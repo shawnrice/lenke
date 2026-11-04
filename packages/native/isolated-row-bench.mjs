@@ -199,6 +199,26 @@ const SHAPES = {
   // Each is a PROJECTION, not a count, so they exercise row construction the way the yield rows do
   // — which is what item 1407's change touched and what these would have caught had they existed.
   hopfiltyield: 'MATCH (a:P)-[:E]->(b:P) WHERE b.n > 5 RETURN b.n AS n',
+  // ⚠️ THE DECOMPOSITION OF `hopfiltyield`, which is the heaviest OPEN row in this bench at **644
+  // ns/row** (item 1437). Profiling it nominated nothing routable — `get adjFrom` is 1.1%, so the
+  // edge-index trick item 1431 took for the undirected walk is worth ~nothing here — and the
+  // remaining structural observation was that it reads `b.n` TWICE (once for the predicate, once for
+  // the projection) with nothing memoizing it. These three rows are what separates the candidate
+  // causes, because `hopfiltyield` differs from `hopsingleyield` in THREE things at once: it carries
+  // a `WHERE` at all, it evaluates a predicate per edge, and it drops rows.
+  //
+  //   `hopsingleyield`   bare projection            — no clause, no predicate, all rows
+  //   `hopfiltwtrue`     clause present, no reads   — isolates "takes the filtered walk"
+  //   `hopfiltallpass`   real far predicate, ALL rows pass — isolates predicate eval at EQUAL rows
+  //   `hopfiltdiffprop`  predicate and projection on DIFFERENT properties — isolates the double read
+  //
+  // `WHERE true` is the repo's named control for "why is the filtered version slower" (closed item
+  // 570). `hopfiltallpass` matters because `hopfiltyield` returns 99,994 rows against the bare row's
+  // 100,000, so the two are not comparable per row until the row counts agree; `b.n > -1` is a real
+  // predicate the planner cannot fold, evaluated per edge, that keeps every row.
+  hopfiltwtrue: 'MATCH (a:P)-[:E]->(b:P) WHERE true RETURN b.n AS n',
+  hopfiltallpass: 'MATCH (a:P)-[:E]->(b:P) WHERE b.n > -1 RETURN b.n AS n',
+  hopfiltdiffprop: 'MATCH (a:P)-[:E]->(b:P) WHERE b.k > -1 RETURN b.n AS n',
   hopundiryield: 'MATCH (a:P)-[:E]-(b:P) RETURN b.n AS n',
   hoprelyield: 'MATCH (a:P)-[r:E]->(b:P) RETURN r.w AS w',
   // `relBoundFilteredHopWalk`, the rel-bound walk's filtered half (item 446's other side). It is a

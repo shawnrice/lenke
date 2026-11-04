@@ -4703,6 +4703,11 @@ Three things to not re-derive:
   `carriedWhere`'s neither-endpoint refusal removed too: `rowLocal` is what refuses a subquery
   clause `WHERE` here. It stays only because the projection half proves free-variable analysis
   cannot see this correlation.
+  **⚠️ THAT SECOND SURVIVOR WAS A 7.46x PERF FINDING AND WAS READ AS A TEST GAP — see item 1437.**
+  The refusal being answer-free is exactly the precondition for removing it, and `WHERE true` was
+  declining hop projection entirely: 194.63 ms against the identical unfiltered row's 26.08. A
+  mutant that survives on a REFUSAL is a perf question too, because the code it guards is
+  unreachable, so the guard's only remaining effect is the route it denies.
 - **The TS edge-write gap is mostly NOT the write.** Of a 7 ms `DELETE e`, 5.6 ms is the read that
   binds `e`. Do not price a TS edge write without subtracting its read first.
 
@@ -52760,3 +52765,174 @@ item 1415's attempt at the per-row machinery measured 2.3% against controls movi
 
 `bun run check` 0 (read unpiped). No engine code changed; `hop-projection.ts` restored and verified
 at the strict `<`.
+
+### Item 1437 — ✅ SHIPPED, **75.9% / 94.2% / 73.8%** (4/4 each): `WHERE true` declined hop projection entirely and cost **7.46x**. Item 444's SURVIVING MUTANT had already proved the refusal was answer-free; nobody measured it
+
+Item 1436 closed routing as the lever for `hopfiltyield` (644 ns/row, the heaviest open row), so I
+decomposed it instead. The profile nominated nothing routable — `get adjFrom` is **1.1%**, which
+declines the edge-index trick item 1431 took for the undirected walk by profile rather than by
+measurement — leaving one structural observation: the row reads `b.n` twice, once for
+`WHERE b.n > 5` and once for `RETURN b.n`, with nothing memoizing it.
+
+**The double read is not the cost, and the arms that proved it found something much larger.** Four
+arms at 100k nodes, `FANOUT=1 MULTILABEL=0 STRIDE=random`, p25 of 14 reps dropping 3:
+
+```text
+  RETURN b.n              (no WHERE)   26.08 ms   100000 rows   260.8 ns/row
+  WHERE true  RETURN b.n              194.63 ms   100000 rows  1946.3 ns/row   7.46x
+  WHERE b.n > -1 RETURN b.n            62.98 ms   100000 rows   629.8 ns/row   2.41x
+  WHERE b.n > 5  RETURN b.n            58.78 ms    99994 rows   587.8 ns/row   2.25x
+  WHERE b.k > -1 RETURN b.n            54.51 ms   100000 rows   545.1 ns/row   2.09x
+```
+
+Read the last two first, because they are the question I set out to answer: predicate and projection
+on the **same** property is 587.8 ns/row and on **different** properties is 545.1 — different is
+_cheaper_. **Nothing shares the read, and a CSE has nothing to win.** (The per-row normalisation is
+load-bearing: the two arms return 99,994 and 100,000 rows, so the raw 58.78-against-54.51 is not
+comparable until divided.)
+
+Then read the second line. **`WHERE true` means exactly what no `WHERE` means and cost 7.46x** —
+3.1x worse than a real far predicate doing actual per-edge work. Spread across six processes was
+1.007x, so it is not noise.
+
+### The cause: a refusal whose comment reasons only about the case it was written for
+
+`carriedWhere` ended with
+
+```ts
+if (!vars.includes(farVar) && !readsStart && !needsRel) {
+  return null;
+}
+```
+
+A predicate with **no free pattern variables at all** — `WHERE true`, `WHERE 1 = 1`, `WHERE $flag` —
+has an empty `vars`, so it reads neither endpoint nor the rel and every test is false. The whole
+shape fell off hop projection to the general matcher: `(anonymous) in filteredHopWalk` vanishes from
+the profile and `expand` 35.2%, `evalLabelExpr` 13.3%, `walkSegments` 8.0%, `get labels` 7.5%,
+`matchPattern` 4.5% replace it. The 20.8% in label frames is the general path re-testing labels per
+candidate — work the walk had already dropped (items 1066, 1408-1410).
+
+The comment block above that line is 10 lines about **start-only** predicates and items 176/177/206.
+The zero-variable case was never considered, which is why the line read as deliberate.
+
+### ⚠️ ITEM 444 ALREADY KNEW THIS WAS SAFE, AS A SURVIVING MUTANT
+
+Item 444 mutation-tested this exact refusal and recorded:
+
+> "Mutation survived with it removed, and survived again with `carriedWhere`'s neither-endpoint
+> refusal removed too: `rowLocal` is what refuses a subquery clause `WHERE` here."
+
+That survivor is the precondition for this change — removing the refusal changes no answer, because
+`rowLocal` is the real guard — and it sat in the file for ~1000 items. **A surviving mutant says the
+tests cannot see the line; it does not say the line is free.** Item 444 read it as defence-in-depth,
+which it is, and stopped there. The missing step was to ask what the refusal COSTS, and it cost
+7.46x. Worth generalising: a mutant that survives on a REFUSAL is a perf question, not just a test
+gap — the code it guards is unreachable, so the guard's only remaining effect is the route it denies.
+
+### The change, and why START-ONLY rather than a new route
+
+A predicate reading no pattern variable is loop-invariant, so it is classified `startOnly` and rides
+the existing start-gated closure — which gates a vertex BEFORE reading its adjacency and already
+carries items 139-145' raise parity (the bucket check and `try`/`catch`). Reusing it keeps those five
+tests pointed at this case instead of asking a new walk to re-derive them. `needsStart` stays false:
+there is nothing to read. `rowLocal` is still required, for item 175's reason — a zero-variable
+predicate can still hold a faulting uncorrelated subquery.
+
+### Measured, as an A/B with the decline restored as the PRE arm
+
+Each arm asserted to BE the code it claims (`grep -c` against an expected count per arm) before
+being built, per CLAUDE.md. `hopfiltwtrue`, 100k nodes, `MULTILABEL=0`, p25 of 10 reps dropping 3,
+two alternated rounds:
+
+```text
+  stride  fanout        PRE       POST    change   concordance
+  random       1     196.59      47.41     75.9%   4/4
+  small        1     146.14       8.48     94.2%   4/4   (17.2x)
+  random       4     376.05      98.51     73.8%   4/4
+```
+
+Controls on the final build, three rounds alternated: `hopsingleyield` 26.08 → 26.40 (-1.2%),
+`hopfiltallpass` 62.98 → 62.13 (+1.4%), `hopfiltyield` 58.78 → 58.74 (+0.1%) — all inside the
+per-row spreads this bench measures for them, and all three are rows the change cannot reach.
+
+### What it does NOT fix, measured rather than assumed
+
+The spellings still do not cost the same, and the residual is not small. `WHERE true` against its
+bare twin on the shipped build:
+
+```text
+  small  / fanout 1    9.11 vs 13.78   0.66x   -- the FIXED row is now FASTER than bare
+  random / fanout 1   46.91 vs 26.40   1.78x
+  small  / fanout 4   59.65 vs 18.77   3.18x
+  random / fanout 4   98.33 vs 36.66   2.68x
+```
+
+Two separate open questions in that table, neither of them this item's:
+
+- **At `small`/1 the constant-predicate row BEATS the bare row** (0.66x). The start-gated walk seeds
+  and gates per vertex; whatever it does there is available to the unfiltered row, which does not do
+  it. That is a lever on `hopsingleyield`, not a defect here.
+- **At fanout 4 the gap is still ~3x**, which is one gate evaluation per START VERTEX where once per
+  QUERY would do. Hoisting it needs a guard equivalent to "at least one complete match exists" —
+  evaluating on the first vertex with a non-empty bucket is exactly raise-faithful, since an
+  invariant predicate that faults faults on the first one — but it is a branch in a hot loop, which
+  item 159 measured at 1.6x on this very function. **Priced, not built.**
+
+### The same spelling was already fast on the COUNT route
+
+Item 937 measured `WHERE true` on `farOnlyHopCount` at **3.69 ms / 18 ns a far vertex** and used it
+as a floor. So one spelling was a cheap control on the count route and a 7.46x cliff on the
+projection route, in the same engine, at the same time. Two detectors, one surface — the shape items
+1408-1410 kept finding inside a single function, here between functions.
+
+### Testing: the suite could not see any of this
+
+All 3,638 tests in the package passed before the change and after it, identically, because admitting
+a predicate to a different walk changes no answer. Per the repo's recorded answer for that shape, the
+decision is extracted as an exported pure fn (`loopInvariantWhere`) and `carriedWhere` is exported
+too — **the pure fn alone is not enough, because a mutant deleting the branch that CALLS it leaves
+the fn correct and the test green** (`rewrite-composition-is-not-free`: export the composition or the
+unwired mutant survives).
+
+- `loop-invariant-where.test.ts` (15) — the pure fn and the wiring. Asserts `startOnly: true`
+  specifically, not merely non-null: a carry resolving to the general per-edge closure would measure
+  2.41x instead of 4.15x while answering identically.
+- `loop-invariant-where-rows.test.ts` (16) — rows and raises. The oracle is the unfiltered spelling,
+  not a literal. Raise parity is asserted as the route-independent contract **raise iff ≥1 complete
+  match exists**, verified against the general matcher by running the same faulting invariant
+  predicate under a two-hop pattern hop projection declines.
+
+Five mutants, all CAUGHT, under `timeout 600 systemd-run --user --scope -p MemoryMax=16G
+-p MemorySwapMax=0` with the kill proven first (allocator bomb 137, bare spin 124), restored from a
+pristine copy before each one, verdicts read from stdout+stderr concatenated before the exit code:
+
+```text
+  M1  branch never fires (=== 0 -> === 99)                CAUGHT  29 pass 2 fail
+  M2  rowLocal dropped                                    CAUGHT  28 pass 3 fail
+  M3  everything invariant (size === 0 -> >= 0)           CAUGHT  27 pass 4 fail
+  M4  carried to the GENERAL closure (startOnly false)    CAUGHT  29 pass 2 fail
+  M5  the decline restored                                CAUGHT  28 pass 3 fail
+```
+
+**M4 and M5 are answer-equivalent and only the exported composition catches them** — which is the
+whole argument for exporting it. M4's first run reported `SED DID NOT APPLY (marker count 2, wanted
+1)` and refused to issue a verdict: the mutant's text also matches the pre-existing
+`where === undefined` early return. The sed had applied; the absolute count was wrong. The assertion
+turning a guessed count into a loud non-verdict instead of a false CAUGHT is CLAUDE.md's rule earning
+itself again.
+
+### Bench rows added
+
+`hopfiltwtrue`, `hopfiltallpass` and `hopfiltdiffprop` on `isolated-row-bench.mjs` — the
+decomposition of `hopfiltyield`, which differs from `hopsingleyield` in three things at once (carries
+a `WHERE`, evaluates a predicate, drops rows). `hopfiltallpass` exists so the row counts agree:
+`hopfiltyield` returns 99,994 against the bare row's 100,000 and the two are not comparable per row
+until they do.
+
+### Gates
+
+`bun run check` 0 (read UNPIPED — `rc=$?` after a pipe is `tail`'s status, which is the trap
+CLAUDE.md names and which I hit once here before re-running it). Suites: gql **3669**/0 (3638 + 31
+new, which also confirms no existing file was overwritten), gremlin 1218/0, core 383/0,
+serialization 144/0, native 961/0. `bun run fuzz` 20/0 — byte-identity intact, which is the real risk
+on a route change, since the two walks visit rows in different orders.

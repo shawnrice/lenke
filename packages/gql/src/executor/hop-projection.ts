@@ -155,7 +155,29 @@ const projectedEndsOnly = (
  * that shape cost 4.047 -> 5.228ms, so this is a measured boundary between two fast paths
  * rather than a conservative one.
  */
-const carriedWhere = (
+
+/**
+ * Whether a carried `WHERE` is LOOP-INVARIANT — it reads no pattern variable, so its value is the
+ * same for every row the walk would produce (item 1437).
+ *
+ * ⚠️ EXPORTED AND UNIT-TESTED BECAUSE THE DECISION IS ANSWER-EQUIVALENT. Admitting `WHERE true` to
+ * hop projection instead of declining it to the general matcher is worth **4.18x** and changes no
+ * answer anywhere, so every differential and query test passes either way — the repo's recorded
+ * shape for that is to extract the arithmetic as a pure fn and test it directly rather than to
+ * believe a green suite (`perf-gate-needs-its-own-test`). `loop-invariant-where.test.ts` is that
+ * test; `carriedWhere` itself is not exported, and a route this cheap to get wrong should not rest
+ * on a timing probe.
+ *
+ * Both halves are load-bearing:
+ *
+ *   * **no free variables** — `WHERE b.n > 5` is not invariant, and neither is `WHERE a.n > 5`.
+ *   * **`rowLocal`** — a predicate can read no variable and still hold an uncorrelated subquery
+ *     that FAULTS, which item 175's cheap-conjunct-first seed order exists to keep unreached.
+ */
+export const loopInvariantWhere = (where: Expr): boolean =>
+  freePredicateVars(where).size === 0 && rowLocal(where);
+
+export const carriedWhere = (
   where: Expr | undefined,
   farVar: string,
   startVar: string | undefined,
@@ -191,6 +213,34 @@ const carriedWhere = (
   // it should seed from the index and keep walking. So a start-only predicate is accepted and
   // gets its own closure, which applies it PER START VERTEX instead of per row — the whole point
   // of carrying it, since the general path cannot reject a start before expanding it either.
+  // ⚠️ A PREDICATE WITH NO FREE PATTERN VARIABLES AT ALL is loop-invariant, and declining it cost
+  // **7.46x** (item 1437). `vars` is empty for `WHERE true`, `WHERE 1 = 1` and `WHERE $flag`, so
+  // every test below it was false and the whole shape fell off hop projection to the general
+  // matcher: `MATCH (a:P)-[:E]->(b:P) WHERE true RETURN b.n` measured **194.63 ms against the
+  // identical unfiltered row's 26.08**, with `walkSegments`/`matchPattern`/`expand`/`evalLabelExpr`
+  // the top frames. A REAL far predicate on the same row is only 2.41x, so the constant was 3.1x
+  // worse than doing actual per-edge work — the exact shape of CLAUDE.md's rule that equivalent
+  // spellings must cost the same, and the reason this is a bug rather than a missing optimization.
+  //
+  // It is classified START-ONLY because that walk's contract is the one an invariant predicate
+  // wants: it gates a vertex BEFORE reading its adjacency, and it already carries the raise parity
+  // this needs (the bucket check and `try`/`catch` below, items 139-145) — the general path
+  // evaluates a clause `WHERE` once per COMPLETE match, so a start that yields no row must never
+  // evaluate it. Reusing that closure keeps those five tests pointed at this case instead of
+  // asking a new route to re-derive them. `needsStart` stays false: there is nothing to read.
+  //
+  // `rowLocal` is still required, for item 175's reason — a zero-variable predicate can still hold
+  // a faulting uncorrelated subquery, and the seed gate's cheap-conjunct-first order is what keeps
+  // `WHERE <false> AND <faulting subquery>` from reaching it.
+  //
+  // This leaves ONE evaluation PER START VERTEX where once per QUERY would do. That residual is
+  // priced, not built: see `docs/reviews/CLOSED.md` item 1437.
+  if (vars.length === 0) {
+    return loopInvariantWhere(where)
+      ? { needsStart: false, startOnly: true, needsRel: false }
+      : null;
+  }
+
   if (!vars.includes(farVar) && !readsStart && !needsRel) {
     return null;
   }
