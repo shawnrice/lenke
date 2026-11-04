@@ -1359,8 +1359,18 @@ const fastPath = (linear: CLinear, graph: Graph, params: Params): Row[] | undefi
   // Item 573's degree algebra sits ABOVE `countShortcut`, which cannot answer a quantified hop
   // at all (`plainRel` is false for one), so the order is not a priority contest — it is the
   // only rung that matches this shape.
+  // ⚠️ THE ONLY RUNG THAT MAY DECLINE AT RUNTIME (item 1399), and the ladder already had the
+  // mechanism: this function's contract is "returns `undefined` when every detector declined and
+  // the general clause loop must run", so falling through is what the other rungs do by not
+  // existing. `varLengthCount` cannot decide at COMPILE time whether a depth-4 trail's endpoint
+  // label is vacuous — vacuity is a property of the graph — so it is admitted and declines here
+  // when the label really filters. See `depth4Admissible`.
   if (linear.varLengthCount) {
-    return linear.varLengthCount(graph, params);
+    const varLength = linear.varLengthCount(graph, params);
+
+    if (varLength !== undefined) {
+      return varLength;
+    }
   }
 
   if (linear.countShortcut) {

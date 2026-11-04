@@ -9071,7 +9071,9 @@ export type CLinear = {
   optionalHopProjection: RowsFn | null;
   countShortcut: ((graph: Graph, params: Params) => Row[]) | null;
   /** The DEGREE-ALGEBRA count over a bounded var-length OUT hop (item 573); else null. */
-  varLengthCount: ((graph: Graph, params: Params) => Row[]) | null;
+  // `Row[] | undefined` — the one rung that may decline at RUNTIME, because an endpoint label's
+  // vacuity is a property of the graph and not of the query (item 1399).
+  varLengthCount: ((graph: Graph, params: Params) => Row[] | undefined) | null;
   /** Precomputed grouped-count closure for `MATCH (n) RETURN n.k, count(*)`; else null. */
   groupCountShortcut: ReachFn | null;
   /** The same over a HOP — `MATCH (a)-[:T]->(b) RETURN b.k, count(*)`; else null. */

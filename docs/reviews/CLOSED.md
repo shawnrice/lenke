@@ -50171,10 +50171,84 @@ next to the code.
 trivial endpoint mask; item 692 already shipped that mistake once and it answered the WALK count
 (450,000 against the trail's 449,998), caught by printing answers beside times. A correct fix needs a
 way to **decline after choosing**, so the closure can test `vacuousLabel` with the graph in hand and
-fall back when the label really does filter — an architecture change to how detectors hand back work,
-not a predicate tweak. That is its own item and arguably its own design decision.
+fall back when the label really does filter — ~~an architecture change to how detectors hand back work,
+not a predicate tweak. That is its own item and arguably its own design decision.~~ **WRONG, and
+corrected at 1399: `fastPath` already returns `undefined` to mean "the general clause loop must
+run", so the decline mechanism existed and the fix was FOUR SMALL EDITS. Shipped at 1399 for 9.6x —
+and the mutants there showed the gate may be removable for FILTERING labels too, 9.9x, pending the
+brute-force oracle.**
 
 ### Gates
 
 Bench rows and one priced comment — **no engine behaviour changed**. gql 3570/0, `bun run check` 0
 (read unpiped).
+
+### Item 1399 — **SHIPPED, 9.6x** on a depth-4 trail with a vacuous endpoint label (433.7 ms → 45.1), by declining at RUN TIME instead of refusing on syntax. Item 1398 called that an architecture change; **it was four small edits and I was wrong.** And all three mutants SURVIVED, which revealed the bigger finding: the gate may be unnecessary for FILTERING labels too — **44.2 ms, correct, 9.9x**
+
+Item 1398 priced `depth4Admissible`'s conservatism at 11-13x and concluded a fix "needs a way to
+decline after choosing… an architecture change to how detectors hand back work". **That was wrong,
+and reading the dispatch is what corrected it**: `fastPath`'s own contract is already _"Returns
+`undefined` when every detector declined and the general clause loop must run"_. The mechanism
+existed; only the rung keyed on whether the closure EXISTS rather than on what it returns.
+
+### What shipped: four edits
+
+1. the ladder rung in `clauses.ts` tolerates a runtime `undefined` and falls through;
+2. `varLengthCount`'s type widens to `Row[] | undefined` — uniquely among the nineteen detectors;
+3. `depth4Admissible` admits a depth-4 trail with a LABEL (still refusing a PREDICATE, which cannot
+   be shown vacuous cheaply);
+4. the closure declines when `max === 4 && isTrail && eff !== undefined` — and `eff` was **already
+   being computed there** via `vacuousLabel(graph, endLabel)`, so no new work on any path.
+
+| graph                          | query        | before   | after       | answer                 |
+| ------------------------------ | ------------ | -------- | ----------- | ---------------------- |
+| `:P` on every vertex (vacuous) | `{1,4}(b:P)` | 433.7 ms | **45.1 ms** | 400,000 ✓              |
+| `:P` on every vertex           | `{1,4}()`    | 43.2     | 38.1        | 400,000                |
+| half `:P`, half `:Q` (filters) | `{1,4}(b:P)` | 435.8    | 435.8       | **200,000** ✓ declines |
+
+The filtering row is the correctness half: it answers the FILTERED count, so the decline really does
+reach the general matcher rather than the closed form.
+
+### ⚠️ ALL THREE MUTANTS SURVIVED, and that is the finding
+
+Nine tests, both regimes, the triangle where trail and walk genuinely differ (9 against the walk's
+12). Then three mutants — dropping the runtime decline, ignoring TRAIL mode, relaxing the compile
+gate to admit a predicate — and **every one survived, 9 pass / 0 fail.**
+
+Not because the tests are weak in the dangerous direction. Applying the "no decline" mutant by hand
+and measuring it directly:
+
+| no-decline arm             | ms       | answer        |
+| -------------------------- | -------- | ------------- |
+| vacuous `{1,4}(b:P)`       | 41.4     | 400,000 ✓     |
+| **filtering `{1,4}(b:P)`** | **44.2** | **200,000 ✓** |
+| filtering `{1,4}(b:Q)`     | 36.1     | 200,000 ✓     |
+
+**The depth-4 closed form answers a FILTERING endpoint label correctly, at 44.2 ms against the
+declined path's 435.8 — 9.9x, on a class ten times wider than the one this item shipped.** So the
+`passesIsVacuous` gate is conservative rather than load-bearing, at least on these fixtures, and the
+decline I shipped is belt-and-braces over a path that appears already correct.
+
+**That is NOT enough to remove the gate.** "It agrees on two fixtures" is exactly the evidence item
+692 had when it shipped the wrong count (450,000 against the trail's 449,998) on this very family,
+caught by a brute-force oracle and not by any timing. The oracle exists —
+`trail-count-bruteforce.test.ts`, built at item 690, which asserts its generator produced
+self-loops, parallel edges and reverse edges because those are what separate a trail from a walk —
+and it does not currently vary an endpoint label.
+
+**NEXT: extend that oracle to a filtering endpoint label at depth 4.** If it holds over randomized
+graphs with all three hazards, the gate comes out and the 9.9x applies to every filtering label, not
+just vacuous ones. That is the item this one opens, and it is a correctness question before it is a
+perf one.
+
+### Gates
+
+gql **3579/0** (9 new), gremlin 1157/0, core 383/0, serialization 144/0, `bun run fuzz` 20/0, the
+brute-force oracle 3/0, `bun run check` 0 (read unpiped). The hand-applied mutant was restored and
+verified (marker present, full suite green) before anything was committed.
+
+Two test defects of my own, both caught by the suite rather than by review: `WALK` is a PREFIX
+(`MATCH WALK (…)`), which I first wrote as a suffix and the parser rejected outright; and one
+assertion stated a count I had guessed rather than derived — replaced with a RELATION (an always-true
+predicate gives the unfiltered count, a selective one strictly less), because a number I cannot
+derive is a number the test cannot defend.

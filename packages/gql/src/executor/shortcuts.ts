@@ -7116,9 +7116,11 @@ const degreeCountShape = (pattern: PathPattern): boolean => {
 /**
  * Whether a depth-4 TRAIL may take the closed form (item 692) — true for every other shape.
  *
- * Depth 4 is admitted only with NO endpoint constraint of any kind. Its terms were derived and
- * validated for a TRIVIAL endpoint mask (items 687-689) and nothing checks them against a filtered
- * one, so a carried predicate or label falls back to enumeration.
+ * Depth 4 is admitted with no endpoint PREDICATE. Its terms were derived and validated for a
+ * TRIVIAL endpoint mask (items 687-689) and nothing checks them against a filtered one — so a
+ * carried predicate falls back to enumeration here, and a LABEL is admitted and decided at RUN TIME
+ * by the closure, because a label every vertex carries is trivial and only the graph can say so
+ * (item 1399). It used to refuse a label here too; that cost 11-13x and the measurements are below.
  *
  * The test has to be STATIC. `passesIsVacuous` is the flag that actually matters, but it is a
  * QUERY-TIME value — it calls `vacuousLabel(graph, …)` — and `walkLevelCount` returns a number with
@@ -7145,12 +7147,8 @@ const degreeCountShape = (pattern: PathPattern): boolean => {
  * label really does filter. That is an architecture change to how detectors hand back work, not a
  * predicate tweak, which is why it is priced here rather than taken.
  */
-const depth4Admissible = (
-  max: number,
-  mode: string | undefined,
-  endPred: unknown,
-  endLabel: unknown,
-): boolean => max !== 4 || mode === 'walk' || (endPred === undefined && endLabel === undefined);
+const depth4Admissible = (max: number, mode: string | undefined, endPred: unknown): boolean =>
+  max !== 4 || mode === 'walk' || endPred === undefined;
 
 /**
  * Whether the MIRROR spelling (`<-[:T]-{n,m}`) may take this route (item 744).
@@ -7186,7 +7184,11 @@ const mirrorAdmissible = (inward: boolean, max: number | null): boolean =>
 
 export const detectVarLengthCount = (
   clauses: readonly Clause[],
-): ((graph: Graph, params: Params) => Row[]) | null => {
+  // `Row[] | undefined`, uniquely among the detectors: a depth-4 trail's endpoint label may be
+  // VACUOUS, which only the graph can say, so this rung is admitted at compile time and declines at
+  // run time (item 1399). `undefined` means "the general clause loop must run", which is the
+  // contract `fastPath` already documented for a rung that does not exist at all.
+): ((graph: Graph, params: Params) => Row[] | undefined) | null => {
   if (clauses.length !== 2) {
     return null;
   }
@@ -7283,7 +7285,7 @@ export const detectVarLengthCount = (
     return null;
   }
 
-  if (!depth4Admissible(max, pattern.mode, endPred, node.label)) {
+  if (!depth4Admissible(max, pattern.mode, endPred)) {
     return null;
   }
 
@@ -7315,6 +7317,17 @@ export const detectVarLengthCount = (
       // between a degree product and a per-edge scan wearing one (item 566 / `effectiveLabel`).
       const eff =
         endLabel === undefined || vacuousLabel(graph, endLabel) ? undefined : endLabel.name;
+
+      // DEPTH 4 DECLINES HERE, not in the detector (item 1399). Its terms are derived for a TRIVIAL
+      // endpoint mask, so a label that really filters must not reach them — but a label every
+      // vertex carries IS trivial, and refusing it on syntax cost **11-13x**: `{1,4}(b:P)` measured
+      // 433.7 ms against 43.2 for the identical 400,000 answer, on a graph where every vertex is
+      // `P`. `vacuousLabel` is a graph property, so this is the earliest point the question can be
+      // asked; returning `undefined` sends the query to the general clause loop, which is where it
+      // went before this item.
+      if (max === 4 && isTrail && eff !== undefined) {
+        return undefined;
+      }
 
       return [
         {
