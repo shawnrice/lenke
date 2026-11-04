@@ -7122,6 +7122,14 @@ const degreeCountShape = (pattern: PathPattern): boolean => {
  * by the closure, because a label every vertex carries is trivial and only the graph can say so
  * (item 1399). It used to refuse a label here too; that cost 11-13x and the measurements are below.
  *
+ * ⚠️ THE MASK CONSTRAINT IS A CORRECTNESS CONSTRAINT, NOT CONSERVATISM — measured at item 1400.
+ * Removing the closure's runtime decline, so a FILTERING label reaches the depth-4 terms, answers
+ * **−3** on randomized multigraphs: with a non-trivial mask the correction subtracts more than the
+ * walk count it corrects. Item 1399 had measured that same removal as "correct and 9.9x faster" on
+ * two 100,000-vertex fixtures — out-degree 1, one long cycle, no self-loops, no parallel edges, i.e.
+ * none of the structures the correction exists for. The guard in `trail-count-bruteforce.test.ts`
+ * now covers this; do not relax it on the strength of a hand-built fixture.
+ *
  * The test has to be STATIC. `passesIsVacuous` is the flag that actually matters, but it is a
  * QUERY-TIME value — it calls `vacuousLabel(graph, …)` — and `walkLevelCount` returns a number with
  * no way to decline once chosen. So this refuses on the SYNTAX, which is stricter than necessary: a

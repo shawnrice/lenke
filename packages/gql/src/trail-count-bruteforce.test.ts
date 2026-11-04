@@ -194,6 +194,90 @@ describe('bounded trail/walk counts agree with enumeration', () => {
     expect(differed).toBeGreaterThan(20);
   });
 
+  test('an endpoint LABEL at every depth, including 4, agrees with enumeration (item 1400)', () => {
+    // THE SPELLING THE ORACLE DID NOT COVER. It varies the endpoint with a `WHERE` predicate, which
+    // `depth4Admissible` refuses at depth 4 — so the predicate rows take the enumerating path there
+    // and say nothing about the closed form. A LABEL is different: item 1399 admitted a depth-4
+    // trail with an endpoint label and declines at RUN TIME only when the label actually filters, so
+    // the label spelling is the one that can reach the depth-4 terms with a non-trivial mask.
+    //
+    // ⚠️ THIS IS WHY IT MATTERS. Item 1399's three mutants — dropping that runtime decline, ignoring
+    // TRAIL mode, relaxing the compile gate — ALL SURVIVED its nine tests, because on its fixtures
+    // the closed form answered a filtering label correctly anyway (44.2 ms against the declined
+    // path's 435.8, same count). That makes the gate look removable and is NOT enough to remove it:
+    // item 692 shipped a wrong depth-4 count on exactly this family with exactly that much evidence.
+    // This test is the instrument that can tell, over randomized multigraphs with the self-loops,
+    // parallel edges and reverse edges the trail terms exist for.
+    //
+    // `V${j}` selects ONE vertex, so the mask is as non-trivial as it gets; `P` selects all of them,
+    // so it is the vacuous end of the same spelling and must agree with having no label at all.
+    const rnd = lcg(20261104);
+    let selfLoopGraphs = 0;
+    let parallelGraphs = 0;
+    let reverseGraphs = 0;
+    let nonZeroFiltered = 0;
+
+    for (let trial = 0; trial < 40; trial += 1) {
+      const n = 3 + Math.floor(rnd() * 5);
+      const m = 2 + Math.floor(rnd() * 10);
+      const edges: Edge[] = [];
+
+      for (let i = 0; i < m; i += 1) {
+        const u = Math.floor(rnd() * n);
+        const v = rnd() < 0.22 ? u : Math.floor(rnd() * n);
+
+        edges.push([u, v]);
+      }
+
+      if (edges.some(([u, v]) => u === v)) {
+        selfLoopGraphs += 1;
+      }
+
+      if (edges.some(([u, v], i) => edges.findIndex(([x, y]) => x === u && y === v) !== i)) {
+        parallelGraphs += 1;
+      }
+
+      if (edges.some(([u, v]) => u !== v && edges.some(([x, y]) => x === v && y === u))) {
+        reverseGraphs += 1;
+      }
+
+      const g = makeGraph(n, edges);
+      const got = (q: string): number => (query(g, q)[0] as { c: number }).c;
+
+      for (const [lo, hi] of [
+        [4, 4],
+        [1, 4],
+        [2, 4],
+        [1, 3],
+      ] as const) {
+        const q = lo === hi ? `{${lo}}` : `{${lo},${hi}}`;
+
+        // A VACUOUS label — every vertex is `P` — must equal having no label at all.
+        expect(got(`MATCH (a)-[:K]->${q}(y:P) RETURN count(*) AS c`)).toBe(
+          brute(n, edges, lo, hi, true),
+        );
+
+        // A FILTERING label, one target vertex at a time.
+        for (let j = 0; j < n; j += 1) {
+          const want = brute(n, edges, lo, hi, true, (v) => v === j);
+
+          expect(got(`MATCH (a)-[:K]->${q}(y:V${j}) RETURN count(*) AS c`)).toBe(want);
+
+          if (want > 0) {
+            nonZeroFiltered += 1;
+          }
+        }
+      }
+    }
+
+    expect(selfLoopGraphs).toBeGreaterThan(10);
+    expect(parallelGraphs).toBeGreaterThan(5);
+    expect(reverseGraphs).toBeGreaterThan(5);
+    // A filtering label that selects NOTHING anywhere would make every assertion `0 === 0`, which
+    // is the vacuous-green failure this generator has to rule out for itself.
+    expect(nonZeroFiltered).toBeGreaterThan(100);
+  });
+
   test('the depth-3 correction is right PER SOURCE, not just in the total', () => {
     // Item 689's gap: item 600 validated the depth-3 total. A per-source error that cancels in
     // the total is invisible to that, and items 687-689 build on the per-source value.

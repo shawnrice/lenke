@@ -50183,7 +50183,7 @@ brute-force oracle.**
 Bench rows and one priced comment — **no engine behaviour changed**. gql 3570/0, `bun run check` 0
 (read unpiped).
 
-### Item 1399 — **SHIPPED, 9.6x** on a depth-4 trail with a vacuous endpoint label (433.7 ms → 45.1), by declining at RUN TIME instead of refusing on syntax. Item 1398 called that an architecture change; **it was four small edits and I was wrong.** And all three mutants SURVIVED, which revealed the bigger finding: the gate may be unnecessary for FILTERING labels too — **44.2 ms, correct, 9.9x**
+### Item 1399 — **SHIPPED, 9.6x** on a depth-4 trail with a vacuous endpoint label (433.7 ms → 45.1), by declining at RUN TIME instead of refusing on syntax. Item 1398 called that an architecture change; **it was four small edits and I was wrong.** And all three mutants SURVIVED, which revealed ~~the bigger finding: the gate may be unnecessary for FILTERING labels too — **44.2 ms, correct, 9.9x**~~ **a FIXTURE ARTEFACT — REFUTED at 1400: the extended oracle answers −3, a NEGATIVE count, with the gate removed. The 9.9x does not exist and the gate is load-bearing**
 
 Item 1398 priced `depth4Admissible`'s conservatism at 11-13x and concluded a fix "needs a way to
 decline after choosing… an architecture change to how detectors hand back work". **That was wrong,
@@ -50252,3 +50252,67 @@ Two test defects of my own, both caught by the suite rather than by review: `WAL
 assertion stated a count I had guessed rather than derived — replaced with a RELATION (an always-true
 predicate gives the unfiltered count, a selective one strictly less), because a number I cannot
 derive is a number the test cannot defend.
+
+### Item 1400 — the oracle extension **REFUTES item 1399's own suggestion**: removing the depth-4 endpoint-mask gate answers **−3**, a NEGATIVE count, on randomized multigraphs. The 9.9x it measured was fixture luck, and the gate is load-bearing
+
+Item 1399 shipped a 9.6x and then reported something larger: its three mutants all survived, and
+applying the "no decline" one by hand showed the depth-4 closed form answering a **filtering**
+endpoint label correctly at **44.2 ms against the declined path's 435.8 — 9.9x** on a class ten times
+wider. It explicitly refused to act on that, because "it agrees on two fixtures" is the evidence item
+692 had when it shipped a wrong depth-4 count, and it named the next step: extend the brute-force
+oracle to a filtering endpoint label.
+
+**That was the right call, and the oracle says the gate stays.**
+
+### What the oracle did not cover, and now does
+
+`trail-count-bruteforce.test.ts` (item 690) already varies the endpoint with a `WHERE` predicate at
+depths 1-4 — but `depth4Admissible` refuses a predicate at depth 4, so those rows take the
+enumerating path and say nothing about the closed form. **A LABEL is the only spelling that can reach
+the depth-4 terms with a non-trivial mask**, and that spelling was untested.
+
+Added: for each randomized multigraph, every depth range including `{4}`, `{1,4}` and `{2,4}`, a
+**vacuous** label (`:P`, every vertex — must equal no label at all) and a **filtering** label
+(`:V{j}`, exactly one vertex) for every `j`, each against `brute(…, (v) => v === j)`. 2,478
+assertions. The generator's own self-checks carry over — self-loops, parallel edges and reverse
+edges, the three structures the trail terms exist for — plus one of its own: **a filtering label that
+selected nothing anywhere would make every assertion `0 === 0`**, so `nonZeroFiltered > 100` is
+asserted.
+
+### The verdict
+
+| mutant                                 | verdict             | answered |
+| -------------------------------------- | ------------------- | -------- |
+| **M1 the runtime decline dropped**     | **CAUGHT**          | **−3**   |
+| M2 the decline ignores TRAIL mode      | SURVIVED, by design | —        |
+| M3 the compile gate admits a PREDICATE | **CAUGHT**          | 32       |
+
+**A count of negative three.** With a non-trivial endpoint mask the depth-4 trail correction subtracts
+more than the walk count it corrects. Not a slightly wrong number — a structurally impossible one,
+which is the clearest possible answer to "is this gate necessary".
+
+So **item 1399's 9.9x does not exist.** The two 100,000-vertex fixtures it measured happened to be
+shapes where the terms coincide; they have out-degree 1, one long cycle, no self-loops and no
+parallel edges — precisely the structures the trail correction exists for, all absent. This is
+CLAUDE.md's "match the fixture to the claim" arriving as a correctness failure rather than a
+mis-measurement.
+
+**M2 survives by design**, and the distinction is worth keeping straight: dropping `isTrail` makes a
+depth-4 WALK with a filtering label decline unnecessarily — slower, same answer. No test can catch an
+answer-equivalent change, exactly as at item 1391's sort mutant; its guard is a bench row.
+
+### What this leaves
+
+- item 1399's shipped decline is **correct and necessary**, and now has oracle-grade teeth where its
+  nine hand-written tests had none;
+- the depth-4 closed form remains restricted to a trivial endpoint mask, and the comment saying its
+  terms "were derived for a TRIVIAL endpoint mask… nothing validates them against a filtered one" is
+  **vindicated as a correctness constraint, not conservatism**;
+- the real open question is unchanged and is mathematical: derive the depth-4 trail correction for a
+  filtered mask, as item 600 did for depth 3. The oracle is now the instrument that would check it.
+
+### Gates
+
+gql **3580/0** (one new oracle test, 2,478 assertions), gremlin 1157/0, core 383/0, `bun run fuzz`
+20/0, `bun run check` 0 (read unpiped). Both hand-applied mutants were restored and the restore
+verified byte-identical before anything was committed; the working tree held only the test file.
