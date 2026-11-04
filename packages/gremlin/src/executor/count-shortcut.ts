@@ -2464,19 +2464,80 @@ const propertyCount = (step: Extract<Step, { kind: 'has' }>, graph: Graph): numb
  * buckets, the same condition the GQL shortcut uses (`multiTypeEdgeCount === 0`);
  * otherwise a two-type edge would be counted twice while the walk yields it once.
  */
+/**
+ * Label cap for {@link adjacentCount}'s union route. Bucket `i` pays `i` membership tests per edge,
+ * so the work is `O(k x |E|)` for `k` labels — well under the pipeline at the two or three a query
+ * names, and unmeasured above that, so it declines past this.
+ */
+const UNION_COUNT_MAX_LABELS = 8;
+
 const adjacentCount = (labels: readonly string[], graph: Graph): number | undefined => {
   if (labels.length === 0) {
     return graph.edgeCount; // every edge, traversed once from its own endpoint
   }
 
-  if (labels.length > 1 && graph.multiTypeEdgeCount !== 0) {
+  if (labels.length === 1) {
+    return graph.edgesByLabel.get(labels[0])?.size ?? 0;
+  }
+
+  if (graph.multiTypeEdgeCount === 0) {
+    // No edge sits in two buckets, so the union IS the sum and every bucket stays O(1).
+    let n = 0;
+
+    for (const label of labels) {
+      n += graph.edgesByLabel.get(label)?.size ?? 0;
+    }
+
+    return n;
+  }
+
+  // UNION_COUNT (item 1379). Several labels AND a two-type edge somewhere, so the sum overcounts —
+  // but the UNION is still cheap, and declining here sent the query to the traverser pipeline at
+  // ~495 ns an edge (item 1378: 198.045 ms against 0.008 for the single-label spelling).
+  //
+  // An edge belongs to exactly one FIRST bucket, so count it where it first appears: bucket 0
+  // contributes its `.size` untouched, and bucket `i` counts only what no earlier bucket holds.
+  // That is item 1377's transform applied to a count instead of an iteration.
+  //
+  // CAPPED, because bucket `i` pays `i` membership tests per edge: the work is bounded by
+  // `k x |E|` for `k` labels, which is far under the pipeline at the two or three labels a query
+  // actually names and is not measured above that. Past the cap this declines as it always did.
+  if (labels.length > UNION_COUNT_MAX_LABELS) {
     return undefined;
   }
 
-  let n = 0;
+  const buckets: ReadonlySet<Edge>[] = [];
 
   for (const label of labels) {
-    n += graph.edgesByLabel.get(label)?.size ?? 0;
+    const bucket = graph.edgesByLabel.get(label);
+
+    if (bucket !== undefined && bucket.size > 0) {
+      buckets.push(bucket);
+    }
+  }
+
+  if (buckets.length === 0) {
+    return 0;
+  }
+
+  let n = buckets[0].size;
+
+  for (let i = 1; i < buckets.length; i += 1) {
+    for (const e of buckets[i]) {
+      let earlier = false;
+
+      for (let j = 0; j < i; j += 1) {
+        if (buckets[j].has(e)) {
+          earlier = true;
+
+          break;
+        }
+      }
+
+      if (!earlier) {
+        n += 1;
+      }
+    }
   }
 
   return n;

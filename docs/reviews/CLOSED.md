@@ -48627,7 +48627,7 @@ which is worth having, but the dedupe's guard is those two.
 
 Engine change (`packages/gql/src/executor.ts`) plus tests. `bun run check` 0 (read unpiped).
 
-### Item 1378 — the Gremlin twin of items 1376-1377's dedupe exists, is the IDENTICAL code, and is worth **NOTHING** (−0.4%): 60.7% in GQL against ~0% here. The real gap is a **24,750x routing** miss, priced analytically at ~100x and NOT built
+### Item 1378 — the Gremlin twin of items 1376-1377's dedupe exists, is the IDENTICAL code, and is worth **NOTHING** (−0.4%): 60.7% in GQL against ~0% here. The real gap is a **24,750x routing** miss, priced analytically at ~100x and NOT built — **BUILT at 1379: 110x, 99.1%, and the ~100x estimate held**
 
 Items 1376-1377 removed GQL's `seen` Set from `edgesOfManyTypes` for **62.5%** on a multi-type hop.
 `graph-queries.ts` has the same pattern twice — `iterLabeled` (multi-label `outE('R','S')`) and
@@ -48707,3 +48707,84 @@ the economical choice.
 
 Instrument only — one bench file; `graph-queries.ts` restored with `ABLATED_ITERLABELED` at 0 and
 both arm files under `target/` deleted by the driver's `finally`. `bun run check` 0 (read unpiped).
+
+### Item 1379 — **SHIPPED, 110x**: the multi-label edge/hop count is the UNION of buckets instead of a decline. 198.139 ms → 1.798, 64/64 concordance, answers identical on 12 shapes
+
+Item 1378 located the gap and priced it analytically at ~100x, then declined to build it. This builds
+it, and the estimate held: **99.1%, 110x**.
+
+### What was wrong
+
+`adjacentCount` answers `V().out(T).count()`, `in`, `outE`, `inE` (and `both*` at twice it) by
+reading bucket SIZES — O(1). With several labels it DECLINED whenever any edge carried two types:
+
+```ts
+if (labels.length > 1 && graph.multiTypeEdgeCount !== 0) {
+  return undefined; // -> the traverser pipeline, ~495 ns an edge
+}
+```
+
+The decline is CORRECT — summing buckets double-counts a two-type edge while the walk yields it
+once — but it is a performance decline, not a semantic one. The answer wanted is the **union**, and
+the union is cheap.
+
+### The transform, which is item 1377's applied to a count
+
+An edge belongs to exactly one FIRST bucket, so count it where it first appears: **bucket 0
+contributes its `.size` untouched** (still O(1), nothing iterated) and bucket `i` counts only its
+edges absent from every earlier bucket. For two labels that is one O(1) read plus one pass over the
+SECOND bucket with one membership test each.
+
+CAPPED at 8 labels: bucket `i` pays `i` tests per edge, so the work is `O(k x |E|)` for `k` labels —
+far under the pipeline at the two or three a query names, unmeasured above that, so past the cap it
+declines exactly as before.
+
+| shape                     | BASE p25 | UNION     | change    | concordance |
+| ------------------------- | -------- | --------- | --------- | ----------- |
+| `edgemulti` (`outE(E,F)`) | 198.139  | **1.798** | **99.1%** | **64/64**   |
+| `edgesingle` [CONTROL]    | 0.008    | 0.008     | 0.0%      | 12/64       |
+| `hopcount3` [CONTROL]     | 298.209  | 303.509   | -1.8%     | 16/64       |
+
+`edgesingle` — the control that actually runs `adjacentCount` — is flat to the digit.
+
+⚠️ **THE `hopcount3` CONTROL READ -1.8% AND THAT IS NOT YET RESOLVED.** It is inside that row's
+measured 2.9% floor (item 1368) and `hopcount3` does not call `adjacentCount` at all — it is served
+by `slotChainCount` — so there is no mechanism for a real effect beyond the file-edit tax
+`pull-alignment-is-load-bearing` describes. But its concordance (16/64) is not centred on chance, and
+item 1374's lesson is that an n=8 control reading 0.7% landed at exactly chance by n=24. **Treat it
+as unresolved rather than as noise or as a regression**; it needs its own n=24 run, which this item
+does not do.
+
+### Correctness, which is the part that matters
+
+The fixture is built so a SUMMING implementation cannot pass: `|E|` = 3 and `|F|` = 3, so the sum is
+**6** where the union is **4**. `e4` is a self-loop carrying both labels, which keeps the `both*`
+doubling honest (items 1087/1089: a loop is one edge from its source and one from its target).
+
+Twelve shapes checked, all correct: `outE(E,F)` 4, `outE(E)` 3, `outE(F)` 3, `inE(E,F)` 4,
+`out(E,F)` 4, `in_(E,F)` 4, **`bothE(E,F)` 8 = 2 x 4**, `both(E,F)` 8, `outE(E,E)` 3 (duplicate
+label), `outE(E,Z)` 3 (absent), `outE(Z,W)` 0, and **nine labels past the cap** still 4 by the old
+route — which is the assertion that matters for a perf decline: the answer must not depend on which
+route ran.
+
+Seven of these are now tests in `multi-label-edges.test.ts`. **Teeth verified by mutation** (count the
+SUM instead of the union): **4 of the 7 fail** — "counts each edge once", "the VERTEX steps agree",
+"`both`/`bothE` are TWICE the union", "a DUPLICATE label". The other three are correctly unaffected
+(single-label; absent-label, where sum equals union; and the cap path), and should not be read as
+guarding the union logic.
+
+### Verification
+
+`bun test` gremlin **1148 / 0** (seven new), gql 3537 / 0, core 370 / 0. `bun run fuzz` **20 / 0**
+across all seven byte-identity fuzzers. `bun run check` 0 (read unpiped).
+
+### Two process notes against myself
+
+- **I guessed the expected marker count again and it was wrong again** — 3, not 4, the same slip as
+  the `walkBucket` A/B at item 1374. The construction assertion caught it both times, which is the
+  assertion earning its place twice; the fix is to COUNT the occurrences in the patch text rather
+  than estimate them.
+- **zsh command-substituted a backtick inside a `python -c` string**, silently deleting
+  `UNION_COUNT_MAX_LABELS` from a comment and leaving "Nine labels exceeds , so". Caught by reading
+  the file back. `no-backticks-in-git-commit-m` names this for `-m`; it applies to any
+  double-quoted shell argument, and the fourth quoting slip of this session.
