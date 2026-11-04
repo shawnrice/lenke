@@ -47429,11 +47429,20 @@ Everything else holds its place, which is the reassuring half: `grouped`'s closu
 `expandSlot` 33.6% -> 36.0%. And `compareCodePoints` goes 6.9% -> **5.9%**, so item 921's declined
 surrogate hoist does NOT get better with size — the decline stands on its own terms.
 
-**The portable finding: a 20,000-element profile understates the property-read path by 2.5-4x, on
-both surfaces.** `propOf` plus `get properties` is ~8-9% of a GQL shape at 20k and **~24-30% at
-200k**, and Gremlin's `get properties` alone reaches 23.3%. Two ticks ago I listed "property access
-itself — every carrier specialization I shipped sits on top of it and I never priced the floor" as an
-uninstrumented area; this is that floor, and it is the dominant cost at realistic sizes.
+**The portable finding: a 20,000-element profile understates the property-read path by ~~2.5-4x~~
+**1.8-2.7x (corrected at 1365)**, on both surfaces.** `propOf` plus `get properties` is ~~~8-9%~~
+9.5-13.1% of a GQL shape at 20k and **~~~24-30%~~ 17-30% at 200k**, and Gremlin's `get properties`
+alone reaches 23.3%. Two ticks ago I listed "property access itself — every carrier specialization I
+shipped sits on top of it and I never priced the floor" as an uninstrumented area; this is that
+floor, and it is the dominant cost at realistic sizes.
+
+> ⚠️ **THE RATIOS ABOVE COMPARED TWO DIFFERENT INSTRUMENTS — corrected at 1365.** The 20k profiles in
+> this item were taken UNWINDOWED (`--cpu-prof` over the whole process, so Node's startup and the
+> fixture build are in their denominator) and the 200k profiles WINDOWED. Every 20k share was
+> therefore deflated and every growth ratio inflated. Matched, both windowed: `propOf` 1.4-3.5x
+> (holds), `degreeOfTypes` **7.2x** (holds, and it is the most size-sensitive frame measured — it is
+> an adjacency degree lookup, NOT a property read, and listing it here was a category error), but
+> **`get properties` is 1.35-2.9x, not 2.5-4.0x** — its headline 4.0x on `grouped` is **2.0x**.
 
 ### Why it grows, which is NOT the getter
 
@@ -47658,3 +47667,81 @@ have not.
 Probes only; no engine or core code changed. `bun run check` 0 (read unpiped). The all-arms mode of
 `prop-bag-regime-probe.mjs` is kept, with its header now stating that it demonstrates the pollution;
 `ARM=<name> SIZE=<n>` is the mode to trust.
+
+### Item 1365 — item 1362's size-sweep compared an UNWINDOWED 20k against a WINDOWED 200k: matched, the property-read growth is **1.8-2.7x not 2.5-4x**, and the most size-sensitive frame is `degreeOfTypes` at **7.2x**
+
+Item 1364 found the micro behind item 1362's _mechanism_ was contaminated. Its _profile_ numbers were
+never re-checked, and they have their own defect: **the two sides of the comparison used different
+instruments.** The 20,000 profiles were taken with `--cpu-prof` over the whole process, so Node's
+startup and the fixture build sit in their denominator; the 200,000 profiles were windowed by the
+helper item 1362 itself built. A windowed share is of engine work only, so every 20k share was
+deflated and every growth ratio inflated.
+
+Re-ran 20,000 windowed, same reps, same fixture, same analyzer:
+
+| frame            | shape        | 20k (windowed) | 200k (windowed) | growth    | 1362 claimed |
+| ---------------- | ------------ | -------------- | --------------- | --------- | ------------ |
+| `propOf`         | `hopfilter`  | 5.2%           | 13.6%           | 2.6x      | 3.4x         |
+| `propOf`         | `grouped`    | 4.7%           | 16.5%           | 3.5x      | 3.1x         |
+| `propOf`         | `sortedpage` | 6.8%           | 9.3%            | 1.4x      | 1.6x         |
+| `get properties` | `grouped`    | 6.6%           | 13.5%           | **2.0x**  | **4.0x**     |
+| `get properties` | `hopfilter`  | 7.9%           | 10.7%           | **1.35x** | —            |
+| `get properties` | `sortedpage` | 2.7%           | 7.8%            | 2.9x      | —            |
+| `degreeOfTypes`  | `hopfilter`  | 2.3%           | 16.5%           | **7.2x**  | 6.6x         |
+
+`propOf` and `degreeOfTypes` hold within noise of what 1362 said. **`get properties` does not**: its
+headline 4.0x on `grouped` is **2.0x** measured against a matched baseline, and on `hopfilter` it is
+1.35x — the weakest size-sensitivity in the table, where 1362 implied it was among the strongest.
+
+Combining the two frames that make up the property read:
+
+```text
+                20k      200k     growth
+  grouped      11.3%     30.0%     2.65x
+  hopfilter    13.1%     24.3%     1.85x
+  sortedpage    9.5%     17.1%     1.80x
+```
+
+**So item 1362's headline — "a 20,000-element profile understates the property-read path by 2.5-4x"
+— should read 1.8-2.7x**, with a per-frame range of 1.35x to 3.5x. The direction and the rough
+magnitude survive; the top of the range was the instrument mismatch.
+
+### The correction that matters more: `degreeOfTypes`, not the property read
+
+At **7.2x** (2.3% -> 16.5% of `hopfilter`) `degreeOfTypes` is the most size-sensitive frame measured
+on either surface, and item 1362 buried it in a list of property-read frames it does not belong to —
+it is the per-vertex typed-adjacency degree lookup, not a property read. Gremlin's `hopcount3` shows
+the same frame moving 9.1% -> 14.6%. It carries 40 mentions, so the screen calls it priced, and the
+SIZE SENSITIVITY is what is new: a lever there is worth ~7x its cache-resident measurement, which is
+a larger multiplier than anything else this sweep found.
+
+**Not priced here**, and deliberately: item 1364's lesson is one item old. A share is a nomination;
+the number that decides anything is an in-engine A/B, and `degreeOfTypes` deserves its own.
+
+### What still stands from 1362-1364, consolidated
+
+- **Windowing is necessary** and the helper is correct: at 200k an unwindowed profile puts the fixture
+  build at the top of every shape.
+- **The columnar counterfactual**: 3.55x at 200,000 and near-flat in size (1364's clean numbers). A
+  micro, so an upper bound on a layout change, not a prediction.
+- **Three levers closed**: `Object.freeze` on the read path (free at every size), a `Map` per element
+  (3.18x WORSE), and bag-shape stability (**1.11x in the engine**, measured in the engine — 1364).
+- **Ranking is stable across the 10x**: `satisfies` 49.7% -> 30.9%, `grouped`'s closure 50.9% ->
+  42.1%, `bump` 33.9% -> 25.4%. Composition shifts toward per-element reads; nothing reorders.
+
+### On this chain of corrections, since it is now four items long
+
+1362 corrected 1361's instrument advice, 1363 corrected 1362's mechanism, 1364 corrected 1363's
+harness and restored 1362's mechanism, and this item corrects 1362's magnitudes. That looks like
+thrashing and is worth distinguishing from it: **the corrections are shrinking** — a retracted
+instrument, then a reversed mechanism, then a reversed refutation, now a 2.5-4x narrowed to 1.8-2.7x.
+The first three changed what was true; this one changes a range by a third and overturns one figure.
+
+The cause of all four is the same and worth stating once: **this screen was built in layers and each
+layer was trusted before the next was tested.** Every defect was found by pointing an instrument at a
+new surface or by two instruments disagreeing — never by reading the code, and never by the item that
+introduced it.
+
+### Gates
+
+Measurement only; no engine or core code changed. `bun run check` 0 (read unpiped).
