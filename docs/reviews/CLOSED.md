@@ -51655,3 +51655,56 @@ here.
 gql **3622/0**, gremlin 1197/0, core 383/0, serialization 144/0, `bun run fuzz` 20/0, `bun run
 check` 0 (read unpiped; it caught seven unnecessary type assertions in the new tests). Answers
 identical across both arms in every cell.
+
+### Item 1419 — **MEASURED, no code change**: items 1417+1418 confirmed from the other side — `chain4`'s GC share fell **14.2% → 1.4%** and the row **73.2 → 50.6 ms**. And the sweep beats naive enumeration by **2.0-4.5x**, so the route choice is right and this row is done
+
+### The mechanism, confirmed rather than assumed
+
+Item 1418's claim was that the ~100,000 per-slot `Int32Array`s were the GC cost, not their
+construction. Re-profiling says so directly:
+
+|                                         | GC share  | `chain4` p25 |
+| --------------------------------------- | --------- | ------------ |
+| before item 1417                        | 11.8%     | 73.18 ms     |
+| after 1417 (hand copy, per-slot arrays) | **14.2%** | 66.6         |
+| after 1418 (one flat buffer)            | **1.4%**  | **50.60**    |
+
+A **10x reduction** in the collector's share. Item 1417 made the arrays cheaper to build and the GC
+share went UP; removing the objects is what moved it. That is the distinction the two items exist to
+separate, and it is now measured on both sides rather than argued once.
+
+What is left is the sweep's own arithmetic: `bucketSize` 41.0%, `sweepChain` 22.4%,
+`sweepSlotCached` 20.0%. ⚠️ `bucketSize`'s share is **misattributed** — item 1416 counted its calls
+and proved every one takes the O(1) branch — so those three frames are one loop, 83% of a row whose
+allocations are now gone.
+
+### Is the clever algorithm even the right one? Measured against naive enumeration
+
+The sweep is a degree PRODUCT: O(V × passes) regardless of how many walks exist. Naive enumeration
+is O(answer). **At out-degree 1 those are ~400,000 slot visits against 100,000 walks**, so the sparse
+end is exactly where the clever route could lose — and nothing in the file had measured it.
+
+| fanout | answer     | engine | naive enumeration | engine / naive |
+| ------ | ---------- | ------ | ----------------- | -------------- |
+| 1      | 100,000    | 74.85  | 151.74            | **0.49x**      |
+| 2      | 1,600,000  | 79.41  | 180.86            | **0.44x**      |
+| 4      | 25,600,000 | 98.80  | 444.55            | **0.22x**      |
+
+The sweep wins by **2.0x, 2.3x and 4.5x**. Both arms are asserted to agree on the answer, so this is
+one question measured two ways rather than two questions. The route choice is correct at every degree
+tested, including the one where it had most to lose.
+
+### So this row is done, and that is the finding
+
+`chain4` went from the heaviest row in the GQL bench (73.2 ms) to 50.6 across two items, its
+allocation cost is gone (1.4% GC), and its algorithm is 2-4.5x better than the obvious alternative.
+The remaining 83% is three frames of one loop doing work the algorithm requires: an O(1) degree read
+per slot per leg and a frontier update per edge.
+
+**Recorded so the next reader does not re-derive it.** The profile still shows a 41% frame, and that
+frame is still `bucketSize` — which looks like an open target and is not one. Anyone ranking rows by
+profile share will land on it again; items 1416 and 1419 together are why they should not.
+
+### Gates
+
+`bun run check` 0 (read unpiped). No engine code changed.
