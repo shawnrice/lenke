@@ -162,6 +162,14 @@ const SHAPES = {
   // SEPARATE closure from `hoprelyield`'s, so a per-edge change to one does not reach the other —
   // item 1409 is the second time in two items that a sibling walk needed its own row to be priced.
   hoprelfiltyield: 'MATCH (a:P)-[r:E]->(b:P) WHERE r.w < 100 RETURN b.n AS n',
+  // `filteredHopWalk`'s START-ONLY gated closure (item 1410) — a predicate reading only the start,
+  // which gets its own walk because item 164 measured gating a vertex BEFORE reading its adjacency
+  // at 34 ns against 52. `hopfiltyield`'s far predicate reaches the GENERAL closure instead, so the
+  // two rows are two different walks inside one function and neither covers the other.
+  hopstartonlyyield: 'MATCH (a:P)-[:E]->(b:P) WHERE a.n > 5 RETURN b.n AS n',
+  // `detectOptionalHopProjection` — the OPTIONAL-MATCH hop, which is a wholly separate detector
+  // with its own per-edge far-label test and no row until now.
+  hopoptyield: 'MATCH (a:P) OPTIONAL MATCH (a)-[:E]->(b:P) RETURN b.n AS n',
   sortedpage: 'MATCH (n:P) WHERE n.k < 50 RETURN n.s AS s ORDER BY s LIMIT 10',
   grouped: 'MATCH (n:P) RETURN n.k AS k, count(*) AS c',
   point: 'MATCH (n:P) WHERE n.n = 12345 RETURN n.s AS s',

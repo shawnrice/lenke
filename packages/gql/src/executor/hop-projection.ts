@@ -1734,6 +1734,16 @@ export const detectOptionalHopProjection = (
   return (graph, params) => {
     const rows: Row[] = [];
     const binding = new Map<string, unknown>();
+    // The vacuous-far-label drop, per call (item 1410). The OPTIONAL-MATCH hop is its own detector,
+    // so the drop every walk in this file has had since item 1066 never reached it: a windowed
+    // profile of `MATCH (a:P) OPTIONAL MATCH (a)-[:E]->(b:P) RETURN b.n` put `evalLabelExpr` at
+    // 14.0%, `get labels` 7.7% and `matchesLabel` 3.4% — **25.1% on a label that rejects nothing**.
+    //
+    // ⚠️ It is also the one place where dropping a vacuous label cannot change `matched`, and so
+    // cannot change which starts get a NULL row — a vacuous label rejects nothing by definition, so
+    // every edge that set `matched` still sets it. That is worth stating because this walk's output
+    // depends on the far test in a way the others' does not.
+    const fl = vacuousLabel(graph, farLabel) ? undefined : farLabel;
 
     for (const v of candidateVertexSource(graph, startLabel)) {
       binding.set(startVar, v);
@@ -1743,7 +1753,7 @@ export const detectOptionalHopProjection = (
       for (const edge of edgesOfTypes(out ? v.adjFrom : v.adjTo, types)) {
         const landed = out ? edge.to : edge.from;
 
-        if (farLabel !== undefined && !matchesLabel(landed, farLabel)) {
+        if (fl !== undefined && !matchesLabel(landed, fl)) {
           continue;
         }
 
@@ -2869,6 +2879,13 @@ const filteredHopWalk = (w: {
       const rows: Row[] = [];
       const binding = new Map<string, unknown>();
       const env: EvalEnv = { binding, params, graph };
+      // The vacuous-far-label drop, per call (item 1410). The GENERAL closure below this one got it
+      // at item 1066 and this one did not, which is why `hopfiltyield` (a far predicate, general
+      // closure) profiles with ZERO label frames while `hopstartonlyyield` (a start-only predicate,
+      // this closure) spends **36.8%** there: `evalLabelExpr` 17.8%, `matchesLabel` 10.9%,
+      // `get labels` 8.1%. Two walks inside one function, and the row that covered one did not
+      // cover the other.
+      const fl = vacuousLabel(graph, farLabel) ? undefined : farLabel;
       // SEED, do not decline. This is what lets the start-only filter be carried at all: without
       // it the walk scans a whole label while the general path seeks (item 177's 3966us against
       // 49.6). `hopSeek` hands back a candidate set only when it is strictly narrower than the
@@ -2922,7 +2939,7 @@ const filteredHopWalk = (w: {
         for (const edge of bucket) {
           const far: Vertex = out ? edge.to : edge.from;
 
-          if (farLabel !== undefined && !matchesLabel(far, farLabel)) {
+          if (fl !== undefined && !matchesLabel(far, fl)) {
             continue;
           }
 

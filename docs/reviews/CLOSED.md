@@ -50809,11 +50809,18 @@ different walks, and the two test blocks are independent rather than one coverin
 test can catch them and the bench rows are their only guard. Harness kill verified first: an
 allocator bomb exits 137 and a bare spin exits 124 under the cap.
 
-### Still open: six per-edge sites with no bench row
+### ~~Still open: six per-edge sites with no bench row~~ ⟶ **ONE, corrected by item 1410**
 
-1423 `relSeekedHopWalk`, 1737, 2688, 2916, 3901 and 3933. Each is the same one-line change, and on
-this item's evidence each is worth 30-80% of its row — but **none has a row**, and items 1408 and
-1409 both exist because a walk without a row cannot be priced. The next step is rows, not edits.
+~~1423 `relSeekedHopWalk`, 1737, 2688, 2916, 3901 and 3933. Each is the same one-line change, and on
+this item's evidence each is worth 30-80% of its row.~~ **Over-broad — item 1410 read all six and
+three are not targets at all:** `anyFarMatches` (2688) is documented "cold by construction, used ONLY
+from the fault path", and `walkStartSide` (3901, 3933) sits behind a `needsFar` flag that **already
+consults `vacuousLabel`**. Item 1410 shipped 1737 and 2916 at **31.2-49.1%**. **Only 1423
+`relSeekedHopWalk` remains**, and it needs an edge-property INDEX in the fixture before the bench can
+reach it.
+
+The surviving half of the claim: **a walk without a row cannot be priced**, which is why items 1408,
+1409 and 1410 all exist. The next step is still rows, not edits.
 
 ### Gates
 
@@ -50831,3 +50838,102 @@ because its marker count was asserted as a guessed absolute (7 against an expect
 a RELATION — `arm == base + 2` — which is the form that cannot go stale when the file grows another
 instance of a natural idiom. That is now the fourth guessed-count slip this session and the first
 one fixed by changing the shape of the assertion rather than the number in it.
+
+### Item 1410 — **SHIPPED, 31.2% / 49.1% / 31.1% / 35.6%**: `filteredHopWalk` holds TWO closures and only one had the vacuity drop, so the row that covered one never covered the other. Plus the OPTIONAL-MATCH hop, a separate detector that never had it. **And item 1409's "six remaining sites" was over-broad — three are not targets**
+
+### First it shrank its own target list
+
+Item 1409's heading is corrected above. Reading all six of the sites it advertised:
+
+| site                                      | verdict                                                                                                                                                                                                                                             |
+| ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `anyFarMatches` (2688)                    | **NOT a target.** Its own comment: "Used ONLY from the fault path … Cold by construction." The happy path never enters it.                                                                                                                          |
+| `walkStartSide` (3901, 3933)              | **NOT a clean target.** Both sit behind `needsFar`, which **already consults `vacuousLabel`** (line 3721). Partially accounted for.                                                                                                                 |
+| `relSeekedHopWalk` (1423)                 | A real target, **unreachable by this bench**: it runs only when `edgeSeek` accepts, which needs an index on an edge property, and the fixture creates none. Deferred for want of a FIXTURE, which is not the same as deferred for want of a reason. |
+| 1737 `detectOptionalHopProjection`        | **Shipped here.**                                                                                                                                                                                                                                   |
+| 2916 `filteredHopWalk` start-only closure | **Shipped here.**                                                                                                                                                                                                                                   |
+
+Three items running have now turned up the same shape, which is the finding worth more than the
+numbers: **a walk without a bench row cannot be priced, and this file's walks outnumbered its rows
+four to one.**
+
+### Two closures in one function
+
+`filteredHopWalk` returns a START-ONLY closure when the predicate reads only the start — so the gate
+can run before the adjacency is touched, worth 34 ns against 52 at item 164 — and a general closure
+otherwise. **Item 1066 gave the general one the drop and not the start-only one.** The two rows show
+it directly:
+
+| row                                   | closure                       | label testing                                                              |
+| ------------------------------------- | ----------------------------- | -------------------------------------------------------------------------- |
+| `hopfiltyield` (far predicate)        | general — has the drop        | **0%**, no label frames at all                                             |
+| `hopstartonlyyield` (start predicate) | start-only — had none         | **36.8%** (`evalLabelExpr` 17.8%, `matchesLabel` 10.9%, `get labels` 8.1%) |
+| `hopoptyield`                         | `detectOptionalHopProjection` | **25.1%** (14.0% / 7.7% / 3.4%)                                            |
+
+| shape                                                       | fanout | BASE  | TWOMORE   | change    | concordance |
+| ----------------------------------------------------------- | ------ | ----- | --------- | --------- | ----------- |
+| **`hopstartonlyyield`**                                     | 1      | 11.50 | **7.92**  | **31.2%** | 77/81       |
+| **`hopstartonlyyield`**                                     | 3      | 67.95 | **34.61** | **49.1%** | **81/81**   |
+| **`hopoptyield`**                                           | 1      | 20.07 | **13.83** | **31.1%** | 77/81       |
+| **`hopoptyield`**                                           | 3      | 82.80 | **53.28** | **35.6%** | **81/81**   |
+| `hopfiltyield` [CONTROL — the other closure, same function] | 1      | 7.21  | 7.82      | **−8.5%** | 31/81       |
+| `hoprelyield` [CONTROL — item 1409's target]                | 1      | 5.54  | 5.31      | 4.1%      | 43/81       |
+
+`MULTILABEL=-1`, n=9 per cell, three order-alternated rounds. **The `hopfiltyield` control is the
+load-bearing one**: it is the same function as the start-only target, and at −8.5% / 31-of-81 it
+moved slightly against the change — so the two closures really are independent, which is the claim
+the code makes and this is the measurement of it. `hoprelyield` at 43/81 against a chance of 40.5 is
+pure noise.
+
+Both targets grow with degree (31.2 → 49.1, 31.1 → 35.6), as a per-edge saving should.
+
+### ⚠️ The optional hop can be wrong at a CONSTANT row count
+
+Its far test decides `matched`, and `matched` decides whether a start with no qualifying edge gets a
+NULL row. So a wrongly-dropped label there does not add or remove rows — **it changes which starts
+are padded**:
+
+| on the filtering fixture | rows                    |
+| ------------------------ | ----------------------- |
+| correct                  | `[null, null, null, 2]` |
+| label wrongly dropped    | `[null, null, 2, 5]`    |
+
+**Four rows either way.** A suite that counted rows would pass. `startonly-optional-vacuous-label.test.ts`
+(12 tests) therefore asserts values throughout, and the one length assertion compares against the
+start count the engine itself reports rather than a literal.
+
+The drop is sound because a vacuous label rejects nothing _by definition_, so every edge that set
+`matched` still sets it — and the point of these tests is to make that an observation rather than an
+assertion.
+
+### A fixture trap, hit while writing those tests
+
+`MATCH (a:P)` filters the START set by the same label, so moving a vertex off `P` to make the far
+label meaningful **also removes it as a start**, and the two fixtures then differ in two ways at
+once. My first version put the `Q` on a vertex that was the second edge's source, and five
+assertions failed — for that reason and no defect. The rebuilt fixture lands the label difference on
+`e`, a **sink**, so `a`..`d` are starts in both graphs and the two differ in exactly the property
+under test. The trap is recorded in the test file's header, next to the fixture it shaped.
+
+### Mutation
+
+| mutant                     | verdict                  | evidence             |
+| -------------------------- | ------------------------ | -------------------- |
+| M1 start-only, ALWAYS drop | **CAUGHT**               | 27 pass / **3 fail** |
+| M2 optional, ALWAYS drop   | **CAUGHT**               | 27 pass / **3 fail** |
+| M3 start-only, NEVER drop  | **SURVIVES — by design** | 30/0                 |
+| M4 optional, NEVER drop    | **SURVIVES — by design** | 30/0                 |
+
+M1 and M2 each being caught is the routing proof per site: a site the tests never reach would
+survive. Unlike item 1409 the two fail counts coincide (3 and 3), so that coincidence carries no
+information here — the per-site argument does. M3/M4 are answer-equivalent, so the bench rows are
+their only guard. Harness kill verified: allocator bomb 137, bare spin 124.
+
+### Gates
+
+gql **3610/0**, gremlin 1157/0, core 383/0, serialization 144/0, `bun run fuzz` 20/0, `bun run
+check` 0 (read unpiped). `rowCount` and `digest` identical across both arms for all six cases — and
+for the optional row that is a real check rather than a formality, per the NULL-padding note above.
+`bun run check` caught two lint errors in the new test file (a nested ternary and an unnecessary
+assertion); both fixed by extraction, which is the fourth time this session the gate has caught
+something the suites did not.
