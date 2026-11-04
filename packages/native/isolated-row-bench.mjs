@@ -59,6 +59,14 @@ const SHAPES = {
   // per-call disparity is a degree rather than a whole index and may not be measurable at all.
   hopmultirev: 'MATCH (a:P)-[:F|E]->(b:P) RETURN count(*) AS c',
   hopcount: 'MATCH (a:P)-[:E]->(b:P) RETURN count(*) AS c',
+  // THE YIELD TWIN of the hopsingle/hopmulti pair (item 1387). Items 1377/1384/1386 all landed on
+  // the COUNT path, where the answer is a number and the union of buckets can replace the walk
+  // outright. A projection cannot take that route - every selected edge must actually be produced -
+  // so this is the instrument for whatever disparity survives on the yield side. Same two spellings
+  // over the same edge set, so they must cost the same.
+  hopsingleyield: 'MATCH (a:P)-[:E]->(b:P) RETURN b.n AS n',
+  hopmultiyield: 'MATCH (a:P)-[:E|F]->(b:P) RETURN b.n AS n',
+  hopmultiyieldrev: 'MATCH (a:P)-[:F|E]->(b:P) RETURN b.n AS n',
   sortedpage: 'MATCH (n:P) WHERE n.k < 50 RETURN n.s AS s ORDER BY s LIMIT 10',
   grouped: 'MATCH (n:P) RETURN n.k AS k, count(*) AS c',
   point: 'MATCH (n:P) WHERE n.n = 12345 RETURN n.s AS s',

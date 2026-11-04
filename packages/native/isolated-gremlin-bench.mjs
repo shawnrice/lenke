@@ -84,6 +84,14 @@ const SHAPES = {
   // right answer. These rows exist to catch that.
   labelmultirev: () => traversal(V(), hasLabel('Q', 'P'), count()),
   edgemultirev: () => traversal(V(), outE('F', 'E'), count()),
+  // THE YIELD TWINS (item 1387). The pairs above all end in `count()`, where the answer is a number
+  // and items 1379/1382/1386 could replace the walk with a union of buckets outright. A projection
+  // must actually PRODUCE every selected element, so it cannot take that route - this is the
+  // instrument for whatever disparity survives on the yield side, where the GQL twin measured
+  // 38.9 ms against 379.6 for the same edge set (9.8x).
+  hopyieldsingle: () => traversal(V(), hasLabel('P'), out('E'), values('k')),
+  hopyieldmulti: () => traversal(V(), hasLabel('P'), out('E', 'F'), values('k')),
+  hopyieldmultirev: () => traversal(V(), hasLabel('P'), out('F', 'E'), values('k')),
 };
 
 const make = SHAPES[SHAPE];

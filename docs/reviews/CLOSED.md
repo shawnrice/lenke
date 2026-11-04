@@ -49199,3 +49199,76 @@ and 3 and the union is 5 — so a SUM answers 7 and is visibly wrong.
 gql 3545/0, gremlin 1148/0, core 370/0, serialization 144/0, `bun run fuzz` 20/0, `bun run check` 0
 (read unpiped). The arm file is the committed code; the pristine copy was restored and deleted by
 the driver's `finally`.
+
+### Item 1387 — the multi-type hop's YIELD side, which no union can fix: GQL **9.8x** (38.9 ms against 379.6) and Gremlin **1.50x** for the same edges and the same rows. The profile says GQL's is a ROUTING miss, and the Gremlin figure PRICES it at ~85%
+
+Items 1377, 1379, 1382, 1384 and 1386 all landed on the COUNT path, where the answer is a number and
+the union of buckets replaces the walk outright. A projection cannot take that route — every selected
+edge must actually be produced — so item 1386's closing line ("the remaining multi-type cost is the
+yield path") was a nomination, and this measures it. Three yield rows added to each isolated bench.
+
+### The measurement
+
+`isolated-row-bench.mjs` / `isolated-gremlin-bench.mjs`, `NODES=200000`, `MULTILABEL=3`,
+`REPS=14 DROP=3`, p25 of one process per row. Every edge carries `E` and a third also carry `F`, so
+both spellings select the IDENTICAL edge set.
+
+| surface | single-type | `E\|F`      | `F\|E`  | gap       | order gap |
+| ------- | ----------- | ----------- | ------- | --------- | --------- |
+| GQL     | **38.881**  | **379.579** | 378.908 | **9.8x**  | 1.00x     |
+| Gremlin | **139.257** | **209.525** | 211.043 | **1.50x** | 1.01x     |
+
+**Row counts verified identical before pricing anything:** 20,000 rows for `:E`, `:E|F` and `:F|E`
+alike, and 20,000 for both counts, on a 20k-vertex twin of the fixture. A 9.8x that turned out to be
+the multi arm emitting duplicate rows would be a correctness bug, not a perf gap, and this session
+has mistaken a correct decline for a gap once already (item 1375). GC confirms the shape too: 25
+collections on the GQL single arm against **331** on the multi.
+
+Neither surface has an ORDER gap, which is the first time one of these pairs has come up clean
+without a fix — items 1382 and 1384 both had to be repaired. The union sort is not involved on this
+path.
+
+### The profile says GQL's gap is a ROUTING miss, not a frame
+
+CPU profiles of both GQL arms (`NODES=100000`, `REPS=6`), through `runtime-profile-analyze.mjs`:
+
+| arm              | top frames                                                                                                                   |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `hopsingleyield` | `(anonymous) in farDrivenHopWalk` **15.5%**, GC 14.7%, `getVertexById` 11.5%                                                 |
+| `hopmultiyield`  | `evalLabelExpr` **12.9%**, `edgesMatching` **10.2%**, GC 9.6%, `outSteps` **8.2%**, `walkSegments` 5.1%, `matchPattern` 3.0% |
+
+The two arms do not share a top frame. The single-type arm runs `farDrivenHopWalk`; the multi-type
+arm runs the general matcher. **No unpriced frame over 2% in either**, which is the screen working
+as designed — there is no hot new function here, the query simply left the specialized route.
+
+The cause, in one line: `hopEnds` (`packages/gql/src/executor/hop-projection.ts:698`) returns `null`
+when `types?.length !== 1`, so the ENTIRE hop-projection family — fifteen call sites doing
+`v.adjFrom.get(typeName)` — declines any disjunction, exactly as `labelledCount` and `adjacentCount`
+declined before items 1382 and 1379.
+
+### What the Gremlin number buys: a price, not just a comparison
+
+Gremlin's `out('E','F')` does **not** fall off a route — it pays two buckets and a dedupe and that
+costs **1.50x**. So on the GQL side, 1.50x is the honest estimate of the work a multi-type hop
+genuinely owes, and the rest is the routing miss:
+
+> **38.881 x 1.50 ≈ 58 ms against 379.579 — a ~85% / 6.5x target.**
+
+That is an estimate from a parallel implementation, not an ablation, and this session's own rule is
+that a share is a nomination while an ablation is the price (expect ~2.5x overstatement on a frame
+share — though this is a route comparison, not a frame share, which is a better-founded kind of
+estimate). It is recorded as the pricing to beat, not as a result.
+
+### Not built this item
+
+Admitting multi-type into the hop-projection family means either threading `types: readonly
+string[]` through fifteen `adjFrom.get(typeName)` sites, or admitting a disjunction only into the
+plain-projection branch (`farPred === undefined && gate === undefined && !needsStart`, which is
+exactly the shape measured here) and declining the other fourteen explicitly. The second is the
+smaller change and the per-vertex primitive already exists — `edgesOfManyTypes` in `executor.ts`,
+with item 1377's earlier-buckets dedupe and item 1384's largest-bucket-first sort. The 1.50x Gremlin
+figure says the dedupe is affordable.
+
+### Gates
+
+Bench rows only; no engine or core code changed. `bun run check` 0 (read unpiped).
