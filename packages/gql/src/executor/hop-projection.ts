@@ -2347,12 +2347,35 @@ export const detectHopProjection = (
  * **86.1 ms against the start-driven walk's 69.3** over 200,000 edges. At in-degree ~100 it wins,
  * **17.2 against 69.3**. So the choice is the degree, and the threshold sits between.
  *
+ * ⚠️ IT WAS 8, AND 8 WAS CALIBRATED ON A FIXTURE THAT COULD NOT SEE THIS (items 1402-1403). Item
+ * 1390 swept fan-in 1.33 / 13 / 133 — all at OUT-degree 1, because the GQL bench had no `FANOUT`
+ * knob until item 1401 — and picked 8 from three points with a gap of two orders of magnitude in the
+ * middle. Sweeping out-degree instead, n=12 per cell, three order-alternated rounds:
+ *
+ *   est. degree 1.33   27.08 -> 27.02    0.2%    64/144   chance — both arms DECLINE
+ *   est. degree 2.67   65.86 -> 65.34    0.8%    83/144   chance — both arms DECLINE
+ *   est. degree 4.00  107.32 -> 72.99   32.0%  144/144
+ *   est. degree 5.33  145.72 -> 82.28   43.5%  144/144
+ *
+ * So 8 was refusing a route worth **32-43.5%** with perfect concordance, and lowering it changes
+ * NOTHING below the boundary — the two sub-threshold rows are flat at chance because both arms
+ * decline there. The single-type control is flat at both degrees (−1.6% at 64/144, +3.7% at
+ * 103/144); its first reading was −2.8% at 16/64 and the SIGN FLIPPED at n=24, which is the n=8
+ * instability this repo documents rather than a real effect.
+ *
+ * ⚠️ THE CROSSOVER IS BRACKETED, NOT PINNED: it lies in (2.67, 4.00]. Whether a threshold of 3 or 2
+ * would capture more is UNMEASURED, because below 4 both arms take the same route and the bench
+ * cannot see the difference without a third arm. And the estimate is biased HIGH by the multi-label
+ * factor — `typeEdgeCount` counts a two-type edge twice, so it reads 1.33x the true degree at
+ * `MULTILABEL=3` and would approach 2x if every edge carried both types. That bias errs toward
+ * ACCEPTING, which is the argument for not dropping the threshold further on a hunch.
+ *
  * See `farDrivenPaysForMultiType` for the arithmetic and `hop-projection-route.test.ts` for its
  * unit tests — a route choice is ANSWER-EQUIVALENT, so no differential test can fail when it is
  * wrong, which is why the decision is a pure function with its own tests rather than an inline
  * comparison (the rule `perf-gate-needs-its-own-test` records from an earlier item).
  */
-const FAR_DRIVEN_MIN_DEGREE = 8;
+const FAR_DRIVEN_MIN_DEGREE = 4;
 
 /**
  * Should a multi-type plain hop take the FAR-driven walk rather than the start-driven one?

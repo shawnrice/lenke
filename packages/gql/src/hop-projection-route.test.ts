@@ -31,9 +31,13 @@ describe('farDrivenPaysForMultiType — the gate arithmetic (item 1390)', () => 
     expect(farDrivenPaysForMultiType(266_667, 2_000)).toBe(true);
   });
 
+  // ⚠️ THESE ENCODE THE THRESHOLD'S VALUE, which is the point: it is 4 since item 1403 (it was 8,
+  // calibrated at out-degree 1 only, and refused a route worth 32-43.5% at degree 3-4). A test that
+  // pins a measured constant has to be edited when the measurement changes — that is the cost of
+  // the constant being measured rather than assumed, and it is the right cost to pay.
   test('the threshold is a FLOOR, not a strict crossing', () => {
-    expect(farDrivenPaysForMultiType(80, 10)).toBe(true);
-    expect(farDrivenPaysForMultiType(79, 10)).toBe(false);
+    expect(farDrivenPaysForMultiType(40, 10)).toBe(true);
+    expect(farDrivenPaysForMultiType(39, 10)).toBe(false);
   });
 
   // ZERO ENDPOINTS IS THE DIVIDE-BY-ZERO CASE, and it is reachable: a graph with vertices and no
@@ -137,12 +141,12 @@ describe('the two multi-type routes agree (item 1390)', () => {
       properties: {},
     });
 
-    // 4 edge-bucket memberships over 1 receiving vertex is a degree of 4, UNDER the threshold — so
-    // this tiny graph takes the START-driven walk and the test name's "far-driven" is aspirational.
-    // Kept, because the dedupe it checks is the shared `edgesOfTypes` one and the answer is 3 on
-    // either route; the far-driven arm's own dedupe is covered by the fan-in-30 case above, where
-    // the gate does accept.
-    expect(farDrivenPaysForMultiType(4, 1)).toBe(false);
+    // 4 edge-bucket memberships over 1 receiving vertex is a degree of 4, which is now AT the
+    // threshold and accepts (item 1403 lowered it from 8). So this case got STRONGER rather than
+    // needing a rewrite: it used to take the start-driven walk, making the test name's "far-driven"
+    // aspirational, and now it genuinely exercises the far-driven arm's own dedupe on a graph where
+    // a summing route would answer 4 against the correct 3.
+    expect(farDrivenPaysForMultiType(4, 1)).toBe(true);
     expect(rowsOf(g, 'MATCH (a:P)-[:E|F]->(b:P) RETURN b.k AS x')).toHaveLength(3);
   });
 });

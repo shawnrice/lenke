@@ -49479,7 +49479,7 @@ gremlin **1157/0** (27 in `hop-values.test.ts`), gql 3557/0, core 370/0, seriali
 `bun run fuzz` 20/0, `bun run check` 0 (read unpiped). The A/B driver restored its arm and deleted
 both arm files in a `finally`.
 
-### Item 1390 — **SHIPPED, 74.2%** at fan-in 133, behind a cost gate because the route is **SIGNED**: it LOSES at fan-in 1. 64/64, answers identical — and the gate's first version chose BACKWARDS with the whole suite green
+### Item 1390 — **SHIPPED, 74.2%** at fan-in 133, behind a cost gate because the route is **SIGNED**: it LOSES at fan-in 1. ~~(threshold 8)~~ **Its threshold was calibrated at OUT-degree 1 only and was refusing 32-43.5% at degree 3-4 — swept and lowered to 4 at item 1403.** 64/64, answers identical — and the gate's first version chose BACKWARDS with the whole suite green
 
 Item 1389 priced the multi-type dedupe at **1.13x**, which left item 1388's residual **1.94x** unexplained
 by any real work: the single-type arm takes the FAR-DRIVEN walk, whose own comment prices its
@@ -50374,3 +50374,69 @@ at depth 2 and the quantifier **3.01x** faster at depth 3, the same non-monotoni
 Bench knob and documentation — **no engine or core code changed**. `bun run check` 0 (read unpiped);
 suites unchanged from item 1400 (gql 3580/0, gremlin 1157/0, core 383/0, serialization 144/0).
 `FANOUT` is indexed in `PROBES.md` beside `FANIN`, with what each has already settled.
+
+### Item 1403 — **SHIPPED, 32.0% and 43.5%** (144/144 both): item 1390's `FAR_DRIVEN_MIN_DEGREE = 8` was calibrated at out-degree 1 and refused a route worth that much at degree 3-4. Lowered to **4** on a sweep, and the control's `−2.8%` FLIPPED SIGN at n=24
+
+Item 1401 added `FANOUT` to the GQL bench because every GQL number this session came from a degree-1
+fixture. Item 1402 pointed a profile at degree 4 and found the two yield arms sharing no hot frame —
+`propOf` 35.2% in the multi-type arm against **absent** in the single-type one, which takes the
+far-driven walk and hoists `projectRow` to once per far vertex. The gap had widened from ~1.9x at
+degree 1 to **3.03x**. The cause was my own threshold.
+
+### What 8 was, and what was wrong with it
+
+Item 1390 swept fan-in **1.33 / 13 / 133** and picked 8. Every one of those readings was at
+out-degree 1 — the knob did not exist — so the sweep had a two-order-of-magnitude gap in the middle
+and the threshold landed in it. Sweeping OUT-degree instead, n=12 per cell, three order-alternated
+rounds:
+
+| est. degree                      | min=8  | min=4     | change    | concordance     |
+| -------------------------------- | ------ | --------- | --------- | --------------- |
+| 1.33                             | 27.08  | 27.02     | 0.2%      | 64/144 — chance |
+| 2.67                             | 65.86  | 65.34     | 0.8%      | 83/144 — chance |
+| **4.00**                         | 107.32 | **72.99** | **32.0%** | **144/144**     |
+| **5.33**                         | 145.72 | **82.28** | **43.5%** | **144/144**     |
+| `hopsingleyield` @1.33 [CONTROL] | 17.95  | 18.24     | −1.6%     | 64/144          |
+| `hopsingleyield` @5.33 [CONTROL] | 26.78  | 25.78     | +3.7%     | 103/144         |
+
+**Lowering it changes nothing below the boundary** — the two sub-threshold rows are flat at chance,
+because both arms decline there, which is exactly the shape a threshold change should have.
+Cross-arm `rowCount` and digest identical on every cell.
+
+### The control's first reading was −2.8%, and the sign FLIPPED
+
+The 8-vs-4 pilot read `hopsingleyield` at degree 4 as **−2.8% with 16/64** — away from chance, and
+with no mechanism, since the single-type path never reads this constant. I refused to ship on it. At
+n=24 it reads **+3.7% at 103/144**: the sign flipped, which is the n=8 instability this repo
+documents (items 1367, 1374, 1380, 1393) rather than a real effect. **That is the fifth instance**,
+and the first where the suspicious reading was resolved by sample size rather than by finding a
+mechanism — the previous time (item 1390's −3.7%) there WAS one.
+
+### What is bracketed and what is not
+
+**The crossover is in (2.67, 4.00] and is not pinned.** Below 4 both arms take the same route, so the
+bench cannot see whether 3 or 2 would capture more without a third arm. That is named, not silently
+left: it is the next question on this gate, and it is cheap.
+
+**And the estimate is biased HIGH**, which is the argument against dropping further on a hunch:
+`typeEdgeCount` sums the named buckets, so a two-type edge counts twice — the estimate reads 1.33x
+the true degree at `MULTILABEL=3` and would approach **2x** if every edge carried both types. The
+code called that over-count "harmless, because it is compared against a threshold rather than used as
+a row count"; that was fair at 8 and is worth restating at 4, because the bias errs toward ACCEPTING
+and a threshold of 2 on the estimate could accept at a true degree of 1.
+
+### Two tests had to change, and one got stronger
+
+`hop-projection-route.test.ts` pins the threshold's value — deliberately, since it is measured rather
+than assumed, and editing it is the cost of that. The FLOOR test moves from (80, 10)/(79, 10) to
+(40, 10)/(39, 10). The second is the interesting one: `farDrivenPaysForMultiType(4, 1)` was `false`
+and the test's own comment admitted that made its name "far-driven" aspirational — at 4 it now
+**accepts**, so the case genuinely exercises the far-driven arm's dedupe on a graph where a summing
+route answers 4 against the correct 3.
+
+### Gates
+
+gql **3580/0**, gremlin 1157/0, core 383/0, serialization 144/0, `bun run fuzz` 20/0, `bun run check`
+0 (read unpiped). Confirming read on the shipped build: `FANOUT=1` 27.80 ms and `FANOUT=4` 82.44 ms,
+with row counts and digests matching the sweep's. Both A/B drivers restored their arm and verified it
+byte-identical.
