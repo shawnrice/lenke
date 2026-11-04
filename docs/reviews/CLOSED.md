@@ -48235,3 +48235,94 @@ one's teeth were verified against a known-surviving mutant, which is the stronge
 `bun run fuzz` 20 pass / 0 fail across all seven; `bun test packages/native/src/gremlin-fuzz.test.ts`
 8 pass / 0 fail; mutant re-applied and CAUGHT, then reverted with `TEETH2` asserted at 0 and `slotOf`
 back to its 6 occurrences. `bun run check` 0 (read unpiped).
+
+### Item 1372 — both of item 1369's gaps CLOSED: byte-identity GREEN against real coverage, and deletes DISQUALIFY the cheap ordinal at **6.18x / 11.34x** under churn. The user's objection was right, and this is why
+
+Item 1369 priced the dense ordinal at 12.9% and named two disqualifying gaps. Item 1371 built the
+coverage gap #1 needed. This closes both.
+
+### Gap #1 — byte-identity: CLOSED, GREEN
+
+Re-ran the ordinal arm against item 1371's dense-route coverage, which has verified teeth (it catches
+the mutant that previously survived all seven fuzzers):
+
+| suite                       | result              |
+| --------------------------- | ------------------- |
+| `bun test packages/gremlin` | 1141 pass, 0 fail   |
+| `bun test packages/gql`     | 3532 pass, 0 fail   |
+| `bun test packages/core`    | 370 pass, 0 fail    |
+| `bun run fuzz` (all seven)  | **20 pass, 0 fail** |
+
+The six dense-route cases now compare TS against the Rust engine on a graph that actually admits the
+route, so the summation-order worry is **tested rather than assumed**. Item 1369's gap #1 is closed.
+
+### Gap #2 — deletes: CLOSED, and DISQUALIFYING
+
+Slots come from a monotonic `Graph.vtxSeq` and are **never reused**, so `slotChainCount` must size its
+three per-pass arrays by total-ever-created rather than by live count. `ordinal-churn-probe.mjs`
+isolates exactly that: the queried graph is 2,000 live vertices that are never touched again, and the
+churn is a separate population added and removed, so `vtxSeq` grows while `vertexCount` stays at
+2,000. Every churn level answers **16000**, asserted.
+
+| churn     | ORDINAL p25 | vs churn=0 | BASE     |
+| --------- | ----------- | ---------- | -------- |
+| 0         | 0.5539 ms   | 1.00x      | 0.597 ms |
+| 200,000   | 3.4254 ms   | **6.18x**  | 0.674 ms |
+| 1,000,000 | 6.2826 ms   | **11.34x** | flat     |
+
+Monotonic, with tight per-process series (3.32-3.49 at 200k, 5.78-6.79 at 1M) and BASE flat because
+it sizes by `vertexCount`. **So the cheap ordinal trades 12.9% on a fresh graph for 6-11x on a churned
+one**, with the live working set unchanged. For any long-lived graph that is a catastrophic trade, and
+it gets worse without bound as `vtxSeq` grows.
+
+### THE FIRST VERSION OF THIS PROBE SAID CHURN WAS FREE, and the flaw is the finding
+
+Run 1 reported 1.00x / 1.53x / 1.35x — non-monotonic, matching BASE's own non-monotonic 0.58 / 1.19 /
+0.61, i.e. noise. The conclusion would have been "deletes cost nothing", published with numbers.
+
+The flaw: it added **every live vertex first and then churned**, so the live slots were `0..1999` —
+contiguous at the very start of the ordinal space. The walk touched 2,000 ADJACENT cache lines
+however large the arrays were. A real churning graph has its live vertices SCATTERED across the
+ordinal space, so the walk touches 2,000 cache lines spread over the whole allocation. Interleaving
+the churn between live insertions is the only fixture that exposes it, and it moved the answer from
+"free" to **6-11x**.
+
+This is the same class as item 702's LCG — a fixture whose output is correct and whose statistics are
+wrong — and the same class as my own item 1364. **The cost of an oversized zero-initialised typed
+array is in the pages you TOUCH, not the pages you allocate**, so any fixture that keeps the touched
+set contiguous will report slot-space growth as free. `SPREAD=0` is kept in the probe so the
+difference between the two layouts stays visible rather than taken on trust.
+
+### THE USER'S OBJECTION WAS RIGHT, and the measurement says why
+
+> _"We need to do much more booking to keep a second structure in alignment with the global
+> structures."_
+
+Item 1369 reported that this did not bind on the Gremlin path, because the arrays were already
+|V|-sized and the variant needed no free list, no `vertexBySlot` and no generation stamps. **That was
+true and incomplete.** The reason the variant needed none of them is that it never reuses a slot —
+and never reusing a slot is exactly what the churn measurement disqualifies.
+
+Fixing churn means reusing slots, which means a free list; a recycled slot then needs invalidation so
+a stale per-query entry cannot be read as live, which means generation stamping. **The full design is
+the bookkeeping the user objected to.** The cheap version is disqualified by deletes and the version
+that survives deletes is the one they declined. The 12.9% is real and unreachable without it.
+
+**So the ordinal is DECLINED on measurement, not on judgment**, and the two numbers are now on the
+record together: +12.9% on the largest Gremlin row, -6.18x to -11.34x after 200k to 1M churn, with
+every intermediate claim tested. Item 1358's decline stands and is now evidenced from both sides.
+
+### What survives from this thread, for whoever reads it next
+
+- **The dense route has byte-identity coverage** it never had (item 1371) — that is permanent and
+  independent of the ordinal.
+- **The per-vertex `Map.get` is worth ~12.9%** on the largest Gremlin row, with the control flat.
+  Anything that removes it without unbounded slot growth captures that; a free list plus generation
+  stamps is the shape, and it is the user's call whether that bookkeeping is worth 12.9%.
+- **A monotonic ordinal is not a shortcut around it.** That is the specific thing this item closes.
+
+### Gates
+
+Both prototypes REVERTED. `git status --porcelain` shows only the new probe; `ORDINAL_READ_ARM` and
+`vtxSeq` at 0 in all three files, `slotOf` back to its 6 occurrences, all six arm files under
+`target/` deleted by each driver's `finally`. `bun run check` 0 (read unpiped).
