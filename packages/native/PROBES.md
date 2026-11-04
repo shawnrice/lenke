@@ -500,3 +500,21 @@ Item 1066 priced this family at 9.3x over far-pool WIDTH; this is the same effec
 varying STRIDE. So **the bench's chain rows are ~2x optimistic against a random graph**: A/B ratios
 are safe (both arms share the fixture) and ABSOLUTE ns/row figures are not. Quote them as
 "on this fixture", and sweep the stride before claiming a general result.
+
+⚠️ **THE TWO ISOLATED BENCHES HAVE OPPOSITE STRIDE DEFAULTS, AND THAT IS DELIBERATE** (item 1439).
+`isolated-row-bench.mjs` defaults to `small`; `isolated-gremlin-bench.mjs` defaults to `random`,
+because its edge builder was hardcoded to the random form before it had a knob at all. Each keeps the
+default its own recorded figures were measured against — changing either silently invalidates its own
+history — so **a cross-bench ratio taken from both defaults compares different graphs** by the ~2x
+above. Pass `STRIDE` explicitly on BOTH when comparing engines, or use `cross-engine-chain3-probe.mjs`,
+which holds one graph for both.
+
+On the Gremlin bench the stride is worth more than the cross-engine probe's 2.06x suggested, now that
+the main bench can vary it: `hopcount3` **90.65 → 41.84 ms (2.17x)** and `hopbare`
+**21.60 → 4.05 (5.3x)** going from `random` to `small`, same answers.
+
+⚠️ **AND `STRIDE` ON THE GREMLIN BENCH WAS SILENTLY IGNORED BEFORE ITEM 1439.** It was not a knob, so
+setting it measured the default while the driver believed otherwise — item 1431's trap, whose recorded
+fix is to have the driver assert the value back. That was impossible here because the bench emitted
+neither `stride` nor `rowCount`. Both are emitted now (along with `multilabel`/`vlabel`), so
+**assert the fixture fields off every reading** rather than trusting the environment you set.

@@ -97,6 +97,34 @@ const edgeLabels = (k) => {
  * the right answer is the union of the buckets. Whether that decline costs anything needs a row.
  */
 const VLABEL = Number(process.env.VLABEL ?? 0);
+
+/**
+ * ⚠️ HOW FAR A VERTEX'S SUCCESSOR SITS — **and this bench's DEFAULT IS NOT THE GQL BENCH'S**.
+ *
+ * `isolated-row-bench.mjs` has had this knob since item 1426 and defaults to `small`
+ * (`to = (i * 7 + 3) % N`, a partly cache-resident successor). THIS bench had no knob at all and its
+ * edge builder was hardcoded to `from = (k * 7919) % N`, `to = (k * 104729) % pool` — which is
+ * precisely what the other bench calls `random`. So the two instruments' defaults have always
+ * differed by the one property item 1426 measured at **1.93x (GQL) / 2.06x (Gremlin)**, and any
+ * cross-engine comparison taking both defaults compared different graphs. Item 1426 built
+ * `cross-engine-chain3-probe.mjs` to get around exactly that; the knob is the fix at the source.
+ *
+ * ⚠️ AND PASSING `STRIDE` HERE USED TO BE SILENTLY IGNORED, which is item 1431's trap: an A/B that
+ * sets a knob the bench does not have measures the default while reporting the knob. It cost item
+ * 1431 a whole wrong reading, whose fix was to have the DRIVER assert the value back — impossible
+ * here until now, because the bench emitted neither `stride` nor `rowCount`. Both are emitted below.
+ *
+ * `random` stays the DEFAULT so that every absolute figure ever recorded against this bench still
+ * holds, byte-for-byte. That is the opposite default from the GQL bench, deliberately: changing
+ * either one silently invalidates its own history. State the stride when quoting a cross-bench
+ * ratio.
+ */
+const STRIDE = process.env.STRIDE ?? 'random';
+
+if (STRIDE !== 'small' && STRIDE !== 'random') {
+  throw new Error(`STRIDE must be 'small' or 'random', got ${STRIDE}`);
+}
+
 const REPS = Number(process.env.REPS ?? 14);
 const DROP = Number(process.env.DROP ?? 3);
 
@@ -166,10 +194,19 @@ const build = () => {
   }
 
   for (let k = 0; k < NODES * FANOUT; k += 1) {
+    const i = k % NODES;
+    // The FANOUT-th edge out of `i` lands elsewhere, so degree rises without the targets collapsing
+    // onto one vertex — mirroring the GQL bench's `hop` term so `small` means the same thing in both.
+    const hop = Math.floor(k / NODES);
+
     g.addEdge({
       id: `e${k}`,
-      from: vs[(k * 7919) % NODES],
-      to: vs[(k * 104_729) % FAR_POOL],
+      from: vs[STRIDE === 'random' ? (k * 7919) % NODES : i],
+      to: vs[
+        STRIDE === 'random'
+          ? (k * 104_729) % FAR_POOL
+          : (i * 7 + 3 + hop * 2_654_435_761) % FAR_POOL
+      ],
       labels: edgeLabels(k),
       properties: { w: k % 13 },
     });
@@ -279,7 +316,16 @@ console.log(
     nodes: NODES,
     fanout: FANOUT,
     fanin: FANIN,
+    // ⚠️ EMITTED SO A DRIVER CAN ASSERT WHAT IT ACTUALLY MEASURED. `stride` and `rowCount` were both
+    // computed-or-defaulted and never printed, which is what let a `STRIDE` that this bench did not
+    // support pass unnoticed. `rowCount` is additionally the only way to normalize per row — two
+    // arms answering different row counts are not comparable until divided (item 1437 settled a
+    // whole question on that division alone).
+    stride: STRIDE,
+    multilabel: MULTILABEL,
+    vlabel: VLABEL,
     reps: REPS,
+    rowCount,
     answer: typeof answer === 'object' ? JSON.stringify(answer) : answer,
     ...(zeroAnswer ? { VACUOUS_ZERO_ANSWER: true } : {}),
     median: Number(at(0.5).toFixed(3)),

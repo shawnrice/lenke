@@ -53024,3 +53024,111 @@ Priced, not built.
 
 `bun run check` 0 (read unpiped). No engine code changed — the ablation was reverted and the tree
 verified clean with `git diff --stat` empty before committing. gql 3669/0.
+
+### Item 1439 — Gremlin's two heaviest rows are BOTH already closed, so the deliverable is the instrument: the Gremlin bench had **no `STRIDE` knob** (setting it was silently ignored) and emitted **neither `stride` nor `rowCount`**. Stride is worth **2.17x-5.3x** there
+
+Turned to Gremlin after three GQL items. Ranked every row, profiled the top two, and shipped no
+engine change — both are in territory already priced. The useful output is an instrument fix and one
+rejected candidate recorded so it is not re-derived.
+
+### The ranking (p25, 100k nodes, `FANOUT=1 MULTILABEL=0`, random stride)
+
+```text
+  hoporder       89.48      hopbare          15.38
+  hopcount3      85.34      hopdedupe         1.98
+  hopbothyield   62.74      grouped           1.66
+  hopyieldmulti  59.11      filterchain       1.26
+  hopyieldsingle 30.11      edge*/label*/hopbothcount  ~0.01  (O(1) degree-sum routes)
+```
+
+### `hoporder` (89.48, heaviest): the sort is NOT the cost, and the cost is CLOSED
+
+Windowed profile: `values` 38.75% + `pick` 16.53% + `get properties` 11.25% = **66.5% on the VALUES
+step**, against only 15.6% on the sort itself (`sortByBys` 12.6%, `orderStep` 3.0%).
+
+That nominated a specific change, and it was on this session's own named-but-not-built list: **extend
+`drain()` to residual shapes whose steps are fully buffering.** `hoporder` is the ideal case —
+`orderStep` is literally `yield* sortByBys([...stream], …)`, so it already materializes the entire
+stream and draining upstream adds **zero** eagerness, which is the `eager-tail-cache` 3680x risk that
+kept the idea unbuilt. The residual wrapper in `executor/index.ts` bypasses `drain` today:
+
+```ts
+(function* () {
+  for (const value of projected.values) yield startTraverser(value, false);
+})();
+```
+
+— a generator feeding a generator, where item 1411 measured generator-against-plain-loop at 2.1x.
+
+**❌ DECLINED, by the closed list, before building it.** The comment block at
+`executor/aggregation.ts:219` already holds item 1394's windowed decomposition of this exact row:
+
+```text
+  evalBy plus project    0.1%   REFUTED — not a cost at all
+  the comparator        ~4.3%   compareTotal inlined into the sortByBys closure
+  [...stream]           ~5.0%   startTraverser 1.4 + unwrap 1.9 + toArray 1.8
+```
+
+with "a share overstates a realizable change by ~2.5x here, so the latter two are ~2% each — under
+what this row resolves", and item 1392's finding that **36% of what `values(k).order()` adds over a
+bare hop is FAR-VERTEX LOCALITY** (115.9 ms at fan-in 1 against 73.5 at fan-in 100, bare-hop control
+flat), which has no per-row lever. The comment ends "Nothing is open on this row."
+
+My `drain`-the-residual idea targets the `[...stream]` term precisely — ~2% realizable, under both the
+noise floor and item 1415's `hop-projection` toll. **Do not re-attempt it on `hoporder`.** It may
+still be worth something on a row whose residual is buffering AND whose value production dominates,
+but `hoporder` is not that row, and no current bench row is.
+
+This is CLAUDE.md's "check the list before measuring or flagging" working as designed: the profile
+nominated a target the closed list had already priced at a thirtieth of what the share implied.
+
+### `hopcount3` (85.34): four frames, no hot spot
+
+`walkBucket` 23.84%, `slotChainCount` 23.56%, `expandSlot` 21.32%, `degreeOfTypes` 20.34% — the
+slot-chain machinery items 1418 and 1423 already rebuilt, with `degreeOfTypes` the frame item 1425
+settled as self-time misattribution by COUNTING CALLS (it is O(1)). An even four-way split is item
+1104's signature for "no single frame to take". Not pursued.
+
+### ⚠️ THE INSTRUMENT DEFECTS, which is what this item actually fixes
+
+**1. `STRIDE` was not a knob on `isolated-gremlin-bench.mjs` at all.** Its edge builder was hardcoded
+to `from = (k * 7919) % N`, `to = (k * 104729) % pool` — exactly what `isolated-row-bench.mjs` calls
+`random`. So setting `STRIDE=random` here, as this item's own ranking run did, measured the default
+while the reading claimed the knob. **That is item 1431's trap**, which cost a whole wrong A/B
+reading, and whose recorded fix is to have the driver assert the value back off every reading.
+
+**2. Which was impossible, because the bench emitted neither `stride` nor `rowCount`.** `rowCount` was
+computed and used internally for the `VACUOUS_ZERO_ANSWER` flag, then never printed — so every row in
+the ranking above reported no row count, and per-row normalization was unavailable for Gremlin. Item
+1437 settled an entire question (the same-property double read) on that division alone.
+
+**3. The two benches' defaults are OPPOSITE**, and have been since the GQL bench gained the knob at
+item 1426: `small` there, hardcoded-`random` here. Any cross-engine comparison taking both defaults
+compared different graphs, by the factor item 1426 measured at 1.93x/2.06x — which is why that item
+had to build `cross-engine-chain3-probe.mjs` to hold one graph for both.
+
+Fixed: `STRIDE` added mirroring the GQL formulas exactly (including its `hop` term, so `small` means
+the same thing in both), validated against a typo, **defaulting to `random` so every figure ever
+recorded against this bench still holds byte-for-byte**; `stride`, `rowCount`, `multilabel` and
+`vlabel` now emitted. The opposite defaults are KEPT on purpose and documented in `PROBES.md` —
+changing either one silently invalidates its own history.
+
+### And the stride is worth more here than the cross-engine probe implied
+
+Now that the main bench can vary it, same answers both arms:
+
+```text
+  shape        random     small    ratio
+  hopcount3     90.65     41.84    2.17x
+  hopbare       21.60      4.05    5.30x
+```
+
+So `hopbare` is **5.3x** optimistic at `small` — above the 2.06x the cross-engine probe measured on a
+3-hop count, because a one-hop projection is almost nothing BUT far-vertex access. Absolute Gremlin
+figures are fixture-bound; quote the stride.
+
+### Gates
+
+`bun run check` 0 (read unpiped). No engine code changed. Default fixture verified unchanged by
+answer and timing (`hopcount3` 100000 at 90.65 against the ranking's 85.34/86.05), `small` verified to
+change the timing while preserving the answer, and a bad `STRIDE` verified to throw.
