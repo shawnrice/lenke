@@ -53223,3 +53223,98 @@ contract; GQL row order is unspecified) recorded next to it.
 `bun run check` 0 (read unpiped). gremlin 1218/0 both before the revert and after it. Engine file
 reverted and verified at marker count 0 with `git diff --stat` empty for it; the only committed change
 is the bench comment.
+
+### Item 1441 — the 1.86x is the per-vertex BUCKETS ARRAY, and removing it lands at **1.03x the single-type walk**: **45.1% headroom**, priced outside the perturbing file. Item 1440's decline is also CONFIRMED correct rather than drowned
+
+Item 1440 measured `out('E','F')` at 1.86x `out('E')` on an identical edge set, failed to price it,
+and named the blocker exactly: `hop-values.ts` carries a **~16% arbitrarily-signed perturbation
+term** (its control moved 16.3% at 4/4 while no target cleared 8%; item 1413 saw the same effect
+there with the signs reversed), so no in-file A/B can resolve a sub-16% branch question.
+
+**The question needed no edit.** The gap exists at HEAD; what was unknown is whether it is intrinsic
+to walking two buckets or engine overhead on top. `gremlin-multitype-floor-probe.mjs` answers that
+with hand floors, one arm per process, outside the engine — nothing to perturb.
+
+### Round 1: the declined change was genuinely worthless, not drowned
+
+100k nodes, `FANOUT=1 MULTILABEL=0 STRIDE=small` (so no `F` edge exists and every arm must produce
+the same multiset — digests checked, not row counts, per item 1430), p25 of 11 reps dropping 3, two
+rounds in opposite order:
+
+```text
+  arm                 p25    x floor-single
+  floor-single       4.04         1.00x
+  engine-single      4.96         1.23x
+  floor-multi       11.81         2.92x
+  floor-multi-lean  11.81         2.92x   <- item 1440's DECLINED change
+  engine-multi      11.57         2.86x
+```
+
+**`floor-multi-lean` is IDENTICAL to `floor-multi`** — 11.81 both. Item 1440 reverted the
+absent-bucket skip on the strength of a control moving more than its targets, and left open whether a
+real win had been drowned. It had not: the change is worth nothing where no perturbation can reach
+it. **That 16.3% was pure file-perturbation noise.** Worth stating plainly, because the alternative
+reading — "the A/B was too noisy to see my win" — is the comfortable one and it is false.
+
+**And `engine-multi` (11.57) sits BELOW its own hand floor (11.81).** The engine's `manyTypes` walk
+has no overhead to remove; it is already at the shape's floor. So the 2.9x is the SHAPE.
+
+### Round 2: which part of the shape, and it is not what either previous item guessed
+
+Both multi floors still build a `buckets` array per vertex and iterate `TYPES` with a `for...of` —
+which `floor-multi-lean` kept, and which is why skipping the `undefined` pushes bought nothing.
+`floor-multi-pair` removes the array entirely: exactly two types, both `Map.get`s hoisted into
+locals, the earlier-buckets rule reduced to one membership test. Same multiset, digests agree.
+
+Pinned over FIVE order-alternated rounds, 14 reps dropping 3, median per round then median of those
+(`floor-multi-pair`'s p25 spread was 1.688x on three rounds, which is why it got five and the median
+estimator rather than p25):
+
+```text
+  arm                medians across 5 rounds              median
+  floor-single        4.62  4.92  5.11  5.80  7.23          5.11
+  floor-multi-pair    4.88  5.05  5.25  5.48  5.64          5.25
+  engine-multi        9.31  9.43  9.57 11.43 11.53          9.57
+```
+
+```text
+  pair / single   1.03x    the equivalent-spelling gap essentially CLOSES
+  engine / pair   1.82x    headroom 45.1%
+```
+
+**So the cost is the per-vertex array scaffolding — not the dedupe (item 1413, −0.5%), not the
+absent-bucket pushes (item 1440, 0.0% here), and not engine overhead (the engine is at its floor).**
+Three candidates refuted and the fourth measured at 45.1%.
+
+### Why this is now buildable where item 1440 was not
+
+45.1% clears the ~16% perturbation term by nearly 3x. The blocker item 1440 named was that the
+effect was smaller than the noise its own file injects; it no longer is. **NOT BUILT in this item** —
+the engine change needs a two-type specialization in both the generator and `drain`, order-preserving
+by construction (Gremlin stream order is a TinkerPop contract the differential fuzzer compares
+ORDERED, unlike GQL's unspecified row order), tests for the overlapping-edge dedupe and for 3+ types
+falling back, and the fuzzers. That is its own item.
+
+Two caveats for whoever builds it:
+
+- **Two types is the specialization, not "many".** The arm that pays hoists exactly two `get`s; a
+  general N-type loop is the array again. `out('E','F')` is the overwhelmingly common spelling, and a
+  3+ type plan should keep the existing path rather than grow a second general one.
+- **`MULTILABEL=0` is the measured fixture, where the second bucket is always ABSENT.** The win at
+  `ML=3`, where both buckets are populated and the dedupe genuinely runs, is NOT measured here and
+  will be smaller — item 1413 recorded its guard costing 7.5% in exactly that cell. Sweep `ML` before
+  claiming the figure generally.
+
+### The reusable method
+
+**When a file's own perturbation exceeds the effect you want to measure, move the measurement out of
+the file instead of trying to average the perturbation away.** Item 1440 ran two rounds and got a
+control moving more than its targets; five rounds would not have fixed that, because the term is not
+noise in the statistical sense — it is a real, repeatable consequence of the edit, in an arbitrary
+direction. A hand floor has no such term, prices the SHAPE rather than the diff, and as a bonus
+settles whether the reverted change was right.
+
+### Gates
+
+`bun run check` 0 (read unpiped). No engine code changed — this item adds one probe and its record.
+All arms' digests and row counts verified equal across every run (100,000 rows, one digest).

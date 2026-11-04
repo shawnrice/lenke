@@ -212,13 +212,14 @@ builds graphs in a tight loop is measuring a different heap than it thinks.
 
 ## The ISOLATED ROW BENCHES — for a sub-10% question on ONE row
 
-| file                             | surface                                               |
-| -------------------------------- | ----------------------------------------------------- |
-| `isolated-row-bench.mjs`         | one GQL row (`SHAPE=hopfilter NODES= REPS= DROP=`)    |
-| `isolated-gremlin-bench.mjs`     | one Gremlin row (item 1368)                           |
-| `gremlin-hop-floor-probe.mjs`    | the Gremlin hop FLOOR, three arms (item 1411)         |
-| `gql-undirected-floor-probe.mjs` | the GQL undirected hop, five-arm ablation (1414)      |
-| `cross-engine-chain3-probe.mjs`  | GQL vs Gremlin, one graph, one arm per process (1426) |
+| file                                | surface                                                                  |
+| ----------------------------------- | ------------------------------------------------------------------------ |
+| `isolated-row-bench.mjs`            | one GQL row (`SHAPE=hopfilter NODES= REPS= DROP=`)                       |
+| `isolated-gremlin-bench.mjs`        | one Gremlin row (item 1368)                                              |
+| `gremlin-hop-floor-probe.mjs`       | the Gremlin hop FLOOR, three arms (item 1411)                            |
+| `gremlin-multitype-floor-probe.mjs` | why `out('E','F')` costs 1.86x `out('E')` — six arms, `ARM=` (item 1441) |
+| `gql-undirected-floor-probe.mjs`    | the GQL undirected hop, five-arm ablation (1414)                         |
+| `cross-engine-chain3-probe.mjs`     | GQL vs Gremlin, one graph, one arm per process (1426)                    |
 
 ⚠️ **`hop-projection.ts` CHARGES A TOLL, so price a target against ~10% before attempting it**
 (items 1413 and 1415). Two independent changes there — a dedupe skip and a per-row `EvalEnv` hoist —
@@ -518,3 +519,13 @@ setting it measured the default while the driver believed otherwise — item 143
 fix is to have the driver assert the value back. That was impossible here because the bench emitted
 neither `stride` nor `rowCount`. Both are emitted now (along with `multilabel`/`vlabel`), so
 **assert the fixture fields off every reading** rather than trusting the environment you set.
+
+⚠️ **WHEN A FILE PERTURBS MORE THAN THE EFFECT, MEASURE OUTSIDE THE FILE** (item 1441).
+`packages/gremlin/src/executor/hop-values.ts` moves unrelated branches **~16%, in an arbitrary
+direction**, on any edit: item 1413 saw two controls REGRESS 3.5% and 5.8%, item 1440 saw one
+"improve" 16.3% at 4/4 while no target cleared 8%. That is not statistical noise — more rounds do not
+average it out, because it is a repeatable consequence of the edit. `gremlin-multitype-floor-probe.mjs`
+is the answer: hand floors price the SHAPE instead of the diff, need no edit, and additionally settle
+whether a reverted change was right (item 1440's was — its lean arm measured IDENTICAL to the
+array arm, 11.81 both). The same caution applies to `hop-projection.ts` on the GQL side, where item
+1415 measured the toll at 3.4-5.8% and the standing rule is that a target there must be worth ~10%.
