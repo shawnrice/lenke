@@ -20,10 +20,15 @@ import { query } from './index.js';
  * `perf-gate-needs-its-own-test` records.
  */
 describe('farDrivenPaysForMultiType — the gate arithmetic (item 1390)', () => {
-  test('a fan-in of 1 declines: there is no hoist to amortize', () => {
-    // 266,667 edges over 200,000 receiving vertices is a degree of 1.33, where the far-driven walk
-    // measured 86.1 ms against the start-driven 69.3.
-    expect(farDrivenPaysForMultiType(266_667, 200_000)).toBe(false);
+  test('a fan-in BELOW 1 declines: there is nothing to walk', () => {
+    // ⚠️ RETARGETED AT ITEM 1434. This read "a fan-in of 1 declines: there is no hoist to amortize"
+    // — true of item 1390's threshold of 8 and of item 1406's 3, and false now: at `min=1` degree 1
+    // is exactly the floor and is accepted, because the route measured 1.87-2.09x FASTER there once
+    // item 1407 rebuilt its rows. The case that still declines is a degree below one, which real
+    // adjacency cannot produce (every counted endpoint has an edge) and which the formula must
+    // nonetheless handle.
+    expect(farDrivenPaysForMultiType(9, 10)).toBe(false);
+    expect(farDrivenPaysForMultiType(1, 2)).toBe(false);
   });
 
   test('a fan-in of ~133 accepts: the hoist has 133 rows to spread one projectRow over', () => {
@@ -31,15 +36,24 @@ describe('farDrivenPaysForMultiType — the gate arithmetic (item 1390)', () => 
     expect(farDrivenPaysForMultiType(266_667, 2_000)).toBe(true);
   });
 
-  // ⚠️ THESE ENCODE THE THRESHOLD'S VALUE, which is the point: it is 4 since item 1403 (it was 8,
-  // calibrated at out-degree 1 only, and refused a route worth 32-43.5% at degree 3-4). A test that
-  // pins a measured constant has to be edited when the measurement changes — that is the cost of
-  // the constant being measured rather than assumed, and it is the right cost to pay. It has moved
-  // twice: 8 -> 4 (item 1403, out-degree never swept) and 4 -> 3 (item 1406, the DISJOINT-type
-  // fixture puts the crossover between true degree 2 and 3).
+  // ⚠️ THESE ENCODE THE THRESHOLD'S VALUE, which is the point. A test that pins a measured constant
+  // has to be edited when the measurement changes — that is the cost of the constant being measured
+  // rather than assumed, and it is the right cost to pay. It has now moved FOUR times:
+  //
+  //   8 -> 4  item 1403, out-degree had never been swept
+  //   4 -> 3  item 1406, the disjoint fixture put the crossover between true degree 2 and 3
+  //   3 -> 1  item 1434, the SIGN FLIPPED: the far-driven route is 1.5-2.1x FASTER at degrees 1
+  //           and 2, where items 1390, 1404 and 1406 had all measured it losing. Those three
+  //           readings were correct about the code as it was and predate item 1407's row builder.
+  //
+  // At `min=1` the gate is "take it when there is anything to walk": `farEndpoints` counts vertices
+  // with an incident edge of a named type, so `typeEdgeCount >= farEndpoints` holds whenever such
+  // an edge exists. The pair below therefore pins the FLOOR at 1 rather than a crossing — 9 edges
+  // into 10 receiving vertices is impossible for real adjacency and is here to say the comparison
+  // is still a `>=` and not an `always true`.
   test('the threshold is a FLOOR, not a strict crossing', () => {
-    expect(farDrivenPaysForMultiType(30, 10)).toBe(true);
-    expect(farDrivenPaysForMultiType(29, 10)).toBe(false);
+    expect(farDrivenPaysForMultiType(10, 10)).toBe(true);
+    expect(farDrivenPaysForMultiType(9, 10)).toBe(false);
   });
 
   // ZERO ENDPOINTS IS THE DIVIDE-BY-ZERO CASE, and it is reachable: a graph with vertices and no
@@ -54,8 +68,12 @@ describe('farDrivenPaysForMultiType — the gate arithmetic (item 1390)', () => 
     expect(farDrivenPaysForMultiType(1_000, 10)).toBe(true);
     // More edges can only make the hoist more worthwhile.
     expect(farDrivenPaysForMultiType(2_000, 10)).toBe(true);
-    // More receiving vertices can only make it less.
-    expect(farDrivenPaysForMultiType(1_000, 1_000)).toBe(false);
+    // More receiving vertices can only make it less. ⚠️ At `min=1` (item 1434) the declining case
+    // has to be a degree BELOW one — 1,000 edges into 1,000 endpoints is degree 1 and is now
+    // ACCEPTED, where item 1390's threshold of 8 refused it. Monotonicity is a property of the
+    // formula and still holds; only where it crosses has moved.
+    expect(farDrivenPaysForMultiType(1_000, 1_001)).toBe(false);
+    expect(farDrivenPaysForMultiType(1_000, 1_000)).toBe(true);
   });
 });
 
@@ -90,10 +108,18 @@ const chain = (n: number, endpoints: number): Graph => {
 const rowsOf = (g: Graph, src: string): unknown[] => query(g, src).map((r) => r['x']);
 
 describe('the two multi-type routes agree (item 1390)', () => {
-  test('fan-in 1 takes the start-driven walk and answers 60 rows', () => {
+  test('fan-in 1 now takes the FAR-driven walk too, and answers the same 60 rows', () => {
+    // ⚠️ THIS TEST'S ROUTE EXPECTATION REVERSED AT ITEM 1434, and the valuable half did not. It
+    // used to read "fan-in 1 takes the start-driven walk": item 1390 measured the far-driven route
+    // losing 1.24x at degree 1 and the gate refused it. After item 1407's row builder the same
+    // comparison is 1.87-2.09x the OTHER way, so `min` is 1 and this fixture is accepted.
+    //
+    // The ANSWER assertion is unchanged and is the point of the describe block: both routes return
+    // the same 60 rows, so a route flip is answer-preserving and only a deliberate route assertion
+    // like the one above can see it.
     const g = chain(60, 60);
 
-    expect(farDrivenPaysForMultiType(60 + 20, 60)).toBe(false);
+    expect(farDrivenPaysForMultiType(60 + 20, 60)).toBe(true);
     expect(rowsOf(g, 'MATCH (a:P)-[:E|F]->(b:P) RETURN b.k AS x')).toHaveLength(60);
   });
 

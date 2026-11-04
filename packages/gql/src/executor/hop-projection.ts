@@ -2483,7 +2483,35 @@ export const detectHopProjection = (
  * wrong, which is why the decision is a pure function with its own tests rather than an inline
  * comparison (the rule `perf-gate-needs-its-own-test` records from an earlier item).
  */
-const FAR_DRIVEN_MIN_DEGREE = 3;
+/**
+ * ⚠️ 3 -> 1 AT ITEM 1434, AND EVERY EARLIER READING ON THIS CONSTANT IS NOW STALE.
+ *
+ * The threshold existed because the multi-type far-driven walk LOST at low degree: item 1390
+ * measured 1.24x against it at degree 1, item 1404 declined `min=2` for that reason, and item 1406
+ * measured a 16.9% loss at true degree 2 on a disjoint fixture. All three are correct readings of
+ * the code AS IT WAS — and all three predate item 1407, which replaced that walk's per-row
+ * computed-key stores with `{ ...template }` and made the template the first row (28.1% on its own
+ * row), on top of item 1386's bucket-union work.
+ *
+ * Re-measured by forcing the gate open and comparing against the shipped route, 100,000 vertices,
+ * `STRIDE=random`, across all three label modes:
+ *
+ *   ML   FANOUT 1   FANOUT 2   FANOUT 4
+ *    0      1.87x      1.99x      0.96x
+ *   -1      2.00x      2.09x      1.00x
+ *    3      1.73x      1.53x      0.96x
+ *
+ * **The sign has flipped: the far-driven route is now 1.5-2.1x FASTER where the gate was refusing
+ * it.** `FANOUT=4` is the control — the estimate is already >= 3 there, so both arms take the same
+ * route and agree, which is what says the forced arm is the route and not an artefact.
+ *
+ * ⚠️ WHY 1 AND NOT 0. `farEndpoints` counts vertices WITH an incident edge of a named type, so
+ * `typeEdgeCount >= farEndpoints` holds whenever any such edge exists — `min=1` is therefore
+ * "always take it when there is anything to walk", and `min=0` differs only on the empty graph,
+ * where `farEndpoints > 0` already declines. 1 states the intent; 0 would imply a degree of zero
+ * means something.
+ */
+const FAR_DRIVEN_MIN_DEGREE = 1;
 
 /**
  * Should a multi-type plain hop take the FAR-driven walk rather than the start-driven one?

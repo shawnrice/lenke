@@ -50440,7 +50440,7 @@ gql **3580/0**, gremlin 1157/0, core 383/0, serialization 144/0, `bun run fuzz` 
 with row counts and digests matching the sweep's. Both A/B drivers restored their arm and verified it
 byte-identical.
 
-### Item 1404 — the bracket is CLOSED: `min=2` is **7.2% faster at 142/144** and is **DECLINED**, because the estimate's bias would make it accept at a TRUE degree of 1 — where item 1390 measured this route losing **1.24x**. The fix is the estimate, not the threshold ~~(threshold stays 4)~~ **— and its 7.2%-at-true-degree-2 is CONTRADICTED at 1405: disjoint types lose 16.9% at the same degree, so bucket structure matters too. Threshold is 3 since 1406.**
+### Item 1404 — ⚠️ **SUPERSEDED BY ITEM 1434** (its `min=2` was declined for a bias that item 1407 then removed; the threshold is now 1). the bracket is CLOSED: `min=2` is **7.2% faster at 142/144** and is **DECLINED**, because the estimate's bias would make it accept at a TRUE degree of 1 — where item 1390 measured this route losing **1.24x**. The fix is the estimate, not the threshold ~~(threshold stays 4)~~ **— and its 7.2%-at-true-degree-2 is CONTRADICTED at 1405: disjoint types lose 16.9% at the same degree, so bucket structure matters too. Threshold is 3 since 1406.**
 
 Item 1403 shipped `FAR_DRIVEN_MIN_DEGREE = 4` and left one thing open rather than silently: the
 crossover was bracketed in **(2.67, 4.00]**, and below 4 both arms take the same route so the bench
@@ -50494,7 +50494,7 @@ gql 3580/0, `bun run check` 0 (read unpiped). No engine behaviour changed — th
 and the arm was restored and verified byte-identical; the commit carries the declined measurement and
 nothing else.
 
-### Items 1405-1406 — **SHIPPED, 18.0%** (144/144): the bench could not build a DISJOINT-type graph, which is what a real schema has. Built, and it pins the crossover between true degree **2 (−16.9%)** and **3 (+25.1%)** — so the threshold is **3**, not 4. And at the same degree the sign DEPENDS ON BUCKET STRUCTURE, which one scalar cannot express
+### Items 1405-1406 — ~~SHIPPED, 18.0%~~ ⟶ **THE THRESHOLD IT SET (3) IS SUPERSEDED BY ITEM 1434, WHICH MEASURED THE SIGN FLIPPED AND SET 1.** Its 16.9% loss at true degree 2 predates item 1407's row builder. Original heading: SHIPPED, 18.0% (144/144): the bench could not build a DISJOINT-type graph, which is what a real schema has. Built, and it pins the crossover between true degree **2 (−16.9%)** and **3 (+25.1%)** — so the threshold is **3**, not 4. And at the same degree the sign DEPENDS ON BUCKET STRUCTURE, which one scalar cannot express
 
 Every multi-type row in this bench has used OVERLAPPING types — every Nth edge carrying both — which
 makes `graph.multiTypeEdgeCount` non-zero and `typeEdgeCount` an over-count: at `MULTILABEL=3` the
@@ -52556,3 +52556,92 @@ its input is exhausted, so eager draining is unobservable there. That needs a pe
 ### Gates
 
 `bun run check` 0 (read unpiped), gremlin 1218/0. No engine code changed.
+
+### Item 1434 — **SHIPPED, 50.3% / 49.7%** (36/36 both): `FAR_DRIVEN_MIN_DEGREE` 3 → 1. **The sign flipped** — items 1390, 1404 and 1406 all measured this route LOSING at low degree, and all three predate item 1407's row builder. Found via a **2.6x gap between `:E` and `:E|F` on identical edges**
+
+### The nomination was an equivalent-spelling gap, not a profile share
+
+At `MULTILABEL=0` the bench has **no `F` edges at all**, so `:E|F` and `:E` select the identical
+100,000 edges and return the identical 100,000 rows:
+
+| spelling                | rows                 | p25       |
+| ----------------------- | -------------------- | --------- |
+| `:E` (`hopsingleyield`) | 100000               | **26.70** |
+| `:E                     | F` (`hopmultiyield`) | 100000    | **69.54** |
+
+**2.6x for the same answer on the same edges** — the class CLAUDE.md says costs 100-300x and returns
+the right answer every time. Not literally two spellings of one predicate, but on this graph they
+select one edge set, and the cost differed by a route choice.
+
+### The cause, and why three earlier items had it right at the time
+
+`:E` takes the far-driven walk (item 167's hoist: `projectRow` once per far VERTEX). `:E|F` takes
+`startDrivenMany` (`projectRow` per EDGE). The multi-type far-driven route exists but was gated at
+degree 3 — because it genuinely lost at low degree:
+
+- **item 1390** measured 1.24x against it at degree 1
+- **item 1404** declined `min=2` for the estimate's bias
+- **item 1406** measured a **16.9% loss** at true degree 2 on a disjoint fixture
+
+All three are correct readings of the code as it then was. **All three predate item 1407**, which
+replaced that walk's per-row computed-key stores with `{ ...template }` and made the template the
+first row. Forcing the gate open and comparing against the shipped route, 100,000 vertices,
+`STRIDE=random`:
+
+| ML  | FANOUT 1  | FANOUT 2  | FANOUT 4 |
+| --- | --------- | --------- | -------- |
+| 0   | **1.87x** | **1.99x** | 0.96x    |
+| −1  | **2.00x** | **2.09x** | 1.00x    |
+| 3   | **1.73x** | **1.53x** | 0.96x    |
+
+`FANOUT=4` is the built-in control: the estimate is already ≥ 3 there, so both arms take the
+far-driven route and agree — which is what says this is a ROUTE change rather than a walk change.
+
+| shape                                            | fanout | BASE  | MIN1      | change    | concordance |
+| ------------------------------------------------ | ------ | ----- | --------- | --------- | ----------- |
+| **`hopmultiyield`**                              | 1      | 66.60 | **33.13** | **50.3%** | **36/36**   |
+| **`hopmultiyieldrev`**                           | 1      | 67.06 | **33.76** | **49.7%** | **36/36**   |
+| `hopmultiyield` [CONTROL — gate already accepts] | 4      | 42.62 | 43.57     | −2.2%     | 9/36        |
+| `hopsingleyield` [CONTROL — no degree gate]      | 1      | 18.29 | 18.24     | 0.3%      | 19/36       |
+
+`:E|F` and `:F|E` now converge at 33.13/33.76 — both FAST, where before they converged at 66.60/67.06,
+both slow. Equal cost for equal meaning was always true; it is now equal cost at the better price.
+
+### Why 1 and not 0
+
+`farEndpoints` counts vertices with an incident edge of a named type, so
+`typeEdgeCount >= farEndpoints` holds whenever such an edge exists. `min=1` is therefore "take it
+when there is anything to walk", and `min=0` differs only on the empty graph, which the
+`farEndpoints > 0` guard already declines. 1 states the intent; 0 would imply a degree of zero means
+something.
+
+### ⚠️ Three tests failed, correctly, and each kept its valuable half
+
+A route choice is answer-equivalent, so only deliberate ROUTE assertions can see this change — item
+1289's lesson. All three that broke were encoding item 1390's conclusion:
+
+- **monotonicity** — a real property of the formula, still true. Only where it crosses moved, so the
+  declining case became a degree BELOW one.
+- **"fan-in 1 takes the start-driven walk"** — route expectation reversed; the **answer assertion is
+  unchanged**, which is the point of that block: both routes return the same 60 rows.
+- **"a fan-in of 1 declines"** — retargeted to the sub-degree-1 case.
+
+The constant has now moved **four times** (8 → 4 → 3 → 1) and the test pinning it has been edited
+every time. That is the cost of a measured constant, and this is the fourth time it has been the
+right cost: an unpinned constant would have drifted silently.
+
+| mutant                               | verdict        |
+| ------------------------------------ | -------------- |
+| M1 back to `min=3`                   | **CAUGHT** (3) |
+| M2 `min=0`                           | **CAUGHT** (3) |
+| M3 drop the `farEndpoints > 0` guard | **CAUGHT** (1) |
+| M4 `>=` becomes `<=`                 | **CAUGHT** (8) |
+
+All four caught purely by the route assertions, which is the evidence they still have teeth after
+being retargeted.
+
+### Gates
+
+gql **3638/0**, gremlin 1218/0, core 383/0, serialization 144/0, `bun run fuzz` 20/0, `bun run
+check` 0 (read unpiped). `rowCount` and `digest` identical across both arms in every cell. Items
+1404 and 1405-1406's headings are corrected in this commit.
