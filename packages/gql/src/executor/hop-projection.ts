@@ -1072,6 +1072,59 @@ const undirectedHopWalk = (w: {
     // Per CALL, not per compile, because vacuity is a property of the graph — the same reason the
     // start-driven walk computes it there (items 195, 198, 1066).
     const fl = vacuousLabel(graph, farLabel) ? undefined : farLabel;
+    /**
+     * ONE PASS OVER THE EDGE INDEX when neither label filters (item 1431).
+     *
+     * The two-pass walk below iterates every VERTEX twice — once for `adjFrom`, once for `adjTo` —
+     * paying 2 x `vertexCount` iterations and 2 x `vertexCount` `Map.get`s to produce two rows per
+     * edge. `graph.edgesByLabel.get(type)` is ONE `Set` holding exactly those edges in insertion
+     * order, so a single sequential pass produces the same row multiset.
+     *
+     * Item 1430 priced it before it was built: **~10x the hand-written two-pass floor and ~12.5x
+     * the engine**, at both localities, with the row contents verified by an order-independent
+     * digest rather than by row count alone. `countOnly` (both passes, no rows) cost 116-220 ns a
+     * row where the edge pass did the walk AND built the rows in 26-43.
+     *
+     * ⚠️ THE GATE IS BOTH LABELS BEING FREE, and it is deliberately the strictest useful one. An
+     * edge pass enumerates EDGES, so each one yields a row with `from` as start and another with
+     * `to` as start — where the two-pass walk gets its start side free from
+     * `candidateVertexSource`. Applying a real start label here means a `matchesLabel` per
+     * ENDPOINT per edge, which is the deref item 1066 priced at 9.3x over a wide far pool. A
+     * narrowing label also makes the vertex source genuinely smaller, which is what the existing
+     * walk is good at. So a label that filters keeps the old route.
+     *
+     * Per CALL, not per compile: vacuity is a property of the graph (items 195, 198, 1066), and
+     * `vacuousLabel` is FALSE for `undefined`, so the absent case needs its own test.
+     *
+     * Row ORDER changes. That is allowed and already relied on: GQL row order is unspecified,
+     * `farDrivenHopWalk` reorders deliberately, and `hopOrderPlan` forces start-driven under
+     * `ORDER BY`. A SELF-LOOP still yields exactly one row, as the two-pass walk's in-pass skip
+     * guarantees today.
+     */
+    const startFree = startLabel === undefined || vacuousLabel(graph, startLabel);
+    const farFree = farLabel === undefined || vacuousLabel(graph, farLabel);
+
+    if (startFree && farFree) {
+      const edges = graph.edgesByLabel.get(typeName);
+
+      if (edges === undefined) {
+        return rows;
+      }
+
+      for (const edge of edges) {
+        binding.set(farVar, edge.to);
+        rows.push(projectRow(proj, binding, params, graph));
+
+        // The second direction, which the two-pass walk's in-pass contributes — and the self-loop
+        // skip that keeps it to one row.
+        if (edge.from !== edge.to) {
+          binding.set(farVar, edge.from);
+          rows.push(projectRow(proj, binding, params, graph));
+        }
+      }
+
+      return rows;
+    }
 
     for (const v of candidateVertexSource(graph, startLabel)) {
       const outBucket = v.adjFrom?.get(typeName);

@@ -52356,3 +52356,80 @@ too.
 
 `bun run check` 0 (read unpiped). No engine code changed; the probe gained the `edgePass` arm, the
 `STRIDE` knob and the content digest.
+
+### Item 1431 — **SHIPPED, 70.6% / 47.8% at random stride and 79.1% / 71.1% at small** (36/36 and 81/81): the undirected hop takes ONE pass over the edge index when neither label filters, instead of iterating every vertex twice. Item 1430's ~12x floor, realised at ~5x end to end
+
+### The change
+
+`undirectedHopWalk` iterated every VERTEX twice — `adjFrom` then `adjTo` — paying 2 x `vertexCount`
+iterations and 2 x `vertexCount` `Map.get`s to produce two rows per edge. When neither label filters
+it now makes one sequential pass over `graph.edgesByLabel.get(type)`, emitting both rows per edge and
+skipping the second for a self-loop.
+
+| stride | fanout | BASE   | EDGEPASS  | change    | concordance |
+| ------ | ------ | ------ | --------- | --------- | ----------- |
+| random | 1      | 53.02  | **15.57** | **70.6%** | **36/36**   |
+| random | 4      | 104.79 | **54.69** | **47.8%** | **36/36**   |
+| small  | 1      | 39.49  | **8.23**  | **79.1%** | **81/81**   |
+| small  | 4      | 118.84 | **34.36** | **71.1%** | **81/81**   |
+
+Controls (`hopsingleyield`, `hopfiltyield`, `hoprelyield` — walks the route cannot reach) read
+2.6-5.0% at random and −16.6% to +9.9% at small, all inside their own 1.18-1.32x run-to-run spreads,
+measured over six processes per row. This file charges a 3.4-5.8% toll on unrelated rows regardless
+(items 1413, 1415), so same-file controls are mandatory here and these are them.
+
+### ⚠️ THE GATE, which the bench structurally cannot test
+
+Both labels must be FREE — absent, or carried by every vertex. A filtering label keeps the two-pass
+walk: an edge pass enumerates EDGES, so each one yields a row with `from` as start and another with
+`to` as start, where the old walk gets its start side free from `candidateVertexSource`. A real start
+label would cost a `matchesLabel` per ENDPOINT per edge — the deref item 1066 priced at 9.3x over a
+wide far pool — and a narrowing label genuinely shrinks the vertex source, which is what the old walk
+is good at.
+
+**`isolated-row-bench.mjs` cannot exercise the decline at all**: its `MULTILABEL` knob varies EDGE
+labels and every vertex in it is always `P`, so the route always fires and a broken gate would never
+appear in a measurement. `undirected-edge-pass.test.ts` (16 tests) is the only guard — filtering far
+label, filtering start label, absent label, self-loops on both routes, parallel edges, a two-type
+edge, and the per-CALL decision pinned by one query text against two graphs in both orders.
+
+### Mutation
+
+| mutant                                      | verdict                  | evidence |
+| ------------------------------------------- | ------------------------ | -------- |
+| M1 gate ignored (always edge route)         | **CAUGHT**               | 19 fail  |
+| M2 self-loop skip removed                   | **CAUGHT**               | 5 fail   |
+| M3 second direction removed                 | **CAUGHT**               | 15 fail  |
+| M4 `startFree` without the `undefined` test | **SURVIVES — by design** | 3638/0   |
+| M5 route never taken                        | **SURVIVES — by design** | 3638/0   |
+
+**M4 is the one worth naming.** `vacuousLabel` is FALSE for `undefined`, so dropping the
+`startLabel === undefined ||` half silently routes every UNLABELLED hop down the slow path — the
+commonest case, and answer-equivalent, so no test can see it. M5 is the old code. Both have the bench
+row as their only guard.
+
+### Two predictions I got wrong
+
+1. **"Random stride favours the edge route more."** It does not: 70.6% random against 79.1% small at
+   degree 1. The single readings suggested otherwise (5.0x small, 5.9x random) and the A/B disagreed.
+2. **"The win grows with degree."** It shrinks — 70.6% → 47.8% at random, 79.1% → 71.1% at small. The
+   mechanism is clear in hindsight: the per-VERTEX overhead the route eliminates is FIXED, so at
+   4x the edges it is amortised over 4x the rows and becomes a smaller fraction.
+
+### ⚠️ And the first A/B measured the wrong fixture, silently
+
+Its `STRIDE` substitution never matched (the env dict had been hardcoded in an earlier derivation),
+so it ran at the bench's DEFAULT stride while the driver's own comments said random. Only the arm
+MARKERS were asserted, not the env. The giveaway was `hoprelyield` reading 4.92 ms where random
+stride gives ~27.
+
+Fixed generally: the bench echoes the knobs it used, and the driver now **asserts
+`stride === 'random'` on every reading**. An env substitution that does not apply is otherwise
+invisible — the same silent-no-op class as item 1391, which cost twenty minutes measuring HEAD
+against itself.
+
+### Gates
+
+gql **3638/0**, gremlin 1212/0, core 383/0, serialization 144/0, `bun run fuzz` 20/0, `bun run check`
+0 (read unpiped). `rowCount` and `digest` identical across both arms in every cell and at both
+strides.
