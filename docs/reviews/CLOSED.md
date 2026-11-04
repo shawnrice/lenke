@@ -51866,3 +51866,84 @@ one-line diagnostic, and the cost of obeying it was adding a deliberately-dead s
 
 `bun run check` 0 (read unpiped). The temporary `tmpdead` shape was added from a copy under
 `crates/lenke-engine/target/`, used for one reading, and removed — verified absent.
+
+### Item 1423 — **SHIPPED, 23.4%**: the GQL sweep's flat memo (items 1417-1418) applied to its GREMLIN TWIN, which held the identical `Int32Array.from` per slot. GC **148 ms → 14.2**. ⚠️ And I overwrote an existing test file doing it — caught only because a mutant that had been CAUGHT started surviving
+
+### The twin had the same code, verbatim
+
+With item 1422's flag fixed, the Gremlin ranking was trustworthy and `hopcount3` was the heaviest row
+at 98-113 ms. Its profile: `expandSlot` 21.9%, `walkBucket` 21.6%, `slotChainCount` 21.3%,
+`degreeOfTypes` 18.6%, **GC 8.6%** — and `slotChainCount` turned out to contain
+
+```ts
+st.memo[slot] = Int32Array.from(scratch);
+```
+
+**the exact line items 1417 and 1418 had just removed from the GQL sweep.** Same per-slot
+`Int32Array`, same `from`, same ~100,000 objects retained for the whole query. Both fixes transfer,
+so the flat memo (which subsumes 1417's hand copy) went in here too.
+
+| shape                      | BASE   | FLAT      | change    | concordance |
+| -------------------------- | ------ | --------- | --------- | ----------- |
+| **`hopcount3`**            | 112.96 | **86.51** | **23.4%** | 72/81       |
+| `hopcount2` [CONTROL]      | 29.82  | 29.83     | **−0.0%** | 37/81       |
+| `hopbare` [CONTROL]        | 16.98  | 17.00     | −0.2%     | 32/81       |
+| `hopyieldsingle` [CONTROL] | 29.60  | 31.11     | −5.1%     | 30/81       |
+
+`gcMs` fell **148 → 14.2** across the same reps, mirroring the GQL twin's 14.2% → 1.4%.
+
+**`hopcount2` is the sharpest control this session has had.** A k-hop chain runs k-1 passes and the
+memo is written on pass 1, read from pass 2 — so a 2-hop chain **writes the memo and never reads
+it**, paying any write-side cost with none of the benefit. At −0.0% / 37-of-81 the write side is
+free. `hopyieldsingle`'s −5.1% is inside its own **1.24x** run-to-run spread (six processes, one
+build); `hopcount3`'s spread is 1.03x against a 23.4% win.
+
+### ⚠️ I overwrote `slot-chain-count.test.ts`, and here is what caught it
+
+The mutants were all caught (M1-M4 by **one** failing test each, where the GQL twin's failed 29-42).
+One test standing between a 23.4% route and a wrong answer is thin, so I wrote a file to thicken it —
+and named it `slot-chain-count.test.ts`, **which already existed**, committed at item 1110, the item
+that built this memo. 13 tests: TinkerPop 3.7.3 ground truth, three/four/five hops, the shapes the
+dense route must decline, and a seed wide enough that the memo actually runs.
+
+Re-running the mutants after "thickening" is what surfaced it: **`M1 off = base + 1` went from CAUGHT
+to SURVIVES.** The test that caught it was the one I had just deleted. The suite total had also gone
+**1203 → 1199**, and that four-test drop was there to be noticed and wasn't — I only chased the count
+after the mutant verdict changed direction, which is the wrong order.
+
+Restored from `git show HEAD:…` into the file (not `git checkout`), verified byte-identical by an
+empty diff, and my additions moved to `slot-chain-oracle.test.ts` — kept because they are what item
+1110's file does NOT do: an independent brute-force oracle sharing nothing with the engine but the
+graph, a self-loop, and out-degree 2 so memo runs exceed one entry. With both present: **1212 tests
+across 142 files**, and 1212 = 1211+1 = 1205+7 = 1209+3 reconciles against every mutant run.
+
+**Two lessons, both cheap:**
+
+1. **The Write tool said "updated", not "created".** That word was the warning and I read past it.
+2. **A test-count drop is a signal in its own right.** 1203 → 1199 needed no mutant to interpret.
+
+M1 remains guarded by item 1110's wide-seed test alone — my oracle file does not catch it, because a
+one-entry run read one slot late still lands on a live slot. Recorded rather than papered over.
+
+### Mutation and gates
+
+| mutant                 | verdict                            |
+| ---------------------- | ---------------------------------- |
+| M1 `off = base + 1`    | CAUGHT (1 fail — item 1110's test) |
+| M2 `len = n - 1`       | CAUGHT (7)                         |
+| M3 `used` not advanced | CAUGHT (7)                         |
+| M4 no reserve          | CAUGHT (7)                         |
+| M5 growth loses one    | CAUGHT (3 — the unit test)         |
+
+`memoReserve` is exported with a `memo-reserve.test.ts` twin, written **alongside** the change this
+time rather than after a mutant proved it necessary — item 1418 established that the growth copy is
+unreachable from any query.
+
+gremlin **1212/0**, gql 3622/0, core 383/0, serialization 144/0, `bun run fuzz` 20/0, `bun run check`
+0 (read unpiped). Answers identical across both arms in every cell.
+
+### Still open on this row
+
+`st.next = new Float64Array(n)` is allocated **per pass** — the GQL sweep doubles and reuses instead.
+Two passes at 100,000 vertices is 1.6 MB of garbage per query, and it is a different allocation from
+the memo, so it gets its own item rather than muddying this one's attribution.

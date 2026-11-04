@@ -1740,13 +1740,63 @@ const oneWalkThroughout = (hops: readonly HopStep[]): boolean => {
   );
 };
 
+/**
+ * THE REMEMBERED NEIGHBOUR SLOTS, FLAT — the GQL twin's item 1418, applied here (item 1423).
+ *
+ * This held one `Int32Array` per slot, which is ~100,000 typed arrays on a 100,000-vertex graph,
+ * every one RETAINED for the whole query and so promoted rather than collected cheaply. The GQL
+ * sweep had the identical shape and the identical `Int32Array.from`; fixing it there measured
+ * **10.1%** for the hand copy (item 1417) and **25.7%** for the flat buffer (item 1418), with the
+ * collector's share falling **14.2% → 1.4%**.
+ *
+ * `len[slot] === undefined` is "not resolved yet", the same sentinel the array-of-arrays used, so
+ * the branch in the pass loop is unchanged.
+ */
+export type SlotMemo = {
+  flat: Int32Array;
+  used: number;
+  readonly off: number[];
+  readonly len: number[];
+};
+
+/**
+ * Room for `need` more entries, doubling as needed.
+ *
+ * ⚠️ EXPORTED FOR ITS OWN UNIT TEST, and item 1418 is why rather than caution. The GQL twin's
+ * identical growth copy survived FOUR black-box attempts to mutate it — a 4,096-slot fixture (growth
+ * verified firing 3 times by counter), a cycle, a path with sinks, and an out-degree-2 graph —
+ * because the dropped entry belongs to whichever slot was written just before a growth and whether
+ * it is ever read depends on frontier ordering. Two theories about why were wrong, each refuted by a
+ * counter rather than by argument.
+ *
+ * So the guard is a direct test of the arithmetic: `memo-reserve.test.ts` asserts every previously
+ * written entry survives each growth. Written here at the same time as the change, instead of after
+ * a mutant proved it necessary a second time.
+ */
+export const memoReserve = (m: SlotMemo, need: number): void => {
+  if (m.used + need <= m.flat.length) {
+    return;
+  }
+
+  let cap = m.flat.length === 0 ? 1024 : m.flat.length;
+
+  while (cap < m.used + need) {
+    cap *= 2;
+  }
+
+  const grown = new Int32Array(cap);
+
+  grown.set(m.flat.subarray(0, m.used));
+  m.flat = grown;
+};
+
 /** The mutable state one pass of {@link slotChainCount} hands to the per-slot walk. */
 type SlotSweep = {
   forward: boolean;
   labels: readonly string[];
   slotOf: Map<Vertex, number>;
   vtx: Vertex[];
-  memo: (Int32Array | undefined)[];
+  memo: SlotMemo;
   next: Float64Array<ArrayBuffer>;
   nextFrontier: number[];
   scratch: number[];
@@ -1822,7 +1872,23 @@ const expandSlot = (st: SlotSweep, slot: number, m: number): void => {
     }
   }
 
-  st.memo[slot] = Int32Array.from(scratch);
+  // APPENDED TO ONE BUFFER, not a fresh typed array per slot (item 1423). The hand copy is
+  // deliberate too: `Int32Array.from` goes through the iterator protocol even for a plain array,
+  // and the GQL twin measured it 4.85x slower than this loop over 100,000 small arrays (item 1417).
+  const { memo } = st;
+  const n = scratch.length;
+
+  memoReserve(memo, n);
+
+  const base = memo.used;
+
+  for (let i = 0; i < n; i += 1) {
+    memo.flat[base + i] = scratch[i];
+  }
+
+  memo.used = base + n;
+  memo.off[slot] = base;
+  memo.len[slot] = n;
 };
 
 /**
@@ -1870,7 +1936,7 @@ const slotChainCount = (
     labels: hops[0].labels,
     slotOf: new Map<Vertex, number>(),
     vtx: [],
-    memo: [],
+    memo: { flat: new Int32Array(0), used: 0, off: [], len: [] },
     next: new Float64Array(0),
     nextFrontier: [],
     scratch: [],
@@ -1892,7 +1958,7 @@ const slotChainCount = (
     st.nextFrontier = [];
 
     for (const slot of frontier) {
-      const known = st.memo[slot];
+      const known = st.memo.len[slot];
 
       if (known === undefined) {
         expandSlot(st, slot, ways[slot]);
@@ -1901,8 +1967,13 @@ const slotChainCount = (
       }
 
       const m = ways[slot];
+      // A CONTIGUOUS RUN of the one buffer: an index walk rather than a pointer chase per slot.
+      const base = st.memo.off[slot];
+      const { flat } = st.memo;
 
-      for (const to of known) {
+      for (let i = 0; i < known; i += 1) {
+        const to = flat[base + i];
+
         if (st.next[to] === 0) {
           st.nextFrontier.push(to);
         }
