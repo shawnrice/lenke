@@ -48626,3 +48626,84 @@ which is worth having, but the dedupe's guard is those two.
 ### Gates
 
 Engine change (`packages/gql/src/executor.ts`) plus tests. `bun run check` 0 (read unpiped).
+
+### Item 1378 — the Gremlin twin of items 1376-1377's dedupe exists, is the IDENTICAL code, and is worth **NOTHING** (−0.4%): 60.7% in GQL against ~0% here. The real gap is a **24,750x routing** miss, priced analytically at ~100x and NOT built
+
+Items 1376-1377 removed GQL's `seen` Set from `edgesOfManyTypes` for **62.5%** on a multi-type hop.
+`graph-queries.ts` has the same pattern twice — `iterLabeled` (multi-label `outE('R','S')`) and
+`iterAllDeduped` — so the transfer looked obvious. Item 1108 is the standing warning that these
+twins do not transfer, and it is right again.
+
+### The row, built before anything was touched
+
+`isolated-gremlin-bench.mjs` gains `edgesingle` / `edgemulti` and a `MULTILABEL` knob, on the same
+design as item 1375's GQL pair: every edge carries `E`, a third also carry `F`, so both spellings
+count the SAME edges and only the route differs. 200,000 vertices / 400,000 edges:
+
+| spelling        | p25            | answer |
+| --------------- | -------------- | ------ |
+| `outE('E')`     | **0.008 ms**   | 400000 |
+| `outE('E','F')` | **198.045 ms** | 400000 |
+
+**24,750x**, and both answers identical.
+
+### The ablation, which refutes the transfer
+
+The obvious read is that the `seen` Set dominates, as it did in GQL. **It was suspect on arithmetic
+alone**: 198 ms over 400,000 edges is ~495 ns an edge, and a `Set.has` plus `Set.add` is nowhere near
+that. Measured, `iterLabeled`'s dedupe removed outright (answers wrong by construction):
+
+| arm       | `edgemulti` p25 | saving    | control `edgesingle` | answer     |
+| --------- | --------------- | --------- | -------------------- | ---------- |
+| BASE      | 201.337         | —         | 0.0080               | 400000     |
+| `NO-SEEN` | 202.208         | **-0.4%** | 0.0075               | **533334** |
+
+**Nothing.** The ranges overlap completely (BASE 199.97-205.21, NO-SEEN 195.12-206.82), and
+`NO-SEEN`'s 533334 is exactly 400000 + the 133,334 edges carrying both labels, so the ablation did
+what it claimed. **The same removal is 60.7% in GQL and 0% in Gremlin** — item 1108's sentence,
+confirmed a second time: _"the difference is what else the loop does."_ In GQL the dedupe sat in a
+lean bucket walk; here it sits beside a traverser pipeline emitting 400,000 edge rows at ~495 ns
+each, which swamps it.
+
+**So `iterLabeled` and `iterAllDeduped` are NOT worth rewriting**, and this is the entry that says
+so with a number rather than leaving the twin looking like free money.
+
+### Where the 24,750x actually is, and what it would take
+
+`outE('E').count()` is answered by a count shortcut that never enumerates an edge (the family at
+items 537/538/1183). `outE('E','F').count()` falls off that shortcut and runs the full traverser
+pipeline. The dedupe is not why; the ROUTING is.
+
+And unlike the GQL case at item 1375 — where summing buckets genuinely double-counts, so the decline
+is correct — **a correct multi-label count is available here**, because `count-shortcut.ts` already
+reaches a GLOBAL `graph.edgesByLabel`:
+
+```
+|E ∪ F| = |E| + |F| − |E ∩ F|
+```
+
+`|E|` and `|F|` are O(1) `Set.size` reads; only `|E ∩ F|` needs work, and that is one pass over the
+SMALLER bucket testing membership in the larger. On this fixture that is 133,334 membership tests
+against 400,000 enumerated rows plus the pipeline — **an estimated ~100x**, which would close most of
+the 24,750x.
+
+⚠️ **THE ~100x IS ARITHMETIC, NOT A MEASUREMENT.** It assumes the membership pass is the only new
+cost and that the shortcut's admission can be widened without disturbing the single-label rung that
+items 537/538 tuned. For k types it is inclusion-exclusion and exponential in k, so a real version
+would cap k or fall back. This item does NOT build it: extending a count shortcut's admission is a
+planner change with its own soundness proof (`bucketSumsAreSound` is the precedent for how that gets
+tested — a pure function with its own unit test, because choosing wrongly is SLOW and not WRONG and
+every mutant survives the differential suite).
+
+### What this adds to the method
+
+Three transfers attempted in this session's tail, three different outcomes: item 1374's pattern
+shipped on the Gremlin walk (2.5%), the same pattern was **refuted** on GQL's `types.map` (−1.8%,
+item 1376), and GQL's dedupe win is **refuted** on the Gremlin twin (−0.4%, here). **A shared code
+shape predicts nothing about a shared win**, and the ablation is cheap enough that guessing is never
+the economical choice.
+
+### Gates
+
+Instrument only — one bench file; `graph-queries.ts` restored with `ABLATED_ITERLABELED` at 0 and
+both arm files under `target/` deleted by the driver's `finally`. `bun run check` 0 (read unpiped).

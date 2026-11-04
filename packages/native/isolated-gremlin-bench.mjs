@@ -32,6 +32,7 @@ import {
   hasLabel,
   order,
   out,
+  outE,
   toArray,
   traversal,
   values,
@@ -40,6 +41,12 @@ import {
 const SHAPE = process.env.SHAPE ?? 'hopcount3';
 const NODES = Number(process.env.NODES ?? 200_000);
 const FANOUT = Number(process.env.FANOUT ?? 1);
+/**
+ * How often an edge carries BOTH `E` and `F`. 0 = never. Item 1375 is why this knob exists: a
+ * fixture where every edge carries both labels cannot tell a walk that deduped nothing from one
+ * that deduped everything, and a fixture where none do never reaches the deduping path at all.
+ */
+const MULTILABEL = Number(process.env.MULTILABEL ?? 0);
 const REPS = Number(process.env.REPS ?? 14);
 const DROP = Number(process.env.DROP ?? 3);
 
@@ -55,6 +62,12 @@ const SHAPES = {
   hopbare: () => traversal(V(), out('E')),
   hoporder: () => traversal(V(), out('E'), values('k'), order()),
   hopdedupe: () => traversal(V(), out('E'), dedupe(), count()),
+  // THE MULTI-LABEL EDGE-STEP PAIR (item 1378). `iterLabeled` in `graph-queries.ts` builds a
+  // `seen` Set and pays has+add per edge once more than one label is named — the same shape the
+  // GQL twin had before items 1376-1377 removed it for 62.5%. Every edge carries `E`, so these two
+  // count the SAME edges and only the route differs.
+  edgesingle: () => traversal(V(), outE('E'), count()),
+  edgemulti: () => traversal(V(), outE('E', 'F'), count()),
 };
 
 const make = SHAPES[SHAPE];
@@ -83,7 +96,7 @@ const build = () => {
       id: `e${k}`,
       from: vs[(k * 7919) % NODES],
       to: vs[(k * 104_729) % NODES],
-      labels: ['E'],
+      labels: MULTILABEL > 0 && k % MULTILABEL === 0 ? ['E', 'F'] : ['E'],
       properties: { w: k % 13 },
     });
   }
