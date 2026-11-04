@@ -571,3 +571,19 @@ not. Two consequences worth knowing before quoting either: `chain3`/`chain4`/`qu
 100k does not survive the sweep** — a routing choice tuned at 100k is tuned on the wrong side of the
 cache transition. And `quant44`'s growth is the outlier because its **GC goes 7.0 → 401.9 ms**, the one
 superlinear term in the sweep that is allocation rather than cache.
+
+⚠️ **`gcMs` NEEDS REPETITION BEFORE IT NOMINATES ANYTHING; `gcCount` IS THE CHEAPER TELL** (item 1456).
+Both isolated benches print one `gcMs` beside a `p25`, and the two are not equally trustworthy. On
+`hopcount3` at 1,000,000 nodes, five runs of the same binary: `p25` 1313.8-1341.2 (stable to 2%),
+`gcCount` 93-98 (5%), and **`gcMs` 252.4, 254.9, 259.0, 506.8, 705.0 — a 2.8x range**. The 705.0
+reading made GC look like 53% of the query and nominated a target that does not exist; a profile of the
+same row put GC at 9.71%.
+
+The honest figure there is 24.8x growth from 100k to 1M (255 against a stable 10.3), which decomposes
+into **8.6x more collections** (11 → 95, near-linear in N) and ~2.9x cost each over a bigger heap —
+ordinary scaling. Compare `quant44`, where `gcMs` 7.0 → 401.9 (57x) was telling the truth because the
+COLLECTION COUNT grew superlinearly: 1,000,000 boxed `Map` keys built per query, removed at item 1453
+for 22-28%.
+
+So: **when GC looks like a target, ask whether the collection count grows faster than N.** If it does
+not, the extra milliseconds are heap size, not garbage the code can stop making.

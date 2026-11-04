@@ -54517,3 +54517,77 @@ balance. **Priced and flagged.**
 
 `bun run check` 0 (read unpiped), gql 3677/0. All instrumentation reverted and verified at 0 markers,
 `git diff --stat` empty; nothing committed but this record.
+
+### Item 1456 — the GREMLIN bench swept to 1M: **no superlinear outlier**, every row 11.5-15.3x for a 10x size increase. And ⚠️ `gcMs` IS A NOISY ESTIMATOR — one reading in five is **2.8x the median**, which nominated a 53%-of-query GC target that does not exist
+
+Item 1452 swept the GQL rows and found `quant44` at 31.25x, which item 1453 took for 22-28%. It swept
+GQL ONLY, so every "closed" verdict on the Gremlin side still rested on 100k measurements. This is
+that sweep, `FANOUT=1 MULTILABEL=0 STRIDE=random`, p25 of 7 reps dropping 2, under a 24G cap:
+
+```text
+  shape            100k ms     1M ms    ratio
+  hopcount3          86.30   1317.56   15.27x
+  hopbothyield       64.41    976.28   15.16x
+  hopcount2          29.98    421.29   14.05x
+  hopdedupe           1.76     23.75   13.48x
+  hopyieldmulti      38.05    486.05   12.78x
+  hoporder           91.20   1153.60   12.65x
+  hopyieldsingle     36.26    456.04   12.58x
+  filterchain         1.17     14.10   12.07x
+  hopbare            17.44    207.78   11.91x
+  grouped             1.72     19.79   11.48x
+```
+
+**Nothing is superlinear.** 11.5-15.3x for 10x more data is 10x linear plus the 1.2-1.5x per-row cache
+term item 1452 measured on the GQL side — the same band, no outlier, and `quant44`'s 31.25x stands
+alone as the anomaly that was worth chasing. The Gremlin rows' closed verdicts survive the size
+transition.
+
+### ⚠️ AND THE SWEEP ALMOST SOLD ME A TARGET THAT IS NOT THERE
+
+The same sweep reported `hopcount3`'s GC at **8.5 → 705.0 ms, 82.94x** — far worse than `quant44`'s
+57x, which was a real find. At 1M that would be **53% of the query in GC**. I profiled it to locate the
+allocation and the profile said GC was **9.71%**, with `gcMs` **274.5**. A 2.6x disagreement between
+two runs of the same binary is not a measurement, so it got repetition instead of a hypothesis:
+
+```text
+  N=1M    p25 1341.20  gcMs 259.0  gcCount 98
+          p25 1328.40  gcMs 254.9  gcCount 93
+          p25 1327.03  gcMs 252.4  gcCount 93
+          p25 1313.81  gcMs 506.8  gcCount 94
+  (the sweep's own run)         705.0
+
+  N=100k  p25   85.29  gcMs  10.1  gcCount 11
+          p25   87.51  gcMs  10.8  gcCount 11
+          p25   85.88  gcMs   9.9  gcCount 10
+```
+
+**`p25` is stable to 2%, `gcCount` to 5%, and `gcMs` ranges 252.4 to 705.0 — 2.8x.** So the 82.94x was
+one outlier over a stable baseline. The honest figure is **24.8x** (255 against 10.3), and it
+decomposes into _8.6x more collections_ (11 → 95, near-linear in N) and _~2.9x cost each_ over a bigger
+heap. That is what GC scaling looks like when nothing is wrong.
+
+Contrast `quant44`, where the same instrument was telling the truth: 57x on gcMs, and the cause was
+1,000,000 boxed `Map` keys built per query — an object-COUNT explosion, which item 1453 removed for
+22-28%. The difference between a real GC finding and this one is whether the collection COUNT grows
+faster than N. Here it does not.
+
+**RULE: `gcMs` needs repetition before it nominates anything, and `gcCount` is the cheaper tell.** A
+single `gcMs` reading can be 2.8x the median while `p25` beside it moves 2%, so a sweep that prints
+one of each invites exactly this error. When GC looks like a target, check whether the collection
+count is growing superlinearly — if it is not, the extra milliseconds are heap size, not garbage the
+code can stop making.
+
+### What is left on `hopcount3`, for the record
+
+`walkBucket` 34.08%, `degreeOfTypes` 18.75%, `slotChainCount` 17.93%, `expandSlot` 14.54% — the slot
+walk itself, i.e. the answer's own work. `degreeOfTypes`' share is the frame item 1425 already settled
+as self-time misattribution by counting calls (and items 1416/1419 settled `bucketSize` the same way
+twice). The one allocation that scales — `new Float64Array(n)` per pass — is item 1424's declined
+double-buffer, measured at −0.3% there; at 1M it is 8 MB a pass rather than 1.6, but item 1424's own
+finding is that V8 tracks object COUNT and not bytes, and three large arrays per query is not a count
+problem. **No lever found, and the sweep's alarming number is accounted for.**
+
+### Gates
+
+`bun run check` 0 (read unpiped). No code changed.
