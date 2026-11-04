@@ -38,7 +38,7 @@
 import { PerformanceObserver } from 'node:perf_hooks';
 
 import { Graph } from '@lenke/core';
-import { V, out, toArray, traversal, values } from '@lenke/gremlin';
+import { V, both, out, toArray, traversal, values } from '@lenke/gremlin';
 
 import { profileWindow } from './windowed-profile.mjs';
 
@@ -62,7 +62,17 @@ const ARMS = [
   'floor-multi',
   'floor-multi-lean',
   'floor-multi-pair',
+  'engine-both',
+  'floor-both',
+  'floor-both-pick',
 ];
+
+/**
+ * ⚠️ THE `both` ARMS ANSWER A DIFFERENT MULTISET — twice as many rows — so the digest invariant is
+ * PER GROUP, not global. An analysis that pooled them would report a false disagreement, or worse,
+ * accept an arm that silently changed group.
+ */
+const GROUP = ARM.includes('both') ? 'both' : 'out';
 
 if (!ARMS.includes(ARM)) {
   throw new Error(`unknown ARM ${ARM}; have ${ARMS.join(',')}`);
@@ -303,7 +313,87 @@ const floorMultiPair = () => {
   return acc;
 };
 
+/**
+ * `both('E')` BY HAND with the property read INLINE — no `pick` closure (item 1443).
+ *
+ * `hopbothyield` is 190.4 ns/row against `out('E')`'s 56.9, **3.35x per row**, even though item 1432
+ * already gave it a hand walk. Per-row decomposition of its profile put `drain` itself at 98 ns/row
+ * against the single-type drain's 17.6 — 5.6x — with `get from` at 10.77% while `get to` was 0.26%,
+ * though both buckets are walked. The structural difference from `oneType` is that `pick` is called
+ * from TWO sites here (`edge.to` and `edge.from`) instead of one.
+ *
+ * So: this arm inlines the read, `floor-both-pick` keeps the closure, and the pair of them separates
+ * "two call sites defeat the closure" from "two passes are intrinsically dearer".
+ */
+const floorBoth = () => {
+  const acc = [];
+
+  for (const v of g.vertices) {
+    const outBucket = v.adjFrom?.get('E');
+
+    if (outBucket !== undefined) {
+      for (const edge of outBucket) {
+        const value = edge.to.properties['k'];
+
+        if (value !== undefined) {
+          acc.push(value);
+        }
+      }
+    }
+
+    const inBucket = v.adjTo?.get('E');
+
+    if (inBucket !== undefined) {
+      for (const edge of inBucket) {
+        const value = edge.from.properties['k'];
+
+        if (value !== undefined) {
+          acc.push(value);
+        }
+      }
+    }
+  }
+
+  return acc;
+};
+
+/** The same walk THROUGH a `pick`-shaped closure, called from both sites, as the engine does. */
+const pickFar = (far) => far.properties['k'];
+
+const floorBothPick = () => {
+  const acc = [];
+
+  for (const v of g.vertices) {
+    const outBucket = v.adjFrom?.get('E');
+
+    if (outBucket !== undefined) {
+      for (const edge of outBucket) {
+        const value = pickFar(edge.to);
+
+        if (value !== undefined) {
+          acc.push(value);
+        }
+      }
+    }
+
+    const inBucket = v.adjTo?.get('E');
+
+    if (inBucket !== undefined) {
+      for (const edge of inBucket) {
+        const value = pickFar(edge.from);
+
+        if (value !== undefined) {
+          acc.push(value);
+        }
+      }
+    }
+  }
+
+  return acc;
+};
+
 const single = traversal(V(), out('E'), values('k'));
+const bothT = traversal(V(), both('E'), values('k'));
 const multi = traversal(V(), out('E', 'F'), values('k'));
 
 const RUN = {
@@ -313,6 +403,9 @@ const RUN = {
   'floor-multi': floorMulti,
   'floor-multi-lean': floorMultiLean,
   'floor-multi-pair': floorMultiPair,
+  'engine-both': () => toArray(bothT, g),
+  'floor-both': floorBoth,
+  'floor-both-pick': floorBothPick,
 };
 
 const run = RUN[ARM];
@@ -366,6 +459,7 @@ const at = (f) => kept[Math.min(kept.length - 1, Math.floor(f * kept.length))];
 console.log(
   JSON.stringify({
     arm: ARM,
+    group: GROUP,
     nodes: NODES,
     fanout: FANOUT,
     stride: STRIDE,

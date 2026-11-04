@@ -53433,3 +53433,90 @@ expression, then 16 unnecessary non-null assertions and a type-only import in th
 any suite could see). Suites: gremlin **1228**/0 (1218 + 10), gql 3669/0, core 383/0, serialization
 144/0, native 961/0. `bun run fuzz` 20/0, and the Gremlin differential fuzzer run SIX more times on
 random seeds (8/0 each) because stream order is the contract this change could break.
+
+### Item 1443 — ❌ DECLINED: `hopbothyield` is AT ITS HAND FLOOR, and its "3.35x per row" is the fixture's SUCCESSOR DIRECTION. At random stride `both` and `out` cost **0.98x** the same per row
+
+Item 1442 took the multi-type yield row to parity, which promoted `hopbothyield` to the heaviest open
+projection row in the Gremlin bench: **190.4 ns/row against `out('E')`'s 56.9 — 3.35x per row** — even
+though item 1432 had already given it a hand walk. Its profile put `drain` itself at **98 ns/row
+against the single-type drain's 17.6 (5.6x)**, with a suspicious asymmetry: `get from` 10.77% while
+`get to` was 0.26%, though both buckets are walked.
+
+The structural nomination was concrete: `bothOneType` calls `pick` from TWO sites (`edge.to` and
+`edge.from`) where `oneType` calls it from one, so the closure might be failing to inline.
+
+### Priced against hand floors, outside the perturbing file
+
+Three new arms on `gremlin-multitype-floor-probe.mjs` (`engine-both`, `floor-both` with the property
+read INLINE, `floor-both-pick` through a `pick`-shaped closure called from both sites). 100k nodes,
+`FANOUT=1 MULTILABEL=0 STRIDE=small`, median of three order-alternated rounds:
+
+```text
+  arm                median     rows   ns/row
+  floor-single         5.17   100000     51.7
+  engine-single        4.92   100000     49.2
+  floor-both          37.39   200000    187.0
+  floor-both-pick     38.13   200000    190.7
+  engine-both         37.85   200000    189.2
+```
+
+```text
+  closure cost (pick vs inline)   1.9%   -- the nomination, REFUTED
+  engine above its best floor     1.2%
+  engine above the pick floor    -0.8%   -- the engine is BELOW it
+```
+
+**The `pick` closure costs 1.9% and the engine is at its floor.** So the 3.35x is not engine overhead
+at all: the HAND code shows 187.0 against 51.7 ns/row, **3.6x**, with nothing in it but two bucket
+walks and an inline property read.
+
+### The cause is the fixture, and the confirming measurement is unambiguous
+
+`out('E')` reads the SUCCESSOR, which at `STRIDE=small` is `to = (i * 7 + 3) % N` — about seven slots
+along, partly cache-resident. `both('E')`'s second pass reads the PREDECESSOR, which is the INVERSE of
+that permutation and therefore scattered across the whole range. So half of `both`'s rows get random
+far-vertex access while every one of `out`'s gets a near one.
+
+At `STRIDE=random`, where neither direction is privileged:
+
+```text
+  STRIDE=random      median     rows   ns/row
+  floor-single        30.74   100000    307.4
+  engine-single       29.09   100000    290.9
+  floor-both          62.05   200000    310.3
+  engine-both         57.01   200000    285.0
+
+  both/single per row:  0.98x engine, 1.01x floors
+  at STRIDE=small    :  3.35x engine, 3.62x floors
+```
+
+**0.98x.** The per-row cost of `both` and `out` is identical once the fixture stops favouring the
+forward direction, and the engine is again below its hand floor (285.0 against 310.3). There is
+nothing to take: the row was never 3.35x anything, and `get from`'s 10.77% was the cache miss, not a
+missing inline.
+
+### The rule this earns
+
+⚠️ **A PER-ROW COMPARISON BETWEEN A FORWARD WALK AND A `both` WALK IS ONLY MEANINGFUL AT RANDOM
+STRIDE.** `small` is `isolated-gremlin-bench.mjs`'s non-default but `isolated-row-bench.mjs`'s
+default, and it privileges the successor direction specifically — so it makes `both` look 3.4x worse
+per row than it is, while leaving same-direction comparisons (`out` vs `out`) perfectly sound. Item
+1439 recorded that the two benches disagree on the stride default and that absolute figures are
+fixture-bound; this is the sharper form, where the fixture biases one QUERY SHAPE against another
+rather than biasing everything uniformly.
+
+This is item 1392's far-vertex-locality finding arriving from a new direction — that item measured it
+over fan-in and closed it as having no per-row lever; this is the same effect over EDGE DIRECTION, and
+the same conclusion.
+
+### What is confirmed rather than refuted
+
+Item 1432's `bothOneType` hand walk is doing its job: the engine sits at or below a hand floor in both
+strides, for a row that was the heaviest in either bench at 181 ms before that item. Nothing further
+is open on it.
+
+### Gates
+
+`bun run check` 0 (read unpiped). No engine code changed — this item adds three probe arms and a
+per-GROUP digest field, because the `both` arms answer twice as many rows and a pooled digest check
+would have reported a false disagreement.

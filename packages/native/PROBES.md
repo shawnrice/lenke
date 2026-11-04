@@ -529,3 +529,11 @@ is the answer: hand floors price the SHAPE instead of the diff, need no edit, an
 whether a reverted change was right (item 1440's was — its lean arm measured IDENTICAL to the
 array arm, 11.81 both). The same caution applies to `hop-projection.ts` on the GQL side, where item
 1415 measured the toll at 3.4-5.8% and the standing rule is that a target there must be worth ~10%.
+
+⚠️ **A FORWARD-vs-`both` PER-ROW COMPARISON IS ONLY MEANINGFUL AT RANDOM STRIDE** (item 1443).
+`small` stride privileges the SUCCESSOR direction (`to = (i * 7 + 3) % N`, a near neighbour), while
+`both`'s second pass reads the PREDECESSOR — the inverse permutation, scattered. So `hopbothyield`
+reads **3.35x `out('E')` per row at `small` and 0.98x at `random`**, with the engine at or below a
+hand floor in both. Same-direction comparisons (`out` vs `out`) stay sound either way; it is only the
+cross-DIRECTION ones the fixture biases. Item 1392 found the same locality effect over fan-in and
+closed it as having no per-row lever.
