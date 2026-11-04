@@ -231,7 +231,12 @@ sub-10% nomination as already declined.
 Per-rep timing, `p25` headline, full distribution, GC accounted, answer in the output so a driver can
 assert the arms agree.
 
-⚠️ **`gcMs` IS 2-3x NOISIER THAN `p25`, so never read it as a share from one run** (item 1421). It is
+⚠️ **`gcMs` IS 2-3x NOISIER THAN `p25`, so never read it as a share from one run** (item 1421). And when it DOES
+move, read it as an OBJECT COUNT and not as bytes (item 1424): removing ~100,000 small per-slot
+arrays took it **148 → 14.2**, while removing **1.6 MB** in two large typed arrays took it 14.2 →
+14.3 — twice the bytes, four orders of magnitude fewer objects, no effect. Large typed arrays land in
+large-object space and are cheap to collect, so an allocation hunt should count allocations, not
+sizes. It is
 a SUM over all reps while `p25` is one rep, so it is not a share to begin with — and it is far less
 stable. Six processes on one build:
 

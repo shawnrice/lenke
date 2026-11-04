@@ -51947,3 +51947,53 @@ gremlin **1212/0**, gql 3622/0, core 383/0, serialization 144/0, `bun run fuzz` 
 `st.next = new Float64Array(n)` is allocated **per pass** — the GQL sweep doubles and reuses instead.
 Two passes at 100,000 vertices is 1.6 MB of garbage per query, and it is a different allocation from
 the memo, so it gets its own item rather than muddying this one's attribution.
+
+### Item 1424 — **DECLINED, −0.3%**: the per-pass `Float64Array(n)` item 1423 left open is 1.6 MB of garbage per query and **costs nothing**. V8's GC tracks object COUNT and promotion, not bytes — which is why removing 100,000 small arrays moved `gcMs` 10x and removing megabytes moves nothing
+
+### The change, and why it looked obviously right
+
+`slotChainCount` allocates one `n`-wide `Float64Array` **per pass**, so a 3-hop chain over 100,000
+vertices discards **1.6 MB per query**. The GQL sweep does not: it keeps two buffers and reuses them.
+Item 1423 had explicitly left this as the allocation that remained after the memo.
+
+Replaced with two buffers swapped, cleared by `fill(0)` — a memset over 800 KB, tens of microseconds
+against an 86 ms row, where the allocation it replaces costs the same zeroing **plus** a collection.
+
+| shape                 | BASE  | SWAP  | change    | concordance |
+| --------------------- | ----- | ----- | --------- | ----------- |
+| `hopcount3` (target)  | 87.76 | 88.00 | **−0.3%** | 17/36       |
+| `hopcount2` [CONTROL] | 29.85 | 29.60 | 0.8%      | 19/36       |
+
+Chance is 18 of 36. Flat in both directions, and `gcMs` did not move either: **14.3 against 14.2**.
+
+### The mechanism, which is the part that generalises
+
+**V8's collector cost tracks object COUNT and promotion, not raw bytes.**
+
+| what was removed                  | bytes      | objects      | `gcMs`         |
+| --------------------------------- | ---------- | ------------ | -------------- |
+| item 1423: per-slot memo arrays   | ~800 KB    | **~100,000** | **148 → 14.2** |
+| item 1424: per-pass weight arrays | **1.6 MB** | 2            | 14.2 → 14.3    |
+
+Twice the bytes, four orders of magnitude fewer objects, and no effect. Large typed arrays go to
+large-object space and are cheap to collect; the memo's cost was a hundred thousand small objects
+being traced and promoted. **"1.6 MB of garbage per query" is an appealing framing and it is the
+wrong unit.**
+
+### A note on the cost of confirming a null
+
+This ran at **2 rounds and 2 rows** rather than three and four, deliberately and recorded in the
+driver: the first reading was already flat (87.00 against 86.51, `gcMs` 14.3 against 14.2) and
+`hopcount3`'s own spread is 1.03x. The job was to confirm a null at proportionate cost, not to hunt
+a small effect — and an under-powered A/B is otherwise indistinguishable from a careless one, so the
+reason belongs next to the numbers.
+
+Recorded rather than silently dropped **because the per-pass allocation still looks wasteful on
+inspection.** Without a number beside it, the next reader takes it again — and the GQL sweep's
+reuse-two-buffers shape sitting right there in the twin makes that more likely, not less. The
+asymmetry is not an oversight in the Gremlin code; it simply does not matter.
+
+### Gates
+
+`bun run check` 0 (read unpiped), gremlin 1212/0. `count-shortcut.ts` reverted and verified: `spare`
+absent, `st.next = new Float64Array(n)` restored. Answers identical across both arms.
