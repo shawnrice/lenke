@@ -45,6 +45,22 @@ const DROP = Number(process.env.DROP ?? 3);
 const MULTILABEL = Number(process.env.MULTILABEL ?? 3);
 
 /**
+ * `MULTILABEL=-1` makes `E` and `F` DISJOINT — alternating, no edge carrying both (item 1405).
+ *
+ * ⚠️ THIS IS THE COMMON CASE AND THE BENCH COULD NOT BUILD IT. Every multi-type row here has used
+ * overlapping types (every Nth edge carries both), which makes `graph.multiTypeEdgeCount` non-zero
+ * and `typeEdgeCount` an OVER-count: at `MULTILABEL=3` the degree estimate reads 1.33x the truth.
+ * Two distinct relationship types that never co-occur on one edge is what a real schema usually has,
+ * and it reads the estimate EXACTLY — which changes which side of `FAR_DRIVEN_MIN_DEGREE` a given
+ * true degree lands on. Item 1404 declined lowering that threshold because the bias can reach 2x;
+ * this mode is how the other half of the question gets measured instead of reasoned about.
+ *
+ * `-1` rather than `0` because `MULTILABEL=0` already means "no `F` at all", which items 1375 and
+ * 1390 use as the control that separates a routing gap from a correct decline.
+ */
+const DISJOINT = MULTILABEL === -1;
+
+/**
  * How many DISTINCT far endpoints the edges point into, as a fraction of `NODES` (item 1390).
  *
  * `FANIN=1` (the default) is the original fixture: `(i * 7 + 3) % NODES`, so every vertex is a far
@@ -141,6 +157,15 @@ if (q === undefined) {
   throw new Error(`unknown SHAPE ${SHAPE}; have ${Object.keys(SHAPES).join(',')}`);
 }
 
+/** The edge's label set: disjoint `E`/`F`, every Nth carrying both, or `E` alone. */
+const labelsFor = (k) => {
+  if (DISJOINT) {
+    return k % 2 === 0 ? ['E'] : ['F'];
+  }
+
+  return MULTILABEL > 0 && k % MULTILABEL === 0 ? ['E', 'F'] : ['E'];
+};
+
 /** Deterministic, so every process in an A/B builds byte-identical input. */
 const build = () => {
   const g = new Graph();
@@ -170,7 +195,7 @@ const build = () => {
       // A THIRD carry both types, so `:E` and `:E|F` select the identical edge set and the
       // multi-bucket path actually has something to DEDUPE — without the overlap it would be a
       // concatenation and would not exercise the `Set` the dedupe allocates.
-      labels: MULTILABEL > 0 && k % MULTILABEL === 0 ? ['E', 'F'] : ['E'],
+      labels: labelsFor(k),
       properties: { w: k % 13 },
     });
   }
@@ -265,6 +290,7 @@ console.log(
     shape: SHAPE,
     nodes: NODES,
     fanout: FANOUT,
+    disjoint: DISJOINT,
     reps: REPS,
     drop: DROP,
     answer,

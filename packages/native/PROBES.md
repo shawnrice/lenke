@@ -342,6 +342,18 @@ should be read at `FANOUT=4` as well. Two things it has already settled: the equ
 symmetry from items 1382-1388 HOLDS at degree 4 (1.01x and 1.02x), and the quantifier-vs-chain pair
 stops being a spelling pair there (799,996 against 800,000 — trail semantics, legitimately).
 
+**`MULTILABEL=-1` IS THE THIRD KNOB, and it is the COMMON case** (item 1405): `E` and `F` DISJOINT,
+no edge carrying both, which is what a real schema has and what every multi-type row here lacked.
+It matters because `typeEdgeCount` sums the named buckets, so overlapping types make the degree
+estimate a 1.33x over-count at `MULTILABEL=3` and up to 2x — and that bias decides which side of
+`FAR_DRIVEN_MIN_DEGREE` a given true degree lands on. On the disjoint fixture the estimate is exact
+and the crossover is an integer: the far-driven walk **loses 16.9% at true degree 2 and wins 25.1% at
+true degree 3** (144/144). ⚠️ At the SAME true degree 2 the overlapping fixture WINS 7.2% — opposite
+sign — so the per-vertex bucket structure is a second factor the gate's one scalar cannot express.
+Sweep `MULTILABEL=-1` alongside `3` for anything that reads a degree estimate or walks per-type
+buckets. (`0` still means "no `F` at all", the control that separates a routing gap from a correct
+decline.)
+
 ## HOW TO RUN ONE, which is not optional detail
 
 **ASSERT THE ARM FROM THE FILE ON DISK, not from the variable you just built — and do it before you

@@ -2363,31 +2363,41 @@ export const detectHopProjection = (
  * 103/144); its first reading was −2.8% at 16/64 and the SIGN FLIPPED at n=24, which is the n=8
  * instability this repo documents rather than a real effect.
  *
- * ⚠️ 2 IS FASTER AND IS DECLINED — the bracket is CLOSED at item 1404, with a number. A third arm
- * at `min=2` reads **7.2% at 142/144** on the one cell where the two differ (est 2.67), with all
- * three controls flat at chance: est 1.33 (both decline), est 5.33 (both accept), and the
- * single-type row that never reads this constant. The win is real.
+ * ⚠️ IT IS 3, AND THE CROSSOVER IS PINNED TO AN INTEGER (items 1404-1406). Three further arms were
+ * run on this one constant, each answering a different question, and the third changed it again:
  *
- * It is declined because the ESTIMATE IS BIASED HIGH and the bias is unbounded in the wrong
- * direction. `typeEdgeCount` sums the named buckets, so an edge carrying two of them counts twice:
- * the estimate reads **1.33x** the true degree at `MULTILABEL=3` and **2x** when every edge carries
- * both types. So `min=2` accepts at a TRUE degree of 1 on a densely multi-labelled graph — which is
- * precisely where item 1390 measured this route LOSING **1.24x** (86.1 ms against the start-driven
- * 69.3). `min=4` cannot reach below true degree 2, where the win is measured.
+ * **`min=2`, overlapping types (item 1404)** — 7.2% at 142/144 at est 2.67, and DECLINED. The
+ * estimate is biased HIGH: `typeEdgeCount` sums the named buckets, so an edge carrying two counts
+ * twice — 1.33x the true degree at `MULTILABEL=3`, and **2x** when every edge carries both. So 2
+ * accepts at a TRUE degree of 1, which is where item 1390 measured this route LOSING 1.24x.
  *
- * Trading a measured 7.2% in a narrow band for a measured 1.24x regression on a shape this engine
- * is built for is the wrong trade. **The fix is the estimate, not the threshold**: `sumIsExact`
- * already exists for "no edge carries two types" (`graph.multiTypeEdgeCount === 0`), and a gate that
- * consulted it could drop to 2 exactly when the sum is unbiased. That is a real follow-up with a
- * priced ceiling of 7.2%, and it is not taken here because it adds a second condition to a gate
- * whose whole value is being O(k) and obvious.
+ * **A DISJOINT-TYPE fixture (item 1405)** — `E` and `F` sharing no edge, which is what a real schema
+ * usually has and which the bench could not build until then. The estimate is then EXACT, and that
+ * is where the crossover shows up cleanly:
+ *
+ *   true degree 2   39.99 -> 46.77   **−16.9%**   35/144    far-driven LOSES
+ *   true degree 3   67.84 -> 50.80   **+25.1%**  144/144    far-driven WINS
+ *
+ * ⚠️ AND THE SCALAR DOES NOT CAPTURE IT. At true degree 2 with OVERLAPPING types the route wins
+ * 7.2%; at true degree 2 DISJOINT it loses 16.9%. Same degree, opposite sign — the per-vertex BUCKET
+ * STRUCTURE matters as well as the degree, and one number cannot express both. The threshold is
+ * therefore a conservative line through a two-dimensional space, not a crossover point.
+ *
+ * **`min=3` (item 1406)** — 18.0% at 144/144 at est 3.00, with est 1.00, 2.00 and 4.00 all flat at
+ * chance. 3 takes the degree-3 win and still declines at the degree-2 cell that regresses, which 2
+ * would have accepted. Every cell measured says 3 beats 4, and nothing measured says 2 beats 3.
+ *
+ * STILL UNMEASURED: true degree 1.5-2 at high overlap, which `min=3` accepts when the bias is 2x.
+ * The principled fix remains the ESTIMATE rather than the threshold — `graph.multiTypeEdgeCount ===
+ * 0` already tells the gate when its sum is exact — and it is not taken because it adds a second
+ * condition to a gate whose whole value is being O(k) and obvious.
  *
  * See `farDrivenPaysForMultiType` for the arithmetic and `hop-projection-route.test.ts` for its
  * unit tests — a route choice is ANSWER-EQUIVALENT, so no differential test can fail when it is
  * wrong, which is why the decision is a pure function with its own tests rather than an inline
  * comparison (the rule `perf-gate-needs-its-own-test` records from an earlier item).
  */
-const FAR_DRIVEN_MIN_DEGREE = 4;
+const FAR_DRIVEN_MIN_DEGREE = 3;
 
 /**
  * Should a multi-type plain hop take the FAR-driven walk rather than the start-driven one?

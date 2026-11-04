@@ -34,10 +34,12 @@ describe('farDrivenPaysForMultiType — the gate arithmetic (item 1390)', () => 
   // ⚠️ THESE ENCODE THE THRESHOLD'S VALUE, which is the point: it is 4 since item 1403 (it was 8,
   // calibrated at out-degree 1 only, and refused a route worth 32-43.5% at degree 3-4). A test that
   // pins a measured constant has to be edited when the measurement changes — that is the cost of
-  // the constant being measured rather than assumed, and it is the right cost to pay.
+  // the constant being measured rather than assumed, and it is the right cost to pay. It has moved
+  // twice: 8 -> 4 (item 1403, out-degree never swept) and 4 -> 3 (item 1406, the DISJOINT-type
+  // fixture puts the crossover between true degree 2 and 3).
   test('the threshold is a FLOOR, not a strict crossing', () => {
-    expect(farDrivenPaysForMultiType(40, 10)).toBe(true);
-    expect(farDrivenPaysForMultiType(39, 10)).toBe(false);
+    expect(farDrivenPaysForMultiType(30, 10)).toBe(true);
+    expect(farDrivenPaysForMultiType(29, 10)).toBe(false);
   });
 
   // ZERO ENDPOINTS IS THE DIVIDE-BY-ZERO CASE, and it is reachable: a graph with vertices and no

@@ -50440,7 +50440,7 @@ gql **3580/0**, gremlin 1157/0, core 383/0, serialization 144/0, `bun run fuzz` 
 with row counts and digests matching the sweep's. Both A/B drivers restored their arm and verified it
 byte-identical.
 
-### Item 1404 — the bracket is CLOSED: `min=2` is **7.2% faster at 142/144** and is **DECLINED**, because the estimate's bias would make it accept at a TRUE degree of 1 — where item 1390 measured this route losing **1.24x**. The fix is the estimate, not the threshold
+### Item 1404 — the bracket is CLOSED: `min=2` is **7.2% faster at 142/144** and is **DECLINED**, because the estimate's bias would make it accept at a TRUE degree of 1 — where item 1390 measured this route losing **1.24x**. The fix is the estimate, not the threshold ~~(threshold stays 4)~~ **— and its 7.2%-at-true-degree-2 is CONTRADICTED at 1405: disjoint types lose 16.9% at the same degree, so bucket structure matters too. Threshold is 3 since 1406.**
 
 Item 1403 shipped `FAR_DRIVEN_MIN_DEGREE = 4` and left one thing open rather than silently: the
 crossover was bracketed in **(2.67, 4.00]**, and below 4 both arms take the same route so the bench
@@ -50493,3 +50493,79 @@ decision instead of a reflex.
 gql 3580/0, `bun run check` 0 (read unpiped). No engine behaviour changed — the threshold stays at 4
 and the arm was restored and verified byte-identical; the commit carries the declined measurement and
 nothing else.
+
+### Items 1405-1406 — **SHIPPED, 18.0%** (144/144): the bench could not build a DISJOINT-type graph, which is what a real schema has. Built, and it pins the crossover between true degree **2 (−16.9%)** and **3 (+25.1%)** — so the threshold is **3**, not 4. And at the same degree the sign DEPENDS ON BUCKET STRUCTURE, which one scalar cannot express
+
+Every multi-type row in this bench has used OVERLAPPING types — every Nth edge carrying both — which
+makes `graph.multiTypeEdgeCount` non-zero and `typeEdgeCount` an over-count: at `MULTILABEL=3` the
+degree estimate reads **1.33x** the truth. Two distinct relationship types that never co-occur on one
+edge is the ordinary schema, and it reads the estimate **exactly**. `MULTILABEL=-1` builds that
+(`-1` rather than `0`, because `0` already means "no `F` at all", the control items 1375 and 1390
+rely on).
+
+### Why it mattered: the bias was deciding the route
+
+With the 1.33x over-count, a true degree of 3 reads **4.00** and clears a threshold of 4. On a
+disjoint graph the same true degree 3 reads **3.00** and is refused — and item 1403 had measured true
+degree 3 winning **32%**. So the bias was accidentally helping the bench's own fixture and penalising
+the common case.
+
+### The crossover, pinned to an integer
+
+Disjoint fixture, estimate exact, `min=4` against `min=2`, n=12 per cell, three order-alternated
+rounds:
+
+| est. = true degree            | min=4 | min=2     | change     | concordance |
+| ----------------------------- | ----- | --------- | ---------- | ----------- |
+| 1.00 [CONTROL — both decline] | 17.21 | 16.84     | 2.2%       | 72/144      |
+| **2.00**                      | 39.99 | 46.77     | **−16.9%** | 35/144      |
+| **3.00**                      | 67.84 | **50.80** | **+25.1%** | **144/144** |
+| 4.00 [CONTROL — both accept]  | 53.54 | 53.10     | 0.8%       | 80/144      |
+
+**The far-driven walk loses at true degree 2 and wins at true degree 3.** Both controls flat. That is
+the tightest bracket this gate has had.
+
+### ⚠️ And the scalar does not capture the decision
+
+At true degree 2 with OVERLAPPING types the route **wins 7.2%** (item 1404); at true degree 2
+DISJOINT it **loses 16.9%**. Same degree, opposite sign. So the **per-vertex bucket structure** is a
+second, independent factor — a vertex with one 2-edge bucket and a vertex with two 1-edge buckets
+cost the union count differently — and `typeEdgeCount / farEndpoints` cannot express it. The
+threshold is a conservative line through a two-dimensional space, not a crossover point, and this
+entry is the record of that rather than a claim to have modelled it.
+
+It also retires the reasoning item 1404 shipped with: the bias is not the only thing distorting the
+decision.
+
+### What shipped
+
+`min=3`, confirmed on its own A/B:
+
+| est. degree                     | min=4 | min=3     | change    | concordance |
+| ------------------------------- | ----- | --------- | --------- | ----------- |
+| **3.00**                        | 60.30 | **49.46** | **18.0%** | **144/144** |
+| 2.00 [CONTROL — still declines] | 40.85 | 40.43     | 1.0%      | 84/144      |
+| 1.00 [CONTROL]                  | 18.37 | 17.82     | 3.0%      | 73/144      |
+| 4.00 [CONTROL — both accept]    | 52.21 | 52.52     | −0.6%     | 55/144      |
+
+3 takes the degree-3 win and **still declines at the degree-2 cell that regresses**, which 2 would
+have accepted. Every cell measured says 3 beats 4; nothing measured says 2 beats 3.
+
+**STILL UNMEASURED:** true degree 1.5-2 at high overlap, which 3 accepts when the bias is 2x. The
+principled fix remains the ESTIMATE rather than the threshold — `multiTypeEdgeCount === 0` already
+tells the gate when its sum is exact — and it is still not taken, because it adds a second condition
+to a gate whose whole value is being O(k) and obvious.
+
+### The threshold has now moved twice, and the test says so
+
+`hop-projection-route.test.ts` pins the value deliberately, so it is edited when the measurement
+changes: 8 → 4 (item 1403, out-degree never swept) and 4 → 3 (here). The FLOOR case moves from
+(40, 10)/(39, 10) to (30, 10)/(29, 10). Three A/Bs on one constant, each answering a different
+question — and the record now carries all three numbers rather than just the last.
+
+### Gates
+
+gql **3580/0**, gremlin 1157/0, core 383/0, serialization 144/0, `bun run fuzz` 20/0, `bun run check`
+0 (read unpiped). Confirming read on the shipped build at true degree 3: 73.83 ms overlapping and
+50.19 ms disjoint, with identical row counts and digests across both fixtures. Every A/B driver
+restored its arm and verified it byte-identical.
