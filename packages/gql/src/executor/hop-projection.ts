@@ -661,18 +661,81 @@ const ANON_FAR_VAR = '\u0000anon_far';
  * `detectHopProjection` opened with, extracted to keep it under the complexity cap for the same
  * reason `projectionIsStreamable` was.
  */
+/**
+ * The most edge types a hop projection will union per vertex (item 1388).
+ *
+ * `edgesOfTypes` pays `i` membership tests on bucket `i`, so the per-vertex work is `O(k x degree)`
+ * for `k` types. Two or three is what a query names and what the 1.50x Gremlin reference figure was
+ * measured at; above that the general matcher's own dedupe is not obviously worse and this is
+ * unmeasured, so it declines rather than guesses. Same cap and same reason as `UNION_MAX_TYPES` in
+ * `shortcuts.ts` and `UNION_COUNT_MAX_LABELS` in the Gremlin twin.
+ */
+const HOP_MAX_TYPES = 8;
+
+/**
+ * MULTI_TYPE_PLAIN_ONLY (item 1388): must a type DISJUNCTION decline this shape?
+ *
+ * `hopEnds` admits a disjunction, but only the two plain walks know how to union a vertex's
+ * buckets — every other route in this file reads `typeName` as THE edge type and would silently
+ * answer for `types[0]` alone, which is a WRONG ANSWER rather than a slow one. So this is the
+ * complement of the plain branch's own condition, and that branch is reached by construction
+ * whenever this lets a disjunction past.
+ *
+ * ONE GUARD rather than a check inside each walk, deliberately: fourteen walks would each need a
+ * branch, and item 159 measured that a branch in those inner loops costs the hot single-type shape
+ * 1.6x. A single type always passes, so the single-type compile sees one comparison.
+ *
+ * EXTRACTED because `detectHopProjection` sits at the complexity cap and inlining this put it at 41
+ * against a limit of 35 — the same reason `projectionIsStreamable` and `hopOrderPlan` are their own
+ * functions. The routes left declining are priced in the item, not forgotten.
+ */
+const declinesDisjunction = (
+  types: readonly string[],
+  w: {
+    rel: RelPattern;
+    itemsReadRel: boolean;
+    carried: { needsRel: boolean };
+    relPred: unknown;
+    farPred: unknown;
+    gate: unknown;
+    needsStart: boolean;
+  },
+): boolean =>
+  types.length > 1 &&
+  (w.rel.direction === 'both' ||
+    w.itemsReadRel ||
+    w.carried.needsRel ||
+    w.relPred !== undefined ||
+    w.farPred !== undefined ||
+    w.gate !== undefined ||
+    w.needsStart);
+
 const hopEnds = (
   rel: RelPattern,
   node: { variable?: string },
   start: { label?: LabelExpr; variable?: string },
 ): {
+  types: readonly string[];
   typeName: string;
   farVar: string;
   startLabel: LabelExpr | undefined;
   startVarName: string | undefined;
 } | null => {
-  // ONE concrete edge type, so the per-vertex bucket is exact. `relTypeNames` returns `undefined`
-  // for an untyped hop and `null` for a shape with no single bucket.
+  // CONCRETE edge types, so the per-vertex buckets are exact. `relTypeNames` returns `undefined`
+  // for an untyped hop and `null` for a shape with no bucket at all.
+  //
+  // A DISJUNCTION IS ADMITTED (item 1388), where this required exactly one name. `-[:E|F]->(b)
+  // RETURN b.n` fell off this whole family onto the general matcher — **379.6 ms against
+  // `-[:E]->`'s 38.9 over the identical 200,000 edges, 9.8x**, both answers correct. The profile
+  // showed the two arms sharing no top frame at all: the single-type one ran `farDrivenHopWalk`,
+  // the multi-type one `evalLabelExpr`/`edgesMatching`/`outSteps`. A routing miss, the same shape
+  // as items 1379 and 1382 on the Gremlin count side.
+  //
+  // ⚠️ ONLY THE PLAIN WALKS TAKE IT. `typeName` is still `types[0]` and fourteen walks in this
+  // file read it as THE type, so `detectHopProjection` declines a disjunction for every route but
+  // the two plain ones — see `MULTI_TYPE_PLAIN_ONLY` there. Admitting it here and filtering there
+  // keeps the single-type walks byte-for-byte, which item 159 says matters: a branch added to
+  // their inner loop costs the hot shape 1.6x.
   const types = relTypeNames(rel.label);
   // An ANONYMOUS end node gets a synthesized name rather than a refusal (item 776).
   //
@@ -695,11 +758,17 @@ const hopEnds = (
   // `candidateVertices` seeds from the label bucket ONLY for a simple label; for anything else it
   // yields every vertex and leaves the filtering to its caller. Requiring a simple (or absent)
   // label keeps the seed exact without re-deriving that filtering here.
-  if (types?.length !== 1 || (startLabel !== undefined && startLabel.kind !== 'label')) {
+  if (
+    types === undefined ||
+    types === null ||
+    types.length === 0 ||
+    types.length > HOP_MAX_TYPES ||
+    (startLabel !== undefined && startLabel.kind !== 'label')
+  ) {
     return null;
   }
 
-  return { typeName: types[0], farVar, startLabel, startVarName: start.variable };
+  return { types, typeName: types[0], farVar, startLabel, startVarName: start.variable };
 };
 
 /**
@@ -1804,7 +1873,7 @@ export const detectHopProjection = (
     return null;
   }
 
-  const { typeName, farVar, startLabel, startVarName } = ends;
+  const { types, typeName, farVar, startLabel, startVarName } = ends;
   const proj: CProjection = cret.projection;
 
   if (!projectionIsStreamable(proj)) {
@@ -1968,6 +2037,12 @@ export const detectHopProjection = (
   // takes everything else and declines the shapes neither can serve.
   // AN UNDIRECTED HOP (item 480): its own walk, and nothing below can see `both` — every
   // walk there captures ONE direction through `out: boolean`. See `undirectedHopWalk`.
+  if (
+    declinesDisjunction(types, { rel, itemsReadRel, carried, relPred, farPred, gate, needsStart })
+  ) {
+    return null;
+  }
+
   if (rel.direction === 'both') {
     // `undirectedHopWalk` has no rel-bound form, so a carried rel constraint must decline here
     // rather than be dropped — a dropped predicate is a wrong answer, not a slow one.
@@ -2060,6 +2135,48 @@ export const detectHopProjection = (
 
       return rows;
     };
+
+    // THE MULTI-TYPE TWIN, its own closure so `startDriven` above stays byte-for-byte (item 1388).
+    //
+    // ⚠️ BUILT INSIDE THE `types.length > 1` BRANCH, not beside `startDriven`. Constructed
+    // unconditionally it is a closure the single-type path allocates per compile and never calls,
+    // and the first A/B read that control at **-3.6% (33/64, chance)** — unsupported as a sign, but
+    // `ts-closure-size-is-load-bearing` is about exactly this and the allocation buys nothing. The
+    // single-type compile now never sees it.
+    //
+    // Its only difference from `startDriven` is the edge source: `edgesOfTypes` unions the vertex's buckets with item
+    // 1377's earlier-buckets dedupe and item 1384's largest-bucket-first sort, so an edge carrying
+    // two of the named types yields exactly ONE row — which is what the general matcher it replaces
+    // did, verified at 20,000 rows for `:E`, `:E|F` and `:F|E` alike before any of this was built.
+    //
+    // NO FAR-DRIVEN FORM. `farDrivenHopWalk` hoists `projectRow` to once per far vertex and reads
+    // one bucket by name; giving it a union is a separate change with its own measurement, and the
+    // start-driven walk is what the 9.8x was measured against.
+    if (types.length > 1) {
+      const startDrivenMany = (graph: Graph, params: Params): Row[] => {
+        const rows: Row[] = [];
+        const binding = new Map<string, unknown>();
+        const fl = vacuousLabel(graph, farLabel) ? undefined : farLabel;
+        const ts = types as string[];
+
+        for (const v of candidateVertexSource(graph, startLabel)) {
+          for (const edge of edgesOfTypes(out ? v.adjFrom : v.adjTo, ts)) {
+            const far: Vertex = out ? edge.to : edge.from;
+
+            if (fl !== undefined && !matchesLabel(far, fl)) {
+              continue;
+            }
+
+            binding.set(farVar, far);
+            rows.push(projectRow(walkProj, binding, params, graph));
+          }
+        }
+
+        return rows;
+      };
+
+      return sorted(startDrivenMany);
+    }
 
     const farDriven = farDrivenHopWalk({ typeName, out, farVar, farLabel, proj: walkProj });
 

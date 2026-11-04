@@ -49200,7 +49200,7 @@ gql 3545/0, gremlin 1148/0, core 370/0, serialization 144/0, `bun run fuzz` 20/0
 (read unpiped). The arm file is the committed code; the pristine copy was restored and deleted by
 the driver's `finally`.
 
-### Item 1387 — the multi-type hop's YIELD side, which no union can fix: GQL **9.8x** (38.9 ms against 379.6) and Gremlin **1.50x** for the same edges and the same rows. The profile says GQL's is a ROUTING miss, and the Gremlin figure PRICES it at ~85%
+### Item 1387 — the multi-type hop's YIELD side, which no union can fix: GQL **9.8x** (38.9 ms against 379.6) and Gremlin **1.50x** for the same edges and the same rows. The profile says GQL's is a ROUTING miss, and the Gremlin figure PRICES it at ~~~85%~~ **nothing — that premise is WRONG, see 1388**: Gremlin's 1.50x is its OWN single-label fast arm skipping two generator layers, not a floor. **BUILT at 1388: 80.7%**, and the estimate landing near it was luck
 
 Items 1377, 1379, 1382, 1384 and 1386 all landed on the COUNT path, where the answer is a number and
 the union of buckets replaces the walk outright. A projection cannot take that route — every selected
@@ -49272,3 +49272,104 @@ figure says the dedupe is affordable.
 ### Gates
 
 Bench rows only; no engine or core code changed. `bun run check` 0 (read unpiped).
+
+### Item 1388 — **SHIPPED, 80.7%**: the multi-type hop PROJECTION takes the plain hop walk instead of the general matcher. 576/576 concordance, the control settled at n=24 — and item 1387's "1.50x is the honest cost" premise is WRONG, which changes what is left
+
+Item 1387 measured `-[:E|F]->(b) RETURN b.n` at **379.6 ms against `-[:E]->`'s 38.9** over the
+identical 200,000 edges — 9.8x, the same 20,000 rows — and the profile said the two arms share no top
+frame at all: the single-type one runs `farDrivenHopWalk`, the multi-type one
+`evalLabelExpr`/`edgesMatching`/`outSteps`. One line caused it: `hopEnds` returned `null` unless
+`types.length === 1`, so the entire hop-projection family — fifteen walks — declined any disjunction.
+
+### What shipped
+
+`hopEnds` now admits up to `HOP_MAX_TYPES` (8) names and reports them, and `declinesDisjunction`
+(`MULTI_TYPE_PLAIN_ONLY`) sends a disjunction away from **every route but the two plain walks**. That
+guard is the load-bearing part, not the walk: `typeName` is still `types[0]` and fourteen walks read
+it as THE edge type, so a disjunction reaching one of them answers for `E` alone — a **wrong answer**,
+not a slow one. One guard rather than a check inside each walk, because item 159 measured that a
+branch added to those inner loops costs the hot single-type shape 1.6x.
+
+The multi-type walk is its own closure and its only difference from `startDriven` is the edge source:
+`edgesOfTypes`, which already carries item 1377's earlier-buckets dedupe and item 1384's
+largest-bucket-first sort. Three items of count-path work, reused unchanged.
+
+### The measurement
+
+`isolated-row-bench.mjs`, `NODES=200000`, `MULTILABEL=3`, `REPS=14 DROP=3`, p25 within a process,
+median across processes, order-alternated rounds. Two A/Bs: five shapes at n=8, then the control and
+the target at **n=24** (3 rounds x 8 processes).
+
+| shape                               | n   | BASE p25 | MANY       | change    | concordance |
+| ----------------------------------- | --- | -------- | ---------- | --------- | ----------- |
+| `hopmultiyield` (`:E\|F`)           | 24  | 370.004  | **71.366** | **80.7%** | **576/576** |
+| `hopmultiyieldrev` (`:F\|E`)        | 8   | 376.799  | 73.088     | 80.6%     | 64/64       |
+| `hopsingleyield` [CONTROL]          | 24  | 38.008   | 37.786     | **+0.6%** | 332/576     |
+| `hopfilter` [CONTROL]               | 8   | 3.581    | 3.560      | 0.6%      | 36/64       |
+| `hopmulti` (1386's count) [CONTROL] | 8   | 0.837    | 0.828      | 1.0%      | 37/64       |
+
+Item 1386's count shortcut is undisturbed and the far-predicate route the guard still declines is
+flat. **No order gap** — 71.4 against 73.1 — because `edgesOfTypes` was already sorted.
+
+### The control's first reading was −3.6%, and chasing it found a real defect
+
+The n=8 A/B read `hopsingleyield` at **−3.6% with 33/64** — chance, and inside the regime this
+session has documented as sign-unstable three times (items 1367, 1374, 1380). Treating it as noise
+would have been wrong anyway, because there WAS a mechanism: `startDrivenMany` was constructed per
+compile even when `types.length === 1`, a closure the hot single-type path allocated and never
+called, which is what `ts-closure-size-is-load-bearing` is about. Moved inside the
+`types.length > 1` branch, the control re-reads **+0.6% at n=24 (332/576)** — the sign flipped and
+neither reading is significant, which is the fourth instance of that n=8 lesson.
+
+**The shipped code is not quite the measured arm.** `declinesDisjunction` was extracted after both
+A/Bs, because inlining the guard put `detectHopProjection` at complexity 41 against a cap of 35 —
+the same reason `projectionIsStreamable` and `hopOrderPlan` are their own functions. That is a
+per-compile call, not per-row, and a single-process read of the final build confirms it moved
+nothing: 69.27 and 36.21 against the A/B's 71.37 and 37.79, both inside process noise.
+
+### Teeth, by four mutants — after the first run of them was VACUOUS
+
+A route choice is answer-equivalent when it is right, so every test passes either way unless the
+mutation makes it WRONG. Four mutants, each caught by a different named test, run against the final
+extracted code:
+
+| mutant                              | verdict     | caught by                                             |
+| ----------------------------------- | ----------- | ----------------------------------------------------- |
+| M1 no dedupe in the multi-type walk | CAUGHT 41/3 | the union, the duplicate-type and the far-label tests |
+| M2 no `MULTI_TYPE_PLAIN_ONLY` guard | CAUGHT 41/3 | the bound-rel, undirected and start-projection tests  |
+| M3 no far-label test                | CAUGHT 43/1 | the `:Q` filter test                                  |
+| M4 no multi-type dispatch           | CAUGHT 41/3 | the union, type-order and far-label tests             |
+
+**The first run of this reported all four CAUGHT and every one was vacuous.** The driver did
+`io.open(SRC, 'w').write(read(SRC).replace(old, new))` — opening for writing TRUNCATES before
+`read(SRC)` is evaluated, so each "mutant" was an EMPTY file and `0 pass / 1 fail` was bun failing to
+load it. The giveaway was the arithmetic: 44 tests cannot become 1. The `== base` no-op check could
+not see it either, because an empty file is not the base. The driver now reads into a variable first
+and asserts the mutated text is at least half the original length.
+
+### ⚠️ Item 1387's pricing premise is WRONG, and it changes what is left here
+
+Item 1387 derived its ~85% estimate from Gremlin's 1.50x multi-label yield gap, calling that "the
+work a multi-type hop genuinely owes". **It is not.** `packages/gremlin/src/executor/hop-values.ts`
+has its own single-label fast arm (`oneType`, line 128) — a hand walk over
+`v.adjFrom.get(labels[0])` that exists to skip two generator-delegation layers per edge — and
+multi-label falls to `adjacentEdges`, a generator chain. That arm's own comment prices exactly this
+at **375.6 ms through the helpers against 251 for the hand walk, 1.50x**: the same number. So
+Gremlin's 1.50x is very likely the SAME class of gap rather than a floor, and the estimate landing
+near the realized 80.7% was luck, not sound reasoning.
+
+Two consequences:
+
+- **The remaining 1.94x on the GQL side (69.3 against 36.2) is not established as dedupe cost.** The
+  single-type arm runs the FAR-DRIVEN walk, whose own comment prices its `projectRow` hoist at 2.3x,
+  and the multi-type arm has no far-driven form. The comparison that would separate route from cost
+  is multi-start-driven against single-START-driven, which no row measures.
+- **The Gremlin twin is the next item, and it re-prices the reference rather than inheriting it.**
+  Giving `hop-values`' multi-label arm a hand walk over unioned buckets should drop its ratio from
+  1.50x toward ~1.1x, and that number would be the first honest measurement of what the dedupe costs
+  on either surface.
+
+### Gates
+
+gql **3557/0**, gremlin 1148/0, core 370/0, serialization 144/0, `bun run fuzz` 20/0, `bun run check`
+0 (read unpiped). Both A/B drivers restored their arm and deleted both arm files in a `finally`.

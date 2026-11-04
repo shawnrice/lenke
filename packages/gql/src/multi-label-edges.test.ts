@@ -58,9 +58,9 @@ describe('a multi-type edge is matched once per pattern', () => {
   });
 
   test('enumeration agrees with the counts', () => {
-    const one = rows('MATCH (a)-[:R]->(b) RETURN a.id AS x ORDER BY x');
+    const one = rows('MATCH (a)-[:R]->(b) RETURN a.nm AS x ORDER BY x');
 
-    expect(rows('MATCH (a)-[:R|S]->(b) RETURN a.id AS x ORDER BY x')).toEqual(one);
+    expect(rows('MATCH (a)-[:R|S]->(b) RETURN a.nm AS x ORDER BY x')).toEqual(one);
   });
 
   test('a reachability walk visits each edge once', () => {
@@ -341,19 +341,22 @@ describe('partially overlapping type buckets dedupe exactly (item 1377)', () => 
 const unionEdges = (): Graph => {
   const g = new Graph();
 
+  // `nm`/`tg` carry the element's own id as a PROPERTY, because a projection has to read one and
+  // `b.id` is not an accessor for the element id (it read as `null`, which made four of item 1388's
+  // assertions pass against the wrong thing until the untyped case failed loudly).
   for (const id of ['a', 'b', 'c']) {
-    g.addVertex({ id, labels: ['P'], properties: {} });
+    g.addVertex({ id, labels: ['P'], properties: { nm: id } });
   }
 
-  g.addVertex({ id: 'q', labels: ['Q'], properties: {} });
+  g.addVertex({ id: 'q', labels: ['Q'], properties: { nm: 'q' } });
 
   const v = (id: string) => g.getVertexById(id)!;
 
-  g.addEdge({ id: 'e1', from: v('a'), to: v('b'), labels: ['E', 'F'] });
-  g.addEdge({ id: 'e2', from: v('a'), to: v('c'), labels: ['E'] });
-  g.addEdge({ id: 'e3', from: v('b'), to: v('c'), labels: ['F'] });
-  g.addEdge({ id: 'e4', from: v('a'), to: v('a'), labels: ['E', 'F'] });
-  g.addEdge({ id: 'e5', from: v('a'), to: v('q'), labels: ['E'] });
+  g.addEdge({ id: 'e1', from: v('a'), to: v('b'), labels: ['E', 'F'], properties: { tg: 'e1' } });
+  g.addEdge({ id: 'e2', from: v('a'), to: v('c'), labels: ['E'], properties: { tg: 'e2' } });
+  g.addEdge({ id: 'e3', from: v('b'), to: v('c'), labels: ['F'], properties: { tg: 'e3' } });
+  g.addEdge({ id: 'e4', from: v('a'), to: v('a'), labels: ['E', 'F'], properties: { tg: 'e4' } });
+  g.addEdge({ id: 'e5', from: v('a'), to: v('q'), labels: ['E'], properties: { tg: 'e5' } });
 
   return g;
 };
@@ -397,5 +400,101 @@ describe('a multi-type edge count is the UNION of global buckets (item 1386)', (
 
   test('past the type CAP it declines and the answer is unchanged', () => {
     expect(u('MATCH ()-[:E|F|Z1|Z2|Z3|Z4|Z5|Z6|Z7]->() RETURN count(*) AS c')).toBe(5);
+  });
+});
+
+/**
+ * The YIELD side of the same disjunction (item 1388).
+ *
+ * Item 1387 measured `-[:E|F]->(b) RETURN b.n` at 379.6 ms against `-[:E]->`'s 38.9 over the
+ * identical 200,000 edges - 9.8x, same 20,000 rows - because `hopEnds` declined any disjunction and
+ * the query fell onto the general matcher. Admitting it means the plain hop walks now union a
+ * vertex's buckets themselves, so the thing to pin is that a two-type edge produces ONE row and that
+ * every route the guard still declines keeps answering.
+ *
+ * The fixture's shape is what makes these cheap to read: `e1` and `e4` carry BOTH types, so a
+ * concatenating walk would emit 7 rows where 5 are right - the same arithmetic the count tests above
+ * use, now observed per row rather than in a total.
+ */
+const uRows = (src: string): unknown[] => query(unionEdges(), src).map((r) => r['x']);
+
+/** Row ORDER is unspecified, so every assertion here is on the multiset. */
+const uSorted = (src: string): unknown[] => uRows(src).slice().sort();
+
+describe('a multi-type hop PROJECTION yields each edge once (item 1388)', () => {
+  test('the single-type projections are 4 and 3 rows, so a concatenation would be 7', () => {
+    expect(uRows('MATCH ()-[:E]->(b) RETURN b.nm AS x')).toHaveLength(4);
+    expect(uRows('MATCH ()-[:F]->(b) RETURN b.nm AS x')).toHaveLength(3);
+  });
+
+  test('the disjunction yields the union, not the concatenation', () => {
+    expect(uSorted('MATCH ()-[:E|F]->(b) RETURN b.nm AS x')).toEqual(['a', 'b', 'c', 'c', 'q']);
+  });
+
+  test('type ORDER does not change the multiset', () => {
+    expect(uSorted('MATCH ()-[:F|E]->(b) RETURN b.nm AS x')).toEqual(
+      uSorted('MATCH ()-[:E|F]->(b) RETURN b.nm AS x'),
+    );
+  });
+
+  test('a DUPLICATE type names one bucket twice and yields it once', () => {
+    expect(uSorted('MATCH ()-[:E|E]->(b) RETURN b.nm AS x')).toEqual(['a', 'b', 'c', 'q']);
+  });
+
+  test('an ABSENT type contributes no rows', () => {
+    expect(uSorted('MATCH ()-[:E|Z]->(b) RETURN b.nm AS x')).toEqual(['a', 'b', 'c', 'q']);
+    expect(uRows('MATCH ()-[:Z|W]->(b) RETURN b.nm AS x')).toHaveLength(0);
+  });
+
+  test('a FAR LABEL still filters, and only e5 reaches a Q', () => {
+    expect(uSorted('MATCH ()-[:E|F]->(b:Q) RETURN b.nm AS x')).toEqual(['q']);
+    expect(uSorted('MATCH ()-[:E|F]->(b:P) RETURN b.nm AS x')).toEqual(['a', 'b', 'c', 'c']);
+  });
+
+  test('the START end can be projected, which routes elsewhere and must still dedupe', () => {
+    expect(uSorted('MATCH (a)-[:E|F]->() RETURN a.nm AS x')).toEqual(['a', 'a', 'a', 'a', 'b']);
+  });
+
+  // THE DECLINED ROUTES. `MULTI_TYPE_PLAIN_ONLY` sends each of these to the general matcher, which
+  // is the code that answered them before item 1388 - so these pin that the guard's complement is
+  // the right one. A route that slipped past it would answer for `types[0]` alone: a WRONG answer.
+  test('a FAR PREDICATE declines the plain walk and still answers', () => {
+    expect(uSorted(`MATCH ()-[:E|F]->(b) WHERE b.nm <> 'c' RETURN b.nm AS x`)).toEqual([
+      'a',
+      'b',
+      'q',
+    ]);
+  });
+
+  test('a BOUND REL declines the plain walk and still answers', () => {
+    expect(uSorted('MATCH ()-[r:E|F]->() RETURN r.tg AS x')).toEqual([
+      'e1',
+      'e2',
+      'e3',
+      'e4',
+      'e5',
+    ]);
+  });
+
+  // NINE, not ten: four two-way edges give 8 and the `a`->`a` SELF-LOOP is traversed once. That is
+  // the pre-existing answer by construction - `hopEnds` declined every disjunction before item 1388
+  // and `MULTI_TYPE_PLAIN_ONLY` declines the undirected one after, so this query takes the identical
+  // path either side of the change. I guessed 10 and the test said 9; the number is the engine's.
+  test('an UNDIRECTED hop declines the plain walk and still answers', () => {
+    expect(uRows('MATCH ()-[:E|F]-(b) RETURN b.nm AS x')).toHaveLength(9);
+  });
+
+  test('past the type CAP it declines and the rows are unchanged', () => {
+    expect(uSorted('MATCH ()-[:E|F|Z1|Z2|Z3|Z4|Z5|Z6|Z7]->(b) RETURN b.nm AS x')).toEqual([
+      'a',
+      'b',
+      'c',
+      'c',
+      'q',
+    ]);
+  });
+
+  test('an UNTYPED hop is every edge once, which this route never had to change', () => {
+    expect(uSorted('MATCH ()-[]->(b) RETURN b.nm AS x')).toEqual(['a', 'b', 'c', 'c', 'q']);
   });
 });
