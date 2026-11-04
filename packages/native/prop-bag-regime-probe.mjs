@@ -164,7 +164,51 @@ const time = (read, bags, idx) => {
   return median(series.slice(DROP));
 };
 
-console.log(`READS=${READS}  REPS=${REPS} drop ${DROP}  key='k'`);
+/**
+ * ⚠️ ONE ARM PER PROCESS when `ARM` is set, and item 1364 is why.
+ *
+ * `readObj` is ONE shared call site used by `locality`, `shapes` and `frozen`, run in that fixed
+ * order inside a single process. So `shapes` drives that site megamorphic and `frozen` inherits a
+ * polluted inline cache it never recovers from — which is the whole of the "small-graph inversion"
+ * item 1363 recorded as an unexplained finding (`frozen` 4.6x `locality` at 1,000, both ~1.0x at
+ * 200,000, because at 200,000 the cache miss swamps the IC state).
+ *
+ * This is CLAUDE.md's item 762 — ONE SHAPE PER PROCESS — which the engine probes in this directory
+ * all honour and which this micro violated. With `ARM` set each arm gets a clean process and a clean
+ * dispatch site; the all-arms-in-one mode is kept only to demonstrate the pollution.
+ */
+const ONE_ARM = process.env.ARM;
+
+if (ONE_ARM !== undefined && ONE_ARM !== '') {
+  const arm = ARMS[ONE_ARM];
+
+  if (arm === undefined) {
+    throw new Error(`unknown ARM ${ONE_ARM}; have ${Object.keys(ARMS).join(',')}`);
+  }
+
+  const n = Number(process.env.SIZE ?? 200_000);
+  const rnd = lcg(0x9e37_79b9 ^ n);
+  const idx = new Int32Array(READS);
+
+  for (let r = 0; r < READS; r += 1) {
+    idx[r] = rnd() % n;
+  }
+
+  const ms = time(arm.read, arm.build(n), idx);
+
+  console.log(
+    JSON.stringify({
+      arm: ONE_ARM,
+      size: n,
+      ms: Number(ms.toFixed(2)),
+      nsPerRead: Number(((ms * 1e6) / READS).toFixed(3)),
+    }),
+  );
+  process.exit(0);
+}
+
+console.log(`READS=${READS}  REPS=${REPS} drop ${DROP}  key='k'   (ALL ARMS IN ONE PROCESS —
+dispatch-site pollution expected at small sizes; set ARM=<name> SIZE=<n> for a clean process)`);
 console.log(
   `\n${'size'.padStart(8)}${'locality'.padStart(11)}${'shapes'.padStart(11)}${'frozen'.padStart(11)}${'mapbag'.padStart(11)}${'columnar'.padStart(11)}   ns/read (locality)`,
 );

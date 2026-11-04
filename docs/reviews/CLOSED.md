@@ -47497,12 +47497,12 @@ dropping 2, median, three processes:
   200000       18.5       17.6       19.2       58.9        5.6   9.24 ns
 ```
 
-| at 200,000                         | ratio to `locality` | verdict                                     |
-| ---------------------------------- | ------------------- | ------------------------------------------- |
-| `shapes` (8 key sets, megamorphic) | **0.95x**           | **polymorphism costs NOTHING at scale**     |
-| `frozen` (`Object.freeze`)         | 1.04x               | freeze is **not** on the read path at scale |
-| `mapbag` (`Map` per element)       | **3.18x WORSE**     | the obvious fix is REFUTED                  |
-| `columnar` (`Float64Array` column) | **3.30x FASTER**    | the layout lever, and FLAT in size          |
+| at 200,000                         | ratio to `locality`                 | verdict                                                               |
+| ---------------------------------- | ----------------------------------- | --------------------------------------------------------------------- |
+| `shapes` (8 key sets, megamorphic) | ~~**0.95x**~~ **3.8x WORSE** (1364) | ~~polymorphism costs NOTHING at scale~~ **WRONG — harness pollution** |
+| `frozen` (`Object.freeze`)         | 1.04x                               | freeze is **not** on the read path at scale                           |
+| `mapbag` (`Map` per element)       | **3.18x WORSE**                     | the obvious fix is REFUTED                                            |
+| `columnar` (`Float64Array` column) | **3.30x FASTER**                    | the layout lever, and FLAT in size                                    |
 
 ### What it actually is
 
@@ -47532,8 +47532,12 @@ declined or taken on the same grounds. What this item adds is the number: **3.30
 
 ### THREE levers closed, which is the point of running it
 
-- **Dictionary mode / megamorphism: REFUTED.** 0.95x. Do not re-derive it; the fixture's uniform keys
-  make the read site monomorphic by construction.
+- ~~**Dictionary mode / megamorphism: REFUTED.** 0.95x.~~ **THIS REFUTATION IS ITSELF WRONG — see 1364.** Run one arm per process, shape polymorphism costs **3.8x at 200,000 and 4.5x at 1,000**,
+  consistently. The 0.95x came from all five arms sharing ONE `readObj` call site in one process, so
+  the `shapes` arm megamorphised it and every later arm — and every later SIZE — inherited that. What
+  IS true, and 1364 measured it in the engine rather than a micro: the gap does **not reach the
+  engine** (uniform bags 3.09 ms against varied 3.44 at 200,000, **1.11x**, sign flipped at 20,000),
+  so it is not a lever by way of making bags uniform.
 - **`Object.freeze` on the read path: REFUTED at scale.** 1.04x at 200,000. (But see the open
   observation below — it is NOT free at small sizes.)
 - **A `Map` per element: REFUTED, and badly.** 3.18x WORSE at 200,000, 1.8x worse at 1,000, worse at
@@ -47553,6 +47557,104 @@ matters: a small graph is a real workload, and the engine freezes every bag. It 
 with its own isolated arms — in particular ruling out that the `locality` arm at 1,000 is being
 optimized in a way the others are not, which a 0.84 ns read invites.
 
+> ⚠️ **ANSWERED AT 1364, AND IT WAS THIS PROBE'S OWN HARNESS.** All five arms shared one `readObj`
+> call site in one process, run in a fixed order, so the `shapes` arm drove that site megamorphic and
+> `frozen` — which runs after it — inherited a polluted inline cache. One arm per process:
+> **`frozen` 1.66 ms against `locality` 1.73 at 1,000**, and 4.60 against 4.72 at 200,000, so
+> `Object.freeze` is FREE at every size and there is no inversion to explain. Declining to name a
+> mechanism was right; the reproducibility across three processes was worthless, because every one of
+> them ran the same polluted order. CLAUDE.md's item 762 — ONE SHAPE PER PROCESS — is the rule this
+> broke, cited in the engine probes next to it and skipped in the micro.
+
 ### Gates
 
 Probe only; no engine or core code changed. `bun run check` 0 (read unpiped).
+
+### Item 1364 — item 1363's probe violated ONE SHAPE PER PROCESS, so three of its conclusions were its own harness; clean, shape polymorphism costs **3.8x** in a micro and **1.11x in the engine**, which closes it
+
+Item 1363 left an "open observation, deliberately not explained": at 1,000 elements `frozen` cost
+**4.6x** `locality` while at 200,000 both were ~1.0x. It declined to name a mechanism, which was the
+right instinct, and flagged the thing to rule out first — _"that the `locality` arm at 1,000 is being
+optimized in a way the others are not"_. That is exactly what was happening, and the cause is in the
+probe.
+
+### The defect: one shared call site, five arms, one process
+
+`readObj` is ONE function, used by `locality`, `shapes` and `frozen`, called in that fixed order
+inside a single process, with the size loop outside the arm loop. So the `shapes` arm drives that
+site megamorphic and **every later arm, and every later SIZE, inherits the polluted inline cache**.
+`locality` at 1,000 was the only reading in the whole table taken on a clean site.
+
+This is CLAUDE.md's item 762 — **ONE SHAPE PER PROCESS** — which every engine probe in this directory
+honours (their headers say so) and which the micro skipped. And item 1363's defence of the number was
+worthless in a specific, instructive way: it was "reproducible across three processes (7.6 / 7.7 /
+7.8)", and all three ran the same polluted order, so the reproduction confirmed the harness, not the
+effect. **A repeat only buys independence from what it actually varies.**
+
+### What the arms cost with a clean process each
+
+`ARM=<name> SIZE=<n>`, one process per cell, against item 1363's all-in-one-process table:
+
+```text
+                 ONE PROCESS PER ARM            ALL ARMS IN ONE PROCESS (1363)
+    size   locality  shapes  frozen  columnar   locality  shapes  frozen  columnar
+    1000      1.73     7.82    1.66     1.10        1.7     8.1     7.7      1.1
+   20000      3.04    11.22    3.00     1.11       11.6    10.6    12.0      5.6
+  200000      4.72    17.82    4.60     1.33       18.5    17.6    19.2      5.6
+```
+
+Three of item 1363's conclusions do not survive:
+
+- **"`Object.freeze` costs 4.6x at 1,000": REFUTED.** Clean, `frozen` is 1.66 against `locality`
+  1.73 at 1,000 and 4.60 against 4.72 at 200,000 — **free at every size**, not just at scale. There
+  is no inversion and never was.
+- **"Polymorphism costs NOTHING at scale (0.95x)": REFUTED.** Clean, 8 key sets cost **3.8x at
+  200,000 and 4.5x at 1,000**, flat in size — so it is inline-cache state, exactly as item 1362
+  originally guessed and item 1363 wrongly refuted. **1362's mechanism was closer to right than the
+  item that overturned it**, and both were arguing from a contaminated instrument.
+- **Item 1362's 2.5-4x size growth is OVERSTATED.** Clean `locality` grows 1.73 -> 4.72, **2.7x**
+  from 1,000 to 200,000, against the polluted 10.9x. The direction holds; the magnitude does not.
+
+One survives, slightly larger: the **columnar counterfactual**. Clean, `locality` / `columnar` at
+200,000 is 4.72 / 1.33 = **3.55x** (1363 said 3.30x), and columnar is near-flat across the sweep
+(1.10 / 1.11 / 1.33) where the object bag grows 2.7x. The layout lever stands.
+
+### THE ENGINE TEST, which is what actually settles it
+
+A 3.8x in a micro is not a 3.8x in the engine, and `propOf` is ONE shared call site there — every GQL
+and Gremlin property read of every element type goes through it — so the engine might be stuck on the
+wrong side of that gap unconditionally. `engine-bag-shape-probe.mjs` asks directly: two graphs, same
+vertex count, same query (`MATCH (n:P) WHERE n.k < 50 RETURN count(*)`), one with every bag `{k,s,n}`
+and one with 8 key sets all still carrying `k`. One arm per process, for the reason this item exists.
+
+| size    | uniform bags | varied bags | ratio                |
+| ------- | ------------ | ----------- | -------------------- |
+| 20,000  | 0.53 ms      | 0.43 ms     | 0.81x (sign FLIPPED) |
+| 200,000 | 3.09 ms      | 3.44 ms     | **1.11x**            |
+
+Both arms answer **103,100** at 200,000 and **10,318** at 20,000 — identical, which is what makes the
+A/B fair rather than two different questions.
+
+**So the micro's 3.8x does not reach the engine: 1.11x, with the sign flipping at the smaller size.**
+Bag-shape stability is therefore NOT a lever — not for the engine to enforce and not for a user to
+exploit by keeping bags uniform. The most likely reason is the one that made the test worth running:
+`propOf`'s single shared site serves every element type and every bag shape in the process, so it is
+megamorphic either way and uniform user bags cannot rescue it. Capturing the 3.8x would need
+per-site monomorphic specialization of the read itself, which is a much larger change than anything
+nominated here and is not priced by this item.
+
+### The portable lesson, which has now happened twice
+
+**A dramatic micro number that does not reach the engine is the normal case, not the surprise.** Item
+1104 is the precedent: `edgesOfTypes` read 37.9% / 2765.8 ms self in a CPU profile and counting its
+branches showed all 3,600,000 calls took a single-`Map.get` fast path, so the profiler was crediting a
+callee with its caller's inlined loop. Here a clean, reproducible, correctly-measured **3.8x** in
+isolation is **1.11x** in the engine. Both times the micro was not wrong about itself — it was wrong
+about what fraction of the engine it represented. Price in the engine, or say explicitly that you
+have not.
+
+### Gates
+
+Probes only; no engine or core code changed. `bun run check` 0 (read unpiped). The all-arms mode of
+`prop-bag-regime-probe.mjs` is kept, with its header now stating that it demonstrates the pollution;
+`ARM=<name> SIZE=<n>` is the mode to trust.
