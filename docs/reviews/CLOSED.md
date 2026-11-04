@@ -51708,3 +51708,67 @@ profile share will land on it again; items 1416 and 1419 together are why they s
 ### Gates
 
 `bun run check` 0 (read unpiped). No engine code changed.
+
+### Item 1420 — **NOMINATION REFUTED**: the chain family's 4-5x step at the THIRD hop against 1.1x at the fourth looks like a misrouting and is not one. Item 301's route choice RE-VERIFIED on today's code at **1.34x**, and items 1417-1418 do not change it because the memo is gated on `passes > 2`
+
+### The nomination, which was a step pattern rather than a profile share
+
+After items 1417-1419 took `chain4` from 73.2 to ~51 ms, `chain3` became the #2 row at 44-49 ms.
+Held across three sizes:
+
+| nodes   | chain2 | chain3 | chain4 | 2→3       | 3→4       |
+| ------- | ------ | ------ | ------ | --------- | --------- |
+| 25,000  | 1.08   | 3.89   | 8.14   | 3.61x     | 2.09x     |
+| 50,000  | 3.92   | 20.78  | 22.11  | **5.30x** | **1.06x** |
+| 100,000 | 11.56  | 46.30  | 52.37  | **4.01x** | **1.13x** |
+
+Adding the THIRD hop costs 4-5x; adding the FOURTH costs 1.1x. A fourth hop is strictly more work
+than a third, so that ordering is backwards — and the two take DIFFERENT ROUTES (`chain4` through
+`sweepChain`, `chain3` through `buildThreeHopCount`), which made "`chain3` is on the slower route"
+the obvious reading.
+
+### Why it is wrong, measured rather than reasoned
+
+`threeSegmentRoute` chooses between the degree PRODUCT and the way-count SWEEP, and the choice is
+already backed by a measurement: **item 301 found the product winning the unfiltered shape, 250.1
+against 374.9 ms.** An unlabelled chain is exactly that shape, so `chain3` takes the product on
+purpose.
+
+That number is from before items 1417-1418, which made the sweep 10.1% + 25.7% faster — so the
+ordering could have flipped. Re-measured by forcing the route (the `!labelled` guard and the
+per-call comparison both removed), then restored:
+
+| nodes   | product (shipped) | sweep (forced) | product / sweep |
+| ------- | ----------------- | -------------- | --------------- |
+| 50,000  | 20.78             | 27.09          | **0.77x**       |
+| 100,000 | 46.30             | 62.16          | **0.74x**       |
+
+**The product is still 1.3x faster.** Item 301's conclusion holds, now with fresh numbers on today's
+code rather than on trust.
+
+### And the reason my own changes could not have flipped it
+
+The flat memo items 1417-1418 built is gated on **`passes > 2`**. A 3-segment chain is **2 passes**,
+so `slotNbrs` is `undefined` and the sweep falls to `sweepOneDirection` — **neither item touched the
+path a 3-hop chain would take.** Item 1106 had already measured that boundary from the other side:
+with exactly two passes the memo is a small LOSS (162.0 against 165.7), which is why the gate is
+there.
+
+So the step pattern has a structural explanation and not a routing one: `chain2` is degree arithmetic
+over two positions, while `chain3` adds a **middle-edge walk** — O(edges) work that a 2-chain does
+not do at all. `chain4` then reuses that same walk with one more cheap pass, which is why its step is
+1.1x. The alarming number is the 2→3 transition doing something genuinely new, not the 3→4 one doing
+something cheap.
+
+### Recorded because the pattern will be noticed again
+
+A reader ranking rows and seeing 11.56 / 46.30 / 52.37 will reach for the same explanation. The
+answer is three facts: the routes differ **by design**, the product is **measured** better for the
+unfiltered shape (0.74x, here), and the memo work of 1417-1418 is **unreachable** at 2 passes. This
+is the second row this session to look open on its face and be closed underneath — `chain4`'s
+41% `bucketSize` frame was the first.
+
+### Gates
+
+`bun run check` 0 (read unpiped). `shortcuts.ts` restored and verified: the `!labelled` guard and
+the per-call `candidateCount` comparison are both back, and `chain3` reads 49.18 ms again.
