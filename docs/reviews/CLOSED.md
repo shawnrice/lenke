@@ -1507,6 +1507,9 @@ inlined / GQL param` = 1.00x** (varying the TEXT costs GQL nothing) and **`GRM f
   ~115ns-per-operation estimate arriving from a different direction. The only lever is the KEY TYPE:
   item 300's dense integer-indexed adjacency, parked at 348. **This is the FOURTH item to arrive
   there (310, 350, 352, 358)** — at some point that is itself the finding.
+  **⚠️ AND IT IS NOW DECLINED ON NUMBERS, not parked (item 1397): the ordinal that lever needs was
+  built and measured at items 1369-1372 — reads +12.9%, writes ~0%, and deletes 6.18x/11.34x under
+  churn, which disqualifies it. The sixth arrival has the answer the first five lacked.**
 - **`addEdge`'s 810ns label index, SPLIT at last — the 1M-element Set is FREE, the two adjacency maps
   are all of it, and they are SUPERADDITIVE (357).** Item 356 left `addEdge` as the only lever on
   pure-TS ingest (the TS decode is format-independent, so the cost is the graph BUILD). Item 312
@@ -17685,6 +17688,8 @@ which is `CLOSED.md`'s "the TS insert path, CLOSED as a constant factor". `index
 specifically has been priced, split across its three indexes, and ablated (items 312, 357, 358);
 its only surviving lever is item 300's dense integer-keyed adjacency, parked at 348, **and the
 audit already notes four items arriving there. This is the fifth.**
+**⚠️ THE SIXTH IS ITEM 1397, AND IT CLOSES IT: that lever's dense ordinal was measured at items
+1369-1372 and DECLINED — deletes cost 6.18x/11.34x under churn. Not parked; declined.**
 
 ### The one line that looked newly actionable, and why it is not
 
@@ -50039,3 +50044,60 @@ occurrences. Read it with python `str.count`/`re`, per the standing note.
 
 Probe only — **no engine or core code changed**. `bun run check` 0 (read unpiped); the suites are
 unchanged from item 1393 (core 383/0, gql 3570/0, gremlin 1157/0, serialization 144/0).
+
+### Item 1397 — the write path's dominant frame has **exactly one surviving lever**, five earlier items said so, I am the SIXTH to arrive — and **this session already measured it and declined it**. The chain is closed, not parked
+
+The repaired write screen (item 1396) puts `indexEdgeLabel` at **28.9%** of a 2.06 us edge write,
+the largest single frame in the write path. That number is not new and neither is the conclusion:
+
+- **item 312** measured it at 28% inside `addEdge` and called it "seven hash operations, five
+  string-keyed" — reproducing my 28.9% exactly, from a different instrument;
+- **item 357** split the 810 ns across its three indexes by ablating one at a time:
+  `edgesByLabel` **not measurable** (a `Set.add` into a million-entry Set is essentially free, which
+  retracted the intuition that the big container is the expensive one), the two adjacency maps
+  **24.8% together**, the per-label loop and the call **free**;
+- **item 358** retracted 357's superadditivity: merging the two outer maps is WORSE than the control,
+  and removing all ~800,000 inner allocations is 4.9% at the noise floor;
+- **item 200** refuted the type-first inversion outright, user-confirmed closed, measuring the
+  dual-spine variant at **2.0-2.4x worse on `indexEdgeLabel`** itself.
+
+What every one of those arrives at is the same sentence: _"The only lever is the KEY TYPE: item 300's
+dense integer-indexed adjacency, parked at 348."_ Item 357 adds "**This is the FOURTH item to arrive
+there (310, 350, 352, 358)** — at some point that is itself the finding", and a later entry adds
+"the audit already notes four items arriving there. **This is the fifth.**"
+
+### The sixth arrival has an answer the first five did not
+
+**The prerequisite was built and measured in this session.** A dense integer-keyed adjacency needs a
+stable dense integer per vertex — the ordinal — and items 1369-1372 measured exactly that:
+
+| side                    | result                                                                       |
+| ----------------------- | ---------------------------------------------------------------------------- |
+| reads                   | **+12.9%** on the largest Gremlin row (1369), 63/64 concordance — a real win |
+| writes                  | **~0%** (1357)                                                               |
+| **deletes under churn** | **6.18x at 200k churn, 11.34x at 1M** (1372)                                 |
+
+Deletes disqualify it, because slots are never reused and the touched slot space grows without
+bound. Making it correct under churn needs a free list plus generation stamps — which is precisely
+the "much more booking to keep a second structure in alignment" the user objected to when this was
+proposed, and item 1372 records that the objection was right on measurement rather than on taste.
+
+So the chain terminates: **`indexEdgeLabel`'s only surviving lever is not parked pending work, it is
+declined on numbers.** The five arrivals were right that nothing else was there; what they were
+missing was a measurement of the one thing left, and it now exists.
+
+### What that means for the write path
+
+`addEdgeOnly` at 2.06 us an edge is accounted for: ~29% `indexEdgeLabel` (closed above), ~13% GC,
+~11% `#commitNormalized`, ~10% `commitElementLabels`, and `getEdgeById`'s 16.6% is self-time
+misattribution on a one-line `Map.get` (item 1396). `ts-ingest-is-constant-factor` already records
+the whole insert path as **CLOSED as a constant factor** — 3.7x, `JSON.parse` + alloc + freeze, not a
+missing path — with `addVertex` withdrawn at 7.4% (item 312).
+
+**Nothing is open on pure-TS ingest.** A seventh arrival at the dense adjacency should read item 1372
+first; the entries that described it as "parked" are annotated.
+
+### Gates
+
+Documentation only — **no code changed**, and nothing was re-measured that the record already held.
+`bun run check` 0 (read unpiped).
