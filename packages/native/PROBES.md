@@ -602,3 +602,24 @@ samples, median 11.772 profiled against 11.79 not.
 graphs resident gives **1.83x**. `REPS` is load-bearing on this probe in a way it is not on the read
 probes, because nine 20,000-node graphs alive at once is a different memory regime. Quote the
 non-perturbing instrument (1.83x) and state the reps.
+
+⚠️ **THE SPELLING PROBES' DEFAULT `SPELL_N` IS NOT THE ONE TO USE, AND A FLAG NEAR THE FLOOR IS NOT A
+RATIO** (item 1461). `spelling-probe.ts` defaults to `SPELL_N = 20_000`, at which **both null controls
+fall under the 1 ms comparison floor** — so its "N group(s) over 2x" line comes back marked UNGATED and
+cannot be judged at all. At the documented `SPELL_N=200000 SPELL_REPS=9` the controls land at 6.3 ms
+and the gate works; two of four groups flagged at the default simply vanish.
+
+Of four flags raised across both probes after five route changes, **three were the instrument**:
+
+| flag                                                | in-sweep | confirmed                       |
+| --------------------------------------------------- | -------- | ------------------------------- |
+| Gremlin `hasLabel(a,b)` vs `or(hasLabel, hasLabel)` | 4.22x    | **1.06x** (two sub-ms readings) |
+| GQL `node count: inline vs clause WHERE`            | 2.73x    | **1.15x** isolated              |
+| GQL `SEEK: a param equality alone`                  | 3.39x    | **1.14x** isolated              |
+| Gremlin `union(out(T), out(U))` vs `out(T, U)`      | 172,061x | **real** — fixed at item 1460   |
+
+The one real finding had absolutes of 0.001 ms against 251.210; the three artifacts were either two
+numbers near the floor or in-sweep inflation (CLAUDE.md's item 737). So: **read the ABSOLUTE readings,
+run at the documented N, and follow the probe's own "re-run the group ALONE, three times" instruction
+before treating a flag as a finding.** It prints that line because its own sweep cannot be trusted at
+these magnitudes.

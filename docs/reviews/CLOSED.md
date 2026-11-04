@@ -54807,11 +54807,21 @@ multi-label fixture first.** The tick found the gap by fixing the instrument; th
 gate and the fusion — and a wrong test assumption there surfaced a pre-existing count-vs-yield
 divergence on `out(T,T)`, now flagged.
 
-### Also newly comparable
+### ~~Also newly comparable~~ — ❌ REFUTED AT ITEM 1461: the 4.22x was floor-boundary noise
 
-`label, two of them: hasLabel(a,b) vs or(hasLabel, hasLabel)` now reads **4.22x** (net 4.16x). It was
-previously in the under-1ms list and crossed the comparison floor because the fixture grew. Not
-introduced by this item — surfaced by it, and a second spelling gap on the same probe.
+`label, two of them: hasLabel(a,b) vs or(hasLabel, hasLabel)` read **4.22x** (net 4.16x) in this
+item's run, having previously sat under the 1 ms floor. It is not a gap. Pinned at two sizes with
+`SPELL_ONLY`:
+
+```text
+  SPELL_N=200000    0.648 ms  /  0.612     1.06x
+  SPELL_N=800000    7.535     /  7.227     1.04x
+```
+
+Both spellings cost the same. A group that straddles the comparison floor produces a ratio from two
+sub-millisecond readings, which is what this was — and calling it "a second spelling gap" in the same
+breath as a measured 172,061x was exactly the error the probe's own floor exists to prevent. **Read a
+flagged ratio's ABSOLUTE readings before believing it; two numbers near the floor are not a ratio.**
 
 ### The GQL probe: 0 answer disagreements, and its 2x gate is UNGATED at the default `SPELL_N`
 
@@ -54920,3 +54930,81 @@ rides on either side of the ambiguity.
 
 `bun run check` 0 (read unpiped). gremlin **1241**/0 (1228 + 13), gql 3677/0, core 383/0.
 `bun run fuzz` 20/0 — byte-identity intact, which matters because this changes which plan runs.
+
+### Item 1461 — BOTH spelling surfaces are CLEAN after this session's four route changes, and **three of the four flags were harness artifacts**: the Gremlin 4.22x is floor noise, and the GQL probe's 2.73x/3.39x refute to **1.15x/1.14x** in isolation
+
+The regression check items 1431, 1432, 1442, 1453 and 1460 were owed, completed properly — and the
+useful content is how many flags did not survive their own confirmation step.
+
+### The Gremlin 4.22x: floor-boundary noise
+
+Item 1459 reported `label, two of them: hasLabel(a,b) vs or(hasLabel, hasLabel)` at **4.22x** and
+called it "a second spelling gap on the same probe". Pinned with `SPELL_ONLY` at two sizes:
+
+```text
+  SPELL_N=200000    0.648 ms  /  0.612     1.06x
+  SPELL_N=800000    7.535     /  7.227     1.04x
+```
+
+Equal. The group straddles the 1 ms comparison floor, so its "ratio" was two sub-millisecond
+readings. Corrected in item 1459 in place. **Read a flagged ratio's ABSOLUTE readings before
+believing it** — and note the asymmetry that made this easy to get wrong: it was reported in the same
+breath as a measured 172,061x, where the absolutes were 0.001 against 251.210 and there was nothing
+to doubt.
+
+### The GQL probe's gate works at the DOCUMENTED `SPELL_N`, and then both flags refute
+
+Item 1459 could not judge four flagged groups because both null controls fell under the floor at the
+probe's default `SPELL_N = 20_000`. At the documented **200000** the controls land at 6.3 ms and the
+gate functions:
+
+```text
+  0 group(s) disagree on the ANSWER
+  2 group(s) over 2x AND clear of the nearest null control:
+    node count: inline vs clause WHERE                            2.73x (net 2.72x)
+    SEEK: a param equality alone — clause vs inline vs inline-WHERE 3.39x (net 3.38x)
+```
+
+**The two boolean groups flagged at the default are gone** — `a NEGATED boolean vs the equality
+spelling` (8.63x) and `a boolean compared against a literal vs the bare predicate` (11.52x) were
+floor artifacts of the same kind as the Gremlin one. Two of four flags disappeared purely by running
+the instrument as documented.
+
+The probe's own output then says: _"CONFIRM EACH BEFORE TREATING IT AS A FINDING — a flag can still be
+this harness. Re-run the group ALONE, where no earlier group has polluted dispatch, THREE TIMES: one
+isolated run is still one reading (item 1073)."_ Doing exactly that:
+
+```text
+  node count: inline vs clause WHERE
+    inline  {k: 2}                      3.20  3.14  3.10
+    clause  WHERE n.k = 2               2.90  2.81  2.78
+    inline-WHERE (n:P WHERE n.k = 2)    2.82  2.87  2.70      -> spread 1.15x
+
+  SEEK: a param equality alone
+    clause  WHERE n.s = $s              3.27  3.15  3.29
+    inline  {s: $s}                     3.59  3.50  3.51
+    inline-WHERE                        3.31  3.17  3.19      -> spread 1.14x
+```
+
+**1.15x and 1.14x — both well under the 2x threshold.** So the in-sweep 2.73x and 3.39x are in-sweep
+inflation, which is CLAUDE.md's item 737 verbatim: _"rows interfere… it reported `project the element +
+materialize` at 44.8 against 27.0 — a 1.66x regression that does not exist, which an isolated A/B
+refuted at 25.2 against 24.7."_ The probe prints the instruction precisely because its own sweep
+cannot be trusted at this magnitude, and following it cost six runs.
+
+### So the tally
+
+Four flags across both probes after five route changes, and **three were the instrument**: one floor
+artifact on the Gremlin side, two more on the GQL side at the wrong `SPELL_N`, and two in-sweep
+inflations that refuted in isolation. The one real finding was item 1459's 172,061x, which item 1460
+fixed — and it was real precisely because its absolutes were 0.001 against 251.210 rather than two
+numbers near a floor.
+
+**Both surfaces are clean.** 0 answer disagreements on either probe, 0 groups over 2x on the Gremlin
+side, and both GQL survivors refuted at 1.15x/1.14x. The session's shipped route changes —
+`undirectedHopWalk`'s edge index (1431), `bothOneType` (1432), `pairTypes` (1442),
+`pairMultiplicities` (1453) and `fuseUnionSameDir` (1460) — introduced no spelling gap.
+
+### Gates
+
+`bun run check` 0 (read unpiped). No code changed.
