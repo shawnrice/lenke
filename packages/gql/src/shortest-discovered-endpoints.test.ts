@@ -176,3 +176,95 @@ describe('the SEED-CYCLE endpoint, which the seed sits in `dist` at distance 0 f
     expect(ns(g, 'MATCH ANY SHORTEST (a:S)-[:E]->{1,3}(b:P) RETURN b.n AS n')).toEqual([0]);
   });
 });
+
+/**
+ * The SIBLING selectors, which had the identical whole-graph scan (item 1463).
+ *
+ * `allShortestWalk` and `shortestKWalk` each ran `for (const end of graph.vertices)` too, so
+ * `ALL SHORTEST` and `SHORTEST k` were O(V²) in exactly the same way. Measured before the change at
+ * 2,000 / 5,000 / 10,000 vertices:
+ *
+ *   ALL SHORTEST    66.50 / 344.08 / 1379.81 ms   ->  after: 28.11 / 42.69 / (104.64 at 20,000)
+ *   SHORTEST 2      60.55 / 156.19 /  605.67      ->  after: 35.31 / 57.19 / (126.49 at 20,000)
+ *
+ * They differ from `ANY SHORTEST` in WHAT they emit per endpoint — every shortest path, or the k
+ * shortest — so each needs its own endpoint-set assertions rather than inheriting them.
+ */
+describe('ALL SHORTEST and SHORTEST k: same fix, same endpoint set (item 1463)', () => {
+  const chain6 = (): Graph => {
+    const g = new Graph();
+    const vs = Array.from({ length: 6 }, (_, i) =>
+      g.addVertex({ id: `v${i}`, labels: i === 0 ? ['P', 'S'] : ['P'], properties: { n: i } }),
+    );
+
+    for (let i = 0; i + 1 < 6; i += 1) {
+      g.addEdge({ id: `e${i}`, from: vs[i], to: vs[i + 1], labels: ['E'], properties: {} });
+    }
+
+    g.addVertex({ id: 'island', labels: ['P'], properties: { n: 99 } });
+
+    return g;
+  };
+
+  test('⚠️ ALL SHORTEST: unreachable excluded, ceiling respected', () => {
+    const g = chain6();
+
+    expect(ns(g, 'MATCH ALL SHORTEST (a:S)-[:E]->{1,3}(b:P) RETURN b.n AS n')).toEqual([1, 2, 3]);
+    expect(ns(g, 'MATCH ALL SHORTEST (a:S)-[:E]->{1,5}(b:P) RETURN b.n AS n')).toEqual([
+      1, 2, 3, 4, 5,
+    ]);
+  });
+
+  test('⚠️ SHORTEST 2: unreachable excluded, ceiling respected', () => {
+    const g = chain6();
+
+    expect(ns(g, 'MATCH SHORTEST 2 (a:S)-[:E]->{1,3}(b:P) RETURN b.n AS n')).toEqual([1, 2, 3]);
+    expect(ns(g, 'MATCH SHORTEST 2 (a:S)-[:E]->{1,5}(b:P) RETURN b.n AS n')).toEqual([
+      1, 2, 3, 4, 5,
+    ]);
+  });
+
+  test('ALL SHORTEST emits EVERY shortest path, where ANY emits one', () => {
+    // The diamond: `d` has two shortest routes. ANY gives one row for it, ALL gives two — so this
+    // also pins that the discovered-set loop did not change WHAT is emitted per endpoint.
+    const g = new Graph();
+    const a = g.addVertex({ id: 'a', labels: ['P', 'S'], properties: { n: 0 } });
+    const b = g.addVertex({ id: 'b', labels: ['P'], properties: { n: 1 } });
+    const c = g.addVertex({ id: 'c', labels: ['P'], properties: { n: 2 } });
+    const d = g.addVertex({ id: 'd', labels: ['P'], properties: { n: 3 } });
+
+    g.addEdge({ id: 'ab', from: a, to: b, labels: ['E'], properties: {} });
+    g.addEdge({ id: 'ac', from: a, to: c, labels: ['E'], properties: {} });
+    g.addEdge({ id: 'bd', from: b, to: d, labels: ['E'], properties: {} });
+    g.addEdge({ id: 'cd', from: c, to: d, labels: ['E'], properties: {} });
+
+    // b, c at distance 1; d twice at distance 2.
+    expect(ns(g, 'MATCH ALL SHORTEST (a:S)-[:E]->{1,2}(b:P) RETURN b.n AS n')).toEqual([
+      1, 2, 3, 3,
+    ]);
+    expect(ns(g, 'MATCH ANY SHORTEST (a:S)-[:E]->{1,2}(b:P) RETURN b.n AS n')).toEqual([1, 2, 3]);
+  });
+
+  test('the SEED-CYCLE endpoint survives in both siblings', () => {
+    const g = new Graph();
+    const vs = Array.from({ length: 3 }, (_, i) =>
+      g.addVertex({ id: `v${i}`, labels: i === 0 ? ['P', 'S'] : ['P'], properties: { n: i } }),
+    );
+
+    for (let i = 0; i < 3; i += 1) {
+      g.addEdge({ id: `r${i}`, from: vs[i], to: vs[(i + 1) % 3], labels: ['E'], properties: {} });
+    }
+
+    expect(ns(g, 'MATCH ALL SHORTEST (a:S)-[:E]->{1,3}(b:P) RETURN b.n AS n')).toEqual([0, 1, 2]);
+    expect(ns(g, 'MATCH SHORTEST 2 (a:S)-[:E]->{1,3}(b:P) RETURN b.n AS n')).toEqual([0, 1, 2]);
+  });
+
+  test('all three selectors agree with the plain quantifier on a degree-1 graph', () => {
+    const g = chain6();
+    const plain = counts(g, 'MATCH (a:P)-[:E]->{1,3}(b:P) RETURN count(*) AS c');
+
+    for (const sel of ['ANY SHORTEST', 'ALL SHORTEST', 'SHORTEST 2']) {
+      expect(counts(g, `MATCH ${sel} (a:P)-[:E]->{1,3}(b:P) RETURN count(*) AS c`)).toBe(plain);
+    }
+  });
+});

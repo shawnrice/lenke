@@ -814,7 +814,11 @@ export const allShortestWalk = function* (
     return out;
   };
 
-  for (const end of graph.vertices) {
+  // THE DISCOVERED SET, for the reason item 1462 records on `shortestWalk` — `queue` holds exactly
+  // the vertices the BFS reached, so scanning `graph.vertices` here made all-sources O(V²). Measured
+  // on this walk before the change: **66.50 / 344.08 / 1379.81 ms at 2,000 / 5,000 / 10,000**, where
+  // the already-fixed `ANY SHORTEST` read 8.42 / 10.47 / 20.05 for the same answer.
+  for (const end of queue) {
     const isSeedCycle = end.id === seed.id && seedCycleEnd;
     const d = dist.get(end.id);
 
@@ -1224,7 +1228,12 @@ export const shortestKWalk = function* (
 
   // Endpoints in graph (insertion/index) order — mirrors native `ends.sort_unstable()`
   // (native ids are the insertion index), the same ordering `allShortestWalk` uses.
-  for (const end of graph.vertices) {
+  // `perEnd` is keyed by VERTEX, so its keys are exactly the reached endpoints — no scan of the whole
+  // graph and no lookup per endpoint. Same O(V²) as item 1462 fixed on `shortestWalk`: measured here
+  // at **60.55 / 156.19 / 605.67 ms at 2,000 / 5,000 / 10,000** before the change. The `!paths` guard
+  // below is now vacuous and kept only because a `Map` iteration contract is a weaker thing to rely
+  // on than an explicit check.
+  for (const end of perEnd.keys()) {
     const paths = perEnd.get(end);
 
     if (!paths) {

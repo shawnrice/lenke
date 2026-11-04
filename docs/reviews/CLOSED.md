@@ -55089,3 +55089,71 @@ Two syntax facts learned by failing: `ANY SHORTEST` is admitted only for `min <=
 serialization 144/0. `bun run fuzz` 20/0, plus the differential fuzzer run FOUR more times on random
 seeds — it is the instrument that would catch a row-order claim being wrong, so one pass was not
 enough.
+
+### Item 1463 — ✅ SHIPPED: the SAME O(V²) scan was in both sibling walks. `ALL SHORTEST` **1379.81 → 42.69 ms (32.3x)** and `SHORTEST 2` **605.67 → 57.19 (10.6x)** at 10,000 vertices, answers identical
+
+Item 1462 fixed `shortestWalk`'s whole-graph endpoint scan. One grep for the pattern found two more:
+
+```text
+  matching.ts:817   allShortestWalk   (ALL SHORTEST)
+  matching.ts:1227  shortestKWalk     (SHORTEST k)
+```
+
+Both ran `for (const end of graph.vertices)` for the same reason and with the same consequence.
+Measured before touching either, all-sources `{1,3}`, answers identical across every row
+(5,910 / 14,950 / 29,910):
+
+```text
+  N        ALL SHORTEST   SHORTEST 2   ANY SHORTEST (already fixed)
+  2,000        66.50 ms      60.55          8.42
+  5,000       344.08        156.19         10.47
+  10,000     1379.81        605.67         20.05
+```
+
+68.8x and 30.2x the fixed sibling, and visibly quadratic (×5.2 then ×4.0 for ×2.5 then ×2 in V).
+
+### Each had its own discovered set already in hand
+
+- `allShortestWalk` has the same `queue` as `shortestWalk` — pushed on discovery, seed included at
+  distance 0, so the `isSeedCycle` / `d < min` rules apply unchanged.
+- `shortestKWalk` keeps `perEnd`, a **`Map<Vertex, …>`**, so `perEnd.keys()` IS the reached endpoint
+  set with no lookup at all. Its `if (!paths) continue` guard becomes vacuous; kept, because a `Map`
+  iteration contract is a weaker thing to lean on than an explicit check.
+
+```text
+  N        ALL SHORTEST          SHORTEST 2
+  5,000     344.08 ->  28.11     156.19 ->  35.31
+  10,000   1379.81 ->  42.69     605.67 ->  57.19      32.3x and 10.6x
+  20,000        (n/a) 104.64          (n/a) 126.49     near-linear where it was quadratic
+```
+
+### Five more tests, because the siblings differ in WHAT they emit
+
+The nine tests from item 1462 cover `ANY SHORTEST` only, and the selectors are not interchangeable:
+`ANY` emits one path per endpoint, `ALL` every shortest path, `SHORTEST k` the k shortest. So each
+sibling gets its own endpoint-set assertions, plus:
+
+- **the diamond asserts `ALL` still emits BOTH routes to the tip** (`[1, 2, 3, 3]`) where `ANY` emits
+  one (`[1, 2, 3]`) — which pins that the discovered-set loop changed the endpoint SET and not what is
+  emitted per endpoint.
+- the seed-cycle endpoint in both siblings, the unreachable island in both, and all three selectors
+  agreeing with the plain quantifier on a degree-1 graph.
+
+### What this run of three items adds up to
+
+A shipped surface with no bench row turned out to carry a quadratic term in all three of its
+implementations. The ratios compound with V, so the figures above understate what a larger graph
+would show — at 20,000 the two siblings now answer in 105-126 ms where the O(V²) form would have taken
+~5 s by its own scaling.
+
+**And the method that found it was not profiling a known row.** Items 1436-1458 profiled, floored and
+ablated the rows the benches already had, and the last eight of those found nothing shippable. One
+question — "which shipped surface has no row at all?" — found 33x, 56x, 32x and 10.6x in three ticks.
+Worth recording as a selection heuristic: **an unmeasured surface beats a well-measured one, because
+the well-measured one is where everyone already looked.**
+
+### Gates
+
+`bun run check` 0 (read unpiped). gql **3691**/0 (3686 + 5), gremlin 1241/0, core 383/0,
+serialization 144/0. `bun run fuzz` 20/0 plus the differential fuzzer three more times on random
+seeds — the same instrument item 1462 leaned on for its row-order claim, which these changes share.
