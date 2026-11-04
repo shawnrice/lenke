@@ -8960,8 +8960,23 @@ export const edgesOfTypes = (
  * {@link edgesOfTypes} has already taken every single-bucket case before this is reached, so `i` is
  * bounded by something tiny.
  *
- * Order is unchanged — bucket 0's edges, then bucket 1's non-duplicates — which matters because
- * unordered result order is still BYTES for cross-engine identity.
+ * ⚠️ THIS CLAIMED "ORDER IS UNCHANGED" AND HAS NOT BEEN TRUE SINCE ITEM 1384 (corrected at 1389).
+ * The claim was that this yields bucket 0's edges then bucket 1's non-duplicates, so the sequence
+ * follows the order the query NAMED its types — and that it mattered, because "unordered result
+ * order is still BYTES for cross-engine identity". Item 1384 then added the size sort below, which
+ * makes bucket 0 the LARGEST rather than the first named: `-[:E|F]->` and `-[:F|E]->` now walk the
+ * same buckets in the same order as each other, and neither follows the spelling.
+ *
+ * That was the POINT of 1384 (it closed a 1.60x equivalent-spelling gap) and the fuzzers have been
+ * green across it, so the sequence here is evidently NOT byte-compared — the repo's stance is that
+ * an unordered result's row order is unspecified and compared as a multiset. Both halves are
+ * recorded because the comment asserted the stronger property for five items while the code had
+ * stopped providing it, and a reader relying on it would conclude a wrong thing in either direction.
+ *
+ * NOT ESTABLISHED: whether a multi-type hop PROJECTION is covered by the differential fuzzers at
+ * all. Item 1371 found one such hole by mutation (the dense multi-hop route) and this is the same
+ * question, unmeasured. The Gremlin twin `iterLabeled` does follow label-arg order, deliberately,
+ * and item 1389 kept it that way rather than copying the sort here.
  */
 const edgesOfManyTypes = function* (
   byType: Map<string, Set<Edge>>,

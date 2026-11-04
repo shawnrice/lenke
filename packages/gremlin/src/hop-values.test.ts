@@ -84,8 +84,12 @@ describe('the fused hop-values walk agrees with the pipeline, in order', () => {
   });
 
   test('a MULTI-TYPE hop, where the pipeline dedupes a two-type edge', () => {
-    // `iterLabeled` dedupes an edge carrying two of the named types; the fused walk routes
-    // multi-type through that same helper rather than re-deriving it, so this must agree.
+    // `iterLabeled` dedupes an edge carrying two of the named types. ⚠️ THE FUSED WALK NO LONGER
+    // ROUTES THROUGH IT (item 1389): multi-type used to delegate to that helper rather than
+    // re-derive it, which is what this comment said, and now it has its own hand walk — so this
+    // comparison went from a near-tautology to a real differential. It kept passing across that
+    // change, but on a fixture whose vertices have at most two out-edges, which cannot observe
+    // bucket ORDER at all. The group below is the one with the discriminating fixture.
     const g = build();
     const a = g.getVertexById('a')!;
     const c = g.getVertexById('c')!;
@@ -288,5 +292,127 @@ describe('the IN direction, on a fixture where it cannot coincide with OUT (item
     expect(fused(g, V(), out('E'), values('age'))).not.toEqual(
       fused(g, V(), in_('E'), values('age')),
     );
+  });
+});
+
+/**
+ * The multi-label hand walk against the pipeline, on a fixture that can SEE bucket order (1389).
+ *
+ * Item 1389 replaced `iterLabeled`'s generator chain with a hand walk for `out('E','F')` — 33.1% of
+ * that arm's profile sat in `iterLabeled`/`iterByLabel`/`outEdgesOf`, frames the single-label arm
+ * never enters. The walk must reproduce the SEQUENCE, not the multiset: this file's header records
+ * that Gremlin stream order is a TinkerPop contract and that the differential fuzzer compares
+ * ordered, and `graph-queries.ts` documents label-arg order as deliberate. So the GQL twin's
+ * largest-bucket-first sort (item 1384) is deliberately NOT copied here.
+ *
+ * ⚠️ THE OBVIOUS FIXTURE IS BLIND TO THIS. With one out-edge per vertex, vertex iteration order
+ * decides everything and `out('E','F')` prints the same sequence as `out('F','E')` whatever the walk
+ * does — my first check reported exactly that and proved nothing. Each vertex here has THREE
+ * out-edges: one `E`, one `F`, one carrying BOTH. The buckets differ in size, they overlap, and the
+ * two spellings must produce DIFFERENT sequences from each other while each matches the pipeline.
+ */
+const threeBuckets = (): Graph => {
+  const g = new Graph();
+
+  for (const [id, age] of [
+    ['a', 1],
+    ['b', 2],
+    ['c', 3],
+    ['d', 4],
+  ] as const) {
+    g.addVertex({ id, labels: ['P'], properties: { age } });
+  }
+
+  const v = (id: string) => g.getVertexById(id)!;
+
+  // `a` is the interesting vertex: E = {ab, acd}, F = {ac, acd}, so `acd` is the overlap and the
+  // bucket the dedupe has to drop depends on which name came first.
+  g.addEdge({ id: 'ab', from: v('a'), to: v('b'), labels: ['E'], properties: {} });
+  g.addEdge({ id: 'ac', from: v('a'), to: v('c'), labels: ['F'], properties: {} });
+  g.addEdge({ id: 'acd', from: v('a'), to: v('d'), labels: ['E', 'F'], properties: {} });
+  g.addEdge({ id: 'bc', from: v('b'), to: v('c'), labels: ['F'], properties: {} });
+  g.addEdge({ id: 'bd', from: v('b'), to: v('d'), labels: ['E', 'F'], properties: {} });
+
+  return g;
+};
+
+describe('the multi-label hand walk agrees with the pipeline IN ORDER (item 1389)', () => {
+  test('E then F matches the pipeline, sequence included', () => {
+    const g = threeBuckets();
+
+    expect(fused(g, V(), out('E', 'F'), values('age'))).toEqual(
+      piped(g, V(), out('E', 'F'), values('age')),
+    );
+  });
+
+  test('F then E matches the pipeline, sequence included', () => {
+    const g = threeBuckets();
+
+    expect(fused(g, V(), out('F', 'E'), values('age'))).toEqual(
+      piped(g, V(), out('F', 'E'), values('age')),
+    );
+  });
+
+  // THE FIXTURE'S OWN CHECK. If these two agreed, the two tests above could both pass while the
+  // walk ignored label order entirely — which is the blindness the degree-1 fixture has. Asserting
+  // they DIFFER is what makes this group able to fail.
+  test('the two spellings DIFFER, which is what makes the fixture discriminating', () => {
+    const g = threeBuckets();
+
+    expect(fused(g, V(), out('E', 'F'), values('age'))).not.toEqual(
+      fused(g, V(), out('F', 'E'), values('age')),
+    );
+  });
+
+  test('label-arg order, spelled out: a yields E-bucket then F-bucket non-duplicates', () => {
+    const g = threeBuckets();
+
+    // `a`: E = ab(2), acd(4); then F = ac(3), acd already seen. `b`: F = bc(3), bd(4); then E =
+    // bd seen. So E-first gives a's 2,4,3 and b's 4,3 in bucket order.
+    expect(fused(g, V(), out('E', 'F'), values('age'))).toEqual([2, 4, 3, 4, 3]);
+    expect(fused(g, V(), out('F', 'E'), values('age'))).toEqual([3, 4, 2, 3, 4]);
+  });
+
+  test('the IN direction takes the same arm', () => {
+    const g = threeBuckets();
+
+    expect(fused(g, V(), in_('E', 'F'), values('age'))).toEqual(
+      piped(g, V(), in_('E', 'F'), values('age')),
+    );
+  });
+
+  test('BOTH still declines to the helpers, which the hand walk must not have changed', () => {
+    const g = threeBuckets();
+
+    expect(fused(g, V(), both('E', 'F'), values('age'))).toEqual(
+      piped(g, V(), both('E', 'F'), values('age')),
+    );
+  });
+
+  test('a DUPLICATE name names one bucket twice and yields it once', () => {
+    const g = threeBuckets();
+
+    expect(fused(g, V(), out('E', 'E'), values('age'))).toEqual(
+      piped(g, V(), out('E', 'E'), values('age')),
+    );
+    expect(fused(g, V(), out('E', 'E'), values('age'))).toEqual(
+      fused(g, V(), out('E'), values('age')),
+    );
+  });
+
+  test('an ABSENT name contributes nothing', () => {
+    const g = threeBuckets();
+
+    expect(fused(g, V(), out('E', 'Z'), values('age'))).toEqual(
+      piped(g, V(), out('E', 'Z'), values('age')),
+    );
+    expect(fused(g, V(), out('Z', 'W'), values('age'))).toEqual([]);
+  });
+
+  test('a vertex with NO matching bucket is skipped, not faulted', () => {
+    const g = threeBuckets();
+
+    // `c` and `d` have no out-edges at all, so the walk must `continue` past an absent adjacency.
+    expect(fused(g, V(), out('E', 'F'), values('age'))).toHaveLength(5);
   });
 });

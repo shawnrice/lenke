@@ -49200,7 +49200,7 @@ gql 3545/0, gremlin 1148/0, core 370/0, serialization 144/0, `bun run fuzz` 20/0
 (read unpiped). The arm file is the committed code; the pristine copy was restored and deleted by
 the driver's `finally`.
 
-### Item 1387 — the multi-type hop's YIELD side, which no union can fix: GQL **9.8x** (38.9 ms against 379.6) and Gremlin **1.50x** for the same edges and the same rows. The profile says GQL's is a ROUTING miss, and the Gremlin figure PRICES it at ~~~85%~~ **nothing — that premise is WRONG, see 1388**: Gremlin's 1.50x is its OWN single-label fast arm skipping two generator layers, not a floor. **BUILT at 1388: 80.7%**, and the estimate landing near it was luck
+### Item 1387 — the multi-type hop's YIELD side, which no union can fix: GQL **9.8x** (38.9 ms against 379.6) and Gremlin **1.50x** for the same edges and the same rows. The profile says GQL's is a ROUTING miss, and the Gremlin figure PRICES it at ~~~85%~~ **nothing — that premise is WRONG, see 1388**: Gremlin's 1.50x is its OWN single-label fast arm skipping two generator layers, not a floor. **BUILT at 1388: 80.7%**, and the estimate landing near it was luck. **The 1.50x is now TAKEN at 1389 for 25.1%, and the dedupe PRICED at 1.13x** — so 1387's reference was ~75% delegation
 
 Items 1377, 1379, 1382, 1384 and 1386 all landed on the COUNT path, where the answer is a number and
 the union of buckets replaces the walk outright. A projection cannot take that route — every selected
@@ -49360,7 +49360,7 @@ near the realized 80.7% was luck, not sound reasoning.
 
 Two consequences:
 
-- **The remaining 1.94x on the GQL side (69.3 against 36.2) is not established as dedupe cost.** The
+- **The remaining 1.94x on the GQL side (69.3 against 36.2) is not established as dedupe cost** — and item 1389 settled it: the dedupe costs **1.13x**, so ~1.7x of this is the route. The
   single-type arm runs the FAR-DRIVEN walk, whose own comment prices its `projectRow` hoist at 2.3x,
   and the multi-type arm has no far-driven form. The comparison that would separate route from cost
   is multi-start-driven against single-START-driven, which no row measures.
@@ -49373,3 +49373,103 @@ Two consequences:
 
 gql **3557/0**, gremlin 1148/0, core 370/0, serialization 144/0, `bun run fuzz` 20/0, `bun run check`
 0 (read unpiped). Both A/B drivers restored their arm and deleted both arm files in a `finally`.
+
+### Item 1389 — **SHIPPED, 25.1%**: Gremlin's multi-label hop projection gets the hand walk its single-label twin already had. 64/64, sequence identity ASSERTED, all three controls at chance — and the dedupe is now PRICED at 1.13x, which re-reads item 1387's 1.50x
+
+Item 1388 found that item 1387's pricing premise was wrong: Gremlin's 1.50x multi-label yield gap was
+not "the work a multi-type hop genuinely owes" but its own `hop-values.ts` single-label fast arm
+(`oneType`) skipping two generator-delegation layers — whose comment prices exactly that at
+**375.6 ms against 251, the same 1.50x**. This measures it and takes it.
+
+### The profile nominated it, cleanly
+
+| arm              | top frames                                                                          |
+| ---------------- | ----------------------------------------------------------------------------------- |
+| `hopyieldsingle` | `values` **24.0%** (the hand walk itself), GC 10.3%, `pick` 11.1%                   |
+| `hopyieldmulti`  | `iterLabeled` **20.3%**, `pick` 9.8%, `iterByLabel` **7.9%**, `outEdgesOf` **4.9%** |
+
+**33.1% of the multi arm sits in the generator chain the single arm never enters.** No unpriced frame
+over 2% in either — the screen working as designed: no hot new function, just a route the query does
+not reach.
+
+### What shipped
+
+A multi-label hand walk beside the single-label one, replacing the `iterLabeled` → `iterByLabel` →
+`outEdgesOf` chain with a direct bucket walk, and `iterLabeled`'s `seen` Set with earlier-buckets
+dedupe — the substitution item 1377 made in GQL, where the Set ablated at 60.7% of a multi-type hop
+count. (Item 1378 measured that same substitution at NOTHING on the Gremlin COUNT path, which is a
+different function.)
+
+**⚠️ LABEL-ARG ORDER IS PRESERVED, and this is where the twin DELIBERATELY DIVERGES from GQL.**
+`graph-queries.ts` documents label-arg order on purpose, `hop-values.test.ts`'s own header records
+that Gremlin stream order is a TinkerPop contract and that the differential fuzzer compares ORDERED,
+and there is no equivalent-spelling gap to close here anyway — `out('F','E')` measured 204.8 against
+`out('E','F')`'s 207.9, because every bucket is walked either way. GQL's largest-bucket-first sort
+(item 1384) was therefore NOT copied.
+
+### The measurement, and the invariant it asserts first
+
+`isolated-gremlin-bench.mjs`, `NODES=200000`, `MULTILABEL=3`, `REPS=14 DROP=3`, p25 within a process,
+median across 8 processes per arm, two order-alternated rounds.
+
+```
+==== SEQUENCE IDENTITY (the invariant, not the speed) ====
+  out('E','F')   BASE vs HAND sequence identical: True
+  out('F','E')   BASE vs HAND sequence identical: True
+```
+
+| shape                      | BASE p25 | HAND        | change    | concordance |
+| -------------------------- | -------- | ----------- | --------- | ----------- |
+| `hopyieldmulti`            | 207.943  | **155.666** | **25.1%** | 64/64       |
+| `hopyieldmultirev`         | 204.759  | **157.279** | 23.2%     | 64/64       |
+| `hopyieldsingle` [CONTROL] | 138.110  | 138.923     | −0.6%     | 26/64       |
+| `hopcount3` [CONTROL]      | 290.831  | 289.894     | 0.3%      | 30/64       |
+| `edgemulti` [CONTROL]      | 0.839    | 0.851       | −1.4%     | 30/64       |
+
+Three controls at chance, including the COUNT path items 1379/1382 shipped. The post-gate code
+differs from the measured arm by an `Edge` type import and a removed `as` — type-only, and a
+single-process read confirms it: 157.47 and 137.32 against the A/B's 155.67 and 138.92.
+
+### The dedupe is PRICED for the first time, at 1.13x
+
+155.67 / 138.11 = **1.127x**, against the ~1.1x predicted at item 1388 from the delegation theory.
+So:
+
+- **Item 1387's 1.50x was ~75% delegation and ~25% dedupe.** Using it as a floor was wrong, as 1388
+  said; now there is a real number in its place.
+- **GQL's residual 1.94x (item 1388) is therefore NOT dedupe cost.** The dedupe costs 1.13x; the
+  other ~1.7x is the route difference — GQL's single-type arm takes the FAR-DRIVEN walk (its own
+  comment prices the `projectRow` hoist at 2.3x) and the multi-type arm has no far-driven form. That
+  is the next concrete target, and it is now priced rather than guessed.
+
+### The order probe needed a vacuity check, and the first version was vacuous
+
+`order-probe-1389.mjs` (indexed in `PROBES.md`) exists because the obvious fixture **cannot see
+bucket order at all**: with one out-edge per vertex, vertex iteration order decides everything and
+both spellings print the identical sequence whatever the walk does. My first check reported
+`efIsFe: true` and proved nothing. The probe now gives every vertex an `E`-only, an `F`-only and a
+both-labelled out-edge, and **the A/B driver refuses to run if the two spellings ever agree** —
+agreement means the instrument has gone blind, not that the engine is right.
+
+The same blindness was in the existing test: `'a MULTI-TYPE hop, where the pipeline dedupes a
+two-type edge'` compares fused against piped, which this change turned from a near-tautology into a
+real differential — but on a fixture with at most two out-edges per vertex. Its comment (which said
+the fused walk "routes multi-type through that same helper rather than re-deriving it") is corrected
+in place, and nine tests on the discriminating fixture were added, including one asserting the two
+spellings DIFFER, without which the others could pass while the walk ignored label order entirely.
+
+### Also corrected: GQL's `edgesOfManyTypes` order claim, stale since item 1384
+
+It still said "Order is unchanged — bucket 0's edges, then bucket 1's non-duplicates — which matters
+because unordered result order is still BYTES for cross-engine identity." Item 1384 added the size
+sort above that loop, so bucket 0 became the LARGEST rather than the first named. The fuzzers have
+been green across it, so that sequence is evidently not byte-compared — but the comment asserted the
+stronger property for five items while the code had stopped providing it. **Unmeasured: whether a
+multi-type hop PROJECTION is covered by the differential fuzzers at all.** Item 1371 found one such
+hole by mutation; this is the same question and it is open.
+
+### Gates
+
+gremlin **1157/0** (27 in `hop-values.test.ts`), gql 3557/0, core 370/0, serialization 144/0,
+`bun run fuzz` 20/0, `bun run check` 0 (read unpiped). The A/B driver restored its arm and deleted
+both arm files in a `finally`.

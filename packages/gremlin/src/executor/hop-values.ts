@@ -1,4 +1,4 @@
-import type { Graph } from '@lenke/core';
+import type { Edge, Graph } from '@lenke/core';
 
 import type { Plan, Step } from '../ast.js';
 import { adjacentEdges, otherEndpoint } from './movement.js';
@@ -126,6 +126,84 @@ export const hopValuesShortcut = (plan: Plan, graph: Graph): HopValues | undefin
   // `iterLabeled`. My first probe inlined what the shipped code has to call, and over-promised
   // by 1.5x — `harness-must-resemble-caller`, again.
   const oneType = labels.length === 1 && kind !== 'both' ? labels[0] : undefined;
+
+  // THE MULTI-LABEL HAND WALK (item 1389), which this had only for a single name. `out('E','F')`
+  // measured **209.5 ms against `out('E')`'s 139.3 — 1.50x** over the identical 20,000 rows, and the
+  // profile put **33.1%** of the multi arm in the generator chain the single arm skips:
+  // `iterLabeled` 20.3%, `iterByLabel` 7.9%, `outEdgesOf` 4.9%. The single-name comment above
+  // already prices that chain at 375.6 against 251 — the same 1.50x — so the gap is the delegation,
+  // not the disjunction.
+  //
+  // ⚠️ LABEL-ARG ORDER IS PRESERVED, and this is where this twin DIVERGES from the GQL one. The
+  // buckets are walked in the order the traversal named them, exactly as `iterLabeled` does and as
+  // `graph-queries.ts` documents on purpose. GQL's `edgesOfManyTypes` sorts largest-bucket-first
+  // (item 1384) to close an equivalent-spelling gap; doing that here would reorder rows for a
+  // property this file states deliberately, and there is no gap to close — `out('F','E')` measured
+  // 211.0 against `out('E','F')`'s 209.5, because every bucket is walked either way.
+  //
+  // EARLIER BUCKETS, not a `seen` Set. An edge can only repeat if it sits in two of the named
+  // buckets, so for bucket `i` a duplicate is exactly an edge already in some bucket `j < i` — and
+  // those buckets are in hand. Same substitution item 1377 made in GQL, where the Set ablated at
+  // 60.7% of a multi-type hop count; item 1378 measured it at NOTHING on the Gremlin COUNT path,
+  // which is a different function from this one.
+  const manyTypes = labels.length > 1 && kind !== 'both' ? labels : undefined;
+
+  if (manyTypes !== undefined) {
+    const forward = kind === 'out';
+
+    return {
+      rest,
+      values: {
+        *[Symbol.iterator]() {
+          const buckets: (ReadonlySet<Edge> | undefined)[] = [];
+
+          for (const v of graph.vertices) {
+            const byLabel = forward ? v.adjFrom : v.adjTo;
+
+            if (byLabel === undefined) {
+              continue;
+            }
+
+            buckets.length = 0;
+
+            for (const t of manyTypes) {
+              buckets.push(byLabel.get(t));
+            }
+
+            for (let i = 0; i < buckets.length; i += 1) {
+              const bucket = buckets[i];
+
+              if (bucket === undefined) {
+                continue;
+              }
+
+              for (const edge of bucket) {
+                let earlier = false;
+
+                for (let j = 0; j < i; j += 1) {
+                  if (buckets[j]?.has(edge) === true) {
+                    earlier = true;
+
+                    break;
+                  }
+                }
+
+                if (earlier) {
+                  continue;
+                }
+
+                const value = pick(forward ? edge.to : edge.from);
+
+                if (!drops || value !== undefined) {
+                  yield value;
+                }
+              }
+            }
+          }
+        },
+      },
+    };
+  }
 
   if (oneType !== undefined) {
     const forward = kind === 'out';
