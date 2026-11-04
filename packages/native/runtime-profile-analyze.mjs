@@ -27,7 +27,7 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { describeFrame, mentions, tagFor, verdict } from './profile-frames.mjs';
+import { describeFrame, isHarnessFrame, mentions, tagFor, verdict } from './profile-frames.mjs';
 
 const [, , DIR] = process.argv;
 
@@ -67,16 +67,30 @@ if (profiles.length === 0) {
 }
 
 for (const f of profiles) {
-  const rows = [...selfTime(join(DIR, f)).entries()]
+  const all = [...selfTime(join(DIR, f)).entries()]
     .map(([k, us]) => {
       const [name, where, url, lineStr] = k.split('\u0000');
 
       return { ...describeFrame({ name, where, url, line: Number(lineStr) }), value: us / 1000 };
     })
     .sort((a, b) => b.value - a.value);
+  // HARNESS FRAMES ARE OUT OF THE DENOMINATOR, not just out of the verdict. Leaving them in makes
+  // shares incomparable between runs that use different machinery: item 1362's windowed 200k
+  // profiles carried the inspector's own `post` at 15.1-25.5%, which deflated every engine frame by
+  // a fifth and made the 20k-vs-200k comparison it existed for unreadable.
+  const rows = all.filter((r) => !isHarnessFrame(r.where));
+  const harness = all.filter((r) => isHarnessFrame(r.where));
   const total = rows.reduce((a, r) => a + r.value, 0);
+  const harnessMs = harness.reduce((a, r) => a + r.value, 0);
+  const note =
+    harnessMs > 0
+      ? `, ${harnessMs.toFixed(0)} ms harness excluded (${harness
+          .slice(0, 3)
+          .map((r) => r.name)
+          .join(', ')})`
+      : '';
 
-  console.log(`\n### ${f}  (${total.toFixed(0)} ms sampled)`);
+  console.log(`\n### ${f}  (${total.toFixed(0)} ms engine${note})`);
   console.log('     ms   share  mentions  frame');
 
   for (const r of rows.slice(0, 22)) {

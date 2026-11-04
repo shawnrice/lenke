@@ -42,7 +42,22 @@ export const ACCESSOR = /^(?:get|set) ([A-Za-z_$][\w$]*)$/;
  * The GQL probe's `build` escaped notice for two items only because "build" appears 841 times in the
  * documents, which is luck rather than a guard.
  */
-export const isHarnessFrame = (where) => /-probe\.(?:mjs|ts)$/.test(where.split(':')[0]);
+export const isHarnessFrame = (where) => {
+  // `node:inspector` is THE PROFILER ITSELF. Item 1362's windowed 200k runs carried
+  // `post @ node:inspector:115` at **15.1-25.5%** of three profiles — a near-constant ~125 ms, which
+  // is `Profiler.stop` serializing the profile while sampling is still on. A filename match cannot
+  // catch it (the basename is `node`), and leaving it in deflated every engine frame by up to a
+  // fifth, which made the 20k-vs-200k comparison the window existed for unreadable.
+  if (where.startsWith('node:inspector')) {
+    return true;
+  }
+
+  const [file] = where.split(':');
+
+  return (
+    /-probe\.(?:mjs|ts)$/.test(file) || /^(?:windowed-profile|profile-frames)\.mjs$/.test(file)
+  );
+};
 
 /**
  * Count a name as an IDENTIFIER, not as a substring.

@@ -15,9 +15,17 @@
 import { Graph } from '@lenke/core';
 import { query } from '@lenke/gql';
 
+import { profileWindow } from './windowed-profile.mjs';
+
 const SHAPE = process.argv[2] ?? 'hopfilter';
 const N = Number(process.argv[3] ?? 2000);
-const NODES = 20000;
+/**
+ * ⚠️ SIZE IS A SEPARATE QUESTION, not a detail. CLAUDE.md's first rule for trusting a number is to
+ * sweep it: cache-resident and not are different regimes and the transition is between 200k and 1M
+ * elements. Items 1358-1361 screened every surface at 20,000 — entirely inside cache — so a verdict
+ * from them is a verdict about the cache-resident regime only, which item 1362 is for.
+ */
+const NODES = Number(process.env.NODES ?? 20000);
 
 /** One fixture for every shape, so a difference between shapes is the shape and not the data. */
 const build = () => {
@@ -63,13 +71,19 @@ if (q === undefined) {
   throw new Error(`unknown shape ${SHAPE}; have ${Object.keys(SHAPES).join(',')}`);
 }
 
+// The fixture is built BEFORE the profile window opens, so the load is never in the profile. With
+// `PROF_OUT` unset this is an ordinary unwindowed run and `--cpu-prof` still works.
 const g = build();
 let sink = 0;
 const t0 = performance.now();
 
-for (let i = 0; i < N; i += 1) {
-  sink += query(g, q).length;
-}
+await profileWindow(process.env.PROF_OUT, () => {
+  for (let i = 0; i < N; i += 1) {
+    sink += query(g, q).length;
+  }
+
+  return sink;
+});
 
 const ms = performance.now() - t0;
 

@@ -47379,3 +47379,92 @@ extraction and reports the same verdicts.
 ### Gates
 
 Probes and instrument only; no engine or core code changed. `bun run check` 0 (read unpiped).
+
+### Item 1362 — every profile in items 1358-1361 was taken INSIDE CACHE, and at 200k the property-read path is 2.5-4x more of the profile than it looked: the screen systematically understates it on BOTH surfaces
+
+Items 1358-1361 screened GQL, Gremlin and the write path and found every nomination priced. **All of
+it ran at 20,000 elements**, and CLAUDE.md's first rule for trusting a number is the one that was
+skipped: _"Sweep the size. Cache-resident and not are different questions; the transition is between
+200k and 1M elements."_ So those verdicts were verdicts about the cache-resident regime only.
+
+### Two instrument faults had to be fixed before the sweep could be read at all
+
+**1. `--cpu-prof` profiles the whole process, so at 200k the FIXTURE BUILD inverts the ranking.** At
+20,000 with 2,000 reps the load is ~5% and harmless. At 200,000 with 120 reps the first run put
+`getVertexById`, `indexEdgeLabel`, `commitElementLabels` and `getEdgeById` at the top of **every**
+shape — all of them the load, none of them the query — and each shape's own hot frames fell below
+them. The audit has hit this before ("windowed past the fixture build — the load is 4s of a 5.8s
+profile and swamped [the rest]"). Raising reps is not the fix: it shrinks the build's fraction but
+costs time in exactly the dimension being swept.
+
+Built `windowed-profile.mjs`, which drives the profiler through `node:inspector` and starts it AFTER
+the fixture is built. It writes an ordinary `.cpuprofile` the analyzer reads unchanged, asserts the
+window captured samples (a window that caught none would read as "every frame is cold"), and is a
+no-op without `PROF_OUT`, so `--cpu-prof` still works.
+
+**2. The profiler then showed up in its own profile at up to a quarter of it.** `post @
+node:inspector:115` read **15.1%, 23.1% and 25.5%** of the three windowed GQL shapes — a
+near-constant ~125 ms, which is `Profiler.stop` serializing while sampling is still on. Two further
+fixes: harness frames are now out of the DENOMINATOR, not merely out of the verdict (leaving them in
+deflates every engine frame and makes runs with different machinery incomparable — which is the one
+thing the window existed to enable), and `node:inspector` is recognised as harness, which a filename
+match cannot do because the basename is `node`.
+
+### THE RESULT: ranking is stable, but the property-read path is NOT
+
+With the build and the profiler both out, 20,000 against 200,000:
+
+| frame                 | surface / shape       | 20k  | 200k      | change   |
+| --------------------- | --------------------- | ---- | --------- | -------- |
+| `propOf`              | GQL `hopfilter`       | 4.0% | **13.6%** | **3.4x** |
+| `propOf`              | GQL `grouped`         | 5.3% | **16.5%** | **3.1x** |
+| `get properties`      | GQL `grouped`         | 3.4% | **13.5%** | **4.0x** |
+| `get properties`      | Gremlin `filterchain` | 9.5% | **23.3%** | **2.5x** |
+| `get properties`      | Gremlin `grouped`     | 3.0% | 6.7%      | 2.2x     |
+| `degreeOfTypes`       | GQL `hopfilter`       | 2.5% | **16.5%** | **6.6x** |
+| `(garbage collector)` | Gremlin `hopcount3`   | 6.3% | **18.8%** | **3.0x** |
+
+Everything else holds its place, which is the reassuring half: `grouped`'s closure 42.7% -> 42.1%,
+`bump` 24.8% -> 25.4%, `satisfies` 36.5% -> 30.9% on `hopfilter` and 15.2% -> 16.2% on `sortedpage`,
+`expandSlot` 33.6% -> 36.0%. And `compareCodePoints` goes 6.9% -> **5.9%**, so item 921's declined
+surrogate hoist does NOT get better with size — the decline stands on its own terms.
+
+**The portable finding: a 20,000-element profile understates the property-read path by 2.5-4x, on
+both surfaces.** `propOf` plus `get properties` is ~8-9% of a GQL shape at 20k and **~24-30% at
+200k**, and Gremlin's `get properties` alone reaches 23.3%. Two ticks ago I listed "property access
+itself — every carrier specialization I shipped sits on top of it and I never priced the floor" as an
+uninstrumented area; this is that floor, and it is the dominant cost at realistic sizes.
+
+### Why it grows, which is NOT the getter
+
+`get properties` is already minimal — a null check, a `??=` memo and a field read — and item 162's box
+cache took the `Map.get` off it. The `get id` getter immediately above it carries a REJECTED-lever
+note for the same reason (JSC inlines a getter whose body is a private-field read; the rewrite
+measured flat with the rounds disagreeing on sign).
+
+So the growth is in what `propOf` does THROUGH it: `element.properties[key]` on a **frozen plain
+object with arbitrary keys**. That is V8 dictionary mode, and with 200,000 distinct bags the call
+site's inline caches are megamorphic — a hash lookup per read instead of an inline-cached field
+access, and one that misses cache more often the bigger the heap. It is the same cliff
+`ts-set-is-o-width` records at 128 -> 256 keys, reached from the element count instead of the bag
+width. **NOT MEASURED HERE as a separate hypothesis** — named, with the mechanism stated, so the next
+tick can price it in isolation rather than infer it from a share.
+
+### What this re-prices, and what it does not
+
+Any lever on the property-read path is worth **~3x its 20k measurement** at realistic sizes, so an
+effect that looked under the ~10% bar there may clear it. That does NOT retroactively revive
+everything declined in this session: `drainMutations` (1361, 1.7%) is per-WRITE and this says nothing
+about it, and `compareCodePoints` measurably shrinks with size. The re-pricing applies to `propOf`,
+`get properties` and `degreeOfTypes` specifically.
+
+**And it is a standing caution for the audit at large**: an unknown number of this corpus's effect
+sizes were measured at 20,000 or below. This item does not audit them; it establishes that the
+regime matters by 2.5-6.6x on the frames that dominate at scale, which is enough that a 20k number
+should carry its size the way it carries its fixture.
+
+### Gates
+
+Probes and instrument only; no engine or core code changed. `bun run check` 0 (read unpiped). The CPU
+analyzer re-run against the stored 20k GQL, Gremlin and write profiles after both fixes: same
+verdicts, same ms values, with the harness line now reported separately.

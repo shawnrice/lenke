@@ -36,10 +36,13 @@ import {
   values,
 } from '@lenke/gremlin';
 
+import { profileWindow } from './windowed-profile.mjs';
+
 const SHAPE = process.argv[2] ?? 'hopcount3';
 const REPS = Number(process.argv[3] ?? 200);
-const NODES = 20_000;
-const FANOUT = 5;
+/** ⚠️ See the size note in `runtime-profile-probe.mjs`: 20,000 is the CACHE-RESIDENT regime only. */
+const NODES = Number(process.env.NODES ?? 20_000);
+const FANOUT = Number(process.env.FANOUT ?? 5);
 
 /**
  * One fixture for every shape, so a difference between shapes is the shape and not the data.
@@ -101,11 +104,15 @@ const g = build();
 let sink = 0;
 const t0 = performance.now();
 
-for (let i = 0; i < REPS; i += 1) {
-  const rows = toArray(plan, g);
+await profileWindow(process.env.PROF_OUT, () => {
+  for (let i = 0; i < REPS; i += 1) {
+    const rows = toArray(plan, g);
 
-  sink += Array.isArray(rows) ? rows.length : 1;
-}
+    sink += Array.isArray(rows) ? rows.length : 1;
+  }
+
+  return sink;
+});
 
 const ms = performance.now() - t0;
 
