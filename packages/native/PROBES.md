@@ -376,6 +376,14 @@ So the rule is now a rule about both benches: **a two-label row measured at `MUL
 measuring one bucket.** Same missing shape, found twice, the second time after it had already cost a
 reading — which is the argument for sweeping the knob rather than picking a value.
 
+⚠️ **AND THE KNOB CUTS BOTH WAYS: `MULTILABEL=-1` makes every MULTI-HOP chain row answer ZERO**
+(item 1416). `-1` halves the `E` edges, so a 3-hop chain needs three consecutive ones and at
+out-degree 1 there are none. A whole ranking of the non-hop GQL rows was taken that way and timed
+dead paths — `chain3` read 21.5 ms with `c=0`, and 47.1 ms with `c=100000`. So: `-1` for a ONE-HOP
+type question, never alone for a multi-hop count, and **read the `answer` field before the timing**.
+A zero answer is the loudest form of "an answer invariant to what you varied cannot validate the
+fixture" and it still took a second look to notice.
+
 ## HOW TO RUN ONE, which is not optional detail
 
 **ASSERT THE ARM FROM THE FILE ON DISK, not from the variable you just built — and do it before you

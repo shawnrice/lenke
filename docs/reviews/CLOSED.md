@@ -51394,3 +51394,87 @@ the remaining headroom is real but tight, and anyone taking it should expect the
 `bun run check` 0 (read unpiped), gql 3610/0 while the change was in. Both files reverted and
 verified: `projectRowIn` appears **0** times in either. Answers were identical across both arms in
 every cell — the hoist was correct, it was simply not worth its own side effects.
+
+### Item 1416 — **TWO INSTRUMENT FINDINGS, no code change**: `MULTILABEL=-1` makes every multi-hop chain row answer **ZERO**, so a whole ranking of non-hop rows timed paths that find nothing. And `chain3`'s **72.6% `bucketSize`** is misattribution — all 200,000 calls take the O(1) branch, proven by counting them
+
+### Finding 1: the disjoint fixture zeroes every multi-hop count
+
+Item 1415's threshold sent target selection out of `hop-projection.ts`, so the non-hop rows were
+ranked by wall time at `MULTILABEL=-1` — the knob item 1413 had just added, carried over from the
+hop work where it is correct. **Every chain and var-length row answered `{"c": 0}`.**
+
+`-1` makes every other edge carry `F` INSTEAD of `E`, which halves the `E` edges — right for a
+single-hop type question and fatal for a chain, because a 3-hop chain needs three consecutive `E`
+edges and at out-degree 1 there are none. Checked across four fixtures rather than assumed:
+
+| shape    | ML  | FANOUT | answer     | p25      |
+| -------- | --- | ------ | ---------- | -------- |
+| `chain3` | −1  | 1      | **`c=0`**  | 6.77 ms  |
+| `chain3` | 0   | 1      | `c=50000`  | 18.09 ms |
+| `chain3` | 0   | 2      | `c=400000` | 29.08 ms |
+| `chain3` | −1  | 2      | `c=50000`  | 27.78 ms |
+
+Same for `varlen24` and `quant33`. So the ranking that produced "`chain3` 21.5 ms, `varlen24` 20.7,
+`varlen13` 16.2…" was a ranking of **dead paths**, and on a live fixture `chain3` is **47.1 ms at
+100k nodes** — more than double, and the heaviest GQL row by wall time.
+
+**The rule, which is the opposite of item 1413's:** sweep `MULTILABEL=-1` for anything that reads a
+degree estimate or walks per-type buckets at ONE hop; never use it alone for a multi-hop count. An
+answer of zero is the loudest possible version of "an answer invariant to the property you varied
+cannot validate the fixture", and it still took a second look to notice.
+
+### Finding 2: `bucketSize`'s 72.6% is its caller's loop
+
+On the live fixture `chain3`'s profile reads `bucketSize` **72.6%** and `side` 16.8% — **89.4%** in
+two frames. `bucketSize`'s hot path is one line:
+
+```ts
+return byType.get(types[0])?.size ?? 0;
+```
+
+A string-keyed `Map.get` plus a `.size`. 72.6% of 685 ms is ~497 ms, which would be absurd — so it
+was counted rather than believed. A counter in the function, two runs:
+
+|                                          |             |
+| ---------------------------------------- | ----------- |
+| whole query                              | 95.9 ms     |
+| `bucketSize` calls                       | **200,000** |
+| ns per call if it were 100% of the query | 479         |
+| ns per call at the profile's 72.6%       | **~345**    |
+
+200,000 `Map.get`s are single-digit milliseconds, not 69. And the branch counters settle the one
+alternative that would have made it real — that it was falling through to
+`countEdges(edgesOfTypes(…))`, which WALKS the bucket:
+
+| branch                                   | calls       |
+| ---------------------------------------- | ----------- |
+| single named type, `byType.get(t)?.size` | **200,000** |
+| whole-graph single bucket                | 0           |
+| **the O(edges) walk**                    | **0**       |
+
+**Every call takes the O(1) path.** So the 72.6% is item 1104's self-time misattribution — a small
+hot callee credited with the inlined loop of `buildThreeHopCount`, which calls it twice per vertex
+(100,000 vertices → 200,000 calls, exactly as counted).
+
+### What that leaves
+
+`chain3` is a degree PRODUCT with a middle-edge walk: two O(1) degree reads per vertex plus one walk
+over the middle leg. The two degree reads are already `Map.get`+`.size`, the walk is the answer's own
+cost, and the profile's top frame is an artifact. **No lever found, and the 89.4% that looked like
+one is accounted for.**
+
+This is the fourth consecutive item where a profile share needed an ablation to become a price, and
+the scoreboard now reads: **1411 real (2.1x, shipped at 1412), 1413 refuted (−0.5%), 1414 real but
+1.4x overstated, 1416 refuted outright.** Two of four nominations were wrong and a third was
+inflated. A share is a nomination; an ablation is the price.
+
+⚠️ **And `mentions` in the analyzer output predicted both refutations.** `bucketSize` showed 12 and
+`side` 1288 — the analyzer's own ambiguity measure, which it prints precisely because a frame it
+cannot locate uniquely cannot be trusted. Reading that column first would have raised the suspicion
+before the profile was taken seriously.
+
+### Gates
+
+`bun run check` 0 (read unpiped). The instrumentation was applied to a copy kept under
+`crates/lenke-engine/target/` and reverted from it; `shortcuts.ts` is verified free of `__bs` and
+`__b1`, and the build was re-run so no instrumented artifact survives.
