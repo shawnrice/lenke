@@ -54592,7 +54592,7 @@ problem. **No lever found, and the sweep's alarming number is accounted for.**
 
 `bun run check` 0 (read unpiped). No code changed.
 
-### Item 1457 — a WRITE FLOOR at last: a TS edge delete is **1.83x** a hand loop making the same core calls, so ~46% is the query layer and ~54% is the core. The biggest single frame is `deIndexEdgeLabel` at **27.35%**, and it is CORE — shared by both arms. Plus two instrument failures a write probe has to avoid
+### Item 1457 — a WRITE FLOOR at last: a TS edge delete is **1.83x** a hand loop making the same core calls, so ~46% is the query layer and ~54% is the core. The biggest single frame is `deIndexEdgeLabel` at **27.35%**, and it is CORE — shared by both arms. ~~Plus two instrument failures a write probe has to avoid~~ — ⚠️ **those were already found and fixed at item 1396; and the 27.35% frame is PRICED AND REFUTED — see item 1458.** What is new here is the hand-floor arm, which no other instrument has
 
 `write-gap-probe.ts` screens TS against native and reports `DELETE edges` at **25.5x** and `SET on an
 edge` at 16.2x. Those are cross-engine ratios, and the repo's own lesson is that a big one is often
@@ -54679,3 +54679,67 @@ perturbing itself; both are recorded so neither looks like a measurement error l
 `bun run check` 0 (read unpiped). No engine code changed — one probe added. The probe's own first run
 also died on `v.labels.includes` because `labels` is a `Set`, which is the kind of thing a floor built
 from assumption gets wrong before it gets anything right.
+
+### Item 1458 — `deIndexEdgeLabel`'s 27.35% is PRICED AND REFUTED, found by searching the cure BEFORE pricing it (item 1455's rule, working as intended — nothing was built). And ⚠️ CORRECTING item 1457: its "two instrument failures" were already recorded at item 1396
+
+Item 1457's write floor nominated `deIndexEdgeLabel` at **27.35%** — the largest single frame on a TS
+edge delete, and core rather than query layer. Item 1455's rule says to search `CLOSED.md` for the
+CURE before pricing the cost. Doing that first closed it in three greps and no code:
+
+- **The TS micro-lever is refuted, with the mechanism in the source.** `Graph.ts`'s
+  `deIndexVertexLabel` records collapsing `has`-then-`get` as REFUTED in TS and says why: _"JSC
+  appears to cache the key's hash, making a `get` right after a `has` on the same key nearly free."_
+  Item 922 cites that note — and its own finding is the useful nuance: the note "reads like a general
+  refutation and is not one", because Rust's `HashMap` caches nothing between calls, so the same scan
+  was live on the Rust side. The direction that matters here is the other one: on the TS side it IS
+  refuted.
+- **The frame's vertex twin was already screened at the same share.** Item 1396's re-screen reports
+  `removeVertices` at 59 ms with `removeVertex` 27.5% and **`deIndexVertexLabel` 27.0%**, under the
+  heading "no unpriced frame over 2% in any of six shapes". My 27.35% on the edge side is that same
+  structure, measured from a different instrument — which is corroboration, not a new finding.
+- **And the add side's split says why there is nothing to remove.** Item 1397 split
+  `indexEdgeLabel`'s 810 ns three ways: the 1M-element `Set` is FREE and **the two adjacency maps are
+  all of it, and they are SUPERADDITIVE**. The de-index is the symmetric operation — three `Set`
+  deletes across `edgesByLabel`, `edgesFromByLabel` and `edgesToByLabel` — so the same conclusion
+  applies: the two adjacency maps are the cost, neither can go without the other, and both are
+  required for correctness.
+
+**So: not a target.** Recorded because the 27.35% looks exactly like an open lever in a profile and is
+the third frame this session to look that way and not be one (`bucketSize` at 72.6% and 41%,
+`degreeOfTypes` at 26%, and now this).
+
+**The rule earned itself on its first use.** Item 1454 priced a cost and proposed a cure that had been
+built and disqualified 85 items earlier; item 1455 wrote the rule; this item applied it and spent three
+greps instead of a tick. That is the whole return.
+
+### ⚠️ CORRECTING ITEM 1457: its instrument lesson was not new either
+
+Item 1457 recorded "two instrument failures a write probe has to avoid" — that an unwindowed write
+profile is mostly fixture construction, and that windowing one short mutation is both too thin and
+perturbing. **Item 1396 had already found and fixed exactly that**, for `bench-usage.ts`: "the write
+probe built its fixture INSIDE the timed call, in four of six shapes", restructured every shape to
+`{ setup, run }` with "setup builds one fixture per rep OUTSIDE the window and timer", and noted that
+the old instrument's sole nomination (`drainMutations`) "does not appear in any of the six profiles —
+it was in that screen because the fixture build was in the profile."
+
+So item 1457 re-derived item 1396's lesson on a new probe. Two mitigations, stated without excusing it:
+the probe was new so its windowing had to be gotten right regardless, and the **hand-floor arm is
+genuinely new** — `bench-usage.ts` has no floor arm (its five "floor" matches are `Math.floor` and
+noise-floor prose), so item 1457's 1.83x engine-against-core split does not exist anywhere else. What
+was not new is the lesson it reported as a finding.
+
+**The pattern across 1454, 1457 and this item:** a measurement is cheap to take and feels like
+evidence of novelty. Three times in five items the COST was new and the CURE or the LESSON was not. The
+grep that settles it costs less than the tick that follows it.
+
+### What is actually left on the TS write path
+
+Nothing nominated. The floor says ~46% is query layer and ~54% core; the core's largest frame is
+refuted above; the query-layer frames are `expand` 10.26%, `walkSegments` 5.13%, `withBinding` 4.27%,
+`runDelete` 3.42%, `recordTail` 2.56%, `matchPattern` 2.56% — none over 11%, all shared with the read
+path that items 1436-1450 closed, and the sum of them is the 1.83x. A 1.83x spread over six frames
+none of which exceeds 11% is not a target; it is what a query layer costs.
+
+### Gates
+
+`bun run check` 0 (read unpiped). No code changed, and nothing was built — which is the point.
