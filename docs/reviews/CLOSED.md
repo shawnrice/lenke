@@ -54743,3 +54743,100 @@ none of which exceeds 11% is not a target; it is what a query layer costs.
 ### Gates
 
 `bun run check` 0 (read unpiped). No code changed, and nothing was built — which is the point.
+
+### Item 1459 — the Gremlin spelling probe had ONE edge label, so it was blind to every multi-type edge spelling. Gave it a second, and the first run flags **172,061x**: `union(out(T), out(U)).count()` against `out(T, U).count()`, identical answers
+
+Four route changes shipped this session (items 1431, 1432, 1442, 1453) and CLAUDE.md's rule is to run
+the spelling probes when the planner is touched and to **add a new form's spellings there**. Running
+them was owed. The GQL side and the Gremlin side both came back clean — 0 answer disagreements, 0
+groups over 2x — and then the reason became obvious.
+
+### The fixture could not express the thing item 1442 changed
+
+`gremlin-spelling-probe.ts` built edges with exactly one label, `T`. So `out(A, B)` against
+`out(B, A)` had **no group at all**, and neither did any other multi-type edge spelling. The planner
+has changed that family five times — items 1377, 1382, 1384, 1386 and 1442, the last of which added a
+whole route for `out(A, B)` — and the probe was structurally incapable of flagging any of it.
+
+**This is the third instance of the same shape in the recorded history**: item 922's "no fixture in
+the corpus varies the index count", item 1453's "the bench fixture has no parallel edges, so a scan
+replaced by `return 1` passes every row", and now this. A probe cannot flag what its graph cannot
+express, and the gap is invisible precisely because the probe reports a clean run.
+
+Added a second edge label `U` as **separate edges, not a relabel**, so every existing group's answer
+is unchanged and only the graph's size moves. `U` is a quarter of `T`'s count so the two buckets have
+a real size gap — which is what makes an order-sensitive union visible (item 1382 measured 3.53x from
+bucket order alone on this surface). Four groups added: the order pair counting, the order pair
+yielding, one-type against a vacuous second type, and the union form.
+
+### The first run flags a 172,061x gap
+
+```text
+  out(T, U).count()                   0.001 ms   answer 500000
+  union(out(T), out(U)).count()     251.210 ms   answer 500000
+```
+
+Identical answers, and the 0.001 ms side is item 1379's shipped union-of-buckets count (110x there).
+The other three new groups are clean: the order pair is 0.002 against 0.002 counting and 37.050
+against 36.721 yielding, and one-type-vs-vacuous-second is 0.001 against 0.001 — **so item 1442's
+route is order-insensitive and the two-type spelling costs what the one-type spelling costs**, which
+is what that item claimed and could not demonstrate here until now.
+
+**And the machinery for the fix already exists**, which is why this is a gap rather than a missing
+feature. Item 1311 fuses `union(out(T), in(T)).count()` into `both(T).count()` (~1 s → 0.011-0.013)
+and left `fuseUnionBoth` plus `ORDER_FREE_TAILS` behind. The unfused case is same-DIRECTION,
+different-TYPE: `union(out(T), out(U))` should fuse to `out(T, U)`, reusing item 1379's union count.
+The probe's own `both(T)` vs `union(out, in)` group reads 0.003 against 0.004 — fused — which is what
+makes the 172,061x a hole in one mechanism rather than an absent one.
+
+### ⚠️ THE FUSION IS NOT UNCONDITIONALLY VALID, and this fixture cannot tell
+
+`union(out(T), out(U))` CONCATENATES: an edge carrying BOTH `T` and `U` is emitted **twice**.
+`out(T, U)` dedupes across buckets and emits it **once**. So the two spellings are equal only when no
+edge carries both types — the `multiTypeEdgeCount === 0` condition the GQL side calls
+`bucketSumsAreSound`, and which item 1379's count already consults.
+
+**My fixture has no overlapping edge labels, so it would NOT catch a wrongly-ungated fusion** — the
+same blindness this item just fixed, one level down. Whoever builds this needs an overlapping-label
+test fixture (item 1453's `multitype-dedupe-skip.test.ts` is the shape), and ideally a fifth probe
+group with an overlapping pair whose two spellings legitimately DISAGREE, asserted as a
+known-different group rather than a spelling pair.
+
+**Not built here**, and deliberately: the tick found the gap by fixing the instrument, and the fix
+needs a correctness gate whose test fixture does not exist yet. Priced at 172,061x on a count, with
+the caveat that `union(out, out)` is a less common spelling than the pair it should fuse to.
+
+### Also newly comparable
+
+`label, two of them: hasLabel(a,b) vs or(hasLabel, hasLabel)` now reads **4.22x** (net 4.16x). It was
+previously in the under-1ms list and crossed the comparison floor because the fixture grew. Not
+introduced by this item — surfaced by it, and a second spelling gap on the same probe.
+
+### The GQL probe: 0 answer disagreements, and its 2x gate is UNGATED at the default `SPELL_N`
+
+The GQL side came back with **0 groups disagreeing on the answer** and four groups over 2x — every
+one of them marked **"UNGATED — no null control in this run"**:
+
+```text
+  a NEGATED boolean vs the equality spelling                               8.63x
+  a boolean compared against a literal vs the bare predicate              11.52x
+  SEEK: a param equality alone — clause vs inline vs inline-WHERE          4.71x
+  SEEK: an anchored hop — clause vs inline on the start                    2.04x
+```
+
+They cannot be judged, because **both null controls fell under the 1 ms comparison floor** — the
+probe's gate compares a group against the null control nearest its own duration, and at the default
+there is none. `spelling-probe.ts` defaults to **`SPELL_N = 20_000`** while the recorded way to run it
+is `SPELL_N=200000 SPELL_REPS=9` (single runs are bimodal). So `bun run spelling` with no environment
+is a known-insufficient configuration and I ran exactly that.
+
+**None of the four is in a family this session touched** — they are boolean and seek spellings, and
+the seek pair is the family item 579/580 already works on — so they are not this item's to chase.
+Recorded with the reason they are unjudged rather than quoted as findings. A 600k run to bring the
+null controls over the floor exceeded the tick's time budget and was stopped; 200000 is the documented
+value and the right one to use next.
+
+### Gates
+
+`bun run check` 0 (read unpiped). Probe only; no engine code changed. My splice left an unbalanced
+array and `tsc` caught it (`TS1005: ',' expected`) before anything ran.

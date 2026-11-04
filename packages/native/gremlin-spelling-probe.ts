@@ -106,6 +106,30 @@ for (let e = 0; e < N * 2; e++) {
   );
 }
 
+/**
+ * ⚠️ A SECOND EDGE LABEL, because without one this probe could not test ANY multi-type edge spelling
+ * — and that is the family the planner has changed most (item 1459).
+ *
+ * The fixture had exactly one edge label, `T`, so `out(A, B)` against `out(B, A)` had no group here.
+ * That is the shape CLAUDE.md keeps recording: item 922's "no fixture in the corpus varies the index
+ * count", item 1453's "the bench fixture has no parallel edges". A probe cannot flag what its graph
+ * cannot express, and this one has been blind to the multi-type hop through items 1377, 1382, 1384,
+ * 1386 and 1442 — the last of which ADDED a route for exactly `out(A, B)` and should have added its
+ * spellings here, per the rule in CLAUDE.md.
+ *
+ * SEPARATE EDGES, not a relabel: every `T` edge keeps exactly the labels it had, so every existing
+ * group's ANSWER is unchanged and only the graph's size moves. `U` is a QUARTER of `T`'s count, so
+ * the two buckets have a real size gap — which is what makes an order-sensitive union visible
+ * (item 1382 measured 3.53x on the Gremlin side from bucket order alone).
+ */
+for (let e = 0; e < N / 2; e++) {
+  lines.push(
+    `{"type":"edge","id":"u${e}","labels":["U"],"from":"v${(e * 2749) % N}","to":"v${
+      (e * 49_957) % N
+    }","properties":{"w":${e % 5}}}`,
+  );
+}
+
 const graph = tsDeserialize(lines.join('\n'), 'ndjson', new TsGraph());
 
 // THE FIXTURE ASSERTIONS. A group below is only as good as the statistic it relies on.
@@ -322,6 +346,32 @@ const GROUPS: readonly Group[] = [
   [
     'hop, both directions: both(T) vs union(out, in)',
     [traversal(V(), both('T'), count()), traversal(V(), union(out('T'), in_('T')), count())],
+  ],
+  [
+    // ⚠️ THE MULTI-TYPE ORDER PAIR, which item 1442 built a route for and did not add here. Both
+    // spellings select the identical edge set, so they must cost the same; item 1382 measured 3.53x
+    // from bucket order alone on this surface, and `U` is deliberately a quarter of `T` so the two
+    // orders put the large bucket first and second.
+    'edge-type order: out(T, U) vs out(U, T)',
+    [traversal(V(), out('T', 'U'), count()), traversal(V(), out('U', 'T'), count())],
+  ],
+  [
+    'edge-type order, YIELDING: out(T, U).values vs out(U, T).values',
+    [
+      traversal(V(), out('T', 'U'), values('age'), count()),
+      traversal(V(), out('U', 'T'), values('age'), count()),
+    ],
+  ],
+  [
+    // The single-vs-multi pair: `out(T, ZZZ)` names a type NOTHING carries, so it selects exactly
+    // `out(T)`'s edges. Item 1442's `pairTypes` route serves the two-type spelling and `oneType` the
+    // single — two routes, one answer, so they must cost the same.
+    'one type vs a vacuous second: out(T) vs out(T, ZZZ)',
+    [traversal(V(), out('T'), count()), traversal(V(), out('T', 'ZZZ'), count())],
+  ],
+  [
+    'edge-type union vs an explicit union: out(T, U) vs union(out(T), out(U))',
+    [traversal(V(), out('T', 'U'), count()), traversal(V(), union(out('T'), out('U')), count())],
   ],
   [
     'hop, both as edges: bothE(T) vs union(outE, inE)',
