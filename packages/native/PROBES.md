@@ -198,6 +198,23 @@ builds graphs in a tight loop is measuring a different heap than it thinks.
 Per-rep timing, `p25` headline, full distribution, GC accounted, answer in the output so a driver can
 assert the arms agree.
 
+**THE EQUIVALENT-SPELLING PAIRS, which is the design that found the 110x.** Both benches carry a
+`MULTILABEL` knob and a pair of shapes that select the IDENTICAL edges by different routes — GQL
+`hopsingle`/`hopmulti` (`-[:E]->` against `-[:E|F]->`, item 1375) and Gremlin
+`edgesingle`/`edgemulti` (`outE('E')` against `outE('E','F')`, item 1378). Every edge carries `E` and
+a fraction also carry `F`, so the answer is fixed and only the route varies.
+
+Two things make that knob load-bearing rather than a convenience:
+
+- **`MULTILABEL=0` is the control that tells a GAP from a correct DECLINE.** With no two-label edge,
+  `bucketSumsAreSound` licenses the fast path for the disjunction too and the pair is equally fast;
+  the difference only appears when the dedupe is genuinely required. Item 1375 nearly filed a **5000x
+  "spelling gap"** against a planner that was behaving correctly, and this arm is what refuted it.
+  **Vary the property the guard keys on before calling a cost difference a gap.**
+- **A fixture where EVERY edge carries both labels proves nothing.** A walk that deduped nothing and
+  one that deduped everything agree on it. The fraction has to be partial, which is what makes the
+  sum (6) differ from the union (4) in the tests at items 1377 and 1379.
+
 **⚠️ THE NOISE IS PROCESS-LEVEL, SO NO ESTIMATOR FIXES IT.** Replacing the loop-total with CLAUDE.md's
 own median-of-14 moved the floor from 12% to 13.2% — no better (item 1367). Each process builds its
 own fixture and gets its own heap layout, and that offset applies to every rep in it. **The unit of
@@ -212,8 +229,37 @@ answer-preserving four-line fast path read **+2.6% faster at n=8** and **−0.3%
 What stopped it was counting pairs: 43 of 64 favoured it, where 32 is chance. "Two medians 2.6% apart
 with overlapping distributions" invites shipping; "43 of 64 pairs" does not.
 
+**⚠️ AND n=8 IS SIGN-UNSTABLE BELOW ~3% ON A ~300 ms ROW — three independent demonstrations, in both
+directions, on targets AND controls:**
+
+| item | what was measured                     | n=8       | n=24       |
+| ---- | ------------------------------------- | --------- | ---------- |
+| 1367 | `FAST1`, the TARGET                   | **+2.6%** | **−0.3%**  |
+| 1374 | `walkBucket`'s CONTROL                | **−0.7%** | chance     |
+| 1380 | the union count's `hopcount3` CONTROL | **−1.8%** | **+0.96%** |
+
+So on this row **n=8 cannot establish the SIGN of an effect under about 3%**, let alone its size, and
+a control that appears to move at n=8 is not evidence of a file-edit tax. Item 1367 established that
+the noise is PROCESS-level and no within-process estimator removes it; this is the magnitude below
+which the process COUNT is inadequate too. Three of this session's readings had to be redone for it.
+
+**⚠️ QUOTE p OR THE PAIR COUNT, NOT A RATIO ALONE.** Item 1380's +0.96% at n=24 looks like a small
+win and is not one: U = 351 against an expected 288 with SD 48.5 gives z = 1.30, p ≈ 0.19. "No
+detectable difference" is a result and should be written as one.
+
+**⚠️ `p25` PER PROCESS, MEDIAN ACROSS PROCESSES — a MEAN inverts verdicts.** Item 1380's faster arm
+carried outliers at 350.31 and 324.15 where the slower arm's largest was 320.17, so a mean reads the
+faster arm as a regression. Print the distribution beside the summary; a bimodal series summarised is
+a lie, and this is the shape it takes.
+
 **⚠️ WITHIN one interleaved run, n=24 resolves ~1%; ACROSS runs the absolute level drifts ~3%.**
 Compare arms inside a run; never against another run's number.
+
+**⚠️ EXTRACT THE BASELINE WITH `git show <ref>:<path>`, DO NOT RECONSTRUCT IT.** Item 1380's BASE came
+from `git show HEAD~1:…`, which is the pre-change engine verbatim; a patch-reconstructed arm can drift
+from the committed diff. Assert that both arms share every OTHER change you are not measuring — 1380
+checked `walkBucket` appeared 4 times in both, without which it would have measured two items at
+once.
 
 ## More bespoke probes
 
