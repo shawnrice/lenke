@@ -53730,7 +53730,9 @@ Four rounds, 100k nodes, `STRIDE=random`, all arms' digests and row counts equal
 ```
 
 **The engine is 24.6 ns/row above a hand floor that mimics both its machinery and its inline-cache
-state.** Five attributions were offered for this row across items 1436, 1437, 1444, 1445 and the
+state.** ⚠️ **BUT THE COMPONENT SPLIT DOES NOT TRANSFER — see item 1448.** The arms bracket the
+engine; the differences BETWEEN them are differences between two hand models, and two engine
+changes derived from this split measured ~0. Read the total, not the terms. Five attributions were offered for this row across items 1436, 1437, 1444, 1445 and the
 call-site comment; this is the first one that closes.
 
 ### What this settles, and it is not a small thing
@@ -53882,3 +53884,90 @@ share.
 
 `bun run check` 0 (read unpiped), gql 3669/0 before the revert and after it. Engine file reverted and
 verified at `farRow` count 0; the only committed change is the probe arm.
+
+### Item 1448 — ❌ REFUTED, and so is item 1447's diagnosis: the sibling closure with the read fully INLINE also measures **−1.7% / +2.2%**. `propOf` stays at **21.80%** after the projection stops calling it, because that share was always the PREDICATE's. ⚠️ The floor arms' COMPONENT split does not transfer to engine changes — and I trusted it for three items
+
+Item 1447's specialization measured −4.8%/+0.7% and I diagnosed the wiring: a hoisted local holding
+one of two closures makes one shared bytecode site polymorphic. Rebuilt it the way the rest of the
+file is written — a sibling `return (graph, params) => {…}` with the property read INLINE at the push
+site, no closure and no call at all, `farPropSpec` handing over `{ name, key }` strings instead of a
+function. Verified reached (the push made to throw: fires for `RETURN b.n AS n`, correctly declines
+for two items and for a START-variable projection).
+
+```text
+  src    row                   PRE     POST   change  concord  note
+  probe  engine              58.02    59.02    -1.7%   2/9   TARGET
+  probe  engine-bare         25.13    25.32    -0.8%   3/9   CONTROL, far-driven
+  bench  hopfiltyield        62.85    61.47     2.2%   7/9   TARGET
+  bench  hopoptyield         59.85    59.77     0.1%   5/9   own detector, not reached
+  bench  hopsingleyield      26.68    26.78    -0.4%   3/9   CONTROL
+  bench  hopstartonlyyield   57.04    56.00     1.8%   5/9   CONTROL, start-only
+  bench  hoprelfiltyield     54.01    53.61     0.7%   7/9   CONTROL, rel-bound
+```
+
+Targets inside the controls' own scatter. **Reverted.** So item 1447's dispatch-site diagnosis is
+refuted as well: two independent wirings, one with an indirect call and one with none, both ~0.
+
+### The profile of the POST build says why, and it is not subtle
+
+```text
+  env.binding (the walk closure)   51.04%
+  propOf                           21.80%   <- UNCHANGED
+  get properties                   14.62%
+  get to                            6.66%
+  satisfies                         0.52%   compareTruth 0.39%
+```
+
+**`projectRow` has left the top frames and `propOf` has not moved.** Its share was never the
+projection's call — it is the PREDICATE's, reached through `satisfies` → `compareTruth` → `propOf`. The
+walk closure, `propOf`, `get properties` and `get to` are ~94% of the row, and the projection is not a
+term in it at all.
+
+### ⚠️ THE REAL FINDING IS ABOUT THE INSTRUMENT, NOT THE ROW
+
+Items 1444-1447 decomposed this row with hand-written floor arms and I reported the result as
+explaining **90.9%** of the engine-to-floor gap — machinery 52.1%, megamorphism 38.8%. That total is
+real in the sense that the arms do bracket the engine. **But its COMPONENTS are not engine terms**, and
+two engine changes derived from them measured ~0:
+
+- `floor-engine-shaped-poly` → `floor-pred-poly-row-direct` is **120 ns/row in the probe**. The
+  equivalent engine change is **0 ns/row**.
+
+The arms were built by adding plausible costs until the total matched. That makes the bracket
+trustworthy and the attribution worthless — a hand arm is a _model_ of the engine's shape, and
+differences between two models are not differences between two engines. **The floor told me the row
+is 1.87x off (true, and still the useful fact). It did not tell me which term to take, and I read it
+as though it had, for three items.**
+
+CLAUDE.md's rule is "a share is a nomination; an ablation is the price". This is the next layer of the
+same lesson: **an ablation in a HAND FLOOR is still only a nomination for the engine.** The price is an
+ablation in the engine, which is what items 1447 and 1448 finally did — and it came back 0 twice.
+
+The method still earned its place where it was used to BRACKET rather than to attribute: item 1441
+(the engine sits at its floor, so stop looking), item 1443 (an apparent 3.35x was the fixture, with
+the engine below its floor). Both of those are "how far off is it", which hand arms answer well. It
+failed on "which part", twice.
+
+### What is actually open on `hopfiltyield`, stated honestly
+
+The row is ~1.9x a lean hand floor and **the three terms that profile are the walk closure (51%), the
+predicate's `propOf` + `get properties` (36%) and `get to` (7%)**. Of those:
+
+- `get to` and `get properties` are far-vertex access. Item 1392 closed that family as having no
+  per-row lever, and item 1443 re-confirmed it from the direction side.
+- the walk closure's 51% is the loop itself, which items 1436 and 1438 established is on the right
+  route at this degree and stride.
+- **the predicate path is the one term never ablated IN THE ENGINE.** Items 1413 and 1437 priced
+  predicate-adjacent things; nobody has replaced `satisfies`/`compareTruth` with a specialized
+  comparison for the single-far-property-vs-literal case, which is the exact analogue of what items
+  1339/1340 shipped on the node-scan side (1.38x, 1.17-1.21x).
+
+That is the next target, and the lesson above says to ablate it in the engine rather than model it in
+a probe: delete the predicate from the query (`hopsingleyield` already is that row, at 26.78 against
+61.47) and the difference — **~35 ms, 57% of the row** — is the predicate path's true engine price,
+measured without a single hand arm. The spelling pair was sitting in the bench the whole time.
+
+### Gates
+
+`bun run check` 0 (read unpiped), gql 3669/0 before the revert and after it. Engine file reverted and
+verified at `farSpec` count 0; nothing of this item is committed but its record.

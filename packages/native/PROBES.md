@@ -219,8 +219,20 @@ builds graphs in a tight loop is measuring a different heap than it thinks.
 | `gremlin-hop-floor-probe.mjs`       | the Gremlin hop FLOOR, three arms (item 1411)                                       |
 | `gremlin-multitype-floor-probe.mjs` | why `out('E','F')` costs 1.86x `out('E')` — six arms, `ARM=` (item 1441)            |
 | `gql-filtered-hop-floor-probe.mjs`  | how far the FILTERED GQL hop is above a hand floor — seven arms, `ARM=` (item 1444) |
-| `gql-undirected-floor-probe.mjs`    | the GQL undirected hop, five-arm ablation (1414)                                    |
-| `cross-engine-chain3-probe.mjs`     | GQL vs Gremlin, one graph, one arm per process (1426)                               |
+
+⚠️ **A HAND FLOOR BRACKETS; IT DOES NOT ATTRIBUTE** (item 1448). `gql-filtered-hop-floor-probe.mjs`
+correctly says `hopfiltyield` is ~1.9x off and that `engine-bare` is AT its floor — both useful, and
+both are "how far off". Its component arms are a different matter: the step from
+`floor-engine-shaped-poly` to `floor-pred-poly-row-direct` is 120 ns/row in the probe and **0 in the
+engine**, measured twice with two different wirings (items 1447, 1448). The arms were built by adding
+plausible costs until the total matched, which makes the bracket trustworthy and the attribution
+worthless. So CLAUDE.md's "a share is a nomination; an ablation is the price" has a next layer: **an
+ablation in a HAND FLOOR is still only a nomination for the engine.** Ablate in the engine — or
+better, find the spelling pair that already isolates the term: `hopfiltyield` against
+`hopsingleyield` is the predicate's price (61.47 against 26.78, **57% of the row**) and needed no hand
+arm at all.
+| `gql-undirected-floor-probe.mjs` | the GQL undirected hop, five-arm ablation (1414) |
+| `cross-engine-chain3-probe.mjs` | GQL vs Gremlin, one graph, one arm per process (1426) |
 
 ⚠️ **`hop-projection.ts` CHARGES A TOLL, so price a target against ~10% before attempting it**
 (items 1413 and 1415). Two independent changes there — a dedupe skip and a per-row `EvalEnv` hoist —
