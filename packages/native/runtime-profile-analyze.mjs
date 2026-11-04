@@ -45,6 +45,14 @@ const docs = ['docs/reviews/CLOSED.md', 'docs/reviews/2026-08-31-ts-audit.md'].m
 const ACCESSOR = /^(?:get|set) ([A-Za-z_$][\w$]*)$/;
 
 /**
+ * A frame from the PROBE rather than from the engine. A probe's fixture builder is genuinely hot and
+ * its names are of course absent from the audit, so it reports as a top unpriced frame every run —
+ * the write-path screen flagged `addEdgeOnly`, `setProps` and `removeVertices`, all harness. The GQL
+ * probe's `build` escaped notice only because "build" appears 841 times in the documents.
+ */
+const isHarnessFrame = (r) => /-probe\.(?:mjs|ts)$/.test(r.where.split(':')[0]);
+
+/**
  * Count a name as an IDENTIFIER, not as a substring.
  *
  * A plain `split(name).length - 1` counts the English word inside prose, which inflated `pick` to
@@ -221,7 +229,12 @@ for (const f of profiles) {
     );
   }
 
-  const big = rows.slice(0, 40).filter((r) => r.ms / total > 0.02);
+  // THE PROBE'S OWN FRAMES ARE NOT FINDINGS. A probe file is named `*-probe.mjs`/`*-probe.ts`, its
+  // fixture builder is genuinely hot (it builds the graph), and its function names are of course
+  // absent from the audit — so it reports as a top unpriced frame every run. The write-path screen
+  // flagged `addEdgeOnly`, `setProps` and `removeVertices`, all of them harness. The GQL probe's
+  // `build` escaped notice only because "build" happens to appear 841 times in the documents.
+  const big = rows.slice(0, 40).filter((r) => r.ms / total > 0.02 && !isHarnessFrame(r));
   const unpriced = big.filter((r) => mentions(r.checkName) === 0);
   // Frames that are STILL unnameable after the enclosing-declaration pass. These are the honest
   // residual: not "recorded", just unknown. Reporting them separately is the whole point of this

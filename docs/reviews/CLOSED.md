@@ -47158,3 +47158,110 @@ priced in the same pass, or the next run will show the field clean while the wor
 ### Gates
 
 Instrument and docs only; no engine or core code changed. `bun run check` 0 (read unpiped).
+
+### Item 1360 — the WRITE path screened for the first time: `drainMutations` is the only unpriced engine frame, its lever PRICED at 3.2% and DECLINED, and O(1)-by-id confirmed at 70.9 ns
+
+Items 1358 and 1359 screened both query surfaces. Neither probe touches the write path, and the GQL
+`control` profile was the hint: with `RETURN 1` as the query its hottest engine frames are all ingest
+(`indexEdgeLabel`, `commitElementLabels`, `insertEdge`, `pushTokens`), because the fixture build is
+most of that process. Built `runtime-profile-write-probe.mjs` — six shapes, one per process, 20,000
+elements, under the cgroup cap (item 1357's arm was OOM-killed for exactly this).
+
+```text
+  addVertexBare    50 reps    890.8 ms     1.43 us a vertex
+  addVertexProps   45 reps    933.7 ms     1.04 us a vertex (1 label + 3 keys)
+  addEdgeOnly       7 reps   1589.1 ms    ~2.0  us an edge
+  setProps         43 reps    912.2 ms
+  removeVertices   38 reps    871.4 ms
+  pointLookups     37 reps   1193.1 ms    7,400,000 lookups
+```
+
+### O(1)-BY-ID, which the standing instruction names explicitly, confirmed at the FRAME level
+
+`pointLookups` puts `getVertexById` at **42.7%, 524.6 ms over 7,400,000 lookups = 70.9 ns each**, flat
+in graph size. Previously this was asserted from `bench:usage`'s `read: point lookup` row (977.8k
+ops/sec); this is the first time it has been read off a profile of the function itself. `Graph`'s
+`vertexCount`/`edgeCount` remain O(1) `Map.size` getters. Nothing in this session's work touches it.
+
+### THE ONE UNPRICED FRAME, and its lever is a measured TRADE rather than a win
+
+`drainMutations @ Graph.ts:1023` — **ZERO mentions, and hot in three of six shapes**: `addVertexProps`
+4.0%, `removeVertices` 3.7%, `setProps` 3.0%. Reading it shows a real inefficiency. `pushTokens`
+appends one entry **per token per write with duplicates kept**, so
+`addVertex({labels:['P'], properties:{k,s,n}})` x 20,000 puts **80,000 entries in `pendingTokens` of
+which 4 are distinct**, and the drain walks all 80,000 doing `Map.get`+`Map.set` on four keys to land
+on `{P:20000, k:20000, s:20000, n:20000}`. The array also grows by doubling to 131,072 slots, which
+is part of the GC bucket below.
+
+The transform is sound: tally `Map<string, number>` at push time, add each distinct count once. The
+epoch numbers are identical (a sum is a sum, and the counters are independent so order is free).
+Measured in `token-drain-probe.mjs`, 14 reps, first 3 dropped, median, order alternated, with an
+equivalence check on both distributions before timing either:
+
+**FIVE PROCESSES, not one** — and the first single-process reading was an OUTLIER that nearly went
+into this entry as the result. It put the array arm at 1.196 ms and reported **2.23x**, where the
+stable value is ~0.90 ms. The in-process estimator (14 reps, drop 3, median, order alternated) was
+already correct and still could not see it, which is precisely why CLAUDE.md says to repeat the
+PROCESS and print the DISTRIBUTION rather than a summary of one.
+
+| distribution               | array (today) | count map | ratio (median of 5) |
+| -------------------------- | ------------- | --------- | ------------------- |
+| narrow — 4 distinct (real) | ~0.90 ms      | ~0.55 ms  | **1.68x FASTER**    |
+| wide — all 80,000 distinct | ~8.3 ms       | ~11.8 ms  | **1.41x SLOWER**    |
+
+```text
+  ratio array/map, one per process
+  narrow   1.61  1.68  1.71  1.65  1.69
+  wide     0.71  0.73  0.68  0.67  0.74
+```
+
+**DECLINED.** 0.35 ms saved per 20,000 writes is **17.5 ns a write against a ~1.04 us write — 1.7%**,
+about half the 4.0% the profile attributes to the frame, and well under the ~10% this repo requires a
+dedicated harness for. Against that it costs **1.41x on wide property bags**, and wide bags are a real
+workload here (`ts-set-is-o-width`, and the graph-ML substrate's wide-feature `SET`). A hybrid that
+switched structures on the observed duplicate ratio could keep both, and that is complexity for 1.7%.
+Same disposition and same reasoning as item 921's surrogate-guard hoist (~1.07x, sound, declined).
+
+Recorded so the next reader does not re-derive it: the inefficiency is REAL and the arithmetic is
+`O(writes)` where `O(distinct)` would do — it is the ADVERSARIAL case and the effect size that kill
+it, not the premise.
+
+### What the write path is actually made of, which is the portable result
+
+Nothing else is unpriced, and the shape of the cost is consistent across all six:
+
+```text
+  w-addEdgeOnly (1635 ms)                    w-addVertexProps
+    416.1  25.4%  48 mentions  indexEdgeLabel      GC              18.6%
+    206.8  12.6%  16 mentions  getEdgeById         drainMutations   4.0%
+    202.5  12.4%  n/a          (garbage collector)
+    145.4   8.9%   7 mentions  #commitNormalized
+    141.5   8.7%   7 mentions  commitElementLabels
+```
+
+**`(garbage collector)` is 12.4-20.7% of EVERY write shape** — the single largest bucket after the top
+function, and **structurally invisible to this screen**, because a synthesized frame name can never
+appear in a document so it is always `n/a`. That is not a new finding so much as independent
+confirmation of `ts-ingest-is-constant-factor`'s conclusion (the 4x native gap is JSON.parse + alloc +
+freeze, with `addEdge` ~85% of it, and `addVertex` WITHDRAWN as a target at item 312 at 7.4%). The
+useful part is the direction it points: **the write path's remaining headroom is allocation, not
+arithmetic**, so the instrument for it is an allocation profile (`--heap-prof`), not a CPU one. Not run
+here; named as the next instrument rather than guessed at.
+
+### An instrument defect this run exposed: the screen was flagging ITS OWN probe
+
+`addEdgeOnly`, `setProps` and `removeVertices` were all reported as top unpriced frames. They are the
+probe's fixture builders — genuinely hot, and of course absent from the audit, so they report every
+run. Frames from a `*-probe.mjs`/`*-probe.ts` file are now excluded. The GQL probe's `build` escaped
+notice for two items only because the word "build" happens to appear 841 times in the documents, which
+is luck rather than a guard.
+
+That is the FOURTH defect in this screen found by pointing it at a new surface (1358: `n/a` laundering
+and the `file://` no-op; 1359: short accessor properties and substring counting). The pattern is worth
+naming: **a cross-checking screen is only as good as the surfaces it has been run against, and each
+new surface has found a fresh way for it to lie.** Its negatives are worth proportionately less than
+its positives until the next surface has been tried.
+
+### Gates
+
+Probes and instrument only; no engine or core code changed. `bun run check` 0 (read unpiped).
