@@ -219,6 +219,7 @@ builds graphs in a tight loop is measuring a different heap than it thinks.
 | `gremlin-hop-floor-probe.mjs`       | the Gremlin hop FLOOR, three arms (item 1411)                                       |
 | `gremlin-multitype-floor-probe.mjs` | why `out('E','F')` costs 1.86x `out('E')` — six arms, `ARM=` (item 1441)            |
 | `gql-filtered-hop-floor-probe.mjs`  | how far the FILTERED GQL hop is above a hand floor — seven arms, `ARM=` (item 1444) |
+| `id-lookup-scaling-probe.mjs`       | is get-by-id O(1)? engine vs a raw `Map`, `MODE=hit                                 | seq | miss` (item 1451) |
 
 ⚠️ **A HAND FLOOR BRACKETS; IT DOES NOT ATTRIBUTE** (item 1448). `gql-filtered-hop-floor-probe.mjs`
 correctly says `hopfiltyield` is ~1.9x off and that `engine-bare` is AT its floor — both useful, and

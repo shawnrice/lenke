@@ -54156,3 +54156,75 @@ halves fused. **Stop looking here**; the next lever on this row is a language-le
 
 `bun run check` 0 (read unpiped), gql 3669/0 before the revert and after it. Engine file reverted and
 verified at 0 markers, `git diff --stat` empty for it; nothing committed but this record.
+
+### Item 1451 — ✅ O(1) GET-BY-ID IS VERIFIED, not just read off the source: the engine scales **as a raw `Map` does** (relative growth 0.38-1.10x across hit/seq/miss). It carries a **2.24x constant factor** over a raw `Map`, which is a cost and not a complexity
+
+Keeping O(1) access to a vertex or edge by id is a standing requirement of this work, and nothing in
+`PROBES.md` measured it — every statement about it so far has been a reading of `Graph.ts`, which is
+a claim about the source and not about the build. `id-lookup-scaling-probe.mjs` measures it.
+
+(`Graph.ts` is also one of the files `grep` silently skips, so the source had to be read through
+python in the first place — which is exactly the kind of reason not to settle for reading it.)
+
+### ⚠️ THE FIRST VERDICT WAS WRONG, AND THE CONTROL IS WHY
+
+The probe's first run reported **"NOT FLAT — per-lookup cost grows with N"** at 4.91x from 10k to 1M.
+That verdict was unsound: a hash map at 1,000,000 entries is slower per lookup than at 10,000 whatever
+its complexity, because the table stops fitting in cache. **Memory hierarchy is not an extra
+comparison.**
+
+The tell was already in the data I had: `seq` grew 2.4-2.9x and `hit` 3.8-4.9x **on the same maps**,
+and locality cannot matter to an algorithmic term. So the question is not "is it flat" but "is it as
+flat as a `Map` can be" — which needs a raw `Map<string, number>` of the same size, with the same keys
+in the same order, through the same timing function. Added, and it settles it:
+
+```text
+  MODE=hit    elements  vertex ns   edge ns   raw Map   v/raw   e/raw
+                 10000       41.6      60.1      13.2    3.15    4.55
+                100000       32.2      34.6      17.5    1.84    1.98
+               1000000      207.2     208.4      96.0    2.16    2.17
+    engine grows 4.98x, raw Map grows 7.26x  ->  relative 0.69x
+
+  MODE=seq       10000       41.8      42.5      11.6    3.61    3.67
+                100000       21.7      25.3      13.4    1.61    1.88
+               1000000       66.1      63.7      48.2    1.37    1.32
+    engine grows 1.58x, raw Map grows 4.16x  ->  relative 0.38x
+
+  MODE=miss      10000       34.6      39.8      33.6    1.03    1.18
+                100000       32.3      29.6      16.0    2.02    1.85
+               1000000       72.3      75.9      63.7    1.14    1.19
+    engine grows 2.09x, raw Map grows 1.89x  ->  relative 1.10x
+```
+
+**Relative growth 0.38-1.10x in all three modes: the engine scales as the map does. O(1) holds**, for
+vertices and edges, on hits and on misses.
+
+### What it does carry: a 2.24x constant factor
+
+At 1,000,000 elements the engine's lookup is **2.24x a raw `Map.get`** for both vertices and edges. That
+is a constant, not a trend — it is flat-ish across sizes (1.3-2.2x) and it is the wrapper around the
+map rather than the map.
+
+**Priced as low value anyway, and the reason is which paths use it.** The query walks hold element
+REFERENCES and never look up by id per row — `hopfiltyield`, the chains, the Gremlin walks all resolve
+`edge.to` directly. The id path is used by external-id results, `_MERGE`, edge reconstruction on
+reload and `from`/`to` resolution during construction, i.e. per-WRITE and per-LOAD work, not per-row
+read work. A 2.24x on a ~100 ns operation that no hot read path calls is not where the next win is.
+Recorded so that a future profile showing `getVertexById` has the constant in hand.
+
+### Honest about the instrument
+
+- **The smallest size is warm-up noisy** and the probe now says so in its own output: at 10,000 the
+  loop runs 10,000 times a rep and the reading comes out ABOVE the 100,000 one (41.6 against 32.2 —
+  non-monotonic). So the base row is indicative, the growth ratios built on it are soft, and the
+  relative-to-map verdict — stable across three modes and two element kinds — is the claim to trust.
+- **The probe's own assertion caught my bug**: `MODE=miss` reported 10,000 hits on keys that were never
+  inserted, because `getVertexById` returns **`null`** for a miss and I had tested `!== undefined`. One
+  line of "assert the sweep found what it should have found" turned a silently wrong measurement into a
+  loud failure. Worth keeping as a habit for any probe whose arms can disagree on what counts as a hit.
+
+### Gates
+
+`bun run check` 0 (read unpiped; it failed three times first — `prefer-for-of`, then
+`no-unnecessary-template-expression`, then `prefer-template` on the fix for the previous one, which is
+a sign the printing wanted restructuring rather than patching). No engine code changed.
