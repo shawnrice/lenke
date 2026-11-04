@@ -2499,7 +2499,8 @@ const farDrivenHopWalk = (w: {
       // all — the same soundness rule `bucketSumsAreSound` states for the whole-graph count.
       const sumIsExact = graph.multiTypeEdgeCount === 0;
       const buckets: ReadonlySet<Edge>[] = [];
-      let keys: string[] | undefined;
+      // NO `keys` CACHE: the spread clone (item 1407) needs no key list, so the one this walk used
+      // to hoist across far vertices is gone. The single-type walk below still has its own.
 
       for (const far of candidateVertexSource(graph, farLabel)) {
         const byType = out ? far.adjTo : far.adjFrom;
@@ -2532,18 +2533,24 @@ const farDrivenHopWalk = (w: {
 
         const template = projectRow(proj, binding, params, graph);
 
-        keys ??= Object.keys(template);
+        // SPREAD, NOT A COMPUTED-KEY LOOP, and the template is the FIRST row rather than a
+        // discarded prototype (item 1407). A windowed profile of this walk on a disjoint-type
+        // fixture at degree 3 put this loop at **58.7%** with GC at another 27.4% — 86% of the row
+        // between creating objects and collecting them — while `propOf` had collapsed to 2.5%,
+        // which is the hoist doing its job and leaving THIS as the cost.
+        //
+        // `{ ...template }` clones with the template's own hidden class; `{}` plus
+        // `row[keys[c]] = …` builds each row through computed-key stores, which cannot reuse it.
+        // Column ORDER is preserved because spread copies own enumerable keys in insertion order,
+        // and that order is BYTES for cross-engine identity (`column-order-is-observable`).
+        //
+        // Pushing the template itself is safe and saves one clone in every `n`: `projectRow`
+        // returns a fresh object per far vertex, nothing else retains it, and the general path
+        // likewise hands out objects it does not keep. At degree 3 that is a third of the clones.
+        rows.push(template);
 
-        const vals = keys.map((k) => template[k]);
-
-        for (; n > 0; n -= 1) {
-          const row: Row = {};
-
-          for (let c = 0; c < keys.length; c += 1) {
-            row[keys[c]] = vals[c];
-          }
-
-          rows.push(row);
+        for (n -= 1; n > 0; n -= 1) {
+          rows.push({ ...template });
         }
       }
 
@@ -2556,12 +2563,23 @@ const farDrivenHopWalk = (w: {
     const binding = new Map<string, unknown>();
     // The OPPOSITE index from the start-driven walk: for an `out` hop the far end is the edge's
     // TARGET, so the far endpoints are the keys of the reverse index.
-    let keys: string[] | undefined;
 
     for (const far of candidateVertexSource(graph, farLabel)) {
       const bucket = (out ? far.adjTo : far.adjFrom)?.get(typeName);
 
-      if (bucket === undefined) {
+      // ⚠️ `size === 0` IS GUARDED, and it did not need to be before item 1407. The old loop was
+      // `for (let n = bucket.size; n > 0; …)`, which simply did not run for an empty bucket; the
+      // spread form pushes the template FIRST and would emit one spurious row.
+      //
+      // DEFENSIVE, NOT A FIX, and checked rather than assumed: `removeEdge` DELETES the bucket
+      // rather than leaving an empty `Set` (verified — after removing the only `E` edge,
+      // `b.adjTo.get('E')` is `undefined` and the query returns 0 rows), so an empty bucket is not
+      // reachable today and a mutant dropping this line SURVIVES. It stays because the spread
+      // form's correctness now depends on an invariant maintained in `Graph`'s removal paths rather
+      // than here, and one comparison on a branch that has already done a `Map.get` is a cheap
+      // place to stop depending on another file. The walk at the bottom of this file guards the
+      // same thing for its own reasons.
+      if (bucket === undefined || bucket.size === 0) {
         continue;
       }
 
@@ -2573,21 +2591,24 @@ const farDrivenHopWalk = (w: {
 
       const template = projectRow(proj, binding, params, graph);
 
-      // The column ORDER is observable (it is bytes), and `projectRow` fixes it; taking the keys
-      // from its own output and rebuilding in that order is what preserves it.
-      keys ??= Object.keys(template);
+      // SPREAD, NOT A COMPUTED-KEY LOOP — the single-type twin of the multi-type change above
+      // (item 1407), identical in shape and on the hotter row. `{ ...template }` clones with the
+      // template's own hidden class, where `{}` plus `row[keys[c]] = …` stores through computed
+      // keys and cannot reuse it. The column ORDER stays observable-correct because spread copies
+      // own enumerable keys in insertion order, which is the property the `Object.keys` round trip
+      // was there to guarantee — so the `keys`/`vals` pair is gone rather than reorganized.
+      //
+      // ⚠️ ITEM 159 MEASURED THIS LOOP AS 1.6x-SENSITIVE to an added branch. This removes work
+      // rather than adding it, and it is measured on its own row rather than assumed to inherit the
+      // multi-type result.
+      //
+      // The edges are never read — only counted — because the projection cannot reach them. The
+      // template IS the first row: `projectRow` returns a fresh object per far vertex and nothing
+      // retains it, so pushing it saves one clone in every `bucket.size`.
+      rows.push(template);
 
-      const vals = keys.map((k) => template[k]);
-
-      // The edges are never read — only counted — because the projection cannot reach them.
-      for (let n = bucket.size; n > 0; n -= 1) {
-        const row: Row = {};
-
-        for (let c = 0; c < keys.length; c += 1) {
-          row[keys[c]] = vals[c];
-        }
-
-        rows.push(row);
+      for (let n = bucket.size - 1; n > 0; n -= 1) {
+        rows.push({ ...template });
       }
     }
 

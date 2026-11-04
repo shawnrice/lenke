@@ -50569,3 +50569,72 @@ gql **3580/0**, gremlin 1157/0, core 383/0, serialization 144/0, `bun run fuzz` 
 0 (read unpiped). Confirming read on the shipped build at true degree 3: 73.83 ms overlapping and
 50.19 ms disjoint, with identical row counts and digests across both fixtures. Every A/B driver
 restored its arm and verified it byte-identical.
+
+### Item 1407 — **SHIPPED, 28.1% / 16.7% / 16.1%** (144/144 on all three): the far-driven walks rebuilt every row through COMPUTED-KEY stores. `{ ...template }` clones with the template's own hidden class, and the template becomes the first row instead of a discarded prototype
+
+Item 1406's disjoint fixture had never been profiled. Windowed, it shows the hoist working and hands
+over its own replacement cost:
+
+| arm                               | engine | top frames                                                                    |
+| --------------------------------- | ------ | ----------------------------------------------------------------------------- |
+| degree 2 — declines, start-driven | 780 ms | `propOf` **31.1%**, `startDrivenMany` 21.5%, GC 21.5%, `get properties` 11.5% |
+| degree 3 — accepts, far-driven    | 914 ms | **`rows` 58.7%**, GC 27.4%, `propOf` **2.5%**                                 |
+
+That is the threshold's mechanism in one table: the far-driven hoist collapses the property read from
+**42.6% to 2.5%**, and the cost moves into row construction — **86% between cloning and GC**. Per
+row, degree 3 is 218 ns against degree 2's 279, which is exactly why 3 wins and 2 does not.
+
+### The change
+
+Both far-driven walks built each row as `{}` and then assigned **computed keys** from a hoisted
+`keys`/`vals` pair, which cannot reuse the template's hidden class. Two edits:
+
+- **`{ ...template }`** clones with that hidden class. Column ORDER stays correct because spread
+  copies own enumerable keys in insertion order — which is the property the `Object.keys` round trip
+  existed to guarantee, so the `keys`/`vals` pair is **gone** rather than reorganized. (Column order
+  is BYTES for cross-engine identity.)
+- **the template IS the first row.** `projectRow` returns a fresh object per far vertex and nothing
+  retains it, so pushing it saves one clone in every `n` — a third of them at degree 3.
+
+| shape                                    | est. degree | BASE  | SPREAD    | change    | concordance |
+| ---------------------------------------- | ----------- | ----- | --------- | --------- | ----------- |
+| `hopsingleyield`                         | 1.00        | 11.14 | **8.01**  | **28.1%** | **144/144** |
+| `hopsingleyield`                         | 3.00        | 24.39 | **20.31** | **16.7%** | **144/144** |
+| `hopmultiyield`                          | 3.00        | 51.13 | **42.88** | **16.1%** | **144/144** |
+| `hopmultiyield`                          | 4.00        | 51.94 | 45.57     | 12.3%     | 144/144     |
+| `hopfilter` [CONTROL — a count, no rows] | 1.00        | 1.56  | 1.43      | 8.1%      | 94/144      |
+
+**28.1% is at degree 1**, the default fixture shape and the most ordinary hop there is. The control
+is a `count(*)` that never builds a row; 8.1% on a 1.56 ms row is inside that row's own floor, and
+94/144 is weak.
+
+### The single-type walk was found by its own control
+
+The multi-type arm was measured first, and `hopsingleyield` sat in it as a control reading 1.1% at
+72/144 — because only the multi-type walk had been changed. The single-type walk has the **identical
+loop** on the **hotter** row: a plain one-type hop projection takes the far-driven route at any
+degree, since its choice has no degree gate. So the control was not noise, it was a pointer, and the
+change was applied there too and measured on its own row rather than assumed to inherit the result —
+**item 159 measured this specific inner loop as 1.6x-sensitive to an added branch**, which is a
+reason to measure it, not to avoid removing work from it.
+
+### An edge case I introduced, found by reading my own diff
+
+Pushing the template unconditionally changes behaviour on an **empty bucket**, where the old
+`for (let n = bucket.size; n > 0; …)` produced zero rows and the spread form would produce one. The
+single-type walk guarded only `bucket === undefined`.
+
+Checked rather than assumed: **`removeEdge` DELETES the bucket** rather than leaving an empty `Set` —
+after removing the only `E` edge, `b.adjTo.get('E')` is `undefined` and the query returns 0 rows. So
+the case is unreachable today and **a mutant dropping the new guard SURVIVES**. It stays, documented
+as defensive, because the spread form's correctness now depends on an invariant maintained in
+`Graph`'s removal paths rather than in this file. The walk at the bottom of the same file already
+guarded the same thing for its own reasons, which is what makes this a cheap place to stop depending
+on another module.
+
+### Gates
+
+gql **3580/0**, gremlin 1157/0, core 383/0, serialization 144/0, `bun run fuzz` 20/0, `bun run check`
+0 (read unpiped). Confirming read on the final build (disjoint fixture): `hopsingleyield` 10.14 /
+26.09 ms and `hopmultiyield` 18.70 / 42.77 ms at degrees 1 and 3, with row counts and digests
+matching every arm. Both A/B drivers restored their arm and verified it.
