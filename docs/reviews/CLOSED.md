@@ -51772,3 +51772,36 @@ is the second row this session to look open on its face and be closed underneath
 
 `bun run check` 0 (read unpiped). `shortcuts.ts` restored and verified: the `!labelled` guard and
 the per-call `candidateCount` comparison are both back, and `chain3` reads 49.18 ms again.
+
+### Item 1421 — **`sortedpage` DECLINED, and an instrument caveat**: `gcMs` is **2-3x noisier than `p25`** and is a SUM over reps rather than a share. The 18.2 ms that nominated this row was the top of a 5.4-17.7 range, and the row was already a bounded top-K walk
+
+### The nomination and its refutation
+
+Ranking the live GQL rows, `sortedpage` (`MATCH (n:P) WHERE n.k < 50 RETURN n.s ORDER BY s LIMIT 10`)
+showed **18.2 ms of GC** against a 4.48 ms p25 — which read like ~29% of its wall time on a `LIMIT 10`
+query, exactly the shape `eager-tail-cache` records a **473x** and a **3680x** for.
+
+It is not that. The profile shows `topKNodeWalk` 29.1%, `boundedTopKeyed` 9.3%, `satisfies` 20.2% —
+a **bounded selection already in place**, which is the fix that family needed and already has. 4.23 ms
+to scan 100,000 vertices with a predicate and keep ten is ~42 ns a vertex.
+
+### The caveat, measured
+
+Six processes on one build:
+
+| row          | `gcMs`      | spread   | `p25`         | spread |
+| ------------ | ----------- | -------- | ------------- | ------ |
+| `sortedpage` | 5.4 - 17.7  | **3.3x** | 4.25 - 5.61   | 1.32x  |
+| `varlen14`   | 12.8 - 16.7 | 1.3x     | 28.49 - 32.08 | 1.13x  |
+
+`gcMs` sums over every rep while `p25` is a single rep, so it was never a share — and it is 2-3x
+less stable on top of that. The noise is shape-dependent, worst on SHORT rows where one collection
+landing inside or outside the window moves the total by a third.
+
+**Used carefully it earned its keep this session**: `chain4` read 11.8-14.2% CONSISTENTLY across
+runs, which is what justified items 1417-1418, and the fix drove it to 1.4%. The difference was
+repetition. `PROBES.md` now says `gcMs` needs more repeats than `p25`, not fewer.
+
+### Gates
+
+`bun run check` 0 (read unpiped). No engine code changed.

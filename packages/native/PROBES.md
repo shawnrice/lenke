@@ -231,6 +231,24 @@ sub-10% nomination as already declined.
 Per-rep timing, `p25` headline, full distribution, GC accounted, answer in the output so a driver can
 assert the arms agree.
 
+⚠️ **`gcMs` IS 2-3x NOISIER THAN `p25`, so never read it as a share from one run** (item 1421). It is
+a SUM over all reps while `p25` is one rep, so it is not a share to begin with — and it is far less
+stable. Six processes on one build:
+
+| row          | `gcMs` spread         | `p25` spread          |
+| ------------ | --------------------- | --------------------- |
+| `sortedpage` | 5.4 - 17.7 → **3.3x** | 4.25 - 5.61 → 1.32x   |
+| `varlen14`   | 12.8 - 16.7 → 1.3x    | 28.49 - 32.08 → 1.13x |
+
+The noise is shape-dependent: biggest on SHORT rows, where one collection landing inside or outside
+the window moves the total by a third. `sortedpage` was nominated this session off a single 18.2 ms
+reading that looked like ~29% of its wall time, and it was the top of that range — the row is already
+a bounded top-K walk and had nothing to fix.
+
+Used the other way it earned its keep: `chain4` read 11.8-14.2% CONSISTENTLY across runs and items
+1417-1418 drove it to 1.4%. So the rule is the usual one — repeat it before believing it — and `gcMs`
+needs more repeats than `p25` does, not fewer.
+
 **THE EQUIVALENT-SPELLING PAIRS, which is the design that found the 110x.** Both benches carry a
 `MULTILABEL` knob and a pair of shapes that select the IDENTICAL edges by different routes — GQL
 `hopsingle`/`hopmulti` (`-[:E]->` against `-[:E|F]->`, item 1375) and Gremlin
