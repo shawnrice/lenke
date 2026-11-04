@@ -145,6 +145,19 @@ const SHAPES = {
   hopsingleyield: 'MATCH (a:P)-[:E]->(b:P) RETURN b.n AS n',
   hopmultiyield: 'MATCH (a:P)-[:E|F]->(b:P) RETURN b.n AS n',
   hopmultiyieldrev: 'MATCH (a:P)-[:F|E]->(b:P) RETURN b.n AS n',
+  // THE OTHER THREE WALKS IN `hop-projection.ts` (item 1408). Items 1388, 1390 and 1407 all edited
+  // that file and only two of its five walks had a row here — `startDriven`/`startDrivenMany` and
+  // the far-driven pair. These are the rest, each reached by a clause the measured ones decline:
+  //
+  //   `filteredHopWalk`    a far predicate or carried `WHERE` — binds the start per vertex
+  //   `undirectedHopWalk`  `-[:E]-`, which no other walk can serve (they capture ONE direction)
+  //   `relBoundRoute`      a projected REL variable, which needs the edge bound
+  //
+  // Each is a PROJECTION, not a count, so they exercise row construction the way the yield rows do
+  // — which is what item 1407's change touched and what these would have caught had they existed.
+  hopfiltyield: 'MATCH (a:P)-[:E]->(b:P) WHERE b.n > 5 RETURN b.n AS n',
+  hopundiryield: 'MATCH (a:P)-[:E]-(b:P) RETURN b.n AS n',
+  hoprelyield: 'MATCH (a:P)-[r:E]->(b:P) RETURN r.w AS w',
   sortedpage: 'MATCH (n:P) WHERE n.k < 50 RETURN n.s AS s ORDER BY s LIMIT 10',
   grouped: 'MATCH (n:P) RETURN n.k AS k, count(*) AS c',
   point: 'MATCH (n:P) WHERE n.n = 12345 RETURN n.s AS s',

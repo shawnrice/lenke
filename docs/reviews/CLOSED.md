@@ -50638,3 +50638,97 @@ gql **3580/0**, gremlin 1157/0, core 383/0, serialization 144/0, `bun run fuzz` 
 0 (read unpiped). Confirming read on the final build (disjoint fixture): `hopsingleyield` 10.14 /
 26.09 ms and `hopmultiyield` 18.70 / 42.77 ms at degrees 1 and 3, with row counts and digests
 matching every arm. Both A/B drivers restored their arm and verified it.
+
+### Item 1408 — **SHIPPED, 26.8% / 42.1%** (144/144 both): `undirectedHopWalk` was the ONE walk in `hop-projection.ts` without item 1066's vacuous-label drop, and it paid the deref TWICE per vertex. Found only because three unmeasured walks got bench rows
+
+### The coverage gap came first
+
+`hop-projection.ts` holds **five** walks — `startDriven`/`startDrivenMany`, `farDrivenHopWalk`,
+`filteredHopWalk`, `undirectedHopWalk`, `relBoundHopWalk` — and the isolated bench had rows for
+**two**. Items 1388, 1390, 1403, 1406 and 1407 all edited this file without that ever surfacing,
+because every row they measured went through the two walks that were covered.
+
+Adding `hopfiltyield`, `hopundiryield` and `hoprelyield` made the outlier visible immediately:
+
+| row | ns/row |
+| --- | ------ |
+| `hopsingleyield` (far-driven) | 192 |
+| `hopfiltyield` | 144 |
+| `hoprelyield` | 250 |
+| **`hopundiryield`** | **503** |
+
+**2.6x the cheapest walk on the same fixture.** That is the whole nomination — no audit heading, no
+priced lever, a row that did not exist two hours earlier.
+
+### The profile named the cause
+
+Windowed (`profileWindow`, so the fixture build is excluded — item 1391) on
+`MATCH (a:P)-[:E]-(b:P) RETURN b.n`:
+
+| frame | share |
+| ----- | ----- |
+| `evalLabelExpr` | **24.6%** |
+| `get labels` | 8.3% |
+| `matchesLabel` | 2.8% |
+| **label testing, total** | **35.7%** |
+
+On a fixture where **every vertex is `:P`**, so the label rejects nothing. Item 1066 priced the far
+deref `matchesLabel` forces as the dominant cost of a hop once the far set stops being
+cache-resident (9.3x over a 50,000-wide far pool against a 100-wide one) and gave every walk in this
+file a vacuity drop — **except this one**, which then paid it **twice per vertex**, once in the
+out-pass and once in the in-pass.
+
+### The change
+
+```ts
+const fl = vacuousLabel(graph, farLabel) ? undefined : farLabel;
+```
+
+One line, computed **per call** — not per compile, because vacuity is a property of the graph, the
+same reason the start-driven walk computes it there (items 195, 198, 1066) — and read in both
+passes.
+
+| shape | est. degree | BASE | VACUOUS | change | concordance |
+| ----- | ----------- | ---- | ------- | ------ | ----------- |
+| **`hopundiryield`** | 1.00 | 52.95 | **38.78** | **26.8%** | **144/144** |
+| **`hopundiryield`** | 3.00 | 166.61 | **96.51** | **42.1%** | **144/144** |
+| `hopsingleyield` [CONTROL — far-driven walk] | 1.00 | 9.84 | 9.12 | 7.3% | 104/144 |
+| `hopfiltyield` [CONTROL — filtered walk] | 1.00 | 6.89 | 6.48 | 6.0% | 93/144 |
+
+`AB_ML=-1` (disjoint, item 1406), n=12 per cell, three order-alternated rounds. Both controls are
+walks this edit **cannot reach** and both sit at 6-7 ms, inside their own floor, at 104/144 and
+93/144 — weak, against two 144/144 targets at 27% and 42%. The degree-3 cell is the larger win
+because the in-pass scan is per-edge, so the dropped deref scales with degree rather than with
+vertices.
+
+### ⚠️ The failure mode is a WRONG ROW SET, not a slow one
+
+`undirected-vacuous-label.test.ts` (8 tests) pins both sides on fixtures that differ **only** in
+whether the label is vacuous, because the same query is correct on one graph and wrong on another if
+the drop is mis-decided. `b:P` and `b:Q` are each pinned against the other and against the
+unlabelled total, so a mis-drop cannot pass by returning a superset. The self-loop case is there
+too — the in-pass skips `edge.from === edge.to` because the out-pass already emitted it, and that
+skip sits directly beside the lines changed.
+
+Mutation verdicts:
+
+| mutant | verdict |
+| ------ | ------- |
+| always drop (`const fl = undefined`) | **CAUGHT 4/4** |
+| never drop (`const fl = farLabel`) | **SURVIVED — by design** |
+
+"Never drop" is **answer-equivalent**: it is the code as it stood this morning, correct and slow.
+No correctness test can catch it, which is exactly the shape of every index-seeding bug in this
+repo's history. **Its only guard is the `hopundiryield` bench row** — which is the thing that did
+not exist, and is why the row is the deliverable here as much as the one-line change is.
+
+### Gates
+
+gql **3588/0**, gremlin 1157/0, core 383/0, serialization 144/0, `bun run fuzz` 20/0, `bun run
+check` 0 (read unpiped). `rows 100000` and `digest 4999950000` identical across every arm and both
+degrees. The A/B driver restored its arm and verified it.
+
+**Process note, third time this session:** the first launch aborted with "working tree is not the
+UNDIRECTED arm" because the arm marker was built from a multi-line string whose escaping mangled it.
+The driver's own arm assertion caught it instead of measuring the wrong thing — the guard item 1391
+added after measuring HEAD against itself for twenty minutes.

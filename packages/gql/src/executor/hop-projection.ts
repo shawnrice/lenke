@@ -1058,6 +1058,20 @@ const undirectedHopWalk = (w: {
   return (graph, params) => {
     const rows: Row[] = [];
     const binding = new Map<string, unknown>();
+    // A VACUOUS FAR LABEL IS DROPPED, ONCE PER CALL (item 1408), which every sibling walk in this
+    // file already did and this one did not. `matchesLabel` dereferences the far vertex to read its
+    // labels, and item 1066 priced that deref as the dominant cost of a hop once the far set stops
+    // being cache-resident — 9.3x over a 50,000-wide far pool against a 100-wide one. A label every
+    // vertex carries cannot reject anything, so the test buys nothing and costs that deref.
+    //
+    // This walk paid it TWICE per vertex, in the out-pass and the in-pass. A windowed profile of
+    // `MATCH (a:P)-[:E]-(b:P) RETURN b.n` put `evalLabelExpr` at **24.6%**, `get labels` 8.3% and
+    // `matchesLabel` 2.8% — **35.7% on a label that rejects nothing**, which is why this row read
+    // 503 ns a row against the far-driven walk's 192.
+    //
+    // Per CALL, not per compile, because vacuity is a property of the graph — the same reason the
+    // start-driven walk computes it there (items 195, 198, 1066).
+    const fl = vacuousLabel(graph, farLabel) ? undefined : farLabel;
 
     for (const v of candidateVertexSource(graph, startLabel)) {
       const outBucket = v.adjFrom?.get(typeName);
@@ -1066,7 +1080,7 @@ const undirectedHopWalk = (w: {
         for (const edge of outBucket) {
           const far = edge.to;
 
-          if (farLabel !== undefined && !matchesLabel(far, farLabel)) {
+          if (fl !== undefined && !matchesLabel(far, fl)) {
             continue;
           }
 
@@ -1090,7 +1104,7 @@ const undirectedHopWalk = (w: {
 
         const far = edge.from;
 
-        if (farLabel !== undefined && !matchesLabel(far, farLabel)) {
+        if (fl !== undefined && !matchesLabel(far, fl)) {
           continue;
         }
 
