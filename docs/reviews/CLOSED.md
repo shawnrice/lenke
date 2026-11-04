@@ -49902,3 +49902,73 @@ there. **Nothing is open on this row.** Do not re-screen it for the sort.
 
 Screen and documentation only — **no code changed**. `bun run check` 0 (read unpiped); the suites are
 unchanged from item 1393 (core 383/0, gql 3570/0, gremlin 1157/0, serialization 144/0).
+
+### Item 1395 — by-id access is **genuinely O(1)**, confirmed at **~5 ns hot / ~18 ns cold** by two experiments with opposite predictions. The standing requirement's own probe reported **105-130 ns with a +22-31% drift indistinguishable from O(log N)**, and ~50 ns of that is the probe CONSTRUCTING ITS OWN KEYS
+
+"Keep good O(1) access to get a vertex or edge by id" is a standing requirement, and
+`id-lookup-is-o1-probe.ts` (item 1326) exists to verify it. Re-run on two core arms over a 16x range:
+
+| arm                  | 50,000 | 200,000 | 800,000  | drift      |
+| -------------------- | ------ | ------- | -------- | ---------- |
+| `core-getVertexById` | 105.7  | 112.6   | 129.5 ns | **+22.5%** |
+| `core-getEdgeById`   | 99.9   | 111.9   | 130.5 ns | **+30.6%** |
+
+**That is not flat, and it must not be waved away as cache**: `log2(800000) / log2(50000)` is
+**1.26**, so a logarithmic structure predicts +26% — between the two numbers measured. A size sweep
+cannot tell the two apart, because N moves the structure and the working set together.
+
+### The discriminator: two experiments whose predictions are OPPOSITE
+
+`id-lookup-hotset-probe.mjs` holds one variable fixed at a time. If the cost is CACHE it tracks the
+hot set; if it is COMPLEXITY it tracks N.
+
+| experiment                               | result                                               | verdict |
+| ---------------------------------------- | ---------------------------------------------------- | ------- |
+| hot set FIXED at 1,000 ids, N varied 16x | **5.15 / 4.78 / 4.90 ns — FLAT**, and non-monotonic  | cache   |
+| N FIXED at 800,000, hot set varied 800x  | **5.15 → 9.05 → 18.64 → 17.93 ns — RISES, plateaus** | cache   |
+
+Both landed on the cache side, so **complexity is ruled out and the requirement holds**: by-id
+access is ~5 ns with the entry cache-resident and ~18 ns once the working set exceeds cache. The
+edge arm agrees (5.37 ns at a 1,000-id hot set). The hot ids are spread by stride rather than taken
+from the front, because a contiguous prefix is exactly how `ordinal-churn-probe.mjs` made a large
+structure look small and measured churn as free.
+
+### Where the other 100 ns went: the probe builds a fresh string per lookup
+
+`id-lookup-is-o1-probe.ts` calls `g.getVertexById(`v${i}`)`. Adding a `CONSTRUCT=1` mode that does
+the same, with the hot set fixed:
+
+| mode                                | 50,000 | 200,000 | 800,000      |
+| ----------------------------------- | ------ | ------- | ------------ |
+| pre-built id string                 | 5.15   | 4.78    | **4.90 ns**  |
+| constructs `` `v${i}` `` per lookup | 49.17  | 50.08   | **56.32 ns** |
+
+**Key construction is ~45-56 ns — ten times the lookup itself — and it drifts +14.5% on its own**,
+because ids grow from 5 characters to 7 across the sweep. So that probe's 105-130 ns decomposes into
+~5 ns of lookup, ~50 ns of building the key, and the rest cache misses from touching all N entries;
+and its "size drift" is part key length, part cache, no part complexity.
+
+**Both halves matter and neither is the other's correction.** A caller that builds ids in a loop
+really does pay the ~50 ns, so the probe is not wrong — it measures "lookup plus building the key".
+But quoting it as the engine's by-id cost overstates that cost by ~20x, which is the reading the
+standing requirement invites. Both probes are annotated with the decomposition and with which figure
+to quote.
+
+### Also found: the WRITE probe conflates construction with measurement
+
+`runtime-profile-write-probe.mjs` has **no profile windowing** — items 1391 and 1392 gave it to the
+two isolated benches and this third instrument was missed — and worse, every one of its shapes builds
+its graph INSIDE the function being timed. `pointLookups` builds N vertices and then does 10xN
+lookups in the same measured call, so at any N its figure is part construction. Item 1360's write
+screen, which priced `drainMutations` at 3.2% and declined it, was taken on that instrument.
+
+NOT fixed here, deliberately: splitting build from measure changes what every one of its six shapes
+reports, so it is its own item with its own re-screen, and item 1360's conclusions have to be re-read
+against the new numbers rather than assumed to survive. Recorded so the next screen does not trust
+it.
+
+### Gates
+
+Probe and documentation only — **no engine or core code changed**. `bun run check` 0 (read unpiped);
+the suites are unchanged from item 1393 (core 383/0, gql 3570/0, gremlin 1157/0, serialization
+144/0).

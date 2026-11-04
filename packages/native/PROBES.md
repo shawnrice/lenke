@@ -16,14 +16,15 @@ Each of these was built because a violation was FOUND. A violation is a planner 
 for a reason other than cost, and it is invisible to every correctness test, because both routes
 return the same rows.
 
-| probe                        | the property                                                                                | last run                                                                                |
-| ---------------------------- | ------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| `spelling-probe.ts`          | equivalent GQL spellings of one predicate cost the same                                     | clean; its one flag is item 644's BUILT-AND-REVERTED product lever                      |
-| `gremlin-spelling-probe.ts`  | the same for Gremlin (item 1305)                                                            | zero flagged AT `SPELL_N=200000`; **1M flagged a new 2.00x group** (item 1332)          |
-| `surface-parity-probe.ts`    | GQL and Gremlin cost the same for ONE question                                              | found 1322's 5.78x and 1334's 1.92x; `two-hop-count` now GQL 1.35x FASTER, gap reversed |
-| `index-never-hurts-probe.ts` | adding an index never makes a query slower (item 1324)                                      | holds on 17 shapes, both surfaces                                                       |
-| `id-lookup-is-o1-probe.ts`   | lookup by id is FLAT in graph size (item 1326)                                              | holds on 8 arms over a 16x range                                                        |
-| `order-probe-1389.mjs`       | a rewritten adjacency walk yields the SAME SEQUENCE, not just the same multiset (item 1389) | BASE vs HAND identical for both `out('E','F')` and `out('F','E')`                       |
+| probe                        | the property                                                                                | last run                                                                                                          |
+| ---------------------------- | ------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `spelling-probe.ts`          | equivalent GQL spellings of one predicate cost the same                                     | clean; its one flag is item 644's BUILT-AND-REVERTED product lever                                                |
+| `gremlin-spelling-probe.ts`  | the same for Gremlin (item 1305)                                                            | zero flagged AT `SPELL_N=200000`; **1M flagged a new 2.00x group** (item 1332)                                    |
+| `surface-parity-probe.ts`    | GQL and Gremlin cost the same for ONE question                                              | found 1322's 5.78x and 1334's 1.92x; `two-hop-count` now GQL 1.35x FASTER, gap reversed                           |
+| `index-never-hurts-probe.ts` | adding an index never makes a query slower (item 1324)                                      | holds on 17 shapes, both surfaces                                                                                 |
+| `id-lookup-is-o1-probe.ts`   | lookup by id is FLAT in graph size (item 1326)                                              | holds on 8 arms over a 16x range                                                                                  |
+| `id-lookup-hotset-probe.mjs` | whether that probe's residual drift is CACHE or COMPLEXITY (item 1395)                      | CACHE: flat in N at a fixed hot set, rising in hot set at fixed N — O(1) confirmed at **~5 ns hot / ~18 ns cold** |
+| `order-probe-1389.mjs`       | a rewritten adjacency walk yields the SAME SEQUENCE, not just the same multiset (item 1389) | BASE vs HAND identical for both `out('E','F')` and `out('F','E')`                                                 |
 
 ⚠️ `order-probe-1389.mjs` CARRIES ITS OWN VACUITY CHECK, and it needs one. Gremlin stream order is a
 TinkerPop contract and the differential fuzzer compares ORDERED, so a walk that replaces

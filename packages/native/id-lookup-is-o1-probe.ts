@@ -10,6 +10,28 @@
 //
 // One arm and one size per process, because four separate readings in this run were inverted by
 // measuring several things in one process (items 1320, 1321, 1323, 1325).
+//
+// ⚠️ HOW TO READ THIS PROBE'S NUMBERS (item 1395). The arms are correct and the invariant HOLDS, but
+// the headline figure is NOT the engine's lookup cost and the residual drift is NOT complexity.
+// Measured here: `core-getVertexById` reads 105.7 / 112.6 / 129.5 ns over a 16x range (+22.5%) and
+// `core-getEdgeById` 99.9 / 111.9 / 130.5 (+30.6%) — and `log2(800000)/log2(50000)` is 1.26, so that
+// drift is numerically indistinguishable from O(log N). `id-lookup-hotset-probe.mjs` separates the
+// two by holding one variable fixed at a time, and both of its predictions came out on the cache
+// side:
+//
+//   hot set FIXED at 1,000 ids, N varied 16x     5.15 / 4.78 / 4.90 ns   FLAT (non-monotonic)
+//   N FIXED at 800,000, hot set varied 800x      5.15 -> 9.05 -> 18.64 -> 17.93 ns   RISES, plateaus
+//
+// So by-id access is genuinely O(1): ~5 ns with the entry cache-resident, ~18 ns once the working
+// set exceeds cache. The cost tracks the WORKING SET, not the structure's size.
+//
+// The 20x gap to this probe's own 105 ns is this probe's FIXTURE: it calls
+// `g.getVertexById(`v${i}`)`, constructing a fresh string per lookup. Measured at ~45-56 ns — ten
+// times the lookup — and it drifts +14.5% across the sweep on its own, because ids grow from 5 to 7
+// characters. That is a real cost for a caller that builds ids in a loop, and NOT a cost for the
+// usual caller, which already holds the id (a query parameter, an edge endpoint). Quote ~5 ns hot
+// and ~18 ns cold for the engine's access; quote this probe's figure only as "lookup plus building
+// the key".
 import { Graph } from '@lenke/core';
 import { query } from '@lenke/gql';
 import { E, V, count, hasId, toArray, traversal, values } from '@lenke/gremlin';
