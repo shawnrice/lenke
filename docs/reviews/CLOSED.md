@@ -50639,7 +50639,7 @@ gql **3580/0**, gremlin 1157/0, core 383/0, serialization 144/0, `bun run fuzz` 
 26.09 ms and `hopmultiyield` 18.70 / 42.77 ms at degrees 1 and 3, with row counts and digests
 matching every arm. Both A/B drivers restored their arm and verified it.
 
-### Item 1408 — **SHIPPED, 26.8% / 42.1%** (144/144 both): `undirectedHopWalk` was the ONE walk in `hop-projection.ts` without item 1066's vacuous-label drop, and it paid the deref TWICE per vertex. Found only because three unmeasured walks got bench rows
+### Item 1408 — **SHIPPED, 26.8% / 42.1%** (144/144 both): `undirectedHopWalk` was ~~the ONE walk in `hop-projection.ts`~~ **one of thirteen `matchesLabel` sites** without item 1066's vacuous-label drop ⟶ **the "ONE walk" claim is WRONG, corrected by item 1409**, which found twelve more and shipped the two measurable ones at 55.7-79.8% — and it paid the deref TWICE per vertex. Found only because three unmeasured walks got bench rows
 
 ### The coverage gap came first
 
@@ -50650,12 +50650,12 @@ because every row they measured went through the two walks that were covered.
 
 Adding `hopfiltyield`, `hopundiryield` and `hoprelyield` made the outlier visible immediately:
 
-| row | ns/row |
-| --- | ------ |
-| `hopsingleyield` (far-driven) | 192 |
-| `hopfiltyield` | 144 |
-| `hoprelyield` | 250 |
-| **`hopundiryield`** | **503** |
+| row                           | ns/row  |
+| ----------------------------- | ------- |
+| `hopsingleyield` (far-driven) | 192     |
+| `hopfiltyield`                | 144     |
+| `hoprelyield`                 | 250     |
+| **`hopundiryield`**           | **503** |
 
 **2.6x the cheapest walk on the same fixture.** That is the whole nomination — no audit heading, no
 priced lever, a row that did not exist two hours earlier.
@@ -50665,11 +50665,11 @@ priced lever, a row that did not exist two hours earlier.
 Windowed (`profileWindow`, so the fixture build is excluded — item 1391) on
 `MATCH (a:P)-[:E]-(b:P) RETURN b.n`:
 
-| frame | share |
-| ----- | ----- |
-| `evalLabelExpr` | **24.6%** |
-| `get labels` | 8.3% |
-| `matchesLabel` | 2.8% |
+| frame                    | share     |
+| ------------------------ | --------- |
+| `evalLabelExpr`          | **24.6%** |
+| `get labels`             | 8.3%      |
+| `matchesLabel`           | 2.8%      |
 | **label testing, total** | **35.7%** |
 
 On a fixture where **every vertex is `:P`**, so the label rejects nothing. Item 1066 priced the far
@@ -50688,12 +50688,12 @@ One line, computed **per call** — not per compile, because vacuity is a proper
 same reason the start-driven walk computes it there (items 195, 198, 1066) — and read in both
 passes.
 
-| shape | est. degree | BASE | VACUOUS | change | concordance |
-| ----- | ----------- | ---- | ------- | ------ | ----------- |
-| **`hopundiryield`** | 1.00 | 52.95 | **38.78** | **26.8%** | **144/144** |
-| **`hopundiryield`** | 3.00 | 166.61 | **96.51** | **42.1%** | **144/144** |
-| `hopsingleyield` [CONTROL — far-driven walk] | 1.00 | 9.84 | 9.12 | 7.3% | 104/144 |
-| `hopfiltyield` [CONTROL — filtered walk] | 1.00 | 6.89 | 6.48 | 6.0% | 93/144 |
+| shape                                        | est. degree | BASE   | VACUOUS   | change    | concordance |
+| -------------------------------------------- | ----------- | ------ | --------- | --------- | ----------- |
+| **`hopundiryield`**                          | 1.00        | 52.95  | **38.78** | **26.8%** | **144/144** |
+| **`hopundiryield`**                          | 3.00        | 166.61 | **96.51** | **42.1%** | **144/144** |
+| `hopsingleyield` [CONTROL — far-driven walk] | 1.00        | 9.84   | 9.12      | 7.3%      | 104/144     |
+| `hopfiltyield` [CONTROL — filtered walk]     | 1.00        | 6.89   | 6.48      | 6.0%      | 93/144      |
 
 `AB_ML=-1` (disjoint, item 1406), n=12 per cell, three order-alternated rounds. Both controls are
 walks this edit **cannot reach** and both sit at 6-7 ms, inside their own floor, at 104/144 and
@@ -50712,10 +50712,10 @@ skip sits directly beside the lines changed.
 
 Mutation verdicts:
 
-| mutant | verdict |
-| ------ | ------- |
-| always drop (`const fl = undefined`) | **CAUGHT 4/4** |
-| never drop (`const fl = farLabel`) | **SURVIVED — by design** |
+| mutant                               | verdict                  |
+| ------------------------------------ | ------------------------ |
+| always drop (`const fl = undefined`) | **CAUGHT 4/4**           |
+| never drop (`const fl = farLabel`)   | **SURVIVED — by design** |
 
 "Never drop" is **answer-equivalent**: it is the code as it stood this morning, correct and slow.
 No correctness test can catch it, which is exactly the shape of every index-seeding bug in this
@@ -50732,3 +50732,102 @@ degrees. The A/B driver restored its arm and verified it.
 UNDIRECTED arm" because the arm marker was built from a multi-line string whose escaping mangled it.
 The driver's own arm assertion caught it instead of measuring the wrong thing — the guard item 1391
 added after measuring HEAD against itself for twenty minutes.
+
+### Item 1409 — **SHIPPED, 55.7% / 79.8% / 36.2% / 37.2%** (81/81 on all four): item 1408's entry said `undirectedHopWalk` was the ONE walk missing the vacuity drop. **It was wrong — twelve more sites lacked it.** Both rel-bound walks, which test PER EDGE, are the two the bench can reach
+
+### The correction came from grepping my own claim
+
+Item 1408's heading is corrected above. Writing it prompted the check that should have preceded it,
+and `grep -n 'vacuousLabel\|matchesLabel('` over `hop-projection.ts` says **thirteen**
+`matchesLabel` sites had no drop, not one. Classified by what the test costs:
+
+| where the test sits                                                        | sites                                                                                                         |
+| -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| **PER EDGE** — the drop scales with degree                                 | 1157 `relBoundHopWalk`, 1261 `relBoundFilteredHopWalk`, 1423 `relSeekedHopWalk`, 1737, 2688, 2916, 3901, 3933 |
+| PER FAR VERTEX — already cheap, three documented as deliberately defensive | 2542, 2600, 2782, 3821                                                                                        |
+
+The per-far-vertex four are not targets and two of them say so in their own comments ("one comparison
+per far VERTEX"). The per-edge eight are, and **two are measurable today**.
+
+### The profiles, on a fixture where every vertex is `:P`
+
+| row                         | walk                      | `evalLabelExpr` | `get labels` | `matchesLabel` | total     |
+| --------------------------- | ------------------------- | --------------- | ------------ | -------------- | --------- |
+| `hoprelyield`               | `relBoundHopWalk`         | 29.2%           | 7.3%         | 7.9%           | **44.4%** |
+| `hoprelfiltyield` (new row) | `relBoundFilteredHopWalk` | 19.2%           | 7.7%         | 5.1%           | **32.0%** |
+
+`hoprelfiltyield` is a new bench row, because the rel-bound walk's filtered half is a **separate
+closure** — a per-edge change to one does not reach the other. That is the second consecutive item
+where a sibling walk needed its own row to be priced at all.
+
+### The control was chosen by measurement, not by reading the code
+
+`hopfiltyield` profiles with **zero** label frames. It takes the one closure inside `filteredHopWalk`
+that already has the drop, so it is simultaneously a control on a walk this edit cannot reach **and**
+the standing evidence that the mechanism is real where it exists. `hopundiryield` is the second
+control: item 1408 changed it, HEAD already carries that, and both arms share it.
+
+| shape                                              | fanout | BASE  | RELBOUND  | change    | concordance |
+| -------------------------------------------------- | ------ | ----- | --------- | --------- | ----------- |
+| **`hoprelyield`**                                  | 1      | 11.14 | **4.93**  | **55.7%** | **81/81**   |
+| **`hoprelyield`**                                  | 3      | 59.66 | **12.03** | **79.8%** | **81/81**   |
+| **`hoprelfiltyield`**                              | 1      | 15.44 | **9.86**  | **36.2%** | **81/81**   |
+| **`hoprelfiltyield`**                              | 3      | 80.30 | **50.45** | **37.2%** | **81/81**   |
+| `hopfiltyield` [CONTROL — already has the drop]    | 1      | 7.97  | 7.08      | 11.1%     | 54/81       |
+| `hopundiryield` [CONTROL — unchanged between arms] | 1      | 38.99 | 39.30     | **−0.8%** | **28/81**   |
+
+`MULTILABEL=-1` (disjoint), n=9 per cell, three order-alternated rounds. `hopundiryield` at −0.8%
+and 28/81 is as flat as this instrument gets. `hopfiltyield`'s 11.1% at 54/81 is barely above
+chance (40.5) on an 8 ms row near its own floor.
+
+### A prediction that half-held, and the half that did not is informative
+
+The saving is per-EDGE, so the win should grow with degree. For the unfiltered walk it does —
+**55.7% → 79.8%**. For the filtered walk it is **flat** (36.2% → 37.2%), and that is consistent
+rather than contradictory: the rel gate `r.w < 100` is also evaluated per edge, so the dropped label
+test and the work that remains scale together and the RATIO stays put. The absolute saving still
+grows (5.58 ms → 29.85 ms). A win that failed to grow in BOTH walks would have said the mechanism
+was misidentified; one that grows where nothing else is per-edge and holds where something else is
+says it was not.
+
+### ⚠️ The mutation pass is the only proof the tests reach these walks
+
+`relbound-vacuous-label.test.ts` (10 tests) passes on 3-vertex fixtures, and **nothing about a
+passing test shows the planner routes those queries to these two closures** rather than to some
+other walk. Four mutants, with deliberately different expected verdicts:
+
+| mutant                                        | verdict                  | evidence             |
+| --------------------------------------------- | ------------------------ | -------------------- |
+| M1 unfiltered, ALWAYS drop (`fl = undefined`) | **CAUGHT**               | 14 pass / **4 fail** |
+| M2 filtered, ALWAYS drop                      | **CAUGHT**               | 15 pass / **3 fail** |
+| M3 unfiltered, NEVER drop (`fl = farLabel`)   | **SURVIVES — by design** | 18/0                 |
+| M4 filtered, NEVER drop                       | **SURVIVES — by design** | 18/0                 |
+
+M1 and M2 fail **different** test counts (4 and 3), which is the routing proof: they reach two
+different walks, and the two test blocks are independent rather than one covering both. M3/M4 are
+**answer-equivalent** — the code as it stood before this item, correct and slow — so no correctness
+test can catch them and the bench rows are their only guard. Harness kill verified first: an
+allocator bomb exits 137 and a bare spin exits 124 under the cap.
+
+### Still open: six per-edge sites with no bench row
+
+1423 `relSeekedHopWalk`, 1737, 2688, 2916, 3901 and 3933. Each is the same one-line change, and on
+this item's evidence each is worth 30-80% of its row — but **none has a row**, and items 1408 and
+1409 both exist because a walk without a row cannot be priced. The next step is rows, not edits.
+
+### Gates
+
+gql **3598/0**, gremlin 1157/0, core 383/0, serialization 144/0, `bun run fuzz` 20/0, `bun run
+check` 0 (read unpiped). `rowCount` and `digest` identical across both arms for all six cases. The
+A/B driver restored its arm and verified both markers.
+
+**A format gate this entry pays for:** item 1408's commit shipped a CLOSED.md that `oxfmt --check`
+rejects — the tables were not column-aligned. `bun run fmt` fixes it here, and it is the recorded
+reason `bun run check` is the gate rather than lint plus tests: `fmt` exiting 0 is not `fmt:check`
+passing.
+
+**And the arm assertion fired again, for the third item running.** The driver refused to start
+because its marker count was asserted as a guessed absolute (7 against an expected 4). Rewritten as
+a RELATION — `arm == base + 2` — which is the form that cannot go stale when the file grows another
+instance of a natural idiom. That is now the fourth guessed-count slip this session and the first
+one fixed by changing the shape of the assertion rather than the number in it.

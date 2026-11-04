@@ -158,6 +158,10 @@ const SHAPES = {
   hopfiltyield: 'MATCH (a:P)-[:E]->(b:P) WHERE b.n > 5 RETURN b.n AS n',
   hopundiryield: 'MATCH (a:P)-[:E]-(b:P) RETURN b.n AS n',
   hoprelyield: 'MATCH (a:P)-[r:E]->(b:P) RETURN r.w AS w',
+  // `relBoundFilteredHopWalk`, the rel-bound walk's filtered half (item 446's other side). It is a
+  // SEPARATE closure from `hoprelyield`'s, so a per-edge change to one does not reach the other —
+  // item 1409 is the second time in two items that a sibling walk needed its own row to be priced.
+  hoprelfiltyield: 'MATCH (a:P)-[r:E]->(b:P) WHERE r.w < 100 RETURN b.n AS n',
   sortedpage: 'MATCH (n:P) WHERE n.k < 50 RETURN n.s AS s ORDER BY s LIMIT 10',
   grouped: 'MATCH (n:P) RETURN n.k AS k, count(*) AS c',
   point: 'MATCH (n:P) WHERE n.n = 12345 RETURN n.s AS s',

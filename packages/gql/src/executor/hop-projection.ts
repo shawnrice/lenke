@@ -1143,6 +1143,11 @@ const relBoundHopWalk = (spec: {
     const rows: Row[] = [];
     // ONE binding, mutated per edge, now holding TWO entries instead of one.
     const binding = new Map<string, unknown>();
+    // The vacuous-far-label drop, per call (item 1409). See `undirectedHopWalk` for the full
+    // argument; here it is worth more, because this walk tests PER EDGE rather than per far
+    // vertex: a windowed profile of `MATCH (a:P)-[r:E]->(b:P) RETURN r.w` put `evalLabelExpr` at
+    // 29.2%, `matchesLabel` 7.9% and `get labels` 7.3% — **44.4% on a label that rejects nothing**.
+    const fl = vacuousLabel(graph, farLabel) ? undefined : farLabel;
 
     for (const v of candidateVertexSource(graph, startLabel)) {
       const bucket = (out ? v.adjFrom : v.adjTo)?.get(typeName);
@@ -1154,7 +1159,7 @@ const relBoundHopWalk = (spec: {
       for (const edge of bucket) {
         const far: Vertex = out ? edge.to : edge.from;
 
-        if (farLabel !== undefined && !matchesLabel(far, farLabel)) {
+        if (fl !== undefined && !matchesLabel(far, fl)) {
           continue;
         }
 
@@ -1243,6 +1248,10 @@ const relBoundFilteredHopWalk = (w: {
 
     const rows: Row[] = [];
     const binding = new Map<string, unknown>();
+    // The vacuous-far-label drop, per call (item 1409) — the rel-bound walk's filtered half needs
+    // its own, because it is a separate closure from the unfiltered one above. Profiled at
+    // **32.0%** of this row (`evalLabelExpr` 19.2%, `get labels` 7.7%, `matchesLabel` 5.1%).
+    const fl = vacuousLabel(graph, farLabel) ? undefined : farLabel;
 
     for (const v of candidateVertexSource(graph, startLabel)) {
       const bucket = (out ? v.adjFrom : v.adjTo)?.get(typeName);
@@ -1258,7 +1267,7 @@ const relBoundFilteredHopWalk = (w: {
       for (const edge of bucket) {
         const far: Vertex = out ? edge.to : edge.from;
 
-        if (farLabel !== undefined && !matchesLabel(far, farLabel)) {
+        if (fl !== undefined && !matchesLabel(far, fl)) {
           continue;
         }
 
