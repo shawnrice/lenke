@@ -55246,7 +55246,10 @@ one cannot ride them.
 
 **The design question, flagged not built.** `simplePath` and `cyclicPath` need the path only to CHECK
 it, never to emit it — so a fused walk that maintained a small fixed-length path array could serve
-them while still skipping the traverser chain. That is a new walk variant with its own correctness
+them while still skipping the traverser chain. ⚠️ **ITS SIZE IS 3.30x, NOT THE 86x THIS SECTION'S
+2583-against-30 IMPLIES — see item 1465**, which measured a hand floor at 27.94 ms against the
+engine's 92.29. `hopbare` emits one vertex per edge while this enumerates 3-hop paths and checks four
+vertices pairwise, so the two rows do different work and their ratio is not a budget. That is a new walk variant with its own correctness
 surface (the path contents must match what the general tail would have built, or `path()` and
 `select` would disagree with `simplePath` on the same graph), and it is worth roughly the gap between
 2583 ns/row and the ~30-200 the fused walks reach. Not a tick's work, and the measurement above is
@@ -55264,3 +55267,73 @@ the case for doing it.
 ### Gates
 
 `bun run check` 0 (read unpiped). No code changed — this item is a sweep and a flag.
+
+### Item 1465 — `simplePath` is **3.30x** a hand floor, not the 10-80x item 1464's framing implied. Priced with the floor, and the cheap implementation is RULED OUT: a count shortcut cannot absorb a path predicate
+
+Item 1464 found that `tracksPath` returns the plan unrewritten and skips `hopValuesShortcut`, so
+`simplePath`/`cyclicPath`/`path`/`select` run the general tail at **2583 ns/row** against `hopbare`'s 30. That is a true statement about the gate and an 86x framing of the opportunity. **The floor says
+the opportunity is 3.30x**, and the difference matters because 86x would justify a large change and
+3.3x justifies a specific one.
+
+### The floor
+
+A hand-written 3-hop walk over the same graph, maintaining a 4-slot vertex path and applying
+`simplePath`'s own distinctness check — so it pays the walk AND the predicate, which is what an
+implementation would have to do:
+
+```text
+  engine   92.29 ms   answer 39,920
+  floor    27.94      answer 39,920
+  engine / floor  3.30x, answers AGREE
+```
+
+40,000 vertices at out-degree 1. **So ~70% of this row is removable and ~30% is the work itself** —
+the 2583 ns/row figure was against a row that cannot cost 30, because `hopbare` emits one vertex per
+edge while this enumerates 3-hop paths and checks four vertices pairwise.
+
+**That is the correction worth keeping**: item 1464 compared a path-predicate row against a bare hop
+row and read the ratio as headroom. Two rows doing different work give a ratio, not a budget. The
+floor is the budget, and it is 3.3x.
+
+### And the cheap implementation does not exist
+
+The obvious thought is to let the existing chain machinery serve it — items 1106-1110's
+`hopChainCount` and the slot sweep count fixed-length chains in O(V+E) without enumerating. **They
+cannot absorb `simplePath`.** Those routes COUNT paths by degree products and level recurrences; a
+distinctness predicate is a property of each individual path, so a counting route has nothing to test
+it against. Asking for it means enumerating, which is exactly what the floor does and what the
+general tail already does.
+
+So the shape of any fix is a hand-written ENUMERATING walk for `out(T)×K` + a path predicate +
+`count`, the sibling of item 1432's `bothOneType` and item 1442's `pairTypes` but carrying a
+fixed-length path array. ~3.3x on that shape, and the conditions are narrow: a fixed-length chain of
+same-direction typed hops, a path predicate that reads only the vertex sequence, and an order-free
+tail.
+
+⚠️ **Its correctness surface is the reason it is not a tick's work.** The path array it maintains has
+to agree with what the general tail would have built, or `path()` and `select` would disagree with
+`simplePath` on the same graph — and `path()` is the step whose output IS the path, so a divergence
+there is a wrong answer rather than a reordering. That needs its own fixture family (parallel edges,
+self-loops, a revisited vertex that `simplePath` must reject and `cyclicPath` must accept) before any
+of it is believable.
+
+**Priced at 3.30x, shape named, correctness surface named. Not built.**
+
+### Where this leaves the session's search
+
+Both engines' read rows, write rows, spelling surfaces and previously-unmeasured shapes have now been
+swept. What remains is a short list, all of it either declined by the user or priced-and-flagged:
+
+- the dense `Vertex` ordinal — **declined on numbers** (deletes 6.18x/11.34x under churn, items
+  1369-1372/1397), seven arrivals recorded.
+- runtime codegen for constant property keys — **declined firmly** (`unsafe-eval` in an embedder's
+  CSP), so `hopfiltyield`'s ~36% is unreachable rather than pending.
+- the multi-label-edge traversal multiplicity — **a semantics decision flagged to the user** (item
+  1460's `out(T,T)` count-vs-yield divergence, which TinkerPop cannot settle because its edges carry
+  one label).
+- the path-predicate enumerating walk — **this item, 3.30x**.
+- the quantified path's CSR build — **at its floor** given the current data model (item 1454/1455).
+
+### Gates
+
+`bun run check` 0 (read unpiped). No code changed.
