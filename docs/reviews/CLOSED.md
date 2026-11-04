@@ -52869,9 +52869,11 @@ bare twin on the shipped build:
 
 Two separate open questions in that table, neither of them this item's:
 
-- **At `small`/1 the constant-predicate row BEATS the bare row** (0.66x). The start-gated walk seeds
-  and gates per vertex; whatever it does there is available to the unfiltered row, which does not do
-  it. That is a lever on `hopsingleyield`, not a defect here.
+- **~~At `small`/1 the constant-predicate row BEATS the bare row (0.66x) — a lever on
+  `hopsingleyield`~~ ❌ REFUTED AT ITEM 1438, NOT A LEVER.** The cause is not that the start-gated
+  walk is clever: the bare row takes `farDrivenHopWalk` and the gated one cannot, and that route
+  loses 40% on this ONE fixture while winning 1.90x and 2.99x at random stride. My reading — "available
+  to the unfiltered row, which does not do it" — had the direction backwards. Item 1438 ablated it.
 - **At fanout 4 the gap is still ~3x**, which is one gate evaluation per START VERTEX where once per
   QUERY would do. Hoisting it needs a guard equivalent to "at least one complete match exists" —
   evaluating on the first vertex with a non-empty bucket is exactly raise-faithful, since an
@@ -52936,3 +52938,89 @@ CLAUDE.md names and which I hit once here before re-running it). Suites: gql **3
 new, which also confirms no existing file was overwritten), gremlin 1218/0, core 383/0,
 serialization 144/0, native 961/0. `bun run fuzz` 20/0 — byte-identity intact, which is the real risk
 on a route change, since the two walks visit rows in different orders.
+
+### Item 1438 — ❌ DECLINED and CORRECTING ITEM 1437: the single-type far-driven route is SOUND. It loses 40% on ONE fixture (`small`/degree 1) and wins **1.90x and 2.99x** at random stride. Item 1437's "lever on `hopsingleyield`" was me reading a fixture artifact as a finding
+
+Item 1437 shipped the invariant-`WHERE` carry and recorded, as open work, that at `small`/fanout 1
+the fixed `WHERE true` row (8.48 ms) BEAT its bare twin (13.78) — concluding "whatever the start-gated
+walk does there is available to the unfiltered row, which does not do it. That is a lever on
+`hopsingleyield`." **That is wrong, and this item is the ablation that says so.**
+
+### What the profile actually showed, once the line numbers were read correctly
+
+The bare row is 68.4% in one closure with NO `propOf` and NO `get properties` frames, while the gated
+row spends 33.7% across exactly those two. That looked like the bare row having a property-read
+specialization the gated row lacks. It is the opposite of a specialization: the closure is
+`farDrivenHopWalk`, and the reason it reads no properties per row is **item 167's template clone** —
+`projectRow` once per far VERTEX, then `rows.push({ ...template })` for the rest of its bucket.
+
+⚠️ **A cpuprofile's `lineNumber` is 0-BASED.** I first mapped the hot frame to line 11724, which is a
+closing brace inside the MULTI-type branch, and spent a step reasoning about the wrong closure. The
+frame is line 11725, the single-type one. Worth knowing because an off-by-one there does not look
+like an error — it lands inside a plausible neighbouring function.
+
+### The gate has no degree condition, which is why this was worth asking
+
+```ts
+return sorted((graph, params) =>
+  !startDrivenForOrder && (startLabel === undefined || vacuousLabel(graph, startLabel))
+    ? farDriven(graph, params)
+    : startDriven(graph, params),
+);
+```
+
+`hopDrivesFar` is **not consulted here at all**, and neither is `farDrivenPaysForMultiType`. The
+single-type unfiltered hop takes the far-driven walk whenever the start label does not filter,
+whatever the degree — while the MULTI-type form next to it is gated on
+`farDrivenPaysForMultiType(edges, endpoints)` (item 1390, threshold moved 3→1 at item 1434). So the
+question was legitimate: at `FANIN=1` the in-degree is 1 and the template clone has nothing to
+amortize, which is the fixture item 1390 explicitly warns "can only lose".
+
+### The ablation: force start-driven, measure both arms across the grid
+
+`hopsingleyield`, 100k nodes, `MULTILABEL=0`, p25 of 10 reps dropping 3, two alternated rounds per
+arm, each arm asserted to BE its own code before being built:
+
+```text
+  stride  fanout   far-driven   start-driven   start/far   verdict
+  small        1        14.46           8.71       0.60x   start-driven wins 40%
+  random       1        25.73          48.88       1.90x   far-driven is RIGHT
+  small        4        17.51          58.80       3.36x   far-driven is RIGHT
+  random       4        33.69         100.89       2.99x   far-driven is RIGHT
+```
+
+**Three of four configs say the route is right, and the one that disagrees is the least realistic
+fixture in the bench** — `small` stride is `to = (i * 7 + 3) % N`, which CLAUDE.md's own note on the
+knob calls out as something "a real graph is unlikely to have", and fanout 1 is the degenerate
+single-permutation-cycle graph item 1399 recorded as having hidden a correctness bug. At random
+stride, the realistic case, the far-driven walk wins at BOTH degrees.
+
+So the missing degree gate is not a defect: adding one tuned to `small`/1 would cost 1.90x on the
+fixture that resembles a real graph. **Declined, and the constant stays ungated.**
+
+### Why the 0.66x looked like a lever, and the rule it earns
+
+The comparison that produced it was `WHERE true` against bare — **two different ROUTES, not one route
+with and without a predicate.** Reading a cross-route comparison as "the predicate made it faster"
+smuggles in the assumption that both rows walk the same way. They do not, and the moment the arms are
+the same route with the route itself flipped, the sign flips back in 3 of 4 configs.
+
+**RULE: a surprising ratio between two SPELLINGS is a route question before it is a cost question.**
+Item 1437 found a real 7.46x this way and then over-read the residual from the same table. The
+instrument that settles it is the one used here — flip the route under a fixed spelling — not another
+pair of spellings.
+
+This is the third consecutive constant to be re-checked and found sound (item 1435's `passes > 2`,
+item 1436's `hopDrivesFar`, this one), which remains the right prior for the rest of them.
+
+### What is still open on these rows
+
+Item 1437's other open note stands unchanged and is the real residual: at fanout 4 the invariant-gate
+row is ~3x its bare twin because the gate is evaluated once per START VERTEX where once per QUERY
+would do, and hoisting it needs a branch in a loop item 159 measured at 1.6x on this function.
+Priced, not built.
+
+### Gates
+
+`bun run check` 0 (read unpiped). No engine code changed — the ablation was reverted and the tree
+verified clean with `git diff --stat` empty before committing. gql 3669/0.
