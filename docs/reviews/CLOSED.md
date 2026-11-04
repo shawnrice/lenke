@@ -53742,7 +53742,8 @@ ns/row spread between `floor` and `engine` is machinery and IC state, both of wh
 builder addresses, and neither of which the access pattern explains.
 
 So the target item 1429 named — _a specialized projection closure for the single-far-property case_,
-priced at 27-36% there and 46.5% here by item 1444 — is **confirmed at ~44%** (the 245.7 ns/row of
+priced at 27-36% there and 46.5% here by item 1444 — is ~~**confirmed at ~44%**~~ ⚠️ **18.9%,
+corrected at item 1447, which built it and split the halves** (the 245.7 ns/row of
 machinery plus megamorphism, against the engine's 561.0), with a mechanism rather than a share.
 
 **And the mechanism says a specialization is the RIGHT shape rather than merely a fast one.** It does
@@ -53773,3 +53774,111 @@ already encodes the "no DISTINCT, no grouping, no ORDER BY, no paging" guard.
 ### Gates
 
 `bun run check` 0 (read unpiped). No engine code changed — one probe arm.
+
+### Item 1447 — the specialized row builder was BUILT, REACHED and REVERTED at **−4.8% / +0.7%**. The probe says **18.9% is still there**, and the failure is my WIRING: one dispatch site holding two closures goes polymorphic across compiles, which is the exact cost it was meant to remove
+
+Built item 1429's target with items 1444-1446's mechanism in hand: `farPropRowBuilder` detects a
+single-far-property projection on the AST side (`{ kind: 'prop', variable, key }` is inspectable,
+`CReturnItem.fn` is not), takes the row key from the COMPILED item's `name` rather than
+reimplementing the alias rule, guards on `plainRowProjection` plus `walkProj === proj` identity, and
+coerces with `?? null` to match `propOf`.
+
+It works and it is REACHED — verified by making the specialized branch throw and watching the query
+fail with `FARROW-REACHED`, after an instrumented run confirmed `identity=true retKind=return
+builder=true`. Not a wiring that silently never fires, which is the usual way this goes wrong.
+
+### It bought nothing
+
+Three rounds, arms copied from staged files and asserted before building (`farRow` count 6 vs 0),
+100k nodes, `STRIDE=random`:
+
+```text
+  src    row                   PRE     POST   change  concord  note
+  probe  engine              56.39    59.09    -4.8%   2/9   TARGET
+  probe  engine-bare         25.39    25.44    -0.2%   4/9   CONTROL, far-driven walk
+  bench  hopfiltyield        62.24    61.81     0.7%   6/9   TARGET
+  bench  hopsingleyield      26.76    26.07     2.6%   7/9   CONTROL
+  bench  hopstartonlyyield   60.16    63.50    -5.6%   1/9   CONTROL, start-only closure
+  bench  hoprelfiltyield     54.17    53.06     2.1%   4/9   CONTROL, rel-bound
+```
+
+Targets indistinguishable from controls scattering ±5.6%, and the probe arm reads a REGRESSION.
+**Reverted.**
+
+### ⚠️ BUT THE TARGET IS NOT REFUTED — the probe says 18.9% is available
+
+`floor-pred-poly-row-direct` is a new arm shaped exactly like the reverted change: megamorphic
+accessor for the predicate, `binding.set` kept every row (the engine's predicate reads the far end out
+of the binding, so a projection specialization cannot remove it), and the row built directly with no
+`env` and no generic `fn`. Three rounds, digests agree:
+
+```text
+  arm                            median   ns/row
+  floor                           28.84    288.4
+  floor-engine-shaped             41.85    418.5
+  floor-pred-poly-row-direct      46.68    466.8
+  floor-engine-shaped-poly        58.68    586.8
+  engine                          63.56    635.6
+```
+
+```text
+  the projection specialization saves   120.0 ns/row = 18.9% of the engine row
+  the PREDICATE path carries            178.4 ns/row
+```
+
+So the two halves split roughly 40/60 — the projection is worth **18.9%**, not the ~44% I read off
+item 1446 (which replaced BOTH halves at once and which I attributed to one of them), and not the ~0%
+the engine A/B measured.
+
+### The failure is the dispatch site, and I wrote the comment that predicted it
+
+The wiring chose between two closures per CALL and read them through a hoisted local:
+
+```ts
+const buildRow =
+  farRow === undefined ? (b, _far) => projectRow(proj, b, params, graph) : (_b, far) => farRow(far);
+```
+
+`filteredHopWalk` returns a fresh closure per compile, but its BODY is shared, so
+`buildRow(binding, far)` is **one bytecode site that every compile of this walk flows through** — and
+it sees both arrow shapes. One polymorphic dispatch per row, which is the cost the specialization
+exists to delete. The comment I wrote directly above it says: _"a site that saw both would be
+polymorphic and give back the very inline-cache cost item 1446 measured at 104.9 ns/row."_ I wrote
+that, then built it.
+
+**RULE: "its own closure, not a branch in the loop" means a separate RETURNED closure, not a hoisted
+function-valued local.** Item 159's 1.6x and item 1432's "own closure, not a branch inside the other
+one" are both about this, and a local that holds one of two closures looks like it satisfies them
+while putting the polymorphism one level deeper, at a site shared across every compile. The whole
+file is written as sibling `return (graph, params) => {…}` closures for exactly this reason, and the
+one place I did not follow that pattern is the one that measured nothing.
+
+### Next step, which is a test of this diagnosis and not a fresh guess
+
+Duplicate the general closure as a sibling `return` with the direct read INLINE at the push site — no
+indirection at all — and re-run the same A/B. The probe says 18.9% with 2/9-vs-9/9 separation
+available, so the diagnosis is falsifiable: if a sibling closure still measures ~0, the dispatch site
+was not the cause and the probe and the engine disagree for a reason neither has shown yet.
+
+Cost of the duplication is real and known: this file's edits move unrelated rows 3.4-5.8% (item 1415),
+which is why the target had to be worth ~10% before attempting it — 18.9% clears that, 0% does not.
+
+### Record of guesses about this row, updated
+
+- item 1436 — routing. Measured, not it.
+- item 1437 — the double read. 2.6% (measured by 1444; 1437's own evidence did not reach it).
+- item 1444 — `propOf`'s 34.8% share. A share, not a price.
+- the call-site comment — the projection is ~2%. The ladder's slope, not its intercept.
+- item 1445 — machinery at 92-141 ns/row, a third of the gap.
+- item 1446 — machinery + megamorphism, 90.9%. Correct, and I split it the wrong way.
+- this item — the projection half is 18.9%, the predicate half 178.4 ns/row, and my wiring gave back
+  what it saved.
+
+Seven attributions, three of them mine, and the row is still ~1.9x its floor. The difference this
+time is that the remaining claim is a MECHANISM with a falsifiable next step rather than another
+share.
+
+### Gates
+
+`bun run check` 0 (read unpiped), gql 3669/0 before the revert and after it. Engine file reverted and
+verified at `farRow` count 0; the only committed change is the probe arm.

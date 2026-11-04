@@ -62,6 +62,7 @@ const ARMS = [
   'floor-tworead',
   'floor-engine-shaped',
   'floor-engine-shaped-poly',
+  'floor-pred-poly-row-direct',
 ];
 
 if (!ARMS.includes(ARM)) {
@@ -76,6 +77,7 @@ const GROUP = [
   'floor-tworead',
   'floor-engine-shaped',
   'floor-engine-shaped-poly',
+  'floor-pred-poly-row-direct',
 ].includes(ARM)
   ? 'filtered'
   : 'all';
@@ -359,7 +361,7 @@ const floorEngineShapedPolyWith = (fn) => {
 /** Pollutes both ICs, then measures with closure 0 — the one whose answer matches `floor`. */
 const floorEngineShapedPoly = () => floorEngineShapedPolyWith(ITEM_FNS[0]);
 
-if (ARM === 'floor-engine-shaped-poly') {
+if (ARM === 'floor-engine-shaped-poly' || ARM === 'floor-pred-poly-row-direct') {
   // (1) the accessor inside `propOfPoly`: five hidden classes, enough to go megamorphic.
   for (const s of POLY_SHAPES) {
     for (let i = 0; i < 20_000; i += 1) {
@@ -372,6 +374,57 @@ if (ARM === 'floor-engine-shaped-poly') {
     floorEngineShapedPolyWith(fn);
   }
 }
+
+/**
+ * ⚠️ THE SHAPE OF ITEM 1447'S REVERTED ENGINE CHANGE: a MEGAMORPHIC predicate path with a DIRECT row
+ * build. This is the arm that explains why that change bought nothing.
+ *
+ * Item 1446 measured machinery + megamorphism at 90.9% of the engine-to-floor gap and I read that as
+ * licensing a specialized PROJECTION closure worth ~44%. Built at item 1447, it was reached (verified
+ * by making the branch throw) and measured **-4.8% / +0.7% against controls scattering ±5.6%** — so
+ * it was reverted.
+ *
+ * The reason is that `floor-engine-shaped-poly` replaced BOTH halves at once: the predicate went
+ * through `propOfPoly` AND the projection went through a generic megamorphic `fn`. A projection
+ * specialization only removes the second, and the engine must still do `binding.set(farVar, far)`
+ * every row because the predicate reads the binding. This arm isolates that: megamorphic accessor for
+ * the predicate, `binding.set` kept, row built directly with no `env` and no generic `fn`.
+ *
+ * If it lands near `floor-engine-shaped-poly` the predicate path carries essentially all of the
+ * 245 ns/row and the projection half is worth ~nothing — which is what item 1447 measured in the
+ * engine, and makes the two measurements agree instead of one contradicting the other.
+ */
+const floorPredPolyRowDirect = () => {
+  const rows = [];
+  const binding = new Map();
+
+  for (const v of g.vertices) {
+    const bucket = v.adjFrom?.get('E');
+
+    if (bucket === undefined) {
+      continue;
+    }
+
+    binding.set('a', v);
+
+    for (const edge of bucket) {
+      const far = edge.to;
+
+      // Still set every row: the engine's predicate reads the far end out of the binding, so a
+      // projection specialization cannot remove this.
+      binding.set('b', far);
+
+      if (!(propOfPoly(far, 'n') > KEEP)) {
+        continue;
+      }
+
+      // The specialization: direct read, one call site, one hidden class, no env, no generic fn.
+      rows.push({ n: far.properties['n'] ?? null });
+    }
+  }
+
+  return rows;
+};
 
 const FILTERED = 'MATCH (a:P)-[:E]->(b:P) WHERE b.n > 5 RETURN b.n AS n';
 const BARE = 'MATCH (a:P)-[:E]->(b:P) RETURN b.n AS n';
@@ -386,6 +439,7 @@ const RUN = {
   'floor-tworead': floorTwoRead,
   'floor-engine-shaped': floorEngineShaped,
   'floor-engine-shaped-poly': floorEngineShapedPoly,
+  'floor-pred-poly-row-direct': floorPredPolyRowDirect,
 };
 
 const run = RUN[ARM];

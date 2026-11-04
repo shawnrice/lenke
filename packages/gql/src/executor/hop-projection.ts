@@ -3240,7 +3240,14 @@ const filteredHopWalk = (w: {
         //
         // A specialized row builder does not make `propOf` cheaper or `item.fn` monomorphic — it
         // BYPASSES both, reading `far.properties[key]` from one site that sees one hidden class.
-        // Confirmed target: **~44%** of this row. Item 1429 named it; items 1444/1445/1446 priced it.
+        // ⚠️ Target: **18.9%**, not the ~44% first recorded here — corrected at item 1447, which
+        // BUILT the specialization and split the two halves. Item 1446's poly arm replaced the
+        // predicate AND the projection together; the projection half alone is 120 ns/row (18.9%)
+        // and the predicate path carries 178.4. Item 1429 named it, 1444/1445/1446 priced it,
+        // 1447 built it — and measured -4.8%/+0.7%, because a hoisted local holding one of two
+        // closures makes `buildRow(...)` ONE bytecode site that every compile flows through, so
+        // it goes polymorphic and hands back exactly what the specialization saved. A sibling
+        // `return (graph, params) => {...}` with the read INLINE is the shape that can work.
         //
         // The original conclusion still holds for what it measured; it just does not follow from a
         // ladder. Same error shape as item 1437's CSE claim, corrected the same tick.
