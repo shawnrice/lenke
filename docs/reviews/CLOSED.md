@@ -53224,7 +53224,7 @@ contract; GQL row order is unspecified) recorded next to it.
 reverted and verified at marker count 0 with `git diff --stat` empty for it; the only committed change
 is the bench comment.
 
-### Item 1441 — the 1.86x is the per-vertex BUCKETS ARRAY, and removing it lands at **1.03x the single-type walk**: **45.1% headroom**, priced outside the perturbing file. Item 1440's decline is also CONFIRMED correct rather than drowned
+### Item 1441 — the 1.86x is the per-vertex BUCKETS ARRAY, and removing it lands at **1.03x the single-type walk**: **45.1% headroom**, priced outside the perturbing file. Item 1440's decline is also CONFIRMED correct rather than drowned — ✅ BUILT AT ITEM 1442, which measured **46.5%** and closed the gap at 1.01x (and found this item's `ML=3` caveat BACKWARDS: that cell is the LARGEST win, 55.9%)
 
 Item 1440 measured `out('E','F')` at 1.86x `out('E')` on an identical edge set, failed to price it,
 and named the blocker exactly: `hop-values.ts` carries a **~16% arbitrarily-signed perturbation
@@ -53318,3 +53318,118 @@ settles whether the reverted change was right.
 
 `bun run check` 0 (read unpiped). No engine code changed — this item adds one probe and its record.
 All arms' digests and row counts verified equal across every run (100,000 rows, one digest).
+
+### Item 1442 — ✅ SHIPPED, **46.5% / 32.3% / 55.9% / 43.9%** (9/9 each): the two-type hop walk hoists both bucket lookups and drops the per-vertex array. `out('E','F')` now costs **1.01x** `out('E')` — the equivalent-spelling gap is CLOSED
+
+Built the target item 1441 priced. `out('E','F')` cost **1.86x** `out('E')` on a graph with no `F`
+edge at all — identical edge set, identical row count — which is the equivalent-spelling class
+CLAUDE.md says returns the right answer and hides 100-300x elsewhere.
+
+`pairTypes` is a new branch for `labels.length === 2`: both `Map.get`s hoisted into locals, no
+per-vertex `buckets` array, the earlier-buckets rule reduced to one membership test against bucket 0.
+Its own closure rather than a branch inside `manyTypes`, for item 159's reason about this very
+function (a branch in the hot inner loop cost the unfiltered shape 1.6x).
+
+### Measured
+
+Three rounds, each arm copied from a staged file and ASSERTED to be its own code before being built.
+The floor probe measures the engine from OUTSIDE `hop-values.ts`, which is the instrument item 1441
+built because any edit here moves unrelated branches ~16% arbitrarily. 100k nodes, `FANOUT=1`,
+`STRIDE=small`, median of per-round p25:
+
+```text
+  src    row              ML      PRE     POST   change  concordance
+  probe  engine-multi      0     9.52     5.09    46.5%   9/9   TARGET
+  bench  hopyieldmulti     0    10.13     6.85    32.3%   9/9   TARGET
+  bench  hopyieldmulti     3    13.83     6.09    55.9%   9/9   dedupe genuinely runs
+  bench  hopyieldmulti    -1    11.24     6.31    43.9%   9/9   disjoint, both buckets
+  probe  engine-single     0     4.75     5.03    -5.9%   2/9   CONTROL, untouched branch
+  bench  hopyieldsingle    0     5.77     5.34     7.5%   7/9   CONTROL, `oneType`
+  bench  hopbare           0     2.88     3.14    -8.7%   1/9   CONTROL
+```
+
+46.5% against the 45.1% item 1441 predicted from the hand floor. **The three controls scatter −8.7%
+to +7.5% — that is the file's perturbation term, and it is why the targets had to clear it by 3x
+before this was worth attempting.** Targets are 32-56% at 9/9 (chance is 4.5/9).
+
+**THE SPELLING GAP IS CLOSED:** `engine-multi` 5.09 against `engine-single` 5.03 is **1.01x**, and
+the engine now matches the hand floor item 1441 measured at 5.25.
+
+### ⚠️ MY PREDICTION ABOUT `ML=3` WAS BACKWARDS, AND THAT IS THE USEFUL PART
+
+Item 1441 recorded a caveat for whoever built this: "`MULTILABEL=0` is the measured fixture, where
+the second bucket is always ABSENT. The win at `ML=3`, where both buckets are populated and the
+dedupe genuinely runs, is NOT measured here and will be smaller."
+
+It is the **largest cell: 55.9%**, against 32.3% at `ML=0`. The reasoning was inverted. At `ML=0` the
+old path built a two-entry array and then skipped an absent bucket, so the array was nearly all of
+the overhead; at `ML=3` the old path built the array AND ran the `i`/`j` dedupe scan over a populated
+second bucket, and the new path replaces both with one hoisted `has`. **The specialization helps MORE
+the more real multi-type work there is**, which is the opposite of what a "the dedupe still has to
+run" intuition suggests — and it means the disjoint case (`ML=-1`, the ordinary schema shape per item 1405) gets 43.9% rather than the least.
+
+Recording it because item 1413 declined its guard partly on an `ML=3` cell REGRESSING 7.5%, which
+made "the dedupe cell is where this gets worse" look like a settled pattern. It is not: 1413's guard
+added a test where it could not help, while this removes scaffolding that is there either way.
+
+### Testing
+
+`pair-type-hop.test.ts`, 10 tests. Two things it does deliberately:
+
+- **Asserts SEQUENCES, not multisets.** Gremlin stream order is a TinkerPop contract the differential
+  fuzzer compares ORDERED — unlike GQL's unspecified row order, which is exactly why item 1431's
+  edge-index trick was available there and not to `both`. The `out('F','E')` case asserts the
+  reversed spelling is a DIFFERENT sequence and the SAME multiset, so a specialization that got the
+  set right and the order wrong has somewhere to fail.
+- **Runs every case through BOTH arms.** `toArray` takes `drain`, so a plain `toArray` never executes
+  the `function*`. Each case is run bare (eager) and with a trailing `dedupe()`, which makes `rest`
+  non-empty and forces the lazy arm. Item 1412 built that split; nothing ran both sides of it on this
+  walk until now — and mutant M2 proves the second arm is genuinely reached.
+
+The oracle is a hand walk over the adjacency, not another query: the two-type and many-type paths are
+two branches of one function, so comparing spellings can compare a route to itself (item 930).
+
+Seven mutants under `timeout 1200 systemd-run -p MemoryMax=16G -p MemorySwapMax=0`, pristine restored
+before each, verdicts read from stdout+stderr concatenated before the exit code:
+
+```text
+  M1  the gate never fires (=== 2 -> === 99)        *** SURVIVES ***  56 pass
+  M2  the GENERATOR arm alone loses its dedupe      CAUGHT  54 pass  2 fail
+  M3  the DRAIN arm alone loses its dedupe          CAUGHT  43 pass 13 fail
+  M4  the dedupe inverted in both arms              CAUGHT  40 pass 16 fail
+  M5  bucket 0 skipped when present                 CAUGHT  35 pass 21 fail
+  M6  the vertex skipped when bucket 0 is absent    CAUGHT  45 pass 11 fail
+  M7  the ORDER swapped (t1 before t0)              CAUGHT  42 pass 14 fail
+```
+
+**M1 survives by construction and is expected**: the gate is a pure route choice, answer-equivalent,
+whose only effect is speed. Unlike item 1437's carry — where the decision had arithmetic worth
+extracting and exporting — `manyTypes?.length === 2` has nothing to unit-test that is not a restatement
+of the line. The guard is the bench row, which now carries a 46% cliff if the gate stops firing. Said
+plainly rather than papered over with a thin exported predicate.
+
+M2 and M3 are the pair that matters: the same mutation applied to each arm separately, each caught by
+a different count of failures, which is the evidence that both arms are exercised rather than one
+being dead code the tests never reach.
+
+**Mutation-harness note:** the arms are textually identical in places and the generator comes FIRST,
+so a `sed '0,/pat/'` anchor that claims to hit `drain` silently hits the generator — I wrote exactly
+that bug and caught it before running. Mutations are applied by OCCURRENCE INDEX via python instead,
+with the post-mutation marker count asserted.
+
+### What is NOT taken
+
+- **Three or more types keep `manyTypes`.** A loop over N hoisted locals is the per-vertex array
+  again, so this is deliberately a specialization, not a generalization. `out('E','F')` is the
+  overwhelmingly common multi-type spelling. A test pins that 3+ types still agree.
+- **`both` with two types is still the general tail.** `manyTypes` excludes `both` (item 1432 built
+  `bothOneType` for the single-type case), so `both('E','F')` reaches neither specialization. Not
+  measured here; `hopbothyield` at 196 ns/row is the single-type row.
+
+### Gates
+
+`bun run check` 0 (read UNPIPED; it failed twice first — `prefer-optional-chain` on the gate
+expression, then 16 unnecessary non-null assertions and a type-only import in the test, none of which
+any suite could see). Suites: gremlin **1228**/0 (1218 + 10), gql 3669/0, core 383/0, serialization
+144/0, native 961/0. `bun run fuzz` 20/0, and the Gremlin differential fuzzer run SIX more times on
+random seeds (8/0 each) because stream order is the contract this change could break.

@@ -180,6 +180,40 @@ export const hopValuesShortcut = (plan: Plan, graph: Graph): HopValues | undefin
   // which is a different function from this one.
   const manyTypes = labels.length > 1 && kind !== 'both' ? labels : undefined;
   /**
+   * EXACTLY TWO TYPES, with both bucket lookups HOISTED and no per-vertex array (item 1442).
+   *
+   * ⚠️ THE PER-VERTEX `buckets` ARRAY IS THE COST OF `manyTypes`, and three other candidates are
+   * refuted. `out('E','F')` measured **1.86x** `out('E')` on a graph with no `F` edge at all — an
+   * identical edge set, identical row count, which is the equivalent-spelling class CLAUDE.md says
+   * returns the right answer and costs 100-300x elsewhere. Item 1441 priced it against hand floors
+   * OUTSIDE this file, because any edit here moves unrelated branches ~16% in an arbitrary direction
+   * (items 1413 and 1440 measured that in both signs), so no in-file A/B could resolve it:
+   *
+   *   floor-single        5.11 ms   one bucket
+   *   floor-multi-pair    5.25      two types, gets hoisted, NO array  -> 1.03x single
+   *   engine-multi        9.57      this walk before the specialization -> 1.82x the pair
+   *
+   * So the gap essentially CLOSES at 1.03x, with 45.1% headroom against the engine. What it is NOT:
+   * not the earlier-buckets dedupe (item 1413 measured skipping it at **−0.5%**), not pushing
+   * `undefined` for absent types (item 1440 built that and item 1441 measured its floor at **11.81
+   * against the array floor's 11.81** — identical), and not engine overhead, since `engine-multi`
+   * sat BELOW its own hand floor. The array itself is the term, which is why item 1440's "lean"
+   * version bought nothing: it kept the array.
+   *
+   * TWO TYPES RATHER THAN A GENERAL N. A loop over N hoisted locals is the array again, so this is
+   * deliberately a specialization and 3+ types keep `manyTypes`. `out('E','F')` is the overwhelmingly
+   * common multi-type spelling.
+   *
+   * ⚠️ ORDER IS A TINKERPOP CONTRACT HERE, unlike GQL's unspecified row order — the differential
+   * fuzzer compares Gremlin streams ORDERED, which is also why item 1431's edge-index trick is
+   * available to GQL's undirected hop and not to `both`. This emits bucket 0 in full, then bucket 1
+   * minus bucket 0, which is exactly what the `i`/`j` loops do at `labels.length === 2`.
+   *
+   * `out('E','E')` is admitted and correct: the two lookups return the same Set, so every edge in
+   * bucket 1 is found in bucket 0 and dropped, leaving one emission each.
+   */
+  const pairTypes = manyTypes?.length === 2 ? manyTypes : undefined;
+  /**
    * `both(T)` BY HAND — the third walk, and the only one left going through the helpers (item 1432).
    *
    * `both` is admitted by this shortcut but had no hand walk: `oneType` and `manyTypes` both exclude
@@ -266,6 +300,100 @@ export const hopValuesShortcut = (plan: Plan, graph: Graph): HopValues | undefin
                 if (!drops || value !== undefined) {
                   acc.push(value);
                 }
+              }
+            }
+          }
+
+          return acc;
+        },
+      },
+    };
+  }
+
+  if (pairTypes !== undefined) {
+    const forward = kind === 'out';
+    // Hoisted out of the per-vertex loop, which is the whole point of this branch.
+    const [t0, t1] = pairTypes as readonly [string, string];
+
+    return {
+      rest,
+      values: {
+        *[Symbol.iterator]() {
+          for (const v of graph.vertices) {
+            const byLabel = forward ? v.adjFrom : v.adjTo;
+
+            if (byLabel === undefined) {
+              continue;
+            }
+
+            const b0 = byLabel.get(t0);
+            const b1 = byLabel.get(t1);
+
+            if (b0 !== undefined) {
+              for (const edge of b0) {
+                const value = pick(forward ? edge.to : edge.from);
+
+                if (!drops || value !== undefined) {
+                  yield value;
+                }
+              }
+            }
+
+            if (b1 === undefined) {
+              continue;
+            }
+
+            for (const edge of b1) {
+              // The earlier-buckets rule at two buckets: one membership test against bucket 0.
+              if (b0?.has(edge) === true) {
+                continue;
+              }
+
+              const value = pick(forward ? edge.to : edge.from);
+
+              if (!drops || value !== undefined) {
+                yield value;
+              }
+            }
+          }
+        },
+        // The same loop, eager. Read only by `toArray`, and only when `rest` is empty.
+        drain() {
+          const acc: unknown[] = [];
+
+          for (const v of graph.vertices) {
+            const byLabel = forward ? v.adjFrom : v.adjTo;
+
+            if (byLabel === undefined) {
+              continue;
+            }
+
+            const b0 = byLabel.get(t0);
+            const b1 = byLabel.get(t1);
+
+            if (b0 !== undefined) {
+              for (const edge of b0) {
+                const value = pick(forward ? edge.to : edge.from);
+
+                if (!drops || value !== undefined) {
+                  acc.push(value);
+                }
+              }
+            }
+
+            if (b1 === undefined) {
+              continue;
+            }
+
+            for (const edge of b1) {
+              if (b0?.has(edge) === true) {
+                continue;
+              }
+
+              const value = pick(forward ? edge.to : edge.from);
+
+              if (!drops || value !== undefined) {
+                acc.push(value);
               }
             }
           }
