@@ -171,6 +171,16 @@ nomination resolved to work already measured — `topKNodeWalk` to item 1064, `c
 `propOf` grows 1.4-3.5x and `degreeOfTypes` **7.2x** from 20k to 200k (item 1365), so a
 cache-resident measurement understates anything on those paths.
 
+**THE WRITE PROBE'S SETUP IS EXCLUDED, since item 1396 — and it was not before.** Four of
+`runtime-profile-write-probe.mjs`'s six shapes built their fixture inside the function being profiled
+and timed, including `pointLookups`, the O(1)-by-id control, which built N vertices and then did 10xN
+lookups in one measured call. It also had no windowing at all. Each shape is now `{setup, run}` with
+`setup` outside the window, and `PROF_OUT` profiles the `run` loop alone. **Item 1360's write screen
+was taken on the old instrument and both its numbers were artifacts**: `drainMutations`, "the only
+unpriced engine frame" at 3.2%, does not appear in ANY of the six windowed profiles, and its
+"O(1)-by-id at 70.9 ns" is 19 ns once construction is out — which independently matches
+`id-lookup-hotset-probe.mjs`'s ~18 ns cold. Two instruments agreeing is the reason to believe 19.
+
 ## The ALLOCATION screen — `--heap-prof` is UNFIT, calibrate before believing it
 
 | file                       | what it does                                                             |

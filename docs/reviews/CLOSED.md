@@ -47159,7 +47159,7 @@ priced in the same pass, or the next run will show the field clean while the wor
 
 Instrument and docs only; no engine or core code changed. `bun run check` 0 (read unpiped).
 
-### Item 1360 — the WRITE path screened for the first time: `drainMutations` is the only unpriced engine frame, its lever PRICED at 3.2% and DECLINED, and O(1)-by-id confirmed at 70.9 ns
+### Item 1360 — the WRITE path screened for the first time: ~~`drainMutations` is the only unpriced engine frame, its lever PRICED at 3.2% and DECLINED, and O(1)-by-id confirmed at 70.9 ns~~ **BOTH NUMBERS WERE THE INSTRUMENT (corrected at 1396): the probe built its fixture inside the timed call and had no windowing. Re-screened, `drainMutations` does not appear AT ALL, and by-id reads 19 ns — matching item 1395's independent ~18 ns**
 
 Items 1358 and 1359 screened both query surfaces. Neither probe touches the write path, and the GQL
 `control` profile was the hint: with `RETURN 1` as the query its hottest engine frames are all ingest
@@ -49972,3 +49972,70 @@ it.
 Probe and documentation only — **no engine or core code changed**. `bun run check` 0 (read unpiped);
 the suites are unchanged from item 1393 (core 383/0, gql 3570/0, gremlin 1157/0, serialization
 144/0).
+
+### Item 1396 — the write probe built its fixture INSIDE the timed call, in four of six shapes. Fixed, and the re-screen **removes item 1360's only nomination**: `drainMutations` does not appear in ANY of the six windowed profiles, and its `pointLookups` control goes from "mostly `addVertex`" to **100% `getVertexById` at 19 ns**
+
+Item 1395 found this while verifying the standing O(1) requirement and deliberately left it; this is
+that item. `runtime-profile-write-probe.mjs` had **no profile windowing** — items 1391 and 1392 gave
+it to the two isolated benches and this third instrument was missed — and, worse, four of its six
+shapes built their fixture inside the function being profiled and timed:
+
+- `addEdgeOnly`'s own doc said "edges onto a prebuilt vertex set, so the measured work is `addEdge`"
+  while the 20,000 `addVertex` calls sat in the same call;
+- `setProps` and `removeVertices` likewise built the vertices they then wrote or deleted;
+- `pointLookups` — the O(1)-by-id control the standing instruction names — built N vertices and then
+  did 10xN lookups in one measured call. At item 1395's figures (~19 ns a cold lookup against ~1 us
+  an `addVertex`) that shape was **mostly construction at any N**.
+
+Each shape is now `{ setup, run }`: `setup` builds one fixture per rep OUTSIDE the window and timer,
+`run` does only the operation under test. The two pure-ingest shapes have no `setup`, because for
+them building IS the operation — the restructuring makes that distinction explicit instead of
+accidental. `pointLookups` also pre-builds its id strings, because item 1395 measured
+`` `v${i}` `` construction at ~45-56 ns against ~5 ns for the lookup.
+
+### The re-screen: no unpriced frame over 2% in any of six shapes
+
+| shape            | engine  | top frames                                                                       |
+| ---------------- | ------- | -------------------------------------------------------------------------------- |
+| `addEdgeOnly`    | 1087 ms | `indexEdgeLabel` 28.9%, `getEdgeById` 16.6%, GC 12.9%, `#commitNormalized` 11.4% |
+| `addVertexProps` | 211 ms  | GC 18.0%, `addVertex` 14.4%, `getVertexById` 12.0%, `pushTokens` 9.9%            |
+| `addVertexBare`  | 202 ms  | GC 22.7%, `#commitNormalized` 15.2%, `getVertexById` 13.1%                       |
+| `removeVertices` | 59 ms   | `removeVertex` 27.5%, `deIndexVertexLabel` 27.0%                                 |
+| `pointLookups`   | 29 ms   | **`getVertexById` 100.0%**                                                       |
+| `setProps`       | 17 ms   | `#commitNormalized` 49.6%, GC 34.5%                                              |
+
+### What the fix changed about the conclusions
+
+**Item 1360's sole nomination is gone.** It screened the write path for the first time and reported
+`drainMutations` as "the only unpriced engine frame", priced its lever at 3.2% and declined it. On
+the windowed instrument **`drainMutations` does not appear in any of the six profiles** — it is below
+0.5% everywhere. It was in that screen because the fixture build was in the profile.
+
+**Item 1360's "O(1)-by-id confirmed at 70.9 ns" was also the old instrument.** `pointLookups` now
+reads 3.8 ms a rep over 200,000 lookups = **19 ns each**, and the profile is 100% `getVertexById`
+with nothing else in it. That independently reproduces item 1395's ~18 ns cold figure from a
+completely different instrument and fixture — which is the useful part, because two instruments
+agreeing on 19 ns is much stronger than either alone. The old 70.9 ns was lookup plus construction
+plus key building.
+
+### `getEdgeById` at 16.6% of edge ingest is MISATTRIBUTION, not a target
+
+`addEdge` does one `getEdgeById` per call (a duplicate-id guard), so 180 ms over 600,000 edges is
+~300 ns a call — against the 19 ns this same screen just measured for a lookup. The function is
+`this.edgesById.get(id) ?? null`, one line. **This is the item 1104 self-time trap**: a small hot
+callee credited with its caller's inlined loop, exactly as `edgesOfTypes` read 37.9% self for a
+single `Map.get` there, and exactly what was declined for `pick` at item 1392. Not pursued.
+
+One real micro-redundancy found while reading it, and declined: the guard is
+`if (params.id && this.getEdgeById(params.id)) { return this.getEdgeById(params.id)!; }` — **two
+lookups on the duplicate-id path**. It fires only when an id collides, never during ingest, so it is
+one `Map.get` on a rare path. Recorded rather than changed.
+
+⚠️ `grep` found NONE of this: `Graph.ts` is the Unicode file `grep` treats as binary, so
+`grep -n getEdgeById packages/core/src/core/Graph.ts` printed nothing while the file contains six
+occurrences. Read it with python `str.count`/`re`, per the standing note.
+
+### Gates
+
+Probe only — **no engine or core code changed**. `bun run check` 0 (read unpiped); the suites are
+unchanged from item 1393 (core 383/0, gql 3570/0, gremlin 1157/0, serialization 144/0).
