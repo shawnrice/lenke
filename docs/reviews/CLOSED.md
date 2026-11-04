@@ -52297,3 +52297,62 @@ small** — so 10% of it is a larger absolute prize than the small-stride rankin
 `bun run check` 0 (read unpiped). No engine code changed; the probe gained the knob and prints the
 chosen value. The four full-row arms are still asserted to agree on the row count and `onePass`
 against its own strict-subset expectation.
+
+### Item 1430 — **PRICED, NOT BUILT: a single pass over the EDGE index answers the undirected hop ~12x faster than the engine** and ~10x faster than the two-pass floor, with the same rows verified by content digest. The adjacency walk, not the property read, is what an undirected hop spends its time on
+
+### The structure, and why it is cheaper
+
+The engine's `undirectedHopWalk` iterates every VERTEX twice — once for `adjFrom`, once for `adjTo` —
+so a 100,000-vertex graph pays 200,000 iterations and 200,000 `Map.get`s to produce two rows per
+edge. Item 1429 measured the in-pass alone at 53.9% of that floor.
+
+`graph.edgesByLabel.get(type)` is ONE `Set` holding every edge of that type, in insertion order. One
+pass over it, emitting both rows per edge, produces the same row multiset:
+
+|               | `twoPass` (the engine's structure) | `edgePass`       | vs floor | vs engine |
+| ------------- | ---------------------------------- | ---------------- | -------- | --------- |
+| small stride  | 25.55 ms (256 ns/row)              | **2.62 ms (26)** | **9.7x** | **12.6x** |
+| random stride | 41.60 ms (416)                     | **4.29 ms (43)** | **9.7x** | **12.5x** |
+
+**~10x the floor and ~12.5x the engine, at both localities.** The edge index is sequential in
+allocation order, where adjacency iteration chases a `Map` per vertex and then a `Set` per bucket —
+`countOnly` (both passes, no rows at all) costs 116-220 ns/row where `edgePass` does the walk AND
+builds the rows in 26-43.
+
+### ⚠️ A 12x deserves an answer check, and only got one on the second pass
+
+The probe compared row COUNTS. At 12x that stops being evidence — a walk emitting the wrong endpoint,
+or the same endpoint twice, matches on length and means nothing. It now computes an order-independent
+summed **content digest** and asserts `engine`, `twoPass` and `edgePass` agree, with `countOnly`
+(builds no rows) and `noProp` (writes a constant) excluded **by name** rather than by silence.
+
+They agree. The 12x is on identical rows.
+
+### What the real implementation must also pay, which this arm does not
+
+**It is a FLOOR, so the number is an upper bound:**
+
+- the START label has to be applied to BOTH endpoints — today it comes free from
+  `candidateVertexSource`, because the walk enumerates starts; an edge pass enumerates edges and each
+  one yields a row with `from` as start and another with `to` as start.
+- a FAR predicate, a carried clause `WHERE` and a start-reading item all need somewhere to go.
+- a self-loop must be emitted once (`edgePass` already skips the second row for `from === to`).
+- it applies only when the hop is UNDIRECTED and the labels permit iterating the type's edge set at
+  all — a narrowing start label probably wants the current walk, which is why this is a route choice
+  and not a replacement.
+
+Row ORDER changes, and that is allowed: GQL row order is unspecified, `farDrivenHopWalk` already
+reorders deliberately, and `hopOrderPlan` already forces start-driven under `ORDER BY`.
+
+### Why this is the right next target rather than the per-row machinery
+
+Item 1414 priced the engine at 1.39-1.51x a hand-written floor and item 1415 failed to take any of
+it (2.3% against controls moving 3.4-5.6%, under the file's ~10% toll). **That was optimising the
+wrong thing**: the gap to the floor is ~1.5x, and the floor itself is ~10x off a better structure.
+`hopundiryield` is the #2 row at random stride (86.84 ms), so the prize is large in absolute terms
+too.
+
+### Gates
+
+`bun run check` 0 (read unpiped). No engine code changed; the probe gained the `edgePass` arm, the
+`STRIDE` knob and the content digest.

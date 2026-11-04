@@ -199,11 +199,47 @@ const countOnly = () => {
   return { length: n };
 };
 
-const ARMS = { engine, twoPass, onePass, noProp, countOnly };
+/**
+ * THE ALTERNATIVE STRUCTURE, priced before anything is built (item 1430).
+ *
+ * `twoPass` is what the engine does: iterate every VERTEX twice — once for `adjFrom`, once for
+ * `adjTo` — which is 2 x `NODES` iterations and 2 x `NODES` `Map.get`s to produce 2 rows per edge.
+ * Item 1429 measured the in-pass alone at 53.9% of that floor at random stride.
+ *
+ * `edgePass` iterates the EDGE index once (`graph.edgesByLabel.get(type)`) and emits both rows per
+ * edge. Same rows, same count, different order — and GQL row order is unspecified, which is the
+ * licence `farDrivenHopWalk` already uses and `hopOrderPlan` already forces start-driven under
+ * `ORDER BY`.
+ *
+ * ⚠️ IT IS A FLOOR, NOT A CANDIDATE. A real implementation must also apply the start label to BOTH
+ * endpoints (each edge yields a row with `from` as start and one with `to` as start, where today the
+ * start side comes free from `candidateVertexSource`) and keep a self-loop emitted once. Those cost
+ * something this arm does not pay, so the gap it shows is an upper bound on the win.
+ */
+const edgePass = () => {
+  const rows = [];
+  const edges = g.edgesByLabel.get('E');
+
+  if (edges !== undefined) {
+    for (const e of edges) {
+      rows.push({ n: e.to.properties['n'] });
+
+      if (e.from !== e.to) {
+        rows.push({ n: e.from.properties['n'] });
+      }
+    }
+  }
+
+  return rows;
+};
+
+const ARMS = { engine, twoPass, onePass, noProp, countOnly, edgePass };
 
 const time = (fn) => {
   const series = [];
   let len = 0;
+
+  let last = [];
 
   for (let r = 0; r < REPS; r += 1) {
     const t0 = performance.now();
@@ -211,11 +247,24 @@ const time = (fn) => {
 
     series.push(performance.now() - t0);
     len = rows.length;
+    last = Array.isArray(rows) ? rows : [];
   }
 
   const kept = series.slice(DROP).sort((a, b) => a - b);
 
-  return { p25: kept[Math.floor(kept.length * 0.25)], len };
+  // ⚠️ AN ORDER-INDEPENDENT CONTENT DIGEST, not just a length (item 1430). `edgePass` measured 13x
+  // the floor, and a number that large is exactly when "same row COUNT" stops being evidence — a
+  // walk that emitted the wrong endpoint, or the same one twice, would match on length and be
+  // meaningless. Summed, so the deliberate reordering is invisible and a wrong VALUE is not.
+  let digest = 0;
+
+  for (const r of last) {
+    const v = r?.['n'];
+
+    digest += typeof v === 'number' ? v : 0;
+  }
+
+  return { p25: kept[Math.floor(kept.length * 0.25)], len, digest };
 };
 
 const names = Object.keys(ARMS);
@@ -236,13 +285,24 @@ const med = (xs) => {
 
 // ⚠️ THE ARMS THAT CLAIM THE SAME ROW SET MUST AGREE ON IT. `onePass` deliberately does not, so it
 // is checked against its own expectation instead: strictly fewer rows, and more than none.
-const full = ['engine', 'twoPass', 'noProp', 'countOnly'].map((n) => got[n][0].len);
+const full = ['engine', 'twoPass', 'noProp', 'countOnly', 'edgePass'].map((n) => got[n][0].len);
 
 if (new Set(full).size !== 1) {
   throw new Error(`full-row arms disagree: ${full.join(' vs ')}`);
 }
 
 const [rows] = full;
+
+// The arms that claim the same ROW SET must also agree on its CONTENT. `countOnly` builds no rows
+// and `noProp` deliberately writes a constant, so both are excluded BY NAME rather than by silence.
+const CONTENT_ARMS = ['engine', 'twoPass', 'edgePass'];
+const digests = new Set(CONTENT_ARMS.map((n) => got[n][0].digest));
+
+if (digests.size !== 1) {
+  throw new Error(
+    `CONTENT DIFFERS: ${CONTENT_ARMS.map((n) => `${n}=${got[n][0].digest}`).join(' ')}`,
+  );
+}
 
 if (!(got['onePass'][0].len > 0 && got['onePass'][0].len < rows)) {
   throw new Error(`onePass should be a strict subset: ${got['onePass'][0].len} of ${rows}`);
@@ -272,6 +332,10 @@ for (const n of names) {
   );
 }
 
+console.log(
+  `\n  edgePass over the floor    ${(V['edgePass'] / V['twoPass']).toFixed(2)}x  ` +
+    `(one pass over the EDGE index instead of two over the vertices)`,
+);
 console.log('\n  ablations:');
 console.log(`    engine over the floor      ${(V['engine'] / V['twoPass']).toFixed(2)}x`);
 console.log(
