@@ -219,6 +219,15 @@ builds graphs in a tight loop is measuring a different heap than it thinks.
 | `gremlin-hop-floor-probe.mjs`    | the Gremlin hop FLOOR, three arms (item 1411)      |
 | `gql-undirected-floor-probe.mjs` | the GQL undirected hop, five-arm ablation (1414)   |
 
+⚠️ **`hop-projection.ts` CHARGES A TOLL, so price a target against ~10% before attempting it**
+(items 1413 and 1415). Two independent changes there — a dedupe skip and a per-row `EvalEnv` hoist —
+had flat-to-small targets (−0.5%, +2.3% at degree 1) and each made rows on walks they CANNOT REACH
+**3.4-5.8% slower**, with concordance against them (28/81, 12/81). The controls moved against the
+change, so this is not a control flattering a target; it is the file. Every item that succeeded here
+clears 10% easily (1408 at 26.8/42.1%, 1409 at 55.7/79.8%, 1410 at 31.2/49.1%) and both that failed
+are under it. Put two per-edge walks the change cannot reach in every A/B on this file, and treat a
+sub-10% nomination as already declined.
+
 Per-rep timing, `p25` headline, full distribution, GC accounted, answer in the output so a driver can
 assert the arms agree.
 

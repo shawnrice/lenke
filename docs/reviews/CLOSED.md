@@ -51323,3 +51323,74 @@ needs its own item with controls on walks it does not mean to reach.
 arms that claim the same row set are asserted to agree on it, and `onePass` — which deliberately
 does not — is checked against its own expectation instead (a strict, non-empty subset) rather than
 excluded from checking.
+
+### Item 1415 — **DECLINED**, and with item 1413 it establishes a THRESHOLD: in `hop-projection.ts` a change worth less than ~10% on its target is likely NET-NEGATIVE across the file. Hoisting `projectRow`'s per-row `EvalEnv` gained 2.3% at degree 1 and cost two unrelated rows 3.4-5.6%
+
+### The change, and why it looked free
+
+`projectRow` built a fresh `{ binding, params, graph }` on every call, and every per-edge walk in
+`hop-projection.ts` calls it once per ROW — so a 100,000-row hop allocated 100,000 three-field
+objects whose contents never varied. `binding` is the same `Map`, mutated in place between rows, so
+an env hoisted to the call observes exactly what a fresh one would.
+
+Item 1414 had priced the room: the undirected hop runs at **1.39x** a hand-written loop doing
+`rows.push({ n: e.to.properties.n })`, and this allocation is part of that gap.
+
+Built as an ADDED entry point (`projectRowIn`) rather than a changed signature, because the hoist is
+only sound while nothing retains the env past the call, and converted in **one walk only** — 2 sites
+changed, 9 left alone as controls, asserted as a relation in the A/B driver.
+
+### The measurement
+
+| shape                         | degree | BASE   | ENVHOIST | change    | concordance |
+| ----------------------------- | ------ | ------ | -------- | --------- | ----------- |
+| `hopundiryield` (target)      | 1      | 40.69  | 39.77    | **2.3%**  | 46/81       |
+| `hopundiryield` (target)      | 4      | 124.37 | 113.77   | **8.5%**  | 61/81       |
+| `hopstartonlyyield` [CONTROL] | 1      | 8.50   | 8.97     | **−5.6%** | 28/81       |
+| `hoprelfiltyield` [CONTROL]   | 1      | 11.00  | 11.38    | **−3.4%** | 33/81       |
+| `hopsingleyield` [CONTROL]    | 1      | 9.81   | 9.85     | −0.4%     | 35/81       |
+
+**At degree 1 — the default shape — the target is 2.3% at 46/81 against a chance of 40.5, which is
+a null**, while two controls on walks whose `projectRow` call is byte-identical between arms got
+**5.6% and 3.4% slower**. The degree-4 cell's 8.5% is the only real signal and it is not enough to
+pay for that.
+
+The first reading already suggested this (383 ns/row against 386), and the likely reason the
+allocation is nearly free is that V8 scalar-replaces an env whose only consumer inlines.
+
+### ⚠️ The finding is the threshold, not the decline
+
+The controls moved **against** the change — slower in the arm, not faster — so this is not a control
+flattering the target. It is the file-perturbation effect, now measured twice:
+
+| item               | target            | controls on unreachable walks |
+| ------------------ | ----------------- | ----------------------------- |
+| 1413 (dedupe skip) | −0.5%             | −3.5%, −5.8%                  |
+| 1415 (env hoist)   | +2.3% at degree 1 | −5.6%, −3.4%, −0.4%           |
+
+Two independent changes to `hop-projection.ts`, both with flat-to-small targets, both costing
+unrelated rows **3.4-5.8%**. That is the same effect already on record for `exec::pull` (1.08-1.24x
+on unrelated clusters, never a gain) and for a walk inlined in a returned closure (4x on unrelated
+queries) — but those were about one hot function, and this says it about the FILE.
+
+**So the operative rule for target selection in this file: a change must be worth ~10% or more on
+its own row to be worth attempting at all**, because the perturbation toll appears to be charged
+regardless of what the change does. Every item that succeeded here this session clears that easily —
+1408 (26.8/42.1%), 1409 (55.7/79.8%), 1410 (31.2/49.1%) — and both that failed are under it. That is
+a cheap filter that would have skipped two items, and it is the most useful thing either of them
+produced.
+
+### What remains of item 1414's 1.39x
+
+The env allocation was one candidate for that gap and it is now priced at ~2%. The rest is the
+`binding.set` per row plus the generic `propOf` evaluation versus a direct property read. A
+specialized `pick`-shaped closure is still the precedented fix — but on the threshold above it has to
+be worth ~10% on `hopundiryield` alone, and item 1414's ablation caps the whole per-row machinery at
+28% of the row (the floor is 1.39x), with the adjacency walk at 59.8% of the floor untouchable. So
+the remaining headroom is real but tight, and anyone taking it should expect the toll.
+
+### Gates
+
+`bun run check` 0 (read unpiped), gql 3610/0 while the change was in. Both files reverted and
+verified: `projectRowIn` appears **0** times in either. Answers were identical across both arms in
+every cell — the hoist was correct, it was simply not worth its own side effects.
