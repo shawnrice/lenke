@@ -48708,7 +48708,7 @@ the economical choice.
 Instrument only — one bench file; `graph-queries.ts` restored with `ABLATED_ITERLABELED` at 0 and
 both arm files under `target/` deleted by the driver's `finally`. `bun run check` 0 (read unpiped).
 
-### Item 1379 — **SHIPPED, 110x**: the multi-label edge/hop count is the UNION of buckets instead of a decline. 198.139 ms → 1.798, 64/64 concordance, answers identical on 12 shapes (its ~~unresolved −1.8%~~ control is REFUTED at 1380 — n=24 flips the sign to +0.96%, significant in neither direction)
+### Item 1379 — **SHIPPED, 110x**: the multi-label edge/hop count is the UNION of buckets instead of a decline. 198.139 ms → 1.798, 64/64 concordance, answers identical on 12 shapes ~~and 64/64 concordance~~ — **but it SHIPPED AN EQUIVALENT-SPELLING GAP, 3.53x on the reversed label order, fixed at 1382** (its ~~unresolved −1.8%~~ control is REFUTED at 1380 — n=24 flips the sign to +0.96%, significant in neither direction)
 
 Item 1378 located the gap and priced it analytically at ~100x, then declined to build it. This builds
 it, and the estimate held: **99.1%, 110x**.
@@ -48845,3 +48845,92 @@ shipped change carrying an unexplained control, which is how a real regression h
 
 Measurement only; the tree is unchanged from item 1379 (`UNION_COUNT` x3, `walkBucket` x4,
 `git status --porcelain` empty) and both extracted arm files were deleted by the driver's `finally`.
+
+### Item 1382 — **I SHIPPED AN EQUIVALENT-SPELLING GAP AT 1379** (`outE('E','F')` 1.781 ms against `outE('F','E')`'s 6.468, **3.53x**, same answer); sorting the union's buckets closes it, and the same helper gives `labelledCount` a union worth **91.5%**
+
+Item 1379's union walk reads bucket 0's `.size` and ITERATES every later bucket, so it is sensitive
+to the order the query names labels in. I did not notice, and the result is the exact failure class
+this repo hunts: _"the planner recognized one spelling of a predicate and scanned for another that
+meant exactly the same thing... Each cost 100-300x and each returned the correct answer."_
+
+| spelling        | shipped at 1379 | answer |
+| --------------- | --------------- | ------ |
+| `outE('E','F')` | 1.781 ms        | 400000 |
+| `outE('F','E')` | **6.468 ms**    | 400000 |
+
+Found by predicting it from the code and then building the row — `edgemultirev` / `labelmultirev`
+are new, and nothing in the corpus compared a disjunction against its own reversal on this surface.
+The GQL spelling probe has an `'edge type disjunction order'` group for exactly this question; the
+Gremlin side had no equivalent for `outE`, which is why six items passed without it surfacing.
+
+### The fix: sort DESCENDING, which makes order unobservable AND minimises the work
+
+Bucket 0 is free, so it should be the biggest. `|E|` = 400,000 and `|F|` = 133,334, so query order
+decided whether the walk paid 133k membership tests or 400k. Largest-first always pays the smaller.
+
+### Same helper, second site: `labelledCount` declined UNCONDITIONALLY
+
+`labelledCount` returned `undefined` for `labels.length !== 1`, and its own doc named the union as
+the right answer. Unlike the edge case there is no "no-overlap ⇒ the sum is safe" escape, because the
+graph tracks `multiTypeEdgeCount` for edges and **nothing equivalent for vertex labels** — so the
+decline never consulted the data. Measured, and the knob proves it: `hasLabel('P','Q')` is
+**9.294 ms at VLABEL=0 and 9.389 at VLABEL=3**, identical whether or not any vertex carries two
+labels, against `hasLabel('P')`'s 0.0070.
+
+The union needs no overlap counter — a member belongs to exactly one FIRST bucket — so one
+`unionOfBuckets` helper serves both the edge buckets and the vertex-label buckets. **ONE copy of the
+rule**, which is item 1078's lesson (a soundness condition open-coded in seven places is how the far
+endpoint ended up on the per-edge tally).
+
+| shape                   | BASE p25 | SORT       | change    | concordance |
+| ----------------------- | -------- | ---------- | --------- | ----------- |
+| `edgemultirev`          | 6.3675   | **1.7480** | **72.5%** | **64/64**   |
+| `labelmulti`            | 9.6700   | **0.8185** | **91.5%** | **64/64**   |
+| `labelmultirev`         | 9.6570   | **0.8250** | **91.5%** | **64/64**   |
+| `edgemulti`             | 1.8045   | 1.7660     | 2.1%      | 49/64       |
+| `edgesingle` [CONTROL]  | 0.0070   | 0.0080     | -14.3%    | 9/64        |
+| `labelsingle` [CONTROL] | 0.0070   | 0.0070     | 0.0%      | 6/64        |
+
+**The spelling gap, before and after** — and the pair must COST the same, not merely answer the same:
+
+```text
+  BASE  edgemulti 1.8045  vs edgemultirev 6.3675   ratio 3.53x
+  SORT  edgemulti 1.7660  vs edgemultirev 1.7480   ratio 0.99x
+  BASE  labelmulti 9.6700 vs labelmultirev 9.6570  ratio 1.00x   (both equally SLOW)
+  SORT  labelmulti 0.8185 vs labelmultirev 0.8250  ratio 1.01x   (both equally FAST)
+```
+
+⚠️ `edgesingle`'s **-14.3%** is 0.0070 ms against 0.0080 — ONE timer tick at 7 microseconds, on a
+code path both arms share byte for byte (the `labels.length === 1` early return is untouched). It is
+quantisation, not a regression, and it is in the table rather than omitted because dropping an
+inconvenient control row is how a real one gets lost.
+
+### The guard already existed, and its teeth were verified
+
+`count-shortcut.test.ts`'s `'shapes it declines still answer correctly'` already asserted
+`hasLabel('P','Q')` is **6** — not the sum (7), not `|P|` (4), not `|Q|` (3). It was written to catch
+a wrong DECLINE and it catches a wrong UNION for the same reason. **Verified by mutation**: counting
+the sum instead of the union fails that case plus `'a multi-type edge is counted once'`.
+
+Its TITLE is now stale — the shape no longer declines — so that is annotated in place rather than
+renamed, and four cases the new walk differs on were added beside it: order reversal, a DUPLICATE
+label naming one bucket twice, an ABSENT label, and nine labels past the cap (where the answer must
+not depend on which route ran).
+
+### Two stale precedent comments, fixed in the same commit
+
+Both cited `labelledCount`'s decline as justification for their own, and it no longer declines:
+
+- `count-shortcut.ts`'s filtered-chain doc ("stays a predicate — `labelledCount` declines it for the
+  same reason");
+- `index-seed.ts`'s multi-label decline ("`labelledCount` in the count shortcut declines it for
+  exactly the same reason").
+
+**Both declines still stand, for a reason the citation obscured**: seeding and a tally need an
+ENUMERATION of the elements, and a union COUNT is a number. Deduping an enumeration across buckets is
+a different and more expensive question than counting one. The citation was the stale half.
+
+### Verification
+
+`bun test` gremlin **1148 / 0**, gql 3537 / 0, core 370 / 0. `bun run fuzz` **20 / 0**. `bun run
+bench:gremlin` — **25 rows, every one `answers same`**. `bun run check` 0 (read unpiped).

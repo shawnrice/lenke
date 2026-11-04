@@ -47,6 +47,12 @@ const FANOUT = Number(process.env.FANOUT ?? 1);
  * that deduped everything, and a fixture where none do never reaches the deduping path at all.
  */
 const MULTILABEL = Number(process.env.MULTILABEL ?? 0);
+/**
+ * How often a VERTEX carries a second label `Q`. 0 = never. The vertex twin of MULTILABEL, for the
+ * same reason: `labelledCount` declines EVERY multi-label `hasLabel` outright, and its own doc says
+ * the right answer is the union of the buckets. Whether that decline costs anything needs a row.
+ */
+const VLABEL = Number(process.env.VLABEL ?? 0);
 const REPS = Number(process.env.REPS ?? 14);
 const DROP = Number(process.env.DROP ?? 3);
 
@@ -68,6 +74,16 @@ const SHAPES = {
   // count the SAME edges and only the route differs.
   edgesingle: () => traversal(V(), outE('E'), count()),
   edgemulti: () => traversal(V(), outE('E', 'F'), count()),
+  // THE VERTEX-LABEL PAIR. Every vertex carries `P` and a fraction also carry `Q`, so these two
+  // count the SAME vertices and only the route differs — the same design as the edge pair above.
+  labelsingle: () => traversal(V(), hasLabel('P'), count()),
+  labelmulti: () => traversal(V(), hasLabel('P', 'Q'), count()),
+  // ORDER-REVERSED TWINS. Bucket 0 of a union walk is free and later buckets are iterated, so an
+  // UNSORTED union makes these cost differently from the pair above while answering identically —
+  // which is exactly the equivalent-spelling class CLAUDE.md says costs 100-300x and returns the
+  // right answer. These rows exist to catch that.
+  labelmultirev: () => traversal(V(), hasLabel('Q', 'P'), count()),
+  edgemultirev: () => traversal(V(), outE('F', 'E'), count()),
 };
 
 const make = SHAPES[SHAPE];
@@ -85,7 +101,7 @@ const build = () => {
     vs.push(
       g.addVertex({
         id: `v${i}`,
-        labels: ['P'],
+        labels: VLABEL > 0 && i % VLABEL === 0 ? ['P', 'Q'] : ['P'],
         properties: { k: i % 97, s: `s${i % 1000}`, n: i },
       }),
     );

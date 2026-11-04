@@ -1107,7 +1107,12 @@ const bucketsFor = (
  *
  * THE SOURCE. A `hasLabel` naming exactly ONE label is read off that label's bucket, so the tally
  * is O(bucket) rather than O(V). A multi-label `hasLabel` is an OR over buckets a vertex may sit
- * in several of, so it stays a predicate — `labelledCount` declines it for the same reason.
+ * in several of, so it stays a predicate here.
+ *
+ * ⚠️ That used to add "— `labelledCount` declines it for the same reason", and since item 1382 it
+ * does NOT: `labelledCount` now counts the UNION. The decline HERE still stands on its own, because
+ * this is a SOURCE for a tally that must then visit each element once, and a union COUNT does not
+ * hand you an enumeration to visit. The citation was the stale half, not the decline.
  *
  * SOUNDNESS. Every admitted step is a TOTAL predicate: `matches` returns false for a missing or
  * incomparable value rather than throwing, and a label test cannot fault. So evaluating all of
@@ -2471,6 +2476,66 @@ const propertyCount = (step: Extract<Step, { kind: 'has' }>, graph: Graph): numb
  */
 const UNION_COUNT_MAX_LABELS = 8;
 
+/**
+ * `|union of the named buckets|`, counted without a `seen` set and WITHOUT caring what order the
+ * query named them in.
+ *
+ * A member belongs to exactly one FIRST bucket, so count it where it first appears: bucket 0
+ * contributes its `.size` untouched and bucket `i` counts only what no earlier bucket holds. That
+ * needs no overlap counter, which is why this serves both the edge buckets (`adjacentCount`) and the
+ * vertex-label buckets (`labelledCount`) — ONE copy of the rule, the drift item 1078 records as the
+ * defect when a soundness condition was open-coded in seven places.
+ *
+ * ⚠️ SORTED DESCENDING, and item 1382 is why. Bucket 0 is FREE and every later bucket is iterated,
+ * so an unsorted walk costs whatever order the query happened to name: item 1379 shipped that and
+ * `outE('E','F')` measured **1.781 ms** against `outE('F','E')`'s **6.468**, 3.63x, both answering
+ * 400000 — an equivalent-spelling gap of exactly the kind CLAUDE.md says returns the right answer
+ * and costs 100-300x. Largest-first makes the order unobservable AND minimises the work, because the
+ * bucket that is free should be the biggest one.
+ */
+const unionOfBuckets = <T>(
+  names: readonly string[],
+  index: ReadonlyMap<string, ReadonlySet<T>>,
+): number => {
+  const buckets: ReadonlySet<T>[] = [];
+
+  for (const name of names) {
+    const bucket = index.get(name);
+
+    if (bucket !== undefined && bucket.size > 0) {
+      buckets.push(bucket);
+    }
+  }
+
+  if (buckets.length === 0) {
+    return 0;
+  }
+
+  buckets.sort((a, b) => b.size - a.size);
+
+  let n = buckets[0].size;
+
+  for (let i = 1; i < buckets.length; i += 1) {
+    for (const member of buckets[i]) {
+      let earlier = false;
+
+      for (let j = 0; j < i; j += 1) {
+        if (buckets[j].has(member)) {
+          earlier = true;
+
+          break;
+        }
+      }
+
+      if (!earlier) {
+        n += 1;
+      }
+    }
+  }
+
+  return n;
+};
+
 const adjacentCount = (labels: readonly string[], graph: Graph): number | undefined => {
   if (labels.length === 0) {
     return graph.edgeCount; // every edge, traversed once from its own endpoint
@@ -2506,41 +2571,7 @@ const adjacentCount = (labels: readonly string[], graph: Graph): number | undefi
     return undefined;
   }
 
-  const buckets: ReadonlySet<Edge>[] = [];
-
-  for (const label of labels) {
-    const bucket = graph.edgesByLabel.get(label);
-
-    if (bucket !== undefined && bucket.size > 0) {
-      buckets.push(bucket);
-    }
-  }
-
-  if (buckets.length === 0) {
-    return 0;
-  }
-
-  let n = buckets[0].size;
-
-  for (let i = 1; i < buckets.length; i += 1) {
-    for (const e of buckets[i]) {
-      let earlier = false;
-
-      for (let j = 0; j < i; j += 1) {
-        if (buckets[j].has(e)) {
-          earlier = true;
-
-          break;
-        }
-      }
-
-      if (!earlier) {
-        n += 1;
-      }
-    }
-  }
-
-  return n;
+  return unionOfBuckets(labels, graph.edgesByLabel);
 };
 
 /**
@@ -2550,9 +2581,19 @@ const adjacentCount = (labels: readonly string[], graph: Graph): number | undefi
  * left to the general path rather than guessed at.
  */
 const labelledCount = (labels: readonly string[], graph: Graph): number | undefined => {
-  if (labels.length !== 1) {
+  if (labels.length === 1) {
+    return graph.verticesByLabel.get(labels[0])?.size ?? 0;
+  }
+
+  // THE UNION, where this used to decline unconditionally (item 1382). A vertex may carry several
+  // labels, so summing buckets overcounts — but the union is cheap and needs no overlap counter,
+  // which matters here because the graph tracks `multiTypeEdgeCount` for EDGES and nothing
+  // equivalent for vertex labels, so the old `labels.length !== 1` decline never consulted the data
+  // at all. Measured: `hasLabel('P')` 0.0070 ms against `hasLabel('P','Q')` 9.294, identical at
+  // every overlap fraction because the decline was unconditional.
+  if (labels.length === 0 || labels.length > UNION_COUNT_MAX_LABELS) {
     return undefined;
   }
 
-  return graph.verticesByLabel.get(labels[0])?.size ?? 0;
+  return unionOfBuckets(labels, graph.verticesByLabel);
 };

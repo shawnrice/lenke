@@ -240,8 +240,13 @@ export type SeededPlan = {
  * every terminal because it removes the step rather than replacing the walk.
  *
  * MULTI-LABEL declines: `hasLabel(a, b)` keeps an element carrying EITHER, and an element may
- * carry both, so the union is not a bucket and not a sum. `labelledCount` in the count shortcut
- * declines it for exactly the same reason.
+ * carry both, so the union is not a bucket and not a sum.
+ *
+ * ⚠️ This used to add that "`labelledCount` in the count shortcut declines it for exactly the same
+ * reason", and since item 1382 it does not — `labelledCount` counts the UNION instead. The decline
+ * here is unaffected: seeding has to hand back an ENUMERATION of the elements, and a union count is
+ * a number. Deduping an enumeration across buckets is a different and more expensive question than
+ * counting one, which is why the two diverge.
  *
  * ORDER. Seeding changes the order elements are emitted in — the bucket's rather than the id
  * map's. That is not a contract: TinkerPop leaves `g.V()`'s order unspecified, this repo treats

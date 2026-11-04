@@ -136,12 +136,32 @@ describe('count() answered from a counter or bucket', () => {
     // MULTI-LABEL hasLabel is a UNION. |P| = 4 and |Q| = 3 overlap on one vertex, so the
     // union is 6 — different from the SUM (7) and different from EITHER bucket (4, 3). All
     // three have to differ, or the case cannot tell a union from a sum from a first-label read.
+    //
+    // ⚠️ SINCE ITEM 1382 THIS SHAPE NO LONGER DECLINES — `labelledCount` counts the union on the
+    // fast path — so it is no longer an example of this test's title. The ASSERTIONS are unchanged
+    // and are exactly the right guard either way: they were written to catch a wrong decline and
+    // they catch a wrong union for the same reason. Verified by mutation at 1382 (counting the sum
+    // instead of the union fails this case).
     expect(n(g, V(), hasLabel('P', 'Q'), count())).toBe(6);
     expect(n(g, V(), hasLabel('P', 'Q'), count())).not.toBe(
       n(g, V(), hasLabel('P'), count()) + n(g, V(), hasLabel('Q'), count()),
     );
     expect(n(g, V(), hasLabel('P', 'Q'), count())).not.toBe(n(g, V(), hasLabel('P'), count()));
     expect(n(g, V(), hasLabel('P', 'Q'), count())).not.toBe(n(g, V(), hasLabel('Q'), count()));
+
+    // THE SPELLINGS MUST COST THE SAME, so they had better ANSWER the same: the union walk reads
+    // bucket 0's size and iterates the rest, so before 1382 sorted them it was sensitive to the
+    // order the query named labels in (item 1382 measured 3.53x on the edge twin). Order, a
+    // DUPLICATE naming one bucket twice, and an ABSENT label are the three shapes that walk differs
+    // on, and none of them had a case here.
+    expect(n(g, V(), hasLabel('Q', 'P'), count())).toBe(6);
+    expect(n(g, V(), hasLabel('P', 'P'), count())).toBe(n(g, V(), hasLabel('P'), count()));
+    expect(n(g, V(), hasLabel('P', 'ZZZ'), count())).toBe(n(g, V(), hasLabel('P'), count()));
+    expect(n(g, V(), hasLabel('ZZZ', 'WWW'), count())).toBe(0);
+
+    // Past `UNION_COUNT_MAX_LABELS` this declines to the pipeline, and the ANSWER must not depend
+    // on which route ran — the whole point of a route that is chosen for cost.
+    expect(n(g, V(), hasLabel('P', 'Q', 'a', 'b', 'c', 'd', 'e', 'f', 'g'), count())).toBe(6);
 
     // `both()` walks out-edges then in-edges, so a self-loop is incident TWICE. Two self-loops
     // here, so the total exceeds the edge count and is not a bucket size.
