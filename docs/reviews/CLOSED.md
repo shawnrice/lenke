@@ -47990,3 +47990,85 @@ filtered-count cluster 1.08-1.24x, never gains"), for 3.7%. The trade is worse t
 The Gremlin bench is new; no engine or core code changed. Tree restored, `ABLATED_BUCKET_ALLOC` and
 `REUSED_ONE` at 0, `bucketsOf` present, both arm files under `target/` deleted by the driver's
 `finally`. `bun run check` 0 (read unpiped).
+
+### Item 1369 — the dense vertex ordinal's READ side, measured at last: **12.9% on the largest Gremlin row** (63/64 concordance, control flat), and on THIS path the user's bookkeeping objection does not bind
+
+Item 1357 measured the ordinal's WRITE cost because the user asked for it: bare +2.4% worst case,
+props -0.1%, withEdges +1.8% — free on realistic shapes. The user then DECLINED the design:
+
+> _"I don't understand how this helps us generally. We need to do much more booking to keep a second
+> structure in alignment with the global structures."_
+
+That objection was accepted at item 1358 and is **not being relitigated**. What was missing from the
+record is the other half of the trade — nobody had ever measured what the ordinal BUYS — so a
+decision that reads as "declined" was really "declined without one of its two numbers". This supplies
+it.
+
+### The objection is much narrower on this path than either of us thought
+
+`slotChainCount` **already** sizes its arrays to the graph: `const n = graph.vertexCount;` with
+`new Float64Array(n)` and a comment saying `n` is an exact bound so nothing grows. So the |V|-sized
+per-query allocation I warned about is **already paid here**. On this walk the ordinal needs:
+
+- `Graph.vtxSeq` — one monotonically increasing integer;
+- `Vertex.#slot` — assigned once at construction, never updated. Not a second structure to keep
+  aligned; a field on the object it describes;
+- `vtx[slot] = w` instead of `slotOf.set(w, slot)` — the slot→Vertex map stays **per-query and lazily
+  filled**, exactly as today.
+
+**No free list, no `vertexBySlot` on the Graph, no generation stamps** — the three things that made
+the design sound heavy when I described it. The per-edge intern block SHRINKS from eight lines to
+two. The one real cost is that slots are never reused, so arrays size by `vtxSeq` (total ever
+created) rather than `vertexCount` (live).
+
+### The number
+
+Timing arm (3 files patched, every anchor asserted unique), item 1368's harness, 200,000 vertices at
+fanout 5, `p25` per process, eight processes per arm, arms interleaved:
+
+| shape                 | BASE p25 | ORDINAL | change    | concordance     |
+| --------------------- | -------- | ------- | --------- | --------------- |
+| `hopcount3`           | 342.68   | 298.52  | **12.9%** | **63/64 (98%)** |
+| `hopcount2` [CONTROL] | 74.56    | 75.12   | -0.7%     | 7/64 (11%)      |
+
+Answers identical in every process (`hopcount3` 25,000,000, `hopcount2` 5,000,000). The control —
+answered by the degree inner product with no edge walk — does not improve, so the arm reached only
+what it was aimed at. 63 of 64 pairs is as clean a separation as this session has produced.
+
+**So the full trade, both sides measured for the first time: ~0% on writes, 12.9% on the largest
+Gremlin row, for one integer on `Graph` and one immutable field on `Vertex`.** It also clears the bar
+this session has otherwise failed to clear: every other candidate priced here came in at 1.7%
+(`drainMutations`), 3.7% (`bucketsOf`), 1.11x (bag shape) or noise (`FAST1`).
+
+### FOUR things not done, and the first two are disqualifying on their own
+
+1. **BYTE-IDENTITY IS NOT VERIFIED.** Slot assignment changes from DISCOVERY order to CREATION order,
+   so `st.next[to] += m` accumulates in a different order. Path counts are integers and exact in
+   f64 below 2^53, so it is probably fine — and "probably" is what the seven byte-identity fuzzers
+   exist for. **They were not run.** Two queries agreeing on two numbers is necessary and nowhere
+   near sufficient; `graph-algorithms-library`'s summation-order rule is the precedent. Nothing here
+   ships until `bun run fuzz` is green.
+2. **DELETES ARE UNMEASURED**, which is the same gap item 1357 flagged and called "the consequential
+   half". Slots are never reused, so a long-lived graph with churn grows its per-query arrays with
+   total-ever-created. The bound is `vtxSeq`, not `vertexCount`, and nothing here measures what that
+   costs after a million add/remove cycles.
+3. **THE GQL SWEEP IS A DIFFERENT CASE and the objection DOES bind there.** `gql/src/executor/
+shortcuts.ts` keys on the edge's `farId` STRING and grows `ways`/`next` from `cap = 256` by
+   doubling — sized to the TOUCHED set, not to |V|. Giving that walk a global ordinal would introduce
+   |V| sizing where none exists, which is exactly the cost this item found absent on the Gremlin
+   side. **This 12.9% is a Gremlin-path number and must not be read as cross-surface** — the same
+   mistake item 1359 had to correct in 1358.
+4. `#slot` is on a USER-VISIBLE object. A taste objection, and the user's to make.
+
+### Where this leaves the decision
+
+Not reopened by me. The user declined on an objection that this measurement shows does not apply to
+the Gremlin walk, which is new information rather than an argument; the write number was already
+~0%; the read number is 12.9%; and items 1 and 2 above are real work that has not been done. Recorded
+so the decision can be taken on two numbers instead of one, whichever way it goes.
+
+### Gates
+
+Timing arm only — **the prototype is REVERTED**. Tree restored, `git status --porcelain` empty,
+`ORDINAL_READ_ARM`/`vtxSeq` at 0 in all three files and `slotOf` back to its 6 occurrences. All six
+arm files under `target/` deleted by the driver's `finally`. `bun run check` 0 (read unpiped).
