@@ -52243,3 +52243,57 @@ available win there is worth re-pricing against the random-stride floor before a
 
 `bun run check` 0 (read unpiped). `shortcuts.ts` restored and verified: the `!labelled` guard and the
 per-call `candidateCount` comparison are both back.
+
+### Item 1429 — **item 1414's 1.39x holds (1.45x small, 1.51x random)**, but its COMPOSITION inverts and my prediction was backwards: the property read is **38.7% of the floor at small stride and 19.9% at random**, because the adjacency walk nearly doubles and crowds it out
+
+### Why re-price it
+
+Item 1428 made `hopundiryield` the #2 row at random stride and noted that item 1414's entry quotes
+two numbers from two fixtures side by side — this probe's 504 ns/row (its own default is random
+stride) and the bench's 365 (small). `STRIDE` is now a knob here too, so the ablation runs at both.
+
+### The headline ratio survives; the breakdown does not
+
+|                              | small                 | random               |
+| ---------------------------- | --------------------- | -------------------- |
+| `engine`                     | 37.79 ms (378 ns/row) | 52.31 ms (523)       |
+| `twoPass` — the floor        | 26.12 (261)           | 34.59 (346)          |
+| **engine / floor**           | **1.45x**             | **1.51x**            |
+| the adjacency walk alone     | 11.34 ms — **43.4%**  | 21.93 ms — **63.4%** |
+| the far-vertex property read | 10.11 ms — **38.7%**  | 6.89 ms — **19.9%**  |
+| building the row object      | 4.67 — 17.9%          | 5.77 — 16.7%         |
+
+**`engine / floor` is stable at 1.45-1.51x**, so item 1414's "~27-36% available on this row" stands
+at both localities and is if anything slightly better at random stride.
+
+### ⚠️ My prediction was backwards, and the reason is worth keeping
+
+Item 1428 reasoned that `hopundiryield`'s cost "is dominated by the far-vertex property read —
+exactly what random stride makes expensive", so the property read's share should RISE. It falls:
+**38.7% → 19.9%**.
+
+The adjacency walk is what random stride makes expensive — 113 → 219 ns/row, from 43.4% of the floor
+to 63.4% — and it crowds everything else out. The property read's ABSOLUTE cost even drops (10.11 ms
+→ 6.89), which is the part I would not have guessed: by the time the row builder reads
+`far.properties`, the walk has already dereferenced that vertex to get `e.to`, so at random stride
+the expensive first touch has been paid by the walk and attributed to it.
+
+So "random stride makes property reads expensive" is the wrong summary. **Random stride makes the
+WALK expensive, and the walk is what first touches the far vertex.** A shape where the property read
+is the first touch would behave differently; a hop is not that shape.
+
+### What it means for the remaining target
+
+The engine's ~31-34% over the floor is **row-construction machinery**, not the property read — and
+that was already item 1414's conclusion and item 1415's failed attempt at it (the per-row `EvalEnv`
+hoist, 2.3% at degree 1 against controls moving 3.4-5.6%). The `hop-projection.ts` toll from item
+1415 still applies: a change there needs ~10% on its own row.
+
+What changes is that the row is bigger than it looked — **86.84 ms at random stride against 36.52 at
+small** — so 10% of it is a larger absolute prize than the small-stride ranking implied.
+
+### Gates
+
+`bun run check` 0 (read unpiped). No engine code changed; the probe gained the knob and prints the
+chosen value. The four full-row arms are still asserted to agree on the row count and `onePass`
+against its own strict-subset expectation.

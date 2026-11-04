@@ -42,6 +42,12 @@ const REPS = Number(process.env.REPS ?? 14);
 const DROP = Number(process.env.DROP ?? 3);
 /** `-1` is disjoint: every other edge carries `F` INSTEAD of `E`, matching the bench's own knob. */
 const MULTILABEL = Number(process.env.MULTILABEL ?? -1);
+/** `random` (this probe's long-standing default) or `small` (what the row bench builds). */
+const STRIDE = process.env.STRIDE ?? 'random';
+
+if (STRIDE !== 'small' && STRIDE !== 'random') {
+  throw new Error(`STRIDE must be 'small' or 'random', got ${STRIDE}`);
+}
 
 const edgeLabels = (k) => {
   if (MULTILABEL === -1) {
@@ -67,10 +73,17 @@ const build = () => {
   }
 
   for (let k = 0; k < NODES * FANOUT; k += 1) {
+    const i = k % NODES;
+
     g.addEdge({
       id: `e${k}`,
-      from: vs[(k * 7919) % NODES],
-      to: vs[(k * 104_729) % NODES],
+      // ⚠️ STRIDE, added at item 1429. This probe has always built `random` — large-stride
+      // permutations for both endpoints — while `isolated-row-bench.mjs` builds `small`
+      // (`to = (i*7+3)`). Item 1426 measured that difference at ~2x and item 1428 found it reorders
+      // the whole row ranking, so the two numbers item 1414's entry quotes side by side (this
+      // probe's 504 ns/row and the bench's 365) were never the same fixture.
+      from: STRIDE === 'small' ? vs[i] : vs[(k * 7919) % NODES],
+      to: STRIDE === 'small' ? vs[(i * 7 + 3) % NODES] : vs[(k * 104_729) % NODES],
       labels: edgeLabels(k),
       properties: { w: k % 13 },
     });
@@ -242,6 +255,7 @@ console.log(
     nodes: NODES,
     fanout: FANOUT,
     multilabel: MULTILABEL,
+    stride: STRIDE,
     rows,
     onePassRows: got['onePass'][0].len,
     arms: Object.fromEntries(names.map((n) => [n, Number(V[n].toFixed(2))])),
