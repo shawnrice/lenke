@@ -3211,6 +3211,28 @@ const filteredHopWalk = (w: {
         // the far-outer ordering, which `hopDrivesFar` declines when the two labels are the same
         // size because the locality it gains on the far end it loses on the start. Optimize the
         // ACCESS PATTERN or nothing; the projection is not the cost.
+        //
+        // ⚠️ CORRECTED AT ITEM 1445: "~2% of its row" is the LADDER'S SLOPE, not the
+        // intercept, and the intercept is **92.6 ns/row (~15% of this row)**. A width ladder prices
+        // the MARGINAL item (5.6 ns); it cannot price going through the generic machinery for the
+        // FIRST one. Measured against a hand floor on the identical walk and access pattern
+        // (`gql-filtered-hop-floor-probe.mjs`, `floor` vs `floor-engine-shaped`, four rounds):
+        //
+        //   floor                 322.1 ns/row   lean hand walk, direct `far.properties[k]`
+        //   floor-engine-shaped   414.7          + `binding.set`, a fresh `env`, a generic item
+        //                                          fn, a `propOf`-shaped accessor, a row object
+        //   engine                614.8
+        //
+        // So the machinery is real and above this file's ~10% toll — but it is only **31.6% of the
+        // engine-to-floor gap**, and **200 ns/row is still unexplained** by walk, predicate
+        // arithmetic or projection. Leading hypothesis, NOT yet measured: `propOf` profiles at
+        // 24.1% here (148 ns/row) while the probe's two-call-site twin is far cheaper, which is
+        // call-site diversity rather than the function's own work — the effect
+        // `ts-closure-size-is-load-bearing` records. A specialized row builder would BYPASS `propOf`
+        // rather than speed it up, so that term is addressable from here after all.
+        //
+        // The original conclusion still holds for what it measured; it just does not follow from a
+        // ladder. Same error shape as item 1437's CSE claim, corrected the same tick.
         rows.push(projectRow(proj, binding, params, graph));
       }
     }

@@ -60,6 +60,7 @@ const ARMS = [
   'floor-nopred',
   'floor-bare',
   'floor-tworead',
+  'floor-engine-shaped',
 ];
 
 if (!ARMS.includes(ARM)) {
@@ -67,7 +68,9 @@ if (!ARMS.includes(ARM)) {
 }
 
 /** Filtered arms answer a different multiset from unfiltered ones. */
-const GROUP = ['engine', 'floor', 'floor-noalloc', 'floor-tworead'].includes(ARM)
+const GROUP = ['engine', 'floor', 'floor-noalloc', 'floor-tworead', 'floor-engine-shaped'].includes(
+  ARM,
+)
   ? 'filtered'
   : 'all';
 
@@ -213,6 +216,65 @@ const floorBare = () => {
   return rows;
 };
 
+/**
+ * THE INTERCEPT, not the slope (item 1445).
+ *
+ * The comment at `filteredHopWalk`'s general `projectRow` call refutes a specialized projection
+ * closure with a WIDTH LADDER — items 1/2/4 at 295.0/294.9/311.7 ns/row, "a projection item costs
+ * ~5.6 ns", "the projection is ~2% of its row", "optimize the ACCESS PATTERN or nothing". But a width
+ * ladder measures the MARGINAL cost of an extra item. It cannot bound the BASE cost of going through
+ * the generic machinery for the FIRST item, which is the intercept. Item 1437 made the same mistake
+ * in the other direction (measuring whether the engine shares a read, concluding about whether
+ * sharing would help), so this arm measures the intercept directly.
+ *
+ * It mimics what the engine does per row and nothing else: a `binding.set` for the far variable, a
+ * fresh `env` object, the projection through a generic compiled-fn-shaped closure, and the property
+ * read through a `propOf`-shaped accessor with its optional chains and `?? null`. Same walk, same
+ * access pattern, same answer as `floor`.
+ *
+ * If this lands near `engine`, the machinery IS the cost and the specialization is worth ~46%. If it
+ * lands near `floor`, the comment is right and the gap is somewhere neither of us has looked.
+ */
+const propOfLike = (bound, key) => bound?.properties?.[key] ?? null;
+
+/** Shaped like a compiled projection item: reads the far end back out of the binding via the env. */
+const itemFnLike = (env) => propOfLike(env.binding.get('b'), 'n');
+
+const floorEngineShaped = () => {
+  const rows = [];
+  const binding = new Map();
+
+  for (const v of g.vertices) {
+    const bucket = v.adjFrom?.get('E');
+
+    if (bucket === undefined) {
+      continue;
+    }
+
+    binding.set('a', v);
+
+    for (const edge of bucket) {
+      const far = edge.to;
+
+      binding.set('b', far);
+
+      // The predicate through the same generic accessor the engine's `satisfies` reaches.
+      if (!(propOfLike(far, 'n') > KEEP)) {
+        continue;
+      }
+
+      // `projectRow`'s shape: a fresh env per row, a fresh row object, one generic fn per item.
+      const env = { binding, params: {}, graph: g };
+      const row = {};
+
+      row['n'] = itemFnLike(env);
+      rows.push(row);
+    }
+  }
+
+  return rows;
+};
+
 const FILTERED = 'MATCH (a:P)-[:E]->(b:P) WHERE b.n > 5 RETURN b.n AS n';
 const BARE = 'MATCH (a:P)-[:E]->(b:P) RETURN b.n AS n';
 
@@ -224,6 +286,7 @@ const RUN = {
   'floor-nopred': floorNoPred,
   'floor-bare': floorBare,
   'floor-tworead': floorTwoRead,
+  'floor-engine-shaped': floorEngineShaped,
 };
 
 const run = RUN[ARM];

@@ -53591,7 +53591,9 @@ The mechanism is exactly what separates these arms: the engine sets a `binding` 
 `projectRow`, which evaluates the projection through the generic `propOf` path; the floor does
 `rows.push({ n: edge.to.properties['n'] })`. The engine's own profile puts `propOf` + `get properties`
 at **34.8%** of this row — ~110 ns per read where the hand read is ~15 ns, a ~7x gap on the accessor
-chain, which is where the 46.5% lives rather than in the number of reads.
+chain, which is where the 46.5% lives rather than in the number of reads. ⚠️ **That last clause is a
+SHARE, not a price, and item 1445 priced it**: the whole per-row machinery is 92.6 ns/row, only
+31.6% of the gap, with 200 ns/row still unexplained.
 
 So the same target now has two rows priced: **27-36% undirected (item 1429), 46.5% filtered directed
 (here)** — and a third data point saying the specialization is the right shape, since `engine-bare`
@@ -53605,3 +53607,91 @@ it, and a carried `WHERE` makes a row ineligible for that clone (item 1438).
 One harness note: the first analysis of this probe died on a `KeyError` from nested quoting inside a
 `python3 -c` f-string, not on anything about the data. Analysis scripts for a multi-arm probe go in a
 FILE; the readings were already on disk and were re-analysed unchanged.
+
+### Item 1445 — ⚠️ CORRECTING the width-ladder refutation at `filteredHopWalk`'s `projectRow` call: "~2% of its row" is the ladder's SLOPE and the intercept is **92.6 ns/row (~15%)**. The machinery is real — and is still only **31.6% of the gap**, leaving 200 ns/row unexplained
+
+Went to build item 1429's named target (a specialized projection closure for the single-far-property
+case, priced at 27-36% there and 46.5% here by item 1444) and found the call site already carrying a
+refutation:
+
+> "A projection item costs ~5.6 ns here, so at width 2 the whole addressable term — one `env`, two
+> binding reads, one `set` — is about 14 ns of 295, under 5% … the projection is ~2% of its row …
+> **Optimize the ACCESS PATTERN or nothing; the projection is not the cost.**"
+
+Its evidence is a WIDTH LADDER: items 1/2/4 at 295.0/294.9/311.7 ns/row.
+
+### A width ladder prices the slope. The question is the intercept
+
+Adding a second projection item costs 5.6 ns. That bounds the MARGINAL item and says nothing about
+the cost of going through `projectRow` — a fresh `env`, a generic compiled `fn`, a `propOf` accessor —
+for the FIRST one. The ladder cannot see the intercept because every rung pays it.
+
+**This is the same error shape as item 1437's CSE claim, which I corrected one tick earlier**: a
+measurement of one quantity used to settle a neighbouring one. There the pair was "does the engine
+share the read" / "would sharing help"; here it is "what does an extra item cost" / "what does the
+machinery cost". Both times the stated conclusion was reasonable and its evidence did not reach it.
+
+`floor-engine-shaped` is the arm that prices the intercept: the same walk, the same access pattern,
+the same answer as `floor`, but doing per row what the engine does — a `binding.set` for the far
+variable, a fresh `env` object, the projection through a generic compiled-fn-shaped closure, and the
+read through a `propOf`-shaped accessor with its optional chains and `?? null`. Four rounds, 100k
+nodes, `STRIDE=random`, digests agree:
+
+```text
+  arm                   median   ns/row   rounds
+  floor                  32.21    322.1   28.07 29.90 34.52 35.01
+  floor-engine-shaped    41.46    414.7   40.59 41.18 41.74 42.79
+  engine                 61.47    614.8   59.03 61.02 61.93 62.77
+```
+
+```text
+  engine - floor (the whole gap)     292.7 ns/row
+  machinery (shaped - floor)          92.6 ns/row   31.6% of the gap, ~15% of the engine row
+  engine - shaped (unexplained)      200.1 ns/row   68.4% of the gap
+```
+
+**So the machinery is 92.6 ns/row, not ~2% of 295.** That clears this file's ~10% toll and makes the
+specialized row builder a live target again — the opposite of what the comment concluded.
+
+### But the comment was right about where the BULK is, for the wrong reason
+
+31.6% of the gap is not most of it. **200 ns/row survives a floor that mimics the walk, the access
+pattern, the predicate arithmetic, the binding, the env, the generic item call and the row object.**
+Whatever that is, it is not any of those.
+
+Leading hypothesis, explicitly NOT measured: `propOf` profiles at **24.1%** of this row (148 ns/row)
+while the probe's `propOfLike` — identical code, two call sites — is far cheaper. That difference is
+CALL-SITE DIVERSITY, not the function's own work: `propOf` is reached from across the whole engine, so
+it is megamorphic there and monomorphic in a probe. The effect is the one
+`ts-closure-size-is-load-bearing` records, and item 1441 found its cousin (a file whose edits move
+unrelated branches ~16%).
+
+If that is the cause it is _good_ news for the target: a specialized row builder reading
+`far.properties[key]` directly does not make `propOf` faster, it **bypasses it**, so the term is
+addressable from this call site after all — which is precisely what "optimize the access pattern or
+nothing" ruled out.
+
+**Not built here.** The next step is to confirm the attribution before writing code: the probe's
+`propOfLike` needs to be made artificially polymorphic (called with several unrelated shapes from
+several sites) and re-measured. If that reproduces the 200 ns, the specialization is worth ~40% of
+this row and item 1429's target is confirmed at its original size. If it does not, the 200 ns is
+somewhere none of items 1429, 1436, 1437, 1444 or this one has looked, and guessing again would be the
+fourth wrong guess about this row.
+
+### Record of guesses about this row, which is why the next step is a measurement
+
+- item 1436 — routing. Measured, not it.
+- item 1437 — the double read. Measured at 2.6% (by item 1444; 1437's own evidence did not reach it).
+- item 1444 — `propOf` + `get properties` at 34.8% nominated as the target. A share, not a price.
+- the call-site comment — the projection is ~2%. The slope, not the intercept.
+- this item — the machinery is 92.6 ns/row, and that is only a third of the gap.
+
+Five attributions, one of them mine from the previous tick, and the row is still 1.87x its floor.
+CLAUDE.md's "record of guesses about this exact cost is poor" applies here as literally as it did at
+item 937.
+
+### Gates
+
+`bun run check` 0 (read unpiped), gql 3669/0. No engine behaviour changed — one probe arm added and
+the call-site comment corrected in place, which is the rule about a stale claim sitting next to the
+code it would misdirect.
