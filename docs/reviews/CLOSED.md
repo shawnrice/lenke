@@ -49072,3 +49072,66 @@ running it, and it is the next tick's measurement rather than a guess here.
 `bun test` gql **3537 / 0**, gremlin 1148 / 0, core 370 / 0, serialization 144 / 0. `bun run fuzz`
 **20 / 0**. `bun run spelling` — the disjunction-order group converged at 1.00x. `bun run check` 0
 (read unpiped).
+
+### Item 1385 — the spelling probe **would NOT have flagged** item 1384's gap: it reads **1.22x** pre-fix against a **2x** threshold. The group is right, reproducible, and under-powered — and no documented tolerance reaches it
+
+Item 1384 recorded a real process failure — I never ran `bun run spelling` at item 1377, where the
+GQL probe has had an `'edge type disjunction order'` group (`:E|F` against `:F|E`) all along — and
+deliberately did NOT claim the probe would have caught the defect. This measures it, because
+guessing is what this session keeps getting wrong.
+
+### The measurement: the probe itself, on its own fixture, pre-fix
+
+Not a model of it. My bench row measured 1.42x at 1-in-3 overlap and degree 1; the probe's fixture is
+1-in-11 at degree 3, and both differences move the asymmetry in directions I cannot reason about
+reliably. So the pre-sort `executor.ts` came from `git show HEAD~1:…` (item 1384 is the sort commit),
+with **both arms asserted to carry item 1377's dedupe** — otherwise this measures that change
+instead — and the one group was run twice per arm:
+
+| arm             | `:E\|F`          | `:F\|E`          | spread           |
+| --------------- | ---------------- | ---------------- | ---------------- |
+| BASE (pre-fix)  | 2.060 / 2.050 ms | 2.520 / 2.520 ms | **1.22x, 1.23x** |
+| HEAD (post-fix) | 2.110 / 2.070 ms | 2.120 / 2.110 ms | **1.00x, 1.02x** |
+
+**The probe would NOT have flagged it.** Its threshold is 2x, and the defect produces 1.22x here —
+below the default AND below the **1.5x** this file documents for a deliberate hunt. **No tolerance
+the probe offers would have fired.**
+
+### What that means, stated carefully
+
+- **The group is CORRECT and the measurement is GOOD.** 1.22 / 1.23 against 1.00 / 1.02 is a clean,
+  reproducible separation across four runs. The instrument sees the defect; the FLAG does not.
+- **The cause is the fixture, not the group.** `F` sits on 1 in 11 edges, so most vertices hold a
+  single bucket and have no asymmetry to expose. The isolated bench reads 1.42x at 1-in-3, and the
+  Gremlin twin 3.53x because its buckets are GLOBAL rather than per-vertex.
+- **So item 1384's process failure was real but not causal.** Running the probe at 1377 would not
+  have caught this. Both halves belong in the record: the rule still says run it, and this says what
+  running it would and would not have bought.
+
+### What actually guards the property
+
+`isolated-row-bench.mjs`'s `hopmulti`/`hopmultirev` pair (item 1384) and
+`isolated-gremlin-bench.mjs`'s `edgemulti`/`edgemultirev` (item 1382) — both at 1-in-3 overlap, where
+the signal is 1.42x and 3.53x. The probe group is annotated in place with its measured power so a
+future reader does not mistake an unflagged run for this property being covered, and is pointed at
+the bench pair that does cover it.
+
+**NOT done: thickening the probe's overlap to 1-in-3.** That would raise the signal past 2x and make
+the group self-sufficient, and it is the obvious fix — but it re-calibrates every other group on that
+fixture, and item 1303 measured exactly this change moving a calibrated ratio from 8.99x to 10.30x.
+Item 1383 declined the same change on the Gremlin probe for the same reason, with the additional
+side-effect that `multiTypeEdgeCount` becoming non-zero flips untyped-hop routing. Both probes now
+carry the same named, priced follow-up rather than a silent gap.
+
+### The general lesson
+
+**A group existing is not the same as a group having power, and the ratio that decides it is a
+property of the FIXTURE.** This probe has had the right comparison for the whole life of the defect
+and its threshold sat above the signal the whole time. When adding a spelling group, measure what
+signal the fixture can actually produce for the failure it is meant to catch — otherwise the group
+reports green for a reason that has nothing to do with the engine being correct.
+
+### Gates
+
+Probe annotation only; no engine or core code changed, `LARGEST_BUCKET_FIRST` still x1 and both
+extracted arm files deleted by the driver's `finally`. `bun run check` 0 (read unpiped).

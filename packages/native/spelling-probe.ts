@@ -322,6 +322,18 @@ const GROUPS: [string, readonly string[]][] = [
       'MATCH (n:P) WHERE n.k <> 2 RETURN count(*) AS c',
     ],
   ],
+  // ⚠️ MEASURED UNDER-POWERED AT THIS FIXTURE (item 1385). This group is the RIGHT group — it is the
+  // one that would catch a union walk whose cost depends on the order the query names types, which
+  // items 1382 and 1384 both shipped and then fixed. But measured against the pre-fix engine on THIS
+  // fixture it reads **1.22x / 1.23x**, reproducibly, where the post-fix engine reads 1.00x / 1.02x.
+  // The separation is clean and the FLAG never fires: 1.22x is under the 2x default AND under the
+  // 1.5x this file documents for a deliberate hunt.
+  //
+  // The cause is the fixture, not the group: `F` sits on 1 in 11 edges, so most vertices have a
+  // single bucket and no asymmetry to expose. The isolated bench measured 1.42x at 1-in-3 overlap
+  // and the Gremlin twin 3.53x over GLOBAL buckets. So READ THE PER-ARM NUMBERS here (2.06 against
+  // 2.52 is visible to a human) and do not treat an unflagged run as this property being guarded;
+  // `isolated-row-bench.mjs`'s `hopmulti`/`hopmultirev` pair is what actually guards it.
   [
     'edge type disjunction order',
     [
