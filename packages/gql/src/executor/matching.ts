@@ -673,8 +673,25 @@ export const shortestWalk = function* (
   // `min ≤ 1` is guaranteed, so this never double-emits a seed already at dist 0.
   const seedCycleEnd = min >= 1 && seedCycle !== null && (max === null || seedCycle.dist <= max);
 
-  // Endpoints in insertion order (= native's dense-id order).
-  for (const end of graph.vertices) {
+  // ⚠️ THE DISCOVERED SET, NOT THE WHOLE GRAPH (item 1462). This loop used to be
+  // `for (const end of graph.vertices)`, scanning EVERY vertex per seed to find the endpoints the
+  // BFS had already found — so an all-sources `ANY SHORTEST` was O(V²). A depth-3 BFS at out-degree
+  // 1 discovers ~3 vertices and then scanned 10,000, which is 10^8 iterations for the query and
+  // measured **1295.16 ms against 32.38 — 40.0x at 10,000 vertices**, growing with V (3.0x at 2,000,
+  // 7.1x at 5,000). The plain quantified spelling answers the SAME count in 2.23 ms.
+  //
+  // `queue` is already exactly the discovered set: it starts as `[seed]` and every newly discovered
+  // vertex is pushed, so after the BFS loop it holds them all with no extra structure and no
+  // `getVertexById` per endpoint. The seed is in it at distance 0, so the `isSeedCycle` / `d < min`
+  // logic below applies to it unchanged.
+  //
+  // ⚠️ THIS CHANGES ROW ORDER, and that is legal — checked rather than assumed. The old comment said
+  // "endpoints in insertion order (= native's dense-id order)" for determinism against native, which
+  // is STRICTER than the contract: GQL row order without `ORDER BY` is unspecified, and
+  // `differential-fuzz` compares rows as a MULTISET unless `totallyOrdered(q)` admits the query. What
+  // must NOT change is WHICH path each endpoint gets, and that comes from `pred`, which the BFS fills
+  // in discovery order and this does not touch.
+  for (const end of queue) {
     const isSeedCycle = end.id === seed.id && seedCycleEnd;
     const d = dist.get(end.id);
 

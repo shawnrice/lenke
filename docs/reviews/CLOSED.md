@@ -55008,3 +55008,84 @@ side, and both GQL survivors refuted at 1.15x/1.14x. The session's shipped route
 ### Gates
 
 `bun run check` 0 (read unpiped). No code changed.
+
+### Item 1462 — ✅ SHIPPED, **97.0% / 98.2%** (33.4x and 56.5x, 4/4 both): `ANY SHORTEST`'s endpoint loop scanned EVERY VERTEX per seed, so all-sources was O(V²). It iterates the discovered set instead — which `queue` already held
+
+`ANY SHORTEST` is a shipped GQL surface with **no row in the isolated bench**, and nothing in
+`CLOSED.md` prices its TS cost (the existing items — 435's dropped endpoint label, and the
+`path_node_values_memo` work — are native). Measuring it from scratch found the largest single ratio
+of this session.
+
+### The shape that is slow is all-sources, and the plain spelling answers it 581x faster
+
+```text
+  N        ANY SHORTEST {1,3}   plain {1,3}   answer (identical)
+  2,000           62.09 ms          2.24         5,910
+  5,000          330.66             7.59        14,950
+  10,000        1295.16             2.23        29,910
+```
+
+**The answers are the same**, which is what made the gap legible: at out-degree 1 every reachable pair
+has exactly one path, so "any shortest" and "all paths" count the same thing. From a SINGLE seed
+`ANY SHORTEST` is cheap (0.80 ms at 20,000) — it is the all-sources form that is quadratic.
+
+A windowed profile put **`shortestWalk` at 88.81%** of the query, one frame, and the cause is one line:
+
+```ts
+// Endpoints in insertion order (= native's dense-id order).
+for (const end of graph.vertices) {
+```
+
+A depth-3 BFS at out-degree 1 discovers ~3 vertices, and then this scans 10,000 to find them — **O(V)
+per seed, O(V²) per query**, 10^8 iterations at N=10,000.
+
+### The fix needed no new structure
+
+`queue` is already exactly the discovered set: it starts as `[seed]` and every newly discovered vertex
+is pushed, so after the BFS it holds them all. `for (const end of queue)` — no extra array, no
+`getVertexById` per endpoint, and the seed is in it at distance 0 so the `isSeedCycle` / `d < min`
+rules below apply unchanged.
+
+```text
+  N        shape               PRE        POST     change  concord  answers
+  10,000   ANY SHORTEST    1312.97       39.34      97.0%    4/4    SAME
+  20,000   ANY SHORTEST    4990.68       88.36      98.2%    4/4    SAME
+  10,000   plain {1,3}        8.65        7.02      18.9%    4/4    SAME   CONTROL
+  20,000   plain {1,3}       15.62       14.06       9.9%    4/4    SAME   CONTROL
+```
+
+**33.4x and 56.5x**, and the win GROWS with V because a quadratic term is gone — scaling is now
+near-linear (10,000 → 20,000 takes 38 → 75 ms where it took 1295 → 4991). The controls drift 9.9-18.9%
+in the same direction, which is this file's perturbation; against 33-56x it does not change the
+reading, and it is reported rather than omitted.
+
+### ⚠️ IT CHANGES ROW ORDER, AND THAT WAS CHECKED RATHER THAN ASSUMED
+
+The old comment justified the whole-graph scan as "endpoints in insertion order (= native's dense-id
+order)" for determinism against native. **That is stricter than the contract.** GQL row order without
+`ORDER BY` is unspecified, and `differential-fuzz` compares rows as a **multiset** unless
+`totallyOrdered(q)` admits the query — its own comment says so: _"Rows then compare as a MULTISET,
+which is right — the ORDER-BY-less contract."_ So endpoint ORDER is free.
+
+**What is NOT free is which path each endpoint gets**, and that is the part this change does not
+touch: `ANY SHORTEST` takes one path per endpoint from the `pred` tree, filled in BFS discovery order.
+The test file's FIRST block is a diamond fixture (`a->b->d` and `a->c->d`, two equally short routes)
+asserting the chosen mid-vertex is still `b`, the first-discovered predecessor — because without that
+fixture a change that re-rooted the predecessor tree would pass every count in the file.
+
+`shortest-discovered-endpoints.test.ts`, 9 tests: the diamond's path identity, an UNREACHABLE island
+(which the old scan had to skip by `dist === undefined` and the new loop never visits), the hop
+ceiling, endpoint label filtering, all-sources agreeing with the plain spelling, and the SEED-CYCLE
+endpoint in three forms — the seed sits in `dist` at distance 0, so it is the case the discovered-set
+loop could most easily have lost.
+
+Two syntax facts learned by failing: `ANY SHORTEST` is admitted only for `min <= 1` quantifiers
+(`{2,2}` is a parse error), and the path variable precedes the selector (`p = ANY SHORTEST …`, not
+`ANY SHORTEST p = …`).
+
+### Gates
+
+`bun run check` 0 (read unpiped). gql **3686**/0 (3677 + 9), gremlin 1241/0, core 383/0,
+serialization 144/0. `bun run fuzz` 20/0, plus the differential fuzzer run FOUR more times on random
+seeds — it is the instrument that would catch a row-order claim being wrong, so one pass was not
+enough.
