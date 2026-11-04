@@ -54802,9 +54802,10 @@ test fixture (item 1453's `multitype-dedupe-skip.test.ts` is the shape), and ide
 group with an overlapping pair whose two spellings legitimately DISAGREE, asserted as a
 known-different group rather than a spelling pair.
 
-**Not built here**, and deliberately: the tick found the gap by fixing the instrument, and the fix
-needs a correctness gate whose test fixture does not exist yet. Priced at 172,061x on a count, with
-the caveat that `union(out, out)` is a less common spelling than the pair it should fuse to.
+~~**Not built here**~~ — ✅ **BUILT AT ITEM 1460: 251.210 ms → 0.005, gap closed, 13 tests with the
+multi-label fixture first.** The tick found the gap by fixing the instrument; the next one built the
+gate and the fusion — and a wrong test assumption there surfaced a pre-existing count-vs-yield
+divergence on `out(T,T)`, now flagged.
 
 ### Also newly comparable
 
@@ -54840,3 +54841,82 @@ value and the right one to use next.
 
 `bun run check` 0 (read unpiped). Probe only; no engine code changed. My splice left an unbalanced
 array and `tsc` caught it (`TS1005: ',' expected`) before anything ran.
+
+### Item 1460 — ✅ SHIPPED: `union(out(T), out(U))` fuses to `out(T, U)`, **251.210 ms → 0.005** on identical answers, closing item 1459's 172,061x. And ⚠️ A CORRECTNESS BUG FOUND BY A WRONG TEST ASSUMPTION: `out(T,T)` counts **6** and yields **3**, where TinkerPop 3.7.3 says 6 for both
+
+Item 1459 added a second edge label to the Gremlin spelling probe and the first run flagged
+`union(out(T), out(U)).count()` at **172,061x** against `out(T, U).count()`. This builds the fusion,
+the sibling of item 1311's `union(out(T), in(T))` → `both(T)`: same DIRECTION, different TYPES.
+
+### The rewrite, and why it needs the graph
+
+`fuseUnionSameDir(plan, graph)` is wired into `effectivePlan` beside `fuseUnionBoth`, and unlike that
+one it takes the graph. `union(out(T), out(U))` CONCATENATES, so an edge carrying BOTH types is
+emitted twice where `out(T, U)` dedupes across buckets and emits it once — the two are multiset-equal
+only when **`graph.multiTypeEdgeCount === 0`**, the same O(1) counter the GQL side gates its degree
+sums on (`bucketSumsAreSound`), maintained by `Graph` at all four transitions. Four further
+conditions, each refusing a measured non-equivalence: same `kind` and one of `out`/`in`/`outE`/`inE`
+(`both` has no two-type hand walk to fuse into), DISJOINT type lists, neither side untyped, and an
+order-free tail via item 1311's own `tailIsOrderFree`.
+
+```text
+  edge-type union vs an explicit union: out(T, U) vs union(out(T), out(U))
+    before   0.001 ms  /  251.210 ms      172,061x
+    after    0.001 ms  /    0.005 ms      gap gone, both under the comparison floor
+```
+
+The probe now reports **0 groups over 2x** and 0 answer disagreements. Controls against item 1456's
+recorded figures, so the per-query rewrite is not a tax: `hopbare` 17.11 against 17.44, `hopcount3`
+86.19 against 86.30, `hopyieldmulti` 33.23 against 38.05.
+
+`union-samedir-fusion.test.ts`, 13 tests, built the way item 1459 said it had to be: **the
+multi-label-edge fixture is the FIRST describe block**, because without it every test would pass with
+the gate deleted — the hole item 1453 found in the bench and item 922 found in the Rust corpus. It
+asserts the PLAN (`fuseUnionSameDir(plan, g)).toBe(plan)` for each declining shape), since
+answer-equality cannot tell a fired rewrite from a declined one — item 1447's three-tick lesson.
+
+### ⚠️ AND A PRE-EXISTING CORRECTNESS BUG, found because a test assumption was wrong
+
+I wrote a test asserting `out('T','T')` emits each edge ONCE (the earlier-buckets dedupe). It failed.
+Chased against TinkerPop 3.7.3 (`podman run -i docker.io/tinkerpop/gremlin-console:3.7.3`):
+
+```text
+                              lenke count   lenke yield   TinkerPop 3.7.3
+  out(T, T)                         6            3             6   values [b, b, d, d, d, d]
+  out(T, T, T)                      9            3             9
+  out(T)                            3            3             3
+  out(T, U)   (no overlap)          4            4             4
+```
+
+**TinkerPop traverses each NAMED label separately**, so a duplicated name traverses each edge twice.
+lenke's COUNT path agrees — it sums buckets, which naturally carries the multiplicity. lenke's YIELD
+path applies the earlier-buckets dedupe by EDGE IDENTITY and collapses the copies to `[b, d, d]`.
+
+**So the engine disagrees with ITSELF on one query**, which is a defect independently of TinkerPop,
+and it diverges from TinkerPop on the yield side.
+
+**PRE-EXISTING, verified rather than assumed.** I shipped the two-type `pairTypes` route at item 1442
+and had to rule myself out: `out('T','T','T')` has three labels so it takes the older `manyTypes`
+path, and it yields `[b, d, d]` too while counting 9. The dedupe is in the general earlier-buckets
+rule, so `pairTypes` reproduced existing behaviour faithfully rather than introducing this.
+
+**Why nothing caught it:** the differential fuzzer compares TS against the Rust engine, and both
+presumably share the dedupe; the Gremlin bench has no duplicated-label row; and `out(T,T)` is a
+spelling nobody writes deliberately. It took a wrong assumption in a new test to surface it.
+
+**NOT FIXED HERE, and the reason is a semantics question rather than effort.** Making the yield path
+match the count path means emitting an edge once per NAMED type it matches — which also changes
+`out(T, U)` for an edge carrying BOTH labels, from once to twice. ⚠️ **TinkerPop cannot settle that
+case: its edges carry exactly ONE label, so a multi-label edge is not expressible there at all** (the
+closest expressible shape, two parallel edges one `T` one `U`, gives 2 for both spellings and agrees).
+A multi-label edge is a lenke extension, so its traversal multiplicity is lenke's own decision — and
+changing it would move `out(T,U)` answers on every graph that has one. That is a decision about the
+extension's semantics, not a bug fix, so it is **flagged for the user** with the evidence above.
+
+The fusion is gated conservatively in the meantime: disjoint type lists are required, so no fusion
+rides on either side of the ambiguity.
+
+### Gates
+
+`bun run check` 0 (read unpiped). gremlin **1241**/0 (1228 + 13), gql 3677/0, core 383/0.
+`bun run fuzz` 20/0 — byte-identity intact, which matters because this changes which plan runs.

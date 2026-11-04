@@ -1206,11 +1206,112 @@ export const fuseValuesIsCount = (plan: Plan): Plan => {
  * leaves the mutant that simply stops CALLING it alive — the suite then answers identically by the
  * slow walk, which is the shape item 1303 measured.
  */
+/**
+ * `union(out(T), out(U))` becomes `out(T, U)` — same DIRECTION, different TYPES (item 1460).
+ *
+ * The sibling of {@link fuseUnionBoth}, which handles the same TYPE in opposite directions. Item
+ * 1459's spelling probe measured this pair at **172,061x** once the probe's fixture gained a second
+ * edge label: `out(T, U).count()` is 0.001 ms on item 1379's union-of-buckets count while
+ * `union(out(T), out(U)).count()` materialises one traverser per branch per vertex at 251.210 ms,
+ * on identical answers. The probe could not see it before because every edge in its graph carried
+ * one label.
+ *
+ * ⚠️ UNLIKE `fuseUnionBoth`, THIS NEEDS THE GRAPH, and that is the whole soundness argument.
+ * `union(out(T), out(U))` CONCATENATES, so an edge carrying BOTH `T` and `U` is emitted **twice**;
+ * `out(T, U)` dedupes across buckets and emits it **once**. The two are multiset-equal only when no
+ * edge carries both types — exactly `graph.multiTypeEdgeCount === 0`, the same O(1) counter the GQL
+ * side gates its degree sums on (`bucketSumsAreSound`), maintained by `Graph` at all four
+ * transitions (add/remove an edge, add/remove one of its types).
+ *
+ * Four more conditions, each refusing a real non-equivalence rather than an unusual spelling:
+ *
+ *   * **Same `kind`**, and one of `out`/`in`/`outE`/`inE`. `both` is excluded: it has no two-type
+ *     hand walk (item 1442's `pairTypes` excludes it and `bothOneType` is single-type), so fusing
+ *     into it would not reach a faster route anyway.
+ *   * **DISJOINT type lists.** `union(out(T), out(T))` emits every edge twice and `out(T, T)` emits
+ *     it once — the same dedupe asymmetry as the multi-type edge, reached through the spelling
+ *     instead of the graph.
+ *   * **Neither side untyped.** `out()` means every type, so `union(out(), out())` is every edge
+ *     twice and `out()` is every edge once.
+ *   * **An order-free tail**, via the same {@link tailIsOrderFree} list item 1311 reasons about:
+ *     the fused form finishes a vertex's buckets together where the union interleaves branches, so
+ *     the two are multiset-equal and NOT sequence-equal.
+ */
+const sameDirFromUnion = (step: Step): Step | undefined => {
+  if (step.kind !== 'union' || step.plans.length !== 2) {
+    return undefined;
+  }
+
+  const [first, second] = step.plans;
+
+  if (first.steps.length !== 1 || second.steps.length !== 1) {
+    return undefined;
+  }
+
+  const [a] = first.steps;
+  const [b] = second.steps;
+
+  if (a === undefined || b === undefined || a.kind !== b.kind) {
+    return undefined;
+  }
+
+  if (a.kind !== 'out' && a.kind !== 'in' && a.kind !== 'outE' && a.kind !== 'inE') {
+    return undefined;
+  }
+
+  const la = (a as Extract<Step, { labels: readonly string[] }>).labels;
+  const lb = (b as Extract<Step, { labels: readonly string[] }>).labels;
+
+  // Untyped means EVERY type, so a union of two untyped hops is every edge twice.
+  if (la.length === 0 || lb.length === 0) {
+    return undefined;
+  }
+
+  // A shared type name is the dedupe asymmetry reached through the spelling.
+  if (la.some((l) => lb.includes(l))) {
+    return undefined;
+  }
+
+  return { kind: a.kind, labels: [...la, ...lb] };
+};
+
+/**
+ * {@link sameDirFromUnion} over the top-level step list, gated on the graph (item 1460).
+ *
+ * EXPORTED so the WIRING is assertable and not only the rewrite — the mutant that stops CALLING a
+ * rewrite answers identically by the slow route, which is the shape item 1303 measured and item
+ * 1447 paid for.
+ */
+export const fuseUnionSameDir = (plan: Plan, graph: Graph): Plan => {
+  // THE GRAPH GATE, checked once before any step is examined: with any multi-type edge present the
+  // rewrite changes the answer, not just the order.
+  if (graph.multiTypeEdgeCount !== 0) {
+    return plan;
+  }
+
+  for (let i = 0; i < plan.steps.length; i += 1) {
+    const fused = sameDirFromUnion(plan.steps[i]);
+
+    if (fused !== undefined && tailIsOrderFree(plan.steps.slice(i + 1))) {
+      const steps = [...plan.steps];
+
+      steps[i] = fused;
+
+      return { ...plan, steps };
+    }
+  }
+
+  return plan;
+};
+
 export const effectivePlan = (plan: Plan, graph: Graph, tracksPath: boolean): Plan =>
   tracksPath
     ? plan
     : dropVacuousLabels(
-        fuseUnionBoth(fuseEdgeHop(flattenFilterWrappers(fuseValuesIsCount(plan)))),
+        fuseUnionSameDir(
+          fuseUnionBoth(fuseEdgeHop(flattenFilterWrappers(fuseValuesIsCount(plan)))),
+          graph,
+        ),
         graph,
       );
 
