@@ -212,12 +212,13 @@ builds graphs in a tight loop is measuring a different heap than it thinks.
 
 ## The ISOLATED ROW BENCHES — for a sub-10% question on ONE row
 
-| file                             | surface                                            |
-| -------------------------------- | -------------------------------------------------- |
-| `isolated-row-bench.mjs`         | one GQL row (`SHAPE=hopfilter NODES= REPS= DROP=`) |
-| `isolated-gremlin-bench.mjs`     | one Gremlin row (item 1368)                        |
-| `gremlin-hop-floor-probe.mjs`    | the Gremlin hop FLOOR, three arms (item 1411)      |
-| `gql-undirected-floor-probe.mjs` | the GQL undirected hop, five-arm ablation (1414)   |
+| file                             | surface                                               |
+| -------------------------------- | ----------------------------------------------------- |
+| `isolated-row-bench.mjs`         | one GQL row (`SHAPE=hopfilter NODES= REPS= DROP=`)    |
+| `isolated-gremlin-bench.mjs`     | one Gremlin row (item 1368)                           |
+| `gremlin-hop-floor-probe.mjs`    | the Gremlin hop FLOOR, three arms (item 1411)         |
+| `gql-undirected-floor-probe.mjs` | the GQL undirected hop, five-arm ablation (1414)      |
+| `cross-engine-chain3-probe.mjs`  | GQL vs Gremlin, one graph, one arm per process (1426) |
 
 ⚠️ **`hop-projection.ts` CHARGES A TOLL, so price a target against ~10% before attempting it**
 (items 1413 and 1415). Two independent changes there — a dedupe skip and a per-row `EvalEnv` hoist —
@@ -487,3 +488,15 @@ whenever a profile nominates a frame inside a loop you could also just write by 
 expectation.** This probe's `onePass` arm deliberately returns half the rows, so it cannot join the
 equality check — but "excluded from checking" is how an arm silently stops doing what it says. It is
 asserted to be a strict, non-empty subset instead.
+
+⚠️ **THE FIXTURE'S SUCCESSOR FUNCTION IS WORTH ~2x, AT THE SAME DEGREE** (item 1426). Two instruments
+in this directory disagreed **1.91x** on the identical 3-hop count with the identical answer, because
+`isolated-row-bench.mjs` builds `to = (i * 7 + 3) % N` — a vertex points ~7 slots along, partly
+cache-resident — while the cross-engine probe's default is `to = (k * 104729) % N`, effectively
+random across the range. Both are permutations, so out-degree and in-degree are exactly 1 either way.
+Measured: **1.93x (GQL), 2.06x (Gremlin)**.
+
+Item 1066 priced this family at 9.3x over far-pool WIDTH; this is the same effect at fixed width and
+varying STRIDE. So **the bench's chain rows are ~2x optimistic against a random graph**: A/B ratios
+are safe (both arms share the fixture) and ABSOLUTE ns/row figures are not. Quote them as
+"on this fixture", and sweep the stride before claiming a general result.

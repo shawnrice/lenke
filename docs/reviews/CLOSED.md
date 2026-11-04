@@ -51731,8 +51731,12 @@ the obvious reading.
 
 `threeSegmentRoute` chooses between the degree PRODUCT and the way-count SWEEP, and the choice is
 already backed by a measurement: **item 301 found the product winning the unfiltered shape, 250.1
-against 374.9 ms.** An unlabelled chain is exactly that shape, so `chain3` takes the product on
-purpose.
+against 374.9 ms.** ~~An unlabelled chain is exactly that shape, so `chain3` takes the product on
+purpose.~~ **⟶ CORRECTED at item 1426: `chain3` IS labelled** — `MATCH (a:P)-…->(b:P)` — so
+`labelled` is true and the route is decided by the per-call comparison instead. It takes the product
+because `P` is on every vertex, so `candidateCount(P) === vertexCount` and nothing narrows. The
+measurement below stands (the route was forced and re-measured); only this sentence's reason was
+wrong.
 
 That number is from before items 1417-1418, which made the sweep 10.1% + 25.7% faster — so the
 ordering could have flipped. Re-measured by forcing the route (the `!labelled` guard and the
@@ -51998,7 +52002,7 @@ asymmetry is not an oversight in the Gremlin code; it simply does not matter.
 `bun run check` 0 (read unpiped), gremlin 1212/0. `count-shortcut.ts` reverted and verified: `spare`
 absent, `st.next = new Float64Array(n)` restored. Answers identical across both arms.
 
-### Item 1425 — **`hopcount3` CLOSED at its floor**, and `degreeOfTypes`' 26% is misattribution — the third frame this session to top a profile and be O(1). ⚠️ But it exposes a CROSS-ENGINE gap: the Gremlin sweep takes **85 ms** where the GQL sweep does the same work in **62**
+### Item 1425 — **`hopcount3` CLOSED at its floor**, and `degreeOfTypes`' 26% is misattribution — the third frame this session to top a profile and be O(1). ~~But it exposes a CROSS-ENGINE gap: the Gremlin sweep takes 85 ms where the GQL sweep does the same work in 62~~ ⟶ **THE GAP DOES NOT EXIST — REFUTED at item 1426.** The two numbers came from different BENCHES whose fixtures differ in locality by ~2x; measured on one graph Gremlin is 0.90-0.96x of GQL, i.e. marginally FASTER
 
 ### After item 1423, the profile is one loop
 
@@ -52069,3 +52073,65 @@ Priced here, built in neither.
 `bun run check` 0 (read unpiped), gremlin 1212/0. The call-counting instrumentation was applied to a
 copy kept under `crates/lenke-engine/target/` and reverted from it; `count-shortcut.ts` verified free
 of `__dg` and rebuilt.
+
+### Item 1426 — **TWO OF MY OWN INSTRUMENTS DISAGREED 1.91x on the identical query**, and the cause is the fixture's SUCCESSOR FUNCTION: `(i*7+3)` against `(k*104729)` is worth **1.93-2.06x** at the same degree. Item 1425's cross-engine gap is refuted — Gremlin is **0.90-0.96x** of GQL, i.e. faster
+
+### The refutation first
+
+Item 1425 put three numbers side by side — GQL product 46-49 ms, GQL sweep (forced) 62, Gremlin
+sweep 85 — and called the last a 1.37x cross-engine gap on the same algorithm. **They came from
+different benches.** Measured on ONE graph, one shape per process, arms alternated across processes:
+
+| STRIDE                           | GQL (`gqlLabelled`) | Gremlin   | Gremlin / GQL |
+| -------------------------------- | ------------------- | --------- | ------------- |
+| `small` — `to = (i*7+3) % N`     | 45.63               | **41.17** | **0.90x**     |
+| `random` — `to = (k*104729) % N` | 88.24               | **84.67** | **0.96x**     |
+
+**Gremlin is marginally FASTER at both localities.** There is no 1.37x. Item 1425's heading is
+corrected, and the "Gremlin has no product route" concern it raised is correspondingly weaker: the
+sweep it uses is already at or ahead of the GQL sweep, and GQL's product margin over its own sweep
+was 1.3x, not 1.8x.
+
+### The instrument finding, which is the durable part
+
+Both fixtures give out-degree and in-degree **exactly 1** (each multiplier is coprime with `N`, so
+each mapping is a permutation) and both answer `N` for a 3-hop count. They differ in **nothing but
+locality**:
+
+- `isolated-row-bench.mjs`: `to = (i * 7 + 3) % N`. A vertex points ~7 slots along — the successor is
+  partly cache-resident.
+- the cross-engine probe's default: `from = (k * 7919) % N`, `to = (k * 104729) % N`. Both
+  large-stride permutations, so a successor is effectively random across the whole range.
+
+**1.93x for GQL and 2.06x for Gremlin**, from the successor function alone. Item 1066 had already
+priced this family at 9.3x over far-pool WIDTH; this is the same effect at fixed width and varying
+STRIDE, which nothing recorded.
+
+⚠️ **So the bench's chain rows are ~2x optimistic against a random graph.** The A/B results from
+items 1417-1420 and 1423 are unaffected — both arms always shared one fixture — but the ABSOLUTE
+figures (`chain4` 73.2 → 50.6 ms, `chain3` 46-49) describe a cache-friendly successor, and a real
+graph is unlikely to have one. `STRIDE` is a knob on the probe now; the benches do not have it, and
+whether item 1418's 25.7% holds at random stride is **unmeasured** — worth checking before that
+number is quoted as a general result.
+
+### And the probe was wrong first, in the way my own notes warn about
+
+Version 1 ran all three arms in ONE process and reported GQL at 88.92 ms where its own bench reads
+~46 for the identical query — which I nearly wrote up as the finding. The repo's rule is **one shape
+per PROCESS, so no other shape pollutes the dispatch**, recorded after a two-shape in-process A/B
+flattered a change by 1.5x on its controls. Three query shapes through one executor is a worse case
+of exactly that.
+
+Fixing it to one arm per process changed the GQL number not at all (89.18 vs 88.92) — so in this
+instance the confound was not the cause, and the real cause was the fixture. **Both were real
+defects and only one mattered**, which is the argument for fixing the instrument before interpreting
+it rather than deciding which flaw is load-bearing by inspection.
+
+The probe also asserts the three arms agree on the answer — a **cross-engine correctness check on a
+shape nothing else covers**, since the differential fuzzer compares TS against Rust, not GQL against
+Gremlin. All three answer 100,000.
+
+### Gates
+
+`bun run check` 0 (read unpiped). No engine code changed; the probe is the deliverable, indexed in
+`PROBES.md`.
