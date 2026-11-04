@@ -61,6 +61,7 @@ const ARMS = [
   'floor-bare',
   'floor-tworead',
   'floor-engine-shaped',
+  'floor-engine-shaped-poly',
 ];
 
 if (!ARMS.includes(ARM)) {
@@ -68,9 +69,14 @@ if (!ARMS.includes(ARM)) {
 }
 
 /** Filtered arms answer a different multiset from unfiltered ones. */
-const GROUP = ['engine', 'floor', 'floor-noalloc', 'floor-tworead', 'floor-engine-shaped'].includes(
-  ARM,
-)
+const GROUP = [
+  'engine',
+  'floor',
+  'floor-noalloc',
+  'floor-tworead',
+  'floor-engine-shaped',
+  'floor-engine-shaped-poly',
+].includes(ARM)
   ? 'filtered'
   : 'all';
 
@@ -275,6 +281,98 @@ const floorEngineShaped = () => {
   return rows;
 };
 
+/**
+ * THE SAME MACHINERY, MADE MEGAMORPHIC — the test of item 1445's leading hypothesis (item 1446).
+ *
+ * Item 1445 priced the per-row machinery at 92.6 ns/row, only 31.6% of the engine-to-floor gap, and
+ * left **200 ns/row unexplained** by the walk, the access pattern, the predicate arithmetic, the
+ * binding, the env, the generic item call or the row object. Its hypothesis was that the remainder is
+ * CALL-SITE DIVERSITY rather than any function's own work: `propOf` profiles at 24.1% of the engine
+ * row (148 ns/row) while `floor-engine-shaped`'s byte-identical `propOfLike` is far cheaper, because
+ * in the engine it is reached from across the whole codebase and in a probe from two places.
+ *
+ * Two sites in the engine are polymorphic where the lean arm's are not, and this arm pollutes BOTH:
+ *
+ *   1. the accessor INSIDE `propOf` — `bound?.properties?.[key]` sees Vertex, Edge and more, so its
+ *      inline cache is megamorphic. Warmed here on five unrelated hidden classes.
+ *   2. `projectRow`'s `item.fn(env)` CALL — a different compiled closure per query, so the call site
+ *      itself is polymorphic. Warmed here by running the whole walk once per closure.
+ *
+ * The measured reps then use closure 0 and real vertices, so the ANSWER and the access pattern are
+ * identical to `floor-engine-shaped` and only the IC state differs. If the 200 ns reproduces, the
+ * hypothesis holds and a specialized row builder is worth ~40% because it BYPASSES both sites. If it
+ * does not, the 200 ns is somewhere no item has looked and the next step is a fresh profile, not a
+ * sixth guess.
+ */
+const POLY_SHAPES = [
+  { properties: { n: 1 } },
+  { properties: { n: 1 }, a: 1 },
+  { properties: { n: 1 }, b: 1, c: 2 },
+  { properties: { n: 1 }, d: 1, e: 2, f: 3 },
+  { properties: { n: 1 }, g: 1, h: 2, i: 3, j: 4 },
+];
+
+const propOfPoly = (bound, key) => bound?.properties?.[key] ?? null;
+
+/** Five distinct compiled-item-shaped closures, so the call site that invokes one goes polymorphic. */
+const ITEM_FNS = [
+  (env) => propOfPoly(env.binding.get('b'), 'n'),
+  (env) => propOfPoly(env.binding.get('b'), 'k'),
+  (env) => String(propOfPoly(env.binding.get('b'), 'n')),
+  (env) => Number(propOfPoly(env.binding.get('b'), 'k')) + 1,
+  (env) => env.binding.get('a'),
+];
+
+const floorEngineShapedPolyWith = (fn) => {
+  const rows = [];
+  const binding = new Map();
+
+  for (const v of g.vertices) {
+    const bucket = v.adjFrom?.get('E');
+
+    if (bucket === undefined) {
+      continue;
+    }
+
+    binding.set('a', v);
+
+    for (const edge of bucket) {
+      const far = edge.to;
+
+      binding.set('b', far);
+
+      if (!(propOfPoly(far, 'n') > KEEP)) {
+        continue;
+      }
+
+      const env = { binding, params: {}, graph: g };
+      const row = {};
+
+      row['n'] = fn(env);
+      rows.push(row);
+    }
+  }
+
+  return rows;
+};
+
+/** Pollutes both ICs, then measures with closure 0 — the one whose answer matches `floor`. */
+const floorEngineShapedPoly = () => floorEngineShapedPolyWith(ITEM_FNS[0]);
+
+if (ARM === 'floor-engine-shaped-poly') {
+  // (1) the accessor inside `propOfPoly`: five hidden classes, enough to go megamorphic.
+  for (const s of POLY_SHAPES) {
+    for (let i = 0; i < 20_000; i += 1) {
+      propOfPoly(s, 'n');
+    }
+  }
+
+  // (2) the `fn(env)` call site: one full walk per closure, results discarded.
+  for (const fn of ITEM_FNS) {
+    floorEngineShapedPolyWith(fn);
+  }
+}
+
 const FILTERED = 'MATCH (a:P)-[:E]->(b:P) WHERE b.n > 5 RETURN b.n AS n';
 const BARE = 'MATCH (a:P)-[:E]->(b:P) RETURN b.n AS n';
 
@@ -287,6 +385,7 @@ const RUN = {
   'floor-bare': floorBare,
   'floor-tworead': floorTwoRead,
   'floor-engine-shaped': floorEngineShaped,
+  'floor-engine-shaped-poly': floorEngineShapedPoly,
 };
 
 const run = RUN[ARM];

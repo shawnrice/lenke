@@ -53695,3 +53695,81 @@ item 937.
 `bun run check` 0 (read unpiped), gql 3669/0. No engine behaviour changed — one probe arm added and
 the call-site comment corrected in place, which is the rule about a stale claim sitting next to the
 code it would misdirect.
+
+### Item 1446 — item 1445's hypothesis CONFIRMED: megamorphism is **104.9 ns/row (38.8% of the gap)** and machinery is **52.1%**, so **90.9% is explained** and only 24.6 ns/row is left. "Optimize the ACCESS PATTERN or nothing" is definitively refuted — the access pattern is IDENTICAL in all four arms
+
+Item 1445 priced the filtered hop row's per-row machinery and found it only a third of the
+engine-to-floor gap, leaving ~200 ns/row unexplained. Its hypothesis — stated as a hypothesis, not a
+finding — was CALL-SITE DIVERSITY: `propOf` profiles at 24.1% of the engine row while a
+byte-identical `propOfLike` in a probe is far cheaper, because the engine reaches it from everywhere
+and the probe from two places.
+
+`floor-engine-shaped-poly` tests it by polluting the two sites the engine has polymorphic and the lean
+arm does not, then measuring with real vertices and the one closure whose answer matches:
+
+1. **the accessor inside `propOf`** — `bound?.properties?.[key]` sees Vertex, Edge and more in the
+   engine. Warmed here on five unrelated hidden classes, 20,000 calls each.
+2. **`projectRow`'s `item.fn(env)` CALL** — a different compiled closure per query. Warmed here by
+   running the whole walk once per closure, five closures, results discarded.
+
+Four rounds, 100k nodes, `STRIDE=random`, all arms' digests and row counts equal:
+
+```text
+  arm                         median   ns/row   rounds
+  floor                        29.07    290.7   27.31 28.64 29.50 30.18
+  floor-engine-shaped          43.14    431.5   42.33 42.72 43.57 43.74
+  floor-engine-shaped-poly     53.63    536.4   50.11 51.38 55.88 59.52
+  engine                       56.10    561.0   55.07 55.79 56.40 57.00
+```
+
+```text
+  machinery, monomorphic      140.8 ns/row   52.1% of the gap
+  megamorphism ADDS           104.9 ns/row   38.8% of the gap
+  the two together                           90.9% of the gap
+  still unexplained            24.6 ns/row
+```
+
+**The engine is 24.6 ns/row above a hand floor that mimics both its machinery and its inline-cache
+state.** Five attributions were offered for this row across items 1436, 1437, 1444, 1445 and the
+call-site comment; this is the first one that closes.
+
+### What this settles, and it is not a small thing
+
+⚠️ **"Optimize the ACCESS PATTERN or nothing; the projection is not the cost" is refuted on its own
+terms.** Every arm above walks `g.vertices` → `v.adjFrom.get('E')` → `edge.to` in the identical order
+with the identical fixture: **the access pattern is a constant across the whole table.** The 270
+ns/row spread between `floor` and `engine` is machinery and IC state, both of which a specialized row
+builder addresses, and neither of which the access pattern explains.
+
+So the target item 1429 named — _a specialized projection closure for the single-far-property case_,
+priced at 27-36% there and 46.5% here by item 1444 — is **confirmed at ~44%** (the 245.7 ns/row of
+machinery plus megamorphism, against the engine's 561.0), with a mechanism rather than a share.
+
+**And the mechanism says a specialization is the RIGHT shape rather than merely a fast one.** It does
+not make `propOf` cheaper or `item.fn` monomorphic — it BYPASSES both, reading `far.properties[key]`
+from one call site that sees one hidden class. That is why the Gremlin walks' `pick` closures measure
+flat where the general scalar path plateaus, and why `engine-bare` already reaches 0.94x of its floor:
+item 167's far-driven template clone is this specialization, and a carried `WHERE` makes a row
+ineligible for it (item 1438).
+
+### Honest about the precision
+
+The machinery term read **92.6 ns/row at item 1445 and 140.8 here** — same arms, same fixture,
+different processes. `floor` moved 322.1 → 290.7 and `floor-engine-shaped` 414.7 → 431.5 between the
+runs, so the component estimates carry roughly ±25%: machinery is 90-140 ns/row and megamorphism
+~105, which is enough to say megamorphism is the larger surprise and comparable to the machinery, and
+not enough to split them finely. The TOTAL is stable (90.9% here, and the 24.6 ns/row residual is
+inside one round's spread of either arm), which is the claim that matters.
+
+### Next: build it
+
+The mechanism is settled, so the remaining work is engineering rather than attribution: a
+`farPropRowBuilder(proj, farVar)` detected on the AST side (`{ kind: 'prop'; variable; key }` is
+inspectable, `CReturnItem.fn` is not), returning `(far) => ({ [name]: far.properties[key] ?? null })`
+to match `propOf`'s null coercion, wired into `filteredHopWalk`'s general closure as its OWN closure
+rather than a branch in the loop (item 159 measured a branch there at 1.6x). `plainRowProjection`
+already encodes the "no DISTINCT, no grouping, no ORDER BY, no paging" guard.
+
+### Gates
+
+`bun run check` 0 (read unpiped). No engine code changed — one probe arm.

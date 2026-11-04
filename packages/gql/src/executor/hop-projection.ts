@@ -3231,6 +3231,17 @@ const filteredHopWalk = (w: {
         // `ts-closure-size-is-load-bearing` records. A specialized row builder would BYPASS `propOf`
         // rather than speed it up, so that term is addressable from here after all.
         //
+        // ⚠️ AND AT ITEM 1446 THE HYPOTHESIS WAS CONFIRMED AND THIS COMMENT'S CONCLUSION IS
+        // REFUTED ON ITS OWN TERMS. Megamorphism adds **104.9 ns/row (38.8% of the gap)** on top of
+        // the machinery's 52.1%, so **90.9% is explained** and 24.6 ns/row is left. Every probe arm
+        // walks `g.vertices` -> `v.adjFrom.get('E')` -> `edge.to` in the identical order on the
+        // identical fixture, so THE ACCESS PATTERN IS A CONSTANT across the table: the 270 ns/row
+        // spread is machinery and inline-cache state, not locality.
+        //
+        // A specialized row builder does not make `propOf` cheaper or `item.fn` monomorphic — it
+        // BYPASSES both, reading `far.properties[key]` from one site that sees one hidden class.
+        // Confirmed target: **~44%** of this row. Item 1429 named it; items 1444/1445/1446 priced it.
+        //
         // The original conclusion still holds for what it measured; it just does not follow from a
         // ladder. Same error shape as item 1437's CSE claim, corrected the same tick.
         rows.push(projectRow(proj, binding, params, graph));
