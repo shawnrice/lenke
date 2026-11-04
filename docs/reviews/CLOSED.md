@@ -48326,3 +48326,72 @@ every intermediate claim tested. Item 1358's decline stands and is now evidenced
 Both prototypes REVERTED. `git status --porcelain` shows only the new probe; `ORDINAL_READ_ARM` and
 `vtxSeq` at 0 in all three files, `slotOf` back to its 6 occurrences, all six arm files under
 `target/` deleted by each driver's `finally`. `bun run check` 0 (read unpiped).
+
+### Item 1373 — I built thirteen cross-cutting instruments across items 1358-1372 and indexed NONE of them; `PROBES.md` corrected, and the two from items 919/921 were missing too
+
+`PROBES.md` opens by stating its own purpose: it indexes _"the **cross-cutting** ones — the
+instruments a new measuring pass should run BEFORE hunting, because each checks a property of the
+whole engine rather than one shape"_, and quotes CLAUDE.md's rule for the Rust corpus — _"Writing a
+new benchmark feels like progress and reading three file headers feels like overhead. It is the other
+way round."_
+
+Items 1358-1372 added thirteen instruments that are exactly that, and **none of them was indexed**.
+Checked all fifteen names the screen and benches now consist of: fifteen missing, including
+`runtime-profile-probe.mjs` and `runtime-profile-analyze.mjs`, which predate this session entirely
+(items 919 and 921). So the index was already incomplete and I added thirteen more without touching
+it, across fifteen items that each ran gates and wrote an audit entry.
+
+This is the same omission class as item 1300 — the six predicate forms lifted without being added to
+the spelling probe, which CLAUDE.md requires of each one — and it has the same cost shape as the
+`CLOSED.md` heading rule: **an index that lags is the failure it exists to prevent.** The concrete
+risk here is specific and large: a future pass reading `PROBES.md` to decide what to run before
+hunting would have found no mention of the unpriced-frame screen, and rebuilt it — including, most
+likely, rebuilding its six defects.
+
+### What was added
+
+Four sections, in the file's own voice, covering the screen (`runtime-profile-probe.mjs` and its
+Gremlin and write-path siblings, `runtime-profile-analyze.mjs`, `profile-frames.mjs`,
+`windowed-profile.mjs`), the allocation screen (`heap-prof-calibrate.mjs`,
+`runtime-heap-analyze.mjs`, `gc-cost-probe.mjs`), the isolated row benches
+(`isolated-row-bench.mjs`, `isolated-gremlin-bench.mjs`), and four bespoke probes
+(`prop-bag-regime-probe.mjs`, `engine-bag-shape-probe.mjs`, `token-drain-probe.mjs`,
+`ordinal-churn-probe.mjs`). 134 lines to 290.
+
+The warnings are the load-bearing part, because every one cost an item to find:
+
+- **the screen's SIX defects**, with why `profile-frames.mjs` is one module and not a copy per
+  analyzer;
+- **"has mentions" is not "is optimized"**, and **a share is a nomination; an ablation is the price**
+  — now three instances (1104's 37.9%, 1364's 3.8x→1.11x, 1368's 9.2%→3.7%), so expect a ~2.5x
+  overstatement;
+- **window the profile above ~20k**, or the fixture build inverts the ranking;
+- **the ZERO signal is one-shot** — writing the item retires the frame;
+- **`--heap-prof` is UNFIT**: 0.7 MiB reported for 128 MiB allocated, calibrate before believing it;
+- **drain a `PerformanceObserver` before reading it**, or a synchronous loop reports 0 pauses;
+- **a `Graph` keeps itself alive until the host yields** — a tight build loop measures a different
+  heap than it thinks;
+- **the noise is PROCESS-level**, so the unit of sampling is the process and no estimator fixes it;
+- **a long row measures 4-5x better than a short one** — size the fixture up before adding reps;
+- **record the CONCORDANCE, not just the ratio**: n=8 read +2.6% and n=24 read −0.3% on the same
+  four-line change, and 43-of-64 pairs is what refused to conclude where the medians invited it;
+- **the two fixture traps**, which are the sharpest things here: `prop-bag-regime-probe.mjs` shared
+  one read function across five arms in one process and inverted its own table, and
+  `ordinal-churn-probe.mjs` placed live slots contiguously and reported churn as free where the
+  interleaved layout says 6.18x / 11.34x.
+
+### Also recorded: what the screen already found, so it is not re-run for the same answer
+
+Both query surfaces at 20k and 200k plus the write path: no unpriced frame survives, and every
+nomination resolved to measured work. **The part worth repeating is the size sweep** — `propOf` grows
+1.4-3.5x and `degreeOfTypes` **7.2x** from 20k to 200k — because a cache-resident number understates
+anything on those paths, which is item 1365's finding and the most portable thing this pass produced.
+
+### Verification
+
+Every one of the 28 files `PROBES.md` now names was checked to exist on disk. All fifteen previously
+missing names are present. `bun run check` 0 (read unpiped).
+
+### Gates
+
+Documentation only; no engine, core or probe code changed.

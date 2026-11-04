@@ -91,6 +91,161 @@ Two sweeps in the same engine use DIFFERENT surfaces: a pinned chain's swept rou
 set, an end-gated chain's sweep walks `verticesById.values()`. A route assertion that watches one
 of them silently loses half its teeth.
 
+## The UNPRICED-FRAME SCREEN — run this before hunting, and read its defect list first
+
+A CPU profile finds what hand-placed timers cannot (item 919), but a profile's top frames are mostly
+hot for reasons already written down. The screen's job is the cross-check: sum self time per frame,
+then report which frames appear NOWHERE in `CLOSED.md` or the audit. A hot frame with ZERO mentions
+is the one worth a tick.
+
+| file                                | surface                                                           |
+| ----------------------------------- | ----------------------------------------------------------------- |
+| `runtime-profile-probe.mjs`         | GQL query shapes (`control point hopfilter sortedpage grouped`)   |
+| `runtime-profile-gremlin-probe.mjs` | Gremlin traversals (item 1359 — the GQL probe never covered them) |
+| `runtime-profile-write-probe.mjs`   | the WRITE path, incl. the O(1)-by-id control (item 1360)          |
+| `runtime-profile-analyze.mjs`       | reads `.cpuprofile`, prints shares + mention counts + verdict     |
+| `profile-frames.mjs`                | the shared cross-check — do NOT duplicate it, see below           |
+| `windowed-profile.mjs`              | profiles a WINDOW, so the fixture build is not in the profile     |
+
+```
+NODES=200000 PROF_OUT=$D/hopfilter.cpuprofile node runtime-profile-probe.mjs hopfilter 120
+node runtime-profile-analyze.mjs $D
+```
+
+**⚠️ ITS VERDICT HAS LIED IN SIX DISTINCT WAYS, each found by pointing it at a new surface or by two
+instruments disagreeing — never by reading the code, and never by the item that introduced it.** The
+list is the reason `profile-frames.mjs` is ONE module and not copied into each analyzer:
+
+1. **`n/a` laundered into "recorded"** (1358). V8 names an anonymous closure after nothing, so the
+   screen marked it unnameable and the verdict line then said "every hot frame is already recorded".
+   It was hiding the LARGEST frame in three of five GQL shapes. `n/a` now has its own bucket.
+2. **The fix for (1) was a silent NO-OP on its first run** (1358) — Node reports `file:///abs/path`
+   and the guard required a leading `/`. Caught only because the frames it was built for were still
+   printed.
+3. **A SHORT accessor property bypassed the accessor rule** (1359): `get to` looks up `to`, which the
+   4-char guard rejects, so it fell through to the enclosing-declaration scan and was attributed to
+   `WIDE_BAG` at 3.1% in two shapes.
+4. **The mention count was a SUBSTRING search** (1359): `pick` read 202 where 53 are the identifier.
+   Now word-boundary matched — and measured first, because the obvious generalisation is wrong
+   (`values` is 1118 substring / 974 inside backticks, i.e. genuinely covered).
+5. **It flagged its OWN probe's fixture builders** (1360). The GQL probe's `build` escaped notice for
+   two items only because "build" appears 841 times in the documents, which is luck not a guard.
+6. **The profiler appeared in its own profile** (1362): `post @ node:inspector` read 15-25% of three
+   windowed shapes. Harness frames are now out of the DENOMINATOR, not merely out of the verdict.
+
+**⚠️ "HAS MENTIONS" IS NOT "IS OPTIMIZED".** The signal is binary, so a frame can be 41.9% of its
+shape and three passing references retire it. Chase the nominations by hand.
+
+**⚠️ A SHARE IS A NOMINATION; AN ABLATION IS THE PRICE.** Three instances now: `edgesOfTypes` read
+37.9% self for a path that is a single `Map.get` (1104); a clean 3.8x micro landed at **1.11x** in the
+engine (1364); `bucketsOf` profiled at 9.2% and ablated at **3.7%** (1368). Expect the share to
+overstate by ~2.5x and price in the engine, or say plainly that you have not.
+
+**⚠️ WINDOW THE PROFILE ABOVE ~20k ELEMENTS.** `--cpu-prof` covers the whole process, so at 200,000
+the fixture build INVERTS the ranking — `getVertexById`, `indexEdgeLabel` and `commitElementLabels`
+at the top of every shape, all load, no query (item 1362). Raising reps is not the fix; it shrinks the
+build's fraction while costing time in the dimension being swept.
+
+**⚠️ WRITING AN ITEM ABOUT A FRAME RETIRES IT FROM THE SCREEN.** `topKNodeWalk` had ZERO mentions when
+1358 flagged it and one afterwards — 1358's own entry. The ZERO signal is ONE-SHOT, so a flagged frame
+must be taken or explicitly priced in the same pass, or the next run reads clean with the work open.
+
+### What the screen found, so it is not re-run for the same answer
+
+Both query surfaces at 20k AND 200k, plus the write path: **no unpriced frame survives**. Every
+nomination resolved to work already measured — `topKNodeWalk` to item 1064, `compareCodePoints` to
+921's declined hoist, `expandSlot`/`slotChainCount`/`bucketsOf` to 1104/1105/1108/1152, and
+`drainMutations` priced at 1.7% and declined (1360). **The size sweep is the part worth repeating**:
+`propOf` grows 1.4-3.5x and `degreeOfTypes` **7.2x** from 20k to 200k (item 1365), so a
+cache-resident measurement understates anything on those paths.
+
+## The ALLOCATION screen — `--heap-prof` is UNFIT, calibrate before believing it
+
+| file                       | what it does                                                             |
+| -------------------------- | ------------------------------------------------------------------------ |
+| `heap-prof-calibrate.mjs`  | allocates 128 MiB through ONE named function, in retained + garbage arms |
+| `runtime-heap-analyze.mjs` | reads `.heapprofile`, same cross-check as the CPU analyzer               |
+| `gc-cost-probe.mjs`        | GC pauses with duration and KIND, via `PerformanceObserver`              |
+
+**⚠️ `node --heap-prof` REPORTED 0.7 MiB FOR 128 MiB ALLOCATED** and never named the allocating
+function, identically in both arms (item 1361). The analyzer is kept because its format reading is
+correct and the defect is upstream — but conclude NOTHING from it until `heap-prof-calibrate.mjs`
+passes. This is the only instrument in this directory found wholly unfit rather than subtly biased.
+
+`gc-cost-probe.mjs` is the one that works: it put the write path at **17.6% GC** against the CPU
+profile's 18.6% for the same shape — two instruments agreeing within a point, which is what makes
+either trustworthy. It also found the split that changes the reading: **93% is MINOR scavenge**, and
+minor cost scales with what SURVIVES the nursery, so when the thing being built is a graph the caller
+keeps, this is promotion of the data structure and not eliminable churn.
+
+**⚠️ DRAIN A `PerformanceObserver` BEFORE READING IT.** Entries arrive in a queued callback, so a
+fully synchronous rep loop buffers every one and `disconnect()` fires first — the probe's first
+version reported **0 pauses and 0.0% GC** for a run profiling at 18.6% (item 1361).
+
+**⚠️ A `Graph` KEEPS ITSELF ALIVE UNTIL THE HOST YIELDS.** Its first write schedules
+`setTimeout(this.notify, 1)`, and a pending timer holds `this.notify`, which holds the Graph. A
+synchronous loop building many graphs retains all of them: heap 148 / 614 / 1242 MiB at 10 / 45 / 90
+reps, and a 256 MiB cap OOM-crashes. Not a leak — one macrotask drains it — but a benchmark that
+builds graphs in a tight loop is measuring a different heap than it thinks.
+
+## The ISOLATED ROW BENCHES — for a sub-10% question on ONE row
+
+| file                         | surface                                            |
+| ---------------------------- | -------------------------------------------------- |
+| `isolated-row-bench.mjs`     | one GQL row (`SHAPE=hopfilter NODES= REPS= DROP=`) |
+| `isolated-gremlin-bench.mjs` | one Gremlin row (item 1368)                        |
+
+Per-rep timing, `p25` headline, full distribution, GC accounted, answer in the output so a driver can
+assert the arms agree.
+
+**⚠️ THE NOISE IS PROCESS-LEVEL, SO NO ESTIMATOR FIXES IT.** Replacing the loop-total with CLAUDE.md's
+own median-of-14 moved the floor from 12% to 13.2% — no better (item 1367). Each process builds its
+own fixture and gets its own heap layout, and that offset applies to every rep in it. **The unit of
+sampling is the PROCESS**: `p25` within one, many processes per arm, arms interleaved.
+
+**⚠️ A LONG ROW MEASURES 4-5x BETTER THAN A SHORT ONE.** The Gremlin 3-hop row is ~300 ms a rep and
+has a 2.9% floor; the GQL hop-filter row is ~3.5 ms and has 13.2% (item 1368). **Pick a fixture size
+that makes the row long before adding reps.**
+
+**⚠️ RECORD THE CONCORDANCE, NOT JUST THE RATIO — n=8 WOULD HAVE SHIPPED A NO-OP.** An
+answer-preserving four-line fast path read **+2.6% faster at n=8** and **−0.3% at n=24** (item 1367).
+What stopped it was counting pairs: 43 of 64 favoured it, where 32 is chance. "Two medians 2.6% apart
+with overlapping distributions" invites shipping; "43 of 64 pairs" does not.
+
+**⚠️ WITHIN one interleaved run, n=24 resolves ~1%; ACROSS runs the absolute level drifts ~3%.**
+Compare arms inside a run; never against another run's number.
+
+## More bespoke probes
+
+| probe                        | question                                                                       |
+| ---------------------------- | ------------------------------------------------------------------------------ |
+| `prop-bag-regime-probe.mjs`  | WHY the property read grows with size — and three refutations (item 1363/1364) |
+| `engine-bag-shape-probe.mjs` | does bag SHAPE reach the engine? **1.11x — no** (item 1364)                    |
+| `token-drain-probe.mjs`      | `drainMutations`' duplicate-token array vs a count map (item 1360)             |
+| `ordinal-churn-probe.mjs`    | what DELETES cost a never-reused dense ordinal (item 1372)                     |
+
+`prop-bag-regime-probe.mjs` closes three levers with numbers, so they are not re-attempted:
+megamorphic bag shapes cost **nothing at 200k** relative to one hidden class, `Object.freeze` is
+**free at every size**, and a `Map` per element is **3.18x WORSE**. The one thing that wins is a
+`Float64Array` column — **3.55x and FLAT in size** — which is the layout lever, i.e. a data-model
+change, not a local one.
+
+**⚠️ IT ALSO VIOLATED ONE-SHAPE-PER-PROCESS AND INVERTED ITS OWN TABLE** (item 1364). Its five arms
+shared ONE read function in one process, so the megamorphic arm polluted the inline cache for every
+later arm AND every later size. `ARM=<name> SIZE=<n>` is the mode to trust; the all-arms mode is kept
+only to demonstrate the pollution. Item 1363 had defended the bad numbers as "reproducible across
+three processes" — and all three ran the same polluted order. **A repeat only buys independence from
+what it actually varies.**
+
+`ordinal-churn-probe.mjs` carries the sharpest fixture trap in this directory. Its first version put
+the live vertices at slots `0..LIVE-1`, contiguous at the start of the ordinal space, so the walk
+touched LIVE ADJACENT cache lines however large the arrays were — and churn measured **free**,
+non-monotonic, indistinguishable from the control. Interleaving the churn between live insertions
+moved the same question to **6.18x at 200k churn and 11.34x at 1M**. **The cost of an oversized
+zero-initialised typed array is in the pages you TOUCH, not the pages you allocate**, so any fixture
+that keeps the touched set contiguous reports slot-space growth as free. `SPREAD=0` restores the old
+layout so the difference stays visible rather than taken on trust.
+
 ## HOW TO RUN ONE, which is not optional detail
 
 **One shape per PROCESS, and repeat the PROCESS rather than adding rounds.** Four separate readings
