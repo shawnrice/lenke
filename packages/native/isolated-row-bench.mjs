@@ -280,7 +280,11 @@ const build = () => {
       // FANIN=1 keeps the original `(i * 7 + 3) % NODES`, byte-for-byte at FANOUT=1; a smaller
       // fraction concentrates the far endpoints into the first `NODES * FANIN` vertices.
       to: g.getVertexById(
-        `v${STRIDE === 'random' ? (k * 104_729) % pool : (i * 7 + 3 + hop * 2_654_435_761) % pool}`,
+        `v${
+          STRIDE === 'random'
+            ? ((k % NODES) * 104_729 + hop * 2_654_435_761) % pool
+            : (i * 7 + 3 + hop * 2_654_435_761) % pool
+        }`,
       ),
       // A THIRD carry both types, so `:E` and `:E|F` select the identical edge set and the
       // multi-bucket path actually has something to DEDUPE — without the overlap it would be a

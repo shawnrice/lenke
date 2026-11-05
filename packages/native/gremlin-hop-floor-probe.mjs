@@ -60,7 +60,14 @@ const build = () => {
     g.addEdge({
       id: `e${k}`,
       from: vs[(k * 7919) % NODES],
-      to: vs[(k * 104_729) % NODES],
+      // ⚠️ THE REPEAT INDEX IS LOAD-BEARING (item 1518). Any linear `(a*k + b) % N` is invariant
+      // under `k -> k + N`, and the FANOUT edges leaving one vertex are exactly k0, k0+N, k0+2N, …
+      // — so the old `(k * 104_729) % NODES` sent EVERY one of them to the SAME target. Degrees
+      // looked perfect and the graph was functional: one distinct out-neighbour per vertex at any
+      // fanout. Item 1516 found the same defect in the GQL bench's own fixture, and `small` arms
+      // elsewhere in this corpus already carry this `hop` term for exactly this reason.
+      // Both products stay far inside 2^53.
+      to: vs[((k % NODES) * 104_729 + Math.floor(k / NODES) * 2_654_435_761) % NODES],
       labels: ['E'],
       properties: { w: k % 13 },
     });

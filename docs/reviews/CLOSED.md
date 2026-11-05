@@ -58108,7 +58108,7 @@ PRE.
 `bun run check` 0 read unpiped. core 431/0, gql 3727/0, gremlin 1406/0, native 961/0,
 serialization 144/0, `bun run fuzz` 20/0.
 
-### Item 1494 — **`V().out(T)` is already within 4.6% of a hand-written loop**, so the Gremlin bare hop has no pipeline overhead left. **Re-confirmed at FANOUT=1 by item 1514** (engine 184.0 against a floor of 184.7 ns/row), which re-derived this entry by searching after measuring instead of before. Decomposed the whole 43.2 ms row, and **refuted the endpoint-getter lever: a plain own property is 1.19x WORSE**
+### Item 1494 — **`V().out(T)` is already within 4.6% of a hand-written loop**, so the Gremlin bare hop has no pipeline overhead left. ⚠️ **Its fixture was DEGENERATE (item 1518) and the conclusion still HOLDS** — re-run on a branching graph, engine 107.37 ns/row against a floor of 107.95. **Re-confirmed at FANOUT=1 by item 1514** (engine 184.0 against a floor of 184.7 ns/row), which re-derived this entry by searching after measuring instead of before. Decomposed the whole 43.2 ms row, and **refuted the endpoint-getter lever: a plain own property is 1.19x WORSE**
 
 > ⚠️ **ITS CLOSING PRICE IS CORRECTED BY ITEM 1495.** ~~Ceiling ~1.6x on this shape~~ — that was
 > arithmetic (assume the two structural shares go to zero), and measuring it gave **24x** for a
@@ -60401,3 +60401,95 @@ the formula is not re-attempted as an idea.
 `bun run check` 0 read unpiped. The engine change is REVERTED — the only edit is the comment — so the
 suites are item 1516's: core 431/0, gql 3803/0, gremlin 1469/0, native 961/0, serialization 144/0,
 `bun run fuzz` 20/0 (all also run with the arm applied, before reverting).
+
+### Item 1518 — item 1516's defect was NOT one fixture: **the `random` stride collapses to ONE distinct out-neighbour at any fanout > 1, in six instruments** — and the `small` arm sitting beside it already carried the fix, with a comment describing it. Fixed all six; ⚠️ **item 1494's conclusion re-validated on a branching graph and it HOLDS**
+
+Item 1516 fixed `bench.ts`'s `graphDoc`. The obvious next question — asked this time instead of
+assumed — is whether any other generated fixture has the same shape. Surveyed every `addEdge` call
+site in the probe corpus (69 files).
+
+### The defect, generalized
+
+```text
+to = (a * k + b) % N            is invariant under  k -> k + N
+```
+
+and every generator in this corpus runs `for (k = 0; k < NODES * FANOUT; k++)`, so the FANOUT edges
+leaving one vertex are exactly `k0, k0+N, k0+2N, …`. Measured at N=50,000:
+
+```text
+                                            distinct out-neighbours per vertex
+                            FANOUT=1   FANOUT=2   FANOUT=5
+to = (k * 104729) % N        {1: …}     {1: …}     {1: …}      ← collapses
+to = (… + hop * 2654435761)  {1: …}     {2: …}     {5: …}      ← tracks fanout
+```
+
+⚠️ **At FANOUT=1 it is harmless** (degree 1 cannot have more than one distinct neighbour), which is
+why it survived so long and why this arc's own readings at FANOUT=1 are unaffected. It bites the
+moment anyone raises the fanout — which two probes do **by default**.
+
+### ⚠️ The fix was already in the file, one line above the defect
+
+`isolated-row-bench.mjs` and `isolated-gremlin-bench.mjs` both build their `small` stride as
+`(i * 7 + 3 + hop * 2_654_435_761) % pool` and comment it:
+
+> The FANOUT-th edge out of `i` lands elsewhere, **so degree rises without the targets collapsing
+> onto one vertex**
+
+…and then the `random` arm immediately below it was `(k * 104_729) % pool`, which is exactly the
+collapse that comment describes preventing. The knowledge was present and applied to one arm of two.
+
+### Six instruments fixed
+
+```text
+hop-rows-floor-probe.mjs          FANOUT default 2   ← broken at its default
+runtime-profile-gremlin-probe.mjs FANOUT default 5   ← broken at its default
+isolated-gremlin-bench.mjs        STRIDE default random
+isolated-row-bench.mjs            random arm only
+gremlin-hop-floor-probe.mjs       random arm
+gql-undirected-floor-probe.mjs    random arm
+```
+
+### ⚠️ What a degenerate fixture does and does NOT invalidate
+
+This is the distinction that decided the scope, and it is worth having written down:
+
+- **An A/B on ONE fixture survives it.** Both arms see the same graph, so "the engine is within X% of
+  a hand-written loop" is still a fair comparison — only its absolute ns/row describes a graph nobody
+  has.
+- **A claim about branching, selectivity or fan-out does not.** Those are claims about the topology
+  the fixture failed to provide.
+
+So item 1494 — _"`V().out(T)` is already within 4.6% of a hand-written loop"_, measured on
+`hop-rows-floor-probe` at its degenerate FANOUT=2 default — was predicted to survive, and it does.
+Re-run on the branching fixture, 200,000 vertices / 400,000 edges / 2 distinct neighbours each:
+
+```text
+reach      71.53 ns/row     rowstoid  108.03
+rowsedge   75.78            rowsto    107.95
+engine    107.37   ← still at the floor, and still fractionally under it
+```
+
+`rowstoid` ≈ `rowsto` again (43.21 ms against 43.18), so item 1494's other finding — reading `e.toId`
+costs the same as the memoized `e.to`, because the cost is the edge object's cache miss rather than
+the getter — also re-validates.
+
+### Not done, deliberately
+
+A further ~14 probes share the pattern at fanout > 1 (`edge-spelling-probe`, `order-cost-probe`,
+`hop-multi-agg-floor-probe`, `cross-surface-arity-probe`, `hop-predicate-profile`,
+`vertex-ordinal-write-probe`, …). They are historical instruments whose conclusions were A/Bs on one
+fixture, which the rule above says survive; fixing them would churn 14 files to change numbers nobody
+will read again. The six above are the ones a future tick reaches for. ⚠️ **Anyone re-running one of
+the others at fanout > 1 should apply the same `hop` term first.**
+
+Two generators that look like the pattern are FINE and were checked rather than assumed:
+`walkcount-probe.ts` uses `(i * 7919 + d * 104_729)` where `d` is the degree index, and
+`algo-scaling-bench.mjs` / `cross-surface-probe.mjs` use `(i * 7 + 3 + hop * 2_654_435_761)` — all
+three already vary with the repeat.
+
+### Gates
+
+`bun run check` 0 read unpiped. No engine or library source changed — only bench and probe
+generators — and the suites confirm it: core 431/0, gql 3803/0, gremlin 1469/0, native 961/0,
+serialization 144/0, `bun run fuzz` 20/0.

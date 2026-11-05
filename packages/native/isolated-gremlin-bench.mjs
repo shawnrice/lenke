@@ -213,7 +213,7 @@ const build = () => {
       from: vs[STRIDE === 'random' ? (k * 7919) % NODES : i],
       to: vs[
         STRIDE === 'random'
-          ? (k * 104_729) % FAR_POOL
+          ? ((k % NODES) * 104_729 + Math.floor(k / NODES) * 2_654_435_761) % FAR_POOL
           : (i * 7 + 3 + hop * 2_654_435_761) % FAR_POOL
       ],
       labels: edgeLabels(k),
