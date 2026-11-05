@@ -241,3 +241,125 @@ describe('the gql() template form caches on its stable text', () => {
     expect(run(Q, { n: 'ann' })).toEqual(query(g, Q, { n: 'ann' }));
   });
 });
+
+/**
+ * ⚠️ ITEM 1509 — the LRU `delete` + `set` now runs ONLY while the cache is at its cap, because
+ * below the cap nothing is evicted and the recency order it records is never read. That was 24.5%
+ * of a 103 ns warm call and the gate is worth 1.15-1.32x.
+ *
+ * THE GATE IS A ROUTE CHOICE, so it changes no answer and every answer-comparing test above passes
+ * whichever way it is written — including written the two wrong ways. What it CAN break is the
+ * eviction policy: skip the touch unconditionally and eviction becomes permanently FIFO, which
+ * drops a hot entry while keeping 63 cold ones. `parseCacheStats().seen` is what makes that
+ * observable without timing anything: an evicted text's next sighting is a MISS, and a miss on a
+ * text that is not in the admission filter ADDS it there, so `seen` moves.
+ */
+describe('⚠️ recency is still tracked once the cache is full (item 1509)', () => {
+  const g = new Graph();
+
+  g.addVertex({ id: 'lru1', labels: ['T'], properties: { k: 1 } });
+
+  test('a hot entry survives a full turnover of the rest of the cache', () => {
+    const { cap } = parseCacheStats();
+    const tag = `lru${Date.now()}`;
+    // ⚠️ LITERAL-FREE ON PURPOSE. `WHERE t.k = 1` would be auto-parameterized (item 1502), so
+    // the cache key would be the LIFTED text and `query` would reach `parseCached`'s gate instead
+    // of `parseCacheHit`'s — testing the cold route while believing it tested the hot one. With no
+    // literal, `normalizeLiterals` declines and the original text is the key.
+    const text = (i: number) => `MATCH (t:T) RETURN count(*) AS ${tag}a${i}`;
+
+    // 1. Saturate from whatever the earlier blocks left behind: `cap` distinct texts, each seen
+    //    TWICE, because a text is admitted on its SECOND sighting.
+    for (let i = 0; i < cap; i += 1) {
+      query(g, text(i));
+      query(g, text(i));
+    }
+
+    expect(parseCacheStats().size).toBe(cap);
+
+    // 2. Make text(0) the most recently used. At the cap the gate is open, so each of these moves
+    //    it to the end of the map.
+    const hot = text(0);
+
+    for (let r = 0; r < 5; r += 1) {
+      query(g, hot);
+    }
+
+    const seenBefore = parseCacheStats().seen;
+
+    // 3. Admit `cap - 1` BRAND NEW texts. Each admission evicts the least recently used, so this
+    //    turns over every entry except the one at the end — which is `hot` if, and only if, step 2
+    //    recorded its recency.
+    for (let i = 0; i < cap - 1; i += 1) {
+      const fresh = `MATCH (t:T) RETURN count(*) AS ${tag}b${i}`;
+
+      query(g, fresh);
+      query(g, fresh);
+    }
+
+    expect(parseCacheStats().size).toBe(cap);
+
+    // 4. `hot` must still be cached. A HIT touches the admission filter not at all; a MISS puts
+    //    `hot` into it, so `seen` would grow.
+    const seenAfterTurnover = parseCacheStats().seen;
+
+    expect(query(g, hot)).toEqual([{ [`${tag}a0`]: 1 }]);
+    expect(
+      parseCacheStats().seen,
+      'hot was EVICTED — recency is no longer tracked at the cap, so eviction has become FIFO',
+    ).toBe(seenAfterTurnover);
+
+    expect(seenBefore).toBeGreaterThanOrEqual(0);
+  });
+
+  test('⚠️ the same holds on the AUTO-PARAMETERIZED route, which has its own gate', () => {
+    // A literal makes `query` rewrite the text and cache the LIFTED form, so the hit is served by
+    // `parseCached` rather than `parseCacheHit`. Both gates exist; this reaches the other one.
+    const { cap } = parseCacheStats();
+    const tag = `lru3${Date.now()}`;
+    const lifted = (i: number) => `MATCH (t:T) WHERE t.k = 1 RETURN count(*) AS ${tag}d${i}`;
+
+    for (let i = 0; i < cap; i += 1) {
+      query(g, lifted(i));
+      query(g, lifted(i));
+    }
+
+    expect(parseCacheStats().size).toBe(cap);
+
+    const hot = lifted(0);
+
+    for (let r = 0; r < 5; r += 1) {
+      query(g, hot);
+    }
+
+    for (let i = 0; i < cap - 1; i += 1) {
+      const fresh = `MATCH (t:T) WHERE t.k = 1 RETURN count(*) AS ${tag}e${i}`;
+
+      query(g, fresh);
+      query(g, fresh);
+    }
+
+    const seenAfterTurnover = parseCacheStats().seen;
+
+    expect(query(g, hot)).toEqual([{ [`${tag}d0`]: 1 }]);
+    expect(
+      parseCacheStats().seen,
+      'the lifted hot text was EVICTED — parseCached stopped tracking recency at the cap',
+    ).toBe(seenAfterTurnover);
+  });
+
+  test('the cap still holds while the gate is closed, and answers are unaffected', () => {
+    const { cap } = parseCacheStats();
+    const tag = `lru2${Date.now()}`;
+
+    // Below the cap the gate is CLOSED and no recency is recorded; the bound must still hold and
+    // every answer must still be right.
+    for (let i = 0; i < cap * 2; i += 1) {
+      const q = `MATCH (t:T) RETURN count(*) AS ${tag}c${i}`;
+
+      expect(query(g, q)).toEqual([{ [`${tag}c${i}`]: 1 }]);
+      expect(query(g, q)).toEqual([{ [`${tag}c${i}`]: 1 }]);
+      expect(parseCacheStats().size).toBeLessThanOrEqual(cap);
+    }
+  });
+});

@@ -293,8 +293,26 @@ const parseCacheHit = (text: string, chain: number | undefined): Statement | und
   }
 
   // Move to the end: `Map` preserves insertion order, so eviction drops the LEAST RECENTLY used.
-  parseCache.delete(text);
-  parseCache.set(text, hit);
+  //
+  // ⚠️ ONLY WHILE THE CACHE IS FULL, and that gate is worth 1.24x on a warm call (item 1509). The
+  // `delete` + `set` pair is ~25 ns — 24.5% of a 103 ns `RETURN 1 AS v` — and it is recording a
+  // recency order that is read by exactly one thing: the eviction in `parseCached`. Below the cap
+  // nothing is ever evicted, so the order it maintains is never consulted and the whole pair is
+  // bookkeeping for a decision that will not be taken. Most processes live here permanently: the
+  // cap is 64 and applications send a handful of distinct texts.
+  //
+  // ⚠️ THE APPROXIMATION THIS ACCEPTS, stated precisely: while under the cap no recency is
+  // recorded, so at the moment the cache FILLS its order is insertion order rather than true LRU,
+  // and the first eviction may drop a hot entry that a fully-tracked LRU would have kept. From
+  // then on every hit is tracked again and the order converges back. It is a choice among 64
+  // cached parses — a cache-policy approximation that can only cost a re-parse, never an answer.
+  // The alternative of dropping the pair outright measured the same 1.24x and is strictly worse:
+  // it makes eviction permanently FIFO, which thrashes for a caller cycling over more than 64 hot
+  // texts. This keeps true LRU for exactly the workload that needs it.
+  if (parseCache.size >= PARSE_CACHE_CAP) {
+    parseCache.delete(text);
+    parseCache.set(text, hit);
+  }
 
   return hit.stmt;
 };
@@ -304,9 +322,14 @@ const parseCached = (text: string, chain: number | undefined): Statement => {
 
   if (hit !== undefined && hit.chain === chain) {
     // Move to the end: `Map` preserves insertion order, so the eviction below drops the LEAST
-    // RECENTLY used rather than the oldest parsed.
-    parseCache.delete(text);
-    parseCache.set(text, hit);
+    // RECENTLY used rather than the oldest parsed — but ONLY while the cache is full, for the
+    // reason given at the same gate in `parseCacheHit` (item 1509). This hit path is reached by
+    // the auto-parameterized route (`query` parses the LIFTED text here), so it is hot for a
+    // caller that interpolates literals, not a cold fallback.
+    if (parseCache.size >= PARSE_CACHE_CAP) {
+      parseCache.delete(text);
+      parseCache.set(text, hit);
+    }
 
     return hit.stmt;
   }

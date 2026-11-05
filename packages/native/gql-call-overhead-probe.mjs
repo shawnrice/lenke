@@ -48,12 +48,36 @@ const graphOf = (n) => {
 const g1 = graphOf(1);
 const g10 = graphOf(10);
 
+/**
+ * ⚠️ THE CONTROL FOR ITEM 1509'S GATE, and the arm where it can only LOSE.
+ *
+ * Item 1509 skips the parse cache's LRU `delete`+`set` while the cache is below `PARSE_CACHE_CAP`,
+ * because nothing is evicted there so the recency order it maintains is never read. When the cache
+ * is FULL that reasoning stops applying: the pair runs as before, plus the gate's own size read and
+ * compare. So this arm fills the cache past its cap and then hammers ONE text, which is the steady
+ * state where every hit pays the full price. It must measure flat against the ungated build —
+ * anything else means the gate costs more than the bookkeeping it is skipping.
+ */
+const FILLERS = [];
+
+for (let i = 0; i < 80; i += 1) {
+  FILLERS.push(`RETURN ${i} AS fill${i}`);
+}
+
+const fillCache = () => {
+  for (const t of FILLERS) {
+    query(g1, t);
+    query(g1, t);
+  }
+};
+
 const ARMS = {
   floor: [g1, 'RETURN 1 AS v', undefined],
   param: [g1, 'RETURN $x AS v', { x: 1 }],
   one: [g1, 'MATCH (n:P) RETURN count(*) AS c', undefined],
   onerow: [g1, 'MATCH (n:P) RETURN n.k AS k', undefined],
   ten: [g10, 'MATCH (n:P) RETURN count(*) AS c', undefined],
+  full: [g1, FILLERS[40], undefined],
 };
 
 const med = (xs) => {
@@ -74,14 +98,28 @@ const timeRound = (fn) => {
 
 // Warm every cache before a single number is taken: a text is admitted on its SECOND sighting
 // (`seenOnce`), so one call is not enough and an unwarmed arm would measure the parse.
-for (const [g, text, params] of Object.values(ARMS)) {
-  query(g, text, params);
+/**
+ * ⚠️ `full` RUNS IN ITS OWN PROCESS, and that is not tidiness. Saturating the cache changes the
+ * regime for EVERY arm, not just this one: a 64-entry `Map` makes `get` itself measurably slower
+ * than a 6-entry one, and filling it for all arms moved `floor` from 97 to 151 ns before anything
+ * was being measured. So the fill happens only when `full` is the selected arm (`ARM=full`), and
+ * `full` is excluded from an unfiltered run. Item 737's one-shape-per-process rule.
+ */
+const ONLY = process.env.ARM;
+const names = ONLY === undefined ? Object.keys(ARMS).filter((n) => n !== 'full') : [ONLY];
+
+if (ONLY === 'full') {
+  fillCache();
+}
+
+for (const name of names) {
+  const [g, text, params] = ARMS[name];
+
   query(g, text, params);
   query(g, text, params);
 }
 
 const out = {};
-const names = Object.keys(ARMS);
 
 for (const name of names) {
   const [g, text, params] = ARMS[name];

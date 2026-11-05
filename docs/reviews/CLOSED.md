@@ -59438,6 +59438,12 @@ serialization 144/0, `bun run fuzz` 20/0. Wide controls at 200,000 vertices: `ho
 
 ### Item 1508 — the GQL per-call floor was a LAZY COMPOSITION that is never observed lazily: `toArray(map(f, it))` builds a generator per call and resumes it per row, for an array it materializes immediately. **`RETURN 1 AS v` 530 → 164 ns (3.24x), a one-row `INSERT` 4587 → 4096 (1.12x)** — and two hypotheses refuted first, both on a fixture that could not see them
 
+> ⚠️ **ONE OF THOSE TWO REFUTATIONS WAS ITSELF WRONG, AND ITEM 1509 OVERTURNED IT.** The
+> `parseCacheHit` LRU touch below was re-measured on the smaller instrument this entry went on to
+> build, and it is **~25 ns / 24.5% of a warm call, not an artifact** — worth 1.15-1.32x once gated.
+> The fixture correction this entry derived invalidated its own earlier number and it did not go
+> back. The allocation refutation still stands.
+
 Profiled the warm GQL call, the symmetric question to items 1503-1507 on the Gremlin side. ⚠️ **Two
 of the three things the profile nominated were wrong, and both wrong answers came from the same
 place: the fixture.**
@@ -59452,14 +59458,19 @@ At 1091 ns a call on `parse-plan-probe`'s `hop` row:
 20.6%  runLinear (anonymous + named)      4.8%  …
 ```
 
+⚠️ **OVERTURNED AT ITEM 1509 — the conclusion below is wrong, and the fixture is why.**
+
 `parseCacheHit` at 27.5% is three `Map` operations on a string key, two of them the `delete`+`set`
 that keeps LRU order. The entry at `PARSE_CACHE_CAP` had already priced that pair at 57.2 ns and
 called it "1.3% of the saving" — against a 4,540 ns PARSE, which is not the denominator any more on
 a cache hit. So it looked like the target.
 
-**Deleted the `delete`+`set` outright and measured: FLAT** (1091 → 1074). An artifact, like item
-1493's `degreeOfTypes` at 97.1% and item 1503's `subPlansOf` at 15.7%. The cheap test remains
-deleting the use, not reasoning about the share.
+~~**Deleted the `delete`+`set` outright and measured: FLAT** (1091 → 1074). An artifact, like item
+1493's `degreeOfTypes` at 97.1% and item 1503's `subPlansOf` at 15.7%.~~ ⚠️ **NOT AN ARTIFACT — that
+measurement was taken on the `hop` fixture this entry goes on to disqualify, where the pair's ~25 ns
+is 2.3% and invisible. On the instrument built below it is 24.5%, and item 1509 gated it for
+1.15-1.32x.** The cheap test remains deleting the use rather than reasoning about the share — but it
+has to be deleted on a fixture that could show the difference.
 
 ### Then GC at 20.7% nominated two per-call allocations. Also flat
 
@@ -59553,3 +59564,117 @@ answer-equivalent change still needs a test for the property that is not the ans
 `bun run check` 0 read unpiped. core 431/0, gql **3784**/0, gremlin 1469/0, native 961/0,
 serialization 144/0, `bun run fuzz` 20/0. Wide controls at 200,000 vertices are the `wide`/`widefilt`
 rows above: 1.05x better and flat.
+
+### Item 1509 — ⚠️ **ITEM 1508's REFUTATION WAS MEASURED ON THE WRONG FIXTURE, by the very error item 1508 documented.** The parse cache's LRU touch IS the cost: gating it on the cap is **1.15-1.32x across every warm read shape**
+
+Item 1508 profiled `parseCacheHit` at 27.5%, deleted its `delete`+`set` pair, measured **flat**, and
+recorded it as an inlining artifact. Then — in the same entry — it worked out that the fixture it
+measured on (`parse-plan-probe`'s `hop`, 200 vertices, zero edges) spends its 1091 ns on 200
+iterations rather than on per-call cost, and built a smaller instrument because of it.
+
+**It did not go back and re-run the refutation on the new instrument.** On
+`gql-call-overhead-probe`'s `floor` arm the same frame is **24.5% of 103.5 ns ≈ 25 ns** — the exact
+magnitude the `PARSE_CACHE_CAP` comment had priced the pair at (57.2 ns, halved by the cache holding
+5 entries instead of 64). On `hop` that 25 ns is 2.3% and cannot be seen.
+
+**A refutation is only as good as the fixture it was measured on, and a fixture correction
+invalidates every number taken before it.** Item 1508's other refutation (the two per-call
+allocations) was re-run here and does still stand.
+
+### What the gate is
+
+The `delete`+`set` maintains a recency order that is read by exactly ONE thing: the eviction in
+`parseCached`. Below the cap nothing is ever evicted, so the order is never consulted and the pair
+is bookkeeping for a decision that will not be taken. Most processes live there permanently — the
+cap is 64 and applications send a handful of distinct texts.
+
+```ts
+if (parseCache.size >= PARSE_CACHE_CAP) {
+  parseCache.delete(text);
+  parseCache.set(text, hit);
+}
+```
+
+⚠️ **TWO GATE SITES, NOT ONE.** `parseCacheHit` serves the plain route; `parseCached` has its own hit
+path, reached when `query` parses the AUTO-PARAMETERIZED text (item 1502), which is the hot route
+for a caller that interpolates literals rather than binding params. Both are gated.
+
+⚠️ **AND A THIRD SITE THAT MUST NOT BE TOUCHED.** `parseCached` also contains `} else if
+(parseCache.size >= PARSE_CACHE_CAP) {` — the EVICTION check. A plain substring anchor matches all
+three, which is how the first mutation run failed its anchor assertion (`gate count=3`, expected 2).
+Mutating that one breaks the cap, which is a different property. The mutation script anchors on line
+start.
+
+### The approximation it accepts, stated precisely
+
+While under the cap no recency is recorded, so at the moment the cache FILLS its order is insertion
+order rather than true LRU, and the first eviction may drop a hot entry that full tracking would
+have kept. From then on every hit is tracked and the order converges back. It is a choice among 64
+cached parses — it can cost a re-parse, never an answer.
+
+**Dropping the pair outright measured the same 1.24x and is strictly worse:** it makes eviction
+permanently FIFO, which thrashes for a caller cycling over more than 64 hot texts. The gate keeps
+true LRU for exactly the workload that needs it.
+
+### Measured — ⚠️ including the arm where the gate can only LOSE
+
+```text
+arm        PRE      POST    ratio
+floor     94.8 ns   82.5 ns  1.15x   RETURN 1 AS v
+param    111.9      92.9     1.20x
+one       63.7      48.2     1.32x   MATCH (n:P) RETURN count(*) AS c
+onerow   134.9     121.3     1.11x
+ten       62.3      47.8     1.30x
+full     145.0     148.8     0.97x   ← the cache SATURATED: 2.6% WORSE, three runs
+insert  4096      4084       flat    (and interp 4492 → 4493)
+wide      14.02 ms  13.72 ms  flat    200,000 rows
+widefilt   4.82      4.86     flat
+aggrows    2.69      2.84     flat
+```
+
+`full` is the new control and it is a real, understood, measured **cost**: with the cache at its cap
+the touch runs as before plus the gate's own compare. 2.6% across three runs, under the noise floor,
+and it buys true LRU in precisely the case that needs it. Reporting it rather than calling it flat.
+
+⚠️ **The `full` arm needs its OWN PROCESS, and building it taught that twice over.** Saturating the
+cache changes the regime for EVERY arm: a 64-entry `Map` makes `get` itself slower than a 6-entry
+one, and filling it for all arms moved `floor` from 97 to **151 ns** before anything was measured.
+Item 737's one-shape-per-process rule, arriving as a 55% baseline shift.
+
+The win is a ~15 ns fixed cost, so it is invisible wherever a call does real work: flat on a 4 µs
+`INSERT`, flat at 200,000 rows. It is 1.15-1.32x on the cheap warm reads a serving workload is made
+of, and relatively largest on `count(*)` — 1.32x — because that shape is the smallest total in the
+engine (62 ns before this, reading `vertexCount` directly).
+
+⚠️ **One widefilt reading came in at 5.43 ms against a 4.79-4.97 band.** A 15 ns per-call change
+cannot move a 5 ms query, so it was variance; three repeats put it back at 4.86/4.97/4.70. A single
+ms-scale reading here has ~15% spread, which is worth knowing before reading one as a regression.
+
+### Mutation — three caught, and ⚠️ one SURVIVOR that is supposed to survive
+
+```text
+notouch    remove both touch bodies (permanent FIFO)   CAUGHT   16 pass  2 fail
+inverted   `<` instead of `>=` (touch only when NOT full) CAUGHT 16 pass  2 fail
+offbyone   `>` instead of `>=` (never true: FIFO)      CAUGHT   16 pass  2 fail
+always     `if (true)` — the ungated PRE behaviour     SURVIVES 18 pass  0 fail
+```
+
+Each caught mutant fails **both** new tests — one per gate site, which is how the second site is
+known to be covered rather than assumed. And `always` surviving is the point of the pair: the tests
+assert the eviction POLICY, not the presence of the gate, so the PRE code passes them too. A test
+that failed on `always` would be pinning an implementation.
+
+The tests observe eviction without timing anything. `parseCacheStats().seen` is the admission
+filter's occupancy: an evicted text's next sighting is a MISS, and a miss on a text absent from the
+filter ADDS it, so `seen` moves. Saturate, hammer one text, turn over the other 63, then ask for the
+hot one — under FIFO it is gone.
+
+⚠️ **The fixture had to be made LITERAL-FREE.** The first version used `WHERE t.k = 1`, which
+auto-parameterization rewrites — so the cache key was the LIFTED text and the test reached
+`parseCached`'s gate while its name claimed `parseCacheHit`'s. Caught by reading the route, not by a
+failure. A second case now covers the lifted route deliberately.
+
+### Gates
+
+`bun run check` 0 read unpiped. core 431/0, gql **3787**/0, gremlin 1469/0, native 961/0,
+serialization 144/0, `bun run fuzz` 20/0.
