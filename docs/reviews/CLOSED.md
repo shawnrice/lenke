@@ -61619,7 +61619,7 @@ path produces no row). Unmeasured, and the narrowest of the family.
 serialization 144/0, `bun run fuzz` 20/0 — byte-identity before timing, answers hand-checked against
 a brute-force undirected walk across four shapes.
 
-### Item 1534 — took item 1529's "what does this fast path DECLINE?" screen to the GREMLIN surface and it found the same class: a SELECTIVE start filter declines `hopValuesShortcut` entirely. **FIVE shapes, 2.78–4.30x, and in every one the more selective query is slower in WALL CLOCK while emitting half the rows.** PRICED, NOT BUILT
+### Item 1534 — took item 1529's "what does this fast path DECLINE?" screen to the GREMLIN surface and it found the same class: a SELECTIVE start filter declines `hopValuesShortcut` entirely. **FIVE shapes, 2.78–4.30x, and in every one the more selective query is slower in WALL CLOCK while emitting half the rows.** ~~PRICED, NOT BUILT~~ — ✅ **FOUR OF THE FIVE BUILT AT ITEM 1535** (1.65–3.79x; `both` still open)
 
 Items 1529–1533 emptied the GQL hop-projection decline table. This tick asked the same question of a
 different file, because the question has generalized better than any of its targets.
@@ -61698,3 +61698,130 @@ so it is the one to build first.
 Probe only; the only edit is six arms and one import in `isolated-gremlin-bench.mjs`, no engine or
 core code. `bun run check` 0 read unpiped, gremlin 1469/0. The rest are item 1533's: core 431/0,
 gql 3851/0, native 961/0, serialization 144/0, `bun run fuzz` 20/0.
+
+### Item 1535 — SHIPPED, **1.65–3.79x on four shapes**: `startFilteredHopValues`, a new module, answers the start-filtered hop `hopValuesShortcut` declined. `V().hasLabel(Q).out(E)` 815.6 → 215.2 ns/row, three controls flat. And the version I nearly shipped was WRONG in two ways the whole suite and all seven fuzzers were blind to
+
+Item 1534 priced the family. This builds it.
+
+#### The change
+
+A new module, consulted as a fallback and in this order, so no plan the existing shortcut already
+admits can change route:
+
+```ts
+-  const projected = ctx.tracksPath ? undefined : hopValuesShortcut(effective, graph);
++  const projected = ctx.tracksPath
++    ? undefined
++    : (hopValuesShortcut(effective, graph) ?? startFilteredHopValues(effective, graph));
+```
+
+**A NEW MODULE RATHER THAN A RELAXED GUARD, and that is items 1441/1466's rule, not tidiness.** An
+edit to `hop-values.ts` costs unrelated rows up to 16%, arbitrarily signed, and item 1466 declined a
+3.3x win on exactly that basis. Item 1482's precedent — the no-hop sibling into its own module — is
+the way out, and here it also kept the ~2% control drift below the measurement floor. `hop-values.ts`
+is byte-identical.
+
+**Scope is ONE named type on `out`/`in`.** `hopValuesShortcut` has four walks (`oneType`,
+`pairTypes`, `manyTypes`, `bothOneType`); forking all four would be the duplication item 1527
+refused. `both` and the multi-type spellings keep declining, which simply leaves them where they
+were — `hopbothq` measured flat across the change, confirming it.
+
+What is **not** duplicated is the filter admission. `collectVertexFilters` is `count-shortcut.ts`'s,
+exported (`const` → `export const`, no behaviour change) rather than reimplemented, because it
+carries a judgement this module must not restate: it **declines a `has` whose key the property index
+could seek**, deferring to `seedFromIndex`. Re-deriving that is how the two would drift.
+
+#### ⚠️ THE FINDING: the obvious implementation was wrong twice, and nothing in the repo could see it
+
+The one-line way to write this is to seed the walk from `graph.verticesByLabel.get(L)`, which is
+exactly what the count-side twin `startFilteredHopCount` does. I wrote that first. It is wrong here
+for two reasons, **both invisible to a count and both observable on a yielded stream**:
+
+1. **ORDER.** Gremlin stream order is a TinkerPop contract the differential fuzzer compares
+   **ordered** — unlike GQL, where row order is unspecified. The general pipeline reaches this shape
+   as `filterStream(stream, v => step.labels.some(l => v.labels.has(l)))` over `graph.vertices`
+   (`dispatch.ts`'s `hasLabel` arm), so the admitted route must emit in **global vertex order**. A
+   label bucket is normally insertion-ordered and agrees by accident; `addLabelToVertex` after the
+   fact breaks that. The test pins a graph whose `Q` bucket is `[n3, n2]` while the answer is
+   `[n2, n3]`.
+2. **STALENESS.** The raw `labels` **setter** has never maintained `verticesByLabel` — only
+   `addLabelToVertex`/`removeLabelFromVertex` index — and `core`'s `label-box.test.ts` pins that as
+   deliberate pre-existing behaviour. So after a setter write the bucket is neither a subset nor a
+   superset of the truth: it can list a vertex that lost the label and omit one that gained it. The
+   test makes the bucket wrong in both directions at once and asserts `[1]` where a seeded walk
+   answers `[2]`.
+
+So the walk tests the label per vertex, like the pipeline. **That costs nothing that matters**: the
+2.78–4.30x was never the per-vertex scan, it is the per-edge generator chain and traverser
+machinery, and the measured numbers below are with the scan in place.
+
+**The teeth were verified by an attacking mutant, not assumed.** Restoring the bucket-seeded version
+fails **exactly the two tests written for it and nothing else — 1482 other tests pass, and all seven
+fuzzers pass.** That is the whole justification for writing them: the suite, the differential fuzzer
+and the Gremlin fuzzer were all blind to a real wrong answer, because reaching it needs a label
+mutation after insertion and none of them generate one.
+
+#### MEASURED — four shapes, three controls flat
+
+`NODES=200000 FANOUT=1 VLABEL=2`, p25 of 12 reps, drop 3, one shape per process.
+
+| arm                               | PRE          | POST      |           |
+| --------------------------------- | ------------ | --------- | --------- |
+| `hasLabel(Q).out(E)` bare         | 815.6 ns/row | **215.2** | **3.79x** |
+| `hasLabel(Q).out(E).id()`         | 834.7        | **272.1** | **3.07x** |
+| `hasLabel(Q).out(E).values(k)`    | 1033.7       | **378.8** | **2.73x** |
+| `has(k, gt(48)).out(E).values(k)` | 1123.4       | **682.5** | **1.65x** |
+
+| control                                | PRE                           | POST                                  |                       |
+| -------------------------------------- | ----------------------------- | ------------------------------------- | --------------------- |
+| `out(E).values(k)` (the admitted twin) | 380.4 (380.4 / 380.0 / 385.4) | 385.4 (386.1 / 384.6 / 383.0 / 390.5) | flat, 1.3%            |
+| `out(E)` bare                          | 189.9                         | 192.6 (189.2 / 193.1 / 192.6)         | flat                  |
+| `hasLabel(Q).both(E).values(k)`        | 1069.8                        | 1117.9 (1135.4 / 1065.3 / 1117.9)     | flat — still declines |
+
+**The headline result is the convergence, not the ratio.** `hasLabel(Q).out(E).values(k)` now costs
+**378.8 ns/row against the unfiltered spelling's 385.4** — the selective query is no longer more
+expensive per row than the one that filters nothing, which is the property item 1534 found violated.
+
+**AND THE CONTROL'S PRE NUMBER HAD TO BE RE-MEASURED TO SAY THAT.** Item 1534 recorded 366.1 and
+378.5 for it, so the POST cluster at 383–390 read as a ~3.5% regression. Taking three PRE readings
+**with the fallback disabled and the arm grep-asserted** (`startFilteredHopValues(effective` count 0,
+then 1 on restore) put PRE at 380.4/380.0/385.4. The 366.1 was the low end of its own spread. Fourth
+tick running where a single reading on this probe pointed the wrong way, and the first where
+asserting the arm was what settled it.
+
+`has(k, …)` gains least (1.65x) because it cannot shortcut anything on the start side — it runs
+`matches` over all 200,000 vertices — but the per-edge saving still carries it.
+
+#### MUTATION — nine mutants, nine caught
+
+| mutant                                              |            |                                                    |
+| --------------------------------------------------- | ---------- | -------------------------------------------------- |
+| `wrong-direction` (`out`/`in` flipped)              | CAUGHT     | 1467 pass 17 fail                                  |
+| `far-endpoint-swapped` (`edge.to`/`edge.from`)      | CAUGHT     | 1468 pass 16 fail                                  |
+| `invert-filter` (`survives` inverted)               | CAUGHT     | 1462 pass 22 fail                                  |
+| `drop-filter-test` (never test the filters)         | CAUGHT     | 1469 pass 15 fail                                  |
+| `drop-the-drops-test` (`values` stops dropping)     | CAUGHT     | 1483 pass 1 fail                                   |
+| `admit-multi-type`                                  | CAUGHT     | 1483 pass 1 fail                                   |
+| `residual-swallowed`                                | CAUGHT     | 1483 pass 1 fail                                   |
+| `admit-unfiltered` (claim the unfiltered shape too) | CAUGHT     | 1483 pass 1 fail                                   |
+| **`seed-from-label-bucket`**                        | **CAUGHT** | **1482 pass 2 fail** — the two hazard tests, alone |
+
+The first four are caught by 15–22 tests, so pre-existing coverage sees a grossly broken walk; the
+last five are caught by exactly one or two, all of them new, because the shape previously declined
+and nothing covered it. Run under `timeout 900 systemd-run --user --scope -p MemoryMax=16G
+-p MemorySwapMax=0`, restoring before each mutant, with the pristine copy under
+`crates/lenke-engine/target/`. Tree verified byte-identical afterwards.
+
+#### What is still open in this family
+
+`both` (2.98x priced at item 1534) and the multi-type spellings. Both need a second walk in this
+module rather than a wider guard, and `both` additionally needs the self-loop-once rule the
+`bothOneType` walk already carries.
+
+#### Gates
+
+`bun run check` 0 read unpiped. core 431/0, gql 3851/0, gremlin **1484**/0, native 961/0,
+serialization 144/0, `bun run fuzz` 20/0 twice. Correctness hand-derived from the fixture's edge list
+before any timing — and two of those derivations were wrong where the engine was right (a's far ends
+are `b` and `c`, not `a`; c's incoming `E` are from `a` and itself, so the `in` self-loop case is two
+rows, not one). Both corrected against the edge list rather than recounted, and the comments say so.

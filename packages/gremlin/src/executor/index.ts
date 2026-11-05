@@ -26,6 +26,7 @@ import { nodeValuesShortcut } from './node-values.js';
 import { groupCountShortcut } from './projection.js';
 import { newContext, planReadsPath, startTraverser, type Traverser, unwrap } from './runtime.js';
 import { applySource } from './sources.js';
+import { startFilteredHopValues } from './start-filtered-hop-values.js';
 
 /**
  * Fault on a plan that is invalid whatever the data.
@@ -1707,7 +1708,11 @@ export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
   // `V().out(T).values(k)` likewise answers the whole plan — one walk instead of the traverser
   // pipeline, 539ns/row down to 251 (see `hopValuesShortcut`). Only when nothing tracks path:
   // the walk emits bare values and builds no traverser, so it has no path to carry.
-  const projected = ctx.tracksPath ? undefined : hopValuesShortcut(effective, graph);
+  // `??` AND IN THIS ORDER, so no plan `hopValuesShortcut` already admits can change route: the
+  // start-filtered walk is consulted only where that one returned undefined (item 1535).
+  const projected = ctx.tracksPath
+    ? undefined
+    : (hopValuesShortcut(effective, graph) ?? startFilteredHopValues(effective, graph));
 
   // NOTHING LEFT OVER is the shape this shortcut has always served: the values ARE the answer, so
   // they are returned without ever building a traverser. Unchanged, and it stays the fast path.

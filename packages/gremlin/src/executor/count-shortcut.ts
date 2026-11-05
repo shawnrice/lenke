@@ -1256,7 +1256,7 @@ const filterChainCount = (mid: readonly Step[], graph: Graph): number | undefine
 const EMPTY_VERTICES: readonly Vertex[] = [];
 
 /** The two vertex-filter steps these tallies admit: a label test and a property predicate. */
-type VertexFilter = Extract<Step, { kind: 'hasLabel' }> | Extract<Step, { kind: 'has' }>;
+export type VertexFilter = Extract<Step, { kind: 'hasLabel' }> | Extract<Step, { kind: 'has' }>;
 
 /**
  * `V().hasLabel(L).out(T).count()` — a hop whose START is filtered, counted as the degree sum
@@ -2237,7 +2237,10 @@ const soleHopAt = (mid: readonly Step[]): number | undefined => {
  * better than the scan a caller would do with it — the same decline `startFilteredHopCount` makes
  * inline, kept in one place now that two rungs need it.
  */
-const collectVertexFilters = (steps: readonly Step[], graph: Graph): VertexFilter[] | undefined => {
+export const collectVertexFilters = (
+  steps: readonly Step[],
+  graph: Graph,
+): VertexFilter[] | undefined => {
   const out: VertexFilter[] = [];
 
   for (const step of steps) {
