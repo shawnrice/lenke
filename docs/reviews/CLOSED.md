@@ -58581,6 +58581,12 @@ evidence.
 
 ### Item 1499 — **`bench:usage` has encoded a 4x since item 662 and nobody priced it: parse+plan is 3.1-6.9x the EXECUTION of a cheap query**, and an application that interpolates literals into query text pays it on every single call. The lever is auto-parameterization, not the parser
 
+> ⚠️ **ONE CLAIM BELOW IS WRONG, corrected at item 1501.** ~~`read: keyed dedup lookup` is 5-11x
+> slower than its siblings~~ — it is not slow: `WHERE u.score = $s` with `score = i % 100` over
+> 20,000 users matches **200 rows** where `read: point lookup` matches **1**, so per row it is ~17x
+> FASTER. Comparing ops/s across rows of different cardinality is the match-the-fixture trap. The
+> parse+plan pricing itself stands and item 1501 GATES the lever it names.
+
 Profile-first, on the one regime this session had not opened: the SERVING path, small operations
 against a warm graph. Two anomalies in `bench:usage`'s TS columns, and the second is the finding.
 
@@ -58766,3 +58772,89 @@ subquery changes nothing measurable, missing a key cannot be worse.
 
 `bun run check` 0 read unpiped. core 431/0, gql 3744/0, gremlin 1406/0, native 961/0,
 serialization 144/0, `bun run fuzz` 20/0.
+
+### Item 1501 — the GATE on item 1499's auto-parameterization lever, and it is **GREEN with exactly one hard exception**: `LIMIT`/`SKIP` loses the top-K walk at **5.3-6.1x**. Also ⚠️ **three flags that all turned out to be the instrument**, by three different mechanisms
+
+Item 1499 priced auto-parameterization at 3.1-6.9x and item 1500 showed the planner has no hot spot,
+so skipping parse+plan is the only large win left. The blocker was never performance: **the planner
+reads literal VALUES**, and a literal lifted into a parameter is invisible to it at plan time. This
+item is the gate, in item 1496's shape — enumerate the positions a literal can occupy and compare the
+literal spelling against the parameter spelling on both axes.
+
+⚠️ **THE ROUTE AXIS IS WHY THIS CANNOT BE A UNIT TEST.** Both spellings answering identically is
+necessary and not sufficient: every index-seeding defect in this engine's history returned the correct
+answer and cost 100-300x. A position where the param spelling is much slower is a position the
+rewrite must leave alone. The fixture is INDEXED by default for the same reason — item 578's lesson
+that the spelling probe had no index and so was blind to the whole class.
+
+### The result: 15 positions, NODES=1,000,000, REPS=25
+
+```text
+case                        literal     param    ratio  answers
+clause =                       4.73      5.86    1.24x  same
+clause >                       9.93     12.03    1.21x  same
+clause string                  0.71      0.71    1.00x  same
+clause bool                   17.46     17.81    1.02x  same
+inline                         2.80      1.45     see below
+inline string                  0.75      0.75    1.00x  same
+inline WHERE                   1.11      1.09    0.99x  same
+two conjuncts                  1.59      1.99    1.25x  same
+IN list                        7.30      7.76    1.06x  same
+hop start                      8.28      3.02     see below
+hop far                        3.18      3.18    1.00x  same
+projection                     2.72      2.09    0.77x  same
+LIMIT                         52.75    322.67    6.12x  same   ← THE exception
+inline null                   25.25     29.77    1.18x  same
+IS NULL vs = $null            13.74     10.38    0.76x  DIFFER (by design)
+```
+
+- **ANSWERS agree everywhere.** The single difference is the row that compares two DIFFERENT
+  operators on purpose: `IS NULL` is a null test, while `= $v` with a null param yields UNKNOWN and
+  matches nothing. That is a stronger statement than "do not parameterize a null literal" — **`IS
+NULL` has no parameterized spelling at all**, so there is nothing to rewrite it into.
+- **ROUTES hold within 1.25x everywhere except `LIMIT`**, which is the exception the audit predicted:
+  `topKPlan` (item 1064) reads the limit VALUE at plan time, so a param limit loses the bounded top-K
+  walk and materializes instead. Measured 5.31x at 200,000 nodes, 6.12x at 1,000,000, and 5.62x on a
+  third run — stable across sizes and rep counts, which none of the false flags were.
+- `inline null` at 1.18x confirms the other audit exception is a SEMANTIC one only (item 260's
+  `{k: null}` means IS NULL for an inline constraint): the route is fine, the meaning is not.
+
+**So auto-parameterization is answer-safe for every position tested and route-safe for all but
+`LIMIT`/`SKIP`** — which is a much narrower exclusion list than "the planner reads literals" implied,
+and it is now measured rather than reasoned.
+
+### ⚠️ Three flags, three different instrument failures, zero findings
+
+Every one of these looked like an equivalent-spelling defect in the LITERAL direction — a user
+writing a constant losing a seed the param spelling gets. None survived.
+
+- **`two conjuncts` 0.54x was THE FLOOR.** At NODES=200,000 it read 0.81 against 0.44 ms; at
+  1,000,000 the same case reads 1.25x. Both arms were sub-millisecond, so the ratio was clock
+  resolution — item 1461's rule, reproduced exactly. The probe now has a `FLOOR_MS` and reports
+  sub-floor flags separately instead of mixing them with results.
+- **`hop start` 0.37x was INSTABILITY.** Three isolated rounds: **3.03x, 0.73x, 0.32x** — the param
+  arm slower by 3x, then faster by 3x. A measurement whose own spread exceeds the effect returns a
+  confident wrong answer, not a weak one (item 1293's phrasing).
+- **`inline` 0.52x was BIMODALITY IN THE LITERAL ARM.** At REPS=25 DROP=5 over four rounds the
+  literal arm reads **0.95 / 3.42 / 1.21 / 0.98 ms**, so the ratio reads 1.07x / 0.53x / 1.04x /
+  1.01x. The 0.52-0.54x readings in the first two sweeps had caught the slow mode twice in a row,
+  which is what made them convincing. Three of four rounds say ~1.0x.
+
+**All three are now printed by the probe itself**, with the confirm-alone command per flag, so the
+next reader does not re-derive them. The in-sweep run flags four cases including `inline` at
+**0.10x** against its isolated ~1.0x — the sweep is simply not an instrument for these sub-5ms rows,
+and saying so in the output is cheaper than remembering it.
+
+### ⚠️ And a correction to my own flag from item 1499
+
+That item noted `read: keyed dedup lookup` at 83.9k ops/s against other indexed reads at 456k-965k
+and called it "5-11x slower than its siblings". **It is not slow.** `WHERE u.score = $s` with
+`score = i % 100` over 20,000 users matches **200 rows**, where `read: point lookup`'s
+`WHERE u.name = $n` matches **1**. Per row the dedup lookup is ~17x FASTER than the point lookup.
+Comparing ops/s across rows with different cardinalities is the "match the fixture to the claim"
+trap, and this one would have cost a whole tick.
+
+### Gates
+
+`bun run check` 0 read unpiped. No engine change — one new gate probe, one measured exception, three
+refuted flags and one corrected claim.

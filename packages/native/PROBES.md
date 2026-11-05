@@ -1195,3 +1195,33 @@ whatever the query does. The distribution it shows IS the result:
 No local change moves an uncached query much — which is the argument for item 1499's conclusion that
 the lever is to SKIP parse+plan (auto-parameterization), not to speed it up. `hasSubquery`'s
 allocation removal shipped at 1.03-1.13x on the plan arm and that is the size of win available here.
+
+## `literal-param-gate-probe.mjs` — can a literal become a parameter?
+
+The gate on item 1499's auto-parameterization lever (3.1-6.9x). The blocker was never performance:
+**the planner reads literal VALUES**, so a literal lifted into a param is invisible to it at plan
+time. This enumerates the positions a literal can occupy and compares the literal spelling against
+the param spelling on ANSWERS and on ROUTE.
+
+⚠️ **The route axis is why this cannot be a unit test**, and the fixture is INDEXED by default for
+the same reason (item 578: the spelling probe had no index and was blind to the whole seeding class).
+Both spellings answering identically is necessary and not sufficient.
+
+**Result (item 1501): GREEN with one hard exception.** Answers agree in every position. Routes hold
+within 1.25x except **`LIMIT` at 5.3-6.1x** — `topKPlan` reads the limit value at plan time, so a
+param limit loses the bounded top-K walk. Stable at 200k, 1M, and on a third run. `IS NULL` has no
+parameterized spelling at all (`= $null` yields UNKNOWN), and `{k: null}` is a SEMANTIC exception
+only (route 1.18x).
+
+⚠️ **THREE FLAGS, THREE INSTRUMENT FAILURES, ZERO FINDINGS** — all three now printed by the probe
+with a confirm-alone command, so they are not re-derived:
+
+- **the FLOOR**: `two conjuncts` read 0.54x at NODES=200000 with both arms sub-millisecond, and
+  1.25x at 1,000,000. `FLOOR_MS` now separates sub-floor flags from results.
+- **INSTABILITY**: `hop start` swung **3.03x / 0.73x / 0.32x** across isolated rounds.
+- **BIMODALITY**: `inline`'s LITERAL arm reads **0.95 / 3.42 / 1.21 / 0.98 ms** at REPS=25, so its
+  0.52-0.54x sweeps had caught the slow mode twice running; three of four rounds read ~1.0x.
+
+The in-sweep run flags four cases including `inline` at 0.10x against its isolated ~1.0x — **the
+sweep is not an instrument for these sub-5ms rows.** Confirm alone, at REPS=25, before believing any
+flag but `LIMIT`.
