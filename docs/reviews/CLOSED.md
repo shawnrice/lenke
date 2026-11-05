@@ -60849,3 +60849,75 @@ product whose own comment had already said why it would lose.
 `bun run check` 0 read unpiped. No engine behaviour changed — the edits are a comment and this entry,
 plus one probe arm — so the suites are item 1522's: core 431/0, gql 3803/0, gremlin 1469/0,
 native 961/0, serialization 144/0, `bun run fuzz` 20/0.
+
+### Item 1524 — asked item 1523's question with the ends SWAPPED and found the symmetry is **unexploited**: a projection reading only the START costs **251 ns/row against the far-driven 134 — 1.87x** for a structurally identical question. Item 1407 shipped the template-and-copy for the far-driven walks only; the start side never got it. ⚠️ PRICED, NOT BUILT
+
+Item 1523 closed the rel-bound line by finding why `farDrivenHopWalk` is fast: it takes the degree
+from bucket SIZES, projects ONE row per far vertex, and pushes `n` spread copies. The precondition is
+"every projected item is a pure function of the far end". **The mirror case has the same shape**: a
+projection reading only the START is identical across all `out-degree` rows of one start vertex.
+
+```text
+startprop  MATCH (a:P)-[:E]->() RETURN a.k    251 ns/row   (247.4 / 255.4)
+farprop    MATCH (:P)-[:E]->(x) RETURN x.k    134 ns/row   (132.0 / 136.4)
+```
+
+**1.87x**, alternated across four processes, bands non-overlapping. One property of one endpoint,
+repeated per incident edge, either way.
+
+### The cost is row CONSTRUCTION, and that was checked rather than assumed
+
+`startprop`'s windowed profile is 79.8% `fastPath` (the walk, fully inlined) and 18.1% GC, with
+`propOf` at **0.3%** and `get properties` at **0.4%** — so the property read is already amortized over
+the start vertex and is not the gap. What is left is the row objects, which is exactly what item 1407
+addressed on the other side:
+
+> **Item 1407 — SHIPPED, 28.1% / 16.7% / 16.1%** (144/144 on all three): the far-driven walks rebuilt
+> every row through COMPUTED-KEY stores. `{ ...template }` clones with the template's own hidden
+> class; `{}` plus `row[keys[c]] = …` cannot reuse it.
+
+⚠️ **It shipped for "the far-driven walks".** Searched `CLOSED.md` for the start-side twin —
+`template-and-copy`, `unionCount`, `spread`, `startOnly`, `start-only` — and the only hits are item
+1523 (which introduced the phrase) and the items below. **No entry applies it to the start-driven
+walk.**
+
+### Why the nearby refutations do NOT cover this
+
+Items 1444-1450 worked this same row hard, so the risk of re-deriving is real and was checked:
+
+- **item 1446** explains 90.9% of the engine-to-floor gap as megamorphism (104.9 ns/row) plus per-row
+  machinery (52.1%) — a decomposition of the cost, not a cure;
+- **item 1447** built a specialized ROW BUILDER for the single-far-property case: **−4.8% / +0.7%**,
+  reverted, and its own diagnosis was wiring (one dispatch site holding two closures goes polymorphic);
+- **item 1450** built a FUSED projection+predicate specialization: **+1.3% / +2.7%**, and its apparent
+  32.8% was an impossible floor because the win needed CONSTANT property keys.
+
+None of those is "emit one row per start vertex and spread-copy it `out-degree` times". They
+specialize HOW ONE ROW is built; this changes HOW MANY rows are built from scratch. Item 1407 is the
+precedent that the distinction matters — it beat the computed-key store by 16-28% where a specialized
+builder beat it by ~0%.
+
+### The target, specified
+
+In the start-driven walk, when the projection reads **only** the start (`startOnly`) and nothing
+filters the far end (no far label, no far predicate, no rel predicate — anything that could reject an
+edge changes the count), take the bucket SIZE, call `projectRow` once, and push the template plus
+`n − 1` spread copies. The guard is the same shape as `relBoundHopWalk`'s and the emit loop the same
+as `farDrivenHopWalk`'s.
+
+⚠️ **Hazards to settle BEFORE building, which is item 1523's lesson:**
+
+1. **Row ORDER.** GQL row order is unspecified (`order-is-unspecified`) and the differential fuzzer
+   compares multisets, but this does not reorder anything — it emits the same rows in the same
+   start-vertex order. Confirm rather than assume.
+2. **Anything that can reject an edge** must decline, or the count is wrong — a wrong answer, not a
+   slow one. That is the same class of mistake `twoSegmentCount`'s end-constraint decline exists to
+   prevent, where a mutant "passed every other test in the file".
+3. **`RETURN *`** must be excluded as at item 1522, where it measured 3.3x the walk and so could not
+   reach it.
+
+### Gates
+
+`bun run check` 0 read unpiped. No engine change — the only edits are a probe arm and this entry — so
+the suites are item 1522's: core 431/0, gql 3803/0, gremlin 1469/0, native 961/0, serialization 144/0,
+`bun run fuzz` 20/0.

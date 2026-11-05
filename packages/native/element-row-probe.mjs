@@ -72,6 +72,12 @@ const ARMS = {
   // edge (start-driven), so the pair says whether the ROUTE or the thing being read dominates
   // before any attempt to teach the far-driven walk to bind an edge.
   farprop: 'MATCH (:P)-[:E]->(x) RETURN x.k AS k',
+  // ⚠️ THE SYMMETRIC CASE (item 1524). The far-driven walk's template-and-copy needs "every item is
+  // a pure function of the far end" — one row value set per far vertex, repeated `degree` times.
+  // A projection reading only the START has the same shape with the ends swapped: one template per
+  // start vertex, repeated `out-degree` times. If that is exploited, `startprop` should land near
+  // `farprop` (~132 ns/row); if it is not, near `relprop` (~339).
+  startprop: 'MATCH (a:P)-[:E]->() RETURN a.k AS k',
   star: 'MATCH (:P)-[r:E]->() RETURN *',
   starnamed: 'MATCH (p:P)-[r:E]->(x) RETURN *',
 };
