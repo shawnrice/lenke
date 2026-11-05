@@ -4606,11 +4606,29 @@ const patternCountOf = <T>(
     // one algorithm in two directions and the old 11.5 ms gap was the degenerate fixture's
     // forward/reverse asymmetry, not a route doing extra work.
     //
-    // What makes the formula worth building is the 2-vs-3 split, which SURVIVED the fixture fix: at
-    // two segments a filter COSTS 2.58-2.75x, at three it SAVES ~1.3x (475.3 bare against
-    // 363.8/369.2 gated). Two segments is the only arity whose unfiltered form touches no edge, so
-    // it is the only one a gate can make worse — and the formula keeps the end-filtered count on
-    // the product arm, which is the arm that does not care how much the graph branches.
+    // What makes the 2-vs-3 split real is that it SURVIVED the fixture fix: at two segments a filter
+    // COSTS 2.58-2.75x, at three it SAVES ~1.3x (475.3 bare against 363.8/369.2 gated). Two
+    // segments is the only arity whose unfiltered form touches no edge, so it is the only one a
+    // gate can make worse.
+    //
+    // ⚠️ BUT THE FORMULA IS NOT THE ANSWER — BUILT AND REFUTED AT ITEM 1517, and the sentence above
+    // about "a different cost class" is exactly why. It was implemented properly: `sideOfVertexGated`
+    // as the second factor, both the clause and inline spellings routed in, answers verified against
+    // brute force and `bun run fuzz` 20/0 green. It measures **265.5 ms against the reversed walk's
+    // 132.4 — 2.0x WORSE** (the other three rows of the family moved not at all, so the arm was what
+    // ran).
+    //
+    // The reason is selectivity, and it is structural rather than a tuning problem. The formula
+    // evaluates `p` once per EDGE — 1,000,000 endpoint resolves plus 1,000,000 predicate calls at
+    // this fixture — while the reversed walk evaluates it once per end VERTEX (200,000) and then
+    // expands only the ~32% that pass. **The walk is selectivity-aware and the formula cannot be**:
+    // there is no way to enumerate "edges whose target passes p" without either visiting every edge
+    // or starting from the targets, and starting from the targets IS the reversed walk. Caching the
+    // passing vertices in a set first does not help — it replaces the predicate call but keeps all
+    // 1,000,000 endpoint resolves.
+    //
+    // So the 2.58x stands as a real cost with no known cure on this route, and the next idea needs
+    // to attack the degree product's start factor rather than its end factor.
     //
     // Not built here: a new count route is 100-300x territory, so it needs the byte-identity
     // fuzzers and a mutation pass, not the tail of a measuring tick.

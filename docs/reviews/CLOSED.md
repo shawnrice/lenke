@@ -60333,3 +60333,71 @@ p|` keeps the end-filtered count on a product instead of a walk.
 `bun run check` 0 read unpiped. core 431/0, gql 3803/0, gremlin 1469/0, native 961/0,
 serialization 144/0, `bun run fuzz` 20/0. No engine code changed — the edits are the bench fixture,
 its new self-check, and documentation.
+
+### Item 1517 — ⚠️ **BUILT the end-filtered degree product and it is 2.0x WORSE: 265.5 ms against the reversed walk's 132.4.** `patternCountOf`'s own comment predicted this ("a different cost class") and I read it as an invitation to measure rather than as the answer. The formula is **selectivity-blind and structurally so**
+
+Item 1516 left this as the next build, and the comment in `patternCountOf` had carried the formula as
+OPEN for some time: `Σ_b indeg(b) · |out-edges of b whose target passes p|` replaces the reversed walk
+for an end-constrained two-segment count.
+
+### It was built properly, which is why the refutation is worth something
+
+- `sideOfVertexGated` — which already existed, module scope, with item 268's closure warning — as the
+  second factor, so the end gate costs one pass over a middle's out-edges.
+- Both the clause (`WHERE c.age > 60`) and inline (`(c {k: 2})`) spellings routed into the same arm,
+  which is the equivalent-spelling discipline; before this they shared a route only by both being
+  refused.
+- The product's end-plainness guard relaxed to "plain OR handed over as `endPreds`", so a constrained
+  end with an empty gate list still declines — ⚠️ dropping an end constraint silently is a wrong
+  answer, not a slow one, so the guard tests both halves and not just the pattern.
+- `both` on the end leg refused, because `undirectedSide` has no gated twin and routing a constraint
+  into it would drop it.
+- Answers verified against a brute-force walk on a hand-checkable fixture (3 = 3), gql **3803/0**, and
+  `bun run fuzz` **20/0** — a new count route is 100-300x territory, so byte-identity came before any
+  timing.
+
+### And it is 2.0x worse
+
+```text
+                        before    after
+count 2-hop               51.4     50.9    unchanged
+count 2-hop + mid filter  31.6     33.1    unchanged
+count 2-hop + start       141.4   139.6    unchanged
+count 2-hop + end         132.4   265.5    2.0x WORSE
+```
+
+Only the row whose arm changed moved, which is also the evidence the new arm is what ran.
+
+### ⚠️ The cause is structural, and the comment had already named it
+
+The refused-formula note said the second factor "is a per-EDGE predicate evaluation, which is a
+different cost class from a once-per-middle gate". That is precisely the defect:
+
+- **the formula** evaluates `p` once per EDGE — 1,000,000 endpoint resolves plus 1,000,000 predicate
+  calls at this fixture;
+- **the reversed walk** evaluates it once per end VERTEX (200,000) and then expands only the ~32%
+  that pass.
+
+**The walk is selectivity-aware and the formula cannot be.** There is no way to enumerate "edges whose
+target passes `p`" without either visiting every edge or starting from the targets — and starting from
+the targets IS the reversed walk. Pre-computing the passing vertices into a set does not rescue it:
+that replaces the predicate call and keeps all 1,000,000 endpoint resolves.
+
+**The lesson for reading these comments:** "recorded as open rather than guessed at" meant the cost was
+unmeasured, not that the stated objection was weak. Item 1515 read it as the former and treated the
+objection as a hypothesis to test; the objection was the answer, and the measurement confirmed it
+rather than overturning it. Three ticks (1515 pricing, 1516 fixture, 1517 build) to establish that —
+of which 1516 was worth it independently.
+
+### What stands
+
+The **2.58x selectivity inversion is real and now has no known cure on this route** — the formula was
+its only candidate. The remaining direction is the product's START factor rather than its end factor,
+which is a different shape and unpriced. Recorded at the code as well as here, with the numbers, so
+the formula is not re-attempted as an idea.
+
+### Gates
+
+`bun run check` 0 read unpiped. The engine change is REVERTED — the only edit is the comment — so the
+suites are item 1516's: core 431/0, gql 3803/0, gremlin 1469/0, native 961/0, serialization 144/0,
+`bun run fuzz` 20/0 (all also run with the arm applied, before reverting).
