@@ -10,7 +10,7 @@ import type { Graph } from '@lenke/core';
 // `aggregation.ts`, etc.) for the step-impl generators.
 import { ErrorCode, LenkeError } from '@lenke/errors';
 
-import { EDGE_STEP_BITS, KIND_BITS, maskOfSteps } from '../ast.js';
+import { EDGE_STEP_BITS, FILTER_WRAPPER_BITS, KIND_BITS, maskOfSteps } from '../ast.js';
 import type { Plan, Step } from '../ast.js';
 import { countShortcut } from './count-shortcut.js';
 import { applyStep } from './dispatch.js';
@@ -942,6 +942,12 @@ export const presenceFoldOf = (step: Step): Step | undefined => {
 };
 
 export const flattenFilterWrappers = (plan: Plan): Plan => {
+  // ⚠️ THE GATE (item 1506): see {@link KIND_BITS} for why these are the only kinds that can make
+  // this pass change a plan.
+  if ((plan.kinds & FILTER_WRAPPER_BITS) === 0) {
+    return plan;
+  }
+
   const steps: Step[] = [];
   let changed = false;
   // Whether the stream carries ELEMENTS at this position. Read BEFORE the step is applied, since
@@ -1517,6 +1523,12 @@ export const fuseEdgeHop = (plan: Plan): Plan => {
 };
 
 const dropVacuousLabels = (plan: Plan, graph: Graph): Plan => {
+  // ⚠️ THE GATE (item 1506): see {@link KIND_BITS} for why these are the only kinds that can make
+  // this pass change a plan.
+  if ((plan.kinds & KIND_BITS.hasLabel) === 0) {
+    return plan;
+  }
+
   const vertexSource = plan.steps[0]?.kind === 'V';
   const edgeSource = plan.steps[0]?.kind === 'E';
 

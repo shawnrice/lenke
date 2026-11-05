@@ -508,10 +508,37 @@ export const KIND_BITS: Readonly<Record<string, number>> = {
   outE: 8,
   inE: 16,
   bothE: 32,
+  // Item 1506. `dropVacuousLabels` only ever drops a label from a `hasLabel` step, so a plan
+  // without one has nothing for it to do — and that pass was 10.7% of a 175 ns reused-plan call,
+  // plus 2.3% more in the `graph.vertexCount` read it does before looking.
+  hasLabel: 64,
+  // Item 1506. `flattenFilterWrappers` folds exactly FIVE kinds, and the fifth is the one a reading
+  // of the function body misses: `pushSplit` runs on EVERY step at the bottom of the loop and
+  // splits `hasLabelAnd` into `hasLabel` + `has` (item 1309). My first gate listed four and the
+  // suite failed in two places — the kinds below are enumerated from the code, not from a comment:
+  //
+  //   not          `presenceFoldOf` — `not(hasNot(k))` <-> `hasKey(k)`
+  //   filter       a `filter` around a normalisable branch
+  //   or           an `or` chain that is really a membership (items 1312/1332)
+  //   and          an `and` whose branches all splice
+  //   hasLabelAnd  `pushSplit`, unconditionally per step
+  //
+  // Nothing else can make the pass change a plan, so a plan with none of these five skips it —
+  // which also skips the per-step `streamStaysElements` call that tracks element position (6.8% of
+  // a 175 ns reused-plan call) and `pushSplit` itself (3.0%).
+  not: 128,
+  filter: 256,
+  or: 512,
+  and: 1024,
+  hasLabelAnd: 2048,
 };
 
 /** Every bit an edge-hop fusion cares about. */
 export const EDGE_STEP_BITS = KIND_BITS.outE | KIND_BITS.inE | KIND_BITS.bothE;
+
+/** Every bit {@link flattenFilterWrappers} can act on — see the four entries above. */
+export const FILTER_WRAPPER_BITS =
+  KIND_BITS.not | KIND_BITS.filter | KIND_BITS.or | KIND_BITS.and | KIND_BITS.hasLabelAnd;
 
 /** The gate bits present among `steps` — recomputed by any rewrite that changes the step list. */
 export const maskOfSteps = (steps: readonly Step[]): number => {

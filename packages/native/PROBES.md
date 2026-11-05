@@ -1294,8 +1294,17 @@ object, each correct for its consumer: the gated passes never recurse, so a nest
 fusable and recording it would make the gate useless. And any pass that changes the steps must
 RECOMPUTE `kinds`, because `fuseLocal` inlines sub-plan steps into the top level.
 
-Still ungated, by design: `flattenFilterWrappers` (can fold a presence filter at any element
-position, item 1141 — not a kind set) and `dropVacuousLabels` (already gated on `steps[0]`). The
-`checkSteps` group (22.1%) resists the same treatment: it tracks a FRONTIER through the step list and
-validates branch arms against the frontier AT THE BRANCH, which a sub-plan cannot know at
-construction — and moving it would shift its errors from `toArray` to `traversal`.
+✅ **AND THE LAST TWO AT ITEM 1506**: `dropVacuousLabels` ← the `hasLabel` bit, and
+`flattenFilterWrappers` ← `not | filter | or | and | hasLabelAnd`. **count 162 → 124, hop 213 → 162
+(1.31x both arms); cumulative since 1503, count 315 → 124 (2.54x) and hop 456 → 162 (2.81x).**
+
+⚠️ **The flatten gate FIRST LISTED FOUR KINDS AND WAS WRONG.** The function's explicit branches test
+`filter`/`or`/`and` plus `presenceFoldOf` (`not`) — but `pushSplit` runs UNCONDITIONALLY at the
+bottom of the loop and splits `hasLabelAnd` (item 1309). Two existing tests caught it. **Enumerate
+the kinds a pass acts on from the CODE, including what runs outside the branch conditions.**
+
+The
+`checkSteps` group is now the largest at **23.5%** and resists the same treatment: it tracks a
+FRONTIER through the step list and validates branch arms against the frontier AT THE BRANCH, which a
+sub-plan cannot know at construction — and moving it would shift its errors from `toArray` to
+`traversal`. `countShortcut` (10.6%) and `newContext` (9.1%) are execution, not analysis.

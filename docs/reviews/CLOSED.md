@@ -59244,3 +59244,86 @@ unrelated to the gate. **Read the precondition out of the code; the third attemp
 
 `bun run check` 0 read unpiped. core 431/0, gql 3773/0, gremlin **1443**/0, native 961/0,
 serialization 144/0, `bun run fuzz` 20/0.
+
+### Item 1506 — gated the last two rewrite passes: **1.31x this item on both arms, 2.54-2.81x cumulative since 1503.** ⚠️ And my gate for one of them was WRONG — it listed four kinds where the code folds five, and two existing tests caught it
+
+Re-profiled rather than worked down the list, as item 1505 did. At 175 ns a call the ranking had moved
+again:
+
+```text
+10.7%  dropVacuousLabels      6.8%  streamStaysElements    4.5%  toArray
+10.6%  countShortcut          6.1%  checkSteps             3.0%  pushSplit
+ 9.1%  newContext             6.1%  effectivePlan          3.0%  nextFrontier
+ 9.1%  checkStep              5.3%  nextHasEdge            2.3%  get vertexCount
+ 6.8%  (garbage collector)
+```
+
+`dropVacuousLabels` — the one fusion pass item 1505 left ungated — was now top at 10.7%, plus the
+2.3% it spends reading `graph.vertexCount` before it looks for anything. And
+`flattenFilterWrappers`' per-step work was another ~10% (`streamStaysElements` 6.8% + `pushSplit`
+3.0%).
+
+Both are gateable on the same construction-time mask, with five more bits:
+
+- **`dropVacuousLabels` ← `hasLabel`.** It only ever drops a label from a `hasLabel` step, so a plan
+  without one has nothing for it to do.
+- **`flattenFilterWrappers` ← `not | filter | or | and | hasLabelAnd`**, which is where this item
+  went wrong.
+
+### ⚠️ MY FIRST GATE LISTED FOUR KINDS AND THE SUITE CAUGHT IT
+
+Reading the function body, the explicit tests are `step.kind === 'filter'`, `'or'`, `'and'`, plus
+`presenceFoldOf` (which needs `not`). Four. I wrote the gate, and **two existing tests failed** —
+`has(label, key, pred)` was no longer splitting into `hasLabel` + `has`.
+
+The fifth fold is not an explicit kind test at all: `pushSplit(steps, step)` runs **unconditionally
+at the bottom of the loop** and splits `hasLabelAnd` (item 1309). A reading of the branch conditions
+misses it entirely.
+
+**So: enumerate from the code, not from the comments or the visible branches** — the same lesson item
+1505 learned twice on fusion preconditions, in a new shape. The gate's own comment now lists all five
+with what each one folds, so the next reader does not have to re-derive the set.
+
+### Both arms, again
+
+```text
+            work (reused)                         rebuilt (built per call)
+          1505    1506     this  cumul(1503)    1505    1506    this
+count      162     124    1.31x     2.54x        729     672   1.08x
+hop        213     162    1.31x     2.81x       1065     978   1.09x
+filtered   966     903    1.07x     1.31x       1837    1748   1.05x
+vals      8918    8860    1.01x     1.04x       9548    9479   1.01x
+```
+
+**Cumulative since item 1503's baseline: count 315 → 124 (2.54x), hop 456 → 162 (2.81x), filtered
+1186 → 903 (1.31x).** Wide controls at 200,000 vertices / FANOUT 2 scattered: `hopbare` 1946.6
+against 1942.2 at the 1503 baseline, `hopcount3` 8578.7 against 8676.6, `filterchain` 98.4 — all
+flat or marginally better.
+
+### Mutation — all four caught
+
+```text
+drop-haslabeland   remove hasLabelAnd from FILTER_WRAPPER_BITS   CAUGHT  24 pass  2 fail
+wrong-vacuous      gate dropVacuousLabels on the `union` bit     CAUGHT  25 pass  1 fail
+wrong-flatten      gate flattenFilterWrappers on `local`         CAUGHT  25 pass  1 fail
+no-haslabel-bit    never set the hasLabel bit                    CAUGHT  25 pass  1 fail
+```
+
+`drop-haslabeland` is the mutant that reproduces this item's own mistake, and it is now caught by a
+dedicated test as well as by the two it originally broke. Each new case asserts the fold FIRES —
+a vacuous `hasLabel` must be removed, a `hasLabelAnd` must be split — because these passes are
+answer-equivalent and a gate that silently stops firing is invisible to every row test (item 1505's
+rule, and item 1307's 18936-24433x is what it is protecting).
+
+### What is left
+
+The `checkSteps` group is now the largest at 23.5% (`checkStep` 9.1% + `checkSteps` 6.1% +
+`nextHasEdge` 5.3% + `nextFrontier` 3.0%) and it resists this design: it tracks a FRONTIER through
+the step list and validates branch arms against the frontier AT THE BRANCH, which a sub-plan cannot
+know at construction — and moving it would shift its errors from `toArray` to `traversal`, an
+observable change. `countShortcut` (10.6%) and `newContext` (9.1%) are execution, not analysis.
+
+### Gates
+
+`bun run check` 0 read unpiped. core 431/0, gql 3773/0, gremlin **1448**/0, native 961/0,
+serialization 144/0, `bun run fuzz` 20/0.

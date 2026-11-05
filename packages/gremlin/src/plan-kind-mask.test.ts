@@ -22,7 +22,7 @@ import { describe, expect, it } from 'bun:test';
 
 import { Graph } from '@lenke/core';
 
-import { EDGE_STEP_BITS, KIND_BITS, maskOfSteps, type Plan } from './ast.js';
+import { EDGE_STEP_BITS, FILTER_WRAPPER_BITS, KIND_BITS, maskOfSteps, type Plan } from './ast.js';
 import { effectivePlan } from './executor/index.js';
 import {
   V,
@@ -30,6 +30,9 @@ import {
   bothE,
   coalesce,
   count,
+  gt,
+  has,
+  hasLabel,
   inE,
   inV,
   in_,
@@ -199,6 +202,65 @@ describe('⚠️ the invariant survives every rewrite — kinds === maskOfSteps(
     const valuesCount = effectivePlan(traversal(V(), values('k'), count()), graph, false);
 
     expect(valuesCount.kinds).toBe(maskOfSteps(valuesCount.steps));
+  });
+});
+
+describe('⚠️ item 1506 — the two passes gated LAST, and the kind I first missed', () => {
+  it('records hasLabel, and dropVacuousLabels still drops a vacuous label', () => {
+    const labelled = traversal(V(), hasLabel('P'), count());
+
+    expect(labelled.kinds & KIND_BITS.hasLabel).not.toBe(0);
+
+    // Every vertex here carries `P`, so the label is VACUOUS and the pass must remove the step.
+    const fused = effectivePlan(labelled, graph, false);
+
+    expect(
+      fused.steps.some((st) => st.kind === 'hasLabel'),
+      'a vacuous hasLabel must be dropped',
+    ).toBe(false);
+    expect(fused.kinds).toBe(maskOfSteps(fused.steps));
+  });
+
+  it('a plan with no hasLabel leaves the bit clear', () => {
+    expect(traversal(V(), out('E'), count()).kinds & KIND_BITS.hasLabel).toBe(0);
+  });
+
+  it('⚠️ FILTER_WRAPPER_BITS covers all FIVE kinds, including hasLabelAnd', () => {
+    // My first gate listed four — `not`, `filter`, `or`, `and` — read off the function body's
+    // explicit `step.kind ===` tests. The fifth is `pushSplit`, which runs unconditionally at the
+    // bottom of the loop and splits `hasLabelAnd` (item 1309); two existing tests failed on it.
+    // Enumerating from the code rather than the comments is what fixed it.
+    for (const kind of ['not', 'filter', 'or', 'and', 'hasLabelAnd'] as const) {
+      expect(KIND_BITS[kind], kind).toBeGreaterThan(0);
+      expect(
+        FILTER_WRAPPER_BITS & KIND_BITS[kind],
+        `${kind} must be in FILTER_WRAPPER_BITS`,
+      ).not.toBe(0);
+    }
+  });
+
+  it('⚠️ the hasLabelAnd split still FIRES — the fold the four-bit gate silently lost', () => {
+    // `has(label, key, pred)` builds a `hasLabelAnd`, which must split into `hasLabel` + `has`.
+    const plan = traversal(V(), has('P', 'k', gt(3)), count());
+
+    expect(plan.kinds & KIND_BITS.hasLabelAnd).not.toBe(0);
+
+    const fused = effectivePlan(plan, graph, false);
+
+    expect(
+      fused.steps.some((st) => st.kind === 'hasLabelAnd'),
+      'hasLabelAnd must be split',
+    ).toBe(false);
+    expect(
+      fused.steps.some((st) => st.kind === 'has'),
+      'into a has',
+    ).toBe(true);
+    expect(fused.kinds).toBe(maskOfSteps(fused.steps));
+  });
+
+  it('a plan with none of the five leaves the wrapper bits clear', () => {
+    expect(traversal(V(), out('E'), count()).kinds & FILTER_WRAPPER_BITS).toBe(0);
+    expect(traversal(V(), values('k')).kinds & FILTER_WRAPPER_BITS).toBe(0);
   });
 });
 
