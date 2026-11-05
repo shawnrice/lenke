@@ -1115,6 +1115,46 @@ const projectionIsStreamable = (proj: CProjection): boolean =>
  * is the START-DRIVEN directed walk at 321-330 ns a row, not the far-driven one at 116-145: an
  * undirected walk cannot be far-driven, because a far end's rows come from two buckets.
  */
+/**
+ * Would the general path have reached this vertex at all, for an UNDIRECTED hop? (item 1531)
+ *
+ * The raise-parity question of items 139/142/144/145, asked for a walk that visits each edge from
+ * BOTH ends: the general path produces a row for this vertex if any incident edge — out OR in —
+ * would have survived. Asking only the out side would swallow a fault the general path raises.
+ *
+ * ⚠️ Shared rather than inlined per compile, and that is safe for exactly `anyFarMatches`' reason:
+ * it is reached ONLY from a fault path, so it is cold by construction and cannot make a hot call
+ * site polymorphic. The GATE's own call stays inside the per-compile closure, where item 159's
+ * 1.29x says it belongs.
+ *
+ * `farPred` is always `undefined` here — `undirectedHopWalk` declines a far predicate — so the far
+ * label is the only test applied.
+ */
+const undirectedFaultReaches = (
+  graph: Graph,
+  params: Params,
+  binding: Map<string, unknown>,
+  v: Vertex,
+  w: { typeName: string; farVar: string; farLabel: LabelExpr | undefined },
+): boolean => {
+  const { typeName, farVar, farLabel } = w;
+  const ob = v.adjFrom?.get(typeName);
+
+  if (
+    ob !== undefined &&
+    anyFarMatches(graph, params, binding, ob, { out: true, farVar, farLabel, farPred: undefined })
+  ) {
+    return true;
+  }
+
+  const ib = v.adjTo?.get(typeName);
+
+  return (
+    ib !== undefined &&
+    anyFarMatches(graph, params, binding, ib, { out: false, farVar, farLabel, farPred: undefined })
+  );
+};
+
 const undirectedHopWalk = (w: {
   startLabel: LabelExpr | undefined;
   typeName: string;
@@ -1126,8 +1166,10 @@ const undirectedHopWalk = (w: {
   needsStart: boolean;
   /** The start's binding name, needed only when a projected item READS it (item 1529). */
   startVar: string | undefined;
+  /** Does the carried clause `WHERE` read ONLY the start? (item 1531) */
+  startOnly: boolean;
 }): RowsFn | null => {
-  const { startLabel, typeName, farVar, farLabel, proj } = w;
+  const { startLabel, typeName, farVar, farLabel, proj, gate } = w;
 
   // The admission test lives HERE rather than at the call site, which keeps three conditions
   // out of `detectHopProjection` — it sits one branch under the complexity cap, and the cap is
@@ -1144,9 +1186,21 @@ const undirectedHopWalk = (w: {
   // refuses. Item 1410's heading is the pattern: "the row that covered one never covered the
   // other".
   //
-  // A far predicate and a gate still decline: neither has a place to go in a walk that visits each
-  // edge from both ends.
-  if (w.farPred !== undefined || w.gate !== undefined) {
+  // A far predicate still declines: it has no place to go in a walk that visits each edge from both
+  // ends.
+  //
+  // ⚠️ A START-ONLY GATE NO LONGER DOES (item 1531). It used to, and that cost **5.47x**:
+  // `MATCH (a:P)-[:E]-(x) WHERE a.age > 5 RETURN x.age` measured 1083.4 ns/row against the
+  // unfiltered 198.2, with `inSteps`/`outSteps`/`edgesMatching` on top — the general matcher.
+  // Adding a selective filter made the query five times slower, which is item 1437's class of bug.
+  //
+  // It is admissible because the TWO-PASS arm's start IS the vertex it is iterating, so the gate is
+  // evaluated once per vertex BEFORE its adjacency is read — the same contract `filteredHopWalk`'s
+  // start-only closure has. A gate reading anything else still declines: `startOnly` is
+  // `carriedWhere`'s answer and it is false for a far-reading or rel-reading predicate.
+  const gateStart = w.gate !== undefined && w.startOnly ? w.startVar : undefined;
+
+  if (w.farPred !== undefined || (w.gate !== undefined && gateStart === undefined)) {
     return null;
   }
 
@@ -1208,7 +1262,11 @@ const undirectedHopWalk = (w: {
     const startFree = startLabel === undefined || vacuousLabel(graph, startLabel);
     const farFree = farLabel === undefined || vacuousLabel(graph, farLabel);
 
-    if (startFree && farFree) {
+    // ⚠️ AND THE EDGE PASS CANNOT CARRY THE GATE. It enumerates EDGES, so each one yields two rows
+    // with DIFFERENT starts — a gate would have to be evaluated per ROW, which is neither the
+    // once-per-vertex contract above nor cheaper than the two-pass walk. Falling back is sound: the
+    // edge pass only ever runs when both labels are free, which the two-pass arm handles anyway.
+    if (startFree && farFree && w.gate === undefined) {
       const edges = graph.edgesByLabel.get(typeName);
 
       if (edges === undefined) {
@@ -1254,6 +1312,44 @@ const undirectedHopWalk = (w: {
       // Once per VERTEX, not per row: `v` is the start for both the out- and the in-pass.
       if (sv !== undefined) {
         binding.set(sv, v);
+      }
+
+      // ⚠️ THE GATE, PER VERTEX AND BEFORE THE ADJACENCY (item 1531) — the whole reason a start-only
+      // predicate belongs on this walk rather than on the general matcher.
+      //
+      // `gate` and `gateStart` are both closure-invariant, so the test costs one property read on
+      // the shapes that carry no filter. The CALL stays here rather than in a shared helper: item
+      // 159 measured a shared module-scope walk at 1.29x because its call sites go polymorphic
+      // across compiles, and a compiled gate differs per query.
+      if (gate !== undefined && gateStart !== undefined) {
+        binding.set(gateStart, v);
+
+        let held: boolean;
+
+        try {
+          held = asTruth(gate({ binding, params, graph })) === true;
+        } catch (e) {
+          // ⚠️ RAISE PARITY (items 139, 142, 144, 145), and for THIS walk the question spans BOTH
+          // directions: the general path reaches an undirected hop's vertex if any incident edge —
+          // out or in — would have produced a row. Asking only the out side would swallow a fault
+          // that the general path raises. `farPred` is `undefined` here (declined above), so the
+          // far label is the only test `anyFarMatches` applies.
+          if (undirectedFaultReaches(graph, params, binding, v, { typeName, farVar, farLabel })) {
+            throw e;
+          }
+
+          continue;
+        }
+
+        if (!held) {
+          continue;
+        }
+
+        // `anyFarMatches` and the gate both wrote `farVar`/`gateStart`; the start is re-set because
+        // a fault path above may have overwritten it while probing far ends.
+        if (sv !== undefined) {
+          binding.set(sv, v);
+        }
       }
 
       const outBucket = v.adjFrom?.get(typeName);
@@ -2321,6 +2417,7 @@ export const detectHopProjection = (
         gate,
         needsStart,
         startVar,
+        startOnly: carried.startOnly,
       }),
     );
   }

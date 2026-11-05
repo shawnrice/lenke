@@ -349,3 +349,118 @@ describe('⚠️ the undirected hop may project the start (item 1529)', () => {
     ]);
   });
 });
+
+/**
+ * ⚠️ ITEM 1531 — `undirectedHopWalk` now carries a START-ONLY gate, where it used to decline every
+ * gate and send the query to the general matcher. `MATCH (a:P)-[:E]-(x) WHERE a.age > 5 RETURN
+ * x.age` went **1083.4 → 391.2 ns/row (2.77x)**.
+ *
+ * ⚠️ THE RAISE PARITY SPANS BOTH DIRECTIONS HERE, and that is the one thing this route can get wrong
+ * in a way no row assertion sees. The general path produces a row for a vertex if ANY incident edge —
+ * out OR in — would have survived, so a fault must rethrow in both cases. Checking only `adjFrom`
+ * would SWALLOW a fault that the general path raises, and the `IN-edge only` case below is the one
+ * that catches it.
+ */
+describe('⚠️ a start-only gate on the undirected hop (item 1531)', () => {
+  const gated = (): Graph => {
+    const g = new Graph();
+
+    for (const [id, k, labels] of [
+      ['a', 1, ['P']],
+      ['b', 7, ['P']],
+      ['c', 3, ['P']],
+      ['q', 9, ['P', 'Q']],
+      ['z', 4, ['Z']],
+    ] as const) {
+      g.addVertex({ id, labels: [...labels], properties: { k } });
+    }
+
+    let e = 0;
+
+    for (const [f, t] of [
+      ['a', 'b'],
+      ['b', 'q'],
+      ['a', 'a'],
+      ['c', 'z'],
+    ] as const) {
+      g.addEdge({ id: `w${e}`, labels: ['E'], from: g.getVertexById(f)!, to: g.getVertexById(t)! });
+      e += 1;
+    }
+
+    return g;
+  };
+
+  it('gates the start vertex and answers over both directions', () => {
+    // Starts with k > 2: b (7), c (3), q (9). b-a, b-q, q-b, c-z → [1,4,7,9].
+    expect(col(query(gated(), 'MATCH (a:P)-[:E]-(x) WHERE a.k > 2 RETURN x.k AS j'), 'j')).toEqual([
+      1, 4, 7, 9,
+    ]);
+  });
+
+  it('a gate plus a narrowing far label', () => {
+    expect(
+      col(query(gated(), 'MATCH (a:P)-[:E]-(x:Q) WHERE a.k > 2 RETURN x.k AS j'), 'j'),
+    ).toEqual([9]);
+  });
+
+  it('a FAR-reading predicate still declines the walk and still answers', () => {
+    // `startOnly` is false, so the gate is refused and the general path takes it.
+    //
+    // ⚠️ [7, 7, 9] AND NOT [7, 9, 9], which is what I first wrote. `b`(7) is reached twice — once
+    // as `a`'s far end and once as `q`'s — while `q`(9) is reached only from `b`. Checked against a
+    // brute-force undirected walk rather than recounted by hand.
+    expect(col(query(gated(), 'MATCH (a:P)-[:E]-(x) WHERE x.k > 6 RETURN x.k AS j'), 'j')).toEqual([
+      7, 7, 9,
+    ]);
+  });
+
+  /**
+   * `bad`'s `s` cannot be cast, so the gate FAULTS on it. Whether that fault may surface depends on
+   * whether the general path would have produced a row for `bad` — which for an undirected hop
+   * means ANY incident edge, in either direction, surviving the far label.
+   */
+  const faulting = (opts: { edge: 'none' | 'in'; farQ: boolean; farLabel: boolean }): Graph => {
+    const g = new Graph();
+
+    g.addVertex({ id: 'bad', labels: ['P'], properties: { s: 'nope', k: 1 } });
+    g.addVertex({ id: 'ok', labels: ['P'], properties: { s: '7', k: 2 } });
+    g.addVertex({ id: 't', labels: ['P', 'Q'], properties: { s: '1', k: 3 } });
+    g.addVertex({ id: 'n', labels: ['P'], properties: { s: '1', k: 4 } });
+    g.addEdge({ id: 'f0', labels: ['E'], from: g.getVertexById('ok')!, to: g.getVertexById('t')! });
+
+    if (opts.edge === 'in') {
+      // An edge INTO `bad`, so it appears only in `adjTo`.
+      g.addEdge({
+        id: 'f1',
+        labels: ['E'],
+        from: g.getVertexById(opts.farQ ? 't' : 'n')!,
+        to: g.getVertexById('bad')!,
+      });
+    }
+
+    return g;
+  };
+
+  const q = (farLabel: boolean): string =>
+    `MATCH (a:P)-[:E]-(x${farLabel ? ':Q' : ''}) WHERE CAST(a.s AS INTEGER) > 0 RETURN x.k AS j`;
+
+  it('⚠️ PARITY: no incident edge at all — the fault is suppressed', () => {
+    expect(
+      col(query(faulting({ edge: 'none', farQ: false, farLabel: false }), q(false)), 'j'),
+    ).toEqual([2, 3]);
+  });
+
+  it('⚠️ PARITY: an IN-edge only — the fault must RAISE (checking only adjFrom would swallow it)', () => {
+    expect(() => query(faulting({ edge: 'in', farQ: false, farLabel: false }), q(false))).toThrow();
+  });
+
+  it('⚠️ PARITY: an IN-edge whose far end fails the label — suppressed', () => {
+    expect(col(query(faulting({ edge: 'in', farQ: false, farLabel: true }), q(true)), 'j')).toEqual(
+      [3],
+    );
+  });
+
+  it('⚠️ PARITY: an IN-edge whose far end PASSES the label — raises', () => {
+    expect(() => query(faulting({ edge: 'in', farQ: true, farLabel: true }), q(true))).toThrow();
+  });
+});

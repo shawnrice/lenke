@@ -61322,7 +61322,7 @@ nominate a shape that never reaches the code.
 `bun run check` 0 read unpiped. core 431/0, gql **3829**/0, gremlin 1469/0, native 961/0,
 serialization 144/0, `bun run fuzz` 20/0.
 
-### Item 1530 — asked item 1529's question of EVERY walk's guard and the answer generalizes: ⚠️ **a START-ONLY predicate is carried by exactly one walk, and the three that refuse it send the whole query to the general matcher.** Two measured instances: **5.47x** (undirected + gate) and **3.17x** (rel-bound + start filter). PRICED, NOT BUILT
+### Item 1530 — ✅ **its 5.47x instance was BUILT AT ITEM 1531 for 2.77x; the 3.17x one remains.** asked item 1529's question of EVERY walk's guard and the answer generalizes: ⚠️ **a START-ONLY predicate is carried by exactly one walk, and the three that refuse it send the whole query to the general matcher.** Two measured instances: **5.47x** (undirected + gate) and **3.17x** (rel-bound + start filter). PRICED, NOT BUILT
 
 Item 1529 shipped 3.06x by asking what a fast path DECLINES rather than where it spends time. This
 tick asked it of all eight walks, mechanically, by extracting every guard-level `return null`.
@@ -61384,3 +61384,79 @@ as item 1528, which the next tick then shipped at 3.06x.
 `bun run check` 0 read unpiped. No engine change — the only edit is two probe arms — so the suites are
 item 1529's: core 431/0, gql 3829/0, gremlin 1469/0, native 961/0, serialization 144/0,
 `bun run fuzz` 20/0.
+
+### Item 1531 — ✅ **SHIPPED, 2.77x**: `undirectedHopWalk` now carries a START-ONLY gate, where it declined every gate and sent the query to the general matcher. `MATCH (a:P)-[:E]-(x) WHERE a.age > 5 RETURN x.age` **1083.4 → 391.2 ns/row**, both controls flat. ⚠️ The raise parity spans BOTH directions here, and a mutant proves the tests see that
+
+Item 1530 priced this at 5.47x and named the shared blocker: the gate needs items 139/142/144/145's
+raise parity, and item 1527 had already decided NOT to copy that block.
+
+### Where the gate's call lives, and why
+
+⚠️ **The `gate(env)` call stays inside the per-compile closure.** Item 159 measured a shared
+module-scope walk at **1.29x** because its call sites go polymorphic across compiles, and a compiled
+gate differs per query — so extracting the gate CALL is the one thing not to do.
+
+What IS extracted is the **fault** path (`undirectedFaultReaches`), and that is safe for exactly the
+reason `anyFarMatches`' own comment gives: _"Used ONLY from the fault path… Cold by construction, so
+it is shared rather than inlined per compile."_ The decomposition is the file's own, not a new idea.
+
+### ⚠️ And the parity question is DIFFERENT for this walk
+
+The general path produces a row for a vertex when any incident edge — **out OR in** — would have
+survived. So a faulting gate must rethrow in both cases, and `undirectedFaultReaches` asks
+`anyFarMatches` of `adjFrom` and then of `adjTo`. **Checking only `adjFrom` would swallow a fault the
+general path raises** — which is not a slow answer but a missing exception.
+
+Verified by hand across the full matrix before any timing:
+
+```text
+no incident edge at all              suppressed   rows [3, 2]
+an IN-edge only                      RAISES       ← the case one-bucket logic loses
+an IN-edge, far end fails the label  suppressed   rows [3]
+an IN-edge, far end passes it        RAISES
+```
+
+### The edge-pass arm cannot carry it
+
+Item 1431's edge pass enumerates EDGES, so each yields two rows with DIFFERENT starts — a gate would
+be per ROW, which is neither the once-per-vertex contract nor cheaper than the two-pass walk. It falls
+back, which is sound because the edge pass only runs when both labels are free and the two-pass arm
+handles that anyway.
+
+### Measured — 2.77x, controls flat
+
+```text
+                         PRE                     POST
+farpropundirgate   1083.4                  391.2 (390.0 / 392.3)        2.77x   ← TARGET
+farpropundir        198.2 (200.2 / 195.2)  204.5 (189.8-225.9, med 5)   flat
+startpropundir      242.6                  237.0                        flat
+hopundiryield       294                    288.9                        flat
+```
+
+⚠️ `farpropundir` first read **225.9** (14% worse) and five repeats put it at 204.5 against a
+189.8-225.9 spread. Flat. That is the third tick running where a single reading on this probe pointed
+the wrong way — the probe's ms-scale arms need repeats, full stop.
+
+### Mutation — five caught, the parity ones by the tests written for them
+
+```text
+parity-out-only        drop the adjTo check          CAUGHT  3834 pass 2 fail  ← the IN-edge cases
+parity-always-raise    rethrow unconditionally       CAUGHT  3834 pass 2 fail  ← the suppression cases
+parity-never-raise     never rethrow                 CAUGHT  3834 pass 2 fail  ← the raise cases
+admit-any-gate         drop the `startOnly` test     CAUGHT  3826 pass 10 fail ← existing far-constraint tests
+edgepass-takes-gate    let the edge pass take it     CAUGHT  3830 pass 6 fail
+```
+
+**The parity matrix has teeth in BOTH directions** — one mutant per failure mode, each caught by the
+cases written for it. That check exists because item 1527's parity tests passed under every mutant
+until one was built specifically to attack them; this time the attacking mutants came first.
+`admit-any-gate` is caught by ten EXISTING tests, so the `startOnly` restriction was already covered.
+
+### Gates
+
+`bun run check` 0 read unpiped. core 431/0, gql **3836**/0, gremlin 1469/0, native 961/0,
+serialization 144/0, `bun run fuzz` 20/0 — byte-identity before timing.
+
+One of item 1530's two instances remains: `relpropfilt` (a rel-bound projection behind a start
+filter) at **3.17x**, which needs the same gate-with-parity in `relBoundFilteredHopWalk` and
+`relSeekedHopWalk`.
