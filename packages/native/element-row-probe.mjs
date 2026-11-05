@@ -97,6 +97,19 @@ const ARMS = {
   // `farpropfilt` control carries the SAME predicate with a far projection, which cannot fold.
   startpropfilt: 'MATCH (a:P)-[:E]->() WHERE a.age > 5 RETURN a.age AS k',
   farpropfilt: 'MATCH (a:P)-[:E]->(x) WHERE a.age > 5 RETURN x.age AS j',
+  // ⚠️ THE TWO REMAINING FOLD CANDIDATES (item 1528), from enumerating every walk in
+  // hop-projection.ts for a per-edge `projectRow` with no template:
+  //   farpropfiltfar  -> farDrivenFilteredHopWalk. Item 1527's EXACT mirror: a FAR predicate gates
+  //                      the far DRIVER, so if the projection reads only the far end its rows are
+  //                      identical and the degree is the count.
+  //   startpropundir  -> undirectedHopWalk, which has four `projectRow` calls and no template.
+  farpropfiltfar: 'MATCH (:P)-[:E]->(x) WHERE x.age > 5 RETURN x.age AS j',
+  startpropundir: 'MATCH (a:P)-[:E]-() RETURN a.age AS k',
+  // ⚠️ THE CONTROL THAT ISOLATES THE DECLINE FROM THE UNDIRECTEDNESS. Same undirected hop, same row
+  // count, but the projection reads the FAR end — so `needsStart` is false and `undirectedHopWalk`
+  // takes it. Comparing `startpropundir` against the DIRECTED fold would charge the decline for the
+  // extra work an undirected hop does anyway; comparing it against this does not.
+  farpropundir: 'MATCH (:P)-[:E]-(x) RETURN x.age AS j',
   star: 'MATCH (:P)-[r:E]->() RETURN *',
   starnamed: 'MATCH (p:P)-[r:E]->(x) RETURN *',
 };

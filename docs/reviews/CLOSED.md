@@ -61164,3 +61164,80 @@ it did not.
 
 `bun run check` 0 read unpiped. core 431/0, gql **3823**/0, gremlin 1469/0, native 961/0,
 serialization 144/0, `bun run fuzz` 20/0.
+
+### Item 1528 — enumerated every walk in `hop-projection.ts` for the fold precondition and found something better: ⚠️ **`undirectedHopWalk` DECLINES whenever the projection reads the START**, so `MATCH (a:P)-[:E]-() RETURN a.age` falls to the general matcher at **741.3 ns/row against the same hop's 197.7 — 3.75x.** This is the gap item 160 closed for the DIRECTED walk, still open on its undirected sibling
+
+Items 1525 and 1527 shipped the fold on two closures. This tick enumerated the file's eight walks for
+the same precondition — a per-edge `projectRow` with no template — and two came back as candidates:
+
+```text
+walk                        projectRow   template   verdict
+undirectedHopWalk                4          0        ⚠️ DECLINES the shape entirely (below)
+farDrivenFilteredHopWalk         1          0        fold candidate, 48.6% property read
+relBound* (three walks)        1 each       0        cannot fold (item 1523: needs distinct edges)
+relSeekedHopWalk                 5          1        already has one
+farDrivenHopWalk                 2          4        item 1407
+filteredHopWalk                  5          2        items 1525, 1527
+```
+
+### The undirected walk refuses the start, and that is a DECLINE rather than a slow walk
+
+```ts
+if (w.farPred !== undefined || w.gate !== undefined || w.needsStart) {
+  return null;
+}
+```
+
+So `RETURN a.age` on an undirected hop never reaches the fast walk at all. Its profile is
+`outSteps` 17.6%, `inSteps` 17.3%, `edgesMatching` 14.6%, `walkSegments` 8.4% — **the general
+matcher**, not `undirectedHopWalk`.
+
+⚠️ **Priced against the right control.** Comparing it to the DIRECTED fold (123.3 ns/row) would charge
+the decline for the extra work an undirected hop does anyway. The honest control is the same
+undirected hop with a FAR projection, which has `needsStart: false` and so takes the walk — same
+query shape, same 1,999,990 rows:
+
+```text
+farpropundir    MATCH (:P)-[:E]-(x) RETURN x.age    197.7 ns/row   (200.2 / 195.2)  takes the walk
+startpropundir  MATCH (a:P)-[:E]-() RETURN a.age    741.3          (742.1 / 740.5)  DECLINES
+```
+
+**3.75x**, two processes each, bands nowhere near overlapping.
+
+### This is a known gap on an unknown sibling
+
+Item 160 closed exactly this for the DIRECTED walk — its note is still in the file:
+
+> Refusing the start cost **3.5-4.7x on four shapes**, including the very ordinary unfiltered
+> `MATCH (u:L)-[:E]->(v) RETURN u.name`: 20.0ms against 5.7ms for the same query projecting `v.name`
+> instead, with no semantic difference between them.
+
+3.75x against that 3.5-4.7x is the same gap, the same size, on the walk item 160 did not touch.
+⚠️ **And this file keeps producing exactly this pattern** — item 1410's heading is _"`filteredHopWalk`
+holds TWO closures and only one had the vacuity drop, so the row that covered one never covered the
+other"_, and items 1408/1409 are the same story for the vacuous-label drop on this very walk.
+Searched `CLOSED.md` for `undirectedHopWalk` + `needsStart`: nine entries on the walk (1408, 1409,
+1414, 1430, 1431, 1432, 1248, 1461) and **none mentions the start refusal.**
+
+### Not built this tick, and what it needs
+
+Admitting `needsStart` is more than a fold: the start variable has to be bound in BOTH passes (the
+out-pass and the in-pass), and self-loops are counted once — items 1408/1409/1431 rebuilt this walk
+three times and item 1248 records that the self-loop correction items 480-483 built does NOT apply to
+it. That is not a change to make at the end of a tick.
+
+⚠️ **And item 1415's threshold says to check the sign before celebrating**: _"in `hop-projection.ts` a
+change worth less than ~10% on its target is likely"_ to lose. 3.75x clears that comfortably, but the
+same entry is why the controls above were measured as a pair rather than inferred.
+
+The second candidate, `farDrivenFilteredHopWalk`, is item 1527's exact mirror — a FAR predicate gates
+the far DRIVER, so a far-only projection's rows are identical. `MATCH (:P)-[:E]->(x) WHERE x.age > 5
+RETURN x.age` is **572.5 ns/row** and **48.6% of it is the property read** (`propOf` 32.1% +
+`get properties` 16.5%), which a fold would collapse from once per row to once per far vertex. Priced
+less precisely than the undirected gap and second in line behind it.
+
+### Gates
+
+`bun run check` 0 read unpiped. No engine change — the only edit is three probe arms — so the suites
+are item 1527's: core 431/0, gql 3823/0, gremlin 1469/0, native 961/0, serialization 144/0,
+`bun run fuzz` 20/0.
