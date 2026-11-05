@@ -313,6 +313,40 @@ type Gate = (v: Vertex) => boolean;
  * `hasLabel` case gets the same treatment by hand — it is the overwhelmingly common spelling and
  * `Set.has` on the label box needs no closure at all.
  */
+/**
+ * ⚠️ THREE CURES FOR THE RESIDUAL GAP, ALL REFUTED WITH NUMBERS (item 1537). Do not re-attempt
+ * without reading the scaling study in that entry.
+ *
+ * `hasLabel(Q).out(E).values(k)` costs 719.7 ns/row against the unfiltered `out(E).values(k)`'s
+ * 387.6 — 1.86x for per-row work that is IDENTICAL in the two walks. Seeding from the label bucket
+ * closes most of it (417) and cannot ship (see `tests` below). What was tried instead:
+ *
+ * ```text
+ *   compiled gates (the code below)              732 -> 738   nothing on this shape
+ *   materialize [...graph.vertices] per plan     719.7 -> 757.7 / 766.1   WORSE
+ *   a dedicated loop for the single-gate case    719.7 -> 731, and `both` 458 -> 507   WORSE
+ * ```
+ *
+ * AND THE PER-VERTEX SCAN IS NOT THE EXPLANATION, which is what makes all three miss. Varying the
+ * filter's selectivity holds the vertex count at 200,000 and shrinks the rows:
+ *
+ * ```text
+ *   VLABEL=2    100,000 rows   73.46 ms   734.6 ns/row
+ *   VLABEL=5     40,000        31.21      780.1
+ *   VLABEL=10    20,000        18.35      917.3
+ *   VLABEL=20    10,000         9.35      934.6
+ * ```
+ *
+ * Total time tracks ROWS, not visits: the same 200,000 visits that take 73 ms at VLABEL=2 take
+ * 9.35 ms at VLABEL=20, so a visit plus its gate is ~40 ns. The gate is not the cost, and neither
+ * is the iteration source. `pick` shows as its own 20.5% self-time frame, so the gap is an INLINING
+ * decision that differs between the two walks' loop bodies — the class
+ * `ts-closure-size-is-load-bearing` describes, where item 1466 declined 3.3x rather than perturb
+ * these files. Settling it means attributing inlining by deleting the use, not by reasoning.
+ *
+ * `compileGates` is kept because it IS a win on the predicate shape — `has(k, gt(48))` went
+ * 701.3 -> 606.6 with every control flat — not because it closed the gap it was written for.
+ */
 const compileGates = (filters: readonly VertexFilter[]): Gate[] =>
   filters.map((step) => {
     if (step.kind === 'hasLabel') {

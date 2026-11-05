@@ -61831,7 +61831,7 @@ before any timing — and two of those derivations were wrong where the engine w
 are `b` and `c`, not `a`; c's incoming `E` are from `a` and itself, so the `in` self-loop case is two
 rows, not one). Both corrected against the edge list rather than recounted, and the comments say so.
 
-### Item 1536 — the `both` arm, **2.33x**, plus compiled gates, 1.85x on the `has` shape. ⚠️ **AND IT CORRECTS ITEM 1535'S HEADLINE NUMBERS, WHICH WERE MEASURED AGAINST A BUILD THAT IS NOT WHAT SHIPPED.** True gains 1.44–2.33x, not 2.73–3.79x. The instrument rule that failure earns is in here
+### Item 1536 — the `both` arm, **2.33x**, plus compiled gates, 1.85x on the `has` shape. ⚠️ **AND IT CORRECTS ITEM 1535'S HEADLINE NUMBERS, WHICH WERE MEASURED AGAINST A BUILD THAT IS NOT WHAT SHIPPED.** True gains 1.44–2.33x, not 2.73–3.79x. The instrument rule that failure earns is in here — ✅ **reach BOUNDED at item 1537: items 1525–1533 re-measured and CONFIRMED, six of six**
 
 Three results, and the correction is the important one.
 
@@ -61975,3 +61975,89 @@ before each mutant, pristine copy under `crates/lenke-engine/target/`; tree veri
 `bun run check` 0 read unpiped. core 431/0, gql 3851/0, gremlin **1489**/0, native 961/0,
 serialization 144/0, `bun run fuzz` 20/0 twice. Every number above taken after `bun run build` with
 the arm asserted in `dist/esm/index.mjs`.
+
+### Item 1537 — **bounded item 1536's correction: items 1525–1533's numbers are CONFIRMED, six of six re-measured against a verified bundle.** Then refuted three cures for the residual 1.86x, and a scaling study shows why all three miss — the per-vertex scan is ~40 ns, not the ~330 ns the algebra implied
+
+Item 1536 found that item 1535's numbers were measured against a dist built from code that was then
+replaced. `element-row-probe.mjs` imports `@lenke/gql`, which resolves to `dist` the same way, so
+the first question this tick is how far that error reaches. **Answer: it does not reach past item 1535.**
+
+#### THE BLAST RADIUS, measured rather than argued
+
+The GQL ticks ran `bun run fuzz` **before** timing — item 1529's own entry says so ("gql 3829/0 and
+`bun run fuzz` 20/0, both run before any timing"), and that run builds the `ts` artifact. Item 1535
+is the one tick that measured first and changed the code afterwards.
+
+Verified by rebuilding, asserting each item's symbols in `dist/esm/index.mjs`
+(`undirectedFaultReaches` 2, `gateStart` 8, `projStartOnly` 5), and re-measuring each item's own
+target arm:
+
+| item | arm                | published POST      | re-measured   |
+| ---- | ------------------ | ------------------- | ------------- |
+| 1533 | `farpropundirfar`  | 556.3               | 543.4 / 549.7 |
+| 1532 | `relpropfilt`      | 367.5               | 368.1 / 375.6 |
+| 1531 | `farpropundirgate` | 391.2               | 391.7 / 425.0 |
+| 1529 | `startpropundir`   | 242.6 (235.1–299.5) | 301.9 / 240.6 |
+| 1527 | `startpropfilt`    | 113.6               | 116.8 / 118.0 |
+| 1527 | `startprop`        | 119.1               | 115.3 / 131.7 |
+
+Every one reproduces. The `bun run build` that preceded this was an **nx cache hit** — the gql dist
+was already current with HEAD — which is itself the evidence that no gql source changed after the
+dist those items measured against.
+
+So the correction is confined to item 1535, and items 1525–1533's figures stand as published.
+
+#### THE RESIDUAL GAP, and the algebra that was wrong about it
+
+`hasLabel(Q).out(E).values(k)` costs 719.7 ns/row against the unfiltered `out(E).values(k)`'s 387.6.
+Both do one far-vertex property read per row. The filtered walk visits 200,000 vertices for 100,000
+rows and the unfiltered one 200,000 for 200,000, so the obvious decomposition is `2V + R = 719.7`
+against `V + R = 387.6`, giving **V ≈ 332 ns per vertex visit** — which would make the scan the whole
+story and seeding (which halves the visits) the obvious cure.
+
+**That prediction is falsifiable and it is false.** Holding the vertex count at 200,000 and shrinking
+the rows:
+
+| VLABEL | rows    | wall     | ns/row |
+| ------ | ------- | -------- | ------ |
+| 2      | 100,000 | 73.46 ms | 734.6  |
+| 5      | 40,000  | 31.21    | 780.1  |
+| 10     | 20,000  | 18.35    | 917.3  |
+| 20     | 10,000  | 9.35     | 934.6  |
+
+At V ≈ 332 ns, VLABEL=10 would be ~3,375 ns/row; it is 917. And the same 200,000 visits that take
+73 ms at VLABEL=2 take **9.35 ms** at VLABEL=20, so a visit plus its gate is **~40 ns**. Total time
+tracks ROWS, not visits. The profile said this already — `get labels` 1.0%, `survives` 0.8% — and the
+algebra talked me out of believing it, because it compared two queries that differ in more than the
+vertex count.
+
+#### THREE CURES, ALL REFUTED, recorded next to the code
+
+| cure                                                          | result                                        |
+| ------------------------------------------------------------- | --------------------------------------------- |
+| compiled gates (item 1536)                                    | 732 → 738 — nothing on this shape             |
+| materialize `[...graph.vertices]` once per plan               | 719.7 → 757.7 / 766.1 — **worse**             |
+| a dedicated loop for the single-gate case, no `survives` call | 719.7 → 731, and `both` 458 → 507 — **worse** |
+
+All three target the scan, which the study above shows is ~5% of the row cost. The third is the
+sharpest refutation: it removes the only function call in the gate path and changes nothing, while
+costing the `both` arm 10% — item 159's branch-in-a-hot-loop toll, arriving on schedule.
+
+`pick` shows as its own 20.5% self-time frame, so the gap is an **inlining decision that differs
+between the two walks' loop bodies** for identical per-row work. That is the class
+`ts-closure-size-is-load-bearing` names and that item 1466 declined a 3.3x win rather than disturb.
+Settling it means attributing inlining by **deleting the use** rather than reasoning about it, on an
+instrument that can see a single loop body — not this bench.
+
+#### What this leaves open
+
+The 1.86x is real and unexplained-but-bounded: not the gate, not the iteration source, not the
+`survives` call. Seeding would close it and cannot ship (item 1535's two hazards). The next move is
+an inlining-attribution probe, not another cure.
+
+#### Gates
+
+Comment-only change to `start-filtered-hop-values.ts` — verified comment-only by diffing against
+`HEAD` and filtering for non-comment lines (zero). `bun run check` 0 read unpiped, gremlin 1489/0.
+The rest stand at item 1536's: core 431/0, gql 3851/0, native 961/0, serialization 144/0,
+`bun run fuzz` 20/0.
