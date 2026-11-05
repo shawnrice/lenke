@@ -58108,7 +58108,7 @@ PRE.
 `bun run check` 0 read unpiped. core 431/0, gql 3727/0, gremlin 1406/0, native 961/0,
 serialization 144/0, `bun run fuzz` 20/0.
 
-### Item 1494 — **`V().out(T)` is already within 4.6% of a hand-written loop**, so the Gremlin bare hop has no pipeline overhead left. Decomposed the whole 43.2 ms row, and **refuted the endpoint-getter lever: a plain own property is 1.19x WORSE**
+### Item 1494 — **`V().out(T)` is already within 4.6% of a hand-written loop**, so the Gremlin bare hop has no pipeline overhead left. **Re-confirmed at FANOUT=1 by item 1514** (engine 184.0 against a floor of 184.7 ns/row), which re-derived this entry by searching after measuring instead of before. Decomposed the whole 43.2 ms row, and **refuted the endpoint-getter lever: a plain own property is 1.19x WORSE**
 
 > ⚠️ **ITS CLOSING PRICE IS CORRECTED BY ITEM 1495.** ~~Ceiling ~1.6x on this shape~~ — that was
 > arithmetic (assume the two structural shares go to zero), and measuring it gave **24x** for a
@@ -60040,3 +60040,110 @@ monomorphic path. Both are now recorded with numbers, on both the per-call and p
 `bun run check` 0 read unpiped. No source changed — the only addition is
 `order-comparator-probe.mjs` — and the suites confirm it: core 431/0, gql 3803/0, gremlin 1469/0,
 native 961/0, serialization 144/0, `bun run fuzz` 20/0.
+
+### Item 1514 — swept for an ALGORITHMIC asymmetry and found none: every documented sibling pair has converged and all five cross-surface pairs are within 1.9x. ⚠️ **I also re-derived item 1494 by checking `CLOSED.md` AFTER measuring instead of before.** Verified the O(1) id invariant, which nothing in items 1504-1512 had re-checked
+
+Items 1511-1513 each declined a lever because the hot-path profiles are diffuse. Item 1513's closing
+note said the next move should be a hunt for an algorithmic asymmetry — a shape far off a sibling
+that answers a comparable question — rather than another frame-share lever. This is that hunt. It
+came back negative, which is a result worth recording, because it says where NOT to look next.
+
+### The Gremlin corpus at 200,000 vertices, FANOUT=1, one shape per process
+
+```text
+hopbare           200000 rows     37.6 ms    187.9 ns/row
+hopyieldsingle    200000 rows     78.2 ms    391.0 ns/row
+hopyieldmulti     200000 rows     80.7 ms    403.3 ns/row
+hopbothyield      400000 rows    143.2 ms    358.0 ns/row
+hopcount2              1 row      68.8 ms
+hopcount3              1 row     214.3 ms
+hopdedupe              1 row       5.2 ms
+grouped                1 row       3.6 ms
+filterchain            1 row       1.5 ms
+edgesingle / edgemulti             7 µs / 6 µs
+labelsingle / labelmulti           7 µs / 5 µs
+```
+
+**Every pair the corpus built as a deliberate asymmetry test has converged.** `edgesingle` vs
+`edgemulti` was item 1378's multi-label `seen`-Set target; `labelsingle` vs `labelmulti` its vertex
+twin; `hopyieldsingle` vs `hopyieldmulti` within 3%. The shapes those pairs were built to catch are
+fixed, and the pairs now serve only as regression guards.
+
+### Cross-surface, same fixture, same question
+
+```text
+pair           gql ms   gremlin ms   ratio
+hopcount         0.01       0.01     1.89x   (both have the chain-count shortcut)
+hopfiltered      3.81       3.87     1.02x
+project          6.51       5.96     0.92x   ← Gremlin FASTER
+exists           6.58       7.99     1.21x
+grouped          2.92       3.67     1.26x
+```
+
+Four of five inside 1.3x, and the one at 1.89x is two shortcuts answering in 10 µs. There is no
+surface paying an algorithmic penalty for any question the probe covers.
+
+### ⚠️ And then I re-derived item 1494
+
+`hopbare` at 187.9 ns/row against `project` at ~30 looked like a 6.3x asymmetry worth decomposing,
+so I ran `hop-rows-floor-probe`'s whole cost ladder at FANOUT=1:
+
+```text
+vonly      18.0 ns/row   iterate the id map
+vbox        9.1          + the adjFrom getter
+vget       64.3          + ONE string-keyed Map.get('E') per vertex
+reach     137.9          + iterate the bucket
+rowsedge  143.8          + push the edge
+rowstoid  188.0          + read e.toId   (a plain string field)
+rowsto    184.7          + read e.to     (the memoized vertex getter)
+engine    184.0          V().out('E')
+```
+
+**The engine equals the hand-written floor** (184.0 against 184.7), and `rowstoid` ≈ `rowsto` says
+reading ANY field off the edge costs the same — so the cost is the edge object's cache miss, not the
+getter.
+
+**Item 1494's heading already says this: _"`V().out(T)` is already within 4.6% of a hand-written
+loop, so the Gremlin bare hop has no pipeline overhead left"_, and it refuted the endpoint getter
+there too.** CLAUDE.md's rule is _"check the list before measuring or flagging"_ and I checked after
+— about eight process runs spent confirming a closed result. The one thing that is new is the
+FIXTURE: item 1494 measured FANOUT=2, this is FANOUT=1, and the conclusion holds at both. That does
+not justify the runs; it is what they bought.
+
+The decomposition is worth keeping for its shape: `hopbare`'s 188 ns/row is **9 + 55 + 74 + 6 + 44**,
+where the 55 is one `Map.get` on a per-vertex adjacency map and the 74 is walking the bucket. All of
+it is memory-bound, and the layout changes that would fix it are already disqualified — the array
+adjacency is **1.58x slower** (item 1498), the global CSR **1.47x worse under churn** (item 1495),
+and the dense vertex ordinal was built and disqualified on deletes (6.18x/11.34x, items 1369-1372).
+Four separate attempts now point at the same floor.
+
+### The O(1) id invariant, verified for the first time since item 1451
+
+This is a standing requirement of the brief rather than a hypothesis, and **nothing in items
+1504-1512 re-checked it** — those items changed plan construction, parse caching, clause flags and
+the projection loop, none of which should touch id lookup, but "should not" is a reading of the
+source and not a measurement. All three modes, 10,000 → 1,000,000 elements:
+
+```text
+mode   engine growth   raw Map growth   relative   constant factor at 1M (vertex / edge)
+hit        3.30x           2.94x          1.12x            1.20x / 1.22x
+miss       2.54x           4.06x          0.63x            1.77x / 1.59x
+seq        2.11x           3.42x          0.62x            1.82x / 1.80x
+```
+
+**O(1) holds on all three.** The engine's per-lookup growth tracks a raw `Map`'s, so what growth
+there is is cache and not complexity, and the constant factor over a raw `Map` is 1.20-1.82x.
+
+### Where this leaves the arc
+
+Four consecutive items without a shipped change (1511 gate, 1512 allocation, 1513 comparator, 1514
+survey). That is the signal, not four separate coincidences: **items 1503-1510 took the per-call
+overhead 5.67x on GQL and 4.09x on the Gremlin count, and what is left on the covered shapes is at
+its floor.** The next real win is more likely to be in a shape the corpus does NOT cover — writes at
+scale, var-length paths, OPTIONAL/UNION, subqueries — than in another frame of the shapes it does.
+
+### Gates
+
+No source or probe changed this tick; the only edit is this entry. `bun run check` 0 read unpiped;
+suites are item 1513's (core 431/0, gql 3803/0, gremlin 1469/0, native 961/0, serialization 144/0,
+`bun run fuzz` 20/0).
