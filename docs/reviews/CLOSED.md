@@ -58976,3 +58976,88 @@ than nearly true.
 `bun run check` 0 read unpiped. core 431/0, gql **3773**/0, gremlin 1406/0, native 961/0,
 serialization 144/0, and **`bun run fuzz` 20/0** — the byte-identity fuzzers are the real gate here,
 since the TS side now rewrites query text before parsing and the Rust side does not.
+
+### Item 1503 — the GREMLIN analogue of items 1499-1502, priced for the first time: **a reused plan costs 315-456 ns over a 2-5 ns floor (130x, 84x), and REBUILDING it costs another 433-684 ns.** Three hypotheses tested, **all three refuted** — a memo, an allocation, and a redundancy
+
+GQL's per-call overhead was parse+plan, and item 1502 removed most of it. Gremlin has no text to
+parse, so the question looked inapplicable. It is not: `toArray` re-runs the whole plan ANALYSIS on
+every call — `effectivePlan`'s seven rewrite passes, `checkSteps`, `planReadsPath`,
+`streamStaysElements` — with nothing cached between one call and the next.
+
+### New instrument: `gremlin-plan-overhead-probe.mjs`
+
+⚠️ **THE FIXTURE IS DELIBERATELY TINY (200 vertices)**, and that is the opposite of every other probe
+here. 200,000 elements is right for measuring a walk and wrong for measuring a per-call constant: at
+bench scale the graph work swamps it and the answer rounds to zero. A serving workload lives in this
+regime anyway — `bench:usage` is small operations against a warm graph.
+
+```text
+shape         floor     work  rebuilt  toArray/floor  rebuild cost
+count             2      315      787         130.5x         473ns
+filtered        587     1186     1870           2.0x         684ns
+hop               5      456     1093          84.0x         637ns
+vals              5     9205     9638        1688.8x         433ns
+```
+
+`work` reuses one plan object, so it is the graph work plus whatever `toArray` re-does per call;
+`rebuilt` constructs the traversal inside the loop, which is what an application does when it builds
+the traversal in the request handler. **Two separable costs: ~300-450 ns of per-call analysis on a
+trivial shape, and ~450-680 ns to construct the plan at all.**
+
+### ⚠️ Hypothesis 1 — memoise `planReadsPath` on the plan. REJECTED, with numbers
+
+A `WeakMap<Plan, boolean>` (plans are built functionally, so a plan is a value and the memo cannot
+go stale):
+
+```text
+            work (reused)        rebuilt
+count       315 -> 207  1.52x    787 -> 904   1.15x WORSE
+hop         456 -> 283  1.61x   1093 -> 1232  1.13x WORSE
+filtered   1186 -> 1038 1.14x   1870 -> 1994  1.07x WORSE
+```
+
+A freshly built plan never hits the memo and pays the set. **The Gremlin equivalent of GQL's
+interpolating caller — an app that constructs its traversal per request — is at least as common as
+one that hoists the plan, and it would have paid for a win it never collects.** Rejected on that
+asymmetry, not on the size of the win.
+
+### ⚠️ Hypothesis 2 — `subPlansOf`'s allocation. REFUTED: it was an INLINING ARTIFACT
+
+The profile of the reused-plan path put `subPlansOf` at **15.7%**, the largest non-GC frame, with
+`planReadsPath` another 10.7% — and `subPlansOf` builds an array per step per call to answer a
+boolean that early-exits. An obvious allocation to remove.
+
+Rewriting the walk to test the plan-bearing fields inline, allocating nothing, measured **FLAT**:
+count 315 → 296-317, hop 456 → 428-434, filtered 1186 → 1195-1235, rebuilt 787 → 785-787. Removing
+the use of a frame credited with 15.7% changed nothing, so the 15.7% was not its own.
+
+**Second instance of this exact trap in one session** — item 1493's `degreeOfTypes` at 97.1% was the
+first. The tell there was arithmetic impossibility; here it is cheaper still: delete the use and
+measure.
+
+### ⚠️ Hypothesis 3 — `planReadsPath` is called repeatedly, as `hasSubqueryExpr` was. REFUTED by counting
+
+Item 919 found `hasSubqueryExpr` walked twice on the same expression, and item 1500 checked the same
+hypothesis for `hasSubquery` before touching it. Instrumented here, `planReadsPath` is called
+**exactly once per `toArray`** for every shape tested. There is no redundancy to remove, which also
+means the memo's 1.52x cannot be explained by saving repeated walks — one walk of a two-step plan
+with no sub-plans is not 108 ns. **That number remains unexplained, and it is recorded as unexplained
+rather than banked.**
+
+### What is left, and it has the shape item 1500 found in the GQL planner
+
+The per-call overhead is spread across ~8 analysis passes with no hot spot: `checkStep` + `checkSteps`
+12.0% (the latter with ZERO audit mentions), `effectivePlan` and its passes ~11.5%, `planReadsPath`
+10.7%, `nextFrontier` 6.8%, `countShortcut` 5.4%, `newContext` 5.0%, `streamStaysElements` 3.6%.
+Every one of them is a pure function of the plan, recomputed per call.
+
+So the lever is the same shape as GQL's: not speeding up any one pass, but **doing the analysis once
+per plan instead of once per call** — which is exactly what hypothesis 1 tried and what the rebuild
+asymmetry defeats. A design that wins both arms has to make plan CONSTRUCTION carry the analysis
+(build it into the combinators, so a fresh plan arrives already analysed) rather than bolting a cache
+onto the execution path. **Priced at ~300-450 ns a call on cheap shapes; not built.**
+
+### Gates
+
+`bun run check` 0 read unpiped, gremlin 1406/0. No engine change — one new instrument and three
+refuted hypotheses.

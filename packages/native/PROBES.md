@@ -1240,3 +1240,39 @@ feature is for: **insert 1.46x, point 1.82x, agg 2.02x, longer 1.83x**.
 holds all seven, so PRE measured FASTER than POST — a warm cache against a cache plus normalization.
 Only `${i}` models the real caller. Third instance this session of match-the-fixture-to-the-claim,
 and the first where the fixture flattered the status quo rather than the change.
+
+## `gremlin-plan-overhead-probe.mjs` — what a traversal costs before it touches the graph
+
+The Gremlin analogue of items 1499-1502. There is no text to parse, but `toArray` re-runs the whole
+plan ANALYSIS per call — `effectivePlan`'s seven passes, `checkSteps`, `planReadsPath`,
+`streamStaysElements` — with nothing cached between calls.
+
+⚠️ **THE FIXTURE IS DELIBERATELY TINY (200 vertices)**, the opposite of every other probe here.
+200,000 elements is right for measuring a walk and wrong for a per-call constant: at bench scale the
+graph work swamps it and the answer rounds to zero. `bench:usage`'s regime is this one.
+
+```text
+shape         floor     work  rebuilt  toArray/floor  rebuild cost
+count             2      315      787         130.5x         473ns
+filtered        587     1186     1870           2.0x         684ns
+hop               5      456     1093          84.0x         637ns
+vals              5     9205     9638        1688.8x         433ns
+```
+
+`work` reuses one plan; `rebuilt` constructs the traversal in the loop, as an app does in a request
+handler. **~300-450 ns of per-call analysis on a trivial shape, plus ~450-680 ns to construct the
+plan.**
+
+Three hypotheses tested at item 1503, **all three refuted** — worth knowing before re-deriving them:
+
+- **a `WeakMap` memo on `planReadsPath`**: 1.52-1.61x on a REUSED plan, **1.07-1.15x WORSE on a
+  rebuilt one** (a fresh plan never hits and pays the set). Rejected on that asymmetry.
+- **`subPlansOf`'s per-step allocation** (15.7%, the largest non-GC frame): removing it entirely
+  measured FLAT. **An inlining artifact — the second this session after item 1493's 97.1%.** The
+  cheap test is to delete the use and measure, not to reason about the share.
+- **repeated calls, as item 919 found for `hasSubqueryExpr`**: instrumented, `planReadsPath` runs
+  **exactly once per `toArray`**. No redundancy — which also leaves the memo's 1.52x unexplained.
+
+The remaining overhead is ~8 pure passes with no hot spot (the shape item 1500 found in the GQL
+planner). A design that wins both arms must make plan CONSTRUCTION carry the analysis, not cache it
+on the execution path.
