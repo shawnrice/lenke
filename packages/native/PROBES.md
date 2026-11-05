@@ -831,3 +831,31 @@ ceiling clears only narrowly.~~ **TAKEN at item 1482, 2.39x**: that framing had 
 perturbation is a consequence of editing the FILE, so a NEW module (`node-values.ts`) costs nothing
 and only one `index.ts` call site changes. `hopbare` stayed flat across the A/B, confirming it.
 `project` is now **0.77x — Gremlin ahead of GQL** where it was 1.63x behind.
+
+## `fused-vs-general-probe.mjs` — how much faster IS the fused walk, for the same hop and row count?
+
+Three items sized an opportunity against `V().out(T).values(k).count()` without noticing that the
+plan rides `hopValuesShortcut`, which emits bare VALUES and never materializes a vertex traverser —
+so the floor did strictly less work than the thing being floored. Item 1484 measures it directly.
+
+⚠️ **THE TRICK:** `hopValuesShortcut` accepts exactly `values(k)` (one key), `id()`, or nothing as the
+third step and DECLINES anything else. So `label()` after the hop gives the general route over the
+**identical hop and row count**, and `values(k)` gives the fused one.
+
+```text
+            200,000 vertices, FANOUT 5, 1,000,000 rows
+fused values(k)   34.83 ms    35 ns/row
+fused id()       117.23      117 ns/row
+general label()  545.92      546 ns/row
+                 general/fused(values) 15.68x    general/fused(id) 4.66x
+```
+
+⚠️ **THERE IS NO SINGLE "FUSED VS GENERAL" NUMBER.** It is 4.66x-15.68x depending on what the
+projection emits, and **the two FUSED arms differ 3.3x from each other** on the same walk (only the
+`pick` closure differs). So price a sub-plan change against an arm that emits **what the sub-plan must
+emit** — vertex traversers, i.e. the `id` arm at 4.66x — not against the cheapest fused arm.
+
+⚠️ **The 3.3x between the fused arms is UNEXPLAINED and recorded as such.** `fuseValuesIsCount` does
+not cause it (that needs `values(k), is(…), count()`), and both arms take the same residual path. A
+property read beating an id read by 3.3x is counter-intuitive; worth knowing before pricing anything
+`pick`-shaped.

@@ -56781,7 +56781,7 @@ items 1303 and 1447 paid for, and [[rewrite-composition-is-not-free]] exists for
 core 431/0, gql 3709/0, gremlin 1276/0 (1264 + 12 new), native 961/0, serialization 144/0,
 `bun run fuzz` 20/0. `bun run check` 0 read unpiped.
 
-### Item 1480 — ❌ PRICED, NOT BUILT: `optional` and `coalesce` cost **~19-20x a bare hop**, and item 1479's fusion CANNOT transfer. The cause is structural and now has three instances: the fused walks are SOURCE-ANCHORED, so no sub-plan can reach them
+### Item 1480 — ❌ PRICED, NOT BUILT: `optional` and `coalesce` cost ~~**~19-20x a bare hop**~~ **(⚠️ that floor rides the values walk and does LESS work — item 1484 measures the real fused-vs-general ratio at 4.66x-15.68x depending on the projection, so the prize is nearer 4.7x)**, and item 1479's fusion CANNOT transfer. The cause is structural and now has three instances: the fused walks are SOURCE-ANCHORED, so no sub-plan can reach them
 
 Item 1479 fused `local()` away for a 20.7x. `coalesce`/`choose`/`optional`/`branch` route each
 traverser individually too — but for them that is the semantics, not an artefact, so the same trick
@@ -57042,7 +57042,7 @@ optional(identity()), values(k), count()     2.28   ← the WRAPPER is nearly fr
 
 `optional(identity())` costing the same as no wrapper at all said the wrapping was cheap in itself,
 so wrapping _a hop_ looked like the whole ~11x. **It was not.** Fusing the wrapper away gave
-**1.26x**, leaving the shape still ~14x the unwrapped hop.
+**1.26x**, leaving the shape still ~14x the unwrapped hop — ⚠️ **and that ~14x is itself against the values-walk floor; item 1484 corrects the real remaining gap to ~4.7x.**
 
 **Item 1480 had it right**: the cost is that the inner hop runs the general traverser pipeline instead
 of the fused source-anchored walk, and `local` only transferred 20.7x because it can be _eliminated_
@@ -57113,3 +57113,65 @@ change — and now, thanks to item 1482, one that could live in a new module.
 
 core 431/0, gql 3709/0, gremlin 1308/0 (1293 + 15 new), native 961/0, serialization 144/0,
 `bun run fuzz` 20/0. `bun run check` 0 read unpiped.
+
+### Item 1484 — ⚠️ A CORRECTION TO MY OWN NUMBER IN TWO PRIOR ITEMS, and a new instrument: "the fused walk is ~14x the general pipeline" is **not one number**. It is **4.66x-15.68x depending on what the projection emits**, and the two FUSED arms differ **3.3x from each other**
+
+Items 1480 and 1483 both sized the `optional`/`coalesce` opportunity by comparing a sub-plan hop
+against `V().out(T).values(k).count()`, and called the ratio the prize — 19.3x at 1480, "still ~14x"
+at 1483. **That floor rides `hopValuesShortcut`, which emits bare VALUES and never materializes a
+vertex traverser**, so it does strictly less work than the thing being floored. The ratio was an
+upper bound, not a size.
+
+This is the third level of the same mistake in four items: item 1479's first floor was answered by a
+**chain count** (377x, actually 20.7x), 1480/1483's by the **values walk**. New instrument,
+`fused-vs-general-probe.mjs`, measures it directly.
+
+### The trick that makes a fair pair possible
+
+`hopValuesShortcut` accepts exactly three third steps — `values(k)` with one key, `id()`, or nothing —
+and **declines anything else**, falling back to the full pipeline. So `label()` after the hop gives
+the general route over the **identical hop and identical row count**, where `values(k)` gives the
+fused one.
+
+```text
+                    200,000 vertices, FANOUT 5, 1,000,000 rows each
+fused values(k)        34.83 ms      35 ns/row
+fused id()            117.23        117 ns/row
+general label()       545.92        546 ns/row
+
+general / fused(values) = 15.68x      general / fused(id) = 4.66x
+```
+
+At 50,000 the same three read 19.71x and 5.82x, so the ratio shrinks with size but the ordering holds.
+
+### What this changes
+
+**There is no single "fused vs general" number, and the right one depends on what the arm emits.**
+A sub-plan inside `optional` must emit **vertex traversers**, because they flow downstream — so the
+`values` arm (35 ns/row, no traverser, no vertex) is the wrong reference for it and the `id` arm
+(117 ns/row) is much closer. The honest prize for reaching the fused walk from a sub-plan is
+therefore nearer **4.7x than 14x.**
+
+That matters because 14x would justify a contract change to the fast-walk interface and 4.7x makes it
+a much narrower decision — exactly the distinction item 1465 drew when it corrected 86x to 3.3x.
+
+⚠️ **AND THE TWO FUSED ARMS DIFFER 3.3x FROM EACH OTHER** (35 against 117 ns/row) on the _same walk_,
+differing only in the `pick` closure — `far.properties[key]` against `far.id`. `fuseValuesIsCount`
+does **not** explain it (that rewrite needs `values(k), is(…), count()`, and there is no `is` here),
+and both arms take the same residual path with `rest = [count]`. **Recorded as an open observation
+rather than guessed at** — the property read beating the id read by 3.3x is counter-intuitive and
+whatever causes it is worth knowing before anyone prices a `pick`-shaped change.
+
+### Not a perfect pair, and the probe says so
+
+A property read is not a label read (first of a `Set`). It is the closest pair available without a
+second engine build, and both are one read per far vertex — so a ~1.5x result would have meant the
+`hop-values.ts` comments (375.6 against 251, "1.50x", for generator delegation alone) were the whole
+story. **4.66x says they are not**: delegation is part of it, and the traverser construction the fused
+walk skips is the rest.
+
+### Gates
+
+`bun run check` 0 read unpiped. One new instrument; no engine code changed. Items 1480 and 1483 keep
+their measured results — 1483's 1.26x was its own A/B and stands — but their framing of the REMAINING
+gap is corrected here.
