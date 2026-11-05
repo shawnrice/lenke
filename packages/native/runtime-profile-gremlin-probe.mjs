@@ -124,6 +124,12 @@ const SHAPES = {
   groupreduce: traversal(V(), group({ by: 'k' }), count()),
   // Barrier: the whole stream collapsed into one list.
   folded: traversal(V(), values('k'), fold(), count()),
+  // ⚠️ `values()` DIRECTLY, with nothing after it to dilute the measurement. Item 1476 found
+  // `projectValues` at 49.22% of `folded` — but `folded` also pays `foldStep`, so a change to
+  // `values` measured only there would be divided by work it did not touch.
+  valuesonly: traversal(V(), values('k'), count()),
+  // Two keys, which takes the multi-key arm the single-key specialization must not change.
+  valuestwo: traversal(V(), values('k', 'n'), count()),
 };
 
 const plan = SHAPES[SHAPE];

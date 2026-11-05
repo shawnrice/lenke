@@ -56400,3 +56400,99 @@ believing an exit 1 from that package.
 
 `asStep` (7% of `selected`, whose shape is 1776 ms) and `foldStep` (10% of `folded`) remain unpriced.
 `projectStep` is now priced and rejected; `projectValueMap` and `groupStep` are taken.
+
+### Item 1476 — SHIPPED, **1.39x** on `values('k')` (3/3, the multi-key arm of the same function FLAT): `projectValues` re-tested its key ARITY per row and allocated an array iterator per row to walk a one-element list. ⚠️ The two remaining nominations from item 1474 are both CLOSED as non-targets, and one of my own mutants was a NO-OP I nearly read as a test gap
+
+Items 1474/1475 left `asStep` and `foldStep` nominated. Pricing them found neither was the target —
+but re-profiling at honest sample counts turned up a much better one.
+
+### ⚠️ The 72-sample profile was noise, and it hid the real find
+
+Item 1474 profiled `folded` with **72 samples** and reported `foldStep` at 10%. Re-run at 400 reps
+(1,152 samples):
+
+```text
+49.22%  projectValues     ← 45.83% at 72 samples
+20.83%  foldStep          ← 10%    at 72 samples
+11.81%  sourceFromIds
+```
+
+Both shares roughly DOUBLED. PROBES.md says the ranking is noise below a few hundred samples; this is
+that, measured. The nomination that mattered was never `foldStep` — it was `projectValues`, and
+`values()` is on nearly every Gremlin query that reads a property.
+
+⚠️ **`projectValues` had ONE word-boundary mention**, and chasing it by hand was the whole point:
+the audit says _"`projectValues` already hoists correctly, which is why `values('age')` (593ms) is not
+this bug"_. That is **true of the property-bag read** — `const props = t.value.properties` is lifted
+out of the key loop — and says nothing about the ARITY branch, which was never hoisted. Exactly
+PROBES.md's warning that "has mentions" is not "is optimized".
+
+### The defect
+
+```ts
+for (const t of stream) {
+  …
+  if (keys.length === 0) { … }          // ← re-tested per row
+  else {
+    for (const key of keys) { … }       // ← an array iterator per row, for a list of length 1
+  }
+}
+```
+
+How many keys a step has is a property of the STEP. And `values('k')` — one key — is the
+overwhelmingly common spelling, so the general arm was allocating an iterator per row to walk a
+single element. The single-key case now reads that key directly; the no-keys and multi-key arms are
+untouched.
+
+```text
+                            POST                      PRE
+valuesonly             440.6 427.6 430.6      601.4 585.8 596.6     3/3, 1.39x
+valuestwo (same fn)   1023.8 1011.2 1009.1   1025.4 1014.6 1005.8   flat
+hopbare (control)     4024.8 4035.1 4010.8   4036.7 3979.1 3923.9   flat
+grouped (control)      147.8  151.3  148.2    145.6  149.2  146.7   flat
+```
+
+**`valuestwo` is the control that matters**: it takes the MULTI-key arm of the same function, so a
+specialization that helped one arm by making the other polymorphic would show there. It is flat.
+
+### Teeth — already present, and verified rather than assumed
+
+**No new tests.** Mutation shows the existing 11 `values` tests have teeth on all three arms:
+
+| mutant                                             | result               |
+| -------------------------------------------------- | -------------------- |
+| the single-key arm drops its presence guard        | 146 failures         |
+| the multi-key arm emits in BAG order               | 2 failures           |
+| the no-keys arm emits only the first property      | 1 failure            |
+| `single` never set (the NULL mutant: the PRE path) | survives, as it must |
+
+⚠️ **One of my mutants was a NO-OP and I nearly recorded its survival as a test gap.** `keys.length
+=== 1` → `keys.length <= 1`, meant to make the specialization wrongly claim the no-keys case,
+**survived** — and the reason is that `keys[0]` on an empty array is `undefined`, so the very next
+test (`single !== undefined`) routes it back to the correct arm. The mutant changed nothing. A real
+no-keys mutant (truncate `Object.values(props)`) is caught in 1 test, and bare `values()` turns out
+to be covered twice over.
+
+**The generalisable form: a surviving mutant is only evidence of a gap once you have checked that the
+mutant CHANGES BEHAVIOUR.** Otherwise "survived" means "was not a mutant".
+
+### The two nominations from item 1474, both CLOSED as non-targets
+
+**`asStep` — the shape's cost is elsewhere and already declined.** `selected`
+(`V().as('a').out('E').select('a').count()`) is the largest shape at 1776 ms, but its profile is
+**68% general tail**: `otherEndpoint` 26.28%, `iterLabeled` 21.62%, `iterByLabel` 8.36%,
+`traverseToVertex` 7.53%, `outEdgesOf` 4.54%. `asStep` itself is 7.11%. That tail is item 1464's
+`tracksPath` gate — a plan that tracks path is returned unrewritten and every fused walk is skipped —
+whose fix is a new walk variant, **priced at item 1465 and declined by the user at item 1466** on the
+~16% perturbation that any edit to those files costs. Nothing new here; `asStep` is 7% of a cost that
+is already recorded and already decided.
+
+**`foldStep` — ~14 ns per element, which is the barrier itself.** 20.83% of a 3.3 ms/rep shape is
+~0.69 ms to materialize 50,000 values into one list. `fold()` is defined as collapsing the stream, so
+that array is the operation, not overhead.
+
+### Gates
+
+core 431/0, gql 3709/0, gremlin 1258/0, native 961/0, serialization 144/0, `bun run fuzz` 20/0.
+`bun run check` 0 read unpiped. (The native run-many flake recurred and was clean on both isolated
+re-runs, as at item 1475.)

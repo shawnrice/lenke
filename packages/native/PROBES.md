@@ -180,8 +180,14 @@ engine** — a count shortcut already answers it, so item 1473's GQL defect has 
 Item 1475 then took two of those: **`projectValueMap` shipped at 1.14x** (a guard that could never
 fail), while **`projectStep` was REJECTED as flat** — its per-row identity-`By` allocation costs
 nothing because escape analysis keeps it off the heap, the second time that mechanism has retired a
-nomination here. **`asStep` (7%) and `foldStep` (10%) are still open nominations** — and the ZERO
-signal is one-shot, so these entries are now their only record.
+nomination here. Item 1476 closed the last two: **`asStep`** is 7% of a shape whose cost is 68% the `tracksPath`
+general tail (priced at 1464, fix declined at 1466), and **`foldStep`** is ~14 ns/element to build the
+list `fold()` is defined as building. Neither is a target.
+
+⚠️ **But re-profiling `folded` at 400 reps instead of 20 roughly DOUBLED both shares** (`projectValues`
+45.83% → 49.22%, `foldStep` 10% → 20.83%), and the real find was `projectValues` — **1.39x, item
+1476**. Its 72-sample profile had ranked the wrong frame. Below a few hundred samples the ranking is
+noise, which is the caveat above, now measured on this corpus.
 
 Both query surfaces at 20k AND 200k, plus the write path: **no unpriced frame survives**. Every
 nomination resolved to work already measured — `topKNodeWalk` to item 1064, `compareCodePoints` to
