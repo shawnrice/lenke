@@ -1091,3 +1091,39 @@ need the edge — though item 595 makes caching the endpoint a legitimate separa
 The open risk is **removal**: `Set.delete` is O(1) and keeping insertion order in an array means
 `splice`, so O(degree). Iteration order is unchanged (a `Set` and an appended array are both in
 insertion order), which is what byte-identity turns on.
+
+## `adjacency-removal-probe.mjs` — the gate on the array-adjacency design
+
+Item 1495 selected `Map<string, Set<Edge>>` → `Map<string, Edge[]>` (4.1x on a bare hop) and left
+removal unmeasured. `Set.delete` is O(1); order-preserving array removal is `indexOf` + `splice`,
+both O(degree) — the axis that disqualified the global dense ordinal.
+
+Two halves, because a micro on `Set.delete` alone is unbounded (items 1364, 1368, 1477):
+
+```text
+degree     set   splice     swap  indexed   splice/set        engine removeEdge
+     4   220.0    142.5    137.5    290.0   0.6x  ← faster    degree    4: 1530 ns (unreliable)
+    16    65.0     65.6     69.4    305.6   1.0x               degree   64: 1127
+  1024    36.9    129.0     71.4   1408.9   3.5x               degree 1024:  717
+  4096    41.6    266.5    202.0   5874.0   6.4x
+```
+
+**At degree 1024 the bucket operation is ~7% of a real removal** (37-46 of 529-717 ns), so `splice`
+makes it **+12% to +17% on the whole removal** — bounded, and below degree 16 it is an improvement.
+Gate passes against 4.1x on reads.
+
+⚠️ **A RANGE, not a point: the engine denominator moved 1.35x between runs** (717 then 529 ns) while
+the bucket micro held steady. The engine half is the noisy side — it rebuilds a fresh graph per rep,
+because removal is destructive and reusing one would measure a shrinking graph.
+
+Two traps the arms exist to show:
+
+- ⚠️ **`indexed` (array + a member→position `Map`) is the WORST arm at every degree**, by up to 22x:
+  it removes the `indexOf` search, keeps the `splice` shift, and then pays to renumber every
+  position after the hole. A plausible optimisation that is strictly worse than what it optimises.
+- ⚠️ **`swap` is cheap and must not be used** — it reorders the bucket, and adjacency iteration
+  order is observable in row order, which is what byte-identity turns on.
+
+**Removal order is load-bearing in the arms themselves**: they remove in a SCATTERED order so the
+expected shift is degree/2. Front-to-back makes `splice` look free and back-to-front maximally dear.
+Members are objects, not integers, because the real buckets hold `Edge` references.

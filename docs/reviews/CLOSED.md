@@ -58281,3 +58281,103 @@ it more tractable than it looks and one thing makes it risky:
 ### Gates
 
 `bun run check` 0 read unpiped. No engine code changed — three probe arms and a corrected price.
+
+### Item 1496 — the gate on item 1495's 4.1x: **removal costs +12.8% at degree 1024, and is FASTER at degree 4.** Gate passed. But enumerating the blast radius found a real blocker — `.has(member)` on a bucket is O(1) on a `Set` and **O(n) on an array, inside a nested loop**
+
+Item 1495 selected the design (`Map<string, Set<Edge>>` → `Map<string, Edge[]>`, 4.1x on a bare hop)
+and left one thing unmeasured: removal. `Set.delete` is O(1); an order-preserving array removal is
+`indexOf` + `splice`, both O(degree). That is the axis that disqualified the global dense ordinal
+(deletes 6.18x/11.34x, items 1369-1372/1397), so it is a gate, not a detail.
+
+New instrument: `adjacency-removal-probe.mjs`, in two halves — because a micro on `Set.delete`
+alone is unbounded, which is this corpus's most-repeated correction (items 1364, 1368, 1477).
+
+### Half one — the structures, by degree
+
+Every arm removes EVERY member of the bucket, one at a time, in a SCATTERED order (so the expected
+shift is degree/2 — front-to-back would make `splice` look free and back-to-front maximally dear).
+Members are objects, not integers, because the real buckets hold `Edge` references and `indexOf` on
+objects is a reference scan.
+
+```text
+degree        set     splice       swap    indexed   splice/set
+     4      220.0      142.5      137.5      290.0   0.6x   ← splice is FASTER
+    16       65.0       65.6       69.4      305.6   1.0x   ← crossover
+    64       56.6       80.2       74.1      446.2   1.4x
+   256       54.7       89.7       66.0      466.3   1.6x
+  1024       36.9      129.0       71.4     1408.9   3.5x
+  4096       41.6      266.5      202.0     5874.0   6.4x
+```
+
+Two results beyond the headline:
+
+- **`indexed` — an array plus a member→position `Map` kept updated — is the worst arm at every
+  degree**, by up to 22x. It removes the `indexOf` search and keeps the `splice` shift, then pays to
+  renumber every position after the hole. A plausible-sounding optimisation that is strictly worse
+  than the thing it optimises.
+- **`swap` (swap-remove) is cheap but must not be used.** It reorders the bucket, and adjacency
+  iteration order is observable in row order — which is what byte-identity between the TS and Rust
+  engines turns on. It is here as the bound and as the trap.
+
+### Half two — what the share is, which is what makes the micro mean anything
+
+```text
+hub degree   ns per engine removeEdge
+         4              1530.0   ← unreliable: 4 removals a rep is ~6 us, near clock resolution
+        64              1127.3
+      1024               716.6
+```
+
+A real `removeEdge` does far more than touch one bucket — element bookkeeping, both direction
+indexes, the label box, the id maps. **So at degree 1024 the bucket operation is ~37-46 ns of a
+529-717 ns removal — about 7% — and `splice` makes it ~128-129, a delta of ~82-92 ns, or +12% to
++17% on the whole removal.** At degree 4096 the delta is ~225 ns, roughly +30-40%. Below degree 16
+the change is an improvement.
+
+⚠️ **Quoted as a RANGE because the denominator moved 1.35x between runs** (716.6 then 529.4 ns at
+degree 1024, with the bucket micro steady at 36.9/45.5). A second run is what turned a confident
+"+12.8%" into an honest "+12-17%", and the engine half is the noisy side — it rebuilds a fresh graph
+per rep, since removal is destructive and reusing one would measure a shrinking graph.
+
+**Verdict: the gate passes.** A bounded +12-17% on removal at degree 1024 against 4.1x on reads is a
+strongly favourable trade for any realistic degree distribution, and the regression is proportional
+to one vertex's degree rather than to the graph — unlike the global dense ordinal, whose delete
+regression was unbounded by anything local.
+
+### ⚠️ But the enumeration found a blocker the pricing could not
+
+264 mentions of `edgesFromByLabel` / `edgesToByLabel` / `adjFrom` / `adjTo` across 15 non-test files.
+Counting which operations are actually used on a bucket shrinks that a lot — most readers only
+ITERATE, which is identical for a `Set` and an array — but it also surfaces the one that is not
+mechanical:
+
+```text
+50  .size      → .length                      mechanical (and over-counted: some are labels.length)
+ 5  .delete(   → indexOf + splice             Graph.ts, the measured cost above
+ 2  .add(      → push                         Graph.ts
+ 2  new Set()  → []                           Graph.ts
+ 8  .has(      → ⚠️ O(1) becomes O(n)
+```
+
+`unionOfBuckets` (`gremlin/src/executor/count-shortcut.ts`) does `buckets[j].has(member)` **inside a
+nested loop** over the buckets, to count a union without a `seen` set — the construction items
+1078/1382 built deliberately. On arrays that becomes O(k·|B|²) instead of O(k·|B|), which is a
+multi-label hop going quadratic. It has a fix (build a `Set` for the union path alone, or keep a
+parallel `Set` only where membership is tested), but it is a semantic change inside a function whose
+comment already records two order-related defects, so it is not a find-and-replace.
+
+**And a second risk the pricing did not carry:** the change touches `hop-values.ts` (17 mentions) and
+`hop-projection.ts` (48), the two files `executor-edits-perturb` records as costing unrelated rows up
+to 16% _for any edit at all_. So the net value cannot be read off the bare-hop row — it needs a WIDE
+A/B across the corpus, which is itself a tick's work rather than a verification step at the end of
+one.
+
+**Gate passed with its cost measured; scope enumerated; two risks named and neither yet addressed.**
+
+### Gates
+
+`bun run check` 0 read unpiped. No engine code changed — one new instrument.
+
+(⚠️ `grep` silently skipped `Graph.ts` for every one of these searches — it holds non-ASCII, and
+`str.count` in python found 11 mentions where grep found none. `grep-silently-skips-unicode`, third
+time this session.)
