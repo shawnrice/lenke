@@ -1284,6 +1284,25 @@ const relBoundHopWalk = (spec: {
       // memory-bound loop charges more for an added test than the skipped work returns. The ~65% of
       // `RETURN r.w` that is `propOf` + `get properties` is the reason it is this sensitive, and
       // item 1392 already closed that read as a cold-object dereference with no lever in it.
+      //
+      // ⚠️ AND THE OTHER CURE — giving this shape the FAR-DRIVEN route — IS STRUCTURALLY
+      // UNREACHABLE (item 1523). The gap is bigger than item 1521 measured: one property per row,
+      // far-driven against start-driven, is `RETURN x.k` 132.0 ns/row against `RETURN r.w` 339.2,
+      // **2.57x**, so the ROUTE dominates rather than the thing being read. But `farDrivenHopWalk`
+      // is fast for a reason that excludes an edge: it takes `n = unionCount(buckets)` from bucket
+      // SIZES, calls `projectRow` ONCE per far vertex, and pushes the template plus `n - 1` spread
+      // copies — it never iterates the edges at all, which is why a far-side property read is
+      // nearly free (`RETURN x` 129.5 against `RETURN x.k` 132.0, a 2.5 ns difference amortized
+      // over the degree).
+      //
+      // A projection that reads `r` needs a DISTINCT edge in each of those `n` rows, so the
+      // template-and-copy collapses and the walk must iterate the bucket — which is exactly the
+      // work this start-driven walk already does. The two routes are not two implementations of one
+      // traversal; the fast one answers a question that does not mention the edge.
+      //
+      // So the 1.86x (`RETURN r` against `RETURN x`) and the 2.57x (`RETURN r.w` against
+      // `RETURN x.k`) are both EXPLAINED and both without a cure on either route: trimming this
+      // walk is refuted above, and fusing into the other one is impossible by construction.
       for (const edge of bucket) {
         const far: Vertex = out ? edge.to : edge.from;
 

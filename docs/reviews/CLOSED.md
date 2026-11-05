@@ -60780,3 +60780,72 @@ giving the rel-bound shape the fused route rather than trimming the walk it has.
 `bun run check` 0 read unpiped. The engine change is REVERTED — the only edits are the comment and
 this entry — so the suites are item 1518's: core 431/0, gql **3803**/0, gremlin 1469/0, native 961/0,
 serialization 144/0, `bun run fuzz` 20/0 (both also run with the guard applied).
+
+### Item 1523 — the last cure for the rel-bound gap is **STRUCTURALLY UNREACHABLE, and reading the code settled it without a build.** The gap is bigger than item 1521 measured (**2.57x**, not 1.86x) — and `farDrivenHopWalk` is fast precisely because it never looks at an edge
+
+Item 1522 refuted trimming the start-driven walk and named the one remaining mechanism: give the
+rel-bound shape the FUSED route. This is that, and it took one measurement and one file read.
+
+### The gap is larger than 1.86x once the comparison is like-for-like
+
+Item 1521 compared `RETURN r` against `RETURN x` — an edge reference against a vertex reference. The
+sharper pair holds the WORK equal at one property read per row, far-driven against start-driven:
+
+```text
+farprop   MATCH (:P)-[:E]->(x) RETURN x.k    132.0 ns/row   (far-driven)
+relprop   MATCH (:P)-[r:E]->() RETURN r.w    339.2 ns/row   (start-driven)
+```
+
+**2.57x, alternated across four processes, bands non-overlapping.** Both read exactly one property per
+row, so **the ROUTE dominates, not the thing being read.** And the far-driven route makes a property
+read nearly free: `RETURN x` is 129.5 and `RETURN x.k` is 132.0 — **2.5 ns** for the whole read.
+
+### Why that 2.5 ns is the answer, and why it closes the line
+
+`farDrivenHopWalk`'s emit loop:
+
+```ts
+let n = unionCount(buckets, sumIsExact); // the DEGREE, from bucket SIZES
+binding.set(farVar, far);
+const template = projectRow(proj, binding, params, graph); // ONCE per far vertex
+rows.push(template);
+for (n -= 1; n > 0; n -= 1) {
+  rows.push({ ...template });
+}
+```
+
+**It never iterates the edges.** It takes the degree from bucket sizes, projects ONE row per far
+vertex, and pushes `n` spread copies. That is the whole 2.3x of item 167 and the whole reason a
+far-side property read amortizes to 2.5 ns a row.
+
+⚠️ **A projection reading `r` needs a DISTINCT edge in each of those `n` rows**, so the
+template-and-copy collapses and the walk must iterate the bucket — which is exactly the work the
+start-driven walk already does. The two routes are not two implementations of one traversal: **the
+fast one answers a question that does not mention the edge.** There is nothing to fuse.
+
+### So the 1521-1523 line closes with a mechanism rather than a number
+
+Every figure is now explained by one fact — far-driven amortizes over degree, rel-bound cannot:
+
+```text
+RETURN x    129.5 ns/row   one far-vertex visit, n cheap copies
+RETURN x.k  132.0          + a property read, amortized over the degree
+RETURN r    236.4          must visit every edge
+RETURN r.w  339.2          + read each edge's property box
+```
+
+And both cures are gone: **trimming** the start-driven walk is refuted on numbers (item 1522 — the
+guard works, gives 1.13x, and costs the same loop's other caller 16%), and **fusing** into the
+far-driven walk is impossible by construction. Recorded at the code so the next reader does not spend
+a tick re-deriving either half.
+
+⚠️ **The method note worth keeping:** item 1522 cost a full tick to build-and-refute; this one cost a
+measurement and a file read. The difference is that I read the fast route's BODY before trying to
+route anything into it. Item 1517 made the same mistake in the same arc — building the end-filtered
+product whose own comment had already said why it would lose.
+
+### Gates
+
+`bun run check` 0 read unpiped. No engine behaviour changed — the edits are a comment and this entry,
+plus one probe arm — so the suites are item 1522's: core 431/0, gql 3803/0, gremlin 1469/0,
+native 961/0, serialization 144/0, `bun run fuzz` 20/0.

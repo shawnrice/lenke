@@ -66,6 +66,12 @@ const ARMS = {
   // same rel-bound walk, skipping the anonymous far binding could change its OUTPUT — `mapToRow`
   // copies EVERY binding with no NUL filter. A cost far above `edge` says star is on the general
   // path instead and the hazard cannot arise.
+  // ⚠️ THE ROUTE PROXY (item 1523). `farnode` is fast because it takes `farDrivenHopWalk` — far
+  // vertices in CREATION order, item 167's 2.3x — while every rel-reading shape is start-driven.
+  // These two read ONE property per row each, one from the far vertex (far-driven) and one from the
+  // edge (start-driven), so the pair says whether the ROUTE or the thing being read dominates
+  // before any attempt to teach the far-driven walk to bind an edge.
+  farprop: 'MATCH (:P)-[:E]->(x) RETURN x.k AS k',
   star: 'MATCH (:P)-[r:E]->() RETURN *',
   starnamed: 'MATCH (p:P)-[r:E]->(x) RETURN *',
 };
