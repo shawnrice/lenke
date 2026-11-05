@@ -50,13 +50,23 @@ for (let e = 0; e < NODES * FANOUT; e += 1) {
   });
 }
 
+// ⚠️ TWO FAMILIES, because a trailing `count()` can be answered WITHOUT materializing the rows.
+// The first reading of this probe (item 1484) used the `count()` forms and reported `values(k)` at 35
+// ns/row against `id()`'s 117 on the same walk — a 3.3x that made no sense. It was not the pick: a
+// `count()` tail lets the engine skip producing the values at all, which the no-count forms below
+// show directly (`values(k)` WITHOUT count costs MORE per row than with it). Item 1485.
+//
+// The ROWS family is the honest one for "what does one hop plus a per-row projection cost", because
+// every arm must actually produce its rows.
 const ARMS = {
-  // ACCEPTED by hopValuesShortcut -> the fused walk, emitting bare values
-  'fused values(k)': traversal(V(), out('E'), values('k'), count()),
-  // also accepted (consumed = 3)
-  'fused id()': traversal(V(), out('E'), id(), count()),
-  // DECLINED -> the general traverser pipeline, same hop, same rows
-  'general label()': traversal(V(), out('E'), label(), count()),
+  // --- rows actually materialized (no count tail) ---
+  'rows values(k)': traversal(V(), out('E'), values('k')),
+  'rows id()': traversal(V(), out('E'), id()),
+  'rows label()': traversal(V(), out('E'), label()),
+  // --- the same three with a count tail, kept so the confound stays VISIBLE ---
+  'count values(k)': traversal(V(), out('E'), values('k'), count()),
+  'count id()': traversal(V(), out('E'), id(), count()),
+  'count label()': traversal(V(), out('E'), label(), count()),
 };
 
 const med = (xs) => {
@@ -78,7 +88,10 @@ for (const [name, plan] of Object.entries(ARMS)) {
     const out_ = toArray(plan, g);
 
     reps.push(performance.now() - t0);
-    answer = Number(Array.isArray(out_) ? out_[0] : out_);
+    // a count arm answers one row holding the tally; a rows arm answers the rows themselves
+    answer = name.startsWith('count')
+      ? Number(Array.isArray(out_) ? out_[0] : out_)
+      : [...out_].length;
   }
 
   const ms = med(reps.slice(DROP));
@@ -89,8 +102,14 @@ for (const [name, plan] of Object.entries(ARMS)) {
   );
 }
 
-// ⚠️ EVERY ARM MUST COUNT THE SAME ROWS, or the ratio is between two different questions.
+// ⚠️ EVERY ARM MUST COVER THE SAME ROWS, or a ratio is between two different questions.
 console.log(
-  `\ngeneral / fused(values) = ${(results['general label()'] / results['fused values(k)']).toFixed(2)}x` +
-    `   general / fused(id) = ${(results['general label()'] / results['fused id()']).toFixed(2)}x\n`,
+  `\nROWS (honest):  label/values = ${(results['rows label()'] / results['rows values(k)']).toFixed(2)}x` +
+    `   label/id = ${(results['rows label()'] / results['rows id()']).toFixed(2)}x` +
+    `   id/values = ${(results['rows id()'] / results['rows values(k)']).toFixed(2)}x`,
+);
+console.log(
+  `COUNT (confounded): label/values = ${(results['count label()'] / results['count values(k)']).toFixed(2)}x` +
+    `   label/id = ${(results['count label()'] / results['count id()']).toFixed(2)}x` +
+    `   id/values = ${(results['count id()'] / results['count values(k)']).toFixed(2)}x\n`,
 );

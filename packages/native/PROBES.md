@@ -855,7 +855,15 @@ projection emits, and **the two FUSED arms differ 3.3x from each other** on the 
 `pick` closure differs). So price a sub-plan change against an arm that emits **what the sub-plan must
 emit** — vertex traversers, i.e. the `id` arm at 4.66x — not against the cheapest fused arm.
 
-⚠️ **The 3.3x between the fused arms is UNEXPLAINED and recorded as such.** `fuseValuesIsCount` does
-not cause it (that needs `values(k), is(…), count()`), and both arms take the same residual path. A
-property read beating an id read by 3.3x is counter-intuitive; worth knowing before pricing anything
-`pick`-shaped.
+⚠️ **THAT 3.3x WAS A THIRD SHORTCUT, found at item 1485**: `count-shortcut.ts` treats a trailing
+single-key `values(k)` under a `count()` as a **presence filter** (item 1141), so those values are
+never materialized. The probe now runs TWO families — `rows` (no count tail, every arm must produce
+its rows) and `count` (kept so the confound stays visible) — and **the ordering REVERSES between
+them**: without a count tail `id()` is 2.8x cheaper than a property read, with one `values(k)` is 3.4x
+cheaper than `id()`.
+
+**Use the `rows` family to price anything.** At 200,000: `rows id()` 53 ns/row, `rows values(k)` 149,
+`rows label()` 629 — so fused-vs-general is **4.2x-11.9x**, not one number.
+
+⚠️ **The tell for a skipped materialization: the fast arm is faster than producing its own rows.**
+`out(E).values(k).count()` measured 2.81 ms against 7.65 for the same rows without the count.

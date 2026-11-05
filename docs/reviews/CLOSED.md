@@ -57114,7 +57114,7 @@ change — and now, thanks to item 1482, one that could live in a new module.
 core 431/0, gql 3709/0, gremlin 1308/0 (1293 + 15 new), native 961/0, serialization 144/0,
 `bun run fuzz` 20/0. `bun run check` 0 read unpiped.
 
-### Item 1484 — ⚠️ A CORRECTION TO MY OWN NUMBER IN TWO PRIOR ITEMS, and a new instrument: "the fused walk is ~14x the general pipeline" is **not one number**. It is **4.66x-15.68x depending on what the projection emits**, and the two FUSED arms differ **3.3x from each other**
+### Item 1484 — ⚠️ A CORRECTION TO MY OWN NUMBER IN TWO PRIOR ITEMS, and a new instrument: "the fused walk is ~14x the general pipeline" is **not one number**. It is a RANGE depending on what the projection emits ~~**4.66x-15.68x**~~ **(⚠️ those arms carried a THIRD shortcut — `values(k).count()` is a presence-filter count; item 1485 re-measures without it at 4.2x-11.9x, and the 3.3x between the fused arms REVERSES once it is removed)**, and the two FUSED arms differ **3.3x from each other**
 
 Items 1480 and 1483 both sized the `optional`/`coalesce` opportunity by comparing a sub-plan hop
 against `V().out(T).values(k).count()`, and called the ratio the prize — 19.3x at 1480, "still ~14x"
@@ -57175,3 +57175,76 @@ walk skips is the rest.
 `bun run check` 0 read unpiped. One new instrument; no engine code changed. Items 1480 and 1483 keep
 their measured results — 1483's 1.26x was its own A/B and stands — but their framing of the REMAINING
 gap is corrected here.
+
+### Item 1485 — the 3.3x anomaly EXPLAINED, and it was a FOURTH shortcut I had not accounted for: `values(k).count()` is a presence-filter count (item 1141), so those values are never materialized. With it removed the ordering REVERSES — `id()` is cheaper than a property read, as it should be — and "fused vs general" is a RANGE of **4.2x-11.9x**, not item 1484's 4.7x
+
+Item 1484 flagged an unexplained **3.3x between two FUSED arms** differing only in their `pick`
+closure (`far.properties[key]` beating `far.id`), recorded it as an open observation rather than
+guessing, and used the slower of them to correct the `optional` prize to "nearer 4.7x". **Both halves
+of that were wrong, and for one reason.**
+
+### The cause, found in the code rather than inferred
+
+`count-shortcut.ts:389`: _"A TRAILING single-key `values(k)` under a count IS a presence filter — item
+1141."_ So `V().out(T).values(k).count()` is answered as a **presence count** and the values are never
+produced. Item 1484's "fused `values(k)`" arm was not the fused walk emitting values; it was a third
+shortcut on top of it.
+
+My own data had already said so and I did not read it: at item 1483 the no-count form measured **7.65
+ms against the count form's 2.81** — producing the rows cost MORE than "counting" them. That is the
+tell for a skipped materialization, and it was sitting in the transcript two items earlier.
+
+### Measured with the confound removed
+
+The probe now runs two families: `rows` (no count tail, so every arm must actually produce its rows)
+and `count` (kept so the confound stays visible).
+
+```text
+                    200,000 vertices, FANOUT 5, 1,000,000 rows
+                  rows family        count family
+values(k)          149 ns/row          36 ns/row
+id()                53                122
+label() (general)  629                588
+
+ROWS  (honest):      label/values 4.21x   label/id 11.91x   id/values 0.35x
+COUNT (confounded):  label/values 16.49x  label/id  4.82x   id/values 3.42x
+```
+
+⚠️ **THE ORDERING REVERSES BETWEEN THE FAMILIES.** Without a count tail `id()` is **2.8x cheaper** than
+a property read — which is what anyone would predict. With one, `values(k)` becomes **3.4x cheaper**
+than `id()`, because only `values(k)` gets the presence-filter shortcut. The anomaly was never about
+the `pick`.
+
+### So what IS the fused-vs-general number?
+
+**A range, and the tail decides it as much as the projection**: 4.21x-11.91x in the rows family,
+4.82x-16.49x in the count family. Item 1484's "nearer 4.7x" came from `count label/id`, which is the
+one cell where the general arm is ALSO nearly unaffected by its tail — accidentally close to the rows
+family's `label/values` 4.21x, for unrelated reasons.
+
+**The rule this leaves**: match the TAIL, not just the hop. A sub-plan inside `optional` cannot reach
+any of these shortcuts — not the chain count (item 1479), not the values walk (1480/1483), not the
+presence count (here) — so every top-level plan that ends in `count()` is a doubly unfair floor for
+it. The fair reference is a rows-family arm, and for a sub-plan that must emit vertex traversers that
+is `rows id()` at 53 ns/row against `rows label()`'s 629 — i.e. the prize for reaching the fused walk
+from a sub-plan is **roughly an order of magnitude**, but only for the walk portion, and the traverser
+construction `optional` cannot avoid is not in that number.
+
+### Four shortcuts, four items, one mistake
+
+| item | the floor's hidden shortcut                       | claimed | after             |
+| ---- | ------------------------------------------------- | ------- | ----------------- |
+| 1479 | chain count (no walk at all)                      | 377x    | 20.7x             |
+| 1480 | values walk (no vertex, no traverser)             | 19.3x   | —                 |
+| 1483 | same                                              | "~14x"  | —                 |
+| 1485 | **presence-filter count** (values never produced) | 4.7x    | a 4.2-11.9x range |
+
+**Every one was a legitimate plan giving the same answer by a cheaper route.** That is what makes a
+floor seductive: it is not wrong, it is just not doing the work you are pricing. The generalisable
+check is now in `bench-methodology`: before quoting a ratio, ask what the fast arm SKIPS — and if the
+fast arm is faster than producing its own rows, it skipped producing them.
+
+### Gates
+
+`bun run check` 0 read unpiped. The probe gained the two families; no engine code changed. Item 1484's
+heading is corrected in place.
