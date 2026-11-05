@@ -59797,3 +59797,82 @@ caught only by the second half).
 
 `bun run check` 0 read unpiped. core 431/0, gql **3803**/0, gremlin 1469/0, native 961/0,
 serialization 144/0, `bun run fuzz` 20/0.
+
+### Item 1511 — ⚠️ **DECLINED with numbers: gating the 19-rung `fastPath` ladder on a construction-time `hasFastPath` is 1.08-1.09x on bare-RETURN shapes and ~1% WORSE on `count(*)`.** And the in-sweep A/B read `count(*)` as 1.10x FASTER — item 762's redistribution trap, caught by the control moving more than the target
+
+Re-profiled after item 1510. `runLinear` had fallen from 14.7% (10.2% + its 4.5% closure frame) to
+**5.0%**, confirming that landed. At 78 ns a call:
+
+```text
+19.1%  runLinearClauses    11.0%  (garbage collector)   5.0%  runLinear
+13.2%  execute              9.2%  fastPath              4.4%  reviveParams
+12.9%  plan                 6.6%  parseCacheHit         4.4%  (anonymous) in projectedRows
+                            6.3%  projectRow            4.1%  mapToArray
+```
+
+`fastPath` at 9.2% is the natural next target and the natural next instance of the items-1505/1510
+pattern: it tests **nineteen** rungs in order, and for a query no detector claims — a bare `RETURN`,
+a write, any uncovered MATCH shape — all nineteen `!== null` tests run on every call to learn
+nothing. `compileLinear` already knows whether any of them exists.
+
+### It was built, it works, and it does not pay for itself
+
+```text
+arm      PRE      POST    ratio
+floor   77.8 ns  72.2 ns  1.08x   RETURN 1 AS v        — no rung
+param   89.0     81.4     1.09x   RETURN $x AS v       — no rung
+one     35.6     36.1     0.99x   RETURN count(*)      — HAS a rung
+onerow 106.2    107.4     0.99x   RETURN n.k           — HAS a rung
+ten     36.1     36.2     flat
+insert 3981     3900      1.02x   a 4 µs call cannot see 6 ns
+wide/widefilt/aggrows                flat within the ~15% ms-scale band
+```
+
+One arm per process, **median of three runs each**. 7-9% on the bare-RETURN family, ~1% worse on
+`count(*)` and the node projection — which pay one extra property load to reach a rung they were
+always going to reach. Those are the more central shapes, both margins sit inside the run-to-run
+bands, and it would add a **third** scalar field to `CLinear`, each of which has to be registered in
+`routes-fired`'s `NON_DETECTORS` (item 1510 learned that by breaking five test files). Declined.
+
+The recipe is recorded at `fastPath` itself as well as here, because the repo's rule is that a
+rejected optimization lives next to the code it would have changed.
+
+### ⚠️ The in-sweep A/B said the opposite, and the giveaway was the one item 762 names
+
+Run as one multi-arm process rather than one arm per process:
+
+```text
+arm      PRE in-sweep  POST in-sweep   in-sweep ratio   ISOLATED ratio
+floor      78.7 ns       72.9 ns          1.08x            1.08x
+param      89.0          81.2             1.10x            1.09x
+one        40.2          36.5             1.10x            0.99x   ← SIGN FLIP
+ten        40.2          38.3             1.05x            flat
+```
+
+`one` has a rung and cannot gain from a gate that only skips a ladder it was going to enter — so
+reading it 1.10x faster was the signal something was wrong with the instrument, not the change. The
+cause is exactly item 762's: **in the PRE arm `fastPath` sees both rung-having and rung-less shapes;
+in the POST arm only rung-having ones, so its inline caches are cleaner.** A change that
+REDISTRIBUTES call sites flatters itself in a shared process, and the tell is a control moving more
+than the target.
+
+⚠️ **AND A SINGLE ISOLATED READING WAS NOT ENOUGH EITHER.** The first isolated POST run of `one` read
+**39.7 ns against a PRE of 35.4 — 12% worse**, which would have been reported as a real regression.
+Three repeats put PRE at 35.5/35.8/35.6 and POST at 36.1/35.9/36.3: the true figure is 1.4%, and the
+39.7 was an outlier. `param` threw a 112.5 against its own 80.8/81.4 in the same sweep. **At this
+scale one reading per arm is not a measurement, isolated or not** — which is the same lesson
+`ts-spelling-probe` records for the TS per-row path, arriving on the GQL call path.
+
+### What this tick did settle
+
+- Item 1510 landed: `runLinear` 14.7% → 5.0%.
+- The arc's cumulative floor is now **441.3 → 77.8 ns (5.67x)** across items 1508-1510.
+- `runLinearClauses`' own 19.1% is the largest remaining frame and it is the general clause loop
+  itself, not analysis around it — so the construction-time seam that paid for items 1504-1507 and
+  1510 is close to exhausted on this path too.
+
+### Gates
+
+Tree reverted to `HEAD` plus the two documentation changes; `bun run check` 0 read unpiped. No
+engine behaviour changed, so the suites are item 1510's: core 431/0, gql 3803/0, gremlin 1469/0,
+native 961/0, serialization 144/0, `bun run fuzz` 20/0.

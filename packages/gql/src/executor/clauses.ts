@@ -1376,6 +1376,35 @@ export const runLinear = (linear: CLinear, graph: Graph, params: Params): Row[] 
  * ORDER IS LOAD-BEARING. Each rung is more specific than the ones below it, and two pairs
  * actually depend on that: `distinctProjection` must precede `nodeProjection` (which does not
  * dedupe), and `countShortcut` must precede everything (it never materializes a row at all).
+ *
+ * ⚠️ DECLINED, WITH ITS NUMBERS (item 1511): gating this whole ladder on a construction-time
+ * `CLinear.hasFastPath` ("does ANY of the nineteen rungs exist for this shape?"), so a query no
+ * detector claims skips all nineteen `!== null` tests. The ladder is 9.2% of a 78 ns
+ * `RETURN 1 AS v`, and the gate works — it just does not pay for itself. One arm per process,
+ * median of three runs each:
+ *
+ * ```text
+ *   arm      PRE      POST    ratio
+ *   floor   77.8 ns  72.2 ns  1.08x   RETURN 1 AS v        — no rung
+ *   param   89.0     81.4     1.09x   RETURN $x AS v       — no rung
+ *   one     35.6     36.1     0.99x   RETURN count(*)      — HAS a rung
+ *   onerow 106.2    107.4     0.99x   RETURN n.k           — HAS a rung
+ *   ten     36.1     36.2     flat
+ *   insert 3981     3900      1.02x   a 4 us call cannot see 6 ns
+ * ```
+ *
+ * So: 7-9% on the bare-RETURN family, and ~1% WORSE on `count(*)` and the node projection, which
+ * pay one extra property load to reach a rung they were always going to reach. Those are the more
+ * central shapes, both margins sit inside the run-to-run bands, and it would add a THIRD scalar
+ * field to `CLinear` — each one of which has to be registered in `routes-fired`'s `NON_DETECTORS`
+ * (item 1510 learned that by breaking five test files). Not worth it for a win confined to queries
+ * with no MATCH.
+ *
+ * ⚠️ AND THE IN-SWEEP READING OF THAT A/B SAID THE OPPOSITE. Run as one multi-arm process, `one`
+ * measured 1.10x FASTER rather than 1% slower — because in the PRE arm this function sees both
+ * rung-having and rung-less shapes, and in the POST arm only rung-having ones, so its inline caches
+ * are cleaner. Item 762's redistribution trap, and the giveaway was exactly the one it names: a
+ * control moving more than the target.
  */
 const fastPath = (linear: CLinear, graph: Graph, params: Params): Row[] | undefined => {
   // Direct `count(*)` shortcut (edge-bucket size / degree product) — skips
