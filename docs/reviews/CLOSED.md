@@ -57726,3 +57726,136 @@ readily an untested guard as a redundant one, and the two have opposite fixes.
 
 `bun run check` 0 read unpiped. core 431/0, gql 3727/0, gremlin 1308/0, native 961/0,
 serialization 144/0, `bun run fuzz` 20/0.
+
+### Item 1491 — item 1490's mechanism is **structurally absent** from Gremlin, and measuring it anyway found a DIFFERENT 2.70x: a date comparison made **four cross-module calls to compare two integers**. Fast path shipped — **1.64x on the predicate, 1.26x on `order()`**, every control flat
+
+Item 1490's defect was AST-shaped (a stored `Temporal` read as an expression node). Gremlin
+dispatches a STEP LIST, not an expression tree, and its comparison values arrive from the host
+already as values — so there is no literal-vs-param distinction and no `.kind` sniffing anywhere in
+`gremlin/src`. **That is a one-grep negative, and it is not a price.** The surface was still
+unmeasured, so `temporal-probe.mjs` gained a Gremlin half over the same fixture.
+
+### What the pairing found
+
+```text
+                     numeric  temporal   ratio
+GQL    order            5.42      5.86   1.08x   ← was 2.74x at item 1489; 1490 closed it
+GREMLIN gfilter         1.91      5.20   2.70x   ← has('d', gt(…)), the predicate alone
+GREMLIN gorder          9.27     15.51   1.67x
+GREMLIN gproject        6.30      7.97   1.27x   ← values('d'), NO comparison
+```
+
+The GQL row is independent confirmation of item 1490: that pair read 2.74x before the fix and 1.08x
+after, measured by a probe half written for a different purpose.
+
+⚠️ **THE REP COUNT CHANGED THE ANSWER, AND IN THE DIRECTION THAT FLATTERS A WRONG CONCLUSION.** At
+the probe's default `REPS=9` the Gremlin gap read 2.01x; swept, it is 2.01 / 2.13 / 2.76 / 2.82x at
+9 / 20 / 60 / 200 reps. The numeric arm tiers up (2.57 → 1.85) and the temporal arm does not
+(5.16 → 5.21), so a short run UNDERSTATES this one. The default stays at 9 for the GQL half, which
+is stable there; quote the Gremlin half at 200.
+
+### ⚠️ And isolating one arm per process UNDERSTATES it too — the opposite of item 762's rule
+
+One arm per process, unprofiled, two rounds each: numeric 1.88 / 1.89, temporal 2.86 / 3.53. Paired
+in one process: numeric 1.85, temporal 5.20. **The numeric arm is unaffected by isolation and the
+temporal arm is ~1.6x faster alone.** `cmpSameType` is one module-level site, so a process that
+compares both types makes it polymorphic, and only the temporal arm pays for that.
+
+Item 762's "one shape per PROCESS" exists because a two-shape process FLATTERS a change that
+redistributes call sites. Here the same mechanism works the other way: isolation would have reported
+1.5-1.9x for a mixed workload that actually pays 2.70x. **So the rule has a direction — isolate to
+measure a CHANGE, pair to measure what a mixed workload costs** — and a bitemporal people-graph
+filtering on dates AND on numbers is the paired case.
+
+### The cause: four calls to compare two integers
+
+Profiling each arm separately (`GARM=`, the Gremlin twin of item 1489's `ARM`):
+
+```text
+numeric (525 ms engine)              temporal (641 ms engine)
+70.2%  propertyCount                 37.6%  propertyCount
+10.5%  matches                       14.3%  cmpNum          ← inside temporalRelCmp
+ 9.9%  get properties                13.2%  isTemporal      ← called TWICE per compare
+ 4.2%  cmpSameType                   11.7%  get properties
+ 0.8%  cmpOrd                        10.0%  cmpSameType
+                                      7.3%  matches
+ ─────                                4.1%  temporalRelCmp
+ 5.0%  comparison total              41.6%  comparison total
+```
+
+Per row, a date/date pair ran: three failed `typeof` tests, then `isTemporal(a)` and `isTemporal(b)`
+(each a 6-way `instanceof` chain), then `temporalRelCmp` (another `instanceof` pair), then `cmpNum`.
+Four cross-module calls — to compare two integers, because `LocalDate` holds a single `days` field.
+
+### The fix
+
+A date/date short-circuit in `cmpSameType`, placed **after** the three `typeof` tests so the numeric
+and string paths pay nothing for it:
+
+```ts
+if (a instanceof LocalDate && b instanceof LocalDate) {
+  if (a.days < b.days) {
+    return -1;
+  }
+
+  return a.days > b.days ? 1 : 0;
+}
+```
+
+DATE is the one kind worth special-casing rather than all six: it is the only temporal whose
+comparison is a single scalar (the rest are 2- or 3-tuples `cmpTuple` already handles, each needing
+its own branch), and it is the kind a bitemporal graph filters on.
+
+⚠️ **The byte-identity hazard is the NaN behaviour, and the two adjacent branches DISAGREE on it by
+design.** `cmpNum` tests `<` then `>` and falls through to 0, so a `NaN` day count compares EQUAL to
+everything. The number/number branch six lines above returns `NaN` for a NaN operand deliberately
+(unordered, so it matches no ordering predicate). `new LocalDate(NaN)` is constructible — the
+constructor validates the ARGUMENT COUNT, not the value — so this is reachable, and the fast path
+has to copy `cmpNum`'s version, not its neighbour's.
+
+### A/B — 200,000 vertices, REPS=200, median of 3 rounds, arm asserted from the built dist
+
+```text
+                                       PRE    POST   ratio
+T  gfilter  temporal  has('d',gt)     5.20    3.17   1.64x
+T  gorder   temporal  order()        15.51   12.28   1.26x
+C  gfilter  numeric                   1.91    1.92   1.00x
+C  gorder   numeric                   9.27    9.44   1.00x
+C  gproject temporal  values('d')     7.97    8.03   1.00x   ← reads dates, never compares
+C  gproject numeric                   6.30    6.35   1.00x
+```
+
+**`gproject` is the control that makes this a localized result rather than a global one**: it reads
+every date and compares none, and it is flat. So the win is in the comparison and nowhere else.
+
+(A single POST round read the numeric control at 2.49 against PRE's 1.85 — a 1.35x control move,
+which is the redistribution signature item 762 names. Three rounds showed it is the control's own
+spread: 1.85 / 1.92 / 2.47. One reading would have made a clean result look like a confound.)
+
+### Mutation — four behavioural mutants caught, and `null` survives BY DESIGN
+
+```text
+pristine     SURVIVED   10 pass  0 fail
+null         SURVIVED   10 pass  0 fail   ← expected: the route is answer-equivalent
+flip         CAUGHT      5 pass  5 fail
+diff         CAUGHT      7 pass  3 fail   ← `a.days - b.days` instead of normalized -1/0/1
+nan          CAUGHT      9 pass  1 fail   ← copied the NUMBER branch's NaN behaviour
+overclaim    CAUGHT      9 pass  1 fail
+```
+
+`null` removes the fast path entirely and every test passes — correctly, because the change cannot
+alter an answer. The perf instrument is the only thing that sees it, and the test file's value is the
+other four.
+
+⚠️ **`overclaim` first SURVIVED because every cross-kind assertion used ONE operand order.** It
+widens the guard to `isTemporal(a) && b instanceof LocalDate`; with a date on the LEFT that is false
+and the generic branch still runs, so the date-first assertions pass. With the date on the RIGHT it
+fires, reads `a.days` off a `LocalTime` (`undefined`), and `undefined < x` and `undefined > x` are
+both false — so it returns 0 and **two incomparable temporals silently order EQUAL**. A comparator's
+guard has two operands; a test for it needs two. Now asserted in both orders, at the function and
+through `has()`.
+
+### Gates
+
+`bun run check` 0 read unpiped. core 431/0, gql 3727/0, gremlin 1318/0, native 961/0,
+serialization 144/0, `bun run fuzz` 20/0.

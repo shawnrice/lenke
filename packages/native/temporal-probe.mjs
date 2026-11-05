@@ -22,6 +22,7 @@
  */
 import { Graph } from '@lenke/core';
 import { query } from '@lenke/gql';
+import { V, count, gt, has, hasLabel, order, toArray, traversal, values } from '@lenke/gremlin';
 
 import { profileWindow } from './windowed-profile.mjs';
 
@@ -162,6 +163,106 @@ for (const name of names) {
     `${name.padEnd(10)}${a.ms.toFixed(2).padStart(10)}${b.ms.toFixed(2).padStart(11)}` +
       `${`${(b.ms / a.ms).toFixed(2)}x`.padStart(9)}  ${a.rows} rows, witness ${a.witness}/${b.witness}  (${pair.note})`,
   );
+}
+
+// ─── THE GREMLIN HALF (item 1491) ────────────────────────────────────────────────────────────────
+//
+// Item 1490's defect was AST-SHAPED: the GQL parser lowers `DATE '…'` to a `lit` node holding a
+// `Temporal`, and the planner's structural walk read that stored value as an expression. Gremlin
+// has no expression tree — it dispatches a STEP LIST, and its comparison values arrive from the
+// HOST already as values — so that mechanism is structurally absent and there is no literal-vs-param
+// distinction to measure. Confirmed by reading: no `.kind` sniffing anywhere in `gremlin/src`.
+//
+// ⚠️ THAT IS AN ARGUMENT ABOUT ONE MECHANISM, NOT A PRICE. Gremlin could still pay a different
+// temporal cost — `predicates.ts` routes every comparison through `isTemporal` twice before
+// `temporalRelCmp` — and nothing had measured it, so the surface stays unpriced until it is.
+//
+// Same pairing discipline as the GQL half: each pair's two arms select the identical set, and the
+// witness is printed so a divergence is visible rather than averaged in.
+if (process.env.SKIP_GREMLIN === undefined && ARM === undefined) {
+  const CUT_NUM = 3600;
+  const CUT_T = dayOf(3600);
+
+  const G_PAIRS = {
+    gfilter: {
+      note: 'has(gt) over 200,000 vertices, 10% selective — the predicate itself',
+      numeric: traversal(V(), hasLabel('P'), has('num', gt(CUT_NUM)), count()),
+      temporal: traversal(V(), hasLabel('P'), has('d', gt(CUT_T)), count()),
+    },
+    gorder: {
+      note: 'order() over the selected tenth — the comparison path, which GQL pays 2.74x on',
+      numeric: traversal(V(), hasLabel('P'), has('num', gt(CUT_NUM)), values('num'), order()),
+      temporal: traversal(V(), hasLabel('P'), has('d', gt(CUT_T)), values('d'), order()),
+    },
+    gproject: {
+      note: 'a bare read of every value — isolates VALUE cost from compare cost',
+      numeric: traversal(V(), hasLabel('P'), values('num')),
+      temporal: traversal(V(), hasLabel('P'), values('d')),
+    },
+  };
+
+  console.log(`\nGREMLIN — same fixture, same pairs\n`);
+  console.log(
+    `${'pair'.padEnd(10)}${'numeric'.padStart(10)}${'temporal'.padStart(11)}${'ratio'.padStart(9)}  rows`,
+  );
+
+  // ⚠️ `GARM` is the Gremlin twin of `ARM`, and for the same reason: one profile window over both
+  // arms attributes the numeric frames and the temporal frames to the same capture. With `GARM`
+  // set, only that arm runs and only it is profiled.
+  const { GARM } = process.env;
+
+  if (GARM !== undefined && GARM !== 'numeric' && GARM !== 'temporal') {
+    throw new Error(`GARM must be numeric|temporal, got ${GARM}`);
+  }
+
+  for (const [name, pair] of Object.entries(G_PAIRS)) {
+    if (process.env.GPAIR !== undefined && process.env.GPAIR !== name) {
+      continue;
+    }
+
+    const timedG = (plan) =>
+      profileWindow(process.env.PROF_OUT, () => {
+        const reps = [];
+        let rows = 0;
+        let witness = null;
+
+        for (let r = 0; r < REPS; r += 1) {
+          const t0 = performance.now();
+          // ⚠️ `toArray(plan, graph)` IN THAT ORDER — item 1349 lost a round to the other order.
+          const out = toArray(plan, graph);
+
+          reps.push(performance.now() - t0);
+          rows = Array.isArray(out) ? out.length : 1;
+          witness = JSON.stringify(Array.isArray(out) ? out[0] : out);
+        }
+
+        return { ms: med(reps.slice(DROP)), rows, witness };
+      });
+
+    const blank = { ms: 0, rows: 0, witness: null };
+    const a = GARM === 'temporal' ? blank : await timedG(pair.numeric);
+    const b = GARM === 'numeric' ? blank : await timedG(pair.temporal);
+
+    if (GARM !== undefined) {
+      console.log(`GARM=${GARM} ${name} ms=${(GARM === 'numeric' ? a.ms : b.ms).toFixed(2)}`);
+      continue;
+    }
+
+    if (a.rows !== b.rows) {
+      throw new Error(`PAIR ${name} ROW COUNTS DIFFER — numeric=${a.rows} temporal=${b.rows}.`);
+    }
+
+    if (name === 'gfilter' && a.witness !== b.witness) {
+      throw new Error(
+        `PAIR ${name} SELECTED DIFFERENT SETS — numeric tally=${a.witness} temporal=${b.witness}.`,
+      );
+    }
+
+    console.log(
+      `${name.padEnd(10)}${a.ms.toFixed(2).padStart(10)}${b.ms.toFixed(2).padStart(11)}` +
+        `${`${(b.ms / a.ms).toFixed(2)}x`.padStart(9)}  ${a.rows} rows, witness ${a.witness}/${b.witness}  (${pair.note})`,
+    );
+  }
 }
 
 console.log();

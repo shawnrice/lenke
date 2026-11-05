@@ -965,3 +965,31 @@ witnesses are the same day by two spellings.
 
 ⚠️ **`ARM=numeric|temporal` for profiling.** One window over both arms attributes their frames to the
 same capture, which is how a 2.74x gap becomes unreadable.
+
+### It has a GREMLIN half now (item 1491), and the two surfaces disagree
+
+Item 1490 fixed the GQL `order` row above — **2.74x → 1.08x** — and the cause was the temporal
+LITERAL in the predicate, not the sort key. The row's own "different routes" note is what led there;
+its inference that the cost was the ordering path was wrong, because the pair it never ran was a
+temporal predicate with a numeric projection.
+
+The Gremlin half (`gfilter` / `gorder` / `gproject`, same fixture) was added to check whether item
+1490's mechanism existed there. It does not — Gremlin dispatches a step list, not an expression tree
+— but the surface measured 2.70x anyway, for an unrelated reason, fixed at item 1491.
+
+⚠️ **QUOTE THE GREMLIN HALF AT `REPS=200`, NOT THE DEFAULT 9.** The gap reads 2.01 / 2.13 / 2.76 /
+2.82x at 9 / 20 / 60 / 200 reps: the numeric arm tiers up (2.57 → 1.85) and the temporal arm does not
+(5.16 → 5.21), so a short run UNDERSTATES this one. The default stays 9 because the GQL half is
+stable there.
+
+⚠️ **AND `GARM=` ISOLATION UNDERSTATES IT TOO — the opposite of item 762's rule.** One arm per
+process: numeric 1.88/1.89, temporal 2.86/3.53. Paired: numeric 1.85, temporal 5.20. `cmpSameType` is
+one module-level site, so a process comparing both types makes it polymorphic and ONLY the temporal
+arm pays. Item 762's "one shape per process" exists because pairing FLATTERS a redistributing change;
+here pairing is the honest case. **Isolate to measure a CHANGE; pair to measure what a mixed workload
+costs** — and a graph filtering on dates and numbers alike is the paired case. Use `GARM` for
+profiling (one window over both arms attributes their frames together) and the paired run for a
+price.
+
+`GPAIR=<name>` selects one Gremlin pair; `SKIP_GREMLIN=1` (any value, including empty) skips the half
+entirely.

@@ -1,4 +1,10 @@
-import { fromTaggedJson, isTemporal, temporalCmpTotal, temporalRelCmp } from '@lenke/core';
+import {
+  LocalDate,
+  fromTaggedJson,
+  isTemporal,
+  temporalCmpTotal,
+  temporalRelCmp,
+} from '@lenke/core';
 import { ErrorCode, LenkeError } from '@lenke/errors';
 
 import type { Orderable, Predicate } from './ast.js';
@@ -202,6 +208,36 @@ const cmpSameType = (a: unknown, b: unknown): number | null => {
     }
 
     return a ? 1 : -1;
+  }
+
+  // ⚠️ A DATE/DATE PAIR SHORT-CIRCUITS THE WHOLE TEMPORAL CHAIN (item 1491), and it is placed
+  // HERE — after the three `typeof` tests — rather than first, so the numeric and string paths
+  // pay nothing for it. Measured flat on both (controls below).
+  //
+  // What it replaces, per row: `isTemporal(a)` and `isTemporal(b)` (each a 6-way `instanceof`
+  // chain), then `temporalRelCmp` (another `instanceof` pair), then `cmpNum`. Four cross-module
+  // calls to compare two integers, when `LocalDate` holds a single `days` field. A CPU profile of
+  // `has('d', gt(<date>))` over 200,000 vertices put that chain at 41.6% of the arm — `cmpNum`
+  // 14.3%, `isTemporal` 13.2%, `cmpSameType` 10.0%, `temporalRelCmp` 4.1% — against 5.0% for the
+  // numeric twin's `cmpSameType` + `cmpOrd`.
+  //
+  // DATE is the one temporal kind worth special-casing rather than all six: it is the only one
+  // whose comparison is a single scalar (the others are 2- or 3-tuples, which `cmpTuple` already
+  // handles and which would need their own branch each), and it is the kind a bitemporal
+  // people-graph filters on.
+  //
+  // ⚠️ BYTE-IDENTITY: this must reproduce `cmpNum(a.days, b.days)` EXACTLY, including its NaN
+  // behaviour. `cmpNum` tests `<` then `>` and falls through to 0, so a `NaN` day count compares
+  // EQUAL to everything rather than returning NaN — unlike the number/number branch above, which
+  // returns NaN deliberately. `new LocalDate(NaN)` is constructible, so that is reachable, and the
+  // fall-through below keeps it. Do not "fix" it here: a date is not a number as far as this
+  // function is concerned, and changing it would diverge from native.
+  if (a instanceof LocalDate && b instanceof LocalDate) {
+    if (a.days < b.days) {
+      return -1;
+    }
+
+    return a.days > b.days ? 1 : 0;
   }
 
   // Temporals of the same instant kind (date/datetime) order chronologically;
