@@ -9709,6 +9709,26 @@ export const detectNodeProjection = (
 
       // Only SURVIVORS reach here, so the row object and the item evaluations are paid per
       // result rather than per scanned vertex.
+      //
+      // ⚠️ REJECTED, WITH ITS NUMBERS (item 1512): hoisting the `{ binding, params, graph }` below
+      // out of the loop, so the env object is allocated once per call instead of once per
+      // NON-DIRECT column per row. The profile nominated it — GC was 18.1% of a 200,000-row
+      // projection — and the hoist is the established spelling at ~30 other sites in this file
+      // family, so it looked like free money.
+      //
+      // It is flat. Measured on a projection of FOUR expression columns over 200,000 vertices, so
+      // 800,000 allocations per call are removed rather than 200,000 (`gql-projection-reach-probe`'s
+      // `exprcols` arm exists for exactly this; `wide` has only one non-direct column and cannot
+      // resolve it against the ~15% ms-scale spread). Five isolated runs each, median of medians:
+      //
+      //     PRE  22.74 23.32 23.84 23.85 26.50  ->  23.84 ms
+      //     POST 22.80 23.13 23.57 24.80 25.70  ->  23.57 ms      1.01x
+      //
+      // The arm was verified to take THIS rung (`nodeProjection`) before the numbers were read, so
+      // the change did reach the executed loop. This is item 424's corollary again, in a new place:
+      // **"it allocates per row" is not by itself a cost in this engine** — V8's young-generation
+      // bump allocation is near-free, and an 18.1% GC share does not track allocation COUNT. The
+      // remaining GC is the row objects themselves, which the API has to return.
       if (!allDirect) {
         binding.set(nodeVar, v);
       }

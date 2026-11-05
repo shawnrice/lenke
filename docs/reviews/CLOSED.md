@@ -59876,3 +59876,84 @@ scale one reading per arm is not a measurement, isolated or not** — which is t
 Tree reverted to `HEAD` plus the two documentation changes; `bun run check` 0 read unpiped. No
 engine behaviour changed, so the suites are item 1510's: core 431/0, gql 3803/0, gremlin 1469/0,
 native 961/0, serialization 144/0, `bun run fuzz` 20/0.
+
+### Item 1512 — changed regime to the MULTI-ROW path and ⚠️ **REFUTED the thing its profile nominated: hoisting a per-row `{ binding, params, graph }` out of the hot projection loop is FLAT even with 800,000 allocations per call removed.** New instrument (`exprcols`) built because the existing arm could not resolve it
+
+Items 1508-1511 worked the per-call floor on both surfaces and took it from 441.3 to 77.8 ns
+(5.67x). The construction-time seam is exhausted there, so this tick profiled the regime the arc had
+not touched: 200,000 rows through the projection path.
+
+### ⚠️ The shape I assumed was wrong before the first measurement
+
+`gql-projection-reach-probe`'s `wide` arm — `MATCH (n:P) RETURN n.k, n.n, n.k + 1` over 200,000
+vertices — is NOT on the general projection path. It takes the `nodeProjection` rung. At 60
+iterations (the first window, at 3 iterations, gave ~40 samples and was unreadable):
+
+```text
+44.5%  (anonymous) in detectNodeProjection   5.4%  variable.variable in compileExpr
+18.1%  (garbage collector)                   3.8%  get properties
+12.0%  fastPath            ← the INLINED rung call, not the ladder
+10.4%  propOf                                3.4%  (anonymous) in compileExpr
+```
+
+`fastPath` at 12% is the same inlining artifact as ever: it `return`s the rung's closure call, so
+the callee's time lands on it. The rung's per-row loop is therefore ~56%, and GC is 18.1%.
+
+### What the per-row loop does, and the allocation the profile pointed at
+
+```ts
+row[cols[i]] = dk === undefined ? fns[i]({ binding, params, graph }) : propOf(v, dk);
+```
+
+A fresh `EvalEnv` **per non-direct column per row**, holding three references that are invariant for
+the whole walk (`binding` is ONE map mutated in place). Hoisting it is already the established
+spelling at ~30 sites across `shortcuts.ts` / `hop-projection.ts` / `clauses.ts` — one comment there
+even records removing it from inside a `.map` — so these five were stragglers, not a new idea.
+
+Five sites hoisted: the `nodeProjection` row loop, the `FOR`-projection row loop, and three per-edge
+`gate(...)` calls in `hop-projection.ts`.
+
+### ⚠️ A new arm, because `wide` cannot see the effect
+
+A DIRECT column (`n.k AS k`) is served by `propOf` and never allocates. `wide` has two direct columns
+and one expression, so it has **one** allocation per row to remove — against a ~15%
+process-to-process spread at ms scale (established at item 1509). Unresolvable by construction.
+
+`exprcols` — `RETURN n.k + 1 AS a, n.k + 2 AS b, n.k + 3 AS c, n.k + 4 AS d` — is the same row count
+with **four** non-direct columns, so 800,000 allocations per call instead of 200,000: four times the
+effect, same shape, same rung.
+
+### It is flat
+
+```text
+          runs (5 isolated processes each, each a median of 10 reps)        median
+PRE   22.74  23.32  23.84  23.85  26.50                                     23.84 ms
+POST  22.80  23.13  23.57  24.80  25.70                                     23.57 ms   1.01x
+```
+
+⚠️ **The arm was verified to take the `nodeProjection` rung before the numbers were read** — the
+"assert each A/B arm IS the code it claims" rule — so the hoist did reach the executed loop. Flat is
+the answer, not a miss.
+
+**This is item 424's corollary arriving in a new place: _"it allocates per row" is not by itself a
+cost in this engine._** V8's young-generation bump allocation is near-free, and an 18.1% GC share
+does not track allocation COUNT — the remaining GC is the row objects themselves, which the API has
+to return. Declined and recorded at the loop as well as here.
+
+Item 1508 refuted two allocation hypotheses on the per-call path for the same reason; this is the
+third, now on the per-row path. **Allocation count is not a target in this engine on either path,
+and the profile's GC share will keep nominating it.**
+
+### What is left on this path, unpriced
+
+At 23.8 ms for 800,000 expression evaluations, each `n.k + 1` costs ~30 ns: a `binding.get('n')`
+string-keyed `Map` lookup, a `propOf` (the `properties` box getter plus an index), and the arith
+step. The four columns of one row each repeat the same `binding.get` and the same `.properties`
+read — four Map lookups and four getter calls for one vertex. Hoisting THAT (per row rather than per
+column) is a different change from this one and is not priced here.
+
+### Gates
+
+`bun run check` 0 read unpiped. The hoist is reverted, so engine behaviour is item 1510's and the
+suites are unchanged: core 431/0, gql **3803**/0 (re-run with the hoist applied, before reverting),
+gremlin 1469/0, native 961/0, serialization 144/0, `bun run fuzz` 20/0.

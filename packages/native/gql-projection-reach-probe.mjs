@@ -27,6 +27,8 @@
 import { Graph } from '@lenke/core';
 import { query } from '@lenke/gql';
 
+import { profileWindow } from './windowed-profile.mjs';
+
 const N = Number(process.env.N ?? 200_000);
 const REPS = Number(process.env.REPS ?? 9);
 const DROP = Number(process.env.DROP ?? 2);
@@ -43,10 +45,20 @@ const ARMS = {
   wide: 'MATCH (n:P) RETURN n.k AS k, n.n AS m, n.k + 1 AS p',
   widefilt: 'MATCH (n:P) WHERE n.k > 90 RETURN n.k AS k, n.n AS m, n.k + 1 AS p',
   aggrows: 'MATCH (n:P) RETURN n.k AS k, count(*) AS c',
+  /**
+   * ⚠️ THE ARM BUILT TO SEE ITEM 1512, and the reason it exists is that `wide` cannot.
+   *
+   * The hoist removes ONE `{ binding, params, graph }` allocation per NON-DIRECT column per row. A
+   * direct column (`n.k AS k`) is served by `propOf` and never allocates, so `wide` — two direct
+   * columns and one expression — has only one allocation per row to remove, against a ~15%
+   * process-to-process spread at ms scale. Every column here is an expression, so there are FOUR
+   * per row: same row count, four times the effect, and the arm is otherwise identical in shape.
+   */
+  exprcols: 'MATCH (n:P) RETURN n.k + 1 AS a, n.k + 2 AS b, n.k + 3 AS c, n.k + 4 AS d',
 };
 
 // Per-arm rep counts: `noop`/`exprs` are nanoseconds, the wide ones are milliseconds.
-const INNER = { noop: 50_000, exprs: 50_000, wide: 1, widefilt: 1, aggrows: 1 };
+const INNER = { noop: 50_000, exprs: 50_000, wide: 1, widefilt: 1, aggrows: 1, exprcols: 1 };
 
 const med = (xs) => {
   const s = [...xs].sort((a, b) => a - b);
@@ -83,6 +95,19 @@ for (const [name, text] of Object.entries(ARMS)) {
     }
 
     times.push(((performance.now() - t0) * 1e6) / inner);
+  }
+
+  // ⚠️ PROFILE WINDOW over the SELECTED arm only, which is why `ARM` is required to use it: a
+  // window over several arms mixes their frames and the ranking becomes meaningless.
+  if (process.env.PROF_OUT !== undefined && ONLY !== undefined) {
+    // eslint-disable-next-line no-await-in-loop
+    await profileWindow(process.env.PROF_OUT, () => {
+      for (let i = 0; i < Number(process.env.PROF_ITERS ?? Math.max(1, inner) * 3); i += 1) {
+        query(graph, text);
+      }
+
+      return 0;
+    });
   }
 
   const ns = med(times.slice(DROP));
