@@ -58107,3 +58107,95 @@ PRE.
 
 `bun run check` 0 read unpiped. core 431/0, gql 3727/0, gremlin 1406/0, native 961/0,
 serialization 144/0, `bun run fuzz` 20/0.
+
+### Item 1494 — **`V().out(T)` is already within 4.6% of a hand-written loop**, so the Gremlin bare hop has no pipeline overhead left. Decomposed the whole 43.2 ms row, and **refuted the endpoint-getter lever: a plain own property is 1.19x WORSE**
+
+Item 1493's clean profile (the one that was not an inlining artifact) said `hopbare` is `drain` 73.9%
+and `get to` 24.6%. `drain` is the walk itself, so the readable claim was the getter — and
+`get to` is MEMOIZED (item 595, `#toV ??= getVertexById(...)`), which makes 24.6% suspicious the way
+item 1493's 97.1% was. Unlike that one it is arithmetically possible (a warm getter has no callees
+to absorb), so it needed a floor rather than an argument.
+
+### New instrument: `hop-rows-floor-probe.mjs`
+
+Nine arms, each adding one thing, every one producing the SAME 400,000-element array the engine
+produces — a floor that skips the materialization prices a different question, which is the error
+items 1479, 1480/1483, 1485 and 1488 each made. One arm per process (item 1492).
+
+```text
+arm         total    MARGINAL over the arm above   what it adds
+vonly        0.8 ms  —                             walk verticesById.values()
+vbox         1.0     +0.2 ms                       + read the adjacency box getter
+vget        11.8    +10.8      54 ns a VERTEX      + the per-vertex type Map.get
+reach       28.3    +16.5      41 ns an EDGE       + iterate the edge Sets
+rowsedge    29.9     +1.6       4 ns an EDGE       + materialize an array of the EDGES
+rowsto      41.3    +11.4      29 ns an EDGE       + read e.to instead of pushing the edge
+engine      43.2     +1.9                          the real traversal
+```
+
+(`rowstoid`, which pushes `e.toId`, lands with `rowsto` at 42.5 — resolving the vertex costs nothing
+over reading the id, because the resolution is memoized.)
+
+**The engine is 43.2 against the floor's 41.2 — 4.6%.** So `V().out(T)` has no recoverable pipeline
+overhead at all: `drain` at 73.9% of the profile IS the walk, and the two levers a reader would take
+from that profile are both dead. The row's cost, as shares:
+
+```text
+ 2%  walk the vertices and read the box
+25%  the per-vertex type lookup           ← 54 ns a VERTEX for a Map.get
+38%  iterating the edge Sets              ← 41 ns an EDGE
+ 4%  materializing the result array
+26%  reading the endpoint and pushing it  ← of which the READ is ~9% (see below)
+ 4%  the engine over the floor
+```
+
+### ⚠️ The endpoint-getter lever is REFUTED, and the refutation is the useful part
+
+`rowstoid` pays 33 ns an edge over `rowsedge`, which looked like the getter. `rowsplain` stashes the
+SAME string as a plain own property once, outside the timed loop, so the only difference is
+getter-versus-plain-property:
+
+```text
+rowsedge    74.66  72.67  75.83 ns/edge
+rowstoid   103.43 106.28 107.78
+rowsplain  125.95 120.09 128.46   ← 1.19x WORSE than the getter
+```
+
+**Making it a plain property is slower, not faster.** Adding an own property to 400,000 `Edge`
+objects transitions their hidden class, so every access on every one of them gets dearer — the cost
+lands on the whole object, not on the one field. That is a general result worth keeping: _you cannot
+buy your way out of a getter by adding a field to a class with many live instances._
+
+⚠️ **And the 33 ns was never the getter.** A `rowstotwice` arm reads `e.to` TWICE per edge and pays
+only **~10 ns** more (106.85 → 114.26), so a warm endpoint read is ~10 ns an edge — **9% of the row,
+not 30%.** My own mid-tick attribution of 30% to "the endpoint read" bundled the materialization with
+it; the read alone is 9%, and what the remaining ~23 ns of the `rowsedge`→`rowstoid` step buys is the
+push of a string rather than an already-held object reference. Corrected here rather than carried.
+
+(The first version of `rowstotwice` was written `push(e.to === undefined ? e.to : e.to)`, which
+conflated a comparison with the two reads and read 177 ns. Its number is quoted nowhere.)
+
+### ⚠️ A probe-only mutation has to be gated to its own arm
+
+The first version applied the `__probeTo` stash whenever `ARM` was unset — so a full-ladder run
+transitioned every Edge's hidden class and taxed **every other arm**, by the very mechanism the arm
+exists to demonstrate. Now gated to `ARM=rowsplain`. A probe that mutates the fixture to measure one
+arm is a probe that can invalidate all the others.
+
+### What is left, and what it is NOT
+
+The two structural shares — the per-vertex type lookup (25%) and the `Set` iteration (38%) — are the
+only remaining levers, and both mean replacing `Map<string, Set<Edge>>` with a flat per-vertex
+adjacency (a packed array plus per-type offsets): the lookup becomes an offset read and the iteration
+an array walk. Ceiling ~1.6x on this shape.
+
+⚠️ **That is NOT the lever `no-dense-vertex-ordinal` disqualified.** That one was a GLOBAL dense
+vertex ordinal, built and rejected at items 1369-1372/1397 because deletes went 6.18x/11.34x under
+churn. A per-vertex flat adjacency needs no global ordinal and leaves by-id access untouched. It is
+also a storage-layout change with byte-identity, delete-path and `executor-edits-perturb` exposure,
+so it wants its own item rather than the tail of this one. **Priced, not built.**
+
+### Gates
+
+`bun run check` 0 read unpiped. No engine code changed this item — one new instrument and two
+refuted levers.

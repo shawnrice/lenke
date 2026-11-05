@@ -1035,3 +1035,31 @@ count.** The analyzer's `mentions` column does not help here — `degreeOfTypes`
 `hophas` was added at item 1493 for this: `filterchain` filters the VERTEX SET and `hopbare` walks
 without filtering, so neither covers the common shape of walking and then filtering the FAR end,
 where the test count scales with FANOUT rather than with |V|.
+
+## `hop-rows-floor-probe.mjs` — what `V().out(T)` costs, step by step
+
+`hopbare` was the largest row in the Gremlin corpus that nothing had decomposed. Nine arms, each
+adding ONE thing, every one producing the same 400,000-element array the engine produces. One arm
+per process (item 1492's rule).
+
+**The headline is a negative: the engine is within 4.6% of the hand-written floor** (43.2 against
+41.2 ms), so `drain` at 73.9% of its profile IS the walk and there is no pipeline overhead to
+recover. The marginal shares (item 1494): 2% the vertex walk, **25% the per-vertex type `Map.get`
+(54 ns a vertex)**, **38% iterating the edge `Set`s (41 ns an edge)**, 4% materializing, 26% reading
+and pushing the endpoint, 4% the engine.
+
+⚠️ **The endpoint getter is NOT the lever**, twice over. A second warm `e.to` read costs only ~10 ns
+an edge, so the read is ~9% of the row (a profile had suggested 24.6%, and my own first attribution
+said 30% because it bundled the materialization). And `rowsplain`, which stashes the same string as
+a PLAIN own property, is **1.19x WORSE** than the getter — adding an own property to 400,000 `Edge`
+objects transitions their hidden class and slows every access on all of them. _You cannot buy your
+way out of a getter by adding a field to a class with many live instances._
+
+⚠️ **`ARM=rowsplain` MUTATES THE FIXTURE and is gated to that arm alone.** The first version applied
+the stash whenever `ARM` was unset, so a full-ladder run taxed every other arm by exactly the
+mechanism that arm exists to demonstrate. A probe that mutates the fixture for one arm can
+invalidate all the others.
+
+What remains is the two structural shares (type lookup + `Set` iteration, 63% together), which mean a
+flat per-vertex adjacency — priced at ~1.6x and NOT the global dense ordinal that was built and
+disqualified at items 1369-1372/1397.
