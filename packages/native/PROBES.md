@@ -1281,6 +1281,21 @@ on the execution path.
 walk is gone and a fresh plan arrives already analysed. **count 315 → 200 (1.57x), hop 456 → 265
 (1.72x), filtered 1186 → 1031 (1.15x) on the reused arm; the rebuilt arm is FLAT** (769-788 vs 787),
 where the memo was 1.07-1.15x worse. Wide controls at 200,000 vertices unmoved: hopbare 1.01x,
-hopcount3 1.00x, grouped 1.01x. The same design is still available for the other passes
-(`checkSteps`, `effectivePlan`'s pure prefix, `streamStaysElements`) — each is a pure function of
-the plan.
+hopcount3 1.00x, grouped 1.01x.
+
+✅ **AND AGAIN AT ITEM 1505 for `effectivePlan`'s passes**, which the re-taken profile showed were
+then the top group at **32.2%**. A `Plan.kinds` bitmask of the six kinds that GATE a pass lets five
+of them return in one test. **count 200 → 162, hop 265 → 213, filtered 1031 → 966 on the reused arm,
+and the REBUILT arm gains too this time** (778 → 729, 1117 → 1065) because a gate skips work however
+the plan arrived. Cumulative since 1503: count 1.94x, hop 2.14x.
+
+⚠️ **`kinds` is TOP-LEVEL ONLY and `readsPath` PROPAGATES INWARD** — opposite rules on the same
+object, each correct for its consumer: the gated passes never recurse, so a nested `union` is not
+fusable and recording it would make the gate useless. And any pass that changes the steps must
+RECOMPUTE `kinds`, because `fuseLocal` inlines sub-plan steps into the top level.
+
+Still ungated, by design: `flattenFilterWrappers` (can fold a presence filter at any element
+position, item 1141 — not a kind set) and `dropVacuousLabels` (already gated on `steps[0]`). The
+`checkSteps` group (22.1%) resists the same treatment: it tracks a FRONTIER through the step list and
+validates branch arms against the frontier AT THE BRANCH, which a sub-plan cannot know at
+construction — and moving it would shift its errors from `toArray` to `traversal`.

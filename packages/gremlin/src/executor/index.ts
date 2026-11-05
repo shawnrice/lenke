@@ -1,3 +1,4 @@
+import type { Graph } from '@lenke/core';
 // Public API of the gremlin executor.
 //
 // `run(plan, graph)` is the primary entry point — runs a plan and yields the
@@ -7,10 +8,9 @@
 // and helpers, `dispatch.ts` for the kind-routing switch + recursive
 // `applyPlanToStream`, and per-category files (`movement.ts`, `filters.ts`,
 // `aggregation.ts`, etc.) for the step-impl generators.
-
-import type { Graph } from '@lenke/core';
 import { ErrorCode, LenkeError } from '@lenke/errors';
 
+import { EDGE_STEP_BITS, KIND_BITS, maskOfSteps } from '../ast.js';
 import type { Plan, Step } from '../ast.js';
 import { countShortcut } from './count-shortcut.js';
 import { applyStep } from './dispatch.js';
@@ -1016,7 +1016,7 @@ export const flattenFilterWrappers = (plan: Plan): Plan => {
     changed = pushSplit(steps, step) || changed;
   }
 
-  return changed ? { ...plan, steps } : plan;
+  return changed ? rewritten(plan, steps) : plan;
 };
 
 /**
@@ -1116,6 +1116,13 @@ const bothFromUnion = (step: Step): Step | undefined => {
  */
 // EXPORTED for its own assertion, like `fuseEdgeHop` and `flattenFilterWrappers` beside it.
 export const fuseUnionBoth = (plan: Plan): Plan => {
+  // ⚠️ THE GATE (item 1505): this pass can only fire on a plan that CONTAINS the kind it fuses, and
+  // the mask answers that in one test instead of a walk. `effectivePlan`'s six passes were 32.2% of
+  // a 208 ns reused-plan call, almost all of it spent looking for steps that were not there.
+  if ((plan.kinds & KIND_BITS.union) === 0) {
+    return plan;
+  }
+
   for (let i = 0; i < plan.steps.length; i += 1) {
     const fused = bothFromUnion(plan.steps[i]);
 
@@ -1124,7 +1131,7 @@ export const fuseUnionBoth = (plan: Plan): Plan => {
 
       steps[i] = fused;
 
-      return { ...plan, steps };
+      return rewritten(plan, steps);
     }
   }
 
@@ -1162,6 +1169,13 @@ export const fuseUnionBoth = (plan: Plan): Plan => {
  */
 // EXPORTED for its own assertion, like the other rewrites in this file.
 export const fuseValuesIsCount = (plan: Plan): Plan => {
+  // ⚠️ THE GATE (item 1505): this pass can only fire on a plan that CONTAINS the kind it fuses, and
+  // the mask answers that in one test instead of a walk. `effectivePlan`'s six passes were 32.2% of
+  // a 208 ns reused-plan call, almost all of it spent looking for steps that were not there.
+  if ((plan.kinds & KIND_BITS.values) === 0) {
+    return plan;
+  }
+
   const { steps } = plan;
 
   for (let i = 0; i + 2 < steps.length; i += 1) {
@@ -1183,7 +1197,7 @@ export const fuseValuesIsCount = (plan: Plan): Plan => {
 
     next.splice(i, 2, { kind: 'has', key: vals.keys[0], pred: test.pred });
 
-    return { ...plan, steps: next };
+    return rewritten(plan, next);
   }
 
   return plan;
@@ -1284,6 +1298,13 @@ const sameDirFromUnion = (step: Step): Step | undefined => {
  * 1447 paid for.
  */
 export const fuseUnionSameDir = (plan: Plan, graph: Graph): Plan => {
+  // ⚠️ THE GATE (item 1505): this pass can only fire on a plan that CONTAINS the kind it fuses, and
+  // the mask answers that in one test instead of a walk. `effectivePlan`'s six passes were 32.2% of
+  // a 208 ns reused-plan call, almost all of it spent looking for steps that were not there.
+  if ((plan.kinds & KIND_BITS.union) === 0) {
+    return plan;
+  }
+
   // THE GRAPH GATE, checked once before any step is examined: with any multi-type edge present the
   // rewrite changes the answer, not just the order.
   if (graph.multiTypeEdgeCount !== 0) {
@@ -1298,7 +1319,7 @@ export const fuseUnionSameDir = (plan: Plan, graph: Graph): Plan => {
 
       steps[i] = fused;
 
-      return { ...plan, steps };
+      return rewritten(plan, steps);
     }
   }
 
@@ -1335,6 +1356,26 @@ const LOCAL_TRANSPARENT_STEPS: ReadonlySet<Step['kind']> = new Set<Step['kind']>
 ]);
 
 /**
+ * A plan with a new step list and its gate mask RECOMPUTED (item 1505).
+ *
+ * ⚠️ `{ ...plan, steps }` would carry the OLD `kinds` mask, and that is unsafe in the one direction
+ * that matters: `fuseLocal` runs first and INLINES a sub-plan's steps into the top level, so it can
+ * introduce a `union`, a `values` or an edge step that the original mask does not record — and a
+ * later pass gated on that mask would skip a fusion it should have made. Recomputing costs one walk
+ * of the new list, paid only when a pass actually changed something; a pass that fuses nothing
+ * returns the plan it was given and pays nothing.
+ *
+ * `readsPath` is NOT recomputed, and that is sound in the other direction: a rewrite can merge or
+ * remove steps but never introduce a path-dependent one that was not already inside the step it
+ * replaced, so a carried-over `true` is at worst stale and only declines an optimisation.
+ */
+const rewritten = (plan: Plan, steps: readonly Step[]): Plan => ({
+  ...plan,
+  steps,
+  kinds: maskOfSteps(steps),
+});
+
+/**
  * `local(plan)` where every step of `plan` is per-traverser-transparent becomes `plan` inlined.
  *
  * `localStep` re-dispatches its sub-plan once per incoming traverser — `applyPlanToStream(plan, [t],
@@ -1351,6 +1392,13 @@ const LOCAL_TRANSPARENT_STEPS: ReadonlySet<Step['kind']> = new Set<Step['kind']>
  * EXPORTED so the WIRING is assertable and not only the rewrite.
  */
 export const fuseLocal = (plan: Plan): Plan => {
+  // ⚠️ THE GATE (item 1505): this pass can only fire on a plan that CONTAINS the kind it fuses, and
+  // the mask answers that in one test instead of a walk. `effectivePlan`'s six passes were 32.2% of
+  // a 208 ns reused-plan call, almost all of it spent looking for steps that were not there.
+  if ((plan.kinds & KIND_BITS.local) === 0) {
+    return plan;
+  }
+
   let changed = false;
   const steps: Step[] = [];
 
@@ -1368,7 +1416,7 @@ export const fuseLocal = (plan: Plan): Plan => {
     steps.push(step);
   }
 
-  return changed ? { ...plan, steps } : plan;
+  return changed ? rewritten(plan, steps) : plan;
 };
 
 export const effectivePlan = (plan: Plan, graph: Graph, tracksPath: boolean): Plan =>
@@ -1434,6 +1482,13 @@ export const effectivePlan = (plan: Plan, graph: Graph, tracksPath: boolean): Pl
 // returns identical rows by the slow walk, so only an assertion on the REWRITTEN PLAN can
 // tell "it fused" from "it answered anyway" (item 1303 measured that distinction).
 export const fuseEdgeHop = (plan: Plan): Plan => {
+  // ⚠️ THE GATE (item 1505): this pass can only fire on a plan that CONTAINS the kind it fuses, and
+  // the mask answers that in one test instead of a walk. `effectivePlan`'s six passes were 32.2% of
+  // a 208 ns reused-plan call, almost all of it spent looking for steps that were not there.
+  if ((plan.kinds & EDGE_STEP_BITS) === 0) {
+    return plan;
+  }
+
   const steps: Step[] = [];
   let fused = false;
 
@@ -1458,7 +1513,7 @@ export const fuseEdgeHop = (plan: Plan): Plan => {
     steps.push(step);
   }
 
-  return fused ? { ...plan, steps } : plan;
+  return fused ? rewritten(plan, steps) : plan;
 };
 
 const dropVacuousLabels = (plan: Plan, graph: Graph): Plan => {
@@ -1497,7 +1552,7 @@ const dropVacuousLabels = (plan: Plan, graph: Graph): Plan => {
 
   const kept = plan.steps.filter((step, i) => i === 0 || i >= cut || !vacuous(step));
 
-  return kept.length === plan.steps.length ? plan : { ...plan, steps: kept };
+  return kept.length === plan.steps.length ? plan : rewritten(plan, kept);
 };
 
 /**
@@ -1562,7 +1617,7 @@ export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
     head++;
   }
 
-  const sliced = head === 0 ? plan : { ...plan, steps: plan.steps.slice(head) };
+  const sliced = head === 0 ? plan : rewritten(plan, plan.steps.slice(head));
   // A VACUOUS `hasLabel` is dropped before anything else looks at the plan. Every shortcut below
   // matches a plan PREFIX that begins at the source, so one extra step in front of the hop makes
   // all of them decline — and a label every element carries is exactly such a step while

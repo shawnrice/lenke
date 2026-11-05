@@ -59145,3 +59145,102 @@ findable.
 `bun run check` 0 read unpiped. core 431/0, gql 3773/0, gremlin **1422**/0, native 961/0,
 serialization 144/0, `bun run fuzz` 20/0 — the fuzzers matter here because path tracking changes
 results, not just speed.
+
+### Item 1505 — `effectivePlan`'s six rewrite passes were **32.2%** of a reused-plan call, almost all of it looking for steps that were not there. A construction-time kind MASK gates five of them: **1.23-1.24x this item, 1.94-2.14x cumulative since 1503**, and the rebuilt arm gains too
+
+After item 1504 removed the path walk, the profile was re-taken rather than worked down from the
+old list — and the ranking had changed. `effectivePlan`'s passes were now the top group:
+
+```text
+13.6%  (garbage collector)          5.9%  checkStep
+ 7.7%  nextFrontier                 5.1%  nextHasEdge        ← ZERO mentions
+ 6.8%  sameDirFromUnion  ← ZERO     5.1%  flattenFilterWrappers
+ 6.8%  dropVacuousLabels            5.1%  countShortcut
+ 6.8%  streamStaysElements          4.2%  newContext
+ 5.9%  effectivePlan                4.2%  fuseLocal
+                                    3.4%  checkSteps · 3.4% fuseUnionSameDir
+```
+
+`effectivePlan` and its passes total **32.2%**; the `checkSteps` group another 22.1%. And for a plan
+like `V().count()` every fusion pass walks the step list hunting a `local`, a `union`, an edge step
+or a `values` that is not present — pure waste, plus the GC from what they allocate.
+
+### The change: item 1504's design, applied again
+
+`Plan` gains `readonly kinds: number`, a bitmask of the six step kinds that GATE a pass
+(`local`, `union`, `values`, `outE`, `inE`, `bothE`), OR'd in at `appendStep`. Five passes now return
+in one test when their kind is absent: `fuseLocal`, `fuseValuesIsCount`, `fuseEdgeHop`,
+`fuseUnionBoth`, `fuseUnionSameDir`.
+
+⚠️ **TOP-LEVEL ONLY, which is the OPPOSITE of `readsPath`'s rule.** Every gated pass iterates
+`plan.steps` and never recurses, so a `union` buried in a sub-plan is not something it can fuse —
+recording it would make the mask pessimistic and the gate useless. `readsPath` must propagate
+inward; `kinds` must not. Two flags on the same object with opposite propagation rules, each correct
+for its own consumer.
+
+⚠️ **AND ANY PASS THAT CHANGES THE STEPS MUST RECOMPUTE.** `fuseLocal` runs FIRST and INLINES a
+sub-plan's steps into the top level, so it can introduce a `union` or a `values` the original mask
+never recorded — and a later pass gated on that mask would skip a fusion it should make. All eight
+`{ ...plan, steps }` sites became `rewritten(plan, steps)`, which recomputes via `maskOfSteps`. It
+costs one walk of the new list, paid only when a pass actually changed something; a pass that fuses
+nothing returns the plan it was given.
+
+(`readsPath` is deliberately NOT recomputed there — a rewrite can merge or remove steps but never
+introduce a path-dependent one that was not already inside the step it replaced, so a carried-over
+`true` is at worst stale and only declines an optimisation.)
+
+`flattenFilterWrappers` and `dropVacuousLabels` are left ungated: the first can fold a PRESENCE
+filter at any element position (item 1141), so its precondition is not a kind set, and the second is
+already gated cheaply on `steps[0]` being `V`/`E`.
+
+### Both arms, and the rebuilt arm gains this time
+
+```text
+            work (reused)                      rebuilt (built per call)
+          1504    1505      this  cumulative   1504    1505    this
+count      200     162     1.23x    1.94x       778     729   1.07x
+hop        265     213     1.24x    2.14x      1117    1065   1.05x
+filtered  1031     966     1.07x    1.23x      1865    1837   1.02x
+vals      9011    8918     1.01x    1.03x      9588    9548   1.00x
+```
+
+Cumulative since item 1503's baseline: **count 315 → 162 (1.94x), hop 456 → 213 (2.14x), filtered
+1186 → 966 (1.23x)**. Unlike item 1504, the rebuilt arm improves as well — a gate skips work whether
+or not the plan is reused.
+
+Wide controls at 200,000 vertices / FANOUT 2 scattered: `hopbare` 1942.9 against 1942.2 before item
+1504 (flat), `hopcount3` 8797.5 against 8676.6 (1.4%, inside this probe's spread).
+
+### ⚠️ A WRONGLY-SKIPPED FUSION IS INVISIBLE TO EVERY ANSWER TEST
+
+The passes are answer-equivalent optimisations — `outE(T).inV()` becomes `out(T)` with identical rows
+— so a gate on the wrong bit costs only speed. Item 1307 measured that one fusion at
+**18936-24433x**, and all 1,422 tests in this package would stay green through losing it. So the new
+file tests the MASK and the FUSIONS FIRING, not the rows, and leans on one property:
+`plan.kinds === maskOfSteps(plan.steps)`, asserted both as built and after `effectivePlan`.
+
+Mutation, all five caught:
+
+```text
+stale         carry the old mask through a rewrite        CAUGHT  19 pass  2 fail
+mask-zero     maskOfSteps always 0 (every gate skips)     CAUGHT  12 pass  9 fail
+no-bit        appendStep forgets the bit                  CAUGHT   9 pass 12 fail
+out-is-edge   treat `out` as an edge step                 CAUGHT  20 pass  1 fail
+wrong-gate    gate fuseLocal on the `union` bit           CAUGHT  20 pass  1 fail
+```
+
+⚠️ **`wrong-gate` SURVIVED THE FIRST VERSION, because my hazard test guarded its assertions behind
+`if ((fused.kinds & KIND_BITS.local) === 0)`** — so a gate that stopped firing made the `if` never
+run and the test pass vacuously. Making the assertion unconditional (an all-transparent `local` MUST
+be inlined, so the `local` step MUST be gone) is what caught it, and a companion test now asserts
+each other gated pass's own observable effect.
+
+⚠️ **And I got the fusion preconditions wrong TWICE while writing that companion** — a bare `outE`
+with no `inV` (nothing to fuse, so `outE` legitimately survives), then `union(out, both)` (the
+fusion needs `union(out(L), in(L))` with identical labels). Each wrong guess failed for a reason
+unrelated to the gate. **Read the precondition out of the code; the third attempt did and passed.**
+
+### Gates
+
+`bun run check` 0 read unpiped. core 431/0, gql 3773/0, gremlin **1443**/0, native 961/0,
+serialization 144/0, `bun run fuzz` 20/0.

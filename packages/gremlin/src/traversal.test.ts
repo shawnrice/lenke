@@ -13,9 +13,11 @@ describe('traversal AST', () => {
         { kind: 'has', key: 'age', pred: { op: 'gt', value: 30 } },
         { kind: 'take', n: 5 },
       ],
-      // ⚠️ Carried by construction as of item 1504, and asserted here because it is part of the
-      // plan's SHAPE now: none of these four steps reads the traverser path.
+      // ⚠️ Carried by construction as of items 1504/1505, and asserted here because both are part
+      // of the plan's SHAPE now: none of these four steps reads the traverser path, and none of
+      // them is a kind that gates a rewrite pass (`out` is not an EDGE step — `outE` is).
       readsPath: false,
+      kinds: 0,
     });
   });
 
@@ -31,7 +33,7 @@ describe('traversal AST', () => {
       { kind: 'V', ids: [1] },
       {
         kind: 'repeat',
-        body: { steps: [{ kind: 'out', labels: ['knows'] }], readsPath: false },
+        body: { steps: [{ kind: 'out', labels: ['knows'] }], readsPath: false, kinds: 0 },
         times: 3,
       },
       { kind: 'dedupe', labels: undefined, bys: undefined },

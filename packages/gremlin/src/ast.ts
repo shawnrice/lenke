@@ -470,9 +470,61 @@ export type Plan = {
    * may be stale, which merely declines an optimisation; a stale `false` is unreachable.
    */
   readonly readsPath: boolean;
+  /**
+   * Which GATE KINDS appear among this plan's OWN top-level steps, as a bitmask.
+   *
+   * ⚠️ IT EXISTS SO `effectivePlan` CAN SKIP PASSES THAT CANNOT FIRE (item 1505). After item 1504
+   * removed the path walk, a profile of a reused plan put `effectivePlan`'s six rewrite passes at
+   * **32.2%** of a 208 ns call — and for a plan like `V().count()` every one of them walks the step
+   * list looking for a `local`, a `union`, an edge step or a `values` that is not there. The bit
+   * says "do not bother" in one test.
+   *
+   * ⚠️ TOP-LEVEL ONLY, DELIBERATELY. Each gated pass iterates `plan.steps` and never recurses, so a
+   * `union` buried in a sub-plan is not something they can fuse — including it would make the mask
+   * pessimistic and the gate useless. This is why, unlike {@link Plan.readsPath}, there is no
+   * inner-plan propagation here.
+   *
+   * ⚠️ AND IT MUST BE RECOMPUTED BY ANY PASS THAT CHANGES THE STEPS. `fuseLocal` runs first and
+   * INLINES a sub-plan's steps into the top level, so it can introduce a `union` or a `values` that
+   * was not there before; a later gate reading the original mask would wrongly skip. Every rewrite
+   * that returns a new plan therefore recomputes via {@link maskOfSteps} — which costs nothing in
+   * the common case, because a pass that fuses nothing returns the plan it was given.
+   */
+  readonly kinds: number;
 };
 
-export const emptyPlan: Plan = { steps: [], readsPath: false };
+/**
+ * The step kinds that gate a rewrite pass in `effectivePlan`, one bit each.
+ *
+ * Only these kinds get a bit: the mask is a gate, not an index of the plan. `flattenFilterWrappers`
+ * and `dropVacuousLabels` are absent on purpose — the first can fold a PRESENCE filter at any
+ * element position (item 1141), so its precondition is not a kind set, and the second is already
+ * gated cheaply on `steps[0]` being `V`/`E`.
+ */
+export const KIND_BITS: Readonly<Record<string, number>> = {
+  local: 1,
+  union: 2,
+  values: 4,
+  outE: 8,
+  inE: 16,
+  bothE: 32,
+};
+
+/** Every bit an edge-hop fusion cares about. */
+export const EDGE_STEP_BITS = KIND_BITS.outE | KIND_BITS.inE | KIND_BITS.bothE;
+
+/** The gate bits present among `steps` — recomputed by any rewrite that changes the step list. */
+export const maskOfSteps = (steps: readonly Step[]): number => {
+  let mask = 0;
+
+  for (const step of steps) {
+    mask |= KIND_BITS[step.kind] ?? 0;
+  }
+
+  return mask;
+};
+
+export const emptyPlan: Plan = { steps: [], readsPath: false, kinds: 0 };
 
 /**
  * Step kinds that read a traverser's accumulated path. The first five touch `t.path` directly; the
@@ -553,9 +605,11 @@ export type StepFn = ((plan: Plan) => Plan) & { readonly [STEP_FN]: true };
 export const appendStep = (step: Step): StepFn => {
   // Computed ONCE per step constructor, not per plan the step is appended to.
   const reads = stepReadsPath(step);
+  const bit = KIND_BITS[step.kind] ?? 0;
   const fn = (plan: Plan): Plan => ({
     steps: [...plan.steps, step],
     readsPath: plan.readsPath || reads,
+    kinds: plan.kinds | bit,
   });
   Object.defineProperty(fn, STEP_FN, { value: true, enumerable: false });
 

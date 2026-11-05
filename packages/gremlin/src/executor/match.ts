@@ -15,7 +15,7 @@ import type { Graph } from '@lenke/core';
 // candidate, until every pattern has been applied.
 import { ErrorCode, LenkeError } from '@lenke/errors';
 
-import { stepReadsPath } from '../ast.js';
+import { maskOfSteps, stepReadsPath } from '../ast.js';
 import type { Plan, Step } from '../ast.js';
 import { applyPlanToStream } from './dispatch.js';
 import {
@@ -54,6 +54,7 @@ type Pattern = {
 const planOfSteps = (steps: readonly Step[]): Plan => ({
   steps,
   readsPath: steps.some(stepReadsPath),
+  kinds: maskOfSteps(steps),
 });
 
 const sameValue = (a: unknown, b: unknown): boolean => {
