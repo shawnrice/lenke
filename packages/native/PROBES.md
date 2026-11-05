@@ -714,10 +714,17 @@ First readings (40,000 vertices, every arm returning 40,000): on `degree` the GQ
 roughly fixed per row**, so the ratio only tells you how much algorithm it is divided by — quote
 both or neither.
 
-⚠️ **The Gremlin arm is not a like-for-like rendering of the GQL one.** `CALL` YIELDs rows; a Gremlin
-OLAP step WRITES a property and passes traversers through. These are "what each surface costs to
-reach the same procedure", not two views of one operation. `@lenke/gremlin` exports no `degree`
-step, and the probe asserts the step exists rather than silently measuring something else.
+⚠️ **`WRITE=1` IS THE CONTROL, and without it the `gremlin` arm is measured against the wrong
+floor.** `CALL` YIELDs rows; a Gremlin OLAP step WRITES a property and passes traversers through, so
+`direct` alone is not its floor. Item 1472: `direct` 122.32, `direct + writeProperty` 145.24,
+`gremlin` 150.44 at 200,000 — so the **Gremlin OLAP wrapper is ~3.6%, within noise**, and the
+apparent 46% was the write. Pass `WRITE=1` whenever comparing against a Gremlin OLAP arm.
+`@lenke/gremlin` exports no `degree` step, and the probe asserts the step exists rather than
+silently measuring something else.
+
+⚠️ **A PROFILED RUN IS ~15% SLOWER.** The same `gremlin` arm read 172.50 ms with `PROF_OUT` set and
+150.44 without. Comparing a profiled number against an unprofiled one turned a 3.6% wrapper into a
+spurious 19%. Profile to find frames; measure with the profiler detached.
 
 ⚠️ **`count(*)` is deliberate**: every arm must consume the same rows without the comparison becoming
 about how they are rendered. A `RETURN node.name` arm would add a property read per row and confound

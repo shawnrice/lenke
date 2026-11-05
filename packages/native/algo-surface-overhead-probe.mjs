@@ -62,7 +62,21 @@ if (COLUMN[ALGO] === undefined) {
   throw new Error(`unknown ALGO ${ALGO}; have ${Object.keys(COLUMN).join(',')}`);
 }
 
-const CONFIG = ALGO === 'shortestPath' ? { source: 'v0' } : {};
+/**
+ * ⚠️ `WRITE=1` IS THE CONTROL FOR A FALSE COMPARISON. The `gremlin` arm looked like it had the
+ * highest surface overhead (30.86 against `direct`'s 21.09 on pagerank at 40,000), but a Gremlin
+ * OLAP step is SPECIFIED to write its result to a vertex property and pass the traversers through,
+ * which `CALL` and the direct call do not do. Its profile shows `setProperty` + `#commitNormalized`
+ * at ~15% — real work, not wrapper cost.
+ *
+ * So `direct` on its own is the wrong floor for that arm. `WRITE=1` adds `writeProperty` to the
+ * direct and GQL arms, making them do the same work, and the remaining gap is the actual wrapper.
+ */
+const WRITE = process.env.WRITE === '1';
+const CONFIG = {
+  ...(ALGO === 'shortestPath' ? { source: 'v0' } : {}),
+  ...(WRITE ? { writeProperty: 'algoOut' } : {}),
+};
 
 const build = () => {
   const g = new Graph();

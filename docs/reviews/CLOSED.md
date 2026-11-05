@@ -55915,7 +55915,7 @@ unpiped.
 48.81% in its own loop) and `shortestPathWeighted` 1149. `onCycle` is flagged ABOVE at 7.96x and
 remains unconfirmed at two points.
 
-### Item 1471 — reaching an algorithm through ISO-GQL's `CALL` costs **2.5x the procedure itself** on a cheap procedure, and the wrapper is ~60% of the run. SHIPPED 1.18x (3/3) off its per-row `new Map(binding)`. ⚠️ The predicted GC mechanism did NOT materialise, and the suite had NO MATCH-then-CALL test at all
+### Item 1471 — reaching an algorithm through ISO-GQL's `CALL` costs **2.5x the procedure itself** on a cheap procedure, and the wrapper is ~60% of the run. SHIPPED 1.18x (3/3) off its per-row `new Map(binding)`. ⚠️ The predicted GC mechanism did NOT materialise, and the suite had NO MATCH-then-CALL test at all ⚠️ **Its `gremlin` row is measured against the WRONG FLOOR — item 1472 shows that gap is the property write the step is specified to do, and the Gremlin OLAP wrapper is ~3.6%, within noise.**
 
 Items 1467-1470 optimized the twelve procedures through `runAlgorithmSync` — the entry point both
 engines dispatch through, but **not how a user reaches them**. A user writes `CALL degree() YIELD
@@ -55931,7 +55931,7 @@ Median of kept reps, 40,000 vertices, every arm returning 40,000:
 direct             21.09          4.06      runAlgorithmSync, no surface
 gql                25.46         10.12      CALL … YIELD … RETURN count(*)
 gqlbare            26.21            —       CALL … RETURN count(*)  (YIELD-less)
-gremlin            30.86            —       V() -> step() -> count()
+gremlin            30.86            —       V() -> step() -> count()  ⚠️ WRONG FLOOR, see item 1472
 ```
 
 **On a cheap procedure the wrapper is 2.5x the procedure** (4.06 → 10.12). On an expensive one it is
@@ -56041,3 +56041,83 @@ about behaviour rather than about the route.
 
 core 431/0, gql 3700/0 (3691 + 9 new), gremlin 1241/0, native 961/0, serialization 144/0,
 `bun run fuzz` 20/0. `bun run check` 0 read unpiped.
+
+### Item 1472 — ❌ THE GREMLIN OLAP WRAPPER IS NOT THE TARGET: it costs **~3.6%, within noise**, once measured against the right floor. Item 1471's `gremlin` row compared a step that WRITES A PROPERTY against calls that do not, and I let the number stand. Also: the algorithm `writeProperty` path is AT its known cost, and a PROFILED run is ~15% slower than an unprofiled one
+
+Item 1471 measured `direct` 21.09 / `gql` 25.46 / `gremlin` 30.86 on pagerank at 40,000 and this
+session's status update called the Gremlin OLAP surface "the highest overhead". **That was wrong, and
+the entry itself contained the reason**: it noted that a Gremlin OLAP step WRITES its result to a
+vertex property and passes traversers through, while `CALL` and the direct call do not — and then
+quoted the number as if the three were comparable. Naming a confound and then reasoning past it is
+worse than missing it.
+
+### The profile said so before the measurement did
+
+`V() → pageRank() → count()` at 200,000 vertices, 1,912 samples:
+
+```text
+53.61%  pagerankCore           the procedure itself
+10.62%  computeGen
+ 9.88%  setProperty            ┐
+ 5.44%  #commitNormalized      ├ ~16%: the property write the step is SPECIFIED to do
+ 0.84%  pushTokens             ┘
+ 6.01%  (garbage collector)
+ 1.52%  algorithmStep          ┐
+ 0.84%  emit                   ├ the actual wrapper: ~3%
+ 0.58%  countStep              ┘
+```
+
+The wrapper frames total ~3%. There is no target here.
+
+### Measured against the right floor
+
+`WRITE=1` adds `writeProperty` to the `direct` arm so it does the same work. pagerank at 200,000,
+median of 9 reps with 3 dropped, no profiler attached to any arm:
+
+```text
+direct, no write        122.32 ms
+direct + writeProperty  145.24        +22.9 ms  <- the write
+gremlin (always writes) 150.44        +5.2 ms over the right floor = ~3.6%
+```
+
+**~3.6%, which is inside this bench's run-to-run spread.** The apparent 46% was the property write.
+
+### ⚠️ A PROFILED RUN IS ~15% SLOWER, so never compare one against an unprofiled one
+
+The first `gremlin` reading at 200,000 was **172.50 ms** and the second **150.44** — a 15% gap
+between two runs of identical code. The difference is that the first had `PROF_OUT` set, so the
+inspector profiler was attached. Had I compared that 172.50 against the unprofiled `direct + write`
+145.24, the wrapper would have "measured" 19% instead of 3.6% and this item would have gone hunting.
+Both numbers in the table above are unprofiled.
+
+### And the write path itself is at its known cost
+
+22.9 ms per 200,000 vertices = **~114 ns per vertex** for one `setProperty` on a two-key vertex. The
+repo already measured `setProperty` at **~87 ns at k=4** (the closure-guard attempt, reverted), and
+the three-O(K)-passes defect behind it was already addressed by splitting `#commitNormalized` from
+`#commitProperties` (items 334, 1676-1687). So this figure is consistent with ground that has been
+attacked three times, once with a revert. **Not a new target.**
+
+### What this closes
+
+The surface question raised at item 1471 is now answered for both engines:
+
+| surface                   | wrapper cost                                                                                |
+| ------------------------- | ------------------------------------------------------------------------------------------- |
+| ISO-GQL `CALL`            | real — was ~60% of a cheap procedure's run; 1.18x taken at 1471, remainder is architectural |
+| Gremlin OLAP step         | **~3.6%, within noise** — this item                                                         |
+| the `writeProperty` write | ~114 ns/vertex, consistent with the recorded ~87 ns at k=4                                  |
+
+The GQL remainder is the binding model: one distinct `Map` per row, `Binding = ReadonlyMap<string,
+unknown>`. Item 1471 measured that removing the per-row _copy_ did not move the GC term at all
+(23.86% → 23.97%), so what is left is the Map itself and no local change reaches it.
+
+⚠️ **One shape deliberately NOT optimized.** `CALL degree() RETURN count(*)` could skip materializing
+bindings entirely (the count is `rows.length × outer.length` absent any filter). It is declined
+because **that shape is the probe's, not a user's** — a real query is
+`CALL pagerank() YIELD node, score RETURN node.name, score ORDER BY score DESC LIMIT 10`, which needs
+every row. Optimizing the measurement instead of the workload is how a bench starts lying.
+
+### Gates
+
+`bun run check` 0 (read unpiped). One instrument gained a `WRITE` arm; no engine code changed.
