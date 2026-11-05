@@ -388,6 +388,108 @@ const anyValueEq = (value: unknown, values: readonly unknown[]): boolean => {
  * Evaluate a predicate against a value. Used by executors; not part of the
  * AST surface.
  */
+/**
+ * A MONOMORPHIC closure for one predicate, built once, or `undefined` when this predicate is not
+ * one of the specialized shapes and the caller should keep using {@link matches}.
+ *
+ * WHY (item 1492). `matches` is called from ~20 sites with every predicate shape the surface has,
+ * so its `switch` and its comparator chain are megamorphic by construction and cannot inline. A
+ * decomposition of `V().has('num', gt(N)).count()` over 200,000 vertices, ONE ARM PER PROCESS,
+ * priced that:
+ *
+ *     scan the id map, nothing else            1.31 ns a vertex
+ *     + the `properties` getter                2.94
+ *     + a DYNAMIC keyed read                   5.17   ← `properties[key]`, not the cost
+ *     + an inline comparison                   4.94
+ *     + the comparison behind a CLOSURE        4.38-5.05
+ *     the engine                              14.20-14.23   ← 2.8x the floor
+ *
+ * The closure arm is the load-bearing one: a predicate called through a closure costs the same as
+ * inline code, so the gap is `matches`'s own dispatch and not the work. (Measured in one process
+ * the arms disagreed with their own ordering — `inline` read SLOWER than `dynkey` — which is the
+ * arms-interfere signature, so every figure above is isolated.)
+ *
+ * ⚠️ EACH SPECIALIZATION BELOW MUST BE PROVABLY THE SAME FUNCTION AS ITS `matches` ARM, for every
+ * value a property read can produce — `undefined`, `null`, a number, a string, a boolean, a
+ * temporal, an array, an object. The derivations, which is why only these shapes are here:
+ *
+ *   `gt` with a NUMBER operand `n`:  `matches` is `v != null && predCmp(v, n) > 0`, and
+ *   `predCmp(v, n)` is `cmpSameType(v, n) ?? NaN`. `cmpSameType` reaches its number/number arm only
+ *   when `typeof v === 'number'`; for every other type it falls through each branch (a string needs
+ *   a string `b`, a boolean a boolean, a date a date, `isTemporal(n)` is false) and returns `null`,
+ *   so `predCmp` is `NaN` and every comparison against it is false. Within the number arm it is
+ *   `NaN` if either side is NaN — again false — and otherwise `cmpOrd`, which is `-1/0/1` by the
+ *   same `<`/`>`. So the whole thing is exactly `typeof v === 'number' && v > n`. `null` and
+ *   `undefined` are excluded by the `typeof`, which also makes the `v != null` guard redundant.
+ *   The same derivation gives `gte`/`lt`/`lte`, and holds when `n` itself is NaN (both sides then
+ *   match nothing).
+ *
+ *   `gt` with a STRING operand: identical, with `typeof v === 'string'` — `cmpOrd` compares strings
+ *   with the same `<`/`>` operators.
+ *
+ *   `eq`/`neq` with a number or string operand: `valueEq(v, b)` is
+ *   `isTemporal(v) && isTemporal(b) ? … : v === b`, and `isTemporal(b)` is false for a scalar, so
+ *   it is `v === b`.
+ *
+ * A TEMPORAL or boolean operand is deliberately NOT specialized: equality would have to reproduce
+ * `temporalCmpTotal` and ordering `temporalRelCmp`'s kind rules, which is item 1491's work and does
+ * not reduce to an operator. Everything else — `between`, `within`, the string-shape predicates,
+ * `not`, `present` — either has no operator form or is already one test, so there is nothing to
+ * hoist.
+ */
+export const specializePredicate = (pred: Predicate): ((value: unknown) => boolean) | undefined => {
+  switch (pred.op) {
+    case 'eq':
+    case 'neq': {
+      const b = pred.value;
+
+      if (typeof b !== 'number' && typeof b !== 'string') {
+        return undefined;
+      }
+
+      return pred.op === 'eq' ? (v) => v === b : (v) => v !== b;
+    }
+
+    case 'gt':
+    case 'gte':
+    case 'lt':
+    case 'lte': {
+      const b = pred.value;
+
+      if (typeof b === 'number') {
+        switch (pred.op) {
+          case 'gt':
+            return (v) => typeof v === 'number' && v > b;
+          case 'gte':
+            return (v) => typeof v === 'number' && v >= b;
+          case 'lt':
+            return (v) => typeof v === 'number' && v < b;
+          default:
+            return (v) => typeof v === 'number' && v <= b;
+        }
+      }
+
+      if (typeof b === 'string') {
+        switch (pred.op) {
+          case 'gt':
+            return (v) => typeof v === 'string' && v > b;
+          case 'gte':
+            return (v) => typeof v === 'string' && v >= b;
+          case 'lt':
+            return (v) => typeof v === 'string' && v < b;
+          default:
+            return (v) => typeof v === 'string' && v <= b;
+        }
+      }
+
+      return undefined;
+    }
+
+    default:
+      return undefined;
+  }
+};
+
 export const matches = (pred: Predicate, value: unknown): boolean => {
   switch (pred.op) {
     // Item 1140. PRESENCE — the one predicate that does not read the value. `undefined` is the

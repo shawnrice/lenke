@@ -57859,3 +57859,129 @@ through `has()`.
 
 `bun run check` 0 read unpiped. core 431/0, gql 3727/0, gremlin 1318/0, native 961/0,
 serialization 144/0, `bun run fuzz` 20/0.
+
+### Item 1492 — `propertyCount` was already the hand-written tally and still ran at **2.8x a floor doing the same work**. Decomposed it: the cost is `matches`'s own megamorphic dispatch, not the property read. **1.92x on the tally, 1.12x on the general `has` row filter**, three real controls flat
+
+Item 1491's profile put `propertyCount` at 70.2% of its arm. A frame that large is either the work
+or the target with nothing between, and this one looked like the work: item 234 built it as the fast
+path and measured it against a floor. But that item also left **2.5x between the tally and its own
+floor** (11.5 ns a vertex against 4.6 "touching no property"), which is the largest unaccounted gap
+in this corpus's own numbers, and nobody had decomposed it.
+
+### New instrument: `tally-floor-probe.mjs`, one thing added per arm
+
+⚠️ **IN ONE PROCESS THE ARMS DISAGREED WITH THEIR OWN ORDERING, AND THAT WAS THE FIRST READING.**
+`inline` (a literal key and an inline compare) read **12.35 ns** against `dynkey`'s 7.79 and
+`closure`'s 7.68 — impossible, since each adds work to the one before. That is the arms-interfere
+signature (item 737's family, and item 762's rule), so every figure below is one arm per process:
+
+```text
+scan the id map, nothing else            1.31 ns a vertex
++ the `properties` getter                2.94
++ a DYNAMIC keyed read                   5.17        ← `properties[key]` is NOT the cost
++ an inline comparison                   4.94
++ the comparison behind a CLOSURE        4.38-5.05   ← a closure costs the same as inline code
+the engine                              14.20-14.23  ← 2.8x the floor
+```
+
+**The `closure` arm is the load-bearing one.** It proves a predicate reached through a closure costs
+no more than inline code, so the gap is not "a function call per row" — it is `matches` specifically.
+`matches` is called from ~20 sites with every predicate shape the surface has, so its `switch` and
+its comparator chain (`matches` → `predCmp` → `cmpSameType` → `cmpOrd`) are megamorphic by
+construction and cannot inline. And the `dynkey` arm rules out the suspect I would have guessed
+first: a dynamic keyed read is free.
+
+### The fix: `specializePredicate`
+
+A new exported function in `predicates.ts` returns a monomorphic closure for one predicate, or
+`undefined` for a shape with no operator form. Hoisted at two sites: `propertyCount`'s tally loop,
+and `dispatch.ts`'s general `has` filter — the latter on the row path of every traversal carrying a
+`has`.
+
+⚠️ **EVERY SPECIALIZATION HAD TO BE DERIVED, NOT GUESSED.** `matches(gt{value:n}, v)` is
+`v != null && predCmp(v, n) > 0`; `cmpSameType` reaches its number/number arm only when
+`typeof v === 'number'` and returns `null` (→ `NaN` → false) for every other type, and within that
+arm it is `NaN` for a NaN operand and `cmpOrd` otherwise. So the whole thing is exactly
+`typeof v === 'number' && v > n`, with the `v != null` guard made redundant by the `typeof`. The
+same derivation gives `gte`/`lt`/`lte` and the string operands; `eq`/`neq` reduce to `v === b`
+because `valueEq`'s temporal arm needs `isTemporal(b)`.
+
+**A temporal or boolean operand is deliberately NOT specialized** — equality would have to reproduce
+`temporalCmpTotal` and ordering `temporalRelCmp`'s kind rules (item 1491's work), neither of which
+reduces to an operator. Everything else (`between`, `within`, the string-shape predicates, `not`,
+`present`) is already one test or has no operator form.
+
+### A/B — 200,000 vertices, FANOUT=2 scattered, 60 reps, two rounds each arm
+
+```text
+                                    PRE          POST         ratio
+T numcount   has(k,gt).count()      2.54 2.59    1.34 1.34     1.92x
+T numrows    has(k,gt) rows         6.25 6.41    5.63 5.68     1.12x
+T streq      has(s,eq).count()      2.86 2.94    2.87 2.75     flat
+T hophas     out(E).has(k,gt).cnt  50.90 51.51  51.70 51.45    flat
+C hoprows    out(E) rows           44.55 44.36  44.68 44.57    1.00x
+C valrows    values(k)              6.33 6.37    6.26 6.49     1.00x
+C labelrows  hasLabel(P)            8.38 8.36    8.32 8.29     1.01x
+F tempcount  has(d,gt(<date>)).cnt  3.28 3.39    2.61 2.66     1.26x
+```
+
+⚠️ **MY FIRST THREE CONTROLS WERE USELESS AND READ 0.00 ms.** `V().count()`,
+`V().hasLabel('P').count()` and `V().out('E').count()` are all O(1) bucket or degree-sum shortcuts
+(items 1479/1488), so they cannot control anything — a control below the clock is not a control. The
+three above have real cost and no reachable `has`, and all three are flat.
+
+`F tempcount` is the FALLBACK path (a temporal operand declines specialization) and it improved
+1.26x. That is not a confound: the same hoist replaced a per-vertex `step.key` load with a
+destructured `key`, which the fallback shares. Named `F` rather than `C` for that reason.
+
+**Two honest negatives.** `streq` is flat — `eq` is a 2-call chain (`valueEq` + `===`) where `gt` is
+4, so there is little to hoist, and the win is concentrated on ORDERING predicates. `hophas` is flat
+because the hop is 50 ms and the filter is a rounding error. So this is a win on predicate-bound
+shapes and nothing else, which is what the profile said it would be.
+
+Post-fix the engine sits at 5.34-6.61 ns a vertex against the closure floor's 5.06-5.77 — **within
+1.21x of a hand-written loop**, where it was 2.8x.
+
+### The test is a DIFFERENTIAL, because the risk is equivalence
+
+58 tests, **1,411 assertions**, every one of the form
+`specializePredicate(p)?.(v) === matches(p, v)` over the cross-product of every op, every operand
+type, and every value a property read can produce (`undefined`, `null`, `±0`, NaN, ±Infinity,
+strings, booleans, three temporal kinds, an array, an object). Hand-written expected booleans would
+encode my belief about `matches` instead of `matches`, and the belief is the thing that can be
+wrong. The matrix also asserts that every UNSPECIALIZED shape still declines, so a later change that
+starts specializing one fails here rather than answering from a derivation nobody did.
+
+### Mutation — six semantic mutants caught, two unwires caught by the PROBE
+
+```text
+pristine       SURVIVED   58 pass  0 fail
+null           CAUGHT      3 pass 55 fail
+noguard        CAUGHT     56 pass  2 fail   ← dropped the `typeof` guard on gt
+strict         CAUGHT     54 pass  4 fail   ← gte spelled as gt
+objectis       CAUGHT     52 pass  6 fail   ← Object.is for eq; differs from === on -0 ALONE
+neqpresence    CAUGHT     49 pass  9 fail   ← gave neq the ordering arms' presence guard
+temporal       CAUGHT     57 pass  1 fail   ← specialized a temporal operand with `>`
+unwire-tally   SURVIVED   58 pass  0 fail
+unwire-has     SURVIVED   58 pass  0 fail
+```
+
+The two unwires are answer-equivalent, so no unit test can see them — `rewrite-composition-is-not-free`
+is exactly this shape, and the rule there is to prove the wiring rather than assert it. Both were
+checked against the perf probe and both are caught: unwiring the tally takes `numcount` 1.34 → 2.79
+and unwiring the has site takes `numrows` 5.63 → 6.43, each back to its PRE reading.
+
+`objectis` is worth keeping in mind: it differs from the shipped code on exactly one value in the
+whole matrix (`-0` against `0`), and it fails 6 tests only because the matrix contains `-0`.
+
+### Open, with its number
+
+The other ~18 `matches` call sites are unchanged, the multi-`has` tally loops
+(`count-shortcut.ts` ~957-969, 1176, 2254) among them. Each is the same one-line hoist and each
+needs its own A/B; the ceiling for any of them is this item's 1.92x, and less wherever the shape is
+not predicate-bound.
+
+### Gates
+
+`bun run check` 0 read unpiped. core 431/0, gql 3727/0, gremlin 1376/0, native 961/0,
+serialization 144/0, `bun run fuzz` 20/0.

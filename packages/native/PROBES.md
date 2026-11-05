@@ -993,3 +993,29 @@ price.
 
 `GPAIR=<name>` selects one Gremlin pair; `SKIP_GREMLIN=1` (any value, including empty) skips the half
 entirely.
+
+## `tally-floor-probe.mjs` — where `V().has(k, pred).count()` spends its time
+
+Item 234 shipped `propertyCount` (the hand-written tally) at 11.5 ns a vertex against a 4.6 ns
+"scan alone, touching no property" floor and left that **2.5x unexplained for 1,258 items**. This
+probe decomposes it: seven arms, each adding exactly ONE thing to the one above, so a difference
+names its own cause. Every answer-bearing arm must return the same count and the probe throws if
+two disagree — an arm that answers a different question is the failure four separate items here have
+hit (chain count 1479, values walk 1480/1483, presence count 1485, hop-count 1488).
+
+⚠️ **RUN IT ONE ARM PER PROCESS (`ARM=`).** In one process the arms disagreed with their own
+ordering — `inline` read 12.35 ns against `dynkey`'s 7.79, which is impossible when each adds work
+to the one before. Isolated:
+
+```text
+scan 1.31 · getter 2.94 · dynkey 5.17 · inline 4.94 · closure 4.38-5.05 · engine 14.20 (PRE 1492)
+```
+
+Two conclusions this instrument exists to supply, both of which cut off a guess:
+
+- **a dynamic keyed read is free** — `properties[key]` is not the cost, so the megamorphic-access
+  theory is out;
+- **a closure costs the same as inline code**, so "a call per row" is not the cost either, which is
+  what made specializing the predicate (item 1492) a derivation rather than a hope.
+
+Post-1492 the engine arm reads 5.34-6.61, within 1.21x of the closure floor.

@@ -20,7 +20,7 @@ import type { Graph } from '@lenke/core';
 import { ErrorCode, LenkeError } from '@lenke/errors';
 
 import type { Plan, Step } from '../ast.js';
-import { matches } from '../predicates.js';
+import { matches, specializePredicate } from '../predicates.js';
 // Per-category step impls.
 import {
   aggregateComparable,
@@ -158,14 +158,24 @@ export const applyStep = (
     case 'otherV':
       return edgeToVertex(stream, step);
 
-    case 'has':
+    case 'has': {
+      // ⚠️ HOISTED OUT OF THE PER-ELEMENT CLOSURE (item 1492), the same change as `propertyCount`'s
+      // and for the same reason: `matches` is one megamorphic site shared by ~20 callers, and a
+      // specialized closure is monomorphic here. This is the GENERAL has filter, so it is on the
+      // row path of every traversal carrying a `has`. `undefined` keeps the original call.
+      const fast = specializePredicate(step.pred);
+      const { key } = step;
+
       return filterStream(stream, (v) => {
         if (!isVertex(v) && !isEdge(v)) {
           return false;
         }
 
-        return matches(step.pred, v.properties[step.key]);
+        const x = v.properties[key];
+
+        return fast === undefined ? matches(step.pred, x) : fast(x);
       });
+    }
 
     case 'hasLabel':
       return filterStream(stream, (v) => {

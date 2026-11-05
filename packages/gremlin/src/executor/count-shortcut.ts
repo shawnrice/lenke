@@ -1,7 +1,7 @@
 import type { Edge, Graph, Vertex } from '@lenke/core';
 
 import type { Plan, Predicate, Step } from '../ast.js';
-import { matches } from '../predicates.js';
+import { matches, specializePredicate } from '../predicates.js';
 import { seedForStep, seekWorthTaking } from './index-seed.js';
 
 /**
@@ -2497,7 +2497,18 @@ const vertexStepCount = (step: Step, graph: Graph): number | undefined => {
  *     the scan alone, touching no property       0.91ms    4.6ns
  *
  * So 3.3x of that row is the pipeline, not the predicate — a traverser allocated per vertex to be
- * filtered and discarded. The same measurement RETRACTED this item's other two candidates:
+ * filtered and discarded.
+ *
+ * ⚠️ AND THE 2.5x BETWEEN THE TALLY AND THAT FLOOR WAS NOT THE PREDICATE EITHER (item 1492). It sat
+ * unexplained for 1,258 items; decomposed one arm per process, it is `matches`'s own megamorphic
+ * dispatch — ~20 call sites and every predicate shape through one `switch`, so it cannot inline.
+ * The keyed read is free (a dynamic `properties[key]` measured 5.17 ns against an inline literal's
+ * 4.94) and a closure costs the same as inline code (4.38-5.05), which is what made
+ * `specializePredicate` the fix rather than a guess. This loop is now 1.92x faster and sits within
+ * 1.21x of a hand-written one; the figures above are the ORIGINAL readings, kept because the 3.3x
+ * they justify is still why this function exists.
+ *
+ * The same measurement RETRACTED this item's other two candidates:
  * `V().out().has().count()` is 50.62ms against a 44.24ms floor, so its 32.6x gap to the native
  * engine is a data-layout difference and not an overhead to recover.
  *
@@ -2520,11 +2531,27 @@ const propertyCount = (step: Extract<Step, { kind: 'has' }>, graph: Graph): numb
   }
 
   let n = 0;
+  // ⚠️ HOISTED (item 1492). `matches` is one site shared by ~20 callers and every predicate shape,
+  // so it is megamorphic and cannot inline; a specialized closure is monomorphic at THIS call and
+  // measured the same as inline code. 14.20 -> 5.45 ns a vertex on this loop. `undefined` means the
+  // predicate has no operator form, and then this is exactly the loop it was before.
+  const fast = specializePredicate(step.pred);
+  const { key } = step;
 
   // `verticesById.values()` rather than the `vertices` view, which allocates an object per access
   // to wrap this very iterator.
+  if (fast !== undefined) {
+    for (const v of graph.verticesById.values()) {
+      if (fast(v.properties[key])) {
+        n += 1;
+      }
+    }
+
+    return n;
+  }
+
   for (const v of graph.verticesById.values()) {
-    if (matches(step.pred, v.properties[step.key])) {
+    if (matches(step.pred, v.properties[key])) {
       n += 1;
     }
   }
