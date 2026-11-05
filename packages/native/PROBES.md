@@ -819,5 +819,8 @@ winning.
 The residual `project` gap is named: Gremlin builds a traverser per vertex and extends it per value
 (`sourceFromIds` 17.3% + `extend` 9.1% + `startTraverser` 2.9% ≈ 29%) where GQL's node-projection walk
 builds none. `hopValuesShortcut` already eliminates exactly that for `V().out(T).values(k)`; the
-no-hop form has no shortcut. **Priced, not taken** — it lands in `hop-values.ts`, whose ~16%
-per-edit perturbation the ~29% ceiling clears only narrowly.
+no-hop form has no shortcut. ~~**Priced, not taken** — it lands in `hop-values.ts`, whose ~16% per-edit perturbation the ~29%
+ceiling clears only narrowly.~~ **TAKEN at item 1482, 2.39x**: that framing had a hole — the
+perturbation is a consequence of editing the FILE, so a NEW module (`node-values.ts`) costs nothing
+and only one `index.ts` call site changes. `hopbare` stayed flat across the A/B, confirming it.
+`project` is now **0.77x — Gremlin ahead of GQL** where it was 1.63x behind.

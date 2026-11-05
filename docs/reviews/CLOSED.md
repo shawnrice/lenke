@@ -56935,3 +56935,88 @@ real queries. That trade needs its own A/B and control band, not the tail of a t
 ### Gates
 
 `bun run check` 0 read unpiped. One new instrument; no engine code changed.
+
+### Item 1482 — SHIPPED, **2.39x** on `V().hasLabel(L).values(k)` (3/3, arms nowhere near overlapping, FOUR controls flat): the no-hop sibling of `hopValuesShortcut`. Gremlin now BEATS ISO-GQL on the pair where it was 1.63x behind — and the ~16% perturbation was sidestepped by putting it in a NEW FILE
+
+Item 1481 priced this and declined it, because the obvious home is `hop-values.ts` — the file
+[[executor-edits-perturb]] measures at up to ~16% on unrelated rows per edit, which a ~29% ceiling
+clears only narrowly on a step as central as `values()`.
+
+**That framing had a hole: the perturbation is a consequence of editing the FILE.** A new module costs
+nothing, and the only edit to a hot file is one call site in `index.ts` — which items 1460 and 1479
+both changed without the effect appearing. `node-values.ts` is that module.
+
+### What it does
+
+`hopValuesShortcut` eliminates the traverser pipeline for `V().out(T).values(k)` but requires a hop
+at `steps[1]`, so the **no-hop** forms never had a shortcut. `nodeValuesShortcut` answers
+`V().values(k)` and `V().hasLabel(L).values(k)` — and nothing else — by scanning `graph.vertices` and
+emitting `props[key]` directly, building no traverser at all.
+
+### Measured
+
+A/B, one arm per process, `nx build` between arms, arm asserted from `dist`, order alternated,
+200,000 vertices. **The cross-surface probe is both target and control rig**: its `project` pair takes
+the shortcut and its other three do not, so they are controls sharing the fixture, process and
+harness with the target. `hopbare` on the Gremlin probe is an outside control.
+
+```text
+                       POST                      PRE
+project           5.86  5.67  5.82      14.18 13.93 13.11     3/3, 2.39x
+hopfiltered       4.07  4.33  3.46       4.04  4.26  3.53     flat
+exists            8.92  9.36  8.86       8.29  9.05  8.38     flat
+grouped           3.41  4.32  3.39       3.68  4.13  3.39     flat
+hopbare        4051.4 4120.1 3990.7   4019.6 3981.9 3939.8    flat
+```
+
+POST's slowest (5.86) is less than half PRE's fastest (13.11). **And `hopbare` is flat — the ~16%
+perturbation did not appear**, which is the evidence that the new-file decision was the right one and
+not merely a hopeful one.
+
+**The cross-surface gap is now reversed**: `project` was Gremlin 13.15 against GQL 8.08 (1.63x
+behind); it is now **5.88 against 7.69 — 0.77x, Gremlin ahead.**
+
+### Teeth
+
+`node-values-shortcut.test.ts`, 17 tests. ⚠️ **A shortcut is an ANSWER PATH, not a rewrite**, so a
+loosened gate is a wrong answer rather than a slow one — most of the tests are refusals:
+
+- answers: one value per vertex that HAS the key, in vertex order; a vertex lacking it **dropped**,
+  not emitted as `undefined`; `hasLabel` filtering; `hasLabel(P, Q)` matching **any**; an absent
+  label; an empty graph
+- refuses: a residual step after `values()`; `values()` with no key; `values(a, b)`; `V(id, …)`; a hop
+  before `values()`; a second filter between
+- `drain()` equals spreading the iterator (they are one loop body for that reason)
+- the shortcut agrees with the traverser pipeline
+
+**Mutation: 6 of 7 caught, and the two survivors were different problems.**
+
+| mutant                                              | result                                   |
+| --------------------------------------------------- | ---------------------------------------- |
+| accept a residual step after `values()`             | 42 failures                              |
+| emit `undefined` instead of dropping                | 6 failures                               |
+| ignore the label filter                             | 5 failures                               |
+| `hasLabel` becomes ALL-of                           | 1 failure                                |
+| accept `V(id, …)`                                   | 1 failure                                |
+| **UNWIRE — shortcut correct, `run` never calls it** | **survived 1,291 tests → now 1 failure** |
+| drop the `tracksPath` guard                         | **survives: UNREACHABLE, verified**      |
+
+⚠️ **The unwire survivor is why a wiring assertion is not optional.** The engine answers identically by
+the traverser pipeline, so every behavioural test passes. `run` returns the shortcut object itself and
+that object carries a `drain`, so its presence is the observable: one test asserts a matching plan's
+result has `drain`, another that a refused plan's does not.
+
+⚠️ **The `tracksPath` survivor is UNREACHABLE, not a gap** — checked by reading, not assumed. The
+shortcut admits only `V`, `hasLabel` and `values`, and **none of the three is in
+`PATH_DEPENDENT_KINDS`**, so `planReadsPath` cannot be true for a plan it matches. The guard is kept
+and now carries that note at the call site, because the gate belongs to the shortcut's CONTRACT rather
+than to today's shape list: widen `matchShape` to admit a path-dependent kind and the guard is what
+stops it becoming a wrong answer. Third instance of item 1478's "survived means blind test, no-op
+mutant, OR unreachable code".
+
+### Gates
+
+core 431/0, gql 3709/0, gremlin 1293/0 (1276 + 17 new), native 961/0, serialization 144/0,
+`bun run fuzz` 20/0 — which matters here: a new ANSWER path in Gremlin is exactly what the
+differential fuzzer's ORDERED comparison against the Rust engine exists to catch.
+`bun run check` 0 read unpiped.

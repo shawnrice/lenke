@@ -16,6 +16,7 @@ import { countShortcut } from './count-shortcut.js';
 import { applyStep } from './dispatch.js';
 import { hopValuesShortcut } from './hop-values.js';
 import { seedFromIndex, tailIsOrderFree } from './index-seed.js';
+import { nodeValuesShortcut } from './node-values.js';
 import { groupCountShortcut } from './projection.js';
 import { newContext, planReadsPath, startTraverser, type Traverser, unwrap } from './runtime.js';
 import { applySource } from './sources.js';
@@ -1588,6 +1589,24 @@ export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
 
   if (grouped !== undefined) {
     return [grouped];
+  }
+
+  // `V().values(k)` / `V().hasLabel(L).values(k)` answer the whole plan with a scan that builds no
+  // traverser — the NO-HOP sibling of `hopValuesShortcut`, which requires a hop and so never
+  // covered these. Item 1481 measured the gap to ISO-GQL's `MATCH (n:P) RETURN n.k` at 1.63x and
+  // profiled it as traverser construction (~29%). Same `tracksPath` guard and the same reason: the
+  // walk emits bare values and carries no path.
+  //
+  // ⚠️ THAT GUARD IS UNREACHABLE FOR THIS SHAPE, and it is kept deliberately. The shortcut admits
+  // only `V`, `hasLabel` and `values`, none of which is in `PATH_DEPENDENT_KINDS`, so
+  // `planReadsPath` cannot be true for a plan it matches — a mutant deleting the guard survives the
+  // whole suite (item 1482). It stays because the gate belongs to the SHORTCUT'S CONTRACT, not to
+  // today's shape list: widen `matchShape` to admit a path-dependent kind and this guard is what
+  // stops that becoming a wrong answer.
+  const nodeValues = ctx.tracksPath ? undefined : nodeValuesShortcut(effective, graph);
+
+  if (nodeValues !== undefined) {
+    return nodeValues;
   }
 
   // `V().out(T).values(k)` likewise answers the whole plan — one walk instead of the traverser
