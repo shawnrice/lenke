@@ -3,6 +3,9 @@ import { ErrorCode, LenkeError } from '@lenke/errors';
 
 import type { Statement } from './ast.js';
 import { isTxControl } from './ast.js';
+import { normalizeLiterals } from './auto-param.js';
+
+export { normalizeLiterals } from './auto-param.js';
 import {
   compile,
   compileValidator,
@@ -275,6 +278,27 @@ const seenOnce = new Set<string>();
  * rather than being remembered. That is the right way round — a failing query is not a hot path,
  * and caching a thrown error would make the first failure permanent for that text.
  */
+/**
+ * The cache HIT alone, with no parse and no admission bookkeeping — `undefined` on a miss.
+ *
+ * Extracted at item 1502 so `query` can ask "is this text already known?" before paying for
+ * anything else. That ordering is the whole reason auto-parameterization is free for callers who
+ * already use parameters: their text repeats, so it hits here and never reaches the tokenizer.
+ */
+const parseCacheHit = (text: string, chain: number | undefined): Statement | undefined => {
+  const hit = parseCache.get(text);
+
+  if (hit === undefined || hit.chain !== chain) {
+    return undefined;
+  }
+
+  // Move to the end: `Map` preserves insertion order, so eviction drops the LEAST RECENTLY used.
+  parseCache.delete(text);
+  parseCache.set(text, hit);
+
+  return hit.stmt;
+};
+
 const parseCached = (text: string, chain: number | undefined): Statement => {
   const hit = parseCache.get(text);
 
@@ -340,11 +364,62 @@ export const parseCacheStats = (): { size: number; seen: number; cap: number } =
   cap: PARSE_CACHE_CAP,
 });
 
+/**
+ * AUTO-PARAMETERIZATION (item 1502), and the ORDER of these three steps is the design.
+ *
+ * 1. Ask the parse cache first. A caller who already uses parameters sends a repeating text, hits
+ *    here, and never pays a byte for anything below — which is the point: the sloppy caller must
+ *    not be subsidised by the careful one. (A tokenize is ~865 ns against a cached call of
+ *    1-4 us, so paying it unconditionally would be a 20-60% regression for correct code.)
+ * 2. On a MISS, try lifting literals into parameters. Items 1499-1501: parse+plan is 3.1-6.9x the
+ *    execution of a cheap query, interpolated text misses by construction, and item 1501's gate
+ *    found the rewrite answer-safe in every position tested and route-safe in all but `LIMIT`,
+ *    which `normalizeLiterals`' allowlist excludes by construction.
+ * 3. If the rewritten text does not PARSE, fall back to the original. A rewrite can only produce
+ *    invalid syntax, never different semantics, for the positions the allowlist admits — so a
+ *    parse failure is the safe failure, and taking it costs one wasted parse on a path that was
+ *    going to parse anyway.
+ *
+ * ⚠️ THE GUARD IS AROUND THE PARSE AND NOT AROUND `execute`, deliberately. Retrying a failed
+ * `execute` would re-run a statement that may already have written — an INSERT that raised halfway
+ * would apply twice. `execute` is called exactly once here, on whichever statement step 2 or 3
+ * settled on.
+ *
+ * ⚠️ USER PARAMS WIN over synthetic ones. They cannot actually collide — the synthetic namespace is
+ * `__ap<n>` — but spreading them last means a future namespace change cannot silently shadow a
+ * caller's own binding.
+ */
 export const query = <R extends Row = Row>(
   graph: Graph,
   text: string,
   params?: Record<string, unknown>,
-): R[] => execute<R>(parseCached(text, graph.maxOperatorChain), graph, withClock(graph, params));
+): R[] => {
+  const chain = graph.maxOperatorChain;
+  const cached = parseCacheHit(text, chain);
+
+  if (cached !== undefined) {
+    return execute<R>(cached, graph, withClock(graph, params));
+  }
+
+  const lifted = normalizeLiterals(text);
+
+  if (lifted !== undefined) {
+    try {
+      const stmt = parseCached(lifted.text, chain);
+
+      return execute<R>(
+        stmt,
+        graph,
+        withClock(graph, params === undefined ? lifted.params : { ...lifted.params, ...params }),
+      );
+    } catch {
+      // Fall through to the original text, whose parse will raise the caller's real error if there
+      // is one. Nothing has executed at this point.
+    }
+  }
+
+  return execute<R>(parseCached(text, chain), graph, withClock(graph, params));
+};
 
 /**
  * Bind a graph and return a runner. Supports both a tagged-template form

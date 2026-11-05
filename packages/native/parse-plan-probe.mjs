@@ -38,6 +38,27 @@ for (let i = 0; i < 200; i += 1) {
 }
 
 /** Query texts, each a shape a real caller writes. */
+/**
+ * ⚠️ A SECOND UNIQUIFIER, AND THE DIFFERENCE IS THE WHOLE MEASUREMENT (item 1502).
+ *
+ * `uniquify` appends a line comment, which makes the TEXT unique while leaving the AST identical —
+ * built at item 1499 to defeat the parse cache. It also defeats AUTO-PARAMETERIZATION, because the
+ * comment survives into the rewritten text, so the `fresh` arm cannot see that feature at all.
+ *
+ * `interpolate` is what a real application does: it varies a LITERAL. That text is unique for the
+ * same reason, and it is the case auto-parameterization exists for — the rewritten text is constant
+ * across reps, so it caches. Keeping BOTH arms is what separates the win from the cost: `fresh`
+ * now measures what a literal-free cache miss pays for the attempt (one extra tokenize), and
+ * `interp` measures what an interpolating caller gains.
+ */
+const INTERPOLATABLE = {
+  insert: (i) => `INSERT (:Event {name: 'ev', score: ${i}, seq: 3})`,
+  point: (i) => `MATCH (n:P) WHERE n.k = ${i} RETURN n.n AS v`,
+  agg: (i) => `MATCH (n:P) WHERE n.k = ${i} RETURN n.k AS k, count(*) AS c`,
+  longer: (i) =>
+    `MATCH (u:P) WHERE u.k = ${i} AND u.n > 10 AND u.n < 100 OPTIONAL MATCH (u)-[:E]->(f:P) RETURN u.n AS n, count(f) AS fans ORDER BY n LIMIT 25`,
+};
+
 const SHAPES = {
   insert: "INSERT (:Event {name: 'ev', score: 7, seq: 3})",
   point: 'MATCH (n:P) WHERE n.k = 3 RETURN n.n AS v',
@@ -95,7 +116,7 @@ for (const [name, text] of Object.entries(SHAPES)) {
 
 console.log(`\nPARSE + PLAN — REPS=${REPS} ROUNDS=${ROUNDS} (median of rounds, ns per call)\n`);
 console.log(
-  `${'shape'.padEnd(8)}${'chars'.padStart(6)}${'parse'.padStart(9)}${'+plan'.padStart(9)}${'warm q'.padStart(9)}${'fresh q'.padStart(9)}   fresh/warm`,
+  `${'shape'.padEnd(8)}${'chars'.padStart(6)}${'parse'.padStart(9)}${'+plan'.padStart(9)}${'warm q'.padStart(9)}${'fresh q'.padStart(9)}${'interp'.padStart(9)}   fresh/warm  interp/warm`,
 );
 
 for (const name of names) {
@@ -107,13 +128,26 @@ for (const name of names) {
     plan: () => timeRound((i) => compile(parse(uniquify(text, i)))),
     // 3. The whole call with a CONSTANT text — the cache hit path.
     warm: () => timeRound(() => query(graph, text)),
-    // 4. The whole call with a UNIQUE text — what an interpolating caller pays.
+    // 4. The whole call with a UNIQUE text, made unique by a COMMENT — so it is unique to the
+    //    parse cache AND to auto-parameterization. This is now the control for what a literal-free
+    //    cache miss pays for the normalization attempt.
     fresh: () => timeRound((i) => query(graph, uniquify(text, i))),
+    // 5. The whole call with a unique text made unique by a LITERAL — what an interpolating
+    //    application actually sends, and the arm auto-parameterization is for.
+    interp:
+      INTERPOLATABLE[name] === undefined
+        ? undefined
+        : () => timeRound((i) => query(graph, INTERPOLATABLE[name](i))),
   };
 
   const out = {};
 
   for (const [arm, fn] of Object.entries(arms)) {
+    if (fn === undefined) {
+      out[arm] = Number.NaN;
+      continue;
+    }
+
     const rounds = [];
 
     for (let r = 0; r < ROUNDS; r += 1) {
@@ -137,10 +171,14 @@ for (const name of names) {
     return 0;
   });
 
+  const interpCell = Number.isNaN(out.interp) ? '-' : out.interp.toFixed(0);
+  const interpRatio = Number.isNaN(out.interp) ? '-' : `${(out.interp / out.warm).toFixed(1)}x`;
+
   console.log(
     `${name.padEnd(8)}${String(text.length).padStart(6)}${out.parse.toFixed(0).padStart(9)}` +
       `${out.plan.toFixed(0).padStart(9)}${out.warm.toFixed(0).padStart(9)}${out.fresh.toFixed(0).padStart(9)}` +
-      `   ${(out.fresh / out.warm).toFixed(1)}x`,
+      `${interpCell.padStart(9)}` +
+      `   ${`${(out.fresh / out.warm).toFixed(1)}x`.padEnd(10)}${interpRatio.padStart(11)}`,
   );
 }
 

@@ -1225,3 +1225,18 @@ with a confirm-alone command, so they are not re-derived:
 The in-sweep run flags four cases including `inline` at 0.10x against its isolated ~1.0x — **the
 sweep is not an instrument for these sub-5ms rows.** Confirm alone, at REPS=25, before believing any
 flag but `LIMIT`.
+
+### ⚠️ `fresh` vs `interp` — two uniquifiers, and only one can see auto-parameterization (item 1502)
+
+`fresh` makes the text unique by appending a line COMMENT (item 1499, to defeat the parse cache).
+That **also defeats auto-parameterization**, because the comment survives into the rewritten text —
+so `fresh` cannot measure the feature at all. It is now the CONTROL for what a literal-free cache
+miss pays for the normalization attempt (1.04x, with the regex pre-filter).
+
+`interp` varies a LITERAL, which is what an interpolating application does, and is the arm the
+feature is for: **insert 1.46x, point 1.82x, agg 2.02x, longer 1.83x**.
+
+⚠️ **AND THE FIRST `interp` USED `i % 7`, WHICH IS SEVEN TEXTS, NOT UNIQUE ONES.** The parse cache
+holds all seven, so PRE measured FASTER than POST — a warm cache against a cache plus normalization.
+Only `${i}` models the real caller. Third instance this session of match-the-fixture-to-the-claim,
+and the first where the fixture flattered the status quo rather than the change.

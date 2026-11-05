@@ -58581,6 +58581,9 @@ evidence.
 
 ### Item 1499 — **`bench:usage` has encoded a 4x since item 662 and nobody priced it: parse+plan is 3.1-6.9x the EXECUTION of a cheap query**, and an application that interpolates literals into query text pays it on every single call. The lever is auto-parameterization, not the parser
 
+> ⚠️ **BUILT AT ITEM 1502: 1.46-2.07x for an interpolating caller**, gated at item 1501 and shipped
+> as a TEXT rewrite (`normalizeLiterals`) that leaves the parse and plan caches untouched.
+>
 > ⚠️ **ONE CLAIM BELOW IS WRONG, corrected at item 1501.** ~~`read: keyed dedup lookup` is 5-11x
 > slower than its siblings~~ — it is not slow: `WHERE u.score = $s` with `score = i % 100` over
 > 20,000 users matches **200 rows** where `read: point lookup` matches **1**, so per row it is ~17x
@@ -58858,3 +58861,118 @@ trap, and this one would have cost a whole tick.
 
 `bun run check` 0 read unpiped. No engine change — one new gate probe, one measured exception, three
 refuted flags and one corrected claim.
+
+### Item 1502 — **AUTO-PARAMETERIZATION SHIPPED: 1.46-2.07x for an interpolating caller.** Literals are lifted out of the query TEXT into parameters, so queries differing only in their constants share one cache entry. Byte-identity holds
+
+Items 1499-1501 built the case: parse+plan is 3.1-6.9x the execution of a cheap query, an
+interpolating caller misses the cache by construction, the planner has no hot spot to speed up
+instead, and item 1501's gate found the rewrite answer-safe in every position tested and route-safe
+in all but `LIMIT`. This item builds it.
+
+### The design is a string, not an AST
+
+`MATCH (n:P) WHERE n.k = 7` becomes `MATCH (n:P) WHERE n.k = $__ap0` with `{ __ap0: 7 }`, and that
+rewritten text goes through the ordinary parse and plan caches **unchanged**. No AST surgery, no plan
+surgery, nothing to keep in sync with either.
+
+⚠️ **THE ORDER OF THE THREE STEPS IN `query` IS THE DESIGN, and step 1 is why this is free for
+callers who already do the right thing.**
+
+1. **Ask the parse cache FIRST.** A caller using parameters sends a repeating text, hits, and never
+   pays a byte for anything below. A tokenize is ~865 ns against a cached call of 1-4 us, so paying
+   it unconditionally would be a **20-60% regression for correct code** — the sloppy caller must not
+   be subsidised by the careful one.
+2. **On a miss, try lifting.**
+3. **If the rewritten text does not PARSE, fall back to the original.** For the positions the
+   allowlist admits, a rewrite can only produce invalid syntax, never different semantics — so a
+   parse failure is the safe failure.
+
+⚠️ **The guard is around the PARSE and not around `execute`.** Retrying a failed `execute` would
+re-run a statement that may already have written — an INSERT that raised halfway would apply twice.
+`execute` runs exactly once.
+
+### The eligibility rule is an ALLOWLIST, which gets item 1501's exception for free
+
+A literal is lifted only when it is adjacent to a comparison operator or follows a `colon`. That
+excludes **by construction** every position the gate found unsafe, rather than by enumerating
+exclusions a new syntax arm could slip past:
+
+- **`LIMIT 10` / `SKIP 10`** — preceded by a keyword. `topKPlan` reads the value at plan time and
+  item 1501 measured a param limit at **5.3-6.1x** (52.75 → 322.67 ms).
+- **a path quantifier `-[:E]->{1,3}`** — preceded by `lbrace` and `comma`. Lifting a bound would
+  change the pattern the planner compiles, silently.
+- **`DATE '2020-01-01'`** — preceded by the temporal keyword; `DATE $p` is a different construct.
+- **`null` / `true` / `false`** — keywords, not literal tokens, so unliftable. Critical for null:
+  `{k: null}` means IS NULL for an inline constraint (item 260) and `IS NULL` has no parameterized
+  spelling at all (item 1501).
+
+**Both sides of a comparison are lifted**, and that is not an afterthought: `5 <= u.n` and
+`u.n >= 5` are the same question, and CLAUDE.md names that exact pair as a defect this engine has
+shipped before. Lifting only the right-hand side would have created the asymmetry rather than found
+it.
+
+### A/B — the arm had to be rebuilt twice before it measured anything
+
+```text
+                      PRE          POST (3 rounds)        ratio
+insert  interp       6708      4556  4541  4705          1.46x
+point   interp      11082      6144  6088  6071          1.82x
+agg     interp      13693      6788  6873  6701          2.02x
+longer  interp      24225     13306 13199 13222          1.83x
+```
+
+⚠️ **MY OWN PROBE DEFEATED THE FEATURE, and then my fixture hid it.** Item 1499's `fresh` arm makes
+text unique by appending a line COMMENT — which normalization preserves, so that arm cannot see
+auto-parameterization at all. Adding an `interp` arm that varies a LITERAL was the fix, and the first
+version of it used `i % 7`, giving **seven distinct texts** that the parse cache holds entirely: PRE
+then measured FASTER than POST, because PRE was a warm cache and POST paid normalization on top. Only
+`${i}` — unique per rep — models an interpolating application. Third instance this session of
+"match the fixture to the claim", and the first where the fixture flattered the status quo.
+
+### The cost, measured rather than waved at
+
+A text that misses the cache for some reason OTHER than a liftable literal pays for the attempt. A
+regex pre-filter (`[=<>:]` next to a literal start, either side) removes it where it can:
+
+```text
+hop (no literals at all)   PRE 7396 7414   POST 7613 7643 7772   1.04x
+```
+
+`IN [...]` and `LIMIT 5` also fail the pre-filter and skip the tokenize entirely. What remains is a
+text unique for another reason that ALSO holds a constant in a comparison — an interpolated label
+beside a constant predicate, say — which pays **1.15-1.27x**. Reported rather than hidden: that case
+was already paying full parse+plan, and now pays ~20% more, against ~2x for the common case.
+
+### ⚠️ Mutation: all six caught, but TWO WIDENINGS WALKED THROUGH 31 PASSING TESTS FIRST
+
+```text
+widen-quantifier   admit lbrace/comma — lifts PATH QUANTIFIER bounds
+widen-keyword      admit keyword      — lifts LIMIT and DATE '…'
+raw-string         carry the SOURCE span instead of the decoded value
+bad-span           off-by-one on the span end
+one-name           reuse one param name for every literal
+null               disable the feature
+```
+
+The first version of the refusal tests asserted that a refusable token existed in the **input** and
+that the query did not throw — a tautology and a near-tautology. `widen-quantifier` and
+`widen-keyword` both left all 31 green. Rewritten to assert on the **rewritten text** (`mustSurvive`:
+the refused token must still be there), both are caught.
+
+And `bad-span` survived one round longer than that: `not.toContain('1234')` passes when an off-by-one
+leaves a single character behind. **Pinning the EXACT rewritten string** is what made it loud —
+including the trailing space the rewriter emits, so that spacing is a pinned decision rather than a
+guess.
+
+A third thing a test found rather than foresight: the reversed-comparison rule also caught the last
+operand of an arithmetic expression (`n.k + 1 = 8` → `n.k + $__ap0 = $__ap1`). Probably harmless —
+item 1501 measured a param inside arithmetic at 0.77x — but "probably" is the wrong standard for
+rewriting user query text, and it put the feature outside the positions the gate measured. Literals
+adjacent to an arithmetic operator are now excluded, which makes the documented rule true rather
+than nearly true.
+
+### Gates
+
+`bun run check` 0 read unpiped. core 431/0, gql **3773**/0, gremlin 1406/0, native 961/0,
+serialization 144/0, and **`bun run fuzz` 20/0** — the byte-identity fuzzers are the real gate here,
+since the TS side now rewrites query text before parsing and the Rust side does not.
