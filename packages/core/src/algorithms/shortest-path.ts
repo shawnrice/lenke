@@ -3,7 +3,7 @@ import { ErrorCode, LenkeError } from '@lenke/errors';
 import type { Edge } from '../core/Edge.js';
 import type { Graph } from '../core/Graph.js';
 import type { Vertex } from '../core/Vertex.js';
-import { incidentEdges } from './adjacency.js';
+import { countIncidentEdges, incidentEdges } from './adjacency.js';
 import { type AlgorithmGen, defineAlgorithm, materializeVertices, YIELD_EVERY } from './async.js';
 import type { AlgorithmConfig, AlgorithmRow } from './types.js';
 
@@ -68,38 +68,11 @@ const heapPop = (heap: HeapItem[]): HeapItem => {
  * Yield each out-edge from a vertex's `edgesFromByLabel` entry, optionally
  * restricted to one edge type. The caller reads `edge.to` for the neighbour.
  */
-const outEdges = incidentEdges;
-
 /** Which incident edges to follow, from `config.direction` (default `out`, mirroring
  *  `degree`); `both` treats the graph as undirected. */
 type Dir = 'out' | 'in' | 'both';
 const dirOf = (config: AlgorithmConfig): Dir =>
   config.direction === 'in' || config.direction === 'both' ? config.direction : 'out';
-
-/**
- * Yield `[edge, neighbourId]` for each incident edge of `u` in the configured
- * direction — the far endpoint is `edge.to` for an out-edge, `edge.from` for an
- * in-edge. `both` yields out-edges then in-edges, matching native `visit_adj`'s
- * order so the Dijkstra `(distance, index)` tie-break stays byte-identical.
- */
-const neighbours = function* (
-  graph: Graph,
-  u: Vertex,
-  dir: Dir,
-  edgeLabel: string | undefined,
-): Iterable<[Edge, string]> {
-  if (dir === 'out' || dir === 'both') {
-    for (const e of outEdges(graph.edgesFromByLabel.get(u.id), edgeLabel)) {
-      yield [e, e.toId];
-    }
-  }
-
-  if (dir === 'in' || dir === 'both') {
-    for (const e of outEdges(graph.edgesToByLabel.get(u.id), edgeLabel)) {
-      yield [e, e.fromId];
-    }
-  }
-};
 
 /**
  * Goal-directed A* — explore by `f = g + h`, where `h` is the admissible estimate
@@ -108,14 +81,98 @@ const neighbours = function* (
  * settled, so identical to Dijkstra), or `undefined` if unreachable. Same
  * `(priority, index)` tie-break as the Dijkstra heap, so native and TS agree.
  */
-/** Shared traversal context — the graph plus the derived index/weight helpers. */
+/**
+ * The traversal adjacency as a flat CSR over dense vertex indices: `nbr[off[u] .. off[u+1])` are
+ * u's neighbour INDICES in the configured direction, and `w[...]` the corresponding edge weights
+ * (empty when unweighted, where every step costs 1).
+ *
+ * ⚠️ IT REPLACES A NESTED GENERATOR THAT ALLOCATED A TUPLE PER EDGE AND HASHED A STRING PER STEP.
+ * `neighbours` was a generator delegating to `incidentEdges` (a second generator), yielding
+ * `[edge, neighbourId]` — one 2-element array per edge traversed — and every consumer then did
+ * `index.get(vid)!`, a string-keyed Map lookup per step. Item 1470 profiled `shortestPath` with
+ * `incidentEdges` at 20.69% and `neighbours` at 20.32%: **41% of the run in adjacency plumbing**,
+ * none of it the search. Built once, every step becomes two typed-array reads.
+ *
+ * ⚠️ THE ORDER IS OUT-EDGES THEN IN-EDGES PER VERTEX — NOT merged by edge index. `both` has to
+ * match native `visit_adj`'s order because the Dijkstra `(distance, index)` tie-break is decided by
+ * it, so two equal-distance routes must be offered in the same sequence as native offers them.
+ * (This is the opposite of item 1469's `neighborAggregate` merge, where eidx order WAS the contract
+ * — the two procedures genuinely differ, so the orders cannot be shared.)
+ *
+ * ⚠️ A `both`-direction SELF-LOOP APPEARS TWICE, once from each side, because that is what
+ * `neighbours` yielded and the distances must not change. `neighborAggregate` drops the second
+ * copy; this one must not.
+ *
+ * The build reads through `incidentEdges` / `countIncidentEdges`, so the multi-label dedupe those
+ * do is preserved exactly — paid once per vertex at build time instead of once per traversal.
+ */
+type Csr = { off: Int32Array; nbr: Int32Array; w: Float64Array };
+
+const buildCsr = (
+  graph: Graph,
+  order: readonly Vertex[],
+  index: Map<string, number>,
+  dir: Dir,
+  edgeLabel: string | undefined,
+  // `undefined` means UNWEIGHTED: every step costs 1 and `w` is not materialized at all. Folding
+  // the flag into the callback keeps this at the parameter bound and makes the two states one fact
+  // rather than two that could disagree.
+  weightOf: ((edge: Edge) => number) | undefined,
+): Csr => {
+  const n = order.length;
+  const off = new Int32Array(n + 1);
+  const wantOut = dir === 'out' || dir === 'both';
+  const wantIn = dir === 'in' || dir === 'both';
+
+  for (let i = 0; i < n; i++) {
+    const { id } = order[i];
+    const c =
+      (wantOut ? countIncidentEdges(graph.edgesFromByLabel.get(id), edgeLabel) : 0) +
+      (wantIn ? countIncidentEdges(graph.edgesToByLabel.get(id), edgeLabel) : 0);
+
+    off[i + 1] = off[i] + c;
+  }
+
+  const m = off[n];
+  const nbr = new Int32Array(m);
+  const w = new Float64Array(weightOf === undefined ? 0 : m);
+  let k = 0;
+
+  for (let i = 0; i < n; i++) {
+    const { id } = order[i];
+
+    if (wantOut) {
+      for (const e of incidentEdges(graph.edgesFromByLabel.get(id), edgeLabel)) {
+        nbr[k] = index.get(e.toId)!;
+
+        if (weightOf !== undefined) {
+          w[k] = weightOf(e);
+        }
+
+        k += 1;
+      }
+    }
+
+    if (wantIn) {
+      for (const e of incidentEdges(graph.edgesToByLabel.get(id), edgeLabel)) {
+        nbr[k] = index.get(e.fromId)!;
+
+        if (weightOf !== undefined) {
+          w[k] = weightOf(e);
+        }
+
+        k += 1;
+      }
+    }
+  }
+
+  return { off, nbr, w };
+};
+
+/** Shared traversal context — the vertex order plus the prebuilt adjacency. */
 type PathContext = {
-  graph: Graph;
   order: Vertex[];
-  index: Map<string, number>;
-  edgeLabel: string | undefined;
-  dir: Dir;
-  weightOf: (edge: Edge) => number;
+  csr: Csr;
 };
 
 const astar = (
@@ -124,7 +181,7 @@ const astar = (
   tgtIdx: number,
   heuristicProperty: string | undefined,
 ): number | undefined => {
-  const { graph, order, index, edgeLabel, dir, weightOf } = ctx;
+  const { order, csr } = ctx;
   const heuristicOf = (i: number): number => {
     if (heuristicProperty === undefined) {
       return 0;
@@ -153,14 +210,14 @@ const astar = (
       return g[u];
     }
 
-    for (const [edge, vid] of neighbours(graph, order[u], dir, edgeLabel)) {
-      const v = index.get(vid)!;
+    for (let k = csr.off[u]; k < csr.off[u + 1]; k++) {
+      const v = csr.nbr[k];
 
       if (closed[v]) {
         continue;
       }
 
-      const ng = g[u] + weightOf(edge);
+      const ng = g[u] + (csr.w.length === 0 ? 1 : csr.w[k]);
 
       if (ng < g[v]) {
         g[v] = ng;
@@ -234,7 +291,17 @@ export const computeGen = function* (
       return [];
     }
 
-    const ctx: PathContext = { graph, order, index, edgeLabel, dir, weightOf };
+    const ctx: PathContext = {
+      order,
+      csr: buildCsr(
+        graph,
+        order,
+        index,
+        dir,
+        edgeLabel,
+        weightProperty === undefined ? undefined : weightOf,
+      ),
+    };
     const d = astar(ctx, srcIdx, tgtIdx, heuristicProperty);
 
     if (d === undefined) {
@@ -251,6 +318,16 @@ export const computeGen = function* (
   const dist = new Float64Array(order.length).fill(Infinity);
   dist[srcIdx] = 0;
 
+  // Built ONCE for the whole search, where `neighbours` rebuilt a generator chain per settled
+  // vertex. Unweighted takes the BFS arm below and never reads `w`, so it is not materialized.
+  const csr = buildCsr(
+    graph,
+    order,
+    index,
+    dir,
+    edgeLabel,
+    weightProperty === undefined ? undefined : weightOf,
+  );
   let sinceYield = 0;
 
   if (weightProperty === undefined) {
@@ -261,8 +338,8 @@ export const computeGen = function* (
     while (head < queue.length) {
       const u = queue[head++];
 
-      for (const [, vid] of neighbours(graph, order[u], dir, edgeLabel)) {
-        const v = index.get(vid)!;
+      for (let k = csr.off[u]; k < csr.off[u + 1]; k++) {
+        const v = csr.nbr[k];
 
         if (dist[v] === Infinity) {
           dist[v] = dist[u] + 1;
@@ -288,9 +365,9 @@ export const computeGen = function* (
         continue;
       }
 
-      for (const [edge, vid] of neighbours(graph, order[u], dir, edgeLabel)) {
-        const v = index.get(vid)!;
-        const nd = du + weightOf(edge);
+      for (let k = csr.off[u]; k < csr.off[u + 1]; k++) {
+        const v = csr.nbr[k];
+        const nd = du + csr.w[k];
 
         if (nd < dist[v]) {
           dist[v] = nd;

@@ -55405,7 +55405,7 @@ What shipped instead: 1431 (47.8-79.1%), 1432 (64.6%), 1437 (75.9-94.2%), 1442 (
 
 `bun run check` 0 (read unpiped). No code changed — a decision and its evidence.
 
-### Item 1467 — the TWELVE ALGORITHMS had no bench row at all, and measuring them turned up a RETENTION defect: a discarded `Graph` is pinned by its own pending `drainMutations` microtask. Nothing algorithmically wrong in the twelve; ~~`labelPropagation` NOMINATED at 14x its siblings per vertex~~ **— the `labelPropagation` CSR target this item priced at 21.6% was TAKEN at item 1468 (14.4% / 21.6% measured, 3/3), and the `neighborAggregate` row it ranked second worst was TAKEN at item 1469 (2.73x). The retention defect is still open.**
+### Item 1467 — the TWELVE ALGORITHMS had no bench row at all, and measuring them turned up a RETENTION defect: a discarded `Graph` is pinned by its own pending `drainMutations` microtask. Nothing algorithmically wrong in the twelve; ~~`labelPropagation` NOMINATED at 14x its siblings per vertex~~ **— the `labelPropagation` CSR target this item priced at 21.6% was TAKEN at item 1468 (14.4% / 21.6% measured, 3/3), and the `neighborAggregate` row it ranked second worst was TAKEN at item 1469 (2.73x), `shortestPath` at item 1470 (2.29x BFS / 2.03x Dijkstra). ⚠️ This item's structural survey MISSED `shortest-path.ts` entirely — a `*test*` filter matches "shor**test**-path" — so its claim that every algorithm already built a CSR was wrong; item 1470 has the detail. The retention defect is still open.**
 
 Item 1466 declined a 3.3x win because any edit to `hop-values.ts` / `hop-projection.ts` moves
 unrelated rows up to ~16% in an arbitrary direction. **That is a reason to move the search, not to
@@ -55787,3 +55787,130 @@ stop matching silently, which the uniqueness assertion turns into a loud failure
 core 413/0 (397 + 16 new), gql 3691/0, gremlin 1241/0, native 961/0 (algo-conformance + algo-fuzz
 112/0, byte-identity with the Rust engine), serialization 144/0, `bun run fuzz` 20/0.
 `bun run check` 0 read unpiped.
+
+### Item 1470 — SHIPPED, **2.29x** (BFS) and **2.03x** (Dijkstra), 3/3 each, both controls flat: `shortestPath` rebuilt a GENERATOR CHAIN per settled vertex and hashed a STRING per step. One flat CSR instead. ⚠️ And a `*test*` filter had silently hidden this file from item 1467's structural survey — "shor**test**-path"
+
+Profiling the two remaining large rows nominated this one: `incidentEdges` at **20.69%** and
+`neighbours` at **20.32%** — **41% of the run in adjacency plumbing, none of it the search.**
+`peerPressure` was profiled in the same pass and is **48.81% in its own loop with no attackable
+frame**, so it is left alone; that is a measured "where not to look".
+
+### ⚠️ The file had been invisible to the earlier survey, and the glob is why
+
+Item 1467 surveyed every algorithm for generator-vs-CSR use and concluded _"all of them build a CSR
+once — `incidentEdges` is called during the build, not per iteration."_ That conclusion was wrong
+about this file, and not because the survey misread it: the loop skipped it. The filter was
+`case "$f" in *test*) continue;;`, and **"shor_test\_-path.ts" contains "test"** at index 4. So
+`shortest-path.ts` was never examined.
+
+**The profile caught what the survey missed**, which is the argument for the user's PROFILE-FIRST
+instruction stated as cleanly as it can be: a structural survey can be silently incomplete, and a
+profile of the actual run cannot. Worth remembering as a concrete hazard — a `*test*` substring
+filter over this repo also swallows anything containing "test" in a longer word.
+
+### What it was doing
+
+`neighbours` was a generator **delegating to `incidentEdges`, a second generator**, yielding
+`[edge, neighbourId]` — one 2-element array per edge traversed — and all three consumers (BFS,
+Dijkstra, A*) then did `index.get(vid)!`, a **string-keyed Map lookup per step**. The whole chain was
+rebuilt for every settled vertex.
+
+Replaced with one flat CSR built once: `off` / `nbr` as `Int32Array`, plus a `Float64Array` of
+per-slot weights (not materialized at all when unweighted). Every step is now two typed-array reads.
+
+Three invariants, each with a reason it cannot be shared with its neighbours:
+
+- **out-edges then in-edges per vertex, NOT merged by edge index.** `both` has to match native
+  `visit_adj`'s order because the Dijkstra `(distance, index)` tie-break is decided by it. This is
+  the _opposite_ of item 1469's `neighborAggregate`, where eidx order was the contract — the two
+  procedures genuinely differ, so the orders cannot be shared, and the comments in both now say so.
+- **a `both`-direction self-loop appears TWICE**, once from each side, because that is what
+  `neighbours` yielded. `neighborAggregate` drops the second copy; this must not.
+- **the build reads through `incidentEdges` / `countIncidentEdges`**, so the multi-label dedupe is
+  preserved exactly — paid once per vertex at build time instead of once per traversal. Using the
+  non-deduping flat count here would be a wrong answer, not a slowdown (see Teeth).
+
+### Measured
+
+**The Dijkstra route was entirely unbenched before this item** — the single `shortestPath` row has no
+`weightProperty`, so it took the BFS arm and the weighted heap was never measured. A second row
+(`label: 'shortestPathWeighted'`) now covers it, which required keying bench rows by label rather
+than by algorithm name since both rows call the same procedure.
+
+A/B, one arm per process, `nx build` between arms, arm asserted from `dist`, order alternated:
+
+```text
+                          POST                    PRE
+shortestPath          16.36 16.84 16.75     38.26 40.97 38.28    3/3, 2.29x
+shortestPathWeighted  30.67 32.24 31.08     59.20 64.64 63.20    3/3, 2.03x
+labelPropagation      81.18 80.13 78.28     83.40 79.19 79.80    mixed, flat
+degree                15.13 14.99 15.01     14.47 14.73 15.13    mixed, flat
+```
+
+On the standing bench, two sizes:
+
+```text
+                         V=40,000           V=160,000
+shortestPath         36.95 -> 16.72      230.91 ->  92.43     1443 -> 578 ns/V
+shortestPathWeighted 65.58 -> 31.22      357.95 -> 183.82     2237 -> 1149 ns/V
+```
+
+Every other row of the thirteen is unchanged within noise. `incidentEdges` and `countIncidentEdges`
+are untouched, so `degree` — their other caller — cannot move, and does not.
+
+### ⚠️ Two harness failures, both caught by the harness
+
+**The arm assertion fired, and it was right.** The first A/B run produced **no output at all** and
+exited 1. The marker was `buildCsr` — which is _also_ the name of a function in `centrality.ts`, so
+the bundle carries 3 of them with this change absent. The assertion correctly refused to measure
+anything. Two lessons: **the marker has to be unique to the change**, not merely present in it
+(`csr.nbr[k]`: 0 in PRE, 3 in POST); and **the assertion must not be swallowed** — `run_one`'s output
+is captured with `$(...)`, so its `echo` printed into a variable and the whole failure was invisible.
+It writes to stderr now.
+
+Item 1468 established that an A/B must assert the artifact the harness loads. This is the next layer:
+asserting the _right_ artifact with the _wrong_ marker fails silently in the other direction.
+
+### Teeth
+
+`shortest-path-csr.test.ts`, 18 tests. The sharpest fixture guards a **size/fill disagreement**: the
+CSR is sized by the deduping count and filled by the deduping iterator, and had the sizing used the
+flat count, a two-label edge would reserve a slot that is never written — leaving **0**, which reads
+as a spurious edge to vertex index 0 and **invents a path**. The fixture makes a far-away vertex the
+source so the stale slot would give an isolated vertex a finite distance.
+
+Also: multi-label traversed once under weights, `edgeLabel` bucket selection, all three directions,
+self-loops, `both` crossing an edge against its direction, Dijkstra preferring more hops for less
+weight, parallel edges of different weight, a non-numeric weight reading as 0, the negative-weight
+guard still firing, all three A* paths, and an independent BFS oracle (adjacency rebuilt from the
+edge list, sharing nothing with the CSR) across all three directions.
+
+⚠️ **Seven of the 18 failed on their first run because I asserted `Infinity` for an unreachable
+vertex.** `computeGen` filters on `Number.isFinite`, so **unreachability is the ABSENCE of a row**,
+not a stored `Infinity`. The contract is now stated at the top of the file.
+
+**Mutation-verified, 5/5:**
+
+| mutant                                                      | caught by   |
+| ----------------------------------------------------------- | ----------- |
+| far endpoint of an out-edge becomes its source              | 18 failures |
+| every weight reads as 1 (Dijkstra → hop count)              | 8 failures  |
+| the slice bound is the NEXT vertex's end                    | 4 failures  |
+| **sized with the NON-deduping flat count (invents a path)** | 3 failures  |
+| in-edges dropped from the build                             | 3 failures  |
+
+The `weight` mutant was first **REFUSED** because its anchor appears twice (the out arm and the in
+arm) — the uniqueness assertion working as intended — and was then applied to both sites as one
+mutant.
+
+### Gates
+
+core 431/0 (413 + 18 new), gql 3691/0, gremlin 1241/0, native 961/0 (algo-conformance + algo-fuzz
+byte-identity with the Rust engine), serialization 144/0, `bun run fuzz` 20/0. `bun run check` 0 read
+unpiped.
+
+### Where the twelve stand now
+
+`labelPropagation` 2619 ns/V is the worst again, then `peerPressure` 1416 (**no attackable frame**,
+48.81% in its own loop) and `shortestPathWeighted` 1149. `onCycle` is flagged ABOVE at 7.96x and
+remains unconfirmed at two points.

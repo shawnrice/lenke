@@ -64,14 +64,28 @@ const SPECS = [
   { name: 'pagerank', div: 1, exp: 4, config: { iterations: 20 } },
   { name: 'personalizedPagerank', div: 1, exp: 4, config: { iterations: 20, sourceNodes: ['v0'] } },
   { name: 'shortestPath', div: 1, exp: 4, config: { source: 'v0' } },
+  // ⚠️ A SEPARATE ROW BECAUSE IT IS A DIFFERENT ROUTE, not a variation of one. Unweighted
+  // `shortestPath` takes the BFS arm; supplying `weightProperty` takes the Dijkstra heap. The row
+  // above measured only the BFS arm, so until item 1470 the whole weighted path was unbenched.
+  {
+    name: 'shortestPath',
+    label: 'shortestPathWeighted',
+    div: 1,
+    exp: 4,
+    config: { source: 'v0', weightProperty: 'w' },
+  },
   { name: 'neighborAggregate', div: 1, exp: 4, config: { feature: 'feat', op: 'mean' } },
   // O(V·E): a 4x size step is ~16x, and at div=1 these would not finish.
   { name: 'betweenness', div: 40, exp: 16, config: {} },
   { name: 'closeness', div: 40, exp: 16, config: {} },
 ];
 
-if (ALGO !== undefined && !SPECS.some((s) => s.name === ALGO)) {
-  throw new Error(`unknown ALGO ${ALGO}; have ${SPECS.map((s) => s.name).join(',')}`);
+/** The row's display + selection key: two specs can share an algorithm NAME but differ in config
+ *  (`shortestPath` has a BFS arm and a Dijkstra arm), so the label is what keys a row. */
+const keyOf = (s) => s.label ?? s.name;
+
+if (ALGO !== undefined && !SPECS.some((s) => keyOf(s) === ALGO)) {
+  throw new Error(`unknown ALGO ${ALGO}; have ${SPECS.map(keyOf).join(',')}`);
 }
 
 const build = (n) => {
@@ -173,14 +187,14 @@ const runOne = (spec, n, g) => {
  * cannot let one row's writes reach another's answer.
  */
 const measure = () => {
-  const specs = ALGO === undefined ? SPECS : SPECS.filter((s) => s.name === ALGO);
+  const specs = ALGO === undefined ? SPECS : SPECS.filter((s) => keyOf(s) === ALGO);
   const steps = [];
 
   for (let s = 0; s < SIZES; s += 1) {
     steps.push(4 ** s);
   }
 
-  const rows = new Map(specs.map((s) => [s.name, { name: s.name, exp: s.exp, points: [] }]));
+  const rows = new Map(specs.map((s) => [keyOf(s), { name: keyOf(s), exp: s.exp, points: [] }]));
   const divs = [...new Set(specs.map((s) => s.div))];
 
   for (const div of divs) {
@@ -191,7 +205,7 @@ const measure = () => {
       for (const spec of specs.filter((s) => s.div === div)) {
         // Progress to stderr, so a row that OOMs or times out NAMES ITSELF. The first run of this
         // bench died anonymously at 4,087 MB and nothing in the output said which row held the heap.
-        process.stderr.write(`[algo] ${spec.name} V=${n} …`);
+        process.stderr.write(`[algo] ${keyOf(spec)} V=${n} …`);
 
         const { ms, shape } = runOne(spec, n, g);
 
@@ -199,12 +213,12 @@ const measure = () => {
           ` ${ms.toFixed(1)} ms, heap ${(process.memoryUsage().heapUsed / 1048576).toFixed(0)} MB\n`,
         );
 
-        rows.get(spec.name).points.push({ n, ms, shape, perV: (ms * 1e6) / n });
+        rows.get(keyOf(spec)).points.push({ n, ms, shape, perV: (ms * 1e6) / n });
       }
     }
   }
 
-  return specs.map((s) => rows.get(s.name));
+  return specs.map((s) => rows.get(keyOf(s)));
 };
 
 const results = await profileWindow(process.env.PROF_OUT, measure);
