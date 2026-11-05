@@ -58578,3 +58578,87 @@ Both were only visible because the change was actually made:
 Reverted; `bun run typecheck` 0, `bun run check` 0 read unpiped, core 431/0, gql 3727/0,
 gremlin 1406/0 confirm the tree is back. The probe keeps its new `setedge` control, which is the
 evidence.
+
+### Item 1499 — **`bench:usage` has encoded a 4x since item 662 and nobody priced it: parse+plan is 3.1-6.9x the EXECUTION of a cheap query**, and an application that interpolates literals into query text pays it on every single call. The lever is auto-parameterization, not the parser
+
+Profile-first, on the one regime this session had not opened: the SERVING path, small operations
+against a warm graph. Two anomalies in `bench:usage`'s TS columns, and the second is the finding.
+
+```text
+write: append node            128.6k ops/s
+write: append node [params]   512.8k        ← 4x, in the UNINDEXED column where no seek applies
+```
+
+The cause is in the harness and it is not a defect there: `append node` interpolates the loop
+counter into the text (`INSERT (:Event {name: 'ev${i}', …})`), so every call is a distinct string and
+misses the parse+plan cache (items 228/229); the param row's text is constant and hits it. Item 662's
+comment already says to read the delete row against the param row for this reason — **so the 4x has
+been sitting in the harness, correctly explained and never priced.**
+
+### New instrument: `parse-plan-probe.mjs`
+
+⚠️ **DEFEATING THE CACHE IS THE WHOLE DESIGN.** Each `fresh` arm mints a UNIQUE text per rep by
+appending a line comment carrying the rep number — the lexer discards it, so the string differs while
+the parsed AST does not. The probe **asserts that** before printing anything (`JSON.stringify(parse(text))`
+against the uniquified parse); without it the fresh arms could be measuring a different query and
+every ratio would be void.
+
+```text
+shape    chars    parse    +plan   warm q  fresh q   fresh/warm
+insert      46     2330     3232     2306     7248   3.1x
+point       41     2741     8392     3900    13617   3.5x
+hop         39     2737     5335     1110     7684   6.9x
+agg         42     2603     5756     3140    10016   3.2x
+longer     137     6956    14055    30805    50086   1.6x
+```
+
+Three things worth separating:
+
+- **Parse alone is 2.3-2.7 us for a ~40-character query** — about 60 ns a character — and 7.0 us at
+  137 characters, so it is roughly linear in text length.
+- **Planning adds 1-6 us on top**, more than parsing for every read shape.
+- **The cheaper the query, the more it dominates.** `hop` executes in 1.1 us warm and costs 7.7 us
+  fresh: for that shape, 86% of an uncached call is parse+plan. The `longer` row's 1.6x is the
+  opposite end — real execution swamping a fixed cost.
+
+### The lever is AUTO-PARAMETERIZATION, and it is named rather than built
+
+A cache cannot help interpolated text — the key is new every call by construction. The structural
+answer is the one real databases ship (SQL Server's forced parameterization, Postgres' prepared
+statements): canonicalize literals out of the text into parameters, so `INSERT (:E {n: 'ev1'})` and
+`INSERT (:E {n: 'ev2'})` share a plan.
+
+**Ceiling, measured above: 3.1-6.9x for an interpolating caller on a cheap query**, falling toward
+1x as execution grows. That is the largest unclaimed factor this session has found, and it is a
+feature with its own correctness surface (literal-to-param extraction has to preserve types, NULL
+handling and the plan's seeding decisions), so it wants its own item rather than the tail of this one.
+
+### ⚠️ Two frames checked and NOT taken, both because the comment got there first
+
+- **`tokenize`, the largest non-GC frame at 11.4%** — items 887/888 already own it. 887 measured the
+  tokenizer at 28-54% of parse; 888 ran a CEILING ABLATION (push one shared constant token instead
+  of a fresh object — "as wrong as code gets, so a hard upper bound") and got **1.07x**, and records
+  that the 1.24x lever in that function was the keyword lookup, already taken. Reading that comment
+  is what stopped a third re-derivation; item 1493 is the precedent for why that matters.
+- **`checkKeyword` at 3.2% with ZERO audit mentions**, which is exactly what an untouched frame looks
+  like — and it reads two fields of one token through two separate `peek()` calls:
+
+  ```ts
+  const checkKeyword = (kw: string): boolean => peek().type === 'keyword' && peek().value === kw;
+  ```
+
+  Hoisting the token into a local measured **FLAT: `agg` parse 2318/2272/2257 ns against
+  2185/2284/2239** — a 1.5% median difference with the ranges overlapping, at REPS=5000 ROUNDS=7 with
+  the arm asserted from the built dist. V8 inlines the cursor closure, so the second call is not a
+  second call. **Reverted, with the numbers recorded next to the code**, because a flat change to the
+  hot parser is perturbation risk for nothing.
+
+  ⚠️ **An earlier pass of this measurement said 7% and was the instrument.** At ROUNDS=5 the PRE
+  readings were 2533/2536 — remarkably tight, which is what made them convincing — and at ROUNDS=7
+  the same build reads 2257-2318. The tightness was within a round, not across configurations. Match
+  the rep and round counts on both sides before believing a 7% that two tight numbers seem to prove.
+
+### Gates
+
+`bun run check` 0 read unpiped, gql 3727/0. No engine change — one new instrument, one rejection
+recorded with its numbers, and a priced lever named.

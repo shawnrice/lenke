@@ -491,6 +491,14 @@ export const parse = (
 
   const check = (type: TokenType): boolean => peek().type === type;
 
+  // ⚠️ THE DOUBLE `peek()` IS DELIBERATE-BY-MEASUREMENT (item 1499), not an oversight. This runs
+  // once per keyword ALTERNATIVE the recursive-descent parser tries at every position, and a screen
+  // put it at 3.2% of an uncached query with ZERO audit mentions — so it looked like free money.
+  // Hoisting the token into a local (`const t = peek(); return t.type === … && t.value === kw;`)
+  // measured FLAT: `agg` parse 2318/2272/2257 ns against 2185/2284/2239, a 1.5% median difference
+  // with the ranges overlapping, at REPS=5000 ROUNDS=7 with the arm asserted from the built dist.
+  // V8 inlines the cursor closure, so the second call is not a second call. Left as-is because a
+  // flat change to the hot parser is perturbation risk for nothing.
   const checkKeyword = (kw: string): boolean => peek().type === 'keyword' && peek().value === kw;
 
   // A sigil extension keyword (`_MERGE`, `_ON_CREATE`, …) lexes as a plain

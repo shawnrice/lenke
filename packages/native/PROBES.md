@@ -1144,3 +1144,39 @@ Two traps the arms exist to show:
 **Removal order is load-bearing in the arms themselves**: they remove in a SCATTERED order so the
 expected shift is degree/2. Front-to-back makes `splice` look free and back-to-front maximally dear.
 Members are objects, not integers, because the real buckets hold `Edge` references.
+
+## `parse-plan-probe.mjs` — what parse+plan costs, and who pays it
+
+`bench:usage` has encoded the answer since item 662 without anyone pricing it: `write: append node`
+runs at 128.6k ops/s and `write: append node [params]` at 512.8k — **4x**, in the unindexed column
+where no seek applies. The first row interpolates the loop counter into the text, so every call is a
+distinct string and misses the parse+plan cache; the param row's text is constant and hits it.
+
+⚠️ **DEFEATING THE CACHE IS THE DESIGN.** Each `fresh` arm mints a unique text per rep by appending
+a line comment carrying the rep number — the lexer discards it, so the string differs while the AST
+does not. **The probe asserts that before printing anything**; without it the fresh arms could be
+measuring a different query and every ratio would be void.
+
+```text
+shape    chars    parse    +plan   warm q  fresh q   fresh/warm
+insert      46     2330     3232     2306     7248   3.1x
+point       41     2741     8392     3900    13617   3.5x
+hop         39     2737     5335     1110     7684   6.9x
+agg         42     2603     5756     3140    10016   3.2x
+longer     137     6956    14055    30805    50086   1.6x
+```
+
+Parse alone is **2.3-2.7 us for ~40 characters** (~60 ns a char, roughly linear — 7.0 us at 137);
+planning adds 1-6 us more, exceeding parse on every read shape. **The cheaper the query, the more it
+dominates**: `hop` executes in 1.1 us warm and costs 7.7 us fresh, so 86% of an uncached call is
+parse+plan. The lever is auto-parameterization (canonicalize literals into params so interpolated
+texts share a plan), priced at 3.1-6.9x for an interpolating caller — named at item 1499, not built.
+
+⚠️ **MATCH `ROUNDS` ON BOTH SIDES.** An earlier pass of the `checkKeyword` A/B read 7% because its
+PRE arm ran at ROUNDS=5 (2533/2536 — tight enough to be convincing) and the same build reads
+2257-2318 at ROUNDS=7. The tightness was within a round, not across configurations; the real answer
+was flat.
+
+Two frames checked and not taken: `tokenize` (11.4%, the largest non-GC frame) is owned by items
+887/888, whose ceiling ablation measured 1.07x; and `checkKeyword`'s double `peek()` (3.2%, zero
+mentions) measured flat at 1.5% and was reverted with the numbers recorded at the code.
