@@ -55317,7 +55317,10 @@ there is a wrong answer rather than a reordering. That needs its own fixture fam
 self-loops, a revisited vertex that `simplePath` must reject and `cyclicPath` must accept) before any
 of it is believable.
 
-**Priced at 3.30x, shape named, correctness surface named. Not built.**
+**Priced at 3.30x, shape named, correctness surface named. Not built** — and ❌ **DECLINED AT ITEM
+1466, do not re-raise**: the user judged it not worth regressions on hotter paths, and the file it
+would live in moves unrelated rows up to 16% on any edit (items 1413, 1415, 1440, 1442, 1462).
+`simplePath` also appears ~28x less often than `out(` in this repo's own corpus.
 
 ### Where this leaves the session's search
 
@@ -55337,3 +55340,67 @@ swept. What remains is a short list, all of it either declined by the user or pr
 ### Gates
 
 `bun run check` 0 (read unpiped). No code changed.
+
+### Item 1466 — ❌ DECLINED BY THE USER, and the measured evidence agrees: the `simplePath` fused walk is not worth the regression risk. **Do not re-raise it** — the file it would live in moves unrelated rows up to **16%** on any edit
+
+Item 1465 priced the path-predicate enumerating walk at **3.30x** against a hand floor and named its
+correctness surface. Put to the user, the answer was: _"A fused walk sounds like expensive house
+keeping, but maybe it's not. I don't know how often a simple path would be used, so it's not worth
+regressions on hotter paths."_
+
+**That instinct is correct and this session measured both halves of it.**
+
+### The regression risk is not hypothetical — it is this session's most repeated measurement
+
+A new walk variant lives in `hop-values.ts` or beside the hop walks, and those files have a measured
+perturbation term on ANY edit, in an arbitrary direction:
+
+| item | what moved                                                   | by how much         |
+| ---- | ------------------------------------------------------------ | ------------------- |
+| 1413 | two single-type controls, on a branch the edit did not touch | **−3.5% and −5.8%** |
+| 1440 | `hopyieldsingle`, the untouched `oneType` branch             | **+16.3% at 4/4**   |
+| 1415 | `hop-projection.ts`'s toll on unrelated rows                 | 3.4-5.8%            |
+| 1442 | this session's own two-type walk, its three controls         | ±8%                 |
+| 1462 | the plain-quantifier control beside the `ANY SHORTEST` fix   | 9.9-18.9%           |
+
+So the cost side of this trade is **up to ~16% on rows that are measurably hotter**, paid to gain 3.3x
+on one that is not. Item 1441 recorded the term as "not noise in the statistical sense — a real,
+repeatable consequence of the edit, in an arbitrary direction", which is exactly what makes it a risk
+rather than something more measurement would average away.
+
+### And the usage side, since that was the unknown
+
+A crude but honest proxy — occurrences across `packages/` and `docs/`:
+
+```text
+  count        18,067        out(          2,284
+  has(          2,150        path()          180
+  simplePath       82        cyclicPath       49
+```
+
+`simplePath` appears ~28x less often than `out(` and ~220x less than `count`. Test and doc files
+inflate every row here so the absolute numbers mean little, but the ORDER of magnitude is the point:
+it is a peripheral step, and the walks it would perturb are the ones every query goes through.
+
+**So: declined, on the user's judgement and on numbers that support it.** Recorded at this length
+precisely so the next pass does not re-derive 3.3x and propose it again — the pattern item 1455
+documented, where a cost gets re-priced because the decision was not written next to it.
+
+### What this closes
+
+Every sizeable lever found this session is now resolved:
+
+| lever                             | outcome                                                                      |
+| --------------------------------- | ---------------------------------------------------------------------------- |
+| dense `Vertex` ordinal            | **declined on numbers** — deletes 6.18x/11.34x under churn (1369-1372, 1397) |
+| runtime codegen for constant keys | **declined firmly** — `unsafe-eval` in an embedder's CSP                     |
+| `simplePath` fused walk, 3.3x     | **declined** — this item                                                     |
+| quantified path's CSR build       | **at its floor** given the data model (1454-1455)                            |
+| `out(T,T)` count-vs-yield         | **a semantics decision, with the user** (1460)                               |
+
+What shipped instead: 1431 (47.8-79.1%), 1432 (64.6%), 1437 (75.9-94.2%), 1442 (22-56%), 1453
+(22-28%), 1460 (251 ms → 0.005), 1462 (97.0-98.2%), 1463 (32.3x and 10.6x).
+
+### Gates
+
+`bun run check` 0 (read unpiped). No code changed — a decision and its evidence.
