@@ -600,3 +600,85 @@ describe('⚠️ a start-only gate on the rel-bound filtered walk (item 1532)', 
     ).not.toThrow();
   });
 });
+
+/**
+ * ⚠️ ITEM 1533 — the last decline in `undirectedHopWalk`: a FAR PREDICATE. It cost **5.70x**
+ * (1130.1 ns/row against the unfiltered 198.2) and is now applied per edge in both passes, for
+ * **2.03x**.
+ *
+ * ⚠️ IT NEEDS NO RAISE PARITY, unlike the start-only gate of item 1531, and the asymmetry is the
+ * thing to keep straight: a far predicate is evaluated once per COMPLETE match, which is what the
+ * general path does, so applying it per edge is the same evaluations in the same places. A start
+ * gate runs BEFORE the adjacency, where the general path would not have evaluated it at all.
+ *
+ * The failure mode here is therefore a dropped predicate in ONE of the two passes — the out-pass and
+ * the in-pass are separate code, and item 1410's heading is this file's standing warning that "the
+ * row that covered one never covered the other".
+ */
+describe('⚠️ a far predicate on the undirected hop (item 1533)', () => {
+  const u = (): Graph => {
+    const g = new Graph();
+
+    for (const [id, k, labels] of [
+      ['a', 1, ['P']],
+      ['b', 7, ['P']],
+      ['c', 3, ['P']],
+      ['q', 9, ['P', 'Q']],
+      ['z', 4, ['Z']],
+    ] as const) {
+      g.addVertex({ id, labels: [...labels], properties: { k } });
+    }
+
+    let e = 0;
+
+    for (const [f, t] of [
+      ['a', 'b'],
+      ['b', 'q'],
+      ['a', 'a'],
+      ['c', 'z'],
+    ] as const) {
+      g.addEdge({ id: `p${e}`, labels: ['E'], from: g.getVertexById(f)!, to: g.getVertexById(t)! });
+      e += 1;
+    }
+
+    return g;
+  };
+
+  it('⚠️ applies in BOTH passes — the out-pass and the in-pass are separate code', () => {
+    // b is reached from a (OUT-pass of a) and q is reached from b (OUT-pass of b); b is also
+    // reached from q (IN-pass of q) and z from c. A predicate applied in only one pass changes this.
+    expect(col(query(u(), 'MATCH (a:P)-[:E]-(x) WHERE x.k > 3 RETURN x.k AS j'), 'j')).toEqual([
+      4, 7, 7, 9,
+    ]);
+  });
+
+  it('with no predicate the control is unchanged', () => {
+    expect(col(query(u(), 'MATCH (a:P)-[:E]-(x) RETURN x.k AS j'), 'j')).toEqual([
+      1, 1, 4, 7, 7, 9,
+    ]);
+  });
+
+  it('a far predicate AND a far label compose', () => {
+    expect(col(query(u(), 'MATCH (a:P)-[:E]-(x:Q) WHERE x.k > 3 RETURN x.k AS j'), 'j')).toEqual([
+      9,
+    ]);
+  });
+
+  it('a far predicate that rejects everything gives no rows', () => {
+    expect(query(u(), 'MATCH (a:P)-[:E]-(x) WHERE x.k > 99 RETURN x.k AS j')).toEqual([]);
+  });
+
+  it('a far predicate with a START projection still counts the surviving edges', () => {
+    // Four rows survive, and the START values identify which: a-b, b-q, c-z, q-b.
+    expect(col(query(u(), 'MATCH (a:P)-[:E]-(x) WHERE x.k > 3 RETURN a.k AS k'), 'k')).toEqual([
+      1, 3, 7, 9,
+    ]);
+  });
+
+  it('a far predicate plus a start-only gate compose (items 1531 + 1533)', () => {
+    // The gate rejects `a` (k=1); the far predicate then keeps x.k > 3 among the rest.
+    expect(
+      col(query(u(), 'MATCH (a:P)-[:E]-(x) WHERE a.k > 2 AND x.k > 3 RETURN x.k AS j'), 'j'),
+    ).toEqual([4, 7, 9]);
+  });
+});

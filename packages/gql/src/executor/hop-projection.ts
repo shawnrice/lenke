@@ -1169,7 +1169,7 @@ const undirectedHopWalk = (w: {
   /** Does the carried clause `WHERE` read ONLY the start? (item 1531) */
   startOnly: boolean;
 }): RowsFn | null => {
-  const { startLabel, typeName, farVar, farLabel, proj, gate } = w;
+  const { startLabel, typeName, farVar, farLabel, proj, gate, farPred } = w;
 
   // The admission test lives HERE rather than at the call site, which keeps three conditions
   // out of `detectHopProjection` — it sits one branch under the complexity cap, and the cap is
@@ -1200,7 +1200,18 @@ const undirectedHopWalk = (w: {
   // `carriedWhere`'s answer and it is false for a far-reading or rel-reading predicate.
   const gateStart = w.gate !== undefined && w.startOnly ? w.startVar : undefined;
 
-  if (w.farPred !== undefined || (w.gate !== undefined && gateStart === undefined)) {
+  // ⚠️ A FAR PREDICATE IS NOW ADMITTED TOO (item 1533), and it was the last decline left in this
+  // walk. It cost **5.70x**: `MATCH (a:P)-[:E]-(x) WHERE x.age > 5 RETURN x.age` measured
+  // 1130.1 ns/row against the unfiltered 198.2 — a more selective query running nearly six times
+  // slower, on the general matcher.
+  //
+  // It needs no raise-parity machinery, unlike the start-only GATE above, and that asymmetry is the
+  // point: a far predicate is evaluated once per COMPLETE match, which is exactly what the general
+  // path does, so applying it per edge here is the same number of evaluations in the same places.
+  // `filteredHopWalk` applies `farPred` per edge with no try/catch for that reason. The gate is
+  // different only because it is evaluated BEFORE the adjacency, where the general path would not
+  // have evaluated it at all.
+  if (w.gate !== undefined && gateStart === undefined) {
     return null;
   }
 
@@ -1208,6 +1219,9 @@ const undirectedHopWalk = (w: {
   // items 803/835's rule. `needsStart` cannot be true with `startVar` undefined (it is derived from
   // an item READING that name), and the test keeps the types honest rather than asserting.
   const sv = w.needsStart ? w.startVar : undefined;
+  // Closure-invariant, so it is computed once rather than re-tested per vertex — and it keeps the
+  // returned closure under its complexity gate.
+  const gated = gate !== undefined && gateStart !== undefined;
 
   if (w.needsStart && sv === undefined) {
     return null;
@@ -1266,7 +1280,7 @@ const undirectedHopWalk = (w: {
     // with DIFFERENT starts — a gate would have to be evaluated per ROW, which is neither the
     // once-per-vertex contract above nor cheaper than the two-pass walk. Falling back is sound: the
     // edge pass only ever runs when both labels are free, which the two-pass arm handles anyway.
-    if (startFree && farFree && w.gate === undefined) {
+    if (startFree && farFree && w.gate === undefined && farPred === undefined) {
       const edges = graph.edgesByLabel.get(typeName);
 
       if (edges === undefined) {
@@ -1321,7 +1335,7 @@ const undirectedHopWalk = (w: {
       // the shapes that carry no filter. The CALL stays here rather than in a shared helper: item
       // 159 measured a shared module-scope walk at 1.29x because its call sites go polymorphic
       // across compiles, and a compiled gate differs per query.
-      if (gate !== undefined && gateStart !== undefined) {
+      if (gated) {
         binding.set(gateStart, v);
 
         let held: boolean;
@@ -1344,12 +1358,6 @@ const undirectedHopWalk = (w: {
         if (!held) {
           continue;
         }
-
-        // `anyFarMatches` and the gate both wrote `farVar`/`gateStart`; the start is re-set because
-        // a fault path above may have overwritten it while probing far ends.
-        if (sv !== undefined) {
-          binding.set(sv, v);
-        }
       }
 
       const outBucket = v.adjFrom?.get(typeName);
@@ -1363,6 +1371,13 @@ const undirectedHopWalk = (w: {
           }
 
           binding.set(farVar, far);
+
+          // The LABEL first, then the predicate: the cheaper test rejects more for less, and the
+          // order is unobservable because both keep only a clean TRUE (item 259).
+          if (farPred !== undefined && !satisfies(far, farPred, binding, params, graph)) {
+            continue;
+          }
+
           rows.push(projectRow(proj, binding, params, graph));
         }
       }
@@ -1387,6 +1402,11 @@ const undirectedHopWalk = (w: {
         }
 
         binding.set(farVar, far);
+
+        if (farPred !== undefined && !satisfies(far, farPred, binding, params, graph)) {
+          continue;
+        }
+
         rows.push(projectRow(proj, binding, params, graph));
       }
     }

@@ -119,6 +119,10 @@ const ARMS = {
   //                   the vertex; the edge-pass arm could not. `farpropundir` is the control.
   relpropfilt: 'MATCH (a:P)-[r:E]->() WHERE a.age > 5 RETURN r.w AS w',
   farpropundirgate: 'MATCH (a:P)-[:E]-(x) WHERE a.age > 5 RETURN x.age AS j',
+  // ⚠️ THE LAST UNMEASURED DECLINE IN THIS FAMILY (item 1533). After items 1529/1531/1532 the
+  // undirected walk still refuses a FAR predicate, and the two-pass arm already applies a far
+  // LABEL per edge — so a far predicate has the same place to go. `farpropundir` is the control.
+  farpropundirfar: 'MATCH (a:P)-[:E]-(x) WHERE x.age > 5 RETURN x.age AS j',
   star: 'MATCH (:P)-[r:E]->() RETURN *',
   starnamed: 'MATCH (p:P)-[r:E]->(x) RETURN *',
 };

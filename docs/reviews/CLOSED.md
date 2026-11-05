@@ -61534,3 +61534,87 @@ run left the tree untouched rather than half-applied.
 `bun run check` 0 read unpiped. core 431/0, gql **3845**/0, gremlin 1469/0, native 961/0,
 serialization 144/0, `bun run fuzz` 20/0 — byte-identity before timing. Answers hand-checked against
 brute force, and the raise parity across all four cases plus the rel-constrained suppression.
+
+### Item 1533 — ✅ **SHIPPED, 2.03x**: the LAST decline in `undirectedHopWalk` — a FAR PREDICATE — now applies per edge in both passes. `MATCH (a:P)-[:E]-(x) WHERE x.age > 5 RETURN x.age` **1130.1 → 556.3 ns/row**, three controls flat. ⚠️ And it needs NO raise parity, which is the asymmetry worth keeping straight
+
+Re-profiled items 1531 and 1532's shapes first: both now show their own walk's closure as the top
+frame (31.3% and 51.6%), which is the check that those admissions actually took the route. What
+remains in both is the per-row property read — `propOf` + `get properties` at 53% and 26% — which
+**item 1392 closed** as a cold-object dereference with no per-row lever.
+
+Then re-screened the decline table and found one entry left untested: the undirected walk still
+refused a FAR predicate.
+
+```text
+farpropundirfar  MATCH (a:P)-[:E]-(x) WHERE x.age > 5 RETURN x.age   1130.1 ns/row
+farpropundir     MATCH (:P)-[:E]-(x) RETURN x.age                     198.2
+                                                                       5.70x
+```
+
+### ⚠️ No raise parity, and that is not an oversight
+
+Items 1531 and 1532 both needed items 139/142/144/145's machinery. **This one does not**, and the
+reason is worth stating because the two look alike:
+
+- a **start gate** runs BEFORE the adjacency, where the general path would not have evaluated it at
+  all — so a fault needs the "would the general path have reached this vertex?" question;
+- a **far predicate** is evaluated once per COMPLETE match, which is exactly what the general path
+  does. Applying it per edge is the same evaluations in the same places, so a fault propagates
+  identically. `filteredHopWalk` applies `farPred` per edge with no try/catch for this reason.
+
+The edge-pass arm declines it (it never resolves endpoints), falling back to the two-pass walk — the
+same fallback item 1531 established, and sound for the same reason.
+
+### Measured — 2.03x, three controls flat
+
+```text
+                      PRE       POST
+farpropundirfar   1130.1     556.3 (553.8 / 558.8)   2.03x   ← TARGET
+farpropundir       198.2     194.6                   flat
+farpropundirgate   391.2     395.2                   flat    (item 1531's shape)
+startpropundir     242.6     241.7                   flat    (item 1529's shape)
+hopundiryield      294       271.5                   flat
+```
+
+It remains well above the unfiltered 194.6 because the predicate now runs 1.87M times, each reading
+`x.age` — real work, not overhead. The predicate and the projection read the SAME property twice per
+row, which looks like a CSE opportunity; item 1437's entry records a CSE claim on this file being
+corrected, so that is a separate question and not assumed here.
+
+### Mutation — four caught, ⚠️ all four by PRE-EXISTING tests
+
+```text
+drop-outpass-pred        drop it from the out-pass     CAUGHT  3832 pass 19 fail
+drop-inpass-pred         drop it from the in-pass      CAUGHT  3832 pass 19 fail
+edgepass-takes-farpred   let the edge pass take it     CAUGHT  3845 pass  6 fail
+invert-pred              invert the test               CAUGHT  3834 pass 17 fail
+```
+
+Every one is caught by `a FAR constraint on an undirected hop` — a suite that already existed and was
+previously exercising the general-matcher route for these shapes. **That is stronger coverage than my
+own tests**, and it is the opposite of items 1529-1532, where the admitted shape had no prior
+coverage because it declined. ⚠️ Both passes are separately covered (19 fails each), which matters
+because item 1410's standing warning for this file is that "the row that covered one never covered
+the other".
+
+My added cases cover what those do not: that the predicate applies in BOTH passes on one fixture,
+that it composes with a far label and with item 1531's start gate, and that rejecting everything
+yields no rows.
+
+### The decline table after items 1529-1533
+
+```text
+undirectedHopWalk          needsStart ✅1529   start gate ✅1531   farPred ✅1533   — nothing left
+relBoundFilteredHopWalk    start gate ✅1532 (without a relPred; WITH one still declines)
+relSeekedHopWalk           startOnly — always with a relPred by construction, so same bound as 1532
+```
+
+What remains is one shape: a start-only gate **alongside** a rel constraint, which needs a rel-aware
+parity check (`anyFarMatches` does not apply a rel constraint, so it would rethrow where the general
+path produces no row). Unmeasured, and the narrowest of the family.
+
+### Gates
+
+`bun run check` 0 read unpiped. core 431/0, gql **3851**/0, gremlin 1469/0, native 961/0,
+serialization 144/0, `bun run fuzz` 20/0 — byte-identity before timing, answers hand-checked against
+a brute-force undirected walk across four shapes.
