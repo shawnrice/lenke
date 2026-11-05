@@ -59957,3 +59957,86 @@ column) is a different change from this one and is not priced here.
 `bun run check` 0 read unpiped. The hoist is reverted, so engine behaviour is item 1510's and the
 suites are unchanged: core 431/0, gql **3803**/0 (re-run with the hoist applied, before reverting),
 gremlin 1469/0, native 961/0, serialization 144/0, `bun run fuzz` 20/0.
+
+### Item 1513 — priced GREMLIN AT SCALE for the first time in this arc, and ⚠️ **the comparator A/B that came out of it was measuring its own harness: the "1.24x" flipped when the arms were reordered, and `(a, b) => a - b` measured SLOWER than a type-switching comparator.** Isolated properly, a numeric-specialized `order()` comparator is worth exactly **nothing**
+
+Items 1503-1507 did Gremlin per-call and 1508-1512 did GQL. Nothing in the arc had profiled Gremlin
+at 200,000 rows, so this tick did, through `isolated-gremlin-bench` (which already has the right
+method: per-rep timing, p25, GC accounted, one shape per process).
+
+```text
+hopbare   V().out('E')                   38.2 ms / 200k rows    drain 79.6%  ·  get to 19.1%
+hoporder  V().out('E').values('k').order() 193.9 ms             values 36.9% · pick 18.3%
+                                                                sortByBys 11.6% · get properties 9.1%
+```
+
+`get to` is already memoized (`#toV ??=`) and the analyzer flags it NOT CHECKABLE, so it was not
+chased. `hoporder`'s `order()` cluster — `sortByBys` 11.6% + its closure 3.6% + `orderStep` 2.8%,
+~18% — was the target, with ~3.4M `compareTotal` calls for one 200,000-row sort. `compareTotal`
+handles nulls, temporals, strings, lists and maps; a column of numbers needs none of that.
+
+### ⚠️ The in-process A/B said 1.24x. It was measuring the inline cache
+
+Five comparator spellings, timed in one loop driven through a wrapper `(a, b) => cmp(a.key, b.key)`:
+
+```text
+compareTotal  19.6 ms      ← ran FIRST
+isNaNcall     24.3
+selfNeq       26.9
+orderFirst    24.1
+subtract      24.9         ← `(a, b) => a - b`, SLOWER than the type-switching comparator
+```
+
+`(a, b) => a - b` cannot plausibly lose to a comparator that type-switches on five value classes.
+That impossibility is what exposed the harness. **V8 keeps feedback per SOURCE POSITION, and the
+wrapper arrow is one source position shared by every iteration of the loop** — so the first arm runs
+monomorphic and every later arm runs against a polluted call site. Reversing the order:
+
+```text
+forward  (compareTotal first)   compareTotal 19.6   subtract 24.9
+reversed (subtract first)       subtract     19.3   compareTotal 30.5
+```
+
+**Whichever comparator ran FIRST measured ~19-20 ms and whichever ran LAST measured 24-30 ms.** The
+ordering was the entire effect; the instrument had no resolving power at all. This is item 762's
+redistribution trap reached from the other side — there a CHANGE redistributed call sites, here the
+HARNESS did — and the giveaway was the same: an arm moving in a direction it cannot move.
+
+### The honest answer, one comparator per process
+
+`order-comparator-probe.mjs`, alternated across four processes:
+
+```text
+compareTotal  23.81   24.08
+numeric       23.91   23.85
+```
+
+**Identical.** A numeric-specialized total order is worth nothing: V8's inline caches already make
+`compareTotal`'s numeric path monomorphic, so the type-switching it does for other value classes
+costs a well-predicted branch and no more. ⚠️ **And correctness was never the blocker** — the probe
+checks both comparators agree on all 121 pairs of
+`{0, -0, 1, -1, NaN, ±Infinity, 1e308, ±5.5, 2^53}` before printing a number, and they do, including
+NaN-last and NaN-equal-to-NaN. The lever is refuted on SPEED with a correct specialization in hand.
+
+A by-product worth recording because it is the usual reason to reach for the inline form: `a !== a`
+and `Number.isNaN(a)` measure the same (23.7 vs 23.9 ms, one process per spelling). The probe uses
+`Number.isNaN`, which is also what `no-self-compare` wants.
+
+### Where this leaves the arc
+
+Three consecutive declines (1511 gate, 1512 allocation hoist, 1513 comparator), each with numbers,
+and the common cause is worth stating once: **after items 1504-1510 the remaining profiles are
+DIFFUSE.** No frame on either surface's hot path is now both large and reducible — `hoporder`'s
+biggest is 36.9% and it is the walk itself; GQL's biggest is 33% and it is the row loop itself. The
+levers that remain are each worth a few percent of one shape, which is under the resolving power of
+an ms-scale instrument even when the instrument is honest.
+
+The two allocation refutations (1512) and this one also share a cause: **V8 makes the obvious targets
+free.** Young-generation allocation is near-free, and inline caches make a type-switch free on a
+monomorphic path. Both are now recorded with numbers, on both the per-call and per-row paths.
+
+### Gates
+
+`bun run check` 0 read unpiped. No source changed — the only addition is
+`order-comparator-probe.mjs` — and the suites confirm it: core 431/0, gql 3803/0, gremlin 1469/0,
+native 961/0, serialization 144/0, `bun run fuzz` 20/0.
