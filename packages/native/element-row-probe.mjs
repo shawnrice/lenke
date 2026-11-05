@@ -110,6 +110,15 @@ const ARMS = {
   // takes it. Comparing `startpropundir` against the DIRECTED fold would charge the decline for the
   // extra work an undirected hop does anyway; comparing it against this does not.
   farpropundir: 'MATCH (:P)-[:E]-(x) RETURN x.age AS j',
+  // ⚠️ ITEM 1530's CANDIDATES, from enumerating what each walk DECLINES (item 1529's question).
+  //   relpropfilt  -> relBoundFilteredHopWalk and relSeekedHopWalk BOTH decline `startOnly`, and
+  //                   the start-only predicate closure binds no rel — so a rel-reading projection
+  //                   behind a START filter may decline the fast path entirely. `relprop` is the
+  //                   unfiltered control that DOES take the rel-bound walk.
+  //   farpropundirgate -> `undirectedHopWalk` still declines a `gate`. The two-pass arm could gate
+  //                   the vertex; the edge-pass arm could not. `farpropundir` is the control.
+  relpropfilt: 'MATCH (a:P)-[r:E]->() WHERE a.age > 5 RETURN r.w AS w',
+  farpropundirgate: 'MATCH (a:P)-[:E]-(x) WHERE a.age > 5 RETURN x.age AS j',
   star: 'MATCH (:P)-[r:E]->() RETURN *',
   starnamed: 'MATCH (p:P)-[r:E]->(x) RETURN *',
 };

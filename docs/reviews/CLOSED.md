@@ -61321,3 +61321,66 @@ nominate a shape that never reaches the code.
 
 `bun run check` 0 read unpiped. core 431/0, gql **3829**/0, gremlin 1469/0, native 961/0,
 serialization 144/0, `bun run fuzz` 20/0.
+
+### Item 1530 — asked item 1529's question of EVERY walk's guard and the answer generalizes: ⚠️ **a START-ONLY predicate is carried by exactly one walk, and the three that refuse it send the whole query to the general matcher.** Two measured instances: **5.47x** (undirected + gate) and **3.17x** (rel-bound + start filter). PRICED, NOT BUILT
+
+Item 1529 shipped 3.06x by asking what a fast path DECLINES rather than where it spends time. This
+tick asked it of all eight walks, mechanically, by extracting every guard-level `return null`.
+
+### The table, read off the code
+
+```text
+walk                        a gate?     `startOnly`?
+undirectedHopWalk           DECLINES    —            ← refuses EVERY gate
+relBoundFilteredHopWalk     uses        DECLINES     ← accepts gates, singles out startOnly
+relSeekedHopWalk            uses        DECLINES     ← same
+farDrivenFilteredHopWalk    uses        —
+filteredHopWalk             uses        —            ← the one with a dedicated start-only closure
+relBoundHopWalk             n/a (requires `unfiltered`)
+farDrivenHopWalk            n/a
+```
+
+**So a start-only predicate has exactly one home.** Any query that needs a DIFFERENT walk for its
+shape — a bound rel, an undirected hop — and also carries a start filter matches no walk at all and
+falls to the general matcher. That is a statement about the routing table rather than about one
+shape, and it predicts both measurements below instead of being inferred from them.
+
+### Two instances, and in both a MORE SELECTIVE query is slower
+
+```text
+relpropfilt       MATCH (a:P)-[r:E]->() WHERE a.age > 5 RETURN r.w   1082.8 ns/row   933,310 rows
+relprop           MATCH (a:P)-[r:E]->() RETURN r.w                    341.9         1,000,000
+                                                                       3.17x
+
+farpropundirgate  MATCH (a:P)-[:E]-(x) WHERE a.age > 5 RETURN x.age  1083.4         1,866,612
+farpropundir      MATCH (:P)-[:E]-(x) RETURN x.age                    198.2         1,999,990
+                                                                       5.47x
+```
+
+Adding a selective filter should REMOVE work. Both confirmed as route losses rather than slow walks,
+by profile: `farpropundirgate` is `inSteps` 12.4% / `outSteps` 12.3% / `edgesMatching` 11.7%, and
+`relpropfilt` is `expand` 35.2% / `walkSegments` 8.1% — the general matcher in both. Same class as
+item 1437's `WHERE true` at 7.46x and item 1515's selectivity inversion.
+
+### Not built, and the blocker is SHARED
+
+Both fixes need the same thing, which is why they are one target rather than two: **a start-only
+predicate has to be evaluated with the raise parity of items 139/142/144/145** — the general path
+evaluates a clause `WHERE` once per COMPLETE match, so a start that yields no row must never have it
+evaluated, and on a fault the walk must decide whether the general path would have reached that
+vertex. `filteredHopWalk` has that block; the other walks do not, and item 1527 is the record of
+deciding NOT to copy it (duplicating safety-critical code to gain a branch is a bad trade).
+
+So the shape of the work is: extract that gate-with-parity once, then let the undirected two-pass arm
+and the rel-bound walks use it. ⚠️ **The undirected EDGE-PASS arm cannot** — each edge there yields
+two rows with DIFFERENT starts, so a gate has no once-per-vertex place to go; it would fall back to
+the two-pass arm, which is sound because the edge-pass arm already requires both labels free.
+
+That extraction is the first thing to get right and is not an end-of-tick change — the same judgement
+as item 1528, which the next tick then shipped at 3.06x.
+
+### Gates
+
+`bun run check` 0 read unpiped. No engine change — the only edit is two probe arms — so the suites are
+item 1529's: core 431/0, gql 3829/0, gremlin 1469/0, native 961/0, serialization 144/0,
+`bun run fuzz` 20/0.
