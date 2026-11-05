@@ -53,8 +53,6 @@ const fold = (op: Op, acc: number[], vec: number[], started: boolean, coef: numb
   }
 };
 
-type Contributor = { eidx: number; nbr: string };
-
 /** Validate `op` (raw so the message shows the offending value, not `never`). */
 const resolveOp = (raw: string): Op => {
   if (raw !== 'mean' && raw !== 'sum' && raw !== 'max' && raw !== 'min') {
@@ -102,19 +100,22 @@ const buildEdgeWeights = (graph: Graph, key: string): number[] => {
   return out;
 };
 
-/** Every vertex's feature vector (by id), plus the shared dimension `d`; a length
- * mismatch faults. Iterated in insertion (= dense-id) order. */
+/** Every vertex's feature vector, plus the shared dimension `d`; a length mismatch faults.
+ * Iterated in insertion (= dense-id) order.
+ *
+ * Indexed by DENSE VERTEX INDEX rather than keyed by external id: the hot loop reads one feature
+ * per contributor, so this is the difference between an array index and a string hash per edge. */
 const buildFeatures = (
   graph: Graph,
   feature: string,
-): { feats: Map<string, number[] | null>; d: number } => {
-  const feats = new Map<string, number[] | null>();
+): { feats: (number[] | null)[]; d: number } => {
+  const feats: (number[] | null)[] = [];
   let dim: number | undefined;
 
   for (const vertex of graph.vertices) {
     const vec = readVec(vertex, feature);
 
-    feats.set(vertex.id, vec);
+    feats.push(vec);
 
     if (vec !== null && dim === undefined) {
       dim = vec.length;
@@ -129,85 +130,204 @@ const buildFeatures = (
   return { feats, d: dim ?? 0 };
 };
 
-/** Per-vertex out/in adjacency in edge-insertion (= native eidx) order. */
+/**
+ * One direction's adjacency as a flat CSR: `nbr[off[i] .. off[i+1])` are vertex i's neighbour
+ * indices and `eidx[...]` their edge-insertion indices, **ascending**, because the fill pass walks
+ * `graph.edges` in order.
+ */
+type Adj = { off: Int32Array; nbr: Int32Array; eidx: Int32Array };
+
+/**
+ * Per-vertex out/in adjacency in edge-insertion (= native eidx) order, as two flat CSRs over dense
+ * vertex indices.
+ *
+ * ⚠️ IT REPLACES A `Map<string, {eidx, nbr}[]>` THAT BOXED ONE OBJECT PER EDGE PER DIRECTION — 2·E
+ * short-lived objects plus an array per vertex per direction. Item 1469 profiled
+ * `neighborAggregate` with `(garbage collector)` at **11.81%**, the highest share in the twelve, and
+ * that allocation is where it came from. Counting first costs a second pass over the edges and buys
+ * all of it back.
+ *
+ * ⚠️ THIS IS NOT THE ROUTE ITEM 416 REFUTED. That one returned the STORED adjacency list to the
+ * consumer instead of copying into a reusable buffer, and regressed `direction: in` by 1.20x; the
+ * reusable buffer it kept is still here in spirit — nothing per-vertex is allocated at all now.
+ * What changes is the REPRESENTATION, which 416 never varied.
+ *
+ * `eidx` is the index over **every** edge, not only the type-matching ones, because `edgeWeights` is
+ * built over every edge and indexed by it. The counter therefore advances outside the filter.
+ */
 const buildAdjacency = (
   graph: Graph,
   edgeLabel: string | undefined,
-): { outAdj: Map<string, Contributor[]>; inAdj: Map<string, Contributor[]> } => {
-  const outAdj = new Map<string, Contributor[]>();
-  const inAdj = new Map<string, Contributor[]>();
+  index: Map<string, number>,
+  n: number,
+): { outAdj: Adj; inAdj: Adj } => {
   const typeOk = (edge: Edge): boolean => edgeLabel === undefined || edge.labels.has(edgeLabel);
+  const outOff = new Int32Array(n + 1);
+  const inOff = new Int32Array(n + 1);
+  let m = 0;
+
+  for (const edge of graph.edges) {
+    if (typeOk(edge)) {
+      outOff[index.get(edge.fromId)! + 1] += 1;
+      inOff[index.get(edge.toId)! + 1] += 1;
+      m += 1;
+    }
+  }
+
+  for (let i = 0; i < n; i++) {
+    outOff[i + 1] += outOff[i];
+    inOff[i + 1] += inOff[i];
+  }
+
+  const outAdj: Adj = { off: outOff, nbr: new Int32Array(m), eidx: new Int32Array(m) };
+  const inAdj: Adj = { off: inOff, nbr: new Int32Array(m), eidx: new Int32Array(m) };
+  // Write cursors, so the fill can walk the edges once in order. Copies, because `off` itself is
+  // the result and advancing it in place would leave every slice start one slice too far along.
+  const outAt = outOff.slice(0, n);
+  const inAt = inOff.slice(0, n);
   let eidx = 0;
 
   for (const edge of graph.edges) {
     if (typeOk(edge)) {
-      const from = edge.fromId;
-      const to = edge.toId;
-      (outAdj.get(from) ?? outAdj.set(from, []).get(from)!).push({ eidx, nbr: to });
-      (inAdj.get(to) ?? inAdj.set(to, []).get(to)!).push({ eidx, nbr: from });
+      const from = index.get(edge.fromId)!;
+      const to = index.get(edge.toId)!;
+      const o = outAt[from];
+      const w = inAt[to];
+
+      outAdj.nbr[o] = to;
+      outAdj.eidx[o] = eidx;
+      outAt[from] = o + 1;
+      inAdj.nbr[w] = from;
+      inAdj.eidx[w] = eidx;
+      inAt[to] = w + 1;
     }
 
-    eidx++;
+    eidx += 1;
   }
 
   return { outAdj, inAdj };
 };
 
-/** Contributors of `v` by direction, sorted by edge index (the canonical,
- * engine-independent accumulation order). A `both`-direction self-loop counts once. */
-const gatherContributors = (
-  v: string,
-  outAdj: Map<string, Contributor[]>,
-  inAdj: Map<string, Contributor[]>,
-  wantOut: boolean,
-  wantIn: boolean,
-  // ONE reusable buffer instead of an array per vertex — native's item 415 shape, which paid
-  // 1.23x there. Returning the STORED adjacency list instead was tried first and regressed
-  // `direction: in` by 1.20x with disjoint ranges, so this keeps a single allocation site and
-  // therefore one array identity at the consumer's iteration (item 416).
-  contrib: Contributor[],
-): Contributor[] => {
-  contrib.length = 0;
-
-  if (wantOut) {
-    contrib.push(...(outAdj.get(v) ?? []));
-  }
-
-  if (wantIn) {
-    for (const a of inAdj.get(v) ?? []) {
-      if (!(wantOut && a.nbr === v)) {
-        contrib.push(a);
-      }
-    }
-  }
-
-  return contrib.sort((x, y) => x.eidx - y.eidx);
-};
-
-/** How many contributors `v` has, WITHOUT building the list — the `gcn` degree pass wants only
- *  this number, and `gatherContributors(...).length` allocated an array, copied the adjacency
- *  into it and sorted it, once per vertex, to read a length off it (audit item 416). The
- *  self-loop rule is `gatherContributors`' own, restated rather than shared, because the two
- *  disagreeing silently is the failure mode: a `both`-direction self-loop counts once.
+/**
+ * How many contributors `v` has, WITHOUT building the list — the `gcn` degree pass wants only this
+ * number, and gathering it allocated, copied and sorted once per vertex to read a length off it
+ * (audit item 416).
+ *
+ * The self-loop rule is restated rather than shared with the merge below, because the two
+ * disagreeing silently is the failure mode: a `both`-direction self-loop counts ONCE.
  */
 const contributorCount = (
-  v: string,
-  outAdj: Map<string, Contributor[]>,
-  inAdj: Map<string, Contributor[]>,
+  i: number,
+  outAdj: Adj,
+  inAdj: Adj,
   wantOut: boolean,
   wantIn: boolean,
 ): number => {
-  let n = wantOut ? (outAdj.get(v)?.length ?? 0) : 0;
+  let n = wantOut ? outAdj.off[i + 1] - outAdj.off[i] : 0;
 
   if (wantIn) {
-    for (const a of inAdj.get(v) ?? []) {
-      if (!(wantOut && a.nbr === v)) {
-        n++;
+    for (let q = inAdj.off[i]; q < inAdj.off[i + 1]; q++) {
+      if (!(wantOut && inAdj.nbr[q] === i)) {
+        n += 1;
       }
     }
   }
 
   return n;
+};
+
+/**
+ * Everything the per-vertex accumulation reads, built ONCE outside the vertex loop. It exists so
+ * `accumulate` can be a plain function rather than ten more branches inside `computeGen` (which the
+ * complexity bound rejects at 39) — and being built once, it costs no per-vertex allocation.
+ */
+type Ctx = {
+  op: Op;
+  outAdj: Adj;
+  inAdj: Adj;
+  feats: (number[] | null)[];
+  deg: Float64Array;
+  edgeWeights: number[];
+  wantOut: boolean;
+  wantIn: boolean;
+  gcn: boolean;
+  weighted: boolean;
+  includeSelf: boolean;
+};
+
+/**
+ * Fold vertex `i`'s contributors into `acc` and return the coefficient sum (`mean`'s divisor).
+ *
+ * Self first when included, with GCN factor 1/deg_i (= 1/sqrt(deg_i·deg_i)); then neighbours in
+ * edge-index order, each scaled by edge weight × GCN factor.
+ *
+ * ⚠️ A MERGE, NOT A SORT. Both CSR slices are already ascending in `eidx` (the fill pass walks
+ * `graph.edges` in order), so interleaving them by `eidx` reproduces exactly what sorting the
+ * concatenation produced. That order is the canonical, engine-independent accumulation order, and
+ * under `sum`/`mean` it is also the FLOAT SUMMATION ORDER — so permuting it changes the result
+ * bytes, not merely the row. A mutant replacing this merge with a plain concatenation left the
+ * contributor multiset identical and passed every other test in the suite; the cancellation fixture
+ * in `neighbor-aggregate-csr.test.ts` is what pins it.
+ *
+ * Ties cannot arise: one `eidx` reaches the same vertex from both directions only for a self-loop,
+ * and the rule below drops the in-copy of one whenever `wantOut`.
+ */
+const accumulate = (ctx: Ctx, i: number, acc: number[]): number => {
+  const { op, outAdj, inAdj, feats, deg, edgeWeights, wantOut, wantIn, gcn, weighted } = ctx;
+  let coefSum = 0;
+  let started = false;
+
+  if (ctx.includeSelf) {
+    const sv = feats[i];
+
+    if (sv !== null) {
+      const coef = gcn ? 1 / deg[i] : 1;
+
+      fold(op, acc, sv, started, coef);
+      started = true;
+      coefSum += coef;
+    }
+  }
+
+  let p = wantOut ? outAdj.off[i] : 0;
+  const pe = wantOut ? outAdj.off[i + 1] : 0;
+  let q = wantIn ? inAdj.off[i] : 0;
+  const qe = wantIn ? inAdj.off[i + 1] : 0;
+
+  while (p < pe || q < qe) {
+    const takeOut = q >= qe || (p < pe && outAdj.eidx[p] <= inAdj.eidx[q]);
+    let eidx: number;
+    let nbrIdx: number;
+
+    if (takeOut) {
+      eidx = outAdj.eidx[p];
+      nbrIdx = outAdj.nbr[p];
+      p += 1;
+    } else {
+      eidx = inAdj.eidx[q];
+      nbrIdx = inAdj.nbr[q];
+      q += 1;
+
+      // A `both`-direction self-loop counts once: its out-copy was taken above.
+      if (wantOut && nbrIdx === i) {
+        continue;
+      }
+    }
+
+    const nv = feats[nbrIdx];
+
+    if (nv !== null) {
+      const w = weighted ? edgeWeights[eidx] : 1;
+      const nf = gcn ? 1 / Math.sqrt(deg[i] * deg[nbrIdx]) : 1;
+      const coef = w * nf;
+
+      fold(op, acc, nv, started, coef);
+      started = true;
+      coefSum += coef;
+    }
+  }
+
+  return coefSum;
 };
 
 export const computeGen = function* (
@@ -238,59 +358,58 @@ export const computeGen = function* (
   }
 
   const { feats, d } = buildFeatures(graph, feature);
-  const { outAdj, inAdj } = buildAdjacency(graph, edgeLabel);
+  // Dense vertex index in insertion (= native dense-id) order, so the adjacency, features and GCN
+  // degrees are all plain arrays rather than string-keyed Maps.
+  const index = new Map<string, number>();
+  const vertices: Vertex[] = [];
+
+  for (const vertex of graph.vertices) {
+    index.set(vertex.id, vertices.length);
+    vertices.push(vertex);
+  }
+
+  const n = vertices.length;
+  const { outAdj, inAdj } = buildAdjacency(graph, edgeLabel, index, n);
   const edgeWeights = weighted ? buildEdgeWeights(graph, weightProperty) : [];
 
   // GCN degree per vertex: contributor count under the configured direction/etype (+ the
   // self-loop when includeSelf), floored at 1. Mirrors native `deg`.
-  const deg = new Map<string, number>();
+  const deg = new Float64Array(gcn ? n : 0);
 
   if (gcn) {
-    for (const vertex of graph.vertices) {
-      const c = contributorCount(vertex.id, outAdj, inAdj, wantOut, wantIn);
-      deg.set(vertex.id, Math.max(c + (includeSelf ? 1 : 0), 1));
+    for (let i = 0; i < n; i++) {
+      deg[i] = Math.max(
+        contributorCount(i, outAdj, inAdj, wantOut, wantIn) + (includeSelf ? 1 : 0),
+        1,
+      );
     }
   }
 
   const rows: NeighborAggregateRow[] = [];
-  const scratch: Contributor[] = [];
   let sinceYield = 0;
 
-  for (const vertex of graph.vertices) {
-    const v = vertex.id;
+  const ctx: Ctx = {
+    op,
+    outAdj,
+    inAdj,
+    feats,
+    deg,
+    edgeWeights,
+    wantOut,
+    wantIn,
+    gcn,
+    weighted,
+    includeSelf,
+  };
+
+  for (let i = 0; i < n; i++) {
+    const vertex = vertices[i];
     const acc = new Array<number>(d).fill(0);
-    let coefSum = 0;
-    let started = false;
-
-    // Self first (when included), with GCN factor 1/deg_i (= 1/sqrt(deg_i·deg_i)).
-    if (includeSelf) {
-      const sv = feats.get(v) ?? null;
-
-      if (sv !== null) {
-        const coef = gcn ? 1 / deg.get(v)! : 1;
-        fold(op, acc, sv, started, coef);
-        started = true;
-        coefSum += coef;
-      }
-    }
-
-    // Then neighbours in edge-index order, each scaled by edge weight × GCN factor.
-    for (const { eidx, nbr } of gatherContributors(v, outAdj, inAdj, wantOut, wantIn, scratch)) {
-      const nv = feats.get(nbr) ?? null;
-
-      if (nv !== null) {
-        const w = weighted ? edgeWeights[eidx] : 1;
-        const nf = gcn ? 1 / Math.sqrt(deg.get(v)! * deg.get(nbr)!) : 1;
-        const coef = w * nf;
-        fold(op, acc, nv, started, coef);
-        started = true;
-        coefSum += coef;
-      }
-    }
+    const coefSum = accumulate(ctx, i, acc);
 
     if (op === 'mean' && coefSum !== 0) {
-      for (let i = 0; i < d; i++) {
-        acc[i] /= coefSum;
+      for (let k = 0; k < d; k++) {
+        acc[k] /= coefSum;
       }
     }
 

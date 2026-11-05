@@ -55405,7 +55405,7 @@ What shipped instead: 1431 (47.8-79.1%), 1432 (64.6%), 1437 (75.9-94.2%), 1442 (
 
 `bun run check` 0 (read unpiped). No code changed — a decision and its evidence.
 
-### Item 1467 — the TWELVE ALGORITHMS had no bench row at all, and measuring them turned up a RETENTION defect: a discarded `Graph` is pinned by its own pending `drainMutations` microtask. Nothing algorithmically wrong in the twelve; ~~`labelPropagation` NOMINATED at 14x its siblings per vertex~~ **— the `labelPropagation` CSR target this item priced at 21.6% was TAKEN at item 1468 (14.4% / 21.6% measured, 3/3). The retention defect is still open.**
+### Item 1467 — the TWELVE ALGORITHMS had no bench row at all, and measuring them turned up a RETENTION defect: a discarded `Graph` is pinned by its own pending `drainMutations` microtask. Nothing algorithmically wrong in the twelve; ~~`labelPropagation` NOMINATED at 14x its siblings per vertex~~ **— the `labelPropagation` CSR target this item priced at 21.6% was TAKEN at item 1468 (14.4% / 21.6% measured, 3/3), and the `neighborAggregate` row it ranked second worst was TAKEN at item 1469 (2.73x). The retention defect is still open.**
 
 Item 1466 declined a 3.3x win because any edit to `hop-values.ts` / `hop-projection.ts` moves
 unrelated rows up to ~16% in an arbitrary direction. **That is a reason to move the search, not to
@@ -55669,4 +55669,121 @@ the likeliest survivor and was caught 3 times.
 
 core 397/0 (383 + 14 new), gql 3691/0, gremlin 1241/0, native 961/0 (algo-conformance + algo-fuzz
 112/0 — byte-identity with the Rust engine), serialization 144/0, `bun run fuzz` 20/0.
+`bun run check` 0 read unpiped.
+
+### Item 1469 — SHIPPED, **2.73x** (3/3, both controls flat): `neighborAggregate`'s adjacency boxed ONE OBJECT PER EDGE PER DIRECTION and re-sorted it per vertex. Two flat CSRs and a two-pointer merge instead. ⚠️ A mutant that PERMUTED THE ACCUMULATION ORDER survived the whole suite
+
+Item 1467's bench put `neighborAggregate` second worst per vertex (2500 ns/V). Profiling it nominated
+the target rather than a priced heading: `(garbage collector)` at **11.81%**, the highest share
+anywhere in the twelve, beside `gatherContributors` 13.82% and `buildAdjacency` 9.14%.
+
+### Where the allocation was
+
+`buildAdjacency` built `Map<string, {eidx, nbr}[]>` — **2·E short-lived objects** plus an array per
+vertex per direction — and `gatherContributors` then copied a vertex's two lists into a buffer and
+**`sort`ed it per vertex** to recover edge-index order.
+
+Replaced by two flat CSRs over dense vertex indices (`off` / `nbr` / `eidx` as `Int32Array`, counted
+then filled), with features and GCN degrees moved from string-keyed `Map`s to arrays indexed the
+same way. The per-vertex sort became a **two-pointer merge**: both slices are already ascending in
+`eidx` because the fill pass walks `graph.edges` in order, so interleaving them reproduces exactly
+what sorting the concatenation produced, in O(d) instead of O(d log d) and with no comparator.
+
+⚠️ **This is NOT the route item 416 refuted.** That one returned the STORED adjacency list to the
+consumer instead of copying into a reusable buffer, and regressed `direction: in` by 1.20x. Item 416
+never varied the REPRESENTATION, which is what changed here — and the reusable buffer it defended is
+moot now, because nothing per-vertex is allocated at all.
+
+### Measured
+
+A/B, one arm per process, `nx build` between arms, arm asserted from `dist`, order alternated,
+median of 7 reps with 2 dropped:
+
+```text
+                       POST                    PRE
+neighborAggregate   25.29 25.84 29.94     69.80 70.63 72.85    3/3, 2.73x
+labelPropagation    79.05 77.27 81.02     75.61 82.14 77.06    mixed, flat
+degree              14.98 15.14 15.01     14.09 16.37 15.65    mixed, flat
+```
+
+Both controls flat **and mixed in sign** — item 762's giveaway for a self-flattering change is a
+control moving more than the target, and that is not what happened.
+
+On the standing bench, two sizes:
+
+```text
+              V=40,000            V=160,000
+PRE            73.94 ms            400.01 ms   (2500 ns/V)
+POST           26.13               131.47      (822 ns/V)
+               2.83x               3.04x
+```
+
+**`neighborAggregate` moves from second-worst to mid-pack**, now cheaper per vertex than
+`shortestPath` (1507) and `peerPressure` (1413). `gatherContributors` is gone from the profile; the
+remaining GC share is largely the fixture build, which now dominates a much shorter run.
+
+### ⚠️ A MUTANT THAT PERMUTED THE ACCUMULATION ORDER SURVIVED THE ENTIRE SUITE
+
+The most useful thing this item found. Replacing the merge with a plain concatenation — every
+out-contributor, then every in-contributor — leaves the contributor **multiset** identical, and **all
+23 other tests passed.** Including the independent oracle, which compared exact arrays.
+
+The reason is that the fixtures used small integer features, and an exact float sum does not care
+about order. But that order **is** the contract: it is the canonical, engine-independent accumulation
+order and, under `sum`/`mean`, the float summation order — so permuting it diverges from the native
+engine in the **result bytes**. A suite that cannot see the difference between a merge and a
+concatenation is not testing the thing the merge exists to preserve.
+
+Pinned with catastrophic cancellation. Edges `v->a`, `b->v`, `v->c`; features `1e16`, `1`, `-1e16`:
+
+```text
+merge by eidx  -> a, b, c -> (1e16 + 1) + (-1e16) = 0
+concatenation  -> a, c, b -> (1e16 + (-1e16)) + 1 = 1
+```
+
+With that fixture the mutant dies. **The generalisable form: when a change replaces a SORT with an
+ORDER-EXPLOITING traversal, the multiset is the easy half — a test has to make the order itself
+observable, and for float accumulation that means values where addition is not associative.**
+
+### Teeth
+
+`neighbor-aggregate-csr.test.ts`, 16 tests. The three things the rewrite could silently break, none
+of which the existing eight covered:
+
+- **the `eidx` ↔ weight association.** `edgeWeights` is indexed over EVERY edge, not only the
+  type-matching ones, so a filtered-local index would pair every weight with the wrong edge. Needs a
+  type filter AND distinct weights to be observable at all; the fixture puts weight 100 on a filtered
+  edge so a mispairing is unmissable.
+- **the self-loop rule** — a `both`-direction self-loop counts once, now enforced by dropping the
+  in-copy during the merge rather than by filtering before a sort. Also checked in the `gcn` degree
+  pass, where the load-bearing number is `deg(a) = 2` (3 if double-counted).
+- **the accumulation order**, as above.
+
+Plus an independent oracle over a generated graph (contributors re-derived by scanning `graph.edges`,
+transcribing the documented rules, sharing nothing with the CSR) across all three directions and
+with weights.
+
+⚠️ **The generator produced ZERO self-loops across 120 edges** — two independent LCG draws mod 40
+never collide on consecutive calls — so the self-loop rule the oracle exists to check was not being
+exercised. **The fixture-statistics test is what caught it** (CLAUDE.md: an invariant that cannot
+validate itself is worthless), and self-loops and a parallel pair are now injected deliberately
+rather than left to chance.
+
+**Mutation-verified against the FINAL code**, after the `accumulate()` extraction moved the merge and
+oxfmt reflowed it — the earlier run had been against different code, and anchors that encode nesting
+stop matching silently, which the uniqueness assertion turns into a loud failure:
+
+| mutant                                            | caught by                                         |
+| ------------------------------------------------- | ------------------------------------------------- |
+| write cursors alias `off` itself                  | 19 failures                                       |
+| self-loop counted twice in the fold               | 5 failures                                        |
+| `eidx` becomes filtered-local (weights mispair)   | 4 failures                                        |
+| the self contribution skipped under `includeSelf` | 2 failures                                        |
+| self-loop double-counted in the `gcn` degree      | 1 failure                                         |
+| **merge replaced by concatenation (order)**       | **1 failure — 0 before the cancellation fixture** |
+
+### Gates
+
+core 413/0 (397 + 16 new), gql 3691/0, gremlin 1241/0, native 961/0 (algo-conformance + algo-fuzz
+112/0, byte-identity with the Rust engine), serialization 144/0, `bun run fuzz` 20/0.
 `bun run check` 0 read unpiped.
