@@ -60493,3 +60493,75 @@ three already vary with the repeat.
 `bun run check` 0 read unpiped. No engine or library source changed — only bench and probe
 generators — and the suites confirm it: core 431/0, gql 3803/0, gremlin 1469/0, native 961/0,
 serialization 144/0, `bun run fuzz` 20/0.
+
+### Item 1519 — measured the Gremlin corpus at FANOUT=5 for the first time (item 1518 made it representable): **per-row costs HALVE** — `hopbare` 187.9 → 95.2 ns/row — which validates item 1514's decomposition quantitatively. Every frame the profile nominated was already closed, found by SEARCHING; and ⚠️ **corrected a now-false reassurance in CLAUDE.md that is why nobody re-checked for 800 items**
+
+Item 1518 fixed six generators, so a branching graph is representable for the first time. No reading
+in this arc had covered fanout > 1.
+
+### The regime, newly measurable
+
+```text
+                   FANOUT=1              FANOUT=5
+hopbare            187.9 ns/row          95.2 ns/row      1M rows
+hopyieldsingle     391.0                207.2
+hopcount2           68.8 ms              75.5 ms         1 row
+hopcount3          214.3                322.0
+filterchain          1.5                   1.8
+hopdedupe            5.2                   4.3
+```
+
+**Per-row costs halve with 5x the edges**, which is the quantitative confirmation of item 1514's
+decomposition of `hopbare` into a per-VERTEX part (the `adjFrom` getter plus one string-keyed
+`Map.get` for the type) and a per-EDGE part. At fanout 1 every row pays a whole vertex's overhead; at
+fanout 5 that is amortized over five. ⚠️ **So the fanout-1 readings this arc has been quoting are the
+worst case for any hop**, not the typical one — worth knowing before pricing a per-row lever against
+them again.
+
+`hopcount2` barely moves (68.8 → 75.5) with five times the edges, which is the degree inner product
+behaving as advertised: O(V) arithmetic, insensitive to edge count.
+
+### Every frame the profile nominated was already closed
+
+`hopcount3` at fanout 5 is ~94% four frames:
+
+```text
+38.5%  walkBucket      19.4%  degreeOfTypes
+20.9%  slotChainCount  15.3%  expandSlot
+```
+
+Searched `CLOSED.md` **before** measuring anything further, which is item 1514's lesson, and it
+returned the answer outright:
+
+- **item 1425 — "`hopcount3` CLOSED at its floor", and `degreeOfTypes`' 26% is misattribution, "the
+  third frame this session to top a profile and be O(1)"** (it reads 19.4% here, so the
+  misattribution persists at a new fanout);
+- **item 1439 — "Gremlin's two heaviest rows are BOTH already closed, so the deliverable is the
+  instrument"**;
+- `walkBucket` (1379/1380/1423), `slotChainCount` (1418/1423/1424), `expandSlot` (1368/1374/1423),
+  `degreeOfTypes` (1458/1493) all worked.
+
+Item 1425's claim is a FLOOR comparison, so by item 1518's rule it survives the fixture fix — both
+arms saw the same graph. Nothing re-derived.
+
+### ⚠️ The CLAUDE.md correction, which is the durable part of this tick
+
+Item 702's rule in CLAUDE.md ended:
+
+> (The repo's own generators are fine, and 702 says why.)
+
+**That was false, and it is why nobody re-checked for ~800 items.** Items 1516 and 1518 found the same
+class of defect in the GQL bench's main fixture and in six probe generators. The bullet now carries
+the mechanical form — `to = (a*k + b) % N` is invariant under `k → k+N`, which no choice of multiplier
+fixes — plus the fanout-1 exemption, the `floor(k / N)` fix, a pointer to `assertGraphDocBranches` as
+a worked example, and item 1518's rule for judging what a degenerate fixture did and did not
+invalidate.
+
+CLOSED.md is read when someone goes looking; CLAUDE.md is loaded every session. A stale reassurance
+there is worse than no note at all, because it actively stops the check.
+
+### Gates
+
+`bun run check` 0 read unpiped. No source, bench or probe changed — the only edits are CLAUDE.md and
+this entry — so the suites are item 1518's: core 431/0, gql 3803/0, gremlin 1469/0, native 961/0,
+serialization 144/0, `bun run fuzz` 20/0.

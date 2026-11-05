@@ -141,8 +141,28 @@ Each of these is here because a wrong conclusion was drawn and committed first.
   edges onto 7% of the vertices returned the right answer and measured 14x fast (item
   702). The cause was an LCG written in f64 — `s * 1103515245` passes 2^53, the period
   collapses from 2^31 to ~11k draws, and nothing about it looks wrong. One line counting
-  the distinct endpoints would have caught it. (The repo's own generators are fine, and
-  702 says why.)
+  the distinct endpoints would have caught it.
+
+  ~~(The repo's own generators are fine, and 702 says why.)~~ ⚠️ **THEY WERE NOT.** Items
+  1516 and 1518 found the same class of defect in the GQL bench's main fixture and in six
+  probe generators, and that parenthetical is why nobody re-checked for 800 items. The
+  mechanical form, which no choice of multiplier fixes:
+
+      to = (a * k + b) % N      is INVARIANT under  k -> k + N
+
+  Every generator here loops `for (k = 0; k < NODES * FANOUT; k++)`, so one vertex's
+  FANOUT edges are exactly `k0, k0+N, k0+2N, …` and all of them land on the SAME target.
+  Out-degree, in-degree and isolated-vertex counts all look perfect; the graph is
+  FUNCTIONAL, so a k-hop count is `F^k · N` by construction. Harmless at FANOUT=1 (degree
+  1 cannot branch), wrong at every higher fanout. The fix is to split on the repeat index
+  `Math.floor(k / N)`, which the `small` arms already did.
+
+  **So: count the DISTINCT endpoints of a new or raised-fanout fixture before trusting a
+  number from it** — `bench.ts`'s `assertGraphDocBranches` is one worked example. And when
+  judging what a degenerate fixture invalidated: an A/B on ONE fixture survives it (both
+  arms saw the same graph), while any claim about branching, selectivity or fan-out does
+  not.
+
 - **Know the noise floor.** Some rows range 2x for the same binary. Anything under
   ~10% needs its own isolated harness, and "obviously correct so it must be
   faster" is not evidence — several such changes measured neutral or worse.
