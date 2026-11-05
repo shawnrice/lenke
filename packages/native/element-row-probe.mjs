@@ -62,6 +62,12 @@ const ARMS = {
   farnode: 'MATCH (:P)-[:E]->(x) RETURN x',
   relprop: 'MATCH (:P)-[r:E]->() RETURN r.w AS w',
   bucket: 'MATCH (n:P) RETURN n',
+  // ⚠️ THE `star` HAZARD, measured rather than reasoned about (item 1522). If `RETURN *` took the
+  // same rel-bound walk, skipping the anonymous far binding could change its OUTPUT — `mapToRow`
+  // copies EVERY binding with no NUL filter. A cost far above `edge` says star is on the general
+  // path instead and the hazard cannot arise.
+  star: 'MATCH (:P)-[r:E]->() RETURN *',
+  starnamed: 'MATCH (p:P)-[r:E]->(x) RETURN *',
 };
 
 const med = (xs) => {

@@ -1259,6 +1259,31 @@ const relBoundHopWalk = (spec: {
         continue;
       }
 
+      // ⚠️ REJECTED, WITH ITS NUMBERS (item 1522): skipping the far resolve and the `binding.set`
+      // when the far end is ANONYMOUS and unlabelled. `farVar` is `node.variable ?? ANON_FAR_VAR`,
+      // NUL-prefixed and unspellable by the parser, so for `-[r:E]->()` nothing can read the far
+      // binding — item 803's "the binding is never read, so writing it is dead work", which
+      // `shortcuts.ts` applies at two sites. The `RETURN *` hazard was cleared first by MEASUREMENT
+      // (`mapToRow` copies every binding with no NUL filter, but star runs 780.6 ns/row against
+      // this walk's 236.4, so it is on the general path and cannot reach here).
+      //
+      // The guard works and does not pay. 1,000,000 edges at FANOUT=5, three processes per arm,
+      // alternated, medians — and both spellings are THIS walk, so neither is an unrelated row:
+      //
+      //             RETURN r          RETURN r.w
+      //   PRE        236.4 ns/row      346.2 ns/row
+      //   one loop   209.5  (1.13x)    402.0  (-16%)
+      //   two loops  228.4  (1.03x)    395.5  (-14%)
+      //
+      // The REGRESSION is robust to the implementation and the GAIN is not: hoisting the test into
+      // two separately-selected loops removed the branch from the skipping body, lost most of the
+      // win, and kept the loss. `RETURN r.w` is at least as common a shape as `RETURN r`, so the
+      // trade is negative either way.
+      //
+      // This is `pull`'s toll in a new place (`pull-alignment-is-load-bearing`, items 1413-1466): a
+      // memory-bound loop charges more for an added test than the skipped work returns. The ~65% of
+      // `RETURN r.w` that is `propOf` + `get properties` is the reason it is this sensitive, and
+      // item 1392 already closed that read as a cold-object dereference with no lever in it.
       for (const edge of bucket) {
         const far: Vertex = out ? edge.to : edge.from;
 

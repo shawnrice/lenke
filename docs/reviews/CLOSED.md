@@ -60711,3 +60711,72 @@ that is a second measurement to take, not a claim.
 `bun run check` 0 read unpiped. The only additions are `element-row-probe.mjs` and this entry — no
 engine source touched — so the suites are item 1518's: core 431/0, gql 3803/0, gremlin 1469/0,
 native 961/0, serialization 144/0, `bun run fuzz` 20/0.
+
+### Item 1522 — the item-1521 lever is **BUILT, CORRECT, and DECLINED**: skipping the dead far-end resolve gives `RETURN r` **1.13x** and costs `RETURN r.w` **16%** — and the regression survives the fix for it while the gain does not. ⚠️ The `RETURN *` hazard was cleared by MEASUREMENT, not by the free-variable argument this file records being refuted
+
+Item 1521 isolated the target and named the hazard to settle first. Both were settled before any code
+changed.
+
+### The hazard, cleared the way this file demands
+
+`relBoundHopWalk` resolves `edge.to` and writes `binding.set(farVar, far)` per edge; for `-[r:E]->()`
+the far name is `ANON_FAR_VAR` (`'\u0000anon_far'`), which the parser cannot produce, so nothing can
+read it. ⚠️ **But `mapToRow` copies EVERY binding with no NUL filter**, so if `RETURN *` took this
+walk, skipping the write would change its OUTPUT — a wrong answer, not a slow one.
+
+I did not settle that by reading the call chain, because **this file records a comment of exactly that
+shape being refuted by running it**: the rel-variable guard's claim that "the projection guard rejects
+any item that reads a name other than the far variable" is _false for a correlated subquery_, and the
+file calls it "the second comment in this file to be refuted by running the thing it described".
+Measured instead:
+
+```text
+MATCH (:P)-[r:E]->() RETURN *     780.6 ns/row
+MATCH (:P)-[r:E]->() RETURN r     236.4 ns/row    ← this walk
+```
+
+**3.3x says star is on the general path and cannot reach the guard.** Hazard cleared.
+
+### Built, correct, and it does not pay
+
+gql **3803/0** and `bun run fuzz` **20/0** with the guard in — a projection route is 100-300x
+territory, so byte-identity came before timing. Then, 1,000,000 edges at FANOUT=5, three processes per
+arm, alternated, medians:
+
+```text
+             RETURN r          RETURN r.w
+PRE        236.4 ns/row      346.2 ns/row
+one loop   209.5  (1.13x)    402.0  (−16%)
+two loops  228.4  (1.03x)    395.5  (−14%)
+```
+
+⚠️ **Both spellings are THIS walk**, so `RETURN r.w` is not an unrelated row — the change made the
+same loop's other caller 16% slower. And the second variant is the textbook fix for that: hoist the
+test out, select one of two loops once, leave the skipping body branch-free. **It lost most of the win
+and kept the loss.**
+
+So the regression is robust to the implementation and the gain is not. `RETURN r.w` is at least as
+common a shape as `RETURN r`, so the trade is negative either way. Declined and reverted; recorded at
+the code with both variants' numbers, because "try hoisting it into two loops" is the obvious next
+idea and it has now been tried.
+
+### Why this loop is that sensitive
+
+`RETURN r.w` is **~65% `propOf` + `get properties`** (44.3% + 20.4% windowed) — a cold-object
+dereference through the edge's property box. That is the read **item 1392 already closed** as having
+no lever in it, and it is also what makes the loop memory-bound: a memory-bound loop charges more for
+an added test than the skipped work returns. Same toll as `pull-alignment-is-load-bearing` (items
+1413-1466: "any edit costs the filtered-count cluster 1.08-1.24x, never gains"), in a new place.
+
+### What stands
+
+The 1.86x between `RETURN r` (236.4) and `RETURN x` (129.5) is real and **now has no candidate cure**
+— the dead-work guard was the only one, and it is refuted. The two spellings take genuinely different
+routes (`relBoundHopWalk` against the fused `detectHopProjection`), so closing the gap would mean
+giving the rel-bound shape the fused route rather than trimming the walk it has.
+
+### Gates
+
+`bun run check` 0 read unpiped. The engine change is REVERTED — the only edits are the comment and
+this entry — so the suites are item 1518's: core 431/0, gql **3803**/0, gremlin 1469/0, native 961/0,
+serialization 144/0, `bun run fuzz` 20/0 (both also run with the guard applied).
