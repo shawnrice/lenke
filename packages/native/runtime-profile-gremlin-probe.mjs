@@ -40,6 +40,7 @@ import {
   select,
   toArray,
   traversal,
+  id,
   identity,
   union,
   valueMap,
@@ -138,6 +139,13 @@ const SHAPES = {
   valuesonly: traversal(V(), values('k'), count()),
   // Two keys, which takes the multi-key arm the single-key specialization must not change.
   valuestwo: traversal(V(), values('k', 'n'), count()),
+  // ⚠️ ROWS, NOT COUNT (item 1485): a trailing single-key `values(k)` under a `count()` is a
+  // presence filter and the values are never produced, so a count tail measures the shortcut rather
+  // than the read. These two force the rows out, and differ only in the fused walk's `pick`:
+  // `far.properties[k]` against `far.id`. 149 ns/row against 53 at 200,000 — the gap IS the
+  // property read, and `values()` is on nearly every query.
+  hopvaluesrows: traversal(V(), out('E'), values('k')),
+  hopidrows: traversal(V(), out('E'), id()),
 
   // ── Item 1478: the last unprofiled Gremlin steps ────────────────────────────────────────────
   //

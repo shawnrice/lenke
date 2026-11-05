@@ -862,8 +862,24 @@ its rows) and `count` (kept so the confound stays visible) — and **the orderin
 them**: without a count tail `id()` is 2.8x cheaper than a property read, with one `values(k)` is 3.4x
 cheaper than `id()`.
 
-**Use the `rows` family to price anything.** At 200,000: `rows id()` 53 ns/row, `rows values(k)` 149,
-`rows label()` 629 — so fused-vs-general is **4.2x-11.9x**, not one number.
+**Use the `rows` family to price anything** — AND set `STRIDE=scattered`. Item 1486: the two
+instruments disagreed **3.4x** on `rows id()` and the fixture's edge stride was the entire reason. One
+knob, one instrument, 200,000 vertices:
+
+```text
+                sequential   scattered
+rows id()          51 ns/row   133 ns/row
+rows values(k)    104          160
+rows label()      595          423
+label / id      11.57x        3.17x
+id / values      0.50x         0.84x
+```
+
+⚠️ **So fused-vs-general is ~3.2x on a realistic (scattered) fixture, not 4.2-11.9x** — and the
+id-vs-values gap collapses from 2.2x to 1.1x, which is why item 1486 found there is NO property-read
+target: when the walk is cache-bound the extra read hides behind the miss. A sequential fixture gives
+every vertex exactly FANOUT out-edges in vertex order, so the walk reads adjacency in build order and
+the per-row costs a real graph pays simply are not there.
 
 ⚠️ **The tell for a skipped materialization: the fast arm is faster than producing its own rows.**
 `out(E).values(k).count()` measured 2.81 ms against 7.65 for the same rows without the count.

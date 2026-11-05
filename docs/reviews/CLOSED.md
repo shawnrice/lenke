@@ -57176,7 +57176,7 @@ walk skips is the rest.
 their measured results — 1483's 1.26x was its own A/B and stands — but their framing of the REMAINING
 gap is corrected here.
 
-### Item 1485 — the 3.3x anomaly EXPLAINED, and it was a FOURTH shortcut I had not accounted for: `values(k).count()` is a presence-filter count (item 1141), so those values are never materialized. With it removed the ordering REVERSES — `id()` is cheaper than a property read, as it should be — and "fused vs general" is a RANGE of **4.2x-11.9x**, not item 1484's 4.7x
+### Item 1485 — the 3.3x anomaly EXPLAINED, and it was a FOURTH shortcut I had not accounted for: `values(k).count()` is a presence-filter count (item 1141), so those values are never materialized. With it removed the ordering REVERSES — `id()` is cheaper than a property read, as it should be — and "fused vs general" is a RANGE of ~~**4.2x-11.9x**~~ **(⚠️ measured on a SEQUENTIAL-adjacency fixture; item 1486 flips the stride and it collapses to ~3.2x, which also makes the property-read target vanish)**, not item 1484's 4.7x
 
 Item 1484 flagged an unexplained **3.3x between two FUSED arms** differing only in their `pick`
 closure (`far.properties[key]` beating `far.id`), recorded it as an open observation rather than
@@ -57248,3 +57248,78 @@ fast arm is faster than producing its own rows, it skipped producing them.
 
 `bun run check` 0 read unpiped. The probe gained the two families; no engine code changed. Item 1484's
 heading is corrected in place.
+
+### Item 1486 — TWO INSTRUMENTS DISAGREED 3.4x ON ONE NUMBER, and the fixture's EDGE STRIDE was the whole reason. Reproduced on a single instrument by flipping one knob: `label/id` goes **11.57x → 3.17x**, and the property-read target this tick set out to chase **vanishes** (2.2x → 1.1x)
+
+Item 1485 left a concrete target: on the same fused walk, a property read cost **149 ns/row** against
+`id()`'s **53** — about 96 ns for one `props[key]`, which is a lot for a memoized getter plus an
+index, on a step as common as `values()`. Profiling it put the same two shapes through the Gremlin
+probe, which reported **126 and 94 ns/row** — a 1.34x gap where the other instrument said 2.8x, and
+`id()` three times more expensive in absolute terms.
+
+**Two instruments disagreeing is the signal PROBES.md says finds defects**, so it got chased before
+anything was optimized.
+
+### Not the profiler, not the rep count, not the consumption
+
+- profiler detached: the gap persisted (item 1472's ~15% is real but far too small);
+- `REPS` 9 / 40 / 120 on one instrument: `id()` read 25, 26, 31 ns/row — **stable**, so rep count was
+  not it;
+- both instruments drain their result and count rows.
+
+### It was the EDGE STRIDE, and the fixtures differed by accident
+
+```text
+                        this probe (before)              gremlin probe
+edge source      vs[e % NODES]  — sequential      vs[(e * 7919) % NODES] — scattered
+out-degree       exactly FANOUT for every vertex   varies
+properties       { k }                             { k, s, n }
+```
+
+A `STRIDE` knob now makes that switchable, and flipping **only** that reproduces the entire
+disagreement on one instrument:
+
+```text
+                  sequential      scattered        (NODES=200,000, 1,000,000 rows)
+rows id()           51 ns/row      133 ns/row
+rows values(k)     104             160
+rows label()       595             423
+label / id       11.57x           3.17x
+id / values       0.50x            0.84x
+```
+
+At 50,000 the same flip reads 15.13x → 3.33x and 0.46x → 0.89x, so both sizes agree.
+
+### What this closes
+
+**The property-read target does not exist.** On a sequential fixture `id()` is 2.2x cheaper than
+`props[key]`; on a scattered one it is **1.1x**. When the adjacency walk is cache-bound — which is
+what a real graph does — the extra property read is hidden behind the miss it is already paying for.
+There is no ~96 ns read to remove; there was a ~96 ns _difference_ that only exists when the walk is
+unrealistically cheap.
+
+**And every ratio in items 1484 and 1485 was stride-dependent.** 1485's "4.2x-11.9x" was measured
+sequentially; the realistic figure for fused-vs-general is **~3.2x**. So the prize for reaching the
+fused walk from a sub-plan (items 1480/1483) is ~3.2x, not 14x, not 19x, and not 11.9x.
+
+### The pattern, now five items deep
+
+| item      | what inflated the number                              | claimed        | honest    |
+| --------- | ----------------------------------------------------- | -------------- | --------- |
+| 1479      | chain count — no walk at all                          | 377x           | 20.7x     |
+| 1480/1483 | values walk — no vertex, no traverser                 | 19.3x / "~14x" | —         |
+| 1485      | presence-filter count — values never produced         | 4.7x           | 4.2-11.9x |
+| 1486      | **sequential adjacency — the walk is cache-friendly** | 11.9x          | **3.2x**  |
+
+The first three were the FAST arm skipping work. This one is different and worth separating: **both
+arms did the same work, and the FIXTURE made that work unrealistically cheap** — which inflates a
+ratio whenever the thing being measured is a per-row cost that cache misses would otherwise swamp.
+
+CLAUDE.md already says "match the fixture to the claim" and the two single-surface probes already
+carry **opposite STRIDE defaults on purpose**. What is new is the magnitude: the stride moved a
+headline ratio by **3.6x**, and it silently reversed a sub-conclusion.
+
+### Gates
+
+`bun run check` 0 read unpiped, gremlin 1308/0. The probe gained a `STRIDE` knob and two rows shapes
+went into the Gremlin probe; no engine code changed. Item 1485's range is corrected in place.

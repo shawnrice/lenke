@@ -31,6 +31,24 @@ const FANOUT = Number(process.env.FANOUT ?? 5);
 const REPS = Number(process.env.REPS ?? 9);
 const DROP = Number(process.env.DROP ?? 3);
 
+/**
+ * ⚠️ THE STRIDE IS THE WHOLE BALLGAME HERE, which is why it is a knob and not a constant.
+ *
+ * `sequential` gives every vertex exactly FANOUT out-edges, added in vertex order, so the walk reads
+ * adjacency in the order it was built. `scattered` draws the source from `(e * 7919) % NODES`, as
+ * `runtime-profile-gremlin-probe.mjs` does — out-degree then varies and the adjacency is touched in
+ * random order, which is what a real graph looks like.
+ *
+ * Item 1486: the two instruments disagreed 3.4x on `rows id()` (28 ns/row against 94) and the fixture
+ * was the entire reason. Worse, the id-vs-values RATIO depends on it too — so a property-read
+ * "target" measured on a sequential fixture can be an artefact of the fixture.
+ */
+const STRIDE = process.env.STRIDE ?? 'sequential';
+
+if (STRIDE !== 'sequential' && STRIDE !== 'scattered') {
+  throw new Error(`STRIDE must be sequential|scattered, got ${STRIDE}`);
+}
+
 const g = new Graph();
 const vs = [];
 
@@ -44,8 +62,10 @@ for (let e = 0; e < NODES * FANOUT; e += 1) {
 
   g.addEdge({
     id: `e${e}`,
-    from: vs[i],
-    to: vs[(i * 7 + 3 + hop * 2_654_435_761) % NODES],
+    from: vs[STRIDE === 'scattered' ? (e * 7919) % NODES : i],
+    to: vs[
+      STRIDE === 'scattered' ? (e * 104_729) % NODES : (i * 7 + 3 + hop * 2_654_435_761) % NODES
+    ],
     labels: ['E'],
   });
 }
@@ -75,7 +95,9 @@ const med = (xs) => {
   return s[(s.length - 1) >> 1];
 };
 
-console.log(`\nFUSED vs GENERAL — NODES=${NODES} FANOUT=${FANOUT} REPS=${REPS} DROP=${DROP}\n`);
+console.log(
+  `\nFUSED vs GENERAL — STRIDE=${STRIDE} NODES=${NODES} FANOUT=${FANOUT} REPS=${REPS} DROP=${DROP}\n`,
+);
 
 const results = {};
 
