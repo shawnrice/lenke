@@ -43,6 +43,12 @@ import {
   union,
   valueMap,
   values,
+  repeat,
+  match,
+  local,
+  pipe,
+  outE,
+  inV,
 } from '@lenke/gremlin';
 
 import { profileWindow } from './windowed-profile.mjs';
@@ -130,6 +136,25 @@ const SHAPES = {
   valuesonly: traversal(V(), values('k'), count()),
   // Two keys, which takes the multi-key arm the single-key specialization must not change.
   valuestwo: traversal(V(), values('k', 'n'), count()),
+
+  // ── Item 1478: the last unprofiled Gremlin steps ────────────────────────────────────────────
+  //
+  // Variable-length traversal, the declarative join, and per-traverser scoping. All three are core
+  // surfaces and none has ever been in a profile — the same question that found `groupStep` (1.27x)
+  // and `projectValues` (1.39x) on this probe.
+  //
+  // ⚠️ Profiled at 200+ reps from the start. Item 1476: a 72-sample profile ranked the wrong frame,
+  // and item 1477 confirmed the clean side of the same lesson.
+
+  // Variable-length: `repeat(out('E')).times(2)`. At FANOUT=5 that is 25 rows per source, so the
+  // size is kept well below the other shapes' to stay inside the memory cap.
+  repeated: traversal(V(), repeat(out('E')).times(2), count()),
+  // The declarative join. Two bound names over one hop, which is the smallest shape that exercises
+  // the matcher rather than a single pattern.
+  matched: traversal(V(), match(pipe(as_('a'), out('E'), as_('b'))), count()),
+  // Per-traverser scoping: `local` runs its sub-traversal once per incoming traverser, so it is the
+  // shape where sub-plan setup cost is paid N times rather than once.
+  localized: traversal(V(), local(pipe(outE(), inV())), count()),
 };
 
 const plan = SHAPES[SHAPE];

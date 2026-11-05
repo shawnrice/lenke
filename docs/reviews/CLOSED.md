@@ -56586,3 +56586,101 @@ however many rounds are run, because the spread is within an arm, not between th
 core 431/0, gql 3709/0, gremlin 1258/0, native 961/0, serialization 144/0, `bun run fuzz` 20/0.
 `bun run check` 0 read unpiped. Revert verified in `dist` (0 occurrences of the marker). Three probe
 shapes added (`proj1`, `proj2`, `proj10`); no engine code changed.
+
+### Item 1478 — SHIPPED, **1.10x** on Gremlin's `match()` (3/3, arm ranges NOT overlapping, controls flat): `tupleKey` paid `.map()` + `.join()` for a ONE-part tuple at four of its five call sites. ⚠️ And mutation found a REACHABLE wrong-answer gap — nothing distinguished an element key from a primitive one, which took reading a guard to kill rather than guessing
+
+The last unprofiled Gremlin steps: variable-length traversal, the declarative join, and
+per-traverser scoping. Three shapes added (`repeated`, `matched`, `localized`), profiled at 60 reps
+from the start per item 1476.
+
+### What the screen found
+
+```text
+shape       engine ms   unpriced frames over 2%
+repeated        119     none — `repeat` is clean
+localized      1692     localStep 7.0%, traverseToEdge 6.7%, edgeToVertex 5.0%, get to 4.5%
+matched        2914     applyPattern 18.4%, solve 7.8%, bind 7.0%, matchStep 4.3%, …  ≈44%
+```
+
+**`matched` is the largest shape yet measured on this probe and it is at only 20,000 vertices** —
+48.6 ms a rep for ~100,000 rows, about **486 ns/row against a bare hop's ~95**. `match()` is
+Gremlin's declarative join and none of its solver had ever been in a profile.
+
+### The defect
+
+`applyPattern` dedupes candidate values with `tupleKey([o.value])` — once per candidate per
+traverser, so 5 × 100,000 a rep on this fixture. And `tupleKey` was written only for the general
+case:
+
+```ts
+parts.map((p) => …).join('\x00')
+```
+
+For a ONE-part tuple that is a real array from `.map()` (escape analysis does not see through array
+builtins the way it does an object literal) plus a `.join()` that copies the string it was just
+handed. **Four of the five call sites pass a single part** — `dedupe()`'s composite branch, two in
+`iteration.ts`, and `match()`'s candidate dedupe — so the fast path went inside `tupleKey` and every
+caller benefits without changing.
+
+```text
+                       POST                        PRE
+matched          2594.1 2670.7 2708.5     2918.6 2933.1 2997.8    3/3, 1.10x
+hopdedupe (2nd caller) 25.8 24.9 25.5         24.5 30.1 23.1      flat — NOT confirmed
+localized (control)  1748.8 1722.2 1862.9  1696.4 1711.2 1784.8   flat
+hopbare (control)     285.1 248.5 251.4      249.1 235.1 254.1    flat
+```
+
+**The arm ranges do not overlap** — POST's slowest 2708 is below PRE's fastest 2918 — which is what
+makes a 1.10x believable at this magnitude.
+
+⚠️ **A prediction that did NOT hold:** I expected `hopdedupe` to gain too, since `dedupe()` is the
+other hot single-part caller. It is flat. The shape is only ~25 ms, near this probe's floor, and the
+dedupe set is small relative to the hop — so the win is there in principle and unmeasurable in
+practice. Recorded because a reader would otherwise expect it.
+
+### ⚠️ Mutation found a real wrong-answer gap, and TWO traps on the way to killing it
+
+Three mutants, all three initially **surviving all 1,258 tests**:
+
+| mutant                                                      | verdict                                   |
+| ----------------------------------------------------------- | ----------------------------------------- |
+| the fast path drops the `@` element namespace               | **a REACHABLE wrong answer — now killed** |
+| the fast path claims 2-tuples (losing the `\x00` separator) | **UNREACHABLE — not a gap**               |
+| no fast path at all (the NULL mutant)                       | survives, as it must                      |
+
+**The namespace one is a genuine hole.** `@` is the only thing keeping an element and a primitive
+apart in a shared key space: a vertex whose id is `"5"` keys as `@5`, and strip the prefix and it
+keys as `"5"` — exactly `JSON.stringify(5)` for the NUMBER 5. The collision silently DROPS a branch:
+the right row count with the wrong contents.
+
+⚠️ **Killing it took reading a guard, not guessing a fixture.** Four `dedupe()`-based tests all passed
+under the mutant, and the reason is in `dispatch.ts`: the `tupleKey` branch there is gated by an
+`isComposite` test — arrays, plain objects, temporals — so **a vertex is deduped by identity in a
+plain `Set` and never keyed at all.** `dedupe()` cannot reach the prefix. `match()` keys EVERY
+candidate into one `Set<string>`, so the killing case is an inner traversal yielding both a vertex
+and a primitive:
+`match(pipe(as_('a'), union(identity(), values('k')), as_('b')))` on a graph whose vertex id is `'5'`
+and whose `k` is `5` — two branches, collapsed to one without the prefix.
+
+⚠️ **The 2-tuple mutant is UNREACHABLE, and that is not a test gap.** The multi-part call site is the
+multi-label `dedupe(a, b)`, whose parts are tag ARRAYS — so each part is `JSON.stringify(["x"])` =
+`["x"]`, which self-delimits. No pair of tag lists concatenates ambiguously, so no separator-loss
+collision can be constructed through the API. Same shape as item 1476's no-op mutant: **"survived"
+means either the test is blind or the mutant is unreachable, and the two look identical in the
+output.**
+
+`dedupe-key-namespace.test.ts`, 6 tests: the reachable `match()` collision, the two `dedupe()` arms
+documented as NOT reaching the prefix (kept, because they pin the behaviour they do cover), a vertex
+repeat collapsing, a number repeat collapsing, and two different numbers not collapsing.
+
+### Still open from this tick
+
+`localized`'s nominations (`localStep` 7.0%, `traverseToEdge` 6.7%, `edgeToVertex` 5.0%) are
+**unpriced** — `local` runs its sub-traversal once per incoming traverser, so sub-plan setup is paid
+N times rather than once, which is the same shape item 1470 fixed in `shortestPath`. 282 ns/row
+against a bare hop's 95. Not taken here.
+
+### Gates
+
+core 431/0, gql 3709/0, gremlin 1264/0 (1258 + 6 new), native 961/0, serialization 144/0,
+`bun run fuzz` 20/0. `bun run check` 0 read unpiped.

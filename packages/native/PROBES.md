@@ -196,6 +196,12 @@ nomination here. Item 1476 closed the last two: **`asStep`** is 7% of a shape wh
 general tail (priced at 1464, fix declined at 1466), and **`foldStep`** is ~14 ns/element to build the
 list `fold()` is defined as building. Neither is a target.
 
+Item 1478 added the last three (`repeated`, `matched`, `localized`): **`repeat` is clean**, `matched`
+is the **largest shape this probe has measured** (2914 ms at only 20,000 vertices, ~44% unpriced,
+~486 ns/row against a bare hop's 95) and gave up `tupleKey`'s single-part fast path (**1.10x**), and
+`localized`'s `localStep`/`traverseToEdge`/`edgeToVertex` nominations are **still unpriced** — `local`
+pays sub-plan setup once per incoming traverser, the shape item 1470 fixed in `shortestPath`.
+
 ⚠️ **But re-profiling `folded` at 400 reps instead of 20 roughly DOUBLED both shares** (`projectValues`
 45.83% → 49.22%, `foldStep` 10% → 20.83%), and the real find was `projectValues` — **1.39x, item
 1476**. Its 72-sample profile had ranked the wrong frame. Below a few hundred samples the ranking is

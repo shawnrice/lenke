@@ -344,16 +344,27 @@ export const recallTag = (
 // Build a stable string key from a tuple of values. Vertices/edges are keyed
 // by `id` (graph-unique); other values fall through to JSON. NUL separates
 // fields so distinct tuples can't collide via concatenation.
-export const tupleKey = (parts: readonly unknown[]): string =>
-  parts
-    .map((p) => {
-      if (isVertex(p) || isEdge(p)) {
-        return `@${p.id}`;
-      }
+/** One tuple part's key. `@` namespaces an element id so a vertex `5` cannot collide with the number. */
+const partKey = (p: unknown): string => {
+  if (isVertex(p) || isEdge(p)) {
+    return `@${p.id}`;
+  }
 
-      return JSON.stringify(p) ?? 'undefined';
-    })
-    .join('\x00');
+  return JSON.stringify(p) ?? 'undefined';
+};
+
+/**
+ * ⚠️ FAST PATH FOR ONE PART, which is FOUR of the five call sites (`dedupe`, two in `iteration.ts`,
+ * and `match`'s candidate dedupe). The general form pays `.map()` — a real array per call, since
+ * escape analysis does not see through array builtins the way it does an object literal — and then
+ * a `.join()` that, for a single part, copies the string it was already handed.
+ *
+ * Item 1478 profiled Gremlin's `match()` at `applyPattern` **18.4% self**, where the candidate
+ * dedupe runs `tupleKey([o.value])` once per candidate per traverser: 5 candidates x 100,000 rows a
+ * rep on the measured fixture.
+ */
+export const tupleKey = (parts: readonly unknown[]): string =>
+  parts.length === 1 ? partKey(parts[0]) : parts.map(partKey).join('\x00');
 
 // ---------- by() modulator evaluation ----------
 
