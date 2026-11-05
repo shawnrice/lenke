@@ -1304,12 +1304,78 @@ export const fuseUnionSameDir = (plan: Plan, graph: Graph): Plan => {
   return plan;
 };
 
+/**
+ * Step kinds that map each traverser INDEPENDENTLY — a flatMap with no cross-traverser state, no
+ * barrier, and no dependence on how many traversers precede it. For a sub-plan built only of these,
+ * `local(plan)` and `plan` produce the same stream in the same order, so the wrapper is pure cost.
+ *
+ * ⚠️ AN ALLOWLIST, DELIBERATELY, and a short one. The denylist version of this question — "which
+ * steps are barriers?" — fails OPEN: a step kind nobody classified would be fused and silently give
+ * a wrong answer. `count`, `fold`, `order`, `limit`, `dedupe`, `group`, `sample`, `tail`, `range`,
+ * `aggregate` and `barrier` all depend on the scope they run in, and `local(order().limit(1))`
+ * picking the top PER TRAVERSER is the whole reason the step exists. Mirrors `ORDER_FREE_STEPS`,
+ * which is four kinds for the same reason.
+ */
+const LOCAL_TRANSPARENT_STEPS: ReadonlySet<Step['kind']> = new Set<Step['kind']>([
+  'out',
+  'in',
+  'both',
+  'outE',
+  'inE',
+  'bothE',
+  'inV',
+  'outV',
+  'otherV',
+  'bothV',
+  'values',
+  'has',
+  'hasLabel',
+  'identity',
+]);
+
+/**
+ * `local(plan)` where every step of `plan` is per-traverser-transparent becomes `plan` inlined.
+ *
+ * `localStep` re-dispatches its sub-plan once per incoming traverser — `applyPlanToStream(plan, [t],
+ * …)` — which rebuilds the generator chain for every row. Item 1479 measured
+ * `V().local(outE().inV()).values('k').count()` at **5.02 ms against 0.77 ms** for the same chain
+ * unwrapped: **6.5x**, on a tail chosen so the count shortcut cannot answer either arm.
+ *
+ * ⚠️ THE 377x FIRST READING WAS THE COUNT SHORTCUT, NOT THIS. `V().outE().inV().count()` answers in
+ * 0.07 ms because a chain count needs no walk, while the `local` wrapper blocks that route — so the
+ * unwrapped form was not doing the same work. Two rows doing different work give a ratio, not a
+ * budget (item 1465). 6.5x is the honest figure; a count-shortcuttable shape gains more because the
+ * fusion also unblocks the shortcut.
+ *
+ * EXPORTED so the WIRING is assertable and not only the rewrite.
+ */
+export const fuseLocal = (plan: Plan): Plan => {
+  let changed = false;
+  const steps: Step[] = [];
+
+  for (const step of plan.steps) {
+    if (step.kind === 'local') {
+      const { plan: inner } = step;
+
+      if (inner.steps.every((s) => LOCAL_TRANSPARENT_STEPS.has(s.kind))) {
+        steps.push(...inner.steps);
+        changed = true;
+        continue;
+      }
+    }
+
+    steps.push(step);
+  }
+
+  return changed ? { ...plan, steps } : plan;
+};
+
 export const effectivePlan = (plan: Plan, graph: Graph, tracksPath: boolean): Plan =>
   tracksPath
     ? plan
     : dropVacuousLabels(
         fuseUnionSameDir(
-          fuseUnionBoth(fuseEdgeHop(flattenFilterWrappers(fuseValuesIsCount(plan)))),
+          fuseUnionBoth(fuseEdgeHop(flattenFilterWrappers(fuseValuesIsCount(fuseLocal(plan))))),
           graph,
         ),
         graph,

@@ -155,6 +155,18 @@ const SHAPES = {
   // Per-traverser scoping: `local` runs its sub-traversal once per incoming traverser, so it is the
   // shape where sub-plan setup cost is paid N times rather than once.
   localized: traversal(V(), local(pipe(outE(), inV())), count()),
+  // ⚠️ THE HAND FLOOR for `localized`: the same inner chain written WITHOUT the local() wrapper.
+  // `local` re-dispatches its sub-plan once per incoming traverser, and for a plan made only of
+  // per-traverser steps (a flatMap chain with no barrier) that scoping changes nothing — so this is
+  // the answer `local` could give if it fused. The gap between the two IS the opportunity, measured
+  // before building the gate rather than after (item 1465's rule: price with a floor first).
+  localfloor: traversal(V(), outE(), inV(), count()),
+  // ⚠️ THE SHAPES THAT ACTUALLY TRAVERSE. The two above both end in a bare `count()`, which a chain
+  // count can answer WITHOUT walking (0.07 ms) — so their ratio measures whether the count shortcut
+  // applies, not what the walk costs. Appending `values('k')` defeats the shortcut in both arms, so
+  // these are the pair that prices `local`'s per-traverser dispatch honestly.
+  localvalues: traversal(V(), local(pipe(outE(), inV())), values('k'), count()),
+  localvaluesfloor: traversal(V(), outE(), inV(), values('k'), count()),
 };
 
 const plan = SHAPES[SHAPE];

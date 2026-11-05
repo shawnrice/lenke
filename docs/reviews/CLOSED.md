@@ -56684,3 +56684,99 @@ against a bare hop's 95. Not taken here.
 
 core 431/0, gql 3709/0, gremlin 1264/0 (1258 + 6 new), native 961/0, serialization 144/0,
 `bun run fuzz` 20/0. `bun run check` 0 read unpiped.
+
+### Item 1479 — SHIPPED, **20.7x** on a transparent `local()` (3/3, landing ON a hand floor) and **364x** where it also unblocks the count shortcut: `localStep` re-dispatched its sub-plan once per incoming traverser even when the scoping was unobservable. ⚠️ The FIRST reading said 377x and was the count shortcut, not this
+
+Item 1478 left `localized`'s frames unpriced: `localStep` 7.0%, `traverseToEdge` 6.7%,
+`edgeToVertex` 5.0%. `localStep` is four lines —
+
+```ts
+for (const t of stream) {
+  yield * applyPlanToStream(plan, [t], graph, ctx);
+}
+```
+
+— so the cost is not in the step, it is the **per-traverser re-dispatch**: the generator chain for
+the sub-plan is rebuilt for every row. And for a sub-plan made only of steps that map each traverser
+independently, that scoping **changes nothing**.
+
+### ⚠️ PRICED WITH A FLOOR FIRST, and the first floor was wrong
+
+The hand floor — the same inner chain without the wrapper — read **4.5 ms against 1696.7**, i.e.
+377x. That number is not the opportunity. `V().outE().inV().count()` answers in **0.07 ms** because a
+chain count needs no walk at all, and the `local` wrapper blocks that route, so the two arms were not
+doing the same work. **Two rows doing different work give a ratio, not a budget** (item 1465).
+
+Appending `values('k')` defeats the shortcut in both arms, which is the honest pair. Both forms also
+return the identical answer (10,000), checked before anything was built.
+
+### The change
+
+`fuseLocal`: a `local` step whose sub-plan consists entirely of per-traverser-transparent steps is
+replaced by that sub-plan inlined. Wired into `effectivePlan` ahead of the existing fusions.
+
+⚠️ **AN ALLOWLIST, and a short one** — 14 kinds (`out`, `in`, `both`, `outE`, `inE`, `bothE`, `inV`,
+`outV`, `otherV`, `bothV`, `values`, `has`, `hasLabel`, `identity`). The denylist version of this
+question fails OPEN: a step kind nobody classified would be fused and silently answer wrongly.
+Mirrors `ORDER_FREE_STEPS`, which is four kinds for the same reason.
+
+⚠️ **`dedupe` IS THE TRAP, and it is in `ORDER_FREE_STEPS`.** Order-free and local-transparent are
+different properties. `local(out('E'), dedupe())` on `a→b, a→c, b→c` yields `[b, c, c]` — it dedupes
+_within_ each traverser, so `c` reached from both `a` and `b` legitimately appears twice. Fusing it
+would collapse those to one. Verified against the running engine before writing the list, not
+reasoned about.
+
+### Measured
+
+A/B, one arm per process, `nx build` between arms, arm asserted from `dist`, order alternated,
+20,000 vertices (FANOUT 5), 60 reps:
+
+```text
+                            POST                      PRE
+localvalues            101.2 106.4 113.1     2264.9 2201.7 2147.0    3/3, 20.7x
+localized              4.8   4.6   8.0       1746.9 1728.9 1809.0    3/3, 364x
+localvaluesfloor       78.4  111.4 114.8     97.7  109.6  103.2      flat (the floor)
+hopbare (control)      269.4 245.6 226.7     263.4 263.0  237.8      flat
+matched (control)      2658.5 2617.8 2741.8  2551.9 2678.5 2686.5    flat
+```
+
+**Two numbers with different meanings, and both are reported because quoting either alone misleads:**
+20.7x is the per-traverser dispatch removed on a shape that must walk; **364x** is that _plus_ the
+chain-count shortcut becoming reachable, which only applies when the traversal ends in a bare
+`count()`. **The fused arm lands ON the hand floor** — 106.4 against the floor's 103-111 — so there
+is nothing left in this shape.
+
+(At 2,000 vertices the same pair read 6.5x rather than 20.7x: the win grows with the traverser count,
+which is what a per-traverser cost predicts.)
+
+### Teeth
+
+`local-fusion.test.ts`, 12 tests, **mostly about what must NOT fuse** — the rewrite can change
+answers if the allowlist is wrong:
+
+- `local(count())` → `[1,1,1]`, a count per traverser, not `[3]`
+- `local(out(E), count())` → `[2,1,0]`, per-traverser degrees, not a total
+- `local(out(E), fold())` → three lists, not one
+- `local(out(E), dedupe())` → `[b,c,c]`, deduped within each traverser
+- the transparent forms equal the unwrapped chain exactly (`[2,3,3]`), under `values` and under `count`
+- the rewrite itself: inlines a transparent sub-plan, leaves a barrier-bearing one alone, and returns
+  the SAME plan object when nothing changes
+- **the WIRING**: `effectivePlan` applies it, and does NOT when the plan tracks path
+
+**Mutation-verified, 4/4:**
+
+| mutant                                                       | caught by     |
+| ------------------------------------------------------------ | ------------- |
+| fuse EVERY `local`, barrier or not                           | 7 failures    |
+| admit `count` to the allowlist                               | 4 failures    |
+| admit `dedupe` (order-free but not local-transparent)        | 1 failure     |
+| **UNWIRE it — rewrite kept, `effectivePlan` never calls it** | **1 failure** |
+
+The unwire mutant is the one that needed the wiring assertion: the rewrite stays correct and the
+engine answers identically by the slow route, so every behavioural test passes. That is the shape
+items 1303 and 1447 paid for, and [[rewrite-composition-is-not-free]] exists for it.
+
+### Gates
+
+core 431/0, gql 3709/0, gremlin 1276/0 (1264 + 12 new), native 961/0, serialization 144/0,
+`bun run fuzz` 20/0. `bun run check` 0 read unpiped.
