@@ -58979,6 +58979,11 @@ since the TS side now rewrites query text before parsing and the Rust side does 
 
 ### Item 1503 — the GREMLIN analogue of items 1499-1502, priced for the first time: **a reused plan costs 315-456 ns over a 2-5 ns floor (130x, 84x), and REBUILDING it costs another 433-684 ns.** Three hypotheses tested, **all three refuted** — a memo, an allocation, and a redundancy
 
+> ✅ **BUILT AT ITEM 1504**, by the one design this entry named: `Plan.readsPath` carried at plan
+> CONSTRUCTION rather than cached on the execution path. **1.57-1.72x on a reused plan and FLAT on a
+> rebuilt one** — where the memo below was 1.07-1.15x worse on that arm. The three refutations here
+> all still stand; what changed is that the design they pointed at works.
+
 GQL's per-call overhead was parse+plan, and item 1502 removed most of it. Gremlin has no text to
 parse, so the question looked inapplicable. It is not: `toArray` re-runs the whole plan ANALYSIS on
 every call — `effectivePlan`'s seven rewrite passes, `checkSteps`, `planReadsPath`,
@@ -59061,3 +59066,82 @@ onto the execution path. **Priced at ~300-450 ns a call on cheap shapes; not bui
 
 `bun run check` 0 read unpiped, gremlin 1406/0. No engine change — one new instrument and three
 refuted hypotheses.
+
+### Item 1504 — **`Plan.readsPath` is now carried by CONSTRUCTION, not walked at execution: 1.57-1.72x on a reused plan and FLAT on a rebuilt one** — the design item 1503 named after its `WeakMap` memo won one arm and lost the other
+
+Item 1503 measured the Gremlin per-call plan overhead (315-456 ns on shapes whose graph work is
+2-5 ns), tried a `WeakMap<Plan, boolean>` memo on `planReadsPath`, and rejected it: **1.52-1.61x for
+a REUSED plan but 1.07-1.15x WORSE for a REBUILT one**, because a freshly built plan never hits the
+memo and pays the set. It closed by naming the design that could win both — make plan CONSTRUCTION
+carry the analysis, so a fresh plan arrives already analysed. This is that.
+
+### The change
+
+`Plan` gains `readonly readsPath: boolean`, computed at the ONE place a step is appended
+(`appendStep` in `ast.ts`) as `plan.readsPath || stepReadsPath(step)`. The recursion disappears: a
+nested plan is built BEFORE the step that holds it, so `sub.readsPath` is already settled and the
+parent just ORs it. `planReadsPath(plan)` becomes a field read, and `subPlansOf` — whose only caller
+it was — is deleted.
+
+`PATH_DEPENDENT_KINDS` moved from the executor to `ast.ts`, because "which step KINDS read the path"
+is AST-level knowledge once the flag is computed at construction.
+
+⚠️ **CONSERVATIVE IN THE SAFE DIRECTION.** A plan rewritten by `effectivePlan` keeps the flag through
+`{ ...plan, steps }`, and a rewrite can only MERGE or REMOVE steps — never introduce a path-dependent
+one that was not already inside the step it replaced. A carried-over `true` may be stale, which
+merely declines an optimisation; a stale `false` is unreachable. The one place that must RECOMPUTE is
+`match.ts`, which builds an inner plan from a SLICE of a step list: the enclosing plan's flag
+describes a different set of steps, so `planOfSteps` runs `stepReadsPath` over the slice.
+
+### Both arms, which is the whole point
+
+```text
+                work (reused plan)              rebuilt (built per call)
+           PRE    POST            ratio     PRE    POST             ratio
+count      315    200 201 201     1.57x     787    769  778  788    1.01x
+hop        456    261 267 268     1.72x    1093   1089 1122 1132    1.00x
+filtered  1186   1022 1032 1039   1.15x    1870   1858 1865 1882    1.00x
+vals      9205   9007 9008 9029   1.02x    9638   9577 9591 9597    1.01x
+```
+
+The rebuilt arm is flat rather than faster — construction now does the OR — but it no longer pays
+the execution-time walk, so it breaks even instead of regressing 1.07-1.15x. **That is the
+difference between this and item 1503's memo.**
+
+Wide controls at 200,000 vertices / FANOUT 2 scattered, where a per-call constant cannot matter and
+a mistake would show: `hopbare` 1942.2 → 1966.9 (1.01x), `hopcount3` 8676.6 → 8656.9 (1.00x),
+`grouped` 170.1 → 171.0 (1.01x).
+
+### ⚠️ A false flag here is SILENT, so the tests are about the false-negative paths
+
+When `readsPath` is false the run skips path bookkeeping entirely, so a missed path-reading step
+yields an **EMPTY path, not an error** — `path()` answers `[]` and `simplePath` filters nothing. The
+old walk's comment said exactly this; moving the computation to construction adds a new way to miss
+one, namely a nested plan whose flag the parent does not consult.
+
+Mutation, all six caught:
+
+```text
+never            readsPath: false always                 CAUGHT   2 pass 14 fail
+no-carry         drop `plan.readsPath ||`                CAUGHT  14 pass  2 fail
+no-subfields     ignore body/plan/until/…                CAUGHT  10 pass  6 fail
+no-plans-array   ignore the `plans` array (union)        CAUGHT  13 pass  3 fail
+no-bys           ignore `by(traversal)`                  CAUGHT  15 pass  1 fail
+always           readsPath: true always (conservative)   CAUGHT   6 pass 10 fail
+```
+
+⚠️ **`no-bys` SURVIVED the new file at first and was caught only by a PRE-EXISTING guard** —
+`executor/subPlansOf.test.ts`, which hides a `path()` in every plan-bearing field for precisely this
+failure. It earned its keep against a change made 580 items after it was written. The case is now in
+the new file too, so that file stands on its own rather than relying on a sibling for one of the
+three field shapes.
+
+That guard's comment named `subPlansOf`, which this item deleted; it has been corrected in place to
+describe `stepReadsPath` and the construction-time flag, with the filename kept so its history stays
+findable.
+
+### Gates
+
+`bun run check` 0 read unpiped. core 431/0, gql 3773/0, gremlin **1422**/0, native 961/0,
+serialization 144/0, `bun run fuzz` 20/0 — the fuzzers matter here because path tracking changes
+results, not just speed.

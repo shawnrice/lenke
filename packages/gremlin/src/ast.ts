@@ -448,9 +448,97 @@ export type AddEEndpoint = { kind: 'tag'; label: string } | { kind: 'plan'; plan
 
 export type Plan = {
   readonly steps: readonly Step[];
+  /**
+   * Does any step anywhere in this plan tree read the traverser path?
+   *
+   * ⚠️ CARRIED BY CONSTRUCTION, NOT COMPUTED AT EXECUTION (item 1504). `toArray` used to answer
+   * this by walking the whole plan tree on EVERY call, which item 1503 measured as part of a
+   * 315-456 ns per-call overhead on shapes whose graph work is 2-5 ns. That item also tried the
+   * obvious fix — a `WeakMap<Plan, boolean>` memo — and rejected it: 1.52-1.61x for a REUSED plan
+   * but **1.07-1.15x WORSE for a REBUILT one**, because a freshly built plan never hits the memo
+   * and pays the set. An application that constructs its traversal in the request handler would
+   * have paid for a win it never collected.
+   *
+   * Computing it here wins both arms. Every combinator already allocates a new `Plan`, so the
+   * marginal cost is one OR per step — and the recursion disappears: a nested plan was built
+   * FIRST, so its own flag is already true or false and the parent just reads it. No walk, no
+   * cache, nothing to invalidate.
+   *
+   * ⚠️ CONSERVATIVE IN THE SAFE DIRECTION. A plan rewritten by `effectivePlan` keeps this flag via
+   * `{ ...plan, steps }`, and a rewrite can only MERGE or REMOVE steps — never introduce a
+   * path-dependent one that was not already inside the step it replaced. So a carried-over `true`
+   * may be stale, which merely declines an optimisation; a stale `false` is unreachable.
+   */
+  readonly readsPath: boolean;
 };
 
-export const emptyPlan: Plan = { steps: [] };
+export const emptyPlan: Plan = { steps: [], readsPath: false };
+
+/**
+ * Step kinds that read a traverser's accumulated path. The first five touch `t.path` directly; the
+ * closure-bearing kinds hand it to user code via `closureView`, so they are conservatively assumed
+ * to read it.
+ *
+ * ⚠️ MOVED HERE FROM THE EXECUTOR at item 1504, because the flag above is computed at construction
+ * and this is AST-level knowledge (which step KINDS are path-dependent), not execution-level. It is
+ * exhaustive against every `.path` read in the executor — keep it in sync if a new path-consuming
+ * step is added, since a missed entry would silently drop paths.
+ */
+export const PATH_DEPENDENT_KINDS: ReadonlySet<string> = new Set([
+  'path',
+  'tree',
+  'simplePath',
+  'cyclicPath',
+  'otherV',
+  'mapFn',
+  'flatMapFn',
+  'filterFn',
+  'sideEffectFn',
+  'foldFn',
+]);
+
+/** The step fields that hold a nested plan. */
+const SUBPLAN_FIELDS = ['body', 'until', 'emit', 'plan', 'test', 'thenPlan', 'elsePlan'] as const;
+
+/**
+ * Does this ONE step read the path, counting its nested plans by their own already-computed flags?
+ *
+ * No recursion: a nested plan is built before the step that holds it, so `sub.readsPath` is already
+ * settled. That is what turns a tree walk per execution into one OR per construction.
+ */
+export const stepReadsPath = (step: Step): boolean => {
+  if (PATH_DEPENDENT_KINDS.has(step.kind)) {
+    return true;
+  }
+
+  const fields = step as unknown as Record<string, unknown>;
+
+  for (const name of SUBPLAN_FIELDS) {
+    const sub = fields[name] as Plan | undefined;
+
+    if (sub?.readsPath === true) {
+      return true;
+    }
+  }
+
+  if (Array.isArray(fields.plans)) {
+    for (const sub of fields.plans as Plan[]) {
+      if (sub.readsPath) {
+        return true;
+      }
+    }
+  }
+
+  if (Array.isArray(fields.bys)) {
+    for (const by of fields.bys as By[]) {
+      if (by.kind === 'traversal' && by.plan.readsPath) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+};
 
 /**
  * Brand applied to every DSL-produced `(plan: Plan) => Plan` so the runtime
@@ -463,7 +551,12 @@ export const STEP_FN: unique symbol = Symbol.for('@lenke/gremlin/StepFn');
 export type StepFn = ((plan: Plan) => Plan) & { readonly [STEP_FN]: true };
 
 export const appendStep = (step: Step): StepFn => {
-  const fn = (plan: Plan): Plan => ({ steps: [...plan.steps, step] });
+  // Computed ONCE per step constructor, not per plan the step is appended to.
+  const reads = stepReadsPath(step);
+  const fn = (plan: Plan): Plan => ({
+    steps: [...plan.steps, step],
+    readsPath: plan.readsPath || reads,
+  });
   Object.defineProperty(fn, STEP_FN, { value: true, enumerable: false });
 
   return fn as StepFn;

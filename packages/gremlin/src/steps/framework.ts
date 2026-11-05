@@ -8,6 +8,7 @@
 import { ErrorCode, LenkeError } from '@lenke/errors';
 
 import {
+  emptyPlan,
   appendStep,
   type By,
   isStepFn,
@@ -197,7 +198,11 @@ export const isSubPlan = (x: unknown): x is SubPlan => isPlan(x) || isStepFn(x);
  * Coerce either form to a `Plan`. The runtime accepts both; this is the one
  * conversion point so call sites stay shape-agnostic.
  */
-export const buildPlan = (sub: SubPlan): Plan => (isPlan(sub) ? sub : sub({ steps: [] }));
+// Re-exported so the step groups take their empty plan from the same place they take
+// `appendStep`/`buildPlan`, rather than reaching past this module into `ast.ts` (item 1504).
+export { emptyPlan };
+
+export const buildPlan = (sub: SubPlan): Plan => (isPlan(sub) ? sub : sub(emptyPlan));
 
 /**
  * Predicate-vs-value detection. Predicates are objects with an `op`

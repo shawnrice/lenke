@@ -1,5 +1,12 @@
 /* eslint-disable no-shadow -- parameter names match the gremlin builder API (e.g. `match` on branch.option) */
-import { appendStep, buildPlan, type Plan, type StepFn, type SubPlan } from './framework.js';
+import {
+  appendStep,
+  buildPlan,
+  emptyPlan,
+  type Plan,
+  type StepFn,
+  type SubPlan,
+} from './framework.js';
 
 // Run each sub-plan from the current traverser; merge outputs in order.
 export const union = (...plans: SubPlan[]): StepFn =>
@@ -69,9 +76,9 @@ const makeRepeat = (config: {
     untilBefore: (pred: SubPlan) =>
       makeRepeat({ ...config, until: buildPlan(pred), untilBefore: true }),
     emit: (pred?: SubPlan) =>
-      makeRepeat({ ...config, emit: pred ? buildPlan(pred) : { steps: [] }, emitBefore: false }),
+      makeRepeat({ ...config, emit: pred ? buildPlan(pred) : emptyPlan, emitBefore: false }),
     emitBefore: (pred?: SubPlan) =>
-      makeRepeat({ ...config, emit: pred ? buildPlan(pred) : { steps: [] }, emitBefore: true }),
+      makeRepeat({ ...config, emit: pred ? buildPlan(pred) : emptyPlan, emitBefore: true }),
   });
 };
 

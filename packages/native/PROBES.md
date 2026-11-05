@@ -1276,3 +1276,11 @@ Three hypotheses tested at item 1503, **all three refuted** — worth knowing be
 The remaining overhead is ~8 pure passes with no hot spot (the shape item 1500 found in the GQL
 planner). A design that wins both arms must make plan CONSTRUCTION carry the analysis, not cache it
 on the execution path.
+
+✅ **DONE AT ITEM 1504 for `planReadsPath`**: `Plan.readsPath` is ORed in at `appendStep`, so the
+walk is gone and a fresh plan arrives already analysed. **count 315 → 200 (1.57x), hop 456 → 265
+(1.72x), filtered 1186 → 1031 (1.15x) on the reused arm; the rebuilt arm is FLAT** (769-788 vs 787),
+where the memo was 1.07-1.15x worse. Wide controls at 200,000 vertices unmoved: hopbare 1.01x,
+hopcount3 1.00x, grouped 1.01x. The same design is still available for the other passes
+(`checkSteps`, `effectivePlan`'s pure prefix, `streamStaysElements`) — each is a pure function of
+the plan.

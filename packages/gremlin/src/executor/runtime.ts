@@ -12,7 +12,7 @@
 import { isEdgeShaped, isVertexShaped } from '@lenke/core';
 import type { Edge, Graph, Vertex } from '@lenke/core';
 
-import type { By, Plan, Step } from '../ast.js';
+import type { By, Plan } from '../ast.js';
 // Cycle: `runtime.ts` ↔ `dispatch.ts`. ESM handles this safely because
 // neither module dereferences the other at init time — `applyPlanToStream`
 // is only called from inside `evalBy`, by which time both modules' exports
@@ -60,68 +60,21 @@ export const isEmptyPlan = (plan: Plan): boolean => plan.steps.length === 0;
 const NO_PATH: readonly unknown[] = Object.freeze([]);
 
 /**
- * Step kinds that read a traverser's accumulated path. The first five touch
- * `t.path` directly; the closure-bearing kinds hand it to user code via
- * `closureView`, so we must conservatively assume they read it. This list is
- * exhaustive against every `.path` read in the executor — keep it in sync if a
- * new path-consuming step is added (a missed entry would silently drop paths).
- */
-const PATH_DEPENDENT_KINDS: ReadonlySet<string> = new Set([
-  'path',
-  'tree',
-  'simplePath',
-  'cyclicPath',
-  'otherV',
-  'mapFn',
-  'flatMapFn',
-  'filterFn',
-  'sideEffectFn',
-  'foldFn',
-]);
-
-/**
- * The sub-plans a step embeds, by their known plan-bearing field names. This list must stay
- * EXHAUSTIVE against every plan-bearing field on any `Step` variant: a missed field means
- * `planReadsPath` can't see a `path()` inside that sub-plan and silently disables path
- * tracking for the whole traversal. Keep it in sync when a new sub-plan-bearing step is
- * added — `subPlansOf.test.ts` guards the current set.
- */
-const subPlansOf = (step: Step): Plan[] => {
-  const plans: Plan[] = [];
-  const fields = step as Record<string, unknown>;
-
-  for (const name of ['body', 'until', 'emit', 'plan', 'test', 'thenPlan', 'elsePlan']) {
-    if (fields[name]) {
-      plans.push(fields[name] as Plan);
-    }
-  }
-
-  if (Array.isArray(fields.plans)) {
-    plans.push(...(fields.plans as Plan[]));
-  }
-
-  if (Array.isArray(fields.bys)) {
-    for (const by of fields.bys as By[]) {
-      if (by.kind === 'traversal') {
-        plans.push(by.plan);
-      }
-    }
-  }
-
-  return plans;
-};
-
-/**
  * Does any step anywhere in the plan tree read the traverser path? Recurses
  * only through plan-bearing fields (never `inject` values, predicate operands,
  * or closures), so it can't loop on or be fooled by user data. When this is
  * false the run skips path bookkeeping entirely; when in doubt it returns true,
  * so the optimization only ever removes provably-unobservable work.
  */
-export const planReadsPath = (plan: Plan): boolean =>
-  plan.steps.some(
-    (step) => PATH_DEPENDENT_KINDS.has(step.kind) || subPlansOf(step).some(planReadsPath),
-  );
+/**
+ * ⚠️ NOW AN O(1) FIELD READ (item 1504). The walk moved to plan CONSTRUCTION — see
+ * {@link Plan.readsPath} in `ast.ts` for why that, and not a cache on this path.
+ *
+ * Kept as a function rather than inlining `plan.readsPath` at its call sites: it is the name the
+ * concept has in the executor and in the comments that reference it, and a function keeps the
+ * option of answering differently for a plan that arrived from somewhere other than the combinators.
+ */
+export const planReadsPath = (plan: Plan): boolean => plan.readsPath;
 
 /** A `{ key, value }` property element (from `.properties(k)`). */
 export type PropertyElement = { key: string; value: unknown };

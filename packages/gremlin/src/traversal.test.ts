@@ -13,6 +13,9 @@ describe('traversal AST', () => {
         { kind: 'has', key: 'age', pred: { op: 'gt', value: 30 } },
         { kind: 'take', n: 5 },
       ],
+      // ⚠️ Carried by construction as of item 1504, and asserted here because it is part of the
+      // plan's SHAPE now: none of these four steps reads the traverser path.
+      readsPath: false,
     });
   });
 
@@ -28,7 +31,7 @@ describe('traversal AST', () => {
       { kind: 'V', ids: [1] },
       {
         kind: 'repeat',
-        body: { steps: [{ kind: 'out', labels: ['knows'] }] },
+        body: { steps: [{ kind: 'out', labels: ['knows'] }], readsPath: false },
         times: 3,
       },
       { kind: 'dedupe', labels: undefined, bys: undefined },

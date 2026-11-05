@@ -1,3 +1,4 @@
+import type { Graph } from '@lenke/core';
 // match() — declarative pattern matching across `as`-bound labels.
 //
 // Each pattern is a traversal `as(start) … [as(end)]`. match() treats it as a
@@ -12,10 +13,9 @@
 // traverser, then repeatedly run any pattern whose start label is already
 // bound (preferring binding patterns over filters), branching the stream per
 // candidate, until every pattern has been applied.
-
-import type { Graph } from '@lenke/core';
 import { ErrorCode, LenkeError } from '@lenke/errors';
 
+import { stepReadsPath } from '../ast.js';
 import type { Plan, Step } from '../ast.js';
 import { applyPlanToStream } from './dispatch.js';
 import {
@@ -42,6 +42,20 @@ type Pattern = {
 };
 
 /** Identity for graph elements (by id), strict equality otherwise. */
+/**
+ * A plan from a step slice, with `readsPath` recomputed over those steps (item 1504).
+ *
+ * ⚠️ IT MUST BE RECOMPUTED, NOT INHERITED. A `match` pattern's inner plan is a SLICE of a larger
+ * step list, so the enclosing plan's flag describes a different set of steps — carrying it over
+ * would be wrong in the unsafe direction for a slice that dropped the path-reading step, and
+ * needlessly pessimistic for one that kept it. `stepReadsPath` reads each step's nested plans by
+ * their own flags, so this is one pass over the slice and no recursion.
+ */
+const planOfSteps = (steps: readonly Step[]): Plan => ({
+  steps,
+  readsPath: steps.some(stepReadsPath),
+});
+
 const sameValue = (a: unknown, b: unknown): boolean => {
   if ((isVertex(a) || isEdge(a)) && (isVertex(b) || isEdge(b))) {
     return a.id === b.id;
@@ -77,10 +91,10 @@ const parsePattern = (plan: Plan): Pattern => {
   const last = steps[steps.length - 1];
 
   if (steps.length >= 2 && last.kind === 'as') {
-    return { startKey, endKey: last.label, inner: { steps: steps.slice(1, -1) }, negated: false };
+    return { startKey, endKey: last.label, inner: planOfSteps(steps.slice(1, -1)), negated: false };
   }
 
-  return { startKey, inner: { steps: steps.slice(1) }, negated: false };
+  return { startKey, inner: planOfSteps(steps.slice(1)), negated: false };
 };
 
 /**

@@ -4,12 +4,19 @@ import { coalesce, choose, map, optional, order, out, path, repeat, union, V } f
 import { traversal } from '../traversal.js';
 import { planReadsPath } from './runtime.js';
 
-// `subPlansOf` (in runtime.ts) lists the plan-bearing fields on a Step; `planReadsPath`
-// recurses through them to decide whether the traversal tracks paths. If a new sub-plan
-// field is added to the AST but NOT to `subPlansOf`, a `path()` buried in that sub-plan
-// goes unseen and path tracking is silently disabled. Each case below hides a `path()`
-// inside one plan-bearing field, so `planReadsPath` must report `true`; a regression (a
-// dropped field) flips it to `false` and fails here.
+// ⚠️ `subPlansOf` NO LONGER EXISTS — item 1504 folded it into `stepReadsPath` (in `ast.ts`), where
+// the plan-bearing fields are now read at plan CONSTRUCTION instead of walked at execution. The
+// filename is kept so this file's history stays findable; what it guards is unchanged and still
+// load-bearing.
+//
+// `stepReadsPath` lists the plan-bearing fields on a Step, and `Plan.readsPath` ORs them as the plan
+// is built. If a new sub-plan field is added to the AST but NOT to that list, a `path()` buried in
+// that sub-plan goes unseen and path tracking is silently disabled — an EMPTY path, not an error.
+// Each case below hides a `path()` inside one plan-bearing field, so `planReadsPath` must report
+// `true`; a dropped field flips it to `false` and fails here.
+//
+// It earns its keep: a mutant that ignored the `bys` traversals survived
+// `plan-reads-path.test.ts` and was caught only by this file.
 describe('subPlansOf covers every plan-bearing Step field', () => {
   const readsPath = (...steps: Parameters<typeof traversal>): boolean =>
     planReadsPath(traversal(...steps));
