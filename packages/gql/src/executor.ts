@@ -9142,6 +9142,22 @@ export type CLinear = {
   groupedNodeAggregate: ((graph: Graph, params: Params) => Row[]) | null;
   /** The same over a HOP — `MATCH (a)-[:T]->(b) RETURN b.k, max(b.j)`; else null. */
   groupedHopAggregate: ((graph: Graph, params: Params) => Row[]) | null;
+  /**
+   * Does this linear query mutate the graph? Carried by CONSTRUCTION — item 1510.
+   *
+   * `runLinear` reads it to decide whether to wrap the run in `graph.transaction`. It used to
+   * compute it per call as `clauses.some((c) => WRITE_CLAUSES.has(c.kind))`, which allocates a
+   * closure and does a `Set` lookup per clause to answer a question the compiled query already
+   * settles — 14.7% of an 82 ns `RETURN 1 AS v`. Same move as `Plan.readsPath`/`mayFault` on the
+   * Gremlin side (items 1504, 1507).
+   *
+   * ⚠️ TOP-LEVEL CLAUSES ONLY, which is the right rule HERE and the opposite of `mayFault`'s. A
+   * nested write — a subquery or a `CALL` body that inserts — is a `CLinear` of its own, and
+   * `runLinear` is what runs it, so it wraps its own transaction when it executes. Propagating
+   * inward would be wrong twice over: it would claim a read-only outer query writes, and
+   * `graph.transaction` nests.
+   */
+  writes: boolean;
 };
 /**
  * `MATCH (a:L) MATCH (a)-[:T]->(x)` IS `MATCH (a:L)-[:T]->(x)` — the anchor-then-traverse
@@ -10966,6 +10982,7 @@ export const compileLinear = (linear: LinearQuery): CLinear => {
     multiNodeAggregate: detectMultiNodeAggregate(fast, clauses),
     groupedNodeAggregate: detectGroupedNodeAggregate(fast, clauses),
     groupedHopAggregate: detectGroupedHopAggregate(fast, clauses),
+    writes: clauses.some((clause) => WRITE_CLAUSES.has(clause.kind)),
   };
 };
 
@@ -10988,6 +11005,7 @@ import {
   procedureSpec,
   queryHasWrite,
   runLinear,
+  WRITE_CLAUSES,
   runTxControl,
 } from './executor/clauses.js';
 // Imported at FUNCTION level like the other detectors — this module and `executor` import

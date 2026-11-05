@@ -59678,3 +59678,122 @@ failure. A second case now covers the lifted route deliberately.
 
 `bun run check` 0 read unpiped. core 431/0, gql **3787**/0, gremlin 1469/0, native 961/0,
 serialization 144/0, `bun run fuzz` 20/0.
+
+### Item 1510 — `runLinear` recomputed "does this query write?" on every call, a closure plus a `Set` lookup per clause to re-derive a property of the compiled query: **1.16x on the count shapes, 5.61x cumulative on the `floor` arm since item 1508** — and adding the field broke **five** test files, four of them for the same reason
+
+Re-profiled after item 1509's gate. `parseCacheHit` had fallen from 24.5% to **7.8%**, which is the
+check that its share was tracking a real cost rather than an inlining artifact. The clause machinery
+was now top:
+
+```text
+24.8%  runLinearClauses       9.5%  plan           4.2%  (anonymous) in projectedRows
+10.2%  runLinear              9.2%  execute        3.6%  mapToArray
+ 9.6%  (garbage collector)    7.8%  parseCacheHit  3.3%  fastPath
+                              5.7%  projectRow     2.1%  reviveParams
+```
+
+`runLinear` opened with:
+
+```ts
+const writes = linear.clauses.some((clause) => WRITE_CLAUSES.has(clause.kind));
+```
+
+`runLinear` 10.2% plus the 4.5% `(anonymous) in runLinear` — **that anonymous frame IS this
+closure** — is 14.7% of an 82 ns call, spent re-deriving something `compileLinear` settles. Same
+move as `Plan.readsPath` and `Plan.mayFault` on the Gremlin side (items 1504, 1507): `CLinear.writes`
+is now carried by construction.
+
+⚠️ **TOP-LEVEL CLAUSES ONLY, which is the right rule here and the OPPOSITE of `mayFault`'s.** A
+nested write — a subquery or a `CALL` body that inserts — is a `CLinear` of its own, and `runLinear`
+is what runs it, so it opens its own transaction when it executes. Propagating inward would claim a
+read-only outer query writes, and `graph.transaction` nests. Three flags across two engines now,
+each with its own propagation rule, each correct for its one consumer.
+
+### Measured
+
+```text
+arm        PRE      POST    ratio     cumulative since item 1508's PRE
+floor     83.7 ns   78.7 ns  1.06x    441.3 → 78.7   5.61x
+param     91.9      89.0     1.03x    471.7 → 89.0   5.30x
+one       46.5      40.2     1.16x     70.2 → 40.2   1.75x
+onerow   119.5     115.1     1.04x    157.1 → 115.1  1.36x
+ten       46.5      40.2     1.16x     61.7 → 40.2   1.53x
+full     145.0     143.5     1.01x
+insert  4084      3948       1.03x
+wide      13.72 ms  13.03 ms flat     200,000 rows
+widefilt   4.86      4.85    flat
+aggrows    2.74      2.74    flat
+```
+
+⚠️ **The one-clause `floor` arm gains 1.06x and the two-clause count arms 1.16x, because the saving
+scales with CLAUSE COUNT** — `.some()` over two clauses costs more than over one. That reading is
+inferred from the arm shapes, not measured: **an attempt to measure it directly failed and the arms
+were removed rather than kept.** `LET a = 1 … RETURN` chains looked like the instrument (no graph
+access, one clause per `LET`) but cost **1087 / 2086 / 4425 ns** at one, four and eight clauses —
+~450 ns per `LET` of binding machinery, against a ~2.5 ns per-clause saving. They also pushed the
+probe past a 120 s timeout and, co-resident with the ns-scale arms, moved `floor` from 85 to 104 ns
+(item 737, again). A bad instrument kept "for completeness" is worse than an honest gap.
+
+### ⚠️ Adding ONE boolean field to `CLinear` broke five test files, and the process gap is why I found out late
+
+```text
+deferred-hop-order.test.ts         13 fail
+deferred-sorted-projection.test.ts  ─┐ same cause
+label-test-fold.test.ts             ─┤
+routes-fired.test.ts (routes)       ─┘
+routes-fired.test.ts (the count)     1 fail, a DIFFERENT cause
+```
+
+Four of them share a `routes()` helper that reads **every non-null field of the compiled `CLinear`
+except `clauses`** and calls that the set of rungs taken. A scalar `writes: false` is not null, so
+it reported as a rung and `['hopProjection']` became `['hopProjection', 'writes']`. Fixed by
+filtering on what a rung actually IS — `typeof v === 'function'` — which excludes `clauses` and
+`writes` and any future scalar without a growing exclusion list.
+
+The fifth is `routes-fired`'s `covers all nineteen detectors`, and it is a **different** failure with
+the same trigger: it enumerates `Object.keys` and asserts the count is 19, so `writes` made it 20.
+That one cannot use the function filter — it needs ALL nineteen detectors and most are `null` for any
+single query shape — so it gets a named `NON_DETECTORS` set instead. That test is a deliberate guard
+("a detector added later without a route case fails HERE") and it did its job.
+
+⚠️ **AND THE PROCESS GAP: I ran the mutation sweep BEFORE the full suite.** The sweep's numbers were
+inflated by 13 pre-existing failures I had not yet seen — `alwaysfalse` read "74 fail" when the
+honest figure is 10, and ~63 of those were my own broken helper, not the mutant. Mutation verdicts
+are only readable against a GREEN baseline. Gates first, then mutate.
+
+### Mutation — all six caught, with honest counts
+
+```text
+alwaysfalse  writes always false (lose every transaction)  CAUGHT  3793 pass 10 fail
+alwaystrue   writes always true (wrap every read)          CAUGHT  3791 pass 12 fail
+dropinsert   drop `insert` from the set                    CAUGHT  3800 pass  3 fail  ← all 3 MINE
+dropset      drop `set` from the set                       CAUGHT  3798 pass  5 fail
+firstonly    test only clauses[0]                          CAUGHT  3796 pass  7 fail
+invertuse    invert the gate in runLinear                   CAUGHT  3797 pass  6 fail
+```
+
+⚠️ **`dropinsert` fails exactly three tests and all three are in the new file.** A write kind dropped
+from the set has no other coverage in 3,803 tests, which is `perf-gate-needs-its-own-test` confirmed
+with a number rather than quoted.
+
+### Why the flag needed its OWN test, and both halves of it
+
+`writes` is the single input to the one decision `runLinear` makes: wrap in `graph.transaction` or
+not. **A `writes` that is wrongly false writes the same rows** — every answer-comparing test passes.
+The difference appears only when a write FAILS PARTWAY: with the transaction the statement rolls
+back, without it the rows written before the failure stay. A unique constraint makes that observable
+with no timing and no internals:
+
+```text
+createUniqueConstraint('T', 'k'); INSERT (:T {k: 1})
+INSERT (:T {k: 3}), (:T {k: 1})   → raises, and k=3 must NOT survive
+```
+
+So the file asserts the flag per clause kind (which names a missing kind precisely) AND the
+consequence as rollback (which catches the flag being right and the wiring wrong — `invertuse` is
+caught only by the second half).
+
+### Gates
+
+`bun run check` 0 read unpiped. core 431/0, gql **3803**/0, gremlin 1469/0, native 961/0,
+serialization 144/0, `bun run fuzz` 20/0.

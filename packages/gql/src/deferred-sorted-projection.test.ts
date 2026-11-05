@@ -30,10 +30,15 @@ const routes = (src: string): string[] => {
   const q = parse(src) as never as { parts: readonly never[] };
   const cl = compileLinear(q.parts[0]) as unknown as Record<string, unknown>;
 
-  return Object.entries(cl)
-    .filter(([k, v]) => k !== 'clauses' && v !== null && v !== undefined)
-    .map(([k]) => k)
-    .sort();
+  return (
+    Object.entries(cl)
+      // ⚠️ A RUNG IS A FUNCTION. Filtering on that rather than on "not null, and not `clauses`"
+      // keeps this honest as `CLinear` grows: item 1510 added a `writes: boolean`, which is not a
+      // rung, and the old predicate reported it as one. See `deferred-hop-order.test.ts`.
+      .filter(([, v]) => typeof v === 'function')
+      .map(([k]) => k)
+      .sort()
+  );
 };
 
 /**

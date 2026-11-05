@@ -50,10 +50,15 @@ const routes = (src: string): string[] => {
   const q = parse(src) as never as { parts: readonly never[] };
   const cl = compileLinear(q.parts[0]) as unknown as Record<string, unknown>;
 
-  return Object.entries(cl)
-    .filter(([k, v]) => k !== 'clauses' && v !== null && v !== undefined)
-    .map(([k]) => k)
-    .sort();
+  return (
+    Object.entries(cl)
+      // ⚠️ A RUNG IS A FUNCTION. Filtering on that rather than on "not null, and not `clauses`"
+      // keeps this honest as `CLinear` grows: item 1510 added a `writes: boolean`, which is not a
+      // rung, and the old predicate reported it as one. See `deferred-hop-order.test.ts`.
+      .filter(([, v]) => typeof v === 'function')
+      .map(([k]) => k)
+      .sort()
+  );
 };
 
 describe('every fast-path detector fires for its own shape', () => {
@@ -217,6 +222,17 @@ describe('every fast-path detector fires for its own shape', () => {
     });
   }
 
+  /**
+   * The `CLinear` fields that are NOT detectors, named rather than inferred.
+   *
+   * ⚠️ This list is the exception register for the guard below, and it must stay as short as the
+   * truth allows. The count cannot be derived by filtering on `typeof v === 'function'` the way
+   * `routes()` does, because this test needs ALL nineteen detectors and most are `null` for any
+   * one query shape. So a new non-detector field has to be added here by hand — and the guard
+   * failing is how you find out, which is what happened to item 1510's `writes`.
+   */
+  const NON_DETECTORS = new Set(['clauses', 'writes']);
+
   // Every one of the nineteen is covered by the table above. Asserted rather than claimed, so a
   // detector added later without a route case fails HERE instead of going unguarded.
   it('covers all nineteen detectors', () => {
@@ -227,7 +243,7 @@ describe('every fast-path detector fires for its own shape', () => {
           (parse('MATCH (n:L) RETURN count(*) AS c') as never as { parts: readonly never[] })
             .parts[0],
         ) as unknown as Record<string, unknown>,
-      ).filter((k) => k !== 'clauses'),
+      ).filter((k) => !NON_DETECTORS.has(k)),
     );
 
     expect([...all].filter((k) => !covered.has(k)).sort()).toEqual([]);

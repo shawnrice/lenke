@@ -1352,9 +1352,11 @@ export const runTxControl = (tx: TxControl, graph: Graph): void => {
  * skip the frame (no undo/commit overhead).
  */
 export const runLinear = (linear: CLinear, graph: Graph, params: Params): Row[] => {
-  const writes = linear.clauses.some((clause) => WRITE_CLAUSES.has(clause.kind));
-
-  if (!writes) {
+  // ⚠️ READ, NOT COMPUTED (item 1510). `CLinear.writes` is settled by `compileLinear`; this used
+  // to be `linear.clauses.some((c) => WRITE_CLAUSES.has(c.kind))` on every call, which is a
+  // closure allocation plus a `Set` lookup per clause to re-derive a property of the compiled
+  // query. 14.7% of an 82 ns `RETURN 1 AS v`.
+  if (!linear.writes) {
     return runLinearClauses(linear, graph, params);
   }
 

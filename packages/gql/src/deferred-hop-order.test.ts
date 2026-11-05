@@ -27,8 +27,14 @@ const routes = (src: string): string[] => {
   const q = parse(src) as never as { parts: readonly never[] };
   const cl = compileLinear(q.parts[0]) as unknown as Record<string, unknown>;
 
+  // ⚠️ A RUNG IS A FUNCTION, and filtering on that rather than on "not null, and not the one field
+  // I know about" is what keeps this helper honest as `CLinear` grows. It used to exclude `clauses`
+  // by name and take every other non-null field as a rung — so item 1510's `writes: boolean`, which
+  // is not a rung at all, registered as one and failed 13 of these tests. Every rung is
+  // `((…) => Row[]) | null`; `clauses` is an array and `writes` a boolean, so this predicate names
+  // exactly the rung set and no future scalar field can join it by accident.
   return Object.entries(cl)
-    .filter(([k, v]) => k !== 'clauses' && v !== null && v !== undefined)
+    .filter(([, v]) => typeof v === 'function')
     .map(([k]) => k)
     .sort();
 };
