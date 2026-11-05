@@ -916,3 +916,32 @@ the recorded history of every row here.
 
 ⚠️ **The tell for a skipped materialization: the fast arm is faster than producing its own rows.**
 `out(E).values(k).count()` measured 2.81 ms against 7.65 for the same rows without the count.
+
+## `temporal-probe.mjs` — temporal values, which had NO bench row at all
+
+`packages/core/src/temporal.ts` is 1,333 lines, reached from both engines' comparison paths, and had
+**zero mentions** anywhere in this corpus until item 1489. It matters more here than that suggests:
+the domain is a people-graph over TIME, so dates are the modelling primitive.
+
+Each pair stores a `num` and a `d` encoding the same ordinal, so the numeric and temporal predicates
+select the identical set. First readings at 200,000 vertices:
+
+| pair      | numeric | temporal  | ratio     |
+| --------- | ------- | --------- | --------- |
+| filter    | 2.59    | 3.86      | 1.49x     |
+| **order** | 5.53    | **15.14** | **2.74x** |
+| project   | 11.01   | 9.78      | 0.89x     |
+| grouped   | 4.38    | 4.85      | 1.11x     |
+
+**`project` and `grouped` flat is what localizes it**: reading a temporal and keying one cost nothing
+extra, so the gap is the ORDERING path. And profiling each arm alone (`ARM=`) shows they take
+DIFFERENT ROUTES — numeric rides `topKNodeWalk` (`beatsRoot` in its profile), temporal runs the
+general matcher. `isTemporal` is 4.97%, so the comparison is not the cost; the missed fast path is.
+
+⚠️ **COMPARE A WITNESS, NOT A ROW COUNT.** The first guard here compared row counts — useless, since
+`count(*)` returns one row and `LIMIT 10` returns ten whatever was selected. It now compares the first
+row's first column: the filter pair proves both arms select **19,950** rows, and the order pair's
+witnesses are the same day by two spellings.
+
+⚠️ **`ARM=numeric|temporal` for profiling.** One window over both arms attributes their frames to the
+same capture, which is how a 2.74x gap becomes unreadable.

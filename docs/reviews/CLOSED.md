@@ -57468,3 +57468,90 @@ result), which is a contract change and not a loop change. Recorded as a bound, 
 
 `bun run check` 0 read unpiped, gql 3709/0. The GQL probe gained `STRIDE` and `FANOUT` knobs and two
 shapes (`hopall`, `hoprows`); no engine code changed.
+
+### Item 1489 — the GQL screen is CLEAN at FANOUT=5 scattered too, so that hunt is closed. And a zero-coverage surface finally measured: **temporal `ORDER BY` costs 2.74-3.50x its numeric twin**, and the profile says why — the temporal plan never reaches the topK fast walk
+
+Two halves: finishing the GQL screen in the regime item 1488 opened, and opening the surface item
+1467's triage flagged and nobody had measured.
+
+### Half one — the GQL screen, closed
+
+Six shapes (`join`, `existssub`, `optional`, `hopfilter`, `wideproj`, `distinct`) at **FANOUT=5
+scattered**, 60 reps, 200,000 vertices — the regime the screen had never run in. **Not one unpriced
+frame.** Only `(garbage collector)`, which has no source location.
+
+Chasing the top PRICED frames by hand anyway, per the screen's own "has mentions is not is
+optimized": `walkTwoHopFiltered` 35.07% (join), `inlineHolds` 20.41% / `satisfies` 11.73-23.60%
+(existssub, optional), and the `propOf` + `get properties` pair at 15-20% across all three — which
+item 1477 already chased by hand (the getter is memoized on the element, `propOf` is a single
+optional-chain). Nothing new.
+
+**So the GQL hot path has no unpriced frame left in EITHER regime** — sequential 1:1 at honest sample
+counts (item 1477) and scattered 5:1 (here). Recorded so a third pass does not re-run it.
+
+### Half two — temporal, measured for the first time
+
+`packages/core/src/temporal.ts` is **1,333 lines**, reached from both engines' comparison paths, and
+had **zero mentions** anywhere in the probe corpus. It also matters disproportionately here: this
+repo's notes record the domain as a people-graph over TIME, so dates are the modelling primitive
+rather than an exotic column. New instrument: `temporal-probe.mjs`.
+
+Each pair stores BOTH a `num` and a `d` encoding the same ordinal, so a numeric and a temporal
+predicate select the identical set:
+
+```text
+pair       numeric   temporal    ratio   witness (numeric/temporal)
+filter        2.59       3.86    1.49x   19950 / 19950
+order         5.53      15.14    2.74x   3601 / {"@date":"2029-11-10"}   ← day 3601
+project      11.01       9.78    0.89x   temporal slightly FASTER
+grouped       4.38       4.85    1.11x
+```
+
+**`project` and `grouped` being flat is what makes this a finding rather than a vague "temporals are
+slow".** Reading a temporal costs nothing extra (0.89x) and KEYING one costs nothing extra (1.11x) —
+`temporalKeyFields`/`temporalKeyAdd` already exist for that. The cost is concentrated in the
+**ordering** path.
+
+⚠️ **MY FIRST GUARD WAS WEAK AND I NEARLY TRUSTED IT.** It compared ROW COUNTS — but `count(*)`
+returns one row and `LIMIT 10` returns ten whatever the predicate selected, so two arms with
+different selectivity would have passed. Strengthened to compare a WITNESS (the first row's first
+column): the filter pair now proves both arms select **19,950** rows, and the order pair's witnesses
+are the same day by two spellings. Only then are the ratios meaningful.
+
+### The cause is a MISSED FAST PATH, not slow comparison
+
+Profiling each arm separately (`ARM=`, because one window over both attributes their frames
+together):
+
+```text
+numeric  (214 samples)            temporal (584 samples)
+35.98%  (anon):8792               19.52%  matchPattern
+19.16%  satisfies                 10.96%  seedVertices
+11.21%  propOf                     9.76%  candidateVertices
+ 5.61%  inlineHolds                7.53%  rejectedByElementDirect
+ 2.80%  beatsRoot   ← topK         6.16%  withBinding
+                                   4.97%  isTemporal
+```
+
+**They are different routes.** The numeric arm rides the node-projection walk with `topKNodeWalk`
+(`beatsRoot` is `boundedTopKeyed`'s comparator); the temporal arm runs the GENERAL matcher. `isTemporal`
+is only 4.97% — the comparison itself is not the problem.
+
+Two candidate gates ruled OUT by reading:
+
+- **the predicate lifts.** `DATE '…'` parses to `{ kind: 'lit', value: <Temporal> }`, which
+  `isConstExpr` accepts, and `directEqProps`' `cmp.push` has no value-type gate — any non-`=`
+  prop-compare against a constant lifts (item 276's work).
+- **`topKPlan` has no type gate** either: it requires only that each sort column be a direct property
+  key.
+
+So the exclusion is somewhere between those two and `detectNodeProjection`, and finding it precisely
+is the next item's work rather than a guess at the end of this one.
+
+**Priced at 2.74-3.50x on `ORDER BY … LIMIT` over a temporal key, cause localized to a missed fast
+path, gate not yet found.**
+
+### Gates
+
+`bun run check` 0 read unpiped, gql 3709/0. One new instrument (`temporal-probe.mjs`); no engine code
+changed.
