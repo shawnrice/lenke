@@ -1303,8 +1303,26 @@ RECOMPUTE `kinds`, because `fuseLocal` inlines sub-plan steps into the top level
 bottom of the loop and splits `hasLabelAnd` (item 1309). Two existing tests caught it. **Enumerate
 the kinds a pass acts on from the CODE, including what runs outside the branch conditions.**
 
-The
-`checkSteps` group is now the largest at **23.5%** and resists the same treatment: it tracks a
-FRONTIER through the step list and validates branch arms against the frontier AT THE BRANCH, which a
-sub-plan cannot know at construction — and moving it would shift its errors from `toArray` to
-`traversal`. `countShortcut` (10.6%) and `newContext` (9.1%) are execution, not analysis.
+✅ **AND THE VALIDATION WALK AT ITEM 1507** — it does not need to MOVE to construction (item 1503
+was right that it cannot), only to be SKIPPED: `checkStep` is the only thing that raises, so a plan
+with none of the 25 kinds it can raise for cannot fault. `Plan.mayFault` says which. **count 124 →
+77 (1.61x), 4.09x cumulative since 1503** — plus `assertPlanIsSatisfiable` gated on a `path` bit
+(~1.04x).
+
+⚠️ **The gate set is read off the SEVEN THROW SITES, not the kind sets.** The broad one
+(`PATH_INCOMPATIBLE`: `out`, `has`, `values`…) also requires `f === 'path'`, and only a `path` step
+produces that frontier — so one kind covers the whole site, where gating on the set would pass for
+nearly every plan.
+
+⚠️ **`mayFault` PROPAGATES INTO SUB-PLANS** (unlike `kinds`), because `assertFrontierTypes` recurses
+into branch arms — `V().union(inV())` must still be rejected. The first version was top-level only
+and would have silently lost that fault.
+
+⚠️ **And the flag caused a REBUILT-arm regression that an early-out then over-paid back.** Two
+sub-plan walks per append (one per flag) cost hop-rebuilt 1.07x; merging them helped, and skipping
+the walk entirely for steps with NO sub-plan field — which is `out`, `has`, `count`, `values`, i.e.
+almost everything — made the rebuilt arm **1.14-1.28x faster than item 1506**. That cost had been
+paid silently since item 1504 introduced the walk.
+
+`countShortcut` (12.9%), `newContext` (12.1%) and GC (12.9%) are now the top frames, and all three
+are execution rather than analysis — the construction-time design does not reach them.

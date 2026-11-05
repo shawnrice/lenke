@@ -59327,3 +59327,108 @@ observable change. `countShortcut` (10.6%) and `newContext` (9.1%) are execution
 
 `bun run check` 0 read unpiped. core 431/0, gql 3773/0, gremlin **1448**/0, native 961/0,
 serialization 144/0, `bun run fuzz` 20/0.
+
+### Item 1507 — the validation walk was the last big group at **27.5%**, and it is skippable: a plan with no step that CAN raise cannot fault. **count 124 → 77 ns (1.61x), 4.09x cumulative since 1503** — and an early-out found along the way made the REBUILT arm 1.14-1.28x faster too
+
+Re-profiled again (fourth tick running, and the ranking moved again). At 123 ns a call:
+
+```text
+12.9%  countShortcut          7.8%  assertPlanIsSatisfiable  ← ZERO mentions
+12.9%  (garbage collector)    7.8%  toArray
+12.8%  checkStep              6.9%  nextHasEdge
+12.1%  newContext             5.2%  checkSteps · 3.5% effectivePlan · 2.6% assertFrontierTypes
+```
+
+Two things, one small and one not.
+
+### The small one: `assertPlanIsSatisfiable`, 7.8% with ZERO mentions
+
+Pure, and every fault it raises needs a `path` step to scan FROM — so a plan without one cannot
+fault there, and the loop would otherwise walk every step to discover that. Gated on a `path` bit:
+**~1.04x** (124 → 119). Smaller than its share, which is the inlining-artifact pattern again, but
+real and free.
+
+### The big one: the validation walk, 27.5%
+
+`checkStep` + `nextHasEdge` + `checkSteps` + `assertFrontierTypes`. Item 1503 looked at this and
+ruled out moving it to construction, correctly — it tracks a FRONTIER through the step list and
+validates branch arms against the frontier AT THE BRANCH, which a sub-plan cannot know when it is
+built, and moving it would shift its errors from `toArray` to `traversal`.
+
+But it does not need to MOVE. **`checkStep` is the only thing that raises, and it raises only for a
+bounded set of kinds — so a plan containing none of them cannot fault, and the whole frontier walk
+is pure overhead.** `Plan.mayFault` says which.
+
+⚠️ **THE GATE SET IS READ OFF THE SEVEN THROW SITES, NOT OFF THE KIND SETS**, and the difference is
+large. The first site tests `PATH_INCOMPATIBLE`, which includes `out`, `has`, `values` and
+`hasLabel` — a set so broad that gating on it would pass for nearly every plan. But that site also
+requires `f === 'path'`, and **the only way the frontier becomes `path` is a `path` step** — so one
+kind covers the whole site. The remaining six each need their own kind present: `ADJ_OR_HOP`,
+`PROJECTION`, `{sum,min,max,mean}`, `order`, `{inV,outV,bothV,otherV}`.
+
+A boolean rather than a bit, because that set is 25 kinds and the `kinds` mask is already 13 bits
+deep — JS bitwise operators are 32-bit.
+
+⚠️ **AND IT MUST PROPAGATE INTO SUB-PLANS, WHICH I NEARLY GOT WRONG.** The first version computed it
+over top-level steps only — the right rule for the `kinds` fusion mask (item 1505) and the WRONG one
+here, because `assertFrontierTypes` recurses into union/choose arms. `V().union(inV())` must still be
+rejected, and a top-level-only flag would have skipped the check and silently lost the fault. Caught
+while writing the gate, not by a test; the `top-level-only` mutant now exists so it cannot come back.
+
+### ⚠️ The regression it caused, and the early-out that paid it back with interest
+
+With the flag added, the REBUILT arm got worse: hop 971 → 1035 ns (1.07x), because `appendStep` now
+walked the nine sub-plan fields TWICE per step — once for `readsPath`, once for `mayFault`. Merging
+them into one `analyzeStep` pass recovered part of it, and then the real fix:
+
+**most steps have no sub-plan at all.** `out`, `has`, `count`, `values` carry none of those nine
+fields, so the walk read nine `undefined`s per append to learn nothing. An early-out on five field
+reads skips it entirely — and that was a cost item 1504 had been paying silently since it introduced
+the walk:
+
+```text
+            work (reused)                          rebuilt (built per call)
+          1506    1507     this   cumul(1503)    1506    1507    this   cumul(1503)
+count      124      77    1.61x      4.09x        672     525   1.28x     1.50x
+filtered   903     821    1.10x      1.45x       1748    1514   1.15x     1.24x
+hop        162     161    1.01x      2.83x        971     854   1.14x     1.28x
+vals      8860    8838    1.00x      1.04x       9479    9337   1.02x     1.03x
+```
+
+`hop` barely moves on the reused arm because `out` is in the gate set — it CAN fault off an edge or
+scalar frontier, so a hop still pays the walk. That is the honest shape of this win: it is for plans
+built from sources and filters, not hops.
+
+⚠️ **THE PREMISE OF THE EARLY-OUT IS CHECKED, NOT ASSUMED.** It holds only if every `Step` variant
+declaring a sub-plan field also declares one of `{body, plan, plans, test, bys}`. Scanned the union:
+`until`/`emit` appear only on `repeat` (which has `body`), `thenPlan`/`elsePlan` only on `choose`
+(which has `test`). A future variant that broke that would lose a nested flag, so the comment says
+so at the code.
+
+### ⚠️ A test expectation that was wrong, and how I knew which side to fix
+
+Two cases failed: `local(inV())` and `union(local(inV()))` returned `[]` where I expected a throw.
+**The deciding fact is that `mayFault` was TRUE for both** — so the gate let the walk run, the walk
+is byte-identical to before, and a non-throw there is the engine's own pre-existing answer (`local`'s
+arm starts from an `unknown` frontier, and the engine's documented rule is that an unknown frontier
+never faults). My expectation was wrong, not the engine. The cases stay, asserting the flag
+propagates and that these two do NOT raise — which is the behaviour, written down.
+
+### Mutation — all five caught
+
+```text
+never-faults     mayFault always false (lose every fault)   CAUGHT   4 pass 17 fail
+no-carry         drop `plan.mayFault ||`                    CAUGHT  19 pass  2 fail
+drop-inv         remove `inV` from the gate set             CAUGHT  15 pass  6 fail
+drop-path        remove `path` from the gate set            CAUGHT  20 pass  1 fail
+early-always     early-out returns unconditionally          CAUGHT  15 pass  6 fail
+```
+
+`early-always` is the one that proves the early-out is safe rather than merely fast: it makes the
+sub-plan walk unreachable, which is exactly the nested-flag hole, and six tests fail.
+
+### Gates
+
+`bun run check` 0 read unpiped. core 431/0, gql 3773/0, gremlin **1469**/0, native 961/0,
+serialization 144/0, `bun run fuzz` 20/0. Wide controls at 200,000 vertices: `hopbare` 1948.6 against
+1942.2 at the 1503 baseline, `hopcount3` 8743.3 against 8676.6, `filterchain` 85.1 against 98.4.

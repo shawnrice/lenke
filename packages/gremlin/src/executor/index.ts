@@ -10,7 +10,13 @@ import type { Graph } from '@lenke/core';
 // `aggregation.ts`, etc.) for the step-impl generators.
 import { ErrorCode, LenkeError } from '@lenke/errors';
 
-import { EDGE_STEP_BITS, FILTER_WRAPPER_BITS, KIND_BITS, maskOfSteps } from '../ast.js';
+import {
+  anyMayFault,
+  EDGE_STEP_BITS,
+  FILTER_WRAPPER_BITS,
+  KIND_BITS,
+  maskOfSteps,
+} from '../ast.js';
 import type { Plan, Step } from '../ast.js';
 import { countShortcut } from './count-shortcut.js';
 import { applyStep } from './dispatch.js';
@@ -451,6 +457,18 @@ const checkSteps = (
 };
 
 const assertFrontierTypes = (plan: Plan): void => {
+  // ⚠️ THE GATE (item 1507). `checkSteps`' entire frontier walk exists to decide which frontier
+  // each step sees, and `checkStep` is the only thing that raises — so a plan with no step that
+  // CAN raise cannot fault, and the walk is pure overhead. It was the largest group left after
+  // items 1504-1506 at **27.5%** of a 123 ns reused-plan call.
+  //
+  // ⚠️ `mayFault` PROPAGATES INTO SUB-PLANS, which is load-bearing here and not in the `kinds`
+  // mask: this function recurses into union/choose arms, so `V().union(inV())` must still be
+  // checked. See {@link stepMayFault}.
+  if (!plan.mayFault) {
+    return;
+  }
+
   checkSteps(plan.steps, 'unknown', false, false);
 };
 
@@ -1379,6 +1397,9 @@ const rewritten = (plan: Plan, steps: readonly Step[]): Plan => ({
   ...plan,
   steps,
   kinds: maskOfSteps(steps),
+  // Recomputed for the same reason as `kinds`: `fuseLocal` inlines sub-plan steps into the top
+  // level, so a rewrite can introduce a kind that CAN fault where the original plan had none.
+  mayFault: anyMayFault(steps),
 });
 
 /**
@@ -1582,6 +1603,13 @@ const COMMUTING_SOURCE_FILTERS = new Set<Step['kind']>([
 ]);
 
 const assertPlanIsSatisfiable = (plan: Plan): void => {
+  // ⚠️ THE GATE (item 1507). Every fault this can raise requires a `path` step to scan FROM, so a
+  // plan without one cannot fault here — and the loop below would otherwise walk every step to
+  // discover that. Pure, single-kind precondition; the mask answers it in one test.
+  if ((plan.kinds & KIND_BITS.path) === 0) {
+    return;
+  }
+
   for (let i = 0; i < plan.steps.length; i++) {
     if (plan.steps[i].kind !== 'path') {
       continue;

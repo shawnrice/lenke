@@ -18,6 +18,7 @@ describe('traversal AST', () => {
       // them is a kind that gates a rewrite pass (`out` is not an EDGE step — `outE` is).
       readsPath: false,
       kinds: 0,
+      mayFault: true,
     });
   });
 
@@ -33,7 +34,12 @@ describe('traversal AST', () => {
       { kind: 'V', ids: [1] },
       {
         kind: 'repeat',
-        body: { steps: [{ kind: 'out', labels: ['knows'] }], readsPath: false, kinds: 0 },
+        body: {
+          steps: [{ kind: 'out', labels: ['knows'] }],
+          readsPath: false,
+          kinds: 0,
+          mayFault: true,
+        },
         times: 3,
       },
       { kind: 'dedupe', labels: undefined, bys: undefined },

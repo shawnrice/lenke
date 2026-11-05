@@ -491,6 +491,18 @@ export type Plan = {
    * the common case, because a pass that fuses nothing returns the plan it was given.
    */
   readonly kinds: number;
+  /**
+   * Can `checkStep` raise for any step in this plan's own top-level steps?
+   *
+   * ⚠️ A BOOLEAN RATHER THAN A BIT, because the gate set is 25 kinds and the mask is already 13
+   * bits deep — JS bitwise operators are 32-bit, so there is no room and no reason to crowd it.
+   *
+   * When false, `checkSteps`' entire frontier walk is skippable: it exists only to decide which
+   * frontier each step sees, and nothing downstream of it can fault. That walk was **27.5%** of a
+   * 123 ns reused-plan call (`checkStep` 12.8% + `nextHasEdge` 6.9% + `checkSteps` 5.2% +
+   * `assertFrontierTypes` 2.6%) — the largest group left after items 1504-1506.
+   */
+  readonly mayFault: boolean;
 };
 
 /**
@@ -531,6 +543,10 @@ export const KIND_BITS: Readonly<Record<string, number>> = {
   or: 512,
   and: 1024,
   hasLabelAnd: 2048,
+  // Item 1507. `assertPlanIsSatisfiable` scans for a `path` step and checks what follows it; with
+  // no `path` in the plan its outer loop walks every step and does nothing. It was 7.8% of a 123 ns
+  // reused-plan call, with ZERO audit mentions — exactly what an untouched frame looks like.
+  path: 4096,
 };
 
 /** Every bit an edge-hop fusion cares about. */
@@ -539,6 +555,104 @@ export const EDGE_STEP_BITS = KIND_BITS.outE | KIND_BITS.inE | KIND_BITS.bothE;
 /** Every bit {@link flattenFilterWrappers} can act on — see the four entries above. */
 export const FILTER_WRAPPER_BITS =
   KIND_BITS.not | KIND_BITS.filter | KIND_BITS.or | KIND_BITS.and | KIND_BITS.hasLabelAnd;
+
+/**
+ * Step kinds for which `checkStep` can raise. A plan containing NONE of them cannot fault in
+ * `checkSteps`, so the whole frontier walk is skippable — see {@link Plan.mayFault}.
+ *
+ * ⚠️ DERIVED FROM `checkStep`'s SEVEN THROW SITES, each of which needs BOTH a kind and a frontier
+ * state. The kind sets alone would be far wider: the first site tests `PATH_INCOMPATIBLE`, which
+ * includes `out`, `has`, `values` and `hasLabel` — but it also requires `f === 'path'`, and the ONLY
+ * way the frontier becomes `path` is a `path` step. So `path` covers that whole site, and
+ * `PATH_INCOMPATIBLE` does not belong here. The remaining six sites each need their own kind
+ * present:
+ *
+ *   ADJ_OR_HOP at an edge/scalar frontier       out, in, both, outE, inE, bothE
+ *   PROJECTION at a scalar frontier             values, value, id, label, properties,
+ *                                               propertyMap, valueMap, elementMap, key
+ *   a non-local numeric reduce over elements    sum, min, max, mean
+ *   order over elements                         order
+ *   a vertex move with no edge                  inV, outV, bothV, otherV
+ *   otherV off a bare edge frontier             otherV
+ *
+ * ⚠️ BEING WRONG HERE LOSES A FAULT, not an answer — a plan that should raise would run. That is
+ * why this is a list read off the throw sites rather than an inference from the kind sets, and why
+ * the fault tests in this package are the real gate on it.
+ */
+const MAY_FAULT_KINDS: ReadonlySet<string> = new Set([
+  'path',
+  'out',
+  'in',
+  'both',
+  'outE',
+  'inE',
+  'bothE',
+  'values',
+  'value',
+  'id',
+  'label',
+  'properties',
+  'propertyMap',
+  'valueMap',
+  'elementMap',
+  'key',
+  'sum',
+  'min',
+  'max',
+  'mean',
+  'order',
+  'inV',
+  'outV',
+  'bothV',
+  'otherV',
+]);
+
+/**
+ * Can this ONE step make `checkStep` raise — counting its nested plans by their own flags?
+ *
+ * ⚠️ IT MUST PROPAGATE INWARD, unlike {@link Plan.kinds}. `assertFrontierTypes` RECURSES into
+ * sub-plans: `V().union(inV())` faults on the vertex-move inside the union arm, exactly as the
+ * native engine's parser does. A top-level-only flag would have skipped that check and silently
+ * LOST the fault — which is the hole this comment exists to stop being re-opened. Same shape as
+ * {@link stepReadsPath}, and for the same reason: a nested plan is built first, so its own flag is
+ * already settled.
+ */
+export const stepMayFault = (step: Step): boolean => {
+  if (MAY_FAULT_KINDS.has(step.kind)) {
+    return true;
+  }
+
+  const fields = step as unknown as Record<string, unknown>;
+
+  for (const name of SUBPLAN_FIELDS) {
+    const sub = fields[name] as Plan | undefined;
+
+    if (sub?.mayFault === true) {
+      return true;
+    }
+  }
+
+  if (Array.isArray(fields.plans)) {
+    for (const sub of fields.plans as Plan[]) {
+      if (sub.mayFault) {
+        return true;
+      }
+    }
+  }
+
+  if (Array.isArray(fields.bys)) {
+    for (const by of fields.bys as By[]) {
+      if (by.kind === 'traversal' && by.plan.mayFault) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+};
+
+/** Can any step in `steps` make `checkStep` raise? See {@link stepMayFault}. */
+export const anyMayFault = (steps: readonly Step[]): boolean => steps.some(stepMayFault);
 
 /** The gate bits present among `steps` — recomputed by any rewrite that changes the step list. */
 export const maskOfSteps = (steps: readonly Step[]): number => {
@@ -551,7 +665,7 @@ export const maskOfSteps = (steps: readonly Step[]): number => {
   return mask;
 };
 
-export const emptyPlan: Plan = { steps: [], readsPath: false, kinds: 0 };
+export const emptyPlan: Plan = { steps: [], readsPath: false, kinds: 0, mayFault: false };
 
 /**
  * Step kinds that read a traverser's accumulated path. The first five touch `t.path` directly; the
@@ -629,14 +743,88 @@ export const STEP_FN: unique symbol = Symbol.for('@lenke/gremlin/StepFn');
 
 export type StepFn = ((plan: Plan) => Plan) & { readonly [STEP_FN]: true };
 
+/**
+ * Both step flags in ONE walk of the sub-plan fields.
+ *
+ * ⚠️ IT EXISTS BECAUSE TWO WALKS MEASURED AS A REGRESSION (item 1507). `stepReadsPath` and
+ * `stepMayFault` each scan the seven plan-bearing fields plus the two array fields, and calling
+ * both per append cost the REBUILT arm 1.12x on a three-step hop (978 → 1094 ns) — handing back a
+ * chunk of what the gates had just won on the reused arm. One pass, two booleans, and the rebuilt
+ * arm comes back.
+ *
+ * The two flags keep their own exported functions for callers that need just one (`match.ts` wants
+ * `readsPath` over a step SLICE, and the tests assert each independently); this is the hot path's
+ * version.
+ */
+const analyzeStep = (step: Step): { reads: boolean; faults: boolean } => {
+  let reads = PATH_DEPENDENT_KINDS.has(step.kind);
+  let faults = MAY_FAULT_KINDS.has(step.kind);
+
+  if (reads && faults) {
+    return { reads, faults };
+  }
+
+  const fields = step as unknown as Record<string, unknown>;
+
+  // ⚠️ EARLY-OUT FOR THE STEPS THAT HAVE NO SUB-PLAN AT ALL, which is almost every step in a real
+  // traversal (`out`, `has`, `count`, `values`). Without it the walk below reads nine fields off a
+  // step that has none of them, per append — and that cost showed up as a 1.07x regression on the
+  // REBUILT arm of a three-step hop, where `out` can fault so the gate cannot pay it back.
+  //
+  // ⚠️ THE PREMISE IS CHECKED, NOT ASSUMED: every `Step` variant in this file that declares ANY
+  // sub-plan field also declares one of these five. Verified by scanning the union — `until`/`emit`
+  // only appear on `repeat` (which has `body`), and `thenPlan`/`elsePlan` only on `choose` (which
+  // has `test`). A variant that broke that would lose a nested flag, so a new sub-plan-bearing step
+  // must carry one of these five or be added here.
+  if (
+    fields.body === undefined &&
+    fields.plan === undefined &&
+    fields.plans === undefined &&
+    fields.test === undefined &&
+    fields.bys === undefined
+  ) {
+    return { reads, faults };
+  }
+
+  const visit = (sub: Plan | undefined): void => {
+    if (sub === undefined) {
+      return;
+    }
+
+    reads = reads || sub.readsPath;
+    faults = faults || sub.mayFault;
+  };
+
+  for (const name of SUBPLAN_FIELDS) {
+    visit(fields[name] as Plan | undefined);
+  }
+
+  if (Array.isArray(fields.plans)) {
+    for (const sub of fields.plans as Plan[]) {
+      visit(sub);
+    }
+  }
+
+  if (Array.isArray(fields.bys)) {
+    for (const by of fields.bys as By[]) {
+      if (by.kind === 'traversal') {
+        visit(by.plan);
+      }
+    }
+  }
+
+  return { reads, faults };
+};
+
 export const appendStep = (step: Step): StepFn => {
-  // Computed ONCE per step constructor, not per plan the step is appended to.
-  const reads = stepReadsPath(step);
+  // Computed ONCE per step constructor, not per plan the step is appended to — and in ONE walk.
+  const { reads, faults } = analyzeStep(step);
   const bit = KIND_BITS[step.kind] ?? 0;
   const fn = (plan: Plan): Plan => ({
     steps: [...plan.steps, step],
     readsPath: plan.readsPath || reads,
     kinds: plan.kinds | bit,
+    mayFault: plan.mayFault || faults,
   });
   Object.defineProperty(fn, STEP_FN, { value: true, enumerable: false });
 
