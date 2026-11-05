@@ -58662,3 +58662,107 @@ handling and the plan's seeding decisions), so it wants its own item rather than
 
 `bun run check` 0 read unpiped, gql 3727/0. No engine change — one new instrument, one rejection
 recorded with its numbers, and a priced lever named.
+
+### Item 1500 — the planner has **no hot spot**: an allocation removal in `hasSubquery` ships at 1.03-1.13x, and the frame distribution says the rest of parse+plan is a long tail. ⚠️ Also: **three mutants that break that walk's recursion survive all 3,744 gql tests**, rows and faults alike
+
+Item 1499 priced parse+plan at 3.1-6.9x the execution of a cheap query and named
+auto-parameterization as the structural lever. This item asked the prior question: is there a hot
+spot in the planner worth taking first? `PROF_ARM=plan` was added to the probe so the profiler sees
+parse+compile with no execution at all.
+
+```text
+21.1%  tokenize          (19 mentions — owned by items 887/888, ablation 1.07x)
+ 7.6%  parse
+ 6.6%  hasSubquery       (18 mentions)
+ 4.4%  check
+ 4.4%  checkKeyword      (measured FLAT at item 1499)
+ 3.3%  flattenConjuncts
+ 2.6%  peek
+ 2.4%  collectHints
+ 2.3%  compilePredicate
+ 2.1%  walk
+ …
+```
+
+**That distribution IS the finding.** After the two frames item 1499 closed, the largest remaining
+is 6.6% and the tail is 1-3% each. No local change can move an uncached query much, which is the
+strongest argument yet for item 1499's conclusion that the lever is to skip parse+plan entirely
+rather than to speed it up.
+
+### `hasSubquery`: the memoization is already done, so the win is the allocation
+
+The precedent was item 919, which found `hasSubqueryExpr` walked twice on the same `where` and made
+it once. So the first question was redundancy — measured by instrumenting the function:
+
+```text
+longer   calls 4   distinct top-level nodes 4   total node visits 34
+point    calls 3   distinct top-level nodes 2   total node visits 24
+agg      calls 2   distinct top-level nodes 2   total node visits 10
+```
+
+**2-4 calls on 2-4 distinct nodes — there is nothing left to memoize.** A WeakMap would add a write
+per call to save at most one walk of 10-34 nodes.
+
+What is left is the allocation: the recursive step was `Object.values(rec).some(hasSubquery)`, which
+builds an array per visited node to throw away. A `for...in` loop enumerates the same keys (these are
+plain object literals from the parser, so there is no prototype chain to widen the set) and allocates
+nothing.
+
+A/B on the plan arm, REPS=5000 ROUNDS=7, arm asserted from the built dist:
+
+```text
+            PRE              POST             ratio
+longer   13528 13730      12991 13187        1.04x
+point     7677  7750       6927  6667        1.13x
+agg       6365  6391       6265  6138        1.03x
+```
+
+Non-overlapping on all three. As a share of an uncached query that is ~1% on `longer` and ~5.5% on
+`point`.
+
+### ⚠️ THE WALK'S RECURSION IS NOT OBSERVABLE, AND THAT IS A COVERAGE FINDING
+
+A `for...in` change alters how a walk enumerates keys, and `hasSubquery`'s own comment names the
+failure direction: it is generic so that it "cannot miss one", because a walk that misses a subquery
+lets the planner push a predicate it must not push. So a test file went in — a subquery in every
+nesting position the parser allows — and then three mutants to check it had teeth:
+
+```text
+norecurse   stop recursing into object children entirely
+noarrays    recurse, but skip array children (where and/in/list/args live)
+oneLevel    look exactly one level down instead of all the way
+```
+
+**All three survive the new file AND the full 3,744-test gql suite.** Rows identical.
+
+So the next hypothesis was fault ORDER, which is where this engine's pushdown hazards actually live
+(`and-chain-seeding-divergence`, item 175's deferral rule): a raise can appear or disappear without
+any row changing. Faults ARE observable here —
+
+```text
+WHERE CAST(n.s AS INTEGER) > 0                              RAISES
+WHERE n.k = 999 AND CAST(n.s AS INTEGER) > 0                0 rows
+WHERE EXISTS { … CAST … }                                   RAISES
+WHERE n.k = 999 AND EXISTS { … CAST … }                     0 rows
+```
+
+— but the nested shapes do not diverge either: `WHERE n.k = 999 AND (COUNT { … CAST … } + 0) = 1`
+returns 0 rows without raising, on the pristine build and on every mutant.
+
+**So the recursion's result is unobservable through every shape I could construct**, because other
+gates (`itemLocal`'s SUBQUERY_KINDS allowlist, `rowLocal`, `freePredicateVars`) decline these shapes
+before it matters. The "cannot miss one" claim describes a failure nothing exercises.
+
+⚠️ **Recorded, not acted on.** Removing a conservative gate on the strength of surviving mutants is
+exactly backwards — the mutants show the TEST suite cannot see it, not that the guard is useless.
+And the test file is kept with its header rewritten to say precisely what it proves (nested-subquery
+ANSWERS) and what it does not (anything about the walk), because a believed-but-empty guard is worse
+than no guard at all.
+
+This also makes the `for...in` change safer than the A/B alone would: if missing EVERY nested
+subquery changes nothing measurable, missing a key cannot be worse.
+
+### Gates
+
+`bun run check` 0 read unpiped. core 431/0, gql 3744/0, gremlin 1406/0, native 961/0,
+serialization 144/0, `bun run fuzz` 20/0.

@@ -123,10 +123,15 @@ for (const name of names) {
     out[arm] = med(rounds.slice(DROP));
   }
 
+  // ⚠️ `PROF_ARM` picks WHICH arm the profiler sees, and it matters: a window over `fresh` mixes
+  // parse, plan and execute, so the planner's own frames are diluted by whatever the query does.
+  // `PROF_ARM=plan` profiles parse+compile with no execution at all.
+  const profArm = process.env.PROF_ARM ?? 'fresh';
+
   // eslint-disable-next-line no-await-in-loop
   await profileWindow(process.env.PROF_OUT, () => {
     for (let r = 0; r < 3; r += 1) {
-      timeRound((i) => query(graph, uniquify(text, i)));
+      arms[profArm]();
     }
 
     return 0;

@@ -8039,7 +8039,9 @@ const SUBQUERY_KINDS: ReadonlySet<string> = new Set(['exists', 'countSubquery', 
  * `Expr` is a wide union, and a walk that enumerated its arms would silently answer
  * "no subquery" for any arm added later — the failure direction that costs
  * `pushWhereIntoNode` below its whole reason to be careful. Object traversal cannot
- * miss one. It runs once per query compile over a predicate-sized AST.
+ * miss one. It runs 2-4 times per query compile, on 2-4 DISTINCT nodes — measured at item 1500
+ * by instrumenting it, which also means there is no redundancy left to memoize: item 919
+ * already removed the double-walk this function used to do per conjunct.
  */
 const hasSubquery = (node: unknown): boolean => {
   if (node === null || typeof node !== 'object') {
@@ -8056,7 +8058,18 @@ const hasSubquery = (node: unknown): boolean => {
     return true;
   }
 
-  return Object.values(rec).some(hasSubquery);
+  // ⚠️ `for...in`, not `Object.values(...).some(...)` (item 1500). The walk visits 10-34 nodes per
+  // compile (measured by instrumenting it), and the array form allocated one array PER VISITED
+  // NODE to then throw away. `for...in` enumerates the same own+inherited string keys an AST node
+  // has — these are plain object literals from the parser, so there is no prototype chain to widen
+  // the set — and allocates nothing.
+  for (const k in rec) {
+    if (hasSubquery(rec[k])) {
+      return true;
+    }
+  }
+
+  return false;
 };
 
 /** `a AND b AND …` for two or more, the expression itself for one, nothing for none. */

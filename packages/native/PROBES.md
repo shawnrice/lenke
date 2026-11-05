@@ -1180,3 +1180,18 @@ was flat.
 Two frames checked and not taken: `tokenize` (11.4%, the largest non-GC frame) is owned by items
 887/888, whose ceiling ablation measured 1.07x; and `checkKeyword`'s double `peek()` (3.2%, zero
 mentions) measured flat at 1.5% and was reverted with the numbers recorded at the code.
+
+### `PROF_ARM` — profile the planner alone (item 1500)
+
+`PROF_ARM=plan` windows parse+compile with no execution, so the planner's frames are not diluted by
+whatever the query does. The distribution it shows IS the result:
+
+```text
+21.1% tokenize (items 887/888, ablation 1.07x) · 7.6% parse · 6.6% hasSubquery · 4.4% check
+4.4% checkKeyword (flat, item 1499) · 3.3% flattenConjuncts · 2.6% peek · 2.4% collectHints · …
+```
+
+**After the two frames item 1499 closed, the largest remaining is 6.6% and the tail is 1-3% each.**
+No local change moves an uncached query much — which is the argument for item 1499's conclusion that
+the lever is to SKIP parse+plan (auto-parameterization), not to speed it up. `hasSubquery`'s
+allocation removal shipped at 1.03-1.13x on the plan arm and that is the size of win available here.
