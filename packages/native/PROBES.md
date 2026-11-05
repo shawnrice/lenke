@@ -1083,10 +1083,27 @@ so the naive policy (drop on any adjacency write, rebuild on next read) makes on
 **1.47x worse than today** — item 680's failure mode on the TS side. Break-even is ~1.5 queries
 between writes.
 
-⚠️ **The maintainable shape gets the win anyway.** Per-vertex arrays append in O(1) and touch one
-vertex, so there is nothing to invalidate. `arrayedge` is the figure to quote (4.1x): `arrayadj`'s
-20.6x pre-resolves `e.to`, which a real box cannot do alone since `outE`, edge properties and labels
-need the edge — though item 595 makes caching the endpoint a legitimate separate step.
+⚠️ **ALL OF THAT IS REFUTED BY ITEM 1498, WHICH BUILT IT: 1.58x SLOWER** (43.33 → 68.56 ms, three
+rounds each, fuzzers green). ~~`arrayedge` is the figure to quote (4.1x)~~ — the array arms rebuild
+the rows in ONE tight loop, so their buckets are contiguous and the walk has near-perfect locality,
+which the engine's buckets never have (allocated interleaved across 400,000 `addEdge` calls).
+
+The control that proves it is `setedge`, added at item 1498: the same nested rows rebuilt as `Set`s.
+
+```text
+setedge    (nested SETS,   built locally)   13.34  14.53  13.01 ms
+arrayedge  (nested ARRAYS, built locally)   10.12  13.77  13.60 ms
+engine                                      67.46  68.41  67.83 ms
+```
+
+**13.3 against 13.6 — the container is irrelevant.** Every "array adjacency" figure in items
+1495-1497 was measuring allocation LOCALITY and attributing it to the container.
+
+⚠️ **So read any floor arm that REBUILDS a structure as a locality floor, not a design prediction.**
+The arm was honest about skipping the endpoint read (item 1495 corrected 20.6x to 4.1x for that) and
+silent about skipping the allocation history, which was the whole number. If a floor rebuilds what
+the engine accumulates, add a control that rebuilds the ENGINE's own container the same way — the
+two should then differ only by the thing under test.
 
 The open risk is **removal**: `Set.delete` is O(1) and keeping insertion order in an array means
 `splice`, so O(degree). Iteration order is unchanged (a `Set` and an appended array are both in

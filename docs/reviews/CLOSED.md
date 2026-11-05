@@ -58209,6 +58209,13 @@ refuted levers.
 
 ### Item 1495 — **my own ~1.6x estimate for the flat adjacency was wrong by 2.5x, and the design it assumed is the one that LOSES.** Measured: a global packed CSR is 24x read-only but **1.47x WORSE under one write per read**; per-vertex ARRAYS get **4.1x with no rebuild at all**
 
+> ⚠️ **REFUTED BY ITEM 1498, which BUILT it: 1.58x SLOWER.** ~~per-vertex ARRAYS get 4.1x~~ — the
+> `arrayadj`/`arrayedge` arms below rebuild the rows in one tight loop, so their buckets are
+> contiguous and the walk has near-perfect locality, which the engine's never have. A `setedge`
+> control (the same rows rebuilt as `Set`s) measures **13.3 ms against arrayedge's 13.6**: the
+> container is irrelevant and the 4.1x was LOCALITY. The CSR half of this entry (24x read-only,
+> 1.47x worse under churn) has the same defect and should be read the same way.
+
 Item 1494 closed with "a flat per-vertex adjacency… ceiling ~1.6x on this shape". That number was
 **arithmetic, not measurement** — assume the two structural shares (type lookup 25%, `Set` iteration
 38%) go to zero and you get 2.7x, which I then hedged to 1.6x. Both are wrong, and the useful part
@@ -58290,6 +58297,11 @@ it more tractable than it looks and one thing makes it risky:
 > word `bucket`, which names two different structures in that file. The removal measurements below
 > stand; the blast-radius conclusion does not, and item 1497 replaces it with a compiler-driven
 > census of 83 sites.
+>
+> ⚠️ **AND THE GATE IS MOOT — item 1498 built the change and measured it 1.58x SLOWER**, so there is
+> no read win to pay the removal cost for. The removal measurements here remain correct, and the two
+> probe traps are still worth keeping: a member→position `Map` is the WORST removal design at every
+> degree, and swap-remove is cheap but unusable because it reorders.
 
 Item 1495 selected the design (`Map<string, Set<Edge>>` → `Map<string, Edge[]>`, 4.1x on a bare hop)
 and left one thing unmeasured: removal. `Set.delete` is O(1); an order-preserving array removal is
@@ -58476,3 +58488,93 @@ correctness gate for a storage change and were never reached this item.
 ### Gates
 
 `bun run check` 0 read unpiped, `bun run typecheck` 0, suites green after the revert. No net change.
+
+### Item 1498 — **BUILT THE ARRAY ADJACENCY AND IT IS 1.58x SLOWER. The target is REFUTED, and items 1495-1497 were pricing a floor that was never comparable**: a nested-SET floor measures 13.3 ms against the nested-ARRAY floor's 13.6 — the container makes no difference, and the "4.1x" was allocation LOCALITY
+
+Four items priced this lever (1494 decomposed the row, 1495 measured "4.1x" and selected the design,
+1496 gated removal at +12-17%, 1497 fixed the enumeration method). This item built it, end to end,
+with every gate green — and then measured it.
+
+### The change, complete and correct
+
+`Map<string, Set<Edge>>` → `Map<string, Edge[]>` in both adjacency indexes, with an exported
+`AdjBucket = readonly Edge[]`, `push` for insert, and a `dropFromBucket` doing `indexOf` + `splice`
+for order-preserving removal. 18 files. **Typecheck 0, `bun run check` 0, all five suites green
+(431 / 3727 / 1406 / 144 / 961), and `bun run fuzz` 20/0 — byte-identity held.** So the swap is
+answer-preserving exactly as item 1495 argued: a `Set` and an appended array both iterate in
+insertion order.
+
+Then:
+
+```text
+                                     PRE      POST
+engine  V().out('E')  400,000 rows   43.33    68.56    0.63x  ← 1.58x WORSE
+                                     43.05    68.84
+                                     43.41    68.03
+```
+
+Three rounds each, one arm per process, arm asserted from the built dist (`dropFromBucket` present
+3 times POST, 0 PRE). The profile is the SAME two frames in the same proportions — `drain` 74.1%,
+`get to` 24.7% — so this is not a new code path. The whole walk is uniformly 1.6x dearer.
+
+### ⚠️ THE FLOOR ARM WAS NEVER A PREDICTION, and one control proves it
+
+Item 1495 built `arrayadj`/`arrayedge` — nested per-vertex arrays, walked — got 4.1x against the
+engine, and read that as what changing the storage type would buy. This item added the control that
+should have existed then: **`setedge`, the same nested rows built the same way but as `Set`s.**
+
+```text
+setedge    (nested SETS,   built locally)   13.34  14.53  13.01 ms
+arrayedge  (nested ARRAYS, built locally)   10.12  13.77  13.60 ms
+engine                                      67.46  68.41  67.83 ms
+```
+
+**13.3 against 13.6 — the container is irrelevant.** The 4-5x those arms showed against the engine
+was never about `Set` versus array; it was that both arms REBUILD the rows in one tight loop, so the
+buckets land contiguously and the walk has near-perfect locality. The engine's buckets never have
+that: they are allocated interleaved with vertices and edges across 400,000 `addEdge` calls.
+
+So every figure in items 1495-1497 was measuring allocation locality and attributing it to the
+container. The mechanism for the change being actively WORSE is the other half of the same fact: an
+array built by `push` from empty grows its backing store as it goes, leaving scattered,
+differently-sized allocations, where a `Set` of the same two members is allocated once.
+
+**This is CLAUDE.md's own rule — "match the fixture to the claim" — failing in the one place I did
+not look: the floor arm, which I trusted because I had built it myself to be honest about what it
+skipped.** It was honest about skipping the endpoint read (item 1495 corrected 20.6x to 4.1x for
+exactly that) and silent about skipping the allocation history, which turned out to be the whole
+number.
+
+### What this retires
+
+- **The array-adjacency lever is REFUTED at 1.58x worse.** Not "unmeasured", not "blocked" —
+  measured, on the complete change, with the fuzzers passing.
+- **Item 1494's conclusion stands and is now better supported**: `V().out(T)` is within 4.6% of a
+  hand-written loop over the real structure, and the remaining 63% that looked structural is
+  LOCALITY, which no container swap reaches.
+- **Item 1496's removal gate is moot** (there is nothing to pay for), though its measurements remain
+  correct and its two probe traps — the member→position `Map` being the worst arm at every degree,
+  and swap-remove being unusable — are still worth keeping.
+- **Item 1497's method lesson stands and earned its keep**: build core, THEN typecheck. Without it
+  this item would have shipped the 644-failure version again.
+
+### Two findings worth keeping from the build itself
+
+Both were only visible because the change was actually made:
+
+- ⚠️ **There ARE real `.has` calls on adjacency buckets** — five of them, in `hop-values.ts` (two
+  dedup walks), `hop-projection.ts`'s `inEarlier`, and `pair-type-hop.test.ts`. Item 1496 flagged
+  this class and pointed at `unionOfBuckets`; item 1497 called it a false positive because
+  `unionOfBuckets` reads the GLOBAL label index. **Both were half right**: the concern was real and
+  the location was wrong.
+- ⚠️ **A broad type rename over-reaches into things that only LOOK like adjacency rows** — the
+  property-index seed candidates (`EdgeCandidate.build`, `narrowerSeed`, `edgesOfTypesIn`) and
+  `graph.edgesByLabel` are all `Map<string, Set<Edge>>` too. The compiler caught every one, but only
+  because `Set<Edge>` is not assignable to `readonly Edge[]`; a rename in the other direction would
+  have been silent.
+
+### Gates
+
+Reverted; `bun run typecheck` 0, `bun run check` 0 read unpiped, core 431/0, gql 3727/0,
+gremlin 1406/0 confirm the tree is back. The probe keeps its new `setedge` control, which is the
+evidence.

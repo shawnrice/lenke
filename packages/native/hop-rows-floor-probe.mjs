@@ -137,6 +137,22 @@ const buildPerVertexEdges = () => {
 
 const perVertexEdges =
   process.env.ARM === undefined || process.env.ARM === 'arrayedge' ? buildPerVertexEdges() : [];
+
+/** The same per-vertex rows as SETS, for the `setedge` locality control. */
+const buildPerVertexSets = () => {
+  const rows = [];
+
+  for (const v of graph.verticesById.values()) {
+    const bucket = v.adjFrom?.get('E');
+
+    rows.push(bucket === undefined ? new Set() : new Set(bucket));
+  }
+
+  return rows;
+};
+
+const perVertexSets =
+  process.env.ARM === undefined || process.env.ARM === 'setedge' ? buildPerVertexSets() : [];
 const flat =
   process.env.ARM === undefined || NEEDS_FLAT.has(process.env.ARM)
     ? buildFlat()
@@ -420,6 +436,25 @@ const ARMS = {
     const out_ = [];
 
     for (const es of perVertexEdges) {
+      for (const e of es) {
+        out_.push(e.to);
+      }
+    }
+
+    return out_.length;
+  },
+
+  // 9c. ⚠️ THE CONTROL THAT INVALIDATES arrayadj/arrayedge AS A PREDICTION (item 1498). Those arms
+  //     build their nested arrays in ONE tight loop, so the buckets land contiguously and the walk
+  //     has near-perfect locality — which the engine's buckets never have, being allocated
+  //     interleaved with vertices and edges across 400,000 `addEdge` calls. This arm builds nested
+  //     SETS the same way. If it lands with `arrayedge` rather than with `engine`, then the gap
+  //     those arms measured was LOCALITY, not the container, and item 1495's 4.1x was never a
+  //     prediction about changing the storage type.
+  setedge: () => {
+    const out_ = [];
+
+    for (const es of perVertexSets) {
       for (const e of es) {
         out_.push(e.to);
       }
