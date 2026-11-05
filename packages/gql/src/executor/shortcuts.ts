@@ -9205,6 +9205,17 @@ const deferredSortedNodeWalk = (spec: {
 
       binding.set(nodeVar, v);
 
+      // ❌ REJECTED, item 1477: building this row by cloning a PRE-SHAPED template
+      // (`{ ...rowShape }`, so the per-column stores hit existing keys and the hidden class never
+      // transitions) measured **1.52x in a 300,000-row micro at width 5** — and NOTHING in the
+      // engine. Four widths, 3 rounds, order-alternated: proj1 2/3, proj2 1/3, wideproj 2/3,
+      // proj10 1/3, with per-arm ranges fully overlapping (proj1 POST 245-310 against PRE 245-322)
+      // and the `sortedpage` CONTROL also reading 2/3 in POST's favour.
+      //
+      // Why the micro did not transfer: row construction is a small share of the per-row cost here
+      // — `propOf`, the `properties` getter, `scanCandidates` and the gate are the rest — so a 1.52x
+      // on construction alone is diluted past this instrument's ~30% spread. Third instance in this
+      // repo of a clean micro not reaching the engine (see item 1364's 3.8x → 1.11x).
       const row: Row = {};
 
       for (let i = 0; i < width; i++) {

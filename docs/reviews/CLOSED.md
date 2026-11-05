@@ -56496,3 +56496,93 @@ that array is the operation, not overhead.
 core 431/0, gql 3709/0, gremlin 1258/0, native 961/0, serialization 144/0, `bun run fuzz` 20/0.
 `bun run check` 0 read unpiped. (The native run-many flake recurred and was clean on both isolated
 re-runs, as at item 1475.)
+
+### Item 1477 — ❌ TWO NEGATIVES, both worth the tick: the six new GQL shapes have NO unpriced frame at honest sample counts (so item 1473's low-sample reads hid nothing), and the pre-shaped row template measured **1.52x in a micro and NOTHING in the engine**
+
+Item 1476 found that a 72-sample profile had ranked the wrong frame, and the GQL shapes added at item
+1473 were profiled in the same regime — 73-206 ms of engine time at 20 reps, so several had ~100
+samples. This re-ran all six at 200 reps.
+
+### Negative 1 — the GQL shapes are clean, and now provably so
+
+```text
+shape        engine ms (200 reps)   unpriced frames over 2%
+distinct             509            none
+existssub           1272            none
+join                1165            none
+optional             898            none
+unioned             1703            none
+wideproj            1260            none
+```
+
+**Not one unpriced frame on any of the six**, where the 20-rep run had nominated `combineRows` (taken
+at item 1473, 4.63x). Only `(garbage collector)` appears, and it is NOT CHECKABLE rather than
+unpriced — a synthesized name with no source location, so the screen can never attribute it.
+
+So the low-sample GQL reads did **not** hide a second find, unlike the Gremlin side at item 1476.
+Recorded so these six are not re-profiled a third time.
+
+What the honest profiles DO show is a shared shape worth knowing: `propOf` (13.2% / 11.1% / 10.0%) plus
+the `properties` getter (8.6% / 8.4% / 8.1%) is **~21% of every GQL shape measured**. Both are
+"priced" by mention count, and chasing them by hand found the getter already memoized on the element
+(`#box ??=`, item 321's box) and `propOf` already a single optional-chain — about as thin as a dynamic
+property read gets without codegen, which is declined.
+
+### Negative 2 — the pre-shaped row template: 1.52x in a micro, nothing in the engine
+
+The hot frame in `wideproj` (25.8%) is the node-projection closure, which builds each row as
+`const row = {}` followed by one **dynamic-key store per column** — so a W-column row transitions its
+hidden class W times. Cloning a template that already carries every column makes those stores hit
+existing keys.
+
+Micro first, 300,000 rows, order-alternated, warm reading:
+
+```text
+width  dynamic   templated
+  2     13.7       13.1      noise
+  5     29.2       19.2      1.52x
+ 10     51.7       45.4      1.14x
+```
+
+**Non-monotonic, and that mattered**: the clone copies W slots, so it stops paying as W grows, and at
+W=1-2 there is nothing to win. Which is why the engine was measured at FOUR widths rather than at the
+one that flattered it — item 1472's rule about not optimizing the probe's own shape.
+
+In the engine (`rowTemplate` + `{ ...rowShape }` at the two identical row loops, 60 reps, 200,000
+vertices, order-alternated):
+
+```text
+            POST                     PRE                 concordance
+proj1    245.4 310.6 258.4     322.0 245.7 300.8          2/3
+proj2    349.1 343.1 329.9     390.9 330.1 331.5          1/3
+wideproj 443.4 406.6 414.2     456.0 464.5 406.8          2/3
+proj10   494.0 558.0 564.9     538.3 571.0 508.9          1/3
+sortedpage (CONTROL) 659.7 648.4 639.2   673.3 609.2 685.4   2/3 ← in POST's favour
+grouped (control)    252.5 196.3 207.0   192.8 221.1 205.7   flat
+```
+
+**A null.** The per-arm ranges overlap completely — `proj1` POST spans 245-310 against PRE's 245-322 —
+concordance alternates 2/3, 1/3, 2/3, 1/3 with no width trend, and a control that cannot reach the
+change reads 2/3 in its favour. **Reverted**, with the numbers recorded at the loop itself.
+
+**Why the micro did not transfer:** row construction is a small share of the per-row cost in the
+engine — `propOf`, the `properties` getter, `scanCandidates` and the gate are the rest — so 1.52x on
+construction alone is diluted below this instrument's ~30% intra-arm spread. **Third instance in this
+repo of a clean micro not reaching the engine** (item 1364: 3.8x micro → 1.11x engine; item 1368:
+9.2% profiled → 3.7% ablated). The pattern is now firm enough to state as a rule: **a micro that
+isolates one operation measures that operation's share of itself, which is 100%; in the engine it is
+whatever the profile says, and the profile's share is the ceiling, not the result.**
+
+### ⚠️ And an instrument limit worth recording
+
+`runtime-profile-probe.mjs` at 60 reps has a **27-31% intra-arm spread** on the projection shapes —
+`proj1` PRE alone read 245.7, 300.8 and 322.0. That is fine for the 2-5x findings it was built for
+and useless for a sub-15% question. For that, the isolated row benches and their
+median-of-medians-across-alternated-rounds protocol are the instrument; this one cannot resolve it
+however many rounds are run, because the spread is within an arm, not between them.
+
+### Gates
+
+core 431/0, gql 3709/0, gremlin 1258/0, native 961/0, serialization 144/0, `bun run fuzz` 20/0.
+`bun run check` 0 read unpiped. Revert verified in `dist` (0 occurrences of the marker). Three probe
+shapes added (`proj1`, `proj2`, `proj10`); no engine code changed.

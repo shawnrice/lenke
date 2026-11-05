@@ -148,10 +148,22 @@ list is the reason `profile-frames.mjs` is ONE module and not copied into each a
 **⚠️ "HAS MENTIONS" IS NOT "IS OPTIMIZED".** The signal is binary, so a frame can be 41.9% of its
 shape and three passing references retire it. Chase the nominations by hand.
 
-**⚠️ A SHARE IS A NOMINATION; AN ABLATION IS THE PRICE.** Three instances now: `edgesOfTypes` read
+**⚠️ `runtime-profile-probe.mjs` CANNOT RESOLVE A SUB-15% QUESTION (item 1477).** At 60 reps its
+intra-arm spread on the projection shapes is **27-31%** — `proj1` PRE alone read 245.7, 300.8 and
+322.0 — so more rounds do not help: the spread is WITHIN an arm, not between them. Fine for the 2-5x
+findings it was built for; for anything smaller use the isolated row benches and their
+median-of-medians-across-alternated-rounds protocol.
+
+**⚠️ A SHARE IS A NOMINATION; AN ABLATION IS THE PRICE.** Four instances now: `edgesOfTypes` read
 37.9% self for a path that is a single `Map.get` (1104); a clean 3.8x micro landed at **1.11x** in the
-engine (1364); `bucketsOf` profiled at 9.2% and ablated at **3.7%** (1368). Expect the share to
-overstate by ~2.5x and price in the engine, or say plainly that you have not.
+engine (1364); `bucketsOf` profiled at 9.2% and ablated at **3.7%** (1368); and a pre-shaped row
+template measured **1.52x in a 300,000-row micro and NOTHING in the engine** (1477). Expect the share
+to overstate by ~2.5x and price in the engine, or say plainly that you have not.
+
+**The micro case deserves its own statement**, because it is the seductive one: a micro that isolates
+one operation measures that operation's share of ITSELF, which is 100%. In the engine it is whatever
+the profile says — so **the profile's share is the CEILING on what a micro's ratio can become, not a
+prediction of it.**
 
 **⚠️ WINDOW THE PROFILE ABOVE ~20k ELEMENTS.** `--cpu-prof` covers the whole process, so at 200,000
 the fixture build INVERTS the ranking — `getVertexById`, `indexEdgeLabel` and `commitElementLabels`

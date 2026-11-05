@@ -103,6 +103,17 @@ const SHAPES = {
   // side is every vertex and the wasted pass is proportional to NODES.
   unionedbig: 'MATCH (n:P) RETURN n.n AS x UNION ALL MATCH (n:P) RETURN n.n AS x',
   unionedbigdistinct: 'MATCH (n:P) RETURN n.n AS x UNION MATCH (n:P) RETURN n.n AS x',
+
+  // ⚠️ PROJECTION WIDTH IS ITS OWN DIMENSION (item 1477). Row construction in the node-projection
+  // walk does `{}` + one dynamic-key store per column, so its cost is not linear in width — a micro
+  // over 300,000 rows measured the template-clone alternative at noise (width 2), 1.52x (width 5)
+  // and 1.14x (width 10). A change here must be reported against ALL of these, because quoting the
+  // width-5 number alone would describe a shape narrower queries never take.
+  proj1: 'MATCH (n:P) WHERE n.k < 10 RETURN n.k AS a',
+  proj2: 'MATCH (n:P) WHERE n.k < 10 RETURN n.k AS a, n.n AS b',
+  proj10:
+    'MATCH (n:P) WHERE n.k < 10 RETURN n.k AS a, n.n AS b, n.s AS c, n.k AS d, n.n AS e, ' +
+    'n.s AS f, n.k AS g, n.n AS h, n.s AS i, n.k AS j',
 };
 
 const q = SHAPES[SHAPE];
