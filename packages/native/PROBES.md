@@ -881,5 +881,26 @@ target: when the walk is cache-bound the extra read hides behind the miss. A seq
 every vertex exactly FANOUT out-edges in vertex order, so the walk reads adjacency in build order and
 the per-row costs a real graph pays simply are not there.
 
+⚠️ **BUT `scattered` IS NOT "REALISTIC" EITHER — it is a DEGENERATE FUNCTIONAL GRAPH (item 1487).**
+`from = 7919·e mod N`, `to = 104729·e mod N` means every edge is `x → c·x mod N` for one constant, so
+each vertex has out-degree FANOUT but exactly **ONE distinct neighbour** (the rest are parallel
+edges) — and `c·0 = 0`, so **`v0` is a fixed point**:
+
+```text
+             v0's distinct targets   2 edges hitting ONE target   self-loops
+sequential   v3, v35764              0 / 40,000                   2
+scattered    v0                      40,000 / 40,000              10
+```
+
+**Consequences.** A single-source algorithm seeded at `v0` measures NOTHING there — `shortestPath`
+returned 1 row and the bench's one-row-per-vertex guard (item 1467) is what caught it. And the two
+strides **bracket** a range rather than one being right: sequential is cache-friendly and
+degree-diverse, scattered is cache-hostile and degree-degenerate. Quote a per-row hop cost from the
+hostile one; do not measure dedupe, multiplicity or fan-out shapes on it at all.
+
+This is the fixture **this probe has used all along**, which is sound for the per-edge costs its rows
+quote and unsound for neighbour-diversity shapes. Not changed, because changing it would invalidate
+the recorded history of every row here.
+
 ⚠️ **The tell for a skipped materialization: the fast arm is faster than producing its own rows.**
 `out(E).values(k).count()` measured 2.81 ms against 7.65 for the same rows without the count.

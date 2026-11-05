@@ -47,6 +47,12 @@ const DROP = Number(process.env.DROP ?? 1);
 const SIZES = Number(process.env.SIZES ?? 2);
 const MULTILABEL = Number(process.env.MULTILABEL ?? 0);
 const { ALGO } = process.env;
+const STRIDE = process.env.STRIDE ?? 'sequential';
+
+if (STRIDE !== 'sequential' && STRIDE !== 'scattered') {
+  throw new Error(`STRIDE must be sequential|scattered, got ${STRIDE}`);
+}
+
 const FEATWIDTH = Number(process.env.FEATWIDTH ?? 4);
 
 /**
@@ -115,8 +121,14 @@ const build = (n) => {
 
     g.addEdge({
       id: `e${e}`,
-      from: vs[i],
-      to: vs[(i * 7 + 3 + hop * 2_654_435_761) % n],
+      // ⚠️ STRIDE MATTERS MORE THAN IT LOOKS (item 1486). `sequential` gives every vertex exactly
+      // FANOUT out-edges in vertex order, so every adjacency read is in build order and the cache
+      // misses a real graph pays are absent — which inflated a headline ratio by 3.6x elsewhere in
+      // this corpus and silently reversed a sub-conclusion. `scattered` matches
+      // `runtime-profile-gremlin-probe.mjs`. Items 1468-1470 were measured sequentially, so this
+      // knob exists to check whether their wins survive a realistic fixture.
+      from: vs[STRIDE === 'scattered' ? (e * 7919) % n : i],
+      to: vs[STRIDE === 'scattered' ? (e * 104_729) % n : (i * 7 + 3 + hop * 2_654_435_761) % n],
       labels: MULTILABEL > 0 && e % MULTILABEL === 0 ? ['E', 'F'] : ['E'],
       properties: { w: (e % 13) + 1 },
     });
@@ -224,7 +236,7 @@ const measure = () => {
 const results = await profileWindow(process.env.PROF_OUT, measure);
 
 console.log(
-  `\nTS ALGORITHMS SCALING — NODES=${NODES} FANOUT=${FANOUT} REPS=${REPS} DROP=${DROP} SIZES=${SIZES} MULTILABEL=${MULTILABEL}\n`,
+  `\nTS ALGORITHMS SCALING — NODES=${NODES} FANOUT=${FANOUT} REPS=${REPS} DROP=${DROP} SIZES=${SIZES} MULTILABEL=${MULTILABEL} STRIDE=${STRIDE}\n`,
 );
 
 const head = ['algorithm', 'V', 'ms', 'ns/V', 'V', 'ms', 'ns/V', 'ratio', 'exp', 'verdict'];

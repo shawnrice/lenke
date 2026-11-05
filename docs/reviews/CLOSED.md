@@ -57323,3 +57323,79 @@ headline ratio by **3.6x**, and it silently reversed a sub-conclusion.
 
 `bun run check` 0 read unpiped, gremlin 1308/0. The probe gained a `STRIDE` knob and two rows shapes
 went into the Gremlin probe; no engine code changed. Item 1485's range is corrected in place.
+
+### Item 1487 — the shipped algorithm wins VERIFIED stride-insensitive (1468, 1469 stand), and the `scattered` fixture turns out to be a DEGENERATE FUNCTIONAL GRAPH: every vertex has exactly ONE distinct out-neighbour and `v0` is a fixed point. The corpus's own Gremlin probe has used it all along
+
+Item 1486 showed the edge stride moves a headline ratio by 3.6x, so the shipped wins measured on a
+sequential fixture needed checking. Triage first:
+
+| items                        | fixture                  | stride can matter?                        |
+| ---------------------------- | ------------------------ | ----------------------------------------- |
+| 1474, 1476, 1478, 1479, 1483 | Gremlin probe            | already **scattered** — stand as measured |
+| 1473, 1482                   | set ops / a vertex scan  | **no hops at all** — stride is irrelevant |
+| **1468, 1469, 1470**         | `algo-scaling-bench.mjs` | sequential, and adjacency-heavy           |
+
+So only the three algorithm wins were at risk. `algo-scaling-bench.mjs` gained a `STRIDE` knob.
+
+### Verified: the CSR wins are stride-insensitive
+
+```text
+row                 sequential   scattered
+labelPropagation       85.47       86.99     unchanged
+neighborAggregate      26.42       27.08     unchanged
+degree                 14.89       21.69     1.46x — stride-SENSITIVE
+```
+
+**Mechanism, not luck:** items 1468 and 1469 both replaced a per-vertex allocation pattern with a CSR
+built ONCE, after which the work is over typed arrays — so the fixture's access order barely reaches
+them. `degree` has no CSR and walks adjacency per vertex, which is why it moves 1.46x; nothing shipped
+there. **1468 and 1469 stand as measured.**
+
+### ⚠️ And `shortestPath` could not be compared, because the bench's OWN GUARD fired
+
+```text
+⚠️ shortestPath at V=40000 returned n=1 col=distance — expected one row per vertex
+```
+
+Item 1467 built that one-row-per-vertex check into the bench, and here it earned itself: under
+`scattered`, `shortestPath` from `v0` reaches **one vertex**. My first explanation — "`v0` must be
+isolated" — was **wrong**: `v0` has 2 out-edges under both strides and NO vertex lacks one. Measuring
+the topology instead of assuming it:
+
+```text
+             v0's distinct targets   vertices whose 2 edges hit ONE target   self-loops
+sequential   v3, v35764              0 / 40,000                              2
+scattered    v0                      40,000 / 40,000                         10
+```
+
+**The `scattered` formula is a functional graph.** `from = 7919·e mod N` and `to = 104729·e mod N`
+means every edge is `x → c·x mod N` for one constant `c`, so each vertex has out-degree FANOUT but
+exactly **one distinct neighbour** (the rest are parallel edges) — and `c·0 = 0`, so **`v0` is a
+fixed point**. A single-source traversal seeded there measures nothing at all.
+
+This is item 702's class exactly: _"an answer that is INVARIANT to the property you varied cannot
+validate the fixture"_ — a generator that looked fine, returned correct answers, and had a topology
+nobody had checked. One line counting distinct endpoints found it, as it did there.
+
+### What this qualifies about item 1486
+
+Item 1486's finding **holds**: flipping the stride moved `label/id` from 11.57x to 3.17x, and the
+property-read target really does vanish — access order is what drove that, and it is real.
+
+But calling `scattered` **"realistic"** was too generous and is corrected: it is realistic in ACCESS
+ORDER and degenerate in TOPOLOGY. One distinct neighbour per vertex is not a real graph either. The
+honest statement is that the two fixtures bracket a range — sequential is cache-friendly and
+diverse, scattered is cache-hostile and degree-degenerate — and **a per-row hop cost should be quoted
+from the hostile one while anything depending on neighbour diversity should not be measured on it at
+all.**
+
+⚠️ **This is the fixture `runtime-profile-gremlin-probe.mjs` has used all along**, so every per-row
+cost in this corpus measured there is on a graph where each vertex has one distinct neighbour. That
+is sound for per-EDGE cost (which is what those items quote) and unsound for dedupe, multiplicity or
+fan-out shapes. Recorded rather than fixed: changing that fixture now would invalidate the recorded
+history of every row in it, which is the trade CLAUDE.md's stride note already makes deliberately.
+
+### Gates
+
+`bun run check` 0 read unpiped. Two probes gained a `STRIDE` knob; no engine code changed. No shipped
+result is withdrawn.
