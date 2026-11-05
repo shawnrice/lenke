@@ -1,0 +1,117 @@
+/**
+ * WHAT DOES A WARM `query()` CALL COST BEFORE IT TOUCHES THE GRAPH?
+ *
+ * The GQL analogue of `gremlin-plan-overhead-probe.mjs` (item 1503), and it exists because item
+ * 1508 spent two measurements on a fixture that could not show the answer. `parse-plan-probe.mjs`'
+ * `warm q` column looked like per-call overhead — its `hop` row returns ZERO rows, so what else
+ * could 1091 ns be? — but that shape is `MATCH (a:P)-[:E]->(b:P)` over a 200-vertex graph: it
+ * iterates 200 vertices looking for outgoing edges and finds none. 200 iterations at ~5 ns each IS
+ * the number. A fixed cost of a few tens of ns is invisible in it, which is why removing work
+ * measured flat twice.
+ *
+ * ⚠️ SO THE FIXTURE HERE IS AS SMALL AS THE LANGUAGE ALLOWS, and the arms are ordered by how much
+ * graph they touch, so the fixed cost can be read off the DIFFERENCES rather than guessed at:
+ *
+ *   - `floor`  — `RETURN 1 AS v`. No graph access at all. This is the pure per-call cost: cache
+ *                lookup, param handling, plan lookup, row construction.
+ *   - `param`  — the same with a bound `$x`, so the param path is exercised rather than skipped.
+ *   - `one`    — a count over a ONE-vertex graph: the smallest call that reaches the executor's
+ *                scan machinery.
+ *   - `onerow` — one vertex PROJECTED, so a row is built from an element.
+ *   - `ten`    — the same count over ten vertices. `ten - one` prices one vertex of iteration, and
+ *                that is what says whether a given arm is dominated by the fixed cost or the loop.
+ *
+ * Each arm is a warm, cached text (parsed twice before timing, per `seenOnce`'s admission filter).
+ *
+ *     node gql-call-overhead-probe.mjs
+ *     PROF_ARM=floor PROF_OUT=/tmp/x.cpuprofile node gql-call-overhead-probe.mjs
+ */
+import { Graph } from '@lenke/core';
+import { query } from '@lenke/gql';
+
+import { profileWindow } from './windowed-profile.mjs';
+
+const REPS = Number(process.env.REPS ?? 50_000);
+const DROP = Number(process.env.DROP ?? 3);
+const ROUNDS = Number(process.env.ROUNDS ?? 9);
+
+const graphOf = (n) => {
+  const g = new Graph();
+
+  for (let i = 0; i < n; i += 1) {
+    g.addVertex({ id: `v${i}`, labels: ['P'], properties: { k: i } });
+  }
+
+  return g;
+};
+
+const g1 = graphOf(1);
+const g10 = graphOf(10);
+
+const ARMS = {
+  floor: [g1, 'RETURN 1 AS v', undefined],
+  param: [g1, 'RETURN $x AS v', { x: 1 }],
+  one: [g1, 'MATCH (n:P) RETURN count(*) AS c', undefined],
+  onerow: [g1, 'MATCH (n:P) RETURN n.k AS k', undefined],
+  ten: [g10, 'MATCH (n:P) RETURN count(*) AS c', undefined],
+};
+
+const med = (xs) => {
+  const s = [...xs].sort((a, b) => a - b);
+
+  return s[(s.length - 1) >> 1];
+};
+
+const timeRound = (fn) => {
+  const t0 = performance.now();
+
+  for (let i = 0; i < REPS; i += 1) {
+    fn();
+  }
+
+  return ((performance.now() - t0) * 1e6) / REPS;
+};
+
+// Warm every cache before a single number is taken: a text is admitted on its SECOND sighting
+// (`seenOnce`), so one call is not enough and an unwarmed arm would measure the parse.
+for (const [g, text, params] of Object.values(ARMS)) {
+  query(g, text, params);
+  query(g, text, params);
+  query(g, text, params);
+}
+
+const out = {};
+const names = Object.keys(ARMS);
+
+for (const name of names) {
+  const [g, text, params] = ARMS[name];
+  const rounds = [];
+
+  for (let r = 0; r < ROUNDS; r += 1) {
+    rounds.push(timeRound(() => query(g, text, params)));
+  }
+
+  out[name] = med(rounds.slice(DROP));
+}
+
+const profArm = process.env.PROF_ARM ?? 'floor';
+const [pg, ptext, pparams] = ARMS[profArm];
+
+await profileWindow(process.env.PROF_OUT, () => {
+  for (let i = 0; i < REPS * 3; i += 1) {
+    query(pg, ptext, pparams);
+  }
+
+  return 0;
+});
+
+console.log(`\nGQL WARM CALL OVERHEAD — REPS=${REPS} ROUNDS=${ROUNDS} (median, ns per call)\n`);
+
+for (const name of names) {
+  console.log(`${name.padEnd(9)}${out[name].toFixed(1).padStart(9)}`);
+}
+
+console.log(`\nper vertex of iteration (ten - one)/9: ${((out.ten - out.one) / 9).toFixed(1)} ns`);
+console.log(
+  `scan machinery over the floor (one - floor): ${(out.one - out.floor).toFixed(1)} ns\n`,
+);

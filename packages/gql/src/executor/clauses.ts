@@ -31,6 +31,7 @@ import type {
 } from '../executor.js';
 import {
   applyProjection,
+  mapToArray,
   projectedRows,
   compareSort,
   isEdge,
@@ -1704,10 +1705,10 @@ export const runLinearClauses = (
         break;
       case 'insert':
         // Mutations must run eagerly and exactly once — force evaluation.
-        bindings = toArray(map((b: Binding) => runInsert(graph, clause, b, params), bindings));
+        bindings = mapToArray(bindings, (b: Binding) => runInsert(graph, clause, b, params));
         break;
       case 'merge':
-        bindings = toArray(map((b: Binding) => runMerge(graph, clause, b, params), bindings));
+        bindings = mapToArray(bindings, (b: Binding) => runMerge(graph, clause, b, params));
         break;
       case 'set': {
         const arr = toArray(bindings);

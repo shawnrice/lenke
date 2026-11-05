@@ -3705,6 +3705,35 @@ export const projectRow = (
  *
  * Lazy, like the path it replaces: a row is projected when it is pulled.
  */
+/**
+ * `toArray(map(f, it))` without the intermediate generator — item 1508.
+ *
+ * `@lenke/fp`'s `map` is LAZY: it returns a generator that yields one mapped value per `next()`.
+ * Composed into `toArray` (`Array.from`) that laziness is never observed — the array is
+ * materialized immediately — so every row pays a generator resume and an iterator-result object
+ * for nothing. This drives the SAME iterable with one `for…of` and pushes, which is what the
+ * composition means.
+ *
+ * ⚠️ IT IS NOT A GENERAL REPLACEMENT FOR `map`. The mapper here is called with ONE argument;
+ * `map`'s is called with `(value, index)`. Both call sites below pass a unary mapper (`mapToRow`
+ * and a `projectRow` closure), checked before this was written. A mapper that reads an index would
+ * silently receive `undefined`.
+ *
+ * ⚠️ AND IT MUST STAY STREAMING OVER ITS INPUT. `bindings` is lazy for every shape that matches —
+ * consuming it with `for…of` pulls exactly as `Array.from` did, one binding at a time. Building an
+ * intermediate array of bindings first would hold the whole match in memory, which is the eager-fill
+ * failure of item 437.
+ */
+export const mapToArray = <T, R>(it: Iterable<T>, f: (x: T) => R): R[] => {
+  const out: R[] = [];
+
+  for (const x of it) {
+    out.push(f(x));
+  }
+
+  return out;
+};
+
 export const projectedRows = (
   proj: CProjection,
   bindings: Iterable<Binding>,
@@ -3718,10 +3747,10 @@ export const projectedRows = (
     resolveCount(proj.skip, params) !== undefined ||
     resolveCount(proj.limit, params) !== undefined
   ) {
-    return toArray(map(mapToRow, applyProjection(proj, bindings, params, graph)));
+    return mapToArray(applyProjection(proj, bindings, params, graph), mapToRow);
   }
 
-  return toArray(map((b: Binding) => projectRow(proj, b, params, graph), bindings));
+  return mapToArray(bindings, (b: Binding) => projectRow(proj, b, params, graph));
 };
 
 /**

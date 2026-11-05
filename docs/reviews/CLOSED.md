@@ -58984,8 +58984,11 @@ since the TS side now rewrites query text before parsing and the Rust side does 
 > rebuilt one** — where the memo below was 1.07-1.15x worse on that arm. The three refutations here
 > all still stand; what changed is that the design they pointed at works.
 
-GQL's per-call overhead was parse+plan, and item 1502 removed most of it. Gremlin has no text to
-parse, so the question looked inapplicable. It is not: `toArray` re-runs the whole plan ANALYSIS on
+~~GQL's per-call overhead was parse+plan, and item 1502 removed most of it.~~ ⚠️ **CORRECTED AT ITEM
+1508: parse+plan was not all of it.** A warm, fully cached `RETURN 1 AS v` still cost 530 ns, none
+of it parse or plan — `projectedRows` built a generator per call for a laziness `toArray`
+immediately discards. Item 1508 took that shape to 164 ns (3.24x). Gremlin has no text to parse, so
+the question looked inapplicable. It is not: `toArray` re-runs the whole plan ANALYSIS on
 every call — `effectivePlan`'s seven rewrite passes, `checkSteps`, `planReadsPath`,
 `streamStaysElements` — with nothing cached between one call and the next.
 
@@ -59432,3 +59435,121 @@ sub-plan walk unreachable, which is exactly the nested-flag hole, and six tests 
 `bun run check` 0 read unpiped. core 431/0, gql 3773/0, gremlin **1469**/0, native 961/0,
 serialization 144/0, `bun run fuzz` 20/0. Wide controls at 200,000 vertices: `hopbare` 1948.6 against
 1942.2 at the 1503 baseline, `hopcount3` 8743.3 against 8676.6, `filterchain` 85.1 against 98.4.
+
+### Item 1508 — the GQL per-call floor was a LAZY COMPOSITION that is never observed lazily: `toArray(map(f, it))` builds a generator per call and resumes it per row, for an array it materializes immediately. **`RETURN 1 AS v` 530 → 164 ns (3.24x), a one-row `INSERT` 4587 → 4096 (1.12x)** — and two hypotheses refuted first, both on a fixture that could not see them
+
+Profiled the warm GQL call, the symmetric question to items 1503-1507 on the Gremlin side. ⚠️ **Two
+of the three things the profile nominated were wrong, and both wrong answers came from the same
+place: the fixture.**
+
+### The profile's top frame was an inlining artifact — the THIRD this session
+
+At 1091 ns a call on `parse-plan-probe`'s `hop` row:
+
+```text
+27.5%  parseCacheHit  ← ZERO mentions     6.9%  plan          6.1%  rowOf
+20.7%  (garbage collector)                6.9%  reviveParams  3.6%  query
+20.6%  runLinear (anonymous + named)      4.8%  …
+```
+
+`parseCacheHit` at 27.5% is three `Map` operations on a string key, two of them the `delete`+`set`
+that keeps LRU order. The entry at `PARSE_CACHE_CAP` had already priced that pair at 57.2 ns and
+called it "1.3% of the saving" — against a 4,540 ns PARSE, which is not the denominator any more on
+a cache hit. So it looked like the target.
+
+**Deleted the `delete`+`set` outright and measured: FLAT** (1091 → 1074). An artifact, like item
+1493's `degreeOfTypes` at 97.1% and item 1503's `subPlansOf` at 15.7%. The cheap test remains
+deleting the use, not reasoning about the share.
+
+### Then GC at 20.7% nominated two per-call allocations. Also flat
+
+`execute`'s `params: Params = {}` default and `reviveParams`' `Object.keys` array — one allocation
+each on every paramless call, which is most calls. Replaced the default with a shared frozen
+`NO_PARAMS` and the `Object.keys` loop with `for…in` + `Object.hasOwn` (same key set, no array).
+**Flat on both fixtures, so not taken.** Consistent with item 424's standing corollary: _"it
+allocates per row" is not by itself a cost in this engine._
+
+### ⚠️ THE FIXTURE WAS THE REASON BOTH LOOKED FLAT, and I had misread what it measures
+
+`parse-plan-probe`'s `hop` row is `MATCH (a:P)-[:E]->(b:P)` over a 200-vertex graph with **no
+edges**. It returns ZERO rows — which is exactly why I read 1091 ns as per-call overhead. It is not:
+it iterates 200 vertices looking for outgoing edges and finds none. **200 iterations at ~5 ns each
+IS the number**, and a fixed cost of a few tens of ns cannot show in it. Zero rows out does not mean
+no work in.
+
+### New instrument: `gql-call-overhead-probe.mjs`
+
+The GQL analogue of item 1503's `gremlin-plan-overhead-probe.mjs`, with the fixture as small as the
+language allows and the arms ordered by how much graph they touch, so the fixed cost is read off the
+DIFFERENCES:
+
+```text
+floor   RETURN 1 AS v                     441.7 ns   ← no graph access at all
+param   RETURN $x AS v                    490.1
+one     MATCH (n:P) RETURN count(*) AS c   62.6      ← ONE vertex
+onerow  MATCH (n:P) RETURN n.k AS k       149.6
+ten     the same count over TEN vertices   62.7      ← invariant: reads vertexCount
+```
+
+⚠️ **`RETURN 1 AS v` costs 7x a whole-graph count.** A query with no MATCH, no graph access and one
+constant column was the most expensive shape in the probe. `count(*)` is 62.6 ns and flat in N (the
+item 204-209 node-scan family reads `vertexCount` directly, which is why `ten` equals `one`), while
+a bare `RETURN` reaches no shortcut at all and falls through to the general projection path.
+
+### The cause: a generator for a laziness nobody observes
+
+`projectedRows` ends in `toArray(map(f, bindings))` on both its branches. `@lenke/fp`'s `map` is a
+**generator**; `toArray` is `Array.from`. So every call constructs a generator and every row costs a
+resume plus an iterator-result object — to produce an array that is materialized before anything can
+observe the laziness. Replaced with `mapToArray`, which drives the same iterable with one `for…of`
+and pushes. Four sites: the two projection branches, and `INSERT`/`_MERGE` per binding in
+`runLinearClauses`.
+
+Gremlin has no composition of this shape (its own `toArray` is the traversal terminal); all four
+sites are GQL's.
+
+### Isolated A/B — ⚠️ and the in-sweep reading said two arms REGRESSED
+
+```text
+arm        rows        PRE       POST   ratio
+floor         1   441.7 ns   107.4 ns   4.11x   (gql-call-overhead-probe)
+param         1   471.7      121.5      3.88x
+noop          1   530.4      163.9      3.24x   (gql-projection-reach-probe)
+exprs         1   666.1      284.5      2.34x
+insert        1  4587       4096        1.12x   (parse-plan-probe, SHAPE=insert)
+aggrows      97     3.11 ms    2.69 ms  1.16x
+wide     200000    14.75     14.02      1.05x
+widefilt  12366     4.79       4.82      flat
+```
+
+Run as one multi-arm process, `aggrows` read **1.15x SLOWER** and `widefilt` 1.05x slower. Isolated,
+`aggrows` is **1.16x faster** and `widefilt` is flat — the sign flipped on the arm that moved most.
+That is item 737's one-shape-per-process rule arriving in a new place, and it would have cost this
+item its two best-looking rows had the regressions been taken at face value.
+
+**The honest shape of the win: it is a FIXED cost, so it scales inversely with rows.** 3-4x on a
+one-row query, 1.05x at 200,000 rows. The shapes it reaches are the ones with no MATCH to
+shortcut — `RETURN <expr>`, which is what the conformance differential harness sends for every
+scalar function it checks, and a health-check `RETURN 1`.
+
+### Mutation — all five caught, and ⚠️ ONE of them by exactly one test
+
+```text
+buffer      [...it].map(f) — same array, buffered   CAUGHT  3783 pass  1 fail
+skiplast    drop the final element                  CAUGHT  2806 pass 978 fail
+skipfirst   drop the first element                  CAUGHT  2804 pass 980 fail
+reverse     reverse the output                      CAUGHT  3622 pass 162 fail
+empty       map everything, return []               CAUGHT  2852 pass 932 fail
+```
+
+`buffer` is the whole reason `map-to-array.test.ts` exists. It returns a **byte-identical array**,
+so all 3,783 other GQL tests pass it — and it reintroduces item 437's eager fill, holding a whole
+match in memory under a `LIMIT` that wants the first rows. The one test that fails is the one
+asserting the ORDER OF EVENTS (`pull1, map1, pull2, map2, …`) rather than the result. An
+answer-equivalent change still needs a test for the property that is not the answer.
+
+### Gates
+
+`bun run check` 0 read unpiped. core 431/0, gql **3784**/0, gremlin 1469/0, native 961/0,
+serialization 144/0, `bun run fuzz` 20/0. Wide controls at 200,000 vertices are the `wide`/`widefilt`
+rows above: 1.05x better and flat.
