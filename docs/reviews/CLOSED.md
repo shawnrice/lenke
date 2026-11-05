@@ -55405,7 +55405,7 @@ What shipped instead: 1431 (47.8-79.1%), 1432 (64.6%), 1437 (75.9-94.2%), 1442 (
 
 `bun run check` 0 (read unpiped). No code changed — a decision and its evidence.
 
-### Item 1467 — the TWELVE ALGORITHMS had no bench row at all, and measuring them turned up a RETENTION defect: a discarded `Graph` is pinned by its own pending `drainMutations` microtask. Nothing algorithmically wrong in the twelve; `labelPropagation` NOMINATED at 14x its siblings per vertex
+### Item 1467 — the TWELVE ALGORITHMS had no bench row at all, and measuring them turned up a RETENTION defect: a discarded `Graph` is pinned by its own pending `drainMutations` microtask. Nothing algorithmically wrong in the twelve; ~~`labelPropagation` NOMINATED at 14x its siblings per vertex~~ **— the `labelPropagation` CSR target this item priced at 21.6% was TAKEN at item 1468 (14.4% / 21.6% measured, 3/3). The retention defect is still open.**
 
 Item 1466 declined a 3.3x win because any edit to `hop-values.ts` / `hop-projection.ts` moves
 unrelated rows up to ~16% in an arbitrary direction. **That is a reason to move the search, not to
@@ -55545,3 +55545,128 @@ item 1455 documented and [[no-dense-vertex-ordinal]] paid for seven times.
 ### Gates
 
 `bun run check` 0 (read unpiped). Two new instruments; no engine code changed.
+
+### Item 1468 — SHIPPED, 14.4% / 21.6% (3/3 concordance, both controls flat): `labelPropagation`'s CSR build allocated one intermediate array PER VERTEX and copied them all into a typed array. It now counts, then fills the typed array directly. ⚠️ And the first A/B measured the SAME CODE TWICE, because the bench loads `dist`
+
+Item 1467 priced this at 21.6% of the run (`incidentEdges` 12.04% + `collectNeighbours` 9.60%) plus a
+6.93% `(garbage collector)` term, named the cure, and verified the gate it needs already exists. This
+built it.
+
+### The change
+
+`buildAdjacency`, extracted from `computeGen` in `label-propagation.ts`, with two arms:
+
+- **fast** (`graph.multiTypeEdgeCount === 0`): pass one sizes `off` by summing bucket sizes
+  (`countIncidentEdgesFlat`, O(buckets) and allocation-free), pass two writes endpoints straight into
+  the `Int32Array` (`writeIncidentEnds`). No per-vertex arrays, no copy pass, no generator.
+- **general** (otherwise): the original path, unchanged.
+
+The gate is required, not an optimization: the label index buckets an edge under **every** label it
+carries, so a flat count double-counts a two-label edge. `multiTypeEdgeCount` is exactly that
+condition and is maintained at all four transitions (item 1460 built it for the Gremlin union
+fusion). Both new helpers carry a ⚠️ saying they are only valid under that gate, and they are
+separate functions rather than a `flag` parameter so the unsafe case is not reachable by passing
+`false`.
+
+### Measured
+
+A/B, each arm in its own process, `nx build` between arms, order alternated, median of 7 reps with 2
+dropped:
+
+```text
+                       POST                    PRE
+labelPropagation    76.82 82.55 76.62     92.00 98.27 92.41    3/3, ~1.20x
+degree (control)    13.09 15.71 14.60     15.40 16.71 14.06    mixed, flat
+connectedComponents  9.19  8.28  7.84      7.92  8.48  7.73    mixed, flat
+```
+
+The controls being **flat and mixed in sign** is the reading that makes the target believable — item
+762's warning is that a change which redistributes call sites flatters itself, and its giveaway is a
+control moving MORE than the target. That is not what happened here (and it IS what happened in the
+first attempt below).
+
+Confirmed on the standing bench, two sizes:
+
+```text
+              V=40,000            V=160,000
+PRE            95.61 ms            534.72 ms   (3342 ns/V)
+POST           81.89               418.96      (2619 ns/V)
+               14.4%               21.6%
+```
+
+**The large size lands on the priced 21.6% almost exactly.** Every other row of the twelve is
+unchanged within noise (`degree` 15.28→15.09, `connectedComponents` 9.08→8.81, `peerPressure`
+43.53→40.02, `pagerank` 19.91→20.72) — the change only ADDS functions to `adjacency.ts`, so the
+shared `incidentEdges` / `countIncidentEdges` used by `degree` are untouched.
+
+Mechanism confirmed in the profile rather than assumed: `incidentEdges` and `collectNeighbours` are
+**gone** from the capture, replaced by `writeIncidentEnds` 17.70% + `countIncidentEdgesFlat` 5.92% +
+`buildAdjacency` 6.21%, with `drainSync` falling 8.94% → 5.20% and GC 6.93% → 6.07%. Total at
+V=80,000: 228.10 → 176.54 ms. (Shares go UP while time goes DOWN because the denominator shrank —
+reading the share alone would have looked like a regression.)
+
+### ⚠️ THE FIRST A/B MEASURED THE SAME CODE TWICE, and its output looked like a clean null
+
+Worth recording in full, because the failure was legible only by accident.
+
+The first A/B swapped the two **source** files between arms and reported `labelPropagation` POST
+97.44 / 98.60 / 94.94 against PRE 98.17 / 95.62 / 96.59 — flat, with both controls moving just as
+much. The honest reading of that table is "the change is a null", and that is what it was written up
+as.
+
+**It was not a null. `packages/native` resolves `@lenke/core` to `packages/core/dist`, so neither arm
+was ever built and both were PRE.** It was caught by profiling the supposed POST arm and finding
+`incidentEdges` still at 13.29% — a frame the change deletes. Nothing in the timing table could have
+revealed it; the controls-move-as-much pattern is exactly what a null looks like.
+
+Two rules, both already in the repo and both evaded here:
+
+- **An A/B's arm assertion has to check the ARTIFACT THE HARNESS LOADS, not the file you edited.**
+  CLAUDE.md requires asserting each arm is the code it claims; the first script did assert, against
+  `src`, and passed every time while measuring neither arm. `@lenke/*` resolving to `dist` is a
+  recorded trap and the assertion sailed straight past it.
+- **`grep` silently skips files containing non-ASCII**, and the rebuilt bundle is one. Checking
+  whether `dist` had picked the change up, `grep -c countIncidentEdgesFlat` printed nothing for a
+  string present **4 times** — which read as "the build did not include it" and nearly caused the
+  working change to be investigated as broken. Verified with `python str.count` instead, which is
+  the recorded rule for exactly this.
+
+The corrected script rebuilds between arms and asserts from `dist` via python.
+
+### Teeth
+
+`adjacency-csr-arms.test.ts`, 14 tests, **multi-label fixtures first** — that is the case the gate
+exists for and the case where a flat count is wrong by construction, so a suite that only exercised
+single-label graphs would pass against a build that ignored the gate entirely. It asserts the new
+pair produces the **identical sequence** to the generator path (not merely the same degree — a
+permuted neighbour list changes a label tie-break, so a divergence is a wrong answer that agrees on
+row count), over: several edge types with no multi-label edge (the only fixture that distinguishes
+`countIncidentEdgesFlat` from `countIncidentEdges`), parallel edges, self-loops, an `edgeLabel`
+restriction, an absent label, and cursor-append order.
+
+End to end, the gate is a property of the GRAPH so the same graph cannot take both arms. The A/B
+fixture instead makes the component under test **identical** in both graphs and forces the slow arm
+with a two-label edge between two extra isolated vertices, then compares the shared component's
+labels — plain, under an `edgeLabel` restriction, and with a `seedProperty` pinned.
+
+**Mutation-verified, because it passed on the first run and so does a test that checks nothing.** Four
+mutants under `timeout` + `MemoryMax=16G` + `MemorySwapMax=0`, pristine copies under `target/`,
+restored before each, anchor asserted unique before mutating, verdict read from the concatenated
+streams:
+
+| mutant                                              | caught by  |
+| --------------------------------------------------- | ---------- |
+| fast arm writes in-sources where out-targets belong | 3 failures |
+| the gate removed (`=== 0` → `>= 0`)                 | 1 failure  |
+| counting pass drops in-edges (sizes `data` short)   | 3 failures |
+| `writeIncidentEnds` ignores its cursor              | 4 failures |
+
+The **count** mutant is the one that mattered: `Int32Array` drops out-of-bounds writes **silently**,
+so sizing the array short produces a truncated adjacency with no error anywhere. It was predicted as
+the likeliest survivor and was caught 3 times.
+
+### Gates
+
+core 397/0 (383 + 14 new), gql 3691/0, gremlin 1241/0, native 961/0 (algo-conformance + algo-fuzz
+112/0 — byte-identity with the Rust engine), serialization 144/0, `bun run fuzz` 20/0.
+`bun run check` 0 read unpiped.
