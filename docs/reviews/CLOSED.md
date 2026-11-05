@@ -62062,7 +62062,7 @@ Comment-only change to `start-filtered-hop-values.ts` — verified comment-only 
 The rest stand at item 1536's: core 431/0, gql 3851/0, native 961/0, serialization 144/0,
 `bun run fuzz` 20/0.
 
-### Item 1538 — built the **by-id scaling probe**, the standing O(1) invariant that had NO instrument. The invariant HOLDS (100x the data for 4–6x the cost is the cache curve, not a lost O(1)). But it found a **~458 ns FIXED cost per Gremlin `run()`**, against a 21.9 ns map hit — and refuted the obvious cause before building it
+### Item 1538 — built the **by-id scaling probe**, the standing O(1) invariant that had NO instrument. The invariant HOLDS (100x the data for 4–6x the cost is the cache curve, not a lost O(1)). But it found a **~458 ns FIXED cost per Gremlin `run()`**, against a 21.9 ns map hit — and refuted the obvious cause before building it — ✅ **~320 ns of the 458 TAKEN at item 1539 (2.42x on `V(id)`); ~140 ns remains**
 
 `getVertexById` / `getEdgeById` are O(1) by construction and **nothing in this repo measured them.**
 An invariant nobody checks is one that can regress silently, and both ways it regresses are
@@ -62173,3 +62173,103 @@ Not worth taking while a 458 ns per-call floor is open.
 suites stand at item 1537's: core 431/0, gql 3851/0, gremlin 1489/0, native 961/0,
 serialization 144/0, `bun run fuzz` 20/0. The 1M-vertex arm runs under
 `timeout 900 systemd-run --user --scope -p MemoryMax=16G -p MemorySwapMax=0`.
+
+### Item 1539 — SHIPPED, **2.42x on `V(id)` and 2.77x on `E(id)`**: `applySource` evaluated `graph.vertices` on EVERY id lookup and discarded it. 508 → 210 ns/call, four controls flat. **48.4% of the profile, and answer-equivalent — which is why no test could have found it**
+
+Item 1538 located a ~458 ns fixed cost per `run()` and refuted the plan-cache explanation
+(`effectivePlan` is 11.5 ns of it). This finds where the money actually was.
+
+#### The bug, in one argument
+
+```ts
+    case 'V':
+      return sourceFromIds(
+-       graph.vertices,          // <- evaluated per call, used only when `ids` is undefined
++       () => graph.vertices,
+        step.ids,
+        (id) => graph.getVertexById(asStringId(id)),
+        tracksPath,
+      );
+```
+
+`sourceFromIds` reads its first argument **only** in the `if (!ids)` branch. JavaScript evaluates
+arguments eagerly, so every `V(id)` call ran the `graph.vertices` getter — which is
+`{ [Symbol.iterator]: () => this.verticesById.values() }`, an object plus a closure — allocated,
+handed in, and never touched. Same for `graph.edges` on `E(id)`.
+
+**It was 48.4% of the profile of a one-row `V(id)` query**, the single largest frame, at 172 ms of a
+356 ms window over 600,000 calls. Found by profiling a 1,000-vertex graph so the fixture could not
+dominate (the cost is flat in N, so a small graph is the right instrument), then walking the call
+tree to the parent: `get vertices <- applySource <- run <- toArray`.
+
+#### ⚠️ NO CORRECTNESS TEST COULD HAVE CAUGHT THIS, and the mutation run proves it
+
+Evaluating an argument and discarding it changes no answer. The whole suite passed before and after;
+so did all seven fuzzers. This is `perf-gate-needs-its-own-test` in its purest form, and the only
+way to pin it is to make the access **observable** — `source-laziness.test.ts` replaces
+`graph.vertices` with a counting own property shadowing the prototype getter, and asserts `V(id)`
+reads it **zero** times.
+
+Two things that test got wrong first, both recorded in it:
+
+- **The positive control was vacuous twice.** "`V()` with no ids DOES read it" was written as
+  `V().count()` and then `V().values(k)`, and both read it **zero** times — `countShortcut` and
+  `nodeValuesShortcut` answer those without building a source at all. A spy that observes nothing
+  makes every assertion beside it pass for free. It now uses a `has` filter, which item 1538
+  measured as declining every shortcut.
+- **My first two mutants were wrong, not the tests.** `eager-again-V` read `graph.vertices` _inside_
+  the thunk, which only runs on the no-ids path — so it never restored eagerness and SURVIVED.
+  Rewritten to hoist the read above the call (`const eager = graph.vertices;`), it is caught.
+
+#### MEASURED — median of 3 runs per arm, one arm per process, arm read from the BUNDLE
+
+Every run prints which arm it is measuring by grepping `dist/esm/index.mjs` itself — item 1536's
+rule, applied from the start this time.
+
+| arm         | PRE                           | POST                              |           |
+| ----------- | ----------------------------- | --------------------------------- | --------- |
+| `V(1 id)`   | 508.1 (511.1 / 505.8 / 508.1) | **209.9** (233.1 / 199.4 / 209.9) | **2.42x** |
+| `E(1 id)`   | 514.0 (492.7 / 514.4 / 514.0) | **185.9** (183.5 / 194.2 / 185.9) | **2.77x** |
+| `V(10 ids)` | 918.8 (917.8 / 918.8 / 937.7) | **596.9** (589.5 / 622.2 / 596.9) | **1.54x** |
+
+`V(10 ids)` gains less in ratio and the same in absolute terms (~320 ns), which is the signature of a
+**fixed** cost removed: per-row work is unchanged at ~46–52 ns.
+
+| control                      | PRE      | POST     |      |
+| ---------------------------- | -------- | -------- | ---- |
+| `V().hasLabel(Q)` in-process | 3.385 ms | 3.430 ms | flat |
+| `hopyieldsingle`             | 77.5 ms  | 76.5     | flat |
+| `hopbare`                    | 38.1     | 38.6     | flat |
+| `hopbothq`                   | 91.6     | 91.2     | flat |
+
+The three heavy controls run in `isolated-gremlin-bench.mjs`, one shape per process — in-process at
+5 calls they swung **28.6M against 44.4M ns/call**, which is item 762's trap and would have made any
+reading meaningless.
+
+#### MUTATION — five mutants, five caught
+
+| mutant                                         |        |                                         |
+| ---------------------------------------------- | ------ | --------------------------------------- |
+| `eager-V-real` (hoist the read above the call) | CAUGHT | 1492 pass 2 fail — the spy tests, alone |
+| `eager-E-real`                                 | CAUGHT | 1493 pass 1 fail — the spy test, alone  |
+| `thunk-empty` (no-ids path yields nothing)     | CAUGHT | 1088 pass **406** fail                  |
+| `ids-ignored` (resolve `ids[0]` every time)    | CAUGHT | 1490 pass 4 fail                        |
+| `ids-dedupe` (`new Set(ids)`)                  | CAUGHT | 1493 pass 1 fail                        |
+
+`ids-dedupe` is caught by a test written for it on purpose: `index-seed.ts` documents that
+`sourceFromIds` **does not dedupe** — which is why `V() + hasId(ids)` is deliberately NOT rewritten
+to `V(ids)`, since `V('a','a')` must yield twice where `hasId('a','a')` yields once. That contract
+is now pinned where the laziness change could have disturbed it.
+
+#### What this leaves of item 1538's 458 ns
+
+About 320 of the 458 ns were this. The remaining ~140 ns per call is the shortcut gauntlet's own
+calls plus traverser construction and `toArray`, on top of ~46–52 ns per row. Worth another look,
+but it is no longer the dominant term.
+
+#### Gates
+
+`bun run check` 0 read unpiped. core 431/0, gql 3851/0, gremlin **1494**/0, native 961/0,
+serialization 144/0, `bun run fuzz` 20/0 twice. Mutants run under `timeout 900 systemd-run --user
+--scope -p MemoryMax=16G -p MemorySwapMax=0`, restoring before each, pristine copy under
+`crates/lenke-engine/target/`; tree verified identical after.

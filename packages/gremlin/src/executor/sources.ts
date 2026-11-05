@@ -28,14 +28,14 @@ export const applySource = (
   switch (step.kind) {
     case 'V':
       return sourceFromIds(
-        graph.vertices,
+        () => graph.vertices,
         step.ids,
         (id) => graph.getVertexById(asStringId(id)),
         tracksPath,
       );
     case 'E':
       return sourceFromIds(
-        graph.edges,
+        () => graph.edges,
         step.ids,
         (id) => graph.getEdgeById(asStringId(id)),
         tracksPath,
@@ -67,13 +67,13 @@ export const injectAsSource = function* (
 };
 
 export const sourceFromIds = function* <T extends { readonly id: string }>(
-  all: Iterable<T>,
+  all: () => Iterable<T>,
   ids: readonly ID[] | undefined,
   byId: (id: ID) => T | null,
   tracksPath = true,
 ): Iterable<Traverser<T>> {
   if (!ids) {
-    for (const x of all) {
+    for (const x of all()) {
       yield startTraverser(x, tracksPath);
     }
 
