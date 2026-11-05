@@ -61018,7 +61018,7 @@ serialization 144/0, `bun run fuzz` 20/0 — byte-identity was run before any ti
 route is 100-300x territory. Answers also hand-checked against a brute-force walk on a mixed-degree,
 mixed-label fixture.
 
-### Item 1526 — ⚠️ **MY OWN PROBE WAS READING A PROPERTY THAT DOES NOT EXIST**: every `.k` arm of `element-row-probe` projected NULL, because the fixture carries `age`/`name`. Item 1525's win re-measured with a real read is **2.13x** (it reported 2.15x, so the figure survives) — and a filtered arm is what exposed it. The next mirror is confirmed at **2.11x**
+### Item 1526 — ✅ **its 2.11x mirror was BUILT AT ITEM 1527 for 2.21x.** ⚠️ **MY OWN PROBE WAS READING A PROPERTY THAT DOES NOT EXIST**: every `.k` arm of `element-row-probe` projected NULL, because the fixture carries `age`/`name`. Item 1525's win re-measured with a real read is **2.13x** (it reported 2.15x, so the figure survives) — and a filtered arm is what exposed it. The next mirror is confirmed at **2.11x**
 
 Set out to find the next instance of item 1525's symmetry and found a defect in the instrument first.
 
@@ -61084,3 +61084,83 @@ what rushing this looks like.
 `bun run check` 0 read unpiped. No engine change — the only edit is the probe — and the shipped state
 is verified unchanged (`git diff` empty for `hop-projection.ts`, 5 `projStartOnly` sites, gql
 **3817**/0).
+
+### Item 1527 — ✅ **SHIPPED, 2.21x**: item 1525's fold extended to the GATED shape — a start-only predicate plus a start-only projection. `WHERE a.age > 5 RETURN a.age` **250.7 → 113.6 ns/row**, controls flat. ⚠️ And the raise-parity tests had NO verified teeth until a mutant was built to attack them specifically
+
+Item 1526 priced this at 2.11x and named the thing to be careful with: that closure's try/catch raise
+parity (items 139, 142, 144, 145).
+
+### Built INSIDE the closure, not as a fourth sibling
+
+Item 1525 added a separate closure, which is this function's own item-159 rule. Here the same choice
+would mean **duplicating the seed, the seeded label re-check, and the raise-parity block** — and that
+block is the subtle one: it decides whether a faulting gate rethrows by asking whether the general
+path would have reached the vertex at all. Copying safety-critical code to gain a branch is a bad
+trade, and item 159's warning is about the per-EDGE loop, which this leaves untouched. So the fold is
+selected **once per call** and branched **once per vertex**, after the gate:
+
+```ts
+const fold = projStartOnly && farPred === undefined && fl === undefined;
+…
+if (fold) { let n = bucket.size; const template = projectRow(…); rows.push(template);
+            for (n -= 1; n > 0; n -= 1) { rows.push({ ...template }); } continue; }
+```
+
+### Measured — 2.21x, controls flat
+
+```text
+                         PRE       POST
+startpropfilt          250.7      113.6     2.21x   ← TARGET (933,310 rows)
+farpropfilt            421.0      423.4     flat    (same gate, FAR projection — cannot fold)
+startprop              117.0      119.1     flat    (item 1525's ungated fold)
+hopstartonlyyield      285.47     284.93    flat
+hopsingleyield          82.48      82.63    flat
+hopfiltyield           324.27     311.94    flat
+```
+
+⚠️ `startprop` first read **132.1** — 13% worse — and three alternated repeats put it at
+120.4/119.1/118.4 against a 115.7-118.4 PRE band. Flat; the 132.1 was an outlier. That is the second
+tick running where a single reading on this probe pointed the wrong way, in both directions.
+
+### ⚠️ The mutation finding: my own parity tests had no verified teeth
+
+Four mutants on the fold condition were all caught:
+
+```text
+fold-ignores-farpred    drop `farPred === undefined`   CAUGHT  3822 pass  1 fail  ← only MY test
+fold-ignores-farlabel   drop `fl === undefined`        CAUGHT  3821 pass  2 fail
+fold-always             `const fold = true`            CAUGHT  3766 pass 57 fail
+fold-before-gate        `fold || true`                 CAUGHT  3766 pass 57 fail
+```
+
+**But the two RAISE PARITY tests passed under every one of them** — so the tests written for the
+hazard I was most worried about were, at that point, believed rather than verified. `fold-before-gate`
+was meant to be the parity mutant and was not: `fold || true` still sits AFTER the try/catch, so it
+only folded everything.
+
+So a fifth mutant was built to attack them properly — the fold block **hoisted above the gate**, with
+its own bucket read:
+
+```text
+fold-hoisted-above-gate   CAUGHT  3817 pass 6 fail
+    (fail) ⚠️ RAISE PARITY: a faulting gate on a start WITH an edge raises
+    (fail) gates the start vertex and still emits out-degree rows for survivors
+```
+
+That is the test earning its place: with the fold above the gate, a faulting predicate is never
+evaluated and the throw disappears. **A generative or hand-written test whose teeth were never
+verified is worse than no test, because it is believed** — and the mutant that "should" have covered
+it did not.
+
+### Correctness, before any timing
+
+- gql **3823**/0, `bun run fuzz` 20/0.
+- Hand-checked against brute force on a mixed-degree/mixed-label fixture: the fold, a gate + far
+  label (3 rows), a gate + far projection, a gate + far predicate — all exact.
+- Raise parity checked directly: a `CAST` that faults is **suppressed** when the faulting start has
+  no edge and **raises** when it has one.
+
+### Gates
+
+`bun run check` 0 read unpiped. core 431/0, gql **3823**/0, gremlin 1469/0, native 961/0,
+serialization 144/0, `bun run fuzz` 20/0.

@@ -3178,6 +3178,20 @@ const filteredHopWalk = (w: {
       // 49.6). `hopSeek` hands back a candidate set only when it is strictly narrower than the
       // label bucket, so an unindexed graph walks and pays nothing for asking.
       const seeded = hopSeek(graph, cstart, startLabel, env);
+      // ⚠️ THE FOLD, PER CALL (item 1527) — item 1525's template-and-copy extended to the gated
+      // shape. A start-only PREDICATE gates the START VERTEX, so if the projection also reads only
+      // the start, every row that vertex then produces is still identical and the bucket SIZE is
+      // still the row count. `MATCH (a:P)-[:E]->() WHERE a.age > 5 RETURN a.age` measured
+      // 246.9 ns/row against the ungated fold's 117.0.
+      //
+      // ⚠️ IN THIS CLOSURE RATHER THAN A FOURTH ONE, deliberately. The alternative was a sibling
+      // closure like item 1525's, which would mean DUPLICATING the seed, the seeded label re-check
+      // and — the one that matters — the try/catch raise-parity block below (items 139, 142, 144,
+      // 145). That block decides whether a faulting gate rethrows by asking whether the general
+      // path would have reached the vertex at all; copying it to gain a branch is a bad trade, and
+      // item 159's warning is about the per-EDGE loop, which this leaves alone. The test is once
+      // per CALL and the branch once per VERTEX.
+      const fold = projStartOnly && farPred === undefined && fl === undefined;
 
       for (const v of seeded ?? candidateVertexSource(graph, startLabel)) {
         // A seeded set is a SUPERSET — an index hint is a necessary condition, not a sufficient
@@ -3220,6 +3234,19 @@ const filteredHopWalk = (w: {
         const bucket = (out ? v.adjFrom : v.adjTo)?.get(typeName);
 
         if (bucket === undefined) {
+          continue;
+        }
+
+        if (fold) {
+          let n = bucket.size;
+          const template = projectRow(proj, binding, params, graph);
+
+          rows.push(template);
+
+          for (n -= 1; n > 0; n -= 1) {
+            rows.push({ ...template });
+          }
+
           continue;
         }
 

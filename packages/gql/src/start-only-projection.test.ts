@@ -180,3 +180,80 @@ describe('the neighbouring shapes still answer', () => {
     ]);
   });
 });
+
+/**
+ * ⚠️ ITEM 1527 — the SAME fold under a start-only PREDICATE. The gate rejects the start VERTEX, so
+ * every row a surviving vertex produces is still identical. `WHERE a.age > 5 RETURN a.age` went from
+ * 250.7 to 113.6 ns/row (2.21x).
+ *
+ * The cases that matter here are the RAISE PARITY ones. That closure wraps its gate in a try/catch
+ * (items 139, 142, 144, 145) because the general path evaluates a clause `WHERE` once per COMPLETE
+ * match — so a start that yields no row must never have it evaluated. On a fault it decides whether
+ * to rethrow by asking whether the general path would have reached the vertex at all. The fold sits
+ * AFTER that block, and these two tests are what prove it did not disturb it.
+ */
+describe('⚠️ the fold under a start-only predicate', () => {
+  const gated = (): Graph => {
+    const g = graph();
+
+    return g;
+  };
+
+  it('gates the start vertex and still emits out-degree rows for survivors', () => {
+    // a (k=1) is rejected; b (k=2) keeps its single edge. c has no edges either way.
+    expect(col(query(gated(), 'MATCH (a:P)-[:E]->() WHERE a.k > 1 RETURN a.k AS k'), 'k')).toEqual([
+      2,
+    ]);
+  });
+
+  it('a gate that keeps everything still gives every row', () => {
+    expect(col(query(gated(), 'MATCH (a:P)-[:E]->() WHERE a.k > 0 RETURN a.k AS k'), 'k')).toEqual([
+      1, 1, 1, 2,
+    ]);
+  });
+
+  it('⚠️ a gate PLUS a non-vacuous far label still counts the surviving edges', () => {
+    // a is kept (k=1 > 0) and has two `Q` edges; b is kept and has one. The fold must NOT fire.
+    expect(
+      col(query(gated(), 'MATCH (a:P)-[:E]->(:Q) WHERE a.k > 0 RETURN a.k AS k'), 'k'),
+    ).toEqual([1, 1, 2]);
+  });
+
+  it('⚠️ a gate PLUS a far predicate still rejects per edge', () => {
+    expect(
+      col(query(gated(), 'MATCH (a:P)-[:E]->(x) WHERE a.k > 0 AND x.k > 8 RETURN a.k AS k'), 'k'),
+    ).toEqual([1, 2]);
+  });
+
+  /** A graph where `bad`'s `s` cannot be cast, so the gate FAULTS on it. */
+  const faulting = (withEdge: boolean): Graph => {
+    const g = new Graph();
+
+    g.addVertex({ id: 'bad', labels: ['P'], properties: { s: 'nope', k: 1 } });
+    g.addVertex({ id: 'ok', labels: ['P'], properties: { s: '7', k: 2 } });
+    g.addVertex({ id: 't', labels: ['P'], properties: { s: '1', k: 3 } });
+    g.addEdge({ id: 'e0', labels: ['E'], from: g.getVertexById('ok')!, to: g.getVertexById('t')! });
+
+    if (withEdge) {
+      g.addEdge({
+        id: 'e1',
+        labels: ['E'],
+        from: g.getVertexById('bad')!,
+        to: g.getVertexById('t')!,
+      });
+    }
+
+    return g;
+  };
+
+  const FAULTY = 'MATCH (a:P)-[:E]->() WHERE CAST(a.s AS INTEGER) > 0 RETURN a.k AS k';
+
+  it('⚠️ RAISE PARITY: a faulting gate on a start with NO edge is suppressed', () => {
+    // The general path would never evaluate the predicate for `bad`, so neither may this one.
+    expect(query(faulting(false), FAULTY)).toEqual([{ k: 2 }]);
+  });
+
+  it('⚠️ RAISE PARITY: a faulting gate on a start WITH an edge raises', () => {
+    expect(() => query(faulting(true), FAULTY)).toThrow();
+  });
+});
