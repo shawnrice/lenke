@@ -3,7 +3,7 @@ import { ErrorCode, LenkeError } from '@lenke/errors';
 
 import type { Statement } from './ast.js';
 import { isTxControl } from './ast.js';
-import { normalizeLiterals } from './auto-param.js';
+import { type Normalized, normalizeLiterals } from './auto-param.js';
 
 export { normalizeLiterals } from './auto-param.js';
 import {
@@ -285,6 +285,60 @@ const seenOnce = new Set<string>();
  * anything else. That ordering is the whole reason auto-parameterization is free for callers who
  * already use parameters: their text repeats, so it hits here and never reaches the tokenizer.
  */
+/**
+ * The LIFT memo — ONE SLOT, deliberately (item 1541).
+ *
+ * ⚠️ WITHOUT IT, AUTO-PARAMETERIZATION DEFEATS THE PARSE CACHE FOR EVERY TEXT IT HELPS. The lifted
+ * statement is cached under the LIFTED text, so `parseCacheHit(originalText)` misses on every
+ * repeat call and `normalizeLiterals` re-tokenizes — forever. Item 1540 measured it and confirmed
+ * the key against the cache's own state (after four calls of `LET x = 5 RETURN x`, querying
+ * `LET x = $__ap0 RETURN x` directly leaves the cache size at 1):
+ *
+ * ```text
+ *   LET x = 5 RETURN x     1013.2 ns/call
+ *   LET x = $p RETURN x     270.1          <- the SAME plan, 3.75x apart
+ * ```
+ *
+ * `RETURN 1 AS v` escapes at ~110 ns for the opposite reason — `MAYBE_LIFTABLE` rejects it, so no
+ * lift happens and the ORIGINAL text is what gets cached. The gap was exactly "did a lift happen",
+ * which made the queries this feature exists for the only ones that never hit a cache.
+ *
+ * ⚠️ WHY ONE SLOT AND NOT AN LRU, WHICH IS WHAT I BUILT FIRST. A `Map` keyed by the original text
+ * holds one entry per distinct literal value — the pollution the lifted key exists to avoid — and
+ * it made item 1502's ALL-MISS workload (a value interpolated into the text, so every call has a
+ * fresh text and nothing can ever hit) **17% slower**: 1367 -> 1598 ns/call over six readings each.
+ * Adding that cache's own admission filter — memoise on the SECOND sighting — recovered only half
+ * of it, to **1500, still 10% down**, because the all-miss caller still pays a `get`, a `has`, an
+ * eviction and an `add`, and still RETAINS 64 fresh strings.
+ *
+ * Item 1502 rejected a 16% regression on exactly this workload. One slot has no bookkeeping to pay:
+ * a miss is two field writes, retains one string, and evicts by overwriting. The caller it serves
+ * is the one that matters — a hot query in a loop — and a caller alternating between several
+ * literal texts degrades to today's cost rather than below it.
+ *
+ * SOUND because `normalizeLiterals` is a pure function of the text: for an identical text the
+ * lifted text and values are identical. No `chain` is stored — the lift does not consult it, and
+ * the statement is still fetched through `parseCached(lifted.text, chain)`, which verifies it.
+ *
+ * ⚠️ AND THE VALUES ARE SPREAD PER CALL rather than handed over by reference. `withClock` returns
+ * its `params` argument UNCHANGED when the graph has no clock, so a memoised object would reach
+ * `execute` directly and be shared by every later call of that text. Nothing is known to mutate it
+ * — a user's own params object already flows that way — but a spread of a small object costs ~25 ns
+ * against the ~740 this saves, so the question is bought out rather than reasoned about.
+ */
+let liftSlotText: string | undefined;
+let liftSlotValue: Normalized | undefined;
+/**
+ * How often the slot answered, and how often it was written.
+ *
+ * ⚠️ THE ROUTE IS OTHERWISE UNTESTABLE, which is the same reason `parseCacheStats` reports `seen`:
+ * a memo is answer-equivalent, so every mutant that disables it passes the whole suite. Mutation
+ * says so directly — `never-store` and `store-before-parse` both survived 3,858 tests. Counting is
+ * what turns "is the slot used?" into an assertion.
+ */
+let liftSlotHits = 0;
+let liftSlotStores = 0;
+
 const parseCacheHit = (text: string, chain: number | undefined): Statement | undefined => {
   const hit = parseCache.get(text);
 
@@ -381,10 +435,18 @@ const parseCached = (text: string, chain: number | undefined): Statement => {
  *
  * `seen` is the admission filter's occupancy; it holds TEXTS only, never statements.
  */
-export const parseCacheStats = (): { size: number; seen: number; cap: number } => ({
+export const parseCacheStats = (): {
+  size: number;
+  seen: number;
+  cap: number;
+  liftHits: number;
+  liftStores: number;
+} => ({
   size: parseCache.size,
   seen: seenOnce.size,
   cap: PARSE_CACHE_CAP,
+  liftHits: liftSlotHits,
+  liftStores: liftSlotStores,
 });
 
 /**
@@ -424,16 +486,34 @@ export const query = <R extends Row = Row>(
     return execute<R>(cached, graph, withClock(graph, params));
   }
 
-  const lifted = normalizeLiterals(text);
+  const memoed = liftSlotText === text ? liftSlotValue : undefined;
+
+  if (memoed !== undefined) {
+    liftSlotHits += 1;
+  }
+
+  const lifted = memoed ?? normalizeLiterals(text);
 
   if (lifted !== undefined) {
     try {
       const stmt = parseCached(lifted.text, chain);
 
+      // Only AFTER the lifted text has parsed. A lift whose text does not parse falls through
+      // below, and remembering it would commit every later call of that text to the same wasted
+      // parse.
+      if (memoed === undefined) {
+        liftSlotText = text;
+        liftSlotValue = lifted;
+        liftSlotStores += 1;
+      }
+
       return execute<R>(
         stmt,
         graph,
-        withClock(graph, params === undefined ? lifted.params : { ...lifted.params, ...params }),
+        withClock(
+          graph,
+          params === undefined ? { ...lifted.params } : { ...lifted.params, ...params },
+        ),
       );
     } catch {
       // Fall through to the original text, whose parse will raise the caller's real error if there

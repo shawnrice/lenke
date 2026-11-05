@@ -62274,7 +62274,7 @@ serialization 144/0, `bun run fuzz` 20/0 twice. Mutants run under `timeout 900 s
 --scope -p MemoryMax=16G -p MemorySwapMax=0`, restoring before each, pristine copy under
 `crates/lenke-engine/target/`; tree verified identical after.
 
-### Item 1540 — **the auto-parameterization lift DEFEATS the parse cache for exactly the queries it exists to help: 3.75x on a small query, every call, forever.** Mechanism confirmed against the cache's own state, not inferred. Sized as a SERVING cost (2.3% once rows are produced). PRICED, NOT BUILT
+### Item 1540 — **the auto-parameterization lift DEFEATS the parse cache for exactly the queries it exists to help: 3.75x on a small query, every call, forever.** Mechanism confirmed against the cache's own state, not inferred. Sized as a SERVING cost (2.3% once rows are produced). ~~PRICED, NOT BUILT~~ — ✅ **BUILT AT ITEM 1541, 3.98x** (one slot, not the LRU this entry sketched — that cost all-miss 17%)
 
 Item 1539's win was an eagerly-evaluated argument on the Gremlin side. This tick screened GQL for a
 per-call floor the same way, and the floor is healthy — `RETURN 1 AS v` is **110.5 ns/call** against
@@ -62369,3 +62369,120 @@ next tick then shipped.
 `bun run check` 0 read unpiped. Probe arms only; no engine or core code changed, so the suites stand
 at item 1539's: core 431/0, gql 3851/0, gremlin 1494/0, native 961/0, serialization 144/0,
 `bun run fuzz` 20/0.
+
+### Item 1541 — SHIPPED, **3.98x**: a ONE-SLOT lift memo, so auto-parameterization stops defeating the parse cache. `LET x = 5 RETURN x` 994 → 250 ns/call, and the literal spelling now COSTS THE SAME as its `$param` twin. The LRU I built first cost the all-miss workload 17% and was thrown away
+
+Item 1540 priced this and named the open question: what cap does the memo want? The answer turned out
+to be **one slot and no cap**, and the two rejected designs are the useful part of the entry.
+
+#### What shipped
+
+```ts
++ let liftSlotText: string | undefined;
++ let liftSlotValue: Normalized | undefined;
+
+-  const lifted = normalizeLiterals(text);
++  const memoed = liftSlotText === text ? liftSlotValue : undefined;
++  const lifted = memoed ?? normalizeLiterals(text);
+```
+
+The lifted statement is cached under the LIFTED text, so `parseCacheHit(originalText)` missed on
+every repeat call and `normalizeLiterals` re-tokenized forever. The slot removes that, and it is
+sound because `normalizeLiterals` is a pure function of the text: for an identical text the lifted
+text and values are identical. No `chain` is stored — the lift does not consult it, and the
+statement still comes from `parseCached(lifted.text, chain)`, which verifies the chain itself.
+
+#### TWO DESIGNS REJECTED WITH NUMBERS, both on the workload item 1502 cares about
+
+The obvious implementation is a `Map` keyed by the original text, capped like the parse cache. It
+holds **one entry per distinct literal value** — the pollution the lifted key exists to avoid — and
+it cost the ALL-MISS workload (a value interpolated into the text, so every call has a fresh text
+and nothing can ever hit) **17%**:
+
+| design                               | `letlit` | `allmiss` (the risk) |
+| ------------------------------------ | -------- | -------------------- |
+| PRE                                  | 994 ns   | 1367 ns              |
+| LRU `Map`, admit on first sighting   | 253      | **1598 — 17% worse** |
+| LRU `Map` + admit on SECOND sighting | 250      | **1500 — 10% worse** |
+| **ONE SLOT (shipped)**               | **250**  | **1400 — flat**      |
+
+Adding the parse cache's own admission filter recovered only half the regression, because the
+all-miss caller still pays a `get`, a `has`, an eviction and an `add` — and still RETAINS 64 fresh
+strings, which is item 1502's retention argument verbatim (that item rejected 16% on this same
+workload for the same reason).
+
+One slot has no bookkeeping to pay: a miss is two field writes, it retains one string, and it evicts
+by overwriting. The caller it serves is the one that matters — a hot query in a loop — and a caller
+alternating between several literal texts degrades to _today's_ cost, never below it.
+
+#### MEASURED — median of 3+ runs per arm, arm read from the BUNDLE every run
+
+| arm                                               | PRE                    | POST                            |                                |
+| ------------------------------------------------- | ---------------------- | ------------------------------- | ------------------------------ |
+| `LET x = 5 RETURN x`                              | 994 (1013.0 / 975.4)   | **250** (240.4 / 268.1 / 249.5) | **3.98x**                      |
+| `LET x = 1 LET y = 2 RETURN y`                    | 1350 (1381.8 / 1318.9) | **333** (333.1 / 370.7 / 314.6) | **4.05x**                      |
+| `MATCH (n:P) WHERE n.k = 5 RETURN n.k` (~2k rows) | 34.9 µs                | 33.8                            | 1.03x — as item 1540 predicted |
+
+| control                             | PRE               | POST              |          |
+| ----------------------------------- | ----------------- | ----------------- | -------- |
+| `LET x = $p RETURN x`               | 234               | 248               | flat     |
+| `RETURN 1 AS v`                     | 128               | 134               | flat     |
+| **`allmiss` — fresh text per call** | 1367 (6 readings) | 1400 (6 readings) | **flat** |
+
+**The headline is the convergence.** On the durable probe the two spellings now read `letlit` 275.5
+against `letparam` 275.1 — identical, which is what two spellings of one plan should cost.
+
+#### ⚠️ THE ROUTE NEEDED ITS OWN OBSERVABILITY, and mutation is what proved it
+
+A memo is answer-equivalent, so the first mutation run had **five survivors of six**. Three were
+real gaps and two were my own bad mutants; only one mutant (`no-text-compare`) was caught, and that
+one by 2,786 tests.
+
+So `parseCacheStats()` now also reports `liftHits` and `liftStores` — the same move item 1509 made
+with `seen`, whose eviction was otherwise untestable. With those, three of the five are caught:
+
+| mutant                                      | first run         | after the counters   |
+| ------------------------------------------- | ----------------- | -------------------- |
+| `no-text-compare` (serve the slot blind)    | CAUGHT, 2786 fail | CAUGHT               |
+| `compare-lifted` (compare the wrong string) | SURVIVES          | **CAUGHT**           |
+| `never-store`                               | SURVIVES          | **CAUGHT**           |
+| `store-before-parse`                        | SURVIVES          | SURVIVES — see below |
+| `no-spread`                                 | SURVIVES          | SURVIVES — see below |
+| `params-order`                              | SURVIVES          | SURVIVES — see below |
+
+`no-text-compare` is the one that is a wrong ANSWER rather than a slow one: both `LET x = 5` and
+`LET x = 6` lift to `LET x = $__ap0 RETURN x`, so neither the lifted text nor the parse cache can
+tell them apart and the slot would serve 5 twice. The original-text compare is the only thing
+standing between those two queries.
+
+#### The three remaining survivors, each with its reason — none is a missing test I could write
+
+- **`store-before-parse`** — and **I checked this rather than assuming coverage.** The test I wrote
+  for it is VACUOUS: the counters say `MATCH (n:P) WHERE n.k = RETURN n.k` never attempts a lift at
+  all (`liftStores` delta 0, `liftHits` delta 0), because `MAYBE_LIFTABLE` rejects it. Covering it
+  needs a text whose literals the allowlist ADMITS but whose rewritten form fails to parse; `query`'s
+  own comment says that is possible-but-rare by construction, and I could not build one. The guard
+  stays as defence and the test now says exactly what it does and does not cover.
+- **`no-spread`** — surviving is the _answer_ to a question I deliberately bought out rather than
+  investigated. `withClock` returns its `params` argument unchanged when the graph has no clock, so a
+  memoised object would reach `execute` by reference on every later call; I spread it for ~25 ns
+  against the ~740 saved. The mutant surviving shows nothing currently mutates it, so the spread is
+  insurance, not a fix — worth saying plainly rather than claiming it closed a live bug.
+- **`params-order`** — unfalsifiable by design, and the code already says why: the synthetic
+  namespace is `__ap<n>`, so user and lifted names cannot collide. The order exists so a future
+  namespace change cannot silently shadow a caller's binding.
+
+#### Gates
+
+`bun run check` 0 read unpiped. core 431/0, gql **3861**/0, gremlin 1494/0, native 961/0,
+serialization 144/0.
+
+`bun run fuzz` read **19/1 once**, then **20/0 five times**. Ruled out structurally rather than by
+counting, per `gremlin-fuzz-families`: the slot is keyed on `liftSlotText === text` (exact string
+identity) and returns what `normalizeLiterals(text)` would, so it cannot serve another text's lift;
+the fuzzer sends mostly distinct texts, so a single slot is almost never consulted there at all; and
+the same 19/1-then-clean pattern appeared in item 1535's tick, before this change existed.
+
+Mutants run under `timeout 900 systemd-run --user --scope -p MemoryMax=16G -p MemorySwapMax=0`,
+restoring before each, pristine copy under `crates/lenke-engine/target/`; tree verified identical
+after.
