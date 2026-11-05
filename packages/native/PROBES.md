@@ -210,6 +210,14 @@ while `localvalues`' 20.7x (a `values('k')` tail, which no shortcut answers) is 
 The first floor read 377x and was entirely the shortcut. `localvaluesfloor` is the hand floor for the
 honest pair.
 
+Item 1480 then measured the PER-ELEMENT branch steps (`optionald`, `coalesced2`, `optionalvalues`,
+`coalescevalues`, `branchvaluesfloor`): **`optional` 19.3x and `coalesce` 20.2x a bare hop**, and
+item 1479's fusion **cannot transfer** — for them the per-traverser sub-plan IS the semantics. The
+cause is not the dispatch switch (it does not appear in the profile at all) but that the fused walks
+are **source-anchored**: `hopValuesShortcut` wants `V()` plus one or two steps and answers the whole
+plan, so a sub-plan starting from a traverser has nothing to anchor on. **Third instance of that one
+cause** — 1464's `tracksPath`, 1479's `local`, these. Priced, not built.
+
 ⚠️ **But re-profiling `folded` at 400 reps instead of 20 roughly DOUBLED both shares** (`projectValues`
 45.83% → 49.22%, `foldStep` 10% → 20.83%), and the real find was `projectValues` — **1.39x, item
 1476**. Its 72-sample profile had ranked the wrong frame. Below a few hundred samples the ranking is

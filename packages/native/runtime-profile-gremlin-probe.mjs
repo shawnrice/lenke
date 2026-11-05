@@ -40,12 +40,14 @@ import {
   select,
   toArray,
   traversal,
+  identity,
   union,
   valueMap,
   values,
   repeat,
   match,
   local,
+  optional,
   pipe,
   outE,
   inV,
@@ -167,6 +169,27 @@ const SHAPES = {
   // these are the pair that prices `local`'s per-traverser dispatch honestly.
   localvalues: traversal(V(), local(pipe(outE(), inV())), values('k'), count()),
   localvaluesfloor: traversal(V(), outE(), inV(), values('k'), count()),
+
+  // ── Item 1480: the PER-ELEMENT branch steps ─────────────────────────────────────────────────
+  //
+  // `coalesce`/`choose`/`optional`/`branch` route each traverser individually BY DESIGN — unlike
+  // `local`, that is their semantics, not an artefact, so item 1479's fusion cannot apply. The open
+  // question is whether the per-traverser RE-DISPATCH (`applyPlanToStream` walking the step array
+  // through a 103-arm switch, once per row) is itself expensive enough to be worth attacking.
+  //
+  // ⚠️ Realistic forms. Item 1474's `coalesced` used `coalesce(out('E'), V())`, whose second arm
+  // rescans the whole graph — a shape nobody writes, and one whose cost is the rescan rather than
+  // the dispatch.
+  optionald: traversal(V(), optional(pipe(out('E'))), count()),
+  coalesced2: traversal(V(), coalesce(pipe(out('E')), pipe(identity())), count()),
+  // The floor for both: the arm that almost always wins, with no branch wrapper at all.
+  branchfloor: traversal(V(), out('E'), count()),
+  // ⚠️ And the honest pair, since a bare `count()` tail is answered by a chain count without
+  // walking (item 1479 learned this the hard way at 377x). At FANOUT 5 every vertex has out-edges,
+  // so `optional(out('E'))` always takes its first arm and the floor is semantically comparable.
+  optionalvalues: traversal(V(), optional(pipe(out('E'))), values('k'), count()),
+  coalescevalues: traversal(V(), coalesce(pipe(out('E')), pipe(identity())), values('k'), count()),
+  branchvaluesfloor: traversal(V(), out('E'), values('k'), count()),
 };
 
 const plan = SHAPES[SHAPE];

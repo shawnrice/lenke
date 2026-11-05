@@ -56780,3 +56780,99 @@ items 1303 and 1447 paid for, and [[rewrite-composition-is-not-free]] exists for
 
 core 431/0, gql 3709/0, gremlin 1276/0 (1264 + 12 new), native 961/0, serialization 144/0,
 `bun run fuzz` 20/0. `bun run check` 0 read unpiped.
+
+### Item 1480 — ❌ PRICED, NOT BUILT: `optional` and `coalesce` cost **~19-20x a bare hop**, and item 1479's fusion CANNOT transfer. The cause is structural and now has three instances: the fused walks are SOURCE-ANCHORED, so no sub-plan can reach them
+
+Item 1479 fused `local()` away for a 20.7x. `coalesce`/`choose`/`optional`/`branch` route each
+traverser individually too — but for them that is the semantics, not an artefact, so the same trick
+cannot apply: the branch decision needs per-traverser knowledge of whether the arm produced anything.
+
+The question worth answering was whether the per-traverser cost is as large here, and what it is.
+
+### Measured — the same magnitude as `local` had
+
+20,000 vertices (FANOUT 5), 60 reps. The `values('k')` tails are deliberate: a bare `count()` tail is
+answered by a chain count **without walking** (item 1479's 377x false reading), so these are the
+honest pair.
+
+```text
+optionalvalues      1836.6 / 1864.3 ms      V().optional(out('E')).values('k').count()
+coalescevalues      1925.4                  V().coalesce(out('E'), identity()).values('k').count()
+branchvaluesfloor     95.4 / 101.0          V().out('E').values('k').count()
+```
+
+**19.3x and 20.2x.** At FANOUT 5 every vertex has out-edges, so `optional`'s first arm always wins
+and the floor is semantically comparable — it is the same answer by the cheap route.
+
+(The first floor attempt, `V().out('E').count()`, read **7.3 ms** — the count shortcut again. Named in
+advance this time and still worth re-stating: a bare `count()` tail measures whether the shortcut
+applies, not what the walk costs.)
+
+### The cause is NOT the dispatch — it is the general walk
+
+`optionalvalues` profiled at 1,664 samples:
+
+```text
+20.97%  otherEndpoint      ┐
+19.47%  iterLabeled        │
+ 7.57%  get to             ├ ~61%: the GENERAL hop walk
+ 5.41%  traverseToVertex   │
+ 4.21%  iterByLabel        │
+ 3.25%  outEdgesOf         ┘
+15.20%  optionalStep
+ 6.61%  projectValues
+```
+
+So the inner `out('E')` runs the **generic traverser pipeline**, not the fused walk that
+`branchvaluesfloor` gets. I had expected the 103-arm `applyStep` switch to be the cost; it does not
+appear at all.
+
+⚠️ **AND THE FUSED WALKS STRUCTURALLY CANNOT REACH A SUB-PLAN.** `hopValuesShortcut` returns
+`{ values: HopWalk, rest: Step[] }` and is consumed once at the top of `run` against the whole
+`effective` plan — it "wants `V()` plus one or two steps", i.e. it is **source-anchored** and answers
+from the graph. A sub-plan inside `optional`/`coalesce` starts from the incoming traverser, not from
+`V()`, so there is nothing for it to anchor on.
+
+**This is the THIRD instance of one structural cause**, and naming it is the point of this item:
+
+| item | shape                                        | outcome                                                    |
+| ---- | -------------------------------------------- | ---------------------------------------------------------- |
+| 1464 | `tracksPath` set ⇒ plan returned unrewritten | `simplePath` 3.3x priced, **declined by the user at 1466** |
+| 1479 | `local(transparent)`                         | **fixed by ELIMINATING the sub-plan** — 20.7x              |
+| 1480 | `optional` / `coalesce`                      | **cannot be eliminated**; the sub-plan is the semantics    |
+
+A real fix means making the fused walks composable — a stream-transformer form that applies a typed
+hop to an arbitrary input stream without building traversers — rather than a source-anchored
+whole-plan answer. That is a design change to the fast-walk contract, not a tick's work, and it would
+land in the files [[executor-edits-perturb]] measures at ~16% per edit.
+
+### The secondary cost, priced and deliberately NOT taken
+
+Both steps do, per traverser:
+
+```ts
+const out = [...applyPlanToStream(plan, [t], graph, ctx)];
+
+if (out.length > 0) {
+  yield * out;
+} else {
+  yield t;
+}
+```
+
+They **fully materialize** the sub-plan's output into an array only to ask whether it is non-empty —
+at FANOUT 5 that is a 5-element array per row, 1.2M of them over the measured run. A lazy first-peek
+(`it.next()`, then yield the first and delegate the rest) removes it.
+
+**Not built, for a reason that is not laziness being hard:** materializing eagerly means the sub-plan
+runs to completion BEFORE anything downstream sees a row, and a lazy version interleaves it. For a
+sub-plan containing `sideEffect`, `aggregate`, `store` or a mutation that changes the observable
+ORDER of side effects relative to downstream consumption — and `sideeffect-in-branch.test.ts` exists
+because that interaction is already known to matter. Against a shape whose cost is 61% elsewhere, the
+expected win is small (item 1477: the profile share is the ceiling) and the semantic surface is wide.
+Priced at one array per traverser, declined on that trade.
+
+### Gates
+
+`bun run check` 0 read unpiped. Six probe shapes added (`optionald`, `coalesced2`, `branchfloor`,
+`optionalvalues`, `coalescevalues`, `branchvaluesfloor`); no engine code changed.
