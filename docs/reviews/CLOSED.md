@@ -56305,3 +56305,98 @@ python read-modify-write (with a uniqueness assertion), not with the file tools.
 
 core 431/0, gql 3709/0, gremlin 1249/0 (1241 + 8 new), native 961/0, serialization 144/0,
 `bun run fuzz` 20/0. `bun run check` 0 read unpiped.
+
+### Item 1475 — SPLIT RESULT: `valueMap`/`elementMap`'s property copy SHIPPED at **1.14x** (3/3, controls flat) by dropping a guard that could never fail; `projectStep`'s per-row identity-`By` allocation **REJECTED as FLAT** — escape analysis again
+
+Item 1474 left four unpriced Gremlin frames nominated, and the ZERO-mentions signal is one-shot. This
+takes two of them: `projectValueMap` (45% of its shape) and `projectStep` (54%). They look like the
+same kind of defect. **Only one of them was.**
+
+### SHIPPED — the guard that could never fail
+
+`valueMap` and `elementMap` carried **byte-identical** copies of this loop:
+
+```ts
+const targetKeys = keys && keys.length > 0 ? keys : Object.keys(props);
+
+for (const k of targetKeys) {
+  if (k in props) {
+    // ← with no keys requested, this cannot be false
+    out[k] = props[k];
+  }
+}
+```
+
+With no keys requested the targets come **from** the bag, so `k in props` re-answered what
+`Object.keys` had just answered — a prototype-chain lookup per property per traverser. Replaced by one
+shared `copyProps` with two arms: requested keys keep the test (a requested key genuinely may be
+absent), the no-keys arm drops it.
+
+Sharing it is the point as much as the speed: two copies of one output-shape rule is what drifts, and
+a drift here is wrong bytes, not a wrong plan.
+
+```text
+                        POST                      PRE
+valuemapped        107.7 104.6 105.6      124.1 119.7 120.5     3/3, 1.14x
+hopbare (control)  473.9 474.4 454.3      450.6 461.5 451.6     mixed, flat
+grouped (control)   30.7  29.6  29.9       32.1  33.4  31.2     mixed, flat
+```
+
+⚠️ **Assignment is kept, not a spread.** `out[k] = v` and `{ ...props }` differ for the key
+`__proto__` — assignment sets the prototype, spread defines an own property — and that behaviour is
+settled won't-fix. A perf item is not the place to change it, and `{ ...props }` would have been the
+faster rewrite.
+
+### ❌ REJECTED — the identity-`By` allocation, FLAT
+
+`projectStep` wrote `bys?.[i] ?? { kind: 'identity' as const }` **inside** its per-key loop, so
+`project('a', 'b')` with no `by()` modulators allocated a fresh object **per key per traverser** — two
+a row, a million over the measured run. Hoisting it to a module-level frozen constant and resolving
+`keys.map((_, i) => bys?.[i] ?? IDENTITY_BY)` once per step:
+
+```text
+projected   POST 83.3 87.2 92.5      PRE 86.8 87.1 89.5     1/3, FLAT
+```
+
+**Reverted.** V8's escape analysis makes an object literal that never leaves the call nearly free —
+**the same mechanism that retired the `setProperty` closure guard**, also reverted, also flat
+("V8's escape analysis makes a closure that never leaves the call nearly free"). That is now twice,
+so it generalises: **an allocation visible in a profile is not necessarily an allocation that costs
+anything, when it cannot escape.** The number is recorded at the line itself so the next reader of
+that loop does not re-derive it.
+
+This is also why the two frames had to be measured separately rather than as one "projection" item:
+they shared a shape, a file and a profile share, and one was worth 1.14x while the other was worth
+nothing.
+
+### Teeth
+
+`value-element-map-keys.test.ts`, 9 tests over both arms and both steps, asserting **`Object.keys`
+sequences** rather than membership — column order is observable in the output bytes, so order is
+contract. Covered: no keys requested (whole bag in bag order, a sparser element, an element with no
+properties at all); keys requested (an absent requested key omitted while the row survives, request
+order rather than bag order, a key absent everywhere); and `elementMap` keeping `id`/`label` first,
+plus `IN`/`OUT` before an edge's properties.
+
+**Mutation-verified, with a null:**
+
+| mutant                                          | caught by            |
+| ----------------------------------------------- | -------------------- |
+| the no-keys arm copies nothing                  | 19 failures          |
+| requested keys emitted in BAG order             | 11 failures          |
+| the absent-key guard dropped for requested keys | 1 failure            |
+| the redundant guard RESTORED (the NULL mutant)  | survives, as it must |
+
+### Gates
+
+core 431/0, gql 3709/0, gremlin 1258/0 (1249 + 9 new), native 961/0, serialization 144/0,
+`bun run fuzz` 20/0. `bun run check` 0 read unpiped.
+
+⚠️ **One native run reported `960 pass 1 fail` and it was the known run-many flake** — four
+subsequent isolated runs of the same command read 961/0 with no `(fail)` line at all. Re-run before
+believing an exit 1 from that package.
+
+### Still nominated from item 1474
+
+`asStep` (7% of `selected`, whose shape is 1776 ms) and `foldStep` (10% of `folded`) remain unpriced.
+`projectStep` is now priced and rejected; `projectValueMap` and `groupStep` are taken.

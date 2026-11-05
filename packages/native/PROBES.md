@@ -177,8 +177,11 @@ named-step select. Seven added (`unioned`, `projected`, `valuemapped`, `coalesce
 `groupreduce`, `folded`), which nominated **five** unpriced frames: `groupStep` 48.9% (taken, 1.27x),
 `projectStep` 54%, `projectValueMap` 45%, `asStep` 7%, `foldStep` 10%. `unioned` came back at **1 ms
 engine** — a count shortcut already answers it, so item 1473's GQL defect has no Gremlin twin.
-**`projectStep`, `projectValueMap`, `asStep` and `foldStep` are still open nominations** — and the
-ZERO signal is one-shot, so this entry is now their only record.
+Item 1475 then took two of those: **`projectValueMap` shipped at 1.14x** (a guard that could never
+fail), while **`projectStep` was REJECTED as flat** — its per-row identity-`By` allocation costs
+nothing because escape analysis keeps it off the heap, the second time that mechanism has retired a
+nomination here. **`asStep` (7%) and `foldStep` (10%) are still open nominations** — and the ZERO
+signal is one-shot, so these entries are now their only record.
 
 Both query surfaces at 20k AND 200k, plus the write path: **no unpriced frame survives**. Every
 nomination resolved to work already measured — `topKNodeWalk` to item 1064, `compareCodePoints` to
