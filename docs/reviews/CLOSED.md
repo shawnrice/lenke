@@ -60565,3 +60565,74 @@ there is worse than no note at all, because it actively stops the check.
 `bun run check` 0 read unpiped. No source, bench or probe changed — the only edits are CLAUDE.md and
 this entry — so the suites are item 1518's: core 431/0, gql 3803/0, gremlin 1469/0, native 961/0,
 serialization 144/0, `bun run fuzz` 20/0.
+
+### Item 1520 — screened the **16 rows `tail -45` had hidden** from item 1515's sweep, re-based on item 1516's corrected fixture. ⚠️ **Four nominations, four already closed** — the decode gap at item 1259, the ratio ranking at item 1233, the property read at 1392, `hopcount3` at 1425. One observation flagged, not claimed: an edge row materializes at **628 ns against its vertex twin's 133**
+
+Item 1519 ended by saying the fanout-1 readings this arc quoted are a hop's worst case, so a declined
+per-row lever might re-price at fanout 5. Both candidates were closed before a measurement:
+
+- **item 1392** — the per-row property read, _"**CLOSED: there is no per-row lever in the accessor** …
+  Do not re-price `pick`"_. Decomposed into four arms, with the accessor **21.6x cheaper** when the
+  far pool is cache-resident, which proves memory latency rather than code. It used the `FANIN` knob,
+  which is the one that governs far-vertex residency, so item 1518's fixture defect (about distinct
+  OUT-neighbours) does not touch it.
+- **items 1425 / 1439** — `hopcount3` at its floor, and "Gremlin's two heaviest rows are BOTH already
+  closed".
+
+### The real gap was in my own instrument reading
+
+Item 1515's sweep printed **61 rows** and I read it with `tail -45`, so the first 16 never reached me —
+including both `decode ndjson` rows, the five filtered-count rows, and all five projection rows.
+A full tick's screen had a blind spot at the top of its own output. Re-run per family, TS and FFI,
+`BENCH_N=200000`, on the corrected fixture:
+
+```text
+decode ndjson (nodes)                     237.2 ts     85.6 ffi    2.77x
+decode ndjson (5 edges/node)             2895.6       478.1        6.06x   ← biggest ABSOLUTE ts cost
+count + prop filter ~49%                    3.1         0.0       92.92x
+count + prop filter ~2%                     2.8         0.0       85.05x
+count + filter, 1 exclusion                 4.6         0.1       78.61x
+count + filter, 2 exclusions                5.3         0.1       65.82x
+count + filter, 4 exclusions                7.6         0.1       59.73x
+query: project 3 columns                    5.4        42.5        0.13x   ← ts FASTER
+query: project the element [ts lazy]        4.2       148.7        0.03x
+query: project the element + materialize   26.6       157.4        0.17x
+query: project the edge [ts lazy]         172.3      1352.6        0.13x
+query: project the edge + materialize     627.9      1425.5        0.44x
+query: group + aggregate                    3.8         1.1        3.48x
+query: group, no aggregate                  3.2         1.0        3.12x
+```
+
+**`decode ndjson (5 edges/node)` is the largest absolute TS cost in the whole corpus** — 2.9 seconds,
+~2.66 µs an edge, against the biggest query row's 475 ms. And it is closed: **item 1259 — "the biggest
+absolute gap in the field is already-closed territory, and my reason for doubting that was REFUTED by
+phase attribution (CONFIRMED, no change)"**. Someone already arrived here, doubted the closure, and
+had the doubt refuted.
+
+The ts/ffi ranking as a screen is also already done — **item 1233** ranked the corpus by that gap and
+refuted its widest entry (2675x) as "schemalessness, not a missing path". So item 1515's screen was a
+re-run of 1233's method; it earned its keep only because its finding was in the TS COLUMN, which a
+ratio ranking does not surface.
+
+### ⚠️ One observation, flagged rather than claimed
+
+`project the edge + materialize` is 627.9 ms for 1,000,000 edges (**628 ns an edge**) where
+`project the element + materialize` is 26.6 ms for 200,000 vertices (**133 ns a vertex**) — 4.7x per
+element. That may be entirely justified by content: an edge row carries `from`/`to` as well as labels
+and properties, so it is more fields and two endpoint resolves. **I did not measure which**, so this
+is recorded as unexplained rather than as a defect, and the next tick on this path should decompose
+the edge row before pricing anything.
+
+### The pattern this tick is itself the finding
+
+Four candidates, four closed, each found by searching `CLOSED.md` first — the rule item 1514 learned
+by breaking it. The corpus has reached a state where **the search is doing the work**: the profile and
+the sweep still nominate frames, and the nominations are nearly all already answered. That is worth
+stating plainly rather than discovering a fifth time, and it is the strongest argument for screening
+UNMEASURED surfaces over re-profiling measured ones.
+
+### Gates
+
+`bun run check` 0 read unpiped. No source, bench or probe changed — the only edit is this entry — so
+the suites are item 1518's: core 431/0, gql 3803/0, gremlin 1469/0, native 961/0, serialization 144/0,
+`bun run fuzz` 20/0.
