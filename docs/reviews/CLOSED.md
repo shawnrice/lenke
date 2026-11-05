@@ -60566,7 +60566,7 @@ there is worse than no note at all, because it actively stops the check.
 this entry — so the suites are item 1518's: core 431/0, gql 3803/0, gremlin 1469/0, native 961/0,
 serialization 144/0, `bun run fuzz` 20/0.
 
-### Item 1520 — screened the **16 rows `tail -45` had hidden** from item 1515's sweep, re-based on item 1516's corrected fixture. ⚠️ **Four nominations, four already closed** — the decode gap at item 1259, the ratio ranking at item 1233, the property read at 1392, `hopcount3` at 1425. One observation flagged, not claimed: an edge row materializes at **628 ns against its vertex twin's 133**
+### Item 1520 — ⚠️ its closing observation (an edge row at 628 ns against a vertex row's 133) is **WITHDRAWN by item 1521**: the two rows are not comparable per element. The real, walk-controlled figure is 1.86x. Screened the **16 rows `tail -45` had hidden** from item 1515's sweep, re-based on item 1516's corrected fixture. ⚠️ **Four nominations, four already closed** — the decode gap at item 1259, the ratio ranking at item 1233, the property read at 1392, `hopcount3` at 1425. One observation flagged, not claimed: an edge row materializes at **628 ns against its vertex twin's 133**
 
 Item 1519 ended by saying the fanout-1 readings this arc quoted are a hop's worst case, so a declined
 per-row lever might re-price at fanout 5. Both candidates were closed before a measurement:
@@ -60636,3 +60636,78 @@ UNMEASURED surfaces over re-profiling measured ones.
 `bun run check` 0 read unpiped. No source, bench or probe changed — the only edit is this entry — so
 the suites are item 1518's: core 431/0, gql 3803/0, gremlin 1469/0, native 961/0, serialization 144/0,
 `bun run fuzz` 20/0.
+
+### Item 1521 — item 1520's unexplained 4.7x was **not comparable per element**, and correcting the instrument found a real one: with the WALK HELD CONSTANT, `RETURN r` costs **246.5 ns/row against `RETURN x`'s 132.2 — 1.86x to bind the edge you already hold rather than the far vertex you must resolve.** Mechanism verified in the code, not inferred
+
+### First, item 1520's observation was an instrument error and is withdrawn
+
+```text
+project the element   MATCH (n:Person) RETURN n              — a LABEL BUCKET scan, 200k rows
+project the edge      MATCH (:Person)-[r:KNOWS]->() RETURN r — a 1-HOP WALK, 1M rows
+```
+
+Dividing one by the other prices neither: the 4.7x mixed the element TYPE with the walk that produced
+it. That is item 1480's error ("that floor rides the values walk and does LESS work"), and item 1520
+was right to flag it as unexplained rather than bank it.
+
+### The experiment that does work: hold the walk constant
+
+New `element-row-probe.mjs`, 200,000 vertices / 1,000,000 edges at FANOUT=5 with item 1518's repeat
+term, one arm per process:
+
+```text
+edge     MATCH (:P)-[r:E]->()  RETURN r      1M rows   246.5 ns/row
+farnode  MATCH (:P)-[:E]->(x)  RETURN x      1M rows   132.2 ns/row   ← 1.86x CHEAPER
+relprop  MATCH (:P)-[r:E]->()  RETURN r.w    1M rows   334.8 ns/row
+bucket   MATCH (n:P)           RETURN n    200k rows    15.8 ns/row   (no walk, for scale)
+```
+
+Same walk, same row count, same single column — only what lands in the row differs. **Binding the
+edge is 1.86x binding the far vertex, which is backwards**: `r` is already in hand at that point and
+`x` has to be resolved through `edge.to`.
+
+### The mechanism, read off the code and confirmed by the profile
+
+The two spellings take DIFFERENT routes — `farnode` the fused `detectHopProjection` closure (62.5%),
+`edge` a separate `relBoundHopWalk` (68.1%, plus `get to` at 4.7% in a query whose far node is
+ANONYMOUS). And `relBoundHopWalk`'s inner loop explains the 4.7%:
+
+```ts
+for (const edge of bucket) {
+  const far: Vertex = out ? edge.to : edge.from; // ← ALWAYS resolved
+  if (fl !== undefined && !matchesLabel(far, fl)) {
+    continue;
+  }
+  binding.set(farVar, far); // ← ALWAYS written
+  binding.set(relVar, edge);
+  rows.push(projectRow(proj, binding, params, graph));
+}
+```
+
+**Both are dead work when the projection never reads the far variable**, and the repo already has the
+rule for it — `shortcuts.ts` carries _"When every item is direct the binding is never read, so writing
+it is dead work — item 803's rule, and the same deletion item 835 made at the node-scan site"_ —
+applied at other sites and not at this one.
+
+⚠️ **And the guard needs no expression analysis in the common case.** `hop-projection.ts:805` is
+`const farVar = node.variable ?? ANON_FAR_VAR` — a name no GQL identifier can collide with — so for an
+anonymous far node (`->()`) **nothing can read it by construction**. The condition is
+`fl === undefined && farVar === ANON_FAR_VAR`.
+
+### Not built this tick, and the hazard to check first
+
+⚠️ **`proj.star`.** A `RETURN *` projects every binding, so it could expose `ANON_FAR_VAR` and would
+make the guard a wrong answer rather than a slow one. `detectNodeProjection` declines `star` outright;
+whether this route does has to be established before the guard goes in, not after. A projection route
+is 100-300x territory, so this needs the byte-identity fuzzers and a mutation pass with verified
+teeth rather than the tail of a measuring tick — which is exactly the discipline item 1517 followed to
+refute its own build.
+
+`relprop` at 334.8 ns/row is the same route and the larger row, so the same saving should reach it;
+that is a second measurement to take, not a claim.
+
+### Gates
+
+`bun run check` 0 read unpiped. The only additions are `element-row-probe.mjs` and this entry — no
+engine source touched — so the suites are item 1518's: core 431/0, gql 3803/0, gremlin 1469/0,
+native 961/0, serialization 144/0, `bun run fuzz` 20/0.
