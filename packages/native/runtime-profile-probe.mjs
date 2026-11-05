@@ -63,6 +63,46 @@ const SHAPES = {
   point: 'MATCH (n:P) WHERE n.n = 12345 RETURN n.s AS s',
   // The control: no pattern at all, so none of the match/expand machinery runs.
   control: 'RETURN 1 AS one',
+
+  // ── Item 1473: shapes the screen never covered ──────────────────────────────────────────────
+  //
+  // The five above are all SINGLE-PATTERN. The screen's record says "no unpriced frame survives",
+  // and that is true of the surface it had — but a real query routinely joins two patterns, keeps
+  // an optional side, de-duplicates, or asks a subquery, and none of those machinery was ever in a
+  // profile. The ZERO-mentions signal is one-shot per frame, so a frame these reach has never had
+  // its shot.
+  //
+  // Each is written to return rows on the probe's own fixture (one out-edge per vertex, `k = i % 97`,
+  // `n = i`), and the probe asserts a non-empty result, so a shape that quietly matched nothing
+  // would fail rather than profile the empty path.
+
+  // A two-pattern JOIN over a shared variable — the shape a hash join exists for.
+  join: 'MATCH (a:P)-[:E]->(b:P) MATCH (b)-[:E]->(c:P) WHERE a.k = 5 RETURN count(*) AS c',
+  // The optional side, which must preserve unmatched left rows.
+  optional: 'MATCH (a:P) WHERE a.k = 5 OPTIONAL MATCH (a)-[:E]->(b:P) RETURN count(*) AS c',
+  // DISTINCT over a low-cardinality key: 97 groups from NODES rows.
+  distinct: 'MATCH (n:P) RETURN DISTINCT n.k AS k',
+  // An EXISTS subquery per row — correlated, so it runs NODES times.
+  existssub: 'MATCH (a:P) WHERE a.k = 5 AND EXISTS { MATCH (a)-[:E]->(b:P) } RETURN count(*) AS c',
+  // A wide projection: five property reads per row, no aggregation to hide them behind.
+  wideproj: 'MATCH (n:P) WHERE n.k < 10 RETURN n.k AS a, n.n AS b, n.s AS c, n.k AS d, n.n AS e',
+  // Set operation over two scans.
+  unioned:
+    'MATCH (n:P) WHERE n.k = 5 RETURN n.n AS x UNION ALL MATCH (n:P) WHERE n.k = 6 RETURN n.n AS x',
+  // ⚠️ A SEPARATE SHAPE, because `UNION` and `UNION ALL` take DIFFERENT branches of `combineRows`:
+  // ALL concatenates, plain UNION dedups. Item 1473's fix removes a wasted key pass from BOTH, so
+  // measuring only one would leave half the change unmeasured.
+  unioneddistinct:
+    'MATCH (n:P) WHERE n.k = 5 RETURN n.n AS x UNION MATCH (n:P) WHERE n.k = 6 RETURN n.n AS x',
+  // The control for both: EXCEPT genuinely NEEDS the right-side keys, so the fix cannot reach it.
+  excepted:
+    'MATCH (n:P) WHERE n.k < 10 RETURN n.n AS x EXCEPT MATCH (n:P) WHERE n.k = 6 RETURN n.n AS x',
+  // ⚠️ MATCH THE FIXTURE TO THE CLAIM. The two shapes above filter to ~2,000 rows a side, and item
+  // 1473's waste is a key pass over the RIGHT SIDE — so at that width it is ~2% and sits under this
+  // bench's noise floor, which an A/B duly reported as a null. These scan unfiltered, so the right
+  // side is every vertex and the wasted pass is proportional to NODES.
+  unionedbig: 'MATCH (n:P) RETURN n.n AS x UNION ALL MATCH (n:P) RETURN n.n AS x',
+  unionedbigdistinct: 'MATCH (n:P) RETURN n.n AS x UNION MATCH (n:P) RETURN n.n AS x',
 };
 
 const q = SHAPES[SHAPE];

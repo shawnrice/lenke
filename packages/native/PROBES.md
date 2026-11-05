@@ -164,6 +164,13 @@ must be taken or explicitly priced in the same pass, or the next run reads clean
 
 ### What the screen found, so it is not re-run for the same answer
 
+⚠️ **ITS SURFACE WAS FIVE SINGLE-PATTERN GQL SHAPES, and that was the limit of "no unpriced frame
+survives" (item 1473).** A real query joins two patterns, keeps an optional side, de-duplicates or
+asks a subquery, and none of that machinery had ever been profiled. Six shapes added — `join`,
+`optional`, `distinct`, `existssub`, `wideproj`, `unioned` (+ `unioneddistinct`, `excepted`,
+`unionedbig`, `unionedbigdistinct`) — and they turned up **one ZERO-mention frame, `combineRows`,
+which became a 4.63x fix**. Five of the six came back clean, so those five are now covered too.
+
 Both query surfaces at 20k AND 200k, plus the write path: **no unpriced frame survives**. Every
 nomination resolved to work already measured — `topKNodeWalk` to item 1064, `compareCodePoints` to
 921's declined hoist, `expandSlot`/`slotChainCount`/`bucketsOf` to 1104/1105/1108/1152, and

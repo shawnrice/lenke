@@ -1772,10 +1772,21 @@ export const distinctRows = (rows: readonly Row[]): Row[] => {
   });
 };
 
-/** Combine two row sets per a set operator. */
+/**
+ * Combine two row sets per a set operator.
+ *
+ * ⚠️ `rightKeys` IS BUILT ONLY WHERE IT IS READ. It used to be the function's first statement, so
+ * **every `UNION` and `UNION ALL` paid a full key pass over its right side and discarded it** —
+ * neither union branch mentions `rightKeys`. Each discarded key cost a `rowKeyOf`, which allocates
+ * an array (`Object.values`), maps `valueKey` over it and joins a string, plus the `Set` holding
+ * them all.
+ *
+ * `UNION ALL` wasted the whole pass. Plain `UNION` wasted it too and then computed the SAME keys a
+ * second time inside `distinctRows`. Item 1473 found it with the unpriced-frame screen: `combineRows`
+ * had ZERO mentions anywhere in `CLOSED.md` or the audit, at 3.7% of a `UNION ALL` profile with
+ * `rowKeyOf` at 2.4% beside it.
+ */
 export const combineRows = (op: SetOp, left: readonly Row[], right: readonly Row[]): Row[] => {
-  const rightKeys = new Set(right.map(rowKeyOf));
-
   switch (op.op) {
     case 'union':
       return op.all ? [...left, ...right] : distinctRows([...left, ...right]);
@@ -1783,9 +1794,13 @@ export const combineRows = (op: SetOp, left: readonly Row[], right: readonly Row
       // EXCEPT/INTERSECT always dedup — only UNION distinguishes ALL (matches the
       // Rust engine: ir.rs "Except/Intersect always dedup; the ALL variants are
       // not distinguished here").
+      const rightKeys = new Set(right.map(rowKeyOf));
+
       return distinctRows(left.filter((r) => !rightKeys.has(rowKeyOf(r))));
     }
     case 'intersect': {
+      const rightKeys = new Set(right.map(rowKeyOf));
+
       return distinctRows(left.filter((r) => rightKeys.has(rowKeyOf(r))));
     }
   }

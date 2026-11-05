@@ -56121,3 +56121,93 @@ every row. Optimizing the measurement instead of the workload is how a bench sta
 ### Gates
 
 `bun run check` 0 (read unpiped). One instrument gained a `WRITE` arm; no engine code changed.
+
+### Item 1473 — SHIPPED, **4.63x** on `UNION ALL` and **1.37x** on `UNION` (3/3 each, both controls flat): `combineRows` built the right-side key `Set` unconditionally and **both `UNION` branches discarded it**. ⚠️ The first A/B reported a NULL because the fixture's right side was 2,000 rows. ⚠️ And mutation found a pre-existing hole: nothing caught `INTERSECT` failing to dedup
+
+The unpriced-frame screen's record says "no unpriced frame survives" — true of the surface it had,
+which was **five single-pattern GQL shapes**. A real query joins two patterns, keeps an optional
+side, de-duplicates, or asks a subquery, and none of that machinery had ever been in a profile. Six
+new shapes added (`join`, `optional`, `distinct`, `existssub`, `wideproj`, `unioned`), profiled at
+200,000 and run through the existing analyzer.
+
+**Exactly one unpriced frame over 2% across all six**: `combineRows`, **ZERO mentions** anywhere in
+`CLOSED.md` or the audit, 3.7% of the `UNION ALL` profile with `rowKeyOf` at 2.4% beside it. The
+other five shapes came back clean, which is worth recording so they are not re-profiled for the same
+answer.
+
+### The defect
+
+```ts
+export const combineRows = (op, left, right) => {
+  const rightKeys = new Set(right.map(rowKeyOf));   // ← first statement, unconditional
+  switch (op.op) {
+    case 'union': return op.all ? [...left, ...right] : distinctRows([...left, ...right]);
+    …
+```
+
+**Neither union branch mentions `rightKeys`.** Only `except` and `intersect` read it. So:
+
+- `UNION ALL` paid a full `rowKeyOf` pass over its right side and threw all of it away. Each key
+  allocates an array (`Object.values`), maps `valueKey` over it and joins a string, and the `Set`
+  holds every one.
+- plain `UNION` paid that pass **and then computed the same keys a second time** inside
+  `distinctRows`.
+
+Fixed by building the `Set` in the two branches that read it.
+
+### Measured — and the first attempt measured a NULL
+
+⚠️ **The first A/B reported no effect, and the fixture was why.** `unioned` filtered each side to
+`n.k = 5`, which at 200,000 vertices is ~2,062 rows — so the wasted pass was ~2% and sat under this
+bench's noise floor. The giveaway was that **every arm including both controls read slightly worse in
+POST**, i.e. run-to-run drift, not a change. CLAUDE.md's "match the fixture to the claim" exactly:
+the claim is a wasted pass over the RIGHT side, so the fixture needs a wide right side.
+
+Unfiltered scans (200,000 rows a side), one arm per process, `nx build` between arms, arm asserted
+from `dist`, order alternated, 25 reps:
+
+```text
+                            POST                          PRE
+unionedbig (UNION ALL)   469.3  625.8  443.8      2165.2 2171.3 2191.2    3/3, 4.63x
+unionedbigdistinct       3752.8 3959.7 3674.9     5221.2 4908.4 5143.5    3/3, 1.37x
+excepted (control)       645.5  617.8  598.9       641.5  638.5  653.4    flat
+grouped (control)        104.3   99.9  112.5       104.0   99.2  162.5    flat
+```
+
+**`excepted` is the designed control**: `EXCEPT` genuinely needs the right-side keys, so the fix
+cannot reach it — and it does not move. The two ratios are also internally consistent: `UNION ALL`
+wasted its ONLY key pass (so removing it is most of the operation), while `UNION` wasted one of two
+(so ~1.5x of key work becomes 1x, measured 1.37x).
+
+So the 3.7% profile share understated this one by more than an order of magnitude on the right
+fixture — the opposite of the screen's usual ~2.5x overstatement, because the share was measured on
+the narrow fixture too.
+
+### ⚠️ Mutation found a PRE-EXISTING hole: `INTERSECT` dedup was unasserted
+
+Four mutants against the full 3,700-test GQL suite:
+
+| mutant                                              | full suite before    |
+| --------------------------------------------------- | -------------------- |
+| `UNION`/`UNION ALL` branches swapped                | 6 failures           |
+| `EXCEPT` keeps what it should drop                  | 3 failures           |
+| **`INTERSECT` stops deduping**                      | **SURVIVED**         |
+| `rightKeys` re-hoisted to the top (the NULL mutant) | survives, as it must |
+
+ISO `EXCEPT`/`INTERSECT` always dedup, and the left side of an `INTERSECT` routinely carries
+duplicates when it projects a non-unique column — so the rule is plainly observable and was simply
+never asserted. `set-op-dedup.test.ts`, 9 tests: `INTERSECT` over a duplicate-bearing left side
+(self-intersection, a narrowed right side, an empty right side), `EXCEPT` deduping its survivors and
+deduping with an empty right side, `UNION ALL` keeping all 12 rows against `UNION`'s 3, and the
+POSITIONAL column comparison (differently-aliased parts matching, left names winning). With them,
+`intersectdup` dies with 3 failures.
+
+**The null mutant surviving is the control for the whole exercise**: re-hoisting the `Set` is
+behaviourally identical and merely slower, so no differential test can catch it — and its survival
+is what shows the other three failures are about semantics rather than about where the `Set` is
+built.
+
+### Gates
+
+core 431/0, gql 3709/0 (3700 + 9 new), gremlin 1241/0, native 961/0, serialization 144/0,
+`bun run fuzz` 20/0. `bun run check` 0 read unpiped.
