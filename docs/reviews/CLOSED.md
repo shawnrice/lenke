@@ -61699,7 +61699,7 @@ Probe only; the only edit is six arms and one import in `isolated-gremlin-bench.
 core code. `bun run check` 0 read unpiped, gremlin 1469/0. The rest are item 1533's: core 431/0,
 gql 3851/0, native 961/0, serialization 144/0, `bun run fuzz` 20/0.
 
-### Item 1535 — SHIPPED, **1.65–3.79x on four shapes**: `startFilteredHopValues`, a new module, answers the start-filtered hop `hopValuesShortcut` declined. `V().hasLabel(Q).out(E)` 815.6 → 215.2 ns/row, three controls flat. And the version I nearly shipped was WRONG in two ways the whole suite and all seven fuzzers were blind to
+### Item 1535 — SHIPPED — ~~**1.65–3.79x on four shapes**~~ ⚠️ **NUMBERS WRONG, CORRECTED AT ITEM 1536 TO 1.44–1.86x** (measured against a dist built from the BUCKET-SEEDED version this entry then replaced — the bench reads `dist`, and only `bun run fuzz` rebuilt it; the module, both hazards and the direction of every number stand): `startFilteredHopValues`, a new module, answers the start-filtered hop `hopValuesShortcut` declined. `V().hasLabel(Q).out(E)` 815.6 → 215.2 ns/row, three controls flat. And the version I nearly shipped was WRONG in two ways the whole suite and all seven fuzzers were blind to
 
 Item 1534 priced the family. This builds it.
 
@@ -61765,12 +61765,17 @@ mutation after insertion and none of them generate one.
 
 `NODES=200000 FANOUT=1 VLABEL=2`, p25 of 12 reps, drop 3, one shape per process.
 
-| arm                               | PRE          | POST      |           |
-| --------------------------------- | ------------ | --------- | --------- |
-| `hasLabel(Q).out(E)` bare         | 815.6 ns/row | **215.2** | **3.79x** |
-| `hasLabel(Q).out(E).id()`         | 834.7        | **272.1** | **3.07x** |
-| `hasLabel(Q).out(E).values(k)`    | 1033.7       | **378.8** | **2.73x** |
-| `has(k, gt(48)).out(E).values(k)` | 1123.4       | **682.5** | **1.65x** |
+| arm                               | PRE          | POST                  |                       |
+| --------------------------------- | ------------ | --------------------- | --------------------- |
+| `hasLabel(Q).out(E)` bare         | 815.6 ns/row | ~~215.2~~ → **439.0** | ~~3.79x~~ → **1.86x** |
+| `hasLabel(Q).out(E).id()`         | 834.7        | ~~272.1~~ → **516.2** | ~~3.07x~~ → **1.62x** |
+| `hasLabel(Q).out(E).values(k)`    | 1033.7       | ~~378.8~~ → **719.7** | ~~2.73x~~ → **1.44x** |
+| `has(k, gt(48)).out(E).values(k)` | 1123.4       | ~~682.5~~ → **606.6** | ~~1.65x~~ → **1.85x** |
+
+⚠️ **Every POST figure in this table was wrong — see item 1536.** The struck values are the
+bucket-seeded build's; the arrows are the shipped code's, re-measured with the arm asserted in the
+BUNDLE rather than in `src`. The `has` row moved the other way because item 1536's compiled gates
+improved it.
 
 | control                                | PRE                           | POST                                  |                       |
 | -------------------------------------- | ----------------------------- | ------------------------------------- | --------------------- |
@@ -61825,3 +61830,148 @@ serialization 144/0, `bun run fuzz` 20/0 twice. Correctness hand-derived from th
 before any timing — and two of those derivations were wrong where the engine was right (a's far ends
 are `b` and `c`, not `a`; c's incoming `E` are from `a` and itself, so the `in` self-loop case is two
 rows, not one). Both corrected against the edge list rather than recounted, and the comments say so.
+
+### Item 1536 — the `both` arm, **2.33x**, plus compiled gates, 1.85x on the `has` shape. ⚠️ **AND IT CORRECTS ITEM 1535'S HEADLINE NUMBERS, WHICH WERE MEASURED AGAINST A BUILD THAT IS NOT WHAT SHIPPED.** True gains 1.44–2.33x, not 2.73–3.79x. The instrument rule that failure earns is in here
+
+Three results, and the correction is the important one.
+
+#### ⚠️ FIRST: ITEM 1535's NUMBERS WERE WRONG, AND HOW
+
+`isolated-gremlin-bench.mjs` imports `@lenke/gremlin`, which **resolves to `dist`, not `src`**
+(`fuzzers-read-built-dists`, already a standing note). Nothing in the item-1535 tick built the dist
+deliberately. What built it was `bun run fuzz`, which rebuilds the `@lenke/gremlin` dist as a side
+effect — and I ran it **twice at the end of the tick, after the measurements**.
+
+So the sequence was: create the module **seeding from `graph.verticesByLabel`** → fuzz (dist built
+WITH seeding) → **measure** → discover seeding is incorrect and replace it with a per-vertex label
+test → suites → fuzz again (dist rebuilt, now correct) → commit. The published numbers are the
+**seeded** build's. The shipped code is slower.
+
+Confirmed directly rather than inferred — re-applying seeding, rebuilding, and re-measuring
+reproduces item 1535's figures almost exactly:
+
+| arm                            | item 1535 published | seeded, re-measured | shipped (correct) |
+| ------------------------------ | ------------------- | ------------------- | ----------------- |
+| `hasLabel(Q).out(E)` bare      | 215.2               | 215 (206.1 / 223.6) | 439.0             |
+| `hasLabel(Q).out(E).values(k)` | 378.8               | 417 (401.7 / 432.9) | 719.7             |
+
+215.2 against 215 is not a coincidence. The correction is real, and item 1535's heading and table
+are struck in this commit.
+
+**What item 1535 still got right:** the module, the two correctness hazards it found (order and
+`verticesByLabel` staleness), the attacking mutant, and the direction of every number. The engine
+is faster than before on all four shapes. Only the magnitudes were overstated.
+
+#### THE INSTRUMENT RULE THIS EARNS
+
+CLAUDE.md already says to assert each A/B arm IS the code it claims. That rule was followed inside
+the tick — the PRE reading was taken with the fallback disabled and grep-asserted — and it still
+missed this, because **the assertion was made against `src` while the benchmark reads `dist`.**
+
+So: **for any TS measurement, build the dist and assert the arm IN THE BUNDLE, not in the source.**
+Both halves are load-bearing:
+
+```bash
+bun run build
+python3 -I -c "import pathlib; t=pathlib.Path('packages/gremlin/dist/esm/index.mjs').read_text(); print(t.count('<a symbol unique to this arm>'))"
+```
+
+And two traps inside that check, both hit today:
+
+- **The bundle is `index.mjs`, not `.js`.** A `rglob('*.js')` over `dist/` returns nothing and reads
+  as "the module is not in the build" — which is exactly the wrong conclusion. It cost a detour here.
+- **A window around the symbol can be too small.** Searching 4,000 characters after
+  `startFilteredHopValues` said the `both` arm was absent; it is ~6,000 characters in. Count over the
+  whole file, or widen until the count stops changing.
+
+#### THE `both` ARM — 2.33x
+
+`hop.kind === 'both'` is now admitted, with its own walk mirroring `hop-values.ts`'s `bothOneType`:
+the out-bucket then the in-bucket, per surviving vertex, with **no self-loop filter**.
+
+**A self-loop yields TWICE under Gremlin's `both`, which is the opposite of GQL's undirected hop**
+(item 1431's edge pass emits it once). `a -E-> a` sits in both `adjFrom` and `adjTo`, so both passes
+see it. That asymmetry is pinned by `both-self-loop.test.ts`, whose own header records that skipping
+the in-pass copy **survived the whole 1,214-test suite** before that file existed — so this arm got
+its own case rather than leaning on one that covers the unfiltered route.
+
+#### COMPILED GATES — 1.85x on the `has` shape, and a hypothesis that was WRONG about the big one
+
+The start filters are now compiled to closures once per plan: a single-label `hasLabel` becomes
+`(v) => v.labels.has(L)` with no closure allocation, and a `has` goes through
+`specializePredicate` (item 1492's lever, 1.92x there for the same reason) with `matches` as the
+fallback.
+
+**It was built to recover the seeding gap and it does not.** `hasLabel(Q).out(E).values(k)` moved
+732 → 738 — nothing. It is kept because it is a real win on the predicate shape, where
+`has(k, gt(48))` went 701.3 → 606.6, with every control flat.
+
+#### THE SEEDING GAP, PRICED AND NOT AN ALGORITHMIC COST
+
+Seeding is worth 1.22–2.06x and it cannot ship as written (item 1535's two hazards). Two cheap
+cures were tested and both failed:
+
+- **compiled gates** — no effect, above;
+- **materializing `[...graph.vertices]` once per plan**, on the theory that array iteration beats the
+  `verticesById.values()` wrapper: 757.7 / 766.1, slightly **worse**.
+
+Then the profile said why both failed. Over the correct walk: `drain` 40.5%, `pick` 20.5%,
+`get properties` 10.1%, `get adjFrom` 3.1% — and **`get labels` 1.0%, `survives` 0.8%.** The
+per-vertex scan the seeding skips is **under 2% of the row cost**, so it cannot be worth 1.8x, and
+`graph.vertices` is only `{[Symbol.iterator]: () => this.verticesById.values()}` — one object per
+iteration, not per vertex.
+
+`pick` appearing as its own 20.5% frame says it is **not inlined**. So the seeded/unseeded gap is an
+**inlining decision that flipped with the loop's shape**, not work saved — the class
+`ts-closure-size-is-load-bearing` and `executor-edits-perturb` already describe, where a walk inline
+in a returned closure gives unrelated shapes a new slow mode. Chasing it means settling inlining
+attribution by deleting the use rather than reasoning about it, which is its own item.
+
+#### MEASURED — p25 of 12 reps, drop 3, THREE readings per arm, one shape per process
+
+PRE is item 1534's, re-verified against the general-pipeline route.
+
+| arm                               | PRE    | POST                              |           |
+| --------------------------------- | ------ | --------------------------------- | --------- |
+| `hasLabel(Q).both(E).values(k)`   | 1069.8 | **458.2** (449.7 / 458.6 / 466.2) | **2.33x** |
+| `hasLabel(Q).out(E)` bare         | 815.6  | **439.0** (444.4 / 438.8 / 433.9) | **1.86x** |
+| `has(k, gt(48)).out(E).values(k)` | 1123.4 | **606.6** (601.6 / 607.6 / 610.7) | **1.85x** |
+| `hasLabel(Q).out(E).id()`         | 834.7  | **516.2** (516.1 / 514.2 / 518.4) | **1.62x** |
+| `hasLabel(Q).out(E).values(k)`    | 1033.7 | **719.7** (715.8 / 718.6 / 724.6) | **1.44x** |
+
+| control             | PRE   | POST                          |      |
+| ------------------- | ----- | ----------------------------- | ---- |
+| `both(E).values(k)` | 359.4 | 367.7 (380.2 / 355.8 / 367.0) | flat |
+| `out(E).values(k)`  | 380.4 | 387.6 (392.4 / 386.0 / 384.5) | flat |
+| `out(E)` bare       | 189.9 | 190.6 (189.7 / 190.6 / 191.6) | flat |
+
+#### MUTATION — eight mutants; the first run left TWO survivors and both were my fixtures being vacuous
+
+| mutant                         | first run        | after the two added tests |
+| ------------------------------ | ---------------- | ------------------------- |
+| `both-skips-in-pass`           | CAUGHT           | CAUGHT                    |
+| `both-skips-out-pass`          | CAUGHT           | CAUGHT                    |
+| `both-in-pass-wrong-end`       | CAUGHT           | CAUGHT                    |
+| `both-admitted-as-directed`    | CAUGHT           | CAUGHT                    |
+| `gate-single-label-inverted`   | CAUGHT (11 fail) | CAUGHT                    |
+| `gate-fast-pred-dropped`       | CAUGHT (10 fail) | CAUGHT                    |
+| **`gate-multi-label-dropped`** | **SURVIVES**     | CAUGHT                    |
+| **`gate-slow-pred-dropped`**   | **SURVIVES**     | CAUGHT                    |
+
+Neither survivor was an untested gate by oversight — **both were vacuous fixtures**, the same trap
+`dropVacuousLabels` set for item 1534 in the first place. `hasLabel('P','Q')` is _every_ vertex in
+the main fixture, so dropping the multi-label gate answered identically; and every `has` in the file
+used `eq`/`gt`, which `specializePredicate` compiles, so the `matches` fallback was never reached (it
+handles eq/neq/gt/gte/lt/lte only). The new cases add a vertex labelled `R` that is in neither set,
+and a `within` predicate.
+
+The `both`-arm mutants are confined to that arm's region before being applied — the directed walk has
+byte-identical lines, and item 1532 is the record of an unregioned edit nearly rewriting the wrong
+one. Run under `timeout 900 systemd-run --user --scope -p MemoryMax=16G -p MemorySwapMax=0`, restoring
+before each mutant, pristine copy under `crates/lenke-engine/target/`; tree verified identical after.
+
+#### Gates
+
+`bun run check` 0 read unpiped. core 431/0, gql 3851/0, gremlin **1489**/0, native 961/0,
+serialization 144/0, `bun run fuzz` 20/0 twice. Every number above taken after `bun run build` with
+the arm asserted in `dist/esm/index.mjs`.

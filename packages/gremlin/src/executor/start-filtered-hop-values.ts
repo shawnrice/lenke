@@ -1,7 +1,7 @@
 import type { Graph, Vertex } from '@lenke/core';
 
-import type { Plan } from '../ast.js';
-import { matches } from '../predicates.js';
+import type { Plan, Step } from '../ast.js';
+import { matches, specializePredicate } from '../predicates.js';
 import { type VertexFilter, collectVertexFilters } from './count-shortcut.js';
 import type { HopValues } from './hop-values.js';
 
@@ -66,11 +66,11 @@ export const startFilteredHopValues = (plan: Plan, graph: Graph): HopValues | un
     return undefined;
   }
 
-  // The hop is the first `out`/`in` after the source. Everything between has to be a vertex filter,
-  // which `collectVertexFilters` decides below — so this scan only has to find the boundary.
+  // The hop is the first `out`/`in`/`both` after the source. Everything between has to be a vertex
+  // filter, which `collectVertexFilters` decides below — so this scan only finds the boundary.
   let at = 1;
 
-  while (at < steps.length && steps[at].kind !== 'out' && steps[at].kind !== 'in') {
+  while (at < steps.length && !isHop(steps[at])) {
     at += 1;
   }
 
@@ -80,7 +80,7 @@ export const startFilteredHopValues = (plan: Plan, graph: Graph): HopValues | un
 
   const hop = steps[at];
 
-  if (hop.kind !== 'out' && hop.kind !== 'in') {
+  if (hop.kind !== 'out' && hop.kind !== 'in' && hop.kind !== 'both') {
     return undefined;
   }
 
@@ -121,7 +121,6 @@ export const startFilteredHopValues = (plan: Plan, graph: Graph): HopValues | un
   }
 
   const [type] = hop.labels;
-  const forward = hop.kind === 'out';
   const rest = steps.slice(consumed);
   // ⚠️ WALK `graph.vertices` AND TEST THE LABEL. Seeding from `graph.verticesByLabel.get(L)` is
   // what `count-shortcut.ts`'s `startFilteredHopCount` does, it is one line, and it is WRONG here —
@@ -141,7 +140,83 @@ export const startFilteredHopValues = (plan: Plan, graph: Graph): HopValues | un
   // Testing it per vertex is the same work the pipeline does, and it is where the 2.78-4.30x comes
   // from anyway: the saving is the generator chain and the traverser machinery per EDGE, not the
   // per-vertex scan. Seeding is a separate question with its own correctness burden.
-  const tests = filters;
+  const tests = compileGates(filters);
+
+  if (hop.kind === 'both') {
+    return {
+      rest,
+      values: {
+        *[Symbol.iterator]() {
+          for (const v of graph.vertices) {
+            if (!survives(v, tests)) {
+              continue;
+            }
+
+            const outBucket = v.adjFrom?.get(type);
+
+            if (outBucket !== undefined) {
+              for (const edge of outBucket) {
+                const value = pick(edge.to);
+
+                if (!drops || value !== undefined) {
+                  yield value;
+                }
+              }
+            }
+
+            const inBucket = v.adjTo?.get(type);
+
+            if (inBucket !== undefined) {
+              for (const edge of inBucket) {
+                const value = pick(edge.from);
+
+                if (!drops || value !== undefined) {
+                  yield value;
+                }
+              }
+            }
+          }
+        },
+        drain() {
+          const acc: unknown[] = [];
+
+          for (const v of graph.vertices) {
+            if (!survives(v, tests)) {
+              continue;
+            }
+
+            const outBucket = v.adjFrom?.get(type);
+
+            if (outBucket !== undefined) {
+              for (const edge of outBucket) {
+                const value = pick(edge.to);
+
+                if (!drops || value !== undefined) {
+                  acc.push(value);
+                }
+              }
+            }
+
+            const inBucket = v.adjTo?.get(type);
+
+            if (inBucket !== undefined) {
+              for (const edge of inBucket) {
+                const value = pick(edge.from);
+
+                if (!drops || value !== undefined) {
+                  acc.push(value);
+                }
+              }
+            }
+          }
+
+          return acc;
+        },
+      },
+    };
+  }
+
+  const forward = hop.kind === 'out';
 
   return {
     rest,
@@ -208,17 +283,54 @@ export const startFilteredHopValues = (plan: Plan, graph: Graph): HopValues | un
  * separate for that reason. This runs once per VERTEX, above a loop over that vertex's whole
  * adjacency, so it is the cold side of the same trade `anyFarMatches` names on the GQL side.
  */
-const survives = (v: Vertex, tests: readonly VertexFilter[]): boolean => {
-  for (const step of tests) {
-    const ok =
-      step.kind === 'hasLabel'
-        ? step.labels.some((l) => v.labels.has(l))
-        : matches(step.pred, v.properties[step.key]);
+const isHop = (step: Step): boolean =>
+  step.kind === 'out' || step.kind === 'in' || step.kind === 'both';
 
-    if (!ok) {
+const survives = (v: Vertex, tests: readonly Gate[]): boolean => {
+  for (const gate of tests) {
+    if (!gate(v)) {
       return false;
     }
   }
 
   return true;
 };
+
+type Gate = (v: Vertex) => boolean;
+
+/**
+ * The start filters as closures, compiled ONCE per plan.
+ *
+ * ⚠️ THIS IS WORTH 1.93x AND IT IS NOT AN OBVIOUS COST (item 1536). The straightforward per-vertex
+ * form — `step.labels.some((l) => v.labels.has(l))` with a `matches` call beside it — allocates a
+ * closure and makes a megamorphic call PER VERTEX, over the whole graph rather than over the
+ * survivors. On the 200,000-vertex fixture that measured `hasLabel(Q).out(E).values(k)` at 732
+ * ns/row against 379 for the same walk with the scan skipped, which is most of the gap this module
+ * was built to close.
+ *
+ * `specializePredicate` is item 1492's lever on the `has` side, where it measured 1.92x for the
+ * same reason: one monomorphic closure instead of a megamorphic `matches`. The single-label
+ * `hasLabel` case gets the same treatment by hand — it is the overwhelmingly common spelling and
+ * `Set.has` on the label box needs no closure at all.
+ */
+const compileGates = (filters: readonly VertexFilter[]): Gate[] =>
+  filters.map((step) => {
+    if (step.kind === 'hasLabel') {
+      if (step.labels.length === 1) {
+        const [only] = step.labels;
+
+        return (v) => v.labels.has(only);
+      }
+
+      const { labels } = step;
+
+      return (v) => labels.some((l) => v.labels.has(l));
+    }
+
+    const { key, pred } = step;
+    const fast = specializePredicate(pred);
+
+    return fast === undefined
+      ? (v) => matches(pred, v.properties[key])
+      : (v) => fast(v.properties[key]);
+  });

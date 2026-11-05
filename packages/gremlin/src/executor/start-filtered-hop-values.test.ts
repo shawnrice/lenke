@@ -25,6 +25,7 @@ import { Graph } from '@lenke/core';
 
 import {
   V,
+  both,
   count,
   gt,
   has,
@@ -36,6 +37,7 @@ import {
   toArray,
   traversal,
   values,
+  within,
 } from '../index.js';
 import { startFilteredHopValues } from './start-filtered-hop-values.js';
 
@@ -227,6 +229,90 @@ describe('item 1535 — a filtered start on a yielded hop', () => {
       'a',
       'c',
     ]);
+  });
+
+  /**
+   * THE `both` ARM (item 1536). Mirrors `hop-values.ts`'s `bothOneType`: the out-bucket then the
+   * in-bucket, per vertex, with NO self-loop filter.
+   *
+   * ⚠️ A SELF-LOOP YIELDS TWICE under Gremlin's `both`, and that is the opposite of GQL's
+   * undirected hop, which emits it once (item 1431's edge pass skips the second). `a -E-> a` sits
+   * in both `adjFrom` and `adjTo`, so both passes see it. `both-self-loop.test.ts` records that
+   * skipping it in the in-pass SURVIVED the whole 1,214-test suite before that file existed — so
+   * this arm gets its own case rather than relying on that one, which covers the UNFILTERED route.
+   */
+  test('both() walks the out-bucket then the in-bucket, and the self-loop yields TWICE', () => {
+    // Starts carrying Q: a, c, d, e, f, g (not b).
+    //   a: out E -> b(2), c(3);  in E <- b (e4) -> b(2)          => 2, 3, 2
+    //   c: out E -> c(3) [e5];   in E <- a (e2) -> a(1), <- c (e5) -> c(3)  => 3, 1, 3
+    //   d, e: no E on either side                                 => nothing
+    //   f: out E -> g (no k, DROPPED); no incoming E              => nothing
+    //   g: in E <- f -> f(6)                                      => 6
+    expect(run(traversal(V(), hasLabel('Q'), both('E'), values('k'))).sort()).toEqual([
+      1, 2, 2, 3, 3, 3, 6,
+    ]);
+  });
+
+  test('both() over a filtered start that is ONLY a self-loop is two rows, not one', () => {
+    const h = new Graph();
+    const a = h.addVertex({ id: 'a', labels: ['Q'], properties: { k: 9 } });
+
+    h.addEdge({ id: 'x', from: a, to: a, labels: ['E'], properties: {} });
+
+    expect(toArray(traversal(V(), hasLabel('Q'), both('E'), values('k')), h)).toEqual([9, 9]);
+    // And the id projection agrees, so this is the walk and not the value picker.
+    expect(toArray(traversal(V(), hasLabel('Q'), both('E'), id()), h)).toEqual(['a', 'a']);
+  });
+
+  test('the both arm is CLAIMED, and a multi-type both still declines', () => {
+    expect(
+      startFilteredHopValues(traversal(V(), hasLabel('Q'), both('E'), values('k')), g),
+    ).toBeDefined();
+    expect(
+      startFilteredHopValues(traversal(V(), hasLabel('Q'), both('E', 'F'), values('k')), g),
+    ).toBeUndefined();
+  });
+
+  /**
+   * THE TWO GATE FORMS THE FIRST MUTATION RUN FOUND UNCOVERED (item 1536). Both survivors were my
+   * fixtures being vacuous rather than the gates being untested-by-oversight:
+   *
+   *   * `hasLabel('P','Q')` above is EVERY vertex in the main fixture, so dropping the multi-label
+   *     gate altogether answered identically — the same "a vacuous filter cannot test a filter"
+   *     trap `dropVacuousLabels` set for item 1534 in the first place.
+   *   * every `has` here used `eq`/`gt`, which `specializePredicate` compiles, so the fallback
+   *     `matches` arm was never reached. It handles eq/neq/gt/gte/lt/lte only.
+   */
+  test('a MULTI-LABEL gate excludes a vertex carrying neither label', () => {
+    const h = new Graph();
+    const a = h.addVertex({ id: 'a', labels: ['P'], properties: { k: 1 } });
+    const b = h.addVertex({ id: 'b', labels: ['Q'], properties: { k: 2 } });
+    const c = h.addVertex({ id: 'c', labels: ['R'], properties: { k: 3 } });
+
+    for (const v of [a, b, c]) {
+      h.addEdge({ id: `x${v.id}`, from: v, to: v, labels: ['E'], properties: {} });
+    }
+
+    // `R` is in NEITHER set, so c must not appear. A dropped gate would answer [1, 2, 3].
+    expect(toArray(traversal(V(), hasLabel('P', 'Q'), out('E'), values('k')), h)).toEqual([1, 2]);
+  });
+
+  test('a has() predicate specializePredicate DECLINES still gates, via matches', () => {
+    const h = new Graph();
+    const a = h.addVertex({ id: 'a', labels: ['P'], properties: { k: 5 } });
+    const b = h.addVertex({ id: 'b', labels: ['P'], properties: { k: 50 } });
+    const c = h.addVertex({ id: 'c', labels: ['P'], properties: { k: 500 } });
+
+    for (const v of [a, b, c]) {
+      h.addEdge({ id: `x${v.id}`, from: v, to: v, labels: ['E'], properties: {} });
+    }
+
+    // `within` is not one of specializePredicate's six ops, so this takes the `matches` arm.
+    expect(
+      toArray(traversal(V(), has('k', within(5, 500)), out('E'), values('k')), h).sort(
+        (x, y) => (x as number) - (y as number),
+      ),
+    ).toEqual([5, 500]);
   });
 
   test('a residual step consumes the walk correctly', () => {
