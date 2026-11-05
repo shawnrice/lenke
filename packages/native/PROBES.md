@@ -792,3 +792,32 @@ the wrapper question with a projection question.
 ⚠️ **Sample count gates the profile.** An early capture of `gql/degree` had **103 samples** (8.67 ms ×
 9 reps at a 1 ms interval) and was nearly targeted off; the ranking is noise below a few hundred. Use
 `NODES=200000 REPS=15`.
+
+## `cross-surface-probe.mjs` — the SAME logical query in both surfaces, over ONE fixture
+
+Every other instrument here measures one surface, and the two single-surface probes do not even share
+a fixture (the GQL one builds one edge per vertex, the Gremlin one defaults to `FANOUT=5`). So "is one
+surface paying more than the other for the same question?" was not askable until item 1481.
+
+⚠️ **`cross-engine` IN THIS REPO MEANS TS vs RUST.** This is cross-SURFACE: both arms are the pure-TS
+engine, so a gap is between two front ends lowering to the same data.
+
+⚠️ **EVERY PAIR ASSERTS ITS TWO ANSWERS AGREE, and the probe throws rather than printing a ratio when
+they do not.** A mistranslated query is the obvious failure of a cross-surface comparison, and a ratio
+between two different questions looks exactly like a finding.
+
+First readings at 200,000 vertices: `hopfiltered` 1.07x, `exists` 1.26x, `grouped` 1.32x, `project`
+1.63x, all GQL-faster; `hopcount` is both-shortcut and below the floor. **Nothing above 1.63x — the
+shared layers dominate and neither front end is dramatically behind.**
+
+⚠️ **RUN IT AT 200,000, NOT 20,000.** At 20,000 the same probe read `project` **4.41x**, `hopfiltered`
+**0.74x** and `grouped` **0.86x** — two of five pairs pointed the OTHER WAY, and the headline was
+4.41x rather than 1.63x. Four of five rows sit under 2 ms there and `hopcount` is 0.01 against 0.04,
+two timer ticks. The size sweep did not merely change a magnitude here; it changed which surface was
+winning.
+
+The residual `project` gap is named: Gremlin builds a traverser per vertex and extends it per value
+(`sourceFromIds` 17.3% + `extend` 9.1% + `startTraverser` 2.9% ≈ 29%) where GQL's node-projection walk
+builds none. `hopValuesShortcut` already eliminates exactly that for `V().out(T).values(k)`; the
+no-hop form has no shortcut. **Priced, not taken** — it lands in `hop-values.ts`, whose ~16%
+per-edit perturbation the ~29% ceiling clears only narrowly.

@@ -56876,3 +56876,62 @@ Priced at one array per traverser, declined on that trade.
 
 `bun run check` 0 read unpiped. Six probe shapes added (`optionald`, `coalesced2`, `branchfloor`,
 `optionalvalues`, `coalescevalues`, `branchvaluesfloor`); no engine code changed.
+
+### Item 1481 — NEW INSTRUMENT + a negative: the two SURFACES are within **1.07-1.63x** of each other at scale, so neither front end is dramatically behind. ⚠️ At 20,000 the same probe read **4.41x** and TWO OF FIVE PAIRS POINTED THE OTHER WAY — the small readings were floor artifacts
+
+Every instrument in this corpus measures one surface, and the two do not even share a fixture — the
+GQL probe builds one edge per vertex, the Gremlin probe has a `FANOUT` knob defaulting to 5. So "is
+one surface paying more than the other for the same question?" had never been askable. New
+instrument: `cross-surface-probe.mjs`, one fixture, five logical queries, both spellings.
+
+⚠️ **`cross-engine` in this repo means TS vs RUST.** This is cross-SURFACE: both arms are the pure-TS
+engine, so a gap is between two front ends lowering to the same data, not between implementations.
+
+### The result, and why the size mattered
+
+```text
+pair          gql ms   gremlin ms   ratio        answer
+                            200,000 vertices
+hopcount        0.00        0.01    3.11x       1000000   both shortcut — below the floor, meaningless
+hopfiltered     3.98        4.27    1.07x         10310
+project         8.08       13.15    1.63x        200000
+exists          7.26        9.15    1.26x          2062
+grouped         3.17        4.17    1.32x            97
+```
+
+**Nothing above 1.63x.** The surfaces are broadly comparable and no front end is the problem; the
+shared layers dominate.
+
+⚠️ **AND THE 20,000-VERTEX RUN SAID OTHERWISE, WRONGLY.** The same probe at 20,000 read `project`
+**4.41x**, `hopfiltered` **0.74x** and `grouped` **0.86x** — so two of five pairs pointed the opposite
+way, and the headline was 4.41x instead of 1.63x. At that size four of five rows are under 2 ms and
+`hopcount` is 0.01 against 0.04, which is two timer ticks. CLAUDE.md's "sweep the size" exists for
+this, and here it did not merely change a magnitude: **it changed which surface was winning.**
+
+### Every pair asserts its answers agree, and that is load-bearing
+
+The probe throws rather than printing a ratio when the two arms disagree. A mistranslated query is
+the obvious failure mode of a cross-surface comparison, and a ratio between two different questions
+looks exactly like a finding. All five pairs agree (1000000 / 10310 / 200000 / 2062 / 97).
+
+### The residual 1.63x has a named cause, priced not taken
+
+`V().values('k')` profiled (595 samples): `projectValues` 36.81%, `countStep` 21.01%,
+**`sourceFromIds` 17.31%**, **`extend` 9.08%**, **`startTraverser` 2.86%**.
+
+So Gremlin builds a **traverser per vertex and extends it per value** — ~29% of the run — where GQL's
+node-projection walk emits values and builds none. That is the gap.
+
+`hopValuesShortcut` already does exactly this elimination for `V().out(T).values(k)`; the analogous
+**no-hop** form (`V().values(k)`, `V().hasLabel(L).values(k)`) has no shortcut. Adding one is
+contained and in the same family.
+
+⚠️ **Not taken here, and the reason is the file.** It would land in `hop-values.ts`, which
+[[executor-edits-perturb]] measures at **up to ~16% on unrelated rows per edit**. The profile share
+caps the win at ~29% (item 1477: the share is the ceiling, not the result), so a realized ~1.3x would
+clear that bound only narrowly — and `values()` is central enough that the perturbation would land on
+real queries. That trade needs its own A/B and control band, not the tail of a tick.
+
+### Gates
+
+`bun run check` 0 read unpiped. One new instrument; no engine code changed.
