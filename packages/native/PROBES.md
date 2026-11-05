@@ -170,6 +170,18 @@ the fixture build INVERTS the ranking — `getVertexById`, `indexEdgeLabel` and 
 at the top of every shape, all load, no query (item 1362). Raising reps is not the fix; it shrinks the
 build's fraction while costing time in the dimension being swept.
 
+**⚠️ THE GQL PROBE RAN AT FANOUT=1 UNTIL ITEM 1488**, which CLAUDE.md itself calls sparse ("per-edge
+costs scale with the edge:node ratio"). It now has `STRIDE` and `FANOUT` knobs — and two new shapes,
+because the ones it had could not show per-edge cost at all: `hopfilter`'s `WHERE a.k = 5` leaves
+~2,062 of 200,000 sources so it is SCAN-dominated (FANOUT 1→5 moved it 113.5→127.6 ms), and `hopall`
+(a one-hop `count()`) is a **degree sum** at 2-8 ns/edge. `hoprows` materializes a row per edge and
+cannot shortcut.
+
+On `hoprows`, stride matters: **1.84x at FANOUT=1, 1.25x at FANOUT=5** (higher fan-out amortizes the
+scattered bucket lookup over more edges). Its screen verdict: `farDrivenHopWalk` 51.6% (priced),
+**`(garbage collector)` 44.8%**, and row construction **1.4% in total** — which is why item 1477's
+row-template change measured a null. **That shape is GC-bound on the size of its own result.**
+
 **⚠️ WRITING AN ITEM ABOUT A FRAME RETIRES IT FROM THE SCREEN.** `topKNodeWalk` had ZERO mentions when
 1358 flagged it and one afterwards — 1358's own entry. The ZERO signal is ONE-SHOT, so a flagged frame
 must be taken or explicitly priced in the same pass, or the next run reads clean with the work open.

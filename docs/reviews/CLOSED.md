@@ -56566,7 +56566,7 @@ concordance alternates 2/3, 1/3, 2/3, 1/3 with no width trend, and a control tha
 change reads 2/3 in its favour. **Reverted**, with the numbers recorded at the loop itself.
 
 **Why the micro did not transfer:** row construction is a small share of the per-row cost in the
-engine — `propOf`, the `properties` getter, `scanCandidates` and the gate are the rest — so 1.52x on
+engine — ⚠️ **measured at item 1488: 1.4%, against 44.8% GARBAGE COLLECTION caused by the rows themselves. The shape is GC-bound, so no change to how each row is BUILT can reach it.** — — `propOf`, the `properties` getter, `scanCandidates` and the gate are the rest — so 1.52x on
 construction alone is diluted below this instrument's ~30% intra-arm spread. **Third instance in this
 repo of a clean micro not reaching the engine** (item 1364: 3.8x micro → 1.11x engine; item 1368:
 9.2% profiled → 3.7% ablated). The pattern is now firm enough to state as a rule: **a micro that
@@ -57399,3 +57399,72 @@ history of every row in it, which is the trade CLAUDE.md's stride note already m
 
 `bun run check` 0 read unpiped. Two probes gained a `STRIDE` knob; no engine code changed. No shipped
 result is withdrawn.
+
+### Item 1488 — the GQL screen had NO fan-out knob and ran at 1:1, which CLAUDE.md already calls sparse. Fixed, plus a shape that actually walks — and the result EXPLAINS item 1477's null: row construction is **1.4%** of a row-materializing hop while the GC those rows cause is **44.8%**
+
+Item 1486 found the edge stride moves a Gremlin hop ratio by 3.6x. The GQL probe had never run
+anything but one fixture, so the natural hunt was: does a cache-hostile fixture surface a frame the
+screen has been missing? Both knobs (`STRIDE`, `FANOUT`) added.
+
+### ⚠️ Two false starts, both the same mistake in a new place
+
+**First**, `hopfilter` and `join` measured FLAT across strides, and I nearly wrote that down as "no
+stride effect on the GQL side". It is not: `hopfilter` is `WHERE a.k = 5`, which leaves **~2,062
+sources out of 200,000**, so its cost is the VERTEX SCAN and the hop is a rounding error — raising
+FANOUT from 1 to 5 moved it only 113.5 → 127.6 ms.
+
+**Second**, `hopall` (`MATCH (a:P)-[:E]->(b:P) RETURN count(*)`) measured **2-8 ns/edge**, which is not
+a traversal: a one-hop count is a **degree sum**. That is the **fourth tail in this corpus that
+answers without doing the work** — chain count (1479), values walk (1480/1483), presence count (1485),
+and now the hop-count shortcut.
+
+⚠️ **And before either of those, an anchor assertion saved a worse error**: my first patch of this
+probe failed on the second anchor (`20_000` against the file's `20000`), so **nothing was written** —
+and the "sequential vs scattered" numbers I then collected were two runs of identical code. 175.4
+against 239.2 ms, a 36% gap, which is this probe's own spread (item 1477: 27-31%). Without the
+assertion that would have been a stride finding.
+
+`hoprows` (`MATCH (a:P)-[:E]->(b:P) RETURN b.k AS k`) materializes a row per edge, so nothing can
+shortcut it.
+
+### The stride DOES matter here, once a shape actually walks
+
+```text
+                          20 reps, NODES=200,000
+FANOUT=1 sequential    791.3 ms   4,000,000 rows   198 ns/row
+FANOUT=1 scattered    1458.5      4,000,000        365        1.84x
+FANOUT=5 sequential   2499.6     20,000,000        125
+FANOUT=5 scattered    3131.6     20,000,000        157        1.25x
+```
+
+Higher fan-out _reduces_ the stride penalty, because one scattered bucket lookup amortizes over five
+edges.
+
+### The screen's verdict, and why it closes item 1477
+
+`hoprows` at FANOUT=5 scattered, 3443 ms of engine time:
+
+```text
+51.6%  (anonymous) in farDrivenHopWalk   46 mentions — priced
+44.8%  (garbage collector)               no source location — NOT CHECKABLE
+ 1.4%  get adjTo + propOf + projectRow + detectHopProjection   ← row construction, all of it
+```
+
+**No unpriced frame** — a clean negative for the hunt. But the shares say something better than that.
+
+⚠️ **ITEM 1477 TRIED TO OPTIMIZE ROW CONSTRUCTION AND MEASURED A NULL. This is why.** That item built
+a pre-shaped row template (1.52x in a 300,000-row micro), measured nothing in the engine, reverted it,
+and recorded "row construction is a small share of the per-row cost" as an inference. It is now a
+number: **1.4%**. And the thing it is small against is not the walk — it is **44.8% garbage
+collection caused by the rows themselves**. A million `{k: …}` objects retained in one result array
+survive the nursery and get promoted; no change to how each is _built_ can touch that, which is
+exactly why a 1.52x micro vanished.
+
+**So the row-materializing GQL hop is GC-bound, and the GC is the result's own size.** That is the
+answer's cost, not the engine's — unless the row contract itself changes (a columnar or streaming
+result), which is a contract change and not a loop change. Recorded as a bound, not a target.
+
+### Gates
+
+`bun run check` 0 read unpiped, gql 3709/0. The GQL probe gained `STRIDE` and `FANOUT` knobs and two
+shapes (`hopall`, `hoprows`); no engine code changed.

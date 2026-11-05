@@ -26,6 +26,12 @@ const N = Number(process.argv[3] ?? 2000);
  * from them is a verdict about the cache-resident regime only, which item 1362 is for.
  */
 const NODES = Number(process.env.NODES ?? 20000);
+const FANOUT = Number(process.env.FANOUT ?? 1);
+const STRIDE = process.env.STRIDE ?? 'sequential';
+
+if (STRIDE !== 'sequential' && STRIDE !== 'scattered') {
+  throw new Error(`STRIDE must be sequential|scattered, got ${STRIDE}`);
+}
 
 /** One fixture for every shape, so a difference between shapes is the shape and not the data. */
 const build = () => {
@@ -39,13 +45,32 @@ const build = () => {
     });
   }
 
-  for (let i = 0; i < NODES; i += 1) {
+  // ⚠️ FANOUT=1 IS SPARSE, AND THIS PROBE HAD NO KNOB FOR IT (item 1488). CLAUDE.md's own rule:
+  // "One edge per node is sparse — per-edge costs scale with the edge:node ratio, per-node costs do
+  // not", with a change that measured flat at 1:1 and -5% at 5:1. So the unpriced-frame screen has
+  // only ever seen a graph where every adjacency bucket holds exactly ONE edge — which is also why
+  // the edge STRIDE has no measurable effect here while it moves the Gremlin probe (FANOUT 5) by
+  // 3.4x: with one edge per bucket there is no walk order to disturb.
+  for (let e = 0; e < NODES * FANOUT; e += 1) {
+    const i = e % NODES;
+    const hop = Math.floor(e / NODES);
+
     g.addEdge({
-      id: `e${i}`,
-      from: g.getVertexById(`v${i}`),
-      to: g.getVertexById(`v${(i * 7 + 3) % NODES}`),
+      id: `e${e}`,
+      // ⚠️ STRIDE (item 1488). `sequential` adds one out-edge per vertex IN VERTEX ORDER, so every
+      // adjacency read during a hop is in build order and the cache misses a real graph pays are
+      // absent — item 1486 measured that inflating a hop ratio by 3.6x on the Gremlin side. This
+      // probe has only ever run sequentially, so the unpriced-frame screen has only ever seen the
+      // cheap regime. `scattered` is the cache-hostile bracket; item 1487's caveat applies, so it
+      // prices per-edge cost and says nothing about neighbour diversity.
+      from: g.getVertexById(`v${STRIDE === 'scattered' ? (e * 7919) % NODES : i}`),
+      to: g.getVertexById(
+        `v${
+          STRIDE === 'scattered' ? (e * 104729) % NODES : (i * 7 + 3 + hop * 2654435761) % NODES
+        }`,
+      ),
       labels: ['E'],
-      properties: { w: i % 13 },
+      properties: { w: e % 13 },
     });
   }
 
@@ -55,6 +80,17 @@ const build = () => {
 const SHAPES = {
   // The row CLOSED.md records at 32x native.
   hopfilter: 'MATCH (a:P)-[:E]->(b:P) WHERE a.k = 5 RETURN count(*) AS c',
+  // ⚠️ HOP-DOMINATED, unlike `hopfilter`. That shape's `a.k = 5` leaves ~2,062 sources out of
+  // 200,000, so its cost is the VERTEX SCAN and the hop is a rounding error — which is why raising
+  // FANOUT from 1 to 5 moved it only 113.5 → 127.6 ms. This one walks every edge, so per-edge cost
+  // is what it measures and FANOUT reaches it (item 1488).
+  hopall: 'MATCH (a:P)-[:E]->(b:P) RETURN count(*) AS c',
+  // ⚠️ AND `hopall` DOES NOT WALK EITHER — a one-hop count is a DEGREE SUM, so it measured 2-8
+  // ns/edge, which is the engine's hop-count shortcut and not a traversal. This is the fourth tail
+  // in this corpus that answers without doing the work (chain count 1479, values walk 1480/1483,
+  // presence count 1485). `hoprows` materializes a row per edge, so nothing can shortcut it and
+  // per-edge cost is what it measures.
+  hoprows: 'MATCH (a:P)-[:E]->(b:P) RETURN b.k AS k',
   // A projection with ORDER BY + LIMIT, the serving shape.
   sortedpage: 'MATCH (n:P) WHERE n.k < 50 RETURN n.s AS s ORDER BY s LIMIT 10',
   // A grouped aggregate.
