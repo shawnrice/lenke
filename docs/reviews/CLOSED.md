@@ -61322,7 +61322,7 @@ nominate a shape that never reaches the code.
 `bun run check` 0 read unpiped. core 431/0, gql **3829**/0, gremlin 1469/0, native 961/0,
 serialization 144/0, `bun run fuzz` 20/0.
 
-### Item 1530 — ✅ **its 5.47x instance was BUILT AT ITEM 1531 for 2.77x; the 3.17x one remains.** asked item 1529's question of EVERY walk's guard and the answer generalizes: ⚠️ **a START-ONLY predicate is carried by exactly one walk, and the three that refuse it send the whole query to the general matcher.** Two measured instances: **5.47x** (undirected + gate) and **3.17x** (rel-bound + start filter). PRICED, NOT BUILT
+### Item 1530 — ✅ **BOTH instances built: 5.47x at item 1531 (2.77x) and 3.17x at item 1532 (2.95x).** asked item 1529's question of EVERY walk's guard and the answer generalizes: ⚠️ **a START-ONLY predicate is carried by exactly one walk, and the three that refuse it send the whole query to the general matcher.** Two measured instances: **5.47x** (undirected + gate) and **3.17x** (rel-bound + start filter). PRICED, NOT BUILT
 
 Item 1529 shipped 3.06x by asking what a fast path DECLINES rather than where it spends time. This
 tick asked it of all eight walks, mechanically, by extracting every guard-level `return null`.
@@ -61460,3 +61460,77 @@ serialization 144/0, `bun run fuzz` 20/0 — byte-identity before timing.
 One of item 1530's two instances remains: `relpropfilt` (a rel-bound projection behind a start
 filter) at **3.17x**, which needs the same gate-with-parity in `relBoundFilteredHopWalk` and
 `relSeekedHopWalk`.
+
+### Item 1532 — ✅ **SHIPPED, 2.95x**: `relBoundFilteredHopWalk` now carries a START-ONLY gate (without a rel constraint). `MATCH (a:P)-[r:E]->() WHERE a.age > 5 RETURN r.w` **1082.8 → 367.5 ns/row**, control flat. ⚠️ And the mutation run found that this gate is an OPTIMIZATION, not a carry — dropping it changes no answer, which three surviving mutants proved and a tripwire confirmed
+
+Item 1530's second instance, built with item 1531's pattern. Closes that item.
+
+### Scoped to `relPred === undefined`, and that is a correctness bound
+
+This walk iterates VERTICES, so a start-only gate has a once-per-vertex place to go — which is what
+the existing note says the start-only CLOSURE lacks for a rel-reading item. Both are true at once:
+that closure cannot serve this shape, and this walk can gate it.
+
+⚠️ **But only without a rel constraint.** The raise parity asks "would the general path have reached
+this vertex?", and `anyFarMatches` answers from the far label and far predicate ONLY — it never
+applies a rel constraint. With a `relPred` that rejects every edge, the general path produces no row
+for the vertex, so a fault must be SUPPRESSED where `anyFarMatches` would say "reached" and rethrow —
+**a spurious throw**. That combination still declines; admitting it needs a rel-aware parity check.
+
+### ⚠️ The finding: this gate cannot produce a wrong answer
+
+Three mutants survived the whole suite — `drop-gate-apply` (never evaluate it), `ignore-held` (discard
+its result) and, before a new test, `admit-with-relpred`. Chasing the first two produced the real
+discovery, by applying the mutant and running the query by hand:
+
+```text
+with the gate DROPPED =>  [20, 30, 40]     ← still correct
+```
+
+**Something downstream applies the predicate as well**, so carrying it into the walk is purely an
+early-exit optimization: it rejects a start before expanding its adjacency instead of filtering the
+rows afterwards. So those two mutants SHOULD survive — they are answer-equivalent, which is
+`perf-gate-needs-its-own-test` exactly. The evidence that the route is taken at all is a tripwire
+(making the gated branch throw — `RELGATE-REACHED` on both a 4-vertex and a 400-vertex fixture) plus
+the 2.95x itself.
+
+⚠️ **That also means I was wrong about this earlier in the tick.** A half-applied edit left the
+admission without the evaluation, and I called it "a wrong-answer bug the suite cannot see". It is
+not: the answer was never at risk. Worth correcting rather than leaving as a scare.
+
+`admit-with-relpred` was a genuine gap and now has the test that justifies the guard — a rel
+constraint matching no edge plus a faulting gate, asserting NO throw. It fails that one test and
+nothing else.
+
+### Measured — 2.95x, control flat
+
+```text
+                    PRE                     POST
+relpropfilt    1082.8                 367.5 (370.4 / 364.5 / 370.0)   2.95x   ← TARGET
+relprop         341.9 (341.9)         341.7 / 351.5 / 326.4           flat
+```
+
+### Mutation, final
+
+```text
+parity-always-raise   rethrow unconditionally     CAUGHT    3842 pass 2 fail
+parity-never-raise    never rethrow               CAUGHT    3842 pass 2 fail
+admit-with-relpred    drop the relPred guard      CAUGHT    3844 pass 1 fail  ← the new test only
+drop-gate-apply       never evaluate the gate     SURVIVES  answer-equivalent (see above)
+ignore-held           discard the gate's result   SURVIVES  answer-equivalent (see above)
+```
+
+### ⚠️ An assertion that earned its place
+
+The first attempt at this edit asserted `count == 1` on the loop head and failed: `relSeekedHopWalk`
+has a **byte-identical** loop head, so the replacement would have hit the wrong walk — or both. The
+edit now slices the file to `relBoundFilteredHopWalk`'s region first. (That walk requires a `relPred`
+by construction, so the guard would never have admitted a gate there anyway — but the edit would
+still have rewritten it.) And because the script writes only after every assertion passes, the failed
+run left the tree untouched rather than half-applied.
+
+### Gates
+
+`bun run check` 0 read unpiped. core 431/0, gql **3845**/0, gremlin 1469/0, native 961/0,
+serialization 144/0, `bun run fuzz` 20/0 — byte-identity before timing. Answers hand-checked against
+brute force, and the raise parity across all four cases plus the rel-constrained suppression.

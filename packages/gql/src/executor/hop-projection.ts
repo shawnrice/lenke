@@ -1536,7 +1536,26 @@ const relBoundFilteredHopWalk = (w: {
   const { startLabel, typeName, out, farVar, relVar, farLabel, proj } = w;
   const { farPred, relPred, gate, startVar, startOnly, cfar } = w;
 
-  if (startOnly) {
+  // ⚠️ A START-ONLY GATE IS NOW ADMITTED, BUT ONLY WITHOUT A REL CONSTRAINT (item 1532).
+  //
+  // The decline cost **3.17x**: `MATCH (a:P)-[r:E]->() WHERE a.age > 5 RETURN r.w` measured
+  // 1082.8 ns/row against the unfiltered 341.9, with `expand` 35.2% and `walkSegments` 8.1% — the
+  // general matcher. A more selective query running three times slower is item 1437's class of bug.
+  //
+  // This walk iterates VERTICES, so a start-only gate has a once-per-vertex place to go — which is
+  // what the note above says the start-only CLOSURE lacks for a rel-reading item. Both are true:
+  // that closure cannot serve this shape, and this walk can gate it.
+  //
+  // ⚠️ `relPred` MUST BE ABSENT, and that is a correctness bound rather than caution. The raise
+  // parity asks "would the general path have reached this vertex?", and `anyFarMatches` answers it
+  // from the far label and far predicate ONLY — it does not apply a rel constraint. With a
+  // `relPred` that rejects every edge the general path produces no row for the vertex, so a fault
+  // must be SUPPRESSED, where `anyFarMatches` would say "reached" and rethrow. Admitting that
+  // combination needs a rel-aware parity check; the shape measured above carries no rel
+  // constraint, so this takes the half that is sound and leaves the other declining.
+  const gateStart = startOnly && relPred === undefined ? startVar : undefined;
+
+  if (startOnly && gateStart === undefined) {
     return null;
   }
 
@@ -1576,6 +1595,38 @@ const relBoundFilteredHopWalk = (w: {
     const fl = vacuousLabel(graph, farLabel) ? undefined : farLabel;
 
     for (const v of candidateVertexSource(graph, startLabel)) {
+      // ⚠️ THE GATE BEFORE THE ADJACENCY (item 164's order, 52 ns against 34 a vertex), which is
+      // why this sits above the bucket read. The CALL stays in this per-compile closure: item 159
+      // measured a shared module-scope walk at 1.29x from call-site polymorphism, and a compiled
+      // gate differs per query.
+      if (gateStart !== undefined && gate !== undefined) {
+        binding.set(gateStart, v);
+
+        let held: boolean;
+
+        try {
+          held = asTruth(gate({ binding, params, graph })) === true;
+        } catch (e) {
+          // Raise parity (items 139, 142, 144, 145). `relPred` is `undefined` here — the guard
+          // above requires it — so the far label and far predicate are the whole question, which
+          // is exactly what `anyFarMatches` answers.
+          const b = (out ? v.adjFrom : v.adjTo)?.get(typeName);
+
+          if (
+            b !== undefined &&
+            anyFarMatches(graph, params, binding, b, { out, farVar, farLabel, farPred })
+          ) {
+            throw e;
+          }
+
+          continue;
+        }
+
+        if (!held) {
+          continue;
+        }
+      }
+
       const bucket = (out ? v.adjFrom : v.adjTo)?.get(typeName);
 
       if (bucket === undefined) {

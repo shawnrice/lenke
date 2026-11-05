@@ -464,3 +464,139 @@ describe('⚠️ a start-only gate on the undirected hop (item 1531)', () => {
     expect(() => query(faulting({ edge: 'in', farQ: true, farLabel: true }), q(true))).toThrow();
   });
 });
+
+/**
+ * ⚠️ ITEM 1532 — `relBoundFilteredHopWalk` now carries a START-ONLY gate (without a rel constraint),
+ * where it declined and sent the query to the general matcher. `MATCH (a:P)-[r:E]->() WHERE
+ * a.age > 5 RETURN r.w` went **1082.8 → 367.5 ns/row (2.95x)**.
+ *
+ * ⚠️ A DROPPED GATE IS THE FAILURE MODE, and it is invisible: admitting the shape without APPLYING
+ * the predicate returns the right columns with too many rows, and item 1530 established that nothing
+ * covered this shape at all (it declined, so no test reached this walk with it). A half-applied edit
+ * during this item did exactly that and the suite still read 3836/0.
+ */
+describe('⚠️ a start-only gate on the rel-bound filtered walk (item 1532)', () => {
+  const relg = (): Graph => {
+    const g = new Graph();
+
+    for (const [id, k] of [
+      ['a', 1],
+      ['b', 7],
+      ['c', 3],
+      ['t', 5],
+    ] as const) {
+      g.addVertex({ id, labels: ['P'], properties: { k } });
+    }
+
+    let e = 0;
+
+    for (const [f, t, w] of [
+      ['a', 't', 10],
+      ['b', 't', 20],
+      ['c', 't', 30],
+      ['b', 'a', 40],
+    ] as const) {
+      g.addEdge({
+        id: `r${e}`,
+        labels: ['E'],
+        from: g.getVertexById(f)!,
+        to: g.getVertexById(t)!,
+        properties: { w },
+      });
+      e += 1;
+    }
+
+    return g;
+  };
+
+  it('⚠️ the gate is APPLIED — a start the predicate rejects contributes no row', () => {
+    // `a` has k=1 and is rejected, so its edge (w=10) must not appear. b → 20, 40; c → 30.
+    expect(col(query(relg(), 'MATCH (a:P)-[r:E]->() WHERE a.k > 2 RETURN r.w AS w'), 'w')).toEqual([
+      20, 30, 40,
+    ]);
+  });
+
+  it('a gate keeping everything gives every edge', () => {
+    expect(col(query(relg(), 'MATCH (a:P)-[r:E]->() WHERE a.k > 0 RETURN r.w AS w'), 'w')).toEqual([
+      10, 20, 30, 40,
+    ]);
+  });
+
+  it('⚠️ a REL CONSTRAINT still declines the gate here, and still answers', () => {
+    // `relPred` is present, so the walk refuses to gate (the parity check cannot see a rel
+    // constraint) and another route answers it.
+    expect(
+      col(query(relg(), 'MATCH (a:P)-[r:E {w: 20}]->() WHERE a.k > 2 RETURN r.w AS w'), 'w'),
+    ).toEqual([20]);
+  });
+
+  it('a far-reading predicate is not start-only and still answers', () => {
+    expect(col(query(relg(), 'MATCH (a:P)-[r:E]->(x) WHERE x.k > 4 RETURN r.w AS w'), 'w')).toEqual(
+      [10, 20, 30],
+    );
+  });
+
+  /** `bad`'s `s` cannot be cast, so the gate FAULTS on it. */
+  const faulting = (opts: { edge: boolean; farQ: boolean }): Graph => {
+    const g = new Graph();
+
+    g.addVertex({ id: 'bad', labels: ['P'], properties: { s: 'nope' } });
+    g.addVertex({ id: 'ok', labels: ['P'], properties: { s: '7' } });
+    g.addVertex({ id: 't', labels: ['P', 'Q'], properties: { s: '1' } });
+    g.addVertex({ id: 'n', labels: ['P'], properties: { s: '1' } });
+    g.addEdge({
+      id: 'h0',
+      labels: ['E'],
+      from: g.getVertexById('ok')!,
+      to: g.getVertexById('t')!,
+      properties: { w: 1 },
+    });
+
+    if (opts.edge) {
+      g.addEdge({
+        id: 'h1',
+        labels: ['E'],
+        from: g.getVertexById('bad')!,
+        to: g.getVertexById(opts.farQ ? 't' : 'n')!,
+        properties: { w: 2 },
+      });
+    }
+
+    return g;
+  };
+
+  const fq = (farLabel: boolean): string =>
+    `MATCH (a:P)-[r:E]->(x${farLabel ? ':Q' : ''}) WHERE CAST(a.s AS INTEGER) > 0 RETURN r.w AS w`;
+
+  it('⚠️ PARITY: no out-edge — the fault is suppressed', () => {
+    expect(col(query(faulting({ edge: false, farQ: false }), fq(false)), 'w')).toEqual([1]);
+  });
+
+  it('⚠️ PARITY: an out-edge — the fault RAISES', () => {
+    expect(() => query(faulting({ edge: true, farQ: false }), fq(false))).toThrow();
+  });
+
+  it('⚠️ PARITY: an out-edge whose far end fails the label — suppressed', () => {
+    expect(col(query(faulting({ edge: true, farQ: false }), fq(true)), 'w')).toEqual([1]);
+  });
+
+  it('⚠️ PARITY: an out-edge whose far end passes the label — raises', () => {
+    expect(() => query(faulting({ edge: true, farQ: true }), fq(true))).toThrow();
+  });
+
+  it('⚠️ a REL CONSTRAINT that rejects every edge must SUPPRESS a faulting gate', () => {
+    // This is the test that justifies the `relPred === undefined` guard. `anyFarMatches` answers
+    // the parity question from the far label and far predicate only — it does NOT apply a rel
+    // constraint — so a walk that gated here with a `relPred` in play could rethrow for a vertex
+    // the general path never reaches, i.e. a SPURIOUS throw. With the guard, the gate declines and
+    // the general path decides.
+    //
+    // `bad` has an out-edge, so the far side alone would say "reached"; `w: 999` matches no edge,
+    // so the general path produces no row for it and the fault must not surface.
+    const g = faulting({ edge: true, farQ: true });
+
+    expect(() =>
+      query(g, 'MATCH (a:P)-[r:E {w: 999}]->() WHERE CAST(a.s AS INTEGER) > 0 RETURN r.w AS w'),
+    ).not.toThrow();
+  });
+});
