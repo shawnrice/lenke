@@ -55914,3 +55914,130 @@ unpiped.
 `labelPropagation` 2619 ns/V is the worst again, then `peerPressure` 1416 (**no attackable frame**,
 48.81% in its own loop) and `shortestPathWeighted` 1149. `onCycle` is flagged ABOVE at 7.96x and
 remains unconfirmed at two points.
+
+### Item 1471 — reaching an algorithm through ISO-GQL's `CALL` costs **2.5x the procedure itself** on a cheap procedure, and the wrapper is ~60% of the run. SHIPPED 1.18x (3/3) off its per-row `new Map(binding)`. ⚠️ The predicted GC mechanism did NOT materialise, and the suite had NO MATCH-then-CALL test at all
+
+Items 1467-1470 optimized the twelve procedures through `runAlgorithmSync` — the entry point both
+engines dispatch through, but **not how a user reaches them**. A user writes `CALL degree() YIELD
+node, degree` or a Gremlin OLAP step, and each surface wraps the result. That wrapper had never been
+measured. New instrument: `algo-surface-overhead-probe.mjs`.
+
+### What a surface costs, which is the finding
+
+Median of kept reps, 40,000 vertices, every arm returning 40,000:
+
+```text
+                 pagerank        degree
+direct             21.09          4.06      runAlgorithmSync, no surface
+gql                25.46         10.12      CALL … YIELD … RETURN count(*)
+gqlbare            26.21            —       CALL … RETURN count(*)  (YIELD-less)
+gremlin            30.86            —       V() -> step() -> count()
+```
+
+**On a cheap procedure the wrapper is 2.5x the procedure** (4.06 → 10.12). On an expensive one it is
+~21% (21.09 → 25.46). So the overhead is roughly FIXED PER ROW and the ratio is just telling you how
+much algorithm it is being divided by — which is why both a cheap and an expensive procedure are
+measured, and why quoting either number alone would mislead.
+
+⚠️ **The Gremlin arm is not a like-for-like rendering of the GQL one and the probe says so.** `CALL`
+YIELDs rows; a Gremlin OLAP step WRITES a property and passes traversers through. The comparable
+shape is `V() → step() → count()`, so these are "what each surface costs to reach the same
+procedure", not two views of one operation. (The Gremlin `degree` cell is absent: `@lenke/gremlin`
+exports no `degree` step, which the probe asserts rather than silently measuring something else.)
+
+### The target, profiled
+
+`CALL degree() RETURN count(*)` at 200,000 vertices, 1,006 samples:
+
+```text
+30.12%  (anon) clauses.ts:1158   the per-row binding builder
+23.86%  (garbage collector)
+17.10%  out                      ┐
+ 7.16%  computeGen$7             ├ the procedure itself, ~31%
+ 7.06%  countIncidentEdges       ┘
+ 5.67%  internalFlatMap
+ 3.58%  buildGroups              the count(*)
+```
+
+**The wrapper is ~60% of the run and the procedure ~31%.** ⚠️ An earlier capture of the same shape
+had **103 samples** and was nearly targeted off — 8.67 ms × 9 reps at a 1 ms sampling interval is ~78
+samples, and at that count the ranking is noise. The reliable read needed 200,000 vertices and 15
+reps.
+
+### What shipped
+
+The row builder did `new Map(binding)` per result row. **`new Map(iterable)` must obtain an iterator
+and step it even when the source is empty**, so it allocates a Map _and_ an iterator where a fresh
+Map allocates one object. Micro-measured over 2,000,000 constructions, order-alternated:
+
+```text
+fresh      32.8 - 37.8 ms
+copyEmpty  85.8 - 93.0 ms     2.5x
+copyOne   118.9 ms
+```
+
+A **leading `CALL` has exactly one outer binding and it is empty** — the common shape — so this was
+paid once per vertex. Now `binding.size !== 0` decides. Also hoisted: whether a bind reads the vertex
+handle or the result column is a property of the CLAUSE, and it was re-tested once per bind per row.
+
+A/B, one arm per process, `nx build` between arms, arm asserted from `dist` on a marker unique to the
+change, order alternated, median of 13 reps with 3 dropped, 200,000 vertices:
+
+```text
+                       POST                        PRE
+gql/degree       59.10 62.53 59.39        67.86 70.80 70.14     3/3, 1.18x
+gql/pagerank    147.76 138.79 136.83     146.22 159.40 148.99   2/3, ~1.07x
+direct/degree    18.91 20.00 19.38        18.01 20.94 17.25     mixed, flat
+```
+
+**The win shrinking on `pagerank` is the prediction, not a disappointment**: the saving is per row and
+`pagerank` divides it by 7x more algorithm. `direct/degree` never enters the wrapper and does not
+move.
+
+### ⚠️ THE PREDICTED MECHANISM DID NOT MATERIALISE
+
+The change was aimed at the **23.86% `(garbage collector)`** term, on the reasoning that halving the
+per-row allocation count would halve the garbage. Profiling the POST arm:
+
+```text
+            PRE      POST
+(anon)     30.12%   23.86%    moved
+GC         23.86%   23.97%    DID NOT MOVE
+```
+
+**The time win is real and 3/3, but it came out of the callback's own work, not out of GC.** The GC
+term is the structural one-Map-per-row of the binding model (`Binding = ReadonlyMap<string,
+unknown>`, one distinct binding per row), which no local change reaches — removing it is an
+architectural change, not a tick's work. Recorded because the next pass will otherwise look at that
+23.97% and re-derive the same idea.
+
+### ⚠️ Teeth — and the suite had a REAL hole, demonstrated rather than asserted
+
+**All thirteen pre-existing `CALL` tests begin with `CALL`**, so every one of them exercised only the
+empty-outer-binding branch. The branch this change introduces — a non-empty outer binding, i.e.
+MATCH-then-CALL — **had no test at all**, and a bug there drops the outer variables _silently_: the
+query still returns the right number of rows, with the outer columns simply gone.
+
+`call-outer-binding.test.ts`, 9 tests: the outer variable surviving into every row of the cross
+product, its cardinality, a one-row outer binding, two outer variables, the leading-`CALL` branch
+still working, `YIELD node` alone, the result column alone, an aliased `YIELD` in either order, and
+the handle being the live element.
+
+**Mutation-verified, and the hole is measured, not claimed:**
+
+| mutant                                                | pre-existing `call.test.ts` | new file                 |
+| ----------------------------------------------------- | --------------------------- | ------------------------ |
+| **`copyOuter = false`** (drops every outer variable)  | **13 pass, 0 fail**         | 3 failures               |
+| `isNode: false` (the handle never resolves)           | —                           | 8 failures               |
+| `isNode: true` (the result column is lost)            | —                           | 7 failures               |
+| `copyOuter = true` (the NULL mutant: correct, slower) | —                           | **survives, as it must** |
+
+The null mutant surviving is the point of including it: a route choice is answer-equivalent, so no
+differential test can catch it and none should be expected to — that is
+`perf-gate-needs-its-own-test` restated, and its survival is evidence the other three failures are
+about behaviour rather than about the route.
+
+### Gates
+
+core 431/0, gql 3700/0 (3691 + 9 new), gremlin 1241/0, native 961/0, serialization 144/0,
+`bun run fuzz` 20/0. `bun run check` 0 read unpiped.

@@ -1143,6 +1143,12 @@ export const runCall = (
   // Materialize the outer bindings first: the call may write a property, and the
   // outer stream must be read against the pre-write graph.
   const outer = toArray(bindings);
+  // Resolved ONCE for the clause, not once per bind per row.
+  const binds = clause.binds.map((bind) => ({
+    var: bind.var,
+    column: bind.column,
+    isNode: bind.column === 'node',
+  }));
 
   return flatMap((binding: Binding) => {
     if (rows.length === 0 && clause.optional) {
@@ -1155,15 +1161,31 @@ export const runCall = (
       return [b];
     }
 
-    return rows.map((r) => {
-      const b = new Map(binding);
+    // ⚠️ `new Map(binding)` MUST OBTAIN AN ITERATOR AND STEP IT EVEN WHEN `binding` IS EMPTY, so
+    // it allocates a Map *and* an iterator per row where a fresh Map allocates one object. Measured
+    // over 2,000,000 constructions: `new Map()` 32.8-37.8 ms against `new Map(emptyMap)` 85.8-93.0
+    // — **2.5x**. A leading `CALL` (the common shape: `CALL degree() RETURN …`) has exactly one
+    // outer binding and it is empty, and a whole-graph procedure returns one row per vertex, so
+    // this is paid 200,000 times on a 200,000-vertex graph.
+    //
+    // Item 1471 profiled `CALL degree() RETURN count(*)` at 200,000 vertices: this callback 30.12%
+    // and `(garbage collector)` 23.86%, against ~31% for the procedure itself. Halving the
+    // per-row allocation count is aimed at the GC term, not at the callback.
+    const copyOuter = binding.size !== 0;
 
-      for (const bind of clause.binds) {
+    return rows.map((r) => {
+      // `Binding` is a `ReadonlyMap`, so the mutable local is typed as the concrete Map it is.
+      const b = copyOuter ? new Map(binding) : new Map<string, unknown>();
+
+      for (const bind of binds) {
         // `node` binds as the live Vertex handle (so it hydrates only when
         // actually returned whole, and `node.name` / further MATCH work);
         // mirrors native's `Val::Node`. Other columns are the raw value.
-        const value =
-          bind.column === 'node' ? graph.verticesById.get(r.node as string) : r[bind.column];
+        //
+        // `isNode` is hoisted: which of the two a bind reads is a property of the CLAUSE, and it
+        // was re-tested once per bind per row.
+        const value = bind.isNode ? graph.verticesById.get(r.node as string) : r[bind.column];
+
         b.set(bind.var, value);
       }
 

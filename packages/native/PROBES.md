@@ -696,3 +696,33 @@ computes and discards inside one turn.
 `empty` landing at exactly 0.00 is what makes the rest trustworthy: retention tracks **mutation**,
 not construction. Needs `--expose-gc`; the probe refuses to run without it rather than report V8's
 incidental collection as an answer.
+
+## `algo-surface-overhead-probe.mjs` — what REACHING an algorithm through a surface costs
+
+Items 1467-1470 optimized the twelve procedures through `runAlgorithmSync`, which is the entry point
+both engines dispatch through but **not how a user reaches them**. This prices the surface wrapper:
+
+| arm       | what it runs                                      |
+| --------- | ------------------------------------------------- |
+| `direct`  | `runAlgorithmSync(name, cfg, graph)` — the floor  |
+| `gql`     | `CALL <name>() YIELD node, <col> RETURN count(*)` |
+| `gqlbare` | `CALL <name>() RETURN count(*)` (YIELD-less)      |
+| `gremlin` | `V() -> step() -> count()`                        |
+
+First readings (40,000 vertices, every arm returning 40,000): on `degree` the GQL wrapper costs
+**2.5x the procedure** (4.06 → 10.12 ms); on `pagerank` only ~21% (21.09 → 25.46). **The overhead is
+roughly fixed per row**, so the ratio only tells you how much algorithm it is divided by — quote
+both or neither.
+
+⚠️ **The Gremlin arm is not a like-for-like rendering of the GQL one.** `CALL` YIELDs rows; a Gremlin
+OLAP step WRITES a property and passes traversers through. These are "what each surface costs to
+reach the same procedure", not two views of one operation. `@lenke/gremlin` exports no `degree`
+step, and the probe asserts the step exists rather than silently measuring something else.
+
+⚠️ **`count(*)` is deliberate**: every arm must consume the same rows without the comparison becoming
+about how they are rendered. A `RETURN node.name` arm would add a property read per row and confound
+the wrapper question with a projection question.
+
+⚠️ **Sample count gates the profile.** An early capture of `gql/degree` had **103 samples** (8.67 ms ×
+9 reps at a 1 ms interval) and was nearly targeted off; the ranking is noise below a few hundred. Use
+`NODES=200000 REPS=15`.
