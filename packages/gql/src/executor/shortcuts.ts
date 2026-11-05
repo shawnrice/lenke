@@ -4586,10 +4586,10 @@ const patternCountOf = <T>(
     // four spellings of the two-segment count, TS engine, `BENCH_ONLY` so each is its own process,
     // at BENCH_N=200,000:
     //
-    //     count 2-hop                 51.0 ms    the degree product — no edge pass at all
-    //     count 2-hop + mid filter    32.0        the product, gated once per middle — FASTER
-    //     count 2-hop + start filter  88.5        1.74x the bare product
-    //     count 2-hop + end filter   100.0        1.96x the bare product  <- this comment's shape
+    //     count 2-hop                 51.4 ms    the degree product — no edge pass at all
+    //     count 2-hop + mid filter    31.6        the product, gated once per middle — FASTER
+    //     count 2-hop + start filter 141.4        2.75x the bare product
+    //     count 2-hop + end filter   132.4        2.58x the bare product  <- this comment's shape
     //
     // So a STRICTLY MORE SELECTIVE query costs up to 1.96x, which is the equivalent-spelling
     // failure family this engine is named for — except these are not equivalent spellings, they
@@ -4597,12 +4597,20 @@ const patternCountOf = <T>(
     //
     // ⚠️ THE START CASE IS NOT A DEFECT AND SHOULD NOT BE CHASED WITH IT. The bare product is O(V)
     // arithmetic over middles and touches no edge; any start-gated form has to enumerate a→b, so
-    // 51.0 → 88.5 is "an edge pass against no edge pass" and is inherent. The END is the one with
-    // a cost-class gap: the formula above is ONE pass over the edges, where whatever the end
-    // spelling reaches today measures WORSE than the start's walk (100.0 against 88.5) on a
-    // predicate of the same selectivity over the same fixture. That 11.5 ms gap between two
-    // one-edge-pass-shaped routes is the evidence the formula is worth building, and it is also
-    // the thing to explain first — a route that is already O(E) would not lose to the start's.
+    // 51.4 → 141.4 is "an edge pass against no edge pass" and is inherent.
+    //
+    // ⚠️ AND THE END IS NOT A SEPARATE COST CLASS — item 1515 claimed it was, from end (100.0)
+    // measuring WORSE than start (88.5), and item 1516 refuted that by fixing the fixture: the
+    // numbers above are the corrected ones and the sign is REVERSED (start 141.4 > end 132.4). An
+    // end predicate becomes the start of the REVERSED pattern (`reversedTwoHop`), so the two are
+    // one algorithm in two directions and the old 11.5 ms gap was the degenerate fixture's
+    // forward/reverse asymmetry, not a route doing extra work.
+    //
+    // What makes the formula worth building is the 2-vs-3 split, which SURVIVED the fixture fix: at
+    // two segments a filter COSTS 2.58-2.75x, at three it SAVES ~1.3x (475.3 bare against
+    // 363.8/369.2 gated). Two segments is the only arity whose unfiltered form touches no edge, so
+    // it is the only one a gate can make worse — and the formula keeps the end-filtered count on
+    // the product arm, which is the arm that does not care how much the graph branches.
     //
     // Not built here: a new count route is 100-300x territory, so it needs the byte-identity
     // fuzzers and a mutation pass, not the tail of a measuring tick.

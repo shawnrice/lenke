@@ -213,14 +213,72 @@ const graphDoc = (() => {
   // Five edges per node, endpoints scattered, every edge carrying an id — the
   // shape a reloaded snapshot actually has. A sparse or id-less fixture
   // understates everything on the edge path.
+  //
+  // ⚠️ THE `to` INDEX USES THE REPEAT COUNTER, AND IT HAS TO (item 1516). This loop runs k from 0
+  // to 5N, so the five edges leaving one vertex are exactly k0, k0+N, k0+2N, k0+3N, k0+4N — and
+  // ANY linear `(a*k + b) % N` is invariant under `k -> k + N`. The old spelling was
+  // `to = (k * 104729) % N`, so all five of a vertex's out-edges pointed at the SAME target:
+  // out-degree 5, in-degree 5, every degree statistic perfect, and **one distinct out-neighbour
+  // per vertex**. 1,000,000 edges spanned 200,000 distinct pairs over a FUNCTIONAL graph that
+  // never branches, which makes a k-hop count 5^k * N by construction — invariant to the topology
+  // it is supposed to be measuring (item 702's trap, and the reason its rule is "count the
+  // DISTINCT endpoints, not the degrees").
+  //
+  // Splitting on `Math.floor(k / N)` — the repeat index, 0..4 — breaks that invariance, which no
+  // choice of multiplier can. Both terms stay far inside 2^53 (199,999 * 104,729 is ~2.1e10), so
+  // this does not repeat item 702's f64 overflow either.
   for (let k = 0; k < N * 5; k++) {
+    const to = ((k % N) * 104_729 + Math.floor(k / N) * 977) % N;
+
     lines.push(
-      `{"type":"edge","id":"e${k}","labels":["KNOWS"],"from":"v${(k * 7919) % N}","to":"v${(k * 104_729) % N}","properties":{"w":${k % 7}}}`,
+      `{"type":"edge","id":"e${k}","labels":["KNOWS"],"from":"v${(k * 7919) % N}","to":"v${to}","properties":{"w":${k % 7}}}`,
     );
   }
 
   return lines.join('\n');
 })();
+
+/**
+ * ⚠️ THE FIXTURE CHECKS ITS OWN TOPOLOGY, because every degree statistic was already perfect while
+ * the graph was degenerate (item 1516). CLAUDE.md's rule after item 702 is that one line counting
+ * the distinct endpoints would have caught it — this is that line, run once at startup so the
+ * corpus cannot silently go back to measuring a functional graph.
+ *
+ * It asserts the PROPERTY that matters (every vertex branches) rather than an exact count, so a
+ * deliberate future change to the generator is free to alter the fan-out without tripping it.
+ */
+const assertGraphDocBranches = (): void => {
+  const nbrs = new Map<number, Set<number>>();
+
+  for (let k = 0; k < N * 5; k++) {
+    const from = (k * 7919) % N;
+    const to = ((k % N) * 104_729 + Math.floor(k / N) * 977) % N;
+    let set = nbrs.get(from);
+
+    if (set === undefined) {
+      set = new Set();
+      nbrs.set(from, set);
+    }
+
+    set.add(to);
+  }
+
+  let worst = Number.POSITIVE_INFINITY;
+
+  for (const set of nbrs.values()) {
+    worst = Math.min(worst, set.size);
+  }
+
+  if (nbrs.size !== N || worst < 2) {
+    throw new Error(
+      `graphDoc is DEGENERATE: ${nbrs.size} of ${N} vertices have an out-edge and the least ` +
+        `branching one has ${worst} distinct out-neighbour(s). A k-hop row over this measures a ` +
+        `chain, not a graph — see item 1516.`,
+    );
+  }
+};
+
+assertGraphDocBranches();
 
 const FORMATS = ['ndjson', 'pg-json', 'graphson', 'pg-text', 'csv'];
 // `ndjson` has its own two dedicated decode rows above, so it is not repeated here. `csv` was

@@ -60150,6 +60150,14 @@ suites are item 1513's (core 431/0, gql 3803/0, gremlin 1469/0, native 961/0, se
 
 ### Item 1515 — a new screen (the TS-vs-native ratio per row) found a live target the four previous ticks missed: **a two-segment count gets up to 1.96x SLOWER when you make it MORE selective** — `count 2-hop` 51.0 ms, `+ start filter` 88.5, `+ end filter` 100.0, `+ mid filter` 32.0. The END formula was already written in the code as OPEN, and this is the measurement it was waiting for
 
+> ⚠️ **MEASURED ON A DEGENERATE FIXTURE — see item 1516.** The headline SURVIVES and grows (the
+> inversion is **2.75x**, not 1.96x), but every number here was taken over a functional graph whose
+> vertices had ONE distinct out-neighbour each, so ~~`+ start filter` 88.5, `+ end filter` 100.0~~ are
+> superseded by **141.4 / 132.4**. And the sub-claim below — that end > start by 11.5 ms proves the end
+> route "is doing more than an edge pass" — is **REFUTED by a sign flip**: corrected, start > end.
+> Both are the same start-driven walk via `reversedTwoHop`; the gap was the fixture's forward/reverse
+> asymmetry.
+
 Items 1511-1514 all declined, and item 1514 concluded the covered shapes are at their floors. The
 move this tick was a screen nothing in items 1503-1514 had used: **the ts/ffi ratio per bench row.**
 Items 1503-1512 were all TS-internal profiling; a large TS-vs-native gap where the algorithm should
@@ -60235,3 +60243,93 @@ verified teeth, not the tail of a measuring tick. Priced at the code and here.
 
 `bun run check` 0 read unpiped. The only change is a comment; suites are item 1513's (core 431/0,
 gql 3803/0, gremlin 1469/0, native 961/0, serialization 144/0, `bun run fuzz` 20/0).
+
+### Item 1516 — ⚠️ **THE GQL BENCH'S MAIN FIXTURE WAS A FUNCTIONAL GRAPH: every vertex had out-degree 5, in-degree 5, and exactly ONE distinct out-neighbour.** 1,000,000 edges spanned 200,000 distinct pairs. Fixed, self-checked, and it **flips the sign** of item 1515's sub-claim while making its headline bigger — a strictly more selective two-hop count costs **2.75x**, not 1.74x
+
+Item 1515 priced a selectivity inversion on `count 2-hop` and flagged an 11.5 ms gap between the
+start- and end-filtered routes as "the thing to explain first". Explaining it led to the fixture.
+
+### What `graphDoc` actually was
+
+```ts
+from = (k * 7919) % N;
+to = (k * 104729) % N; // k runs 0 .. 5N
+```
+
+The five edges leaving one vertex are exactly `k0, k0+N, k0+2N, k0+3N, k0+4N` — and **any linear
+`(a·k + b) mod N` is invariant under `k → k+N`**, so all five pointed at the SAME target. Measured
+rather than reasoned:
+
+```text
+vertices with an out-edge        200,000 of 200,000
+out-degree distribution         {5: 200000}
+in-degree  distribution         {5: 200000}
+DISTINCT out-neighbours/vertex  {1: 200000}     ← the whole finding
+1,000,000 edges                 200,000 distinct (from,to) pairs
+```
+
+**Every degree statistic was perfect.** The graph was a functional graph (each vertex points at one
+other) wearing 5-fold parallel edges, so a k-hop count is `5^k · N` by construction — invariant to
+the topology it is meant to measure. That is item 702's trap exactly, and item 702's rule is the one
+that catches it: _count the DISTINCT endpoints, not the degrees._ I only looked because items 1426
+and 1486 record two instruments disagreeing **1.91x and 3.4x** on identical queries, both from the
+fixture's edge stride.
+
+⚠️ **The defect is structural, not bad luck with these primes.** No multiplier fixes it: splitting on
+`Math.floor(k / N)` — the repeat index — is what breaks the invariance. `to` is now
+`((k % N) * 104729 + floor(k / N) * 977) % N`: out-degree 5, **5 distinct out-neighbours**, in-degree
+exactly 5, no isolated vertices, and both terms stay far inside 2^53 so it does not reintroduce item
+702's f64 overflow either.
+
+**The fixture now checks its own topology** (`assertGraphDocBranches`), because every degree
+statistic was already perfect while the graph was degenerate. It asserts the PROPERTY — every vertex
+branches — rather than an exact fan-out, so a deliberate future change to the generator is free to
+alter it.
+
+### ⚠️ NUMBERS FROM BEFORE THIS CHANGE ARE NOT COMPARABLE WITH NUMBERS AFTER IT
+
+Every multi-hop, var-length and DISTINCT row in `bench.ts` ran over the degenerate graph. The file
+already carries that warning once, for the setup/teardown split; this is the second time. Rows that
+walk get slower because they now branch; rows with a closed form do not move at all, which is itself
+the diagnostic:
+
+```text
+                        degenerate   corrected
+count 2-hop                 51.0       51.4    product: O(V), no edge pass — insensitive
+count 2-hop + mid filter    32.0       31.6    gated once per middle — also insensitive
+count 2-hop + start filter  88.5      141.4    the walk now branches 5 ways
+count 2-hop + end filter   100.0      132.4
+count 3-hop                332.8*     475.3
+count 3-hop + start filter 182.5*     363.8
+count 3-hop + end filter   195.4*     369.2
+count 3-hop + interior     108.2*     172.8
+```
+
+(\* in-sweep; the 2-hop rows are `BENCH_ONLY`, one process each.)
+
+### What this does to item 1515
+
+- **Its headline is CONFIRMED and LARGER.** A strictly more selective two-hop count costs
+  **2.75x** (start) and **2.58x** (end) against the bare product, where the degenerate fixture said
+  1.74x/1.96x. No correctness test can see it.
+- **Its sub-claim is REFUTED, by a sign flip.** Item 1515 read end (100.0) > start (88.5) and
+  concluded "the end spelling is doing more than an edge pass… that 11.5 ms gap is the evidence the
+  formula is worth building". On a correct fixture **start (141.4) > end (132.4)** — the gap reverses.
+  Both routes are the same start-driven walk (an end predicate becomes the start of the reversed
+  pattern, via `reversedTwoHop`), so there was never a cost-class difference between them; the 11.5 ms
+  was the degenerate topology's forward/reverse asymmetry. Item 1515's heading now says so.
+- **And the 2-vs-3 asymmetry SURVIVES**, which is what makes the target real: at two segments a filter
+  costs 2.58-2.75x, at three it SAVES 1.3x. The explanation is now verified rather than guessed:
+  **the two-segment bare count is the only one with a closed form that touches no edge at all**, so it
+  is the only one a gate can make worse. The three-segment product already walks middle edges, so a
+  gate there only removes work.
+
+That also makes the formula in `patternCountOf`'s comment MORE attractive, not less: the arm that
+does not care about branching is the product, and `Σ_b indeg(b) · |out-edges of b whose target passes
+p|` keeps the end-filtered count on a product instead of a walk.
+
+### Gates
+
+`bun run check` 0 read unpiped. core 431/0, gql 3803/0, gremlin 1469/0, native 961/0,
+serialization 144/0, `bun run fuzz` 20/0. No engine code changed — the edits are the bench fixture,
+its new self-check, and documentation.
