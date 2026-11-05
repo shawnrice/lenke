@@ -34,6 +34,70 @@ describe('item 1541 — the lift memo', () => {
    * and store counts for exactly this reason — the same reason it reports `seen` for the LRU, whose
    * eviction item 1509 could not otherwise test.
    */
+  /**
+   * THE RING (item 1542). One slot won at one hot query and lost everything at two — `rot2`
+   * measured ~1030 ns against `rot1`'s 250, i.e. straight back to the un-memoised cost. Four slots
+   * hold a realistic serving mix; the fifth distinct text evicts round-robin.
+   */
+  test('FOUR distinct liftable texts all hit, and each keeps its OWN value', () => {
+    const graph = g();
+    const texts = [11, 12, 13, 14];
+
+    // Warm: one store each, no hits.
+    const before = parseCacheStats();
+
+    for (const v of texts) {
+      expect(query(graph, `LET x = ${v} RETURN x`)).toEqual([{ x: v }]);
+    }
+
+    const warmed = parseCacheStats();
+
+    expect(warmed.liftStores).toBe(before.liftStores + 4);
+    expect(warmed.liftHits).toBe(before.liftHits);
+
+    // Now every one of the four hits, and still answers with its own literal — four slots means
+    // four chances to serve the wrong value, which is the failure `no-text-compare` produces.
+    for (const v of texts) {
+      expect(query(graph, `LET x = ${v} RETURN x`)).toEqual([{ x: v }]);
+    }
+
+    const hot = parseCacheStats();
+
+    expect(hot.liftHits).toBe(warmed.liftHits + 4);
+    expect(hot.liftStores).toBe(warmed.liftStores);
+  });
+
+  test('a FULL CYCLE of new texts evicts every earlier one, which still answers', () => {
+    // ⚠️ CURSOR-INDEPENDENT ON PURPOSE. The ring is module state shared by every test in this file,
+    // so the write cursor is wherever earlier cases left it. My first version stored four texts and
+    // asserted the FIFTH evicted the first — it did not, because the cursor did not start at slot
+    // 0, and the test failed for a reason that had nothing to do with the behaviour. Writing a full
+    // ring's worth of NEW texts evicts all four whatever the cursor position.
+    const graph = g();
+    const first = [31, 32, 33, 34];
+
+    for (const v of first) {
+      expect(query(graph, `LET x = ${v} RETURN x`)).toEqual([{ x: v }]);
+    }
+
+    for (const v of [41, 42, 43, 44]) {
+      expect(query(graph, `LET x = ${v} RETURN x`)).toEqual([{ x: v }]);
+    }
+
+    const before = parseCacheStats();
+
+    // All four of the first group are gone, so each stores instead of hitting — and each still
+    // answers with its own literal, because the ring is an optimization and never the truth.
+    for (const v of first) {
+      expect(query(graph, `LET x = ${v} RETURN x`)).toEqual([{ x: v }]);
+    }
+
+    const after = parseCacheStats();
+
+    expect(after.liftStores).toBe(before.liftStores + 4);
+    expect(after.liftHits).toBe(before.liftHits);
+  });
+
   test('a REPEATED liftable text HITS the slot — the route, not the answer', () => {
     const graph = g();
     const before = parseCacheStats();

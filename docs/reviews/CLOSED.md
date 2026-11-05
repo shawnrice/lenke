@@ -62370,7 +62370,7 @@ next tick then shipped.
 at item 1539's: core 431/0, gql 3851/0, gremlin 1494/0, native 961/0, serialization 144/0,
 `bun run fuzz` 20/0.
 
-### Item 1541 — SHIPPED, **3.98x**: a ONE-SLOT lift memo, so auto-parameterization stops defeating the parse cache. `LET x = 5 RETURN x` 994 → 250 ns/call, and the literal spelling now COSTS THE SAME as its `$param` twin. The LRU I built first cost the all-miss workload 17% and was thrown away
+### Item 1541 — SHIPPED, **3.98x**: a ONE-SLOT lift memo, so auto-parameterization stops defeating the parse cache. `LET x = 5 RETURN x` 994 → 250 ns/call, and the literal spelling now COSTS THE SAME as its `$param` twin. The LRU I built first cost the all-miss workload 17% and was thrown away — ⚠️ **and ONE SLOT was itself superseded at item 1542**: it gets nothing at TWO hot literal queries, so the memo is now a ring of four
 
 Item 1540 priced this and named the open question: what cap does the memo want? The answer turned out
 to be **one slot and no cap**, and the two rejected designs are the useful part of the entry.
@@ -62486,3 +62486,103 @@ the same 19/1-then-clean pattern appeared in item 1535's tick, before this chang
 Mutants run under `timeout 900 systemd-run --user --scope -p MemoryMax=16G -p MemorySwapMax=0`,
 restoring before each, pristine copy under `crates/lenke-engine/target/`; tree verified identical
 after.
+
+### Item 1542 — the lift memo is now a RING OF FOUR, because one slot lost everything at TWO hot queries (`rot2` 1030 ns against `rot1`'s 250). Calibrated against the all-miss cost. **AND: the intermittent `bun run fuzz` failure I dismissed TWICE as the known gremlin residual is a REAL cross-engine wrong answer — caught, replayed by seed, and minimized**
+
+Two results. The second one matters more, and it is a correction of my own record.
+
+#### THE RING — item 1541's slot was right about all-miss and wrong about serving
+
+Item 1541's entry claimed a caller alternating between several literal texts "degrades to today's
+cost". True, and far more damaging than that phrasing suggests: a server with **two** hot literal
+queries gets nothing at all. Measured by rotating N distinct liftable texts round-robin:
+
+| design                  | `letlit` | `rot2`  | `rot3`  | `rot4`  | `rot8` | `allmiss` | vs PRE all-miss |
+| ----------------------- | -------- | ------- | ------- | ------- | ------ | --------- | --------------- |
+| PRE (no memo)           | 994      | ~1000   | ~1000   | ~1000   | ~1000  | 1367      | —               |
+| 1 slot (item 1541)      | 250      | 1030    | 1080    | 1015    | ~1030  | 1390      | +1.7%           |
+| ring of 2               | 258      | **262** | 1027    | 1016    | ~1030  | 1396      | +2.1%           |
+| **ring of 4 (shipped)** | **245**  | **249** | **226** | **225** | ~1030  | 1437      | **+5.1%**       |
+
+The all-miss cost is K failed string compares per call, so it rises with K. **Accepting ~5% there is
+a different judgement from item 1541's rejection of the LRU at 10-17%, and the difference is what
+the cost buys**: the LRU's 10% bought nothing a single slot did not already have, while this 5% buys
+rot3/rot4 at 4.2x. The 5% also overlaps the measurement spread (PRE ranges 1304-1551 over six
+readings), where the LRU's regression did not. `LIFT_SLOTS = 2` is the cheaper point and the table
+is in the code so the knob can be re-tuned with numbers rather than argument.
+
+Mutation: 3 of 5 caught. `scan-first-only` and `cursor-never-advances` by the new ring tests,
+`wrong-slot-value` by 100 existing tests. `no-break` survives and _should_ — a text can only be
+stored on a miss, so it can never occupy two slots, which makes the `break` a perf detail rather
+than a correctness one. `text-not-stored` was a no-op mutant of mine (`String(s)` on a string is
+identity).
+
+The ring's own tests had a bug worth recording: the first eviction test asserted that the FIFTH
+text evicts the first, and it failed — because the ring is module state shared by every test in the
+file, so the write cursor is wherever earlier cases left it. Writing a full ring's worth of new
+texts is cursor-independent and is what the test does now.
+
+#### ⚠️ THE FUZZER FAILURE WAS REAL, AND I WAS WRONG ABOUT IT TWICE
+
+`bun run fuzz` has read 19/1 three times in recent ticks. Both times I attributed it to
+`gremlin-fuzz-families`' documented "rare 1-in-30 residual whose SEED REPLAYS CLEAN" and moved on,
+once with an explicit structural argument. **That was wrong on every count:** it is the
+**differential** fuzzer (TS GQL vs Rust), not the Gremlin one, and its seed **replays
+deterministically**.
+
+What found it was giving up on inference and instrumenting the hunt:
+
+- all seven fuzzers individually — **54 runs, 0 failures**;
+- 12 full sweeps with `--no-build` — **0 failures**;
+- 8 full sweeps WITH the build — **1 failure**, captured to a log.
+
+```text
+FUZZ_SEED=2949348313 bun test src/differential-fuzz.test.ts    # replays every time
+
+MATCH (t:T) OPTIONAL MATCH (t)-[:E]->(n WHERE
+  (([1e400, local_time('08:30:00')]['a'] <= n.s) AND ((n.s || 0.0) IS NOT NULL)))
+RETURN t.n AS x, n.n AS y ORDER BY x, y
+
+  ts:     ok  [{"x":3,"y":null},{"x":7,"y":null}]
+  native: err E_INVALID_VALUE: || requires all operands to be strings or all lists
+```
+
+The fuzzer's own note said "an evaluation-order difference, but no registry entry covers this shape",
+which is exactly right and is the sentence I should have read the first time.
+
+#### MINIMIZED, and the obvious suspect was a red herring
+
+`divergence-1542-min.test.ts` strips it down. The list-indexed-by-a-string (`[…]['a']`) looks like
+the culprit and is **not** — every reduction containing it agrees, and `RETURN [1, 2]['a']` is
+`null` in both engines. The native error names the real ingredient: `n.s || 0.0`, a string
+concatenated with a NUMBER, which native rejects and TS does too **when it evaluates it**.
+
+| case                                                                               | ts             | native  |              |
+| ---------------------------------------------------------------------------------- | -------------- | ------- | ------------ |
+| `RETURN ('a' \|\| 0.0)`                                                            | err            | err     | agree        |
+| `RETURN ((null <= 'z') AND (('a' \|\| 0.0) IS NOT NULL))`                          | err            | err     | agree        |
+| `RETURN ((1 = 2) AND (…))`                                                         | `false`        | `false` | agree        |
+| `OPTIONAL MATCH (t)-[:E]->(n WHERE ((n.s \|\| 0.0) IS NOT NULL))`                  | err            | err     | agree        |
+| `MATCH (t)-[:E]->(n WHERE ((n.s \|\| 0.0) IS NOT NULL))`                           | err            | err     | agree        |
+| **the original** — UNKNOWN conjunct, THEN the fault, in a pattern's inline `WHERE` | **ok, 2 rows** | **err** | **DIVERGES** |
+
+**So the rule is narrow and now stated:** inside a PATTERN's inline `WHERE`, an `AND` whose left
+operand is UNKNOWN causes TS to skip the right operand — so a faulting right operand never raises —
+while native evaluates it and raises. In a scalar expression both engines evaluate it and both
+raise. Items 258/259 settled that `AND` short-circuits on **FALSE** in both engines in written
+order; this is **UNKNOWN**, and a pattern predicate rather than a value position, which is why that
+closure did not cover it.
+
+Found incidentally: native rejects a clause `WHERE` inside `OPTIONAL MATCH` outright ("WHERE inside
+OPTIONAL MATCH is not supported") where TS evaluates it — a second, separate gap.
+
+**Deliberately NOT added to `divergence-registry.ts`.** Registering it would stop the fuzzer flagging
+it, which is the opposite of what a real wrong answer needs. The fuzzer should keep failing ~1 run in
+8 until this is fixed. The new test asserts that every _reduction_ agrees (a real regression guard)
+and only PRINTS the original.
+
+#### Gates
+
+`bun run check` 0 read unpiped. core 431/0, gql **3863**/0, gremlin 1494/0, native **963**/0,
+serialization 144/0. `bun run fuzz` is expected to fail intermittently until the divergence above is
+fixed — that is now a known, seeded, minimized bug rather than an unexplained flake.

@@ -326,8 +326,35 @@ const seenOnce = new Set<string>();
  * — a user's own params object already flows that way — but a spread of a small object costs ~25 ns
  * against the ~740 this saves, so the question is bought out rather than reasoned about.
  */
-let liftSlotText: string | undefined;
-let liftSlotValue: Normalized | undefined;
+/**
+ * How many distinct liftable texts stay memoised at once.
+ *
+ * ⚠️ FOUR, AND THE KNOB IS CALIBRATED, NOT PICKED. Item 1541 shipped ONE slot, and item 1542 then
+ * measured what it actually does to a serving mix: a caller rotating N distinct liftable texts
+ * round-robin, which is a server with N hot queries. One slot wins at N=1 and loses EVERYTHING at
+ * N=2 — two hot literal queries and the memo never hits.
+ *
+ * ```text
+ *   design    letlit   rot2    rot3    rot4   allmiss   vs PRE all-miss
+ *   PRE          994   ~1000   ~1000   ~1000     1367         —
+ *   1 slot       250    1030    1080    1015     1390       +1.7%
+ *   ring of 2    258     262    1027    1016     1396       +2.1%
+ *   ring of 4    245     249     226     225     1437       +5.1%
+ * ```
+ *
+ * The all-miss cost is K failed string compares per call, so it rises with K. Accepting ~5% there
+ * is a different judgement from item 1541's rejection of the LRU at 10-17%, and the difference is
+ * what the cost BUYS: the LRU's 10% bought nothing a single slot did not already have, while this
+ * 5% buys rot3/rot4 at 4.2x. The 5% also overlaps the measurement spread (PRE ranges 1304-1551
+ * across six readings), where the LRU's regression did not.
+ *
+ * Re-tune it with that table: `LIFT_SLOTS = 2` is the cheaper point if the all-miss workload ever
+ * matters more than a 3-or-4-query serving mix.
+ */
+const LIFT_SLOTS = 4;
+const liftSlotTexts: (string | undefined)[] = Array.from({ length: LIFT_SLOTS });
+const liftSlotValues: (Normalized | undefined)[] = Array.from({ length: LIFT_SLOTS });
+let liftSlotNext = 0;
 /**
  * How often the slot answered, and how often it was written.
  *
@@ -486,10 +513,14 @@ export const query = <R extends Row = Row>(
     return execute<R>(cached, graph, withClock(graph, params));
   }
 
-  const memoed = liftSlotText === text ? liftSlotValue : undefined;
+  let memoed: Normalized | undefined;
 
-  if (memoed !== undefined) {
-    liftSlotHits += 1;
+  for (let s = 0; s < LIFT_SLOTS; s += 1) {
+    if (liftSlotTexts[s] === text) {
+      memoed = liftSlotValues[s];
+      liftSlotHits += 1;
+      break;
+    }
   }
 
   const lifted = memoed ?? normalizeLiterals(text);
@@ -502,8 +533,9 @@ export const query = <R extends Row = Row>(
       // below, and remembering it would commit every later call of that text to the same wasted
       // parse.
       if (memoed === undefined) {
-        liftSlotText = text;
-        liftSlotValue = lifted;
+        liftSlotTexts[liftSlotNext] = text;
+        liftSlotValues[liftSlotNext] = lifted;
+        liftSlotNext = (liftSlotNext + 1) % LIFT_SLOTS;
         liftSlotStores += 1;
       }
 
