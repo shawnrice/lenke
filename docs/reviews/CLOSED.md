@@ -58284,6 +58284,13 @@ it more tractable than it looks and one thing makes it risky:
 
 ### Item 1496 — the gate on item 1495's 4.1x: **removal costs +12.8% at degree 1024, and is FASTER at degree 4.** Gate passed. But enumerating the blast radius found a real blocker — `.has(member)` on a bucket is O(1) on a `Set` and **O(n) on an array, inside a nested loop**
 
+> ⚠️ **THAT BLOCKER WAS A FALSE POSITIVE, corrected at item 1497.** ~~`.has(member)` on a bucket~~ —
+> `unionOfBuckets` operates on `graph.edgesByLabel`, the GLOBAL label index, not the per-vertex
+> adjacency rows this change touches, so it is never reached. The scan matched lines containing the
+> word `bucket`, which names two different structures in that file. The removal measurements below
+> stand; the blast-radius conclusion does not, and item 1497 replaces it with a compiler-driven
+> census of 83 sites.
+
 Item 1495 selected the design (`Map<string, Set<Edge>>` → `Map<string, Edge[]>`, 4.1x on a bare hop)
 and left one thing unmeasured: removal. `Set.delete` is O(1); an order-preserving array removal is
 `indexOf` + `splice`, both O(degree). That is the axis that disqualified the global dense ordinal
@@ -58381,3 +58388,91 @@ one.
 (⚠️ `grep` silently skipped `Graph.ts` for every one of these searches — it holds non-ASCII, and
 `str.count` in python found 11 mentions where grep found none. `grep-silently-skips-unicode`, third
 time this session.)
+
+### Item 1497 — attempted the array-adjacency change and **REVERTED it**, because the enumeration method was wrong: ⚠️ **`bun run typecheck` is not authoritative until core's DIST is rebuilt.** It reported 0 errors in both engines; after a rebuild it reports **83**. Also: item 1496's `unionOfBuckets` blocker was a FALSE POSITIVE
+
+Item 1496 passed the gate (removal +12-17% at degree 1024 against 4.1x on reads) and enumerated the
+scope by counting mentions. This item tried to build it, using what looked like a better enumerator:
+flip the two declarations in `Graph.ts` and let the compiler list every site.
+
+That worked, for core. It is **wrong for everything else**, and the way it fails is silent.
+
+### ⚠️ The typechecker lied, and the reason is the dist
+
+`packages/gremlin` and `packages/gql` resolve `@lenke/core` to its BUILT output
+(`packages/core/dist/types/...`), so a `bun run typecheck` run before rebuilding core checks them
+against the OLD declarations. With the change in place and core NOT rebuilt:
+
+```text
+core:     26 production errors (which I fixed, 6 files, gate green)
+gremlin:   0
+gql:       0
+```
+
+I read that as "the engines only ITERATE buckets, so they need no changes" — a conclusion the
+enumeration in item 1496 had already suggested. Then `bun run build` rebuilt everything and the
+suites said otherwise:
+
+```text
+core 431/0 · gql 3254 pass 473 FAIL · gremlin 1285 pass 121 FAIL · native 911 pass 50 FAIL
+```
+
+**644 failures, and the shape of them was the tell**: a four-segment hop count returned `0` where it
+should return 24. `bucket?.size ?? 0` on an array is `undefined ?? 0` — zero, silently, with no
+error anywhere. Re-running typecheck AFTER the rebuild:
+
+```text
+83 errors: shortcuts.ts 34 · count-shortcut.ts 18 · hop-projection.ts 10 · executor.ts 5
+           hop-values.ts 4 · graph-queries.ts (both) 6 · hop-endpoint-extremum.ts 2 · 2 probes
+```
+
+This is `fuzzers-read-built-dists` in a new place. That rule is written about the FUZZERS reading a
+stale `dist`; the same resolution applies to the typechecker, and there it is worse, because a
+fuzzer failing is loud while a typecheck passing is silence that reads as permission.
+
+**The method for the next attempt: change core, `bun run build`, THEN typecheck — and treat a clean
+cross-package typecheck as meaningless until that rebuild has happened.**
+
+### ⚠️ And item 1496's blocker was a false positive
+
+That item named `unionOfBuckets`' `buckets[j].has(member)` — O(1) on a `Set`, O(n) on an array,
+inside a nested loop — as the one non-mechanical site. It is not reached by this change at all:
+`unionOfBuckets` operates on `graph.edgesByLabel`, the GLOBAL label index, not the per-vertex
+adjacency rows. My blast-radius scan matched lines containing the word `bucket`, and that word names
+two different structures in this file.
+
+Also worth correcting, since item 1497 reasoned about it before checking: I argued that rewriting
+`unionOfBuckets` to accumulate a `Set` would be a strict improvement (O(total) against O(k·total)).
+It would not. **Bucket 0 is FREE today** — sorted largest-first (item 1382) and consumed as a bare
+`.size` — so an accumulating version pays O(|B₀|) that the current one does not. At k = 2, the
+common case, today's version wins. The complexity argument was right about the exponent and wrong
+about the constant that matters.
+
+### What IS now known, so the next attempt is execution
+
+The change itself is small and the compiler can drive it, in this order:
+
+- **`core/Edge.ts`**: an `AdjBucket = readonly Edge[]` type, documented as insertion-ordered (which
+  is why the swap is answer-preserving: a `Set` and an appended array iterate identically, and
+  adjacency order is observable in row order).
+- **`core/Graph.ts`**: two declarations; two `new Set()` → `[]`; two `.add` → `push`; the two
+  `delete`-and-drop-if-empty sites behind one `dropFromBucket(bucket, edge)` helper doing
+  `indexOf` + `splice` (NOT swap-remove — item 1496 measured that as cheaper and it reorders).
+- **`core/algorithms/adjacency.ts`**: the four exported helpers are the hub — widening them to
+  `ReadonlyMap<string, AdjBucket>` clears 12 of core's 26 errors at once, because they only ever
+  iterate and read a size.
+- **`core/Vertex.ts`**: the two cached getters, and the two convenience accessors whose empty
+  fallback must stay a FRESH array per call (a shared constant would be mutable into every other
+  vertex's answer).
+- **then rebuild, then the 83 engine sites**, almost all `.size` → `.length`.
+
+Two risks still unretired: the 14 errors in `hop-projection.ts`/`hop-values.ts`, which
+`executor-edits-perturb` records as costing unrelated rows up to 16% for ANY edit — so the net value
+needs a wide A/B, not the bare-hop row — and the byte-identity fuzzers, which are the real
+correctness gate for a storage change and were never reached this item.
+
+**Reverted to pristine; core 431/0, gql 3727/0, gremlin 1406/0 confirm the tree is back.**
+
+### Gates
+
+`bun run check` 0 read unpiped, `bun run typecheck` 0, suites green after the revert. No net change.
