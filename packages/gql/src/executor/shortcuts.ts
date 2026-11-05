@@ -8614,6 +8614,32 @@ export const rowLocal = (e: Expr | undefined): boolean => {
     return false;
   }
 
+  // ⚠️ A `lit` IS `{ kind: 'lit'; value: unknown }` — one field, and that field is DATA, never an
+  // expression. Stopping here is therefore not an optimization but the structural truth, and
+  // descending was a WRONG DECLINE (item 1490).
+  //
+  // `rowLocalChild`'s note below says "descending into a non-`Expr` object is safe because every
+  // `Expr` carries a `kind`". That is true and it is the wrong direction: the walk relies on the
+  // CONVERSE — that everything carrying a string `kind` is an `Expr` — and a stored temporal
+  // breaks it. `LenkeDate` and its five siblings each carry `readonly kind = 'date'` (etc.) as
+  // their `instanceof` discriminant, so `DATE '2029-11-10'`, which the parser lowers to
+  // `{ kind: 'lit', value: <LenkeDate> }`, was handed to `rowLocal` AS AN EXPRESSION, missed the
+  // allowlist, and declined the whole shape.
+  //
+  // It cost an EQUIVALENT SPELLING 2.41x — the exact failure class `CLAUDE.md` names, where the
+  // planner recognizes one spelling of a predicate and not another that means the same thing.
+  // `WHERE n.d > DATE '…'` and `WHERE n.d > $cut` are one filter; at 200,000 vertices the first
+  // measured 15.90 ms against the second's 6.59, because only the param spelling (which puts no
+  // temporal in the AST) reached this path. Both answered correctly, so no correctness test could
+  // have caught it.
+  //
+  // The guard is on the `lit` rather than on `isTemporal(value)` because the temporals are only
+  // today's instance: any future value class with a `kind` — or a stored map carrying a user key
+  // named `kind` — fails the same way, and a literal has no sub-expression to check in any case.
+  if (e.kind === 'lit') {
+    return true;
+  }
+
   return Object.values(e).every(rowLocalChild);
 };
 
@@ -8685,7 +8711,10 @@ const SUBQUERY_KINDS: ReadonlySet<string> = new Set(['exists', 'countSubquery', 
  * only applied OUTSIDE subqueries, because `count(*)` inside a `COUNT { … }` belongs to that
  * subquery, not to this projection.
  */
-const itemLocal = (e: Expr | undefined): boolean => {
+// Exported for its OWN test, not for a caller — item 1490. This is a pure ROUTE predicate, so
+// every answer it changes is answer-equivalent and the differential tests cannot see a mutant in
+// it (`perf-gate-needs-its-own-test`). `rowLocal` above is exported for the same reason.
+export const itemLocal = (e: Expr | undefined): boolean => {
   if (e === undefined) {
     return true;
   }
@@ -8700,6 +8729,14 @@ const itemLocal = (e: Expr | undefined): boolean => {
 
   if (e.kind === 'func' && AGGREGATES.has(e.name)) {
     return false;
+  }
+
+  // The same stop as `rowLocal`'s, for the same reason and with the same measured cost — see the
+  // long note there. This copy is what the single-node paths (`nodeWhereOf`, and each projected
+  // item in `detectNodeProjection`) go through; `rowLocal`'s is what the hop paths go through,
+  // and BOTH declined a temporal literal.
+  if (e.kind === 'lit') {
+    return true;
   }
 
   return Object.values(e).every(itemLocalChild);

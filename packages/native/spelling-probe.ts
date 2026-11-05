@@ -57,7 +57,16 @@ const FLOOR_MS = Number(process.env.SPELL_FLOOR ?? 1);
 const lines = Array.from(
   { length: N },
   (_, i) =>
-    `{"type":"node","id":"v${i}","labels":${i % 3 === 0 ? '["P","Q","Univ"]' : '["P","Univ"]'},"properties":{"k":${i % 50},"s":"s${i % 7}","flag":${i % 5 !== 0},"meta":{"s":"s${i % 7}"}}}`,
+    // `d` IS NEW AND EVERY OTHER KEY IS UNTOUCHED (item 1490), the same discipline as `ew` on the
+    // edges below. It is a DATE derived from `k`'s own ordinal, so `n.d > DATE '…'` and
+    // `n.k > <n>` select the identical set and a temporal spelling can be compared with a
+    // numeric one without the row count being a second variable.
+    //
+    // This probe had NO temporal property and therefore no temporal group, which is why it was
+    // blind to a 2.41x spelling gap for as long as it existed: a `lit` holding a `Temporal`
+    // declined every single-node and hop fast path, while the `$param` spelling of the same
+    // predicate took it.
+    `{"type":"node","id":"v${i}","labels":${i % 3 === 0 ? '["P","Q","Univ"]' : '["P","Univ"]'},"properties":{"k":${i % 50},"s":"s${i % 7}","flag":${i % 5 !== 0},"d":{"@date":"2020-${String(Math.floor((i % 50) / 31) + 1).padStart(2, '0')}-${String(((i % 50) % 31) + 1).padStart(2, '0')}"},"meta":{"s":"s${i % 7}"}}}`,
 );
 
 // BOTH ENDPOINT KEYS ARE SCATTERED, by different multipliers, and that is load-bearing.
@@ -1433,6 +1442,57 @@ const SEEK_GROUPS: [string, readonly string[], Record<string, unknown>][] = [
       'MATCH (a:P WHERE a.s = $s)-[:E]->(b) RETURN count(*) AS c',
     ],
     { s: 's1' },
+  ],
+  [
+    // ⚠️ NOT A SEEKED GROUP — `d` carries no index, and these scan. It lives in this family only
+    // because this is the one that carries PARAMETERS, and the parameter spelling is half of the
+    // question: the defect was that a temporal LITERAL and a temporal PARAM meaning the same thing
+    // took different routes.
+    //
+    // ITEM 1490. The parser lowers `DATE '…'` to `{ kind: 'lit', value: <LocalDate> }`, and
+    // `LocalDate` carries `readonly kind = 'date'` as its `instanceof` discriminant. The AST walk
+    // that decides the fast route treats any object with a string `kind` as an expression, so it
+    // read the stored DATE as an expression of an unknown kind and declined — while `$cut`, which
+    // puts no temporal in the AST, was admitted. Measured at 200,000 vertices: the node shape
+    // 15.07 against 6.59 ms, the hop 26.60 against 7.16.
+    //
+    // All five members below must now land together. The numeric twin is included deliberately as
+    // the group's own floor: it is the one member that NEVER had a temporal in its AST, so if a
+    // future change re-breaks the temporal route, the group's spread opens against a member that
+    // cannot move.
+    // ⚠️ AND THESE ARE PROJECTIONS, NOT `count(*)`, BECAUSE THE FIRST VERSION OF THIS GROUP WAS
+    // BLIND. Written with `count(*)` like every group above it, it reported the five members
+    // within 1.27x of each other on the BROKEN build — 3.96 / 4.10 / 4.53 / 4.25 / 3.85 ms — and
+    // would have been committed as a guard that could never fire. A `count(*)` is claimed earlier
+    // in the ladder by the count shortcuts, which build their gate through `compilePredicate`
+    // rather than through `itemLocal`, so it never reaches the walk this group exists to watch.
+    // Verified the other way round too: on the broken build the shapes below read 15.07 against
+    // 6.59 ms, a 2.29x spread, well past the 2x flag.
+    'a temporal LITERAL vs the param, the reversed and the numeric twin',
+    [
+      "MATCH (n:P) WHERE n.d > DATE '2020-01-26' RETURN n.k AS v ORDER BY v LIMIT 10",
+      'MATCH (n:P) WHERE n.d > $cut RETURN n.k AS v ORDER BY v LIMIT 10',
+      "MATCH (n:P) WHERE DATE '2020-01-26' < n.d RETURN n.k AS v ORDER BY v LIMIT 10",
+      'MATCH (n:P) WHERE $cut < n.d RETURN n.k AS v ORDER BY v LIMIT 10',
+      'MATCH (n:P) WHERE n.k > 25 RETURN n.k AS v ORDER BY v LIMIT 10',
+    ],
+    { cut: { '@date': '2020-01-26' } },
+  ],
+  [
+    // The HOP half, which routes through `rowLocal` rather than `itemLocal` — two separate copies
+    // of the same walk, and item 1490 found BOTH declining. The hop's gap was the larger of the
+    // two (3.72x against 2.35x), so a group that covered only the node shape would under-report it.
+    // A PROJECTION here too, for the reason above. The extra `a.s = $s` conjunct is shared by
+    // every member and holds the result to ~86,000 rows: without it the three members each
+    // materialize 1.8M rows and the group measures row construction and the GC it causes
+    // (44.8% of a row-materializing hop, item 1488) rather than the route.
+    'a temporal literal on a HOP start vs the param and the numeric twin',
+    [
+      "MATCH (a:P)-[:E]->(b:P) WHERE a.d > DATE '2020-01-26' AND a.s = $s RETURN b.k AS k",
+      'MATCH (a:P)-[:E]->(b:P) WHERE a.d > $cut AND a.s = $s RETURN b.k AS k',
+      'MATCH (a:P)-[:E]->(b:P) WHERE a.k > 25 AND a.s = $s RETURN b.k AS k',
+    ],
+    { cut: { '@date': '2020-01-26' }, s: 's1' },
   ],
 ];
 

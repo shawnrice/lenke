@@ -18,7 +18,7 @@ return the same rows.
 
 | probe                        | the property                                                                                | last run                                                                                                          |
 | ---------------------------- | ------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| `spelling-probe.ts`          | equivalent GQL spellings of one predicate cost the same                                     | clean; its one flag is item 644's BUILT-AND-REVERTED product lever                                                |
+| `spelling-probe.ts`          | equivalent GQL spellings of one predicate cost the same                                     | clean; one flag is item 644's reverted product lever. **Gained TEMPORAL groups at 1490 (2.29x)**                  |
 | `gremlin-spelling-probe.ts`  | the same for Gremlin (item 1305)                                                            | zero flagged AT `SPELL_N=200000`; **1M flagged a new 2.00x group** (item 1332)                                    |
 | `surface-parity-probe.ts`    | GQL and Gremlin cost the same for ONE question                                              | found 1322's 5.78x and 1334's 1.92x; `two-hop-count` now GQL 1.35x FASTER, gap reversed                           |
 | `index-never-hurts-probe.ts` | adding an index never makes a query slower (item 1324)                                      | holds on 17 shapes, both surfaces                                                                                 |
@@ -701,6 +701,26 @@ numbers near the floor or in-sweep inflation (CLAUDE.md's item 737). So: **read 
 run at the documented N, and follow the probe's own "re-run the group ALONE, three times" instruction
 before treating a flag as a finding.** It prints that line because its own sweep cannot be trusted at
 these magnitudes.
+
+⚠️ **A GROUP WRITTEN WITH `count(*)` CANNOT SEE A ROUTE THAT ONLY PROJECTIONS REACH** (item 1490).
+Every group in this probe up to that point used `RETURN count(*) AS c`, which is the right default —
+it keeps the reading off row construction and the GC it causes (44.8% of a row-materializing hop,
+item 1488). But a `count(*)` is claimed EARLIER in the shortcut ladder by the count family, whose
+gate goes through `compilePredicate` rather than through `itemLocal` / `rowLocal`, so a group in that
+spelling never reaches the walk that picks the projection and hop routes. Item 1490's first version
+of its own guard was written that way and reported its five members within **1.27x on the build it
+was meant to catch** (3.96 / 4.10 / 4.53 / 4.25 / 3.85 ms). Rewritten as `RETURN n.k AS v ORDER BY v
+LIMIT 10` the same group reads 6.07x on that build and 1.46x once fixed.
+
+So: **run a new group against the BROKEN build before committing it.** A spelling group is a
+generative guard and CLAUDE.md's rule for those applies unchanged — one whose teeth were never
+verified is worse than none, because it is believed. And when adding a group, ask which rung of the
+ladder the spelling lands on, not just whether the two spellings mean the same thing.
+
+The fixture gained a `d` DATE key for those groups (item 1490), derived from `k`'s own ordinal so a
+temporal predicate and a numeric one select the identical set. `d` is new and every other key is
+untouched — the same discipline as `ew` on the edges (item 1053), so every earlier group's figures
+stay comparable.
 
 ## `algo-scaling-bench.mjs` — the TWELVE ALGORITHMS, which had no bench row at all
 

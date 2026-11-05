@@ -57471,6 +57471,14 @@ shapes (`hopall`, `hoprows`); no engine code changed.
 
 ### Item 1489 — the GQL screen is CLEAN at FANOUT=5 scattered too, so that hunt is closed. And a zero-coverage surface finally measured: **temporal `ORDER BY` costs 2.74-3.50x its numeric twin**, and the profile says why — the temporal plan never reaches the topK fast walk
 
+> **CLOSED AND PARTLY CORRECTED BY ITEM 1490.** ~~gate not yet found~~ — the gate is `rowLocal` /
+> `itemLocal` reading a stored `Temporal`'s `kind` discriminant as an expression kind, and it is
+> fixed. ~~`ORDER BY` over a temporal key~~ is the wrong half: the sort key is IRRELEVANT (a
+> temporal sort key under a numeric predicate measured 3.84 ms against the numeric twin's 4.52),
+> and the cost is entirely the temporal LITERAL in the **predicate** — which this entry's "the
+> predicate lifts" paragraph ruled out by reading, wrongly. It is also not confined to `ORDER BY`:
+> the hop projection pays MORE (3.72x). See item 1490.
+
 Two halves: finishing the GQL screen in the regime item 1488 opened, and opening the surface item
 1467's triage flagged and nobody had measured.
 
@@ -57555,3 +57563,166 @@ path, gate not yet found.**
 
 `bun run check` 0 read unpiped, gql 3709/0. One new instrument (`temporal-probe.mjs`); no engine code
 changed.
+
+### Item 1490 — **a stored `Temporal`'s `kind` field was read as an AST expression kind**, so `WHERE n.d > DATE '…'` declined every single-node and hop fast path while `WHERE n.d > $cut` took it. **2.35x on the node shape, 3.72x on the hop, between two spellings of one predicate**
+
+Item 1489 priced this at 2.74-3.50x and named "find the gate" as the next item's work. The gate is
+found, the fix is two lines, and **item 1489 got the half wrong** — see the correction on its
+heading.
+
+### First: it is not the ORDER BY
+
+Item 1489 located the cost on the ordering path, because that was the pair that moved. Crossing the
+two halves over one fixture settles it — the WHERE's value type is everything and the sort key's is
+nothing:
+
+```text
+WHERE type / SORT KEY type        200,000 vertices, 9 reps
+num  / num        4.52 ms
+num  / temp       3.84        ← a temporal SORT KEY is FREE (cheaper than the numeric twin)
+temp / num       15.60        ← a temporal PREDICATE costs 3.45x
+temp / temp      14.35
+```
+
+So item 1489's "`project` and `grouped` are flat, therefore the cost is in the ordering path" was a
+valid inference from an incomplete set: the pair it never ran was a temporal predicate with a
+numeric projection, which is where the whole gap lives.
+
+### The cause: two `kind` discriminants, one structural walk
+
+`rowLocal` / `itemLocal` decide the fast route by walking the expression tree against an allowlist,
+and `rowLocalChild` / `itemLocalChild` descend through non-`Expr` wrapper objects to reach it. The
+existing note says the descent is "safe because every `Expr` carries a `kind`". That is true, and it
+is the wrong direction — the walk relies on the **converse**:
+
+```ts
+return typeof rec.kind === 'string' ? rowLocal(child as Expr) : /* descend */;
+```
+
+`LocalDate` and its five siblings each carry `readonly kind = 'date'` (etc.) as their `instanceof`
+discriminant (`core/src/temporal.ts`). The parser lowers `DATE '2029-11-10'` to
+`{ kind: 'lit', value: <LocalDate> }` (`parser.ts:2241`). So the walk descended into the `lit`,
+found an object with a string `kind`, called `rowLocal` **on the stored date as though it were an
+expression**, missed the allowlist, and declined the whole shape. A `$param` carries no temporal in
+the AST, so the param spelling was admitted — which is the entire difference.
+
+Confirmed before building anything, by the one discriminator that separates the two:
+
+```text
+numeric lit       4.43 ms      temporal lit     15.90 ms
+numeric param     5.16         temporal param    6.59   ← 2.41x between two spellings
+```
+
+### ⚠️ This is the equivalent-spelling failure class, exactly as `CLAUDE.md` describes it
+
+> "the planner recognized one spelling of a predicate and scanned for another that meant exactly
+> the same thing … Each cost 100-300x and each returned the correct answer, so no correctness test
+> could catch it."
+
+`WHERE n.d > DATE '…'` and `WHERE n.d > $cut` are one filter. Both answered correctly for as long as
+the bug existed. The one instrument built to catch this had no temporal property in its fixture and
+therefore no temporal group — so it was blind by construction, not by bad luck.
+
+### The fix
+
+A `lit` is `{ kind: 'lit'; value: unknown }` (`ast.ts:484`) — one field, and that field is DATA. So
+stopping there is not an optimization but the structural truth:
+
+```ts
+if (e.kind === 'lit') {
+  return true;
+}
+```
+
+in both `rowLocal` (the hop paths) and `itemLocal` (the single-node paths). Both declined, and the
+hop's gap was the larger of the two.
+
+**The guard is on the `lit`, not on `isTemporal(value)`.** The temporals are only today's instance:
+a stored map with a user key named `kind`, or the next value class to carry one, fails identically,
+and a literal has no sub-expression to check in any case.
+
+### A/B — 200,000 vertices, FANOUT=2 scattered, 11 reps, median after 3 dropped
+
+Arm asserted from the BUILT `dist` on a countable marker (14 occurrences PRE, 16 POST), because
+`packages/native` resolves `@lenke/*` to `dist` and item 1468 measured the same code twice without it.
+
+```text
+                     PRE      POST    ratio
+T node templit     15.07      6.41    2.35x
+T node tempproj    15.69      6.75    2.32x
+T hop templit      26.60      7.16    3.72x
+C node numlit       5.40      4.74    1.14x   ← control: no Temporal ever in the AST
+C node tempparam    6.59      5.84    1.13x   ← control: already on the fast path PRE
+C hop numlit        6.68      6.18    1.08x
+```
+
+All three controls move 1.08-1.14x, in the same direction and by less than any target — a small
+global drift, not the redistribution signature item 762 warns about (there the controls moved MORE
+than the targets). POST, the spelling gap is 6.41 against 5.84: **2.29x → 1.10x**.
+
+### ⚠️ MY FIRST VERSION OF THE PERMANENT GUARD WAS BLIND, AND I VERIFIED IT RATHER THAN BELIEVING IT
+
+The durable fix is a spelling-probe group, so the probe's fixture gained a `d` date derived from
+`k`'s own ordinal (`d` is new, every other key untouched — the `ew` discipline from item 1053), and
+two groups went in. Written with `count(*)` like every group above them, they reported the five
+members within 1.27x **on the broken build**:
+
+```text
+3.96 / 4.10 / 4.53 / 4.25 / 3.85 ms      ← count(*) spelling, BROKEN build, no flag
+```
+
+A `count(*)` is claimed earlier in the ladder by the count shortcuts, whose gate goes through
+`compilePredicate` rather than `itemLocal` — so it never reaches the walk the group exists to watch.
+Rewritten as projections (`RETURN n.k AS v ORDER BY v LIMIT 10`, and a hop projection held to ~86,000
+rows by a shared conjunct so it does not measure row-construction GC instead — item 1488):
+
+```text
+BROKEN build                              FIXED build
+43.01  n.d > DATE '…'                      7.55
+ 7.68  n.d > $cut                          7.62
+23.54  DATE '…' < n.d                     10.69
+ 8.15  $cut < n.d                         11.03
+ 7.09  n.k > 25        (numeric twin)      9.65
+6.07x flagged                             1.46x, under tolerance
+
+64.60  hop, DATE '…'                      22.12
+22.45  hop, $cut                          22.40
+20.95  hop, n.k > 25                      21.22
+3.08x flagged                             1.06x
+```
+
+**That is the difference between a guard and the belief in one.** `CLAUDE.md`'s rule — a generative
+test whose teeth were never verified is worse than no test, because it is believed — applies to a
+probe group just as it does to a fuzzer, and this one would have been committed green and useless.
+
+(The broken build also shows a THIRD gap inside itself: the reversed spelling `DATE '…' < n.d` at
+23.54 against the forward's 43.01. Moot now — both land together — and recorded only because it
+shows the walk was declining different amounts for spellings nobody had compared.)
+
+### Mutation — four mutants, all caught, and the fourth only after the test was fixed
+
+The change is a pure ROUTE choice, so every query in the suite answers identically on both routes
+and the differential tests cannot see a mutant in it (`perf-gate-needs-its-own-test`). `itemLocal` is
+therefore exported for its own test, as `rowLocal` already was.
+
+```text
+pristine        SURVIVED   18 pass  0 fail
+null-both       CAUGHT     14 pass  4 fail
+null-rowlocal   CAUGHT     14 pass  4 fail
+null-itemlocal  CAUGHT     15 pass  3 fail
+widen           CAUGHT     17 pass  1 fail
+```
+
+⚠️ **`widen` first SURVIVED, and it was a real test gap, not a no-op.** It replaces the stop with
+`if (e.kind !== undefined) return true;` — admit anything past the allowlist without descending.
+All 17 other tests stayed green because every decline they checked is refused by the allowlist at the
+TOP level, before the stop is reached. The walk's whole job is the descent, so the refusal has to sit
+UNDERNEATH an admissible node: a nested `exists` under an `and` for `rowLocal`, a nested aggregate
+for `itemLocal` (which admits subqueries by design), and one level deeper under the `arith` wrapper
+item 207 found the walk mishandling. Item 475's rule read in the other direction — a survivor is as
+readily an untested guard as a redundant one, and the two have opposite fixes.
+
+### Gates
+
+`bun run check` 0 read unpiped. core 431/0, gql 3727/0, gremlin 1308/0, native 961/0,
+serialization 144/0, `bun run fuzz` 20/0.
