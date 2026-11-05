@@ -79,7 +79,44 @@ const CASES: Record<string, string> = {
     'MATCH (t:T) MATCH (t)-[:E]->(n WHERE ((n.s || 0.0) IS NOT NULL)) RETURN t.n AS x, n.n AS y ORDER BY x, y',
   'optional-clause-fault':
     'MATCH (t:T) OPTIONAL MATCH (t)-[:E]->(n) WHERE ((n.s || 0.0) IS NOT NULL) RETURN t.n AS x, n.n AS y ORDER BY x, y',
+
+  // ⚠️ IS IT THE LIFT? The hypothesis (item 1543): the FIRST conjunct is lifted into `cmpProps`
+  // and evaluated before `pred.where`, and an UNKNOWN lifted comparison returns `false` early — so
+  // the faulting residual never runs. These separate the factors.
+  //
+  // The exotic literals should be irrelevant if that is the mechanism.
+  'plain-pair-inline':
+    "MATCH (t:T) OPTIONAL MATCH (t)-[:E]->(n WHERE (([1, 2]['a'] <= n.s) AND ((n.s || 0.0) IS NOT NULL))) RETURN t.n AS x, n.n AS y ORDER BY x, y",
+  // Order swapped: the FAULT first. If the lift is the mechanism, this raises in both.
+  'swapped-fault-first':
+    "MATCH (t:T) OPTIONAL MATCH (t)-[:E]->(n WHERE (((n.s || 0.0) IS NOT NULL) AND ([1, 2]['a'] <= n.s))) RETURN t.n AS x, n.n AS y ORDER BY x, y",
+  // A first conjunct that is UNKNOWN but compares two NON-element expressions, so there is no
+  // element property to lift against.
+  'unliftable-unknown-first':
+    "MATCH (t:T) OPTIONAL MATCH (t)-[:E]->(n WHERE ((null <= 'z') AND ((n.s || 0.0) IS NOT NULL))) RETURN t.n AS x, n.n AS y ORDER BY x, y",
+  // And the same chain in a REQUIRED match, to show the OPTIONAL is not the factor.
+  'required-pair-inline':
+    "MATCH (t:T) MATCH (t)-[:E]->(n WHERE (([1, 2]['a'] <= n.s) AND ((n.s || 0.0) IS NOT NULL))) RETURN t.n AS x, n.n AS y ORDER BY x, y",
 };
+
+/**
+ * The shapes that currently diverge, so the assertion below guards the REST.
+ *
+ * ⚠️ THE FAMILY IS WIDER THAN THE ORIGINAL AND NARROWER THAN "AND WITH UNKNOWN" (item 1543). Each
+ * member pairs a conjunct comparing an ELEMENT PROPERTY (liftable into `cmpProps`) with a faulting
+ * conjunct. `unliftable-unknown-first` uses `null <= 'z'` instead — nothing to lift — and both
+ * engines AGREE, which is what points at the lift rather than at `AND`.
+ *
+ * And `swapped-fault-first` is why "written order" is NOT the explanation: the faulting conjunct is
+ * written FIRST and TS still does not raise, because the lifted conjunct is hoisted ahead of the
+ * residual `where` regardless of where it appeared.
+ */
+const KNOWN_DIVERGENT = new Set([
+  'original',
+  'plain-pair-inline',
+  'swapped-fault-first',
+  'required-pair-inline',
+]);
 
 const suite = nativeReady ? describe : describe.skip;
 
@@ -113,8 +150,8 @@ suite('item 1542 — the AND-with-UNKNOWN divergence inside a pattern predicate'
       const nat = run(() => nativeGraph.query(text));
       const agree = ts.startsWith('err') === nat.startsWith('err');
 
-      if (name === 'original') {
-        console.log(`\n${name} (the known bug, printed not asserted)`);
+      if (KNOWN_DIVERGENT.has(name)) {
+        console.log(`\n${name} (known-divergent, printed not asserted)`);
         console.log(`  ts:     ${ts.slice(0, 150)}`);
         console.log(`  native: ${nat.slice(0, 150)}`);
         continue;

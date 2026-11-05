@@ -62586,3 +62586,87 @@ and only PRINTS the original.
 `bun run check` 0 read unpiped. core 431/0, gql **3863**/0, gremlin 1494/0, native **963**/0,
 serialization 144/0. `bun run fuzz` is expected to fail intermittently until the divergence above is
 fixed — that is now a known, seeded, minimized bug rather than an unexplained flake.
+
+### Item 1543 — diagnosed item 1542's divergence to the exact mechanism, and it is **NOT a bug to fix but a DESIGN COLLISION**: TS's filter position deliberately settles on "not cleanly TRUE", which skips a sibling's throw, and that short-circuit is what the 1.94–2.62x conjunct lift rests on. Three candidate resolutions, each with a measured cost. **NEEDS A DECISION, NOT A PATCH**
+
+Item 1542 left this as "fix it next tick". It is not patchable without choosing between two things the
+repo has written commitments to.
+
+#### THE MECHANISM, nailed down
+
+Three more reductions moved the diagnosis past item 1542's:
+
+| case                                                | ts         | native |                                                        |
+| --------------------------------------------------- | ---------- | ------ | ------------------------------------------------------ |
+| `[1, 2]['a'] <= n.s` AND the fault (plain literals) | ok, 2 rows | err    | **DIVERGES** — so `1e400`/`local_time` were irrelevant |
+| the fault written FIRST, then `[1, 2]['a'] <= n.s`  | ok, 2 rows | err    | **DIVERGES** — so WRITTEN ORDER is not the explanation |
+| the same chain under a REQUIRED `MATCH`             | ok, `[]`   | err    | **DIVERGES** — so `OPTIONAL` is not the factor         |
+| `(null <= 'z')` AND the fault — nothing to lift     | err        | err    | **agrees**                                             |
+
+The last two rows together are the finding. A conjunct comparing an **element property** is lifted
+into `cmpProps`; `satisfies` evaluates those lifts **before** `pred.where`, whatever order they were
+written in; and a lift that yields UNKNOWN `return false`s, so the residual faulting conjunct is
+never reached. Replace the liftable conjunct with one that has no element property and the lift
+cannot happen — and the engines agree.
+
+#### AND IT IS DELIBERATE, which is why this is a decision
+
+`compilePredicate` says so in its own words:
+
+> FILTER position: `matchesPredicate` reads this as `asTruth(...) === true`, below a `props` and an
+> `eqProps` loop that both `return false` outright. **So a conjunct that is not cleanly TRUE settles
+> the element and its siblings need not be evaluated.**
+
+That is the measured behaviour, by design, and it is load-bearing. The same file prices the lift it
+enables, over 200,000 vertices:
+
+```text
+   a=50 alone, lifts                 4.160 ms
+   a=50 AND <unliftable>             8.072        1.94x
+   a=50 AND b=0 AND <unliftable>    10.686        2.62x
+```
+
+Meanwhile `and-short-circuit-conformance.test.ts` pins the SHARED contract as "`AND` short-circuits
+on FALSE in both engines… the distinction that matters here — **FALSE settles, UNKNOWN does not**",
+and asserts `RETURN (null AND (1.0 / 0.0))` raises in both. Scalar position honours that; the filter
+position does not. **Both statements are in the repo and they disagree about UNKNOWN.**
+
+ISO almost certainly permits either: the needed result in a filter is "is it TRUE", and once that is
+settled an implementation need not evaluate the rest. So this is not a conformance question — it is a
+byte-identity policy choice, which makes it the owner's call rather than mine.
+
+#### WHY THERE IS NO CHEAP FIX
+
+The principled repair is "let the lift short-circuit only when the residual cannot raise", which
+needs a totality analysis. There is none: no `canRaise`/`mayRaise`/`isTotal` anywhere in
+`packages/gql/src`, and the one adjacent thing — the static boolean-context check — is recorded in
+`boolean-context-static-check` as **"CLAUSE-level only. READ IT before extending to inline pattern
+predicates: tried twice, worse."** So that route is already closed twice over.
+
+#### THE THREE RESOLUTIONS, with what each costs
+
+1. **TS stops settling on UNKNOWN in the filter position.** Matches native and the shared contract.
+   Cost: without a totality analysis the residual `where` must be evaluated whenever one exists, so
+   the lift's early exit is lost on exactly the chains the 1.94–2.62x was measured on.
+2. **Native settles on not-TRUE in the filter position.** Matches TS, and is plausibly a native perf
+   WIN. Cost: a Rust change, and it removes errors some queries raise today.
+3. **Declare it.** Ruled out by the conformance file itself: "an error against a NON-EMPTY result is
+   something `divergence-registry.ts` explicitly may not excuse" — and TS returns two rows here.
+
+#### Also worth knowing: this makes the NATIVE SUITE intermittently red, not just `bun run fuzz`
+
+`differential-fuzz.test.ts` lives in `packages/native`, so `cd packages/native && bun test` runs it
+with random seeds. It read **962/1 once and 963/0 three times** this tick. So the blast radius of
+leaving this open is wider than item 1542 said: it is not only the fuzz sweep.
+
+#### What shipped
+
+Only the minimization, extended: `divergence-1542-min.test.ts` now carries a `KNOWN_DIVERGENT` set
+of the four shapes and **asserts that every other reduction agrees** — a real regression guard that
+will fail if the family widens — plus the characterization test that the scalar `AND` cases agree.
+Nothing was registered, so the fuzzer keeps flagging it.
+
+#### Gates
+
+`bun run check` 0 read unpiped. gql 3863/0, native 963/0 (three runs; one 962/1, which is this very
+divergence). No engine change.
