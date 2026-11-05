@@ -1019,3 +1019,19 @@ Two conclusions this instrument exists to supply, both of which cut off a guess:
   what made specializing the predicate (item 1492) a derivation rather than a hope.
 
 Post-1492 the engine arm reads 5.34-6.61, within 1.21x of the closure floor.
+
+### ⚠️ A single frame over ~95% is evidence of INLINING, not of a hot spot (item 1493)
+
+`runtime-profile-gremlin-probe.mjs`'s `hophas` shape reported **`degreeOfTypes` at 97.1%** with
+`matches` at 0.5%. Both are impossible: `degreeOfTypes` for a single-type hop is one `Map.get`
+(97.1% would make it 262 ns a call), and `matches` is called once per vertex in that same loop —
+the cost item 1492 measured as dominant in a structurally identical one.
+
+V8 inlined the loop's callees and the sampler attributes an inlined callee's samples to its own
+frame, so one frame absorbed the loop body and the others lost their time to it. **Check the
+arithmetic before chasing a frame: read its body and ask whether its share is possible at the call
+count.** The analyzer's `mentions` column does not help here — `degreeOfTypes` had 65.
+
+`hophas` was added at item 1493 for this: `filterchain` filters the VERTEX SET and `hopbare` walks
+without filtering, so neither covers the common shape of walking and then filtering the FAR end,
+where the test count scales with FANOUT rather than with |V|.

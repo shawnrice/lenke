@@ -867,6 +867,18 @@ const filteredHopCount = (hop: Step, rest: readonly Step[], graph: Graph): numbe
   // only removing both recovers the step. Widths above 2 keep the loop: the third filter costs
   // ~1.5 ns a row, so there is nothing there to unroll for.
   const [k0, p0, k1, p1, k2, p2] = unrollSlots(keys, preds);
+  // ⚠️ SPECIALIZED (item 1493), a lever that did not exist when item 593 chased this loop. That
+  // item hoisted `labels[0]`, inlined the single-type degree and destructured the filter, and
+  // measured 1.01-1.05x across four shapes and five controls — inside the noise floor — and
+  // concluded that "what is left here is constant-factor: a JS property read and a predicate
+  // DISPATCH per vertex". The dispatch half of that is now addressable: `specializePredicate`
+  // (item 1492) turns the megamorphic `matches` into a monomorphic closure, which measured 1.92x
+  // on the structurally identical loop in `propertyCount`.
+  //
+  // `undefined` for any slot means that filter has no operator form, and the `fastAll` guard
+  // below then keeps the original `matches` calls for the whole row rather than mixing the two —
+  // a per-filter branch inside the loop would reintroduce the dispatch this removes.
+  const fastRow = specializedRowTest(keys, preds);
 
   // Drive the FAR side where it is sound: one predicate test per far VERTEX, contributing that
   // vertex's whole degree, instead of one per EDGE with a vertex lookup to go with it.
@@ -953,7 +965,9 @@ const filteredHopCount = (hop: Step, rest: readonly Step[], graph: Graph): numbe
       // its one-filter twin. Same `i < len && ok` shape `filterChainCount` has always used.
       let hit: boolean;
 
-      if (width === 1) {
+      if (fastRow !== undefined) {
+        hit = fastRow(v.properties);
+      } else if (width === 1) {
         hit = matches(p0, v.properties[k0]);
       } else if (width === 2) {
         hit = matches(p0, v.properties[k0]) && matches(p1, v.properties[k1]);
@@ -1032,6 +1046,61 @@ const filteredHopCount = (hop: Step, rest: readonly Step[], graph: Graph): numbe
   }
 
   return n;
+};
+
+/** The ops {@link specializedRowTest} admits — see its note for the `eq` measurement. */
+const ORDERING_OPS: ReadonlySet<string> = new Set(['gt', 'gte', 'lt', 'lte']);
+
+/**
+ * ONE filter of a hop as a monomorphic closure over a property bag, or `undefined`
+ * when any filter has no operator form and the caller should keep its `matches` calls.
+ *
+ * ITEM 1493. Item 593 chased this loop and recorded that "what is left here is constant-factor: a
+ * JS property read and a predicate DISPATCH per vertex" — having measured the other levers
+ * (hoisting `labels[0]`, inlining the single-type degree, destructuring the filter) at 1.01-1.05x
+ * across four shapes and five controls, inside the noise. The dispatch half became addressable at
+ * item 1492: `specializePredicate` replaces the megamorphic `matches` with a closure, which
+ * measured 1.92x on the structurally identical loop in `propertyCount`.
+ *
+ * ⚠️ WIDTH 1 AND ORDERING OPS ONLY, AND THE WIDER ARMS WERE BUILT, MEASURED AND REMOVED. A
+ * closure over the chain has to be ONE closure — a per-filter branch inside the loop would
+ * reintroduce the dispatch this removes — so at width w it costs the wrapper call plus w closure
+ * calls against w `matches` calls. At width 1 that trade wins; past it, it loses. Built wide
+ * first, A/B'd, and cut back (200,000 vertices, FANOUT 2 scattered, 40 reps, two rounds, medians):
+ *
+ *     out(E).has(num,gt).count()                      52.95 -> 47.42   1.12x
+ *     in(E).has(num,gt).count()                       50.39 -> 46.15   1.09x
+ *     out(E).has(num,gt).has(m,gt).count()            48.52 -> 49.38   0.98x
+ *     out(E).has(num,gt).has(m,gt).has(s,gt).count()  49.22 -> 55.93   0.88x  <- 1.14x WORSE
+ *     out(E).has(s,eq).count()                        54.14 -> 56.50   0.96x
+ *     four controls (hop rows, values, label rows, node count)         flat
+ *
+ * The `eq` row is the same story from the other side and agrees with item 1492's finding: `eq` is
+ * a 2-call chain (`valueEq` + `===`) where `gt` is 4, so there is less dispatch to remove than the
+ * wrapper costs. Specializing `eq` here is a LOSS, not a smaller win.
+ *
+ * `specializePredicate` is the right place to ask what a predicate CAN be; this is the right place
+ * to ask whether it is worth it at this call site.
+ *
+ * It takes the PROPERTY BAG rather than the vertex, so this is usable from the edge-driven loops
+ * (which hold an `Edge`) as well as the vertex-driven ones.
+ */
+// Exported for its OWN test, not for a caller. It is a pure ROUTE predicate: every answer it
+// changes is answer-equivalent, so the differential suites cannot see a mutant in it
+// (`perf-gate-needs-its-own-test`), and the arithmetic of "which shapes is this worth for" is
+// exactly what the A/B above established and what a later change could silently widen.
+export const specializedRowTest = (
+  keys: readonly string[],
+  preds: readonly Predicate[],
+): ((props: Record<string, unknown>) => boolean) | undefined => {
+  if (keys.length !== 1 || !ORDERING_OPS.has(preds[0].op)) {
+    return undefined;
+  }
+
+  const [k0] = keys;
+  const f0 = specializePredicate(preds[0]);
+
+  return f0 === undefined ? undefined : (props) => f0(props[k0]);
 };
 
 /**

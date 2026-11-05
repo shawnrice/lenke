@@ -110,6 +110,13 @@ const SHAPES = {
   filterchain: traversal(V(), hasLabel('P'), has('k', gt(44)), count()),
   // De-duplication over a hop, which materializes a set per traversal.
   hopdedupe: traversal(V(), out('E'), dedupe(), count()),
+  // ⚠️ A HOP WITH A FILTER AFTER IT (item 1493). `filterchain` filters the VERTEX SET (200,000
+  // tests) and `hopbare` walks without filtering; neither is the common real shape, which is to
+  // walk and then filter the FAR end — one test per EDGE, so the test count scales with FANOUT
+  // rather than with |V|. Item 1492 measured this at 51.8 ms against `hopbare`'s 44.5 at
+  // 200,000 x 2, so the filter is 18 ns of a 111 ns-per-edge row, and the question is what the
+  // other 111 are.
+  hophas: traversal(V(), out('E'), has('k', gt(44)), count()),
 
   // ── Item 1474: shapes the screen never covered ──────────────────────────────────────────────
   //

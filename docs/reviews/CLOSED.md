@@ -57985,3 +57985,125 @@ not predicate-bound.
 
 `bun run check` 0 read unpiped. core 431/0, gql 3727/0, gremlin 1376/0, native 961/0,
 serialization 144/0, `bun run fuzz` 20/0.
+
+### Item 1493 — ⚠️ **a 97.1% PROFILE FRAME WAS AN INLINING ARTIFACT, and the lever it nominated had already been refuted at item 593.** The real lever at that site was one item 593 could not have tried; built it wide, measured it, and **cut it back from four shapes to one: 1.10x**
+
+Item 1492's open line was "~18 more `matches` call sites, same one-line hoist, ceiling 1.92x each".
+Doing that mechanically would have been list-first work, so this tick profiled instead — and the
+profile was wrong in a way worth recording.
+
+### The artifact
+
+`out('E').has('k', gt(44)).count()`, 200,000 vertices at FANOUT 2 scattered, 400 reps:
+
+```text
+hophas (21616 ms engine)              hopbare (17896 ms engine)
+97.1%  degreeOfTypes                  73.9%  drain
+ 1.6%  filteredHopCount               24.6%  get to
+ 0.5%  matches                         1.3%  (garbage collector)
+```
+
+**`degreeOfTypes` cannot be 97.1% of anything.** For a single-type hop its whole body is
+`byType.get(t)?.size ?? 0` — one `Map.get`. At 80M calls over the run, 97.1% would make it 262 ns a
+call. And the companion reading is just as impossible: `matches` at **0.5%** in a loop that calls it
+once per vertex, when item 1492 measured that same call as the dominant cost of a structurally
+identical loop.
+
+Both numbers have one explanation: V8 inlined the loop's callees, and the sampler attributes an
+inlined callee's samples to its own frame, so `degreeOfTypes` absorbed the loop body and `matches`
+lost its own time to it. **A single frame over ~95% is evidence of inlining, not of a hot spot** —
+and the giveaway is cheap to check: read the frame's body and ask whether its share is arithmetically
+possible.
+
+### ⚠️ And the lever it nominated was already closed, with numbers, in a comment beside the loop
+
+Item 593 hoisted `labels[0]`, inlined the single-type degree as `byType.get(only)?.size ?? 0`, and
+destructured `{ key, pred }` above the loop — exactly what a reader of this profile would do. Over
+four alternated rounds, one case per process at 200,000 / 1,000,000:
+
+```text
+out(K).has(age,gt(44)).count()    41.59 -> 41.17   1.01x
+in(K).has(age,gt(44)).count()     39.09 -> 37.76   1.04x
+out(K).has(age,gt(500)).count()   41.43 -> 40.89   1.01x
+out(K).has(city,'c7').count()     43.67 -> 41.48   1.05x
+five CONTROLS                                      1.00-1.01x
+```
+
+That comment also records _why_ it is there — item 591 had mispriced the same loop from a micro-probe
+and read a 24 ms difference as the cost of these calls. So this is the third time this one loop has
+invited the same wrong conclusion, and the thing that stopped it the third time was reading the
+comment next to the code, not the profile.
+
+### What item 593 could NOT have tried
+
+Its own closing line is the lever: _"what is left here is constant-factor: a JS property read and a
+predicate DISPATCH per vertex"_. The dispatch half became addressable at item 1492.
+
+### Built it wide, measured it, cut it back
+
+The first version specialized widths 1-3 and all specializable ops. A/B at 200,000 / FANOUT 2
+scattered, 40 reps, two rounds, medians:
+
+```text
+out(E).has(num,gt).count()                      52.95 -> 47.42   1.12x
+in(E).has(num,gt).count()                       50.39 -> 46.15   1.09x
+out(E).has(num,gt).has(m,gt).count()            48.52 -> 49.38   0.98x
+out(E).has(num,gt).has(m,gt).has(s,gt).count()  49.22 -> 55.93   0.88x   ← 1.14x WORSE
+out(E).has(s,eq).count()                        54.14 -> 56.50   0.96x
+four controls (hop rows, values, label rows, node count)         flat
+```
+
+**A closure over a chain has to be ONE closure** — a per-filter branch inside the loop would
+reintroduce the dispatch it removes — so at width `w` it pays a wrapper call plus `w` closure calls
+against `w` `matches` calls. Only `w = 1` wins. The `eq` row is the same arithmetic from the other
+side, and it agrees with item 1492's flat `streq`: `eq` is a 2-call chain (`valueEq` + `===`) where
+`gt` is 4, so there is less dispatch to remove than the wrapper costs. **Specializing `eq` here is a
+LOSS, not a smaller win.**
+
+Restricted to width 1 and the four ordering ops, then re-measured ONE SHAPE PER PROCESS, three
+rounds, because 1.10x is at the noise floor CLAUDE.md warns about:
+
+```text
+          PRE                    POST                  ratio
+hop1      53.83 53.76 53.38      48.87 49.96 48.46     1.10x
+hop2      52.72 53.83 52.36      52.40 53.07 53.70     0.99x   ← now declines
+hop3      55.99 52.78 54.54      53.94 52.51 54.06     1.01x   ← now declines
+hopstr    55.34 53.17 55.84      56.28 55.14 55.71     0.99x   ← now declines
+hoprows   43.52 43.50 43.98      43.73 43.63 43.36     1.00x
+```
+
+PRE's `hop1` spread is 0.8% across rounds, so a 10% move is an order of magnitude clear of it.
+
+### The test asserts the BOUNDS, each with its number
+
+30 tests, 371 assertions. The route is answer-equivalent and so invisible to the 1,406 differential
+tests, which is why `specializedRowTest` is exported and its decisions asserted directly: it claims
+one ordering filter, and DECLINES two filters, three filters, `eq`/`neq`, `between`/`within`, and an
+ordering filter whose operand has no operator form. Each decline names the measurement that put it
+there, so widening one fails loudly rather than shipping a 1.14x regression.
+
+The claimed closure is then checked as a differential against `matches` over every value a property
+read can produce, including an ABSENT key (a bag missing the property, not a stored `undefined`), and
+one test pins that it reads the key it was GIVEN rather than the bag's first entry.
+
+### Mutation — five caught, the unwire caught by the probe
+
+```text
+pristine      SURVIVED   30 pass  0 fail
+null          CAUGHT      8 pass 22 fail
+widen-arity   CAUGHT     28 pass  2 fail   ← back to the 0.88x bound
+widen-ops     CAUGHT     29 pass  1 fail   ← back to the 0.96x bound
+wrongkey      CAUGHT     28 pass  2 fail   ← read the bag's first value
+nodecline     CAUGHT     29 pass  1 fail   ← dropped the specialize decline
+unwire        SURVIVED   30 pass  0 fail
+```
+
+The two WIDEN mutants are the ones worth having: each restores a version that was actually built and
+measured, so the test now defends a cost decision rather than only a correctness one. `unwire` is
+answer-equivalent and was checked against the probe: `hop1` goes 48.46-49.96 → 52.86-54.11, back to
+PRE.
+
+### Gates
+
+`bun run check` 0 read unpiped. core 431/0, gql 3727/0, gremlin 1406/0, native 961/0,
+serialization 144/0, `bun run fuzz` 20/0.
