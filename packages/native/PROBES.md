@@ -171,6 +171,15 @@ asks a subquery, and none of that machinery had ever been profiled. Six shapes a
 `unionedbig`, `unionedbigdistinct`) — and they turned up **one ZERO-mention frame, `combineRows`,
 which became a 4.63x fix**. Five of the six came back clean, so those five are now covered too.
 
+⚠️ **The Gremlin screen had the same gap (item 1474).** Its eight shapes covered hops, order,
+grouping, filtering and dedupe — no set operation, no wide projection, no optional side, no
+named-step select. Seven added (`unioned`, `projected`, `valuemapped`, `coalesced`, `selected`,
+`groupreduce`, `folded`), which nominated **five** unpriced frames: `groupStep` 48.9% (taken, 1.27x),
+`projectStep` 54%, `projectValueMap` 45%, `asStep` 7%, `foldStep` 10%. `unioned` came back at **1 ms
+engine** — a count shortcut already answers it, so item 1473's GQL defect has no Gremlin twin.
+**`projectStep`, `projectValueMap`, `asStep` and `foldStep` are still open nominations** — and the
+ZERO signal is one-shot, so this entry is now their only record.
+
 Both query surfaces at 20k AND 200k, plus the write path: **no unpriced frame survives**. Every
 nomination resolved to work already measured — `topKNodeWalk` to item 1064, `compareCodePoints` to
 921's declined hoist, `expandSlot`/`slotChainCount`/`bucketsOf` to 1104/1105/1108/1152, and

@@ -56211,3 +56211,97 @@ built.
 
 core 431/0, gql 3709/0 (3700 + 9 new), gremlin 1241/0, native 961/0, serialization 144/0,
 `bun run fuzz` 20/0. `bun run check` 0 read unpiped.
+
+### Item 1474 — SHIPPED, **1.27x** (3/3, three controls flat): Gremlin's `group()` buffered EVERY traverser even when the value-by never needed one. Seven uncovered Gremlin shapes added to the screen, five more frames nominated. ⚠️ Mutation found the missing-VALUE rule unasserted, and `grep` was blind to the file because it holds NUL bytes
+
+Item 1473 found a 4.63x defect by noting the GQL screen's surface was five single-pattern shapes.
+The Gremlin screen had the same shape of gap: eight shapes covering hops, order, grouping, filtering
+and dedupe — **no set operation, no wide projection, no optional side, no named-step select.** Seven
+added: `unioned`, `projected`, `valuemapped`, `coalesced`, `selected`, `groupreduce`, `folded`.
+
+### What the screen nominated
+
+| shape         | engine ms | top UNPRICED frame                 | share |
+| ------------- | --------- | ---------------------------------- | ----- |
+| `groupreduce` | 281       | `groupStep` (+ GC 26%)             | 48.9% |
+| `projected`   | 77        | `projectStep`                      | 54%   |
+| `valuemapped` | 109       | `projectValueMap`                  | 45%   |
+| `selected`    | 1776      | `asStep`                           | 7%    |
+| `folded`      | 72        | `foldStep`                         | 10%   |
+| `coalesced`   | 1601      | `get to` (priced elsewhere)        | —     |
+| `unioned`     | **1**     | none — a count shortcut answers it | —     |
+
+`unioned` at **1 ms engine** is worth recording on its own: `union(out(E), in(E))` + `count()` is
+already answered by a shortcut, so the GQL defect at item 1473 has **no Gremlin twin**. Five
+genuinely unpriced frames remain nominated; `groupStep` is taken here.
+
+### The defect
+
+`groupStep` buffered the group's `Traverser` objects so a reducing value-by could fold over them —
+correct, and necessary for `by(count())`, which is applied as a BARRIER. But it did that for **every**
+value-by, and then `groupValueOf` walked each bucket a SECOND time doing
+`members.map(evalBy).filter(…)`.
+
+For a non-traversal value-by (identity, a key, a token) each member's value depends only on that
+member, so the traverser is dead the moment its value is read. Buffering them retained **the whole
+stream** until the step ended and allocated two arrays per bucket — which is exactly what
+`groupStep` 48.9% self plus `(garbage collector)` 26% looks like.
+
+Now the non-traversal case evaluates at insertion and keeps only values; the traversal case is
+unchanged.
+
+### Measured
+
+A/B, one arm per process, `nx build` between arms, arm asserted from `dist`, order alternated,
+50,000 vertices, 20 reps:
+
+```text
+                          POST                        PRE
+groupreduce          243.3 246.7 245.3        316.9 311.8 300.4     3/3, 1.27x
+grouped (control)     32.8  30.2  31.7         30.7  33.4  32.1     flat
+hopbare (control)    478.3 473.6 464.2        461.0 493.6 498.9     flat
+valuemapped (control) 118.4 119.3 118.0       121.4 116.7 119.7     flat
+```
+
+`grouped` is `groupCount`, a different step, and it does not move. The series are unusually tight on
+both arms, which is what makes a 1.27x at this magnitude trustworthy.
+
+### ⚠️ Mutation found the missing-VALUE rule unasserted
+
+A mutant that KEEPS a member whose value-by yields `NO_VALUE`, instead of dropping it,
+**survived all 1,241 Gremlin tests.** The nine existing `group()` tests cover a missing KEY ("no null
+bucket") but never a missing VALUE — and they are different rules with different consequences:
+
+- a missing **key** filters the traverser out entirely, so **no bucket appears**;
+- a missing **value** drops that member from its bucket's list, **but its key still created the
+  bucket** — so a bucket can legitimately map to an **empty list**.
+
+That asymmetry is the subtlety of the step and was untested in either arm. `group-missing-value.test.ts`,
+8 tests: present values collected with no placeholder, the absent-value bucket still PRESENT,
+stream order within a bucket, a bucket where EVERY member lacks the value (empty list, not a dropped
+bucket), `by(count())` counting members regardless, a mapping traversal by collecting outputs, and the
+missing-KEY rule restated for contrast. With them the mutant dies with 3 failures.
+
+| mutant                                                | before               | after      |
+| ----------------------------------------------------- | -------------------- | ---------- |
+| **a NO_VALUE member is kept in the list**             | **SURVIVED**         | 3 failures |
+| a traversal value-by takes the direct arm             | 2 failures           | 4 failures |
+| the bucket is created only if the value survives      | 1 failure            | 4 failures |
+| `direct = false` (the NULL mutant: the PRE behaviour) | survives, as it must | survives   |
+
+### ⚠️ `grep` WAS BLIND TO THE FILE, in the mutation-verdict position
+
+`projection.ts` contains **two literal NUL bytes** — a `\x00` group-key prefix written as a real
+byte, not an escape. So `grep -c MUT_` printed **nothing** for every mutant: grep treats the file as
+binary and silently skips it, and the marker check that is supposed to prove a mutant applied
+returned an empty string that the shell happily printed as `markers=`. The mutants HAD applied (the
+verdicts differed per mutant), but the evidence line was worthless. Re-counted with `python
+str.count`, which is this repo's recorded rule for exactly this, and all four read 1.
+
+The NUL bytes also make `Edit`/`Write` refuse the file, so the change itself was applied with a
+python read-modify-write (with a uniqueness assertion), not with the file tools.
+
+### Gates
+
+core 431/0, gql 3709/0, gremlin 1249/0 (1241 + 8 new), native 961/0, serialization 144/0,
+`bun run fuzz` 20/0. `bun run check` 0 read unpiped.

@@ -23,16 +23,25 @@
 import { Graph } from '@lenke/core';
 import {
   V,
+  as_,
+  coalesce,
   count,
   dedupe,
+  fold,
+  group,
   groupCount,
   gt,
   has,
   hasLabel,
+  in_,
   order,
   out,
+  project,
+  select,
   toArray,
   traversal,
+  union,
+  valueMap,
   values,
 } from '@lenke/gremlin';
 
@@ -92,6 +101,29 @@ const SHAPES = {
   filterchain: traversal(V(), hasLabel('P'), has('k', gt(44)), count()),
   // De-duplication over a hop, which materializes a set per traversal.
   hopdedupe: traversal(V(), out('E'), dedupe(), count()),
+
+  // ── Item 1474: shapes the screen never covered ──────────────────────────────────────────────
+  //
+  // The eight above are hops, order, grouping, filtering and dedupe. None of them is a SET
+  // OPERATION, a wide PROJECTION, an OPTIONAL side or a named-step SELECT — and the GQL twin of
+  // that gap is exactly where item 1473 found a 4.63x defect (`combineRows` built a key set both
+  // UNION branches discarded). The same question asked of Gremlin.
+
+  // ⚠️ OPPOSITE DIRECTIONS DELIBERATELY. Item 1460 fuses `union(out(T), out(T))` into one hop, so a
+  // same-direction union would measure the fusion rather than the union machinery.
+  unioned: traversal(V(), union(out('E'), in_('E')), count()),
+  // A wide projection: two sub-traversals materialized per row.
+  projected: traversal(V(), project('a', 'b'), count()),
+  // The whole property bag per element, the widest read in the surface.
+  valuemapped: traversal(V(), valueMap(), count()),
+  // The optional side — `coalesce` keeps the left row when the hop yields nothing.
+  coalesced: traversal(V(), coalesce(out('E'), V()), count()),
+  // A named step and a select, the shape a join is written as.
+  selected: traversal(V(), as_('a'), out('E'), select('a'), count()),
+  // Grouping with a REDUCER, which `groupCount` above does not exercise.
+  groupreduce: traversal(V(), group({ by: 'k' }), count()),
+  // Barrier: the whole stream collapsed into one list.
+  folded: traversal(V(), values('k'), fold(), count()),
 };
 
 const plan = SHAPES[SHAPE];
