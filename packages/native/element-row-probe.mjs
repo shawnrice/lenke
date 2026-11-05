@@ -57,6 +57,18 @@ for (let k = 0; k < NODES * FANOUT; k += 1) {
   });
 }
 
+/**
+ * ⚠️ THE PROPERTY NAME MUST EXIST IN THE FIXTURE (item 1526). Every arm here said `.k` and the
+ * fixture carries `age`/`name`, so every property projection read NULL — `propOf` ran and returned
+ * `null`, the row count was unaffected, and nothing in the output looked wrong. Items 1525 and 1523
+ * took their numbers that way; the corrected ones are in item 1526. A filtered arm is what exposed
+ * it: `WHERE a.age > 5` is UNKNOWN for every row, so it returned ZERO rows and the probe printed a
+ * null ns/row instead of a number.
+ *
+ * The lesson is CLAUDE.md's own, turned on my own instrument: an answer that cannot vary with the
+ * thing you are measuring is not validating the fixture. A row COUNT is invariant to whether the
+ * projected key exists.
+ */
 const ARMS = {
   edge: 'MATCH (:P)-[r:E]->() RETURN r',
   farnode: 'MATCH (:P)-[:E]->(x) RETURN x',
@@ -71,13 +83,20 @@ const ARMS = {
   // These two read ONE property per row each, one from the far vertex (far-driven) and one from the
   // edge (start-driven), so the pair says whether the ROUTE or the thing being read dominates
   // before any attempt to teach the far-driven walk to bind an edge.
-  farprop: 'MATCH (:P)-[:E]->(x) RETURN x.k AS k',
+  farprop: 'MATCH (:P)-[:E]->(x) RETURN x.age AS k',
   // ⚠️ THE SYMMETRIC CASE (item 1524). The far-driven walk's template-and-copy needs "every item is
   // a pure function of the far end" — one row value set per far vertex, repeated `degree` times.
   // A projection reading only the START has the same shape with the ends swapped: one template per
   // start vertex, repeated `out-degree` times. If that is exploited, `startprop` should land near
   // `farprop` (~132 ns/row); if it is not, near `relprop` (~339).
-  startprop: 'MATCH (a:P)-[:E]->() RETURN a.k AS k',
+  startprop: 'MATCH (a:P)-[:E]->() RETURN a.age AS k',
+  // ⚠️ THE MIRROR ITEM 1525 DECLINED (item 1526). A start-only PREDICATE plus a start-only
+  // PROJECTION is foldable for the same reason — the predicate gates the start vertex, and every
+  // row it then produces is identical — but item 1525's guard requires `gate === undefined`, so
+  // this shape still builds a row per edge. `startpropfilt` against `startprop` is the gap; the
+  // `farpropfilt` control carries the SAME predicate with a far projection, which cannot fold.
+  startpropfilt: 'MATCH (a:P)-[:E]->() WHERE a.age > 5 RETURN a.age AS k',
+  farpropfilt: 'MATCH (a:P)-[:E]->(x) WHERE a.age > 5 RETURN x.age AS j',
   star: 'MATCH (:P)-[r:E]->() RETURN *',
   starnamed: 'MATCH (p:P)-[r:E]->(x) RETURN *',
 };

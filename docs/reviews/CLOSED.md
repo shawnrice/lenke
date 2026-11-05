@@ -60783,6 +60783,12 @@ serialization 144/0, `bun run fuzz` 20/0 (both also run with the guard applied).
 
 ### Item 1523 — the last cure for the rel-bound gap is **STRUCTURALLY UNREACHABLE, and reading the code settled it without a build.** The gap is bigger than item 1521 measured (**2.57x**, not 1.86x) — and `farDrivenHopWalk` is fast precisely because it never looks at an edge
 
+> ⚠️ **ITS 2.57x COMPARED A NULL READ AGAINST A REAL ONE — see item 1526.** `RETURN x.k` read an
+> absent key (the probe's fixture carries `age`, not `k`) while `RETURN r.w` read a real edge
+> property, so part of that gap is the read and not the route. **The CONCLUSION is from the CODE and
+> stands** — the far-driven walk never iterates edges — but the number needs re-taking: corrected
+> single readings are `farprop` 129.7 against `relprop` 356.9, ~2.75x, at one process per arm.
+
 Item 1522 refuted trimming the start-driven walk and named the one remaining mechanism: give the
 rel-bound shape the FUSED route. This is that, and it took one measurement and one file read.
 
@@ -60922,7 +60928,7 @@ as `farDrivenHopWalk`'s.
 the suites are item 1522's: core 431/0, gql 3803/0, gremlin 1469/0, native 961/0, serialization 144/0,
 `bun run fuzz` 20/0.
 
-### Item 1525 — ✅ **SHIPPED, 2.15x**: the start-driven hop projection gets `farDrivenHopWalk`'s template-and-copy when the projection reads only the START. `MATCH (a:P)-[:E]->() RETURN a.k` **251 → 117 ns/row**, four probe controls and three bench controls flat. ⚠️ And a 23% "regression" was noise, which three repeats showed and one reading did not
+### Item 1525 — ✅ **SHIPPED, 2.15x** (⚠️ measured on a NULL projection — item 1526 re-measured it with a real property at **2.13x**, so the figure stands): the start-driven hop projection gets `farDrivenHopWalk`'s template-and-copy when the projection reads only the START. `MATCH (a:P)-[:E]->() RETURN a.k` **251 → 117 ns/row**, four probe controls and three bench controls flat. ⚠️ And a 23% "regression" was noise, which three repeats showed and one reading did not
 
 Item 1524 priced this at 1.87x with three hazards to settle first. All three were settled before the
 measurement, and the realized win is larger than the gap predicted — the folded start path is now
@@ -61011,3 +61017,70 @@ look at what the engine actually returned before changing either side.
 serialization 144/0, `bun run fuzz` 20/0 — byte-identity was run before any timing, since a projection
 route is 100-300x territory. Answers also hand-checked against a brute-force walk on a mixed-degree,
 mixed-label fixture.
+
+### Item 1526 — ⚠️ **MY OWN PROBE WAS READING A PROPERTY THAT DOES NOT EXIST**: every `.k` arm of `element-row-probe` projected NULL, because the fixture carries `age`/`name`. Item 1525's win re-measured with a real read is **2.13x** (it reported 2.15x, so the figure survives) — and a filtered arm is what exposed it. The next mirror is confirmed at **2.11x**
+
+Set out to find the next instance of item 1525's symmetry and found a defect in the instrument first.
+
+### How it surfaced
+
+Added `startpropfilt` (`WHERE a.k > 5 RETURN a.k`) to measure the mirror item 1525 declined, and it
+returned **ZERO rows**. `a.k` is absent from the fixture, so the predicate was UNKNOWN for every
+row — and the probe printed a null `ns/row` instead of a number, which is what made it visible.
+
+**Without the filtered arm nothing looked wrong.** A projection of an absent key returns `null` per
+row: `propOf` runs, the row count is unaffected, and the output is a column of nulls nobody prints.
+⚠️ **This is CLAUDE.md's own rule turned on my own instrument** — _"an answer that is INVARIANT to the
+property you varied cannot validate the fixture"_ — and a row COUNT is invariant to whether the
+projected key exists. Items 1516 and 1518 applied that rule to the repo's fixtures; this is the third
+instance and the first in something I wrote.
+
+### What it does and does not invalidate
+
+**Item 1525's 2.15x survives**, re-measured with a real property (`age`) on both arms:
+
+```text
+                 null read (as reported)    REAL read (corrected)
+startprop PRE        247.4 / 255.4                249.2
+startprop POST       115.7 / 118.4                117.0
+                        2.15x                      2.13x
+```
+
+The reason it survives is the mechanism: **both arms pay a property read, just at different rates** —
+PRE once per ROW, POST once per START VERTEX — and `propOf` returning `null` costs about what
+returning a number costs (a getter plus an index either way). So the fold's advantage is in the row
+construction, which is what item 1525 claimed. `farprop` likewise moved 123.9 against 129.7, i.e. not
+at all, because the far-driven walk also reads once per vertex.
+
+⚠️ **Item 1523's 2.57x is the one to treat with suspicion**, and it is not re-measured here. That
+comparison was `RETURN x.k` (NULL, as it turns out) against `RETURN r.w` (a REAL edge property), so
+part of its gap is "a real read against a null one" rather than route against route. **Its CONCLUSION
+does not depend on the number** — the far-driven walk never iterates edges, which was read off
+`unionCount` + the template-and-copy in the code — but the figure should be re-taken before it is
+quoted again. The corrected `farprop` is 129.7 and `relprop` 356.9, so the route gap is ~2.75x on
+this fixture; that is one pair of processes, not the three-apiece this repo asks for.
+
+### The next mirror, now confirmed with a real read and a real filter
+
+```text
+startprop      MATCH (a:P)-[:E]->() RETURN a.age                   117.0 ns/row   folded (item 1525)
+startpropfilt  MATCH (a:P)-[:E]->() WHERE a.age > 5 RETURN a.age    246.9         NOT folded
+```
+
+**2.11x**, 933,310 rows, and PRE/POST agree on the unfolded arm (250.7 / 246.9) because item 1525's
+guard requires `gate === undefined`. A start-only PREDICATE plus a start-only PROJECTION is foldable
+for exactly item 1525's reason — the predicate gates the START VERTEX, so every row that vertex then
+produces is still identical.
+
+⚠️ **The bench has no such shape**, which is why this never surfaced: `hopstartonlyyield` is
+`WHERE a.n > 5 RETURN b.n` — a start predicate with a FAR projection, which cannot fold.
+
+**Not built this tick.** The start-only predicate closure carries items 139-145's raise parity (the
+bucket check and `try`/`catch`), and that is not something to copy at the end of a tick — item 1522 is
+what rushing this looks like.
+
+### Gates
+
+`bun run check` 0 read unpiped. No engine change — the only edit is the probe — and the shipped state
+is verified unchanged (`git diff` empty for `hop-projection.ts`, 5 `projStartOnly` sites, gql
+**3817**/0).
