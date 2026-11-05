@@ -61618,3 +61618,83 @@ path produces no row). Unmeasured, and the narrowest of the family.
 `bun run check` 0 read unpiped. core 431/0, gql **3851**/0, gremlin 1469/0, native 961/0,
 serialization 144/0, `bun run fuzz` 20/0 — byte-identity before timing, answers hand-checked against
 a brute-force undirected walk across four shapes.
+
+### Item 1534 — took item 1529's "what does this fast path DECLINE?" screen to the GREMLIN surface and it found the same class: a SELECTIVE start filter declines `hopValuesShortcut` entirely. **FIVE shapes, 2.78–4.30x, and in every one the more selective query is slower in WALL CLOCK while emitting half the rows.** PRICED, NOT BUILT
+
+Items 1529–1533 emptied the GQL hop-projection decline table. This tick asked the same question of a
+different file, because the question has generalized better than any of its targets.
+
+#### Why this was not visible from the bench
+
+`hopValuesShortcut`'s guard destructures `const [source, hop, proj] = steps` and refuses unless
+`steps[1]` is `out`/`in`/`both`. So any step between the source and the hop declines the whole plan.
+
+That reads like it should make every realistic hop decline — and it does not, for a reason worth
+writing down: `effectivePlan` runs `dropVacuousLabels`, so `hasLabel('P')` on a graph where every
+vertex carries `P` is **deleted from the plan** before the shortcut sees it. Every yield arm in
+`isolated-gremlin-bench.mjs` is written `V(), hasLabel('P'), out('E'), values('k')` on an all-`P`
+fixture, so all of them reach the fused walk and none of them measure the decline. The arms look
+like they cover a filtered start and they cover a dropped one.
+
+With `VLABEL=2` only half the vertices carry `Q`, nothing is dropped, and the decline is reachable.
+
+#### THE FAMILY, per row, at NODES=200000 FANOUT=1 VLABEL=2
+
+Per-row is the honest normalization here: each declined arm visits half the starts and emits half
+the rows, and the per-row work on both sides is one far-vertex property (or id) read.
+
+| shape                             | declined                           | admitted control          | ratio     |
+| --------------------------------- | ---------------------------------- | ------------------------- | --------- |
+| `hasLabel(Q).out(E)` bare         | 815.6 ns/row                       | `out(E)` 189.9            | **4.30x** |
+| `hasLabel(Q).out(E).id()`         | 834.7                              | `out(E).id()` 240.7       | **3.47x** |
+| `has(k, gt(48)).out(E).values(k)` | 1123.4                             | `out(E).values(k)` 372.3  | **3.02x** |
+| `hasLabel(Q).both(E).values(k)`   | 1069.8                             | `both(E).values(k)` 359.4 | **2.98x** |
+| `hasLabel(Q).out(E).values(k)`    | 1033.7 (two runs: 1032.6 / 1034.8) | 372.3 (366.1 / 378.5)     | **2.78x** |
+
+And the wall clock, which is the part that makes this a route loss rather than a slow walk:
+`hopyieldq` is **103.5 ms against the control's 73.2** while doing half the work.
+
+Confirmed by profile rather than inferred. The declined arm spends **~41% in the generator
+delegation chain the hand walk skips** — `iterLabeled` 24.6%, `outEdgesOf` 9.2%, `iterByLabel`
+7.2% — plus `otherEndpoint` 7.4%, `traverseToVertex` 3.7%, `isVertexShaped` 6.7%, `startTraverser`
+and `unwrap`. `hop-values.ts`'s own header prices that chain at 375.6 ms against 251, and this is
+that cost showing up through the front door.
+
+Same class as items 1437 (`WHERE true` at 7.46x), 1515 and 1530: **adding a selective filter should
+REMOVE work.** This is the Gremlin instance of it.
+
+#### Why the spelling probe did not catch it, which is a gap in the probe
+
+`bun run spelling:gremlin` has exactly the right group — `label, VACUOUS, before a hop:
+hasLabel(Univ).out vs out` — and it converges, correctly, because that label IS vacuous and IS
+dropped. **Every group in that probe ends in `count()`.** The count side admits a start filter
+(`collectVertexFilters`, which item 1302 confirms "takes `hasLabel` for the steps BEFORE the hop"),
+so the count surface genuinely has no gap here and the probe reports the truth about the surface it
+measures. The yield side has no vacuous-label group at all, and no selective-label group on either
+side. That is the same shape as item 1383's own recorded limitation: a group that guards a
+regression without covering the surface where the gap was.
+
+#### NOT BUILT, and the two blockers are both about where the code goes
+
+1. **`collectVertexFilters` is private to `count-shortcut.ts`.** The machinery this needs already
+   exists and is already the right machinery — it declines a `has` the property index could seek
+   (`seekWorthTaking`), which is the correct deference to `seedFromIndex`. Exposing it plus its
+   applier is a shared-code change across two 2000+ line modules, and getting that extraction right
+   is the first thing to do, not the last — the same judgement as items 1528 and 1530, each of which
+   the next tick then shipped.
+2. **The obvious home is `hop-values.ts`, and that file has a measured toll.** Items 1441/1466
+   price an edit to it at up to 16% on unrelated rows, arbitrarily signed, and item 1466 **declined
+   a 3.3x win** on exactly that basis. Item 1482 is the precedent for the way out: it took the
+   no-hop sibling (`V().hasLabel(L).values(k)`, 2.39x) into a NEW module rather than editing this
+   one. A start-filtered variant should follow that, which also means it must not duplicate the four
+   hand walks (`oneType`, `manyTypes`, `bothOneType`, the general tail) — so the shape of the work
+   is to parameterize the walk by an optional start gate, not to fork it.
+
+The bare-hop arm (4.30x) is the largest and the simplest — `consumed = 2`, no projection at all —
+so it is the one to build first.
+
+#### Gates
+
+Probe only; the only edit is six arms and one import in `isolated-gremlin-bench.mjs`, no engine or
+core code. `bun run check` 0 read unpiped, gremlin 1469/0. The rest are item 1533's: core 431/0,
+gql 3851/0, native 961/0, serialization 144/0, `bun run fuzz` 20/0.

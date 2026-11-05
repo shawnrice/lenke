@@ -31,6 +31,7 @@ import {
   gt,
   has,
   hasLabel,
+  id,
   order,
   out,
   outE,
@@ -163,6 +164,23 @@ const SHAPES = {
   // 38.9 ms against 379.6 for the same edge set (9.8x).
   hopyieldsingle: () => traversal(V(), hasLabel('P'), out('E'), values('k')),
   hopyieldmulti: () => traversal(V(), hasLabel('P'), out('E', 'F'), values('k')),
+  // ⚠️ A SELECTIVE START LABEL, which is a DIFFERENT ROUTE from the vacuous one above and not an
+  // obvious thing to read off the shape. `effectivePlan`'s `dropVacuousLabels` deletes
+  // `hasLabel('P')` when every vertex carries `P`, so `hopyieldsingle` reaches
+  // `hopValuesShortcut` with `out` as step 1 and rides the fused walk. With `VLABEL=2` only half
+  // the vertices carry `Q`, nothing is dropped, and the shortcut's guard reads step 1 as
+  // `hasLabel` and declines the WHOLE plan to the traverser pipeline. Run it as
+  //   SHAPE=hopyieldq VLABEL=2 ...
+  // against `hopyieldsingle` and compare NS/ROW: this arm visits half the starts and emits half
+  // the rows, so if it costs more per row the extra is the route, not the work.
+  hopyieldq: () => traversal(V(), hasLabel('Q'), out('E'), values('k')),
+  // The same decline reached by the OTHER start-filter spelling and the other two projections, to
+  // size the family rather than one shape. All four read step 1 as a filter and decline.
+  hopyieldhas: () => traversal(V(), has('k', gt(48)), out('E'), values('k')),
+  hopidq: () => traversal(V(), hasLabel('Q'), out('E'), id()),
+  hopidsingle: () => traversal(V(), out('E'), id()),
+  hopbareq: () => traversal(V(), hasLabel('Q'), out('E')),
+  hopbothq: () => traversal(V(), hasLabel('Q'), both('E'), values('k')),
   hopyieldmultirev: () => traversal(V(), hasLabel('P'), out('F', 'E'), values('k')),
   // THE `both` HOP — the twin of GQL's undirected hop, which item 1431 took from 53.02 to 15.57 ms
   // by iterating the EDGE index once instead of every vertex twice.
