@@ -62273,3 +62273,99 @@ but it is no longer the dominant term.
 serialization 144/0, `bun run fuzz` 20/0 twice. Mutants run under `timeout 900 systemd-run --user
 --scope -p MemoryMax=16G -p MemorySwapMax=0`, restoring before each, pristine copy under
 `crates/lenke-engine/target/`; tree verified identical after.
+
+### Item 1540 — **the auto-parameterization lift DEFEATS the parse cache for exactly the queries it exists to help: 3.75x on a small query, every call, forever.** Mechanism confirmed against the cache's own state, not inferred. Sized as a SERVING cost (2.3% once rows are produced). PRICED, NOT BUILT
+
+Item 1539's win was an eagerly-evaluated argument on the Gremlin side. This tick screened GQL for a
+per-call floor the same way, and the floor is healthy — `RETURN 1 AS v` is **110.5 ns/call** against
+Gremlin's 210 — but one arm is 10x the others.
+
+#### The measurement, on the durable probe (`gql-call-overhead-probe.mjs`)
+
+| arm                                        | ns/call    |                                  |
+| ------------------------------------------ | ---------- | -------------------------------- |
+| `floor` — `RETURN 1 AS v`                  | 110.5      |                                  |
+| `param` — `RETURN $x AS v`                 | 138.4      |                                  |
+| `letparam` — `LET x = $p RETURN x`         | **270.1**  |                                  |
+| `letlit` — `LET x = 5 RETURN x`            | **1013.2** | **3.75x its param twin**         |
+| `letlit2` — `LET x = 1 LET y = 2 RETURN y` | 1348.5     | ~+340 per further lifted literal |
+
+Two spellings that produce the **same plan** and the same answer differ by 3.75x — the
+equivalent-spelling class CLAUDE.md says costs 100-300x elsewhere and always returns the right
+answer. And it is backwards from the intuition: the _literal_ is slower than the _parameter_.
+
+#### THE MECHANISM, confirmed against the cache rather than reasoned about
+
+`query()`'s three steps (item 1502) are: ask the parse cache; on a miss, lift literals into
+parameters and parse the LIFTED text; else parse the original. The lifted statement is cached under
+the **lifted** text. So for a text with liftable literals:
+
+- call 1: miss, lift, parse, cache under `LET x = $__ap0 RETURN x`;
+- call 2: `parseCacheHit('LET x = 5 RETURN x')` — **misses again**, because that key was never
+  stored. `normalizeLiterals` re-tokenizes. The comment above it prices a tokenize at ~865 ns, which
+  is the gap measured (1013.2 − 270.1 = 743).
+
+Confirmed by querying the lifted text directly after four calls of the literal form:
+
+```text
+   after literal LET x4                      cache size 1
+   query('LET x = $__ap0 RETURN x', {__ap0:5})  -> [{"x":5}], size STILL 1
+```
+
+The size does not grow, so the key the cache holds is the lifted one — the original text can never
+hit it.
+
+**And `RETURN 1 AS v` escapes for the opposite reason.** Its literal position is not in
+`normalizeLiterals`' allowlist, so no lift happens and the ORIGINAL text is what gets cached, which
+then hits forever. The gap is exactly "did a lift happen" — which makes the queries
+auto-parameterization was built for (the "sloppy caller" its own comment names) the only ones that
+never hit the cache. The careful caller was never subsidising the sloppy one; the sloppy one was
+paying a tokenize per call indefinitely.
+
+#### SIZED HONESTLY: a serving cost, not a throughput one
+
+|                                                      | literal   | param   |                  |
+| ---------------------------------------------------- | --------- | ------- | ---------------- |
+| `LET x = … RETURN x` (1 row)                         | 1013.2 ns | 270.1   | **3.75x**        |
+| `MATCH (n:P) WHERE n.k = … RETURN n.k` (~2,062 rows) | 3.95 ms   | 3.83 ms | **2.3% — noise** |
+
+Once a query produces rows, ~865 ns is nothing. This taxes the small-query workload `bun run
+bench:usage` exists for — point lookups, authz checks, single-row reads — where it is 4x.
+
+#### NOT BUILT, and the design has one real trade-off to get right
+
+The fix is to make the lift path cacheable: a second, LRU-capped memo from the original text to
+`{ liftedText, params }`, consulted before `normalizeLiterals`, so a repeated identical text skips
+the tokenize and goes straight to the lifted plan.
+
+It is **sound**: `normalizeLiterals(text)` is a pure function of the text, so for an identical text
+the lifted text and the lifted params are deterministic. It must be keyed by `(text, chain)` like
+the existing cache, since `maxOperatorChain` is part of the parse key.
+
+The trade-off is the one auto-parameterization exists to avoid: **one memo entry per distinct
+literal value**, which is the cache pollution the lifted key was chosen to prevent. Two things make
+it tolerable rather than self-defeating, and both need checking against a measurement rather than
+asserted here: the memo holds two strings and a small object rather than a statement, and a churning
+interpolated caller degrades to _today's_ cost (a tokenize per call) rather than anything worse,
+because the plan still comes from the lifted-key cache. Whether that memo wants its own cap, or a
+share of the existing one, is the question to answer with numbers.
+
+Not started at the end of a tick, for the same reason as items 1528 and 1530 — both of which the
+next tick then shipped.
+
+#### Instrument notes, so the next tick does not re-derive them
+
+- **The first arm is unreliable at low N.** At `N=2000` the `RETURN 1` arm read **1785 ns** against
+  its true ~100; the JIT has not settled and the first arm absorbs it. Measured at `N=20000` it is
+  stable at 100.4 / 102.3 across runs.
+- **A row-producing arm needs its own call count.** Giving the two `MATCH` arms the same 2,000 calls
+  as the scalar arms meant 4M rows per rep and the probe had to be killed. They run at 60.
+- **The probe's own "produced no rows" guard earned its place**: my first `WHERE` arm referenced
+  `n.n`, which this fixture does not set, and the guard failed the run instead of reporting a fast
+  empty arm.
+
+#### Gates
+
+`bun run check` 0 read unpiped. Probe arms only; no engine or core code changed, so the suites stand
+at item 1539's: core 431/0, gql 3851/0, gremlin 1494/0, native 961/0, serialization 144/0,
+`bun run fuzz` 20/0.

@@ -78,6 +78,27 @@ const ARMS = {
   onerow: [g1, 'MATCH (n:P) RETURN n.k AS k', undefined],
   ten: [g10, 'MATCH (n:P) RETURN count(*) AS c', undefined],
   full: [g1, FILLERS[40], undefined],
+  // ⚠️ THE LIFT-CACHE GAP (item 1540). A text whose literals `normalizeLiterals` ADMITS is parsed
+  // and cached under the LIFTED text (`LET x = $__ap0 RETURN x`), so `parseCacheHit(originalText)`
+  // misses on EVERY repeat call and the ~865 ns tokenize is paid again, forever. Verified by
+  // querying the lifted text directly after four calls of the literal form: the cache size stays 1,
+  // so the key it holds is the lifted one.
+  //
+  //   letlit   LET x = 5 RETURN x    1094.4 / 1099.8 ns/call
+  //   letparam LET x = $p RETURN x    303.4 /  278.9        <- 3.6-3.9x, the SAME plan
+  //   letlit2  one more literal LET  1463.8 / 1483.3        <- ~+370 per lifted literal
+  //
+  // `RETURN 1 AS v` (the `floor` arm) ESCAPES at ~100 ns because its literal position is not in the
+  // allowlist, so no lift happens and the ORIGINAL text is what gets cached. The gap is exactly
+  // "did a lift happen", which makes the queries auto-parameterization exists to help the only ones
+  // that never hit the cache.
+  //
+  // It is a SMALL-QUERY cost and the sizing says so: on `MATCH (n:P) WHERE n.k = 5 RETURN n.k`
+  // (~2,062 rows) the literal and param spellings are 3.95 ms against 3.83 ms — 2.3%, noise. This
+  // taxes the serving workload (`bun run bench:usage`), not row production.
+  letlit: [g1, 'LET x = 5 RETURN x', undefined],
+  letparam: [g1, 'LET x = $p RETURN x', { p: 5 }],
+  letlit2: [g1, 'LET x = 1 LET y = 2 RETURN y', undefined],
 };
 
 const med = (xs) => {
