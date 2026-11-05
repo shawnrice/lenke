@@ -63,6 +63,7 @@ import { matchStep } from './match.js';
 import { evalMath, mathStep } from './misc.js';
 import { edgeToVertex, traverseToEdge, traverseToVertex } from './movement.js';
 import { addEStep, addVStep, dropStep, propertyStep } from './mutation.js';
+import { optionalHopStep, optionalSingleHop } from './optional-hop.js';
 import {
   asStep,
   groupCountStep,
@@ -481,8 +482,17 @@ export const applyStep = (
     case 'coalesce':
       return coalesceStep(stream, step.plans, graph, ctx);
 
-    case 'optional':
-      return optionalStep(stream, step.plan, graph, ctx);
+    case 'optional': {
+      // `optional(<one vertex step>)` — the left-join idiom — is fused into one loop: no
+      // per-traverser input array, no sub-plan dispatch, no materialized output. See
+      // `optional-hop.ts` for why that is most of the cost and why laziness is safe for this shape
+      // only. Every other sub-plan shape falls through untouched.
+      const hop = optionalSingleHop(step.plan);
+
+      return hop === undefined
+        ? optionalStep(stream, step.plan, graph, ctx)
+        : optionalHopStep(stream, hop, graph);
+    }
 
     case 'choose':
       return chooseStep(stream, step.test, step.thenPlan, step.elsePlan, graph, ctx);

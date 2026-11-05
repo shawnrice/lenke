@@ -57020,3 +57020,96 @@ core 431/0, gql 3709/0, gremlin 1293/0 (1276 + 17 new), native 961/0, serializat
 `bun run fuzz` 20/0 — which matters here: a new ANSWER path in Gremlin is exactly what the
 differential fuzzer's ORDERED comparison against the Rust engine exists to catch.
 `bun run check` 0 read unpiped.
+
+### Item 1483 — SHIPPED, **1.26x** on `optional(<one vertex step>)` (3/3, arms non-overlapping, three controls flat). ⚠️ I EXPECTED ~11x AND THE HYPOTHESIS WAS WRONG: the per-traverser wrapping is NOT where `optional`'s cost is — item 1480's diagnosis was right and this measures how much of it the wrapping accounts for
+
+Item 1482's new-file insight reopened the targets previously declined on the ~16% perturbation toll.
+Item 1466's `simplePath` walk stays declined — the user declined it on usage frequency as well as
+regression risk — so this took item 1480's 19.3x instead.
+
+### The hypothesis, and why it was wrong
+
+Item 1479 removed `local`'s per-traverser sub-plan re-dispatch for **20.7x**, and `optional` pays the
+same wrapping: a one-element input array, the sub-plan's step array walked through a 103-arm dispatch,
+a generator per step, and the whole output materialized into an array just to test non-emptiness.
+Warm single-rep numbers at 20,000 vertices looked conclusive:
+
+```text
+out(E), values(k), count()                   2.81 ms
+optional(out(E)), values(k), count()        32.00
+optional(identity()), values(k), count()     2.28   ← the WRAPPER is nearly free
+```
+
+`optional(identity())` costing the same as no wrapper at all said the wrapping was cheap in itself,
+so wrapping _a hop_ looked like the whole ~11x. **It was not.** Fusing the wrapper away gave
+**1.26x**, leaving the shape still ~14x the unwrapped hop.
+
+**Item 1480 had it right**: the cost is that the inner hop runs the general traverser pipeline instead
+of the fused source-anchored walk, and `local` only transferred 20.7x because it can be _eliminated_
+entirely — reaching that walk — which `optional` cannot. This item measures how much of the gap the
+wrapping accounts for: **about a quarter of it, not all of it.**
+
+### What shipped
+
+`optional-hop.ts` (a NEW module, per item 1482: the perturbation toll is on editing `hop-values.ts` /
+`hop-projection.ts`, so a new file avoids it) fuses `optional(<single out/in/both step>)` into one
+loop over the stream — far endpoints when there are any, the traverser itself when there are none.
+Every other sub-plan shape falls through to `optionalStep` untouched.
+
+⚠️ **It is LAZY where `optionalStep` is EAGER, and that is safe only here.** The eager `[...]` runs the
+whole sub-plan before yielding, so laziness reorders side effects relative to downstream consumption
+— which is exactly why item 1480 declined this for the general case and why
+`sideeffect-in-branch.test.ts` exists. A vertex step has no side effects, so for this shape the two
+orders are indistinguishable. The gate is narrow for that reason, not for tidiness.
+
+```text
+                       POST                      PRE
+optionalvalues    1288.6 1618.7 1481.5   1863.5 1888.7 1873.1   3/3, 1.26x
+coalescevalues    2002.5 1986.7 1981.7   1911.3 2059.8 1929.7   flat
+localvalues        109.0  117.4  115.0    114.1  134.7  108.2   flat
+```
+
+Every POST reading is below every PRE reading. `coalescevalues` is the control that matters — same
+branch family, not fused — and it does not move.
+
+⚠️ **`hopbare` FIRST READ 13% WORSE, which is the pattern that should stop a ship.** Re-measured ALONE
+over five alternated rounds: POST median 230.5 against PRE 241.8, **3/5 concordance, POST nominally
+better**. Its own PRE spread across the five was 235.5-289.5 (23%), so the 13% was that spread, not
+the edit. A control that moves gets isolated before anything else happens.
+
+### Teeth
+
+`optional-hop-fusion.test.ts`, 15 tests: far endpoints emitted for a vertex that has them, the
+vertex itself when it has none, an isolated vertex, a multi-label hop, `both()` from either side, a
+downstream step seeing the fused output; the gate refusing a multi-step sub-plan, a filter, a barrier,
+a hop followed by anything, an empty sub-plan — and ACCEPTING a single vertex step, so the refusals
+mean something; plus `optional(count())` and `optional(out(E), count())` still per-traverser.
+
+⚠️ **One test records an UNREACHABLE branch rather than asserting a behaviour the engine never
+produces.** `inject(7).optional(out(E))` is rejected by a STATIC frontier check ("out() moves from a
+vertex, but the frontier is a scalar"), so the non-vertex branch cannot be reached by that route. It
+is kept because it mirrors the general path exactly (`traverseToVertex` is lenient and yields nothing,
+so `optionalStep` emits the traverser), and the test asserts the static rejection. Same reasoning as
+item 1482's unreachable `tracksPath` guard.
+
+**Mutation: 5 of 6 caught** — never emit the traverser when empty (6 failures), always emit both (6),
+emit the near vertex (5), accept a multi-step sub-plan (5), accept any single step (3).
+
+⚠️ **The UNWIRE mutant survives, and here it CANNOT be caught.** Item 1482's could: that shortcut
+returns an object carrying a `drain`, so the route was observable. This one returns a generator of
+traversers either way, and the fused and general routes are answer-equivalent with identical order —
+laziness is not observable through the output either. That is precisely the limit
+`perf-gate-needs-its-own-test` documents ("a route CHOICE is answer-equivalent, so every mutant
+survives the differential tests; extract the arithmetic as a pure fn and unit-test it"), and the pure
+gate `optionalSingleHop` is unit-tested in six of the tests above.
+
+### What is left, honestly
+
+`optional` is still ~14x the unwrapped hop, and `coalesce` is untouched. Both need what item 1480
+named: a stream-transformer form of the fused walk, reachable from a sub-plan. That remains a contract
+change — and now, thanks to item 1482, one that could live in a new module.
+
+### Gates
+
+core 431/0, gql 3709/0, gremlin 1308/0 (1293 + 15 new), native 961/0, serialization 144/0,
+`bun run fuzz` 20/0. `bun run check` 0 read unpiped.

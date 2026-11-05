@@ -218,6 +218,13 @@ are **source-anchored**: `hopValuesShortcut` wants `V()` plus one or two steps a
 plan, so a sub-plan starting from a traverser has nothing to anchor on. **Third instance of that one
 cause** — 1464's `tracksPath`, 1479's `local`, these. Priced, not built.
 
+Item 1483 then took the WRAPPING half of it — `optional(<one vertex step>)` fused into one loop,
+**1.26x** — and the number is the point: I expected ~11x from the same trick that gave `local` 20.7x,
+and the wrapping turns out to account for about a QUARTER of `optional`'s gap. 1480's diagnosis was
+right; the rest is the general-vs-fused walk, which still needs the stream-transformer contract.
+⚠️ `hopbare` first read 13% worse there and was FLAT (3/5, nominally better) when isolated over five
+alternated rounds — its own spread across those was 23%.
+
 ⚠️ **But re-profiling `folded` at 400 reps instead of 20 roughly DOUBLED both shares** (`projectValues`
 45.83% → 49.22%, `foldStep` 10% → 20.83%), and the real find was `projectValues` — **1.39x, item
 1476**. Its 72-sample profile had ranked the wrong frame. Below a few hundred samples the ranking is
