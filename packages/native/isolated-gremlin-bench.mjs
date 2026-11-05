@@ -181,6 +181,16 @@ const SHAPES = {
   hopidsingle: () => traversal(V(), out('E'), id()),
   hopbareq: () => traversal(V(), hasLabel('Q'), out('E')),
   hopbothq: () => traversal(V(), hasLabel('Q'), both('E'), values('k')),
+  // THE NO-HOP SHORTCUT'S DECLINES (item 1538). `nodeValuesShortcut` (item 1482) matches exactly
+  // `V().values(k)` or `V().hasLabel(L).values(k)` — `matchShape` requires steps.length 2 or 3 — so
+  // it takes NO other filter kind and has no residual mechanism at all. Run with VLABEL=2 so the
+  // label is not vacuous.
+  nodelabel: () => traversal(V(), hasLabel('Q'), values('n')), // ADMITTED — the control
+  nodehas: () => traversal(V(), has('k', gt(48)), values('n')), // declines: `has`, not `hasLabel`
+  nodecount: () => traversal(V(), hasLabel('Q'), values('n'), count()), // declines: a 4th step
+  nodebare: () => traversal(V(), values('n')), // ADMITTED, two steps
+  // The tail's own cost, to separate "the residual is expensive" from "the decline is expensive".
+  nodecountonly: () => traversal(V(), hasLabel('Q'), count()),
   hopyieldmultirev: () => traversal(V(), hasLabel('P'), out('F', 'E'), values('k')),
   // THE `both` HOP — the twin of GQL's undirected hop, which item 1431 took from 53.02 to 15.57 ms
   // by iterating the EDGE index once instead of every vertex twice.

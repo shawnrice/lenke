@@ -62061,3 +62061,115 @@ Comment-only change to `start-filtered-hop-values.ts` — verified comment-only 
 `HEAD` and filtering for non-comment lines (zero). `bun run check` 0 read unpiped, gremlin 1489/0.
 The rest stand at item 1536's: core 431/0, gql 3851/0, native 961/0, serialization 144/0,
 `bun run fuzz` 20/0.
+
+### Item 1538 — built the **by-id scaling probe**, the standing O(1) invariant that had NO instrument. The invariant HOLDS (100x the data for 4–6x the cost is the cache curve, not a lost O(1)). But it found a **~458 ns FIXED cost per Gremlin `run()`**, against a 21.9 ns map hit — and refuted the obvious cause before building it
+
+`getVertexById` / `getEdgeById` are O(1) by construction and **nothing in this repo measured them.**
+An invariant nobody checks is one that can regress silently, and both ways it regresses are
+invisible to a correctness test: a lookup that becomes a scan returns the right element in O(N), and
+a lookup that stays O(1) but gains a constant taxes every query that resolves an id.
+
+`packages/native/by-id-scaling-probe.mjs` closes that. It measures three surfaces — the core map,
+Gremlin's `V(id)`, and the edge map — across four graph sizes, and prints ns/lookup **and the ratio
+against the smallest size**, so the shape is the signal rather than any single number.
+
+Two design points that are the difference between a measurement and a decoration:
+
+- **The lookup keys are SHUFFLED**, deterministically. Looking ids up in insertion order walks the
+  Map's own iteration order — the access pattern a _scan_ is also fast at — so a sequential probe
+  cannot distinguish O(1) from a cache-friendly O(N). `KEYS=seq` turns it off and should be faster.
+- **The LCG is integer arithmetic** (`Math.imul`), not the f64 form CLAUDE.md records collapsing to
+  a ~11k period.
+
+#### THE INVARIANT HOLDS, and the shape says why
+
+| arm             | 10k     | 50k    | 200k      | 1M     | vs 10k    |
+| --------------- | ------- | ------ | --------- | ------ | --------- |
+| `getVertexById` | 11.2 ns | 16.5   | 17.7      | 47.3   | **4.23x** |
+| `getEdgeById`   | 11.7    | 17.0   | 20.3–45.0 | 51.9   | **4.45x** |
+| Gremlin `V(id)` | 1315.6  | 1226.7 | 1195.7    | 1137.7 | **0.86x** |
+
+**100x the data for 4–6x the cost is not linear** — it is the cache-residency curve, and the jump
+lands exactly where CLAUDE.md says to expect it ("the transition is between 200k and 1M elements").
+A map lookup is O(1) in operations with a constant that grows as the table leaves L2/L3. So the
+brief's requirement is met, and now it is _checked_ rather than asserted.
+
+The absolute numbers carry ~2x run-to-run variance at some sizes (`getEdgeById` at 200k read 20.3
+then 45.0 across two runs). The conclusion rests on the ratio column, not on any cell.
+
+#### ⚠️ THE PROBE'S OWN FIRST NUMBER WAS WRONG, and it is the same class of bug twice in three ticks
+
+The Gremlin arm's call count was computed in **two places** — inside the arm and again in the
+reporting loop. Raising only the first reported **52,940 ns/lookup** against a true ~1,038: a 50x
+error, in a brand-new instrument, in the direction that would have made this look like a catastrophe.
+It is now one `GREMLIN_CALLS` constant. A divisor used twice is a wrong number waiting to happen —
+and the tell was the absurdity of the value, which is not a tell I can rely on for a 2x error.
+
+#### THE FINDING: a ~458 ns FIXED COST PER `run()`
+
+`V(id)` is flat in N, so it is not an O(1) problem — it is a constant one, and the constant is large.
+Decomposed at 200,000 vertices:
+
+|                                                | ns/call   |
+| ---------------------------------------------- | --------- |
+| `getVertexById` alone, incl. key construction  | 105.6     |
+| plan construction (`traversal(V(id))`, no run) | 209.8     |
+| **execution of a REUSED plan**                 | **498.6** |
+| construction + execution per call              | 1231.3    |
+
+Then the fixed/variable split, by widening the id list on one reused plan:
+
+|              | ns/call | ns/row |
+| ------------ | ------- | ------ |
+| `V(1 id)`    | 504.8   | 504.8  |
+| `V(2 ids)`   | 551.1   | 275.5  |
+| `V(10 ids)`  | 923.2   | 92.3   |
+| `V(100 ids)` | 5681.4  | 56.8   |
+
+Per-row is **~46–52 ns** and the intercept is **~458 ns of fixed per-call cost**, independent of
+result size. For a one-row query that _is_ the query. This is the serving workload `bun run
+bench:usage` exists for, and it taxes every small Gremlin call, not just id lookups.
+
+#### AND THE OBVIOUS CAUSE IS REFUTED, before building anything
+
+The natural hypothesis is the per-run plan gauntlet: `effectivePlan` runs six rewrite passes and
+then six shortcuts are consulted in turn, all of which **decline** for `V(id)` (every one guards on
+`source.ids?.length ?? 0) > 0`). The Gremlin side has no plan-analysis cache — zero `WeakMap`, zero
+`epoch` use in `executor/index.ts` — where GQL has a parse cache (items 228/229). So: cache the
+analysis per plan object, keyed by graph epoch.
+
+**Measured first, and it is not there:**
+
+```text
+   full run (reused plan)    506.2 ns/call
+   effectivePlan only         11.5 ns/call     <- 2.3% of it
+```
+
+A plan cache would buy ~2%. The 458 ns is downstream of plan analysis — the shortcut gauntlet's own
+calls, the traverser/stream construction, and `toArray` — and locating it is the next item's job.
+Recording this because the hypothesis is compelling, cheap to state, and wrong: it would have been
+a day's work for 2%.
+
+#### Also screened: `nodeValuesShortcut`'s declines, and they are thin
+
+Item 1482's no-hop shortcut (`matchShape` requires exactly 2 or 3 steps) takes only `hasLabel`, no
+other filter kind, and has **no residual mechanism at all** — the gap item 881 closed for
+`hopValuesShortcut`. Priced at `VLABEL=2`, 200,000 vertices:
+
+| shape                                          |               |                                      |
+| ---------------------------------------------- | ------------- | ------------------------------------ |
+| `V().values(n)` — admitted                     | 32.7 ns/row   |                                      |
+| `V().hasLabel(Q).values(n)` — admitted         | 76.3          | the control                          |
+| `V().has(k, gt(48)).values(n)` — declines      | 115.0         | 1.51x, but only 3.8 ms absolute      |
+| `V().hasLabel(Q).values(n).count()` — declines | 5.09 ms total | **FASTER** than the admitted 7.63 ms |
+
+So the 4-step decline is not a cost at all — the count tail avoids materializing 100,000 rows, which
+is worth more than the shortcut. And the `has` decline is 1.51x on a shape already at 115 ns/row.
+Not worth taking while a 458 ns per-call floor is open.
+
+#### Gates
+
+`bun run check` 0 read unpiped. Probe and bench arms only; no engine or core code changed, so the
+suites stand at item 1537's: core 431/0, gql 3851/0, gremlin 1489/0, native 961/0,
+serialization 144/0, `bun run fuzz` 20/0. The 1M-vertex arm runs under
+`timeout 900 systemd-run --user --scope -p MemoryMax=16G -p MemorySwapMax=0`.
