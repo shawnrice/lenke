@@ -4581,6 +4581,31 @@ const patternCountOf = <T>(
     // The END is still refused: `Σ_b indeg(b) · |out-edges of b whose target passes p|` is a
     // correct formula, but its second factor is a per-EDGE predicate evaluation, which is a
     // different cost class from a once-per-middle gate. Recorded as open rather than guessed at.
+    //
+    // ⚠️ NOW PRICED (item 1515), which is what "open rather than guessed at" was waiting for. The
+    // four spellings of the two-segment count, TS engine, `BENCH_ONLY` so each is its own process,
+    // at BENCH_N=200,000:
+    //
+    //     count 2-hop                 51.0 ms    the degree product — no edge pass at all
+    //     count 2-hop + mid filter    32.0        the product, gated once per middle — FASTER
+    //     count 2-hop + start filter  88.5        1.74x the bare product
+    //     count 2-hop + end filter   100.0        1.96x the bare product  <- this comment's shape
+    //
+    // So a STRICTLY MORE SELECTIVE query costs up to 1.96x, which is the equivalent-spelling
+    // failure family this engine is named for — except these are not equivalent spellings, they
+    // are a query and a narrowing of it, and the narrowing is the slow one.
+    //
+    // ⚠️ THE START CASE IS NOT A DEFECT AND SHOULD NOT BE CHASED WITH IT. The bare product is O(V)
+    // arithmetic over middles and touches no edge; any start-gated form has to enumerate a→b, so
+    // 51.0 → 88.5 is "an edge pass against no edge pass" and is inherent. The END is the one with
+    // a cost-class gap: the formula above is ONE pass over the edges, where whatever the end
+    // spelling reaches today measures WORSE than the start's walk (100.0 against 88.5) on a
+    // predicate of the same selectivity over the same fixture. That 11.5 ms gap between two
+    // one-edge-pass-shaped routes is the evidence the formula is worth building, and it is also
+    // the thing to explain first — a route that is already O(E) would not lose to the start's.
+    //
+    // Not built here: a new count route is 100-300x territory, so it needs the byte-identity
+    // fuzzers and a mutation pass, not the tail of a measuring tick.
     if (segments.length === 2) {
       const startName = start.variable;
       const midName = segments[0].node.variable;

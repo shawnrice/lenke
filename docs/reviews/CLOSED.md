@@ -60147,3 +60147,91 @@ scale, var-length paths, OPTIONAL/UNION, subqueries — than in another frame of
 No source or probe changed this tick; the only edit is this entry. `bun run check` 0 read unpiped;
 suites are item 1513's (core 431/0, gql 3803/0, gremlin 1469/0, native 961/0, serialization 144/0,
 `bun run fuzz` 20/0).
+
+### Item 1515 — a new screen (the TS-vs-native ratio per row) found a live target the four previous ticks missed: **a two-segment count gets up to 1.96x SLOWER when you make it MORE selective** — `count 2-hop` 51.0 ms, `+ start filter` 88.5, `+ end filter` 100.0, `+ mid filter` 32.0. The END formula was already written in the code as OPEN, and this is the measurement it was waiting for
+
+Items 1511-1514 all declined, and item 1514 concluded the covered shapes are at their floors. The
+move this tick was a screen nothing in items 1503-1514 had used: **the ts/ffi ratio per bench row.**
+Items 1503-1512 were all TS-internal profiling; a large TS-vs-native gap where the algorithm should
+be the same is a different signal, and item 573 established it is a productive one.
+
+### ⚠️ The finding was in the TS COLUMN, not in the ratios
+
+Most large ratios are expected — `min boolean [short-circuits]` reads 2479x because native
+short-circuits and TS does not, which is a known difference, not a discovery. What the sweep actually
+exposed was an inconsistency between SIBLING ROWS of the TS column:
+
+```text
+count 2-hop                  75.7 ms      count 3-hop                 332.8 ms
+count 2-hop + start filter   93.7         count 3-hop + start filter  182.5
+count 2-hop + end filter    108.1         count 3-hop + end filter    195.4
+count 2-hop + mid filter     34.0         count 3-hop + interior      108.2
+```
+
+At THREE segments every filter helps, as a filter should. At TWO, the start and end filters make the
+query SLOWER. Re-measured with `BENCH_ONLY` so each row is its own process (the sweep's in-process
+inflation is documented), TS only, `BENCH_N=200000` — and isolated the gap is **larger**, not smaller:
+
+```text
+count 2-hop                 51.0 ms    the degree product — no edge pass at all
+count 2-hop + mid filter    32.0        the product, gated once per middle — FASTER
+count 2-hop + start filter  88.5        1.74x the bare product
+count 2-hop + end filter   100.0        1.96x the bare product
+```
+
+**A strictly more selective query costs up to 1.96x.** That is the equivalent-spelling failure family
+this engine is named for, except these are not two spellings of one question — they are a query and a
+narrowing of it, and the narrowing is the slow one, which no correctness test can see.
+
+### It is not a routing loss, and the cause is documented in the code
+
+All four spellings take the SAME rung (`countShortcut` — checked, not assumed, via `compileLinear`),
+so this is a split INSIDE the rung. `patternCountOf`'s own comments give the design: no constraint or
+a MIDDLE one goes to the degree product (which iterates middles, so a middle gate is free); a START or
+END constraint does not.
+
+And the END case already had my idea written down, verbatim, as an OPEN item:
+
+> The END is still refused: `Σ_b indeg(b) · |out-edges of b whose target passes p|` is a correct
+> formula, but its second factor is a per-EDGE predicate evaluation, which is a different cost class
+> from a once-per-middle gate. **Recorded as open rather than guessed at.**
+
+So the lever was known, the formula was derived, and it was left open for want of exactly the
+measurement above. The comment now carries it.
+
+### ⚠️ The start case is NOT a defect and must not be chased with the end case
+
+The bare product is O(V) arithmetic over middles and touches no edge. Any start-gated form has to
+enumerate a→b, so 51.0 → 88.5 is "an edge pass against no edge pass" and is inherent — there is no
+closed form that gates a start without visiting its edges. Treating the two together would turn a
+real target into an unachievable one.
+
+**The END is the one with a cost-class gap**, and the sharpest evidence is not against the product but
+against the start: the formula above is ONE pass over the edges, and whatever the end spelling reaches
+today measures **worse than the start's walk (100.0 against 88.5)** on a predicate of the same
+selectivity over the same fixture. Two routes that should both be one-edge-pass-shaped differ by
+11.5 ms, so the end spelling is doing more than an edge pass. That is both the reason to build the
+formula and the thing to explain first.
+
+### Not built this tick, deliberately
+
+A new count route is 100-300x territory — it needs the byte-identity fuzzers and a mutation pass with
+verified teeth, not the tail of a measuring tick. Priced at the code and here.
+
+### Method notes from this tick
+
+- ⚠️ **I piped the sweep into `tail`, which made a 7-minute run completely opaque** — zero bytes of
+  output until it exited, so two loop ticks were spent holding with no visibility. The fix is not to
+  pipe a long measurement; `BENCH_ONLY` then gives a legible per-row run anyway.
+- I held the machine quiet for the whole run rather than filling the wait, which is right for a
+  benchmark: these cross-engine rows already drift ~10% between arms on an unrelated change.
+- ⚠️ **Searched `CLOSED.md` BEFORE measuring this time** (item 1514's lesson), and it mattered twice:
+  it sent me away from item 1454's CSR build (explicitly "at its floor given the current data model",
+  with the ordinal declined and six prior arrivals) and from the var-length / UNION / OPTIONAL
+  families, which have 7 / 9 / 3 entries between them. A heading scan alone would have missed the
+  `patternCountOf` prior art — that needed a body search, which is how item 1454 went wrong.
+
+### Gates
+
+`bun run check` 0 read unpiped. The only change is a comment; suites are item 1513's (core 431/0,
+gql 3803/0, gremlin 1469/0, native 961/0, serialization 144/0, `bun run fuzz` 20/0).
