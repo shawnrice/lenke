@@ -1124,13 +1124,38 @@ const undirectedHopWalk = (w: {
   farPred: CPredicate | undefined;
   gate: CompiledExpr | undefined;
   needsStart: boolean;
+  /** The start's binding name, needed only when a projected item READS it (item 1529). */
+  startVar: string | undefined;
 }): RowsFn | null => {
   const { startLabel, typeName, farVar, farLabel, proj } = w;
 
   // The admission test lives HERE rather than at the call site, which keeps three conditions
   // out of `detectHopProjection` — it sits one branch under the complexity cap, and the cap is
   // right that the detector is already doing enough.
-  if (w.farPred !== undefined || w.gate !== undefined || w.needsStart) {
+  // ⚠️ `needsStart` IS NO LONGER A DECLINE (item 1529). It used to be, and that put every
+  // start-projecting undirected hop on the GENERAL MATCHER: `MATCH (a:P)-[:E]-() RETURN a.age`
+  // measured **741.3 ns/row against the same hop's 197.7 with a far projection — 3.75x**, with
+  // `outSteps`/`inSteps`/`edgesMatching`/`walkSegments` as its top frames.
+  //
+  // This is item 160's gap on the sibling it did not touch. Its note is still in this file:
+  // "Refusing the start cost 3.5-4.7x on four shapes, including the very ordinary unfiltered
+  // `MATCH (u:L)-[:E]->(v) RETURN u.name`" — and the same refusal survived here because items
+  // 1408, 1409, 1414, 1430, 1431, 1432 and 1248 all worked this walk without ever asking what it
+  // refuses. Item 1410's heading is the pattern: "the row that covered one never covered the
+  // other".
+  //
+  // A far predicate and a gate still decline: neither has a place to go in a walk that visits each
+  // edge from both ends.
+  if (w.farPred !== undefined || w.gate !== undefined) {
+    return null;
+  }
+
+  // Bound only when a projected item reads it, so the shapes that do not pay no `set` at all —
+  // items 803/835's rule. `needsStart` cannot be true with `startVar` undefined (it is derived from
+  // an item READING that name), and the test keeps the types honest rather than asserting.
+  const sv = w.needsStart ? w.startVar : undefined;
+
+  if (w.needsStart && sv === undefined) {
     return null;
   }
 
@@ -1190,12 +1215,32 @@ const undirectedHopWalk = (w: {
         return rows;
       }
 
+      // ⚠️ TWO LOOPS, SELECTED ONCE. The start-binding variant needs a `set` per ROW, and item 159
+      // measured a branch in this file's hot inner loop at 1.6x on the unfiltered shape — so the
+      // shapes that read no start keep a loop that is byte-for-byte what it was.
+      if (sv !== undefined) {
+        for (const edge of edges) {
+          // Each edge yields a row from BOTH ends, so the start and far swap between the two —
+          // which is the same pairing the two-pass walk below produces from its out- and in-pass.
+          binding.set(sv, edge.from);
+          binding.set(farVar, edge.to);
+          rows.push(projectRow(proj, binding, params, graph));
+
+          // A SELF-LOOP yields exactly ONE row, as the two-pass walk's in-pass skip guarantees.
+          if (edge.from !== edge.to) {
+            binding.set(sv, edge.to);
+            binding.set(farVar, edge.from);
+            rows.push(projectRow(proj, binding, params, graph));
+          }
+        }
+
+        return rows;
+      }
+
       for (const edge of edges) {
         binding.set(farVar, edge.to);
         rows.push(projectRow(proj, binding, params, graph));
 
-        // The second direction, which the two-pass walk's in-pass contributes — and the self-loop
-        // skip that keeps it to one row.
         if (edge.from !== edge.to) {
           binding.set(farVar, edge.from);
           rows.push(projectRow(proj, binding, params, graph));
@@ -1206,6 +1251,11 @@ const undirectedHopWalk = (w: {
     }
 
     for (const v of candidateVertexSource(graph, startLabel)) {
+      // Once per VERTEX, not per row: `v` is the start for both the out- and the in-pass.
+      if (sv !== undefined) {
+        binding.set(sv, v);
+      }
+
       const outBucket = v.adjFrom?.get(typeName);
 
       if (outBucket !== undefined) {
@@ -2270,6 +2320,7 @@ export const detectHopProjection = (
         farPred,
         gate,
         needsStart,
+        startVar,
       }),
     );
   }

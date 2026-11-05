@@ -257,3 +257,95 @@ describe('⚠️ the fold under a start-only predicate', () => {
     expect(() => query(faulting(true), FAULTY)).toThrow();
   });
 });
+
+/**
+ * ⚠️ ITEM 1529 — `undirectedHopWalk` used to DECLINE any projection reading the start, which put
+ * `MATCH (a:P)-[:E]-() RETURN a.age` on the general matcher at **741.3 ns/row against the same hop's
+ * 197.7 with a far projection — 3.75x**. Admitting it is 3.06x.
+ *
+ * The route is answer-equivalent, so these are about the two ways admitting it can be WRONG, both of
+ * which are wrong ANSWERS:
+ *
+ *  1. **The pairing.** An undirected hop yields a row from each end of an edge, so the start and the
+ *     far must SWAP between the two rows. Binding one and not the other, or binding the same end
+ *     twice, gives the right row count with wrong values.
+ *  2. **The self-loop.** A loop yields exactly ONE row. The two-pass walk gets that from its in-pass
+ *     skip; the edge-pass arm needs its own `from !== to` test, and that arm is the one a label-free
+ *     query takes.
+ *
+ * Both arms are exercised: a label-free query takes the EDGE PASS (item 1431), a narrowing label
+ * takes the TWO-PASS walk.
+ */
+describe('⚠️ the undirected hop may project the start (item 1529)', () => {
+  /**
+   * `a → b`, `b → q`, `a → a` (a SELF LOOP), `c → z` where `z` is not `P`.
+   *
+   * The self-loop and the non-`P` far end are what make the counts discriminating.
+   */
+  const undir = (): Graph => {
+    const g = new Graph();
+
+    for (const [id, k, labels] of [
+      ['a', 1, ['P']],
+      ['b', 2, ['P']],
+      ['c', 3, ['P']],
+      ['q', 9, ['P', 'Q']],
+      ['z', 4, ['Z']],
+    ] as const) {
+      g.addVertex({ id, labels: [...labels], properties: { k } });
+    }
+
+    let e = 0;
+
+    for (const [f, t] of [
+      ['a', 'b'],
+      ['b', 'q'],
+      ['a', 'a'],
+      ['c', 'z'],
+    ] as const) {
+      g.addEdge({ id: `u${e}`, labels: ['E'], from: g.getVertexById(f)!, to: g.getVertexById(t)! });
+      e += 1;
+    }
+
+    return g;
+  };
+
+  it('⚠️ the EDGE-PASS arm (no labels): one row per end, and a self-loop gives ONE', () => {
+    // 4 edges: a-b → 2 rows, b-q → 2, a-a → 1 (the loop), c-z → 2. Seven rows.
+    expect(col(query(undir(), 'MATCH (a)-[:E]-() RETURN a.k AS k'), 'k')).toEqual([
+      1, 1, 2, 2, 3, 4, 9,
+    ]);
+  });
+
+  it('the TWO-PASS arm (a narrowing start label) agrees', () => {
+    // `Z` is excluded as a START, so `z`'s row (k=4) goes and the other six stay.
+    expect(col(query(undir(), 'MATCH (a:P)-[:E]-() RETURN a.k AS k'), 'k')).toEqual([
+      1, 1, 2, 2, 3, 9,
+    ]);
+  });
+
+  it('a narrowing FAR label still filters', () => {
+    // Only `b-q` has a `Q` end, met from `b`. One row, k=2.
+    expect(col(query(undir(), 'MATCH (a:P)-[:E]-(:Q) RETURN a.k AS k'), 'k')).toEqual([2]);
+  });
+
+  it('⚠️ THE PAIRING: both ends projected must SWAP between the two rows of an edge', () => {
+    const rows = query(undir(), 'MATCH (a)-[:E]-(x) RETURN a.k AS k, x.k AS j');
+    const pairs = rows.map((r) => `${String(r.k)}-${String(r.j)}`).sort();
+
+    // Each edge appears from both ends with the roles swapped, and the loop appears once as 1-1.
+    expect(pairs).toEqual(['1-1', '1-2', '2-1', '2-9', '3-4', '4-3', '9-2']);
+  });
+
+  it('the far projection is unchanged — it never needed the start', () => {
+    expect(col(query(undir(), 'MATCH (a:P)-[:E]-(x) RETURN x.k AS j'), 'j')).toEqual([
+      1, 1, 2, 2, 4, 9,
+    ]);
+  });
+
+  it('a far predicate still declines the walk and still answers', () => {
+    expect(col(query(undir(), 'MATCH (a:P)-[:E]-(x) WHERE x.k > 3 RETURN a.k AS k'), 'k')).toEqual([
+      2, 3,
+    ]);
+  });
+});

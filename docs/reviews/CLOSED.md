@@ -61165,7 +61165,7 @@ it did not.
 `bun run check` 0 read unpiped. core 431/0, gql **3823**/0, gremlin 1469/0, native 961/0,
 serialization 144/0, `bun run fuzz` 20/0.
 
-### Item 1528 — enumerated every walk in `hop-projection.ts` for the fold precondition and found something better: ⚠️ **`undirectedHopWalk` DECLINES whenever the projection reads the START**, so `MATCH (a:P)-[:E]-() RETURN a.age` falls to the general matcher at **741.3 ns/row against the same hop's 197.7 — 3.75x.** This is the gap item 160 closed for the DIRECTED walk, still open on its undirected sibling
+### Item 1528 — ✅ **its 3.75x was BUILT AT ITEM 1529 for 3.06x.** enumerated every walk in `hop-projection.ts` for the fold precondition and found something better: ⚠️ **`undirectedHopWalk` DECLINES whenever the projection reads the START**, so `MATCH (a:P)-[:E]-() RETURN a.age` falls to the general matcher at **741.3 ns/row against the same hop's 197.7 — 3.75x.** This is the gap item 160 closed for the DIRECTED walk, still open on its undirected sibling
 
 Items 1525 and 1527 shipped the fold on two closures. This tick enumerated the file's eight walks for
 the same precondition — a per-edge `projectRow` with no template — and two came back as candidates:
@@ -61241,3 +61241,83 @@ less precisely than the undirected gap and second in line behind it.
 `bun run check` 0 read unpiped. No engine change — the only edit is three probe arms — so the suites
 are item 1527's: core 431/0, gql 3823/0, gremlin 1469/0, native 961/0, serialization 144/0,
 `bun run fuzz` 20/0.
+
+### Item 1529 — ✅ **SHIPPED, 3.06x**: `undirectedHopWalk` now admits a projection that reads the START, where it used to DECLINE to the general matcher. `MATCH (a:P)-[:E]-() RETURN a.age` **741.3 → 242.6 ns/row**, controls flat. This closes item 160's gap on the sibling it never touched
+
+Item 1528 priced it at 3.75x against an isolating control and named what it needs: the start bound in
+BOTH passes, with self-loops counted once.
+
+### What changed
+
+```ts
+-  if (w.farPred !== undefined || w.gate !== undefined || w.needsStart) {
++  if (w.farPred !== undefined || w.gate !== undefined) {
+```
+
+…plus the binding itself, in two places and two shapes, because this walk has two arms:
+
+- **the EDGE-PASS arm** (item 1431's, taken when neither label filters) enumerates edges and emits a
+  row per endpoint-as-far. It bound no start at all. Now the start and far **swap** between an
+  edge's two rows, and a self-loop still yields one.
+- **the TWO-PASS arm** binds the start **once per vertex** — `v` is the start for both its out- and
+  in-pass — so that costs one `set` per vertex, not per row.
+
+⚠️ **Two loops in the edge-pass arm, selected once.** The start-binding variant needs a `set` per ROW,
+and item 159 measured a branch in this file's hot inner loop at 1.6x — so the shapes that read no
+start keep a loop that is byte-for-byte what it was. `sv` is `undefined` unless a projected item
+actually reads the start (items 803/835's rule), so those shapes pay nothing.
+
+### Measured — 3.06x, controls flat
+
+```text
+                       PRE                        POST
+startpropundir    741.3 (742.1 / 740.5)     242.6 (235.1-299.5, median of 6)   3.06x   ← TARGET
+farpropundir      197.7 (200.2 / 195.2)     198.6 (204.0 / 193.1)              flat
+hopundiryield     294   (320.1 / 268.6)     278.6 (278.6 / 289.4 / 277.9)      flat
+```
+
+The target is still above `farpropundir` after the change (242.6 against 198.6) because it sets one
+extra binding per row and does not fold. The fold's precondition does hold here — that is a separate
+change, not stacked onto this one.
+
+### Correctness, before timing
+
+Hand-checked against a brute-force undirected walk on a fixture built to be discriminating — a
+**self-loop**, a far end whose label excludes it, and mixed degrees:
+
+```text
+edge pass, no labels     engine [1,1,2,2,3,4,9]   brute [1,1,2,2,3,4,9]
+two-pass, start :P       engine [1,1,2,2,3,9]     brute [1,1,2,2,3,9]
+narrowing far label :Q   engine [2]               brute [2]
+both ends projected      engine [1,1,2,2,3,4,9]   brute [1,1,2,2,3,4,9]
+```
+
+gql **3829**/0 and `bun run fuzz` 20/0, both run before any timing.
+
+### Mutation — four caught, ⚠️ all four by ONLY the new tests
+
+```text
+no-swap          second row binds the SAME ends      CAUGHT  3827 pass 2 fail
+loop-twice       drop the self-loop test             CAUGHT  3827 pass 2 fail
+no-start-bind    edge pass binds no start            CAUGHT  3827 pass 2 fail
+no-vertex-bind   two-pass binds no start             CAUGHT  3827 pass 2 fail
+```
+
+**Every one is caught only inside the item-1529 describe block** — which follows from the shape having
+previously declined: no existing test covered it on this walk, so there was nothing to notice a wrong
+answer. The first three are caught by the edge-pass and pairing cases, the fourth by the two-pass and
+far-label cases, so both arms have distinct coverage rather than one test standing in for both.
+
+### The pattern worth naming
+
+Nine `CLOSED.md` entries worked this walk (1248, 1408, 1409, 1414, 1430, 1431, 1432, 1461) and none
+asked what it REFUSES. Item 160 closed this exact refusal on the directed walk and measured
+"3.5-4.7x on four shapes"; this is 3.06x on the undirected one, found by enumerating the walks for a
+different property entirely. ⚠️ **"What does this fast path decline?" is a question worth asking of
+every walk in this file**, separately from "what does it spend its time on" — the profile cannot
+nominate a shape that never reaches the code.
+
+### Gates
+
+`bun run check` 0 read unpiped. core 431/0, gql **3829**/0, gremlin 1469/0, native 961/0,
+serialization 144/0, `bun run fuzz` 20/0.
