@@ -65,6 +65,83 @@ if (process.env.ARM === 'rowsplain') {
 }
 
 const plan = traversal(V(), out('E'));
+
+/**
+ * The flat adjacency the `flatceiling` arm walks: `off` indexes into `nbr`, counted then filled,
+ * exactly as `algorithms/shortest-path.ts`'s `buildCsr` does (item 1470).
+ *
+ * ⚠️ Built in a LOCAL structure, not stashed on the vertices — item 1494's `rowsplain` arm measured
+ * that adding an own property to the elements transitions their hidden class and slows every access
+ * on all of them by 1.19x, which would tax this arm by the very mechanism it is trying to avoid.
+ */
+const buildFlat = () => {
+  const order = [...graph.verticesById.values()];
+  const off = new Int32Array(order.length + 1);
+
+  for (let i = 0; i < order.length; i += 1) {
+    off[i + 1] = off[i] + (order[i].adjFrom?.get('E')?.size ?? 0);
+  }
+
+  const nbr = new Array(off[order.length]);
+  let c = 0;
+
+  for (const v of order) {
+    const bucket = v.adjFrom?.get('E');
+
+    if (bucket === undefined) {
+      continue;
+    }
+
+    for (const e of bucket) {
+      nbr[c] = e.to;
+      c += 1;
+    }
+  }
+
+  return { off, nbr };
+};
+
+let churnCounter = 0;
+
+const tBuild = performance.now();
+const NEEDS_FLAT = new Set(['flatceiling', 'flatchurn']);
+
+/** Nested per-vertex arrays for the `arrayadj` arm — the incrementally maintainable shape. */
+const buildPerVertex = () => {
+  const rows = [];
+
+  for (const v of graph.verticesById.values()) {
+    const bucket = v.adjFrom?.get('E');
+
+    rows.push(bucket === undefined ? [] : [...bucket].map((e) => e.to));
+  }
+
+  return rows;
+};
+
+const perVertex =
+  process.env.ARM === undefined || process.env.ARM === 'arrayadj' ? buildPerVertex() : [];
+
+/** The same, holding EDGES — what a real adjacency box must hold. For the `arrayedge` arm. */
+const buildPerVertexEdges = () => {
+  const rows = [];
+
+  for (const v of graph.verticesById.values()) {
+    const bucket = v.adjFrom?.get('E');
+
+    rows.push(bucket === undefined ? [] : [...bucket]);
+  }
+
+  return rows;
+};
+
+const perVertexEdges =
+  process.env.ARM === undefined || process.env.ARM === 'arrayedge' ? buildPerVertexEdges() : [];
+const flat =
+  process.env.ARM === undefined || NEEDS_FLAT.has(process.env.ARM)
+    ? buildFlat()
+    : { off: new Int32Array(1), nbr: [] };
+const buildMs = performance.now() - tBuild;
 const EDGES = NODES * FANOUT;
 
 const ARMS = {
@@ -247,6 +324,110 @@ const ARMS = {
     return out_.length;
   },
 
+  // 7. ⚠️ THE CEILING FOR A FLAT ADJACENCY, which item 1494 priced at ~1.6x from arithmetic rather
+  //    than measurement. This arm measures it instead: parallel dense arrays built ONCE outside the
+  //    timed loop, so the walk pays no per-vertex `Map.get`, no `Set` iteration and no endpoint
+  //    getter — the three shares that item 1494's decomposition left as the only levers.
+  //
+  //    It is deliberately the OPTIMISTIC bound and it is not a design:
+  //      - it assumes the structure is already built and valid, so it excludes ALL maintenance
+  //        cost, which is precisely what disqualified the global dense ordinal at items
+  //        1369-1372/1397 (deletes 6.18x/11.34x under churn) and what item 680 records on the Rust
+  //        side (one `add_edge` demotes every later read for the session);
+  //      - it holds ONE type's neighbours, where a real structure needs per-type offsets.
+  //    So read it as "what is the most this lever could ever be worth", and nothing more. The
+  //    build cost is reported separately below, because whether it can be maintained incrementally
+  //    or must be rebuilt is the question that decides the design.
+  flatceiling: () => {
+    const out_ = [];
+    const { off, nbr } = flat;
+
+    for (let i = 0; i < off.length - 1; i += 1) {
+      const end = off[i + 1];
+
+      for (let k = off[i]; k < end; k += 1) {
+        out_.push(nbr[k]);
+      }
+    }
+
+    return out_.length;
+  },
+
+  // 8. ⚠️ THE SAME STRUCTURE UNDER CHURN, which is the number that decides the design rather than
+  //    the ceiling above. One edge added per rep, then the structure rebuilt, then walked — the
+  //    naive invalidation policy (drop on any adjacency write, rebuild on the next read). This is
+  //    item 680's failure mode priced on the TS side: there, `rebuild_csr` runs only at LOAD and
+  //    every adjacency write clears `csr_fresh` with nothing to re-arm it, so ONE `add_edge`
+  //    demotes every later read for the whole session.
+  //
+  //    If this lands above the engine's reading, a rebuild-on-read-after-write cache is WORSE than
+  //    today for any write-interleaved workload, and the lever needs incremental maintenance of a
+  //    packed array — which is the hard part, not the walk.
+  flatchurn: () => {
+    const n = churnCounter;
+
+    churnCounter += 1;
+    graph.addEdge({
+      id: `churn${n}`,
+      labels: ['E'],
+      from: graph.getVertexById(`v${n % NODES}`),
+      to: graph.getVertexById(`v${(n * 7919 + 1) % NODES}`),
+    });
+
+    const rebuilt = buildFlat();
+    const out_ = [];
+    const { off, nbr } = rebuilt;
+
+    for (let i = 0; i < off.length - 1; i += 1) {
+      const end = off[i + 1];
+
+      for (let k = off[i]; k < end; k += 1) {
+        out_.push(nbr[k]);
+      }
+    }
+
+    // One edge more than the baseline per rep, so this arm is excluded from the agreement check.
+    return out_.length;
+  },
+
+  // 9. ⚠️ THE MAINTAINABLE MIDDLE, and the most decision-relevant arm of the nine. `flatceiling`
+  //    wins 30x and `flatchurn` loses 1.47x, so the lever's whole problem is that a GLOBAL packed
+  //    array cannot absorb an insert — it has to be rebuilt. A per-vertex ARRAY can: appending is
+  //    O(1) amortized and touches one vertex, so there is nothing to invalidate and no rebuild.
+  //
+  //    This arm models exactly that — nested arrays in place of `Map<string, Set<Edge>>` — so it
+  //    keeps a per-vertex indirection and the endpoint resolution, and only replaces the `Set`
+  //    iteration (38% of the row per item 1494) with an array walk. It is mildly optimistic about
+  //    the type lookup, since a real box still needs to select the type.
+  arrayadj: () => {
+    const out_ = [];
+
+    for (const nbrs of perVertex) {
+      for (const n of nbrs) {
+        out_.push(n);
+      }
+    }
+
+    return out_.length;
+  },
+
+  // 9b. ⚠️ THE SAME, HOLDING EDGES RATHER THAN PRE-RESOLVED ENDPOINTS. `arrayadj` stores `e.to`,
+  //     which a real adjacency box cannot do on its own: `outE`, edge properties and edge labels
+  //     all need the edge. This arm holds `Edge[]` and reads `.to` during the walk, so it re-adds
+  //     the ~10 ns an edge item 1494 measured for a warm endpoint read. It is the honest version
+  //     of the maintainable design.
+  arrayedge: () => {
+    const out_ = [];
+
+    for (const es of perVertexEdges) {
+      for (const e of es) {
+        out_.push(e.to);
+      }
+    }
+
+    return out_.length;
+  },
+
   // 6. The engine.
   engine: () => toArray(plan, graph).length,
 };
@@ -289,8 +470,13 @@ for (const name of names) {
 // So this is a real agreement check, not a decoration.
 /** The `v*` ladder counts VERTICES; everything else counts edges. */
 const VERTEX_ARMS = new Set(['vonly', 'vbox', 'vget']);
+const UNCHECKED_ARMS = new Set(['flatchurn']);
 
 for (const r of results) {
+  if (UNCHECKED_ARMS.has(r.name)) {
+    continue;
+  }
+
   if (VERTEX_ARMS.has(r.name)) {
     if (r.answer !== NODES) {
       throw new Error(`ARM ${r.name} answered ${r.answer}, expected ${NODES} vertices.`);
@@ -307,6 +493,11 @@ for (const r of results) {
 }
 
 console.log(`\nHOP ROWS FLOOR — NODES=${NODES} FANOUT=${FANOUT} EDGES=${EDGES} REPS=${REPS}\n`);
+
+if (buildMs > 0.01) {
+  console.log(`flat adjacency BUILD: ${buildMs.toFixed(2)} ms (excluded from every arm below)\n`);
+}
+
 console.log(
   `${'arm'.padEnd(13)}${'ms'.padStart(9)}${'ns/edge'.padStart(10)}${'vs reach'.padStart(10)}`,
 );

@@ -58110,6 +58110,13 @@ serialization 144/0, `bun run fuzz` 20/0.
 
 ### Item 1494 — **`V().out(T)` is already within 4.6% of a hand-written loop**, so the Gremlin bare hop has no pipeline overhead left. Decomposed the whole 43.2 ms row, and **refuted the endpoint-getter lever: a plain own property is 1.19x WORSE**
 
+> ⚠️ **ITS CLOSING PRICE IS CORRECTED BY ITEM 1495.** ~~Ceiling ~1.6x on this shape~~ — that was
+> arithmetic (assume the two structural shares go to zero), and measuring it gave **24x** for a
+> global packed CSR and **4.1x** for the maintainable per-vertex-array design. The 1.6x understated
+> the lever by 2.5x on the design that is actually buildable. Item 1495 also found what the
+> arithmetic could not: the global CSR is **1.47x WORSE than today** under one write per read, while
+> per-vertex arrays need no rebuild at all.
+
 Item 1493's clean profile (the one that was not an inlining artifact) said `hopbare` is `drain` 73.9%
 and `get to` 24.6%. `drain` is the walk itself, so the readable claim was the getter — and
 `get to` is MEMOIZED (item 595, `#toV ??= getVertexById(...)`), which makes 24.6% suspicious the way
@@ -58199,3 +58206,78 @@ so it wants its own item rather than the tail of this one. **Priced, not built.*
 
 `bun run check` 0 read unpiped. No engine code changed this item — one new instrument and two
 refuted levers.
+
+### Item 1495 — **my own ~1.6x estimate for the flat adjacency was wrong by 2.5x, and the design it assumed is the one that LOSES.** Measured: a global packed CSR is 24x read-only but **1.47x WORSE under one write per read**; per-vertex ARRAYS get **4.1x with no rebuild at all**
+
+Item 1494 closed with "a flat per-vertex adjacency… ceiling ~1.6x on this shape". That number was
+**arithmetic, not measurement** — assume the two structural shares (type lookup 25%, `Set` iteration
+38%) go to zero and you get 2.7x, which I then hedged to 1.6x. Both are wrong, and the useful part
+is that measuring it changed the DESIGN, not just the figure.
+
+Three arms added to `hop-rows-floor-probe.mjs`, each built once outside the timed loop, every one
+producing the same 400,000-element array the engine produces.
+
+### What it is actually worth
+
+```text
+arm                                            ms      vs engine
+flatceiling   global packed CSR (off/nbr)      1.82      24x
+arrayadj      per-vertex arrays, endpoints     2.11      20.6x
+              pre-resolved
+arrayedge     per-vertex Edge[], endpoint      10.50     4.1x
+              read live during the walk
+engine        today                            43.43     1.00x
+flatchurn     global CSR + 1 edge per rep,     63.58     0.68x  ← 1.47x WORSE
+              rebuild on the next read
+```
+
+Flat-adjacency BUILD cost, measured separately: **93.4 ms** — more than two whole queries' worth.
+
+### ⚠️ The arm that decides the design is `flatchurn`, and it kills the obvious version
+
+A global packed array cannot absorb an insert; it has to be rebuilt. With the naive policy (drop on
+any adjacency write, rebuild on the next read) a workload of one write per read measures **63.58 ms
+against today's 43.43 — 1.47x worse.** That is item 680's failure mode reproduced on the TS side:
+there `rebuild_csr` runs only at LOAD and every adjacency write clears `csr_fresh` with nothing to
+re-arm it, so one `add_edge` demotes every later read for the session. The break-even is ~1.5
+queries between writes; below that the cache is a regression.
+
+So "build a CSR for the hop path" is the version of this lever that should NOT be built, and the
+1.6x estimate could not have told me that — it priced the walk and said nothing about maintenance.
+
+### ⚠️ And the MAINTAINABLE design gets the win anyway
+
+`arrayadj` — nested per-vertex arrays instead of `Map<string, Set<Edge>>` — measured **2.11 ms,
+within 16% of the global CSR's 1.82**. Appending to a per-vertex array is O(1) amortized and touches
+one vertex, so there is nothing to invalidate and no rebuild: the entire reason `flatchurn` loses
+simply does not arise.
+
+**But `arrayadj` is optimistic twice over, and `arrayedge` is the honest number.** `arrayadj` stores
+`e.to`, which a real adjacency box cannot do on its own — `outE`, edge properties and edge labels all
+need the edge. Holding `Edge[]` and reading `.to` during the walk costs 8.4 ms more (2.11 → 10.50),
+which is ~21 ns an edge for the endpoint read, the same order as item 1494's ~10 ns for a warm one.
+It is also mildly optimistic about the type lookup, since a real box still has to select the type.
+
+**So: 4.1x for the buildable design, 20.6x if resolved endpoints are cached alongside** — and item
+595 already established that an endpoint reference is safe to cache under a live edge, so that second
+step is a real option rather than a cheat, just a separate decision.
+
+### What a reader should take to the next item
+
+The change is `Map<string, Set<Edge>>` → `Map<string, Edge[]>` in the adjacency box. Two things make
+it more tractable than it looks and one thing makes it risky:
+
+- **Iteration order is unchanged.** A `Set` iterates in insertion order and an appended array is in
+  insertion order, so the walk emits the same edges in the same sequence — which is what
+  byte-identity between the engines turns on.
+- **Insert stays O(1)** (`push`), so none of `flatchurn`'s problem appears.
+- ⚠️ **Removal becomes O(degree).** `Set.delete` is O(1); keeping order under removal means `splice`.
+  That is the thing to measure before building, and it is the same class of regression that
+  disqualified the global dense ordinal (deletes 6.18x/11.34x, items 1369-1372/1397) — though
+  bounded by one vertex's degree rather than by the whole graph.
+
+**Priced at 4.1x (20.6x with cached endpoints), design selected, removal cost not yet measured.**
+
+### Gates
+
+`bun run check` 0 read unpiped. No engine code changed — three probe arms and a corrected price.

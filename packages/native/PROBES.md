@@ -1061,5 +1061,33 @@ mechanism that arm exists to demonstrate. A probe that mutates the fixture for o
 invalidate all the others.
 
 What remains is the two structural shares (type lookup + `Set` iteration, 63% together), which mean a
-flat per-vertex adjacency — priced at ~1.6x and NOT the global dense ordinal that was built and
-disqualified at items 1369-1372/1397.
+flat per-vertex adjacency — NOT the global dense ordinal that was built and disqualified at items
+1369-1372/1397.
+
+### The flat-adjacency lever, MEASURED (item 1495) — and the obvious version is the one that loses
+
+Item 1494 priced it at "~1.6x" from arithmetic. Measured, with three more arms:
+
+```text
+flatceiling  global packed CSR (off/nbr)                     1.82 ms   24x
+arrayadj     per-vertex arrays, endpoints pre-resolved       2.11      20.6x
+arrayedge    per-vertex Edge[], endpoint read live          10.50      4.1x   ← the honest number
+engine       today                                          43.43      1.00x
+flatchurn    global CSR + one edge per rep, rebuild         63.58      1.47x WORSE
+```
+
+Build cost of the flat structure: **93.4 ms**, more than two queries' worth.
+
+⚠️ **`flatchurn` is the arm that decides the design.** A global packed array cannot absorb an insert,
+so the naive policy (drop on any adjacency write, rebuild on next read) makes one-write-per-read
+**1.47x worse than today** — item 680's failure mode on the TS side. Break-even is ~1.5 queries
+between writes.
+
+⚠️ **The maintainable shape gets the win anyway.** Per-vertex arrays append in O(1) and touch one
+vertex, so there is nothing to invalidate. `arrayedge` is the figure to quote (4.1x): `arrayadj`'s
+20.6x pre-resolves `e.to`, which a real box cannot do alone since `outE`, edge properties and labels
+need the edge — though item 595 makes caching the endpoint a legitimate separate step.
+
+The open risk is **removal**: `Set.delete` is O(1) and keeping insertion order in an array means
+`splice`, so O(degree). Iteration order is unchanged (a `Set` and an appended array are both in
+insertion order), which is what byte-identity turns on.
