@@ -117,9 +117,14 @@ const projectedEndsOnly = (
   farVar: string,
   startVar: string | undefined,
   relVar: string | undefined,
-): { readsStart: boolean; readsRel: boolean } | null => {
+): { readsStart: boolean; readsRel: boolean; readsFar: boolean } | null => {
   let readsStart = false;
   let readsRel = false;
+  // ⚠️ REPORTED, NOT INFERRED FROM THE OTHER TWO (item 1525). `readsStart === true` does not imply
+  // the far end is unread — `RETURN a.k, x.k` reads both — and a caller that wants "START ONLY"
+  // needs the far end answered directly. The `farVar` arm below was previously the silent
+  // fall-through that allowed a name without recording it.
+  let readsFar = false;
 
   for (const item of items) {
     for (const name of freePredicateVars((item as { expr: Expr }).expr)) {
@@ -139,10 +144,12 @@ const projectedEndsOnly = (
       if (name !== farVar) {
         return null;
       }
+
+      readsFar = true;
     }
   }
 
-  return { readsStart, readsRel };
+  return { readsStart, readsRel, readsFar };
 };
 
 /**
@@ -176,6 +183,28 @@ const projectedEndsOnly = (
  */
 export const loopInvariantWhere = (where: Expr): boolean =>
   freePredicateVars(where).size === 0 && rowLocal(where);
+
+/**
+ * ⚠️ DO THE PROJECTION'S ITEMS READ THE START AND NOTHING ELSE? (item 1525.)
+ *
+ * This is what lets the start-driven walk project ONCE per start vertex and copy the row — every
+ * row that vertex produces is then identical. It is `farDrivenHopWalk`'s template-and-copy with the
+ * ends swapped.
+ *
+ * ⚠️ `readsFar` has to be false as well as `readsRel`, and that is the whole reason
+ * `projectedEndsOnly` now reports it: `RETURN a.k, x.k` reads BOTH ends, and copying one template
+ * for it would repeat the first far vertex's value across the whole group — a wrong answer, not a
+ * slow one.
+ *
+ * Its own function because `detectHopProjection` sits on a complexity budget of 35 and the inline
+ * conjunction put it at 36 — the same extraction this file already made for `hopOrderPlan` and
+ * `projectionIsStreamable`.
+ */
+const itemsAreStartOnly = (p: {
+  readsStart: boolean;
+  readsRel: boolean;
+  readsFar: boolean;
+}): boolean => p.readsStart && !p.readsRel && !p.readsFar;
 
 export const carriedWhere = (
   where: Expr | undefined,
@@ -2104,6 +2133,7 @@ export const detectHopProjection = (
   const walkProj = order.walkProj ?? proj;
 
   const itemsReadStart = projected.readsStart;
+  const projStartOnly = itemsAreStartOnly(projected);
   const itemsReadRel = projected.readsRel;
 
   // A clause `WHERE` is CARRIED rather than refused, as long as it reads nothing but the
@@ -2465,6 +2495,7 @@ export const detectHopProjection = (
       farPred,
       gate,
       startOnly: carried.startOnly,
+      projStartOnly,
       cstart: cm.patterns[0].start,
       startVar: needsStart ? startVar : undefined,
       // The COMPILED far node carries both the inline equalities and the seed hints lifted from
@@ -3023,12 +3054,20 @@ const filteredHopWalk = (w: {
   farPred: CPredicate | undefined;
   gate: CompiledExpr | undefined;
   startOnly: boolean;
+  /**
+   * Do the PROJECTION's items read the start and nothing else? Distinct from `startOnly`, which is
+   * `carriedWhere`'s answer about the clause `WHERE` (item 1525).
+   *
+   * When true, every row a start vertex produces is IDENTICAL, so the walk can project once and
+   * copy — `farDrivenHopWalk`'s template-and-copy with the ends swapped.
+   */
+  projStartOnly: boolean;
   cstart: CNode | undefined;
   startVar: string | undefined;
   cfar: CNode | undefined;
 }): RowsFn => {
   const { startLabel, typeName, out, farVar, farLabel, proj, farPred, gate, startVar, cfar } = w;
-  const { startOnly, cstart, forceStartDriven } = w;
+  const { startOnly, projStartOnly, cstart, forceStartDriven } = w;
   // Built per compile, like the two walks below it, and consulted only by the general closure —
   // the START-ONLY walk already gates a vertex before reading its adjacency and seeds the start
   // through `hopSeek`, which is the good case this is for.
@@ -3043,6 +3082,79 @@ const filteredHopWalk = (w: {
     gate,
     startVar,
   });
+
+  // ⚠️ A START-ONLY PROJECTION GETS ITS OWN WALK TOO (item 1525), and the reason it is a separate
+  // closure rather than a branch is this function's own item-159 note below: a branch in the hot
+  // inner loop cost the unfiltered shape 1.6x, and a shared module-scope walk cost 1.29x by going
+  // polymorphic across compiles. Item 1522 re-learned the same toll from the other side.
+  //
+  // Every row a start vertex produces is IDENTICAL here, so the bucket SIZE is the row count and
+  // one `projectRow` serves the whole group — `farDrivenHopWalk`'s trick with the ends swapped
+  // (item 1407 shipped it there for 16-28%; the start side never had it). Measured 251 ns/row
+  // against the far-driven 134 before this.
+  //
+  // ⚠️ ANYTHING THAT CAN REJECT AN EDGE MUST DECLINE, or the count is wrong — a wrong ANSWER, not a
+  // slow one. `farPred` is refused outright; a NON-VACUOUS far label is handled per call by the
+  // first arm, which walks and tests as before. `gate` is refused because the start-only PREDICATE
+  // closure below owns that shape and already carries items 139-145's raise parity.
+  //
+  // ⚠️ TWO OF THESE TESTS ARE DEFENCE IN DEPTH RATHER THAN THE GUARD, and mutation says so rather
+  // than my reading it (item 1525). Removing `!proj.star` and removing `!p.readsRel` from
+  // `itemsAreStartOnly` each change NO answer across all 3,817 tests:
+  //
+  //   - `RETURN *` carries ZERO projection items, so `projectedEndsOnly` iterates nothing and
+  //     reports `readsStart: false` — the shape declines on that before reaching `star`. (Item
+  //     1517 recorded the same equivalence for `patternCountOf`: `proj.star` IS
+  //     `items.length === 0` there too.)
+  //   - a projection reading the REL variable is claimed by the rel-bound walks ABOVE this one, so
+  //     it never arrives here. The surviving mutant is the evidence: with the test gone, the fold
+  //     still did not fire for `RETURN a.k, r.w`.
+  //
+  // Both stay, named as redundant-today rather than described as load-bearing — this file's own
+  // rule after item 444, where a guard documented as "defensive, not load-bearing" turned out to be
+  // the only thing refusing a correlated subquery. A later relaxation of the routing above would
+  // reopen exactly what these cover.
+  if (projStartOnly && farPred === undefined && gate === undefined && !proj.star) {
+    return (graph, params) => {
+      const rows: Row[] = [];
+      const binding = new Map<string, unknown>();
+      // Per call, as item 1410 established for this file's other walks.
+      const fl = vacuousLabel(graph, farLabel) ? undefined : farLabel;
+
+      for (const v of candidateVertexSource(graph, startLabel)) {
+        const bucket = (out ? v.adjFrom : v.adjTo)?.get(typeName);
+
+        if (bucket === undefined) {
+          continue;
+        }
+
+        binding.set(startVar as string, v);
+
+        // A real far label can reject edges, so the count is not the bucket size: walk and test,
+        // which is what this walk did for every shape before this item.
+        if (fl !== undefined) {
+          for (const edge of bucket) {
+            if (matchesLabel(out ? edge.to : edge.from, fl)) {
+              rows.push(projectRow(proj, binding, params, graph));
+            }
+          }
+
+          continue;
+        }
+
+        let n = bucket.size;
+        const template = projectRow(proj, binding, params, graph);
+
+        rows.push(template);
+
+        for (n -= 1; n > 0; n -= 1) {
+          rows.push({ ...template });
+        }
+      }
+
+      return rows;
+    };
+  }
 
   // A START-ONLY predicate gets its own walk, which gates a vertex BEFORE reading its adjacency.
   // Its own closure rather than a branch in the loop below, for the reason item 159 recorded

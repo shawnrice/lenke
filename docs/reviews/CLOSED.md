@@ -60850,7 +60850,7 @@ product whose own comment had already said why it would lose.
 plus one probe arm — so the suites are item 1522's: core 431/0, gql 3803/0, gremlin 1469/0,
 native 961/0, serialization 144/0, `bun run fuzz` 20/0.
 
-### Item 1524 — asked item 1523's question with the ends SWAPPED and found the symmetry is **unexploited**: a projection reading only the START costs **251 ns/row against the far-driven 134 — 1.87x** for a structurally identical question. Item 1407 shipped the template-and-copy for the far-driven walks only; the start side never got it. ⚠️ PRICED, NOT BUILT
+### Item 1524 — ✅ **BUILT AT ITEM 1525 for 2.15x** (the realized win beat this entry's 1.87x estimate). asked item 1523's question with the ends SWAPPED and found the symmetry is **unexploited**: a projection reading only the START costs **251 ns/row against the far-driven 134 — 1.87x** for a structurally identical question. Item 1407 shipped the template-and-copy for the far-driven walks only; the start side never got it. ⚠️ PRICED, NOT BUILT
 
 Item 1523 closed the rel-bound line by finding why `farDrivenHopWalk` is fast: it takes the degree
 from bucket SIZES, projects ONE row per far vertex, and pushes `n` spread copies. The precondition is
@@ -60921,3 +60921,93 @@ as `farDrivenHopWalk`'s.
 `bun run check` 0 read unpiped. No engine change — the only edits are a probe arm and this entry — so
 the suites are item 1522's: core 431/0, gql 3803/0, gremlin 1469/0, native 961/0, serialization 144/0,
 `bun run fuzz` 20/0.
+
+### Item 1525 — ✅ **SHIPPED, 2.15x**: the start-driven hop projection gets `farDrivenHopWalk`'s template-and-copy when the projection reads only the START. `MATCH (a:P)-[:E]->() RETURN a.k` **251 → 117 ns/row**, four probe controls and three bench controls flat. ⚠️ And a 23% "regression" was noise, which three repeats showed and one reading did not
+
+Item 1524 priced this at 1.87x with three hazards to settle first. All three were settled before the
+measurement, and the realized win is larger than the gap predicted — the folded start path is now
+slightly FASTER than the far-driven one (117 against 134), because it needs no `unionCount` over
+several buckets.
+
+### What it does
+
+When the projection reads the start and nothing else, every row a start vertex produces is
+IDENTICAL, so the bucket SIZE is the row count and one `projectRow` serves the whole group. Item 1407
+shipped exactly this for the far-driven walks (16-28%); the start side never had it.
+
+⚠️ **A separate closure per compile, not a branch** — this function's own item-159 note says a branch
+in the hot inner loop cost the unfiltered shape 1.6x and a shared module-scope walk cost 1.29x by
+going polymorphic across compiles. Item 1522 re-learned the same toll from the other side, which is
+why that form was not even attempted here.
+
+`projectedEndsOnly` had to start reporting `readsFar`: it previously allowed the far variable as a
+silent fall-through, so "reads the start" could not be distinguished from "reads both ends".
+
+### The three hazards, settled
+
+1. **Count exactness.** `farPred` declines outright; a NON-VACUOUS far label is handled per call by a
+   first arm that walks and tests as before (decided per call, item 1410's rule). `gate` declines
+   because the start-only PREDICATE closure already owns that shape with items 139-145's raise parity.
+2. **Row order.** Unchanged — the same rows in the same start-vertex order, and within a group the
+   rows are identical, so intra-group order is unobservable.
+3. **`RETURN *`.** Excluded, and item 1522's measurement had already shown star is on the general path.
+
+### Measured — 2.15x, controls flat
+
+```text
+                    PRE                POST
+startprop   247.4 / 255.4      115.7 / 118.4     2.15x   ← TARGET
+farprop     132.0 / 136.4      140.6 / 128.9     flat    (far-driven control)
+edge             236-246            246.3        flat
+relprop          339-346            332.4        flat
+star             769-781            755.5        flat
+hopfiltyield      324.27            303.91       1.07x better
+hopsingleyield     82.48             79.76       1.03x better
+hopstartonlyyield 285.47            295.68       flat (band 277-349 BOTH arms)
+```
+
+⚠️ **`hopstartonlyyield` first read 290 → 358, a 23% regression, and it was NOISE.** Three repeats per
+arm put PRE at 346/285/277 and POST at 285/349/296 — a 1.25x intrinsic spread that one reading cannot
+see through. `hopsingleyield` went the other way: a single 85.65 against a tight 82.2-82.5 PRE looked
+like a 4% regression and is 79.8 on repeats, i.e. slightly better. **Neither single reading was
+usable, in either direction.**
+
+### Mutation — five of seven caught, and ⚠️ the two survivors are REDUNDANT guards, demonstrated
+
+```text
+ignore-readsfar   drop !readsFar from the derivation    CAUGHT   3798 pass 19 fail
+allow-farpred     admit a far predicate                 CAUGHT   3798 pass 19 fail
+ignore-farlabel   fold even under a real far label      CAUGHT   3807 pass 10 fail
+alias-rows        push the template n times, no clone   CAUGHT   3815 pass  2 fail  ← only MY tests
+off-by-one        n copies instead of n − 1             CAUGHT   3802 pass 15 fail
+ignore-readsrel   drop !readsRel                        SURVIVES 3817 pass  0 fail
+allow-star        drop !proj.star                       SURVIVES 3817 pass  0 fail
+```
+
+`alias-rows` is why the distinct-object cases exist: **nothing else in 3,815 tests sees aliased rows**,
+and `rows.push(template)` followed by `{ ...template }` is a deliberate idiom whose failure mode is a
+caller mutating one row and changing its siblings.
+
+And the two survivors were diagnosed rather than left open: `RETURN *` carries ZERO projection items,
+so `projectedEndsOnly` reports `readsStart: false` and the shape declines before `star` is consulted
+(verified by parsing it — `star=true items=0`); a rel-reading projection is claimed by the rel-bound
+walks ABOVE this one, and the surviving mutant IS the evidence, since the fold still did not fire for
+`RETURN a.k, r.w`. Both tests stay, **labelled redundant-today rather than load-bearing** — item 444's
+lesson, where a guard called "defensive, not load-bearing" turned out to be the only thing refusing a
+correlated subquery.
+
+### ⚠️ A test that could not have failed for its own reason
+
+The first version of the rel case asserted on `r.id` and read four NULLs: `id` is an edge's IDENTITY,
+not a property, so ISO property access on an absent key gives NULL and the column was uniformly null
+whether or not the fold had wrongly fired. Caught by it failing for the wrong reason (`1` distinct,
+expected `4`) and fixed by giving the fixture a real `w` per edge — which then showed 1/2/3/4, the
+guard working. Same class as item 1507's wrong expectation, and the deciding evidence was the same:
+look at what the engine actually returned before changing either side.
+
+### Gates
+
+`bun run check` 0 read unpiped. core 431/0, gql **3817**/0, gremlin 1469/0, native 961/0,
+serialization 144/0, `bun run fuzz` 20/0 — byte-identity was run before any timing, since a projection
+route is 100-300x territory. Answers also hand-checked against a brute-force walk on a mixed-degree,
+mixed-label fixture.
