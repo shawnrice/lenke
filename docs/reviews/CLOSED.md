@@ -55404,3 +55404,144 @@ What shipped instead: 1431 (47.8-79.1%), 1432 (64.6%), 1437 (75.9-94.2%), 1442 (
 ### Gates
 
 `bun run check` 0 (read unpiped). No code changed — a decision and its evidence.
+
+### Item 1467 — the TWELVE ALGORITHMS had no bench row at all, and measuring them turned up a RETENTION defect: a discarded `Graph` is pinned by its own pending `drainMutations` microtask. Nothing algorithmically wrong in the twelve; `labelPropagation` NOMINATED at 14x its siblings per vertex
+
+Item 1466 declined a 3.3x win because any edit to `hop-values.ts` / `hop-projection.ts` moves
+unrelated rows up to ~16% in an arbitrary direction. **That is a reason to move the search, not to
+stop it**, so this item went to ground where a change cannot pay that toll.
+
+### First, where NOT to look — the codecs, checked before building anything
+
+Item 1455's rule is to search for the cure before pricing a cost. `CLOSED.md` already holds the
+codec answer in full: the TS decode is **format-independent** (2229-2740 ns/element across five
+formats, a 1.23x spread against native's 3.55x), because pure-TS ingest is bound by the graph BUILD
+and not by any codec — _"no codec work can make pure-TS ingest faster; the only target is `addEdge`"_,
+itself already closed at item 312. CSV encode was rejected at item 118 with two levers priced, and
+the `encode graphson` row was retracted on bytes-per-element. **So the serialization package is swept
+ground and no bench was built for it.** Recorded because "profile the codecs" is an obvious next
+thought and the answer is already here.
+
+### The actual hole: `packages/core/src/algorithms/`
+
+~2,200 lines, twelve procedures, dispatched through `runAlgorithmSync` — which is the exact entry
+point **both** engines use (Gremlin's OLAP steps, GQL's `CALL`) — and **not one bench row anywhere in
+the probe corpus.** Items 1462-1463 found 33-56x by asking "which shipped surface has no bench row?";
+this is the same question asked of the algorithms. New instrument: `algo-scaling-bench.mjs`.
+
+### Nothing is algorithmically wrong, and that is the main result
+
+Each procedure at two sizes a 4x step apart (NODES=40000, FANOUT=2, REPS=5, median of kept reps):
+
+```text
+algorithm                       V       ms    ns/V        V       ms    ns/V    ratio    exp
+degree                      40000    15.28     382   160000    63.27     395    4.14x     4x
+connectedComponents         40000     9.08     227   160000    37.03     231    4.08x     4x
+stronglyConnectedComponents 40000    13.23     331   160000    95.87     599    7.25x     4x  ABOVE
+onCycle                     40000    12.86     321   160000    96.12     601    7.48x     4x  ABOVE
+labelPropagation            40000    95.61    2390   160000   534.72    3342    5.59x     4x
+peerPressure                40000    43.53    1088   160000   224.22    1401    5.15x     4x
+pagerank                    40000    19.91     498   160000    89.47     559    4.49x     4x
+personalizedPagerank        40000    18.38     460   160000    90.18     564    4.91x     4x
+shortestPath                40000    39.39     985   160000   245.79    1536    6.24x     4x
+neighborAggregate           40000    73.94    1849   160000   400.01    2500    5.41x     4x
+betweenness                  1000    80.62   80621     4000  1343.57  335894   16.67x    16x
+closeness                    1000    71.57   71570     4000  1182.46  295614   16.52x    16x
+```
+
+Ratios run 4.08-7.48x against an expected 4x; the excess is the per-row cache term item 1452
+measured at 1.2-3.1x over a 10x step, not an exponent. **The two O(V·E) procedures land on 16.67x and
+16.52x against their expected 16x**, which is the reading that makes the rest of the column
+believable — the instrument reproduces a known exponent before being trusted on an unknown one.
+`stronglyConnectedComponents` and `onCycle` are flagged `ABOVE` and are **NOT confirmed**: a
+two-point ratio is a ratio and not a trend (item 1464), and the bench prints that instruction itself.
+
+**The signal is the per-vertex spread, not the ratios.** `labelPropagation` costs 3342 ns/V where
+`connectedComponents` costs 231 on the identical fixture — **14x** — with `neighborAggregate` (2500),
+`shortestPath` (1536) and `peerPressure` (1401) behind it.
+
+### ⚠️ The defect found on the way: a discarded `Graph` is retained in full
+
+The bench's first version built one fixture per algorithm per size and died at **4,087 MB** with
+"Ineffective mark-compacts near heap limit". The fixture measures ~2.8 KB/vertex — 450 MB at the size
+that failed — so the heap was not what was live, it was what should have been dead. Adding a progress
+line (so a row names itself instead of dying anonymously) showed the heap climbing monotonically
+**124 → 4018 MB across the whole sweep, never falling.**
+
+A heap snapshot BFS from the GC roots gave the retaining path exactly, rather than by guessing:
+
+```text
+(GC roots) -> (Micro tasks) -> system / CallableTask
+  -> closure 'drainMutations' -> system / Context -> Context
+  -> [object] Graph -> property 'verticesById' -> Map -> Vertex
+```
+
+`Graph` defers reactive bookkeeping to one microtask per burst of writes, and that queued closure
+captures the graph. **The deferral is correct; the consequence is that `global.gc()` does not unwind
+the stack**, so in a synchronous run the pending drain pins each graph forever. Confirmed by toggling
+exactly one thing — `graph-retention-probe.mjs`, per-round growth at N=20,000:
+
+| arm             | growth/round | reading                                   |
+| --------------- | ------------ | ----------------------------------------- |
+| `empty`         | **0.00 MB**  | the control — never mutated, never pinned |
+| `verticesProps` | 11.45 MB     | ~570 B/vertex, i.e. the whole vertex      |
+| `full`          | 48.35 MB     |                                           |
+| `full YIELD=1`  | **0.00 MB**  | one `await setTimeout(0)` per round       |
+
+**It is BOUNDED retention, not an unbounded leak, and the distinction is the finding.** Every async
+embedding releases each graph on the next tick, so this is not a user-facing leak in normal use. The
+exposure is synchronous batch work — a test suite, a bench sweep, a CLI that builds, computes and
+discards inside one turn. `empty` at exactly 0.00 is what makes the rest trustworthy: retention
+tracks **mutation**, not construction.
+
+Not fixed in this item. The shape of a fix is to stop the queued drain from strongly capturing the
+graph (a `WeakRef`, with the drain becoming a no-op when the referent is gone — sound, because an
+unreachable graph's counters are unobservable by construction), and that is a correctness change to
+the reactive path which needs its own tests, not a tick's work bolted onto a bench.
+
+⚠️ **Two instrument traps recorded, both load-bearing.** The bench builds ONE fixture per (div, size)
+shared by every algorithm at that scale — 4 fixtures, not 24 — and that is a requirement, not a
+tidy-up, because of the retention above. And the body **cannot** become async to drain the queue:
+`profileWindow` does `result = body()` **without awaiting**, so an async body stops the profiler
+immediately and every `PROF_OUT` capture comes back empty — a silent instrument failure of exactly
+the kind this corpus keeps recording.
+
+### `labelPropagation` NOMINATED, priced by profile share, not built
+
+Profiled at V=80,000 (`PROF_OUT`, 1,645 samples). Fixture frames are ~16.5% of the capture and are
+subtracted by eye — item 1457's lesson applies to an ad-hoc read profile too, and the ranking among
+query frames is unaffected:
+
+```text
+30.94%  computeGen            label-propagation's own loop
+12.04%  incidentEdges         the per-vertex GENERATOR
+ 9.60%  collectNeighbours     its only consumer
+ 8.94%  drainSync
+ 6.93%  (garbage collector)
+```
+
+**`incidentEdges` + `collectNeighbours` = 21.6%, and all of it is CSR BUILD, not iteration.** The
+build allocates **one intermediate `number[]` per vertex**, pushes each into a `lists` array, then
+copies every list into an `Int32Array` — so `n` allocations plus a full copy pass, which is also
+where the 6.93% GC comes from. `incidentEdges` is a generator delegating to a `Set` iterator, and on
+this fixture (`MULTILABEL=0`, one edge type) it takes the `byLabel.size === 1` arm, so that 12.04% is
+**pure generator overhead with no dedupe in it.**
+
+The cure, for the next item rather than this one: a two-pass **count-then-fill** build. `countIncidentEdges`
+already exists beside `incidentEdges`, so pass one fills `off` and pass two writes straight into the
+`Int32Array` — no per-vertex arrays, no copy pass, no generator. Order is preserved (`to` neighbours
+then `from`, per vertex) which byte-identity with native requires.
+
+And it needs one gate, which already exists: counting twice is only cheap when no dedupe is needed,
+and dedupe is needed **exactly** when an edge carries more than one label — which is what
+`multiTypeEdgeCount` counts. Verified present on the core `Graph` and maintained at all four
+transitions (item 1460 built it for the Gremlin union fusion). So: two-pass build when
+`multiTypeEdgeCount === 0`, today's path otherwise.
+
+**Priced at 21.6% of `labelPropagation` plus its share of a 6.93% GC term, cure named, gate verified
+to exist. Not built** — written down next to the price so it is not re-derived, which is the pattern
+item 1455 documented and [[no-dense-vertex-ordinal]] paid for seven times.
+
+### Gates
+
+`bun run check` 0 (read unpiped). Two new instruments; no engine code changed.

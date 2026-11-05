@@ -623,3 +623,76 @@ numbers near the floor or in-sweep inflation (CLAUDE.md's item 737). So: **read 
 run at the documented N, and follow the probe's own "re-run the group ALONE, three times" instruction
 before treating a flag as a finding.** It prints that line because its own sweep cannot be trusted at
 these magnitudes.
+
+## `algo-scaling-bench.mjs` — the TWELVE ALGORITHMS, which had no bench row at all
+
+`packages/core/src/algorithms/` is ~2,200 lines of procedure reachable from **both** surfaces
+(Gremlin's OLAP steps, GQL's `CALL`), dispatched through `runAlgorithmSync`, and nothing in this
+corpus measured any of it. This bench measures each at two sizes a 4x step apart, so the **ratio** is
+the reading: 4.0x is linear in V, and the two O(V·E) procedures carry `exp: 16`.
+
+Why this ground: item 1466 declined a 3.3x win because any edit to `hop-values.ts` /
+`hop-projection.ts` moves unrelated rows up to ~16% ([[executor-edits-perturb]]). The algorithms are
+not those files and are not on any query's row path, so a change here cannot pay that toll.
+
+⚠️ **Each row has its own size scale (`div`), and it is a fixture requirement.** `betweenness` and
+`closeness` are Brandes/BFS from every vertex, so at `div: 1` they would not finish. Both of a row's
+points are divided equally so its ratio stays comparable; the **absolute ms are not comparable across
+rows with different `div`**, and the output prints each row's actual V so that cannot be misread.
+
+⚠️ **One fixture per (div, size), shared by every algorithm at that scale — required, not tidiness.**
+See `graph-retention-probe.mjs` below: a synchronous body cannot release a mutated graph, so the
+first version (24 fixtures) died at 4,087 MB. The body **cannot** become async either, because
+`profileWindow` does `result = body()` without awaiting — an async body stops the profiler
+immediately and every `PROF_OUT` capture comes back empty.
+
+First readings (NODES=40000, FANOUT=2, REPS=5): **nothing is algorithmically wrong.** Ratios run
+4.08-7.48x against an expected 4x — the excess is the per-row cache term item 1452 measured at
+1.2-3.1x over a 10x step, not an exponent — and `betweenness`/`closeness` land on 16.67x/16.52x
+against their expected 16x. The signal is the **per-vertex spread**:
+
+| ns/V at V=160,000 | row                            |
+| ----------------- | ------------------------------ |
+| 3342              | `labelPropagation`             |
+| 2500              | `neighborAggregate`            |
+| 1536              | `shortestPath`                 |
+| 1401              | `peerPressure`                 |
+| 231-601           | the other six whole-graph rows |
+
+`labelPropagation` is **14x** `connectedComponents` per vertex on the identical fixture.
+
+The bench prints its own `ABOVE` flag when a ratio exceeds `exp × 1.6`, and the flag tells you to
+re-run at `SIZES=4` first, because item 1464 is explicit that a two-point ratio is a ratio and not a
+trend. `stronglyConnectedComponents` (7.25x) and `onCycle` (7.48x) are flagged and **not yet
+confirmed at four points.**
+
+## `graph-retention-probe.mjs` — a discarded `Graph` is retained until the microtask queue drains
+
+Found because the algorithm bench OOMed. The retaining path, from a heap snapshot BFS rather than by
+guessing:
+
+```text
+(GC roots) -> (Micro tasks) -> system / CallableTask
+  -> closure 'drainMutations' -> system / Context -> Context
+  -> [object] Graph -> property 'verticesById' -> Map -> Vertex
+```
+
+`Graph` defers reactive bookkeeping to one microtask per burst of writes, and that queued closure
+captures the graph. The deferral is fine; the consequence is that **`global.gc()` does not unwind the
+stack**, so in a synchronous run the pending drain pins every graph.
+
+⚠️ **Bounded retention, not an unbounded leak** — and that distinction is the finding. `YIELD=1` (one
+`await setTimeout(0)` per round) flattens it completely, so every async embedding releases on the
+next tick. The exposure is synchronous batch work: a test suite, a bench sweep, a CLI that builds,
+computes and discards inside one turn.
+
+| arm             | per-round growth, N=20,000 |
+| --------------- | -------------------------- |
+| `empty`         | **0.00 MB** (the control)  |
+| `verticesProps` | 11.45 MB                   |
+| `full`          | 48.35 MB                   |
+| `full YIELD=1`  | 0.00 MB                    |
+
+`empty` landing at exactly 0.00 is what makes the rest trustworthy: retention tracks **mutation**,
+not construction. Needs `--expose-gc`; the probe refuses to run without it rather than report V8's
+incidental collection as an answer.
