@@ -547,6 +547,10 @@ export const KIND_BITS: Readonly<Record<string, number>> = {
   // no `path` in the plan its outer loop walks every step and does nothing. It was 7.8% of a 123 ns
   // reused-plan call, with ZERO audit mentions — exactly what an untouched frame looks like.
   path: 4096,
+  // Item 1572. `dropUnreadAs` only ever removes an `as` step, so a plan without one has nothing for
+  // it to do — the same gate reasoning as `hasLabel` above, and for the same measured reason: a pass
+  // that runs on every query shows up in a reused-plan call.
+  as: 8192,
 };
 
 /** Every bit an edge-hop fusion cares about. */

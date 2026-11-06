@@ -1452,12 +1452,14 @@ export const fuseLocal = (plan: Plan): Plan => {
 export const effectivePlan = (plan: Plan, graph: Graph, tracksPath: boolean): Plan =>
   tracksPath
     ? plan
-    : dropVacuousLabels(
-        fuseUnionSameDir(
-          fuseUnionBoth(fuseEdgeHop(flattenFilterWrappers(fuseValuesIsCount(fuseLocal(plan))))),
+    : dropUnreadAs(
+        dropVacuousLabels(
+          fuseUnionSameDir(
+            fuseUnionBoth(fuseEdgeHop(flattenFilterWrappers(fuseValuesIsCount(fuseLocal(plan))))),
+            graph,
+          ),
           graph,
         ),
-        graph,
       );
 
 /**
@@ -1544,6 +1546,61 @@ export const fuseEdgeHop = (plan: Plan): Plan => {
   }
 
   return fused ? rewritten(plan, steps) : plan;
+};
+
+/**
+ * `as(l)` whose label NOTHING downstream can read is removed (item 1572).
+ *
+ * ⚠️ TWO COSTS, AND THE BIGGER ONE IS NOT THE TAG COPY. `as` writes its label by COPYING the whole
+ * tag map per traverser (`projection.ts`: `new Map(t.tags)` then a spread), which is a real
+ * per-element cost — but it is also just another step in front of the hop, and every count/values
+ * rung matches a plan PREFIX from the source. So an unread `as` makes them all DECLINE, exactly the
+ * mechanism {@link dropVacuousLabels} exists for:
+ *
+ *     V().as(x).out(E).count()        24.1 ms  ->  0.0   the shortcut answers it again
+ *     V().out(E).count()               0.0           the spelling that never bound it
+ *     V().as(x).out(E).values(k)      30.1     ->  7.7   3.9x, this one IS the tag copy
+ *
+ * ⚠️ IT REUSES `tagsObservedFrom` RATHER THAN ASKING PER LABEL. The precise question is "does
+ * anything read THIS label", which would mean enumerating every reader's label fields
+ * (`select`, `where` keys, `dedupe` labels, `math` names, `addE` tag endpoints) and getting a wrong
+ * answer means a `select` finding its tag missing. The coarse question — does anything read tags AT
+ * ALL — is already answered by item 1560's allowlist, which is mutation-tested and defaults to
+ * "observed". It covers both measured shapes and cannot be wrong about a label it never inspects.
+ *
+ * ⚠️ TESTED AGAINST THE KEPT SUFFIX, WALKING BACKWARDS. `as` is not tag-blind (it reads `t.tags` to
+ * copy it), so checking each `as` against the ORIGINAL suffix would let a second unread `as` keep
+ * the first one alive — `V().as(x).out(E).as(y).count()` would drop only `y`. Walking from the end
+ * and testing what SURVIVES drops both.
+ */
+/**
+ * EXPORTED so the KIND GATE can be asserted by IDENTITY. Removing the gate is answer-equivalent —
+ * the pass simply runs, finds no `as`, and returns the same plan — so no differential test can see
+ * it, and item 1506 added these gates for a measured reason (`dropVacuousLabels` was 10.7% of a
+ * 175 ns reused-plan call). `dropUnreadAs(plan) === plan` is the observable.
+ */
+export const dropUnreadAs = (plan: Plan): Plan => {
+  if ((plan.kinds & KIND_BITS.as) === 0) {
+    return plan;
+  }
+
+  const { steps } = plan;
+  const rev: Step[] = [];
+  let changed = false;
+
+  for (let i = steps.length - 1; i >= 0; i -= 1) {
+    const step = steps[i];
+
+    // `rev` holds the kept suffix (in reverse); the question is existential, so order is irrelevant.
+    if (step.kind === 'as' && !tagsObservedFrom(rev, 0)) {
+      changed = true;
+      continue;
+    }
+
+    rev.push(step);
+  }
+
+  return changed ? rewritten(plan, rev.reverse()) : plan;
 };
 
 const dropVacuousLabels = (plan: Plan, graph: Graph): Plan => {

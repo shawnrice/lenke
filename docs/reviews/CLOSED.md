@@ -65010,3 +65010,77 @@ it is drain-ordered; that is the transferable finding here, independent of the C
 No change to ship — the instrumentation was temporary and `shortcuts.ts` is byte-identical to HEAD
 (verified by `diff` against both the pre-tick copy and `git show`), with `__wlcBuild` absent from the
 rebuilt bundle. `bun run check` 0 read unpiped. Suites unchanged from item 1570.
+
+### Item 1572 — SHIPPED on the GREMLIN side, the same insight as items 1567-1569: an `as(l)` label nothing downstream can read is removed. **`V().as(x).out(E).count()` 24.1 → 0.0 ms** (the count shortcut answers it again) and **3.7x** on a values shape. ⚠️ The dominant cost is NOT the tag copy — it is that one extra step makes every prefix rung decline
+
+Items 1567-1569 found that an unread binding in GQL disqualifies the var-length fast paths. The
+transferable question is whether Gremlin has the same shape, and it does.
+
+#### Measured first
+
+```text
+   V().as(x).out(E).count()        24.1 ms      V().out(E).count()         0.0 ms
+   V().as(x).out(E).values(k)      30.1         V().out(E).values(k)       7.7
+   V().as(x).out(E).as(y).count()  29.4
+   V().as(x).out(E).select(x).count()  21.7     <- the label IS read
+```
+
+**Two costs, and the smaller one is the obvious one.** `as` writes its label by copying the whole tag
+map per traverser (`projection.ts`: `new Map(t.tags)` plus a spread), which is the 3.9x on the values
+shape. But it is also just another step in front of the hop, and every count/values rung matches a
+plan PREFIX from the source — so an unread `as` makes them all DECLINE, which is why the count shape
+goes from a closed-form 0.0 ms to a full 24.1 ms walk. Exactly the mechanism `dropVacuousLabels`
+exists for, and `dropUnreadAs` sits beside it in `effectivePlan`.
+
+| arm                                         | PRE     | POST    |                                                   |
+| ------------------------------------------- | ------- | ------- | ------------------------------------------------- |
+| `V().as(x).out(E).count()`                  | 24.1 ms | **0.0** | the shortcut is restored                          |
+| `V().as(x).out(E).values(k)`                | 30.1    | **8.1** | **3.7x**, converged with the 8.6 no-`as` spelling |
+| `V().as(x).out(E).as(y).count()`            | 29.4    | **0.0** | both dropped                                      |
+| ⚠️ `…select(x).count()` — the label IS read | 27.1    | 27.1    | unchanged                                         |
+| ⚠️ `V().hasLabel(P).out(E).count()`         | 0.0     | 0.0     | control, untouched                                |
+
+#### Two decisions worth their reasons
+
+- **It reuses `tagsObservedFrom` rather than asking per label.** The precise question is "does
+  anything read THIS label", which means enumerating every reader's label fields (`select`, `where`
+  keys, `dedupe` labels, `math` names, `addE` tag endpoints) — and a wrong answer means a `select`
+  finding its tag missing. The coarse question, "does anything read tags at all", is already answered
+  by item 1560's allowlist, which is mutation-tested and defaults to "observed". It covers both
+  measured shapes and cannot be wrong about a label it never inspects.
+- **It walks BACKWARDS, testing the KEPT suffix.** `as` is not tag-blind (it reads `t.tags` to copy
+  it), so testing each `as` against the ORIGINAL suffix lets a second unread `as` keep the first
+  alive — `as(x) … as(y) … count()` would drop only `y`. The `original-suffix` mutant is exactly
+  that, and it dies on the two-label test.
+
+A `KIND_BITS.as = 8192` gate was added for the reason item 1506 gives: a pass running on every query
+showed up at 10.7% of a 175 ns reused-plan call.
+
+#### ⚠️ Mutation — four mutants, three caught, and the survivor is UNKILLABLE (which I first got wrong)
+
+| mutant                                           | verdict                   |
+| ------------------------------------------------ | ------------------------- |
+| drop every `as`, read or not                     | caught, 36 tests          |
+| invert the observation test                      | caught, 40 tests          |
+| test the ORIGINAL suffix instead of the kept one | caught, 1 test            |
+| remove the `KIND_BITS.as` gate                   | **SURVIVES — unkillable** |
+
+I wrote an identity assertion claiming to catch the gate mutant, and **it does not**. Without the
+gate the loop still runs, finds no `as`, leaves `changed` false and returns `plan` — _the same
+object_. So the gate has no observable effect of any kind: not the answer, not the plan, not even
+object identity. It is a pure cost guard, and no behavioural test can see it. The test's comment now
+says that instead of claiming otherwise; what it actually pins is the identity contract the rewrite
+chain's other identity checks depend on.
+
+That is the sixth survivor chased this session and the second that turned out to be correct rather
+than a gap — but the first where **my own test's stated purpose was wrong**, which is worth more than
+the mutant: an assertion that passes for the wrong reason reads as coverage.
+
+⚠️ **And `bun test` did not catch an untyped closure parameter in the new file — `bun run check` did.**
+`bun test` does not typecheck, so a green suite is not a green gate.
+
+#### Gates
+
+`bun run check` 0 read unpiped (one `TS7006` fixed). Suites: core 431/0, gql 3964/0,
+**gremlin 1525/0** (14 new in `drop-unread-as.test.ts`), native 963/0, serialization 144/0,
+`bun run fuzz` 20/0.
