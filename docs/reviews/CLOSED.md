@@ -65617,3 +65617,70 @@ is exactly the attribution mistake items 1570 and 1577 each made once.
 
 No engine change — one new probe (`gql-seek-floor-probe.mjs`). `bun run check` 0 read unpiped.
 Suites unchanged from item 1578: gremlin 1551/0, native 963/0, and the rest from 1577.
+
+### Item 1580 — ⚠️ **THE RUST ENGINE'S WRITE-INVALIDATION CLIFF DOES NOT EXIST IN TS, measured both ways.** CLAUDE.md records that one `add_edge` demotes EVERY later Rust read for the session (up to 24.07x); in TS, `afterone` is **0.30 us/read against `reads` 0.30** over 2,000 reads. What TS does pay is **~1.2 us on the NEXT closed-form count per write**, re-armed immediately — and **nothing at all** on the walking path
+
+CLAUDE.md is emphatic about this on the Rust side: `rebuild_csr` runs only at LOAD, every adjacency
+write clears `csr_fresh`, **nothing re-arms it**, so one `add_edge` demotes every later read for the
+rest of the session — 1.96x at 1 edge in 2, 2.93x at 1 in 10, **24.07x at 1 in 50**. The TS engine
+had no counterpart measured either way, and the natural assumption is that the figures carry over.
+They do not.
+
+#### The three arms that distinguish the two worlds
+
+```text
+   reads        N reads, no writes             the baseline
+   interleaved  N x (one write, one read)      the serving pattern
+   afterone     ONE write, then N reads        <- the diagnostic
+```
+
+`afterone ≈ reads` means caches re-arm; `afterone ≈ interleaved` means one write poisons everything
+after it. At `REPS=2000`, one arm per process, over 20,000 vertices / 100,000 edges with 1 edge in 10
+carrying the queried type:
+
+```text
+   reads         0.30 us/iter     rounds  2.1  0.8  0.7  0.6  0.6
+   writes        1.80             rounds  4.5  4.1  3.9  3.8  3.5
+   interleaved   3.30             rounds  6.3  5.1  5.0  4.7  6.6
+   afterone      0.30             rounds  1.9  0.8  0.6  0.6  0.6    <- identical to `reads`
+```
+
+**`afterone` is exactly `reads`**, so after one write all 2,000 subsequent reads run at full speed:
+the first read re-arms whatever the write invalidated. That is the Rust bug's absence, and it is the
+result worth having — the alternative reading (that CLAUDE.md's 24x applies here too) would have
+justified a large piece of work on a problem this engine does not have.
+
+What TS does pay: `interleaved` 3.30 against `reads + writes` 2.10, a gap of **~1.2 us per
+iteration**. So a write costs the NEXT closed-form count about 1.2 us of rebuild, once.
+
+#### ⚠️ And the first version of this probe was not measuring a walk at all
+
+`V().out(T).count()` is answered in CLOSED FORM off degree sums, which the rounds gave away
+immediately: **200 reads in 0.1 ms**. That tests the count rung and says nothing about the walking
+path the Rust CSR penalty actually lives on. A second read that materializes a value per edge and
+must walk:
+
+```text
+   readswalk        425.0 us/read
+   afteronewalk     442.5
+   interleavedwalk  447.5
+```
+
+All three within 5%, so **no rebuild penalty is visible on the walking path** — interleaving costs
+only the writes themselves, which are ~1.8 us against a 425 us read. Both paths now covered, which is
+what makes the negative result trustworthy rather than an artefact of picking a shape that shortcuts.
+
+#### The one lever this leaves, priced
+
+In a workload that alternates a write with a closed-form count, the ~1.2 us rebuild is **36% of the
+3.30 us iteration**. Maintaining the degree sums INCREMENTALLY on write — rather than invalidating
+and rebuilding on next read — would recover it. Not attempted: incremental counter maintenance is
+precisely where a wrong answer hides (every `addEdge`/`removeEdge`/label change has to agree), and
+the payoff is confined to write-then-count alternation. Recorded with its number so the next person
+chooses rather than rediscovers.
+
+#### Gates
+
+No engine change — one new probe (`ts-write-invalidation-probe.mjs`), which takes `ARM=<name>` for
+one arm per process after items 1578 and 1579 each produced an impossible in-process reading.
+`bun run check` 0 read unpiped. Suites unchanged from item 1579.
