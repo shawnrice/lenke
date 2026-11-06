@@ -225,6 +225,13 @@ const SHAPES: [string, Plan][] = [
       values('age'),
     ),
   ],
+  // ⚠️ THREE hops YIELDING (item 1617): the generic stacked walk, where the two-hop rows above take
+  // the literal nesting. 394.89 -> 103.79 ms isolated, 3.80x. The `count()` twin above is answered
+  // from degrees without walking, so it says nothing about this row.
+  [
+    'V().out()x3.values(age)',
+    traversal(V(), hasLabel('Person'), out('KNOWS'), out('KNOWS'), out('KNOWS'), values('age')),
+  ],
   [
     'V().out().has().out().values(age)',
     traversal(

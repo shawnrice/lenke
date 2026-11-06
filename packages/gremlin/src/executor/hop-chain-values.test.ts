@@ -22,7 +22,7 @@ import {
   traversal,
   values,
 } from '../index.js';
-import { hopChainValuesShortcut } from './hop-chain-values.js';
+import { hopChainValuesShortcut, walkKindFor } from './hop-chain-values.js';
 
 /**
  * `V().out(T).out(T).values(k)` — the two-hop fused walk (item 1614), 5.26x.
@@ -422,6 +422,145 @@ describe('a FILTER in any of the three positions (item 1615)', () => {
   });
 });
 
+describe('THREE hops and up — the generic stacked walk (item 1617)', () => {
+  /**
+   * Depth 3+ uses a STACK of bucket iterators rather than a nesting level per hop, and the split is
+   * measured: the stack costs a flat ~28% over literal nesting at both depths and is still 4.80x the
+   * pipeline at depth 3, so depth 2 keeps its literal loop and everything above shares one walk.
+   *
+   * ⚠️ ORDER IS THE WHOLE RISK, so every assertion here is against the pipeline ORDERED rather than
+   * a count or a set. The stack advances the deepest live iterator and descends on each non-leaf
+   * edge, which is depth-first PREORDER — the claim is that this matches the nested loops, and the
+   * `V(id, …)` oracle is what actually checks it.
+   */
+  test('depth 3, every tail', () => {
+    for (const tail of [
+      [out('E'), out('E'), out('E'), values('k')],
+      [out('E'), out('E'), out('E'), id()],
+      [out('E'), out('E'), out('E')],
+    ]) {
+      expect(viaEngine(tail)).toEqual(viaPipeline(tail));
+      expect(tookTheWalk(tail)).toBe(true);
+    }
+  });
+
+  test('depth 4 and 5, so nothing is special about three', () => {
+    for (const tail of [
+      [out('E'), out('E'), out('E'), out('E'), id()],
+      [out('E'), out('E'), out('E'), out('E'), out('E'), id()],
+    ]) {
+      expect(viaEngine(tail)).toEqual(viaPipeline(tail));
+      expect(tookTheWalk(tail)).toBe(true);
+    }
+  });
+
+  test('a filter in EACH of the four runs at depth 3, and all four at once', () => {
+    /**
+     * ⚠️ The runs are indexed by DEPTH, so an off-by-one applies the wrong gate set to the wrong
+     * vertex — the failure the depth-2 `gates/*-swapped` mutants cover there and these cover here.
+     * Each position is asserted alone so a cross-up cannot hide behind another position's filter.
+     */
+    for (const tail of [
+      [has('k', gte(2)), out('E'), out('E'), out('E'), values('k')],
+      [out('E'), has('k', gte(2)), out('E'), out('E'), values('k')],
+      [out('E'), out('E'), has('k', gte(2)), out('E'), values('k')],
+      [out('E'), out('E'), out('E'), has('k', gte(2)), values('k')],
+      [
+        hasLabel('V'),
+        out('E'),
+        has('k', gte(1)),
+        out('E'),
+        has('k', gte(2)),
+        out('E'),
+        has('k', gte(3)),
+        values('k'),
+      ],
+    ]) {
+      expect(viaEngine(tail)).toEqual(viaPipeline(tail));
+      expect(tookTheWalk(tail)).toBe(true);
+    }
+  });
+
+  test('MIXED directions and per-hop types at depth 3', () => {
+    for (const tail of [
+      [out('E'), in_('E'), out('E'), id()],
+      [in_('E'), in_('E'), in_('E'), id()],
+      [out('E'), out('F'), out('E'), id()],
+      [out('E'), out('E'), out('G'), id()],
+    ]) {
+      expect(viaEngine(tail)).toEqual(viaPipeline(tail));
+    }
+  });
+
+  test('⚠️ the LAZY half of the stacked walk, under a residual', () => {
+    /**
+     * The stack is written twice like every other walk here — a generator cannot `yield` from inside
+     * a callback, so `drain`'s sink form cannot serve the lazy side. Item 1615 found exactly this
+     * pair covered on the eager side only, and item 1616 found four more across the executor, so the
+     * lazy half gets its own spelling: a trailing `limit` leaves a step in `rest`, which routes
+     * through the generator.
+     */
+    for (const tail of [
+      [out('E'), out('E'), out('E'), values('k'), limit(50)],
+      [out('E'), out('E'), out('E'), values('k'), limit(2)],
+      [has('k', gte(2)), out('E'), out('E'), out('E'), values('k'), limit(50)],
+      [out('E'), out('E'), has('k', gte(2)), out('E'), values('k'), limit(50)],
+    ]) {
+      expect(tookTheWalk(tail)).toBe(false); // a residual, so the generator is what runs
+      expect(viaEngine(tail)).toEqual(viaPipeline(tail));
+    }
+  });
+
+  test('⚠️ the LAZY half with a DIFFERENT type and direction per hop', () => {
+    /**
+     * ⚠️ THE `hops[d + 1]` INDEX MUTANT SURVIVED IN THE LAZY COPY while the eager one died, and the
+     * reason is the fixture: every lazy test above used `out('E')` three times, where reading the
+     * WRONG hop's type and direction is indistinguishable from reading the right one. Item 1615 found
+     * the same class on the filter runs and item 1616 screened the whole executor for it; this is the
+     * third instance, and it is the one a uniform chain cannot catch.
+     *
+     * So: three hops, three different (type, direction) pairs, under a residual.
+     */
+    for (const tail of [
+      [out('E'), out('F'), in_('E'), values('k'), limit(50)],
+      [in_('E'), out('G'), out('E'), values('k'), limit(50)],
+      [out('E'), in_('F'), out('G'), id(), limit(50)],
+    ]) {
+      expect(tookTheWalk(tail)).toBe(false);
+      expect(viaEngine(tail)).toEqual(viaPipeline(tail));
+    }
+
+    // And at least one of them must return rows, or the loop above asserts `[] === []`.
+    expect(
+      viaEngine([out('E'), out('F'), in_('E'), values('k'), limit(50)]).length,
+    ).toBeGreaterThan(0);
+  });
+
+  test('the ROUTE threshold itself, which no differential test can pin', () => {
+    /**
+     * A route choice is answer-equivalent: sending depth 2 through the stacked walk returns the same
+     * rows in the same order, so the whole suite passes. It is a 1.29x REGRESSION and nothing but a
+     * direct assertion catches it (`perf-gate-needs-its-own-test`).
+     */
+    expect(walkKindFor(2)).toBe('literal');
+    expect(walkKindFor(3)).toBe('stacked');
+    expect(walkKindFor(4)).toBe('stacked');
+    expect(walkKindFor(9)).toBe('stacked');
+  });
+
+  test('the two halves agree with each other, element for element', () => {
+    // `drain` against the generator for the same plan — the drift check the pair needs.
+    const got = hopChainValuesShortcut(
+      traversal(V(), out('E'), out('E'), out('E'), values('k')),
+      g,
+    );
+
+    expect(got).not.toBeUndefined();
+    expect(got?.values.drain?.()).toEqual([...(got?.values ?? [])]);
+    expect(got?.values.drain?.()).toEqual(viaPipeline([out('E'), out('E'), out('E'), values('k')]));
+  });
+});
+
 describe('`run` actually takes the walk — the ROUTE, not just the answer', () => {
   test('every admitted tail routes through the fused walk', () => {
     expect(tookTheWalk([out('E'), out('E'), values('k')])).toBe(true);
@@ -431,9 +570,17 @@ describe('`run` actually takes the walk — the ROUTE, not just the answer', () 
   });
 
   test('and a declined tail does NOT — otherwise the check above proves nothing', () => {
-    expect(tookTheWalk([out('E'), out('E'), out('E'), values('k')])).toBe(false);
+    // ⚠️ The three-hop row moved to the POSITIVE list at item 1617; `both` and a multi-key
+    // `values` are the declines that remain, and the list must keep at least one or the positive
+    // assertions above prove nothing.
     expect(tookTheWalk([out('E'), both('E'), values('k')])).toBe(false);
     expect(tookTheWalk([out('E'), out('E'), values('k', 'n')])).toBe(false);
+    expect(tookTheWalk([out(), out('E'), values('k')])).toBe(false);
+  });
+
+  test('THREE and FOUR hops take the generic stacked walk (item 1617)', () => {
+    expect(tookTheWalk([out('E'), out('E'), out('E'), values('k')])).toBe(true);
+    expect(tookTheWalk([out('E'), out('E'), out('E'), out('E'), values('k')])).toBe(true);
   });
 });
 
@@ -446,9 +593,16 @@ describe('the rung declines what it must', () => {
     declines([out('E'), values('k')]);
   });
 
-  test('THREE hops — priced and left open, so it must still decline', () => {
-    declines([out('E'), out('E'), out('E'), values('k')]);
-    // And the answer is still right down the pipeline: the `E` three-hop far ends.
+  test('THREE hops are ANSWERED since item 1617, by the generic stacked walk', () => {
+    /**
+     * ⚠️ THIS TEST ASSERTED THE OPPOSITE until item 1617, which is its whole value: item 1614 left
+     * three hops open with a price (6.45x against a hand floor) and this pinned the decline so the
+     * two could not drift. Taking the target changes the ASSERTION, not the reasoning — and the
+     * rung's answer is still checked against the pipeline ORDERED below.
+     */
+    expect(
+      hopChainValuesShortcut(traversal(V(), out('E'), out('E'), out('E'), values('k')), g),
+    ).not.toBeUndefined();
     expect(viaEngine([out('E'), out('E'), out('E'), id()])).toEqual(
       viaPipeline([out('E'), out('E'), out('E'), id()]),
     );

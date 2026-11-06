@@ -69240,7 +69240,7 @@ serialization 144 — 0 fail. `bun run fuzz` 20/0 under the 16G cap.
 
 ### Item 1614 — **2.99x and 3.12x on a TWO-HOP row-returning Gremlin walk** (`V().out(T).out(T).values(k)` 1151.7 to 385.2 ms; `.id()` 1131.7 to 362.2, over 1,000,000 edges / 5,000,000 rows), closing a hole that survived because **every multi-hop shape in both the bench and the profile corpus ends in `count()`** — which `hopChainCount` answers from degrees without walking at all, so the two-hop WALK had only ever been measured in the arm where it does not run. Found PROFILE-FIRST, by reading which frames the one-hop and two-hop shapes do not share
 
-OPEN: three hops (priced below at 6.45x, deliberately a second measurement). ~~a `has` AFTER the second hop, and a `has` BETWEEN the hops with a yielding tail — the only two shapes the cliff finder still reads as `pipeline`~~ — **BOTH TAKEN at item 1615** (3.91x and 2.68x, plus 2.62x on the lead position); the cliff finder now reads CLOSED on all fifteen shapes.
+OPEN: ~~three hops (priced below at 6.45x, deliberately a second measurement)~~ — **TAKEN at item 1617** (3.60x, and the depth cap is gone rather than raised). ~~a `has` AFTER the second hop, and a `has` BETWEEN the hops with a yielding tail — the only two shapes the cliff finder still reads as `pipeline`~~ — **BOTH TAKEN at item 1615** (3.91x and 2.68x, plus 2.62x on the lead position); the cliff finder now reads CLOSED on all fifteen shapes.
 
 #### The nomination came from the frames, not from a list
 
@@ -69325,7 +69325,7 @@ serialization 144 — 0 fail. `bun run fuzz` 20/0 and `spelling:gremlin` 0 disag
 
 ### Item 1615 — **3.91x, 2.68x and 2.62x** on a two-hop yielding walk with a filter before, between or after the hops. These were the only two shapes `gremlin-cliff-finder.ts` still read as `pipeline`, and the finder now reads **CLOSED on all fifteen**. ⚠️ And the mutation pass found a REAL hole of a kind this executor is structurally prone to: the lazy and eager loops are written twice, and every test reached only the eager one
 
-OPEN: three hops (still 6.45x against a hand floor, priced at item 1614 and unchanged by this).
+OPEN: ~~three hops (still 6.45x against a hand floor, priced at item 1614 and unchanged by this)~~ — **TAKEN at item 1617**, 3.60x, by one generic stacked walk for every depth above two.
 
 #### The nomination
 
@@ -69437,3 +69437,72 @@ Every literal was derived before the files were written, and all 25 passed first
 #### Gates
 
 `bun run check` 0 read unpiped. Suites gremlin 1756, gql 4160, core 435, native 1066, serialization 144 — 0 fail (25 new). `bun run fuzz` 20/0 under the 16G cap. The screen reads **13/13 gremlin, 11/11 gql**.
+
+### Item 1617 — **3.60x on a THREE-hop yielding walk** (`V().out()x3.values(age)` 3772.5 to 1047.6 ms on the 1,000,000-edge bench), **from 3.3x behind native to PARITY (ts/nat 1.0)** — and the depth cap is gone rather than raised: one generic STACKED walk serves every depth above two, while depth two keeps its literal nesting because replacing it measured a **1.29x regression**. The split is the whole item and it was priced before either was built
+
+OPEN: nothing in this family. Every shape in `gremlin-cliff-finder.ts` reads CLOSED, and depth is no longer a cap.
+
+#### Two ways to take it, and only a measurement could choose
+
+Item 1614 left three hops open with a price (6.45x against a hand floor). The choices were another nesting level — a fourth and fifth copy of a loop in one file, the duplication item 1527 refused for `hop-values.ts`' four walks — or ONE generic walk over a stack of iterators. The generic shape had a prior AGAINST it: `pairTypes`' note says "a loop over N hoisted locals is the array again", measured at item 1441.
+
+**That prior does not apply, and nearly stopped this.** Item 1441's array was allocated PER VERTEX, over the whole graph; this one is allocated once per plan and reused across every source vertex. So it had to be measured, by hand and outside the engine, in `hop-chain-depth-floor.ts`:
+
+```text
+   depth 2  LITERAL nesting      13.06 ms    319972 rows    40.8 ns/row
+   depth 2  ITERATOR STACK       16.87                      52.7     1.29x the literal
+   depth 2  the engine           15.86                      49.6
+   depth 3  LITERAL nesting      64.36      1279840         50.3
+   depth 3  ITERATOR STACK       82.29                      64.3     1.28x the literal
+   depth 3  the engine          394.89                     308.5     <- the pipeline
+```
+
+The stack costs a flat **~28%** over literal nesting at both depths and is still **4.80x** the pipeline at depth 3. So neither answer was right on its own: replacing depth 2 with the stack is a 1.29x regression on the commonest shape in the family, and a specialization per depth is a copy per depth. **Depth 2 keeps its loop; 3 and up share one.**
+
+#### The A/B, same instrument, PRE by ablating the route
+
+```text
+   row                                   PRE      POST    verdict
+   V().out()x3.values(age)            3772.5    1047.6    3.60x   (ts/nat 3.3 -> 1.0)
+   V().out().out().values(age)         368.5     387.1    flat (control)
+   V().out().out().id()                347.1     356.9    flat (control)
+   V().out().out().has().values(age)   385.6     400.7    flat (control)
+   V().out().has().out().values(age)   374.0     380.5    flat (control)
+   V().out().out().out().count()       221.1     221.1    flat (control)
+   V().out()x4.count()                 220.9     212.5    flat (control)
+```
+
+Isolated at 20,000x4: **394.89 → 103.79 ms, 3.80x**, which is 1.36x the stack's own hand floor — the same residual the depth-2 walk pays (`toArray`'s array growth, the `pick` closure, the gate checks).
+
+The depth-3 row is NEW. `V().out().out().out().count()` has existed for ages and says nothing about this: `hopChainCount` answers it from degrees without walking at all (item 590), which is the same reason items 1614 and 1615 found their holes.
+
+#### ⚠️ A route choice is answer-equivalent, and the mutant proved it again
+
+Sending depth 2 through the stacked walk returns the same rows in the same order, so the entire suite passes while the commonest shape gets 1.29x slower. `perf-gate-needs-its-own-test`'s fix applied: the threshold is extracted as `walkKindFor(hops)` and unit-tested directly. `hops > 1` and `hops > 3` now both die; neither was caught by anything before.
+
+**What the extraction does NOT buy is a guard at the call site** — a mutant that inlines `at.length > 2` back into the caller survives, and must, being the same predicate written out. That is recorded where it sits, because "redundant" and "untested" have opposite fixes (item 475).
+
+#### ⚠️ Two more instances of the coverage class items 1615/1616 opened
+
+- **The inverted seek flag.** I wrote `collectVertexFilters(…, h !== 0)` where the lead run must refuse a seekable `has` and every interior run must admit one. **Item 1615's index test caught it on the first run** — the test that existed only because its mutant had survived a pass. That is the clearest return this session's coverage work has paid.
+- **`hops[d + 1]` read as `hops[d]` SURVIVED in the LAZY copy** while the eager one died, and the fixture is why: every lazy test used `out('E')` three times, where reading the wrong hop's type and direction is indistinguishable from reading the right one. Fixed with three hops of three different (type, direction) pairs under a residual, plus an assertion that at least one of them returns rows — otherwise the loop compares `[] === []`.
+
+So the screen from item 1616 earned itself immediately: it now finds **14** emission sites in Gremlin (the stacked walk's lazy loop is the new one) and catches all 14.
+
+#### The pair is still written twice, and it is not collapsible
+
+I tried to collapse it with a `sink` closure and could not: **a generator cannot `yield` from inside a callback**, so the lazy side has to be its own loop whatever the eager side looks like. The alternative — drop `drain` and let `toArray` spread the generator — trades a real cost for a cosmetic one (item 1411 measured the generator protocol at 1.9-2.2x, item 1412 measured `drain` at 53.8% of `V().out(E)`). The pair stays; what makes it safe is that item 1616's screen mutates both halves.
+
+#### Order
+
+Depth-first PREORDER by construction: the stack advances the deepest live iterator and descends on each non-leaf edge, which is what the nested loops produce. That claim is checked rather than asserted — every depth-3+ test compares against the pipeline ORDERED via the `V(id, …)` oracle, including mixed directions and per-hop types, and `drain` is compared against the generator element for element.
+
+#### Mutation 27 of 29
+
+The parse's run boundaries (both ends), the seek flag, the one-hop refusal, the route threshold in both directions; and in EACH of the stack's two copies: the leaf test, the pop, the gate index, the gates ignored, the lead gate ignored, the far endpoint, the next-hop index, the next bucket inverted, the first bucket inverted, `drops`, and `drain` drifting in order from the generator.
+
+Two survivors, both provably equivalent and documented: inlining the route predicate, and the iterator array's initial `length` (a JS array grows on assignment past its end, so the walk is right at any initial length; it is written as `depth` so the array never grows mid-walk).
+
+#### Gates
+
+`bun run check` 0 read unpiped. Suites gremlin 1765 (36 in this file), gql 4160, core 435, native 1066, serialization 144 — 0 fail. `bun run fuzz` 20/0, `spelling:gremlin` 0 answer disagreements / 0 groups over 2x, `lazy-emission-screen` 14/14, all under the 16G cap.

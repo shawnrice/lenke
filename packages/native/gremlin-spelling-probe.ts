@@ -361,8 +361,11 @@ const GROUPS: readonly Group[] = [
     ],
   ],
   [
-    // The three-hop twin, BOTH on the pipeline — the control that says the group above measures the
-    // fusion and not some property of writing two hops.
+    // ⚠️ The three-hop twin. It was added at item 1614 as the control that says the group above
+    // measures the fusion rather than some property of writing two hops — on the grounds that BOTH
+    // its arms were on the pipeline. Item 1617 fused depth 3 as well, so both arms are now fused and
+    // it is no longer that control; it stays as the standing guard that the two spellings still
+    // converge at a depth the generic stacked walk serves.
     'three hops, yielding: out x3 vs outE().inV().out().out()',
     [
       traversal(V(), out('T'), out('T'), out('T'), values('age')),
