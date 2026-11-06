@@ -62903,3 +62903,97 @@ serialization 144/0, `bun run fuzz` 20/0 three times. The native conformance sui
 which is the check that matters here: scoping the relaxation to `cmp`/`path` is what keeps
 `and-short-circuit-conformance.test.ts` green. Mutants under `timeout 900 systemd-run --user --scope
 -p MemoryMax=16G -p MemorySwapMax=0`, restored before each, tree verified identical after.
+
+### Item 1546 — a PROFILE-FIRST tick that shipped nothing and is worth having: a **false nomination** caught by checking the caller, the GQL generic-residual path **declined at its floor** with the arithmetic, and `degreeOfTypes`' 25.8% frame **refuted** by a 3-line change that measured null
+
+Items 1544 and 1545 exhausted the conjunct-lift family. This tick went back to profiling for a fresh
+target and found three things, none of them a win.
+
+#### 1. A FALSE NOMINATION — `getVertexById` at 8.6%, in a query that never looks up by id
+
+Profiling `MATCH (n:P) WHERE n.a >= n.a RETURN count(*)` over 200,000 vertices put `getVertexById`
+third by self time. A label scan has no business resolving ids, so that read as a real defect — an
+O(1) lookup per row that should not exist.
+
+The call tree says otherwise:
+
+```text
+   getVertexById:3075 <- addVertex:2820 <- (anon):1 <- (root):-1
+```
+
+It is the FIXTURE BUILD. Together with `#commitNormalized`, `commitElementLabels`,
+`indexVertexLabel` and `validateElementNames` the build is ~15% of that profile, and a self-time
+ranking cannot tell build from query. **Resolve a nomination to its caller before believing it** —
+the same discipline item 1536 needed when a frame's share was an inlining artifact.
+
+#### 2. THE GQL GENERIC RESIDUAL PATH IS AT ITS FLOOR, declined with arithmetic rather than a shrug
+
+With the build frames set aside, the query's own profile has no fat frame: the per-row driver
+(`fastPath`'s closure) 11.8%, `inlineHolds` 9.9%, `variable.variable` 7.3%, `propOf` 4.9%,
+`get properties` 3.6%, `satisfies` 1.7%, `compareTruth` 1.6%.
+
+`variable.variable` is the compiled `prop` closure, and it is exactly what it looks like:
+
+```js
+   case "prop": { const { variable, key } = expr;
+     return (env) => propOf(env.binding.get(variable), key); }
+```
+
+So `n.a >= n.a` does **two `Map.get` per row**, 16M over the measured run. The fix is to let an
+element-local residual read the element directly — what `eqProps`/`cmpProps` already do for lifted
+conjuncts — by threading `ownVar` into `compileExpr`.
+
+**Priced and declined.** 46.3 ms over 16M lookups is **~2.9 ns each**, so the whole lever is ~6 ns of
+a ~41 ns row. `compileExpr` is called everywhere and `EvalEnv` is shared, so threading a parameter
+through is exactly the kind of edit `executor-edits-perturb` prices at **up to 16% on unrelated
+rows**. A 14% win on one shape against a 16% risk on many is not a trade worth making.
+
+Two things that are NOT the cost, checked rather than assumed: the binding `Map` and the env object
+are allocated **once per query**, outside the row loop — so the 9.6% GC is not env churn — and
+`specializeSingleProp` already exists for the shapes it can answer (it refuses here, correctly,
+because `where` is populated).
+
+#### 3. REFUTED: a single-type fast path in `degreeOfTypes`
+
+`hopcount3` — the largest row in `bench:gremlin` — has the fat profile this tick was looking for:
+**86.9% in four functions.** `walkBucket` 26.8%, `degreeOfTypes` 25.8%, `slotChainCount` 17.9%,
+`expandSlot` 16.4%.
+
+`degreeOfTypes` loops `for (const t of types)` and `out(T)` names exactly one type, so skipping the
+loop looked free — and item 1374 set the precedent on this very path (the single-label case skips
+`bucketsOf`'s array). Three lines:
+
+```ts
+if (types.length === 1) {
+  return byType.get(types[0])?.size ?? 0;
+}
+```
+
+**Null.** p25 of 10 reps at 200,000 vertices, arm asserted in the bundle both ways:
+
+|      | readings                    | median |
+| ---- | --------------------------- | ------ |
+| PRE  | 214.59 / 217.90 / 221.13 ms | 217.90 |
+| POST | 212.64 / 222.60             | ~217.6 |
+
+So that 25.8% is the `Map.get` plus `.size` themselves — V8 already handles `for...of` over a
+one-element array — not the loop around them. Reverted, with the numbers recorded next to the code.
+
+**And the remaining lever there is one already disqualified.** All four hot functions are per-vertex
+or per-edge `Map` work; removing it means caching degree per vertex per type, which is index-shaped,
+and `no-dense-vertex-ordinal` records that family as BUILT AND DISQUALIFIED (deletes 6.18x/11.34x
+under churn, items 1369-1372/1397). Seven items have arrived at that door.
+
+#### What this tick is for
+
+Three negative results, each with the number that makes it negative, so none of them costs a future
+tick. The honest summary of the current state: **the two shapes I profiled are at their floor for
+this engine's object model**, and the next real win is more likely to come from a shape that still
+DECLINES a fast path than from making an existing hot loop faster — which is what items 1529-1545
+kept finding.
+
+#### Gates
+
+`bun run check` 0 read unpiped. The only tree change is a comment (verified comment-only by diffing
+against `HEAD` and filtering non-comment lines: zero). gremlin 1494/0, native 963/0; the rest stand
+at item 1545's: core 431/0, gql 3865/0, serialization 144/0, `bun run fuzz` 20/0.

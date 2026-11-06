@@ -1122,6 +1122,21 @@ const degreeOfTypes = (
     return deg;
   }
 
+  // ⚠️ A SINGLE-TYPE FAST PATH HERE IS REFUTED (item 1546). This function is **25.8% of
+  // `hopcount3`'s profile** — the largest row in `bench:gremlin` — and `out(T)` names exactly one
+  // type, so skipping the loop for `types.length === 1` looks free:
+  //
+  //     if (types.length === 1) return byType.get(types[0])?.size ?? 0;
+  //
+  // Measured NULL at 200,000 vertices, p25 of 10 reps, arm asserted in the bundle:
+  //
+  //     PRE   214.59 / 217.90 / 221.13 ms     median 217.90
+  //     POST  212.64 / 222.60               median ~217.6
+  //
+  // So the 25.8% is the `Map.get` plus `.size` themselves, not the loop setup around them — V8
+  // already handles `for...of` over a one-element array. The remaining lever would be a per-vertex
+  // per-type degree CACHE, which is index-shaped, and that family is the one
+  // `no-dense-vertex-ordinal` records as BUILT AND DISQUALIFIED (deletes 6.18x/11.34x under churn).
   for (const t of types) {
     deg += byType.get(t)?.size ?? 0;
   }
