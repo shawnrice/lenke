@@ -69710,7 +69710,7 @@ Two survivors, both documented where they sit: the `WHERE`'s unbound-name loop (
 
 ### Item 1621 — **1.83x on the far-keyed grouped hop count** (7.87 ms to 4.30 median of four runs each), by reading the ONE bucket directly instead of going through `expand`'s generator. ⚠️ And the profile is what made this a target rather than the cliff finder's ratio: three shapes were flagged at ~20x their non-hop neighbour and only ONE of them had a frame worth attacking
 
-OPEN: the same `directedBucket` substitution at the other SEVEN `expand` call sites — five in the generic matcher, one in `hop-projection.ts`, one more in `shortcuts.ts`. Each needs its own measurement, and the matcher ones are the broadest.
+OPEN: ~~the same `directedBucket` substitution at the other SEVEN `expand` call sites — five in the generic matcher, one in `hop-projection.ts`, one more in `shortcuts.ts`~~ — **REFUTED at item 1622** for the matcher: +9% on the admitted family and −3.7% on the declined one, which is not the trade. The remaining sites are priced by that.
 
 #### The ratio was a nomination; the profile was the price
 
@@ -69761,3 +69761,53 @@ The single survivor is `route/never-taken`, which is item 1619's recorded limit:
 #### Gates
 
 `bun run check` 0 read unpiped. Suites gql 4199 (8 new), core 435, native 1076, gremlin 1765, serialization 144 — 0 fail. `bun run fuzz` 20/0 under the 16G cap.
+
+### Item 1622 — ⚠️ **A REFUTATION with its numbers.** `expand` was **28.2%** of the generic matcher's profile — three times the next frame — and removing its generator and its per-edge allocation was worth **+9% on the family it serves and −3.7% on the family it declines**. Not taken. And the first attempt measured at NOTHING for a reason worth more than the lever: it replaced `expand`'s generator with ANOTHER generator
+
+OPEN: nothing here. The remaining six `expand` call sites are priced by this: the same substitution, the same trade. `directedBucket` (item 1621, 1.83x) is the version of the idea that pays, and it pays where the CALLER loops the `Set` directly.
+
+#### The nomination was as strong as a profile gets
+
+```text
+   q-hop3rows.cpuprofile  (MATCH (a:P)-[:E]->(b)-[:E]->(c)-[:E]->(d) RETURN d.k)
+     expand            174.7 ms   28.2%
+     walkSegments       56.7       9.1%
+     (gc)               51.7       8.3%
+     evalLabelExpr      48.1       7.8%
+     withBinding        40.1       6.5%
+```
+
+`expand` is a generator yielding a fresh `{ edge, node }` per edge. For a directed single-type hop there is one adjacency `Set` to walk and nothing to dedupe, so an edge-only iterable returning that `Set` removes the allocation AND the generator. The far endpoint is derivable — `edge.from === v ? edge.to : edge.from` is correct for `out`, for `in` and for a self-loop, because every edge in `v`'s out-adjacency has `v` as its source and every edge in its in-adjacency has `v` as its target — which is what let `walkSegments` keep ONE loop body rather than two. That mattered: a second copy of that body, in the generic matcher, is a wrong-answer risk and not a tidiness question.
+
+#### ⚠️ THE FIRST VERSION MEASURED AT NOTHING, AND THE REASON IS THE LESSON
+
+```text
+   3 single-type segments   PRE 829.727   POST 824.831   1.006x
+```
+
+I wrote the helper as `function*` with `yield* direct.set`. That replaces `expand`'s generator layer with another one: the per-edge allocation goes away and the per-edge **resume** does not — and the resume was the term. Returning the `Set` itself means the caller's `for...of` drives a native Set iterator with no engine frame in between.
+
+**This is item 1104's rule arriving the hard way**: a self-time share is a NOMINATION, not a price. 28.2% of `expand` did not become 28.2% of anything until the generator was actually gone — and then it became 9%.
+
+#### What the real version measured, three runs an arm, one shape per process
+
+```text
+   3 single-type segments   PRE 843.09 824.14 820.77   POST 741.68 773.52 756.15   1.09x
+   3 `both` segments        PRE 711.84 707.74 703.92   POST 737.09 733.66 730.37   0.96x
+```
+
+Both with non-overlapping ranges, so both are real. The declined arm pays because the slow path then runs **two** generator layers — `expand` wrapped in the edge-only adapter — where it ran one.
+
+**9% on the admitted family in exchange for 3.7% on the declined one, in the engine's most correctness-critical function, is not the trade `executor-edits-perturb` and item 1466 say to take** (that item declined a 3.3x win rather than perturb these files). Reverted; the helpers are gone and the argument is recorded at the site so the next reader does not rebuild them.
+
+#### What would make it payable, priced but not built
+
+Removing the second generator from the slow arm — either by duplicating the loop body (the drift risk the single-body design existed to avoid) or by materializing `expand`'s edges into an array per expansion (one allocation per vertex-expansion instead of one generator, roughly 320,000 of them at depth 2 on this fixture). Neither is obviously better than 9%, and both need their own measurement.
+
+#### The other thing the profile says, left open with its share
+
+`evalLabelExpr` 7.8% + `get labels` 3.6% = **11.4% on label testing**, on a fixture whose `:P` is carried by EVERY vertex. Items 1551/1552/1609 built `effectiveLabel`/`vacuousLabel` for exactly that and the generic matcher does not use them. That is a bigger share than the lever this item refuted, it is a DIFFERENT mechanism, and it is the next thing to try on this shape.
+
+#### Gates
+
+`bun run check` 0 read unpiped. Suites gql 4199, core 435, native 1076, gremlin 1765, serialization 144 — 0 fail (no new tests: nothing shipped). `bun run fuzz` 20/0 under the 16G cap. The three-segment profile shape is kept in `runtime-profile-probe.mjs` and the three matcher shapes in `gql-one-shape.ts`, so the next attempt starts from the instrument rather than rebuilding it.

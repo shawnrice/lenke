@@ -121,6 +121,32 @@ export const directedBucket = (
 const EMPTY_EDGES: ReadonlySet<Edge> = new Set();
 
 /**
+ * ⚠️ `incidentEdges` / `farEnd` WERE HERE AND ARE GONE — item 1622 built them, measured them, and
+ * REFUTED the lever. Do not re-attempt without reading `docs/reviews/CLOSED.md` item 1622.
+ *
+ * The idea was sound on paper: `expand` is a generator that allocates one `{ edge, node }` per edge
+ * and it was **28.2%** of the three-segment row projection's profile, three times the next frame. An
+ * edge-only iterable returning the raw adjacency `Set` for a directed single-type hop removes both
+ * the allocation and the generator, and the far endpoint is derivable (`edge.from === v ? edge.to :
+ * edge.from` is correct for `out`, `in` and a self-loop), so `walkSegments` could keep ONE loop body.
+ *
+ * What it measured, three runs an arm, one shape per process:
+ *
+ * ```text
+ *    3 single-type segments   PRE 843.09 824.14 820.77   POST 741.68 773.52 756.15   1.09x
+ *    3 `both` segments        PRE 711.84 707.74 703.92   POST 737.09 733.66 730.37   0.96x
+ * ```
+ *
+ * **+9% on the admitted family and −3.7% on the declined one**, both with non-overlapping ranges.
+ * The declined arm pays for it because the slow path then runs TWO generator layers — `expand`
+ * wrapped in the edge-only adapter — where it used to run one. 9% in exchange for 4% elsewhere, in
+ * the generic matcher, is not the trade `executor-edits-perturb` and item 1466 say to take.
+ *
+ * `directedBucket` below STAYS: item 1621 measured it at 1.83x where the caller loops the `Set`
+ * directly, which is the version of this idea that pays.
+ */
+
+/**
  * Expand a single pattern segment from `v`, yielding every matching
  * `{ edge, node }`. `both` walks outgoing then incoming, matching the natural
  * read order of an undirected pattern.

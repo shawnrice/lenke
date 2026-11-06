@@ -31,6 +31,11 @@ const QUERIES: Record<string, string> = {
   hop2midwhere: 'MATCH (a:P)-[:E]->(b:P)-[:E]->(c:P) WHERE b.k = 5 RETURN c.k AS k',
   hop2startwhere: 'MATCH (a:P)-[:E]->(b:P)-[:E]->(c:P) WHERE a.k = 5 RETURN c.k AS k',
   hop2truewhere: 'MATCH (a:P)-[:E]->(b:P)-[:E]->(c:P) WHERE true RETURN c.k AS k',
+  // Item 1622: THREE segments returning rows, which no rung answers — the generic matcher.
+  hop3rows: 'MATCH (a:P)-[:E]->(b:P)-[:E]->(c:P)-[:E]->(d:P) RETURN d.k AS k',
+  hop3multi: 'MATCH (a:P)-[:E|F]->(b:P)-[:E|F]->(c:P)-[:E|F]->(d:P) RETURN d.k AS k',
+  hop3both: 'MATCH (a:P)-[:E]-(b:P)-[:E]-(c:P) RETURN c.k AS k',
+  varlen: 'MATCH (a:P)-[:E]->{1,2}(b:P) RETURN count(*) AS c',
   // Item 1621: the grouped-hop count, whose rung calls `expand` per edge.
   groupedhop: 'MATCH (a:P)-[:E]->(b:P) RETURN b.k AS k, count(*) AS c',
   groupedhopstart: 'MATCH (a:P)-[:E]->(b:P) RETURN a.k AS k, count(*) AS c',
@@ -38,7 +43,6 @@ const QUERIES: Record<string, string> = {
   groupednode: 'MATCH (n:P) RETURN n.k AS k, count(*) AS c',
   // CONTROLS the change can reach: one hop through the matcher, and a var-length walk.
   hoprows: 'MATCH (a:P)-[:E]->(b:P) RETURN b.k AS k',
-  varlen: 'MATCH (a:P)-[:E]->{1,2}(b:P) RETURN count(*) AS c',
   optional: 'MATCH (a:P) WHERE a.k = 5 OPTIONAL MATCH (a)-[:E]->(b:P) RETURN count(*) AS c',
   bothhop: 'MATCH (a:P)-[:E]-(b:P) RETURN count(*) AS c',
   // CONTROLS it cannot reach — no adjacency at all. If these move, the run is noise.

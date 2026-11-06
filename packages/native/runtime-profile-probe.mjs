@@ -102,6 +102,12 @@ const SHAPES = {
    */
   hop2rows: 'MATCH (a:P)-[:E]->(b:P)-[:E]->(c:P) RETURN c.k AS k',
   hop2rowswhere: 'MATCH (a:P)-[:E]->(b:P)-[:E]->(c:P) WHERE c.k = 5 RETURN c.k AS k',
+  /**
+   * ⚠️ Item 1622: THREE segments returning rows, which no rung answers — items 1619/1620 took two.
+   * This is the generic matcher (`walkSegments` + `expand`) with nothing shadowing it, which is what
+   * makes it the right profile for the five `expand` call sites item 1621 left open.
+   */
+  hop3rows: 'MATCH (a:P)-[:E]->(b:P)-[:E]->(c:P)-[:E]->(d:P) RETURN d.k AS k',
   // A projection with ORDER BY + LIMIT, the serving shape.
   sortedpage: 'MATCH (n:P) WHERE n.k < 50 RETURN n.s AS s ORDER BY s LIMIT 10',
   // A grouped aggregate.
