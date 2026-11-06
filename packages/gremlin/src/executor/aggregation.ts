@@ -415,6 +415,153 @@ const sortByBys = <T>(
   return live.map((k) => k.item);
 };
 
+/**
+ * The capped `order()` as ONE STREAMING PASS: a heap of at most `cap`, never an array of the whole
+ * stream (item 1576).
+ *
+ * Item 1574 capped the sort but still did `[...stream]` first. Item 1575 priced what that costs, and
+ * had to decompose it twice to get an honest number — the spread's time is upstream generator work
+ * PLUS array growth, and streaming only removes the latter:
+ *
+ *     SPREAD  [...stream]       consume 102.4 ms   sort 51.2     (5 reps, 200,000 values)
+ *     DRAIN   for-of, no array  consume  48.8      sort  0.0
+ *     => accumulation ~= 53.6 ms of 153.6 total  ->  ~1.54x, NOT the 4.4x item 1574 implied
+ *
+ * ⚠️ ELEMENT FAULTS ARE DEFERRED TO THE END OF THE LOOP, and that is the whole correctness argument.
+ * `sortByBys` evaluates every key before checking any of them for elements, so an `evalBy` that
+ * throws wins over the element fault — item 890 recorded that phase order as guarded by construction
+ * only, and item 1575 finally tested it (`by(pipe(fail(…)))` under a `choose`, so one item's key is
+ * an ELEMENT and a later item's `by` THROWS). A per-item check here would surface the element error
+ * where the engine surfaces the throw, which is a different exception from the same query and is
+ * compared across engines. Setting a flag and throwing after the loop reproduces the old precedence
+ * exactly.
+ *
+ * ⚠️ A `cap` OF 0 STILL DRAINS AND STILL FAULTS. `order().limit(0)` evaluates every key today, so an
+ * early return would silently stop raising — the `cap > 0` guard sits on the heap ACCESS, not on the
+ * loop.
+ *
+ * ⚠️ NO ONE-`by` SPECIALIZATION HERE, deliberately, unlike `sortByBys`. That fast path (item 879)
+ * pays off over `n log n` comparisons; a bounded heap does ~`n` of them — one against the root per
+ * item — so the multi-key loop is a constant on a term that is already linear.
+ */
+const streamTopByBys = <T>(
+  stream: Iterable<T>,
+  project: (item: T) => unknown,
+  bys: readonly By[],
+  opts: { readonly desc: boolean; readonly cap: number },
+  graph: Graph,
+  ctx: RunContext,
+): T[] => {
+  const { desc, cap } = opts;
+  const dirs = bys.map((by) => by.direction ?? (desc ? 'desc' : 'asc'));
+
+  type Entry = { item: T; keys: unknown[]; at: number };
+
+  // Ties break on ARRIVAL, so this comparator is a total order and the final sort is deterministic.
+  const cmp = (a: Entry, b: Entry): number => {
+    for (let i = 0; i < bys.length; i += 1) {
+      const c = compareTotal(a.keys[i], b.keys[i]) * (dirs[i] === 'desc' ? -1 : 1);
+
+      if (c !== 0) {
+        return c;
+      }
+    }
+
+    return a.at - b.at;
+  };
+  // A max-heap under `cmp`: the root is the WORST entry kept, so it is the one a better candidate
+  // displaces.
+  const heap: Entry[] = [];
+  const swap = (x: number, y: number): void => {
+    const t = heap[x];
+
+    heap[x] = heap[y];
+    heap[y] = t;
+  };
+  const up = (from: number): void => {
+    let i = from;
+
+    while (i > 0) {
+      const parent = (i - 1) >> 1;
+
+      if (cmp(heap[i], heap[parent]) <= 0) {
+        break;
+      }
+
+      swap(i, parent);
+      i = parent;
+    }
+  };
+  const down = (): void => {
+    let i = 0;
+
+    for (;;) {
+      const l = i * 2 + 1;
+      const r = l + 1;
+      let big = i;
+
+      if (l < heap.length && cmp(heap[l], heap[big]) > 0) {
+        big = l;
+      }
+
+      if (r < heap.length && cmp(heap[r], heap[big]) > 0) {
+        big = r;
+      }
+
+      if (big === i) {
+        break;
+      }
+
+      swap(i, big);
+      i = big;
+    }
+  };
+  let sawElement = false;
+  let at = 0;
+
+  for (const item of stream) {
+    // Evaluated FIRST and unconditionally: a throwing `by` must win over the element fault.
+    const keys = bys.map((by) => evalBy(by, project(item), graph, ctx));
+
+    at += 1;
+
+    if (keys.some(isElement)) {
+      sawElement = true;
+      continue;
+    }
+
+    // TinkerPop: a `by()` yielding no value filters the item out of the ordering entirely.
+    if (keys.some((key) => key === NO_VALUE)) {
+      continue;
+    }
+
+    const entry: Entry = { item, keys, at };
+
+    if (heap.length < cap) {
+      heap.push(entry);
+      up(heap.length - 1);
+      continue;
+    }
+
+    if (cap > 0 && cmp(heap[0], entry) > 0) {
+      heap[0] = entry;
+      down();
+    }
+  }
+
+  if (sawElement) {
+    throw new LenkeError(
+      `order() over graph elements is not supported — elements have no natural order; ` +
+        `use order().by('<key>')`,
+      { code: ErrorCode.Syntax },
+    );
+  }
+
+  heap.sort(cmp);
+
+  return heap.map((e) => e.item);
+};
+
 // `order` (global scope) materializes the stream, sorts the traversers by their
 // value, then re-yields. Boundary step.
 // REJECTED, item 892: making this a lazy `Iterable` that hands back an ARRAY ITERATOR instead of
@@ -441,7 +588,9 @@ export const orderStep = function* (
   /** The fused `take(n)` bound, if `fuseOrderTake` set one (item 1574). */
   cap?: number,
 ): Iterable<Traverser<unknown>> {
-  yield* sortByBys([...stream], (t) => t.value, bys, { desc, cap }, graph, ctx);
+  yield* cap === undefined
+    ? sortByBys([...stream], (t) => t.value, bys, { desc }, graph, ctx)
+    : streamTopByBys(stream, (t) => t.value, bys, { desc, cap }, graph, ctx);
 };
 
 // `order(Scope.local)` sorts WITHIN each traverser's value instead of across the

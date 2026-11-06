@@ -65314,7 +65314,7 @@ cannot let the heap filling decide which fault wins.
 
 #### Not built, and why that is now a choice rather than a risk
 
-The streaming change is ~1.54x, the invariant it would disturb is now guarded, and the shape is
+⚠️ **TAKEN at item 1576: 1.43x, close to the 1.54x predicted here.** The streaming change is ~1.54x, the invariant it would disturb is now guarded, and the shape is
 clear: one pass, a heap of at most `cap`, element faults DEFERRED to the end of the loop so a later
 throwing `by` still wins. What is left is the work itself, which wants its own item rather than
 riding on an entry whose main result is a corrected number and a closed test gap.
@@ -65325,3 +65325,72 @@ No engine change — `aggregation.ts` is byte-identical to its pre-tick copy (ve
 instrumentation was temporary and the only addition is the test file. `bun run check` 0 read unpiped.
 Suites: core 431/0, gql 3964/0, **gremlin 1540/0** (4 new in `order-fault-precedence.test.ts`),
 native 963/0, serialization 144/0, `bun run fuzz` 20/0.
+
+### Item 1576 — SHIPPED, **1.43x** further on Gremlin paging (26.6 → 18.6 ms; **2.97x cumulative** from 55.2 pre-1574) and 1.88x on the element spelling: the capped `order()` is now ONE STREAMING PASS. Item 1575's 1.54x prediction held at 1.43x. ⚠️ **And a test I wrote last tick passed for the WRONG REASON — a parse-time check, not the runtime path it claimed to cover**
+
+Items 1573-1575 measured the paging gap, took half of it, corrected the attribution of the rest, and
+tested the invariant that blocked the remainder. This takes the remainder.
+
+#### What shipped
+
+`streamTopByBys`: one pass over the stream, a heap of at most `cap`, no array of the whole stream.
+`orderStep` chooses it whenever a `cap` is set and keeps `sortByBys` otherwise.
+
+| arm                                          | pre-1574 | 1574 | **1576** |                                  |
+| -------------------------------------------- | -------- | ---- | -------- | -------------------------------- |
+| `V().values(k).order().limit(10)`            | 55.2 ms  | 26.6 | **18.6** | 1.43x here, **2.97x cumulative** |
+| `V().values(k).order().limit(100)`           | —        | —    | 14.1     |                                  |
+| `V().order().by(k).limit(10).values(k)`      | 54.8     | 22.6 | **12.0** | 1.88x here, 4.57x cumulative     |
+| `V().values(k).order()` — full sort, control | 66.2     | 67.8 | 72.0     | flat throughout                  |
+| GQL `ORDER BY k LIMIT 10`                    | 5.5      | 6.1  | 5.8      | untouched                        |
+
+Item 1575 predicted ~1.54x from the measured accumulation cost and it came in at 1.43x. The
+cross-surface gap item 1573 opened at **10.0x** is now **3.2x**.
+
+#### The correctness argument, which is the whole of this change
+
+- **Element faults are DEFERRED to the end of the loop.** `sortByBys` evaluates every key before
+  checking any for elements, so a throwing `by` wins over the element fault — item 890 recorded that
+  phase order as guarded by construction only, and item 1575 tested it. A per-item check here would
+  surface the element error where the engine surfaces the throw: a different exception from the same
+  query, compared across engines. `element-per-item` is the mutant and it dies.
+- **A `cap` of 0 still drains and still faults.** The `cap > 0` guard sits on the HEAP ACCESS, not on
+  the loop.
+- **No one-`by` specialization**, deliberately: item 879's fast path pays over `n log n` comparisons,
+  and a bounded heap does ~`n` — one against the root per item.
+
+#### ⚠️ A TEST OF MINE THAT PASSED FOR THE WRONG REASON, found by a surviving mutant
+
+`early-zero-cap` (return `[]` immediately when `cap <= 0`) **survived**, even though item 1575 added
+a cap-0 fault test one tick earlier. The reason: that test was written as `order().limit(0)` over
+elements, and a bare element `order()` is rejected by **`checkStep` at parse time** — it never
+reaches `streamTopByBys` at all. The runtime element check is only reachable when a `by` YIELDS an
+element, so the test was rewritten as `order().by(pipe(out('E'))).limit(0)`, and a second test now
+pins the parse-time rejection separately so the two cannot be confused again.
+
+**Third time this session a test's stated purpose was wrong while passing** (item 1569's
+`with.where`, item 1572's identity assertion, this). The pattern is stable enough to state plainly:
+**when a mutant survives a path you believe is covered, suspect the test before the taxonomy** — and
+the diagnosis each time was to ask which code the test actually reaches, not whether it passes.
+
+The second survivor was an ordinary gap: `keep-no-value` (retain items whose `by` yields NO_VALUE)
+had no test, because nothing exercised a missing key under a cap. TinkerPop filters those out of the
+ordering entirely, and under a cap they would otherwise occupy heap slots and appear in the result.
+
+#### Mutation — six mutants, all six caught (two after the tests were fixed)
+
+| mutant                                | caught by                                  |
+| ------------------------------------- | ------------------------------------------ |
+| throw the element fault PER ITEM      | the precedence test                        |
+| early-return on a zero cap            | **survived; now the corrected cap-0 test** |
+| lose the arrival tiebreak             | the tie-order suite                        |
+| lose the final heap sort              | 4 tests                                    |
+| keep NO_VALUE items                   | **survived; now a new test**               |
+| replace the root on a WORSE candidate | 3 tests                                    |
+
+#### Gates
+
+`bun run check` 0 read unpiped. Suites: core 431/0, gql 3964/0, **gremlin 1544/0** (8 in
+`order-fault-precedence.test.ts`, 11 in `order-take-topk.test.ts`), native 963/0,
+serialization 144/0, `bun run fuzz` 20/0 — the check that matters, since tie order is compared
+against native.

@@ -2,7 +2,19 @@ import { describe, expect, test } from 'bun:test';
 
 import { Graph } from '@lenke/core';
 
-import { V, choose, fail, has, limit, order, out, pipe, toArray, traversal } from './index.js';
+import {
+  V,
+  choose,
+  fail,
+  has,
+  limit,
+  order,
+  out,
+  pipe,
+  toArray,
+  traversal,
+  values,
+} from './index.js';
 
 /**
  * ⚠️ THE TWO-PHASE ORDER OF `sortByBys`, WHICH ITEM 890 RECORDED AS GUARDED BY CONSTRUCTION ONLY.
@@ -55,6 +67,43 @@ describe('an evalBy throw wins over the element fault', () => {
     expect(() => toArray(traversal(V(), order().by(elementOrThrow()), limit(1)), mixed())).toThrow(
       'BY-BOOM',
     );
+  });
+
+  test('⚠️ a cap of ZERO still drains and still faults — via a BY, not a bare order()', () => {
+    // ⚠️ THIS TEST FIRST PASSED FOR THE WRONG REASON. Written as `order().limit(0)` it caught a
+    // PARSE-TIME rejection (`checkStep` refuses a pure-element `order()`), not the runtime drain —
+    // so the `early-zero-cap` mutant survived it. The runtime element check is only reachable when
+    // a `by` YIELDS an element, which is what this uses.
+    //
+    // Item 1576's streaming path must not early-return on `cap <= 0`: `order().limit(0)` evaluates
+    // every key today, so an early return silently stops raising, and returning `[]` for a query
+    // that should fault is invisible to any answer test over a non-faulting graph. The `cap > 0`
+    // guard therefore sits on the HEAP ACCESS, not on the loop.
+    expect(() => toArray(traversal(V(), order().by(pipe(out('E'))), limit(0)), mixed())).toThrow(
+      'order() over graph elements is not supported',
+    );
+  });
+
+  test('a bare order() over elements is rejected BEFORE execution, which is a different check', () => {
+    // Pinned so the two are not confused again: this one never reaches `streamTopByBys`.
+    expect(() => toArray(traversal(V(), order(), limit(0)), mixed())).toThrow(
+      'order() over graph elements is not supported',
+    );
+  });
+
+  test('a NO_VALUE key is filtered out of the ordering under a cap', () => {
+    // TinkerPop: a `by()` that yields no value drops the item from the ordering entirely. Under a
+    // cap that is easy to lose — keeping NO_VALUE items would let them occupy heap slots and
+    // appear in the result. `b` has no `flag`, so `by('flag')` yields NO_VALUE for it.
+    const rows = toArray(traversal(V(), order().by('flag'), limit(5), values('n')), mixed());
+
+    expect(rows).toEqual([0]);
+  });
+
+  test('a cap of zero over ordinary values still returns empty', () => {
+    // The control for the test above: `limit(0)` must stay empty where there is nothing to fault,
+    // so the drain is not an excuse to return rows.
+    expect(toArray(traversal(V(), values('n'), order(), limit(0)), mixed())).toEqual([]);
   });
 
   test('the element error also still raises under a cap', () => {
