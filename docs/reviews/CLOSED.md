@@ -64116,7 +64116,7 @@ the parts that demonstrably matter.
 `match-tag-snapshot.test.ts`), native 963/0, serialization 144/0, `bun run fuzz` 20/0. Item 1559's
 heading corrected in this commit per the stale-number rule.
 
-### Item 1561 — SHIPPED, **4.01x** on `UNION` and ~~1.25x on `EXCEPT`~~ — **EXCEPT is now 1.79x cumulative and INTERSECT 2.60x, both taken at item 1562**, which closes the "obvious next lever" this entry priced (3/3, arm ranges NOT overlapping, three controls flat): a ONE-COLUMN row needs no string key, and `rowKeyOf` built two arrays and a string per row to dedup a single number. ⚠️ Also: the Gremlin half of this tick found a CLOSED target and walked away, and I published a wrong fact about NaN from a `JSON.stringify` artifact
+### Item 1561 — ⚠️ **ITS EQUIVALENCE CLAIM IS RETRACTED: for `UNION` over MIXED-ARITY sides it DID change the answer, 4 rows to 2, fixed at item 1564.** The value-level argument (-0, NaN, the two key spaces) stands; it had no premise about rows all being the same WIDTH. SHIPPED, **4.01x** on `UNION` and ~~1.25x on `EXCEPT`~~ — **EXCEPT is now 1.79x cumulative and INTERSECT 2.60x, both taken at item 1562**, which closes the "obvious next lever" this entry priced (3/3, arm ranges NOT overlapping, three controls flat): a ONE-COLUMN row needs no string key, and `rowKeyOf` built two arrays and a string per row to dedup a single number. ⚠️ Also: the Gremlin half of this tick found a CLOSED target and walked away, and I published a wrong fact about NaN from a `JSON.stringify` artifact
 
 Two profile screens this tick. The Gremlin one nominated closed work; the GQL one found this.
 
@@ -64364,3 +64364,76 @@ test-support harness from `src`, which is not published to `dist`).
 
 Probe only; no engine change. `bun run check` 0 read unpiped. Suites unchanged from item 1562:
 core 431/0, gql 3909/0, gremlin 1511/0, native 963/0, serialization 144/0, `bun run fuzz` 20/0.
+
+### Item 1564 — ⚠️ **A SILENT ANSWER CHANGE I INTRODUCED AT ITEM 1561, FOUND AND FIXED.** That entry claimed the one-column fast path was "a pure speedup rather than a semantic change"; for `UNION` over MIXED-ARITY sides it was not — 4 rows became 2. Plus the perf half: dropping `[...left, ...right]` is **1.27x** on medians-of-7 (bimodal POST, ranges overlap), with GC at 35.4% of the shape
+
+The tick began as a re-profile of the shapes items 1561/1562 sped up. The profile pointed at
+`combineRows` (27.9% self) and garbage collection (35.4%) — and looking at `combineRows` to find the
+allocation surfaced the regression instead.
+
+#### ⚠️ THE REGRESSION, and why 1562's guard did not cover it
+
+`distinctRows` decides the one-column fast path from **`rows[0]` alone**. `union` is its ONE caller
+that hands it rows of MIXED WIDTH, because it passes `[...left, ...right]` and this engine accepts
+ISO-invalid unequal degree (item 1563). So a one-column left put two-column right rows through a key
+built from their FIRST COLUMN ONLY. Measured against an actual pre-1561 build, not reasoned:
+
+```text
+MATCH (n:P) RETURN n.k AS a UNION MATCH (n:P) RETURN n.k AS a, n.s AS b
+   pre-1561    4 rows   [{a:1},{a:2},{a:1,b:"a"},{a:2,b:"b"}]   full string keys all differ
+   post-1561   2 ROWS   [{a:1},{a:2}]                            right side keyed on `a` alone
+   now         4 rows   — pre-1561 restored
+```
+
+Item 1562 guarded `EXCEPT`/`INTERSECT` against exactly this mechanism — its `no-right-guard` mutant
+survived and said so — and I did not carry the lesson to `union`, because union's mixed widths arrive
+**already concatenated** and so look like one uniform array by the time `distinctRows` sees them.
+`distinctUnion` now requires BOTH sides to be one column.
+
+**Three things worth carrying:**
+
+- **Item 1561's equivalence argument was about VALUES and the hole was about WIDTH.** Every line of
+  it — `-0`, NaN, `5` vs `'5'`, the two key spaces — is still correct, and none of it addressed
+  "what if the rows are not all the same shape". A key-space proof needs a premise about the
+  ROW SET, not only about the values in a column.
+- **A guard added for one caller is not added for its siblings.** 1562's mutant found the width hole
+  and I fixed the two call sites the mutant covered. The third had the same hole behind a different
+  surface.
+- **The regression was invisible to 3909 tests** and to the differential fuzzer, because nothing
+  writes an unequal-degree set operation (item 1563 records that coverage gap). It surfaced from
+  reading the code for an unrelated reason.
+
+#### The perf half: the concatenation
+
+`[...left, ...right]` copied 400,000 rows per query at `NODES=200000`, then `distinctRows` allocated
+its output. `distinctUnion` iterates both sides directly.
+
+```text
+unionedbigdistinct, 50 reps, 7 runs each, one shape per process
+   PRE   2318.1 1825.0 1845.8 1814.8 1757.6 1805.4 1753.1     median 1814.8
+   POST  1337.2 1604.7 1430.8 1818.6 1837.0 1332.4 1419.5     median 1430.8   1.27x
+   hoprows (control)  917.4 median against 921.5              flat
+```
+
+⚠️ **Reported as medians-of-7 because the ranges OVERLAP and the POST series is BIMODAL** — four runs
+near 1380 and three near 1750, while PRE sits tight at ~1800. That is what a removed allocation
+sometimes-avoiding-a-GC-cycle looks like, and it is why 25 reps x 3 runs (the instrument the previous
+two items used) reported this as flat-to-worse: at that length the shape's spread reached 40%. The
+series is printed above rather than summarised, per the bimodality rule.
+
+`unionedbig` (`UNION ALL`) is untouched — it still needs the concatenation, since that IS its result —
+and its readings swing 336-607 ms, which is harness noise on a path this change cannot reach.
+
+#### Mutation — three mutants, all caught
+
+| mutant                                                                  | caught   |
+| ----------------------------------------------------------------------- | -------- |
+| trust only the LEFT side's width (**the item 1561 bug, re-introduced**) | 1 test   |
+| drop the dedup on the fast path                                         | 13 tests |
+| drop the right side from the union                                      | 7 tests  |
+
+#### Gates
+
+`bun run check` 0 read unpiped. Suites: core 431/0, **gql 3913/0** (29 in
+`distinct-rows-one-column.test.ts`), gremlin 1511/0, native 963/0, serialization 144/0,
+`bun run fuzz` 20/0. Item 1561's heading corrected in this commit to retract its equivalence claim.

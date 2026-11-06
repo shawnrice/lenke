@@ -1880,6 +1880,61 @@ export const distinctRows = (rows: readonly Row[]): Row[] => {
 };
 
 /**
+ * `UNION` (not `ALL`): DISTINCT across both sides WITHOUT materializing their concatenation
+ * (item 1564).
+ *
+ * ⚠️ IT ALSO FIXES A SILENT ANSWER CHANGE I INTRODUCED AT ITEM 1561, and that is the more important
+ * half. `distinctRows` decides the one-column fast path from `rows[0]` alone, and `union` was its
+ * ONE caller that hands it rows of MIXED WIDTH — `[...left, ...right]`, where ISO-invalid unequal
+ * degree is accepted by this engine (item 1563). A one-column left therefore put two-column right
+ * rows through a key built from their FIRST COLUMN ONLY:
+ *
+ *     MATCH (n:P) RETURN n.k AS a UNION MATCH (n:P) RETURN n.k AS a, n.s AS b
+ *       pre-1561   4 rows   [{a:1},{a:2},{a:1,b:'a'},{a:2,b:'b'}]   full string keys all differ
+ *       post-1561  2 ROWS   [{a:1},{a:2}]                           right side keyed on `a` alone
+ *
+ * Item 1562 guarded `EXCEPT`/`INTERSECT` against exactly this (their mutant survived and said so);
+ * `union` was missed because its mixed widths arrive already concatenated. Requiring BOTH sides to
+ * be one column restores the pre-1561 answer and makes the fast path answer-equivalent everywhere.
+ *
+ * The concatenation removal is the perf half: `[...left, ...right]` copied 400,000 rows per query
+ * at `NODES=200000`, and after items 1561/1562 the profile put `combineRows` at 27.9% self with
+ * garbage collection at 35.4% — the largest single entry in the shape.
+ */
+const distinctUnion = (left: readonly Row[], right: readonly Row[]): Row[] => {
+  const out: Row[] = [];
+
+  if (isOneColumn(left) && isOneColumn(right)) {
+    const keys = newOneColumnKeys();
+
+    for (const part of [left, right]) {
+      for (const r of part) {
+        if (addOneColumnKey(keys, oneColumnValue(r))) {
+          out.push(r);
+        }
+      }
+    }
+
+    return out;
+  }
+
+  const seen = new Set<string>();
+
+  for (const part of [left, right]) {
+    for (const r of part) {
+      const k = rowKeyOf(r);
+
+      if (!seen.has(k)) {
+        seen.add(k);
+        out.push(r);
+      }
+    }
+  }
+
+  return out;
+};
+
+/**
  * `EXCEPT`/`INTERSECT` over ONE-COLUMN sides, or `undefined` to decline (item 1562).
  *
  * One pass over the right side to build the key set, one over the left that both probes and
@@ -1950,7 +2005,7 @@ const inKeysOf = (right: readonly Row[]): ((r: Row) => boolean) => {
 export const combineRows = (op: SetOp, left: readonly Row[], right: readonly Row[]): Row[] => {
   switch (op.op) {
     case 'union':
-      return op.all ? [...left, ...right] : distinctRows([...left, ...right]);
+      return op.all ? [...left, ...right] : distinctUnion(left, right);
     case 'except': {
       // EXCEPT/INTERSECT always dedup — only UNION distinguishes ALL (matches the
       // Rust engine: ir.rs "Except/Intersect always dedup; the ALL variants are

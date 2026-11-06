@@ -131,6 +131,49 @@ describe('one-column UNION keeps the string key space equivalence classes', () =
   });
 });
 
+describe('⚠️ item 1564: MIXED-ARITY UNION — the answer change item 1561 made silently', () => {
+  // `distinctRows` decides the one-column fast path from `rows[0]` alone, and `union` is the ONE
+  // caller that hands it rows of mixed WIDTH (`[...left, ...right]`, legal here because this engine
+  // accepts ISO-invalid unequal degree — item 1563). So item 1561 keyed two-column right rows on
+  // their FIRST COLUMN and dropped rows the string path keeps: 4 rows became 2. Item 1562 guarded
+  // EXCEPT/INTERSECT against exactly this; union was missed because its widths arrive already
+  // concatenated.
+  //
+  // These pin the pre-1561 answer, which is what makes the fast path answer-equivalent.
+  test('a one-column left and a two-column right keep ALL FOUR rows', () => {
+    const rows = query(
+      g(),
+      'MATCH (n:P) RETURN n.k AS a UNION MATCH (n:P) RETURN n.k AS a, n.s AS b',
+    );
+
+    expect(rows.length).toBe(4);
+  });
+
+  test('the reversed widths also keep all four', () => {
+    const rows = query(
+      g(),
+      'MATCH (n:P) RETURN n.k AS a, n.s AS b UNION MATCH (n:P) RETURN n.k AS a',
+    );
+
+    expect(rows.length).toBe(4);
+  });
+
+  test('UNION ALL is unaffected — it never dedups', () => {
+    const rows = query(
+      g(),
+      'MATCH (n:P) RETURN n.k AS a UNION ALL MATCH (n:P) RETURN n.k AS a, n.s AS b',
+    );
+
+    expect(rows.length).toBe(4);
+  });
+
+  test('equal arity still dedups, so the guard did not disable the fast path', () => {
+    const rows = query(g(), 'MATCH (n:P) RETURN n.k AS a UNION MATCH (n:P) RETURN n.k AS a');
+
+    expect(rows.length).toBe(2);
+  });
+});
+
 describe('the general path is untouched', () => {
   test('TWO columns still dedup positionally', () => {
     const rows = query(
