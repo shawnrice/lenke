@@ -1795,6 +1795,62 @@ export const runLinearClauses = (
 export const rowKeyOf = (row: Row): string => Object.values(row).map(valueKey).join('\x01');
 
 export const distinctRows = (rows: readonly Row[]): Row[] => {
+  // ⚠️ A ONE-COLUMN ROW NEEDS NO STRING KEY AT ALL (item 1561). `rowKeyOf` costs two array
+  // allocations (`Object.values`, then `.map`), a string build and a string hash per row, and the
+  // profile puts this function plus `rowKeyOf` at 80.3% of `MATCH (n:P) RETURN n.n AS x UNION …`.
+  // For a single column the value can be its own key.
+  //
+  // EQUIVALENCE, which is the whole question. For PRIMITIVES a `Set`'s SameValueZero agrees with
+  // `valueKey` exactly:
+  //   - `valueKey` maps `-0` and `0` to the same `n0`, and SameValueZero also treats them as one;
+  //   - NaN keys as `#NaN` for both, and SameValueZero has NaN equal to itself;
+  //   - no two DISTINCT primitives share a `valueKey`, and the type prefixes (`n`/`s`/`b`) mean
+  //     `5` and `'5'` stay apart — which raw values do too.
+  //
+  // ⚠️ TWO SETS, NOT ONE, and the second is why. Non-primitives still need `valueKey` (an element
+  // keys by `@id`, not by object identity — two row objects can hold different instances for one
+  // id). Putting those strings in the SAME set as raw values would let a string COLUMN collide with
+  // an element's key: the row `['@v1']` and the row `[<vertex v1>]` are different rows that would
+  // both key as `'@v1'`. Separate sets cannot collide.
+  //
+  // ⚠️ POSITIONAL, so the column name is read PER ROW and not once from `rows[0]`. ISO set
+  // operations compare positionally and the two sides may alias differently (`… AS a` vs
+  // `… AS b`), so one name taken from the first row would mis-read the other side. `for…in` takes
+  // the first own enumerable key with no allocation; a `Row` is a plain object literal, whose
+  // prototype carries no enumerable keys.
+  if (rows.length > 0 && Object.keys(rows[0]).length === 1) {
+    const prims = new Set<unknown>();
+    const refs = new Set<string>();
+    const out: Row[] = [];
+
+    for (const r of rows) {
+      let v: unknown;
+
+      for (const name in r) {
+        v = (r as unknown as Record<string, unknown>)[name];
+        break;
+      }
+
+      if (v !== null && typeof v === 'object') {
+        const k = valueKey(v);
+
+        if (!refs.has(k)) {
+          refs.add(k);
+          out.push(r);
+        }
+
+        continue;
+      }
+
+      if (!prims.has(v)) {
+        prims.add(v);
+        out.push(r);
+      }
+    }
+
+    return out;
+  }
+
   const seen = new Set<string>();
 
   return rows.filter((r) => {

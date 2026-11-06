@@ -56122,7 +56122,7 @@ every row. Optimizing the measurement instead of the workload is how a bench sta
 
 `bun run check` 0 (read unpiped). One instrument gained a `WRITE` arm; no engine code changed.
 
-### Item 1473 — SHIPPED, **4.63x** on `UNION ALL` and **1.37x** on `UNION` (3/3 each, both controls flat): `combineRows` built the right-side key `Set` unconditionally and **both `UNION` branches discarded it**. ⚠️ The first A/B reported a NULL because the fixture's right side was 2,000 rows. ⚠️ And mutation found a pre-existing hole: nothing caught `INTERSECT` failing to dedup
+### Item 1473 — SHIPPED, **4.63x** on `UNION ALL` and **1.37x** on `UNION` (3/3 each, ⚠️ **but `excepted` is NOT a valid control for every change here — item 1561 reaches it, 1.25x, because `except`/`intersect` both end in `distinctRows`**): `combineRows` built the right-side key `Set` unconditionally and **both `UNION` branches discarded it**. ⚠️ The first A/B reported a NULL because the fixture's right side was 2,000 rows. ⚠️ And mutation found a pre-existing hole: nothing caught `INTERSECT` failing to dedup
 
 The unpriced-frame screen's record says "no unpriced frame survives" — true of the surface it had,
 which was **five single-pattern GQL shapes**. A real query joins two patterns, keeps an optional
@@ -64115,3 +64115,116 @@ the parts that demonstrably matter.
 `bun run check` 0 read unpiped. Suites: core 431/0, gql 3884/0, **gremlin 1511/0** (11 new in
 `match-tag-snapshot.test.ts`), native 963/0, serialization 144/0, `bun run fuzz` 20/0. Item 1559's
 heading corrected in this commit per the stale-number rule.
+
+### Item 1561 — SHIPPED, **4.01x** on `UNION` and **1.25x** on `EXCEPT` (3/3, arm ranges NOT overlapping, three controls flat): a ONE-COLUMN row needs no string key, and `rowKeyOf` built two arrays and a string per row to dedup a single number. ⚠️ Also: the Gremlin half of this tick found a CLOSED target and walked away, and I published a wrong fact about NaN from a `JSON.stringify` artifact
+
+Two profile screens this tick. The Gremlin one nominated closed work; the GQL one found this.
+
+#### ⚠️ THE GREMLIN SCREEN NOMINATED A CLOSED TARGET, and reading the mentions is what saved the tick
+
+`hoporder` is the second-largest Gremlin shape (9268 ms) with **31.2% in `sortByBys`** across three
+frames. It is closed, comprehensively:
+
+- item 879 shipped the one-`by` scalar fast path;
+- **item 890 BUILT AND REVERTED** the index-permutation rewrite — ~14 ms of ~127, and its 1.04x was
+  matched exactly by a control the change cannot reach;
+- item 891 decomposed the residual: the sort runs at **1.13x its own floor**, an INERT `order()` step
+  is 42.4%, keying 11.9% — "no change to `sortByBys` can reach that";
+- item 892 corrected the inert slice to the **per-step pipeline**, which "also rules out the same
+  follow-up for every other boundary step".
+
+The function's own doc says `do not re-attempt this rewrite` and the entry says `price those before
+touching sortByBys again`. **The signal was in the screen's output all along: 25 mentions.** The
+other frames in that shape are priced far more heavily still (`values` 1260, `get properties` 403,
+`pick` 97). `selected`'s only unpriced frame is `recallTag` at 2.1% (108 ms); `coalescevalues` is
+priced throughout. So the Gremlin surface at these shapes is priced out, which is itself the result.
+
+#### The GQL screen: 20 shapes, and one shape 15x its own twin
+
+No unpriced frame over 2% anywhere (every ZERO-mention frame is ~1 ms of parse work). But the
+ranking is lopsided: `unionedbigdistinct` **17388 ms** against `unionedbig` **1161 ms** — the same
+query with `UNION` instead of `UNION ALL`, **15x** — and 80.3% of it in two lightly-priced frames:
+
+```text
+   7993.0  46.0%   3 mentions   (anonymous) in distinctRows
+   5966.5  34.3%   4 mentions   rowKeyOf
+```
+
+Those mentions are item 1473, which removed a _wasted_ key pass. What remained was the single
+necessary one.
+
+#### The defect
+
+```ts
+export const rowKeyOf = (row: Row): string => Object.values(row).map(valueKey).join('\x01');
+```
+
+For `MATCH (n:P) RETURN n.n AS x UNION …` — **one column, numbers** — every row paid two array
+allocations, a string build and a string hash to dedup a single number. A one-column row can be
+keyed on the value itself.
+
+**The equivalence argument, which is the whole question.** For primitives a `Set`'s SameValueZero
+agrees with `valueKey` exactly: `-0`/`0` are one group both ways, NaN equals itself both ways, and
+the type prefixes (`n`/`s`/`b`) keep `5` and `'5'` apart just as raw values do.
+
+⚠️ **TWO sets, not one.** Non-primitives still key through `valueKey` (an element keys by `@id`, not
+identity). Putting those strings in the same set as raw values lets a STRING column collide with an
+element: the row `['@v1']` and the row `[<vertex v1>]` are different rows that would both key as
+`'@v1'`. Separate sets cannot collide — and the `one-set` mutant confirms a test catches it.
+
+⚠️ **Positional, so the column is read PER ROW.** ISO set ops compare positionally and the two sides
+may alias differently (`… AS a` vs `… AS b`); a name taken once from `rows[0]` would read `undefined`
+off the other side and collapse it to a single row. `for…in` takes the first own key with no
+allocation.
+
+#### Measured — `NODES=200000`, 25 reps, one shape per process, order alternated
+
+```text
+                          PRE                        POST
+unionedbigdistinct   3707.6 3607.8 3692.0     1128.8  920.3  895.6    3/3, 4.01x
+excepted             684.7  663.6  690.8       549.9  544.0  569.9    3/3, 1.25x
+unioneddistinct      330.2  370.1  377.5       308.5  355.9  318.9    1.16x
+distinct   (control) 201.8  179.1  175.6       186.7  228.8  186.6    flat
+hoprows    (control) 865.5  914.3  903.4       890.6  905.5  903.9    flat
+sortedpage (control) 322.8  280.0  329.6       332.3  293.9  340.6    flat
+```
+
+The target's ranges do not overlap — POST's slowest 1128.8 is below PRE's fastest 3607.8.
+
+⚠️ **`excepted` is NOT a control for this change, and item 1473 used it as one.** `except` and
+`intersect` both end in `distinctRows`, so they are second beneficiaries; they gain less (1.25x)
+because their `rightKeys` pass still calls `rowKeyOf` per row, which this change does not touch.
+That is the obvious next lever, priced at the gap between 1.25x and 4.01x.
+
+⚠️ **`distinct` being flat is CORRECT and is itself a control.** `distinctRows` has exactly three
+callers, all inside `combineRows`, so `RETURN DISTINCT` never reaches it — it routes elsewhere. I
+expected that shape to gain and it did not; checking the call sites rather than re-measuring is what
+explained it.
+
+#### ⚠️ I published a wrong fact mid-tick, from a `JSON.stringify` artifact
+
+While testing the NaN equivalence I checked a stored NaN with
+`console.log(JSON.stringify(query(...)))`, read `null`, and concluded that NaN and Infinity normalize
+to null on the way in — stating it as settled. **`JSON.stringify(NaN)` is the string `null`.** The
+value is a real NaN, and the suite said so immediately (`Received: {"x": NaN}`). So that equivalence
+class is LIVE, not unreachable, and the fast path genuinely has to match it — which it does, by
+SameValueZero. `0.0/0.0` is no way to make one; it raises `division by zero`.
+
+**The rule:** never read a numeric value back through `JSON.stringify` — it renders NaN, Infinity and
+`-0` as `null`, `null` and `0`, which is three of the exact edge cases a key-space argument turns on.
+Same family as the libm constant-folding trap.
+
+#### Mutation — four mutants, all four caught
+
+| mutant                                   | caught                                |
+| ---------------------------------------- | ------------------------------------- |
+| collapse the two key spaces into one set | yes (the `'@v1'` collision test)      |
+| read the column name once from `rows[0]` | yes, 2 tests (the aliased-UNION test) |
+| treat non-primitives as primitives       | yes (element dedup)                   |
+| widen the fast path to any column count  | yes (the two-column tests)            |
+
+#### Gates
+
+`bun run check` 0 read unpiped (one `no-unnecessary-type-assertion` fixed first). Suites: core
+431/0, **gql 3899/0** (15 new in `distinct-rows-one-column.test.ts`), gremlin 1511/0, native 963/0,
+serialization 144/0, `bun run fuzz` 20/0.
