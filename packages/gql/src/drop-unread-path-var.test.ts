@@ -111,8 +111,133 @@ describe('⚠️ the refusals, each of which a mutant removes', () => {
     ).toBe('p');
   });
 
-  test('more than two clauses refuses — deliberately narrow', () => {
-    expect(pathVarOf('MATCH p = (a:P)-[:E]->(b:P) LET w = 1 RETURN count(*) AS c')).toBe('p');
+  test('⚠️ a clause whose reads are BARE STRINGS refuses — a second MATCH joins on `p`', () => {
+    // Item 1569 widened the pass past `[match, return]`, and this is the hazard that decided its
+    // shape: a MATCH pattern's `pathVar` / `node.variable` / `rel.variable` are bare strings, so a
+    // second MATCH naming `p` READS it with no `var` node anywhere for an expression walk to find.
+    expect(
+      pathVarOf('MATCH p = (a:P)-[:E]->(b:P) MATCH p = (c:P)-[:E]->(d:P) RETURN count(*) AS c'),
+    ).toBe('p');
+  });
+
+  test('SET and REMOVE refuse — `SetItem`/`RemoveItem` name the variable as a string', () => {
+    expect(pathVarOf('MATCH p = (a:P)-[:E]->(b:P) SET a.k = 1 RETURN count(*) AS c')).toBe('p');
+    expect(pathVarOf('MATCH p = (a:P)-[:E]->(b:P) REMOVE a.k RETURN count(*) AS c')).toBe('p');
+  });
+
+  test('an inline CALL refuses — its `scope` is a string[] of outer names', () => {
+    expect(
+      pathVarOf(
+        'MATCH p = (a:P)-[:E]->(b:P) CALL (a) { MATCH (a)-[:E]->(z) RETURN 1 AS u } RETURN count(*) AS c',
+      ),
+    ).toBe('p');
+  });
+
+  test('a tail clause REBINDING the name refuses', () => {
+    // `LET p = 1` shadows the pattern's binding, which probably makes dropping it safe — but the
+    // pass refuses rather than reason about shadowing.
+    expect(pathVarOf('MATCH p = (a:P)-[:E]->(b:P) LET p = 1 RETURN count(*) AS c')).toBe('p');
+  });
+
+  test('WITH * refuses, like RETURN *', () => {
+    expect(pathVarOf('MATCH p = (a:P)-[:E]->(b:P) WITH * RETURN count(*) AS c')).toBe('p');
+  });
+
+  test('`p` read in a LET expression refuses', () => {
+    expect(
+      pathVarOf('MATCH p = (a:P)-[:E]->{1,2}(b:P) LET n = size(nodes(p)) RETURN count(*) AS c'),
+    ).toBe('p');
+  });
+});
+
+describe('item 1569: the tail may be any allowlisted clauses, not just RETURN', () => {
+  // The `[match, return]` restriction cost 83x on the measured shape: one `LET` between the two
+  // re-exposed the whole var-length cost (869.6 ms against 10.5).
+  test('a LET in between no longer blocks the drop', () => {
+    expect(
+      pathVarOf('MATCH p = (a:P)-[:E]->{1,2}(b:P) LET w = 1 RETURN count(*) AS c'),
+    ).toBeUndefined();
+  });
+
+  test('FILTER in between', () => {
+    expect(
+      pathVarOf('MATCH p = (a:P)-[:E]->{1,2}(b:P) FILTER a.n > 0 RETURN count(*) AS c'),
+    ).toBeUndefined();
+  });
+
+  test('WITH in between', () => {
+    expect(
+      pathVarOf('MATCH p = (a:P)-[:E]->{1,2}(b:P) WITH a.n AS x RETURN count(*) AS c'),
+    ).toBeUndefined();
+  });
+
+  test('ORDER BY as a statement in between', () => {
+    expect(
+      pathVarOf('MATCH p = (a:P)-[:E]->{1,2}(b:P) ORDER BY a.n LIMIT 10 RETURN count(*) AS c'),
+    ).toBeUndefined();
+  });
+
+  // ⚠️ ONE TEST PER READER POSITION `tailReads` COLLECTS. Each of these kills a mutant that forgets
+  // that one slot, and nothing else in the suite reaches them — a forgotten slot is a WRONG ANSWER
+  // (the binding is dropped while something still reads it), not a lost optimization.
+  test('`p` read in a FILTER refuses', () => {
+    expect(
+      pathVarOf('MATCH p = (a:P)-[:E]->{1,2}(b:P) FILTER size(nodes(p)) > 2 RETURN count(*) AS c'),
+    ).toBe('p');
+  });
+
+  test('`p` PROJECTED through a WITH and then filtered refuses', () => {
+    // ⚠️ THIS TEST WAS FIRST WRITTEN TO COVER `with.where` AND DOES NOT. It reads `pp`, the
+    // projected alias, so what refuses is the projection ITEM (`p AS pp`) — the `WHERE` never sees
+    // the pre-WITH `p` at all. Kept under an honest name because the shape is still worth pinning.
+    expect(
+      pathVarOf(
+        'MATCH p = (a:P)-[:E]->{1,2}(b:P) WITH a.n AS x, p AS pp WHERE size(nodes(pp)) > 2 RETURN count(*) AS c',
+      ),
+    ).toBe('p');
+  });
+
+  test('⚠️ WITH NARROWS SCOPE, which is why a `with.where` mutant survives', () => {
+    // `tailReads` collects `with.where`, and removing that collection survives the whole suite.
+    // The reason is not a coverage gap: a `WITH`'s `WHERE` is evaluated AFTER the projection, so it
+    // can only name projected aliases — referencing a pre-WITH variable RAISES. Any `WHERE` that
+    // does reach `p` therefore required `p` to be projected first, which the item check catches.
+    //
+    // This pins that scope rule, so the collection becomes load-bearing — rather than silently
+    // redundant — if the engine ever stopped narrowing.
+    const graph = g();
+
+    expect(() =>
+      query(
+        graph,
+        'MATCH p = (a:P)-[:E]->(b:P) WITH a.n AS x WHERE size(nodes(p)) > 1 RETURN count(*) AS c',
+      ),
+    ).toThrow('variable `p` is not defined');
+
+    // And the same for an ordinary variable, so the rule is about WITH and not about paths.
+    expect(() =>
+      query(graph, 'MATCH (a:P)-[:E]->(b:P) WITH 1 AS x WHERE a.n > -1 RETURN count(*) AS c'),
+    ).toThrow('variable `a` is not defined');
+  });
+
+  test('`p` read in a WITH projection item refuses', () => {
+    expect(
+      pathVarOf('MATCH p = (a:P)-[:E]->{1,2}(b:P) WITH size(nodes(p)) AS n RETURN count(*) AS c'),
+    ).toBe('p');
+  });
+
+  test('`p` read in a statement ORDER BY refuses', () => {
+    expect(
+      pathVarOf(
+        'MATCH p = (a:P)-[:E]->{1,2}(b:P) ORDER BY size(nodes(p)) LIMIT 5 RETURN count(*) AS c',
+      ),
+    ).toBe('p');
+  });
+
+  test('the answer is unchanged with a LET in the tail', () => {
+    expect(query(g(), 'MATCH p = (a:P)-[:E]->{1,2}(b:P) LET w = 1 RETURN count(*) AS c')).toEqual([
+      { c: 3 },
+    ]);
   });
 });
 

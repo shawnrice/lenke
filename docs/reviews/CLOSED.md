@@ -64710,7 +64710,7 @@ build settles it either way, and costs a minute.
 **gql 3936/0** (13 new in `drop-unread-path-var.test.ts`), gremlin 1511/0, native 963/0 on a clean
 seed, serialization 144/0, `bun run fuzz` 20/0.
 
-### Item 1568 — SHIPPED, **71.9x** on `MATCH (a:P)-[r:E]->{1,2}(b:P) RETURN count(*)` (819.6 → 11.4 ms, converging with the spelling that never bound `r`): an unread EDGE variable on a quantified segment is item 1567's defect again, and `dropUnreadGroupBinds` misses it by one field. ⚠️ Also measured: the 2-clause restriction costs **83x** on the same shape with a `LET` in front — the next target
+### Item 1568 — SHIPPED, **71.9x** on `MATCH (a:P)-[r:E]->{1,2}(b:P) RETURN count(*)` (819.6 → 11.4 ms, converging with the spelling that never bound `r`): an unread EDGE variable on a quantified segment is item 1567's defect again, and `dropUnreadGroupBinds` misses it by one field. ⚠️ ~~Also measured: the 2-clause restriction costs 83x … the next target~~ — **TAKEN at item 1569, 75.6x**
 
 Item 1567 dropped an unread PATH variable for 72.6x. The obvious follow-up is whether other unread
 bindings do the same, so it was measured rather than assumed:
@@ -64798,4 +64798,81 @@ string rather than a `var` node, which `freePredicateVars` would not see. That w
 
 `bun run check` 0 read unpiped. Suites: core 431/0, **gql 3949/0** (13 new in
 `drop-unread-edge-var.test.ts`), gremlin 1511/0, native 963/0, serialization 144/0,
+`bun run fuzz` 20/0.
+
+### Item 1569 — SHIPPED, **75.6x**: items 1567/1568 both required exactly `[match, return]`, and one `LET` between the two re-exposed the whole var-length cost (869.6 → **11.5 ms**, converging with the never-bound spelling). ⚠️ The pass is an ALLOWLIST of clause kinds because a generic `var`-node walk would be WRONG — several clauses name a variable as a BARE STRING
+
+Both unread-binding passes were deliberately narrow. Item 1568 priced the narrowness at 83x; this
+removes it.
+
+#### ⚠️ WHY A GENERIC WALK IS NOT AN OPTION
+
+The obvious generalization is "walk the remaining clauses for a `{kind: 'var', name}` node". That is
+unsound here, and checking it first is what shaped the pass. Three clause families reference a
+variable with no `var` node anywhere:
+
+```text
+   SetItem / RemoveItem        { variable: string, key | label }
+   a MATCH pattern             node.variable / rel.variable / pathVar are bare strings —
+                               so a SECOND `MATCH` naming `p` JOINS on it, which is a READ
+   CCallInline.scope           string[] of imported outer names, likewise a read
+```
+
+So `tailReads` admits only kinds whose variable reads are entirely `Expr`s — `let`, `filter`,
+`page`, `with`, `return` — and **refuses everything else**. Adding a kind means checking that claim
+for it, not that it "looks read-only".
+
+It also refuses a tail that **REBINDS** the name (`LET p = 1`, `WITH 1 AS p`). Shadowing probably
+makes the drop safe, but "probably" is not a basis for a rewrite and the shape is rare.
+
+#### Measured
+
+| arm                                                   | PRE      | POST     |                              |
+| ----------------------------------------------------- | -------- | -------- | ---------------------------- |
+| `MATCH p = …{1,2}… LET w = 1 RETURN count(*)`         | 869.6 ms | **11.5** | **75.6x**                    |
+| `MATCH (a)-[r:E]->{1,2}(b) LET w = 1 RETURN count(*)` | ~820     | **11.2** | ~73x                         |
+| the same with no binding at all                       | 7.0      | 7.0      | the floor it converges to    |
+| ⚠️ `LET n = size(nodes(p))` — `p` IS read             | 1108.0   | 1108.0   | unchanged                    |
+| ⚠️ a second `MATCH` in the tail                       | 1042.1   | 1042.1   | unchanged (bare-string join) |
+
+Both controls sit at ~1 second while the optimized shapes are ~11 ms.
+
+#### ⚠️ Mutation — eight mutants, seven caught, and the survivor taught me my own test was wrong
+
+| mutant                                       | verdict         |
+| -------------------------------------------- | --------------- |
+| admit every clause kind (open the allowlist) | caught, 3 tests |
+| ignore `RETURN *` / `WITH *`                 | caught, 4 tests |
+| ignore a rebinding tail                      | caught, 1 test  |
+| forget `filter.where`                        | caught, 1 test  |
+| forget a `let` item's expression             | caught, 1 test  |
+| forget `page.orderBy`                        | caught, 1 test  |
+| forget the MATCH's own `WHERE`               | caught, 2 tests |
+| forget `with.where`                          | **SURVIVED**    |
+
+**I had written a test specifically for `with.where` and it did not cover it.** It read
+`WITH a.n AS x, p AS pp WHERE size(nodes(pp)) > 2` — `pp`, the projected alias — so what refused was
+the projection ITEM, not the `WHERE`. Renamed to say what it actually tests.
+
+Then the real question: can a `WITH`'s `WHERE` reach a pre-`WITH` variable at all? **Measured, not
+assumed — it cannot:**
+
+```text
+   MATCH p = … WITH a.n AS x WHERE size(nodes(p)) > 1 …   raises: variable `p` is not defined
+   MATCH (a:P)-… WITH 1 AS x WHERE a.n > -1 …             raises: variable `a` is not defined
+```
+
+The engine narrows `WITH` scope, so a `WHERE` only names projected aliases, and any `WHERE` reaching
+`p` required `p` to be projected first — which the item check catches. The collection is therefore
+**redundant, and the survivor is correct**. It is kept (cheap, and defensive if the scope rule ever
+changes), with a test pinning THE SCOPE RULE so it becomes load-bearing rather than silently dead.
+
+That is the fifth survivor chased this session, and the pattern is now consistent: the survivor is
+either a real gap or a fact about the implementation worth writing down, and the only way to tell is
+to construct the case.
+
+#### Gates
+
+`bun run check` 0 read unpiped. Suites: core 431/0, **gql 3964/0** (28 in
+`drop-unread-path-var.test.ts`), gremlin 1511/0, native 963/0, serialization 144/0,
 `bun run fuzz` 20/0.

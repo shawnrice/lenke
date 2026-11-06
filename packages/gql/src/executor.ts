@@ -10902,6 +10902,123 @@ const plainGroupNode = (n: NodePattern | undefined): boolean =>
   (n.label === undefined && (n.properties?.length ?? 0) === 0 && n.where === undefined);
 
 /**
+ * Every expression through which a TAIL of clauses could read a variable, plus every name the tail
+ * REBINDS — or `undefined` to refuse outright (item 1569).
+ *
+ * Items 1567/1568 both required exactly `[match, return]`, and that restriction was expensive: one
+ * `LET` between the two re-exposed the whole cost.
+ *
+ *     MATCH p = (a:P)-[:E]->{1,2}(b:P) LET w = 1 RETURN count(*)   869.6 ms
+ *     MATCH p = (a:P)-[:E]->{1,2}(b:P)           RETURN count(*)    10.5 ms     83x
+ *
+ * ⚠️ AN ALLOWLIST OF CLAUSE KINDS, AND NOT BECAUSE OF LAZINESS — a generic walk for `{kind: 'var'}`
+ * nodes would be WRONG here. Several clauses name a variable as a BARE STRING that no expression
+ * walk can see:
+ *
+ *   - `SetItem` and `RemoveItem` are `{ variable: string, … }`;
+ *   - a MATCH pattern's `node.variable` / `rel.variable` / `pathVar` are bare strings, so a second
+ *     `MATCH` naming the same variable JOINS on it — a read, with no `var` node anywhere;
+ *   - `CCallInline.scope` is a `string[]` of imported outer names, likewise a read.
+ *
+ * So only kinds whose variable reads are entirely `Expr`s are admitted, and everything else refuses.
+ * Adding a kind here means checking that claim for it, not just that it "looks read-only".
+ *
+ * ⚠️ REBINDINGS REFUSE TOO. `LET p = 1` or `WITH 1 AS p` after `MATCH p = …` shadows the pattern's
+ * binding, which probably makes dropping it safe — but "probably" is not a basis for a rewrite, and
+ * the shapes are rare enough that refusing costs nothing.
+ */
+const tailReads = (tail: readonly Clause[]): { exprs: Expr[]; bound: Set<string> } | undefined => {
+  const exprs: Expr[] = [];
+  const bound = new Set<string>();
+
+  for (const c of tail) {
+    switch (c.kind) {
+      case 'return':
+      case 'with': {
+        const { projection } = c;
+
+        // `RETURN *` / `WITH *` binds every variable in scope, so nothing can be dropped.
+        if (projection.star) {
+          return undefined;
+        }
+
+        for (const it of projection.items) {
+          exprs.push(it.expr);
+
+          if (it.alias !== undefined) {
+            bound.add(it.alias);
+          }
+        }
+
+        for (const o of projection.orderBy ?? []) {
+          exprs.push(o.expr);
+        }
+
+        exprs.push(...(projection.groupBy ?? []));
+
+        if (projection.having !== undefined) {
+          exprs.push(projection.having);
+        }
+
+        if (c.kind === 'with' && c.where !== undefined) {
+          exprs.push(c.where);
+        }
+
+        break;
+      }
+      case 'filter':
+        exprs.push(c.where);
+        break;
+      case 'let':
+        for (const it of c.items) {
+          exprs.push(it.expr);
+          bound.add(it.var);
+        }
+
+        break;
+      case 'page':
+        for (const o of c.orderBy ?? []) {
+          exprs.push(o.expr);
+        }
+
+        break;
+      default:
+        return undefined;
+    }
+  }
+
+  return { exprs, bound };
+};
+
+/**
+ * Is `name` provably unread by everything after the MATCH? `false` on any doubt.
+ */
+const nameIsUnread = (name: string, where: Expr | undefined, tail: readonly Clause[]): boolean => {
+  const reads = tailReads(tail);
+
+  if (reads === undefined || reads.bound.has(name)) {
+    return false;
+  }
+
+  const exprs = where === undefined ? reads.exprs : [...reads.exprs, where];
+
+  // A subquery can reference an outer variable and `freePredicateVars` does not see inside one.
+  if (exprs.some(hasSubquery)) {
+    return false;
+  }
+
+  for (const e of exprs) {
+    for (const free of freePredicateVars(e)) {
+      if (free === name) {
+        return false;
+      }
+    }
+  }
+
+  return true;
+};
+
+/**
  * `MATCH p = … RETURN <no mention of p>` drops the PATH VARIABLE, which is worth up to **74x**
  * (item 1567).
  *
@@ -10933,41 +11050,17 @@ const plainGroupNode = (n: NodePattern | undefined): boolean =>
  * way `liftStartProps` is.
  */
 export const dropUnreadPathVar = (clauses: readonly Clause[]): readonly Clause[] => {
-  if (clauses.length !== 2) {
-    return clauses;
-  }
+  const [m, ...tail] = clauses;
 
-  const [m, ret] = clauses;
-
-  if (m?.kind !== 'match' || m.patterns.length !== 1 || ret?.kind !== 'return') {
+  if (m?.kind !== 'match' || m.patterns.length !== 1 || tail.length === 0) {
     return clauses;
   }
 
   const [pattern] = m.patterns;
   const name = pattern?.pathVar;
 
-  if (name === undefined || ret.projection.star) {
+  if (name === undefined || !nameIsUnread(name, m.where, tail)) {
     return clauses;
-  }
-
-  const exprs: Expr[] = [
-    ...ret.projection.items.map((it) => it.expr),
-    ...(ret.projection.orderBy ?? []).map((o) => o.expr),
-    ...(ret.projection.groupBy ?? []),
-    ...(ret.projection.having === undefined ? [] : [ret.projection.having]),
-    ...(m.where === undefined ? [] : [m.where]),
-  ];
-
-  if (exprs.some(hasSubquery)) {
-    return clauses;
-  }
-
-  for (const e of exprs) {
-    for (const free of freePredicateVars(e)) {
-      if (free === name) {
-        return clauses;
-      }
-    }
   }
 
   // ⚠️ REBUILD WITHOUT THE KEY, not `pathVar: undefined`. Every gate tests
@@ -10976,7 +11069,7 @@ export const dropUnreadPathVar = (clauses: readonly Clause[]): readonly Clause[]
   // here would make the two representations differ for anything comparing pattern shapes.
   const { pathVar: _dropped, ...rest } = pattern;
 
-  return [{ ...m, patterns: [rest] }, ret];
+  return [{ ...m, patterns: [rest] }, ...tail];
 };
 
 /**
@@ -11003,40 +11096,16 @@ export const dropUnreadPathVar = (clauses: readonly Clause[]): readonly Clause[]
  */
 /** EXPORTED FOR ITS OWN TEST, like {@link dropUnreadPathVar} — a route choice is answer-equivalent. */
 export const dropUnreadEdgeVar = (clauses: readonly Clause[]): readonly Clause[] => {
-  if (clauses.length !== 2) {
-    return clauses;
-  }
+  const [m, ...tail] = clauses;
 
-  const [m, ret] = clauses;
-
-  if (m?.kind !== 'match' || m.patterns.length !== 1 || ret?.kind !== 'return') {
+  if (m?.kind !== 'match' || m.patterns.length !== 1 || tail.length === 0) {
     return clauses;
   }
 
   const [pattern] = m.patterns;
 
-  if (pattern === undefined || ret.projection.star) {
+  if (pattern === undefined) {
     return clauses;
-  }
-
-  const exprs: Expr[] = [
-    ...ret.projection.items.map((it) => it.expr),
-    ...(ret.projection.orderBy ?? []).map((o) => o.expr),
-    ...(ret.projection.groupBy ?? []),
-    ...(ret.projection.having === undefined ? [] : [ret.projection.having]),
-    ...(m.where === undefined ? [] : [m.where]),
-  ];
-
-  if (exprs.some(hasSubquery)) {
-    return clauses;
-  }
-
-  const mentioned = new Set<string>();
-
-  for (const e of exprs) {
-    for (const free of freePredicateVars(e)) {
-      mentioned.add(free);
-    }
   }
 
   let changed = false;
@@ -11045,7 +11114,7 @@ export const dropUnreadEdgeVar = (clauses: readonly Clause[]): readonly Clause[]
 
     if (
       rel.variable === undefined ||
-      mentioned.has(rel.variable) ||
+      !nameIsUnread(rel.variable, m.where, tail) ||
       rel.quantifier === undefined ||
       hopFrom !== undefined ||
       nested !== undefined ||
@@ -11063,7 +11132,7 @@ export const dropUnreadEdgeVar = (clauses: readonly Clause[]): readonly Clause[]
     return { ...seg, rel: { ...rel, variable: undefined } };
   });
 
-  return changed ? [{ ...m, patterns: [{ ...pattern, segments }] }, ret] : clauses;
+  return changed ? [{ ...m, patterns: [{ ...pattern, segments }] }, ...tail] : clauses;
 };
 
 const dropUnreadGroupBinds = (clauses: readonly Clause[]): readonly Clause[] => {
