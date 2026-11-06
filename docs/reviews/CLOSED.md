@@ -69143,3 +69143,97 @@ what moved is `countShortcut`, which is what that test calls.
 
 `bun run check` 0 read unpiped. Suites gremlin 1707 (13 new, 1 changed), gql 4153, core 435, native
 1056, serialization 144 — 0 fail. `bun run fuzz` 20/0 under the 16G cap.
+
+### Item 1613 — **21.6x on a DISTINCT far count with a filter** (`V().out(E).has(team,eq).dedupe().count()`, 13.31 ms to 616 us), closing a **76.5x** cliff whose no-filter neighbour was already a closed form. Found by a new instrument — `gremlin-cliff-finder.ts`, which asks which NEIGHBOURING pair of shapes disagrees rather than how fast the engine is — and the instrument's first version LIED, because it asked the rung verdict of the RAW plan where `run` asks it of the EFFECTIVE one
+
+OPEN: nothing. Both spellings around the `dedupe` are answered.
+
+#### The cliff
+
+```text
+   V().out(E).dedupe().count()                  180212 ns   CLOSED (`distinctHopCount`)
+   V().out(E).has(team,eq).dedupe().count()   13309727      THE PIPELINE      76.53x
+   ... after this rung                           616026      21.6x, and 3.42x of its neighbour
+```
+
+One `has` between the hop and the dedupe. `countShortcut` gates `distinctHopCount` on
+`mid.length !== 2`, so any filter between them dropped the whole query to the traverser pipeline —
+which then also builds a `Set` of every distinct far vertex, the cost item 1590 deleted from the
+unfiltered shape.
+
+`filteredDistinctHopCount` sits BEFORE that arity gate, so the two rungs do not fight over it.
+
+#### What the rung does, and the one thing it does NOT re-derive
+
+`distinctHopCount`'s insight carries over unchanged: the distinct targets of type-`T` edges are
+exactly the vertices holding at least one `T` IN-edge, so the question is per-VERTEX and needs no
+`Set` and no edge walk. The filter needs the vertex itself, which is the only change.
+
+**⚠️ No multi-type guard, and that is `distinctHopCount`'s own reasoning rather than an omission.**
+This counts VERTICES, and "has a non-empty bucket for any of these labels" is a UNION per vertex, so
+an edge carrying two named types makes its target qualify once either way. The guard the hop-COUNT
+rungs need (`hopChainShape`'s 13 divergences) exists because `degreeOfTypes` SUMS buckets; nothing is
+summed here.
+
+**Both spellings around the `dedupe` are admitted**, and must be: `has` then `dedupe` and `dedupe`
+then `has` describe the same set of far vertices, and a COUNT makes emission order unobservable
+anyway. Two spellings of one question, one rung.
+
+**A LEADING filter is handled rather than declined**, because declining it would leave every
+selective-label graph on the pipeline. The far vertex must then be reachable from a SURVIVING start,
+which is an early-exiting `any` over its in-edges, not a count — item 1602's `anyStart` split in the
+same words.
+
+#### Driving from the VERTICES rather than the reverse index was worth 1.64x
+
+The first version iterated `edgesToByLabel`'s ENTRIES and called `getVertexById(id)` per candidate:
+**1009957 ns** against this version's **616026**. Every vertex carries its own adjacency box, cached
+on first read, so "does `w` hold a `T` in-edge?" is a FIELD read rather than a string-keyed `Map.get`
+into the graph. Items 162/321 priced the three ways over 200,000 vertices — string key **59.7 ns**, a
+`Map` keyed on the vertex object 30.5, a `WeakMap` 43.8, a cached reference **16.1**. Driving from
+`far.source` also reuses the filter run's own candidate set instead of enumerating twice.
+
+#### ⚠️ The instrument lied first, and the lesson generalizes to every probe in this repo
+
+`gremlin-cliff-finder.ts`'s first version called `countShortcut` on the plan as written. `run` calls
+it on `effectivePlan(plan, graph, false)`, which runs `dropVacuousLabels` — so a leading
+`hasLabel('User')` on a fixture where every vertex is a `User` is DELETED before any rung sees the
+plan, and `mid.length` differs by one. Fixing the probe flipped a verdict from `pipeline` to
+`CLOSED`.
+
+That is not a one-off: **most of this repo's fixtures are single-label**, so an instrument asking a
+rung about the raw plan invents cliffs wherever a vacuous label is present. The probe now carries the
+reason at the call site, and `filtered-distinct-hop-count.test.ts` pins it with a shape where the
+verdict actually differs — the UNFILTERED one, because the first attempt at that test used a shape
+THIS rung answers on the raw plan too.
+
+#### Correctness: three independent oracles across eight shapes
+
+The rung, a hand-built `Set` over the edge list, and the equivalent GQL `count(DISTINCT b)` agree on
+all eight: 43, 43, 100, 14, 33, 34, 120, 0. Every unit literal was derived by a SCRIPT over the
+fixture table before the test file was written — items 1602, 1611 and 1612 each wrote literals by eye
+and the engine was right each time. One more was caught here: the no-`dedupe` control reads **3**
+E-edges into a `t1` target against **2** distinct such targets, and 3 was written as 4 by eye. That
+difference IS the rung's reason to exist.
+
+The LEAD cases were chosen from a derived (no lead / `User` lead / `Admin` lead) table, because the
+obvious far filters do not discriminate a dropped lead filter — the same trap item 1612's mutation
+pass found. `hasLabel('Admin')` reads 2/2/1 and separates; `team = 't2'` reads 1/1/1 and does not.
+
+#### Mutation 12 of 13
+
+far filter ignored (9 fail), lead filter ignored (1), `anyStart` always (1), lead wrong endpoint (1),
+lead wrong box (1), far wrong box (6), hop-type test ignored (5), counting edges instead of distinct
+vertices (9), a modulated `dedupe` admitted (1), `both` admitted (1), the unfiltered shape claimed
+(1), and the rung never firing (8). No NOT-APPLIED and no DID-NOT-RUN.
+
+The one survivor — **a second hop admitted** — is REDUNDANT, not untested, and is documented where it
+sits. Dropping the guard leaves the LAST hop in `at`, so the first falls inside `mid.slice(0, at)` and
+reaches `asVertexFilters`, which refuses it: a hop is neither a `hasLabel` nor an `asHasFilter`. Same
+structural reason as item 1612's twin survivor, and item 475's rule applies — "redundant" and
+"untested" have opposite fixes.
+
+#### Gates
+
+`bun run check` 0 read unpiped. Suites gremlin 1721 (14 new), gql 4153, core 435, native 1056,
+serialization 144 — 0 fail. `bun run fuzz` 20/0 under the 16G cap.

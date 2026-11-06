@@ -222,6 +222,14 @@ export const countShortcut = (plan: Plan, graph: Graph): number | undefined => {
     return filtered;
   }
 
+  // A DISTINCT far count with a FILTER (item 1613) — a 76.5x cliff beside `distinctHopCount`'s own
+  // closed form. Before the arity gate below, which that rung needs and this one does not.
+  const filteredDistinct = filteredDistinctHopCount(mid, graph);
+
+  if (filteredDistinct !== undefined) {
+    return filteredDistinct;
+  }
+
   // `distinctHopCount` is the [hop, dedupe] pair and takes exactly two.
   if (mid.length !== 2) {
     return undefined;
@@ -256,6 +264,180 @@ export const countShortcut = (plan: Plan, graph: Graph): number | undefined => {
  * changes no answer. It stays because that equivalence depends on two other
  * functions keeping their invariant.
  */
+/**
+ * `V()[…filters] out(T) …filters dedupe() .count()` — a DISTINCT far-endpoint count with a filter.
+ *
+ * ⚠️ ITEM 1613 — A 76.5x CLIFF, found by `gremlin-cliff-finder.ts` rather than by a profile. Its
+ * neighbour one step away is answered in CLOSED FORM and this was not:
+ *
+ * ```text
+ *    V().out(E).dedupe().count()                  173908 ns   CLOSED (`distinctHopCount`)
+ *    V().out(E).has(team,eq).dedupe().count()   13309727      THE PIPELINE      76.5x
+ * ```
+ *
+ * One `has` between the hop and the dedupe. `distinctHopCount` takes EXACTLY `[hop, dedupe]` —
+ * `countShortcut` gates it on `mid.length !== 2` — so any filter between them drops the whole query
+ * to the traverser pipeline, which then builds a `Set` of every distinct far vertex as well.
+ *
+ * THE TRICK IS `distinctHopCount`'s AND IS NOT RE-DERIVED: the distinct targets of type-`T` edges
+ * are exactly the vertices holding at least one `T` IN-edge, so the reverse index answers it in
+ * O(V) without walking edges and without a `Set`. The only change needed is to iterate its ENTRIES
+ * rather than its values, because a filter needs the vertex and not just its adjacency row.
+ *
+ * ⚠️ NO MULTI-TYPE GUARD, and that is `distinctHopCount`'s own reasoning rather than an omission:
+ * this counts VERTICES, and "has a non-empty bucket for any of these labels" is a UNION per vertex,
+ * so an edge carrying two of the named types makes its target qualify once either way. The guard
+ * the hop-COUNT rungs need exists because `degreeOfTypes` SUMS buckets; nothing is summed here.
+ *
+ * ORDER AROUND THE `dedupe` DOES NOT MATTER, so both spellings are admitted: `has` then `dedupe`
+ * and `dedupe` then `has` describe the same set of far vertices, and this is a COUNT, so emission
+ * order is not observable either. Two spellings of one question, one rung — which is the property
+ * this engine is named after.
+ *
+ * A LEADING filter is handled rather than declined, because declining it would leave every
+ * selective-label graph on the pipeline: the far vertex must then be reachable from a SURVIVING
+ * start, which is an `any` over its in-edges with an early exit, not a count.
+ */
+const filteredDistinctHopCount = (mid: readonly Step[], graph: Graph): number | undefined => {
+  // `[hop, filter, dedupe]` at the very least — `[hop, dedupe]` is `distinctHopCount`'s.
+  if (mid.length < 3) {
+    return undefined;
+  }
+
+  let at = -1;
+
+  for (let i = 0; i < mid.length; i += 1) {
+    const k = mid[i].kind;
+
+    if (k === 'both') {
+      return undefined; // `both` reaches a vertex from either side; not one index
+    }
+
+    if (k === 'out' || k === 'in') {
+      /**
+       * A second hop is a different family — and this guard is REDUNDANT rather than untested,
+       * which is the same verdict item 1612's twin reached for the same structural reason. Dropping
+       * it keeps the LAST hop in `at`, so the first one falls inside `mid.slice(0, at)` and reaches
+       * `asVertexFilters` below, which refuses it: a hop is neither a `hasLabel` nor an
+       * `asHasFilter`. The mutant therefore SURVIVED. Kept because it states the rung's arity where
+       * a reader looks for it, at one pass over a handful of steps per query — item 475's rule is
+       * that a survivor on a NEW guard means "redundant" as readily as "untested", and the two have
+       * opposite fixes.
+       */
+      if (at >= 0) {
+        return undefined;
+      }
+
+      at = i;
+    }
+  }
+
+  if (at < 0 || at === mid.length - 1) {
+    return undefined;
+  }
+
+  const hop = mid[at] as Extract<Step, { kind: 'out' | 'in' }>;
+  // Exactly ONE bare `dedupe` after the hop, and vertex filters around it in either order.
+  const after = mid.slice(at + 1);
+  const dedupes = after.filter((st) => st.kind === 'dedupe');
+
+  if (dedupes.length !== 1) {
+    return undefined;
+  }
+
+  const [dd] = dedupes;
+
+  // Only the BARE `dedupe()` — the same refusal `distinctHopCount` makes, for its reasons: a
+  // path-label scope (`dedupe('a')`) and a by-modulator dedupe on something other than the element.
+  if ((dd.labels?.length ?? 0) > 0 || (dd.bys?.length ?? 0) > 0) {
+    return undefined;
+  }
+
+  const lead = asVertexFilters(mid.slice(0, at), graph, {
+    seed: false,
+    refuseSeekable: true,
+  });
+  const far = asVertexFilters(
+    after.filter((st) => st.kind !== 'dedupe'),
+    graph,
+    { seed: false, refuseSeekable: false },
+  );
+
+  if (lead === undefined || far === undefined || far.rest.length === 0) {
+    return undefined; // no far filter means `distinctHopCount`'s own shape
+  }
+
+  const fwd = hop.kind === 'out';
+  const { labels } = hop;
+  const anyStart = lead.rest.length === 0;
+  let n = 0;
+
+  /**
+   * ⚠️ DRIVEN FROM THE VERTICES, NOT FROM THE REVERSE INDEX, and that is worth 1.64x.
+   *
+   * `distinctHopCount` iterates `edgesToByLabel`'s VALUES, which is right for it: it needs only the
+   * adjacency row, never the vertex. A filter needs the vertex, and the first version of this rung
+   * therefore iterated the index's ENTRIES and called `getVertexById(id)` per candidate — 1009957 ns
+   * against this version's 616026 (and against its unfiltered neighbour's 180212, which is the
+   * figure the ratio below is measured against).
+   *
+   * Every vertex carries its OWN adjacency box, cached on first read, so the same question —
+   * "does `w` hold a `T` in-edge?" — is a FIELD read from the vertex rather than a string-keyed
+   * `Map.get` into the graph. Items 162/321 priced the three ways to reach an adjacency over
+   * 200,000 vertices: a string key **59.7 ns**, a `Map` keyed on the vertex object 30.5, a
+   * `WeakMap` 43.8, and a cached reference **16.1**. Driving from `far.source` also reuses the
+   * filter run's own candidate set instead of a second enumeration.
+   */
+  for (const w of far.source) {
+    const box = fwd ? w.adjTo : w.adjFrom;
+
+    if (box === undefined) {
+      continue; // nothing arrives here, so it is not a distinct endpoint
+    }
+
+    if (labels.length === 0 ? !anyNonEmpty(box) : !hasAny(box, labels)) {
+      continue;
+    }
+
+    if (!vertexFiltersHold(far.rest, w)) {
+      continue;
+    }
+
+    if (anyStart || reachedFromSurvivingStart(w, hop, lead.rest)) {
+      n += 1;
+    }
+  }
+
+  return n;
+};
+
+/**
+ * Does ANY surviving start reach `w` along one `hop`? An early-exiting `any`, not a count — a
+ * distinct count asks whether the vertex is reachable at all, however many ways.
+ */
+const reachedFromSurvivingStart = (
+  w: Vertex,
+  hop: Extract<Step, { kind: 'out' | 'in' }>,
+  lead: readonly VertexFilter[],
+): boolean => {
+  const fwd = hop.kind === 'out';
+  const box = fwd ? w.adjTo : w.adjFrom;
+
+  if (box === undefined) {
+    return false;
+  }
+
+  for (const set of hop.labels.length === 0 ? box.values() : bucketsOf(box, hop.labels)) {
+    for (const e of set) {
+      if (vertexFiltersHold(lead, fwd ? e.from : e.to)) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+};
+
 const distinctHopCount = (hop: Step, filter: Step, graph: Graph): number | undefined => {
   if (hop.kind !== 'out' && hop.kind !== 'in') {
     return undefined; // `both` reaches a vertex from either side; not one index
