@@ -514,7 +514,7 @@ export const runDelete = (
       // Plain DELETE must not orphan relationships: deleting a still-connected
       // node is a graph violation unless the user opted into DETACH (which
       // cascades the incident edges).
-      if (!clause.detach && hasIncidentEdges(graph, vertex)) {
+      if (!clause.detach && hasIncidentEdges(vertex)) {
         throw new LenkeError(
           'Cannot delete a node that still has relationships; use DETACH DELETE',
           { code: ErrorCode.InvalidGraphOp },

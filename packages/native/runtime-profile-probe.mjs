@@ -91,6 +91,17 @@ const SHAPES = {
   // presence count 1485). `hoprows` materializes a row per edge, so nothing can shortcut it and
   // per-edge cost is what it measures.
   hoprows: 'MATCH (a:P)-[:E]->(b:P) RETURN b.k AS k',
+  /**
+   * ⚠️ Item 1618: TWO HOPS RETURNING ROWS, which `gql-cliff-finder.ts` found has NO rung at all.
+   * `hop2/count` is a closed form at 415 us; `hop2/rows` reads PIPELINE at 226.68 ms over 319,972
+   * rows — **708 ns a row against the ONE-hop projection's 29**, and against the Gremlin engine's
+   * ~50 after items 1614/1617 fused the same shape there. Every two-hop shape in this corpus and in
+   * `bench.ts` returns a COUNT, which `countShortcut` answers without walking, so the two-hop
+   * row-returning walk has never been profiled — the same blind spot items 1614 and 1615 found on
+   * the Gremlin side, in the other engine.
+   */
+  hop2rows: 'MATCH (a:P)-[:E]->(b:P)-[:E]->(c:P) RETURN c.k AS k',
+  hop2rowswhere: 'MATCH (a:P)-[:E]->(b:P)-[:E]->(c:P) WHERE c.k = 5 RETURN c.k AS k',
   // A projection with ORDER BY + LIMIT, the serving shape.
   sortedpage: 'MATCH (n:P) WHERE n.k < 50 RETURN n.s AS s ORDER BY s LIMIT 10',
   // A grouped aggregate.

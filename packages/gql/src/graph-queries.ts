@@ -64,14 +64,15 @@ const edgesMatching = function* (
   }
 };
 
-const outSteps = function* (graph: Graph, v: Vertex, label: LabelExpr | undefined): Iterable<Step> {
-  for (const edge of edgesMatching(graph.edgesFromByLabel.get(v.id), label)) {
+// `v.adjFrom` / `v.adjTo` rather than a string-keyed graph lookup — see the note in `expand`.
+const outSteps = function* (v: Vertex, label: LabelExpr | undefined): Iterable<Step> {
+  for (const edge of edgesMatching(v.adjFrom, label)) {
     yield { edge, node: edge.to };
   }
 };
 
-const inSteps = function* (graph: Graph, v: Vertex, label: LabelExpr | undefined): Iterable<Step> {
-  for (const edge of edgesMatching(graph.edgesToByLabel.get(v.id), label)) {
+const inSteps = function* (v: Vertex, label: LabelExpr | undefined): Iterable<Step> {
+  for (const edge of edgesMatching(v.adjTo, label)) {
     yield { edge, node: edge.from };
   }
 };
@@ -99,9 +100,23 @@ export const expand = function* (graph: Graph, v: Vertex, rel: Adjacency): Itera
 
   if (rel.direction !== 'both' && label?.kind === 'label') {
     const forward = rel.direction === 'out';
-    const bucket = (forward ? graph.edgesFromByLabel : graph.edgesToByLabel)
-      .get(v.id)
-      ?.get(label.name);
+    /**
+     * ⚠️ THE VERTEX'S OWN CACHED BOX, not a STRING-KEYED lookup into the graph (item 1618).
+     *
+     * This read `(forward ? graph.edgesFromByLabel : graph.edgesToByLabel).get(v.id)` — one hash of
+     * an id string per expansion, on the hottest line of the matcher. `Vertex.adjFrom`/`adjTo`
+     * memoize the SAME `Map` object the graph holds, and `adjacency-box.test.ts` exists for exactly
+     * this: "every consumer that already holds the vertex object stops hashing (audit items 162,
+     * 321)". Those items priced the three ways over 200,000 vertices — string key **59.7 ns**, a
+     * `Map` keyed on the vertex object 30.5, a `WeakMap` 43.8, a **cached reference 16.1**.
+     *
+     * The Gremlin engine has read the box everywhere for ages; this is the GQL side adopting the
+     * same access, and `expand` was **28.5%** of the two-hop row profile that found it.
+     *
+     * It changes nothing about O(1) access BY ID: `getVertexById` is untouched, and the box is the
+     * same object the id-keyed map returns.
+     */
+    const bucket = (forward ? v.adjFrom : v.adjTo)?.get(label.name);
 
     if (bucket) {
       for (const edge of bucket) {
@@ -113,11 +128,11 @@ export const expand = function* (graph: Graph, v: Vertex, rel: Adjacency): Itera
   }
 
   if (rel.direction === 'out' || rel.direction === 'both') {
-    yield* outSteps(graph, v, rel.label);
+    yield* outSteps(v, rel.label);
   }
 
   if (rel.direction === 'in' || rel.direction === 'both') {
-    for (const step of inSteps(graph, v, rel.label)) {
+    for (const step of inSteps(v, rel.label)) {
       // A self-loop is indexed under both `edgesFromByLabel` and
       // `edgesToByLabel` for `v`, so an undirected (`both`) walk would yield it
       // twice — once as an out-step, once as an in-step. The out-step already
@@ -135,9 +150,17 @@ export const expand = function* (graph: Graph, v: Vertex, rel: Adjacency): Itera
  * Whether any edge — incoming or outgoing — is incident to `v`. Reads the same
  * adjacency indexes as `expand`. Used to enforce that a plain `DELETE` (without
  * `DETACH`) refuses to orphan relationships.
+ *
+ * ⚠️ BOTH BOXES, and that is load-bearing rather than defensive: a vertex with ONLY IN-edges is
+ * incident, and reading `adjFrom` alone would let a plain `DELETE` silently orphan them. The mutant
+ * that dropped `adjTo` SURVIVED item 1618's pass — no test deleted such a vertex — so it is pinned
+ * now in `expand-reads-adjacency-box.test.ts`.
+ *
+ * The `graph` parameter is gone since item 1618: the boxes come off the vertex, so there was nothing
+ * left to read from it.
  */
-export const hasIncidentEdges = (graph: Graph, v: Vertex): boolean => {
-  for (const byLabel of [graph.edgesFromByLabel.get(v.id), graph.edgesToByLabel.get(v.id)]) {
+export const hasIncidentEdges = (v: Vertex): boolean => {
+  for (const byLabel of [v.adjFrom, v.adjTo]) {
     if (!byLabel) {
       continue;
     }

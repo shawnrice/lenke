@@ -69506,3 +69506,78 @@ Two survivors, both provably equivalent and documented: inlining the route predi
 #### Gates
 
 `bun run check` 0 read unpiped. Suites gremlin 1765 (36 in this file), gql 4160, core 435, native 1066, serialization 144 — 0 fail. `bun run fuzz` 20/0, `spelling:gremlin` 0 answer disagreements / 0 groups over 2x, `lazy-emission-screen` 14/14, all under the 16G cap.
+
+### Item 1618 — a **GQL CLIFF FINDER**, the twin of the instrument that produced items 1613-1617; it immediately named GQL's biggest open hole (**two-hop rows have NO rung at all: 644 ns a row against the one-hop projection's 48 and Gremlin's ~50**). And the first lever it exposed shipped: GQL's `expand` now reads the vertex's CACHED adjacency box instead of hashing its id, **1.14x / 1.19x / 1.08x** with every control flat
+
+OPEN: **the two-hop row projection**, priced below. That is the next target and it is a rung, not a constant factor.
+
+#### The instrument
+
+`gremlin-cliff-finder.ts` produced four items in a row by asking what no absolute benchmark asks: take shapes that differ by ONE clause, ask the engine which rung answers each, and time them all. The GQL twin can do better than a boolean — `compileLinear` returns a record of ~22 NAMED rungs, so it prints WHICH fire. That matters because of `rung-precedence-decides-speed`: a willing rung can be starved by a broader one above it in `runLinear`'s chain (1.80-6.00x at item 1583), and the fired-rung SET is the only thing that shows it.
+
+The rung reader is `deferred-hop-order.test.ts`' `routes` helper, including its warning — a rung is a FUNCTION, so filtering on `typeof v === 'function'` is what keeps it honest as `CLinear` grows; excluding fields by name let item 1510's `writes: boolean` register as a rung and fail 13 tests.
+
+#### What it found, first run
+
+```text
+   family shape                          ns/op    rows  rungs
+   hop    rows                         2328762   79996  hopProjection          29 ns/row
+   hop2   count                         415021       1  countShortcut
+   hop2   rows                       226675722  319972  PIPELINE              708 ns/row
+   hop2   rows + trailing where      193804126    3200  PIPELINE
+   hop2   rows + mid where           189204421    3200  PIPELINE
+   hop2   count + trailing where        510590       1  countShortcut
+```
+
+**24x worse PER ROW than the one-hop projection, and no rung at all.** The blind spot is the one items 1614/1615 found on the Gremlin side, in the other engine and for the same reason: every two-hop shape in the profile corpus and in `bench.ts` returns a COUNT, which `countShortcut` answers without walking, so the two-hop row-returning walk had never been profiled. Gremlin now does the identical shape at ~50 ns/row (items 1614/1617), so GQL is ~13x behind its own twin.
+
+The profile confirms it is the generic matcher rather than extra work: `expand` **28.5%**, `walkSegments` 11.3%, `evalLabelExpr` 9.3%, `withBinding` 8.5%, `matchPattern` 2.8% — where the one-hop shape's top engine frame is `farDrivenHopWalk` at 11.4%. Two different machines, not one doing twice the work.
+
+#### The lever that shipped: the cached box, not a hashed id
+
+`expand`'s directed fast path read `(forward ? graph.edgesFromByLabel : graph.edgesToByLabel).get(v.id)` — one hash of an id STRING per expansion, on the hottest line of the matcher. `Vertex.adjFrom`/`adjTo` memoize the same `Map` object, and `@lenke/core`'s `adjacency-box.test.ts` states the purpose outright: _"every consumer that already holds the vertex object stops hashing (audit items 162, 321)"_. Those items priced the three ways over 200,000 vertices — string key **59.7 ns**, a `Map` keyed on the vertex object 30.5, a `WeakMap` 43.8, a **cached reference 16.1**. The Gremlin engine has read the box for ages; this is the GQL side adopting the same access. `outSteps`, `inSteps` and `hasIncidentEdges` were on the same string-keyed path and move with it.
+
+**O(1) by-id access is untouched**: `getVertexById` is unchanged, and the box is the same object the id-keyed map returns — asserted as IDENTITY in the new test, because a copy would pass a deep comparison and then go stale.
+
+#### ⚠️ The sweep said one thing and the isolated A/B said another — and the control settled it
+
+The first reading came from the cliff finder's own sweep and showed `hop2/rows` **1.29x better** while `page/ordered rows` was **2.76x WORSE** in the same run. A control moving more than the target is CLAUDE.md's named giveaway, and `ordered rows` is a shape this change cannot reach — it touches no adjacency at all.
+
+One shape per process, three runs each:
+
+```text
+   shape         PRE (3 runs)              POST (3 runs)             verdict
+   hop2rows      233.4  234.6  235.1 ms    204.1  205.9  206.7 ms    1.14x
+   noderows        0.397  0.362  0.366       0.598  0.362  0.367     flat (the 0.598 is a
+                                                                      first-run outlier)
+```
+
+So the "regression" was a single cold first rep, in a 0.4 ms row where noise is large relative to the signal. Repetition settled it; no theory was needed, and no theory would have been right. The target's own numbers are tight to ±0.4% across three runs in each arm.
+
+```text
+   arm            PRE      POST    verdict
+   hop2rows     234.415  206.097   1.14x
+   hop2where    196.534  164.695   1.19x
+   hoprows        4.187    3.873   1.08x   (the one-hop matcher row)
+   varlen         6.220    6.446   flat
+   bothhop        0.002    0.002   flat
+   noderows       0.362    0.362   flat (control, repeated)
+   orderedrows    1.193    1.182   flat (control)
+   nodecount      0.001    0.001   flat (control)
+```
+
+#### ⚠️ A SILENT WRONG ANSWER the mutation pass found in pre-existing code
+
+`hasIncidentEdges` guards a plain `DELETE` from orphaning relationships, and it reads BOTH boxes. The mutant that dropped `adjTo` **SURVIVED the whole `gql` and `core` suites** — nothing deleted a vertex whose edges all point AT it, so a plain `DELETE` of such a vertex would have silently orphaned them. Pinned now in both directions, with `DETACH DELETE` asserted alongside so the refusal reads as the guard rather than a general inability to delete. The `graph` parameter is also gone: with the boxes on the vertex there was nothing left to read from it.
+
+#### Mutation 12 of 12
+
+Both boxes inverted on the fast path and on each of `outSteps`/`inSteps`; both endpoint reads; both incidence directions; the `both` self-loop dedupe; the multi-type cross-bucket dedupe; `edgesMatching`'s single-type lookup. And one mutant specifically about the CONTRACT this item adopts rather than about `expand`'s existing logic — **the box read as a SNAPSHOT COPY instead of the live `Map`**, which is what a wrong adoption would look like: 272 failures.
+
+The new test file covers the four ways a cache over graph-owned state fails, THROUGH A GQL QUERY rather than by reading the box directly. `adjacency-box.test.ts` covers them at the core level, and that says nothing about whether `expand` reads the box correctly — a cache is wrong only on the SECOND read, so a suite that builds a graph and queries it once sees none of them.
+
+(A slip worth one line: `removeEdge` takes the EDGE, not its id, and passing the id throws inside the graph rather than returning null. `removeVertex` takes either.)
+
+#### Gates
+
+`bun run check` 0 read unpiped. Suites gql 4170 (10 new), core 435, native 1066, gremlin 1765, serialization 144 — 0 fail. `bun run fuzz` 20/0 under the 16G cap, which is the check that matters for a change to the shared adjacency read.
