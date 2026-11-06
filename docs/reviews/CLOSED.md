@@ -68896,8 +68896,11 @@ is **harmless instead of merely untested**, which is the better of the two outco
 
 #### What this leaves
 
-Three walks still re-validate an exact seed — the topK arm (38538 ns), `detectNodeAggregate`
-(37073) and `detectMultiNodeAggregate` (46091). Each needs the same two lines, but `soleKey` has to
+✅ **DONE AT ITEM 1611** — 1.84x, 1.68x and 1.41x respectively, each landing on its own ablation
+ceiling, plus the two spec-taking walks.
+
+~~Three walks still re-validate an exact seed — the topK arm (38538 ns), `detectNodeAggregate`
+(37073) and `detectMultiNodeAggregate` (46091).~~ Each needs the same two lines, but `soleKey` has to
 be threaded through their spec objects rather than read from an enclosing scope, so they are a
 separate edit. The skip is ANSWER-EQUIVALENT, so unlike item 1609's elision there is no uniformity
 requirement forcing them to land together.
@@ -68905,8 +68908,117 @@ requirement forcing them to land together.
 #### Gates
 
 `bun run check` 0 read unpiped. Suites gql 4146 (1 new), gremlin 1694, core 435, native 1056,
-serialization 144 — 0 fail. ⚠️ **`bun run fuzz` reported `1 fail` on one run and then 20/0 on three
-consecutive runs**, and the failing fuzzer's identity was not captured before the clean re-runs —
+serialization 144 — 0 fail. ⚠️ ~~**`bun run fuzz` reported `1 fail` on one run and then 20/0 on three
+consecutive runs**~~ — **NOT REPRODUCED: item 1611 re-ran it five more times with full output logged,
+5 of 5 clean, and three more after its own change — eleven consecutive clean runs.** The failing
+fuzzer's identity was not captured before the clean re-runs —
 consistent with the rare residual `gremlin-fuzz-families` records (a 1-in-30 whose seed replays
 clean) but NOT confirmed as that. Flagged rather than filed as green: the next tick should re-run
 `bun run fuzz` and, on a failure, capture the fuzzer and seed before re-running.
+
+### Item 1611 — the exact-seed skip finished: **1.84x on the topK arm, 1.68x on the aggregate, 1.41x on the multi-aggregate**, each landing on its own ablation ceiling. ⚠️ And two mutation passes on different changes independently proved the SAME two walks unreachable
+
+Item 1610 took the streaming projection and named the three remaining walks with their numbers. This
+took them, plus the two spec-taking walks, by threading the verdict through the derivation that
+already existed.
+
+#### Priced by ablation first, per walk
+
+Replacing each gate with `() => true` — wrong answers, measured only to price the right ones:
+
+```text
+                   before      ablated        ceiling
+   values+limit    38538      20951 20982     1.84x
+   aggregate       37073      22107 22432     1.66x
+   multi-agg       46091      32591 33472     1.39x
+   values+order    31199      29577 30420     flat — already done at item 1610 (control)
+```
+
+#### What shipped, and the threading is the design
+
+Five walks: `deferredSortedNodeWalk`, `topKNodeWalk`, both `detectNodeAggregate` arms and
+`detectMultiNodeAggregate`. The verdict comes from the parse that builds the gate, never a second
+one:
+
+- **`NodeScan.soleKey`**, set in `nodeScanOf` — which is where the gate is built, so the two cannot
+  disagree. Item 652 split that derivation out so the single- and multi-aggregate paths could not
+  drift; one field reaches all three of their walks.
+- **`soleKey` through `deferredRoute`'s spec** to `deferredSortedNodeWalk`, and straight into
+  `topKNodeWalk`'s — both are reached only from `detectNodeProjection`, which already had it.
+
+```text
+                   POST-1610     POST-1611     verdict        MULTI control
+   values+limit      38538         20995       1.84x          28599 28735
+   aggregate         37073         22025       1.68x          30163 30326
+   multi-agg         46091         32675       1.41x          39324 39021
+   values+order      31199         29580       1.05x
+   values            16046         15594       flat (control: done at 1610)
+   count              2721          2537       flat (control: done at 1607)
+```
+
+**Every row lands on its own ablation ceiling** (20995 against 20951-20982, 22025 against
+22107-22432, 32675 against 32591-33472), which is the strongest available confirmation that the skip
+IS the ablation rather than an approximation of it. And the MULTI fixture improves too, for item
+1610's reason: an exact seed is exact whatever the labels are.
+
+#### ⚠️ THREE FAILED ATTEMPTS AT THE EDIT, and each failure mode is worth keeping
+
+The change is five near-identical sites, which invites a blanket pass. Three of them went wrong:
+
+1. **A blanket `labelEff`-anchored pass** added a declaration at the two walks that ALREADY had one
+   (items 1607 and 1610), and at sites where `soleKey` was not in scope. `Cannot redeclare
+block-scoped variable`.
+2. **Matching the gate by INDENT** hit three gates in walks that are not single-node scans at all —
+   no `seeded`, no `soleKey`, no `eqKey` — so they referenced names that do not exist there.
+3. **A regex anchored on `labelEff … label test … gate`** matched SIX walks where five lack the
+   skip, because `(?:.|\n)*?` between the parts can span a walk boundary. The assert on the hit
+   count is what stopped it writing.
+
+What worked is a bounded backward scan: a gate belongs to a single-node scan iff a label test sits
+within the preceding eight lines, and the declaration goes after that walk's own nearest `labelEff`.
+⚠️ **The assert-the-count discipline earned itself three times in one item** — every one of those
+attempts would have shipped something broken or over-broad without it.
+
+#### Mutation: 5 caught, and all FOUR survivors are explained
+
+```text
+   site-0 deferredSortedNodeWalk   SURVIVED      site-3 agg COLLECTING arm   SURVIVED
+   site-1 topKNodeWalk             CAUGHT  5     site-4 agg FOLDING arm      CAUGHT  6
+   site-2 streaming (item 1610)    CAUGHT 11     site-5 multi-aggregate      CAUGHT  8
+   all/exact-always                CAUGHT 366    scan/solekey-drifts         SURVIVED
+                                                 all/drops-seeded-guard      SURVIVED
+```
+
+⚠️ **The two surviving SITE mutants are the same two walks item 1609 proved unreachable** — the
+deferred sort-key walk and the collecting-aggregate arm — reached by a second mutation pass on a
+different change. Item 1609 established why: a FILTERED `collect(n.n)` goes to the general path and
+only the unfiltered form takes `nodeAggregate`, which never seeds; and no constructible shape reaches
+`deferredSortedNodeWalk` with a seed. Two independent passes agreeing is better evidence than either
+alone.
+
+The other two survive in the SAFE direction. `scan/solekey-drifts` derives the key from a different
+parse, which yields `undefined` and so declines the skip — more conservative, not less, and the
+dangerous direction is caught by `all/exact-always` at 366 failures. `all/drops-seeded-guard`
+re-opens item 1610's designed-out hazard, whose state no fixture reaches.
+
+#### And a literal I got wrong for the third time in this family
+
+`MATCH (u:Admin) … RETURN max(u.n)` — I wrote 51; the engine said 56 and was right. `Admin` is not
+the complement of `User` in this fixture: `i % 3 === 0` is Admin-only and `i % 3 === 2` is BOTH, so
+the Admin set includes the overlap. ⚠️ Worse, **`max` cannot discriminate the label test at all here**
+— every label's `t1` set contains 56, so the folding-arm mutant answered correctly by accident and
+SURVIVED on `max` alone. `min` differs by label (User 1, Admin 6, both 11, all 1) and catches it. An
+overlapping-label fixture is exactly what this file needs and exactly what makes its literals easy to
+get wrong by eye.
+
+#### Also: item 1610's flagged fuzz failure did NOT reproduce
+
+That item recorded `1 fail` on one `bun run fuzz` run with the failing fuzzer's identity uncaptured.
+Re-run five times with full output logged: **5 of 5 clean**, and three more after this change —
+**eleven consecutive clean runs** across the two sessions. Consistent with the rare residual
+`gremlin-fuzz-families` records; recorded as not reproduced rather than as explained.
+
+#### Gates
+
+`bun run check` 0 read unpiped. Suites gql 4153 (7 new), gremlin 1694, core 435, native 1056,
+serialization 144 — 0 fail. `bun run fuzz` 20/0 three times under the 16G cap.

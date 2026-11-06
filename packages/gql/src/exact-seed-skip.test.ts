@@ -110,6 +110,39 @@ describe('an exact seed still answers what the scan answers', () => {
       { v: 't1' },
     ],
     ['ROWS, ordered', 'MATCH (u:User) WHERE u.team = $v RETURN u.n AS n ORDER BY n', { v: 't1' }],
+    // ⚠️ ITEM 1611 gave the remaining five walks the skip, so these reach it too: the topK arm
+    // (an ordered LIMIT), the deferred sort-key walk, both aggregate arms and the multi-aggregate.
+    // The fixture shares `team` across labels, so a skip that dropped the label test over-counts.
+    [
+      'ROWS, topK arm',
+      'MATCH (u:User) WHERE u.team = $v RETURN u.n AS n ORDER BY n LIMIT 3',
+      { v: 't1' },
+    ],
+    [
+      'aggregate, folding arm',
+      'MATCH (u:User) WHERE u.team = $v RETURN max(u.n) AS m',
+      { v: 't1' },
+    ],
+    [
+      'aggregate, collecting arm',
+      'MATCH (u:User) WHERE u.team = $v RETURN collect(u.n) AS s',
+      { v: 't1' },
+    ],
+    [
+      'multi-aggregate',
+      'MATCH (u:User) WHERE u.team = $v RETURN count(*) AS c, max(u.n) AS m',
+      { v: 't1' },
+    ],
+    [
+      'aggregate, the OTHER label',
+      'MATCH (u:Admin) WHERE u.team = $v RETURN max(u.n) AS m',
+      { v: 't1' },
+    ],
+    [
+      'multi-agg, unlabelled',
+      'MATCH (u) WHERE u.team = $v RETURN count(*) AS c, max(u.n) AS m',
+      { v: 't1' },
+    ],
     ['ROWS, no match', 'MATCH (u:User) WHERE u.team = $v RETURN u.n AS n', { v: 'zz' }],
     ['an ORDERING, never exact', 'MATCH (u:User) WHERE u.n > 30 RETURN count(*) AS c', {}],
     ['IN, never exact', 'MATCH (u:User) WHERE u.team IN [$v] RETURN count(*) AS c', { v: 't1' }],
@@ -215,6 +248,64 @@ describe('an exact seed still answers what the scan answers', () => {
       expect(
         rowsOf(g, 'MATCH (u:User) WHERE u.team = $v AND u.n > 20 RETURN u.n AS n', { v: 't1' }),
       ).toBe(5);
+    }
+  });
+
+  test('⚠️ the five walks item 1611 skipped answer the same NUMBERS', () => {
+    /**
+     * Agreement with the unindexed twin is above; these are the literals, because two routes
+     * agreeing says nothing if both are wrong. Twelve vertices carry `team = 't1'`: eight are
+     * `User`, eight `Admin`, four both. A walk that skipped the LABEL along with the predicate
+     * would report twelve.
+     *
+     * `n = i` and the t1 vertices are i in {1, 6, 11, 16, 21, 26, 31, 36, 41, 46, 51, 56}; the
+     * eight `User`s among them are 1, 11, 16, 26, 31, 41, 46, 56 — so max is 56 and the ordered
+     * first three are 1, 11, 16.
+     */
+    for (const g of [plain, indexed]) {
+      const one = (text: string): Record<string, unknown> => query(g, text, { v: 't1' })[0];
+
+      expect(Number(one('MATCH (u:User) WHERE u.team = $v RETURN max(u.n) AS m').m)).toBe(56);
+      /**
+       * ⚠️ 56, NOT 51 — and the engine was right while my hand count was wrong, for the THIRD time
+       * in this family. `Admin` is not the complement of `User`: `i % 3 === 0` is Admin-only and
+       * `i % 3 === 2` is BOTH, so the Admin t1 set is {6, 11, 21, 26, 36, 41, 51, 56} and its max
+       * is 56. I had counted only the Admin-only third. A fixture whose labels OVERLAP is exactly
+       * what this file needs — and exactly what makes its literals easy to get wrong by eye.
+       */
+      expect(Number(one('MATCH (u:Admin) WHERE u.team = $v RETURN max(u.n) AS m').m)).toBe(56);
+      expect(
+        (one('MATCH (u:User) WHERE u.team = $v RETURN collect(u.n) AS s').s as number[]).length,
+      ).toBe(8);
+
+      /**
+       * ⚠️ `min`, BECAUSE `max` CANNOT DISCRIMINATE HERE — mutation said so. Every label's t1 set
+       * contains 56, so dropping the label test leaves `max` at 56 and the mutant answers correctly
+       * by accident; the folding-arm mutant SURVIVED on `max` alone. The minima differ:
+       * User {1, 11, 16, 26, 31, 41, 46, 56} -> 1, Admin {6, 11, 21, 26, 36, 41, 51, 56} -> 6,
+       * both {11, 26, 41, 56} -> 11, and the whole t1 set -> 1. So a label-skipping aggregate reads
+       * 1 where 6 or 11 is right.
+       */
+      expect(Number(one('MATCH (u:Admin) WHERE u.team = $v RETURN min(u.n) AS m').m)).toBe(6);
+      expect(Number(one('MATCH (u:User&Admin) WHERE u.team = $v RETURN min(u.n) AS m').m)).toBe(11);
+      expect(Number(one('MATCH (u:User) WHERE u.team = $v RETURN min(u.n) AS m').m)).toBe(1);
+      expect(Number(one('MATCH (u) WHERE u.team = $v RETURN min(u.n) AS m').m)).toBe(1);
+
+      const multi = one('MATCH (u:User) WHERE u.team = $v RETURN count(*) AS c, max(u.n) AS m');
+
+      expect(Number(multi.c)).toBe(8);
+      expect(Number(multi.m)).toBe(56);
+
+      const unl = one('MATCH (u) WHERE u.team = $v RETURN count(*) AS c, max(u.n) AS m');
+
+      expect(Number(unl.c)).toBe(12);
+      expect(Number(unl.m)).toBe(56);
+
+      expect(
+        query(g, 'MATCH (u:User) WHERE u.team = $v RETURN u.n AS n ORDER BY n LIMIT 3', {
+          v: 't1',
+        }).map((r) => Number(r.n)),
+      ).toEqual([1, 11, 16]);
     }
   });
 });

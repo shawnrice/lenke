@@ -9722,6 +9722,15 @@ type NodeScan = {
   labelName: string | undefined;
   cstart: CNode | undefined;
   gate: InlineGate | undefined;
+  /**
+   * The ONE key this scan's predicate asserts an equality on, for the exact-seed skip (item 1611).
+   *
+   * It rides on `NodeScan` rather than being re-derived per consumer BECAUSE `nodeScanOf` is where
+   * the gate is built: the verdict and the gate then come from one parse, which is the property
+   * `nodeScanPreds` exists to guarantee. Item 652 split this derivation out so the single- and
+   * multi-aggregate paths could not drift; one field here reaches all three of their walks.
+   */
+  soleKey: string | undefined;
 };
 
 /**
@@ -9760,6 +9769,7 @@ const nodeScanOf = (m: Clause, cm: CClause): NodeScan | null => {
     labelName: label?.name,
     cstart: cm.patterns[0].start,
     gate,
+    soleKey: nodeScanSoleKey(start, m.where, nodeVar),
   };
 };
 
@@ -9886,15 +9896,17 @@ const deferredSortedNodeWalk = (spec: {
   directKeys: readonly (string | undefined)[];
   keys: readonly DeferredKey[];
   plan: SortPlan;
+  soleKey: string | undefined;
 }): ((graph: Graph, params: Params) => Row[]) => {
-  const { cstart, label, labelName, gate, nodeVar, cols, fns, directKeys, keys, plan } = spec;
+  const { cstart, label, labelName, gate, nodeVar, cols, fns, directKeys, keys, plan, soleKey } =
+    spec;
   const width = cols.length;
 
   return (graph, params) => {
     const keyed: KeyRow[] = [];
     const binding = new Map<string, unknown>();
     const env = { binding, params, graph };
-    const { vertices, seeded } = scanCandidates(graph, cstart, label, labelName, env);
+    const { vertices, seeded, eqKey } = scanCandidates(graph, cstart, label, labelName, env);
 
     // ITEM 1609: the label with a VACUOUS one dropped, resolved ONCE PER CALL. Hoisting is the
     // whole change: with `effectiveLabel` called per ELEMENT the control fixture (a multi-label
@@ -9902,6 +9914,9 @@ const deferredSortedNodeWalk = (spec: {
     // hoisted it is flat. Per EXECUTION, not per compile: universality is a property of the graph
     // (item 1551), so a cached plan cannot carry it.
     const labelEff = effectiveLabel(graph, label);
+    // Per CALL: the verdict needs the candidate the seek chose, and `seeded !== undefined` is
+    // item 1610's designed-out hazard — exactness means nothing on a bucket walk.
+    const exactSeed = seeded !== undefined && seedIsExact({ eqKey }, soleKey);
 
     for (const v of vertices) {
       // Both tests, in the same order and for the same reasons the plain arm states.
@@ -9909,7 +9924,11 @@ const deferredSortedNodeWalk = (spec: {
         continue;
       }
 
-      if (gate !== undefined && !gate(v, binding, params, graph)) {
+      // ITEM 1611: an EXACT seed has already decided the predicate — the same skip item 1607 gave
+      // the count and item 1610 the streaming projection, now at the five walks that still
+      // re-validated. Ablating these gates priced them at 1.39-1.84x before anything was built.
+      // The LABEL test above still runs: a seek returns vertices by VALUE across all labels.
+      if (!exactSeed && gate !== undefined && !gate(v, binding, params, graph)) {
         continue;
       }
 
@@ -10059,8 +10078,9 @@ const topKNodeWalk = (spec: {
   directKeys: readonly (string | undefined)[];
   keyProps: readonly string[];
   plan: SortPlan & { limit: number };
+  soleKey: string | undefined;
 }): ((graph: Graph, params: Params) => Row[]) => {
-  const { cstart, label, gate, nodeVar, cols, fns, directKeys, keyProps, plan } = spec;
+  const { cstart, label, gate, nodeVar, cols, fns, directKeys, keyProps, plan, soleKey } = spec;
   const labelName = label?.name;
   const width = cols.length;
   const cap = plan.skip + plan.limit;
@@ -10069,7 +10089,7 @@ const topKNodeWalk = (spec: {
   return (graph, params) => {
     const binding = new Map<string, unknown>();
     const env = { binding, params, graph };
-    const { vertices, seeded } = scanCandidates(graph, cstart, label, labelName, env);
+    const { vertices, seeded, eqKey } = scanCandidates(graph, cstart, label, labelName, env);
     const kept: Vertex[] = [];
 
     // ITEM 1609: the label with a VACUOUS one dropped, resolved ONCE PER CALL. Hoisting is the
@@ -10078,6 +10098,9 @@ const topKNodeWalk = (spec: {
     // hoisted it is flat. Per EXECUTION, not per compile: universality is a property of the graph
     // (item 1551), so a cached plan cannot carry it.
     const labelEff = effectiveLabel(graph, label);
+    // Per CALL: the verdict needs the candidate the seek chose, and `seeded !== undefined` is
+    // item 1610's designed-out hazard — exactness means nothing on a bucket walk.
+    const exactSeed = seeded !== undefined && seedIsExact({ eqKey }, soleKey);
 
     for (const v of vertices) {
       // Both tests, in the same order and for the same reasons the plain arm states.
@@ -10085,7 +10108,11 @@ const topKNodeWalk = (spec: {
         continue;
       }
 
-      if (gate !== undefined && !gate(v, binding, params, graph)) {
+      // ITEM 1611: an EXACT seed has already decided the predicate — the same skip item 1607 gave
+      // the count and item 1610 the streaming projection, now at the five walks that still
+      // re-validated. Ablating these gates priced them at 1.39-1.84x before anything was built.
+      // The LABEL test above still runs: a seek returns vertices by VALUE across all labels.
+      if (!exactSeed && gate !== undefined && !gate(v, binding, params, graph)) {
         continue;
       }
 
@@ -10152,8 +10179,9 @@ const deferredRoute = (spec: {
   cols: readonly string[];
   fns: readonly CompiledExpr[];
   directKeys: readonly (string | undefined)[];
+  soleKey: string | undefined;
 }): ((graph: Graph, params: Params) => Row[]) | null => {
-  const { proj, cstart, label, gate, nodeVar, cols, fns, directKeys } = spec;
+  const { proj, cstart, label, gate, nodeVar, cols, fns, directKeys, soleKey } = spec;
   const { skip, limit } = proj;
   const keys = proj.orderBy;
 
@@ -10183,6 +10211,7 @@ const deferredRoute = (spec: {
     fns,
     directKeys,
     keys: deferredKeys,
+    soleKey,
     plan: {
       sorts: keys.map((k, i) => ({
         col: deferredKeys[i].col,
@@ -10360,6 +10389,7 @@ export const detectNodeProjection = (
       cols,
       fns,
       directKeys,
+      soleKey,
     });
   }
 
@@ -10380,6 +10410,7 @@ export const detectNodeProjection = (
       directKeys,
       keyProps: topK.keyProps,
       plan: topK.plan,
+      soleKey,
     });
   }
 
@@ -11597,12 +11628,12 @@ export const detectNodeAggregate = (
     const [{ name: aggName, frac }] = collect;
 
     if (vs !== null) {
-      const { nodeVar: sv, label, labelName, cstart, gate, argFn } = vs;
+      const { nodeVar: sv, label, labelName, cstart, gate, argFn, soleKey } = vs;
 
       return applyOuter((graph, params) => {
         const binding = new Map<string, unknown>();
         const env = { binding, params, graph };
-        const { vertices, seeded } = scanCandidates(graph, cstart, label, labelName, env);
+        const { vertices, seeded, eqKey } = scanCandidates(graph, cstart, label, labelName, env);
         const values: unknown[] = [];
 
         // ITEM 1609: the label with a VACUOUS one dropped, resolved ONCE PER CALL. Hoisting is the
@@ -11611,13 +11642,20 @@ export const detectNodeAggregate = (
         // hoisted it is flat. Per EXECUTION, not per compile: universality is a property of the graph
         // (item 1551), so a cached plan cannot carry it.
         const labelEff = effectiveLabel(graph, label);
+        // Per CALL: the verdict needs the candidate the seek chose, and `seeded !== undefined` is
+        // item 1610's designed-out hazard — exactness means nothing on a bucket walk.
+        const exactSeed = seeded !== undefined && seedIsExact({ eqKey }, soleKey);
 
         for (const v of vertices) {
           if (seeded !== undefined && !matchesLabel(v, labelEff)) {
             continue;
           }
 
-          if (gate !== undefined && !gate(v, binding, params, graph)) {
+          // ITEM 1611: an EXACT seed has already decided the predicate — the same skip item 1607 gave
+          // the count and item 1610 the streaming projection, now at the five walks that still
+          // re-validated. Ablating these gates priced them at 1.39-1.84x before anything was built.
+          // The LABEL test above still runs: a seek returns vertices by VALUE across all labels.
+          if (!exactSeed && gate !== undefined && !gate(v, binding, params, graph)) {
             continue;
           }
 
@@ -11652,12 +11690,12 @@ export const detectNodeAggregate = (
   const { fold } = agg!;
 
   if (vs !== null) {
-    const { nodeVar: sv, label, labelName, cstart, gate, argFn } = vs;
+    const { nodeVar: sv, label, labelName, cstart, gate, argFn, soleKey } = vs;
 
     return applyOuter((graph, params) => {
       const binding = new Map<string, unknown>();
       const env = { binding, params, graph };
-      const { vertices, seeded } = scanCandidates(graph, cstart, label, labelName, env);
+      const { vertices, seeded, eqKey } = scanCandidates(graph, cstart, label, labelName, env);
       let acc = fold.init();
 
       // ITEM 1609: the label with a VACUOUS one dropped, resolved ONCE PER CALL. Hoisting is the
@@ -11666,13 +11704,20 @@ export const detectNodeAggregate = (
       // hoisted it is flat. Per EXECUTION, not per compile: universality is a property of the graph
       // (item 1551), so a cached plan cannot carry it.
       const labelEff = effectiveLabel(graph, label);
+      // Per CALL: the verdict needs the candidate the seek chose, and `seeded !== undefined` is
+      // item 1610's designed-out hazard — exactness means nothing on a bucket walk.
+      const exactSeed = seeded !== undefined && seedIsExact({ eqKey }, soleKey);
 
       for (const v of vertices) {
         if (seeded !== undefined && !matchesLabel(v, labelEff)) {
           continue;
         }
 
-        if (gate !== undefined && !gate(v, binding, params, graph)) {
+        // ITEM 1611: an EXACT seed has already decided the predicate — the same skip item 1607 gave
+        // the count and item 1610 the streaming projection, now at the five walks that still
+        // re-validated. Ablating these gates priced them at 1.39-1.84x before anything was built.
+        // The LABEL test above still runs: a seek returns vertices by VALUE across all labels.
+        if (!exactSeed && gate !== undefined && !gate(v, binding, params, graph)) {
           continue;
         }
 
@@ -11909,12 +11954,12 @@ export const detectMultiNodeAggregate = (
   const vs = nodeScanOf(m, compiled[0]);
 
   if (vs !== null) {
-    const { nodeVar: sv, label, labelName, cstart, gate } = vs;
+    const { nodeVar: sv, label, labelName, cstart, gate, soleKey } = vs;
 
     return (graph, params) => {
       const binding = new Map<string, unknown>();
       const env = { binding, params, graph };
-      const { vertices, seeded } = scanCandidates(graph, cstart, label, labelName, env);
+      const { vertices, seeded, eqKey } = scanCandidates(graph, cstart, label, labelName, env);
       const state = accs.map((a) => (a.kind === 'fold' ? a.fold.init() : ([] as unknown[])));
       let n = 0;
 
@@ -11924,6 +11969,9 @@ export const detectMultiNodeAggregate = (
       // hoisted it is flat. Per EXECUTION, not per compile: universality is a property of the graph
       // (item 1551), so a cached plan cannot carry it.
       const labelEff = effectiveLabel(graph, label);
+      // Per CALL: the verdict needs the candidate the seek chose, and `seeded !== undefined` is
+      // item 1610's designed-out hazard — exactness means nothing on a bucket walk.
+      const exactSeed = seeded !== undefined && seedIsExact({ eqKey }, soleKey);
 
       for (const v of vertices) {
         // The row path's exact order: label recheck, then gate, then `binding.set`. The gate
@@ -11932,7 +11980,11 @@ export const detectMultiNodeAggregate = (
           continue;
         }
 
-        if (gate !== undefined && !gate(v, binding, params, graph)) {
+        // ITEM 1611: an EXACT seed has already decided the predicate — the same skip item 1607 gave
+        // the count and item 1610 the streaming projection, now at the five walks that still
+        // re-validated. Ablating these gates priced them at 1.39-1.84x before anything was built.
+        // The LABEL test above still runs: a seek returns vertices by VALUE across all labels.
+        if (!exactSeed && gate !== undefined && !gate(v, binding, params, graph)) {
           continue;
         }
 
