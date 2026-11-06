@@ -77,7 +77,7 @@ import {
   aggregateOverValues,
   foldedAggOnlyView,
   satisfies,
-  specializeSingleProp,
+  specializeNarrowPred,
   sortsOnOutputOnly,
   countEdges,
   outNeighbors,
@@ -289,6 +289,58 @@ type CountOf<T> = (graph: Graph, params: Params) => T;
  * Only the plain single-label form and the unlabelled form are answered. `and` (`(n:A:B)`),
  * `or`, `not` and `%` have no single bucket, so they fall through to enumeration.
  */
+/**
+ * The tally's per-element predicate pre-resolved, or `undefined` to keep the `inlineHolds` loop.
+ *
+ * ⚠️ TWO `InlinePred`s, NOT ONE, and item 1604 is why. The gate here read `preds.length === 1`, and
+ * the ISO spelling of a two-conjunct filter arrives as TWO preds — `inlineOf(start)` carries the
+ * inline `{score: $s}` and `nodeWhereOf(where)` carries the lifted `u.active = true` — so the
+ * clause spelling (one pred holding `eqProps(2)`) specialized and the inline one did not. Keeping
+ * that would have opened an EQUIVALENT-SPELLING GAP on the row that nominated the work, which is
+ * the defect class this engine is named after.
+ *
+ * ⚠️ FOUND BY A TRIPWIRE, not by reading. The width-2 specializer was built, the clause row moved
+ * 1.27x and the inline row measured FLAT — and the reason was invisible in the predicate, because
+ * the inline form's carriers (`props(1) eqProps(1)`) are exactly what `specializeEqPair` admits.
+ * A one-line stderr print of `bindVar` and the live carriers at this call site showed the inline
+ * shape never arriving at all. Item 1586's `fused-hits=0` lesson, in a new place.
+ *
+ * `bindVar` must be absent on EVERY pred, for the reason the single-pred version gave: `inlineHolds`
+ * WRITES the binding for a correlated conjunct before testing it, and a specialized closure never
+ * writes one.
+ *
+ * A route choice is ANSWER-EQUIVALENT, so every mutant of it survives the differential tests — hence
+ * an exported pure function with its own test (`perf-gate-needs-its-own-test`).
+ */
+export const fastTallyPred = (
+  preds: readonly InlinePred[],
+): ((element: Vertex, env: EvalEnv) => boolean) | undefined => {
+  if (preds.length === 0 || preds.length > 2) {
+    return undefined;
+  }
+
+  for (const ip of preds) {
+    if (ip.bindVar !== undefined) {
+      return undefined;
+    }
+  }
+
+  const first = specializeNarrowPred(preds[0].pred);
+
+  if (first === undefined || preds.length === 1) {
+    return first;
+  }
+
+  const second = specializeNarrowPred(preds[1].pred);
+
+  // IN `preds` ORDER, which is the WRITTEN order (inline before clause) and the order the
+  // `inlineHolds` loop below iterates — the same property item 1601's `composeInlineGate` keeps,
+  // so an inline filter matching nothing still short-circuits a faulting clause `WHERE`.
+  return second === undefined
+    ? undefined
+    : (element, env) => first(element, env) && second(element, env);
+};
+
 const buildNodeCount = <T>(
   start: NodePattern,
   rowOf: (n: number) => T,
@@ -341,10 +393,7 @@ const buildNodeCount = <T>(
   // caller pass `closedProps: false`, this is what keeps a specialized closure from evaluating a
   // correlated value against a binding the tally never wrote — items 121-123's correlation problem.
   // The cost is one comparison PER QUERY, not per element.
-  const fastPred =
-    preds.length === 1 && preds[0].bindVar === undefined
-      ? specializeSingleProp(preds[0].pred)
-      : undefined;
+  const fastPred = fastTallyPred(preds);
 
   // CONSTRAINED: tally the bucket. O(bucket) rather than O(1), but it is the same
   // walk the general path makes with none of the row building — and it is what lets
@@ -9315,7 +9364,7 @@ export const composeInlineGate = (preds: readonly InlinePred[]): InlineGate | un
 export const specializedConjunct = (
   ip: InlinePred,
 ): ((element: Vertex | Edge, env: EvalEnv) => boolean) | undefined =>
-  ip.bindVar === undefined ? specializeSingleProp(ip.pred) : undefined;
+  ip.bindVar === undefined ? specializeNarrowPred(ip.pred) : undefined;
 
 const nodeScanGate = (
   start: NodePattern,

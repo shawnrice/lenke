@@ -6959,6 +6959,152 @@ const SPECIALIZABLE: ReadonlySet<string> = new Set([
   'props',
 ]);
 
+/** The two carriers {@link specializeEqPair} can answer, both of them equality readings. */
+const PAIRABLE: ReadonlySet<string> = new Set(['props', 'eqProps']);
+
+/**
+ * TWO equality conjuncts as ONE straight-line closure, or `undefined` when the predicate is not
+ * that shape. The width-2 sibling of {@link specializeSingleProp}.
+ *
+ * ⚠️ ITEM 1604 — THE ARITY CLIFF, nominated by `bun run bench:usage` rather than by a profile.
+ * `read: keyed dedup lookup` is the slowest INDEXED read in the TS engine by 6-20x over its
+ * siblings (76.4k ops/s against 468k-1.49M) and the only indexed read row where TS LOSES to native
+ * (76.4k against 162.0k). Its query is `WHERE u.score = $s AND u.active = true` — and the planner
+ * says exactly why:
+ *
+ * ```text
+ *    WHERE u.score = $s AND u.active = true    carriers eqProps(2)           specializes FALSE
+ *    (u:User {score: $s}) WHERE u.active       carriers props(1) eqProps(1)  specializes FALSE
+ *    WHERE u.score = $s                        carriers eqProps(1)           specializes TRUE
+ * ```
+ *
+ * `specializeSingleProp` takes exactly one entry in exactly one carrier, so the one-conjunct shape
+ * is specialized and BOTH spellings of the two-conjunct one fall to the general `satisfies` loop.
+ * Priced over 1000 seeded candidates, two runs each, one shape per process:
+ *
+ * ```text
+ *    one-clause    20708  21140 ns     specialized
+ *    one-inline    21515  21759        specialized
+ *    two-clause    54575  56653        NOT                 2.7x the one-conjunct twin
+ *    two-inline    58921  59478        NOT
+ *    three-clause  76166  81336        NOT                 the next cliff, left there on purpose
+ * ```
+ *
+ * So the FIRST conjunct costs ~21 ns a candidate and each unspecialized one adds ~34.
+ *
+ * ⚠️ THE UNROLL IS THE SHAPE `filteredHopCount` ALREADY MEASURED, not a new idea: that function's
+ * header records a two-filter count at **54.81 ms against a one-filter 28.49**, an inline indexed
+ * loop at 41.79, monomorphic key/pred arrays at 43.82 ("so the polymorphic `Step` property load was
+ * NOT the cost — that hypothesis is refuted"), and an UNROLLED straight-line pair over captured
+ * locals at **30.25** — landing on the one-filter twin. The same cliff at the same arity in a
+ * different file, so this takes the answer that was already paid for.
+ *
+ * ⚠️ A SEPARATE FUNCTION, NOT A WIDENED `specializeSingleProp`. That function's guard structure —
+ * one populated carrier, iterate the keys PRESENT so an unknown carrier REFUSES rather than being
+ * ignored — exists because its first version used a hand-written list and MISSED FOUR CARRIERS,
+ * answering 5 where the right answer was 2. Widening it would put all five of its arms on the same
+ * change; this adds a second narrow contract beside it and leaves those untouched.
+ *
+ * ⚠️ BOTH SPELLINGS OR NEITHER. `props` and `eqProps` are admitted together, which is not
+ * generosity: specializing only the clause form would open a 2.7x EQUIVALENT-SPELLING GAP, the
+ * defect class this engine is named after, on the exact row that nominated the work.
+ *
+ * SEMANTICS ARE BOUND, NOT RE-DERIVED, and the two carriers' readings stay apart exactly as item
+ * 1598 established — `props` is the INLINE reading (plain `structuralEq`, so `{k: null}` matches a
+ * stored null and an absent key) and `eqProps` is the EXPRESSION one (a null right-hand side
+ * rejects outright). `satisfies` runs `props` BEFORE `eqProps`, so this emits them in that order
+ * and a faulting value expression still faults in the same place.
+ */
+export const specializeEqPair = (
+  pred: CPredicate,
+): ((element: Bound, env: EvalEnv) => boolean) | undefined => {
+  // The same INVERTED refusal `specializeSingleProp` uses: iterate the keys PRESENT on the
+  // predicate, so a carrier this function has never heard of makes it refuse rather than be
+  // ignored. A thirteenth carrier added to `CPredicate` must land here as a decline.
+  for (const [carrier, held] of Object.entries(pred)) {
+    if (held === undefined || (Array.isArray(held) && held.length === 0)) {
+      continue;
+    }
+
+    if (!Array.isArray(held) || !PAIRABLE.has(carrier)) {
+      return undefined;
+    }
+  }
+
+  const inline = pred.props;
+  const lifted = pred.eqProps ?? [];
+
+  // EXACTLY two entries across the two carriers. One is `specializeSingleProp`'s and is tried
+  // first by the call sites; three or more is the next cliff and keeps the general loop.
+  if (inline.length + lifted.length !== 2) {
+    return undefined;
+  }
+
+  // Straight-line over captured locals, in `satisfies`'s carrier order: both inline entries, then
+  // one of each, then both lifted. Three closures rather than a loop over a pair of arrays,
+  // because `filteredHopCount` measured the loop at 41.79 ms against the unroll's 30.25.
+  if (inline.length === 2) {
+    const [{ key: k0, value: v0 }, { key: k1, value: v1 }] = inline;
+
+    return (element, env) =>
+      structuralEq(propOf(element, k0), v0(env)) && structuralEq(propOf(element, k1), v1(env));
+  }
+
+  /**
+   * ⚠️ THE MIXED ARM IS NOT REACHED BY ANY ENGINE QUERY TODAY, and that is measured rather than
+   * assumed. Making it THROW left the suite green except for this file's own two direct tests — so
+   * every real query carrying both an inline and a clause constraint splits them into TWO
+   * `InlinePred`s, each width-1, which `fastTallyPred` composes from two `specializeSingleProp`
+   * results instead. A single pred holding both carriers only arrives from a hand-built
+   * `compilePredicate(properties, where, ownVar)` call.
+   *
+   * It stays, for `specializeSingleProp`'s own stated reason: nothing ENFORCES that split, so a
+   * caller that ever does combine them must find a correct arm here rather than a decline that
+   * silently costs 2.7x — or worse, a closure built for the wrong carrier. Item 475's rule is that
+   * a surviving mutant on a new guard means "redundant" as readily as "untested", and the two have
+   * opposite fixes; this is the redundant kind, with its semantics pinned by direct unit tests
+   * rather than left to a route that does not exist.
+   */
+  if (inline.length === 1) {
+    const [{ key: k0, value: v0 }] = inline;
+    const [{ key: k1, value: v1 }] = lifted;
+
+    return (element, env) => {
+      if (!structuralEq(propOf(element, k0), v0(env))) {
+        return false;
+      }
+
+      const rhs = v1(env);
+
+      return rhs === null || rhs === undefined ? false : structuralEq(propOf(element, k1), rhs);
+    };
+  }
+
+  const [{ key: k0, value: v0 }, { key: k1, value: v1 }] = lifted;
+
+  return (element, env) => {
+    const r0 = v0(env);
+
+    if (r0 === null || r0 === undefined || !structuralEq(propOf(element, k0), r0)) {
+      return false;
+    }
+
+    const r1 = v1(env);
+
+    return r1 === null || r1 === undefined ? false : structuralEq(propOf(element, k1), r1);
+  };
+};
+
+/**
+ * One closure for a predicate narrow enough to pre-resolve, trying the width-1 arms before the
+ * width-2 pair. The order is not load-bearing — the two are disjoint by entry count — but it keeps
+ * the cheaper, five-carrier function first, and it is ONE decision per QUERY either way.
+ */
+export const specializeNarrowPred = (
+  pred: CPredicate,
+): ((element: Bound, env: EvalEnv) => boolean) | undefined =>
+  specializeSingleProp(pred) ?? specializeEqPair(pred);
+
 export const specializeSingleProp = (
   pred: CPredicate,
 ): ((element: Bound, env: EvalEnv) => boolean) | undefined => {

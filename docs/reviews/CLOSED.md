@@ -68173,3 +68173,146 @@ every indexed graph and gains nothing. Both halves are pinned with the index pre
 
 `bun run check` 0 read unpiped. Suites gremlin 1694 (13 new), gql 4060, core 435, native 1031,
 serialization 144 — 0 fail. `bun run fuzz` 20/0 under the 16G cap.
+
+### Item 1604 — **1.29x / 1.37x on the ARITY CLIFF**: a second equality conjunct cost 2.7x and now costs ~1. Nominated by `bench:usage` rather than a profile, and the second half of the change exists only to stop it opening an equivalent-spelling gap
+
+Five items of profile-driven work had all come from one probe family, so this tick ran the broad
+regression sweep instead of picking another shape from it. The sweep nominated something no profile
+of mine would have.
+
+#### What the sweep said — ⚠️ AND MY FIRST READING OF IT REPEATED AN ERROR ITEM 1501 HAD ALREADY CORRECTED
+
+`read: keyed dedup lookup` reads 76.4k ops/s against other indexed reads at 468k-1.49M, and my first
+framing of this entry called it "the slowest indexed read by 6-20x over its siblings".
+
+⚠️ **THAT COMPARISON IS THE ONE ITEM 1501 STRUCK OUT**, in a block that is still in this file:
+"~~`read: keyed dedup lookup` is 5-11x slower than its siblings~~ — it is not slow: `WHERE u.score =
+$s` with `score = i % 100` over 20,000 users matches **200 rows** where `read: point lookup` matches
+**1**, so per row it is ~17x FASTER. Comparing ops/s across rows of different cardinality is the
+match-the-fixture trap." Item 1501 added that it "would have cost a whole tick". It was found here
+only by reading this file before committing, which is the discipline's whole point — and it is the
+third time this session that `CLOSED.md` has corrected the tick that was about to be written.
+
+**Two things about the row DO survive that correction, and they are what the work rests on:**
+
+- **Same query, two engines, same cardinality:** TS 76.4k against native 162.0k. It is the ONLY
+  indexed read row where TS loses, and that comparison has no cardinality confound.
+- **Same fixture, same cardinality, one conjunct against two** — which is the measurement that
+  actually nominated the change, and which no cross-row reading is involved in. The row's own
+  comment asked for exactly this: "use a standalone probe at ~1000 matches a seek to resolve the gap
+  itself".
+
+⚠️ **The sweep also says something worth keeping about where TS stands overall**, because it is the
+first run of it this session — and these ARE same-query cross-engine comparisons, so the
+cardinality trap above does not apply to them: indexed, TS BEATS native on most reads (point lookup
+1.49M against 476.6k, permission check 491.0k against 148.4k, 2-hop 596.9k against 243.6k) and is at
+parity or better on writes (append node [params] 540.0k against 451.0k). Unindexed it is 10-34x
+behind. So the TS engine's weakness is the unindexed scan, and the indexed rows — where it is
+already ahead — are where a regression would actually be felt.
+
+#### The cause, read off the planner rather than profiled
+
+```text
+   WHERE u.score = $s AND u.active = true    carriers eqProps(2)           specializes FALSE
+   (u:User {score: $s}) WHERE u.active       carriers props(1) eqProps(1)  specializes FALSE
+   WHERE u.score = $s                        carriers eqProps(1)           specializes TRUE
+```
+
+`specializeSingleProp` takes exactly ONE entry in exactly ONE carrier, so items 1598/1600's work
+answers the one-conjunct shape and refuses both spellings of the two-conjunct one. Priced over 1000
+seeded candidates, one shape per process:
+
+```text
+   one-clause    20708  21140 ns    specialized
+   two-clause    54575  56653       NOT          2.7x its one-conjunct twin
+   three-clause  76166  81336       NOT
+```
+
+The first conjunct costs ~21 ns a candidate and each unspecialized one adds ~34.
+
+⚠️ **The fix is the shape `filteredHopCount` had already paid for**, which is why this is a
+half-tick of building rather than a research item. That function's header records a two-filter count
+at **54.81 ms against a one-filter 28.49**, an inline indexed loop at 41.79, monomorphic key/pred
+arrays at 43.82 ("so the polymorphic `Step` property load was NOT the cost — that hypothesis is
+refuted"), and an unrolled straight-line pair over captured locals at **30.25**. Same cliff, same
+arity, different file.
+
+#### ⚠️ THE FIRST HALF ALONE WOULD HAVE OPENED A 2.7x SPELLING GAP, and a tripwire is what caught it
+
+`specializeEqPair` moved the clause row 1.27x and left the inline row **FLAT** — and the reason was
+invisible in the predicate, because the inline form's carriers (`props(1) eqProps(1)`) are exactly
+what the new function admits. A one-line stderr print of `bindVar` and the live carriers at the call
+site showed the inline shape **never arriving at all**: the ISO spelling reaches `buildNodeCount` as
+TWO `InlinePred`s (`inlineOf(start)` and `nodeWhereOf(where)`), and the gate there read
+`preds.length === 1`.
+
+`fastTallyPred` closes that: up to two preds, every one `bindVar`-free, each pre-resolved and
+composed in `preds` order (the written order, inline before clause, so an inline filter matching
+nothing still short-circuits a faulting clause `WHERE`). Shipping the first half alone would have
+put a 2.7x gap between two spellings of the row that nominated the work — the defect class this
+engine is named after. Item 1586's `fused-hits=0` lesson, in a new place.
+
+#### The numbers, an asserted A/B
+
+```text
+                 PRE                   POST                        verdict
+   two-clause    54575 56653    41555 41908 45567                  1.29x
+   two-inline    58921 59478    43759 44042 44053                  1.37x
+   one-clause    20708 21140    21058 21420 22144                  flat (control)
+   one-inline    21515 21759    20916 22054                        flat (control)
+   two-mixed     60459 61717    60007 64252                        flat (control)
+   three-clause  76166 81336    76854 77805                        flat (control)
+```
+
+Four controls flat, and **two of them are deliberately outside the gate** rather than merely
+unrelated: `two-mixed` is `eqProps + cmpProps` (an ordering carrier, whose reading this closure does
+not implement) and `three-clause` is three entries. A control that the change COULD have reached and
+did not is worth more than one it never could, and these two pin the gate's boundaries.
+
+#### Mutation: 12 of 13 caught, and the two rounds it took are the record
+
+```text
+   pair/inline-rejects-null        CAUGHT 4    pair/second-dropped       CAUGHT 1
+   pair/mixed-inline-rejects-null  CAUGHT 1    tally/composes-or         CAUGHT 6
+   pair/mixed-lifted-admits-null   CAUGHT 1    tally/width-unbounded     CAUGHT 1
+   pair/lifted-admits-null-first   CAUGHT 2    tally/bindvar-first-only  CAUGHT 1
+   pair/width-unbounded            CAUGHT 3    pair/never-fires          CAUGHT 1
+   pair/admits-cmpProps            CAUGHT 1    tally/never-fires         SURVIVED
+   pair/unknown-ignored            CAUGHT 2
+```
+
+⚠️ **`pair/mixed-lifted-admits-null` survived TWICE before it was caught, and both reasons are worth
+keeping.** The first null-matrix test put the null param on `k` — and no vertex has a null `k`, so
+`structuralEq(value, null)` is false either way and the mutant answered correctly BY ACCIDENT. A
+null test needs a key that actually holds nulls. The second attempt used a query spelling that never
+reaches the mixed arm at all (see below); what finally caught it was a direct differential case with
+the null on the LIFTED side of a hand-built mixed pred.
+
+#### ⚠️ AND THAT FOUND SOMETHING ELSE: the mixed arm is UNREACHABLE from any engine query
+
+Measured, not assumed, by the technique `specializeSingleProp` itself uses — making the arm THROW
+and running the suite. It fired 4 times, all of them **this file's own direct tests**. Every real
+query carrying both an inline and a clause constraint splits them into two width-1 preds, which
+`fastTallyPred` composes from two `specializeSingleProp` results; a single pred holding both
+carriers only arrives from a hand-built `compilePredicate(properties, where, ownVar)`.
+
+It stays, for the reason `specializeSingleProp` gives for its own two unreachable guards: nothing
+ENFORCES that split, so a caller that ever does combine them must find a correct arm rather than a
+decline costing 2.7x. Item 475's rule — a surviving mutant on a new guard means "redundant" as
+readily as "untested", and the two have opposite fixes — makes this the redundant kind, with its
+semantics pinned by direct unit tests rather than by a route that does not exist.
+
+#### The one survivor, and the generalization
+
+`tally/never-fires` replaces the CALL SITE with `undefined` and survives. The route is
+answer-equivalent, so no test of answers can see it, and the decision itself IS extracted and tested
+(`perf-gate-needs-its-own-test`) — what is unprotected is the WIRING. ⚠️ **That hole is not specific
+to this item**: items 1600/1601's equivalent mutants were caught only because they mutated the
+FUNCTION. Every fast-arm call site in `shortcuts.ts` has the same unguarded wiring, and nothing short
+of a timing assertion (which this repo refuses in CI, correctly) would catch it. Recorded rather than
+papered over.
+
+#### Gates
+
+`bun run check` 0 read unpiped. Suites gql 4079 (19 new), gremlin 1694, core 435, native 1031,
+serialization 144 — 0 fail. `bun run fuzz` 20/0 under the 16G cap.
