@@ -65170,7 +65170,7 @@ faulting `by` still raises when its item would not have been kept.
 No change to ship — measurement only; `git status` clean apart from this entry. `bun run check` 0
 read unpiped. Suites unchanged from item 1572.
 
-### Item 1574 — SHIPPED, **2.07x** on Gremlin paging (`order().limit(10)` 55.2 → 26.6 ms at 200,000 values, full-sort control flat) and **2.42x** on the element spelling: `order()` followed by `take(n)` now takes a bounded top-k. ⚠️ Item 1573 priced the cross-surface gap at 10.0x and **only half of it was the algorithm** — GQL is still 4.4x ahead, and the reason is identified
+### Item 1574 — SHIPPED, **2.07x** on Gremlin paging (`order().limit(10)` 55.2 → 26.6 ms at 200,000 values, full-sort control flat) and **2.42x** on the element spelling: `order()` followed by `take(n)` now takes a bounded top-k. ⚠️ Item 1573 priced the cross-surface gap at 10.0x and **only half of it was the algorithm** — GQL is still 4.4x ahead. ⚠️ **And "the reason is identified" OVERSTATED it: item 1575 measured the addressable part at ~1.54x, not 4.4x** — the rest is producing the traversers, which no change here can avoid
 
 Item 1573 measured the gap and designed the fix; this builds it.
 
@@ -65251,3 +65251,77 @@ now one options object rather than four trailing positional values nobody can re
 gql 3964/0, **gremlin 1536/0** (11 new in `order-take-topk.test.ts`), native 963/0,
 serialization 144/0, `bun run fuzz` 20/0 — the cross-engine check that matters here, since tie order
 is compared against native.
+
+### Item 1575 — ⚠️ **ITEM 1574'S "4.4x on `[...stream]`" WAS AN UNMEASURED ATTRIBUTION; the real streaming ceiling is ~1.54x.** And the prerequisite turned out to be a missing test: item 890 recorded `sortByBys`' two-phase fault order as _"guarded by construction only, by no test"_, and it is now guarded — **a fuse-phases mutant fails 2 tests where 1,538 others pass**
+
+Item 1574 shipped a top-k and attributed the remaining gap to GQL as "4.4x materialization". That was
+a hypothesis stated as a cause. Pricing it changed the number and then changed the plan.
+
+#### What `[...stream]` actually costs
+
+First pass: `[...stream]` is **64.8%** of the capped path (92.5 ms of 142.6 over 5 reps). That reads
+like a 2.8x ceiling — and it is wrong, because the stream is LAZY: the spread's time is upstream
+generator work PLUS array growth, and streaming still pays the former.
+
+Decomposed with a drain arm that iterates without accumulating:
+
+```text
+   SPREAD  [...stream]      consume 102.4 ms   sort 51.2     (5 reps, 200,000 values)
+   DRAIN   for-of, no array consume  48.8      sort  0.0
+   => array accumulation ~= 53.6 ms of 153.6 total  ->  ~1.54x, not 2.8x and not 4.4x
+```
+
+Still above the repo's ~10% floor, so worth having — but a third of what item 1574's entry implied.
+**That entry's "4.4x" is corrected to "~1.54x of it is addressable"**; the rest is producing the
+200,000 traversers, which no change to `orderStep` can avoid.
+
+⚠️ **Two instrument bugs on the way, both caught by a control reading wrong rather than by review:**
+
+- The drain arm was gated on `process.env.OS_DRAIN !== undefined`, and `OS_DRAIN=""` satisfies that —
+  so BOTH arms drained. The giveaway was `sort=0.0` in the arm that was supposed to sort. Fixed to
+  `=== '1'`; the arms then read 102.4/51.2 against 48.8/0.0, visibly distinct.
+- The first spread/drain comparison therefore reported 46.8 against 50.1 — "accumulation is free" —
+  which is the conclusion I would have published.
+
+That is CLAUDE.md's "assert each A/B arm IS the code it claims" rule, and the assertion that worked
+was not a grep but a field that had to be non-zero in one arm and zero in the other.
+
+#### ⚠️ THE PREREQUISITE WAS A MISSING TEST, AND IT IS NOW WRITTEN
+
+`sortByBys` evaluates every key BEFORE the element check, so _"an `evalBy` that throws still wins over
+the element fault"_. Item 890's method note says that phase order **"is guarded by construction only,
+by no test"** — and a streaming top-k is exactly a per-item loop, which would surface the ELEMENT
+error where the engine surfaces the `by` throw. A different exception from the same query, which the
+cross-engine differential compares.
+
+It went untested because the case is awkward to construct: `order().by(fn)` with a raw function is
+not a supported form (it is read as a plan, and fails with "plan.steps is not iterable"). The
+construction that works is `by(pipe(fail(...)))`, plus a `choose` so one item's `by` yields an
+ELEMENT and another's THROWS:
+
+```text
+   by = choose(has(flag), pipe(out(E)), pipe(fail(BY-BOOM)))
+     `a` has flag -> key is a VERTEX (element), and `a` arrives FIRST
+     `b` lacks it -> the by THROWS
+   measured: BY-BOOM wins                     <- the documented precedence, confirmed
+   control, element key only: the element error
+```
+
+**Mutation proves the teeth**: fusing the phases (check each key for an element as it is evaluated,
+instead of after all of them) fails **exactly the two precedence tests** while the other **1,538**
+gremlin tests pass. Two of the four tests also pin the precedence UNDER A CAP, so item 1574's top-k
+cannot let the heap filling decide which fault wins.
+
+#### Not built, and why that is now a choice rather than a risk
+
+The streaming change is ~1.54x, the invariant it would disturb is now guarded, and the shape is
+clear: one pass, a heap of at most `cap`, element faults DEFERRED to the end of the loop so a later
+throwing `by` still wins. What is left is the work itself, which wants its own item rather than
+riding on an entry whose main result is a corrected number and a closed test gap.
+
+#### Gates
+
+No engine change — `aggregation.ts` is byte-identical to its pre-tick copy (verified by `diff`); the
+instrumentation was temporary and the only addition is the test file. `bun run check` 0 read unpiped.
+Suites: core 431/0, gql 3964/0, **gremlin 1540/0** (4 new in `order-fault-precedence.test.ts`),
+native 963/0, serialization 144/0, `bun run fuzz` 20/0.
