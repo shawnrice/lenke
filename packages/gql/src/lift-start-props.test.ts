@@ -79,16 +79,44 @@ describe('a multi-pattern MATCH lifts its inline start props', () => {
   });
 });
 
-describe('the refusals, each of which a mutant tried to remove', () => {
-  test('a SINGLE bare node stays inline — the scan rungs already serve it', () => {
-    // Refused on measured grounds, unlike the multi-pattern refusal this item removed: braces and
-    // the clause WHERE read 3.36 against 3.55 ms for a bare node, so lifting gains nothing.
+describe('item 1558: a SINGLE bare node lifts too, and the refusal that blocked it was mispriced', () => {
+  // The refusal here used to read "the scan rungs already serve it and the lift gains nothing —
+  // measured equal at 3.36 against 3.55 ms". That equality came from timing all three spellings of
+  // the group in ONE process, where the clause arm runs second through sites the inline arm has
+  // just made polymorphic. One shape per process: inline is 1.37-1.56x slower WITHOUT the lift
+  // (0.26/3.79/11.81 against 0.19/2.43/7.93) and both twins are flat.
+  test('it lifts', () => {
     const m = matchOf('MATCH (b:P {k: 7}) RETURN b.k AS x');
 
-    expect(m.where).toBeUndefined();
-    expect(inlineCounts(m)).toEqual([1]);
+    expect(m.where).toBeDefined();
+    expect(inlineCounts(m)).toEqual([0]);
   });
 
+  // ⚠️ THE ROUTE ASSERTION ABOVE IS NOT ENOUGH, and this is the half that matters: item 778 records
+  // that lifting on a bare node is exactly where "one rung's admission gate is another rung's
+  // disqualifier" bit — a lifted clause `WHERE` disqualified the unbounded BFS rung and turned two
+  // `reachability.test.ts` passes into errors. So pin ANSWERS, for the bare node and for the
+  // quantified shape next to it that must still refuse.
+  test('the answers are unchanged, including the quantified neighbour that still refuses', () => {
+    const g = new Graph();
+    const a = g.addVertex({ id: 'a', labels: ['N'], properties: { k: 1 } });
+    const b = g.addVertex({ id: 'b', labels: ['N'], properties: { k: 2 } });
+    const c = g.addVertex({ id: 'c', labels: ['N'], properties: { k: 1 } });
+
+    g.addEdge({ id: 'e1', from: a, to: b, labels: ['E'] });
+    g.addEdge({ id: 'e2', from: b, to: c, labels: ['E'] });
+
+    // The lifted shape: a bare node with an inline property, both spellings and the empty case.
+    expect(query(g, 'MATCH (n:N {k: 1}) RETURN count(*) AS c')[0]?.c).toBe(2);
+    expect(query(g, 'MATCH (n:N) WHERE n.k = 1 RETURN count(*) AS c')[0]?.c).toBe(2);
+    expect(query(g, 'MATCH (n:N {k: 9}) RETURN count(*) AS c')[0]?.c).toBe(0);
+
+    // The quantified rung the lift must NOT reach — item 778's actual regression.
+    expect(query(g, 'MATCH (n:N {k: 1})-[:E]->+(m) RETURN count(DISTINCT m) AS c')[0]?.c).toBe(2);
+  });
+});
+
+describe('the refusals, each of which a mutant tried to remove', () => {
   test('a clause binding a PATH variable does not lift', () => {
     // The regression the suite caught: the collision in `MATCH p = …, (p:P …)` raises only because
     // the product shortcut DECLINES, and a lifted `where` routed it elsewhere so it answered 0.

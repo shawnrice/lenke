@@ -9952,7 +9952,6 @@ export const liftStartProps = (clauses: readonly Clause[]): readonly Clause[] =>
       return c;
     }
 
-    const single = c.patterns.length === 1;
     const conjuncts: Expr[] = [];
 
     const patterns = c.patterns.map((pattern) => {
@@ -9963,10 +9962,22 @@ export const liftStartProps = (clauses: readonly Clause[]): readonly Clause[] =>
       if (
         name === undefined ||
         props.length === 0 ||
-        // A BARE NODE in a SINGLE-pattern clause still stays inline, exactly as before: the scan
-        // rungs already serve it and the lift gains nothing — measured equal at 3.36 against 3.55
-        // ms. In a PRODUCT a bare node is NOT served that way, which is the whole point here.
-        (single && pattern.segments.length === 0) ||
+        // ⚠️ THE BARE-NODE REFUSAL USED TO LIVE HERE AND IT WAS PRICED WRONG (item 1558). Its own
+        // comment read "the scan rungs already serve it and the lift gains nothing — measured equal
+        // at 3.36 against 3.55 ms", and that equality was an INSTRUMENT ARTIFACT: the three
+        // spellings of the group were timed in ONE process, so the clause arm ran second through
+        // call sites the inline arm had just made polymorphic (item 762's redistribution shape).
+        // One shape per process, three runs each, the inline spelling is 1.37-1.56x SLOWER without
+        // the lift and both twins are flat:
+        //
+        //     config            arm      PRE     POST
+        //     indexed, 200k     inline   0.26    0.19   1.37x   clause 0.19 -> 0.19
+        //     scan,    200k     inline   3.79    2.43   1.56x   clause 2.56 -> 2.43
+        //     scan,    600k     inline  11.81    7.93   1.49x   clause 7.38 -> 7.47
+        //
+        // The indexed row is the one that had to be checked before taking it: lifting an inline
+        // property into a clause `WHERE` could have cost the index SEEK, and it does not — all
+        // three spellings converge at 0.19 ms, so the seeder recognizes the lifted form.
         // A QUANTIFIED segment stays inline, and this one was found by the suite rather than
         // reasoned out. Lifting is not free: a clause `WHERE` DISQUALIFIES the unbounded
         // var-length BFS rung, so `MATCH (a:N {k: 1})-[:E]->+(b) RETURN DISTINCT b` stopped

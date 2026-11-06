@@ -63751,7 +63751,7 @@ Two groups flagged and not yet confirmed: `node count: inline vs clause WHERE` (
 `a product's one-sided predicate: comma vs MATCH MATCH (item 285)` (2.11x). Both want the probe's
 own three-isolated-runs treatment before being treated as findings.
 
-### Item 1557 — confirmed the sweep's other two flags and **both are in-sweep artifacts, not findings**. Of three groups the full `bun run spelling` flagged, ONE was a real 5.96x regression (item 1556) and TWO were the harness. That ratio is the useful output: it is the probe's own documented behaviour, and it is why its output tells you to confirm alone
+### Item 1557 — ⚠️ **HALF WRONG, corrected by item 1558: one of the two flags I dismissed here was REAL (1.37-1.56x, taken).** Only the product one was an artifact. ~~confirmed the sweep's other two flags and both are in-sweep artifacts, not findings~~. Of three groups the full `bun run spelling` flagged, ONE was a real 5.96x regression (item 1556) and TWO were the harness. That ratio is the useful output: it is the probe's own documented behaviour, and it is why its output tells you to confirm alone
 
 Item 1556 took the largest of three flags. The probe's own instruction for the rest is explicit —
 _"CONFIRM EACH BEFORE TREATING IT AS A FINDING — a flag can still be this harness. Re-run the group
@@ -63798,3 +63798,107 @@ target that may not exist.
 
 No code change — `git status` clean apart from this entry. The suites stand at item 1556's:
 core 431/0, gql 3883/0, gremlin 1500/0, native 963/0, serialization 144/0, `bun run fuzz` 20/0.
+
+### Item 1558 — ⚠️ **ITEM 1557 WAS HALF WRONG AND THIS CORRECTS IT.** The `node count: inline vs clause` flag I dismissed as an in-sweep artifact was a real **1.37-1.56x**, and the refusal behind it had been priced with the very instrument error I used to dismiss it: **all three spellings timed in ONE process**. Taken on the bare node; both twins flat; the index seek survives
+
+Item 1557 confirmed two of the sweep's three flags as harness artifacts and closed them. One of them
+was not. The correction matters more than the win, because the same mistake appears **twice** here —
+once in 2026's refusal comment and once in my own entry one tick earlier.
+
+#### THE INSTRUMENT ERROR, which is the whole item
+
+`liftStartProps` refused to lift a bare node in a single-pattern clause, and its comment gave a
+measured reason: _"the scan rungs already serve it and the lift gains nothing — measured equal at
+3.36 against 3.55 ms."_ Item 1557 then dismissed the flag on the same shape and even identified this
+exact code, writing _"the convergence is the isolation and not the change."_ Right code, wrong
+conclusion, both times.
+
+Both readings came from timing the three spellings of the group **in one process**. That is item
+762's redistribution shape, and here it is large enough to invert the verdict:
+
+|                           | inline | clause   | pattern WHERE | reported gap |
+| ------------------------- | ------ | -------- | ------------- | ------------ |
+| all three in ONE process  | 3.73   | **1.74** | 2.38          | 2.14x        |
+| **one shape per process** | 3.79   | **2.56** | 2.59          | **1.48x**    |
+
+The clause arm is measured **second**, through call sites the inline arm has just made polymorphic,
+and it reads 1.74 instead of its true 2.56 — 1.47x flattered. So the in-process instrument inflates
+the _gap_ while the isolated-group instrument (`SPELL_ONLY`, which also runs all three arms in one
+process) **hides it entirely**: the group converges to 1.01-1.05x both before and after the fix, so
+item 1557's three confirming runs could not have distinguished them. Neither reading was the honest
+one; only one shape per process is.
+
+⚠️ **And I nearly mis-concluded a third time.** My first lifted build, still all-arms-in-one-process,
+reported the clause arm 1.39x SLOWER (1.74 → 2.42) and I wrote that off as a ~40% noise floor. It was
+neither a regression nor noise — it was the artifact disappearing, because once the lift routes the
+inline spelling through the clause's route the clause arm no longer gets the free warm-up. Five
+repeats showed both arms stable to ±3%, which is what made it clear the swing was systematic.
+
+#### THE MEASUREMENT, one shape per process, three runs each
+
+| config        | arm              | PRE   | POST     |           |
+| ------------- | ---------------- | ----- | -------- | --------- |
+| indexed, 200k | inline `{k: 2}`  | 0.26  | **0.19** | **1.37x** |
+|               | clause `n.k = 2` | 0.19  | 0.19     | flat      |
+|               | pattern `WHERE`  | 0.19  | 0.19     | flat      |
+| scan, 200k    | inline           | 3.79  | **2.43** | **1.56x** |
+|               | clause           | 2.56  | 2.43     | flat      |
+|               | pattern          | 2.59  | 2.52     | flat      |
+| scan, 600k    | inline           | 11.81 | **7.93** | **1.49x** |
+|               | clause           | 7.38  | 7.47     | flat      |
+
+Consistent across the seek path, the scan path and a 3x size sweep, and **flat on every twin** — the
+control that says this is the inline spelling getting faster rather than a redistribution.
+
+**The indexed row is the one that had to be checked before taking it.** Lifting an inline property
+into a clause `WHERE` could plausibly have cost the index SEEK, which would have traded 1.56x on a
+scan for far more on a seek. It does not: all three spellings converge at 0.19 ms, so the seeder
+recognizes the lifted form. (Consistent with item 1333's finding that inline props seed through
+`indexCandidates`'s `node.pred.props` path independently of the lift.)
+
+#### Why it was safe, and the one refusal next to it that is NOT
+
+Item 778 records that lifting on a bare node is exactly where _"one rung's admission gate is another
+rung's disqualifier"_ bit: a lifted clause `WHERE` disqualified the unbounded var-length BFS rung and
+turned two `reachability.test.ts` passes into errors. So the suite, not the reasoning, was the
+load-bearing check here — and it passes: **3884/0 gql** with the refusal removed, `reachability`
+included. The QUANTIFIED refusal beside it stays, and it is what protects that rung.
+
+#### Mutation
+
+Both mutants caught, each verified **applied** by a mutator that exits 2 on a non-unique or no-op
+anchor (item 1536's rule, and it earned itself again this tick — a `sed` whose `|` delimiter
+collided with `||` silently produced a null run that read as a surviving mutant):
+
+| mutant                        | caught by                                            |
+| ----------------------------- | ---------------------------------------------------- |
+| restore the bare-node refusal | `item 1558 … > it lifts`                             |
+| drop the QUANTIFIED refusal   | `the refusals … > a QUANTIFIED segment stays inline` |
+
+⚠️ **One honest limit.** The new ANSWER test pins the lifted bare-node answers (2/2/0) and adds a
+quantified-neighbour assertion, but that assertion **does not catch the `drop-quantified` mutant** —
+it passed, and only the existing route test failed. Item 778's regression was a trail-budget fault
+that needs a larger fixture than this one. The assertion is kept because it pins an answer cheaply,
+but the teeth on that refusal are the route test's, not its.
+
+#### Gates
+
+`bun run check` 0 read unpiped (two files needed `bun run fmt` first). Suites: core 431/0,
+**gql 3884/0**, gremlin 1500/0, native 963/0, serialization 144/0. `bun run fuzz` 20/0.
+`SPELL_ONLY='node count'` converges 1.01-1.05x over three runs — which, per the above, is the
+instrument that cannot see this either way.
+
+**The confirmation that counts is the FULL sweep, because that is where the flag lived.** The group
+read 2.56x and then 2.51x across two sweeps before this change; after it, in a sweep run the same
+way, **3.05 / 3.30 / 3.28 ms — 1.08x**. A flag that survives isolation-by-group but only closes when
+the code changes is the shape to remember: the sweep was right and the confirmation step was blind.
+
+**That sweep came back at `0 group(s) over 2x AND clear of the nearest null control`, with
+`0 group(s) disagree on the ANSWER`** — the first entirely clean full sweep, from three flags two
+items ago. The sequence was: item 1556 took the one flag I believed (5.96x), item 1557 dismissed the
+other two, and item 1558 found that one of those dismissals was wrong. So **two of the three flags
+were real and the triage rule caught only one of them** — the inverse of the ~1-in-3 survival rate
+item 1557 recorded as "the useful output".
+
+The probe is `packages/native/dispatch-pollution-probe.mjs`, which gained an `ONLY=<arm>` knob for
+exactly this reason; its header now carries the artifact as a worked example.
