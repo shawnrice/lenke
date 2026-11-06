@@ -201,3 +201,101 @@ export const seededNodeValuesShortcut = (plan: Plan, graph: Graph): NodeValues |
     drain: () => [...walk()],
   };
 };
+
+/**
+ * `V()[.hasLabel(L)].has(k, eq(v)).count()` — the SEEDED COUNT, answered off the bucket's SIZE
+ * (item 1596).
+ *
+ * ⚠️ WHY NOBODY ANSWERED THIS ALREADY, because it looks like `countShortcut`'s job.
+ * `filterChainCount` declines a `has` the moment `seekWorthTaking` says a seek beats a scan —
+ * deliberately, leaving the shape to the seeding path. But the seeding path then runs the TRAVERSER
+ * PIPELINE over the seeded stream, so the shape falls between the two: recognised as seekable,
+ * answered by neither in closed form.
+ *
+ * Measured over 20,000 indexed vertices, per operation, against ISO-GQL's
+ * `MATCH (u:User) WHERE u.name = $v RETURN count(*)`:
+ *
+ * ```text
+ *   count, unique key    gql 420 ns    gremlin 2486    5.92x   <- the worst ratio in the family
+ *   values, unique key   gql 495       gremlin 1743    3.52x   (item 1595 took this one)
+ * ```
+ *
+ * The seeded count was SLOWER than the seeded projection, which is the tell: a count should never
+ * cost more than reading a property off the same elements.
+ *
+ * ⚠️ WITH NO LABEL IT IS O(1) — the bucket's `size`, no iteration at all. With a label it is one
+ * pass over the bucket, which is still the minimum: a label is not in the index, so the elements
+ * have to be looked at. Both rest on the same `removable` claim item 1595 documents — the bucket IS
+ * the matching set for an `eq` on a plain `has` over an indexed key, which is `seedForStep`'s own
+ * existing contract and not a new one.
+ */
+/**
+ * A GLOBAL `count` terminal. `count(local)` counts within each element, which is a different
+ * question — the same guard `countShortcut` states for its own terminal, and the distinction is
+ * only visible once there are SEVERAL matches: on one match both scopes answer `[1]`, which is why
+ * a mutant admitting `local` survived until the tests counted seven.
+ *
+ * At module scope because it captures nothing, so an inner definition would allocate per call —
+ * and this file's whole reason for existing is per-call cost.
+ */
+const isGlobalCount = (step: Step | undefined): boolean =>
+  step?.kind === 'count' && step.scope !== 'local';
+
+const seededCountShape = (
+  steps: readonly Step[],
+): { labels: readonly string[] | undefined; has: Extract<Step, { kind: 'has' }> } | undefined => {
+  const [source, second, third, fourth] = steps;
+
+  if (source?.kind !== 'V' || (source.ids?.length ?? 0) > 0) {
+    return undefined;
+  }
+
+  if (steps.length === 3 && second?.kind === 'has' && isGlobalCount(third)) {
+    return { labels: undefined, has: second };
+  }
+
+  if (
+    steps.length === 4 &&
+    second?.kind === 'hasLabel' &&
+    third?.kind === 'has' &&
+    isGlobalCount(fourth)
+  ) {
+    return { labels: second.labels, has: third };
+  }
+
+  return undefined;
+};
+
+export const seededNodeCountShortcut = (plan: Plan, graph: Graph): number | undefined => {
+  const shape = seededCountShape(plan.steps);
+
+  if (shape === undefined) {
+    return undefined;
+  }
+
+  const candidate = seedForStep(shape.has, graph.vertexPropertyIndex);
+
+  // `removable: false` means the bucket only NARROWS — a range seed, or a `hasLabelAnd` whose label
+  // the bucket does not capture — so its size is not the answer.
+  if (candidate === null || !candidate.removable) {
+    return undefined;
+  }
+
+  const bucket = candidate.build();
+  const { labels } = shape;
+
+  if (labels === undefined) {
+    return bucket.size;
+  }
+
+  let n = 0;
+
+  for (const v of bucket) {
+    // `hasLabel`'s own rule: ANY of the named labels is a pass, not all of them.
+    if (labels.some((l) => v.labels.has(l))) {
+      n += 1;
+    }
+  }
+
+  return n;
+};

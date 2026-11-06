@@ -21,10 +21,10 @@ import { describe, expect, test } from 'bun:test';
 import { Graph } from '@lenke/core';
 
 import { eq, gte, within } from '../predicates.js';
-import { V, has, hasLabel, limit, values } from '../steps.js';
+import { Scope, V, count, has, hasLabel, limit, values } from '../steps.js';
 import { traversal } from '../traversal.js';
 import { effectivePlan, toArray } from './index.js';
-import { seededNodeValuesShortcut } from './node-values.js';
+import { seededNodeCountShortcut, seededNodeValuesShortcut } from './node-values.js';
 
 /**
  * Vertices inserted in a SCRAMBLED order, so bucket order and scan order are not the same sequence
@@ -195,5 +195,120 @@ describe('the ROUTE — answer-equivalent, so it needs its own test', () => {
     // No `has` at all: `nodeValuesShortcut` owns that, and this one must not claim it.
     expect(takes(traversal(V(), values('score')), g)).toBe(false);
     expect(takes(traversal(V(), hasLabel('User'), values('score')), g)).toBe(false);
+  });
+});
+
+/**
+ * The COUNT twin (item 1596) — `V()[.hasLabel(L)].has(k, eq(v)).count()` off the bucket's size.
+ *
+ * ⚠️ `countShortcut` declines this shape ON PURPOSE: `filterChainCount` refuses a `has` the moment
+ * `seekWorthTaking` says a seek beats a scan, leaving it to the seeding path — which then ran the
+ * traverser pipeline. So it was recognised as seekable and answered in closed form by neither, and
+ * the tell was that the seeded COUNT cost MORE than the seeded projection (2486 ns against 1743).
+ */
+describe('the seeded count agrees with the pipeline', () => {
+  // ⚠️ A count is TERMINAL, so the shortcut cannot be defeated by appending a step. A vacuous
+  // `limit` BEFORE the count does it instead — it changes no answer and makes the step list a
+  // shape the gate refuses, so the pipeline answers.
+  const CASES: Array<readonly [string, () => Parameters<typeof traversal>]> = [
+    ['eq with a label', () => [V(), hasLabel('User'), has('name', eq('dup')), count()]],
+    ['eq, no label', () => [V(), has('name', eq('dup')), count()]],
+    ['a label that NARROWS', () => [V(), hasLabel('Admin'), has('name', eq('dup')), count()]],
+    [
+      'a MULTI-LABEL hasLabel (some, not every)',
+      () => [V(), hasLabel('User', 'Admin'), has('name', eq('dup')), count()],
+    ],
+    ['a label nothing carries', () => [V(), hasLabel('ZZZ'), has('name', eq('dup')), count()]],
+    ['no match', () => [V(), has('name', eq('nope')), count()]],
+    ['an UNINDEXED key', () => [V(), has('score', eq(4)), count()]],
+    ['a RANGE predicate', () => [V(), has('name', gte('d')), count()]],
+    ['a WITHIN predicate', () => [V(), has('name', within('dup', 'other')), count()]],
+  ];
+
+  for (const [name, parts] of CASES) {
+    test(name, () => {
+      const g = build();
+      const all = parts();
+      const head = all.slice(0, -1);
+
+      expect(toArray(traversal(...all), g)).toEqual(
+        toArray(traversal(...head, limit(1000), count()), g),
+      );
+    });
+  }
+
+  test('the counts are the LITERAL values, not just agreement', () => {
+    const g = build();
+
+    // ⚠️ COUNTED OFF THE FIXTURE, and my first attempt at these got them wrong — the
+    // pipeline-comparison tests above all passed while four literals here were off by one, because
+    // `u3`'s special case (no `score`) ALSO gives it `name: 'dup'`, overriding the parity rule.
+    // That is the argument for having both kinds: the comparisons prove the two paths agree, and
+    // only a literal proves they agree on the right number.
+    //
+    //   name 'dup':   u0 u2 u3 u4 u6 u8 and `z`          -> 7
+    //   name 'other': u1 u5 u7 u9                        -> 4
+    //   labels: u0-u4 ['User'], u5-u9 ['User','Admin'], z ['Other']
+    expect(toArray(traversal(V(), has('name', eq('dup')), count()), g)).toEqual([7]);
+    expect(toArray(traversal(V(), has('name', eq('other')), count()), g)).toEqual([4]);
+    // `z` carries `dup` but not `User`, so the label drops exactly one.
+    expect(toArray(traversal(V(), hasLabel('User'), has('name', eq('dup')), count()), g)).toEqual([
+      6,
+    ]);
+    // Only u6 and u8 carry Admin among the `dup` matches.
+    expect(toArray(traversal(V(), hasLabel('Admin'), has('name', eq('dup')), count()), g)).toEqual([
+      2,
+    ]);
+    // hasLabel(a, b) passes EITHER, so this is the User count and not the Admin one — the
+    // some-vs-every distinction, pinned as a number.
+    expect(
+      toArray(traversal(V(), hasLabel('User', 'Admin'), has('name', eq('dup')), count()), g),
+    ).toEqual([6]);
+  });
+});
+
+describe('the seeded count ROUTE — answer-equivalent, so its own test', () => {
+  const takes = (t: ReturnType<typeof traversal>, g: Graph): boolean =>
+    seededNodeCountShortcut(effectivePlan(t, g, false), g) !== undefined;
+
+  test('it fires for the shape, with and without a label', () => {
+    const g = build();
+
+    expect(takes(traversal(V(), has('name', eq('dup')), count()), g)).toBe(true);
+    expect(takes(traversal(V(), hasLabel('User'), has('name', eq('dup')), count()), g)).toBe(true);
+  });
+
+  test('an unindexed key, a range predicate and a seeded source all decline', () => {
+    const g = build();
+
+    expect(takes(traversal(V(), has('score', eq(4)), count()), g)).toBe(false);
+    expect(takes(traversal(V(), has('name', gte('d')), count()), g)).toBe(false);
+    expect(takes(traversal(V('u2'), has('name', eq('dup')), count()), g)).toBe(false);
+  });
+
+  test('a terminal that is not a global count declines', () => {
+    const g = build();
+
+    expect(takes(traversal(V(), has('name', eq('dup')), values('score')), g)).toBe(false);
+    expect(takes(traversal(V(), has('name', eq('dup'))), g)).toBe(false);
+  });
+
+  test('⚠️ count(LOCAL) declines, and its answer is a DIFFERENT question', () => {
+    const g = build();
+
+    expect(takes(traversal(V(), has('name', eq('dup')), count(Scope.local)), g)).toBe(false);
+    // ⚠️ PINNED AS AN ANSWER TOO, because the route assertion alone did not catch a mutant that
+    // admitted `local`: on a single-match fixture both scopes answer `[1]`, so they only differ
+    // once there are several matches. Global counts the STREAM (one row, seven); local counts
+    // WITHIN each element (seven rows of one).
+    expect(toArray(traversal(V(), has('name', eq('dup')), count()), g)).toEqual([7]);
+    expect(toArray(traversal(V(), has('name', eq('dup')), count(Scope.local)), g)).toHaveLength(7);
+  });
+
+  test('the unfiltered count is left to countShortcut', () => {
+    const g = build();
+
+    expect(takes(traversal(V(), count()), g)).toBe(false);
+    expect(takes(traversal(V(), hasLabel('User'), count()), g)).toBe(false);
   });
 });

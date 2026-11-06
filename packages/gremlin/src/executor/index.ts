@@ -30,7 +30,11 @@ import { applyStep } from './dispatch.js';
 import { hopValuesShortcut } from './hop-values.js';
 import { seedFromIndex, tailIsOrderFree } from './index-seed.js';
 import { matchStep } from './match.js';
-import { nodeValuesShortcut, seededNodeValuesShortcut } from './node-values.js';
+import {
+  nodeValuesShortcut,
+  seededNodeCountShortcut,
+  seededNodeValuesShortcut,
+} from './node-values.js';
 import { groupCountShortcut } from './projection.js';
 import { newContext, planReadsPath, startTraverser, type Traverser, unwrap } from './runtime.js';
 import { applySource } from './sources.js';
@@ -1884,6 +1888,16 @@ export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
 
   if (seededValues !== undefined) {
     return seededValues;
+  }
+
+  // The COUNT twin (item 1596). `countShortcut` above declines this shape on purpose —
+  // `filterChainCount` refuses a `has` the moment a seek looks better — and the seeding path then
+  // runs the pipeline, so it was answered in closed form by neither. With no label it is the
+  // bucket's `size`, O(1).
+  const seededCount = ctx.tracksPath ? undefined : seededNodeCountShortcut(effective, graph);
+
+  if (seededCount !== undefined) {
+    return [seededCount];
   }
 
   // `V().out(T).values(k)` likewise answers the whole plan — one walk instead of the traverser

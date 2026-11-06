@@ -67270,3 +67270,102 @@ parameters at ~17% rather than the ~50% previously recorded) and the rest is the
 `toArray`'s drain. The next comparable step would be the same treatment for `has(k, eq(v))` with a
 terminal other than `values` — `count()` and the element projection are the obvious two — but each is
 its own shape and wants its own measurement.
+
+⚠️ **PRICED AND PARTLY TAKEN AT 1596.** `count()` was the worst of the family (5.92x, and WORSE than
+`values`) and is now **2.41x faster at one hit, 8.90x at 400** off the bucket's size. The element
+projection was priced at 4.00x and left. And the pricing found something the one-shape view could
+not: at 400 hits GQL LOSES to Gremlin on both values and count, so the per-hit cost is the wider gap.
+
+### Item 1596 — **2.41x on the seeded `count()` and 8.90x at 400 hits**, by answering it off the bucket's SIZE. The shape fell between two shortcuts: `countShortcut` declines it ON PURPOSE and the seeding path then ran the pipeline. ⚠️ And pricing the candidates first found a bigger one than the one I came for
+
+Item 1595's closing note named "the same seek with a terminal other than `values`" as the next
+candidate. Naming is not pricing, so this measured the family first — items 1587, 1589 and 1594 each
+built something the numbers then refused, and the cheap version of that lesson is to price before
+building.
+
+#### The pricing, which redirected the tick
+
+Six seeded serving shapes, 20,000 indexed vertices, per operation, answers asserted equal:
+
+```text
+   values, unique key     gql   495    gremlin  1743    3.52x
+   count,  unique key     gql   420    gremlin  2486    5.92x   <- the worst, and WORSE than values
+   element, unique key    gql   492    gremlin  2104    4.28x
+   id,     unique key     gql   527    gremlin  1856    3.52x
+   values, 400 hits       gql 24245    gremlin 14706    0.61x   <- GREMLIN FASTER
+   count,  400 hits       gql 14792    gremlin  8364    0.57x   <- GREMLIN FASTER
+```
+
+Two things that list says and a one-shape probe could not. **The seeded COUNT cost MORE than the
+seeded projection** (2486 against 1743), which is the tell: counting elements should never cost more
+than reading a property off the same elements. And **the two surfaces have opposite profiles** — GQL
+wins 3.5-5.9x at one hit and LOSES 1.6-1.7x at four hundred. Low per-call overhead with high per-row
+cost on one side, the reverse on the other.
+
+#### Why nothing answered it, which is the interesting part
+
+It is not an oversight. `countShortcut`'s `filterChainCount` **declines a `has` the moment
+`seekWorthTaking` says a seek beats a scan** — deliberately, leaving the shape to the seeding path.
+But the seeding path then runs the TRAVERSER PIPELINE over the seeded stream. So the shape was
+recognised as seekable and answered in closed form by neither: it fell between the two.
+
+`seededNodeCountShortcut` closes it. With no label the answer is the bucket's `size` — **O(1), no
+iteration at all**. With a label it is one pass over the bucket, which is the minimum, since a label
+is not in the index. Both rest on the same `removable` claim item 1595 documents: for an `eq` on a
+PLAIN `has` over an indexed key, `seedForStep` already asserts the bucket IS the matching set.
+
+#### The numbers, an asserted A/B
+
+```text
+                           PRE       POST
+   count, unique key       2518      1043      2.41x
+   count, 400 hits         8434       948      8.90x
+   values, unique key      1731      1720      flat   (control)
+   values, 400 hits       14401     14760      flat   (control)
+   element, unique key     2111      2111      flat   (control)
+   id, unique key          1871      1814      flat   (control)
+```
+
+Four controls flat, both targets moved. Gremlin's seeded count at 400 hits is now **948 ns against
+GQL's 14193 — 15x the other way**, which makes GQL's per-hit count the next item in this family.
+
+#### Mutation: 7 of 7 caught, after two rounds
+
+```text
+   count/ignores-label          CAUGHT 5 fail     count/admits-local-scope    CAUGHT 1 fail
+   count/label-every-not-some   CAUGHT 2 fail     count/never-fires           CAUGHT 1 fail
+   count/off-by-one             CAUGHT 5 fail     count/admits-seeded-source  CAUGHT 1 fail
+   count/admits-non-removable   CAUGHT 1 fail
+```
+
+⚠️ **`admits-local-scope` survived the first round, and the reason is worth keeping**: `count(local)`
+counts WITHIN each element while a global count counts the stream — but on a ONE-match fixture both
+answer `[1]`, so the scopes are indistinguishable until there are several matches. The route
+assertion alone did not catch it either; what did was pinning both answers at seven matches (global
+`[7]`, local seven rows). ⚠️ `admits-seeded-source` also "survived" and was **my own broken mutant** —
+`void (source.ids?.length ?? 0);` does not remove a guard. A mutant that changes nothing is not a
+surviving mutant, and reading it as one would have hidden a real gap.
+
+#### ⚠️ Two of my own errors the tests caught
+
+- **Four literal counts were wrong.** The pipeline-comparison tests all passed while my hand-computed
+  numbers were off, because the fixture's `u3` special case (no `score`) ALSO gives it `name: 'dup'`,
+  overriding the parity rule. The comparisons prove two paths agree; only a literal proves they agree
+  on the right number — and only careful counting makes the literal worth anything.
+- **The probe reported a FALSE "answers differ"** on the element row: `query` returns a row object
+  while `toArray` returns the bare vertex, and a Vertex's enumerable own-properties are empty, so the
+  normalizer read `undefined` for one side. Fixed to compare element IDs. The timings around it were
+  fine, which is how a bad normalizer survives — item 1581 shipped the same mistake in the other
+  direction, where every pair falsely agreed.
+
+#### Gates
+
+`bun run check` 0 read unpiped. Suites gremlin 1666, gql 4038, core 435, native 1031, serialization
+144 — 0 fail. `bun run fuzz` 20/0 under the 16G cap.
+
+#### What this leaves
+
+**GQL's per-hit cost**, which this tick's pricing exposed and which is now the wider gap: at 400 hits
+GQL is 0.60x on values and 0.06x on count. A seeded count of 400 elements costing 14.5 us where
+reading the bucket size costs 0.9 is the same closed-form opportunity on the other surface —
+`detectCountShortcut` has an index-seeded path, so the question is why it is not reached here.
