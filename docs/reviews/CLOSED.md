@@ -65553,3 +65553,67 @@ attempted.
 No engine change — a new probe, plus a documentation block on the existing one recording what it does
 and does not measure. `bun run check` 0 read unpiped. Suites: gremlin 1551/0, native 963/0; the rest
 unchanged from item 1577.
+
+### Item 1579 — the GQL probe does **NOT** have item 1578's blind spot, and the brief's O(1) concern extends to indexed seeks: **varying the VALUE is free** (0.692 against 0.759 us for a fixed one). Varying the TEXT is 2.7x, already priced. ⚠️ **TWO in-process measurements this tick returned IMPOSSIBLE answers, and both would have supported a story**
+
+Item 1578 found that the Gremlin probe reuses plan objects and so cannot see construction. The
+obvious question is whether the GQL probe has the same gap. It does not, and the reason is
+structural: `query(g, text, params)` is keyed on TEXT, so one cached plan serves every value — which
+is exactly what a parameterised caller does. The probe's cached-plan path IS the realistic path.
+
+#### ⚠️ BUT THE FIRST TWO MEASUREMENTS WERE CONTAMINATED, AND THE SIGN SAVED BOTH TIMES
+
+Several arms in one process, in order:
+
+```text
+   attempt 1   param FIXED text  1.493     interpolated VARY text  2.101     interpolated SAME text  0.312
+   attempt 2   param FIXED value 1.444     param VARYING value     0.657
+```
+
+Attempt 1 invited "parameterised queries are 4.8x slower than interpolated ones". Attempt 2 says a
+**fixed value is slower than a varying one**, which cannot be true — the varying arm does strictly
+more work, a random bucket in a 20,000-entry index against the same bucket every time. The pattern is
+that whichever arm runs FIRST pays: the shared `query` call site warms up, so POSITION BEATS EFFECT.
+That is item 182's recorded finding for the spelling probe, rediscovered by violating the
+one-shape-per-process rule twice in one tick.
+
+I was midway through an explanation of a "1.18 us varying index seek" when the second impossible sign
+stopped it. **The explanation was ready before the measurement was.**
+
+#### One arm per process, median of the last four of seven rounds
+
+```text
+   paramfixed    0.759 us/op    cached plan, cached bucket
+   paramvary     0.692          cached plan, RANDOM bucket each call
+   interpfixed   0.672          interpolated but constant text — auto-parameterization normalizes it
+   interpvary    1.849          a UNIQUE text per call
+   byid          0.084          the raw map lookup underneath
+```
+
+**Varying the value costs NOTHING** (0.692 against 0.759, the varying arm nominally faster). So the
+hash index seek is genuinely O(1) in the sense the brief asks about, not just `getVertexById` — and
+the 1.18 us I was chasing does not exist.
+
+**Varying the TEXT costs 2.7x** (1.849 against 0.692), and that is already priced: the comment above
+`normalizeLiterals` records a tokenize at **~865 ns**, which plus the params allocation is the gap.
+Item 1502 introduced the normalization so a unique interpolated text still lands on ONE compiled
+plan, and item 1541 added the four-slot memo for repeated identical text. For genuinely unique texts
+it is irreducible — normalizing requires tokenizing — so there is no target here, only a reason to
+prefer `$params`, which is a DX point (`discoverability-is-the-bottleneck`) rather than an engine one.
+
+⚠️ **One caveat on the new probe's own numbers**: the round series still descends at round seven
+(`6.4, 6.2, 5.5, 2.3, 2.3, 1.9, 1.0` for `paramfixed`), so the steady state is BELOW the median
+reported. The figures above are therefore upper bounds, and a comparison between two arms is sounder
+than either absolute. Said rather than quietly over-reported.
+
+#### What is left on the point-query floor
+
+A fully cached GQL point query is 0.692 us against a 0.084 us raw map lookup, so ~0.6 us is engine
+overhead per query. That surface is already heavily worked — items 216/224/230 (reading through the
+binding), 228/229 (the parse and plan caches) — so it is not opened here on a whole-call share, which
+is exactly the attribution mistake items 1570 and 1577 each made once.
+
+#### Gates
+
+No engine change — one new probe (`gql-seek-floor-probe.mjs`). `bun run check` 0 read unpiped.
+Suites unchanged from item 1578: gremlin 1551/0, native 963/0, and the rest from 1577.
