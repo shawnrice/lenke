@@ -1,7 +1,11 @@
 import { describe, expect, test } from 'bun:test';
 
+import { Graph } from '@lenke/core';
+
 import type { Clause, MatchClause } from './ast.js';
+import { normalizeLiterals } from './auto-param.js';
 import { liftStartProps } from './executor.js';
+import { query } from './index.js';
 import { parse } from './parser.js';
 
 /**
@@ -108,6 +112,89 @@ describe('the refusals, each of which a mutant tried to remove', () => {
 
     expect(m.where).toBeUndefined();
     expect(inlineCounts(m)).toEqual([0, 1]);
+  });
+
+  /**
+   * ⚠️ THE COMPOSED SHAPE, which is what actually broke (item 1556).
+   *
+   * Every route test above feeds `liftStartProps` a freshly PARSED query — and that is not the
+   * path a real query takes. Auto-parameterization (item 1502) runs BEFORE the parse, so
+   * `MATCH (a:P {k: 5})` reaches this rewrite as `{k: $__ap0}`, a `param` and not a `lit`. The old
+   * gate refused params outright, so item 778's rewrite was silently off for every inline-literal
+   * query: 51.44 ms against the clause twin's 9.47, caught by `bun run spelling` and not by any
+   * test, because every test here parsed the UNLIFTED text.
+   *
+   * `rewrite-composition-is-not-free` is the standing rule this breaks: assert the COMPOSED shape,
+   * not each rewrite against hand-written input.
+   */
+  test('⚠️ COMPOSED: an inline literal survives auto-parameterization and still lifts', () => {
+    const q = 'MATCH (a:S), (b:P {k: 7}) RETURN b.k AS x';
+    const lifted = normalizeLiterals(q);
+
+    // The premise: auto-param really does rewrite this position into a synthetic param.
+    expect(lifted?.text).toContain('$__ap');
+
+    // And the rewrite still fires on what the parser then sees.
+    const m = matchOf(lifted?.text ?? q);
+
+    expect(m.where).toBeDefined();
+    expect(inlineCounts(m)).toEqual([0, 0]);
+  });
+
+  test('a SYNTHETIC param lifts where a USER param does not', () => {
+    const synthetic = matchOf('MATCH (a:S), (b:P {k: $__ap0}) RETURN b.k AS x');
+
+    expect(synthetic.where).toBeDefined();
+    expect(inlineCounts(synthetic)).toEqual([0, 0]);
+
+    // The user's own name is still refused — item 260's null case, which the synthetic namespace
+    // cannot reach because `normalizeLiterals` never lifts `null`.
+    const user = matchOf('MATCH (a:S), (b:P {k: $k}) RETURN b.k AS x');
+
+    expect(user.where).toBeUndefined();
+  });
+
+  /**
+   * ⚠️ THE ANSWER, not the route — the guard the refusals above were missing (item 1556).
+   *
+   * Every other test here asserts whether `where` is defined, which a route mutant can satisfy
+   * while changing rows. These numbers are what item 260 is actually about: an inline `{k: …}`
+   * means IS NULL, so a null value matches BOTH the stored-null vertex and the absent-key one,
+   * while the clause form it would be lifted to matches NEITHER.
+   */
+  test('⚠️ ANSWERS: lifting a user param would turn 2 rows into 0', () => {
+    const g = new Graph();
+    const a = g.addVertex({ id: 'a', labels: ['P'], properties: { k: null } });
+    const b = g.addVertex({ id: 'b', labels: ['P'], properties: { k: 5 } });
+    const c = g.addVertex({ id: 'c', labels: ['P'], properties: {} });
+
+    for (const [i, v] of [a, b, c].entries()) {
+      g.addEdge({ id: `e${i}`, from: v, to: a, labels: ['E'], properties: {} });
+    }
+
+    const n = (q: string, params?: Record<string, unknown>): number => query(g, q, params).length;
+
+    // IS NULL semantics: the stored null AND the absent key.
+    expect(n('MATCH (x:P {k: null})-[:E]->(y) RETURN y.k AS v')).toBe(2);
+    expect(n('MATCH (x:P {k: $p})-[:E]->(y) RETURN y.k AS v', { p: null })).toBe(2);
+    // The clause form means equality, and nothing equals null.
+    expect(n('MATCH (x:P)-[:E]->(y) WHERE x.k = null RETURN y.k AS v')).toBe(0);
+    expect(n('MATCH (x:P)-[:E]->(y) WHERE x.k = $p RETURN y.k AS v', { p: null })).toBe(0);
+    // And the NON-null spellings agree with each other, which is what the lift relies on.
+    expect(n('MATCH (x:P {k: 5})-[:E]->(y) RETURN y.k AS v')).toBe(1);
+    expect(n('MATCH (x:P {k: $p})-[:E]->(y) RETURN y.k AS v', { p: 5 })).toBe(1);
+    expect(n('MATCH (x:P)-[:E]->(y) WHERE x.k = 5 RETURN y.k AS v')).toBe(1);
+  });
+
+  test('normalizeLiterals never mints a NULL synthetic, which is what makes the above sound', () => {
+    // If this ever starts lifting, the synthetic admission above becomes item 260's wrong answer.
+    expect(normalizeLiterals('MATCH (b:P {k: null}) RETURN b.k AS x')).toBeUndefined();
+    expect(normalizeLiterals('MATCH (b:P {k: true}) RETURN b.k AS x')).toBeUndefined();
+    // Numbers and strings DO lift — including 0, which is falsy and must not be mistaken for null.
+    expect(normalizeLiterals('MATCH (b:P {k: 0}) RETURN b.k AS x')?.params).toEqual({ __ap0: 0 });
+    expect(normalizeLiterals("MATCH (b:P {s: 'x'}) RETURN b.s AS x")?.params).toEqual({
+      __ap0: 'x',
+    });
   });
 
   test('a PARAM value stays inline, since it cannot be shown non-null at compile time', () => {

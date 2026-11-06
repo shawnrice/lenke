@@ -98,6 +98,22 @@ export type Normalized = { text: string; params: Record<string, unknown> };
 const NAME_PREFIX = '__ap';
 
 /**
+ * Was this parameter name minted by {@link normalizeLiterals}, rather than supplied by the caller?
+ *
+ * ⚠️ WHY ANYONE OUTSIDE THIS FILE NEEDS TO ASK (item 1556). A synthetic param carries a value this
+ * file has already proved non-null: the lifting loop admits only numbers and strings, and refuses
+ * `null`, `true` and `false` outright. A caller's `$p`, by contrast, could BE null, and item 260
+ * records what that costs — `{k: null}` means IS NULL while `WHERE a.k = null` answers `[]`, so a
+ * rewrite that treats them alike silently drops a row.
+ *
+ * So a rewrite may admit a synthetic param where it must refuse a user one. Exported as a
+ * PREDICATE rather than as the prefix, so the namespace stays known in exactly one place — the
+ * comment above it warns that the tagged-template form owns `p<n>`, and two files guessing at that
+ * split is how they drift.
+ */
+export const isSyntheticParam = (name: string): boolean => name.startsWith(NAME_PREFIX);
+
+/**
  * The source span of `tokens[i]`, bounded by where the NEXT token starts.
  *
  * ⚠️ A `Token` carries `pos` but no LENGTH, and the two cannot be derived from `value`: a string

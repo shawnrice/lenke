@@ -63645,3 +63645,108 @@ default and `INDEXED=0` reproduces the mistake.
 Probe only; no engine or core change. `bun run check` 0 read unpiped. The suites stand at item
 1553's: core 431/0, gql 3879/0, gremlin 1500/0, native 963/0, serialization 144/0,
 `bun run fuzz` 20/0. The probe is `packages/native/gql-write-probe.mjs`.
+
+### Item 1556 — ⚠️ **A REGRESSION, found by the repo's own spelling probe: auto-parameterization (item 1502) silently switched OFF item 778's `liftStartProps` rewrite for every inline-literal query.** `MATCH (a:P {k: 5})-[:E]->(b)` 51.44 → 8.63 ms, **5.96x**, converged with its clause twin. The fix is three lines; the lesson is that both features were individually correct
+
+Item 1554's index finding raised the engine-side question — do all SPELLINGS of a filtered lookup
+reach the same route? — so this tick ran `bun run spelling`, which I had not used this session.
+
+#### THE PROBE EARNED ITSELF AGAIN
+
+The full sweep at `SPELL_N=200000 SPELL_REPS=9` flagged three groups over 2x and clear of the null
+control. The largest, confirmed alone three times exactly as the probe's own output instructs:
+
+```text
+   MATCH (a:P {k: 5})-[:E]->(b) RETURN b.k         25.19 / 26.33 / 24.86 ms
+   MATCH (a:P)-[:E]->(b) WHERE a.k = 5 RETURN b.k   6.84 /  6.98 /  6.87
+```
+
+**3.65x, identical answers** — and item 778 had already FIXED this exact pair, recording "5.04 →
+0.95 ms, 5.31x, converging with its clause twin at 0.95" and "the spelling probe's item 777 group …
+is absent from the >2x list after this". It was back.
+
+#### THE MECHANISM — two correct features, composed wrongly
+
+`liftStartProps` rewrites `MATCH (a:L {k: 5})-[:T]->(b)` into `MATCH (a:L)-[:T]->(b) WHERE a.k = 5`,
+and its gate refuses a param because "a param could BE null" (item 260). Auto-parameterization
+(item 1502) runs **before the parse**:
+
+```text
+   normalizeLiterals('MATCH (a:P {k: 5})…')  ->  'MATCH (a:P {k: $__ap0 })…', { __ap0: 5 }
+   parse(that).…start.properties[0].value    ->  { kind: 'param', name: '__ap0' }
+```
+
+So the gate's `value.kind === 'lit'` test stopped matching, and the rewrite had been off for every
+inline-literal query since. **Neither feature is wrong on its own.** Item 778's refusal is sound,
+item 1502's lifting is sound, and the composition is a silent 6x.
+
+#### THE FIX, and why admitting a synthetic param is sound
+
+`normalizeLiterals` lifts **only numbers and strings** — `null`, `true` and `false` are refused,
+verified rather than assumed:
+
+```text
+   {k: null}  NOT LIFTED      {k: 5}  -> {__ap0: 5}
+   {k: true}  NOT LIFTED      {k: 0}  -> {__ap0: 0}      <- falsy, still lifted
+                              {s:'x'} -> {__ap0: 'x'}
+```
+
+So a synthetic `__ap<n>` carries a value already proved non-null, and the gate may admit it where a
+caller's `$p` must still refuse. `isSyntheticParam` is exported from `auto-param.ts` as a PREDICATE
+rather than as the prefix, so the namespace stays known in one place — that file's own comment warns
+the tagged-template form owns `p<n>`, and two files guessing at the split is how they drift.
+
+#### MEASURED — min of 9, 200,000 vertices, arm asserted in the bundle
+
+| spelling                                     | PRE      | POST     |                                 |
+| -------------------------------------------- | -------- | -------- | ------------------------------- |
+| `MATCH (a:P {k: 5})-[:E]->(b) RETURN b.k`    | 51.44 ms | **8.63** | **5.96x**                       |
+| `MATCH (a:P)-[:E]->(b) WHERE a.k = 5`        | 9.47     | 9.52     | flat — the twin it converges on |
+| `MATCH (a:P)-[:E]->(b) WHERE a.k = $p`       | 8.87     | 9.44     | flat                            |
+| `MATCH (a:P {k: $p})-[:E]->(b)` — USER param | 50.50    | 52.10    | **unchanged, by design**        |
+
+And the probe agrees: that group now reports **0 over 2x** across two isolated runs (7.61 vs 7.48,
+6.93 vs 7.44).
+
+#### ⚠️ AN INLINE _USER_ PARAM IS NOW 6x ITS OWN LITERAL — a DX cliff, recorded not fixed
+
+`{k: $p}` costs 52.10 against `{k: 5}`'s 8.63 and `WHERE a.k = $p`'s 9.44. A caller doing the right
+thing — parameterising — falls off a cliff that the literal spelling does not have. It cannot be
+fixed the same way: the plan is cached (item 1551), so the engine cannot see the value, and the null
+case is a genuine semantic difference, not a rounding one:
+
+```text
+   MATCH (x:P {k: $p})     p = null  ->  2 rows   (IS NULL: the stored null AND the absent key)
+   MATCH (x:P) WHERE x.k = $p  p = null  ->  0 rows
+```
+
+Closing it would need a null-safe lifted predicate (`a.k = $p OR (a.k IS NULL AND $p IS NULL)`),
+which is a different and slower comparison. The advice that follows is "inline a literal, or use a
+clause `WHERE` with a param — not an inline param", which belongs in the docs.
+
+#### MUTATION — two mutants, two caught, and the second needed an ANSWER test
+
+| mutant                                      |        |                                                             |
+| ------------------------------------------- | ------ | ----------------------------------------------------------- |
+| `revert-synthetic`                          | CAUGHT | 3880 pass 2 fail — the composed test and the synthetic test |
+| `admit-any-param` — item 260's wrong answer | CAUGHT | 3879 pass **4** fail, incl. the new row-count assertion     |
+
+Every route test in `lift-start-props.test.ts` feeds the rewrite a freshly PARSED query — which is
+not the path a real query takes, and is exactly why none of them saw this. The new test asserts the
+**composed** shape (auto-param → parse → lift), which is `rewrite-composition-is-not-free`'s rule
+applied: assert the composition, not each rewrite against hand-written input.
+
+The second mutant was initially caught only by ROUTE assertions, so an answer test now pins the six
+spellings and their row counts. It turns the wrong answer from "2 becomes 0" into a failing number.
+
+#### Gates
+
+`bun run check` 0 read unpiped. core 431/0, gql **3883**/0, gremlin 1500/0, native 963/0,
+serialization 144/0, `bun run fuzz` 20/0. Mutants one at a time in the foreground, restoring before
+each; tree verified identical afterwards.
+
+#### Still open from the sweep
+
+Two groups flagged and not yet confirmed: `node count: inline vs clause WHERE` (2.56x) and
+`a product's one-sided predicate: comma vs MATCH MATCH (item 285)` (2.11x). Both want the probe's
+own three-isolated-runs treatment before being treated as findings.

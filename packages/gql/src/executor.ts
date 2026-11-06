@@ -44,6 +44,7 @@ import type {
   TypeTest,
 } from './ast.js';
 import { isTxControl } from './ast.js';
+import { isSyntheticParam } from './auto-param.js';
 import { labelsMatch, matchesLabel } from './graph-queries.js';
 
 /**
@@ -9974,8 +9975,26 @@ export const liftStartProps = (clauses: readonly Clause[]): readonly Clause[] =>
         // another rung's disqualifier, which is the real hazard in rewriting a clause list and
         // is not visible from the gate being opened.
         pattern.segments.some((seg) => seg.rel.quantifier !== undefined) ||
-        // A NULL literal means IS NULL and a param could BE null — neither lifts (item 260).
-        !props.every((pc) => pc.value.kind === 'lit' && pc.value.value !== null)
+        // A NULL literal means IS NULL and a USER param could BE null — neither lifts (item 260).
+        //
+        // ⚠️ A SYNTHETIC PARAM DOES LIFT, and not admitting it had silently disabled this whole
+        // rewrite (item 1556). Auto-parameterization (item 1502) runs BEFORE the parse, so
+        // `MATCH (a:P {k: 5})` reaches here as `{k: $__ap0}` — `kind: 'param'`, not `'lit'` — and
+        // the old test refused it. Item 778 built this rewrite and measured the pair converging at
+        // 0.95 ms; a later feature turned it off for every inline-literal query, and the GQL
+        // spelling probe is what caught it:
+        //
+        //     MATCH (a:P {k: 5})-[:E]->(b) RETURN b.k         51.44 ms  ->  9.52
+        //     MATCH (a:P)-[:E]->(b) WHERE a.k = 5 RETURN b.k   9.47        9.47
+        //
+        // Sound because `normalizeLiterals` lifts only numbers and strings — `null`, `true` and
+        // `false` are refused there, verified rather than assumed — so a synthetic param cannot be
+        // the null that item 260 is about. A caller's own `$p` still refuses.
+        !props.every(
+          (pc) =>
+            (pc.value.kind === 'lit' && pc.value.value !== null) ||
+            (pc.value.kind === 'param' && isSyntheticParam(pc.value.name)),
+        )
       ) {
         return pattern;
       }
