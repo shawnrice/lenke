@@ -193,6 +193,21 @@ const SHAPES = {
   hop2valuesrows: traversal(V(), out('E'), out('E'), values('k')),
   hop2idrows: traversal(V(), out('E'), out('E'), id()),
 
+  /**
+   * ⚠️ Item 1615: the two shapes item 1614 LEFT on the pipeline, and the only two the cliff finder
+   * still reads that way. Both are a two-hop walk with a `has` in it, and both now sit beside a
+   * FUSED neighbour, which is what makes their cost a route loss rather than honest filtering:
+   *
+   *     hop hop values                    18.6 ms   319972 rows   <- fused at 1614
+   *     hop hop + trailing has, values    87.3        6400        <- the pipeline, 4.68x
+   *     hop + mid has + hop, values       14.0        6400        <- the pipeline
+   *
+   * The trailing row costs 4.7x its neighbour for FIFTY TIMES FEWER rows, because it walks all
+   * 319,972 traversers down the pipeline and then filters.
+   */
+  hop2trailinghas: traversal(V(), out('E'), out('E'), has('k', gt(44)), values('k')),
+  hop2midhas: traversal(V(), out('E'), has('k', gt(44)), out('E'), values('k')),
+
   // ── Item 1478: the last unprofiled Gremlin steps ────────────────────────────────────────────
   //
   // Variable-length traversal, the declarative join, and per-traverser scoping. All three are core

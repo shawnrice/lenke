@@ -363,9 +363,10 @@ const isHop = (step: Step): boolean =>
  * `values(k)` is the PROJECTION, so reusing that reader would consume the projection as a filter
  * and then find nothing to project.
  */
-const isVertexFilterStep = (step: Step): boolean => step.kind === 'hasLabel' || step.kind === 'has';
+export const isVertexFilterStep = (step: Step): boolean =>
+  step.kind === 'hasLabel' || step.kind === 'has';
 
-const survives = (v: Vertex, tests: readonly Gate[]): boolean => {
+export const survives = (v: Vertex, tests: readonly Gate[]): boolean => {
   for (const gate of tests) {
     if (!gate(v)) {
       return false;
@@ -375,7 +376,7 @@ const survives = (v: Vertex, tests: readonly Gate[]): boolean => {
   return true;
 };
 
-type Gate = (v: Vertex) => boolean;
+export type Gate = (v: Vertex) => boolean;
 
 /**
  * The start filters as closures, compiled ONCE per plan.
@@ -426,7 +427,7 @@ type Gate = (v: Vertex) => boolean;
  * `compileGates` is kept because it IS a win on the predicate shape — `has(k, gt(48))` went
  * 701.3 -> 606.6 with every control flat — not because it closed the gap it was written for.
  */
-const compileGates = (filters: readonly VertexFilter[]): Gate[] =>
+export const compileGates = (filters: readonly VertexFilter[]): Gate[] =>
   filters.map((step) => {
     if (step.kind === 'hasLabel') {
       if (step.labels.length === 1) {

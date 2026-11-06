@@ -69240,7 +69240,7 @@ serialization 144 — 0 fail. `bun run fuzz` 20/0 under the 16G cap.
 
 ### Item 1614 — **2.99x and 3.12x on a TWO-HOP row-returning Gremlin walk** (`V().out(T).out(T).values(k)` 1151.7 to 385.2 ms; `.id()` 1131.7 to 362.2, over 1,000,000 edges / 5,000,000 rows), closing a hole that survived because **every multi-hop shape in both the bench and the profile corpus ends in `count()`** — which `hopChainCount` answers from degrees without walking at all, so the two-hop WALK had only ever been measured in the arm where it does not run. Found PROFILE-FIRST, by reading which frames the one-hop and two-hop shapes do not share
 
-OPEN: three hops (priced below at 6.45x, deliberately a second measurement); a `has` AFTER the second hop, and a `has` BETWEEN the hops with a yielding tail — the only two shapes the cliff finder still reads as `pipeline`.
+OPEN: three hops (priced below at 6.45x, deliberately a second measurement). ~~a `has` AFTER the second hop, and a `has` BETWEEN the hops with a yielding tail — the only two shapes the cliff finder still reads as `pipeline`~~ — **BOTH TAKEN at item 1615** (3.91x and 2.68x, plus 2.62x on the lead position); the cliff finder now reads CLOSED on all fifteen shapes.
 
 #### The nomination came from the frames, not from a list
 
@@ -69322,3 +69322,67 @@ The Gremlin spelling probe had no two-hop group at all, for the same reason the 
 
 `bun run check` 0 read unpiped. Suites gremlin 1739 (18 new), gql 4153, core 435, native 1056,
 serialization 144 — 0 fail. `bun run fuzz` 20/0 and `spelling:gremlin` 0 disagreements / 0 groups over 2x, both under the 16G cap.
+
+### Item 1615 — **3.91x, 2.68x and 2.62x** on a two-hop yielding walk with a filter before, between or after the hops. These were the only two shapes `gremlin-cliff-finder.ts` still read as `pipeline`, and the finder now reads **CLOSED on all fifteen**. ⚠️ And the mutation pass found a REAL hole of a kind this executor is structurally prone to: the lazy and eager loops are written twice, and every test reached only the eager one
+
+OPEN: three hops (still 6.45x against a hand floor, priced at item 1614 and unchanged by this).
+
+#### The nomination
+
+Item 1614's rung declined a filter in any position, so the two shapes beside it stayed on the pipeline, and the trailing one cost **4.7x its own now-fused neighbour for FIFTY TIMES FEWER ROWS** — it walked every traverser down the pipeline and filtered at the end. Both profiles are the same delegation chain item 1614 removed:
+
+```text
+   iterLabeled + iterByLabel + outEdgesOf + otherEndpoint + traverseToVertex
+     53.7% of `hop hop + trailing has, values`
+     49.7% of `hop + mid has + hop, values`
+```
+
+#### The A/B, one instrument, PRE by reverting the module to its item-1614 state
+
+```text
+   arm                              PRE      POST    verdict
+   2 hop + TRAILING has, values   79.18    20.27     3.91x
+   2 hop + MID has, values        45.44    16.93     2.68x
+   2 hop + LEAD has, values       44.49    16.96     2.62x
+   2 hop values  (no filter)      15.77    16.15     flat (control)
+   2 hop id      (no filter)      11.69    11.70     flat (control)
+   1 hop values                    2.23     2.47     flat (control)
+   3 hop values  (declined)      385.60   361.18     flat (control)
+   HAND trailing-filtered floor   11.99    10.95     — the floor, 1.85x of it
+```
+
+The three unfiltered controls are flat because the `anyLead`/`anyMid`/`anyFar` booleans mean **no call at all** where a position has no filter — item 1602's `anyStart` split, and the thing that makes extending a hot loop safe here.
+
+In the full `bench:gremlin` sweep the two new filtered rows read 394.8 and 390.0 ms against native's 141.1 and 111.6, and every pre-existing row is within sweep drift of item 1614's reading.
+
+#### What was reused rather than re-derived
+
+`collectVertexFilters` (admission, including the seek deference), `compileGates`, `survives` and `isVertexFilterStep` are all `count-shortcut.ts`'s and `start-filtered-hop-values.ts`', exported rather than copied. `compileGates` alone is worth 1.93x on the label side and 1.16x on the predicate side (items 1536/1492), and a second copy of a specialization table is precisely the drift this executor keeps paying for.
+
+**`refuseSeekable` is TRUE FOR THE LEAD RUN ONLY**, which is `collectVertexFilters`' own asymmetry from item 1603: a seek seeds the SOURCE and this rung runs before `seedFromIndex`, so a lead run that scanned would preempt a better route — while nothing seeds from the far side of a hop, so refusing there declines the shape on every indexed graph and gains nothing. The MIDDLE run is a far side too, the same split `interleavedHopChainCount` makes.
+
+#### ⚠️ THE LOOP WRITTEN TWICE WAS COVERED ONCE — the real finding of this item
+
+`lead/ignored` and `mid/ignored` **SURVIVED in the LAZY loop while their EAGER twins died**. The cause is structural, not an oversight in one test file: `toArray` with an empty `rest` reads `drain`, so every assertion in the file reached the eager copy only. The far filter was covered lazily _by accident_, through the `limit` test item 1614 wrote for a different reason.
+
+The fix is a trailing `limit` — it puts a step in `rest`, which routes through the generator — asserted for all three positions, each against the pipeline and each with a DIFFERENT row count (1, 3, 5) so no position can pass another's expectation.
+
+**This generalizes to every `HopWalk` in the executor.** `hop-values.ts` has four such pairs, `start-filtered-hop-values.ts` more; the rule its header states ("written twice as the same loop") protects against drift in the CODE and says nothing about whether the tests reach both. A mutation pass that only ever drains is blind to half of each file.
+
+`seek/lead-run-admits-seekable` also survived — no test had an index on it. Pinned now with the index present, lead declining and mid/far answering.
+
+#### Mutation 21 of 25
+
+Each of the three runs ignored, in each of the two loops (6); the gate sets crossed two ways; five parse mutants (lead boundary off by one, mid run emptied, far run emptied, the far-run scan never advancing, `rest` measured from the wrong index); the seek asymmetry; `drops`; both `consumed` arms; a multi-key `values`; a multi-type hop; an id source; and both endpoint reads re-checked after the rewrite.
+
+**`consumed` changed meaning in this item and the off-by-one would have been SILENT on item 1614's tests.** It now counts PROJECTION steps (0 or 1), because `rest` is measured from the end of the far filter run rather than from the start of the plan — correct while step positions were fixed, wrong the moment a filter can sit anywhere. `consumed/values-off-by-one` is the loudest mutant in the pass at 13 failures.
+
+The four survivors are all provably equivalent, documented together with the distinct distant fact each one's redundancy depends on: `both` (never pushed to `hops`, or refused by `collectVertexFilters` in a filter run), a third hop (`hops.length !== 2`), that length test itself (a missing `i1` makes `singleTypeHop(steps[undefined])` decline), and the bare arm's `consumed` (reached only when `farEnd === steps.length`, where both slices are empty).
+
+#### The fifth eyeballed literal this session the engine was right about
+
+The MID and LEAD expectations were both written by eye counting `d`'s paths — and `d` has no `k` at all, so no `has('k', …)` admits it. Derived: three rows and one, not four and three. What the literals are FOR is separating the positions, and they still do: 1 / 3 / 5 for lead / mid / trailing.
+
+#### Gates
+
+`bun run check` 0 read unpiped. Suites gremlin 1748 (27 in this file), gql 4153, core 435, native 1056, serialization 144 — 0 fail. `bun run fuzz` 20/0 and `spelling:gremlin` 0 answer disagreements / 0 groups over 2x, both under the 16G cap.

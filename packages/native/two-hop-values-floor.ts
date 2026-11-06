@@ -28,7 +28,7 @@
  */
 import { Graph } from '@lenke/core';
 import type { Edge, Vertex } from '@lenke/core';
-import { V, id, out, toArray, traversal, values } from '@lenke/gremlin';
+import { V, gt, has, id, out, toArray, traversal, values } from '@lenke/gremlin';
 
 const NODES = Number(process.env.NODES ?? 20_000);
 const FANOUT = Number(process.env.FANOUT ?? 4);
@@ -156,6 +156,37 @@ const handThreeHop = (key: string): unknown[] => {
   return outp;
 };
 
+/** The trailing-filtered nested walk by hand — the floor for the item 1615 arms. */
+const handTwoHopFiltered = (): unknown[] => {
+  const outp: unknown[] = [];
+
+  for (const v of g.vertices) {
+    const b0 = v.adjFrom?.get('E');
+
+    if (b0 === undefined) {
+      continue;
+    }
+
+    for (const e0 of b0 as Iterable<Edge>) {
+      const b1 = e0.to.adjFrom?.get('E');
+
+      if (b1 === undefined) {
+        continue;
+      }
+
+      for (const e1 of b1 as Iterable<Edge>) {
+        const { k } = e1.to.properties;
+
+        if (typeof k === 'number' && k > 44) {
+          outp.push(k);
+        }
+      }
+    }
+  }
+
+  return outp;
+};
+
 type Arm = { name: string; run: () => number };
 
 const ARMS: Arm[] = [
@@ -173,6 +204,30 @@ const ARMS: Arm[] = [
   },
   { name: 'HAND  2 hop values   (the FLOOR)', run: () => handTwoHop('k').length },
   { name: 'HAND  2 hop id       (the FLOOR)', run: () => handTwoHop(undefined).length },
+  // ── Item 1615: the two-hop walk WITH A FILTER, in each of the three positions ────────────────
+  //
+  // These are the shapes item 1614 left on the pipeline and the only two the cliff finder still read
+  // that way. The trailing one cost 4.7x its (now fused) unfiltered neighbour for FIFTY TIMES FEWER
+  // rows, because it walked all 319,972 traversers down the pipeline and then filtered. Their
+  // profiles are the same delegation chain item 1614 removed: `iterLabeled` + `iterByLabel` +
+  // `outEdgesOf` + `otherEndpoint` + `traverseToVertex` is 53.7% of the trailing shape and 49.7% of
+  // the mid one.
+  {
+    name: '2 hop + TRAILING has, values',
+    run: () => toArray(traversal(V(), out('E'), out('E'), has('k', gt(44)), values('k')), g).length,
+  },
+  {
+    name: '2 hop + MID has, values',
+    run: () => toArray(traversal(V(), out('E'), has('k', gt(44)), out('E'), values('k')), g).length,
+  },
+  {
+    name: '2 hop + LEAD has, values',
+    run: () => toArray(traversal(V(), has('k', gt(44)), out('E'), out('E'), values('k')), g).length,
+  },
+  {
+    name: 'HAND  2 hop + trailing has (FLOOR)',
+    run: () => handTwoHopFiltered().length,
+  },
   // ⚠️ THREE hops, to PRICE what item 1614 leaves open rather than asserting it is worth taking.
   {
     name: 'engine 3 hop values  (the pipeline)',

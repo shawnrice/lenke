@@ -210,6 +210,32 @@ const SHAPES: [string, Plan][] = [
     traversal(V(), hasLabel('Person'), out('KNOWS'), out('KNOWS'), values('age')),
   ],
   ['V().out().out().id()', traversal(V(), hasLabel('Person'), out('KNOWS'), out('KNOWS'), id())],
+  // ⚠️ THE FILTERED two-hop walk (item 1615), with the two rows above as its control. This shape
+  // cost 4.7x its own UNFILTERED neighbour for a fraction of the rows, because it walked every
+  // traverser down the pipeline and filtered at the end. Isolated A/B: 79.18 -> 20.27 ms, 3.91x on
+  // the trailing position and 2.68x on the middle one.
+  [
+    'V().out().out().has().values(age)',
+    traversal(
+      V(),
+      hasLabel('Person'),
+      out('KNOWS'),
+      out('KNOWS'),
+      has('age', gt(44)),
+      values('age'),
+    ),
+  ],
+  [
+    'V().out().has().out().values(age)',
+    traversal(
+      V(),
+      hasLabel('Person'),
+      out('KNOWS'),
+      has('age', gt(44)),
+      out('KNOWS'),
+      values('age'),
+    ),
+  ],
 ];
 
 /**
