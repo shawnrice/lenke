@@ -125,7 +125,17 @@ describe('the answers the gate feeds are unchanged', () => {
   const g = new Graph();
 
   for (let i = 0; i < 60; i += 1) {
-    const properties: Record<string, unknown> = { k: i % 5, n: i, tags: [i % 3] };
+    // `a`/`b` are constants so a TWO-property inline filter matches every vertex (the slow-arm
+    // chain test needs that), and `flagless` is a NUMBER so reading it in boolean context
+    // raises (the written-order test needs that).
+    const properties: Record<string, unknown> = {
+      k: i % 5,
+      n: i,
+      tags: [i % 3],
+      a: 1,
+      b: 2,
+      flagless: i,
+    };
 
     if (i % 4 === 0) {
       properties.note = null;
@@ -176,6 +186,50 @@ describe('the answers the gate feeds are unchanged', () => {
     // And the control, so the 0 above is not a query that matches nothing for another reason.
     expect(c('MATCH (a:P)-[:E]->(b:P {n: a.n}) RETURN count(*) AS c')).toBe(0);
     expect(c('MATCH (a:P)-[:E]->(b:P) WHERE b.n = a.n + 1 RETURN count(*) AS c')).toBe(59);
+  });
+
+  test('the conjuncts run in WRITTEN order, so an inline non-match short-circuits a faulting clause', () => {
+    /**
+     * ⚠️ ITEM 1601 FOUND THIS UNTESTED, by mutation. `composeInlineGate` uses `reduceRight` so the
+     * conjuncts evaluate inline-before-clause, and the function's own comment says that is what
+     * lets an inline filter matching nothing short-circuit a faulting clause `WHERE`. Switching it
+     * to `reduce` — reversing the order — left all 4,058 tests green, so the documented claim had
+     * no test at all.
+     *
+     * ⚠️ AND THE SHAPE HAS TO BE A PROJECTION, not a count. A count takes `countShortcut` ->
+     * `buildNodeCount`, which has its OWN `for (const ip of preds)` loop and never reaches this
+     * composition — the first version of these two tests was written as counts, both mutants
+     * survived again, and that is what said so.
+     *
+     * A property in BOOLEAN CONTEXT is the fault: it is DYNAMIC under the static boolean-context
+     * check, so a non-boolean value must RAISE at evaluation (item 875's condition for
+     * `truthProps` existing). `{a: 999}` matches nothing, so in written order nothing is ever
+     * evaluated against it.
+     */
+    expect(query(g, 'MATCH (n:P {a: 999}) WHERE n.flagless RETURN n.k AS k', {}).length).toBe(0);
+
+    // TWO controls, because a `0` that is not caused by the short-circuit proves nothing:
+    //   - with no inline filter the clause IS reached, and raises;
+    //   - with an inline filter that MATCHES it is reached too, and raises.
+    expect(() => query(g, 'MATCH (n:P) WHERE n.flagless RETURN n.k AS k', {})).toThrow();
+    expect(() => query(g, 'MATCH (n:P {a: 1}) WHERE n.flagless RETURN n.k AS k', {})).toThrow();
+  });
+
+  test('a conjunct on the SLOW arm still chains to the ones after it', () => {
+    /**
+     * ⚠️ ALSO FOUND UNTESTED BY MUTATION (item 1601). Dropping the `rest` call from the SLOW arm —
+     * so the first conjunct answers for the whole chain — survived the suite, because with item
+     * 1600's fast arm in place every tested multi-conjunct gate had its FIRST conjunct specialize.
+     * The slow arm's chain is reached only when a conjunct does NOT specialize and another follows
+     * it, and nothing had that shape.
+     *
+     * TWO inline properties do not specialize (one closure cannot answer a conjunction), so this
+     * puts the slow arm first and a rejecting clause `WHERE` after it.
+     */
+    expect(query(g, 'MATCH (n:P {a: 1, b: 2}) WHERE n.n = 999 RETURN n.k AS k', {}).length).toBe(0);
+    // The control: without the clause the inline pair matches every vertex, so the 0 above is the
+    // chain working and not the inline pair rejecting.
+    expect(query(g, 'MATCH (n:P {a: 1, b: 2}) RETURN n.k AS k', {}).length).toBe(60);
   });
 
   test('a projection through the gate yields the same rows', () => {

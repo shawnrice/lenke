@@ -4197,12 +4197,7 @@ const buildThreeHopCount = <T>(
   const dBoth = s3.rel.direction === 'both';
 
   const gateOfPreds = (preds: readonly InlinePred[]): InlineGate | undefined =>
-    preds.reduceRight<InlineGate | undefined>(
-      (rest, ip) => (v, binding, params, graph) =>
-        inlineHolds(ip, v, binding, params, graph) &&
-        (rest === undefined || rest(v, binding, params, graph)),
-      undefined,
-    );
+    composeInlineGate(preds);
   const bGate = gateOfPreds(interior.b);
   const cGate = gateOfPreds(interior.c);
 
@@ -4418,12 +4413,7 @@ const buildTwoHopCount = <T>(
   // Composed once, the same `reduceRight` the node tally uses, so the clause and inline spellings
   // of a middle constraint go through `inlineHolds` -> `satisfies` — the general path's own
   // implementation — rather than re-deriving inline-pattern semantics here.
-  const gate = midPreds.reduceRight<InlineGate | undefined>(
-    (rest, ip) => (v, binding, params, graph) =>
-      inlineHolds(ip, v, binding, params, graph) &&
-      (rest === undefined || rest(v, binding, params, graph)),
-    undefined,
-  );
+  const gate = composeInlineGate(midPreds);
 
   return (graph, params) => {
     // Once per execution and before the driver set is even built: a label no vertex carries makes
@@ -6738,12 +6728,7 @@ const anchorFilterGate = (
     preds.push(predFor(compilePredicate(undefined, where, anchorVar), anchorVar, true));
   }
 
-  return preds.reduceRight<InlineGate | undefined>(
-    (rest, ip) => (vertex, binding, params, graph) =>
-      inlineHolds(ip, vertex, binding, params, graph) &&
-      (rest === undefined || rest(vertex, binding, params, graph)),
-    undefined,
-  );
+  return composeInlineGate(preds);
 };
 
 export const detectOptionalHopCount = (
@@ -9247,50 +9232,25 @@ const nodeWhereOf = (where: Expr, nodeVar: string): InlinePred | 'decline' => {
  * wording, as `detectHopProjection`'s rel-variable and path-variable checks.
  */
 /**
- * One gate conjunct's per-element closure when it can be pre-resolved, else `undefined` so the
- * caller keeps `inlineHolds`.
+ * EVERY carried `InlinePred` must hold, composed into ONE closure — the single implementation of a
+ * per-element inline gate.
  *
- * ⚠️ A SEPARATE EXPORTED FUNCTION BECAUSE IT IS A ROUTE CHOICE, and a route choice is
- * answer-equivalent — so every mutant of it survives the differential tests and it needs a test of
- * its own (`perf-gate-needs-its-own-test`, and item 1064's `topKPlan` is the same shape).
- * `gate-conjunct-route.test.ts` is that test.
+ * ⚠️ ITEM 1601 EXTRACTED THIS FROM EIGHT IDENTICAL COPIES, and the duplication was not cosmetic:
+ * item 1600 put its fast arm in `nodeScanGate`'s copy and the other seven — the three-hop interior,
+ * the two-hop middle, the keyed, anchored and far-side walks — silently kept the slow one. That is
+ * the shape this file's own note warns about ("two copies of one shape rule is how the far endpoint
+ * ended up on a per-edge tally once before"), realized as a performance divergence rather than a
+ * wrong answer.
  *
- * `bindVar === undefined` is REQUIRED, not an optimization: `inlineHolds` WRITES the binding for a
- * correlated conjunct before testing it, and a specialized closure never writes one — it would
- * otherwise evaluate a value against a name nothing had bound.
+ * `reduceRight` rather than a loop, and that is load-bearing for the measured reason recorded at
+ * `gateWith`: a `for (const ip of preds)` allocated an iterator per element over an empty array and
+ * cost an unfiltered scan 34%.
+ *
+ * The conjuncts stay in WRITTEN order (inline before clause), which is what lets an inline filter
+ * matching nothing short-circuit a faulting clause `WHERE` — both engines do this.
  */
-export const specializedConjunct = (
-  ip: InlinePred,
-): ((element: Vertex | Edge, env: EvalEnv) => boolean) | undefined =>
-  ip.bindVar === undefined ? specializeSingleProp(ip.pred) : undefined;
-
-const nodeScanGate = (
-  start: NodePattern,
-  where: Expr | undefined,
-  nodeVar: string,
-): InlineGate | undefined | null => {
-  const preds: InlinePred[] = [];
-  const inStart = inlineOf(start);
-
-  if (inStart === null) {
-    return null;
-  }
-
-  if (inStart !== undefined) {
-    preds.push(inStart);
-  }
-
-  if (where !== undefined) {
-    const carried = nodeWhereOf(where, nodeVar);
-
-    if (carried === 'decline') {
-      return null;
-    }
-
-    preds.push(carried);
-  }
-
-  return preds.reduceRight<InlineGate | undefined>((rest, ip) => {
+export const composeInlineGate = (preds: readonly InlinePred[]): InlineGate | undefined =>
+  preds.reduceRight<InlineGate | undefined>((rest, ip) => {
     /**
      * ITEM 1600: each conjunct's per-element work chosen ONCE PER QUERY, which is item 1598's
      * lever one consumer along. `inlineHolds` -> `satisfies` re-dispatches over twelve carriers
@@ -9338,6 +9298,52 @@ const nodeScanGate = (
           fast(v, { binding, params, graph }) &&
           (rest === undefined || rest(v, binding, params, graph));
   }, undefined);
+
+/**
+ * One gate conjunct's per-element closure when it can be pre-resolved, else `undefined` so the
+ * caller keeps `inlineHolds`.
+ *
+ * ⚠️ A SEPARATE EXPORTED FUNCTION BECAUSE IT IS A ROUTE CHOICE, and a route choice is
+ * answer-equivalent — so every mutant of it survives the differential tests and it needs a test of
+ * its own (`perf-gate-needs-its-own-test`, and item 1064's `topKPlan` is the same shape).
+ * `gate-conjunct-route.test.ts` is that test.
+ *
+ * `bindVar === undefined` is REQUIRED, not an optimization: `inlineHolds` WRITES the binding for a
+ * correlated conjunct before testing it, and a specialized closure never writes one — it would
+ * otherwise evaluate a value against a name nothing had bound.
+ */
+export const specializedConjunct = (
+  ip: InlinePred,
+): ((element: Vertex | Edge, env: EvalEnv) => boolean) | undefined =>
+  ip.bindVar === undefined ? specializeSingleProp(ip.pred) : undefined;
+
+const nodeScanGate = (
+  start: NodePattern,
+  where: Expr | undefined,
+  nodeVar: string,
+): InlineGate | undefined | null => {
+  const preds: InlinePred[] = [];
+  const inStart = inlineOf(start);
+
+  if (inStart === null) {
+    return null;
+  }
+
+  if (inStart !== undefined) {
+    preds.push(inStart);
+  }
+
+  if (where !== undefined) {
+    const carried = nodeWhereOf(where, nodeVar);
+
+    if (carried === 'decline') {
+      return null;
+    }
+
+    preds.push(carried);
+  }
+
+  return composeInlineGate(preds);
 };
 
 /**
@@ -10202,12 +10208,7 @@ export const detectGroupedNodeCount = (clauses: readonly Clause[]): ReachFn | nu
   // indexed loop fixed it but `prefer-for-of` then objects, and the rule is right in general
   // and wrong here; composing instead removes the loop altogether, so there is no iterator
   // for the common case and no suppression comment to out-live its reason.
-  const gate = preds.reduceRight<InlineGate | undefined>(
-    (rest, ip) => (v, binding, params, graph) =>
-      inlineHolds(ip, v, binding, params, graph) &&
-      (rest === undefined || rest(v, binding, params, graph)),
-    undefined,
-  );
+  const gate = composeInlineGate(preds);
 
   const { label } = start;
 
@@ -10480,12 +10481,7 @@ export const detectGroupedHopCount = (clauses: readonly Clause[]): ReachFn | nul
     preds.push(predFor(compilePredicate(undefined, where, keyed.variable), keyed.variable, true));
   }
 
-  const gate = preds.reduceRight<InlineGate | undefined>(
-    (rest, ip) => (v, binding, params, graph) =>
-      inlineHolds(ip, v, binding, params, graph) &&
-      (rest === undefined || rest(v, binding, params, graph)),
-    undefined,
-  );
+  const gate = composeInlineGate(preds);
 
   // The start-key walk seeds from the label bucket, which `candidateVertices` fills exactly
   // only for a SIMPLE label (see item 138).
@@ -11946,12 +11942,7 @@ export const detectGroupedNodeAggregate = (
 
   // Composed rather than looped, for the reason item 141 measured on the tally: a `for…of` over
   // an EMPTY predicate array cost the unfiltered shape 34%.
-  const gate = preds.reduceRight<InlineGate | undefined>(
-    (rest, ip) => (v, binding, params, graph) =>
-      inlineHolds(ip, v, binding, params, graph) &&
-      (rest === undefined || rest(v, binding, params, graph)),
-    undefined,
-  );
+  const gate = composeInlineGate(preds);
   const labelName = label?.name;
 
   return (graph, params) => {
@@ -12507,12 +12498,7 @@ export const detectGroupedHopAggregate = (
     return null;
   }
 
-  const gate = preds.reduceRight<InlineGate | undefined>(
-    (rest, ip) => (v, binding, params, graph) =>
-      inlineHolds(ip, v, binding, params, graph) &&
-      (rest === undefined || rest(v, binding, params, graph)),
-    undefined,
-  );
+  const gate = composeInlineGate(preds);
   const startLabel = start.label;
 
   if (startLabel !== undefined && startLabel.kind !== 'label') {

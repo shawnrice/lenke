@@ -67798,14 +67798,17 @@ closedness. The real binding is still passed, as defence in depth over a contrac
 see enforced — and the survivor is also the evidence that a future signature change could hoist the
 env out of the loop entirely.
 
-#### ⚠️ EIGHT COPIES OF THIS COMPOSITION EXIST, and seven are untouched
+#### ⚠️ EIGHT COPIES OF THIS COMPOSITION EXIST, and seven are untouched — ⚠️ **EXTRACTED at item 1601**
 
 `reduceRight((rest, ip) => … inlineHolds(ip, …) && (rest === undefined || rest(…)))` appears **eight
 times** in `shortcuts.ts` — `nodeScanGate`, `gateOfPreds` (the three-hop interior), the
 two-hop/keyed/anchored builders, and others. Only `nodeScanGate`'s has the fast arm.
 
-**The follow-up is to extract ONE composition and give it the arm**, which would carry this 1.25-1.31x
-to the hop and multi-hop gates. It is deliberately not done here: eight sites is a different change
+~~**The follow-up is to extract ONE composition and give it the arm**, which would carry this
+1.25-1.31x to the hop and multi-hop gates.~~ — **DONE at item 1601**, and the carried win is
+**1.15x on the two-hop middle-gated count** rather than 1.25-1.31x: the one-hop shapes land at
+1.00-1.05x. That item's mutation pass also found two untested claims in this composition, one of
+them written in its own comment. It is deliberately not done here: eight sites is a different change
 from one, and the file's own note warns that "two copies of one shape rule is how the far endpoint
 ended up on a per-edge tally once before". The duplication is the finding; the extraction is the
 next item.
@@ -67824,4 +67827,94 @@ reads.
 #### Gates
 
 `bun run check` 0 read unpiped. Suites gql 4058 (10 new), gremlin 1666, core 435, native 1031,
+serialization 144 — 0 fail. `bun run fuzz` 20/0 under the 16G cap.
+
+### Item 1601 — the seven remaining copies of the gate composition are now ONE, which carries item 1600's arm to them: **1.15x on the two-hop middle-gated count**, one-hop shapes 1.00-1.05x, null control flat. ⚠️ And the extraction's mutation pass found TWO untested claims, one of them written in the function's own comment
+
+Item 1600 put its fast arm in `nodeScanGate`'s copy of the gate composition and found the same
+`reduceRight` body EIGHT times in `shortcuts.ts`, naming the extraction as the follow-up. This is it.
+
+#### What was duplicated
+
+```text
+   reduceRight((rest, ip) => (v, binding, params, graph) =>
+     inlineHolds(ip, v, binding, params, graph) &&
+     (rest === undefined || rest(v, binding, params, graph)))
+```
+
+Eight times, textually identical but for one site naming the parameter `vertex`: the three-hop
+interior (`gateOfPreds`), the two-hop middle (`midPreds`), `gateWith`, `nodeScanGate` and four
+keyed/anchored/far-side walks. Now one exported `composeInlineGate(preds)`, with the 0-remain check
+asserted by the extraction script rather than eyeballed (item 1581's three silent no-ops).
+
+#### The numbers, an asserted A/B
+
+Each arm verified in the BUILT dist (`composeInlineGate` absent from the bundle in the PRE arm).
+`hop-gate-probe.mjs`, 20,000 vertices and ~80,000 edges, one shape per process, three runs each —
+and the fixture **counts its distinct endpoints and branching out-degrees before any timing**, which
+is the line items 702/1516/1518 say to write:
+
+```text
+                       PRE                           POST                        verdict
+   mid-count           631199 595800 615586 ns       520466 535889 544731        1.15x
+   start-count         378030 384088 366211          356702 371533 360404        1.05x
+   far-inline          543845 382455 427581          403147 382970 409391        ~1.05x
+   far-count           429247 400960 431315          421862 402485 425480        flat
+   two-conjunct-count  615452 547965 572140          546945 578440 553194        flat (NULL CONTROL)
+```
+
+The two-hop MIDDLE gate is where it lands, with non-overlapping ranges, and that is the expected
+place: the middle gate runs per edge at the middle, so the per-element share is largest there. The
+null control is a gate that cannot specialize — two conjuncts, so item 1600's arm is unreachable
+while the gate still runs per element — and it does not move.
+
+⚠️ **A 6% REGRESSION ON `far-proj` DID NOT REPRODUCE.** At REPS=200 the POST medians read ~6% worse
+than PRE on the 4.6 ms far-side projection, which is the one shape where a loss would outweigh the
+win. Five runs each at REPS=300 refuted it:
+
+```text
+   PRE   5242755 4373333 4457661 4656605 4599144   median 4599144
+   POST  4561472 4379697 4498277 4541316 4410788   median 4498277   POST 2% FASTER
+```
+
+Item 737's confirm-in-isolation rule, earning itself in the direction of clearing a phantom rather
+than finding one.
+
+#### ⚠️ Mutation: 3 of 5 first time, and the two survivors were REAL — including a claim in the comment
+
+```text
+   gate/composition-never-gates   CAUGHT 1491 fail     gate/reversed-conjunct-order   SURVIVED
+   gate/admits-bindvar            CAUGHT    1 fail     gate/drops-rest-slow-arm       SURVIVED
+   gate/fast-arm-never-fires      CAUGHT    4 fail
+```
+
+- **`reduceRight` -> `reduce`**, reversing the conjunct order, left all 4,058 tests green. The
+  function's OWN comment says written order (inline before clause) "is what lets an inline filter
+  matching nothing short-circuit a faulting clause `WHERE`" — a documented, load-bearing claim with
+  no test. The test is a property in BOOLEAN CONTEXT, which must RAISE on a non-boolean value (item
+  875's reason `truthProps` exists): `(n:P {a: 999}) WHERE n.flagless` returns 0 rows and does NOT
+  throw, while both controls — no inline filter, and an inline filter that MATCHES — do throw.
+- **Dropping the `rest` call from the SLOW arm** also survived, and item 1600 is why: its own
+  `drops-rest` mutant was CAUGHT because it mutated the FAST arm, and after that item every tested
+  multi-conjunct gate had its first conjunct specialize. The slow arm's chain is reached only when a
+  conjunct does NOT specialize and another follows it, and nothing had that shape. Two inline
+  properties do not specialize, so `(n:P {a: 1, b: 2}) WHERE n.n = 999` is it.
+
+⚠️ **AND THE FIRST VERSION OF BOTH TESTS WAS WRITTEN AS A `count(*)`, AND BOTH MUTANTS SURVIVED
+AGAIN.** A count takes `countShortcut` -> `buildNodeCount`, which has its OWN
+`for (const ip of preds)` loop and never reaches this composition at all. Re-running the mutants
+after adding the tests is what caught that — a test added for a surviving mutant is not evidence
+until the mutant dies. With both as PROJECTIONS: **5 of 5 caught.**
+
+#### What this leaves
+
+`buildNodeCount`'s own `for (const ip of preds)` loop is now the NINTH copy of the gate rule, and
+the one the count route uses — it has item 1598's `fastPred` for the single-pred case and falls to
+`inlineHolds` for the rest. Whether it should call `composeInlineGate` is a real question and not
+obviously yes: its loop is the one `reduceRight`'s own note says a `for` loop cost 34% at, so it was
+written that way deliberately. Measure before merging them.
+
+#### Gates
+
+`bun run check` 0 read unpiped. Suites gql 4060 (2 new), gremlin 1666, core 435, native 1031,
 serialization 144 — 0 fail. `bun run fuzz` 20/0 under the 16G cap.
