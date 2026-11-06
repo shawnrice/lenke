@@ -64939,3 +64939,74 @@ raising this._ Adding one inside the reachable walk would widen it again. Record
 No engine change — `executor.ts` differs from its pre-tick copy by a comment only, and
 `shortcuts.ts` is byte-identical (both verified by `diff`). `bun run check` 0 read unpiped.
 Suites: gql 3964/0, the rest unchanged from item 1569; `bun run fuzz` 20/0.
+
+### Item 1571 — **86.3% of a bounded var-length count is a CSR that is REBUILT EVERY QUERY**, priced by instrumentation rather than inferred from a share. The cache is designed and NOT built, because ⚠️ **neither `graph.version` NOR `graph.epoch(name)` advances synchronously** — both read 0 through three mutations and only move after a task drain, so keying a cache on either serves a STALE result to any query following a write
+
+Item 1570 refuted a target taken from a self-time share, so this one was ablated first.
+
+#### The measurement
+
+`walkLevelCount` is 70% of `varlen12` (`MATCH (a:P)-[:E]->{1,2}(b:P) RETURN count(*)`) and carries
+26 mentions, i.e. it is thoroughly priced as a FUNCTION. What was not priced is the split inside it.
+Timers around the two halves, 20 reps at 20,000 vertices / 100,000 edges:
+
+```text
+   20 reps total        144.9 ms
+     build total        125.1   86.3%
+       order + idx       21.0   14.5%     <- TYPE-INDEPENDENT (a spread + one Map.set per vertex)
+       CSR fill         104.1   71.8%     <- type-dependent (one Map.get per EDGE)
+     level recurrence    19.8   13.7%
+```
+
+**The recurrence this route exists for is 13.7% of it.** The other 86% is building a CSR — vertex
+numbering, then `off`/`nbr` filled with an `idx.get(vertex)` per edge — from scratch, on a graph that
+did not change between queries. The function's own comments are all about making the build fast
+(items 744, 601, 692, 699: prealloc, no boxing, no Map in the levels), and they succeeded; nobody
+had asked whether it should happen at all.
+
+#### Two levers, and the first one is already disqualified
+
+- **Replace `idx.get(vertex)` with a dense vertex ordinal** — this is the obvious read of "71.8% is
+  a Map.get per edge", and it is **BUILT AND DISQUALIFIED**: deletes cost 6.18x/11.34x under churn
+  (items 1369-1372/1397), and the standing note records that _seven_ items have arrived at it. Not
+  re-attempted. Priced here only so the 71.8% is attributable.
+- **Cache the CSR across queries** — different lever, not previously tried on the TS side (every
+  `csr_fresh` / `rebuild_csr` / `invalidate_csr` reference in this file is the RUST engine). This is
+  the one worth having, and it would reach the whole 86%.
+
+#### ⚠️ WHY THE CACHE IS NOT BUILT: there is no synchronous change signal to key it on
+
+`Graph` looks like it offers exactly the right key. `version` is documented as a _"monotonic mutation
+counter — an O(1) 'did anything change?' signal"_, and `epoch(name)` as a per-token counter so _"a
+selector that depends only on specific tokens can fingerprint `deps.map(epoch)` and recompute only
+when one of them moved"_. Both are **deferred**, which the doc hints at ("advances on the same
+deferred, veto-checked step as snapshot-staleness") and measurement confirms:
+
+```text
+   fresh             epoch(E)=0  epoch(P)=0  version=0
+   after addVertex   epoch(E)=0  epoch(P)=0  version=0
+   after addEdge     epoch(E)=0  epoch(P)=0  version=0
+   after addEdge F   epoch(E)=0  epoch(F)=0  version=0     vertexCount=2  edgeCount=2
+   ...after a task drain                     version=3
+```
+
+So a cache keyed on `version` or on token epochs would hand a **stale CSR** to any query that runs
+after a synchronous write — `g.addEdge(...); query(g, …)` is the ordinary shape, and it would return
+a wrong count silently. `vertexCount`/`edgeCount` DO advance eagerly but cannot serve: a delete plus
+an add leaves both unchanged while the topology differs.
+
+**The prerequisite is therefore a synchronous mutation counter in core**, which touches every mutator
+plus the transaction undo path — too much to fold into a perf item, and precisely where the native
+side's own version of this went wrong: `csr_fresh` is cleared by every adjacency write and _nothing
+re-arms it_, so one `add_edge` demotes every later read for the session. A TS cache must be keyed,
+not flagged, for that reason.
+
+⚠️ **And `graph.version`'s own doc invites the mistake.** "An O(1) did-anything-change signal" reads
+as safe for read-after-write and is not. Anyone reaching for it to invalidate a cache needs to know
+it is drain-ordered; that is the transferable finding here, independent of the CSR.
+
+#### Gates
+
+No change to ship — the instrumentation was temporary and `shortcuts.ts` is byte-identical to HEAD
+(verified by `diff` against both the pre-tick copy and `git show`), with `__wlcBuild` absent from the
+rebuilt bundle. `bun run check` 0 read unpiped. Suites unchanged from item 1570.
