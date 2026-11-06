@@ -14,6 +14,30 @@ import type { GraphHandle } from './backend.js';
 import type { Backend } from './backend.js';
 import { asByteLength, type ErrorReport, makeFail, parseErrorReport } from './marshal.js';
 
+/**
+ * A crate-owned `(ptr, len)` pair copied into a JS `Uint8Array`, with `len === 0` answered WITHOUT
+ * calling `toArrayBuffer`.
+ *
+ * ⚠️ ITEM 1606: BUN 1.4.4 MADE A ZERO-LENGTH RESULT THROW, where 1.4.0 returned an empty buffer.
+ * `toArrayBuffer(ptr, 0, 0)` now raises `TypeError: length must be > 0. This usually means a bug in
+ * your code.` — and a zero-length result is NOT a bug here: `asByteLength` admits it by contract
+ * (it rejects only a negative or non-integer length), and an empty payload is the right answer for
+ * serializing an empty graph or dumping an empty schema.
+ *
+ * It broke three native tests and made `write-fuzz` unreliable — `differential fuzz: write path`,
+ * `dropIndex … dumpSchema round-trip` and `an empty graph dumps an empty schema`. ⚠️ It was
+ * ENVIRONMENTAL: bun auto-upgraded mid-session (`~/.bun/bin/bun` restamped 13:04), so the suite
+ * went red with no repo change behind it, and the obvious reading — that the item in flight had
+ * broken byte-identity — was wrong. What settled it was running the same test FIVE times on each
+ * side rather than once: 1-of-3 passing with the change in the tree and 0-of-5 without it, so the
+ * one clean run that pointed at the change was the fluke. CLAUDE.md's "match sample counts on both
+ * sides" earned itself in the direction of NOT chasing a regression that was never there.
+ *
+ * The `lnk_free` still runs for a zero-length result, because it always did: under bun 1.4.0 this
+ * path ran `toArrayBuffer` and then freed, so the crate side already expects `lnk_free(ptr, 0)`.
+ */
+const EMPTY_RESULT = new Uint8Array(0);
+
 // usize / u64 on the native targets (arm64 / x86_64).
 const U = FFIType.u64_fast;
 
@@ -75,7 +99,9 @@ export const createFfiEngineBackend = (libPath: string): Backend => {
     let json: string;
 
     try {
-      json = decoder.decode(new Uint8Array(toArrayBuffer(errPtr, 0, len)).slice());
+      // `len === 0` means an empty report, which `parseErrorReport` turns into the generic code.
+      // See `EMPTY_RESULT` for why it cannot go through `toArrayBuffer` any more.
+      json = len === 0 ? '' : decoder.decode(new Uint8Array(toArrayBuffer(errPtr, 0, len)).slice());
     } finally {
       symbols.lnk_free(errPtr, len);
     }
@@ -98,7 +124,7 @@ export const createFfiEngineBackend = (libPath: string): Backend => {
     const len = asByteLength(outLen[0], op);
 
     try {
-      return new Uint8Array(toArrayBuffer(resPtr, 0, len)).slice();
+      return len === 0 ? EMPTY_RESULT : new Uint8Array(toArrayBuffer(resPtr, 0, len)).slice();
     } finally {
       symbols.lnk_free(resPtr, len);
     }

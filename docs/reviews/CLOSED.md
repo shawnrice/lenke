@@ -68428,3 +68428,71 @@ bug is cheaper than rediscovering it as a wrong answer.
 new), serialization 144 — 0 fail. `bun run fuzz` 20/0 under the 16G cap. The non-null seeded count
 measures 12363-12735 ns against 12363-13279 before, so declining the null seek costs the seeking
 path nothing.
+
+### Item 1606 — ⚠️ **bun auto-upgraded 1.4.0 -> 1.4.4 MID-SESSION and made a zero-length FFI result THROW**, turning three native tests red and `write-fuzz` unreliable with no repo change behind it. One guard fixes it — and the way it was nearly misattributed is the part worth keeping
+
+Found while finishing item 1607: the native suite went from `1040 pass 0 fail` to `1054 pass 2 fail`
+with nothing in the tree to explain it.
+
+#### What broke
+
+`takeResult` copies a crate-owned `(ptr, len)` pair with
+`new Uint8Array(toArrayBuffer(resPtr, 0, len)).slice()`. Under **bun 1.4.4** that raises
+
+```text
+   TypeError: length must be > 0. This usually means a bug in your code.
+```
+
+for `len === 0`, where **1.4.0** returned an empty buffer. A zero-length result is not a bug here:
+`asByteLength` admits it BY CONTRACT (it rejects only a negative or non-integer length), and an
+empty payload is the right answer for serializing an empty graph or dumping an empty schema. Three
+tests went red — `differential fuzz: write path`, `dropIndex … dumpSchema round-trip` and `an empty
+graph dumps an empty schema` — and the first of those is a byte-identity fuzzer, so the invariant it
+guards was simply not being checked.
+
+The fix answers `len === 0` with a shared empty array and never calls `toArrayBuffer`. `lnk_free`
+still runs for it, because it always did: under 1.4.0 this path built the buffer and then freed, so
+the crate side already expects `lnk_free(ptr, 0)`. Both call sites are fixed — the result path and
+the last-error decode, where an empty report now yields `''` and `parseErrorReport` turns that into
+the generic code exactly as before.
+
+#### ⚠️ AND IT WAS NEARLY BLAMED ON THE ITEM IN FLIGHT
+
+The obvious reading was that item 1607's exact-seed skip had broken byte-identity — a GQL read
+change showing up in a write-path differential is strange but not impossible, and the test was
+failing. The first check seemed to confirm it:
+
+```text
+   with the change in the tree       1 of 1 runs FAILED
+   with the change reverted          1 of 1 runs PASSED
+```
+
+⚠️ **Both of those were single runs, and the second was the fluke.** Repeating:
+
+```text
+   with the change      1 pass, 2 fail  of 3
+   with it reverted     0 pass, 5 fail  of 5
+```
+
+So it fails either way and the change is innocent. CLAUDE.md's "match sample counts on both sides,
+and prefer min or p25 over the mean" is written for PERFORMANCE arms; this is the same rule applied
+to a PASS/FAIL arm, where it matters more — a one-run comparison was about to send the next hour
+into reverting correct work. Two further wrong turns came off the same root before the cause was
+found: removing the new parity test file made the count WORSE (3 fail, not 2), which ruled out test
+pollution, and only then did the version banner in bun's own output — `v1.4.0` in the session's
+earlier runs, `v1.4.4` in the later ones — point at the real cause. `~/.bun/bin/bun` is restamped
+13:04 today.
+
+#### What this says about the gates
+
+The session had read `bun run fuzz` 20/0 and the native suite green several times before 13:04, so
+the regression window is bounded by the upgrade rather than by any commit. ⚠️ **An environmental
+change can turn a byte-identity fuzzer red, and a red fuzzer is indistinguishable from a broken
+engine until someone checks the toolchain.** Worth knowing the next time a suite goes red with a
+clean `git diff`: check `bun --version` and the mtime of the binary before reading the diff again.
+
+#### Gates
+
+`bun run check` 0 read unpiped. Suites gql 4129, gremlin 1694, core 435, native **1056 — 0 fail**
+(from 2-3 fail), serialization 144. `bun run fuzz` 20/0 under the 16G cap, and `write-fuzz` passes
+3 of 3 where it passed 0 of 5 before.
