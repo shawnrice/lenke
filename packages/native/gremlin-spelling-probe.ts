@@ -340,6 +340,36 @@ const GROUPS: readonly Group[] = [
     [traversal(V(), out('T'), count()), traversal(V(), outE('T'), inV(), count())],
   ],
   [
+    /**
+     * ⚠️ TWO HOPS, YIELDING — the shape item 1614 fused, and the group that gives this surface a
+     * two-hop spelling at all. Every hop group here is ONE hop under a `count()`, which
+     * `hopChainCount` answers from degrees without walking (item 590), so the two-hop WALK had no
+     * spelling group any more than it had a bench row.
+     *
+     * ⚠️ AND BOTH SPELLINGS RIDE THE FUSED WALK, which was worth checking rather than assuming: I
+     * added this group expecting it to FLAG, on the reasoning that the rung matches `out`/`in` steps
+     * and `outE(T).inV()` is a different pair. It does not, because `effectivePlan` runs
+     * `fuseEdgeHop` BEFORE any rung sees the plan and normalizes the pair into one hop — so the two
+     * spellings are the same plan by the time the rung is asked, and `run(…).drain` is defined for
+     * both. The group is kept as the standing guard that this stays true (202.573 against 202.799 ms
+     * over 800,000 rows), not as a recorded gap.
+     */
+    'two hops, yielding: out(T).out(T) vs outE(T).inV().out(T)',
+    [
+      traversal(V(), out('T'), out('T'), values('age')),
+      traversal(V(), outE('T'), inV(), out('T'), values('age')),
+    ],
+  ],
+  [
+    // The three-hop twin, BOTH on the pipeline — the control that says the group above measures the
+    // fusion and not some property of writing two hops.
+    'three hops, yielding: out x3 vs outE().inV().out().out()',
+    [
+      traversal(V(), out('T'), out('T'), out('T'), values('age')),
+      traversal(V(), outE('T'), inV(), out('T'), out('T'), values('age')),
+    ],
+  ],
+  [
     'hop, incoming: in(T) vs inE(T).outV()',
     [traversal(V(), in_('T'), count()), traversal(V(), inE('T'), count())],
   ],

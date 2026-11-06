@@ -27,6 +27,7 @@ import {
 } from './aggregation.js';
 import { countShortcut } from './count-shortcut.js';
 import { applyStep } from './dispatch.js';
+import { hopChainValuesShortcut } from './hop-chain-values.js';
 import { hopValuesShortcut } from './hop-values.js';
 import { seedFromIndex, tailIsOrderFree } from './index-seed.js';
 import { matchStep } from './match.js';
@@ -1905,9 +1906,16 @@ export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
   // the walk emits bare values and builds no traverser, so it has no path to carry.
   // `??` AND IN THIS ORDER, so no plan `hopValuesShortcut` already admits can change route: the
   // start-filtered walk is consulted only where that one returned undefined (item 1535).
+  // `hopChainValuesShortcut` (item 1614) is the TWO-hop twin, and it is consulted LAST for item
+  // 1535's stated reason: `??` in this order means no plan an earlier rung already admits can change
+  // route. It cannot overlap `hopValuesShortcut` anyway — that one takes `[V, hop, proj]` and this
+  // one requires a second hop in position 2 — but the ordering rule is what keeps that true if
+  // either gate is ever widened.
   const projected = ctx.tracksPath
     ? undefined
-    : (hopValuesShortcut(effective, graph) ?? startFilteredHopValues(effective, graph));
+    : (hopValuesShortcut(effective, graph) ??
+      startFilteredHopValues(effective, graph) ??
+      hopChainValuesShortcut(effective, graph));
 
   // NOTHING LEFT OVER is the shape this shortcut has always served: the values ARE the answer, so
   // they are returned without ever building a traverser. Unchanged, and it stays the fast path.

@@ -46830,7 +46830,7 @@ to check, not a target to take.**
 
 Docs only. `oxfmt --check` 0.
 
-### Item 1356 — the TS multi-hop field reduces to ONE root cause, and the only lever left is a DESIGN DECISION ~~and the autonomous-local field is exhausted~~ (the exhaustion claim is WRONG — see 1358; the ordinal fork is DECLINED at 1358)
+### Item 1356 — the TS multi-hop field reduces to ONE root cause, and ~~the only lever left is a DESIGN DECISION~~ ~~and the autonomous-local field is exhausted~~ (the exhaustion claim is WRONG — see 1358; the ordinal fork is DECLINED at 1358. ⚠️ AND "the only lever left" is over-broad: item 1614 took **2.99x/3.12x** on the two-hop YIELDING shapes, which this item's field never covered because every multi-hop row in the bench and the profile corpus ends in `count()`)
 
 Items 1354 and 1355 cleared the priced list of stale headings, leaving 1152 as the one genuinely
 open TS-side entry. Reading it alongside 1104/1105 shows they are not three targets but one.
@@ -69237,3 +69237,88 @@ structural reason as item 1612's twin survivor, and item 475's rule applies — 
 
 `bun run check` 0 read unpiped. Suites gremlin 1721 (14 new), gql 4153, core 435, native 1056,
 serialization 144 — 0 fail. `bun run fuzz` 20/0 under the 16G cap.
+
+### Item 1614 — **2.99x and 3.12x on a TWO-HOP row-returning Gremlin walk** (`V().out(T).out(T).values(k)` 1151.7 to 385.2 ms; `.id()` 1131.7 to 362.2, over 1,000,000 edges / 5,000,000 rows), closing a hole that survived because **every multi-hop shape in both the bench and the profile corpus ends in `count()`** — which `hopChainCount` answers from degrees without walking at all, so the two-hop WALK had only ever been measured in the arm where it does not run. Found PROFILE-FIRST, by reading which frames the one-hop and two-hop shapes do not share
+
+OPEN: three hops (priced below at 6.45x, deliberately a second measurement); a `has` AFTER the second hop, and a `has` BETWEEN the hops with a yielding tail — the only two shapes the cliff finder still reads as `pipeline`.
+
+#### The nomination came from the frames, not from a list
+
+`gremlin-cliff-finder.ts`'s `values` family put `hop hop values` at 100.68 ms against `hop values`' 2.66 — 9.5x PER ROW over the same walk, which is not a workload difference. The profiles say why, and they share almost nothing:
+
+```text
+   one hop   (g-hopvaluesrows)    drain 15.9%   pick 8.9%            <- the FUSED walk
+   two hops  (g-hop2valuesrows)   iterLabeled 19.3%  otherEndpoint 14.8%
+                                  traverseToVertex 11.3%  unwrap 3.1%  extend 1.6%
+                                  mapTraverser 3.7% (UNPRICED)        <- the generic PIPELINE
+```
+
+`hopValuesShortcut` takes `[V, hop, proj]` and declines at a second hop, so one extra `out` dropped the whole query onto the traverser pipeline. The gap is present with `id()` as the tail as well as `values(k)` (237.6 ns/row against 254.6), which is what says it is the WALK and not the property read — the split `hopidrows`/`hopvaluesrows` exists for.
+
+#### Priced against a hand floor FIRST (item 1465's rule), at 20,000 x 4
+
+```text
+   V().out(E).values(k)           2.07 ms    79996 rows    25.9 ns/row   <- the one-hop walk
+   V().out(E).out(E).values(k)   81.47      319972        254.6          <- the pipeline
+   V().out(E).out(E).id()        76.01      319972        237.6
+   the nested walk BY HAND       12.25      319972         38.3          <- THE FLOOR, 6.65x
+   ... id by hand                11.23      319972         35.1
+```
+
+The floor's per-row sits beside the ONE-hop fused walk's 25.9, so the fusion generalizes rather than merely applying twice. After the rung: **15.49 and 12.78 ms**, 1.08-1.17x and 1.13x of their own floors. The residual is `toArray`'s array growth and the `pick` closure.
+
+#### The A/B on the real bench, one instrument, PRE by ablating the `??` link
+
+```text
+   row                              PRE      POST    verdict
+   V().out().out().values(age)   1151.7     385.2    2.99x   (ts/nat 5.2 -> 1.7)
+   V().out().out().id()          1131.7     362.2    3.12x   (ts/nat 3.7 -> 1.2)
+   V().out().values(age)          139.8     133.5    flat (control)
+   V().out() [bare]               117.6     118.4    flat (control)
+   V().out().id()                 177.1     199.1    flat (control, in-sweep drift)
+   V().out().out().count()         51.3      51.6    flat (control)
+   V().out().out().out().count()  219.9     217.1    flat (control)
+   V().out()x4.count()            212.7     210.3    flat (control)
+```
+
+Both new rows land at or near native parity, from 5.2x and 3.7x behind it. The smaller fixture reads 5.26x and 5.95x where this reads 2.99x and 3.12x — the same change at 20,000 cache-resident against 200,000 not, both quoted with their size per CLAUDE.md's sweep rule.
+
+**Those two bench rows are new, and their absence was load-bearing.** `bench:gremlin` had `V().out().values(age)` and `V().out().id()` — the pair that separates the property read from the walk — but every multi-hop row ended in `count()`. Same omission in the profile corpus, same cause.
+
+#### What the rung is, and what it deliberately is not
+
+A SEPARATE module, not an arm inside `hop-values.ts`: `executor-edits-perturb` prices an edit to that file at up to 16% on unrelated rows in an arbitrary direction (items 1413/1440/1442), and its four existing hand walks are the hottest one-hop paths in the surface. The new rung is one `??` link at the end of `run`'s chain, in item 1535's order, so no plan an earlier rung admits can change route.
+
+- **ORDER IS TINKERPOP'S BY CONSTRUCTION** — `out` flatMaps per traverser, so the row sequence is the depth-first nesting written literally. Gremlin streams are compared ORDERED by the differential fuzzer, so walking the edge index once or hoisting the far side is a cross-engine failure, not an optimization — items 167, 1431 and 1432's limit. This removes DELEGATION only.
+- **NO DEDUPLICATION**: two paths to the same far vertex are two rows and a self-loop is a step. `dedupe()` lands in `rest`.
+- **NO MULTI-TYPE GUARD NEEDED** — nothing is summed; each hop reads its own single bucket, unlike `degreeOfTypes`.
+- **EXACTLY TWO HOPS, SINGLE-TYPE, NON-`both`** — `pairTypes`' stated reason: a general N is a stack of iterators, which is the per-vertex array that branch measured as the whole cost of the general form. `both`'s contract is out-bucket then in-bucket PER VERTEX, so nesting two is four interleaved orders.
+
+#### Three hops: priced, not taken
+
+**59.12 ms by hand against the pipeline's 381.37 at 1,279,840 rows — 6.45x**, essentially this item's own ratio. The lever is real; it is a second measurement.
+
+#### ⚠️ The cliff finder lied a SECOND way, and in the opposite direction from item 1613's
+
+Item 1613 fixed it asking the RAW plan. This item found it asks only `countShortcut` — so every ROW-returning shape read `pipeline` whatever answered it, `V().out(E).values(k)` included, which has ridden a fused walk since item 170. A verdict column that is wrong for a whole family is worse than none: the `values` rows looked uniformly unanswered and the ratios beside them could not be read. It now consults every rung `run` consults, in `run`'s own `??` order. Two defects in two consecutive items on an instrument three days old — the cost of a verdict read from the engine is that it has to be read from ALL of it.
+
+#### Correctness: the PIPELINE ITSELF as an ORDERED oracle
+
+The rung declines a `V(id, …)` source, so the same query with every vertex id listed in `graph.vertices` order runs the identical question down the pipeline — `sourceFromIds` neither dedupes nor reorders. The two row sequences must match element for element, which is the strongest check available for a walk whose whole risk is row ORDER. A hand nested walk is the second oracle and derived literals the third; all three agree on the eight-path fixture, including a self-loop, a vertex with no `k` (dropped by `values`, kept by `id`), an isolated vertex, mixed `out`/`in` directions and per-hop type differences.
+
+#### Mutation 17 of 19, and the first pass found a real hole
+
+far/near bucket inverted on either hop, either endpoint read wrong, the two types swapped, `drops` ignored in each of the two loops and in the table, `drain` DRIFTING in order from the lazy loop, `id` picking the element, both `consumed` off-by-ones, a multi-key `values` admitted, an unknown projection admitted, and each of the five gates.
+
+**`rung/never-fires` SURVIVED the first pass**, which is `perf-gate-needs-its-own-test` exactly: a route choice is answer-equivalent, so every assertion passed whether the rung fired or the pipeline did. Fixed by asserting the ROUTE — `run` returns `projected.values`, and only a fused walk carries `drain` (item 1412; `eager-drain-route.test.ts` reads the same signal for one hop) — with a negative control for three shapes that must NOT take it, since without that the positive check proves nothing. The mutant now dies.
+
+Two survivors remain, both provably equivalent and documented where they sit: a third hop falls to `projectionOf`'s closing `return undefined` anyway, and the bare arm's `consumed` is unobservable because it is reached only when `steps.length === 3`, where `slice(3)` and `slice(4)` are both empty.
+
+#### A two-hop SPELLING group, and a prediction it refuted
+
+The Gremlin spelling probe had no two-hop group at all, for the same reason the bench had no row — every hop group is one hop under a `count()`. Added `out(T).out(T)` against `outE(T).inV().out(T)`, expecting it to FLAG on the reasoning that the rung matches `out`/`in` and the edge-step pair is different. It does not: `effectivePlan` runs `fuseEdgeHop` before any rung sees the plan, so the two are the SAME plan by then and `run(…).drain` is defined for both — 202.573 against 202.799 ms over 800,000 rows. Kept as the standing guard, with the three-hop twin (both on the pipeline) as the control that says the group measures the fusion.
+
+#### Gates
+
+`bun run check` 0 read unpiped. Suites gremlin 1739 (18 new), gql 4153, core 435, native 1056,
+serialization 144 — 0 fail. `bun run fuzz` 20/0 and `spelling:gremlin` 0 disagreements / 0 groups over 2x, both under the 16G cap.

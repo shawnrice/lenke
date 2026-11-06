@@ -40,8 +40,14 @@ import type { Plan } from '@lenke/gremlin';
 
 // eslint-disable-next-line boundaries/no-cross-package-relative-import -- internal rung entry point, read pre-build
 import { countShortcut } from '../gremlin/src/executor/count-shortcut.js';
+// eslint-disable-next-line boundaries/no-cross-package-relative-import -- internal rung entry point, read pre-build
+import { hopChainValuesShortcut } from '../gremlin/src/executor/hop-chain-values.js';
+// eslint-disable-next-line boundaries/no-cross-package-relative-import -- internal rung entry point, read pre-build
+import { hopValuesShortcut } from '../gremlin/src/executor/hop-values.js';
 // eslint-disable-next-line boundaries/no-cross-package-relative-import -- internal planner entry point, read pre-build
 import { effectivePlan } from '../gremlin/src/executor/index.js';
+// eslint-disable-next-line boundaries/no-cross-package-relative-import -- internal rung entry point, read pre-build
+import { startFilteredHopValues } from '../gremlin/src/executor/start-filtered-hop-values.js';
 
 const NODES = Number(process.env.NODES ?? 20_000);
 const FANOUT = Number(process.env.FANOUT ?? 4);
@@ -208,9 +214,23 @@ for (const s of picked) {
    * the plan. A leading vacuous label therefore changed the verdict without changing the query —
    * the instrument would have invented a cliff wherever the fixture is single-label, which is most
    * of this repo's.
+   *
+   * ⚠️ AND IT MUST ASK EVERY RUNG `run` ASKS, NOT JUST `countShortcut` — the second way this probe
+   * lied (item 1614). Its first version consulted the count rung alone, so every ROW-returning shape
+   * read `pipeline` whatever answered it: `V().out(E).values(k)` has ridden a fused walk since item
+   * 170 and was reported as pipeline here. A verdict column that is wrong for a whole family is
+   * worse than none, because the `values` rows then look uniformly unanswered and the ratios beside
+   * them cannot be read.
+   *
+   * `??` IN `run`'S OWN ORDER, so the verdict is the route actually taken.
    */
-  const rung =
-    countShortcut(effectivePlan(s.plan, g, false), g) === undefined ? 'pipeline' : 'CLOSED';
+  const effective = effectivePlan(s.plan, g, false);
+  const answered =
+    countShortcut(effective, g) !== undefined ||
+    (hopValuesShortcut(effective, g) ??
+      startFilteredHopValues(effective, g) ??
+      hopChainValuesShortcut(effective, g)) !== undefined;
+  const rung = answered ? 'CLOSED' : 'pipeline';
 
   for (let i = 0; i < 5; i += 1) {
     toArray(s.plan, g);

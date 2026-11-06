@@ -195,6 +195,21 @@ const SHAPES: [string, Plan][] = [
       count(),
     ),
   ],
+  // ⚠️ TWO HOPS WITH A ROW-RETURNING TAIL, which NO row above reached (item 1614) — and the omission
+  // was load-bearing rather than cosmetic. Every multi-hop row in this suite ends in `count()`,
+  // which `hopChainCount` answers from degrees without walking at all (item 590), so the two-hop
+  // WALK was only ever benched in the arm where it does not run. `V().out().values(age)` above rode
+  // a fused walk; adding one `out` dropped the whole query onto the traverser pipeline at **254.6
+  // ns a row against the one-hop walk's 25.9**, which `hop-chain-values.ts` now closes at 5.26x.
+  //
+  // BOTH TAILS, because the one-hop pair above (`values(age)` against `id()`) exists to separate the
+  // property read from the walk, and a gap present in both arms is the walk. Here both were on the
+  // pipeline and both are now fused.
+  [
+    'V().out().out().values(age)',
+    traversal(V(), hasLabel('Person'), out('KNOWS'), out('KNOWS'), values('age')),
+  ],
+  ['V().out().out().id()', traversal(V(), hasLabel('Person'), out('KNOWS'), out('KNOWS'), id())],
 ];
 
 /**

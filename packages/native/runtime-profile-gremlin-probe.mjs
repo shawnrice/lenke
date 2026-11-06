@@ -179,6 +179,20 @@ const SHAPES = {
   hopvaluesrows: traversal(V(), out('E'), values('k')),
   hopidrows: traversal(V(), out('E'), id()),
 
+  /**
+   * ⚠️ Item 1614: THE SECOND HOP UNDER A ROW-RETURNING TAIL, which the screen has never covered.
+   * Every two-hop shape above ends in `count()`, which `hopChainCount` answers from degrees without
+   * walking at all (item 590) — so the whole two-hop WALK has only ever been profiled in the arm
+   * where it does not run. `gremlin-cliff-finder.ts` priced the row-returning twin at **315 ns a
+   * row** against `hopvaluesrows`' 33 over 20,000x4, and a 9.5x per-row gap between one hop and two
+   * is not a workload difference: both emit one property read per arriving traverser.
+   *
+   * `hop2idrows` is the same split `hopidrows` is to `hopvaluesrows` — it isolates the property read
+   * from the walk, so a gap present in BOTH is the walk and a gap only in the first is the read.
+   */
+  hop2valuesrows: traversal(V(), out('E'), out('E'), values('k')),
+  hop2idrows: traversal(V(), out('E'), out('E'), id()),
+
   // ── Item 1478: the last unprofiled Gremlin steps ────────────────────────────────────────────
   //
   // Variable-length traversal, the declarative join, and per-traverser scoping. All three are core
