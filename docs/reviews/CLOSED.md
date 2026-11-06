@@ -67370,7 +67370,7 @@ GQL is 0.60x on values and 0.06x on count. A seeded count of 400 elements costin
 reading the bucket size costs 0.9 is the same closed-form opportunity on the other surface —
 `detectCountShortcut` has an index-seeded path, so the question is why it is not reached here.
 
-### Item 1597 — GQL's seeded count is **not failing to seek** (10.78x and 142.78x over unindexed) — it seeks and then **RE-VALIDATES EVERY CANDIDATE**, which a profile puts at 75% predicate plus 9% label. The mechanism is named: GQL's `SeedCandidate` has no exactness flag, where Gremlin's `Candidate` has `removable`. ~~Priced at 4-7x~~ — **re-priced at 2.08x by item 1605**, which also found the 75% predicate share this rested on is now 19.4% (items 1598/1600/1604 specialized that predicate) and fixed a WRONG ANSWER in the same seeding loop. Still real, still NOT built. ~~And a second finding: a 1.76x
+### Item 1597 — GQL's seeded count is **not failing to seek** (10.78x and 142.78x over unindexed) — it seeks and then **RE-VALIDATES EVERY CANDIDATE**, which a profile puts at 75% predicate plus 9% label. The mechanism is named: GQL's `SeedCandidate` has no exactness flag, where Gremlin's `Candidate` has `removable`. ~~Priced at 4-7x~~ — **re-priced at 2.08x by item 1605**, which also found the 75% predicate share this rested on is now 19.4% (items 1598/1600/1604 specialized that predicate) and fixed a WRONG ANSWER in the same seeding loop. ✅ **BUILT AT ITEM 1607: 1.8-2.1x on the seeded count and 3.9x unlabelled** — and that item's `exact`-on-the-candidate sketch, below, is the one part it got wrong. ~~And a second finding: a 1.76x
 
 equivalent-spelling gap on the same count, recorded rather than closed~~ — **that half is CLOSED by
 item 1598** (1.39x indexed, 1.55x unindexed, the two spellings converged); the re-validation target
@@ -67423,9 +67423,16 @@ calls it `removable` — "whether dropping the owning step leaves an equivalent 
 let items 1595 and 1596 answer off the bucket directly.
 
 **So the fix is to give GQL's seeds the same notion**: exact when the candidate's key/value is the
-node's ONLY constraint, superset otherwise, and skip re-validation in the first case. The label test
-still applies — the index returns vertices by VALUE across all labels, which item 149 names as the
-first of its two risks.
+node's ONLY constraint, superset otherwise, and skip re-validation in the first case.
+
+> ⚠️ **BUILT AT ITEM 1607, AND THIS SENTENCE PUTS THE FLAG IN THE WRONG OBJECT.** `indexCandidates`
+> reads a `CNode`'s `pred`; the skip happens against a list of `InlinePred`s built separately from
+> the AST. They agree today and nothing makes them, so an `exact` flag computed from one and applied
+> to the other is a wrong answer waiting for the day they drift. What shipped instead: the candidate
+> reports only what it SOUGHT (`eqKey`) and the verdict is formed against the predicate actually
+> held (`soleEqualityKey` + `seedIsExact`). The label test
+> still applies — the index returns vertices by VALUE across all labels, which item 149 names as the
+> first of its two risks.
 
 #### Priced, and deliberately not built here
 
@@ -68323,7 +68330,7 @@ papered over.
 `bun run check` 0 read unpiped. Suites gql 4079 (19 new), gremlin 1694, core 435, native 1031,
 serialization 144 — 0 fail. `bun run fuzz` 20/0 under the 16G cap.
 
-### Item 1605 — ⚠️ **A WRONG ANSWER: an index made `{k: null}` UNDER-COUNT by exactly the vertices that lack the key.** Found while re-pricing item 1597's target, which is also corrected here — its "4-7x" is now **2.08x**, and the 75% predicate share it rested on is 19.4%
+### Item 1605 — ⚠️ **A WRONG ANSWER: an index made `{k: null}` UNDER-COUNT by exactly the vertices that lack the key.** Found while re-pricing item 1597's target, which is also corrected here — its "4-7x" is now **2.08x**, and the 75% predicate share it rested on is 19.4%. That target is **BUILT at item 1607**, which this item unblocked
 
 This tick went looking at what `isScalar` admits, because the exactness lever item 1597 priced
 threads a flag through the same loop. The loop turned out to be already wrong.
@@ -68496,3 +68503,98 @@ clean `git diff`: check `bun --version` and the mtime of the binary before readi
 `bun run check` 0 read unpiped. Suites gql 4129, gremlin 1694, core 435, native **1056 — 0 fail**
 (from 2-3 fail), serialization 144. `bun run fuzz` 20/0 under the 16G cap, and `write-fuzz` passes
 3 of 3 where it passed 0 of 5 before.
+
+### Item 1607 — **the exactness lever item 1597 named is BUILT: 1.8-2.1x on the seeded count, 3.9x unlabelled**, by not re-validating what the seek already decided. ⚠️ And `exact` does NOT go on the candidate, which is where item 1597's own sketch put it
+
+Item 1597 named it, priced it at 4-7x, and deliberately deferred it as "a correctness-sensitive
+change that gets its own tick". Item 1605 re-priced it at **2.08x** by ablation and cleared its
+prerequisite (a null-valued seed, which would have become a wrong answer under exactness). This
+builds it.
+
+#### The design, and the one place item 1597's sketch was wrong
+
+That item proposed marking each `SeedCandidate` `exact`. ⚠️ **That puts the judgement in the wrong
+object.** `indexCandidates` reads a `CNode`'s `pred`; `buildNodeCount` skips a list of
+`InlinePred`s built separately from the AST. They express the same constraints today and nothing
+makes them — a flag computed from one and applied to the other is a wrong answer waiting for the day
+they drift.
+
+So the candidate reports only a FACT — `eqKey`, "this set is every vertex whose `k` equals the value
+I sought" — and the verdict is formed against the predicate actually held:
+
+- `soleEqualityKey(preds)`: the one key this pred list asserts an equality on and NOTHING else —
+  one `InlinePred`, no `bindVar`, exactly one entry in `props` or `eqProps`, no residual `where`, no
+  second carrier. The loop iterates the keys PRESENT, so a thirteenth carrier added to `CPredicate`
+  REFUSES rather than being ignored (`specializeSingleProp`'s structure, for the reason its first
+  version shipped a wrong answer by missing four of twelve).
+- `seedIsExact(candidate, soleKey)`: the two-line verdict.
+
+**The LABEL is not covered and still runs** — the index returns vertices by VALUE across all labels,
+which is the first of item 149's two risks.
+
+#### The numbers, measured on two fixtures
+
+```text
+                                        PRE              POST          verdict
+   count 400 hits (own probe)      12363 13279 ns    6707 6716 7428    1.8x
+   count 400 hits (149's probe)    10568 11371       5139             2.1x
+   count 400 hits, NO label        10739 10957       2724             3.9x
+   count 400 hits, inline          15559 19045       8724             1.8-2.2x
+   count, 1000 candidates clause   21058 22144      13836             1.5x
+   count, 1000 candidates inline   20916 22054      13838             1.5x   (spellings converged)
+   count, 1 hit                      513   572        513             flat (already closed form)
+   values, 400 hits                21752            21752             flat (control: not the tally)
+   count, two conjuncts            41271 45567      42946             flat (control: NOT exact)
+   count, three conjuncts          76166 81336      79439             flat (control: NOT exact)
+```
+
+The **unlabelled row is the full ablation** — no label test to pay either — and at 3.9x it is the
+shape where the seek now costs essentially nothing per hit. Four controls flat, two of them
+deliberately outside the gate. The index-neutrality contract holds on every row of item 149's own
+probe ("answers agree"), which is the assertion that matters more than any of the timings.
+
+#### Correctness: the fixture is built so the LABEL can fail
+
+⚠️ **Both test fixtures share property values ACROSS labels on purpose.** A bucket for `t1` holds
+`User`s, `Admin`s and both-labelled vertices, so a skip that dropped the label test over-counts —
+and a same-label fixture, which is what most of this repo's probes use, cannot see that at all. The
+native parity fixture goes further: every `t1` vertex is `[User]`-only, so `MATCH (u:Admin) WHERE
+u.team = 't1'` must be **0** where a label-skipping seed answers 4.
+
+16 of 16 shapes byte-identical with native, and both engines hand-counted: `User` 4, `Admin` 0,
+`User&Admin` 0, unlabelled 4.
+
+#### Mutation: 11 of 12 caught — and FIVE survived the first pass for one reason
+
+```text
+   exact/skips-label          CAUGHT 11     sole/admits-two-preds       CAUGHT  2
+   exact/always               CAUGHT 10     sole/admits-second-carrier  CAUGHT  1
+   exact/key-not-compared     CAUGHT  1     sole/admits-bindvar         CAUGHT  1
+   exact/any-candidate        CAUGHT  2     sole/unknown-ignored        CAUGHT  1
+   eqKey/on-within            CAUGHT  1     eqKey/on-range              CAUGHT  1
+   sole/admits-two            CAUGHT  3     exact/never-fires           SURVIVED
+```
+
+⚠️ **Getting there took three rounds, and each round's lesson is different.**
+
+- **Two of my own mutants changed nothing.** `eqKey/on-within` added a tautology instead of the
+  field; `sole/unknown-ignored` put the `only !== undefined` check FIRST, so a second carrier still
+  refused. Item 1596's rule — a mutant that changes nothing is not a surviving mutant — and reading
+  either as a survivor would have hidden a real gap.
+- **The most important mutant did not apply at all.** `exact/skips-label` anchored on a line item
+  1599 had reverted. NOT-APPLIED is not a pass, and re-anchoring it gave the single largest catch of
+  the pass (11 failures).
+- **Four genuinely survived, all for ONE reason**: `soleEqualityKey` is already so narrow that when
+  it answers, the only candidate `indexCandidates` can build IS the equality on that key — so the
+  key comparison and the candidate-kind check were REDUNDANT TODAY. Item 475's rule is that the fix
+  for "redundant" is to pin it where it can be seen, not to delete it: the verdict was extracted as
+  `seedIsExact` and `eqKey`'s contract tested directly over `indexCandidates` (a `within` is a union
+  of buckets, a `range` an interval — neither may report a key). All four then CAUGHT.
+
+The lone survivor is `exact/never-fires` — the call-site wiring, answer-equivalent, the same
+unguarded shape item 1604 recorded for every fast-arm site in this file.
+
+#### Gates
+
+`bun run check` 0 read unpiped. Suites gql 4129 (35 new), gremlin 1694, core 435, native 1056 (16
+new), serialization 144 — 0 fail. `bun run fuzz` 20/0 under the 16G cap.

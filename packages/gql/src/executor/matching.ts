@@ -104,7 +104,27 @@ export const evalBound = (bound: CRangeBound, env: EvalEnv): RangeBound | null =
 };
 
 /** A seekable predicate: its estimated cardinality and a thunk for the set. */
-export type SeedCandidate = { count: number; build: () => ReadonlySet<Vertex> };
+/**
+ * A seekable predicate: its estimated cardinality, a thunk for the set, and — for an EQUALITY seek
+ * — the key it sought on.
+ *
+ * ⚠️ `eqKey` IS NOT AN EXACTNESS FLAG, and the distinction is the whole design (item 1607). Item
+ * 1597 proposed marking candidates `exact` here, and that would put the judgement in the wrong
+ * place: this function knows what it SOUGHT, not what the caller is about to SKIP. The two are
+ * different objects — `indexCandidates` reads a `CNode`'s `pred`, while `buildNodeCount` skips a
+ * list of `InlinePred`s built separately from the AST — and a flag computed from one and applied to
+ * the other is a wrong answer waiting for the day they diverge.
+ *
+ * So this reports a FACT ("this set is every vertex whose `k` equals the sought value") and the
+ * caller decides exactness against the predicate it actually holds. `undefined` for every
+ * non-equality candidate: an id pin, an edge-end pin, a range and a `within` all stay supersets.
+ */
+export type SeedCandidate = {
+  count: number;
+  build: () => ReadonlySet<Vertex>;
+  /** The property key an EQUALITY seek matched on, or `undefined` for any other candidate kind. */
+  eqKey?: string;
+};
 
 /**
  * The vertices an id LIST resolves to (item 1315), as a `Set` so a repeated id yields one row.
@@ -171,6 +191,9 @@ export const indexCandidates = function* (
   const eqCandidate = (key: string, v: unknown): SeedCandidate => ({
     count: idx.countEquals(key, v) ?? 0,
     build: () => idx.equals(key, v) ?? EMPTY,
+    // Both call sites reach here only for a non-null scalar (item 1605), so the bucket IS every
+    // vertex whose `key` equals `v` — which is what makes the fact reportable at all.
+    eqKey: key,
   });
 
   for (const { key, value } of node.pred.props) {

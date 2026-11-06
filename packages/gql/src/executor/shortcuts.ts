@@ -290,6 +290,93 @@ type CountOf<T> = (graph: Graph, params: Params) => T;
  * `or`, `not` and `%` have no single bucket, so they fall through to enumeration.
  */
 /**
+ * The ONE property key this pred list asserts an equality on and nothing else, or `undefined`.
+ *
+ * ⚠️ ITEM 1607 — THE EXACTNESS DECISION, and it is a CORRECTNESS gate, not a route choice. If this
+ * says `k` and the chosen seed sought on `k`, the seeded set IS the matching set and the
+ * re-validation below can be skipped. If it is wrong, rows appear that should not — so unlike items
+ * 1600/1601/1604 the mutants here are wrong answers and the differential tests DO see them. It is
+ * still extracted and tested directly, because a gate that is only ever exercised through four
+ * other conditions is a gate nobody can read.
+ *
+ * ⚠️ IT IS COMPUTED FROM `preds`, THE THING BEING SKIPPED — not from the `CNode` the seek came
+ * from. Item 1597's sketch put an `exact` flag on the candidate, which would have judged a
+ * `CNode.pred` and applied the verdict to a separately-built `InlinePred` list. They express the
+ * same constraints today; nothing makes them, and a flag that crosses that gap is a wrong answer
+ * waiting for the day they drift. So `indexCandidates` reports only what it SOUGHT (`eqKey`) and
+ * the verdict is formed here against what is actually held.
+ *
+ * EXACT means EVERYTHING the list asserts is that one equality:
+ *
+ *   - exactly one `InlinePred`, with no `bindVar` (a correlated value reads a binding this never
+ *     writes — the same condition `fastTallyPred` has);
+ *   - its predicate carries exactly one entry, in `props` or `eqProps`, and NOTHING else: no
+ *     residual `where`, no second carrier, no unknown carrier. The loop below iterates the keys
+ *     PRESENT so a thirteenth carrier added to `CPredicate` REFUSES rather than being ignored —
+ *     `specializeSingleProp`'s own structure, for the reason its first version shipped a wrong
+ *     answer by missing four.
+ *
+ * ⚠️ THE NULL CASE IS ALREADY CLOSED, upstream, and that is load-bearing here. `{k: null}` means
+ * IS NULL — stored null OR absent key — which a value bucket cannot represent, and item 1605 fixed
+ * `indexCandidates` to decline a null-valued seek entirely. So no null seed can reach this verdict,
+ * and `eqProps`'s null rejection cannot be skipped either. Had this item shipped first, that bug
+ * would have become a wrong answer instead of an under-count.
+ *
+ * THE LABEL IS NOT COVERED and must still be tested: the index returns vertices by VALUE across all
+ * labels, which is the first of the two risks item 149 names.
+ */
+/**
+ * Does this chosen seed make the predicate redundant? The two-line verdict, extracted so it can be
+ * tested DIRECTLY (item 1607).
+ *
+ * ⚠️ IT IS EXTRACTED BECAUSE EVERY MUTANT OF IT SURVIVED INLINE. Dropping the key comparison,
+ * accepting any candidate kind, and reporting `eqKey` on a `within` or a `range` candidate all left
+ * the suite green — because `soleEqualityKey` is already so narrow that when it answers, the only
+ * candidate `indexCandidates` can produce IS the equality on that key. The comparison is therefore
+ * REDUNDANT TODAY and load-bearing by design, which item 475 says have opposite fixes: the fix for
+ * "redundant" is to pin it where it can be seen, not to delete it.
+ *
+ * What it guards is the gap the type comment on `SeedCandidate` describes: the candidate is built
+ * from a `CNode`'s `pred` and the verdict is applied to a separately-built `InlinePred` list. They
+ * agree today and nothing makes them. A seek on `n` must never satisfy a predicate about `team`.
+ */
+export const seedIsExact = (
+  candidate: { eqKey?: string } | undefined,
+  soleKey: string | undefined,
+): boolean => candidate?.eqKey !== undefined && candidate.eqKey === soleKey;
+
+export const soleEqualityKey = (preds: readonly InlinePred[]): string | undefined => {
+  const [sole] = preds;
+
+  if (preds.length !== 1 || sole.bindVar !== undefined) {
+    return undefined;
+  }
+
+  const { pred } = sole;
+  let only: 'props' | 'eqProps' | undefined;
+
+  for (const [carrier, held] of Object.entries(pred)) {
+    if (held === undefined || (Array.isArray(held) && held.length === 0)) {
+      continue;
+    }
+
+    if (
+      !Array.isArray(held) ||
+      only !== undefined ||
+      (carrier !== 'props' && carrier !== 'eqProps')
+    ) {
+      return undefined;
+    }
+
+    only = carrier;
+  }
+
+  const entries = only === 'props' ? pred.props : (pred.eqProps ?? []);
+
+  return entries.length === 1 ? entries[0].key : undefined;
+};
+
+/**
  * The tally's per-element predicate pre-resolved, or `undefined` to keep the `inlineHolds` loop.
  *
  * ⚠️ TWO `InlinePred`s, NOT ONE, and item 1604 is why. The gate here read `preds.length === 1`, and
@@ -394,6 +481,10 @@ const buildNodeCount = <T>(
   // correlated value against a binding the tally never wrote — items 121-123's correlation problem.
   // The cost is one comparison PER QUERY, not per element.
   const fastPred = fastTallyPred(preds);
+  // Decided ONCE PER QUERY, like `fastPred` and `labelTest`: which single key, if any, the whole
+  // pred list asserts an equality on. `undefined` for every other shape, and the seek then
+  // re-validates exactly as before.
+  const soleKey = soleEqualityKey(preds);
 
   // CONSTRAINED: tally the bucket. O(bucket) rather than O(1), but it is the same
   // walk the general path makes with none of the row building — and it is what lets
@@ -426,6 +517,9 @@ const buildNodeCount = <T>(
     // it seeded — and the label check below is needed only when it did. Applying that check
     // unconditionally would tax the unindexed path, which is the common one.
     let seeded: ReadonlySet<Vertex> | undefined;
+    // Whether that seed made the predicate redundant — see `soleEqualityKey` and the assignment
+    // below. FALSE on the bucket route, which never seeks.
+    let exactSeed = false;
 
     // REJECTED lever — guarding this with a "does the graph have ANY index?" check, so an
     // unindexed graph skips the enumeration entirely. It needed a new `PropertyIndex`
@@ -452,6 +546,13 @@ const buildNodeCount = <T>(
       // drift (item 407's lesson, which is why the helper exists).
       if (best !== undefined && seekIsWorthIt(graph, cstart.label, best.count)) {
         seeded = best.build();
+        // ITEM 1607: when the seek's equality is EVERYTHING the predicate asserts, the seeded set
+        // IS the matching set and re-validating every candidate is pure waste. Ablating that
+        // re-validation measured 12766-13279 ns down to 6324-6354 on the 400-hit seeded count —
+        // 2.08x — and for an exact seed skipping it is that ablation rather than an approximation
+        // of it. The LABEL test below still runs: the index returns vertices by value across all
+        // labels.
+        exactSeed = seedIsExact(best, soleKey);
       }
     }
 
@@ -469,6 +570,15 @@ const buildNodeCount = <T>(
       // A seek returns vertices by VALUE, not by label, so the label has to be applied here.
       // The bucket path inherits it from the seed and must not pay for it again.
       if (seeded !== undefined && !matchesLabel(v, label)) {
+        continue;
+      }
+
+      // ITEM 1607: an EXACT seed has already decided the predicate, so every candidate that
+      // passes the label test is a match. This is the whole 2.08x — the two arms below are what
+      // the ablation removed.
+      if (exactSeed) {
+        n += 1;
+
         continue;
       }
 
