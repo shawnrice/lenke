@@ -66936,3 +66936,87 @@ and not because of the guard, which is how item 1576 shipped a test that covered
 What is left on `paging` is the ~1.6 ms the remaining chain costs (`sourceFromIds` and the source
 traverser), which needs the fusion to start AT the source the way `nodeValuesShortcut` does — a
 bigger change than this one and not obviously worth it at this margin.
+
+### Item 1592 — ⚠️ **item 301's multi-hop crossover measurement is STALE: its "product wins 1.50x at 3 hops" does NOT reproduce.** Re-measured at three degrees, the sweep ties at degree 3 and wins 1.12-1.35x at 5 and 8. But routing 3 segments to it is UNSAFE — `longChainCount` accepts inline-gated shapes and DROPS the gates, which 10 tests caught. Not changed; recorded with the blocker
+
+A fresh profile target rather than the cross-surface list, which is down to small items. `bench:gremlin`
+shows the widest ts/native ratios in the whole corpus on multi-hop counts (18.5x at 2 hops, 47x at 3,
+35x at 4), so that is where a profile was pointed.
+
+#### First: the two surfaces AGREE, so this is not a cross-surface question
+
+At 200,000 vertices / 1,000,000 edges, answers asserted equal at every depth:
+
+```text
+   depth 1   gql   0.003ms   gremlin   0.007ms    closed form, a degree sum
+   depth 2   gql  52.7       gremlin  51.7        ~10 ns/path
+   depth 3   gql 460.1       gremlin 227.3        ~18 / ~9 ns/path
+   depth 4   gql 242.4       gremlin 234.7        ~1.9 ns/path
+```
+
+⚠️ **Depth 4 is FASTER than depth 3 in absolute terms**, on 5x the paths — 125M paths at 1.9 ns each
+cannot be enumeration. That impossible-looking ordering is what the tick followed, and it is real:
+four-or-more segments take `longChainCount`'s SWEEP while three take a degree PRODUCT.
+
+#### The recorded crossover does not reproduce
+
+`detectCountShortcut`'s own comment records item 301's measurement, at **200,000 vertices of degree
+3**:
+
+```text
+   3 hops   product 250.1ms   sweep 374.9ms   <- the PRODUCT wins, 1.50x
+   4 hops   product 980.2ms   sweep 512.4ms   <- the SWEEP wins, 1.91x
+```
+
+A degree product's cost grows with degree while a sweep's is O(E) per pass and flat in it, so the
+crossover MUST move with degree — and item 301 measured one degree. Re-measured at depth 3, product
+against sweep, same fixture shape, the sweep forced by a one-line experiment:
+
+```text
+   degree 3   product 321.975ms   sweep 315.117ms   TIE (1.02x)
+   degree 5   product 458.477     sweep 410.423     sweep 1.12x
+   degree 8   product 610.077     sweep 531.207     sweep 1.15x
+```
+
+And at degree 8 with three tight rounds each, non-overlapping (product 584.474-613.877, sweep
+433.300-544.604): **sweep 1.20x on medians, 1.35x on minima.**
+
+So the product's 1.50x win at 3 hops is gone — it is a TIE at the degree item 301 measured, and the
+sweep is ahead everywhere above it. The code has moved a great deal since item 301 (the sweep gained
+an index seed at 1330, pinned-start guards at 1329, clause-gate splitting at 305), so a number
+measured then describing a routing decision now is exactly the staleness CLAUDE.md's rule about
+verifying a heading against the source is for.
+
+#### ⚠️ BUT THE ROUTING CANNOT SIMPLY MOVE, and the tests said so
+
+Routed sweep-first with a fallback — `longChainCount(...) ?? threeSegmentRoute(...)` — the gql suite
+went **4028 pass / 10 fail**, every failure an inline-gated three-hop count (`a three-hop count gated
+by an inline constraint (item 456)` among them). `longChainCount` ACCEPTS those shapes and then
+ignores the constraint: it takes `clauseGates` for the clause-`WHERE` spelling but nothing for an
+INLINE one, so `(x {k: 0})` silently stops filtering.
+
+A hand check first looked fine — `(x {k: 0})` gave 32 against the unconstrained 96, so the number had
+clearly moved — which is why the suite is the oracle and not a plausible-looking answer. The
+specialized product exists partly BECAUSE it can gate those positions once per visit (item 219's
+point, and item 456's tests).
+
+**So the change is not made.** A correct version needs the sweep to receive inline constraints the way
+it receives clause ones, and then the routing could be degree-aware. That is a real piece of work, not
+a one-line reroute, and it wants its own item.
+
+#### What is recorded, so the next attempt starts from here
+
+- Item 301's crossover numbers are **stale**; the current ones are above, with degree as the axis.
+- The sweep is never slower at depth 3 in anything measured, and better with degree — so the routing
+  question is live, not settled.
+- The blocker is precise: **`longChainCount` does not take inline node constraints.** Fix that first,
+  then re-measure, then route.
+- ⚠️ And the 2-hop case should NOT be touched on this evidence: at 52.7 ms for 1M edges it is already
+  ~52 ns/edge, which is the sweep's own per-pass rate, so two passes would lose to one product.
+
+#### Gates
+
+No engine change — one new probe (`multihop-count-compare.mjs`, which asserts both surfaces' answers
+at every depth and refuses a degenerate fixture by counting distinct endpoints AND branching
+vertices). `bun run check` 0 read unpiped. Suites unchanged from item 1591; gql re-run green at 4038
+after the experiment was reverted.

@@ -4895,6 +4895,28 @@ const patternCountOf = <T>(
   //   3 hops   product 250.1ms   sweep 374.9ms   <- the PRODUCT wins, 1.50x
   //   4 hops   product 980.2ms   sweep 512.4ms   <- the SWEEP wins, 1.91x
   //
+  // ⚠️ THE 3-HOP HALF OF THAT IS STALE — re-measured at item 1592, and the product's 1.50x win is
+  // GONE. Degree is the axis item 301 could not vary (a product's cost grows with degree, a
+  // sweep's is O(E) per pass and flat in it), and at 200,000 vertices:
+  //
+  //   depth 3, degree 3   product 321.975ms   sweep 315.117ms   TIE (1.02x)
+  //   depth 3, degree 5   product 458.477     sweep 410.423     sweep 1.12x
+  //   depth 3, degree 8   product 610.077     sweep 531.207     sweep 1.15x
+  //
+  // and at degree 8 over three tight non-overlapping rounds, sweep 1.20x on medians / 1.35x on
+  // minima. So the sweep is never slower at three segments and improves with degree.
+  //
+  // ⚠️ THE ROUTING STILL DID NOT MOVE, and the reason is a correctness gap rather than a cost one:
+  // routed sweep-first, the gql suite went 4028/10 with every failure an INLINE-gated three-hop
+  // count (item 456's tests among them). `longChainCount` ACCEPTS those shapes and then ignores
+  // the constraint — it takes `clauseGates` for the clause-`WHERE` spelling but nothing for an
+  // inline one, so `(x {k: 0})` silently stops filtering. The product is here partly BECAUSE it
+  // gates those positions once per visit (item 219).
+  //
+  // To move this: teach the sweep inline node constraints, re-measure, then route by degree. Not a
+  // one-line reroute. The TWO-segment case should be left alone regardless — at 52.7 ms for
+  // 1,000,000 edges it already runs at the sweep's own per-pass rate, so two passes would lose.
+  //
   // A SPLIT verdict, which is why it was recorded as open-with-a-hint rather than obvious. The
   // reason is the shape of each product: `threeSegmentCount` pays per MIDDLE EDGE and multiplies
   // two degree sides, which is O(E) with no frontier and no hashing — cheaper than three sweep
