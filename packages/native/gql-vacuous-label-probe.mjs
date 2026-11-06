@@ -75,6 +75,23 @@ const ARMS = {
   'rel: :E (twin of !F)': 'MATCH (a)-[:E]->(x) RETURN count(*) AS c',
   'rel: :!E (selective)': 'MATCH (a)-[:!E]->(x) RETURN count(*) AS c',
   'rel: :F (twin of !E)': 'MATCH (a)-[:F]->(x) RETURN count(*) AS c',
+
+  // ⚠️ THE COMPANION OF VACUITY (item 1552): a label carried by NO element matches NOTHING, which
+  // is decidable in O(1) from the same bucket read `vacuousLabel` already does. `effectiveLabel`'s
+  // comment names the pattern — "decided per EXECUTION, because vacuity is a property of the
+  // GRAPH" — and the empty case is the other end of it.
+  'empty node label': 'MATCH (a:Nope)-[:E]->(x) RETURN count(*) AS c',
+  'empty node label, bare': 'MATCH (a:Nope) RETURN count(*) AS c',
+  'empty rel type': 'MATCH (a)-[:NopeType]->(x) RETURN count(*) AS c',
+  'empty far label': 'MATCH (a)-[:E]->(x:Nope) RETURN count(*) AS c',
+  'empty both ends': 'MATCH (a:Nope)-[:E]->(x:Nope) RETURN count(*) AS c',
+  'empty node, 2 hops': 'MATCH (a:Nope)-[:E]->(b)-[:E]->(c) RETURN count(*) AS c',
+  // CONTROLS for the 2-hop arm: the same chain with no label, and with a label that DOES match.
+  'ctl 2 hops, no label': 'MATCH (a)-[:E]->(b)-[:E]->(c) RETURN count(*) AS c',
+  'ctl 2 hops, :P': 'MATCH (a:P)-[:E]->(b)-[:E]->(c) RETURN count(*) AS c',
+  'ctl 2 hops, :Q': 'MATCH (a:Q)-[:E]->(b)-[:E]->(c) RETURN count(*) AS c',
+  'empty mid label, 2 hops': 'MATCH (a)-[:E]->(b:Nope)-[:E]->(c) RETURN count(*) AS c',
+  'empty end label, 2 hops': 'MATCH (a)-[:E]->(b)-[:E]->(c:Nope) RETURN count(*) AS c',
 };
 
 const only = process.env.ONLY;

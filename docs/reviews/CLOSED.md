@@ -63402,3 +63402,76 @@ pleasing special case that with `multiTypeEdgeCount === 0` it matches nothing.
 No code change — `git status` clean. The verification above runs against the committed build; the
 suites stand at item 1550's: core 431/0, gql 3874/0, gremlin 1500/0, native 963/0,
 serialization 144/0, `bun run fuzz` 20/0.
+
+### Item 1552 — SHIPPED, **~146,000x and ~118,000x**: a label carried by NO vertex now short-circuits a multi-hop count to 0, where it used to cost the whole sweep to discover nothing. The selective control is untouched. **Found by taking item 1551's "vacuity is per-execution" and asking the opposite question**
+
+Item 1551 established that `vacuousLabel` is resolved per EXECUTION, and `effectiveLabel`'s own
+comment names why: _"Decided per EXECUTION and not at compile time, because vacuity is a property of
+the GRAPH."_ The companion question is the other end of the same bucket read — not "does this label
+match everything?" but **"does it match nothing?"**
+
+#### MEASURED — 200,000 vertices
+
+| shape                                | PRE        | POST            |                          |
+| ------------------------------------ | ---------- | --------------- | ------------------------ |
+| `MATCH (a:Nope)-[:E]->(b)-[:E]->(c)` | 146.126 ms | **0.001–0.003** | **~146,000x**            |
+| `MATCH (a)-[:E]->(b)-[:E]->(c:Nope)` | 118.157    | **0.001**       | **~118,000x**            |
+| `MATCH (a)-[:E]->(b:Nope)-[:E]->(c)` | 0.001      | 0.001           | already free — see below |
+
+| control                                                     | PRE     | POST    |                                     |
+| ----------------------------------------------------------- | ------- | ------- | ----------------------------------- |
+| `MATCH (a:Q)-[:E]->(b)-[:E]->(c)` — **genuinely selective** | 148.264 | 147.201 | flat, correctly not short-circuited |
+| `MATCH (a)-[:E]->(b)-[:E]->(c)` — no label                  | 50.792  | 46.202  | flat                                |
+| `MATCH (a:P)-[:E]->(b)-[:E]->(c)` — vacuous                 | 52.643  | 46.293  | flat                                |
+
+#### WHY THE MIDDLE WAS ALREADY FREE AND THE ENDS WERE NOT
+
+`buildTwoHopCount` drives from the **middle** — a two-hop count is a degree inner product over `b` —
+so an empty middle bucket yields an empty driver set and 0 falls out for nothing. The END labels are
+applied as per-edge **filters**, so an empty one takes the same route a selective label takes and
+discovers nothing at the end of it.
+
+The tell was in the numbers before the code: `:Nope` cost **146.126** against a genuinely selective
+`:Q`'s **148.264**. Identical. A label matching nothing was paying exactly what a label matching half
+the graph pays.
+
+The guard sits beside the `effectiveLabel` calls the closure already makes once per execution, and
+**before the driver set is even built**. Both the two-hop and three-hop builders got it.
+
+#### MUTATION — the condition is load-bearing; the guard itself is answer-equivalent
+
+| mutant                                                   |            |                               |
+| -------------------------------------------------------- | ---------- | ----------------------------- |
+| `always-empty` (`size >= 0`, so every label looks empty) | **CAUGHT** | 3833 pass **46** fail         |
+| `guard-never-fires`                                      | SURVIVES   | answer-equivalent — see below |
+
+`always-empty` is the wrong-answer direction and it is caught by 46 tests, most of them
+pre-existing: answering 0 for a query with rows breaks everything that counts a labelled chain. So
+the _condition_ has teeth.
+
+`guard-never-fires` surviving is honest and expected: removing a short-circuit leaves the slow path
+computing the same 0, so no answer changes. **Its instrument is the probe, not a test** — the same
+`perf-gate-needs-its-own-test` position as item 1549's `or-needs-both`. Noted rather than papered
+over: a route assertion here would need the timing, and a timing threshold in the suite would be
+flaky.
+
+#### The test that exists because of item 1551
+
+`compile(stmt)` is cached in `planCache`, so a guard decided at compile time would be baked in and
+answer 0 forever once it had seen an empty bucket. The test runs the SAME query text three times —
+empty, then after `addLabelToVertex` makes the label universal, then after `removeLabelFromVertex`
+takes it away — and asserts 0, 4, 0. That assertion exists only because item 1551 went looking for
+the staleness trap; without it this change would have had a plausible-looking test suite and a latent
+wrong answer.
+
+#### What is left in this family
+
+`MATCH (a:Nope)-[:E]->(x:Nope)` — a ONE-hop with both ends empty — still reads 4.020 ms against the
+0.009 of a single empty end. It is a different builder (`buildOneHopCount`), and 4 ms is two orders
+of magnitude below the shapes taken here, so it is recorded rather than taken.
+
+#### Gates
+
+`bun run check` 0 read unpiped. core 431/0, gql **3879**/0, gremlin 1500/0, native 963/0,
+serialization 144/0, `bun run fuzz` 20/0. Mutants one at a time in the foreground, output
+redirected, restoring before each; tree verified identical to the intended code afterwards.

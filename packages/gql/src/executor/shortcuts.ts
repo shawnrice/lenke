@@ -3654,6 +3654,45 @@ const effectiveLabel = (graph: Graph, label: LabelExpr | undefined): LabelExpr |
   label !== undefined && vacuousLabel(graph, label) ? undefined : label;
 
 /**
+ * The COMPANION of vacuity: a label carried by NO vertex, so the pattern it sits on matches
+ * nothing (item 1552).
+ *
+ * Same bucket read as {@link vacuousLabel} and the same per-EXECUTION reasoning — emptiness is a
+ * property of the graph, so it cannot be decided when the plan is compiled and cached (item 1551).
+ * One is `size === vertexCount`, the other `size === 0`; between them they turn a label into "drop
+ * the test" or "drop the query".
+ *
+ * ⚠️ WHY THE ENDS NEEDED THIS AND THE MIDDLE DID NOT. `buildTwoHopCount` drives from the MIDDLE —
+ * a two-hop count is a degree inner product over `b` — so an empty middle bucket yields an empty
+ * driver and 0 falls out for free. The end labels are applied as per-edge FILTERS, so an empty one
+ * costs the whole sweep to discover nothing. Measured at 200,000 vertices:
+ *
+ * ```text
+ *   MATCH (a)-[:E]->(b:Nope)-[:E]->(c)     0.001 ms    <- the driver is empty, already free
+ *   MATCH (a:Nope)-[:E]->(b)-[:E]->(c)   146.126       <- a filter that rejects everything
+ *   MATCH (a)-[:E]->(b)-[:E]->(c:Nope)   118.157
+ *   MATCH (a:Q)-[:E]->(b)-[:E]->(c)      148.264       <- a GENUINELY selective label, for scale
+ * ```
+ *
+ * `:Nope` cost the same as a selective label, which is the tell: it took the same route and simply
+ * filtered everything out at the end of it.
+ *
+ * Only a plain `label` for now. The compound kinds are decidable too — `or` is empty iff both
+ * sides are, `and` iff either is — but they are unmeasured here, and item 1549's wildcard is the
+ * standing reminder that a label operator's obvious reading can be the wrong one.
+ */
+const emptyLabel = (graph: Graph, expr: LabelExpr | undefined): boolean =>
+  expr?.kind === 'label' && (graph.verticesByLabel.get(expr.name)?.size ?? 0) === 0;
+
+/**
+ * Does any of these labels match nothing? Taken as a LIST rather than a chain of `||` because the
+ * three-hop closure sits on the complexity cap of 35 and four disjuncts put it at 37 — the same
+ * budget item 1298's lift had to respect.
+ */
+const anyEmptyLabel = (graph: Graph, labels: readonly (LabelExpr | undefined)[]): boolean =>
+  labels.some((l) => emptyLabel(graph, l));
+
+/**
  * The same two-hop pattern read from the far end.
  *
  * `MATCH (a)-[r1]->(b)-[r2]->(c)` and `MATCH (c)<-[r2]-(b)<-[r1]-(a)` match the same set of
@@ -4156,6 +4195,11 @@ const buildThreeHopCount = <T>(
   const cGate = gateOfPreds(interior.c);
 
   return (graph, params) => {
+    // The same guard on the three-hop shape, for the same reason (item 1552).
+    if (anyEmptyLabel(graph, [aLabel, bLabel, cLabel, dLabel])) {
+      return rowOf(0);
+    }
+
     const aEff = effectiveLabel(graph, aLabel);
     const cEff = effectiveLabel(graph, cLabel);
     const dEff = effectiveLabel(graph, dLabel);
@@ -4370,6 +4414,13 @@ const buildTwoHopCount = <T>(
   );
 
   return (graph, params) => {
+    // Once per execution and before the driver set is even built: a label no vertex carries makes
+    // the whole chain empty. The middle gets this free from an empty driver; the ends are the
+    // filters that would otherwise sweep the graph to discover nothing (item 1552).
+    if (anyEmptyLabel(graph, [aLabel, cLabel, midLabel])) {
+      return rowOf(0);
+    }
+
     const mids =
       midLabel?.kind === 'label'
         ? (graph.verticesByLabel.get(midLabel.name) ?? new Set<Vertex>())
