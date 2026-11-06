@@ -9123,7 +9123,26 @@ const edgesOfManyTypes = function* (
 
 /** One-hop neighbours of `v` along `out` (or in) edges of the given `types` (all
  * types when undefined). Shared by the EXISTS-reachable and RETURN-reachable
- * traversals so their neighbour expansion can't drift from each other or native. */
+ * traversals so their neighbour expansion can't drift from each other or native.
+ *
+ * ⚠️ REJECTED, item 1570: do NOT replace this with a callback/visitor to avoid the array.
+ *
+ * The `Vertex[]` here is materialized per EXPANDED VERTEX and both callers immediately iterate it
+ * and drop it, so removing the allocation looks free — and a profile of
+ * `MATCH (a:P)-[:E]->+(b:P) RETURN count(DISTINCT b)` put this function at **32.5% self** (576 ms),
+ * with only 2 mentions anywhere, which reads like an unpriced target.
+ *
+ * It was built: `eachOutNeighbor(graph, v, out, types, visit)` with a boolean STOP signal (needed
+ * because the `EXISTS` walk returns the moment it finds a hit), both callers converted, the visitor
+ * closures hoisted once rather than per expansion. **Flat.**
+ *
+ *     varlenplus   PRE 1591.0 1656.9 1725.0     POST 1483.3 1629.9 1628.0    1.02x, ranges overlap
+ *     existssub    PRE   72.2   69.2   73.2     POST   72.5   71.9   70.6    flat (the early-exit arm)
+ *
+ * So the 32.5% is `edgesOfTypes`' iteration credited to its caller, not the allocation — the
+ * attribution hazard `runtime-profile-analyze.mjs`' own header warns about (item 1104: "a small hot
+ * callee gets credited with its caller's inlined loop … use this screen to NOMINATE, then ablate to
+ * price"). One array per expanded vertex is not where the time goes. */
 export const outNeighbors = (
   graph: Graph,
   v: Vertex,

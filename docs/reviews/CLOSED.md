@@ -64876,3 +64876,66 @@ to construct the case.
 `bun run check` 0 read unpiped. Suites: core 431/0, **gql 3964/0** (28 in
 `drop-unread-path-var.test.ts`), gremlin 1511/0, native 963/0, serialization 144/0,
 `bun run fuzz` 20/0.
+
+### Item 1570 — ⚠️ **REFUTED, 1.02x with overlapping ranges**: `outNeighbors` reads **32.5% self** with only 2 mentions, which is exactly what an unpriced target looks like — and the `Vertex[]` it allocates per expanded vertex is not the cost. Built, measured flat, reverted. ⚠️ And the next frame down is **BLOCKED on the owner's label-index decision**, not on measurement
+
+With three unread-binding passes landed (items 1567-1569), the var-length shapes were re-profiled to
+see what the floor is made of.
+
+```text
+varlen12 (617 ms)      walkLevelCount 70.0% (26 mentions)   get to 8.1%   buildTrailMasks 6.9%
+varlenplus (1829 ms)   outNeighbors 32.5% (2)   push 18.9% (213)   evalLabelExpr 10.9% (11)
+                       edgesOfTypes 10.4% (71)
+```
+
+#### The nomination, and why it was wrong
+
+`outNeighbors` materializes a `Vertex[]` per EXPANDED VERTEX, and **both callers immediately iterate
+it and drop it** — the array is pure intermediate. 32.5% self, 2 mentions anywhere. Built as
+`eachOutNeighbor(graph, v, out, types, visit)`:
+
+- a boolean **STOP signal** rather than a plain visitor, because the `EXISTS` walk returns the moment
+  it finds a hit — a `forEach` shape would have traded one allocation for expanding the whole
+  frontier, on exactly the arm that cares most;
+- `outNeighbors` kept as a thin wrapper so the shared definition stays the single source of
+  neighbour expansion (its doc exists to stop the two traversals drifting from each other or native);
+- both visitor closures hoisted ONCE, not built per expansion (`ts-closure-size-is-load-bearing`).
+
+```text
+                   PRE                          POST
+varlenplus    1591.0 1656.9 1725.0        1483.3 1629.9 1628.0     1.02x, RANGES OVERLAP
+existssub       72.2   69.2   73.2          72.5   71.9   70.6     flat — the early-exit arm
+varlen12       584.5  590.9  551.4         573.4  588.1  582.9     flat — not reached
+hoprows        365.7  395.6  396.5         364.4  448.5  351.6     flat
+```
+
+**So the 32.5% is `edgesOfTypes`' iteration credited to its caller, not the allocation.** That is the
+hazard `runtime-profile-analyze.mjs`' own header states — _"a small hot callee gets credited with its
+caller's inlined loop … use this screen to NOMINATE, then ablate to price"_ (item 1104) — and it is
+the **second time this session** it has produced a plausible-looking target: item 1559's `get to` at
+7-8% across eleven shapes was the first.
+
+**The practical lesson is about the mention count.** A low count plus a high share has been a
+reliable signal this session (items 1561/1562 both found real targets that way), but it is not
+sufficient: `outNeighbors` is lightly mentioned because it is a four-line helper nobody needed to
+write about, not because its cost was unexamined. Reverted; the refutation with its numbers now sits
+in the function's own doc comment, per the repo's rule for rejected optimizations.
+
+#### ⚠️ The next frame down is blocked on a DECISION, not on measurement
+
+`evalLabelExpr` is 10.9% of `varlenplus`, and the reason is visible: the fixture gives every vertex
+`:P`, the pattern's far endpoint is `(b:P)`, and the reachable walk tests that label **per expanded
+vertex**. A vacuous-label elision would remove it outright.
+
+**Not taken.** Every such elision reads `graph.verticesByLabel`, and the public `v.labels = […]`
+setter does not maintain it — a wrong answer reachable through public API, measured in both
+directions at item 1553 and still with the owner. Items 1549/1550/1552 each widened that exposure,
+and the standing note is explicit: _do NOT add another elision that reads `verticesByLabel` without
+raising this._ Adding one inside the reachable walk would widen it again. Recorded here so the
+10.9% is priced and attributable to the open decision rather than looking un-examined.
+
+#### Gates
+
+No engine change — `executor.ts` differs from its pre-tick copy by a comment only, and
+`shortcuts.ts` is byte-identical (both verified by `diff`). `bun run check` 0 read unpiped.
+Suites: gql 3964/0, the rest unchanged from item 1569; `bun run fuzz` 20/0.
