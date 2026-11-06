@@ -210,7 +210,13 @@ export const unwrap = function* (stream: Iterable<Traverser<unknown>>): Iterable
   }
 };
 
-export const hasAny = (stream: Iterable<Traverser<unknown>>): boolean => {
+/**
+ * ⚠️ `Iterable<unknown>`, NOT `Iterable<Traverser>` — the body only asks whether the iterable yields
+ * anything, and item 1627 needed it for an iterable of VALUES. Widening the parameter to what the
+ * body actually requires costs nothing and every existing caller still fits; narrowing it to
+ * traversers was an accident of where it was first used.
+ */
+export const hasAny = (stream: Iterable<unknown>): boolean => {
   for (const _ of stream) {
     return true;
   }

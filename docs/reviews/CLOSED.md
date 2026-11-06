@@ -56602,6 +56602,10 @@ localized      1692     localStep 7.0%, traverseToEdge 6.7%, edgeToVertex 5.0%, 
 matched        2914     applyPattern 18.4%, solve 7.8%, bind 7.0%, matchStep 4.3%, …  ≈44%
 ```
 
+⚠️ **AND THE ADJACENCY CHAIN WAS NOT THE TARGET HERE — item 1627 took it for 1.08-1.11x.** This
+screen's unpriced list is the SOLVER's frames; `iterLabeled`/`iterByLabel`/`outEdgesOf`/
+`otherEndpoint` were 37.7% of the two-pattern shape and went untouched until then.
+
 **`matched` is the largest shape yet measured on this probe and it is at only 20,000 vertices** —
 48.6 ms a rep for ~100,000 rows, about **486 ns/row against a bare hop's ~95**. `match()` is
 Gremlin's declarative join and none of its solver had ever been in a profile.
@@ -70033,3 +70037,62 @@ So the lever is a CSR cached on the graph and invalidated on an adjacency write.
 #### Gates
 
 No engine change. `bun run check` 0 read unpiped. Suites core 444, native 1076 — 0 fail. The probe is renamed with its history (`git mv`), and `label-prop-probe.ts`'s mention in item 1625's entry now points at the new name.
+
+### Item 1627 — **1.08x/1.11x/1.10x on all three `match()` shapes**, the largest in the Gremlin probe: the solver now reads the adjacency bucket for a one-hop pattern instead of running its inner plan through `applyPlanToStream`. ⚠️ And the 37.7% the profile put in the generator chain yielded 8-11%, which is item 1394's "a share overstates a realizable change by ~2.5x" holding at ~3.5x
+
+OPEN: nothing new. `applyPattern`'s own 19.7% and `solve`'s 23.2% are the solver proper, and item 1565's entry already took the one defect found there (`tupleKey`, 1.10x).
+
+#### The nomination, from three previously unprofiled shapes
+
+`valuemapped` (2.65 ms a rep) and `groupreduce` (4.83) are near the probe's floor. `matched2` is **351 ms a rep at 20,000 × 5** — 702 ns a solution against the fused two-hop walk's ~50, and an order of magnitude larger than anything else in the Gremlin probe. Its profile:
+
+```text
+   solve            23.2%     iterLabeled      11.8%
+   applyPattern     19.7%     iterByLabel       4.1%
+   otherEndpoint    15.4%     outEdgesOf        2.6%
+                              traverseToVertex  3.8%
+```
+
+The adjacency chain is **37.7%** — the same chain `hop-values.ts` exists to avoid (its header prices it at 375.6 ms against a hand walk's 251, 1.50x) and that items 1614/1617 removed from the fused walks. `match()` expands every pattern through `applyPlanToStream`, so a one-hop pattern pays the generic `out` step, the chain, and a Traverser per edge.
+
+⚠️ **`matched` HAS BEEN PROFILED BEFORE and this is not a re-derivation.** Item 1565's screen listed `applyPattern 18.4%, solve 7.8%, bind 7.0%, matchStep 4.3%` — the SOLVER's frames — and took `tupleKey` for 1.10x. The adjacency chain was never the target there.
+
+#### The change, and what it refuses
+
+`soleHop` admits exactly one `out`/`in` with ONE label; `bucketEnds` reads that bucket and takes the endpoint. `both`, a multi-type hop, an untyped hop and any longer inner plan all keep `applyPlanToStream` unchanged — the same narrow admission `hopValuesShortcut` and `directedBucket` make.
+
+**⚠️ NOT A GENERATOR, and item 1622 is why**: that item replaced one generator layer with another and measured 1.006x, because the per-edge allocation went away and the per-edge RESUME did not. `bucketEnds` returns a plain object whose `[Symbol.iterator]` closes over the bucket's own iterator.
+
+**The four branches now read VALUES, not traversers**, which is what let the fast arm feed them without duplicating any of them — each already used only `o.value`. ⚠️ And the general arm uses **`unwrap`**, which is `runtime.ts`' existing "traverser stream as plain values": my first version added a local `valuesOf` doing the identical thing, which is the duplication this executor keeps paying for. `hasAny`'s parameter was widened from `Iterable<Traverser>` to `Iterable<unknown>` — what its body actually requires; the narrower type was an accident of where it was first used.
+
+#### The A/B, two or three runs an arm
+
+```text
+   shape                PRE                      POST                    verdict
+   matched2       4112.6 4255.4 4160.4 ms   3841.7 3829.4 3923.9      1.08x
+   matched         848.9                     767.1                    1.11x
+   matchedsel     5112.4                    4644.6                    1.10x
+   hopbare (ctl)    90.4   81.6               88.3   90.4             flat
+   repeated (ctl)   33.6   34.7               34.0   35.2             flat
+```
+
+Non-overlapping on the target (POST's slowest 3923.9 below PRE's fastest 4112.6), both controls flat.
+
+**8-11% from a 37.7% share.** Item 1394 recorded that on this surface "a share overstates a realizable change by ~2.5x"; here it is ~3.5x. Worth stating as a number rather than a surprise: the chain's samples do not all become savings, because the fast arm still visits every edge and still reads an endpoint.
+
+#### Mutation 9 of 11
+
+`soleHop`'s four refusals (a longer plan, `both`, multi-type, the direction inverted), `bucketEnds`' box, endpoint, empty-bucket and loop-termination, and the fast arm returning nothing.
+
+Two survivors:
+
+- **`bucket/nonvertex-admitted` — redundant, and the mutant is how I know.** A non-vertex has no `adjFrom`/`adjTo`, so `?.get` yields `undefined` and the walk is empty either way; the general path is lenient for the same values (`traverseToVertex` yields nothing rather than throwing), so both arms answer nothing. An EDGE is the realistic value that reaches there — it has `from`/`to` and no adjacency — and it is now pinned at 0 both ways. Kept because that agreement is a property of `traverseToVertex` being lenient, which is documented elsewhere and could reasonably change.
+- **`wire/fast-never-used`** — the answer-equivalent route class item 1619 recorded for all twenty GQL rungs. What IS pinned is the fast arm's OUTPUT: `wire/fast-always-empty` dies with 13 failures, so the arm is demonstrably the one producing the rows.
+
+#### Correctness: a longer inner plan is the oracle
+
+`soleHop` admits exactly one step, so appending `identity()` makes the identical question take the general path — and `identity()` is the right disqualifier because it changes the inner plan's LENGTH and nothing else, where a second label or a `both` would change the question. All four branches (binding, pure filter, bound end, negated) are compared element for element, plus a self-loop, a type no edge carries, a scalar start and an edge start.
+
+#### Gates
+
+`bun run check` 0 read unpiped. Suites gremlin 1776 (11 new), gql 4207, core 444, native 1076, serialization 144 — 0 fail. `bun run fuzz` 20/0 and `spelling:gremlin` 0 answer disagreements / 0 groups over 2x, both under the 16G cap.

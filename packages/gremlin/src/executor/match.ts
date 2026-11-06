@@ -27,6 +27,7 @@ import {
   type RunContext,
   type Traverser,
   tupleKey,
+  unwrap,
 } from './runtime.js';
 
 /** A match pattern lowered to its solver shape. */
@@ -167,6 +168,99 @@ const KEEP: PatternOutcome = { kind: 'keep' };
  * or already-bound end keeps `t` once iff the constraint holds; a negated
  * pattern keeps `t` iff the constraint does NOT hold.
  */
+/**
+ * ONE SINGLE-TYPE DIRECTED HOP, as the `[type, forward]` pair, or `undefined` for every other inner
+ * plan (item 1627).
+ *
+ * ⚠️ WHY `applyPattern` WANTS THIS. `match()` expands each pattern by running its inner plan through
+ * `applyPlanToStream`, which for a hop means the generic `out` step and therefore the generator
+ * chain `hop-values.ts` exists to avoid — its header prices that chain at **375.6 ms against a hand
+ * walk's 251, 1.50x**, and items 1614/1617 removed it from the fused walks. A profile of the
+ * two-pattern join at 20,000 x 5 puts the chain at **37.7%**:
+ *
+ * ```text
+ *    solve            23.2%     iterLabeled      11.8%
+ *    applyPattern     19.7%     iterByLabel       4.1%
+ *    otherEndpoint    15.4%     outEdgesOf        2.6%
+ *                              traverseToVertex  3.8%
+ * ```
+ *
+ * `matched2` is **351 ms a rep** — 702 ns a solution against the fused two-hop walk's ~50 — and it
+ * is the largest shape in the Gremlin probe by an order of magnitude.
+ *
+ * ⚠️ IT REFUSES EVERYTHING ELSE, which is what keeps this safe. `both` reaches a vertex from either
+ * side, a multi-type hop needs `expand`'s cross-bucket dedupe, and any longer inner plan is an
+ * arbitrary traversal — all of them keep `applyPlanToStream` exactly as they are today. The same
+ * narrow admission `hopValuesShortcut` and `directedBucket` make, for the same reason.
+ */
+const soleHop = (inner: Plan): readonly [string, boolean] | undefined => {
+  if (inner.steps.length !== 1) {
+    return undefined;
+  }
+
+  const [step] = inner.steps;
+
+  if (step.kind !== 'out' && step.kind !== 'in') {
+    return undefined;
+  }
+
+  return step.labels.length === 1 ? [step.labels[0], step.kind === 'out'] : undefined;
+};
+
+/**
+ * The far endpoints of one single-type hop from `from`, straight off the adjacency bucket.
+ *
+ * ⚠️ NOT A GENERATOR, AND ITEM 1622 IS WHY. That item replaced one generator layer with another and
+ * measured 1.006x — the per-edge allocation went away and the per-edge RESUME did not. Returning a
+ * plain object whose `[Symbol.iterator]` closes over the bucket's own iterator means the caller's
+ * `for...of` advances a native Set iterator with one endpoint read per step.
+ */
+const bucketEnds = (
+  from: unknown,
+  type: string,
+  forward: boolean,
+): Iterable<unknown> | undefined => {
+  /**
+   * ⚠️ A FALLBACK, NOT A GUARD — and REDUNDANT, which the mutant proves rather than the reasoning
+   * doing so: removing it SURVIVED. A non-vertex has no `adjFrom`/`adjTo`, so `?.get` yields
+   * `undefined` and the walk is empty either way; and the general path is lenient for exactly the
+   * same values (`traverseToVertex` yields nothing for a non-vertex rather than throwing), so both
+   * arms answer nothing. An EDGE is the realistic case that reaches here — it has `from`/`to` and no
+   * adjacency — and it is pinned at 0 both ways.
+   *
+   * Kept because the two arms agreeing is a property of `traverseToVertex` being lenient, which is
+   * documented in `optional-hop.ts` and could reasonably change; item 475's rule is that a survivor
+   * on a new guard means "redundant" as readily as "untested", and the two have opposite fixes.
+   */
+  if (!isVertex(from)) {
+    return undefined;
+  }
+
+  const bucket = (forward ? from.adjFrom : from.adjTo)?.get(type);
+
+  return {
+    [Symbol.iterator]: (): Iterator<unknown> => {
+      if (bucket === undefined) {
+        return EMPTY_ITER;
+      }
+
+      const it = bucket[Symbol.iterator]();
+
+      return {
+        next: (): IteratorResult<unknown> => {
+          const step = it.next();
+
+          return step.done === true
+            ? { done: true, value: undefined }
+            : { done: false, value: forward ? step.value.to : step.value.from };
+        },
+      };
+    },
+  };
+};
+
+const EMPTY_ITER: Iterator<unknown> = { next: () => ({ done: true, value: undefined }) };
+
 const applyPattern = (
   p: Pattern,
   t: Traverser<unknown>,
@@ -179,7 +273,19 @@ const applyPattern = (
     return DROP;
   }
 
-  const out = applyPlanToStream(p.inner, [fromBinding(t, start.value)], graph, ctx);
+  /**
+   * ⚠️ THE BRANCHES BELOW READ VALUES, NOT TRAVERSERS, and that is the whole shape of this change.
+   * Each of the four already used only `o.value`, so taking an `Iterable<unknown>` lets the fast arm
+   * hand them the bucket's endpoints directly while the general arm maps the traverser stream —
+   * one definition of each branch, no duplication, and nothing about the solver's logic moved.
+   */
+  const hop = soleHop(p.inner);
+  const fast = hop === undefined ? undefined : bucketEnds(start.value, hop[0], hop[1]);
+  const out: Iterable<unknown> =
+    // ⚠️ `unwrap` IS ALREADY THIS, in `runtime.ts` — a traverser stream as plain values. My first
+    // version added a local `valuesOf` doing the identical thing, which is the duplication this
+    // executor keeps paying for; asked rather than rewritten.
+    fast ?? unwrap(applyPlanToStream(p.inner, [fromBinding(t, start.value)], graph, ctx));
 
   const boundEnd = p.endKey !== undefined ? recallTag(t.tags, p.endKey, 'last') : undefined;
 
@@ -188,8 +294,8 @@ const applyPattern = (
     // end (or, if the end is unbound/absent, when any output exists at all).
     let satisfiable = false;
 
-    for (const o of out) {
-      if (boundEnd?.ok ? sameValue(o.value, boundEnd.value) : true) {
+    for (const v of out) {
+      if (boundEnd?.ok ? sameValue(v, boundEnd.value) : true) {
         satisfiable = true;
         break;
       }
@@ -203,8 +309,8 @@ const applyPattern = (
   }
 
   if (boundEnd?.ok) {
-    for (const o of out) {
-      if (sameValue(o.value, boundEnd.value)) {
+    for (const v of out) {
+      if (sameValue(v, boundEnd.value)) {
         return KEEP; // end already bound and consistent
       }
     }
@@ -216,15 +322,15 @@ const applyPattern = (
   const seen = new Set<string>();
   const values: unknown[] = [];
 
-  for (const o of out) {
-    const k = tupleKey([o.value]);
+  for (const v of out) {
+    const k = tupleKey([v]);
 
     if (seen.has(k)) {
       continue;
     }
 
     seen.add(k);
-    values.push(o.value);
+    values.push(v);
   }
 
   return values.length === 0 ? DROP : { kind: 'bind', key: p.endKey, values };
