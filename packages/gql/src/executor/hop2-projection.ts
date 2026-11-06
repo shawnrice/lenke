@@ -1,12 +1,13 @@
 import type { Graph, Vertex } from '@lenke/core';
 
 import type { Clause, NodePattern, RelPattern } from '../ast.js';
-import type { CClause, CProjection, Params, Row } from '../executor.js';
+import type { CClause, CompiledExpr, CProjection, Params, Row } from '../executor.js';
 import { freePredicateVars, projectRow } from '../executor.js';
 import { matchesLabel } from '../graph-queries.js';
 import { plainRowProjection } from './hop-projection.js';
 import type { AlwaysRowsFn } from './hop-projection.js';
-import { effectiveLabel, plainNode, plainRel } from './shortcuts.js';
+import { asTruth } from './scalars.js';
+import { effectiveLabel, plainNode, plainRel, rowLocal } from './shortcuts.js';
 
 /**
  * `MATCH (a:A)-[:T]->(b:B)-[:U]->(c:C) RETURN <items>` — a TWO-SEGMENT pattern returning ROWS,
@@ -53,9 +54,10 @@ import { effectiveLabel, plainNode, plainRel } from './shortcuts.js';
  *
  * ⚠️ THE SCOPE IS NARROW ON PURPOSE, and what it declines simply stays where it already is:
  *
- *   - a clause `WHERE` DECLINES. The filtered twins are 165-195 ms and are a separate item with
- *     their own number — `carriedWhere`'s admission rule is 70 lines of measured judgement about
- *     which end a predicate may read, and restating it here is how the two would drift.
+ *   - ~~a clause `WHERE` DECLINES~~ — **CARRIED since item 1620**, evaluated at the DEEPEST level so
+ *     the evaluation point is identical to the general matcher's. Pushing a start-only conjunct up
+ *     to the outer loop is a separate item: it changes WHEN the predicate runs, which `carriedWhere`
+ *     records as a raise-parity question pinned by five tests (items 139-145).
  *   - `both` on either segment declines: its contract visits a self-loop from both ends.
  *   - a quantifier, inline node or rel properties, an inline `WHERE`, a path variable, a path mode
  *     or selector, and a named relationship MENTIONED anywhere all decline.
@@ -82,8 +84,6 @@ export const detectHop2Projection = (
     m.kind !== 'match' ||
     m.optional ||
     m.patterns.length !== 1 ||
-    // A clause `WHERE` declines — see the scope note above.
-    m.where !== undefined ||
     ret.kind !== 'return' ||
     cm.kind !== 'match' ||
     cret.kind !== 'return'
@@ -165,6 +165,92 @@ export const detectHop2Projection = (
     }
   }
 
+  /**
+   * ⚠️ A CLAUSE `WHERE` IS CARRIED (item 1620), and it is evaluated AT THE DEEPEST LEVEL — once per
+   * complete match, exactly where the general matcher evaluates it.
+   *
+   * THAT PLACEMENT IS THE WHOLE CARE HERE. Pushing a start-only predicate up to the outer loop is
+   * the obvious optimization and it is NOT answer-equivalent: the general path evaluates a clause
+   * `WHERE` once per COMPLETE match, so a start that yields no row must never evaluate it, and a
+   * predicate that FAULTS would then raise where it previously did not. `carriedWhere`'s own note
+   * records that parity (items 139-145 pinned it with five tests) and routes an invariant predicate
+   * specifically to the walk that carries it. Taking the push-down means redoing that analysis, so
+   * it is a separate item with its own number; this one keeps the evaluation point identical and
+   * takes the WALK, which is where the measured 4.5x sits.
+   *
+   * `rowLocal` is still required, for item 175's reason: a zero-variable predicate can still hold a
+   * faulting uncorrelated subquery, and nothing here orders conjuncts to keep one away from it.
+   */
+  const { where } = m;
+
+  if (where !== undefined) {
+    if (!rowLocal(where)) {
+      return null;
+    }
+
+    const vars = freePredicateVars(where);
+
+    /**
+     * ⚠️ REDUNDANT, and the mutant proves it rather than the reasoning doing so: in a two-clause
+     * query a clause `WHERE` has nothing to read but the pattern's own names, a parameter (not a
+     * free variable), or a path variable — and a path variable is refused above. Kept as the pair to
+     * the projection's identical loop, so a reader sees the same rule applied to both halves of the
+     * clause, and because a later relaxation of either guard would make this one load-bearing.
+     */
+    for (const name of vars) {
+      if (!named.has(name)) {
+        return null;
+      }
+    }
+
+    /**
+     * ⚠️ A `WHERE` THAT READS THE START VARIABLE DECLINES, AND THAT IS A MEASURED REFUSAL rather
+     * than a conservative one. I admitted it first and it was a **3.7x REGRESSION**: the general
+     * matcher rejects a start BEFORE expanding it, so a start-anchored predicate costs it one test
+     * per VERTEX, where this walk evaluates at the deepest level and pays one per ROW.
+     *
+     * ```text
+     *    WHERE a.k = 5   (start-only)    4.825 ms general  ->  17.895 admitted   3.71x WORSE
+     *    WHERE b.k = 5   (middle)      161.205           ->  22.980             7.02x better
+     *    WHERE c.k = 5   (far)         165.432           ->  26.321             6.28x better
+     *    WHERE true      (invariant)   209.829           ->  36.575             5.74x better
+     * ```
+     *
+     * So the refusal is exactly `carriedWhere`'s own point — *"a start-only predicate ... gets its
+     * own closure, which applies it PER START VERTEX instead of per row — the whole point of
+     * carrying it"* — reached here from the opposite direction, by shipping the naive placement into
+     * a measurement. Taking it means PUSHING the predicate to the outer loop, which changes WHEN it
+     * is evaluated and reopens the raise-parity question items 139-145 pinned with five tests. That
+     * is a separate item with its own number; declining leaves the shape exactly where it already
+     * was, at 4.8 ms.
+     *
+     * ⚠️ IT IS THE START VARIABLE, NOT "START-ONLY". A predicate reading `a` AND `c` would still
+     * lose the matcher's early start rejection, so the test is membership rather than exclusivity —
+     * and that also declines the lifted form of an inline `{…}` on the start node, which is the same
+     * predicate by another spelling.
+     */
+    const startVar = nodes[0].variable;
+
+    if (startVar !== undefined && vars.has(startVar)) {
+      return null;
+    }
+  }
+
+  const gate = cm.where;
+
+  /**
+   * A `WHERE` in the AST and no compiled gate (or the reverse) would silently DROP or INVENT a
+   * filter, so the two are required to agree rather than assumed to.
+   *
+   * ⚠️ UNREACHABLE TODAY — the mutant SURVIVED, because `compileMatch` compiles a clause `WHERE`
+   * exactly when there is one. It is defence in depth against a compiler change that stops doing so
+   * for some shape: the failure mode is a filter silently not applied, which is a wrong ANSWER, and
+   * this rung reads the AST and the compiled form from two different places. One test per query.
+   */
+  if ((where === undefined) !== (gate === undefined)) {
+    return null;
+  }
+
   // ⚠️ `plainRowProjection` takes the AST projection and `aggregating` is on the COMPILED one, so
   // both are asked — of the right object each. They are not the same test: the AST form rejects
   // `DISTINCT`/`GROUP BY`/`HAVING`/`ORDER BY`/`SKIP`/`LIMIT`/`*`, and `aggregating` is what rejects
@@ -179,7 +265,7 @@ export const detectHop2Projection = (
     return null;
   }
 
-  return walk(nodes, hops as readonly Hop[], projection);
+  return walk(nodes, hops as readonly Hop[], projection, gate);
 };
 
 type Hop = { readonly type: string; readonly forward: boolean };
@@ -221,6 +307,7 @@ const walk = (
   nodes: readonly NodePattern[],
   hops: readonly Hop[],
   projection: CProjection,
+  gate: CompiledExpr | undefined,
 ): AlwaysRowsFn => {
   const [n0, n1, n2] = nodes;
   const [h0, h1] = hops;
@@ -276,6 +363,21 @@ const walk = (
 
           if (v2 !== undefined) {
             binding.set(v2, c);
+          }
+
+          /**
+           * ⚠️ THE GATE RUNS BEFORE `projectRow`, and `asTruth(...) !== true` is the test rather
+           * than a falsy check: a clause `WHERE` keeps only rows whose predicate is definitely
+           * TRUE, so UNKNOWN (a null comparison) must be dropped like FALSE. `filters.ts`'s own
+           * rule, and the reason the comparison is to `true` and not to `false`.
+           *
+           * The `{ binding, params, graph }` object is rebuilt per row, which item 833 priced at
+           * 5.6 ns — real but not worth hoisting here, because the binding it names is the one
+           * being mutated and a hoisted env would alias it. `projectRow` builds the same object
+           * one line later for the same reason.
+           */
+          if (gate !== undefined && asTruth(gate({ binding, params, graph })) !== true) {
+            continue;
           }
 
           out.push(projectRow(projection, binding, params, graph));

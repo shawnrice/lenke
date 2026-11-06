@@ -69584,7 +69584,7 @@ The new test file covers the four ways a cache over graph-owned state fails, THR
 
 ### Item 1619 — **5.28x on GQL's two-segment ROW projection** (206.1 ms to 39.0 isolated, 320k rows), the twentieth rung and the biggest hole `gql-cliff-finder.ts` named one tick after it was built. ⚠️ And TWELVE of my eyeballed literals in this file were wrong with the engine right every time — the oracle (`WHERE true`) is what settled every case, and the literals only exist to catch the two being wrong together
 
-OPEN: **the two filtered twins**, which this rung deliberately declines — `rows + trailing where` and `rows + mid where` are now **4.49x and 4.69x** their fast neighbour and read `PIPELINE`. That is the next target and it is `carriedWhere`'s admission rule, not a new walk.
+OPEN: ~~**the two filtered twins**, which this rung deliberately declines — `rows + trailing where` and `rows + mid where` are now **4.49x and 4.69x** their fast neighbour and read `PIPELINE`~~ — **BOTH TAKEN at item 1620** (6.25x and 7.21x). What is left is the START-anchored position, which item 1620 measured as a 3.7x REGRESSION under the naive placement and declines.
 
 #### Priced against hand floors first (item 1465's rule), at 20,000 x 4
 
@@ -69652,3 +69652,58 @@ The rung is a TS-only route, so the invariant is that the two engines still agre
 #### Gates
 
 `bun run check` 0 read unpiped. Suites gql 4189 (18 new), core 435, native 1076 (10 new), gremlin 1765, serialization 144 — 0 fail. `bun run fuzz` 20/0 under the 16G cap.
+
+### Item 1620 — **6.25x and 7.21x** on the two filtered twins item 1619 left open (a far and a middle `WHERE` over a two-segment pattern), plus **5.54x** on the loop-invariant `WHERE true`. ⚠️ And the naive placement that looked obviously right was a **3.7x REGRESSION** on the start-anchored position, found by measuring it rather than by reasoning — so that position is DECLINED, with the number recorded at the refusal
+
+OPEN: **pushing a start-anchored predicate to the outer loop.** It is worth 4x on that shape and it changes WHEN the predicate is evaluated, which reopens the raise-parity question items 139-145 pinned with five tests. Priced below; a separate item.
+
+#### The A/B, one shape per process
+
+```text
+   arm                            PRE      POST    verdict
+   WHERE c.k = 5   (far)       165.432   26.487    6.25x
+   WHERE b.k = 5   (middle)    161.205   22.358    7.21x
+   WHERE true      (invariant) 209.829   37.886    5.54x
+   WHERE a.k = 5   (start)       4.825    4.476    flat — DECLINED, see below
+   no WHERE        (control)    33.740   38.25/39.32/38.31   flat
+   one-hop rows    (control)      3.515    3.311   flat
+   node rows       (control)      0.372    0.361   flat
+```
+
+The unfiltered control needs its numbers stated rather than a verdict asserted: the single PRE reading of 33.740 sits BELOW all three of item 1619's POST readings of the identical code (36.5 / 39.0 / 40.0), so it was the low end of that shape's own spread, and three POST runs here land at 38.25-39.32. Flat across six runs of two builds.
+
+#### ⚠️ THE OBVIOUS PLACEMENT WAS A REGRESSION, and only the measurement said so
+
+The gate is evaluated at the DEEPEST level — once per complete match, exactly where the general matcher evaluates it — so the evaluation POINT is unchanged and a faulting predicate raises where it did. That is the correct-by-construction choice, and it is wrong for one position:
+
+```text
+   WHERE a.k = 5  (start-only)    4.825 ms general  ->  17.895 admitted   3.71x WORSE
+```
+
+The general matcher rejects a start BEFORE expanding it, so a start-anchored predicate costs it one test per VERTEX where this walk pays one per ROW. I shipped the admission into a measurement and it came back 3.7x the wrong way; the refusal is now in the code with those four numbers beside it.
+
+This is `carriedWhere`'s own point — _"a start-only predicate … gets its own closure, which applies it PER START VERTEX instead of per row — the whole point of carrying it"_ — arrived at from the opposite direction. **The test is MEMBERSHIP of the start variable, not exclusivity**: a predicate reading `a` AND `c` loses the same early rejection, so it declines too.
+
+#### ⚠️ The ORACLE went stale, and the assertion that caught it is the point
+
+Item 1619's oracle was `WHERE true`: the rung declined a clause `WHERE`, so that spelling reached the general matcher. This item CARRIES one, so the oracle would have compared the rung against ITSELF — the characteristic failure of an oracle, and silent.
+
+It failed loudly on eight tests instead, because `agrees` asserts BOTH halves: that the fast spelling takes the rung AND that the oracle spelling does not. The oracle is now an `ORDER BY`, which makes the projection non-plain and is the remaining way to reach the general matcher for an otherwise identical query. **Assert that your oracle is still on the other path.**
+
+#### ⚠️ Inline node properties: wrong twice in one tick, now asserted as observed
+
+The start node's `{id: 'a'}` is LIFTED by the rewrite into a clause `WHERE` reading `a` — visible as a fact, because before the start-variable refusal went in that spelling ADMITTED the rung, which is how the lift was discovered. With the refusal it declines, and so does the explicit `WHERE a.id = 'a'`: the two spellings agree on the ROUTE as well as the answer, which is the property that matters.
+
+The middle node's inline properties are NOT lifted into a position the rung accepts (`routes` reports no rung at all), so `plainNode` refuses them. Item 1619's test claimed all three declined; it was right about two of them for the wrong reason. All three are now pinned, and the file says which reason applies to which.
+
+#### Mutation 9 of 11
+
+The gate ignored, inverted, keeping UNKNOWN, run after the row is emitted, and run at the wrong depth (one level up, where the far variable is unbound); the start-variable refusal removed and pointed at the wrong node; `rowLocal` dropped; the AST/compiled consistency check dropped; and the gate not passed to the walk at all.
+
+**`gate/unknown-kept` is the one worth naming**: a clause `WHERE` keeps only rows whose predicate is definitely TRUE, so a null comparison must be dropped like FALSE. The test is `asTruth(...) !== true` and not `=== false`, and the fixture has a vertex with no `k` so the two differ.
+
+Two survivors, both documented where they sit: the `WHERE`'s unbound-name loop (in a two-clause query a clause `WHERE` has nothing to read but the pattern's names, a parameter, or a path variable — and a path variable is refused above), and the AST/compiled consistency check (unreachable today; defence in depth against a compiler change, where the failure mode is a filter silently not applied).
+
+#### Gates
+
+`bun run check` 0 read unpiped. Suites gql 4191 (20 in this file), core 435, native 1076, gremlin 1765, serialization 144 — 0 fail. `bun run fuzz` 20/0 under the 16G cap.

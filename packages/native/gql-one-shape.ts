@@ -27,6 +27,10 @@ const QUERIES: Record<string, string> = {
   // The target: two hops returning rows, which no rung answers.
   hop2rows: 'MATCH (a:P)-[:E]->(b:P)-[:E]->(c:P) RETURN c.k AS k',
   hop2where: 'MATCH (a:P)-[:E]->(b:P)-[:E]->(c:P) WHERE c.k = 5 RETURN c.k AS k',
+  // Item 1620: the two filtered twins and their invariant sibling.
+  hop2midwhere: 'MATCH (a:P)-[:E]->(b:P)-[:E]->(c:P) WHERE b.k = 5 RETURN c.k AS k',
+  hop2startwhere: 'MATCH (a:P)-[:E]->(b:P)-[:E]->(c:P) WHERE a.k = 5 RETURN c.k AS k',
+  hop2truewhere: 'MATCH (a:P)-[:E]->(b:P)-[:E]->(c:P) WHERE true RETURN c.k AS k',
   // CONTROLS the change can reach: one hop through the matcher, and a var-length walk.
   hoprows: 'MATCH (a:P)-[:E]->(b:P) RETURN b.k AS k',
   varlen: 'MATCH (a:P)-[:E]->{1,2}(b:P) RETURN count(*) AS c',
