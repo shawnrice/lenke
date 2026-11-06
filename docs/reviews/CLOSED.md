@@ -65084,3 +65084,88 @@ the mutant: an assertion that passes for the wrong reason reads as coverage.
 `bun run check` 0 read unpiped (one `TS7006` fixed). Suites: core 431/0, gql 3964/0,
 **gremlin 1525/0** (14 new in `drop-unread-as.test.ts`), native 963/0, serialization 144/0,
 `bun run fuzz` 20/0.
+
+### Item 1573 — ⚠️ **A 10.0x CROSS-SURFACE ASYMMETRY ON PAGING: Gremlin's `order().limit(k)` does a FULL SORT where GQL's `ORDER BY … LIMIT` takes a top-k.** 55.2 ms against 5.5 for the same question over the same graph. Three other "transparent step" candidates measured and REFUTED, each for its own reason
+
+Item 1572 dropped an unread `as` because an extra step in front of the hop makes every prefix rung
+decline. The follow-up question is which other steps do that, so four candidates were measured
+before anything was built.
+
+#### The three refusals, each for a different reason
+
+```text
+   V().out(E).count()                      0.0 ms     the baseline the rungs answer
+   V().identity().out(E).count()           22.2       a PURE no-op costs the whole shortcut
+   V().barrier().out(E).count()            14.3
+   V().order().by(k).out(E).count()        25.2
+   V().dedupe().out(E).count()             15.2
+```
+
+- **`identity()` — 22.2 ms for a semantic no-op, and NOT taken.** It is trivially safe to drop, but
+  `count-shortcut.ts`' own comments use `identity()` as the way to force a decline and measure the
+  general path (_"against the forced-`identity()` decline that IS the route this replaces"_, and
+  `optional(identity())` at item 1483). Dropping it removes that tool. No LIVE instrument depends on
+  it (zero hits across `packages/native`'s probes), but a prefix `identity()` is also rare in
+  practice — the engine emits none itself — so the trade is a real measurement technique for a shape
+  nobody writes. Recorded rather than built; if it is ever wanted, the decline-forcer needs a
+  replacement first.
+- **`order()` before `count()` — 25.2 ms, and ordering cannot change cardinality, so it LOOKS
+  droppable. It is not: `order()` FAULTS on raw elements** ("order() over graph elements is not
+  supported — elements have no natural order"), so dropping it would turn a raised error into a
+  count. Whether it faults depends on the VALUES, not the plan, so no static test can decide it.
+  Same shape as the GQL rule that an `evalBy` throw must win over the element fault.
+- **`barrier()` — 14.3 ms, not taken**: it exists to buffer, and this engine has a recorded
+  lazy-vs-eager deviation on `inject`+`limit(0)` shapes. Dropping a buffering step changes when
+  things happen, which is exactly what that deviation is about.
+- **`dedupe()` — not a candidate at all**: it changes the count whenever the stream has duplicates,
+  and whether it does is a property of the data.
+
+#### ⚠️ THE FINDING: paging is 10x apart between the two surfaces
+
+Measured at 200,000 vertices, medians of 5:
+
+```text
+   GREMLIN  V().values(k).order().limit(10)         55.2 ms
+   GREMLIN  V().values(k).order()        (full)     66.2        the limit saves 1.2x — a full sort
+   GREMLIN  V().order().by(k).limit(10).values(k)   54.8
+   GQL      MATCH (n:P) RETURN n.k AS k ORDER BY k LIMIT 10      5.5
+   GQL      MATCH (n:P) RETURN n.k AS k ORDER BY k   (full)     47.7        top-k is 8.7x its own sort
+```
+
+**GQL's top-k is 8.7x its own full sort; Gremlin's `limit` is worth 1.2x.** Cross-surface, the same
+question costs **10.0x more** in Gremlin. `boundedTopK`/`boundedTopKeyed` exist in the GQL executor
+(item 1064) and `grep -i topk` over `packages/gremlin` returns NOTHING.
+
+This is the repo's own equivalent-spellings principle one level up: two surface languages asking one
+question should not differ by an order of magnitude when the cheaper algorithm is already written
+next door.
+
+#### ⚠️ Why this is recorded and not yet built
+
+The existing `order()` work is heavily refuted — items 878/879/890/891/892 concluded the sort runs at
+**1.13x its own floor** and "no change to `sortByBys` can reach that". **Those refutations do not
+cover this**: they are about the full sort's constant factors, while a top-k is an ALGORITHMIC change
+(O(n log n) → O(n log k)) — the distinction `closed-perf-targets` records as item 573's lesson, that
+a big ratio may be algorithmic rather than a layout ceiling. Item 891's "do not reopen without
+attacking the generator pipeline" is about the per-step cost, not about what algorithm the step runs.
+
+The design, from reading both sides:
+
+- **Fuse in `effectivePlan`**, beside `fuseValuesIsCount` — `order` immediately followed by `limit(n)`
+  sets a `cap` on the order step. That is the established shape for a two-step fusion here.
+- **Reuse GQL's algorithm, not its code.** `boundedTopK` is a max-heap whose comparator breaks ties on
+  ARRIVAL INDEX, which is what reproduces `Array.prototype.sort`'s stability — and the Gremlin sort is
+  stable today, with tie order compared against native. Ordering stays per-language by design
+  (`shared-engine-layers`), so it is a sibling implementation with a pointer, not an import.
+- ⚠️ **Keys must still be evaluated for EVERY input**, not just the kept ones. `sortByBys` evaluates
+  every key before the element check specifically so a throwing `by` wins over the element fault; a
+  selection that skipped rejected items would silently drop that fault. A heap still compares every
+  item, so this falls out — but it is the thing to assert, not assume.
+
+Two answer-visible properties to test: the tie order against the full-sort spelling, and that a
+faulting `by` still raises when its item would not have been kept.
+
+#### Gates
+
+No change to ship — measurement only; `git status` clean apart from this entry. `bun run check` 0
+read unpiped. Suites unchanged from item 1572.
