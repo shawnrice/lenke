@@ -19,7 +19,12 @@ import {
 } from '../ast.js';
 import { tagsObservedFrom } from '../ast.js';
 import type { Plan, Step } from '../ast.js';
-import { fusableValuesAggregate, fusedValuesAggregate } from './aggregation.js';
+import {
+  fusableValuesAggregate,
+  fusableValuesTopK,
+  fusedValuesAggregate,
+  fusedValuesTopK,
+} from './aggregation.js';
 import { countShortcut } from './count-shortcut.js';
 import { applyStep } from './dispatch.js';
 import { hopValuesShortcut } from './hop-values.js';
@@ -1935,6 +1940,17 @@ export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
     // the property getter and the type guards are FREE (0.96 and 0.98), and routing the same work
     // across two generator yields costs ~1.5. So the boundaries and the per-element traverser are
     // the cost, which is what this removes.
+    // The capped-order twin of the aggregate fusion below (item 1591). Same lookahead, same
+    // reason it lives in THIS loop, and it is tried first only because the two shapes are
+    // disjoint — `order` is not one of the aggregate kinds.
+    const top = fusableValuesTopK(step, steps[i + 1]);
+
+    if (top !== undefined) {
+      stream = fusedValuesTopK(stream, top.key, { desc: top.desc, cap: top.cap }, graph, ctx);
+      i += 1;
+      continue;
+    }
+
     const fuse = fusableValuesAggregate(step, steps[i + 1]);
 
     if (fuse !== undefined) {

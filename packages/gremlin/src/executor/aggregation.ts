@@ -162,6 +162,9 @@ export const fusableValuesAggregate = (
   return { key: step.keys[0], kind };
 };
 
+/** What `normalizeBys` supplies for a bare `order()`; shared so the fusion allocates none. */
+const IDENTITY_BYS: readonly By[] = [{ kind: 'identity' }];
+
 export const fusedValuesAggregate = function* (
   stream: Iterable<Traverser<unknown>>,
   key: string,
@@ -237,6 +240,125 @@ export const fusedValuesAggregate = function* (
   } else {
     yield startTraverser(best);
   }
+};
+
+/**
+ * `values(k)` fused with a CAPPED `order()` — the top-k over a property stream, read straight off
+ * the elements (item 1591).
+ *
+ * Item 1586 fused `values(k)` with the reducing terminals; `order()` was left out because its
+ * terminal is not a reduce. But `fuseOrderTake` (item 1574) folds a following `take(n)` into the
+ * order as a `cap`, so a capped order IS bounded and can be driven the same way.
+ *
+ * ⚠️ WHY, and it is the fast side that named the target (item 1590's method). GQL answers
+ * `RETURN n.k ORDER BY k LIMIT 10` in 0.935 ms against Gremlin's 3.479 — the biggest ABSOLUTE
+ * cross-surface gap left. Profiling the SLOW side then showed where its time goes, and it is not
+ * the sort: `streamTopByBys` is 23.2% while the generator chain feeding it is **48.6%**
+ * (`projectValues` 21.6%, `sourceFromIds` 12.8%, `extend` 4.8%, `get properties` 3.7%, `isElement`
+ * 3.5%, `startTraverser` 2.7%). GQL's route reads properties in a scan with no traverser at all and
+ * rejects most values in O(1) against its heap root (`boundedTopKeyed` / `beatsRoot`).
+ *
+ * So this removes one generator boundary and the per-element traverser, and reuses
+ * `streamTopByBys` rather than re-deriving a heap — it is generic over its item type, so raw
+ * VALUES go through it with an identity projection. Re-implementing the heap to shave the per-entry
+ * key array would duplicate ~100 lines of tie-breaking and bounds logic, which is where a top-k
+ * goes wrong silently.
+ *
+ * Semantics are the pair's, not a new set: `values(k)` contributes one value per element that HAS
+ * the key (a missing key emits nothing, a present null emits a null), and the order is
+ * `compareTotal`'s total order via the identity `by` that `normalizeBys` already supplies for a
+ * bare `order()` — so nulls sort FIRST, as Gremlin's comparator documents.
+ */
+export const fusedValuesTopK = function* (
+  stream: Iterable<Traverser<unknown>>,
+  key: string,
+  opts: { readonly desc: boolean; readonly cap: number },
+  graph: Graph,
+  ctx: RunContext,
+): Iterable<Traverser<unknown>> {
+  // A generator, NOT an array: the whole point of a capped order is that the stream is never
+  // materialised, which item 1576 established for this shape.
+  const values = function* (): Iterable<unknown> {
+    for (const t of stream) {
+      const el = t.value;
+
+      // ⚠️ THIS GUARD IS UNREACHABLE TODAY, and it stays. Mutation says so rather than reading:
+      // removing it SURVIVED, because `assertFrontierTypes` rejects `values()` on a non-element
+      // frontier at PLAN time — `inject(5).values('k')` raises "values() reads from a graph
+      // element, but the frontier is a projected…" before any of this runs. So the guard defends
+      // against a shape a static check already prevents.
+      //
+      // It is kept because the static check is a SEPARATE mechanism that could narrow, and without
+      // the guard this reads `.properties` off a number and throws from deep in a generator rather
+      // than at the surface. `fusedValuesAggregate` above has the same guard for the same reason.
+      // The parse-time-vs-runtime confusion is worth naming explicitly: a test of this guard would
+      // pass because of the frontier check and not because of the guard, which is exactly how item
+      // 1576 shipped a test that covered nothing.
+      if (!isElement(el)) {
+        continue;
+      }
+
+      const props = el.properties;
+
+      if (key in props) {
+        yield props[key];
+      }
+    }
+  };
+
+  for (const v of streamTopByBys(values(), (x) => x, IDENTITY_BYS, opts, graph, ctx)) {
+    yield startTraverser(v, false);
+  }
+};
+
+/**
+ * Is this pair `values(k)` + a capped global `order()` — the shape {@link fusedValuesTopK}
+ * replaces? `undefined` means "not this shape".
+ *
+ * ⚠️ A CAP IS REQUIRED. An uncapped `order()` sorts the whole stream, so there is nothing to bound
+ * and the fusion would have to materialise — exactly what it is meant to avoid. The cap arrives
+ * from `fuseOrderTake`, which runs earlier in `effectivePlan`, so this pass sees it already folded.
+ */
+export const fusableValuesTopK = (
+  step: Step,
+  next: Step | undefined,
+): { readonly key: string; readonly desc: boolean; readonly cap: number } | undefined => {
+  if (step.kind !== 'values' || step.keys.length !== 1 || next?.kind !== 'order') {
+    return undefined;
+  }
+
+  // A `key` is the legacy single-key form, which projects a sort key off each item — a different
+  // question. `local` sorts within each value rather than across the stream. And no cap means
+  // nothing to bound.
+  if (next.cap === undefined || next.scope === 'local' || next.key !== undefined) {
+    return undefined;
+  }
+
+  // ⚠️ `bys` IS ADMITTED WHEN IT IS EXACTLY ONE IDENTITY BY, and finding that out is why this
+  // reads the way it does. `order()` bare arrives with no `bys` at all, but the natural DESCENDING
+  // spelling — `order().by(Order.desc)` — arrives as `bys: [{kind:'identity', direction:'desc'}]`.
+  // The first version of this gate refused any `bys`, which made the `desc` parameter below DEAD
+  // CODE: the descending form silently took the unfused path, and the tests covering it passed
+  // through that path while appearing to exercise this one.
+  //
+  // An identity by with a direction still means "sort by the value itself", which is this shape. A
+  // by of any other kind projects a different sort key and declines.
+  const { bys } = next;
+  let desc = next.desc ?? false;
+
+  if (bys !== undefined) {
+    if (bys.length !== 1 || bys[0].kind !== 'identity') {
+      return undefined;
+    }
+
+    const dir = bys[0].direction;
+
+    if (dir !== undefined) {
+      desc = dir === 'desc';
+    }
+  }
+
+  return { key: step.keys[0], desc, cap: next.cap };
 };
 
 export const countStep = function* (

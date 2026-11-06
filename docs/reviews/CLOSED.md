@@ -66444,7 +66444,10 @@ the exit code alone. Both fixed before the verdict was read.
 #### What this leaves
 
 `fold` and `count` are not fused — `count` has item 1585's `hasKey` rewrite instead, and `fold` needs
-an array so the fusion would save only the boundary. The remaining cross-surface flags are GQL-side:
+an array so the fusion would save only the boundary. ⚠️ **`order()` was also left out here, and item
+1591 took it**: a CAPPED order is bounded (`fuseOrderTake` folds a following `take(n)` into it), so
+it drives the same way — 1.12x, and it exposed that admitting the shape requires reading the
+direction off a single identity `by`, not off `desc`. The remaining cross-surface flags are GQL-side:
 `hop distinct` 12.49x (down from 52.37x across items 1583/1584) and `filtered count` 2.46x.
 
 ### Item 1587 — ⚠️ **A REFUTATION with its numbers, and a redirect worth more than the thing refuted.** GQL's `count(DISTINCT <far end>)` walk is ALREADY the optimal shape, so the 13x against Gremlin is a constant factor — and the micro-ladder that nominated a cause could not survive repetition. What Gremlin actually does differently: **`dedupe` puts element references straight into a `Set`, with no key built at all**
@@ -66827,3 +66830,109 @@ directions.
 measured and could not improve (its micro-ladder has no resolution at tens of nanoseconds). Gremlin's
 `hasAny` reads 10.4 ns/vertex against GQL's 44.9 — a smaller and much harder target than the four
 structural ones taken so far.
+
+### Item 1591 — **1.12x on Gremlin's top-k paging** by extending item 1586's fusion to a CAPPED `order()`, the last big absolute cross-surface gap. ⚠️ A modest win, taken on tight non-overlapping ranges and flat controls — and the gate's first version made its own `desc` parameter DEAD CODE, which only a literal expectation caught
+
+`paging` was the biggest ABSOLUTE gap left in the cross-surface probe: GQL 1.247 ms against
+Gremlin's 3.700 for the same top-10, with Gremlin on the slow side after items 1574/1576 had already
+taken 2.97x out of it.
+
+#### Item 1590's method again: profile the FAST side first
+
+```text
+   GQL (fast)      boundedTopKeyed 5.3%, beatsRoot 4.9%, compareValues 7.2%
+                   -> a bounded top-k heap, rejecting most values in O(1) against its root,
+                      reading properties in a scan with NO traverser
+   Gremlin (slow)  streamTopByBys  23.2%   <- the sort is NOT the problem
+                   projectValues   21.6%
+                   sourceFromIds   12.8%
+                   extend           4.8%   get properties 3.7%   isElement 3.5%
+                   startTraverser   2.7%
+```
+
+**48.6% is the generator chain feeding the sort**, which is exactly what item 1586 fused for the
+reducing terminals. `order()` was left out then because its terminal is not a reduce — but
+`fuseOrderTake` (item 1574) folds a following `take(n)` into the order as a `cap`, so a capped order
+IS bounded and can be driven the same way.
+
+`streamTopByBys` is generic over its item type, so raw VALUES pass through it with an identity
+projection: one generator instead of two, and no traverser per element. Re-deriving the heap to also
+shave its per-entry key array was declined — ~100 lines of tie-breaking and bounds logic is where a
+top-k goes wrong silently.
+
+#### ⚠️ The win is MODEST, and the judgement is recorded rather than dressed up
+
+```text
+                     PRE                             POST
+   paging (target)   3.208 3.208 3.211 3.222 3.311   2.854 2.863 2.890 2.892 2.894   1.12x
+   max (sibling)     1.117 1.181 1.204               1.107 1.112 1.158              flat
+```
+
+12% is near the line, and **item 1587 refused 1.09x**. Three things decide it the other way here:
+the ranges are tight (3% and 1.4%) and do NOT overlap, so the gain is real rather than noise; a
+broad `bench:gremlin` sweep run TWICE per arm shows every unrelated row flat (`values(age)` 136.0
+against 135.0, the UNCAPPED `order()` row 387.4 against 383.5, bare `out()` 120.3 against 120.1); and
+the change is a small extension of a mechanism already built and tested at item 1586 rather than a
+new walk. Had any of those gone the other way it would have been a reject.
+
+#### ⚠️⚠️ The gate's first version made its own `desc` parameter DEAD CODE
+
+The first gate refused any `bys`, on the reasoning that a `by` projects a sort key off each item and
+is therefore a different question. True of every `by` kind except the one that matters:
+
+```text
+   order()                   ->  { kind: 'order', cap: 10 }
+   order().by(Order.desc)    ->  { kind: 'order', cap: 10, bys: [{kind:'identity',direction:'desc'}] }
+```
+
+The natural DESCENDING spelling arrives as a single identity `by` with a direction, **not** as
+`desc: true`. So the descending form silently took the unfused path while the fused step's `desc`
+parameter was never reached. An identity by with a direction still means "sort by the value itself",
+so it is now admitted, with the direction read off it; any other kind, or more than one, still
+declines.
+
+⚠️ **AND THE TEST THAT SHOULD HAVE CAUGHT THAT PASSED VACUOUSLY.** The fixtures compared the capped
+result against an uncapped-sort-and-slice ORACLE — a genuinely independent path — but both arms were
+written `order().by(undefined, 'desc')`, which sorts **ASCENDING** (`[5,1,3]` comes back `[1,3,5]`).
+Both sides were wrong identically, so every descending assertion agreed. **Only a LITERAL expectation
+caught it**, which is the argument for pairing an oracle with literals rather than trusting it alone:
+an oracle written by the same hand can share the same misunderstanding. The correct spelling is
+`order().by(Order.desc)` — the comparator-only form, token FIRST.
+
+With the gate fixed, the descending form measures 2.496 ms and answers `[96,…]` correctly.
+
+#### Mutation: 9 of 10 caught
+
+```text
+   topk/missing-key-included   CAUGHT  4 fail     gate/admits-uncapped      CAUGHT 30 fail
+   topk/cap-ignored            CAUGHT 21 fail     gate/admits-local         CAUGHT  1 fail
+   topk/desc-inverted          CAUGHT 25 fail     gate/admits-any-bys       CAUGHT  1 fail
+   topk/no-element-guard       SURVIVED (equivalent)  gate/drops-by-direction CAUGHT 20 fail
+                                                  gate/never-fuses          CAUGHT  2 fail
+                                                  gate/admits-multi-key     CAUGHT  2 fail
+```
+
+`gate/drops-by-direction` is the mutant that reproduces the bug above, and it is caught — the gate's
+own regression test now exists. `topk/no-element-guard` survives because `assertFrontierTypes`
+rejects `values()` on a non-element frontier at PLAN time (`inject(5).values('k')` raises before any
+of this runs), so the guard defends against something a static check already prevents. It stays, and
+the note at the line says why — including that a test of it would pass because of the frontier check
+and not because of the guard, which is how item 1576 shipped a test that covered nothing.
+
+#### Gates
+
+`bun run check` 0 read unpiped. Suites gremlin 1630, gql 4038, core 435, native 1031, serialization
+144 — 0 fail. `bun run fuzz` 20/0 under the 16G cap.
+
+#### Cross-surface state after this
+
+```text
+   hop distinct     gql 2.15   gremlin 0.36    5.95x GQL slower   <- per-vertex constant factor
+   filtered count   gql 0.50   gremlin 0.20    2.46x GQL slower   <- small absolute (0.3 ms)
+   paging           gql 1.25   gremlin ~2.9    ~2.3x gremlin slower
+   sum/max/group count/count all/...            within tolerance or under the floor
+```
+
+What is left on `paging` is the ~1.6 ms the remaining chain costs (`sourceFromIds` and the source
+traverser), which needs the fusion to start AT the source the way `nodeValuesShortcut` does — a
+bigger change than this one and not obviously worth it at this margin.
