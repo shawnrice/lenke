@@ -65685,7 +65685,7 @@ No engine change — one new probe (`ts-write-invalidation-probe.mjs`), which ta
 one arm per process after items 1578 and 1579 each produced an impossible in-process reading.
 `bun run check` 0 read unpiped. Suites unchanged from item 1579.
 
-### Item 1581 — built the CROSS-SURFACE probe, which no instrument covered, and followed its largest flag to an EQUIVALENT-SPELLING defect in the grouped count: **`RETURN count(*) GROUP BY n.k` is 24.6x its two-column twin** (16.05 ms against 0.652), and **34.4x with a `LET` in front** (22.42). Same 97 groups, same scan. ⚠️ `hopvaluesrows` — the shape this tick set out to profile — is CLOSED, which is what redirected it
+### Item 1581 — built the CROSS-SURFACE probe, which no instrument covered, and followed its largest flag to an EQUIVALENT-SPELLING defect in the grouped count: ~~**`RETURN count(*) GROUP BY n.k` is 24.6x its two-column twin** (16.05 ms against 0.652), and **34.4x with a `LET` in front** (22.42)~~ — **BOTH TAKEN AT ITEM 1582** (24.7x, 15.33 ms to 0.62, against a same-build control). Same 97 groups, same scan. ⚠️ `hopvaluesrows` — the shape this tick set out to profile — is CLOSED, which is what redirected it
 
 The tick began intending to profile the 425 us walking read item 1580 measured. **It is
 `hopvaluesrows`, already profiled at item 1559**: `drain` 53.1% (89 mentions), `pick` 24.0% (97),
@@ -65753,8 +65753,8 @@ answers:
 **Gremlin's `groupCount({by:'k'})` answers the same question in 0.78 ms, which is `alias2`'s cost.**
 So the fast rung is the CORRECT price and the other two spellings are the defect — the cross-surface
 ratio was reporting a GQL-internal gap, not a language one. This is precisely the failure mode
-CLAUDE.md names: *"the planner recognized one spelling of a predicate and scanned for another that
-meant exactly the same thing… each cost 100-300x and each returned the correct answer."*
+CLAUDE.md names: _"the planner recognized one spelling of a predicate and scanned for another that
+meant exactly the same thing… each cost 100-300x and each returned the correct answer."_
 
 ⚠️ **And the one-column spelling is the one a user reaches for**, because it asks for strictly LESS:
 the group key is not even wanted in the output. The rung declines it for needing a second projection
@@ -65772,11 +65772,11 @@ is accepted, and it is the spelling the fast rung requires.
 
 #### Two things the cross-surface probe needed, both learned from this session's own mistakes
 
-* ⚠️ **A FLOOR.** Its first run flagged `count label` at 2.06x and `hop count` at 2.87x on readings of
+- ⚠️ **A FLOOR.** Its first run flagged `count label` at 2.06x and `hop count` at 2.87x on readings of
   **0.001-0.006 ms** — clock resolution, both closed-form on both surfaces. `FLOOR_MS` (0.05) now
   reports those as "too fast to compare, raise NODES", the guard the GQL spelling probe grew at
   item 127 for the same reason.
-* ⚠️ **TWO PASSES IN OPPOSITE ORDER.** Items 1578 and 1579 each produced an impossible in-process
+- ⚠️ **TWO PASSES IN OPPOSITE ORDER.** Items 1578 and 1579 each produced an impossible in-process
   reading because whichever arm ran first paid.
 
 ⚠️ **And the normalizer was wrong in a way that faked ten findings.** `query` yields ROW OBJECTS
@@ -65796,14 +65796,13 @@ worth stating plainly: **the assertion is not optional even for a probe file.** 
 
 #### What this leaves open, with numbers
 
-* **The one-column grouped count, 24.6x** (`alias1` 16.05 ms against `alias2` 0.652). The gate is
-  `proj.items.length < 2` in `detectGroupedNodeAggregate` and its tally twin. The key expression
-  would have to come from `proj.groupBy` rather than from a projection item.
-* **The same shape behind a `LET`, 34.4x** (`let2` 22.42 ms). A separate gate — `clauses.length !== 2`
-  — and the broader question of whether a `LET` that only names a grouping key should be folded away
-  before rung selection, which is the same move `dropUnreadEdgeVar` (1568) and `dropUnreadPathVar`
-  (1567) make for bindings.
-* **`hop distinct`, ~30 ms** against Gremlin's 0.55 for `count(DISTINCT b)` over a hop. Not yet
+- ~~**The one-column grouped count, 24.6x**~~ **DONE AT 1582**, and the fix was the key expression
+  coming from `proj.groupBy` rather than from a projection item, exactly as guessed here. The `LET`
+  spelling needed no separate work: `groupedClauses` already admitted the three-clause form, so
+  `proj.items.length !== 2` was the ONLY gate and both spellings converged at 0.62 ms together.
+  (This entry's guess that `clauses.length !== 2` was a second gate was WRONG — it is not reached
+  for this shape.)
+- **`hop distinct`, ~30 ms** against Gremlin's 0.55 for `count(DISTINCT b)` over a hop. Not yet
   diagnosed; the spelling result above is a warning that the first thing to check is which rung it
   misses and why, not where its profile time goes.
 
@@ -65812,3 +65811,128 @@ worth stating plainly: **the assertion is not optional even for a probe file.** 
 No engine change — two new probes. `bun run check` 0 read unpiped (a `prefer-destructuring`, two
 `no-nested-ternary` and a `no-base-to-string` fixed; the last was the tuple typing, which the
 restructure to typed objects removed). Suites unchanged from item 1580.
+
+### Item 1582 — **24.7x on the one-column grouped count**, both spellings, by admitting it to the tally that already answered its two-column twin: 15.33 ms to 0.62, measured against a general-path control on the SAME build. The cross-surface flag item 1581 opened at 30.97x now reads 1.32-1.48x, with GQL the FASTER side. ⚠️ And writing explicit coverage for the shape found a PRE-EXISTING WRONG ANSWER in the Rust engine
+
+Item 1581 priced this and did not take it. The gate was arity, in `groupedProjection`:
+
+```text
+   proj.items.length !== 2     declines a grouped count that does not project its key
+```
+
+`MATCH (n) RETURN count(*) AS c GROUP BY n.k` asks for strictly LESS than the two-column form —
+the group key is not even wanted in the output — and was refused for lacking a second projection
+item the tally has no use for. The key for that form comes from `GROUP BY` instead of from a
+projection item, which is the whole of the change: `groupedProjection` now returns `keyExpr` and a
+`keyCol` that is `undefined` for the one-column form, and one shared `groupedCountRow` emits either
+one column or two.
+
+#### The numbers, all 97 groups over 50,000 vertices, three runs each
+
+```text
+   ord1     RETURN count(*) AS c GROUP BY n.k ORDER BY c     15.761  13.990  15.329 ms   <- general path
+   alias1   RETURN count(*) AS c GROUP BY n.k                 0.608   0.623   0.621      24.7x
+   let2     LET grp = n.k RETURN count(*) AS c GROUP BY grp   0.616   0.623   0.611      24.7x
+   alias2   RETURN n.k AS key, count(*) AS c GROUP BY n.k     0.624   0.613   0.622      CONTROL, flat
+   nokey    RETURN count(*) AS c                              0.001   0.001   0.001      ungrouped control
+```
+
+⚠️ **`ord1` is the instrument's point.** `ORDER BY` declines the new rung by design, so that arm asks
+the same question over the same scan and still runs the general path — on the SAME BUILD as the fast
+arms. That is what makes 24.7x a measurement rather than a comparison of two builds, and it
+independently reproduces item 1581's cross-build 16.05 ms. The `alias2` control is flat (0.613-0.624
+against 0.652 before the change), which matters because CLAUDE.md's rule is that a control moving
+more than the target is the giveaway for a bad instrument.
+
+⚠️ **AND IT DID MOVE, at 9 reps.** The first post-change run read `alias2` at **1.427 ms**, a 2.2x
+REGRESSION in the control. The series was `1.5 1.0 1.0 1.4 1.5 1.6 0.7 0.6 0.6` — bimodal, with
+warm-up running past the three dropped reps, so the median landed on the wrong mode. At 30 reps it is
+0.62 and flat. Nine reps is not enough for this shape, and the control is what said so.
+
+Cross-surface, the flag item 1581 opened:
+
+```text
+   group count   BEFORE   gql 24.433ms   gremlin 0.789ms   30.97x GQL slower
+                 AFTER    gql  0.589      gremlin 0.812      1.32-1.48x, GQL FASTER
+```
+
+#### ⚠️⚠️ A PRE-EXISTING WRONG ANSWER IN THE RUST ENGINE, found by covering the shape
+
+```text
+   SELECT count(*) AS c FROM MATCH (n:P) GROUP BY n.k
+       ts   [{"c":2},{"c":1},{"c":1}]     3 groups  — correct
+       nat  [{"c":4}]                     ONE group — the GROUP BY is DROPPED
+```
+
+Native drops the grouping exactly when the form is `SELECT`, the grouping key is **not** in the
+select list, and there is **no** `HAVING`. Each conjunct matters and each was checked: the `RETURN`
+spelling of the same question agrees, `HAVING count(*) >= 1` makes native correct, and the
+two-column `SELECT` agrees. Per ISO a select list holding only an aggregate still yields one row per
+group, so TS is right.
+
+⚠️ **That it predates this change is MEASURED, not assumed.** `ORDER BY` declines the new rung, so
+`… GROUP BY n.k ORDER BY c` runs the TS GENERAL path — the code that answered this shape before item
+1582 — and it diverges identically. `select-group-probe-1582.mjs` prints the five-way comparison.
+
+**NOT registered**, deliberately: `divergence-registry` refuses a `value` axis on purpose ("if the
+engines disagree about the answer to a determinate question, that is a bug in one of them, and no
+entry may excuse it"). It is encoded as an `test.failing` expected failure, which documents it and
+turns red the moment native is fixed, rather than a skip that would go quiet. Fixing it is Rust-side
+and out of this item's scope. **This is the 10th open cross-engine divergence.**
+
+#### ⚠️ `bun run fuzz` was GREEN before any of this was written, and said nothing
+
+Every fuzzer's grouped shape is the TWO-column `RETURN k, count(*) AS c GROUP BY k` — `genQuery` in
+`backend-parity-fuzz`, and the `simpleGroup` counter in `differential-fuzz`. **No fuzzer generates
+the one-column form at all**, so a change to which columns a rung emits sailed through the sweep
+that exists to catch exactly that. The shape now has explicit TS-vs-native coverage
+(`one-column-grouped-count-parity.test.ts`, 22 queries, compared as row multisets with column order
+asserted exactly). This is CLAUDE.md's own warning arriving in a new place: a generative test whose
+teeth were never verified is worse than no test, because it is believed.
+
+#### Mutation: 8 of 8 caught, and the first run caught only 5
+
+The three survivors all degraded the rung to DECLINING, which is answer-equivalent, so no
+correctness test could see them — `perf-gate-needs-its-own-test` exactly. Adding ROUTE assertions
+against `detectGroupedNodeCount` / `detectGroupedHopCount` (does this query reach the tally, yes or
+no) turned all three red:
+
+```text
+   row/keyCol-inverted              CAUGHT  56 fail
+   row/count-zeroed                 CAUGHT  19 fail
+   gate/admit-three-items           CAUGHT   1 fail
+   route/refuse-one-column          CAUGHT   2 fail     <- SURVIVED before the route tests
+   gate/no-groupby-required         CAUGHT   9 fail
+   gate/admit-multi-key-groupby     CAUGHT   7 fail
+   gate/allow-order-by              CAUGHT   2 fail
+   key/from-projection-not-groupby  CAUGHT   2 fail     <- SURVIVED before the route tests
+```
+
+A ninth mutant, `gate/admit-zero-items`, survived and was NOT a test gap: an empty projection
+already declines at `countAt === -1`, since `findIndex` finds no `count(*)` in it. So the
+`proj.items.length < 1` half of the guard was dead and went the way of item 475's — a line no test
+can fail on, whose redundancy is provable by reading. The mutant was replaced with
+`gate/admit-three-items`, which the route tests catch.
+
+The cap was proven before it was trusted, per CLAUDE.md: an allocator bomb died 137 and a bare
+infinite loop 124.
+
+#### What the one-column form still declines, and why
+
+`ORDER BY`. Its only resolvable sort target is the count column, and `colSortsOf` is written around a
+projected KEY column this form does not have. Declining is answer-equivalent — `ord1` proves the
+general path answers it correctly — so this is a missing optimization and not a bug. It is also the
+same 15.33 ms, which makes `ORDER BY c` on a grouped count the next rung-level target in this
+family.
+
+#### ⚠️ Process: item 1581 shipped markdown the formatter rejects
+
+`bun run check` ran BEFORE that entry was appended to this file, not after, so `fmt:check` never saw
+it — and oxfmt normalizes `*` bullets to `-` and `*…*` to `_…_`. The normalization rides along in
+this commit. Memory already records that `fmt` exiting 0 is not `fmt:check` passing; the sharper rule
+is to run the gate AFTER writing the entry, which is the order this item used.
+
+#### Gates
+
+`bun run check` 0 read unpiped. Suites gql 3993, core 431, gremlin 1551, native 985, serialization
+144 — 0 fail. `bun run fuzz` 20/0 under the 16G cap.

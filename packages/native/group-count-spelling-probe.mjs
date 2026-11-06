@@ -51,6 +51,16 @@ const ARMS = {
   alias2: 'MATCH (n) RETURN n.k AS key, count(*) AS c GROUP BY n.k',
   /** The control: an UNGROUPED count over the same scan, which has its own long-closed rung. */
   nokey: 'MATCH (n) RETURN count(*) AS c',
+  /**
+   * THE GENERAL-PATH CONTROL, measured on the SAME BUILD as the fast arms.
+   *
+   * Item 1582 admits the one-column grouped count to the tally but declines it when an
+   * `ORDER BY` is present, because the only resolvable target is the count column and
+   * `colSortsOf` is written around a projected KEY column this form does not have. So this arm
+   * asks the same question, over the same scan, and still goes through the general path — which
+   * is what makes it a scale check that does not depend on comparing two builds.
+   */
+  ord1: 'MATCH (n) RETURN count(*) AS c GROUP BY n.k ORDER BY c',
 };
 
 const text = ARMS[ARM];

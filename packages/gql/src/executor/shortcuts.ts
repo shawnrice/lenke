@@ -8597,11 +8597,23 @@ const groupedClauses = (clauses: readonly Clause[]): GroupedShape | null => {
   return { match: m, ret, let: mid.items[0] };
 };
 
-/** The projection shapes this can answer: two items, one of them `count(*)`, nothing else on. */
+/**
+ * The projection shapes this can answer: one or two items, one of them `count(*)`, nothing else
+ * on.
+ *
+ * `keyCol` is the output column the group key goes in, or `undefined` for the ONE-COLUMN form,
+ * which projects only the count and so emits no key column at all.
+ */
 const groupedProjection = (
   proj: Projection,
   letName: string | undefined,
-): { countAt: number; sort: readonly ColSort[]; having: CompiledExpr | undefined } | null => {
+): {
+  countAt: number;
+  sort: readonly ColSort[];
+  having: CompiledExpr | undefined;
+  keyExpr: Expr;
+  keyCol: string | undefined;
+} | null => {
   // SKIP/LIMIT are NOT refused. A grouped count's rows come out in FIRST-SEEN group order,
   // which is the pinned contract both engines keep (a `Map`'s insertion order here, the
   // general path's own `Map<string, Binding[]>` there) — so a window over them is a slice of
@@ -8610,7 +8622,24 @@ const groupedProjection = (
   // `ORDER BY` used to decline here, because it reorders the groups BEFORE the window and the
   // tally did not sort. It sorts now (`colSortsOf` + `sortGroupRows`, item 190), which is that
   // same order, applied to one row per GROUP instead of one per input element.
-  if (proj.star || proj.distinct || proj.items.length !== 2) {
+  // ONE item is admitted as well as two, and that is item 1582's change. The gate used to be
+  // `!== 2`, which declined `MATCH (n) RETURN count(*) AS c GROUP BY n.k` — a grouped count that
+  // does not want the key in its output — for lacking a second projection item the tally has no
+  // use for. It asks for strictly LESS than the two-column form and cost 24.6x more:
+  //
+  //     MATCH (n) RETURN n.k AS key, count(*) AS c GROUP BY n.k     0.652ms   <- reached here
+  //     MATCH (n) RETURN count(*) AS c GROUP BY n.k                16.051     the general path
+  //     MATCH (n) LET grp = n.k RETURN count(*) AS c GROUP BY grp   22.421     34.4x
+  //
+  // Found by `cross-surface-probe`, which flagged the shape at 27x Gremlin's `groupCount` — and
+  // the Gremlin side's 0.78ms is the two-column form's cost, so the fast rung was the correct
+  // price and these two spellings were the defect (item 1581).
+  // No lower bound on the item count, and that is a removal rather than an omission: an EMPTY
+  // projection already declines at `countAt === -1` below, because `findIndex` finds no
+  // `count(*)` in it. A `proj.items.length < 1` guard here survived its mutant for exactly that
+  // reason, so it went the way of item 475's — a line no test can fail on, whose redundancy is
+  // provable by reading.
+  if (proj.star || proj.distinct || proj.items.length > 2) {
     return null;
   }
 
@@ -8625,6 +8654,33 @@ const groupedProjection = (
 
   if (countAt === -1) {
     return null;
+  }
+
+  // ONE-COLUMN: there is no key ITEM, so the key can only come from an explicit `GROUP BY`, and
+  // without one the query is an UNGROUPED count that belongs to a different rung entirely
+  // (`buildNodeCount`, measured at 0.003ms). `ORDER BY` declines here rather than being
+  // supported: its only resolvable target is the count column, and `colSortsOf` is written
+  // around a projected KEY column that this form does not have. Left for a shape that asks.
+  const oneColumn = proj.items.length === 1;
+
+  if (oneColumn) {
+    const only = proj.groupBy;
+
+    // No shape check on the key beyond "there is exactly one": each CALLER resolves it through
+    // its own `LET` and then requires `keySource.kind === 'prop'` on the node it scans, which is
+    // strictly stronger than anything checkable here. A second check in this function would be
+    // the redundant guard item 475 removed.
+    if (only?.length !== 1 || (proj.orderBy?.length ?? 0) !== 0) {
+      return null;
+    }
+
+    return {
+      countAt,
+      sort: [],
+      having: proj.having === undefined ? undefined : compileExpr(proj.having),
+      keyExpr: only[0],
+      keyCol: undefined,
+    };
   }
 
   const keyItem = proj.items[1 - countAt];
@@ -8675,7 +8731,32 @@ const groupedProjection = (
     countAt,
     sort,
     having: proj.having === undefined ? undefined : compileExpr(proj.having),
+    keyExpr: keyItem.expr,
+    keyCol: keyItem.alias ?? columnName(keyItem.expr),
   };
+};
+
+/**
+ * One grouped-count row: the count alone for the one-column form, otherwise the count and the
+ * key in the order the projection wrote them.
+ *
+ * Shared by the node and hop tallies, which had the same three-way branch spelled out twice —
+ * and `keyCol === undefined` is the whole of the one-column form's output difference, so having
+ * one place that knows it is what keeps the two rungs from drifting apart.
+ */
+const groupedCountRow = (
+  slot: { readonly key: unknown; readonly n: number },
+  countCol: string,
+  keyCol: string | undefined,
+  countFirst: boolean,
+): Row => {
+  if (keyCol === undefined) {
+    return { [countCol]: slot.n };
+  }
+
+  return countFirst
+    ? { [countCol]: slot.n, [keyCol]: slot.key }
+    : { [keyCol]: slot.key, [countCol]: slot.n };
 };
 
 /**
@@ -9926,7 +10007,7 @@ export const detectGroupedNodeCount = (clauses: readonly Clause[]): ReachFn | nu
   }
 
   const { items, skip, limit } = shape.ret.projection;
-  const { countAt, sort, having } = picked;
+  const { countAt, sort, having, keyExpr, keyCol } = picked;
   const [{ start, segments }] = shape.match.patterns;
 
   if (segments.length !== 0 || start.variable === undefined) {
@@ -9983,11 +10064,10 @@ export const detectGroupedNodeCount = (clauses: readonly Clause[]): ReachFn | nu
     return null;
   }
 
-  const keyItem = items[1 - countAt];
-  const keyExpr = keyItem.expr;
-  // Two-clause: the item IS the property. Three-clause: the item is the `LET` name and the
-  // property lives in the `LET`. Either way the grouped value must be one property of the
-  // matched node; anything else falls through to the general path.
+  // Two-clause: the key IS the property. Three-clause: the key is the `LET` name and the
+  // property lives in the `LET`. One-column: the key is the `GROUP BY` element, which is one of
+  // those two spellings again. Either way the grouped value must be one property of the matched
+  // node; anything else falls through to the general path.
   let keySource: Expr | undefined = keyExpr;
 
   if (shape.let !== undefined) {
@@ -10000,7 +10080,6 @@ export const detectGroupedNodeCount = (clauses: readonly Clause[]): ReachFn | nu
 
   const { key } = keySource;
   const countCol = items[countAt].alias ?? columnName(items[countAt].expr);
-  const keyCol = keyItem.alias ?? columnName(keyExpr);
   const countFirst = countAt === 0;
   const labelName = label?.name;
   // The variable a `HAVING` reads its representative through — the node this tally groups.
@@ -10031,9 +10110,7 @@ export const detectGroupedNodeCount = (clauses: readonly Clause[]): ReachFn | nu
     return pageGroups(
       sortGroupRows(
         keepGroups(groups.slots, having, repVar, params, graph).map((slot) =>
-          countFirst
-            ? { [countCol]: slot.n, [keyCol]: slot.key }
-            : { [keyCol]: slot.key, [countCol]: slot.n },
+          groupedCountRow(slot, countCol, keyCol, countFirst),
         ),
         sort,
       ),
@@ -10157,7 +10234,7 @@ export const detectGroupedHopCount = (clauses: readonly Clause[]): ReachFn | nul
   }
 
   const { items, skip, limit } = shape.ret.projection;
-  const { countAt, sort, having } = picked;
+  const { countAt, sort, having, keyExpr, keyCol } = picked;
   const [pattern] = shape.match.patterns;
 
   if (pattern.pathVar !== undefined || pattern.segments.length !== 1) {
@@ -10199,8 +10276,6 @@ export const detectGroupedHopCount = (clauses: readonly Clause[]): ReachFn | nul
   }
 
   // Resolve the group key to a property of one END of the hop.
-  const keyItem = items[1 - countAt];
-  const keyExpr = keyItem.expr;
   let keySource: Expr | undefined = keyExpr;
 
   if (shape.let !== undefined) {
@@ -10271,7 +10346,6 @@ export const detectGroupedHopCount = (clauses: readonly Clause[]): ReachFn | nul
 
   const { key } = keySource;
   const countCol = items[countAt].alias ?? columnName(items[countAt].expr);
-  const keyCol = keyItem.alias ?? columnName(keyExpr);
   const countFirst = countAt === 0;
   // The variable a `HAVING` reads its representative through: the KEYED end, which is the one
   // this tally groups by and the one whose vertex each slot holds.
@@ -10391,9 +10465,7 @@ export const detectGroupedHopCount = (clauses: readonly Clause[]): ReachFn | nul
     return pageGroups(
       sortGroupRows(
         keepGroups(groups.slots, having, repVar, params, graph).map((slot) =>
-          countFirst
-            ? { [countCol]: slot.n, [keyCol]: slot.key }
-            : { [keyCol]: slot.key, [countCol]: slot.n },
+          groupedCountRow(slot, countCol, keyCol, countFirst),
         ),
         sort,
       ),
