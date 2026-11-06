@@ -218,12 +218,25 @@ describe('the rung answers a filter between two hops', () => {
 });
 
 describe('the rung declines what it must', () => {
-  test('a filter AFTER the last hop — the final contribution is no longer a degree', () => {
+  test('⚠️ a filter AFTER the last hop is now ANSWERED — by item 1612, not by this rung', () => {
+    /**
+     * ⚠️ THIS TEST USED TO ASSERT A DECLINE, and the change is deliberate. This item left the shape
+     * open with the reason "the final contribution stops being a degree, so it needs the last level
+     * walked" — and item 1612 walked it, far-driven, at **214x** on the two-hop form and 36.8x on
+     * this one. `countShortcut` therefore answers it now, through
+     * `trailingFilteredHopChainCount`.
+     *
+     * What this rung does is unchanged: `interleavedHopChainCount` still requires the LAST step to
+     * BE the hop and still declines this shape, which is what keeps the two disjoint. The
+     * expectation that moved is about the CHAIN, which is what `answered` calls.
+     *
+     * Hand-derived: paths `x -> mid -> far` with both teams `t1` are `d -> a -> b` and `f -> a -> b`.
+     */
     expect(
       answered(
         traversal(V(), out('E'), has('team', eq('t1')), out('E'), has('team', eq('t1')), count()),
       ),
-    ).toBeUndefined();
+    ).toBe(2);
   });
 
   test('a `both` hop on either side', () => {

@@ -171,6 +171,15 @@ export const countShortcut = (plan: Plan, graph: Graph): number | undefined => {
     return interleaved;
   }
 
+  // A TRAILING filter after the last hop (item 1612) — the shape item 1602 left open, at 214x.
+  // AFTER the rung above so that one keeps every shape it answers; disjoint from it by
+  // construction, since that one requires the last step to BE the hop.
+  const trailingFiltered = trailingFilteredHopChainCount(mid, graph);
+
+  if (trailingFiltered !== undefined) {
+    return trailingFiltered;
+  }
+
   // A hop followed by a CHAIN of one or more `has` filters (item 930). This was gated behind
   // `mid.length !== 2` — exactly one filter — and a second `has` fell off the end of every rung to
   // the general traversal at 11.15x. `filteredHopCount` returns `undefined` unless every step
@@ -1635,6 +1644,221 @@ const chainDegree = (v: Vertex, hop: HopStep, reverse: boolean): number => {
  * the first version of this rung takes the shape that was measured. `V().both(T).has(…).both(T)`
  * keeps falling through as it does today.
  */
+/**
+ * `trailingFilteredHopChainCount`'s SHAPE, parsed. Its own function for the reason `hopChainShape`
+ * is: inlined, the two halves took the rung to a complexity of 36 against a limit of 35 — the same
+ * wall, and the same way out.
+ */
+const trailingHopChainShape = (
+  mid: readonly Step[],
+  graph: Graph,
+):
+  | {
+      h0: Extract<Step, { kind: 'out' | 'in' }>;
+      h1: Extract<Step, { kind: 'out' | 'in' }>;
+      lead: { source: Iterable<Vertex>; rest: VertexFilter[] };
+      interior: { source: Iterable<Vertex>; rest: VertexFilter[] };
+      trailing: { source: Iterable<Vertex>; rest: VertexFilter[] };
+    }
+  | undefined => {
+  // `[hop, hop, filter]` at the very least.
+  if (mid.length < 3) {
+    return undefined;
+  }
+
+  // The two hops, scanning forward. Everything before the first is a lead filter, everything
+  // between them interior, everything after the second trailing.
+  const hops: number[] = [];
+
+  for (let i = 0; i < mid.length && hops.length < 2; i += 1) {
+    const step = mid[i];
+
+    if (step.kind === 'both') {
+      return undefined;
+    }
+
+    if (step.kind === 'out' || step.kind === 'in') {
+      hops.push(i);
+    }
+  }
+
+  if (hops.length !== 2 || hops[1] === mid.length - 1) {
+    // ⚠️ `hops[1] === mid.length - 1` is REDUNDANT TODAY (mutation: removing it survived), for two
+    // independent reasons — this rung is listed AFTER `interleavedHopChainCount` and
+    // `hopChainCount`, which answer every untrailed shape first; and an EMPTY trailing filter list
+    // would make the walk compute the same number anyway, just without the closed form those rungs
+    // use. It stays as the statement of what this rung is FOR.
+    return undefined; // not two hops, or nothing trails the second
+  }
+
+  /**
+   * No THIRD hop: this rung is the two-hop shape, and a deeper chain keeps the pipeline.
+   *
+   * ⚠️ ALSO REDUNDANT TODAY, and mutation says so rather than my reading it: removing this loop
+   * SURVIVED, because a hop in the trailing run reaches `asVertexFilters` below and is refused
+   * there — it is neither a `hasLabel` nor an `asHasFilter`. Kept for the reason
+   * `specializeSingleProp` keeps its two unreachable guards: it states the rung's ARITY where a
+   * reader looks for it, at one pass over a handful of steps PER QUERY. Item 475's rule is that a
+   * surviving mutant on a new guard means "redundant" as readily as "untested", and the two have
+   * opposite fixes.
+   */
+  for (let i = hops[1] + 1; i < mid.length; i += 1) {
+    const k = mid[i].kind;
+
+    if (k === 'out' || k === 'in' || k === 'both') {
+      return undefined;
+    }
+  }
+
+  const h0 = mid[hops[0]] as Extract<Step, { kind: 'out' | 'in' }>;
+  const h1 = mid[hops[1]] as Extract<Step, { kind: 'out' | 'in' }>;
+
+  if ((h0.labels.length !== 1 || h1.labels.length !== 1) && graph.multiTypeEdgeCount !== 0) {
+    return undefined;
+  }
+
+  const lead = asVertexFilters(mid.slice(0, hops[0]), graph, {
+    seed: false,
+    refuseSeekable: true,
+  });
+  const interior = asVertexFilters(mid.slice(hops[0] + 1, hops[1]), graph, {
+    seed: false,
+    refuseSeekable: false,
+  });
+  // The TRAILING run is what the walk iterates, so its leading `hasLabel` is worth seeding from.
+  const trailing = asVertexFilters(mid.slice(hops[1] + 1), graph, {
+    seed: true,
+    refuseSeekable: false,
+  });
+
+  if (lead === undefined || interior === undefined || trailing === undefined) {
+    return undefined;
+  }
+
+  return { h0, h1, lead, interior, trailing };
+};
+
+/**
+ * How many `h0`-traversals land on `node`: a DEGREE when nothing narrows the starts, a per-edge
+ * count when a lead filter does.
+ *
+ * Its own function to flatten the walk below, which nested six blocks deep inline against a limit
+ * of five — and because it is the one place the `anyStart` split lives, so the two arms cannot
+ * drift.
+ */
+const arrivalsAt = (
+  node: Vertex,
+  h0: Extract<Step, { kind: 'out' | 'in' }>,
+  lead: readonly VertexFilter[],
+  anyStart: boolean,
+): number => {
+  const fwd0 = h0.kind === 'out';
+  // Arrivals along an `out` hop reach `node` by way of its IN-edges, an `in` hop by its OUT-edges.
+  const box0 = fwd0 ? node.adjTo : node.adjFrom;
+
+  if (box0 === undefined) {
+    return 0;
+  }
+
+  if (anyStart) {
+    return degreeOfTypes(box0, h0.labels);
+  }
+
+  let arrivals = 0;
+
+  for (const set of h0.labels.length === 0 ? box0.values() : bucketsOf(box0, h0.labels)) {
+    for (const e of set) {
+      if (vertexFiltersHold(lead, fwd0 ? e.from : e.to)) {
+        arrivals += 1;
+      }
+    }
+  }
+
+  return arrivals;
+};
+
+/**
+ * `V()[…filters] out(T) […filters] out(U) …filters .count()` — a TRAILING filter after the LAST hop.
+ *
+ * ⚠️ ITEM 1612 — THE SHAPE ITEM 1602 LEFT OPEN, and the cliff is **214x**. That item's own note said
+ * a trailing filter "needs the last level walked" because the final contribution stops being a
+ * degree, and left it. Measured on 20,000 vertices / ~80,000 edges, one shape per process:
+ *
+ * ```text
+ *    V().hasLabel(U).out(E).out(E).count()                   464445 ns   closed form (item 574)
+ *    V().hasLabel(U).out(E).out(E).has(team,eq).count()    99515343      THE PIPELINE   214x
+ *    V().hasLabel(U).out(E).has(team,eq).out(E).count()      315763      item 1602's rung
+ *    a hand-written FAR-DRIVEN floor                          354162      the ceiling
+ * ```
+ *
+ * Same walk, same 319,972 traversers, one `has` at the end — and the no-filter twin is closed-form,
+ * which is what makes this a cliff rather than honest work. The floor answers the identical 6400.
+ *
+ * FAR-DRIVEN, for `filteredHopCount`'s measured reason: its header prices edge-driven against
+ * far-driven at 3.06-4.00x over 1,000,000 edges, because testing each far vertex ONCE beats testing
+ * it once per arriving edge. So the walk starts from the far side and asks how many two-hop paths
+ * reach it:
+ *
+ *     total = sum over w passing the trailing filters of
+ *               sum over w's U-in-edges of arrivals(mid)
+ *
+ * where `arrivals(x)` is how many T-traversals land on `x` — a DEGREE when no leading filter
+ * narrows the starts, and a per-edge count when one does. That is the same `anyStart` split item
+ * 1602 makes, in the same words.
+ *
+ * ⚠️ IT ALSO SUBSUMES THE INTERIOR FILTER, so `out(E).has(k,v).out(E).has(k,v)` — 16.2 ms, the other
+ * shape item 1602 left — takes this rung too: a middle that fails the interior test contributes
+ * zero arrivals. One rung, both holes.
+ *
+ * DISJOINT FROM ITS SIBLINGS BY CONSTRUCTION: `interleavedHopChainCount` requires the LAST step to
+ * be the hop, `hopChainCount` collects only a trailing run of HOPS, `filteredHopCount` takes one
+ * hop, and `startFilteredHopCount` requires the hop last. This requires at least one filter AFTER
+ * the second hop, which none of them accepts.
+ *
+ * THE MULTI-TYPE GUARD IS REPLICATED, NOT REASONED ABOUT AFRESH — `degreeOfTypes` sums per-type
+ * buckets, which is a degree only when the wanted set is ONE bucket, and `hopChainShape`'s note
+ * records 13 divergences from getting that wrong. `both` is declined on either hop for the same
+ * reason item 1602 declines it.
+ */
+const trailingFilteredHopChainCount = (mid: readonly Step[], graph: Graph): number | undefined => {
+  const shape = trailingHopChainShape(mid, graph);
+
+  if (shape === undefined) {
+    return undefined;
+  }
+
+  const { h0, h1, lead, interior, trailing } = shape;
+  const fwd1 = h1.kind === 'out';
+  const anyStart = lead.rest.length === 0;
+  let total = 0;
+
+  for (const far of trailing.source) {
+    if (!vertexFiltersHold(trailing.rest, far)) {
+      continue;
+    }
+
+    // Arrivals along `h1` reach `far` by way of its IN-edges for an `out` hop, its OUT-edges for an
+    // `in` hop — the mirror item 1602's note spells out.
+    const box1 = fwd1 ? far.adjTo : far.adjFrom;
+
+    if (box1 === undefined) {
+      continue;
+    }
+
+    for (const set of h1.labels.length === 0 ? box1.values() : bucketsOf(box1, h1.labels)) {
+      for (const e of set) {
+        const node = fwd1 ? e.from : e.to;
+
+        if (vertexFiltersHold(interior.rest, node)) {
+          total += arrivalsAt(node, h0, lead.rest, anyStart);
+        }
+      }
+    }
+  }
+
+  return total;
+};
+
 const interleavedHopChainCount = (mid: readonly Step[], graph: Graph): number | undefined => {
   // `[filters…] hop filters… hop` — at least one filter between, so at least four steps.
   if (mid.length < 3) {

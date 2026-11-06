@@ -67934,7 +67934,7 @@ written that way deliberately. Measure before merging them.
 `bun run check` 0 read unpiped. Suites gql 4060 (2 new), gremlin 1666, core 435, native 1031,
 serialization 144 — 0 fail. `bun run fuzz` 20/0 under the 16G cap.
 
-### Item 1602 — **62x on Gremlin's two-hop filtered count** (16.84 ms -> 269 us), by adding the one rung in that family that did not exist: a filter BETWEEN two hops. ⚠️ Its own PROJECTION twin, left open here, is TAKEN by item 1603 at 4.1x — bounded by the stream-order contract, not by the walk. ⚠️ The hole was invisible because all four of its neighbours ARE answered in closed form, and the first version of the rung used the edge-driven shape this file had already measured at 3-4x worse
+### Item 1602 — **62x on Gremlin's two-hop filtered count** (16.84 ms -> 269 us), by adding the one rung in that family that did not exist: a filter BETWEEN two hops. ⚠️ Both shapes it left open are TAKEN at item 1612 (214x and 36.8x). ⚠️ Its own PROJECTION twin, left open here, is TAKEN by item 1603 at 4.1x — bounded by the stream-order contract, not by the walk. ⚠️ The hole was invisible because all four of its neighbours ARE answered in closed form, and the first version of the rung used the edge-driven shape this file had already measured at 3-4x worse
 
 Items 1598-1601 were all GQL. This gave Gremlin the turn, profile-first, and the biggest number of
 the session was sitting in a shape nothing had asked about.
@@ -68062,8 +68062,10 @@ rather than counted as a pass.
 
 Two things, both measured here and neither taken:
 
-- **A trailing filter after the last hop** (`out(E).has(…).out(E).has(…)`) still declines — the
-  final contribution stops being a degree, so it needs the last level walked.
+- ~~**A trailing filter after the last hop** (`out(E).has(…).out(E).has(…)`) still declines — the
+  final contribution stops being a degree, so it needs the last level walked.~~ — ✅ **TAKEN at item
+  1612**, which walked it FAR-DRIVEN: **214x** on the two-hop form (99.5 ms -> 424 us) and 36.8x on
+  this one. The no-filter twin being closed-form is what made it a cliff.
 - ~~**The PROJECTION twin**, `V().out(E).has(team,eq).values(score)`, at **15.7-16.4 ms** and
   untouched by a count rung. That is now the largest single number on this probe.~~ — **TAKEN by
   item 1603**, at **4.1x** (16.54 ms -> 3.80). ⚠️ Not 62x, and the reason is a contract rather than
@@ -69022,3 +69024,122 @@ Re-run five times with full output logged: **5 of 5 clean**, and three more afte
 
 `bun run check` 0 read unpiped. Suites gql 4153 (7 new), gremlin 1694, core 435, native 1056,
 serialization 144 — 0 fail. `bun run fuzz` 20/0 three times under the 16G cap.
+
+### Item 1612 — **214x on a two-hop count with a TRAILING filter** (99.5 ms -> 424 us), and 36.8x on the mid+trailing shape. Both are the holes item 1602 named and left; one rung closes both. ⚠️ And the broad sweep that chose this target found NOTHING wrong, which is why a structural hole beat a constant factor
+
+Seven items had landed since the last `bench:usage`, so this tick ran it first.
+
+#### The sweep: the session's work shows up, and nothing is badly off
+
+```text
+   ts(+) row                        before      now
+   read: keyed dedup lookup          76.4k    95.5k     1.25x
+   read: keyed dedup [inline]        67.1k    95.7k     1.43x   <- and CONVERGED with its twin
+   interleaved: write + traversal   236.6k   322.6k     1.36x
+   write: 100 in one transaction    353.3k   514.8k     1.46x
+   gremlin(built) point lookup      378.9k   542.4k     1.43x
+   read: 2-hop recommendation       596.9k   648.3k     1.09x
+```
+
+Item 1604's two rows improved AND converged — 95.5k against 95.7k where they were 76.4/67.1 apart,
+which is its `fastTallyPred` half working. ⚠️ **And the sweep nominated nothing new**: the remaining
+same-query cross-engine losses are 1.6-1.8x, inside the TS/native band memory records, so reading
+them as targets would be reading the layout ceiling as a defect. So the pick came from a STRUCTURAL
+lead instead — a declined rung, which is a cliff rather than a constant.
+
+#### The cliff
+
+```text
+   V().hasLabel(U).out(E).out(E).count()                   464445 ns   closed form (item 574)
+   V().hasLabel(U).out(E).out(E).has(team,eq).count()    99515343      THE PIPELINE      214x
+   V().hasLabel(U).out(E).has(team,eq).out(E).count()      315763      item 1602's rung
+   V().out(E).has(k,v).out(E).has(k,v).count()           16199984      the other open shape
+   a hand-written FAR-DRIVEN floor                         354162      the ceiling
+```
+
+Same walk, same 319,972 traversers, one `has` at the end. **The no-filter twin being closed-form is
+what makes this a cliff rather than honest work** — and the floor answers the identical 6400, so the
+214x is headroom and not a different question.
+
+#### What shipped
+
+`trailingFilteredHopChainCount`, FAR-DRIVEN for `filteredHopCount`'s measured reason (its header
+prices edge-driven against far-driven at 3.06-4.00x over 1,000,000 edges, because testing each far
+vertex ONCE beats testing it once per arriving edge):
+
+```text
+   total = sum over w passing the trailing filters of
+             sum over w's U-in-edges of arrivals(mid)
+```
+
+`arrivals(x)` is a DEGREE when no lead filter narrows the starts and a per-edge count when one does
+— item 1602's `anyStart` split, in the same words. ⚠️ **It subsumes the interior filter too**, so
+`out(E).has(k,v).out(E).has(k,v)` takes the same walk: a middle failing the interior test
+contributes zero arrivals. One rung, both of item 1602's holes.
+
+```text
+                            PRE          POST        verdict
+   trailing-only-count   99515343      424054        214x
+   mid-and-trailing      16199984      450592        36.8x
+   twohop-nofilter         464445      419244        flat (control)
+   mid-count               315763      246235        flat (control)
+   far-count               412518      403441        flat (control)
+   start-count             500554      338506        flat (control)
+```
+
+Four controls flat and both targets on the floor (424054 against the hand-written 354162).
+
+#### Correctness: three independent oracles across seven shapes
+
+The rung, a hand count over the edge list, and the equivalent GQL query — all three agree on
+trailing-only, no-lead, mid+trailing, trailing `hasLabel`, two trailing filters, a filtered lead and
+`in` hops on both sides (153, 229, 63, 532, 72, 50, 227). ⚠️ **Every unit literal was derived by a
+SCRIPT over the table before the file was written** — items 1602 and 1611 both wrote literals by eye
+and both were wrong while the engine was right.
+
+#### ⚠️ Mutation: 11 of 13, and three separate process failures it caught
+
+```text
+   trailing/ignored    CAUGHT 8     far/wrong-box             CAUGHT  9
+   interior/ignored    CAUGHT 1     mid/wrong-box             CAUGHT  9
+   lead/ignored        CAUGHT 1     mid/wrong-end             CAUGHT 11
+   lead/wrong-endpoint CAUGHT 1     guard/multi-type-dropped  CAUGHT  1
+   anyStart/always     CAUGHT 1     guard/both-admitted       CAUGHT  1
+   rung/never-fires    CAUGHT 10    guard/third-hop-admitted  SURVIVED
+                                    guard/claims-untrailed    SURVIVED
+```
+
+- **Three mutants NOT-APPLIED on the first run (anchor count 2)**, because this rung was modelled on
+  item 1602's and shares its text. Re-anchored on a unique neighbouring line. NOT-APPLIED is not a
+  pass.
+- **The two lead mutants SURVIVED the first pass**, and the fixture is why: with a trailing
+  `team = 't1'` the answer is 1 whether the starts are every vertex, the `User`s or the `Admin`s. A
+  derived table of (no lead / User lead / Admin lead) against four trailing filters found the
+  columns that differ — `team = 't2'` reads 7/6/3 — and both mutants then died.
+- **Four mutants stopped applying AFTER the lint-driven refactor** (see below), and were re-anchored
+  and re-run rather than assumed: 11 of 13 again, so the split kept every guard. A refactor can lose
+  one silently, and re-running the pass is the only thing that says it did not.
+
+The two survivors are REDUNDANT, not untested, and both are documented where they sit: the
+third-hop check is already enforced by `asVertexFilters` refusing a hop in the trailing run, and the
+"nothing trails" check is enforced by rung ORDER (the two rungs above answer every untrailed shape
+first) and would compute the same number anyway. Item 475's rule — "redundant" and "untested" have
+opposite fixes.
+
+#### The lint gate split the rung three ways, and both limits are the repo's own
+
+Complexity 36 against 35 and a nesting depth of 6 against 5. Extracted
+`trailingHopChainShape` (the parse — exactly what `hopChainShape` is to `hopChainCount`, for the
+same stated reason) and `arrivalsAt` (which also flattens the depth, and is the one place the
+`anyStart` split lives so the two arms cannot drift).
+
+#### One test had to CHANGE, and that is the point
+
+`interleaved-hop-count.test.ts` asserted this shape DECLINES — item 1602's own record of leaving it
+open. It now answers 2, hand-derived. The rung it tested is unchanged and still declines the shape;
+what moved is `countShortcut`, which is what that test calls.
+
+#### Gates
+
+`bun run check` 0 read unpiped. Suites gremlin 1707 (13 new, 1 changed), gql 4153, core 435, native
+1056, serialization 144 — 0 fail. `bun run fuzz` 20/0 under the 16G cap.

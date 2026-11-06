@@ -38,6 +38,26 @@ const SHAPES: Record<string, (v: string) => unknown> = {
   // Two hops, so the gate sits in the middle of the walk.
   'mid-count': (v) =>
     traversal(V(), hasLabel('User'), out('E'), has('team', eq(v)), out('E'), count()),
+  // ⚠️ THE SHAPE ITEM 1602 LEFT OPEN: a trailing filter AFTER the last hop. Its rung declines,
+  // because the final contribution stops being a DEGREE once the far end is filtered — so it needs
+  // the last level walked rather than summed. Item 1602's own note names it.
+  'mid-and-trailing-count': (v) =>
+    traversal(
+      V(),
+      hasLabel('User'),
+      out('E'),
+      has('team', eq(v)),
+      out('E'),
+      has('team', eq(v)),
+      count(),
+    ),
+  // The same shape with only the TRAILING filter, so the two halves of the decline are separable.
+  'trailing-only-count': (v) =>
+    traversal(V(), hasLabel('User'), out('E'), out('E'), has('team', eq(v)), count()),
+  // The NO-FILTER twin of `trailing-only-count`: the same 320,000 traversers, closed-form since
+  // item 574's `hopChainCount`. If this is fast and the filtered one is not, the filter is a CLIFF
+  // rather than honest work.
+  'twohop-nofilter-count': () => traversal(V(), hasLabel('User'), out('E'), out('E'), count()),
   // NULL CONTROL: no `has` at all, so no per-element filter runs.
   'nofilter-count': () => traversal(V(), hasLabel('User'), out('E'), count()),
 };
