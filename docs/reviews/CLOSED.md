@@ -63249,3 +63249,87 @@ So it is an early-exit walk materialising `min(n, total)` traversers at ~0.35 µ
 behaviour, and the gap only exists for an `n` so large the caller could have written `count()`. Small
 `n`, which is the real shape ("are there at least 10?"), is already fast. Declined on value, not on
 difficulty; the table is in `count-decline-screen.mjs` so it is not re-derived.
+
+### Item 1550 — SHIPPED, **212,000x**: a REL wildcard `-[:%]->` is "any type" unconditionally, where item 1549 had to leave the NODE wildcard `(a:%)` alone. **The same operator, two opposite answers, and the difference is a `core` invariant rather than an analogy.** Plus the `:!X` complement priced at 202,000x and NOT taken, with the soundness condition worked out
+
+Item 1549 fixed the vertex-label expressions and left `:%` un-elided because an unlabelled vertex is
+allowed. The obvious next question is the edge side.
+
+#### What the screen found
+
+`relTypeNames` maps a rel label to the edge types it admits, and bails on three of the five kinds:
+
+```ts
+/** `null` = bail (and/not/wildcard); `undefined` = "any type"; `string[]` = exactly those. */
+```
+
+At 200,000 edges, 1-in-10 typed `F` and the rest `E`:
+
+| spelling      | PRE         | POST      | equivalent typed spelling |                         |
+| ------------- | ----------- | --------- | ------------------------- | ----------------------- |
+| `-[]->`       | 0.003 ms    | 0.003     | —                         | the yardstick           |
+| `-[:E]->`     | 0.001       | 0.001     | —                         | already a type list     |
+| `-[:E\|F]->`  | 0.001       | 0.001     | —                         | `or` already folds      |
+| **`-[:%]->`** | **212.117** | **0.001** | `-[]->`                   | **212,000x**            |
+| `-[:!Nope]->` | 213.331     | 205.550   | `-[]->` 0.003             | priced, not taken       |
+| `-[:!F]->`    | 202.345     | 198.602   | `-[:E]->` 0.001           | **202,000x**, not taken |
+| `-[:!E]->`    | 118.345     | 109.392   | `-[:F]->` 0.001           | **118,000x**, not taken |
+
+#### ⚠️ THE ASYMMETRY IS THE FINDING, and it is decided by a core invariant
+
+`(a:%)` and `-[:%]->` are the same ISO operator — "carries at least one label/type" — and they
+differ because:
+
+```text
+   g.addEdge({ labels: [], … })   ->  THROWS: "Cannot add an edge with no labels: every edge must carry ≥1"
+   g.addVertex({ labels: [], … }) ->  fine
+```
+
+So a rel wildcard admits every edge that _can exist_ and is pure cost, while a node wildcard is
+genuinely selective — item 1549 measured `MATCH (a:%)` at 3 against `MATCH (a)`'s 4 on a graph with
+one unlabelled vertex, and recorded `return true` there as a wrong answer that 3,871 tests miss.
+
+**Reasoning by analogy from item 1549 would have got this backwards**, in the direction of leaving
+212,000x on the table. The test that pins it asserts the `addEdge` rejection directly, so if that
+invariant ever relaxes the wildcard arm becomes a wrong answer loudly rather than silently.
+
+#### THE `:!X` COMPLEMENT: priced at 202,000x, NOT taken, and the condition is written down
+
+`:!F` over a graph whose only types are `{E, F}` is exactly `:E` — a type list, and the typed
+spelling is 202,000x faster on the identical 180,000 rows. The naive complement is **unsound**,
+which is measured rather than assumed:
+
+```text
+   e1 = [E], e2 = [E, F]
+   MATCH (a)-[:!F]->(x)   count 1      <- e2 carries F, so it is excluded
+   MATCH (a)-[:E]->(x)    count 2      <- e2 carries E, so it is included
+```
+
+So the complement needs **`graph.multiTypeEdgeCount === 0`**, and `relTypeNames` is a pure function
+of the label with no graph to read it from. Taking it means either threading a graph through or a
+graph-aware wrapper at the shortcut detectors — a real change, not a line. The "no untyped edges"
+half needs no check at all, per the invariant above.
+
+`and` is in the same position and has a pleasing special case for a future item: with
+`multiTypeEdgeCount === 0`, no edge carries two types, so `:A&B` with `A ≠ B` matches **nothing** and
+could return `[]`.
+
+#### MUTATION — two mutants, two caught, and one was ALREADY pinned
+
+| mutant                                                |        |                  |
+| ----------------------------------------------------- | ------ | ---------------- |
+| `wildcard-empty-list` (`return []` — matches nothing) | CAUGHT | 3872 pass 2 fail |
+| `not-is-any-type` (the unsound reading, deliberately) | CAUGHT | 3872 pass 2 fail |
+
+The second is caught partly by a test that already existed: **"a NEGATED relationship label must
+decline — 'every type' is the wrong reading"**, from an earlier mutation pass. So the exact shortcut
+I declined above was already tried and rejected once, which is independent confirmation that the
+complement needs its condition rather than a blanket reading. Worth knowing before a future tick
+reaches for it.
+
+#### Gates
+
+`bun run check` 0 read unpiped. core 431/0, gql **3874**/0, gremlin 1500/0, native 963/0,
+serialization 144/0, `bun run fuzz` 20/0. Mutants one at a time in the foreground, output
+redirected, restoring before each; tree verified identical to the intended code afterwards. Probe:
+`packages/native/gql-vacuous-label-probe.mjs`, which now carries both the node and rel arms.

@@ -167,6 +167,55 @@ describe('item 1549 — vacuousLabel over compound label expressions', () => {
     expect(c(g, 'MATCH (a:P|Q) RETURN count(*) AS c')).toBe(2);
   });
 
+  /**
+   * ⚠️ THE REL WILDCARD IS VACUOUS WHERE THE NODE WILDCARD IS NOT (item 1550), and the reason is a
+   * `core` invariant rather than an analogy: an edge with no labels is REFUSED outright ("Cannot
+   * add an edge with no labels: every edge must carry ≥1"), while a VERTEX may be unlabelled.
+   *
+   * So `-[:%]->` admits every edge that can exist and is pure cost — 212.117 → 0.001 ms at 200,000
+   * edges — whereas `(a:%)` is selective and eliding it would invent rows.
+   */
+  test('`-[:%]->` admits every edge, and `(a:%)` still does not admit every vertex', () => {
+    const g = build();
+
+    // Four edges, every one typed `E`; the rel wildcard matches all of them, as does no type.
+    expect(c(g, 'MATCH (a)-[:%]->(x) RETURN count(*) AS c')).toBe(4);
+    expect(c(g, 'MATCH (a)-[]->(x) RETURN count(*) AS c')).toBe(4);
+    expect(c(g, 'MATCH (a)-[:E]->(x) RETURN count(*) AS c')).toBe(4);
+
+    // The NODE wildcard on the same graph is still selective — `bare` has no labels.
+    expect(c(g, 'MATCH (a:%) RETURN count(*) AS c')).toBe(3);
+    expect(c(g, 'MATCH (a) RETURN count(*) AS c')).toBe(4);
+  });
+
+  test('an edge with no labels is refused, which is what makes the rel wildcard sound', () => {
+    // If this ever starts succeeding, `relTypeNames`' wildcard arm becomes a WRONG ANSWER: the
+    // untyped edge would be matched by `-[:%]->`'s elided form and not by its real meaning.
+    const g = new Graph();
+    const a = g.addVertex({ id: 'a', labels: ['P'], properties: {} });
+    const b = g.addVertex({ id: 'b', labels: ['P'], properties: {} });
+
+    expect(() => g.addEdge({ id: 'bad', from: a, to: b, labels: [], properties: {} })).toThrow();
+  });
+
+  test('`-[:!X]->` and `-[:A&B]->` still BAIL, and still answer correctly', () => {
+    // Priced at item 1550 and not taken: a complement is only a type list when no edge carries two
+    // types (`e1 = [E]`, `e2 = [E, F]` makes `:!F` admit 1 where `[E]` admits 2), and
+    // `relTypeNames` has no graph to read `multiTypeEdgeCount` from. These assert the ANSWERS so a
+    // future fast path cannot change them.
+    const g = new Graph();
+    const a = g.addVertex({ id: 'a', labels: ['P'], properties: {} });
+    const b = g.addVertex({ id: 'b', labels: ['P'], properties: {} });
+
+    g.addEdge({ id: 'e1', from: a, to: b, labels: ['E'], properties: {} });
+    g.addEdge({ id: 'e2', from: a, to: b, labels: ['E', 'F'], properties: {} });
+
+    expect(c(g, 'MATCH (a)-[:!F]->(x) RETURN count(*) AS c')).toBe(1);
+    expect(c(g, 'MATCH (a)-[:E]->(x) RETURN count(*) AS c')).toBe(2);
+    expect(c(g, 'MATCH (a)-[:!Nope]->(x) RETURN count(*) AS c')).toBe(2);
+    expect(c(g, 'MATCH (a)-[:%]->(x) RETURN count(*) AS c')).toBe(2);
+  });
+
   test('an EMPTY graph is handled, and a nested compound does not crash', () => {
     const g = new Graph();
 

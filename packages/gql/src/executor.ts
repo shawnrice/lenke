@@ -8957,6 +8957,29 @@ export const relTypeNames = (label: LabelExpr | undefined): string[] | null | un
     return l && r ? [...l, ...r] : null;
   }
 
+  // ⚠️ A REL WILDCARD IS "ANY TYPE", UNCONDITIONALLY — and that is the opposite of the NODE
+  // wildcard, which item 1549 had to leave un-elided (item 1550).
+  //
+  // `core` refuses an edge with no labels outright: "Cannot add an edge with no labels: every edge
+  // must carry ≥1". So `-[:%]->` ("carries at least one type") admits every edge that exists, and
+  // the test is pure cost. A VERTEX may be unlabelled, which is why `(a:%)` is selective there and
+  // eliding it invents rows — the same operator, two different answers, decided by a core
+  // invariant rather than by analogy.
+  //
+  // Measured at 200,000 edges, both answering the identical 200,000:
+  //
+  //     MATCH (a)-[:%]->(x) RETURN count(*)    212.117 -> 0.001 ms
+  //     MATCH (a)-[]->(x)   RETURN count(*)      0.003
+  //
+  // `and` and `not` still bail. Both are soundly expressible as a type list ONLY when no edge
+  // carries two types — with `e1 = [E]` and `e2 = [E, F]`, `:!F` admits 1 edge where `[E]` admits
+  // 2 — so they need `graph.multiTypeEdgeCount === 0`, which this function has no graph to read.
+  // Priced at item 1550: `:!F` 202.345 ms against its `:E` twin's 0.001, a 202,000x on the SAME
+  // 180,000 rows.
+  if (label.kind === 'wildcard') {
+    return undefined;
+  }
+
   return null;
 };
 

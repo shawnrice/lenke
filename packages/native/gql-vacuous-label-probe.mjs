@@ -44,7 +44,8 @@ for (let i = 0; i < NODES; i += 1) {
     id: `e${i}`,
     from: vs[i],
     to: vs[(i * 104_729 + 1) % NODES],
-    labels: ['E'],
+    // 1-in-10 edges are F instead of E, so a COMPLEMENT is meaningful: `:!F` is exactly `:E`.
+    labels: i % 10 === 0 ? ['F'] : ['E'],
     properties: {},
   });
 }
@@ -61,6 +62,19 @@ const ARMS = {
   ':P&P (and)': 'MATCH (a:P&P)-[:E]->(x) RETURN count(*) AS c',
   // CONTROL: a genuinely selective label, which must NOT be elided.
   ':Q (selective)': 'MATCH (a:Q)-[:E]->(x) RETURN count(*) AS c',
+
+  // ⚠️ THE EDGE-TYPE TWIN (item 1550). `vacuousLabel` reads `verticesByLabel`/`vertexCount`, so it
+  // is vertex-only. Every edge here is `:E`, so `-[:E]->` and `-[]->` are equivalent spellings of
+  // one question — the same argument the function's own comment makes for a universal vertex label.
+  'rel: none': 'MATCH (a)-[]->(x) RETURN count(*) AS c',
+  'rel: :E': 'MATCH (a)-[:E]->(x) RETURN count(*) AS c',
+  'rel: :E|F': 'MATCH (a)-[:E|F]->(x) RETURN count(*) AS c',
+  'rel: :!Nope': 'MATCH (a)-[:!Nope]->(x) RETURN count(*) AS c',
+  'rel: :%': 'MATCH (a)-[:%]->(x) RETURN count(*) AS c',
+  'rel: :!F (selective)': 'MATCH (a)-[:!F]->(x) RETURN count(*) AS c',
+  'rel: :E (twin of !F)': 'MATCH (a)-[:E]->(x) RETURN count(*) AS c',
+  'rel: :!E (selective)': 'MATCH (a)-[:!E]->(x) RETURN count(*) AS c',
+  'rel: :F (twin of !E)': 'MATCH (a)-[:F]->(x) RETURN count(*) AS c',
 };
 
 const only = process.env.ONLY;
