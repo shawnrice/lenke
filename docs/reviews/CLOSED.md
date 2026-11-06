@@ -64438,7 +64438,7 @@ and its readings swing 336-607 ms, which is harness noise on a path this change 
 `distinct-rows-one-column.test.ts`), gremlin 1511/0, native 963/0, serialization 144/0,
 `bun run fuzz` 20/0. Item 1561's heading corrected in this commit to retract its equivalence claim.
 
-### Item 1565 — ⚠️ **AN INLINE `CALL { … }` CORRELATED SUBQUERY IS QUADRATIC IN THE DRIVING ROW COUNT.** Per-row cost tracks N almost exactly (1.00x → 1.94x → 3.71x for N ×1/×2/×4), so **1.36 ms A ROW at N=1000 against 104 ns for the equivalent `COUNT { … }`**. Found by ADDING a profile shape, not by reading one — and the first comparison I made overstated it 97x, which the probe now prevents
+### Item 1565 — ⚠️⚠️ **THIS FINDING IS WRONG AND ITEM 1566 RETRACTS IT. There is no quadratic defect:** my query omitted the SCOPE LIST, so it was a NON-CORRELATED subquery, and running an O(N) body N times is O(N²) by ISO design. The correlated spelling `CALL (n) { … }` is linear (0.6 ms at N=1000). What is real is a missing loop-invariant HOIST, taken at 1566 for 289x. ~~AN INLINE CALL { … } CORRELATED SUBQUERY IS QUADRATIC IN THE DRIVING ROW COUNT.~~ Per-row cost tracks N almost exactly (1.00x → 1.94x → 3.71x for N ×1/×2/×4), so **1.36 ms A ROW at N=1000 against 104 ns for the equivalent `COUNT { … }`**. Found by ADDING a profile shape, not by reading one — and the first comparison I made overstated it 97x, which the probe now prevents
 
 Two negative results and one finding. The negatives first, because they are what made the finding
 necessary.
@@ -64519,3 +64519,98 @@ found this, and a sweep should see it recover when the fix lands.
 
 Probes and shapes only; no engine change. `bun run check` 0 read unpiped. Suites unchanged from item
 1564: core 431/0, gql 3913/0, gremlin 1511/0, native 963/0, serialization 144/0.
+
+### Item 1566 — ⚠️ **ITEM 1565'S FINDING WAS WRONG AND THIS RETRACTS IT: there is no quadratic defect.** `CALL { … }` with no scope list is NON-CORRELATED by ISO design, so running an O(N) body N times is O(N²) _as specified_ — my probe's query simply omitted the scope list. The real result is a legitimate missing optimization: a non-correlated body is **loop-invariant**, so it runs ONCE. **289x at 1,000 driving rows** (1358.0 → 4.7 ms)
+
+Item 1565 reported "an inline `CALL { … }` correlated subquery is quadratic in the driving row
+count". It is not a correlated subquery.
+
+#### ⚠️ WHAT I GOT WRONG
+
+`runCallInline` seeds the body with `clause.scope` and nothing else. My probe wrote
+`CALL { MATCH (n)-[:E]->(x) … }` — **no scope list** — so the inner `n` is a FRESH, unbound variable
+and the body legitimately matches every vertex. That is the scope isolation the ISO form exists for,
+and `gql-call-statement` already records it as the design. The correlated spelling is
+`CALL (n) { … }`, and it is linear:
+
+```text
+   N      scoped CALL (n)        unscoped CALL { }
+  250        7.9 ms                119.7 ms
+  500        0.8                   378.6
+ 1000        0.6                  1430.9
+```
+
+The scoped form is not merely faster, it is **falling** per row (JIT warm-up, then flat). Item
+1565's "O(N) per row" was real arithmetic about the wrong query.
+
+**And the two spellings are DIFFERENT QUESTIONS, which is exactly why the comparison looked valid.**
+Both return the same `t` for `RETURN count(*)`, because the join produces one row per outer row
+either way. The difference is in the column I had not projected:
+
+```text
+6 vertices, out-degree 1 each
+   CALL (n) { MATCH (n)-[:E]->(x) RETURN count(*) AS c }   ->  c = 1 for every row   (correlated)
+   CALL    { MATCH (n)-[:E]->(x) RETURN count(*) AS c }   ->  c = 6 for every row   (NOT)
+```
+
+**Project the column that distinguishes the arms, not just the one that totals.** Item 1565's probe
+compared a non-correlated subquery against correlated ones and read the difference as a defect; the
+`t` column could not tell them apart. Same family as the "project, do not count" rule the correlated
+-push tests already carry.
+
+#### THE REAL RESULT: that identical `c` is an INVARIANCE, and it is exploitable
+
+`c = 6` for every row is the proof: with an empty scope the body cannot see the outer row, so every
+iteration computes identical rows. It can run once.
+
+```text
+correlated-subquery-scaling-probe.mjs, unscoped CALL, FANOUT=5, medians of 3
+
+   N        PRE        POST      ns/row POST   vs smallest N
+  250      91.5 ms     2.8 ms       11,170        1.00x      32.7x
+  500     355.7        3.2           6,483        0.58x     111x
+ 1000    1358.0        4.7           4,651        0.42x     289x
+ 2000   ~5688          7.2           3,581        0.32x     ~790x
+```
+
+ns/row now FALLS with N, so the shape is linear, and the win grows with N because the change is
+O(N²) → O(N).
+
+#### Three guards, and the read-only one is not optional
+
+- **`clause.scope.length === 0`.** A scoped body is correlated and must run per row.
+- **The body must be READ-ONLY.** ISO runs a non-correlated subquery per outer row, so its writes
+  happen per row: hoisting `CALL { INSERT (:Q) }` over 4 rows would create ONE `:Q` instead of four.
+- **The hoist is LAZY**, computed inside the closure. Eager would run the body even when the outer
+  query produces no rows — changing both the cost and when a body fault surfaces.
+
+⚠️ **`CLinear.writes` LOOKS like the read-only test and is NOT one.** It is
+`clauses.some(c => WRITE_CLAUSES.has(c.kind))` over ONE level, and its own doc says pushing it inward
+would be wrong for the transaction question it exists for — so it reports `false` for a body holding
+a nested `CALL { INSERT … }`, and `WRITE_CLAUSES` does not list `callNamed` at all. The guard is a
+recursive allowlist instead, for the usual asymmetry: a missed read-only kind loses an optimization,
+a missed write kind loses N−1 writes.
+
+#### ⚠️ Mutation — five mutants, and the survivor found a real gap
+
+| mutant                                         | verdict                                  |
+| ---------------------------------------------- | ---------------------------------------- |
+| hoist unconditionally                          | caught, 5 tests                          |
+| drop the scope check (hoist a correlated body) | caught, 3 tests                          |
+| drop the read-only check                       | caught, 2 tests                          |
+| admit `insert` to the allowlist                | caught, 2 tests                          |
+| stop recursing into a nested inline CALL       | **SURVIVED all 3,921 tests; now 1 test** |
+
+I nearly filed the survivor as unreachable: `CALL { CALL { INSERT (:Q) } }` raises "a query must end
+in RETURN or FINISH". It does — but the inner body only needs a `RETURN`, and
+`CALL { CALL { INSERT (:Q) RETURN 1 AS z } RETURN 1 AS y }` is perfectly legal and creates four
+`:Q`. **Item 1562's rule applied for the third time this session**: "unreachable because the language
+forbids it" is a claim about the implementation, so check it — one query did.
+
+#### Gates
+
+`bun run check` 0 read unpiped. Suites: core 431/0, **gql 3923/0** (10 new in
+`call-inline-hoist.test.ts`), gremlin 1511/0, native 963/0, serialization 144/0,
+`bun run fuzz` 20/0 — which is the cross-engine check that matters here, since the hoist changes how
+many times a body runs and `gql-call-statement` records both ISO CALL forms as byte-identical with
+native. Item 1565's heading retracted in this commit.

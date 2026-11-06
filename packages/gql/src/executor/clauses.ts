@@ -1202,13 +1202,72 @@ export const runCall = (
  * OPTIONAL keeps the outer row (nested columns null-filled) when the subquery is
  * empty; a non-OPTIONAL empty subquery drops the outer row.
  */
+/**
+ * Clause kinds that cannot change the graph or any side-effect state, so a subquery built only from
+ * them answers the same thing however many times it runs.
+ *
+ * ⚠️ AN ALLOWLIST, because the cost of being wrong is asymmetric: a missed read-only kind loses an
+ * optimization, while a missed MUTATING kind would run a write ONCE where ISO runs it per outer row.
+ * `insert`, `set`, `remove`, `delete` and `merge` all write; `callNamed` invokes a procedure that
+ * may; `for` and `finish` are left out for no reason beyond not having reasoned them through.
+ *
+ * ⚠️ `CLinear.writes` IS NOT A SUBSTITUTE, though it looks like one. It is `clauses.some(c =>
+ * WRITE_CLAUSES.has(c.kind))` over ONE level, and its own doc says pushing it inward would be
+ * wrong for the transaction question it exists for — so it reports `false` for a body containing a
+ * nested `CALL { INSERT … }`, and `WRITE_CLAUSES` does not list `callNamed` at all. Hoisting on
+ * that flag would turn N inserts into one.
+ */
+const READ_ONLY_CLAUSE_KINDS: ReadonlySet<string> = new Set([
+  'match',
+  'filter',
+  'let',
+  'with',
+  'page',
+  'return',
+]);
+
+/** Is every clause in this body read-only, recursing into nested inline CALLs? */
+const bodyIsReadOnly = (linear: CLinear): boolean =>
+  linear.clauses.every((c) =>
+    c.kind === 'callInline'
+      ? bodyIsReadOnly(c.body) && c.bodyMore.every((m) => bodyIsReadOnly(m.part))
+      : READ_ONLY_CLAUSE_KINDS.has(c.kind),
+  );
+
 export const runCallInline = (
   graph: Graph,
   clause: CCallInline,
   bindings: Iterable<Binding>,
   params: Params,
-): Iterable<Binding> =>
-  flatMap((outer: Binding) => {
+): Iterable<Binding> => {
+  /**
+   * ⚠️ AN EMPTY SCOPE MAKES THE BODY LOOP-INVARIANT, so it runs ONCE rather than once per outer row
+   * (item 1566). `CALL { … }` with no scope list is NON-CORRELATED by ISO design — the subquery
+   * cannot see the outer row at all, which is the scope isolation the form exists for — so every
+   * iteration computes the identical rows. It is directly observable:
+   *
+   *     MATCH (n:P) CALL { MATCH (n)-[:E]->(x) RETURN count(*) AS c } RETURN n.n AS nn, c
+   *       6 vertices of degree 1  ->  c = 6 for EVERY row     (the inner `n` is a FRESH variable)
+   *     MATCH (n:P) CALL (n) { … }  (the correlated form)
+   *       the same graph           ->  c = 1 for every row     (the outer `n`)
+   *
+   * That identical `c` is the invariance. Without the hoist an O(N) body ran N times: measured
+   * 1430.9 ms at N=1000 against 0.6 ms for the correlated spelling, and rising linearly per row.
+   *
+   * ⚠️ READ-ONLY IS REQUIRED, not incidental. `CALL { INSERT … }` with no scope is still run once
+   * per outer row by ISO and inserts N times; hoisting it would insert once. Hence the allowlist.
+   *
+   * ⚠️ AND IT IS COMPUTED LAZILY, inside the closure. An eager computation would run the body even
+   * when the outer query produced NO rows, which changes both the cost and when a body fault
+   * surfaces.
+   */
+  const invariant =
+    clause.scope.length === 0 &&
+    bodyIsReadOnly(clause.body) &&
+    clause.bodyMore.every((m) => bodyIsReadOnly(m.part));
+  let hoisted: Row[] | undefined;
+
+  return flatMap((outer: Binding) => {
     // Import only the scoped variables into the subquery's initial binding.
     const seed = new Map<string, unknown>();
 
@@ -1218,12 +1277,22 @@ export const runCallInline = (
       }
     }
 
-    let nested = runLinearClauses(clause.body, graph, params, new Map(seed));
+    let nested: Row[];
 
-    // Fold in any set-op parts (`… UNION/EXCEPT/INTERSECT …`), each run against
-    // the same seed, matching the top-level set-op semantics.
-    for (const { op, part } of clause.bodyMore) {
-      nested = combineRows(op, nested, runLinearClauses(part, graph, params, new Map(seed)));
+    if (invariant && hoisted !== undefined) {
+      nested = hoisted;
+    } else {
+      nested = runLinearClauses(clause.body, graph, params, new Map(seed));
+
+      // Fold in any set-op parts (`… UNION/EXCEPT/INTERSECT …`), each run against
+      // the same seed, matching the top-level set-op semantics.
+      for (const { op, part } of clause.bodyMore) {
+        nested = combineRows(op, nested, runLinearClauses(part, graph, params, new Map(seed)));
+      }
+
+      if (invariant) {
+        hoisted = nested;
+      }
     }
 
     if (nested.length === 0 && clause.optional) {
@@ -1246,6 +1315,7 @@ export const runCallInline = (
       return b;
     });
   }, bindings);
+};
 
 export const runFor = (
   graph: Graph,

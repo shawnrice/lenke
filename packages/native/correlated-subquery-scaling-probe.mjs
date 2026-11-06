@@ -5,6 +5,15 @@
  * SECONDS a query at 4,000 vertices, and doubling N took it from 5.7 s to 25.0 s — 4.4x for 2x the
  * data, which is quadratic. This probe is the per-row instrument for that.
  *
+ * ⚠️ AND IT SHOWED THAT THE FIRST READING OF THAT WAS WRONG (item 1566). `callinline` here has NO
+ * SCOPE LIST, so it is NOT a correlated subquery: the inner `n` is a fresh variable and the body
+ * legitimately scans the graph. Running an O(N) body N times is O(N^2) by ISO design, not a
+ * defect. The correlated spelling is `CALL (n) { … }` and it was always linear.
+ *
+ * What the probe is for now: an empty-scope body is LOOP-INVARIANT, and item 1566 hoists it to run
+ * once (1358.0 -> 4.7 ms at N=1000, 289x). A `ns/row` column that still TRACKS N on `callinline`
+ * means that hoist has regressed.
+ *
  * ⚠️ THE FIRST COMPARISON I MADE WAS NOT APPLES-TO-APPLES. The probe's existing `existssub` shape
  * filters with `a.k = 5` BEFORE the subquery, and `k` is `i % 97`, so its subquery runs for about
  * N/97 rows while the `CALL` runs for all N. That is a 97x difference in subquery COUNT, not an

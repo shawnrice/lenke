@@ -158,12 +158,17 @@ const SHAPES = {
   countdistinct: 'MATCH (n:P) RETURN count(DISTINCT n.k) AS c',
   collected: 'MATCH (n:P) RETURN collect(n.k) AS ks',
   scalaraggs: 'MATCH (n:P) RETURN sum(n.n) AS s, avg(n.n) AS a, min(n.k) AS mn, max(n.k) AS mx',
-  // ⚠️⚠️ RUN THIS ONE AT `NODES=1000` OR SMALLER UNTIL THE DEFECT IS FIXED. It is QUADRATIC in the
-  // driving row count (item 1565): ~1.36 ms PER ROW at N=1000 against 104 ns for the equivalent
-  // `COUNT { … }`, and at this probe's default `NODES=20000` one rep takes ~24 SECONDS. It is kept
-  // in the list because it is the shape that FOUND that, and a sweep over the whole list should see
-  // it recover when the fix lands — but do not include it in a default-size sweep.
+  // ⚠️ `callinline` HAS NO SCOPE LIST, SO IT IS NON-CORRELATED — the inner `n` is a FRESH variable,
+  // not the outer one, which is the scope isolation the ISO form exists for. Item 1565 read that as
+  // a quadratic DEFECT; item 1566 retracted it. The body genuinely scans the graph, and running it
+  // once per outer row is O(N^2) by specification.
+  //
+  // It is kept because an empty-scope body is LOOP-INVARIANT, which item 1566 then exploited:
+  // 1358.0 -> 4.7 ms at N=1000, 289x. So this row is now the regression guard on that hoist, and
+  // `callscoped` beside it is the genuinely correlated shape that had no coverage at all.
   callinline: 'MATCH (n:P) CALL { MATCH (n)-[:E]->(x) RETURN count(*) AS c } RETURN count(*) AS t',
+  callscoped:
+    'MATCH (n:P) CALL (n) { MATCH (n)-[:E]->(x) RETURN count(*) AS c } RETURN count(*) AS t',
   topkhop: 'MATCH (a:P)-[:E]->(b:P) RETURN b.k AS k ORDER BY k LIMIT 10',
   // A LITERAL, not a `$param`: this probe calls `query(g, q)` with no params object, and a
   // `$x` would fault. The literal also goes through item 1502's auto-parameterization, so the
