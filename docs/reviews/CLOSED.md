@@ -64614,3 +64614,98 @@ forbids it" is a claim about the implementation, so check it — one query did.
 `bun run fuzz` 20/0 — which is the cross-engine check that matters here, since the hoist changes how
 many times a body runs and `gql-call-statement` records both ISO CALL forms as byte-identical with
 native. Item 1565's heading retracted in this commit.
+
+### Item 1567 — SHIPPED, **72.6x** on `MATCH p = (a:P)-[:E]->{1,2}(b:P) RETURN count(*)` (878.0 → 12.1 ms, converging with the spelling that never bound `p`) and 1.57x on `ANY SHORTEST`: an UNREAD path variable was disqualifying **every fast path**. ⚠️ The cost is not the `Path` objects — five gates refuse outright on `pathVar !== undefined`, `orient` among them
+
+Profiling the nine shapes added at item 1565 (none of which had been looked at) put `anyshortest` at
+4806 ms, second only to `callinline`. Its `shortestWalk` frame carries 3 mentions, which looked like
+the target — and the real one was next to it.
+
+#### The defect
+
+```text
+   MATCH p = (a:P)-[:E]->{1,2}(b:P) RETURN count(*) AS c      878.0 ms
+   MATCH     (a:P)-[:E]->{1,2}(b:P) RETURN count(*) AS c       11.8 ms      74.1x
+   MATCH p = ANY SHORTEST (a:P)-[:E]->+(b:P) WHERE a.n = 0     57.4 ms
+   MATCH     ANY SHORTEST (a:P)-[:E]->+(b:P) WHERE a.n = 0     37.6 ms       1.53x
+```
+
+`p` is never read in either — the projection is `count(*)`. **And `Path` allocation is the small
+half.** `pathVar !== undefined` is an outright refusal in five separate places: the typed-hop seed,
+two count rungs, the hop projection, and `orient` itself —
+`pattern.pathVar !== undefined ? pattern : orient(graph, pattern, binding, params)`, so the planner
+does not even choose a direction. Binding a path variable nobody reads falls off the whole ladder
+onto the general matcher. That is why it is 74x and not 1.1x.
+
+A path variable is also exactly the binding a user adds _speculatively_ — written while exploring a
+query, then left in place when the projection becomes a count.
+
+#### The fix, and the machinery that already existed
+
+`dropUnreadPathVar`, an AST rewrite in `compileLinear`'s existing stack. **`dropUnreadGroupBinds`
+was already the template** — same narrow `[match, return]` shape, same `freePredicateVars` /
+`hasSubquery` helpers, same "a subquery anywhere refuses" rule. It even explicitly refuses on
+`pattern.pathVar !== undefined`, which is why the new pass runs INSIDE it: stripping an unread
+`pathVar` first is what lets the two compose rather than the first blocking the second.
+
+A compile-time decision is safe to cache here because "is `p` read" depends only on the query text,
+never on the graph — unlike `vacuousLabel`, which must be decided per execution.
+
+| arm                                       | PRE      | POST     |                              |
+| ----------------------------------------- | -------- | -------- | ---------------------------- |
+| `varlen {1,2}`, `p` unread                | 878.0 ms | **12.1** | **72.6x**                    |
+| the same without `p` at all               | 11.8     | 11.0     | converged                    |
+| `ANY SHORTEST`, `p` unread                | 57.4     | **36.5** | **1.57x**                    |
+| the same without `p`                      | 37.6     | 32.9     | converged                    |
+| ⚠️ `RETURN count(nodes(p))` — `p` IS read | 932.1    | 932.1    | **unchanged, as it must be** |
+
+Answers identical throughout (599,996 / 20,000 / 100,000).
+
+#### Refusals, and the one no other test covers
+
+`RETURN *` refuses: `Projection.star` binds every variable in scope, `p` included, so dropping it
+would remove a column from the result. Also refused: `p` read in the projection, in a function
+(`nodes(p)`), in the clause `WHERE`, or in `ORDER BY`; any subquery downstream (`freePredicateVars`
+cannot see inside one); and anything that is not exactly two clauses.
+
+#### Mutation — eight mutants, all eight caught
+
+| mutant                                            | caught   |
+| ------------------------------------------------- | -------- |
+| drop the `RETURN *` guard                         | 2 tests  |
+| ignore whether the projection reads `p`           | 16 tests |
+| drop the subquery refusal                         | 1 test   |
+| forget the clause `WHERE` when collecting readers | 1 test   |
+| forget `ORDER BY`                                 | 1 test   |
+| forget the projection items                       | 15 tests |
+
+⚠️ **Two mutants first exited 2 as `ANCHOR-NOT-UNIQUE`, and that is the applied-check earning its
+keep**: `dropUnreadGroupBinds` contains the expression-collection block VERBATIM, so anchoring on it
+matched twice. Re-anchored on the `name === undefined || ret.projection.star` test, which exists only
+in the new function. Without the uniqueness check both would have reported as surviving mutants.
+
+#### ⚠️ A differential-fuzz failure that was NOT mine, verified rather than assumed
+
+The native suite came back 962/1: the GQL differential fuzzer flagged
+
+```text
+MATCH (t:T) OPTIONAL MATCH (t)-[:E]->(n WHERE (((-1 % n.m.j) < difference(1e400, n.s))
+  AND NOT (n.m.k >= 1))) RETURN t.n AS x, n.n AS y ORDER BY x, y
+   ts: ok (6 rows)     native: err E_INVALID_VALUE
+```
+
+No path variable anywhere in it, but my change is a planner rewrite, so "it looks unrelated" is not
+evidence. **Replaying `FUZZ_SEED=37571259` against a rebuilt PRE tree reproduces it identically**, so
+it is pre-existing: the deliberately-unregistered AND/UNKNOWN evaluation-order divergence that the
+fuzzer is supposed to keep flagging (the test draws a random seed, which is why earlier ticks read
+963/0). `bun run fuzz` is 20/0.
+
+Recorded at length because this session's notes already carry a case where an intermittent fuzz
+failure was dismissed twice as "the known residual" and was real. One seed replay against the old
+build settles it either way, and costs a minute.
+
+#### Gates
+
+`bun run check` 0 read unpiped (one `prefer-destructuring` fixed). Suites: core 431/0,
+**gql 3936/0** (13 new in `drop-unread-path-var.test.ts`), gremlin 1511/0, native 963/0 on a clean
+seed, serialization 144/0, `bun run fuzz` 20/0.

@@ -10901,6 +10901,84 @@ const plainGroupNode = (n: NodePattern | undefined): boolean =>
   n === undefined ||
   (n.label === undefined && (n.properties?.length ?? 0) === 0 && n.where === undefined);
 
+/**
+ * `MATCH p = … RETURN <no mention of p>` drops the PATH VARIABLE, which is worth up to **74x**
+ * (item 1567).
+ *
+ * ⚠️ THE COST IS NOT THE `Path` OBJECTS, IT IS THAT `pathVar` DISQUALIFIES EVERY FAST PATH. Five
+ * separate gates refuse outright on `path.pathVar !== undefined` — the typed-hop seed, the two
+ * count rungs, the hop projection and `orient` itself (`pattern.pathVar !== undefined ? pattern :
+ * orient(...)`, so the planner does not even choose a direction). Binding a path variable nobody
+ * reads therefore falls off the whole ladder onto the general matcher:
+ *
+ *     MATCH p = (a:P)-[:E]->{1,2}(b:P) RETURN count(*) AS c      878.0 ms
+ *     MATCH     (a:P)-[:E]->{1,2}(b:P) RETURN count(*) AS c       11.8 ms      74.1x
+ *     MATCH p = ANY SHORTEST (a:P)-[:E]->+(b:P) WHERE a.n = 0      57.4 ms
+ *     MATCH     ANY SHORTEST (a:P)-[:E]->+(b:P) WHERE a.n = 0      37.6 ms      1.53x
+ *
+ * A path variable is also the one binding a user adds *speculatively* — written while exploring,
+ * then left in place when the projection changes to a count.
+ *
+ * ⚠️ `RETURN *` READS IT. `Projection.star` binds every variable in scope, `p` included, so a star
+ * projection refuses — this is the guard a mutation removes and no other test covers.
+ *
+ * Deliberately the same narrow shape as {@link dropUnreadGroupBinds} below, and for the same
+ * reason: exactly `[match, return]`, one pattern, and NO subquery anywhere in the downstream
+ * expressions. A subquery can reference an outer variable, and `freePredicateVars` does not see
+ * inside one.
+ */
+/**
+ * EXPORTED FOR ITS OWN TEST. A route choice is answer-equivalent, so the differential suites cannot
+ * see a mutant in it — `perf-gate-needs-its-own-test`. The transformation is tested directly, the
+ * way `liftStartProps` is.
+ */
+export const dropUnreadPathVar = (clauses: readonly Clause[]): readonly Clause[] => {
+  if (clauses.length !== 2) {
+    return clauses;
+  }
+
+  const [m, ret] = clauses;
+
+  if (m?.kind !== 'match' || m.patterns.length !== 1 || ret?.kind !== 'return') {
+    return clauses;
+  }
+
+  const [pattern] = m.patterns;
+  const name = pattern?.pathVar;
+
+  if (name === undefined || ret.projection.star) {
+    return clauses;
+  }
+
+  const exprs: Expr[] = [
+    ...ret.projection.items.map((it) => it.expr),
+    ...(ret.projection.orderBy ?? []).map((o) => o.expr),
+    ...(ret.projection.groupBy ?? []),
+    ...(ret.projection.having === undefined ? [] : [ret.projection.having]),
+    ...(m.where === undefined ? [] : [m.where]),
+  ];
+
+  if (exprs.some(hasSubquery)) {
+    return clauses;
+  }
+
+  for (const e of exprs) {
+    for (const free of freePredicateVars(e)) {
+      if (free === name) {
+        return clauses;
+      }
+    }
+  }
+
+  // ⚠️ REBUILD WITHOUT THE KEY, not `pathVar: undefined`. Every gate tests
+  // `pathVar !== undefined`, so either spelling works for them — but `compilePattern` spreads
+  // `...(pattern.pathVar !== undefined ? { pathVar } : {})`, and leaving an explicit `undefined`
+  // here would make the two representations differ for anything comparing pattern shapes.
+  const { pathVar: _dropped, ...rest } = pattern;
+
+  return [{ ...m, patterns: [rest] }, ret];
+};
+
 const dropUnreadGroupBinds = (clauses: readonly Clause[]): readonly Clause[] => {
   if (clauses.length !== 2) {
     return clauses;
@@ -11008,8 +11086,15 @@ export const compileLinear = (linear: LinearQuery): CLinear => {
                   // a clause's `WHERE` entirely, and the rungs it is aiming at are selected on
                   // `pred.fn === alwaysTrue`, so a later pass must see the clause already folded.
                   dropUnreadGroupBinds(
-                    dropVacuousPage(
-                      dropVacuousQuantifier(foldLabelTestsIntoPatterns(linear.clauses)),
+                    // `dropUnreadPathVar` runs INSIDE `dropUnreadGroupBinds` because that one
+                    // REFUSES outright on a pattern carrying a `pathVar` — so stripping an unread
+                    // one first is what lets the two compose instead of the first blocking the
+                    // second. Both require exactly `[match, return]`, so neither can see a shape
+                    // the other created.
+                    dropUnreadPathVar(
+                      dropVacuousPage(
+                        dropVacuousQuantifier(foldLabelTestsIntoPatterns(linear.clauses)),
+                      ),
                     ),
                   ),
                 ),
