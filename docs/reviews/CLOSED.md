@@ -69923,7 +69923,7 @@ Items 1622 and 1624 profiled GQL reads, GQL writes, Gremlin chain counts and Gre
 
 Its profile has the only unpriced frame in the surface: **`computeGen` 20.4%, ZERO mentions.** (`writeIncidentEnds` 16.1% + `countIncidentEdgesFlat` 5.3% is the CSR build, already priced at 21.6%.)
 
-⚠️ **AND HALF THAT PROFILE IS THE FIXTURE BUILD** — `indexEdgeLabel` 6.1%, `#commitNormalized` 3.7%, `commitElementLabels` 3.1%, `insertEdge` 1.6% — which the bench's timing excludes but a whole-process profile does not. `label-prop-probe.ts` exists for that: one algorithm per process, fixture build outside the window, and the community count printed so an ablation that changes the answer cannot read as a win.
+⚠️ **AND HALF THAT PROFILE IS THE FIXTURE BUILD** — `indexEdgeLabel` 6.1%, `#commitNormalized` 3.7%, `commitElementLabels` 3.1%, `insertEdge` 1.6% — which the bench's timing excludes but a whole-process profile does not. `label-prop-probe.ts` (GENERALIZED to `algo-one-probe.ts` at item 1626) exists for that: one algorithm per process, fixture build outside the window, and the community count printed so an ablation that changes the answer cannot read as a win.
 
 #### The ablation, then the two candidate fixes, each measured
 
@@ -69981,3 +69981,55 @@ The rank's comparator (inverted, constant), the sort removed, a numeric sort, th
 #### Gates
 
 `bun run check` 0 read unpiped. Suites core 444 (9 new), gql 4207, native 1076, gremlin 1765, serialization 144 — 0 fail. `bun run fuzz` 20/0 under the 16G cap.
+
+### Item 1626 — ⚠️ **NO perf change; the ANSWER FINGERPRINT caught THREE defects in my own instrument in one tick, and each one would have published a wrong number.** `label-prop-probe` generalized to `algo-one-probe` (any procedure, fixture build outside the window), a per-algorithm BASELINE table the repo did not have, and `shortestPathWeighted`'s 2x settled as algorithmic
+
+OPEN: the **flat-CSR build is 31% of `labelPropagation`** and is rebuilt per CALL — priced below, scope stated, not started.
+
+#### The fingerprint earned itself three times, which is the tick's product
+
+Item 1625 added one line to the probe: print the number of DISTINCT values in the result column, so an ablation that changes the answer cannot read as a win. Generalizing the probe to every algorithm then broke it three different ways, and the fingerprint caught all three:
+
+1. **The column map was guessed.** `closeness` and `betweenness` return `centrality`, not `score`, so `r[COL]` was `undefined` on every row and the probe reported **1 distinct answer over 80,000 rows**. The map is now printed off the engine, in the file.
+2. **`shortestPathWeighted` IS NOT AN ALGORITHM.** `runAlgorithmSync` returned `undefined` and the probe crashed. `algo-scaling-bench` runs `shortestPath` with a `weightProperty` and LABELS the row `shortestPathWeighted` — so reaching for the name found nothing. `WEIGHTED=1` is the probe's equivalent.
+3. **⚠️ THE EDGES HAD NO WEIGHT.** The fixture built `properties: {}`, so `WEIGHTED=1` asked for a `weightProperty` nothing had — and the weighted arm measured a tidy, plausible, publishable **1.98x** while reporting **ONE distinct distance over 80,000 rows**. Without the fingerprint that number ships. With a real `w` of 1..9 the answer is 94 distinct distances and the ratio is ~1.9x — the same number, now measuring the thing it claims to.
+
+That third one is the whole argument for printing an answer beside a timing: the ratio was RIGHT and the mechanism was wrong, and no amount of repetition or control-matching would have found it.
+
+A fourth, smaller hazard is now documented in the file rather than discovered again: **the centralities hang at the probe's default size.** `betweenness` and `closeness` are O(V·E) and `algo-scaling-bench` runs them at V=1000/4000 while everything else runs at 40,000+ — that is what its `div` column is for. I ran `closeness` at 80,000, it blew past a 600-second timeout, and it had to be killed.
+
+#### The baseline the repo did not have: every procedure, isolated, same fixture
+
+`algo-scaling-bench` reports a sweep; this is one algorithm per process with the fixture build outside the measured window, 80,000 vertices at fanout 2, median of the post-warmup reps:
+
+```text
+   algorithm                     ms      ns/V   distinct answers
+   degree                     10.91       136    2
+   connectedComponents        17.54       219    1
+   stronglyConnectedComponents 30.31      379    1
+   onCycle                    29.90       374    1
+   shortestPath               39.28       491   24
+   peerPressure               42.62       533  319
+   pagerank                   43.49       544   34
+   personalizedPagerank       46.65       583   34
+   shortestPath WEIGHTED      71.65-80.02 ~940  94
+   labelPropagation          120.62      1508 2118
+```
+
+⚠️ **The three `1`s were checked, not assumed**: this generator makes one weakly- and strongly-connected component in which every vertex lies on a cycle, so one distinct `componentId` and one `onCycle` are the right answers, not a repeat of defect (1).
+
+**`labelPropagation` is still 2.8x the next slowest** after item 1625's 1.126x, so it remains the outlier — but 1625 took its one unpriced frame and the rest of that ablation ceiling was the dirty loop.
+
+#### `shortestPathWeighted`'s 2x is ALGORITHMIC, which closes it
+
+71.65-80.02 ms weighted against 39.11-42.93 unweighted on the IDENTICAL fixture, both answering 80,000 rows: **~1.9x**, matching the sweep's 765-1051 against 411-504 ns/V. That is a priority queue against a plain BFS queue. Not a lever, and now recorded so the ratio is not mistaken for one.
+
+#### The one thing left, priced and scoped
+
+Re-profiled after item 1625, `labelPropagation` reads `computeGen` 20.7% (the tie-break gone, `idRank` costing 0.7%) and — now the larger term — **the flat-CSR build at 31%**: `writeIncidentEnds` 19.6% + `countIncidentEdgesFlat` 6.3% + `buildAdjacency` 5.1%. It is built once per CALL.
+
+So the lever is a CSR cached on the graph and invalidated on an adjacency write. **Scope checked before claiming it**: only `label-propagation.ts` and `neighbor-aggregate.ts` use the flat CSR, so it reaches 2 of 12 procedures, and it buys nothing for a single call — only for several procedures over an unchanged graph, which is the real serving pattern. ⚠️ And CLAUDE.md records the native side's version of exactly this going wrong: `rebuild_csr` runs only at LOAD and every adjacency write clears `csr_fresh` with **nothing to re-arm it**, so one `add_edge` demotes every later read for the session. A staleness flag with no re-arm is the trap, not the cache.
+
+#### Gates
+
+No engine change. `bun run check` 0 read unpiped. Suites core 444, native 1076 — 0 fail. The probe is renamed with its history (`git mv`), and `label-prop-probe.ts`'s mention in item 1625's entry now points at the new name.
