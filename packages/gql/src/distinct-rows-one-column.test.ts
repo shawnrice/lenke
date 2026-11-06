@@ -151,7 +151,9 @@ describe('the general path is untouched', () => {
   });
 });
 
-describe('EXCEPT and INTERSECT dedup through the same path', () => {
+describe('item 1562: EXCEPT and INTERSECT key BOTH sides the one-column way', () => {
+  // Item 1561 reached only the trailing `distinctRows`, so these two kept building strings for the
+  // right-side set and for the per-left-row probe. 1.44x on EXCEPT and 2.60x on INTERSECT on top.
   test('EXCEPT', () => {
     const rows = query(
       g(),
@@ -168,5 +170,104 @@ describe('EXCEPT and INTERSECT dedup through the same path', () => {
     );
 
     expect(rows).toEqual([{ k: 1 }]);
+  });
+
+  test('both DEDUP their result, not just filter it', () => {
+    // The fast path folds the dedup into the same pass as the probe, so a lost `seen` check shows
+    // up here and nowhere else: each side yields two copies of every row.
+    const q = (op: string): unknown[] =>
+      query(
+        g(),
+        `MATCH (n:P) RETURN n.k AS k UNION ALL MATCH (n:P) RETURN n.k AS k ${op} MATCH (n:P) WHERE n.k = 1 RETURN n.k AS k`,
+      );
+
+    expect(q('EXCEPT')).toEqual([{ k: 2 }]);
+    expect(q('INTERSECT')).toEqual([{ k: 1 }]);
+  });
+
+  test('EXCEPT is positional — the right side may alias differently', () => {
+    const rows = query(
+      g(),
+      'MATCH (n:P) RETURN n.k AS a EXCEPT MATCH (n:P) WHERE n.k = 1 RETURN n.k AS b',
+    );
+
+    expect(rows).toEqual([{ a: 2 }]);
+  });
+
+  test('⚠️ a string that looks like an element key does not collide, on the SET-OP path too', () => {
+    // The same two-key-space requirement as `distinctRows`, now also for the right-side set and the
+    // left-row probe. `'@v1'` must not subtract the vertex `v1`.
+    const rows = query(g(), 'MATCH (n:P) RETURN n AS x EXCEPT MATCH (n:P) RETURN n.tag AS x');
+
+    expect(rows.length).toBe(2);
+  });
+
+  test('elements DO subtract each other by id', () => {
+    const rows = query(g(), 'MATCH (n:P) RETURN n AS x EXCEPT MATCH (n:P) RETURN n AS x');
+
+    expect(rows).toEqual([]);
+  });
+
+  test('NaN subtracts NaN', () => {
+    const graph = new Graph();
+
+    graph.addVertex({ id: 'v1', labels: ['P'], properties: { bad: Number.NaN } });
+
+    expect(
+      query(graph, 'MATCH (n:P) RETURN n.bad AS x EXCEPT MATCH (n:P) RETURN n.bad AS x'),
+    ).toEqual([]);
+  });
+
+  test('an EMPTY right side leaves the left deduped', () => {
+    const rows = query(
+      g(),
+      'MATCH (n:P) RETURN n.k AS k EXCEPT MATCH (n:P) WHERE n.k = 99 RETURN n.k AS k',
+    );
+
+    expect([...(col(rows, 'k') as number[])].sort((x, y) => x - y)).toEqual([1, 2]);
+  });
+
+  test('TWO columns still take the general string path', () => {
+    const rows = query(
+      g(),
+      'MATCH (n:P) RETURN n.k AS a, n.s AS b EXCEPT MATCH (n:P) WHERE n.k = 1 RETURN n.k AS a, n.s AS b',
+    );
+
+    expect(rows).toEqual([{ a: 2, b: '6' }]);
+  });
+
+  test('⚠️ MISMATCHED ARITY declines the fast path — found by a surviving mutant', () => {
+    // This engine does NOT reject unequal degree in a set operation (ISO requires equal degree, so
+    // that is a separate conformance question — recorded, not fixed here). Since it runs, a
+    // one-column LEFT can meet a two-column RIGHT, and the fast path must decline: keying the right
+    // side on its FIRST column alone would make `{a:1}` and `{a:1, b:'a'}` the same key and subtract
+    // a row the string path keeps. The string keys differ (`n1` vs `n1\x01sa`), so the answer is
+    // the left row.
+    //
+    // Nothing covered this until the `no-right-guard` mutant survived all 3907 tests.
+    const rows = query(
+      g(),
+      'MATCH (n:P) RETURN n.k AS a EXCEPT MATCH (n:P) RETURN n.k AS a, n.s AS b',
+    );
+
+    expect([...(col(rows, 'a') as number[])].sort((x, y) => x - y)).toEqual([1, 2]);
+  });
+
+  test('mismatched arity on INTERSECT declines too', () => {
+    const rows = query(
+      g(),
+      'MATCH (n:P) RETURN n.k AS a INTERSECT MATCH (n:P) RETURN n.k AS a, n.s AS b',
+    );
+
+    expect(rows).toEqual([]);
+  });
+
+  test('left order is preserved', () => {
+    const rows = query(
+      g(),
+      'MATCH (n:P) RETURN n.k AS k ORDER BY k DESC EXCEPT MATCH (n:P) WHERE n.k = 99 RETURN n.k AS k',
+    );
+
+    expect(col(rows, 'k')).toEqual([2, 1]);
   });
 });

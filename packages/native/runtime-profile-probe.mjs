@@ -137,6 +137,10 @@ const SHAPES = {
   // 1473's waste is a key pass over the RIGHT SIDE — so at that width it is ~2% and sits under this
   // bench's noise floor, which an A/B duly reported as a null. These scan unfiltered, so the right
   // side is every vertex and the wasted pass is proportional to NODES.
+  // ⚠️ INTERSECT had NO shape until item 1562, and it is a beneficiary of the same one-column
+  // keying as EXCEPT — both build a right-side key set and probe it per left row. A wide right
+  // side, for the reason the comment above gives.
+  intersected: 'MATCH (n:P) RETURN n.n AS x INTERSECT MATCH (n:P) RETURN n.n AS x',
   unionedbig: 'MATCH (n:P) RETURN n.n AS x UNION ALL MATCH (n:P) RETURN n.n AS x',
   unionedbigdistinct: 'MATCH (n:P) RETURN n.n AS x UNION MATCH (n:P) RETURN n.n AS x',
 

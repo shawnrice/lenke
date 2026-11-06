@@ -64116,7 +64116,7 @@ the parts that demonstrably matter.
 `match-tag-snapshot.test.ts`), native 963/0, serialization 144/0, `bun run fuzz` 20/0. Item 1559's
 heading corrected in this commit per the stale-number rule.
 
-### Item 1561 — SHIPPED, **4.01x** on `UNION` and **1.25x** on `EXCEPT` (3/3, arm ranges NOT overlapping, three controls flat): a ONE-COLUMN row needs no string key, and `rowKeyOf` built two arrays and a string per row to dedup a single number. ⚠️ Also: the Gremlin half of this tick found a CLOSED target and walked away, and I published a wrong fact about NaN from a `JSON.stringify` artifact
+### Item 1561 — SHIPPED, **4.01x** on `UNION` and ~~1.25x on `EXCEPT`~~ — **EXCEPT is now 1.79x cumulative and INTERSECT 2.60x, both taken at item 1562**, which closes the "obvious next lever" this entry priced (3/3, arm ranges NOT overlapping, three controls flat): a ONE-COLUMN row needs no string key, and `rowKeyOf` built two arrays and a string per row to dedup a single number. ⚠️ Also: the Gremlin half of this tick found a CLOSED target and walked away, and I published a wrong fact about NaN from a `JSON.stringify` artifact
 
 Two profile screens this tick. The Gremlin one nominated closed work; the GQL one found this.
 
@@ -64228,3 +64228,87 @@ Same family as the libm constant-folding trap.
 `bun run check` 0 read unpiped (one `no-unnecessary-type-assertion` fixed first). Suites: core
 431/0, **gql 3899/0** (15 new in `distinct-rows-one-column.test.ts`), gremlin 1511/0, native 963/0,
 serialization 144/0, `bun run fuzz` 20/0.
+
+### Item 1562 — SHIPPED, **1.44x** on `EXCEPT` and **2.60x** on `INTERSECT` (3/3 each, arm ranges NOT overlapping, three controls flat): item 1561's one-column keying reached only the trailing `distinctRows`, so both still built strings for the right-side set AND the per-left-row probe. ⚠️ A surviving mutant found a real test gap, and behind it an ISO conformance question: **unequal set-operation degree is accepted here**
+
+Item 1561 took `UNION` to 4.01x and `EXCEPT` to only 1.25x, and recorded the gap as the next lever.
+This is it.
+
+#### The defect
+
+`except` and `intersect` computed a row's key **three times** where `union` computed it once:
+
+```ts
+const rightKeys = new Set(right.map(rowKeyOf)); // pass 1
+return distinctRows(left.filter((r) => !rightKeys.has(rowKeyOf(r)))); // pass 2, then pass 3 inside
+```
+
+Item 1561's fast path only reached pass 3. The one-column keying now covers all three, and the probe
+pass folds the dedup into itself — one pass over the right side, one over the left.
+
+The three call sites share extracted helpers (`oneColumnValue`, `addOneColumnKey`,
+`hasOneColumnKey`, `isOneColumn`) rather than repeating the two-key-space logic, which is what let a
+single mutant on the shared helper be caught by tests on all three paths.
+
+#### Measured — `NODES=200000`, 25 reps, one shape per process, order alternated
+
+```text
+                          PRE (item 1561)            POST
+excepted             551.1  552.8  578.9       382.5  370.6  387.8    3/3, 1.44x
+intersected         3354.7 3365.3 3314.9      1289.5 1095.0 1297.7    3/3, 2.60x
+unionedbigdistinct   920.3 (1561's POST)        922.1               flat — path untouched
+hoprows   (control)  903.9                      921.5               flat
+sortedpage (control) 332.3                      291.2               flat
+```
+
+Neither target's ranges overlap. Cumulative over both items, `EXCEPT` is **684.7 → 382.5, 1.79x**.
+
+⚠️ **`INTERSECT` had NO probe shape until this item** — it is a beneficiary of exactly the same code
+as `EXCEPT` and nothing measured it. `intersected` is now in `runtime-profile-probe.mjs`. It is the
+larger win because its right-side set is _retained_ (every left row probes a hit) rather than mostly
+missing.
+
+#### ⚠️ A SURVIVING MUTANT FOUND A REAL GAP — and an ISO question behind it
+
+Six mutants; five died at once. `no-right-guard` — removing
+`right.length > 0 && !isOneColumn(right)` — **survived all 3907 tests**.
+
+I expected it to be unreachable, on the grounds that ISO requires equal degree in a set operation.
+**This engine does not enforce that**, measured directly:
+
+```text
+   MATCH (n:P) RETURN n.k AS a EXCEPT MATCH (n:P) RETURN n.k AS a, n.s AS b   ->  [{a:1}]   runs
+   MATCH (n:P) RETURN n.k AS a UNION  MATCH (n:P) RETURN n.k AS a, n.s AS b   ->  [{a:1}]   runs
+```
+
+So a one-column left CAN meet a two-column right, and without the guard the fast path keys the right
+side on its **first column alone** — making `{a:1}` and `{a:1, b:'a'}` the same key and subtracting a
+row the string path keeps (`n1` vs `n1\x01sa` differ). A wrong answer, previously uncovered. Two
+tests added; the mutant now dies.
+
+**The conformance question is left open deliberately**: ISO/IEC 39075 requires set operands to have
+the same degree, and this engine accepts unequal degree with the left side's names. Whether the
+native engine agrees is unmeasured, so this is a candidate cross-engine divergence rather than a
+settled gap — it belongs with the open divergence list, not fixed inside a perf item.
+
+**The lesson for the next mutation run:** "this mutant is unreachable because the language forbids
+it" is a claim about the IMPLEMENTATION, not the language. Check that the implementation forbids it
+before dismissing a survivor; here it took one query to find out it does not.
+
+#### Mutation — six mutants, all six caught (one after the gap was closed)
+
+| mutant                                              | caught by                 |
+| --------------------------------------------------- | ------------------------- |
+| swap `EXCEPT`/`INTERSECT` (`=== keep` → `!== keep`) | 19 tests                  |
+| drop the dedup folded into the probe pass           | 6 tests                   |
+| collapse the two key spaces (add side)              | 2 tests                   |
+| collapse the two key spaces (probe side)            | 2 tests                   |
+| read the column by a fixed name                     | 16 tests                  |
+| drop the right-side width guard                     | **survived; now 2 tests** |
+
+#### Gates
+
+`bun run check` 0 read unpiped. Suites: core 431/0, **gql 3909/0** (25 in
+`distinct-rows-one-column.test.ts`), gremlin 1511/0, native 963/0, serialization 144/0,
+`bun run fuzz` 20/0. Item 1561's heading corrected in this commit — its `1.25x on EXCEPT` is now
+1.79x cumulative, and the "obvious next lever" it priced is taken here.

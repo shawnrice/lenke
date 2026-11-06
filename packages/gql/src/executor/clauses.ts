@@ -1794,56 +1794,75 @@ export const runLinearClauses = (
  */
 export const rowKeyOf = (row: Row): string => Object.values(row).map(valueKey).join('\x01');
 
+/**
+ * ONE-COLUMN KEYING, shared by `distinctRows` and both of `combineRows`' key-set branches
+ * (items 1561, 1562).
+ *
+ * `rowKeyOf` costs two array allocations (`Object.values`, then `.map`), a string build and a
+ * string hash per row. For a single column the VALUE can be its own key, and that is 80.3% of
+ * `MATCH (n:P) RETURN n.n AS x UNION …`.
+ *
+ * EQUIVALENCE, which is the whole question. For PRIMITIVES a `Set`'s SameValueZero agrees with
+ * `valueKey` exactly:
+ *   - `valueKey` maps `-0` and `0` to the same `n0`, and SameValueZero also treats them as one;
+ *   - NaN keys as `#NaN` for both, and SameValueZero has NaN equal to itself — and NaN DOES reach a
+ *     row here, which item 1561 nearly missed because `JSON.stringify(NaN)` is the string `null`;
+ *   - no two DISTINCT primitives share a `valueKey`, and the type prefixes (`n`/`s`/`b`) keep `5`
+ *     and `'5'` apart, which raw values do too.
+ *
+ * ⚠️ TWO KEY SPACES, NOT ONE. Non-primitives still key through `valueKey` (an element keys by
+ * `@id`, not by object identity — two row objects can hold different instances for one id). Putting
+ * those strings in the SAME set as raw values would let a string COLUMN collide with an element's
+ * key: the row `['@v1']` and the row `[<vertex v1>]` are different rows that would both key as
+ * `'@v1'`. Separate sets cannot collide.
+ */
+type OneColumnKeys = { readonly prims: Set<unknown>; readonly refs: Set<string> };
+
+const newOneColumnKeys = (): OneColumnKeys => ({ prims: new Set(), refs: new Set() });
+
+/**
+ * The single column's value, read PER ROW and positionally.
+ *
+ * ⚠️ NOT by a name taken once from `rows[0]`: ISO set operations compare positionally and the two
+ * sides may alias differently (`… AS a` vs `… AS b`), so one name would read `undefined` off the
+ * other side and collapse it to a single row. `for…in` takes the first own enumerable key with no
+ * allocation; a `Row` is a plain object literal, whose prototype carries no enumerable keys.
+ */
+const oneColumnValue = (row: Row): unknown => {
+  for (const name in row) {
+    return (row as unknown as Record<string, unknown>)[name];
+  }
+
+  return undefined;
+};
+
+/** Add `v` to the key set; `true` when it was NOT already present. */
+const addOneColumnKey = (keys: OneColumnKeys, v: unknown): boolean => {
+  if (v !== null && typeof v === 'object') {
+    const k = valueKey(v);
+
+    return keys.refs.has(k) ? false : (keys.refs.add(k), true);
+  }
+
+  return keys.prims.has(v) ? false : (keys.prims.add(v), true);
+};
+
+const hasOneColumnKey = (keys: OneColumnKeys, v: unknown): boolean =>
+  v !== null && typeof v === 'object' ? keys.refs.has(valueKey(v)) : keys.prims.has(v);
+
+/**
+ * Is this row set one column wide? Empty answers `false`, which simply declines the fast path.
+ */
+const isOneColumn = (rows: readonly Row[]): boolean =>
+  rows.length > 0 && Object.keys(rows[0]).length === 1;
+
 export const distinctRows = (rows: readonly Row[]): Row[] => {
-  // ⚠️ A ONE-COLUMN ROW NEEDS NO STRING KEY AT ALL (item 1561). `rowKeyOf` costs two array
-  // allocations (`Object.values`, then `.map`), a string build and a string hash per row, and the
-  // profile puts this function plus `rowKeyOf` at 80.3% of `MATCH (n:P) RETURN n.n AS x UNION …`.
-  // For a single column the value can be its own key.
-  //
-  // EQUIVALENCE, which is the whole question. For PRIMITIVES a `Set`'s SameValueZero agrees with
-  // `valueKey` exactly:
-  //   - `valueKey` maps `-0` and `0` to the same `n0`, and SameValueZero also treats them as one;
-  //   - NaN keys as `#NaN` for both, and SameValueZero has NaN equal to itself;
-  //   - no two DISTINCT primitives share a `valueKey`, and the type prefixes (`n`/`s`/`b`) mean
-  //     `5` and `'5'` stay apart — which raw values do too.
-  //
-  // ⚠️ TWO SETS, NOT ONE, and the second is why. Non-primitives still need `valueKey` (an element
-  // keys by `@id`, not by object identity — two row objects can hold different instances for one
-  // id). Putting those strings in the SAME set as raw values would let a string COLUMN collide with
-  // an element's key: the row `['@v1']` and the row `[<vertex v1>]` are different rows that would
-  // both key as `'@v1'`. Separate sets cannot collide.
-  //
-  // ⚠️ POSITIONAL, so the column name is read PER ROW and not once from `rows[0]`. ISO set
-  // operations compare positionally and the two sides may alias differently (`… AS a` vs
-  // `… AS b`), so one name taken from the first row would mis-read the other side. `for…in` takes
-  // the first own enumerable key with no allocation; a `Row` is a plain object literal, whose
-  // prototype carries no enumerable keys.
-  if (rows.length > 0 && Object.keys(rows[0]).length === 1) {
-    const prims = new Set<unknown>();
-    const refs = new Set<string>();
+  if (isOneColumn(rows)) {
+    const keys = newOneColumnKeys();
     const out: Row[] = [];
 
     for (const r of rows) {
-      let v: unknown;
-
-      for (const name in r) {
-        v = (r as unknown as Record<string, unknown>)[name];
-        break;
-      }
-
-      if (v !== null && typeof v === 'object') {
-        const k = valueKey(v);
-
-        if (!refs.has(k)) {
-          refs.add(k);
-          out.push(r);
-        }
-
-        continue;
-      }
-
-      if (!prims.has(v)) {
-        prims.add(v);
+      if (addOneColumnKey(keys, oneColumnValue(r))) {
         out.push(r);
       }
     }
@@ -1858,6 +1877,60 @@ export const distinctRows = (rows: readonly Row[]): Row[] => {
 
     return seen.has(k) ? false : (seen.add(k), true);
   });
+};
+
+/**
+ * `EXCEPT`/`INTERSECT` over ONE-COLUMN sides, or `undefined` to decline (item 1562).
+ *
+ * One pass over the right side to build the key set, one over the left that both probes and
+ * de-duplicates — so a row's key is computed ONCE rather than the three times the string path
+ * needed (right set, left probe, trailing `distinctRows`).
+ *
+ * ⚠️ BOTH SIDES ARE CHECKED. Set-operation arity is equal, so a one-column left implies a
+ * one-column right — but an EMPTY left declines rather than assuming, and checking both means a
+ * mismatch that slipped past validation falls to the general path instead of mis-keying.
+ */
+const oneColumnSetOp = (
+  left: readonly Row[],
+  right: readonly Row[],
+  keep: boolean,
+): Row[] | undefined => {
+  if (!isOneColumn(left) || (right.length > 0 && !isOneColumn(right))) {
+    return undefined;
+  }
+
+  const rightKeys = newOneColumnKeys();
+
+  for (const r of right) {
+    addOneColumnKey(rightKeys, oneColumnValue(r));
+  }
+
+  const seen = newOneColumnKeys();
+  const out: Row[] = [];
+
+  for (const r of left) {
+    const v = oneColumnValue(r);
+
+    // `keep` is INTERSECT; `!keep` is EXCEPT. Dedup folded into the same pass.
+    if (hasOneColumnKey(rightKeys, v) === keep && addOneColumnKey(seen, v)) {
+      out.push(r);
+    }
+  }
+
+  return out;
+};
+
+/** The string-keyed fallbacks, unchanged in behaviour. */
+const notInKeysOf = (right: readonly Row[]): ((r: Row) => boolean) => {
+  const rightKeys = new Set(right.map(rowKeyOf));
+
+  return (r) => !rightKeys.has(rowKeyOf(r));
+};
+
+const inKeysOf = (right: readonly Row[]): ((r: Row) => boolean) => {
+  const rightKeys = new Set(right.map(rowKeyOf));
+
+  return (r) => rightKeys.has(rowKeyOf(r));
 };
 
 /**
@@ -1882,14 +1955,14 @@ export const combineRows = (op: SetOp, left: readonly Row[], right: readonly Row
       // EXCEPT/INTERSECT always dedup — only UNION distinguishes ALL (matches the
       // Rust engine: ir.rs "Except/Intersect always dedup; the ALL variants are
       // not distinguished here").
-      const rightKeys = new Set(right.map(rowKeyOf));
-
-      return distinctRows(left.filter((r) => !rightKeys.has(rowKeyOf(r))));
+      //
+      // ⚠️ TWO `rowKeyOf` PASSES LIVE HERE, which is why item 1561's one-column keying reached
+      // `UNION` at 4.01x and `EXCEPT` at only 1.25x: the gain was confined to the trailing
+      // `distinctRows` while the right-side set and the per-left-row probe still built strings.
+      // Item 1562 keys both the same way.
+      return oneColumnSetOp(left, right, false) ?? distinctRows(left.filter(notInKeysOf(right)));
     }
-    case 'intersect': {
-      const rightKeys = new Set(right.map(rowKeyOf));
-
-      return distinctRows(left.filter((r) => rightKeys.has(rowKeyOf(r))));
-    }
+    case 'intersect':
+      return oneColumnSetOp(left, right, true) ?? distinctRows(left.filter(inKeysOf(right)));
   }
 };
