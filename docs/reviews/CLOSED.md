@@ -60148,7 +60148,7 @@ No source or probe changed this tick; the only edit is this entry. `bun run chec
 suites are item 1513's (core 431/0, gql 3803/0, gremlin 1469/0, native 961/0, serialization 144/0,
 `bun run fuzz` 20/0).
 
-### Item 1515 — a new screen (the TS-vs-native ratio per row) found a live target the four previous ticks missed: **a two-segment count gets up to 1.96x SLOWER when you make it MORE selective** — `count 2-hop` 51.0 ms, `+ start filter` 88.5, `+ end filter` 100.0, `+ mid filter` 32.0. The END formula was already written in the code as OPEN, and this is the measurement it was waiting for
+### Item 1515 — a new screen (the TS-vs-native ratio per row) found a live target the four previous ticks missed: **a two-segment count gets up to 1.96x SLOWER when you make it MORE selective** — `count 2-hop` 51.0 ms, `+ start filter` 88.5, `+ end filter` 100.0, `+ mid filter` 32.0. The END formula was already written in the code as OPEN, and this is the measurement it was waiting for — ⚠️ **and item 1517 then BUILT that formula and found it 2.0x WORSE** (265.5 ms against the reversed walk's 132.4): it is selectivity-blind and structurally so, so do not read this heading as pointing at an available win
 
 > ⚠️ **MEASURED ON A DEGENERATE FIXTURE — see item 1516.** The headline SURVIVES and grows (the
 > inversion is **2.75x**, not 1.96x), but every number here was taken over a functional graph whose
@@ -63646,7 +63646,7 @@ Probe only; no engine or core change. `bun run check` 0 read unpiped. The suites
 1553's: core 431/0, gql 3879/0, gremlin 1500/0, native 963/0, serialization 144/0,
 `bun run fuzz` 20/0. The probe is `packages/native/gql-write-probe.mjs`.
 
-### Item 1556 — ⚠️ **A REGRESSION, found by the repo's own spelling probe: auto-parameterization (item 1502) silently switched OFF item 778's `liftStartProps` rewrite for every inline-literal query.** `MATCH (a:P {k: 5})-[:E]->(b)` 51.44 → 8.63 ms, **5.96x**, converged with its clause twin. The fix is three lines; the lesson is that both features were individually correct
+### Item 1556 (absorbing 1555, which was the sweep run itself — there is no separate 1555 entry) — ⚠️ **A REGRESSION, found by the repo's own spelling probe: auto-parameterization (item 1502) silently switched OFF item 778's `liftStartProps` rewrite for every inline-literal query.** `MATCH (a:P {k: 5})-[:E]->(b)` 51.44 → 8.63 ms, **5.96x**, converged with its clause twin. The fix is three lines; the lesson is that both features were individually correct
 
 Item 1554's index finding raised the engine-side question — do all SPELLINGS of a filtered lookup
 reach the same route? — so this tick ran `bun run spelling`, which I had not used this session.
