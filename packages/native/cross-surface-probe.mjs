@@ -1,181 +1,261 @@
 /**
- * THE SAME LOGICAL QUERY, WRITTEN IN BOTH SURFACES, OVER ONE FIXTURE.
+ * ONE QUESTION, BOTH SURFACES: where do ISO-GQL and Gremlin disagree on cost? (item 1581)
  *
- * Every instrument in this corpus measures one surface. `runtime-profile-probe.mjs` is ISO-GQL,
- * `runtime-profile-gremlin-probe.mjs` is Gremlin, and they do not even share a fixture — the GQL one
- * builds one edge per vertex, the Gremlin one has a `FANOUT` knob defaulting to 5. So "is one surface
- * paying more than the other for the same question?" has never been askable, let alone asked.
+ * Each surface already has a spelling probe that checks EQUIVALENT SPELLINGS WITHIN it
+ * (`bun run spelling`, `bun run spelling:gremlin`). Nothing checks the same question ACROSS them,
+ * and that is where this session's largest gaps were: item 1573 found paging 10.0x apart by asking
+ * one question two ways, and items 1574/1576 closed it to ~3x. That was found by hand. This makes it
+ * systematic.
  *
- * ⚠️ `cross-engine` IN THIS REPO MEANS TS vs RUST. This is cross-SURFACE: both arms are the pure-TS
- * engine, and a gap is a gap between two front ends lowering to the same data, not between
- * implementations of the same front end. A large one is a target on the slower surface; a small one
- * says the shared layers dominate and neither front end is the problem.
+ * ⚠️ A GAP HERE IS NOT AUTOMATICALLY A DEFECT. The two languages are intentionally different — ISO
+ * `-[:T]-` emits a self-loop ONCE where Gremlin `both()` yields it TWICE (item 1086), row ORDER is
+ * unspecified in GQL but a TinkerPop contract in Gremlin, and some questions have no faithful twin
+ * at all. Every pair here answers the SAME value, which is asserted, and a pair that cannot is left
+ * out rather than fudged.
  *
- * ⚠️ EVERY PAIR ASSERTS ITS TWO ANSWERS AGREE, and that is not a formality — it is the only thing
- * standing between a real finding and a mistranslated query. A pair whose arms answer differently is
- * measuring two different questions, and the ratio would be meaningless. The probe refuses rather
- * than printing it.
+ * ⚠️ TWO PASSES IN OPPOSITE ORDER, keeping the better reading per surface. Items 1578 and 1579 each
+ * produced an IMPOSSIBLE in-process reading because whichever arm ran first paid — item 182's
+ * finding. The two engines are different call sites so they do not pollute each other's dispatch,
+ * but position still matters, and this is the harness the GQL spelling probe already uses for it.
  *
- * ⚠️ NO BARE `count()` TAIL WHERE IT CAN BE AVOIDED. Item 1479 lost a measurement to this: a chain
- * count answers `V().out('E').count()` WITHOUT walking (0.07 ms), so a pair ending in a bare count
- * can compare a shortcut against a walk. Where both surfaces have the shortcut it is a fair
- * comparison of shortcuts; where only one does, the pair says so in its note.
- *
- *     NODES=50000 FANOUT=5 REPS=9 node cross-surface-probe.mjs
- *     PAIR=hopcount node cross-surface-probe.mjs
+ *     node cross-surface-probe.mjs                 # every question
+ *     ONLY=paging node cross-surface-probe.mjs     # one, by substring
+ *     NODES=200000 TOL=1.5 node cross-surface-probe.mjs
  */
 import { Graph } from '@lenke/core';
 import { query } from '@lenke/gql';
-import {
-  V,
-  count,
-  groupCount,
-  has,
-  hasLabel,
-  out,
-  toArray,
-  traversal,
-  values,
-  where,
-} from '@lenke/gremlin';
+import * as G from '@lenke/gremlin';
 
 const NODES = Number(process.env.NODES ?? 50_000);
-const FANOUT = Number(process.env.FANOUT ?? 5);
+const FANOUT = Number(process.env.FANOUT ?? 3);
 const REPS = Number(process.env.REPS ?? 9);
-const DROP = Number(process.env.DROP ?? 3);
-const ONLY = process.env.PAIR;
+const TOL = Number(process.env.TOL ?? 2);
+const { ONLY } = process.env;
+/** Below this, a ratio is clock resolution rather than a cost. See the use site. */
+const FLOOR_MS = Number(process.env.FLOOR_MS ?? 0.05);
 
-const build = () => {
-  const g = new Graph();
-  const vs = [];
+const g = new Graph();
+const vs = [];
 
-  for (let i = 0; i < NODES; i += 1) {
-    vs.push(g.addVertex({ id: `v${i}`, labels: ['P'], properties: { k: i % 97, n: i } }));
-  }
-
-  for (let e = 0; e < NODES * FANOUT; e += 1) {
-    const i = e % NODES;
-    const hop = Math.floor(e / NODES);
-
-    g.addEdge({
-      id: `e${e}`,
-      from: vs[i],
-      to: vs[(i * 7 + 3 + hop * 2_654_435_761) % NODES],
-      labels: ['E'],
-      properties: { w: e % 13 },
-    });
-  }
-
-  return g;
-};
-
-/**
- * Each pair's two arms must produce a COMPARABLE answer, so each supplies a `norm` that reduces its
- * surface's result shape to one value. GQL returns rows of objects; Gremlin returns a bare stream.
- */
-const PAIRS = {
-  hopcount: {
-    note: 'one typed hop, counted — both surfaces have a chain-count shortcut here',
-    gql: 'MATCH (a:P)-[:E]->(b:P) RETURN count(*) AS c',
-    gremlin: () => traversal(V(), hasLabel('P'), out('E'), count()),
-  },
-  hopfiltered: {
-    note: 'a hop behind a property filter on the SOURCE',
-    gql: 'MATCH (a:P)-[:E]->(b:P) WHERE a.k = 5 RETURN count(*) AS c',
-    gremlin: () => traversal(V(), hasLabel('P'), has('k', 5), out('E'), count()),
-  },
-  project: {
-    note: 'a bare property read per vertex — no aggregation to hide it behind',
-    gql: 'MATCH (n:P) RETURN n.k AS k',
-    gremlin: () => traversal(V(), hasLabel('P'), values('k')),
-    norm: (rows) => rows.length,
-  },
-  exists: {
-    note: 'existence of a hop: GQL EXISTS subquery against Gremlin where(out)',
-    gql: 'MATCH (a:P) WHERE a.k = 5 AND EXISTS { MATCH (a)-[:E]->(b:P) } RETURN count(*) AS c',
-    gremlin: () => traversal(V(), hasLabel('P'), has('k', 5), where(out('E')), count()),
-  },
-  grouped: {
-    note: 'a grouped count over a low-cardinality key (97 groups)',
-    gql: 'MATCH (n:P) RETURN n.k AS k, count(*) AS c',
-    gremlin: () => traversal(V(), hasLabel('P'), groupCount({ by: 'k' })),
-    // GQL yields one row per group; Gremlin yields one Map. Compare the group COUNT.
-    norm: (r) => (Array.isArray(r) && r.length > 0 && r[0] instanceof Map ? r[0].size : r.length),
-  },
-};
-
-const names = ONLY === undefined ? Object.keys(PAIRS) : [ONLY];
-
-for (const n of names) {
-  if (PAIRS[n] === undefined) {
-    throw new Error(`unknown PAIR ${n}; have ${Object.keys(PAIRS).join(',')}`);
-  }
-}
-
-const med = (xs) => {
-  const s = [...xs].sort((a, b) => a - b);
-
-  return s[(s.length - 1) >> 1];
-};
-
-/** Default normalizer: a single scalar out of a one-row/one-value answer. */
-const defaultNorm = (r) => {
-  if (!Array.isArray(r) || r.length === 0) {
-    return 0;
-  }
-
-  const [first] = r;
-
-  return typeof first === 'object' && first !== null && !(first instanceof Map)
-    ? Number(Object.values(first)[0])
-    : Number(first);
-};
-
-const graph = build();
-
-console.log(
-  `\nCROSS-SURFACE — NODES=${NODES} FANOUT=${FANOUT} REPS=${REPS} DROP=${DROP}  (both arms are the pure-TS engine)\n`,
-);
-console.log(
-  `${'pair'.padEnd(13)}${'gql ms'.padStart(10)}${'gremlin ms'.padStart(12)}${'ratio'.padStart(10)}  answer`,
-);
-
-for (const name of names) {
-  const pair = PAIRS[name];
-  const norm = pair.norm ?? defaultNorm;
-  const plan = pair.gremlin();
-  const timed = (fn) => {
-    const reps = [];
-    let answer;
-
-    for (let r = 0; r < REPS; r += 1) {
-      const t0 = performance.now();
-
-      answer = fn();
-      reps.push(performance.now() - t0);
-    }
-
-    return { ms: med(reps.slice(DROP)), answer };
-  };
-
-  const g = timed(() => norm(query(graph, pair.gql)));
-  const m = timed(() => norm(toArray(plan, graph)));
-
-  // ⚠️ THE GUARD, not a formality: different answers mean two different questions.
-  if (g.answer !== m.answer) {
-    throw new Error(
-      `PAIR ${name} ARMS DISAGREE — gql=${g.answer} gremlin=${m.answer}. ` +
-        `The queries are not the same question, so the ratio would be meaningless.`,
-    );
-  }
-
-  const ratio = g.ms === 0 ? Number.NaN : m.ms / g.ms;
-  const faster = ratio > 1 ? 'gql faster' : 'gremlin faster';
-
-  console.log(
-    `${name.padEnd(13)}${g.ms.toFixed(2).padStart(10)}${m.ms.toFixed(2).padStart(12)}` +
-      `${`${ratio.toFixed(2)}x`.padStart(10)}  ${g.answer}  (${faster}; ${pair.note})`,
+for (let i = 0; i < NODES; i += 1) {
+  vs.push(
+    g.addVertex({
+      id: `v${i}`,
+      labels: i % 2 === 0 ? ['P', 'Q'] : ['P'],
+      properties: { k: i % 97, n: i, s: `s${i % 50}` },
+    }),
   );
 }
 
-console.log();
+// Split the target on the REPEAT INDEX, not on `i` alone: `(i * a + b) % N` is invariant under
+// `i -> i + N`, so a flat loop points all of one vertex's edges at the SAME target and the graph
+// comes out functional — out-degree looks perfect and every k-hop count is `F^k * N` by
+// construction (CLAUDE.md, items 1516/1518).
+for (let rep = 0; rep < FANOUT; rep += 1) {
+  for (let i = 0; i < NODES; i += 1) {
+    g.addEdge({
+      id: `e${rep}_${i}`,
+      from: vs[i],
+      to: vs[(i * 7919 + rep * 104_729 + 1) % NODES],
+      labels: ['E'],
+      properties: { w: i % 13 },
+    });
+  }
+}
+
+{
+  const seen = new Set();
+
+  for (const e of g.edges) {
+    seen.add(e.to.id);
+  }
+
+  console.log(
+    `fixture: ${NODES} vertices, ${g.edgeCount} edges, ${seen.size} distinct targets ` +
+      `(${((seen.size / NODES) * 100).toFixed(1)}%)  tol=${TOL}x reps=${REPS}\n`,
+  );
+}
+
+g.createIndex({ on: 'vertex', kind: 'hash', keys: ['n'] });
+
+/** `{ name, gql, gremlin, norm }` — `norm` reduces each surface's answer to one comparable. */
+/**
+ * The first scalar of a result, from EITHER surface.
+ *
+ * ⚠️ THE TWO SURFACES RETURN DIFFERENT SHAPES, and my first version only handled one: `query`
+ * yields ROW OBJECTS (`[{c: 50000}]`) while `toArray` yields bare VALUES (`[50000]`). Taking
+ * `Object.values(row)[0]` on a number gives `undefined`, so EVERY pair reported "ANSWERS DISAGREE"
+ * and the timings beside them were comparing a real answer against nothing.
+ */
+const first = (rows) => {
+  if (!Array.isArray(rows)) {
+    return rows ?? null;
+  }
+
+  const [row] = rows;
+
+  if (row === null || row === undefined) {
+    return null;
+  }
+
+  if (row instanceof Map) {
+    return row.size;
+  }
+
+  return typeof row === 'object' ? (Object.values(row)[0] ?? null) : row;
+};
+const QUESTIONS = [
+  {
+    name: 'count all',
+    gql: 'MATCH (n) RETURN count(*) AS c',
+    gremlin: G.traversal(G.V(), G.count()),
+    norm: first,
+  },
+  {
+    name: 'count label',
+    gql: 'MATCH (n:Q) RETURN count(*) AS c',
+    gremlin: G.traversal(G.V(), G.hasLabel('Q'), G.count()),
+    norm: first,
+  },
+  {
+    name: 'hop count',
+    gql: 'MATCH (a:P)-[:E]->(b) RETURN count(*) AS c',
+    gremlin: G.traversal(G.V(), G.hasLabel('P'), G.out('E'), G.count()),
+    norm: first,
+  },
+  {
+    name: 'hop distinct',
+    gql: 'MATCH (a:P)-[:E]->(b) RETURN count(DISTINCT b) AS c',
+    gremlin: G.traversal(G.V(), G.hasLabel('P'), G.out('E'), G.dedupe(), G.count()),
+    norm: first,
+  },
+  {
+    name: 'point by key',
+    gql: 'MATCH (n) WHERE n.n = 7 RETURN n.n AS x',
+    gremlin: G.traversal(G.V(), G.has('n', 7), G.values('n')),
+    norm: first,
+  },
+  {
+    name: 'filtered count',
+    gql: 'MATCH (n:P) WHERE n.k > 44 RETURN count(*) AS c',
+    gremlin: G.traversal(G.V(), G.hasLabel('P'), G.has('k', G.gt(44)), G.count()),
+    norm: first,
+  },
+  {
+    name: 'sum',
+    gql: 'MATCH (n) RETURN sum(n.k) AS s',
+    gremlin: G.traversal(G.V(), G.values('k'), G.sum()),
+    norm: first,
+  },
+  {
+    name: 'max',
+    gql: 'MATCH (n) RETURN max(n.k) AS m',
+    gremlin: G.traversal(G.V(), G.values('k'), G.max()),
+    norm: first,
+  },
+  {
+    name: 'group count',
+    gql: 'MATCH (n) LET grp = n.k RETURN count(*) AS c GROUP BY grp',
+    gremlin: G.traversal(G.V(), G.groupCount({ by: 'k' })),
+    norm:
+      // GQL returns one ROW PER GROUP; Gremlin returns ONE Map whose size is the group count. Both
+      // reduce to "how many groups", which is the comparable quantity.
+      (r) => {
+        const [row] = Array.isArray(r) ? r : [r];
+
+        if (row instanceof Map) {
+          return row.size;
+        }
+
+        return Array.isArray(r) ? r.length : null;
+      },
+  },
+  {
+    name: 'paging',
+    gql: 'MATCH (n) RETURN n.k AS k ORDER BY k LIMIT 10',
+    gremlin: G.traversal(G.V(), G.values('k'), G.order(), G.limit(10)),
+    norm: (r) =>
+      JSON.stringify(
+        Array.isArray(r)
+          ? r.map((x) => (typeof x === 'object' && x !== null ? Object.values(x)[0] : x))
+          : r,
+      ),
+  },
+];
+
+const timeOne = (fn) => {
+  const s = [];
+
+  for (let i = 0; i < REPS; i += 1) {
+    const t0 = performance.now();
+
+    fn();
+    s.push(performance.now() - t0);
+  }
+
+  // Drop the first three as warm-up (visibly the JIT tiering up) and take the MEDIAN of the rest —
+  // the estimator `ts-spelling-probe` prescribes for this engine, because `min` reports a rare fast
+  // rep on the general scalar path.
+  const kept = s.slice(3).sort((a, b) => a - b);
+
+  return kept[Math.floor(kept.length / 2)];
+};
+const flagged = [];
+
+for (const { name, gql: text, gremlin: plan, norm } of QUESTIONS) {
+  if (ONLY !== undefined && !name.includes(ONLY)) {
+    continue;
+  }
+
+  const gql = () => query(g, text);
+  const grem = () => G.toArray(plan, g);
+  const gqlAnswer = JSON.stringify(norm(gql()));
+  const gremAnswer = JSON.stringify(norm(grem()));
+
+  // Forward pass, then reversed, keeping the better reading per surface: a genuinely slower surface
+  // is slower from either position.
+  const q1 = timeOne(gql);
+  const r1 = timeOne(grem);
+  const r2 = timeOne(grem);
+  const q2 = timeOne(gql);
+  const q = Math.min(q1, q2);
+  const r = Math.min(r1, r2);
+  const ratio = q === 0 || r === 0 ? 1 : Math.max(q, r) / Math.min(q, r);
+  const slower = q > r ? 'GQL' : 'gremlin';
+  const agree = gqlAnswer === gremAnswer;
+
+  // ⚠️ A FLOOR, for the reason the GQL spelling probe has one (its `SPELL_FLOOR`, item 127): a pair
+  // whose members both read 0.001-0.006 ms is comparing CLOCK RESOLUTION, and the first run of this
+  // probe duly flagged `count label` at 2.06x and `hop count` at 2.87x on readings of 0.00 ms. Both
+  // are closed-form answers on both surfaces. A pair under the floor is reported as too fast to
+  // compare, never as a ratio.
+  const tooFast = Math.max(q, r) < FLOOR_MS;
+  let note = '';
+
+  if (tooFast) {
+    note = 'under floor';
+  } else if (ratio > TOL) {
+    note = `${slower} SLOWER`;
+  }
+
+  if (!agree) {
+    flagged.push(`${name}: ANSWERS DISAGREE — gql ${gqlAnswer} vs gremlin ${gremAnswer}`);
+  } else if (tooFast) {
+    flagged.push(`${name}: too fast to compare (both under ${FLOOR_MS}ms) — raise NODES`);
+  } else if (ratio > TOL) {
+    flagged.push(
+      `${name}: ${ratio.toFixed(2)}x, ${slower} slower (gql ${q.toFixed(2)}ms, gremlin ${r.toFixed(2)}ms)`,
+    );
+  }
+
+  console.log(
+    `${name.padEnd(16)} gql ${q.toFixed(3).padStart(9)}ms   gremlin ${r.toFixed(3).padStart(9)}ms   ` +
+      `${ratio.toFixed(2)}x ${note.padEnd(14)} ${agree ? '' : '⚠ ANSWERS DIFFER'}`,
+  );
+}
+
+console.log(`\n${flagged.length} flagged (tol ${TOL}x):`);
+
+for (const f of flagged) {
+  console.log(`  ${f}`);
+}

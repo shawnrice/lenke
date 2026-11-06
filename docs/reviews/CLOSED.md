@@ -65684,3 +65684,131 @@ chooses rather than rediscovers.
 No engine change — one new probe (`ts-write-invalidation-probe.mjs`), which takes `ARM=<name>` for
 one arm per process after items 1578 and 1579 each produced an impossible in-process reading.
 `bun run check` 0 read unpiped. Suites unchanged from item 1579.
+
+### Item 1581 — built the CROSS-SURFACE probe, which no instrument covered, and followed its largest flag to an EQUIVALENT-SPELLING defect in the grouped count: **`RETURN count(*) GROUP BY n.k` is 24.6x its two-column twin** (16.05 ms against 0.652), and **34.4x with a `LET` in front** (22.42). Same 97 groups, same scan. ⚠️ `hopvaluesrows` — the shape this tick set out to profile — is CLOSED, which is what redirected it
+
+The tick began intending to profile the 425 us walking read item 1580 measured. **It is
+`hopvaluesrows`, already profiled at item 1559**: `drain` 53.1% (89 mentions), `pick` 24.0% (97),
+`get properties` 14.2% (403), and "no unpriced frame over 2%". Fully priced, no target — the mentions
+said so before any new profile ran.
+
+#### Why a cross-surface probe, and why now
+
+Reviewing what actually paid this session: the wins were STRUCTURAL, and almost all were found by
+comparing two spellings or two surfaces rather than by reading a profile share — unread bindings
+(1567-1569, 1572), a loop-invariant hoist (1566), one-column keying (1561/1562), a top-k (1574/1576).
+Profile shares produced two refutations (1570, 1577's first reading) for every target.
+
+Each surface already has a probe for equivalent spellings WITHIN it (`bun run spelling`,
+`bun run spelling:gremlin`). **Nothing compared the same question ACROSS them**, and that is exactly
+where item 1573 found paging 10.0x apart — by hand. `cross-surface-probe.mjs` makes it systematic:
+10 questions, each asked in both languages, **every pair's answer asserted equal**, timed in two
+passes in opposite order keeping the better reading per surface.
+
+#### What it found, at 50,000 vertices / 150,000 edges
+
+```text
+   hop distinct     gql  34.283ms   gremlin  0.655ms   52.37x  GQL slower
+   group count      gql  24.433     gremlin  0.789     30.97x  GQL slower
+   paging           gql   1.359     gremlin  3.839      2.83x  gremlin slower   (item 1576's residual)
+   filtered count   gql   0.926     gremlin  0.356      2.60x  GQL slower
+   max              gql   1.139     gremlin  2.836      2.49x  gremlin slower
+   sum              gql   1.636     gremlin  2.570      1.57x
+   count all / count label / hop count / point by key        under the floor
+```
+
+Both large flags confirmed in isolation (`ONLY=…`, three runs each), because the probe's own header
+warns that position can beat effect:
+
+```text
+   hop distinct   gql  30.75  30.04  29.55 ms    gremlin  0.55  0.54  0.32    56.3x  55.9x  93.6x
+   group count    gql  21.19  20.89  21.24       gremlin  0.78  0.78  0.79    27.1x  26.7x  26.9x
+```
+
+⚠️ **Quote the GQL absolute, not the ratio.** The GQL side is stable to ~4%; the entire spread lives
+on the Gremlin side, which at 0.32-0.55 ms is close enough to `FLOOR_MS` that the third run's
+"93.60x" is the floor talking.
+
+#### ⚠️ The `group count` flag is NOT a cross-language cost difference. It is a spelling defect
+
+`CLOSED.md` has 74 mentions of `count(DISTINCT` and 7 of `detectGroupedNodeAggregate`, so the first
+move was the mentions rather than a profile. Item 1249 closed `ORDER BY` on a grouped aggregate; this
+shape has no `ORDER BY`. Reading the rung's gate instead of guessing:
+
+```text
+   clauses.length !== 2        -> a LET clause in front of the RETURN declines on ARITY ALONE
+   proj.items.length < 2       -> a ONE-COLUMN grouped count declines, before anything reads the key
+```
+
+So `group-count-spelling-probe.mjs`, one arm per process, 50,000 vertices, 97 groups, identical
+answers:
+
+```text
+   alias2   MATCH (n) RETURN n.k AS key, count(*) AS c GROUP BY n.k    0.652 ms   <- reaches the tally
+   alias1   MATCH (n) RETURN count(*) AS c            GROUP BY n.k    16.051      24.6x
+   let2     MATCH (n) LET grp = n.k RETURN count(*) AS c GROUP BY grp 22.421      34.4x
+   nokey    MATCH (n) RETURN count(*) AS c                             0.003      (ungrouped control)
+```
+
+**Gremlin's `groupCount({by:'k'})` answers the same question in 0.78 ms, which is `alias2`'s cost.**
+So the fast rung is the CORRECT price and the other two spellings are the defect — the cross-surface
+ratio was reporting a GQL-internal gap, not a language one. This is precisely the failure mode
+CLAUDE.md names: *"the planner recognized one spelling of a predicate and scanned for another that
+meant exactly the same thing… each cost 100-300x and each returned the correct answer."*
+
+⚠️ **And the one-column spelling is the one a user reaches for**, because it asks for strictly LESS:
+the group key is not even wanted in the output. The rung declines it for needing a second projection
+item it has no use for. Not fixed this tick — a rung-selection change wants its own item, its own
+mutation pass and the `one shape per process` instrument item 762 prescribes, since routing some
+shapes elsewhere cleans the inline caches of the site left behind.
+
+#### ⚠️ `GROUP BY <output alias>` is a syntax error, which narrows the fast shape further
+
+`MATCH (n) RETURN n.k AS key, count(*) AS c GROUP BY key` raises `variable \`key\` is not defined`.
+That is correct — GROUP BY is evaluated before the projection, so it cannot see an alias the
+projection introduces — but it means the fast two-column shape must REPEAT the expression, and the
+memory note recording "GROUP BY takes a bound name only" is narrower than it reads: `GROUP BY n.k`
+is accepted, and it is the spelling the fast rung requires.
+
+#### Two things the cross-surface probe needed, both learned from this session's own mistakes
+
+* ⚠️ **A FLOOR.** Its first run flagged `count label` at 2.06x and `hop count` at 2.87x on readings of
+  **0.001-0.006 ms** — clock resolution, both closed-form on both surfaces. `FLOOR_MS` (0.05) now
+  reports those as "too fast to compare, raise NODES", the guard the GQL spelling probe grew at
+  item 127 for the same reason.
+* ⚠️ **TWO PASSES IN OPPOSITE ORDER.** Items 1578 and 1579 each produced an impossible in-process
+  reading because whichever arm ran first paid.
+
+⚠️ **And the normalizer was wrong in a way that faked ten findings.** `query` yields ROW OBJECTS
+(`[{c: 50000}]`); `toArray` yields bare VALUES (`[50000]`). Taking `Object.values(row)[0]` on a number
+gives `undefined`, so the first run reported **"ANSWERS DISAGREE" on all ten pairs** with timings
+beside them. Had it been wrong in the other direction — silently agreeing — the ratios would have
+been published against nothing.
+
+#### ⚠️ A process failure worth recording: three unasserted replacements silently no-op'd
+
+Restructuring the question list from tuples to objects, three multi-line entries did not match because
+`bun run fmt` had reflowed them, and **I had not asserted the substitutions**. The result was
+`text === undefined` and a crash inside `tokenize` — loud, this time. CLAUDE.md's rule about asserting
+an anchor exists exactly once is the one I have now broken often enough in one session that it is
+worth stating plainly: **the assertion is not optional even for a probe file.** The fix re-ran with
+`assert s.count(old)==1` per entry plus a final check that zero tuples remained.
+
+#### What this leaves open, with numbers
+
+* **The one-column grouped count, 24.6x** (`alias1` 16.05 ms against `alias2` 0.652). The gate is
+  `proj.items.length < 2` in `detectGroupedNodeAggregate` and its tally twin. The key expression
+  would have to come from `proj.groupBy` rather than from a projection item.
+* **The same shape behind a `LET`, 34.4x** (`let2` 22.42 ms). A separate gate — `clauses.length !== 2`
+  — and the broader question of whether a `LET` that only names a grouping key should be folded away
+  before rung selection, which is the same move `dropUnreadEdgeVar` (1568) and `dropUnreadPathVar`
+  (1567) make for bindings.
+* **`hop distinct`, ~30 ms** against Gremlin's 0.55 for `count(DISTINCT b)` over a hop. Not yet
+  diagnosed; the spelling result above is a warning that the first thing to check is which rung it
+  misses and why, not where its profile time goes.
+
+#### Gates
+
+No engine change — two new probes. `bun run check` 0 read unpiped (a `prefer-destructuring`, two
+`no-nested-ternary` and a `no-base-to-string` fixed; the last was the tuple typing, which the
+restructure to typed objects removed). Suites unchanged from item 1580.
