@@ -66587,7 +66587,20 @@ Both `Vertex` and `Edge` read and write them by their own `#id`, so an `Edge` wi
 is built on — "there is still exactly ONE source of truth per id" — and that is precisely the
 assumption that fails when two ELEMENT KINDS with independent id spaces share the map.
 
-A correct fix is per-kind storage, and the surface is larger than it looks: `elementProperties` has
+#### ⚠️ OWNER DECISION: WON'T FIX — document only
+
+Asked directly, the owner's call is that **a vertex and an edge sharing an id is OUT OF CONTRACT**:
+no per-kind storage split, and a guard or a documented limitation instead. So the entry below prices
+a fix that is NOT going to be built, and is kept only to explain the mechanism.
+
+⚠️ **A GUARD HAS A COST THE QUESTION DID NOT MENTION, and it needs deciding before one is added:**
+native ACCEPTS a colliding id and answers correctly, so a TS `addEdge` that THREW would be a new
+cross-engine divergence — TS raises where native returns rows. That trades silent data loss for a
+loud byte-identity break. Documenting the limitation has no such cost, which makes it the reading of
+"a guard or a documented limitation" that does not create a second problem. Settled this way unless
+the owner says otherwise.
+
+A correct fix would be per-kind storage, and the surface is larger than it looks: `elementProperties` has
 6 references each in `Vertex.ts` and `Edge.ts`, while `elementLabels` is written at ~10 sites in
 `Graph.ts` — several through `commitElementLabels(id, next)`, which takes a BARE id and would need
 the kind threaded through. Plus `label-box.test.ts`, `Graph.test.ts` and two probes read the maps
