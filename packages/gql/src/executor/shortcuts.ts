@@ -3916,8 +3916,10 @@ const KEEP_ANY = (): boolean => true;
  * on it, item 217 removed a far-label test that a false `needsFar` had already made constant, and
  * here it turns the two-hop degree product's per-edge scan back into a `size` read.
  */
-const effectiveLabel = (graph: Graph, label: LabelExpr | undefined): LabelExpr | undefined =>
-  label !== undefined && vacuousLabel(graph, label) ? undefined : label;
+export const effectiveLabel = (
+  graph: Graph,
+  label: LabelExpr | undefined,
+): LabelExpr | undefined => (label !== undefined && vacuousLabel(graph, label) ? undefined : label);
 
 /**
  * The COMPANION of vacuity: a label carried by NO vertex, so the pattern it sits on matches

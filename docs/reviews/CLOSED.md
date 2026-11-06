@@ -69509,7 +69509,7 @@ Two survivors, both provably equivalent and documented: inlining the route predi
 
 ### Item 1618 — a **GQL CLIFF FINDER**, the twin of the instrument that produced items 1613-1617; it immediately named GQL's biggest open hole (**two-hop rows have NO rung at all: 644 ns a row against the one-hop projection's 48 and Gremlin's ~50**). And the first lever it exposed shipped: GQL's `expand` now reads the vertex's CACHED adjacency box instead of hashing its id, **1.14x / 1.19x / 1.08x** with every control flat
 
-OPEN: **the two-hop row projection**, priced below. That is the next target and it is a rung, not a constant factor.
+OPEN: ~~**the two-hop row projection**, priced below~~ — **TAKEN at item 1619** (5.28x, the twentieth rung). What is left of that family is its two FILTERED twins, now 4.49x and 4.69x their fast neighbour.
 
 #### The instrument
 
@@ -69581,3 +69581,74 @@ The new test file covers the four ways a cache over graph-owned state fails, THR
 #### Gates
 
 `bun run check` 0 read unpiped. Suites gql 4170 (10 new), core 435, native 1066, gremlin 1765, serialization 144 — 0 fail. `bun run fuzz` 20/0 under the 16G cap, which is the check that matters for a change to the shared adjacency read.
+
+### Item 1619 — **5.28x on GQL's two-segment ROW projection** (206.1 ms to 39.0 isolated, 320k rows), the twentieth rung and the biggest hole `gql-cliff-finder.ts` named one tick after it was built. ⚠️ And TWELVE of my eyeballed literals in this file were wrong with the engine right every time — the oracle (`WHERE true`) is what settled every case, and the literals only exist to catch the two being wrong together
+
+OPEN: **the two filtered twins**, which this rung deliberately declines — `rows + trailing where` and `rows + mid where` are now **4.49x and 4.69x** their fast neighbour and read `PIPELINE`. That is the next target and it is `carriedWhere`'s admission rule, not a new walk.
+
+#### Priced against hand floors first (item 1465's rule), at 20,000 x 4
+
+```text
+   ENGINE  1 hop rows (hopProjection)      5.23 ms    79996 rows    65.3 ns/row
+   ENGINE  2 hop rows (the PIPELINE)     204.24      319972        638.3
+   HAND    2 hop, scalar  (walk only)     19.86                     62.1
+   HAND    2 hop, {k: v}  (rows)          26.69                     83.4   <- THE FLOOR, 7.65x
+   HAND    2 hop, template copy           34.85                    108.9
+```
+
+**⚠️ AN OBJECT LITERAL BEATS TEMPLATE-AND-COPY BY 1.31x AT ONE ALIAS**, which is worth recording because `farDrivenHopWalk`'s header recommends the template trick. That trick amortizes over a vertex's whole BUCKET (item 167) and pays for itself at width; at one alias per row the spread copy is pure cost. So this walk goes through `projectRow`, which allocates a fresh `Row` per call.
+
+#### The A/B, one shape per process, three runs each
+
+```text
+   shape      PRE                        POST                       verdict
+   hop2rows   204.1  205.9  206.7 ms     36.5  39.0  40.0 ms        5.28x median, 5.59x min
+   hoprows      3.873                     3.476  3.740  4.210       flat (control)
+   noderows     0.362  0.367              0.374  0.374  0.380       flat (control)
+   hop2where  196.5                      169.4                      declines, as designed
+```
+
+In the cliff finder's own sweep the row went 175.99 → 34.09 ms and its rung column now reads `hop2Projection` where it read `PIPELINE`.
+
+#### A SEPARATE MODULE, and the scope is narrow on purpose
+
+`hop-projection.ts` is 5591 lines of individually-measured arms pinned to `segments.length === 1`, and its own header records item 1527 refusing to fork its four walks. The Gremlin side set the precedent twice (`start-filtered-hop-values.ts`, `hop-chain-values.ts`), with items 1441/1466 measuring an edit to the shared file at up to 16% on UNRELATED rows in an arbitrary direction.
+
+What it declines simply stays where it already is: a clause `WHERE`, `both`, a quantifier, inline node/rel properties, an inline `WHERE`, a read path variable, a NAMED relationship (even unread — `detectHopProjection` admits that and its own comment records the subquery-correlation hole the relaxation cost), and anything but a plain row projection.
+
+#### ⚠️ THE PATH MODE CHECK WAS WRONG IN BOTH DIRECTIONS, and the engine corrected me twice
+
+First I refused `pattern.mode !== undefined` — and `mode` is never `undefined`, it defaults to `'trail'`, so the rung declined EVERY query. `routes-fired.test.ts` caught that on the first run: it asserts each of the twenty detectors fires for its own shape, and the new one fired for nothing.
+
+Then the real question: is TRAIL load-bearing across two SEGMENTS? It forbids a repeated edge, and a self-loop lets a two-segment pattern traverse the same edge twice. It is NOT, and that is **measured rather than reasoned** — on a fixture with a loop at `a` plus `a->b`, the default, `WALK`, `TRAIL` and `ACYCLIC` all answer the same rows, including the one that reuses the loop edge. The restrictors apply per REPETITION of a quantifier, exactly as `detectHopProjection`'s comment states, and a quantifier is declined by `plainRel`. `detectHopProjection` checks neither field for the same reason.
+
+#### ⚠️ An UNREAD path variable is DROPPED before any detector sees the clauses
+
+`MATCH p = … RETURN c.k` fires this rung and SHOULD: there is no `Path` to build. I wrote the test expecting a decline; `drop-unread-path-var` is the rewrite and the clauses the detectors receive are the post-rewrite form. The decline is real the moment `p` is read, and the test now pins both halves.
+
+#### ⚠️ TWELVE eyeballed literals wrong, the engine right every time
+
+The sixth through seventeenth of this session. Two causes, both avoidable: I listed six two-hop paths and then wrote four rows, and I forgot that `d` carries BOTH labels so an `M` start includes it. Every literal in the file is now **derived by a script over the table**, and the file says so.
+
+What actually settles each case is the oracle: the rung declines any clause `WHERE`, so appending `WHERE true` runs the IDENTICAL question down the general matcher — item 570 records `WHERE true` as _the_ control for this engine, and here it is the only way to reach the path this rung replaced. Row order without an `ORDER BY` is unspecified (item 198), so the comparison is a multiset. The literals exist to catch the case where both arms are wrong together, which is the only thing the oracle cannot see.
+
+#### One more wrong intuition, recorded rather than deleted
+
+I wrote `RETURN c.k AS k, size($p) AS n` as a decline, reasoning that it reads a name the pattern does not bind. The engine is right: `$p` is a PARAMETER, `freePredicateVars` does not report it, and `projectRow` is handed `params` anyway. Kept as an admission with its oracle, because the next reader will have the same wrong intuition. (Also: `AS sum` does not parse — `bindName` refuses an aggregate name.)
+
+#### Mutation 25 of 29
+
+Both buckets and both endpoints at each of the two levels, the two hop types swapped, each of the three label tests ignored, labels 0 and 2 swapped, the three bindings (not bound, swapped, bound to the wrong vertex), and ten gates.
+
+Four survivors, and the triage matters:
+
+- **`pathVar` and the free-variable test are MUTUALLY REDUNDANT.** Each alone survives: a read path variable declines on the free-var test because `p` is not a node variable, and an unbound name can only reach the projection through a path variable. Dropping **both** is CAUGHT — verified by hand, after the scripted pair mutant turned out to be malformed (it inserted its marker inside an if-block that returns, so it only dropped one of the two). Both guards stay, and the `pathVar` half is the one that would still hold if a future relaxation let a clause `WHERE` ride this rung.
+- **`rung/never-fires` survives, and that is true of all twenty rungs rather than this one.** `routes-fired.test.ts` pins each DETECTOR; removing the branch in `runLinear` that CONSUMES it is answer-equivalent and the whole suite passes. I checked whether row ORDER could distinguish the two paths and it cannot — the rung and the general matcher emit the IDENTICAL sequence on a five-row fixture — so there is nothing to assert that is not a timing test. `perf-gate-needs-its-own-test`'s remedy is to extract the arithmetic as a pure function, and here there is none. Recorded at the branch rather than papered over.
+
+#### Byte-identity
+
+The rung is a TS-only route, so the invariant is that the two engines still agree. `hop2-projection-parity.test.ts` compares nine ORDERED queries byte for byte and seven UNORDERED ones as multisets — and the split is the point: an `ORDER BY` makes the projection non-plain, so the ordered queries DECLINE the rung, which means the ordered form can be byte-compared and the unordered form is the one the rung actually serves. Both are needed.
+
+#### Gates
+
+`bun run check` 0 read unpiped. Suites gql 4189 (18 new), core 435, native 1076 (10 new), gremlin 1765, serialization 144 — 0 fail. `bun run fuzz` 20/0 under the 16G cap.

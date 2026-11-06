@@ -1,7 +1,7 @@
 /**
  * WHICH fast-path detector fires for which query shape — a ROUTE assertion per detector.
  *
- * `compileLinear` ends by running nineteen independent compile-time probes, and its own comment is
+ * `compileLinear` ends by running twenty independent compile-time probes, and its own comment is
  * explicit that this is not a ladder: *"EVERY detector RUNS … nineteen independent compile-time
  * probes."* Each one, when it fires, hands the executor a closure that answers a recognised shape
  * directly instead of running the general pipeline.
@@ -98,6 +98,13 @@ describe('every fast-path detector fires for its own shape', () => {
     ['node projection', 'MATCH (n:L) RETURN n.k AS k', ['nodeProjection']],
     ['node projection, the element itself', 'MATCH (n:L) RETURN n', ['nodeProjection']],
     ['hop projection', 'MATCH (a:L)-[:R]->(b:L) RETURN b.k AS k', ['hopProjection']],
+    // Item 1619: the TWO-segment twin. `hopProjection` requires `segments.length === 1`, so the two
+    // are disjoint by construction and each shape fires exactly one of them.
+    [
+      'two-hop projection',
+      'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L) RETURN c.k AS k',
+      ['hop2Projection'],
+    ],
     ['distinct projection', 'MATCH (n:L) RETURN DISTINCT n.k AS k', ['distinctProjection']],
 
     // --- aggregates ---------------------------------------------------------------------
@@ -227,15 +234,15 @@ describe('every fast-path detector fires for its own shape', () => {
    *
    * ⚠️ This list is the exception register for the guard below, and it must stay as short as the
    * truth allows. The count cannot be derived by filtering on `typeof v === 'function'` the way
-   * `routes()` does, because this test needs ALL nineteen detectors and most are `null` for any
+   * `routes()` does, because this test needs ALL twenty detectors and most are `null` for any
    * one query shape. So a new non-detector field has to be added here by hand — and the guard
    * failing is how you find out, which is what happened to item 1510's `writes`.
    */
   const NON_DETECTORS = new Set(['clauses', 'writes']);
 
-  // Every one of the nineteen is covered by the table above. Asserted rather than claimed, so a
+  // Every one of the twenty is covered by the table above. Asserted rather than claimed, so a
   // detector added later without a route case fails HERE instead of going unguarded.
-  it('covers all nineteen detectors', () => {
+  it('covers all twenty detectors', () => {
     const covered = new Set(CASES.flatMap(([, , want]) => want));
     const all = new Set(
       Object.keys(
@@ -247,7 +254,7 @@ describe('every fast-path detector fires for its own shape', () => {
     );
 
     expect([...all].filter((k) => !covered.has(k)).sort()).toEqual([]);
-    expect(all.size).toBe(19);
+    expect(all.size).toBe(20);
   });
 });
 

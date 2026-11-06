@@ -1554,6 +1554,27 @@ const fastPath = (linear: CLinear, graph: Graph, params: Params): Row[] | undefi
     }
   }
 
+  /**
+   * A TWO-segment pattern projecting rows: the nested walk (item 1619). It sits AFTER the one-hop
+   * branch for `rung-precedence-decides-speed`'s reason — a rung placed above a narrower one starves
+   * it — and the two are disjoint by construction, since `detectHopProjection` requires
+   * `segments.length === 1` and this one requires 2. Placing it here also means a one-hop plan pays
+   * one extra null check and nothing more, which the controls confirm is flat.
+   */
+  /**
+   * ⚠️ THIS BRANCH IS NOT PINNED BY ANY TEST, and that is true of all twenty rungs rather than of
+   * this one. `routes-fired.test.ts` asserts that each DETECTOR fires for its shape — which is what
+   * catches a compile-time regression — but removing the branch that CONSUMES it is
+   * answer-equivalent and the whole suite passes. Item 1619 checked whether row ORDER could
+   * distinguish the two paths and it cannot: the rung and the general matcher emit the identical
+   * sequence on a five-row fixture, so there is nothing to assert that is not a timing test.
+   * `perf-gate-needs-its-own-test`'s remedy is to extract the arithmetic as a pure function, and
+   * here there is no arithmetic. Recorded rather than papered over.
+   */
+  if (linear.hop2Projection) {
+    return linear.hop2Projection(graph, params);
+  }
+
   // The same walk under ONE foldable aggregate — `RETURN max(b.k)` — folded as the rows are
   // produced. It delegates to `detectHopProjection`'s walk, so it sits AFTER that branch: the
   // two shapes are disjoint (a projection declines an aggregating one), and placing it FIRST

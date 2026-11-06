@@ -9392,6 +9392,8 @@ export type CLinear = {
   reachShortcut: ReachFn | null;
   /** Fused `MATCH (a)-[:T]->(x) RETURN <exprs over x>` row builder; else null. */
   hopProjection: RowsFn | null;
+  /** A two-segment pattern projecting rows (item 1619) — `detectHop2Projection`. */
+  hop2Projection: AlwaysRowsFn | null;
   /** The same walk under ONE foldable aggregate — `RETURN max(x.k)`; else null. */
   hopAggregate: RowsFn | null;
   /** The same walk under TWO OR MORE foldable aggregates — `RETURN count(*), max(x.k)`. */
@@ -11429,7 +11431,7 @@ const dropUnreadGroupBinds = (clauses: readonly Clause[]): readonly Clause[] => 
 
 // EXPORTED for ROUTE ASSERTIONS, and deliberately not from `index.ts` (item 911).
 //
-// The nineteen detectors below are answer-equivalent routes: a query whose shortcut stops firing
+// The twenty detectors below are answer-equivalent routes: a query whose shortcut stops firing
 // returns the same rows by the general pipeline, so NO correctness test can see the difference.
 // Item 910 priced them at 25% of planning the big query and named "a route assertion per detector"
 // as the prerequisite for sharing work between them — because the failure mode of that refactor is
@@ -11493,7 +11495,7 @@ export const compileLinear = (linear: LinearQuery): CLinear => {
   // and an empty list matches none of them.
   const fast = repeatsNodeVariable(source) ? [] : source;
 
-  // EVERY detector RUNS — this is nineteen independent compile-time probes, not a ladder, and
+  // EVERY detector RUNS — this is twenty independent compile-time probes, not a ladder, and
   // the field order below carries no precedence whatsoever. PRECEDENCE LIVES IN ONE PLACE:
   // `runLinear`'s `if (linear.…)` chain in `executor/clauses.ts`, which is lazy and therefore
   // the only thing that decides which rung answers a shape. Read that chain's comments before
@@ -11551,6 +11553,7 @@ export const compileLinear = (linear: LinearQuery): CLinear => {
     groupHopShortcut: detectGroupedHopCount(fast),
     reachShortcut: detectReachableShortcut(fast, clauses),
     hopProjection: detectHopProjection(fast, clauses),
+    hop2Projection: detectHop2Projection(fast, clauses),
     hopAggregate,
     multiHopAggregate: detectMultiHopAggregate(fast, clauses),
     distinctProjection: detectDistinctProjection(fast, clauses),
@@ -11586,8 +11589,6 @@ import {
   WRITE_CLAUSES,
   runTxControl,
 } from './executor/clauses.js';
-// Imported at FUNCTION level like the other detectors — this module and `executor` import
-// each other, which the existing comment on the shortcuts import explains is safe.
 import {
   detectDistinctCount,
   detectDistinctProjection,
@@ -11597,6 +11598,9 @@ import {
   detectMultiHopAggregate,
 } from './executor/hop-projection.js';
 import type { AlwaysRowsFn, RowsFn } from './executor/hop-projection.js';
+// Imported at FUNCTION level like the other detectors — this module and `executor` import
+// each other, which the existing comment on the shortcuts import explains is safe.
+import { detectHop2Projection } from './executor/hop2-projection.js';
 // Count / reachability fast-paths (see executor/shortcuts.ts) — this back-edge and
 // the shortcuts' import of the trunk's bucket primitives form a safe function-level
 // cycle, matching the other executor submodules.
