@@ -107,6 +107,16 @@ const ARMS = {
   'lbl P,Q .count': () => traversal(V(), hasLabel('P', 'Q'), count()),
   'lbl Q .count': () => traversal(V(), hasLabel('Q'), count()),
   'lbl Q,R .count': () => traversal(V(), hasLabel('Q', 'R'), count()),
+
+  // ⚠️ THE LIMIT FAMILY (item 1549). `out(T).limit(n).count()` is `min(n, degree_sum)` — a closed
+  // form — yet it measured 68.681 ms against `out(T).count()`'s 0.005 for the SAME answer. Does the
+  // cost track `n` (an early-exit walk) or the row count (full materialisation)?
+  'lim 10': () => traversal(V(), out('E'), limit(10), count()),
+  'lim 1000': () => traversal(V(), out('E'), limit(1000), count()),
+  'lim 100000': () => traversal(V(), out('E'), limit(100_000), count()),
+  'lim 199999': () => traversal(V(), out('E'), limit(199_999), count()),
+  'lim 200000': () => traversal(V(), out('E'), limit(200_000), count()),
+  'lim 1e9': () => traversal(V(), out('E'), limit(1_000_000_000), count()),
 };
 
 const only = process.env.ONLY;

@@ -63147,3 +63147,105 @@ back to 1500/0.
 No code change — `git status` clean, and the restored file verified identical to item 1547's commit.
 gremlin 1500/0 after restoring. The rest stand at item 1547's: core 431/0, gql 3865/0, native 963/0,
 serialization 144/0, `bun run fuzz` 20/0.
+
+### Item 1549 — SHIPPED, **7406x / 9495x / 6949x**: item 1547's bug has a TWIN on the GQL surface, and it is four spellings wide. `vacuousLabel` tested only a single `label`, so `:P|Q`, `:P&P` and `:!Nope` all stayed in the plan. ⚠️ **And the fifth kind, `:%`, looks statically vacuous and is NOT — `return true` there is a wrong answer that 3,871 tests do not see**
+
+Item 1547 fixed `dropVacuousLabels` requiring `labels.length === 1` on the Gremlin side. The obvious
+next question is whether GQL has the same hole. It does, and wider.
+
+#### The hole
+
+```ts
+export const vacuousLabel = (graph: Graph, expr: LabelExpr | undefined): boolean =>
+  expr?.kind === 'label' && (graph.verticesByLabel.get(expr.name)?.size ?? 0) === graph.vertexCount;
+```
+
+`LabelExpr` has **five** kinds — `label`, `wildcard`, `not`, `and`, `or` — and only the first was
+tested. The function's own comment already prices what elision is worth: _"When every vertex is a
+`Person`, `MATCH (a:Person)-[:KNOWS]->(x)` and `MATCH (a)-[:KNOWS]->(x)` are EQUIVALENT SPELLINGS of
+one question — and they cost 586ms against ~0ms."_ Every compound spelling of a universal label was
+paying that.
+
+#### MEASURED — 200,000 vertices, every arm answering the identical 200,000
+
+| spelling                            | PRE      | POST      |                                        |
+| ----------------------------------- | -------- | --------- | -------------------------------------- |
+| `MATCH (a)-[:E]->(x)`               | 0.003 ms | 0.003     | the yardstick                          |
+| `MATCH (a:P)-[:E]->(x)`             | 0.001    | 0.001     | already elided                         |
+| `MATCH (a:P&P)-[:E]->(x)`           | 9.495    | **0.001** | **9495x**                              |
+| `MATCH (a:P\|Q)-[:E]->(x)`          | 7.406    | **0.001** | **7406x**                              |
+| `MATCH (a:Q\|P)-[:E]->(x)`          | 7.152    | **0.001** | **7152x**                              |
+| `MATCH (a:!Nope)-[:E]->(x)`         | 6.949    | **0.001** | **6949x**                              |
+| `MATCH (a:%)-[:E]->(x)`             | 5.960    | 5.671     | **deliberately unchanged — see below** |
+| `MATCH (a:Q)-[:E]->(x)` — selective | 2.640    | 2.911     | flat, correctly kept                   |
+
+`or` needs only ONE side universal (a disjunction matches whatever either side does); `and` needs
+both; `:!X` is universal exactly when `X` matches nothing, and an empty bucket is the cheap way to
+know that.
+
+#### ⚠️ THE WILDCARD IS THE FINDING, and I nearly shipped it as a wrong answer
+
+`:%` reads as "any node", so `case 'wildcard': return true` is the obvious line — it needs no graph
+lookup at all, which makes it look like the cheapest win of the five. **It is wrong.** Tested before
+implementing, on a graph with one `:P` vertex and one UNLABELLED vertex:
+
+```text
+   MATCH (a)     count 2        MATCH (a:%)   count 1
+```
+
+So `%` means "carries at least one label", and eliding it invents the unlabelled rows. It is vacuous
+only when every vertex has a label, and nothing here knows that in O(1) — the label buckets can sum
+past `vertexCount` because a vertex may carry several. Left un-elided, with the reason in the code.
+
+`:!Nope` is the other half of the same question and goes the other way: it matched **both** vertices
+including the unlabelled one, which is why eliding it when the inner label is absent is sound.
+
+**The mutation run is what makes this worth writing down.** `case 'wildcard': return true` is caught
+by **exactly one test — the one written for it — out of 3,871.** The whole suite is blind to it.
+
+#### MUTATION — four mutants, three caught, and the survivor is correct
+
+| mutant                                                   |          |                                                        |
+| -------------------------------------------------------- | -------- | ------------------------------------------------------ |
+| `wildcard-is-vacuous` (`return true`) — **wrong answer** | CAUGHT   | 3870 pass 1 fail — the wildcard test ALONE             |
+| `and-needs-either` (`&&` → `\|\|`) — **wrong answer**    | CAUGHT   | 3869 pass 2 fail — mine plus a pre-existing sweep test |
+| `not-inverted` (`=== 0` → `!== 0`) — **wrong answer**    | CAUGHT   | 3870 pass 1 fail                                       |
+| `or-needs-both` (`\|\|` → `&&`)                          | SURVIVES | correct — tightening only DECLINES an elision          |
+
+The survivor is answer-equivalent by construction: a stricter test elides less, which costs time and
+changes no row. Its instrument is the probe (7406x), not a test.
+
+#### ⚠️ TWO OF MY OWN GUARDS WERE VACUOUS, and mutation is the only reason I know
+
+`not-inverted` and `and-needs-either` both passed the first time against tests I had written
+specifically for them. The cause: I asserted on a **bare** `MATCH (a:!Q) RETURN count(*)`, and that
+shape does not consult `vacuousLabel` at all — the elision fires on the HOP shapes, which is where
+every number above was measured. Moving both guards onto `-[:E]->(x)` is what gave them teeth.
+
+That is the same trap as item 1545's vacuous positive control and item 1542's vacuous reduction: a
+test that exercises the wrong ROUTE passes for a reason unrelated to what it claims. The rule that
+keeps catching it: **assert on the shape the measurement used.**
+
+#### Gates
+
+`bun run check` 0 read unpiped. core 431/0, gql **3871**/0, gremlin 1500/0, native 963/0,
+serialization 144/0, `bun run fuzz` 20/0. Mutants run one at a time in the FOREGROUND with the
+output redirected to a file, restoring before each — item 1548's three process findings applied, and
+no mutant was left in the tree. The probe is `packages/native/gql-vacuous-label-probe.mjs`.
+
+#### Also measured this tick and DECLINED: `limit(n).count()`
+
+`V().out(E).limit(n).count()` is `min(n, degree_sum)` — a closed form — and `countShortcut` has no
+`limit` handling at all, so any plan carrying one declines outright. The cost tracks `n` exactly:
+
+|                 | ms     |                             |
+| --------------- | ------ | --------------------------- |
+| `limit(10)`     | 0.026  |                             |
+| `limit(1000)`   | 0.615  |                             |
+| `limit(100000)` | 32.406 |                             |
+| `limit(200000)` | 70.510 | vs `out(E).count()`'s 0.005 |
+
+So it is an early-exit walk materialising `min(n, total)` traversers at ~0.35 µs each — correct
+behaviour, and the gap only exists for an `n` so large the caller could have written `count()`. Small
+`n`, which is the real shape ("are there at least 10?"), is already fast. Declined on value, not on
+difficulty; the table is in `count-decline-screen.mjs` so it is not re-derived.

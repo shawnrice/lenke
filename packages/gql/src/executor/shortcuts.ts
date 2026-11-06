@@ -127,8 +127,57 @@ import { AGGREGATES, asTruth, collectAggregates, isNullish } from './scalars.js'
  * it may drive the FAR side (a start label it cannot apply by iteration is only ignorable when
  * no vertex fails it).
  */
-export const vacuousLabel = (graph: Graph, expr: LabelExpr | undefined): boolean =>
-  expr?.kind === 'label' && (graph.verticesByLabel.get(expr.name)?.size ?? 0) === graph.vertexCount;
+export const vacuousLabel = (graph: Graph, expr: LabelExpr | undefined): boolean => {
+  if (expr === undefined) {
+    return false;
+  }
+
+  switch (expr.kind) {
+    case 'label':
+      return (graph.verticesByLabel.get(expr.name)?.size ?? 0) === graph.vertexCount;
+
+    // ⚠️ THE COMPOUND KINDS, which this used to ignore (item 1549). `LabelExpr` has five, and only
+    // `label` was tested — so every compound spelling of a vacuous label stayed in the plan and
+    // left the O(1) route. The same defect as item 1547's on the Gremlin side, where
+    // `dropVacuousLabels` required `labels.length === 1`. Measured at 200,000 vertices, every arm
+    // answering the identical 200,000:
+    //
+    //     MATCH (a)-[:E]->(x)        0.003 ms      MATCH (a:P)-[:E]->(x)      0.001 ms
+    //     MATCH (a:P|Q)-[:E]->(x)    7.406         MATCH (a:Q|P)-[:E]->(x)    7.152
+    //     MATCH (a:!Nope)-[:E]->(x)  6.949         MATCH (a:P&P)-[:E]->(x)    9.495
+    //
+    // `or` needs only ONE side universal, since a disjunction matches whatever either side does;
+    // `and` needs both.
+    case 'or':
+      return vacuousLabel(graph, expr.left) || vacuousLabel(graph, expr.right);
+
+    case 'and':
+      return vacuousLabel(graph, expr.left) && vacuousLabel(graph, expr.right);
+
+    // `:!X` matches everything exactly when `X` matches nothing, and an empty bucket is the cheap
+    // way to know that. Deliberately only for a plain inner label: a nested compound would need a
+    // matches-NOTHING recursion, which is a second function for a shape nobody writes.
+    case 'not':
+      return (
+        expr.expr.kind === 'label' && (graph.verticesByLabel.get(expr.expr.name)?.size ?? 0) === 0
+      );
+
+    // ⚠️ THE WILDCARD IS **NOT** VACUOUS, AND THAT IS MEASURED, NOT ASSUMED. `:%` reads as "any
+    // node" and the obvious implementation here is `return true` — which is a WRONG ANSWER. On a
+    // graph with one `:P` vertex and one UNLABELLED vertex:
+    //
+    //     MATCH (a)     count 2        MATCH (a:%)   count 1
+    //
+    // So `%` means "carries at least one label", and eliding it would invent the unlabelled rows.
+    // It is vacuous only when every vertex has a label, and nothing here knows that in O(1): the
+    // label buckets can sum past `vertexCount` because a vertex may carry several. Left un-elided.
+    case 'wildcard':
+      return false;
+
+    default:
+      return false;
+  }
+};
 
 export const plainNode = (n: NodePattern): boolean =>
   (n.properties?.length ?? 0) === 0 && n.where === undefined;
