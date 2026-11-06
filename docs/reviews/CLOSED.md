@@ -63250,7 +63250,7 @@ behaviour, and the gap only exists for an `n` so large the caller could have wri
 `n`, which is the real shape ("are there at least 10?"), is already fast. Declined on value, not on
 difficulty; the table is in `count-decline-screen.mjs` so it is not re-derived.
 
-### Item 1550 — SHIPPED, **212,000x**: a REL wildcard `-[:%]->` is "any type" unconditionally, where item 1549 had to leave the NODE wildcard `(a:%)` alone. **The same operator, two opposite answers, and the difference is a `core` invariant rather than an analogy.** Plus the `:!X` complement priced at 202,000x and NOT taken, with the soundness condition worked out
+### Item 1550 — SHIPPED, **212,000x**: a REL wildcard `-[:%]->` is "any type" unconditionally, where item 1549 had to leave the NODE wildcard `(a:%)` alone. **The same operator, two opposite answers, and the difference is a `core` invariant rather than an analogy.** Plus the `:!X` complement priced at 202,000x and NOT taken, with the soundness condition worked out — ⚠️ **item 1551 found a SECOND blocker: `compile(stmt)` is plan-CACHED, so the complement cannot be a compile-time substitution at all**
 
 Item 1549 fixed the vertex-label expressions and left `:%` un-elided because an unlabelled vertex is
 allowed. The obvious next question is the edge side.
@@ -63333,3 +63333,72 @@ reaches for it.
 serialization 144/0, `bun run fuzz` 20/0. Mutants one at a time in the foreground, output
 redirected, restoring before each; tree verified identical to the intended code afterwards. Probe:
 `packages/native/gql-vacuous-label-probe.mjs`, which now carries both the node and rel arms.
+
+### Item 1551 — the `:!X` complement (202,000x) is **DECLINED for a better reason than "it needs a graph": `compile(stmt)` is CACHED in `planCache`, so any graph-derived compile-time substitution is baked in permanently.** And the same question asked of items 1549/1550 — **verified NOT stale**, empirically, across a mutation that changes the vacuity
+
+Item 1550 priced the rel-type complement at 202,000x and left it because `relTypeNames` is a pure
+function of the label with no graph to read `multiTypeEdgeCount` from. That reason was true and
+shallow. The real one is worse, and it also had to be checked against what items 1549 and 1550
+already shipped.
+
+#### WHY THE COMPLEMENT CANNOT BE A COMPILE-TIME SUBSTITUTION
+
+```ts
+const hit = planCache.get(stmt);
+if (hit !== undefined) return hit(graph, params) as R[];
+const plan = compile<Row>(stmt);
+planCache.set(stmt, plan);
+```
+
+`compile(stmt)` takes **no graph** and runs **once per statement**, with the result cached. So
+`relTypeNames`' purity is not an oversight — it is load-bearing for that cache. Baking `:!F → [E]`
+at compile time would survive the next `addEdge`, and the very next `F` edge would make every later
+execution of that cached plan answer from a stale type list. That is a silent wrong answer across a
+mutation, which is strictly worse than the 202,000x it buys.
+
+`relTypeNames`' result also **picks the route**, at compile time: `if (types === null) return null`
+declines the whole shortcut. So a working design needs the admission at compile time and the type
+list at run time, with a run-time guard that can still fall back when `multiTypeEdgeCount !== 0` —
+and a count closure has no general matcher to fall back to. That is the shape of the work, and it is
+a good deal larger than item 1550's pricing implied.
+
+#### ⚠️ AND THE SAME QUESTION APPLIES TO WHAT I ALREADY SHIPPED — CHECKED, NOT ASSUMED
+
+`vacuousLabel(graph, expr)` takes a graph, so if it were consulted during `compile` then items 1549
+and 1550's elisions would be baked into cached plans too, and a query would answer wrongly the
+moment the graph stopped making the label vacuous. That is the same bug class, on code committed two
+ticks ago.
+
+**It is sound, and here is the evidence rather than an argument.** Every shape shipped at items 1549
+and 1550, run twice against the SAME query text — once while `P` is universal, then after adding a
+`:Z` vertex with an edge, which makes `P` non-universal and changes three of the four answers:
+
+| query                                                           | while `P` universal | after the mutation | truth                                  |
+| --------------------------------------------------------------- | ------------------- | ------------------ | -------------------------------------- |
+| `MATCH (n:P\|Q)-[:E]->(x)`                                      | 1                   | **1**              | 1 — `c` is `:Z`, not `P\|Q`            |
+| `MATCH (n:P&P)-[:E]->(x)`                                       | 1                   | **1**              | 1                                      |
+| `MATCH (n:!Nope)-[:E]->(x)`                                     | 1                   | **2**              | 2 — every vertex qualifies, both edges |
+| `MATCH (n)-[:%]->(x)`                                           | 1                   | **2**              | 2 — both edges are typed               |
+| `MATCH (n:P)-[:E]->(x)` (the pre-existing single-label elision) | 1                   | **1**              | 1                                      |
+
+A baked elision would have answered 2 for the first, second and fifth rows. All five are right, so
+`vacuousLabel` is consulted inside the closure that receives the graph, per execution — which is why
+it could be extended where `relTypeNames` cannot.
+
+**That asymmetry is the durable finding of this tick**, and it is not visible from either function's
+signature: both take or lack a graph for reasons that look incidental and are not. A future item
+reaching for a graph-derived optimisation in this engine should ask _when_ the decision is taken
+before asking whether it is sound.
+
+#### What remains priced
+
+`-[:!F]->` 202.345 ms against `-[:E]->`'s 0.001 on the identical 180,000 rows, and `-[:!E]->` 118.345
+against `-[:F]->`'s 0.001. Still worth having; the cost is a run-time-resolved type list with a
+fallback, not a compile-time substitution. `:A&B` sits beside it with the same requirement and the
+pleasing special case that with `multiTypeEdgeCount === 0` it matches nothing.
+
+#### Gates
+
+No code change — `git status` clean. The verification above runs against the committed build; the
+suites stand at item 1550's: core 431/0, gql 3874/0, gremlin 1500/0, native 963/0,
+serialization 144/0, `bun run fuzz` 20/0.
