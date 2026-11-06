@@ -108,6 +108,20 @@ const ARMS = {
   'lbl Q .count': () => traversal(V(), hasLabel('Q'), count()),
   'lbl Q,R .count': () => traversal(V(), hasLabel('Q', 'R'), count()),
 
+  // ⚠️ THE EMPTY-LABEL FAMILY ON THE GREMLIN SIDE (item 1553). Item 1552 took this on the GQL side
+  // for ~146,000x: a label carried by NO vertex makes the whole chain empty, decidable in O(1) from
+  // the same bucket read `dropVacuousLabels` already does. `R` is on nobody here.
+  'empty: hasLabel(R).count': () => traversal(V(), hasLabel('R'), count()),
+  'empty: R.out(E).count': () => traversal(V(), hasLabel('R'), out('E'), count()),
+  'empty: R.out.out.count': () => traversal(V(), hasLabel('R'), out('E'), out('E'), count()),
+  'empty: R.out.out.out.count': () =>
+    traversal(V(), hasLabel('R'), out('E'), out('E'), out('E'), count()),
+  'empty: out(E).hasLabel(R).count': () => traversal(V(), out('E'), hasLabel('R'), count()),
+  'empty: out(E).values(k) R': () => traversal(V(), hasLabel('R'), out('E'), values('k')),
+  // CONTROLS: the same chains with a label that DOES match, for scale.
+  'ctl: Q.out.out.count': () => traversal(V(), hasLabel('Q'), out('E'), out('E'), count()),
+  'ctl: out.out.count': () => traversal(V(), out('E'), out('E'), count()),
+
   // ⚠️ THE LIMIT FAMILY (item 1549). `out(T).limit(n).count()` is `min(n, degree_sum)` — a closed
   // form — yet it measured 68.681 ms against `out(T).count()`'s 0.005 for the SAME answer. Does the
   // cost track `n` (an early-exit walk) or the row count (full materialisation)?

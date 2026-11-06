@@ -63475,3 +63475,85 @@ of magnitude below the shapes taken here, so it is recorded rather than taken.
 `bun run check` 0 read unpiped. core 431/0, gql **3879**/0, gremlin 1500/0, native 963/0,
 serialization 144/0, `bun run fuzz` 20/0. Mutants one at a time in the foreground, output
 redirected, restoring before each; tree verified identical to the intended code afterwards.
+
+### Item 1553 — ⚠️ **A WRONG ANSWER REACHABLE THROUGH PUBLIC API, pre-existing, and my own items 1549/1550/1552 widened the surface exposed to it.** Every label elision trusts `verticesByLabel`; the public `v.labels = […]` setter does not maintain it. Measured in both directions. **And I had already refused this exact trust at item 1535 — then relied on it three items later without re-raising it**
+
+This tick set out to take item 1552's empty-label idea to the Gremlin side. The Gremlin side turned
+out to need nothing, and the screen found something more important instead.
+
+#### THE GREMLIN SIDE NEEDS NOTHING — measured, so it is not re-derived
+
+Gremlin's chain counts seed from the start label's bucket, so an empty one is already free at every
+depth. At 200,000 vertices with `R` on nobody:
+
+| arm                                            | ms         | control                              |
+| ---------------------------------------------- | ---------- | ------------------------------------ |
+| `V().hasLabel(R).count()`                      | 0.005      | —                                    |
+| `V().hasLabel(R).out(E).count()`               | 0.005      | —                                    |
+| `V().hasLabel(R).out(E).out(E).count()`        | 0.011      | `hasLabel(Q)` twin **51.326**        |
+| `V().hasLabel(R).out(E).out(E).out(E).count()` | 0.005      | —                                    |
+| `V().out(E).hasLabel(R).count()`               | **49.125** | the one gap — a FAR-side empty label |
+
+So one Gremlin gap exists (a far-side empty label, ~10,000x) and it was **not** taken, because of
+what follows.
+
+#### ⚠️ THE FINDING: EVERY LABEL ELISION TRUSTS A BUCKET THE PUBLIC SETTER DOES NOT MAINTAIN
+
+`Vertex` has a public `set labels(labels: string[] | Set<string>)`, and it is deliberately optimised
+to keep "a re-write off the map entirely" — its own comment prices a 200,000-element re-write. It
+does not touch `verticesByLabel`. Every label elision reads exactly that index. Both directions
+produce a wrong answer, measured:
+
+```text
+   OVER-COUNT (the PRE-EXISTING vacuous elision)
+     4 vertices, all :P, 4 edges.  MATCH (a:P)-[:E]->(b)-[:E]->(x) -> 4   correct
+     v0.labels = ['Z']             stale P bucket 4, labels.has 3
+     same query                                                     -> 4   TRUTH IS 3
+
+   UNDER-COUNT (item 1552's empty guard)
+     4 vertices, no :R.            MATCH (a:R)-[:E]->(b)-[:E]->(x) -> 0   correct
+     every v.labels = ['P','R']    stale R bucket 0, labels.has 4
+     same query                                                     -> 0   TRUTH IS 4
+```
+
+**This is pre-existing, not introduced here** — the first block is `vacuousLabel`, which long
+predates this session. But it is also not harmless: items 1549 (`or`/`and`/`not`), 1550 (the rel
+wildcard) and 1552 (the empty guard) each added elisions that read the same index, so the set of
+queries that can answer wrongly after a setter write is now considerably larger than it was.
+
+#### AND I HAD ALREADY REFUSED THIS TRUST, THREE ITEMS EARLIER
+
+Item 1535 declined to seed a Gremlin walk from `verticesByLabel` **for exactly this reason**, and
+said so: _"the raw `labels` SETTER has never maintained `verticesByLabel` … so the bucket is neither
+a subset nor a superset of the truth after a setter write."_ Then items 1549–1552 relied on that same
+bucket without my re-raising it. The pre-existing `vacuousLabel` gave the reliance cover, which is a
+real argument — but I did not **check** that cover when I leaned on it; I checked it only now, a tick
+later, and only because the Gremlin screen put the question back in front of me.
+
+Recording that plainly because the lesson is not "the bucket is stale" (which was already written
+down) but **that having written a caution down is not the same as applying it** — the note was in a
+file I authored, about the same index, and three items walked past it.
+
+#### THE TRADE, which is why this is a decision and not a fix
+
+The setter is fast _because_ it does not reindex. The elisions are fast _because_ they trust the
+index. Those two cannot both be right, and each repair costs the other:
+
+1. **Make the setter maintain `verticesByLabel`.** Fixes the whole family at once, including the
+   pre-existing case. Costs the setter the optimisation its comment was written to defend.
+2. **Make the elisions not trust the bucket.** Costs them the O(1) property they exist for — it
+   undoes items 1549/1550/1552 and the pre-existing `vacuousLabel`, i.e. 146,000x, 212,000x and
+   9495x go back.
+3. **Accept it and document the supported mutators.** The de facto state today:
+   `addLabelToVertex`/`removeLabelFromVertex` do index, and `core`'s `label-box.test.ts` already
+   pins the stale bucket as deliberate — but nothing warns a caller of `v.labels =` that queries may
+   then answer wrongly.
+
+Not taken unilaterally: it is a core semantics choice with a measured cost on either side, and the
+Gremlin far-side gap above is left with it because fixing that would widen the same exposure again.
+
+#### Gates
+
+No engine change — the only edits are screen arms. `bun run check` 0 read unpiped; the suites stand
+at item 1552's: core 431/0, gql 3879/0, gremlin 1500/0, native 963/0, serialization 144/0,
+`bun run fuzz` 20/0.
