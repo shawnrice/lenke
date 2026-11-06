@@ -63590,3 +63590,58 @@ owner's own account fits — both were once maintained, and this is the one that
 No engine change — the only edits are screen arms. `bun run check` 0 read unpiped; the suites stand
 at item 1552's: core 431/0, gql 3879/0, gremlin 1500/0, native 963/0, serialization 144/0,
 `bun run fuzz` 20/0.
+
+### Item 1554 — first measurement of the GQL **WRITE** path this session, and it is **healthy**: a `SET` is 4.61 µs/op and the read floor 0.31 µs once the lookup key is indexed. The 695 µs/op I first measured was an **unindexed scan**, not a write cost — ⚠️ **and my first reading of it was wrong in a way the probe itself invited**
+
+Items 1508-1553 were all reads. The brief is the whole TS engine, so this is the other half:
+`INSERT`, `SET`, `REMOVE`, `DELETE`, one operation at a time against a warm graph — the serving
+shape, not bulk ingest (which `ts-ingest-is-constant-factor` already closed).
+
+#### ⚠️ THE FIRST READING WAS WRONG, AND IT LOOKED LIKE A FINDING
+
+The probe's first run, with no index on the lookup key:
+
+```text
+   SET one prop        695.08 us/op
+   DELETE node         673.83
+   [floor] MATCH only  368.00
+```
+
+I read that as "~327 µs of write cost per property set" — an enormous number, and a plausible-looking
+one because it sat consistently above a floor I had also measured. **It was the 20,000-vertex scan
+in the `MATCH`, twice over**: once in the floor arm and once inside each write. Adding one index
+settles it:
+
+| arm                                               | no index     | **indexed** |           |
+| ------------------------------------------------- | ------------ | ----------- | --------- |
+| `MATCH (a) WHERE a.n = $n RETURN a.n` — the floor | 368.00 µs/op | **0.31**    | **1187x** |
+| `SET a.k = $v`                                    | 695.08       | **4.61**    | 151x      |
+| `SET a.k = $v, a.s = $s`                          | 708.14       | **3.09**    | 229x      |
+| `REMOVE a.s`                                      | 701.63       | **2.13**    | 329x      |
+| `DETACH DELETE a`                                 | 673.83       | **5.27**    | 128x      |
+| `INSERT (:P {k: …, n: …})` — literals             | 5.89         | 4.17        | —         |
+| `INSERT (:P {k: $k, n: $n})` — params             | 1.98         | **2.15**    | —         |
+
+**So there is no write-path target here.** A `SET` costs 4.61 µs against a 0.31 µs read floor, and
+`REMOVE` 2.13. The lesson is about the instrument: a per-operation write probe whose `MATCH` is
+unindexed measures the scan and attributes it to the write. The probe now creates the index by
+default and `INDEXED=0` reproduces the mistake.
+
+#### What the numbers do say
+
+- **The single largest lever available to a caller is an index**, at 1187x on a point lookup. That
+  is a DX/docs point rather than an engine one — `discoverability-is-the-bottleneck` is the standing
+  note that every dogfood wall was something unfound rather than something missing.
+- **`INSERT` with literals costs 1.94x its parameterised twin** (4.17 against 2.15). That is the
+  all-miss lift cost items 1540/1541 measured: every interpolated `INSERT` carries a unique text, so
+  the lift memo cannot hit and each call pays the tokenize. It is **not** waste — the lift is what
+  lets all those unique texts share ONE compiled plan, which is strictly better than a parse and a
+  plan each. Correct as designed, and "use parameters" is worth ~2 µs/op.
+- `SET` of two properties reading faster than `SET` of one (3.09 against 4.61) is arm-ordering
+  noise, not a result. Flagged so it is not quoted as one.
+
+#### Gates
+
+Probe only; no engine or core change. `bun run check` 0 read unpiped. The suites stand at item
+1553's: core 431/0, gql 3879/0, gremlin 1500/0, native 963/0, serialization 144/0,
+`bun run fuzz` 20/0. The probe is `packages/native/gql-write-probe.mjs`.
