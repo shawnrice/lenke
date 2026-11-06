@@ -37,6 +37,7 @@ import {
   inV,
   in_,
   local,
+  order,
   out,
   outE,
   toArray,
@@ -136,7 +137,13 @@ describe('⚠️ the invariant survives every rewrite — kinds === maskOfSteps(
     // the FIRST pass. If the inlined steps carry a gate bit the original plan lacked, a later pass
     // reading a stale mask would skip. `values` is both transparent and a gate kind, which is what
     // makes this shape the one that can catch it.
-    const plan = traversal(V(), local(traversal(out('E'), values('k'))), count());
+    // ⚠️ THE TAIL IS `order`, NOT `count`, AND ITEM 1585 IS WHY. With a `count` tail this plan now
+    // fuses TWICE: `fuseLocal` lifts the `values` to the top level, and then the widened
+    // `fuseValuesIsCount` consumes it (`values(k).count()` -> `hasKey(k).count()`), so the
+    // `values` step this test looks for is legitimately gone and the assertion failed. `order` is
+    // a tail that pass declines, which keeps this test isolating the ONE hazard it was written
+    // for. The composed two-pass case is asserted separately below, where it belongs.
+    const plan = traversal(V(), local(traversal(out('E'), values('k'))), order());
 
     expect(plan.kinds & KIND_BITS.local).not.toBe(0);
 
@@ -160,6 +167,34 @@ describe('⚠️ the invariant survives every rewrite — kinds === maskOfSteps(
     expect(fused.kinds & KIND_BITS.values, 'the mask records the LIFTED values').not.toBe(0);
 
     // And whatever the pipeline produced, the mask must describe THOSE steps.
+    expect(fused.kinds).toBe(maskOfSteps(fused.steps));
+  });
+
+  it('⚠️ a kind LIFTED by one pass is visible to a later gated pass — the hazard, positively', () => {
+    // The sharper form of the test above, available since item 1585 widened `fuseValuesIsCount`.
+    // `fuseLocal` lifts `values('k')` out of the `local`, which sets the `values` gate bit that
+    // the original plan lacked; `fuseValuesIsCount` is gated on exactly that bit and runs LATER.
+    // So if the mask were stale, the second pass would skip and the `values` step would survive.
+    // Asserting that it was CONSUMED proves the lifted kind reached the later gate — which is what
+    // the staleness hazard is actually about, and it cannot be satisfied by a stale mask.
+    const plan = traversal(V(), local(traversal(out('E'), values('k'))), count());
+
+    expect(plan.kinds & KIND_BITS.local).not.toBe(0);
+
+    const fused = effectivePlan(plan, graph, false);
+
+    expect(
+      fused.steps.some((st) => st.kind === 'local'),
+      'local must be inlined',
+    ).toBe(false);
+    expect(
+      fused.steps.some((st) => st.kind === 'values'),
+      'values must be CONSUMED',
+    ).toBe(false);
+    expect(
+      fused.steps.some((st) => st.kind === 'hasKey'),
+      'the fold fired on it',
+    ).toBe(true);
     expect(fused.kinds).toBe(maskOfSteps(fused.steps));
   });
 

@@ -393,6 +393,39 @@ const GROUPS: readonly Group[] = [
     ],
   ],
 
+  // ── VALUES AND THE TERMINAL AGGREGATES. ⚠️ THIS WHOLE SECTION WAS MISSING, and item 1585 is what
+  // the gap cost: `fuseValuesIsCount` rewrites `values(k).is(p).count()` to `has(k, p).count()`,
+  // and its equivalence argument never needed the predicate — but the gate required the `is`, so
+  // the PLAIN `values(k).count()` kept materialising one value per element. 1.89x apart at 50,000
+  // vertices, same answer, which is exactly the class of defect this probe exists for and it went
+  // unseen because no group asked.
+  //
+  // The predicate pair is kept beside the plain one deliberately: it CONVERGED before the fix
+  // (0.235 against 0.235), so having both is what distinguishes "the mechanism is wrong" from
+  // "the mechanism's gate is too narrow".
+  [
+    'values count vs has: values(k).count() vs has(k).count()',
+    [traversal(V(), values('age'), count()), traversal(V(), has('age'), count())],
+  ],
+  [
+    'values count, with a predicate: values(k).is(p).count() vs has(k, p).count()',
+    [
+      traversal(V(), values('age'), is(gte(45)), count()),
+      traversal(V(), has('age', gte(45)), count()),
+    ],
+  ],
+  // ⚠️ THREE MORE GROUPS WERE IN THE FIRST CUT OF THIS SECTION AND THE ANSWER CHECK REJECTED ALL
+  // THREE, correctly: `max` vs `min` (89 against 0), `sum` vs `mean` (8899300 against 44.4965) and
+  // `fold` vs `count` (a list against 200000). They are not two spellings of ONE question — there
+  // is no element-level equivalent of `max` — and I added them anyway, to compare the FAMILY's
+  // cost, having written a comment that said as much. This probe's contract is that a group's
+  // members answer identically; a cost-equality question between different answers belongs in
+  // `gremlin-agg-probe.mjs`, which has it (max/min/sum/mean all read 2.09-2.53 ms over the same
+  // 50,000 values, so the aggregate itself is free and the cost is `values()`).
+  //
+  // Recorded rather than quietly deleted, because this is the second time the answer check has
+  // paid for itself in this file — see the token-arm note at the top.
+
   // ── NULL CONTROLS. One spelling against itself: this is the instrument, not a result. Two of
   // them, at different costs, because a ratio means different things at 1ms and at 300ms.
   [

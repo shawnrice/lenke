@@ -66203,3 +66203,120 @@ while probing reachability, byte-identical across both builds, and not pursued.
 for once**: `differential-fuzz` does generate `count(DISTINCT b)` over a var-length hop. What it does
 not generate is the ROWS spelling over a bare element — every distinct-rows arm is a PROPERTY — so
 that half got explicit coverage.
+
+### Item 1585 — **1.89x on `values(k).count()`**, because an existing rewrite's equivalence argument never needed the predicate its GATE required. The two spellings now converge exactly, and the gap went unseen because the Gremlin spelling probe had no values/aggregate group at all. ⚠️ The aggregate family is NOT a target: max/min/sum/mean all cost the same, and the cost is `values()`
+
+The cross-surface probe flagged Gremlin's `max` at 2.46x its GQL twin and `sum` at 1.63x. Profiling
+that first is what redirected the tick.
+
+#### The aggregate terminals are FREE, which refutes the obvious target
+
+```text
+   gremlin  V().count()                      0.004 ms   <- closed form
+   gremlin  V().values('k')                  2.181      <- the floor
+   gremlin  V().values('k').count()          2.256
+   gremlin  V().values('k').fold()           2.189
+   gremlin  V().values('k').max()            2.120
+   gremlin  V().values('k').min()            2.526
+   gremlin  V().values('k').sum()            2.093
+   gremlin  V().values('k').mean()           2.138
+   gql      RETURN max(n.k)                  0.851      <- builds no rows
+   gql      RETURN n.k AS k                  1.299
+```
+
+Every terminal costs what `values('k')` alone costs, so **the reduce is free and the whole 2.1 ms is
+producing 50,000 property values.** The 2.46x against GQL is not an aggregate problem; GQL's `max` is
+faster than GQL's own row projection because it materialises nothing, where Gremlin's does not.
+
+A CPU profile at 800 reps (the first attempt at 40 was swamped by fixture construction — `addVertex`
+and `#commitNormalized` in the top ten is the giveaway) puts 75.8% in three generator frames:
+`projectValues` 35.6%, `sourceFromIds` 20.8%, `aggregateComparable` 19.4%, with GC only 2.7%. So it
+is the generator plumbing and not allocation, and `projectValues` is already tuned — item 1476
+hoisted its arity branch.
+
+#### What the Gremlin spelling probe never asked
+
+`bun run spelling:gremlin` reports **0 answer disagreements and 0 groups over 2x** — the spelling
+surface is clean. But it has **no values/aggregate group**, so this pair had never been compared:
+
+```text
+   V().values('k').count()               2.43 ms      V().has('k').count()          1.18   1.89x
+   V().values('k').is(gt 44).count()     0.235        V().has('k', gt 44).count()   0.235  1.00x
+```
+
+`fuseValuesIsCount` rewrites `values(k).is(p).count()` to `has(k, p).count()`, and its equivalence
+argument — single-valued properties, so `values(k)` emits one value per element that HAS `k` — **never
+needed the predicate**. The gate required an `is` anyway, so the plain spelling kept materialising a
+value per element. The predicate pair converging EXACTLY is what distinguishes "the mechanism is
+wrong" from "the mechanism's gate is too narrow"; it was the latter.
+
+#### The fix, and the measurement
+
+The `is` is now optional. ⚠️ **Without a predicate the step is `hasKey`, not `has`** — `has` carries a
+required `pred`, and `G.has('k')` parses to `{kind: 'hasKey', keys}`, which is checked against what
+the builder produces rather than inferred from the surface spelling (emitting a `has` without a
+`pred` does not typecheck).
+
+```text
+                  PRE                      POST
+   count      2.073 2.091 2.166 ms     1.084 1.096 1.132     1.89x
+   hascount   1.102 1.112 1.122        1.102 1.113 1.123     the control, FLAT across builds
+```
+
+Both arms built from saved copies, each ASSERTED to be the code it claimed before either was built.
+The two spellings now read 1.11 against 1.11 — **converged** — and the spelling probe confirms it at
+its own scale (2.675 against 2.719, 1.02x).
+
+⚠️ **One arm in that probe is not usable as a control at this precision**: `V().values('k')` with no
+terminal ranges **1.466-2.130 across five runs** (1.45x), because it returns 50,000 traversers. Its
+earlier 2.181 reading looked like a moved control after the change and was its own spread. The arms
+that matter are tight to ~4%.
+
+#### ⚠️ The probe's answer check rejected three of my five new groups, correctly
+
+I added five groups and three were not equivalent spellings at all: `max` vs `min` (89 against 0),
+`sum` vs `mean` (8899300 against 44.4965), `fold` vs `count` (a list against 200000). I had even
+written a comment saying they were not two spellings of one question — and added them anyway, to
+compare the family's cost. **This probe's contract is that a group's members answer identically**; a
+cost-equality question between different answers belongs in `gremlin-agg-probe.mjs`, which has it.
+Removed, and recorded in the file: this is the second time that check has paid for itself there, the
+first being the token arms at the top.
+
+#### ⚠️ Two existing tests pinned the OLD narrowness, and both had to change
+
+- `values-is-count.test.ts` listed `['values with no is', …]` among its NO_FOLD cases — pinning the
+  gate's narrowness as though it were a semantic. It is not, and the entry is replaced by the
+  positive assertion.
+- `plan-kind-mask.test.ts` asserted that `fuseLocal` lifts a `values` to the top level, using a
+  `count` tail. That plan now fuses TWICE — the lifted `values` is consumed by the widened pass — so
+  the step it looked for is legitimately gone. Its tail is now `order`, which the pass declines, so
+  it still isolates the one hazard it was written for. **And the composed case became a STRONGER
+  test of that hazard**, added beside it: a kind LIFTED by `fuseLocal` must be visible to a later
+  gated pass, and asserting the second fusion FIRED cannot be satisfied by a stale mask.
+
+#### Mutation: 6 of 6 caught
+
+Every mutant here is answer-equivalent except `never-is` (which drops a real predicate), which is why
+the tests assert the PLAN:
+
+```text
+   gate/require-is-again          CAUGHT  4 fail      gate/any-key-count            CAUGHT  2 fail
+   gate/never-is                  CAUGHT  3 fail      gate/count-need-not-be-last   CAUGHT  2 fail
+   rewrite/empty-keys             CAUGHT  4 fail      rewrite/splice-two-not-one    CAUGHT  5 fail
+```
+
+#### What this leaves, priced
+
+`values()` itself, at ~2.1 ms for 50,000 values against GQL's 1.299 for the same rows and 0.851 for a
+reduce over them. The profile says it is generator-boundary cost across `sourceFromIds` ->
+`projectValues` -> terminal, three `yield`s and two traverser objects per element. A fused
+values+terminal step would address it, and it is the real remaining Gremlin aggregate target — but
+`executor-edits-perturb` prices a new walk variant at up to 16% on unrelated rows, and item 1573
+declined several step shortcuts on exactly that trade, so it wants its own item and its own control
+set rather than a bolt-on here.
+
+#### Gates
+
+`bun run check` 0 read unpiped. Suites gremlin 1559, gql 4021, core 431, native 1031, serialization
+144 — 0 fail. `bun run fuzz` 20/0 under the 16G cap. `bun run spelling:gremlin` 0 answer
+disagreements, 0 groups over 2x.

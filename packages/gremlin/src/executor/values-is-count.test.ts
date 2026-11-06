@@ -73,6 +73,80 @@ describe('the fold fires for values(k).is(p).count()', () => {
   });
 });
 
+describe('item 1585: the `is` is OPTIONAL, so values(k).count() folds too', () => {
+  // The gate required an `is`, so the PLAIN spelling kept materialising one value per element —
+  // 1.89x against its `has` twin at 50,000 vertices, same answer. The equivalence argument in this
+  // file's header never needed a predicate: with single-valued properties `values(k)` emits one
+  // value per element that HAS `k`, which is what the presence filter selects.
+  //
+  // ⚠️ WITHOUT A PREDICATE THE STEP IS `hasKey`, NOT `has`. `has` carries a required `pred`, and
+  // `G.has('k')` parses to `{ kind: 'hasKey', keys: ['k'] }` — checked against what the builder
+  // actually produces, because emitting a `has` with no `pred` does not even typecheck.
+  test('the two steps become one hasKey', () => {
+    const flat = fuseValuesIsCount(traversal(V(), values('k'), count()));
+
+    expect(kinds(flat.steps)).toEqual(['V', 'hasKey', 'count']);
+    expect((flat.steps[1] as unknown as { keys: readonly string[] }).keys).toEqual(['k']);
+  });
+
+  test('it is WIRED into effectivePlan', () => {
+    const flat = effectivePlan(traversal(V(), values('k'), count()), build(), false);
+
+    expect(kinds(flat.steps)).toEqual(['V', 'hasKey', 'count']);
+  });
+
+  test('the count agrees, including the NULL value and the absent key', () => {
+    const g = build();
+
+    // Three elements HAVE `k` — one holding an array, one holding null — and `c` does not.
+    expect(n(g, traversal(V(), values('k'), count()))).toBe(3);
+    expect(n(g, traversal(V(), has('k'), count()))).toBe(3);
+  });
+
+  test('the predicate form still folds to `has`, not `hasKey`', () => {
+    // The control that says the change widened the gate without moving the existing arm.
+    const flat = fuseValuesIsCount(traversal(V(), values('k'), is(gte(2)), count()));
+
+    expect(kinds(flat.steps)).toEqual(['V', 'has', 'count']);
+  });
+
+  test('MULTI-KEY still declines without a predicate, and the numbers differ', () => {
+    const g = build();
+    const plan = traversal(V(), values('k', 'j'), count());
+
+    expect(kinds(fuseValuesIsCount(plan).steps)).toEqual(['V', 'values', 'count']);
+    // 3 values of `k` plus 4 of `j`; the presence filter on `k` alone would say 3.
+    expect(n(g, plan)).toBe(7);
+    expect(n(g, traversal(V(), has('k'), count()))).toBe(3);
+  });
+
+  test('a DEDUPE tail still declines without a predicate', () => {
+    const g = new Graph();
+
+    g.addVertex({ id: 'a', labels: ['P'], properties: { k: 1 } });
+    g.addVertex({ id: 'b', labels: ['P'], properties: { k: 1 } });
+
+    const plan = traversal(V(), values('k'), dedupe(), count());
+
+    expect(kinds(fuseValuesIsCount(plan).steps)).toEqual(['V', 'values', 'dedupe', 'count']);
+    // Distinct VALUES is 1 where distinct ELEMENTS is 2 — the non-equivalence the tail guard is for.
+    expect(n(g, plan)).toBe(1);
+    expect(n(g, traversal(V(), has('k'), dedupe(), count()))).toBe(2);
+  });
+
+  test('a count that is NOT last declines', () => {
+    const plan = traversal(V(), values('k'), count(), order());
+
+    expect(kinds(fuseValuesIsCount(plan).steps)).toEqual(['V', 'values', 'count', 'order']);
+  });
+
+  test('a plan with values but no count tail is returned UNCHANGED, by identity', () => {
+    const plan = traversal(V(), values('k'), order());
+
+    expect(fuseValuesIsCount(plan)).toBe(plan);
+  });
+});
+
 describe('the declines, each asserted by the NUMBER that differs', () => {
   test('MULTI-KEY values emits one row per key, so the counts differ', () => {
     const g = build();
@@ -105,7 +179,11 @@ describe('the declines, each asserted by the NUMBER that differs', () => {
     ['count that is not LAST', traversal(V(), values('k'), is(gte(2)), count(), is(gte(0)))],
     ['no count at all', traversal(V(), values('k'), is(gte(2)))],
     ['an order between is and count', traversal(V(), values('k'), is(gte(2)), order(), count())],
-    ['values with no is', traversal(V(), values('k'), count())],
+    // ⚠️ `['values with no is', traversal(V(), values('k'), count())]` WAS IN THIS LIST and item
+    // 1585 REMOVED IT, deliberately: that spelling now folds to `hasKey`, and the entry was
+    // pinning the gate's narrowness as if it were a semantic. It is not — the header's
+    // equivalence argument never needed the predicate, and the plain spelling cost 1.89x for it.
+    // Its replacement is the positive assertion in the item-1585 describe above.
     ['is with no preceding values', traversal(V(), has('k'), is(gte(2)), count())],
   ];
 
