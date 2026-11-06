@@ -63902,3 +63902,113 @@ item 1557 recorded as "the useful output".
 
 The probe is `packages/native/dispatch-pollution-probe.mjs`, which gained an `ONLY=<arm>` knob for
 exactly this reason; its header now carries the artifact as a worked example.
+
+### Item 1559 — Gremlin's `match()` spends **82% of its time copying the tag map** (ablation: 14781 → 2604 ms, **5.68x**), and the obvious fix — defer the copy to the leaf — is **REFUTED, flat on two shapes**, because in a branching search the leaves outnumber the internal nodes. The reachable lever is a `tracksTags` context flag, and `tracksPath` is already the precedent. Two further ablations null, both recorded
+
+A profile-first tick on the Gremlin side (items 1535-1558 were nearly all GQL). The screen is the
+repo's own: `runtime-profile-gremlin-probe.mjs` x 32 shapes under `windowed-profile.mjs`, read by
+`runtime-profile-analyze.mjs`, which ranks self time and then flags frames **unpriced** in this file
+and the audit.
+
+#### What the screen said, and the two frames it mis-triaged
+
+| shape            | engine ms | top unpriced                                          |
+| ---------------- | --------: | ----------------------------------------------------- |
+| `matched`        | **14964** | `bind$1` 14.7% (ZERO mentions), `partKey` 2.3% (ZERO) |
+| `hoporder`       |      9268 | —                                                     |
+| `coalescevalues` |      6584 | —                                                     |
+| `selected`       |      5263 | —                                                     |
+| `coalesced`      |      4964 | `get to` 7.8% (NOT CHECKABLE)                         |
+
+Both flags needed correcting before either could be believed:
+
+- **`get to` at 7-8% across ELEVEN shapes is an ATTRIBUTION ARTIFACT, not a target.** The accessor is
+  `this.#toV ??= …; return this.#toV` — item 595 already cached it, so a 385 ms self time is
+  impossible for the body. It is the analyzer's own documented hazard (item 1104): a small hot callee
+  is credited with its caller's inlined loop. "NOT CHECKABLE" meant the NAME is too generic to grep,
+  not that the frame is unpriced.
+- **`bind$1`'s "ZERO mentions" is a BUNDLER RENAME.** Item 1478 lists it as `bind 7.0%`; esbuild
+  renamed it `bind$1` to avoid colliding with `bind.ts`'s export, and the analyzer greps the frame
+  name. ⚠️ **So "ZERO mentions" is not evidence of an unpriced frame when the name could have been
+  renamed** — check the un-suffixed name too. Its share has since risen 7.0% → 14.7% precisely
+  because item 1478 removed the `tupleKey` cost beside it.
+
+#### The cost is real, and three ablations priced it
+
+`match()` is a depth-first join. `bind` built each branch with `new Map(t.tags)` — an O(bindings)
+copy at every node of the DFS.
+
+| ablation                                                               | `matched`, 3 runs (ms) | vs 14781  |
+| ---------------------------------------------------------------------- | ---------------------- | --------- |
+| PRE                                                                    | 14496 / 14781 / 15111  | —         |
+| `{ ...t, tags }` → explicit `{ value, path, loopCount, tags }` literal | 15858 / 17275 / 15885  | **WORSE** |
+| `new Set(done).add(idx)` → one shared mutable set                      | 15386 / 14940 / 15162  | **flat**  |
+| **the tags `Map` copy removed** (wrong answers, ceiling only)          | **2604 / 2565 / 2706** | **5.68x** |
+
+So **82% of the shape is that one copy**, the `done` set copy is worth nothing, and hand-writing the
+object literal in place of the spread is actively worse. The two nulls are recorded because both
+looked like co-equal targets from the code.
+
+#### ⚠️ THE OBVIOUS FIX IS REFUTED, and the arithmetic says it had to be
+
+I built the deferred-copy version: one mutable map down the DFS, each binding undone on the way out,
+and a SNAPSHOT at the leaf (`extend` propagates `tags` by reference, so without one every emitted
+traverser would share the map the solver keeps rewriting). `applyPattern` returned a descriptor
+(`drop` / `keep` / `bind` + candidate values) instead of built traversers. It passes 1500/0.
+
+It is **flat**:
+
+| shape                                    | PRE                   | POST                  |
+| ---------------------------------------- | --------------------- | --------------------- |
+| `matched` (1 pattern)                    | 14496 / 14781 / 15111 | 15276 / 15019 / 16318 |
+| `matched2` (2 patterns)                  | 8923 / 8690 / 9185    | 8856 / 8868 / 8667    |
+| `matchedsel` (2 patterns, `select('c')`) | 9314 / 9569 / 9334    | 9771 / 9697 / 9716    |
+
+**Why, and this is the general result worth keeping.** The old code copied once per BIND; the new
+one copies once per SOLUTION. With branching factor `f` and `b` binder patterns, solutions are `f^b`
+while binds are `f + f² + … + f^b ≈ f^b · f/(f−1)`. At `f = 5` that is **1.25x fewer copies at
+best** — and the leaf snapshot copies the FULL map where a mid-path bind copied a partial one, which
+gives the 1.25x straight back. **In a branching search the leaves dominate the node count, so
+deferring work to the leaf amortizes nothing.** Depth is not the axis.
+
+⚠️ **And the probe could not have shown otherwise.** `matched` is
+`match(pipe(as_('a'), out('E'), as_('b')))` — ONE pattern, so the DFS is depth 1 and `k = 1`. A
+change that trades `k` copies along a path for 1 at the leaf is identically a no-op there. Its own
+comment says it is "the smallest shape that exercises the matcher", which is the worst case for this
+class of change. **Two multi-pattern shapes are now in the probe** (`matched2`, `matchedsel`) so the
+next attempt is measurable; `matchedsel` exists because without a downstream reader the leaf
+snapshot would be dead code and the easy half of the question.
+
+A three-pattern shape is deliberately absent: 2383 ms a REP at FANOUT=5, so ~8 minutes on a 200-rep
+sweep. Item 1478 made the same call about the 3-hop end-filtered question, for the same reason.
+
+#### The reachable lever, not built this tick
+
+The 5.68x needs the leaf snapshot GONE, not moved — and it is only needed when something downstream
+reads the tags. `matchStep` cannot see the downstream steps, but **`RunContext` already carries
+exactly this kind of answer**: `tracksPath: boolean`, "computed once from the plan via
+`planReadsPath`; defaults to `true` so any context built without it … is always correct, just
+unoptimized." A `tracksTags` flag is the same shape, the same default-safe direction, and would let
+the solver pass the shared map through untouched when no `select`/`where`-by-label follows. That is
+the next target, with its ceiling already measured.
+
+#### Gates
+
+No engine change survived — `match.ts` is byte-identical to its pre-tick copy (verified by `diff`
+against `crates/lenke-engine/target/match-1559-pre.ts`, and by `outcome.kind` reading 0 occurrences
+in the rebuilt bundle). The only committed changes are the two probe shapes and this entry.
+`bun run check` 0 read unpiped. Suites: core 431/0, gql 3884/0, gremlin 1500/0, native 963/0,
+serialization 144/0, `bun run fuzz` 20/0.
+
+#### One number in item 1478's table should not be quoted as current
+
+Its screen recorded `localized` at **1692 ms**; the same shape at the same 60 reps now reads
+**4.3-7.0 ms**. The shape definition is unchanged (`git log -L` confirms it has not been touched
+since 1478 added it) — **item 1479 took it**, at "20.7x on a transparent `local()` and 364x where it
+also unblocks the count shortcut". So this is not a stale target, just a pre-1479 reading sitting in
+a table a reader might quote.
+
+⚠️ Recording it because I spent a measurement treating it as a possible unrecorded 300x regression
+window before checking the adjacent entry. That is CLAUDE.md's documented pattern exactly — of 40
+stale headings a sweep corrected, **22 were closed by the VERY NEXT item** — and the cheap move is
+to read the neighbouring entry before measuring, which I did second.

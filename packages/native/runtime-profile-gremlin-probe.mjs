@@ -178,6 +178,29 @@ const SHAPES = {
   // The declarative join. Two bound names over one hop, which is the smallest shape that exercises
   // the matcher rather than a single pattern.
   matched: traversal(V(), match(pipe(as_('a'), out('E'), as_('b'))), count()),
+  // ⚠️ TWO AND THREE PATTERNS, because `matched` above has exactly ONE and that is the worst case
+  // for anything that amortizes over the solver's DEPTH (item 1559). The DFS is depth 1 there, so a
+  // change that trades k copies along a path for 1 at the leaf cannot show anything: k IS 1. These
+  // two give the matcher an actual join to solve.
+  matched2: traversal(
+    V(),
+    match(pipe(as_('a'), out('E'), as_('b')), pipe(as_('b'), out('E'), as_('c'))),
+    count(),
+  ),
+  // ⚠️ A THREE-PATTERN `matched3` IS DELIBERATELY ABSENT. It measured 2383 ms a REP at FANOUT=5
+  // (125 solutions a source), so it would add ~8 minutes to a 200-rep sweep. Item 1478 made the
+  // same call about the 3-hop end-filtered question for the same reason: a shape whose single rep
+  // takes seconds makes a probe nobody runs. Two patterns already give the solver a real join, and
+  // item 1559's arithmetic says depth is not the axis that matters here anyway.
+  // A multi-pattern match whose bindings are actually READ downstream, so the leaf snapshot is
+  // load-bearing rather than dead. Without this the only multi-pattern rows would be ones where
+  // nothing observes the tags, which is the easy half of the question.
+  matchedsel: traversal(
+    V(),
+    match(pipe(as_('a'), out('E'), as_('b')), pipe(as_('b'), out('E'), as_('c'))),
+    select('c'),
+    count(),
+  ),
   // Per-traverser scoping: `local` runs its sub-traversal once per incoming traverser, so it is the
   // shape where sub-plan setup cost is paid N times rather than once.
   localized: traversal(V(), local(pipe(outE(), inV())), count()),
