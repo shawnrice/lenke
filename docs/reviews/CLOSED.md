@@ -65394,3 +65394,93 @@ ordering entirely, and under a cap they would otherwise occupy heap slots and ap
 `order-fault-precedence.test.ts`, 11 in `order-take-topk.test.ts`), native 963/0,
 serialization 144/0, `bun run fuzz` 20/0 — the check that matters, since tie order is compared
 against native.
+
+### Item 1577 — SHIPPED, **4.27x** on building `traversal(V(id))` and **4.68x** on a three-step plan, **1.66x** on a whole small `V(id)` call: `appendStep` marked step functions with `Object.defineProperty`, which was **73% of plan construction**. Found by giving the Gremlin WRITE path its first probe, and the write path itself turned out healthy
+
+`grep -c 'addV|addE|property|drop'` over every Gremlin probe in `packages/native` returned **0** — the
+32-shape profile probe is reads only. Item 1554 found and closed the same gap on the GQL side, so
+this is its twin, and `gremlin-write-probe.mjs` is now the instrument.
+
+#### The write path is healthy, which is the negative result
+
+Per operation at 20,000 vertices, the lookup key indexed (item 1554's lesson: its first run read a
+20,000-vertex SCAN as write cost):
+
+```text
+   [floor] V(id)         0.98 us/op      the by-id read every write does first
+   property on V(id)     1.80            ~0.8 us of actual write
+   addV label            2.30
+   addV + 2 props        3.55
+   drop V(id)            6.53            detach cascades to incident edges
+   addE between ids      7.15            but it does TWO V(id) lookups
+```
+
+**And the cross-surface comparison came back clean**, which is worth recording so it is not
+re-measured: Gremlin `addE(...).from(V(id)).to(V(id))` is **6.89 us/op** against GQL's two-MATCH
+`INSERT (a)-[:F]->(b)` at **7.27** — and net of each surface's own floor the Gremlin edge write is
+_cheaper_ (2.68 against 4.22). No asymmetry here, unlike paging at items 1573-1576.
+
+#### ⚠️ The finding was in the FLOOR, not the writes
+
+Gremlin's `V(id)` floor is 0.98 us where GQL's indexed seek is 0.31 (item 1554). Decomposing it took
+three passes, and the first two were wrong:
+
+```text
+   A  build only        (varying id)   0.235 us/op
+   B  build + run       (varying id)   0.774
+   C  run only          (FIXED plan)   0.214
+   D  build + run       (FIXED id)     0.498
+```
+
+⚠️ **My first inference — "executing a fresh plan is 2.4x a reused one" — was a CONFLATION.** It came
+from comparing B−A against C, but C uses a FIXED id while B varies it. `D − C ≈ A`, so construction
+is ~0.235 and the B/D difference is the memory latency of a RANDOM versus repeated lookup in a
+20,000-entry map, not plan freshness. The matched four-arm run is what separated them, and the
+earlier two runs also differed in `OPS` and fixture — which is why they could not.
+
+So construction is **~30% of a small `V(id)` call**, and Gremlin pays it on EVERY call whose value
+varies: the id is baked into the step, so there is no plan to reuse. GQL's `$n` plus its parse/plan
+cache serves every id from one compiled plan. ⚠️ **`bind(graph)` is NOT this** — it closes over the
+graph only (`query`/`toArray`/`toSet` partially applied) and provides no value binding.
+
+#### The fix, and why it is safe
+
+`appendStep` ended with `Object.defineProperty(fn, STEP_FN, { value: true, enumerable: false })`.
+Replacing it with a plain assignment:
+
+| arm                      | PRE         | POST      |           |
+| ------------------------ | ----------- | --------- | --------- |
+| build `traversal(V(id))` | 0.235 us/op | **0.055** | **4.27x** |
+| build a three-step plan  | 0.627       | **0.134** | **4.68x** |
+| build + run `V(id)`      | 0.774       | **0.465** | **1.66x** |
+
+So `defineProperty` was **73%** of construction. The same line existed in `steps/pipe.ts`; both are
+changed.
+
+**The `enumerable: false` it replaced bought nothing observable**, and that is the whole safety
+argument, in two independent halves:
+
+1. `STEP_FN` is a **Symbol**, and symbols are excluded from `Object.keys`, `for…in` and
+   `JSON.stringify` regardless of enumerability.
+2. An enumerable symbol does travel through `Object.assign`/spread — but only with the step function
+   as the SOURCE, and every `Object.assign` in the package passes `fn` as the TARGET (the fluent
+   `addE(…).from(…)`, `pageRank(…)`, `repeat(…)` builders).
+
+`step-fn-marker.test.ts` pins both halves, and a third test states the consequence plainly: a future
+`{ ...someStepFn }` WOULD carry the marker. Better met as a documented fact than as a surprise.
+
+#### Mutation — and one mutant is deliberately not claimed
+
+`no-marker` (24 tests) and `wrong-value` (22 tests) both die loudly. ⚠️ **Reverting to
+`defineProperty` is behaviourally IDENTICAL**, so no test can catch it — it is a pure cost change,
+the same category as item 1572's `KIND_BITS` gate. Saying so rather than inventing an assertion for
+it.
+
+⚠️ **A fourth mis-aimed test this session, but it FAILED rather than passing**: I asserted
+`isSerializable(V())` is false, and `isSerializable` takes a PLAN — it crashed on `plan.steps.length`.
+Rewritten as a plan check. A loud failure is the good outcome; items 1569/1572/1576 were the bad one.
+
+#### Gates
+
+`bun run check` 0 read unpiped. Suites: core 431/0, gql 3964/0, **gremlin 1551/0** (7 new in
+`step-fn-marker.test.ts`), native 963/0, serialization 144/0, `bun run fuzz` 20/0.

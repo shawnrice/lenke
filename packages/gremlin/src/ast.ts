@@ -940,7 +940,19 @@ export const appendStep = (step: Step): StepFn => {
     kinds: plan.kinds | bit,
     mayFault: plan.mayFault || faults,
   });
-  Object.defineProperty(fn, STEP_FN, { value: true, enumerable: false });
+  // ⚠️ A PLAIN ASSIGNMENT, NOT `Object.defineProperty` — which was **73% of plan construction**
+  // (item 1577). Building `traversal(V(id))` went 0.235 -> 0.064 us/op and a three-step plan
+  // 0.627 -> 0.137, which is 1.69x on a whole small `V(id)` call since construction is ~30% of it.
+  // Gremlin pays this on EVERY call whose value varies, because it has no parameter binding: the id
+  // is baked into the step, so there is no plan to reuse the way GQL's `$n` plus its parse/plan
+  // cache reuses one.
+  //
+  // ⚠️ THE `enumerable: false` IT REPLACED BOUGHT NOTHING OBSERVABLE, which is why this is safe:
+  // `STEP_FN` is a SYMBOL, and symbols are already excluded from `Object.keys`, `for…in` and
+  // `JSON.stringify`. The only way an enumerable symbol escapes is `Object.assign`/spread with the
+  // step function as the SOURCE, and every `Object.assign` in this package passes `fn` as the
+  // TARGET. `step-fn-marker.test.ts` pins both halves of that claim.
+  (fn as unknown as Record<symbol, boolean>)[STEP_FN] = true;
 
   return fn as StepFn;
 };
