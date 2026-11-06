@@ -67919,7 +67919,7 @@ written that way deliberately. Measure before merging them.
 `bun run check` 0 read unpiped. Suites gql 4060 (2 new), gremlin 1666, core 435, native 1031,
 serialization 144 — 0 fail. `bun run fuzz` 20/0 under the 16G cap.
 
-### Item 1602 — **62x on Gremlin's two-hop filtered count** (16.84 ms -> 269 us), by adding the one rung in that family that did not exist: a filter BETWEEN two hops. ⚠️ The hole was invisible because all four of its neighbours ARE answered in closed form, and the first version of the rung used the edge-driven shape this file had already measured at 3-4x worse
+### Item 1602 — **62x on Gremlin's two-hop filtered count** (16.84 ms -> 269 us), by adding the one rung in that family that did not exist: a filter BETWEEN two hops. ⚠️ Its own PROJECTION twin, left open here, is TAKEN by item 1603 at 4.1x — bounded by the stream-order contract, not by the walk. ⚠️ The hole was invisible because all four of its neighbours ARE answered in closed form, and the first version of the rung used the edge-driven shape this file had already measured at 3-4x worse
 
 Items 1598-1601 were all GQL. This gave Gremlin the turn, profile-first, and the biggest number of
 the session was sitting in a shape nothing had asked about.
@@ -68049,10 +68049,127 @@ Two things, both measured here and neither taken:
 
 - **A trailing filter after the last hop** (`out(E).has(…).out(E).has(…)`) still declines — the
   final contribution stops being a degree, so it needs the last level walked.
-- **The PROJECTION twin**, `V().out(E).has(team,eq).values(score)`, at **15.7-16.4 ms** and
-  untouched by a count rung. That is now the largest single number on this probe.
+- ~~**The PROJECTION twin**, `V().out(E).has(team,eq).values(score)`, at **15.7-16.4 ms** and
+  untouched by a count rung. That is now the largest single number on this probe.~~ — **TAKEN by
+  item 1603**, at **4.1x** (16.54 ms -> 3.80). ⚠️ Not 62x, and the reason is a contract rather than
+  an implementation: Gremlin stream ORDER is compared ordered by the differential fuzzer, so a
+  yielding walk cannot use the far-driven shape this item's 62x rests on.
 
 #### Gates
 
 `bun run check` 0 read unpiped. Suites gremlin 1681 (15 new), gql 4060, core 435, native 1031,
+serialization 144 — 0 fail. `bun run fuzz` 20/0 under the 16G cap.
+
+### Item 1603 — **4.1x on Gremlin's far-filtered hop projection** (16.54 ms -> 3.80), the YIELD twin of item 1602's hole: a filter between the hop and the projection reached NEITHER values shortcut. ⚠️ And the win could not use item 1602's trick, because ORDER is a TinkerPop contract
+
+Item 1602 closed the count side and left this as the largest number on its own probe. Same hole, one
+step along.
+
+#### The hole, read off the shortcuts rather than inferred
+
+A profile of `V().out(E).has(team,eq).values(score)` is 57.3% `generatorResume` plus 14.6% the hop
+generator — the traverser pipeline again — so the two values shortcuts were called directly:
+
+```text
+   V().out(E).values(k)                    hopValues ANSWERS   startFiltered decline
+   V().hasLabel(L).out(E).values(k)        hopValues decline   startFiltered ANSWERS
+   V().hasLabel(L).has(k,p).out(E).values  hopValues decline   startFiltered ANSWERS
+   V().out(E).has(k,p).values(j)           hopValues decline   startFiltered decline   <- 16.5 ms
+   V().hasLabel(L).out(E).has(k,p).values  hopValues decline   startFiltered decline
+```
+
+`hopValuesShortcut` destructures exactly `[source, hop, proj]`, so ANY step after the hop sends the
+plan to the pipeline, and `startFilteredHopValues` scanned only the steps BEFORE the hop. **The
+count sibling has answered the far-filtered shape in closed form for ages** (`filteredHopCount`),
+which is exactly why the hole was invisible: the count spelling was fast and the yield spelling was
+not.
+
+#### ⚠️ ITEM 1602's WINNING SHAPE IS NOT AVAILABLE HERE, and that is the interesting constraint
+
+Item 1602 got 62x by going FAR-DRIVEN: test each far vertex once and contribute its degree.
+`filteredHopCount`'s header measures that at 3-4x over the edge-driven form. It cannot be used for a
+yielding walk: **Gremlin stream order is a TinkerPop contract that the differential fuzzer compares
+ORDERED** (unlike GQL, where row order is unspecified), and a far-driven walk emits grouped by far
+vertex where the pipeline emits in start-then-edge order. This module's own header already records
+the same reasoning for why it walks `graph.vertices` instead of seeding from a label bucket.
+
+So the win here is only the generator chain, not the algorithm — which is why it is 4.1x and not
+62x, and that ceiling is a property of the contract rather than of the implementation.
+
+#### What shipped, in two parts
+
+1. **A far-side filter run** between the hop and the projection, collected by
+   `collectVertexFilters` — the existing admission rule, not a second copy — and **folded into
+   `pick`** rather than tested in the loops. There are three loops (the `both` iterator, its
+   `drain`, and the `out`/`in` arm) and this module exists because items 1441/1466 measured an edit
+   to a hot values walk at up to 16% on UNRELATED rows; item 1466 declined a 3.3x win on that
+   basis. Composing once per QUERY leaves all three bodies byte-identical and a plan with no far
+   filter gets the unwrapped `pick` it had.
+2. **The `at === 1` decline removed.** It read "at `length === 3` with no filter,
+   `hopValuesShortcut` already owns the plan" — true only when the hop is immediately followed by
+   the projection. With a far filter that shortcut declines too, so the plan reached NEITHER. And
+   the no-leading-filter spelling is the COMMON one, because `effectivePlan`'s `dropVacuousLabels`
+   DELETES a leading `hasLabel` whenever every vertex carries it. The decline moved to "no filter on
+   EITHER side", which is the condition that was meant.
+
+`undefined` is the drop sentinel, and it is sound for all three projections: `values(k)` already
+drops on `undefined` and must; a bare hop picks the far VERTEX and `id()` a string, so neither can
+produce `undefined` of its own.
+
+#### The numbers, an asserted A/B
+
+PRE arm asserted by `isVertexFilterStep` being absent from every `packages/gremlin/dist` bundle.
+Three runs each, one shape per process, 20,000 vertices / ~80,000 edges:
+
+```text
+                     PRE                            POST                      verdict
+   far-proj          16538329 17232627 15968792     4091788 3797601 4052404   4.1x
+   far-count           395001   392583   414846      409604  393819  583460   flat (control)
+   start-count         534516   485010   520146      486387  470150  482331   flat (control)
+   mid-count         (item 1602's)                   265292  261639  295242   flat (control)
+   nofilter-count        3523     3751     3280        4093    3602    3592   flat (control)
+```
+
+Four controls flat. The remaining 3.8 ms is 50 ns an edge over 80,000 edges, which is the
+start-driven walk the order contract requires — `far-count`'s 0.4 ms is the far-driven form, and the
+8x between them is the price of ordered output on this shape. Recorded rather than chased.
+
+#### Correctness: the oracle was built BEFORE the literals
+
+⚠️ **Item 1602 wrote its unit literals by eye and SIX of fifteen were wrong** while the engine was
+right every time. This file did it the other way round: a hand walk over the fixture table, as a
+script with no engine involved, produced every expectation first. Six shapes were also checked
+against the same oracle on a 300-vertex graph, comparing the full ARRAY — values AND order — because
+order is the contract.
+
+The discriminating row is `e`: `Admin` with NO `score`. `V().out(E).hasLabel(Admin).values(score)`
+yields `[3,3,3,3]` while the `id()` form yields six ids — so the filter keeps it and `values` drops
+it, which is what proves the sentinel is not conflating "rejected by the filter" with "has no such
+property".
+
+#### Mutation: 8 of 8 caught, 0 survived
+
+```text
+   far/ignored            CAUGHT 15    far/consumed-stale        CAUGHT 10
+   far/inverted           CAUGHT 15    guard/claims-bare-hop     CAUGHT  2
+   far/drops-not-forced   CAUGHT  4    far/values-as-filter      CAUGHT 13
+   far/boundary-overruns  CAUGHT 13    collect/refuses-nothing   CAUGHT  1
+```
+
+`far/values-as-filter` is the one worth naming: `count-shortcut.ts`'s `farFilters` treats a trailing
+single-key `values(k)` as a PRESENCE filter (item 1141), so reusing that reader here would consume
+the PROJECTION as a filter. The boundary scanner deliberately does not admit `values`, and the
+mutant is what makes that comment load-bearing. `collect/refuses-nothing` guards the seek deference
+in the shared admission rule.
+
+#### A seekable FAR `has` is not refused, where a seekable LEADING one still is
+
+The same split item 1602 made for its interior run, and `collectVertexFilters` now takes it as a
+parameter instead of each caller re-deriving it: a seek seeds the SOURCE (`seedForStep` reads the
+source step), nothing seeds from the far side of a hop, so refusing there declines the shape on
+every indexed graph and gains nothing. Both halves are pinned with the index present.
+
+#### Gates
+
+`bun run check` 0 read unpiped. Suites gremlin 1694 (13 new), gql 4060, core 435, native 1031,
 serialization 144 — 0 fail. `bun run fuzz` 20/0 under the 16G cap.

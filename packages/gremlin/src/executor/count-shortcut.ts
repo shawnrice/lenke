@@ -2493,11 +2493,20 @@ const soleHopAt = (mid: readonly Step[]): number | undefined => {
  *
  * An indexable `has` is REFUSED rather than accepted, because the index-seed path is strictly
  * better than the scan a caller would do with it — the same decline `startFilteredHopCount` makes
- * inline, kept in one place now that two rungs need it.
+ * inline, kept in one place now that several rungs need it.
+ *
+ * ⚠️ `refuseSeekable: false` IS FOR A FAR-SIDE RUN ONLY, and the asymmetry is deliberate rather
+ * than a relaxation (item 1603). The refusal exists because a seek seeds the SOURCE and
+ * `countShortcut`/the values shortcuts run before `seedFromIndex`, so a tally or walk that scanned
+ * would preempt a better route. Nothing seeds from the FAR side of a hop — `seedForStep` reads the
+ * source step — so refusing there declines the shape on every indexed graph and gains nothing. Item
+ * 1602's `interleavedHopChainCount` makes the same split for its interior run, and both pin the two
+ * halves with the index present.
  */
 export const collectVertexFilters = (
   steps: readonly Step[],
   graph: Graph,
+  refuseSeekable = true,
 ): VertexFilter[] | undefined => {
   const out: VertexFilter[] = [];
 
@@ -2509,6 +2518,7 @@ export const collectVertexFilters = (
     }
 
     if (
+      refuseSeekable &&
       vf.kind === 'has' &&
       seekWorthTaking(vf, graph.vertexPropertyIndex, graph.verticesById.size)
     ) {

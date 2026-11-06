@@ -74,9 +74,23 @@ export const startFilteredHopValues = (plan: Plan, graph: Graph): HopValues | un
     at += 1;
   }
 
-  if (at === 1 || at >= steps.length) {
+  if (at >= steps.length) {
     return undefined;
   }
+
+  // ⚠️ `at === 1` — NO leading filter — IS NO LONGER A DECLINE (item 1603), and the reason the old
+  // guard existed no longer covers the case. It read "at `length === 3` with no filter,
+  // `hopValuesShortcut` already owns the plan and this one is never consulted", which is true only
+  // when the hop is immediately followed by the projection: that shortcut destructures exactly
+  // `[source, hop, proj]`, so a FAR-SIDE filter makes it decline too and the plan reached neither.
+  // `V().out(T).has(k,p).values(j)` is the measured spelling — 15.7-16.4 ms on 20,000 vertices —
+  // and it is the common one, because `effectivePlan`'s `dropVacuousLabels` DELETES a leading
+  // `hasLabel` whenever every vertex carries it, turning the filtered spelling into this one.
+  //
+  // The decline moved to the pair below rather than being dropped: with no filter on EITHER side
+  // this is `hopValuesShortcut`'s plan and must stay there, since it reaches it first through
+  // `??` and has four walks this module deliberately does not fork (see the header).
+  const leadCount = at - 1;
 
   const hop = steps[at];
 
@@ -96,7 +110,36 @@ export const startFilteredHopValues = (plan: Plan, graph: Graph): HopValues | un
     return undefined;
   }
 
-  const proj = steps[at + 1];
+  // ⚠️ ITEM 1603: a FAR-SIDE filter run between the hop and the projection. `V().out(T).has(k,p)
+  // .values(j)` reached NEITHER values shortcut — `hopValuesShortcut` destructures exactly
+  // `[source, hop, proj]` and this module scanned only the steps BEFORE the hop — so it fell to the
+  // traverser pipeline at **15.7-16.4 ms** on 20,000 vertices / 80,000 edges, where its own count
+  // sibling (`filteredHopCount`) answers in closed form. Every neighbouring spelling was admitted,
+  // which is exactly why the hole survived: the same shape as item 1602 found on the count side.
+  let farEnd = at + 1;
+
+  while (farEnd < steps.length && isVertexFilterStep(steps[farEnd])) {
+    farEnd += 1;
+  }
+
+  const farFilters =
+    farEnd === at + 1
+      ? []
+      : // `refuseSeekable: false` — nothing seeds from the far side of a hop, so the refusal the
+        // START run makes would decline this shape on every indexed graph and gain nothing. The
+        // admission rule itself is still `collectVertexFilters`'s, not a second copy.
+        collectVertexFilters(steps.slice(at + 1, farEnd), graph, false);
+
+  if (farFilters === undefined) {
+    return undefined;
+  }
+
+  // Neither side filtered is `hopValuesShortcut`'s plan — see the note at `leadCount`.
+  if (leadCount === 0 && farFilters.length === 0) {
+    return undefined;
+  }
+
+  const proj = steps[farEnd];
   // ONE key, for `hopValuesShortcut`'s reason: `values()` with no key emits every property value
   // and `values(a, b)` fans out per key.
   const valueKey = proj?.kind === 'values' && proj.keys.length === 1 ? proj.keys[0] : undefined;
@@ -109,15 +152,39 @@ export const startFilteredHopValues = (plan: Plan, graph: Graph): HopValues | un
   if (valueKey !== undefined) {
     pick = (far) => far.properties[valueKey];
     drops = true;
-    consumed = at + 2;
+    consumed = farEnd + 1;
   } else if (proj === undefined) {
     pick = (far) => far;
-    consumed = at + 1;
+    consumed = farEnd;
   } else if (proj.kind === 'id') {
     pick = (far) => far.id;
-    consumed = at + 2;
+    consumed = farEnd + 1;
   } else {
     return undefined;
+  }
+
+  /**
+   * The far filters FOLDED INTO `pick`, which is what keeps every walk below byte-identical.
+   *
+   * ⚠️ NOT A TEST ADDED TO THE LOOPS. There are three of them (the `both` iterator, its `drain`,
+   * and the `out`/`in` arm), and this module exists because items 1441/1466 measured an edit to a
+   * hot values walk at up to 16% on UNRELATED rows — item 1466 declined a 3.3x win on that basis.
+   * Composing `pick` once per QUERY leaves all three loop bodies exactly the code they were, and a
+   * plan with no far filter gets the unwrapped `pick` it had.
+   *
+   * `undefined` AS THE DROP SENTINEL IS SOUND FOR ALL THREE PROJECTIONS, and that is worth stating
+   * because it looks like a conflation. `values(k)` already drops on `undefined` and must (a far
+   * vertex lacking `k` yields nothing, which is also the right answer for one the filter rejects);
+   * a bare hop picks the far VERTEX and `id()` picks a string, so neither can produce `undefined`
+   * of its own and forcing `drops` cannot swallow a real value.
+   */
+  const farTests = farFilters.length === 0 ? undefined : compileGates(farFilters);
+
+  if (farTests !== undefined) {
+    const inner = pick;
+
+    pick = (far) => (survives(far as unknown as Vertex, farTests) ? inner(far) : undefined);
+    drops = true;
   }
 
   const [type] = hop.labels;
@@ -285,6 +352,18 @@ export const startFilteredHopValues = (plan: Plan, graph: Graph): HopValues | un
  */
 const isHop = (step: Step): boolean =>
   step.kind === 'out' || step.kind === 'in' || step.kind === 'both';
+
+/**
+ * Could this step be a vertex filter? Only the KINDS are tested here — whether the step is
+ * admissible (and whether a seekable `has` defers to the index) is `collectVertexFilters`'s
+ * judgement, which this must not restate. It exists to find the far run's BOUNDARY (item 1603).
+ *
+ * ⚠️ `values` IS NOT ON THIS LIST, where `count-shortcut.ts`'s `farFilters` treats a trailing
+ * single-key `values(k)` as a PRESENCE filter (item 1141). On this module's shape a trailing
+ * `values(k)` is the PROJECTION, so reusing that reader would consume the projection as a filter
+ * and then find nothing to project.
+ */
+const isVertexFilterStep = (step: Step): boolean => step.kind === 'hasLabel' || step.kind === 'has';
 
 const survives = (v: Vertex, tests: readonly Gate[]): boolean => {
   for (const gate of tests) {
