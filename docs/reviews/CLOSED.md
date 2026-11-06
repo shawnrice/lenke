@@ -62997,3 +62997,103 @@ kept finding.
 `bun run check` 0 read unpiped. The only tree change is a comment (verified comment-only by diffing
 against `HEAD` and filtering non-comment lines: zero). gremlin 1494/0, native 963/0; the rest stand
 at item 1545's: core 431/0, gql 3865/0, serialization 144/0, `bun run fuzz` 20/0.
+
+### Item 1547 — SHIPPED, **908x**: a VACUOUS `hasLabel` with several labels was never recognized as vacuous, so it stayed in the plan and the plan left the closed-form route. `V().hasLabel(P,Q).out(E).count()` 9.075 → 0.010 ms, two controls flat. ⚠️ **The mutation run was KILLED by memory pressure mid-sweep and left a mutant in the tree — recorded because it is the hazard CLAUDE.md names, observed for real**
+
+Item 1546 concluded that the wins have been coming from shapes that still DECLINE a fast path rather
+than from making hot loops faster. This tick took that advice and it paid immediately.
+
+#### The screen, and why it was the right instrument
+
+`count-shortcut.ts` is 2,771 lines with ~50 guard-level declines. Reading fifty guards is the wrong
+tool; `packages/native/count-decline-screen.mjs` times fifteen count shapes in one process and looks
+for **order-of-magnitude** outliers against structural twins. A closed-form count is sub-millisecond
+and a materialised one is tens to hundreds, so the signal is 1000x, not 10% — which is why many arms
+in one process is acceptable here where item 762 forbids it for a 10% claim.
+
+It flagged on the first run:
+
+```text
+   V().hasLabel(P).out(E).count()      0.005 ms   [200000]
+   V().hasLabel(P, Q).out(E).count()   9.268      [200000]    <- same answer, 1850x
+   V().hasLabel(P).count()             0.003
+   V().hasLabel(P, Q).count()          1.259                  <- same answer, 420x
+```
+
+#### The cause, one clause
+
+```ts
+-    if (step.kind !== 'hasLabel' || step.labels.length !== 1) {
++    if (step.kind !== 'hasLabel') {
+```
+
+`hasLabel` is **ANY-match**, so a disjunction one of whose labels sits on every element removes
+nothing. `dropVacuousLabels` tested only the single-label spelling, so `hasLabel(P, Q)` on a graph
+where every vertex carries `P` survived into the plan — and a plan carrying that filter takes the
+general route where the dropped form is closed-form.
+
+The replacement costs the same: iterate the named labels and return true if any one bucket covers the
+total. Same O(k) `Map.get`s the old single test did.
+
+**SUFFICIENT, NOT COMPLETE, deliberately.** Two labels each on half the vertices could union to
+everything while neither bucket covers it alone; deciding that needs a real union and this pass runs
+on every query. That case is pinned as a test with its answer asserted — the filter is kept and the
+answer is right, just slower.
+
+#### MEASURED — one arm per process, arm asserted in the bundle both ways
+
+| arm                                | PRE      | POST      |          |
+| ---------------------------------- | -------- | --------- | -------- |
+| `V().hasLabel(P,Q).out(E).count()` | 9.075 ms | **0.010** | **908x** |
+| `V().hasLabel(P,Q).count()`        | 1.287    | **0.007** | **184x** |
+
+| control                                          | PRE   | POST  |      |
+| ------------------------------------------------ | ----- | ----- | ---- |
+| `V().hasLabel(Q,R).count()` — non-vacuous        | 0.006 | 0.009 | flat |
+| `V().hasLabel(Q,R).out(E).count()` — non-vacuous | 8.530 | 8.498 | flat |
+
+In the many-arm screen the POST figures read 0.002 and 0.001; isolated they sit at the measurement
+floor with few reps. Either way it is two to three orders of magnitude, and the non-vacuous twins do
+not move.
+
+#### ⚠️ THE MUTATION RUN WAS KILLED, AND IT LEFT A MUTANT IN THE TREE
+
+The sweep ran in the background and was stopped by the harness because the machine was low on memory
+— not a failure of the command, and the notice says not to restart it unasked, so it has not been
+restarted. **It restores the tree only at the end of the loop, so it was killed with a mutant
+applied.** `diff` against the saved pristine copy caught it and the file was restored.
+
+CLAUDE.md names this exactly: _"Restore before applying the next mutant, never only after the loop.
+An interrupted loop leaves the mutant in the tree, and `git diff` is then the only thing standing
+between it and a commit."_ That is now an observed event rather than a warning, and the script in
+`scratchpad/` still has the end-of-loop restore it was written with. The next mutation script should
+restore **before** each mutant AND verify against pristine after being interrupted.
+
+**So mutation verification is OWED for this item.** What stands in its place, stated precisely rather
+than glossed: the first mutant in the list, `single-label-only`, is byte-identical to the PRE code
+that was measured at 9.075 ms, and the new tests assert `effectivePlan(...).steps` is `['V','count']`
+for `hasLabel(P,Q).count()` — a plan the PRE code cannot produce, because it never drops a
+multi-label filter. So that mutant is caught by construction. The three others — `drop-any-multi`
+(drop a NON-vacuous disjunction, a wrong answer), `always-vacuous`, and `wrong-index` (use the vertex
+index for an edge source) — are **unverified**, and `drop-any-multi` is the one a future tick should
+run first.
+
+#### Two stale claims the screen corrected
+
+- **`isolated-gremlin-bench.mjs`'s `hopcount2` comment is wrong.** It says "answered by the degree
+  inner product with no edge walk"; it measures **68 ms**. Two-hop counts are a slot sweep in both
+  directions (`out.out` 52.8, `both.both` 61.1). The inner product in `bothChainCount` is gated on
+  `unfiltered && hops.length === 2` and ~60 ms is what that path costs at 200,000 vertices — which
+  matches CLOSED.md's own "both.both 6241 → 82 ms" prize rather than contradicting it.
+- **Multi-type edges do not disable the single-type closed form**, which I suspected and tested:
+  `out(E).count()` is 0.005 ms whether or not 1-in-7 edges carry two labels. Only the multi-LABEL
+  hops change (`out(E,F)` 0.315 → 0.001), which is `bucketsFor`'s documented soundness condition
+  working correctly.
+
+#### Gates
+
+`bun run check` 0 read unpiped. core 431/0, gql 3865/0, gremlin **1500**/0, native 963/0,
+serialization 144/0. Six new tests, all ROUTE-level reading `effectivePlan`, because a correct drop
+is answer-equivalent (`perf-gate-needs-its-own-test`). `bun run fuzz` **20/0** — run because this is
+a plan rewrite and byte-identity is a hard invariant, which is a gate rather than part of the killed
+sweep. Only the MUTATION verification is owed.

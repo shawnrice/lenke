@@ -1565,15 +1565,36 @@ const dropVacuousLabels = (plan: Plan, graph: Graph): Plan => {
   }
 
   const vacuous = (step: Step): boolean => {
-    if (step.kind !== 'hasLabel' || step.labels.length !== 1) {
+    if (step.kind !== 'hasLabel') {
       return false;
     }
 
-    const bucket = vertexSource
-      ? graph.verticesByLabel.get(step.labels[0])
-      : graph.edgesByLabel.get(step.labels[0]);
+    // ⚠️ MULTIPLE LABELS COUNT TOO, and this used to require exactly one (item 1547). `hasLabel`
+    // is ANY-match, so if ONE of the named labels is on every element the whole disjunction is
+    // vacuous — `hasLabel(P, Q)` on a graph where every vertex carries `P` removes nothing.
+    // Requiring `labels.length === 1` left that filter in the plan, and the plan then takes the
+    // general route where the dropped form is closed-form. Measured at 200,000 vertices, one arm
+    // per process:
+    //
+    //     V().hasLabel(P, Q).count()            1.287 -> 0.007 ms    184x
+    //     V().hasLabel(P, Q).out(E).count()     9.075 -> 0.010       908x
+    //
+    // both answering exactly what the single-label spelling answers.
+    //
+    // ⚠️ THE TEST IS SUFFICIENT, NOT COMPLETE, and deliberately. Two labels each on half the
+    // vertices could UNION to everything while neither bucket covers it alone; deciding that needs
+    // a real union and this pass runs on every query. `hasLabel(Q, R)` — half and none — is
+    // correctly judged non-vacuous and measured 0.006 against 0.009 ms, so the incomplete case is
+    // not where the cost is.
+    const byLabel = vertexSource ? graph.verticesByLabel : graph.edgesByLabel;
 
-    return bucket?.size === total;
+    for (const label of step.labels) {
+      if (byLabel.get(label)?.size === total) {
+        return true;
+      }
+    }
+
+    return false;
   };
 
   // Only a LEADING run of them: a `hasLabel` after a hop tests the hop's endpoints, which are a
