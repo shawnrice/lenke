@@ -67370,7 +67370,7 @@ GQL is 0.60x on values and 0.06x on count. A seeded count of 400 elements costin
 reading the bucket size costs 0.9 is the same closed-form opportunity on the other surface —
 `detectCountShortcut` has an index-seeded path, so the question is why it is not reached here.
 
-### Item 1597 — GQL's seeded count is **not failing to seek** (10.78x and 142.78x over unindexed) — it seeks and then **RE-VALIDATES EVERY CANDIDATE**, which a profile puts at 75% predicate plus 9% label. The mechanism is named: GQL's `SeedCandidate` has no exactness flag, where Gremlin's `Candidate` has `removable`. Priced at 4-7x and NOT built this tick. ~~And a second finding: a 1.76x
+### Item 1597 — GQL's seeded count is **not failing to seek** (10.78x and 142.78x over unindexed) — it seeks and then **RE-VALIDATES EVERY CANDIDATE**, which a profile puts at 75% predicate plus 9% label. The mechanism is named: GQL's `SeedCandidate` has no exactness flag, where Gremlin's `Candidate` has `removable`. ~~Priced at 4-7x~~ — **re-priced at 2.08x by item 1605**, which also found the 75% predicate share this rested on is now 19.4% (items 1598/1600/1604 specialized that predicate) and fixed a WRONG ANSWER in the same seeding loop. Still real, still NOT built. ~~And a second finding: a 1.76x
 
 equivalent-spelling gap on the same count, recorded rather than closed~~ — **that half is CLOSED by
 item 1598** (1.39x indexed, 1.55x unindexed, the two spellings converged); the re-validation target
@@ -67430,12 +67430,18 @@ first of its two risks.
 #### Priced, and deliberately not built here
 
 At ~75% of 48 ns per hit, removing re-validation on the exact case is **4-7x on this shape** — the
-400-hit count from 14.5 us to ~2-4. That is worth having, and it is also a change that threads a new
-flag through a hot file (`matching.ts`) on the path where a wrong exactness verdict is a WRONG
-ANSWER rather than a slow one. ⚠️ **Not started at the end of a long tick**: items 1592 and 1596 both
-had me nearly ship something the tests then refused, and the pattern worth keeping is that a
-correctness-sensitive change gets its own tick with its own mutation pass, not the last twenty
-minutes of another.
+400-hit count from 14.5 us to ~2-4.
+
+> ⚠️ **BOTH NUMBERS ARE STALE, corrected at item 1605.** Items 1598/1600/1604 specialized the
+> predicate this 75% measured, so a fresh profile puts it at **19.4%** and the label test at 55.6%.
+> By share the target reads ~1.24x; by ABLATION it is **2.08x** (12766-13279 ns down to 6324-6354),
+> which is item 1600's lesson that a share under-reads a per-element cost. The lever is still worth
+> having and is still unbuilt — at 2.08x, not 4-7x. That is worth having, and it is also a change that threads a new
+> flag through a hot file (`matching.ts`) on the path where a wrong exactness verdict is a WRONG
+> ANSWER rather than a slow one. ⚠️ **Not started at the end of a long tick**: items 1592 and 1596 both
+> had me nearly ship something the tests then refused, and the pattern worth keeping is that a
+> correctness-sensitive change gets its own tick with its own mutation pass, not the last twenty
+> minutes of another.
 
 What the next tick needs is all here: the shape, the mechanism, the precedent to copy, the two risks
 item 149 names, and the number to beat.
@@ -68316,3 +68322,109 @@ papered over.
 
 `bun run check` 0 read unpiped. Suites gql 4079 (19 new), gremlin 1694, core 435, native 1031,
 serialization 144 — 0 fail. `bun run fuzz` 20/0 under the 16G cap.
+
+### Item 1605 — ⚠️ **A WRONG ANSWER: an index made `{k: null}` UNDER-COUNT by exactly the vertices that lack the key.** Found while re-pricing item 1597's target, which is also corrected here — its "4-7x" is now **2.08x**, and the 75% predicate share it rested on is 19.4%
+
+This tick went looking at what `isScalar` admits, because the exactness lever item 1597 priced
+threads a flag through the same loop. The loop turned out to be already wrong.
+
+#### The bug
+
+`indexCandidates` seeds from `node.pred.props` — the INLINE constraint — and `isScalar` admits
+`null`, so a null-valued inline property seeded from the index's null bucket. The two equality
+readings differ precisely there:
+
+```text
+   {k: null}         matches a stored null AND an ABSENT key   (item 260, and `satisfies`)
+   WHERE n.k = null  matches NEITHER
+```
+
+A value bucket holds the stored nulls. It **cannot** hold the vertices with no such key, and no
+re-validation can add them back — a seed is only ever NARROWED. On a fixture with 10 stored nulls,
+10 absent and 20 valued:
+
+```text
+   MATCH (u:P {note: null}) RETURN count(*)    unindexed 20    indexed 10
+   MATCH (u:P) WHERE u.note IS NULL            unindexed 20    indexed 20
+```
+
+**Twenty is right**, and three independent sources say so: the unindexed path, the `IS NULL`
+spelling (which canonicalizes TO `{k: null}`), and `satisfies`'s own `props` loop. The indexed path
+silently dropped ten rows. This is item 149's one contract — "an index may change the COST and must
+never change the COUNT" — and the fix is to decline the seek, because the matching set is not a
+value bucket.
+
+⚠️ **NATIVE AGREES WITH THE FIXED BEHAVIOUR**, which is why `inline-null-seek-parity.test.ts`
+exists: had native matched the pre-fix TS answer, this would have been a new DIVERGENCE rather than
+a repair, and that is worth a test rather than an assumption. 9 of 9 shapes byte-identical.
+
+#### How it hid, which is the part worth keeping
+
+- **Every probe this session used a non-null `$param`.** The one contract that would have caught it
+  is asserted by `gql-seek-revalidation-probe.mjs` — on exactly the shapes it measures, none of them
+  null-valued.
+- **No fuzzer covers it.** `differential-fuzz` does generate inline constraints, but over generated
+  property values; a null-valued inline property against an INDEXED key is outside what it builds,
+  and the index is what makes the two readings diverge.
+- The whole suite was green, and items 1598/1600/1604 all touched this family without tripping it.
+
+#### ⚠️ AND I BRIEFLY BELIEVED SOMETHING FAR WORSE, because of the dist
+
+The first reproduction showed `MATCH (u:P {note: "x"}) RETURN count(*)` returning 3 on a 3-vertex
+graph while the ROWS twin returned 1 — every filtered count ignoring its predicate, at every size.
+That was **my own ablation still in the built `dist`**: the source had been restored with
+`git restore` and never rebuilt. `fuzzers-read-built-dists` is the standing note and this is the
+same trap in the DIAGNOSTIC direction — it manufactures a catastrophic-looking bug rather than
+hiding a real one. Two minutes, and the tell was that the wrongness did not scale with anything.
+
+#### Item 1597's target, re-priced — and the number was stale in BOTH directions
+
+That item priced "skip re-validation on an exact seed" at **4-7x**, from a profile where predicate
+evaluation was ~75%. Items 1598/1600/1604 have since specialized that predicate, so a fresh profile
+of the same query reads:
+
+```text
+   45.8%  evalLabelExpr          the label test, which item 1599 REFUTED both levers for
+   9.9%   structuralEq
+   8.2%   get labels
+   5.4%   (anonymous) :4988      the specialized predicate closure
+   4.1%   propOf
+   1.4%   countEquals            the seek itself
+```
+
+So the predicate is now **19.4%**, not 75%, and the label test is 55.6%. By share the target looked
+dead at ~1.24x. ⚠️ **The ablation says 2.08x** — 12766-13279 ns down to 6324-6354 with the predicate
+call removed — which is item 1600's lesson again: a share under-reads a per-element cost by its
+effect on the loop's shape. So:
+
+- **item 1597's 4-7x is wrong and corrected to ~2.08x** (its heading is struck);
+- **the target is still real**, and unlike item 1599's label test it is fully reachable: for an
+  EXACT seed, removing the predicate IS the ablation rather than an approximation of it;
+- **this item is a prerequisite for it.** A null-valued seed must not survive into an exactness
+  check, which is why the clause-side guard below went in now.
+
+#### Mutation: 4 of 5 caught, and the fifth was MEANT to survive
+
+```text
+   null/guard-removed             CAUGHT  6     null/checks-undefined-instead  CAUGHT  6
+   null/guard-inverted            CAUGHT 20     null/clause-hint-also-guarded  SURVIVED
+   null/never-seeds               CAUGHT 14
+```
+
+`null/never-seeds` is the over-reach control: the route assertions in `inline-null-seek.test.ts`
+check that a non-null inline value still yields a candidate, so "no wrong answer" cannot be achieved
+by never seeking.
+
+⚠️ **`null/clause-hint-also-guarded` was run to find out whether the clause side depends on seeding
+a null, and its survival is the answer: 0 failures across 4,094 tests.** So the guard is
+answer-neutral there — and that is the evidence on which it then became CODE. It stops pointless
+work (a bucket walk that cannot produce a match) and, more importantly, it stops being harmless the
+moment a seed may skip re-validation. Closing it next to the `props` fix that had the mirror-image
+bug is cheaper than rediscovering it as a wrong answer.
+
+#### Gates
+
+`bun run check` 0 read unpiped. Suites gql 4094 (15 new), gremlin 1694, core 435, native 1040 (9
+new), serialization 144 — 0 fail. `bun run fuzz` 20/0 under the 16G cap. The non-null seeded count
+measures 12363-12735 ns against 12363-13279 before, so declining the null seek costs the seeking
+path nothing.

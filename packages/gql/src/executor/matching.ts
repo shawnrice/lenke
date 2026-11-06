@@ -177,7 +177,42 @@ export const indexCandidates = function* (
     if (idx.isIndexed(key)) {
       const v = value(env);
 
-      if (isScalar(v)) {
+      /**
+       * ⚠️ A NULL VALUE MUST NOT SEED FROM THIS LOOP — item 1605, a WRONG ANSWER, not a slow path.
+       *
+       * `isScalar` admits `null` (the property index does store null-valued keys), and for a
+       * `WHERE k = $v` hint that is harmless. It is NOT harmless here, because this loop reads
+       * `node.pred.props` — the INLINE constraint — whose equality is a different notion:
+       *
+       * ```text
+       *    {k: null}        matches a stored null AND an ABSENT key   (item 260; `satisfies`)
+       *    WHERE n.k = null matches NEITHER
+       * ```
+       *
+       * A value bucket can hold the stored nulls. It cannot hold the vertices that lack the key at
+       * all, and no amount of re-validation can add them back — a seed is only ever NARROWED. So
+       * seeding here made an index CHANGE THE COUNT, which is item 149's one contract:
+       *
+       * ```text
+       *    MATCH (u:P {note: null}) RETURN count(*)   unindexed 20   indexed 10
+       *    MATCH (u:P) WHERE u.note IS NULL           unindexed 20   indexed 20
+       * ```
+       *
+       * on a fixture with 10 stored nulls, 10 absent and 20 valued. Twenty is right — the
+       * unindexed path and the `IS NULL` spelling agree on it, and it is what `satisfies`'s `props`
+       * loop computes. The indexed path silently dropped the ten absent-key vertices.
+       *
+       * Declining sends the shape to the scan, which is the only sound answer: the matching set is
+       * not a value bucket. `{k: null}` is also the spelling `IS NULL` canonicalizes to, and that
+       * route already scans.
+       *
+       * ⚠️ THE `eq` SEED HINT BELOW IS LEFT ALONE, and that is deliberate: it carries the
+       * EXPRESSION reading, which rejects a null right-hand side, so re-validation reduces the null
+       * bucket to nothing and the answer is right today. It would become unsound the moment a seed
+       * is allowed to skip re-validation — the exactness work item 1597 priced — so that item has to
+       * decline a null value when it lands.
+       */
+      if (isScalar(v) && v !== null) {
         yield eqCandidate(key, v);
       }
     }
@@ -285,7 +320,20 @@ export const indexCandidates = function* (
     if (hint.kind === 'eq') {
       const v = hint.value(env);
 
-      if (isScalar(v)) {
+      /**
+       * ⚠️ ANSWER-NEUTRAL TODAY AND LOAD-BEARING TOMORROW, and the mutation pass is what says so.
+       * This hint carries the EXPRESSION reading, which rejects a null right-hand side, so a null
+       * bucket seeded here is emptied by re-validation and the answer is right either way —
+       * ADDING this guard was run as a mutant and SURVIVED, 0 failures across 4,094 tests, which is
+       * the evidence that it changes nothing rather than an argument that it should not.
+       *
+       * It is here because the seek is then pointless work (a bucket walk that cannot produce a
+       * match), and because it stops being harmless the moment a seed is allowed to SKIP
+       * re-validation — the exactness lever item 1597 priced. A null-valued `eq` hint would then
+       * count the stored nulls that `=` must not match. Cheaper to close now, next to the `props`
+       * fix that had the mirror-image bug, than to rediscover as a wrong answer.
+       */
+      if (isScalar(v) && v !== null) {
         yield eqCandidate(hint.key, v);
       }
     } else if (hint.kind === 'within') {
