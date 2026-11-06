@@ -67587,14 +67587,16 @@ call-site comment and the test's own docstring now say which reason. The mutant'
 not finding a missing test; it was stopping a wrong explanation from being committed next to
 working code — which is the failure mode item 1593 and item 1594 both hit from the other direction.
 
-#### Scope, stated so the next item does not over-read the number
+#### Scope, stated so the next item does not over-read the number — ⚠️ **the follow-up here is TAKEN by item 1600**
 
 There is exactly ONE call site: `buildNodeCount`'s `fastPred`. So this reaches the filtered node
 COUNT and nothing else. The inline spelling of a PROJECTION (`MATCH (u:User {team: $v}) RETURN
 u.score`) still runs the general matcher per candidate and is unmoved — item 1597's probe measures
-it at 21-23 us against the clause form's own general path. **Widening the specializer to the general
-`inlineHolds` path is the next lever on this family**, and it is a different change: that path
-carries bindings and is shared by every pattern shape, where this one is a closed tally.
+it at 21-23 us against the clause form's own general path. ~~**Widening the specializer to the
+general `inlineHolds` path is the next lever on this family**~~ — **DONE at item 1600**: composed
+into `nodeScanGate`'s per-conjunct chain rather than per call site, 1.25-1.31x on a 20,000-candidate
+scan with a null control flat. That item also found EIGHT copies of the same composition, of which
+seven still lack the arm — which is where this family's remaining work now is.
 
 #### Gates
 
@@ -67694,3 +67696,132 @@ that row, the label test would have looked like 4% instead of 53%.
 
 No engine change — the REJECTED notes land on `matchesLabel` and one probe is added. `bun run
 check` 0 read unpiped. Suites unchanged from item 1598.
+
+### Item 1600 — **1.25-1.31x on a filtered node scan** by pre-resolving each gate conjunct once per query, with a null control flat. ⚠️ Found by a FLOOR plus a two-part ablation, not by a profile frame — and the profile's own top frame was the one item 1599 had already refuted
+
+Item 1598 left "widening the specializer to the general path" as the next lever on this family and
+item 1599 refuted the label test. This took the remaining half, and the instrument is the story.
+
+#### The floor, which said there was something to find
+
+Item 1598 gave the seeded COUNT a specialized predicate and left the seeded PROJECTION alone; the
+per-row costs had diverged to 30 ns against 65. `gql-seeded-projection-floor.mjs` measures the
+minimum any implementation must do for the same answer — walk the seeded candidates, test the
+label, read one property, build one row — one arm per process:
+
+```text
+   engine clause  RETURN u.score    29344  24723 ns
+   engine inline  RETURN u.score    23914  23470
+   engine clause  RETURN count(*)   13162  12829
+   FLOOR  bucket + label + one row   8502   8353        the projection is 2.8x its floor
+   FLOOR  no row objects              5864   5989
+```
+
+⚠️ A floor is the right instrument BEFORE building a shortcut, and memory's
+`gremlin-ts-unmeasured` is why: a floor per shape RETRACTED two of three targets there. Here it did
+the opposite — it said 2.8x was on the table and the row objects were not where it lived.
+
+#### The two-part ablation, which named the half worth taking
+
+The profile's top frames were `evalLabelExpr` 25.0%, `get labels` 8.2%, `matchesLabel` 7.6% — 40.8%
+on the label test, **the target item 1599 had just refuted**. So instead of trusting the frame, both
+candidates were ablated separately at `detectNodeProjection`'s streaming walk, on
+`MATCH (u:User) WHERE u.team = $v RETURN u.score`, 400 rows of 20,000 seeded, one shape per process:
+
+```text
+   baseline                 24204  24572  24643 ns
+   the GATE ablated         11721  11987  11996        2.05x   <- the half nothing had looked at
+   the LABEL test ablated   18996  19176  19930        1.27x   <- the 40.8% of the profile
+   both ablated              7373   7680   7994        3.16x
+   the FLOOR                 8353   8502               both-ablated IS the floor
+```
+
+**The gate is 2.05x and the 40.8% profile frame is 1.27x.** A frame's self-time share ranked these
+in the wrong order (item 1104, again), and with both gone the rung sits exactly on the floor — which
+is what says the two account for the whole gap and nothing else is hiding behind them.
+
+#### What shipped
+
+`nodeScanGate` composes one closure per conjunct, each calling `inlineHolds` -> `satisfies`, which
+re-dispatches over twelve carriers PER ELEMENT. Each conjunct's work is now resolved ONCE PER QUERY
+through `specializeSingleProp` — item 1598's lever, one consumer along.
+
+⚠️ **It goes in the composition, not in the loops.** The gate has thirteen call sites and
+`executor-edits-perturb` prices a new walk variant at up to 16% on UNRELATED rows, so a fast arm per
+site would cost more than it buys. Composed here the signature is unchanged, every site benefits,
+and no loop body moves.
+
+The `{ binding, params, graph }` is allocated per element, which looks like the wrong trade and is
+not: item 1512, in this same file, removed 800,000 such allocations per call from the projection
+loop and measured **1.01x**. "It allocates per row" is not by itself a cost in this engine.
+
+#### The numbers, an asserted A/B
+
+Each arm verified in the BUILT dist before measuring (the PRE arm's `false &&` folds the
+`specializeSingleProp` call out of the bundle entirely, which is the check):
+
+```text
+                              PRE                      POST
+   proj-clause  20k scan      435346 445185 436398   329933 331853 346457   1.31x
+   proj-inline  20k scan      409378 410108 409949   317971 330609 331586   1.25x
+   uniq-clause  20k scan      404190 404713 416251   312620 318662 320686   1.28x
+   proj-nofilter 20k scan     224135 226294 226806   225275 231411 232277   flat (NULL CONTROL)
+   proj-clause  400 seeded     24204  24572  24643    23435  23658  23988   1.03x
+```
+
+Three shapes move, the null control — no predicate, so `nodeScanGate` returns `undefined` and the
+arm is unreachable — does not. **Both spellings move**, so this opens no equivalent-spelling gap.
+
+⚠️ **And the seeded 400-candidate shape is only 1.03x where its own ablation said 2.05x.** That is
+not a contradiction and it is worth stating plainly: the dispatch is ONE part of the gate's 31 ns a
+candidate, and `propOf` + the value closure + `structuralEq` — which the specialized closure still
+pays — are the rest. The scan rows are where the per-candidate share is large enough to read. The
+fast arm was confirmed FIRING by a tripwire (`fast=true carriers=eqProps`) before these numbers were
+read, which is the check item 1586 learned the hard way.
+
+#### Mutation: 5 of 6 caught, and the survivor is a REDUNDANCY with a use
+
+```text
+   gate/admits-bindvar   CAUGHT 1 fail      gate/drops-rest        CAUGHT   3 fail
+   gate/never-fires      CAUGHT 4 fail      gate/fast-always-true  CAUGHT 203 fail
+   gate/inverted-guard   CAUGHT 4 fail      gate/empty-binding     SURVIVED
+```
+
+`admits-bindvar` is the one that had to be caught: `inlineHolds` WRITES the binding for a correlated
+conjunct before testing it, and a specialized closure never writes one.
+
+⚠️ `gate/empty-binding` — handing the fast closure `{ binding: new Map(), … }` — survives, and it is
+**redundant rather than untested**, which item 475 says have opposite fixes. Every specializable
+conjunct is CLOSED by construction (that is `asPropCompare`'s own requirement), so its value closure
+reads `params` and `graph` and never the binding. No test can catch it without first breaking
+closedness. The real binding is still passed, as defence in depth over a contract this site cannot
+see enforced — and the survivor is also the evidence that a future signature change could hoist the
+env out of the loop entirely.
+
+#### ⚠️ EIGHT COPIES OF THIS COMPOSITION EXIST, and seven are untouched
+
+`reduceRight((rest, ip) => … inlineHolds(ip, …) && (rest === undefined || rest(…)))` appears **eight
+times** in `shortcuts.ts` — `nodeScanGate`, `gateOfPreds` (the three-hop interior), the
+two-hop/keyed/anchored builders, and others. Only `nodeScanGate`'s has the fast arm.
+
+**The follow-up is to extract ONE composition and give it the arm**, which would carry this 1.25-1.31x
+to the hop and multi-hop gates. It is deliberately not done here: eight sites is a different change
+from one, and the file's own note warns that "two copies of one shape rule is how the far endpoint
+ended up on a per-edge tally once before". The duplication is the finding; the extraction is the
+next item.
+
+#### Also measured and NOT a defect: `props` is missing from the scan pre-filter
+
+`matchPattern`'s `preFilter` is `pre.eqProps !== undefined || pre.cmpProps !== undefined` — **`props`
+is not in it**, so the inline spelling gets no pre-filter where the clause spelling does. That is the
+same asymmetry item 1598 fixed one level up, so it looked like a second spelling gap. It is not:
+unindexed at 20,000 vertices the two spellings read 428478/431086 against 408614/410727 at 400 hits
+and 403166/413289 against 398233/398251 at ONE hit — converged, with the PRE-FILTERED clause form
+marginally SLOWER. So `rejectedByElementDirect` costs about what the `withBinding` allocation it
+saves costs, at today's prices. Recorded so the omission is not "fixed" on the strength of how it
+reads.
+
+#### Gates
+
+`bun run check` 0 read unpiped. Suites gql 4058 (10 new), gremlin 1666, core 435, native 1031,
+serialization 144 — 0 fail. `bun run fuzz` 20/0 under the 16G cap.

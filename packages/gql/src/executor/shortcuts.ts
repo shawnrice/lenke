@@ -9246,6 +9246,24 @@ const nodeWhereOf = (where: Expr, nodeVar: string): InlinePred | 'decline' => {
  * these checks are purely about outer names.) The same reasoning, and the same
  * wording, as `detectHopProjection`'s rel-variable and path-variable checks.
  */
+/**
+ * One gate conjunct's per-element closure when it can be pre-resolved, else `undefined` so the
+ * caller keeps `inlineHolds`.
+ *
+ * ⚠️ A SEPARATE EXPORTED FUNCTION BECAUSE IT IS A ROUTE CHOICE, and a route choice is
+ * answer-equivalent — so every mutant of it survives the differential tests and it needs a test of
+ * its own (`perf-gate-needs-its-own-test`, and item 1064's `topKPlan` is the same shape).
+ * `gate-conjunct-route.test.ts` is that test.
+ *
+ * `bindVar === undefined` is REQUIRED, not an optimization: `inlineHolds` WRITES the binding for a
+ * correlated conjunct before testing it, and a specialized closure never writes one — it would
+ * otherwise evaluate a value against a name nothing had bound.
+ */
+export const specializedConjunct = (
+  ip: InlinePred,
+): ((element: Vertex | Edge, env: EvalEnv) => boolean) | undefined =>
+  ip.bindVar === undefined ? specializeSingleProp(ip.pred) : undefined;
+
 const nodeScanGate = (
   start: NodePattern,
   where: Expr | undefined,
@@ -9272,12 +9290,54 @@ const nodeScanGate = (
     preds.push(carried);
   }
 
-  return preds.reduceRight<InlineGate | undefined>(
-    (rest, ip) => (v, binding, params, graph) =>
-      inlineHolds(ip, v, binding, params, graph) &&
-      (rest === undefined || rest(v, binding, params, graph)),
-    undefined,
-  );
+  return preds.reduceRight<InlineGate | undefined>((rest, ip) => {
+    /**
+     * ITEM 1600: each conjunct's per-element work chosen ONCE PER QUERY, which is item 1598's
+     * lever one consumer along. `inlineHolds` -> `satisfies` re-dispatches over twelve carriers
+     * per element; `specializeSingleProp` resolves the single-carrier case to one closure.
+     *
+     * ⚠️ THE SIZE OF THIS IS AN ABLATION, not a profile share (item 1104). Replacing the gate call
+     * in `detectNodeProjection`'s streaming walk with `() => true` — a wrong answer measured only
+     * to price the right one — on `MATCH (u:User) WHERE u.team = $v RETURN u.score`, 400 rows of
+     * 20,000 seeded, one shape per process:
+     *
+     * ```text
+     *    baseline                    24204  24572  24643 ns
+     *    the GATE ablated            11721  11987  11996       2.05x
+     *    the LABEL test ablated      18996  19176  19930       1.27x
+     *    both ablated                 7373   7680   7994       3.16x
+     *    a hand-written FLOOR         8353   8502              both-ablated IS the floor
+     * ```
+     *
+     * So the gate is ~31 ns a candidate and 2.05x of that query, and with it and the label test
+     * gone the rung sits exactly on a floor that walks the bucket, tests the label and builds one
+     * row. That is what nominated this rather than a frame name.
+     *
+     * ⚠️ AND IT GOES HERE, NOT IN THE LOOPS. The gate has thirteen call sites and
+     * `executor-edits-perturb` prices a new walk variant at up to 16% on UNRELATED rows, so a fast
+     * arm added per site would cost more than it buys. Composed here the signature is unchanged,
+     * every site benefits, and no loop body moves.
+     *
+     * The `{ binding, params, graph }` is allocated per element, which looks like the wrong trade
+     * and is not: item 1512, in this same file, removed 800,000 such allocations per call from the
+     * projection loop and measured **1.01x** — "it allocates per row" is not by itself a cost in
+     * this engine, because V8's young-generation bump allocation is near-free. The dispatch it
+     * replaces is not.
+     *
+     * `bindVar === undefined` is REQUIRED, not an optimization: `inlineHolds` WRITES the binding
+     * for a correlated conjunct before testing it, and the specialized closure never writes one.
+     * `specializeSingleProp` would otherwise evaluate a value against a name nothing had bound.
+     */
+    const fast = specializedConjunct(ip);
+
+    return fast === undefined
+      ? (v, binding, params, graph) =>
+          inlineHolds(ip, v, binding, params, graph) &&
+          (rest === undefined || rest(v, binding, params, graph))
+      : (v, binding, params, graph) =>
+          fast(v, { binding, params, graph }) &&
+          (rest === undefined || rest(v, binding, params, graph));
+  }, undefined);
 };
 
 /**

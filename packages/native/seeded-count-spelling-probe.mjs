@@ -17,6 +17,15 @@ const TEXT = {
   clause: 'MATCH (u:User) WHERE u.team = $v RETURN count(*) AS c',
   'inline-nolabel': 'MATCH (u {team: $v}) RETURN count(*) AS c',
   'clause-nolabel': 'MATCH (u) WHERE u.team = $v RETURN count(*) AS c',
+  'proj-clause': 'MATCH (u:User) WHERE u.team = $v RETURN u.score AS s',
+  'proj-inline': 'MATCH (u:User {team: $v}) RETURN u.score AS s',
+  'proj-clause-nolabel': 'MATCH (u) WHERE u.team = $v RETURN u.score AS s',
+  'elem-clause': 'MATCH (u:User) WHERE u.team = $v RETURN u AS u',
+  'uniq-clause': 'MATCH (u:User) WHERE u.name = $w RETURN u.score AS s',
+  'uniq-inline': 'MATCH (u:User {name: $w}) RETURN u.score AS s',
+  // NULL CONTROL: no predicate at all, so `nodeScanGate` returns undefined and item 1600's
+  // fast arm cannot be reached. Any movement here is this run's own variance.
+  'proj-nofilter': 'MATCH (u:User) RETURN u.score AS s',
 }[SHAPE];
 
 if (TEXT === undefined) {
@@ -38,13 +47,13 @@ if (INDEXED) {
 }
 
 for (let i = 0; i < 500; i += 1) {
-  query(g, TEXT, { v: `t${i % 50}` });
+  query(g, TEXT, { v: `t${i % 50}`, w: `user${i % NODES}` });
 }
 
 const t0 = performance.now();
 
 for (let i = 0; i < REPS; i += 1) {
-  query(g, TEXT, { v: `t${i % 50}` });
+  query(g, TEXT, { v: `t${i % 50}`, w: `user${i % NODES}` });
 }
 
 const ns = ((performance.now() - t0) * 1e6) / REPS;
