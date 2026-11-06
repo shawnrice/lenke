@@ -8008,6 +8008,9 @@ export const valueSet = (): { add: (v: unknown) => boolean } => {
   let zonedTimes: Map<number, Set<number>> | undefined;
   let zonedDateTimes: Map<number, Set<number>> | undefined;
   let structural: Set<string> | undefined;
+  // Elements and anything else `valueKey` keys by id — see the use site for why this is its own
+  // container and why the key is `String(v.id)` rather than the raw value.
+  let ids: Set<string> | undefined;
 
   return {
     add: (v: unknown): boolean => {
@@ -8092,6 +8095,31 @@ export const valueSet = (): { add: (v: unknown) => boolean } => {
 
           return addNested(root, v.secs, tail);
         }
+      }
+
+      // An ELEMENT (or anything else `valueKey` keys by id) gets its own container keyed on the
+      // ID ITSELF, which builds NO STRING for the common case. `valueKey` would return
+      // `'@' + String(v.id)`; the `'@'` is a constant within a container of its own, so dropping
+      // it is exactly `valueKey`'s equivalence restricted to this branch — the same "one container
+      // per kind" trade `LocalDate` and the zoned kinds make above, and the same reason they are
+      // never shared: the tag is what keeps the kinds apart, so a separate container has to.
+      //
+      // `String(v.id)` is kept rather than raw-keying `v.id`, deliberately: `valueKey` collapses
+      // an id `5` and an id `'5'` into one value, and a raw key would split them. For a string id
+      // — which is every id this engine mints — `String(s)` returns `s` with no allocation, so the
+      // common path builds nothing while the equivalence is unchanged.
+      if ('id' in v) {
+        ids ??= new Set();
+
+        const id = typeof v.id === 'string' ? v.id : String(v.id);
+
+        if (ids.has(id)) {
+          return false;
+        }
+
+        ids.add(id);
+
+        return true;
       }
 
       structural ??= new Set();

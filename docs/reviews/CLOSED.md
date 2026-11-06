@@ -66051,13 +66051,155 @@ The cross-surface flag went **52.37x to ~31x** (GQL 34.28 to 17.0 ms on that que
 open, because the flagged spelling dedups on the NODE and that is the arm this change helped least.
 The residual has a measured cause rather than a guessed one: `count(DISTINCT b)` at 16.611 against
 `count(DISTINCT b.n)` at 8.820 — **same cardinality (50,000), same walk, same rung** — so **1.88x is
-attributable purely to keying an ELEMENT instead of a scalar**, where `valueSet` must build a
-`valueKey` string per element while Gremlin's `dedupe()` keys on object identity. An identity-keyed
-set for the element case is the next target in this family, and it is worth more than the 1.88x
-suggests because it also lands on `distinctProjection`, which takes `RETURN DISTINCT b` by the same
-route.
+attributable purely to keying an ELEMENT instead of a scalar**.
+
+⚠️ ~~An identity-keyed set for the element case is the next target~~ — **TAKEN AT 1584, but NOT that
+way, and the mechanism named here was half wrong.** An identity `Set` in front of the key made it
+**1.24-1.39x WORSE**; what worked was a container keyed on the id ITSELF rather than on `valueKey`'s
+`'@' + id` string (1.92-2.31x, and it did also land on `distinctProjection` as predicted). Gremlin's
+`dedupe()` keying on object identity was the wrong model to copy.
 
 #### Gates
 
 `bun run check` 0 read unpiped. Suites gql 4008, core 431, gremlin 1551, native 1010, serialization
 144 — 0 fail. `bun run fuzz` 20/0 under the 16G cap.
+
+### Item 1584 — **1.92-2.31x on dedup over ELEMENTS**, by giving them a container keyed on the id itself instead of on the `'@' + id` string `valueKey` builds. ⚠️ Two hypotheses were REFUTED first, one of them made it 1.24-1.39x WORSE — and the sweep for more of item 1583's starved-rung defect found NONE, which closes that class
+
+Item 1583 left the cross-surface `hop distinct` flag open at ~31x and priced the residual as
+"element-identity dedup, 1.88x". Two of the three attacks on that price were wrong, and the order
+they were tried in is the story.
+
+#### First: the sweep for more starved rungs, which found NOTHING
+
+Item 1583's defect — a willing narrow rung starved by a broader one above it in `runLinear`'s lazy
+19-branch chain — looked like a CLASS rather than a one-off, so `rung-contention-probe.mjs`
+enumerates it: 40 shapes through `compileLinear`, reporting every one that more than one rung will
+answer. Of 40 shapes, **4 are contended, and in all four the winner is the narrower, faster rung**:
+
+```text
+   distinctCount      WINS over nodeAggregate          MATCH (n:P) RETURN count(DISTINCT n.k)
+   distinctCount      WINS over nodeAggregate          MATCH (n:P) RETURN count(DISTINCT n)
+   groupCountShortcut WINS over groupedNodeAggregate    … RETURN n.k, count(*) GROUP BY n.k
+   groupHopShortcut   WINS over groupedHopAggregate     … RETURN b.k, count(*) GROUP BY b.k
+```
+
+So item 1583's was the only instance in this corpus and **the class is closed, not open.** A negative
+result, recorded because the alternative is re-running the sweep next time the thought occurs. The
+probe stays, since "which rung answers this?" is a question that cost item 1583 a near-mis-pricing.
+
+#### ⚠️ REFUTED, with numbers: an identity `Set` in front of the key
+
+The graph hands out one object per vertex — verified through id lookup, scan, and both ends of an
+edge — so a far-end dedup offers 150,000 elements that are only 50,000 objects. An identity `Set`
+consulted first should then skip two thirds of the key building, and it is SEMANTICS-PRESERVING
+(having seen this exact object, it was already keyed). It made things **worse**:
+
+```text
+   count(DISTINCT b)   16.611 -> 20.546 ms    1.24x WORSE
+   count(DISTINCT a)   11.545 -> 16.022       1.39x WORSE
+```
+
+A `Set<object>` probe costs more than the key it saves. Reverted.
+
+#### ⚠️ ALSO REFUTED: the per-element binding write and closure call
+
+`count(DISTINCT b)` names the bare variable, so `directPropKey` is undefined and the rung takes its
+general arm: a `binding.set` and a compiled-expression call PER ELEMENT whose whole job is to read
+the binding back out and return the element already in hand. Short-circuiting that to `value = el`
+is **flat** — 16.611 to 16.100, 11.545 to 10.842, 7.059 to 6.756, all inside the ~10% noise floor.
+Not shipped: a flat change to the executor is not free, because `executor-edits-perturb` records
+that a new walk variant costs unrelated rows up to 16%.
+
+#### What actually worked, and why the first attempt could not see it
+
+`valueKey` keys anything id-bearing as `'@' + String(v.id)`. The `'@'` is a CONSTANT within a
+container of its own, so a dedicated container keyed on `String(v.id)` is **exactly the same
+equivalence** and builds no string at all for a string id — the same "one container per kind" trade
+`LocalDate` and the zoned kinds already make, and the same reason they are never shared.
+
+```text
+                                                 PRE      POST
+   MATCH (a:P)-[:E]->(b) RETURN DISTINCT b        21.958   11.425 ms   1.92x
+   MATCH (a:P)-[:E]->(b) RETURN count(DISTINCT b) 17.895    9.172      1.95x
+   MATCH (n:P) RETURN count(DISTINCT n)            7.425    3.210      2.31x
+   MATCH (a:P)-[:E]->(b) RETURN count(DISTINCT a) 11.381    5.126      2.22x
+   count(DISTINCT b.n)   scalar control            8.820    8.497      flat
+   MATCH (n:P) count(DISTINCT n.n)  control        2.559    2.559      flat
+```
+
+Both arms were built from saved copies, each ASSERTED to be the code it claimed before either was
+built. **The first attempt was CONFOUNDED**: it removed string builds _and_ added an object `Set`, so
+its regression was read as "the string was never the cost" when the string was most of it. One change
+at a time is the rule that would have found this two attempts earlier.
+
+`count(DISTINCT b)` is now 9.17 against `count(DISTINCT b.n)`'s 8.50 — the element/scalar gap item
+1583 priced at 1.88x is **1.08x**, so the diagnosis is confirmed by the gap closing rather than by
+the speedup alone.
+
+#### ⚠️ MUTATION FOUND A REAL GAP, AND THE GAP WAS A PRE-EXISTING TS BUG
+
+The first run caught 2 of 6. Four survived, and chasing them produced the tick's most useful finding
+— starting with a tripwire, because `always-new` surviving meant either the branch was not reached
+or the tests did not look:
+
+```text
+   MATCH (a:P)-[:E]->(b) RETURN count(DISTINCT b)   ids-branch hits = 20,000   edges = 60,000
+```
+
+**The set is offered each element EXACTLY ONCE.** The walk is far-driven — one visit per candidate
+vertex, not per edge — so `ids.has` never fires in any shape that reaches this container, and the
+var-length and two-hop shapes do not reach it at all (0 hits). Hence the survivors: with the verdict
+never consulted twice, breaking the verdict changes nothing.
+
+Except one of them was not that. `ids/no-string-coercion` survived because nothing covered it, and
+**a vertex id may be a NUMBER** (`addVertex({id: 5})` stores `5`). Which exposes this:
+
+```text
+   two DISTINCT vertices, ids 5 and '5'
+       count(*)            ts 2   nat 2
+       count(DISTINCT n)   ts 1   nat 2      <- TS conflates them
+```
+
+`'@' + String(v.id)` makes a numeric id and its string form one value, so TWO REAL VERTICES collapse
+in a dedup. **Native is right and TS is wrong**, and it is PRE-EXISTING — item 1584 preserves it
+deliberately, because preserving the equivalence exactly is what makes a perf change a perf change.
+It is now pinned as the CURRENT state, with the fix described where the test is: two containers, one
+for string ids and one for the rest, which costs nothing since neither needs a tag. **That fix is its
+own item**: `valueKey`'s conflation is shared by `groupIndex` and the set-operation dedup, so fixing
+one site alone would make DISTINCT and GROUP BY disagree with each other.
+
+Final mutation, after that test: **4 of 6 caught.** `CONTROL/elements-to-structural` is the intended
+answer-equivalent control (it reverts to pre-1584 keying and costs only speed), and
+`ids/shared-with-structural` is unreachable-equivalent — no structural key can equal a raw id string,
+since a string value keys into `prim`.
+
+#### ⚠️ Two more PRE-EXISTING divergences, found by writing the parity coverage
+
+Both proven to predate this change: the probes produce **byte-identical output against a build with
+the change and one without**.
+
+- **A WRONG ANSWER in native.** Over five edges with five distinct ids,
+  `MATCH ()-[e:E]->() RETURN count(DISTINCT e)` is **ts 5, nat 3** — while `RETURN DISTINCT e` agrees
+  at five rows and `count(*)` agrees at 5. So native's dedup finds five distinct edges in the ROWS
+  path and counts three in the COUNT path; the two disagree inside native itself, which localizes it
+  to `count(DISTINCT <edge>)` and rules out the match. Naming the ends changes nothing. **11th open
+  divergence.**
+- **A COLUMN NAME divergence.** An UNALIASED list projection is `expr` in TS and `col0` in native;
+  `AS x` makes them agree. Column naming is part of the bytes a caller sees. **12th.**
+
+Neither is registered: `divergence-registry` refuses a `value` axis on purpose. Both are `test.failing`
+expected failures, which turn red when fixed rather than going quiet like a skip.
+
+#### Also recorded, pre-existing and unrelated
+
+An edge may be created with a vertex's id, and a vertex then renders with the EDGE's labels — found
+while probing reachability, byte-identical across both builds, and not pursued.
+
+#### Gates
+
+`bun run check` 0 read unpiped. Suites gql 4021, core 431, gremlin 1551, native 1031, serialization
+144 — 0 fail. `bun run fuzz` 20/0 under the 16G cap. **And the fuzzers are partly informative here
+for once**: `differential-fuzz` does generate `count(DISTINCT b)` over a var-length hop. What it does
+not generate is the ROWS spelling over a bare element — every distinct-rows arm is a PROPERTY — so
+that half got explicit coverage.
