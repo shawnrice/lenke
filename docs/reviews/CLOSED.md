@@ -69361,7 +69361,7 @@ In the full `bench:gremlin` sweep the two new filtered rows read 394.8 and 390.0
 
 **`refuseSeekable` is TRUE FOR THE LEAD RUN ONLY**, which is `collectVertexFilters`' own asymmetry from item 1603: a seek seeds the SOURCE and this rung runs before `seedFromIndex`, so a lead run that scanned would preempt a better route — while nothing seeds from the far side of a hop, so refusing there declines the shape on every indexed graph and gains nothing. The MIDDLE run is a far side too, the same split `interleavedHopChainCount` makes.
 
-#### ⚠️ THE LOOP WRITTEN TWICE WAS COVERED ONCE — the real finding of this item
+#### ⚠️ THE LOOP WRITTEN TWICE WAS COVERED ONCE — the real finding of this item (⚠️ AND IT GENERALIZED: item 1616 screened all twelve generator files and found FOUR MORE in Gremlin plus `anyWalk` in GQL)
 
 `lead/ignored` and `mid/ignored` **SURVIVED in the LAZY loop while their EAGER twins died**. The cause is structural, not an oversight in one test file: `toArray` with an empty `rest` reads `drain`, so every assertion in the file reached the eager copy only. The far filter was covered lazily _by accident_, through the `limit` test item 1614 wrote for a different reason.
 
@@ -69386,3 +69386,54 @@ The MID and LEAD expectations were both written by eye counting `d`'s paths — 
 #### Gates
 
 `bun run check` 0 read unpiped. Suites gremlin 1748 (27 in this file), gql 4153, core 435, native 1056, serialization 144 — 0 fail. `bun run fuzz` 20/0 and `spelling:gremlin` 0 answer disagreements / 0 groups over 2x, both under the 16G cap.
+
+### Item 1616 — ⚠️ **NO PERF CHANGE; FIVE UNTESTED FAST-PATH ROUTES, found mechanically.** Item 1615's lazy/eager hole was not local to one file: a screen that duplicates every bare `yield` in both TS executors, one at a time, found **four more in Gremlin and one in GQL** — including `anyWalk`, the bare-`ANY` trail enumerator, which had no test in EITHER suite. Both engines now read 13/13 and 11/11, and the screen is kept as `lazy-emission-screen.mjs`
+
+OPEN: nothing in the screen's scope. It does not cover the Rust engine or the generators outside these twelve files.
+
+#### The question, and why it is not "is this code tested"
+
+Item 1615 found two mutants SURVIVING in a fused walk's LAZY loop while their EAGER twins died. Every `HopWalk` in the Gremlin executor is written twice — a generator and a `drain()` — and `toArray` with an empty residual reads `drain`, so a suite that only calls `toArray` reaches the eager copy and never the generator. `hop-values.ts`' header states the rule that keeps the two loops from DRIFTING; **nothing stated that the tests reach both.**
+
+So the generalization got screened rather than reasoned about. The mutant is deliberately crude and universal — DUPLICATE one `yield` — because every row through that loop then comes out twice, which no fixture and no unspecified-order liberty can excuse: GQL's row order is unspecified, its row MULTISET is not.
+
+```text
+   gremlin   9/13 caught on the first run
+     hop-values.ts:454                  the THREE-OR-MORE-TYPES walk (`manyTypes`)
+     start-filtered-hop-values.ts:229   the `both(T)` walk, OUT bucket
+     start-filtered-hop-values.ts:241   the `both(T)` walk, IN bucket
+     optional-hop.ts:83                 `optional`'s non-vertex PASSTHROUGH
+   gql      10/11 caught
+     executor/matching.ts:1261          `anyWalk`, the bare-`ANY` trail enumerator
+```
+
+Reaching a lazy walk takes a RESIDUAL: a trailing `limit` leaves a step in `rest`, so `run` wraps the generator instead of reading `drain`. That is the only spelling that routes there — and it is the same mechanism `eager-tail-cache` says must never read `drain` under a `limit`.
+
+#### The two that are not lazy/eager at all, and are the more interesting finds
+
+**`optional-hop.ts:83` — a branch chosen by a type test.** `optionalHopStep` emits the traverser unchanged when its value is not a vertex. Reaching it took three attempts: the static frontier check rejects `values(k).optional(out(E))`, `inject(…)` and `id()` with _"out() moves from a vertex, but the frontier is a scalar"_. What gets through is a frontier the checker cannot type — a `select` of a tag holding a scalar. So the branch is reachable and was simply untested, not dead. Oracle: the general path, reached by giving `optional` a two-step sub-plan.
+
+**`executor/matching.ts:1261` — `anyWalk`, and the route predicate is why it was invisible.** `pickSeedDriver` sends `ANY` to the O(V+E) BFS driver whenever `bfsReducible` holds (one segment, `min <= 1`, no inline predicate), and **every existing bare-`ANY` test uses `*` (min 0) or `{1,1}`** — including `gql-conformance.test.ts`'s "bare ANY yields one path per endpoint", which has existed since item 614. All of them exercised `shortestWalk`. The enumerate-trails arm beneath it was reached by no spelling anyone had written; `{2,3}` is the cheapest that gets there. TS and native agreed on it all along — the path was unpinned, not wrong.
+
+This is the same CLASS as item 1615's finding — a branch chosen by a route predicate where every test happens to take the other side — which is why both items pin the ROUTE and not only the answer.
+
+#### ⚠️ A unit test in `packages/native` CANNOT pin a TS `src` path
+
+The `anyWalk` claim is asserted in BOTH packages, and that is not redundancy. `packages/native/src/bare-any-walk-parity.test.ts` imports `@lenke/gql`, which resolves to the **built dist** — so the mutant sailed straight past it (10 pass) until a rebuild, after which it died with 6 failures. That is `fuzzers-read-built-dists` applied to a unit test, and it means a mutation pass against `src` is blind to every assertion living in the `native` package. The src-level guard has to live in `packages/gql`; the native one is the byte-identity guard.
+
+#### ⚠️ The instrument misreported its own loudest mutant, and the cause is worth keeping
+
+Ported from the throwaway script to `lazy-emission-screen.mjs`, the GQL half read `clauses.ts:649` as **DID-NOT-RUN** where the original read it as CAUGHT with 655 failures. Cause: `spawnSync`'s default 1 MB `maxBuffer`. Bun prints a diff per failure, 655 of them blew past it, the child was killed and `status` came back `null` — which the result check reads as "never ran". **So the loudest mutant in the pass looked like the one nothing covered**, the exact inversion the instrument exists to prevent. Fixed at 256 MB, with the reason recorded at the call site next to the existing both-streams rule (items 767, 772-773).
+
+#### What was added
+
+- `packages/gremlin/src/executor/lazy-walk-coverage.test.ts` — 8 tests. Three-or-more-types walk under a residual (including a short `limit`, so the generator is abandoned part way), the `both(T)` walk with **two different limits** because one cannot reach both of its yield sites, and `optional`'s scalar passthrough against the general path.
+- `packages/gql/src/bare-any-walk.test.ts` — 7 tests, `src`-level. Includes the control that makes the assertion mean something: the all-trails spelling of the same walk answers **six** where `ANY` answers three, so a fixture where every endpoint has one path could not pass it. That is item 614's recorded fixture defect for this very selector, where both counts were 6 and could not be told apart.
+- `packages/native/src/bare-any-walk-parity.test.ts` — 10 tests, TS vs native byte-identity, including the reducible twin as a control.
+- `packages/native/lazy-emission-screen.mjs` — the screen. Run it after adding a `HopWalk`, a selector driver, or any generator in those twelve files.
+
+Every literal was derived before the files were written, and all 25 passed first run — which after five eyeballed errors in this session is worth noting as the method working rather than as luck.
+
+#### Gates
+
+`bun run check` 0 read unpiped. Suites gremlin 1756, gql 4160, core 435, native 1066, serialization 144 — 0 fail (25 new). `bun run fuzz` 20/0 under the 16G cap. The screen reads **13/13 gremlin, 11/11 gql**.
