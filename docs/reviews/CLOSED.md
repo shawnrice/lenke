@@ -67168,9 +67168,105 @@ trims in that machinery do not convert, so the next attempt should be a whole-pl
 seeded point lookup — the way `nodeValuesShortcut` answers `V().values(k)` without building a
 traverser at all — rather than another frame off the profile.
 
+⚠️ **TAKEN AT 1595, by exactly that route**: `seededNodeValuesShortcut` answers
+`V()[.hasLabel(L)].has(k, eq(v)).values(j)` off the index bucket — **1.45x-1.67x**, and the serving
+call is now 2.6x GQL rather than 4.0x. The refutation above is what chose the form.
+
 #### Gates
 
 No engine change — one probe. `bun run check` 0 read unpiped. Suites gremlin 1630, gql 4038, core
 435, native 1031, serialization 144 — 0 fail. ⚠️ The native suite first read 1030/1 and re-ran clean;
 that is the run-many flake `sync-test-flake-is-timing` records, and the rule is to re-run isolated
 before believing an exit 1.
+
+### Item 1595 — **1.45x to 1.67x on the Gremlin seeded point lookup**, by answering `V()[.hasLabel(L)].has(k, eq(v)).values(j)` off the index bucket with no traverser. The form was chosen BECAUSE item 1594 refuted the per-frame trims — and the correctness it rests on is the engine's own existing claim rather than a new one
+
+Item 1593 measured the TS Gremlin serving call at 2619 ns against ISO-GQL's 650 for the identical
+seeded lookup, and showed only ~400 ns of that is plan construction. Item 1594 then profiled the rest
+and refuted trimming it frame by frame: `countEquals` at **12.0% self time surrendered nothing**. Its
+conclusion was that a whole-plan shortcut is the remaining form. This is that shortcut.
+
+#### Where the correctness comes from, which is the part worth reading
+
+`seededNodeValuesShortcut` seeks the bucket and reads the property off each hit. The claim it needs
+is that **the bucket IS the matching set**, and that is not a new claim: `seedForStep` already
+returns `removable: true` for an `eq` predicate on a PLAIN `has` over an indexed key, and
+`removable` means "dropping the owning step leaves an equivalent plan". Reusing `seedForStep` rather
+than re-deriving equality is what keeps this from drifting — index equality agreeing with `has`
+equality is already load-bearing for `seedFromIndex`.
+
+`removable: false` declines, which covers the two dangerous shapes in one test: a RANGE seed
+(`gt`/`lt`/`between`) narrows without deciding, and a `hasLabelAnd` carries a label the bucket does
+not capture. Both would need the predicate applied per element — the pipeline this exists to skip.
+
+⚠️ **No cost check against a scan, deliberately.** Every element in the bucket is one the answer must
+visit anyway, so an exact seek cannot lose. That is specifically NOT true of a range seed, which is a
+second reason those decline.
+
+⚠️ **AND THE ORDER HAD TO BE CHECKED, not assumed.** The unfiltered sibling iterates
+`graph.vertices` while this iterates the index BUCKET, and Gremlin stream order is a TinkerPop
+contract the differential fuzzer compares ORDERED. It agrees — because the pipeline also seeds from
+that bucket for this shape — and the test pins the SEQUENCE (`[2, 0, 8, 6, 4]` from a scrambled
+insertion order), not a set.
+
+#### The numbers, an asserted A/B with non-overlapping ranges
+
+```text
+                              PRE                    POST
+   built fresh, varying key   2485-2713 ns           1709-1993     1.45x
+   built fresh, fixed key     2140-2390              1409-1731     1.52x
+   reused plan                1744-1961              1045-1236     1.67x
+```
+
+The standing `bench:usage` rows corroborate two of three:
+
+```text
+   gremlin(built) reused plan   762.0k -> 1.05-1.28M ops/s     ~1.4-1.7x
+   gremlin(built) fixed key     556.9k -> 789-815k             ~1.42-1.46x
+   gremlin(built) point lookup  358.7k -> 332-414k             INCONCLUSIVE, ±25% spread
+```
+
+⚠️ **The varying-key bench row is too noisy to read** — 332-414k across three runs, straddling its
+own PRE — so the probe's asserted A/B is the instrument for it and the bench is corroboration on the
+two tight rows. `reused plan` at 1.05-1.28M is now level with GQL's 1.08-1.21M on this shape.
+
+**Perturbation: none.** `bench:gremlin`'s nine nearest rows are unchanged — and the reason is worth
+recording, because it is also a coverage gap: that harness **creates no indexes at all**
+(`createIndex` appears zero times in it) and its `has` is `gt(44)`, a range. So it cannot exercise
+this shortcut on either count, which makes its rows a clean control and means the indexed serving
+path is measurable only in `bench:usage` and the probes.
+
+#### Mutation: 8 of 8 caught, after the tests had a real gap
+
+```text
+   walk/ignores-label            CAUGHT  7 fail     gate/admits-non-removable  CAUGHT 1 fail
+   walk/label-every-not-some     CAUGHT  3 fail     gate/never-fires           CAUGHT 1 fail
+   walk/emits-missing-key        CAUGHT  7 fail     gate/admits-multi-key      CAUGHT 1 fail
+   walk/scans-instead-of-seeking CAUGHT 10 fail     gate/admits-seeded-source  CAUGHT 1 fail
+```
+
+⚠️ **`label-every-not-some` SURVIVED the first run**, and that was a genuine gap rather than an
+equivalent mutant: `hasLabel(a, b)` passes a vertex carrying EITHER label, so `some` and `every`
+differ only on a MULTI-LABEL `hasLabel` — and every fixture vertex carried `User`, so the two agreed
+everywhere else. Two cases and a literal (`hasLabel('User','Admin')` -> all five, `hasLabel('Admin')`
+-> two) now cover it.
+
+Three mutants also APPLY-FAILED at first with `ANCHOR-COUNT 2`: the file now holds two shortcuts whose
+walk bodies are textually identical, so an anchor that was unique before this item no longer is.
+Re-anchored on the `for (const v of bucket)` line, which only the seeded walk has. A mutant that
+cannot be applied is not a passing mutant, and the script prints the two apart for exactly that
+reason.
+
+#### Gates
+
+`bun run check` 0 read unpiped. Suites gremlin 1651, gql 4038, core 435, native 1031, serialization
+144 — 0 fail. `bun run fuzz` 20/0 under the 16G cap.
+
+#### What this leaves
+
+Gremlin's serving point lookup is now 1709 ns against GQL's 650 — **2.6x, down from 4.0x**. Of what
+remains, ~400 ns is plan construction (irreducible without parameters, and item 1593 priced
+parameters at ~17% rather than the ~50% previously recorded) and the rest is the bucket walk plus
+`toArray`'s drain. The next comparable step would be the same treatment for `has(k, eq(v))` with a
+terminal other than `values` — `count()` and the element projection are the obvious two — but each is
+its own shape and wants its own measurement.

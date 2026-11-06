@@ -24,6 +24,7 @@
 import type { Graph } from '@lenke/core';
 
 import type { Plan, Step } from '../ast.js';
+import { seedForStep } from './index-seed.js';
 
 /** The same shape `hopValuesShortcut` returns, so `run` can treat both identically. */
 export type NodeValues = Iterable<unknown> & { drain?: () => unknown[] };
@@ -79,6 +80,110 @@ export const nodeValuesShortcut = (plan: Plan, graph: Graph): NodeValues | undef
   // liberty.
   const walk = function* (): Generator<unknown> {
     for (const v of graph.vertices) {
+      if (labels !== undefined && !labels.some((l) => v.labels.has(l))) {
+        continue;
+      }
+
+      const props = v.properties;
+
+      if (key in props) {
+        yield props[key];
+      }
+    }
+  };
+
+  return {
+    [Symbol.iterator]: walk,
+    drain: () => [...walk()],
+  };
+};
+
+/**
+ * `V()[.hasLabel(L)].has(k, eq(v)).values(j)` — the SEEDED POINT LOOKUP, answered off the index
+ * bucket with no traverser (item 1595).
+ *
+ * ⚠️ WHY THIS SHAPE. `bench:usage`'s builder rows put the TS Gremlin serving call at 2619 ns against
+ * ISO-GQL's 650 for the identical seeded lookup — 4.0x — and item 1593 showed only ~400 ns of that
+ * is plan construction. So ~2150 ns is per-call machinery for a result of ONE element, where
+ * per-element work is negligible and setup is the entire cost. Item 1594 then established that
+ * trimming individual frames out of that machinery does NOT convert: `countEquals` at 12.0% self
+ * time surrendered nothing. A whole-plan shortcut is the remaining form, which is what this is — the
+ * same answer `nodeValuesShortcut` gives for the unfiltered scan.
+ *
+ * ⚠️ THE BUCKET IS THE ANSWER SET, and that is the engine's own existing claim rather than a new
+ * one: `seedForStep` returns `removable: true` for an `eq` predicate on a PLAIN `has` over an
+ * indexed key, and `removable` means "dropping the owning step leaves an equivalent plan" — i.e.
+ * the bucket is exactly the matching elements. Reusing `seedForStep` is what keeps this from
+ * re-deriving equality semantics: index equality and `has` equality agreeing is already load-bearing
+ * for `seedFromIndex`, so nothing here can drift from it independently.
+ *
+ * `removable: false` DECLINES — a range seed (`gt`/`lt`/`between`) narrows but does not decide, and
+ * a `hasLabelAnd` carries a label the bucket does not capture. Both would need the predicate applied
+ * per element, which is the pipeline this exists to skip.
+ *
+ * No cost check against a scan, deliberately: every element in the bucket is an element the answer
+ * must visit anyway, so the seek cannot lose. That is not true of a range seed, which is one more
+ * reason those decline.
+ */
+const seededShape = (
+  steps: readonly Step[],
+):
+  | {
+      label: Extract<Step, { kind: 'hasLabel' }> | undefined;
+      has: Extract<Step, { kind: 'has' }>;
+      key: string;
+    }
+  | undefined => {
+  const [source, second, third, fourth] = steps;
+
+  if (source?.kind !== 'V' || (source.ids?.length ?? 0) > 0) {
+    return undefined;
+  }
+
+  if (
+    steps.length === 3 &&
+    second?.kind === 'has' &&
+    third?.kind === 'values' &&
+    third.keys.length === 1
+  ) {
+    return { label: undefined, has: second, key: third.keys[0] };
+  }
+
+  if (
+    steps.length === 4 &&
+    second?.kind === 'hasLabel' &&
+    third?.kind === 'has' &&
+    fourth?.kind === 'values' &&
+    fourth.keys.length === 1
+  ) {
+    return { label: second, has: third, key: fourth.keys[0] };
+  }
+
+  return undefined;
+};
+
+export const seededNodeValuesShortcut = (plan: Plan, graph: Graph): NodeValues | undefined => {
+  const shape = seededShape(plan.steps);
+
+  if (shape === undefined) {
+    return undefined;
+  }
+
+  const candidate = seedForStep(shape.has, graph.vertexPropertyIndex);
+
+  // `null` means the key is not indexed or the predicate is not seekable; `removable: false` means
+  // the seed narrows without deciding. Either way this is not the shape.
+  if (candidate === null || !candidate.removable) {
+    return undefined;
+  }
+
+  const { label, key } = shape;
+  const labels = label?.labels;
+  const bucket = candidate.build();
+  // ONE loop body for both the iterator and `drain`, as above — item 169's lesson, and Gremlin
+  // results are compared ORDERED by the differential fuzzer, so two derivations could diverge.
+  const walk = function* (): Generator<unknown> {
+    for (const v of bucket) {
       if (labels !== undefined && !labels.some((l) => v.labels.has(l))) {
         continue;
       }

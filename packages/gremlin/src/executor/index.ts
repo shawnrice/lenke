@@ -30,7 +30,7 @@ import { applyStep } from './dispatch.js';
 import { hopValuesShortcut } from './hop-values.js';
 import { seedFromIndex, tailIsOrderFree } from './index-seed.js';
 import { matchStep } from './match.js';
-import { nodeValuesShortcut } from './node-values.js';
+import { nodeValuesShortcut, seededNodeValuesShortcut } from './node-values.js';
 import { groupCountShortcut } from './projection.js';
 import { newContext, planReadsPath, startTraverser, type Traverser, unwrap } from './runtime.js';
 import { applySource } from './sources.js';
@@ -1870,6 +1870,20 @@ export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
 
   if (nodeValues !== undefined) {
     return nodeValues;
+  }
+
+  // The SEEDED twin of the shortcut above: `V()[.hasLabel(L)].has(k, eq(v)).values(j)` answered off
+  // the index bucket, with no traverser (item 1595). `??` and in this order so nothing the
+  // unfiltered shortcut already admits can change route — its shapes have no `has` and so cannot
+  // reach this at all, but the ordering says so rather than relying on it.
+  //
+  // `tracksPath` gates it for the same reason, and the same caveat applies: the shape list it
+  // admits contains nothing path-dependent, so a mutant deleting the guard survives — it is the
+  // SHORTCUT'S CONTRACT, not a statement about today's shapes.
+  const seededValues = ctx.tracksPath ? undefined : seededNodeValuesShortcut(effective, graph);
+
+  if (seededValues !== undefined) {
+    return seededValues;
   }
 
   // `V().out(T).values(k)` likewise answers the whole plan — one walk instead of the traverser
