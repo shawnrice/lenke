@@ -6950,18 +6950,19 @@ const compilePath = (pattern: PathPattern): CPath => {
  * that the two spellings "agree by construction"; this keeps `satisfies` as the only implementation
  * and binds its arm rather than writing a second one.
  */
-/** The four carriers {@link specializeSingleProp} can answer; exactly one may be populated. */
+/** The five carriers {@link specializeSingleProp} can answer; exactly one may be populated. */
 const SPECIALIZABLE: ReadonlySet<string> = new Set([
   'eqProps',
   'cmpProps',
   'nullProps',
   'memberProps',
+  'props',
 ]);
 
 export const specializeSingleProp = (
   pred: CPredicate,
 ): ((element: Bound, env: EvalEnv) => boolean) | undefined => {
-  let only: 'eqProps' | 'cmpProps' | 'nullProps' | 'memberProps' | undefined;
+  let only: 'eqProps' | 'cmpProps' | 'nullProps' | 'memberProps' | 'props' | undefined;
 
   for (const [carrier, held] of Object.entries(pred)) {
     if (held === undefined) {
@@ -6977,7 +6978,7 @@ export const specializeSingleProp = (
     // it is the only one — `eqProps` AND `cmpProps` together need a loop, which is the thing being
     // removed. Everything else, including any non-array carrier such as `where`, refuses.
     if (Array.isArray(held) && SPECIALIZABLE.has(carrier) && only === undefined) {
-      only = carrier as 'eqProps' | 'cmpProps' | 'nullProps' | 'memberProps';
+      only = carrier as 'eqProps' | 'cmpProps' | 'nullProps' | 'memberProps' | 'props';
 
       continue;
     }
@@ -7104,6 +7105,58 @@ export const specializeSingleProp = (
      * carrier, so there is no sibling conjunct whose raise could be suppressed or exposed.
      */
     return (element) => isNullish(propOf(element, key)) !== negated;
+  }
+
+  if (only === 'props') {
+    const inline = pred.props;
+
+    if (inline.length !== 1) {
+      return undefined;
+    }
+
+    const [{ key, value }] = inline;
+
+    /**
+     * ITEM 1598: the INLINE carrier — `(u:User {team: $v})`, the ISO equality spelling.
+     *
+     * Item 1597's probe found a stable **1.76x EQUIVALENT-SPELLING GAP** between the two spellings
+     * of one seeded count, which is the defect class this engine is named after:
+     *
+     * ```text
+     *    MATCH (u:User) WHERE u.team = $v RETURN count(*)    11097  11639  12157 ns
+     *    MATCH (u:User {team: $v})        RETURN count(*)    19544  20254  21954
+     * ```
+     *
+     * Both take `countShortcut` and both seek. The difference was entirely here: a clause `WHERE`
+     * lifts into `eqProps` and gets item 1340's pre-resolved closure, while the inline form lands
+     * in `props`, which `SPECIALIZABLE` refused — so the general `satisfies` dispatch ran per
+     * candidate for one spelling and not the other.
+     *
+     * ⚠️ THIS IS A SEPARATE ARM ON PURPOSE, and merging it into the `eqProps` closure below would
+     * be a WRONG ANSWER rather than a slow one. The two carriers implement DIFFERENT readings of
+     * equality, and `satisfies`'s own `eqProps` comment is the matrix:
+     *
+     * ```text
+     *    {k: null}         matches a stored null AND an absent key     <- this arm
+     *    WHERE n.k = null  matches NEITHER                             <- the arm below
+     * ```
+     *
+     * `propOf` returns `null` for both an absent key and a stored null, so `structuralEq` ALONE
+     * gives the inline reading — which is why this arm has NO null rejection and the one below
+     * must keep its. Item 260 settled that `{k: null}` means IS NULL; memory's
+     * `inline-props-null-is-is-null` records it. Admitting `props` into the arm below instead of
+     * giving it its own would have changed answers on exactly that case, which is why item 1597
+     * recorded the gap rather than closing it in its last minutes.
+     *
+     * SEMANTICS ARE BOUND, NOT RE-DERIVED, as in the four arms above: `satisfies`'s `props` loop is
+     * `if (!structuralEq(propOf(element, key), value(env))) return false`, so passing is exactly
+     * `structuralEq(propOf(element, key), value(env))` over the same two functions. `structuralEq`
+     * is CALLED rather than replaced by JS `===`, and here that is not defence in depth: unlike
+     * `eqProps`, a LIST value does reach this carrier — `(n {tags: [1, 2]})` is an inline literal —
+     * and `satisfies`'s own comment records the bug where JS `!==` made such a constraint never
+     * match. `inline-props-specialized.test.ts` pins it through this arm.
+     */
+    return (element, env) => structuralEq(propOf(element, key), value(env));
   }
 
   const carried = pred.eqProps;

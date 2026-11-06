@@ -67370,7 +67370,11 @@ GQL is 0.60x on values and 0.06x on count. A seeded count of 400 elements costin
 reading the bucket size costs 0.9 is the same closed-form opportunity on the other surface —
 `detectCountShortcut` has an index-seeded path, so the question is why it is not reached here.
 
-### Item 1597 — GQL's seeded count is **not failing to seek** (10.78x and 142.78x over unindexed) — it seeks and then **RE-VALIDATES EVERY CANDIDATE**, which a profile puts at 75% predicate plus 9% label. The mechanism is named: GQL's `SeedCandidate` has no exactness flag, where Gremlin's `Candidate` has `removable`. Priced at 4-7x and NOT built this tick
+### Item 1597 — GQL's seeded count is **not failing to seek** (10.78x and 142.78x over unindexed) — it seeks and then **RE-VALIDATES EVERY CANDIDATE**, which a profile puts at 75% predicate plus 9% label. The mechanism is named: GQL's `SeedCandidate` has no exactness flag, where Gremlin's `Candidate` has `removable`. Priced at 4-7x and NOT built this tick. ~~And a second finding: a 1.76x
+
+equivalent-spelling gap on the same count, recorded rather than closed~~ — **that half is CLOSED by
+item 1598** (1.39x indexed, 1.55x unindexed, the two spellings converged); the re-validation target
+above is still open
 
 Item 1596's pricing left GQL losing to Gremlin on the 400-hit seeded count — 14.5 us against 948 ns
 after that item's shortcut. This diagnosed it rather than guessing.
@@ -67436,7 +67440,7 @@ minutes of another.
 What the next tick needs is all here: the shape, the mechanism, the precedent to copy, the two risks
 item 149 names, and the number to beat.
 
-#### ⚠️ AND THE PROBE FOUND A SECOND THING: a 1.76x EQUIVALENT-SPELLING GAP, with its mechanism
+#### ⚠️ AND THE PROBE FOUND A SECOND THING: a 1.76x EQUIVALENT-SPELLING GAP, with its mechanism — **CLOSED by item 1598**
 
 Adding the ISO equality spelling to the probe as a matter of course turned up this, which nothing
 was looking at:
@@ -67463,6 +67467,12 @@ it), so admitting `props` to `SPECIALIZABLE` wholesale would change answers on t
 has to admit it only where the value is non-null, or carry the null spelling separately — and that
 wants its own item with the null matrix in front of it.
 
+> ⚠️ **AND THE FIRST OF THOSE TWO RECIPES IS ALSO WRONG** — item 1598, with the matrix actually in
+> front of it. "Admit it only where the value is non-null" cannot be decided at compile time for a
+> `$param`, and it is not needed: a SEPARATE arm implementing `props`'s own rule (plain
+> `structuralEq`, no null rejection) is correct for EVERY value, null included. The danger was only
+> ever in routing `props` into the existing `eqProps` closure.
+
 #### Also recorded, and NOT a target
 
 `evalLabelExpr` at 8.9% would be ~1.1x on its own — below this repo's noise floor for an executor
@@ -67472,3 +67482,115 @@ edit, and memory's `label-index-vs-setter` note already blocks the adjacent idea
 #### Gates
 
 No engine change — one probe. `bun run check` 0 read unpiped. Suites unchanged from item 1596.
+
+### Item 1598 — **the 1.76x equivalent-spelling gap item 1597 found is CLOSED**: `1.39x` indexed and `1.55x` unindexed on the inline seeded count, by admitting `props` to `specializeSingleProp` as its OWN arm. ⚠️ Item 1597's own recipe for the fix was wrong, and the null matrix is why
+
+Item 1597's probe found a stable gap between the two spellings of one seeded count and named the
+mechanism but did not close it. This closed it — on the narrower of the two targets that item left,
+deliberately, because the other (seed exactness) changes what a seek is allowed to skip.
+
+#### The gap, and that it is gone
+
+One shape per PROCESS (CLAUDE.md's rule, item 762: two spellings in one process pollute each
+other's dispatch sites), 20,000 indexed vertices, 400 hits, 20,000 ops, three runs each:
+
+```text
+                                       PRE                      POST
+   MATCH (u:User {team: $v})   count    18135 16387 17790        13539 12804 12588    1.39x
+   MATCH (u:User) WHERE u.team = $v     12505 12338 13225        12405 12218 12387    flat (control)
+```
+
+So the spelling gap goes **1.42x -> 1.03x**. The clause arm is the control and it did not move,
+which is what distinguishes this from a general speed-up.
+
+And the same pair with NO index, so every one of the 20,000 vertices is a candidate and the number
+is the per-element price with no seek in it (two runs each, REPS=400):
+
+```text
+                                       PRE                      POST
+   (u:User {team: $v})                  329634 331762            220486 207923        1.55x
+   (u:User) WHERE u.team = $v           212893 214597            219897 212648        flat (control)
+   (u {team: $v})         no label      335719 330355            215122 211407        1.57x
+   (u) WHERE u.team = $v  no label      204726 207810            206193 211883        flat (control)
+```
+
+Gap labelled **1.55x -> 1.00x**, unlabelled **1.62x -> 1.02x**, with both controls flat. The A/B
+arms were asserted in the BUILT dist, not just the source: the PRE arm's `SPECIALIZABLE` literal
+reads four entries in `packages/gql/dist/esm/index.mjs` and the POST arm's five, checked each time
+(item's own version of the `grep -c <the new symbol>` rule — comments are stripped by the bundler,
+so the sentinel has to be something that survives it).
+
+#### ⚠️ ITEM 1597's RECIPE FOR THE FIX WAS WRONG, and this is the part worth keeping
+
+That item wrote: "The fix has to admit it only where the value is non-null, or carry the null
+spelling separately." The first of those is not implementable and not necessary, and reading
+`satisfies`'s own null matrix is what showed it:
+
+```text
+   {k: null}         matches a stored null AND an absent key     <- the `props` reading
+   WHERE n.k = null  matches NEITHER                             <- the `eqProps` reading
+```
+
+"Only where the value is non-null" cannot be decided when the value is a `$param` — its value is
+unknown at compile time, which is the whole reason `eqProps` carries a RUNTIME null rejection. And
+it is not needed: `propOf` returns `null` for both an absent key and a stored null, so plain
+`structuralEq` ALREADY gives the inline reading. A SEPARATE arm that calls `structuralEq` and
+rejects nothing is therefore correct for **every** value, null included.
+
+The danger was never in admitting `props`. It was in routing `props` into the existing `eqProps`
+closure, whose null rejection implements the other reading. One arm per reading, and the matrix is
+satisfied by construction rather than by a value-dependent gate.
+
+`satisfies` is still the only implementation of either rule — the arm binds its `props` loop
+(`structuralEq(propOf(element, key), value(env))`) exactly as items 1338-1350's four arms bind
+theirs.
+
+#### One difference from the four arms above it, which matters for the comparison used
+
+`eqProps`'s header records that `structuralEq` there is defence in depth: a LIST never reaches it,
+because a list literal does not lift into `eqProps`. **That is not true here.** An inline
+`(n {tags: [1, 2]})` is exactly a list-valued `props` entry, and `satisfies`'s own comment records
+the bug where JS `!==` made such a constraint never match. So `structuralEq` in this arm is
+load-bearing, and `inline-props-specialized.test.ts` pins it through the fast arm in both the
+literal and `$param` spellings.
+
+#### Mutation: 6 of 7 caught, and the survivor CORRECTED A COMMENT I had just written
+
+```text
+   props/null-rejected       CAUGHT 10 fail    props/wrong-carrier        CAUGHT  2 fail
+   props/reference-equality  CAUGHT  3 fail    props/always-true          CAUGHT 15 fail
+   props/admits-two          CAUGHT  1 fail    count/drops-bindvar-guard  SURVIVED
+   props/never-fires         CAUGHT  2 fail
+```
+
+`props/null-rejected` is the one that had to be caught — it gives this arm `eqProps`'s reading — and
+it fires ten tests.
+
+⚠️ **`count/drops-bindvar-guard` survived, and my first comment claimed it could not.** Admitting
+`props` looked like it made `buildNodeCount`'s `bindVar` guard load-bearing: `predFor` sets `bindVar`
+for a non-closed inline constraint, and a specialized closure would then evaluate `(b {k: a.k})`
+against a binding the tally never wrote. The mutant refuted that, and checking the call sites says
+why: `predFor`'s `props` clause is `!closedProps && props.length > 0`, and **all nine production
+calls pass `closedProps: true`**. Closedness is proved UPSTREAM — `inlinePredOf` and `gateWith` run
+`freePredicateVars(c.value).size > 0` and return `null` for a correlated constraint, so one never
+reaches `predFor` at all.
+
+So the guard is still unreachable, for a DIFFERENT reason than item 1338 recorded, and both the
+call-site comment and the test's own docstring now say which reason. The mutant's value here was
+not finding a missing test; it was stopping a wrong explanation from being committed next to
+working code — which is the failure mode item 1593 and item 1594 both hit from the other direction.
+
+#### Scope, stated so the next item does not over-read the number
+
+There is exactly ONE call site: `buildNodeCount`'s `fastPred`. So this reaches the filtered node
+COUNT and nothing else. The inline spelling of a PROJECTION (`MATCH (u:User {team: $v}) RETURN
+u.score`) still runs the general matcher per candidate and is unmoved — item 1597's probe measures
+it at 21-23 us against the clause form's own general path. **Widening the specializer to the general
+`inlineHolds` path is the next lever on this family**, and it is a different change: that path
+carries bindings and is shared by every pattern shape, where this one is a closed tally.
+
+#### Gates
+
+`bun run check` 0 read unpiped. Suites gql 4048 (10 new), gremlin 1666, core 435, native 1031,
+serialization 144 — 0 fail. `bun run fuzz` 20/0 under the 16G cap. `bun run spelling` at
+`SPELL_N=200000 SPELL_REPS=9`: unchanged flag set.

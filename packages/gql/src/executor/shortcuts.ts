@@ -320,15 +320,27 @@ const buildNodeCount = <T>(
   // 803), and the fast closure never writes one.
   //
   // ⚠️ MUTATION SAYS THIS GUARD IS UNREACHABLE FROM HERE, and it is kept anyway. Dropping it
-  // SURVIVED item 1338's pass, because every `InlinePred` reaching `buildNodeCount` comes from
-  // `predFor`, which sets `bindVar` only when `where` is present or `props` is non-empty — and
-  // `specializeSingleProp` already refuses both. So the check cannot change an answer today.
+  // SURVIVED item 1338's pass and SURVIVED AGAIN at item 1598 — but the REASON changed, and the
+  // second reason is the one to keep.
   //
-  // It stays because the invariant is NOT global: the two-hop middle gate builds an `InlinePred`
-  // directly (`{ pred: compilePredicate(...), bindVar }`) with `bindVar` set unconditionally, so a
-  // predicate CAN carry one while every carrier the allow-list inspects is empty. Should that
-  // construction ever feed this tally, the guard is what keeps the fast closure from evaluating
-  // against a binding it never wrote. The cost is one comparison PER QUERY, not per element.
+  // Item 1338's reason: `predFor` sets `bindVar` only when `where` is present or `props` is
+  // non-empty, and `specializeSingleProp` refused both carriers. Item 1598 admitted `props`, so
+  // that half of the argument is gone.
+  //
+  // What stands in its place: `predFor`'s `props` clause is `!closedProps && props.length > 0`,
+  // and EVERY production call site passes `closedProps: true` — nine of them, checked. Closedness
+  // is proved UPSTREAM rather than by the flag: `inlinePredOf` and `gateWith` run the
+  // `freePredicateVars(c.value).size > 0` loop and return `null` for a correlated `(b {k: a.k})`,
+  // so such a predicate never reaches `predFor` at all. A CLOSED `{k: $v}` is therefore the only
+  // inline shape that gets here, and it carries no `bindVar`.
+  //
+  // It stays because the invariant is NOT global, which is the reason it originally stayed: the
+  // two-hop middle gate builds an `InlinePred` directly (`{ pred: compilePredicate(...), bindVar }`)
+  // with `bindVar` set unconditionally, so a predicate CAN carry one while every carrier the
+  // allow-list inspects is empty. Should that construction ever feed this tally, or should a future
+  // caller pass `closedProps: false`, this is what keeps a specialized closure from evaluating a
+  // correlated value against a binding the tally never wrote — items 121-123's correlation problem.
+  // The cost is one comparison PER QUERY, not per element.
   const fastPred =
     preds.length === 1 && preds[0].bindVar === undefined
       ? specializeSingleProp(preds[0].pred)
