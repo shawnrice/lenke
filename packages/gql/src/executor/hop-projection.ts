@@ -4275,6 +4275,27 @@ const walkFarSide = (graph: Graph, plan: WalkPlan, take: (el: Vertex) => void): 
   // The MIRROR index of the start-driven walk's: an out-hop's edges arrive at the far vertex,
   // so they are in its IN-adjacency.
 
+  // ⚠️ REJECTED, WITH ITS NUMBERS (item 1587): splitting this into TWO loops, one reading `adjTo`
+  // and one `adjFrom`, so the ternary below stops putting two different getters at ONE
+  // property-access site and each access stays monomorphic.
+  //
+  // A micro-ladder nominated it loudly — `bucket` (a bare `adjTo?.get(type)`) at 18.1 ns/vertex
+  // against `dirbranch` (the same with the ternary) at 46.7, so ~28 ns/vertex on a loop that runs
+  // once per far vertex. ⚠️ THAT NOMINATION DID NOT SURVIVE REPETITION: four rounds each read
+  // `bucket` 36.0/33.3/34.1/36.7, `dirbranch` 46.7/52.1/**17.2**/50.0 and a hand-written split loop
+  // 38.4/**16.9**/20.8/34.9 — all bimodal across a 3x range, so the original 18-vs-47 was one mode
+  // read against another. The per-vertex mechanisms are below this instrument's resolution.
+  //
+  // Judged end to end instead, where the instrument is tighter, eight rounds each on asserted
+  // builds of `MATCH (a:P)-[:E]->(b) RETURN count(DISTINCT b)` over 50,000 vertices / 150,000 edges:
+  //
+  //     PRE   7.551 8.010 6.751 7.328 7.770 8.460 8.002 7.362   median 7.66
+  //     POST  7.105 7.703 6.632 6.755 6.763 6.940 7.684 11.523  median 7.02   1.09x
+  //
+  // 9% is at the noise floor this repo puts at ~10%, and `executor-edits-perturb` prices an
+  // executor edit at up to 16% on unrelated rows — so a win this size is not worth the toll. The
+  // walk is already the optimal SHAPE (one adjacency lookup per far vertex, no edge ever touched);
+  // what remains is a constant factor, and it is NOT here. See item 1587 for where it is.
   for (const far of candidateVertexSource(graph, farLabel)) {
     const bucket = (direct.forward ? far.adjTo : far.adjFrom)?.get(direct.type);
 

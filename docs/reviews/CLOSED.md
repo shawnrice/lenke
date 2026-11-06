@@ -66446,3 +66446,96 @@ the exit code alone. Both fixed before the verdict was read.
 `fold` and `count` are not fused — `count` has item 1585's `hasKey` rewrite instead, and `fold` needs
 an array so the fusion would save only the boundary. The remaining cross-surface flags are GQL-side:
 `hop distinct` 12.49x (down from 52.37x across items 1583/1584) and `filtered count` 2.46x.
+
+### Item 1587 — ⚠️ **A REFUTATION with its numbers, and a redirect worth more than the thing refuted.** GQL's `count(DISTINCT <far end>)` walk is ALREADY the optimal shape, so the 13x against Gremlin is a constant factor — and the micro-ladder that nominated a cause could not survive repetition. What Gremlin actually does differently: **`dedupe` puts element references straight into a `Set`, with no key built at all**
+
+`hop distinct` is the largest remaining cross-surface flag: GQL ~7.0 ms against Gremlin's 0.527 over
+50,000 vertices / 150,000 edges, both answering 50,000.
+
+#### The walk is not the problem, which the profile says before any hypothesis
+
+```text
+   walkFarSide    50.5%     the far-driven walk
+   add            22.5%     the dedup set (item 1584's id container)
+   everything else <4% each, mostly fixture construction
+```
+
+And `walkFarSide` is already optimal in SHAPE: for each candidate far vertex it does ONE adjacency
+lookup and never touches an edge, so it is O(V) where the question looks O(E). There is no
+algorithmic gap to close — 1041.6 ms / 200 reps / 50,000 vertices is **~104 ns per vertex** for what
+should be a cached getter plus a `Map.get`, so the gap is a constant factor.
+
+#### ⚠️ The micro-ladder nominated a cause, loudly, and it was WRONG
+
+A ladder priced each mechanism separately (`far-driven-ceiling-probe.mjs`):
+
+```text
+   iterate     iterate the vertex map, touch nothing        0.9-4.3 ns/vertex
+   getter      + read the cached `adjTo`                    5.9-6.9
+   bucket      + `.get(type)` and the size test            18.1
+   dirbranch   + the `direct.forward ?` ternary            46.7     <- +28 ns?!
+   idset       + add the id to a Set<string>              78.2-115.2
+   gql         the real query                            143.7-151.4
+```
+
+`bucket` 18.1 against `dirbranch` 46.7 is a textbook polymorphic-inline-cache story: the ternary
+puts TWO getters at ONE access site. **Four rounds each destroyed it:**
+
+```text
+   bucket     36.0  33.3  34.1  36.7
+   dirbranch  46.7  52.1  17.2  50.0      <- 17.2
+   splitloop  38.4  16.9  20.8  34.9      <- the "fix", also 16.9
+```
+
+All three are bimodal across a 3x range, so the original 18-vs-47 was **one mode read against
+another**. At tens of nanoseconds per vertex this instrument has no resolution, which is the floor
+CLAUDE.md names ("anything under ~10% needs its own isolated harness") arriving in a new place.
+
+#### Built anyway and judged end to end, because that instrument IS tighter — and it is a null
+
+Eight rounds each, asserted builds:
+
+```text
+   PRE   7.551 8.010 6.751 7.328 7.770 8.460 8.002 7.362   median 7.66
+   POST  7.105 7.703 6.632 6.755 6.763 6.940 7.684 11.523  median 7.02   1.09x
+```
+
+9% at the noise floor, with an outlier in the favourable arm. **NOT TAKEN**, and
+`executor-edits-perturb` prices an executor edit at up to 16% on unrelated rows, so a win this size
+is a loss. Recorded in full next to `walkFarSide`, which is where the next person will look.
+
+#### ⚠️ THE REDIRECT, and it is the useful half of the tick
+
+The `idset` ladder arm — `walkFarSide`'s work PLUS the id-string dedup, nothing else — reads
+**3.9-5.8 ms**, while Gremlin answers the WHOLE question in **0.527**. So Gremlin is not paying
+GQL's per-element keying at all, and `dispatch.ts`'s `dedupe` says exactly what it does instead:
+
+> Primitives and stable graph-element references dedupe directly in this Set — value/identity
+> equality, **no allocation (the hot path)**. Composite values … upgrade to a structural string key
+> in a second, lazily-created Set.
+
+A `Set<unknown>` holding the elements themselves. GQL's `valueSet` builds `String(v.id)` per element
+(item 1584 got that down from `valueKey`'s `'@' + id`, 1.92-2.31x) and still pays a string-keyed
+`Set` op per element.
+
+⚠️ **This does NOT contradict item 1584's refutation, and the difference matters.** There an identity
+`Set` was added **in FRONT of** `valueKey` — paying both — and measured 1.24-1.39x WORSE. Gremlin's
+evidence is for identity **as the only container**, which is a different change.
+
+**And it would fix a correctness bug at the same time.** Divergence 13 (item 1584): two distinct
+vertices with ids `5` and `'5'` give `count(*)` 2 but `count(DISTINCT n)` **ts 1, nat 2**, because
+`String(v.id)` conflates them. Identity keying makes them two, which is what native already answers.
+So the next item is a speed fix and a divergence fix with one mechanism, and Gremlin's own executor
+is the worked precedent — including its `WeakSet` short-circuit for composites, which is the part
+item 1584's attempt lacked.
+
+Open questions it must answer, named now so the measurement is designed rather than improvised: does
+identity-alone keying change ANY reachable answer besides the `5`/`'5'` one (items 1584's
+reachability probe says a vertex/edge id collision is reachable, and those are different objects —
+so native's answer there has to be checked too), and does the element path keep its 1.9-2.3x from
+1584 when the string container is removed rather than fronted.
+
+#### Gates
+
+No engine change shipped — one comment and one new probe. `bun run check` 0 read unpiped. Suites
+unchanged from item 1586.
