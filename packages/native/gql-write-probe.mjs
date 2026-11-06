@@ -51,6 +51,13 @@ const build = () => {
 
 /** Each arm: (graph, i) => runs ONE operation. */
 const ARMS = {
+  // ⚠️ THE INTERPOLATION IS THE POINT OF THIS ARM, and the repo's own `lenke/no-raw-interpolation`
+  // rule is right to flag it everywhere else: splicing a value into query text is an injection
+  // risk, and the rule's advice (a tagged template or a `$name` param) is what the arm below
+  // measures against. Here the spliced values are loop integers in a benchmark, and the whole
+  // purpose is to price what an interpolating caller pays — 4.17 against the parameterised 2.15
+  // us/op, which is items 1540/1541's all-miss lift cost.
+  // oxlint-disable-next-line lenke/no-raw-interpolation
   'INSERT node': (g, i) => query(g, `INSERT (:P {k: ${i % 97}, n: ${i}})`),
   'INSERT node, param': (g, i) => query(g, 'INSERT (:P {k: $k, n: $n})', { k: i % 97, n: i }),
   'SET one prop': (g, i) => query(g, 'MATCH (a) WHERE a.n = $n SET a.k = $v', { n: i, v: i + 1 }),
