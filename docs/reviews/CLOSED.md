@@ -68599,7 +68599,7 @@ unguarded shape item 1604 recorded for every fast-arm site in this file.
 `bun run check` 0 read unpiped. Suites gql 4129 (35 new), gremlin 1694, core 435, native 1056 (16
 new), serialization 144 — 0 fail. `bun run fuzz` 20/0 under the 16G cap.
 
-### Item 1608 — the vacuous-label elision on the seeded count is **5.6x and REVERTED**, because taking it at ONE site makes `count(*)` and the rows spelling disagree. ⚠️ And the owner's question — _what is faster across the board_ — is answered by MEASUREMENT: the elision, not the setter fix, and it needs all SEVEN sites
+### Item 1608 — the vacuous-label elision on the seeded count is **5.6x and REVERTED**, ~~because taking it at ONE site makes `count(*)` and the rows spelling disagree~~ — ⚠️ **that REASON IS WRONG, corrected at item 1609**: the shortcut-vs-general split it feared already exists in the HOP family, shipped with items 1551/1552, and this item checked the one pair that could not show it. ✅ **SHIPPED UNIFORMLY AT ITEM 1609** (5.58x). The owner's question — _what is faster across the board_ — is still answered as written: the elision, not the setter fix
 
 Item 1607 removed the predicate from the seeded count, so a fresh profile is dominated by one thing:
 
@@ -68637,7 +68637,13 @@ bucket was all-`User` or all-`Other`, making each query all-match or all-reject 
 `i % 3` decorrelates it (gcd(3, 20) = 1) and each bucket then holds a mix, which is the only fixture
 a label test can be measured over.
 
-#### ⚠️ WHY IT IS REVERTED: two spellings of one question, disagreeing
+#### ⚠️ WHY IT IS REVERTED: two spellings of one question, disagreeing — ⚠️ **AND THIS SECTION IS WRONG, see item 1609**
+
+> ⚠️ **The hop comparison below is the one pair that cannot show the problem.** Both a hop count and
+> a hop ROWS query take SHORTCUTS, and shortcuts elide; a hop spelling that DECLINES its shortcut
+> goes to the general matcher, which does not. Measured at item 1609:
+> `MATCH (a:P)-[:E]->(b) RETURN b.n ORDER BY a.n` answers 6 where the four shortcut spellings answer 7. So the split shipped with items 1551/1552 and the node family joins an existing class rather
+> than inventing one — which is why item 1609 ships the elision uniformly instead.
 
 Ten vertices all labelled `P`, then `v.labels = ['Q']` through the RAW setter, which does not
 maintain `verticesByLabel`:
@@ -68678,8 +68684,118 @@ fewer is the gap above. That is a seven-site edit to hot walks, which `executor-
 at up to 16% on unrelated rows and so wants measured PER SITE — its own item, with its own numbers,
 rather than the tail of this one.
 
+> ✅ **DONE AT ITEM 1609**, all seven sites, 5.58x on the count and 1.29-1.51x on five more shapes
+> with every control flat. That item also found the per-ELEMENT version of the hoist costs the
+> control fixture 1.32x, and that two of the seven sites are unreachable when seeded.
+
 #### Gates
 
 `bun run check` 0 read unpiped. Suites gql 4129, gremlin 1694, core 435, native 1056, serialization
 144 — 0 fail. No engine change: the elision is reverted, the findings are recorded at
 `buildNodeCount`'s label test, and one probe is added.
+
+### Item 1609 — the vacuous-label elision SHIPPED uniformly across all seven seeded label tests: **5.58x on the seeded count**, 1.29-1.51x on five more shapes, every control flat. ⚠️ And item 1608's reason for reverting it was WRONG — the inconsistency it feared already exists, in the hop family, since items 1551/1552
+
+Item 1608 built this at one site, measured 5.6x, and reverted it on a correctness argument. The
+argument does not survive a wider test, which is the first thing this item establishes.
+
+#### ⚠️ ITEM 1608's OBJECTION, AND WHY IT WAS WRONG
+
+It found that eliding at `buildNodeCount` alone made `count(*)` answer 5 where the rows spelling
+answered 4 after a raw `v.labels =` write, called that a new equivalent-spelling gap, and reverted.
+It also checked the hop family and reported it CONSISTENT — "a hop count and a hop ROWS query both
+answer 9".
+
+**Both of those hop spellings take shortcuts.** A hop spelling that DECLINES its shortcut goes to the
+general matcher, which does not elide:
+
+```text
+   MATCH (a:P)-[:E]->(b) RETURN count(*)            7    <- shortcut, elides
+   MATCH (a:P)-[:E]->(b) RETURN b.n                 7    <- shortcut, elides
+   MATCH (a:P)-[:E]->(b) RETURN collect(b.n)        7    <- shortcut, elides
+   MATCH (a:P)-[:E]->(b) RETURN DISTINCT b.n        7    <- shortcut, elides
+   MATCH (a:P)-[:E]->(b) RETURN b.n ORDER BY a.n    6    <- GENERAL, honours the setter
+```
+
+So the shortcut-vs-general split shipped with items 1551/1552 and the node family now JOINS an
+existing class rather than inventing one. Item 1608 compared the one pair that could not show it —
+the same shape of mistake as testing two arms that are both the fast one.
+
+What this item does guarantee is the property 1608 actually wanted: **every shape that takes a NODE
+shortcut agrees with every other.** That is what the test pins, and it is what the single-site
+version broke.
+
+#### The change: seven sites, and the hoist IS the change
+
+The label-test line appears seven times, across five detectors — `buildNodeCount`,
+`deferredSortedNodeWalk`, the topK walk, `detectNodeProjection`'s streaming walk, both
+`detectNodeAggregate` arms and `detectMultiNodeAggregate`. All seven now test
+`effectiveLabel(graph, label)`, resolved ONCE PER CALL.
+
+⚠️ **The first version called it per ELEMENT, and the control caught it.** `effectiveLabel` is a
+`Map.get` plus a size compare; per candidate that is real work on a fixture where it can never
+elide:
+
+```text
+                       PRE        per-ELEMENT      per-CALL
+   count   (vacuous)  15483         7579            2775
+   count   (MULTI)    15295        20207  ⚠ 1.32x WORSE   13761  flat
+   values  (MULTI)    44076        42589           39558-41034  flat
+```
+
+A multi-label graph paid 32% for a check that can never help it. The hoist is why the control is
+flat, not a tidiness choice.
+
+#### The numbers, per site
+
+```text
+                       PRE              POST       vacuous    MULTI control
+   count              15483            2775        5.58x      15295 -> 13761   flat
+   values             51421           34000        1.51x      44076 -> 39558..41034  flat
+   values+order       62368           47102        1.32x      51882 -> 49567   flat
+   values+limit       53755           39199        1.37x      47324 -> 45933   flat
+   aggregate          49494           38478        1.29x      41970 -> 40986   flat
+   multi-agg          61344           46978        1.31x      51034 -> 50630   flat
+   count, NO label     2845            2409..2792  flat (NULL CONTROL)
+```
+
+Six shapes up, six MULTI controls flat, and a null control (no label at all, so nothing to elide)
+flat. ⚠️ **Two of those controls looked moved on a single run** — `count, NO label` 1.18x better and
+`values MULTI` 5% worse — and both were flat on three repetitions. Item 737's rule in both
+directions, for the third time this session.
+
+#### Mutation: 5 of 7 partial-elision mutants caught, and the two survivors are PROVEN unreachable
+
+The mutant that matters is PARTIAL elision — one site reverted — because that is exactly what item
+1608 shipped and withdrew. Five of seven are caught. The two survivors:
+
+- **the collecting-aggregate arm is unreachable WHEN SEEDED.** `compileLinear` says a FILTERED
+  `collect(n.n)` goes to the general path; only the UNFILTERED form takes `nodeAggregate`, and an
+  unfiltered scan never seeds — so `seeded !== undefined` is false there by construction and the
+  label test is dead code. Proven, not assumed.
+- **the deferred sort-key walk** needs `outputColumnSorts` to decline while the rung still accepts,
+  which no shape constructed here reaches with a seed (`ORDER BY` an off-output column declines the
+  rung entirely; `DESC`, `SKIP` and an aliased key all take the streaming or topK arms).
+
+Both are therefore uniform-by-edit rather than pinned-by-test, which is item 475's distinction
+stated honestly. `seeded/guard-dropped` also survives and is answer-equivalent: on the bucket route
+every vertex carries the label, so testing it changes nothing but wastes work.
+
+⚠️ **Two of the test's own shapes were added BY the mutation pass**, after five-of-seven showed two
+sites unreached — and then both turned out to reach the general matcher instead, which is how the
+pre-existing split above was found. The mutation pass did not just verify the tests; it produced the
+finding that reversed item 1608's verdict.
+
+#### Also corrected: a test of my own that tested nothing
+
+The maintained-API test removed the label from `u1` and expected the count to drop — but `k = i % 2`
+and the shapes query `k = 0`, so stripping the label from an ODD vertex leaves the queried bucket
+untouched and the test passed whatever the elision did. `u2` fixes it. And the collecting shape first
+used `sum`, normalized to a cardinality by RE-ASKING with `count(*)` — which takes a different route
+and reported that route's answer; `collect` returns a list whose length is the cardinality, with no
+re-ask.
+
+#### Gates
+
+`bun run check` 0 read unpiped. Suites gql 4137 (8 new), gremlin 1694, core 435, native 1056,
+serialization 144 — 0 fail. `bun run fuzz` 20/0 under the 16G cap.

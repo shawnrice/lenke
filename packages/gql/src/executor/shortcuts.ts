@@ -634,10 +634,17 @@ const buildNodeCount = <T>(
       (name === undefined ? graph.verticesById.values() : (graph.verticesByLabel.get(name) ?? []));
     let n = 0;
 
+    // ITEM 1609: the label with a VACUOUS one dropped, resolved ONCE PER CALL. Hoisting is the
+    // whole change: with `effectiveLabel` called per ELEMENT the control fixture (a multi-label
+    // graph, where it can never elide) measured 1.32x WORSE — 15295 ns against 20207 — while
+    // hoisted it is flat. Per EXECUTION, not per compile: universality is a property of the graph
+    // (item 1551), so a cached plan cannot carry it.
+    const labelEff = effectiveLabel(graph, label);
+
     for (const v of vertices) {
       // A seek returns vertices by VALUE, not by label, so the label has to be applied here.
       // The bucket path inherits it from the seed and must not pay for it again.
-      if (seeded !== undefined && !matchesLabel(v, label)) {
+      if (seeded !== undefined && !matchesLabel(v, labelEff)) {
         continue;
       }
 
@@ -9827,9 +9834,16 @@ const deferredSortedNodeWalk = (spec: {
     const env = { binding, params, graph };
     const { vertices, seeded } = scanCandidates(graph, cstart, label, labelName, env);
 
+    // ITEM 1609: the label with a VACUOUS one dropped, resolved ONCE PER CALL. Hoisting is the
+    // whole change: with `effectiveLabel` called per ELEMENT the control fixture (a multi-label
+    // graph, where it can never elide) measured 1.32x WORSE — 15295 ns against 20207 — while
+    // hoisted it is flat. Per EXECUTION, not per compile: universality is a property of the graph
+    // (item 1551), so a cached plan cannot carry it.
+    const labelEff = effectiveLabel(graph, label);
+
     for (const v of vertices) {
       // Both tests, in the same order and for the same reasons the plain arm states.
-      if (seeded !== undefined && !matchesLabel(v, label)) {
+      if (seeded !== undefined && !matchesLabel(v, labelEff)) {
         continue;
       }
 
@@ -9996,9 +10010,16 @@ const topKNodeWalk = (spec: {
     const { vertices, seeded } = scanCandidates(graph, cstart, label, labelName, env);
     const kept: Vertex[] = [];
 
+    // ITEM 1609: the label with a VACUOUS one dropped, resolved ONCE PER CALL. Hoisting is the
+    // whole change: with `effectiveLabel` called per ELEMENT the control fixture (a multi-label
+    // graph, where it can never elide) measured 1.32x WORSE — 15295 ns against 20207 — while
+    // hoisted it is flat. Per EXECUTION, not per compile: universality is a property of the graph
+    // (item 1551), so a cached plan cannot carry it.
+    const labelEff = effectiveLabel(graph, label);
+
     for (const v of vertices) {
       // Both tests, in the same order and for the same reasons the plain arm states.
-      if (seeded !== undefined && !matchesLabel(v, label)) {
+      if (seeded !== undefined && !matchesLabel(v, labelEff)) {
         continue;
       }
 
@@ -10307,6 +10328,13 @@ export const detectNodeProjection = (
       graph,
     });
 
+    // ITEM 1609: the label with a VACUOUS one dropped, resolved ONCE PER CALL. Hoisting is the
+    // whole change: with `effectiveLabel` called per ELEMENT the control fixture (a multi-label
+    // graph, where it can never elide) measured 1.32x WORSE — 15295 ns against 20207 — while
+    // hoisted it is flat. Per EXECUTION, not per compile: universality is a property of the graph
+    // (item 1551), so a cached plan cannot carry it.
+    const labelEff = effectiveLabel(graph, label);
+
     for (const v of vertices) {
       // The label is re-checked because a SEEDED set is a SUPERSET: an index hint is a
       // NECESSARY condition, not a sufficient one, so it can hand back a same-named vertex of
@@ -10315,7 +10343,7 @@ export const detectNodeProjection = (
       // caught the omission as a WRONG ANSWER, not as a slow one. Guarded on `seeded` so the
       // bucket walk — every unindexed graph — pays nothing for a test it satisfies by
       // construction; the same idiom this file already uses at the far-side walk.
-      if (seeded !== undefined && !matchesLabel(v, label)) {
+      if (seeded !== undefined && !matchesLabel(v, labelEff)) {
         continue;
       }
 
@@ -11482,8 +11510,15 @@ export const detectNodeAggregate = (
         const { vertices, seeded } = scanCandidates(graph, cstart, label, labelName, env);
         const values: unknown[] = [];
 
+        // ITEM 1609: the label with a VACUOUS one dropped, resolved ONCE PER CALL. Hoisting is the
+        // whole change: with `effectiveLabel` called per ELEMENT the control fixture (a multi-label
+        // graph, where it can never elide) measured 1.32x WORSE — 15295 ns against 20207 — while
+        // hoisted it is flat. Per EXECUTION, not per compile: universality is a property of the graph
+        // (item 1551), so a cached plan cannot carry it.
+        const labelEff = effectiveLabel(graph, label);
+
         for (const v of vertices) {
-          if (seeded !== undefined && !matchesLabel(v, label)) {
+          if (seeded !== undefined && !matchesLabel(v, labelEff)) {
             continue;
           }
 
@@ -11530,8 +11565,15 @@ export const detectNodeAggregate = (
       const { vertices, seeded } = scanCandidates(graph, cstart, label, labelName, env);
       let acc = fold.init();
 
+      // ITEM 1609: the label with a VACUOUS one dropped, resolved ONCE PER CALL. Hoisting is the
+      // whole change: with `effectiveLabel` called per ELEMENT the control fixture (a multi-label
+      // graph, where it can never elide) measured 1.32x WORSE — 15295 ns against 20207 — while
+      // hoisted it is flat. Per EXECUTION, not per compile: universality is a property of the graph
+      // (item 1551), so a cached plan cannot carry it.
+      const labelEff = effectiveLabel(graph, label);
+
       for (const v of vertices) {
-        if (seeded !== undefined && !matchesLabel(v, label)) {
+        if (seeded !== undefined && !matchesLabel(v, labelEff)) {
           continue;
         }
 
@@ -11781,10 +11823,17 @@ export const detectMultiNodeAggregate = (
       const state = accs.map((a) => (a.kind === 'fold' ? a.fold.init() : ([] as unknown[])));
       let n = 0;
 
+      // ITEM 1609: the label with a VACUOUS one dropped, resolved ONCE PER CALL. Hoisting is the
+      // whole change: with `effectiveLabel` called per ELEMENT the control fixture (a multi-label
+      // graph, where it can never elide) measured 1.32x WORSE — 15295 ns against 20207 — while
+      // hoisted it is flat. Per EXECUTION, not per compile: universality is a property of the graph
+      // (item 1551), so a cached plan cannot carry it.
+      const labelEff = effectiveLabel(graph, label);
+
       for (const v of vertices) {
         // The row path's exact order: label recheck, then gate, then `binding.set`. The gate
         // takes the vertex explicitly and runs before the binding is set.
-        if (seeded !== undefined && !matchesLabel(v, label)) {
+        if (seeded !== undefined && !matchesLabel(v, labelEff)) {
           continue;
         }
 
