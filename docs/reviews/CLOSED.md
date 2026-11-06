@@ -69707,3 +69707,57 @@ Two survivors, both documented where they sit: the `WHERE`'s unbound-name loop (
 #### Gates
 
 `bun run check` 0 read unpiped. Suites gql 4191 (20 in this file), core 435, native 1076, gremlin 1765, serialization 144 — 0 fail. `bun run fuzz` 20/0 under the 16G cap.
+
+### Item 1621 — **1.83x on the far-keyed grouped hop count** (7.87 ms to 4.30 median of four runs each), by reading the ONE bucket directly instead of going through `expand`'s generator. ⚠️ And the profile is what made this a target rather than the cliff finder's ratio: three shapes were flagged at ~20x their non-hop neighbour and only ONE of them had a frame worth attacking
+
+OPEN: the same `directedBucket` substitution at the other SEVEN `expand` call sites — five in the generic matcher, one in `hop-projection.ts`, one more in `shortcuts.ts`. Each needs its own measurement, and the matcher ones are the broadest.
+
+#### The ratio was a nomination; the profile was the price
+
+`gql-cliff-finder.ts` flagged grouped-hop-count, topk-over-a-hop and collect-over-a-hop at 16.9x, 21.4x and 20.3x their non-hop neighbours — all three walking 80,000 edges where the neighbour touches 20,000 vertices, so the ratio alone says nothing. Per EDGE they are 69-91 ns against the one-hop ROW projection's 46, which is the number to beat. The profiles:
+
+```text
+   groupedhop   detectGroupedHopCount's closure 23.7%   expand 16.3%   gc 8.1%
+   collecthop   startDriven 14.6%   gc 13.5%   projectRow 5.0%   walkRows 4.1%
+   topkhop      (no frame over 2% that is not fixture build)
+```
+
+Only `groupedhop` has a frame to attack, and it is not the rung's own closure — it is **`expand`**, the general path's adjacency iterator, which the rung calls per edge. `collecthop` is `startDriven` plus garbage collection, which is `hop-projection.ts`'s own walk doing what it does; `topkhop`'s profile is flat. So two of the three SUSPECTs are honest work, recorded here so nobody prices them again from the ratio.
+
+#### What `expand` costs a caller, and the narrow substitution
+
+`expand` is a GENERATOR that yields a fresh `{ edge, node }` per edge, so a caller pays one resume and one object allocation per edge — 80,000 of each on this fixture, with the garbage collector at 8.1% beside it. For a DIRECTED SINGLE-TYPE hop there is one `Set` to walk and nothing to dedupe.
+
+`directedBucket(v, rel)` returns `{ set, forward }` for exactly that shape and `undefined` for every other, and the refusal is the load-bearing half. `detectGroupedHopCount`'s own comment records what hand-rolling the general case cost: **a `T|S` edge counted TWICE** under `-[:T|S]->`, because the per-type buckets both hold it and only `expand`'s `Set` dedupes across them. So the multi-type, untyped and `both` patterns still go through `expand`.
+
+It also returns a shape for an EMPTY bucket rather than `undefined`: `undefined` means "this pattern needs `expand`", and conflating that with "this vertex has no such edge" would send every zero-degree vertex down the general path.
+
+#### The A/B, one shape per process, four runs each arm
+
+```text
+   arm                        PRE                        POST                      verdict
+   groupedhop (far key)    8.000 8.250 7.414 7.736    4.851 4.342 3.697 4.268    1.83x median
+   groupedhop (START key)  6.014                      6.214                      flat (control)
+   groupedhop (E|F)       31.111                     32.398                      flat (control)
+   grouped node count      0.264                      0.269                      flat (control)
+   one-hop rows            3.457                      3.508                      flat (control)
+   node rows               0.390                      0.373                      flat (control)
+```
+
+**The two interesting controls are the ones that must DECLINE**, and both are flat: the multi-type spelling still goes through `expand`, and the START-keyed shape takes the rung's DEGREE arm rather than either per-edge body. Non-overlapping ranges on the target (7.414-8.250 against 3.697-4.851).
+
+#### Mutation 13 of 14
+
+The helper's three refusals (`both`, multi-type, everything), its `forward`, its box, its type name, and its empty-bucket contract; the caller's endpoint, far label, keyed node, gate and increment; and the route taken for everything, which reproduces the historical double-count and dies with 4 failures.
+
+**One prediction wrong in the safe direction**: I expected `helper/empty-as-undefined` to survive as answer-equivalent, and it was CAUGHT — the test asserts the empty-bucket contract directly, which is the kind of assertion worth writing precisely because it pins an invariant no answer depends on _yet_.
+
+The single survivor is `route/never-taken`, which is item 1619's recorded limit: the two loop bodies are identical by design, so making the `if` never fire is answer-equivalent. What IS pinned is `directedBucket`'s verdict — it is exported and unit-tested, so every way it could admit the wrong shape dies; only "the caller stopped asking" survives.
+
+#### The eighteenth eyeballed literal
+
+`-[:T]-(y)` over four `T` edges: I wrote 4/4 by eye and the engine answered 5/3. Each edge is seen from both ends, so the eight far ends are b(2), a(1), c(1), b(2), a(1), c(1), f(2), e(1). **"Symmetric" is not "evenly split"**, which is what the wrong literal assumed. Derived by script, with the reasoning in the test.
+
+#### Gates
+
+`bun run check` 0 read unpiped. Suites gql 4199 (8 new), core 435, native 1076, gremlin 1765, serialization 144 — 0 fail. `bun run fuzz` 20/0 under the 16G cap.

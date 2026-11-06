@@ -168,6 +168,14 @@ const SHAPES = {
   anyshortest: 'MATCH p = ANY SHORTEST (a:P)-[:E]->+(b:P) WHERE a.n = 0 RETURN count(*) AS c',
   countdistinct: 'MATCH (n:P) RETURN count(DISTINCT n.k) AS c',
   collected: 'MATCH (n:P) RETURN collect(n.k) AS ks',
+  /**
+   * ⚠️ Item 1621: the three shapes `gql-cliff-finder.ts` still flags, each ~20x its NON-hop
+   * neighbour. All three walk 80,000 edges where the neighbour touches 20,000 vertices, so the
+   * ratio may be honest work — the profile is what says whether it is. Priced per EDGE they are
+   * 69-91 ns against the one-hop ROW projection's 46, which is the number to beat.
+   */
+  groupedhop: 'MATCH (a:P)-[:E]->(b:P) RETURN b.k AS k, count(*) AS c',
+  collecthop: 'MATCH (a:P)-[:E]->(b:P) RETURN collect(b.k) AS ks',
   scalaraggs: 'MATCH (n:P) RETURN sum(n.n) AS s, avg(n.n) AS a, min(n.k) AS mn, max(n.k) AS mx',
   // ⚠️ `callinline` HAS NO SCOPE LIST, SO IT IS NON-CORRELATED — the inner `n` is a FRESH variable,
   // not the outer one, which is the scope isolation the ISO form exists for. Item 1565 read that as

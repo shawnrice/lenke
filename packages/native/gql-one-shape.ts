@@ -31,6 +31,11 @@ const QUERIES: Record<string, string> = {
   hop2midwhere: 'MATCH (a:P)-[:E]->(b:P)-[:E]->(c:P) WHERE b.k = 5 RETURN c.k AS k',
   hop2startwhere: 'MATCH (a:P)-[:E]->(b:P)-[:E]->(c:P) WHERE a.k = 5 RETURN c.k AS k',
   hop2truewhere: 'MATCH (a:P)-[:E]->(b:P)-[:E]->(c:P) WHERE true RETURN c.k AS k',
+  // Item 1621: the grouped-hop count, whose rung calls `expand` per edge.
+  groupedhop: 'MATCH (a:P)-[:E]->(b:P) RETURN b.k AS k, count(*) AS c',
+  groupedhopstart: 'MATCH (a:P)-[:E]->(b:P) RETURN a.k AS k, count(*) AS c',
+  groupedhopmulti: 'MATCH (a:P)-[:E|F]->(b:P) RETURN b.k AS k, count(*) AS c',
+  groupednode: 'MATCH (n:P) RETURN n.k AS k, count(*) AS c',
   // CONTROLS the change can reach: one hop through the matcher, and a var-length walk.
   hoprows: 'MATCH (a:P)-[:E]->(b:P) RETURN b.k AS k',
   varlen: 'MATCH (a:P)-[:E]->{1,2}(b:P) RETURN count(*) AS c',

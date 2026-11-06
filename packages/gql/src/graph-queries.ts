@@ -78,6 +78,49 @@ const inSteps = function* (v: Vertex, label: LabelExpr | undefined): Iterable<St
 };
 
 /**
+ * The ONE bucket a directed single-type hop reads, or `undefined` when the shape needs `expand`
+ * (item 1621).
+ *
+ * ⚠️ WHY A CALLER WOULD WANT THIS RATHER THAN `expand`. `expand` is a GENERATOR that yields a fresh
+ * `{ edge, node }` per edge, so a caller pays one resume and one object allocation per edge — and
+ * `expand` was **16.3%** of the grouped-hop count's profile with the garbage collector at 8.1%
+ * beside it. For the directed single-type case there is nothing to iterate but one `Set` and nothing
+ * to dedupe, so a caller that loops it directly pays neither.
+ *
+ * ⚠️ IT RETURNS `undefined` FOR EVERY OTHER SHAPE, AND THAT IS THE LOAD-BEARING PART.
+ * `detectGroupedHopCount`'s own comment records what hand-rolling the general case cost: a `T|S`
+ * edge counted TWICE under `-[:T|S]->`, because the per-type buckets both hold it and only
+ * `expand`'s `Set` dedupes across them. So this helper refuses anything but the shape `expand`
+ * itself fast-paths, and the caller keeps `expand` for the rest.
+ *
+ * `forward` is returned rather than re-derived, so a caller cannot read the wrong endpoint off the
+ * edge — the other half of the same mistake.
+ */
+export const directedBucket = (
+  v: Vertex,
+  rel: Adjacency,
+): { readonly set: ReadonlySet<Edge>; readonly forward: boolean } | undefined => {
+  const { label, direction } = rel;
+
+  if (direction === 'both' || label?.kind !== 'label') {
+    return undefined;
+  }
+
+  const forward = direction === 'out';
+  // ⚠️ The vertex's CACHED box, not a string-keyed lookup — item 1618, which measured the three
+  // ways at 59.7 ns / 30.5 / 16.1 over 200,000 vertices.
+  const set = (forward ? v.adjFrom : v.adjTo)?.get(label.name);
+
+  // An EMPTY bucket still returns a shape rather than `undefined`: `undefined` here means "this
+  // pattern needs `expand`", and conflating that with "this vertex has no such edge" would send a
+  // zero-degree vertex down the general path for no reason.
+  return { set: set ?? EMPTY_EDGES, forward };
+};
+
+/** Shared so a zero-degree vertex allocates nothing. */
+const EMPTY_EDGES: ReadonlySet<Edge> = new Set();
+
+/**
  * Expand a single pattern segment from `v`, yielding every matching
  * `{ edge, node }`. `both` walks outgoing then incoming, matching the natural
  * read order of an undirected pattern.

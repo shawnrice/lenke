@@ -89,7 +89,13 @@ import {
   resolveCount,
   valueKey,
 } from '../executor.js';
-import { candidateCount, candidateVertexSource, expand, matchesLabel } from '../graph-queries.js';
+import {
+  candidateCount,
+  candidateVertexSource,
+  directedBucket,
+  expand,
+  matchesLabel,
+} from '../graph-queries.js';
 import type { Adjacency } from '../graph-queries.js';
 import { plainRowProjection } from './hop-projection.js';
 import { indexCandidates, matchNode, seedVertices, seekIsWorthIt } from './matching.js';
@@ -10975,6 +10981,52 @@ export const detectGroupedHopCount = (clauses: readonly Clause[]): ReachFn | nul
       // the per-type buckets with a `Set`. Hand-rolling the bucket loop counted a `T|S` edge
       // TWICE under `-[:T|S]->` — caught by the multi-label test, which the general path
       // answered correctly.
+      /**
+       * ⚠️ THE LOOP BODY IS WRITTEN TWICE, and the duplication buys removing `expand`'s generator
+       * resume AND its per-edge `{ edge, node }` allocation — **16.3%** of this shape's profile with
+       * the garbage collector at 8.1% beside it (item 1621).
+       *
+       * `directedBucket` returns a shape ONLY for the directed single-type case, which is the one
+       * `expand` itself fast-paths and the one where nothing needs deduping. Every other pattern
+       * still goes through `expand`, which is what the paragraph above is about: hand-rolling the
+       * general case counted a `T|S` edge TWICE under `-[:T|S]->`, because the per-type buckets both
+       * hold it and only `expand`'s `Set` dedupes across them.
+       *
+       * The two bodies are identical line for line, and the risk of that is drift rather than the
+       * duplication itself — so the multi-label test that caught the original double-count still
+       * covers the `expand` arm, and item 1621's own tests cover both arms with the same fixture.
+       *
+       * ⚠️ THE ROUTE ITSELF IS UNPINNED, the same limit item 1619 recorded for all twenty rungs:
+       * making this `if` never fire is answer-equivalent (the bodies are identical, which is the
+       * point) and the whole suite passes. What IS pinned is `directedBucket`'s verdict — it is
+       * exported and unit-tested directly, so every way it could admit the wrong shape dies. Only
+       * "the caller stopped asking" survives, and there is nothing to assert about it that is not a
+       * timing test.
+       */
+      const direct = directedBucket(v, adjacency);
+
+      if (direct !== undefined) {
+        const { set, forward } = direct;
+
+        for (const edge of set) {
+          const node = forward ? edge.to : edge.from;
+
+          if (farPb !== undefined && !matchesLabel(node, farPb)) {
+            continue;
+          }
+
+          const keyedNode = onStart ? v : node;
+
+          if (gate !== undefined && !gate(keyedNode, binding, params, graph)) {
+            continue;
+          }
+
+          add(propOf(keyedNode, key), 1, keyedNode);
+        }
+
+        continue;
+      }
+
       for (const step of expand(graph, v, adjacency)) {
         const { node } = step;
 
