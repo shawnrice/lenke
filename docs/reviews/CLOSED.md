@@ -63750,3 +63750,51 @@ each; tree verified identical afterwards.
 Two groups flagged and not yet confirmed: `node count: inline vs clause WHERE` (2.56x) and
 `a product's one-sided predicate: comma vs MATCH MATCH (item 285)` (2.11x). Both want the probe's
 own three-isolated-runs treatment before being treated as findings.
+
+### Item 1557 — confirmed the sweep's other two flags and **both are in-sweep artifacts, not findings**. Of three groups the full `bun run spelling` flagged, ONE was a real 5.96x regression (item 1556) and TWO were the harness. That ratio is the useful output: it is the probe's own documented behaviour, and it is why its output tells you to confirm alone
+
+Item 1556 took the largest of three flags. The probe's own instruction for the rest is explicit —
+_"CONFIRM EACH BEFORE TREATING IT AS A FINDING — a flag can still be this harness. Re-run the group
+ALONE, where no earlier group has polluted dispatch, THREE TIMES: one isolated run is still one
+reading (item 1073)."_ Both remaining flags fail that test.
+
+#### `node count: inline vs clause WHERE` — flagged 2.56x, confirmed CONVERGED
+
+|                                             | run 1   | run 2 | run 3 |
+| ------------------------------------------- | ------- | ----- | ----- |
+| `MATCH (n:P {k: 2}) RETURN count(*)`        | 3.79 ms | 3.77  | 3.37  |
+| `MATCH (n:P) WHERE n.k = 2 RETURN count(*)` | 3.29    | 3.13  | 3.14  |
+| `MATCH (n:P WHERE n.k = 2) RETURN count(*)` | 3.43    | 3.16  | 3.13  |
+
+Max spread ~1.2x, and the probe reports **0 groups over 2x** in all three. Worth noting that item
+1556's fix cannot explain this one: `liftStartProps` refuses a bare node in a single-pattern clause
+(`single && pattern.segments.length === 0`), which is exactly this shape, so the convergence is the
+isolation and not the change.
+
+#### `a product's one-sided predicate: comma vs MATCH MATCH (item 285)` — flagged 2.11x, confirmed CONVERGED
+
+|                                         | run 1    | run 2 | run 3 |
+| --------------------------------------- | -------- | ----- | ----- |
+| `MATCH (a:S), (b:P) WHERE b.k = 7`      | 11.47 ms | 11.92 | 11.90 |
+| `MATCH (a:S) MATCH (b:P) WHERE b.k = 7` | 10.52    | 10.84 | 10.63 |
+| `MATCH (a:S), (b:P WHERE b.k = 7)`      | 14.61    | 11.91 | 13.51 |
+| `MATCH (a:S), (b:P {k: 7})`             | 14.39    | 12.16 | 15.35 |
+
+Max spread 1.44x, **0 over 2x** in all three runs.
+
+#### THE RATIO IS THE FINDING
+
+**One real regression, two artifacts, out of three flags.** That is not a complaint about the probe —
+it is the design working: flag broadly in a sweep where groups pollute each other's dispatch, then
+confirm narrowly. A tick that treated all three as targets would have spent two thirds of itself
+chasing its own harness, and a tick that dismissed the list would have missed a 5.96x regression
+that had been live since item 1502.
+
+So the calibration to carry: **expect roughly a third of this probe's in-sweep flags to survive
+isolation**, and never skip the three-run confirmation — the cost is three 110-second runs against a
+target that may not exist.
+
+#### Gates
+
+No code change — `git status` clean apart from this entry. The suites stand at item 1556's:
+core 431/0, gql 3883/0, gremlin 1500/0, native 963/0, serialization 144/0, `bun run fuzz` 20/0.
