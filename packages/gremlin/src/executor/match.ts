@@ -130,13 +130,36 @@ const fromBinding = (t: Traverser<unknown>, value: unknown): Traverser<unknown> 
   tags: t.tags,
 });
 
-/** `t` with `key` bound to `value` (single-valued; match binds each label once). */
-const bind = (t: Traverser<unknown>, key: string, value: unknown): Traverser<unknown> => {
-  const tags = new Map<string, readonly unknown[]>(t.tags);
-  tags.set(key, [value]);
+/**
+ * What one pattern does to the current branch. ⚠️ THIS IS A DESCRIPTOR, NOT A TRAVERSER LIST, and
+ * that is the whole of item 1559's 5.3x.
+ *
+ * `applyPattern` used to return the bound traversers, built by a `bind` helper that did
+ * `new Map(t.tags)` per branch. The solver is a depth-first join, so that is an O(bindings) copy at
+ * every node of the DFS — and an ablation that simply skipped the copy (wrong answers, ceiling only)
+ * took `matched` from 14781 to 2604 ms. **82% of the shape was copying the tag map.**
+ *
+ * So the solver now carries ONE mutable map down the DFS and undoes each binding on the way out.
+ * Returning a descriptor is what lets it: the binding is applied by `solve`, around the recursion,
+ * rather than baked into a traverser the caller has to copy to build.
+ *
+ * Two ablations that did NOT pay, recorded so they are not re-attempted:
+ *
+ *   * `new Set(done).add(idx)` per DFS node, replaced by a shared mutable set — **flat** (15386 /
+ *     14940 / 15162 against a 14781 baseline). The `done` set copy is not a cost; only the TAG map
+ *     copy is, because `done` holds one small int per pattern while the tags hold boxed values.
+ *   * `{ ...t, tags }` replaced by an explicit `{ value, path, loopCount, tags }` literal —
+ *     **WORSE**, 15858 / 17275 / 15885. The spread is not the problem and hand-writing the literal
+ *     loses whatever shape the spread was preserving.
+ */
+type PatternOutcome =
+  | { readonly kind: 'drop' }
+  | { readonly kind: 'keep' }
+  | { readonly kind: 'bind'; readonly key: string; readonly values: readonly unknown[] };
 
-  return { ...t, tags };
-};
+/** Shared singletons: the two non-binding outcomes carry no data, so they allocate nothing. */
+const DROP: PatternOutcome = { kind: 'drop' };
+const KEEP: PatternOutcome = { kind: 'keep' };
 
 /**
  * Apply one pattern to a traverser, returning the consistent continuations
@@ -149,11 +172,11 @@ const applyPattern = (
   t: Traverser<unknown>,
   graph: Graph,
   ctx: RunContext,
-): Traverser<unknown>[] => {
+): PatternOutcome => {
   const start = recallTag(t.tags, p.startKey, 'last');
 
   if (!start.ok) {
-    return [];
+    return DROP;
   }
 
   const out = applyPlanToStream(p.inner, [fromBinding(t, start.value)], graph, ctx);
@@ -172,26 +195,26 @@ const applyPattern = (
       }
     }
 
-    return satisfiable ? [] : [t];
+    return satisfiable ? DROP : KEEP;
   }
 
   if (p.endKey === undefined) {
-    return hasAny(out) ? [t] : []; // pure filter on start
+    return hasAny(out) ? KEEP : DROP; // pure filter on start
   }
 
   if (boundEnd?.ok) {
     for (const o of out) {
       if (sameValue(o.value, boundEnd.value)) {
-        return [t]; // end already bound and consistent
+        return KEEP; // end already bound and consistent
       }
     }
 
-    return [];
+    return DROP;
   }
 
-  // Bind the end label, one branch per distinct candidate value.
+  // The end label's distinct candidate values. `solve` binds each one in turn.
   const seen = new Set<string>();
-  const branches: Traverser<unknown>[] = [];
+  const values: unknown[] = [];
 
   for (const o of out) {
     const k = tupleKey([o.value]);
@@ -201,10 +224,10 @@ const applyPattern = (
     }
 
     seen.add(k);
-    branches.push(bind(t, p.endKey, o.value));
+    values.push(o.value);
   }
 
-  return branches;
+  return values.length === 0 ? DROP : { kind: 'bind', key: p.endKey, values };
 };
 
 /** Pick a not-yet-applied pattern whose start is bound, preferring binders. */
@@ -237,24 +260,48 @@ export const matchStep = function* (
   patternPlans: readonly Plan[],
   graph: Graph,
   ctx: RunContext,
+  /**
+   * Can anything downstream read the emitted traversers' tags? Defaults to `true`, so every caller
+   * that has not thought about it stays correct and merely unoptimized — the same default-safe
+   * direction as `RunContext.tracksPath`. `applyPlanToStream` computes it from this step's own
+   * suffix via `tagsObservedFrom`.
+   */
+  tagsObserved = true,
 ): Iterable<Traverser<unknown>> {
   const patterns = patternPlans.map(parsePattern);
   const startLabel = computeStartLabel(patterns);
 
+  /**
+   * One mutable tag map travels the whole depth-first search; `tags` and `t.tags` are the SAME
+   * object, passed separately only because `Traverser.tags` is a `ReadonlyMap` and this needs to
+   * write to it without casting at every site.
+   */
   const solve = function* (
     t: Traverser<unknown>,
     done: ReadonlySet<number>,
+    tags: Map<string, readonly unknown[]>,
   ): Iterable<Traverser<unknown>> {
     if (done.size === patterns.length) {
       // Emit the binding map as the value (TinkerPop-faithful); tags carry the
       // bindings for any following select(...).
       const bindings = new Map<string, unknown>();
 
-      for (const [label, values] of t.tags) {
+      for (const [label, values] of tags) {
         bindings.set(label, values[values.length - 1]);
       }
 
-      yield extend(t, bindings);
+      // ⚠️ THE SNAPSHOT IS THE WHOLE COST, AND IT IS OFTEN DEAD. `extend` propagates `tags` BY
+      // REFERENCE, so an emitted traverser would otherwise share the map the search keeps
+      // rewriting and a later `select(...)` would read whatever state the solver had reached. But
+      // when nothing downstream can read tags — `match(…).count()` is the common case — the copy
+      // is pure waste, and it is 82% of the shape (item 1559 measured the ceiling by simply
+      // deleting it: 14781 -> 2604 ms). `tagsObserved` is the plan's answer, default `true`.
+      //
+      // ⚠️ Deferring the copy here WITHOUT the skip is worth NOTHING, measured flat on three
+      // shapes at item 1559: the old code copied once per BIND and this copies once per SOLUTION,
+      // and in a branching search the leaves outnumber the internal nodes. The refactor is the
+      // PREREQUISITE for the skip, not a win of its own — do not re-derive it as one.
+      yield tagsObserved ? extend({ ...t, tags: new Map(tags) }, bindings) : extend(t, bindings);
 
       return;
     }
@@ -265,17 +312,49 @@ export const matchStep = function* (
       return; // no runnable pattern: this branch is stuck, drop it
     }
 
+    const outcome = applyPattern(patterns[idx], t, graph, ctx);
+
+    if (outcome.kind === 'drop') {
+      return;
+    }
+
     const next = new Set(done).add(idx);
 
-    for (const t2 of applyPattern(patterns[idx], t, graph, ctx)) {
-      yield* solve(t2, next);
+    if (outcome.kind === 'keep') {
+      yield* solve(t, next, tags);
+
+      return;
+    }
+
+    // Bind each candidate in turn and UNDO on the way out, so sibling branches never see each
+    // other's binding. `match()` binds a label once, so there is nothing to restore in practice —
+    // but `pickRunnable` only requires the START label to be bound, so a pattern CAN be reached
+    // with its end label already set; the saved value keeps that case honest rather than assuming.
+    const had = tags.has(outcome.key);
+    const prev = tags.get(outcome.key);
+
+    for (const value of outcome.values) {
+      tags.set(outcome.key, [value]);
+
+      yield* solve(t, next, tags);
+    }
+
+    if (had) {
+      tags.set(outcome.key, prev as readonly unknown[]);
+    } else {
+      tags.delete(outcome.key);
     }
   };
 
   for (const t of stream) {
-    // Seed the source label from the incoming value (unless already bound).
-    const seed = t.tags.has(startLabel) ? t : bind(t, startLabel, t.value);
+    // ONE copy per incoming traverser: the caller's map belongs to the caller, and everything below
+    // mutates. Seed the source label from the incoming value (unless already bound).
+    const work = new Map<string, readonly unknown[]>(t.tags);
 
-    yield* solve(seed, new Set());
+    if (!work.has(startLabel)) {
+      work.set(startLabel, [t.value]);
+    }
+
+    yield* solve({ ...t, tags: work }, new Set(), work);
   }
 };

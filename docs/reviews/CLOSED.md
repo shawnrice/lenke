@@ -63903,7 +63903,7 @@ item 1557 recorded as "the useful output".
 The probe is `packages/native/dispatch-pollution-probe.mjs`, which gained an `ONLY=<arm>` knob for
 exactly this reason; its header now carries the artifact as a worked example.
 
-### Item 1559 — Gremlin's `match()` spends **82% of its time copying the tag map** (ablation: 14781 → 2604 ms, **5.68x**), and the obvious fix — defer the copy to the leaf — is **REFUTED, flat on two shapes**, because in a branching search the leaves outnumber the internal nodes. The reachable lever is a `tracksTags` context flag, and `tracksPath` is already the precedent. Two further ablations null, both recorded
+### Item 1559 — ⚠️ **ITS HEADLINE NUMBER IS WRONG AND ITEM 1560 CORRECTS IT: the 5.68x was a PRUNED SEARCH, not removed copies.** The ablation skipped the copy by sharing one map and never undoing it, so a sibling branch found its label already bound and short-circuited — **2004 solutions instead of 10000**, i.e. 4.99x less WORK against a measured 5.68x. The real win is **1.16-1.23x** (item 1560). ~~Gremlin's `match()` spends 82% of its time copying the tag map (ablation: 14781 → 2604 ms, 5.68x)~~, and the obvious fix — defer the copy to the leaf — is **REFUTED, flat on two shapes**, because in a branching search the leaves outnumber the internal nodes. The reachable lever is a `tracksTags` context flag, and `tracksPath` is already the precedent. Two further ablations null, both recorded
 
 A profile-first tick on the Gremlin side (items 1535-1558 were nearly all GQL). The screen is the
 repo's own: `runtime-profile-gremlin-probe.mjs` x 32 shapes under `windowed-profile.mjs`, read by
@@ -64012,3 +64012,106 @@ a table a reader might quote.
 window before checking the adjacent entry. That is CLAUDE.md's documented pattern exactly — of 40
 stale headings a sweep corrected, **22 were closed by the VERY NEXT item** — and the cheap move is
 to read the neighbouring entry before measuring, which I did second.
+
+### Item 1560 — SHIPPED, **1.16x** on `match(…).count()` and **1.23x** at two patterns (controls flat): the solver's per-solution tag snapshot is skipped when no downstream step can read tags. ⚠️ **And item 1559's 5.68x "ceiling" does not exist — its ablation PRUNED THE SEARCH, 2004 solutions where the correct answer needs 10000.** Three mutants survive, and the reason is worth more than the win
+
+Item 1559 nominated this from a profile and priced it at 5.68x. The price was wrong, and finding out
+why is most of this item.
+
+#### ⚠️ THE ABLATION WAS NOT MEASURING WHAT I THOUGHT: it did 5x LESS WORK
+
+Item 1559's `nomapcopy` arm removed the tag-map copy by having `bind` mutate one shared map and
+return `t` — **and never undo it**. So after the first branch the end label stayed bound, and
+`applyPattern` took its `boundEnd?.ok` path (return once, consistent) instead of fanning out over
+every candidate. The search collapsed:
+
+```text
+   correct                            10000 solutions   (answer 10000)
+   item 1559's `nomapcopy` ablation    2004 solutions   (answer 2004)
+```
+
+**10000 / 2004 = 4.99x less work, against a measured 5.68x speedup.** Essentially the whole
+"ceiling" was the pruning. The tag copy was never 82% of anything.
+
+**The rule this earns:** a wrong-answer ablation is only a valid ceiling if it does the SAME AMOUNT
+OF WORK. Removing a cost per unit is fine to measure that way; changing control flow is not, and a
+mutation that leaves state behind in a backtracking search changes control flow by construction.
+**Count the units** — here one line counting yielded solutions settled it, and it is the same
+discipline CLAUDE.md already prescribes for fixtures ("an answer that is INVARIANT to the property
+you varied cannot validate the fixture"). I had the counter available and did not run it for a whole
+item.
+
+#### What the real change is, and what it is worth
+
+`extend` propagates `tags` by reference, so the solver cannot hand out a traverser pointing at the
+map it is still rewriting — hence a snapshot per solution. That snapshot is dead whenever nothing
+downstream reads tags, and `match(…).count()` is exactly that. `tagsObservedFrom(steps, from)` in
+`ast.ts` answers it from the match step's own suffix, and `run`'s step loop passes the verdict.
+
+| shape                                              | PRE                   | POST                  |                       |
+| -------------------------------------------------- | --------------------- | --------------------- | --------------------- |
+| `matched` — `match(…).count()`, skip FIRES         | 14496 / 14781 / 15111 | 13081 / 12610 / 12769 | **1.16x**             |
+| `matched2` — two patterns, skip fires              | 8923 / 8690 / 9185    | 7093 / 7440 / 7225    | **1.23x**             |
+| `matchedsel` — `select('c')`, snapshot still taken | 9314 / 9569 / 9334    | 9450 / 9686 / 9613    | flat (ranges overlap) |
+| `hopcount3` — control, no `match.ts`               | 2789 / 2689 / 2773    | 2867 / 2689 / 2773    | flat                  |
+
+Item 1559's reverted mutate-and-undo refactor is a **PREREQUISITE, not a competitor**: without one
+snapshot to skip there is nothing to condition. On its own it measured flat on three shapes, and
+that entry records why — do not re-derive it as a win.
+
+#### Two guards, both of them load-bearing for a different reason
+
+- **`tagsObservedFrom` is an ALLOWLIST, defaulting to "observed"** — the opposite direction from
+  `PATH_DEPENDENT_KINDS`. A missed path reader degrades to `NO_PATH` and the suite notices; a missed
+  TAG reader would read a map the solver is rewriting, which is the right row count with the wrong
+  contents. `group`, `groupCount`, `order`, `project` and `dedupe` are deliberately excluded because
+  they can carry a `by` traversal and **`by` is not in `SUBPLAN_FIELDS`**, so the nested-plan check
+  would not catch it.
+- **The verdict is computed in `run`'s own step loop, NOT `applyPlanToStream`.** I wired it into
+  `applyPlanToStream` first and reverted that: it runs for every nested plan, where a sub-plan's
+  suffix says nothing about what follows the enclosing step — `union(match(…))` then `select('a')`
+  has an empty inner suffix and a very real reader. It also turned out `run` never calls
+  `applyPlanToStream` at all, so the wiring was dead as well as unsafe. Steps reached through a
+  sub-plan keep `matchStep`'s default of "observed".
+
+#### ⚠️ Mutation: four die, THREE SURVIVE, and the survivors are the interesting part
+
+| mutant                                              | verdict                  |
+| --------------------------------------------------- | ------------------------ |
+| drop the UNDO (item 1559's ablation, exactly)       | **caught** — answer test |
+| claim every kind is tag-blind                       | **caught**               |
+| admit `select` to the allowlist                     | **caught**               |
+| drop the nested-plan guard                          | **caught**               |
+| flip `tagsObserved`'s default to `false`            | **SURVIVES**             |
+| invert the snapshot condition                       | **SURVIVES**             |
+| hard-code the call site to `false` (never snapshot) | **SURVIVES**             |
+
+The three survivors all disable the snapshot where it is supposedly required, and **I could not
+construct any pipeline that observes the difference.** `match-buffer-probe.mjs` runs the same
+question through `barrier`, `aggregate`, `dedupe`, `fold`, a trailing `order`, and a MANUAL DRAIN
+that retains every emitted traverser before reading anything — byte-identical output with the
+snapshot forced off:
+
+```text
+   plain select / barrier+select / aggregate+select / dedupe+select   [2,3,3]  both builds
+   manual drain                                            ["b","c","c"]  both builds
+```
+
+The reason is laziness plus what actually escapes: `run` yields the freshly-built **bindings** map
+rather than the traverser, and `select` reads tags during the pull, before the solver advances. My
+first attempt to give the guard teeth was a `barrier()` test written on the theory that buffering
+would expose it; it passed under all three mutants, which is how I learned the theory was wrong.
+
+**So the snapshot may be dead code in general, and the honest position is that the guard is
+PRECAUTIONARY.** It is kept because `extend`'s by-reference propagation is a real aliasing hazard
+and correctness should not rest on my failing to find a counterexample — but it is not a verified
+necessity, and the suite cannot falsify it. Anyone tempted to delete the conditional and always skip
+should know that is probably correct, costs the `matchedsel` path nothing, and is unprovable with
+the current instruments. The four mutants that DO die protect the analysis and the undo, which are
+the parts that demonstrably matter.
+
+#### Gates
+
+`bun run check` 0 read unpiped. Suites: core 431/0, gql 3884/0, **gremlin 1511/0** (11 new in
+`match-tag-snapshot.test.ts`), native 963/0, serialization 144/0, `bun run fuzz` 20/0. Item 1559's
+heading corrected in this commit per the stale-number rule.

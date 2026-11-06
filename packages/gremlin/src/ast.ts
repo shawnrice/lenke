@@ -690,6 +690,107 @@ export const PATH_DEPENDENT_KINDS: ReadonlySet<string> = new Set([
   'foldFn',
 ]);
 
+/**
+ * Step kinds that provably CANNOT observe a traverser's tags: they read the value (or its structure)
+ * and nothing else, carry no user closure, and hold no nested plan.
+ *
+ * ⚠️ THIS IS AN ALLOWLIST AND THE DEFAULT IS "OBSERVED", which is the opposite direction from
+ * {@link PATH_DEPENDENT_KINDS}. The path flag can be a denylist because a missed entry degrades to
+ * `NO_PATH` and the suite notices; a missed tag reader would instead read a tag map that
+ * `match()`'s solver is still rewriting, which is a SILENT WRONG ANSWER. So a kind earns its place
+ * here by inspection, and anything unlisted is assumed to read tags.
+ *
+ * Deliberately absent, each for a reason:
+ *
+ *   - `select`, `selectColumn`, `where`, `math`, `match`, `addE` — the actual tag readers.
+ *   - `as` — it COPIES `t.tags` to extend it, which is a read of the live map.
+ *   - every `*Fn` kind — a user closure receives the traverser and can read anything.
+ *   - `group`, `groupCount`, `order`, `project`, `dedupe` — these can carry a `by` traversal, and
+ *     `by` is NOT in {@link SUBPLAN_FIELDS}, so the nested-plan check below would not catch it.
+ *   - `path`, `tree`, `simplePath`, `cyclicPath`, `otherV` — path-dependent, and `cyclicPath`
+ *     shares a dispatch case with `dedupe`.
+ */
+const TAG_BLIND_KINDS: ReadonlySet<string> = new Set([
+  // Terminal aggregates.
+  'count',
+  'sum',
+  'max',
+  'min',
+  'mean',
+  'fold',
+  'toList',
+  // Value and structure reads.
+  'id',
+  'label',
+  'values',
+  'value',
+  'valueMap',
+  'elementMap',
+  'propertyMap',
+  'properties',
+  'unfold',
+  'constant',
+  // Predicate filters: the predicate receives the VALUE, never the traverser.
+  'has',
+  'hasId',
+  'hasKey',
+  'hasLabel',
+  'hasLabelAnd',
+  'hasNot',
+  'hasValue',
+  'is',
+  // Hops.
+  'out',
+  'in',
+  'both',
+  'outE',
+  'inE',
+  'bothE',
+  'outV',
+  'inV',
+  // Slicing and no-ops.
+  'range',
+  'skip',
+  'tail',
+  'take',
+  'barrier',
+  'identity',
+  'none',
+  'drop',
+  'fail',
+]);
+
+/**
+ * Can any step in `steps` from index `from` onward observe a traverser's tags?
+ *
+ * `match()` asks this of its own suffix so it can skip the per-solution tag snapshot when nothing
+ * downstream could read it (item 1560). Conservative in the safe direction: an unlisted kind, a
+ * nested plan, or a labelled `dedupe` all answer `true`.
+ */
+export const tagsObservedFrom = (steps: readonly Step[], from: number): boolean => {
+  for (let i = from; i < steps.length; i++) {
+    const step = steps[i];
+
+    if (!TAG_BLIND_KINDS.has(step.kind)) {
+      return true;
+    }
+
+    const fields = step as unknown as Record<string, unknown>;
+
+    for (const name of SUBPLAN_FIELDS) {
+      if (fields[name] !== undefined) {
+        return true;
+      }
+    }
+
+    if (Array.isArray(fields.plans) && fields.plans.length > 0) {
+      return true;
+    }
+  }
+
+  return false;
+};
+
 /** The step fields that hold a nested plan. */
 const SUBPLAN_FIELDS = ['body', 'until', 'emit', 'plan', 'test', 'thenPlan', 'elsePlan'] as const;
 

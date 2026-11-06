@@ -17,11 +17,13 @@ import {
   KIND_BITS,
   maskOfSteps,
 } from '../ast.js';
+import { tagsObservedFrom } from '../ast.js';
 import type { Plan, Step } from '../ast.js';
 import { countShortcut } from './count-shortcut.js';
 import { applyStep } from './dispatch.js';
 import { hopValuesShortcut } from './hop-values.js';
 import { seedFromIndex, tailIsOrderFree } from './index-seed.js';
+import { matchStep } from './match.js';
 import { nodeValuesShortcut } from './node-values.js';
 import { groupCountShortcut } from './projection.js';
 import { newContext, planReadsPath, startTraverser, type Traverser, unwrap } from './runtime.js';
@@ -1762,13 +1764,29 @@ export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
       : (seeded?.stream ?? null);
   const steps = projected !== undefined ? projected.rest : (seeded?.steps ?? effective.steps);
 
-  for (const step of steps) {
+  for (let i = 0; i < steps.length; i++) {
+    const step = steps[i];
+
     if (stream === null) {
       stream = applySource(step, graph, ctx.tracksPath);
       continue;
     }
 
-    stream = applyStep(step, stream, graph, ctx);
+    // ⚠️ `match` is the one step whose cost depends on what comes AFTER it, so it is dispatched
+    // here rather than through `applyStep` (item 1560). Its solver snapshots the tag map once per
+    // solution to keep an emitted traverser from sharing the map the search is still rewriting, and
+    // that snapshot is DEAD when nothing downstream can read tags — `match(…).count()` being the
+    // common case, and 82% of that shape's time.
+    //
+    // THIS LOOP, and not `applyPlanToStream`, because only here is the suffix the WHOLE downstream.
+    // `applyPlanToStream` runs for every nested plan too, where a sub-plan's suffix says nothing
+    // about what follows the enclosing step: in `union(match(…))` then `select('a')` the inner
+    // suffix is empty while the `select` very much reads tags. Steps reached that way keep
+    // `matchStep`'s default of "observed", so they stay correct and merely unoptimized.
+    stream =
+      step.kind === 'match'
+        ? matchStep(stream, step.patterns, graph, ctx, tagsObservedFrom(steps, i + 1))
+        : applyStep(step, stream, graph, ctx);
   }
 
   return unwrap(stream ?? []);
