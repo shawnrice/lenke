@@ -1,7 +1,7 @@
 import { type Graph, isElement } from '@lenke/core';
 import { ErrorCode, LenkeError } from '@lenke/errors';
 
-import type { By } from '../ast.js';
+import type { By, Step } from '../ast.js';
 import { compareTotal } from '../predicates.js';
 import {
   evalBy,
@@ -90,6 +90,153 @@ export const aggregateComparable = function* (
   }
 
   yield startTraverser(best);
+};
+
+/**
+ * `values(k)` FUSED WITH its terminal aggregate — one generator over the element stream instead of
+ * two, and no intermediate traverser per element (item 1586).
+ *
+ * ### Why, with the ceiling measured first
+ *
+ * Item 1585 established that every Gremlin terminal costs what `values(k)` alone costs, and that
+ * 75.8% of the profile is three generator frames. A ladder from a hand-written loop up to the real
+ * traversal priced what a fusion could recover, over 50,000 vertices
+ * (`gremlin-agg-ceiling-probe.mjs`):
+ *
+ * ```text
+ *   rawloop    iterate, read props, reduce          ~1.0 ms   (bimodal 0.4-0.6 / 0.9-1.3)
+ *   rawgetter  same, through the properties getter    0.96     the getter is FREE
+ *   rawtyped   same, plus the isVertex/isEdge tests   0.98     the guards are FREE
+ *   gentwo     the same work across TWO yields        ~1.5     the BOUNDARIES cost ~0.5
+ *   gremlin    the real traversal                     ~2.18
+ * ```
+ *
+ * So the guards and the property read are not the cost; the generator boundaries and the
+ * per-element traverser are. That is what this removes, and the ladder is why it was worth doing
+ * against `executor-edits-perturb`'s 16% — the alternative, a numeric fast path in
+ * `aggregateComparable`, was priced at only ~1.18x and on `min`/`max` alone.
+ *
+ * ### What it must preserve, exactly
+ *
+ * Nothing here re-derives a semantic; each line mirrors the pair it replaces.
+ *
+ *   - `projectValues`: only a VERTEX or EDGE contributes, and only when the key is PRESENT. A
+ *     missing key emits nothing, so it must not reach the reduce as a null.
+ *   - `aggregateComparable`: the engine's TOTAL order via `compareTotal`, so strings, booleans and
+ *     mixed streams work; nulls are skipped; NaN is greatest and equal to itself; an empty stream
+ *     yields ONE null traverser rather than nothing.
+ *   - `aggregateNumber`: `asNumber` THROWS on a non-number (TinkerPop raises rather than coercing),
+ *     and `mean` divides by the count of non-null values.
+ *
+ * ⚠️ ONE KEY ONLY. `values(j, k)` emits one value PER KEY per element, so a single accumulator
+ * would silently count differently — the same non-equivalence `fuseValuesIsCount` refuses.
+ */
+/**
+ * Is this step pair `values(k)` + a global terminal aggregate — the shape {@link
+ * fusedValuesAggregate} replaces? `undefined` means "not this shape", and the ordinary dispatch
+ * runs unchanged.
+ *
+ * ⚠️ ONE KEY ONLY. `values(j, k)` emits one value PER KEY per element, so a single accumulator
+ * would silently aggregate differently — the same non-equivalence `fuseValuesIsCount` refuses.
+ */
+export const fusableValuesAggregate = (
+  step: Step,
+  next: Step | undefined,
+): { readonly key: string; readonly kind: 'min' | 'max' | 'sum' | 'mean' } | undefined => {
+  if (step.kind !== 'values' || step.keys.length !== 1 || next === undefined) {
+    return undefined;
+  }
+
+  const { kind } = next;
+
+  if (kind !== 'min' && kind !== 'max' && kind !== 'sum' && kind !== 'mean') {
+    return undefined;
+  }
+
+  // These carry a SCOPE in this surface; per-traverser (`local`) aggregation has its own helpers
+  // below, and a non-global scope is a different question.
+  if ('scope' in next && next.scope !== undefined && next.scope !== 'global') {
+    return undefined;
+  }
+
+  return { key: step.keys[0], kind };
+};
+
+export const fusedValuesAggregate = function* (
+  stream: Iterable<Traverser<unknown>>,
+  key: string,
+  kind: 'min' | 'max' | 'sum' | 'mean',
+): Iterable<Traverser<unknown>> {
+  const numeric = kind === 'sum' || kind === 'mean';
+  let best: unknown;
+  let sum = 0;
+  let count = 0;
+  let sawNonNull = false;
+
+  for (const t of stream) {
+    const el = t.value;
+
+    // `isElement` rather than two `isVertex`/`isEdge` calls: the pair's guard accepts either, and
+    // the ceiling ladder measured the guard as free, so this is for brevity and not for speed.
+    if (!isElement(el)) {
+      continue;
+    }
+
+    const props = el.properties;
+
+    // ⚠️ THIS GUARD IS CURRENTLY REDUNDANT, AND IT STAYS. Mutation says so rather than reading:
+    // removing it SURVIVED the whole suite, because a missing key reads as `undefined` and the very
+    // next test (`v == null`) skips it. So for these four terminals "absent" and "present null" are
+    // indistinguishable.
+    //
+    // It is kept because it is ONE RELAXATION away from a wrong answer, which is item 1483's
+    // standard for a surviving guard: `values(k)` emits NOTHING for a missing key and a NULL for a
+    // present null, and the moment a terminal that can tell those apart joins the fused set —
+    // `count` and `fold` both can — this line is what makes it right. Recorded so the next reader
+    // does not have to re-run the mutant to learn it is deliberate.
+    if (!(key in props)) {
+      continue;
+    }
+
+    const v = props[key];
+
+    if (v == null) {
+      continue;
+    }
+
+    if (numeric) {
+      sawNonNull = true;
+      sum += asNumber(v);
+      count += 1;
+      continue;
+    }
+
+    if (!sawNonNull) {
+      best = v;
+      sawNonNull = true;
+      continue;
+    }
+
+    const c = compareTotal(v, best);
+
+    if (kind === 'min' ? c < 0 : c > 0) {
+      best = v;
+    }
+  }
+
+  if (!sawNonNull) {
+    yield startTraverser(null);
+
+    return;
+  }
+
+  if (kind === 'sum') {
+    yield startTraverser(sum);
+  } else if (kind === 'mean') {
+    yield startTraverser(sum / count);
+  } else {
+    yield startTraverser(best);
+  }
 };
 
 export const countStep = function* (

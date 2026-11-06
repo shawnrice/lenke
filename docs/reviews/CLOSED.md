@@ -66307,16 +66307,142 @@ the tests assert the PLAN:
 
 #### What this leaves, priced
 
-`values()` itself, at ~2.1 ms for 50,000 values against GQL's 1.299 for the same rows and 0.851 for a
-reduce over them. The profile says it is generator-boundary cost across `sourceFromIds` ->
-`projectValues` -> terminal, three `yield`s and two traverser objects per element. A fused
-values+terminal step would address it, and it is the real remaining Gremlin aggregate target — but
-`executor-edits-perturb` prices a new walk variant at up to 16% on unrelated rows, and item 1573
-declined several step shortcuts on exactly that trade, so it wants its own item and its own control
-set rather than a bolt-on here.
+~~`values()` itself, at ~2.1 ms for 50,000 values~~ — **TAKEN AT 1586**: fused with its terminal
+aggregate, **1.90x on `max` and 1.89x on `sum`** (2.100 to 1.108, 2.042 to 1.071), with `fold` as a
+flat control and no unrelated row moved. The perturbation this entry warned about did NOT materialise
+— though one sweep row claimed a 1.46x regression that three repeats refuted, which is item 737's
+rule applied to a regression instead of a win.
+
+Still not fused: `fold` (needs an array, so only the boundary would be saved) and `count` (which has
+item 1585's `hasKey` rewrite instead).
 
 #### Gates
 
 `bun run check` 0 read unpiped. Suites gremlin 1559, gql 4021, core 431, native 1031, serialization
 144 — 0 fail. `bun run fuzz` 20/0 under the 16G cap. `bun run spelling:gremlin` 0 answer
 disagreements, 0 groups over 2x.
+
+### Item 1586 — **1.90x on `values(k).max()` and 1.89x on `.sum()`** by fusing the pair into one generator. The ceiling was measured BEFORE building it, the first attempt fused in a place the shape never reaches, and a single sweep row claimed a 1.46x regression that three repeats refuted
+
+Item 1585 left this as the priced Gremlin target and warned it off: `executor-edits-perturb` puts a
+new walk variant at up to 16% on unrelated rows, and item 1573 declined several step shortcuts on
+exactly that trade. So the first question was not how to build it but how much there was to win.
+
+#### The ceiling, measured first, as a LADDER
+
+`gremlin-agg-ceiling-probe.mjs`, 50,000 vertices, each arm adding one mechanism:
+
+```text
+   rawloop    iterate, read props, reduce            ~1.0 ms   (bimodal 0.4-0.6 / 0.9-1.3)
+   rawgetter  same, through the `properties` getter    0.96     the getter is FREE
+   rawtyped   same, plus the isVertex/isEdge tests     0.98     the guards are FREE
+   gentwo     the same work across TWO yields         ~1.5      the BOUNDARIES cost ~0.5
+   gremlin    the real traversal                      ~2.18
+```
+
+So the property read and the type guards are not the cost — the generator boundaries and the
+per-element traverser are, which is what a fusion removes. That is also what disqualified the
+cheaper alternative: a numeric fast path in `aggregateComparable` (19.4% of the profile) was priced
+at only ~1.18x and on `min`/`max` alone.
+
+⚠️ **The floor is BIMODAL** — `rawloop`'s series alternates between ~0.4-0.6 and ~0.9-1.3 in blocks,
+with a 2.0-2.8 GC spike — so it is quoted as a range. A single number there would have been invented.
+
+#### ⚠️ The first attempt fused in a place the measured shape never reaches
+
+The fusion went into `applyPlanToStream`, which is the obvious step fold. The timings did not move at
+all — max 2.202 against 2.120-2.233 before. A tripwire said why: **`fused-hits=0`**. `run` has its
+OWN step loop, and `applyPlanToStream` serves only NESTED plans.
+
+That loop already carries the precedent for the fix: `match` is dispatched there and not in
+`applyPlanToStream`, with a comment saying only there is the suffix the whole downstream. The fusion
+belongs beside it for the same reason. **Without the tripwire this would have been published as "the
+fusion is flat, not worth it"** — a wrong refutation, and the second one this session caught by
+instrumenting rather than believing a number (item 1584 was the first).
+
+#### The numbers, an asserted A/B at 40 reps
+
+Both arms built from saved copies, each ASSERTED to contain or lack the fusion before either was
+built. 15 reps was not enough — the arms spread 1.8x — so this is 40, four rounds:
+
+```text
+                PRE                          POST
+   max      2.100 2.127 2.130 2.144 ms   1.108 1.117 1.118 1.123   1.90x
+   sum      2.042 2.078 2.108 2.155      1.071 1.078 1.081 1.106   1.89x
+   min      ~2.53                        1.116 1.122 1.141
+   mean     ~2.14                        1.078 1.092 1.094
+   fold     2.165 2.180 2.202 2.255      2.138 2.162 2.186         the CONTROL: not fused, FLAT
+```
+
+`fold` is the control that matters: the same `values()` walk with a terminal the fusion deliberately
+does not claim, flat across builds. Cross-surface, both of item 1581's Gremlin-slower flags clear:
+
+```text
+   max   BEFORE  gql 1.046  gremlin 2.571   2.46x gremlin slower
+         AFTER   gql 0.828  gremlin 1.099   1.33x, under tolerance
+   sum   BEFORE  gql 1.514  gremlin 2.463   1.63x gremlin slower
+         AFTER   gql 1.567  gremlin 1.083   1.45x, GREMLIN NOW FASTER
+```
+
+#### ⚠️⚠️ A sweep row claimed a 1.46x REGRESSION that does not exist
+
+The perturbation check ran `bench:gremlin` on both arms. One POST sweep read:
+
+```text
+   V().hasLabel().has().values(age)    8.7 -> 12.7   1.46x WORSE
+   V().hasLabel().has().count()        2.1 ->  2.9   1.38x
+```
+
+That is worse than the 16% `executor-edits-perturb` warns about, and it was very nearly the reason
+this change was abandoned. **Three repeats refuted it**: the same rows read **8.8 and 8.9** (against
+PRE's 8.7) and **2.4 and 2.0** (against 2.1). Item 737's rule — a sweep's rows interfere, so confirm
+a moved row in isolation — applied to a REGRESSION rather than a win, which is the direction it is
+easier to believe uncritically. No unrelated row moved.
+
+#### Where it is wired, and why not as a plan rewrite
+
+A rewrite would need a new step kind, a `KIND_BITS` entry, a `maskOfSteps` arm and a `Step` union
+member — four places a later pass could read the new kind wrongly. `run`'s loop is the only consumer
+of the pair, so recognising it there costs one comparison PER STEP PER CALL (not per element) and
+leaves the AST, the mask and every rewrite untouched. The recognizer is a pure exported function
+(`fusableValuesAggregate`), which is what gives the gate its own test.
+
+Semantics are re-asserted rather than re-derived: `projectValues`'s element-and-presence rule,
+`aggregateComparable`'s total order (strings, booleans, NaN greatest, nulls skipped, empty yields ONE
+null), and `aggregateNumber`'s `asNumber` that THROWS rather than coercing.
+
+#### Mutation: 8 of 10 caught, and both survivors are provably equivalent
+
+```text
+   gen/nulls-not-skipped      CAUGHT  4 fail     gate/multi-key-accepted   CAUGHT  1 fail
+   gen/minmax-inverted        CAUGHT  9 fail     gate/any-scope-accepted   CAUGHT  1 fail
+   gen/naive-compare          CAUGHT  1 fail     gate/never-fuses          CAUGHT  2 fail
+   gen/mean-wrong-divisor     CAUGHT  5 fail
+   gen/empty-yields-nothing   CAUGHT  7 fail
+   gen/missing-key-included   SURVIVED  — equivalent, and the guard STAYS
+   wire/no-skip-terminal      SURVIVED  — equivalent
+```
+
+- **`key in props` is currently redundant**: a missing key reads `undefined` and the next test
+  (`v == null`) skips it, so for these four terminals "absent" and "present null" are
+  indistinguishable. It is kept because it is ONE RELAXATION from a wrong answer — `count` and
+  `fold` CAN tell them apart — and that is now written at the line rather than left for someone to
+  re-derive with a mutant.
+- **Not skipping the consumed terminal is unobservable**: it would run a second time over the
+  one-element stream the fusion just produced, and all four reduces are IDEMPOTENT there. So the
+  `i += 1` is a cost fix, no test can fail on it, and none pretends to.
+
+Two mutant definitions were themselves broken on the first run — a non-unique anchor (3 matches) and
+a `\n` that produced invalid code, which showed up as `0 pass` and would have read as "caught" from
+the exit code alone. Both fixed before the verdict was read.
+
+#### Gates
+
+`bun run check` 0 read unpiped. Suites gremlin 1589, gql 4021, core 431, native 1031, serialization
+144 — 0 fail. `bun run fuzz` 20/0 under the 16G cap.
+
+#### What this leaves
+
+`fold` and `count` are not fused — `count` has item 1585's `hasKey` rewrite instead, and `fold` needs
+an array so the fusion would save only the boundary. The remaining cross-surface flags are GQL-side:
+`hop distinct` 12.49x (down from 52.37x across items 1583/1584) and `filtered count` 2.46x.

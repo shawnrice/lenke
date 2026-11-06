@@ -19,6 +19,7 @@ import {
 } from '../ast.js';
 import { tagsObservedFrom } from '../ast.js';
 import type { Plan, Step } from '../ast.js';
+import { fusableValuesAggregate, fusedValuesAggregate } from './aggregation.js';
 import { countShortcut } from './count-shortcut.js';
 import { applyStep } from './dispatch.js';
 import { hopValuesShortcut } from './hop-values.js';
@@ -1921,6 +1922,33 @@ export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
     // about what follows the enclosing step: in `union(match(…))` then `select('a')` the inner
     // suffix is empty while the `select` very much reads tags. Steps reached that way keep
     // `matchStep`'s default of "observed", so they stay correct and merely unoptimized.
+    // ⚠️ `values(k)` + a terminal aggregate is FUSED into one generator, and it belongs in THIS
+    // loop for exactly the reason `match` above does: only here is the next step the whole
+    // downstream. In `applyPlanToStream` — which runs for every nested plan — a sub-plan's suffix
+    // says nothing about what follows the enclosing step, and the first version of this change put
+    // the lookahead there, where the measured shape never reaches it. The tripwire read
+    // `fused-hits=0` with the timings unmoved, which is the only reason that was caught rather
+    // than published as a flat result.
+    //
+    // WHY A FUSION AT ALL, measured before it was built (`gremlin-agg-ceiling-probe.mjs`, 50,000
+    // vertices): a hand-written loop doing the same work is ~1.0 ms against the traversal's ~2.18,
+    // the property getter and the type guards are FREE (0.96 and 0.98), and routing the same work
+    // across two generator yields costs ~1.5. So the boundaries and the per-element traverser are
+    // the cost, which is what this removes.
+    const fuse = fusableValuesAggregate(step, steps[i + 1]);
+
+    if (fuse !== undefined) {
+      stream = fusedValuesAggregate(stream, fuse.key, fuse.kind);
+      // ⚠️ Skipping the consumed terminal is NOT observable, and that is worth stating because a
+      // mutant that drops this `i += 1` SURVIVED: the terminal would then run a second time over
+      // the one-element stream the fusion just produced, and all four of these reduces are
+      // IDEMPOTENT there (`sum` of `[sum]` is `sum`, `mean` of `[mean]` is `mean`, `min`/`max`
+      // trivially). So the line is a cost fix rather than a correctness one — it stays, but no test
+      // can fail on it and none pretends to.
+      i += 1;
+      continue;
+    }
+
     stream =
       step.kind === 'match'
         ? matchStep(stream, step.patterns, graph, ctx, tagsObservedFrom(steps, i + 1))
