@@ -5095,10 +5095,23 @@ type CMemberProp = {
 /**
  * Did the prefix lift a family whose reading can RAISE where the whole-chain route would not?
  *
- * `truth`/`notTruth` coerce a value to a boolean and raise on a non-boolean; `cmp`/`path` apply an
- * ordering comparison, which throws on a cross-type pair. `eq`, `nulls` and `member` cannot raise —
- * equality is total (a cross-type `=` answers no-match), `isNullish` returns a plain boolean, and
- * membership is built on equality.
+ * `truth`/`notTruth` coerce a value to a boolean and raise on a non-boolean. `eq`, `nulls` and
+ * `member` cannot raise — equality is total (a cross-type `=` answers no-match), `isNullish`
+ * returns a plain boolean, and membership is built on equality.
+ *
+ * ⚠️ `cmp`/`path` USED TO BE HELD BACK HERE AND NO LONGER ARE (item 1545). An ordering comparison
+ * does throw on a cross-type pair, so lifting one ahead of a residual can RAISE where the
+ * whole-chain route settled the row FALSE first — a query that works today can start throwing on
+ * mixed-type data. That is a deliberate trade the owner took on being shown it: the hold cost
+ * **1.55x on `n.a < 1 AND <unliftable>` (8.60 → 5.55 ms) and 2.66x on the reverse spelling
+ * (14.63 → 5.50)**, at 200,000 vertices with the selectivity matched to the `eq` twin so the pair
+ * differs only in which family the conjunct lands in. The win is an ORDERING effect and cannot be
+ * had without it: the lifted arm beats the unliftable conjunct ALONE (5.55 against 8.2) precisely
+ * because it drops 99% of rows before the expensive residual runs.
+ *
+ * `truth`/`notTruth` stay held back, and that is not timidity — `and-short-circuit-conformance.ts`
+ * pins `WHERE n.s AND false` and `WHERE n.s AND n.n IS UNKNOWN` as agreeing across the engines, and
+ * lifting a bare-property coercion ahead of the residual breaks both.
  *
  * Named rather than inlined because the four-way test put `directEqProps` over the complexity cap,
  * and because the question it asks deserves a sentence of its own.
@@ -5108,11 +5121,7 @@ const raisesWhereTheChainWouldNot = (lists: {
   notTruth: readonly string[];
   cmp: readonly CCmpProp[];
   path: readonly CPathProp[];
-}): boolean =>
-  lists.truth.length > 0 ||
-  lists.notTruth.length > 0 ||
-  lists.cmp.length > 0 ||
-  lists.path.length > 0;
+}): boolean => lists.truth.length > 0 || lists.notTruth.length > 0;
 
 /**
  * The tail `directEqProps` could not read, as one expression — or `'decline'`, meaning the chain

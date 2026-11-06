@@ -64,6 +64,20 @@ const ARMS = {
   'unliftable-alone': `MATCH (n:P) WHERE ${UNLIFTABLE} RETURN count(*) AS c`,
   // CONTROL: no AND at all.
   'no-and': `MATCH (n:P) WHERE n.a = 50 RETURN count(*) AS c`,
+
+  // ⚠️ THE SECOND GUARD (item 1545). `residualOf` declines the WHOLE lift when a RAISE-CAPABLE
+  // family — `cmp`, `truth`, `notTruth`, `path` — would lift ahead of a residual, because an
+  // ordering comparison throws on a cross-type pair where the generic chain would have settled the
+  // row FALSE first. `eq`/`nulls`/`member` are exempt (equality is total).
+  //
+  // Selectivity is matched to the `eq` arms on purpose: `n.a < 1` keeps 1 row in 100, exactly as
+  // `n.a = 50` does, so the pair differs only in which FAMILY the conjunct lands in.
+  'cmp-alone': `MATCH (n:P) WHERE n.a < 1 RETURN count(*) AS c`,
+  'cmp-then-unliftable': `MATCH (n:P) WHERE n.a < 1 AND ${UNLIFTABLE} RETURN count(*) AS c`,
+  'cmp-reverse': `MATCH (n:P) WHERE ${UNLIFTABLE} AND n.a < 1 RETURN count(*) AS c`,
+  // A null test is EXEMPT, so this one should already lift beside a residual — the control that
+  // says the guard is about the family and not about residuals in general.
+  'null-then-unliftable': `MATCH (n:P) WHERE n.a IS NOT NULL AND ${UNLIFTABLE} RETURN count(*) AS c`,
 };
 
 const only = process.env.ONLY;

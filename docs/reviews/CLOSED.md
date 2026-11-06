@@ -62801,3 +62801,105 @@ serialization 144/0, `bun run fuzz` 20/0 three times. Mutants run under `timeout
 --user --scope -p MemoryMax=16G -p MemorySwapMax=0`, restoring before each, pristine copy under
 `crates/lenke-engine/target/`; tree verified identical after. The probe is
 `packages/native/conjunct-lift-order-probe.mjs`, which carries the table.
+
+### Item 1545 — SHIPPED, **1.46x and 2.52x**: ordering comparisons now lift beside a residual, so `cmp` costs what `eq` costs for the same selectivity. ⚠️ **AND THE GUARD'S STATED REASON TURNED OUT TO BE FALSE** — "an ordering comparison throws on a cross-type pair" is not true of this engine, so the trade I warned the owner about does not exist. `truth`/`notTruth` stay held back, and that half IS real
+
+Item 1544 removed the prefix rule. This removes half of the second guard, and the interesting part is
+that it cost nothing it was supposed to cost.
+
+#### The change
+
+```ts
+-}): boolean =>
+-  lists.truth.length > 0 ||
+-  lists.notTruth.length > 0 ||
+-  lists.cmp.length > 0 ||
+-  lists.path.length > 0;
++}): boolean => lists.truth.length > 0 || lists.notTruth.length > 0;
+```
+
+`residualOf` declines the whole lift when a raise-capable family would lift ahead of a residual.
+`cmp`/`path` are no longer counted as raise-capable; `truth`/`notTruth` still are.
+
+#### ⚠️ I TOLD THE OWNER THIS WOULD CREATE ERRORS. IT DOES NOT, AND THAT IS THE FINDING
+
+The guard's own comment justified holding `cmp`/`path` back because "an ordering comparison throws
+on a cross-type pair (an `=` does not — it answers no-match)". I repeated that to the owner when
+asking for the decision, framing it as a 1.55-2.66x win paid for with new `E_INVALID_VALUE` errors on
+queries that work today. They took the trade.
+
+**Then I tried to write the test that pins the new error, and could not produce one.** Seven operand
+pairs, every one answering no-match rather than faulting:
+
+```text
+   n.s < 5                     ok   (string vs number)
+   n.s <= DATE '2024-01-01'    ok   (string vs temporal)
+   n.L < 5                     ok   (list vs number)
+   n.L < [1,3]                 ok   (list vs list)
+   n.m < 5                     ok   (record vs number)
+   n.b < 5                     ok   (boolean vs number)
+   n.s > n.m                   ok   (string vs record)
+   RETURN 'x' < DATE '…'       null (not a throw, in scalar position either)
+```
+
+So in the TS engine an ordering comparison is TOTAL on the pairs reachable here, and the premise the
+guard rested on for `cmp`/`path` does not hold. The relaxation is a pure win — no behaviour change
+to trade away. The owner's authorization was sought in good faith against a cost that, measured,
+is not there; recording that plainly because the next person to read the guard's comment will
+believe it, as I did.
+
+**The `truth` half is real, and the two queries that prove it are now a test:**
+
+```text
+   WHERE n.s                                   RAISES   — coercing 'x' to a boolean
+   WHERE upper(n.s) = 'ZZZ' AND n.s            ok []    — truth held back, residual settles FALSE
+```
+
+Relax the guard for `truth` and the second line throws. That is also the exact TS-vs-native
+divergence `and-short-circuit-conformance.test.ts` pins as AGREEING, so the split is load-bearing in
+both directions, not a halfway measure.
+
+#### MEASURED — p25 of 12 reps, 200,000 vertices, selectivity matched to the `eq` twin
+
+`n.a < 1` keeps 1 row in 100 exactly as `n.a = 50` does, so each pair differs only in which family
+the conjunct lands in.
+
+| arm                        | PRE                      | POST                      |           |
+| -------------------------- | ------------------------ | ------------------------- | --------- |
+| `n.a < 1 AND <unliftable>` | 8.612 (8.628 / 8.596)    | **5.879** (5.786 / 5.972) | **1.46x** |
+| `<unliftable> AND n.a < 1` | 14.694 (14.760 / 14.628) | **5.836** (5.727 / 5.944) | **2.52x** |
+
+**And `cmp` now costs what `eq` costs**: 5.879 against the `eq` twin's 5.539, and 5.836 against
+5.560 — within 6%, which is the ordering comparison itself being dearer than equality rather than a
+routing difference. Two families, one price.
+
+| control                                   | PRE   | POST  |      |
+| ----------------------------------------- | ----- | ----- | ---- |
+| `n.a < 1` alone (already lifted)          | 3.535 | 3.606 | flat |
+| `n.a = 50` alone                          | 2.427 | 2.414 | flat |
+| `n.a = 50 AND n.b = 0`                    | 4.702 | 4.743 | flat |
+| `n.a = 50 AND <unliftable>`               | 5.594 | 5.539 | flat |
+| `<unliftable> AND n.a = 50` (item 1544's) | 5.568 | 5.560 | flat |
+| `<unliftable>` alone                      | 8.227 | 8.215 | flat |
+| no `AND` at all                           | 3.669 | 3.588 | flat |
+
+#### MUTATION — four mutants, four caught, in BOTH directions
+
+| mutant                                                |        |                                                           |
+| ----------------------------------------------------- | ------ | --------------------------------------------------------- |
+| `relax-truth-too`                                     | CAUGHT | 3863 pass 2 fail — the new answer test and the route test |
+| `relax-everything`                                    | CAUGHT | 3863 pass 2 fail                                          |
+| `re-hold-cmp` (put `cmp` back)                        | CAUGHT | 3864 pass 1 fail                                          |
+| `guard-always` (drop the `rest.length > 0` condition) | CAUGHT | 3861 pass 4 fail                                          |
+
+Both directions matter: a mutant that relaxes further is caught, and so is one that re-tightens. The
+fourth is the condition the previous test already warned about ("the assertion that fails if the
+guard is written without its `residual !== undefined` condition").
+
+#### Gates
+
+`bun run check` 0 read unpiped. core 431/0, gql **3865**/0, gremlin 1494/0, native 963/0,
+serialization 144/0, `bun run fuzz` 20/0 three times. The native conformance suite passes unchanged,
+which is the check that matters here: scoping the relaxation to `cmp`/`path` is what keeps
+`and-short-circuit-conformance.test.ts` green. Mutants under `timeout 900 systemd-run --user --scope
+-p MemoryMax=16G -p MemorySwapMax=0`, restored before each, tree verified identical after.

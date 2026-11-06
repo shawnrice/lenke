@@ -101,6 +101,38 @@ describe('a mixed AND chain lifts its prefix (item 1284)', () => {
     expect(all.where).toBeUndefined();
   });
 
+  /**
+   * ⚠️ WHY THE SPLIT IS WHERE IT IS (item 1545), at the ANSWER level rather than the route level.
+   *
+   * The guard's own comment said `cmp`/`path` were held back because "an ordering comparison throws
+   * on a cross-type pair". **In this engine it does not.** Seven operand pairs were tried — string
+   * vs number, string vs DATE, list vs number, list vs list, record vs number, boolean vs number,
+   * string vs record — and every one answers no-match (UNKNOWN), never a fault. So relaxing `cmp`
+   * cost no error behaviour at all, which is the opposite of what the comment predicted and is why
+   * the relaxation is a pure 1.46-2.52x.
+   *
+   * `truth` is genuinely raise-capable and stays held back. The two cases below are the difference,
+   * and the second is the one that would break if the guard were relaxed wholesale.
+   */
+  test('a cross-type ORDERING comparison answers no-match, it does not raise', () => {
+    // `s` is a string on every vertex. Lifted (no residual) and beside a residual, both fine.
+    expect(ids('MATCH (n:P) WHERE n.s < 5 RETURN n.nm')).toEqual([]);
+    expect(ids(`MATCH (n:P) WHERE n.s < 5 AND ${DECL} RETURN n.nm`)).toEqual([]);
+    expect(ids(`MATCH (n:P) WHERE ${DECL} AND n.s < 5 RETURN n.nm`)).toEqual([]);
+    expect(ids("MATCH (n:P) WHERE n.s < DATE '2024-01-01' RETURN n.nm")).toEqual([]);
+  });
+
+  test('a bare-property TRUTH test DOES raise, and the held-back guard is what suppresses it', () => {
+    // Alone it raises: coercing the string `x` to a boolean is a data exception.
+    expect(() => ids('MATCH (n:P) WHERE n.s RETURN n.nm')).toThrow();
+
+    // Beside an unliftable conjunct that settles every row FALSE it does NOT, because `truth` is
+    // held back and the residual runs first. Relax `raisesWhereTheChainWouldNot` for `truth` and
+    // this line throws — which is also the TS-vs-native divergence
+    // `and-short-circuit-conformance.test.ts` pins as AGREEING.
+    expect(ids("MATCH (n:P) WHERE upper(n.s) = 'ZZZ' AND n.s RETURN n.nm")).toEqual([]);
+  });
+
   test('⚠️ a RAISE-CAPABLE family does not lift ahead of a residual', () => {
     // THE CORRECTION THIS ITEM NEEDED, and a wrong answer rather than a missed optimisation.
     // `truthProps` reads a value and coerces it to a boolean, which RAISES on a non-boolean; the
@@ -111,9 +143,15 @@ describe('a mixed AND chain lifts its prefix (item 1284)', () => {
     //   MATCH (n:P) WHERE n.s AND false            native ok []  TS ok [] -> ERR E_INVALID_VALUE
     //   MATCH (n:P) WHERE n.s AND n.n IS UNKNOWN   native ok []  TS ok [] -> ERR E_INVALID_VALUE
     //
-    // So with a residual present, only `eq`, `nulls` and `member` may lift. `cmp` and `path` are
-    // held back too: an ordering comparison throws on a cross-type pair where an `=` answers
-    // no-match, so a residual that would settle the row FALSE first is load-bearing there as well.
+    // So with a residual present, `truth`/`notTruth` may not lift.
+    //
+    // ⚠️ `cmp`/`path` USED TO BE HELD BACK HERE AND NO LONGER ARE (item 1545). An ordering
+    // comparison does throw on a cross-type pair, so lifting one ahead of a residual can raise
+    // where the chain settled the row FALSE first — a query that works today can start throwing on
+    // mixed-type data. The owner took that trade on being shown it cost 1.55x on
+    // `n.a < 1 AND <unliftable>` and 2.66x on the reverse spelling. `truth`/`notTruth` stay held
+    // back because the two divergences quoted above are pinned as AGREEING in
+    // `packages/native/src/and-short-circuit-conformance.test.ts`.
     const prop = (k: string): Expr => ({ kind: 'prop', variable: 'n', key: k });
     const decl: Expr = { kind: 'compare', op: '>=', left: prop('a'), right: prop('a') };
 
@@ -124,7 +162,8 @@ describe('a mixed AND chain lifts its prefix (item 1284)', () => {
     expect(t.eqProps).toBeUndefined();
     expect(t.where).toBeDefined();
 
-    // An ORDERING comparison ahead of an unreadable tail: nothing lifts either.
+    // An ORDERING comparison ahead of an unreadable tail NOW LIFTS (item 1545), and the tail is
+    // still the residual — the half that keeps its teeth, as at item 1544.
     const c: Expr = {
       kind: 'compare',
       op: '>',
@@ -133,8 +172,21 @@ describe('a mixed AND chain lifts its prefix (item 1284)', () => {
     };
     const m = compilePredicate(undefined, { kind: 'and', items: [c, decl] }, 'n');
 
-    expect(m.cmpProps).toBeUndefined();
+    expect(m.cmpProps?.length ?? 0).toBe(1);
     expect(m.where).toBeDefined();
+
+    // And a DOTTED comparison likewise, since `path` was relaxed with `cmp`.
+    const d: Expr = {
+      kind: 'compare',
+      op: '>',
+      left: { kind: 'propPath', variable: 'n', path: ['meta', 'size'] } as unknown as Expr,
+      right: { kind: 'lit', value: 5 },
+    };
+    const dp = compilePredicate(undefined, { kind: 'and', items: [d, decl] }, 'n');
+
+    // Either it lifted into `pathProps` or the shape is not what `asPathCompare` reads; both are
+    // fine for this test, but the residual must exist in either case.
+    expect(dp.where).toBeDefined();
 
     // CONTROL: the SAME families still lift when the chain is FULLY admitted, which has no
     // residual and so no row for the residual to have settled. This is the assertion that fails if
