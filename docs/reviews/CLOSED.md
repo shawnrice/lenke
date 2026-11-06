@@ -65485,7 +65485,7 @@ Rewritten as a plan check. A loud failure is the good outcome; items 1569/1572/1
 `bun run check` 0 read unpiped. Suites: core 431/0, gql 3964/0, **gremlin 1551/0** (7 new in
 `step-fn-marker.test.ts`), native 963/0, serialization 144/0, `bun run fuzz` 20/0.
 
-### Item 1578 — ⚠️ **THE 32-SHAPE GREMLIN PROBE BUILDS EVERY PLAN ONCE AND REUSES IT, so it has never measured plan construction** — which is why item 1577's 4.27x moved no row in it. Measured properly, construction is a MEDIAN **48.1%** of `V().count()` and **51.5%** of `V(id)` even after 1577, and noise for anything expensive. ⚠️ My first attempt reported a **NEGATIVE 95.9%** build share
+### Item 1578 — ⚠️ **THE 32-SHAPE GREMLIN PROBE BUILDS EVERY PLAN ONCE AND REUSES IT, so it has never measured plan construction** — which is why item 1577's 4.27x moved no row in it. Measured properly, construction is a MEDIAN **48.1%** of `V().count()` and **51.5%** of `V(id)` even after 1577, and noise for anything expensive. ⚠️ My first attempt reported a **NEGATIVE 95.9%** build share. ⚠️⚠️ **AND THOSE SHARES DO NOT TRANSFER TO A SERVING CALL — item 1593 measured ~13-17%, not ~50%**: these shapes build and run the SAME traversal repeatedly, so the lookup KEY never varies, and at serving scale the varying key is 67% of the rebuilt-plan gap while construction is 33%
 
 Item 1577 cut plan construction 4.27x, so the obvious next step was re-measuring the Gremlin shapes.
 They cannot move, and finding out why is the result.
@@ -67020,3 +67020,78 @@ No engine change — one new probe (`multihop-count-compare.mjs`, which asserts 
 at every depth and refuses a degenerate fixture by counting distinct endpoints AND branching
 vertices). `bun run check` 0 read unpiped. Suites unchanged from item 1591; gql re-run green at 4038
 after the experiment was reverted.
+
+### Item 1593 — gave the TS Gremlin SERVING path its first coverage in `bench:usage`, where two rows had always printed `-`. ⚠️ **And the first pair of rows I added was CONFOUNDED: it priced plan construction at 54% of a serving call when the real share is ~17%** — the majority of the gap is the varying lookup KEY, which parameters would not fix. The priced "48-51% of cheap calls" target is worth far less than recorded
+
+`bench:usage` is the serving-shaped harness — small operations against a warm graph, where per-call
+overhead shows. Two of its rows, `gremlin read: point lookup` and `gremlin read: fixed count`, print
+`-` for the pure-TS engine, and the reason on the hook is correct rather than a gap: those rows take
+Gremlin TEXT, and the pure-TS Gremlin surface is a fluent BUILDER.
+
+But the consequence was a real hole: **the TS Gremlin serving path had no coverage in this harness at
+all**, while items 1577/1578 had measured plan construction at ~48-51% of a cheap Gremlin call. A
+builder row closes it, because the builder's equivalent of "a fresh text every call" is a freshly
+BUILT plan — and Gremlin accepts no parameters, so a serving workload that varies a value MUST vary
+the plan.
+
+#### ⚠️ The first pair of rows was CONFOUNDED, and the number it produced was wrong
+
+```text
+   gremlin(built) read: point lookup   357.9k ops/s     <- built fresh, varying user
+   gremlin(built) read: reused plan    779.6k           <- plan reused
+```
+
+Read as a pair that says "construction is 54% of the call". It does not. **The two rows differ in TWO
+ways**: the reused plan has its value baked in, so it looks up ONE user every call, while the built
+row looks up a DIFFERENT user each call. Their gap is construction PLUS whatever varying the lookup
+key costs in index-bucket and cache locality.
+
+A probe arm that builds fresh on a FIXED key separates them, and a third bench row now does the same:
+
+```text
+                                   probe (20k users)      bench (ops/s -> ns)
+   reused plan, fixed key           1784 ns                762.0k -> 1312 ns
+   built fresh, fixed key           2146                   556.9k -> 1796
+   built fresh, varying key         2619                   358.7k -> 2788
+```
+
+```text
+   construction      362 ns (43% of the gap)      484 ns (33%)
+   varying the key   473 ns (57%)                 992 ns (67%)
+```
+
+Two independent instruments, same direction: **the majority of the gap is the varying key, not
+construction.** Construction is ~362-484 ns of a ~2600-2800 ns serving call — **13-17%, not 54%.**
+
+#### What that corrects, which is the useful part
+
+This session has carried "Gremlin parameter binding — the structural fix for ~48-51% of cheap calls"
+as a priced open target. At serving scale on this shape **parameters would recover ~17%, not ~50%**,
+because the varying-key cost stays whatever the plan does: a parameterized plan still looks up a
+different user. The 48-51% figure came from probes that build and run the SAME shape repeatedly,
+where the key never varies — so it measured construction's share of a call that touches one hot
+vertex, not of a serving call.
+
+⚠️ That is the SAME confound in the two places, and I reproduced it before catching it. Items
+1503/1504 already knew the rebuilt-plan case matters — they rejected a `WeakMap<Plan, boolean>` memo
+precisely because "a freshly built plan never hits the memo", and `readsPath`/`kinds` are carried by
+construction instead. What nobody had separated is the _data_ half of the rebuilt-plan penalty.
+
+#### Also measured, and not a target
+
+Construction itself decomposes cleanly by step count — 51 ns for the bare source, 149 at two steps,
+213 at four — so it is ~50 ns fixed plus ~40 ns per step after item 1577's 4.27x. At 362-484 ns in a
+2600 ns call there is no large win left there.
+
+#### Gates
+
+No engine change — two probes and three bench rows. `bun run check` 0 read unpiped. Suites native
+1031, gremlin 1630, gql 4038, core 435, serialization 144 — 0 fail.
+
+#### What this leaves
+
+The varying-key cost (~992 ns, 67% of the rebuilt-plan gap) is the real item, and it is NOT
+Gremlin-specific — it is what an indexed lookup over 20,000 distinct keys costs in cache terms. The
+GQL row on the same fixture and the same varying key runs at 1.08M ops/s (926 ns) against Gremlin's
+358.7k (2788), so ~1860 ns of the Gremlin call is not the key at all. That is the gap worth
+profiling next, and it is now measurable in a standing row rather than a one-off probe.

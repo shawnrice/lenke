@@ -28,6 +28,7 @@ import { existsSync } from 'node:fs';
 
 import { Graph as TsGraph } from '@lenke/core';
 import { query as tsQuery } from '@lenke/gql';
+import * as Grem from '@lenke/gremlin';
 import { deserialize as tsDeserialize } from '@lenke/serialization';
 
 import { createFfiEngineBackend } from './src/backend-ffi-engine.js';
@@ -79,6 +80,24 @@ type Engine = {
    * report per row; it is a different surface, so a Gremlin row prints `-` for that engine.
    */
   gremlin?: (g: unknown, text: string) => unknown;
+  /**
+   * Run a Gremlin traversal BUILT per operation, for an engine whose Gremlin surface is a fluent
+   * builder rather than text (item 1593).
+   *
+   * ⚠️ WHY THIS EXISTS AS A SECOND HOOK. The `gremlin` hook above takes TEXT, and the note on it
+   * explains that the pure-TS Gremlin engine has none — so its rows printed `-` and the TS Gremlin
+   * SERVING path had no coverage in this harness at all. That is a real hole and not just a
+   * different surface: items 1577/1578 measured plan CONSTRUCTION at ~48-51% of a cheap Gremlin
+   * call, and construction is exactly what a serving loop pays on every operation.
+   *
+   * `i` rather than a string, because the builder's equivalent of "a fresh text every call" is a
+   * freshly BUILT plan — so the callee decides what to vary.
+   */
+  gremlinBuilder?: (g: unknown, i: number) => unknown;
+  /** The same traversal built ONCE and reused — a FIXED key, so see the note on the rows. */
+  gremlinBuilderWarm?: (g: unknown, i: number) => unknown;
+  /** Built fresh per operation but on the SAME key, which is what makes the triple decomposable. */
+  gremlinBuilderFixed?: (g: unknown, i: number) => unknown;
   index: (g: unknown, on: 'vertex' | 'edge', key: string) => void;
   transaction: (g: unknown, body: () => void) => void;
   free: (g: unknown) => void;
@@ -105,10 +124,38 @@ const nativeEngine = (name: string, backend: Backend): Engine => ({
   free: (g) => (g as NativeGraph).free(),
 });
 
+/**
+ * The TS Gremlin serving shape: a traversal BUILT per operation (item 1593).
+ *
+ * ⚠️ The value is inlined into the plan, which is the builder's equivalent of "a fresh text every
+ * call" — Gremlin accepts no parameters, so a serving workload that varies a value must vary the
+ * PLAN. That is the realistic shape, and it pays construction every time.
+ */
+const tsGremlinBuilt = (g: unknown, i: number): unknown =>
+  Grem.toArray(
+    Grem.traversal(
+      Grem.V(),
+      Grem.hasLabel('User'),
+      Grem.has('name', Grem.eq(`user${i % GRAPH}`)),
+      Grem.values('score'),
+    ),
+    g as TsGraph,
+  );
+/** The same traversal built ONCE, so the pair prices construction rather than inferring it. */
+const tsGremlinWarmPlan = Grem.traversal(
+  Grem.V(),
+  Grem.hasLabel('User'),
+  Grem.has('name', Grem.eq('user0')),
+  Grem.values('score'),
+);
+
 const tsEngine: Engine = {
   name: 'ts',
   load: (doc) => tsDeserialize(doc, 'ndjson', new TsGraph()),
   query: (g, text, params) => tsQuery(g as TsGraph, text, params),
+  gremlinBuilder: tsGremlinBuilt,
+  gremlinBuilderWarm: (g) => Grem.toArray(tsGremlinWarmPlan, g as TsGraph),
+  gremlinBuilderFixed: (g) => tsGremlinBuilt(g, 0),
   index: (g, on, key) => (g as TsGraph).createIndex({ on, kind: 'hash', keys: [key] }),
   transaction: (g, body) => (g as TsGraph).transaction(body),
   free: () => {},
@@ -178,7 +225,7 @@ type Workload = {
    */
   grows?: true;
   /** Needs an engine capability; engines without it print `-` rather than erroring per cell. */
-  needs?: 'gremlin';
+  needs?: 'gremlin' | 'gremlinBuilder';
 };
 
 const WORKLOADS: Workload[] = [
@@ -212,6 +259,40 @@ const WORKLOADS: Workload[] = [
   // A GQL row varying `$n` is a cache HIT every time, because the value is a parameter and the
   // text is constant. That asymmetry is about parameters, not about either engine, and it is the
   // most useful thing these rows say.
+  // --- TS GREMLIN serving rows, via the BUILDER surface (item 1593) --------------------------
+  //
+  // The two text rows below print `-` for the pure-TS engine because its Gremlin surface is a
+  // builder, which left the TS Gremlin SERVING path with no coverage here at all. These two close
+  // that, and they are a PAIR for the same reason the text ones are: the first builds a fresh plan
+  // per operation (the realistic shape, since Gremlin takes no parameters so a varying value must
+  // vary the plan), the second reuses one. The gap between them IS construction's share, which
+  // items 1577/1578 measured at ~48-51% of a cheap call — so if that holds in a serving loop it
+  // shows up here as the standing number rather than as a one-off probe.
+  {
+    name: 'gremlin(built) read: point lookup',
+    needs: 'gremlinBuilder',
+    op: (e, g, i) => void e.gremlinBuilder?.(g, i),
+  },
+  {
+    name: 'gremlin(built) read: reused plan',
+    needs: 'gremlinBuilder',
+    op: (e, g, i) => void e.gremlinBuilderWarm?.(g, i),
+  },
+  {
+    // ⚠️ THE ROW THAT MAKES THE OTHER TWO READABLE, and its absence made my first reading of them
+    // WRONG. `reused plan` has its value baked in, so it looks up ONE user every call, while
+    // `point lookup` builds fresh and therefore looks up a DIFFERENT user each call. The pair
+    // differs in TWO ways at once, so their gap is NOT construction — it is construction plus
+    // whatever varying the lookup key costs in index-bucket and cache locality.
+    //
+    // This builds fresh on a FIXED key, which separates them. Measured at 20,000 users
+    // (`gremlin-build-cost-probe.mjs`): reused 1784 ns, fixed-build 2146, varying-build 2619 — so
+    // construction is 362 ns (43% of the gap) and varying the key is 473 ns (57%). Reading the
+    // original pair alone would have priced construction at 2.2x its real share.
+    name: 'gremlin(built) read: fixed key',
+    needs: 'gremlinBuilder',
+    op: (e, g, i) => void e.gremlinBuilderFixed?.(g, i),
+  },
   {
     name: 'gremlin read: point lookup',
     needs: 'gremlin',
@@ -691,6 +772,10 @@ for (const w of SELECTED) {
     // lookup` is 2.2k against 927.3k — the index effect dominates and the bias cannot reach it.
     [false, true].map((indexed) => {
       if (w.needs === 'gremlin' && e.gremlin === undefined) {
+        return '-'.padStart(10);
+      }
+
+      if (w.needs === 'gremlinBuilder' && e.gremlinBuilder === undefined) {
         return '-'.padStart(10);
       }
 
