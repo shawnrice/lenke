@@ -162,6 +162,15 @@ export const countShortcut = (plan: Plan, graph: Graph): number | undefined => {
     return chained;
   }
 
+  // A filter BETWEEN two hops (item 1602) — the one shape in this family that reached none of the
+  // rungs, at 32x the identical GQL question. AFTER `hopChainCount` so that rung keeps every shape
+  // it answers, and disjoint from all four of its siblings by construction: see its own note.
+  const interleaved = interleavedHopChainCount(mid, graph);
+
+  if (interleaved !== undefined) {
+    return interleaved;
+  }
+
   // A hop followed by a CHAIN of one or more `has` filters (item 930). This was gated behind
   // `mid.length !== 2` — exactly one filter — and a second `has` fell off the end of every rung to
   // the general traversal at 11.15x. `filteredHopCount` returns `undefined` unless every step
@@ -1573,6 +1582,240 @@ const chainDegree = (v: Vertex, hop: HopStep, reverse: boolean): number => {
   const box = (hop.kind === 'out') !== reverse ? v.adjFrom : v.adjTo;
 
   return box === undefined ? 0 : degreeOfTypes(box, hop.labels);
+};
+
+/**
+ * `V()[…filters] out(T) …filters out(U) .count()` — a filter BETWEEN two hops.
+ *
+ * ⚠️ ITEM 1602: THIS SHAPE FELL OFF THE END OF EVERY RUNG, and the hole was invisible because all
+ * four of its neighbours are answered in closed form. Measured on 20,000 vertices / 80,000 edges,
+ * one shape per process, against the identical GQL question:
+ *
+ * ```text
+ *    V().hasLabel(U).out(E).count()                      3836 ns     closed form
+ *    V().hasLabel(U).out(E).has(team,eq).count()       491165        closed form (filteredHopCount)
+ *    V().hasLabel(U).has(team,eq).out(E).count()       500554        closed form (startFiltered…)
+ *    V().hasLabel(U).out(E).out(E).count()               — —         closed form (hopChainCount)
+ *    V().hasLabel(U).out(E).has(team,eq).out(E).count() 16912372     THE PIPELINE
+ * ```
+ *
+ * against GQL's `(a:User)-[:E]->(b:User)-[:E]->(c:User) WHERE b.team = $v` at **520466 ns — 32x**.
+ * `countShortcut` was confirmed returning `undefined` for this shape and a number for all four
+ * neighbours before anything was built, which is what made it a hole rather than a guess, and a
+ * profile of the fallback is 54.9% `generatorResume` plus 18.5% the hop generator — the traverser
+ * chain, which is what a closed form removes.
+ *
+ * WHY IT IS DISJOINT FROM ITS FOUR SIBLINGS BY CONSTRUCTION, which is the condition for adding a
+ * rung at all: `startFilteredHopCount` requires the hop LAST, `filteredHopCount` requires it FIRST,
+ * `bothFilteredHopCount` takes exactly ONE hop, and `hopChainShape` collects only a TRAILING run of
+ * hops and so declines the moment a filter follows one. This requires at least one filter STRICTLY
+ * BETWEEN two hops, which none of them accepts.
+ *
+ * NO MULTIPLICITY MAP AND NO MULTIPLICITY ARGUMENT, unlike `hopChainCount`'s three-hop arm: the
+ * walk visits each first-hop traverser separately and tests `w` per ARRIVAL, exactly as the
+ * pipeline does, so arriving twice at one vertex is filtered twice and counted twice. That is why
+ * this reuses the two-hop no-map shape, which `hopChainCount` measured at 26.83/24.26/25.89 ms
+ * against a map's 33.56/33.00/31.70.
+ *
+ * THE MULTI-TYPE GUARD IS REPLICATED, NOT REASONED ABOUT AFRESH. `degreeOfTypes` sums the per-type
+ * buckets, which is a degree only when the wanted set is ONE bucket — `hopChainShape`'s own note
+ * records 13 divergences from getting this wrong, every one an untyped `out()` at depth ≥ 2, and
+ * that `!== 1` (not `> 1`) is the correct test because `out()` iterates every bucket and visits a
+ * multi-type edge once per label.
+ *
+ * ⚠️ A SEEKABLE INTERIOR `has` IS NOT REFUSED, where the leading filters still are, and the
+ * asymmetry is deliberate. The siblings refuse a seekable `has` because `countShortcut` runs before
+ * `seedFromIndex` and a tally that scanned would preempt the seek — but a seek seeds the SOURCE, and
+ * no route seeds from the MIDDLE of a walk (`seedForStep` reads the source step). So refusing here
+ * would decline the shape on an indexed graph and gain nothing; `interior-seek` in
+ * `gremlin-interleaved-hop-count.test.ts` pins the answer with the index present.
+ *
+ * `both` IS DECLINED on either hop. `chainDegree` exists for that case and the unfiltered chain
+ * uses it, but `both` plus the bucket-sum guard is precisely where the divergences above lived, so
+ * the first version of this rung takes the shape that was measured. `V().both(T).has(…).both(T)`
+ * keeps falling through as it does today.
+ */
+const interleavedHopChainCount = (mid: readonly Step[], graph: Graph): number | undefined => {
+  // `[filters…] hop filters… hop` — at least one filter between, so at least four steps.
+  if (mid.length < 3) {
+    return undefined;
+  }
+
+  const last = mid[mid.length - 1];
+
+  if (last.kind !== 'out' && last.kind !== 'in') {
+    return undefined;
+  }
+
+  // The FIRST hop, scanning forward: everything before it is a leading filter, everything between
+  // it and `last` is an interior filter.
+  let firstHopAt = -1;
+
+  for (let i = 0; i < mid.length - 1; i += 1) {
+    const step = mid[i];
+
+    if (step.kind === 'out' || step.kind === 'in') {
+      firstHopAt = i;
+      break;
+    }
+
+    if (step.kind === 'both') {
+      return undefined;
+    }
+  }
+
+  // No first hop, or nothing between the two hops — then a sibling rung owns the shape.
+  if (firstHopAt < 0 || firstHopAt === mid.length - 2) {
+    return undefined;
+  }
+
+  const h0 = mid[firstHopAt] as Extract<Step, { kind: 'out' | 'in' }>;
+  const h1 = last;
+
+  if ((h0.labels.length !== 1 || h1.labels.length !== 1) && graph.multiTypeEdgeCount !== 0) {
+    return undefined;
+  }
+
+  // ⚠️ THE LEAD FILTERS ARE PARSED WITH `seed: false`, and that is a CORRECTNESS condition, not a
+  // missed optimization. This walk is driven from the MIDDLE, so the lead filters are applied to
+  // the far endpoint of an arriving edge — a leading `hasLabel` folded into a source bucket would
+  // be DROPPED instead of applied, and the count would include starts of the wrong label. Seeding
+  // the starts buys nothing here anyway, since the starts are never enumerated.
+  const lead = asVertexFilters(mid.slice(0, firstHopAt), graph, {
+    seed: false,
+    refuseSeekable: true,
+  });
+
+  if (lead === undefined) {
+    return undefined;
+  }
+
+  // The INTERIOR run is what this walk iterates, so its leading `hasLabel` IS worth seeding from.
+  const interior = asVertexFilters(mid.slice(firstHopAt + 1, mid.length - 1), graph, {
+    seed: true,
+    refuseSeekable: false,
+  });
+
+  if (interior === undefined) {
+    return undefined;
+  }
+
+  const fwd0 = h0.kind === 'out';
+  const fwd1 = h1.kind === 'out';
+  // No leading filter at all means EVERY vertex is a start, which is what lets `arrivals` below be
+  // a DEGREE instead of a per-edge question — `hopChainCount`'s inner-product arm records the same
+  // condition, in the same words, for the same reason.
+  const anyStart = lead.rest.length === 0;
+  let total = 0;
+
+  for (const w of interior.source) {
+    if (!vertexFiltersHold(interior.rest, w)) {
+      continue;
+    }
+
+    const box1 = fwd1 ? w.adjFrom : w.adjTo;
+    const departures = box1 === undefined ? 0 : degreeOfTypes(box1, h1.labels);
+
+    if (departures === 0) {
+      continue; // nothing leaves here, so it contributes nothing however many traversals arrive
+    }
+
+    // Arrivals along `h0`: an `out` hop lands on `w` by way of `w`'s IN-edges, an `in` hop by way
+    // of its OUT-edges — the question `chainDegree(…, reverse)` asks.
+    const box0 = fwd0 ? w.adjTo : w.adjFrom;
+
+    if (box0 === undefined) {
+      continue;
+    }
+
+    if (anyStart) {
+      total += degreeOfTypes(box0, h0.labels) * departures;
+
+      continue;
+    }
+
+    let arrivals = 0;
+
+    for (const set of h0.labels.length === 0 ? box0.values() : bucketsOf(box0, h0.labels)) {
+      for (const e of set) {
+        if (vertexFiltersHold(lead.rest, fwd0 ? e.from : e.to)) {
+          arrivals += 1;
+        }
+      }
+    }
+
+    total += arrivals * departures;
+  }
+
+  return total;
+};
+
+/**
+ * Do every one of these vertex filters hold for `v`? The siblings' own inline loop, named.
+ *
+ * ⚠️ THE INDEXED LOOP IS DELIBERATE and the lint rule is disabled rather than obeyed: this runs
+ * once per vertex and, in the filtered-lead arm, once per arriving edge. `gateWith`'s own note
+ * measures the alternative — `for (const f of filters)` allocates an iterator per element, over an
+ * array that is usually length 1 and sometimes EMPTY, and cost an unfiltered scan **34%**.
+ */
+const vertexFiltersHold = (filters: readonly VertexFilter[], v: Vertex): boolean => {
+  // eslint-disable-next-line prefer-for-of -- per-element: an iterator allocation here costs 34%; see above
+  for (let i = 0; i < filters.length; i += 1) {
+    const f = filters[i];
+    const ok =
+      f.kind === 'hasLabel'
+        ? f.labels.some((l) => v.labels.has(l))
+        : matches(f.pred, v.properties[f.key]);
+
+    if (!ok) {
+      return false;
+    }
+  }
+
+  return true;
+};
+
+/**
+ * A run of steps as vertex filters, with the leading `hasLabel` turned into a SEED when `seedable`.
+ *
+ * `seekable` is refused only for the leading run — see `interleavedHopChainCount`'s note on why the
+ * interior run must not refuse it.
+ */
+const asVertexFilters = (
+  steps: readonly Step[],
+  graph: Graph,
+  opts: { seed: boolean; refuseSeekable: boolean },
+): { source: Iterable<Vertex>; rest: VertexFilter[] } | undefined => {
+  const filters: VertexFilter[] = [];
+
+  for (const step of steps) {
+    const vf = step.kind === 'hasLabel' ? step : asHasFilter(step);
+
+    if (vf === undefined) {
+      return undefined;
+    }
+
+    if (
+      opts.refuseSeekable &&
+      vf.kind === 'has' &&
+      seekWorthTaking(vf, graph.vertexPropertyIndex, graph.verticesById.size)
+    ) {
+      return undefined;
+    }
+
+    filters.push(vf);
+  }
+
+  const [first] = filters;
+
+  if (!opts.seed || first?.kind !== 'hasLabel' || first.labels.length !== 1) {
+    return { source: graph.verticesById.values(), rest: filters };
+  }
+
+  return {
+    source: graph.verticesByLabel.get(first.labels[0]) ?? EMPTY_VERTICES,
+    rest: filters.slice(1),
+  };
 };
 
 const hopChainCount = (mid: readonly Step[], graph: Graph): number | undefined => {

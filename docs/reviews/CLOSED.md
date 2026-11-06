@@ -67918,3 +67918,141 @@ written that way deliberately. Measure before merging them.
 
 `bun run check` 0 read unpiped. Suites gql 4060 (2 new), gremlin 1666, core 435, native 1031,
 serialization 144 — 0 fail. `bun run fuzz` 20/0 under the 16G cap.
+
+### Item 1602 — **62x on Gremlin's two-hop filtered count** (16.84 ms -> 269 us), by adding the one rung in that family that did not exist: a filter BETWEEN two hops. ⚠️ The hole was invisible because all four of its neighbours ARE answered in closed form, and the first version of the rung used the edge-driven shape this file had already measured at 3-4x worse
+
+Items 1598-1601 were all GQL. This gave Gremlin the turn, profile-first, and the biggest number of
+the session was sitting in a shape nothing had asked about.
+
+#### How the hole was found: by asking `countShortcut` directly, not by timing
+
+A new `gremlin-hop-filter-probe.ts` priced the filtered-hop family against the identical GQL
+questions, one shape per process, 20,000 vertices / ~80,000 edges:
+
+```text
+                                                        Gremlin        GQL twin
+   V().hasLabel(U).out(E).count()                          3836 ns     — —
+   V().hasLabel(U).out(E).has(team,eq).count()           491165        421862
+   V().hasLabel(U).has(team,eq).out(E).count()           500554        356702
+   V().hasLabel(U).out(E).has(team,eq).out(E).count()  16912372        520466    <- 32x
+```
+
+That is 157 ns per traverser against the one-hop shape's 4.8 — a marginal cost of ~1900 ns for the
+second hop, which is a ROUTE change and not a constant. ⚠️ **So `countShortcut` was called directly
+on all five shapes rather than inferred from the timings**, and it returned a number for four and
+`undefined` for exactly one:
+
+```text
+   nofilter 7996    far 160    start 160    two-hop-no-filter 31972    mid-filter undefined
+```
+
+A hole, not a guess — and the fallback's profile is 54.9% `generatorResume` plus 18.5% the hop
+generator, the traverser chain a closed form removes. The scaling was checked too (linear, 2.0-2.6x
+per doubling), so it was a high constant rather than a complexity bug.
+
+#### ⚠️ THE FIRST VERSION WAS THE SHAPE THIS FILE HAD ALREADY REFUTED
+
+Written edge-driven — walk the surviving starts, expand, test each arriving middle, add its degree —
+it measured 16.84 ms -> **4.5 ms, only 3.5x**, where the sibling rung does the same work in 0.4.
+`filteredHopCount`'s own header says why, with numbers over 1,000,000 edges:
+
+```text
+   selectivity          edge-driven   vertex-driven
+   gt(44), ~50% pass        104.2ms         34.1ms   3.06x
+   gt(85), 4.4% pass        101.7ms         29.8ms   3.41x
+   gt(500), none pass       101.3ms         25.3ms   4.00x
+```
+
+Rewritten VERTEX-DRIVEN over the middles — test the interior filter once per middle vertex, read
+its departure degree, and take arrivals as a degree when there is no leading filter — it lands at
+**269 us, 62x**. The lesson is not "vertex-driven is faster"; it is that the measured answer was
+already written down in the function three screens above the new one.
+
+#### The numbers, an asserted A/B
+
+PRE arm asserted by `interleavedHopChainCount` being absent from every `packages/gremlin/dist`
+bundle. Three runs each, one shape per process:
+
+```text
+                     PRE                            POST                      verdict
+   mid-count         16580445 17283749 16844037     279337 269130 265822      62x
+   far-count           395001   392583   414846     383664 397598 404698      flat (control)
+   start-count         534516   485010   520146     516064 536988 495404      flat (control)
+   nofilter-count        3523     3751     3280       3519   3617   3569      flat (control)
+   far-proj          16424262 15696864 (unchanged)  — —                       flat (control)
+```
+
+Three count controls flat, and the PROJECTION twin of the same walk is flat too because a count rung
+cannot reach it. Gremlin now answers this question in 269 us against **GQL's 520 — 1.9x the other
+way**, which makes the GQL twin the follow-up rather than this one.
+
+Size swept (CLAUDE.md's first rule): 5,000 -> 85.8 us, 20,000 -> 278, 80,000 -> 1.74 ms. The
+superlinear step at the top is the cache transition the repo's own note places between 200k and 1M
+elements (80,000 vertices at fanout 4 is 320,000 edges), not a complexity problem.
+
+#### Correctness: three INDEPENDENT oracles, because the obvious one was not
+
+⚠️ **THE FIRST ORACLE AGREED WITH THE RUNG BY CONSTRUCTION.** It was `toArray(plan, graph)` — which
+calls `countShortcut` itself, so it reported the rung's own answer back. An oracle written by the
+same hand can share the same bug; this one _was_ the same code. Replaced with a hand count over the
+edge list and the equivalent GQL query, and six shapes agree across all three:
+
+```text
+   mid-has 204   mid-two-has 105   mid-haslabel 719   no-lead 309   lead-has 153   two-labels 486
+```
+
+And in the unit fixture, ⚠️ **six of fifteen literals were wrong on the first run and the ENGINE was
+right every time** — e.g. an Admin-middle count where I read `c`'s in-edges as "a plus the
+self-loop" and forgot `b->c`. They were re-derived by a hand count over the table with no engine
+involved, and the comments now carry the corrected arithmetic rather than the guess. Item 1596's
+rule, which is that a comparison proves two paths agree and only a literal proves they agree on the
+right number.
+
+#### Mutation: 12 of 12 caught, 0 survived
+
+```text
+   lead/ignored            CAUGHT  2    arrivals/wrong-box       CAUGHT 10
+   lead/wrong-endpoint     CAUGHT  2    departures/wrong-box     CAUGHT 10
+   interior/ignored        CAUGHT  7    product/becomes-sum      CAUGHT  2
+   anyStart/always         CAUGHT  2    guard/multi-type-dropped CAUGHT  1
+   guard/both-admitted     CAUGHT  1    guard/trailing-admitted  CAUGHT 16
+   lead/seeded-drops-label CAUGHT  1    rung/never-fires         CAUGHT 10
+```
+
+Unlike items 1600/1601, every mutant here is a WRONG ANSWER rather than a route choice, which is
+why the pass is this wide. `lead/seeded-drops-label` is the one worth naming: parsing the leading
+filters with `seed: true` folds a leading `hasLabel` into a source bucket this walk never
+enumerates, so the label requirement would be silently DROPPED — the rung's own comment says so,
+and the mutant is what makes the comment load-bearing. `departures/wrong-box`'s anchor was not
+unique on the first pass (two sites spell that line identically) and was re-anchored and re-run
+rather than counted as a pass.
+
+#### Three guards, each with its reason
+
+- **The multi-type guard is REPLICATED, not reasoned about afresh.** `degreeOfTypes` sums the
+  per-type buckets, which is a degree only when the wanted set is ONE bucket. `hopChainShape`'s own
+  note records **13 divergences** from getting this wrong, every one an untyped `out()` at depth 2
+  or more, and that `!== 1` (not `> 1`) is the right test because `out()` iterates every bucket and
+  visits a two-type edge once per label. Tested both ways: untyped on a multi-type graph declines,
+  a single named type on the same graph still answers.
+- **`both` is declined** on either hop. `chainDegree` exists for that case, but `both` plus the
+  bucket sum is precisely where those divergences lived, so the first version takes the shape that
+  was measured.
+- **A seekable INTERIOR `has` is NOT refused, where a seekable LEADING one still is.** The siblings
+  refuse it because `countShortcut` runs before `seedFromIndex` and a tally that scanned would
+  preempt the seek — but a seek seeds the SOURCE, and no route seeds from the middle of a walk. The
+  test pins both halves on an indexed graph: the interior shape answers, the leading twin declines.
+
+#### What this leaves
+
+Two things, both measured here and neither taken:
+
+- **A trailing filter after the last hop** (`out(E).has(…).out(E).has(…)`) still declines — the
+  final contribution stops being a degree, so it needs the last level walked.
+- **The PROJECTION twin**, `V().out(E).has(team,eq).values(score)`, at **15.7-16.4 ms** and
+  untouched by a count rung. That is now the largest single number on this probe.
+
+#### Gates
+
+`bun run check` 0 read unpiped. Suites gremlin 1681 (15 new), gql 4060, core 435, native 1031,
+serialization 144 — 0 fail. `bun run fuzz` 20/0 under the 16G cap.
