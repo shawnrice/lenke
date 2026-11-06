@@ -137,6 +137,39 @@ const SHAPES = {
   // 1473's waste is a key pass over the RIGHT SIDE — so at that width it is ~2% and sits under this
   // bench's noise floor, which an A/B duly reported as a null. These scan unfiltered, so the right
   // side is every vertex and the wasted pass is proportional to NODES.
+  // ⚠️ SURFACES THAT HAD NO PROFILE SHAPE AT ALL (item 1565). Items 1473 and 1562 both found their
+  // target by ADDING a shape rather than re-reading the ones already here, and the audit that
+  // prompted this tick came back clean on every existing shape — so coverage, not depth, is where
+  // the remaining signal is. Each of these is a major ISO-GQL surface the screen could not see:
+  //
+  //   * VAR-LENGTH / quantified paths — the whole `->{m,n}` and `->+` family, and the largest
+  //     structural gap: nothing in this probe walked a quantified path.
+  //   * ANY SHORTEST — a different matcher entirely (BFS), not the linear walk.
+  //   * count(DISTINCT …) and collect() — aggregate paths that build a key set or a list per group,
+  //     where `grouped` only ever exercised a tally.
+  //   * the scalar aggregate family in one row (sum/avg/min/max).
+  //   * an inline CALL subquery, which runs a correlated scope per row.
+  //   * a hop with ORDER BY + LIMIT — `sortedpage` is node-only, so the topK walk over a HOP was
+  //     unmeasured.
+  //   * a string function in a predicate, standing in for the scalar-function dispatch path.
+  varlen12: 'MATCH (a:P)-[:E]->{1,2}(b:P) RETURN count(*) AS c',
+  varlenplus: 'MATCH (a:P)-[:E]->+(b:P) RETURN count(DISTINCT b) AS c',
+  anyshortest: 'MATCH p = ANY SHORTEST (a:P)-[:E]->+(b:P) WHERE a.n = 0 RETURN count(*) AS c',
+  countdistinct: 'MATCH (n:P) RETURN count(DISTINCT n.k) AS c',
+  collected: 'MATCH (n:P) RETURN collect(n.k) AS ks',
+  scalaraggs: 'MATCH (n:P) RETURN sum(n.n) AS s, avg(n.n) AS a, min(n.k) AS mn, max(n.k) AS mx',
+  // ⚠️⚠️ RUN THIS ONE AT `NODES=1000` OR SMALLER UNTIL THE DEFECT IS FIXED. It is QUADRATIC in the
+  // driving row count (item 1565): ~1.36 ms PER ROW at N=1000 against 104 ns for the equivalent
+  // `COUNT { … }`, and at this probe's default `NODES=20000` one rep takes ~24 SECONDS. It is kept
+  // in the list because it is the shape that FOUND that, and a sweep over the whole list should see
+  // it recover when the fix lands — but do not include it in a default-size sweep.
+  callinline: 'MATCH (n:P) CALL { MATCH (n)-[:E]->(x) RETURN count(*) AS c } RETURN count(*) AS t',
+  topkhop: 'MATCH (a:P)-[:E]->(b:P) RETURN b.k AS k ORDER BY k LIMIT 10',
+  // A LITERAL, not a `$param`: this probe calls `query(g, q)` with no params object, and a
+  // `$x` would fault. The literal also goes through item 1502's auto-parameterization, so the
+  // scalar-function dispatch is still what this measures.
+  stringfn: "MATCH (n:P) WHERE upper(n.s) <> 'ZZZ' RETURN count(*) AS c",
+
   // ⚠️ INTERSECT had NO shape until item 1562, and it is a beneficiary of the same one-column
   // keying as EXCEPT — both build a right-side key set and probe it per left row. A wide right
   // side, for the reason the comment above gives.

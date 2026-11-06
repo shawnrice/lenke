@@ -64437,3 +64437,85 @@ and its readings swing 336-607 ms, which is harness noise on a path this change 
 `bun run check` 0 read unpiped. Suites: core 431/0, **gql 3913/0** (29 in
 `distinct-rows-one-column.test.ts`), gremlin 1511/0, native 963/0, serialization 144/0,
 `bun run fuzz` 20/0. Item 1561's heading corrected in this commit to retract its equivalence claim.
+
+### Item 1565 — ⚠️ **AN INLINE `CALL { … }` CORRELATED SUBQUERY IS QUADRATIC IN THE DRIVING ROW COUNT.** Per-row cost tracks N almost exactly (1.00x → 1.94x → 3.71x for N ×1/×2/×4), so **1.36 ms A ROW at N=1000 against 104 ns for the equivalent `COUNT { … }`**. Found by ADDING a profile shape, not by reading one — and the first comparison I made overstated it 97x, which the probe now prevents
+
+Two negative results and one finding. The negatives first, because they are what made the finding
+necessary.
+
+#### The width audit from item 1564 comes back CLEAN
+
+Item 1564 fixed a one-column fast path that was selected from `rows[0]` while the loop touched rows
+of other widths. The obvious worry is siblings:
+
+- **Every caller of the one-column helpers is accounted for.** `distinctUnion` and `oneColumnSetOp`
+  check BOTH sides; `distinctRows`' two remaining callers pass `left.filter(…)`, which is uniform by
+  construction. `distinctRows` is **not** in the package's public exports, so no external caller can
+  hand it mixed widths.
+- **`isOneColumn` is the only `Object.keys(rows[0])` route choice in the GQL engine**, and a sweep of
+  all three packages for the general pattern — a route selected from `collection[0]` — returns two
+  hits, both safe: `parts[0]` is structural (a linear query has one part) and
+  `hop-projection.ts`'s `proj.items[0]` is guarded by `keys?.length !== 1`, which verifies there is
+  only one BEFORE sampling it. That is the correct form of this pattern.
+
+#### `hoprows` is closed, and `farDrivenHopWalk`'s 54 mentions said so
+
+The GQL screen's second-largest shape is 77.2% in `farDrivenHopWalk`'s closure. Item 1488 already
+decomposed it: row construction is **1.4%** against **44.8% garbage collection caused by the rows
+themselves**, and item 1477 had already built a row template, measured a null and reverted. The
+entry's conclusion — "the row-materializing GQL hop is GC-bound, and the GC is the result's own size
+… recorded as a bound, not a target" — stands. **Second time in three ticks that a 50+ mention count
+was the whole signal.**
+
+#### So the remaining signal is COVERAGE, and nine shapes were missing
+
+Items 1473 and 1562 both found their target by adding a shape. The screen had no shape for: the
+whole var-length/quantified family (`->{m,n}`, `->+`), `ANY SHORTEST`, `count(DISTINCT …)`,
+`collect()`, the scalar aggregates, an inline `CALL`, a hop with `ORDER BY`+`LIMIT`, or a scalar
+function in a predicate. All nine added.
+
+#### ⚠️ THE FINDING: the inline CALL is O(N) PER ROW
+
+```text
+correlated-subquery-scaling-probe.mjs, FANOUT=5, medians of 3, same unfiltered driving MATCH
+
+   arm             N        ms      ns/row   vs smallest N
+   callinline    250      91.5     365,915      1.00x
+   callinline    500     355.7     711,481      1.94x
+   callinline   1000    1358.0   1,357,981      3.71x     ← tracks N: O(N) per row, O(N²) total
+   countsub      250       0.3       1,285      1.00x
+   countsub     1000       0.1         104      0.08x     ← flat
+   existssub    1000       0.1          88      0.07x     ← flat
+   plainhop     1000       0.0           8      0.01x     ← flat, the floor
+```
+
+`ns/row` rising in step with N is the whole result: per driving row the CALL does work proportional
+to the GRAPH, not to the row's degree. At the probe's default `NODES=20000` one rep takes ~24
+seconds; at 4,000 it is 25 s against 5.7 s at 2,000.
+
+**The mechanism, as a hypothesis the fix must verify.** The profile at N=1000 puts `walkSegments`
+24.3%, `withBinding` 23.5%, `expand` 12.8% — while `seedVertices` is 0.9% and `candidateVertices`
+0.8%. That is consistent with the body expanding EVERY vertex per driving row and filtering by the
+correlation rather than SEEDING from it, and the arithmetic fits: N × FANOUT·N is 5,000,000
+expansions a rep at N=1000, and 552 ms over 15,000,000 (3 reps) is ~37 ns each. Stated as a
+hypothesis because the profile is consistent with it rather than proof of it.
+
+⚠️ **MY FIRST COMPARISON OVERSTATED THIS BY ~97x AND I ALMOST PUBLISHED IT.** I put `callinline`
+beside the probe's existing `existssub` shape — but `existssub` filters `a.k = 5` before the
+subquery, and `k` is `i % 97`, so its subquery runs for about N/97 rows while the CALL runs for all
+N. "10.6 ms against 17,063 ms" is mostly a 97x difference in subquery COUNT. The new probe drives
+every arm from an unfiltered `MATCH (n:P)` so the row counts match, and the real gap — still
+~13,000x per row at N=1000 — is the one above.
+
+**Not fixed this tick**: it is an executor change in the CALL correlation path, it wants the
+mechanism confirmed rather than assumed, and `gql-call-statement` records both ISO CALL forms as
+shipped byte-identical with native — so the native side needs checking too before touching the
+lowering. Next target, with the instrument built.
+
+The `callinline` shape carries a loud `NODES=1000` warning rather than being removed: it is what
+found this, and a sweep should see it recover when the fix lands.
+
+#### Gates
+
+Probes and shapes only; no engine change. `bun run check` 0 read unpiped. Suites unchanged from item
+1564: core 431/0, gql 3913/0, gremlin 1511/0, native 963/0, serialization 144/0.
