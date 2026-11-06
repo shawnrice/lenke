@@ -66539,3 +66539,92 @@ so native's answer there has to be checked too), and does the element path keep 
 
 No engine change shipped — one comment and one new probe. `bun run check` 0 read unpiped. Suites
 unchanged from item 1586.
+
+### Item 1588 — ⚠️⚠️ **SILENT DATA LOSS in core storage, found while designing a perf measurement: `addEdge` with an id equal to an existing VERTEX's id REPLACES that vertex's labels AND properties.** `elementProperties` and `elementLabels` are each ONE map keyed by bare id, shared across two separate id spaces. No fix in this item — a speed tick is the wrong place — but it is reproducible in four lines. ⚠️ It also means item 1584's divergence 13 was mis-described
+
+This tick set out to build identity-only element dedup (item 1587's redirect). Its own design note
+said to settle the correctness question FIRST, because a vertex/edge id collision is a reachable
+shape where identity and `String(v.id)` disagree, and native's answer there decides whether the
+change fixes a divergence or creates one. Asking that question is what found this.
+
+#### The bug, through the public API, in four lines
+
+```js
+const a = g.addVertex({ id: 'x', labels: ['P'], properties: { k: 1 } });
+const b = g.addVertex({ id: 'y', labels: ['P'], properties: { k: 2 } });
+g.addEdge({ id: 'x', from: a, to: b, labels: ['E'] });
+```
+
+```text
+   vertex x labels before: ["P"]   props: {"k":1}
+   vertex x labels after : ["E"]   props: {}
+```
+
+The VERTEX is overwritten by the EDGE — both its labels and its whole property bag. It is still the
+same object (`verticesById.get('x') === a`), still listed in `verticesByLabel.get('P')`, and
+`vertexCount` is still 2. So the damage is invisible to the shapes a reader would check first and
+shows up as a wrong answer:
+
+```text
+   MATCH (n:P) RETURN count(*) AS c                     2   <- the stale label index is trusted
+   MATCH (n:P) WHERE n.k = 1 RETURN count(*) AS c       0   <- was 1; the properties are gone
+   MATCH (n:P) WHERE n.k = 1 RETURN count(DISTINCT n)   0   against native's 1
+```
+
+**Native keeps both elements and answers correctly**, so this is TS-only. Vertex and edge ids are
+separate spaces here (`verticesById` and `edgesById` are distinct maps) and TinkerPop treats them as
+separate too, so sharing an id is legal input and not user error.
+
+#### The mechanism, and why the fix does not belong in this item
+
+```text
+   Graph.elementProperties: Map<string, PropBox>     ONE map, keyed by BARE id
+   Graph.elementLabels:     Map<string, LabelBox>    ONE map, keyed by BARE id
+```
+
+Both `Vertex` and `Edge` read and write them by their own `#id`, so an `Edge` with id `x` does
+`elementProperties.set('x', box)` over the vertex's box. The field's own doc states the invariant it
+is built on — "there is still exactly ONE source of truth per id" — and that is precisely the
+assumption that fails when two ELEMENT KINDS with independent id spaces share the map.
+
+A correct fix is per-kind storage, and the surface is larger than it looks: `elementProperties` has
+6 references each in `Vertex.ts` and `Edge.ts`, while `elementLabels` is written at ~10 sites in
+`Graph.ts` — several through `commitElementLabels(id, next)`, which takes a BARE id and would need
+the kind threaded through. Plus `label-box.test.ts`, `Graph.test.ts` and two probes read the maps
+directly. **Fixing properties without labels would be worse than recording it**, since the result
+would look fixed while labels still cross over. So this wants its own item, with the fuzzers and a
+look at whether any codec or snapshot path depends on the shared keying.
+
+#### ⚠️ And it corrects item 1584's description of divergence 13
+
+⚠️ **Precisely: item 1584's entry in THIS file is right** — it says `addVertex({id: 5})`, the direct
+API, and shows `count(*)` 2 on BOTH sides with `count(DISTINCT n)` ts 1 against nat 2. What is wrong
+is the claim I wrote in its TEST COMMENT and in the memory note, that the conflation is "reachable
+from untyped JS or NDJSON ingest".
+
+Through NDJSON, **`count(*)` ALSO diverges (ts 1, nat 2)**, which means TS's graph holds only ONE
+vertex: deserialization coerces a numeric id to a string and the second node overwrites the first —
+an INGEST defect, not a dedup one. Both have been corrected.
+
+The divergence as a DEDUP bug is real only through the direct API, where `count(*)` is 2 and
+`count(DISTINCT n)` is 1. Two different defects wearing one entry, and the giveaway was there all
+along: a dedup bug cannot move `count(*)`.
+
+#### What this means for the perf target, which stays open
+
+Identity-only element dedup (item 1587's redirect, Gremlin's own `dedupe` being the precedent) is
+unaffected as a performance idea. But **the shapes meant to validate it cannot do that job**:
+
+- the vertex/edge collision shape is CORRUPT in TS before any dedup runs, so comparing dedup answers
+  there measures this bug, not the keying;
+- the NDJSON numeric-id shape is an ingest defect, so it cannot validate a dedup change either;
+- what is left is the direct-API numeric-id shape, which identity keying would fix — and that one is
+  real.
+
+Walking into the measurement without this would have produced a confident wrong conclusion about
+either the change or the engine. That is the item's value: a probe designed before the code, which
+is the discipline item 1587's refuted micro-ladder earned the hard way.
+
+#### Gates
+
+No engine change — three probes. `bun run check` 0 read unpiped. Suites unchanged from item 1587.

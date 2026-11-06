@@ -167,9 +167,13 @@ describe('⚠️ the String(v.id) coercion is LOAD-BEARING, and it preserves a T
     const graph = new Graph();
 
     // ⚠️ The TYPE says `id: string`, so this needs a cast — which narrows how the bug is reached:
-    // not from typed code, but from untyped JS or from DESERIALIZATION. NDJSON `{"id":5,…}`
-    // ingests fine (that is how the native side of the comparison got its numeric id), so the
-    // conflation is reachable in practice and not only in a cast.
+    // from untyped JS, and ONLY from there.
+    //
+    // ⚠️ AN EARLIER VERSION OF THIS COMMENT ALSO CLAIMED DESERIALIZATION, and item 1588 measured
+    // that wrong. Through NDJSON, `count(*)` ALSO diverges (ts 1 against native's 2) — TS's graph
+    // holds only ONE vertex, because ingest coerces the numeric id to a string and the second node
+    // overwrites the first. That is an INGEST defect, not this dedup one, and the giveaway was
+    // available all along: a dedup bug cannot change `count(*)`.
     graph.addVertex({ id: 5 as unknown as string, labels: ['P'], properties: { k: 1 } });
     graph.addVertex({ id: '5', labels: ['P'], properties: { k: 2 } });
 
