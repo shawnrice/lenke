@@ -64287,9 +64287,9 @@ row the string path keeps (`n1` vs `n1\x01sa` differ). A wrong answer, previousl
 tests added; the mutant now dies.
 
 **The conformance question is left open deliberately**: ISO/IEC 39075 requires set operands to have
-the same degree, and this engine accepts unequal degree with the left side's names. Whether the
-native engine agrees is unmeasured, so this is a candidate cross-engine divergence rather than a
-settled gap — it belongs with the open divergence list, not fixed inside a perf item.
+the same degree, and this engine accepts unequal degree with the left side's names. ⚠️ **Measured
+immediately after, at item 1563: the two engines DISAGREE, in opposite directions.** It is a
+confirmed cross-engine divergence, not a candidate — see that entry.
 
 **The lesson for the next mutation run:** "this mutant is unreachable because the language forbids
 it" is a claim about the IMPLEMENTATION, not the language. Check that the implementation forbids it
@@ -64312,3 +64312,55 @@ before dismissing a survivor; here it took one query to find out it does not.
 `distinct-rows-one-column.test.ts`), gremlin 1511/0, native 963/0, serialization 144/0,
 `bun run fuzz` 20/0. Item 1561's heading corrected in this commit — its `1.25x on EXCEPT` is now
 1.79x cumulative, and the "obvious next lever" it priced is taken here.
+
+### Item 1563 — ⚠️ **A CONFIRMED CROSS-ENGINE DIVERGENCE, in OPPOSITE directions, on a shape neither the differential fuzzer nor any test generates**: with unequal set-operation degree, TS compares the WHOLE row key and native compares only the COMMON PREFIX. `EXCEPT` keeps everything in TS and nothing in native; `INTERSECT` is the exact reverse. Found by following up item 1562's surviving mutant rather than filing it as "unmeasured"
+
+Item 1562 discovered that this engine accepts unequal degree in a set operation, which ISO/IEC 39075
+forbids, and recorded the native side as unmeasured. One probe settles it, and the answer is worse
+than a shared non-conformance.
+
+```text
+                          ts                                   native
+EXCEPT    1 vs 2   ok [{"a":1},{"a":2}]                  ok []
+INTERSECT 1 vs 2   ok []                                 ok [{"a":1},{"a":2}]
+EXCEPT    2 vs 1   ok [{"a":1,"b":"a"},{"a":2,"b":"b"}]   ok [{"a":1,"b":"a"},{"a":2,"b":"b"}]
+UNION     1 vs 2   ok [{"a":1},{"a":2}]                  ok [{"a":1},{"a":2}]
+EXCEPT equal       ok [{"a":2}]                          ok [{"a":2}]          control, agrees
+```
+
+`1 vs 2` is `MATCH (n:P) RETURN n.k AS a <OP> MATCH (n:P) RETURN n.k AS a, n.s AS b` over two
+vertices.
+
+**The mechanism is readable off the two results.** TS keys a row by all of its columns, so a
+one-column row and a two-column row can never match: `EXCEPT` subtracts nothing and keeps both rows,
+`INTERSECT` matches nothing and returns empty. Native evidently compares only the columns the two
+sides share, so every left row matches: `EXCEPT` subtracts all of them and `INTERSECT` keeps all of
+them. Both engines are self-consistent and they are **exact opposites** on both operators.
+
+`UNION` agrees only because it concatenates before de-duplicating, and `2 vs 1` agrees because the
+wider side is on the left, where the extra column is part of TS's key and absent from native's
+comparison in the same way.
+
+**Neither is ISO-correct, because ISO rejects the input.** 39075 requires the operands of a set
+operation to have the same degree, so the conformant behaviour is a compile-time error in both
+engines — which would also make this divergence unreachable. That is the fix; it is a semantics
+change with a condition code to choose, so it is not being made inside a perf item.
+
+⚠️ **Nothing was ever going to catch this.** The differential fuzzer does not generate unequal-degree
+set operations, and no test in either engine writes one. It surfaced only because item 1562 wrote a
+mutant that assumed the shape was impossible, the mutant SURVIVED, and checking why took one query.
+**A surviving mutant is a question about the implementation, and this is the second time this session
+that following one up found something the suite could not see** (item 1560's three survivors proved
+the opposite: that a guard was unfalsifiable).
+
+Deliberately NOT added to `divergence-registry.ts` — registering it would silence a fuzzer that is
+not generating the shape anyway, and it should fail loudly if the generator is ever widened to cover
+set-operation degree, which is now a known gap in its coverage.
+
+The probe is `packages/native/setop-arity-probe.mjs` (run with **bun**, not node — it imports the
+test-support harness from `src`, which is not published to `dist`).
+
+#### Gates
+
+Probe only; no engine change. `bun run check` 0 read unpiped. Suites unchanged from item 1562:
+core 431/0, gql 3909/0, gremlin 1511/0, native 963/0, serialization 144/0, `bun run fuzz` 20/0.
