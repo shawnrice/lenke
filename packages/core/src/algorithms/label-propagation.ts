@@ -1,7 +1,7 @@
 import type { Edge } from '../core/Edge.js';
 import type { Graph } from '../core/Graph.js';
 import type { Vertex } from '../core/Vertex.js';
-import { countIncidentEdgesFlat, incidentEdges, writeIncidentEnds } from './adjacency.js';
+import { countIncidentEdgesFlat, idRank, incidentEdges, writeIncidentEnds } from './adjacency.js';
 import { type AlgorithmGen, defineAlgorithm, materializeVertices, YIELD_EVERY } from './async.js';
 import type { AlgorithmConfig, AlgorithmRow } from './types.js';
 
@@ -236,6 +236,8 @@ export const computeGen = function* (
   // the reset stays O(distinct labels) rather than O(n).
   const count = new Int32Array(n);
   const dirty: number[] = [];
+  // The tie-break reads an integer rank rather than two `Vertex.id` getters — see `idRank`.
+  const rank = idRank(order);
 
   for (let iter = 0; iter < iterations; iter++) {
     const nextLabels = new Int32Array(n);
@@ -274,7 +276,7 @@ export const computeGen = function* (
       for (const lbl of dirty) {
         const c = count[lbl];
 
-        if (best === -1 || c > bestCount || (c === bestCount && order[lbl].id < order[best].id)) {
+        if (best === -1 || c > bestCount || (c === bestCount && rank[lbl] < rank[best])) {
           best = lbl;
           bestCount = c;
         }

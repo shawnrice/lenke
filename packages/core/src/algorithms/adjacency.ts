@@ -1,4 +1,5 @@
 import type { Edge } from '../core/Edge.js';
+import type { Vertex } from '../core/Vertex.js';
 
 /**
  * One direction of a vertex's edges, optionally restricted to a single edge type
@@ -166,4 +167,63 @@ export const countIncidentEdges = (
   }
 
   return seen.size;
+};
+
+/**
+ * An integer RANK per vertex in EXTERNAL-ID order, so a tie-break on "smallest external id" is an
+ * int compare instead of two `Vertex.id` getter reads and a string compare (item 1625).
+ *
+ * ⚠️ WHY IT IS WORTH A PRECOMPUTE. `labelPropagation` and `peerPressure` both resolve a tie on the
+ * smallest external id, inside a loop that runs per tie, per vertex, per round — and at fanout 2
+ * almost every vertex ties (two neighbours, two distinct labels, both counted once), so it ran on
+ * nearly every vertex of every round. `labelPropagation` is the slowest procedure per vertex in
+ * `algo-scaling-bench.mjs` by a wide margin, and ablating the whole tie-break from it — a WRONG
+ * ANSWER measured only to price it — moved it **136.4 ms to 112.5, 1.20x**:
+ *
+ * ```text
+ *    control (7 runs)        134.76 - 139.63 ms   median 136.44
+ *    ids[] hoisted only      130.15 - 132.01      median 131.95    1.034x
+ *    this rank              123.80 - 126.55      median 125.41    1.088x
+ *    tie-break ABLATED      112.47 - 112.60                       1.20x (the ceiling)
+ * ```
+ *
+ * Removing only the two GETTERS recovered 3.4%, so the STRING COMPARE was the bulk of it — which is
+ * why this ranks rather than just hoisting the ids. The remaining ~10% of the ceiling is the dirty
+ * loop itself, which the ablation also removed.
+ *
+ * ⚠️ `rank[a] < rank[b]` IFF `ids[a] < ids[b]`, because ranks are assigned in id order and vertex
+ * ids are UNIQUE — so the tie-break can never itself tie and the contract is unchanged. The sort
+ * uses the same `<`/`>` on strings the loops used, so the order is identical by construction rather
+ * than by a second definition of "lexicographic".
+ *
+ * The cost is one O(V log V) sort of V string compares per call, against O(rounds x E) in the loop.
+ */
+export const idRank = (order: readonly Vertex[]): Int32Array => {
+  const n = order.length;
+  const ids: string[] = new Array<string>(n);
+  const byId: number[] = new Array<number>(n);
+
+  for (let i = 0; i < n; i++) {
+    ids[i] = order[i].id;
+    byId[i] = i;
+  }
+
+  byId.sort((a, b) => compareIds(ids[a], ids[b]));
+
+  const rank = new Int32Array(n);
+
+  for (let p = 0; p < n; p++) {
+    rank[byId[p]] = p;
+  }
+
+  return rank;
+};
+
+/** Its own function because a nested ternary is a lint error, and the rule is right here. */
+const compareIds = (a: string, b: string): number => {
+  if (a < b) {
+    return -1;
+  }
+
+  return a > b ? 1 : 0;
 };

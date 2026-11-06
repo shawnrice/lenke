@@ -1,4 +1,5 @@
 import type { Graph } from '../core/Graph.js';
+import { idRank } from './adjacency.js';
 import { type AlgorithmGen, defineAlgorithm, materializeVertices, YIELD_EVERY } from './async.js';
 import type { AlgorithmConfig, AlgorithmRow } from './types.js';
 
@@ -88,6 +89,8 @@ export const computeGen = function* (
   // reliably marks a first sighting).
   const energy = new Float64Array(n);
   const dirty: number[] = [];
+  // The tie-break reads an integer rank rather than two `Vertex.id` getters — see `idRank`.
+  const rank = idRank(order);
 
   for (let iter = 0; iter < iterations; iter++) {
     const next = new Int32Array(n);
@@ -115,7 +118,7 @@ export const computeGen = function* (
       for (const c of dirty) {
         const e = energy[c];
 
-        if (best === -1 || e > bestE || (e === bestE && order[c].id < order[best].id)) {
+        if (best === -1 || e > bestE || (e === bestE && rank[c] < rank[best])) {
           best = c;
           bestE = e;
         }

@@ -69907,8 +69907,77 @@ The two label frames fell by 7.6 points together, which is the 1.17x that shippe
 
 CLAUDE.md records three passes in one session re-deriving a closed target, each having "searched something first and searched the wrong store". The cost is measured: a sweep of 265 `OPEN` lines corrected 40. An item that profiles a surface, finds every frame closed, and writes that down is the cheapest possible version of that sweep — and the alternative is a seventh arrival at `indexEdgeLabel` by someone reading a fresh 27.2%.
 
-Two things also hold after this tick and are worth stating plainly: the matcher's label frames are gone for good, and the write path is a constant factor with its parts individually measured. The next GQL lever is structural (`withBinding`) or it is in a surface neither profile covers.
+Two things also hold after this tick and are worth stating plainly: the matcher's label frames are gone for good, and the write path is a constant factor with its parts individually measured. The next GQL lever is structural (`withBinding`) or it is in a surface neither profile covers — ⚠️ **and it was the latter: item 1625 found 1.16-1.47x in the TS ALGORITHMS, which no profile this session had touched.**
 
 #### Gates
 
 No engine change; the two ablations were restored and the tree verified clean. `bun run check` 0 read unpiped. Suites gql 4207, core 435, native 1076, gremlin 1765, serialization 144 — 0 fail.
+
+### Item 1625 — **1.16x/1.24x on `labelPropagation` and 1.17x/1.47x on `peerPressure`**, eleven sibling algorithms flat: the "tie → smallest external id" rule now compares an integer RANK instead of reading `Vertex.id` twice and comparing strings. ⚠️ Found on the only TS surface no profile this session had touched, after the GQL and Gremlin profiles came back fully closed at items 1622/1624
+
+OPEN: nothing on these two. The remaining ~10% of the ablation ceiling is the dirty loop itself, which the ablation also removed and which has no separable term.
+
+#### Why the algorithms, and why this one
+
+Items 1622 and 1624 profiled GQL reads, GQL writes, Gremlin chain counts and Gremlin `order()` and found every top frame closed or refuted. The TS algorithm surface had not been profiled this session at all, and `algo-scaling-bench.mjs` names its own target without being asked: **`labelPropagation` is the slowest procedure per vertex by a wide margin** — 2056-2535 ns/V against `peerPressure`'s 1000-1344 and `pagerank`'s 490-505.
+
+Its profile has the only unpriced frame in the surface: **`computeGen` 20.4%, ZERO mentions.** (`writeIncidentEnds` 16.1% + `countIncidentEdgesFlat` 5.3% is the CSR build, already priced at 21.6%.)
+
+⚠️ **AND HALF THAT PROFILE IS THE FIXTURE BUILD** — `indexEdgeLabel` 6.1%, `#commitNormalized` 3.7%, `commitElementLabels` 3.1%, `insertEdge` 1.6% — which the bench's timing excludes but a whole-process profile does not. `label-prop-probe.ts` exists for that: one algorithm per process, fixture build outside the window, and the community count printed so an ablation that changes the answer cannot read as a win.
+
+#### The ablation, then the two candidate fixes, each measured
+
+```text
+   control (7 runs)        134.76 - 139.63 ms   median 136.44
+   ids[] hoisted only      130.15 - 132.01      median 131.95    1.034x
+   integer rank (SHIPPED)  120.83 - 123.41      median 121.25    1.126x
+   tie-break ABLATED       112.47 - 112.60                       1.20x — THE CEILING
+```
+
+The ablation (the tie-break removed — a wrong answer, and the probe's `communities` moved **2118 → 79860** so it could not be mistaken for a win) prices the whole tie-break at 20%.
+
+**⚠️ HOISTING THE IDS RECOVERED ONLY 3.4%, SO THE STRING COMPARE WAS THE BULK — not the getters.** That is the measurement that chose the design: the obvious fix (stop reading `Vertex.id` twice) leaves five sixths of the cost on the floor. Ranking by id once and comparing integers takes 1.126x of a 1.20x ceiling.
+
+At fanout 2 almost every vertex TIES — two neighbours, two distinct labels, each counted once — so the tie-break ran on nearly every vertex of every round. That is why a rule that reads like an edge case is 20% of the algorithm.
+
+#### The full bench, PRE and POST, same settings
+
+```text
+   algorithm                 PRE 40k   POST    PRE 160k   POST     verdict
+   labelPropagation            82.24   70.89     405.55   327.92   1.16x / 1.24x
+   peerPressure                39.99   34.13     214.98   146.52   1.17x / 1.47x
+   degree                      14.71   15.30      65.56    63.00   flat
+   connectedComponents          9.69    9.53      41.28    35.47   flat
+   stronglyConnectedComponents 14.19   15.12      93.22    86.82   flat
+   onCycle                     12.56   15.50      89.11    89.29   flat
+   pagerank                    20.18   20.00      78.41    73.75   flat
+   personalizedPagerank        17.78   18.00      80.25    75.71   flat
+   shortestPath                16.97   16.43      88.25    80.62   flat
+   shortestPathWeighted        31.02   30.61     170.82   168.09   flat
+   neighborAggregate           25.44   24.71     108.86   101.75   flat
+   betweenness                 74.26   74.98    1234.23  1253.71   flat
+   closeness                   68.44   68.23    1100.11  1119.45   flat
+```
+
+`peerPressure` at 160k is the biggest single win (1.47x) and it was free: `grep` found the identical tie-break line there, so one shared helper fixed both. Eleven controls flat.
+
+**A bonus the sweep settles**: the PRE run flagged `stronglyConnectedComponents` at 6.57x and `onCycle` at 7.09x against an expected 4x, with the bench's own warning that _a two-point ratio is a ratio, not a trend_ (item 1464). Both read `ok` POST (5.74x, 5.76x) without anything touching them — so they were noise, as the warning said.
+
+#### `idRank` is one helper in `adjacency.ts`, not two copies
+
+`rank[a] < rank[b]` iff `ids[a] < ids[b]`, because ranks are assigned in id order and vertex ids are UNIQUE — so the tie-break can never itself tie, and the sort uses the same `<`/`>` on strings the loops used rather than a second definition of "lexicographic". Cost: one O(V log V) sort of V string compares per call, against O(rounds × E) in the loop. The extraction was forced by the lint gate (`max-statements` 87 against 80, and `no-nested-ternary` on the comparator) and is better than the inline form anyway — it measured 121.25 against the inline version's 125.41.
+
+#### ⚠️ Mutation 12 of 12, and it took THREE attempts at one fixture
+
+The rank's comparator (inverted, constant), the sort removed, a numeric sort, the permutation inverted, the id read replaced; and at both call sites the tie-break dropped, inverted, and the primary key ignored.
+
+**`lp/count-ignored` and `pp/energy-ignored` survived TWICE before dying**, and both reasons are worth having:
+
+1. First I had no test for them at all — a PRE-EXISTING gap, since item 1625 does not touch `c > bestCount`. My first attempt to fix it guessed a fixture; label propagation on a small graph OSCILLATES (a triangle-plus-tail answered `v10, v9, v10, v10, v9` at iterations 1, 2, 3, 5, 10, and the `v9` readings were the tie-break picking the smallest of three distinct labels, not a majority). I removed it and wrote down that I could not pin it.
+2. Then I derived one properly from the round-by-round labels — and it STILL survived, because **the edge order is load-bearing**. The dirty list is built in first-sighting order, so dropping `c > bestCount` only changes the answer when the MAJORITY label is seen SECOND. With `x—p, x—q` inserted first the best is already the majority and the condition is never re-tested. Reordering so the minority neighbour comes first killed both mutants with one failure each.
+
+**A fixture that exercises the line is not the same as a fixture that discriminates on it** — and the thing that decided it here was neither the graph nor the query but the INSERTION ORDER of three edges.
+
+#### Gates
+
+`bun run check` 0 read unpiped. Suites core 444 (9 new), gql 4207, native 1076, gremlin 1765, serialization 144 — 0 fail. `bun run fuzz` 20/0 under the 16G cap.
