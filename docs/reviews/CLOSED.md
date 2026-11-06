@@ -67602,6 +67602,8 @@ working code — which is the failure mode item 1593 and item 1594 both hit from
 
 #### Scope, stated so the next item does not over-read the number — ⚠️ **the follow-up here is TAKEN by item 1600**
 
+⚠️ **ITEM 1610 TOOK THE PROJECTION HALF** (2.1x), so the scope note below is historical.
+
 There is exactly ONE call site: `buildNodeCount`'s `fastPred`. So this reaches the filtered node
 COUNT and nothing else. The inline spelling of a PROJECTION (`MATCH (u:User {team: $v}) RETURN
 u.score`) still runs the general matcher per candidate and is unmoved — item 1597's probe measures
@@ -68799,3 +68801,112 @@ re-ask.
 
 `bun run check` 0 read unpiped. Suites gql 4137 (8 new), gremlin 1694, core 435, native 1056,
 serialization 144 — 0 fail. `bun run fuzz` 20/0 under the 16G cap.
+
+### Item 1610 — **2.1x on the seeded projection** (34000 -> 16046 ns) and 1.51x on its ordered twin, by giving the PROJECTION the exact-seed skip item 1607 gave only the count. ⚠️ And unlike item 1609's elision this one helps the multi-label fixture too, which is what tells the two changes apart
+
+Item 1609 removed the label test, so a fresh profile of the seeded projection is property reads plus
+the gate:
+
+```text
+   22.6%  propOf                   the projected column AND the predicate's read
+   18.1%  fastPath                 once per query — the INLINED rung body
+   16.7%  (anonymous) :10099       the rung's own walk
+   12.7%  get properties
+    5.9%  (anonymous) :18291       the specialized predicate closure
+```
+
+#### The floor said there was 3.5x, and the gate was most of it
+
+```text
+   engine                  29063 ns   29.1 ns/row
+   FLOOR bag per vertex     8277       8.3            3.5x
+   FLOOR hoisted bag        8064       8.1            so the getter is NOT the cost at one column
+   FLOOR no row objects     4638       4.6            row objects are 3.7 ns/row
+```
+
+Hoisting the property bag changes nothing at one column, which rules out the obvious reading of
+`get properties` at 12.7%. Ablating the GATE instead took 34000/34958 -> **15407/16039, 2.2x** — and
+`buildNodeCount` has not re-validated an exact seed since item 1607, while the projection still did.
+
+#### What shipped
+
+`detectNodeProjection`'s streaming walk skips the gate when the seed is exact, reusing item 1607's
+`soleEqualityKey` and `seedIsExact` unchanged. Three supporting extractions, each for a stated
+reason:
+
+- **`hopSeekWithKey`** — the seed AND the equality key it sought on. `hopSeek` now delegates to it,
+  so there is ONE choose loop; this file's own note records what two copies of a seed rule cost
+  before.
+- **`nodeScanPreds`** — the gate's pred derivation, so the exactness verdict is formed from the very
+  list the gate composes. `SeedCandidate`'s argument (report a fact, decide against what is held),
+  one level further out.
+- **`nodeScanSoleKey`** — for the LINT gate, not for speed: the two lines inlined took
+  `detectNodeProjection` to a complexity of 36 against a limit of 35, the same wall `liftedOwnPred`
+  records at 38.
+
+#### The numbers
+
+```text
+                      POST-1609      POST-1610     verdict
+   values               34000          16046       2.1x
+   values+order         47102          31199       1.51x
+   count                 2775           2721       flat (item 1607 already skips)
+   values+limit         39199          38538       flat (topK walk, NOT patched)
+   aggregate            38478          37073       flat (NOT patched)
+   multi-agg            46978          46091       flat (NOT patched)
+   values MULTI      39558-41034        24011       1.65x
+   values+order MULTI    49567          33933       1.46x
+```
+
+The three un-patched walks being flat is not just a control — it is the confirmation that the edit
+reached exactly the walk it claims and no other.
+
+⚠️ **THE MULTI FIXTURE IMPROVES HERE, AND THAT IS THE DIFFERENCE BETWEEN THIS ITEM AND 1609.** The
+label elision could only ever help a graph whose queried label covers everything, so its multi-label
+row had to be flat. The predicate skip is label-independent: an exact seed is exact whatever the
+labels are. Two changes to the same loop with opposite control behaviour, which is worth stating
+because "the control moved" means the opposite thing in each.
+
+Against the floor, the projection is now 16 ns/row against 8.3 — **1.94x off, from 3.5x**.
+
+#### Mutation: 4 of 6 caught, and the two survivors are handled differently
+
+```text
+   proj/exact-skips-label       CAUGHT  11 fail     seek/key-when-declined   SURVIVED
+   proj/exact-always            CAUGHT 351 fail     proj/never-skips         SURVIVED
+   proj/solekey-ignores-inline  CAUGHT 694 fail
+   seek/hopSeek-diverges        CAUGHT  13 fail
+```
+
+`proj/solekey-ignores-inline` is the drift guard — deriving the sole key from a different parse than
+the gate composes fails 694 tests, which is what makes `nodeScanPreds` load-bearing rather than
+tidy.
+
+⚠️ **`seek/key-when-declined` was chased and then DESIGNED OUT.** Reporting the chosen candidate's
+key even when the seek was DECLINED would be a wrong answer — the walk then covers the whole label
+bucket, and skipping the gate emits every member — but no fixture reaches that state. Two attempts
+failed: `seekIsWorthIt`'s small-graph floor means the 60-vertex fixtures seek even for a two-value
+key, and a purpose-built 2,000-vertex graph did not reproduce it either (measured at 20,000
+vertices, an indexed two-value key reads 0.99x its unindexed twin and a five-value key 1.11x — both
+declined — against 33.74x for a fifty-value key). Rather than keep hunting, the skip now also
+requires `seeded !== undefined`: exactness can only mean anything for a seeded walk, so the mutant
+is **harmless instead of merely untested**, which is the better of the two outcomes.
+
+`proj/never-skips` is the answer-equivalent wiring survivor, the same class item 1604 recorded.
+
+#### What this leaves
+
+Three walks still re-validate an exact seed — the topK arm (38538 ns), `detectNodeAggregate`
+(37073) and `detectMultiNodeAggregate` (46091). Each needs the same two lines, but `soleKey` has to
+be threaded through their spec objects rather than read from an enclosing scope, so they are a
+separate edit. The skip is ANSWER-EQUIVALENT, so unlike item 1609's elision there is no uniformity
+requirement forcing them to land together.
+
+#### Gates
+
+`bun run check` 0 read unpiped. Suites gql 4146 (1 new), gremlin 1694, core 435, native 1056,
+serialization 144 — 0 fail. ⚠️ **`bun run fuzz` reported `1 fail` on one run and then 20/0 on three
+consecutive runs**, and the failing fuzzer's identity was not captured before the clean re-runs —
+consistent with the rare residual `gremlin-fuzz-families` records (a 1-in-30 whose seed replays
+clean) but NOT confirmed as that. Flagged rather than filed as green: the next tick should re-run
+`bun run fuzz` and, on a failure, capture the fuzzer and seed before re-running.

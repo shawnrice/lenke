@@ -1314,14 +1314,25 @@ const degreeOfTypes = (
  * Mirrors `buildNodeCount`'s chooser exactly, including declining a seek WIDER than the bucket
  * (an indexed key can be common outside this label). Both are correct; only the cost differs.
  */
-export const hopSeek = (
+/**
+ * The seed AND the equality key it sought on — item 1610, the input the exactness verdict needs.
+ *
+ * ⚠️ ONE CHOOSE LOOP, NOT TWO. `hopSeek` below delegates here rather than keeping its own copy:
+ * this file's own note records what two copies of one seed rule cost before (the far endpoint on a
+ * per-edge tally), and the choosing is the dangerous half of the preamble, not the walk around it.
+ * Every existing caller of `hopSeek` is untouched.
+ *
+ * `eqKey` is a FACT about the chosen candidate, never a verdict — see `SeedCandidate`'s own note on
+ * why exactness is decided against the predicate actually held rather than stamped on the seed.
+ */
+export const hopSeekWithKey = (
   graph: Graph,
   cstart: CNode | undefined,
   pa: LabelExpr | undefined,
   env: EvalEnv,
-): ReadonlySet<Vertex> | undefined => {
+): { seeded: ReadonlySet<Vertex> | undefined; eqKey: string | undefined } => {
   if (cstart === undefined) {
-    return undefined;
+    return { seeded: undefined, eqKey: undefined };
   }
 
   let best: SeedCandidate | undefined;
@@ -1334,8 +1345,17 @@ export const hopSeek = (
 
   // Same rule as every other seed site (item 409): `< candidateCount` admitted anything
   // narrower than the whole bucket, where the break-even is ~1/8 of it.
-  return best !== undefined && seekIsWorthIt(graph, pa, best.count) ? best.build() : undefined;
+  return best !== undefined && seekIsWorthIt(graph, pa, best.count)
+    ? { seeded: best.build(), eqKey: best.eqKey }
+    : { seeded: undefined, eqKey: undefined };
 };
+
+export const hopSeek = (
+  graph: Graph,
+  cstart: CNode | undefined,
+  pa: LabelExpr | undefined,
+  env: EvalEnv,
+): ReadonlySet<Vertex> | undefined => hopSeekWithKey(graph, cstart, pa, env).seeded;
 
 /**
  * THE BARE DEGREE SUM: `MATCH (a:L)-[:T]->(b) RETURN count(*)` with nothing else to apply.
@@ -9551,11 +9571,19 @@ export const specializedConjunct = (
 ): ((element: Vertex | Edge, env: EvalEnv) => boolean) | undefined =>
   ip.bindVar === undefined ? specializeNarrowPred(ip.pred) : undefined;
 
-const nodeScanGate = (
+/**
+ * The `InlinePred`s a single-node scan's gate is composed from, or `null` when the shape declines.
+ *
+ * Extracted at item 1610 so the EXACTNESS verdict is formed from the very list the gate composes.
+ * `soleEqualityKey(nodeScanPreds(...))` and `nodeScanGate(...)` therefore cannot disagree about
+ * what the predicate asserts — which is the whole reason `SeedCandidate` reports a fact rather than
+ * carrying an `exact` flag, and the same argument applied one level further out.
+ */
+const nodeScanPreds = (
   start: NodePattern,
   where: Expr | undefined,
   nodeVar: string,
-): InlineGate | undefined | null => {
+): InlinePred[] | null => {
   const preds: InlinePred[] = [];
   const inStart = inlineOf(start);
 
@@ -9577,7 +9605,35 @@ const nodeScanGate = (
     preds.push(carried);
   }
 
-  return composeInlineGate(preds);
+  return preds;
+};
+
+/**
+ * The ONE key a single-node scan's predicate asserts an equality on, or `undefined`.
+ *
+ * A free function for the LINT GATE rather than for speed — the two lines inlined took
+ * `detectNodeProjection` to a complexity of 36 against a limit of 35, which is the same wall
+ * `liftedOwnPred` records hitting at 38 and the same way out. It decides a route ONCE PER QUERY,
+ * where the walk it unlocks runs once per candidate.
+ */
+const nodeScanSoleKey = (
+  start: NodePattern,
+  where: Expr | undefined,
+  nodeVar: string,
+): string | undefined => {
+  const preds = nodeScanPreds(start, where, nodeVar);
+
+  return preds === null ? undefined : soleEqualityKey(preds);
+};
+
+const nodeScanGate = (
+  start: NodePattern,
+  where: Expr | undefined,
+  nodeVar: string,
+): InlineGate | undefined | null => {
+  const preds = nodeScanPreds(start, where, nodeVar);
+
+  return preds === null ? null : composeInlineGate(preds);
 };
 
 /**
@@ -9605,11 +9661,17 @@ const scanCandidates = (
   label: LabelExpr | undefined,
   labelName: string | undefined,
   env: EvalEnv,
-): { vertices: Iterable<Vertex>; seeded: ReadonlySet<Vertex> | undefined } => {
-  const seeded = hopSeek(graph, cstart, label, env);
+): {
+  vertices: Iterable<Vertex>;
+  seeded: ReadonlySet<Vertex> | undefined;
+  /** The equality key the seek matched on, for the exactness verdict (item 1610). */
+  eqKey: string | undefined;
+} => {
+  const { seeded, eqKey } = hopSeekWithKey(graph, cstart, label, env);
 
   return {
     seeded,
+    eqKey,
     vertices:
       seeded ??
       (labelName === undefined
@@ -10206,6 +10268,19 @@ export const detectNodeProjection = (
 
   const { where } = m;
   const gate = nodeScanGate(start, where, nodeVar);
+  /**
+   * ITEM 1610: the one key this scan's predicate asserts an equality on, decided ONCE PER QUERY.
+   *
+   * Item 1607 gave the exact-seed skip to `buildNodeCount` only, and the PROJECTION kept
+   * re-validating every seeded candidate. After item 1609 removed the label test, that is what the
+   * profile IS — ablating the gate here measured **34000/34958 ns -> 15407/16039, 2.2x**, the same
+   * magnitude item 1607 measured on the count, and for an exact seed skipping it IS that ablation
+   * rather than an approximation of it.
+   *
+   * From `nodeScanPreds`, the same list the gate above is composed from, so the verdict cannot
+   * disagree with what is actually applied — `SeedCandidate`'s own argument, one level further out.
+   */
+  const soleKey = nodeScanSoleKey(start, where, nodeVar);
 
   if (gate === null) {
     return null;
@@ -10322,7 +10397,7 @@ export const detectNodeProjection = (
     const binding = new Map<string, unknown>();
     // SEED FROM THE INDEX when one is cheaper than the label bucket. The decision, and the
     // 50x `bench:usage` regression that shaped it, are documented once on `scanCandidates`.
-    const { vertices, seeded } = scanCandidates(graph, cstart, label, labelName, {
+    const { vertices, seeded, eqKey } = scanCandidates(graph, cstart, label, labelName, {
       binding,
       params,
       graph,
@@ -10334,6 +10409,23 @@ export const detectNodeProjection = (
     // hoisted it is flat. Per EXECUTION, not per compile: universality is a property of the graph
     // (item 1551), so a cached plan cannot carry it.
     const labelEff = effectiveLabel(graph, label);
+    /**
+     * Per CALL, because the verdict needs the candidate the seek actually chose.
+     *
+     * ⚠️ `seeded !== undefined` IS DEFENCE IN DEPTH, and mutation is why it is here rather than a
+     * test. Making `hopSeekWithKey` report the chosen candidate's key even when it DECLINED the
+     * seek survived the whole suite: on a declined seek the walk covers the whole label bucket, so
+     * skipping the gate would emit every member — a wrong answer — but no fixture here reaches
+     * that state. `seekIsWorthIt` carries a small-graph floor, so the 60-vertex fixtures seek even
+     * for a two-value key; and a graph big enough to decline (measured: an indexed two-value key
+     * reads 0.99x its unindexed twin at 20,000 vertices, a five-value key 1.11x, a fifty-value key
+     * 33.74x) did not reproduce it either.
+     *
+     * Rather than keep hunting a fixture, the hazard is removed: exactness can only mean anything
+     * for a SEEDED walk, so the skip asks for both. One comparison per call, and the mutant becomes
+     * harmless instead of merely untested — which is the better outcome of the two.
+     */
+    const exactSeed = seeded !== undefined && seedIsExact({ eqKey }, soleKey);
 
     for (const v of vertices) {
       // The label is re-checked because a SEEDED set is a SUPERSET: an index hint is a
@@ -10347,7 +10439,10 @@ export const detectNodeProjection = (
         continue;
       }
 
-      if (gate !== undefined && !gate(v, binding, params, graph)) {
+      // ITEM 1610: an EXACT seed has already decided the predicate — the seeded set IS the
+      // matching set — so re-validating every candidate is pure waste. The LABEL test above still
+      // runs: the index returns vertices by VALUE across all labels.
+      if (!exactSeed && gate !== undefined && !gate(v, binding, params, graph)) {
         continue;
       }
 

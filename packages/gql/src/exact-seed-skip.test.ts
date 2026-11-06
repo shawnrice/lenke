@@ -45,7 +45,7 @@ const build = (indexed: boolean): Graph => {
 
   for (let i = 0; i < 60; i += 1) {
     const labels = labelsFor(i);
-    const properties: Record<string, unknown> = { team: `t${i % 5}`, n: i };
+    const properties: Record<string, unknown> = { team: `t${i % 5}`, n: i, half: i % 2 };
 
     if (i % 7 === 0) {
       properties.flag = true;
@@ -57,6 +57,10 @@ const build = (indexed: boolean): Graph => {
   if (indexed) {
     g.createIndex({ on: 'vertex', kind: 'hash', keys: ['team'] });
     g.createIndex({ on: 'vertex', kind: 'hash', keys: ['n'] });
+    // ⚠️ `half` has only TWO distinct values, so its buckets are ~half the graph and
+    // `seekIsWorthIt` DECLINES the seek (the break-even is ~1/8 of the bucket). That is the one
+    // state where an index exists and `seeded` is nevertheless undefined — see the test below.
+    g.createIndex({ on: 'vertex', kind: 'hash', keys: ['half'] });
   }
 
   return g;
@@ -91,7 +95,22 @@ describe('an exact seed still answers what the scan answers', () => {
     ['an inline literal', "MATCH (u:User {team: 't1'}) RETURN count(*) AS c", {}],
     ['a UNIQUE numeric key', 'MATCH (u:User) WHERE u.n = $v RETURN count(*) AS c', { v: 4 }],
     ['a value nothing has', 'MATCH (u:User) WHERE u.team = $v RETURN count(*) AS c', { v: 'nope' }],
+    // ⚠️ ITEM 1610 gave the PROJECTION the same skip, so these rows now take it too. The fixture
+    // above shares `team` values across labels precisely so a skip that dropped the label test
+    // over-counts — and the rows spelling is where that would show as extra ROWS, not a bigger
+    // number.
     ['the ROWS spelling', 'MATCH (u:User) WHERE u.team = $v RETURN u.n AS n', { v: 't1' }],
+    ['ROWS, the OTHER label', 'MATCH (u:Admin) WHERE u.team = $v RETURN u.n AS n', { v: 't1' }],
+    ['ROWS, both labels', 'MATCH (u:User&Admin) WHERE u.team = $v RETURN u.n AS n', { v: 't1' }],
+    ['ROWS, unlabelled', 'MATCH (u) WHERE u.team = $v RETURN u.n AS n', { v: 't1' }],
+    ['ROWS, inline', 'MATCH (u:User {team: $v}) RETURN u.n AS n', { v: 't1' }],
+    [
+      'ROWS, two conjuncts — NOT exact',
+      'MATCH (u:User) WHERE u.team = $v AND u.n > 20 RETURN u.n AS n',
+      { v: 't1' },
+    ],
+    ['ROWS, ordered', 'MATCH (u:User) WHERE u.team = $v RETURN u.n AS n ORDER BY n', { v: 't1' }],
+    ['ROWS, no match', 'MATCH (u:User) WHERE u.team = $v RETURN u.n AS n', { v: 'zz' }],
     ['an ORDERING, never exact', 'MATCH (u:User) WHERE u.n > 30 RETURN count(*) AS c', {}],
     ['IN, never exact', 'MATCH (u:User) WHERE u.team IN [$v] RETURN count(*) AS c', { v: 't1' }],
     ['IS NULL, never exact', 'MATCH (u:User) WHERE u.flag IS NULL RETURN count(*) AS c', {}],
@@ -127,6 +146,75 @@ describe('an exact seed still answers what the scan answers', () => {
       expect(c(g, 'MATCH (u:User {team: $v}) RETURN count(*) AS c', { v: 't1' })).toBe(8);
       expect(c(g, 'MATCH (u:User) WHERE u.n = $v RETURN count(*) AS c', { v: 4 })).toBe(1);
       expect(c(g, 'MATCH (u:User) WHERE u.n = $v RETURN count(*) AS c', { v: 3 })).toBe(0);
+    }
+  });
+
+  test('⚠️ a DECLINED seek must not claim exactness — found by mutation', () => {
+    /**
+     * The one state where an index EXISTS and `seeded` is still undefined: `seekIsWorthIt` declines
+     * a seek wider than ~1/8 of the bucket, and `half` has two values over sixty vertices.
+     *
+     * ⚠️ MUTATION FOUND THIS GAP. Making `hopSeekWithKey` report the chosen candidate's key even
+     * when it DECLINED the seek survived the whole suite, because no fixture here had an indexed
+     * key whose seek is refused — so the mutant's `exactSeed` was never true on a bucket walk. It
+     * would be a wrong answer there: the walk covers the whole label bucket, and skipping the gate
+     * emits every member. Thirty of the sixty have `half = 0`; all sixty would be the failure.
+     */
+    /**
+     * ⚠️ IT NEEDS ITS OWN, BIGGER GRAPH. `seekIsWorthIt` carries a small-graph FLOOR, so on the
+     * 60-vertex fixture above the seek is TAKEN even for a two-value key and the mutant is
+     * indistinguishable. Measured on 20,000 vertices: an indexed two-value key reads 0.99x its
+     * unindexed twin and a five-value key 1.11x — both declined — while a fifty-value key is
+     * 33.74x. 2,000 vertices is over the floor and fast enough for a unit test.
+     */
+    const big = (withIndex: boolean): Graph => {
+      const g = new Graph();
+
+      for (let i = 0; i < 2_000; i += 1) {
+        g.addVertex({ id: `b${i}`, labels: ['User'], properties: { half: i % 2, n: i } });
+      }
+
+      if (withIndex) {
+        g.createIndex({ on: 'vertex', kind: 'hash', keys: ['half'] });
+      }
+
+      return g;
+    };
+
+    for (const g of [big(false), big(true)]) {
+      expect(
+        Number(query(g, 'MATCH (u) WHERE u.half = $v RETURN count(*) AS c', { v: 0 })[0]?.c),
+      ).toBe(1_000);
+      expect(query(g, 'MATCH (u) WHERE u.half = $v RETURN u.n AS n', { v: 0 }).length).toBe(1_000);
+      // And with the label, so the label test and the declined seek interact.
+      expect(query(g, 'MATCH (u:User) WHERE u.half = $v RETURN u.n AS n', { v: 0 }).length).toBe(
+        1_000,
+      );
+    }
+  });
+
+  test('⚠️ the ROWS spelling counts the same, which is where item 1610 could go wrong', () => {
+    /**
+     * Item 1610 extended the skip to `detectNodeProjection`'s streaming walk. The count and the
+     * rows spelling of one question must agree, and the label test is what makes them: twelve
+     * vertices carry `team = 't1'`, eight are `User`, eight `Admin`, four both. A projection that
+     * skipped the label along with the predicate would emit twelve rows.
+     */
+    const rowsOf = (g: Graph, text: string, params: Record<string, unknown> = {}): number =>
+      query(g, text, params).length;
+
+    for (const g of [plain, indexed]) {
+      expect(rowsOf(g, 'MATCH (u:User) WHERE u.team = $v RETURN u.n AS n', { v: 't1' })).toBe(8);
+      expect(rowsOf(g, 'MATCH (u:Admin) WHERE u.team = $v RETURN u.n AS n', { v: 't1' })).toBe(8);
+      expect(rowsOf(g, 'MATCH (u:User&Admin) WHERE u.team = $v RETURN u.n AS n', { v: 't1' })).toBe(
+        4,
+      );
+      expect(rowsOf(g, 'MATCH (u) WHERE u.team = $v RETURN u.n AS n', { v: 't1' })).toBe(12);
+      expect(rowsOf(g, 'MATCH (u:User {team: $v}) RETURN u.n AS n', { v: 't1' })).toBe(8);
+      // NOT exact, so the gate still runs: of the eight `User`s with t1, those with n > 20.
+      expect(
+        rowsOf(g, 'MATCH (u:User) WHERE u.team = $v AND u.n > 20 RETURN u.n AS n', { v: 't1' }),
+      ).toBe(5);
     }
   });
 });
