@@ -66641,3 +66641,80 @@ is the discipline item 1587's refuted micro-ladder earned the hard way.
 #### Gates
 
 No engine change — three probes. `bun run check` 0 read unpiped. Suites unchanged from item 1587.
+
+### Item 1589 — the id-space limitation is now DOCUMENTED and pinned by a test (owner's call at 1588), and ⚠️ **identity-only element dedup is REFUTED: a 5% REGRESSION on the one arm tight enough to read.** So Gremlin's 12x on hop-distinct is NOT its dedup keying, and three mechanisms are now ruled out
+
+#### The documented limitation, which was the owner's decision
+
+Item 1588 found that `addEdge` with an id equal to an existing VERTEX's id replaces that vertex's
+labels and properties, and asked. The call: **out of contract, document only** — no per-kind storage
+split. Done in three places:
+
+- `Graph.addEdge`'s doc comment states the contract (ids unique across BOTH kinds, not merely within
+  each), shows the four-line reproduction, and says why it is not guarded.
+- `Graph.elementProperties`'s doc names the one place its own "exactly ONE source of truth per id"
+  invariant does not hold.
+- `id-space-contract.test.ts` pins it, for two reasons worth stating: so the documented promise
+  cannot drift silently if someone later changes the storage, and so the SHAPE of the loss is pinned
+  — `vertexCount`, the vertex object's identity and the label index all SURVIVE it, which is exactly
+  what lets a label-index count still answer 2 while a property filter answers 0.
+
+⚠️ **The collision is SYMMETRIC**, which the test pins and the prose would otherwise get wrong: a
+VERTEX reusing an edge's id loses in the same way. Whichever element is added second wins the shared
+box, so the contract is "unique across both kinds", not "edges must avoid vertex ids".
+
+⚠️ **And it is deliberately NOT guarded.** Native ACCEPTS a colliding id and answers correctly, so a
+TS `addEdge` that threw would trade silent data loss for a cross-engine divergence — TS raising where
+native returns rows. That is why "documented limitation" is the reading of the owner's instruction
+that does not create a second problem.
+
+#### ⚠️ REFUTED, with its numbers: identity-only element dedup
+
+Item 1587's redirect looked strong, and it was wrong. The case for it: Gremlin's `dedupe` keys
+elements by identity with no key built ("no allocation (the hot path)"), Gremlin answers hop-distinct
+in 0.527 ms against GQL's ~7-9, and identity would ALSO fix divergence 13. It is sound as well — the
+graph hands out one object per id, so identity agrees with id equality within a query.
+
+Implemented precisely (`isElement`, not `'id' in v`, so a plain object carrying an `id` keeps its
+old key and two structurally equal ones still collapse), then measured as an asserted A/B at 40 reps:
+
+```text
+   count(DISTINCT n)   node-only    PRE 2.569-2.610   POST 2.700-2.730   1.05x WORSE
+   RETURN DISTINCT b                PRE 10.39-11.39   POST 10.76-13.30   worse
+   count(DISTINCT b)   hop          PRE  8.35-10.05   POST  6.63- 8.62   ranges OVERLAP
+   count(DISTINCT n.n) control      PRE 1.934-2.006   POST 1.900-1.955   flat
+```
+
+⚠️ **The hop arm's apparent 1.26x is noise, and reading it as a win would have shipped a
+regression**: its PRE minimum (8.348) sits INSIDE POST's range (6.625-8.623). The node-only arm is
+tight on both sides and does not overlap, so the 5% regression is the real reading. Which arm to
+trust is decided by the spreads, not by which number is more welcome — the same discipline item 1587
+needed in the opposite direction, where a single sweep row claimed a regression that did not exist.
+
+This is item 1584's refutation arriving again by a different route: there an identity `Set` was added
+IN FRONT of the key, here it REPLACED the key, and both are slower than `'@' + id`. A `Set<object>`
+probe simply costs more than the string it saves.
+
+#### What this rules out, which is the useful residue
+
+Three mechanisms have now been tested against the hop-distinct gap, and only one ever paid:
+
+```text
+   valueKey string building        item 1584   1.92-2.31x    TAKEN
+   identity keying (in front)      item 1584   1.24-1.39x worse
+   identity keying (replacing)     item 1589   1.05x worse
+   per-element binding + evalFn    item 1584   flat (1.03-1.06x)
+   the polymorphic adjacency read  item 1587   1.09x, at the noise floor
+```
+
+So **Gremlin's 12x is not explained by any of them**, and the walk is already the optimal shape
+(item 1587: one adjacency lookup per far vertex, no edge touched). The next attempt should stop
+guessing at the keying and instrument the two ROUTES side by side — what Gremlin's executor actually
+does for `V().out(E).dedupe().count()`, step by step, against what GQL's `detectDistinctCount` does —
+because the remaining difference is evidently somewhere neither profile has separated yet. Recorded
+next to `valueSet` so the next reader starts from the ruled-out list rather than the top.
+
+#### Gates
+
+No engine change shipped — a documented contract, a test for it, and a recorded refutation.
+`bun run check` 0 read unpiped. Suites core 435, and the rest unchanged from item 1588.

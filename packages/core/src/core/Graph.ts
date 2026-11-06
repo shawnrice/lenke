@@ -769,6 +769,13 @@ export class Graph {
    * box from this map, and a write replaces `box.bag`, so there is still exactly ONE source of
    * truth per id.
    */
+  /**
+   * ⚠️ KEYED BY THE BARE ID AND SHARED BETWEEN VERTICES AND EDGES, which is the one place the
+   * "exactly ONE source of truth per id" invariant above does not hold: vertex ids and edge ids are
+   * INDEPENDENT spaces (`verticesById` / `edgesById`), so an edge reusing a vertex's id silently
+   * replaces that vertex's box. Same for {@link Graph.elementLabels}. A documented limitation, not
+   * a bug — see {@link Graph.addEdge} for the contract and item 1588 for the decision.
+   */
   elementProperties: Map<string, PropBox>;
 
   /** Opt-in secondary indexes over property values (see {@link PropertyIndex}). */
@@ -1937,6 +1944,26 @@ export class Graph {
   /**
    * Adds an Edge to the Graph. Accepts either an existing Edge or params to
    * construct a new one.
+   *
+   * ⚠️ **AN EDGE ID MUST NOT EQUAL A VERTEX ID.** Ids are expected to be unique across BOTH
+   * element kinds, not merely within each — `verticesById` and `edgesById` are separate maps, but
+   * {@link Graph.elementProperties} and {@link Graph.elementLabels} are each keyed by the bare id
+   * and shared, so an edge that reuses a vertex's id REPLACES that vertex's labels and properties:
+   *
+   * ```text
+   *   a = addVertex({ id: 'x', labels: ['P'], properties: { k: 1 } })
+   *   addEdge({ id: 'x', from: a, to: b, labels: ['E'] })
+   *   // vertex x is now labels ['E'], properties {}
+   * ```
+   *
+   * The vertex object, `vertexCount` and the label index are all left intact, so the loss is
+   * silent: `MATCH (n:P) RETURN count(*)` still answers 2 while `WHERE n.k = 1` drops to 0.
+   *
+   * This is a DOCUMENTED LIMITATION and not a bug to be fixed — the owner's decision at item 1588,
+   * where the alternative (per-kind storage) was priced and declined. It is NOT guarded either, and
+   * that is deliberate: the Rust engine ACCEPTS a colliding id and answers correctly, so throwing
+   * here would trade silent data loss for a cross-engine divergence. Callers that mint ids from an
+   * untrusted or shared sequence should namespace them (`v:`/`e:` prefixes, say).
    */
   public addEdge = (params: AddEdgeArgs | Edge): Edge => {
     // Same gate as addVertex — validate before the Edge constructor writes.

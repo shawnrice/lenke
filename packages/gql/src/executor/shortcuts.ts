@@ -8108,6 +8108,35 @@ export const valueSet = (): { add: (v: unknown) => boolean } => {
       // an id `5` and an id `'5'` into one value, and a raw key would split them. For a string id
       // — which is every id this engine mints — `String(s)` returns `s` with no allocation, so the
       // common path builds nothing while the equivalence is unchanged.
+      // ⚠️ REJECTED, WITH ITS NUMBERS (item 1589): keying a graph ELEMENT on its own OBJECT
+      // IDENTITY instead of on `String(v.id)`, in a `Set<object>` with no key built at all.
+      //
+      // Item 1587 made this look compelling: it is exactly what Gremlin's `dedupe` does ("stable
+      // graph-element references dedupe directly in this Set — value/identity equality, no
+      // allocation (the hot path)"), Gremlin answers the hop-distinct question in 0.527 ms where
+      // GQL takes ~7-9, and identity would ALSO fix divergence 13 (two distinct vertices with ids
+      // `5` and `'5'` collapse here and do not in native). It is sound, too — the graph hands out
+      // one object per id, verified at item 1584 through every path.
+      //
+      // It is still a small REGRESSION. An asserted A/B at 40 reps, reading the TIGHT arms rather
+      // than the noisy ones:
+      //
+      //     count(DISTINCT n)  node-only   PRE 2.569-2.610   POST 2.700-2.730   1.05x WORSE
+      //     RETURN DISTINCT b              PRE 10.39-11.39   POST 10.76-13.30   worse
+      //     count(DISTINCT b)  hop         PRE  8.35-10.05   POST  6.63- 8.62   ranges OVERLAP
+      //     count(DISTINCT n.n) control    PRE 1.934-2.006   POST 1.900-1.955   flat
+      //
+      // The hop arm's apparent 1.26x is noise — its PRE minimum (8.348) sits inside POST's range
+      // (6.625-8.623). The node-only arm is tight on BOTH sides and does not overlap, so the 5%
+      // regression is the real reading. A `Set<object>` probe costs more than `'@' + id` saves,
+      // which is item 1584's refutation arriving again by a different route: there identity was
+      // added IN FRONT of the key, here it REPLACED it, and both are slower.
+      //
+      // ⚠️ So Gremlin's 12x on that shape is NOT its dedup keying, and the three mechanisms tested
+      // so far — `valueKey` string building (1584, the only one that paid), identity keying (1584
+      // and here), and the per-element binding + `evalFn` (1584, flat) — do not explain it. The
+      // next attempt needs a different instrument: a step-by-step comparison of what Gremlin's
+      // route for that plan actually does against GQL's, rather than another guess at the keying.
       if ('id' in v) {
         ids ??= new Set();
 
