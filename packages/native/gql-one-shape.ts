@@ -35,6 +35,10 @@ const QUERIES: Record<string, string> = {
   hop3rows: 'MATCH (a:P)-[:E]->(b:P)-[:E]->(c:P)-[:E]->(d:P) RETURN d.k AS k',
   hop3multi: 'MATCH (a:P)-[:E|F]->(b:P)-[:E|F]->(c:P)-[:E|F]->(d:P) RETURN d.k AS k',
   hop3both: 'MATCH (a:P)-[:E]-(b:P)-[:E]-(c:P) RETURN c.k AS k',
+  // ⚠️ THE SELECTIVE-LABEL CONTROL: `Q` is on a third of the vertices, so the elision must DECLINE
+  // and the test must still run. If this moves, the change costs something where it cannot help.
+  hop3sel: 'MATCH (a:Q)-[:E]->(b:Q)-[:E]->(c:Q)-[:E]->(d:Q) RETURN d.k AS k',
+  hop3mixed: 'MATCH (a:P)-[:E]->(b:Q)-[:E]->(c:P)-[:E]->(d:Q) RETURN d.k AS k',
   varlen: 'MATCH (a:P)-[:E]->{1,2}(b:P) RETURN count(*) AS c',
   // Item 1621: the grouped-hop count, whose rung calls `expand` per edge.
   groupedhop: 'MATCH (a:P)-[:E]->(b:P) RETURN b.k AS k, count(*) AS c',
@@ -60,9 +64,15 @@ if (q === undefined) {
 const g = new Graph();
 
 for (let i = 0; i < NODES; i += 1) {
+  /**
+   * ⚠️ `P` ON EVERY VERTEX AND `Q` ON A THIRD — the second label is what makes a SELECTIVE control
+   * possible (item 1623). A fixture whose only label is universal can measure a vacuous-label
+   * elision's win and nothing about its cost, which is item 1608's confounded-control mistake.
+   * `i % 3` against `k = i % 100` keeps the two decorrelated (gcd(3, 100) = 1).
+   */
   g.addVertex({
     id: `u${i}`,
-    labels: ['P'],
+    labels: i % 3 === 0 ? ['P', 'Q'] : ['P'],
     properties: { team: `t${i % 50}`, k: i % 100, n: i, s: `s${i % 1000}` },
   });
 }

@@ -32,6 +32,7 @@ import {
 } from '../executor.js';
 import { candidateCount, candidateVertices, expand, matchesLabel } from '../graph-queries.js';
 import { asTruth } from './scalars.js';
+import { effectiveLabel } from './shortcuts.js';
 
 // --- matching ----------------------------------------------------------------
 
@@ -41,8 +42,26 @@ export const matchNode = (
   vertex: Vertex,
   params: Params,
   graph: Graph,
+): Binding | null => matchNodeLabelled(binding, node, vertex, params, graph, node.label);
+
+/**
+ * `matchNode` with the label test given EXPLICITLY, so a caller that has already resolved the
+ * effective label (item 1623) can pass `undefined` for a vacuous one and skip the test.
+ *
+ * ⚠️ IT IS A SEPARATE PARAMETER AND NOT A MUTATED `CNode`: the compiled plan is reused across
+ * executions and across GRAPHS, and vacuity is a property of the graph. Writing the elided label
+ * back onto the node would make the second execution's answer depend on the first graph's label
+ * distribution, which is a wrong answer and not a slow one.
+ */
+export const matchNodeLabelled = (
+  binding: Binding,
+  node: CNode,
+  vertex: Vertex,
+  params: Params,
+  graph: Graph,
+  label: LabelExpr | undefined,
 ): Binding | null => {
-  if (!matchesLabel(vertex, node.label)) {
+  if (!matchesLabel(vertex, label)) {
     return null;
   }
 
@@ -1159,7 +1178,10 @@ export const matchPattern = function* (
           pathAcc: { origin: seed, steps: [] },
         });
       } else {
-        yield* walkSegments(graph, path, seed, seeded, params);
+        yield* walkSegments(graph, path, seed, seeded, params, {
+          index: 0,
+          labels: effectiveLabels(graph, path),
+        });
       }
     }
   }
@@ -2150,6 +2172,59 @@ export const trailEndsUnit = function* (
 type WalkCursor = {
   index: number;
   pathAcc?: { origin: Vertex; steps: { edge: Edge; vertex: Vertex }[] };
+  /**
+   * The per-node EFFECTIVE labels, resolved ONCE by the caller (item 1623) — `undefined` where the
+   * pattern's label is carried by EVERY vertex and therefore constrains nothing.
+   *
+   * ⚠️ IT RIDES THE CURSOR BECAUSE THE RESOLUTION POINT IS THE WHOLE DESIGN. `walkSegments` recurses
+   * once per matched edge, so resolving inside it would be PER ELEMENT — and item 1609 measured
+   * exactly that mistake at **1.32x WORSE** on its control. The cursor is built once per
+   * `matchPattern` invocation and threaded unchanged through the recursion, so the bucket-size reads
+   * happen once per pattern rather than once per edge.
+   *
+   * Absent means "not resolved" and the walk falls back to `node.label`, so every other caller of
+   * `walkSegments` keeps its present behaviour.
+   */
+  labels?: readonly (LabelExpr | undefined)[];
+};
+
+/**
+ * The pattern's per-node effective labels: `undefined` wherever the label is VACUOUS.
+ *
+ * ⚠️ WHY THIS IS WORTH THREADING, measured by ABLATION before anything was built — item 1599's own
+ * method, and its own warning that a share is a share OF something. Replacing `matchesLabel` with
+ * `() => true` in the generic matcher (a wrong answer, measured only to price the right one):
+ *
+ * ```text
+ *    MATCH (a:P)-[:E]->(b)-[:E]->(c)-[:E]->(d) RETURN d.k
+ *      with the label tests   843.09  824.14  820.77 ms
+ *      ablated                695.33                       1.19x — the CEILING
+ * ```
+ *
+ * The profile agrees: `evalLabelExpr` 7.8% + `get labels` 3.6% = **11.4%** of that shape.
+ *
+ * ⚠️ AND IT DOES NOT MAKE THE TEST CHEAPER, which is the lever item 1599 refuted twice — compiling
+ * the test to a closure measured FLAT and testing by bucket identity measured SLOWER than the
+ * getter. This removes the test instead, where the label cannot reject anything, which is the
+ * mechanism items 1551/1552/1609 built and measured at 5.58x on the seeded count.
+ */
+/**
+ * ⚠️ IMPORTED AT FUNCTION LEVEL, because `shortcuts.ts` imports `indexCandidates` from THIS module
+ * and a top-level import back would be a cycle evaluated at module init. The same shape
+ * `executor.ts` documents for its own back-edge to `shortcuts.ts`: the reference is only needed at
+ * call time, so the lazy form is both safe and the one the file already uses.
+ */
+export const effectiveLabels = (
+  graph: Graph,
+  pattern: CPath,
+): readonly (LabelExpr | undefined)[] => {
+  const out: (LabelExpr | undefined)[] = [effectiveLabel(graph, pattern.start.label)];
+
+  for (const seg of pattern.segments) {
+    out.push(effectiveLabel(graph, seg.node.label));
+  }
+
+  return out;
 };
 
 export const walkSegments = function* (
@@ -2160,7 +2235,7 @@ export const walkSegments = function* (
   params: Params,
   walk: WalkCursor = { index: 0 },
 ): Iterable<Binding> {
-  const { index, pathAcc } = walk;
+  const { index, pathAcc, labels } = walk;
 
   if (index >= pattern.segments.length) {
     yield pathAcc !== undefined && pattern.pathVar !== undefined
@@ -2235,12 +2310,18 @@ export const walkSegments = function* (
         yield* walkSegments(graph, pattern, end, matched, params, {
           index: index + 1,
           pathAcc: nextAcc,
+          labels,
         });
       }
     }
 
     return;
   }
+
+  // ⚠️ `labels?.[index + 1]` IS THE SEGMENT'S NODE — index 0 of the array is the pattern's START,
+  // so a segment at `index` lands at `index + 1`. Off by one here applies the wrong node's label,
+  // which the mutation pass covers.
+  const nodeLabel = labels === undefined ? node.label : labels[index + 1];
 
   for (const { edge, node: nextVertex } of expand(graph, from, rel)) {
     if (!consistent(binding, rel.variable, edge)) {
@@ -2253,7 +2334,7 @@ export const walkSegments = function* (
       continue;
     }
 
-    const matched = matchNode(withEdge, node, nextVertex, params, graph);
+    const matched = matchNodeLabelled(withEdge, node, nextVertex, params, graph, nodeLabel);
 
     if (matched) {
       const nextAcc =
@@ -2266,6 +2347,7 @@ export const walkSegments = function* (
       yield* walkSegments(graph, pattern, nextVertex, matched, params, {
         index: index + 1,
         pathAcc: nextAcc,
+        labels,
       });
     }
   }

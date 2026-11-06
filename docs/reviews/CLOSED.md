@@ -67619,7 +67619,7 @@ seven still lack the arm — which is where this family's remaining work now is.
 serialization 144 — 0 fail. `bun run fuzz` 20/0 under the 16G cap. `bun run spelling` at
 `SPELL_N=200000 SPELL_REPS=9`: unchanged flag set.
 
-### Item 1599 — the label test IS **1.53x** of the seeded count, not the ~1.1x item 1597 priced — and **BOTH levers aimed at it are REFUTED**: compiling it per query measures FLAT, and the bucket-identity test is SLOWER than hoisting the getter. ⚠️ Which also removes the PERF reason to settle the `label-index-vs-setter` decision
+### Item 1599 — the label test IS **1.53x** of the seeded count, not the ~1.1x item 1597 priced — and **BOTH levers aimed at it are REFUTED**: compiling it per query measures FLAT, and the bucket-identity test is SLOWER than hoisting the getter. ⚠️ Which also removes the PERF reason to settle the `label-index-vs-setter` decision ⚠️ (NARROWED BY 1623: the two levers it refuted were ways to make the label test CHEAPER, and that still holds; ELIDING the test where the label is vacuous is a different mechanism and took 1.17x in the generic matcher.)
 
 Profile-first, and the profile had moved. Item 1598 took most of the predicate cost out of the
 seeded count, so a fresh profile of the same query nominated a different frame:
@@ -69804,10 +69804,63 @@ Both with non-overlapping ranges, so both are real. The declined arm pays becaus
 
 Removing the second generator from the slow arm — either by duplicating the loop body (the drift risk the single-body design existed to avoid) or by materializing `expand`'s edges into an array per expansion (one allocation per vertex-expansion instead of one generator, roughly 320,000 of them at depth 2 on this fixture). Neither is obviously better than 9%, and both need their own measurement.
 
-#### The other thing the profile says, left open with its share
+#### The other thing the profile says — ⚠️ **TAKEN AT ITEM 1623, 1.17x**
 
 `evalLabelExpr` 7.8% + `get labels` 3.6% = **11.4% on label testing**, on a fixture whose `:P` is carried by EVERY vertex. Items 1551/1552/1609 built `effectiveLabel`/`vacuousLabel` for exactly that and the generic matcher does not use them. That is a bigger share than the lever this item refuted, it is a DIFFERENT mechanism, and it is the next thing to try on this shape.
 
 #### Gates
 
 `bun run check` 0 read unpiped. Suites gql 4199, core 435, native 1076, gremlin 1765, serialization 144 — 0 fail (no new tests: nothing shipped). `bun run fuzz` 20/0 under the 16G cap. The three-segment profile shape is kept in `runtime-profile-probe.mjs` and the three matcher shapes in `gql-one-shape.ts`, so the next attempt starts from the instrument rather than rebuilding it.
+
+### Item 1623 — **1.17x and 1.16x** on the generic matcher, by ELIDING a label carried by every vertex rather than making the test cheaper — which captures the full **1.19x** the ablation priced as the ceiling. ⚠️ And it is the lever item 1622's refuted profile pointed at on its way out: the frame item 1599 had already declared "not addressable from here" was addressable by a different mechanism
+
+OPEN: nothing on this shape. The matcher's own profile is now `expand` (28.2%, refuted at 1622) plus `walkSegments`/`withBinding`, with the label frames gone.
+
+#### The ceiling was priced by ablation before anything was built
+
+Item 1599's own method — replace the test with `() => true`, a wrong answer measured only to price the right one:
+
+```text
+   MATCH (a:P)-[:E]->(b)-[:E]->(c)-[:E]->(d) RETURN d.k   (20,000 x 4, 1,279,840 rows)
+     with the label tests   843.09  824.14  820.77 ms
+     ablated                695.33                         1.19x — THE CEILING
+```
+
+and the profile agreed: `evalLabelExpr` 7.8% + `get labels` 3.6% = **11.4%** of that shape.
+
+**⚠️ ITEM 1599 LOOKED AT THIS FRAME AND CLOSED IT, correctly, for the lever it tried.** It refuted two ways of making the test CHEAPER — a per-query compiled closure measured FLAT (the dispatch was already inlined), and testing by bucket identity measured SLOWER than reading the getter — and concluded "what is left of the 1.53x is not addressable from here". That holds. This item does not make the test cheaper; it removes it where the label cannot reject anything, which is the mechanism items 1551/1552/1609 built (`effectiveLabel`/`vacuousLabel`, 5.58x on the seeded count) and which the generic matcher simply never used.
+
+#### The A/B, three runs an arm, one shape per process
+
+```text
+   shape                          PRE                      POST                    verdict
+   3 segments, vacuous `:P`    843.09 824.14 820.77    699.51 701.90 711.15     1.17x
+   3 segments, `both`, vacuous 711.84 707.74 703.92    610.29 610.49 614.81     1.16x
+   4 nodes, 2 vacuous of 4     105.31 104.30 103.21     93.74                   1.11x
+   4 nodes, ALL selective       24.68  24.14  22.36     24.37  27.62  23.88     flat (control)
+   2-segment rows / node rows  (rungs, cannot reach)    flat                    flat (controls)
+```
+
+1.17x against a 1.19x ceiling — the change captures essentially all of it. **The `both` family wins equally**, which item 1622's refuted lever could not do (it made that family 3.7% worse).
+
+**⚠️ THE SELECTIVE CONTROL NEEDED A NEW FIXTURE, and without it this item could not have been judged.** The probe's graph had ONE label, on every vertex — which can measure an elision's win and nothing about its cost. That is item 1608's confounded-control mistake, so the fixture now carries `Q` on a third of the vertices (`i % 3` against `k = i % 100`, decorrelated since gcd(3, 100) = 1) and the all-selective shape is flat.
+
+#### Where the resolution happens is the whole design
+
+`walkSegments` recurses once per matched edge, so resolving inside it would be PER ELEMENT — and item 1609 measured exactly that mistake at **1.32x WORSE** on its control. So the per-node effective labels are resolved ONCE per `matchPattern` invocation and ride the existing `WalkCursor` through the recursion unchanged. Absent means "not resolved", so every other caller of `walkSegments` keeps its present behaviour.
+
+**⚠️ AND THE ELIDED LABEL IS A PARAMETER, NEVER WRITTEN BACK ONTO THE `CNode`.** The compiled plan is reused across executions AND graphs, and vacuity is a property of the GRAPH — a plan that remembered the first graph's answer would give the second one a wrong answer, and only on the second run. `matchNodeLabelled` takes the label explicitly and `matchNode` delegates with `node.label`. The mutant that writes it back is CAUGHT with 5 failures, and the test runs one cached plan against two graphs where `Q` is selective in one and universal in the other, in both orders.
+
+#### Mutation 9 of 13
+
+Three depth off-by-ones (index 0 is the START, so a segment at `index` reads `index + 1`), the label always elided, four resolution mutants, and the write-back. **`resolve/no-elision` and `resolve/start-not-elided` survived the first pass and die now**: `effectiveLabels` is a pure function, so `perf-gate-needs-its-own-test`'s remedy applies directly — it is exported and its output asserted per position, per graph.
+
+The four remaining survivors are ALL the same thing: _the elision does not happen_, which is the old behaviour and therefore answer-equivalent — the route class item 1619 recorded for all twenty rungs. What is pinned is the resolution; what is not is whether the caller threads it.
+
+#### Twentieth and twenty-first eyeballed literals
+
+Two of four per-position expectations wrong, from one slip: I read the label position off the QUERY TEXT instead of walking the ring. Derived properly in the test (a three-segment path from `i` visits i..i+3 mod 5, so `:Q` at position `p` keeps the paths where `(i + p) mod 5` is 0 or 2), and the four answers turn out to be FOUR distinct sets rather than the three I predicted — which makes the off-by-one assertion stronger, not weaker.
+
+#### Gates
+
+`bun run check` 0 read unpiped. Suites gql 4207 (8 new), core 435, native 1076, gremlin 1765, serialization 144 — 0 fail. `bun run fuzz` 20/0 under the 16G cap, which is the check that matters for a change to the generic matcher.
