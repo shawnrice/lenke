@@ -67090,8 +67090,87 @@ No engine change — two probes and three bench rows. `bun run check` 0 read unp
 
 #### What this leaves
 
+⚠️ **ANSWERED AT 1594**: GQL answers the identical seeded lookup in **650 ns** against Gremlin's
+2619, so ~2150 ns is Gremlin's per-call machinery for a ONE-element result — and the per-frame trims
+in it do not convert (a 12.0% self-time frame went flat). The next attempt wants a whole-plan
+shortcut for the seeded point lookup, not another frame.
+
 The varying-key cost (~992 ns, 67% of the rebuilt-plan gap) is the real item, and it is NOT
 Gremlin-specific — it is what an indexed lookup over 20,000 distinct keys costs in cache terms. The
 GQL row on the same fixture and the same varying key runs at 1.08M ops/s (926 ns) against Gremlin's
 358.7k (2788), so ~1860 ns of the Gremlin call is not the key at all. That is the gap worth
 profiling next, and it is now measurable in a standing row rather than a one-off probe.
+
+### Item 1594 — ⚠️ **a 12.0% SELF-TIME FRAME DID NOT CONVERT: deduplicating the seed's double bucket lookup is FLAT.** And the tick's useful half: GQL answers the identical seeded point lookup in **650 ns** against Gremlin's **2619** — 4.0x, of which only ~400 ns is construction, so **~2150 ns is per-call machinery for a ONE-element result**
+
+Item 1593 left ~1860 ns of the Gremlin serving call unexplained — neither construction nor the
+varying lookup key. This profiled it.
+
+#### The profile, and what it correctly confirmed
+
+`V().hasLabel('User').has('name', eq(v)).values('score')` over 20,000 indexed users, built fresh per
+operation, 400,000 operations:
+
+```text
+   projectValues                                  20.8%
+   (anonymous) index.mjs:3493                      13.3%   the seed path
+   countEquals                                     12.0%
+   (garbage collector)                              6.0%
+   toArray                                          4.6%
+   analyzeStep 3.2 + stepMayFault 3.1 + anyMayFault 1.9 + appendStep 2.1 + fn 2.2  = 12.5%
+```
+
+That last group is CONSTRUCTION — `mayFault` and `readsPath` are carried on the `Plan` and computed
+by `appendStep` as it builds, so a freshly built plan pays them per step. **12.5% corroborates item
+1593's 13-17% from an independent instrument**, which is the useful kind of agreement: a share
+measured by sampling and a share measured by a fixed-key arm landing in the same place.
+
+#### ⚠️ REFUTED, with its numbers: the seed's double bucket lookup
+
+`countEquals` fetches the bucket to read its `.size`, then `build()` fetches the SAME bucket again —
+two `indexes.get(key)` plus two `buckets.get(value)` per seek, and a string-keyed `Map.get` is
+~190 ns in this repo (item 194). Holding the bucket once is semantically exact: `equals` returns the
+index's own live set, which is what `countEquals` just looked up, and `bucket?.size ?? 0` equals
+`countEquals(...) ?? 0` for an unindexed key, an indexed key with no match, and a non-indexable value
+alike. (The unindexed case cannot reach it regardless — the caller guards on `isIndexed` first, which
+matters because a count of 0 with an EMPTY build would be a wrong answer rather than a slow one.)
+
+Five rounds each, 400,000 operations per round:
+
+```text
+   built fresh, varying key   PRE 2502-2700 ns   POST 2554-2802   overlapping
+   built fresh, fixed key     PRE 2091-2304      POST 2088-2301   overlapping
+```
+
+**Flat.** Reverted, recorded at the line. A 12.0% self-time frame surrendered nothing — item 1104's
+rule, that a share is a NOMINATION and not a price, in a new place. At this granularity V8 inlines
+those lookups and the sampled attribution is coarser than the effect. ⚠️ Worth noting that the rule
+is written in `prof-summary.mjs`'s own header, which I wrote, and I still took the 12% as a price
+worth two attempts.
+
+#### The priced target this leaves, measured both ways
+
+The same seeded point lookup with the same varying key, 400,000 operations:
+
+```text
+   GQL      MATCH (u:User) WHERE u.name = $n RETURN u.score AS s      650 ns
+   Gremlin  V().hasLabel(User).has(name, eq(v)).values(score)        2619 ns     4.0x
+```
+
+Subtracting item 1593's construction (~362-484 ns) leaves **~2150 ns of Gremlin EXECUTION for a
+one-element result**, against GQL's 650 for the whole call. With one element the per-element work is
+negligible, so that is all per-call setup: source generator, traverser, seed candidate selection,
+`projectValues`'s generator, `toArray`'s drain.
+
+That is the structural shape items 1586 and 1591 fused for multi-element streams, and here it is at
+N=1 where setup is the ENTIRE cost. ⚠️ **But note what did not work above**: the obvious per-frame
+trims in that machinery do not convert, so the next attempt should be a whole-plan shortcut for the
+seeded point lookup — the way `nodeValuesShortcut` answers `V().values(k)` without building a
+traverser at all — rather than another frame off the profile.
+
+#### Gates
+
+No engine change — one probe. `bun run check` 0 read unpiped. Suites gremlin 1630, gql 4038, core
+435, native 1031, serialization 144 — 0 fail. ⚠️ The native suite first read 1030/1 and re-ran clean;
+that is the run-many flake `sync-test-flake-is-timing` records, and the rule is to re-run isolated
+before believing an exit 1.

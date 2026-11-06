@@ -127,6 +127,25 @@ const seedForPred = <E>(
       }
 
       const { value } = pred;
+      // ⚠️ REJECTED, WITH ITS NUMBERS (item 1594): holding the bucket here so the count and the
+      // build share ONE lookup instead of two. `countEquals` fetches the bucket for its `.size`
+      // and `build()` fetches the same bucket again — two `indexes.get(key)` plus two
+      // `buckets.get(value)` per seek, and a string-keyed `Map.get` is ~190 ns in this repo
+      // (item 194). A profile of the serving shape
+      // `V().hasLabel(U).has(name, eq(v)).values(score)` put `countEquals` at **12.0% self**.
+      //
+      // It is FLAT. Five rounds each, 400,000 operations per round:
+      //
+      //     built fresh, varying key   PRE 2502-2700 ns   POST 2554-2802   overlapping
+      //     built fresh, fixed key     PRE 2091-2304      POST 2088-2301   overlapping
+      //
+      // The change is semantically exact (`equals` returns the index's own live set, which is what
+      // `countEquals` just looked up; and `bucket?.size ?? 0` equals `countEquals(...) ?? 0` for an
+      // unindexed key, an indexed key with no match, and a non-indexable value alike), so this is
+      // a cost result and not a correctness one. **A 12% SELF-TIME SHARE DID NOT CONVERT** —
+      // item 1104's rule, that a share is a nomination and not a price, in a new place. At this
+      // granularity V8 inlines these lookups and the sampled attribution is coarser than the
+      // effect.
 
       return {
         count: index.countEquals(key, value) ?? 0,
