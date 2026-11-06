@@ -66708,7 +66708,10 @@ Three mechanisms have now been tested against the hop-distinct gap, and only one
 ```
 
 So **Gremlin's 12x is not explained by any of them**, and the walk is already the optimal shape
-(item 1587: one adjacency lookup per far vertex, no edge touched). The next attempt should stop
+(item 1587: one adjacency lookup per far vertex, no edge touched). ⚠️ **ANSWERED AT 1590, and the
+instrument found it in one profile:** Gremlin has a `distinctHopCount` shortcut that keeps NO dedup
+set, because a far-driven walk already visits each far vertex once. GQL paid for a set on top of the
+same walk — 3.13x, and 14.5x cumulative on that query. The next attempt should stop
 guessing at the keying and instrument the two ROUTES side by side — what Gremlin's executor actually
 does for `V().out(E).dedupe().count()`, step by step, against what GQL's `detectDistinctCount` does —
 because the remaining difference is evidently somewhere neither profile has separated yet. Recorded
@@ -66718,3 +66721,109 @@ next to `valueSet` so the next reader starts from the ruled-out list rather than
 
 No engine change shipped — a documented contract, a test for it, and a recorded refutation.
 `bun run check` 0 read unpiped. Suites core 435, and the rest unchanged from item 1588.
+
+### Item 1590 — **3.13x on `count(DISTINCT <far end>)` over a hop** by deleting the dedup set entirely: the far-driven walk visits each far vertex ONCE, so distinctness was already guaranteed and the set only re-derived it. Found by instrumenting the two ROUTES after five guesses at mechanisms had failed — Gremlin's profile named a `distinctHopCount` shortcut that keeps no set at all
+
+Items 1584, 1587 and 1589 each guessed at a mechanism for the hop-distinct gap and four of five guesses
+were wrong. Item 1589's conclusion was to stop guessing and instrument the two routes side by side.
+That is what this item did, and it took one profile.
+
+#### What the Gremlin profile said
+
+```text
+   hasAny            38.6%     "does this vertex have any edge of this type"
+   distinctHopCount  10.2%     the shortcut built on it
+   everything else   <8% each, mostly fixture construction
+```
+
+Gremlin has a dedicated `distinctHopCount` shortcut, and **it keeps no dedup set**. It does not need
+one: a far-driven walk visits each far vertex exactly once, so "how many far vertices have a
+qualifying edge" IS the distinct count.
+
+GQL's `detectDistinctCount` does the same far-driven walk — item 1587 established it is already the
+optimal SHAPE, one adjacency lookup per far vertex with no edge touched — and then pays for a dedup
+set on top of it.
+
+⚠️ **Item 1584 half-saw this and wrote down the smaller half.** Its tripwire found that `ids.has`
+NEVER fires on this route, and the note recorded the _guard_ as redundant. The whole _set_ is. The
+observation was right there; what was missing was asking why the guard never fires.
+
+#### The change, and why it is sound rather than merely faster
+
+`countFarSide` at module scope: iterate `candidateVertexSource`, test the per-type adjacency bucket,
+increment. No set, no `take` closure, no per-element value.
+
+It is gated on two conditions, and **the gating is where the correctness lives**:
+
+- **The dedup value must be the keyed ELEMENT** (a bare variable). A PROPERTY key still needs the
+  set, because two distinct far ends can SHARE a value — counting visits would say 2 where distinct
+  values is 1. Pinned by a test that does exactly that.
+- **No clause `WHERE`**, so the fast walk needs no binding and no `satisfies`.
+- **Only `walkFarSide` may skip the set**, which is the subtle one. `farDrivenFits` requires
+  `!onStart`, so that walk is always far-keyed and visits each candidate once. The other two cannot
+  promise it: `walkFarSideResolvingStart` enumerates the far side and resolves STARTS, so one start
+  is reachable through several far vertices; and `walkStartSide` breaks after the first qualifying
+  edge on its BUCKET path but **not** on its `expand` path. Both keep the dedup.
+
+#### The numbers, an asserted A/B at 40 reps
+
+```text
+                                            PRE                      POST
+   count(DISTINCT b)   hop, TARGET     6.923 7.721 8.202 8.750   2.209 2.213 2.340 2.448   3.13x
+   count(DISTINCT a)   start-keyed     4.342 4.437 5.180 5.513   4.720 4.739 4.992 5.392   flat
+   count(DISTINCT b.n) property-keyed  6.195 6.244 6.503 8.753   5.784 7.805 9.333 11.873  flat
+   count(DISTINCT n)   node scan       2.542 2.609 2.652 2.653   2.545 2.597 2.604 2.634   flat
+```
+
+The node-scan control is tight on both sides and identical, which is the one to read; the other two
+controls overlap. Both arms were built from saved copies, each ASSERTED to contain or lack
+`countFarSide` before either was built.
+
+Cross-surface, the flag that has driven four items:
+
+```text
+   hop distinct   item 1581   gql 34.283ms   gremlin 0.527   52.37x
+                  item 1583   gql 17.0                       ~31x     (rung precedence)
+                  item 1584   gql  6.577                      12.49x  (id-keyed container)
+                  item 1590   gql  2.356-2.480  gremlin 0.530-0.567   4.16-4.50x
+```
+
+**14.5x cumulative on that query**, 34.283 to 2.356.
+
+#### Mutation: 8 of 8 caught
+
+The walk's mutants change an answer; the gate's are answer-equivalent, which is why
+`countsVisitsDirectly` is exported and pure — `perf-gate-needs-its-own-test`, applied before the
+fact this time rather than after.
+
+```text
+   walk/count-every-candidate      CAUGHT  9 fail     gate/always-counts      CAUGHT  9 fail
+   walk/wrong-direction            CAUGHT  5 fail     gate/never-counts       CAUGHT  1 fail
+   walk/ignores-edge-type          CAUGHT  2 fail     gate/ignores-the-gate   CAUGHT  2 fail
+   walk/counts-edges-not-vertices  CAUGHT  5 fail     gate/any-variable       CAUGHT  1 fail
+```
+
+`walk/counts-edges-not-vertices` (`n += bucket.size`) is the mutant worth naming: it is exactly the
+double-count the whole item is about not doing, and the fixtures that catch it are the ones built for
+it — five edges into one hub, parallel edges between one pair, and a self-loop.
+
+#### ⚠️ A spelling that is not this surface's
+
+`MATCH (a:P)-->(b)` raises _"a query must end in RETURN or FINISH"_, which reads like a completely
+different mistake. The untyped forms are `-[]->` and `->`, and both are now exercised in the test
+because they are two spellings of one question.
+
+#### Gates
+
+`bun run check` 0 read unpiped. Suites gql 4033, gremlin 1589, core 435, native 1031, serialization
+144 — 0 fail. `bun run fuzz` 20/0 under the 16G cap, plus a `FUZZ_ITERATIONS=20000` differential
+sweep. Native parity for this shape family was already covered by item 1584's
+`element-dedup-parity.test.ts`, which includes this exact query with labels, filters and both
+directions.
+
+#### What remains
+
+`hop distinct` is still 4.2-4.5x, and the residue is now the per-vertex constant factor item 1587
+measured and could not improve (its micro-ladder has no resolution at tens of nanoseconds). Gremlin's
+`hasAny` reads 10.4 ns/vertex against GQL's 44.9 — a smaller and much harder target than the four
+structural ones taken so far.

@@ -4311,6 +4311,67 @@ const walkFarSide = (graph: Graph, plan: WalkPlan, take: (el: Vertex) => void): 
 };
 
 /**
+ * May the far-driven walk COUNT ITS VISITS instead of deduping them? (item 1590)
+ *
+ * Three conditions, each refusing a real non-equivalence rather than an unusual spelling:
+ *
+ *   * **The dedup value is the keyed ELEMENT**, named by the bare variable. A PROPERTY key must
+ *     keep the set — two distinct far ends can SHARE a value, so counting visits would say 2 where
+ *     distinct values is 1.
+ *   * **No clause `WHERE`**, so the counting walk needs no binding and no `satisfies`. The filtered
+ *     shape keeps the general `take` rather than growing the fast one — the trade this file's own
+ *     item 119 note prices at 1.17x on an unrelated shape.
+ *   * (the caller adds the third) **the walk is `walkFarSide`**, the only one of the three that
+ *     promises one visit per keyed element. See `countFarSide`.
+ *
+ * ⚠️ EXPORTED AND PURE because the route choice is ANSWER-EQUIVALENT: declining it returns the same
+ * rows by the slower path, so no correctness test can see a mutant in it. Items 1582, 1583 and 1586
+ * all needed this and only 1582 learned it the hard way.
+ */
+export const countsVisitsDirectly = (source: Expr, keyedVar: string, hasGate: boolean): boolean =>
+  !hasGate && source.kind === 'var' && source.name === keyedVar;
+
+/**
+ * `walkFarSide`, but COUNTING — no dedup set, no `take` closure, no per-element value (item 1590).
+ *
+ * ⚠️ WHY NO DEDUP IS NEEDED, which is the whole point. `farDrivenFits` requires `!onStart`, so this
+ * walk is ALWAYS keyed on the far end, and it iterates `candidateVertexSource` — each candidate far
+ * vertex exactly ONCE. When the dedup value IS that element (a bare variable, not a property), the
+ * walk has already guaranteed distinctness and the set can only re-derive what the iteration order
+ * established. Item 1584 half-saw this: a tripwire showed `ids.has` never fires on this route and
+ * the note recorded the GUARD as redundant. The whole SET is.
+ *
+ * A PROPERTY key still needs the set — two distinct vertices can share a value — which is why the
+ * caller gates this on the source being the keyed variable itself.
+ *
+ * Found by instrumenting the two routes side by side instead of guessing at mechanisms again: a
+ * profile of Gremlin's `V().out(E).dedupe().count()` put 38.6% in `hasAny` under a
+ * `distinctHopCount` shortcut that keeps no set at all, which is this. Five mechanisms had been
+ * tested and rejected first (items 1584/1587/1589).
+ *
+ * At module scope and taking no closure, for the reason stated above `walkFarSide`: this file has
+ * measured a 1.17x cost on an UNRELATED shape from growing the returned closure (item 119), and
+ * `ts-closure-size-is-load-bearing` records a 4x on one inlined walk.
+ */
+const countFarSide = (graph: Graph, plan: WalkPlan): number => {
+  const { farLabel } = plan;
+  const direct = plan.direct as DirectHop;
+  let n = 0;
+
+  for (const far of candidateVertexSource(graph, farLabel)) {
+    const bucket = (direct.forward ? far.adjTo : far.adjFrom)?.get(direct.type);
+
+    if (bucket === undefined || bucket.size === 0) {
+      continue;
+    }
+
+    n += 1;
+  }
+
+  return n;
+};
+
+/**
  * The walk plan for ONE call, with `needsFar` decided against this graph.
  *
  * `needsFar` says whether the walk must RESOLVE the far endpoint — a string-keyed `Map.get`, ~190ns
@@ -4595,6 +4656,8 @@ export const detectDistinctCount = (
   // Same once-per-query decision as the rows path — see `directPropKey`.
   const directKey = directPropKey(shape.source, keyedVar);
   const needsBinding = gatePred !== undefined || directKey === undefined;
+  // See `countsVisitsDirectly`. Decided once per query.
+  const countsDirectly = countsVisitsDirectly(shape.source, keyedVar, gatePred !== undefined);
 
   return (graph, params) => {
     const seen = valueSet();
@@ -4628,7 +4691,15 @@ export const detectDistinctCount = (
     const plan = planFor(graph, planParts);
 
     if (farDrivenFits(graph, direct, onStart, startLabel)) {
-      walkFarSide(graph, plan, take);
+      // ⚠️ ONLY `walkFarSide` may skip the set. `walkFarSideResolvingStart` enumerates the far side
+      // and resolves STARTS, so one start is reachable through several far vertices; and
+      // `walkStartSide` breaks after the first qualifying edge on its BUCKET path but NOT on its
+      // `expand` path, so it cannot promise one visit per element either. Both keep the dedup.
+      if (countsDirectly) {
+        n = countFarSide(graph, plan);
+      } else {
+        walkFarSide(graph, plan, take);
+      }
     } else if (dedupDrivesFar(graph, plan)) {
       walkFarSideResolvingStart(graph, plan, take);
     } else {
