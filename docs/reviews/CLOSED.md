@@ -63552,6 +63552,39 @@ index. Those two cannot both be right, and each repair costs the other:
 Not taken unilaterally: it is a core semantics choice with a measured cost on either side, and the
 Gremlin far-side gap above is left with it because fixing that would widen the same exposure again.
 
+#### ✅ WHY NO TEST CAUGHT IT — the owner's question, answered with evidence
+
+1. **GQL's own write path INDEXES.** `packages/gql/src/executor/clauses.ts` mutates labels through
+   `addLabelToVertex`/`removeLabelFromVertex`, so any label change expressed as a QUERY keeps
+   `verticesByLabel` correct. A pure-query workload cannot desync — and that is nearly everything
+   the suites and the fuzzers do.
+2. **The fuzzers cannot reach it.** They ingest NDJSON (through `addVertex`, which indexes) and then
+   run generated queries. A raw-setter write is not a query; it is a host API call, so no generator
+   emits one.
+3. **The tests that DO use the raw setter never run a query.** `core`'s `label-box.test.ts` uses it
+   five times and asserts only the INDEX state — it deliberately pins the stale bucket
+   (`getVerticesByLabel('P')` still returns the stale entry) as pre-existing behaviour. Nothing
+   connects that state to an answer. My own `start-filtered-hop-values.test.ts` uses it for the
+   inverse case: asserting a walk is RIGHT because it reads `labels.has` instead of the bucket.
+4. **No production code in the repo uses the raw setter at all.** A grep for `.labels =` finds the
+   setter's own definition, those two test files, and one false positive (`state.labels` in the CLI
+   shell, which is an autocomplete list, not a vertex). So the exposure is entirely a HOST
+   application surface: code that does `v.labels = [...]` and then queries.
+
+#### AND WHAT OPTION 1 WOULD COST, measured
+
+The setter's comment defends a bulk re-write. At 200,000 vertices, min-of-5:
+
+| path                                                | ms       |
+| --------------------------------------------------- | -------- |
+| `v.labels = ['P','R']` — the raw setter, no reindex | **18.1** |
+| `graph.addLabelToVertex('R', v)` — indexes          | **92.6** |
+
+So making the setter maintain the index costs roughly **5x on that bulk re-write** — and it is a
+path no production code in this repo takes. That reframes the trade: option 1's cost falls on an
+API surface nothing internal uses, while the correctness it buys covers every elision at once. The
+owner's own account fits — both were once maintained, and this is the one that was optimised away.
+
 #### Gates
 
 No engine change — the only edits are screen arms. `bun run check` 0 read unpiped; the suites stand
