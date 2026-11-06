@@ -1452,13 +1452,15 @@ export const fuseLocal = (plan: Plan): Plan => {
 export const effectivePlan = (plan: Plan, graph: Graph, tracksPath: boolean): Plan =>
   tracksPath
     ? plan
-    : dropUnreadAs(
-        dropVacuousLabels(
-          fuseUnionSameDir(
-            fuseUnionBoth(fuseEdgeHop(flattenFilterWrappers(fuseValuesIsCount(fuseLocal(plan))))),
+    : fuseOrderTake(
+        dropUnreadAs(
+          dropVacuousLabels(
+            fuseUnionSameDir(
+              fuseUnionBoth(fuseEdgeHop(flattenFilterWrappers(fuseValuesIsCount(fuseLocal(plan))))),
+              graph,
+            ),
             graph,
           ),
-          graph,
         ),
       );
 
@@ -1546,6 +1548,58 @@ export const fuseEdgeHop = (plan: Plan): Plan => {
   }
 
   return fused ? rewritten(plan, steps) : plan;
+};
+
+/**
+ * `order()` immediately followed by `take(n)` becomes a BOUNDED top-k (item 1574).
+ *
+ * ⚠️ GREMLIN SORTED EVERYTHING AND SLICED, where GQL already took a top-k. The same question, the
+ * same graph, 200,000 vertices, medians of 5:
+ *
+ *     GREMLIN  V().values(k).order().limit(10)      55.2 ms    its own full sort: 66.2 (1.2x)
+ *     GQL      RETURN n.k AS k ORDER BY k LIMIT 10   5.5       its own full sort: 47.7 (8.7x)
+ *
+ * **10.0x apart on paging**, with `boundedTopK` sitting in the GQL executor since item 1064 and no
+ * counterpart here.
+ *
+ * ⚠️ NOT COVERED BY THE `order()` REFUTATIONS. Items 878/879/890/891/892 closed this function hard —
+ * the sort runs at 1.13x its own floor, "no change to `sortByBys` can reach that" — but all of that
+ * is about the full sort's CONSTANT FACTORS. A top-k is an ALGORITHMIC change, O(n log n) to
+ * O(n log k), which is item 573's recorded distinction.
+ *
+ * ⚠️ DELIBERATELY NARROW: only a `take` IMMEDIATELY after the order, both global scope. A
+ * `skip(a).take(b)` between them would need `cap = a + b` and an `order().range(a, b)` likewise;
+ * neither fires here rather than risk an off-by-one in a bound that silently drops rows.
+ */
+const fuseOrderTake = (plan: Plan): Plan => {
+  const { steps } = plan;
+  let changed = false;
+  const out: Step[] = [];
+
+  for (let i = 0; i < steps.length; i += 1) {
+    const step = steps[i];
+    const next = steps[i + 1];
+
+    if (
+      step.kind === 'order' &&
+      step.scope !== 'local' &&
+      step.cap === undefined &&
+      next?.kind === 'take' &&
+      next.scope !== 'local' &&
+      next.n >= 0
+    ) {
+      changed = true;
+      out.push({ ...step, cap: next.n });
+      continue;
+    }
+
+    out.push(step);
+  }
+
+  // The `take` is KEPT. It is already satisfied by a capped order, so it costs one pass over at
+  // most `n` traversers — and leaving it in place means this pass cannot change what the plan
+  // RETURNS even if the cap were computed wrongly, which is the property worth more than the pass.
+  return changed ? rewritten(plan, out) : plan;
 };
 
 /**

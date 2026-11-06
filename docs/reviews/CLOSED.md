@@ -65085,7 +65085,7 @@ the mutant: an assertion that passes for the wrong reason reads as coverage.
 **gremlin 1525/0** (14 new in `drop-unread-as.test.ts`), native 963/0, serialization 144/0,
 `bun run fuzz` 20/0.
 
-### Item 1573 — ⚠️ **A 10.0x CROSS-SURFACE ASYMMETRY ON PAGING: Gremlin's `order().limit(k)` does a FULL SORT where GQL's `ORDER BY … LIMIT` takes a top-k.** 55.2 ms against 5.5 for the same question over the same graph. Three other "transparent step" candidates measured and REFUTED, each for its own reason
+### Item 1573 — ⚠️ **A 10.0x CROSS-SURFACE ASYMMETRY ON PAGING** — ⚠️ **and only HALF of it was the algorithm: item 1574's top-k took 2.07x and GQL is still 4.4x ahead on `[...stream]` materialization.** Gremlin's `order().limit(k)` did a FULL SORT where GQL's `ORDER BY … LIMIT` takes a top-k. 55.2 ms against 5.5 for the same question over the same graph. Three other "transparent step" candidates measured and REFUTED, each for its own reason
 
 Item 1572 dropped an unread `as` because an extra step in front of the hop makes every prefix rung
 decline. The follow-up question is which other steps do that, so four candidates were measured
@@ -65169,3 +65169,85 @@ faulting `by` still raises when its item would not have been kept.
 
 No change to ship — measurement only; `git status` clean apart from this entry. `bun run check` 0
 read unpiped. Suites unchanged from item 1572.
+
+### Item 1574 — SHIPPED, **2.07x** on Gremlin paging (`order().limit(10)` 55.2 → 26.6 ms at 200,000 values, full-sort control flat) and **2.42x** on the element spelling: `order()` followed by `take(n)` now takes a bounded top-k. ⚠️ Item 1573 priced the cross-surface gap at 10.0x and **only half of it was the algorithm** — GQL is still 4.4x ahead, and the reason is identified
+
+Item 1573 measured the gap and designed the fix; this builds it.
+
+#### What shipped
+
+`fuseOrderTake` in `effectivePlan` (beside `fuseValuesIsCount`, the established two-step fusion)
+sets a `cap` on an `order` step immediately followed by a global `take(n)`. `sortByBys` honours the
+cap with `boundedTop`, a max-heap over INDICES whose comparator breaks ties on arrival position.
+
+| arm                                          | PRE     | POST     |           |
+| -------------------------------------------- | ------- | -------- | --------- |
+| `V().values(k).order().limit(10)`            | 55.2 ms | **26.6** | **2.07x** |
+| `V().order().by(k).limit(10).values(k)`      | 54.8    | **22.6** | **2.42x** |
+| `V().values(k).order()` — full sort, control | 66.2    | 67.8     | flat      |
+| GQL `ORDER BY k LIMIT 10`                    | 5.5     | 6.1      | untouched |
+
+#### ⚠️ ITEM 1573'S 10.0x WAS NOT ALL ALGORITHM, and that correction matters more than the win
+
+1573 recorded "10.0x apart on paging" and implied a top-k would close it. It closes **half**: 55.2 →
+26.6 leaves GQL 4.4x ahead at 6.1 ms. The remainder is identified, not guessed —
+**`orderStep` does `[...stream]`, materializing all 200,000 traversers before the selection**,
+whereas GQL's `boundedTopK` consumes an `Iterable` and never holds more than `cap`. The capped path
+cannot avoid EVALUATING every key (see the fault rule below), but it has no need to RETAIN every
+traverser.
+
+So the honest decomposition of 1573's 10.0x is roughly 2x algorithm, which is taken, and ~4.4x
+materialization, which is not. Streaming the capped path is the follow-on, and it is a change to
+`orderStep`'s shape rather than to the sort — which is also why it does not collide with items
+878-892's refutations of `sortByBys`' constant factors.
+
+#### Three things the design had to get right
+
+- **Ties break on ARRIVAL INDEX.** Gremlin's sort is stable and tie order is compared against native,
+  so the top-k must return the exact prefix a stable full sort would. A tie group straddling the cap
+  is where a heap gets this wrong, so the fixture gives `k` only three distinct values over 30
+  vertices — every cap lands inside a group — and every cap is compared against the sliced full
+  sort. Two mutants (`no-tiebreak`, `final-sort-unstable`) die on it.
+- **Keys are evaluated for EVERY item, and the element check still runs over all of them**, both
+  above the selection. `sortByBys` evaluates every key before the element check precisely so a
+  throwing `by` wins over the element fault; a selection that stopped once its heap was full would
+  silently drop both. The `cap-the-input` mutant is exactly that mistake and dies on two tests —
+  including one where the offending element is the LAST arrival and the cap is 1.
+- **Deliberately narrow: only a `take` IMMEDIATELY after the order, both global.** A
+  `skip(a).take(b)` needs `cap = a + b`; getting that wrong silently drops rows, so it does not fire.
+  `fuse-past-skip` is the mutant, and it dies on 4 tests. **The `take` is also KEPT in the plan** —
+  already satisfied by a capped order, so it costs one pass over at most `n` — which means the pass
+  cannot change what the plan RETURNS even if a future cap were computed wrongly.
+
+#### ⚠️ A crash my own test found, that GQL's version already guards
+
+`boundedTop` with `cap === 0` left the heap empty and then dereferenced `heap[0]`, so
+**`order().limit(0)` threw a TypeError**. GQL's `boundedTopK` has `if (cap <= 0) return []` as its
+first line; I re-implemented the algorithm (ordering is per-language by design) and did not copy the
+guard. The cap-0 case was in the test list from item 1573's design, which is the only reason it was
+found before the suite — a full sort returns `[]` for `limit(0)` perfectly happily.
+
+#### Mutation — six mutants, all six caught
+
+| mutant                                          | caught  |
+| ----------------------------------------------- | ------- |
+| lose the heap's arrival tiebreak                | 1 test  |
+| lose the final sort of the kept heap            | 3 tests |
+| lose the final sort's tiebreak                  | 1 test  |
+| remove the zero-cap guard                       | 1 test  |
+| cap the INPUT (skipping the full element check) | 2 tests |
+| fuse across a `skip`                            | 4 tests |
+
+⚠️ **The mutator itself failed six times first** with `APPLY-FAILED`, because escaping `\n` through a
+nested heredoc into a generated Python file mangled it. Rewritten with the `Write` tool, which has no
+escaping layer. The loud applied-check is what turned six silent null runs into six visible failures.
+
+A seventh parameter on `sortByBys` tripped `max-params`, and the rule was right: `desc` and `cap` are
+now one options object rather than four trailing positional values nobody can read at a call site.
+
+#### Gates
+
+`bun run check` 0 read unpiped (a `max-params` and a `padding-lines` fixed). Suites: core 431/0,
+gql 3964/0, **gremlin 1536/0** (11 new in `order-take-topk.test.ts`), native 963/0,
+serialization 144/0, `bun run fuzz` 20/0 — the cross-engine check that matters here, since tie order
+is compared against native.

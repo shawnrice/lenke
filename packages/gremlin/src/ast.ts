@@ -226,7 +226,16 @@ export type Step =
   // is the modulator form (`order().by('age')`). The first `by` projects;
   // additional `by`s are tie-breakers (Gremlin semantics). `desc` flips order
   // (applies to all `by`s for now — comparator-per-by would need closures).
-  | { kind: 'order'; key?: string; desc?: boolean; bys?: readonly By[]; scope?: 'local' | 'global' }
+  // `cap` is set only by `fuseOrderTake` (item 1574): a fused `take(n)` bound that lets the sort
+  // take a bounded top-k instead of sorting everything and slicing. Never set by a step builder.
+  | {
+      kind: 'order';
+      key?: string;
+      desc?: boolean;
+      bys?: readonly By[];
+      scope?: 'local' | 'global';
+      cap?: number;
+    }
   // Stop the stream with an error.
   | { kind: 'fail'; message?: string }
   // Sub-traversal filters: keep traverser if the sub-plan produces ≥1 result.

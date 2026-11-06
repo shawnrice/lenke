@@ -456,7 +456,7 @@ export const applyStep = (
 
       return step.scope === 'local'
         ? orderLocalStep(stream, bys, desc, graph, ctx)
-        : orderStep(stream, bys, desc, graph, ctx);
+        : orderStep(stream, bys, desc, graph, ctx, step.cap);
     }
 
     case 'fail':
