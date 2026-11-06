@@ -62666,6 +62666,37 @@ of the four shapes and **asserts that every other reduction agrees** — a real 
 will fail if the family widens — plus the characterization test that the scalar `AND` cases agree.
 Nothing was registered, so the fuzzer keeps flagging it.
 
+#### ✅ DECIDED BY THE OWNER (2026-11-05), and it is none of the three above
+
+> "It should be whatever is faster. The left or right side of the conjunction should have the easiest
+> and fastest evaluate. I think ts only goes left to right. Native can pick either based on a cost."
+
+So the policy is **evaluation order is chosen for SPEED**, per engine, and an error raised by one
+engine where the other short-circuits past it is an accepted consequence rather than a bug to fix by
+slowing either side down. That rules out resolutions 1 and 2 — both buy error parity with
+performance — and it reframes the whole item from a correctness question into a perf one.
+
+**It also authorizes a 3.2x this file has been declining.** `compilePredicate`'s own note says:
+
+> ⚠️ THE REVERSE ORDER IS DELIBERATELY NOT DONE. `<unliftable> AND a=50` measured 13.750 and a lift
+> would take it to ~4.3 (3.2x), but only by running `a = 50` FIRST — which is observable when the
+> unliftable conjunct can RAISE, because short-circuiting on FALSE would then skip a throw that
+> happens today.
+
+That observability is now explicitly acceptable, so the reverse-order lift is the next item's target:
+**13.750 → ~4.3 ms, 3.2x, on a shape the engine currently declines in full.** The test `a declining
+conjunct is not overtaken` pins the current boundary and will need to move with it.
+
+Two consequences to handle rather than assume:
+
+- **The differential fuzzer will keep flagging the AND/UNKNOWN family**, and
+  `and-short-circuit-conformance.test.ts`'s "FALSE settles, UNKNOWN does not" line is now a
+  statement about one engine rather than a shared contract. Reconciling the registry with this policy
+  is its own decision — the conformance file currently says an error against a NON-EMPTY result "may
+  not be excused", and that rule predates this one.
+- **Order-chosen-for-speed and byte-identity are in tension by construction.** Whatever excuses this
+  family has to be narrow enough that a genuine wrong ANSWER still fails.
+
 #### Gates
 
 `bun run check` 0 read unpiped. gql 3863/0, native 963/0 (three runs; one 962/1, which is this very
