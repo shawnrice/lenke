@@ -11308,6 +11308,38 @@ export const compileLinear = (linear: LinearQuery): CLinear => {
   // contradicted the chain, where item 510 correctly places it BELOW `countShortcut` as the
   // strictly narrower shape. A list that resembles the precedence for three quarters of its
   // length is worse than one that plainly does not, so this one now matches it exactly.
+  // ⚠️ ONE PRECEDENCE DECISION IS TAKEN HERE RATHER THAN IN THE CHAIN, and it is the only one.
+  //
+  // `count(DISTINCT <one expr over one end>)` over a 1-hop is accepted by BOTH `detectHopAggregate`
+  // (which folds it via `distinctCountFold`, materializing nothing but walking every row) and
+  // `detectDistinctCount` (which dedupes WHILE walking, and breaks out of a vertex's bucket at the
+  // first qualifying edge when the dedup is keyed on the START). `hopAggregate` sits first in
+  // `runLinear`'s chain, so it took every such shape and the narrower rung never ran — measured at
+  // 50,000 vertices / 150,000 edges (item 1583, `hop-distinct-probe`):
+  //
+  //     count(DISTINCT b)     29.928ms      count(DISTINCT a)     20.923ms
+  //     count(DISTINCT b.k)   22.418        count(DISTINCT a.n)   17.870
+  //     count(DISTINCT b.n)   29.230
+  //
+  // against the node-only twin `MATCH (n:P) RETURN count(DISTINCT n.n)` at 2.599ms, which reaches
+  // `distinctCount` because `nodeAggregate` sits BELOW it. Same rung, opposite outcome, decided
+  // entirely by which broader detector happened to be listed first.
+  //
+  // WHY HERE AND NOT BY REORDERING THE CHAIN. Moving the `distinctCount` branch above
+  // `hopAggregate` would put a branch ahead of a hot dispatch, which item 418 measured costing the
+  // shape it does not claim 1.12x. This decides it ONCE PER QUERY at compile time instead, so the
+  // runtime chain is untouched and the plain hop aggregate pays nothing.
+  //
+  // And the rule is not duplicated: nothing here re-derives what `distinctCount` accepts, it just
+  // asks. Two copies of one shape rule is how the far endpoint ended up on a per-edge tally once
+  // before (`detectDistinctCount`'s own note).
+  const distinctCount = detectDistinctCount(fast, clauses);
+  // A cross-end `WHERE` already declines `distinctCount` at compile time — `distinctShape` requires
+  // `whereReadsOnly(where, keyedVar)` — so the shapes where `hopAggregate`'s EXECUTION-TIME decline
+  // could hand the query to an index seek on the end it does not drive are exactly the shapes where
+  // `distinctCount` is null and this gate does nothing.
+  const hopAggregate = distinctCount === null ? detectHopAggregate(fast, clauses) : null;
+
   return {
     clauses,
     varLengthCount: detectVarLengthCount(fast),
@@ -11320,10 +11352,10 @@ export const compileLinear = (linear: LinearQuery): CLinear => {
     groupHopShortcut: detectGroupedHopCount(fast),
     reachShortcut: detectReachableShortcut(fast, clauses),
     hopProjection: detectHopProjection(fast, clauses),
-    hopAggregate: detectHopAggregate(fast, clauses),
+    hopAggregate,
     multiHopAggregate: detectMultiHopAggregate(fast, clauses),
     distinctProjection: detectDistinctProjection(fast, clauses),
-    distinctCount: detectDistinctCount(fast, clauses),
+    distinctCount,
     nodeProjection: detectNodeProjection(fast, clauses),
     nodeAggregate: detectNodeAggregate(fast, clauses),
     multiNodeAggregate: detectMultiNodeAggregate(fast, clauses),

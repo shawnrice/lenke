@@ -65802,9 +65802,12 @@ worth stating plainly: **the assertion is not optional even for a probe file.** 
   `proj.items.length !== 2` was the ONLY gate and both spellings converged at 0.62 ms together.
   (This entry's guess that `clauses.length !== 2` was a second gate was WRONG — it is not reached
   for this shape.)
-- **`hop distinct`, ~30 ms** against Gremlin's 0.55 for `count(DISTINCT b)` over a hop. Not yet
-  diagnosed; the spelling result above is a warning that the first thing to check is which rung it
-  misses and why, not where its profile time goes.
+- ~~**`hop distinct`, ~30 ms**~~ **PARTLY TAKEN AT 1583** — and the warning in this bullet was the
+  right one: it WAS a rung question. `distinctCount` accepted every hop spelling all along while
+  `hopAggregate` sat above it in the chain and answered first (1.80-6.00x, item 1583). The flag is
+  now ~31x, not 52x, and what is LEFT is element-identity dedup: `count(DISTINCT b)` 16.611 ms
+  against `count(DISTINCT b.n)` 8.820 at the same cardinality, so 1.88x is the cost of keying an
+  element rather than a scalar.
 
 #### Gates
 
@@ -65935,4 +65938,126 @@ is to run the gate AFTER writing the entry, which is the order this item used.
 #### Gates
 
 `bun run check` 0 read unpiped. Suites gql 3993, core 431, gremlin 1551, native 985, serialization
+144 — 0 fail. `bun run fuzz` 20/0 under the 16G cap.
+
+### Item 1583 — **up to 6.00x on `count(DISTINCT …)` over a hop**, because the dedup-while-walking rung was WRITTEN, CORRECT AND WILLING and a broader rung sat ahead of it in the chain: `hopAggregate` took every such shape and `distinctCount` never ran. The node-only twin reached it and was 10x faster, decided entirely by which detector happened to be listed first
+
+Item 1581's cross-surface probe flagged `MATCH (a:P)-[:E]->(b) RETURN count(DISTINCT b)` at **52.37x**
+its Gremlin twin. The useful part was not the ratio but what the diagnosis turned out to be.
+
+#### Time could not answer the question; `compileLinear` could
+
+The hop spellings measured 17.9-29.9 ms while the node-only twin measured 2.6 — but a hop walks
+150,000 edges where the node scan visits 50,000 vertices, so a slow arm might simply have more work.
+**Timing cannot distinguish "declined the rung" from "took the rung and had more to do."**
+
+`compileLinear` runs all nineteen detectors and returns the set, so reading its fields names the
+route directly (`hop-distinct-route-probe.mjs`). That gave the answer at once:
+
+```text
+   count(DISTINCT b)      hopAggregate, distinctCount      <- BOTH accept
+   count(DISTINCT b.k)    hopAggregate, distinctCount
+   count(DISTINCT a.n)    hopAggregate, distinctCount
+   MATCH (n:P) count(DISTINCT n.n)   distinctCount, nodeAggregate
+```
+
+`distinctCount` was non-null for **every** hop spelling — the narrow rung was willing all along. But
+`hopAggregate` was non-null too, and it sits at `runLinear`'s line 1562 against `distinctCount`'s
+1592, so it answered first every time. For the node-only shape the competing rung is `nodeAggregate`
+at line 1608, **below** `distinctCount`, so there the narrow rung won. Same rung, opposite outcome,
+decided by nothing but listing order.
+
+#### The fix is a compile-time gate, not a reordered branch
+
+```ts
+const distinctCount = detectDistinctCount(fast, clauses);
+const hopAggregate = distinctCount === null ? detectHopAggregate(fast, clauses) : null;
+```
+
+Moving the `distinctCount` branch above `hopAggregate` in the chain would put a branch ahead of a hot
+dispatch, which **item 418 measured costing the shape it does not claim 1.12x**. This decides it once
+per query at compile time, so the runtime chain is untouched. And no shape rule is duplicated —
+nothing re-derives what `distinctCount` accepts, it just asks, because two copies of one rule is how
+the far endpoint ended up on a per-edge tally once before (`detectDistinctCount`'s own note).
+
+The index-seek concern answers itself: `distinctShape` requires `whereReadsOnly(where, keyedVar)`, so
+a cross-end `WHERE` — exactly the shape where `hopAggregate`'s EXECUTION-TIME decline can hand the
+query to a seek on the end it does not drive — already declines `distinctCount`, and there the gate
+does nothing. That is asserted as a route test, not reasoned about and left.
+
+#### The numbers, 50,000 vertices / 150,000 edges, answers unchanged throughout
+
+```text
+                                      PRE      POST
+   count(DISTINCT b.k)   far, 97       22.418    3.735    6.00x
+   count(DISTINCT a.n)   start, uniq   17.870    4.416    4.05x
+   count(DISTINCT b.n)   far, uniq     29.230    8.820    3.31x
+   count(DISTINCT a)     start, node   20.923   11.545    1.81x
+   count(DISTINCT b)     far, node     29.928   16.611    1.80x
+```
+
+The spread is the rung's own structure showing through: the start-keyed arms benefit most because
+`detectDistinctCount` **breaks out of a vertex's bucket at the first qualifying edge** when the dedup
+is keyed on the start, which `hopAggregate` cannot do — it has to fold every row.
+
+⚠️ **Controls, measured as a real A/B rather than argued from construction.** The gate only nulls
+`hopAggregate` when `distinctCount` accepts, so a non-DISTINCT hop aggregate executes identical code
+and a regression is "impossible by construction" — which is the reasoning this file exists to
+distrust. Both arms were built from saved copies, each ASSERTED to be the code it claimed before
+either was built:
+
+```text
+                PRE      POST
+   hopmax       10.715    9.307
+   hopmin        8.605    8.480
+   hopsum       20.945   18.623
+   hopmulti     20.439   18.678
+   hopproj      12.060   11.768
+   nodeonlyprop  2.614    2.559     (the untouched route)
+```
+
+Flat within noise. POST reads marginally faster across the board, which is noise and **not** claimed
+as a win.
+
+#### Correctness: the two rungs could have disagreed about NULL, and that is checked
+
+`detectDistinctCount`'s own doc records that it drops nulls before the set, where the ROWS path keeps
+a null as a row. If `distinctCountFold` — the fold `hopAggregate` used — did not hold the same rule,
+this reroute would have silently changed answers. So the null cases are pinned twice: against NATIVE
+as the oracle (unaffected by a TS route change) in `hop-distinct-count-route-parity.test.ts`, and as
+LITERAL values, because two engines can agree and both be wrong. `count(DISTINCT b.nope)` over a
+property no vertex has is **0, not 1**, and the rows spelling still yields its null row.
+
+⚠️ `bun run fuzz` was green throughout and is not evidence here: `genQuery` generates no
+`count(DISTINCT …)` over a hop at all — the same blind spot item 1582 found for the one-column
+grouped count, now confirmed to extend to a second rung family.
+
+#### Mutation: 4 of 4 caught, and all four are ANSWER-EQUIVALENT
+
+Reverting the gate, inverting its condition, and nulling either detector all leave every answer
+correct and change only the speed. The route tests are the only thing that can see them, which is
+item 1582's lesson applied before the fact rather than after:
+
+```text
+   gate/reverted                    CAUGHT   6 fail
+   gate/condition-inverted          CAUGHT  11 fail
+   gate/hopAggregate-always-null    CAUGHT   5 fail
+   gate/distinctCount-always-null   CAUGHT   7 fail
+```
+
+#### What remains, priced
+
+The cross-surface flag went **52.37x to ~31x** (GQL 34.28 to 17.0 ms on that query) and is still
+open, because the flagged spelling dedups on the NODE and that is the arm this change helped least.
+The residual has a measured cause rather than a guessed one: `count(DISTINCT b)` at 16.611 against
+`count(DISTINCT b.n)` at 8.820 — **same cardinality (50,000), same walk, same rung** — so **1.88x is
+attributable purely to keying an ELEMENT instead of a scalar**, where `valueSet` must build a
+`valueKey` string per element while Gremlin's `dedupe()` keys on object identity. An identity-keyed
+set for the element case is the next target in this family, and it is worth more than the 1.88x
+suggests because it also lands on `distinctProjection`, which takes `RETURN DISTINCT b` by the same
+route.
+
+#### Gates
+
+`bun run check` 0 read unpiped. Suites gql 4008, core 431, gremlin 1551, native 1010, serialization
 144 — 0 fail. `bun run fuzz` 20/0 under the 16G cap.
