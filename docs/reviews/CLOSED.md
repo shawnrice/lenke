@@ -62998,7 +62998,7 @@ kept finding.
 against `HEAD` and filtering non-comment lines: zero). gremlin 1494/0, native 963/0; the rest stand
 at item 1545's: core 431/0, gql 3865/0, serialization 144/0, `bun run fuzz` 20/0.
 
-### Item 1547 — SHIPPED, **908x**: a VACUOUS `hasLabel` with several labels was never recognized as vacuous, so it stayed in the plan and the plan left the closed-form route. `V().hasLabel(P,Q).out(E).count()` 9.075 → 0.010 ms, two controls flat. ⚠️ **The mutation run was KILLED by memory pressure mid-sweep and left a mutant in the tree — recorded because it is the hazard CLAUDE.md names, observed for real**
+### Item 1547 — SHIPPED, **908x**: a VACUOUS `hasLabel` with several labels was never recognized as vacuous, so it stayed in the plan and the plan left the closed-form route. `V().hasLabel(P,Q).out(E).count()` 9.075 → 0.010 ms, two controls flat. ⚠️ **The mutation run was KILLED by memory pressure mid-sweep and left a mutant in the tree — recorded because it is the hazard CLAUDE.md names, observed for real** — ✅ **the owed verification is PAID at item 1548: 4 mutants, 4 caught**
 
 Item 1546 concluded that the wins have been coming from shapes that still DECLINE a fast path rather
 than from making hot loops faster. This tick took that advice and it paid immediately.
@@ -63097,3 +63097,53 @@ serialization 144/0. Six new tests, all ROUTE-level reading `effectivePlan`, bec
 is answer-equivalent (`perf-gate-needs-its-own-test`). `bun run fuzz` **20/0** — run because this is
 a plan rewrite and byte-identity is a hard invariant, which is a gate rather than part of the killed
 sweep. Only the MUTATION verification is owed.
+
+### Item 1548 — **item 1547's owed mutation verification is PAID: four mutants, four caught**, including the wrong-answer one. Plus three process findings from doing it one-at-a-time in the foreground, each of which cost a command
+
+Item 1547 shipped with mutation verification owed, because the background sweep was killed by memory
+pressure mid-loop and left a mutant in the tree. This pays the debt without re-running that sweep.
+
+#### THE VERDICTS — 4/4
+
+| mutant                                                                 |        | caught by                                                                               |
+| ---------------------------------------------------------------------- | ------ | --------------------------------------------------------------------------------------- |
+| `drop-any-multi` — drop a NON-vacuous disjunction (a **wrong answer**) | CAUGHT | 5+ failures: three of the new tests AND `an edge hop + has filters, seeded (item 1044)` |
+| `always-vacuous` — every `hasLabel` is vacuous                         | CAUGHT | many, across `index-seed`, `seek-gate`, `id-seed`                                       |
+| `single-label-only` — **byte-identical to the PRE code**               | CAUGHT | 1498 pass **2 fail** — exactly the two new route tests                                  |
+| `wrong-index` — vertex index for an edge source                        | CAUGHT | 1499 pass **1 fail** — exactly the edge-source test                                     |
+
+`single-label-only` is the one that matters for the perf gate, and it is the strongest result: that
+mutant IS the code measured at 9.075 ms, and it is caught by the route tests alone — nothing else in
+1,500 tests notices, which is `perf-gate-needs-its-own-test` demonstrated rather than asserted.
+`wrong-index` being caught by exactly one test says the edge-source case was worth writing
+separately instead of trusting the vertex one to cover it.
+
+Tree restored and verified byte-identical to the committed file after every mutant, and the suite is
+back to 1500/0.
+
+#### THREE PROCESS FINDINGS, each of which cost a command
+
+1. **RESTORE BEFORE EACH MUTANT, which is CLAUDE.md's rule and is now load-bearing rather than
+   advisory.** Item 1547's script restored only at the end of the loop; the reaper killed it
+   mid-loop and a mutant was left in the working tree, caught only by `diff` against a saved
+   pristine copy. Every mutant here restored first and verified after. The pristine copy lives under
+   `crates/lenke-engine/target/` for the reason CLAUDE.md gives — it survives a reboot and is
+   gitignored.
+
+2. **`bun test 2>&1 >| log` IS THE WRONG ORDER and sends stderr to the terminal.** `2>&1` duplicates
+   stderr onto the CURRENT stdout — the terminal — and only then is stdout redirected, so the
+   failure diffs printed and the log got the passes. `>| log 2>&1` is the order that captures both.
+   The verdict was still readable, but it backgrounded the command.
+
+3. **A CATASTROPHIC MUTANT STALLS A PIPED COMMAND, and the cause is output volume, not the machine.**
+   `always-vacuous` breaks hundreds of tests, each printing a diff, and piping that through
+   `grep | head` took a suite that normally runs in **1.1 s** past a 120-second limit twice. The
+   tempting conclusion was memory — the reaper had already killed one command this session for
+   exactly that — and it was wrong: `free -g` showed **50 GB of 61 available**. Checked rather than
+   assumed. **Redirect a mutant's output to a file and grep the file**; do not pipe it.
+
+#### Gates
+
+No code change — `git status` clean, and the restored file verified identical to item 1547's commit.
+gremlin 1500/0 after restoring. The rest stand at item 1547's: core 431/0, gql 3865/0, native 963/0,
+serialization 144/0, `bun run fuzz` 20/0.
