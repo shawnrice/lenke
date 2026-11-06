@@ -69864,3 +69864,51 @@ Two of four per-position expectations wrong, from one slip: I read the label pos
 #### Gates
 
 `bun run check` 0 read unpiped. Suites gql 4207 (8 new), core 435, native 1076, gremlin 1765, serialization 144 — 0 fail. `bun run fuzz` 20/0 under the 16G cap, which is the check that matters for a change to the generic matcher.
+
+### Item 1624 — ⚠️ **NO CODE CHANGE: two surfaces re-profiled and EVERY top frame traced to a closed item.** The GQL matcher's remaining 25.4% is item 1622's refutation and its 8.3% is un-ablatable; the write path's 27.2% is `indexEdgeLabel`, refuted in five directions, and its 11.9% `getEdgeById` is the self-time attribution item 700's successor already ablated to an upper bound of ZERO. The tick's product is the verification trail — a seventh arrival at the label index prevented
+
+OPEN: `withBinding`, 8.3% of the matcher and the only unpriced frame in either profile — and it CANNOT be ablated, so pricing it means building the alternative. See below.
+
+#### Item 1623's elision is visible in the profile, which is the first thing this confirms
+
+```text
+   frame                 before 1623    after
+   evalLabelExpr            7.8%         2.3%
+   get labels               3.6%         1.5%
+   expand                  28.2%        25.4%
+   walkSegments             9.1%        10.3%
+   withBinding              6.5%         8.3%
+```
+
+The two label frames fell by 7.6 points together, which is the 1.17x that shipped. The shares that "rose" did not: they are shares OF a smaller total, which is item 1597's lesson stated the other way round.
+
+#### The GQL matcher: nothing left that is both unclosed and ablatable
+
+- **`expand` 25.4%** — item 1622 built the substitution, measured +9% on the admitted family and −3.7% on the declined one, and did not take it. Its entry has the numbers and the two routes that would make it payable.
+- **`withBinding` 8.3%** — ⚠️ **UN-ABLATABLE, and that is the finding.** The copy IS the semantics: each level's binding must not be visible to its siblings. I ablated it anyway (mutate in place, return the same `Map`) and the walk answered **1 row instead of 1,279,840** — so the arm is not a price, it is a different query. An ablation that changes the ROW COUNT prices nothing, which is CLAUDE.md's invariant-answer rule arriving from the other side.
+
+  The only way to price it is to BUILD the alternative: a persistent binding (parent pointer plus one entry) or a fixed-shape object spread instead of `new Map`. Both change `Binding`'s type, which is `Map<string, unknown>` read by `.get`/`.has`/iteration across both engines' executors — a multi-tick change, and the reason it is recorded here rather than attempted.
+
+#### The write path: the top two frames are the same two the repo has already closed
+
+`addEdgeOnly` is 196.32 ms a rep for 80,000 edges — **2454 ns an edge**, the most expensive thing in the engine — and its profile is:
+
+```text
+   indexEdgeLabel     27.2%     getEdgeById       11.9%
+   (gc)               12.7%     #commitNormalized 11.1%
+   commitElementLabels 7.7%     getVertexById      4.4%
+```
+
+- **`indexEdgeLabel`** — priced at item 312, SPLIT across its three indexes at 357 (the 1,000,000-element `Set` is not measurable; the two adjacency maps are all of it), superadditivity retracted at 358, the single-label inner representation refuted at 358 before being built, the type-first inversion refuted at 200, the dense ordinal DECLINED at 1397 on delete churn. Six items have arrived here; this is the seventh and it is not re-deriving them.
+- **`getEdgeById` 11.9% / `getVertexById` 4.4%** — the audit's own entry on the NDJSON decode row found `getVertexById` at 15.85%, ablated the re-resolution IN THE ROW, and measured **0.949x: the ablation is SLOWER than the control**. Its lesson is the one that applies here verbatim: _a profiler's self-time is an attribution, not a counterfactual._ Upper bound on any correct version: zero.
+- **`commitElementLabels` 7.7%** — a label set is 1-2 entries and the copy is documented as deliberate at item 335 (the PROPERTY copy was the one that was removable, for 1.70x). Same attribution class.
+
+#### Why this is an entry rather than a silent tick
+
+CLAUDE.md records three passes in one session re-deriving a closed target, each having "searched something first and searched the wrong store". The cost is measured: a sweep of 265 `OPEN` lines corrected 40. An item that profiles a surface, finds every frame closed, and writes that down is the cheapest possible version of that sweep — and the alternative is a seventh arrival at `indexEdgeLabel` by someone reading a fresh 27.2%.
+
+Two things also hold after this tick and are worth stating plainly: the matcher's label frames are gone for good, and the write path is a constant factor with its parts individually measured. The next GQL lever is structural (`withBinding`) or it is in a surface neither profile covers.
+
+#### Gates
+
+No engine change; the two ablations were restored and the tree verified clean. `bun run check` 0 read unpiped. Suites gql 4207, core 435, native 1076, gremlin 1765, serialization 144 — 0 fail.
