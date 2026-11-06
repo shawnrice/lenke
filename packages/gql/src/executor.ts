@@ -10979,6 +10979,93 @@ export const dropUnreadPathVar = (clauses: readonly Clause[]): readonly Clause[]
   return [{ ...m, patterns: [rest] }, ret];
 };
 
+/**
+ * An unread EDGE variable on a QUANTIFIED segment is the same defect as the path variable, and the
+ * same size: **71.9x** (item 1568).
+ *
+ *     MATCH (a:P)-[r:E]->{1,2}(b:P) RETURN count(*) AS c      819.6 ms
+ *     MATCH (a:P)-[:E]->{1,2}(b:P)  RETURN count(*) AS c       11.4 ms
+ *
+ * ⚠️ `dropUnreadGroupBinds` ALREADY DROPS AN UNREAD `rel.variable` — but only on a FUSED HOP shape:
+ * it requires `hopFrom !== undefined` and refuses on `nested`/`unitRest`/`innerQ`. A plain
+ * quantified hop has `rel.quantifier` set and NO `hopFrom`, so it falls straight through that pass.
+ * This covers exactly that gap and nothing else; the fused-hop case stays where it is.
+ *
+ * ⚠️ HARMLESS ON A SINGLE HOP, so this does not chase it: `-[r:E]->` unread measures 0.2 ms against
+ * 0.2 for the absent spelling. The cost appears only where a binding disqualifies the var-length
+ * rungs.
+ *
+ * The refusals mirror `dropUnreadGroupBinds`' own conservatism rather than re-deriving it: a rel
+ * carrying properties or an inline `WHERE` is left alone (the predicate is evaluated against the
+ * bound edge), and so is any segment with a nested subpath, a multi-element unit, an inner
+ * quantifier or a subpath `WHERE` — each of which exposes inner variables this pass does not
+ * reason about.
+ */
+/** EXPORTED FOR ITS OWN TEST, like {@link dropUnreadPathVar} — a route choice is answer-equivalent. */
+export const dropUnreadEdgeVar = (clauses: readonly Clause[]): readonly Clause[] => {
+  if (clauses.length !== 2) {
+    return clauses;
+  }
+
+  const [m, ret] = clauses;
+
+  if (m?.kind !== 'match' || m.patterns.length !== 1 || ret?.kind !== 'return') {
+    return clauses;
+  }
+
+  const [pattern] = m.patterns;
+
+  if (pattern === undefined || ret.projection.star) {
+    return clauses;
+  }
+
+  const exprs: Expr[] = [
+    ...ret.projection.items.map((it) => it.expr),
+    ...(ret.projection.orderBy ?? []).map((o) => o.expr),
+    ...(ret.projection.groupBy ?? []),
+    ...(ret.projection.having === undefined ? [] : [ret.projection.having]),
+    ...(m.where === undefined ? [] : [m.where]),
+  ];
+
+  if (exprs.some(hasSubquery)) {
+    return clauses;
+  }
+
+  const mentioned = new Set<string>();
+
+  for (const e of exprs) {
+    for (const free of freePredicateVars(e)) {
+      mentioned.add(free);
+    }
+  }
+
+  let changed = false;
+  const segments = pattern.segments.map((seg) => {
+    const { rel, hopFrom, unitRest, innerQ, nested, subpathWhere } = seg;
+
+    if (
+      rel.variable === undefined ||
+      mentioned.has(rel.variable) ||
+      rel.quantifier === undefined ||
+      hopFrom !== undefined ||
+      nested !== undefined ||
+      subpathWhere !== undefined ||
+      innerQ !== undefined ||
+      (unitRest?.length ?? 0) > 0 ||
+      (rel.properties?.length ?? 0) > 0 ||
+      rel.where !== undefined
+    ) {
+      return seg;
+    }
+
+    changed = true;
+
+    return { ...seg, rel: { ...rel, variable: undefined } };
+  });
+
+  return changed ? [{ ...m, patterns: [{ ...pattern, segments }] }, ret] : clauses;
+};
+
 const dropUnreadGroupBinds = (clauses: readonly Clause[]): readonly Clause[] => {
   if (clauses.length !== 2) {
     return clauses;
@@ -11092,8 +11179,16 @@ export const compileLinear = (linear: LinearQuery): CLinear => {
                     // second. Both require exactly `[match, return]`, so neither can see a shape
                     // the other created.
                     dropUnreadPathVar(
-                      dropVacuousPage(
-                        dropVacuousQuantifier(foldLabelTestsIntoPatterns(linear.clauses)),
+                      // `dropUnreadEdgeVar` runs INSIDE `dropUnreadPathVar` for the same
+                      // composition reason: the path-variable pass refuses on nothing the edge pass
+                      // creates, but a pattern can carry BOTH an unread `p` and an unread `r`, and
+                      // only this order drops both in one compile. Each is independently narrow
+                      // (`[match, return]`, one pattern), so neither can see a shape it did not
+                      // expect.
+                      dropUnreadEdgeVar(
+                        dropVacuousPage(
+                          dropVacuousQuantifier(foldLabelTestsIntoPatterns(linear.clauses)),
+                        ),
                       ),
                     ),
                   ),

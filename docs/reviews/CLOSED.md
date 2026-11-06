@@ -64709,3 +64709,93 @@ build settles it either way, and costs a minute.
 `bun run check` 0 read unpiped (one `prefer-destructuring` fixed). Suites: core 431/0,
 **gql 3936/0** (13 new in `drop-unread-path-var.test.ts`), gremlin 1511/0, native 963/0 on a clean
 seed, serialization 144/0, `bun run fuzz` 20/0.
+
+### Item 1568 — SHIPPED, **71.9x** on `MATCH (a:P)-[r:E]->{1,2}(b:P) RETURN count(*)` (819.6 → 11.4 ms, converging with the spelling that never bound `r`): an unread EDGE variable on a quantified segment is item 1567's defect again, and `dropUnreadGroupBinds` misses it by one field. ⚠️ Also measured: the 2-clause restriction costs **83x** on the same shape with a `LET` in front — the next target
+
+Item 1567 dropped an unread PATH variable for 72.6x. The obvious follow-up is whether other unread
+bindings do the same, so it was measured rather than assumed:
+
+```text
+   MATCH (a:P)-[r:E]->{1,2}(b:P) RETURN count(*)      819.6 ms
+   MATCH (a:P)-[:E]->{1,2}(b:P)  RETURN count(*)       11.4 ms      71.9x
+   MATCH (a:P)-[r:E]->(b:P)      RETURN count(*)        0.2 ms      a SINGLE hop costs NOTHING
+   MATCH (a:P)-[:E]->(b:P)       RETURN count(*)        0.2 ms      (0.0 for the node variable)
+```
+
+**The cost appears only where a binding disqualifies the VAR-LENGTH rungs** — the same mechanism as
+the path variable, and nothing to win on a plain hop. That asymmetry is what keeps the new pass
+narrow.
+
+#### Why the existing pass misses it, by one field
+
+`dropUnreadGroupBinds` already drops an unread `rel.variable`. But it requires
+`hopFrom !== undefined` and refuses on `nested`/`unitRest`/`innerQ`, i.e. it is written for a FUSED
+HOP. Inspecting the parsed AST shows the two shapes differ exactly there:
+
+```text
+   (a:P)-[r:E]->{1,2}(b:P)              rel.quantifier set, NO hopFrom      <- falls through
+   (x:P)((a)-[r:E]->(b)){1,2}(y:P)      rel.quantifier set AND hopFrom      <- that pass's case
+```
+
+`dropUnreadEdgeVar` covers the first only. Its refusals mirror that pass's own conservatism rather
+than re-deriving them: a rel carrying properties or an inline `WHERE` is left alone, because the
+predicate is evaluated against the bound edge and the binding is load-bearing even when no later
+clause names it.
+
+#### Measured, with both refusal controls
+
+| arm                                      | PRE      | POST     |                                                           |
+| ---------------------------------------- | -------- | -------- | --------------------------------------------------------- |
+| `-[r:E]->{1,2}`, `r` unread              | 819.6 ms | **11.4** | **71.9x**                                                 |
+| the same without `r`                     | 11.4     | 8.6      | converged                                                 |
+| ⚠️ `RETURN count(r)` — `r` IS read       | 877.1    | 877.1    | unchanged, as it must be                                  |
+| ⚠️ `-[r:E WHERE r.w > 0]->{1,2}`         | 879.2    | 879.2    | unchanged (and its answer differs: the predicate filters) |
+| single hop, `r` unread                   | 0.2      | 0.2      | untouched by design                                       |
+| **both** an unread `p` AND an unread `r` | —        | **6.4**  | the two passes compose                                    |
+
+Answers identical (599,996) between the optimized and the never-bound spellings.
+
+#### ⚠️ Mutation — five mutants, four caught, and the survivor is CORRECT
+
+| mutant                                         | verdict                          |
+| ---------------------------------------------- | -------------------------------- |
+| ignore whether the projection reads `r`        | caught, 5 tests                  |
+| allow a single hop (drop the quantifier guard) | caught, 3 tests                  |
+| allow a rel with an inline `WHERE`             | caught, 3 tests                  |
+| allow a rel with inline properties             | caught, 1 test                   |
+| drop the `nested !== undefined` guard          | **SURVIVES — and that is right** |
+
+Rather than assume the survivor was a coverage gap, I parsed a nested subpath and looked:
+
+```text
+   (x:P)(((a)-[r:E]->(b)){1,2}){1,3}(y:P)
+     outer segment:  rel = { direction, quantifier }        <- NO variable
+     nested segment: rel = { variable: 'r', label, … }      <- `r` lives here
+```
+
+So on a nested segment the outer `rel` carries no variable and `rel.variable === undefined` refuses
+first: the `nested` guard is **unreachable belt-and-braces**, kept only for consistency with
+`dropUnreadGroupBinds`' identical list. A test now pins that SHAPE, so a parser change that started
+putting a variable on the outer rel would fail loudly rather than quietly making the guard
+load-bearing. **Third time this session that chasing a survivor was right and the fourth time the
+answer was "check the implementation, not the spec"** — here the answer happened to be "genuinely
+unreachable", which is only worth saying because it was verified.
+
+#### The next target, priced here
+
+The `[match, return]` restriction both passes share is expensive:
+
+```text
+   MATCH p = (a:P)-[:E]->{1,2}(b:P) LET w = 1 RETURN count(*)   869.6 ms
+   MATCH p = (a:P)-[:E]->{1,2}(b:P)           RETURN count(*)    10.5 ms     83x
+```
+
+One `LET` re-exposes the whole cost. Generalizing to "any clause after the MATCH" needs expression
+collection from arbitrary clause kinds — and the hazard is a clause that names a variable as a bare
+string rather than a `var` node, which `freePredicateVars` would not see. That wants its own item.
+
+#### Gates
+
+`bun run check` 0 read unpiped. Suites: core 431/0, **gql 3949/0** (13 new in
+`drop-unread-edge-var.test.ts`), gremlin 1511/0, native 963/0, serialization 144/0,
+`bun run fuzz` 20/0.
