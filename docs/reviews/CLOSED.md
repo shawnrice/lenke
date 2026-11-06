@@ -68598,3 +68598,88 @@ unguarded shape item 1604 recorded for every fast-arm site in this file.
 
 `bun run check` 0 read unpiped. Suites gql 4129 (35 new), gremlin 1694, core 435, native 1056 (16
 new), serialization 144 — 0 fail. `bun run fuzz` 20/0 under the 16G cap.
+
+### Item 1608 — the vacuous-label elision on the seeded count is **5.6x and REVERTED**, because taking it at ONE site makes `count(*)` and the rows spelling disagree. ⚠️ And the owner's question — _what is faster across the board_ — is answered by MEASUREMENT: the elision, not the setter fix, and it needs all SEVEN sites
+
+Item 1607 removed the predicate from the seeded count, so a fresh profile is dominated by one thing:
+
+```text
+   66.3%  evalLabelExpr        the label test
+    4.6%  get labels
+    1.7%  matchesLabel         = 72.6%
+    8.8%  (anonymous) :5103
+    1.7%  countEquals          the seek itself
+```
+
+#### The lever, and that it is already shipped TEN times
+
+`effectiveLabel`/`vacuousLabel` (items 1551/1552) drop a label carried by EVERY vertex. They are
+used at **ten** sites in `shortcuts.ts`, all hop builders; `buildNodeCount` is not one, so a
+single-label graph pays a per-candidate test that is a tautology by construction. ⚠️ **That also
+disposes of item 1599's blocker without reopening it**: that item declined to test a candidate
+against the label BUCKET because `verticesByLabel` can disagree with `v.labels`, and left the call
+to the owner. `vacuousLabel` reads the bucket's SIZE, and that reading is already shipped.
+
+Built and measured, asserted A/B over 1000 seeded candidates:
+
+```text
+   SINGLE label (vacuous: the elision fires)
+     one-clause      13877 14255 ns  ->   2463  2516     5.6x
+   MULTI label (NOT vacuous: it cannot fire)
+     one-clause      13563 14325     ->  14001 14268     flat (CONTROL)
+     two-clause      36889 37414     ->  36374 38660     flat (CONTROL)
+```
+
+On item 149's own probe the seeded count went 5139 -> **1481** (3.5x, and 161x over unindexed) and
+its inline twin 8724 -> 2751. ⚠️ The MULTI control took two attempts: the first used `i % 2` for the
+label and `score = i % 20` for the seek key, so **parity correlated with the bucket** — every score
+bucket was all-`User` or all-`Other`, making each query all-match or all-reject on the label alone.
+`i % 3` decorrelates it (gcd(3, 20) = 1) and each bucket then holds a mix, which is the only fixture
+a label test can be measured over.
+
+#### ⚠️ WHY IT IS REVERTED: two spellings of one question, disagreeing
+
+Ten vertices all labelled `P`, then `v.labels = ['Q']` through the RAW setter, which does not
+maintain `verticesByLabel`:
+
+```text
+   MATCH (n:P) WHERE n.k = $v RETURN count(*)    5     <- with the elision
+   MATCH (n:P) WHERE n.k = $v RETURN n.k         4 rows
+```
+
+The defect class this engine is named after, as a CORRECTNESS bug. And the ten existing sites do
+**not** have it: measured, a hop count and a hop ROWS query both answer 9 after the same setter
+write, so they are uniformly elided and agree with each other. The node count would be the first
+site whose own two spellings diverge, because the rows path (`detectNodeProjection`) does not elide.
+
+#### What is faster across the board — the measurement, not the preference
+
+The alternative is to fix the raw setter so the index is never stale, which makes the elision sound
+everywhere. `label-setter-cost-probe.mjs`, 20,000 vertices:
+
+```text
+   v.labels = [different]    the raw setter today       35.2  37.1 ns
+   v.addLabel + removeLabel  the MAINTAINED API        390.6 412.9     ~200 ns a call
+   v.setProperty             for scale                 121.0 126.6
+```
+
+So index maintenance on a label write costs what the maintained API costs — **5.5x the raw setter** —
+for read gains IDENTICAL to the elision's. ⚠️ **And it is not a 150 ns patch.** `verticesByLabel`
+holds vertex OBJECTS, so the setter would have to find the canonical instance (two `Vertex`es can
+share an id, which the box comment states outright); and `addLabelToVertex` participates in the
+TX-TOUCHED SET and the UNDO LOG, so a setter mutating buckets without joining that machinery leaves
+a rolled-back transaction with a stale index — the same bug in a new place. Done properly, the raw
+setter becomes `addLabel`.
+
+**So the elision is the faster answer and the setter fix is the slower one.** The elision's single
+requirement is UNIFORMITY: the label-test line appears at **seven** sites in this file and today none
+of them elides, so the engine is consistent. Eliding at all seven keeps it consistent; eliding at
+fewer is the gap above. That is a seven-site edit to hot walks, which `executor-edits-perturb` prices
+at up to 16% on unrelated rows and so wants measured PER SITE — its own item, with its own numbers,
+rather than the tail of this one.
+
+#### Gates
+
+`bun run check` 0 read unpiped. Suites gql 4129, gremlin 1694, core 435, native 1056, serialization
+144 — 0 fail. No engine change: the elision is reverted, the findings are recorded at
+`buildNodeCount`'s label test, and one probe is added.

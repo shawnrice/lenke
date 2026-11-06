@@ -30,6 +30,14 @@ const REPS = Number(process.env.REPS ?? 20_000);
 const SHAPE = process.env.SHAPE ?? 'two-clause';
 const BUCKETS = Number(process.env.BUCKETS ?? 20);
 
+/**
+ * ⚠️ `MULTI=1` GIVES THE FIXTURE A SECOND LABEL, which is the control item 1608 needs. The vacuous-
+ * label elision fires only when the queried label covers EVERY vertex, so a single-label fixture —
+ * what most of this repo's probes use, including this one by default — measures the best case and a
+ * multi-label graph measures nothing at all. Both numbers belong in the entry.
+ */
+const MULTI = process.env.MULTI === '1';
+
 const TEXT = {
   // The bench row: a seeded equality AND a second equality.
   'two-clause': 'MATCH (u:User) WHERE u.score = $s AND u.active = true RETURN count(*) AS c',
@@ -56,7 +64,11 @@ const g = new Graph();
 for (let i = 0; i < NODES; i += 1) {
   g.addVertex({
     id: `u${i}`,
-    labels: ['User'],
+    // ⚠️ `i % 3`, NOT `i % 2`. `score = i % BUCKETS` with BUCKETS = 20, so a parity-based label
+    // CORRELATES with the seek key: every vertex in a given score bucket would share a parity and
+    // therefore a label, making each query either all-match or all-reject on the label alone. With
+    // `gcd(3, 20) = 1` each bucket holds a MIX, which is what a label test has to be measured over.
+    labels: MULTI && i % 3 === 0 ? ['Other'] : ['User'],
     properties: {
       name: `user${i}`,
       score: i % BUCKETS,

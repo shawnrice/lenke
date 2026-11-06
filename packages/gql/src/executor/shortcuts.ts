@@ -517,6 +517,74 @@ const buildNodeCount = <T>(
     // it seeded — and the label check below is needed only when it did. Applying that check
     // unconditionally would tax the unindexed path, which is the common one.
     let seeded: ReadonlySet<Vertex> | undefined;
+    /**
+     * ⚠️ ITEM 1608 — REJECTED, WITH ITS NUMBERS, and the reason is CONSISTENCY rather than trust.
+     *
+     * `effectiveLabel`/`vacuousLabel` (items 1551/1552) drop a label carried by EVERY vertex, and
+     * they are used at TEN sites in this file — every one a hop builder. `buildNodeCount` is not
+     * among them, so a single-label graph pays a per-candidate label test that is a tautology. That
+     * looked like free money, and after item 1607 removed the predicate it is the biggest remaining
+     * frame: `evalLabelExpr` 66.3% + `get labels` 4.6% + `matchesLabel` 1.7% = **72.6%**.
+     *
+     * Built and measured — an asserted A/B over 1000 seeded candidates:
+     *
+     * ```text
+     *    SINGLE label (vacuous: the elision fires)
+     *      one-clause      13877 14255 ns  ->  2463 2516      5.6x
+     *    MULTI label (NOT vacuous: it cannot fire)
+     *      one-clause      13563 14325     -> 14001 14268      flat (CONTROL)
+     *      two-clause      36889 37414     -> 36374 38660      flat (CONTROL)
+     * ```
+     *
+     * 5.6x, with the control a fixture the change COULD have reached and provably does not. And it
+     * is reverted anyway, because of what it does to a graph written through the RAW `labels`
+     * SETTER, which does not maintain `verticesByLabel` (memory's `label-index-vs-setter`, an OPEN
+     * owner decision). On ten vertices all labelled `P`, then `v.labels = ['Q']`:
+     *
+     * ```text
+     *    MATCH (n:P) WHERE n.k = $v RETURN count(*)   5     <- with the elision
+     *    MATCH (n:P) WHERE n.k = $v RETURN n.k        4 rows
+     * ```
+     *
+     * ⚠️ **TWO SPELLINGS OF ONE QUESTION, DISAGREEING** — the defect class this engine is named
+     * after, as a correctness bug rather than a slow path. The ten existing sites do NOT have this
+     * problem: measured, a hop count and a hop ROWS query both answer 9 after the same setter write,
+     * so they are uniformly elided and agree with each other. Adding an eleventh site here would
+     * make the count and the rows spelling of the SAME query disagree, because the rows path
+     * (`detectNodeProjection`) does not elide.
+     *
+     * So the lever is worth 5.6x and its blocker is not the trust question — it is that taking it
+     * HERE alone breaks spelling consistency.
+     *
+     * ⚠️ WHAT IS FASTER ACROSS THE BOARD, asked and measured rather than chosen. The alternative is
+     * to fix the raw setter so `verticesByLabel` is never stale, which would make the elision sound
+     * everywhere. `label-setter-cost-probe.mjs`, 20,000 vertices:
+     *
+     * ```text
+     *    v.labels = [different]    the raw setter today       35.2  37.1 ns
+     *    v.addLabel + removeLabel  the MAINTAINED API        390.6 412.9      ~200 ns a call
+     *    v.setProperty             for scale                 121.0 126.6
+     * ```
+     *
+     * So maintaining the index on a label write costs what the maintained API costs — **5.5x the
+     * raw setter** — for READ gains identical to the elision's. And it is not a 150 ns patch:
+     * `verticesByLabel` holds vertex OBJECTS (so the setter would have to find the canonical
+     * instance, since two `Vertex`es can share an id) and `addLabelToVertex` participates in the
+     * TX-TOUCHED SET AND THE UNDO LOG. A setter that mutated the buckets without joining that
+     * machinery would leave a rolled-back transaction with a stale index — the same bug in a new
+     * place. Doing it properly makes the raw setter into `addLabel`.
+     *
+     * **So the faster answer is the elision, not the setter fix**: all of the read win, no write
+     * cost, no new machinery. Its one requirement is UNIFORMITY — this line appears at SEVEN sites
+     * in this file and today none of them elides, so the engine is consistent. Eliding at all seven
+     * keeps it consistent; eliding at fewer is the count-vs-rows gap above. That is a seven-site
+     * edit to hot walks, which `executor-edits-perturb` prices at up to 16% on unrelated rows and
+     * therefore wants measured PER SITE — its own item, not the tail of this one.
+     *
+     * Do not re-derive any of this: the read numbers are above, the write numbers are here, and the
+     * measurements are `two-conjunct-seek-probe.mjs` with `MULTI=1` as the control plus
+     * `label-setter-cost-probe.mjs`.
+     */
     // Whether that seed made the predicate redundant — see `soleEqualityKey` and the assignment
     // below. FALSE on the bucket route, which never seeks.
     let exactSeed = false;
