@@ -172,7 +172,58 @@ const evalLabelExpr = (expr: LabelExpr, labels: ReadonlySet<string>): boolean =>
 export const labelsMatch = (labels: ReadonlySet<string>, expr: LabelExpr): boolean =>
   evalLabelExpr(expr, labels);
 
-/** A node matches when it has no label constraint or its label set satisfies it. */
+/**
+ * A node matches when it has no label constraint or its label set satisfies it.
+ *
+ * ⚠️ ITEM 1599 — TWO REJECTED LEVERS, and the ablation that made them look worth having.
+ *
+ * This is the most-called helper in the hot paths (~70 sites in `shortcuts.ts` and
+ * `hop-projection.ts` alone), and after item 1598 took the predicate cost out from under it,
+ * `evalLabelExpr` showed **46.1% SELF time** in a profile of the 400-hit seeded count. ⚠️ Item
+ * 1597 had priced the same frame at "~1.1x, NOT a target" when it was 8.9% — a share is a share OF
+ * something, and closing a neighbouring target re-prices it. So it was re-priced properly, by
+ * ABLATION at `buildNodeCount`'s seeded loop (the test replaced with `() => true`: a wrong answer
+ * measured only to price the right one):
+ *
+ * ```text
+ *    with the label test      11968  12494  12110 ns
+ *    ablated                   7804   8910   7829        1.53x
+ *    the UNLABELLED query      7513   8019   7749        agrees, by a different route
+ * ```
+ *
+ * **1.53x of that query is the label test**, confirmed twice. Both levers aimed at it FAILED:
+ *
+ * 1. **Compiling the test to a per-query closure** — item 1339's "answer it at the call site"
+ *    applied to the label test: `(v) => v.labels.has(name)` resolved once, so neither
+ *    `matchesLabel`'s `undefined` check nor `evalLabelExpr`'s `switch` is re-decided per element,
+ *    plus folding the loop-invariant `seeded !== undefined` into the gate. Built, wired and
+ *    measured **FLAT** (12110/12419/12895 against 11968/12494/12110). The dispatch was already
+ *    being inlined, and `evalLabelExpr`'s 46% self-time is V8 charging it the inlined getter and
+ *    `Set.has`. REVERTED rather than kept, since it buys nothing.
+ * 2. **Testing by OBJECT IDENTITY against the label bucket** (`verticesByLabel.get(name).has(v)`),
+ *    which skips the getter and the string hash both. `label-test-cost-probe.mjs` prices the three
+ *    tests over the same 400 candidates, twice:
+ *
+ * ```text
+ *    v.labels.has(name)   getter + string hash   5.52  5.48 ns
+ *    hoisted Set          string hash only       3.25  3.29
+ *    bucket.has(v)        object identity        3.95  3.92
+ *    NULL CONTROL         no test at all         0.34  0.34
+ * ```
+ *
+ * So identity is **slower than hoisting the getter** and worth ~1.6 ns a candidate over what the
+ * engine does today — 400 × 1.6 ns is ~5% of the query. ⚠️ **That refutes the lever AND removes a
+ * reason to settle the owner decision it was blocked on**: memory's `label-index-vs-setter` records
+ * that `verticesByLabel` is not maintained by the `v.labels =` setter, so the bucket and `v.labels`
+ * can disagree — and the engine already trusts the bucket on the UNSEEDED route of the same
+ * function. That remains worth settling for CORRECTNESS, and is now known not to be worth anything
+ * for speed.
+ *
+ * What is left of the 1.53x is not addressable from here. The test's own cost is 5.5 ns a candidate
+ * of which only the ~2.2 ns getter could go, and the getter must be read per candidate. The
+ * remaining ~5 ns a candidate is the test's PRESENCE in the loop rather than the test — the shape
+ * `ts-closure-size-is-load-bearing` describes — which no change to this function can recover.
+ */
 export const matchesLabel = (v: Vertex, expr: LabelExpr | undefined): boolean =>
   expr === undefined || evalLabelExpr(expr, v.labels);
 

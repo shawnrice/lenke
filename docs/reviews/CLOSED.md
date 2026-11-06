@@ -67473,11 +67473,18 @@ wants its own item with the null matrix in front of it.
 > `structuralEq`, no null rejection) is correct for EVERY value, null included. The danger was only
 > ever in routing `props` into the existing `eqProps` closure.
 
-#### Also recorded, and NOT a target
+#### ~~Also recorded, and NOT a target~~ — ⚠️ **THIS VERDICT WAS WRONG, see item 1599**
 
 `evalLabelExpr` at 8.9% would be ~1.1x on its own — below this repo's noise floor for an executor
 edit, and memory's `label-index-vs-setter` note already blocks the adjacent idea (trusting
 `verticesByLabel`) on correctness grounds. Mentioned because 9% looks like money and is not.
+
+> ⚠️ **It is 1.53x, not ~1.1x.** Item 1598 took the predicate cost out from under this frame and
+> its share went 8.9% -> 46.1%; an ablation at the call site then priced the label test at **1.53x**
+> of the same query, confirmed by the unlabelled query agreeing. The dismissal was arithmetic on a
+> share, not a measurement. Item 1599 re-priced it properly and then REFUTED both levers aimed at
+> it — so the conclusion "not a target" survives, for reasons that have nothing to do with the
+> number given here.
 
 #### Gates
 
@@ -67594,3 +67601,96 @@ carries bindings and is shared by every pattern shape, where this one is a close
 `bun run check` 0 read unpiped. Suites gql 4048 (10 new), gremlin 1666, core 435, native 1031,
 serialization 144 — 0 fail. `bun run fuzz` 20/0 under the 16G cap. `bun run spelling` at
 `SPELL_N=200000 SPELL_REPS=9`: unchanged flag set.
+
+### Item 1599 — the label test IS **1.53x** of the seeded count, not the ~1.1x item 1597 priced — and **BOTH levers aimed at it are REFUTED**: compiling it per query measures FLAT, and the bucket-identity test is SLOWER than hoisting the getter. ⚠️ Which also removes the PERF reason to settle the `label-index-vs-setter` decision
+
+Profile-first, and the profile had moved. Item 1598 took most of the predicate cost out of the
+seeded count, so a fresh profile of the same query nominated a different frame:
+
+```text
+   46.1%   412.2ms   390x   evalLabelExpr        <- was 8.9% one item ago
+   11.7%   104.4ms    99x   get labels
+    9.5%    85.3ms    81x   structuralEq
+    5.4%    48.5ms    46x   (anonymous) :4906     the specialized predicate closure
+    3.4%    30.6ms    29x   propOf
+    2.5%    22.2ms    21x   matchesLabel
+```
+
+848 samples. ⚠️ **Item 1597 priced this exact frame at "~1.1x, NOT a target — mentioned because 9%
+looks like money and is not", and that verdict was stale within one item.** A share is a share OF
+something, and closing a neighbouring target re-prices it. The stale direction here is the
+unusual one: the entry was too PESSIMISTIC.
+
+#### Re-priced by ablation, which is the only honest way (item 1104)
+
+The test at `buildNodeCount`'s seeded loop, replaced with `() => true` — a wrong answer, built
+only to price the right one — one shape per process, 20,000 vertices, 400 hits:
+
+```text
+   with the label test      11968  12494  12110 ns
+   ablated                   7804   8910   7829        1.53x
+   the UNLABELLED query      7513   8019   7749        agrees, by a different route
+```
+
+**1.53x**, confirmed twice by independent routes. So the frame is real money, and item 1597 was
+wrong to dismiss it. What follows is why it is nonetheless unreachable.
+
+#### Lever 1: compile the label test per query — FLAT, reverted
+
+Item 1339's "answer it at the call site" applied to the label test rather than to a comparison.
+`matchesLabel` is called from ~70 sites with ~70 `LabelExpr` shapes, so its `undefined` check and
+`evalLabelExpr`'s `switch` are re-decided per ELEMENT everywhere; `compileLabelTest(expr)` resolved
+the single-label case to `(v) => v.labels.has(name)` once per query, and the loop-invariant
+`seeded !== undefined` folded into the gate alongside it.
+
+```text
+   PRE    11968  12494  12110 ns
+   POST   12110  12419  12895    FLAT
+```
+
+Built, wired, measured, **reverted**. The dispatch was already being inlined — `evalLabelExpr`'s
+46% self-time is V8 charging it the inlined getter and `Set.has`, not a call it actually makes. A
+profile frame naming a function does not mean the function's own machinery is the cost.
+
+#### Lever 2: test by OBJECT IDENTITY against the label bucket — SLOWER than hoisting
+
+`verticesByLabel.get(name).has(v)` skips the `labels` getter and the string hash both, and was the
+obvious next move. `label-test-cost-probe.mjs` prices the three tests over the same 400 candidates,
+two runs:
+
+```text
+   v.labels.has(name)   getter + string hash   5.52  5.48 ns
+   hoisted Set          string hash only       3.25  3.29
+   bucket.has(v)        object identity        3.95  3.92
+   NULL CONTROL         no test at all         0.34  0.34
+```
+
+Identity is **slower than the hoisted string hash** and saves ~1.6 ns a candidate against what the
+engine does today — 400 x 1.6 ns is ~5% of the query, under the noise floor for an executor edit.
+
+⚠️ **This also removes the PERF reason to settle an open owner decision.** The lever was blocked on
+memory's `label-index-vs-setter`: `verticesByLabel` is not maintained by the `v.labels =` setter, so
+the bucket and `v.labels` can disagree, and the engine ALREADY trusts the bucket on the unseeded
+route of the same function — meaning one query can be answered from either source today. That is
+still worth settling for CORRECTNESS, and is now known to be worth nothing for speed, so it should
+not be priced as an optimization again.
+
+#### What is left of the 1.53x, and why it is not here
+
+The test's own cost is 5.5 ns a candidate, of which only the ~2.2 ns getter could go — and the
+getter must be read per candidate, since each candidate is a different vertex. The remaining ~5 ns
+a candidate is the test's PRESENCE in the loop rather than the test: ablating it also deletes a
+branch and shrinks the body, which is the shape memory's `ts-closure-size-is-load-bearing`
+describes. No change to `matchesLabel` or its call site can recover that half.
+
+#### Also recorded: a five-shape probe hid this entirely
+
+`gql-seek-revalidation-probe.mjs` runs five shapes in ONE process and reported the labelled and
+unlabelled seeded counts at 11371 and 10957 — **1.04x**, where the isolated instrument says 1.60x.
+Items 737 and 762's rule, costing a target rather than inventing one this time: had the loop trusted
+that row, the label test would have looked like 4% instead of 53%.
+
+#### Gates
+
+No engine change — the REJECTED notes land on `matchesLabel` and one probe is added. `bun run
+check` 0 read unpiped. Suites unchanged from item 1598.
