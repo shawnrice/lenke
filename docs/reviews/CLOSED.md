@@ -62684,8 +62684,7 @@ performance — and it reframes the whole item from a correctness question into 
 > happens today.
 
 That observability is now explicitly acceptable, so the reverse-order lift is the next item's target:
-**13.750 → ~4.3 ms, 3.2x, on a shape the engine currently declines in full.** The test `a declining
-conjunct is not overtaken` pins the current boundary and will need to move with it.
+~~**13.750 → ~4.3 ms, 3.2x, on a shape the engine currently declines in full.**~~ — ✅ **TAKEN AT ITEM 1544 at 2.51x** (13.952 → 5.568; the ~4.3 estimate was against a baseline items 1283/1287 have since moved, which is why the PRE was re-measured). Four tests pinned the old boundary and were updated, each keeping its "still in the residual" half.
 
 Two consequences to handle rather than assume:
 
@@ -62701,3 +62700,104 @@ Two consequences to handle rather than assume:
 
 `bun run check` 0 read unpiped. gql 3863/0, native 963/0 (three runs; one 962/1, which is this very
 divergence). No engine change.
+
+### Item 1544 — SHIPPED, **2.51x**: the conjunct lift is no longer a PREFIX, so a liftable conjunct lifts from any position. `<unliftable> AND n.a = 50` 13.952 → 5.568 ms, and the two spellings of that question now cost the SAME. Five controls flat, and the vanish mutant item 1284 found is caught by 20 tests
+
+The owner's decision at item 1543 — evaluation order is chosen for SPEED per engine — authorized the
+one thing `executor.ts` had been declining on purpose. This takes it.
+
+#### The change
+
+`directEqProps` scanned the flattened `AND` chain and `break`ed at the first conjunct it could not
+read; `stop` was that index and everything from there on became the residual. So a liftable conjunct
+after an unreadable one did not lift, and its siblings' lifts were forfeited with it.
+
+```ts
+-  let stop = conjuncts.length;
+-      stop = i;
+-      break;                     // ×5 sites
+-  const residual = residualOf(conjuncts.slice(stop), …);
++  const skipped: Expr[] = [];
++      skipped.push(conjunct);
++      continue;                  // ×5 sites
++  const residual = residualOf(skipped, …);
+```
+
+**The other guard is untouched and still does its job.** `residualOf` declines the whole lift when a
+raise-capable family (`truth`, `notTruth`, `cmp`, `path`) would lift ahead of a residual, so this
+widens only `eq`, `nulls` and `member` — the families the file itself notes "cannot raise: equality
+is total, `isNullish` returns a plain boolean, and membership is built on equality".
+
+#### MEASURED — p25 of 12 reps, 200,000 vertices, PRE re-measured rather than taken from the comment
+
+The note in the source priced this at "13.750 → ~4.3 (3.2x)". **Re-measuring first was the right
+call**: the target reproduces at 13.952, but the baseline it would land on has moved (items
+1283/1287 sped up the lifted arms), so the honest figure is **2.51x**, not 3.2x.
+
+| arm                                     | PRE       | POST                      |           |
+| --------------------------------------- | --------- | ------------------------- | --------- |
+| `<unliftable> AND n.a = 50`             | 13.952 ms | **5.568** (5.544 / 5.593) | **2.51x** |
+| `<unliftable> AND n.a = 50 AND n.b = 0` | 13.985    | **5.586** (5.553 / 5.619) | **2.50x** |
+
+**The headline is the convergence.** `<unliftable> AND n.a = 50` now costs 5.568 against
+`n.a = 50 AND <unliftable>`'s 5.594 — the same question, two spellings, the same price. That is the
+equivalent-spelling property CLAUDE.md names, restored on a pair that was 2.5x apart and answering
+identically the whole time. Before the change the reverse spelling was even slower than the
+unliftable conjunct ALONE (13.952 against 8.595), the "more selective query is slower" signature.
+
+| control                     | PRE   | POST (median of 5) |                                           |
+| --------------------------- | ----- | ------------------ | ----------------------------------------- |
+| `n.a = 50` alone            | 2.427 | 2.465              | flat                                      |
+| `n.a = 50 AND n.b = 0`      | 4.702 | 4.813              | flat (+2.4%, inside the 4.60-4.92 spread) |
+| `n.a = 50 AND <unliftable>` | 5.741 | 5.594              | flat                                      |
+| `<unliftable>` alone        | 8.595 | 8.227              | flat, slightly better                     |
+| no `AND` at all             | 3.669 | 3.544              | flat                                      |
+
+#### ⚠️ FOUR TESTS PINNED THE OLD BOUNDARY, and one of them said so in its own words
+
+> THE BOUNDARY: a decliner FIRST lifts nothing at all. **This is the assertion that fails if the
+> prefix rule is ever widened to pick liftable conjuncts out of the middle of a chain.**
+
+It was widened, so it failed, exactly as designed. All four were updated to the new rule — and each
+kept the half that still has teeth: **the unreadable conjunct is STILL IN THE RESIDUAL.**
+
+That distinction is the whole item. Item 1284's mutation run replaced these same five
+`stop = i; break;` sites with a bare `continue;` and found the conjunct **VANISHES** — neither
+lifted nor residual — so the predicate answers a SUPERSET, and **all 3217 tests passed**. The
+difference between that bug and this change is one line: `skipped.push(conjunct)`.
+
+One of the four stays a full decline for an unrelated reason worth keeping straight: `NOT (m.k = 1)
+AND n.k = 1` declines everything because `residualOf` rejects a residual with a free variable other
+than `ownVar`, not because of the prefix rule.
+
+#### MUTATION — the vanish mutant is now caught by 20 tests
+
+| mutant                                                          |            |                                        |
+| --------------------------------------------------------------- | ---------- | -------------------------------------- |
+| `vanish-all-sites` (drop `skipped.push` at all five)            | **CAUGHT** | 3843 pass **20** fail                  |
+| `vanish-one-site` (drop it at one nested site)                  | CAUGHT     | 3862 pass 1 fail                       |
+| `residual-empty` (back to lifting everything, residual dropped) | CAUGHT     | 3843 pass 20 fail                      |
+| `residual-reversed`                                             | SURVIVES   | consistent with the policy — see below |
+
+So the suite now has 20 assertions standing where item 1284's had none. The two that catch it are
+the `GQL fuzz: Kleene boolean-algebra laws` and `feature cross-consistency` properties, which is
+pleasing: a generative property test caught the superset, not a hand-written case.
+
+`residual-reversed` surviving is **not** a gap. Within the residual the conjuncts are `and`-combined
+and the generic evaluator settles on FALSE in written order, so reversing them changes only which
+raise happens first — and item 1543's policy makes that free. Pinning it with a test would encode a
+constraint the owner has explicitly lifted.
+
+#### Did this widen the known AND/UNKNOWN divergence? NO
+
+Lifting more could in principle make TS short-circuit past more faults. Checked rather than assumed:
+`divergence-1542-min.test.ts`'s `KNOWN_DIVERGENT` set is unchanged — every other reduction still
+agrees — and `bun run fuzz` read **20/0 three times**.
+
+#### Gates
+
+`bun run check` 0 read unpiped. core 431/0, gql **3863**/0, gremlin 1494/0, native 963/0,
+serialization 144/0, `bun run fuzz` 20/0 three times. Mutants run under `timeout 1800 systemd-run
+--user --scope -p MemoryMax=16G -p MemorySwapMax=0`, restoring before each, pristine copy under
+`crates/lenke-engine/target/`; tree verified identical after. The probe is
+`packages/native/conjunct-lift-order-probe.mjs`, which carries the table.

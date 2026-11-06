@@ -123,10 +123,12 @@ describe('a nested AND is flattened into its conjuncts (item 1271)', () => {
     }
   });
 
-  test('an UNLIFTABLE conjunct inside the nest still declines the whole chain', () => {
-    // The decline is per-chain, not per-level: one conjunct this loop cannot read takes the whole
-    // predicate to the generic evaluator. Flattening must not change that, only what counts as
-    // readable. `n.a + 1 = 2` is an arithmetic left operand, which `asPropCompare` does not match.
+  test('an UNLIFTABLE conjunct inside the nest becomes the residual, siblings still lift', () => {
+    // ⚠️ IT USED TO DECLINE THE WHOLE CHAIN, per-chain rather than per-level. Item 1544 made the
+    // unreadable conjunct the RESIDUAL instead, so its liftable siblings lift wherever they sit —
+    // flattening still must not change what counts as readable, only what the decline costs.
+    // The answer assertion below is the half that keeps its teeth: a conjunct that VANISHED rather
+    // than reaching the residual would answer a superset (item 1284's surviving mutant). `n.a + 1 = 2` is an arithmetic left operand, which `asPropCompare` does not match.
     const where: Expr = {
       kind: 'and',
       items: [
@@ -155,7 +157,7 @@ describe('a nested AND is flattened into its conjuncts (item 1271)', () => {
     };
     const pred = compilePredicate(undefined, where, 'n');
 
-    expect(pred.eqProps).toBeUndefined();
+    expect(pred.eqProps?.map((e) => e.key)).toEqual(['c']);
     expect(pred.where).toBeDefined();
 
     // And it still answers: `all`, `nulled` and `absent` all have a = 1, c = 3.

@@ -95,13 +95,20 @@ describe('the lift fires, and only where it is element-local', () => {
     expect(pred.where).not.toBeUndefined();
   });
 
-  test('CONTROL: the unreadable conjunct FIRST still declines the whole chain', () => {
-    // Only a PREFIX lifts, so a chain that opens with the unreadable conjunct lifts nothing — the
-    // boundary that keeps executed order equal to written order.
+  test('the unreadable conjunct FIRST no longer forfeits the lift (item 1544)', () => {
+    // ⚠️ THIS ASSERTION IS INVERTED FROM WHAT IT WAS, and deliberately. It used to read
+    // `eqProps` undefined, pinning the PREFIX rule: a chain opening with an unreadable conjunct
+    // lifted nothing, which kept executed order equal to written order. Item 1544 dropped that
+    // rule — the owner settled at item 1543 that evaluation order is chosen for SPEED per engine —
+    // and the same question spelled the two ways measured 13.952 ms against 5.741.
+    //
+    // What this test still protects is unchanged and is the half that matters: the unreadable
+    // conjunct is STILL IN THE RESIDUAL. Item 1284's mutation run showed that making these sites
+    // `continue` WITHOUT collecting the conjunct makes it vanish — neither lifted nor residual —
+    // and the predicate answers a SUPERSET while all 3217 tests pass.
     const pred = compilePredicate(undefined, parsePredicate("upper(n.s) = 'X' AND n.k = 1"), 'n');
 
-    expect(pred.eqProps).toBeUndefined();
-    expect(pred.cmpProps).toBeUndefined();
+    expect((pred.eqProps ?? []).map((e) => e.key)).toEqual(['k']);
     expect(pred.where).not.toBeUndefined();
   });
 
@@ -114,19 +121,23 @@ describe('the lift fires, and only where it is element-local', () => {
   //
   // Each one checks the ROUTE (nothing lifted, the tail still compiled) and then the ANSWER, since
   // the route alone would not show what dropping the conjunct costs.
-  test('⚠️ a NEGATED compare on another variable declines, and is not dropped', () => {
+  test('⚠️ a NEGATED compare on another variable declines the WHOLE chain', () => {
+    // This one still declines everything, and for a different reason from the prefix rule item
+    // 1544 removed: `residualOf` rejects a residual with a free variable other than `ownVar`, so
+    // the predicate cannot be element-local at all. That guard is untouched.
     const pred = compilePredicate(undefined, parsePredicate('NOT (m.k = 1) AND n.k = 1'), 'n');
 
     expect(pred.eqProps).toBeUndefined();
     expect(pred.where).not.toBeUndefined();
   });
 
-  test('⚠️ a PER-ROW membership haystack declines, and is not dropped', () => {
-    // A list whose members are not closed cannot be lifted — the haystack differs per row.
+  test('⚠️ a PER-ROW membership haystack is not LIFTED and not DROPPED', () => {
+    // A list whose members are not closed cannot be lifted — the haystack differs per row. Since
+    // item 1544 the SIBLING equality lifts anyway; the membership must still reach the residual.
     const pred = compilePredicate(undefined, parsePredicate('n.k IN [n.j] AND n.k = 1'), 'n');
 
-    expect(pred.eqProps).toBeUndefined();
     expect(pred.memberProps).toBeUndefined();
+    expect((pred.eqProps ?? []).map((e) => e.key)).toEqual(['k']);
     expect(pred.where).not.toBeUndefined();
   });
 

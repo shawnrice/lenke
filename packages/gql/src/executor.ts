@@ -5517,11 +5517,28 @@ const directEqProps = (
   // when the unliftable conjunct can RAISE, because short-circuiting on FALSE would then skip a
   // throw that happens today. It needs its own argument and its own item; the test
   // `a declining conjunct is not overtaken` pins the boundary so it cannot be taken by accident.
-  let stop = conjuncts.length;
+  /**
+   * The conjuncts this loop could not read, in WRITTEN ORDER — the residual.
+   *
+   * ⚠️ IT USED TO BE A PREFIX RULE and that forfeited every lift after the first unreadable
+   * conjunct (item 1544). `stop` was the index of the first conjunct the scan could not read and
+   * everything from there on became the residual, so `<unliftable> AND n.a = 50` lifted NOTHING
+   * while `n.a = 50 AND <unliftable>` lifted the equality. Two spellings of one question, measured
+   * 13.952 ms against 5.741 — the equivalent-spelling class CLAUDE.md names, answering identically.
+   *
+   * Collecting the unreadable ones instead lets a liftable conjunct lift from ANY position. That
+   * reorders evaluation: the lifted families run before the residual, so a row the lift rejects
+   * never reaches a residual that might have raised. The engine declined exactly this on those
+   * grounds until the owner settled it at item 1543 — evaluation order is chosen for SPEED per
+   * engine, and an error one side raises where the other short-circuits past it is accepted.
+   *
+   * The OTHER guard is untouched and still does its job: `residualOf` declines the whole lift when
+   * a raise-capable family (`truth`, `notTruth`, `cmp`, `path`) would lift ahead of a residual, so
+   * this widens only the families that cannot raise.
+   */
+  const skipped: Expr[] = [];
 
-  for (let i = 0; i < conjuncts.length; i++) {
-    const conjunct = conjuncts[i];
-
+  for (const conjunct of conjuncts) {
     // A BARE PROPERTY standing alone as the predicate (`WHERE n.flag`), which this used to
     // decline along with the whole chain — it is not a `compare`. Item 874 counted the cost of
     // that: the generic evaluator does a binding `Map` lookup and a closure call per scanned
@@ -5569,8 +5586,8 @@ const directEqProps = (
     const neg = liftNegatedCompare(conjunct, ownVar, eq, cmp, path);
 
     if (neg === 'stop') {
-      stop = i;
-      break;
+      skipped.push(conjunct);
+      continue;
     }
 
     if (neg === 'taken') {
@@ -5619,8 +5636,8 @@ const directEqProps = (
     const mem = liftMembership(conjunct, ownVar, member);
 
     if (mem === 'stop') {
-      stop = i;
-      break;
+      skipped.push(conjunct);
+      continue;
     }
 
     if (mem === 'taken') {
@@ -5628,8 +5645,8 @@ const directEqProps = (
     }
 
     if (conjunct.kind !== 'compare') {
-      stop = i;
-      break;
+      skipped.push(conjunct);
+      continue;
     }
 
     // `asPropCompare` is the seed-hint extractor's own reader: it handles both operand orders
@@ -5642,8 +5659,8 @@ const directEqProps = (
 
     if (pathc !== null) {
       if (pathc.variable !== ownVar) {
-        stop = i;
-        break;
+        skipped.push(conjunct);
+        continue;
       }
 
       path.push({ path: pathc.path, op: pathc.op, value: compileExpr(pathc.value) });
@@ -5653,8 +5670,8 @@ const directEqProps = (
     const pc = asPropCompare(conjunct);
 
     if (pc === null || pc.variable !== ownVar) {
-      stop = i;
-      break;
+      skipped.push(conjunct);
+      continue;
     }
 
     // AN ORDERING COMPARISON LIFTS TOO, which this used to decline — "merely unimplemented",
@@ -5713,7 +5730,7 @@ const directEqProps = (
   // expression when a single conjunct is left, and an `and` of the rest otherwise, rebuilt from
   // the FLATTENED list so that a two-conjunct residual is flat even if the source parenthesised
   // it.
-  const residual = residualOf(conjuncts.slice(stop), ownVar, { truth, notTruth, cmp, path });
+  const residual = residualOf(skipped, ownVar, { truth, notTruth, cmp, path });
 
   if (residual === 'decline') {
     return null;

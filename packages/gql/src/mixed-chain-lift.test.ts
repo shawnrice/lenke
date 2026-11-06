@@ -79,11 +79,18 @@ describe('a mixed AND chain lifts its prefix (item 1284)', () => {
     expect(two.eqProps?.length ?? 0).toBe(2);
     expect(two.where).toBeDefined();
 
-    // THE BOUNDARY: a decliner FIRST lifts nothing at all. This is the assertion that fails if
-    // the prefix rule is ever widened to pick liftable conjuncts out of the middle of a chain.
+    // ⚠️ THE BOUNDARY MOVED AT ITEM 1544. This used to assert that a decliner FIRST lifts nothing
+    // at all, and its own comment said it was "the assertion that fails if the prefix rule is ever
+    // widened to pick liftable conjuncts out of the middle of a chain". It was widened, on purpose:
+    // the owner settled at item 1543 that evaluation order is chosen for SPEED per engine, and the
+    // two spellings measured 13.952 ms against 5.741 while answering identically.
+    //
+    // The half that still has teeth is the residual. Item 1284's mutation run showed that making
+    // the decline sites `continue` WITHOUT collecting the conjunct makes it VANISH — neither
+    // lifted nor residual — so the predicate answers a superset with every test passing.
     const rev = compilePredicate(undefined, { kind: 'and', items: [decl, eq('a', 50)] }, 'n');
 
-    expect(rev.eqProps).toBeUndefined();
+    expect(rev.eqProps?.length ?? 0).toBe(1);
     expect(rev.cmpProps).toBeUndefined();
     expect(rev.where).toBeDefined();
 
