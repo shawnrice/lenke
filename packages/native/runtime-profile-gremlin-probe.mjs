@@ -19,6 +19,22 @@
  * which throws nothing useful — it just measures the wrong thing.
  *
  * ⚠️ `@lenke/gremlin` is a BUILT DIST. A source edit reaches this probe only after `bun run build`.
+ *
+ * ⚠️ EVERY `SHAPES` ENTRY IS BUILT ONCE, AT MODULE LEVEL, AND THE PLAN OBJECT IS REUSED ACROSS REPS.
+ * That is the right isolation for a profile — it measures EXECUTION and keeps plan construction out
+ * of the frames — but it means this probe cannot see construction at all, and a caller whose values
+ * vary pays it on every call because Gremlin has no parameter binding (item 1577). Item 1577 cut
+ * construction 4.27x and not one row here moved, correctly.
+ *
+ * The gap is covered by `gremlin-build-share-probe.mjs`, which times a REUSED plan against one built
+ * per call. Item 1578 measured construction, even after 1577, at a MEDIAN of **48.1%** of
+ * `V().count()` and **51.5%** of `V(id)` over three runs each — and at noise (-0.4%, -0.3%) for
+ * `hophas` and `valuesk`, whose execution dwarfs it. So a number from THIS probe is the serving cost
+ * only for shapes whose execution dominates; for a cheap point query it is roughly HALF of it.
+ *
+ * ⚠️ Take the MEDIAN of several runs, not one. The `reused` arm is steady (0.137-0.147 us for
+ * `control`) but the `fresh` arm spikes — 0.262, 0.284, then 1.006 across three runs — which is the
+ * GC of allocating a plan per call, and a single run can read the share as high as 85.8%.
  */
 import { Graph } from '@lenke/core';
 import {

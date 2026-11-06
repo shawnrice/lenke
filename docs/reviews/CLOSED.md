@@ -65484,3 +65484,72 @@ Rewritten as a plan check. A loud failure is the good outcome; items 1569/1572/1
 
 `bun run check` 0 read unpiped. Suites: core 431/0, gql 3964/0, **gremlin 1551/0** (7 new in
 `step-fn-marker.test.ts`), native 963/0, serialization 144/0, `bun run fuzz` 20/0.
+
+### Item 1578 — ⚠️ **THE 32-SHAPE GREMLIN PROBE BUILDS EVERY PLAN ONCE AND REUSES IT, so it has never measured plan construction** — which is why item 1577's 4.27x moved no row in it. Measured properly, construction is a MEDIAN **48.1%** of `V().count()` and **51.5%** of `V(id)` even after 1577, and noise for anything expensive. ⚠️ My first attempt reported a **NEGATIVE 95.9%** build share
+
+Item 1577 cut plan construction 4.27x, so the obvious next step was re-measuring the Gremlin shapes.
+They cannot move, and finding out why is the result.
+
+#### The standing instrument measures execution only
+
+`runtime-profile-gremlin-probe.mjs` defines every `SHAPES` entry at module level —
+`control: traversal(V(), count())` — and the timed loop is `toArray(plan, g)` with the SAME plan
+object every rep. That is the right isolation for a profile: it keeps construction out of the frames.
+But it means a caller whose values vary pays something the probe cannot see, because **Gremlin has no
+parameter binding** — the value is baked into the step, so there is no plan to reuse (item 1577).
+
+#### ⚠️ MY FIRST MEASUREMENT OF THE GAP WAS NONSENSE, AND THE SIGN IS WHAT CAUGHT IT
+
+Four shapes in one process reported:
+
+```text
+   control   reused 0.142  fresh 0.265   build share  46.6%
+   point     reused 1.139  fresh 0.581   build share -95.9%     <- fresh plans FASTER than reused
+   hophas    reused 884.4  fresh 884.4                 0.0%
+   valuesk   reused 531.0  fresh 515.7                -3.0%
+```
+
+A negative build share is impossible, and `point`'s reused arm reading 1.139 against item 1577's
+0.214 for the same query was the second tell. **All four arms share one `toArray` call site, which
+goes megamorphic** — item 762's dispatch pollution, and the repo's own one-shape-per-process rule,
+which I had just violated. `gremlin-build-share-probe.mjs` takes `SHAPE=<name>` for that reason, and
+its header records the -95.9% as the worked example.
+
+#### What construction actually costs, one shape per process, three runs each
+
+```text
+   shape     build share (3 runs)          median     reused        fresh
+   control   48.1%  47.6%  85.8%           48.1%      0.137-0.147   0.262-1.006
+   point     51.5%  46.3%  72.7%           51.5%      0.427-0.616   1.145-1.565
+   hophas    -0.4%                          noise     870.1         867.0
+   valuesk   -0.3%                          noise     513.1         511.5
+```
+
+**So construction is roughly HALF of a cheap call and nothing at all for an expensive one.** The
+split is clean: a point lookup or an O(1) count is construction-dominated, and anything that walks
+the graph is not. That is the useful decision rule — further construction work only pays for the
+serving shape, which is exactly where a server lives.
+
+⚠️ **Take the MEDIAN of several runs.** The `reused` arm is steady (0.137-0.147 for `control`) while
+the `fresh` arm spikes — 0.262, 0.284, then 1.006 — which is the GC of allocating a plan per call. A
+single run can read the share as high as 85.8%, and I nearly recorded 55.9%/59.2% from one run each
+into the probe's own header before re-running.
+
+#### What is left, and the structural fix
+
+~0.18 us of construction remains on `V().count()`: one step object, one closure, one plan object, the
+`[...plan.steps, step]` spread (O(n) per step, so O(n²) per plan — trivial at 2-4 steps), plus
+`analyzeStep` and `maskOfSteps` per step-constructor call. None of it is memoizable while the value
+varies.
+
+**The structural fix is Gremlin parameter binding** — one compiled plan serving many values, which is
+what GQL's `$n` plus its parse/plan cache already does. TinkerPop has `Bindings` for exactly this, so
+it would be conformant rather than invented syntax. ⚠️ And `bind(graph)` is NOT it: it closes over the
+graph only. That is a surface-language feature, not a perf tweak, so it is recorded here rather than
+attempted.
+
+#### Gates
+
+No engine change — a new probe, plus a documentation block on the existing one recording what it does
+and does not measure. `bun run check` 0 read unpiped. Suites: gremlin 1551/0, native 963/0; the rest
+unchanged from item 1577.
