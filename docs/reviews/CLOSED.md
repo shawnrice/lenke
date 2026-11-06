@@ -67369,3 +67369,106 @@ surviving mutant, and reading it as one would have hidden a real gap.
 GQL is 0.60x on values and 0.06x on count. A seeded count of 400 elements costing 14.5 us where
 reading the bucket size costs 0.9 is the same closed-form opportunity on the other surface —
 `detectCountShortcut` has an index-seeded path, so the question is why it is not reached here.
+
+### Item 1597 — GQL's seeded count is **not failing to seek** (10.78x and 142.78x over unindexed) — it seeks and then **RE-VALIDATES EVERY CANDIDATE**, which a profile puts at 75% predicate plus 9% label. The mechanism is named: GQL's `SeedCandidate` has no exactness flag, where Gremlin's `Candidate` has `removable`. Priced at 4-7x and NOT built this tick
+
+Item 1596's pricing left GQL losing to Gremlin on the 400-hit seeded count — 14.5 us against 948 ns
+after that item's shortcut. This diagnosed it rather than guessing.
+
+#### First: it DOES seek, which rules out the obvious story
+
+Item 149's own tell for a lost index is "two identical `bench:usage` columns", so the same test
+applies here — the identical query with and without the index:
+
+```text
+   count, 400 hits (team)   unindexed 205760 ns   indexed  19082    10.78x
+   count, 1 hit   (name)    unindexed 216592      indexed   1517   142.78x
+   values, 400 hits         unindexed 309645      indexed  30303    10.22x
+```
+
+So the seek is working and the filtered node count is not scanning the label bucket. Had I gone
+straight to "the count shortcut does not use the index" — which `buildNodeCount`'s own code invites,
+since it is O(1) only when UNCONSTRAINED and otherwise tallies — the next item would have rebuilt a
+path that already exists.
+
+#### What it actually pays, from the profile
+
+```text
+   (anonymous) index.mjs:4906    48.9%     the specialised predicate closure
+   (anonymous) index.mjs:17782   25.9%     the compiled expression
+   evalLabelExpr                  8.9%
+   countEquals                    1.0%     the seek itself is NOISE
+```
+
+**~75% is predicate evaluation per candidate and ~9% is the label test** — so of 48 ns per hit,
+almost all of it is re-deciding what the bucket already decided. The seek costs 1%.
+
+#### The mechanism, stated so the fix is specified rather than explored
+
+`indexCandidates` (in `executor/matching.ts`) yields `SeedCandidate` as `{ count, build }` — a
+cardinality estimate and a thunk. **There is no flag saying whether the seek is EXACT.** So every
+seeded candidate is treated as a superset and re-validated, which item 149's header states as a
+deliberate condition of seeking at all:
+
+> a seed hint is a NECESSARY condition lifted from an AND-chain, so the seek is a SUPERSET of the
+> matches and every candidate must be re-validated
+
+That is right for a HINT. It is not right for an ISO equality constraint or a lone `WHERE k = v`,
+where the bucket IS the matching set. Gremlin's `index-seed.ts` draws exactly this distinction and
+calls it `removable` — "whether dropping the owning step leaves an equivalent plan" — which is what
+let items 1595 and 1596 answer off the bucket directly.
+
+**So the fix is to give GQL's seeds the same notion**: exact when the candidate's key/value is the
+node's ONLY constraint, superset otherwise, and skip re-validation in the first case. The label test
+still applies — the index returns vertices by VALUE across all labels, which item 149 names as the
+first of its two risks.
+
+#### Priced, and deliberately not built here
+
+At ~75% of 48 ns per hit, removing re-validation on the exact case is **4-7x on this shape** — the
+400-hit count from 14.5 us to ~2-4. That is worth having, and it is also a change that threads a new
+flag through a hot file (`matching.ts`) on the path where a wrong exactness verdict is a WRONG
+ANSWER rather than a slow one. ⚠️ **Not started at the end of a long tick**: items 1592 and 1596 both
+had me nearly ship something the tests then refused, and the pattern worth keeping is that a
+correctness-sensitive change gets its own tick with its own mutation pass, not the last twenty
+minutes of another.
+
+What the next tick needs is all here: the shape, the mechanism, the precedent to copy, the two risks
+item 149 names, and the number to beat.
+
+#### ⚠️ AND THE PROBE FOUND A SECOND THING: a 1.76x EQUIVALENT-SPELLING GAP, with its mechanism
+
+Adding the ISO equality spelling to the probe as a matter of course turned up this, which nothing
+was looking at:
+
+```text
+   MATCH (u:User) WHERE u.team = $v RETURN count(*)    11097  11639  12157 ns
+   MATCH (u:User {team: $v})        RETURN count(*)    19544  20254  21954
+```
+
+Three runs each, non-overlapping: **1.76x for one question in two spellings** — the defect class this
+engine is named after, on a seeded count. Both take `countShortcut` and both seek (25x over
+unindexed), so it is an internal path difference.
+
+**The mechanism is named.** `specializeSingleProp`'s `SPECIALIZABLE` set is
+`{eqProps, cmpProps, nullProps, memberProps}` — and **`props` is not in it**. A clause
+`WHERE u.team = $v` lifts into `eqProps` and gets item 1338's pre-resolved per-element closure; the
+inline `{team: $v}` lands in `props`, which the specializer refuses, so the general `inlineHolds`
+loop runs per candidate instead.
+
+⚠️ **AND THE OBVIOUS FIX IS WRONG**, which is why this is recorded rather than attempted in the last
+minutes: `props` and `eqProps` are separate carriers for a REASON. An inline `{k: null}` means
+**IS NULL**, not equality-with-null (memory's `inline-props-null-is-is-null`, and item 260 settled
+it), so admitting `props` to `SPECIALIZABLE` wholesale would change answers on the null case. The fix
+has to admit it only where the value is non-null, or carry the null spelling separately — and that
+wants its own item with the null matrix in front of it.
+
+#### Also recorded, and NOT a target
+
+`evalLabelExpr` at 8.9% would be ~1.1x on its own — below this repo's noise floor for an executor
+edit, and memory's `label-index-vs-setter` note already blocks the adjacent idea (trusting
+`verticesByLabel`) on correctness grounds. Mentioned because 9% looks like money and is not.
+
+#### Gates
+
+No engine change — one probe. `bun run check` 0 read unpiped. Suites unchanged from item 1596.
