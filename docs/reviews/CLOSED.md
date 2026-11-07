@@ -56599,6 +56599,7 @@ from the start per item 1476.
 shape       engine ms   unpriced frames over 2%
 repeated        119     none — `repeat` is clean
 localized      1692     localStep 7.0%, traverseToEdge 6.7%, edgeToVertex 5.0%, get to 4.5%
+                        ⚠️ STALE — item 1479 fixed this shape and item 1628 re-measured it at 0.57 ms/rep
 matched        2914     applyPattern 18.4%, solve 7.8%, bind 7.0%, matchStep 4.3%, …  ≈44%
 ```
 
@@ -56805,7 +56806,7 @@ coalescevalues      1925.4                  V().coalesce(out('E'), identity()).v
 branchvaluesfloor     95.4 / 101.0          V().out('E').values('k').count()
 ```
 
-**19.3x and 20.2x.** At FANOUT 5 every vertex has out-edges, so `optional`'s first arm always wins
+**19.3x and 20.2x.** ⚠️ **BOTH NUMBERS ARE STALE — item 1628 re-measured the same pair at 10.6x and 12.4x**, and took the `optional` half for 1.25x. At FANOUT 5 every vertex has out-edges, so `optional`'s first arm always wins
 and the floor is semantically comparable — it is the same answer by the cheap route.
 
 (The first floor attempt, `V().out('E').count()`, read **7.3 ms** — the count shortcut again. Named in
@@ -56847,8 +56848,10 @@ from the graph. A sub-plan inside `optional`/`coalesce` starts from the incoming
 
 A real fix means making the fused walks composable — a stream-transformer form that applies a typed
 hop to an arbitrary input stream without building traversers — rather than a source-anchored
-whole-plan answer. That is a design change to the fast-walk contract, not a tick's work, and it would
-land in the files [[executor-edits-perturb]] measures at ~16% per edit.
+whole-plan answer. ~~That is a design change to the fast-walk contract, not a tick's work~~ — ⚠️ **item
+1627 built that piece for `match()` and item 1628 lifted it to `movement.ts` as `soleTypeBucket`,
+taking the `optional` half for 1.25x.** `coalesce` is still open: it has no fused single-hop
+detector, so its sub-plan keeps `applyPlanToStream`.
 
 ### The secondary cost, priced and deliberately NOT taken
 
@@ -70096,3 +70099,60 @@ Two survivors:
 #### Gates
 
 `bun run check` 0 read unpiped. Suites gremlin 1776 (11 new), gql 4207, core 444, native 1076, serialization 144 — 0 fail. `bun run fuzz` 20/0 and `spelling:gremlin` 0 answer disagreements / 0 groups over 2x, both under the 16G cap.
+
+### Item 1628 — **1.25x on `V().optional(out(T)).values(k)`**, the shape item 1480 priced at 19.3x its floor and left as "a design change to the fast-walk contract, not a tick's work". ⚠️ Item 1627 built the composable piece that note was asking for, so this tick was the second half of one idea rather than a new one — and ⚠️ **item 1480's 19.3x is STALE: the same pair now reads 10.6x**
+
+OPEN: `coalesce`. It measured FLAT here (382.6 → 366.5, ~1.04x) and correctly so — it has no `coalesceSingleHop`, so its sub-plan still goes through `applyPlanToStream`. That is the same change again, one fused detector further back.
+
+#### Ranked the field first, which is how this shape was picked
+
+Every shape in the Gremlin probe at a fixed rep count, rather than trusting a stale number. The top of the list is `matched` 69.3 ms/rep (item 1627), the fused two-hop walks 47-52 (items 1614/1617, at their floors), `hoporder` 45.4 (closed at 1392/1394) — and then the branch steps at 31-35.
+
+⚠️ **AND `localized` IS NOT A TARGET ANY MORE, which the ranking is what caught.** Item 1565's screen recorded it at **1692 ms**; it now reads **0.57 ms/rep**, and its honest pair (`localvalues` 36.7 against `localvaluesfloor` 32.1) is **1.14x**. Item 1479 fixed that shape by eliminating the sub-plan; the old number survived in the screen's table. A ranking run costs minutes and stopped this tick from profiling a shape that is three orders of magnitude off its recorded cost.
+
+#### ⚠️ Item 1480's number is stale too, and by 2x
+
+```text
+                      item 1480     now (PRE)
+   optionalvalues       19.3x         10.6x
+   coalescevalues       20.2x         12.4x
+```
+
+Nothing in this tick explains that — the fused walks and the box reads between then and now did. The direction of the correction matters: a 19.3x heading invites a bigger swing than the shape can give.
+
+#### The cause was already identified; what changed is that the fix now exists
+
+Item 1480 found that `optionalSingleHop` had removed the sub-plan DISPATCH and what remained was the generator chain, at **~61%** of the shape:
+
+```text
+   otherEndpoint 20.97%   iterLabeled 19.47%   get to 7.57%
+   traverseToVertex 5.41%   iterByLabel 4.21%   outEdgesOf 3.25%
+```
+
+and named the fix as "making the fused walks composable — a stream-transformer form that applies a typed hop to an arbitrary input stream". **Item 1627 built exactly that**, in miniature, for `match()`'s pattern expansion. This item lifts it to `movement.ts` as `soleTypeBucket` and uses it in `optionalHopStep` — and refactors item 1627's inline copy onto the shared primitive, because a second copy of the box choice is how the two drift on `both` or a multi-type hop.
+
+```text
+   shape                      PRE                     POST                  verdict
+   optionalvalues    329.1 326.0 310.4 ms     245.2 275.5              1.25x
+   coalescevalues    382.6 389.3 367.0        365.8 367.2              flat (no fused path)
+   branchvaluesfloor  32.9  29.6  30.8 (ctl)   30.7  28.8              flat
+   hopvaluesrows      99.9 105.2 (ctl)        107.5 (137.4 outlier)    flat
+```
+
+The gap to the floor goes from 10.6x to 8.7x. Not the whole 61% — the per-traverser array materialization item 1480 priced and declined is still there, and the fast arm still visits every edge.
+
+#### The risk the fast arm carries is the FALLBACK, not the walk
+
+`optional` yields the incoming traverser when the hop produces NOTHING, so an arm that confused "an empty bucket" with "declined" would drop that row or emit it twice. `soleTypeBucket` returns a SHAPE for an empty bucket and `undefined` only for a hop it refuses — the two meanings kept distinct at the type level — and the tests include a type no vertex carries (every row is the fallback, all five) as well as one only a single vertex carries (four of five fall back).
+
+#### Mutation 10 of 11
+
+The three refusals (`both`, multi-type, untyped), `forward`, the box, the empty-bucket contract, the optional arm's endpoint, its `any` flag, its emission, and item 1627's `match` call site still reading the right direction off the shared primitive.
+
+**`bucket/empty-as-undefined` dies with 1 failure** — the contract test earns itself immediately, which is worth noting because item 1621 predicted the same mutant would survive and it did not there either.
+
+The single survivor is `optional/fast-never-used`, the answer-equivalent route class item 1619 recorded for all twenty GQL rungs. What is pinned is the arm's OUTPUT: `optional/fallback-always` (the fast loop emitting nothing) dies with 8 failures.
+
+#### Gates
+
+`bun run check` 0 read unpiped. Suites gremlin 1784 (8 new), gql 4207, core 444, native 1076, serialization 144 — 0 fail. `bun run fuzz` 20/0 and `spelling:gremlin` 0 answer disagreements / 0 groups over 2x, both under the 16G cap.

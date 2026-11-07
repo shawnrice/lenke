@@ -18,6 +18,7 @@ import { ErrorCode, LenkeError } from '@lenke/errors';
 import { anyMayFault, maskOfSteps, stepReadsPath } from '../ast.js';
 import type { Plan, Step } from '../ast.js';
 import { applyPlanToStream } from './dispatch.js';
+import { soleTypeBucket } from './movement.js';
 import {
   extend,
   hasAny,
@@ -236,7 +237,11 @@ const bucketEnds = (
     return undefined;
   }
 
-  const bucket = (forward ? from.adjFrom : from.adjTo)?.get(type);
+  // ⚠️ `soleTypeBucket` IS THE SHARED PRIMITIVE (item 1628): `movement.ts` owns the "one bucket for a
+  // directed single type" rule, and `optionalHopStep` reads it too. Item 1627 had this inline; a
+  // second copy of the box choice is how the two would drift on `both` or a multi-type hop.
+  const direct = soleTypeBucket(from, forward ? 'out' : 'in', [type]);
+  const bucket = direct?.set;
 
   return {
     [Symbol.iterator]: (): Iterator<unknown> => {

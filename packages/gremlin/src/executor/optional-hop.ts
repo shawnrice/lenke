@@ -35,7 +35,7 @@
 import type { Graph } from '@lenke/core';
 
 import type { Plan } from '../ast.js';
-import { adjacentEdges, otherEndpoint } from './movement.js';
+import { adjacentEdges, otherEndpoint, soleTypeBucket } from './movement.js';
 import { extend, isVertex, type Traverser } from './runtime.js';
 
 /** The single vertex step this fusion handles, or `undefined` for every other sub-plan shape. */
@@ -86,11 +86,33 @@ export const optionalHopStep = function* (
 
     const v = t.value;
     let any = false;
+    /**
+     * ⚠️ THE BUCKET DIRECTLY FOR A DIRECTED SINGLE TYPE, and the loop is written twice for it
+     * (item 1628). `optionalSingleHop` already removed the sub-plan DISPATCH; what was left is the
+     * generator chain, which item 1480's profile of this exact shape puts at **~61%** —
+     * `otherEndpoint` 20.97% + `iterLabeled` 19.47% + `get to` 7.57% + `traverseToVertex` 5.41% +
+     * `iterByLabel` 4.21% + `outEdgesOf` 3.25%.
+     *
+     * `soleTypeBucket` refuses `both`, a multi-type hop and an untyped one, so those keep
+     * `adjacentEdges` exactly as they are — which is why the second loop stays rather than being
+     * replaced. Three duplicated lines against a chain that is most of the shape.
+     */
+    const direct = soleTypeBucket(v, kind, labels);
 
-    for (const e of adjacentEdges(kind, graph, v, labels)) {
-      any = true;
+    if (direct !== undefined) {
+      const { set, forward } = direct;
 
-      yield extend(t, otherEndpoint(kind, e, v));
+      for (const e of set) {
+        any = true;
+
+        yield extend(t, forward ? e.to : e.from);
+      }
+    } else {
+      for (const e of adjacentEdges(kind, graph, v, labels)) {
+        any = true;
+
+        yield extend(t, otherEndpoint(kind, e, v));
+      }
     }
 
     if (!any) {
