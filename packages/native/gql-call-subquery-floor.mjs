@@ -119,6 +119,49 @@ const ARMS = {
    * This arm isolates that: identical body, the only difference being the scope list.
    */
   calltrivialscoped: 'MATCH (n:P) CALL (n) { RETURN 1 AS c } RETURN sum(c) AS t',
+
+  /**
+   * ⚠️ THE ARMS BELOW EXIST BECAUSE `correlated` IS NOT A VALID FLOOR EITHER, and the reason is the
+   * same one item 1654 found for `outer` — one level further down. Profiling `correlated` shows
+   * **`bucketSize` at 37.9% self time**: its body's `MATCH … RETURN count(*)` is answered by a
+   * CLOSED-FORM COUNT RUNG per outer row, so the body never materialises a nested row at all. The
+   * `inline` arm above is the same trap a third time — it reads 0.1 ns/row, which is a rung, not a
+   * hop. So the 69.5-vs-825 gap between `correlated` and `calltrivialscoped` is NOT "a real body is
+   * cheaper than a trivial one"; it is a rung against a materialising path.
+   *
+   * Each arm below is paired with an `inline*` equivalent spelling where **BOTH SIDES MATERIALISE**,
+   * which is what makes the ratio a budget rather than a ratio between two amounts of work.
+   */
+
+  /**
+   * The same hop as `correlated` with the count rung DENIED — `sum(1)` per matched row is the same
+   * number by a path that must produce the rows. Pairs with `inlinesumrow`.
+   */
+  callsumrow: 'MATCH (n:P) CALL (n) { MATCH (n)-[:E]->(x) RETURN sum(1) AS c } RETURN sum(c) AS t',
+  inlinesumrow: 'MATCH (n:P)-[:E]->(x) RETURN sum(1) AS t',
+
+  /**
+   * A body that emits ONE NESTED ROW PER EDGE rather than one aggregate per outer row, so the
+   * `nested.map` merge runs once per edge and the outer binding is copied that many times. This is
+   * the shape a real correlated CALL is written in. Pairs with `inlineprojx`.
+   */
+  callprojx: 'MATCH (n:P) CALL (n) { MATCH (n)-[:E]->(x) RETURN x.k AS c } RETURN sum(c) AS t',
+  inlineprojx: 'MATCH (n:P)-[:E]->(x) RETURN sum(x.k) AS t',
+
+  /**
+   * A scoped body with NO pattern that nonetheless READS the imported name, so it cannot be
+   * constant-folded away. Pairs with `projrow`, which is the same arithmetic with no CALL.
+   */
+  callproj: 'MATCH (n:P) CALL (n) { RETURN n.k AS c } RETURN sum(c) AS t',
+
+  /**
+   * ⚠️ THE CEILING OF EXTENDING `inlineCorrelatedCall`, hand-written rather than built (item 1661).
+   * That rewrite already turns a correlated CALL whose body PASSES THROUGH its pattern variables
+   * into a plain `MATCH`, and refuses `callprojx` on one line — `item.expr.kind !== 'var'` — because
+   * its body returns an EXPRESSION (`x.k AS c`) rather than a bare variable. This arm is what the
+   * extended rewrite would emit, so it prices the target without building it.
+   */
+  projxhand: 'MATCH (n:P) MATCH (n)-[:E]->(x) LET c = x.k RETURN sum(c) AS t',
 };
 
 const one = (text) => Number(query(g, text)[0].t);
@@ -153,6 +196,26 @@ if (
 
 if (answers.bodyonce !== edges) {
   throw new Error(`bodyonce ${answers.bodyonce} !== the ${edges} edges built`);
+}
+
+// ⚠️ THE NEW PAIRS, each asserted EQUIVALENT before any time is read. A CALL arm whose answer
+// differs from its inline twin is two questions, and the ratio would be item 1465's error.
+for (const [call, twin] of [
+  ['callsumrow', 'inlinesumrow'],
+  ['callprojx', 'inlineprojx'],
+  ['callproj', 'projrow'],
+  ['projxhand', 'callprojx'],
+]) {
+  if (answers[call] !== answers[twin]) {
+    throw new Error(
+      `${call} ${answers[call]} !== ${twin} ${answers[twin]} — not an equivalent pair`,
+    );
+  }
+}
+
+// And both row-counting pairs must land on the edge count, so the fixture is in the ratio too.
+if (answers.callsumrow !== edges || answers.inlinesumrow !== edges) {
+  throw new Error(`the sum(1) pair did not answer ${edges}: ${JSON.stringify(answers)}`);
 }
 
 const timeOf = (text) => {

@@ -1282,12 +1282,40 @@ export const runCallInline = (
     if (invariant && hoisted !== undefined) {
       nested = hoisted;
     } else {
-      nested = runLinearClauses(clause.body, graph, params, new Map(seed));
+      /**
+       * ⚠️ AN EMPTY SEED IS PASSED AS `undefined`, NOT AS AN EMPTY MAP, AND THAT IS THE WHOLE
+       * OPTIMIZATION (item 1661). `runLinearClauses` starts from `[initial ?? new Map()]`, so an
+       * empty Map and `undefined` are the same start — but its FAST-PATH GATE is
+       * `if (initial === undefined)`, because the rungs assume an empty start. Handing it an empty
+       * Map therefore disqualified every inline-CALL body from `fastPath` for no reason at all,
+       * including bodies with no scope, where there is no imported binding for a rung to be wrong
+       * about.
+       *
+       * The gate is `seed.size`, not `clause.scope.length`: a scope whose names are all absent
+       * from the outer row imports nothing, and that row's body deserves the rungs too.
+       *
+       * Measured at item 1661: an unscoped `CALL { MATCH … RETURN count(*) }` over 20,000 outer
+       * rows went **34.9 -> 9.6 ms, 3.6x**, because the body's one hoisted run now takes the
+       * closed-form count rung instead of materialising 39,990 edges. A SCOPED body still takes
+       * the general loop and is unaffected — a separate and much harder target, priced in the
+       * same item.
+       *
+       * ⚠️ COMPUTED INSIDE THE `else`, not above the branch. On the hoisted path there is no body
+       * run to seed, so computing it there would add work to every outer row after the first and
+       * buy nothing — on exactly the shape this change helps least.
+       */
+      const start = seed.size === 0 ? undefined : seed;
+
+      nested = runLinearClauses(clause.body, graph, params, start && new Map(start));
 
       // Fold in any set-op parts (`… UNION/EXCEPT/INTERSECT …`), each run against
       // the same seed, matching the top-level set-op semantics.
       for (const { op, part } of clause.bodyMore) {
-        nested = combineRows(op, nested, runLinearClauses(part, graph, params, new Map(seed)));
+        nested = combineRows(
+          op,
+          nested,
+          runLinearClauses(part, graph, params, start && new Map(start)),
+        );
       }
 
       if (invariant) {

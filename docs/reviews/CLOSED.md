@@ -72345,7 +72345,7 @@ not re-priced.
 No engine change — the tree is identical to its parent apart from this entry. `bun run check` 0 read
 unpiped; the gremlin suite 1992 pass / 0 fail was re-run under every ablation and both orderings.
 
-### Item 1653 — ⚠️ **THE INLINE `CALL { … }` CLAUSE COSTS 538-733 ns PER OUTER ROW, and a body the rungs RECOGNISE costs 74 — 10x for strictly more work** (⚠️ **item 1654 re-floors this at 17.2x against a VALID control and finds the cause is the OUTER match's route, not the clause**)**.** Found by screening ten unprofiled GQL shapes; the probe's own answer assertion also caught me writing the Cypher spelling of a correlated CALL, and item 1566's uncorrelated hoist is confirmed WORKING (linear, not quadratic)
+### Item 1653 — ⚠️ **THE INLINE `CALL { … }` CLAUSE COSTS 538-733 ns PER OUTER ROW, and a body the rungs RECOGNISE costs 74 — 10x for strictly more work** (⚠️ **item 1654 re-floors this at 17.2x against a VALID control and finds the cause is the OUTER match's route, not the clause**)**.** ⚠️⚠️ **AND ITEM 1654'S CONTROL WAS NOT VALID EITHER — item 1661: `correlated` is ELIMINATED by `inlineAggregateCall` and never runs as a CALL, so BOTH re-floorings in this family compared a CALL against a rewritten query. The surviving-clause cost is 846-3178 ns/outer row and the honest ratio is 9.4x.** Found by screening ten unprofiled GQL shapes; the probe's own answer assertion also caught me writing the Cypher spelling of a correlated CALL, and item 1566's uncorrelated hoist is confirmed WORKING (linear, not quadratic)
 
 MEASURED, no engine change. New instrument: `gql-call-subquery-floor.mjs`.
 
@@ -72434,7 +72434,7 @@ first ablation to try is skipping the seed entirely on the invariant path.~~
 
 No engine change — one new probe. `bun run check` 0 read unpiped.
 
-### Item 1654 — ⚠️ **A REFUTATION AND A REDIRECT: the inline `CALL`'s 17.2x is the OUTER MATCH's ROUTE, not the clause's own work.** Removing both of `runCallInline`'s per-row allocations — the `seed` Map built for an empty scope and the `Object.entries` per nested row — measures **FLAT**, while the profiles show `LET c = 1` taking a fused aggregate path with NO matcher frames and the same query with a `CALL` taking the general binding-materialising one
+### Item 1654 — ⚠️ **A REFUTATION AND A REDIRECT: the inline `CALL`'s 17.2x is the OUTER MATCH's ROUTE, not the clause's own work.** (⚠️⚠️ **ITEM 1661 FOUND THE THIRD INVALID FLOOR IN THIS FAMILY, AND IT IS THIS ENTRY'S OWN CONTROL: `correlated` — the arm both this entry and item 1653 treat as "the realistic CALL" — IS NOT A CALL BY THE TIME IT RUNS. `inlineAggregateCall` eliminates the clause outright, so its 69.5 ns/row is a rewritten query and every ratio taken against it compares two different routes. `inline` is a rung too, at 0.1 ns/row. Against floors where BOTH sides materialise the honest figure is 9.4x, the target is `inlineCorrelatedCall`'s one-line refusal of an expression projection, and a 3.6x piece SHIPPED at 1661**) Removing both of `runCallInline`'s per-row allocations — the `seed` Map built for an empty scope and the `Object.entries` per nested row — measures **FLAT**, while the profiles show `LET c = 1` taking a fused aggregate path with NO matcher frames and the same query with a `CALL` taking the general binding-materialising one
 
 MEASURED, no engine change shipped. Two probe arms added.
 
@@ -72834,8 +72834,10 @@ The three targets this session leaves are all feature-sized, and each is priced:
 
 - **A JOIN operator for `match()`** — items 1656/1657. 37-89x and growing with selectivity, blocked
   on the solver's per-traverser nested-loop model and on Gremlin's ordered emission.
-- **A route change so a fused GQL scan survives a following `CALL`** — item 1654. 17.2x for a body
-  that is a bare `RETURN`, less for one that must materialise.
+- **A route change so a fused GQL scan survives a following `CALL`** — item 1654. ~~17.2x for a body
+  that is a bare `RETURN`, less for one that must materialise.~~ ⚠️ **RESTATED AND PART-CLOSED AT ITEM
+  1661: the 17.2x was measured against an arm that is not a CALL at all. What is left is extending
+  `inlineCorrelatedCall` to an EXPRESSION projection, 9.4x, and the empty-seed half shipped at 3.6x.**
 - **The `run`-level per-call floor** — item 1652. ~126 ns against a 15.4 ns hand floor, decomposed and
   with every individual term refuted; what is left is distributed.
 
@@ -73011,3 +73013,155 @@ ns (already cached; the cost is the cache lookup and the rewrite-chain dispatch)
 `drain` already exists for `V().values(k)` precisely to skip the generator on an eager terminal (item 1412) — so the protocol cost there is paid only by a LAZY consumer, which is the consumer that wants
 it.** No bounded rung is left without an eager route, so the generalization above has, for now, no
 remaining target — which is the honest reason to stop here rather than a claim that nothing is left.
+
+### Item 1661 — ⚠️⚠️ **THE INLINE `CALL` FAMILY HAD THREE INVALID FLOORS, NOT ONE, AND THE THIRD IS ITEM 1654'S OWN CONTROL: `correlated` is ELIMINATED by a rewrite and never runs as a `CALL` at all.** Against floors where both sides materialise the honest ratio is **9.4x**, not 17.2x — and one piece of it SHIPPED: an unscoped `CALL { … }` body was handed an empty-but-DEFINED `Map`, which disqualified it from the whole fast-path ladder, **34.9 → 9.6 ms, 3.6x**
+
+SHIPPED. `executor/clauses.ts`, plus `call-empty-seed-fastpath.test.ts` (13 cases) and four arms on
+`gql-call-subquery-floor.mjs`.
+
+#### ⚠️ FIRST: this family's floor has now been wrong three times, and the pattern is the lesson
+
+Item 1653 priced the clause against `outer` (`MATCH (n:P) RETURN count(*)`, 0.1 ns/row). Item 1654
+caught that — a closed-form rung against a materialising path — and re-floored on `letrow`. **Item
+1654's own replacement control was invalid too, in the same way, one level further down:**
+
+```text
+   arm           what it IS                                         ns/row   compiles to
+   outer         a count rung (item 1654 caught this one)              0.1    match+return
+   inline        ⚠️ ALSO a rung — the "equivalent spelling" floor       0.1    match+return
+   bodyonce      ⚠️ ALSO a rung                                        0.2    match+return
+   correlated    ⚠️ NOT A CALL: inlineAggregateCall ELIMINATES it      63.8    ["match","return"]
+   callprojx     a CALL whose clause SURVIVES                       3178.0    ["match","callInline","return"]
+```
+
+`correlated` is the arm both earlier entries call "the realistic CALL". Compiling it prints
+`["match","return"]` — `inlineAggregateCall` turns an aggregate body into `LET c = COUNT { … }` and
+the clause is gone. Its profile says so independently: **`bucketSize` 37.9% self time**, the degree
+rung, with `matchPattern` at 1.3%. So item 1653's 10x, item 1654's 17.2x and this entry's first
+draft all divided a surviving CALL by a rewritten query.
+
+⚠️ **THE GENERALIZATION, which is worth more than either number: in this engine a `count(*)` arm is a
+RUNG until proven otherwise, and "the equivalent spelling" is not automatically a floor.** Item 1465
+is the rule; what is new is that the check has to be run on the CONTROL as well as the target, and
+that `compileLinear`'s clause list — not the query text — is what says whether the clause under
+study still exists. One line (`compileLinear(parse(q).parts[0]).clauses.map(c => c.kind)`) separates
+the two, and it is now the first thing this probe's new arms assert.
+
+#### The valid pairs, both sides materialising
+
+Added three CALL arms each paired with an inline twin, and the probe ASSERTS each pair answers
+identically before reporting a time (`callsumrow`/`inlinesumrow` and `callprojx`/`inlineprojx` on
+39,990 and 1,918,109). One arm per process, 3 order-alternated rounds:
+
+```text
+   pair                                        CALL        twin      ratio
+   aggregating body  sum(1) per outer row     ~150        ~228       0.66x  ⚠️ the CALL is FASTER
+   per-edge body     RETURN x.k AS c         3178         ~340        9.4x  <- THE TARGET
+   no pattern        RETURN n.k AS c          846          30.4        26x
+```
+
+The aggregating body is faster than its own inline twin because it, too, is rewritten away. The
+per-edge body is the shape a real correlated `CALL` is written in, and it is the one that survives.
+
+#### The change: an empty seed is passed as `undefined`, not as an empty `Map`
+
+`runLinearClauses` gates its fast-path ladder on `initial === undefined`, because the rungs assume
+an empty start. `runCallInline` handed it `new Map(seed)` **unconditionally** — so a body with NO
+SCOPE, which imports nothing, arrived with an empty-but-defined `Map` and was refused by all twenty
+rungs. `[initial ?? new Map()]` is the start either way, so `undefined` is the same start.
+
+The gate is `seed.size`, not `clause.scope.length`: `CALL (m) { … }` for an `m` bound nowhere
+outside is ACCEPTED by this engine (measured, not assumed) and imports nothing, so it deserves the
+rungs too. Arms alternated, one shape per process, 3 rounds:
+
+```text
+   arm                            PRE                      POST                   ratio
+   uncorrelated      TARGET       34.75 / 34.58 / 34.82    10.64 / 9.65 / 9.33    3.60x
+   calltrivial       TARGET       10.65 / 11.50 / 12.05    11.81 / 11.56 / 11.65  1.01x  flat
+   correlated        CTL           1.33 /  1.24 /  1.29     1.33 / 1.32 / 1.31    flat
+   callprojx         CTL          63.5  / 66.5  / 68.9     65.2 / 63.7 / 64.1     flat
+   callproj          CTL          16.5  / 16.7  / 16.6     17.0 / 17.0 / 16.1     flat
+   calltrivialscoped CTL          18.0  / 15.8  / 16.5     16.1 / 16.4 / 16.3     flat
+   letrow            CTL           0.561/  0.556/  0.542    0.562/ 0.679/ 0.548   flat
+```
+
+⚠️ **`calltrivial` IS FLAT FOR A REASON, AND THE REASON IS PINNED IN A TEST.** A body that is a bare
+`RETURN` of a constant carries **no rung at all** — zero of the twenty hooks is a function on its
+compiled `CLinear` — so there was never anything for the gate to unlock. Read as "no rung exists",
+not "the gate does not work"; item 1654's idea of normalising a bare-`RETURN` body to a `LET` would
+therefore need a NEW rung, not this gate.
+
+⚠️ **AND `start` IS COMPUTED INSIDE THE `else`, WHICH IS A MEASURED PLACEMENT, NOT A STYLE CHOICE.**
+Computed above the branch it also ran on the hoisted path, where there is no body to seed — and
+`calltrivial` read POST ≥ PRE in all three rounds for ~6%. Moving it took that to 1.01x. A ~6%
+effect at this repo's noise floor, caught only because a control was read as a result rather than
+waved through.
+
+#### ⚠️ What is left, with its ceiling priced and the refusing line named
+
+The engine already has TWO CALL-elimination rewrites: `inlineAggregateCall` (aggregate body →
+`LET c = COUNT { … }`, 24.9x at item 561) and `inlineCorrelatedCall` (a pass-through body → a plain
+`MATCH`). `callprojx` is refused by the second one on a single line:
+
+```ts
+if (item.expr.kind !== 'var' || (item.alias !== undefined && item.alias !== item.expr.name)) {
+  return null; // executor.ts:9966
+}
+```
+
+So a body may return its pattern VARIABLES verbatim (`RETURN x`) but not an EXPRESSION over them
+(`RETURN x.k AS c`). Hand-writing what the extended rewrite would emit prices the target without
+building it — `projxhand`, now an arm, asserted to answer identically:
+
+```text
+   callprojx   MATCH (n:P) CALL (n) { MATCH (n)-[:E]->(x) RETURN x.k AS c } RETURN sum(c)   3136
+   projxhand   MATCH (n:P) MATCH (n)-[:E]->(x) LET c = x.k RETURN sum(c)                     333
+   inlineprojx MATCH (n:P)-[:E]->(x) RETURN sum(x.k)                                         346
+```
+
+**9.4x**, and the hand rewrite lands on the fully-fused twin, so the route is reachable. NOT BUILT,
+and the reason is specific rather than a lack of time: the current rewrite emits ONE `match` clause
+because the body's yielded names are exactly the names its pattern introduces, so nothing has to be
+hidden. An expression projection must also DROP the body's pattern variables (`x` escapes the CALL
+where the clause hid it) and that needs a `match` + projection pair whose item list the rewrite does
+not statically know. A leaked name changes later-clause semantics, so this is optimizer-fuzzer
+territory and deserves its own tick.
+
+#### The mutation pass: 5 of 6 caught, and the survivor is diagnosed rather than assumed
+
+Six mutants under `timeout 600 systemd-run --user --scope -q -p MemoryMax=16G -p MemorySwapMax=0`,
+harness kills proven first (allocator bomb 137, bare loop 124), pristine under
+`crates/lenke-engine/target/item1661/`, restored BEFORE each mutant, over the new file plus the four
+existing `call*` suites (51 tests):
+
+```text
+   M1 revert the gate (always a defined Map)        CAUGHT (3)
+   M2 gate on scope.length instead of seed.size     CAUGHT (1)   <- the unbound-scope case
+   M3 always undefined, dropping the seed           CAUGHT (5)
+   M4 drop the seed on the set-op parts only        CAUGHT (1)   <- the scoped UNION case
+   M5 defeat the uncorrelated hoist                 CAUGHT (1)
+   M6 share the seed Map instead of copying it      SURVIVED
+```
+
+⚠️ **M6 survives the whole 4,243-test gql suite, and it is UNOBSERVABLE rather than uncovered.**
+`insertVertexWithId` is the one clause path that writes into the binding it is handed
+(`binding.set(node.variable, vertex)`, `clauses.ts:144`, in place), so the only shape where the copy
+could matter is a WRITING body with a set-op part. That shape is legal — measured — and a test for
+it is now in the file, and it STILL agrees: the set-op parts project only their `RETURN` columns, so
+a leaked binding never reaches the output. The copy stays (it predates this item; the change
+replaced `new Map(seed)` with `start && new Map(start)` and kept it), and the test stays because it
+covers a legal shape that 4,243 tests did not.
+
+⚠️ The route tests are the teeth here, because the change is ANSWER-EQUIVALENT by construction — the
+gql suite passed on the very first run, before any of this existed. The instrument is a spy wrapping
+all twenty fast-path hooks on the body's compiled `CLinear`, counting ladder entries, which needs no
+timing. Against PRE source, 3 of 13 fail; the spy wraps by `typeof === 'function'` because some
+slots hold `null` and replacing one with a function got it CALLED by `buildGroups`.
+
+#### Gates
+
+`bun run check` 0 read UNPIPED. Suites core 444, gql 4243 (+13 new), gremlin 2017, serialization
+144, native 1081 — **7929 pass / 0 fail**, each exit code read unpiped. All seven byte-identity
+fuzzers (codec, differential, write, injection, algo, gremlin, parity) 20 pass / 0 fail, exit 0 read
+unpiped. `spelling` (SPELL_N=200000 SPELL_REPS=9) and `spelling:gremlin` both **0 groups
+disagreeing on the ANSWER and 0 groups over 2x clear of the nearest null control**.
