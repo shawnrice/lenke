@@ -71465,10 +71465,7 @@ over 2x, and `bench:gremlin` reports `same` on all 31 rows.
 
 ### Item 1644 — ⚠️ **THE GREMLIN SPELLING PROBE WAS BLIND TO THE WHOLE FAST END OF ITS OWN CORPUS: 19 of its groups reported "under 1ms, not compared" and were never judged.** Calibrated inner iterations make 9 of them measurable and surface **7 flags**; isolation confirms one — **`union(out(T), in(T))` is 2.15-2.92x `both(T)`** for an identical answer — and refutes two as dispatch pollution
 
-OPEN: **`union(out(T), in(T))` against `both(T)`, 2.15-2.92x, confirmed in four isolated runs** (236.7
-and 193.6 ns against 509.0 and 564.3). ⚠️ `effectivePlan` already contains a `fuseUnionBoth` pass
-whose whole job is this spelling, so either it is not firing or it fires and the result is still
-slower — the `rewrite-composition-is-not-free` class. Also open, flagged but NOT yet isolated:
+OPEN: ~~**`union(out(T), in(T))` against `both(T)`, 2.15-2.92x** … either it is not firing or it fires and the result is still slower~~ — ⚠️ **ANSWERED AT ITEM 1645: it FIRES, and the rewrite itself is 52% of the gap (117.5 of 225.2 ns), because `run` calls `effectivePlan` per invocation.** Also open, flagged but NOT yet isolated:
 `edge-type union vs explicit union` 2.75x, `multi-id EDGE lookup` 2.50x, `bothE(T) vs union(outE,
 inE)` 2.27x, `multi-id lookup, dedupe tail` 2.03x.
 
@@ -71529,3 +71526,72 @@ as flagged, not as findings.
 #### Gates
 
 No engine code changed — the probe only. `bun run check` 0 read unpiped.
+
+### Item 1645 — ⚠️⚠️ **A SPELLING THAT NEEDS A REWRITE TO BECOME THE FAST ONE CAN NEVER MATCH THE ONE THAT DID NOT, because the rewrite runs PER CALL.** `union(out(T), in(T)).count()` is 2.41x `both(T).count()` even though `fuseUnionBoth` collapses the first into the second — and **52% of the gap is `effectivePlan` doing that collapse** (117.5 of 225.2 ns). A conceptual correction to this repo's central invariant, not a lever
+
+OPEN: the 2.41x itself, with two priced fixes and neither taken. **A `WeakMap<Plan, Plan>` memo on
+`effectivePlan`** would recover the 117.5 ns for a REUSED plan — but item 1503 measured exactly that
+trade for `readsPath` and rejected it (**1.52-1.61x reused, 1.07-1.15x WORSE rebuilt**), and Gremlin
+has no parameter binding (item 1577) so a varying id forces the rebuilt case. **Removing
+`fuseUnionBoth`'s two per-call allocations** — `plan.steps.slice(i + 1)` handed to `tailIsOrderFree`,
+and the `[...plan.steps]` spread — is worth maybe 8% of the row, below the bar for a file whose edits
+perturb.
+
+#### The measurement
+
+`both(T).count()` and `union(out(T), in(T)).count()` over 200,000 vertices / ~400,000 edges, plans
+reused, 60,000 reps, min of 5, one purpose per process:
+
+```text
+   both(T).count                  159.6 ns/call
+   union(out,in).count            384.8            the gap is 225.2 ns — 2.41x
+   fuseUnionBoth alone (union)     94.5            it FIRES, and costs this
+   fuseUnionBoth alone (both)       4.6            the gate declines, as designed
+   effectivePlan (union)          131.7
+   effectivePlan (both)            14.2            → 117.5 ns of the 225.2 is the rewrite
+```
+
+Both answer `[799984]`. So the rewrite works, fires, and produces the identical plan — and accounts
+for **52%** of the gap it exists to remove. The remaining ~108 ns is the cold-inline-cache cost of
+executing a freshly-allocated plan object, which item 1643 priced at ~200 ns on a point lookup and
+which scales with how little else the query does.
+
+#### ⚠️ Why this matters beyond one pair
+
+CLAUDE.md's invariant is that equivalent spellings must cost the same, and the stated reason it holds
+here is that "this engine lowers BOTH GQL and Gremlin to one `ir::Plan` and runs one `exec`, so speed
+is a property of the optimized plan, not the surface syntax — two spellings that optimize to the same
+plan cannot differ."
+
+**That is exactly right for the Rust engine and not quite right for the TS one.** In Rust the plan is
+optimized once and executed; in TS `run` calls `effectivePlan` on every invocation, so the spelling
+that needs normalising pays for the normalisation every time. Two spellings that optimize to the same
+plan therefore CAN differ, by the cost of the optimization — and on a sub-microsecond query that cost
+is the whole gap.
+
+This is the same mechanism as item 1643's residual: after rewriting `V().hasId(x)` to `V(x)`, the two
+spellings were still 1.44x apart. I recorded the cause there as per-call reallocation; it is more
+precisely this, and it is general.
+
+So three of the probe's confirmed-or-flagged union/multi-spelling groups (`union(out, in)`,
+`union(outE, inE)`, `out(T,U) vs union(out(T), out(U))`) are likely the same finding rather than three
+separate ones. **Not verified for the other two** — flagged for whoever takes them, so they are not
+re-derived as novel.
+
+#### What would actually close it
+
+Only caching the rewrite. The allocation trims are real but small, and the memo is a trade item 1503
+already measured and refused for a cheaper pass. What has changed since is that this item puts a
+number on the other side of that trade for the whole rewrite chain rather than one boolean: **117.5
+ns per call for a reused plan.** Whether that beats a 1.07-1.15x penalty on rebuilt plans is a
+measurement nobody has made, and it needs both arms — reused AND rebuilt — in one instrument before
+anyone builds it.
+
+⚠️ And it is not obviously the right shape even then: `effectivePlan` takes the GRAPH, because
+`dropVacuousLabels` reads its label counts. A memo keyed on the plan alone would go stale when the
+graph's labels change, which is the `csr_fresh` trap CLAUDE.md records going wrong natively. A sound
+key is (plan, graph, mutation-epoch) and the graph has no epoch today.
+
+#### Gates
+
+No code changed — measurement only. `bun run check` 0 read unpiped.
