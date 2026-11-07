@@ -56850,8 +56850,8 @@ A real fix means making the fused walks composable — a stream-transformer form
 hop to an arbitrary input stream without building traversers — rather than a source-anchored
 whole-plan answer. ~~That is a design change to the fast-walk contract, not a tick's work~~ — ⚠️ **item
 1627 built that piece for `match()` and item 1628 lifted it to `movement.ts` as `soleTypeBucket`,
-taking the `optional` half for 1.25x.** `coalesce` is still open: it has no fused single-hop
-detector, so its sub-plan keeps `applyPlanToStream`.
+taking the `optional` half for 1.25x.** ~~`coalesce` is still open~~ — **taken at item 1629 for
+1.26x**, fusing its FIRST arm only (the only one that runs for every traverser).
 
 ### The secondary cost, priced and deliberately NOT taken
 
@@ -70102,7 +70102,7 @@ Two survivors:
 
 ### Item 1628 — **1.25x on `V().optional(out(T)).values(k)`**, the shape item 1480 priced at 19.3x its floor and left as "a design change to the fast-walk contract, not a tick's work". ⚠️ Item 1627 built the composable piece that note was asking for, so this tick was the second half of one idea rather than a new one — and ⚠️ **item 1480's 19.3x is STALE: the same pair now reads 10.6x**
 
-OPEN: `coalesce`. It measured FLAT here (382.6 → 366.5, ~1.04x) and correctly so — it has no `coalesceSingleHop`, so its sub-plan still goes through `applyPlanToStream`. That is the same change again, one fused detector further back.
+OPEN: ~~`coalesce`. It measured FLAT here (382.6 → 366.5, ~1.04x) and correctly so — it has no `coalesceSingleHop`, so its sub-plan still goes through `applyPlanToStream`~~ — **TAKEN at item 1629, 1.26x.**
 
 #### Ranked the field first, which is how this shape was picked
 
@@ -70156,3 +70156,49 @@ The single survivor is `optional/fast-never-used`, the answer-equivalent route c
 #### Gates
 
 `bun run check` 0 read unpiped. Suites gremlin 1784 (8 new), gql 4207, core 444, native 1076, serialization 144 — 0 fail. `bun run fuzz` 20/0 and `spelling:gremlin` 0 answer disagreements / 0 groups over 2x, both under the 16G cap.
+
+### Item 1629 — **1.26x on `V().coalesce(out(T), identity()).values(k)`**, the half item 1628 left open: `coalesce` now reads the adjacency bucket for its FIRST arm when that arm is a single vertex step. ⚠️ And the mutation pass found a real hole the whole test file had missed — reading the LAST arm instead of arm 0 was answer-equivalent across every case, because in all of them the last arm is one the fusion refuses
+
+OPEN: nothing in the branch-step family. `optional` (item 1628) and `coalesce` are both fused for the one shape that matters; `choose` routes on a test rather than on emptiness and is a different question.
+
+#### Why only the first arm
+
+`coalesce` emits the output of the first arm that produces anything, so **arm 0 runs for every incoming traverser** and the rest run only for the rows arm 0 missed. On `coalesce(out(T), identity())` — the "hop, or keep what you had" spelling — arm 0 succeeds for every vertex with an out-edge, so fusing it reaches almost every row while fusing the others would reach almost none.
+
+```text
+   shape                      PRE                     POST                     verdict
+   coalescevalues    362.8 372.5 365.2 ms     277.4 303.3 281.3            1.26x
+   branchvaluesfloor  30.7  36.4  29.8 (ctl)   29.4  28.9                  flat
+   optionalvalues    (item 1628's arm)        259.7 246.7                  flat (control)
+```
+
+Non-overlapping (POST's slowest 303.3 below PRE's fastest 362.8). Item 1480's pair is now 12.4x → **9.8x** of its floor.
+
+#### `from = 1` is the correctness question, and it is the one the comment calls out
+
+When the fast arm's bucket is EMPTY the remaining arms must run — starting at arm **1**, because the general loop would have moved past arm 0 after it produced nothing. Skipping arm 1 drops rows (`from/skips-arm-one` dies with 5 failures); re-running arm 0 is answer-equivalent and merely wasteful (`from/rewinds-to-zero` SURVIVES, as the comment predicted).
+
+**Laziness is safe here for `optional-hop.ts`'s stated reason, which applies verbatim.** The general loop's `[...]` means the whole arm runs before any row is yielded, so a lazy arm reorders side effects relative to downstream consumption — item 1480 declined exactly that for the general case and `sideeffect-in-branch.test.ts` exists because the interaction matters. A single vertex step has no side effects, so for this shape the two orders are indistinguishable.
+
+#### ⚠️ The hole the mutation pass found, and why nine tests missed it
+
+`arm/picks-last` — reading `optionalSingleHop(plans[plans.length - 1])` instead of `plans[0]` — **survived the entire file**. The reason is uniform across every case I had written: the last arm is `identity()`, which `optionalSingleHop` refuses, so the fast arm never engaged and the two readings agreed.
+
+The separating shape has a first arm the fusion REFUSES and a last arm it would accept —
+`coalesce(out(E).out(E), out(F))` — where the mutant runs arm 1's hop as if it were arm 0 and the two-hop arm never runs at all. Pinned now, with the oracle spelling asserted beside the literal.
+
+**Nine tests covering four fall-through patterns, three refusals and a self-loop did not touch which ARM the detector reads.** That is the same shape as item 1625's edge-order finding: a fixture that exercises the line is not a fixture that discriminates on it, and what decided it here was which STEP the other arm happened to contain.
+
+#### The twenty-second eyeballed literal, and a new cause
+
+The three-arm case: I derived `[4, 1, 2, 3, 1, 5]` and the engine answered `[4, 1, 1, 2, 3, 4, 5]`. Two errors in one literal — I dropped `a`'s second `E` edge, and I wrote the in-neighbour's `k` where the fall-through row's own `k` belongs. The cause is new and worth naming: **I derived from MEMORY of the fixture rather than from the fixture**, four tests after writing it. The derivation is now in the test with the edge list spelled out.
+
+#### Mutation 8 of 11
+
+The `from` index both ways, the fast arm's endpoint, its `any` flag, its emission, its success `continue`, the arm choice, an empty `plans`, and the general loop's own `break` re-checked after the rewrite.
+
+Three survivors, all documented where they sit: `from/rewinds-to-zero` (answer-equivalent, wasteful — predicted in the comment before the pass), `gate/nonvertex-admitted` (a non-vertex has no adjacency so the bucket is empty and the fast arm falls through to arm 1 — and arm 0 IS that hop, which yields nothing for a non-vertex on the general path too, `traverseToVertex` being lenient), and `route/never-taken` (the answer-equivalent route class item 1619 recorded for all twenty GQL rungs).
+
+#### Gates
+
+`bun run check` 0 read unpiped. Suites gremlin 1794 (10 new), gql 4207, core 444, native 1076, serialization 144 — 0 fail. `bun run fuzz` 20/0 and `spelling:gremlin` 0 answer disagreements / 0 groups over 2x, both under the 16G cap.
