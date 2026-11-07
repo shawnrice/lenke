@@ -67108,7 +67108,7 @@ GQL row on the same fixture and the same varying key runs at 1.08M ops/s (926 ns
 358.7k (2788), so ~1860 ns of the Gremlin call is not the key at all. That is the gap worth
 profiling next, and it is now measurable in a standing row rather than a one-off probe.
 
-### Item 1594 — ⚠️ **a 12.0% SELF-TIME FRAME DID NOT CONVERT: deduplicating the seed's double bucket lookup is FLAT.** And the tick's useful half: GQL answers the identical seeded point lookup in **650 ns** against Gremlin's **2619** — ~~4.0x~~ **2.5x as of item 1641 (805 against 2000); quote that figure**, of which only ~400 ns is construction, so **~2150 ns is per-call machinery for a ONE-element result**
+### Item 1594 — ⚠️ **a 12.0% SELF-TIME FRAME DID NOT CONVERT: deduplicating the seed's double bucket lookup is FLAT.** And the tick's useful half: GQL answers the identical seeded point lookup in **650 ns** against Gremlin's **2619** — ~~4.0x~~ **2.5x as of item 1641 (805 against 2000); quote that figure**, of which only ~400 ns is construction, so ~~**~2150 ns is per-call machinery for a ONE-element result**~~ — ⚠️ **decomposed at item 1642: 1277.6 ns per call total, of which 233.8 is construction, 33.6 routing and ~1044 execution; the machinery is the traverser SETUP, not the routing**
 
 Item 1593 left ~1860 ns of the Gremlin serving call unexplained — neither construction nor the
 varying lookup key. This profiled it.
@@ -71303,3 +71303,78 @@ Gremlin per-call machinery for a one-element answer, which no item has taken.
 #### Gates
 
 No code changed — verification only. `bun run check` 0 read unpiped.
+
+### Item 1642 — the Gremlin seeded POINT LOOKUP decomposed for the first time: **1277.6 ns per call = 233.8 construction (18%) + ~1044 execution, with routing at 33.6 ns (2.6%)**. ⚠️ **The profile's ~15% plan-analysis tail prices at 2.6% — the FIFTH share this session that did not survive an ablation.** And `effectivePlan` genuinely runs per call with no cache, which is correct and not worth changing
+
+OPEN: **~840 ns to execute a ONE-ELEMENT seeded lookup** with the plan reused. That is item 1594's
+finding re-measured in a single-purpose instrument, and it is the largest per-call cost left on a
+cheap Gremlin query. Construction and routing are both small; the traverser setup is the bulk.
+
+#### What was asked and what the profile said
+
+Item 1594 attributed "~2150 ns per-call machinery for a ONE-element result" and item 1641 re-measured
+the pair at 2000 ns, leaving ~1200 ns unexplained. A windowed profile of a seeded point lookup
+nominated a long tail of PLAN-ANALYSIS frames — `effectivePlan` 1.8%, `hopValuesShortcut` 2.7%,
+`startFilteredHopValues` 1.8%, `fuseOrderTake` 1.8%, `seededShape` 1.8%, plus `matchShape`,
+`seededCountShape`, `fusableValuesTopK`, `fuseValuesIsCount`, `dropVacuousLabels`, `isHop` — about
+**15%** of the row, on a query returning one element. And `run` really does call
+`effectivePlan(sliced, graph, ctx.tracksPath)` per call, with no cache anywhere in the file, so the
+rewrite passes and the whole rung chain are re-consulted on every invocation.
+
+#### The ablation says 2.6%
+
+One single-purpose instrument, 60,000 reps, min of 5, plan reused except where stated:
+
+```text
+   build plan only                       233.8 ns/call    18% of the realistic cost
+   full run (toArray, reused plan)       843.5
+   build + run (per-call id, REALISTIC) 1277.6
+   effectivePlan alone                    33.6            2.6% of 1277.6
+```
+
+**33.6 ns, not ~15%.** The fifth time this session a profile share has failed to convert — after
+`pick` at 19.0% priced at +0.4% (item 1634), `propOf`'s share (item 1444, corrected at 1446),
+`bucketSize` at 76.7% proven misattribution by counting (item 1637), and the closure environment at
+0.4% (item 1639). The tail is small frames hit once per call being credited with their caller's
+setup.
+
+So the per-call `effectivePlan` is **correct as it stands**. A cache would also have to be keyed on
+the GRAPH — `dropVacuousLabels` reads the graph's label counts — and invalidated on mutation, which
+is the `csr_fresh` staleness trap CLAUDE.md records going wrong on the native side. 2.6% does not buy
+that risk.
+
+#### The decomposition, and where the cost actually is
+
+```text
+   construction   233.8 ns   18%     item 1577 already cut this 4.27x
+   routing         33.6 ns    2.6%
+   execution     ~1044 ns    ~82%    of which ~840 with a warm plan object
+```
+
+The 200 ns between reused-plan execution (843.5) and fresh-plan execution (1277.6 − 233.8 = 1043.8)
+is the inline-cache cost of handing the engine a NEW plan object every call — not construction
+itself, which is counted separately.
+
+⚠️ **This also re-frames item 1578.** It measured construction at a MEDIAN of 48.1% of `V().count()`;
+here it is 18% of a point lookup. Both are right — `V().count()` is answered from a bucket size in
+O(1), so construction is a bigger share of a cheaper query. Neither figure transfers to the other
+shape.
+
+#### What would actually move it
+
+The bulk is the traverser pipeline's per-call setup for a one-element answer (`projectValues`,
+`seedRest`, `newContext`, `unwrap`, `toArray` in the profile). Two structural options, neither a
+tick's work:
+
+- **a closed-form route for "seeded by id + one projection"** that never builds a traverser, in the
+  spirit of the fused walks items 1613-1636 built for multi-row shapes. `seededShape` and
+  `seedFromIndex` already exist, so the seeding half is there; what remains is the emit half.
+- **parameter binding for Gremlin**, which it does not have (item 1577): a caller whose id varies
+  cannot reuse a plan, so it pays construction AND the fresh-object inline-cache cost on every call —
+  together ~434 of the 1277.6 ns, 34%. That is a feature, not an optimization, and it is the larger
+  of the two.
+
+#### Gates
+
+No engine code changed — two probe shapes (`point`, `pointcount`), which this probe lacked. `bun run
+check` 0 read unpiped.

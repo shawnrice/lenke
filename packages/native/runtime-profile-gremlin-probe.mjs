@@ -49,6 +49,7 @@ import {
   groupCount,
   gt,
   has,
+  hasId,
   hasLabel,
   in_,
   limit,
@@ -203,6 +204,19 @@ const SHAPES = {
   // nesting'"'"'s 889.84 at 50,000/5 - 1.24x and 1.37x. Depth TWO is at its floor (1.04x), so the
   // gap is specific to the stacked walk.
   hop3valuesrows: traversal(V(), out('E'), out('E'), out('E'), values('k')),
+
+  // ── Item 1642: a SEEDED POINT LOOKUP, which this probe had no shape for ─────────────────────
+  // Item 1594 measured GQL answering an identical seeded point lookup in 650 ns against Gremlin's
+  // 2619 and attributed ~2150 ns to "per-call machinery for a ONE-element result"; item 1641
+  // re-measured the pair at 805 against 2000, so ~1200 ns of that machinery is still there. It is a
+  // PER-CALL cost, not a per-row one, so none of items 1613-1636's walk fusions touch it — and it
+  // is what every point query pays.
+  //
+  // ⚠️ THE PLAN IS REUSED HERE, like every shape in this file, so this measures EXECUTION only.
+  // Construction is the other half and has its own instrument (`gremlin-build-share-probe.mjs`,
+  // where item 1578 measured it at a MEDIAN of 48.1% of `V().count()`).
+  point: traversal(V(), hasId('v12345'), values('k')),
+  pointcount: traversal(V(), hasId('v12345'), count()),
 
   /**
    * ⚠️ Item 1615: the two shapes item 1614 LEFT on the pipeline, and the only two the cliff finder
