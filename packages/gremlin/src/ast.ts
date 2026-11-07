@@ -560,6 +560,9 @@ export const KIND_BITS: Readonly<Record<string, number>> = {
   // it to do — the same gate reasoning as `hasLabel` above, and for the same measured reason: a pass
   // that runs on every query shows up in a reused-plan call.
   as: 8192,
+  // Item 1643. `seedSingleHasId` turns `V().hasId(x)` into the seeded source `V(x)`, so a plan with
+  // no `hasId` has nothing for it to do — the same gate reasoning as `as` and `hasLabel` above.
+  hasId: 16_384,
 };
 
 /** Every bit an edge-hop fusion cares about. */

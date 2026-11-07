@@ -71306,7 +71306,7 @@ No code changed — verification only. `bun run check` 0 read unpiped.
 
 ### Item 1642 — the Gremlin seeded POINT LOOKUP decomposed for the first time: **1277.6 ns per call = 233.8 construction (18%) + ~1044 execution, with routing at 33.6 ns (2.6%)**. ⚠️ **The profile's ~15% plan-analysis tail prices at 2.6% — the FIFTH share this session that did not survive an ablation.** And `effectivePlan` genuinely runs per call with no cache, which is correct and not worth changing
 
-OPEN: **~840 ns to execute a ONE-ELEMENT seeded lookup** with the plan reused. That is item 1594's
+OPEN: **~840 ns to execute a ONE-ELEMENT seeded lookup** with the plan reused. ⚠️ **Item 1643 took 1.44-1.60x of the `hasId` spelling of it** by rewriting to the seeded source; what remains is the ~330 ns the ALREADY-seeded spelling costs, still 35x a 9.3 ns hand floor. That is item 1594's
 finding re-measured in a single-purpose instrument, and it is the largest per-call cost left on a
 cheap Gremlin query. Construction and routing are both small; the traverser setup is the bulk.
 
@@ -71378,3 +71378,87 @@ tick's work:
 
 No engine code changed — two probe shapes (`point`, `pointcount`), which this probe lacked. `bun run
 check` 0 read unpiped.
+
+### Item 1643 — **1.44-1.60x on `V().hasId(x).values(k)` and 1.89-1.97x on its `count()` twin**, an EQUIVALENT-SPELLING gap on the commonest query there is: `V().hasId(x)` now rewrites to the seeded source `V(x)` for exactly ONE id. ⚠️ **A PRE-EXISTING TEST caught the first version turning an empty answer into a THROW**, and the spelling probe has a group for this pair that reports it as "under 1ms, not compared"
+
+OPEN: the two spellings are still **1.44x** apart on `values` (514-571 ns against the seeded 329-373)
+where they should be identical, because the rewrite allocates a fresh plan per call and the executor
+then pays the cold-inline-cache cost item 1642 priced at ~200 ns. A `WeakMap<Plan, Plan>` memo would
+close it for a REUSED plan and item 1503 measured exactly that trade and rejected it — **1.52-1.61x
+reused but 1.07-1.15x WORSE rebuilt** — and a point lookup whose id varies is the rebuilt case. Left
+alone. Both spellings remain **35-55x** a 9.3 ns hand floor (`getVertexById` + a property read),
+which is item 1642's traverser-setup question, not this one.
+
+#### The gap, and how it was found
+
+Item 1642 decomposed the point lookup and left ~840 ns of execution unexplained. Pricing that against
+a hand floor turned up something better than a floor gap — a difference between two spellings of the
+same question, measured in a single-purpose instrument at 200,000 vertices, plan reused, 60,000 reps,
+min of 5:
+
+```text
+   spelling              values     count
+   V().hasId(id)         821.8      646.7   ns/call
+   V(id)   (seeded)      348.5      228.6
+                         2.36x      2.83x
+   hand floor              9.3        9.3
+```
+
+⚠️ **`gremlin-spelling-probe.ts` HAS a group for this pair** — "id lookup: seeded V(id) vs hasId" —
+and reports it among the "19 group(s) under 1ms, not compared (raise SPELL_N)". The instrument built
+to catch exactly this class could not see it at its default size. That is the third instrument hole
+this arc has found after items 1631 and 1634, and the first where the right group already existed.
+
+#### What it is NOT
+
+`hasId` already seeds: item 1306 built `seedFromIndex` so it reads the id map instead of scanning,
+and `id-seed.test.ts` documents the three semantics that make that sound. So this is not seek-vs-scan
+— it is one seeded route being cheaper than another, and the rewrite routes to the cheaper one.
+
+```text
+   hasId.values   821.8 -> 514.4 / 571.5     1.44-1.60x
+   hasId.count    646.7 -> 328.6 / 341.8     1.89-1.97x
+   V(id).values   [CONTROL, unreachable]     329.5 / 373.2
+   V(id).count    [CONTROL, unreachable]     263.7 / 186.8
+```
+
+#### ⚠️⚠️ EXACTLY ONE ID, and a pre-existing test caught the case I missed
+
+The spellings diverge above one id, measured BEFORE the rewrite was written:
+
+```text
+   V().hasId(v3, v1).id()  ->  ["v1", "v3"]   GRAPH order, filtered
+   V(v3, v1).id()          ->  ["v3", "v1"]   the order the IDS were given
+   V().hasId(v1, v1).id()  ->  ["v1"]         a filter matches a vertex once
+   V(v1, v1).id()          ->  ["v1", "v1"]   a seed emits once per id
+```
+
+Order is a TinkerPop contract the differential fuzzer compares ORDERED; the multiplicity difference is
+a wrong answer outright. The single-id gate excludes both.
+
+**And a fourth case I did not anticipate.** `id-seed.test.ts` (item 1306) pins "a non-string id must
+not raise" — `V().hasId(5)` answers EMPTY because a number cannot match a string id, while `V(5)`
+RAISES "a vertex/edge id must be a string". The first version of this rewrite converted the first
+spelling into the second, **turning an empty answer into a throw**, and that pre-existing test failed
+on it. A `typeof === 'string'` guard fixes it, and the boundary is now pinned in this rewrite's own
+tests as well, so it does not depend on a file three directories away.
+
+That is the suite doing the job no measurement could: the rewrite was answer-equivalent on every case
+I thought to write.
+
+#### Mutation 7 of 8
+
+The single survivor is `gate/bit-dropped` — removing the `KIND_BITS.hasId` fast-path gate. It is
+unobservable by construction: the bit is DERIVED from the steps, so a plan whose bit is clear also
+fails the structural check one line later and the pass returns the same object either way. The gate
+is a speed fast-path (item 1505's reason) and has no answer to change.
+
+`mask/not-recomputed` is caught, which matters: `rewritten()` recomputes `kinds` and `mayFault`, and
+this pass REMOVES a `hasId` step — a later pass reading the stale mask would be reasoning about a
+step that is gone.
+
+#### Gates
+
+`bun run check` 0 read unpiped. Suites gremlin 1843 (17 new), gql 4230, core 444, native 1081,
+serialization 144 — 0 fail. `bun run fuzz` 20/0, `spelling:gremlin` 0 answer disagreements / 0 groups
+over 2x, and `bench:gremlin` reports `same` on all 31 rows.

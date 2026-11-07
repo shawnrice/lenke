@@ -1208,6 +1208,77 @@ export const fuseUnionBoth = (plan: Plan): Plan => {
  * emitted, which IS the property value.
  */
 // EXPORTED for its own assertion, like the other rewrites in this file.
+/**
+ * `V().hasId(x)` becomes the SEEDED source `V(x)`, and the same for `E()` — ONE id only (item 1643).
+ *
+ * ⚠️ AN EQUIVALENT-SPELLING GAP, which is the class CLAUDE.md says returns the right answer and costs
+ * 100-300x elsewhere. Measured in a single-purpose instrument at 200,000 vertices, plan reused,
+ * 60,000 reps, min of 5:
+ *
+ * ```text
+ *    spelling              values     count
+ *    V().hasId(id)         821.8      646.7   ns/call
+ *    V(id)   (seeded)      348.5      228.6
+ *                          2.36x      2.83x
+ *    hand floor              9.3        9.3   getVertexById + a property read
+ * ```
+ *
+ * `gremlin-spelling-probe.ts` HAS a group for this pair ("id lookup: seeded V(id) vs hasId") and
+ * reports it as "under 1ms, not compared" at its default size — so the gap has been invisible to the
+ * instrument built to catch exactly it.
+ *
+ * ⚠️⚠️ EXACTLY ONE ID, AND THE TWO REASONS ARE MEASURED NOT ARGUED. The spellings diverge above one:
+ *
+ * ```text
+ *    V().hasId(v3, v1).id()   ->  ["v1", "v3"]        GRAPH order, filtered
+ *    V(v3, v1).id()           ->  ["v3", "v1"]        the order the IDS were given
+ *    V().hasId(v1, v1).id()   ->  ["v1"]              a filter matches a vertex once
+ *    V(v1, v1).id()           ->  ["v1", "v1"]        a seed emits per id
+ * ```
+ *
+ * Gremlin stream order is a TinkerPop contract the differential fuzzer compares ORDERED, and the
+ * multiplicity difference is a wrong answer outright. One id has neither problem: one element, or
+ * none when the id is absent (both spellings give `[]`).
+ *
+ * ⚠️ IMMEDIATELY AFTER THE SOURCE, deliberately. Filters commute, so `V().hasLabel(P).hasId(x)` is
+ * equally seedable — but that widens the gate to reasoning about which intervening steps preserve
+ * the property, and the shape worth 2.36x is the point lookup. Kept narrow.
+ */
+export const seedSingleHasId = (plan: Plan): Plan => {
+  if ((plan.kinds & KIND_BITS.hasId) === 0) {
+    return plan;
+  }
+
+  const { steps } = plan;
+
+  if (steps.length < 2) {
+    return plan;
+  }
+
+  const [src, filter] = steps;
+
+  // An ALREADY-SEEDED source is left alone: `V(a).hasId(b)` is an intersection, not a seed.
+  if ((src.kind !== 'V' && src.kind !== 'E') || src.ids !== undefined) {
+    return plan;
+  }
+
+  if (filter.kind !== 'hasId' || filter.ids.length !== 1) {
+    return plan;
+  }
+
+  // ⚠️ A STRING ID ONLY, and a PRE-EXISTING TEST caught this. `V().hasId(5)` answers EMPTY — a
+  // number cannot match a string id — while `V(5)` RAISES "a vertex/edge id must be a string".
+  // Seeding a non-string would turn an empty answer into a throw, which is the wrong-answer half of
+  // `id-seed.test.ts`'s contract ("a non-string id must not raise"). The other two cases that file
+  // names — duplicates must not double, a multi-id `hasId` must keep the source's order — are
+  // already excluded by the single-id gate above.
+  if (typeof filter.ids[0] !== 'string') {
+    return plan;
+  }
+
+  return rewritten(plan, [{ kind: src.kind, ids: filter.ids }, ...steps.slice(2)]);
+};
+
 export const fuseValuesIsCount = (plan: Plan): Plan => {
   // ⚠️ THE GATE (item 1505): this pass can only fire on a plan that CONTAINS the kind it fuses, and
   // the mask answers that in one test instead of a walk. `effectivePlan`'s six passes were 32.2% of
@@ -1496,7 +1567,11 @@ export const effectivePlan = (plan: Plan, graph: Graph, tracksPath: boolean): Pl
         dropUnreadAs(
           dropVacuousLabels(
             fuseUnionSameDir(
-              fuseUnionBoth(fuseEdgeHop(flattenFilterWrappers(fuseValuesIsCount(fuseLocal(plan))))),
+              fuseUnionBoth(
+                fuseEdgeHop(
+                  flattenFilterWrappers(fuseValuesIsCount(seedSingleHasId(fuseLocal(plan)))),
+                ),
+              ),
               graph,
             ),
             graph,
