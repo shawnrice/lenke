@@ -71010,3 +71010,96 @@ about.
 
 No engine behaviour changed — a comment and two probe shapes. `bun run check` 0 read unpiped; gql
 4230 pass / 0 fail.
+
+### Item 1638 — the two-hop filter family priced at ALL THREE positions for the first time: **a filter costs ~1.9x its hand floor wherever it sits** (trailing 1.97x, mid 1.90x, lead 1.88x) while the UNFILTERED two-hop walk is at **1.08x**. ⚠️ **And the trailing-vs-mid 1.78x is NOT an asymmetry — it is 5x the predicate tests for the same rows.** ⚠️ **This instrument swings 1.47x run-to-run on its engine arm; read it within a run only**
+
+OPEN: the **~1.9x filtered-walk gap**, which is the third consecutive item to find a 1.2-2.0x
+engine-vs-hand-floor gap on an unrelated shape whose cause resists per-frame attribution. The gate
+collapse is NOT the answer (below), and the remaining candidate is the one the corpus cannot ablate
+from outside the engine. See the pattern note at the end.
+
+#### The instrument had floors for ONE of three positions
+
+`two-hop-values-floor.ts` floored the TRAILING filter and left MID and LEAD with engine numbers and
+nothing to compare against. Both floors added. At 200,000 vertices / 5 fanout, 12 arms, one run:
+
+```text
+   arm                                  ms/rep       rows   ns/row   vs floor
+   engine 2 hop values                  907.33   4999964    181.5    1.08x
+   HAND  2 hop values                   839.38   4999964    167.9      —
+   2 hop + TRAILING has, values        1616.45   2680230    603.1    1.97x
+   HAND  2 hop + trailing has           818.51   2680230    305.4      —
+   2 hop + MID has, values              947.74   2680232    353.6    1.90x
+   HAND  2 hop + MID has                498.31   2680232    185.9      —
+   2 hop + LEAD has, values             881.05   2680230    328.7    1.88x
+   HAND  2 hop + LEAD has               467.90   2680230    174.6      —
+```
+
+**The unfiltered walk is AT its floor and every filtered one is ~1.9x.** My first read of this family
+was that the TRAILING position was the outlier at 1.32x; with floors for all three it is clear the
+position hardly matters and the FILTER does.
+
+#### ⚠️ The trailing-vs-mid 1.78x is correct, not a defect
+
+Engine per-row: trailing 603.1, mid 353.6, lead 328.7 — for the SAME 2,680,230 rows. That looks like
+an equivalent-cost violation and is not. A two-hop pattern has 5,000,000 paths, so:
+
+```text
+   LEAD filter      tests    200,000 start vertices
+   MID filter       tests  1,000,000 first-hop far ends
+   TRAILING filter  tests  5,000,000 second-hop far ends
+```
+
+Five times the predicate work for the same output. Confirmed by profile rather than inferred: the
+gate closure is **30.4%** of the trailing row against **8.7%** of the mid one — 1381.6 ms against
+192.5, a 7.2x difference in absolute terms, which is the 5x plus its own overhead. Filtering later is
+more work; the floors move by the same factor (305.4 trailing against 185.9 mid per row).
+
+#### The gate collapse is priced and it is NOT the ~1.9x
+
+`hop-chain-values.ts` still applies gates through `survives(farV, farGates)` — item 1631's collapse
+went into `start-filtered-hop-values.ts` only. But `compileGates` already emits
+`(v) => fast(v.properties[key])`, so the step available here is fusing the comparison into the gate to
+drop ONE call layer — strictly smaller than item 1631's collapse, which removed `survives` entirely
+and measured **1.06-1.077x** against a 1.51x floor gap. That recovered ~12% of its gap; the same
+proportion here is ~1.08x.
+
+And both ways of applying it are worse than the prize: a branch in the per-edge loop, which item 159
+measured at **1.6x on this very family**, or a fifth and sixth copy of the literal two-hop walk (it is
+already written twice for lazy/eager). Not attempted.
+
+#### ⚠️⚠️ THIS INSTRUMENT SWINGS 1.47x ON ITS ENGINE ARM BETWEEN RUNS
+
+The trailing engine arm read **1096.86 ms** in one run and **1616.45** in the next — after two arms
+were added to the same process. Its floor moved far less (828.35 → 818.51). So:
+
+- **engine-vs-floor WITHIN one run is the only comparison this file supports.** The ratios above are
+  all same-run pairs for that reason.
+- a ratio carried ACROSS runs is worthless here, and the 1.32x in this item's first reading was
+  exactly that — trailing engine from one run against its floor from another.
+
+Twelve arms in one process, so this is items 1631/1634's cross-arm interference again, now measured
+at 1.47x rather than the ~6% those items saw. Anything needing per-arm resolution goes one arm per
+process.
+
+#### ⚠️ A pattern across three items, named rather than attacked a fourth time
+
+| item | shape                                      | engine vs hand floor | ablations accounted for                     |
+| ---- | ------------------------------------------ | -------------------- | ------------------------------------------- |
+| 1634 | Gremlin depth-3 stacked walk               | 1.23x                | ~60% across four causes, `pick` at 0%       |
+| 1636 | GQL filtered hop (after taking 1.19-1.43x) | ~2.0x                | probe arm predicted 41.5%, realized ~19-30% |
+| 1638 | Gremlin two-hop + filter, any position     | ~1.9x                | gate collapse ~1.08x of it                  |
+
+Three unrelated shapes, three engines-above-floor gaps of 1.2-2.0x, and in each case the per-frame
+ablations explain a minority. The residual candidate each time is the same one and it is the one that
+cannot be ablated from outside the engine: the closure ENVIRONMENT a walk captures and the inlining
+decisions that follow from it, which `ts-closure-size-is-load-bearing` records as real (a walk inline
+in a returned closure gave UNRELATED queries a new 4x slow mode) and which no hand floor reproduces,
+because a hand floor captures three locals where the engine's captures ten.
+
+That is a hypothesis with a shape, not a lever. Testing it needs an experiment on closure
+environment size — not another per-frame ablation, which is now 0 for 3.
+
+#### Gates
+
+No engine code changed — two floor arms. `bun run check` 0 read unpiped; suites unchanged.

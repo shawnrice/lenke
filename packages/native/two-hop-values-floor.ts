@@ -25,6 +25,21 @@
  *
  *     bun two-hop-values-floor.ts
  *     NODES=50000 REPS=10 bun two-hop-values-floor.ts
+ *
+ * ⚠️⚠️ COMPARE ENGINE TO FLOOR WITHIN ONE RUN ONLY. Item 1638 measured the trailing engine arm at
+ * **1096.86 ms in one run and 1616.45 in the next** — a 1.47x swing, after two arms were added to the
+ * same process — while its floor barely moved (828.35 -> 818.51). Twelve arms share one process, so
+ * this is items 1631/1634's cross-arm interference at a much larger scale than those items saw. A
+ * ratio built from an engine number in one run and a floor from another is worthless, and item 1638's
+ * own first reading (1.32x) was exactly that mistake. Anything needing per-arm resolution goes ONE
+ * ARM PER PROCESS.
+ *
+ * ⚠️ AND THE THREE FILTER POSITIONS ARE NOT COMPARABLE PER ROW. A two-hop pattern has 5,000,000
+ * paths at 200,000/5, so a LEAD filter tests 200,000 vertices, a MID filter 1,000,000 first-hop far
+ * ends and a TRAILING filter 5,000,000 second-hop far ends — five times the predicate work for the
+ * same 2,680,230 output rows. The engine reads 603.1 / 353.6 / 328.7 ns a row across them and the
+ * FLOORS move by the same factor (305.4 / 185.9 / 174.6), so the spread is the position's inherent
+ * work, not an asymmetry. Each position is ~1.9x its own floor; the UNFILTERED walk is 1.08x.
  */
 import { Graph } from '@lenke/core';
 import type { Edge, Vertex } from '@lenke/core';
@@ -187,6 +202,92 @@ const handTwoHopFiltered = (): unknown[] => {
   return outp;
 };
 
+/**
+ * ⚠️ FLOORS FOR THE MID AND LEAD FILTER POSITIONS, which this instrument did not have (item 1638).
+ * It floored the TRAILING position only, so the other two had engine numbers and nothing to compare
+ * them against — and the three positions differ by a factor of 5 in how many predicate tests they
+ * run, which is the whole story of this family.
+ *
+ * At 200,000 vertices / 5 fanout the engine reads 409.2 ns/row trailing, 230.0 mid and 208.6 lead for
+ * the SAME 2,680,230 rows. That is not an asymmetry to fix: a 2-hop pattern has 5,000,000 paths, so
+ * a TRAILING filter tests 5,000,000 far ends, a MID filter tests the 1,000,000 first-hop far ends,
+ * and a LEAD filter tests the 200,000 start vertices. Five times the tests for the same output.
+ * Confirmed by profile: the gate closure is **30.4%** of the trailing row against **8.7%** of the mid
+ * one, a 7.2x difference in absolute ms.
+ */
+const handTwoHopMidFiltered = (): unknown[] => {
+  const outp: unknown[] = [];
+
+  for (const v of g.vertices) {
+    const b0 = v.adjFrom?.get('E');
+
+    if (b0 === undefined) {
+      continue;
+    }
+
+    for (const e0 of b0 as Iterable<Edge>) {
+      const mid = e0.to;
+      const mk = mid.properties.k;
+
+      if (typeof mk !== 'number' || !(mk > 44)) {
+        continue;
+      }
+
+      const b1 = mid.adjFrom?.get('E');
+
+      if (b1 === undefined) {
+        continue;
+      }
+
+      for (const e1 of b1 as Iterable<Edge>) {
+        const value = e1.to.properties.k;
+
+        if (value !== undefined) {
+          outp.push(value);
+        }
+      }
+    }
+  }
+
+  return outp;
+};
+
+const handTwoHopLeadFiltered = (): unknown[] => {
+  const outp: unknown[] = [];
+
+  for (const v of g.vertices) {
+    const sk = v.properties.k;
+
+    if (typeof sk !== 'number' || !(sk > 44)) {
+      continue;
+    }
+
+    const b0 = v.adjFrom?.get('E');
+
+    if (b0 === undefined) {
+      continue;
+    }
+
+    for (const e0 of b0 as Iterable<Edge>) {
+      const b1 = e0.to.adjFrom?.get('E');
+
+      if (b1 === undefined) {
+        continue;
+      }
+
+      for (const e1 of b1 as Iterable<Edge>) {
+        const value = e1.to.properties.k;
+
+        if (value !== undefined) {
+          outp.push(value);
+        }
+      }
+    }
+  }
+
+  return outp;
+};
+
 type Arm = { name: string; run: () => number };
 
 const ARMS: Arm[] = [
@@ -228,6 +329,8 @@ const ARMS: Arm[] = [
     name: 'HAND  2 hop + trailing has (FLOOR)',
     run: () => handTwoHopFiltered().length,
   },
+  { name: 'HAND  2 hop + MID has (FLOOR)', run: () => handTwoHopMidFiltered().length },
+  { name: 'HAND  2 hop + LEAD has (FLOOR)', run: () => handTwoHopLeadFiltered().length },
   // ⚠️ THREE hops, to PRICE what item 1614 leaves open rather than asserting it is worth taking.
   {
     name: 'engine 3 hop values  (the pipeline)',
