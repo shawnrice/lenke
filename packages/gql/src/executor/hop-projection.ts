@@ -2101,6 +2101,45 @@ export const plainRowProjection = (proj: Projection): boolean =>
   proj.skip === undefined &&
   proj.limit === undefined;
 
+/**
+ * Is this projection exactly ONE property read off the FAR variable — `RETURN b.n AS n` — so the
+ * walk can build its row with a direct read instead of the generic `projectRow` (item 1636)?
+ *
+ * ⚠️ THE AST, NOT THE COMPILED ITEM. `CReturnItem.fn` is an opaque `CompiledExpr`; the AST's
+ * `{ kind: 'prop', variable, key }` is inspectable. The ROW KEY still comes from the COMPILED item's
+ * `name`, which is where the alias rule already lives — re-deriving "alias ?? the source text" here
+ * is how the two spellings drift apart.
+ *
+ * ⚠️ EXPORTED FOR ITS OWN TEST. A route choice is ANSWER-EQUIVALENT, so a mutant that makes this
+ * decline everything — or admits a shape it should refuse — passes every differential test by
+ * construction. Four of ten mutants survived the differential file for exactly that reason; the unit
+ * test on this function is the only instrument that can fail on them. Same remedy as items
+ * 1630/1631.
+ *
+ * ⚠️ PRICED AT 41.5% OF THE ROW, and that figure is itself a correction. Item 1447 built this,
+ * reached it, measured ~0% and reverted; its probe recorded 18.9% available. Item 1635 found the
+ * whole arc had been measured at `FANOUT=1` — one edge per node — and at `FANOUT=5` the two arms the
+ * split rests on swap order: the projection half is 215.1 ns of a 518.7 ns row.
+ */
+export const farPropRow = (
+  astProj: Projection,
+  proj: CProjection,
+  farVar: string,
+): { readonly rowKey: string; readonly key: string } | undefined => {
+  if (!plainRowProjection(astProj) || astProj.items.length !== 1 || proj.items.length !== 1) {
+    return undefined;
+  }
+
+  const [item] = astProj.items;
+  const [citem] = proj.items;
+
+  if (item.expr.kind !== 'prop' || item.expr.variable !== farVar || citem.isAgg) {
+    return undefined;
+  }
+
+  return { rowKey: citem.name, key: item.expr.key };
+};
+
 export const detectOptionalHopProjection = (
   clauses: readonly Clause[],
   compiled: readonly CClause[],
@@ -2702,8 +2741,14 @@ export const detectHopProjection = (
     );
   }
 
+  // ⚠️ `walkProj === proj` IS LOAD-BEARING. The deferred ORDER BY arm hands back a REDUCED copy of
+  // the projection (`order.walkProj`), whose items are not the AST's, so the detector would be
+  // reading one projection and the walk building from another. Item 1447 carried this same guard.
+  const farProp = walkProj === proj ? farPropRow(ret.projection, proj, farVar) : undefined;
+
   return sorted(
     filteredHopWalk({
+      farProp,
       forceStartDriven: startDrivenForOrder,
       startLabel,
       typeName,
@@ -3262,6 +3307,12 @@ const farDrivenFilteredHopWalk = (w: {
 };
 
 const filteredHopWalk = (w: {
+  /**
+   * Set when the projection is ONE property read off the far variable, so the general closure's
+   * sibling can build the row with a direct read (item 1636). `undefined` keeps the generic
+   * `projectRow`.
+   */
+  farProp: { readonly rowKey: string; readonly key: string } | undefined;
   /** See {@link detectHopProjection}'s own parameter — the order-sensitive fold's requirement. */
   forceStartDriven: boolean;
   startLabel: LabelExpr | undefined;
@@ -3286,7 +3337,7 @@ const filteredHopWalk = (w: {
   cfar: CNode | undefined;
 }): RowsFn => {
   const { startLabel, typeName, out, farVar, farLabel, proj, farPred, gate, startVar, cfar } = w;
-  const { startOnly, projStartOnly, cstart, forceStartDriven } = w;
+  const { startOnly, projStartOnly, cstart, forceStartDriven, farProp } = w;
   // Built per compile, like the two walks below it, and consulted only by the general closure —
   // the START-ONLY walk already gates a vertex before reading its adjacency and seeds the start
   // through `hopSeek`, which is the good case this is for.
@@ -3483,6 +3534,217 @@ const filteredHopWalk = (w: {
           }
 
           rows.push(projectRow(proj, binding, params, graph));
+        }
+      }
+
+      return rows;
+    };
+  }
+
+  /**
+   * THE SAME WALK WITH THE ROW BUILT INLINE — `RETURN b.n AS n` and nothing else (item 1636).
+   *
+   * ⚠️ A SIBLING `return`, NOT A BRANCH, AND THAT IS THE WHOLE POINT. Item 1447 built this
+   * specialization as a function-valued local chosen per call:
+   *
+   * ```ts
+   * const buildRow = farRow === undefined ? (b, _far) => projectRow(…) : (_b, far) => farRow(far);
+   * ```
+   *
+   * `filteredHopWalk` returns a fresh closure per compile but its BODY is shared, so
+   * `buildRow(binding, far)` is ONE bytecode site that every compile flows through, seeing both
+   * arrow shapes — one polymorphic dispatch per row, which is exactly the inline-cache cost item
+   * 1446 measured at 104.9 ns/row and exactly what the specialization exists to delete. It measured
+   * −4.8%/+0.7% and was reverted. Item 1447's own rule, written afterwards: **"its own closure, not
+   * a branch in the loop" means a separate RETURNED closure, not a hoisted function-valued local.**
+   * The comment at the general closure's push site says a sibling `return` with the read INLINE is
+   * the shape that can work; this is that.
+   *
+   * ⚠️ GENERATED FROM THE GENERAL CLOSURE'S SOURCE, not written by hand, and only ONE line differs —
+   * the push. Hand-duplicating it got the guards wrong (`startLabel !== undefined` where the
+   * original tests `seeded !== undefined`, which changes which vertices are visited), and a
+   * text-anchored attempt matched the START-ONLY closure instead. Nothing is removed: the
+   * template-and-copy fold lives in that other closure, so there is no dead arm here.
+   *
+   * ⚠️ `binding.set(farVar, far)` STAYS. The far predicate reads the far end out of the binding, so
+   * a PROJECTION specialization cannot remove it — item 1447's probe arm kept it for the same
+   * reason, which is why that arm is the honest model of this change.
+   *
+   * ⚠️ `?? null` MATCHES `propOf`. ISO GQL yields NULL for an absent property and the generic path
+   * coerces in `propOf`; a direct read must do it here or the two spellings disagree on a vertex
+   * that lacks the key.
+   *
+   * The duplication is a real cost — edits in this file move unrelated rows 3.4-5.8% (item 1415) —
+   * which is why the target had to be worth ~10% before attempting it. Item 1635 re-priced it at
+   * 41.5% after finding items 1444-1447 had measured the whole arc at ONE EDGE PER NODE.
+   */
+  if (farProp !== undefined) {
+    const { rowKey, key } = farProp;
+
+    return (graph, params) => {
+      // DECLINE when the FAR end can seek an index, and let the general path answer.
+      //
+      // `carriedWhere` accepts a clause `WHERE` only if it reads the far variable, so this walk
+      // takes precisely the filters it is worst at: a far-reading filter cannot reject a start
+      // vertex before expanding it, and the end it constrains — the seekable one — is not the end
+      // this walk drives. A filter reading only the START already declines here and reaches the
+      // general path's seed, which is why that spelling was fast all along. Measured on 20,000
+      // users, `name` indexed (audit item 177):
+      //
+      //   (u)-[:FOLLOWS]->(x:User) WHERE x.name = $n RETURN u.name     3966.1us  <- this walk
+      //   (u)-[:FOLLOWS]->(x:User {name: $n}) RETURN u.name            3531.5us  <- this walk
+      //   (x:User {name: $n})<-[:FOLLOWS]-(u) RETURN u.name              35.3us  <- general path
+      //   (x:User) WHERE x.name = $n MATCH (u)-[:FOLLOWS]->(x) …         40.7us  <- general path
+      //   (u:User)-[:FOLLOWS]->(x) WHERE u.name = $n RETURN x.name       49.6us  <- general path
+      //
+      // 97x between a query and the SAME query with its arrow flipped. Adding `LIMIT 1` also made
+      // it fast (43.3us) for the same reason: the projection guard rejects a paged projection, so
+      // the query fell through to the path that seeds.
+      //
+      // NARROWER BY A MARGIN, and the margin is measured rather than assumed. "Narrower than the
+      // source" is the guard `hopSeek` and `buildNodeCount` use, and it is WRONG here: those
+      // choose between two walks with the same per-element cost, while this chooses between a walk
+      // that builds no rows and a path that builds one per match. The fused walk is FLAT in the
+      // filter's selectivity (it visits every edge of the start source either way); the general
+      // path costs about 1.2us per matched far vertex. 20,000 users, 40,000 edges, each spelling
+      // forced both ways:
+      //
+      //   far matches   declining   fused walk
+      //             2        43.4      3871.8   decline, 89x
+      //            10        60.3      3897.0   decline, 65x
+      //           100       187.4      3827.5   decline, 20x
+      //          1000      1092.7      3970.4   decline, 3.6x
+      //         10000     13998.5      4527.5   FUSED, 3.1x
+      //
+      // So the crossover is near 3,250 of 20,000 and a plain `narrowest < source` guard sends the
+      // last row the wrong way — it was written that way first and measured 13430us against the
+      // 4272 it replaced, a 3.1x REGRESSION on an indexed-but-unselective filter. Dividing by 8
+      // puts the threshold at 2,500 for this source: inside the region where declining still wins
+      // by 3.6x, and clear of the one where it loses.
+      if (cfar !== undefined) {
+        const env: EvalEnv = { binding: new Map<string, unknown>(), params, graph };
+        let narrowest = Infinity;
+
+        for (const candidate of indexCandidates(graph, cfar, env)) {
+          narrowest = Math.min(narrowest, candidate.count);
+        }
+
+        if (narrowest * SEEK_MARGIN < candidateCount(graph, startLabel)) {
+          return null;
+        }
+      }
+
+      // Drive whichever end enumerates fewer vertices — a PER-CALL decision, since bucket sizes are
+      // a runtime property of the graph, so the inner loop below pays nothing for the choice. One
+      // early return rather than a restructuring, which keeps that loop byte-for-byte: item 159
+      // measured 1.6x on the hot shape from adding even a branch inside it. See `hopDrivesFar`.
+      if (!forceStartDriven && hopDrivesFar(graph, startLabel, farLabel)) {
+        return farDriven(graph, params);
+      }
+
+      const rows: Row[] = [];
+      const binding = new Map<string, unknown>();
+      // A VACUOUS FAR LABEL IS DROPPED, ONCE PER CALL — see the inline start-driven walk above for
+      // the measurement and the reasoning. On this walk it is worth more, because the shapes that
+      // reach it may read ONLY the start: `MATCH (a:P)-[:E]->(b:P) RETURN min(a.k) AS c` measured
+      // 20.38 ms against 8.14 for the same query written `->(b)`, two spellings of one question
+      // over a graph where every vertex carries `P` — 2.5x for a label test that cannot fail.
+      const fl = vacuousLabel(graph, farLabel) ? undefined : farLabel;
+
+      for (const v of candidateVertexSource(graph, startLabel)) {
+        const bucket = (out ? v.adjFrom : v.adjTo)?.get(typeName);
+
+        if (bucket === undefined) {
+          continue;
+        }
+
+        if (startVar !== undefined) {
+          binding.set(startVar, v);
+        }
+
+        for (const edge of bucket) {
+          const far: Vertex = out ? edge.to : edge.from;
+
+          if (fl !== undefined && !matchesLabel(far, fl)) {
+            continue;
+          }
+
+          binding.set(farVar, far);
+
+          if (farPred !== undefined && !satisfies(far, farPred, binding, params, graph)) {
+            continue;
+          }
+
+          if (gate !== undefined && asTruth(gate({ binding, params, graph })) !== true) {
+            continue;
+          }
+
+          // REJECTED HERE AND AT EVERY OTHER PER-EDGE `projectRow` IN THIS FILE (item 839): item
+          // 835's direct read, lifting `a.k`/`b.k` items to read the endpoint the loop already
+          // holds instead of going through the binding and the compiled closure. It APPLIES — this
+          // walk holds `v` and `far` at once, so item 832's "a multi-variable projection has no
+          // single element to read from" is false here, as item 838 showed it is for `FOR`. It is
+          // not worth taking, and a width ladder is what says so. Min of three rounds, 60,000
+          // vertices at 4 edges each, 240,000 rows:
+          //
+          //   items     1       2       4      ns/row
+          //           295.0   294.9   311.7    the START-driven walk, this one
+          //                           73.6     `RETURN b.k` alone -> the far-driven template walk
+          //
+          // A projection item costs ~5.6 ns here, so at width 2 the whole addressable term — one
+          // `env`, two binding reads, one `set` — is about 14 ns of 295, under 5%, which is below
+          // the ±8% this corpus's own controls measure (item 838). Against a change spanning seven
+          // call sites, that is not a trade.
+          //
+          // The ladder also says where the cost IS. This walk is 4.0x the far-driven one (295
+          // against 73.6) and the projection is ~2% of its row, so the gap is the far-vertex
+          // pointer chase in EDGE order that `farDrivenHopWalk`'s own comment prices at ~180 ns,
+          // plus the loss of its template hoist. Neither is reachable from here: with `needsStart`
+          // there is no per-vertex template to hoist, and `farDrivenFilteredHopWalk` already offers
+          // the far-outer ordering, which `hopDrivesFar` declines when the two labels are the same
+          // size because the locality it gains on the far end it loses on the start. Optimize the
+          // ACCESS PATTERN or nothing; the projection is not the cost.
+          //
+          // ⚠️ CORRECTED AT ITEM 1445: "~2% of its row" is the LADDER'S SLOPE, not the
+          // intercept, and the intercept is **92.6 ns/row (~15% of this row)**. A width ladder prices
+          // the MARGINAL item (5.6 ns); it cannot price going through the generic machinery for the
+          // FIRST one. Measured against a hand floor on the identical walk and access pattern
+          // (`gql-filtered-hop-floor-probe.mjs`, `floor` vs `floor-engine-shaped`, four rounds):
+          //
+          //   floor                 322.1 ns/row   lean hand walk, direct `far.properties[k]`
+          //   floor-engine-shaped   414.7          + `binding.set`, a fresh `env`, a generic item
+          //                                          fn, a `propOf`-shaped accessor, a row object
+          //   engine                614.8
+          //
+          // So the machinery is real and above this file's ~10% toll — but it is only **31.6% of the
+          // engine-to-floor gap**, and **200 ns/row is still unexplained** by walk, predicate
+          // arithmetic or projection. Leading hypothesis, NOT yet measured: `propOf` profiles at
+          // 24.1% here (148 ns/row) while the probe's two-call-site twin is far cheaper, which is
+          // call-site diversity rather than the function's own work — the effect
+          // `ts-closure-size-is-load-bearing` records. A specialized row builder would BYPASS `propOf`
+          // rather than speed it up, so that term is addressable from here after all.
+          //
+          // ⚠️ AND AT ITEM 1446 THE HYPOTHESIS WAS CONFIRMED AND THIS COMMENT'S CONCLUSION IS
+          // REFUTED ON ITS OWN TERMS. Megamorphism adds **104.9 ns/row (38.8% of the gap)** on top of
+          // the machinery's 52.1%, so **90.9% is explained** and 24.6 ns/row is left. Every probe arm
+          // walks `g.vertices` -> `v.adjFrom.get('E')` -> `edge.to` in the identical order on the
+          // identical fixture, so THE ACCESS PATTERN IS A CONSTANT across the table: the 270 ns/row
+          // spread is machinery and inline-cache state, not locality.
+          //
+          // A specialized row builder does not make `propOf` cheaper or `item.fn` monomorphic — it
+          // BYPASSES both, reading `far.properties[key]` from one site that sees one hidden class.
+          // ⚠️ Target: **18.9%**, not the ~44% first recorded here — corrected at item 1447, which
+          // BUILT the specialization and split the two halves. Item 1446's poly arm replaced the
+          // predicate AND the projection together; the projection half alone is 120 ns/row (18.9%)
+          // and the predicate path carries 178.4. Item 1429 named it, 1444/1445/1446 priced it,
+          // 1447 built it — and measured -4.8%/+0.7%, because a hoisted local holding one of two
+          // closures makes `buildRow(...)` ONE bytecode site that every compile flows through, so
+          // it goes polymorphic and hands back exactly what the specialization saved. A sibling
+          // `return (graph, params) => {...}` with the read INLINE is the shape that can work.
+          //
+          // The original conclusion still holds for what it measured; it just does not follow from a
+          // ladder. Same error shape as item 1437's CSE claim, corrected the same tick.
+          rows.push({ [rowKey]: far.properties[key] ?? null });
         }
       }
 

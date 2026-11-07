@@ -128,6 +128,14 @@ const FANIN = Number(process.env.FANIN ?? 1);
  * only ever say what a degree-1 graph does. A per-vertex cost and a per-edge cost scale differently
  * (CLAUDE.md), and so do a walk that dedupes and one that never meets a duplicate.
  */
+// ⚠️⚠️ ONE EDGE PER NODE BY DEFAULT, AND THAT HIDES PER-EDGE EFFECTS. Item 1636 measured the
+// far-property row builder at NO separation here at FANOUT=1 (33 ms rows with a 42 ms outlier) and at
+// 1.23-1.43x at FANOUT=5 — and the same default produced a PHANTOM 7-18% regression on
+// `hoprelfiltyield` that three further rounds refuted. At one edge per node there is one far-end read
+// per vertex, so a per-EDGE cost barely exists. Item 1635 found the same default misleading the
+// sibling probe (`gql-filtered-hop-floor-probe.mjs`), where it had set a recorded prior at less than
+// half its real value. Pass FANOUT=5 for anything per-edge; the default stays at 1 so the numbers in
+// items 1398-1447 remain comparable to each other.
 const FANOUT = Number(process.env.FANOUT ?? 1);
 
 const SHAPES = {

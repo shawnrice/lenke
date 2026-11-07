@@ -53521,7 +53521,7 @@ is open on it.
 per-GROUP digest field, because the `both` arms answer twice as many rows and a pooled digest check
 would have reported a false disagreement.
 
-### Item 1444 — the FILTERED hop row is ~~**1.87x a hand floor (46.5% headroom)**~~ **2.74x / 63.5% at FANOUT=5 — item 1635 found this whole arc was measured at ONE EDGE PER NODE** while its UNFILTERED twin BEATS its floor at 0.94x. A second, larger instance of item 1429's named target — and item 1437's CSE conclusion was right on evidence that did not support it (the second read is **2.6%**)
+### Item 1444 — the FILTERED hop row is ~~**1.87x a hand floor (46.5% headroom)**~~ **2.74x / 63.5% at FANOUT=5 — item 1635 found this whole arc was measured at ONE EDGE PER NODE** — ✅ **item 1636 took 1.19-1.43x of it; the row is now ~2.0x its floor** while its UNFILTERED twin BEATS its floor at 0.94x. A second, larger instance of item 1429's named target — and item 1437's CSE conclusion was right on evidence that did not support it (the second read is **2.6%**)
 
 `hopfiltyield` is the heaviest open row in the GQL bench and its two obvious levers are closed —
 routing (item 1436: forcing the far-driven filtered walk measured no better) and the double read
@@ -53777,7 +53777,7 @@ already encodes the "no DISTINCT, no grouping, no ORDER BY, no paging" guard.
 
 `bun run check` 0 (read unpiped). No engine code changed — one probe arm.
 
-### Item 1447 — the specialized row builder was BUILT, REACHED and REVERTED at **−4.8% / +0.7%**. The probe says ~~**18.9% is still there**~~ — ⚠️ **41.5% is still there: item 1635 re-measured at FANOUT=5, where the two arms this split rests on SWAP ORDER.** The wiring diagnosis below stands; the prize is more than twice what this heading advertised, and the failure is my WIRING: one dispatch site holding two closures goes polymorphic across compiles, which is the exact cost it was meant to remove
+### Item 1447 — the specialized row builder was BUILT, REACHED and REVERTED at **−4.8% / +0.7%**. The probe says ~~**18.9% is still there**~~ — ⚠️ **41.5%, re-measured at FANOUT=5 by item 1635** — ✅ **and BUILT AT ITEM 1636 for 1.19-1.43x: the wiring diagnosis below was RIGHT, and a sibling `return` gets what the hoisted local gave back**, and the failure is my WIRING: one dispatch site holding two closures goes polymorphic across compiles, which is the exact cost it was meant to remove
 
 Built item 1429's target with items 1444-1446's mechanism in hand: `farPropRowBuilder` detects a
 single-far-property projection on the AST side (`{ kind: 'prop', variable, key }` is inspectable,
@@ -70762,7 +70762,7 @@ No engine code changed. `bun run check` 0 read unpiped; suites unchanged.
 
 ### Item 1635 — ⚠️ **ITEMS 1444-1447'S WHOLE DECOMPOSITION WAS MEASURED AT ONE EDGE PER NODE**, the probe's default, which is the sparse fixture CLAUDE.md warns per-edge costs do not scale on. At FANOUT=5 two arms SWAP ORDER and the recorded prior doubles: the projection specialization is **41.5%** of the engine row, not the **18.9%** item 1447 filed as available — so the row builder it reverted is worth more than twice what the audit advertises
 
-OPEN: **the specialized far-property row builder, re-priced at 41.5%** (215.1 ns of a 518.7 ns row).
+OPEN: ~~**the specialized far-property row builder, re-priced at 41.5%**~~ — ✅ **BUILT AT ITEM 1636** (1.19-1.43x; the 41.5% arm overshot the realized ~19-30%, and POST still sits 1.40x above that arm).
 Item 1447 built it, reached it, measured ~0% and reverted, and diagnosed the failure exactly — "one
 dispatch site holding two closures goes polymorphic across compiles, which is the exact cost it was
 meant to remove". That diagnosis still stands and is the thing to solve; what changes is the size of
@@ -70829,3 +70829,129 @@ have put the engine BELOW the megamorphic arm and inverted the conclusion.
 
 No engine code changed — a measurement correction and a header. `bun run check` 0 read unpiped;
 suites unchanged.
+
+### Item 1636 — **the specialized far-property row builder is BUILT and SHIPPED**, the target item 1429 named and item 1447 reverted: **1.19-1.23x** on the probe and **1.23-1.43x** on item 1447's own row bench, both at FANOUT=5, every control flat. ⚠️ **Item 1447's wiring diagnosis is CONFIRMED** — a sibling `return` gets what a hoisted function-valued local gave back. ⚠️ **And `isolated-row-bench.mjs` ALSO defaults to one edge per node: at FANOUT=1 the target shows NOTHING and produced a phantom control regression**
+
+OPEN: the row is still ~2.0x its hand floor after this (POST ~425 ms against `floor`'s 189 at
+FANOUT=5). The probe's own `floor-pred-poly-row-direct` arm predicted **41.5%** and the realized win
+is ~19-30%, so the arm models the change faithfully and the engine still pays something it does not —
+POST sits 1.40x above that arm. That residue is unattributed and is the next question on this shape.
+
+#### What item 1447 got right, and the one thing it got wrong
+
+Item 1447 built this, reached it, measured −4.8%/+0.7% and reverted — then diagnosed its own failure
+exactly: the wiring chose between two closures per CALL through a hoisted local, so
+`buildRow(binding, far)` was ONE bytecode site every compile flowed through, seeing both arrow
+shapes. One polymorphic dispatch per row, which is the inline-cache cost item 1446 measured at
+104.9 ns/row and precisely what the specialization exists to delete. Its rule, written afterwards:
+
+> "its own closure, not a branch in the loop" means a separate RETURNED closure, not a hoisted
+> function-valued local.
+
+**That diagnosis was correct.** The route is a sibling `return (graph, params) => {…}` now, and it
+converts.
+
+#### The numbers, at a realistic degree and from two instruments
+
+`gql-filtered-hop-floor-probe.mjs`, `engine` arm, NODES=200000 FANOUT=5, three order-alternated
+rounds:
+
+```text
+   PRE   528.36   503.27   503.14
+   POST  431.07   426.75   419.03      1.19-1.23x, non-overlapping
+   engine-bare (no predicate)          flat: 134.57/135.81/134.57 -> 133.36/133.59/124.72
+   digests identical in every arm (99999499925 filtered / 99999500000 bare)
+```
+
+`isolated-row-bench.mjs` — item 1447's own instrument, with its own target and controls — NODES=200000
+**FANOUT=5**, two rounds, p25:
+
+```text
+   row                        PRE            POST          verdict
+   hopfiltyield      [T]    374.93 319.58   261.31 258.71  non-overlapping, 1.23-1.43x
+   hopfiltdiffprop   [T]    331.15 337.92   311.69 243.67  directional, ~1.20x
+   hopstartonlyyield [CTL]  282.42 276.93   277.79 266.99  flat
+   hoprelfiltyield   [CTL]  347.87 343.69   342.27 353.83  flat
+```
+
+`hopstartonlyyield` is the control with TEETH: its projection is the same single far property, so the
+detector fires — but the START-ONLY closure returns before this sibling, so the row tests whether
+adding the route perturbed a walk it cannot reach. It does not. `hopfiltdiffprop` matters separately:
+the predicate and the projection read DIFFERENT properties, so its gain is not item 1437's double
+read (which item 1444 priced at 2.6% anyway).
+
+#### ⚠️⚠️ `isolated-row-bench.mjs` ALSO DEFAULTS TO FANOUT=1, and it cost two wrong readings
+
+Item 1635 found items 1444-1447 had measured the whole arc at one edge per node. The SAME default is
+in this second instrument, and at FANOUT=1 it produced two conclusions that are both false:
+
+- **the target showed NO separation** — POST 34.29/31.70/32.50 against PRE 32.02/42.36/31.70. A 33 ms
+  row whose own spread reaches 42 ms cannot resolve 15%.
+- **a phantom control regression.** `hoprelfiltyield` read 7-18% WORSE in POST and three further
+  rounds refuted it (POST 43.93/47.34/42.21 against PRE 47.52/40.76/45.07, overlapping, POST slightly
+  better). I nearly rejected the change on it.
+
+At one edge per node there is one far-end read per vertex, so the per-edge cost this specialization
+removes barely exists. **Both GQL row instruments default to the sparse fixture, and this engine's
+costs are per edge.** Pass `FANOUT=5`.
+
+#### ⚠️ I also ran the WRONG GATE for three ticks
+
+`bench.ts`'s `traverse 1-hop + filter` is `… RETURN count(*) AS c` — a COUNT, which never reaches the
+row-building path. I swept all 69 rows of that bench twice per arm before noticing. The tell was
+visible from the start: that row reads ~41 ms where the identically-shaped probe arm reads 425-519.
+Item 1447's A/B table names its rows `hopfiltyield`/`hopsingleyield`/`hopstartonlyyield`/
+`hoprelfiltyield` — all in `isolated-row-bench.mjs`, not `bench.ts`.
+
+And the discarded sweep did leave one useful by-product: comparing its two POST passes against each
+other (same build, so pure noise) gives a floor of **>10% for rows under ~150 ms** and **<1.5% for the
+large ones**. The target row is ~41 ms there, so that bench could never have resolved this either way.
+
+#### The sibling is GENERATED from the general closure's source
+
+Two hand attempts failed and both would have shipped a different walk:
+
+1. Hand-writing the duplicate got the guards wrong — `startLabel !== undefined` where the original
+   tests `seeded !== undefined`, which changes which vertices are visited.
+2. A text-anchored generator matched the START-ONLY closure (guarded by
+   `startOnly && gate !== undefined && startVar !== undefined`), escaped that narrowing and did not
+   typecheck; a third attempt matched a closure in a different function and spanned six pushes.
+
+It now anchors on STRUCTURE — indent 2, no enclosing guard, scoped inside `filteredHopWalk` — and
+changes exactly one line, the push. Nothing is removed: the template-and-copy fold lives in the
+start-only closure, not this one.
+
+**And the route is PROVEN REACHED**, item 1447's own check: a throw in the fast arm makes the target
+query fail with `FARPROP-REACHED` while every declining spelling keeps working.
+
+#### Mutation 8 of 10, after the pure-function tests converted four survivors
+
+The first pass caught 5 of 10, and three of the five survivors were real test gaps:
+
+- **`push/no-null-coerce` survived because my `{ n: null }` test used an UNFILTERED query**, which
+  routes to the FAR-DRIVEN walk and never reaches this specialization. Passing for the wrong reason,
+  which is this file's recurring failure (item 1576, and item 1636's own element test at 1630). Fixed
+  with a filtered query whose predicate reads a DIFFERENT key, so a far end lacking the projected one
+  is admitted.
+- **`gate/plain-dropped` survived because the DISTINCT assertion did not discriminate** — the fixture
+  had six distinct values in six rows, so dedup removed nothing either way. Fixed with a second,
+  scoped graph carrying a duplicate far value. (Scoped deliberately: adding the duplicate to the
+  shared fixture invalidated NINE existing literals at once, and re-deriving nine is where the errors
+  come from.)
+- **`route/never-taken`, `kind/agg-admitted` and `gate/plain-dropped`** are the answer-equivalent
+  route class — no differential test can fail on a gate that merely declines. `farPropRow` is
+  EXPORTED and unit-tested for its decisions, which converted all but one. Same remedy as items
+  1630/1631.
+
+Two documented survivors: `route/never-taken` (GQL rows expose no route observable — Gremlin's
+`drain` has no equivalent here) and `call/walkproj-guard-dropped` (defensive; I could not construct a
+shape where the deferred ORDER BY arm supplies a reduced `walkProj`, and the guard is carried from
+item 1447 rather than re-derived).
+
+#### Gates
+
+`bun run check` 0 read unpiped. Suites gql 4230 (23 new), gremlin 1827, core 444, native 1081,
+serialization 144 — 0 fail. `bun run fuzz` 20/0. ⚠️ `bun run spelling` flags two SEEK clause-vs-inline
+groups at 3.84x and 2.13x, one of them named for item 578 — **verified PRE-EXISTING** by running
+`SPELL_ONLY=SEEK` on BOTH arms, where each reads 0 groups over 2x. The full run's flags are its own
+dispatch pollution; a filtered PRE against an unfiltered POST would not have been comparable.
