@@ -71462,3 +71462,70 @@ step that is gone.
 `bun run check` 0 read unpiped. Suites gremlin 1843 (17 new), gql 4230, core 444, native 1081,
 serialization 144 — 0 fail. `bun run fuzz` 20/0, `spelling:gremlin` 0 answer disagreements / 0 groups
 over 2x, and `bench:gremlin` reports `same` on all 31 rows.
+
+### Item 1644 — ⚠️ **THE GREMLIN SPELLING PROBE WAS BLIND TO THE WHOLE FAST END OF ITS OWN CORPUS: 19 of its groups reported "under 1ms, not compared" and were never judged.** Calibrated inner iterations make 9 of them measurable and surface **7 flags**; isolation confirms one — **`union(out(T), in(T))` is 2.15-2.92x `both(T)`** for an identical answer — and refutes two as dispatch pollution
+
+OPEN: **`union(out(T), in(T))` against `both(T)`, 2.15-2.92x, confirmed in four isolated runs** (236.7
+and 193.6 ns against 509.0 and 564.3). ⚠️ `effectivePlan` already contains a `fuseUnionBoth` pass
+whose whole job is this spelling, so either it is not firing or it fires and the result is still
+slower — the `rewrite-composition-is-not-free` class. Also open, flagged but NOT yet isolated:
+`edge-type union vs explicit union` 2.75x, `multi-id EDGE lookup` 2.50x, `bothE(T) vs union(outE,
+inE)` 2.27x, `multi-id lookup, dedupe tail` 2.03x.
+
+#### The blind spot, and what it hid
+
+`timeOf` wrapped ONE `toArray` in a `performance.now()` pair. For a sub-microsecond query that
+measures the clock as much as the work, so the probe skipped any group whose max was under 1 ms — 19
+of them, listed every run under "not compared (raise SPELL_N)". Raising `SPELL_N` cannot help: it
+grows the GRAPH, and a point lookup stays sub-millisecond at any size.
+
+Item 1643 is what exposed the cost. One of those 19 groups — "id lookup: seeded V(id) vs hasId" — was
+hiding **2.36x on `values` and 2.83x on `count`**, on a point lookup, the commonest query there is.
+The instrument built to catch equivalent-spelling gaps could not see the fast half of its corpus, and
+the group was right there in the list.
+
+#### The fix
+
+Each group now calibrates an inner count until one sample takes `SPELL_SAMPLE_MS` (default 2 ms) and
+reports the PER-CALL median. A slow group calibrates to `inner = 1` and behaves exactly as before;
+the spread between two spellings is a ratio, so nothing about the flagging logic changes. `FLOOR_MS`
+drops from 1 ms to 500 ns — it no longer guards timing resolution, only the regime where allocation
+noise swamps a difference.
+
+**And sub-millisecond times now print in ns.** `toFixed(3)` rendered every fast group as `0.000ms` or
+`0.001ms`, so a CONFIRMED 2.79x was unreadable and nothing said which arm was slow. That is a second,
+smaller instance of the same failure: the number was there and the instrument would not show it.
+
+```text
+   before   19 groups "under 1ms, not compared"
+   after    10 under 500 ns/call, 7 FLAGGED, and the rest judged clean
+```
+
+#### The seven flags, and why three readings matter
+
+```text
+   multi-id lookup: V(ids) vs hasId(ids)                        5.93x
+   label, two of them: hasLabel(a,b) vs or(hasLabel, hasLabel)  3.06x
+   edge-type union vs an explicit union                         2.75x
+   multi-id EDGE lookup: E(ids) vs hasId(ids)                   2.50x
+   hop, both directions: both(T) vs union(out, in)              2.40x
+   hop, both as edges: bothE(T) vs union(outE, inE)             2.27x
+   multi-id lookup, dedupe tail: V(ids) vs hasId(ids)           2.03x
+```
+
+The probe's own instruction is to re-run each ALONE three times before treating a flag as a finding,
+and that instruction earned itself immediately:
+
+- **`multi-id lookup` 5.93x — REFUTED.** Isolated, both arms read 0.001 ms, equal. The largest flag
+  in the list was dispatch pollution from earlier groups.
+- **`label, two of them` 3.06x — REFUTED.** Two isolated runs, 0 groups over 2x.
+- **`hop, both directions` — CONFIRMED four times** (2.79x, 4.47x, 2.15x, 2.92x), and with the ns
+  display the slow arm is unambiguous: `both(T)` 236.7 / 193.6 ns against `union(out, in)` 509.0 /
+  564.3.
+
+So of three flags checked, two were the harness and one is real. The four unchecked ones are recorded
+as flagged, not as findings.
+
+#### Gates
+
+No engine code changed — the probe only. `bun run check` 0 read unpiped.

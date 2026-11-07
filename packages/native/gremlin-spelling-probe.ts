@@ -76,7 +76,11 @@ import { deserialize as tsDeserialize } from '@lenke/serialization';
 const N = Number(process.env.SPELL_N ?? 200_000);
 const REPS = Number(process.env.SPELL_REPS ?? 14);
 const TOL = Number(process.env.SPELL_TOL ?? 2);
-const FLOOR_MS = Number(process.env.SPELL_FLOOR ?? 1);
+// ⚠️ WAS 1ms AND IS NOW 0.0005ms (500 ns), because item 1644 gave every group calibrated inner
+// iterations: the floor no longer guards TIMING RESOLUTION, only the regime where allocation noise
+// and GC swamp a real difference. At 1ms it skipped 19 of this probe's groups, one of which hid a
+// 2.36x (item 1643).
+const FLOOR_MS = Number(process.env.SPELL_FLOOR ?? 0.0005);
 const ONLY = process.env.SPELL_ONLY ?? '';
 
 // THE FIXTURE, and its statistics are asserted below rather than assumed.
@@ -525,14 +529,67 @@ const answerOf = (plan: Plan): string => {
   return `${rows.length}:${JSON.stringify(rows.slice(0, 8).map(plain))}`;
 };
 
+/**
+ * ⚠️ INNER ITERATIONS, CALIBRATED PER GROUP (item 1644) — and without them this probe could not see a
+ * 2.36x.
+ *
+ * The old form wrapped ONE `toArray` in a `performance.now()` pair. For a sub-microsecond query that
+ * measures the clock as much as the work, which is why 19 of this probe's groups reported "under 1ms,
+ * not compared" and were simply never judged. Item 1643 then found that one of them — "id lookup:
+ * seeded V(id) vs hasId" — was hiding **2.36x on `values` and 2.83x on `count`**, a point lookup
+ * being the commonest query there is. The instrument built to catch equivalent-spelling gaps was
+ * blind to the whole fast end of its own corpus.
+ *
+ * So each group now calibrates an inner count until one sample takes at least `SAMPLE_MS`, and
+ * reports the PER-CALL time. The spread between two spellings is a ratio, so it is unchanged for the
+ * slow groups (which calibrate to `inner = 1` and behave exactly as before) while the fast ones
+ * become measurable for the first time.
+ *
+ * ⚠️ THE FLOOR STAYS, AT A MUCH SMALLER VALUE. It no longer guards timing resolution — calibration
+ * does that — but a group answering in a few nanoseconds is one where allocation noise and GC
+ * dominate any real difference, and the null controls cannot gate what they cannot resolve either.
+ */
+const SAMPLE_MS = Number(process.env.SPELL_SAMPLE_MS ?? 2);
+
+/** How many calls one timed sample needs to reach `SAMPLE_MS`. Capped so a slow group stays at 1. */
+const calibrate = (plan: Plan): number => {
+  let inner = 1;
+
+  for (let guard = 0; guard < 40; guard += 1) {
+    const t = performance.now();
+
+    for (let i = 0; i < inner; i += 1) {
+      toArray(plan, graph);
+    }
+
+    const dt = performance.now() - t;
+
+    if (dt >= SAMPLE_MS || inner >= 1_000_000) {
+      return inner;
+    }
+
+    // Aim straight at the target rather than doubling, but never shrink and never overshoot wildly.
+    inner = Math.min(
+      1_000_000,
+      Math.max(inner * 2, Math.ceil((inner * SAMPLE_MS) / Math.max(dt, 0.001))),
+    );
+  }
+
+  return inner;
+};
+
 const timeOf = (plan: Plan): number => {
+  const inner = calibrate(plan);
   const series: number[] = [];
 
   for (let r = 0; r < REPS; r++) {
     const t = performance.now();
 
-    toArray(plan, graph);
-    series.push(performance.now() - t);
+    for (let i = 0; i < inner; i += 1) {
+      toArray(plan, graph);
+    }
+
+    series.push((performance.now() - t) / inner);
   }
 
   const warm = series.slice(3).sort((a, b) => a - b);
@@ -579,7 +636,14 @@ for (const r of results) {
 
   for (let i = 0; i < r.times.length; i++) {
     console.log(
-      `      ${r.times[i].toFixed(3).padStart(9)}ms   answer=${r.answers[i].slice(0, 44)}`,
+      // ⚠️ ns BELOW A MILLISECOND (item 1644). Calibrated inner iterations made the fast groups
+      // comparable, and `toFixed(3)` then printed every one of them as `0.000ms` or `0.001ms` — so a
+      // CONFIRMED 2.79x was unreadable and no one could tell which arm was the slow one.
+      `      ${
+        r.times[i] < 1
+          ? `${(r.times[i] * 1e6).toFixed(1).padStart(9)}ns`
+          : `${r.times[i].toFixed(3).padStart(9)}ms`
+      }   answer=${r.answers[i].slice(0, 44)}`,
     );
   }
 }
@@ -649,7 +713,7 @@ if (flagged.length > 0) {
 
 if (tooFast.length > 0) {
   console.log(
-    `\n${tooFast.length} group(s) under ${FLOOR_MS}ms, not compared (raise SPELL_N): ${tooFast
+    `\n${tooFast.length} group(s) under ${FLOOR_MS}ms per call, not compared: ${tooFast
       .map((r) => r.name)
       .join('; ')}`,
   );
