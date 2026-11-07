@@ -72655,9 +72655,58 @@ earlier tags.
 
 OPEN, with that number. **Not built**: an entry/join-order choice in the solver is a planner feature,
 not a tick, and it needs a cost model (the engine has `cost.rs` on the native side, nothing
-equivalent in the TS solver). What this item fixes is the PRICE — the next attempt starts from
+equivalent in the TS solver). ⚠️ **AND ITEM 1657 RE-PRICES WHAT "NOT BUILT" MEANS HERE: it is not a
+cost model, it is a JOIN OPERATOR, and it conflicts with Gremlin's per-traverser emission.** What this item fixes is the PRICE — the next attempt starts from
 "37-89x and growing", not from the four constant-factor items' 1.1x.
 
 #### Gates
 
 No engine change — one new probe. `bun run check` 0 read unpiped.
+
+### Item 1657 — ⚠️ **ITEM 1656's TARGET IS NOT A COST MODEL, IT IS A JOIN OPERATOR — and it conflicts with Gremlin's per-traverser emission.** `pickRunnable` already restricts the solver to patterns whose start tag is BOUND, which is why written pattern order measures irrelevant; entering from a selective pattern's own edge bucket means binding BACKWARDS across the whole stream, which the nested-loop model cannot express
+
+MEASURED/READ, no engine change. A short structural correction to the item before it, written because
+the difference changes whether the target is reachable at all.
+
+#### What `pickRunnable` already does
+
+```ts
+for (let i = 0; i < patterns.length; i++) {
+  if (done.has(i) || !t.tags.has(patterns[i].startKey)) continue;
+  if (!patterns[i].negated) return i;   // binders/filters before negated constraints
+  …
+}
+```
+
+It picks the first pattern that is RUNNABLE — start tag already bound — preferring non-negated. So
+the solver is not following written order, and item 1656's own measurement agrees: `match(p1, p2)`
+and `match(p2, p1)` cost 7.2-9.0 ms either way for the same 11,910 answer. **"Order the patterns by
+selectivity" is therefore not the lever**, and in a CHAIN exactly one pattern is runnable at each
+depth, so there is nothing to choose between.
+
+#### Why the selective entry needs a different execution model
+
+Item 1656's 37-89x comes from entering `as(b).out(S).as(c)` FIRST — but `b` is unbound there, so the
+only way in is the global `S` bucket, and the earlier tag `a` must then be bound BACKWARDS
+(`in(T)` from `b`). Two things block that:
+
+- **`a` is fixed per incoming traverser.** `matchStep` is `function*(stream, …)` and `solve` extends
+  ONE traverser at a time, so the stream has already chosen `a` before any pattern runs. Entering
+  from the `S` bucket finds solutions for all `a`s at once — a whole-stream hash join, not a
+  nested-loop extension.
+- **Emission order is a TinkerPop contract**, compared ORDERED by the differential fuzzer. A join
+  that groups by `b` emits solutions in bucket order, not in incoming-traverser order.
+
+So the reachable form is a new JOIN operator with an order-restoring step, not a cost model bolted
+onto `pickRunnable`. That is a much larger piece of work than item 1656's entry implies, and the
+37-89x is its payoff rather than a planner tweak's.
+
+⚠️ **The per-candidate constant is NOT the explanation either**, and it was the obvious next
+hypothesis: 30,000 candidates in 11.07 ms is ~370 ns each, which looks removable. It is not reachable
+by this tick's instruments — `node --cpu-prof` cannot run a `.ts` probe and `bun` has no
+`--cpu-prof`, so profiling the selective shape needs an `.mjs` companion that does not exist. Left
+unmeasured and said so, rather than asserted from the sweep.
+
+#### Gates
+
+No engine change — `git diff` is this entry. `bun run check` 0 read unpiped.
