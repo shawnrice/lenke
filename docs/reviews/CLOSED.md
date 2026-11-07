@@ -59338,7 +59338,7 @@ observable change. `countShortcut` (10.6%) and `newContext` (9.1%) are execution
 `bun run check` 0 read unpiped. core 431/0, gql 3773/0, gremlin **1448**/0, native 961/0,
 serialization 144/0, `bun run fuzz` 20/0.
 
-### Item 1507 — the validation walk was the last big group at **27.5%**, and it is skippable: a plan with no step that CAN raise cannot fault. **count 124 → 77 ns (1.61x), 4.09x cumulative since 1503** — and an early-out found along the way made the REBUILT arm 1.14-1.28x faster too
+### Item 1507 — the validation walk was the last big group at **27.5%**, and it is skippable: a plan with no step that CAN raise cannot fault. **count 124 → 77 ns (1.61x), 4.09x cumulative since 1503** — and an early-out found along the way made the REBUILT arm 1.14-1.28x faster too. ⚠️ **The GATE is not the end of it: item 1648 found the walk still costs 74% of a `union(out, in).count()` call for a plan whose `mayFault` is TRUE, and cached the verdict per plan**
 
 Re-profiled again (fourth tick running, and the ranking moved again). At 123 ns a call:
 
@@ -71527,12 +71527,14 @@ as flagged, not as findings.
 
 No engine code changed — the probe only. `bun run check` 0 read unpiped.
 
-### Item 1645 — ⚠️⚠️ **A SPELLING THAT NEEDS A REWRITE TO BECOME THE FAST ONE CAN NEVER MATCH THE ONE THAT DID NOT, because the rewrite runs PER CALL** (⚠️ **the per-call part is FIXED at item 1647 — the rewrite is cached; the conceptual point stands and the residual moved to `run`'s validation**)**.** `union(out(T), in(T)).count()` is 2.41x `both(T).count()` even though `fuseUnionBoth` collapses the first into the second — and **52% of the gap is `effectivePlan` doing that collapse** (117.5 of 225.2 ns). A conceptual correction to this repo's central invariant, not a lever
+### Item 1645 — ⚠️⚠️ **A SPELLING THAT NEEDS A REWRITE TO BECOME THE FAST ONE CAN NEVER MATCH THE ONE THAT DID NOT, because the rewrite runs PER CALL** (⚠️ **the per-call part is FIXED across items 1647-1648 — the rewrite AND the static-check walk are both cached, and the two spellings now cost the same; the conceptual point stands, and the lesson is that it was NOT only the rewrite**)**.** `union(out(T), in(T)).count()` is 2.41x `both(T).count()` even though `fuseUnionBoth` collapses the first into the second — and **52% of the gap is `effectivePlan` doing that collapse** (117.5 of 225.2 ns). A conceptual correction to this repo's central invariant, not a lever
 
-~~OPEN: the 2.41x itself~~ — ⚠️ **MOSTLY CLOSED AT ITEM 1647**, which cached the rewrite and took the
-whole call from **395.0 → 274.7 ns** against a flat `both` control, narrowing this gap to 1.58x. The
-residual is NOT the rewrite: `run`'s pre-rewrite validation walks the UN-normalised plan, which is
-~91 ns of the remaining 118 and is now the open part. ~~**A `WeakMap<Plan, Plan>` memo on `effectivePlan`**~~ — ⚠️ **ANSWERED AT ITEM 1646 (a WeakMap is 1.25x worse rebuilt; a field on the plan is not) AND BUILT AT ITEM 1647 — though not with that item's key, which is a wrong answer: `graph.version` is asynchronous.** **Removing
+~~OPEN: the 2.41x itself~~ — ⚠️ **CLOSED ACROSS ITEMS 1647 AND 1648.** 1647 cached the rewrite
+(395.0 → 274.7 ns, gap 1.58x); 1648 cached the static-check verdict the rewrite's residual turned out
+to be (274.7 → 73.0 ns, **gap 1.02x**). The union and `both` spellings now cost the SAME, and all
+three union groups this item flagged have dropped off the Gremlin spelling probe's comparison list
+entirely — they fell below its 500 ns floor. ⚠️ **And this item's guess that the three were ONE
+finding was right**: one fix removed all three. ~~**A `WeakMap<Plan, Plan>` memo on `effectivePlan`**~~ — ⚠️ **ANSWERED AT ITEM 1646 (a WeakMap is 1.25x worse rebuilt; a field on the plan is not) AND BUILT AT ITEM 1647 — though not with that item's key, which is a wrong answer: `graph.version` is asynchronous.** **Removing
 `fuseUnionBoth`'s two per-call allocations** — `plan.steps.slice(i + 1)` handed to `tailIsOrderFree`,
 and the `[...plan.steps]` spread — is worth maybe 8% of the row, below the bar for a file whose edits
 perturb.
@@ -71714,7 +71716,7 @@ no parameter binding (item 1577), so a caller whose id varies rebuilds every cal
 item 1503's refusal was right to protect that case, and at 6.9x against 1.05x the asymmetry now
 settles it the other way.
 
-#### ⚠️ The residual is NOT the rewrite, and that is the new target
+#### ⚠️ The residual is NOT the rewrite ~~and that is the new target~~ — **CLOSED AT ITEM 1648: it is the static-check walk, and caching its verdict is another 3.5x on this call**
 
 `union-both-call-floor.ts` decomposes the POST call, and the cached rewrite is a small part of what
 is left:
@@ -71728,9 +71730,11 @@ is left:
 
 `full − rest` is 118 ns but `eff` is only 27, so **~91 ns is `run`'s PRE-REWRITE validation**:
 `assertPlanIsSatisfiable`, `assertFrontierTypes` and `planReadsPath` all walk the UN-normalised plan,
-and the union spelling makes them walk two nested sub-plans the `both` spelling does not have. OPEN:
-validate the EFFECTIVE plan rather than the written one, or cache the validation verdict the way the
-rewrite is now cached. That is the rest of item 1645's gap.
+and the union spelling makes them walk two nested sub-plans the `both` spelling does not have.
+~~OPEN: validate the EFFECTIVE plan rather than the written one, or cache the validation verdict the
+way the rewrite is now cached.~~ ⚠️ **TAKEN AT ITEM 1648 by the second of those** — the verdict is
+cached, and the ablation that priced it put the walk at **74% of this call**, far more than the
+`full − rest` subtraction above suggested. That is the rest of item 1645's gap, and it is gone.
 
 #### Why the slot is symbol-keyed, which the measurement did not ask
 
@@ -71782,4 +71786,112 @@ not costing anything either).
 #### Gates
 
 `bun run check` 0 read UNPIPED. Suites: core 444, gql 4230, gremlin 1856 (+13 new), native 1081,
+serialization 144 — 0 fail. `bun run fuzz` all seven green.
+
+### Item 1648 — ⚠️ **THE STATIC-CHECK WALK IS 74% OF A CHEAP GREMLIN CALL, and it runs on every one.** Caching its verdict per plan is **3.5-3.67x on `union(out, in).count()` (267.9 → 73.0 ns)**, 2.0x on `both(T).count()` and 2.2x on an already-rewritten plan, at 1.01x on a plan rebuilt every call — and it **closes the equivalent-spelling gap item 1645 opened: the two spellings now cost the same**
+
+CLOSED. The target came from a PROFILE and the price from an ABLATION, which disagreed by a factor of
+two in the ablation's favour — the opposite of this corpus's usual direction.
+
+#### The profile nominated it, 600,000 reps so the query dominates the fixture build
+
+`runtime-profile-gremlin-probe.mjs`, two new shapes (`unioncount`, `bothcount`). ⚠️ At 4,000 reps the
+profile is 14.3 ms of query inside 378 ms sampled and shows nothing but `indexEdgeLabel` and
+`#commitNormalized` — the FIXTURE. At 600,000 the query is 153.4 ms and the frames appear:
+
+```text
+   unioncount (153.4 ms of query)        bothcount (107.1 ms)
+   6.5%  checkSteps                      3.0%  checkStep
+   5.1%  checkStep                       2.7%  checkSteps
+   3.6%  nextHasEdge
+   2.3%  nextFrontier
+   ----                                  ----
+   17.5% of the whole profile            5.7%
+   = ~56% of the QUERY                   = ~22%
+```
+
+#### The ablation priced it HIGHER than its share, which is the rarer error
+
+A share is a nomination, not a price (item 1104) — and five times this session a share has collapsed
+under ablation. Not here. Stubbing the two checks out behind an env flag:
+
+```text
+   arm                        checks ON          checks ABLATED     the walk
+   full  union(out,in).count  303.4 / 305.4 ns   82.4 / 76.7 ns     ~225 ns, 74%
+   both  both(T).count        158.3 / (293.5)     77.8 / 79.7       ~78 ns, ~49%
+   rest  the rewritten plan   167.2 / 174.4       90.5 / 79.8       ~85 ns
+```
+
+⚠️ **AND ABLATED, THE TWO SPELLINGS COST THE SAME** — 77-82 against 78-80 ns. So what was left of
+item 1645's gap after item 1647 cached the rewrite was ENTIRELY this walk: the union plan is dearer
+only because `assertFrontierTypes` RECURSES into its two union arms, which `both` does not have.
+
+#### What shipped
+
+Both checks are pure functions of the plan, and a plan is immutable, so a PASS can be remembered on
+it — the same soundness argument as item 1647's prefix cache, and the same symbol-keyed slot
+(`EFF_CHECKED`), initialised at all four construction sites and reset in `rewritten`.
+
+⚠️ **ONLY A PASS IS EVER RECORDED.** The flag is written AFTER both checks return, so an invalid plan
+is never marked and raises again on every call. ⚠️ **AND THE RESET IN `rewritten` MATTERS MORE HERE
+THAN FOR THE PREFIX**: a rewrite can INTRODUCE a faulting kind (`fuseLocal` inlines a sub-plan's
+steps into the top level, which is why `mayFault` is recomputed there), so an inherited pass would
+skip a check that should raise.
+
+#### The numbers, one arm per process, order-alternated, 3 rounds, 12 reps / median of 9
+
+```text
+   union-both-call-floor.ts        PRE (= item 1647)        POST
+   full   union(out,in).count()    267.9 / 277.5 / 294.5    77.1 / 73.0 / 84.6   3.67x
+   both   both(T).count()          170.3 / 174.9 / 157.8    (138.1) / 83.5 / 78.9  2.0x
+   rest   the rewritten plan       168.6 / 170.2 / 170.1    78.3 / 79.8 / 78.0   2.2x
+   rebuilt-full (fresh plan/call)  887.3 / 906.6            895.0 / 910.8        1.01x worse
+   build-only  CONTROL             322.0 / (455.0)          321.3 / 309.0        FLAT
+```
+
+The POST figures land on the ablation floor (73-85 against 76.7-82.4), so the cache collects
+essentially the whole walk. **`full` ≈ `rest` ≈ `both` POST**, which is the equivalent-spelling
+invariant restored on this pair: 2.26x before item 1647, 1.58x after it, **1.02x now**.
+
+⚠️ **`build-only` is the only true null control available**, because the walk runs on EVERY query —
+there is no query shape this change cannot reach. It is flat, and the rebuilt arm (which pays the
+checks every call and collects nothing) is 1.01x, so neither arm of the trade loses.
+
+#### Measured widely: no regression anywhere
+
+- **`bench:gremlin`, all 32 rows, both arms with their own build** (`PROBE_REPS=3`): every row flat
+  within 1-2% and every `answers` column `same`. Expected — those rows walk 200,000 vertices and
+  1,000,000 edges, where ~190 ns per call is invisible. The sweep is the regression pass, not the
+  instrument for this effect (item 737).
+- **Gremlin spelling probe, full sweep:** flagged groups **6 → 3**, and the three that left are
+  exactly the three union groups item 1645 suspected were one finding — `hop, both directions`,
+  `edge-type union vs an explicit union` and `hop, both as edges` all fell below the probe's 500 ns
+  comparison floor. The remaining three are the `multi-id lookup` family, which is item 1643's
+  single-id seed not yet extended to many ids.
+- Isolated group, three runs: `both` 75.7 / 76.3 / 79.0 against `union` 77.3 / 202.6 / 167.4. The
+  MIN pair is 1.02x; runs 2-3 scattered on the union arm, where the dedicated instrument is flat at
+  73-85, so the probe's own variance is the difference (read per-arm mins, not the group ratio).
+
+#### Teeth
+
+Four mutants, each under `timeout 600 systemd-run --user --scope -p MemoryMax=16G -p
+MemorySwapMax=0`, restored before each, both streams read for a result line:
+
+```text
+   mark-before-asserts   mark checked BEFORE the checks run, so an      CAUGHT (12 fail)
+                         invalid plan throws ONCE and then succeeds
+   shared-flag           a module-level flag instead of a per-plan slot  CAUGHT (27 fail)
+   never-check           the checks removed entirely                     CAUGHT (27 fail)
+   inherit-verdict       `rewritten` keeps the verdict                   CAUGHT (1 fail)
+```
+
+⚠️ **`plan-may-fault.test.ts` ALREADY COVERS EVERY THROW SITE AND WOULD NOT HAVE CAUGHT THE FIRST
+ONE.** It calls `toArray` exactly ONCE per faulting plan, so a cache that marks before it checks
+leaves it green: every invalid plan throws on its first call, which is the only call it makes.
+`static-check-cache.test.ts` re-uses that file's plan list and calls each THREE times, plus a valid
+run interleaved so a shared flag cannot pass either.
+
+#### Gates
+
+`bun run check` 0 read UNPIPED. Suites: core 444, gql 4230, gremlin 1873 (+16 new), native 1081,
 serialization 144 — 0 fail. `bun run fuzz` all seven green.

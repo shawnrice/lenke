@@ -469,6 +469,11 @@ export type AddEEndpoint = { kind: 'tag'; label: string } | { kind: 'plan'; plan
  * against 4.7-4.8.
  */
 export const EFF_PREFIX: unique symbol = Symbol('lenke.effPrefix');
+/**
+ * `run`'s memo of the fact that this plan PASSED its static checks (item 1648). See
+ * {@link Plan[EFF_CHECKED]}; symbol-keyed for the same reason as {@link EFF_PREFIX}.
+ */
+export const EFF_CHECKED: unique symbol = Symbol('lenke.effChecked');
 
 export type Plan = {
   readonly steps: readonly Step[];
@@ -566,6 +571,28 @@ export type Plan = {
    * construction sites exist to prevent in the code that builds plans at speed.
    */
   [EFF_PREFIX]?: Plan | undefined;
+  /**
+   * Has this plan already PASSED `assertPlanIsSatisfiable` and `assertFrontierTypes`? MUTABLE and
+   * symbol-keyed, like {@link Plan[EFF_PREFIX]}, and sound for the same reason: both checks are pure
+   * functions of a plan, and a plan is immutable, so a verdict can never be stale.
+   *
+   * ⚠️ IT IS THE LARGEST PER-CALL COST LEFT ON A CHEAP GREMLIN QUERY, measured by ablation rather
+   * than inferred from a profile share (item 1648). Stubbing the two checks out took
+   * `union(out(T), in(T)).count()` from **303.4 to 82.4 ns** and `both(T).count()` from 158.3 to
+   * 77.8 — so the walk is **74% of the union call** and about half of the `both` call, on a plan
+   * whose graph work is closed-form.
+   *
+   * ⚠️ AND IT IS WHAT WAS LEFT OF THE EQUIVALENT-SPELLING GAP. Ablated, the two spellings cost the
+   * SAME (77-82 against 78-80 ns). The union plan is dearer only because `assertFrontierTypes`
+   * RECURSES into its two union arms, which the `both` plan does not have — so the gap item 1645
+   * called conceptual was, in its remaining part, this walk.
+   *
+   * ⚠️ ONLY A PASS IS RECORDED, NEVER A FAILURE. The flag is written AFTER both checks return, so a
+   * plan that raises is never marked and raises again on every call. Writing it before them would
+   * make an invalid plan throw once and then silently succeed — which is why
+   * `the same invalid plan throws EVERY time` exists in `static-check-cache.test.ts`.
+   */
+  [EFF_CHECKED]?: boolean | undefined;
 };
 
 /**
@@ -741,6 +768,7 @@ export const emptyPlan: Plan = {
   kinds: 0,
   mayFault: false,
   [EFF_PREFIX]: undefined,
+  [EFF_CHECKED]: undefined,
 };
 
 /**
@@ -1002,9 +1030,11 @@ export const appendStep = (step: Step): StepFn => {
     readsPath: plan.readsPath || reads,
     kinds: plan.kinds | bit,
     mayFault: plan.mayFault || faults,
-    // Item 1647's cache slot, present from birth so every plan has one hidden class. NOT copied
-    // from `plan`: this is a different step list and its normalised form is not this one's.
+    // Items 1647/1648's cache slots, present from birth so every plan has one hidden class. NOT
+    // copied from `plan`: this is a different step list, so neither its normalised form nor its
+    // static-check verdict is this one's.
     [EFF_PREFIX]: undefined,
+    [EFF_CHECKED]: undefined,
   });
   // ⚠️ A PLAIN ASSIGNMENT, NOT `Object.defineProperty` — which was **73% of plan construction**
   // (item 1577). Building `traversal(V(id))` went 0.235 -> 0.064 us/op and a three-step plan

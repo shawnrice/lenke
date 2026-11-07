@@ -34,7 +34,7 @@ const REPS = Number(process.env.REPS ?? 12);
 const DROP = Number(process.env.DROP ?? 3);
 const ARM = process.env.ARM ?? 'full';
 
-const ARMS = ['full', 'eff', 'rest', 'both-full'];
+const ARMS = ['full', 'eff', 'rest', 'both-full', 'rebuilt-full', 'build-only'];
 
 if (!ARMS.includes(ARM)) {
   throw new Error(`unknown ARM ${ARM}; have ${ARMS.join(',')}`);
@@ -74,8 +74,18 @@ const bothPlan: Plan = traversal(V(), both('T'), count());
 /** What `effectivePlan` turns the union spelling into — run directly, so no rewrite is needed. */
 const rewrittenPlan: Plan = effectivePlan(unionPlan, g, false);
 
+/**
+ * ⚠️ THE OTHER ARM OF ITEM 1648'S TRADE. Gremlin has no parameter binding (item 1577), so a
+ * caller whose value varies REBUILDS the plan every call and never collects a per-plan memo — it
+ * pays the static checks every time plus one slot write. `build-only` is the control the change
+ * cannot reach at all: construction with no `run`.
+ */
+const buildUnion = (): Plan => traversal(V(), union(out('T'), in_('T')), count());
+
 const WORK: Record<string, () => unknown> = {
   full: () => toArray(unionPlan, g),
+  'rebuilt-full': () => toArray(buildUnion(), g),
+  'build-only': () => buildUnion(),
   eff: () => effectivePlan(unionPlan, g, false),
   rest: () => toArray(rewrittenPlan, g),
   'both-full': () => toArray(bothPlan, g),

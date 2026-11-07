@@ -15,7 +15,7 @@ import type { Graph } from '@lenke/core';
 // candidate, until every pattern has been applied.
 import { ErrorCode, LenkeError } from '@lenke/errors';
 
-import { anyMayFault, EFF_PREFIX, maskOfSteps, stepReadsPath } from '../ast.js';
+import { anyMayFault, EFF_CHECKED, EFF_PREFIX, maskOfSteps, stepReadsPath } from '../ast.js';
 import type { Plan, Step } from '../ast.js';
 import { applyPlanToStream } from './dispatch.js';
 import { soleTypeBucket } from './movement.js';
@@ -58,8 +58,9 @@ const planOfSteps = (steps: readonly Step[]): Plan => ({
   readsPath: steps.some(stepReadsPath),
   kinds: maskOfSteps(steps),
   mayFault: anyMayFault(steps),
-  // Item 1647's cache slot, present from birth so every plan has one hidden class.
+  // Items 1647/1648's cache slots, present from birth so every plan has one hidden class.
   [EFF_PREFIX]: undefined,
+  [EFF_CHECKED]: undefined,
 });
 
 const sameValue = (a: unknown, b: unknown): boolean => {

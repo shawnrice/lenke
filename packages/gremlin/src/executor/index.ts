@@ -13,6 +13,7 @@ import { ErrorCode, LenkeError } from '@lenke/errors';
 import {
   anyMayFault,
   EDGE_STEP_BITS,
+  EFF_CHECKED,
   EFF_PREFIX,
   FILTER_WRAPPER_BITS,
   KIND_BITS,
@@ -1515,11 +1516,14 @@ const rewritten = (plan: Plan, steps: readonly Step[]): Plan => ({
   // Recomputed for the same reason as `kinds`: `fuseLocal` inlines sub-plan steps into the top
   // level, so a rewrite can introduce a kind that CAN fault where the original plan had none.
   mayFault: anyMayFault(steps),
-  // ⚠️ RESET, NOT INHERITED (item 1647). Object spread COPIES enumerable own symbol properties, so
-  // `...plan` would hand this new plan the normalised form of a DIFFERENT step list — a rewritten
-  // plan handed back as the answer for the plan it was rewritten from. Every other field here is
-  // recomputed for the same reason; this one has no value worth carrying.
+  // ⚠️ RESET, NOT INHERITED (items 1647/1648). Object spread COPIES enumerable own symbol
+  // properties, so `...plan` would hand this new plan the normalised form — and the static-check
+  // verdict — of a DIFFERENT step list. The verdict is the dangerous one: a rewrite can INTRODUCE a
+  // faulting kind (`fuseLocal` inlines a sub-plan's steps into the top level, which is why
+  // `mayFault` is recomputed two lines up), so an inherited pass would skip a check that should
+  // raise. Every other field here is recomputed for the same reason.
   [EFF_PREFIX]: undefined,
+  [EFF_CHECKED]: undefined,
 });
 
 /**
@@ -1915,8 +1919,18 @@ const assertPlanIsSatisfiable = (plan: Plan): void => {
 export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
   // Before anything runs: static faults the engine raises at parse time — a plan that
   // cannot succeed on any graph, and an aggregate/sort/vertex-move on the wrong frontier.
-  assertPlanIsSatisfiable(plan);
-  assertFrontierTypes(plan);
+  //
+  // ⚠️ ONCE PER PLAN, NOT ONCE PER CALL (item 1648). Both checks are pure functions of the plan and
+  // a plan is immutable, so a PASS can be remembered on it: see {@link Plan[EFF_CHECKED]} for the
+  // ablation that priced this walk at **74% of a `union(out, in).count()` call** and for why only a
+  // pass is ever recorded. The flag is written AFTER both return, so a plan that raises is never
+  // marked and raises again on every call.
+  if (plan[EFF_CHECKED] !== true) {
+    assertPlanIsSatisfiable(plan);
+    assertFrontierTypes(plan);
+
+    plan[EFF_CHECKED] = true;
+  }
 
   // Decide once whether any step observes the path; if not, traversers skip
   // path bookkeeping for the whole run (see planReadsPath / startTraverser).

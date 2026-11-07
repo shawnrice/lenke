@@ -72,6 +72,7 @@ import {
   pipe,
   outE,
   inV,
+  both,
 } from '@lenke/gremlin';
 
 import { profileWindow } from './windowed-profile.mjs';
@@ -328,6 +329,11 @@ const SHAPES = {
   hopvaluesn: traversal(V(), out('E'), values('n')),
   // The `id()` twin, 3.14x its own unfiltered neighbour in the same run.
   hopfarhasid: traversal(V(), out('E'), has('k', eq(1)), id()),
+  // Item 1647's residual: the union spelling costs 118 ns more per call than the `both` plan the
+  // rewrite turns it into, and only 27 of that is the (now cached) rewrite. These two shapes are
+  // the pair that isolates where the other ~91 ns goes.
+  unioncount: traversal(V(), union(out('E'), in_('E')), count()),
+  bothcount: traversal(V(), both('E'), count()),
 };
 
 const plan = SHAPES[SHAPE];
