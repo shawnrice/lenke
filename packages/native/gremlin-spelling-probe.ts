@@ -59,6 +59,8 @@ import {
   lt,
   not,
   or,
+  order,
+  Order,
   out,
   outE,
   toArray,
@@ -393,6 +395,28 @@ const GROUPS: readonly Group[] = [
     [
       traversal(V(), out('T', 'U'), values('age'), count()),
       traversal(V(), out('U', 'T'), values('age'), count()),
+    ],
+  ],
+  [
+    // ⚠️ THE SORT-DIRECTION SPELLINGS (item 1630). A bare `order()` arrives with no `bys` and
+    // `order(Order.asc)` arrives as `bys: [{kind:'identity', direction:'asc'}]` — the same question
+    // down two different gate branches, and exactly the pair item 1591's first gate got wrong by
+    // refusing any `bys` at all. If one spelling takes the fused sort and the other does not, the
+    // gap is 2.3x on this shape, which is the equivalent-spelling class that returns the right
+    // answer and costs 100-300x elsewhere.
+    'sort direction: order() vs order(Order.asc)',
+    [
+      traversal(V(), out('T'), values('age'), order(), count()),
+      traversal(V(), out('T'), values('age'), order(Order.asc), count()),
+    ],
+  ],
+  [
+    // The DESCENDING twin of the pair above: `order({desc: true})` is the config spelling and
+    // `order(Order.desc)` the modulator one. Both must reach the same comparator.
+    'sort direction, DESC: order({desc}) vs order(Order.desc)',
+    [
+      traversal(V(), out('T'), values('age'), order({ desc: true }), count()),
+      traversal(V(), out('T'), values('age'), order(Order.desc), count()),
     ],
   ],
   [

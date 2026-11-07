@@ -49851,7 +49851,7 @@ disproved.
 core **383/0** (13 new), gql 3570/0, gremlin 1157/0, serialization 144/0, `bun run fuzz` 20/0,
 `bun run check` 0 (read unpiped). Both drivers restored their arm in a `finally` and verified it.
 
-### Item 1394 — the windowed GREMLIN screen finds **no unpriced frame over 2%** in four shapes, and prices the **three candidates item 879 left open**: `evalBy` **0.1%** (refuted), the comparator **~4.3%**, the stream materialization **~5%**. `hoporder` is **36% far-vertex locality**, which item 1392 closed
+### Item 1394 — the windowed GREMLIN screen finds **no unpriced frame over 2%** in four shapes, and prices the **three candidates item 879 left open**: `evalBy` **0.1%** (refuted), the comparator **~4.3%**, the stream materialization **~5%**. `hoporder` is **36% far-vertex locality**, which item 1392 closed. ⚠️ ~~Nothing is open on this row~~ — **item 1630 took 2.33x out of it.** Every number here still stands; what it could not price is a composite ROUTE, since a share prices one FRAME
 
 Items 1391 and 1392 gave both isolated benches profile windowing. This is the first windowed screen
 over the Gremlin shapes that are not yields: `filterchain`, `grouped`, `hopdedupe`, `hoporder`.
@@ -49906,7 +49906,7 @@ a rep. **All three are closed, and none is worth a change.**
 `hoporder` is now accounted for: ~36% of the added cost is the closed locality floor, the sort
 scaffolding is ~15.5% of the row with its three named candidates priced at 0.1-5%, and the one-`by`
 specialization (item 879) plus the refuted permutation rewrite (item 890) already took what was
-there. **Nothing is open on this row.** Do not re-screen it for the sort.
+there. ~~**Nothing is open on this row.** Do not re-screen it for the sort.~~ **SUPERSEDED by item 1630, which took 2.33x.** The three candidates above are still refuted and were not re-attempted; what this paragraph missed is that enumerating the frames ON a route does not price removing the route. See item 1630.
 
 ### Gates
 
@@ -70202,3 +70202,150 @@ Three survivors, all documented where they sit: `from/rewinds-to-zero` (answer-e
 #### Gates
 
 `bun run check` 0 read unpiped. Suites gremlin 1794 (10 new), gql 4207, core 444, native 1076, serialization 144 — 0 fail. `bun run fuzz` 20/0 and `spelling:gremlin` 0 answer disagreements / 0 groups over 2x, both under the 16G cap.
+
+### Item 1630 — **2.33x on `V().out(T).values(k).order()`** and 2.23x on the descending spelling, the largest absolute row in the Gremlin bench: a residual global `order()` now sorts the fused walk's raw values instead of wrapping each one in a traverser. ⚠️ **Item 1394 closed this row and its accounting was right — a profile share prices a FRAME and cannot price a composite ROUTE.** And a test I wrote to pin the one correctness question passed for a different reason than I wrote it for
+
+OPEN: nothing on this row. The capped spelling declines on a measured flat result (below), the three candidates item 1394 priced are untouched and still refuted, and the residual above the hand floor is 1.20x.
+
+#### ⚠️ Why this was taken AFTER item 1394 said not to look
+
+Item 1394 decomposed `hoporder` and closed it: `evalBy` plus `project` **0.1%** (refuted), the
+comparator **~4.3%**, `[...stream]` **~5%**, and 36% of what the sort adds over a bare hop being
+far-vertex locality with no per-row lever. Its body ends _"Nothing is open on this row. Do not
+re-screen it for the sort."_ **Every one of those numbers still stands and none of them is
+re-attempted here.**
+
+What changed is the MECHANISM, not the accounting. Item 1586 built the values fusion and item 1591
+extended it to a CAPPED `order()`, leaving the uncapped one explicitly flat. So `hopValuesShortcut`
+consumed `[V, hop, values]` and handed back `rest = [order]`, and `run` wrapped a million raw values
+in traversers one at a time, `orderStep` spread them back into an array, and `sortByBys` allocated a
+`{item, key}` wrapper per element and ran three more passes over it — when the walk already produces
+exactly the array the sort wants.
+
+**The lesson is a correction to how a share is read, and it is the inverse of item 1104's.** 1104
+says a share OVERSTATES a realizable change (~2.5-3.5x here). This row shows a share can also
+UNDERSTATE one by an order of magnitude, because a share prices ONE FRAME and this change removes a
+composite route: the lazy `values` generator, 1M `startTraverser`, `[...stream]`, the wrapper plus
+three passes, 1M `unwrap`, and the GC of all of it. Item 1394 enumerated three of those frames at
+0.1-5% and concluded correctly about each one. **Enumerating the frames on a route is not pricing the
+route.**
+
+#### Priced against a hand floor BEFORE building (item 1465's rule)
+
+`order-values-floor.ts`, 200,000 vertices / 999,996 edges, min of 7:
+
+```text
+   arm                               PRE        POST     note
+   engine hop+values+ORDER        471.56      170.92     the target
+   HAND  walk + sort              146.27      142.80     the FLOOR — 3.22x before
+   HAND  walk + WRAPPED sort      195.15      198.21     so the wrapper is 48.9 of the 325 ms gap
+   engine hop+values (fused)       96.81         —       the same walk with rest EMPTY
+   engine hop+values+order+LIMIT  272.00 for TEN ROWS    the capped spelling, same hole
+```
+
+The wrapped-sort floor is what made this worth building: at 195 ms it says the `{item, key}` wrapper
+and its passes are 15% of the gap and the traverser round trip is the rest, so the fix is the route
+rather than a cheaper sort. Item 1513 had already refuted a numeric-specialized comparator at exactly
+nothing, and the floor uses a comparator of `compareTotal`'s SHAPE so as not to flatter itself by the
+amount that item refuted.
+
+#### ⚠️ The floor instrument's own controls moved, and the isolated A/B is why that is not the result
+
+In the floor run POST, two arms the change CANNOT reach moved the wrong way — `engine hop+values`
+96.81 → 142.85 and `engine bare hop` 38.28 → 62.72. Both ride `rest.length === 0`, which this change
+does not touch. That is in-process interference (item 737's rule, in the direction that would have
+discredited a real win), and the isolated per-shape A/B settles it: **all three controls are flat
+across three order-alternated rounds.** One shape per process, a rebuild per arm, and the arm
+switcher asserting the tree AND the built dist are the arm they claim:
+
+```text
+   shape           PRE (3 rounds)            POST (3 rounds)           verdict
+   hoporder        5401.1 5505.5 5306.9      2282.3 2340.1 2290.1      2.33x
+   hoporderdesc    5517.8 5459.9 5428.1      2473.0 2443.3 2421.1      2.23x
+   hopordercap     2988.4 3335.4 2942.1      3035.2 2977.6 2988.6      FLAT
+   hopvaluesrows   1558.6 1585.9 1580.5      1520.7 1538.6 1559.8      flat (control)
+   hopbare          752.9  733.6  746.2       729.7  740.9  741.6      flat (control)
+   hopidrows        982.4 1008.0  995.3       979.6  988.5  994.6      flat (control)
+```
+
+Non-overlapping on both targets by a factor of two. The broad `bench:gremlin` sweep reads the row
+369.0 → **264.0** (1.40x in-sweep, the residual inflation item 747 priced) with `answers same` on all
+30 rows.
+
+#### ⚠️ The CAP declines, measured rather than assumed
+
+The first version admitted a capped order and drove `streamTopByBys` from the fusion. It measured
+**flat** — `hopordercap` above — and the reason is clean: what this change removes is the
+MATERIALIZATION, and a capped order never materialized. So the branch is GONE rather than kept as an
+unmeasured route, and the capped spelling keeps item 1591's streaming top-k. The 272 ms it takes to
+return ten rows is the walk of a million values through the heap, which no route here avoids.
+
+#### ⚠️⚠️ A test I wrote to pin the one correctness question passed for a different reason
+
+The gate requires the walk to be in VALUE MODE, because `hopValuesShortcut` also serves a bare hop
+(`pick` = the far vertex) and `id()`, and `order()` over graph elements throws by contract. I wrote
+that up as _the_ correctness question, with `sortByBys`' element pass as what raises — it raises even
+for a one-element stream, so a comparator-side check would not be equivalent.
+
+It is not `sortByBys`. **`assertFrontierTypes` raises at PLAN-CHECK time**, before any route is
+chosen — `checkStep` / `checkSteps` / `assertFrontierTypes` / `run`. An element walk never reaches a
+sort by either path, and `id()` mode sorts strings, which a raw sort gets right too. So the gate is
+CONSERVATIVE, not load-bearing, and removing it is answer-equivalent through the public API.
+
+Two things follow, both recorded in the code rather than left implied. The guard stays, for the
+reason `fusedValuesTopK`'s own unreachable guard states: the static check is a SEPARATE mechanism
+that could narrow. And the mutant is caught anyway — **by the gate's unit test, not by anything
+differential** — which is the whole argument for testing a route gate as a pure function.
+
+This is the same trap as item 1576's test that covered a parse-time check while claiming the runtime
+path, and it was caught here only because the route assertion (below) failed on an unrelated case.
+
+#### The route is asserted through an observable, and that caught the wiring mutant
+
+A route choice is answer-equivalent, so `wiring/route-never-taken` and an off-by-one on the
+last-consumed-step index survive every differential assertion by construction (item 1619 recorded
+that for all twenty GQL rungs). The fusion's return value exposes `drain` and the general path's
+`unwrap` generator does not, so the route is observable — and both mutants DIE on it.
+
+⚠️ **That same observable is a pre-existing test's subject, and it failed.** `eager-drain-route.test.ts`
+pins item 1412's decision "drain is offered exactly where the route applies", and it listed `residual
+order` under DECLINES. The case has moved to TAKES — the same way `both('E')` moved there at item
+1432, which that file documents as _"it failed the moment that stopped being true, which is the test
+doing its job."_ Second time that file has earned itself.
+
+#### Mutation 13 of 15
+
+`gate/rest-any-length` needed a residual the oracle spelling does not provide: a trailing
+`identity()` after the sort is answer-equivalent, so the separating case is `dedupe()` — DERIVED
+[null, 1, 2, 3] against the six values a route consuming the whole residual returns.
+
+Two survivors, both predicted: `element/pass-removed` (the unreachable guard above) and
+`drain/spread-instead` (answer-equivalent, perf-only). One mutant I predicted would survive was
+CAUGHT — `gate/value-mode-dropped`, by the unit test asserting the gate declines an `id`
+last-consumed step.
+
+#### ⚠️ `order('local')` is silently accepted as a config object
+
+The 23rd eyeballed-literal-class slip, with a cause that is not a derivation error. `order()`'s
+overloads are `order(symbol)` and `order({key?, desc?})`, so a STRING has neither field and reads as
+a bare `order()` — the local-scope test asserted the walk's own order and failed by returning the
+correctly-sorted stream. The spelling is `order(Scope.local)`. Recorded because the failure mode is
+an API slip that type-checks.
+
+#### Spellings
+
+The two sort-DIRECTION spellings are now in `gremlin-spelling-probe.ts`: a bare `order()` arrives
+with no `bys` and `order(Order.asc)` as `bys: [{kind:'identity', direction:'asc'}]` — the same
+question down two gate branches, and exactly the pair item 1591's first gate got wrong. They
+converge: 175.1 against 171.2 ms, and 178.3 against 171.8 for the descending twin.
+
+`identityOrderDesc` is ONE copy shared by both gates for that reason, rather than a second place to
+get `desc` wrong.
+
+#### Gates
+
+`bun run check` 0 read unpiped. Suites gremlin 1816 (22 new), gql 4207, core 444, native 1076,
+serialization 144 — 0 fail. `bun run fuzz` 20/0 and `spelling:gremlin` 0 answer disagreements / 0
+groups over 2x, both under the 16G cap. ⚠️ The full probe first flagged `label + property` at 2.21x,
+a group this change cannot reach; three isolated re-runs are clean, so it was dispatch pollution from
+an earlier group and not a finding.

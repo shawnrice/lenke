@@ -343,22 +343,171 @@ export const fusableValuesTopK = (
   //
   // An identity by with a direction still means "sort by the value itself", which is this shape. A
   // by of any other kind projects a different sort key and declines.
-  const { bys } = next;
-  let desc = next.desc ?? false;
+  const desc = identityOrderDesc(next);
 
-  if (bys !== undefined) {
-    if (bys.length !== 1 || bys[0].kind !== 'identity') {
-      return undefined;
-    }
-
-    const dir = bys[0].direction;
-
-    if (dir !== undefined) {
-      desc = dir === 'desc';
-    }
+  if (desc === undefined) {
+    return undefined;
   }
 
   return { key: step.keys[0], desc, cap: next.cap };
+};
+
+/**
+ * Does this `order` sort by the VALUE ITSELF, and in which direction? `undefined` means it does
+ * not — a `by` of any other kind projects a different sort key, which is a different question.
+ *
+ * ⚠️ SHARED BY TWO GATES ON PURPOSE. Item 1591's first version of this logic refused any `bys` at
+ * all, which made its own `desc` parameter DEAD CODE: `order().by(Order.desc)` arrives as
+ * `bys: [{kind:'identity', direction:'desc'}]`, not as `desc: true`, so the descending spelling
+ * silently took the unfused path while the tests covering it appeared to exercise the fused one.
+ * One copy means item 1630's gate cannot repeat that independently.
+ */
+const identityOrderDesc = (next: Extract<Step, { kind: 'order' }>): boolean | undefined => {
+  const { bys } = next;
+
+  if (bys === undefined) {
+    return next.desc ?? false;
+  }
+
+  if (bys.length !== 1 || bys[0].kind !== 'identity') {
+    return undefined;
+  }
+
+  const dir = bys[0].direction;
+
+  return dir === undefined ? (next.desc ?? false) : dir === 'desc';
+};
+
+/**
+ * Is a FUSED hop walk's residual nothing but a global `order()` over the values it already
+ * produced? `undefined` means "not this shape" (item 1630).
+ *
+ * ⚠️ WHY THIS EXISTS WHEN ITEM 1394 CLOSED THE ROW. That item priced the three candidates item 879
+ * left open — `evalBy` plus `project` at 0.1% (refuted), the comparator at ~4.3%, `[...stream]` at
+ * ~5% — and concluded nothing was open. The accounting was right and none of it is re-attempted
+ * here. What changed is the MECHANISM: item 1586 built the values fusion and item 1591 extended it
+ * to a CAPPED `order()`, leaving the uncapped one explicitly flat. `hopValuesShortcut` consumes
+ * `[V, hop, values]` and hands back `rest = [order]`, so `run` wrapped a million raw values into
+ * traversers one at a time, `orderStep` spread them back into an array, and `sortByBys` allocated a
+ * `{item, key}` wrapper per element and ran three more passes over it — when the walk already
+ * produces exactly the array the sort wants.
+ *
+ * Priced BEFORE building (`order-values-floor.ts`, 200,000 vertices / 1M edges, min of 7):
+ *
+ * ```text
+ *    engine hop+values+ORDER        471.56 ms      <- the target
+ *    HAND  walk + sort              146.27         <- the floor: 3.22x
+ *    HAND  walk + WRAPPED sort      195.15         <- so the wrapper is 48.9 of the 325 ms gap
+ *    engine hop+values (fused)       96.81         <- the same walk with rest EMPTY
+ *    engine hop+values+order+LIMIT  272.00 for TEN ROWS  <- the capped spelling is in the same hole
+ * ```
+ *
+ * ⚠️ THE WALK MUST BE IN VALUE MODE — and that gate is CONSERVATIVE, not load-bearing, which I
+ * found out by writing a test that passed for the wrong reason. `hopValuesShortcut` also serves a
+ * bare hop (`pick` = the far vertex) and `id()`, and `order()` over graph ELEMENTS throws by
+ * contract. I expected `sortByBys`' element pass to be what raises, which would make this the one
+ * correctness question in the change. It is not: `assertFrontierTypes` raises at PLAN-CHECK time,
+ * before any route is chosen, so an element walk never reaches a sort by either path. `id()` mode
+ * sorts strings, which a raw sort would also get right. So removing this check is ANSWER-EQUIVALENT
+ * through the public API — and the mutant is still CAUGHT, by this gate's own unit test asserting it
+ * declines an `id` last-consumed step. That is the remedy for the whole answer-equivalent route
+ * class: test the gate as a pure function, because no differential test can fail on it.
+ *
+ * It stays, for the reason `fusedValuesTopK`'s unreachable guard above states: the static check is a
+ * SEPARATE mechanism that could narrow, and the cost is one `kind` comparison per plan.
+ *
+ * Reading the last CONSUMED step rather than adding a field to the shortcut's return type keeps the
+ * gate uniform across all three producers (`hopValuesShortcut`, `startFilteredHopValues`,
+ * `hopChainValuesShortcut`) without widening three signatures.
+ */
+export const fusableProjectedOrder = (
+  rest: readonly Step[],
+  consumedLast: Step | undefined,
+): { readonly desc: boolean } | undefined => {
+  if (rest.length !== 1) {
+    return undefined;
+  }
+
+  const [next] = rest;
+
+  // `local` sorts within each value rather than across the stream, and a legacy `key` projects a
+  // sort key off each item — both different shapes.
+  if (next.kind !== 'order' || next.scope === 'local' || next.key !== undefined) {
+    return undefined;
+  }
+
+  // ⚠️ A CAP DECLINES, AND THAT IS MEASURED RATHER THAN ASSUMED. `fuseOrderTake` folds a trailing
+  // `take(n)` into the order as a `cap`, and `orderStep` already takes a streaming top-k for it.
+  // The first version of this gate admitted the cap and drove `streamTopByBys` from here, which
+  // measured **FLAT** — `hopordercap` 2988.4 / 3335.4 / 2942.1 ms PRE against 3035.2 / 2977.6 /
+  // 2988.6 POST — because what this change removes is the MATERIALIZATION, and a capped order never
+  // materialized. So the capped spelling keeps item 1591's path and this branch is gone rather than
+  // kept as an unmeasured route.
+  if (next.cap !== undefined) {
+    return undefined;
+  }
+
+  // ⚠️ VALUE MODE ONLY. See the note above: the other two walk modes emit elements (or ids), and an
+  // element stream must reach `sortByBys` so it can throw.
+  if (consumedLast?.kind !== 'values' || consumedLast.keys.length !== 1) {
+    return undefined;
+  }
+
+  const desc = identityOrderDesc(next);
+
+  return desc === undefined ? undefined : { desc };
+};
+
+/**
+ * Sort a fused walk's raw values, taking the walk's EAGER arm (item 1630).
+ *
+ * `order()` is a boundary step — nothing can be emitted before the whole stream is seen — so
+ * draining eagerly is the same answer by a cheaper route rather than a change in behaviour, which
+ * is item 1412's argument for `toArray`. Construction still does no work (`order-step-laziness`
+ * pins that contract), because the iterator is a generator.
+ *
+ * A CAPPED order never reaches here — see the gate, where that declines on a measured flat result.
+ */
+export const fusedProjectedOrder = (
+  values: Iterable<unknown> & { readonly drain?: () => unknown[] },
+  opts: { readonly desc: boolean },
+): Iterable<unknown> & { drain: () => unknown[] } => {
+  const cmp = opts.desc
+    ? (a: unknown, b: unknown): number => -compareTotal(a, b)
+    : (a: unknown, b: unknown): number => compareTotal(a, b);
+
+  const sorted = (): unknown[] => {
+    const { drain } = values;
+    const acc = typeof drain === 'function' ? drain() : [...values];
+
+    // ⚠️ THE ELEMENT PASS IS KEPT, and mutation will report it unreachable. `sortByBys` raises
+    // before sorting when any key is a graph element, and it does so even for a stream of ONE where
+    // no comparison happens — so a comparator-side check would not be equivalent. In value mode a
+    // property value cannot be a Vertex or Edge, which makes this the same deliberately-unreachable
+    // guard `fusedValuesTopK` documents above: the static shape is a SEPARATE mechanism that could
+    // narrow, and without this the fault would surface from inside a sort rather than at the step.
+    for (const v of acc) {
+      if (isElement(v)) {
+        throw new LenkeError(
+          `order() over graph elements is not supported — elements have no natural order; ` +
+            `use order().by('<key>')`,
+          { code: ErrorCode.Syntax },
+        );
+      }
+    }
+
+    acc.sort(cmp);
+
+    return acc;
+  };
+
+  return {
+    *[Symbol.iterator]() {
+      yield* sorted();
+    },
+    // `toArray` reads this (item 1412), which saves copying the sorted array a second time.
+    drain: sorted,
+  };
 };
 
 export const countStep = function* (

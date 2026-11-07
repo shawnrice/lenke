@@ -50,7 +50,9 @@ import {
   has,
   hasLabel,
   in_,
+  limit,
   order,
+  Order,
   out,
   project,
   select,
@@ -282,6 +284,15 @@ const SHAPES = {
   optionalvalues: traversal(V(), optional(pipe(out('E'))), values('k'), count()),
   coalescevalues: traversal(V(), coalesce(pipe(out('E')), pipe(identity())), values('k'), count()),
   branchvaluesfloor: traversal(V(), out('E'), values('k'), count()),
+
+  // ── Item 1630: the UNCAPPED global sort over a fused walk, and its capped twin ───────────────
+  // `hoporder` above is the target. This is the spelling `fuseOrderTake` folds into a `cap`, which
+  // item 1591's fusion reaches only when the `values` step survives to `run`'s loop — here
+  // `hopValuesShortcut` consumes it, so before item 1630 it returned TEN ROWS in 272 ms.
+  hopordercap: traversal(V(), out('E'), values('k'), order(), limit(10)),
+  // The DESCENDING spelling, which arrives as an identity `by` rather than as `desc: true` — the
+  // shape whose gate item 1591 got wrong and only a literal expectation caught.
+  hoporderdesc: traversal(V(), out('E'), values('k'), order(Order.desc)),
 };
 
 const plan = SHAPES[SHAPE];

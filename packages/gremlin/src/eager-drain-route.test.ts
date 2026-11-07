@@ -84,6 +84,11 @@ const TAKES = {
   // `both` with ONE type, added at item 1432 — out-bucket then in-bucket per vertex, which is
   // `iterBoth`'s TinkerPop ordering without its four-deep generator chain.
   'both, one type': () => traversal(V(), both('E'), values('k')),
+  // ⚠️ MOVED FROM `DECLINES` AT ITEM 1630, which fused a residual global `order()`: the sort now
+  // drains the walk eagerly and re-exposes `drain` over the sorted array, so `toArray` does not
+  // copy it a second time. Same shape as `both, one type` below — the assertion failed the moment
+  // its reason stopped being true, which is the test doing its job.
+  'residual order (fused at 1630)': () => traversal(V(), out('E'), values('k'), order()),
 };
 
 const DECLINES = {
@@ -94,8 +99,9 @@ const DECLINES = {
   // exactly one label.
   'both, two types': () => traversal(V(), both('E', 'F'), values('k')),
   // A RESIDUAL: the shortcut still fires but `rest` is non-empty, so `run` wraps the values in
-  // traversers and the route must not be offered.
-  'residual order': () => traversal(V(), out('E'), values('k'), order()),
+  // traversers and the route must not be offered. ⚠️ A GLOBAL `order()` residual is the EXCEPTION
+  // since item 1630 and has moved to `TAKES`; a CAPPED one has not, because that fusion measured
+  // flat and declines. `limit(2)` arrives here as its own step rather than as a cap.
   'residual limit': () => traversal(V(), out('E'), values('k'), limit(2)),
   'residual identity': () => traversal(V(), out('E'), values('k'), identity()),
 };

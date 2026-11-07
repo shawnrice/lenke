@@ -20,8 +20,10 @@ import {
 import { tagsObservedFrom } from '../ast.js';
 import type { Plan, Step } from '../ast.js';
 import {
+  fusableProjectedOrder,
   fusableValuesAggregate,
   fusableValuesTopK,
+  fusedProjectedOrder,
   fusedValuesAggregate,
   fusedValuesTopK,
 } from './aggregation.js';
@@ -1921,6 +1923,22 @@ export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
   // they are returned without ever building a traverser. Unchanged, and it stays the fast path.
   if (projected?.rest.length === 0) {
     return projected.values;
+  }
+
+  // A RESIDUAL THAT IS ONLY A GLOBAL `order()` IS SORTED IN PLACE (item 1630), instead of wrapping
+  // every value in a traverser for `orderStep` to spread back into an array. `V().out(T).values(k)`
+  // rides the fused walk at 96.81 ms over 1M edges and `.order()` took it to **471.56 against a
+  // hand floor of 146.27 — 3.22x**; the capped spelling returned TEN ROWS in 272.00.
+  //
+  // ⚠️ BEFORE the `seedFromIndex` / residual path below, and the ordering matters: the generic
+  // residual route is what this replaces, so a later placement would never be reached.
+  if (projected !== undefined) {
+    const consumed = effective.steps.length - projected.rest.length;
+    const sortable = fusableProjectedOrder(projected.rest, effective.steps[consumed - 1]);
+
+    if (sortable !== undefined) {
+      return fusedProjectedOrder(projected.values, sortable);
+    }
   }
 
   // If the plan opens `V()`/`E()` + a seedable `has` on an indexed key, seed
