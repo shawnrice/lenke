@@ -59,6 +59,8 @@ const ARMS = [
   'seeded-manyids',
   'seeded-twokeys',
   'seeded-bare',
+  'seeded-manyvalues',
+  'floor-manyvalues',
 ];
 
 if (!ARMS.includes(ARM)) {
@@ -182,8 +184,31 @@ for (const id of IDS) {
   barePlans.set(id, traversal(V(id)));
 }
 
+/**
+ * ⚠️ THE MULTI-ROW CASE, so a change aimed at per-CALL overhead is not read off a one-row answer
+ * alone. 64 ids through one plan: if a change helps the fixed cost and hurts the per-row path, the
+ * one-id arms cannot see it and this one can.
+ */
+const manyValuesPlan = traversal(V(...IDS), values('k'));
+
+const floorManyValues = (): unknown => {
+  const rows: unknown[] = [];
+
+  for (const id of IDS) {
+    const v = g.getVertexById(id);
+
+    if (v !== undefined) {
+      rows.push((v as Vertex).properties.k);
+    }
+  }
+
+  return rows;
+};
+
 const WORK: Record<string, () => unknown> = {
   floor,
+  'seeded-manyvalues': () => toArray(manyValuesPlan, g),
+  'floor-manyvalues': floorManyValues,
   'seeded-twokeys': () => toArray(twoKeyPlans.get(nextId())!, g),
   'seeded-bare': () => toArray(barePlans.get(nextId())!, g),
   'floor-hopcount': floorHopCount,

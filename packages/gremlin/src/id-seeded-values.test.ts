@@ -130,6 +130,37 @@ describe('⚠️ the rung is actually TAKEN, and declines where it should', () =
   }
 });
 
+describe('⚠️ the result is ONE-SHOT, like the general path', () => {
+  /**
+   * ⚠️ WHETHER `run`'s RESULT CAN BE ITERATED TWICE MUST NOT DEPEND ON WHICH RUNG FIRED.
+   * `run` returns a generator chain for nearly every plan, so a second pass yields nothing — and
+   * item 1651 found that the `{ [Symbol.iterator], drain }` wrapper this rung used to return made
+   * its shape RE-ITERABLE, so `V(id).values(k)` and `V(id).values(k).identity()` disagreed on an
+   * observable property decided purely by route. These assert they now agree.
+   */
+  for (const [label, plan] of [
+    ['the rung', traversal(V('a', 'b'), values('k'))],
+    ['the pipeline', traversal(V('a', 'b'), values('k'), identity())],
+  ] as const) {
+    test(`${label} yields once and is then exhausted`, () => {
+      const it = run(plan, g);
+
+      expect([...it], `${label}: first pass`).toEqual([1, 2]);
+      expect([...it], `${label}: second pass`).toEqual([]);
+    });
+  }
+
+  test('and the rung no longer offers a drain() fast path', () => {
+    const short = idSeededValuesShortcut(traversal(V('a'), values('k')), g) as {
+      drain?: () => unknown[];
+    };
+
+    // It is the generator, so there is nothing to keep in step with the iterator (item 169's
+    // two-derivations hazard cannot apply to one derivation).
+    expect(short.drain).toBeUndefined();
+  });
+});
+
 describe('⚠️ the fault is LAZY, like the general path', () => {
   /**
    * `asStringId` raises for a non-string id, and `sourceFromIds` is a generator, so the general path
@@ -155,10 +186,10 @@ describe('⚠️ the fault is LAZY, like the general path', () => {
     expect(() => toArray(traversal(V('a', 5), values('k')), g)).toThrow();
   });
 
-  test('the drain() fast path raises too', () => {
+  test('spreading the rung raises too', () => {
     const short = idSeededValuesShortcut(traversal(V('a', 5), values('k')), g);
 
-    expect(short?.drain).toBeDefined();
-    expect(() => short?.drain?.()).toThrow();
+    expect(short).toBeDefined();
+    expect(() => [...(short as Iterable<unknown>)]).toThrow();
   });
 });

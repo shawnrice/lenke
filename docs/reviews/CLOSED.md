@@ -72034,7 +72034,7 @@ choice otherwise lets the file pass vacuously (`rung-precedence-decides-speed`).
 serialization 144 — 0 fail. `bun run fuzz` all seven green. Gremlin spelling probe: 1 flagged group,
 down from 6 before item 1648.
 
-### Item 1650 — **1.36x on `V(id).values(k)`** (286.0 → 211.2 ns), the projection half of the point lookup item 1642 named — ⚠️ **and its FIRST version was 1.2x SLOWER than the pipeline it replaced, because the walk was a closure built per call.** Hoisting one generator to module scope is a **1.6x swing**, which is this corpus's own recorded lesson walked into head-first
+### Item 1650 — **1.36x on `V(id).values(k)`** (286.0 → 211.2 ns; ⚠️ **item 1651 takes it to 127 — 2.25x cumulative**), the projection half of the point lookup item 1642 named — ⚠️ **and its FIRST version was 1.2x SLOWER than the pipeline it replaced, because the walk was a closure built per call.** Hoisting one generator to module scope is a **1.6x swing**, which is this corpus's own recorded lesson walked into head-first
 
 CLOSED. The tick's larger finding is the mechanism, not the ratio.
 
@@ -72111,10 +72111,11 @@ trap item 1649 fell into and had to fix inside the same item.
 
 #### What is left on this shape
 
-**211 ns against a 15.4 ns floor is still 13.7x.** The rung removed ~75 ns of the ~270 ns of
-per-call overhead; the residue is `run`'s own floor — `newContext`, `planReadsPath`, the shortcut
-chain itself, the returned object and the generator — for an answer of ONE value. That is item 1642's
-question in its final form, and it is now a `run`-level question rather than a per-shape one.
+~~**211 ns against a 15.4 ns floor is still 13.7x.**~~ ⚠️ **HALF OF THAT RESIDUE WAS THE RETURNED
+OBJECT, taken at item 1651: 211 → 127 ns, another 1.66x, and the item's own list named it ("the
+returned object") without pricing it.** The rung removed ~75 ns of the ~270 ns of per-call overhead
+and item 1651 removed ~85 ns more. What is left — `newContext`, `planReadsPath`, the shortcut chain,
+the generator — is 8.2x the floor and is a `run`-level question rather than a per-shape one.
 
 #### Teeth: 8 meaningful mutants, 8 caught — and one that SURVIVED for a good reason
 
@@ -72149,3 +72150,96 @@ and the comparison is ORDERED (a TinkerPop contract, not an unspecified-order li
 `bun run check` 0 read UNPIPED. Suites: core 444, gql 4230, gremlin 1989 (+24 new), native 1081,
 serialization 144 — 0 fail. `bun run fuzz` all seven green. `bench:gremlin`, all 32 rows, both arms
 with their own build: flat, every `answers` column `same`.
+
+### Item 1651 — ⚠️ **THE RETURNED OBJECT WAS 53% OF THE QUERY.** Returning the generator instead of a `{ [Symbol.iterator], drain }` wrapper is **1.66x on `V(id).values(k)`** (212 → 127 ns), **2.25x cumulative with item 1650** — and it removes a divergence: the wrapper made re-iterability depend on WHICH RUNG FIRED, where `run`'s actual contract is one-shot
+
+CLOSED. A profile nominated it, an ablation priced it, and the thing it removed turned out to be a
+correctness wart as well as a cost.
+
+#### The profile, at 1,500,000 reps so the query dominates
+
+```text
+   point: V().hasId(x).values(k)      704.9 ms of query inside 1048.3 sampled
+   35.8%  374.9ms  idSeededValuesShortcut   <- the function BODY, = 53% of the query
+    9.6%  101.1ms  drain
+    5.6%   59.1ms  seededIdWalk
+    5.2%   54.9ms  getVertexById
+    3.2%   33.8ms  newContext
+    1.6%   16.9ms  run
+    1.1%   11.6ms  matchSeededShape         <- so the body is NOT the shape match
+```
+
+The body minus the shape match is the ALLOCATION: an object literal with a COMPUTED SYMBOL KEY plus
+two closures, built on every call to return a one-value answer.
+
+#### ⚠️ And its `drain` bought nothing, which is why removing it costs nothing
+
+`drain`'s purpose (item 1412) is an EAGER walk that skips the generator entirely — that is what the
+fused hop walk offers. This rung's `drain` was `() => [...seededIdWalk(…)]`, which spreads the same
+generator `[Symbol.iterator]` would have produced. Identical work behind an extra closure.
+
+```text
+   gremlin-point-floor.ts          PRE (wrapper)            POST (generator)       ratio
+   V(id).values(k)                 217.3 / 212.3 / 211.7    127.4 / 126.8 / 130.9  1.66x
+   V().hasId(id).values(k)         213.4 / 225.1 / 214.5    137.7 / 134.1 / 135.0  1.59x
+   V(64 ids).values(k)             2127.2 / 2151.7          1945.2 / 1980.4        1.09x
+   64 ids by hand        CONTROL    989.8 /  973.5           956.7 /  968.5        FLAT
+   V(id).values(k, kk)   CONTROL    304.9 /  295.4           297.1 /  300.7        FLAT
+```
+
+⚠️ **The 64-id row is there because a per-CALL change must not be read off a one-row answer alone.**
+It improves 1.09x — the same ~180 ns of fixed cost, amortised — so the per-row path is not traded
+away. The declined shape (`values(k, kk)` fans out per key) is flat, so the gate costs refused plans
+nothing.
+
+#### ⚠️⚠️ The wrapper was also a route-dependent observable, which is the part worth keeping
+
+`run`'s result is a generator chain for nearly every plan, so it is ONE-SHOT. The wrapper made the
+shortcut's result re-iterable. Measured, two spellings of one query:
+
+```text
+   V().values(k).identity()   [1,2] -> []       the general path: one-shot
+   V(id).values(k).identity()   [1] -> []
+   V().values(k)              [1,2] -> [1,2]    nodeValuesShortcut: re-iterable
+   V(id).values(k)              [1] -> [1]      this rung, BEFORE
+```
+
+So whether `run`'s result could be read twice depended on which rung fired — the shape of defect
+CLAUDE.md opens with, in its observable-behaviour form rather than its cost form. Returning the
+generator makes this rung agree with the general path, and `id-seeded-values.test.ts` now pins the
+pair (`the rung` and `the pipeline`, both `[1,2]` then `[]`).
+
+⚠️ **OPEN: `nodeValuesShortcut` beside it is still re-iterable** (`V().values(k)`, and its
+index-seeded sibling). The same argument applies, but there is no perf payoff there — the wrapper is
+per-call and that rung's shapes return 200,000 rows — so it is a consistency fix, not a lever, and it
+changes observable behaviour. Left deliberately, recorded so the inconsistency is not read as
+intentional.
+
+#### Teeth: 7 mutants, 7 caught — ⚠️ and the pass had to be RE-RUN because the first one tested the wrong arm
+
+```text
+   wrapper-reintroduced      put the re-iterable wrapper back    CAUGHT (2 fail)
+   eager-resolve             spread inside the shortcut          CAUGHT (3 fail)
+   dedupes-ids               the id list's multiplicity          CAUGHT
+   coerces-id                `V(5)` must RAISE                   CAUGHT
+   haslabel-every            `hasLabel` is ANY-match             CAUGHT
+   presence-guard-dropped    a key-less vertex is dropped        CAUGHT
+   missing-id-not-skipped    a missing id yields nothing         CAUGHT
+```
+
+⚠️ **`wrapper-reintroduced` is the one that matters**: it proves the one-shot parity test has teeth,
+and without that test it would have been a silent revert of this item.
+
+⚠️ **THE FIRST PASS WAS RUN AGAINST THE PRE ARM AND ITS VERDICTS WERE WORTHLESS.** The measurement
+loop's last `arm.sh` call left the tree on `pre`, the mutation script saved THAT as its pristine, and
+two anchors came back "NOT UNIQUE (0)" — the only reason it was caught. CLAUDE.md's rule is to assert
+each arm IS the code it claims; the fix here is that the pass itself now asserts the marker
+(`"THE GENERATOR ITSELF" in src`) and REFUSES to run otherwise, rather than trusting the loop's exit
+state. A second instance of the same class: the `post` snapshot predated a later comment edit, so
+switching arms silently discarded it — the same failure recorded earlier this session.
+
+#### Gates
+
+`bun run check` 0 read UNPIPED (one `no-shadow` on the new probe arm, fixed). Suites: core 444, gql
+4230, gremlin 1992 (+3 new), native 1081, serialization 144 — 0 fail. `bun run fuzz` all seven green.
+`bench:gremlin`, all 32 rows, both arms with their own build: flat, every `answers` column `same`.

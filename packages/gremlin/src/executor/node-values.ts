@@ -222,10 +222,19 @@ export const idSeededValuesShortcut = (plan: Plan, graph: Graph): NodeValues | u
   const { ids, label, key } = shape;
   const labels = label?.labels;
 
-  return {
-    [Symbol.iterator]: () => seededIdWalk(ids, labels, key, graph),
-    drain: () => [...seededIdWalk(ids, labels, key, graph)],
-  };
+  // ⚠️⚠️ THE GENERATOR ITSELF, NOT A `{ [Symbol.iterator], drain }` WRAPPER — 1.66x, and it also
+  // removes a divergence (item 1651). The wrapper was **53% of the query's self time**: an object
+  // with a COMPUTED SYMBOL KEY plus two closures, allocated per call, for a `drain` that only
+  // spread the same generator and so bought nothing. (`drain`'s point, item 1412, is an EAGER walk
+  // that skips the generator; this rung has none to skip.)
+  //
+  // ⚠️ AND ONE-SHOT IS THE ENGINE'S ACTUAL CONTRACT, which the wrapper quietly broke. `run`'s result
+  // is a generator chain for nearly every plan, so iterating it twice yields nothing the second
+  // time — measured: `V().values(k).identity()` gives `[1,2]` then `[]`. The wrapper made
+  // `V(id).values(k)` re-iterable, so whether re-iteration worked depended on WHICH RUNG FIRED,
+  // which is route-dependent observable behaviour. `nodeValuesShortcut` beside this one still has
+  // it; see item 1651's entry in `CLOSED.md`.
+  return seededIdWalk(ids, labels, key, graph);
 };
 
 /**
