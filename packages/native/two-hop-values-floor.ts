@@ -26,6 +26,13 @@
  *     bun two-hop-values-floor.ts
  *     NODES=50000 REPS=10 bun two-hop-values-floor.ts
  *
+ * ⚠️⚠️⚠️ AND EVEN WITHIN ONE RUN, THIS FILE'S ENGINE-VS-FLOOR RATIOS OVERSTATE BY ~1.55x. Item 1640
+ * re-measured the trailing filtered pair with one arm per process and got **1.25-1.30x** where this
+ * file reports **1.97x** — interference moves the engine arm and the floor arm by different amounts
+ * inside a single run, so same-run pairing is necessary and NOT sufficient. Use this file to rank
+ * shapes against each other; for an engine-vs-floor ratio use a one-measurement-per-process
+ * instrument (`closure-env-probe.ts` is the pattern).
+ *
  * ⚠️⚠️ COMPARE ENGINE TO FLOOR WITHIN ONE RUN ONLY. Item 1638 measured the trailing engine arm at
  * **1096.86 ms in one run and 1616.45 in the next** — a 1.47x swing, after two arms were added to the
  * same process — while its floor barely moved (828.35 -> 818.51). Twelve arms share one process, so

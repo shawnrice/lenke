@@ -70833,7 +70833,9 @@ suites unchanged.
 ### Item 1636 — **the specialized far-property row builder is BUILT and SHIPPED**, the target item 1429 named and item 1447 reverted: **1.19-1.23x** on the probe and **1.23-1.43x** on item 1447's own row bench, both at FANOUT=5, every control flat. ⚠️ **Item 1447's wiring diagnosis is CONFIRMED** — a sibling `return` gets what a hoisted function-valued local gave back. ⚠️ **And `isolated-row-bench.mjs` ALSO defaults to one edge per node: at FANOUT=1 the target shows NOTHING and produced a phantom control regression**
 
 OPEN: the row is still ~2.0x its hand floor after this (POST ~425 ms against `floor`'s 189 at
-FANOUT=5). The probe's own `floor-pred-poly-row-direct` arm predicted **41.5%** and the realized win
+FANOUT=5). ⚠️ **That 2.0x is SUSPECT: it comes from a multi-arm probe, and item 1640 found the
+equivalent Gremlin figure inflated ~1.55x by exactly that. Not re-measured — treat as an upper
+bound.** The probe's own `floor-pred-poly-row-direct` arm predicted **41.5%** and the realized win
 is ~19-30%, so the arm models the change faithfully and the engine still pays something it does not —
 POST sits 1.40x above that arm. That residue is unattributed and is the next question on this shape.
 
@@ -71011,10 +71013,11 @@ about.
 No engine behaviour changed — a comment and two probe shapes. `bun run check` 0 read unpiped; gql
 4230 pass / 0 fail.
 
-### Item 1638 — the two-hop filter family priced at ALL THREE positions for the first time: **a filter costs ~1.9x its hand floor wherever it sits** (trailing 1.97x, mid 1.90x, lead 1.88x) while the UNFILTERED two-hop walk is at **1.08x**. ⚠️ **And the trailing-vs-mid 1.78x is NOT an asymmetry — it is 5x the predicate tests for the same rows.** ⚠️ **This instrument swings 1.47x run-to-run on its engine arm; read it within a run only**
+### Item 1638 — the two-hop filter family priced at ALL THREE positions for the first time: ~~**a filter costs ~1.9x its hand floor wherever it sits** (trailing 1.97x, mid 1.90x, lead 1.88x)~~ — ⚠️ **item 1640 re-measured the trailing pair one arm per process at 1.25-1.30x: these ratios are inflated ~1.55x by this file's twelve-arm process** — while the UNFILTERED two-hop walk is at **1.08x**. ⚠️ **And the trailing-vs-mid 1.78x is NOT an asymmetry — it is 5x the predicate tests for the same rows.** ⚠️ **This instrument swings 1.47x run-to-run on its engine arm; read it within a run only**
 
-OPEN: the **~1.9x filtered-walk gap**, which is the third consecutive item to find a 1.2-2.0x
-engine-vs-hand-floor gap on an unrelated shape whose cause resists per-frame attribution. The gate
+OPEN: ~~the **~1.9x filtered-walk gap**~~ — ⚠️ **it is 1.25-1.30x; item 1640 found ~1.55x of it was
+this instrument.** What remains is the third of a run of items finding a 1.2-2.0x
+engine-vs-hand-floor gap on an unrelated shape whose cause resists per-frame attribution — The gate
 collapse is NOT the answer (below), and the remaining candidate is the one the corpus cannot ablate
 from outside the engine. See the pattern note at the end.
 
@@ -71181,3 +71184,71 @@ another file.**
 #### Gates
 
 No engine code changed — one new probe. `bun run check` 0 read unpiped; suites unchanged.
+
+### Item 1640 — ⚠️⚠️ **THE 1.9-2.0x ENGINE-VS-FLOOR GAPS WERE SUBSTANTIALLY THE INSTRUMENT.** Measured one arm per process with the harness held constant, item 1638's **1.97x** filtered two-hop walk reads **1.25-1.30x**, and the one-hop fused walk reads **1.13-1.18x**. A twelve-arm process inflated the gap by a factor of **~1.55** — which is why four rounds of per-frame ablation (items 1634-1639) kept accounting for a minority of something that was not there
+
+OPEN: the engine is **1.13-1.30x** its hand floors on these shapes. That is a constant factor of the
+right size for "a general executor against a hand-specialised loop", it is below anything this
+session has taken, and it needs no further attribution. ⚠️ Item 1636's `~2.0x` for the GQL filtered
+hop comes from a multi-arm probe and is likely inflated the same way — **not re-measured here**, and
+the honest status is "suspect", not "corrected".
+
+#### The experiment item 1639 asked for
+
+Item 1639 refuted the closure-environment hypothesis and noticed something sharper: two
+HAND-WRITTEN walks of the same shape, in two different instruments, differ by **1.45x**. So the
+untested variable was never the engine — it was the harness. `closure-env-probe.ts` already had the
+right shape (one `ARM` per process, one fixture builder, one timing loop), so the engine and its floor
+went in there as two more arms.
+
+```text
+   pair                              run 1                run 2             ratio
+   one hop, fused
+     engine1  V().out(E).values(k)   181.10               169.22
+     floor1   hand walk + push       153.41               149.58            1.13-1.18x
+   two hops + trailing filter
+     engine2f out.out.has.values    1153.22              1112.01
+     floor2f  hand walk + inline     888.05               892.36            1.25-1.30x
+```
+
+Both pairs return identical row counts (999,990 and 2,680,204). The floors PUSH rather than count,
+because `toArray` materialises an array and a counting floor is not doing the same work — the
+`lean`/`fat`/`fatread` arms above it do count, which is exactly why item 1639 forbade comparing
+across them.
+
+#### What this corrects
+
+```text
+   shape                        as measured            one arm per process   inflation
+   two-hop + trailing filter    1.97x  (item 1638)     1.25-1.30x            ~1.55x
+   two-hop unfiltered           1.08x  (item 1638)     —                     (already small)
+   one-hop fused                —                      1.13-1.18x            —
+```
+
+Item 1638's own header already warned that its engine arm swings **1.47x** run-to-run and that only
+same-run pairs mean anything. Its ratios WERE same-run pairs, which is why they were defensible — and
+they were still wrong by 1.55x, because interference moves the engine arm and the floor arm by
+different amounts within a single run. **Same-run pairing is necessary and not sufficient; the
+process must contain one measurement.**
+
+#### Why four items found so little
+
+Items 1634, 1636, 1638 and 1639 each tried to attribute a 1.2-2.0x gap and each accounted for a
+minority — `pick` priced at 0% against a 19.0% share, a 41.5% arm realising ~19-30%, a gate collapse
+worth ~1.08x of 1.9x, and the closure environment refuted outright at 0.4%. That reads as four
+failures of attribution. It is better read as four correct measurements of a gap that was ~1.55x
+smaller than the instrument said: there was less to find than the denominator implied, and the
+ablations that came back small were right.
+
+#### The rule
+
+**An engine-vs-floor ratio comes from a one-measurement-per-process instrument, or it does not
+count.** The multi-arm floor files (`two-hop-values-floor.ts`, `hop-chain-depth-floor.ts`,
+`gql-filtered-hop-floor-probe.mjs`) are useful for ranking shapes against each other and for the
+ablation DIFFERENCES within one arm's family, but their absolute engine-vs-floor ratios overstate.
+`closure-env-probe.ts` is the pattern to copy: `ARM` selects one thing, the process does nothing
+else.
+
+#### Gates
+
+No engine code changed — two probe arms. `bun run check` 0 read unpiped; native 1081 pass / 0 fail.
