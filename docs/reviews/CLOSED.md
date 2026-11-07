@@ -71529,10 +71529,7 @@ No engine code changed — the probe only. `bun run check` 0 read unpiped.
 
 ### Item 1645 — ⚠️⚠️ **A SPELLING THAT NEEDS A REWRITE TO BECOME THE FAST ONE CAN NEVER MATCH THE ONE THAT DID NOT, because the rewrite runs PER CALL.** `union(out(T), in(T)).count()` is 2.41x `both(T).count()` even though `fuseUnionBoth` collapses the first into the second — and **52% of the gap is `effectivePlan` doing that collapse** (117.5 of 225.2 ns). A conceptual correction to this repo's central invariant, not a lever
 
-OPEN: the 2.41x itself, with two priced fixes and neither taken. **A `WeakMap<Plan, Plan>` memo on
-`effectivePlan`** would recover the 117.5 ns for a REUSED plan — but item 1503 measured exactly that
-trade for `readsPath` and rejected it (**1.52-1.61x reused, 1.07-1.15x WORSE rebuilt**), and Gremlin
-has no parameter binding (item 1577) so a varying id forces the rebuilt case. **Removing
+OPEN: the 2.41x itself, with two priced fixes and neither taken. ~~**A `WeakMap<Plan, Plan>` memo on `effectivePlan`**~~ — ⚠️ **ANSWERED AT ITEM 1646: a WeakMap is indeed 1.25x worse rebuilt, but three SCALAR FIELDS on the plan are 33x better reused and FLAT rebuilt. Item 1503's refusal does not apply to that design, and `Graph` already has the `version` the sound key needs.** **Removing
 `fuseUnionBoth`'s two per-call allocations** — `plan.steps.slice(i + 1)` handed to `tailIsOrderFree`,
 and the `[...plan.steps]` spread — is worth maybe 8% of the row, below the bar for a file whose edits
 perturb.
@@ -71595,3 +71592,60 @@ key is (plan, graph, mutation-epoch) and the graph has no epoch today.
 #### Gates
 
 No code changed — measurement only. `bun run check` 0 read unpiped.
+
+### Item 1646 — ⚠️ **ITEM 1503'S REFUSAL DOES NOT APPLY TO THE RIGHT DESIGN.** A plan-cached `effectivePlan` makes a REUSED plan **33x cheaper (155.0 → 4.7 ns)** and a REBUILT one **FLAT** — no trade at all — where the `WeakMap` form it refused is 1.25x WORSE rebuilt. Three designs priced in one instrument, and the first two of mine were wrong: an object-per-miss and a key without the graph's identity
+
+OPEN: **build it.** The measurement is done and the design is settled; three build concerns are named
+below and none is a blocker. This is the largest clean win left on cheap queries — item 1645 showed
+`run` calls `effectivePlan` per invocation, which is 52% of the `union(out,in)` vs `both` gap and the
+residual in item 1643's `hasId` seed.
+
+#### The trade, priced for the whole rewrite chain
+
+`plan-memo-trade-probe.ts`, one arm per process, 20,000 inner calls per sample, 12 reps, median of 9,
+three rounds. The plan is the UNION spelling, because that is the one `effectivePlan` does work on
+(`fuseUnionBoth` fires); the `both` spelling measures the gate declining, which item 1645 priced at
+14.2 ns and is not the question.
+
+```text
+   design                        REUSED plan        REBUILT plan (fresh every call)
+   no cache                      155.0 ns           495-509 ns
+   WeakMap<Plan, Plan>             3.8              639.9      1.25x WORSE
+   on-plan {version, plan}         4.8              502-592    1.01-1.15x worse
+   on-plan 3 scalar fields         4.7              490-570    FLAT (ranges overlap)
+```
+
+**33x on a reused plan and flat on a rebuilt one.** Item 1503 measured the same trade for the much
+cheaper `readsPath` boolean and refused it — **1.52-1.61x reused but 1.07-1.15x WORSE rebuilt** — and
+that refusal was right for a `WeakMap`. It is not right for a field on the plan.
+
+#### ⚠️ My first two designs were both wrong, and the probe caught one while reading caught the other
+
+- **`{ version, plan }` on the plan allocates an object on every MISS**, which put the rebuilt arm at
+  +7 to +77 ns across three rounds and left break-even at ~30% reuse — no better than the `WeakMap`.
+  Three SCALAR fields allocate nothing and the penalty disappears.
+- **keying on `graph.version` alone is a WRONG ANSWER**, caught by reading rather than measuring:
+  `effectivePlan(plan, graphA)` then `effectivePlan(plan, graphB)` HITS WRONGLY whenever both graphs
+  share a version, and two freshly built graphs both start at the same one. `dropVacuousLabels` reads
+  the graph's label counts, so the cached plan would be the other graph's answer. The key is
+  (graph identity, graph version), and the sound version costs the same — 4.7 against 4.8 ns.
+
+⚠️ And the prerequisite item 1645 thought was missing is already there: **`Graph` carries `version`
+(a mutation counter) and per-token `epoch(name)`**. No core change is needed, and `epoch(label)` is
+available later as a tighter key than the whole-graph version.
+
+#### Three build concerns, none a blocker
+
+- **`Plan` is `readonly`.** The cache needs a deliberate mutable field on the type, not a cast at the
+  use site.
+- **HIDDEN CLASS STABILITY is the real risk.** Adding fields to a `Plan` on first use mutates its
+  shape, and this corpus has measured that class of effect repeatedly (item 159's 1.29x from
+  polymorphic call sites, `ts-closure-size-is-load-bearing`'s 4x slow mode). The fields should be
+  initialised wherever a `Plan` is constructed so every plan has one shape from birth — which is also
+  why this is not a two-line change.
+- **`tracksPath` belongs in the key, or only the `false` case gets cached.** `effectivePlan` returns
+  the plan unchanged when `tracksPath` is true, so that case needs no cache at all.
+
+#### Gates
+
+No engine code changed — one new probe. `bun run check` 0 read unpiped.
