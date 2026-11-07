@@ -1,8 +1,9 @@
 import type { Edge, Graph, Vertex } from '@lenke/core';
 
-import type { Plan, Predicate, Step } from '../ast.js';
+import type { ID, Plan, Predicate, Step } from '../ast.js';
 import { matches, specializePredicate } from '../predicates.js';
 import { seedForStep, seekWorthTaking } from './index-seed.js';
+import { asStringId } from './sources.js';
 
 /**
  * `g.…count()` answered from the graph's counters instead of by enumerating.
@@ -102,9 +103,17 @@ export const countShortcut = (plan: Plan, graph: Graph): number | undefined => {
 
   const [source, ...mid] = steps.slice(0, -1);
 
-  // `V(id, …)` / `E(id, …)` enumerate a given set, not the whole graph.
-  if ((source.kind !== 'V' && source.kind !== 'E') || (source.ids?.length ?? 0) > 0) {
+  if (source.kind !== 'V' && source.kind !== 'E') {
     return undefined;
+  }
+
+  // ⚠️ `V(id, …)` / `E(id, …)` ENUMERATE A GIVEN SET, which every rung below assumes they do not —
+  // each one answers from a whole-graph bucket. Before item 1649 this was a flat decline, so one
+  // vertex's out-degree went to the traverser pipeline: `V(id).out(T).count()` measured **584.4 ns
+  // against an 18.3 ns closed form the graph already has** (`getVertexById` + `outDegree`), 31.9x,
+  // on the commonest serving question there is. Its own rung answers it instead.
+  if ((source.ids?.length ?? 0) > 0) {
+    return idSeededCount(source, mid, graph);
   }
 
   // THE REPEAT PRE-PASS (item 574), before any rung looks at `mid`: an eligible
@@ -118,6 +127,27 @@ export const countShortcut = (plan: Plan, graph: Graph): number | undefined => {
 
   if (mid.length === 0) {
     return source.kind === 'V' ? graph.vertexCount : graph.edgeCount;
+  }
+
+  // ⚠️ `hasId` IS THE OTHER SPELLING OF THE SEEDED SOURCE, and it has to be answered here or the
+  // two diverge. Before item 1649 both spellings walked and `V(ids)` was ~2x faster; teaching the
+  // seeded source alone took it to **74.8 ns against `hasId`'s 1006-1170 — 13-16x**, which is the
+  // defect class CLAUDE.md opens with (the right answer at 100-300x the cost). Handled BEFORE the
+  // `V`-only check below, because the arithmetic is the same for an edge source.
+  if (mid[0].kind === 'hasId' && mid.length <= 2) {
+    if (mid.length === 1) {
+      return distinctIdCount(mid[0].ids, source.kind, graph);
+    }
+
+    // ⚠️ `hasId` + ONE HOP, and it is here because leaving it out CREATED an equivalent-spelling
+    // gap rather than merely leaving one. Teaching the bare count both spellings but the hop only
+    // the seeded one took `V(ids).out(T).count()` vs `V().hasId(ids).out(T).count()` to **14.40x**
+    // on the Gremlin spelling probe — worse than the ~2x it was before item 1649 touched anything.
+    if (source.kind !== 'V' || !seedableHop(mid[1])) {
+      return undefined;
+    }
+
+    return distinctIdDegreeSum(mid[0].ids, mid[1], graph);
   }
 
   if (source.kind !== 'V') {
@@ -3379,6 +3409,209 @@ const unionOfBuckets = <T>(
       if (!earlier) {
         n += 1;
       }
+    }
+  }
+
+  return n;
+};
+
+/**
+ * The per-vertex twin of {@link adjacentCount}: how many traversers does ONE hop step emit from ONE
+ * vertex?
+ *
+ * ⚠️ IT REUSES `unionOfBuckets` RATHER THAN SUMMING THE LABELS, and that is load-bearing, not tidy.
+ * A vertex's `adjFrom`/`adjTo` is a `Map<label, Set<Edge>>`, so an edge labelled `['T','S']` sits in
+ * BOTH buckets and `out('T','S')` would double-count it. That helper exists in this file precisely
+ * to hold one copy of the overlap rule (its own header records item 1078's seven-copy drift), and it
+ * is generic over `ReadonlyMap<string, ReadonlySet<T>>` — which is exactly the adjacency's shape.
+ *
+ * ⚠️ `both`/`bothE` IS out + in, SELF-LOOP INCLUDED TWICE. A self-loop is one edge from its source
+ * and one from its target, so it is in `adjFrom` AND `adjTo` — which is the TinkerPop ground truth
+ * this file already records on `edgeHopSeededCount`: on 4 `T` edges including a self-loop,
+ * `outE(T)` and `inE(T)` are both 4 while `bothE(T)` is 8.
+ *
+ * ⚠️ THE UNTYPED HOP IS DECLINED. `out()` traverses every incident edge, and a vertex keeps no total
+ * — the union across every bucket would be correct but is not O(1), and summing the buckets
+ * overcounts a multi-label edge. The general path answers it.
+ */
+const SEEDABLE_HOPS: ReadonlySet<string> = new Set(['out', 'in', 'both', 'outE', 'inE', 'bothE']);
+
+/**
+ * Can {@link seededHopDegree} answer this step at all?
+ *
+ * ⚠️ IT IS CHECKED BEFORE THE ID LOOP, NOT INSIDE IT. Asked per resolving id, an UNTYPED hop would
+ * decline for a seed set where something resolves and return 0 for one where nothing does — the same
+ * query answered two ways depending on the data. The answer 0 happens to be right in that case, but
+ * the route must not depend on it.
+ */
+const seedableHop = (step: Step): boolean =>
+  SEEDABLE_HOPS.has(step.kind) &&
+  (step as Step & { readonly labels?: readonly string[] }).labels !== undefined &&
+  (step as Step & { readonly labels: readonly string[] }).labels.length > 0;
+
+const seededHopDegree = (step: Step, vertex: Vertex): number | undefined => {
+  const outward = (labels: readonly string[]): number | undefined =>
+    labels.length === 0 ? undefined : unionOfBuckets(labels, vertex.adjFrom ?? EMPTY_ADJ);
+
+  const inward = (labels: readonly string[]): number | undefined =>
+    labels.length === 0 ? undefined : unionOfBuckets(labels, vertex.adjTo ?? EMPTY_ADJ);
+
+  switch (step.kind) {
+    case 'out':
+    case 'outE':
+      return outward(step.labels);
+    case 'in':
+    case 'inE':
+      return inward(step.labels);
+    case 'both':
+    case 'bothE': {
+      const o = outward(step.labels);
+      const i = inward(step.labels);
+
+      return o === undefined || i === undefined ? undefined : o + i;
+    }
+    default:
+      return undefined;
+  }
+};
+
+const EMPTY_ADJ: ReadonlyMap<string, ReadonlySet<Edge>> = new Map();
+
+/**
+ * `count()` over an ID-SEEDED source: `V(ids).count()` and `V(ids).<one hop>.count()`.
+ *
+ * ⚠️ THE MULTIPLICITY IS `sourceFromIds`', NOT A SET'S. That generator walks the ids IN ORDER and
+ * yields one traverser per RESOLVING id with no dedup — so a DUPLICATE id counts twice and a MISSING
+ * one not at all. `V('a','a').count()` is 2.
+ *
+ * ⚠️ AND IT RESOLVES THROUGH `asStringId`, so a non-string id RAISES here exactly as it does in
+ * `applySource`. Item 1643 shipped a seeding rewrite that answered where the general path raised,
+ * and only a pre-existing test caught it; this rung would have the same hole if it resolved ids
+ * itself.
+ *
+ * Everything else declines to the general path: more than one intermediate step, an edge source with
+ * a hop, an untyped hop, a filter.
+ */
+const idSeededCount = (
+  source: Step & { readonly ids?: readonly ID[] },
+  mid: readonly Step[],
+  graph: Graph,
+): number | undefined => {
+  const { ids } = source;
+
+  if (ids === undefined || ids.length === 0) {
+    return undefined;
+  }
+
+  if (mid.length === 0) {
+    let n = 0;
+
+    for (const id of ids) {
+      const found =
+        source.kind === 'V'
+          ? graph.getVertexById(asStringId(id))
+          : graph.getEdgeById(asStringId(id));
+
+      if (found) {
+        n += 1;
+      }
+    }
+
+    return n;
+  }
+
+  // A hop needs a VERTEX to hop from, and only one step may follow the source — a filter or a second
+  // hop is the general path's business.
+  if (mid.length > 1 || source.kind !== 'V' || !seedableHop(mid[0])) {
+    return undefined;
+  }
+
+  let total = 0;
+
+  for (const id of ids) {
+    const vertex = graph.getVertexById(asStringId(id));
+
+    if (!vertex) {
+      continue;
+    }
+
+    const degree = seededHopDegree(mid[0], vertex);
+
+    if (degree === undefined) {
+      return undefined;
+    }
+
+    total += degree;
+  }
+
+  return total;
+};
+
+/**
+ * `V().hasId(ids).count()` / `E().hasId(ids).count()`: how many DISTINCT ids resolve?
+ *
+ * ⚠️⚠️ THE MULTIPLICITY IS NOT {@link idSeededCount}'S, AND THE DIFFERENCE IS LOAD-BEARING. The
+ * seeded source walks the id LIST (`sourceFromIds`), so `V('a','a').count()` is **2**; `hasId` is a
+ * FILTER over the element set — `step.ids.includes(v.id)`, one test per element — so
+ * `V().hasId('a','a').count()` is **1**. That is item 1306's finding, which is why `hasId(ids)` is
+ * not rewritten to `V(ids)` wholesale, and it is why this is a second rung rather than a call into
+ * the first one.
+ *
+ * ⚠️ AND A NON-STRING ID MATCHES NOTHING RATHER THAN RAISING, which is the other half of the same
+ * asymmetry: ids are strings here, `includes` does not coerce, and `V(5)` throws while
+ * `V().hasId(5)` answers 0 (item 1643 shipped a rewrite that got this backwards and a pre-existing
+ * test caught it). So non-strings are skipped here, NOT passed through `asStringId`.
+ */
+/**
+ * `V().hasId(ids).<one hop>.count()`: the degree sum over the DISTINCT resolving ids.
+ *
+ * The dedup is {@link distinctIdCount}'s and the degree is {@link seededHopDegree}'s — so this
+ * differs from {@link idSeededCount}'s hop arm in exactly one way, the multiplicity, which is the
+ * one way the two spellings genuinely differ.
+ */
+const distinctIdDegreeSum = (ids: readonly ID[], hop: Step, graph: Graph): number | undefined => {
+  const seen = new Set<string>();
+  let total = 0;
+
+  for (const id of ids) {
+    if (typeof id !== 'string' || seen.has(id)) {
+      continue;
+    }
+
+    seen.add(id);
+
+    const vertex = graph.getVertexById(id);
+
+    if (!vertex) {
+      continue;
+    }
+
+    const degree = seededHopDegree(hop, vertex);
+
+    if (degree === undefined) {
+      return undefined;
+    }
+
+    total += degree;
+  }
+
+  return total;
+};
+
+const distinctIdCount = (ids: readonly ID[], kind: 'V' | 'E', graph: Graph): number => {
+  const seen = new Set<string>();
+  let n = 0;
+
+  for (const id of ids) {
+    // Not `asStringId` — see the header. A numeric id cannot equal any element's string id.
+    if (typeof id !== 'string' || seen.has(id)) {
+      continue;
+    }
+
+    seen.add(id);
+
+    if (kind === 'V' ? graph.getVertexById(id) : graph.getEdgeById(id)) {
+      n += 1;
     }
   }
 

@@ -10,7 +10,10 @@ import { newContext, startTraverser, type Traverser } from './runtime.js';
 // Apache TinkerPop under its STRING id manager ("Expected an id convertible to String but
 // received Integer"), the ground truth for Gremlin semantics. The builder still accepts a
 // numeric literal in the AST; it faults here, at resolution, on a string-id graph.
-const asStringId = (id: ID): string => {
+// ⚠️ EXPORTED FOR `count-shortcut.ts` (item 1649), which answers an id-seeded `count()` without
+// resolving through `applySource`. A rung that skipped this check would ANSWER where the general
+// path RAISES — item 1643's exact mistake, caught there by a pre-existing test.
+export const asStringId = (id: ID): string => {
   if (typeof id !== 'string') {
     throw new LenkeError(`a vertex/edge id must be a string; got ${typeof id} \`${String(id)}\``, {
       code: ErrorCode.InvalidValue,

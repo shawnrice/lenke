@@ -71369,6 +71369,9 @@ tick's work:
 - **a closed-form route for "seeded by id + one projection"** that never builds a traverser, in the
   spirit of the fused walks items 1613-1636 built for multi-row shapes. `seededShape` and
   `seedFromIndex` already exist, so the seeding half is there; what remains is the emit half.
+  ⚠️ **ITEM 1649 BUILT THE `count()` HALF OF THIS** — `V(ids).count()` and `V(ids).<one hop>.count()`
+  now answer from the graph's indexes (5.19x on the hop) — and the PROJECTION half is still open: it
+  is the only remaining arm of the point lookup, now **6.0x** a hand floor rather than 31.9x.
 - **parameter binding for Gremlin**, which it does not have (item 1577): a caller whose id varies
   cannot reuse a plan, so it pays construction AND the fresh-object inline-cache cost on every call —
   together ~434 of the 1277.6 ns, 34%. That is a feature, not an optimization, and it is the larger
@@ -71379,15 +71382,15 @@ tick's work:
 No engine code changed — two probe shapes (`point`, `pointcount`), which this probe lacked. `bun run
 check` 0 read unpiped.
 
-### Item 1643 — **1.44-1.60x on `V().hasId(x).values(k)` and 1.89-1.97x on its `count()` twin**, an EQUIVALENT-SPELLING gap on the commonest query there is: `V().hasId(x)` now rewrites to the seeded source `V(x)` for exactly ONE id. ⚠️ **A PRE-EXISTING TEST caught the first version turning an empty answer into a THROW**, and the spelling probe has a group for this pair that reports it as "under 1ms, not compared"
+### Item 1643 — **1.44-1.60x on `V().hasId(x).values(k)` and 1.89-1.97x on its `count()` twin**, an EQUIVALENT-SPELLING gap on the commonest query there is: `V().hasId(x)` now rewrites to the seeded source `V(x)` for exactly ONE id (⚠️ **its 1.44x residual is CLOSED at items 1647/1648 and the `count()` twin is superseded by item 1649, which answers BOTH spellings from the graph's indexes**). ⚠️ **A PRE-EXISTING TEST caught the first version turning an empty answer into a THROW**, and the spelling probe has a group for this pair that reports it as "under 1ms, not compared"
 
-OPEN: the two spellings are still **1.44x** apart on `values` (514-571 ns against the seeded 329-373)
-where they should be identical, because the rewrite allocates a fresh plan per call and the executor
-then pays the cold-inline-cache cost item 1642 priced at ~200 ns. A `WeakMap<Plan, Plan>` memo would
-close it for a REUSED plan and item 1503 measured exactly that trade and rejected it — **1.52-1.61x
-reused but 1.07-1.15x WORSE rebuilt** — and a point lookup whose id varies is the rebuilt case. Left
-alone. Both spellings remain **35-55x** a 9.3 ns hand floor (`getVertexById` + a property read),
-which is item 1642's traverser-setup question, not this one.
+~~OPEN: the two spellings are still **1.44x** apart on `values`~~ — ⚠️ **CLOSED BY ITEMS 1647/1648,
+which built the memo this paragraph declined** (as a plan slot, not a `WeakMap`). Re-measured at item
+1649 on a dedicated instrument: **294.1 ns seeded against 293.7 for `hasId` — 1.00x.** The gap
+survives only in the REBUILT case, which is Gremlin's real one (no parameter binding): 526.0 against
+816.6 ns, **1.55x**, because a fresh plan collects no memo and pays `seedSingleHasId` every call.
+⚠️ **And the floor figure is stale too**: "35-55x a 9.3 ns hand floor" is now **17.4x** (294.1 against
+16.9), of which items 1647/1648 did most. Item 1642's traverser-setup question is still the residual.
 
 #### The gap, and how it was found
 
@@ -71895,3 +71898,137 @@ run interleaved so a shared flag cannot pass either.
 
 `bun run check` 0 read UNPIPED. Suites: core 444, gql 4230, gremlin 1873 (+16 new), native 1081,
 serialization 144 — 0 fail. `bun run fuzz` all seven green.
+
+### Item 1649 — ⚠️ **`countShortcut` DECLINED EVERY ID-SEEDED SOURCE BY ONE GATE LINE**, so one vertex's out-degree walked the traverser pipeline at **584.4 ns against the 18.3 ns closed form the graph already has**. Its own rung: **5.19x on `V(id).out(T).count()`** (589.6 → 113.6 ns), 2.32x on a 64-id count — and, because taking only the seeded spelling WIDENED an equivalent-spelling gap to 14.4x, the `hasId` spellings too, at 7.6-9.2x
+
+CLOSED, with the equivalent-spelling invariant kept rather than traded: the Gremlin spelling probe's
+flag list went **6 → 1** across items 1648-1649, and the survivor pre-dates both.
+
+#### The decline was explicit, and the profile found the shape it cost
+
+```ts
+// `V(id, …)` / `E(id, …)` enumerate a given set, not the whole graph.
+if ((source.kind !== 'V' && source.kind !== 'E') || (source.ids?.length ?? 0) > 0) {
+  return undefined;
+}
+```
+
+Correct as a statement about the rungs below it — each answers from a whole-graph bucket — and a flat
+decline for a shape whose answer is one `Map.get` away. Measured on a new instrument
+(`gremlin-point-floor.ts`), 200,000 vertices, degree 4, one arm per process:
+
+```text
+   arm                                    ns/call   vs its floor
+   floor-hopcount  getVertexById + outDegree  18.3      1x
+   V(id).out(T).count()                      584.4     31.9x
+   floor           getVertexById + prop k     15.7      1x
+   V(id).values(k)                           286.3     18.2x
+```
+
+⚠️ **THE FIRST VERSION OF THAT PROBE HAD NO EDGES**, so both hop arms answered 0 — a degree
+measurement on a degree-zero fixture, which is item 702's answer-invariant-to-the-property trap. The
+fixture now branches (`Math.floor(k / N)` split, items 1516/1518) and asserts it via
+`assertBranching`.
+
+#### What shipped: three arms, all reusing rules that already existed
+
+- `V(ids).count()` / `E(ids).count()` — the number of RESOLVING ids, with `sourceFromIds`'
+  multiplicity: it walks the id LIST, so a duplicate counts twice and a missing one not at all.
+- `V(ids).<one typed hop>.count()` — the degree sum over those ids, via `unionOfBuckets` on the
+  vertex's own `adjFrom`/`adjTo`.
+- `V().hasId(ids).count()` and `V().hasId(ids).<one typed hop>.count()` — the same arithmetic over
+  the DISTINCT resolving ids.
+
+⚠️ **`unionOfBuckets` RATHER THAN A LABEL SUM, AND THAT IS LOAD-BEARING.** A vertex's adjacency is a
+`Map<label, Set<Edge>>`, so an edge labelled `['T','S']` sits in BOTH buckets and `out('T','S')` would
+double-count it. That helper exists in this file to hold ONE copy of the overlap rule (its header
+records item 1078's seven-copy drift) and is generic over `ReadonlyMap<string, ReadonlySet<T>>` —
+exactly the adjacency's shape. The `sum-labels-not-union` mutant is caught.
+
+⚠️ **AND `asStringId` RATHER THAN A LOCAL RESOLVE**, for the seeded arms only. Ids are strings here
+and `V(5)` RAISES; a rung that resolved ids itself would answer where the general path raises, which
+is item 1306's bug and then item 1643's. Exported for this.
+
+#### ⚠️⚠️ The two spellings are NOT the same question, and a shared implementation would be wrong
+
+```text
+   V('a','a').count()              2     the seeded source walks the id LIST
+   V().hasId('a','a').count()      1     hasId FILTERS the element set, one test per element
+   V('a','a').out(T).count()       8
+   V().hasId('a','a').out(T).count()   4
+   V(5).count()                    RAISES
+   V().hasId(5).count()            0     `includes` does not coerce
+```
+
+That is item 1306's finding, and it is why `hasId(ids)` is not rewritten to `V(ids)` wholesale. Both
+asymmetries are pinned by tests.
+
+#### ⚠️ Taking only the seeded spelling WIDENED a gap, which is why this item has three arms
+
+The honest sequence: with the seeded rung alone, the probe's `multi-id lookup` group went from 1.95x
+to **13.4-15.6x** (`V(ids)` 74.8 ns against `hasId(ids)` 1006-1170), and a full sweep then surfaced
+`multi-id lookup, then a hop` at **14.40x** — a gap this item created, not one it inherited. CLAUDE.md
+opens with that defect class (the right answer at 100-300x the cost). With all three arms:
+
+```text
+   group                            spelling      PRE      POST    gap PRE -> POST
+   multi-id lookup                  V(ids)        541.5    75.5
+                                    hasId(ids)   1054.0   139.2    1.95x -> 1.84x
+   multi-id lookup, then a hop      V(ids)       1025.4   162.0
+                                    hasId(ids)   1829.7   223.7    1.78x -> 1.38x
+```
+
+Both gaps NARROWED and both spellings are 6-9x faster.
+
+#### The numbers, one arm per process, order-alternated, 3 rounds, 14 reps / median of 11
+
+```text
+   gremlin-point-floor.ts        PRE                      POST                  ratio
+   V(id).out(T).count()          603.2 / 603.7 / 589.0    115.7 / 113.7 / 112.3  5.19x
+   V(64 ids).count()            1734.2 / 1598.1 / 1767.0  730.8 / 737.2 / 733.4  2.32x
+   V(id).values(k)  CONTROL      287.6 / 289.4 / 286.4    287.1 / 292.4 / 285.3  FLAT
+   getVertexById+outDegree CTL    18.0 /  18.9 /  18.6     18.9 /  19.1 /  19.0  FLAT
+```
+
+The seeded hop is now **6.0x** its closed form, down from 31.9x; the 64-id count is 1.25x its floor
+(745 against 598), so its marginal per-id cost is ~2.3 ns over the floor's own 9.3.
+
+#### Measured widely
+
+`bench:gremlin`, all 32 rows, both arms with their own build: every row flat and every `answers`
+column `same`. None of its rows is seeded, so it is a pure control sweep — which is the point.
+
+#### Teeth: 13 mutants, 13 caught, and TWO of them found real holes in the tests
+
+```text
+   seeded-dedupes            a duplicate id must count twice         CAUGHT
+   seeded-counts-missing     a missing id must be skipped            CAUGHT
+   sum-labels-not-union      the multi-label overlap rule            CAUGHT
+   both-is-out-only          `both` is out + in, self-loop twice     CAUGHT
+   seeded-coerces-id         `V(5)` must RAISE                       CAUGHT
+   hasid-keeps-duplicates    `hasId` counts DISTINCT ids             CAUGHT
+   hasid-raises-on-number    `hasId(5)` must NOT raise               CAUGHT
+   untyped-out-answers-zero  an untyped hop must decline             CAUGHT (after a fix)
+   untyped-in-answers-zero   …in BOTH directions                     SURVIVED first
+   hasidhop-keeps-duplicates the hop arm dedupes too                 CAUGHT
+   gate-moved-into-loop      eligibility is checked UP FRONT         CAUGHT
+   seeded-gate-dropped       …on the seeded arm too                  CAUGHT
+   hasid-arm-too-wide        3 mid steps must decline                SURVIVED first
+```
+
+⚠️ **`untyped-in-answers-zero` survived because the test exercised `out()` only** — one helper arm of
+two — so `V(id).in_().count()` would have answered 0. Every direction now has a case.
+⚠️ **`hasid-arm-too-wide` survived because the trailing-filter case existed for the SEEDED spelling
+and not for `hasId`**: `[hasId, out, has]` would have been answered as `[hasId, out]`, dropping the
+filter. Both holes were in the tests, not the code, and only a mutant could have found either.
+
+The whole file is a differential against the engine's own general path — each `…count()` compared to
+the LENGTH of the same traversal without the `count()`, which the shortcut cannot answer — plus a
+`countShortcut`-returns-a-number ROUTE assertion per taken shape, because an answer-equivalent route
+choice otherwise lets the file pass vacuously (`rung-precedence-decides-speed`).
+
+#### Gates
+
+`bun run check` 0 read UNPIPED. Suites: core 444, gql 4230, gremlin 1965 (+92 new), native 1081,
+serialization 144 — 0 fail. `bun run fuzz` all seven green. Gremlin spelling probe: 1 flagged group,
+down from 6 before item 1648.
