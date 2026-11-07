@@ -72702,11 +72702,84 @@ onto `pickRunnable`. That is a much larger piece of work than item 1656's entry 
 37-89x is its payoff rather than a planner tweak's.
 
 ⚠️ **The per-candidate constant is NOT the explanation either**, and it was the obvious next
-hypothesis: 30,000 candidates in 11.07 ms is ~370 ns each, which looks removable. It is not reachable
-by this tick's instruments — `node --cpu-prof` cannot run a `.ts` probe and `bun` has no
-`--cpu-prof`, so profiling the selective shape needs an `.mjs` companion that does not exist. Left
-unmeasured and said so, rather than asserted from the sweep.
+hypothesis: 30,000 candidates in 11.07 ms is ~370 ns each, which looks removable. ~~It is not
+reachable by this tick's instruments~~ — ⚠️ **ITEM 1658 BUILT THE `.mjs` COMPANION, PROFILED IT, AND
+REFUTED THE 42.8% FRAME IT FOUND.** The constant is not an allocation.
 
 #### Gates
 
 No engine change — `git diff` is this entry. `bun run check` 0 read unpiped.
+
+### Item 1658 — ⚠️ **A 42.8% FRAME THAT YIELDED NOTHING, and the third per-call allocation this session to measure FLAT.** `bucketEnds` allocated an object plus a closure for every candidate — including the 29,994 of 30,000 that have no edge of the type at all — and removing that for the empty case is flat across the whole selectivity sweep. The generalization is worth more than the change: in this engine, removing a per-call allocation has now measured flat three times, while the two that WON were about the SHAPE of what is returned
+
+REFUTED, no engine change. One new instrument: `gremlin-match-selectivity-prof.mjs`.
+
+#### First, the instrument item 1657 said was missing
+
+`node --cpu-prof` cannot run a `.ts` probe and `bun` has no `--cpu-prof`, so the selective `match()`
+shape could not be profiled at all. A `PROF=` flag on the TypeScript probe is dead weight (one was
+added and removed in that tick); every profilable probe in this directory is `.mjs` for the same
+reason, and a shape on `runtime-profile-gremlin-probe.mjs` is not an option either — its fixture
+carries ONE edge type, and a selective second type can only be added by adding edges, which changes
+the graph a dozen audit items quote numbers against.
+
+#### What it found, and how hard it pointed
+
+400 reps at rarity 500 (6 `S` edges, 60 solutions, 17.17 ms/call):
+
+```text
+   42.8%  3004.2ms  bucketEnds      <- the adjacency read
+   16.2%  1139.3ms  applyPattern
+   15.5%  1084.9ms  solve
+    4.1%   288.9ms  soleTypeBucket
+    4.0%   282.5ms  next
+    3.8%   266.9ms  matchStep
+```
+
+And `bucketEnds` has an obvious per-call allocation: it returns `{ [Symbol.iterator]: () => … }` — an
+object plus a closure — **unconditionally**, then yields `EMPTY_ITER` from inside when the bucket is
+absent. In a selective pattern that is nearly every call.
+
+#### The A/B: flat, and marginally worse at the extremes
+
+A shared `EMPTY_ITERABLE` returned before the wrapper is built (not `undefined`, which means
+"not a vertex" to the caller and would change the route). Order-alternated, 3 rounds, the whole
+sweep:
+
+```text
+   rarity    POST                    PRE
+        1    31.61 / 30.38 / 29.89   29.49 / 29.88 / 29.44
+        5    18.79 / 17.13 / 18.06   17.15 / 17.27 / 17.36
+       25    12.46 / 12.19 / 12.11   12.60 / 13.68 / 13.15
+      100    11.04 / 11.68 / 11.60   11.05 / 11.42 / 11.33
+      500    11.57 / 11.09 / 11.21   10.81 / 11.35 / 10.88
+```
+
+Overlapping everywhere. **Not shipped** — `match.ts` is a hot file four items have perturbed, and an
+edit with no measured gain is risk without return (item 1654's standard, applied to itself).
+
+⚠️ **So the 42.8% is the solver's inlined per-candidate loop credited to its callee**, which is item
+1104's stated warning about self time at this granularity — `bucketEnds` is small, hot, and called
+from the loop that does the actual work. The ~370 ns per discarded candidate is the DFS's own
+bookkeeping, not an allocation inside the adjacency read.
+
+#### ⚠️ The generalization, which is the part worth keeping
+
+Removing a per-call allocation from a hot path has now measured **flat three times this session** —
+item 1654's `seed` Map and its `Object.entries` merge, and this `bucketEnds` wrapper — while the two
+that WON were not about an allocation existing but about the SHAPE of what was returned:
+
+- **item 1650**: a generator function DEFINED INSIDE a returned closure, so every call created a
+  fresh one and V8 could not reuse its inline caches. Hoisting it to module scope: **1.6x swing**.
+- **item 1651**: returning the generator ITSELF instead of a `{ [Symbol.iterator], drain }` wrapper,
+  which also removed a route-dependent observable. **1.66x**.
+
+The difference is that those two changed what the ENGINE sees on the hot path — one function shape
+instead of N, one object instead of two layers — where the flat three removed a short-lived
+allocation V8's generational collector handles for free. **A per-call allocation is not a target on
+its own evidence; a per-call closure or wrapper LAYER is.**
+
+#### Gates
+
+No engine change — the pass was reverted and `git diff` is empty apart from the new probe.
+`bun run check` 0 read unpiped; gremlin 1997 pass / 0 fail under both arms.
