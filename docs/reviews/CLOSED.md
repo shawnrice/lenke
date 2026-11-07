@@ -72034,7 +72034,7 @@ choice otherwise lets the file pass vacuously (`rung-precedence-decides-speed`).
 serialization 144 — 0 fail. `bun run fuzz` all seven green. Gremlin spelling probe: 1 flagged group,
 down from 6 before item 1648.
 
-### Item 1650 — **1.36x on `V(id).values(k)`** (286.0 → 211.2 ns; ⚠️ **item 1651 takes it to 127 — 2.25x cumulative**), the projection half of the point lookup item 1642 named — ⚠️ **and its FIRST version was 1.2x SLOWER than the pipeline it replaced, because the walk was a closure built per call.** Hoisting one generator to module scope is a **1.6x swing**, which is this corpus's own recorded lesson walked into head-first
+### Item 1650 — **1.36x on `V(id).values(k)`** (286.0 → 211.2 ns; ⚠️ **item 1651 takes it to 127 — 2.25x cumulative, and item 1660 to 65 — 4.4x**), the projection half of the point lookup item 1642 named — ⚠️ **and its FIRST version was 1.2x SLOWER than the pipeline it replaced, because the walk was a closure built per call.** Hoisting one generator to module scope is a **1.6x swing**, which is this corpus's own recorded lesson walked into head-first
 
 CLOSED. The tick's larger finding is the mechanism, not the ratio.
 
@@ -72153,7 +72153,7 @@ and the comparison is ORDERED (a TinkerPop contract, not an unspecified-order li
 serialization 144 — 0 fail. `bun run fuzz` all seven green. `bench:gremlin`, all 32 rows, both arms
 with their own build: flat, every `answers` column `same`.
 
-### Item 1651 — ⚠️ **THE RETURNED OBJECT WAS 53% OF THE QUERY.** Returning the generator instead of a `{ [Symbol.iterator], drain }` wrapper is **1.66x on `V(id).values(k)`** (212 → 127 ns), **2.25x cumulative with item 1650** — and it removes a divergence: the wrapper made re-iterability depend on WHICH RUNG FIRED, where `run`'s actual contract is one-shot
+### Item 1651 — ⚠️ **THE RETURNED OBJECT WAS 53% OF THE QUERY.** Returning the generator instead of a `{ [Symbol.iterator], drain }` wrapper is **1.66x on `V(id).values(k)`** (212 → 127 ns), **2.25x cumulative with item 1650** — and it removes a divergence: the wrapper made re-iterability depend on WHICH RUNG FIRED, ~~where `run`'s actual contract is one-shot~~ ⚠️ **AND IT IS NOT: item 1660 measured the shipped engine and THREE OF FIVE ROUTES ARE ALREADY RE-ITERABLE (`V().values(k)` keeps this very wrapper, and both `count` rungs return a bare `[n]`). Item 1660 deliberately makes the ONE-ID case re-iterable again for 1.94x, and this item's one-shot test never covered it — it is written on `V('a', 'b')`**
 
 CLOSED. A profile nominated it, an ablation priced it, and the thing it removed turned out to be a
 correctness wart as well as a cost.
@@ -72246,7 +72246,7 @@ switching arms silently discarded it — the same failure recorded earlier this 
 4230, gremlin 1992 (+3 new), native 1081, serialization 144 — 0 fail. `bun run fuzz` all seven green.
 `bench:gremlin`, all 32 rows, both arms with their own build: flat, every `answers` column `same`.
 
-### Item 1652 — ⚠️ **THREE REFUTATIONS, ALL PRICED, AND A FLOOR DECLARED.** The point lookup's remaining ~126 ns has no single removable term: `newContext` prices at **2.7-5%** against a 16%-of-query share, dropping LAZINESS for an eager array is **FLAT** (so the 41% `toArray` share is not a cost eagerness can remove), and lifting the rung up `run`'s chain is **+3% on `values` and −3% on every `count`** — a redistribution, not a win
+### Item 1652 — ⚠️ **THREE REFUTATIONS, ALL PRICED, AND A FLOOR DECLARED** (⚠⚠ **THE FLOOR WAS WRONG: item 1660 found a removable term worth 1.94x — the ITERATOR PROTOCOL at 43% of the call, which this item's eager-array ablation did not test because it kept the generator and changed only the return VALUE**)**.** ~~The point lookup's remaining ~126 ns has no single removable term~~: `newContext` prices at **2.7-5%** against a 16%-of-query share, dropping LAZINESS for an eager array is **FLAT** (so the 41% `toArray` share is not a cost eagerness can remove), and lifting the rung up `run`'s chain is **+3% on `values` and −3% on every `count`** — a redistribution, not a win
 
 CLOSED, no engine change. Five items (1642, 1643, 1649, 1650, 1651) took this shape from 1277.6 ns to
 ~126; this one establishes that the next win is not in it.
@@ -72845,3 +72845,169 @@ spelling SHOULD cost. That is the method the next session should start from.
 #### Gates
 
 No engine change — `git diff` is this entry. `bun run check` 0 read unpiped.
+
+### Item 1660 — ⚠⚠ **ITEM 1652'S FLOOR WAS WRONG, AND THE TERM IT MISSED IS THE BIGGEST ONE IN THE CALL: the ITERATOR PROTOCOL at ~54 ns, 43%, larger than `run`'s whole prologue.** `V(id).values(k)` **1.94x** (127 → 65 ns) and its `hasId` spelling **1.99x**, by answering the ONE-ID case with an eager array — and the generalization is the constraint, not the win: the 54 ns is a PER-CALL FIXED cost, so this licenses eagerness for **bounded-result rungs only**
+
+SHIPPED. `packages/gremlin/src/executor/node-values.ts`, plus `eager-one-id.test.ts` (20 cases) and
+five envelope arms on `gremlin-point-floor.ts`.
+
+#### Why item 1652's floor held for five items and was still wrong
+
+That item priced each term of the remaining ~126 ns **separately, against the other terms still
+present**, and concluded there was no single removable one. Two of its three refutations stand
+(`newContext` at 2.7-5%, the rung's position a wash). The third does not: _"dropping LAZINESS for an
+eager array is FLAT"_ tested replacing what the rung RETURNED **while keeping the generator**, which
+leaves every cost of the protocol in place. Removing the generator machinery is a different change,
+and it converts.
+
+What no term-by-term ablation can produce is the ENVELOPE. `bypass-values` calls the answering rung
+directly — no `EFF_CHECKED` read, no `newContext`, no `withSack` peel, no `effectivePlan`, none of
+the three rungs that decline this shape first — which is unsound by construction and therefore
+prices a ceiling nothing can exceed.
+
+#### The whole 125 ns call, decomposed for the first time
+
+Three order-alternated rounds, one arm per process (item 762), on the instrument that reproduced item
+1652's 125.8 ns exactly before anything changed:
+
+```text
+   part                                                ns    share   measured as
+   the work itself (getVertexById + a property read)    16     13%   the hand floor
+   this rung's bookkeeping (asStringId, key in props)   19     15%   eager arm − floor
+   THE ITERATOR/GENERATOR PROTOCOL                      54     43%   generator arm − eager arm
+   matchSeededShape + its per-call result object         9      7%   bypass − walk-only
+   run's prologue                                       30     24%   shipped − bypass
+```
+
+⚠️ **SO `run`'s PROLOGUE — the target item 1652 declared and the one a route token would
+reach — IS THE MINORITY OF THE CALL.** Its parts: `newContext` ~7, `effectivePlan` ~19 (already
+prefix-cached by items 1647/1648 and still the largest piece), the declining rung chain ~11. That
+last figure is the per-plan ROUTE TOKEN's entire ceiling, and it **confirms item 1652's own estimate
+of ~3-4 ns of net gain** — that lever stays refused.
+
+Two independent methods agree: subtracting the bypass arm gives ~28 ns of prologue, and
+reconstructing it stage by stage gives ~36 once the loop's own 5.8 ns base (`pro-base`) is removed.
+The gap between them is the residual of comparing arms across processes; both say the same thing
+about rank and magnitude.
+
+#### The change, and the gate that makes it sound
+
+`idSeededValuesShortcut` answers `ids.length === 1 && typeof ids[0] === 'string'` with `[value]` or
+`[]` instead of a generator.
+
+```text
+   arm                           PRE                      POST                  ratio
+   V(id).values(k)               134.2 / 125.6 / 124.3    67.5 / 65.1 / 66.3    1.87-1.99x
+   V(id).values(k)  re-confirmed 127.0 / 125.1            65.5 / 64.6          1.94x
+   V().hasId(x).values(k)        129.6 / 131.6            65.2 / 66.2          1.99x
+```
+
+Against the 16 ns hand floor that is **7.8x → 4.1x**, and **4.4x cumulative** with items 1650/1651
+(286 → 65). The `hasId` spelling wins equally because item 1643 rewrites it to `V(x)`, so the pair
+stays level to within 1.5% — item 1649's lesson (taking one spelling WIDENED a gap to 14.4x) applied
+rather than re-learned.
+
+⚠️ **`typeof ids[0] === 'string'` IS A LAZINESS GUARD, NOT A TYPE NARROWING.** `asStringId`
+raises on a non-string id and must raise from INSIDE the walk, so a non-string id falls through to the
+generator and keeps faulting on the first `next()` rather than at `run()` time. Dropping it is mutant
+M1 below.
+
+#### ⚠⚠ The generalization, which is worth more than the 1.94x
+
+**The 54 ns is a PER-CALL FIXED cost. It dominates only when the answer is TINY.** On
+`V().values(k)` over 200,000 vertices it is 54 ns against 17.5 ms — 0.0003%, invisible — where
+laziness is what keeps the scan bounded. So the finding licenses eagerness for **bounded-result rungs
+only**, and _"move the hot path to eager arrays"_ is the memory regression it looks like. Stated
+because this entry's headline number invites exactly that overreach, and because the owner raised it
+before the change was taken.
+
+This is the companion to item 1658's rule rather than a contradiction of it: a per-call ALLOCATION has
+measured flat three times, while the three that WON (items 1650, 1651, 1660) were all about the SHAPE
+of what is returned. The protocol is shape; the allocation is not.
+
+Measured, not argued — the large shapes are untouched, and the per-call cost is where the memory
+question is settled too:
+
+```text
+   V().values(k)             generator   pull-1 0.149 ms   drain-all 17.526 ms   200000 rows
+   V().values(k).limit(10)   generator   pull-1 0.337 ms   drain-all  0.073 ms       10 rows
+   V(64 ids).values(k)       generator   pull-1 0.067 ms   drain-all  0.137 ms       64 rows
+   V(oneId).values(k)        ARRAY       —                                            1 row
+
+   2M calls, arms alternated twice:  POST 104-114 ms   rss 54.1 / 54.6 MB   heapUsed 2.2 MB
+                                     PRE  202-217 ms   rss 54.7 / 54.1 MB   heapUsed 2.3 MB
+```
+
+Memory is flat-to-LOWER eager, because a V8 generator object carries a suspended frame and a register
+file and is the larger object — which is the same reason the CPU halves. And the rung fires only
+when it answers the WHOLE plan, so a trailing step lands in the residual and never reaches an eager
+route: that is the structural reason a 200,000-row scan cannot be made eager by this change.
+
+#### Re-iterability: a deliberate reversal of item 1651, on measured grounds
+
+The eager array is RE-ITERABLE, which item 1651 removed from this rung on purpose. Before taking it,
+what the SHIPPED engine actually does was measured, and the one-shot contract was already broken in
+three of five routes:
+
+```text
+   V(id).values(k)                   one-shot     item 1651's generator
+   V().values(k)                     RE-ITERABLE  nodeValuesShortcut still has the wrapper
+   V(id).count() / V().count()       RE-ITERABLE  both return a bare [n]
+   the general path                  one-shot
+```
+
+⚠️ **And item 1651's one-shot test is written on `V('a', 'b')` — TWO ids — so the one-id
+shape, which is the point lookup and the commonest serving query there is, had no contract coverage
+at all.** A green suite said nothing about it. `eager-one-id.test.ts` covers it now and states which
+way the choice goes, rather than leaving it to be inferred from the code.
+
+The one-shot-AND-eager middle ground was priced and refused: `arr.values()` reads **76.5 ns against
+the generator's 87.7**, so only ~11 of the 54 ns is the GENERATOR specifically and the rest is the
+iterator protocol at `toArray`'s spread. Holding one-shot buys ~8%, not 1.94x.
+
+#### ⚠⚠ The mutation pass caught a test that checked nothing — twice
+
+Six mutants, each run under `timeout 600 systemd-run --user --scope -q -p MemoryMax=16G -p
+MemorySwapMax=0`, harness kills proven first (allocator bomb 137, bare loop 124), pristine copy under
+`crates/lenke-engine/target/`, restored BEFORE each mutant. The first pass:
+
+```text
+   M1 drop the typeof laziness guard        CAUGHT (4 failing)
+   M2 drop the label check                  CAUGHT (1)
+   M3 stored PRESENT null dropped           ⚠⚠ SURVIVED
+   M4 a vertex LACKING the key emits undef  ⚠⚠ SURVIVED
+   M5 widen the gate to EVERY id list       CAUGHT (13)
+   M6 revert the eager route                CAUGHT (1)
+```
+
+Two causes, both worth more than the mutants:
+
+- ⚠️ **`expect([undefined]).toEqual([])` PASSES in bun.** So an oracle comparison against the
+  general path cannot see a row INVENTED out of a missing key. Every comparison now goes through a
+  fingerprint carrying the arity and each value's type, plus a separate exact-arity test.
+- ⚠️ **This engine CAN store `undefined`**: `addVertex({ properties: { k: undefined } })`
+  leaves the key PRESENT, so `'k' in props` is true and the value is `undefined`. The general path
+  tests `key in props` and therefore EMITS, so M3 was a real divergence rather than an equivalent
+  mutant. A `k: undefined` vertex is now in the fixture. (This also corrects a loose note of mine
+  that "undefined → null" — that holds on other paths, not on `addVertex` into the TS `Graph`.)
+
+Re-run after both fixes: **all six CAUGHT** (4 / 1 / 2 / 3 / 13 / 1).
+
+#### Gates
+
+`bun run check` 0 read UNPIPED. Suites: core 444, gql 4230, gremlin 2017 (+20 new), serialization
+144, native 1081 — **7916 pass / 0 fail**. All seven byte-identity fuzzers `bun run fuzz` exit 0
+read unpiped. `spelling` and `spelling:gremlin` both 0 groups disagreeing on the ANSWER; the two
+groups the Gremlin probe flagged over 2x are **refuted in isolation 3/3 each** (and the flag count
+read 0, then 1, then 2 across three runs of the IDENTICAL build, which is the probe's own threshold
+jitter — neither group is reachable from a gate on `ids.length === 1`: one is explicitly multi-id,
+the other a `has` seek with no ids).
+
+#### What this leaves open
+
+The route token stays refused at ~11 ns. The remaining terms on this shape are `effectivePlan` at ~19
+ns (already cached; the cost is the cache lookup and the rewrite-chain dispatch) and the rung's own
+~19 ns of bookkeeping. **And the 43% finding has one unexplored address: `nodeValuesShortcut`'s
+`drain` already exists for `V().values(k)` precisely to skip the generator on an eager terminal (item 1412) — so the protocol cost there is paid only by a LAZY consumer, which is the consumer that wants
+it.** No bounded rung is left without an eager route, so the generalization above has, for now, no
+remaining target — which is the honest reason to stop here rather than a claim that nothing is left.

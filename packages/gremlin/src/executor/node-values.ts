@@ -119,7 +119,10 @@ export const nodeValuesShortcut = (plan: Plan, graph: Graph): NodeValues | undef
  * compared ORDERED by the differential fuzzer, so two derivations that could drift would be a
  * cross-engine failure rather than an unspecified-order liberty (item 169).
  */
-const seededIdWalk = function* (
+// EXPORTED FOR THE PROBE ONLY (item 1660's `rung-walkonly` arm, `gremlin-point-floor.ts`), which
+// prices the shape match and the generator protocol separately. Nothing in the engine calls it from
+// outside this module, and a probe that re-implemented the loop would be measuring its own copy.
+export const seededIdWalk = function* (
   ids: readonly ID[],
   labels: readonly string[] | undefined,
   key: string,
@@ -234,6 +237,63 @@ export const idSeededValuesShortcut = (plan: Plan, graph: Graph): NodeValues | u
   // `V(id).values(k)` re-iterable, so whether re-iteration worked depended on WHICH RUNG FIRED,
   // which is route-dependent observable behaviour. `nodeValuesShortcut` beside this one still has
   // it; see item 1651's entry in `CLOSED.md`.
+  //
+  // ⚠️⚠️ AND THE ONE-ID CASE IS EAGER ANYWAY — 1.9x, item 1660 — WHICH REVERSES THE PARAGRAPH
+  // ABOVE FOR EXACTLY ONE ID AND NOTHING ELSE. Read both: the generator is still the route for every
+  // other shape, and the reason is a RESULT-SIZE argument rather than a protocol one.
+  //
+  // ITEM 1660 DECOMPOSED THE WHOLE 125 ns CALL and the iterator protocol was its single biggest
+  // term — bigger than `run`'s entire prologue:
+  //
+  // ```text
+  //   the work itself (getVertexById + a property read)   16 ns   13%   hand floor
+  //   this rung's bookkeeping (asStringId, key in props)  19 ns   15%
+  //   THE ITERATOR/GENERATOR PROTOCOL                     54 ns   43%
+  //   matchSeededShape + its per-call result object        9 ns    7%
+  //   run's prologue (newContext 7, effectivePlan 19, …)  30 ns   24%
+  // ```
+  //
+  // ⚠️⚠️ THAT 54 ns IS A PER-CALL FIXED COST, AND THAT IS THE WHOLE LICENCE FOR THIS BRANCH. It
+  // dominates only when the answer is TINY. On `V().values(k)` over 200,000 vertices it is 54 ns
+  // against 17.5 ms — 0.0003%, invisible — so eagerness there would buy nothing and would cost the
+  // laziness that keeps the scan bounded. **So this generalizes to BOUNDED-RESULT rungs only, and
+  // "move the hot path to eager arrays" is the memory regression it looks like.** `ids.length === 1`
+  // with one key is 0 or 1 values: there is no walk to make eager and no early exit to destroy, and
+  // the rung fires only when it answers the WHOLE plan, so there is no downstream step either.
+  //
+  // Measured, 2M calls, arms alternated twice: **104-114 ms against 202-217**, with RSS 54.1/54.6 MB
+  // against 54.7/54.1 and heapUsed 2.2 MB against 2.3. Memory is FLAT-to-lower, because a V8
+  // generator object carries a suspended frame and a register file and is the LARGER object — which
+  // is the same reason the CPU halves.
+  //
+  // ⚠️ `typeof ids[0] === 'string'` IS THE LAZINESS GUARD, not a type narrowing. `asStringId` raises
+  // on a non-string id and must raise from INSIDE the walk (see the contract above), so a non-string
+  // id falls through to the generator and keeps raising exactly when it did. Dropping this test
+  // would make `run(traversal(V(5), values('k')), g)` throw at CALL time instead of on first
+  // `next()`, which `id-seeded-values.test.ts` pins.
+  //
+  // ⚠️ AND THE RESULT IS RE-ITERABLE, which is a DELIBERATE choice and not an oversight. It puts
+  // this rung with the three routes that already behave that way in the shipped engine —
+  // `V().values(k)` (the wrapper item 1651 left on `nodeValuesShortcut`), `V(id).count()` and
+  // `V().count()` (both return a bare `[n]`) — against the general path and the multi-id walk, which
+  // are one-shot. Item 1651's one-shot test is written on `V('a', 'b')`, TWO ids, so it never covered
+  // this shape; `eager-one-id.test.ts` covers it now and states which way it goes.
+  if (ids.length === 1 && typeof ids[0] === 'string') {
+    const v = graph.getVertexById(ids[0]);
+
+    if (v === undefined || v === null) {
+      return [];
+    }
+
+    if (labels !== undefined && !labels.some((l) => v.labels.has(l))) {
+      return [];
+    }
+
+    const props = v.properties;
+
+    return key in props ? [props[key]] : [];
+  }
+
   return seededIdWalk(ids, labels, key, graph);
 };
 
