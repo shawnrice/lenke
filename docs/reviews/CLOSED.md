@@ -72503,9 +72503,11 @@ fast rung declined because of a clause further down the chain.
 
 The target is not `runCallInline`'s body but the ROUTE it forces: **let the fused node-scan path
 survive a following `CALL`, or give the CALL clause a path that consumes the fast row stream.** The
-ceiling is `letrow`'s 33.6 ns/row against 577.8 — **17.2x**, and it applies to every CALL body, not
-only the trivial one (the `correlated` arm's 70.6 ns/row shows what a body answered off a rung costs
-instead). A narrow alternative with a much smaller reach: an inline CALL whose body is a single
+ceiling is `letrow`'s 33.6 ns/row against 577.8 — **17.2x** — ⚠️ **but "it applies to every CALL
+body" (as this entry first said) IS THE SAME ERROR ONE LEVEL UP.** A fused aggregate and a
+materialised binding stream are not the same work: a CALL body containing a `MATCH` MUST materialise,
+so that route is not available to it and the 17.2x is not its ceiling. The figure holds for a body
+that is a bare `RETURN`, which is the shape real queries do not write. Corrected at item 1655. A narrow alternative with a much smaller reach: an inline CALL whose body is a single
 `RETURN` of expressions, with no scope and no pattern, IS a `LET` per column and could be normalised
 to one — sound and easy, but `CALL { RETURN 1 }` is not a shape real queries write.
 
@@ -72515,3 +72517,86 @@ Not built: this is a planner-route change and deserves its own tick.
 
 No engine change — two probe arms. `bun run check` 0 read unpiped; gql suite 4230 pass / 0 fail, run
 under both arms of the refuted change.
+
+### Item 1655 — ⚠️⚠️ **A 237x "EQUIVALENT-SPELLING GAP" THAT IS A WRONG ANSWER.** `match()` counts distinct variable BINDINGS; a hop chain counts PATHS. The flattening rewrite was built, verified against a fixture that confirmed it, and REVERTED when a fixture with ONE parallel edge separated the two spellings
+
+REFUTED, no engine change. One guard test added (`match-binding-semantics.test.ts`).
+
+#### The screen found it, and the ratio looked like the session's biggest lever
+
+Ten unscreened Gremlin shapes through `runtime-profile-gremlin-probe.mjs`, 300 reps:
+
+```text
+   shape                                                        ms/call
+   V().hasLabel(P).out(E).out(E).count()        hopcount2          1.40
+   V().out(E).out(E).id()                       hop2idrows        26.10
+   V().match(as(a).out(E).as(b)).count()        matched           58.47
+   V().match(2 patterns).count()                matched2         332.40    237x hopcount2
+   V().match(2 patterns).select('c').count()    matchedsel       438.81    313x
+```
+
+The profile is the solver: `solve` 32.6%, `applyPattern` 17.2%, `next` 16.2%, `bucketEnds` 7.0% —
+a two-pattern DFS enumerating what `hopChainCount` answers in closed form.
+
+#### It verified, twice, and both verifications were worthless
+
+On a generated 200-vertex fixture all three spellings answered **1750**, and the `select('c')` rows
+were **ORDERED-equal** (310 of them, first twelve identical). On that evidence the rewrite is sound
+for counts AND for rows. It was built: a `fuseMatchChain` pass in its own module, gated on a new
+`match` KIND bit, wired into item 1647's cached graph-free prefix, dropping the `as` steps because a
+`count()` tail cannot observe a tag.
+
+⚠️ **The fixture had no PARALLEL edges, and that is the only property that separates the spellings.**
+CLAUDE.md's own rule — "an answer that is INVARIANT to the property you varied cannot validate the
+fixture" — and I varied the pattern count, the direction and the labels, never the multiplicity.
+
+#### What a differential against the SOLVER said
+
+The new test's fixture carries a parallel edge, a self-loop and a second edge type, and its oracle is
+the solver itself (a `select(tag)` tail, which the rewrite declines, so that plan runs the DFS).
+**8 of 9 taken shapes failed**, and the minimal case is three vertices:
+
+```text
+   a -T-> b -T-> c                 match 1   chain 1    agree
+   a =T=> b -T-> c  (a->b twice)   match 1   chain 2    DIVERGE
+   the same on ONE hop             match 2   chain 3
+```
+
+`match` enumerates distinct `(a, b, c)` BINDINGS; the chain enumerates PATHS. A second `a -T-> b`
+edge is a second path and the same binding. **So the two spellings answer different questions**, and
+the 237x is not a defect to close.
+
+⚠️ **AND IT CANNOT BE GATED.** "No parallel edges of the matching types" is a property of the DATA,
+not of the plan, so no plan-time test decides it. `Graph` maintains `multiTypeEdgeCount` but nothing
+counts parallel edges, so the gate does not exist today either. A `graph.parallelEdgeCount === 0`
+gate would work and would have to live with `dropVacuousLabels` rather than in the cached prefix
+(it reads the graph) — that is a core change for a rewrite whose benefit vanishes on exactly the
+graphs that motivate a graph database. Not taken.
+
+#### The second trap, found while writing the pass
+
+A `match` step's output VALUE is a tag map, not the chain's end element:
+
+```text
+   V().match(…)                            -> [{}, {}, {}]
+   V().as(a).out(E).as(b).out(E).as(c)     -> the c vertices
+   V().match(…).id()                       -> [null, null, null]
+   V().as(a)….id()                         -> ['v2', 'v5', 'v3']
+```
+
+`count()` and `select(tag)` both hide that, which is why the count-tail-only gate looked safe. Even
+where the counts agree the spellings are not interchangeable mid-plan, and the guard test pins this
+too.
+
+#### What is left on `match()`
+
+The 237x is real as a COST — the solver is genuinely 237x the closed form for the question it
+answers — but it is the price of a different, stricter aggregate. The honest open question is whether
+the SOLVER can be made cheaper (its own DFS, `solve`/`applyPattern`/`next` at 66% of the profile),
+not whether it can be replaced by a chain. Nothing here prices that.
+
+#### Gates
+
+No engine change — the pass, its KIND bit and its wiring were all reverted and `git diff` is empty
+apart from the new test. `bun run check` 0 read unpiped. Suites: gremlin 1997 (+5 new), gql 4230 — 0
+fail.
