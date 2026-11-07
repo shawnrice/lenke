@@ -172,6 +172,13 @@ const SHAPES = {
   //     unmeasured.
   //   * a string function in a predicate, standing in for the scalar-function dispatch path.
   varlen12: 'MATCH (a:P)-[:E]->{1,2}(b:P) RETURN count(*) AS c',
+  // ⚠️ THE MULTI-HOP COUNTS, which this probe had no shape for (item 1637) — and they are the
+  // biggest absolute GQL rows in `bench.ts` on the corrected fixture: `count 3-hop` 471.5 ms at
+  // 99.2x native, `count 2-hop` 78.2 at 28.4x. `hopall` covers ONE hop and `hop3rows` three hops
+  // YIELDING; a three-hop count is neither, and a count can be answered without materialising rows
+  // so it is a different route from `hop3rows` entirely.
+  count2: 'MATCH (a:P)-[:E]->(b:P)-[:E]->(c:P) RETURN count(*) AS c',
+  count3: 'MATCH (a:P)-[:E]->(b:P)-[:E]->(c:P)-[:E]->(d:P) RETURN count(*) AS c',
   varlenplus: 'MATCH (a:P)-[:E]->+(b:P) RETURN count(DISTINCT b) AS c',
   anyshortest: 'MATCH p = ANY SHORTEST (a:P)-[:E]->+(b:P) WHERE a.n = 0 RETURN count(*) AS c',
   countdistinct: 'MATCH (n:P) RETURN count(DISTINCT n.k) AS c',

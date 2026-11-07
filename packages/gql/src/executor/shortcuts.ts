@@ -3884,6 +3884,15 @@ const loopsOfTypes = (graph: Graph, types: string[] | undefined): boolean => {
 /**
  * How many edges `edgesOfTypes` would yield, without yielding them.
  *
+ * ⚠️ IT PROFILES AT 72-77% OF A MULTI-HOP COUNT AND THAT IS MISATTRIBUTION. Item 1416 found it for
+ * `chain3` (72.6%, "all 200,000 calls take the O(1) branch, proven by counting them") and item 1637
+ * reproduced it for a THREE-HOP COUNT (76.7% of `count3`): instrumenting this function counted
+ * **119,992 calls for 20,000 vertices and 99,992 edges — exactly |V| + |E|, one per vertex plus one
+ * per edge, and ALL of them on the single-named-type O(1) branch.** At the profiled fixture that
+ * works out to ~185 ns for a `Map.get(…)?.size`, which is not credible; the time is the CALLER's
+ * per-edge loop credited to a small hot callee. So there is no repeated-lookup lever here — a
+ * per-vertex degree memo would save nothing, because no vertex's degree is read twice.
+ *
  * Mirrors that function's cases exactly, which is the whole requirement: a single named type, or
  * a single bucket when every type is wanted, is one `size` read. Several buckets are NOT a sum —
  * one edge can carry several labels and so sit in more than one of them, which is why

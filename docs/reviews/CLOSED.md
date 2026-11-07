@@ -70955,3 +70955,58 @@ serialization 144 — 0 fail. `bun run fuzz` 20/0. ⚠️ `bun run spelling` fla
 groups at 3.84x and 2.13x, one of them named for item 578 — **verified PRE-EXISTING** by running
 `SPELL_ONLY=SEEK` on BOTH arms, where each reads 0 groups over 2x. The full run's flags are its own
 dispatch pollution; a filtered PRE against an unfiltered POST would not have been comparable.
+
+### Item 1637 — ⚠️ **A 76.7% FRAME THAT IS MISATTRIBUTION, refuted by COUNTING rather than by building against it** — `bucketSize` on a three-hop GQL count takes **exactly |V| + |E| calls, all on the O(1) branch**, so the per-vertex degree memo it nominates would save nothing. Item 1416 found the same for `chain3`; this reproduces it for `count3`. And the GQL profile probe had **no multi-hop count shape at all**
+
+OPEN: nothing new on the multi-hop GQL counts. They are the biggest absolute GQL rows on the
+corrected fixture (`count 3-hop` 471.5 ms at 99.2x native, `count 2-hop` 78.2 at 28.4x), and the
+remaining cross-surface gap against Gremlin (471.5 against 243.1 — **1.94x**) sits exactly on the line
+item 1514 swept and called converged. Nothing in this profile nominates a route.
+
+#### The nomination, and why it is not a price
+
+A windowed profile of a three-hop count at NODES=100000 FANOUT=5:
+
+```text
+   bucketSize                        76.7%   887.8 ms
+   side                              11.1%
+   (anonymous) in buildThreeHopCount  5.6%
+   get toId                           2.3%
+```
+
+`bucketSize` is `byType.get(types[0])?.size ?? 0` for a single named type. At 76.7% it nominates an
+obvious lever: a three-hop count is a degree product, so if each vertex's degree were re-read once
+per incident edge, memoizing it per query would turn O(|E|) lookups into O(|V|).
+
+**It is not re-read.** Instrumenting the function and counting:
+
+```text
+   20,000 vertices, 99,992 edges  ->  119,992 calls, 119,992 on the fast branch
+                                      = |V| + |E| exactly: one per vertex, one per edge
+```
+
+No vertex's degree is read twice, so the memo has nothing to save. At the profiled fixture that is
+~600,000 calls for 111 ms a rep — **~185 ns for a `Map.get(…)?.size`** — which is not credible on its
+face. The time is the CALLER's per-edge loop credited to a small hot callee, which is what item 1634
+measured in the strongest form yet recorded (`pick` at 19.0% of a Gremlin row, priced at +0.4%).
+
+⚠️ **Item 1416 had already found this for `chain3`** (72.6%, "all 200,000 calls take the O(1) branch,
+proven by counting them"). Reading `CLOSED.md` before building is what turned a multi-tick memo
+attempt into a counter and a comment. The verification was still worth doing separately: `chain3` and
+`count3` are different shapes on different fixtures, so 1416's count does not transfer — and the
+cheap instrument (a counter, not a build) is what makes re-verifying affordable.
+
+The finding is now recorded **on `bucketSize` itself**, where the next profile will send someone.
+
+#### The probe had no multi-hop count shape
+
+`runtime-profile-probe.mjs` covers ONE hop (`hopall`) and three hops YIELDING (`hop3rows`), and a
+count is neither — it can be answered without materialising rows, so it is a different route. `count2`
+and `count3` are shapes there now. Same class of hole as item 1631 found in `bench:gremlin` and item
+1634 in the Gremlin profile probe: the corpus keeps lacking the shape whose cost is being asked
+about.
+
+#### Gates
+
+No engine behaviour changed — a comment and two probe shapes. `bun run check` 0 read unpiped; gql
+4230 pass / 0 fail.
