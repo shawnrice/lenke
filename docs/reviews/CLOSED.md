@@ -72345,7 +72345,7 @@ not re-priced.
 No engine change — the tree is identical to its parent apart from this entry. `bun run check` 0 read
 unpiped; the gremlin suite 1992 pass / 0 fail was re-run under every ablation and both orderings.
 
-### Item 1653 — ⚠️ **THE INLINE `CALL { … }` CLAUSE COSTS 538-733 ns PER OUTER ROW, and a body the rungs RECOGNISE costs 74 — 10x for strictly more work.** Found by screening ten unprofiled GQL shapes; the probe's own answer assertion also caught me writing the Cypher spelling of a correlated CALL, and item 1566's uncorrelated hoist is confirmed WORKING (linear, not quadratic)
+### Item 1653 — ⚠️ **THE INLINE `CALL { … }` CLAUSE COSTS 538-733 ns PER OUTER ROW, and a body the rungs RECOGNISE costs 74 — 10x for strictly more work** (⚠️ **item 1654 re-floors this at 17.2x against a VALID control and finds the cause is the OUTER match's route, not the clause**)**.** Found by screening ten unprofiled GQL shapes; the probe's own answer assertion also caught me writing the Cypher spelling of a correlated CALL, and item 1566's uncorrelated hoist is confirmed WORKING (linear, not quadratic)
 
 MEASURED, no engine change. New instrument: `gql-call-subquery-floor.mjs`.
 
@@ -72420,14 +72420,98 @@ from scratch.
 
 The target is the **538-733 ns per outer row** of the general inline-CALL path. The `correlated` arm
 shows the ceiling: a body answered without the clause machinery costs 74 ns/row, so there is ~7-10x
-in it for every body that is not a bare `count(*)`. `runCallInline`'s per-row work is visible and
+in it for every body that is not a bare `count(*)`. ~~`runCallInline`'s per-row work is visible and
 small-looking — it allocates a `seed` Map per outer row **even when `clause.scope.length === 0` and
 the body is hoisted**, then merges the nested columns into a fresh binding per nested row — so the
-first ablation to try is skipping the seed entirely on the invariant path.
+first ablation to try is skipping the seed entirely on the invariant path.~~
 
-OPEN, with that number. Not built this tick: the discovery consumed it, and a clause-machinery change
-in `clauses.ts` deserves its own tick with tests, mutants and a wide pass.
+⚠️ **BOTH OF THOSE WERE REMOVED AT ITEM 1654 AND MEASURED FLAT.** The cost is not in
+`runCallInline` at all: a `CALL` clause makes the OUTER `MATCH` abandon its fused route, and the
+17.2x is that route change. Also note this entry's floor arm (`outer`) was invalid — a bare
+`count(*)` is answered by a rung without materialising bindings. See item 1654.
 
 #### Gates
 
 No engine change — one new probe. `bun run check` 0 read unpiped.
+
+### Item 1654 — ⚠️ **A REFUTATION AND A REDIRECT: the inline `CALL`'s 17.2x is the OUTER MATCH's ROUTE, not the clause's own work.** Removing both of `runCallInline`'s per-row allocations — the `seed` Map built for an empty scope and the `Object.entries` per nested row — measures **FLAT**, while the profiles show `LET c = 1` taking a fused aggregate path with NO matcher frames and the same query with a `CALL` taking the general binding-materialising one
+
+MEASURED, no engine change shipped. Two probe arms added.
+
+#### ⚠️ FIRST: item 1653's floor arm was invalid, and profiling it is what showed that
+
+`outer` (`MATCH (n:P) RETURN count(*)`) reads 0.1 ns/row — because a bare `count(*)` is answered by a
+closed-form rung that never materialises a binding per vertex, while every CALL arm must materialise
+20,000 of them for the clause to run against. Comparing them is item 1465's error (two rows doing
+different work give a ratio, not a budget). The valid control is the same query with the CALL
+replaced by the cheapest clause that also binds a name:
+
+```text
+   arm                                                   ms     ns/outer row   answer
+   outer       MATCH (n:P) RETURN count(*)             0.003        0.1        20000   <- a RUNG
+   letrow      MATCH (n:P) LET c = 1 RETURN sum(c)     0.673       33.6        20000   <- the floor
+   projrow     MATCH (n:P) RETURN sum(n.k)             0.652       32.6       959289
+   calltrivial MATCH (n:P) CALL { RETURN 1 AS c } …   11.556      577.8        20000
+   calltrivialscoped  … CALL (n) { RETURN 1 AS c } …  15.437      771.8        20000
+```
+
+`letrow` and `calltrivial` are an EQUIVALENT SPELLING — both answer 20,000 by summing a per-row 1 —
+so **17.2x** is the honest figure, against item 1653's 538-733 ns measured off a rung.
+
+#### The refutation: both per-row allocations removed, both FLAT
+
+`runCallInline` allocated a `seed` Map per outer row and filled it by looping `clause.scope` — so a
+scope-less `CALL { … }` built an empty Map per row and never read it — and merged each nested row
+with `Object.entries(row)`, which allocates an array plus a two-element array per key per row. Both
+removed (the merge via `for…in`, which iterates the same keys in the same order without allocating),
+order-alternated, 3 rounds:
+
+```text
+   arm                  POST (both removed)        PRE
+   calltrivial          11.90 / 11.24 / 11.37      11.18 / 10.95 / 12.45   FLAT
+   calltrivialscoped    16.57 / 15.93 / 15.46      15.15 / 15.90 / 15.37   FLAT
+   uncorrelated         35.08 / 36.74 / 36.97      34.84 / 35.78 / 34.86   FLAT
+   correlated     CTL    1.37 /  1.26 /  1.22       1.24 /  1.27 /  1.17   FLAT
+   letrow         CTL    0.69 /  0.62 /  0.62       0.65 /  0.62 /  0.62   FLAT
+```
+
+**Not shipped.** An edit to a hot clause file with no measured gain is risk without return, and
+`executor-edits-perturb` prices that risk at up to 16% on unrelated rows. Recorded here so the two
+obvious allocations are not removed again in the belief that they matter.
+
+#### ⚠️ The redirect: the frames say the CALL changes the OUTER match's ROUTE
+
+Profiling both spellings of the identical question:
+
+```text
+   letrow      MATCH (n:P) LET c = 1 RETURN sum(c)        calltrivial  … CALL { RETURN 1 } …
+   38.5%  aggregateOverValues                             9.4%  matchPattern
+   28.3%  (anonymous) index.mjs:11516                      7.2%  withBinding
+    5.6%  fastPath                                         3.9%  hoistedMatch
+    1.1%  walkSegments                                     3.5%  walkSegments
+   —      NO matchPattern / withBinding / seedVertices     1.7%  candidateVertices
+   —      NO hoistedMatch / candidateVertices              1.6%  seedVertices
+```
+
+The body of `calltrivial` has NO pattern, so every matcher frame in it belongs to the OUTER
+`MATCH (n:P)`. `letrow` runs that same outer match through a fused aggregate path and never enters
+the matcher at all. **So a following `CALL` clause makes the outer match abandon its fast route and
+materialise 20,000 bindings** — which is `rung-precedence-decides-speed`'s shape exactly: a willing
+fast rung declined because of a clause further down the chain.
+
+#### OPEN, restated precisely
+
+The target is not `runCallInline`'s body but the ROUTE it forces: **let the fused node-scan path
+survive a following `CALL`, or give the CALL clause a path that consumes the fast row stream.** The
+ceiling is `letrow`'s 33.6 ns/row against 577.8 — **17.2x**, and it applies to every CALL body, not
+only the trivial one (the `correlated` arm's 70.6 ns/row shows what a body answered off a rung costs
+instead). A narrow alternative with a much smaller reach: an inline CALL whose body is a single
+`RETURN` of expressions, with no scope and no pattern, IS a `LET` per column and could be normalised
+to one — sound and easy, but `CALL { RETURN 1 }` is not a shape real queries write.
+
+Not built: this is a planner-route change and deserves its own tick.
+
+#### Gates
+
+No engine change — two probe arms. `bun run check` 0 read unpiped; gql suite 4230 pass / 0 fail, run
+under both arms of the refuted change.

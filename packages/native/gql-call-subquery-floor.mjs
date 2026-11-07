@@ -75,8 +75,22 @@ for (let k = 0; k < N * FANOUT; k += 1) {
 }
 
 const ARMS = {
-  /** The outer scan alone — the floor for "one row per vertex, counted". */
+  /**
+   * ⚠️ NOT A VALID FLOOR FOR THE CALL ARMS, and item 1654 found that out by profiling one. A bare
+   * `count(*)` is answered by a closed-form rung WITHOUT materialising a binding per vertex, while
+   * every CALL arm must materialise 20,000 of them for the clause to run against. Comparing them
+   * gives a ratio between two different amounts of work (item 1465). Kept, labelled, as the
+   * rung's own number.
+   */
   outer: 'MATCH (n:P) RETURN count(*) AS t',
+  /**
+   * ⚠️ THE REAL FLOOR FOR THE CALL ARMS: the same per-row binding and the same outer aggregate,
+   * with the CALL clause replaced by the cheapest clause that also binds a name. `calltrivial`
+   * minus THIS is the inline-CALL clause's own cost.
+   */
+  letrow: 'MATCH (n:P) LET c = 1 RETURN sum(c) AS t',
+  /** The outer scan forced to materialise, with no extra clause at all. */
+  projrow: 'MATCH (n:P) RETURN sum(n.k) AS t',
   /**
    * ⚠️ THE CORRELATED FORM IS `CALL (n) { … }` — ISO-GQL, not Cypher. The scope list is what
    * imports an outer name; without it the body's `n` is a FRESH variable. CLAUDE.md says this has
@@ -124,6 +138,10 @@ if (answers.inline !== edges) {
 }
 
 // The uncorrelated arms emit one row per OUTER row, so they count `N`.
+if (answers.letrow !== N) {
+  throw new Error(`letrow ${answers.letrow} !== ${N}`);
+}
+
 if (
   answers.outer !== N ||
   answers.uncorrelated !== N ||
