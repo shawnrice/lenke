@@ -72115,7 +72115,9 @@ trap item 1649 fell into and had to fix inside the same item.
 OBJECT, taken at item 1651: 211 → 127 ns, another 1.66x, and the item's own list named it ("the
 returned object") without pricing it.** The rung removed ~75 ns of the ~270 ns of per-call overhead
 and item 1651 removed ~85 ns more. What is left — `newContext`, `planReadsPath`, the shortcut chain,
-the generator — is 8.2x the floor and is a `run`-level question rather than a per-shape one.
+the generator — is 8.2x the floor. ⚠️ **ITEM 1652 PRICED ALL THREE OF THOSE AND REFUTED EACH**: the
+remaining cost is distributed with no single removable term, so this shape is AT its floor for the
+current architecture, not merely near it.
 
 #### Teeth: 8 meaningful mutants, 8 caught — and one that SURVIVED for a good reason
 
@@ -72243,3 +72245,102 @@ switching arms silently discarded it — the same failure recorded earlier this 
 `bun run check` 0 read UNPIPED (one `no-shadow` on the new probe arm, fixed). Suites: core 444, gql
 4230, gremlin 1992 (+3 new), native 1081, serialization 144 — 0 fail. `bun run fuzz` all seven green.
 `bench:gremlin`, all 32 rows, both arms with their own build: flat, every `answers` column `same`.
+
+### Item 1652 — ⚠️ **THREE REFUTATIONS, ALL PRICED, AND A FLOOR DECLARED.** The point lookup's remaining ~126 ns has no single removable term: `newContext` prices at **2.7-5%** against a 16%-of-query share, dropping LAZINESS for an eager array is **FLAT** (so the 41% `toArray` share is not a cost eagerness can remove), and lifting the rung up `run`'s chain is **+3% on `values` and −3% on every `count`** — a redistribution, not a win
+
+CLOSED, no engine change. Five items (1642, 1643, 1649, 1650, 1651) took this shape from 1277.6 ns to
+~126; this one establishes that the next win is not in it.
+
+#### ⚠️ FIRST: the profile that nominated these was of a STALE DIST, and the frames said so
+
+The first profile of the post-1651 build showed `idSeededValuesShortcut` at 39.5% **and `drain` at
+11.4%** — `drain` being a function item 1651 had deleted. The sweep in the previous tick had ended
+its loop on the `pre` arm and rebuilt there, so `@lenke/gremlin`'s dist was the wrapper version. The
+`fuzzers-read-built-dists` trap, caught only by reading the frame LIST rather than the top number.
+Rebuilt, the same query is **929.3 → 317.1 ms per 2,000,000 reps**, which is the item-1651 win showing
+up on a second instrument.
+
+```text
+   point: V().hasId(x).values(k)      317.1 ms of query inside 661.2 sampled
+   19.6%  129.9ms  toArray           = 41% of the query
+    8.8%   58.0ms  seededIdWalk        the actual work
+    7.5%   49.5ms  newContext        = 16% of the query
+    5.8%   38.1ms  getVertexById       the O(1) lookup, which must stay
+    2.5%   16.9ms  run
+    1.4%    9.5ms  matchSeededShape
+```
+
+#### Refutation 1 — `newContext`: 16% of the query by share, 2.7-5% by ablation
+
+It allocates TWO Maps plus an object per run, and a plan answered by a shortcut touches neither Map —
+so deferring it past the shortcut chain is pure waste removal, and `run` only needs the `tracksPath`
+boolean before the rungs. Ablated (a shared singleton — unsound, which is the point: it prices the
+ceiling):
+
+```text
+                      newContext        singleton        ceiling
+   V(id).values(k)     125.8 ns          122.4            2.7%   (mins 124.7 -> 114.1)
+   V().hasId(id)…      128.9             122.4            5.0%
+   V(64 ids).values    2075.6           1987.8            4.2%
+```
+
+**~3-10 ns on a 126 ns call, for an edit to `run` — the file `executor-edits-perturb` records costing
+UNRELATED rows up to 16% (items 1413/1415/1440/1442/1462, and item 1466 declining 3.3x over it).**
+Below the bar. ⚠️ **This is the SIXTH share this session to fail an ablation** (after `pick` 19.0%,
+`propOf`, `bucketSize` 76.7%, the closure environment, and the plan-analysis tail at ~15% → 2.6%),
+which is CLAUDE.md's own rule earning its place five times over.
+
+#### Refutation 2 — laziness is FREE, so `toArray`'s 41% is not eagerness's to remove
+
+`toArray` falls to `[...it]` now that the rung returns a bare generator, and spreading a generator for
+a one-value answer is its 65 ns of self time. The obvious trade is to return an eager array instead —
+which the suite forbids (item 1651's laziness contract: `asStringId` must raise from inside the walk,
+as the general path does). Priced anyway:
+
+```text
+                      generator        eager array
+   V(id).values(k)     128.0 ns         129.9        FLAT (slightly worse)
+   V(64 ids).values   1970.2           1981.5        FLAT
+```
+
+**So the correctness property costs nothing**, and the 41% share is the generator PROTOCOL rather than
+a choice between lazy and eager. Worth knowing for any future tick tempted to trade item 169's
+one-derivation rule for speed here: there is no speed in it.
+
+#### Refutation 3 — lifting the rung up `run`'s chain is a WASH, which is the shape of trap item 762 names
+
+The rung sits after `countShortcut`, `groupCountShortcut` and `nodeValuesShortcut`, all of which
+DECLINE its shape (they need a count tail or an id-less source), so moving it first changes no route —
+asserted by the suite and by the shapes being disjoint. Measured with the ORDER itself as the arm
+assertion (the first attempt asserted a line number that both arms shared, which made three rounds
+worthless):
+
+```text
+                            lifted                   original               verdict
+   V(id).values(k)           125.0 / 123.5 / 122.9    128.1 / 126.9 / 126.6  1.03x BETTER
+   V(id).out(T).count()      122.6 / 123.4 / 121.1    117.5 / 119.6 / 118.7  1.03x WORSE
+   V(64 ids).count()         756.7 / 767.3 / 740.8    747.1 / 752.0 / 731.1  1.01x WORSE
+   V(id).values(k, kk)  CTL  296.0 / 299.7 / 296.8    307.6 / 296.9 / 300.5  FLAT
+```
+
+Unanimous in both directions — 3/3 rounds each way — and it nets to nothing: the `values` shape gains
+exactly what every `count` shape loses, because a count query now runs `matchSeededShape` before
+reaching its own rung. **A reordering that moves cost between shapes is not an optimisation unless
+there is a reason to prefer one shape**, and there is none here. (`conjunct-order-chosen-for-speed` is
+the case where there IS such a reason and the owner stated it; this is not that.)
+
+#### The floor, stated so the next tick does not re-derive it
+
+At ~126 ns against a 15.4 ns hand floor (8.2x), the remainder is `run`'s prologue, the shape match,
+the rung chain, `getVertexById` (which is the O(1)-by-id invariant and must stay), and the generator
+protocol — each a few nanoseconds, none removable without trading a measured property. **The one
+unbuilt lever with a real ceiling is a per-plan ROUTE token** — caching WHICH rung answers a plan, the
+way items 1647/1648 cache the rewrite and the static-check verdict — which would remove the whole
+declining chain rather than reordering it. Its ceiling is the chain's own cost, which refutation 3
+puts at **~3-4 ns**, so it is not worth the design either. Priced, not built, and said here so it is
+not re-priced.
+
+#### Gates
+
+No engine change — the tree is identical to its parent apart from this entry. `bun run check` 0 read
+unpiped; the gremlin suite 1992 pass / 0 fail was re-run under every ablation and both orderings.
