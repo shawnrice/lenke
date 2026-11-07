@@ -72783,3 +72783,65 @@ its own evidence; a per-call closure or wrapper LAYER is.**
 
 No engine change — the pass was reverted and `git diff` is empty apart from the new probe.
 `bun run check` 0 read unpiped; gremlin 1997 pass / 0 fail under both arms.
+
+### Item 1659 — **THE MECHANICAL UNPRICED-FRAME SCREEN IS EXHAUSTED: 32 shapes across all three probe families, ZERO unpriced frames over 2%.** The write family is screened for the first time and is no exception — every hot frame in it carries 12-97 prior mentions. What remains in this corpus is structural, not hot frames, and that is a result about the METHOD rather than about any one shape
+
+MEASURED, no engine change.
+
+#### What was screened, and when
+
+```text
+   family                       shapes   item    unpriced frames > 2%
+   GQL  (runtime-profile-probe)      6   1650    none  (one NOT-CHECKABLE: item 921's regex)
+   GQL                              10   1653    none  (detectNodeProjection was its per-ROW closure)
+   Gremlin (…-gremlin-probe)        10   1655    none  (the outlier was match(), item 1656)
+   writes  (…-write-probe)           6   1659    none
+```
+
+The write family's profile, screened here for the first time:
+
+```text
+   addEdgeOnly    202.93 ms/rep   indexEdgeLabel 27.4% (66 mentions), getEdgeById 12.1% (33),
+                                  #commitNormalized 10.0% (19), commitElementLabels 8.4% (18)
+   addVertexBare   23.78          addVertex 13.7% (87), #commitNormalized 11.5% (19),
+                                  getVertexById 10.7% (97)
+   addVertexProps  26.73    addEdgeOnly's parts are CLOSED already (`ts-ingest-is-constant-factor`:
+   setProps         3.80    addVertex withdrawn at 7.4%, addEdge ~85% and its parts refuted)
+   removeVertices   7.64
+   pointLookups     3.97
+```
+
+⚠️ **"NO UNPRICED FRAME" IS NOT "NOTHING LEFT", and the distinction is the whole value of the
+statement.** The screen's cross-check is whether a frame's NAME appears in `CLOSED.md` or the audit —
+a mention means someone looked, not that it is closed. Priced-and-still-open frames are exactly what
+the audit's `OPEN` lines track. What is exhausted is the mechanical route to a NEW target: profiling a
+shape and finding a frame nobody has considered.
+
+#### Two cheap refutations along the way
+
+- **`hopChainValuesShortcut` covers every depth.** The 2-hop twin's comment says item 1617 lifted the
+  cap, and the rung was asked directly rather than trusted: 2-hop, 3-hop, 4-hop, `id()` tails and a
+  mid-chain filter are all TAKEN. The 1.4x per-row difference between the 2- and 3-hop rows is one
+  more hop's work, not an unfused layer.
+- **No per-call wrapper layer in the GQL engine.** Item 1651's win was a `{ [Symbol.iterator] }`
+  wrapper built per call; the GQL executor has three `[Symbol.iterator]()` sites and all three are
+  CONSUMERS (`matchClauseBindings`), not producers. Item 1658's filter — a per-call closure or
+  wrapper LAYER, not an allocation — finds nothing there to apply to.
+
+#### What this means for the next attempt
+
+The three targets this session leaves are all feature-sized, and each is priced:
+
+- **A JOIN operator for `match()`** — items 1656/1657. 37-89x and growing with selectivity, blocked
+  on the solver's per-traverser nested-loop model and on Gremlin's ordered emission.
+- **A route change so a fused GQL scan survives a following `CALL`** — item 1654. 17.2x for a body
+  that is a bare `RETURN`, less for one that must materialise.
+- **The `run`-level per-call floor** — item 1652. ~126 ns against a 15.4 ns hand floor, decomposed and
+  with every individual term refuted; what is left is distributed.
+
+None is a self-paced tick's work, and none was found by a profile — they were found by asking what a
+spelling SHOULD cost. That is the method the next session should start from.
+
+#### Gates
+
+No engine change — `git diff` is this entry. `bun run check` 0 read unpiped.
