@@ -53521,7 +53521,7 @@ is open on it.
 per-GROUP digest field, because the `both` arms answer twice as many rows and a pooled digest check
 would have reported a false disagreement.
 
-### Item 1444 — the FILTERED hop row is **1.87x a hand floor (46.5% headroom)** while its UNFILTERED twin BEATS its floor at 0.94x. A second, larger instance of item 1429's named target — and item 1437's CSE conclusion was right on evidence that did not support it (the second read is **2.6%**)
+### Item 1444 — the FILTERED hop row is ~~**1.87x a hand floor (46.5% headroom)**~~ **2.74x / 63.5% at FANOUT=5 — item 1635 found this whole arc was measured at ONE EDGE PER NODE** while its UNFILTERED twin BEATS its floor at 0.94x. A second, larger instance of item 1429's named target — and item 1437's CSE conclusion was right on evidence that did not support it (the second read is **2.6%**)
 
 `hopfiltyield` is the heaviest open row in the GQL bench and its two obvious levers are closed —
 routing (item 1436: forcing the far-driven filtered walk measured no better) and the double read
@@ -53696,7 +53696,7 @@ item 937.
 the call-site comment corrected in place, which is the rule about a stale claim sitting next to the
 code it would misdirect.
 
-### Item 1446 — item 1445's hypothesis CONFIRMED: megamorphism is **104.9 ns/row (38.8% of the gap)** and machinery is **52.1%**, so **90.9% is explained** and only 24.6 ns/row is left. "Optimize the ACCESS PATTERN or nothing" is definitively refuted — the access pattern is IDENTICAL in all four arms
+### Item 1446 — item 1445's hypothesis CONFIRMED: megamorphism is **104.9 ns/row (38.8% of the gap)** and machinery is **52.1%**, so ~~**90.9% is explained** and only 24.6 ns/row is left~~ — ⚠️ at FANOUT=5 the megamorphic arm accounts for the engine **completely** (item 1635), so nothing is left over. "Optimize the ACCESS PATTERN or nothing" is definitively refuted — the access pattern is IDENTICAL in all four arms
 
 Item 1445 priced the filtered hop row's per-row machinery and found it only a third of the
 engine-to-floor gap, leaving ~200 ns/row unexplained. Its hypothesis — stated as a hypothesis, not a
@@ -53777,7 +53777,7 @@ already encodes the "no DISTINCT, no grouping, no ORDER BY, no paging" guard.
 
 `bun run check` 0 (read unpiped). No engine code changed — one probe arm.
 
-### Item 1447 — the specialized row builder was BUILT, REACHED and REVERTED at **−4.8% / +0.7%**. The probe says **18.9% is still there**, and the failure is my WIRING: one dispatch site holding two closures goes polymorphic across compiles, which is the exact cost it was meant to remove
+### Item 1447 — the specialized row builder was BUILT, REACHED and REVERTED at **−4.8% / +0.7%**. The probe says ~~**18.9% is still there**~~ — ⚠️ **41.5% is still there: item 1635 re-measured at FANOUT=5, where the two arms this split rests on SWAP ORDER.** The wiring diagnosis below stands; the prize is more than twice what this heading advertised, and the failure is my WIRING: one dispatch site holding two closures goes polymorphic across compiles, which is the exact cost it was meant to remove
 
 Built item 1429's target with items 1444-1446's mechanism in hand: `farPropRowBuilder` detects a
 single-far-property projection on the AST side (`{ kind: 'prop', variable, key }` is inspectable,
@@ -70759,3 +70759,73 @@ shape at all — the same gap item 1631 found in `bench:gremlin`.
 #### Gates
 
 No engine code changed. `bun run check` 0 read unpiped; suites unchanged.
+
+### Item 1635 — ⚠️ **ITEMS 1444-1447'S WHOLE DECOMPOSITION WAS MEASURED AT ONE EDGE PER NODE**, the probe's default, which is the sparse fixture CLAUDE.md warns per-edge costs do not scale on. At FANOUT=5 two arms SWAP ORDER and the recorded prior doubles: the projection specialization is **41.5%** of the engine row, not the **18.9%** item 1447 filed as available — so the row builder it reverted is worth more than twice what the audit advertises
+
+OPEN: **the specialized far-property row builder, re-priced at 41.5%** (215.1 ns of a 518.7 ns row).
+Item 1447 built it, reached it, measured ~0% and reverted, and diagnosed the failure exactly — "one
+dispatch site holding two closures goes polymorphic across compiles, which is the exact cost it was
+meant to remove". That diagnosis still stands and is the thing to solve; what changes is the size of
+the prize.
+
+#### What was wrong, and it is the fixture not the arithmetic
+
+`gql-filtered-hop-floor-probe.mjs` defaults to `FANOUT = 1`. Every number in items 1444, 1445, 1446
+and 1447 was taken there unless it says otherwise. CLAUDE.md's rule is explicit — _"One edge per node
+is sparse — per-edge costs scale with the edge:node ratio, per-node costs do not"_ — and this shape's
+cost is per EDGE: one predicate evaluation and one row per edge traversed.
+
+At `FANOUT=5`, three rounds, one arm per process, 999,970 rows (so ms ≈ ns/row):
+
+```text
+   arm                            R1       R2       R3    median   vs floor
+   floor                       217.87   189.22   185.88    189.2      —
+   floor-pred-poly-row-direct  317.26   303.62   303.57    303.6    1.60x
+   floor-engine-shaped         344.19   331.94   319.30    331.9    1.75x
+   engine                      509.01   518.71   528.49    518.7    2.74x
+   floor-engine-shaped-poly    532.80   526.94   516.39    526.9    2.78x
+```
+
+**`floor-pred-poly-row-direct` is BELOW `floor-engine-shaped` in all three rounds** (317<344,
+304<332, 304<319). At FANOUT=1 item 1447 measured the opposite (46.68 against 41.85), and its
+projection/predicate split is computed FROM that ordering.
+
+#### The three numbers that change
+
+| claim                                     | recorded                  | at FANOUT=5                                                                  |
+| ----------------------------------------- | ------------------------- | ---------------------------------------------------------------------------- |
+| engine above its hand floor (item 1444)   | **1.87x**, 46.5% headroom | **2.74x**, 63.5%                                                             |
+| the projection specialization (item 1447) | **18.9%**                 | **41.5%** (215.1 of 518.7 ns/row)                                            |
+| the predicate path (item 1447)            | 178.4 ns/row              | 114.4 ns/row (22.1%)                                                         |
+| megamorphic model explains (item 1446)    | **90.9%**                 | **100%** — the engine (518.7) now sits AT `floor-engine-shaped-poly` (526.9) |
+
+The last row is the one that makes the others credible: item 1446's megamorphic model was built to
+explain the engine and left 24.6 ns/row over. At a realistic degree it accounts for the engine
+completely — slightly overshooting it — so the decomposition is not missing a term any more.
+
+#### Why this matters more than a number
+
+Item 1447 is filed as a build-and-revert with **18.9% still available**. A reader deciding whether to
+retry it weighs a known-hard wiring problem against 18.9%, and 18.9% is near the line this session has
+refused twice (items 1587 at 1.09x, 1634 at 1.23x). At **41.5%** that calculus is different. The
+recorded prior was not merely imprecise, it pointed the wrong way on a go/no-go.
+
+#### ⚠️ The probe's default is LEFT AT 1, deliberately
+
+Changing `FANOUT` to 5 would silently invalidate every number in items 1444-1447 without
+re-measuring them, and those numbers are each other's controls. The default stays and the header now
+says, loudly, that it is sparse, that the published decomposition was taken there, and that FANOUT=5
+reverses two arms. A reader quoting any of those figures needs to know which fixture produced them.
+
+#### ⚠️ And one reading of my own is withdrawn
+
+My first pass measured the `engine` arm at **397.83 ms** under `systemd-run --scope` while the
+three-round set reads 509-528 under plain `node`. I have not chased the difference — the cgroup, the
+background load, or both — and the split above uses ONLY arms measured under identical conditions, in
+the same rounds. The 397.83 is not quoted anywhere and should not be: mixing it with the others would
+have put the engine BELOW the megamorphic arm and inverted the conclusion.
+
+#### Gates
+
+No engine code changed — a measurement correction and a header. `bun run check` 0 read unpiped;
+suites unchanged.

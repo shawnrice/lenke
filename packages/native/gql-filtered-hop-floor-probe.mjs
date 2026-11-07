@@ -33,6 +33,36 @@
  *   ARM=floor NODES=100000 STRIDE=random REPS=14 node gql-filtered-hop-floor-probe.mjs
  *
  * ONE ARM PER PROCESS (item 762).
+ *
+ * ⚠️⚠️ `FANOUT` DEFAULTS TO 1, AND EVERY NUMBER IN ITEMS 1444-1447 WAS TAKEN THERE. One edge per node
+ * is the sparse fixture CLAUDE.md warns per-edge costs do not scale on — and this shape's cost IS per
+ * edge: one predicate evaluation and one row per edge traversed. Item 1635 re-ran all five arms at
+ * `FANOUT=5`, three rounds, and the ordering CHANGES:
+ *
+ * ```text
+ *    arm                          FANOUT=1 (items 1444-1447)   FANOUT=5 (item 1635, median of 3)
+ *    floor                                   28.84                        189.2
+ *    floor-engine-shaped                     41.85                        331.9
+ *    floor-pred-poly-row-direct              46.68  <- ABOVE               303.6  <- BELOW
+ *    floor-engine-shaped-poly                58.68                        526.9
+ *    engine                                  63.56                        518.7
+ * ```
+ *
+ * `floor-pred-poly-row-direct` sits BELOW `floor-engine-shaped` in all three FANOUT=5 rounds and
+ * ABOVE it at FANOUT=1 — and item 1447's projection/predicate split is computed from that ordering.
+ * Re-priced at FANOUT=5: the engine is **2.74x** its floor (not 1.87x), the projection
+ * specialization is **41.5%** of the row (not 18.9%), the predicate path is 114.4 ns/row (not
+ * 178.4), and the megamorphic arm now accounts for the engine COMPLETELY rather than leaving 24.6
+ * ns/row over.
+ *
+ * ⚠️ THE DEFAULT IS LEFT AT 1 ON PURPOSE. Changing it would silently invalidate every figure in items
+ * 1444-1447 without re-measuring them, and those arms are each other's controls. Pass `FANOUT=5` for
+ * a realistic degree, and when quoting any number from this probe, say which fixture produced it.
+ *
+ * ⚠️ AND DO NOT MIX `systemd-run --scope` READINGS WITH PLAIN `node` ONES. Item 1635 measured the
+ * `engine` arm at 397.83 under a scope and 509-528 under plain node; the cause was not chased, but
+ * mixing them would have put the engine BELOW the megamorphic arm and inverted the conclusion. Keep
+ * every arm of a comparison in the same harness.
  */
 import { PerformanceObserver } from 'node:perf_hooks';
 
