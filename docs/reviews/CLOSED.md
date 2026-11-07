@@ -67108,7 +67108,7 @@ GQL row on the same fixture and the same varying key runs at 1.08M ops/s (926 ns
 358.7k (2788), so ~1860 ns of the Gremlin call is not the key at all. That is the gap worth
 profiling next, and it is now measurable in a standing row rather than a one-off probe.
 
-### Item 1594 — ⚠️ **a 12.0% SELF-TIME FRAME DID NOT CONVERT: deduplicating the seed's double bucket lookup is FLAT.** And the tick's useful half: GQL answers the identical seeded point lookup in **650 ns** against Gremlin's **2619** — 4.0x, of which only ~400 ns is construction, so **~2150 ns is per-call machinery for a ONE-element result**
+### Item 1594 — ⚠️ **a 12.0% SELF-TIME FRAME DID NOT CONVERT: deduplicating the seed's double bucket lookup is FLAT.** And the tick's useful half: GQL answers the identical seeded point lookup in **650 ns** against Gremlin's **2619** — ~~4.0x~~ **2.5x as of item 1641 (805 against 2000); quote that figure**, of which only ~400 ns is construction, so **~2150 ns is per-call machinery for a ONE-element result**
 
 Item 1593 left ~1860 ns of the Gremlin serving call unexplained — neither construction nor the
 varying lookup key. This profiled it.
@@ -71252,3 +71252,54 @@ else.
 #### Gates
 
 No engine code changed — two probe arms. `bun run check` 0 read unpiped; native 1081 pass / 0 fail.
+
+### Item 1641 — the **O(1) by-id invariant is RE-VERIFIED** across all six arms after ~245 items, and the core paths are slightly FASTER than item 1395 recorded (115.7 ns at 800,000 against its 129.5). ⚠️ **And item 1594's cross-surface point-lookup gap has moved: 4.0x then, 2.5x now** — GQL 805 ns against Gremlin 2000, where it recorded 650 against 2619
+
+OPEN: nothing on the invariant. The remaining cross-surface point-lookup gap is **2.5x** on a
+one-element result, which item 1594 attributed to per-call machinery rather than the lookup; that
+attribution is unchanged and the gap has closed by 1.6x on its own since.
+
+#### Why re-verify
+
+"Keep good O(1) access to get a vertex or edge by id" is a standing requirement of this work, and the
+last verification was item 1395 — about 245 items ago. Since then this session alone has shipped
+changes to the adjacency box reads (item 1618), the Gremlin fused walks (1613-1629) and GQL's row
+projection (1636), all of which sit next to the id paths. A standing invariant that is not re-checked
+is an assumption.
+
+`id-lookup-is-o1-probe.ts`, ONE arm and ONE size per process, over a 16x size range:
+
+```text
+   arm                   50,000   200,000   800,000   drift     item 1395
+   core-getVertexById      94.2     104.6     115.7   +22.8%    105.7 / 112.6 / 129.5
+   core-getEdgeById        95.9     111.9     113.7   +18.6%     99.9 / 111.9 / 130.5
+   gql-node-eq           1162.6     783.7     805.0   DOWN
+   gql-edge-in           5926.1    4931.1    4520.8   DOWN
+   grm-hasId-one         2134.7    2018.4    2000.5   DOWN
+   grm-E-hasId-count     1851.9    2926.5    1599.9   non-monotonic
+```
+
+The two core arms keep the same ~19-23% drift over 16x that item 1395 established is the WORKING SET
+and not the structure — its `id-lookup-hotset-probe.mjs` separated them by holding one variable at a
+time and got 5.15/4.78/4.90 ns with the hot set fixed (flat) against 5.15 → 18.64 ns with N fixed and
+the hot set grown (rises, plateaus). Four surface arms are flat or DECREASING, two of them
+non-monotonic, which cannot be O(log N) in any reading.
+
+**The invariant holds, and both core paths are faster than at item 1395** — 115.7 against 129.5 and
+113.7 against 130.5 at 800,000. Nothing in 245 items regressed them.
+
+#### ⚠️ Item 1594's 4.0x is now 2.5x
+
+Item 1594 measured "GQL answers the identical seeded point lookup in **650 ns** against Gremlin's
+**2619** — 4.0x, of which only ~400 ns is construction, so **~2150 ns is per-call machinery for a ONE
+element result**". Today: **805 against 2000 — 2.5x.**
+
+Both halves moved, in opposite directions, and the honest reading is that neither is a clean
+measurement of the same thing: these are probe arms at a different size and under a different
+harness than item 1594's, so the 2.5x is the figure to quote going forward and the 1.6x improvement
+is not attributable to any one change. What is unchanged is the SHAPE of 1594's finding — ~1200 ns of
+Gremlin per-call machinery for a one-element answer, which no item has taken.
+
+#### Gates
+
+No code changed — verification only. `bun run check` 0 read unpiped.
