@@ -38,7 +38,7 @@ const doc = (() => {
 
   for (let k = 0; k < N * 5; k++) {
     lines.push(
-      `{"type":"edge","id":"e${k}","labels":["KNOWS"],"from":"v${(k * 7919) % N}","to":"v${(k * 104_729) % N}","properties":{}}`,
+      `{"type":"edge","id":"e${k}","labels":["KNOWS"],"from":"v${(k * 7919) % N}","to":"v${((k % N) * 104_729 + Math.floor(k / N) * 977) % N}","properties":{}}`,
     );
   }
 

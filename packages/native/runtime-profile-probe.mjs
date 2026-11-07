@@ -66,7 +66,9 @@ const build = () => {
       from: g.getVertexById(`v${STRIDE === 'scattered' ? (e * 7919) % NODES : i}`),
       to: g.getVertexById(
         `v${
-          STRIDE === 'scattered' ? (e * 104729) % NODES : (i * 7 + 3 + hop * 2654435761) % NODES
+          STRIDE === 'scattered'
+            ? ((e % NODES) * 104729 + hop * 977) % NODES
+            : (i * 7 + 3 + hop * 2654435761) % NODES
         }`,
       ),
       labels: ['E'],

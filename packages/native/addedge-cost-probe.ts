@@ -81,7 +81,9 @@ const tos = new Array<string>(E);
 
 for (let k = 0; k < E; k++) {
   froms[k] = `v${(k * 7919) % N}`;
-  tos[k] = `v${(k * 104_729) % N}`;
+  // The repeat-index split (item 1633): the plain form gave every one of a vertex's RATIO
+  // edges the same target, so each insert hit one already-warm adjacency bucket.
+  tos[k] = `v${((k % N) * 104_729 + Math.floor(k / N) * 977) % N}`;
 }
 
 const vids = Array.from({ length: N }, (_, i) => `v${i}`);

@@ -94,7 +94,9 @@ const build = () => {
       id: `e${k}`,
       from: vs[STRIDE === 'random' ? (k * 7919) % NODES : i],
       to: vs[
-        STRIDE === 'random' ? (k * 104_729) % NODES : (i * 7 + 3 + hop * 2_654_435_761) % NODES
+        STRIDE === 'random'
+          ? ((k % NODES) * 104_729 + hop * 977) % NODES
+          : (i * 7 + 3 + hop * 2_654_435_761) % NODES
       ],
       labels: MULTILABEL > 0 && k % MULTILABEL === 0 ? ['E', 'F'] : ['E'],
       properties: { w: k % 13 },

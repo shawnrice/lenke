@@ -172,9 +172,14 @@ const hopPairDoc = (() => {
       `{"type":"node","id":"v${i}","labels":["Person"],"properties":{"age":${i % 90},"name":"person${i}","city":"city${i % 8}"}}`,
   );
 
+  // ⚠️ THE REPEAT-INDEX SPLIT, ADDED AT ITEM 1633. Item 1516 fixed `graphDoc` above and left
+  // THIS generator — also five edges per node — invariant under `k -> k + N`, so every one of a
+  // vertex's five out-edges landed on the same target. Same defect, same file, one fixture over.
   for (let k = 0; k < N * 5; k++) {
+    const to = ((k % N) * 104_729 + Math.floor(k / N) * 977) % N;
+
     lines.push(
-      `{"type":"edge","id":"e${k}","labels":["KNOWS"],"from":"v${(k * 7919) % N}","to":"v${(k * 104_729) % N}","properties":{}}`,
+      `{"type":"edge","id":"e${k}","labels":["KNOWS"],"from":"v${(k * 7919) % N}","to":"v${to}","properties":{}}`,
     );
   }
 

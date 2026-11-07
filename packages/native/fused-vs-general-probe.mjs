@@ -64,7 +64,9 @@ for (let e = 0; e < NODES * FANOUT; e += 1) {
     id: `e${e}`,
     from: vs[STRIDE === 'scattered' ? (e * 7919) % NODES : i],
     to: vs[
-      STRIDE === 'scattered' ? (e * 104_729) % NODES : (i * 7 + 3 + hop * 2_654_435_761) % NODES
+      STRIDE === 'scattered'
+        ? ((e % NODES) * 104_729 + hop * 977) % NODES
+        : (i * 7 + 3 + hop * 2_654_435_761) % NODES
     ],
     labels: ['E'],
   });

@@ -88,7 +88,7 @@ for (let k = 0; k < N * DEG; k++) {
   g.addEdge({
     id: `e${k}`,
     from: vs[(k * 7919) % N],
-    to: vs[(k * 104_729) % N],
+    to: vs[((k % N) * 104_729 + Math.floor(k / N) * 977) % N],
     labels: ['KNOWS'],
     properties: {},
   });

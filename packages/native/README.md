@@ -13,8 +13,8 @@ bun add @lenke/native
 ## Usage
 
 ```ts
-import { createFfiEngineBackend } from '@lenke/native/ffi-engine';
 import { graphFromNdjson } from '@lenke/native';
+import { createFfiEngineBackend } from '@lenke/native/ffi-engine';
 
 // Load the native library built from `crates/lenke-engine`
 // (liblenke_engine.{dylib,so,dll}).
@@ -41,8 +41,8 @@ g.free();
 In the browser, swap the backend for the wasm one; the rest of the API is identical:
 
 ```ts
-import { createWasmEngineBackend } from '@lenke/native/wasm-engine';
 import { graphFromNdjson } from '@lenke/native';
+import { createWasmEngineBackend } from '@lenke/native/wasm-engine';
 
 const backend = await createWasmEngineBackend(fetch('/lenke_engine.wasm'));
 const g = graphFromNdjson(backend, ndjsonBytes);

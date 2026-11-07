@@ -26,6 +26,16 @@ import { graphFromNdjson } from './src/graph.js';
 
 const N = Number(process.env.PN ?? 40_000);
 const DEG = 5;
+
+/**
+ * The target for edge `k`, SPLIT ON THE REPEAT INDEX (item 1633).
+ *
+ * ⚠️ `(a * k + b) % N` is invariant under `k -> k + N`, and both generators in this file loop
+ * `k < N * DEG`, so every one of a vertex's DEG edges landed on the SAME target: the graph was
+ * FUNCTIONAL with perfect-looking degrees. Shared by both builders so the TS and native fixtures
+ * cannot drift apart — item 471 is this file's own record of patching one builder and not the other.
+ */
+const toBase = (k: number): number => ((k % N) * 104_729 + Math.floor(k / N) * 977) % N;
 const REPS = Number(process.env.PR ?? 9);
 
 const fresh = (): Graph => {
@@ -50,7 +60,7 @@ const fresh = (): Graph => {
     // N = 200,000 (`k * 96810 ≡ 0 mod N` every 20,000 edges), which is enough to disarm any
     // optimization gated on `selfLoopCount === 0` — item 478 measured the DECLINE before
     // noticing. Off by default: the other cases' numbers are against the original fixture.
-    const to = (k * 104_729) % N;
+    const to = toBase(k);
 
     g.addEdge({
       id: `e${k}`,
@@ -452,10 +462,13 @@ if (engine === 'native') {
         type: 'edge',
         id: `e${k}`,
         from: `v${(k * 7919) % N}`,
+        // ⚠️ The repeat-index split (item 1633); the plain `(k * 104_729) % N` sent all DEG edges
+        // of a vertex to one target. `toBase` is computed once so the self-loop test and the
+        // emitted value cannot drift apart.
         to: `v${
-          process.env.PNOLOOP !== undefined && (k * 104_729) % N === (k * 7919) % N
-            ? ((k * 104_729) % N) + 1
-            : (k * 104_729) % N
+          process.env.PNOLOOP !== undefined && toBase(k) === (k * 7919) % N
+            ? toBase(k) + 1
+            : toBase(k)
         }`,
         labels: ['KNOWS'],
         properties: { w: k % 7 },

@@ -70468,7 +70468,7 @@ groups over 2x, both under the 16G cap.
 OPEN: the five other degenerate generators listed below, each needing its own fix AND a
 re-measurement of whatever it published — `edge-spelling-probe.ts` (DEG 5),
 `hop-multi-agg-floor-probe.ts` (DEG 5), `order-cost-probe.ts` (A_DEG 5),
-`fused-vs-general-probe.mjs` (FANOUT 5), `hop-rows-floor-probe.mjs` (FANOUT 2). And five whose
+`fused-vs-general-probe.mjs` (FANOUT 5), ~~`hop-rows-floor-probe.mjs` (FANOUT 2)~~ — ⚠️ WRONG, see item 1633: that one was fixed at item 1518 and documents it; I classified it from a pattern match without reading the expression. And five whose
 generator shape could not be classified from the degree knob alone: `gc-cost-probe.mjs`,
 `route-cost-probe.ts`, `runtime-profile-write-probe.mjs`, `src/hop-extremum-ab.ts` /
 `-price.ts`, `vertex-ordinal-write-probe.ts`.
@@ -70550,3 +70550,113 @@ distinct and ordered, and `V().out().id()` above is its unfiltered twin.
 
 Its 62.5x is also restated: on the branching fixture the row reads **TS 156.2 ms against native 2.70
 — 57.8x**, still the largest ratio of any yielding row in the sweep.
+
+### Item 1633 — ⚠️⚠️ **THE SAME DEGENERATE FIXTURE IN SIXTEEN MORE GENERATORS**, including a SECOND one in the GQL bench that item 1516 left when it fixed the first. Every one is now fixed and the corpus has a TEST that forbids the form — because `hop-rows-floor-probe.mjs` has carried a nine-line warning about exactly this since item 1518 and nine other files kept the defect anyway. ⚠️ **And the test found eleven instances my own pattern screen had missed, including two I had just "fixed" only the first occurrence of**
+
+OPEN: nothing on the fixture class — the corpus is clean and guarded. What is open is RE-MEASUREMENT:
+every probe listed below published numbers from a functional graph, and item 1632 measured that error
+at **2.4-6.2x** on multi-hop yielding rows. None of those numbers is safe to quote, and several sit
+in `sortByBys`' and `route-cost-probe`'s own headers.
+
+#### The defect, once more, and why a comment did not stop it
+
+```text
+   to = (a * k + b) % N      is INVARIANT under  k -> k + N
+```
+
+Every generator loops `for (k = 0; k < N * FANOUT; k++)`, so one vertex's FANOUT edges are exactly
+`k0, k0+N, k0+2N, …` and all of them land on the SAME target: full out-degree, **one** distinct
+out-neighbour, every degree statistic perfect. Items 702/1516/1518 found it, item 1632 found it in
+`bench:gremlin`'s main fixture, and this item found the remaining sixteen.
+
+**`hop-rows-floor-probe.mjs` has carried a nine-line warning naming this exact trap since item 1518.** Nine other files kept the defect anyway. That is why this is now a TEST
+(`src/fixture-branching.test.ts`) and not another comment.
+
+#### Fixed (verified: distinct out-neighbours 5/5 at each probe's own default N)
+
+```text
+   edge-spelling-probe.ts            order-cost-probe.ts  (TWO sites)
+   hop-multi-agg-floor-probe.ts      route-cost-probe.ts  (TWO sites, now one shared `toBase`)
+   gc-cost-probe.mjs                 runtime-profile-write-probe.mjs
+   src/hop-extremum-ab.ts            src/hop-extremum-price.ts
+   vertex-ordinal-write-probe.ts     addedge-cost-probe.ts
+   bench.ts — `hopPairDoc`           fused-vs-general-probe.mjs      (`scattered` arm)
+   gql-filtered-hop-floor-probe.mjs  gremlin-multitype-floor-probe.mjs  (`random` arms)
+   runtime-profile-probe.mjs         (`scattered` arm)
+```
+
+⚠️ **`bench.ts` is the GQL bench, and item 1516 fixed `graphDoc` while leaving `hopPairDoc` — also
+five edges per node — degenerate in the same file.** So the GQL bench's edge-pair rows have the same
+correction coming that item 1632 measured for the Gremlin one.
+
+⚠️ **`order-cost-probe.ts`'s second site is not a graph at all**: `raw.push(((k * 104_729) % N) % 90)`
+builds the VALUE sequence its sort arms consume, and the invariance made that 200,000 distinct values
+repeated five times — a materially different sort from `N * DEG` draws.
+
+#### The test found what my pattern screen could not
+
+I screened for `k < N * FANOUT` plus a `% N` target and got five files. The text test got **nineteen
+hits across fifteen files**, including:
+
+- `bench.ts` — the GQL bench, which my screen cleared because it had already been fixed ONCE;
+- second sites in `order-cost-probe.ts` and `route-cost-probe.ts`, two files my own patch had just
+  touched — my `count(old) == 1` anchors matched the first occurrence and asserted nothing about the
+  rest;
+- `direction-spelling-probe.ts`, `present-spelling-probe.ts`, `literal-param-gate-probe.mjs`,
+  `label-arity-probe.ts`, `addedge-cost-probe.ts`, which my screen never considered because their
+  loop bound is not of the form it matched.
+
+**A `count == 1` assertion proves the anchor is unique; it says nothing about whether the DEFECT is.**
+That is the lesson, and it is the second time this session an anchor assertion passed while leaving
+work undone.
+
+#### The allowlist is reasoned, keyed on source text, and self-validating
+
+Six hits are genuinely harmless and each carries its reason rather than being silently excluded —
+four are ONE edge per vertex (degree 1 cannot branch), one has `FANOUT` defaulting to 1, and
+`label-arity-probe.ts` nests `d < DEG` inside the vertex loop, so a vertex's edges get CONSECUTIVE
+`k` and `k -> k + N` never relates two of them.
+
+Two design points, both learned by the test failing:
+
+- **Keyed on the LINE TEXT, not its number.** The first version keyed on `file:line`, and editing
+  `bench.ts` above `hopSparseDoc` shifted it from 201 to 206 immediately. Text changes exactly when
+  the code does, which is when the entry should be re-reviewed.
+- **Every allowlist entry must still match something.** Otherwise an entry whose code was fixed sits
+  there excusing a line that now means something else — which is how an allowlist becomes the hiding
+  place it is meant not to be. That check is what caught the line-number shift, and then caught two
+  keys I had guessed wrong rather than read.
+
+`assertBranching` (`src/fixture-branching.ts`) is the behavioural half, for a probe to call on its own
+numbers; its own test proves it REJECTS the degenerate form rather than only accepting the fixed one.
+
+#### ⚠️ The GQL-side correction is FLAT, and the control is what says so
+
+Item 1632 measured the Gremlin bench's correction at **2.4-6.2x** on multi-hop yielding rows, so I
+expected the GQL bench's `hopPairDoc` to move too. It does not. Only THREE rows read the changed
+fixtures, and the third is the ideal control — it reads `hopSparseDoc`, which is allowlisted as
+harmless and is **byte-identical in both arms**:
+
+```text
+   row                                      PRE (degenerate)   POST (fixed)   change
+   hop min+max over a string  [hopPairDoc]            105.4          108.1    +2.6%
+   hop min+max over a dict    [hopPairDoc]            109.4          103.3    -5.6%
+   hop min+max at degree 1    [UNCHANGED]              71.2           76.0    +6.7%  <- control
+```
+
+**The control moved MORE than either affected row**, in the same runs, so ~7% is this row family's
+noise floor and both affected rows are inside it. The fix stands on the fixture being provably
+degenerate, not on a number.
+
+Worth naming because it bounds item 1632's finding: both GQL rows here are AGGREGATES (`min+max`
+over a one-hop pair), while every row that moved 2.4-6.2x on the Gremlin side was a row-YIELDING
+multi-hop walk (`values(age)`, `id()` at depth 2-3). That is consistent with the locality
+explanation — a yielding walk re-reads far-vertex properties per row where an aggregate folds them —
+but it is a bound on where the error shows, not a measured mechanism.
+
+#### ⚠️ A correction to item 1632's own list
+
+Item 1632 listed `hop-rows-floor-probe.mjs` as degenerate at FANOUT 2. **It is not** — it was fixed at
+item 1518 and documents the fix. I had classified it from a pattern match without reading the
+expression, which is the same shortcut that produced the rest of this item's findings. Corrected
+there.

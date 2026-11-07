@@ -82,7 +82,7 @@ for (let k = 0; k < N * DEG; k += 1) {
     id: `e${k}`,
     labels: ['KNOWS'],
     from: verts[(k * 7919) % N] as never,
-    to: verts[(k * 104_729) % N] as never,
+    to: verts[((k % N) * 104_729 + Math.floor(k / N) * 977) % N] as never,
     properties: {},
   });
 }
@@ -92,7 +92,9 @@ for (let k = 0; k < N * DEG; k += 1) {
 const raw: number[] = [];
 
 for (let k = 0; k < N * DEG; k += 1) {
-  raw.push(((k * 104_729) % N) % 90);
+  // Not a graph — the value sequence the sort arms consume. The plain form repeated 200,000
+  // distinct values five times, which is a different sort from N * DEG draws (item 1633).
+  raw.push((((k % N) * 104_729 + Math.floor(k / N) * 977) % N) % 90);
 }
 
 const cmpNum = (a: number, b: number): number => a - b;
