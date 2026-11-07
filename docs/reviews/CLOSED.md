@@ -72593,10 +72593,71 @@ too.
 The 237x is real as a COST — the solver is genuinely 237x the closed form for the question it
 answers — but it is the price of a different, stricter aggregate. The honest open question is whether
 the SOLVER can be made cheaper (its own DFS, `solve`/`applyPattern`/`next` at 66% of the profile),
-not whether it can be replaced by a chain. Nothing here prices that.
+not whether it can be replaced by a chain. ~~Nothing here prices that.~~ ⚠️ **ITEM 1656 PRICES IT,
+and the answer is not a constant factor: the solver has no SELECTIVITY-driven entry choice, so its
+cost is independent of the answer size — 37-89x a hand route the engine already has the index for,
+GROWING as the selective pattern gets rarer.**
 
 #### Gates
 
 No engine change — the pass, its KIND bit and its wiring were all reverted and `git diff` is empty
 apart from the new test. `bun run check` 0 read unpiped. Suites: gremlin 1997 (+5 new), gql 4230 — 0
 fail.
+
+### Item 1656 — ⚠️ **`match()` HAS NO SELECTIVITY-DRIVEN ENTRY CHOICE, and the cost is ALGORITHMIC rather than constant: it pays ~11 ms whether the answer is 60 solutions or 30,000.** 37-89x a hand route the engine already has the index for, and **the ratio GROWS as the selective pattern gets rarer** — the signature four constant-factor items could not have found
+
+MEASURED, no engine change. New instrument: `gremlin-match-selectivity-floor.ts`.
+
+#### Why this is a different question from the four items before it
+
+The solver has been optimised four times — item 1478 (`tupleKey`, 1.10x), items 1559/1560 (the tag
+snapshot, 1.16-1.23x), item 1627 (the adjacency read, 1.08-1.11x) — every one a CONSTANT FACTOR, and
+item 1559's 5.68x "ceiling" was a pruned search. None of them could ask whether the solver's WORK is
+asymptotically right.
+
+#### Two cheap refutations first, so the target is not mis-aimed
+
+- **Written pattern ORDER does not matter.** `match(p1, p2)` and `match(p2, p1)` for a chain answer
+  the same (11,910) and cost the same (7.2-9.0 ms either way, both orders twice). So the solver is
+  not naively following the written order, and "reorder the patterns" is not the lever.
+- **The 237x of item 1655 is not available** — that was a different aggregate (bindings vs paths),
+  refuted the same session.
+
+#### The measurement: the gap GROWS as the answer shrinks
+
+`match(as(a).out(T).as(b), as(b).out(S).as(c))` over 3,000 vertices, every vertex carrying 10 `T`
+edges and one vertex in `rarity` carrying a single `S` edge. The floor is the route the solver could
+take — for each `S` edge its source is a satisfying `b`, and the `a`s are that b's incoming `T`
+neighbours — and **every row asserts the two answers agree before it is timed**:
+
+```text
+   rarity   S edges   solutions   solver     hand      ratio
+        1      3000       29990   31.43 ms   0.524 ms   59.9x
+        5       600        5998   18.57      0.402      46.2x
+       25       120        1200   12.09      0.322      37.5x
+      100        30         300   11.29      0.135      83.7x
+      500         6          60   11.07      0.125      88.8x
+```
+
+⚠️ **READ THE SOLVER COLUMN, NOT THE RATIO.** It is 11.07 ms for SIX `S` edges and 31.43 for three
+thousand — so the solver's cost is **driven by |V| x deg(T)**, the candidates it enumerates and
+discards, and is nearly INDEPENDENT of how many solutions exist. The hand route scales with the
+answer (0.125 → 0.524). That is why the ratio grows without bound as the selective pattern gets
+rarer, and it is the one shape of finding a constant-factor sweep cannot produce.
+
+#### The route exists; the choice does not
+
+Driving from `S` needs `edgesByLabel.get('S')` — the same index `adjacentCount` already uses for a
+global edge count — plus one `in(T)` per hit. So this is not a missing structure. What is missing is
+an entry choice: the solver always enters from the incoming stream and tests each pattern forward,
+where a selective pattern should be entered from its own bucket and traversed BACKWARDS to bind the
+earlier tags.
+
+OPEN, with that number. **Not built**: an entry/join-order choice in the solver is a planner feature,
+not a tick, and it needs a cost model (the engine has `cost.rs` on the native side, nothing
+equivalent in the TS solver). What this item fixes is the PRICE — the next attempt starts from
+"37-89x and growing", not from the four constant-factor items' 1.1x.
+
+#### Gates
+
+No engine change — one new probe. `bun run check` 0 read unpiped.
