@@ -21,10 +21,17 @@
 //
 // ⚠️ `values(k)` DROPS A VERTEX LACKING `k`, it does not emit undefined — the same rule
 // `hopValuesShortcut` states for its value mode, and `projectValues` implements with `k in props`.
+// ⚠️ TWO DIFFERENT THINGS ARE CALLED "SEEDED" IN THIS ENGINE, and they are not the same rung.
+// `seededNodeValuesShortcut` below is INDEX-seeded — `has(k, eq(v))` answered off a property index's
+// bucket (item 1595). `idSeededValuesShortcut` is ID-seeded — `V(id, …)`, the element ids given in
+// the query. They are disjoint by shape (one requires a `has`, the other requires ids on the source)
+// and neither can take the other's plans. The same ambiguity exists in `count-shortcut.ts`, where
+// `seededNodeCountShortcut` is index-seeded and `idSeededCount` is id-seeded (item 1649).
 import type { Graph } from '@lenke/core';
 
-import type { Plan, Step } from '../ast.js';
+import type { ID, Plan, Step } from '../ast.js';
 import { seedForStep } from './index-seed.js';
+import { asStringId } from './sources.js';
 
 /** The same shape `hopValuesShortcut` returns, so `run` can treat both identically. */
 export type NodeValues = Iterable<unknown> & { drain?: () => unknown[] };
@@ -95,6 +102,129 @@ export const nodeValuesShortcut = (plan: Plan, graph: Graph): NodeValues | undef
   return {
     [Symbol.iterator]: walk,
     drain: () => [...walk()],
+  };
+};
+
+/**
+ * ONE loop body for both the iterator and `drain`, AT MODULE SCOPE.
+ *
+ * ⚠️ MODULE SCOPE IS NOT STYLE, IT IS THE WHOLE WIN. Written as a closure inside the shortcut — so a
+ * fresh generator function is defined on every call — this rung measured **1.2x SLOWER than the
+ * traverser pipeline it replaces** (346 ns against 283), and the decomposition said why:
+ * `drain()` cost **203 ns on a freshly constructed rung against 62.9 ns on a reused one**, all of it
+ * the per-call closure. `ts-closure-size-is-load-bearing` records the same effect at 4x on an
+ * unrelated shape. Hoisted, the parameters carry what the closure used to capture.
+ *
+ * It stays ONE body for both consumers for the reason the shortcut above states: Gremlin results are
+ * compared ORDERED by the differential fuzzer, so two derivations that could drift would be a
+ * cross-engine failure rather than an unspecified-order liberty (item 169).
+ */
+const seededIdWalk = function* (
+  ids: readonly ID[],
+  labels: readonly string[] | undefined,
+  key: string,
+  graph: Graph,
+): Generator<unknown> {
+  for (const id of ids) {
+    const v = graph.getVertexById(asStringId(id));
+
+    if (v === undefined || v === null) {
+      continue;
+    }
+
+    if (labels !== undefined && !labels.some((l) => v.labels.has(l))) {
+      continue;
+    }
+
+    const props = v.properties;
+
+    if (key in props) {
+      yield props[key];
+    }
+  }
+};
+
+/**
+ * The same shape as {@link matchShape} but with the ids the source names — `V(id, …)` rather than
+ * `V()`.
+ */
+const matchSeededShape = (
+  steps: readonly Step[],
+):
+  | {
+      ids: readonly ID[];
+      label: Extract<Step, { kind: 'hasLabel' }> | undefined;
+      key: string;
+    }
+  | undefined => {
+  const [source, second, third] = steps;
+
+  if (source?.kind !== 'V') {
+    return undefined;
+  }
+
+  const { ids } = source;
+
+  if (ids === undefined || ids.length === 0) {
+    return undefined;
+  }
+
+  if (steps.length === 2 && second?.kind === 'values' && second.keys.length === 1) {
+    return { ids, label: undefined, key: second.keys[0] };
+  }
+
+  if (
+    steps.length === 3 &&
+    second?.kind === 'hasLabel' &&
+    third?.kind === 'values' &&
+    third.keys.length === 1
+  ) {
+    return { ids, label: second, key: third.keys[0] };
+  }
+
+  return undefined;
+};
+
+/**
+ * `V(id, …)[.hasLabel(L)].values(k)` — THE POINT LOOKUP, answered by resolving the ids with no
+ * traverser (item 1650).
+ *
+ * ⚠️ WHY THIS SHAPE, AND WHY NOW. Item 1642 decomposed this query and named the fix: "a closed-form
+ * route for seeded by id + one projection that never builds a traverser". Item 1649 built the
+ * `count()` half; this is the projection half, and it was the LAST arm of the point lookup. Measured
+ * against a hand floor (`getVertexById` + a property read) on `gremlin-point-floor.ts`:
+ *
+ * ```text
+ *   floor  getVertexById + props.k    15.7 ns
+ *   V(id).values(k)                  286.3 ns     18.2x
+ * ```
+ *
+ * where per-element work is negligible and the whole cost is per-call pipeline setup for an answer
+ * of ONE value.
+ *
+ * ⚠️ `asStringId` RAISES ON A NON-STRING ID, AND IT MUST RAISE FROM INSIDE THE GENERATOR. Ids are
+ * strings here, so `V(5)` is a type error rather than a coercion — and the general path raises it
+ * lazily too, because `sourceFromIds` is itself a generator. `V('a', 5).values(k)` therefore yields
+ * `a`'s value and THEN raises, on both routes. A rung that resolved ids eagerly would move the
+ * fault earlier, which is observable to a caller that reads one value and stops.
+ *
+ * ⚠️ THE MULTIPLICITY IS THE ID LIST'S: a duplicate id yields its value twice, a missing id nothing.
+ * Same rule as `idSeededCount` (item 1649), and the opposite of `hasId`'s, which filters the element
+ * set instead.
+ */
+export const idSeededValuesShortcut = (plan: Plan, graph: Graph): NodeValues | undefined => {
+  const shape = matchSeededShape(plan.steps);
+
+  if (shape === undefined) {
+    return undefined;
+  }
+
+  const { ids, label, key } = shape;
+  const labels = label?.labels;
+
+  return {
+    [Symbol.iterator]: () => seededIdWalk(ids, labels, key, graph),
+    drain: () => [...seededIdWalk(ids, labels, key, graph)],
   };
 };
 

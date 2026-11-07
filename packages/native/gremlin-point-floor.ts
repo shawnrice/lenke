@@ -57,6 +57,8 @@ const ARMS = [
   'seeded-hopcount',
   'floor-manyids',
   'seeded-manyids',
+  'seeded-twokeys',
+  'seeded-bare',
 ];
 
 if (!ARMS.includes(ARM)) {
@@ -165,8 +167,25 @@ const floorManyIds = (): unknown => {
   return n;
 };
 
+/**
+ * ⚠️ THE CONTROL FOR A NEW RUNG, which the arms above cannot be. Every other arm here is either
+ * ADMITTED by item 1650's shortcut or answered before `run` reaches its call site, so none of them
+ * prices what the extra gate costs a shape it DECLINES. `values(k, s)` fans out per key, which the
+ * rung refuses, and `V(id)` bare has no projection at all — both walk past the new call site and on
+ * to the pipeline.
+ */
+const twoKeyPlans = new Map<string, Plan>();
+const barePlans = new Map<string, Plan>();
+
+for (const id of IDS) {
+  twoKeyPlans.set(id, traversal(V(id), values('k', 'kk')));
+  barePlans.set(id, traversal(V(id)));
+}
+
 const WORK: Record<string, () => unknown> = {
   floor,
+  'seeded-twokeys': () => toArray(twoKeyPlans.get(nextId())!, g),
+  'seeded-bare': () => toArray(barePlans.get(nextId())!, g),
   'floor-hopcount': floorHopCount,
   'seeded-hopcount': () => toArray(hopCountPlans.get(nextId())!, g),
   'floor-manyids': floorManyIds,

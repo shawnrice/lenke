@@ -36,6 +36,7 @@ import { hopValuesShortcut } from './hop-values.js';
 import { seedFromIndex, tailIsOrderFree } from './index-seed.js';
 import { matchStep } from './match.js';
 import {
+  idSeededValuesShortcut,
   nodeValuesShortcut,
   seededNodeCountShortcut,
   seededNodeValuesShortcut,
@@ -1991,6 +1992,21 @@ export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
 
   if (nodeValues !== undefined) {
     return nodeValues;
+  }
+
+  // The ID-SEEDED twin of the shortcut above: `V(id, …)[.hasLabel(L)].values(k)` answered by
+  // resolving the ids, with no traverser (item 1650). DISJOINT BY SHAPE from both of its neighbours
+  // rather than ordered against them — the unfiltered rung requires a source with NO ids and the
+  // index-seeded one below requires a `has`, neither of which this shape has — but it is placed here
+  // so the ordering says so instead of relying on it.
+  //
+  // `tracksPath` gates it for the same reason and with the same caveat as its neighbours: the shapes
+  // it admits hold nothing path-dependent, so a mutant deleting the guard survives the suite. It is
+  // the SHORTCUT'S CONTRACT, not a statement about today's shape list.
+  const idSeededValues = ctx.tracksPath ? undefined : idSeededValuesShortcut(effective, graph);
+
+  if (idSeededValues !== undefined) {
+    return idSeededValues;
   }
 
   // The SEEDED twin of the shortcut above: `V()[.hasLabel(L)].has(k, eq(v)).values(j)` answered off

@@ -71370,8 +71370,9 @@ tick's work:
   spirit of the fused walks items 1613-1636 built for multi-row shapes. `seededShape` and
   `seedFromIndex` already exist, so the seeding half is there; what remains is the emit half.
   ⚠️ **ITEM 1649 BUILT THE `count()` HALF OF THIS** — `V(ids).count()` and `V(ids).<one hop>.count()`
-  now answer from the graph's indexes (5.19x on the hop) — and the PROJECTION half is still open: it
-  is the only remaining arm of the point lookup, now **6.0x** a hand floor rather than 31.9x.
+  now answer from the graph's indexes (5.19x on the hop) — and ⚠️ **ITEM 1650 BUILT THE PROJECTION
+  HALF**: `V(ids)[.hasLabel(L)].values(k)` at **1.36x** (286.0 → 211.2 ns). Both halves of this
+  bullet are now done; what is left is `run`'s own per-call floor, ~195 ns of the 211.
 - **parameter binding for Gremlin**, which it does not have (item 1577): a caller whose id varies
   cannot reuse a plan, so it pays construction AND the fresh-object inline-cache cost on every call —
   together ~434 of the 1277.6 ns, 34%. That is a feature, not an optimization, and it is the larger
@@ -72032,3 +72033,119 @@ choice otherwise lets the file pass vacuously (`rung-precedence-decides-speed`).
 `bun run check` 0 read UNPIPED. Suites: core 444, gql 4230, gremlin 1965 (+92 new), native 1081,
 serialization 144 — 0 fail. `bun run fuzz` all seven green. Gremlin spelling probe: 1 flagged group,
 down from 6 before item 1648.
+
+### Item 1650 — **1.36x on `V(id).values(k)`** (286.0 → 211.2 ns), the projection half of the point lookup item 1642 named — ⚠️ **and its FIRST version was 1.2x SLOWER than the pipeline it replaced, because the walk was a closure built per call.** Hoisting one generator to module scope is a **1.6x swing**, which is this corpus's own recorded lesson walked into head-first
+
+CLOSED. The tick's larger finding is the mechanism, not the ratio.
+
+#### What the screen said first: nothing
+
+Six GQL shapes (`point`, `hopfilter`, `grouped`, `sortedpage`, `distinct`, `wideproj`) at 20,000 reps
+through `runtime-profile-analyze.mjs`: **no unpriced frame over 2% in any of them.** Two false leads
+worth recording so they are not re-chased:
+
+- `RegExp: [\uD800-\uDBFF]` at **6.8%** of `sortedpage`, reported as "NOT CHECKABLE and over 2% —
+  unknown, NOT recorded". It is item 921's surrogate guard in `compareCodePoints`, priced there at
+  **~1.07x** for the only live option (hoisting the guard out of the comparator) and declined. The
+  screen cannot see that because the frame has no function NAME to grep — an analyzer blind spot, not
+  a target.
+- `detectNodeProjection` at **31.0%** of `wideproj` looked like per-call plan analysis, which is what
+  items 1645-1648 had just been fixing in Gremlin. It is not: the frame is
+  `(anonymous) in detectNodeProjection`, the per-ROW closure it returns. GQL's analysis is cached.
+
+The cross-surface probe's three flags were all known too (`hop distinct` 4.34x — items
+1583/1584/1587/1590 took it from 52.37x and priced the residual as a hard per-vertex constant;
+`filtered count` 2.36x; `paging` 2.35x). So the target came from the one unpriced NUMBER in the
+tick: both surfaces sit at ~250-290 ns for a one-row point lookup against a ~16 ns hand floor.
+
+#### ⚠️ "Seeded" means two different things in this engine, and the first job was ruling out duplication
+
+`seededNodeValuesShortcut` and `seededNodeCountShortcut` already existed — and are INDEX-seeded
+(`has(k, eq(v))` off a property index, items 1595/1596). `idSeededCount` (1649) and
+`idSeededValuesShortcut` (this item) are ID-seeded. They are disjoint by shape and neither can take
+the other's plans; both module headers now say so, because the names do not.
+
+#### ⚠️⚠️ The first version was SLOWER, and the decomposition named the cause exactly
+
+```text
+   arm                          PRE        POST (closure)    verdict
+   V(id).values(k)              286.0 ns   346.4 ns          1.2x WORSE
+   V().hasId(id).values(k)      290.7      365.5             1.26x WORSE
+```
+
+The rung fired (asserted, not assumed) and lost. Decomposed on a one-vertex graph:
+
+```text
+   match + construct the rung           21.3 ns
+   construct + drain()                 224.7       so drain is ~203
+   drain() on a REUSED rung object      62.9       the same work, 3.2x cheaper
+   getVertexById + props.k (floor)       7.4
+```
+
+`walk` was a generator function DEFINED INSIDE the shortcut, so every call created a fresh closure and
+V8 could not reuse its inline caches. `ts-closure-size-is-load-bearing` records this exact effect at
+4x on an unrelated shape; `node-values.ts`'s own header records the sibling hazard (editing a hot
+file perturbs unrelated rows). Hoisting `seededIdWalk` to module scope, with the captured values
+passed as parameters, keeps ONE loop body for the iterator and `drain` (item 169) and flips the
+result.
+
+#### The numbers, one arm per process, order-alternated, 3 rounds, 14 reps / median of 11
+
+```text
+   gremlin-point-floor.ts            PRE                      POST                  ratio
+   V(id).values(k)                   286.0 / 290.5 / 287.6    211.8 / 253.1 / 211.2  1.36x
+   V().hasId(id).values(k)           290.7 / 293.2 / 295.6    212.5 / 212.7 / 217.1  1.37x
+   V(id).values(k, kk)   CONTROL     287.4 / 295.5            295.0 / 302.2         ~1.02x
+   V(id) bare            CONTROL     201.3 / 191.9            196.0 / 194.9         FLAT
+   V(id).out(T).count()  CONTROL     116.6 / 117.9 / 116.9    107.5 / 115.9 / 125.0  FLAT
+```
+
+⚠️ **The first two controls are the ones that matter and the third is nearly worthless**, which is
+worth saying because the third is the obvious one. A new rung's real risk is what it costs the shapes
+it DECLINES, and `V(id).out(T).count()` is answered by `countShortcut` before `run` ever reaches the
+new call site — so it cannot price the gate at all. `values(k, kk)` fans out per key and `V(id)` bare
+has no projection: both walk past the new gate and on to the pipeline, and both are flat to ~2%.
+
+Both spellings move together (211.2 against 217.1 — 1.03x), so no spelling gap opens, which is the
+trap item 1649 fell into and had to fix inside the same item.
+
+#### What is left on this shape
+
+**211 ns against a 15.4 ns floor is still 13.7x.** The rung removed ~75 ns of the ~270 ns of
+per-call overhead; the residue is `run`'s own floor — `newContext`, `planReadsPath`, the shortcut
+chain itself, the returned object and the generator — for an answer of ONE value. That is item 1642's
+question in its final form, and it is now a `run`-level question rather than a per-shape one.
+
+#### Teeth: 8 meaningful mutants, 8 caught — and one that SURVIVED for a good reason
+
+```text
+   eager-resolve            resolving ids before the generator    CAUGHT
+   dedupes-ids              the id list's multiplicity            CAUGHT
+   coerces-id               `V(5)` must RAISE                     CAUGHT
+   drain-diverges           drain must be the same derivation     CAUGHT (17 fail)
+   haslabel-every           `hasLabel` is ANY-match               CAUGHT
+   presence-guard-dropped   a vertex lacking the key is dropped   CAUGHT
+   missing-id-not-skipped   a missing id yields nothing           CAUGHT
+   null-dropped             `props[key] !== undefined`            SURVIVED — EQUIVALENT
+```
+
+⚠️ **`null-dropped` is an equivalent mutant, not a test hole.** A STORED PRESENT NULL is `null`, not
+`undefined` (`null-first-class-policy`), so `props[key] !== undefined` still emits it; the two guards
+differ only for a stored `undefined`, which this engine normalises to null and cannot hold. The
+sharper mutant — dropping the presence guard entirely — is caught by the key-less vertex.
+
+⚠️ **`eager-resolve` is the one worth having.** `asStringId` raises on a non-string id and the general
+path raises it from INSIDE a generator, so `V('a', 5).values(k)` yields `a`'s value and only THEN
+raises. Resolving eagerly moves the fault earlier — invisible to `toArray`, observable to a caller
+that reads one value and stops — so the contract is asserted on the ITERATOR, stepping it by hand.
+
+The differential compares each shortcut answer against the same query with `.identity()` appended,
+which lands in the residual and forces the pipeline, so the oracle is the engine's own general path
+and the comparison is ORDERED (a TinkerPop contract, not an unspecified-order liberty). Plus a
+`idSeededValuesShortcut`-returns-defined ROUTE assertion for 3 admitted shapes and 6 declined ones.
+
+#### Gates
+
+`bun run check` 0 read UNPIPED. Suites: core 444, gql 4230, gremlin 1989 (+24 new), native 1081,
+serialization 144 — 0 fail. `bun run fuzz` all seven green. `bench:gremlin`, all 32 rows, both arms
+with their own build: flat, every `answers` column `same`.
