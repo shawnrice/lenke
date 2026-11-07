@@ -196,6 +196,14 @@ const SHAPES = {
   hop2valuesrows: traversal(V(), out('E'), out('E'), values('k')),
   hop2idrows: traversal(V(), out('E'), out('E'), id()),
 
+  // ── Item 1634: THREE hops yielding, the stacked arm ────────────────────────────────────────
+  // The largest absolute TS row in the corrected bench (6868.6 ms) and 5.5x native. Item 1617
+  // fused it with one generic STACKED walk for every depth above two; hop-chain-depth-floor.ts
+  // now prices that arm at 1218.36 ms against a hand-written iterator stack'"'"'s 984.85 and literal
+  // nesting'"'"'s 889.84 at 50,000/5 - 1.24x and 1.37x. Depth TWO is at its floor (1.04x), so the
+  // gap is specific to the stacked walk.
+  hop3valuesrows: traversal(V(), out('E'), out('E'), out('E'), values('k')),
+
   /**
    * ⚠️ Item 1615: the two shapes item 1614 LEFT on the pipeline, and the only two the cliff finder
    * still reads that way. Both are a two-hop walk with a `has` in it, and both now sit beside a

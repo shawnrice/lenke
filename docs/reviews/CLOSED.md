@@ -69445,9 +69445,9 @@ Every literal was derived before the files were written, and all 25 passed first
 
 `bun run check` 0 read unpiped. Suites gremlin 1756, gql 4160, core 435, native 1066, serialization 144 — 0 fail (25 new). `bun run fuzz` 20/0 under the 16G cap. The screen reads **13/13 gremlin, 11/11 gql**.
 
-### Item 1617 — **3.60x on a THREE-hop yielding walk** (`V().out()x3.values(age)` 3772.5 to 1047.6 ms on the 1,000,000-edge bench), **from 3.3x behind native to PARITY (ts/nat 1.0)** — and the depth cap is gone rather than raised: one generic STACKED walk serves every depth above two, while depth two keeps its literal nesting because replacing it measured a **1.29x regression**. The split is the whole item and it was priced before either was built
+### Item 1617 — **3.60x on a THREE-hop yielding walk** (`V().out()x3.values(age)` 3772.5 to 1047.6 ms on the 1,000,000-edge bench), ~~**from 3.3x behind native to PARITY (ts/nat 1.0)**~~ — ⚠️ **the parity claim was the DEGENERATE fixture item 1632 found; the row is 5.5x behind native on a branching graph** (the 3.60x itself stands, both arms saw the same graph) — and the depth cap is gone rather than raised: one generic STACKED walk serves every depth above two, while depth two keeps its literal nesting because replacing it measured a **1.29x regression**. The split is the whole item and it was priced before either was built
 
-OPEN: nothing in this family. Every shape in `gremlin-cliff-finder.ts` reads CLOSED, and depth is no longer a cap.
+OPEN: ~~nothing in this family~~ — ⚠️ **never checked against a hand floor at depth 3; item 1634 priced the stacked arm at 1.23x one and declined it with six ablations.** Every shape in `gremlin-cliff-finder.ts` reads CLOSED, and depth is no longer a cap.
 
 #### Two ways to take it, and only a measurement could choose
 
@@ -70660,3 +70660,102 @@ Item 1632 listed `hop-rows-floor-probe.mjs` as degenerate at FANOUT 2. **It is n
 item 1518 and documents the fix. I had classified it from a pattern match without reading the
 expression, which is the same shortcut that produced the rest of this item's findings. Corrected
 there.
+
+### Item 1634 — ⚠️ **A REFUTATION WITH SIX ABLATIONS, and the profile's top nomination priced at ZERO.** The depth-3 stacked walk is **1.23x** a hand-written iterator stack; `pick` was 19.0% of the profile and removing the call costs **+0.4%**. No single lever is worth taking — and the ablation instrument itself turned out to resolve only the two largest facts, which is item 1631s trap one item later. ⚠️ **And item 1617's "PARITY (ts/nat 1.0)" was measured on the fixture item 1632 found degenerate — the row is 5.5x behind native**
+
+OPEN: nothing actionable in the depth-chain family on the TS side. The row's remaining gap to native
+(**5.5x**, 6868.6 ms against 1242.58 at 200,000/5) survives a perfect TS stacked walk — the hand floor
+is only 1.23x below the engine, so even closing it entirely leaves ~4.5x. That residue is layout and
+algorithm, not walk overhead.
+
+#### Why this row was re-opened at all
+
+Item 1632 fixed `bench:gremlin`'s functional fixture, and the ranking changed: `V().out()x3.values(age)`
+is now the largest absolute TS row in the corpus at **6868.6 ms** and 5.5x native, where on the
+degenerate fixture it read ~1100 ms at `ts/nat` ≈ 1.0. Item 1617's heading claims **"from 3.3x behind
+native to PARITY (ts/nat 1.0)"** and **"OPEN: nothing in this family"**. The 3.60x it took is real
+(both its arms saw the same graph), but the PARITY claim was the degenerate fixture flattering the TS
+side, and "nothing open" had never been checked against a hand floor at depth 3.
+
+#### The price, and depth 2 is already done
+
+`hop-chain-depth-floor.ts` at 50,000 vertices / 249,996 edges, min of 7, 6,249,740 rows:
+
+```text
+   depth 2  LITERAL nesting (ships)      147.31 ms   117.8 ns/row
+   depth 2  the ENGINE                   159.16      127.3        1.08x — essentially AT its floor
+   depth 3  LITERAL nesting              864.66      138.4
+   depth 3  ITERATOR STACK               990.79      158.5        the stack's own floor
+   depth 3  the ENGINE (stacked, 1617)  1214.85      194.4        1.23x the stack, 1.40x literal
+```
+
+So the literal-nesting arm (depth 2) is closed and the STACKED arm (depth 3+) carries a 1.23x.
+
+#### ⚠️ Six ablations, and the profile's top nomination is worth nothing
+
+The windowed profile of `hop3valuesrows` reads `walk` **57.9%**, `pick` **19.0%**, `get properties`
+15.6%, `get to` 4.9%. Each candidate was modelled by ADDING exactly that one thing to the hand stack,
+so every number below is a delta against the same 990.79 base:
+
+⚠️ **AND THE PER-CAUSE DELTAS ARE ONLY TRUSTWORTHY WHERE THREE RUNS AGREE, because this is a
+MULTI-ARM PROCESS.** Editing one arm (hoisting `HOPS[0]` out of the vertex loop to match the engine)
+moved two arms I had not touched — `VARIABLE map key` read 997.45, 998.64, then **1054.60** — which is
+item 1631's trap in my own instrument, one item later. Three runs, so a range per arm rather than a
+number:
+
+```text
+   arm                            run 1     run 2     run 3    vs base
+   ITERATOR STACK (base)          990.79    995.75    991.94        —
+   + PICK CALL                    994.36    996.09    994.64   +0.3% ... +0.4%   STABLE
+   + SINK callback               1030.02   1019.92   1030.78   +2.4% ... +4.0%   directional
+   + flat-array bookkeeping      1064.97   1046.65   1058.92   +5.1% ... +7.5%   directional
+   + NESTED-TUPLE bookkeeping    1077.69      —      1110.61   +8.8% ... +12.0%  directional
+   + VARIABLE map key             997.45    998.64   1054.60   UNRESOLVABLE
+   the ENGINE                    1214.85   1212.22   1247.16  +21.7% ... +25.7%
+```
+
+Only two things survive that: the engine is **1.23x** its hand floor (stable across every run), and
+the `pick` CALL costs nothing (its arm tracks base within 0.5% in all three). The rest is
+directional, and `VARIABLE map key` is not measurable here at all.
+
+**`pick` is the lesson.** It is the second-largest frame in the profile at 19.0% and removing the call
+entirely costs **+0.4%** — a monomorphic closure called once per row is inlined, and its self time is
+its caller's loop body credited to it. That is item 1104's "a share is a nomination, not a price" in
+the strongest form yet recorded here: not an overstatement by ~2.5x, but by ~50x.
+
+**And the directional causes do not sum to the gap.** Taking the midpoint of each range gives ~14 of
+~23 points, and that arithmetic is itself suspect given the cross-arm interference above. The
+remainder is not attributable to anything modelled; the most likely candidate is the closure ENVIRONMENT the engine's `walk` captures (graph,
+hops, runs, pick, drops, depth, leadGates, anyLead, t0, fwd0) against the floor's three, which
+`ts-closure-size-is-load-bearing` records as real and which cannot be ablated cleanly from outside the
+engine. Recorded as unattributed rather than guessed.
+
+#### Why nothing is taken
+
+The one lever the ablations actually point at — flattening `hops`/`runs` into parallel arrays once per
+plan — is the DELTA between the nested-tuple and flat-array arms, and across the two runs that have
+both it is **1.2 points and 4.9 points**. A lever whose own price ranges 4x in two readings of the
+same instrument is not one to take. The sink callback (4.0%) cannot be removed: a generator cannot `yield` from inside a
+callback, which is why `stackedWalk` is written twice in the first place, and `drain` exists because
+item 1411 measured the generator protocol at 1.9-2.2x. So the addressable total is ~5% of a 23% gap,
+on a shape where item 1466 declined a 3.3x rather than perturb these files.
+
+⚠️ **The literal-vs-stack choice is NOT re-opened.** Literal nesting is 864.66 against the stack's
+990.79 — 1.15x — and a depth-3 specialization would buy that on the largest row in the bench. Item
+1617 priced exactly this and chose the stack to avoid a copy per depth; the numbers have moved
+(the stack's premium was ~28% then, 14.6% now) but the judgement is unchanged and re-deriving it is
+the expensive path CLAUDE.md names.
+
+#### What was built
+
+Six ablation arms in `hop-chain-depth-floor.ts`, kept because they are the durable output: the next
+person to look at this row gets the decomposition instead of the profile's misleading shares. ⚠️ Read
+them ONE ARM PER PROCESS if a per-cause number matters — the cross-arm interference above is this
+instrument's own limit, and it is why only the `pick` refutation and the 1.23x total are quoted as
+facts. And
+`hop3valuesrows` is now a shape in `runtime-profile-gremlin-probe.mjs`, which had no depth-3 yielding
+shape at all — the same gap item 1631 found in `bench:gremlin`.
+
+#### Gates
+
+No engine code changed. `bun run check` 0 read unpiped; suites unchanged.

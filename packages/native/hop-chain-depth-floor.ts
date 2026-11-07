@@ -200,6 +200,398 @@ const stacked = (depth: number): unknown[] => {
   return acc;
 };
 
+/**
+ * ⚠️ THREE ABLATION ARMS (item 1634), separating the two things the ENGINE's stacked walk does per
+ * EDGE that `stacked` above does not. The engine measures 1218.36 ms against `stacked`'s 984.85 at
+ * 50,000/5 — **1.24x** — and its windowed profile splits as `walk` 57.9%, `pick` 19.0%,
+ * `get properties` 15.6%. The two candidates:
+ *
+ *   BOOKKEEPING — per edge the engine reads `const [, fwd] = hops[d]` (a destructure of a
+ *     plan-constant array), `const gates = runs[d + 1]` (an index), and `gates.length > 0` (a load
+ *     and compare). All three are constant for the whole walk at a given depth.
+ *   PICK AS A CALL — the engine calls a `pick` closure chosen once per plan; the floor inlines
+ *     `far.properties.k`. `pick` is its own 19.0% frame, so this is not free.
+ *
+ * Measuring them separately is the point: a combined arm that lands on the engine's number would
+ * confirm the total without saying which half to fix, and the fixes are completely different (hoist
+ * flat arrays vs specialize the emit site).
+ */
+const FWDS = [true, true, true, true];
+const RUNS: (readonly ((v: Vertex) => boolean)[])[] = [[], [], [], []];
+const PICK = (far: Vertex): unknown => far.properties.k;
+
+/** The hand stack PLUS only the engine's per-edge bookkeeping. `pick` stays inlined. */
+const stackedBookkeeping = (depth: number): unknown[] => {
+  const acc: unknown[] = [];
+  const its: (Iterator<Edge> | undefined)[] = Array.from({ length: depth });
+
+  for (const v of g.vertices) {
+    const b0 = v.adjFrom?.get('E');
+
+    if (b0 === undefined) {
+      continue;
+    }
+
+    its[0] = (b0 as Iterable<Edge>)[Symbol.iterator]();
+
+    let d = 0;
+
+    while (d >= 0) {
+      const step = its[d]!.next();
+
+      if (step.done === true) {
+        its[d] = undefined;
+        d -= 1;
+        continue;
+      }
+
+      // The engine's three per-edge reads, verbatim in shape.
+      const fwd = FWDS[d];
+      const far = fwd ? step.value.to : step.value.from;
+      const gates = RUNS[d + 1];
+
+      if (gates.length > 0) {
+        continue;
+      }
+
+      if (d === depth - 1) {
+        const value = far.properties.k;
+
+        if (value !== undefined) {
+          acc.push(value);
+        }
+
+        continue;
+      }
+
+      const fwdn = FWDS[d + 1];
+      const next = (fwdn ? far.adjFrom : far.adjTo)?.get('E');
+
+      if (next === undefined) {
+        continue;
+      }
+
+      d += 1;
+      its[d] = (next as Iterable<Edge>)[Symbol.iterator]();
+    }
+  }
+
+  return acc;
+};
+
+/** The hand stack PLUS only the `pick` CALL. No bookkeeping. */
+const stackedPickCall = (depth: number): unknown[] => {
+  const acc: unknown[] = [];
+  const its: (Iterator<Edge> | undefined)[] = Array.from({ length: depth });
+
+  for (const v of g.vertices) {
+    const b0 = v.adjFrom?.get('E');
+
+    if (b0 === undefined) {
+      continue;
+    }
+
+    its[0] = (b0 as Iterable<Edge>)[Symbol.iterator]();
+
+    let d = 0;
+
+    while (d >= 0) {
+      const step = its[d]!.next();
+
+      if (step.done === true) {
+        its[d] = undefined;
+        d -= 1;
+        continue;
+      }
+
+      const far = step.value.to;
+
+      if (d === depth - 1) {
+        const value = PICK(far);
+
+        if (value !== undefined) {
+          acc.push(value);
+        }
+
+        continue;
+      }
+
+      const next = far.adjFrom?.get('E');
+
+      if (next === undefined) {
+        continue;
+      }
+
+      d += 1;
+      its[d] = (next as Iterable<Edge>)[Symbol.iterator]();
+    }
+  }
+
+  return acc;
+};
+
+/** BOTH, which should land on the engine's number if the two account for the 1.24x. */
+const stackedBoth = (depth: number): unknown[] => {
+  const acc: unknown[] = [];
+  const its: (Iterator<Edge> | undefined)[] = Array.from({ length: depth });
+
+  for (const v of g.vertices) {
+    const b0 = v.adjFrom?.get('E');
+
+    if (b0 === undefined) {
+      continue;
+    }
+
+    its[0] = (b0 as Iterable<Edge>)[Symbol.iterator]();
+
+    let d = 0;
+
+    while (d >= 0) {
+      const step = its[d]!.next();
+
+      if (step.done === true) {
+        its[d] = undefined;
+        d -= 1;
+        continue;
+      }
+
+      const fwd = FWDS[d];
+      const far = fwd ? step.value.to : step.value.from;
+      const gates = RUNS[d + 1];
+
+      if (gates.length > 0) {
+        continue;
+      }
+
+      if (d === depth - 1) {
+        const value = PICK(far);
+
+        if (value !== undefined) {
+          acc.push(value);
+        }
+
+        continue;
+      }
+
+      const fwdn = FWDS[d + 1];
+      const next = (fwdn ? far.adjFrom : far.adjTo)?.get('E');
+
+      if (next === undefined) {
+        continue;
+      }
+
+      d += 1;
+      its[d] = (next as Iterable<Edge>)[Symbol.iterator]();
+    }
+  }
+
+  return acc;
+};
+
+/**
+ * ⚠️ TWO MORE ABLATIONS (item 1634), because the first three REFUTED both candidates. Bookkeeping is
+ * +4.8%, the `pick` CALL is +0.0% — V8 inlines a monomorphic closure called once per row — and both
+ * together are +6.0% against the ENGINE's +23.4%. So ~17 points were unexplained, and the profile
+ * naming `pick` at 19.0% was a nomination that priced at nothing (item 1104, in reverse).
+ *
+ * What is left, read off the engine rather than guessed again:
+ *
+ *   SINK CALLBACK — the engine's walk is `walk(sink)` and calls `sink(value)` per ROW, so the eager
+ *     arm pays a closure call for every one of 6,249,740 rows. The floor pushes to `acc` directly.
+ *     This is a different question from the `pick` call: `pick` is called at the same site, but the
+ *     sink is called THROUGH a parameter, which is a megamorphic-by-design site (the lazy and eager
+ *     halves pass different sinks).
+ *   VARIABLE MAP KEY — the engine does `.get(t0)` with the edge type in a variable; the floor does
+ *     `.get('E')` with a literal. A constant key lets V8 specialize the lookup.
+ */
+const T0 = 'E';
+
+/** The hand stack with the emit going THROUGH A SINK PARAMETER, as the engine's walk does. */
+const stackedSink = (depth: number): unknown[] => {
+  const acc: unknown[] = [];
+
+  const walk = (sink: (value: unknown) => void): void => {
+    const its: (Iterator<Edge> | undefined)[] = Array.from({ length: depth });
+
+    for (const v of g.vertices) {
+      const b0 = v.adjFrom?.get('E');
+
+      if (b0 === undefined) {
+        continue;
+      }
+
+      its[0] = (b0 as Iterable<Edge>)[Symbol.iterator]();
+
+      let d = 0;
+
+      while (d >= 0) {
+        const step = its[d]!.next();
+
+        if (step.done === true) {
+          its[d] = undefined;
+          d -= 1;
+          continue;
+        }
+
+        const far = step.value.to;
+
+        if (d === depth - 1) {
+          const value = far.properties.k;
+
+          if (value !== undefined) {
+            sink(value);
+          }
+
+          continue;
+        }
+
+        const next = far.adjFrom?.get('E');
+
+        if (next === undefined) {
+          continue;
+        }
+
+        d += 1;
+        its[d] = (next as Iterable<Edge>)[Symbol.iterator]();
+      }
+    }
+  };
+
+  walk((value) => acc.push(value));
+
+  return acc;
+};
+
+/** The hand stack with the bucket key in a VARIABLE instead of a literal. */
+const stackedVarKey = (depth: number): unknown[] => {
+  const acc: unknown[] = [];
+  const its: (Iterator<Edge> | undefined)[] = Array.from({ length: depth });
+
+  for (const v of g.vertices) {
+    const b0 = v.adjFrom?.get(T0);
+
+    if (b0 === undefined) {
+      continue;
+    }
+
+    its[0] = (b0 as Iterable<Edge>)[Symbol.iterator]();
+
+    let d = 0;
+
+    while (d >= 0) {
+      const step = its[d]!.next();
+
+      if (step.done === true) {
+        its[d] = undefined;
+        d -= 1;
+        continue;
+      }
+
+      const far = step.value.to;
+
+      if (d === depth - 1) {
+        const value = far.properties.k;
+
+        if (value !== undefined) {
+          acc.push(value);
+        }
+
+        continue;
+      }
+
+      const next = far.adjFrom?.get(T0);
+
+      if (next === undefined) {
+        continue;
+      }
+
+      d += 1;
+      its[d] = (next as Iterable<Edge>)[Symbol.iterator]();
+    }
+  }
+
+  return acc;
+};
+
+/**
+ * ⚠️ THE SIXTH ABLATION, and it exists because five accounted for only 7.8 of the engine's 21.7
+ * points. The `BOOKKEEPING` arm above under-modelled the engine: it reads `FWDS[d]`, a FLAT boolean
+ * array, where the engine destructures a NESTED TUPLE — `const [, fwd] = hops[d]` with
+ * `hops: readonly (readonly [string, boolean])[]`. That is a load of an inner array, then an indexed
+ * read out of it, per edge, and the engine does it TWICE per descend (`hops[d]` and `hops[d + 1]`).
+ *
+ * This arm is the engine's shape verbatim. If it lands on the engine's number, the fix is to flatten
+ * `hops` into parallel arrays once per plan — which is the same lever the flat `FWDS` arm already
+ * shows costs only 5.1%, so the DELTA between the two arms is what flattening would recover.
+ */
+const HOPS: readonly (readonly [string, boolean])[] = [
+  ['E', true],
+  ['E', true],
+  ['E', true],
+  ['E', true],
+];
+
+/** The hand stack with the engine's NESTED-TUPLE bookkeeping, and nothing else. */
+const stackedTuple = (depth: number): unknown[] => {
+  const acc: unknown[] = [];
+  const its: (Iterator<Edge> | undefined)[] = Array.from({ length: depth });
+
+  // Hoisted exactly as the engine does it (`const [[t0, fwd0]] = hops`).
+  const [[t0, fwd0]] = HOPS;
+
+  for (const v of g.vertices) {
+    const b0 = (fwd0 ? v.adjFrom : v.adjTo)?.get(t0);
+
+    if (b0 === undefined) {
+      continue;
+    }
+
+    its[0] = (b0 as Iterable<Edge>)[Symbol.iterator]();
+
+    let d = 0;
+
+    while (d >= 0) {
+      const step = its[d]!.next();
+
+      if (step.done === true) {
+        its[d] = undefined;
+        d -= 1;
+        continue;
+      }
+
+      const [, fwd] = HOPS[d];
+      const far = fwd ? step.value.to : step.value.from;
+      const gates = RUNS[d + 1];
+
+      if (gates.length > 0) {
+        continue;
+      }
+
+      if (d === depth - 1) {
+        const value = far.properties.k;
+
+        if (value !== undefined) {
+          acc.push(value);
+        }
+
+        continue;
+      }
+
+      const [tn, fwdn] = HOPS[d + 1];
+      const next = (fwdn ? far.adjFrom : far.adjTo)?.get(tn);
+
+      if (next === undefined) {
+        continue;
+      }
+
+      d += 1;
+      its[d] = (next as Iterable<Edge>)[Symbol.iterator]();
+    }
+  }
+
+  return acc;
+};
+
 type Arm = { name: string; run: () => number };
 
 const ARMS: Arm[] = [
@@ -211,6 +603,12 @@ const ARMS: Arm[] = [
   },
   { name: 'depth 3  LITERAL nesting', run: () => nested3().length },
   { name: 'depth 3  ITERATOR STACK', run: () => stacked(3).length },
+  { name: 'depth 3  stack + BOOKKEEPING only', run: () => stackedBookkeeping(3).length },
+  { name: 'depth 3  stack + PICK CALL only', run: () => stackedPickCall(3).length },
+  { name: 'depth 3  stack + BOTH', run: () => stackedBoth(3).length },
+  { name: 'depth 3  stack + SINK callback', run: () => stackedSink(3).length },
+  { name: 'depth 3  stack + VARIABLE map key', run: () => stackedVarKey(3).length },
+  { name: 'depth 3  stack + NESTED-TUPLE bookkeeping', run: () => stackedTuple(3).length },
   {
     name: 'depth 3  the ENGINE (STACKED at 1617)',
     run: () => toArray(traversal(V(), out('E'), out('E'), out('E'), values('k')), g).length,
