@@ -71097,9 +71097,87 @@ decisions that follow from it, which `ts-closure-size-is-load-bearing` records a
 in a returned closure gave UNRELATED queries a new 4x slow mode) and which no hand floor reproduces,
 because a hand floor captures three locals where the engine's captures ten.
 
-That is a hypothesis with a shape, not a lever. Testing it needs an experiment on closure
-environment size — not another per-frame ablation, which is now 0 for 3.
+~~That is a hypothesis with a shape, not a lever. Testing it needs an experiment on closure
+environment size — not another per-frame ablation, which is now 0 for 3.~~ ⚠️ **TESTED AND REFUTED AT
+ITEM 1639**: 14 captured locals cost **0.4%** against 3, and reading one per edge costs nothing. The
+candidate is dead; item 1639 also notes that two hand walks of the same shape in different
+instruments differ by 1.45x, so part of this family's gap may be instrument rather than engine.
 
 #### Gates
 
 No engine code changed — two floor arms. `bun run check` 0 read unpiped; suites unchanged.
+
+### Item 1639 — ⚠️ **THE CLOSURE-ENVIRONMENT HYPOTHESIS IS REFUTED, and it was the one candidate three items pointed at.** A walk capturing **14 locals costs 0.4% against one capturing 3**, and reading a context local per EDGE costs nothing either — so the persistent 1.2-2.0x engine-vs-floor gap is not the environment, and the engine's per-edge `hops[d]` / `runs[d+1]` / `drops` reads are not it either
+
+OPEN: the **1.2-2.0x engine-vs-hand-floor gap** on three unrelated shapes (items 1634, 1636, 1638)
+is now short of candidates. Per-frame ablation accounted for a minority each time (0 for 3), and the
+structural explanation those items converged on is dead. What has NOT been tested is whether the
+remaining difference is the instruments rather than the engine — see the caution below, which is the
+honest next step and cheaper than another lever hunt.
+
+#### The hypothesis, and why it was worth one experiment
+
+Items 1634, 1636 and 1638 each found an engine walk 1.2-2.0x a hand floor doing the same work, with
+per-frame ablations explaining a minority:
+
+```text
+   item 1634  Gremlin depth-3 stacked walk     1.23x   ~60% across four causes; `pick` priced at 0%
+   item 1636  GQL filtered hop (after 1.19x)   ~2.0x   a 41.5% probe arm realized ~19-30%
+   item 1638  Gremlin two-hop + any filter     ~1.9x   the gate collapse is ~1.08x of it
+```
+
+The one candidate common to all three was the thing a hand floor structurally cannot reproduce: the
+engine's walks are closures returned per compile capturing **eight to fourteen** locals
+(`stackedWalk` captures graph, hops, runs, pick, drops, depth, leadGates, anyLead, t0, fwd0;
+`filteredHopWalk` more) where a floor captures two or three. `ts-closure-size-is-load-bearing`
+records the EFFECT as real — a walk inline in a returned closure gave unrelated queries a new 4x slow
+mode — but nothing had measured the cost of the environment itself.
+
+#### The measurement: three byte-identical walks, one arm per process
+
+`closure-env-probe.ts`, 200,000 vertices / 999,990 edges, 12 reps, median of the last 9:
+
+```text
+   arm                                      run 1 median   run 2 median   run 1 min  run 2 min
+   lean     3 captured locals                     144.78         142.60      144.27     137.41
+   fat      14 captured, cold-referenced          145.31         142.82      144.36     140.65
+   fatread  14 captured, ONE read per edge        144.85         145.18      144.34     144.29
+```
+
+**0.4% across all three in run 1 and 1.8% in run 2**, with run 1's series tight to ±1 ms. Two runs
+are reported because the first was tighter than the second and quoting only it would overstate the
+instrument: `fatread` is the slowest arm in both, by 0.1% and then 1.8%, which is as close to no
+effect as this corpus measures anything. A real null, not an unresolvable one.
+
+Two things die at once:
+
+- **the environment itself is free.** Fourteen captured locals cost nothing against three.
+- **reading through it is free too.** `fatread` does one context read per edge — the engine's actual
+  pattern (`hops[d]`, `runs[d + 1]`, `drops`, `pick` are all context reads inside the loop) — and is
+  indistinguishable from `lean`. That independently corroborates item 1634's bookkeeping ablation
+  coming out small, by a different route.
+
+#### ⚠️ The cold reference is load-bearing, and without it this arm would have BEEN `lean`
+
+A captured local referenced nowhere is dropped from the context entirely, so `fat` would have been
+`lean` and the arms would have differed by nothing — a null result that looks like a result, which is
+the exact failure this corpus keeps producing (items 1626, 1631, 1632). Each extra local is
+referenced in a branch guarded by a condition the fixture never satisfies, and the probe counts the
+branch's firings and THROWS if the count is not zero. It is zero.
+
+#### ⚠️ A caution this item raises about its own neighbours
+
+`closure-env-probe`'s `lean` arm walks 1M edges, reads a property and counts, in **144.78 ms**.
+`two-hop-values-floor.ts` reports its 1-hop engine arm doing comparable work in **99.63 ms**. Two
+hand-written walks of the same shape in different instruments differ by 1.45x — which is the same
+order as the 1.47x run-to-run swing item 1638 measured on one arm of one file.
+
+So the cross-item 1.2-2.0x gaps may be partly instrument, not engine. The ratios in items 1634/1636/
+1638 are all same-run engine-vs-floor pairs, which is the right construction and is why they stand —
+but the NEXT step on that family is to put the engine and its floor in one process with one arm per
+measurement, not to hunt a fifth lever. **Do not compare a number from this probe with a number from
+another file.**
+
+#### Gates
+
+No engine code changed — one new probe. `bun run check` 0 read unpiped; suites unchanged.
