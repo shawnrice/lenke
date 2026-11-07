@@ -13,6 +13,7 @@ import { ErrorCode, LenkeError } from '@lenke/errors';
 import {
   anyMayFault,
   EDGE_STEP_BITS,
+  EFF_PREFIX,
   FILTER_WRAPPER_BITS,
   KIND_BITS,
   maskOfSteps,
@@ -1514,6 +1515,11 @@ const rewritten = (plan: Plan, steps: readonly Step[]): Plan => ({
   // Recomputed for the same reason as `kinds`: `fuseLocal` inlines sub-plan steps into the top
   // level, so a rewrite can introduce a kind that CAN fault where the original plan had none.
   mayFault: anyMayFault(steps),
+  // ⚠️ RESET, NOT INHERITED (item 1647). Object spread COPIES enumerable own symbol properties, so
+  // `...plan` would hand this new plan the normalised form of a DIFFERENT step list — a rewritten
+  // plan handed back as the answer for the plan it was rewritten from. Every other field here is
+  // recomputed for the same reason; this one has no value worth carrying.
+  [EFF_PREFIX]: undefined,
 });
 
 /**
@@ -1560,23 +1566,42 @@ export const fuseLocal = (plan: Plan): Plan => {
   return changed ? rewritten(plan, steps) : plan;
 };
 
+/**
+ * The six rewrite passes that read ONLY the plan, memoised on the plan (item 1647).
+ *
+ * ⚠️ THE MEMO IS THE POINT. `run` calls `effectivePlan` on EVERY invocation, so a spelling that
+ * needs a rewrite to become the fast one paid for the rewrite per call — 117.5 ns of the 225.2 ns
+ * gap between `union(out(T), in(T)).count()` and `both(T).count()` (item 1645), of which
+ * `fuseUnionBoth` alone was 94.5 ns. That pass is in here.
+ *
+ * ⚠️ THE CACHE HAS NO KEY, AND THAT IS WHY IT IS THIS PREFIX. A plan is immutable and these six
+ * passes read nothing else, so an entry can never be stale. The whole-chain cache item 1646 priced
+ * would have to be keyed on the graph's mutation state, and `Graph` has none that is SYNCHRONOUS:
+ * `version` and `epoch(name)` advance on a microtask drain, so the first read after a write sees
+ * the old value and `dropVacuousLabels` would serve a filter it dropped as vacuous against a graph
+ * where it no longer is. See {@link Plan[EFF_PREFIX]}.
+ */
+const graphFreePrefix = (plan: Plan): Plan => {
+  const cached = plan[EFF_PREFIX];
+
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  const prefix = fuseUnionBoth(
+    fuseEdgeHop(flattenFilterWrappers(fuseValuesIsCount(seedSingleHasId(fuseLocal(plan))))),
+  );
+
+  plan[EFF_PREFIX] = prefix;
+
+  return prefix;
+};
+
 export const effectivePlan = (plan: Plan, graph: Graph, tracksPath: boolean): Plan =>
   tracksPath
     ? plan
     : fuseOrderTake(
-        dropUnreadAs(
-          dropVacuousLabels(
-            fuseUnionSameDir(
-              fuseUnionBoth(
-                fuseEdgeHop(
-                  flattenFilterWrappers(fuseValuesIsCount(seedSingleHasId(fuseLocal(plan)))),
-                ),
-              ),
-              graph,
-            ),
-            graph,
-          ),
-        ),
+        dropUnreadAs(dropVacuousLabels(fuseUnionSameDir(graphFreePrefix(plan), graph), graph)),
       );
 
 /**

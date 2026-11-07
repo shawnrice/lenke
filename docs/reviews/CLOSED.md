@@ -71527,9 +71527,12 @@ as flagged, not as findings.
 
 No engine code changed — the probe only. `bun run check` 0 read unpiped.
 
-### Item 1645 — ⚠️⚠️ **A SPELLING THAT NEEDS A REWRITE TO BECOME THE FAST ONE CAN NEVER MATCH THE ONE THAT DID NOT, because the rewrite runs PER CALL.** `union(out(T), in(T)).count()` is 2.41x `both(T).count()` even though `fuseUnionBoth` collapses the first into the second — and **52% of the gap is `effectivePlan` doing that collapse** (117.5 of 225.2 ns). A conceptual correction to this repo's central invariant, not a lever
+### Item 1645 — ⚠️⚠️ **A SPELLING THAT NEEDS A REWRITE TO BECOME THE FAST ONE CAN NEVER MATCH THE ONE THAT DID NOT, because the rewrite runs PER CALL** (⚠️ **the per-call part is FIXED at item 1647 — the rewrite is cached; the conceptual point stands and the residual moved to `run`'s validation**)**.** `union(out(T), in(T)).count()` is 2.41x `both(T).count()` even though `fuseUnionBoth` collapses the first into the second — and **52% of the gap is `effectivePlan` doing that collapse** (117.5 of 225.2 ns). A conceptual correction to this repo's central invariant, not a lever
 
-OPEN: the 2.41x itself, with two priced fixes and neither taken. ~~**A `WeakMap<Plan, Plan>` memo on `effectivePlan`**~~ — ⚠️ **ANSWERED AT ITEM 1646: a WeakMap is indeed 1.25x worse rebuilt, but three SCALAR FIELDS on the plan are 33x better reused and FLAT rebuilt. Item 1503's refusal does not apply to that design, and `Graph` already has the `version` the sound key needs.** **Removing
+~~OPEN: the 2.41x itself~~ — ⚠️ **MOSTLY CLOSED AT ITEM 1647**, which cached the rewrite and took the
+whole call from **395.0 → 274.7 ns** against a flat `both` control, narrowing this gap to 1.58x. The
+residual is NOT the rewrite: `run`'s pre-rewrite validation walks the UN-normalised plan, which is
+~91 ns of the remaining 118 and is now the open part. ~~**A `WeakMap<Plan, Plan>` memo on `effectivePlan`**~~ — ⚠️ **ANSWERED AT ITEM 1646 (a WeakMap is 1.25x worse rebuilt; a field on the plan is not) AND BUILT AT ITEM 1647 — though not with that item's key, which is a wrong answer: `graph.version` is asynchronous.** **Removing
 `fuseUnionBoth`'s two per-call allocations** — `plan.steps.slice(i + 1)` handed to `tailIsOrderFree`,
 and the `[...plan.steps]` spread — is worth maybe 8% of the row, below the bar for a file whose edits
 perturb.
@@ -71593,12 +71596,16 @@ key is (plan, graph, mutation-epoch) and the graph has no epoch today.
 
 No code changed — measurement only. `bun run check` 0 read unpiped.
 
-### Item 1646 — ⚠️ **ITEM 1503'S REFUSAL DOES NOT APPLY TO THE RIGHT DESIGN.** A plan-cached `effectivePlan` makes a REUSED plan **33x cheaper (155.0 → 4.7 ns)** and a REBUILT one **FLAT** — no trade at all — where the `WeakMap` form it refused is 1.25x WORSE rebuilt. Three designs priced in one instrument, and the first two of mine were wrong: an object-per-miss and a key without the graph's identity
+### Item 1646 — ⚠️ **ITEM 1503'S REFUSAL DOES NOT APPLY TO THE RIGHT DESIGN.** A plan-cached `effectivePlan` makes a REUSED plan **33x cheaper (155.0 → 4.7 ns)** and a REBUILT one **FLAT** — no trade at all — where the `WeakMap` form it refused is 1.25x WORSE rebuilt. Three designs priced in one instrument, and the first two of mine were wrong: an object-per-miss and a key without the graph's identity. ~~**And the key `Graph` already has is enough**~~ — ⚠️⚠️ **IT IS NOT, AND THIS DESIGN IS A WRONG ANSWER: `graph.version` IS ASYNCHRONOUS. BUILT AT ITEM 1647 AS A PREFIX CACHE INSTEAD (6.9x on the chain, 1.44-1.58x on the call).**
 
-OPEN: **build it.** The measurement is done and the design is settled; three build concerns are named
-below and none is a blocker. This is the largest clean win left on cheap queries — item 1645 showed
-`run` calls `effectivePlan` per invocation, which is 52% of the `union(out,in)` vs `both` gap and the
-residual in item 1643's `hasId` seed.
+~~OPEN: **build it.**~~ **CLOSED AT ITEM 1647 — but not this design.** `version` and `epoch(name)` are
+REACTIVE counters that advance on a microtask DRAIN, so `addVertex(); graph.version` reads the OLD
+value and a whole-chain cache keyed on it serves a stale rewrite to every read in the same
+synchronous block as a write. For `dropVacuousLabels` that is a dropped filter against a graph where
+it is no longer vacuous. Item 1647 caches only the GRAPH-FREE PREFIX of the chain, which needs no key
+at all, and measures **167 → 24 ns** on the chain rather than this entry's 4.7. The three designs
+priced below are still the right pricing of the SHAPE, and the symbol-key question the build raised
+is answered there.
 
 #### The trade, priced for the whole rewrite chain
 
@@ -71649,3 +71656,130 @@ available later as a tighter key than the whole-graph version.
 #### Gates
 
 No engine code changed — one new probe. `bun run check` 0 read unpiped.
+
+### Item 1647 — ⚠️⚠️ **`Graph.version` IS NOT A SYNCHRONOUS MUTATION COUNTER, so item 1646's whole-chain plan cache was a WRONG ANSWER** — caught by a test, not by reading. Shipped the sound half instead: a keyless cache of the rewrite chain's GRAPH-FREE PREFIX, **6.9x on the chain (167 → 24 ns)** and **1.44-1.58x on the whole `union(out, in).count()` call** against a flat control, at a measured cost of ~5% on a plan rebuilt every call
+
+CLOSED. It also corrects two things about its own instruments: the premise item 1646 recorded as
+already satisfied, and a null A/B the Gremlin spelling probe cannot avoid giving a `src`-only change.
+
+#### The wrong answer, and how it surfaced
+
+Item 1646 priced a cache of the WHOLE chain keyed on `(graph identity, graph.version)` and recorded
+that "the prerequisite item 1645 thought was missing is already there". It is not there:
+
+```text
+   g.addVertex(...)             g.version  g.epoch('P')  g.vertexCount
+   immediately after the write      0            0             1
+   after one microtask drain         1            1             1
+```
+
+`version` and `epoch(name)` are REACTIVE counters that advance when the mutation queue DRAINS. So
+every read in the same synchronous block as a write sees the old value, and a cache keyed on it
+serves the pre-write rewrite. `dropVacuousLabels` reads the graph's label counts, so the specific
+failure is **a filter dropped as vacuous and still dropped after the write that made it selective** —
+a wrong answer, not a stale optimisation. The whole-chain version was built, and the test
+`a write immediately before the read is seen — no drain in between` failed on it. `vertexCount` and
+`edgeCount` ARE synchronous and are not sufficient alone, because a label's distribution can change
+at a constant vertex count.
+
+⚠️ **This is the second time in two items that a premise recorded as settled was false.** Item 1646's
+own entry says reading caught one hole in its design (a key without the graph's identity) that
+measuring missed; this one measuring did not catch either — a test did, and only because the test was
+written to exercise a write between two reads.
+
+#### What shipped: the prefix, which needs no key
+
+Six of the chain's ten passes read only the plan (`fuseLocal`, `seedSingleHasId`, `fuseValuesIsCount`,
+`flattenFilterWrappers`, `fuseEdgeHop`, `fuseUnionBoth`); two take the `graph` (`fuseUnionSameDir`,
+`dropVacuousLabels`). A plan is immutable, so an entry for the graph-free prefix **can never be
+stale** — the cache has no key, nothing to invalidate, and no `Graph` reference to pin. The two
+graph-dependent passes run per call, gated as they already were. And the expensive pass is inside the
+prefix: item 1645 priced `fuseUnionBoth` alone at 94.5 ns of the chain's 131.7.
+
+#### The numbers, one arm per process, order-alternated, 12 reps / median of 9
+
+```text
+   plan-memo-trade-probe.ts        PRE                POST
+   the chain, plan REUSED          167.0 / 181.9 ns   24.3 / 25.4 / 27.7    6.9x
+   the chain, plan REBUILT         480.0 / 487.0      504.9 / 510.7 / 570   1.05x WORSE
+   plan construction alone         284.0 / 286.4      283.1 / 299.3        FLAT
+
+   union-both-call-floor.ts (new)  PRE                POST
+   toArray(union(out,in).count())  395.0 / 438.2      274.7 / 359.7        1.44x (mins 1.58x)
+   toArray(both(T).count())  CTL   174.5 / 177.8      174.2 / 172.9        FLAT
+```
+
+**Break-even is 16% plan reuse**, from the per-call figures: `0.16·24 + 0.84·180 = 155`. Gremlin has
+no parameter binding (item 1577), so a caller whose id varies rebuilds every call and pays the 5% —
+item 1503's refusal was right to protect that case, and at 6.9x against 1.05x the asymmetry now
+settles it the other way.
+
+#### ⚠️ The residual is NOT the rewrite, and that is the new target
+
+`union-both-call-floor.ts` decomposes the POST call, and the cached rewrite is a small part of what
+is left:
+
+```text
+   full  toArray(union plan)                 285.3 ns
+   rest  toArray(the ALREADY-rewritten plan)  167.1
+   eff   effectivePlan alone (cache hit)       27.0
+   both  toArray(both(T)) — the same answer   166.0
+```
+
+`full − rest` is 118 ns but `eff` is only 27, so **~91 ns is `run`'s PRE-REWRITE validation**:
+`assertPlanIsSatisfiable`, `assertFrontierTypes` and `planReadsPath` all walk the UN-normalised plan,
+and the union spelling makes them walk two nested sub-plans the `both` spelling does not have. OPEN:
+validate the EFFECTIVE plan rather than the written one, or cache the validation verdict the way the
+rewrite is now cached. That is the rest of item 1645's gap.
+
+#### Why the slot is symbol-keyed, which the measurement did not ask
+
+`serialize.ts` does `JSON.stringify(plan)` as a public API and `traversal.test.ts` round-trips a plan
+through JSON. A plain field would change that output — and could not survive it: the common case
+(no pass fires) caches the plan AS ITSELF, which is a CYCLE, so `JSON.stringify` would throw. A
+symbol key is invisible to `JSON.stringify`, `Object.keys` and `for…in`, the same argument `ast.ts`
+already records for `STEP_FN`. Priced before building: **4.8-5.0 ns against a string field's
+4.7-4.8 — no cost.** A `WeakMap<Graph, number>` graph token was also built and measured (0.4-0.6 ns,
+to avoid pinning a graph a cached plan outlives); the prefix design needs no graph in the key at all,
+so it is not in the shipped code.
+
+#### ⚠️ The Gremlin spelling probe CANNOT A/B a `src`-only change, and silently returned a null
+
+Three isolated runs per arm of `hop, both directions` showed **no movement** — POST 524-547 ns
+against PRE 505-601 — while the `src`-level instrument on the same query showed 1.44x with a flat
+control. The probe imports `toArray` from `@lenke/gremlin`, which resolves to the BUILT DIST, and the
+arm switcher swapped only `src`: **both of its arms ran the same unbuilt code.** This is the
+`fuzzers-read-built-dists` trap, and it reads as a refutation rather than an error. After rebuilding
+both arms the group reads 503.4/185.7 → 251.6/163.8 ns, so the union arm is 2.0x and the gap is
+1.54x — but the `both` arm moved too, which the controlled instrument reads as flat, so the
+`src`-level A/B is the one to quote. **Rebuild before any probe that imports from `@lenke/*`, or
+measure through `src`.**
+
+#### Teeth
+
+Five mutants, each under `timeout 600 systemd-run --user --scope -p MemoryMax=16G -p
+MemorySwapMax=0`, restored before each, stdout and stderr both read for a result line:
+
+```text
+   no-store                 the cache never stores            CAUGHT (3 fail)
+   cache-graph-pass         dropVacuousLabels INSIDE the      CAUGHT (3 fail)
+                            cached prefix — item 1646's
+                            design, i.e. THE wrong answer
+   cache-under-trackspath   cached on a path-tracking run     CAUGHT (7 fail)
+   inherit-slot             `rewritten` keeps the slot        SURVIVED, then CAUGHT
+   no-init-appendstep       construction-site init dropped    SURVIVED (expected)
+```
+
+⚠️ **`inherit-slot` surviving was a real gap in my tests and the reason for one more.** Deleting
+`rewritten`'s reset left the whole suite green, because every `rewritten` call the chain makes today
+happens BEFORE the slot is written — the inherited value is `undefined` either way, so the reset is
+defensive rather than load-bearing. The test that kills it reaches the hazard through the exported
+`fuseLocal`, called on a plan that is already cached. ⚠️ **`no-init-appendstep` is an EXPECTED
+survivor**: initialising the slot at the four construction sites buys one hidden class per plan, which
+is a perf property no answer test can see (and which measured FLAT in `rebuilt-build-only`, so it is
+not costing anything either).
+
+#### Gates
+
+`bun run check` 0 read UNPIPED. Suites: core 444, gql 4230, gremlin 1856 (+13 new), native 1081,
+serialization 144 — 0 fail. `bun run fuzz` all seven green.

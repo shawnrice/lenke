@@ -455,6 +455,21 @@ export type Step =
  */
 export type AddEEndpoint = { kind: 'tag'; label: string } | { kind: 'plan'; plan: Plan };
 
+/**
+ * The key of `effectivePlan`'s per-plan cache (item 1647). See {@link Plan} for the field and
+ * `effectivePlan` for the hit/miss.
+ *
+ * ⚠️ IT IS A SYMBOL BECAUSE A PLAN IS SERIALIZABLE. `serialize.ts` does
+ * `JSON.stringify(plan)` as a public API and `traversal.test.ts` round-trips a plan through JSON,
+ * so an enumerable own property would change that output — and its value often cannot survive
+ * it anyway: a cached result that IS the input plan (the common case, when no pass fires) is a
+ * CYCLE, which makes `JSON.stringify` throw. A symbol key is invisible to `JSON.stringify`,
+ * `Object.keys` and `for…in`, which is the same argument {@link appendStep} already records for
+ * `STEP_FN`. Measured cost of the symbol lookup over a plain string field: **none** — 4.8-5.0 ns
+ * against 4.7-4.8.
+ */
+export const EFF_PREFIX: unique symbol = Symbol('lenke.effPrefix');
+
 export type Plan = {
   readonly steps: readonly Step[];
   /**
@@ -512,6 +527,45 @@ export type Plan = {
    * `assertFrontierTypes` 2.6%) — the largest group left after items 1504-1506.
    */
   readonly mayFault: boolean;
+  /**
+   * `effectivePlan`'s memo of the GRAPH-FREE PREFIX of its rewrite chain. MUTABLE, unlike every
+   * field above, and symbol-keyed — see {@link EFF_PREFIX} for why.
+   *
+   * ⚠️ IT EXISTS BECAUSE `run` NORMALISES ON EVERY CALL (items 1645/1646). A spelling that needs a
+   * rewrite to become the fast one pays for the rewrite per invocation: `union(out(T), in(T))` is
+   * 2.41x `both(T)` for an identical plan, and **117.5 ns of that 225.2 ns gap is `effectivePlan`
+   * doing the collapse**. `fuseUnionBoth` alone was 94.5 ns of it, and that pass is inside this
+   * prefix.
+   *
+   * ⚠️⚠️ AND IT IS THE PREFIX RATHER THAN THE WHOLE CHAIN BECAUSE `Graph` HAS NO SYNCHRONOUS
+   * MUTATION COUNTER. Item 1646 priced a whole-chain cache keyed on `(graph, graph.version)` and
+   * recorded that the prerequisite "is already there". It is not: `version` and `epoch(name)` are
+   * REACTIVE counters that advance when the mutation queue DRAINS, on a microtask —
+   * `addVertex(); graph.version` is unchanged, and the first read after a write therefore hits a
+   * stale entry. For `dropVacuousLabels`, which reads the graph's label counts, that is a WRONG
+   * ANSWER: a filter dropped as vacuous stays dropped after the write that made it selective. The
+   * test that caught it is in `effective-plan-cache.test.ts`.
+   *
+   * So the key is nothing at all: the six passes cached here read only the plan, which is immutable,
+   * so the entry can never be stale. The two passes that take the `graph` run per call, gated as
+   * they already were.
+   *
+   * ⚠️ ITEM 1503 REFUSED THIS TRADE AND WAS RIGHT ABOUT A `WeakMap`. A `WeakMap<Plan, Plan>` is
+   * 1.25x WORSE on a rebuilt plan because the `set` allocates; a field on the plan does not. An
+   * `{ version, plan }` object here was also measured and rejected for the same reason — it
+   * allocates on every MISS (+7 to +77 ns). A scalar slot allocates nothing.
+   *
+   * ⚠️ INITIALISED AT EVERY CONSTRUCTION SITE so every plan has ONE hidden class from birth. Adding
+   * the slot on first use would give plans in the wild two shapes and make every `plan.steps` read
+   * polymorphic — item 159 measured 1.29x from exactly that, and `ts-closure-size-is-load-bearing`
+   * a 4x slow mode.
+   *
+   * ⚠️ OPTIONAL ON THE TYPE, REQUIRED IN PRACTICE. `Plan` is exported, so demanding an internal
+   * cache slot in every hand-written plan literal would be a breaking change for no benefit — a
+   * literal without it is a plan with one missing-slot shape, which is exactly what the four
+   * construction sites exist to prevent in the code that builds plans at speed.
+   */
+  [EFF_PREFIX]?: Plan | undefined;
 };
 
 /**
@@ -681,7 +735,13 @@ export const maskOfSteps = (steps: readonly Step[]): number => {
   return mask;
 };
 
-export const emptyPlan: Plan = { steps: [], readsPath: false, kinds: 0, mayFault: false };
+export const emptyPlan: Plan = {
+  steps: [],
+  readsPath: false,
+  kinds: 0,
+  mayFault: false,
+  [EFF_PREFIX]: undefined,
+};
 
 /**
  * Step kinds that read a traverser's accumulated path. The first five touch `t.path` directly; the
@@ -942,6 +1002,9 @@ export const appendStep = (step: Step): StepFn => {
     readsPath: plan.readsPath || reads,
     kinds: plan.kinds | bit,
     mayFault: plan.mayFault || faults,
+    // Item 1647's cache slot, present from birth so every plan has one hidden class. NOT copied
+    // from `plan`: this is a different step list and its normalised form is not this one's.
+    [EFF_PREFIX]: undefined,
   });
   // ⚠️ A PLAIN ASSIGNMENT, NOT `Object.defineProperty` — which was **73% of plan construction**
   // (item 1577). Building `traversal(V(id))` went 0.235 -> 0.064 us/op and a three-step plan

@@ -25,6 +25,20 @@
  * (plan, graph, mutation-epoch) and the graph has no epoch today. This probe measures the CEILING: if
  * even an unsound, maximally-cheap memo does not win, no sound one will.
  *
+ * ⚠️⚠️ ITEM 1647 BUILT THIS AND FOUND THE DESIGN'S PREMISE FALSE. Two things to know before
+ * reading any number out of this file again:
+ *
+ * - **`graph.version` IS NOT A SYNCHRONOUS MUTATION COUNTER**, so every arm below keyed on it is
+ *   measuring a WRONG ANSWER'S cost. `version` and `epoch(name)` advance when the mutation queue
+ *   DRAINS, on a microtask: `addVertex(); graph.version` reads the OLD value. A read in the same
+ *   synchronous block as a write therefore hits a stale entry, and for `dropVacuousLabels` that is a
+ *   filter dropped as vacuous against a graph where it no longer is. Only `vertexCount`/`edgeCount`
+ *   are synchronous, and they are not sufficient alone — a label's distribution can change at a
+ *   constant vertex count. What shipped instead caches only the GRAPH-FREE PREFIX of the chain,
+ *   which needs no key at all.
+ * - **The `*-nomemo` arms are no longer a baseline.** `effectivePlan` now has a cache of its own, so
+ *   every arm here measures it; the PRE numbers are in item 1647's entry in `CLOSED.md`.
+ *
  * ONE ARM PER PROCESS (item 762), and per item 1640 do not compare these numbers with another file's.
  */
 import { Graph } from '@lenke/core';
@@ -55,6 +69,10 @@ const ARMS = [
   'rebuilt-field2',
   'reused-field3',
   'rebuilt-field3',
+  'reused-sym3',
+  'rebuilt-sym3',
+  'reused-tok3',
+  'rebuilt-tok3',
 ];
 
 if (!ARMS.includes(ARM)) {
@@ -170,6 +188,89 @@ const effectiveField3 = (plan: Plan): Plan => {
   return out1;
 };
 
+/**
+ * ⚠️⚠️ THE FIELDS CANNOT BE PLAIN STRING KEYS, which `field3` above is — found by reading
+ * `serialize.ts`, not by measuring. `gremlin/src/serialize.ts` does `JSON.stringify(plan)` as a
+ * PUBLIC API and `traversal.test.ts` round-trips a plan through JSON, so three enumerable own
+ * properties change that output. Worse, two of the three values are unserializable: a `Graph`
+ * reference drags the whole graph in, and a cached plan that IS the input plan (the common case,
+ * when no pass fires) is a CYCLE, which makes `JSON.stringify` THROW.
+ *
+ * A SYMBOL key is invisible to `JSON.stringify`, `Object.keys` and `for…in` — the same argument
+ * `ast.ts` already records for `STEP_FN` at item 1577. So the question this arm answers is what the
+ * symbol lookup costs relative to the string-keyed `field3` that is not shippable.
+ */
+const S_G = Symbol('effG');
+const S_V = Symbol('effV');
+const S_P = Symbol('effP');
+
+type CachedSym = Plan & { [S_G]?: Graph; [S_V]?: number; [S_P]?: Plan };
+
+const effectiveSym3 = (plan: Plan): Plan => {
+  const p = plan as CachedSym;
+
+  if (p[S_G] === g && p[S_V] === g.version && p[S_P] !== undefined) {
+    return p[S_P];
+  }
+
+  const out1 = effectivePlan(plan, g, false);
+
+  p[S_G] = g;
+  p[S_V] = g.version;
+  p[S_P] = out1;
+
+  return out1;
+};
+
+/**
+ * ⚠️ AND A GRAPH TOKEN RATHER THAN THE GRAPH, because a symbol-keyed `Graph` reference still PINS
+ * that graph for as long as the user holds the plan. Bounded to one graph per plan rather than a
+ * growing set, so it is not a leak — but `graph-pinned-until-microtask-drain` is already a recorded
+ * hazard in this corpus and a cached reference is avoidable. A `WeakMap<Graph, number>` mints a
+ * small integer per graph ONCE; the per-call cost is one `WeakMap.get`, which is the thing this arm
+ * prices against `sym3`.
+ */
+const S_T = Symbol('effT');
+const S_TV = Symbol('effTV');
+const S_TP = Symbol('effTP');
+
+type CachedTok = Plan & { [S_T]?: number; [S_TV]?: number; [S_TP]?: Plan };
+
+const tokens = new WeakMap<Graph, number>();
+let nextToken = 1;
+
+const tokenOf = (x: Graph): number => {
+  const hit = tokens.get(x);
+
+  if (hit !== undefined) {
+    return hit;
+  }
+
+  const minted = nextToken;
+
+  nextToken += 1;
+  tokens.set(x, minted);
+
+  return minted;
+};
+
+const effectiveTok3 = (plan: Plan): Plan => {
+  const p = plan as CachedTok;
+  const tok = tokenOf(g);
+
+  if (p[S_T] === tok && p[S_TV] === g.version && p[S_TP] !== undefined) {
+    return p[S_TP];
+  }
+
+  const out1 = effectivePlan(plan, g, false);
+
+  p[S_T] = tok;
+  p[S_TV] = g.version;
+  p[S_TP] = out1;
+
+  return out1;
+};
+
 const effectiveField2 = (plan: Plan): Plan => {
   const p = plan as Cached2;
 
@@ -204,6 +305,8 @@ const reusedPlan = buildUnion();
 const reusedFieldPlan = buildUnion();
 const reusedField2Plan = buildUnion();
 const reusedField3Plan = buildUnion();
+const reusedSym3Plan = buildUnion();
+const reusedTok3Plan = buildUnion();
 
 const WORK: Record<string, () => unknown> = {
   'reused-nomemo': () => effectivePlan(reusedPlan, g, false),
@@ -220,6 +323,10 @@ const WORK: Record<string, () => unknown> = {
   'rebuilt-field2': () => effectiveField2(buildUnion()),
   'reused-field3': () => effectiveField3(reusedField3Plan),
   'rebuilt-field3': () => effectiveField3(buildUnion()),
+  'reused-sym3': () => effectiveSym3(reusedSym3Plan),
+  'rebuilt-sym3': () => effectiveSym3(buildUnion()),
+  'reused-tok3': () => effectiveTok3(reusedTok3Plan),
+  'rebuilt-tok3': () => effectiveTok3(buildUnion()),
 };
 
 const work = WORK[ARM];
