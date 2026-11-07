@@ -70349,3 +70349,116 @@ serialization 144 — 0 fail. `bun run fuzz` 20/0 and `spelling:gremlin` 0 answe
 groups over 2x, both under the 16G cap. ⚠️ The full probe first flagged `label + property` at 2.21x,
 a group this change cannot reach; three isolated re-runs are clean, so it was dispatch pollution from
 an earlier group and not a finding.
+
+### Item 1631 — **1.06-1.077x** on a selective FAR filter over a yielding hop, the smallest win taken this session and taken only because it passes all three of item 1591's criteria. ⚠️ **But the tick's real output is three instrument defects, all mine, two of which would have published numbers for effects that do not exist** — a 1.67x target and a 1.30x regression, neither real. And `bench:gremlin` had NO ROW for this shape, which is why the TS/native gap on it (**62.5x**) was never seen
+
+OPEN: **the 62.5x TS-vs-native ratio on the new `V().out().has(eq).values(age)` row** — TS 131.4 ms against native 2.10 at 200,000/5. That is the largest ratio of any yielding row in the sweep and it is now measurable; this item's 1.07x is a constant-factor shave on the TS side and says nothing about it. The far-filtered walk is **1.51x its hand floor** before this change and ~1.42x after, so the remaining TS-side headroom is small — the 62.5x is an ALGORITHMIC question (native seeks; TS scans every edge), not a closure-overhead one.
+
+#### ⚠️⚠️ THREE INSTRUMENT DEFECTS, AND THE LESSON IS THAT I MADE ALL THREE IN ONE TICK
+
+**1. A 1.67x that was eight arms in one process.** The cliff finder nominated
+`out(E).has(k,eq(1)).id()` at 188.2 ms for 20,000 rows against the unfiltered `out(E).id()`'s 68.94
+for 999,996, and `far-filter-values-floor.ts` reproduced it at **144.15 against the `values(n)`
+twin's 86.48** — same rung, same loop, same composed `pick`, differing only in the inner closure. I
+confirmed via the ENGINE (not the timing) that all four shapes take `startFilteredHopValues` with an
+empty residual, so the gap should not exist.
+
+It does not. **Isolated, one shape per process: 86.7 and 88.03 — within 1.5%.** `pick` is called
+through a closure VARIABLE inside the walk loops, so several arms in one process make that call site
+polymorphic. Item 1558 is the same error on a GQL spelling ("all three spellings timed in ONE
+process"), and the floor instrument's own eight-arm design is what produced it.
+
+**2. A 1.30x regression that was a rep count too short.** With `REPS=9, DROP=3` the always-true arm
+read a POST median of 162-164 against a PRE of 123-128. The series says why:
+
+```text
+   POST  160.2 157.9 164.2 | 113.0 115.6 114.9 112.1 113.4 113.8 111.8 111.8 109.7
+   PRE   160.6 133.9 128.7 | 124.4 126.3 131.5 133.1 123.7 125.2 127.8 126.5 126.1
+```
+
+POST's JIT takes 3-7 reps to settle where PRE's takes 1-3, so a 9-rep window with 3 dropped was
+measuring the WARM-UP as the steady state. At 12 reps the same arm is **1.08x BETTER** (PRE medians
+125.4 121.4 126.2 126.5 126.3, POST 116.1 116.3 122.4 118.1 113.0). CLAUDE.md's rule is to print the
+per-rep series before trusting a summary; this is the first time that rule caught a false REGRESSION
+rather than a hidden win.
+
+**3. A broad sweep piped through `tail -5`**, which discards the per-row tables that are the whole
+point of the "every unrelated row flat" check. Killed and relaunched. No wrong number from this one
+— it would simply have produced no evidence while looking like evidence.
+
+#### The change, and the price that justified it
+
+A FAR filter runs one test per EDGE where a start filter runs one per VERTEX — 1,000,000 against
+200,000 at fanout 5 — so the per-call layers add up differently on the two sides. The general
+composition is `pick` → `survives` iterating a one-element array → the gate → `specializePredicate`'s
+`fast`. For a single `has` whose predicate specializes, that is now `pick` → `fast`, reading the
+property directly.
+
+⚠️ `start-filtered-hop-values.ts`' header already refutes three levers nearby — compiled gates
+(nothing on its shape), per-plan vertex materialization (worse), a dedicated single-gate LOOP (worse,
+719.7 → 731 and `both` 458 → 507). **None is re-attempted here**: all three were measured on the
+START side, and this composes `pick` once per QUERY, which that file names as the safe place to
+change ("leaves all three loop bodies exactly the code they were").
+
+Priced first (`far-filter-one-shape.ts`, 200,000 vertices / 999,996 edges, median of 12 reps):
+
+```text
+   engine far-filtered (selective)   86.7 ms     <- 87 ns/edge
+   HAND  walk + inline test          57.44       <- the FLOOR, 1.51x
+```
+
+So 30 ns/edge was the entire budget and this recovers ~7 of it, which is what item 1394's own "a
+share overstates a realizable change by ~2.5-3.5x" predicts from the profile's 45.5%.
+
+#### Why a 1.07x is taken, against item 1587's 1.09x refusal
+
+Item 1591 took 1.12x on three stated criteria. All three hold here, and the first one holds
+unusually strongly — **five processes per arm per shape, and every POST reading beats every PRE
+reading on all three affected shapes**:
+
+```text
+   shape                PRE mins (5)                      POST mins (5)                     ratio
+   farhasvalues         88.37 83.42 86.38 83.09 82.26     76.38 78.28 80.69 77.93 77.54    1.077x
+   farhasid             83.48 84.62 84.83 84.14 81.61     79.30 76.08 79.77 78.56 77.72    1.06x
+   farhasalwaysvalues   113.29 … 123.66 (10 readings)     106.48 … 113.20 (10)             1.07x
+   plainvalues  [CTL]   87.21 92.31 90.66 89.87 91.57     94.37 91.31 90.98 93.69 92.01    ~2.4% worse
+   plainid      [CTL]   / handfiltered [CTL]                                               flat
+```
+
+The broad sweep, twice per arm, is flat on all 30 rows. The two that looked otherwise are their own
+noise: `V().out().out().has().values(age)` spreads **478.3 against 384.3 WITHIN the POST arm** while
+PRE is 399.0/393.8, and its better POST pass beats both PRE passes; `V().out().values(age)` — the
+sweep's twin of the `plainvalues` control above — spreads 133.7/153.2 in PRE, **14.6%**, which
+swallows the 2.4% drift entirely. Item 1587's refusal was of a micro-ladder that "could not survive
+repetition"; this survives it 10 readings deep on three shapes.
+
+#### ⚠️ `bench:gremlin` had no row for the shape, and the gap it was hiding is 62.5x
+
+The sweep has `V().out().has().count()` — the same filter answered in closed form without yielding —
+and `V().out().out().has().values(age)` at two hops. The ONE-hop yielding shape, "walk and keep the
+far ends that match", which is about as common as a traversal gets, was measured by neither. Added:
+
+```text
+   V().out().has(eq).values(age)    ts 131.4 ms    native 2.10    62.5x    answers same
+```
+
+That is the largest TS/native ratio of any yielding row in the sweep. Same class of hole as item
+1493's `hophas`, and the pair is an equivalent-COST guard too: a selective filter must not cost more
+than the unfiltered walk it is a subset of, which is what the cliff finder appeared to show.
+
+#### Mutation 6 of 8
+
+Two survivors, neither a test gap. `gate/wrong-index` is unreachable by construction — under
+`farFilters.length === 1`, index 0 and `length - 1` are the same element. `arm/always-general` is the
+answer-equivalent route class (item 1619 recorded it for all twenty GQL rungs); unlike item 1630,
+this route exposes no observable such as `drain`, so there is nothing an assertion could read.
+
+`pred/reads-projection-key` is caught because the filter key and the projected key are deliberately
+different in every test in the file — a fixture where they coincided would have missed it, which is
+item 1629's finding in a new place.
+
+#### Gates
+
+`bun run check` 0 read unpiped. Suites gremlin 1827 (11 new), gql 4207, core 444, native 1076,
+serialization 144 — 0 fail. `bun run fuzz` 20/0 and `spelling:gremlin` 0 answer disagreements / 0
+groups over 2x, both under the 16G cap.

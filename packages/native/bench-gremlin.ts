@@ -23,6 +23,7 @@ import {
   count,
   dedupe,
   groupCount,
+  eq,
   gt,
   has,
   hasLabel,
@@ -96,6 +97,21 @@ const SHAPES: [string, Plan][] = [
   // the shortcut must move this row and leave that one alone.
   ['V().out().values(age).order()', traversal(V(), out('KNOWS'), values('age'), order())],
   ['V().out().has().count()', traversal(V(), out('KNOWS'), has('age', gt(44)), count())],
+  // ⚠️ A FAR FILTER ON A YIELDING HOP, WHICH THIS SWEEP HAD NO ROW FOR (item 1631). The row above
+  // is the same filter with `count()`, which a closed-form rung answers without yielding, and
+  // `V().out().out().has().values(age)` below is TWO hops; the one-hop yielding shape — the
+  // commonest real traversal there is, "walk and keep the far ends that match" — was measured by
+  // neither. Its cost is one test per EDGE where a start filter pays one per VERTEX, which is why
+  // `start-filtered-hop-values.ts`' header refuting three start-side levers does not settle it.
+  //
+  // THE PAIR IS ALSO AN EQUIVALENT-COST GUARD. A selective filter must not cost MORE than the
+  // unfiltered walk it is a subset of: the cliff finder reported exactly that (188.2 ms for 20,000
+  // rows against 132.8 for 999,996) and it turned out to be an instrument artifact, but nothing in
+  // the sweep would have caught it had it been real.
+  [
+    'V().out().has(eq).values(age)',
+    traversal(V(), out('KNOWS'), has('age', eq(30)), values('age')),
+  ],
   ['V().groupCount(age)', traversal(V(), groupCount({ by: 'age' }))],
   ['V().out().dedupe().count()', traversal(V(), out('KNOWS'), dedupe(), count())],
   // A FILTER CHAIN, which no row here had — and its absence is why item 537's 4-6x was

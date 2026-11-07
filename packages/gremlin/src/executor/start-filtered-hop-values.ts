@@ -182,8 +182,55 @@ export const startFilteredHopValues = (plan: Plan, graph: Graph): HopValues | un
 
   if (farTests !== undefined) {
     const inner = pick;
+    /**
+     * ONE `has` FAR FILTER IS COLLAPSED INTO A SINGLE CLOSURE (item 1631) — the common shape, and
+     * the one with the measurable cost. A FAR filter runs one test per EDGE where a start filter
+     * runs one per VERTEX, so at fanout 5 this call site is hit 1,000,000 times against the start
+     * side's 200,000, and the layers add up differently there.
+     *
+     * The general composition below is three invocations per edge: `pick`, then `survives`
+     * iterating a one-element array, then the gate, then `specializePredicate`'s `fast` inside it.
+     * This arm is two — `pick` and `fast` — reading the property directly, which is exactly what
+     * the gate's own body would have done.
+     *
+     * ⚠️ PRICED FIRST, and the headroom is narrow (`far-filter-one-shape.ts`, 200,000 vertices /
+     * 999,996 edges, median of **12** reps less three warm-up): the engine's filtered walk is
+     * **86.7 ms against a hand floor of 57.44 — 1.51x**, so 30 ns/edge is the whole budget and no
+     * part of this can be worth more than that. It recovers ~7, for **1.06-1.077x** with every POST
+     * reading below every PRE reading across five processes an arm on three shapes.
+     *
+     * ⚠️ TWELVE REPS, NOT NINE, AND THAT CHANGED THE VERDICT'S SIGN. At `REPS=9, DROP=3` the
+     * always-true arm read a POST median of 162-164 against a PRE of 123-128 — a 1.30x REGRESSION
+     * that does not exist. This arm's JIT settles in 3-7 reps where the PRE arm's settles in 1-3, so
+     * a 9-rep window was measuring the warm-up as the steady state. At 12 reps it is 1.08x BETTER.
+     *
+     * ⚠️ AND THE 1.67x THAT NOMINATED IT WAS MY OWN INSTRUMENT. `far-filter-values-floor.ts` runs
+     * eight arms in ONE process and read `id()` at 144.15 ms against `values(n)`'s 86.48 on the
+     * identical route — but `pick` is called through a closure VARIABLE in the loops below, so
+     * several arms in one process make that call site polymorphic. Isolated, one shape per process,
+     * the two are 86.7 and 88.03: within 1.5%. Item 1558 is the same error on a GQL spelling.
+     *
+     * ⚠️ NOT A TEST ADDED TO THE LOOPS, and not a dedicated loop either. This file's header records
+     * a dedicated single-gate LOOP measuring WORSE (719.7 -> 731, and `both` 458 -> 507), and items
+     * 1441/1466 measured an edit to a hot values walk at up to 16% on unrelated rows. Composing
+     * `pick` once per QUERY is the sanctioned place to change: all three loop bodies stay byte for
+     * byte the code they were.
+     *
+     * A `hasLabel` far filter, or more than one filter, keeps the general path. Those are the rarer
+     * spellings and the collapse has nothing to offer a label test, which is already one
+     * `labels.has`.
+     */
+    const only = farFilters.length === 1 ? farFilters[0] : undefined;
+    const fastOne = only?.kind === 'has' ? specializePredicate(only.pred) : undefined;
 
-    pick = (far) => (survives(far as unknown as Vertex, farTests) ? inner(far) : undefined);
+    if (fastOne !== undefined && only?.kind === 'has') {
+      const { key } = only;
+
+      pick = (far) => (fastOne(far.properties[key]) ? inner(far) : undefined);
+    } else {
+      pick = (far) => (survives(far as unknown as Vertex, farTests) ? inner(far) : undefined);
+    }
+
     drops = true;
   }
 
@@ -426,6 +473,14 @@ export type Gate = (v: Vertex) => boolean;
  *
  * `compileGates` is kept because it IS a win on the predicate shape — `has(k, gt(48))` went
  * 701.3 -> 606.6 with every control flat — not because it closed the gap it was written for.
+ *
+ * ⚠️ EVERY NUMBER ABOVE IS THE START SIDE — one test per VERTEX — and item 1631 found the FAR side
+ * behaves differently for a structural reason: a far filter runs one test per EDGE, so at fanout 5
+ * the same composition is invoked 1,000,000 times rather than 200,000. Collapsing `survives` plus
+ * the gate into one closure there is worth **1.06-1.077x** where the start-side levers listed above
+ * measured nothing. So do not read this list as "gate composition is a dead end"; read it as "it is
+ * a dead end where the test count is the vertex count". The collapse is at the `farTests`
+ * composition below.
  */
 export const compileGates = (filters: readonly VertexFilter[]): Gate[] =>
   filters.map((step) => {

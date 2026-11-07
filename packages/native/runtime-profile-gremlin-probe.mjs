@@ -43,6 +43,7 @@ import {
   coalesce,
   count,
   dedupe,
+  eq,
   fold,
   group,
   groupCount,
@@ -293,6 +294,18 @@ const SHAPES = {
   // The DESCENDING spelling, which arrives as an identity `by` rather than as `desc: true` — the
   // shape whose gate item 1591 got wrong and only a literal expectation caught.
   hoporderdesc: traversal(V(), out('E'), values('k'), order(Order.desc)),
+
+  // ── Item 1631: a SELECTIVE FAR FILTER on a yielding hop ─────────────────────────────────────
+  // The cliff finder's biggest oddity at 200,000/5: `hop + far has, values` costs 188.2 ms to
+  // produce 20,000 rows where the UNFILTERED `hop values` costs 132.8 for 999,996 — the filter
+  // costs more than the 50x fewer rows save. `team` is 1 in 50, so this is the selective arm; the
+  // probe's existing `hophas` is a COUNT and `hop2trailinghas` is two hops.
+  hopfarhasvalues: traversal(V(), out('E'), has('k', eq(1)), values('n')),
+  // The UNFILTERED neighbour, which is the same walk with nothing removed — the control that says
+  // whether a change is in the filter or in the walk.
+  hopvaluesn: traversal(V(), out('E'), values('n')),
+  // The `id()` twin, 3.14x its own unfiltered neighbour in the same run.
+  hopfarhasid: traversal(V(), out('E'), has('k', eq(1)), id()),
 };
 
 const plan = SHAPES[SHAPE];
