@@ -72344,3 +72344,90 @@ not re-priced.
 
 No engine change — the tree is identical to its parent apart from this entry. `bun run check` 0 read
 unpiped; the gremlin suite 1992 pass / 0 fail was re-run under every ablation and both orderings.
+
+### Item 1653 — ⚠️ **THE INLINE `CALL { … }` CLAUSE COSTS 538-733 ns PER OUTER ROW, and a body the rungs RECOGNISE costs 74 — 10x for strictly more work.** Found by screening ten unprofiled GQL shapes; the probe's own answer assertion also caught me writing the Cypher spelling of a correlated CALL, and item 1566's uncorrelated hoist is confirmed WORKING (linear, not quadratic)
+
+MEASURED, no engine change. New instrument: `gql-call-subquery-floor.mjs`.
+
+#### The screen: ten GQL shapes nothing had profiled, and one outlier
+
+```text
+   join 0.40ms/call   optional 0.19   existssub 0.37   unioned 0.70   varlenplus 5.35
+   anyshortest 2.00   groupedhop 1.07  collecthop 0.95  scalaraggs 2.23
+   callinline 21.65   <- 50x its nearest neighbour
+```
+
+#### ⚠️⚠️ FIRST: `CALL { … }` IS NOT CYPHER'S, AND THE PROBE CAUGHT ME ASSUMING IT WAS
+
+I wrote `MATCH (n:P) CALL { MATCH (n)-[:E]->(x) … }` expecting the body's `n` to be the outer `n`.
+It is not: **ISO-GQL imports outer names through an explicit scope list, `CALL (n) { … }`**, and
+without one the body's `n` is a FRESH variable. The probe asserts its two spellings agree before
+reporting a time, and that assertion fired:
+
+```text
+   CALL { … }      sum(c) = 799,800,000   = 39,990 edges x 20,000 outer rows
+   CALL (n) { … }  sum(c) =      39,990   = the edges, once
+```
+
+CLAUDE.md says GQL's CALL correlation "has been gotten wrong many times". It is right, and an
+assertion in the instrument is what stops it becoming a number in this file.
+
+#### The measurement, 20,000 vertices / 39,990 edges, median of 5
+
+```text
+   arm                                                   ms      ns/outer row   answer
+   outer      MATCH (n:P) RETURN count(*)              0.003         0.1        20000
+   inline     MATCH (n:P)-[:E]->(x) RETURN count(*)    0.002         0.1        39990
+   bodyonce   the uncorrelated body, alone             0.001         0.0        39990
+   correlated CALL (n) { … count(*) } RETURN sum(c)    1.486        74.3        39990
+   calltrivial       CALL { RETURN 1 }                10.770       538.5        20000
+   calltrivialscoped CALL (n) { RETURN 1 }            14.657       732.8        20000
+   uncorrelated      CALL { … count(*) }              35.643      1782.1        20000
+```
+
+#### Finding 1 — the clause path is ~538-733 ns/row and a RECOGNISED body skips it
+
+`correlated` does a real hop per row for **74.3 ns**; `calltrivialscoped` does NOTHING for **732.8**
+— same form, same scope, 10x apart. So the 74.3 is not the CALL clause at all: a body of the shape
+`MATCH (n)-[:E]->(x) RETURN count(*)` is taken by a degree rung (`degreeCountSubquery` /
+`landingPredDegreeCount` are the candidates) and the clause machinery is bypassed. **Every body the
+rungs do not recognise pays 538-733 ns per outer row**, which is the open target.
+
+⚠️ **AND THE SCOPE-LESS FORM IS NOT THE SLOW ONE** — my first hypothesis, refuted by its own arm:
+538.5 scope-less against 732.8 scoped for an identical body. Whatever the 538-733 is, it is not
+scope handling.
+
+#### Finding 2 — item 1566's uncorrelated hoist WORKS, and the residue is the replay
+
+`uncorrelated` at 1782 ns/row looked like a body re-run per outer row — the thing item 1566 built the
+hoist to stop. It is not. Scaling says so:
+
+```text
+   N        uncorrelated   calltrivial   calltrivialscoped   correlated
+   5,000        8.06 ms       2.81            3.57              0.65
+   10,000      16.38          5.27            6.70              0.65
+   20,000      34.01         10.78           14.82              1.21
+```
+
+**Exactly linear** (2.03x, 2.08x) where a re-run body over an O(N) fixture would be quadratic. So the
+body runs once, as designed, and the 1782 ns/row is the per-row REPLAY of the hoisted rows plus the
+outer aggregate — of which `calltrivial`'s 538 is the floor. Checking the list before building saved
+this item from re-implementing a working optimisation: **`runCallInline` already carries the hoist,
+its read-only allowlist and the lazy-computation rule**, each with the reasoning I was re-deriving
+from scratch.
+
+#### What to build next, and what it is worth
+
+The target is the **538-733 ns per outer row** of the general inline-CALL path. The `correlated` arm
+shows the ceiling: a body answered without the clause machinery costs 74 ns/row, so there is ~7-10x
+in it for every body that is not a bare `count(*)`. `runCallInline`'s per-row work is visible and
+small-looking — it allocates a `seed` Map per outer row **even when `clause.scope.length === 0` and
+the body is hoisted**, then merges the nested columns into a fresh binding per nested row — so the
+first ablation to try is skipping the seed entirely on the invariant path.
+
+OPEN, with that number. Not built this tick: the discovery consumed it, and a clause-machinery change
+in `clauses.ts` deserves its own tick with tests, mutants and a wide pass.
+
+#### Gates
+
+No engine change — one new probe. `bun run check` 0 read unpiped.
