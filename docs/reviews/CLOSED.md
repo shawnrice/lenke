@@ -70350,9 +70350,9 @@ groups over 2x, both under the 16G cap. ⚠️ The full probe first flagged `lab
 a group this change cannot reach; three isolated re-runs are clean, so it was dispatch pollution from
 an earlier group and not a finding.
 
-### Item 1631 — **1.06-1.077x** on a selective FAR filter over a yielding hop, the smallest win taken this session and taken only because it passes all three of item 1591's criteria. ⚠️ **But the tick's real output is three instrument defects, all mine, two of which would have published numbers for effects that do not exist** — a 1.67x target and a 1.30x regression, neither real. And `bench:gremlin` had NO ROW for this shape, which is why the TS/native gap on it (**62.5x**) was never seen
+### Item 1631 — **1.06-1.077x** on a selective FAR filter over a yielding hop, the smallest win taken this session and taken only because it passes all three of item 1591's criteria. ⚠️ **But the tick's real output is three instrument defects, all mine, two of which would have published numbers for effects that do not exist** — a 1.67x target and a 1.30x regression, neither real. And `bench:gremlin` had NO ROW for this shape, which is why the TS/native gap on it (~~**62.5x**~~ **57.8x** — item 1632 found this bench's fixture was FUNCTIONAL and re-measured it) was never seen
 
-OPEN: **the 62.5x TS-vs-native ratio on the new `V().out().has(eq).values(age)` row** — TS 131.4 ms against native 2.10 at 200,000/5. That is the largest ratio of any yielding row in the sweep and it is now measurable; this item's 1.07x is a constant-factor shave on the TS side and says nothing about it. The far-filtered walk is **1.51x its hand floor** before this change and ~1.42x after, so the remaining TS-side headroom is small — the 62.5x is an ALGORITHMIC question (native seeks; TS scans every edge), not a closure-overhead one.
+OPEN: **the ~~62.5x~~ 57.8x TS-vs-native ratio on the new `V().out().has(eq).id()` row** — TS 156.2 ms against native 2.70 at 200,000/5. ⚠️ Item 1632 corrects BOTH halves of this line: the fixture was functional (so 131.4/2.10 measured a chain) and the row projected the key it filtered on (so its `answers same` compared fifteen copies of `30`). That is the largest ratio of any yielding row in the sweep and it is now measurable; this item's 1.07x is a constant-factor shave on the TS side and says nothing about it. The far-filtered walk is **1.51x its hand floor** before this change and ~1.42x after, so the remaining TS-side headroom is small — the 62.5x is an ALGORITHMIC question (native seeks; TS scans every edge), not a closure-overhead one.
 
 #### ⚠️⚠️ THREE INSTRUMENT DEFECTS, AND THE LESSON IS THAT I MADE ALL THREE IN ONE TICK
 
@@ -70462,3 +70462,91 @@ item 1629's finding in a new place.
 `bun run check` 0 read unpiped. Suites gremlin 1827 (11 new), gql 4207, core 444, native 1076,
 serialization 144 — 0 fail. `bun run fuzz` 20/0 and `spelling:gremlin` 0 answer disagreements / 0
 groups over 2x, both under the 16G cap.
+
+### Item 1632 — ⚠️⚠️ **`bench:gremlin`'s MAIN FIXTURE WAS FUNCTIONAL**: every one of its 200,000 vertices had out-degree 5 and exactly **ONE** distinct out-neighbour, so all 1,000,000 edges were 200,000 pairs with five parallel copies. The documented items-1516/1518 defect, in the primary Gremlin instrument, which those items' own note says they checked everywhere but here. Multi-hop yielding rows were **2.4-6.2x** too fast; **five more generators are degenerate at their default degree**
+
+OPEN: the five other degenerate generators listed below, each needing its own fix AND a
+re-measurement of whatever it published — `edge-spelling-probe.ts` (DEG 5),
+`hop-multi-agg-floor-probe.ts` (DEG 5), `order-cost-probe.ts` (A_DEG 5),
+`fused-vs-general-probe.mjs` (FANOUT 5), `hop-rows-floor-probe.mjs` (FANOUT 2). And five whose
+generator shape could not be classified from the degree knob alone: `gc-cost-probe.mjs`,
+`route-cost-probe.ts`, `runtime-profile-write-probe.mjs`, `src/hop-extremum-ab.ts` /
+`-price.ts`, `vertex-ordinal-write-probe.ts`.
+
+#### The defect, verbatim in the form CLAUDE.md predicts
+
+```text
+   for (let k = 0; k < N * 5; k++)
+     from = (k * 7919)   % N
+     to   = (k * 104_729) % N        <- INVARIANT under k -> k + N
+```
+
+Both terms are invariant under `k -> k + N`, so a vertex's five out-edges are `k0, k0+N, …, k0+4N`
+and **all five land on the same target**. Counted numerically: 200,000 vertices with an out-edge,
+out-degree min/max 5/5, **distinct out-neighbours min/max 1/1**, 200,000 distinct `(from, to)` pairs
+behind 1,000,000 edges.
+
+Out-degree, in-degree and isolated-vertex counts are all perfect, which is the whole trap. CLAUDE.md
+records this after items 1516/1518 and says they found it "in the GQL bench's main fixture and in six
+probe generators" — **this bench was not among them, and it is the primary Gremlin instrument.**
+
+The fix is the GQL bench's own expression, byte for byte, so the two fixtures are now IDENTICAL —
+which is what this file's header has claimed since it was written:
+
+```text
+   to = ((k % N) * 104_729 + Math.floor(k / N) * 977) % N     -> distinct out-neighbours 5/5
+```
+
+#### ⚠️ What this invalidates, and what it does NOT
+
+**It is LOCALITY, not row count.** A k-hop count over a functional graph is `F^k · N` by
+construction, and it is `F^k · N` over the branching one too — the row counts are IDENTICAL and every
+`answers` column still reads `same`. What changed is that five parallel edges to ONE far vertex read
+the same cache line five times, and at depth two all 25 traversers sat on one vertex. This is item
+1392's far-vertex locality (which it measured at 36% of `hoporder`) compounded per hop:
+
+```text
+   row                                   functional   branching   factor
+   V().out().values(age)                      137.7       173.8    1.26x
+   V().out().id()                             178.8       205.1    1.15x
+   V().out().values(age).order()              260.9       384.3    1.47x
+   V().out().out().count()   [closed form]     51.5        52.1    flat
+   V().out().out().out().count()              220.9       243.1    1.10x
+   V().out().out().values(age)                 381.5      993.1    2.60x
+   V().out().out().id()                        354.8      906.3    2.55x
+   V().out().out().has().values(age)           478.3     1146.5    2.40x
+   V().out().has().out().values(age)           369.0      976.9    2.65x
+   V().out()x3.values(age)                    1108.7     6868.6    6.20x
+```
+
+So:
+
+- **Every A/B ever run on this bench SURVIVES** — both arms saw the same graph, which is exactly the
+  distinction CLAUDE.md draws ("an A/B on ONE fixture survives it… any claim about branching,
+  selectivity or fan-out does not"). Items 1630 and 1631's sweeps are unaffected as A/Bs.
+- **Every ABSOLUTE magnitude and every `ts/nat` ratio quoted from this bench for a multi-hop yielding
+  row predates the fix and is too fast on the TS side**, by the factors above. `V().out()x3.values(age)`
+  sat at `ts/nat` ≈ 1.0 — the row that said TS matches native on a deep yield — and now reads **5.5x**.
+  `V().out().out().values(age)` went 1.7x to 4.5x.
+- The closed-form count rows are unmoved, correctly: they never walk.
+
+#### The fixture now checks its own topology
+
+`assertBranches()` runs once at startup and asserts the PROPERTY (every vertex branches) rather than
+a count, so a deliberate fan-out change does not trip it. Same shape as `bench.ts`'s
+`assertGraphDocBranches`, which this bench should have had when that one was written.
+
+⚠️ **Proven to fire rather than assumed**: re-introducing `to = (k * 104_729) % N` in both the
+generator and the assertion's own recomputation throws from `assertBranches` before any row runs.
+
+#### ⚠️ And item 1631's own new row was degenerate in a second way
+
+Item 1631 added `V().out().has(eq).values(age)` — filtering `age == 30` and projecting `age`, so
+**every emitted value is `30` by construction**. The answers column is
+`JSON.stringify(rows).slice(0, 48)`, which compares about FIFTEEN of them: a differing row count was
+invisible to it, and so was a different subset of the same size. That is the fixture-invariance rule
+quoted in item 1631's own entry, broken one item later. It now projects `id()`, whose values are
+distinct and ordered, and `V().out().id()` above is its unfiltered twin.
+
+Its 62.5x is also restated: on the branching fixture the row reads **TS 156.2 ms against native 2.70
+— 57.8x**, still the largest ratio of any yielding row in the sweep.

@@ -53,11 +53,72 @@ const lines = Array.from(
   (_, i) => `{"type":"node","id":"v${i}","labels":["Person"],"properties":{"age":${i % 90}}}`,
 );
 
+/**
+ * ⚠️ THIS FIXTURE WAS FUNCTIONAL UNTIL ITEM 1632, and every degree statistic looked perfect while it
+ * was. `to = (k * 104_729) % N` is INVARIANT under `k -> k + N`, and this loop runs `k < N * 5`, so
+ * each vertex's five out-edges were five PARALLEL EDGES TO ONE TARGET: 200,000 distinct `(from, to)`
+ * pairs behind 1,000,000 edges, out-degree 5 and distinct-out-neighbours **1** for every vertex.
+ *
+ * That is the exact defect CLAUDE.md records from items 1516/1518 — whose own note says they found
+ * it "in the GQL bench's main fixture and in six probe generators". This bench was not among them,
+ * and it is the primary Gremlin instrument, so its multi-hop rows were measuring a CHAIN: a k-hop
+ * count over a functional graph is `F^k · N` by construction however the fan-out is distributed.
+ *
+ * Splitting on the repeat index `Math.floor(k / N)` breaks the invariance, which no choice of
+ * multiplier can. This is byte-for-byte the GQL bench's own expression, so the two benches' fixtures
+ * are now IDENTICAL — which is what this file's header has claimed all along. Both terms stay far
+ * inside 2^53 (199,999 * 104,729 is ~2.1e10), so it does not repeat item 702's f64 overflow.
+ */
 for (let k = 0; k < N * 5; k++) {
+  const to = ((k % N) * 104_729 + Math.floor(k / N) * 977) % N;
+
   lines.push(
-    `{"type":"edge","id":"e${k}","labels":["KNOWS"],"from":"v${(k * 7919) % N}","to":"v${(k * 104_729) % N}","properties":{"w":${k % 7}}}`,
+    `{"type":"edge","id":"e${k}","labels":["KNOWS"],"from":"v${(k * 7919) % N}","to":"v${to}","properties":{"w":${k % 7}}}`,
   );
 }
+
+/**
+ * ⚠️ THE FIXTURE CHECKS ITS OWN TOPOLOGY, for item 1516's reason: every degree statistic was already
+ * perfect while the graph was degenerate, and CLAUDE.md's rule is that one line counting the
+ * DISTINCT endpoints would have caught it. This is that line, run once at startup, so this corpus
+ * cannot silently go back to measuring a functional graph.
+ *
+ * It asserts the PROPERTY (every vertex branches) rather than an exact count, so a deliberate change
+ * to the fan-out does not trip it. Same shape as `bench.ts`'s `assertGraphDocBranches`, which this
+ * bench should have had from the start.
+ */
+const assertBranches = (): void => {
+  const nbrs = new Map<number, Set<number>>();
+
+  for (let k = 0; k < N * 5; k++) {
+    const from = (k * 7919) % N;
+    const to = ((k % N) * 104_729 + Math.floor(k / N) * 977) % N;
+    let set = nbrs.get(from);
+
+    if (set === undefined) {
+      set = new Set();
+      nbrs.set(from, set);
+    }
+
+    set.add(to);
+  }
+
+  let worst = Number.POSITIVE_INFINITY;
+
+  for (const set of nbrs.values()) {
+    worst = Math.min(worst, set.size);
+  }
+
+  if (nbrs.size !== N || worst < 2) {
+    throw new Error(
+      `the Gremlin bench fixture is DEGENERATE: ${nbrs.size} of ${N} vertices have an out-edge ` +
+        `and the least branching one has ${worst} distinct out-neighbour(s). A k-hop row over this ` +
+        `measures a chain, not a graph — see items 1516 and 1632.`,
+    );
+  }
+};
+
+assertBranches();
 
 const doc = lines.join('\n');
 const backend = createFfiEngineBackend(LIB);
@@ -108,10 +169,15 @@ const SHAPES: [string, Plan][] = [
   // unfiltered walk it is a subset of: the cliff finder reported exactly that (188.2 ms for 20,000
   // rows against 132.8 for 999,996) and it turned out to be an instrument artifact, but nothing in
   // the sweep would have caught it had it been real.
-  [
-    'V().out().has(eq).values(age)',
-    traversal(V(), out('KNOWS'), has('age', eq(30)), values('age')),
-  ],
+  // ⚠️ IT PROJECTS `id()`, NOT THE KEY IT FILTERS ON, and item 1632 changed it for that reason.
+  // Item 1631 wrote this row as `has('age', eq(30)).values('age')` — where every emitted value is
+  // `30` by construction. The answers column is `JSON.stringify(rows).slice(0, 48)`, so it was
+  // comparing about fifteen identical values: a differing ROW COUNT was invisible to it, and so was
+  // a different subset of the same size. That is CLAUDE.md's rule about an answer invariant to the
+  // property varied, one item after the rule was quoted. Far-end ids are distinct and ordered, so
+  // the truncated comparison now checks identity and position, and `V().out().id()` above is the
+  // unfiltered twin.
+  ['V().out().has(eq).id()', traversal(V(), out('KNOWS'), has('age', eq(30)), id())],
   ['V().groupCount(age)', traversal(V(), groupCount({ by: 'age' }))],
   ['V().out().dedupe().count()', traversal(V(), out('KNOWS'), dedupe(), count())],
   // A FILTER CHAIN, which no row here had — and its absence is why item 537's 4-6x was
