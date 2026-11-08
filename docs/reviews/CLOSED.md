@@ -74216,3 +74216,88 @@ arm's spread is not a reading.
 `bun run check` 0 read unpiped. All five package suites isolated: core 453, gql 4268, gremlin 2017,
 serialization 144, native 1081 — 0 fail each. All seven byte-identity fuzzers: 20 pass, 0 fail. Six
 cache-key mutants, all six caught.
+
+### Item 1677 — **THE GREMLIN ANALOGUE OF ITEM 1676, PRICED: `slotChainCount`'s adjacency memo is 38.8% of a repeated 3-hop chain count, and the last hop's degree sum another 24.0%.** So 39-63% is addressable, against GQL's 86.3% — ⚠️ **a real target but a much smaller one, and the honest answer to "does the same cache apply".** OPEN, not built
+
+Item 1676 cached the CSR behind GQL's bounded var-length count for 3.8x to 27.2x. `slotChainCount`
+(`gremlin/src/executor/count-shortcut.ts`) has the same disease by inspection — `slotOf`, `vtx` and a
+flat `SlotMemo` allocated per call and discarded on return — so the question is whether the same cure
+applies. Found by reading rather than profiling, then priced.
+
+#### The shape of the cost
+
+```text
+   arm          ms/call      (100,000 vertices / 400,000 edges, 5 calls per rep, 7 reps, 3 rounds)
+   hop2           16.74      the ALGEBRAIC route, no memo at all
+   chain3         67.19
+   chain4         69.57      +2.4 ms for a WHOLE EXTRA HOP
+   chain5         73.13      +3.6
+   valuesCtl       2.85      a route with no adjacency
+```
+
+⚠️ **THE COST IS NOT THE WALK**, and the hop sweep is what says so: a fourth hop costs 2.4 ms against
+a 67 ms base, so ~63 ms is fixed per call. A per-hop instrument would have missed this entirely.
+
+#### The profile
+
+100 calls on one graph at 67.40 ms/call — one graph built once, many calls, so the fixture cannot
+dominate (item 1671's mistake):
+
+```text
+   28.9%  walkBucket          the memo FILL
+   24.0%  degreeOfTypes       the LAST hop's degree sum, not memoized
+   16.9%  slotChainCount
+    9.9%  expandSlot          the memo fill's per-slot half
+    0.4%  memoReserve
+```
+
+`walkBucket` + `expandSlot` = **38.8%** is the memo fill, and it is largely FIXED rather than per-hop
+because the memo is filled lazily once for the slots the frontier touches and then read. The 24.0% in
+`degreeOfTypes` is the final hop's degree sum, which the route deliberately does not memoize — and it
+is equally a pure function of topology, so a per-slot degree array is cacheable on the same key.
+
+**39% to 63% addressable, so 1.6x to 2.7x on this shape.** Worth building, and worth stating plainly
+that it is not another 27x.
+
+#### What makes it harder than item 1676, and what does not
+
+⚠️ **The memo is LAZY where GQL's CSR is EAGER**, which is why the share is 38.8% and not 86.3%: the
+per-call cost is already proportional to what the traversal touched rather than to the graph. "It is
+lazy so there is nothing there" was the wrong instinct, but so was expecting GQL's number.
+
+The two admission conditions both HELP, which is the opposite of what was assumed:
+
+```ts
+oneWalkThroughout(hops) && seeds.length > Math.max(graph.vertexCount >> 4, 1024);
+```
+
+`oneWalkThroughout` means every hop walks the same index with the same labels — the file says "the
+memo is a function of exactly that" — so the shape key is `(direction, labels)`, exactly item 1676's.
+And the seed set must be WIDE, which dissolves the one real obstacle: `slotOf` is assigned in SEED
+order, so the memo's indices are meaningful only relative to that seed set, but if the route only
+fires when most of the graph is seeded then numbering all vertices up front by `verticesById` order
+costs little more and makes the memo a pure function of `(topologyVersion, direction, labels)`.
+
+⚠️ **A 2-hop count never reaches here and must not be measured as if it did.** It is answered by the
+degree inner product, which item 590 measured at 7.73 ms against a 37.65 ms CSR build — 8.0x, and
+the comment at `count-shortcut.ts:2291` records "item 589's trick: no help here". The chain walk
+starts at THREE hops. `hop2` is in the probe as a control for exactly this reason.
+
+#### ⚠️ The fixture was OUT-REGULAR on the first run, and no endpoint check can catch that
+
+The probe's first fixture gave every vertex exactly FANOUT out-edges. Its distinct-endpoint assertion
+passed at 8000/8000 — so not functional — and the walk counts were still **exactly** `N*F^k`
+(6,400,000 / 25,600,000 / 102,400,000 at 100,000 x 4), because for an out-REGULAR graph every vertex
+has exactly `F^k` k-walks whatever the structure. A count a one-line formula predicts cannot validate
+the traversal that produced it.
+
+This is a DIFFERENT defect from the functional-fixture trap this file already documents, and the
+existing check is blind to it: one rules out "all edges land on one target", the other "every vertex
+has the same out-degree". The degree is now spread over `1..2*FANOUT-1` with mean FANOUT, the
+assertion counts distinct out-degrees as well as distinct endpoints, and the answers are no longer
+`N*F^k` (6,399,468 against 6,400,000). The timings barely moved — regularity costs the ANSWER its
+evidential value, not the clock — which is exactly why it would have survived unnoticed.
+
+#### Gates
+
+`bun run check` 0 read unpiped. Two new probes, no engine change.
