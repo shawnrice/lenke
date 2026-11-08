@@ -96,8 +96,8 @@ import {
   detectNodeProjection,
   detectOptionalHopCount,
   detectReachableShortcut,
-  detectVarLengthCount,
 } from './shortcuts.js';
+import { detectVarLengthCount } from './var-length-count.js';
 
 /**
  * Attribute a MULTI-PATTERN clause's `WHERE` conjuncts to the patterns they constrain, so the

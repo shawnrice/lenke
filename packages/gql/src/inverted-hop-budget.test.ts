@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 
-import { invertedHopBudget, sampleRulesOutInversion } from './executor/shortcuts.js';
+import { invertedHopBudget, sampleRulesOutInversion } from './executor/var-length-count.js';
 
 // Item 585. A bounded `-[:T]->{1,2}(y <test>)` count needs, per vertex, how many of its out-edges
 // land somewhere that PASSES. Walking out-edges pays one visit per edge in the graph and is FLAT
