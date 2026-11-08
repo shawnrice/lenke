@@ -73706,3 +73706,75 @@ control. It was worth getting.
 #### Gates
 
 `bun run check` 0 read unpiped. No engine change — `git diff` is this entry.
+
+### Item 1671 — **`_MERGE` PRICED FOR THE FIRST TIME, and it is O(1) in graph size: the indexed existence check is 468-510 ns at every size from 10,000 to 1,000,000.** An upsert is ~1.4-2.9 us, the read half is ~20% of it, and an UPDATE is cheaper than a CREATE
+
+New instrument: `gql-merge-scaling-probe.mjs`. No engine change.
+
+#### Found by screening the GQL surface, not by profiling
+
+The same screen item 1668 ran over Gremlin's 104 step kinds, applied to GQL: all 15 clause kinds
+appear somewhere in `packages/native`, and of 51 expression kinds only four are thin (two being the
+`CALL` forms item 1662 measured). But **`_MERGE` appears five times and has never been measured** —
+its seven mentions in CLOSED.md are item 442's parse-error divergence, an id path and a push site.
+For a clause real ingest workloads run in a loop, that was the hole.
+
+It matters because of the shape: an upsert is a READ then a WRITE, and the read decides the
+complexity. `resolveMergeEndpoint` -> `graph.uniqueLookup(label, key, value)` ->
+`vertexPropertyIndex.equals(key, value)`, so the create-vs-update decision rides the unique
+constraint's index. A degradation to a scan would make an upsert loop O(N^2) and still return the
+right answer at every step — the by-KEY analogue of the by-id invariant `by-id-scaling-probe.mjs`
+guards.
+
+```text
+   arm            N          ns/op    vs LARGEST N
+   lookupOnly       10000     495.2      0.97x
+   lookupOnly       50000     471.7      0.92x
+   lookupOnly      200000     467.8      0.92x
+   lookupOnly     1000000     510.3      1.00x
+
+   mergeUpdate      10000    2187.7      1.44x
+   mergeUpdate      50000    1885.9      1.24x
+   mergeUpdate     200000    1427.2      0.94x
+   mergeUpdate    1000000    1521.4      1.00x
+
+   mergeCreate      10000    2731.1      0.96x     insertPlain   10000   4395.0   1.67x
+   mergeCreate      50000    2476.4      0.87x     insertPlain   50000   2322.2   0.88x
+   mergeCreate     200000    2595.5      0.91x     insertPlain  200000   2461.8   0.94x
+   mergeCreate    1000000    2852.6      1.00x     insertPlain 1000000   2630.5   1.00x
+```
+
+**The invariant holds, and `lookupOnly` holds it exactly**: 468-510 ns across 100x the data, which
+is as flat as this instrument reads anything. No arm rises with N, so an upsert loop is O(N).
+
+Three things worth having:
+
+- **The read half is a MINORITY of the cost.** ~490 ns against 1,427-2,188 for an update (20-34%)
+  and 2,476-2,853 for a create (~18%). The write dominates, so the lever on upsert throughput is
+  the write path, not the existence check.
+- **An UPDATE is cheaper than a CREATE** — 1,427-2,188 against 2,476-2,853 — because a create also
+  pays vertex construction, index maintenance and the constraint check. An upsert-heavy workload
+  over existing keys is the cheap case, which is the opposite of the intuition that an update costs
+  a read plus a write while a create costs only a write.
+- **`_MERGE` costs about what `INSERT` costs** (2,852 against 2,630 at a million). The clause is not
+  expensive; writes are.
+
+#### ⚠️ TWO BUGS IN THIS PROBE, AND THE REPO'S OWN LINT RULE FOUND THE WORSE ONE
+
+The first version spliced the key into the query text. `lenke(no-raw-interpolation)` flagged it as
+an injection risk — and the consequence for a MEASUREMENT is worse than the consequence for safety:
+every call gets a different query string, so the parse+plan cache never hits and the reading is
+dominated by parsing 500 distinct texts per call. **`lookupOnly` read ~2,000 ns interpolated and
+495 ns with `$k` bound — 4x.** Items 1499-1502 are about exactly that cost, and the probe walked
+into it while measuring something else. A real upsert loop binds a param; so does this now.
+
+And the ratio column first normalised against the SMALLEST N, which reported `insertPlain` at
+"0.51x at a million" — twice as fast with 100x the data, which is not a thing. The create arms ADD
+`OPS * REPS` vertices to the graph they measure: +35% at 10,000 against +0.35% at a million, so all
+that index work lands on the small-N reading. Normalised against the largest N instead, with the
+artefact documented in the probe — `insertPlain`'s 1.67x at 10,000 is that artefact and not a
+scaling term.
+
+#### Gates
+
+`bun run check` 0 read unpiped. No engine change — one new probe and this entry.
