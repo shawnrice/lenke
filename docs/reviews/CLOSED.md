@@ -73379,9 +73379,23 @@ spread on IDENTICAL code:
 ```
 
 **The null control and the query rows have the same p90.** So this sweep cannot distinguish a real
-GQL toll from noise below ~1.5x on any single row, and the expected toll of a relocation is 0-16%.
-Reading it as the gate would have been reading noise. It stays as a backstop for a catastrophic
+GQL toll from noise below ~1.5x on any single row. It stays as a backstop for a catastrophic
 regression only.
+
+⚠️ **AND THE "0-16% EXPECTED TOLL" THIS ENTRY FIRST CLAIMED WAS WRONG — corrected here because a
+reader would otherwise inherit it.** The 16% belongs to `executor-edits-perturb`, which measured
+edits that ADD code: a new walk variant introducing another shape at a shared dispatch site, after
+which that site's inline caches serve more shapes and every query through it pays. That is a
+property of adding CALL SITES. A relocation adds none. Quoting the number for it applied a
+measurement outside the regime it was measured in, which is the first defect CLAUDE.md lists, in
+the same entry that cites CLAUDE.md.
+
+The honest figure for a relocation is **zero, and provably** rather than approximately: this move's
+bundle is byte-identical but for one `//#region` comment, and a comment does not execute. There is
+not even extra parsing to pay for, because the package is one bundle either way. The only mechanism
+that survives is declaration ORDER in the bundle, which could in principle move JIT code layout —
+here the order did not change at all, and no measurement of an order-only change exists, so naming
+a number for it would repeat the same error.
 
 (The first baseline capture was thrown away for an unrelated reason worth recording: it parsed with
 `sed` inside the loop, and `[a-z)\]]` does not escape inside a POSIX bracket expression — it demands
@@ -73451,3 +73465,45 @@ that block today — the planner, in a file named for execution. That label is a
 `bun run check` 0 read UNPIPED. Suites core 444, gql 4254, gremlin 2017, serialization 144, native
 1081 — 7940 pass / 0 fail, each exit code read unpiped. Bundle diff 1 line of 24,074, both controls
 run first.
+
+### Item 1664 — ⚠️ **WHAT ACTUALLY MADE `executor.ts` UNSPLITTABLE WAS FIVE HIDDEN GLOBALS, NOT ITS SIZE.** `compile` installs three collector `Set`s that code 10,000 lines away mutates instead of returning anything — so moving `compile` out made TypeScript infer `never` for the declarations that stayed, and the error pointed at the READER rather than the cause
+
+REFACTOR. New `executor/compile.ts` (372 lines, the entry points) and `executor/compile-state.ts`
+(71 lines, the query-scoped globals). `core.ts` 12,056 -> 11,704.
+
+`compile` is the only caller of `compileLinear` outside the planner family, so while it lived in
+`core.ts` the planner could not be extracted without a module cycle. Its interface turned out
+narrow, which is what said the boundary was right: **2 values and 4 types** from `core.ts`.
+
+#### The obstacle was not size
+
+```text
+   execEpoch             bumped once per plan invocation; memo caches key on it
+   memoUncorrelated      may an uncorrelated subquery be computed once and reused across rows
+   paramCollector        every $name the compiler saw, so compile can reject an unbound one
+   unknownFnCollector    every function name resolving to no scalar/aggregate
+   countParamCollector   params in a COUNT position
+```
+
+All five are written ONLY by `compile`/`execute` and read ONLY from `core.ts`. `compileExpr` reports
+an unbound `$param` by MUTATING A VARIABLE rather than returning anything, and nothing in the call
+signatures says so. No reading of the section markers would have found this.
+
+⚠️ **The reads stay free, which is why this is a module and not a class or a context object.** An
+imported `let` is an ESM live binding, and because the package ships as one bundle it collapses back
+to a direct variable reference — no call, no property load. `execEpoch` is read in a PER-ROW memo
+guard, so a getter there would have put a call in a hot loop to buy nothing. Only assignment cannot
+cross a module boundary, so only the writers moved behind functions, and the bundle prices that
+exactly: **-9 direct assignments, +16 lines of three setters and five call sites** in 14,951 —
+five extra calls per `compile()` and one per plan invocation, never per row.
+
+Lint earned its keep: the move left **eight dead imports** in `core.ts` and one in `compile.ts`,
+none of which typecheck catches.
+
+⚠️ Item 1663's "0-16% expected toll" is CORRECTED in that entry in this commit — a relocation is
+provably zero, and the 16% belongs to edits that add call sites.
+
+#### Gates
+
+`bun run check` 0 read UNPIPED. Suites 7940 pass / 0 fail, each exit code read unpiped. All seven
+byte-identity fuzzers 20 pass / 0 fail, exit 0 read unpiped.

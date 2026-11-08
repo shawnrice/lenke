@@ -35,3 +35,4 @@
  * No logic lives in this file.
  */
 export * from './executor/core.js';
+export * from './executor/compile.js';
