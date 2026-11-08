@@ -6,14 +6,8 @@ import { isTxControl } from './ast.js';
 import { type Normalized, normalizeLiterals } from './auto-param.js';
 
 export { normalizeLiterals } from './auto-param.js';
-import {
-  compile,
-  compileValidator,
-  execute,
-  freePredicateVars,
-  type Plan,
-  type Row,
-} from './executor.js';
+import { compile, execute } from './executor/compile.js';
+import { compileValidator, freePredicateVars, type Plan, type Row } from './executor/core.js';
 import { parse, parsePredicate } from './parser.js';
 
 export type {
@@ -27,10 +21,11 @@ export type {
   Expr,
 } from './ast.js';
 export { isTxControl } from './ast.js';
-export type { Plan, Row } from './executor.js';
+export type { Plan, Row } from './executor/core.js';
 export { GqlSyntaxError, isReserved, quoteIdent } from './lexer.js';
 export { parse, parsePredicate } from './parser.js';
-export { compile, compileValidator, execute } from './executor.js';
+export { compileValidator } from './executor/core.js';
+export { compile, execute } from './executor/compile.js';
 
 /**
  * Declare a custom VALIDATOR constraint: every element carrying `label` (a vertex

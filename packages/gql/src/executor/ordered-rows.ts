@@ -26,8 +26,8 @@
 import type { Graph } from '@lenke/core';
 
 import type { Clause, Expr, SortItem } from '../ast.js';
-import type { Params, Row } from '../executor.js';
-import { compareSort } from '../executor.js';
+import type { Params, Row } from './core.js';
+import { compareSort } from './core.js';
 
 /**
  * Can evaluating this expression FAULT, beyond producing its own value?

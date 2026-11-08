@@ -51,6 +51,14 @@ import type {
   Segment,
   SortItem,
 } from '../ast.js';
+import {
+  candidateCount,
+  candidateVertexSource,
+  directedBucket,
+  expand,
+  matchesLabel,
+} from '../graph-queries.js';
+import type { Adjacency } from '../graph-queries.js';
 // The shortcuts read shared primitives + compiled types out of the executor
 // trunk, and the trunk imports the two detectors back — a safe function-level
 // cycle (resolved lazily at call time), matching the other executor submodules.
@@ -65,7 +73,7 @@ import type {
   EvalEnv,
   Params,
   Row,
-} from '../executor.js';
+} from './core.js';
 import {
   edgesOfTypes,
   foldFor,
@@ -88,15 +96,7 @@ import {
   relTypeNames,
   resolveCount,
   valueKey,
-} from '../executor.js';
-import {
-  candidateCount,
-  candidateVertexSource,
-  directedBucket,
-  expand,
-  matchesLabel,
-} from '../graph-queries.js';
-import type { Adjacency } from '../graph-queries.js';
+} from './core.js';
 import { plainRowProjection } from './hop-projection.js';
 import { indexCandidates, matchNode, seedVertices, seekIsWorthIt } from './matching.js';
 import type { SeedCandidate } from './matching.js';

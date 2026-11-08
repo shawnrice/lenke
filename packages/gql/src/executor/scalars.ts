@@ -27,7 +27,7 @@ import { AGGREGATES } from '../ast.js';
 import type { ArithOp, CompareOp, Expr } from '../ast.js';
 // Shared element guards + ordering comparator live in the executor trunk; used
 // lazily inside scalar fns, so this back-edge is a safe function-level cycle.
-import { compareSort, isEdge, isElement, isVertex } from '../executor.js';
+import { compareSort, isEdge, isElement, isVertex } from './core.js';
 
 // --- three-valued logic & scalar helpers -------------------------------------
 

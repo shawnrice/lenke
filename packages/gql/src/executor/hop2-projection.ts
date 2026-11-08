@@ -1,9 +1,9 @@
 import type { Graph, Vertex } from '@lenke/core';
 
 import type { Clause, NodePattern, RelPattern } from '../ast.js';
-import type { CClause, CompiledExpr, CProjection, Params, Row } from '../executor.js';
-import { freePredicateVars, projectRow } from '../executor.js';
 import { matchesLabel } from '../graph-queries.js';
+import type { CClause, CompiledExpr, CProjection, Params, Row } from './core.js';
+import { freePredicateVars, projectRow } from './core.js';
 import { plainRowProjection } from './hop-projection.js';
 import type { AlwaysRowsFn } from './hop-projection.js';
 import { asTruth } from './scalars.js';

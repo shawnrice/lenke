@@ -10,9 +10,9 @@
 import type { Edge, Graph } from '@lenke/core';
 
 import type { Clause, Expr } from '../ast.js';
-import type { AggFold, CompiledExpr, Params, Row } from '../executor.js';
-import { freePredicateVars, relTypeNames } from '../executor.js';
 import { candidateVertexSource, matchesLabel } from '../graph-queries.js';
+import type { AggFold, CompiledExpr, Params, Row } from './core.js';
+import { freePredicateVars, relTypeNames } from './core.js';
 import { isNullish } from './scalars.js';
 import { plainNode, plainRel, vacuousLabel } from './shortcuts.js';
 

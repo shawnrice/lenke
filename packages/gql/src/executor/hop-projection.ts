@@ -1,6 +1,8 @@
 import type { Edge, Graph, Vertex } from '@lenke/core';
 
 import type { Clause, CountValue, Expr, LabelExpr, Projection, RelPattern } from '../ast.js';
+import { candidateCount, candidateVertexSource, expand, matchesLabel } from '../graph-queries.js';
+import type { Adjacency } from '../graph-queries.js';
 import type {
   AggFold,
   CClause,
@@ -12,7 +14,7 @@ import type {
   EvalEnv,
   Params,
   Row,
-} from '../executor.js';
+} from './core.js';
 import {
   aggregateOverValues,
   compileExpr,
@@ -30,9 +32,7 @@ import {
   relTypeNames,
   satisfies,
   sortsOnOutputOnly,
-} from '../executor.js';
-import { candidateCount, candidateVertexSource, expand, matchesLabel } from '../graph-queries.js';
-import type { Adjacency } from '../graph-queries.js';
+} from './core.js';
 import { primedEndpointExtremum, withPrimedEndpointExtremum } from './hop-endpoint-extremum.js';
 import { indexCandidates } from './matching.js';
 import type { SortPlan } from './ordered-rows.js';

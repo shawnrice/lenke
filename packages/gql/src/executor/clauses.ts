@@ -8,6 +8,7 @@ import { ErrorCode, LenkeError } from '@lenke/errors';
 import { filter, flatMap, map, skip, slice, toArray } from '@lenke/fp';
 
 import type { Query, SetOp, TxControl } from '../ast.js';
+import { hasIncidentEdges } from '../graph-queries.js';
 // Back-edges into the executor trunk (compiled types + helpers), used lazily.
 import type {
   Binding,
@@ -28,7 +29,7 @@ import type {
   EvalEnv,
   Params,
   Row,
-} from '../executor.js';
+} from './core.js';
 import {
   applyProjection,
   mapToArray,
@@ -39,8 +40,7 @@ import {
   isVertex,
   resolveCount,
   valueKey,
-} from '../executor.js';
-import { hasIncidentEdges } from '../graph-queries.js';
+} from './core.js';
 import { matchPattern } from './matching.js';
 import { boundedTopKeyed } from './ordered-rows.js';
 import { asTruth } from './scalars.js';
