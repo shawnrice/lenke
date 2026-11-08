@@ -1220,6 +1220,30 @@ export class Graph {
     return this.edgesById.size;
   }
 
+  /**
+   * A monotonic counter bumped whenever the graph's TOPOLOGY changes — a vertex or an edge added or
+   * removed. Advances SYNCHRONOUSLY, which is the whole reason it exists.
+   *
+   * ⚠️ `version` AND `epoch(name)` CANNOT SERVE THIS PURPOSE, and item 1571 declined a cache over
+   * exactly that: both are deferred, reading 0 through three mutations and moving only after a task
+   * drain, so a cache keyed on either hands a STALE result to the ordinary
+   * `g.addEdge(...); query(g, …)` shape. `vertexCount`/`edgeCount` advance eagerly but cannot serve
+   * either — a delete plus an add leaves both unchanged while the topology differs.
+   *
+   * ⚠️ TOPOLOGY, NOT MUTATION. A property or label write does NOT bump this, deliberately: a
+   * consumer caching an adjacency structure is not invalidated by either, and bumping would throw
+   * away work on every `SET`. Anything keyed on this must therefore depend on the vertex set and
+   * the edges ONLY. (The vertex set is in scope because a CSR numbers vertices by iteration order,
+   * so an add or remove shifts every index.)
+   *
+   * ⚠️ IT IS FOR INVALIDATION, SO IT ONLY HAS TO BE CONSERVATIVE, NOT EXACT. A rollback replays the
+   * transaction's inverse operations through these same public mutators, so it bumps this too and a
+   * cache correctly rebuilds; over-invalidating costs a rebuild, where under-invalidating would
+   * serve a wrong answer. Never compare two values for ordering or subtract them — the only sound
+   * question is "is this the same number I saw before?".
+   */
+  public topologyVersion = 0;
+
   public subscribe = (callback: () => unknown): (() => void) => {
     this.listeners.add(callback);
 
@@ -1722,6 +1746,7 @@ export class Graph {
     this.emit(new EmitterEvent('@graph/VertexAdded', vertex));
 
     this.verticesById.set(vertex.id, vertex);
+    this.topologyVersion += 1;
 
     for (const label of vertex.labels) {
       this.indexVertexLabel(label, vertex);
@@ -1797,6 +1822,7 @@ export class Graph {
     this.vertexPropertyIndex.remove(vertex, vertex.properties);
 
     this.verticesById.delete(vertex.id);
+    this.topologyVersion += 1;
 
     vertex.evict();
 
@@ -2081,6 +2107,7 @@ export class Graph {
     this.emit(new EmitterEvent('@graph/EdgeAdded', edge));
 
     this.edgesById.set(edge.id, edge);
+    this.topologyVersion += 1;
 
     // One read for the loop AND the multi-type tally, which asked the getter twice more.
     const { labels: edgeLabels } = edge;
@@ -2172,6 +2199,7 @@ export class Graph {
     this.edgePropertyIndex.remove(edge, edge.properties);
 
     this.edgesById.delete(edge.id);
+    this.topologyVersion += 1;
 
     edge.evict();
 

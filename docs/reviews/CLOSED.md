@@ -64947,7 +64947,7 @@ No engine change — `executor.ts` differs from its pre-tick copy by a comment o
 `shortcuts.ts` is byte-identical (both verified by `diff`). `bun run check` 0 read unpiped.
 Suites: gql 3964/0, the rest unchanged from item 1569; `bun run fuzz` 20/0.
 
-### Item 1571 — **86.3% of a bounded var-length count is a CSR that is REBUILT EVERY QUERY**, priced by instrumentation rather than inferred from a share. The cache is designed and NOT built, because ⚠️ **neither `graph.version` NOR `graph.epoch(name)` advances synchronously** — both read 0 through three mutations and only move after a task drain, so keying a cache on either serves a STALE result to any query following a write
+### Item 1571 — **86.3% of a bounded var-length count is a CSR that is REBUILT EVERY QUERY**, priced by instrumentation rather than inferred from a share. ~~The cache is designed and NOT built, because~~ ⚠️ **THE BLOCKER IS GONE — ITEM 1674 BUILT THE SIGNAL (`topologyVersion`), measured it free, and the cache itself is what remains.** The blocker was real: ⚠️ **neither `graph.version` NOR `graph.epoch(name)` advances synchronously** — both read 0 through three mutations and only move after a task drain, so keying a cache on either serves a STALE result to any query following a write
 
 Item 1570 refuted a target taken from a self-time share, so this one was ablated first.
 
@@ -65005,12 +65005,24 @@ an add leaves both unchanged while the topology differs.
 **The prerequisite is therefore a synchronous mutation counter in core**, which touches every mutator
 plus the transaction undo path — too much to fold into a perf item
 
-⚠️ **NARROWED AT ITEM 1673: AN ADJACENCY-SCOPED SIGNAL NEEDS TWO INCREMENT SITES, NOT EVERY MUTATOR.**
-A CSR is invalidated by adjacency changes and by nothing else — a property or label write cannot move
-it — and `Graph.ts` funnels every adjacency change through exactly two methods: `insertEdge` (private,
-the target of `addEdge` and of the `Edge`-instance form) and `removeEdge` (the target of vertex
-removal, once per incident edge). `indexEdgeLabel` inside `insertEdge` is the index write. So the
-signal is a monotonic counter bumped in two places, not a core-wide mutation counter.
+⚠️ **NARROWED AT ITEM 1673: A TOPOLOGY SIGNAL NEEDS FOUR INCREMENT SITES, NOT EVERY MUTATOR.**
+(⚠️ **AND ITEM 1673 FIRST SAID TWO, WHICH WAS WRONG** — it scoped the signal to ADJACENCY, but the CSR
+numbers the vertices as `[...graph.verticesById.values()]` and `nbr` holds indices INTO that order, so
+a vertex add or remove shifts every index and invalidates the CSR as surely as an edge write does.
+Corrected before anything was built on it.)
+
+What a CSR cannot be invalidated by is a property or label write — those move neither the vertex
+numbering nor the adjacency. And `Graph.ts` funnels the whole of topology through four writes, two
+maps:
+
+```text
+   1724  this.verticesById.set(vertex.id, vertex)   addVertex
+   1799  this.verticesById.delete(vertex.id)        removeVertex
+   2083  this.edgesById.set(edge.id, edge)          insertEdge
+   2174  this.edgesById.delete(edge.id)             removeEdge
+```
+
+So the signal is a monotonic counter bumped in four places, not a core-wide mutation counter.
 
 And it needs no undo semantics. A counter for INVALIDATION only has to answer "might the adjacency
 have changed since?", so an undo incrementing it is correct — over-invalidating costs a rebuild, never
@@ -65028,9 +65040,16 @@ and `undoTo` simply invokes them:
    this.recordUndo(() => this.addEdge({ id: undo.id, from: …, to: …, labels: …, properties: … }));
 ```
 
-So a counter bumped in `insertEdge` and `removeEdge` is bumped during rollback as well, and
-UNDER-invalidation — the only failure mode, and this entry's original one — cannot occur. The design
-is a two-site monotonic adjacency counter plus the cache, with no new invariant to maintain.
+So a counter bumped at those sites is bumped during rollback as well, and UNDER-invalidation — the
+only failure mode, and this entry's original one — cannot occur.
+
+⚠️ **AND THE CONVERSE CLAIM WAS WRONG, caught by item 1674's mutation pass rather than by reasoning.**
+This entry first said restoring the counter on rollback "would be the one change that could make a
+cache serve a stale structure". It would not: a rollback restores state FAITHFULLY, so a counter
+restored alongside it is CONSISTENT — the cache entry at the pre-transaction version was built from
+the pre-transaction state, which is exactly the post-rollback state. The mutant that restores it
+SURVIVES the contract suite, correctly, as an equivalent mutant. Not restoring is simply simpler: it
+costs one rebuild after a rollback and needs no bookkeeping in the undo path.
 
 (That the inverses re-resolve by ID rather than closing over the element is itself deliberate: the
 comment above `insertEdge`'s undo records that closing over a stale instance dereferences a null
@@ -73857,3 +73876,104 @@ profile whose fixture outweighs its measurement by 40x describes the fixture. Re
 #### Gates
 
 `bun run check` 0 read unpiped. No engine change — one new probe and this entry.
+
+### Item 1674 — **`topologyVersion`: THE SYNCHRONOUS SIGNAL ITEM 1571 SAID DID NOT EXIST, BUILT AND MEASURED FREE.** Four integer increments, two maps, a 6-test contract suite, and a 5/6 mutation score where the survivor is an equivalent mutant. ⚠️ **Its A/B needed a purpose-built instrument, because the probe it was first measured with produced a result that CONTRADICTED its own mechanism** — the arm that moved most bumps the counter zero times
+
+Item 1571 priced a CSR cache at 86.3% of a bounded var-length count and declined to build it for one
+reason: nothing in `Graph.ts` advances synchronously. Item 1673's blocker audit narrowed the
+prerequisite from "every mutator plus the transaction undo path" to four sites. This builds it.
+
+#### What it is
+
+```ts
+   public topologyVersion = 0;        // Graph.ts, beside vertexCount/edgeCount
+```
+
+bumped at exactly the four writes that can move a CSR — `verticesById.set`/`.delete` and
+`edgesById.set`/`.delete` — and at nothing else. Three properties, all pinned as tests in
+`packages/core/src/core/topology-version.test.ts`:
+
+- **Synchronous**, where `version` and `epoch(name)` are deferred. The test asserts `g.version` is
+  still 0 after two `addEdge` calls while `topologyVersion` has moved by 2. This is item 1571's
+  disqualifying measurement, now a regression test rather than a note.
+- **Topology, not mutation.** A property or label write does NOT bump it, so a cached adjacency
+  structure survives `SET`. This is what makes the signal worth having rather than merely correct:
+  bumping on property writes would discard the cache on every write and it would never pay on a
+  read-write workload.
+- **Conservative under rollback.** A rolled-back transaction still bumps it, because the undo log
+  stores inverses as closures over the public mutators, so a rollback replays through the same four
+  writes. Over-invalidation costs a rebuild; under-invalidation is a wrong answer.
+
+#### ⚠️ The cost: FREE, and the instrument to show it had to be built
+
+```text
+   arm                PRE      POST    POST/PRE
+   addVerticesOnly   891.6    895.1     1.004x    bumps the counter
+   addEdgesToo      1526.0   1515.1     0.993x    bumps the counter
+   setPropertyOnly   533.4    553.3     1.037x    CONTROL, bumps nothing
+```
+
+(`core-write-floor-probe.mjs`, N=100,000, 9 reps, two order-alternated rounds, a core rebuild per
+arm.) **The CONTROL moved more than either target**, 3.7% against 0.4% and −0.7%, and the two arms
+that actually pay the increment disagree on the sign. That is this file's own tell for noise, so the
+reading is: whatever the counter costs is below the instrument's 3.7% resolution.
+
+⚠️ **THE QUERY-LEVEL PROBE COULD NOT ANSWER THIS, AND ITS ANSWER WAS INCOHERENT RATHER THAN MERELY
+NOISY.** Pointed at `gql-merge-scaling-probe.mjs`, the counter appeared to cost 1.30x on `mergeUpdate`
+and 1.16x on `mergeCreate` against item 1671's numbers. But `mergeUpdate` is a property write, which
+bumps the counter ZERO times, while `insertPlain` — which does bump — read flat at 1.01x. A pattern
+that contradicts the mechanism is noise however large it looks, and the cause is resolution: that
+probe reads 1.4-4.7 us an operation with a 1.53x within-run spread across sizes, so it cannot see a
+sub-1% change to a write path. It was also a CROSS-RUN comparison against a log from a previous item,
+which this file has twice recorded as unreliable (`valuesDecl` moved 34% and `direct` 7.5x on
+identical code). Hence `core-write-floor-probe.mjs`: the mutators directly, no query, no plan, no
+transaction, with the property-write path as a built-in control.
+
+⚠️ **AND THE A/B'S "PRISTINE" SNAPSHOT WAS NOT PRISTINE.** The copy kept at
+`crates/lenke-engine/target/item1674/Graph.pristine.ts` was taken AFTER the counter went in, so it
+carried all five occurrences; using it as the PRE arm would have compared the change against itself
+and reported the counter free for the wrong reason. Caught by counting the symbol in each arm before
+building it — the rule this file already states as "assert each A/B arm IS the code it claims" — and
+the driver now asserts the count in the BUILT DIST, not in src, since dist is what the probe imports.
+
+⚠️ **THE PROBE ALSO OOMed ON ITS FIRST RUN, at N=100,000 in a 4 GB heap**, which is
+`graph-pinned-until-microtask-drain` exactly: a discarded `Graph` is retained in full by its pending
+`drainMutations` microtask, so a synchronous build-and-discard loop holds every graph it ever made.
+Ten reps was enough. `await` a macrotask yield between reps and the retention releases. Any probe
+that builds a fresh graph per rep needs that drain.
+
+#### Mutation score: 5 caught, 1 equivalent survivor
+
+Six mutants, each anchor asserted unique so a mutant that fails to apply cannot be scored as caught.
+M1-M4 delete one of the four increments — under-invalidation, the failure mode that serves a stale
+structure — and each is caught (1, 1, 3, 1 failures). M5 adds a bump where a LABEL write commits:
+correct but ruinous, and caught by the "does NOT bump" test, which is the whole reason that test
+exists.
+
+⚠️ **M6 — restore the counter on rollback — SURVIVED, AND CORRECTLY.** The claim in item 1571's entry
+that restoring it "could make a cache serve a stale structure" was wrong: a rollback restores state
+faithfully, so a counter restored alongside it is CONSISTENT, since a cache entry at the
+pre-transaction version was built from the pre-transaction state, which is exactly the post-rollback
+state. Both choices are sound; not restoring is simply simpler. The entry and the test comment are
+corrected, and the test now pins the weaker property that is actually load-bearing — the version
+CHANGES when state changes.
+
+(⚠️ M5's first draft added an unused private method, which changes no behaviour and would have
+"survived" meaninglessly. A mutant that cannot be caught tests nothing. Repointed at
+`commitElementLabels`.)
+
+#### Gates
+
+`bun run check` 0 read unpiped. `packages/core` isolated: 450 pass, 0 fail. All seven byte-identity
+fuzzers: 20 pass, 0 fail.
+
+⚠️ A repo-root `bun test` reports 68 failures on this tree and **none of them are this change** — it
+sweeps `packages/react` without a DOM, two Playwright e2e specs that cannot run under `bun test`,
+stale copies under `crates/lenke-engine/target/{a597,p597}`, and the `@lenke/sync` timing suites that
+`sync-test-flake-is-timing` records as flaking under run-many only. `Graph.reactive.test.ts` fails
+there with fifteen 5-second timeouts and passes isolated, which is the same artefact and the one most
+likely to be mistaken for a real break in a change to `Graph.ts`. Per-package runs are the gate.
+
+#### Still open
+
+The cache itself. The prerequisite is now in the tree, so item 1571's 86.3% is next.
