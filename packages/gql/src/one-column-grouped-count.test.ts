@@ -3,7 +3,8 @@ import { describe, expect, test } from 'bun:test';
 import { Graph } from '@lenke/core';
 
 import type { Clause } from './ast.js';
-import { detectGroupedHopCount, detectGroupedNodeCount } from './executor/shortcuts.js';
+import { detectGroupedHopCount } from './executor/grouped-hop.js';
+import { detectGroupedNodeCount } from './executor/node-scan.js';
 import { query } from './index.js';
 import { parse } from './parser.js';
 

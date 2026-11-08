@@ -23,7 +23,7 @@ import { describe, expect, test } from 'bun:test';
 
 import { Graph } from '@lenke/core';
 
-import { predFor } from './executor/shortcuts.ts';
+import { predFor } from './executor/inline-gate.ts';
 import { query } from './index.ts';
 
 const NEVER = (): unknown => {

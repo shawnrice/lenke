@@ -21,7 +21,8 @@ import { describe, expect, it } from 'bun:test';
 import { Graph, LocalDate, temporalParse } from '@lenke/core';
 
 import type { Expr } from './ast.js';
-import { itemLocal, rowLocal } from './executor/shortcuts.js';
+import { itemLocal } from './executor/node-scan.js';
+import { rowLocal } from './executor/shortcuts.js';
 import { query } from './index.js';
 
 const lit = (value: unknown): Expr => ({ kind: 'lit', value });

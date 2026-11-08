@@ -18,7 +18,7 @@ import { describe, expect, it } from 'bun:test';
 
 import { Graph } from '@lenke/core';
 
-import { heapBeatsSort, topKPlan } from './executor/shortcuts.ts';
+import { heapBeatsSort, topKPlan } from './executor/node-scan.ts';
 import { query } from './index.ts';
 
 /**

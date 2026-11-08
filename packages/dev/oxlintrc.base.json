@@ -184,12 +184,6 @@
       "rules": { "import/no-cycle": "off" }
     },
     {
-      // The same ratchet for file size. shortcuts.ts is 5891 CODE lines; everything else in the
-      // repo is now under 3000 — core.ts came off this list at 2822 after nine extractions.
-      "files": ["packages/gql/src/executor/shortcuts.ts"],
-      "rules": { "max-lines": "off" }
-    },
-    {
       // `execEpoch` is exported as a mutable binding on purpose — it is read PER ROW inside the
       // closure `memoizeIfUncorrelated` returns, so an accessor would put a call in a hot loop.
       // The module header carries the full reasoning. Every other value there is an accessor.

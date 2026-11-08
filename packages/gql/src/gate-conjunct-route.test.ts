@@ -3,8 +3,8 @@ import { describe, expect, test } from 'bun:test';
 import { Graph } from '@lenke/core';
 
 import { compilePredicate } from './executor/core.js';
+import { specializedConjunct } from './executor/inline-gate.js';
 import { satisfies } from './executor/predicates.js';
-import { specializedConjunct } from './executor/shortcuts.js';
 import { query } from './index.js';
 
 /**

@@ -25,8 +25,9 @@ import type { Clause, PathPattern } from '../ast.js';
 import { edgesOfTypes, relTypeNames } from './adjacency.js';
 import type { Params, Row } from './core.js';
 import { plainNode } from './hop-sides.js';
+import { inlineHolds } from './inline-gate.js';
 import { vacuousLabel } from './labels.js';
-import { alwaysTrue, chainGatesOf, countStarColumn, gateWith, inlineHolds } from './shortcuts.js';
+import { alwaysTrue, chainGatesOf, countStarColumn, gateWith } from './shortcuts.js';
 
 /**
  * A one-hop count whose ONLY constraint is a label on one end: the DEGREE SUM over that end's

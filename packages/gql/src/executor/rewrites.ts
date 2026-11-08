@@ -61,6 +61,7 @@ import {
   seedPrefilter,
   withPin,
 } from './core.js';
+import { detectCountShortcut } from './count-shortcut.js';
 import {
   SUBQUERY_EXPRS,
   andExprOf,
@@ -72,6 +73,8 @@ import {
   freePredicateVars,
   hasSubquery,
 } from './expr-analysis.js';
+import { detectForCount, detectForProjection } from './for-unwind.js';
+import { detectGroupedHopAggregate, detectGroupedHopCount } from './grouped-hop.js';
 import {
   detectDistinctCount,
   detectDistinctProjection,
@@ -81,22 +84,17 @@ import {
   detectOptionalHopProjection,
 } from './hop-projection.js';
 import { detectHop2Projection } from './hop2-projection.js';
-import { columnName } from './rows.js';
-import { collectAggregates, hasAggregate } from './scalars.js';
 import {
-  detectCountShortcut,
-  detectForCount,
-  detectForProjection,
-  detectGroupedHopAggregate,
-  detectGroupedHopCount,
   detectGroupedNodeAggregate,
   detectGroupedNodeCount,
   detectMultiNodeAggregate,
   detectNodeAggregate,
   detectNodeProjection,
-  detectOptionalHopCount,
-  detectReachableShortcut,
-} from './shortcuts.js';
+} from './node-scan.js';
+import { detectOptionalHopCount } from './optional-hop.js';
+import { detectReachableShortcut } from './reachability.js';
+import { columnName } from './rows.js';
+import { collectAggregates, hasAggregate } from './scalars.js';
 import { detectVarLengthCount } from './var-length-count.js';
 
 /**
