@@ -30,20 +30,11 @@ import type {
   Params,
   Row,
 } from './core.js';
-import {
-  applyProjection,
-  mapToArray,
-  projectedRows,
-  compareSort,
-  isEdge,
-  isElement,
-  isVertex,
-  resolveCount,
-  valueKey,
-} from './core.js';
+import { applyProjection, mapToArray, projectedRows, resolveCount, valueKey } from './core.js';
 import { matchPattern } from './matching.js';
 import { boundedTopKeyed } from './ordered-rows.js';
 import { asTruth } from './scalars.js';
+import { compareSort, isEdge, isElement, isVertex } from './values.js';
 
 export const evalProps = (
   props: readonly CProp[],

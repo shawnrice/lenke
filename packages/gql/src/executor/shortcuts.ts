@@ -102,7 +102,8 @@ import { indexCandidates, matchNode, seedVertices, seekIsWorthIt } from './match
 import type { SeedCandidate } from './matching.js';
 import type { ColSort, SortPlan } from './ordered-rows.js';
 import { boundedTopKeyed, outputColumnSorts, sortRowsByColumns } from './ordered-rows.js';
-import { AGGREGATES, asTruth, collectAggregates, isNullish } from './scalars.js';
+import { AGGREGATES, asTruth, collectAggregates } from './scalars.js';
+import { isNullish } from './values.js';
 
 /**
  * Is `expr` satisfied by EVERY vertex in `graph`, so that testing it per element is pure

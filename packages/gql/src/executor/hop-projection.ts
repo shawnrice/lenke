@@ -25,7 +25,6 @@ import {
   truthCannotRaise,
   foldFor,
   percentileFraction,
-  compareSort,
   freePredicateVars,
   projectRow,
   propOf,
@@ -37,7 +36,7 @@ import { primedEndpointExtremum, withPrimedEndpointExtremum } from './hop-endpoi
 import { indexCandidates } from './matching.js';
 import type { SortPlan } from './ordered-rows.js';
 import { outputColumnSorts, sortRowsByColumns, sortedRows } from './ordered-rows.js';
-import { asTruth, isNullish } from './scalars.js';
+import { asTruth } from './scalars.js';
 import {
   edgeSeek,
   hopSeek,
@@ -51,6 +50,8 @@ import {
   vacuousLabel,
   valueSet,
 } from './shortcuts.js';
+import { compareSort } from './values.js';
+import { isNullish } from './values.js';
 
 /** Rows for a whole `MATCH … RETURN` query, or `null` if the shape does not fit. */
 /**

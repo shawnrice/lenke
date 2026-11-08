@@ -147,6 +147,10 @@
       }
     },
     {
+      // ⚠️ TO RE-MEASURE THIS LIST, USE A CONFIG WITHOUT THESE OVERRIDES. Running
+      // `oxlint -A all -D import/no-cycle` still applies them, so every file listed here
+      // reports clean and the list looks finished. That misreading nearly booked a false
+      // win: 31 files were still cyclic while the measurement said 0.
       // RATCHET, not an exemption: these are the files already in an import cycle when the rule
       // was turned on. Listing them individually means any NEW cycle anywhere errors, and the
       // list only ever shrinks. Delete an entry when its cycle goes; do not add one.
@@ -156,8 +160,6 @@
         "packages/gql/src/executor/hop-endpoint-extremum.ts",
         "packages/gql/src/executor/hop-projection.ts",
         "packages/gql/src/executor/matching.ts",
-        "packages/gql/src/executor/ordered-rows.ts",
-        "packages/gql/src/executor/scalars.ts",
         "packages/gql/src/executor/shortcuts.ts",
         "packages/gremlin/src/executor/aggregation.ts",
         "packages/gremlin/src/executor/cardinality.ts",
