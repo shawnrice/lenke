@@ -6,9 +6,10 @@ import type { CClause, CompiledExpr, CProjection, Params, Row } from './core.js'
 import { freePredicateVars } from './expr-analysis.js';
 import { plainRowProjection } from './hop-projection.js';
 import type { AlwaysRowsFn } from './hop-projection.js';
+import { plainNode, plainRel } from './hop-sides.js';
 import { projectRow } from './rows.js';
 import { asTruth } from './scalars.js';
-import { effectiveLabel, plainNode, plainRel, rowLocal } from './shortcuts.js';
+import { effectiveLabel, rowLocal } from './shortcuts.js';
 
 /**
  * `MATCH (a:A)-[:T]->(b:B)-[:U]->(c:C) RETURN <items>` — a TWO-SEGMENT pattern returning ROWS,

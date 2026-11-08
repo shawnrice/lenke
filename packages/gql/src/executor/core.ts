@@ -7466,7 +7466,6 @@ import {
   uniformIdEqChain,
 } from './expr-analysis.js';
 import type { AlwaysRowsFn, RowsFn } from './hop-projection.js';
-import { columnName, mapToArray, projectRow, resolveCount, valueKey } from './rows.js';
 // Imported at FUNCTION level like the other detectors — this module and `executor` import
 // each other, which the existing comment on the shortcuts import explains is safe.
 // Count / reachability fast-paths (see executor/shortcuts.ts) — this back-edge and
@@ -7480,6 +7479,8 @@ import {
   sideOfVertexGated,
   threeHopSide,
   twoHopSide,
-} from './shortcuts.js';
-import type { ReachFn, ThreeHopSide, TwoHopSide } from './shortcuts.js';
+} from './hop-sides.js';
+import type { ThreeHopSide, TwoHopSide } from './hop-sides.js';
+import { columnName, mapToArray, projectRow, resolveCount, valueKey } from './rows.js';
+import type { ReachFn } from './shortcuts.js';
 import { compareSort, compareValues, isEdge, isElement, isVertex } from './values.js';

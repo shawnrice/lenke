@@ -2,7 +2,7 @@ import { beforeAll, describe, expect, test } from 'bun:test';
 
 import { Graph, type Vertex } from '@lenke/core';
 
-import { side, sideOfVertex } from './executor/shortcuts.js';
+import { side, sideOfVertex } from './executor/hop-sides.js';
 import { query } from './index.js';
 
 /**

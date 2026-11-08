@@ -29,6 +29,7 @@ import {
 } from './core.js';
 import { flattenConjuncts, freePredicateVars, truthCannotRaise } from './expr-analysis.js';
 import { primedEndpointExtremum, withPrimedEndpointExtremum } from './hop-endpoint-extremum.js';
+import { plainNode, plainRel } from './hop-sides.js';
 import { indexCandidates } from './matching.js';
 import type { SortPlan } from './ordered-rows.js';
 import { outputColumnSorts, sortRowsByColumns, sortedRows } from './ordered-rows.js';
@@ -40,8 +41,6 @@ import {
   liftedOwnPred,
   pageGroups,
   pageIsEmpty,
-  plainNode,
-  plainRel,
   rowLocal,
   sameGroupingExpr,
   vacuousLabel,
