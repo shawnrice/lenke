@@ -73652,3 +73652,57 @@ measurement, an absolute ns figure across runs is not.
 #### Gates
 
 `bun run check` 0 read unpiped. No engine change — one new probe and this entry.
+
+### Item 1670 — ⚠️ **THE TIMING BACKSTOP THE SPLIT KEPT PROMISING AND NEVER RAN: nine extractions and two new lint rules measure FLAT.** Query rows median **1.023x** against a null-control median of **1.021x** — a 0.2% difference, which is the instrument and not the code
+
+No engine change. The measurement thirteen commits said was covered by a bundle diff.
+
+#### What was actually verified, and what was not
+
+Every extraction from item 1663 onward was gated on a code-only BUNDLE DIFF, on the argument that
+`@lenke/gql` ships as one bundle so a pure relocation cannot change the emitted code. That argument
+holds and the diffs were clean — across ~14,000 emitted lines the only substantive changes in the
+whole split are ~35 lines of accessor plumbing in `compile-state.ts` and one alias inlined at item 1669. Everything else was identical code in a different ORDER, or the bundler swapping which of two
+same-named functions carries a `$1` suffix.
+
+⚠️ **BUT A BUNDLE DIFF CANNOT SEE DECLARATION ORDER, WHICH IS THE ONE THING EVERY EXTRACTION
+CHANGED** — and that is precisely the mechanism behind `executor-edits-perturb`'s 16%. A 4-round
+`BENCH_ENGINES=ts bun run bench` baseline was captured at 121b22fc specifically as that backstop,
+and then not used for thirteen commits. This is it.
+
+```text
+   4 rounds each side, commit 121b22fc -> 0939b347
+
+   QUERY rows  n=55   median 1.023x   worst 1.41x   best 0.89x
+   NULL CTL    n=15   median 1.021x   worst 1.10x   best 0.97x
+```
+
+**The query rows and the null control moved by the same amount.** The 15 codec rows
+(encode/decode ndjson, pg-json, graphson, pg-text, csv) are code a GQL executor split provably
+cannot reach, so 1.021x there is the machine's drift; the query rows' 1.023x is the same drift. The
+difference is 0.2%.
+
+#### The one remaining outlier is a PRE-side artefact, and reading it the other way would have been wrong
+
+```text
+   1.41x   pre 3.1 / 3.0 / 2.2 / 3.4   post 3.1 / 3.4 / 3.1 / 3.2   query: group, no aggregate
+```
+
+The POST side is tighter. The ratio exists only because `min`-of-4 banked a single fast pre rep —
+the bimodal-arm problem CLAUDE.md records for the TS per-row path, where `min` is the wrong
+estimator. ⚠️ And at three rounds the worst row in the whole sweep was `encode ndjson` at 1.33x — a
+NULL CONTROL, i.e. a file the split never opened — which the fourth round took back to 1.10x. Both
+are the same lesson: a single row's ratio is noise, and the readable signal is the median across 55
+rows with the controls pinned.
+
+#### Why this is worth an entry rather than a line
+
+The split was argued from a mechanism (one bundle, so relocation is free) and verified against a
+proxy (the emitted lines). Both were right, and neither is the measurement. Thirteen commits each
+said "zero emitted-code change" and let that stand for "no regression" — which it does not, because
+the thing it cannot see is the thing that moves the JIT. The number is 1.02x against a 1.02x
+control. It was worth getting.
+
+#### Gates
+
+`bun run check` 0 read unpiped. No engine change — `git diff` is this entry.
