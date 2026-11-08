@@ -47,16 +47,33 @@ for (let i = 0; i < N; i += 1) {
 
 let e = 0;
 
-// Out-degree VARIES: on an out-regular graph a k-walk count is `N * F^k` by arithmetic whatever the
-// code does, so a regular fixture cannot tell a correct implementation from a broken one.
+/**
+ * ⚠️ A THIRD VARIANT OF THE FIXTURE TRAP, AND IT PASSES BOTH EXISTING CHECKS.
+ *
+ * This generator's first form used `to = (i * 7919 + r * 104729 + 13) % N`, which is LINEAR in `i`
+ * and therefore a BIJECTION per layer — so every vertex ended up with in-degree exactly 3 while
+ * out-degree varied 1..5. That passes item 1516/1518's distinct-endpoint check (not functional) AND
+ * item 1677's distinct-out-degree check (five of them), and the 3-walk count was STILL exactly
+ * `N * F^3` — 2,700,000 at 100,000 x 3, verified against a brute-force enumeration.
+ *
+ * The reason is that a 3-walk count is `sum over b of indeg(b) * sum over (b->c) of outdeg(c)`, so
+ * the arithmetic collapses on the IN-degree distribution, not the out-degree. A check on
+ * out-degrees cannot see it.
+ *
+ * The mix below is nonlinear in `i`: 14 distinct in-degrees, 4.9% of vertices with no in-edge
+ * (realistic rather than degenerate), and a count that is not `N * F^k`. A quadratic form was tried
+ * first and rejected the other way — it left 46% of vertices unreachable.
+ */
 for (let i = 0; i < N; i += 1) {
   const deg = 1 + ((i * 2654435761) % (2 * FANOUT - 1));
 
   for (let r = 0; r < deg; r += 1) {
+    const mix = ((i * 2654435761) ^ ((i >> 13) * 40503) ^ (r * 104_729)) & 0x7fffffff;
+
     g.addEdge({
       id: `e${e}`,
       from: vs[i],
-      to: vs[(i * 7919 + r * 104_729 + 13) % N],
+      to: vs[mix % N],
       labels: ['KNOWS'],
       properties: {},
     });
@@ -200,9 +217,78 @@ const countOverCsr = ({ off, len, nbr }) => {
 };
 
 const csrLevels = () => countOverCsr(CSR);
+
+/**
+ * ⚠️ THE ARM THE FIRST SWEEP WAS MISSING, AND THE ONE THAT MATCHES THE ENGINE'S ASYMPTOTICS.
+ *
+ * `csrLevels` COUNTS PATHS, so it is O(E * F) where the engine's route is a DEGREE PRODUCT at
+ * O(V + E). That is why its ratio decays with fanout — 23.80x at F=3, 13.94x at F=8, 7.28x at
+ * F=15 — and why it would eventually LOSE. The decay is the arm's complexity, not the lever's.
+ *
+ * The engine computes, for a 3-hop `a->b->c->d`:
+ *
+ *     count = sum over b of  indeg(b) * sum over (b->c) of outdeg(c)
+ *
+ * paying a string-keyed `edgesFromByLabel.get(id)` for each of those degrees — one per VERTEX for
+ * `indeg(b)` and one per EDGE for `outdeg(c)`. The same arithmetic over flat arrays replaces both
+ * with an index read while keeping O(V + E), so its ratio should hold at any fanout.
+ */
+const degreeProductOverCsr = ({ off, len, nbr }, indeg) => {
+  let total = 0;
+
+  for (let b = 0; b < order.length; b += 1) {
+    const ways = indeg[b];
+
+    if (ways === 0) {
+      continue;
+    }
+
+    let inner = 0;
+    const end = off[b] + len[b];
+
+    for (let i = off[b]; i < end; i += 1) {
+      inner += len[nbr[i]];
+    }
+
+    total += ways * inner;
+  }
+
+  return total;
+};
+
+const buildIndeg = () => {
+  const indeg = new Int32Array(order.length);
+
+  for (let s = 0; s < order.length; s += 1) {
+    for (let i = CSR.off[s]; i < CSR.off[s] + CSR.len[s]; i += 1) {
+      indeg[CSR.nbr[i]] += 1;
+    }
+  }
+
+  return indeg;
+};
+
+const INDEG = buildIndeg();
+
+const csrDegreeProduct = () => degreeProductOverCsr(CSR, INDEG);
+const csrDegProdPlusBuild = () => {
+  const csr = buildCsr();
+  const indeg = new Int32Array(order.length);
+
+  for (let s = 0; s < order.length; s += 1) {
+    for (let i = csr.off[s]; i < csr.off[s] + csr.len[s]; i += 1) {
+      indeg[csr.nbr[i]] += 1;
+    }
+  }
+
+  return degreeProductOverCsr(csr, indeg);
+};
 const csrPlusBuild = () => countOverCsr(buildCsr());
 
-const ARMS = { engineRoute, bucketPerEdge, csrLevels, csrPlusBuild };
+const ARMS =
+  DEPTH === 3
+    ? { engineRoute, csrLevels, csrPlusBuild, csrDegreeProduct, csrDegProdPlusBuild }
+    : { engineRoute, bucketPerEdge, csrLevels, csrPlusBuild };
 
 const expected = engineRoute();
 
@@ -214,8 +300,42 @@ for (const [name, fn] of Object.entries(ARMS)) {
   }
 }
 
-if (expected === N * FANOUT ** DEPTH) {
-  console.log(`⚠️ count is EXACTLY N*F^${DEPTH} — fixture may be out-regular`);
+{
+  // ⚠️ THE IN-DEGREE SPREAD IS THE ONE A DEGREE PRODUCT COLLAPSES ON — see the generator note.
+  const ind = new Int32Array(order.length);
+
+  for (let s = 0; s < order.length; s += 1) {
+    for (let i = CSR.off[s]; i < CSR.off[s] + CSR.len[s]; i += 1) {
+      ind[CSR.nbr[i]] += 1;
+    }
+  }
+
+  let isolated = 0;
+
+  for (const d of ind) {
+    if (d === 0) {
+      isolated += 1;
+    }
+  }
+
+  const distinctIn = new Set(ind).size;
+
+  console.log(
+    `fixture: ${new Set(CSR.len).size} distinct out-degrees, ${distinctIn} distinct in-degrees, ` +
+      `${isolated} vertices with no in-edge`,
+  );
+
+  if (distinctIn < 3) {
+    throw new Error(
+      `FIXTURE IS IN-REGULAR (${distinctIn} distinct in-degrees): a 3-walk count is ` +
+        `sum_b indeg(b) * sum_{b->c} outdeg(c), so it collapses to N*F^k by arithmetic and cannot ` +
+        `validate the traversal`,
+    );
+  }
+
+  if (expected === N * FANOUT ** DEPTH) {
+    console.log(`⚠️ count is EXACTLY N*F^${DEPTH} — fixture still determined`);
+  }
 }
 
 const timed = (fn) => {

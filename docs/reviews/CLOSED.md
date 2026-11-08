@@ -74671,6 +74671,8 @@ arms do not, so it is not a clean lower bound either — but it is the number a 
 
 #### What the honest numbers say
 
+⚠️ **SUPERSEDED BY ITEM 1684 IN TWO WAYS: the fixture was IN-REGULAR (so the count was `N*F^k` by arithmetic), and `csrLevels` counts PATHS where the engine does a DEGREE PRODUCT, so these ratios decay with fanout — 22.24x at F=3 down to 7.52x at F=15. The real lever, the degree product over flat arrays, holds 243x-298x warm and 3.8x-4.8x cold across that range.** The reading below stands only as the path-counting arm at one fanout on a determined fixture.
+
 **20.3x on a repeated query and 4.9x on a cold one.** The cold arm is the one that decides whether
 this is worth building: a hop count is often asked once per graph, and if only the cached arm won,
 the lever would have to be sold as a repeat-workload optimisation. At 4.92x with the whole O(V + E)
@@ -74761,3 +74763,89 @@ building there.
 #### Gates
 
 `bun run check` 0 read unpiped. `packages/gql` isolated: 4268 pass, 0 fail.
+
+### Item 1684 — ⚠️ **A THIRD VARIANT OF THE FIXTURE TRAP, WHICH PASSES BOTH EXISTING CHECKS: the fixture was IN-regular while its out-degrees varied, so a 3-walk count was `N * F^k` by arithmetic anyway.** And with it fixed, the GQL hop count's real lever is a DEGREE PRODUCT over flat arrays at **243x-298x warm / 3.8x-4.8x cold, stable across fanout** — where item 1682's path-counting arm decays from 22x to 7.5x. The route is identified. OPEN, not built
+
+Item 1683 left two questions: which route answers `count 3-hop`, and whether item 1682's pricing
+holds. Both are answered, and both answers correct something.
+
+#### The route, by counting call sites
+
+Each `hopSide(` call site in `shortcuts.ts` was wrapped with a per-site counter:
+
+```text
+   count 2-hop              (no hopSide)
+   count 3-hop              L3111 = 99,999 = |E|     L3148 = 20,000 = |V|
+   count 3-hop + interior   L3111 = 55,278           L3148 = 10,878
+   count 4-hop              (no hopSide)
+```
+
+So `count 3-hop` is the **three-hop degree product**: for each `b`, `waysToA = hopSide(b.id, …)` once
+per VERTEX (L3148), then for each middle edge `b->c`, `dSide(c) = hopSide(c.id, …)` once per EDGE
+(L3111). `count = sum over b of indeg(b) * sum over (b->c) of outdeg(c)`, at |V| + |E| string-keyed
+`edgesFromByLabel.get(id)` lookups — which is where item 1637's |V| + |E| count came from.
+
+⚠️ **TWO ADJACENT LEVERS ARE ALREADY REFUTED AT THAT EXACT SITE, with numbers in the code.** Item
+1335 replaced the id-string lookup with `b`'s own box read and measured **0.99x** (25.44 against
+25.68 ms, three processes), noting the lever is worth 1.92x on the UNFILTERED twin and nothing here
+because a gate and an inner walk amortize it away. Item 310 memoized the d-side degree per `c` and
+rejected it after alternated rounds despite a 1.063x first reading with disjoint ranges. Neither is
+the lever below: both keep a hash lookup per unit, where a CSR replaces it with an index.
+
+#### ⚠️ The fixture trap, which cost item 1682 its number
+
+The probe's generator used `to = (i * 7919 + r * 104729 + 13) % N`. That is LINEAR in `i`, hence a
+BIJECTION per layer, so **every vertex had in-degree exactly 3** while out-degree varied 1..5.
+Verified against brute-force enumeration: the 3-walk count was exactly `N * F^3` — 2,700,000 at
+100,000 x 3.
+
+It passes both checks this file already records:
+
+```text
+   item 1516/1518  distinct ENDPOINTS      passes — not functional
+   item 1677       distinct OUT-DEGREES    passes — five of them
+   the count       still exactly N*F^3
+```
+
+**Because a 3-walk count collapses on the IN-degree distribution, not the out-degree.** A check on
+out-degrees cannot see it, and item 1677's check was written to catch out-regularity specifically.
+The generator is now nonlinear in `i` (14-34 distinct in-degrees across the sweep, 0-4.9% of vertices
+with no in-edge), the probe asserts the IN-degree spread, and the counts are no longer `N * F^k`. A
+quadratic form was tried first and rejected the other way: it left 46% of vertices unreachable.
+
+#### ⚠️ And item 1682's arm was the wrong DESIGN, not just the wrong fixture
+
+`csrLevels` counts PATHS, which is O(E * F), where the engine's degree product is O(V + E). So its
+ratio decays with fanout and would eventually invert:
+
+```text
+   FANOUT    engine   csrLevels   ratio
+      3       119.3        5.4    22.24x
+      8       216.3       17.5    12.37x
+     15       350.2       46.6     7.52x
+```
+
+The same arithmetic as the engine, over flat arrays, holds instead:
+
+```text
+   FANOUT    engine   csrDegreeProduct  warm     +build   cold
+      3       119.3         0.5        242.94x    25.1   4.76x
+      8       216.3         0.7        297.93x    49.4   4.38x
+     15       350.2         1.3        278.24x    93.2   3.76x
+```
+
+`count = sum over b of indeg[b] * sum over (b->c) of len[nbr[i]]` — one `Int32Array` read where the
+engine pays a string-keyed `Map.get`, same complexity, and the ratio holds across a 5x fanout range
+on a fixture whose answer is no longer determined by arithmetic.
+
+#### Still open — the build
+
+A new rung over a `topologyVersion`-keyed CSR plus an in-degree array. Hazards: the `both`/undirected
+cases (`undirectedSide` with `loopsOfTypes`), the `b` gate and the `c` label, which the current route
+handles per vertex and per edge respectively; and item 1681's measured 1.26x polymorphism cost from
+one walk serving several shapes.
+
+#### Gates
+
+`bun run check` 0 read unpiped. Probe only; the call-site instrumentation was removed again and
+`shortcuts.ts` is byte-identical to item 1683's commit.
