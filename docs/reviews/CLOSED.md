@@ -73775,6 +73775,38 @@ that index work lands on the small-N reading. Normalised against the largest N i
 artefact documented in the probe — `insertPlain`'s 1.67x at 10,000 is that artefact and not a
 scaling term.
 
+#### Addendum — the write path profiles FLAT too, so the lever item 1671 named has no hot spot
+
+`_MERGE`'s cost being the write rather than the lookup made the write path the obvious next target.
+Profiled, it is the same shape as everything else this session:
+
+```text
+   mergeUpdate: 1687 ns/op   (fixture 10,000 vertices, 200,000 measured ops)
+
+   12.3%  runMerge              4.4%  uniqueLookup
+    7.9%  runLinearClauses      2.9%  equals / hasLabel
+    7.5%  commitTransaction     1.8%  uniqueConflict
+    6.0%  plan                  1.7%  runDeferredChecks
+    4.9%  #commitNormalized     1.5%  deferConstraint
+    4.7%  setProperty           1.5%  query
+```
+
+No hot spot — the largest frame is 12.3% and the rest is a 1.5-8% tail. Transaction and constraint
+machinery together (`commitTransaction`, `runDeferredChecks`, `deferConstraint`, `uniqueConflict`)
+is ~12.5%, which is the largest coherent group and still not a target.
+
+⚠️ **`plan` AT 6.0% IS NOT A CACHE MISS, WHICH WAS WORTH CHECKING RATHER THAN ASSUMING.** The plan
+cache is a `WeakMap<Query, Plan>` keyed on the AST and it DOES cover writes; with constant query
+text plus a bound param, both it and item 228's parse cache hit. The frame is the cached path's own
+work.
+
+⚠️ **AND THE FIRST ATTEMPT AT THIS PROFILE MEASURED THE FIXTURE.** Run against
+`gql-merge-scaling-probe.mjs` directly it showed `getVertexById` 16.3%, `#commitNormalized` 11.8%,
+`commitElementLabels` 8.7% — the BULK INGEST path, because that probe builds four 200,000-vertex
+graphs against ~22,000 measured operations, so ~97% of the write work sampled was `build()`. A
+profile whose fixture outweighs its measurement by 40x describes the fixture. Redone with a
+10,000-vertex fixture and 200,000 ops — 20x the other way — it says what is above.
+
 #### Gates
 
 `bun run check` 0 read unpiped. No engine change — one new probe and this entry.
