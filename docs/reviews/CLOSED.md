@@ -65003,7 +65003,25 @@ a wrong count silently. `vertexCount`/`edgeCount` DO advance eagerly but cannot 
 an add leaves both unchanged while the topology differs.
 
 **The prerequisite is therefore a synchronous mutation counter in core**, which touches every mutator
-plus the transaction undo path — too much to fold into a perf item, and precisely where the native
+plus the transaction undo path — too much to fold into a perf item
+
+⚠️ **NARROWED AT ITEM 1673: AN ADJACENCY-SCOPED SIGNAL NEEDS TWO INCREMENT SITES, NOT EVERY MUTATOR.**
+A CSR is invalidated by adjacency changes and by nothing else — a property or label write cannot move
+it — and `Graph.ts` funnels every adjacency change through exactly two methods: `insertEdge` (private,
+the target of `addEdge` and of the `Edge`-instance form) and `removeEdge` (the target of vertex
+removal, once per incident edge). `indexEdgeLabel` inside `insertEdge` is the index write. So the
+signal is a monotonic counter bumped in two places, not a core-wide mutation counter.
+
+And it needs no undo semantics. A counter for INVALIDATION only has to answer "might the adjacency
+have changed since?", so an undo incrementing it is correct — over-invalidating costs a rebuild, never
+an answer. That is the whole reason this is cheaper than the general counter: the general one has to
+be RIGHT through a rollback, an invalidation flag only has to be CONSERVATIVE.
+
+⚠️ **ONE THING NOT VERIFIED, AND IT IS THE ONLY WAY THIS GOES WRONG.** `insertEdge`'s own comment says
+a rollback replay "skips them entirely" of some commit-time work, so whether the transaction rollback
+path routes adjacency restoration through these two funnels is UNCHECKED. Over-invalidation is safe;
+UNDER-invalidation after a rollback would serve a stale CSR, which is this entry's original failure
+mode. That check is the first step of building it, not an afterthought., and precisely where the native
 side's own version of this went wrong: `csr_fresh` is cleared by every adjacency write and _nothing
 re-arms it_, so one `add_edge` demotes every later read for the session. A TS cache must be keyed,
 not flagged, for that reason.
