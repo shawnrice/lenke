@@ -65017,11 +65017,24 @@ have changed since?", so an undo incrementing it is correct — over-invalidatin
 an answer. That is the whole reason this is cheaper than the general counter: the general one has to
 be RIGHT through a rollback, an invalidation flag only has to be CONSERVATIVE.
 
-⚠️ **ONE THING NOT VERIFIED, AND IT IS THE ONLY WAY THIS GOES WRONG.** `insertEdge`'s own comment says
-a rollback replay "skips them entirely" of some commit-time work, so whether the transaction rollback
-path routes adjacency restoration through these two funnels is UNCHECKED. Over-invalidation is safe;
-UNDER-invalidation after a rollback would serve a stale CSR, which is this entry's original failure
-mode. That check is the first step of building it, not an afterthought., and precisely where the native
+⚠️ **AND THE ROLLBACK QUESTION IS NOW CLOSED — IT ROUTES THROUGH THE SAME TWO FUNNELS.** The undo log
+does not restore state directly; it stores INVERSE OPERATIONS AS CLOSURES OVER THE PUBLIC MUTATORS,
+and `undoTo` simply invokes them:
+
+```ts
+   // insertEdge's inverse
+   this.recordUndo(() => { const live = this.getEdgeById(undoEdgeId); if (live) this.removeEdge(live); });
+   // removeEdge's inverse
+   this.recordUndo(() => this.addEdge({ id: undo.id, from: …, to: …, labels: …, properties: … }));
+```
+
+So a counter bumped in `insertEdge` and `removeEdge` is bumped during rollback as well, and
+UNDER-invalidation — the only failure mode, and this entry's original one — cannot occur. The design
+is a two-site monotonic adjacency counter plus the cache, with no new invariant to maintain.
+
+(That the inverses re-resolve by ID rather than closing over the element is itself deliberate: the
+comment above `insertEdge`'s undo records that closing over a stale instance dereferences a null
+`#graph` and aborts the whole replay, leaving a half-rolled-back graph.), and precisely where the native
 side's own version of this went wrong: `csr_fresh` is cleared by every adjacency write and _nothing
 re-arms it_, so one `add_edge` demotes every later read for the session. A TS cache must be keyed,
 not flagged, for that reason.
