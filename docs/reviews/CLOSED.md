@@ -72345,7 +72345,7 @@ not re-priced.
 No engine change — the tree is identical to its parent apart from this entry. `bun run check` 0 read
 unpiped; the gremlin suite 1992 pass / 0 fail was re-run under every ablation and both orderings.
 
-### Item 1653 — ⚠️ **THE INLINE `CALL { … }` CLAUSE COSTS 538-733 ns PER OUTER ROW, and a body the rungs RECOGNISE costs 74 — 10x for strictly more work** (⚠️ **item 1654 re-floors this at 17.2x against a VALID control and finds the cause is the OUTER match's route, not the clause**)**.** ⚠️⚠️ **AND ITEM 1654'S CONTROL WAS NOT VALID EITHER — item 1661: `correlated` is ELIMINATED by `inlineAggregateCall` and never runs as a CALL, so BOTH re-floorings in this family compared a CALL against a rewritten query. The surviving-clause cost is 846-3178 ns/outer row and the honest ratio is 9.4x.** Found by screening ten unprofiled GQL shapes; the probe's own answer assertion also caught me writing the Cypher spelling of a correlated CALL, and item 1566's uncorrelated hoist is confirmed WORKING (linear, not quadratic)
+### Item 1653 — ⚠️ **THE INLINE `CALL { … }` CLAUSE COSTS 538-733 ns PER OUTER ROW, and a body the rungs RECOGNISE costs 74 — 10x for strictly more work** (⚠️ **item 1654 re-floors this at 17.2x against a VALID control and finds the cause is the OUTER match's route, not the clause**)**.** ⚠️⚠️ **AND ITEM 1654'S CONTROL WAS NOT VALID EITHER — item 1661: `correlated` is ELIMINATED by `inlineAggregateCall` and never runs as a CALL, so BOTH re-floorings in this family compared a CALL against a rewritten query. The surviving-clause cost is 846-3178 ns/outer row and the honest ratio is 9.4x — ⚠️ CLOSED AT ITEM 1662, which took it at 11.3x.** Found by screening ten unprofiled GQL shapes; the probe's own answer assertion also caught me writing the Cypher spelling of a correlated CALL, and item 1566's uncorrelated hoist is confirmed WORKING (linear, not quadratic)
 
 MEASURED, no engine change. New instrument: `gql-call-subquery-floor.mjs`.
 
@@ -72434,7 +72434,7 @@ first ablation to try is skipping the seed entirely on the invariant path.~~
 
 No engine change — one new probe. `bun run check` 0 read unpiped.
 
-### Item 1654 — ⚠️ **A REFUTATION AND A REDIRECT: the inline `CALL`'s 17.2x is the OUTER MATCH's ROUTE, not the clause's own work.** (⚠️⚠️ **ITEM 1661 FOUND THE THIRD INVALID FLOOR IN THIS FAMILY, AND IT IS THIS ENTRY'S OWN CONTROL: `correlated` — the arm both this entry and item 1653 treat as "the realistic CALL" — IS NOT A CALL BY THE TIME IT RUNS. `inlineAggregateCall` eliminates the clause outright, so its 69.5 ns/row is a rewritten query and every ratio taken against it compares two different routes. `inline` is a rung too, at 0.1 ns/row. Against floors where BOTH sides materialise the honest figure is 9.4x, the target is `inlineCorrelatedCall`'s one-line refusal of an expression projection, and a 3.6x piece SHIPPED at 1661**) Removing both of `runCallInline`'s per-row allocations — the `seed` Map built for an empty scope and the `Object.entries` per nested row — measures **FLAT**, while the profiles show `LET c = 1` taking a fused aggregate path with NO matcher frames and the same query with a `CALL` taking the general binding-materialising one
+### Item 1654 — ⚠️ **A REFUTATION AND A REDIRECT: the inline `CALL`'s 17.2x is the OUTER MATCH's ROUTE, not the clause's own work.** (⚠️⚠️ **ITEM 1661 FOUND THE THIRD INVALID FLOOR IN THIS FAMILY, AND IT IS THIS ENTRY'S OWN CONTROL: `correlated` — the arm both this entry and item 1653 treat as "the realistic CALL" — IS NOT A CALL BY THE TIME IT RUNS. `inlineAggregateCall` eliminates the clause outright, so its 69.5 ns/row is a rewritten query and every ratio taken against it compares two different routes. `inline` is a rung too, at 0.1 ns/row. Against floors where BOTH sides materialise the honest figure is 9.4x, the target is `inlineCorrelatedCall`'s one-line refusal of an expression projection, and a 3.6x piece SHIPPED at 1661. ⚠️ ITEM 1662 THEN TOOK THAT TARGET AT 11.3x — and found the one-line refusal was the easy half: the rewrite's POSITION in the composition was worth 7.9x of the 11.3x**) Removing both of `runCallInline`'s per-row allocations — the `seed` Map built for an empty scope and the `Object.entries` per nested row — measures **FLAT**, while the profiles show `LET c = 1` taking a fused aggregate path with NO matcher frames and the same query with a `CALL` taking the general binding-materialising one
 
 MEASURED, no engine change shipped. Two probe arms added.
 
@@ -72834,10 +72834,12 @@ The three targets this session leaves are all feature-sized, and each is priced:
 
 - **A JOIN operator for `match()`** — items 1656/1657. 37-89x and growing with selectivity, blocked
   on the solver's per-traverser nested-loop model and on Gremlin's ordered emission.
-- **A route change so a fused GQL scan survives a following `CALL`** — item 1654. ~~17.2x for a body
-  that is a bare `RETURN`, less for one that must materialise.~~ ⚠️ **RESTATED AND PART-CLOSED AT ITEM
-  1661: the 17.2x was measured against an arm that is not a CALL at all. What is left is extending
-  `inlineCorrelatedCall` to an EXPRESSION projection, 9.4x, and the empty-seed half shipped at 3.6x.**
+- ~~**A route change so a fused GQL scan survives a following `CALL`** — item 1654. 17.2x for a body
+  that is a bare `RETURN`, less for one that must materialise.~~ ⚠️ **FULLY CLOSED. Item 1661
+  restated it (the 17.2x was measured against an arm that is not a CALL at all) and shipped the
+  empty-seed half at 3.6x; ITEM 1662 BUILT THE REST AT 11.3x, better than the 9.4x it was priced at,
+  because the rewritten spelling lands ON the fully-fused twin rather than near it. Nothing in this
+  family is open.**
 - **The `run`-level per-call floor** — item 1652. ~126 ns against a 15.4 ns hand floor, decomposed and
   with every individual term refuted; what is left is distributed.
 
@@ -73014,7 +73016,7 @@ ns (already cached; the cost is the cache lookup and the rewrite-chain dispatch)
 it.** No bounded rung is left without an eager route, so the generalization above has, for now, no
 remaining target — which is the honest reason to stop here rather than a claim that nothing is left.
 
-### Item 1661 — ⚠️⚠️ **THE INLINE `CALL` FAMILY HAD THREE INVALID FLOORS, NOT ONE, AND THE THIRD IS ITEM 1654'S OWN CONTROL: `correlated` is ELIMINATED by a rewrite and never runs as a `CALL` at all.** Against floors where both sides materialise the honest ratio is **9.4x**, not 17.2x — and one piece of it SHIPPED: an unscoped `CALL { … }` body was handed an empty-but-DEFINED `Map`, which disqualified it from the whole fast-path ladder, **34.9 → 9.6 ms, 3.6x**
+### Item 1661 — ⚠️⚠️ **THE INLINE `CALL` FAMILY HAD THREE INVALID FLOORS, NOT ONE, AND THE THIRD IS ITEM 1654'S OWN CONTROL: `correlated` is ELIMINATED by a rewrite and never runs as a `CALL` at all.** Against floors where both sides materialise the honest ratio is **9.4x**, not 17.2x — and one piece of it SHIPPED: an unscoped `CALL { … }` body was handed an empty-but-DEFINED `Map`, which disqualified it from the whole fast-path ladder, **34.9 → 9.6 ms, 3.6x** (⚠️ **the OTHER half — the expression projection this entry priced at 9.4x and declined to build, calling it optimizer-fuzzer territory — was BUILT AT ITEM 1662 at 11.3x. The escape analysis it said was missing already existed as `nameIsUnread`, and the real difficulty was somewhere this entry did not look: the rewrite's position in `compileLinear`'s composition**)
 
 SHIPPED. `executor/clauses.ts`, plus `call-empty-seed-fastpath.test.ts` (13 cases) and four arms on
 `gql-call-subquery-floor.mjs`.
@@ -73165,3 +73167,169 @@ slots hold `null` and replacing one with a function got it CALLED by `buildGroup
 fuzzers (codec, differential, write, injection, algo, gremlin, parity) 20 pass / 0 fail, exit 0 read
 unpiped. `spelling` (SPELL_N=200000 SPELL_REPS=9) and `spelling:gremlin` both **0 groups
 disagreeing on the ANSWER and 0 groups over 2x clear of the nearest null control**.
+
+### Item 1662 — ⚠️⚠️ **THE 9.4x TARGET WAS REAL BUT THE DIAGNOSIS WAS WRONG: the one-line refusal was the easy half, and the rewrite's POSITION in the composition was worth 7.9x of the 11.3x.** `CALL (n) { MATCH (n)-[:E]->(x) RETURN x.k AS c }` now compiles to the SAME plan as `MATCH (n:P)-[:E]->(x)`, **3101 → 275 ns an outer row, 11.3x** — better than the 9.4x it was priced at, because the rewritten spelling lands ON the fully-fused twin rather than near it
+
+SHIPPED. `packages/gql/src/executor.ts` (two changes: `inlineCorrelatedCall` admits a computed
+yield, and it moves INSIDE `inlineTrailingLet`), plus 11 new cases on `call-inline-rewrite.test.ts`
+— **a file that until now had no route assertion at all** — and two retargeted fixtures on
+`call-empty-seed-fastpath.test.ts`.
+
+#### What item 1661 got wrong about its own target
+
+Item 1661 priced this at 9.4x and declined to build it, naming the blocker as: the rewrite must
+DROP the body's pattern variables (`x` escapes the `CALL` where the clause hid it), which needs a
+`match` + projection pair whose item list the rewrite does not statically know — "optimizer-fuzzer
+territory". Both halves of that were wrong, in opposite directions.
+
+**The escape analysis already existed.** `nameIsUnread(name, where, tail)` is the predicate
+`dropUnreadPathVar` (item 1049) and `dropUnreadEdgeVar` were built on, and it asks the identical
+question — is this pattern variable provably unread by everything after the clause. It refuses on
+any doubt: an unknown clause kind in the tail, a `RETURN *` (the one reference site that names no
+name), a rebinding, a subquery `freePredicateVars` cannot see into. So the sound move is not to
+drop the escaping names but to decline when anything can observe them, and the repo had already
+answered that question once. Writing a second escape analysis was the thing to avoid: two of them
+would drift, and the one that drifted would be wrong silently.
+
+**And the actual difficulty was somewhere item 1661 never looked.** The first build was correct,
+fired on exactly the intended shapes, passed its own route assertion — and delivered **1.44x**:
+
+```text
+   arm                      PRE                       POST                      ratio
+   callprojx  TARGET        3110.7 3378.0 3300.7      2214.2 2165.6 2265.9      1.44x
+   projxhand  the twin       373.9  380.1  389.7       287.5  726.5  306.6
+```
+
+2165 against the 330 its hand-written twin reaches. ⚠️ **THE DIAGNOSTIC WAS THE TWIN'S CLAUSE LIST,
+NOT ITS TIME.** `projxhand` — `MATCH (n:P) MATCH (n)-[:E]->(x) LET c = x.k RETURN sum(c)` — compiles
+to `[match, return]` carrying `hopAggregate`. The rewritten `CALL` compiled to `[match, let, return]`
+carrying **nothing**:
+
+```text
+   callprojx    ["match","let","return"]      rungs=[]
+   projxhand    ["match","return"]            rungs=[hopAggregate]
+   inlineprojx  ["match","return"]            rungs=[hopAggregate]
+```
+
+`inlineCorrelatedCall` ran OUTSIDE `inlineTrailingLet`, so the `LET` it now emits was never folded,
+and **a standing `LET` is off every one of the twenty rungs** — items 512/516 measured that at 83x
+and the comment on `inlineAggregateCall` says so in as many words ("runs INSIDE `inlineTrailingLet`
+so the `LET` it produces is itself inlined"). The new rewrite needed the same placement and did not
+have it. Moving it there:
+
+```text
+   arm                      PRE                       POST                      ratio
+   callprojx  TARGET        3262.9 3101.2 3628.4       274.9  292.3  289.1     11.28x
+   inlineprojx CTL           277.7  311.3  304.0       259.6  314.1  327.3      1.07x
+   projxhand   CTL           309.6  294.8  638.6       249.3  277.9  250.7      1.18x
+   correlated  CTL            67.5   66.8   58.4        60.7   63.9   59.1      0.99x
+   callproj    CTL           850.2  811.5  838.1       812.3  805.1  807.8      1.01x
+   calltrivial CTL           532.8  562.7  574.4       551.3  543.2  559.2      0.98x
+   uncorrelated CTL          494.6  479.3  465.5       476.6  467.3  451.3      1.03x
+   letrow      CTL            25.7   31.4   28.1        27.6   25.9   36.8      0.99x
+   callsumrow  CTL           135.3  148.7  133.0       162.8  131.4  479.7      1.01x
+   inline      CTL             0.1    0.1    0.1         0.1    0.1    0.1      1.00x
+```
+
+**11.28x, and the arm now reads the same as `inlineprojx`** — the CALL spelling costs what the
+one-pattern spelling costs, which is the equivalent-spelling claim CLAUDE.md opens with. One arm per
+process, three order-alternated rounds, 14 reps with the first 3 dropped and the median taken, both
+members of every pair asserted to answer identically (1,918,109) before any time is read.
+
+#### `projxhand` read 1.18x and it is the INSTRUMENT — proven, not assumed
+
+`projxhand` has no `CALL`, so `inlineCorrelatedCall` is a no-op on it either side of the reorder and
+its plan is provably untouched. A control moving while the target moves is CLAUDE.md's own warning
+sign, so it got a NULL A/B — the same dist on both sides, labelled pre/post:
+
+```text
+   arm           side a                    side b                     NULL ratio
+   projxhand     309.8  279.3  272.7       301.3  454.5  645.7          0.91x
+   inlineprojx   302.6  296.8  282.9       309.3  281.5  577.2          1.00x
+   callsumrow    128.4  124.2  169.8       134.0  122.4  181.7          1.01x
+   callproj      833.2  815.9  838.2       839.0  844.4  833.6          0.98x
+   letrow         32.8   31.2   29.0        29.1   25.8   31.5          1.12x
+```
+
+⚠️ **`projxhand` reads 0.91x on IDENTICAL code, with single readings spanning 272.7 to 645.7, and
+even `letrow` — 30 ns and flat — reads 1.12x.** So this instrument resolves nothing below ~1.2x on
+the bimodal arms (`projxhand`, `inlineprojx`, `callsumrow` all show a rare slow mode, the shape
+CLAUDE.md records for the TS per-row path). 11.28x is far outside that; six controls are flat
+inside it. The null control is what licenses saying so.
+
+#### What inlines, and the asymmetry that is the honest shape of the win
+
+A yield is admitted when it is aliased and `cheapPureExpr` — `prop | var | lit | param`. That set is
+doing two jobs: the expression must be TOTAL, because the emitted `LET` evaluates it on every
+matched row, and it must be aggregate-free, which those four kinds give for nothing (an aggregate is
+`inlineAggregateCall`'s shape and a different cardinality). Then every pattern name the body does
+not yield must pass `nameIsUnread`.
+
+⚠️ **ONLY THE COMPUTED YIELD REACHES A RUNG, AND THE ALIAS-ONLY SPELLING DOES NOT:**
+
+```text
+   RETURN x.k AS v   ->  [match, return]        on hopAggregate,  ~275 ns an outer row
+   RETURN x   AS y   ->  [match, let, return]   off every rung,   ~2165
+```
+
+`inlineTrailingLet` substitutes a property read into the projection but declines a bare VARIABLE
+rename (`LET y = x`), and it folds a ONE-ITEM `LET` only — a later item may read an earlier one
+(`LET a = n.k, b = a`), so collecting several into one substitution map is a wrong answer. Both
+refusals predate this item. So an aliased pass-through, and a body with TWO computed yields, lose
+the `callInline` without being made fast. That is a smaller win rather than a wrong one, and it is
+pinned in the tests so the next reader does not assume both halves reached the ladder.
+
+#### The test file had no route assertion, and that cost exactly what it is supposed to cost
+
+`call-inline-rewrite.test.ts` existed to pin this rewrite and asserted only ANSWERS. A rewrite is
+answer-equivalent, so deleting `inlineCorrelatedCall` outright leaves every one of its assertions
+passing. ⚠️ **It is not a theoretical gap: the test titled `an ALIASED or computed yield declines`
+is the shape this item made INLINE. Its title became false and it PASSED.** The answers are kept —
+they are now the equivalence oracle for the new route — and the clause list is asserted alongside
+them. The 11 new cases assert the COMPOSED shape (`[match, return]`), not this rewrite's own output,
+which is the only assertion that would have caught the 1.44x build.
+
+#### The mutation pass: 7 of 7 CAUGHT
+
+Under `timeout 300 systemd-run --user --scope -q -p MemoryMax=16G -p MemorySwapMax=0`, harness kills
+proven first (allocator bomb 137, bare loop 124), pristine under
+`crates/lenke-engine/target/item1662/`, restored BEFORE each mutant, each anchor asserted to match
+exactly once so a mutant that fails to apply cannot be scored as caught:
+
+```text
+   M1 revert the COMPOSITION reorder                CAUGHT (2)   <- the 1.44x build itself
+   M2 drop the escape analysis entirely             CAUGHT (4)
+   M3 hand the escape analysis an EMPTY tail        CAUGHT (4)
+   M4 admit any expression, not a cheap TOTAL one   CAUGHT (3)
+   M5 admit an UN-ALIASED computed yield            CAUGHT (1)
+   M6 drop the alias-collision check                CAUGHT (1)
+   M7 treat every introduced name as yielded        CAUGHT (4)
+```
+
+M1 is the one worth keeping: the bug that actually shipped in the first build is now gated by a test
+rather than by having measured it once.
+
+#### The cross-engine oracle was already there
+
+⚠️ **`differential-fuzz.test.ts` already generates this exact route** — line 900 is
+`MATCH (a:T) CALL (a) { MATCH (a)-[e:E]->(b) RETURN b.n AS bn } RETURN a.n AS an, bn`, which is
+precisely the shape `executor.ts:9966` used to refuse, with `OPTIONAL`, `RETURN *`, set-op-body and
+compound-label variants beside it. And it is the RIGHT oracle: the rewrite is TS-only, so the Rust
+engine is an independent implementation rather than a mirror — stronger than the raw-vs-optimized
+arm `rewrite_fuzz` has to settle for on the Rust side. At `FUZZ_ITERATIONS=300000`: **70,601
+generated queries, 0 divergences.** Two of its five CALL shapes take the new route (confirmed by
+compiling them, not assumed).
+
+So item 1661's "optimizer-fuzzer territory, deserves its own tick" was also wrong, and in the
+cheapest possible way: the coverage was already written and nobody checked.
+
+#### Gates
+
+`bun run check` 0 read UNPIPED. Suites core 444, gql 4254 (+11 new), gremlin 2017, serialization
+144, native 1081 — **7940 pass / 0 fail**, each exit code read unpiped. All seven byte-identity
+fuzzers 20 pass / 0 fail, exit 0 read unpiped. `spelling` (SPELL_N=200000 SPELL_REPS=9) **0 groups
+disagreeing on the ANSWER, 0 groups over 2x clear of the nearest null control**. `spelling:gremlin`
+0 answer disagreements and **1 group over 2x** (`hasLabel().has()` vs `has(label, key, pred)`,
+2.03x) — ruled out STRUCTURALLY rather than by re-running: `@lenke/gremlin` depends on `core`,
+`errors` and `fp` only, never on `@lenke/gql`, so a change confined to `packages/gql/src/executor.ts`
+cannot reach it, and that group is at the standing baseline item 1305 left.

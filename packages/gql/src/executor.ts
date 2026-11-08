@@ -9931,7 +9931,7 @@ const inlineAggregateCall = (clauses: readonly Clause[]): readonly Clause[] => {
 };
 
 const inlineCorrelatedCall = (clauses: readonly Clause[]): readonly Clause[] => {
-  const asMatch = (c: Clause): Clause | null => {
+  const asMatch = (c: Clause, tail: readonly Clause[]): readonly Clause[] | null => {
     if (c.kind !== 'callInline' || c.optional || c.scope.length === 0) {
       return null;
     }
@@ -9968,40 +9968,110 @@ const inlineCorrelatedCall = (clauses: readonly Clause[]): readonly Clause[] => 
       return null;
     }
 
-    const yielded = new Set<string>();
+    // A PASS-THROUGH yield (`RETURN x`) needs nothing but the MATCH — the pattern already binds
+    // that name. A COMPUTED one (`RETURN x.k AS c`) needs a `LET`, and item 1661 priced the
+    // difference between having it and not: `CALL (n) { MATCH (n)-[:E]->(x) RETURN x.k AS c }`
+    // cost 3136 ns an outer row against 333 for the two clauses this emits, 9.4x, because the
+    // CALL route has no rung at all and `[match, let]` lands on the hop projection.
+    const plain = new Set<string>();
+    const computed: { var: string; expr: Expr }[] = [];
+    const aliases = new Set<string>();
 
     for (const item of proj.items) {
-      if (item.expr.kind !== 'var' || (item.alias !== undefined && item.alias !== item.expr.name)) {
+      if (item.expr.kind === 'var' && (item.alias === undefined || item.alias === item.expr.name)) {
+        plain.add(item.expr.name);
+        continue;
+      }
+
+      // `cheapPureExpr` is `prop | var | lit | param`, so this admits `x.k`, `x AS y`, a literal
+      // and a parameter. It is doing two jobs: the expression must be TOTAL, because a `LET`
+      // evaluates it on every matched row where the body's RETURN did too (the same rows — but a
+      // throwing expression inside an OPTIONAL-shaped body would differ, and `optional` is
+      // already refused above); and it must be AGGREGATE-FREE, which the four kinds give for
+      // nothing. An aggregate here is `inlineAggregateCall`'s shape and a different cardinality.
+      if (item.alias === undefined || !cheapPureExpr(item.expr)) {
         return null;
       }
 
-      yielded.add(item.expr.name);
+      computed.push({ var: item.alias, expr: item.expr });
+      aliases.add(item.alias);
     }
 
-    // The body may introduce ONLY the names it yields; anything else would stay bound after the
-    // rewrite where the call hides it.
-    const imported = new Set(c.scope);
-    const introduced = [...patternNames(bm.patterns[0])].filter((n) => !imported.has(n));
-
-    if (introduced.length !== yielded.size || introduced.some((n) => !yielded.has(n))) {
+    if (aliases.size !== computed.length) {
       return null;
     }
 
-    return { kind: 'match', optional: false, patterns: bm.patterns, where: bm.where };
+    const imported = new Set(c.scope);
+    const introduced = [...patternNames(bm.patterns[0])].filter((n) => !imported.has(n));
+
+    // A pass-through yield must be a name the PATTERN introduced. Yielding an imported name back
+    // out is a no-op the general path can keep.
+    for (const n of plain) {
+      if (!introduced.includes(n)) {
+        return null;
+      }
+    }
+
+    // An alias becomes a new column on the outer row, so it may not be a name that is already
+    // there — imported — nor one the emitted MATCH leaves bound.
+    for (const a of aliases) {
+      if (imported.has(a) || introduced.includes(a)) {
+        return null;
+      }
+    }
+
+    // ⚠️ THE ESCAPING NAMES ARE THE WHOLE DIFFICULTY, and they are why item 1661 priced this
+    // route but did not build it. The body's pattern introduces `x`; the CALL yields only
+    // `x.k AS c` and HIDES `x`. The emitted `MATCH` cannot hide it — a plain MATCH binds what it
+    // matches — so after the rewrite `x` is live where the call had scoped it away. That is
+    // observable: a later `MATCH (x)` would correlate instead of fresh-scanning, a later
+    // `LET x = …` would collide, and `RETURN *` would emit a column that is not in the answer.
+    //
+    // The route item 1661 named — manufacture a projection that DROPS them — needs the set of
+    // names bound BEFORE the call, which is a bind-site walker whose failure mode is dropping a
+    // LIVE name. Proving the leak UNOBSERVABLE is the other direction, and it is the one this
+    // repo already answered: `nameIsUnread` is the predicate `dropUnreadPathVar` (item 1049) and
+    // `dropUnreadEdgeVar` were built on, and the question those ask is identical to this one —
+    // "is this pattern variable provably unread by everything after the clause". It refuses on
+    // any doubt: an unknown clause kind in the tail, a `RETURN *`, a rebinding, a subquery that
+    // `freePredicateVars` cannot see into. Reusing it rather than writing a second scanner is
+    // the point: two escape analyses of the same question would drift, and the one that drifted
+    // would be wrong silently.
+    //
+    // `where` is passed as `undefined` on purpose. Its role there is the MATCH's own predicate,
+    // which those rewrites keep while deleting the variable from the pattern — a reference it
+    // must not miss. Here nothing is deleted: the emitted MATCH keeps both the pattern and the
+    // `WHERE`, so a reference to `x` inside `bm.where` is still bound and is not an escape.
+    const escaping = introduced.filter((n) => !plain.has(n));
+
+    if (escaping.some((n) => !nameIsUnread(n, undefined, tail))) {
+      return null;
+    }
+
+    const match: Clause = {
+      kind: 'match',
+      optional: false,
+      patterns: bm.patterns,
+      where: bm.where,
+    };
+
+    return computed.length === 0 ? [match] : [match, { kind: 'let', items: computed }];
   };
 
   let changed = false;
-  const out = clauses.map((c) => {
-    const m = asMatch(c);
+  const out: Clause[] = [];
+
+  for (const [i, c] of clauses.entries()) {
+    const m = asMatch(c, clauses.slice(i + 1));
 
     if (m === null) {
-      return c;
+      out.push(c);
+      continue;
     }
 
     changed = true;
-
-    return m;
-  });
+    out.push(...m);
+  }
 
   return changed ? out : clauses;
 };
@@ -11446,11 +11516,24 @@ export const compileLinear = (linear: LinearQuery): CLinear => {
   // exactly the inline property this lifts (item 778).
   const source = liftStartProps(
     fuseAnchorThenHop(
-      inlineCorrelatedCall(
-        // `inlineAggregateCall` runs INSIDE `inlineTrailingLet` so the `LET` it produces is itself
-        // inlined when it is the last binding before the RETURN — the two compose into "a CALL with
-        // an aggregate body is a projection subquery", which is where the rungs are.
-        inlineTrailingLet(
+      // `inlineAggregateCall` runs INSIDE `inlineTrailingLet` so the `LET` it produces is itself
+      // inlined when it is the last binding before the RETURN — the two compose into "a CALL with
+      // an aggregate body is a projection subquery", which is where the rungs are.
+      //
+      // ⚠️ `inlineCorrelatedCall` IS INSIDE `inlineTrailingLet` FOR THE SAME REASON, AND IT WAS
+      // OUTSIDE UNTIL ITEM 1662 MEASURED WHAT THAT COST. Once that rewrite could emit a `LET` of
+      // its own (a computed yield, `RETURN x.k AS c`), running it after the `LET`-folding pass
+      // left the `LET` standing, and a standing `LET` is OFF EVERY RUNG — `[match, let, return]`
+      // carries none of the twenty, where the folded `[match, return]` carries `hopAggregate`.
+      // Measured: the rewrite fired, the route assertion passed, and the arm went 3110 -> 2165
+      // ns an outer row against the 330 its hand-written twin reaches. 1.44x of an available
+      // 9.4x, with the whole gap in the composition rather than in either rewrite.
+      //
+      // The twin is the diagnostic worth keeping: `MATCH (n:P) MATCH (n)-[:E]->(x) LET c = x.k
+      // RETURN sum(c)` is 4 clauses and still compiles to `[match, return]`, so `inlineTrailingLet`
+      // never needed the fused shape — only to run LAST of the three.
+      inlineTrailingLet(
+        inlineCorrelatedCall(
           inlineAggregateCall(
             inlineTrailingFilter(
               unoptionalizeForAggregate(

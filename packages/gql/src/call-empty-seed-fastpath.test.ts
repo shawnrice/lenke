@@ -208,11 +208,15 @@ describe('⚠️ 1. an unscoped CALL body reaches the fast-path ladder', () => {
    * this path reachable at all — so a `scope.length === 0` gate would be a silent miss here.
    */
   test('⚠️ a scope whose names are ALL UNBOUND reaches it too (seed.size, not scope.length)', () => {
-    // ⚠️ The body returns an EXPRESSION, not a bare variable, so neither `inlineAggregateCall` nor
-    // `inlineCorrelatedCall` claims the clause and it really does run as a CALL. An aggregate body
-    // here would be rewritten away and the test would be asserting nothing about this route.
+    // ⚠️ THE YIELD IS WRAPPED IN A FUNCTION CALL, AND THAT IS LOAD-BEARING (item 1662). This
+    // fixture read `RETURN z.k AS c` when it was written, with a comment claiming no rewrite
+    // could claim it — item 1662 extended `inlineCorrelatedCall` to exactly that shape and this
+    // test is what reported it. `abs(…)` is not `cheapPureExpr` (a function can raise, so it is
+    // not TOTAL and cannot move into a `LET`), which is a durable refusal rather than a gap:
+    // the rewrite can never admit it. The body still carries its `nodeProjection` rung, so the
+    // assertion below is still about reaching the ladder and not about a missing rung.
     const { hits, rungs } = rungHits(
-      'MATCH (n:P) CALL (m) { MATCH (z:P) RETURN z.k AS c } RETURN sum(c) AS t',
+      'MATCH (n:P) CALL (m) { MATCH (z:P) RETURN abs(z.k) AS c } RETURN sum(c) AS t',
       build(),
     );
 
@@ -231,8 +235,12 @@ describe('⚠️ 2. a NON-EMPTY seed still takes the general loop', () => {
     // The `callprojx` shape: scope `(n)` is bound by the outer MATCH, so the seed is non-empty.
     // It carries a `hopProjection` rung, which makes the assertion meaningful — the rung EXISTS
     // and is still not reached.
+    //
+    // ⚠️ `abs(…)` for the same reason as the unbound-scope case above (item 1662): the bare
+    // `RETURN x.k AS c` spelling this used to carry is now REWRITTEN to `[match, let]` and never
+    // reaches `runCallInline` at all, so it could no longer test the seed gate.
     const { hits, rungs } = rungHits(
-      'MATCH (n:P) CALL (n) { MATCH (n)-[:E]->(x) RETURN x.k AS c } RETURN sum(c) AS t',
+      'MATCH (n:P) CALL (n) { MATCH (n)-[:E]->(x) RETURN abs(x.k) AS c } RETURN sum(c) AS t',
       build(),
     );
 
