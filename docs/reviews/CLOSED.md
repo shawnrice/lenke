@@ -64947,7 +64947,7 @@ No engine change — `executor.ts` differs from its pre-tick copy by a comment o
 `shortcuts.ts` is byte-identical (both verified by `diff`). `bun run check` 0 read unpiped.
 Suites: gql 3964/0, the rest unchanged from item 1569; `bun run fuzz` 20/0.
 
-### Item 1571 — **86.3% of a bounded var-length count is a CSR that is REBUILT EVERY QUERY**, priced by instrumentation rather than inferred from a share. ~~The cache is designed and NOT built, because~~ ⚠️ **THE BLOCKER IS GONE — ITEM 1674 BUILT THE SIGNAL (`topologyVersion`), measured it free, and the cache itself is what remains.** The blocker was real: ⚠️ **neither `graph.version` NOR `graph.epoch(name)` advances synchronously** — both read 0 through three mutations and only move after a task drain, so keying a cache on either serves a STALE result to any query following a write
+### Item 1571 — **86.3% of a bounded var-length count is a CSR that is REBUILT EVERY QUERY**, priced by instrumentation rather than inferred from a share. ~~The cache is designed and NOT built, because~~ ⚠️ **CLOSED — ITEM 1674 BUILT THE SIGNAL (`topologyVersion`) and ITEM 1676 BUILT THE CACHE: 3.8x to 27.2x across the six bench rows that reach it. Nothing here is open.** The blocker was real: ⚠️ **neither `graph.version` NOR `graph.epoch(name)` advances synchronously** — both read 0 through three mutations and only move after a task drain, so keying a cache on either serves a STALE result to any query following a write
 
 Item 1570 refuted a target taken from a self-time share, so this one was ablated first.
 
@@ -74058,3 +74058,161 @@ fuzzers: 20 pass, 0 fail.
 The cache itself, unchanged from item 1674: item 1571's 86.3%. The key is `(topologyVersion, inward,
 types)`, and only `order`/`idx`/`off`/`nbr` are cacheable — the `passes` vector is predicate-dependent
 and `src`/`srcIdx` read `verticesByLabel`, which a vertex-label write moves without bumping.
+
+### Item 1676 — **ITEM 1571'S CSR CACHE, BUILT AND TAKEN: 3.8x to 27.2x across the six bench rows that reach it, with the in-family ENUMERATING row flat at 0.991x.** ⚠️ **The probe that drove the work reported 2.45x and that was the FLOOR, not the answer — a 50,000-vertex fixture understates this cache by an order of magnitude**, for a reason the repo's own "sweep the size" rule predicts. ⚠️ **The 4,254 tests already in the package all passed on the first build of this cache and would have passed on one with NO invalidation at all** — the suite that can tell the difference is 14 new tests and six key mutants
+
+Item 1571 instrumented `walkLevelCount` and found 86.3% of a bounded var-length count going into a
+flattened adjacency that is discarded the moment the query returns, then declined to build the cache
+because no synchronous change signal existed to key it on. Items 1674 and 1675 built that signal.
+This spends it.
+
+#### The measurement
+
+```text
+   arm                PRE      POST    ratio
+   repeated          12.68     5.17    2.45x    the same query 20x, no writes
+   depth2            10.80     2.84    3.80x    `{1,2}`, least to amortize
+   writeInterleaved  12.73    12.87    1.01x    a 1-edge write between every call
+   scanControl        0.30     0.31    1.03x    a node scan, a route the cache cannot reach
+```
+
+(`gql-varlen-cache-probe.mjs`, 50,000 vertices / 150,000 edges, 20 calls per rep, 9 reps, three
+order-alternated rounds.) Depth 3 saves 7.51 ms and depth 2 saves 7.96 — the same fixed build in
+both, which is what a cache of a build SHOULD look like. A win that grew with depth would mean
+something else had changed.
+
+⚠️ **AND THESE RATIOS ARE THE FLOOR. The same change on the `bun run bench` fixture (200,000 /
+1,000,000) measures 3.8x to 27.2x** — see the sweep below. The two do not disagree, because what the
+cache ELIMINATES and what it LEAVES scale differently:
+
+```text
+   the build     a V-entry `Map` plus E map lookups     7.6 ms at 50k  ->  124-196 ms at 200k
+   the residual  a dense Int32Array read per level     ~5.0 ms at 50k  ->    7-30 ms at 200k
+```
+
+The build does one `idx.get` per edge, and that falls out of cache across precisely the
+200,000-to-1,000,000 element transition this file documents; a sequential typed-array read does not.
+So the win GROWS with the fixture. **Picking 50,000 for the probe was the "sweep the size" trap, and
+it cost this item its headline number in the first report of it.** The probe's header now says so and
+gives both invocations.
+
+⚠️ **SHAPE matters far less than SIZE, which is worth knowing because it was the first explanation
+reached for and it was wrong.** Faced with the probe saying 3.7x and the bench 27x at the same vertex
+count, the obvious suspect was the bench's UNLABELLED endpoint making the endpoint test vacuous. At
+200,000, warm: a labelled endpoint reads 29.89 ms/call, an unlabelled one 27.63 (1.08x), and
+`MATCH WALK` with an unlabelled endpoint 14.76 (2.0x). That is the entire spread across spellings,
+against the 16-26x the fixture size is worth. The hypothesis was measured rather than adopted.
+
+⚠️ **`writeInterleaved` IS THE ARM THAT EARNS THE ENTRY**, and it is the one most easily left out. A
+write between every query makes every call miss, so it prices the cache's COST rather than its win:
+flat at 1.01x, so the lookup, the version compare and the dropped generation are free. Without it the
+other three rows cannot distinguish "the cache works" from "the cache works and taxes everyone who
+writes".
+
+#### ⚠️ The existing suite could not have caught a cache that never invalidates
+
+A cache with no invalidation at all returns the correct answer for every read-only query ever
+written. All 4,254 tests in `packages/gql` passed on the first build of this one, and would have
+passed on a broken one; the failure mode is `query, write, query`, which nothing in the package
+exercised against this route. `var-length-count-cache.test.ts` is 14 tests that are all invalidation
+tests, and the mutation pass is what says they have teeth:
+
+```text
+   MC1  never invalidate                         CAUGHT (6 failures)
+   MC2  key drops the DIRECTION                  CAUGHT (1)
+   MC3  key drops the edge TYPES                 CAUGHT (1)
+   MC4  key on `graph.version`                   CAUGHT (6)
+   MC5  key on vertexCount + edgeCount           CAUGHT (2)
+   MC6  key on edgeCount alone                   CAUGHT (2)
+```
+
+MC4, MC5 and MC6 are not arbitrary breakage — they are the three keys item 1571 rejected on paper,
+now rejected by measurement. MC4 is that entry's disqualifying finding (`version` is deferred, so it
+reads 0 through a sequence of mutations) and it fails six of the fourteen. MC6 is item 1675's hole:
+an edge-label write re-buckets a type-keyed adjacency while `edgeCount` does not move.
+
+#### Three design points that are not obvious
+
+⚠️ **`types` IS NOT SORTED INTO THE KEY, and sharing an entry across orderings would be a byte-identity
+bug.** Two spellings naming the same edge types in a different order are semantically equivalent, so
+collapsing them looks free. But `edgesOfTypes` iterates `types` IN ORDER, so the two orderings produce
+`nbr` arrays that differ in POSITION. The count itself is a sum and would survive; the depth-3/4 trail
+corrections read `nbr` positionally through `pairMultiplicities`, and f64 sums in a different order are
+not required to agree bit for bit. Byte-identity between the engines is a hard invariant, so the
+conservative key ships.
+
+⚠️ **A STALE GENERATION IS DROPPED WHOLE, not per shape.** Every shape built from the old topology is
+equally invalid, and keeping the map would leak one dead entry per shape per write.
+
+⚠️ **THE PER-SHAPE MAP IS CAPPED AT 8, because the retention is not small and nothing else bounds
+it.** Each entry holds `order` (V references), `idx` (a V-entry Map) and two typed arrays sized V+1
+and E — on the order of 2 MB at 50,000/150,000 — and lives as long as the graph. A generation is
+cleared on any topology write, so growth needs MANY distinct shapes with no write between them,
+which is exactly the shape of a report sweeping one query per edge type. Past the cap the generation
+is cleared rather than evicted one entry at a time: there is no recency information worth keeping,
+every entry costs one rebuild to recover, and a clear cannot degrade into holding the cap's worth of
+cold entries forever. The cap is free — 5.17 against 5.04 ms/call, inside the noise — and it has its
+own test, because no key mutant can reach it: clearing a cache can only cost a rebuild, never return
+a wrong answer.
+
+#### ⚠️ Two probe defects, both of which produced a plausible wrong number first
+
+**The route was first measured with the Cypher spelling.** `-[:E*1..3]->` is not ISO-GQL and the
+parser said so. The ISO form is a quantified path pattern, `-[:E]->{1,3}`. Taken from the repo's own
+tests rather than from memory, which is the standing rule for exactly this reason.
+
+**The first two controls both read 0.0 ms and were useless.** `{1,1}` and a plain one-hop count each
+take an O(1) shortcut rung rather than `walkLevelCount`, so neither prices the route and neither can
+show perturbation. A control that cannot move is not a control. Replaced with a depth-2 arm and a
+node scan, which reads 0.30 ms and is measurable.
+
+(The fixture's distinct-endpoint count is asserted — 6000/6000 sampled — and the depth-3 answer,
+1,949,750, is not `F^k * N`. A functional fixture would have given a right answer and a meaningless
+measurement.)
+
+#### The wide regression sweep — PRE/POST, interleaved, two rounds per arm
+
+`BENCH_ENGINES=ts bun run bench` on both arms, a core rebuild per arm, the dist asserted to BE the
+code it claims before each run. 70 rows matched in both arms, min of the two readings per arm.
+
+The six rows that reach the route:
+
+```text
+    ratio        PRE       POST   row
+   0.037x      196.0        7.2   count var-length 1-3 hops [WALK]              27.2x
+   0.039x      262.4       10.2   count var-length 1-2 hops                     25.7x
+   0.051x      267.0       13.5   count var-length 1-2 hops + end filter        19.8x
+   0.106x      173.7       18.4   count 3-hop quantified [TRAIL, the default]     9.4x
+   0.110x      170.1       18.7   count 3-hop quantified MIRROR [TRAIL]           9.1x
+   0.265x      240.4       63.6   count 4-hop quantified [TRAIL]                  3.8x
+```
+
+⚠️ **AND THE SWEEP HANDED OVER A CONTROL BETTER THAN THE ONE DESIGNED INTO THE PROBE.**
+`project var-length 1-3 hops + start filter [ENUMERATES]` reads **0.991x** — it is the one
+var-length row in the corpus that ENUMERATES rather than counting, so it never enters the closed-form
+route at all. A control that sits inside the same query family, on the same fixture, in the same
+process, and does not move is worth more than the node scan chosen deliberately.
+
+**No regression is attributable to the change**, and the distribution is why rather than the absence
+of movement:
+
+```text
+   median 1.000x   p10 0.843x   p90 1.093x   rows over 1.15x: 5   under 0.87x: 8
+```
+
+The largest movers in BOTH directions are codec rows the change cannot reach — `encode pg-json`
+1.363x and `encode graphson` 0.843x, `encode pg-text` 0.841x. That is this file's documented null
+control behaving as documented: the codec rows carry the same p90 as the query rows. The slowest
+query rows named (`project 3 columns` 1.224x, `percentile_cont` 1.281x, `select group + having`
+1.182x) are likewise unreachable from `var-length-count.ts`.
+
+⚠️ The two hop rows that could plausibly be argued to be reachable — `count 3-hop + start filter` at
+1.074x and `count 4-hop + start filter` at 1.084x — are refuted by their OWN per-rep spread, which is
+larger than the effect: `post=[386.4, 477.8]` is 1.24x within one arm. A ratio smaller than its own
+arm's spread is not a reading.
+
+#### Gates
+
+`bun run check` 0 read unpiped. All five package suites isolated: core 453, gql 4268, gremlin 2017,
+serialization 144, native 1081 — 0 fail each. All seven byte-identity fuzzers: 20 pass, 0 fail. Six
+cache-key mutants, all six caught.
