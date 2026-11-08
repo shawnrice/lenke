@@ -309,3 +309,17 @@ export const compareCodePoints = (a: string, b: string): number => {
 
   return j < b.length ? -1 : 0;
 };
+
+/**
+ * ⚠️ MOVED DOWN FROM `bindings.ts` (item 1666), and the reason is a cycle THIS SESSION CREATED
+ * rather than an old one. Moving `satisfies` into `predicates.ts` and `matchNode` into
+ * `bindings.ts` left `predicates -> bindings` (for `propOf`) against `bindings -> predicates` (for
+ * `satisfies`) — a fresh mutual pair, reported by `import/no-cycle` before it could be committed.
+ * `propOf` reads a property off a bound value, so this is its proper layer anyway: it is a value
+ * accessor, not a binding operation.
+ */
+// ISO GQL: accessing a property that is absent — or a property of a NULL element
+// (e.g. an unmatched OPTIONAL variable) — yields NULL, not `undefined`. Coalesce
+// here so the whole pipeline (output rows, IS NULL, arithmetic) sees ISO's NULL.
+export const propOf = (bound: unknown, key: string): unknown =>
+  (bound as { properties?: Record<string, unknown> } | undefined)?.properties?.[key] ?? null;

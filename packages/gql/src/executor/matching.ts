@@ -7,8 +7,9 @@ import type { Edge, Graph, IndexableValue, RangeBound, Vertex } from '@lenke/cor
 import { ErrorCode, LenkeError } from '@lenke/errors';
 
 import type { LabelExpr, PathMode, PathSelector, RelPattern } from '../ast.js';
-import { candidateCount, candidateVertices, expand, matchesLabel } from '../graph-queries.js';
+import { candidateCount, candidateVertices, expand } from '../graph-queries.js';
 import { consistent, hasPredicate, unitExposes, unitIsFlat, withBinding } from './bindings.js';
+import { matchNode, matchNodeLabelled } from './bindings.js';
 // Compiled pattern types + binding helpers live in the executor trunk; the value
 // back-edges (consistent/withBinding/…) are used lazily inside match closures, so
 // this is a safe function-level cycle.
@@ -23,63 +24,11 @@ import type {
   EvalEnv,
   Params,
 } from './core.js';
-import { rejectedByElementDirect, satisfies } from './core.js';
+import { effectiveLabel } from './labels.js';
+import { rejectedByElementDirect, satisfies } from './predicates.js';
 import { asTruth } from './scalars.js';
-import { effectiveLabel } from './shortcuts.js';
 
 // --- matching ----------------------------------------------------------------
-
-export const matchNode = (
-  binding: Binding,
-  node: CNode,
-  vertex: Vertex,
-  params: Params,
-  graph: Graph,
-): Binding | null => matchNodeLabelled(binding, node, vertex, params, graph, node.label);
-
-/**
- * `matchNode` with the label test given EXPLICITLY, so a caller that has already resolved the
- * effective label (item 1623) can pass `undefined` for a vacuous one and skip the test.
- *
- * ⚠️ IT IS A SEPARATE PARAMETER AND NOT A MUTATED `CNode`: the compiled plan is reused across
- * executions and across GRAPHS, and vacuity is a property of the graph. Writing the elided label
- * back onto the node would make the second execution's answer depend on the first graph's label
- * distribution, which is a wrong answer and not a slow one.
- */
-export const matchNodeLabelled = (
-  binding: Binding,
-  node: CNode,
-  vertex: Vertex,
-  params: Params,
-  graph: Graph,
-  label: LabelExpr | undefined,
-): Binding | null => {
-  if (!matchesLabel(vertex, label)) {
-    return null;
-  }
-
-  if (!consistent(binding, node.variable, vertex)) {
-    return null;
-  }
-
-  // THE ELEMENT-DIRECT CONJUNCTS FIRST, BEFORE ANY ALLOCATION. `withBinding` copies the
-  // incoming binding into a fresh `Map`, and on a scan that is once per CANDIDATE for a
-  // predicate that rejects nearly all of them: instrumented over
-  // `MATCH (u:User) WHERE u.name = $n` at 20,000 nodes, this allocated 20,000 bindings and
-  // rejected 19,999 of them (item 631). A read of that shape claims a fast-path rung and never
-  // arrives here at all, which is why an unindexed WRITE cost ~3.0x the identical read.
-  //
-  // Sound because `eqProps`/`cmpProps` read the property off the ELEMENT and their value side
-  // is CLOSED (`asPropCompare`'s own requirement), so neither can read the variable this is
-  // about to bind. Everything else still waits for `bound`.
-  const bound = withBinding(binding, node.variable, vertex);
-
-  if (!satisfies(vertex, node.pred, bound, params, graph)) {
-    return null;
-  }
-
-  return bound;
-};
 
 /** A scalar the property index can seek on (mirrors PropertyIndex's IndexableValue). */
 export const isScalar = (v: unknown): v is IndexableValue =>

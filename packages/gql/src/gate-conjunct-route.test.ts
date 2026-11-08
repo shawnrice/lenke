@@ -2,7 +2,8 @@ import { describe, expect, test } from 'bun:test';
 
 import { Graph } from '@lenke/core';
 
-import { compilePredicate, satisfies } from './executor/core.js';
+import { compilePredicate } from './executor/core.js';
+import { satisfies } from './executor/predicates.js';
 import { specializedConjunct } from './executor/shortcuts.js';
 import { query } from './index.js';
 

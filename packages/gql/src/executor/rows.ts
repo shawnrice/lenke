@@ -25,6 +25,7 @@ import {
 import type { Graph, Temporal } from '@lenke/core';
 
 import type { CountValue, Expr } from '../ast.js';
+import type { Projection } from '../ast.js';
 import type { Binding, CProjection, EvalEnv, Params, Row } from './core.js';
 
 // Resolve a `LIMIT` / `OFFSET` bound to a concrete count at execution: a literal
@@ -295,3 +296,24 @@ export const mapToArray = <T, R>(it: Iterable<T>, f: (x: T) => R): R[] => {
 
   return out;
 };
+
+/**
+ * ⚠️ MOVED DOWN FROM `hop-projection.ts` (item 1666). `shortcuts.ts` needed this ONE symbol from
+ * `hop-projection.ts` while `hop-projection.ts` needed nine back — one of the four mutual import
+ * pairs that made this package cyclic, closed by moving the single thin-side symbol. It is a row
+ * projection, so this was always its home.
+ */
+/** A projection that emits one row per binding: no folding, deduping, grouping or paging. */
+/**
+ * A projection with nothing but items: no `*`, no DISTINCT, no grouping, no ORDER BY, no paging.
+ * Exported because item 528's `FOR` projection asks exactly the same question, and two copies of
+ * this list is how one of them falls behind the other.
+ */
+export const plainRowProjection = (proj: Projection): boolean =>
+  !proj.star &&
+  !proj.distinct &&
+  proj.groupBy === undefined &&
+  proj.having === undefined &&
+  (proj.orderBy?.length ?? 0) === 0 &&
+  proj.skip === undefined &&
+  proj.limit === undefined;

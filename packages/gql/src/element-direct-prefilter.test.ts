@@ -18,7 +18,7 @@ import { Graph } from '@lenke/core';
 import type { Vertex } from '@lenke/core';
 
 import type { CPredicate } from './executor/core.js';
-import { rejectedByElementDirect } from './executor/core.js';
+import { rejectedByElementDirect } from './executor/predicates.js';
 import { query } from './index.js';
 
 const fixture = (): Graph => {

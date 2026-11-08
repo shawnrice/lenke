@@ -15,7 +15,7 @@ import { relTypeNames } from './adjacency.js';
 import type { AggFold, CompiledExpr, Params, Row } from './core.js';
 import { freePredicateVars } from './expr-analysis.js';
 import { plainNode, plainRel } from './hop-sides.js';
-import { vacuousLabel } from './shortcuts.js';
+import { vacuousLabel } from './labels.js';
 import { isNullish } from './values.js';
 
 /**

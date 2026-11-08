@@ -4,7 +4,6 @@ import type { Clause, CountValue, Expr, LabelExpr, Projection, RelPattern } from
 import { candidateCount, candidateVertexSource, expand, matchesLabel } from '../graph-queries.js';
 import type { Adjacency } from '../graph-queries.js';
 import { edgesOfTypes, relTypeNames } from './adjacency.js';
-import { propOf } from './bindings.js';
 import type {
   AggFold,
   CClause,
@@ -24,16 +23,18 @@ import {
   filterPredicate,
   foldFor,
   percentileFraction,
-  satisfies,
   sortsOnOutputOnly,
 } from './core.js';
 import { flattenConjuncts, freePredicateVars, truthCannotRaise } from './expr-analysis.js';
 import { primedEndpointExtremum, withPrimedEndpointExtremum } from './hop-endpoint-extremum.js';
 import { plainNode, plainRel } from './hop-sides.js';
+import { vacuousLabel } from './labels.js';
 import { indexCandidates } from './matching.js';
 import type { SortPlan } from './ordered-rows.js';
 import { outputColumnSorts, sortRowsByColumns, sortedRows } from './ordered-rows.js';
+import { satisfies } from './predicates.js';
 import { projectRow } from './rows.js';
+import { plainRowProjection } from './rows.js';
 import { asTruth } from './scalars.js';
 import {
   edgeSeek,
@@ -43,9 +44,9 @@ import {
   pageIsEmpty,
   rowLocal,
   sameGroupingExpr,
-  vacuousLabel,
   valueSet,
 } from './shortcuts.js';
+import { propOf } from './values.js';
 import { compareSort } from './values.js';
 import { isNullish } from './values.js';
 
@@ -2082,21 +2083,6 @@ const optionalHopShape = (
     out: rel.direction === 'out',
   };
 };
-
-/** A projection that emits one row per binding: no folding, deduping, grouping or paging. */
-/**
- * A projection with nothing but items: no `*`, no DISTINCT, no grouping, no ORDER BY, no paging.
- * Exported because item 528's `FOR` projection asks exactly the same question, and two copies of
- * this list is how one of them falls behind the other.
- */
-export const plainRowProjection = (proj: Projection): boolean =>
-  !proj.star &&
-  !proj.distinct &&
-  proj.groupBy === undefined &&
-  proj.having === undefined &&
-  (proj.orderBy?.length ?? 0) === 0 &&
-  proj.skip === undefined &&
-  proj.limit === undefined;
 
 /**
  * Is this projection exactly ONE property read off the FAR variable — `RETURN b.n AS n` — so the

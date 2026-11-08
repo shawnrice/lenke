@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 
 import { Graph } from '@lenke/core';
 
-import { vacuousLabel } from './executor/shortcuts.js';
+import { vacuousLabel } from './executor/labels.js';
 import { query } from './index.js';
 
 /**

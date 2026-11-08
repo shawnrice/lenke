@@ -2,12 +2,8 @@ import { describe, expect, test } from 'bun:test';
 
 import { Graph } from '@lenke/core';
 
-import {
-  compilePredicate,
-  satisfies,
-  specializeEqPair,
-  specializeNarrowPred,
-} from './executor/core.js';
+import { compilePredicate, specializeEqPair, specializeNarrowPred } from './executor/core.js';
+import { satisfies } from './executor/predicates.js';
 import { fastTallyPred } from './executor/shortcuts.js';
 import { query } from './index.js';
 
