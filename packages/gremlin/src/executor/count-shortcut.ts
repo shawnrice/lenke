@@ -2554,217 +2554,218 @@ export const memoReserve = (m: SlotMemo, need: number): void => {
 };
 
 /** The mutable state one pass of {@link slotChainCount} hands to the per-slot walk. */
-type SlotSweep = {
-  forward: boolean;
-  labels: readonly string[];
-  slotOf: Map<Vertex, number>;
-  vtx: Vertex[];
-  memo: SlotMemo;
-  next: Float64Array<ArrayBuffer>;
-  nextFrontier: number[];
-  scratch: number[];
+/**
+ * THE CHAIN CSR, REUSED ACROSS TRAVERSALS (item 1678) — the gremlin twin of item 1676's GQL cache.
+ *
+ * Item 1677 profiled a repeated 3-hop chain count at 100,000 vertices / 400,000 edges and found the
+ * cost is not the walk: a fourth hop adds 2.4 ms to a 67 ms base, and the samples sit in the memo
+ * FILL (`walkBucket` 28.9% + `expandSlot` 9.9%) and the last hop's degree sum (`degreeOfTypes`
+ * 24.0%). Both are pure functions of topology, so both belong in a cache rather than in the call.
+ *
+ * ⚠️ WHY THIS IS EAGER WHERE THE OLD MEMO WAS LAZY. The old structure resolved a slot's
+ * neighbours on first touch, numbering vertices in DISCOVERY order — which made the slot indices a
+ * function of the seed set, so nothing about it could be shared between traversals. Numbering every
+ * vertex up front by `verticesById` order is what makes the memo a pure function of
+ * `(topologyVersion, direction, labels)`. The cost of eagerness is bounded by the route's own
+ * admission rule: `denseChainCount` only fires when `seeds.length > max(vertexCount >> 4, 1024)`, so
+ * most of the graph is seeded and the lazy build was already touching most of it.
+ *
+ * ⚠️ AND THE LAST HOP'S DEGREE IS NOW `len[slot]`, WHICH IS THE 24.0% GONE RATHER THAN MOVED.
+ * `oneWalkThroughout` is the route's other admission condition and it requires every hop to walk the
+ * same index with the same labels — so the final hop's `degreeOfTypes(byType, lastHop.labels)` counts
+ * exactly the edges this CSR already walked for that slot. Parallel edges and self-loops are counted
+ * the same way by both, which is what makes the substitution exact rather than approximate.
+ *
+ * ⚠️ THE KEY IS `graph.topologyVersion`, and nothing weaker would do (items 1674/1675):
+ * `graph.version` and `graph.epoch(name)` advance on a DEFERRED step and read stale through a
+ * sequence of mutations; `vertexCount`/`edgeCount` miss a delete-plus-add. `topologyVersion` also
+ * covers edge-LABEL writes, which matters here because `labels` selects buckets of a type-keyed
+ * adjacency that `addLabelToEdge` re-buckets without touching `insertEdge`.
+ *
+ * ⚠️ `labels` IS NOT SORTED INTO THE KEY. Two orderings name the same buckets and sharing is
+ * tempting, but the fill iterates `labels` in order, so the neighbour runs differ in POSITION. The
+ * count is a sum of integer-valued f64 and would survive, but the conservative key is the one that
+ * ships where byte-identity is the invariant.
+ */
+type ChainCsr = {
+  readonly slotOf: ReadonlyMap<Vertex, number>;
+  readonly vtx: readonly Vertex[];
+  readonly memo: SlotMemo;
 };
 
+const MAX_CHAIN_SHAPES = 8;
+
+const chainCsrCache = new WeakMap<Graph, { tv: number; byShape: Map<string, ChainCsr> }>();
+
 /**
- * The per-bucket half of {@link expandSlot}, at module scope so the single-label case can skip
- * `bucketsOf`'s array without duplicating this body (item 1374).
+ * Append one bucket's neighbour slots to the flat buffer, returning how many were written.
  *
- * One call per BUCKET, which is one or two per vertex — not per edge. State travels in the object
- * for the reason {@link expandSlot} gives: item 1105 measured that as free per edge in the GQL twin
- * (570.7 ms against 570.6 for the same walk reading locals).
- *
- * `st.next` is REASSIGNED once per pass by `slotChainCount`, so this destructures per call rather
- * than capturing: it must read the pass's current frontier, not the one live when the walk started.
+ * APPENDED TO ONE BUFFER, not a fresh typed array per slot (item 1423). The hand copy is deliberate
+ * too: `Int32Array.from` goes through the iterator protocol even for a plain array, and the GQL twin
+ * measured it 4.85x slower than this loop over 100,000 small arrays (item 1417).
  */
-const walkBucket = (st: SlotSweep, set: ReadonlySet<Edge>, m: number): void => {
-  const { forward, slotOf, vtx, next, nextFrontier, scratch } = st;
+const appendBucket = (
+  memo: SlotMemo,
+  set: ReadonlySet<Edge>,
+  forward: boolean,
+  slotOf: ReadonlyMap<Vertex, number>,
+): number => {
+  memoReserve(memo, set.size);
+
+  let n = 0;
 
   for (const e of set) {
-    const w = forward ? e.to : e.from;
-    let to = slotOf.get(w) ?? -1;
-
-    if (to < 0) {
-      to = vtx.length;
-      slotOf.set(w, to);
-      vtx.push(w);
-    }
-
-    scratch.push(to);
-
-    if (next[to] === 0) {
-      nextFrontier.push(to);
-    }
-
-    next[to] += m;
+    // Every vertex of this graph was numbered before the fill began, so this cannot miss.
+    memo.flat[memo.used + n] = slotOf.get(forward ? e.to : e.from) ?? 0;
+    n += 1;
   }
+
+  memo.used += n;
+
+  return n;
 };
 
-/**
- * Walk ONE slot's adjacency, accumulating `m` into each neighbour slot and REMEMBERING the slots.
- *
- * Its own function because inlining it trips both the nesting cap and the complexity cap: a pass
- * loop, a slot loop, a bucket loop and the per-edge body is already deep, and item 1374 moved that
- * body out to {@link walkBucket} so the single-label case can skip `bucketsOf`'s array. State
- * travels in an object, which item 1105 measured as free per edge in the GQL twin — 570.7 ms
- * against 570.6 for the same walk reading locals instead.
- */
-const expandSlot = (st: SlotSweep, slot: number, m: number): void => {
-  const { forward, labels, vtx, scratch } = st;
-  const byType = forward ? vtx[slot].adjFrom : vtx[slot].adjTo;
+const buildChainCsr = (graph: Graph, forward: boolean, labels: readonly string[]): ChainCsr => {
+  const vtx: Vertex[] = [];
+  const slotOf = new Map<Vertex, number>();
 
-  scratch.length = 0;
+  for (const v of graph.verticesById.values()) {
+    slotOf.set(v, vtx.length);
+    vtx.push(v);
+  }
 
-  if (byType !== undefined) {
-    if (labels.length === 0) {
-      for (const set of byType.values()) {
-        walkBucket(st, set, m);
-      }
-    } else {
-      // ITERATE THE LABELS, not an array of their buckets: `bucketsOf` would allocate a fresh
-      // array per vertex per pass to hold exactly these sets in exactly this order, and item 1368
-      // priced that allocation at 3.7% of this row. Sound for the same reason `bucketsOf` is —
-      // the multi-type guard has already cleared, so visiting each named bucket visits each edge
-      // once.
-      for (const t of labels) {
-        const set = byType.get(t);
+  const memo: SlotMemo = { flat: new Int32Array(0), used: 0, off: [], len: [] };
 
-        if (set !== undefined) {
-          walkBucket(st, set, m);
+  for (let slot = 0; slot < vtx.length; slot += 1) {
+    const byType = forward ? vtx[slot].adjFrom : vtx[slot].adjTo;
+    const base = memo.used;
+    let n = 0;
+
+    if (byType !== undefined) {
+      if (labels.length === 0) {
+        for (const set of byType.values()) {
+          n += appendBucket(memo, set, forward, slotOf);
+        }
+      } else {
+        // ITERATE THE LABELS, not an array of their buckets: `bucketsOf` would allocate a fresh
+        // array per vertex to hold exactly these sets in exactly this order, and item 1368 priced
+        // that allocation at 3.7% of this row. Sound for the same reason `bucketsOf` is — the
+        // multi-type guard has already cleared, so visiting each named bucket visits each edge once.
+        for (const t of labels) {
+          const set = byType.get(t);
+
+          if (set !== undefined) {
+            n += appendBucket(memo, set, forward, slotOf);
+          }
         }
       }
     }
+
+    memo.off[slot] = base;
+    memo.len[slot] = n;
   }
 
-  // APPENDED TO ONE BUFFER, not a fresh typed array per slot (item 1423). The hand copy is
-  // deliberate too: `Int32Array.from` goes through the iterator protocol even for a plain array,
-  // and the GQL twin measured it 4.85x slower than this loop over 100,000 small arrays (item 1417).
-  const { memo } = st;
-  const n = scratch.length;
-
-  memoReserve(memo, n);
-
-  const base = memo.used;
-
-  for (let i = 0; i < n; i += 1) {
-    memo.flat[base + i] = scratch[i];
-  }
-
-  memo.used = base + n;
-  memo.off[slot] = base;
-  memo.len[slot] = n;
+  return { slotOf, vtx, memo };
 };
 
-/**
- * The 3+ hop chain count over DENSE SLOTS, with each slot's neighbour slots REMEMBERED.
- *
- * The same identity the `Map<Vertex, number>` walk computes, with two representation changes that
- * items 1108 and 1109 measured in that order:
- *
- *   * the frontier is a `Float64Array` indexed by an interned SLOT rather than a `Map` keyed by
- *     vertex object. Item 1109's micro, on the engine's own shapes: `Map<Vertex,number>` get+set
- *     **31.7 ns a touch**, a `Float64Array` accumulate with the slot known **2.3**, interning plus
- *     the accumulate **15.7**;
- *   * each slot's neighbour SLOTS are stored on first visit, so later passes touch **no edges and
- *     no Map at all** — the 2.3 ns arm, against a measured **158 ns an edge** for a pass of the
- *     `Map` walk (item 1109, by depth difference: `V().out()x4` 555.5 ms less
- *     `V().out().out().out()` 397.3).
- *
- * Storing SLOTS rather than vertices is the whole point, and item 1108 first got this wrong: a memo
- * of vertices would still need `next.get(w)`/`next.set(w)` per edge and would only save the
- * adjacency iteration, which that same item measured at 3-4%.
- *
- * THE CONDITIONS, checked by the caller:
- *
- *   * every hop walks the SAME index with the SAME labels ({@link oneWalkThroughout}) — a memo is
- *     a function of (direction, labels), so hops differing in either would read a list built for a
- *     different edge set;
- *   * the seed is WIDE, past `max(n/16, 1024)`. A `Float64Array` per pass is the wrong trade for a
- *     narrow frontier, and GQL's `Counts` doc records that as a measured 30x regression — "an 8 MB
- *     zeroed array and a 1M-entry scan, five times, for a frontier of a few hundred nodes".
- *
- * Byte-identity: the total sums exact-integer multiplicities, so the order slots enter the frontier
- * cannot change it, and parallel edges stay duplicated in the remembered list exactly as the `Map`
- * walk pushes them twice.
- */
+const chainCsrFor = (graph: Graph, forward: boolean, labels: readonly string[]): ChainCsr => {
+  const tv = graph.topologyVersion;
+  let entry = chainCsrCache.get(graph);
+
+  if (entry === undefined || entry.tv !== tv) {
+    // A stale generation is dropped WHOLE: every shape built from the old topology is equally
+    // invalid, and keeping the map would leak one dead entry per shape per write.
+    entry = { tv, byShape: new Map() };
+    chainCsrCache.set(graph, entry);
+  }
+
+  const key = `${forward ? '>' : '<'}${labels.join('\u0000')}`;
+  const hit = entry.byShape.get(key);
+
+  if (hit !== undefined) {
+    return hit;
+  }
+
+  // ⚠️ CAPPED, because an entry holds a V-entry Map, a V-length array and a flat buffer sized by
+  // the walked degree, and it lives as long as the graph. A generation is cleared on any topology
+  // write, so growth needs many distinct shapes with no write between them — the shape of a report
+  // sweeping one traversal per edge type. Cleared rather than evicted one at a time: there is no
+  // recency information worth keeping and every entry costs one rebuild to recover.
+  if (entry.byShape.size >= MAX_CHAIN_SHAPES) {
+    entry.byShape.clear();
+  }
+
+  const built = buildChainCsr(graph, forward, labels);
+  entry.byShape.set(key, built);
+
+  return built;
+};
+
 const slotChainCount = (
   hops: readonly HopStep[],
   seeds: readonly Vertex[],
   graph: Graph,
 ): number => {
-  const n = graph.vertexCount;
-  // Slots are only ever assigned to vertices of this graph, so `n` is an exact bound and no array
-  // here ever grows.
-  const st: SlotSweep = {
-    forward: hops[0].kind === 'out',
-    labels: hops[0].labels,
-    slotOf: new Map<Vertex, number>(),
-    vtx: [],
-    memo: { flat: new Int32Array(0), used: 0, off: [], len: [] },
-    next: new Float64Array(0),
-    nextFrontier: [],
-    scratch: [],
-  };
+  // `oneWalkThroughout` has already cleared, so hop 0's direction and labels are every hop's.
+  const { slotOf, vtx, memo } = chainCsrFor(graph, hops[0].kind === 'out', hops[0].labels);
+  const n = vtx.length;
   let ways = new Float64Array(n);
   let frontier: number[] = [];
 
   for (const v of seeds) {
-    const slot = st.vtx.length;
+    const slot = slotOf.get(v);
 
-    st.slotOf.set(v, slot);
-    st.vtx.push(v);
-    ways[slot] = 1;
-    frontier.push(slot);
+    if (slot === undefined) {
+      continue;
+    }
+
+    // ACCUMULATED RATHER THAN SET, which also fixes a latent difference from the old lazy path: it
+    // gave a repeated seed TWO slots each weighted 1, so a duplicate counted twice. Adding into one
+    // slot reaches the same total without depending on seeds being unique.
+    if (ways[slot] === 0) {
+      frontier.push(slot);
+    }
+
+    ways[slot] += 1;
   }
 
+  const { flat, off, len } = memo;
+
   for (let h = 0; h < hops.length - 1; h += 1) {
-    st.next = new Float64Array(n);
-    st.nextFrontier = [];
+    const next = new Float64Array(n);
+    const nextFrontier: number[] = [];
 
     for (const slot of frontier) {
-      const known = st.memo.len[slot];
-
-      if (known === undefined) {
-        expandSlot(st, slot, ways[slot]);
-
-        continue;
-      }
-
       const m = ways[slot];
       // A CONTIGUOUS RUN of the one buffer: an index walk rather than a pointer chase per slot.
-      const base = st.memo.off[slot];
-      const { flat } = st.memo;
+      const base = off[slot];
+      const run = len[slot];
 
-      for (let i = 0; i < known; i += 1) {
+      for (let i = 0; i < run; i += 1) {
         const to = flat[base + i];
 
-        if (st.next[to] === 0) {
-          st.nextFrontier.push(to);
+        if (next[to] === 0) {
+          nextFrontier.push(to);
         }
 
-        st.next[to] += m;
+        next[to] += m;
       }
     }
 
-    if (st.nextFrontier.length === 0) {
+    if (nextFrontier.length === 0) {
       return 0; // nothing reaches this position, so nothing reaches a later one
     }
 
-    ways = st.next;
-    frontier = st.nextFrontier;
+    ways = next;
+    frontier = nextFrontier;
   }
 
-  // The last hop is a degree SUM weighted by multiplicity — never a pass, so it reads its OWN
-  // direction and labels rather than the shared ones above.
-  const lastHop = hops[hops.length - 1];
-  const lastForward = lastHop.kind === 'out';
+  // The last hop is a degree SUM weighted by multiplicity, and that degree is this slot's run
+  // length — see the note on the cache above for why the substitution is exact.
   let total = 0;
 
   for (const slot of frontier) {
-    const byType = lastForward ? st.vtx[slot].adjFrom : st.vtx[slot].adjTo;
-
-    if (byType !== undefined) {
-      total += ways[slot] * degreeOfTypes(byType, lastHop.labels);
-    }
+    total += ways[slot] * len[slot];
   }
 
   return total;

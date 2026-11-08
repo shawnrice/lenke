@@ -74217,7 +74217,7 @@ arm's spread is not a reading.
 serialization 144, native 1081 — 0 fail each. All seven byte-identity fuzzers: 20 pass, 0 fail. Six
 cache-key mutants, all six caught.
 
-### Item 1677 — **THE GREMLIN ANALOGUE OF ITEM 1676, PRICED: `slotChainCount`'s adjacency memo is 38.8% of a repeated 3-hop chain count, and the last hop's degree sum another 24.0%.** So 39-63% is addressable, against GQL's 86.3% — ⚠️ **a real target but a much smaller one, and the honest answer to "does the same cache apply".** OPEN, not built
+### Item 1677 — **THE GREMLIN ANALOGUE OF ITEM 1676, PRICED: `slotChainCount`'s adjacency memo is 38.8% of a repeated 3-hop chain count, and the last hop's degree sum another 24.0%.** ~~So 39-63% is addressable~~ ⚠️ **CLOSED BY ITEM 1678 AT 7.5x-10.4x, so this pricing was an UNDER-estimate** — the 16.9% of self-time in `slotChainCount` was mostly cacheable slot assignment, which a frame's self-time does not reveal. The "much smaller target" conclusion here was wrong
 
 Item 1676 cached the CSR behind GQL's bounded var-length count for 3.8x to 27.2x. `slotChainCount`
 (`gremlin/src/executor/count-shortcut.ts`) has the same disease by inspection — `slotOf`, `vtx` and a
@@ -74301,3 +74301,97 @@ evidential value, not the clock — which is exactly why it would have survived 
 #### Gates
 
 `bun run check` 0 read unpiped. Two new probes, no engine change.
+
+### Item 1678 — **THE GREMLIN CHAIN CSR, BUILT: 9.3x and 10.4x on the two bench rows that reach it, 7.51x on the probe.** ⚠️ **Item 1677 priced this at 1.6x-2.7x and that was an UNDER-estimate, for a reason worth keeping: a frame's own self-time cannot be attributed without knowing what is inside it.** Every control flat, 0 of 25 rows over 1.15x, and the bench's `answers` column reads `same` on all of them
+
+Item 1677 profiled `slotChainCount` and found the memo fill at 38.8% and the last hop's degree sum at
+24.0%, concluding 39-63% was addressable. The actual change is 7.5x to 10.4x, i.e. ~87-90% removed.
+The gap is item 1677's 16.9% of self-time in `slotChainCount` itself, which turned out to be mostly
+slot assignment — `slotOf.set` and `vtx.push` per discovered vertex — and so also cacheable. **A
+profile names the frames; it does not tell you which parts of a frame's own time are essential.**
+
+#### The change, in two parts
+
+**1. The lazy memo became an EAGER CSR.** The old structure resolved a slot's neighbours on first
+touch and numbered vertices in DISCOVERY order, which made the slot indices a function of the SEED
+SET — so nothing about it could be shared between traversals. Numbering every vertex up front by
+`verticesById` order is what makes the memo a pure function of `(topologyVersion, direction,
+labels)`. Eagerness is affordable because the route's own admission rule only fires when
+`seeds.length > max(vertexCount >> 4, 1024)`, so the lazy build was already touching most of the
+graph.
+
+**2. The last hop's degree became `len[slot]`, which is the 24.0% GONE rather than moved.**
+`oneWalkThroughout` requires every hop to walk the same index with the same labels, so the final
+hop's `degreeOfTypes(byType, lastHop.labels)` counts exactly the edges this CSR already walked for
+that slot. Parallel edges and self-loops are counted identically by both, which is what makes the
+substitution exact.
+
+#### The measurement
+
+```text
+   arm          PRE      POST    ratio     (probe: 100,000 vertices / 400,000 edges)
+   chain3     67.19      8.95    7.51x
+   chain4     69.57     11.97    5.81x
+   chain5     73.13     15.56    4.70x
+   hop2       16.74     16.80    1.00x     the ALGEBRAIC route — control
+   valuesCtl   2.85      2.95    1.03x     no adjacency — control
+```
+
+`bench:gremlin`, PRE/POST interleaved, two rounds per arm, the dist asserted to BE the code it
+claims (200,000 / 1,000,000):
+
+```text
+    ratio     PRE ts   POST ts   row
+   0.097x      247.5      23.9   V().out().out().out().count()        10.4x
+   0.107x      251.7      27.0   V().out()x4.count()                   9.3x
+```
+
+and the rows that must not move:
+
+```text
+   1.002x       51.6      51.7   V().out().out().count()      the 2-hop ALGEBRAIC route
+   0.994x       51.8      51.5   V().repeat(out).times(2).count()
+   1.013x       22.7      23.0   V().has().out().count()
+   1.000x      884.6     885.0   V().out().out().id()         ENUMERATES, not a count
+   0.999x      969.0     968.4   V().out().out().values(age)
+```
+
+**median 0.999x, p10 0.874x, p90 1.037x, and ZERO of 25 rows over 1.15x.** The two rows under 0.87x
+are the two targets. The worst row is `V().out().has(eq).id()` at 1.065x, which this change cannot
+reach; the only other mover, `V().out().values(age)` at 0.874x, has a PRE series of `[195.3, 254.9]`
+— a 1.3x spread within one arm, so larger than the effect.
+
+⚠️ **AND THE BENCH'S OWN `answers` COLUMN READS `same` ON ALL 25 ROWS**, which is an independent
+byte-identity check against native on top of the seven fuzzers — worth having here specifically
+because this change altered the SUMMATION ORDER (slot numbering moved from discovery order to
+`verticesById` order) and replaced a degree computation. Counts are integer-valued f64 well below
+2^53, so the sums are exact and order-independent; that is the reason it holds, not luck.
+
+#### ⚠️ Two of the invalidation tests were worth nothing, and the mutation pass is what said so
+
+Written, 14 tests passed, and a mutant that dropped the DIRECTION from the cache key survived — as
+did one that dropped the LABELS.
+
+**The direction one is a theorem, not a fixture accident.** Reversing every edge is a BIJECTION on
+walks, so the number of k-walks in `G` equals the number in `G` reversed, for every k on every graph.
+A ring reported equal counts; so did a star. **No fixture can distinguish `out` from `in` by a
+whole-graph walk count.** What breaks the symmetry is the SEED SET: with `hub(:Q) -> a(:P) -> b(:P)
+-> c(:P)` and seeding only `:P`, forwards there is no 3-walk at all and backwards there is one per
+spoke — 0 against 1100.
+
+**The label one was simpler and the same mistake.** The test built an `:E` ring and an `:F` ring BOTH
+counting WIDE, so a key that conflated them answered correctly. Two shapes that agree cannot detect a
+key that merges them. `:F` is now a single 3-chain against the full `:E` ring, 1 against 1100.
+
+(A third test was named for direction and used `out` on BOTH arms, so it compared a plan with itself.
+It passed, which is the worse outcome.)
+
+Final score 7 of 8 caught — never-invalidate 6 failures, direction 1, labels 1, `graph.version` 6,
+vertex+edge counts 2, `edgeCount` 2, and the degree substitution reading `off[]` instead of `len[]` 13. **GC8 — seeds SET instead of ACCUMULATED — survives and is equivalent on reachable inputs**: seeds
+come from `verticesByLabel` or `verticesById`, both unique, so a duplicate seed cannot be produced
+through the public API. The accumulate is kept anyway because it removes a silent dependence on that.
+
+#### Gates
+
+`bun run check` 0 read unpiped. All five package suites isolated, 0 fail each: core 453, gql 4268,
+gremlin 2030, serialization 144, native 1081. All seven byte-identity fuzzers: 20 pass, 0 fail.
