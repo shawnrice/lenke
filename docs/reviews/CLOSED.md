@@ -58984,7 +58984,7 @@ than nearly true.
 serialization 144/0, and **`bun run fuzz` 20/0** — the byte-identity fuzzers are the real gate here,
 since the TS side now rewrites query text before parsing and the Rust side does not.
 
-### Item 1503 — the GREMLIN analogue of items 1499-1502, priced for the first time: **a reused plan costs 315-456 ns over a 2-5 ns floor (130x, 84x), and REBUILDING it costs another 433-684 ns.** Three hypotheses tested, **all three refuted** — a memo, an allocation, and a redundancy
+### Item 1503 — the GREMLIN analogue of items 1499-1502, priced for the first time: **a reused plan costs 315-456 ns over a 2-5 ns floor (130x, 84x), and REBUILDING it costs another 433-684 ns.** Three hypotheses tested, **all three refuted** — a memo, an allocation, and a redundancy (⚠️ **ITS "WHAT IS LEFT" FRAME TABLE IS STALE — `checkStep` is now 1.2%, not 12.0%, and the ~300-450 ns it prices as "not built" is largely gone. Re-profiled at item 1667; do not work that table without re-profiling**)
 
 > ✅ **BUILT AT ITEM 1504**, by the one design this entry named: `Plan.readsPath` carried at plan
 > CONSTRUCTION rather than cached on the execution path. **1.57-1.72x on a reused plan and FLAT on a
@@ -73507,3 +73507,85 @@ provably zero, and the 16% belongs to edits that add call sites.
 
 `bun run check` 0 read UNPIPED. Suites 7940 pass / 0 fail, each exit code read unpiped. All seven
 byte-identity fuzzers 20 pass / 0 fail, exit 0 read unpiped.
+
+### Item 1667 — ⚠️ **A PROFILE-FIRST SCREEN THAT FOUND NOTHING, AND THE FOURTH INSTANCE OF ONE TRAP: `get properties` at 23.8% self time is ATTRIBUTION, not its own cost.** It was nearly booked as an 11.7x target off a single run, and what killed it was the CONTROL moving 7.5x
+
+NO ENGINE CHANGE. One heading correction, three things screened out, and a method note.
+
+#### The by-id invariant HOLDS, measured rather than assumed
+
+```text
+   arm            10k      1M     ratio over 100x the data
+   vertexById    12.5    48.6     3.88x
+   edgeById      12.9    51.6     4.01x
+   gremlinVById  1513    1119     0.74x   (flat — per-call surface cost, not the map's)
+```
+
+100x the data for 3.9x the time is the cache curve, and the jump sits between 200k and 1M exactly
+where CLAUDE.md places the cache-resident transition. A lost O(1) would be ~100x. The instrument is
+`by-id-scaling-probe.mjs`, which item 1538 built for this invariant.
+
+#### ⚠️ ITEM 1503'S FRAME TABLE IS STALE, which is why its heading is corrected in this commit
+
+It names `checkStep` + `checkSteps` at **12.0%** as the remaining Gremlin per-call lever and prices
+~300-450 ns a call as "not built". A fresh profile puts `checkStep` at **1.2%** — items 1504 and 1508
+took it. Working that table without re-profiling would have been working a number that no longer
+exists, which is the exact failure the profile-first instruction exists to prevent.
+
+#### The screen: `propertyCount` 32.8%, `get properties` 23.8% — and only one of them is real
+
+```text
+                    200 vertices   200k vertices
+   propertyCount        33.3%          32.8%
+   get properties       18.3%          23.8%
+```
+
+It survived the size sweep (it got MORE significant at 200k, so not a small-fixture artefact), and
+the obvious fix was ruled out structurally: `elementProperties` is shared between vertices and edges,
+so a vertex scan cannot iterate the property boxes directly.
+
+⚠️ **THEN THE ATTRIBUTION TEST, AND IT WENT BOTH WAYS.** Rather than rewriting the getter, three arms
+over the same vertices — `v.properties[key]`, the bag hoisted, and a prearranged bag array:
+
+```text
+                 FIRST run        SECOND run (two arms added)
+   getter      9.38  11.74x       6.13   1.01x
+   hoisted     9.56  11.96x       6.15   1.02x
+   direct      0.80   1.00x       6.05   1.00x   <- the CONTROL, identical code, 7.5x apart
+```
+
+**The control moved 7.5x between runs on identical code**, purely from adding two more arms to the
+same file. With a stable baseline the getter costs NOTHING over a direct bag read, and the 23.8% is
+the profiler crediting inlined work to the frame.
+
+That makes four instances of this trap in this codebase: `degreeOfTypes` at 97.1% (item 1493),
+`subPlansOf` at 15.7% (item 1503), the `get labels` rewrite that measured flat on every row because
+"JSC inlines a getter whose whole body is a private-field read" (the comment in `Vertex.ts`), and
+this. ⚠️ **The pattern is specific enough to be a rule: a frame that is a FIELD READ OR A GETTER on a
+hot object is attribution until a deletion test says otherwise — and the deletion test needs a
+control, run more than once.**
+
+I asserted "it's REAL, not attribution" off the first run. The second run existed only because I
+wanted to decompose the cost, not because I doubted it. CLAUDE.md names both halves of that mistake
+already — single-run conclusions, and a control moving more than the target.
+
+#### `seekWorthTaking` is not an opening either
+
+The remaining 32.8% is `propertyCount` doing GENUINE work: a 200k-vertex scan serving
+`V().has(k,pred).count()`. Making it faster means seeking an index, and it already declines to one
+when `seekWorthTaking` says a seek beats a scan — a gate item 1322 built with numbers (2.179 ms for
+the count shortcut, 14.457 ungated seek, 5.433 when the gate makes BOTH fast paths bow out). Its
+`SEEK_MAX_FRACTION = 1/8` is **the third copy of one rule**: native has carried it throughout, GQL
+added it at item 409, Gremlin at 1322. Retuning it in one engine would diverge three.
+
+#### What this says about the method
+
+Item 1659 concluded the mechanical unpriced-frame screen was exhausted — 32 shapes, zero unpriced
+frames over 2%. This is the first screen run AFTER that conclusion, against a restructured executor,
+and it agrees: the frames that are left are either genuine work or attribution. What remains is
+routes and structure, which is where items 1656/1657 (a join operator for `match()`) and 1652 (the
+distributed `run`-level floor) already sit.
+
+#### Gates
+
+`bun run check` 0 read unpiped. No engine change — `git diff` is this entry plus item 1503's heading.
