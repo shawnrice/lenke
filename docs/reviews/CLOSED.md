@@ -74396,7 +74396,7 @@ through the public API. The accumulate is kept anyway because it removes a silen
 `bun run check` 0 read unpiped. All five package suites isolated, 0 fail each: core 453, gql 4268,
 gremlin 2030, serialization 144, native 1081. All seven byte-identity fuzzers: 20 pass, 0 fail.
 
-### Item 1679 — **THE LARGEST ROW IN THE GREMLIN CORPUS PRICED AT 31.8x, and ⚠️ THE OBVIOUS HYPOTHESIS IS REFUTED: the iterator protocol is only 1.27x of it.** `V().out()x3.values(age)` costs 6813 ms TS against 1134 native; the cost is the ELEMENT DEREFERENCE AND PROPERTY-GETTER CHAIN, not `.next()`. OPEN, not built
+### Item 1679 — **THE LARGEST ROW IN THE GREMLIN CORPUS PRICED AT 31.8x, and ⚠️ THE OBVIOUS HYPOTHESIS IS REFUTED: the iterator protocol is only 1.27x of it.** `V().out()x3.values(age)` costs 6813 ms TS against 1134 native; the cost is the ELEMENT DEREFERENCE AND PROPERTY-GETTER CHAIN, not `.next()`. ~~OPEN, not built~~ ⚠️ **CLOSED BY ITEM 1680 AT 14.2x** — below the 31.8x ceiling because the real route carries gates, an `unknown[]` value array and a lazy memo flag, exactly as the three design constraints below predicted
 
 The `bench:gremlin` sweep for item 1678 named this row by elimination: 6813 ms where the next-slowest
 is 1140, so it is 6x the rest of the corpus and 6.0x its own native counterpart.
@@ -74461,3 +74461,93 @@ specific array is still entitled to its order.
 #### Gates
 
 `bun run check` 0 read unpiped. One new probe, no engine change.
+
+### Item 1680 — **THE CORPUS'S LARGEST ROW, TAKEN: `V().out()x3.values(age)` 6712.6 → 471.6 ms, 14.2x, and TypeScript is now FASTER than native on it** (471.6 against 1244.4, a ts/nat ratio of 6.0x becoming 0.38x). ⚠️ **The projection memo is 5.71x of that 14.2x, which had to be measured because it decides a SEMANTIC question** — this route now snapshots where the depth-2 route is live
+
+Item 1679 priced this at 31.8x and refuted the iterator protocol as its cause. This builds the
+replacement: `stackedWalk` (depth 3 and up) now walks flat slot runs from item 1678's cached CSR
+instead of a stack of `Set` iterators.
+
+#### The measurement
+
+`bench:gremlin`, PRE/POST interleaved, two rounds per arm:
+
+```text
+    ratio     PRE ts   POST ts   row
+   0.070x     6712.6     471.6   V().out()x3.values(age)                     14.2x
+```
+
+and everything that must not move did not — the depth-2 values rows keep their literal nesting and
+read 1.028x, 1.007x, 1.006x, 1.000x, 0.985x and 0.972x; the count rows read 0.998x, 0.996x, 0.991x.
+**median 1.001x, p10 0.967x, p90 1.048x, ZERO of 25 rows over 1.15x**, and the bench's `answers`
+column reads `same` on all 25.
+
+(⚠️ `V().out()x4.count()` reads 0.786x, a 1.27x gain on a row this change does not touch. It is a
+CROSS-ROW CACHE EFFECT inside the bench process, not a claim: the values walk now calls
+`chainCsrFor` too, so a count row that runs after it finds the CSR already built. Real workloads get
+this only if they actually interleave the two shapes, so it is not a win to quote.)
+
+#### ⚠️ The win decomposes, and the larger half is the part that changes semantics
+
+```text
+   the old iterator stack                  6813.3 ms
+   the slot walk, pick called per ROW      2669.8        2.55x
+   the slot walk, pick memoized per SLOT    467.8       14.56x
+```
+
+At 200,000 vertices and 25,000,000 rows each far vertex is reached ~125 times, so a per-slot memo
+turns 25,000,000 projections into at most 200,000. **That is 5.71x of the 14.56x, so the memo could
+not simply be dropped** — which matters because it is the part that changes behaviour, and the A/B
+above exists precisely to answer "can we avoid the question by not doing it".
+
+⚠️ **THIS ROUTE NOW SNAPSHOTS, WHERE THE DEPTH-2 LITERAL NESTING IS LIVE.** A caller holding the LAZY
+iterator and mutating the graph between rows could partly observe that mutation before: the old walk
+read `far.adjFrom.get(t)` per vertex and called `pick` per row. Now the CSR fixes topology at first
+touch and the memo fixes each projected value at first touch. Both of this route's caches have the
+same shape, so the semantics are coherent — the traversal reads one snapshot — but depth 2 and depth
+3 would disagree under mid-iteration mutation.
+
+Nothing in the engine does this (`toArray` goes through `drain`, which runs to completion) and all
+three `pick` forms are pure functions of the vertex (`far.properties[k]`, `far.id`, `far`), so nothing
+is unsound for a non-mutating caller. **Recorded as an OWNER DECISION rather than settled here**, on
+the precedent that cross-route behavioural asymmetries are the owner's call — the same shape as the
+accepted error-vs-short-circuit divergence in the conjunct-order policy.
+
+#### What the CSR actually removes
+
+Not the `.next()` allocation, which item 1679 measured at 1.27x of a 42x gap. The per-row chain: a
+`Map.get(label)` per vertex per visit, an `Edge` dereference, a `Vertex` dereference, the `properties`
+getter and a string-keyed object lookup, for two `Int32Array` reads.
+
+⚠️ **ROW ORDER IS A CONTRACT HERE** — Gremlin streams are compared ORDERED by the differential fuzzer
+— and it is preserved checkably rather than hopefully: `graph.vertices` IS `verticesById.values()`,
+which is the order every CSR numbers its slots in, and within a slot the run holds that vertex's
+wanted bucket in iteration order. All 17 new tests compare against the PIPELINE element for element
+via the `V(...ids)` trick that forces a decline.
+
+⚠️ **THE GATE MASKS AND THE PROJECTION MEMO ARE BOTH LAZY, FOR CORRECTNESS BEFORE SPEED.** Computing
+either over every vertex up front would call `pick` or a predicate on vertices the nested walk never
+reaches, so one that throws on an unreached vertex would start throwing. Lazily, each is evaluated
+exactly where the old walk evaluated it.
+
+#### Mutation score: 7 of 8, survivor equivalent
+
+Caught: the two halves desyncing (18 failures), a gate mask shared across runs (7), inverted gate
+polarity (5), the gate applied one level early (6), a run bound read from `off[]` (22), one CSR used
+for every hop (4), and **the rung never firing (25)** — that last only because `tookTheWalk` asserts
+the route fired, which is `perf-gate-needs-its-own-test`'s rule and the hazard this file names.
+`VC4-no-projection-memo` SURVIVES and must: it is correct-but-slow, so its gate is the 467.8-against-
+2669.8 A/B above rather than a test.
+
+#### ⚠️ The sweep's arm-identity guard earned itself, on my own mistake
+
+The first sweep aborted at exit 3 rather than measuring. The marker was `chainCsrFor` in the built
+dist — but this item EXPORTED that symbol from `count-shortcut.ts` so the values walk could import
+it, so it is present in the dist for BOTH arms and could not discriminate PRE from POST. The guard
+refused to compare the change against itself. Switched to `gateMask`, which is 0 in PRE and 2 in
+POST. Second instance this session, after item 1674's not-actually-pristine snapshot.
+
+#### Gates
+
+`bun run check` 0 read unpiped. All five package suites isolated, 0 fail each: core 453, gql 4268,
+gremlin 2047, serialization 144, native 1081. All seven byte-identity fuzzers: 20 pass, 0 fail.

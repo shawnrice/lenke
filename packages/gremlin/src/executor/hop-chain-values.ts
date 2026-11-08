@@ -1,8 +1,8 @@
-import type { Edge, Graph, Vertex } from '@lenke/core';
+import type { Graph, Vertex } from '@lenke/core';
 
 import type { Plan, Step } from '../ast.js';
-import { collectVertexFilters } from './count-shortcut.js';
-import type { HopValues, HopWalk } from './hop-values.js';
+import { chainCsrFor, collectVertexFilters } from './count-shortcut.js';
+import type { HopValues } from './hop-values.js';
 import {
   type Gate,
   compileGates,
@@ -330,13 +330,13 @@ export const walkKindFor = (hops: number): 'literal' | 'stacked' =>
   hops > 2 ? 'stacked' : 'literal';
 
 /**
- * ⚠️ THE GENERIC WALK, ANY DEPTH — a STACK of bucket iterators rather than a nesting level per hop
- * (item 1617). Used at depth 3 and above; depth 2 keeps its literal nesting, and the split is
- * MEASURED rather than assumed.
+ * ⚠️ THE GENERIC WALK, ANY DEPTH — now over FLAT SLOT RUNS rather than a stack of bucket
+ * iterators (item 1680, replacing item 1617's stack). Used at depth 3 and above; depth 2 keeps its
+ * literal nesting, and the split is MEASURED rather than assumed.
  *
- * `hop-chain-depth-floor.ts` prices both shapes by hand, outside the engine so neither inherits the
- * other's inlining (items 1413/1440 measured an in-file A/B moving unrelated branches ~16% in an
- * arbitrary direction, which is why the pricing happens there):
+ * `hop-chain-depth-floor.ts` prices the two ITERATOR shapes by hand, outside the engine so neither
+ * inherits the other's inlining (items 1413/1440 measured an in-file A/B moving unrelated branches
+ * ~16% in an arbitrary direction, which is why the pricing happens there):
  *
  * ```text
  *    depth 2  LITERAL nesting      13.06 ms    319972 rows    40.8 ns/row
@@ -347,22 +347,66 @@ export const walkKindFor = (hops: number): 'literal' | 'stacked' =>
  *    depth 3  the engine          394.89                     308.5          <- the pipeline
  * ```
  *
- * So the stack costs a flat **~28%** over literal nesting at both depths, and is still **4.80x**
- * the pipeline at depth 3. Replacing the depth-2 specialization with it would therefore be a 1.29x
- * REGRESSION on the commonest shape in the family — which is why both exist, and why a fourth and
- * fifth nesting level do not: one generic loop covers every depth above the one that matters most.
+ * So the iterator stack cost a flat ~28% over literal nesting at both depths, which is why replacing
+ * the depth-2 specialization with it would be a 1.29x REGRESSION on the commonest shape in the
+ * family, and why both still exist. ⚠️ **That 28% is also what made the iterator protocol the
+ * obvious suspect for item 1679's 6x row, and it was the WRONG suspect** — see below.
  *
- * ⚠️ IT EMITS THE SAME ORDER BY CONSTRUCTION, which is the only property that could not be
- * compromised: Gremlin streams are compared ORDERED by the differential fuzzer. The stack advances
- * the deepest live iterator and descends on each non-leaf edge, which is depth-first PREORDER —
- * exactly what the nested loops produce. The tests assert that against the pipeline, element for
- * element, rather than resting on this paragraph.
+ * ⚠️ AND `hop-values.ts`' PRIOR AGAINST A GENERAL FORM DOES NOT APPLY HERE, which is worth
+ * stating because it nearly stopped item 1617. `pairTypes`' note says "a loop over N hoisted locals
+ * is the array again", measured at item 1441 — but that array was allocated PER VERTEX, over the
+ * whole graph. These are allocated ONCE per plan and reused across every source vertex.
  *
- * ⚠️ AND `hop-values.ts`' PRIOR AGAINST A GENERAL FORM DOES NOT APPLY HERE, which is worth stating
- * because it nearly stopped this. `pairTypes`' note says "a loop over N hoisted locals is the array
- * again", measured at item 1441 — but that array was allocated PER VERTEX, over the whole graph.
- * This one is allocated ONCE per plan and reused across every source vertex, so the cost it priced
- * is not the cost here. The 28% above is the `next()` call and the depth bookkeeping.
+ * Item 1679 profiled `V().out()x3.values(age)`, the largest absolute cost in the gremlin corpus at
+ * 6813 ms against 1134 native, and priced the replacement at 31.8x with materialization. ⚠️ **The
+ * iterator protocol was NOT the cost** — the same Sets walked with `for..of` instead of explicit
+ * `.next()` are only 1.27x of a 42x gap. What costs is the per-row chain of indirections, and the
+ * CSR removes all of it: a `Map.get(label)` per vertex per visit, an `Edge` dereference, a `Vertex`
+ * dereference, the `properties` getter and a string-keyed object lookup, for two `Int32Array` reads.
+ *
+ * ⚠️ ROW ORDER IS A CONTRACT HERE, NOT A COURTESY — Gremlin streams are compared ORDERED by the
+ * differential fuzzer, which is the one property that could not be compromised. It is preserved, and
+ * checkably rather than hopefully: `graph.vertices` IS `verticesById.values()`, which is the order
+ * every CSR numbers its slots in, and within a slot the run holds that vertex's wanted bucket in
+ * iteration order. So slot 0..V-1 crossed with each run's order reproduces the nested-`Set` order
+ * edge for edge, depth-first PREORDER, exactly what the nested loops produce. The tests assert that
+ * against the pipeline element for element rather than resting on this paragraph.
+ *
+ * ⚠️ THREE THINGS ARE PER-CALL AND MUST NOT BE CACHED ON `topologyVersion`, which is the split
+ * item 1679 recorded as a design constraint. The CSR is topology; the GATES read labels and
+ * properties, and the PROJECTION reads properties, and a property write deliberately does not bump
+ * that signal (items 1674/1675) so that a `SET` does not discard an adjacency cache. Both are
+ * therefore rebuilt per call.
+ *
+ * ⚠️ AND BOTH ARE MEMOIZED **LAZILY**, FOR CORRECTNESS BEFORE SPEED. Computing `pick` or a gate
+ * over every vertex up front would call them on vertices the nested walk never reaches, so a `pick`
+ * or predicate that throws on some unreached vertex would start throwing. Lazily, each is evaluated
+ * exactly when the old walk would have evaluated it.
+ *
+ * The speed follows anyway and the PROJECTION memo is most of the win, which was measured rather
+ * than assumed because it decides a semantic question (below): at 200,000 vertices and 25,000,000
+ * rows each far vertex is reached ~125 times, so a per-slot memo turns 25,000,000 projections into
+ * at most 200,000. On the corpus's `V().out()x3.values(age)` row:
+ *
+ * ```text
+ *    the old iterator stack                  6813.3 ms
+ *    the slot walk, pick called per ROW      2669.8        2.55x
+ *    the slot walk, pick memoized per SLOT    467.8       14.56x
+ * ```
+ *
+ * ⚠️ **THIS ROUTE THEREFORE SNAPSHOTS, WHERE THE DEPTH-2 LITERAL NESTING IS LIVE, and that is a
+ * real behavioural difference rather than an implementation detail.** A caller may hold the LAZY
+ * iterator and mutate the graph between rows. The old walk read `far.adjFrom.get(t)` per vertex and
+ * called `pick` per row, so such a mutation was partly observable; here the CSR fixes the topology
+ * at first touch and the memo fixes each projected value at first touch, so it is not. Both of this
+ * route's caches have the same shape, so the semantics are at least coherent: the whole traversal
+ * reads one snapshot.
+ *
+ * The three `pick` forms are all pure functions of the vertex — `far.properties[k]`, `far.id` and
+ * `far` itself — so nothing here is unsound for a caller that does not mutate mid-iteration, which
+ * is every caller in the engine: `toArray` goes through `drain`, which runs to completion. The
+ * snapshot is pinned by a test rather than left to this paragraph, and the asymmetry with depth 2 is
+ * recorded in `docs/reviews/CLOSED.md` as an owner decision rather than settled here.
  */
 const stackedWalk = (
   graph: Graph,
@@ -370,69 +414,90 @@ const stackedWalk = (
   runs: readonly Gate[][],
   pick: (far: Vertex) => unknown,
   drops: boolean,
-): HopWalk => {
+): HopValues['values'] => {
   const depth = hops.length;
   const [leadGates] = runs;
   const anyLead = leadGates.length > 0;
+  // One CSR per hop shape. They share a slot numbering because every one numbers by
+  // `verticesById` order — see the note above.
+  const csrs = hops.map(([t, fwd]) => chainCsrFor(graph, fwd, [t]));
+  const [{ vtx }] = csrs;
+  const n = vtx.length;
+
+  /** 0 = not yet evaluated, 1 = passed, 2 = failed. One array per filter run. */
+  const gateMask = runs.map((g) => (g.length > 0 ? new Uint8Array(n) : undefined));
+  const passes = (slot: number, run: number): boolean => {
+    const mask = gateMask[run];
+
+    if (mask === undefined) {
+      return true;
+    }
+
+    const seen = mask[slot];
+
+    if (seen !== 0) {
+      return seen === 1;
+    }
+
+    const ok = survives(vtx[slot], runs[run]);
+    mask[slot] = ok ? 1 : 2;
+
+    return ok;
+  };
+
+  /** The projection, memoized per slot — 0 = not yet evaluated. */
+  const vals: unknown[] = Array.from({ length: n });
+  const valSeen = new Uint8Array(n);
+  const valueAt = (slot: number): unknown => {
+    if (valSeen[slot] === 0) {
+      vals[slot] = pick(vtx[slot]);
+      valSeen[slot] = 1;
+    }
+
+    return vals[slot];
+  };
 
   /**
-   * ⚠️ STILL WRITTEN TWICE, and the sink closure does NOT avoid that — a generator cannot `yield`
-   * from inside a callback, so the lazy side has to be its own loop whatever the eager side looks
-   * like. I tried to collapse the pair here and it is not collapsible in JavaScript.
-   *
-   * The alternative was to drop `drain` entirely and let `toArray` spread the generator, which is
-   * one loop — but item 1411 measured the generator protocol at **1.9-2.2x** and item 1412 measured
-   * `drain` at **53.8%** of `V().out(E)`, so that trades a real cost for a cosmetic one. The pair
-   * stays, and what makes it safe is that item 1616's screen now mutates BOTH halves of every such
+   * ⚠️ STILL WRITTEN TWICE, LAZY AND EAGER, and the sink closure does not avoid it — a generator
+   * cannot `yield` from inside a callback, so the lazy side has to be its own loop whatever the eager
+   * side looks like. Item 1411 measured the generator protocol at 1.9-2.2x and item 1412 measured
+   * `drain` at 53.8% of `V().out(E)`, so collapsing the pair trades a real cost for a cosmetic one.
+   * What makes the duplication safe is item 1616's screen, which mutates BOTH halves of every such
    * loop in the executor: a drift between them is caught rather than reasoned about.
+   *
+   * The two cursors are a position per level: `cur[d]` is where level `d` has reached in its run,
+   * `end[d]` where that run stops. That is the `Int32Array` equivalent of the old `its[d]` iterator.
    */
-  const [[t0, fwd0]] = hops;
-
   const walk = (sink: (value: unknown) => void): void => {
-    /**
-     * Hoisted ONCE and reused across source vertices — see the note above on why item 1441's
-     * per-vertex array is a different cost.
-     *
-     * ⚠️ THE `length` IS A PRE-SIZING HINT ONLY, and the mutant that set it to 1 SURVIVED, correctly:
-     * `its[d] = …` past the end extends a JS array, so the walk is right at any initial length. It
-     * is written as `depth` so the array never grows during the walk.
-     */
-    const its: (Iterator<Edge> | undefined)[] = Array.from({ length: depth });
+    const cur = new Int32Array(depth);
+    const end = new Int32Array(depth);
 
-    for (const v of graph.vertices) {
-      if (anyLead && !survives(v, leadGates)) {
+    for (let s = 0; s < n; s += 1) {
+      if (anyLead && !passes(s, 0)) {
         continue;
       }
 
-      const b0 = (fwd0 ? v.adjFrom : v.adjTo)?.get(t0);
-
-      if (b0 === undefined) {
-        continue;
-      }
-
-      its[0] = b0[Symbol.iterator]();
+      const [c0] = csrs;
+      cur[0] = c0.memo.off[s];
+      end[0] = cur[0] + c0.memo.len[s];
 
       let d = 0;
 
       while (d >= 0) {
-        const step = its[d]!.next();
-
-        if (step.done === true) {
-          its[d] = undefined;
+        if (cur[d] >= end[d]) {
           d -= 1;
           continue;
         }
 
-        const [, fwd] = hops[d];
-        const far = fwd ? step.value.to : step.value.from;
-        const gates = runs[d + 1];
+        const far = csrs[d].memo.flat[cur[d]];
+        cur[d] += 1;
 
-        if (gates.length > 0 && !survives(far, gates)) {
+        if (!passes(far, d + 1)) {
           continue;
         }
 
         if (d === depth - 1) {
-          const value = pick(far);
+          const value = valueAt(far);
 
           if (!drops || value !== undefined) {
             sink(value);
@@ -441,57 +506,51 @@ const stackedWalk = (
           continue;
         }
 
-        const [tn, fwdn] = hops[d + 1];
-        const next = (fwdn ? far.adjFrom : far.adjTo)?.get(tn);
+        const cn = csrs[d + 1];
+        const len = cn.memo.len[far];
 
-        if (next === undefined) {
+        if (len === 0) {
           continue;
         }
 
         d += 1;
-        its[d] = next[Symbol.iterator]();
+        cur[d] = cn.memo.off[far];
+        end[d] = cur[d] + len;
       }
     }
   };
 
   return {
     *[Symbol.iterator]() {
-      const its: (Iterator<Edge> | undefined)[] = Array.from({ length: depth });
+      const cur = new Int32Array(depth);
+      const end = new Int32Array(depth);
 
-      for (const v of graph.vertices) {
-        if (anyLead && !survives(v, leadGates)) {
+      for (let s = 0; s < n; s += 1) {
+        if (anyLead && !passes(s, 0)) {
           continue;
         }
 
-        const b0 = (fwd0 ? v.adjFrom : v.adjTo)?.get(t0);
-
-        if (b0 === undefined) {
-          continue;
-        }
-
-        its[0] = b0[Symbol.iterator]();
+        const [c0] = csrs;
+        cur[0] = c0.memo.off[s];
+        end[0] = cur[0] + c0.memo.len[s];
 
         let d = 0;
 
         while (d >= 0) {
-          const step = its[d]!.next();
-
-          if (step.done === true) {
-            its[d] = undefined;
+          if (cur[d] >= end[d]) {
             d -= 1;
             continue;
           }
 
-          const [, fwd] = hops[d];
-          const far = fwd ? step.value.to : step.value.from;
-          const gates = runs[d + 1];
+          const far = csrs[d].memo.flat[cur[d]];
+          cur[d] += 1;
 
-          if (gates.length > 0 && !survives(far, gates)) {
+          if (!passes(far, d + 1)) {
             continue;
           }
 
           if (d === depth - 1) {
-            const value = pick(far);
+            const value = valueAt(far);
 
             if (!drops || value !== undefined) {
               yield value;
@@ -500,15 +559,16 @@ const stackedWalk = (
             continue;
           }
 
-          const [tn, fwdn] = hops[d + 1];
-          const next = (fwdn ? far.adjFrom : far.adjTo)?.get(tn);
+          const cn = csrs[d + 1];
+          const len = cn.memo.len[far];
 
-          if (next === undefined) {
+          if (len === 0) {
             continue;
           }
 
           d += 1;
-          its[d] = next[Symbol.iterator]();
+          cur[d] = cn.memo.off[far];
+          end[d] = cur[d] + len;
         }
       }
     },

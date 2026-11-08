@@ -2587,7 +2587,7 @@ export const memoReserve = (m: SlotMemo, need: number): void => {
  * count is a sum of integer-valued f64 and would survive, but the conservative key is the one that
  * ships where byte-identity is the invariant.
  */
-type ChainCsr = {
+export type ChainCsr = {
   readonly slotOf: ReadonlyMap<Vertex, number>;
   readonly vtx: readonly Vertex[];
   readonly memo: SlotMemo;
@@ -2668,7 +2668,17 @@ const buildChainCsr = (graph: Graph, forward: boolean, labels: readonly string[]
   return { slotOf, vtx, memo };
 };
 
-const chainCsrFor = (graph: Graph, forward: boolean, labels: readonly string[]): ChainCsr => {
+/**
+ * ⚠️ EXPORTED FOR `hop-chain-values.ts` (item 1680), and the slot numbering is what makes sharing
+ * it sound: every CSR numbers vertices by `graph.verticesById` iteration order regardless of
+ * direction or labels, so two CSRs for two different hop shapes agree on which slot is which vertex.
+ * A lazily-numbered memo could not be shared this way, which is the reason item 1678 made it eager.
+ */
+export const chainCsrFor = (
+  graph: Graph,
+  forward: boolean,
+  labels: readonly string[],
+): ChainCsr => {
   const tv = graph.topologyVersion;
   let entry = chainCsrCache.get(graph);
 
