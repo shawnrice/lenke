@@ -73589,3 +73589,66 @@ distributed `run`-level floor) already sit.
 #### Gates
 
 `bun run check` 0 read unpiped. No engine change — `git diff` is this entry plus item 1503's heading.
+
+### Item 1668 — ⚠️ **A COVERAGE SCREEN INSTEAD OF A FRAME SCREEN, and it found the one unpriced shape left: the HOST LAMBDA family. `map(fn)` costs 2.54x `values(k)` and a `count()` behind a lambda costs 2.84x — but the lambda CALL is only 1.20x. The cost is the LOST ROUTE, not the call**
+
+New instrument: `gremlin-lambda-steps-probe.mjs`. No engine change.
+
+#### Why a coverage screen
+
+Item 1659 declared the unpriced-FRAME screen exhausted, and item 1667 re-ran it against a
+restructured executor and agreed. So this asks a different question — not "which frame is hot" but
+**"which SHAPE has never been measured"**, which is what CLAUDE.md means by needing a better
+benchmark rather than a better profile.
+
+Over all **104 Gremlin step kinds**, 30 had no probe in `packages/native`. ⚠️ **THAT RAW NUMBER IS
+WRONG AND THE SCREEN NEEDS THE CROSS-CHECK**: probes get deleted while their findings stay in
+CLOSED.md, so "no probe" is not "no measurement". Cross-checking the 30 against CLOSED.md moved 14
+of them out — `simplePath` most sharply, which items 1464-1466 measured in detail. What remained was
+niche (`sack`, `withSack`, `subgraph`, the OLAP trio) plus one real family.
+
+⚠️ **AND CHECKING CLOSED.MD FIRST SAVED A WASTED PROBE.** `hasRevisit` allocates a `Set` and walks
+the whole path per traverser per step, which reads as O(depth²) with a per-step allocation — a
+textbook find. Item 1464 had already profiled it: **`simplePath`'s own predicate is 2.18%**. The cost
+is `tracksPath` returning the plan unrewritten and skipping `hopValuesShortcut`, sized at 3.30x,
+flagged not built, and declined at item 1466 over the edit-perturbation toll. The hypothesis was
+right about the mechanism and wrong about the magnitude by ~40x.
+
+#### The finding: the lambda family, five step kinds, never priced
+
+`filterFn`, `mapFn`, `flatMapFn`, `foldFn`, `sideEffectFn` — the escape hatch a user reaches for when
+no declarative step fits. 200,000 vertices, three pairs, each asserted to answer identically before
+any time is read:
+
+```text
+   arm            ns/vertex              ratio
+   valuesDecl         36.74     mapLambda      93.27    2.54x
+   hasDecl            26.97     filterLambda   32.30    1.20x
+   countDecl          10.89     countLambda    30.88    2.84x
+```
+
+⚠️ **THE DECOMPOSITION IS THE RESULT, NOT THE RATIOS.** A lambda must be slower — the engine cannot
+see into it. The question was whether the gap is the CALL or the LOST ROUTE, and the three pairs
+separate them: `filter(fn)` against `has(k,v)` is **1.20x**, so the opaque per-traverser call costs
+about **5 ns**. The other two are 2.5-2.8x because the declarative side rides something the lambda
+cannot — `values()` its fusion (item 1586) and `has()+count()` the count rung (10.89 ns against
+30.88). So a user who writes `map(v => v.properties.k)` for `values('k')` is not paying for the
+call, they are falling off a rung.
+
+**Not an engine change, and deliberately so.** Nothing can fuse an opaque function. This is a
+documented cost of the escape hatch and a first number for five step kinds, which is what makes it
+worth having.
+
+#### Two process notes, both mine
+
+The first version of this probe named its lambda arm `filterDecl` and shipped **no declarative twin
+at all**, so a 27.59 ns reading was compared against nothing and the `has` route — the whole point —
+was never measured. Caught by reading my own arm list, not by a gate.
+
+And `valuesDecl` read 27.47 ns in one run and 36.74 in the next (**34% apart**) purely from the
+other arms present. Same lesson as item 1667's 7.5x control: the RATIOS within a run are the
+measurement, an absolute ns figure across runs is not.
+
+#### Gates
+
+`bun run check` 0 read unpiped. No engine change — one new probe and this entry.
