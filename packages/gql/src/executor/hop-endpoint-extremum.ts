@@ -11,8 +11,8 @@ import type { Edge, Graph } from '@lenke/core';
 
 import type { Clause, Expr } from '../ast.js';
 import { candidateVertexSource, matchesLabel } from '../graph-queries.js';
+import { relTypeNames } from './adjacency.js';
 import type { AggFold, CompiledExpr, Params, Row } from './core.js';
-import { relTypeNames } from './core.js';
 import { freePredicateVars } from './expr-analysis.js';
 import { plainNode, plainRel, vacuousLabel } from './shortcuts.js';
 import { isNullish } from './values.js';

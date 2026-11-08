@@ -30,9 +30,10 @@ import type {
   Params,
   Row,
 } from './core.js';
-import { applyProjection, mapToArray, projectedRows, resolveCount, valueKey } from './core.js';
+import { applyProjection, projectedRows } from './core.js';
 import { matchPattern } from './matching.js';
 import { boundedTopKeyed } from './ordered-rows.js';
+import { mapToArray, resolveCount, valueKey } from './rows.js';
 import { asTruth } from './scalars.js';
 import { compareSort, isEdge, isElement, isVertex } from './values.js';
 

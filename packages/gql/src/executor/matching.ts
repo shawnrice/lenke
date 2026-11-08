@@ -8,6 +8,7 @@ import { ErrorCode, LenkeError } from '@lenke/errors';
 
 import type { LabelExpr, PathMode, PathSelector, RelPattern } from '../ast.js';
 import { candidateCount, candidateVertices, expand, matchesLabel } from '../graph-queries.js';
+import { consistent, hasPredicate, unitExposes, unitIsFlat, withBinding } from './bindings.js';
 // Compiled pattern types + binding helpers live in the executor trunk; the value
 // back-edges (consistent/withBinding/…) are used lazily inside match closures, so
 // this is a safe function-level cycle.
@@ -22,15 +23,7 @@ import type {
   EvalEnv,
   Params,
 } from './core.js';
-import {
-  consistent,
-  hasPredicate,
-  rejectedByElementDirect,
-  satisfies,
-  unitExposes,
-  unitIsFlat,
-  withBinding,
-} from './core.js';
+import { rejectedByElementDirect, satisfies } from './core.js';
 import { asTruth } from './scalars.js';
 import { effectiveLabel } from './shortcuts.js';
 

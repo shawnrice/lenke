@@ -3,7 +3,8 @@ import { describe, expect, test } from 'bun:test';
 import { Graph } from '@lenke/core';
 
 import type { Expr } from './ast.js';
-import { compilePredicate, hasPredicate } from './executor/core.js';
+import { hasPredicate } from './executor/bindings.js';
+import { compilePredicate } from './executor/core.js';
 import { query } from './index.js';
 
 // `WHERE n.k IS NULL`, `IS NOT NULL` and `NOT (n.k IS NULL)` now LIFT into `nullProps` — read off

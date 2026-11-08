@@ -1,4 +1,4 @@
-import type { Edge, Graph, Path, Temporal, Vertex } from '@lenke/core';
+import type { Edge, Graph, Vertex } from '@lenke/core';
 import {
   type AlgorithmName,
   Duration,
@@ -55,7 +55,7 @@ import { labelsMatch, matchesLabel } from '../graph-queries.js';
  */
 
 /** A bound element: a matched vertex or edge for a pattern variable. */
-type Bound = Vertex | Edge;
+export type Bound = Vertex | Edge;
 
 /**
  * One candidate solution: the variables bound so far. Values are graph elements
@@ -101,42 +101,6 @@ export type CompiledExpr = (env: EvalEnv) => unknown;
 export type Plan<R extends Row = Row> = (graph: Graph, params?: Params) => R[];
 
 // --- binding helpers ---------------------------------------------------------
-
-export const withBinding = (
-  binding: Binding,
-  name: string | undefined,
-  value: Bound | Path,
-): Binding => {
-  if (!name) {
-    return binding;
-  }
-
-  const next = new Map(binding);
-  next.set(name, value);
-
-  return next;
-};
-
-/**
- * Is binding `value` to `name` consistent with what's already bound? An
- * unbound variable always binds; a bound one must refer to the same element
- * (this is what makes shared variables across patterns act as a join key).
- */
-export const consistent = (binding: Binding, name: string | undefined, value: Bound): boolean => {
-  if (!name) {
-    return true;
-  }
-
-  const existing = binding.get(name);
-
-  return existing === undefined || existing === value;
-};
-
-// ISO GQL: accessing a property that is absent — or a property of a NULL element
-// (e.g. an unmatched OPTIONAL variable) — yields NULL, not `undefined`. Coalesce
-// here so the whole pipeline (output rows, IS NULL, arithmetic) sees ISO's NULL.
-export const propOf = (bound: unknown, key: string): unknown =>
-  (bound as { properties?: Record<string, unknown> } | undefined)?.properties?.[key] ?? null;
 
 // Element identity, mirroring the Rust `value::equals`: nodes/edges are equal iff same
 // kind + same id; a non-element falls back to structural (value) equality.
@@ -593,17 +557,6 @@ const membershipTest = (list: Expr): ((needle: unknown, env: EvalEnv) => Truth) 
   }
 
   return null;
-};
-
-// Resolve a `LIMIT` / `OFFSET` bound to a concrete count at execution: a literal
-// passes through; a `$param` is read from the bound params (its value is already
-// validated to be a non-negative integer up-front, in the plan closure).
-export const resolveCount = (v: CountValue | undefined, params: Params): number | undefined => {
-  if (v === undefined || typeof v === 'number') {
-    return v;
-  }
-
-  return Number(params[v.param]);
 };
 
 /**
@@ -2482,182 +2435,6 @@ export const compileValidator = (
 
 // --- value / ordering helpers ------------------------------------------------
 
-/** Derive a column name for a RETURN item that has no explicit `AS` alias. */
-export const columnName = (expr: Expr): string => {
-  switch (expr.kind) {
-    case 'var':
-      return expr.name;
-    case 'prop':
-      return `${expr.variable}.${expr.key}`;
-    case 'property_exists':
-      return `property_exists(${expr.variable}, ${expr.key})`;
-    default:
-      return 'expr';
-  }
-};
-
-// The replacer used only for nested containers (below): `JSON.stringify` maps
-// NaN/±Infinity all to `null`, collapsing them with each other AND with real null —
-// a byte-identity break vs the Rust `val_key`, which keys numbers by bit pattern
-// (so `[NaN]`, `[Infinity]`, `[null]` are three groups). This tags non-finite
-// numbers as bare `#…` tokens and prefixes every string with `$`, keeping the two
-// key-spaces disjoint at any depth — a real string `"#Infinity"` (→ `"$#Infinity"`)
-// can never collide with the number `Infinity` (→ `"#Infinity"`).
-const keyReplacer = (_k: string, val: unknown): unknown => {
-  if (typeof val === 'number') {
-    return Number.isFinite(val) ? val : `#${val}`;
-  }
-
-  return typeof val === 'string' ? `$${val}` : val;
-};
-
-/**
- * Stable distinct/group key for a projected value, partitioning exactly as the
- * Rust `val_key`. Primitives and graph elements are keyed inline (the common
- * DISTINCT/GROUP BY case — no `JSON.stringify`, so it's off the hot path); only a
- * nested container (list/record/temporal/path — rare as a group key) pays the
- * `JSON.stringify` + `keyReplacer` cost, which is what makes nested non-finite safe.
- * Type-tag prefixes (`n`/`s`/`b`/`@`/`#`/`N`) keep the primitive key-spaces disjoint
- * from each other and from container JSON (which starts with `{`/`[`).
- */
-/**
- * A temporal's DISTINCT/GROUP BY key from its own fields, or `undefined` when any field is
- * non-finite and the `JSON.stringify` fallback must keep its exact classing (item 843).
- *
- * Every field of every kind is included: dropping one would silently merge two distinct values
- * into one group, which is a wrong ANSWER rather than a slow one.
- */
-const temporalKey = (v: Temporal): string | undefined => {
-  if (v instanceof LocalDate) {
-    return Number.isFinite(v.days) ? `t0${v.days}` : undefined;
-  }
-
-  if (v instanceof Duration) {
-    return Number.isFinite(v.months) &&
-      Number.isFinite(v.days) &&
-      Number.isFinite(v.secs) &&
-      Number.isFinite(v.nanos)
-      ? `t5${v.months}/${v.days}/${v.secs}.${v.nanos}`
-      : undefined;
-  }
-
-  if (!Number.isFinite(v.secs) || !Number.isFinite(v.nanos)) {
-    return undefined;
-  }
-
-  if (v instanceof LocalTime) {
-    return `t1${v.secs}.${v.nanos}`;
-  }
-
-  if (v instanceof LocalDateTime) {
-    return `t2${v.secs}.${v.nanos}`;
-  }
-
-  if (!Number.isFinite(v.offset)) {
-    return undefined;
-  }
-
-  if (v instanceof ZonedDateTime) {
-    return `t3${v.secs}.${v.nanos}+${v.offset}`;
-  }
-
-  if (v instanceof ZonedTime) {
-    return `t4${v.secs}.${v.nanos}+${v.offset}`;
-  }
-
-  return undefined;
-};
-
-export const valueKey = (v: unknown): string => {
-  switch (typeof v) {
-    case 'number':
-      if (!Number.isFinite(v)) {
-        return `#${v}`;
-      }
-
-      // `-0` and `0` are ONE group: `-0 = 0` is true, and the distinction is
-      // normalized everywhere else (ORDER BY, sign(), the result JSON, the
-      // property index), so keeping them apart here alone produced two groups
-      // that both rendered as `0`. `String(-0)` is already "0", so the plain
-      // template does it — mirrors the Rust `value::num_group_bits`.
-      return `n${v}`;
-    case 'string':
-      return `s${v}`;
-    case 'boolean':
-      return v ? 'bT' : 'bF';
-    case 'object':
-      if (v === null) {
-        return 'N';
-      }
-
-      if ('id' in v) {
-        return `@${String(v.id)}`;
-      }
-
-      // Lists are native arrays (the common container key): recurse through the
-      // inline keyer — no JSON.stringify, and nested non-finite is handled by the
-      // element's own `#…` tag. `[` can't collide with a record's `{` (below) or
-      // any primitive prefix. A manual loop (no `.map` intermediate) keeps this on
-      // the hot path for large DISTINCT/GROUP BY over projected tuples.
-      if (Array.isArray(v)) {
-        let key = '[';
-
-        for (const item of v) {
-          key += `${valueKey(item)},`;
-        }
-
-        return `${key}]`;
-      }
-
-      // A record recurses through this keyer (like a list above), NOT through
-      // JSON.stringify: stringify renders -0 as `0`, so `{b: -0}` and `{b: 0}`
-      // collapsed into one DISTINCT group here while the native `value::group_key_into` —
-      // which recurses and keys numbers by bit pattern — kept them apart. Mirrors
-      // the Rust `Value::Map` arm's `{k=<key>,…}` shape.
-      if (v instanceof LenkeRecord) {
-        let key = '{';
-
-        for (const [name, field] of v) {
-          key += `${name}=${valueKey(field)},`;
-        }
-
-        return `${key}}`;
-      }
-
-      // A TEMPORAL keys off its own FIELDS (item 843). This arm used to fall through to the
-      // `JSON.stringify` below with the comment "rarer as a group key" — an assumption a date in
-      // a people-graph refutes, and one this repo's own domain made worth measuring:
-      // `count(DISTINCT p.hired)` over 200,000 `LocalDate`s cost **81.3 ms against 4.2 for the
-      // same query over a number, 19.5x**, and 15.6x against a STRING column, so it was not
-      // "non-numeric is slower" but a stringify per row. (The native engine had the same defect
-      // from a different cause and it was closed at items 840/841.)
-      //
-      // THE EQUIVALENCE CLASSES ARE UNCHANGED, which is what makes this a pure speedup rather
-      // than a semantic change. `JSON.stringify` of one of these instances serializes exactly its
-      // own enumerable fields — `kind` plus numbers — so a key built from the same fields groups
-      // the same values. Each kind gets a distinct prefix because native's rule is "same kind AND
-      // the same rendering", and `t` collides with no other prefix here (`n`/`s`/`b`/`N`/`@`/`[`/
-      // `{`/`j`).
-      //
-      // A non-finite field falls BACK to the stringify, deliberately: `JSON.stringify` renders
-      // `NaN` as `null`, so a hand-written template would group `LocalDate(NaN)` differently from
-      // the way it is grouped today. That case is pathological, and keeping it bit-for-bit is
-      // cheaper than arguing about it.
-      if (isTemporal(v)) {
-        const k = temporalKey(v);
-
-        if (k !== undefined) {
-          return k;
-        }
-      }
-
-      // Path, or a temporal with a non-finite field.
-      return JSON.stringify(v, keyReplacer) ?? 'undefined';
-    default:
-      // undefined / bigint / symbol are outside the value model; a stable fallback.
-      return `j${String(v)}`;
-  }
-};
 const rowKey = (b: Binding): string => [...b].map(([k, v]) => `${k}=${valueKey(v)}`).join('');
 
 /** Keep the first occurrence of each distinct value, keyed structurally by
@@ -3064,93 +2841,6 @@ const projectBinding = (
 
   for (const item of proj.items) {
     out.set(item.name, item.fn(env));
-  }
-
-  return out;
-};
-
-/**
- * `projectBinding`'s twin, writing the output ROW directly.
- *
- * The no-sort path built a projected `Map` and then had `mapToRow` copy it into a
- * plain object — two allocations and two iterations per row where one of each will
- * do. Nothing downstream of that path wants the `Map` form: it exists for the
- * ORDER BY overlay and for DISTINCT's row keys, and neither is present here.
- *
- * BYTE-IDENTITY. Column order is the output's observable shape, and it is
- * unchanged: `mapToRow` walks the `Map` in insertion order, which is
- * `proj.items` order (or the input binding's, under `*`), and this writes the
- * same keys in the same order. A repeated column name keeps its first position
- * in both a `Map` and an object, and `item.fn` is called in the same order, so a
- * projection that throws throws on the same row at the same point.
- *
- * REJECTED (item 836): hoisting the per-call `env` out of the caller's loop. Every
- * `projectRow` caller in `hop-projection.ts` passes a `Binding` allocated once and mutated in
- * place, so `{ binding, params, graph }` is invariant for a whole walk and is rebuilt per call
- * anyway — item 833 priced that object at 5.6 ns a row. It is not worth taking, because
- * `farDrivenHopWalk` already calls this once per far VERTEX and clones a template for the
- * vertex's whole bucket (item 167): the env is amortized over the degree, so the ceiling is
- * 5.6 / degree ns a row — 1.4 against ~70 at four edges a vertex, about 2%. Measured alongside:
- * at four edges a vertex the hop walk is 70.4 ns a row against a hand loop's 129.6, so it is
- * already PAST the hand floor. Do not re-derive this.
- */
-export const projectRow = (
-  proj: CProjection,
-  binding: Binding,
-  params: Params,
-  graph: Graph,
-): Row => {
-  const row: Row = {};
-
-  if (proj.star) {
-    for (const [k, v] of binding) {
-      row[k] = v;
-    }
-
-    return row;
-  }
-
-  const env: EvalEnv = { binding, params, graph };
-
-  for (const item of proj.items) {
-    row[item.name] = item.fn(env);
-  }
-
-  return row;
-};
-
-/**
- * `Row`s for the shape that needs no sort, no dedup and no paging — the same
- * five conditions `applyProjection` fast-paths (item 113). `undefined` means
- * "not this shape", and the caller falls back to the general
- * `map(mapToRow, applyProjection(…))`.
- *
- * Lazy, like the path it replaces: a row is projected when it is pulled.
- */
-/**
- * `toArray(map(f, it))` without the intermediate generator — item 1508.
- *
- * `@lenke/fp`'s `map` is LAZY: it returns a generator that yields one mapped value per `next()`.
- * Composed into `toArray` (`Array.from`) that laziness is never observed — the array is
- * materialized immediately — so every row pays a generator resume and an iterator-result object
- * for nothing. This drives the SAME iterable with one `for…of` and pushes, which is what the
- * composition means.
- *
- * ⚠️ IT IS NOT A GENERAL REPLACEMENT FOR `map`. The mapper here is called with ONE argument;
- * `map`'s is called with `(value, index)`. Both call sites below pass a unary mapper (`mapToRow`
- * and a `projectRow` closure), checked before this was written. A mapper that reads an index would
- * silently receive `undefined`.
- *
- * ⚠️ AND IT MUST STAY STREAMING OVER ITS INPUT. `bindings` is lazy for every shape that matches —
- * consuming it with `for…of` pulls exactly as `Array.from` did, one binding at a time. Building an
- * intermediate array of bindings first would hold the whole match in memory, which is the eager-fill
- * failure of item 437.
- */
-export const mapToArray = <T, R>(it: Iterable<T>, f: (x: T) => R): R[] => {
-  const out: R[] = [];
-
-  for (const x of it) {
-    out.push(f(x));
   }
 
   return out;
@@ -4215,20 +3905,6 @@ type CElem = { hop: CHop } | { sub: CSub };
 export type CUnit = { elems: readonly CElem[]; startVar?: string; where?: CompiledExpr };
 export type CSegment = { rel: CRel; node: CNode; unit?: CUnit };
 
-/** Whether a unit binds any GROUP variable (source, an edge, a target, a `Sub`'s
- *  landing, or anything a nested sub-unit binds). Mirrors native `CUnit::exposes`. */
-export const unitExposes = (u: CUnit): boolean =>
-  u.startVar !== undefined ||
-  u.elems.some((e) =>
-    'hop' in e
-      ? e.hop.targetVar !== undefined || e.hop.rel.variable !== undefined
-      : e.sub.targetVar !== undefined || unitExposes(e.sub.unit),
-  );
-
-/** Whether every element is a plain hop (no nested `Sub`) — a flat unit binds group
- *  variables by the cheap `k`-stride over the flat walk, never per-hop steps. Mirrors
- *  native `CUnit::is_flat`. */
-export const unitIsFlat = (u: CUnit): boolean => u.elems.every((e) => 'hop' in e);
 export type CPath = {
   start: CNode;
   segments: readonly CSegment[];
@@ -4970,20 +4646,6 @@ const labelTestsHold = (
   return true;
 };
 
-export const hasPredicate = (pred: CPredicate): boolean =>
-  pred.props.length > 0 ||
-  pred.where !== undefined ||
-  (pred.eqProps?.length ?? 0) > 0 ||
-  (pred.truthProps?.length ?? 0) > 0 ||
-  (pred.notTruthProps?.length ?? 0) > 0 ||
-  (pred.cmpProps?.length ?? 0) > 0 ||
-  (pred.pathProps?.length ?? 0) > 0 ||
-  (pred.memberProps?.length ?? 0) > 0 ||
-  (pred.nullProps?.length ?? 0) > 0 ||
-  (pred.truthTestProps?.length ?? 0) > 0 ||
-  (pred.labelTests?.length ?? 0) > 0 ||
-  (pred.typedTests?.length ?? 0) > 0;
-
 export const compilePredicate = (
   properties: readonly PropertyConstraint[] | undefined,
   where: Expr | undefined,
@@ -5411,9 +5073,6 @@ export const compileRel = (rel: RelPattern): CRel => ({
   pred: compilePredicate(rel.properties, rel.where),
   quantifier: rel.quantifier,
 });
-
-export const relHasPredicate = (rel: RelPattern): boolean =>
-  (rel.properties?.length ?? 0) > 0 || rel.where !== undefined;
 
 /** Build one repetition unit from a quantified-subpath segment. A NESTED parenthesized
  *  subpath (`( ((x)-[e]->(y)){a,b} ){n,m}`) recurses: the outer unit's sole element is a
@@ -7224,238 +6883,6 @@ export const seedPrefilter = (
   return { var: name, pred: gatePredicate(where) };
 };
 
-/** Edge types a rel label admits: `null` = bail (and/not/wildcard); `undefined`
- * = "any type" (no `:T`); `string[]` = exactly those types. */
-export const relTypeNames = (label: LabelExpr | undefined): string[] | null | undefined => {
-  if (!label) {
-    return undefined;
-  }
-
-  if (label.kind === 'label') {
-    return [label.name];
-  }
-
-  if (label.kind === 'or') {
-    const l = relTypeNames(label.left);
-    const r = relTypeNames(label.right);
-
-    return l && r ? [...l, ...r] : null;
-  }
-
-  // ⚠️ A REL WILDCARD IS "ANY TYPE", UNCONDITIONALLY — and that is the opposite of the NODE
-  // wildcard, which item 1549 had to leave un-elided (item 1550).
-  //
-  // `core` refuses an edge with no labels outright: "Cannot add an edge with no labels: every edge
-  // must carry ≥1". So `-[:%]->` ("carries at least one type") admits every edge that exists, and
-  // the test is pure cost. A VERTEX may be unlabelled, which is why `(a:%)` is selective there and
-  // eliding it invents rows — the same operator, two different answers, decided by a core
-  // invariant rather than by analogy.
-  //
-  // Measured at 200,000 edges, both answering the identical 200,000:
-  //
-  //     MATCH (a)-[:%]->(x) RETURN count(*)    212.117 -> 0.001 ms
-  //     MATCH (a)-[]->(x)   RETURN count(*)      0.003
-  //
-  // `and` and `not` still bail. Both are soundly expressible as a type list ONLY when no edge
-  // carries two types — with `e1 = [E]` and `e2 = [E, F]`, `:!F` admits 1 edge where `[E]` admits
-  // 2 — so they need `graph.multiTypeEdgeCount === 0`, which this function has no graph to read.
-  // Priced at item 1550: `:!F` 202.345 ms against its `:E` twin's 0.001, a 202,000x on the SAME
-  // 180,000 rows.
-  if (label.kind === 'wildcard') {
-    return undefined;
-  }
-
-  return null;
-};
-
-/**
- * Every edge of `types` (undefined = every type) from a `Map<type, Set<Edge>>`
- * index, each yielded ONCE.
- *
- * An edge carries a SET of types and the index buckets it under every one, so
- * concatenating buckets sees a two-type edge twice — as a doubled count, a
- * doubled neighbour, a doubled row. Native walks a single adjacency list and
- * asks "does this edge carry any of these types", which is what this mirrors.
- * Only one bucket can be in play → no dedupe, no allocation, which is the hot
- * single-type case.
- */
-/** Shared empty iterable, so the fast paths below allocate nothing to say "no edges". */
-const NO_EDGES: readonly Edge[] = [];
-
-/**
- * Edges of `types` out of one vertex's by-type bucket map.
- *
- * NOT a generator for the two single-bucket cases, and that is the point. A `Set<Edge>` is already
- * an `Iterable<Edge>`, so `yield* byType.get(t)` delegated to an iterator the function could
- * simply have RETURNED — paying a generator frame per edge for nothing. Audit item 324 priced the
- * frame at **8.4 ns an edge** in the way-count sweep's shape (200,000 frontier slots x ~5 edges x
- * 3 passes: 68.7ms against 43.4, **1.58x** on that loop), and the returning version measured at or
- * below the floor of iterating the Set with no call at all, so the call itself is free. Item 300
- * had priced "the `edgesOfTypes` generator frame" at 1.19x on the sweep without isolating it.
- *
- * The multi-bucket case keeps the generator: it has to dedupe across buckets, so it has real work
- * to interleave and nothing to return.
- *
- * Semantics are unchanged. `yield* set` delegates to the SAME live Set iterator this now returns,
- * so a caller that mutates mid-iteration sees exactly what it saw before; and the only laziness
- * lost is a `Map.get` that every caller was about to force anyway.
- */
-export const edgesOfTypes = (
-  byType: Map<string, Set<Edge>> | undefined,
-  types: string[] | undefined,
-): Iterable<Edge> => {
-  if (!byType) {
-    return NO_EDGES;
-  }
-
-  if (types !== undefined) {
-    if (types.length === 1) {
-      return byType.get(types[0]) ?? NO_EDGES;
-    }
-  } else if (byType.size === 1) {
-    for (const set of byType.values()) {
-      return set;
-    }
-  }
-
-  return edgesOfManyTypes(byType, types);
-};
-
-/**
- * The deduping multi-bucket tail of {@link edgesOfTypes}, which genuinely wants to be lazy.
- *
- * NO `seen` SET, and that is the point (item 1377). An edge can only be yielded twice if it sits in
- * two of the buckets being walked, so for bucket `i` a duplicate is exactly an edge already present
- * in some bucket `j < i` — and those buckets already exist, so asking them directly replaces a Set
- * that grew to the full edge count. Bucket 0 yields with ZERO tests; bucket `i` pays at most `i`.
- *
- * EARLIER_BUCKETS. Item 1376 ablated the old `seen` Set at **60.7%** of a multi-type hop count
- * (15.015 ms to 5.902 with dedupe removed outright) while the `types.map` array it also replaced
- * measured at **nothing** (-1.8%, noise) — so the Set's has+add traffic was the whole cost and the
- * allocation was not. Bucket count is the distinct edge types on ONE vertex, and
- * {@link edgesOfTypes} has already taken every single-bucket case before this is reached, so `i` is
- * bounded by something tiny.
- *
- * ⚠️ THIS CLAIMED "ORDER IS UNCHANGED" AND HAS NOT BEEN TRUE SINCE ITEM 1384 (corrected at 1389).
- * The claim was that this yields bucket 0's edges then bucket 1's non-duplicates, so the sequence
- * follows the order the query NAMED its types — and that it mattered, because "unordered result
- * order is still BYTES for cross-engine identity". Item 1384 then added the size sort below, which
- * makes bucket 0 the LARGEST rather than the first named: `-[:E|F]->` and `-[:F|E]->` now walk the
- * same buckets in the same order as each other, and neither follows the spelling.
- *
- * That was the POINT of 1384 (it closed a 1.60x equivalent-spelling gap) and the fuzzers have been
- * green across it, so the sequence here is evidently NOT byte-compared — the repo's stance is that
- * an unordered result's row order is unspecified and compared as a multiset. Both halves are
- * recorded because the comment asserted the stronger property for five items while the code had
- * stopped providing it, and a reader relying on it would conclude a wrong thing in either direction.
- *
- * NOT ESTABLISHED: whether a multi-type hop PROJECTION is covered by the differential fuzzers at
- * all. Item 1371 found one such hole by mutation (the dense multi-hop route) and this is the same
- * question, unmeasured. The Gremlin twin `iterLabeled` does follow label-arg order, deliberately,
- * and item 1389 kept it that way rather than copying the sort here.
- */
-const edgesOfManyTypes = function* (
-  byType: Map<string, Set<Edge>>,
-  types: string[] | undefined,
-): Iterable<Edge> {
-  const buckets: Set<Edge>[] = [];
-
-  if (types === undefined) {
-    for (const set of byType.values()) {
-      buckets.push(set);
-    }
-  } else {
-    for (const t of types) {
-      const set = byType.get(t);
-
-      if (set !== undefined) {
-        buckets.push(set);
-      }
-    }
-  }
-
-  // LARGEST_BUCKET_FIRST (item 1384). Bucket `i` pays `i` membership tests per edge, so the total is
-  // minimised by descending size — and WITHOUT this the walk costs whatever order the query named
-  // its types: `-[:E|F]->` measured 5.227 ms against `-[:F|E]->`'s 8.352, **1.60x**, both answering
-  // 200000. That is the equivalent-spelling class CLAUDE.md hunts, and item 1382 fixed the same
-  // defect on the Gremlin side at 3.53x.
-  //
-  // Sorting here is paid PER VERTEX, not once per query as in the Gremlin twin, over an array whose
-  // length is the number of edge types incident to ONE vertex — so it is two or three elements and
-  // V8 sorts that with insertion sort. A/B'd rather than assumed, because a per-vertex sort could
-  // have cost more than the asymmetry it removes.
-  buckets.sort((a, b) => b.size - a.size);
-
-  for (let i = 0; i < buckets.length; i += 1) {
-    for (const e of buckets[i]) {
-      let earlier = false;
-
-      for (let j = 0; j < i; j += 1) {
-        if (buckets[j].has(e)) {
-          earlier = true;
-
-          break;
-        }
-      }
-
-      if (!earlier) {
-        yield e;
-      }
-    }
-  }
-};
-
-/** One-hop neighbours of `v` along `out` (or in) edges of the given `types` (all
- * types when undefined). Shared by the EXISTS-reachable and RETURN-reachable
- * traversals so their neighbour expansion can't drift from each other or native.
- *
- * ⚠️ REJECTED, item 1570: do NOT replace this with a callback/visitor to avoid the array.
- *
- * The `Vertex[]` here is materialized per EXPANDED VERTEX and both callers immediately iterate it
- * and drop it, so removing the allocation looks free — and a profile of
- * `MATCH (a:P)-[:E]->+(b:P) RETURN count(DISTINCT b)` put this function at **32.5% self** (576 ms),
- * with only 2 mentions anywhere, which reads like an unpriced target.
- *
- * It was built: `eachOutNeighbor(graph, v, out, types, visit)` with a boolean STOP signal (needed
- * because the `EXISTS` walk returns the moment it finds a hit), both callers converted, the visitor
- * closures hoisted once rather than per expansion. **Flat.**
- *
- *     varlenplus   PRE 1591.0 1656.9 1725.0     POST 1483.3 1629.9 1628.0    1.02x, ranges overlap
- *     existssub    PRE   72.2   69.2   73.2     POST   72.5   71.9   70.6    flat (the early-exit arm)
- *
- * So the 32.5% is `edgesOfTypes`' iteration credited to its caller, not the allocation — the
- * attribution hazard `runtime-profile-analyze.mjs`' own header warns about (item 1104: "a small hot
- * callee gets credited with its caller's inlined loop … use this screen to NOMINATE, then ablate to
- * price"). One array per expanded vertex is not where the time goes. */
-export const outNeighbors = (
-  graph: Graph,
-  v: Vertex,
-  out: boolean,
-  types: string[] | undefined,
-): Vertex[] => {
-  const byType = out ? v.adjFrom : v.adjTo;
-  const acc: Vertex[] = [];
-
-  for (const e of edgesOfTypes(byType, types)) {
-    acc.push(out ? e.to : e.from);
-  }
-
-  return acc;
-};
-
-/** Count the `edges` that pass `keep`. */
-export const countEdges = (edges: Iterable<Edge>, keep: (e: Edge) => boolean): number => {
-  let n = 0;
-
-  for (const e of edges) {
-    if (keep(e)) {
-      n += 1;
-    }
-  }
-
-  return n;
-};
-
 export type CLinear = {
   clauses: readonly CClause[];
   /** Precomputed direct-count closure for `MATCH … RETURN count(*)`; else null. */
@@ -8007,6 +7434,8 @@ export const plainGroupNode = (n: NodePattern | undefined): boolean =>
   n === undefined ||
   (n.label === undefined && (n.properties?.length ?? 0) === 0 && n.where === undefined);
 
+import { edgesOfTypes, outNeighbors, relTypeNames } from './adjacency.js';
+import { consistent, hasPredicate, propOf } from './bindings.js';
 import { mapToRow, matchClauseBindings } from './clauses.js';
 import {
   SUBQUERY_EXPRS,
@@ -8037,6 +7466,7 @@ import {
   uniformIdEqChain,
 } from './expr-analysis.js';
 import type { AlwaysRowsFn, RowsFn } from './hop-projection.js';
+import { columnName, mapToArray, projectRow, resolveCount, valueKey } from './rows.js';
 // Imported at FUNCTION level like the other detectors — this module and `executor` import
 // each other, which the existing comment on the shortcuts import explains is safe.
 // Count / reachability fast-paths (see executor/shortcuts.ts) — this back-edge and

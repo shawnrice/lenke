@@ -3,6 +3,8 @@ import type { Edge, Graph, Vertex } from '@lenke/core';
 import type { Clause, CountValue, Expr, LabelExpr, Projection, RelPattern } from '../ast.js';
 import { candidateCount, candidateVertexSource, expand, matchesLabel } from '../graph-queries.js';
 import type { Adjacency } from '../graph-queries.js';
+import { edgesOfTypes, relTypeNames } from './adjacency.js';
+import { propOf } from './bindings.js';
 import type {
   AggFold,
   CClause,
@@ -18,14 +20,10 @@ import type {
 import {
   aggregateOverValues,
   compileExpr,
-  edgesOfTypes,
   compilePredicate,
   filterPredicate,
   foldFor,
   percentileFraction,
-  projectRow,
-  propOf,
-  relTypeNames,
   satisfies,
   sortsOnOutputOnly,
 } from './core.js';
@@ -34,6 +32,7 @@ import { primedEndpointExtremum, withPrimedEndpointExtremum } from './hop-endpoi
 import { indexCandidates } from './matching.js';
 import type { SortPlan } from './ordered-rows.js';
 import { outputColumnSorts, sortRowsByColumns, sortedRows } from './ordered-rows.js';
+import { projectRow } from './rows.js';
 import { asTruth } from './scalars.js';
 import {
   edgeSeek,

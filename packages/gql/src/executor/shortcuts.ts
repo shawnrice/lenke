@@ -59,6 +59,8 @@ import {
   matchesLabel,
 } from '../graph-queries.js';
 import type { Adjacency } from '../graph-queries.js';
+import { countEdges, edgesOfTypes, outNeighbors, relTypeNames } from './adjacency.js';
+import { propOf, relHasPredicate } from './bindings.js';
 // The shortcuts read shared primitives + compiled types out of the executor
 // trunk, and the trunk imports the two detectors back — a safe function-level
 // cycle (resolved lazily at call time), matching the other executor submodules.
@@ -75,10 +77,8 @@ import type {
   Row,
 } from './core.js';
 import {
-  edgesOfTypes,
   foldFor,
   gatePredicate,
-  columnName,
   compileExpr,
   compilePredicate,
   aggregateOverValues,
@@ -86,15 +86,7 @@ import {
   satisfies,
   specializeNarrowPred,
   sortsOnOutputOnly,
-  countEdges,
-  outNeighbors,
   percentileFraction,
-  projectRow,
-  propOf,
-  relHasPredicate,
-  relTypeNames,
-  resolveCount,
-  valueKey,
 } from './core.js';
 import { freePredicateVars } from './expr-analysis.js';
 import { plainRowProjection } from './hop-projection.js';
@@ -102,6 +94,7 @@ import { indexCandidates, matchNode, seedVertices, seekIsWorthIt } from './match
 import type { SeedCandidate } from './matching.js';
 import type { ColSort, SortPlan } from './ordered-rows.js';
 import { boundedTopKeyed, outputColumnSorts, sortRowsByColumns } from './ordered-rows.js';
+import { columnName, projectRow, resolveCount, valueKey } from './rows.js';
 import { AGGREGATES, asTruth, collectAggregates } from './scalars.js';
 import { isNullish } from './values.js';
 

@@ -3,10 +3,10 @@ import type { Graph, Vertex } from '@lenke/core';
 import type { Clause, NodePattern, RelPattern } from '../ast.js';
 import { matchesLabel } from '../graph-queries.js';
 import type { CClause, CompiledExpr, CProjection, Params, Row } from './core.js';
-import { projectRow } from './core.js';
 import { freePredicateVars } from './expr-analysis.js';
 import { plainRowProjection } from './hop-projection.js';
 import type { AlwaysRowsFn } from './hop-projection.js';
+import { projectRow } from './rows.js';
 import { asTruth } from './scalars.js';
 import { effectiveLabel, plainNode, plainRel, rowLocal } from './shortcuts.js';
 

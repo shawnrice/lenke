@@ -40,7 +40,6 @@ import {
   boundExprs,
   coalesceRangeHints,
   collectHints,
-  columnName,
   compileExpr,
   compileInsertPath,
   compilePath,
@@ -82,6 +81,7 @@ import {
   detectOptionalHopProjection,
 } from './hop-projection.js';
 import { detectHop2Projection } from './hop2-projection.js';
+import { columnName } from './rows.js';
 import { collectAggregates, hasAggregate } from './scalars.js';
 import {
   detectCountShortcut,
