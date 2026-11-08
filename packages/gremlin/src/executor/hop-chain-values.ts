@@ -188,146 +188,40 @@ export const hopChainValuesShortcut = (plan: Plan, graph: Graph): HopValues | un
   const { pick, drops, consumed } = tail;
   const rest = steps.slice(farEnd + consumed);
 
-  if (walkKindFor(at.length) === 'stacked') {
-    return { rest, values: stackedWalk(graph, hops, runs, pick, drops) };
-  }
-
-  const [[t0, fwd0], [t1, fwd1]] = hops;
-  const [leadGates, midGates, farGates] = runs;
-  /**
-   * The `any*` booleans keep the unfiltered walk at its item-1614 cost: with no filters in a
-   * position there is no call at all, not a call over an empty array. That is item 1602's `anyStart`
-   * split, and it is what makes the unfiltered controls flat.
-   *
-   * `compileGates` (called in the parse above) is `start-filtered-hop-values.ts`'s, exported rather
-   * than reimplemented — it is worth 1.93x on the label side and 1.16x on the predicate side (items
-   * 1536/1492), and a second copy of a specialization table is exactly the drift this executor keeps
-   * paying for.
-   */
-  const anyLead = leadGates.length > 0;
-  const anyMid = midGates.length > 0;
-  const anyFar = farGates.length > 0;
-
-  /**
-   * ⚠️ WRITTEN TWICE, LAZY AND EAGER, AS THE SAME LOOP — `hop-values.ts`'s rule, for its reason:
-   * `run` returns an iterable a caller may `break` out of, so the walk stays lazy, while `toArray`
-   * is `[...run(…)]` and already drains it in full, where the eager form is the same answer by a
-   * cheaper route (item 1412 measured 53.8% on `V().out(E)`). `drain` is read only when `rest` is
-   * empty, so no downstream step has to be reasoned about.
-   *
-   * A second DERIVATION is what must not happen, and does not: both loops nest the identical two
-   * bucket reads in the identical order.
-   */
   return {
     rest,
-    values: {
-      *[Symbol.iterator]() {
-        for (const v of graph.vertices) {
-          if (anyLead && !survives(v, leadGates)) {
-            continue;
-          }
-
-          const b0 = (fwd0 ? v.adjFrom : v.adjTo)?.get(t0);
-
-          if (b0 === undefined) {
-            continue;
-          }
-
-          for (const e0 of b0) {
-            const midV = fwd0 ? e0.to : e0.from;
-
-            if (anyMid && !survives(midV, midGates)) {
-              continue;
-            }
-
-            const b1 = (fwd1 ? midV.adjFrom : midV.adjTo)?.get(t1);
-
-            if (b1 === undefined) {
-              continue;
-            }
-
-            for (const e1 of b1) {
-              const farV = fwd1 ? e1.to : e1.from;
-
-              if (anyFar && !survives(farV, farGates)) {
-                continue;
-              }
-
-              const value = pick(farV);
-
-              if (!drops || value !== undefined) {
-                yield value;
-              }
-            }
-          }
-        }
-      },
-      drain() {
-        const acc: unknown[] = [];
-
-        for (const v of graph.vertices) {
-          if (anyLead && !survives(v, leadGates)) {
-            continue;
-          }
-
-          const b0 = (fwd0 ? v.adjFrom : v.adjTo)?.get(t0);
-
-          if (b0 === undefined) {
-            continue;
-          }
-
-          for (const e0 of b0) {
-            const midV = fwd0 ? e0.to : e0.from;
-
-            if (anyMid && !survives(midV, midGates)) {
-              continue;
-            }
-
-            const b1 = (fwd1 ? midV.adjFrom : midV.adjTo)?.get(t1);
-
-            if (b1 === undefined) {
-              continue;
-            }
-
-            for (const e1 of b1) {
-              const farV = fwd1 ? e1.to : e1.from;
-
-              if (anyFar && !survives(farV, farGates)) {
-                continue;
-              }
-
-              const value = pick(farV);
-
-              if (!drops || value !== undefined) {
-                acc.push(value);
-              }
-            }
-          }
-        }
-
-        return acc;
-      },
-    },
+    values:
+      walkKindFor(at.length) === 'pair'
+        ? pairSlotWalk(graph, hops, runs, pick, drops)
+        : stackedWalk(graph, hops, runs, pick, drops),
   };
 };
 
 /**
- * WHICH WALK A GIVEN HOP COUNT GETS. Depth 2 has its own literal nesting; 3 and up share the generic
- * stack.
+ * WHICH SLOT WALK A GIVEN HOP COUNT GETS. Depth 2 has its own copy; 3 and up share the generic one.
  *
- * ⚠️ EXTRACTED AS A PURE FUNCTION BECAUSE A ROUTE CHOICE IS ANSWER-EQUIVALENT, so no differential
- * test can pin it — the mutant that sent depth 2 through the stack SURVIVED the whole suite, exactly
- * as `perf-gate-needs-its-own-test` says it would. The threshold is the only thing here that is a
- * PERFORMANCE claim rather than a correctness one, so it is unit-tested directly in
- * `hop-chain-values.test.ts`, with the numbers that chose it recorded on `stackedWalk` below.
+ * ⚠️ THE THRESHOLD MOVED AT ITEM 1681 AND SO DID WHAT IT DECIDES. It used to pick between a literal
+ * nesting of `Set` loops and a stack of bucket iterators, where the literal form was worth 1.29x at
+ * depth 2 and the stack cost a flat ~28% at both depths. Both of those are gone: every depth now
+ * walks flat slot runs, and the choice is between TWO COPIES OF THE SAME WALK.
  *
- * ⚠️ WHAT THE EXTRACTION BUYS IS NOT A GUARD AT THE CALL SITE. A mutant that inlines `at.length > 2`
- * back into the caller SURVIVES, and must: it is the same predicate written out, equivalent in both
- * answer and speed. What dies instead is a changed THRESHOLD — `hops > 1` and `hops > 3` are each
- * caught by this function's own test, where neither was caught by anything before the extraction.
+ * It is still a choice that has to be made, and for a measured reason rather than tidiness — one
+ * function serving depths 2, 3, 4 and 5 has worse inline caches for each than a function serving
+ * one. On an interleaved A/B, sharing cost the depth-3 row **1.26x** (468.7/484.1 against
+ * 615.8/591.8) while the duplicate recovered it to 445.1, better than before depth 2 moved at all.
+ * Not the shape cap: `MAX_CHAIN_SHAPES` at 8 and at 32 both left the row at ~618.
+ *
+ * ⚠️ STILL A PURE FUNCTION WITH ITS OWN TEST, for the reason item 1617 recorded: a route choice is
+ * ANSWER-EQUIVALENT, so no differential test can pin it — the mutant that sent depth 2 through the
+ * generic walk SURVIVED the whole suite, exactly as `perf-gate-needs-its-own-test` says it would.
+ * The threshold is the only thing here that is a PERFORMANCE claim rather than a correctness one, so
+ * it is unit-tested directly in `hop-chain-values.test.ts`.
+ *
+ * ⚠️ AND INLINING IT BACK INTO THE CALLER WOULD SURVIVE A MUTANT, which is not an argument for doing
+ * so: `at.length === 2` written out is the same predicate, equivalent in answer and in speed. What
+ * dies instead is a changed THRESHOLD, and only because this function has a test of its own.
  */
-export const walkKindFor = (hops: number): 'literal' | 'stacked' =>
-  hops > 2 ? 'stacked' : 'literal';
+export const walkKindFor = (hops: number): 'pair' | 'stacked' => (hops > 2 ? 'stacked' : 'pair');
 
 /**
  * ⚠️ THE GENERIC WALK, ANY DEPTH — now over FLAT SLOT RUNS rather than a stack of bucket
@@ -409,6 +303,199 @@ export const walkKindFor = (hops: number): 'literal' | 'stacked' =>
  * recorded in `docs/reviews/CLOSED.md` as an owner decision rather than settled here.
  */
 const stackedWalk = (
+  graph: Graph,
+  hops: readonly (readonly [string, boolean])[],
+  runs: readonly Gate[][],
+  pick: (far: Vertex) => unknown,
+  drops: boolean,
+): HopValues['values'] => {
+  const depth = hops.length;
+  const [leadGates] = runs;
+  const anyLead = leadGates.length > 0;
+  // One CSR per hop shape. They share a slot numbering because every one numbers by
+  // `verticesById` order — see the note above.
+  const csrs = hops.map(([t, fwd]) => chainCsrFor(graph, fwd, [t]));
+  const [{ vtx }] = csrs;
+  const n = vtx.length;
+
+  /** 0 = not yet evaluated, 1 = passed, 2 = failed. One array per filter run. */
+  const gateMask = runs.map((g) => (g.length > 0 ? new Uint8Array(n) : undefined));
+  const passes = (slot: number, run: number): boolean => {
+    const mask = gateMask[run];
+
+    if (mask === undefined) {
+      return true;
+    }
+
+    const seen = mask[slot];
+
+    if (seen !== 0) {
+      return seen === 1;
+    }
+
+    const ok = survives(vtx[slot], runs[run]);
+    mask[slot] = ok ? 1 : 2;
+
+    return ok;
+  };
+
+  /** The projection, memoized per slot — 0 = not yet evaluated. */
+  const vals: unknown[] = Array.from({ length: n });
+  const valSeen = new Uint8Array(n);
+  const valueAt = (slot: number): unknown => {
+    if (valSeen[slot] === 0) {
+      vals[slot] = pick(vtx[slot]);
+      valSeen[slot] = 1;
+    }
+
+    return vals[slot];
+  };
+
+  /**
+   * ⚠️ STILL WRITTEN TWICE, LAZY AND EAGER, and the sink closure does not avoid it — a generator
+   * cannot `yield` from inside a callback, so the lazy side has to be its own loop whatever the eager
+   * side looks like. Item 1411 measured the generator protocol at 1.9-2.2x and item 1412 measured
+   * `drain` at 53.8% of `V().out(E)`, so collapsing the pair trades a real cost for a cosmetic one.
+   * What makes the duplication safe is item 1616's screen, which mutates BOTH halves of every such
+   * loop in the executor: a drift between them is caught rather than reasoned about.
+   *
+   * The two cursors are a position per level: `cur[d]` is where level `d` has reached in its run,
+   * `end[d]` where that run stops. That is the `Int32Array` equivalent of the old `its[d]` iterator.
+   */
+  const walk = (sink: (value: unknown) => void): void => {
+    const cur = new Int32Array(depth);
+    const end = new Int32Array(depth);
+
+    for (let s = 0; s < n; s += 1) {
+      if (anyLead && !passes(s, 0)) {
+        continue;
+      }
+
+      const [c0] = csrs;
+      cur[0] = c0.memo.off[s];
+      end[0] = cur[0] + c0.memo.len[s];
+
+      let d = 0;
+
+      while (d >= 0) {
+        if (cur[d] >= end[d]) {
+          d -= 1;
+          continue;
+        }
+
+        const far = csrs[d].memo.flat[cur[d]];
+        cur[d] += 1;
+
+        if (!passes(far, d + 1)) {
+          continue;
+        }
+
+        if (d === depth - 1) {
+          const value = valueAt(far);
+
+          if (!drops || value !== undefined) {
+            sink(value);
+          }
+
+          continue;
+        }
+
+        const cn = csrs[d + 1];
+        const len = cn.memo.len[far];
+
+        if (len === 0) {
+          continue;
+        }
+
+        d += 1;
+        cur[d] = cn.memo.off[far];
+        end[d] = cur[d] + len;
+      }
+    }
+  };
+
+  return {
+    *[Symbol.iterator]() {
+      const cur = new Int32Array(depth);
+      const end = new Int32Array(depth);
+
+      for (let s = 0; s < n; s += 1) {
+        if (anyLead && !passes(s, 0)) {
+          continue;
+        }
+
+        const [c0] = csrs;
+        cur[0] = c0.memo.off[s];
+        end[0] = cur[0] + c0.memo.len[s];
+
+        let d = 0;
+
+        while (d >= 0) {
+          if (cur[d] >= end[d]) {
+            d -= 1;
+            continue;
+          }
+
+          const far = csrs[d].memo.flat[cur[d]];
+          cur[d] += 1;
+
+          if (!passes(far, d + 1)) {
+            continue;
+          }
+
+          if (d === depth - 1) {
+            const value = valueAt(far);
+
+            if (!drops || value !== undefined) {
+              yield value;
+            }
+
+            continue;
+          }
+
+          const cn = csrs[d + 1];
+          const len = cn.memo.len[far];
+
+          if (len === 0) {
+            continue;
+          }
+
+          d += 1;
+          cur[d] = cn.memo.off[far];
+          end[d] = cur[d] + len;
+        }
+      }
+    },
+    drain() {
+      const acc: unknown[] = [];
+
+      walk((value) => acc.push(value));
+
+      return acc;
+    },
+  };
+};
+
+/**
+ * ⚠️ DEPTH 2'S OWN COPY OF THE SLOT WALK, AND THE DUPLICATION IS THE WHOLE POINT (item 1681).
+ *
+ * Routing depth 2 through the generic walk is worth 7.2x to 9.5x on four rows — and costs the
+ * depth-3 row 1.26x, measured on an interleaved A/B with both rounds agreeing (468.7/484.1 against
+ * 615.8/591.8). That is not the shape cap: raising `MAX_CHAIN_SHAPES` from 8 to 32 left the row at
+ * 618.1. It is POLYMORPHISM — one function serving depths 2, 3, 4 and 5 has worse inline caches for
+ * each than a function serving one depth.
+ *
+ * ⚠️ SO A FACTORY, A WRAPPER OR A PARAMETERISED SHIM WOULD TEST NOTHING AND FIX NOTHING. V8's inline
+ * caches live on the FUNCTION, not the call site, so two call sites of one function share them. Only
+ * a second function object with its own body gives depth 2 its own caches. This is the same reason
+ * the file carried a literal depth-2 nesting beside the generic iterator stack before item 1680, and
+ * the same reason the lazy and eager halves are written twice rather than shared through a sink.
+ *
+ * The body is otherwise IDENTICAL to {@link stackedWalk} and must stay so. Item 1616's screen
+ * mutates every duplicated loop in this executor, so a drift between them is caught rather than
+ * reasoned about.
+ */
+const pairSlotWalk = (
   graph: Graph,
   hops: readonly (readonly [string, boolean])[],
   runs: readonly Gate[][],

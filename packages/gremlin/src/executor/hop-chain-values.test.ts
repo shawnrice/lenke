@@ -538,11 +538,23 @@ describe('THREE hops and up — the generic stacked walk (item 1617)', () => {
 
   test('the ROUTE threshold itself, which no differential test can pin', () => {
     /**
-     * A route choice is answer-equivalent: sending depth 2 through the stacked walk returns the same
-     * rows in the same order, so the whole suite passes. It is a 1.29x REGRESSION and nothing but a
-     * direct assertion catches it (`perf-gate-needs-its-own-test`).
+     * A route choice is answer-equivalent: sending depth 2 through the generic walk returns the same
+     * rows in the same order, so the whole suite passes. Nothing but a direct assertion catches it
+     * (`perf-gate-needs-its-own-test`), and this test is the only reason the regression below was
+     * ever noticed rather than shipped.
+     *
+     * ⚠️ WHAT IT DECIDES CHANGED AT ITEM 1681, and the numbers with it. It used to pick between a
+     * literal nesting of `Set` loops ('literal') and a stack of bucket iterators ('stacked'), where
+     * the literal form was worth 1.29x at depth 2. Both are gone — every depth now walks flat slot
+     * runs — so the choice is between TWO COPIES OF THE SAME WALK, and the reason is inline caches:
+     * one function serving depths 2, 3, 4 and 5 is worse for each than a function serving one.
+     *
+     * Interleaved A/B, both rounds agreeing: sharing cost the DEPTH-3 row **1.26x** (468.7/484.1
+     * against 615.8/591.8) while depth 2 gained 7.2x-9.5x. The duplicate keeps the depth-2 gains and
+     * recovers depth 3 to 445.1, better than before depth 2 moved at all. ⚠️ Not the shape cap:
+     * `MAX_CHAIN_SHAPES` at 8 and at 32 both left that row at ~618.
      */
-    expect(walkKindFor(2)).toBe('literal');
+    expect(walkKindFor(2)).toBe('pair');
     expect(walkKindFor(3)).toBe('stacked');
     expect(walkKindFor(4)).toBe('stacked');
     expect(walkKindFor(9)).toBe('stacked');

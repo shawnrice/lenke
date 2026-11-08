@@ -74462,7 +74462,7 @@ specific array is still entitled to its order.
 
 `bun run check` 0 read unpiped. One new probe, no engine change.
 
-### Item 1680 — **THE CORPUS'S LARGEST ROW, TAKEN: `V().out()x3.values(age)` 6712.6 → 471.6 ms, 14.2x, and TypeScript is now FASTER than native on it** (471.6 against 1244.4, a ts/nat ratio of 6.0x becoming 0.38x). ⚠️ **The projection memo is 5.71x of that 14.2x, which had to be measured because it decides a SEMANTIC question** — this route now snapshots where the depth-2 route is live
+### Item 1680 — **THE CORPUS'S LARGEST ROW, TAKEN: `V().out()x3.values(age)` 6712.6 → 471.6 ms, 14.2x, and TypeScript is now FASTER than native on it** (471.6 against 1244.4, a ts/nat ratio of 6.0x becoming 0.38x). ⚠️ **The projection memo is 5.71x of that 14.2x, which had to be measured because it decides a SEMANTIC question** — ~~this route now snapshots where the depth-2 route is live~~ ⚠️ **THE CROSS-ROUTE ASYMMETRY IS CLOSED BY ITEM 1681, which moved depth 2 onto the same slot walk, so the whole family reads one snapshot**
 
 Item 1679 priced this at 31.8x and refuted the iterator protocol as its cause. This builds the
 replacement: `stackedWalk` (depth 3 and up) now walks flat slot runs from item 1678's cached CSR
@@ -74546,6 +74546,80 @@ dist — but this item EXPORTED that symbol from `count-shortcut.ts` so the valu
 it, so it is present in the dist for BOTH arms and could not discriminate PRE from POST. The guard
 refused to compare the change against itself. Switched to `gateMask`, which is 0 in PRE and 2 in
 POST. Second instance this session, after item 1674's not-actually-pristine snapshot.
+
+#### Gates
+
+`bun run check` 0 read unpiped. All five package suites isolated, 0 fail each: core 453, gql 4268,
+gremlin 2047, serialization 144, native 1081. All seven byte-identity fuzzers: 20 pass, 0 fail.
+
+### Item 1681 — **DEPTH 2 JOINS THE SLOT WALK: 7.1x to 9.0x on four more rows, the depth-3 row fully recovered, and the literal `Set` nesting RETIRED.** ⚠️ **Sharing one walk across depths 2-5 cost the depth-3 row 1.26x, and it was POLYMORPHISM, not the shape cap** — a real duplicate recovers it. Also closes item 1680's open snapshot-asymmetry decision, because both depths now read one snapshot
+
+Item 1680 moved depth 3 and up to flat slot runs for 14.2x. That left the depth-2 values rows as the
+corpus's slowest, still on the literal `Set` nesting at ~880-1140 ms each, and the memo that supplied
+5.71x of item 1680's win is depth-independent. So the one-line question was whether `walkKindFor`
+should send depth 2 there too.
+
+#### The measurement, interleaved, two rounds per arm
+
+```text
+    ratio     PRE ts   POST ts   row
+   0.111x     1136.2     126.1   V().out().out().has().values(age)      9.01x
+   0.115x      966.6     110.9   V().out().out().values(age)            8.72x
+   0.139x      975.2     135.8   V().out().has().out().values(age)      7.18x
+   0.141x      882.1     124.2   V().out().out().id()                   7.10x
+   1.000x      453.3     453.1   V().out()x3.values(age)                the depth-3 row, RECOVERED
+```
+
+Controls flat: `V().out().out().count()` 1.000x, `V().repeat(out).times(2).count()` 1.006x,
+`V().out().id()` 1.000x, `V().out().values(age).order()` 1.005x. **median 0.995x, p90 1.006x, ZERO of
+25 rows over 1.15x**, and the `answers` column reads `same` on all 25.
+
+#### ⚠️ The first attempt cost the depth-3 row 1.26x, and the cause was not what it looked like
+
+Routing depth 2 through the EXISTING generic walk gave the four wins above and regressed
+`V().out()x3.values(age)` from 468.7 to 591.8 — **1.26x, with both rounds agreeing** (pre 468.7/484.1,
+post 615.8/591.8), on a row the change does not touch.
+
+The obvious suspect was item 1680's shape cap: more routes sharing the CSR cache, so a generation
+gets cleared and the depth-3 row rebuilds. **Measured and refuted** — `MAX_CHAIN_SHAPES` at 8 and at
+32 both left the row at ~618. The cap is not involved.
+
+It is POLYMORPHISM. One function serving depths 2, 3, 4 and 5 has worse inline caches for each than a
+function serving one depth. Giving depth 2 its own copy (`pairSlotWalk`) recovers the row to 445.1 —
+**better than the 468.7 it read before depth 2 moved at all** — while keeping the depth-2 gains.
+
+⚠️ **AND THE DUPLICATION HAS TO BE LITERAL.** V8's inline caches live on the FUNCTION, not the call
+site, so two call sites of one function share them: a factory, a wrapper or a parameterised shim
+would all have tested nothing and fixed nothing. Only a second function object with its own body
+gives depth 2 its own caches. This is the same reason this file already writes its lazy and eager
+halves twice rather than sharing a sink closure, and the same reason a literal depth-2 nesting sat
+beside the generic iterator stack before item 1680 — the old split was right for a reason that
+survived the implementation changing underneath it.
+
+#### What was retired, and what replaced the threshold
+
+The `walkKindFor(...) === 'stacked'` branch is now always taken, so **130 lines of literal `Set`
+nesting are unreachable and deleted**. `walkKindFor` now decides `'pair' | 'stacked'` rather than
+`'literal' | 'stacked'`.
+
+⚠️ **ITS TEST IS THE ONLY REASON THE 1.26x WAS NOTICED RATHER THAN SHIPPED**, which is
+`perf-gate-needs-its-own-test` earning itself again: a route choice is answer-equivalent, so the
+2,046 other tests passed on the regressing arm and exactly one failed — the threshold assertion. It
+is updated with the numbers above rather than flipped, and it stays a pure function with its own test
+for the reason item 1617 recorded. (Inlining `at.length === 2` back into the caller would survive a
+mutant and must: it is the same predicate, equivalent in answer and speed. What dies is a changed
+THRESHOLD, and only because the function has a test of its own.)
+
+#### ⚠️ This closes item 1680's open decision
+
+Item 1680 recorded an OWNER DECISION: the depth-3 route snapshots (CSR fixes topology at first touch,
+memo fixes each projected value at first touch) where the depth-2 literal nesting was live, so the
+two depths would disagree under mid-iteration mutation. **Both depths now run the same slot walk, so
+the asymmetry is gone** and the whole family reads one snapshot. The remaining semantic question is
+no longer cross-route but whole-route, and it is the narrow one: a caller holding the LAZY iterator
+and mutating between rows sees the snapshot rather than the mutation. Nothing in the engine does that
+(`toArray` goes through `drain`, which runs to completion) and all three `pick` forms are pure
+functions of the vertex.
 
 #### Gates
 
