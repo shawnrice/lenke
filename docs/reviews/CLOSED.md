@@ -72701,6 +72701,22 @@ So the reachable form is a new JOIN operator with an order-restoring step, not a
 onto `pickRunnable`. That is a much larger piece of work than item 1656's entry implies, and the
 37-89x is its payoff rather than a planner tweak's.
 
+⚠️ **THE SECOND BLOCKER IS A POLICY GAP, NOT AN OPERATOR — narrowed at item 1672.** "Emission order
+is a TinkerPop contract, compared ORDERED by the differential fuzzer" is true of the fuzzer as
+written: `orderUnspecified = multiType || RECONVERGING_BRANCH.test(text)`, and `match(` is in
+neither. But the fuzzer's OWN rationale for that list is that _"TinkerPop guarantees output order
+ONLY through `order()`"_, and by that rule a `match()` solution stream is equally unspecified — it
+was never added, the same way `coalesce`/`choose`/`optional` had to be added when their
+reconvergence order was found to differ. `index-seed.ts` states the policy directly: this repo
+treats an unordered result's order as WON'T-FIX and the fuzzer compares such results as MULTISETS,
+skipped only on an explicit `order()`.
+
+So the order-restoring step is not required by anything technical. What is required is a DECISION to
+extend that list to `match(`, which is a semantics call with precedent and is NOT taken here —
+changing what a fuzzer enforces is exactly the kind of thing that should not be done on the way past.
+**Blocker 1 (the whole-stream hash join, because `a` is fixed per incoming traverser) stands and is
+technical. Blocker 2 is one line and a judgement.**
+
 ⚠️ **The per-candidate constant is NOT the explanation either**, and it was the obvious next
 hypothesis: 30,000 candidates in 11.07 ms is ~370 ns each, which looks removable. ~~It is not
 reachable by this tick's instruments~~ — ⚠️ **ITEM 1658 BUILT THE `.mjs` COMPANION, PROFILED IT, AND
