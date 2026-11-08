@@ -3,7 +3,7 @@ import { describe, expect, test } from 'bun:test';
 import { Graph, type Vertex } from '@lenke/core';
 
 import type { PathMode, RelPattern } from './ast.js';
-import { compileRel } from './executor.js';
+import { compileRel } from './executor/core.js';
 import { trailEnds, trailEndsViaUnit } from './executor/matching.js';
 import { parse } from './parser.js';
 

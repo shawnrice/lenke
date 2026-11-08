@@ -14,7 +14,7 @@ import { describe, expect, test } from 'bun:test';
 
 import { Graph } from '@lenke/core';
 
-import { uniformEqChain } from './executor.js';
+import { uniformEqChain } from './executor/core.js';
 import { query } from './index.js';
 import { parsePredicate } from './parser.js';
 

@@ -34,8 +34,8 @@ import { describe, expect, test } from 'bun:test';
 import { Graph, type Vertex } from '@lenke/core';
 
 import type { LinearQuery } from './ast.js';
-import { compileLinear } from './executor.js';
 import { runLinearClauses } from './executor/clauses.js';
+import { compileLinear } from './executor/rewrites.js';
 import { query } from './index.js';
 import { parse } from './parser.js';
 

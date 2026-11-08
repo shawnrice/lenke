@@ -3,7 +3,7 @@ import { describe, expect, test } from 'bun:test';
 import { Graph } from '@lenke/core';
 
 import type { Clause } from './ast.js';
-import { dropUnreadEdgeVar } from './executor.js';
+import { dropUnreadEdgeVar } from './executor/rewrites.js';
 import { query } from './index.js';
 import { parse } from './parser.js';
 

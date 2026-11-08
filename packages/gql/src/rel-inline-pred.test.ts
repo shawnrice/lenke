@@ -3,7 +3,7 @@ import { describe, expect, test } from 'bun:test';
 import { Graph, type Vertex } from '@lenke/core';
 
 import type { RelPattern } from './ast.js';
-import { compileRel } from './executor.js';
+import { compileRel } from './executor/core.js';
 import { expandFilteredArr, relHasInlinePred } from './executor/matching.js';
 import { query } from './index.js';
 import { parse } from './parser.js';

@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 
 import { Graph } from '@lenke/core';
 
-import { compilePredicate } from './executor.js';
+import { compilePredicate } from './executor/core.js';
 import { indexCandidates } from './executor/matching.js';
 import { seedIsExact, soleEqualityKey } from './executor/shortcuts.js';
 import { query } from './index.js';

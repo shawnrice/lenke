@@ -3,9 +3,9 @@ import { describe, expect, test } from 'bun:test';
 import { Graph } from '@lenke/core';
 import type { Vertex } from '@lenke/core';
 
-import { compileLinear } from './executor.ts';
-import type { CPath } from './executor.ts';
+import type { CPath } from './executor/core.ts';
 import { effectiveLabels } from './executor/matching.ts';
+import { compileLinear } from './executor/rewrites.ts';
 import { query } from './index.ts';
 import { parse } from './parser.ts';
 

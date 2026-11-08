@@ -2,7 +2,7 @@ import { beforeAll, describe, expect, test } from 'bun:test';
 
 import { Graph, type Vertex } from '@lenke/core';
 
-import type { CNode } from './executor.js';
+import type { CNode } from './executor/core.js';
 import { startIsPinnedById } from './executor/shortcuts.js';
 import { query } from './index.js';
 

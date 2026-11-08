@@ -4,7 +4,7 @@ import { Graph } from '@lenke/core';
 import type { Vertex } from '@lenke/core';
 
 import type { Projection } from './ast.js';
-import type { CProjection } from './executor.js';
+import type { CProjection } from './executor/core.js';
 import { farPropRow } from './executor/hop-projection.js';
 import { query } from './index.js';
 

@@ -21,7 +21,7 @@ import { describe, expect, it } from 'bun:test';
 
 import { Graph } from '@lenke/core';
 
-import { compileLinear, foldLabelTestsIntoPatterns } from './executor.ts';
+import { compileLinear, foldLabelTestsIntoPatterns } from './executor/rewrites.ts';
 import { query } from './index.ts';
 import { parse } from './parser.ts';
 

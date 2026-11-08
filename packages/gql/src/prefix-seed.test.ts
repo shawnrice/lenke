@@ -16,7 +16,7 @@ import { describe, expect, test } from 'bun:test';
 
 import { Graph } from '@lenke/core';
 
-import { prefixBound, prefixUpper } from './executor.js';
+import { prefixBound, prefixUpper } from './executor/core.js';
 import { query } from './index.js';
 
 const VALUES = [

@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 
 import { Graph } from '@lenke/core';
 
-import { compileLinear } from './executor.js';
+import { compileLinear } from './executor/rewrites.js';
 import { query } from './index.js';
 import { parse } from './parser.js';
 

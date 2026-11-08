@@ -4,7 +4,7 @@ import { Graph } from '@lenke/core';
 
 import type { Clause, MatchClause } from './ast.js';
 import { normalizeLiterals } from './auto-param.js';
-import { liftStartProps } from './executor.js';
+import { liftStartProps } from './executor/rewrites.js';
 import { query } from './index.js';
 import { parse } from './parser.js';
 

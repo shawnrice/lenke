@@ -3,7 +3,7 @@ import { describe, expect, test } from 'bun:test';
 import { Graph } from '@lenke/core';
 
 import type { Expr } from './ast.js';
-import { compilePredicate } from './executor.js';
+import { compilePredicate } from './executor/core.js';
 import { query } from './index.js';
 
 // `NOT (n.k = v)` is `n.k <> v`, so it now lifts by FLIPPING the operator (item 1272). Before this,

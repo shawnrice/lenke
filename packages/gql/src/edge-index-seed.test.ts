@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 
 import { Graph } from '@lenke/core';
 
-import type { CPredicate, EvalEnv } from './executor.js';
+import type { CPredicate, EvalEnv } from './executor/core.js';
 import { edgeSeek } from './executor/shortcuts.js';
 import { query } from './index.js';
 

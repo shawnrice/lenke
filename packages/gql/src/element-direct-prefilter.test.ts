@@ -17,8 +17,8 @@ import { describe, expect, test } from 'bun:test';
 import { Graph } from '@lenke/core';
 import type { Vertex } from '@lenke/core';
 
-import type { CPredicate } from './executor.js';
-import { rejectedByElementDirect } from './executor.js';
+import type { CPredicate } from './executor/core.js';
+import { rejectedByElementDirect } from './executor/core.js';
 import { query } from './index.js';
 
 const fixture = (): Graph => {

@@ -2,8 +2,8 @@ import { describe, expect, test } from 'bun:test';
 
 import { Graph } from '@lenke/core';
 
-import type { CNode, CPath } from './executor.js';
-import { compileExpr, compilePredicate } from './executor.js';
+import type { CNode, CPath } from './executor/core.js';
+import { compileExpr, compilePredicate } from './executor/core.js';
 import { estimateSeed, orient } from './executor/matching.js';
 import { query } from './index.js';
 

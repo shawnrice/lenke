@@ -19,7 +19,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 
-import { mapToArray } from './executor.js';
+import { mapToArray } from './executor/core.js';
 
 describe('mapToArray', () => {
   it('maps every element in order', () => {

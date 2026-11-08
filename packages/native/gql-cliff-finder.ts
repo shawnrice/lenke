@@ -27,7 +27,7 @@ import { Graph } from '@lenke/core';
 import type { Vertex } from '@lenke/core';
 
 // eslint-disable-next-line boundaries/no-cross-package-relative-import -- internal planner entry point, read pre-build
-import { compileLinear } from '../gql/src/executor.ts';
+import { compileLinear } from '../gql/src/executor/rewrites.ts';
 // eslint-disable-next-line boundaries/no-cross-package-relative-import -- internal entry point, read pre-build
 import { query } from '../gql/src/index.ts';
 // eslint-disable-next-line boundaries/no-cross-package-relative-import -- internal parser entry point, read pre-build

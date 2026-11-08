@@ -3,7 +3,7 @@ import { describe, expect, test } from 'bun:test';
 import { Graph } from '@lenke/core';
 
 import type { Expr } from './ast.js';
-import { compilePredicate, hasPredicate } from './executor.js';
+import { compilePredicate, hasPredicate } from './executor/core.js';
 import { query } from './index.js';
 
 // `WHERE n.k IN [..]` and its `n.k = a OR n.k = b` spelling now LIFT into `memberProps` — read off

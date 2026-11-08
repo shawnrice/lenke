@@ -3,7 +3,7 @@ import { describe, expect, test } from 'bun:test';
 import { Graph } from '@lenke/core';
 
 import type { Query } from './ast.js';
-import { compile, execute } from './executor.js';
+import { compile, execute } from './executor/compile.js';
 import { query } from './index.js';
 import { parse } from './parser.js';
 

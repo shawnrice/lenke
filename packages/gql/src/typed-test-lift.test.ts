@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 
 import { Graph } from '@lenke/core';
 
-import { compilePredicate, hasPredicate } from './executor.js';
+import { compilePredicate, hasPredicate } from './executor/core.js';
 import { query } from './index.js';
 import { parsePredicate } from './parser.js';
 

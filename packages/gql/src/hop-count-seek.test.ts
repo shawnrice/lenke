@@ -2,8 +2,8 @@ import { describe, expect, test } from 'bun:test';
 
 import { Graph } from '@lenke/core';
 
-import type { CNode, EvalEnv } from './executor.js';
-import { compilePredicate } from './executor.js';
+import type { CNode, EvalEnv } from './executor/core.js';
+import { compilePredicate } from './executor/core.js';
 import { hopSeek } from './executor/shortcuts.js';
 import { query } from './index.js';
 
