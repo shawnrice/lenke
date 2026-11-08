@@ -5,6 +5,8 @@
     "./lint-rules/module-boundaries.js",
     "@lenke/lint"
   ],
+  // Built-in plugins. `import` is OFF by default and carries `no-cycle`.
+  "plugins": ["import"],
   "categories": {
     "correctness": "error"
   },
@@ -42,6 +44,11 @@
     "no-fallthrough": "error",
     "no-inline-comments": "off",
     "no-inner-declarations": "error",
+    // Structural limits. `max-lines` counts CODE, not comments: the comments in this repo are
+    // the audit trail (measured numbers, item references, why a rewrite declines a shape), and
+    // a cap that counted them would reward deleting them. Code-only, only two files exceed 3000.
+    "max-lines": ["error", { "max": 3000, "skipComments": true, "skipBlankLines": true }],
+    "import/no-cycle": "error",
     "max-params": ["error", { "max": 6 }],
     "max-statements": ["error", { "max": 80 }],
     "max-nested-callbacks": ["error", { "max": 5 }],
@@ -138,6 +145,65 @@
         "typescript/no-base-to-string": "off",
         "typescript/restrict-template-expressions": "off"
       }
+    },
+    {
+      // RATCHET, not an exemption: these are the files already in an import cycle when the rule
+      // was turned on. Listing them individually means any NEW cycle anywhere errors, and the
+      // list only ever shrinks. Delete an entry when its cycle goes; do not add one.
+      "files": [
+        "packages/gql/src/executor/clauses.ts",
+        "packages/gql/src/executor/core.ts",
+        "packages/gql/src/executor/hop-endpoint-extremum.ts",
+        "packages/gql/src/executor/hop-projection.ts",
+        "packages/gql/src/executor/matching.ts",
+        "packages/gql/src/executor/ordered-rows.ts",
+        "packages/gql/src/executor/scalars.ts",
+        "packages/gql/src/executor/shortcuts.ts",
+        "packages/gremlin/src/executor/aggregation.ts",
+        "packages/gremlin/src/executor/cardinality.ts",
+        "packages/gremlin/src/executor/dispatch.ts",
+        "packages/gremlin/src/executor/filters.ts",
+        "packages/gremlin/src/executor/iteration.ts",
+        "packages/gremlin/src/executor/match.ts",
+        "packages/gremlin/src/executor/misc.ts",
+        "packages/gremlin/src/executor/movement.ts",
+        "packages/gremlin/src/executor/mutation.ts",
+        "packages/gremlin/src/executor/optional-hop.ts",
+        "packages/gremlin/src/executor/projection.ts",
+        "packages/gremlin/src/executor/runtime.ts",
+        "packages/gremlin/src/executor/sack.ts",
+        "packages/gremlin/src/executor/shortest-path.ts",
+        "packages/gremlin/src/executor/side-effects.ts",
+        "packages/gremlin/src/executor/sources.ts",
+        "packages/gremlin/src/executor/stream.ts",
+        "packages/list/src/List.ts",
+        "packages/list/src/functions/empty.ts",
+        "packages/list/src/functions/from.ts",
+        "packages/list/src/functions/index.ts",
+        "packages/list/src/functions/isList.ts",
+        "packages/list/src/functions/of.ts",
+        "packages/tree/src/TreeNode/TreeNode.ts",
+        "packages/tree/src/TreeNode/deserialize.ts"
+      ],
+      "rules": { "import/no-cycle": "off" }
+    },
+    {
+      // The same ratchet for file size. 4452 and 5891 CODE lines respectively; everything else
+      // in the repo is already under 3000.
+      "files": ["packages/gql/src/executor/core.ts", "packages/gql/src/executor/shortcuts.ts"],
+      "rules": { "max-lines": "off" }
+    },
+    {
+      // `execEpoch` is exported as a mutable binding on purpose — it is read PER ROW inside the
+      // closure `memoizeIfUncorrelated` returns, so an accessor would put a call in a hot loop.
+      // The module header carries the full reasoning. Every other value there is an accessor.
+      "files": ["packages/gql/src/executor/compile-state.ts"],
+      "rules": { "import/no-mutable-exports": "off" }
+    },
+    {
+      // A build-tool config is CONSUMED as a default export; the rule is right everywhere else.
+      "files": ["**/*.config.ts", "**/*.config.js"],
+      "rules": { "import/no-default-export": "off" }
     }
   ],
   "ignorePatterns": ["node_modules/", "dist/", ".tsc_d", ".nx/"]

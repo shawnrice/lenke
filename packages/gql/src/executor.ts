@@ -36,3 +36,4 @@
  */
 export * from './executor/core.js';
 export * from './executor/compile.js';
+export * from './executor/rewrites.js';

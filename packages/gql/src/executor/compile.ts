@@ -19,17 +19,10 @@ import { ErrorCode, LenkeError } from '@lenke/errors';
 import { isTxControl } from '../ast.js';
 import type { Query, SetOp, Statement } from '../ast.js';
 import { combineRows, queryHasWrite, runLinear, runTxControl } from './clauses.js';
-import {
-  bumpExecEpoch,
-  countParamCollector,
-  memoUncorrelated,
-  paramCollector,
-  setCollectors,
-  setMemoUncorrelated,
-  unknownFnCollector,
-} from './compile-state.js';
+import { bumpExecEpoch, withCompileScope } from './compile-state.js';
 import type { CLinear, Params, Plan, Row } from './core.js';
-import { checkLinearScope, compileLinear } from './core.js';
+import { checkLinearScope } from './core.js';
+import { compileLinear } from './rewrites.js';
 
 // --- compile & execute -------------------------------------------------------
 
@@ -190,23 +183,15 @@ export const compile = <R extends Row = Row>(query: Query): Plan<R> => {
   const referenced = new Set<string>();
   const unknownFns = new Set<string>();
   const countParams = new Set<string>();
-  const prevParam = paramCollector;
-  const prevUnknown = unknownFnCollector;
-  const prevCount = countParamCollector;
-  const prevMemo = memoUncorrelated;
-  setCollectors(referenced, unknownFns, countParams);
-  // A WRITE anywhere in the query can change an uncorrelated subquery's answer between rows,
-  // so the whole query opts out rather than trying to reason about clause order.
-  setMemoUncorrelated(!queryHasWrite(query));
-
-  let compiled: CQuery;
-
-  try {
-    compiled = { parts: query.parts.map(compileLinear), ops: query.ops };
-  } finally {
-    setCollectors(prevParam, prevUnknown, prevCount);
-    setMemoUncorrelated(prevMemo);
-  }
+  // The `memo` flag: a WRITE anywhere in the query can change an uncorrelated subquery's answer
+  // between rows, so the whole query opts out rather than trying to reason about clause order.
+  const compiled: CQuery = withCompileScope(
+    referenced,
+    unknownFns,
+    countParams,
+    !queryHasWrite(query),
+    () => ({ parts: query.parts.map(compileLinear), ops: query.ops }),
+  );
 
   // Eager unknown-function rejection: a name the query references that resolves
   // to no scalar (or aggregate) function is never valid — throw NOW, at compile
