@@ -37,12 +37,7 @@ import { isSyntheticParam } from '../auto-param.js';
 import { WRITE_CLAUSES, procedureSpec } from './clauses.js';
 import type { CClause, CLinear, CMergeUpdate, CNode, CSeedHint, HintMap } from './core.js';
 import {
-  SUBQUERY_EXPRS,
-  andExprOf,
-  asLabelTest,
   boundExprs,
-  cannotFault,
-  cheapPureExpr,
   coalesceRangeHints,
   collectHints,
   columnName,
@@ -51,15 +46,11 @@ import {
   compilePath,
   compileProjection,
   compileSetItem,
-  conjoin,
   correlatedSubqueries,
   dropVacuousQuantifier,
   faultFreeSortKey,
   filterPredicate,
-  flattenConjuncts,
   foldSitesOf,
-  freePredicateVars,
-  hasSubquery,
   matchVarSets,
   noteCountParam,
   oneOrderFreeRow,
@@ -71,6 +62,17 @@ import {
   seedPrefilter,
   withPin,
 } from './core.js';
+import {
+  SUBQUERY_EXPRS,
+  andExprOf,
+  asLabelTest,
+  cannotFault,
+  cheapPureExpr,
+  conjoin,
+  flattenConjuncts,
+  freePredicateVars,
+  hasSubquery,
+} from './expr-analysis.js';
 import {
   detectDistinctCount,
   detectDistinctProjection,

@@ -77,7 +77,6 @@ import type {
 import {
   edgesOfTypes,
   foldFor,
-  freePredicateVars,
   gatePredicate,
   columnName,
   compileExpr,
@@ -97,6 +96,7 @@ import {
   resolveCount,
   valueKey,
 } from './core.js';
+import { freePredicateVars } from './expr-analysis.js';
 import { plainRowProjection } from './hop-projection.js';
 import { indexCandidates, matchNode, seedVertices, seekIsWorthIt } from './matching.js';
 import type { SeedCandidate } from './matching.js';

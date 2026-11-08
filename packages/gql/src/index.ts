@@ -7,7 +7,8 @@ import { type Normalized, normalizeLiterals } from './auto-param.js';
 
 export { normalizeLiterals } from './auto-param.js';
 import { compile, execute } from './executor/compile.js';
-import { compileValidator, freePredicateVars, type Plan, type Row } from './executor/core.js';
+import { compileValidator, type Plan, type Row } from './executor/core.js';
+import { freePredicateVars } from './executor/expr-analysis.js';
 import { parse, parsePredicate } from './parser.js';
 
 export type {

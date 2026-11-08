@@ -21,17 +21,15 @@ import {
   edgesOfTypes,
   compilePredicate,
   filterPredicate,
-  flattenConjuncts,
-  truthCannotRaise,
   foldFor,
   percentileFraction,
-  freePredicateVars,
   projectRow,
   propOf,
   relTypeNames,
   satisfies,
   sortsOnOutputOnly,
 } from './core.js';
+import { flattenConjuncts, freePredicateVars, truthCannotRaise } from './expr-analysis.js';
 import { primedEndpointExtremum, withPrimedEndpointExtremum } from './hop-endpoint-extremum.js';
 import { indexCandidates } from './matching.js';
 import type { SortPlan } from './ordered-rows.js';
