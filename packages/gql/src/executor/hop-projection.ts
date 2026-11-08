@@ -21,7 +21,6 @@ import {
   compileExpr,
   compilePredicate,
   filterPredicate,
-  foldFor,
   percentileFraction,
   sortsOnOutputOnly,
 } from './core.js';
@@ -33,6 +32,7 @@ import { indexCandidates } from './matching.js';
 import type { SortPlan } from './ordered-rows.js';
 import { outputColumnSorts, sortRowsByColumns, sortedRows } from './ordered-rows.js';
 import { satisfies } from './predicates.js';
+import { foldFor } from './projection.js';
 import { projectRow } from './rows.js';
 import { plainRowProjection } from './rows.js';
 import { asTruth } from './scalars.js';

@@ -30,9 +30,9 @@ import type {
   Params,
   Row,
 } from './core.js';
-import { applyProjection, projectedRows } from './core.js';
 import { matchPattern } from './matching.js';
 import { boundedTopKeyed } from './ordered-rows.js';
+import { applyProjection, projectedRows } from './projection.js';
 import { mapToArray, resolveCount, valueKey } from './rows.js';
 import { asTruth } from './scalars.js';
 import { compareSort, isEdge, isElement, isVertex } from './values.js';
@@ -1366,16 +1366,6 @@ export const runFor = (
       return b;
     });
   }, bindings);
-
-export const mapToRow = (b: Binding): Row => {
-  const row: Row = {};
-
-  for (const [k, v] of b) {
-    row[k] = v;
-  }
-
-  return row;
-};
 
 export const WRITE_CLAUSES = new Set(['insert', 'merge', 'set', 'remove', 'delete']);
 

@@ -78,7 +78,6 @@ import type {
   Row,
 } from './core.js';
 import {
-  foldFor,
   gatePredicate,
   compileExpr,
   compilePredicate,
@@ -96,6 +95,7 @@ import type { SeedCandidate } from './matching.js';
 import type { ColSort, SortPlan } from './ordered-rows.js';
 import { boundedTopKeyed, outputColumnSorts, sortRowsByColumns } from './ordered-rows.js';
 import { satisfies } from './predicates.js';
+import { foldFor } from './projection.js';
 import { plainRowProjection } from './rows.js';
 import { columnName, projectRow, resolveCount, valueKey } from './rows.js';
 import { AGGREGATES, asTruth, collectAggregates } from './scalars.js';

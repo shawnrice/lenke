@@ -317,3 +317,20 @@ export const plainRowProjection = (proj: Projection): boolean =>
   (proj.orderBy?.length ?? 0) === 0 &&
   proj.skip === undefined &&
   proj.limit === undefined;
+
+/**
+ * ⚠️ MOVED DOWN FROM `clauses.ts` (item 1666), to close the LAST import cycle in the package.
+ * Extracting `projection.ts` left `projection -> clauses` (for this one function) against
+ * `clauses -> projection` (for `applyProjection` and `projectedRows`) — the third fresh cycle
+ * `import/no-cycle` caught during this split rather than after it. `mapToRow` turns a binding into
+ * a row, which is what this module is, so it was mis-filed rather than mis-moved.
+ */
+export const mapToRow = (b: Binding): Row => {
+  const row: Row = {};
+
+  for (const [k, v] of b) {
+    row[k] = v;
+  }
+
+  return row;
+};
