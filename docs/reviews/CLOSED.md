@@ -73333,3 +73333,121 @@ disagreeing on the ANSWER, 0 groups over 2x clear of the nearest null control**.
 2.03x) — ruled out STRUCTURALLY rather than by re-running: `@lenke/gremlin` depends on `core`,
 `errors` and `fp` only, never on `@lenke/gql`, so a change confined to `packages/gql/src/executor.ts`
 cannot reach it, and that group is at the standing baseline item 1305 left.
+
+### Item 1663 — ⚠️ **A FILE SPLIT IN THIS PACKAGE IS PROVABLY FREE, AND THE BENCH SWEEP CANNOT SHOW IT — the right gate is a BUNDLE DIFF.** `executor.ts` (12,046 lines) becomes `executor/core.ts` behind a barrel; the emitted bundle differs by **ONE line out of 24,074**, a `//#region` comment. And the module graph already had a cycle through `executor.ts`, which is why the split stalled half-done
+
+REFACTOR, no logic change. `packages/gql/src/executor.ts` -> `packages/gql/src/executor/core.ts`,
+plus a new `executor.ts` that is a barrel and nothing else.
+
+#### `executor-edits-perturb` does not apply to a MOVE, and the reason is the build
+
+Items 1413/1415/1440/1442/1462 measured that edits to these files cost unrelated query shapes up to
+16%, and item 1466 declined a 3.3x win over it. That made a 12,000-line split look dangerous. It is
+not, and the argument is structural rather than statistical:
+
+⚠️ **`@lenke/gql` ships as ONE bundled `dist/esm/index.mjs`.** The nine `executor/*.ts` modules that
+already existed are inlined into it and survive only in the sourcemap. So module boundaries do not
+exist at runtime, a split adds **zero** file I/O, and the only thing a pure relocation can change in
+the output is declaration ORDER. (`bun test` does read src, but it already loads 250+ files.)
+
+So the question "did this move anything" is answerable by COMPARING THE BUNDLES rather than by
+timing them. Both controls were run before the tool was trusted:
+
+```text
+   POSITIVE  item 1662's real change      29 substantive lines added, 11 removed -> correctly NOT a relocation
+   NEGATIVE  two builds, identical source  BYTE-IDENTICAL -> the build is deterministic, so a clean verdict means something
+```
+
+And the verdict for this move:
+
+```text
+   det-a.mjs        24074 non-blank lines
+   after-rename.mjs 24074 non-blank lines
+   ADDED 1   REMOVED 1
+      -  //#region src/executor.ts
+      +  //#region src/executor/core.ts
+```
+
+#### ⚠️ THE BENCH SWEEP IS THE WRONG INSTRUMENT HERE, AND ITS OWN NULL CONTROL SAYS SO
+
+A 4-round `BENCH_ENGINES=ts bun run bench` baseline was captured first (73 rows). Its round-to-round
+spread on IDENTICAL code:
+
+```text
+   NULL CONTROL (codec rows, unreachable by a GQL change)   n=15  median 1.064x  p90 1.470x  worst 1.786x
+   QUERY rows                                               n=55  median 1.106x  p90 1.472x  worst 2.861x
+```
+
+**The null control and the query rows have the same p90.** So this sweep cannot distinguish a real
+GQL toll from noise below ~1.5x on any single row, and the expected toll of a relocation is 0-16%.
+Reading it as the gate would have been reading noise. It stays as a backstop for a catastrophic
+regression only.
+
+(The first baseline capture was thrown away for an unrelated reason worth recording: it parsed with
+`sed` inside the loop, and `[a-z)\]]` does not escape inside a POSIX bracket expression — it demands
+a literal `]` — so it silently kept only the 14 rows whose label ends in `]`, out of 73. The rewrite
+dumps RAW output and parses afterwards, so a parsing bug cannot cost a 15-minute run again.)
+
+#### The structure, measured: it is not eleven sections, it is one recursive compiler
+
+The file carries eleven `// --- section ---` markers, and section-level coupling says six of them
+are mutually dependent — true, and useless, because it does not say which symbols make them so. A
+Tarjan SCC over the top-level symbol graph (VALUE references only; a type-position reference is
+erased and creates no runtime edge) says:
+
+```text
+   219 value symbols, 193 SCCs, only 3 cyclic
+   190 symbols are in NO cycle at all
+    29 sit inside a cycle, in 3 clusters
+```
+
+```text
+   CLUSTER A  25 symbols, 2,105 lines, spanning 4 sections — IRREDUCIBLE
+              compileExpr/Func/Case/Aggregate/Exists/CountSubquery/ValueSubquery/LetIn/SubMatch,
+              hopValueAggregate, landingPredDegreeCount, membershipTest, compilePath/Node/Rel/
+              SubpathUnit, collectHints, hintsForVariable, compilePredicate, compileProps,
+              directEqProps, liftMembership, liftNegatedCompare, gatePredicate, filterPredicate
+   CLUSTER B  compileLinear <-> compileClause, 385 lines
+   CLUSTER C  checkLinearScope <-> checkWriteClauseScope, 150 lines
+```
+
+Cluster A is inherent: compiling an expression can require compiling a subquery's pattern, which
+requires compiling predicates, which requires compiling expressions. It gets one module. ⚠️ Note
+`gatePredicate` and `filterPredicate` are MEMBERS — they are predicate COMPILERS that call
+`compileExpr`, so filing them as "expression analysis leaves" (the first plan) would have created
+the cycle it was meant to remove.
+
+⚠️ **AND THE LAYERS ARE ORTHOGONAL TO THE SECTIONS.** Topologically the DAG is 11 layers, and every
+layer draws from every section — layer 0 alone is 94 symbols, 2,637 lines, pulling 712 from "shared
+bucket/adjacency", 437 from "expression compilation", 322 from "projection". So extracting by layer
+gives dependency-clean modules that are incoherent to read, and extracting by section gives cycles.
+The split has to be thematic groups that HAPPEN to be dependency-closed, verified one at a time.
+
+#### Why the barrel, and the cycle that was already there
+
+⚠️ **Nine modules under `executor/` import from `../executor.js` today, and the code behind it
+imports those nine back.** The graph has had a cycle through `executor.ts` all along; ESM tolerates
+it only because every reference sits inside a function body and resolves at call time rather than at
+module evaluation. That is luck, and it is the best available explanation for why the existing split
+stopped at nine modules with 12,000 lines left behind: there was nowhere to put the next piece.
+
+A barrel that is not itself one of the split modules is what gives the next piece somewhere to go.
+What breaks the remaining cycle is measured, not guessed: the nine siblings need **37 values and 29
+types** back from `core.ts`. The 29 types are free (erased). The 37 values are the shared leaf layer
+this package never had.
+
+The next extraction is priced the same way: the planner family — `inlineAggregateCall`,
+`inlineCorrelatedCall`, `inlineTrailingLet`, `fuseAnchorThenHop`, `dropUnread*`, `nameIsUnread`,
+`compileLinear` — is 23 symbols, 2,005 lines, exports exactly **ONE** name (`compileLinear`, called
+only by `compile` and by in-group `compileClause`), imports 33 from below, and is verified CLOSED:
+nothing it imports depends back on a member.
+
+⚠️ And it gets RENAMED when it moves. `// --- shared bucket/adjacency primitives` is the label on
+that block today — the planner, in a file named for execution. That label is a direct reason item
+1662's composition bug was hard to see.
+
+#### Gates
+
+`bun run check` 0 read UNPIPED. Suites core 444, gql 4254, gremlin 2017, serialization 144, native
+1081 — 7940 pass / 0 fail, each exit code read unpiped. Bundle diff 1 line of 24,074, both controls
+run first.
