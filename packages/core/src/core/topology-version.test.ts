@@ -34,28 +34,66 @@ describe('topologyVersion advances SYNCHRONOUSLY, which version and epoch do not
     // The deferred signals have not moved — this is the behaviour item 1571 measured.
     expect(g.version).toBe(0);
 
-    // The synchronous one has: two vertices seeded, then two edges.
-    expect(g.topologyVersion).toBe(before + 2);
+    // The synchronous one has: one per edge map write, one per label indexed.
+    expect(g.topologyVersion).toBe(before + 4);
   });
 
-  test('every topology write bumps it exactly once', () => {
+  /**
+   * ⚠️ EXACT DELTAS, AND THE EXACTNESS IS LOAD-BEARING FOR THE **TEST** EVEN THOUGH THE
+   * CONTRACT FORBIDS A **CONSUMER** FROM RELYING ON IT. Those are different claims. A consumer may
+   * only ask "is this the same number I saw before?", because the delta is an implementation detail
+   * that may change. A test that pins the delta detects a MISSING or REDUNDANT bump, which is the
+   * only way to tell a live site from a dead one.
+   *
+   * This was learned by weakening it. When the signal grew the two edge-label sites, the delta
+   * assertions here failed (a singly-labelled `addEdge` bumps twice, not once) and were relaxed to
+   * "it changed". The next mutation pass then scored three mutants that the exact version had caught
+   * as survivors — deleting the `edgesById.set` bump, deleting the `edgesById.delete` bump, and
+   * adding a spurious bump on vertex-label commits — because every one of them leaves SOME other
+   * site bumping on the same operation. Relaxing an assertion to match a widened implementation is
+   * how a suite quietly stops testing.
+   */
+  test('the per-site deltas, asserted exactly', () => {
     const g = new Graph();
-    const start = g.topologyVersion;
+    const delta = (fn: () => void): number => {
+      const before = g.topologyVersion;
+      fn();
+
+      return g.topologyVersion - before;
+    };
 
     const a = g.addVertex({ id: 'a', labels: ['P'], properties: {} });
-    expect(g.topologyVersion).toBe(start + 1);
+    expect(delta(() => g.addVertex({ id: 'b', labels: ['P'], properties: {} }))).toBe(1);
 
-    const b = g.addVertex({ id: 'b', labels: ['P'], properties: {} });
-    expect(g.topologyVersion).toBe(start + 2);
+    const b = g.getVertexById('b')!;
 
-    const e = g.addEdge({ id: 'e', from: a, to: b, labels: ['E'], properties: {} });
-    expect(g.topologyVersion).toBe(start + 3);
+    // One for `edgesById.set`, one per label indexed into the type-keyed adjacency.
+    expect(
+      delta(() => g.addEdge({ id: 'e1', from: a, to: b, labels: ['E'], properties: {} })),
+    ).toBe(2);
+    expect(
+      delta(() => g.addEdge({ id: 'e2', from: a, to: b, labels: ['E', 'F'], properties: {} })),
+    ).toBe(3);
 
-    g.removeEdge(e);
-    expect(g.topologyVersion).toBe(start + 4);
+    expect(delta(() => g.removeEdge(g.getEdgeById('e1')!))).toBe(2);
+    expect(delta(() => g.removeVertex(b))).toBe(1 + 3);
+  });
 
-    g.removeVertex(b);
-    expect(g.topologyVersion).toBe(start + 5);
+  /**
+   * ⚠️ THE ≥1-LABEL INVARIANT MAKES THE TWO EDGE-MAP BUMPS REDUNDANT, which is worth stating
+   * because it is why two mutants against them survive and why they are kept anyway.
+   *
+   * `addEdge` rejects an edge with no labels, so `edgesById.set` can never run without at least one
+   * `indexEdgeLabel`, and `edgesById.delete` never without a `deIndexEdgeLabel`. Deleting either
+   * edge-map bump therefore cannot under-invalidate: the label site still fires. They are kept as
+   * defence in depth — with them, each map's bump is correct on its own terms, and the signal does
+   * not silently depend on an invariant enforced elsewhere in the file. The delta test above is what
+   * keeps them live rather than dead code.
+   */
+  test('⚠️ an edge cannot exist without a label, which is why the edge-map bumps are belt-and-braces', () => {
+    const { g, a, b } = seed();
+
+    expect(() => g.addEdge({ id: 'e', from: a, to: b, labels: [], properties: {} })).toThrow();
   });
 });
 
@@ -88,7 +126,7 @@ describe('what it does and does NOT respond to', () => {
    * on those would throw the cache away on every `SET` and the cache would never pay for itself on
    * a read-write workload.
    */
-  test('⚠️ a property or label write does NOT bump it', () => {
+  test('⚠️ a property write, or a VERTEX label write, does NOT bump it', () => {
     const { g, a } = seed();
     const v = g.topologyVersion;
 
@@ -98,11 +136,61 @@ describe('what it does and does NOT respond to', () => {
     a.properties = { k: 100, extra: 'x' };
     expect(g.topologyVersion).toBe(v);
 
+    // A vertex's labels feed `verticesByLabel`, which no adjacency structure is derived from.
+    //
+    // ⚠️ BOTH THE SETTER AND THE METHODS, because they are DIFFERENT PATHS and only the methods
+    // reach `commitElementLabels` — `v.labels =` bypasses it (which is a known hazard of its own).
+    // A test that exercised only the setter scored a spurious bump on vertex-label commits as a
+    // SURVIVOR, since the setter never reaches the site the mutant touched.
     a.labels = ['P', 'Q'];
+    expect(g.topologyVersion).toBe(v);
+
+    g.addLabelToVertex('R', a);
+    expect(g.topologyVersion).toBe(v);
+
+    g.removeLabelFromVertex('R', a);
     expect(g.topologyVersion).toBe(v);
 
     a.removeProperty('extra');
     expect(g.topologyVersion).toBe(v);
+  });
+
+  /**
+   * ⚠️ THE HOLE THAT WOULD HAVE MADE THE FIRST CACHE A WRONG ANSWER, found while writing the
+   * consumer rather than by this suite. The adjacency boxes are keyed BY EDGE TYPE, so an edge label
+   * write moves the edge between buckets via `indexEdgeLabel`/`deIndexEdgeLabel` and never touches
+   * `insertEdge`. A type-filtered CSR cached on a counter that ignored this would keep serving
+   * neighbours for a type the edge no longer carries — the correct answer at every step, from a
+   * structure describing a graph that no longer exists.
+   *
+   * So an EDGE label write bumps, where a VERTEX label write does not. The asymmetry is the point.
+   */
+  test('⚠️ an EDGE label write DOES bump it — adjacency is keyed by type', () => {
+    const { g, a, b } = seed();
+    const e = g.addEdge({ id: 'e1', from: a, to: b, labels: ['E'], properties: {} });
+
+    const added = g.topologyVersion;
+    g.addLabelToEdge('F', e);
+    expect(g.topologyVersion).not.toBe(added);
+
+    const removed = g.topologyVersion;
+    g.removeLabelFromEdge('F', e);
+    expect(g.topologyVersion).not.toBe(removed);
+  });
+
+  /**
+   * The re-bucketing is observable through the public adjacency, which is what makes the bump
+   * load-bearing rather than defensive: the same read returns different edges before and after.
+   */
+  test('and the re-bucketing it guards is observable from the adjacency box', () => {
+    const { g, a, b } = seed();
+    const e = g.addEdge({ id: 'e1', from: a, to: b, labels: ['E'], properties: {} });
+
+    expect(a.adjFrom?.get('F')?.size ?? 0).toBe(0);
+
+    g.addLabelToEdge('F', e);
+
+    expect(a.adjFrom?.get('F')?.size ?? 0).toBe(1);
   });
 });
 

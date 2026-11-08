@@ -1230,11 +1230,20 @@ export class Graph {
    * `g.addEdge(...); query(g, …)` shape. `vertexCount`/`edgeCount` advance eagerly but cannot serve
    * either — a delete plus an add leaves both unchanged while the topology differs.
    *
-   * ⚠️ TOPOLOGY, NOT MUTATION. A property or label write does NOT bump this, deliberately: a
-   * consumer caching an adjacency structure is not invalidated by either, and bumping would throw
-   * away work on every `SET`. Anything keyed on this must therefore depend on the vertex set and
-   * the edges ONLY. (The vertex set is in scope because a CSR numbers vertices by iteration order,
-   * so an add or remove shifts every index.)
+   * ⚠️ TOPOLOGY, NOT MUTATION. A property write does NOT bump this, nor does a VERTEX label
+   * write, deliberately: a consumer caching an adjacency structure is not invalidated by either,
+   * and bumping would throw away work on every `SET`. Anything keyed on this must therefore depend
+   * on the vertex set, the edges, and the edges' TYPES only. (The vertex set is in scope because a
+   * CSR numbers vertices by iteration order, so an add or remove shifts every index.)
+   *
+   * ⚠️ AN **EDGE** LABEL WRITE DOES BUMP IT, AND THAT IS NOT AN INCONSISTENCY WITH THE LINE
+   * ABOVE. The adjacency boxes (`Vertex.adjFrom`/`adjTo`, i.e. `edgesFromByLabel`) are keyed BY
+   * EDGE TYPE, so `addLabelToEdge` moves an edge between buckets through
+   * `indexEdgeLabel`/`deIndexEdgeLabel` without going anywhere near `insertEdge`. Every consumer of
+   * this signal reads a TYPE-FILTERED adjacency, so to such a consumer that re-bucketing is a
+   * topology change in every sense that matters, and omitting it would make a type-filtered cache
+   * serve a stale answer after `SET`-style label surgery. A vertex label write touches
+   * `verticesByLabel`, which no adjacency structure is derived from, so it stays out.
    *
    * ⚠️ IT IS FOR INVALIDATION, SO IT ONLY HAS TO BE CONSERVATIVE, NOT EXACT. A rollback replays the
    * transaction's inverse operations through these same public mutators, so it bumps this too and a
@@ -4518,6 +4527,7 @@ export class Graph {
    * box either: it holds only the id, by items 140/218's deliberate choice.
    */
   private readonly indexEdgeLabel = (label: string, edge: Edge) => {
+    this.topologyVersion += 1;
     let byLabel = this.edgesByLabel.get(label);
 
     if (byLabel === undefined) {
@@ -4563,6 +4573,7 @@ export class Graph {
   };
 
   private readonly deIndexEdgeLabel = (label: string, edge: Edge) => {
+    this.topologyVersion += 1;
     this.edgesByLabel.get(label)?.delete(edge);
 
     const { fromId } = edge;

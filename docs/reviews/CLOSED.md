@@ -73877,7 +73877,7 @@ profile whose fixture outweighs its measurement by 40x describes the fixture. Re
 
 `bun run check` 0 read unpiped. No engine change — one new probe and this entry.
 
-### Item 1674 — **`topologyVersion`: THE SYNCHRONOUS SIGNAL ITEM 1571 SAID DID NOT EXIST, BUILT AND MEASURED FREE.** Four integer increments, two maps, a 6-test contract suite, and a 5/6 mutation score where the survivor is an equivalent mutant. ⚠️ **Its A/B needed a purpose-built instrument, because the probe it was first measured with produced a result that CONTRADICTED its own mechanism** — the arm that moved most bumps the counter zero times
+### Item 1674 — **`topologyVersion`: THE SYNCHRONOUS SIGNAL ITEM 1571 SAID DID NOT EXIST, BUILT AND MEASURED FREE.** Four integer increments, two maps, a 6-test contract suite, and a 5/6 mutation score where the survivor is an equivalent mutant. ⚠️ **Its A/B needed a purpose-built instrument, because the probe it was first measured with produced a result that CONTRADICTED its own mechanism** — the arm that moved most bumps the counter zero times. ⚠️ **AND THE SIGNAL AS BUILT HERE WAS INCOMPLETE — see item 1675, which found that a type-keyed adjacency is re-bucketed by an edge-label write and added two more sites**
 
 Item 1571 priced a CSR cache at 86.3% of a bounded var-length count and declined to build it for one
 reason: nothing in `Graph.ts` advances synchronously. Item 1673's blocker audit narrowed the
@@ -73977,3 +73977,84 @@ likely to be mistaken for a real break in a change to `Graph.ts`. Per-package ru
 #### Still open
 
 The cache itself. The prerequisite is now in the tree, so item 1571's 86.3% is next.
+
+### Item 1675 — ⚠️ **ITEM 1674'S SIGNAL WAS WRONG BY OMISSION, AND THE CACHE IT EXISTS FOR WOULD HAVE BEEN A WRONG ANSWER.** Adjacency is keyed BY EDGE TYPE, so an edge-label write re-buckets it without ever touching `insertEdge`. Found while writing the first consumer, not by the contract suite. ⚠️ **And the repair's first draft RELAXED an assertion to fit the widened code, which cost three mutants their teeth** — the next pass scored them as survivors
+
+Item 1674 bumped `topologyVersion` at the four map writes that change the vertex set or the edge set.
+Writing the CSR cache against it exposed what that misses.
+
+#### The hole
+
+`walkLevelCount` builds its `nbr` from a TYPE-FILTERED adjacency — `edgesOfTypes(v.adjFrom, types)`.
+Those boxes are `edgesFromByLabel`, keyed by edge type, and `addLabelToEdge` moves an edge between
+buckets through `indexEdgeLabel`/`deIndexEdgeLabel`:
+
+```text
+   addLabelToEdge  ->  commitElementLabels  +  indexEdgeLabel    -> edgesFromByLabel mutated
+                       (no insertEdge, no edgesById write, no bump)
+```
+
+So a CSR cached on the four-site counter would keep serving neighbours for a type an edge no longer
+carries: the correct answer at every step, from a structure describing a graph that no longer exists.
+This is the exact failure shape every entry in this file's index-seeding family has.
+
+The fix is two more sites, at `indexEdgeLabel` and `deIndexEdgeLabel`. **An edge-label write IS a
+topology change to every consumer of this signal**, because every one of them reads a type-filtered
+adjacency. A VERTEX label write stays out: it touches `verticesByLabel`, which no adjacency structure
+is derived from. The asymmetry is the content of the contract, so it is pinned in both directions.
+
+#### ⚠️ The repair's first draft relaxed a test to fit the code, and a mutation pass priced it
+
+Widening the signal broke an assertion: a singly-labelled `addEdge` now bumps TWICE, once for
+`edgesById.set` and once for the label indexed, so `toBe(start + 3)` failed. It was relaxed to
+`.not.toBe(previous)` — per-site CHANGE rather than an exact delta — with what felt like a principled
+justification: the declaration's own contract says a consumer must never subtract two values, so
+asserting a delta looked like testing something the signal does not promise.
+
+The next mutation pass refuted that:
+
+```text
+                              exact-delta   relaxed
+   M3  drop edgesById.set bump     CAUGHT   SURVIVED
+   M4  drop edgesById.delete bump  CAUGHT   SURVIVED
+   M5  bump on vertex-label commit CAUGHT   SURVIVED
+```
+
+Each of those three leaves SOME other site bumping on the same operation, so "it changed" still holds
+while a site is dead. ⚠️ **The two claims are different and only one of them was true**: a CONSUMER
+must not rely on the delta, because it is an implementation detail. A TEST that pins the delta is the
+only instrument that distinguishes a live site from a dead one. Restored as an exact delta table
+(`addVertex` +1, `addEdge` +2 for one label and +3 for two, `removeEdge` +2, isolated `removeVertex`
++4), all three are caught again — M5 with 3 failures.
+
+⚠️ **M5 ALSO NEEDED A SECOND PATH, not just a tighter assertion.** The no-bump test exercised
+`v.labels = [...]`, which BYPASSES `commitElementLabels` entirely — the same divergence between the
+setter and the methods that this file already records for the label index. So a spurious bump placed
+in `commitElementLabels` was invisible to it. The test now exercises the setter AND
+`addLabelToVertex`/`removeLabelFromVertex`.
+
+#### ⚠️ An edge cannot exist without a label, so the two edge-map bumps are redundant
+
+`addEdge` rejects `labels: []`, so `edgesById.set` can never run without at least one
+`indexEdgeLabel`, nor `edgesById.delete` without a `deIndexEdgeLabel`. Deleting either edge-map bump
+therefore cannot under-invalidate. They are KEPT as defence in depth — with them each map's bump is
+correct on its own terms and the signal does not silently depend on an invariant enforced 2,000 lines
+away — and the delta table is what keeps them live rather than dead code. The invariant itself is now
+asserted, so its removal would surface here rather than as a stale cache.
+
+#### Mutation score: 7 of 8, survivor equivalent
+
+M1-M5, M7, M8 all caught (1, 1, 2, 1, 3, 3, 2 failures). M6 — restore the counter on rollback —
+survives, correctly and for the reason item 1674 recorded: a rollback restores state faithfully, so a
+restored counter is consistent.
+
+#### Gates
+
+`bun run check` 0 read unpiped. `packages/core` isolated: 453 pass, 0 fail. All seven byte-identity
+fuzzers: 20 pass, 0 fail.
+
+#### Still open
+
+The cache itself, unchanged from item 1674: item 1571's 86.3%. The key is `(topologyVersion, inward,
+types)`, and only `order`/`idx`/`off`/`nbr` are cacheable — the `passes` vector is predicate-dependent
+and `src`/`srcIdx` read `verticesByLabel`, which a vertex-label write moves without bumping.
