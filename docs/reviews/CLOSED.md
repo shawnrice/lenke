@@ -74625,3 +74625,68 @@ functions of the vertex.
 
 `bun run check` 0 read unpiped. All five package suites isolated, 0 fail each: core 453, gql 4268,
 gremlin 2047, serialization 144, native 1081. All seven byte-identity fuzzers: 20 pass, 0 fail.
+
+### Item 1682 — **THE GQL FIXED-DEPTH HOP COUNT PRICED AT 20.3x WARM AND 4.9x COLD**, the gremlin twin of items 1678/1681. ⚠️ **AND THE FIRST VERSION OF THIS PROBE MEASURED AGAINST A STRAWMAN 2.5x SLOWER THAN THE ENGINE, which inflated it to 71x.** Also the THIRD arrival at `bucketSize`'s misattribution, which the comment parked there caught as designed. OPEN, not built
+
+Four bench rows sit at ~340-475 ms (`count 3-hop`, `count 4-hop` and their filtered variants),
+untouched by item 1676 — that cache covers `{m,n}` quantified paths, not a literal chain. A profile of
+`MATCH (a:Person)-[:KNOWS]->(b)-[:KNOWS]->(c)-[:KNOWS]->(d) RETURN count(*)` puts **65.1% in
+`bucketSize`** and 11.7% in `side`.
+
+#### ⚠️ The third arrival at a closed frame, and the comment did its job
+
+`bucketSize`'s own doc records that share as MISATTRIBUTION, proven by COUNTING rather than by
+building: exactly |V| + |E| calls, all on the O(1) branch, so a per-vertex degree MEMO has nothing to
+save because no vertex's degree is read twice. Item 1416 found it for `chain3`, item 1637 reproduced
+it for `count3`, and that entry says the note was parked on the function "where the next profile will
+send someone". **It sent someone. The note is what stopped a third memo attempt**, which is the
+cheapest possible outcome for a comment.
+
+⚠️ **THE LEVER HERE IS A DIFFERENT CLAIM AND THE DISTINCTION IS LOAD-BEARING.** What is refuted is
+"read each degree ONCE instead of many times" — that saves nothing when each is already read once.
+What is open is "make each SINGLE read cheaper": a `Map.get(label)?.size` plus a generator frame per
+edge, against two `Int32Array` reads. The gremlin twin of this shape took exactly that substitution
+for 7x-10x at items 1678/1681, which is why it was worth pricing rather than assuming either way.
+
+#### ⚠️ The first measurement was against a strawman, and it read 71x
+
+```text
+   arm                   ms    vs engineRoute
+   engineRoute        402.3          1.00x
+   bucketPerEdge     1021.8          0.39x    <- hand-rolled "current shape", 2.5x SLOWER
+   csrLevels           19.9         20.25x    <- cached CSR, the repeat case
+   csrPlusBuild        81.8          4.92x    <- the build INSIDE the timed region, first call
+```
+
+The probe's first version had no `engineRoute` arm and took `bucketPerEdge` as the baseline, giving
+71.05x and 12.36x. **`bucketPerEdge` is not the current shape**: it enumerates every PATH, calling
+`.size` once per path at the last level, where the engine does LEVEL-WISE work — which is exactly
+what item 1637's |V| + |E| count established. So the stand-in was 2.5x slower than the route it stood
+in for and every ratio against it was inflated by that factor.
+
+This is "assert each A/B arm IS the code it claims" in a form the existing rule does not quite name:
+not a build that failed to apply, but a hand-written PRE arm that was simply not the algorithm. The
+fix is to time the engine, which cannot be a strawman. It carries parse, plan and dispatch the CSR
+arms do not, so it is not a clean lower bound either — but it is the number a change has to beat.
+
+#### What the honest numbers say
+
+**20.3x on a repeated query and 4.9x on a cold one.** The cold arm is the one that decides whether
+this is worth building: a hop count is often asked once per graph, and if only the cached arm won,
+the lever would have to be sold as a repeat-workload optimisation. At 4.92x with the whole O(V + E)
+build inside the timed region, it does not.
+
+(All four arms are asserted to produce the same count, 24,999,751, so an arm cannot read fast by
+doing less. The fixture's out-degree varies, so the count is not `N * F^3` — 24,999,751 against
+25,000,000 — which an out-regular fixture would have made uninformative.)
+
+#### Still open
+
+The build. Item 1676's `csrFor` in `var-length-count.ts` is already the structure and already cached
+on `topologyVersion`, so the work is routing the fixed-depth chain count through it — the same shape
+as item 1678, including the per-hop direction and label key, and the same hazards: per-hop filters,
+and the polymorphism item 1681 measured at 1.26x when one walk served several depths.
+
+#### Gates
+
+`bun run check` 0 read unpiped. One new probe, no engine change.
