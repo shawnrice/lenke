@@ -4769,6 +4769,32 @@ const sweepChain = ({ graph, params, legs, startLabel, startGate, startSource }:
   // asserting the answer buys over one asserting the route.
   const lastLoops = last.both && loopsOfTypes(graph, last.types);
 
+  /**
+   * ⚠️ THE MEMO ALREADY KNOWS THIS DEGREE, AND THE LAST POSITION WAS PAYING A STRING-KEYED MAP
+   * LOOKUP TO RE-ASK IT (item 1683). `hopSide(graph, idOf[slot], …)` does
+   * `edgesFromByLabel.get(id)` — an id STRING through a Map — once per frontier slot, where
+   * `memo.len[slot]` is the same number as an `Int32Array` read.
+   *
+   * Sound only because of what `slotNbrs`' own eligibility already guarantees: `uniform` means every
+   * leg shares a direction and none is `both`, and the memo additionally requires every leg to carry
+   * the same types with no gate and no effective label. So the LAST leg is the leg the memo was
+   * built from, and `len[slot]` is exactly the degree this position wants. `lastFar` is `undefined`
+   * and `last.both` is `false` whenever `slotNbrs` exists, which is why neither is consulted here.
+   *
+   * `len[slot] === undefined` is "this slot was never walked as a SOURCE" — a slot first reached in
+   * the final pass has no run — so the fallback is the original call, unchanged.
+   */
+  if (slotNbrs !== undefined) {
+    const { len } = slotNbrs;
+
+    for (const slot of frontier) {
+      count +=
+        ways[slot] * (len[slot] ?? hopSide(graph, idOf[slot], last.out, last.types, lastFar));
+    }
+
+    return count;
+  }
+
   for (const slot of frontier) {
     count +=
       ways[slot] *

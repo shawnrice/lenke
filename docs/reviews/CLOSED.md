@@ -74690,3 +74690,74 @@ and the polymorphism item 1681 measured at 1.26x when one walk served several de
 #### Gates
 
 `bun run check` 0 read unpiped. One new probe, no engine change.
+
+### Item 1683 — **1.17x and 1.18x on the two hop-count rows that actually reach `sweepChain`'s memo**, by reading a degree the memo already holds instead of re-asking it through a string-keyed map. ⚠️ **AND A GATE RELAXATION WAS BUILT, MEASURED, AND REVERTED — because a ROUTE MAP showed `count 3-hop` does not use `sweepChain` at all.** Item 1682's 4.9x/20.3x belongs to a different route than the one edited here
+
+Item 1682 priced a CSR substrate at 4.92x cold and 20.25x warm against whatever answers
+`MATCH (a:Person)-[:KNOWS]->(b)-[:KNOWS]->(c)-[:KNOWS]->(d) RETURN count(*)`. This item set out to
+build it in `sweepChain` and found, by instrumenting, that it had the wrong function.
+
+#### ⚠️ The route map, which should have come before the first edit
+
+Counters on each candidate rung, 20,000 vertices / 99,999 edges:
+
+```text
+   row                             sweepChain   side      note
+   count 2-hop                              0      0      a different route entirely
+   count 3-hop                              0  119,999    NOT sweepChain
+   count 4-hop                              1      0      memo serves the last position
+   count 3-hop + start filter               1  20,000     passes = 2, so no memo
+   count 3-hop + end filter                 1  19,878
+   count 3-hop + interior filter            0  66,156     NOT sweepChain
+   count 4-hop + start filter               1      0      memo serves the last position
+```
+
+**`count 3-hop` never enters `sweepChain`.** It reaches `side` exactly |V| + |E| times through a
+route this item did not identify, which is also the route item 1682's `engineRoute` arm timed — so
+**that item's 4.9x/20.3x pricing belongs to the unidentified route, not to `sweepChain`**, and this
+entry does not inherit it.
+
+⚠️ **THE PREVIOUS ITEM'S OWN NOTE SAID "find the route before editing anything" AND THE FIRST EDIT
+HERE IGNORED IT.** `sweepChain`'s memo is gated `passes > 2` with item 1106's measurement behind it;
+relaxing it to `passes > 1` was tried on the assumption that `count 3-hop` went through there. The
+result was incoherent — the filtered 3-hop variants improved 1.18x-1.28x while plain `count 3-hop`
+got **1.06x WORSE**, on a route it turns out not to use. REVERTED, and the gate stands at `passes > 2`
+with item 1106's numbers intact.
+
+#### What shipped, and why it is sound
+
+The last position was calling `hopSide(graph, idOf[slot], …)` — `edgesFromByLabel.get(id)`, an id
+STRING through a Map — once per frontier slot, to re-ask a degree the memo already holds as
+`len[slot]`, an `Int32Array` read.
+
+Sound because of what the memo's existing eligibility already guarantees: `uniform` means every leg
+shares a direction and none is `both`, and the memo additionally requires every leg to carry the same
+types with no gate and no effective label. **So the last leg IS the leg the memo was built from.**
+`lastFar` is `undefined` and `last.both` is `false` whenever the memo exists, which is why neither is
+consulted on that path. `len[slot] === undefined` means "never walked as a SOURCE" — a slot first
+reached in the final pass has no run — so the fallback is the original call.
+
+#### The measurement, interleaved, two rounds per arm
+
+```text
+    ratio        PRE       POST   row
+   0.853x      340.7      290.6   count 4-hop                    1.17x
+   0.847x      406.1      344.0   count 4-hop + start filter     1.18x
+```
+
+Exactly the two rows the route map shows reaching the memo, which is the attribution this win needed.
+Everything else is flat: the 3-hop family 0.983x-1.021x and the 2-hop family 0.952x-1.030x, neither
+of which gets a memo. **median 0.994x, p10 0.915x, p90 1.070x** across 70 rows; the three rows over
+1.15x are `query: top distinct values` (a 3.8 ms row), `query: subquery item` and `encode graphson`,
+none reachable from `shortcuts.ts`'s chain walk. `count 4-hop quantified [TRAIL]` reads 0.719x but
+with `post=[64.6, 90.2]`, a 1.4x spread inside one arm, so it is noise rather than a bonus.
+
+#### Still open
+
+Which route answers `count 3-hop`, `count 2-hop` and `count 3-hop + interior filter` — all three
+bypass `sweepChain`, and the first of them is the row item 1682 priced at 4.9x/20.3x. Find it before
+building there.
+
+#### Gates
+
+`bun run check` 0 read unpiped. `packages/gql` isolated: 4268 pass, 0 fail.
