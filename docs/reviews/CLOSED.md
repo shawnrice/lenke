@@ -74395,3 +74395,69 @@ through the public API. The accumulate is kept anyway because it removes a silen
 
 `bun run check` 0 read unpiped. All five package suites isolated, 0 fail each: core 453, gql 4268,
 gremlin 2030, serialization 144, native 1081. All seven byte-identity fuzzers: 20 pass, 0 fail.
+
+### Item 1679 — **THE LARGEST ROW IN THE GREMLIN CORPUS PRICED AT 31.8x, and ⚠️ THE OBVIOUS HYPOTHESIS IS REFUTED: the iterator protocol is only 1.27x of it.** `V().out()x3.values(age)` costs 6813 ms TS against 1134 native; the cost is the ELEMENT DEREFERENCE AND PROPERTY-GETTER CHAIN, not `.next()`. OPEN, not built
+
+The `bench:gremlin` sweep for item 1678 named this row by elimination: 6813 ms where the next-slowest
+is 1140, so it is 6x the rest of the corpus and 6.0x its own native counterpart.
+
+#### The profile
+
+200,000 vertices / 1,000,000 edges, 25,000,000 output rows, 8830 ms/call, one graph built once:
+
+```text
+   44.0%  walk              the DFS — `its[d].next()` per edge visited
+   27.4%  pick              per-row value extraction
+   16.5%  get properties
+```
+
+`walk` drives the hop chain with explicit `Set` iterators, so every edge visited allocates a fresh
+`{value, done}`. With items 1411 and 1412 having already priced the generator protocol at 1.9-2.2x
+and `drain` at 53.8% of `V().out(E)`, the protocol was the obvious suspect.
+
+#### ⚠️ It is not the protocol, and that is the finding
+
+Three arms over the SAME adjacency, each asserted to compute the same checksum so an arm cannot read
+fast by doing less (100,000 vertices / 400,000 edges, depth 3, 6,399,468 rows):
+
+```text
+   setProtocol          1437.1 ms    1.00x     the current shape
+   setForOf             1131.2       1.27x     same Sets, no explicit iterator objects
+   csrIndexed             34.1      42.17x     flat Int32Array runs + a per-slot value array
+   setProtocolToArray   1599.6       1.00x     the current shape, MATERIALIZING
+   csrToArray             50.3      31.83x     the CSR, MATERIALIZING
+```
+
+**The iterator protocol is worth 1.27x of a 42x gap.** What the CSR arm actually removes is the chain
+of indirections per row: a `Map.get(label)` per vertex per visit, an `Edge` dereference, a `Vertex`
+dereference, the `properties` getter, and a string-keyed object lookup — replaced by two
+`Int32Array` reads and one array index. That also explains the 16.5% in `get properties`, which this
+file's own rule says to treat as attribution until a deletion test says otherwise: it is real, and it
+is real because of how OFTEN it is called, not because the getter is slow.
+
+⚠️ **AND THE SINK IS NOT THE BOUND, which had to be measured because it would have capped the whole
+lever.** `csrIndexed` sums into a scalar while the real route must materialize every row, so the
+first version of this probe was quoting a ceiling that no implementation could reach. Adding the
+materializing pair costs the CSR arm 16 ms (34.1 to 50.3) against 160 ms for the protocol arm (1437
+to 1600) — so 31.8x survives the sink.
+
+#### Three design constraints for the build
+
+⚠️ **THE PER-SLOT VALUE ARRAY CANNOT BE CACHED ON `topologyVersion`.** The CSR can — item 1678
+already caches exactly this structure — but the values are PROPERTIES, and a property write
+deliberately does not bump that signal (items 1674/1675), precisely so a `SET` does not discard an
+adjacency cache. So the value array has to be rebuilt per call. That is O(V) against 25,000,000 rows,
+which is free, and it is the right split rather than a compromise.
+
+⚠️ **`values(k)` RETURNS ANY TYPE**, so the per-slot array is `unknown[]`, not a `Float64Array`.
+The probe's `Float64Array` is part of why its ceiling is 42x; expect the real route lower.
+
+⚠️ **PER-HOP GATES AND ROW ORDER both have to be preserved**, and neither is exercised by these
+arms. The current walk visits `graph.vertices` then per-vertex bucket order; a CSR built from the
+same buckets in the same order reproduces it, but that is a claim to test rather than assume — and
+`order-is-unspecified` means row order is not a cross-engine contract, while a test asserting a
+specific array is still entitled to its order.
+
+#### Gates
+
+`bun run check` 0 read unpiped. One new probe, no engine change.
