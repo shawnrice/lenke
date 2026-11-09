@@ -97,7 +97,14 @@
  * ```
  *
  * `mapBucket` is REFUTED outright: building the Map costs more than the comparator saves.
- * `composite` WORKS and is 1.37x on the sort step (~1.3x on the row) with byte-identical order.
+ *
+ * ⚠️ AND THE `composite` 1.37x IS WITHDRAWN — IT WAS MEASURED ON UNREPRESENTATIVE DATA (item
+ * 1718). Those arms used synthetic keys drawn as a PERMUTATION, so all 1,000,000 were DISTINCT. The
+ * engine's own rows carry 200,000 distinct names over 1,000,000 rows, and on THOSE the composite is
+ * **166.6 ms against the comparator's 30.5 — 5.5x WORSE**. So it is refuted on SPEED as well as on
+ * the 111 MB. The synthetic fixture misled the measurement in BOTH directions, which is the lesson
+ * worth keeping: a sort arm must be measured on the engine's real key distribution, because both
+ * V8's interned-string pointer compare and TimSort's run detection depend on it.
  *
  * ⚠️ AND IT IS DECLINED ON MEMORY, WHICH IS THE NUMBER THAT DECIDES IT. Measured peak
  * `heapUsed` over the same 1,000,000-row sort: the comparator path adds **0 MB**, the composite

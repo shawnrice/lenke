@@ -76914,7 +76914,7 @@ would measure whichever printed last.
 the new probe). native 1081 pass, 0 fail. No engine source changed — `bench.ts`, `bench-gremlin.ts`
 and a new probe only — so the suites and fuzzers are item 1713's.
 
-### Item 1717 — **REFUTED ON MEMORY, NOT ON SPEED: sorting natively via a composite key is a measured 1.37x on the sort step and costs 111 MB of transient heap on a 1,000,000-row sort (peak 51 -> 162 MB, 3.2x).** ⚠️ **`mapBucket` is refuted outright at 394.6 against 335.9.** The lever is recorded on the function with its numbers, including the two correctness costs a re-pricing would have to pay
+### Item 1717 — ~~**REFUTED ON MEMORY, NOT ON SPEED: sorting natively via a composite key is a measured 1.37x on the sort step**~~ ⚠️ **CORRECTED AT ITEM 1718: THE 1.37x WAS MEASURED ON UNREPRESENTATIVE DATA. On the engine's own rows the composite is 166.6 ms against the comparator's 30.5 — 5.5x WORSE, not 1.37x better.** It is refuted on SPEED as well as on memory (111 MB of transient heap on a 1,000,000-row sort, peak 51 -> 162 MB, 3.2x). ⚠️ **`mapBucket` is refuted outright at 394.6 against 335.9.** The lever is recorded on the function with its numbers, including the two correctness costs a re-pricing would have to pay
 
 Once item 1711's reduced comparator is a bare `<`, the row's remaining cost is ~20M JS->native
 crossings, and V8's comparator-LESS `Array.prototype.sort()` avoids them: for surrogate-free strings
@@ -76961,3 +76961,68 @@ input.
 `bun run check` 0 read through `${pipestatus[1]}`. No behaviour changed — the only edits are this
 entry and the rejection note on `sort-column-specialize.ts` — so the suites and fuzzers are item
 1713's.
+
+### Item 1718 — **THE LARGEST GQL ROW IS FULLY DECOMPOSED AND HAS NO ANOMALY IN IT: walk 282.8 + scan 32.0 + sort 479.6 = 812.7 ms, and the 479.6 is the GENUINE n log n cost.** ⚠️ **I chased a 15x phantom for five measurements because I compared against a route whose output is ALREADY SORTED — TimSort is adaptive and my "same rows" control was 100% ascending in 6 runs.** ⚠️ **And it withdraws item 1717's 1.37x: on the engine's real key distribution the composite is 5.5x WORSE, not better**
+
+With item 1716's fixture fix, `traverse 1-hop project + order by` is the largest live query row.
+Timed at the `sortedRows` call site, one shape per process:
+
+```text
+    total      812.7 ms
+    walk       282.8      the inner producer, 1,000,000 rows
+    scan        32.0      `sortColumnKind` — 1M typeof + regex tests
+    sort       479.6      `rows.sort(reduced)`
+    unaccounted  0.0
+```
+
+**⚠️ THE PHANTOM, AND WHY IT HELD UP FOR SO LONG.** Sorting what looked like the same 1,000,000 rows
+externally measured **30.6 ms** — a 15x gap against the 479.6 inside. It survived four attempts to
+explain it, and each one was a real measurement that happened to be consistent with the wrong story:
+recopying the rows compactly did NOT help (31.2 read / 433.0 sort), so not row locality; the rows are
+the same one-key `{n}` shape; `String(v).slice(0)` moved it only 478.6 -> 406.6, so not string
+representation; and the two row sets hold equal values.
+
+The answer is that **the control was never equivalent**:
+
+```text
+    rows produced by        ascending-adjacent   ascending runs   external sort
+    the ORDER BY path             88.8%             112,196          478.6 ms
+    the no-sort route            100.0%                   6           30.7 ms
+```
+
+The no-sort route takes the FAR-DRIVEN walk, which emits far vertices in id order, so `x.name` comes
+out `person0, person0, person0, …` — **already sorted, in six runs** — and TimSort finishes a
+nearly-sorted array in near-linear time. The row's own comment in `bench.ts` says this outright
+("Sorting also forces the START-DRIVEN walk, because the far-driven one reorders rows deliberately"),
+which I had read at the start of item 1711 and did not connect. **A sort control must be matched on
+SORTEDNESS, not just on values, row count and shape.**
+
+So the decomposition is consistent and nothing is wrong: 479.6 ms is what sorting 1,000,000 genuinely
+unsorted strings costs, item 1711's specialization is the 1.30x-1.46x already recorded, and the
+walk's 282.8 against 99.5 is the far-driven locality win being given up — deliberate, and the row
+exists partly to watch it.
+
+**⚠️ THIS WITHDRAWS ITEM 1717'S HEADLINE NUMBER.** Those arms used synthetic keys drawn as a
+permutation, so all 1,000,000 were DISTINCT; the engine's rows carry 200,000 distinct names over
+1,000,000 rows. Re-measured on the real rows:
+
+```text
+    comparator sort   30.5 ms
+    composite        166.6         5.5x WORSE
+```
+
+So the composite is refuted on SPEED as well as on its 111 MB, and 1717's "1.37x, declined on memory"
+is corrected in its heading and on the function. **The synthetic fixture misled it in BOTH
+directions** — V8's interned-string pointer compare and TimSort's run detection both depend on the
+key distribution, so a sort arm measured on invented keys says nothing about the row.
+
+**What is open on this row: nothing at the comparator.** The scan is 32 ms, the comparator is already
+a bare `<`, and the remaining 479.6 is V8's sort on genuinely unsorted data, whose floor for bare
+strings is 67.2 ms — a gap that only a mechanism avoiding the JS boundary could close, and the two
+such mechanisms are now both refuted with numbers.
+
+#### Gates
+
+`bun run check` 0 read through `${pipestatus[1]}`. All instrumentation was reverted and the tree
+verified clean (`__zt`/`__zrows` absent, the specialization's two references intact) before gating;
+no behaviour changed, so the suites and fuzzers are item 1713's.
