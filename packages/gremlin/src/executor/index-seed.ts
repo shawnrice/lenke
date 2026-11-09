@@ -103,6 +103,27 @@ const rangeCandidate = <E>(
   bound: RangeBound,
   cap: number,
 ): Candidate<E> | null => {
+  /**
+   * ⚠️ `cap === 0` MEANS "A RANGE SEED IS OF NO USE TO ME — DO NOT COUNT IT" (item 1759).
+   *
+   * Both `node-values.ts` callers of `seedForStep` discard any candidate whose `removable` is
+   * false, and a range candidate is ALWAYS `removable: false` — so for a range predicate they were
+   * paying `countRange`'s O(distinct values in range) and throwing the answer away. Measured:
+   * `V().has('n', lt(10000)).values('s')` over 20,000 distinct values cost **1.62x MORE with the
+   * index than without** (1033.6 µs against 1671.4), while the 97-value twin was flat.
+   *
+   * Returning `null` rather than a candidate with a meaningless count is what keeps this honest:
+   * those callers already map `null` to "not this shape", and since they would have discarded a
+   * range candidate anyway the two paths are equivalent by construction.
+   *
+   * ⚠️ UNREACHABLE FROM `rangeCap`, checked: it returns `Infinity` below the floor and
+   * `sourceSize / 8` at or above it, so its smallest possible value is 512 at `SEEK_FLOOR_ELEMENTS`.
+   * Only an explicit `0` from a caller that wants exact seeds only can land here.
+   */
+  if (cap === 0) {
+    return null;
+  }
+
   // CAPPED, because the only consumer is a gate comparing against a threshold — see `rangeCap`.
   const count = index.countRangeAtMost(key, bound, cap);
 

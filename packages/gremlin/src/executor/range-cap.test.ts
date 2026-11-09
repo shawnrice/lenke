@@ -7,7 +7,9 @@
 // test it directly, because nothing else can see it.
 import { describe, expect, test } from 'bun:test';
 
-import { rangeCap } from './index-seed.ts';
+import { Graph } from '@lenke/core';
+
+import { rangeCap, seedForStep } from './index-seed.ts';
 
 /** Mirrors the module's own constants; a drift here should fail loudly rather than silently pass. */
 const SEEK_FLOOR_ELEMENTS = 4_096;
@@ -45,5 +47,51 @@ describe('rangeCap', () => {
     for (const n of [4_096, 10_000, 20_000, 500_000]) {
       expect(rangeCap(n)).toBeLessThanOrEqual(n * SEEK_MAX_FRACTION);
     }
+  });
+});
+
+describe('seedForStep with cap 0 — "exact seeds only"', () => {
+  // `node-values.ts` requires `removable: true` and a range candidate never is, so it pays an
+  // O(distinct values in range) count and discards it. Item 1759 measured that at 1.62x on
+  // `V().has('n', lt(10000)).values('s')`, and `cap === 0` is the contract that suppresses it.
+  const indexed = (): Graph => {
+    const g = new Graph();
+
+    for (let i = 0; i < 200; i += 1) {
+      g.addVertex({ id: `v${i}`, labels: ['P'], properties: { n: i } });
+    }
+
+    g.createIndex({ on: 'vertex', kind: 'hash', keys: ['n'] });
+
+    return g;
+  };
+
+  const step = (pred: unknown) => ({ kind: 'has', key: 'n', pred }) as never;
+
+  test('suppresses a RANGE seed entirely', () => {
+    const idx = indexed().vertexPropertyIndex;
+
+    expect(seedForStep(step({ op: 'lt', value: 100 }), idx, 0)).toBeNull();
+    expect(seedForStep(step({ op: 'gt', value: 100 }), idx, 0)).toBeNull();
+  });
+
+  test('⚠️ still returns an EXACT seed — suppressing those would lose the fast path', () => {
+    const idx = indexed().vertexPropertyIndex;
+    const seed = seedForStep(step({ op: 'eq', value: 7 }), idx, 0);
+
+    // This is the assertion with teeth: a mutant that returned `null` for every predicate at cap 0
+    // would pass the test above and silently disable the `node-values` fast path it exists to serve.
+    expect(seed).not.toBeNull();
+    expect(seed?.removable).toBe(true);
+    expect(seed?.count).toBe(1);
+  });
+
+  test('an uncapped call DOES return the range seed, so cap 0 is the only suppressor', () => {
+    const idx = indexed().vertexPropertyIndex;
+    const seed = seedForStep(step({ op: 'lt', value: 100 }), idx, Number.POSITIVE_INFINITY);
+
+    expect(seed).not.toBeNull();
+    expect(seed?.removable).toBe(false);
+    expect(seed?.count).toBe(100);
   });
 });

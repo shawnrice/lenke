@@ -18,7 +18,7 @@
  *     INDEXED=1 SHAPE=rangewide node gremlin-range-count-probe.mjs
  */
 import { Graph } from '@lenke/core';
-import { count, has, hasLabel, lt, toArray, traversal, V } from '@lenke/gremlin';
+import { count, has, hasLabel, lt, toArray, traversal, V, values } from '@lenke/gremlin';
 
 const NODES = Number(process.env.NODES ?? 20_000);
 const N = Number(process.env.N ?? 300);
@@ -44,6 +44,12 @@ const PLANS = {
   rangelowcard: traversal(V(), hasLabel('P'), has('k', lt(48)), count()),
   // Highly selective, where the seek genuinely pays and must stay fast.
   rangetight: traversal(V(), hasLabel('P'), has('n', lt(10)), count()),
+  // ⚠️ THE `node-values` PATH (item 1759). Both `seedForStep` callers there require
+  // `removable: true`, and a range candidate is ALWAYS `removable: false` — so for a range
+  // predicate they pay the O(distinct) count and then discard the candidate. These two shapes are
+  // how that path is reached: a values projection behind a range filter.
+  valueswide: traversal(V(), has('n', lt(10_000)), values('s')),
+  valueslowcard: traversal(V(), has('k', lt(48)), values('s')),
 };
 
 const plan = PLANS[SHAPE];
@@ -53,18 +59,32 @@ if (plan === undefined) {
 }
 
 const EXPECTED = { rangewide: 10_000, rangelowcard: 9906, rangetight: 10 };
+const ROWS = { valueswide: 10_000, valueslowcard: 9906 };
 let answer;
 const t0 = performance.now();
 
+let rowCount = 0;
+
 for (let i = 0; i < N; i += 1) {
-  [answer] = toArray(plan, g);
+  const out = toArray(plan, g);
+
+  rowCount = out.length;
+  [answer] = out;
 }
 
 const ms = performance.now() - t0;
 
 // The answer is asserted, not printed and ignored (item 1749): a count shape returns one row
 // whatever the count is, so only the VALUE can tell an answer-equivalent arm from a broken one.
-if (answer !== EXPECTED[SHAPE]) {
+// A values shape returns ROWS, so its assertion is the row count; a count shape returns one row
+// whatever the count is, so only the VALUE can tell it apart (item 1749).
+if (ROWS[SHAPE] !== undefined && rowCount !== ROWS[SHAPE]) {
+  throw new Error(
+    `${SHAPE} returned ${rowCount} rows, expected ${ROWS[SHAPE]} — not answer-equivalent`,
+  );
+}
+
+if (EXPECTED[SHAPE] !== undefined && answer !== EXPECTED[SHAPE]) {
   throw new Error(
     `${SHAPE} answered ${String(answer)}, expected ${EXPECTED[SHAPE]} — not answer-equivalent, so its timing is meaningless`,
   );

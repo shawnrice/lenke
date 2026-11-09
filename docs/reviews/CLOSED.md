@@ -79619,3 +79619,64 @@ green**, new test **4 pass**, `bun run check` 0 read through `${pipestatus[1]}`.
 
 **Both engines are now capped**, and `seedForStep`'s corrected doc (item 1757) no longer claims a
 range count is free.
+
+### Item 1759 — ✅ **SHIPPED: `cap === 0` as "exact seeds only" — 1.29x on a values projection behind a range filter, three controls flat.** The waste item 1757 noticed in passing: both `node-values.ts` callers require `removable`, which a range candidate NEVER is, so they paid an O(distinct) count and discarded it
+
+Item 1757 observed that `seedForStep`'s two external callers check `candidate.removable` and bail
+when it is false — and `rangeCandidate` always returns `removable: false`. **So for a range
+predicate those callers paid `countRange`'s O(distinct values in range) and threw the answer away.**
+Item 1758's cap did not reach them: it defaults to `Infinity` precisely so external callers are
+untouched.
+
+**Measured first**, 20,000 vertices, µs/query:
+
+```text
+  V().has('n', lt(10000)).values('s')   20k distinct   1033.6 no index  ->  1671.4 indexed   1.62x SLOWER
+  V().has('k', lt(48)).values('s')         97 distinct   1088.9         ->  1058.7          flat
+```
+
+The cardinality twin going flat is what attributes it to the count rather than the seek, the same
+control that identified the mechanism at item 1755.
+
+#### The contract, and why `null` rather than a meaningless count
+
+`cap === 0` now means **"a range seed is of no use to me — do not count it"**, and `rangeCandidate`
+returns `null`. Returning `null` instead of a candidate carrying a stopped-early count is what keeps
+it honest: those callers already map `null` to "not this shape", and since they would have discarded
+a range candidate anyway **the two paths are equivalent by construction.**
+
+⚠️ **Unreachable from `rangeCap`, checked rather than assumed**: it returns `Infinity` below the
+floor and `sourceSize / 8` at or above it, so its smallest possible value is **512** at
+`SEEK_FLOOR_ELEMENTS`. Only an explicit `0` from a caller wanting exact seeds can land there.
+
+#### Measured, three alternated rounds, answers asserted, µs/query
+
+```text
+  shape                         base                      exactonly                 verdict
+  valueswide    (the target)    1643.2  1646.7  1656.2    1276.3  1518.5  1231.8    1.29x, DISJOINT
+  valueslowcard (card. twin)    1072.4  1046.9  1040.8    1053.5  1056.3  1046.9    flat
+  rangewide     (1758's row)     262.7   266.6   246.3     266.3   256.4   248.9    flat
+  rangetight    (selective)       31.4    34.1    31.0      29.0    30.5    34.9    flat
+```
+
+⚠️ **A ~1.21x residual remains** against no index on `valueswide` (1276 against 1057): this removed
+the discarded count, not every index consult on that path. Stated rather than rounded away — the
+shape is better, not fixed.
+
+#### The test, and the mutant it was written for
+
+Three cases added: cap 0 suppresses a range seed; **cap 0 still returns an EXACT seed**; an uncapped
+call still returns the range seed. The middle one is the one with teeth —
+
+```text
+  MUTANT: `cap === 0` suppresses EVERY seed, not just ranges    1 of 7 FAIL
+```
+
+— and it is the failure that matters, because such a mutant would **silently disable the
+`node-values` fast path the change exists to serve** while passing a test that only checked the
+range case. A test asserting only "ranges are suppressed" would have shipped it.
+
+#### Gates
+
+gremlin **2116 pass, 0 fail**, **all seven byte-identity fuzzers green**, `bun run check` 0 read
+through `${pipestatus[1]}`.

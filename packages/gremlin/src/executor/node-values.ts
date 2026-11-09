@@ -368,7 +368,9 @@ export const seededNodeValuesShortcut = (plan: Plan, graph: Graph): NodeValues |
     return undefined;
   }
 
-  const candidate = seedForStep(shape.has, graph.vertexPropertyIndex);
+  // `0` is the cap meaning "exact seeds only": this path requires `removable`, which a range
+  // candidate never is, so counting one is pure waste (item 1759 measured it at 1.62x).
+  const candidate = seedForStep(shape.has, graph.vertexPropertyIndex, 0);
 
   // `null` means the key is not indexed or the predicate is not seekable; `removable: false` means
   // the seed narrows without deciding. Either way this is not the shape.
@@ -472,7 +474,9 @@ export const seededNodeCountShortcut = (plan: Plan, graph: Graph): number | unde
     return undefined;
   }
 
-  const candidate = seedForStep(shape.has, graph.vertexPropertyIndex);
+  // `0` is the cap meaning "exact seeds only": this path requires `removable`, which a range
+  // candidate never is, so counting one is pure waste (item 1759 measured it at 1.62x).
+  const candidate = seedForStep(shape.has, graph.vertexPropertyIndex, 0);
 
   // `removable: false` means the bucket only NARROWS — a range seed, or a `hasLabelAnd` whose label
   // the bucket does not capture — so its size is not the answer.
