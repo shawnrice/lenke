@@ -165,6 +165,15 @@ const SHAPES = {
   topknarrow: 'MATCH (n:P) WHERE n.k < 10 RETURN n.k AS a ORDER BY a LIMIT 10',
   defwide: 'MATCH (n:P) WHERE n.k < 10 RETURN n.k AS a, n.n AS b, n.s AS c ORDER BY a',
   defnarrow: 'MATCH (n:P) WHERE n.k < 10 RETURN n.k AS a ORDER BY a',
+  // ⚠️ THE THIRD closure, `deferredSortedNodeWalk`, and reaching it took work (item 1744). It is
+  // chosen when `outputColumnSorts` DECLINES, which for a windowed sort means an item that can
+  // FAULT -- `n.k + 1` is arith, which `cannotFault` refuses. Verified with a per-closure counter:
+  // these two fire it (20 and 10 row-builds); a parameterized `LIMIT $n` and a `LIMIT 0` do NOT.
+  // The wide form is the realistic one: several direct columns beside a computed one, i.e.
+  // `RETURN p.name, p.age, p.salary * 1.1 AS raise ORDER BY p.name LIMIT 20`.
+  defsortwide:
+    'MATCH (n:P) WHERE n.k < 10 RETURN n.k + 1 AS x, n.n AS b, n.s AS c, n.k AS d ORDER BY b LIMIT 5',
+  defsortnarrow: 'MATCH (n:P) WHERE n.k < 10 RETURN n.k + 1 AS x, n.n AS b ORDER BY b LIMIT 5',
   // Set operation over two scans.
   unioned:
     'MATCH (n:P) WHERE n.k = 5 RETURN n.n AS x UNION ALL MATCH (n:P) WHERE n.k = 6 RETURN n.n AS x',

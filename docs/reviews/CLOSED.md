@@ -78671,3 +78671,73 @@ GQL suite **4424 pass, 0 fail**. **All seven byte-identity fuzzers green** (20 p
 **Three items, one lever, and the sequence is the point:** 1741 shipped it where the narrow path was
 flat, 1742 found the closure-size cost where it was not and named the fix, 1743 measured that fix.
 None of the three could have been written without the one before it.
+
+### Item 1744 — ❌ **FLAT on the third and last closure: the bag hoist buys ~2% in `deferredSortedNodeWalk`, with the arm's range ENCLOSING the base's.** The lever is now SWEPT across every site of its kind in the GQL executor — shipped at two, flat at one. ⚠️ **And reaching this closure at all needed a counter: a parameterized `LIMIT` and a `LIMIT 0` do NOT arrive here, a windowed sort with a FAULTABLE item does**
+
+Items 1741 and 1743 shipped a per-row property-bag hoist in two of `node-scan.ts`'s three
+multi-column row loops. This is the third, and the sweep's completion.
+
+#### First: is there anywhere else at all?
+
+Searched every `row[cols[i]] = …` loop in the GQL executor. **Only `node-scan.ts` has them** — three
+sites. The hop and distinct rungs project a SINGLE value per row (`hop-projection.ts`'s `take` holds
+one `directKey`, not an array), so they have no per-column redundancy to remove. The lever's whole
+surface is those three loops.
+
+#### Reaching the third closure took a counter, and most candidate shapes miss it
+
+`deferredSortedNodeWalk` runs when `outputColumnSorts` returns `null`. Reading its decline
+conditions and testing each with a per-closure counter:
+
+```text
+  case                                                      closures entered
+  RETURN … ORDER BY a LIMIT $lim   (parameterized window)   {}
+  RETURN … ORDER BY a LIMIT 0                               {}
+  RETURN … ORDER BY a SKIP $sk                              parse error (unsupported)
+  RETURN n.k + 1 AS a, n.n AS b ORDER BY b LIMIT 5          { deferred: 10 }   ✓
+  RETURN n.k + 1 AS x, n.n, n.s, n.k ORDER BY b LIMIT 5     { deferred: 20 }   ✓
+```
+
+So the route is **a WINDOWED sort with an item that can FAULT** — `n.k + 1` is arith, which
+`cannotFault` refuses. The realistic form is the wide one:
+`RETURN p.name, p.age, p.salary * 1.1 AS raise ORDER BY p.name LIMIT 20`. Item 1742 reported this
+closure as never firing; it fires, just not for any of the four shapes tried there.
+
+#### Measured, 1500 runs, three alternated rounds
+
+```text
+  shape                                  base          deferhoist          verdict
+  defsortwide   (3 direct + 1 computed)  637.1 632.7   622.8 614.1 644.1   ~2%, arm ENCLOSES base
+  defsortnarrow (1 direct + 1 computed)  622.0 634.6   612.7 612.2 606.0   flat (guard off anyway)
+  topkwide      (CONTROL)                360.2 376.8   365.7 377.0 366.8   flat
+  wideproj      (CONTROL)                489.5 502.7   483.3 493.2 486.5   flat
+```
+
+**The site's own pre-existing comment predicted this and was right**: _"row construction is a small
+share of the per-row cost here — `propOf`, the `properties` getter, `scanCandidates` and the gate are
+the rest."_ This closure also extracts sort keys and sorts, so these shapes cost ~620 ms against
+`wideproj`'s ~490 for the same work count, and three getter calls collapsing to one is diluted past
+the instrument. Reverted; the engine diff is comment-only.
+
+#### ⚠️ AND A FOURTH ANCHOR FAILURE, caught by the assertion again
+
+The driver first discriminated the arms on `'propOf(v, dk)' in dist` — which is **present in both**,
+because item 1741's main closure keeps it in its `else` branch (3 occurrences in base). The
+assertion refused all three arm rounds rather than printing numbers for unidentified code. Fixed by
+discriminating on a **COUNT**: `readDirect(bag, v, dk)` is 1 in base (1743's topK arm) and 2 once
+this loop joins.
+
+**That is four distinct anchor failures across items 1737, 1738, 1742 and here, and every one was
+caught.** The accumulated rule: **a dist discriminator must be something the mutation UNIQUELY
+produces — and once a lever has been applied at more than one site, "unique" means a COUNT, not a
+presence test.**
+
+#### Gates
+
+`bun run check` 0 read through `${pipestatus[1]}`. Engine diff verified comment-only; the probe gains
+`defsortwide` and `defsortnarrow`, which are how the next reader reaches this closure at all.
+
+**The three-closure sweep, in one place:** main closure **1.30x** (1741, two-loop form), top-K arm
+**1.35x** (1743, `readDirect` form, after 1742 measured the two-loop form costing 7.6% there), and
+this one **flat**. Two shipped, one declined, one superseded spelling — and the surface is now
+exhausted.

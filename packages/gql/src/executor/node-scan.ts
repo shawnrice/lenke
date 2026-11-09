@@ -643,6 +643,25 @@ export const deferredSortedNodeWalk = (spec: {
       // — `propOf`, the `properties` getter, `scanCandidates` and the gate are the rest — so a 1.52x
       // on construction alone is diluted past this instrument's ~30% spread. Third instance in this
       // repo of a clean micro not reaching the engine (see item 1364's 3.8x → 1.11x).
+      // ❌ REJECTED HERE, item 1744: the per-row bag hoist, in the `readDirect` form item 1743
+      // shipped two closures away. It is FLAT on this one — 1500 runs, three alternated rounds, ms:
+      // THREE direct columns beside a computed one 637/633 -> 623/614/644, ~2% with the arm's range
+      // ENCLOSING the base's; one direct column 622/635 -> 613/612/606. Both controls flat
+      // (`topkwide` 360/377/373 -> 366/377/367, `wideproj` 490/503/486 -> 483/493/487).
+      //
+      // The comment above already said why, and it holds: row construction is a small share of the
+      // per-row cost HERE, because this closure also extracts sort keys and sorts. These shapes cost
+      // ~620 ms against `wideproj`'s ~490 for the same 1500 runs, so three getter calls collapsing
+      // to one is diluted past the instrument.
+      //
+      // ⚠️ REACHING THIS CLOSURE AT ALL took a counter, and the shape is narrow: `outputColumnSorts`
+      // declines — sending the query here — when a WINDOWED sort has an item that can FAULT, so
+      // `RETURN n.k + 1 AS x, n.n AS b … ORDER BY b LIMIT 5` arrives but a parameterized `LIMIT $n`
+      // and a `LIMIT 0` do NOT (both measured as entering no counted closure). Probe shapes
+      // `defsortwide`/`defsortnarrow` exist for it now.
+      //
+      // So the lever is SWEPT across all three closures of this kind: shipped at the main one
+      // (1.30x, item 1741) and the top-K arm (1.35x, item 1743), flat here.
       const row: Row = {};
 
       for (let i = 0; i < width; i++) {
