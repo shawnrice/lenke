@@ -79797,3 +79797,57 @@ is the largest frame.
 
 `bun run check` 0 read through `${pipestatus[1]}`. `rewrites.ts` restored and verified identical to
 HEAD after the counter; no source changed.
+
+### Item 1762 — **THE UNINDEXED REGRESSION PASS the index-seed family owed: 18 shapes across both engines, NO regression.** Every measurement in items 1756-1760 was taken on an INDEXED fixture, and the four files they changed are on the unindexed path too
+
+Items 1756/1758/1759 shipped three wins across **four source files, one of them in core**
+(`PropertyIndex.ts`, `matching.ts`, `index-seed.ts`, `node-values.ts`) — and ⚠️ **every number in
+that family came from an indexed fixture.** The two frame screens are unindexed (item 1754), so the
+path most queries actually take was never re-measured. Item 1747 established the method for exactly
+this and its caveat; this applies both.
+
+Pre-family (`ff1783b8~1`, extracted with `git show` rather than a checkout) against HEAD, two
+alternated rounds, one build of all three packages per arm, with a dist assertion requiring BOTH
+`countRangeAtMost` (gql) and `rangeCap` (gremlin) to agree on the arm:
+
+```text
+  gql    distinct  hopall  hopfilter  join  optional  sortedpage        all flat
+  gql    existssub 1.05x · grouped 1.01x · point 1.05x · wideproj 1.05x  nominally FASTER
+  grem   coalesced  filterchain  folded  hopcount3  repeated  selected  valuesonly   all flat
+  grem   hophas 1.03x                                                    nominally SLOWER
+```
+
+**5 of 18 rows had disjoint arm ranges, every one at or below 1.05x** — and at two readings per arm
+a disjoint verdict is far too easy to reach, which is the caveat item 1747 wrote into the sweep
+driver after `filterchain` turned out to be bimodal.
+
+#### The one SLOWER row, re-measured properly
+
+A regression matters more than a small win, so `hophas` got its own run — 300 reps, 9 readings per
+arm, three alternated rounds:
+
+```text
+  prefam  275.8 278.8 283.2 284.9 285.2 285.8 288.2 288.7 291.9   median 285.2
+  head    277.7 279.3 279.7 280.3 282.0 282.2 285.4 291.8 292.7   median 282.0
+```
+
+**HEAD is nominally 1.01x FASTER with the ranges fully overlapping** — the sweep's 1.03x was noise.
+**No regression on the unindexed path.**
+
+#### Why the unindexed path was at risk at all, stated so the check is repeatable
+
+`rangeCap(sourceSize)` is evaluated at the `seedForStep(step, index, rangeCap(sourceSize))` call site
+— i.e. **before** `seedForStep` returns early for an unindexed key — so an unindexed graph does pay
+one comparison and one multiply per filter step per query. The GQL side does not: its
+`rangeCountCap` sits inside the range branch, which only an indexed key reaches. That asymmetry is
+exactly the kind of thing a reasoned argument gets wrong, which is why it was measured rather than
+argued, and at ~1 ns it is invisible as the sweep shows.
+
+**NEW PERMANENT INSTRUMENT — `packages/native/family-regression-sweep.sh`**, parameterised
+(`GQLSHAPES`, `QREPS`, `GREPS`) and carrying the nominates-but-does-not-price warning. It swaps FOUR
+files across three packages, which the single-file drivers could not do.
+
+#### Gates
+
+`bun run check` 0 read through `${pipestatus[1]}`. All four source files verified identical to HEAD
+after the sweep; no source changed.
