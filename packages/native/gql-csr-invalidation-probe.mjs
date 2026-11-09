@@ -71,6 +71,13 @@ const ROWS = {
   vl12: 'MATCH (a:Person)-[:KNOWS]->{1,2}(y) RETURN count(*) AS c',
   vl13: 'MATCH (a:Person)-[:KNOWS]->{1,3}(y) RETURN count(*) AS c',
   vl12end: 'MATCH (a:Person)-[:KNOWS]->{1,2}(y) WHERE y.age > 60 RETURN count(*) AS c',
+  // ⚠️ THE SAME QUESTION AS `h3interior`, SPELLED INLINE. Item 1698 found the clause form's gate
+  // carries `bindVar: 'c'` and so refuses `specializedConjunct`, while both inline forms specialize
+  // — so these two rows price the dispatch against the cache miss.
+  h3interiorInline:
+    'MATCH (a:Person)-[:KNOWS]->(b)-[:KNOWS]->(c WHERE c.age > 60)-[:KNOWS]->(d) RETURN count(*) AS c',
+  h3interiorProp:
+    'MATCH (a:Person)-[:KNOWS]->(b)-[:KNOWS]->(c {age: 61})-[:KNOWS]->(d) RETURN count(*) AS c',
 };
 
 const ROW = process.env.ROW ?? 'h3';

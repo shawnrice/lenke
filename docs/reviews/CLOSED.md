@@ -75872,3 +75872,62 @@ rather than incidental: it is the only arm whose replaced walk (101 ms) is cheap
 `bun run check` 0 read unpiped. `packages/gql` isolated: 4360 pass, 0 fail. The var-length arm was
 disabled and restored for the PRE measurement, with the temporary marker asserted back to 0. Three
 rows added to an existing probe; no engine behaviour changed.
+
+### Item 1698 — **THE INTERIOR-FILTER ARM'S GATE IS 83% OF THE ROW (an ablation: 89.82 -> 14.77 ms), AND THE DISPATCH IS ONLY 1.11x OF IT.** ⚠️ **A clause `WHERE` and an inline `WHERE` take DIFFERENT gate routes — confirmed by a counter, `bindVar: 'c'` refuses `specializedConjunct` — and that route difference is worth 1.11x, not the 6.08x the ablation promised.** So the prize is the per-vertex PROPERTY READ, which is a TS data-layout question, not a dispatch one
+
+On a scattered fixture (item 1694), `count 3-hop + interior filter` is the slowest of the GQL CSR
+arms by an order of magnitude: 89.82 ms against `count 3-hop`'s 9.12 and `+ start filter`'s 9.01
+(item 1696's table). This item asks why and answers it with two measurements that disagree about the
+cause until both are in.
+
+**The ablation sizes the prize.** Replacing the arm's `cGate(...)` with `true` — a deliberate wrong
+answer, item 1600's method, and the count changes to 25,000,000 to prove it — takes the row from
+**89.82 to 14.77 ms**. So the gate is 83% of the arm and up to 6.08x is available. At ~200,000
+evaluations that is **~375 ns per gate call**, where item 1600 priced a specialized gate at ~31 ns.
+
+**The route is genuinely split by spelling, and a counter proves it.** Instrumenting
+`composeInlineGate`'s `specializedConjunct` call for the three spellings of the same question:
+
+```text
+   WHERE c.age > 60        fast 0  slow 1   bindVar "c"    <- the general `inlineHolds` path
+   (c WHERE c.age > 60)    fast 1  slow 0                  <- specialized
+   (c {age: 61})           fast 1  slow 0                  <- specialized
+```
+
+The clause form must BIND `c`, and `specializedConjunct` refuses a conjunct with a `bindVar` for a
+documented correctness reason ("`inlineHolds` WRITES the binding for a correlated conjunct before
+testing it, and the specialized closure never writes one"). That is this repo's opening defect class
+— equivalent spellings on different routes — so it looked like the whole 6.08x.
+
+**It is not. The two spellings are 1.11x apart:**
+
+```text
+   h3interior        (clause WHERE)   69.73 ms
+   h3interiorInline  (inline WHERE)   62.97       1.11x
+   h3interiorProp    (inline prop)    68.65       (a different count, same cost)
+```
+
+⚠️ **So the dispatch is ~7 ms of the gate's ~75.** The remaining ~68 is the per-vertex work the
+ablation also removed: reading `c.properties[key]` for every reached slot. On a scattered adjacency
+those vertex objects are spread across the heap, so each read is a cache miss — the same mechanism
+item 1694 measured at 2.26x for the walk itself.
+
+#### What that leaves
+
+- **The specialization lever is REFUTED for this row at 1.11x.** Extending
+  `specializedConjunct` to the `bindVar !== undefined` case (by writing the binding inside the
+  specialized closure) would be a general improvement across its thirteen call sites, and it is
+  worth ~7 ms here, not 75. Not re-attempted on this row's strength.
+- **The real prize is a property READ, which TS stores per-vertex as an object.** Native stores
+  properties columnar, which is why its twin of this row is in the single-digit milliseconds. A
+  columnar property store for the TS core is an architecture change, not an arm, and it is the
+  honest answer to "why is this row 70 ms when its arithmetic is 15".
+- The row's own variance is wide on this fixture: the same build read 89.82 and 69.73 across
+  processes (1.29x), so neither figure should be quoted without the other.
+
+#### Gates
+
+`bun run check` 0 read unpiped. `packages/gql` isolated: 4360 pass, 0 fail. Three temporary
+instrumentations (an ablation in the arm, a route counter in `composeInlineGate`, a profile script)
+were applied and removed, with the markers asserted back to 0. Two rows added to an existing probe;
+no engine behaviour changed.

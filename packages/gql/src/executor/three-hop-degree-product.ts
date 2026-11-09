@@ -146,6 +146,22 @@ export const csrGatedDegreeProductApplies = (w: {
  * inner loop is then one `Float64Array` read per middle edge, exactly as in the unfiltered arm,
  * instead of a vertex resolve plus a label test plus a gate call.
  *
+ * ⚠️ REJECTED, WITH ITS NUMBERS (item 1698): specializing this gate. An ablation puts the gate at
+ * **83% of this row** — 89.82 -> 14.77 ms on a scattered fixture, ~375 ns per call against item
+ * 1600's ~31 for a specialized one — and a route counter confirms the CLAUSE spelling takes the
+ * general `inlineHolds` path while both INLINE spellings specialize: `bindVar: 'c'` makes
+ * `specializedConjunct` refuse, for its own documented correctness reason.
+ *
+ * That looks like the whole 6.08x and it is not. The two spellings measure **1.11x apart** (69.73
+ * clause against 62.97 inline), so the dispatch is ~7 ms of the gate's ~75. The rest is the
+ * per-vertex `c.properties[key]` READ, and on a scattered adjacency each one is a cache miss — the
+ * mechanism item 1694 priced at 2.26x for the walk itself. Native's twin of this row is
+ * single-digit milliseconds because it stores properties COLUMNAR; that is the real lever, and it
+ * is an architecture change rather than an arm.
+ *
+ * ⚠️ AND THIS ROW'S VARIANCE IS WIDE ON THAT FIXTURE: the same build read 89.82 and 69.73 across
+ * processes (1.29x), so neither figure above should be quoted without the other.
+ *
  * ⚠️ THE WEIGHTS ARE PER-QUERY AND MUST NEVER BE CACHED ON `topologyVersion`. They read PROPERTIES
  * through the gate, and a property write deliberately does not bump that signal (items 1674/1675),
  * so a weight array cached on it would go stale with no signal to catch it. Only the CSRs are
