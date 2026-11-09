@@ -79490,3 +79490,63 @@ core **453 pass**, gql **4424 pass**, **all seven byte-identity fuzzers green**,
 `bun run check` 0 read through `${pipestatus[1]}`.
 
 **NEW PERMANENT INSTRUMENT — `packages/native/range-count-cap-ab.sh`.**
+
+### Item 1757 — ⚠️ **THE GREMLIN TWIN IS WORSE: a hash index makes a wide high-cardinality range 5.07x SLOWER** (GQL's was 1.9x before item 1756 fixed it). ⚠️⚠️ **And `seedForStep`'s doc licenses the cost: "the `count` … is an O(1) estimate … so asking costs nothing" is FALSE for a range candidate.** Cap design derived; NOT built, because it changes an exported signature with external callers
+
+Item 1756 fixed the GQL range seed by capping its count at the gate's own threshold.
+`gremlin/src/executor/index-seed.ts`'s `rangeCandidate` calls `index.countRange(key, bound)` with
+no cap — the identical pre-fix shape — behind the identical gate (`SEEK_MAX_FRACTION = 1/8`,
+`SEEK_FLOOR_ELEMENTS = 4096`), which item 1322 added after an index made a query 5x slower.
+
+**Measured before writing anything**, 20,000 vertices, answers asserted, µs/query:
+
+```text
+  traversal                                              no index    indexed    verdict
+  V().hasLabel(P).has('n', lt(10000)).count()  20k dist    127.2      644.7     5.07x SLOWER
+  V().hasLabel(P).has('k', lt(48)).count()        97 dist    203.8      124.7     1.63x faster
+  V().hasLabel(P).has('n', lt(10)).count()     selective     184.5       30.8     6.00x faster
+```
+
+**5.07x — worse than GQL's 1.9x**, and the low-cardinality twin going the _right_ way is what
+confirms item 1755's mechanism rather than selectivity. The 5.07x is also, exactly, the magnitude
+item 1322's own note quotes for the _pre-gate_ pathology: **the gate fixed the materialization and
+the count still costs the same 5x.**
+
+#### ⚠️ A FALSE COST CLAIM IN THE DOC, AND IT IS THE LICENCE FOR THE COST
+
+`seedForStep`'s comment says the returned `count` is _"an O(1) estimate and `build()` is not called,
+so asking costs nothing (audit item 234)"_ — and that is **why a count shortcut asks freely before
+`seedFromIndex` runs.** It is true for `eq`/`within` (`countEquals` is a bucket-size read) and
+**false for a range**, where `countRange` is O(distinct values in range). Corrected in place with the
+numbers; same class as item 1745's "(no cost)" and item 1748's refuted reason.
+
+#### The cap, derived — and why GQL's does NOT transfer
+
+GQL's cap is the label bucket, fixed and known at the seed site. Here
+`seekIsWorthIt(count, scan, total)` is called two ways:
+
+```text
+  line 587   seekIsWorthIt(candidate.count, sourceSize, sourceSize)   threshold = sourceSize/8
+  line 650   seekIsWorthIt(seek.count, scan, sourceSize)              threshold = scan/8, scan ≤ sourceSize
+```
+
+and `scan = exact?.count ?? sourceSize` — **another candidate's count, discovered after this one**.
+So the cap cannot be the gate's actual threshold. It can be **`sourceSize * SEEK_MAX_FRACTION`**,
+the largest threshold either site can use: a count above it is declined at both, counts at or below
+it stay exact so every ranking among admissible candidates is unchanged, and `Infinity` below
+`SEEK_FLOOR_ELEMENTS` preserves the sub-floor admit-anything behaviour exactly — the same three
+properties item 1756's entry sets out, re-derived for this call graph rather than assumed from it.
+
+#### Why it is not built in this item
+
+The cap has to thread `rangeCandidate` (**8 call sites** inside `seedForPred`) → `seedForPred` →
+**`seedForStep`, which is EXPORTED** and called from `node-values.ts:371` and `:475`. An exported
+signature change with external callers, in the path a count shortcut consults, is its own piece of
+work — and the measurement above is what makes it worth doing rather than a guess. **OPEN, with the
+design settled and the regression priced.**
+
+#### Gates
+
+`bun run check` 0 read through `${pipestatus[1]}`. The only source change is the corrected comment;
+**NEW PERMANENT INSTRUMENT — `packages/native/gremlin-range-count-probe.mjs`**, with the
+cardinality control and an asserted answer.

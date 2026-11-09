@@ -208,10 +208,20 @@ const seedForPred = <E>(
  *
  * EXPORTED so a count shortcut can ask whether the index would seed this filter WITHOUT building
  * the seed: `countShortcut` runs before `seedFromIndex`, so a shortcut that scans would preempt a
- * seek and answer in O(V) where the general path answers in O(matches). The `count` on the returned
- * candidate is an O(1) estimate and `build()` is not called, so asking costs nothing (audit item
- * 234; the failure it avoids is item 149's, where a fast path lost the index and the tell was two
- * identical `bench:usage` columns).
+ * seek and answer in O(V) where the general path answers in O(matches). ~~The `count` on the
+ * returned candidate is an O(1) estimate and `build()` is not called, so asking costs nothing~~
+ * (audit item 234; the failure it avoids is item 149's, where a fast path lost the index and the
+ * tell was two identical `bench:usage` columns).
+ *
+ * ⚠️ **THE "O(1) ESTIMATE … ASKING COSTS NOTHING" CLAIM IS FALSE FOR A RANGE PREDICATE** (item
+ * 1757). It holds for `eq`/`within`, whose `countEquals` is a bucket-size read — but a range
+ * candidate's count comes from `countRange`, which is **O(distinct values in range)**. On a
+ * high-cardinality column that is not an estimate, it is most of the query: measured at 20,000
+ * vertices with `n` unique, `V().hasLabel('P').has('n', lt(10000)).count()` runs **127.2 µs with
+ * NO index and 644.7 µs with one — 5.07x SLOWER** — while the same shape on the 97-value column
+ * goes the right way (203.8 -> 124.7). GQL had the same defect and item 1756 fixed it by capping
+ * the count at the gate's own threshold; the twin fix here is described in that item's entry and
+ * is NOT yet built.
  */
 export const seedForStep = <E>(step: Step, index: PropertyIndex<E>): Candidate<E> | null => {
   if (step.kind !== 'has' && step.kind !== 'hasLabelAnd') {
