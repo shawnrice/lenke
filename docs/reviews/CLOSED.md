@@ -79128,7 +79128,7 @@ it is not reached for again.
 `bun run check` 0 read through `${pipestatus[1]}`. Engine diff verified **comment-only**;
 `predicates.ts` confirmed identical to HEAD before the comment was added.
 
-### Item 1751 — ⚠️ **A BARE ROOT `bun test` REPORTS 68 FAILURES AND EXITS 0** — so it is unusable as a verdict, exactly as this repo's own execution-evidence rule warns. ⚠️ **And it is not the project's gate at all:** CI runs `nx run-many -t test` per package. Every failure examined is PRE-EXISTING and ENVIRONMENTAL, in two classes. ⚠️⚠️ **My own `tail -12` hid 65 of the 68 on the verification pass itself**
+### Item 1751 — ⚠️ ~~**A BARE ROOT `bun test` REPORTS 68 FAILURES AND EXITS 0**~~ **WRONG, CORRECTED AT ITEM 1752: `bun test` exits 1 correctly. The 0 was MY pipe into `tail` — a pipeline takes its last command's status, which is the exact clippy-into-grep trap CLAUDE.md names, and I published it as a finding about the project's tooling** — so it is unusable as a verdict, exactly as this repo's own execution-evidence rule warns. ⚠️ **And it is not the project's gate at all:** CI runs `nx run-many -t test` per package. Every failure examined is PRE-EXISTING and ENVIRONMENTAL, in two classes. ⚠️⚠️ **My own `tail -12` hid 65 of the 68 on the verification pass itself**
 
 Twenty items had each been gated with `bun run check` plus the suite of whichever package they
 touched (gql 4424 pass, gremlin 2109 pass) and all seven byte-identity fuzzers. What had never been
@@ -79191,3 +79191,61 @@ would manufacture the failures it is meant to rule out.
 #### Gates
 
 `bun run check` 0 read through `${pipestatus[1]}`. No source changed — this item is the entry.
+
+### Item 1752 — ⚠️ **I PUBLISHED A WRONG CLAIM ABOUT THE PROJECT'S TOOLING AND IT WAS MY OWN PIPELINE: `bun test` exits 1 correctly; item 1751's "exits 0" was `| tail` swallowing the status.** The full 68 failures are now attributed — **every one environmental, none from this stretch's 30 lines**
+
+Item 1751 reported that a root `bun test` "reports 68 failures and exits 0", and drew the conclusion
+that _"anything gating on this command's status is green while red."_ **That conclusion is false and
+the observation was an artefact of my own command.**
+
+The first run was `… bun test 2>&1 | tail -12`. **A pipeline's exit status is its LAST command's**,
+and `tail` succeeds — so the 0 was `tail`'s. Re-run without the pipe, appending the status directly:
+**`EXIT=1`**. `bun test` reports failure correctly.
+
+⚠️ **This is the specific trap CLAUDE.md spells out** — _"piping clippy into `grep -c` and chaining
+with `&&` takes the exit status from `grep`, which succeeds when it finds errors. That has let broken
+lint through twice."_ I hit it on the verification pass, with `tail` instead of `grep`, and then wrote
+it up as a defect in the tooling rather than in my command. **Two instrument errors in one tick, same
+pipeline: the truncation hid 65 of 68 failures, and the pipe hid the exit code.**
+
+#### The complete attribution, which the un-piped run finally allowed
+
+```text
+  package   kind      count
+  sync      timeout     25
+  core      timeout     15
+  core      other        1
+  native    timeout      1
+  react     other       19
+                      ----
+                        61  (+ 7 file-level load errors = 68)
+```
+
+- **41 timeouts at 5000 ms** across `sync`, `core` and `native` — `sync-test-flake-is-timing`'s
+  documented run-many flake. Spot-checked: `Graph.reactive.test.ts` **15/15 in 172 ms** isolated.
+- **19 `react`** — `ReferenceError: document is not defined`; a root run provides no DOM.
+- **The 1 remaining `core` "other"** was the only candidate for a real failure:
+  `Graph.test.ts > copy() — async, event-loop-friendly deep copy > yields the …`. It is an
+  event-loop-timing test, and the file passes **27/27 in 128 ms** isolated. Same load cause.
+
+**So all 68 are environmental, and none is attributable to this stretch's behavioural change** — 30
+non-comment lines in `node-scan.ts` and `runtime.ts`, both of whose packages were separately green
+(gql 4424, gremlin 2109) along with all seven byte-identity fuzzers.
+
+#### What survives from item 1751, and what does not
+
+- ❌ **Struck:** "exits 0", and the inference that the status is unusable.
+- ✅ **Stands:** the root `bun test` is **not the project's test gate** — `ci.yml` runs
+  `nx run-many -t test` per package plus `cargo test`, and 660 files in one process without
+  per-package environments is why `react` has no DOM and the async tests time out. A red from the
+  root command still says little about CI.
+- ✅ **Stands:** the stretch's 30 lines are not implicated.
+
+**The lesson is the one the repo already had, and it needed a third instance to stick: never read an
+exit code through a pipe.** Redirect to a file and check the status directly, or use
+`${pipestatus[1]}` — which this repo's gate commands already do, and which I had been using
+correctly for `bun run check` all stretch while getting it wrong here.
+
+#### Gates
+
+`bun run check` 0 read through `${pipestatus[1]}`. No source changed.
