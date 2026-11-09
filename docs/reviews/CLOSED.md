@@ -78259,3 +78259,79 @@ process, scrambled order, alternated row order, and it throws unless every looku
 
 `bun run check` 0 read through `${pipestatus[1]}`. Pristine `Graph.ts` restored and rebuilt by the
 driver, tree verified clean; **no engine source changed** — the arms were built, measured, reverted.
+
+### Item 1738 — **`RETURN DISTINCT n.k` decomposed by ablation: the PROPERTY READ is ~20% of the query and the computed-key row literal is ZERO.** The profile had `take` at 60.6% self and `propOf` + `get properties` at only 14.4%, so it UNDERSTATED the read — the rest was inlined into `take`. ⚠️ **And the driver failed three times in three distinct ways before producing a number, each failure a variant of "the assertion checked the wrong thing"**
+
+A windowed profile of four under-mined GQL shapes (`distinct`, `optional`, `existssub`, `wideproj`)
+gave one dominant single frame: **`take` at 60.6%** of `MATCH (n:P) RETURN DISTINCT n.k AS k`, with
+`walkStartSide` 9.9%, `add` 9.7%, `propOf` 8.7%, `get properties` 5.7%.
+
+`take`'s body is two branches, a property read, a `valueSet` add, and a conditional
+`rows.push({ [outName]: value })`. **60.6% SELF for that is implausible** — V8 charges inlined
+callees to the caller frame — so the split was settled by deletion rather than read off the profile.
+
+#### Two ceilings, cardinality preserved, `sink` identical in every arm
+
+The fixture yields **97 distinct values over ~2000 vertices per run**, so the dedup is mostly
+duplicate hits. Both arms keep the row count and the non-zero `sink` the probe asserts on:
+
+```text
+  arm        runs (ms)
+  base       437.9  447.6  439.0  438.5  447.7  454.3
+  constrow   433.3  437.6                              <- prebuilt row object instead of { [k]: v }
+  novalue    350.6  350.7  350.4  352.0                <- counter mod 97 instead of propOf
+```
+
+- ⚠️ **The computed-key object literal is FREE.** `constrow` 433-438 against base 438-454 — inside
+  the noise, nominally faster. A per-row `{ [outName]: value }` looked like an obvious allocation
+  target and is not one. Rejected before being built.
+- **The property read is ~90 ms of ~440, about 20% of the query.** At 2000 runs × ~2000 vertices
+  that is ~22 ns per read for a getter call plus an index — plausible and close to irreducible: the
+  getter's box is cached after the first read (`#box ??=`), so what remains is a null check, a field
+  read, an optional chain and the index. **No cheap lever**; a dedicated raw accessor would be new
+  API on the element, which is a different decision.
+- **So `take`'s 60.6% is the read (~20% of total) plus the dedup and branches, and the profile's own
+  14.4% for `propOf` + `get properties` was an UNDER-count** by roughly a third of the read's real
+  cost. A self-time share is a nomination, and here it was a nomination that pointed at the right
+  place for the wrong reason.
+
+Noted in passing, not acted on: **`valueSet.add`'s primitive branch does TWO Set operations**
+(`prim.has(v)` then `prim.add(v)`) where a size-delta before/after `add` would do ONE. It saves a
+hash only when the value is NEW, so it is worth nothing on this low-cardinality fixture and would
+need a high-cardinality `DISTINCT` to show. Unmeasured, recorded so it is not re-derived.
+
+#### ⚠️ THE DRIVER FAILED THREE TIMES, THREE DIFFERENT WAYS, BEFORE GIVING A NUMBER
+
+Worth recording in full, because each is a way an ablation reports a confident wrong answer:
+
+1. **The insertion anchor was not unique — `    const rows: Row[] = [];` occurs FIFTEEN times** in
+   `hop-projection.ts`. A `replace(..., 1)` put the mutant's declaration in a different closure, so
+   both arms crashed at runtime. **And `tail -1` banked the crash's last line, `Node.js v26.13.0`,
+   as the measurement** — the same trap this session already hit once with a probe that could not
+   resolve its imports.
+2. **The dist assertion checked PRESENCE, not POSITION, and passed on that broken mutant.** The
+   symbol was in the bundle, just in the wrong function. An assertion that the arm's code exists is
+   not an assertion that it exists _where it runs_.
+3. **The proximity fix keyed on the first `const take = (el) =>` — and this file has TWO `take`
+   closures**, a count path and a rows path, with the count one emitted first. So it inspected the
+   closure that was never mutated and classified every arm as `base`. **Third first-occurrence
+   failure in two items** (item 1737 burned two).
+
+The form that finally worked asserts on text that can only exist if the mutation landed in the right
+body — the rewritten push and the rewritten value expression — rather than on a name plus a
+distance. **A dist assertion should key on something the mutation UNIQUELY produces, not on a symbol
+and a guess about where it sits.**
+
+4. And a fourth, cosmetic but worth the line: the explanatory comment inside the
+   `python3 -c "..."` string contained **backticks, which are command substitution in a
+   double-quoted shell string** — every run printed `take: command not found`. Same class as this
+   repo's no-backticks-in-`commit -m` rule.
+
+**NEW PERMANENT INSTRUMENT — `packages/native/distinct-take-driver.sh`**, carrying all four lessons
+and the working assertion form.
+
+#### Gates
+
+`bun run check` 0 read through `${pipestatus[1]}`. Pristine `hop-projection.ts` restored and rebuilt
+by the driver, tree verified clean; **no engine source changed** — both arms were ceilings, built,
+measured and reverted.
