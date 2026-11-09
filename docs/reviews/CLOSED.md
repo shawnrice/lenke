@@ -77582,7 +77582,7 @@ the sibling conformance and differential tests all import from `bun:test`.
 `bun run check` 0 read through `${pipestatus[1]}` (after `bun run fmt`). native **1084** pass (up 3),
 gremlin 2109, 0 fail. `packages/gremlin/src/predicates.ts` restored and verified after the mutation.
 
-### Item 1729 — **THE STANDING O(1)-BY-ID REQUIREMENT IS VERIFIED, not assumed: the engine scales AS A RAW `Map` DOES (growth 2.67x against the map's 2.57x over 100x the elements — 1.04x relative) and adds a 1.26x constant over a bare `Map.get` at 1,000,000 elements.** First check of it this stretch, after eighteen items that touched comparators, sort routes, fixtures and the algorithms' adjacency
+### Item 1729 — **THE STANDING O(1)-BY-ID REQUIREMENT IS VERIFIED, not assumed: the engine scales AS A RAW `Map` DOES (growth 2.67x against the map's 2.57x over 100x the elements — 1.04x relative) and adds a ~~1.26x~~ constant over a bare `Map.get` at 1,000,000 elements** (⚠️ **the 1.26x is SHAPE-DEPENDENT and does not reproduce — item 1737 measures ~1.09x with the raw-Map row in the SAME process, and prices both candidate causes as at-or-below resolution. Do not price by-id work from the 1.26x here**). First check of it this stretch, after eighteen items that touched comparators, sort routes, fixtures and the algorithms' adjacency
 
 "Keep good O(1) access to get a vertex or edge by id" is a standing requirement of this work rather
 than a hypothesis, and nothing this stretch had tested it — every statement about it was a reading of
@@ -78186,3 +78186,76 @@ an asserted match count, so a drifted loop body fails to match rather than being
 `bun run check` 0 read through `${pipestatus[1]}`. Pristine `projection.ts` restored and rebuilt by
 the driver, tree verified clean; **no engine source changed** — the arms were built, measured and
 reverted.
+
+### Item 1737 — **the standing O(1)-by-id requirement is in better shape than recorded: `getVertexById` is ~1.09x a bare `Map.get`, not item 1729's 1.26x.** Both candidate causes of the remainder priced and both are AT OR BELOW this instrument's resolution — the arrow-field call shape ~6 points, the `?? null` ~3. ⚠️ **And the dist assertion caught THREE bad classifiers in a row, refusing to print numbers for code it could not identify — the first time that guard has demonstrably earned its keep here**
+
+"Keep good O(1) access to get a vertex or edge by id" is a standing requirement. Item 1729 verified
+the COMPLEXITY (1.04x relative growth over 100x the elements) but also recorded a CONSTANT — 112.4 ns
+against a raw `Map`'s 89.2 at 1,000,000 elements, **1.26x** — which nothing had explained or ablated.
+It is the engine's most-used primitive: item 1731 measured decode spending ~14% in
+`getVertexById`/`getEdgeById`/`requireVertex`, two lookups per edge.
+
+The accessor is `public getVertexById = (id) => this.verticesById.get(id) ?? null;` — an **arrow
+assigned as a class field**, so a call is a property load on the instance plus an indirect call,
+which V8 inlines less readily than a prototype method. `verticesById` is a plain field (checked, not
+assumed), so the only candidates are that call shape and the `?? null`.
+
+#### Three arms, 1,000,000 vertices, scrambled lookup order, with the raw `Map` row IN THE SAME PROCESS
+
+The raw-`Map` row is the control and it is unaffected by any arm, so the within-process **ratio** is
+the estimator — the absolute ns swung 37-56 between processes on this machine, which is exactly why
+a cross-process absolute would have been the wrong reading. Row order alternated (`FIRST=engine` and
+`FIRST=rawmap`) so the first-measured row is not always the engine's. 9 reps, median of the last 6,
+three alternated rounds:
+
+```text
+  arm      ratio readings                                 median
+  base     1.103  1.084  1.092  1.082  1.048  1.218        1.088
+  proto    1.048  1.124  0.969  1.015  1.013  1.022        1.019
+  nonull   1.030  1.089  1.069  1.033  1.045  1.065        1.055
+```
+
+- ⚠️ **The constant is ~1.09x here, not 1.26x.** Item 1729's figure does not reproduce in this shape
+  — a FOURTH instance this stretch of a constant being a measurement of its own harness (1730, 1731,
+  1733). Its heading is corrected.
+- **The prototype form removes most of the remainder (~6 points) and the `?? null` about 3** — but
+  the ranges OVERLAP (base's best 1.048 against proto's worst 1.124), and CLAUDE.md's own rule is
+  that anything under ~10% needs its own isolated harness. **So both are priced as at-or-below
+  resolution, not as wins.**
+- **Neither is worth taking.** `proto` is a semantic change — a prototype method loses its
+  `this`-binding when detached, so `const f = g.getVertexById; f('v1')` would break, and every public
+  method on `Graph` uses the arrow-field form, so changing one is an inconsistency and changing all
+  is a different project. Paying that for ~6% on a primitive already within ~9% of a bare `Map.get`
+  is a bad trade.
+
+**NET: the requirement is satisfied with margin, and the 1.26x that might have motivated work on it
+was shape-dependent.** Recorded so the next reader does not price this from 1729's number.
+
+#### ⚠️ THE DIST ASSERTION EARNED ITS KEEP, THREE TIMES IN ONE ITEM
+
+The driver asserts the arm's code is in the built dist before running the arm. It failed three times
+in a row, each time refusing to print numbers rather than reporting them for unidentified code:
+
+1. First detector tested `'verticesById.get(id);' in dist` — that substring occurs at ANOTHER site,
+   so every arm classified as `nonull`. Refused `base` and `proto`.
+2. Second took the 90 characters after the first `'getVertexById'` — but that name occurs **26 times**
+   in the bundle, as call sites AND inside COMMENT TEXT, so it landed on a call site and classified
+   every arm as `proto`. Refused all three.
+3. Third keys on a regex that matches only the DECLARATION (`getVertexById\s*=\s*\(` or
+   `getVertexById\(id\)\s*\{`), verified to have exactly one match. All three arms then asserted
+   clean and ran.
+
+**Without the assertion, run 1 would have reported `nonull`'s numbers as `base`'s and `proto`'s** —
+three arms of a null result that was really one arm measured three times, which is precisely the
+"the after reading is the before code" failure CLAUDE.md describes. The lesson for the next driver:
+**a dist assertion must key on the DECLARATION, not on the symbol name** — in a bundle the name also
+appears in call sites and in the source comments that were carried through.
+
+**NEW PERMANENT INSTRUMENTS — `packages/native/byid-constant-probe.mjs`** (engine vs raw `Map` in one
+process, scrambled order, alternated row order, and it throws unless every lookup hits) and
+**`packages/native/byid-constant-driver.sh`** (three arms, with the working classifier).
+
+#### Gates
+
+`bun run check` 0 read through `${pipestatus[1]}`. Pristine `Graph.ts` restored and rebuilt by the
+driver, tree verified clean; **no engine source changed** — the arms were built, measured, reverted.
