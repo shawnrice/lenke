@@ -79851,3 +79851,59 @@ files across three packages, which the single-file drivers could not do.
 
 `bun run check` 0 read through `${pipestatus[1]}`. All four source files verified identical to HEAD
 after the sweep; no source changed.
+
+### Item 1763 — **FIRST MEASUREMENT OF THE GQL WRITE PATH, a surface no screen covers** — and ⚠️ **two instrument defects found in my own new probe before any number could be trusted.** Headline result: **not parameterising a write costs 1.44-1.60x**, and ~97% of a parameterised write is query machinery rather than the write
+
+`runtime-profile-probe.mjs` has fifty-odd shapes and **every one is a READ**. Items 1732-1734
+profiled the core write (`Vertex.setProperty`, ~121 ns), but a write issued as a QUERY goes through
+parse, plan, the clause runner and the write executor first, and none of that had been measured.
+
+#### ⚠️ DEFECT ONE: the first version was 99% SCAN, not write
+
+```text
+  shape        unindexed MATCH    indexed MATCH
+  insert             5.93 µs          5.50      (no MATCH — unaffected, the control)
+  set               74.67             5.82      12.8x
+  insertedge       150.80            10.92      13.8x
+```
+
+A probe named "write" whose `set` row is 93% a 2,000-vertex scan would have produced a confident
+target in the scan path. **This is item 1754's defect — the screens never index — reproduced in a
+brand-new probe one tick after writing that item up.**
+
+#### ⚠️ DEFECT TWO: a literal template is a parse-cache MISS per rep
+
+With the MATCH fixed, the profile of a pure `INSERT` read: **`tokenize` 10.7%, `normalizeLiterals`
+5.1%, `digits` 4.0%, `parseCached` 3.0% — ~23% PARSING.** The cause was the probe:
+`INSERT (:P {n: 2001, k: 4})` is a **different string every rep**, and `parseCached` keys on text, so
+every rep missed. A real application parameterises.
+
+#### Both fixed, and the gap between them is the user-facing result
+
+```text
+  shape         literal text    parameterised    gap
+  insert            5.62 µs          3.91       1.44x
+  set               5.92             4.09       1.45x
+  insertedge       10.50             6.56       1.60x
+```
+
+**Not parameterising a write costs 1.44-1.60x** — worth saying in the docs, and the kind of thing
+only a probe that gets both halves right can state.
+
+#### What the parameterised path leaves
+
+`INSERT (:P {n: $n, k: $k})` has **no MATCH at all** and costs **3.91 µs**, against `RETURN 1 AS one`
+at **103 ns** (item 1762) and the core write at **~121 ns** (item 1733). So **~97% of a parameterised
+GQL write is neither the parse nor the write** — it is the write executor, the clause runner and
+index maintenance. That is the largest unexplained per-operation gap this stretch has found, and it
+is OPEN: the cost is spread (as item 1761's flat mix was), so it needs an ablation ladder rather than
+a profile to attribute.
+
+**NEW PERMANENT INSTRUMENT — `packages/native/gql-write-probe.mjs`**: six shapes (three literal,
+three parameterised), `INDEXED=0|1`, a per-round element-count assertion so a write that silently
+did nothing cannot be the fastest arm, and a fixture rebuilt per batch because **a write probe cannot
+reuse its fixture** — every rep mutates, which no read probe has to handle.
+
+#### Gates
+
+`bun run check` 0 read through `${pipestatus[1]}`. No source changed — one new probe and this entry.
