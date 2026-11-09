@@ -65,6 +65,12 @@ const ROWS = {
   h3interior:
     'MATCH (a:Person)-[:KNOWS]->(b)-[:KNOWS]->(c)-[:KNOWS]->(d) WHERE c.age > 60 RETURN count(*) AS c',
   h2start: 'MATCH (a:Person)-[:KNOWS]->(b)-[:KNOWS]->(c) WHERE a.age > 60 RETURN count(*) AS c',
+  // ⚠️ Item 1676's bounded var-length arm — the sixth CSR consumer, and the one item 1696 left
+  // unmeasured because none of the fixed-depth rows exercises a quantified path. It builds ONE
+  // CSR (`walkLevelCount` calls `csrFor` once), so its rebuild is ~172 ms rather than ~345.
+  vl12: 'MATCH (a:Person)-[:KNOWS]->{1,2}(y) RETURN count(*) AS c',
+  vl13: 'MATCH (a:Person)-[:KNOWS]->{1,3}(y) RETURN count(*) AS c',
+  vl12end: 'MATCH (a:Person)-[:KNOWS]->{1,2}(y) WHERE y.age > 60 RETURN count(*) AS c',
 };
 
 const ROW = process.env.ROW ?? 'h3';

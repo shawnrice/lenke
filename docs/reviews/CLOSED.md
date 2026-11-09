@@ -75812,13 +75812,63 @@ its depth. Worth knowing before adding an arm to a mixed-direction shape.
 
 #### What is still unmeasured
 
-Item 1676's bounded var-length arm (3.8x-27.2x) is the sixth CSR consumer and is not in this table.
+~~Item 1676's bounded var-length arm (3.8x-27.2x) is the sixth CSR consumer and is not in this table.
 Its walk is the expensive one in that family, so it is very likely on the safe side — but "likely"
-is what this item exists to replace, and it has its own fixture shape (a quantified path) that none
-of these four rows exercises.
+is what this item exists to replace~~ ⚠️ **MEASURED AT ITEM 1697 and it passes by the widest margin
+of the six: 220x warm and still 23.1x at one write per read.** Its fixture shape (a quantified path)
+is its own, which is why it needed its own measurement.
 
 #### Gates
 
 `bun run check` 0 read unpiped. `packages/gql` isolated: 4360 pass, 0 fail. The three arm modules
 were disabled and restored for the PRE measurement, with the temporary markers asserted back to 0.
 One probe added; no engine behaviour changed.
+
+### Item 1697 — **THE INVALIDATION QUESTION IS NOW CLOSED ACROSS ALL SIX CSR ARMS.** Item 1676's bounded var-length arm passes by the widest margin of any: **220x warm, and still 23.1x when a write precedes EVERY read.** ⚠️ **Its PRE walk is 3.88 SECONDS per read, which is also why the deeper rows were not measured — the baseline, not the arm, is what makes them unaffordable**
+
+Item 1696 left this as the one CSR consumer unmeasured under writes, and said "likely" was what that
+item existed to replace. Measured, on the same scattered fixture, ms per read:
+
+```text
+   row                              PRE warm    POST warm    warm     PRE wr1    POST wr1     wr1
+   count var-length 1-2 (1676)       3877.31        17.62   220.0x    3838.85      166.55    23.1x
+   count var-length 1-3                   —         32.14         —         —      178.80        —
+   1-2 + end filter                       —         20.42         —         —      168.95        —
+```
+
+`walkLevelCount` calls `csrFor` ONCE, so its rebuild is ~150 ms against a walk of 3,877 — item
+1695's criterion (safe iff the walk costs more than the rebuild) is satisfied 26-fold. This is the
+only arm of the six where the write rate is irrelevant to the decision rather than merely favourable.
+
+#### ⚠️ WHY TWO OF THE THREE ROWS HAVE NO PRE COLUMN, AND WHY THAT IS NOT A GAP
+
+`{1,3}` over 1,000,000 edges enumerates **30,999,830** paths. With the arm disabled that is ~20
+seconds per read, so the PRE arm alone would be 40+ minutes for the two remaining rows — and the
+`{1,2}` row's 23.1x margin at the worst write rate already settles the criterion for the family. The
+run was stopped deliberately rather than left to finish.
+
+**The baseline being unaffordable to measure is itself the result.** A rung whose PRE path takes four
+seconds per query is not in the same régime as the fixed-depth rows, where PRE is 100-550 ms and the
+rebuild can plausibly compete.
+
+#### Where the six arms stand
+
+```text
+   arm                                    warm      worst write rate   verdict
+   1676  var-length 1-2                  220.0x               23.1x    safe by 26x
+   1685  count 3-hop                      48.0x                1.21x   safe
+   1688  3-hop + start filter             29.0x                1.72x   safe
+   1689  3-hop + interior filter           6.1x                1.31x   safe
+   1690  2-hop + start filter              9.4x                0.65x   ⚠️ a documented trade
+   1692  Gremlin far-filtered hop         56.7x                1.19x   safe
+```
+
+Five of six are wins at any write rate. Item 1690's is the one trade, and its reason is structural
+rather than incidental: it is the only arm whose replaced walk (101 ms) is cheaper than a CSR rebuild
+(~147). That is recorded on the arm itself, not only here.
+
+#### Gates
+
+`bun run check` 0 read unpiped. `packages/gql` isolated: 4360 pass, 0 fail. The var-length arm was
+disabled and restored for the PRE measurement, with the temporary marker asserted back to 0. Three
+rows added to an existing probe; no engine behaviour changed.
