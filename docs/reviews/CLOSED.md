@@ -76425,9 +76425,10 @@ route map explains it: a vacuous label makes `candidateCount(startLabel) === gra
 `threeSegmentRoute`'s comparison picks the PRODUCT, while a real label picks the SWEEP. On this shape
 the sweep is the better arm and the vacuous case cannot reach it.
 
-That is a route-choice question, not a correctness one, and the comparison it would change carries
-the note that **no test can police the choice** — so it needs a clean A/B of the two routes on ONE
-fixture before anything moves. The two figures above are from fixtures differing by four vertices,
+~~That is a route-choice question … it needs a clean A/B of the two routes on ONE fixture before
+anything moves.~~ ⚠️ **RUN AT ITEM 1707 AND TAKEN AT 1708: the verdict splits by SHAPE, not by
+vacuity — product 1.17x unfiltered, SWEEP 1.58x-1.72x interior-gated — and the route is now
+shape-aware, worth 1.55x and 1.53x on those two rows with everything else flat.** The two figures above are from fixtures differing by four vertices,
 which cannot account for 1.7x at 200,000, but they are still not the same fixture and so are not
 that A/B.
 
@@ -76435,3 +76436,71 @@ that A/B.
 
 `bun run check` 0 read through `${pipestatus[1]}`. One probe gained a toggle; no engine behaviour
 changed.
+
+### Items 1707/1708 — **THE THREE-SEGMENT ROUTE IS NOW SHAPE-AWARE: `+ interior filter` 17.40 -> 11.20 ms (1.55x) and its inline twin 18.46 -> 12.06 (1.53x), with the unfiltered chain keeping the product at 7.41.** ⚠️ **A STRING MARKER CANNOT IDENTIFY A FORCED-ROUTE ARM — a comment is stripped by the bundler and a single-use `const` is INLINED by it; two runs aborted before the guard became a bundle HASH**
+
+Item 1706 observed `+ interior filter` at 11.43 ms with a real anchor label against 19.26 with a
+vacuous one and traced it to `threeSegmentRoute`'s comparison, but across two fixtures. Item 1707 is
+the same-fixture A/B: both routes forced, four rows, two order-alternated rounds, one row per
+process.
+
+```text
+   row                      PRODUCT    SWEEP    verdict
+   count 3-hop                 7.41     8.68    product 1.17x — item 301's direction, intact
+   + start filter              8.91     8.94    tie
+   + interior filter          17.40    11.04    SWEEP 1.58x
+   + interior inline          18.46    10.75    SWEEP 1.72x
+```
+
+**The verdict splits by SHAPE**, and the shipped comparison keys on label VACUITY — a vacuous start
+label makes `narrow === graph.vertexCount` and picks the product even where the sweep is 1.6x-1.7x
+better. ⚠️ **This is not items 301/310's refuted lever**: those routed EVERY three-segment chain to
+the sweep and measured it losing, which the unfiltered row reproduces at 1.17x. The interior-gated
+shape is the one they never isolated.
+
+Shipped (item 1708), same fixture:
+
+```text
+   count 3-hop            7.41    product kept — the better arm
+   + start filter         8.98    flat
+   + interior filter     11.20    1.55x
+   + interior inline     12.06    1.53x
+   count 2-hop + start   11.13    flat, a different family
+```
+
+#### ⚠️ TWO FAILED A/B RUNS, AND BOTH WERE THE GUARD WORKING
+
+The arm-identity guard aborted all four arms twice, which is the only reason a wrong number was not
+reported:
+
+- A trailing `// A/B: … forced` comment marker: **the bundler strips comments**, so the dist carried
+  no marker.
+- `const narrow = graph.vertexCount;`: **the bundler INLINES a single-use local**, so that vanished
+  too.
+
+Both times the driver refused to time a build it could not identify. Without the guard it would have
+timed the pristine bundle twice and reported "no difference" — the null that looks like a result.
+**The guard is now a HASH**: assert the marker in the SOURCE that was patched, and assert the built
+bundle differs from a pristine bundle hashed once at the start. Three distinct hashes appeared
+(pristine `f032f4c3`, product `ee746c8c`, sweep `51243ca6`), each stable across both rounds. That is
+immune to stripping, inlining and renaming.
+
+#### The choice needed its own module, and a cap said so
+
+Adding the test inline put `shortcuts.ts` at 3,008 lines against a cap of 3,000 — the same limit that
+moved item 1685's arm out, and its note applies verbatim. `interior-route-choice.ts` now owns the
+route test, the `InteriorGates` type and `interiorPredOf`, the reader that produces it; a leaf module,
+because `shortcuts.ts` imports it and the reverse would be a cycle.
+
+⚠️ **The inline spelling has to be read from the SEGMENTS, not from `interiorPred`.**
+`inlineInteriorGate` sets that only for an inline `b`, so `(c {k: 2})` leaves it `undefined` while
+being exactly the 1.72x shape. A gates-only test would have missed the biggest row.
+
+#### Gates
+
+`bun run check` 0 read through `${pipestatus[1]}`. Five suites isolated: core 453, gql 4394, gremlin
+2065, serialization 144, native 1081, 0 fail each. Seven byte-identity fuzzers 20 pass, 0 fail. **Five
+mutants on the route choice, all CAUGHT** — always-sweep, never-sweep, the inline spelling ignored,
+only the first interior position read, and the clause gates ignored. A route choice is
+answer-equivalent, so those unit tests are the whole instrument and this pass is what proves they
+have teeth.

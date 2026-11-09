@@ -18,7 +18,7 @@ import { Graph } from '@lenke/core';
 import type { Expr, Segment } from '../ast.js';
 import { query } from '../index.js';
 import { parse } from '../parser.js';
-import { interiorPredOf } from './shortcuts.js';
+import { interiorConstrained, interiorPredOf } from './interior-route-choice.js';
 
 /**
  * ⚠️ Scattered insertion and a nonlinear target, so the graph is neither functional nor in-regular
@@ -337,5 +337,75 @@ describe('⚠️ the SWEEP path, which needs a NON-VACUOUS start label to reach'
     expect(
       countIn('MATCH (a:P)-[:E]->(b)-[:E]->(c)-[:E]->(d) WHERE c.k = 3 RETURN count(*) AS c'),
     ).toBe(countIn('MATCH (a:P)-[:E]->(b)-[:E]->(c {k: 3})-[:E]->(d) RETURN count(*) AS c'));
+  });
+});
+
+describe('interiorConstrained — the ROUTE choice, asserted directly', () => {
+  /**
+   * ⚠️ THIS CHOICE IS ANSWER-EQUIVALENT, so every mutant of it survives the differential tests and
+   * it needs its own assertions — `perf-gate-needs-its-own-test`, and the same reason
+   * `csrDegreeProductApplies` and `interiorPredOf` carry theirs. The numbers that justify the
+   * choice (product 1.17x unfiltered, sweep 1.58x-1.72x interior-gated) are on the function.
+   */
+  const segmentsOf = (q: string): readonly Segment[] => {
+    const ast = parse(q) as unknown as {
+      parts: { clauses: { kind: string; patterns?: { segments: readonly Segment[] }[] }[] }[];
+    };
+    const match = ast.parts[0].clauses.find((c) => c.kind === 'match');
+
+    if (match?.patterns === undefined) {
+      throw new Error('the probe query must have a MATCH');
+    }
+
+    return match.patterns[0].segments;
+  };
+  const chain = (b: string, c: string): readonly Segment[] =>
+    segmentsOf(`MATCH (a:P)-[:E]->(${b})-[:E]->(${c})-[:E]->(d) RETURN count(*) AS c`);
+  const gates = { b: [], c: [] } as Parameters<typeof interiorConstrained>[1];
+
+  test('an UNCONSTRAINED chain is not interior-constrained — the product keeps that row', () => {
+    expect(interiorConstrained(chain('b', 'c'), undefined)).toBe(false);
+    expect(interiorConstrained(chain('b', 'c'), gates)).toBe(false);
+  });
+
+  test('⚠️ an INLINE constraint on either interior position counts, read from the SEGMENTS', () => {
+    // `inlineInteriorGate` sets `interiorPred` only for an inline `b`, so the `c` case would be
+    // missed entirely by testing the gates alone — and the inline `c` row is the 1.72x one.
+    expect(interiorConstrained(chain('b {k: 2}', 'c'), undefined)).toBe(true);
+    expect(interiorConstrained(chain('b', 'c {k: 2}'), undefined)).toBe(true);
+    expect(interiorConstrained(chain('b WHERE b.k > 2', 'c'), undefined)).toBe(true);
+    expect(interiorConstrained(chain('b', 'c WHERE c.k > 2'), undefined)).toBe(true);
+  });
+
+  test('a CLAUSE-derived gate on either position counts', () => {
+    const one = interiorPredOf(
+      (
+        parse(
+          'MATCH (a:P)-[:E]->(b)-[:E]->(c)-[:E]->(d) WHERE b.k = 7 RETURN count(*) AS c',
+        ) as unknown as {
+          parts: { clauses: { kind: string; where?: Expr }[] }[];
+        }
+      ).parts[0].clauses.find((cl) => cl.kind === 'match')!.where!,
+      chain('b', 'c')[0],
+      chain('b', 'c')[1],
+    );
+
+    expect(one).not.toBeNull();
+    expect(interiorConstrained(chain('b', 'c'), one)).toBe(true);
+  });
+
+  test('an END or START constraint alone does NOT count — those are not interior', () => {
+    expect(
+      interiorConstrained(
+        segmentsOf('MATCH (a:P)-[:E]->(b)-[:E]->(c)-[:E]->(d {k: 2}) RETURN count(*) AS c'),
+        undefined,
+      ),
+    ).toBe(false);
+    expect(
+      interiorConstrained(
+        segmentsOf('MATCH (a:P {k: 2})-[:E]->(b)-[:E]->(c)-[:E]->(d) RETURN count(*) AS c'),
+        undefined,
+      ),
+    ).toBe(false);
   });
 });

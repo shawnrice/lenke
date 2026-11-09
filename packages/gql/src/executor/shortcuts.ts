@@ -67,11 +67,13 @@ import type {
   Row,
 } from './core.js';
 import { compileExpr, compilePredicate, specializeNarrowPred, percentileFraction } from './core.js';
-import { flattenConjuncts, freePredicateVars } from './expr-analysis.js';
+import { freePredicateVars } from './expr-analysis.js';
 import { filteredChainCsrApplies, filteredChainCsrCount } from './filtered-chain-csr.js';
 import { plainNode, plainRel, side as hopSide, sideOfVertex } from './hop-sides.js';
 import { composeInlineGate, inlineHolds, inlineOf, inlinePredOf, predFor } from './inline-gate.js';
 import type { InlineGate, InlinePred } from './inline-gate.js';
+import { interiorConstrained, interiorPredOf } from './interior-route-choice.js';
+import type { InteriorGates } from './interior-route-choice.js';
 import { anyEmptyLabel, effectiveLabel, vacuousLabel } from './labels.js';
 import { indexCandidates, seekIsWorthIt } from './matching.js';
 import type { SeedCandidate } from './matching.js';
@@ -740,9 +742,6 @@ const relHopPred = (
  * against the inline 33.9 — 139x, item 125's bug class at the far end of the family. Native had
  * the same gap for the same reason and item 304 closed it the same way.
  */
-/** Interior gates for a three-segment count, bucketed by the position each conjunct reads. */
-export type InteriorGates = { b: readonly InlinePred[]; c: readonly InlinePred[] };
-
 export const chainGatesOf = (
   where: Expr,
   start: NodePattern,
@@ -4128,6 +4127,12 @@ const threeSegmentRoute = <T>(
     return product;
   }
 
+  // ⚠️ AN INTERIOR CONSTRAINT PREFERS THE SWEEP — a SHAPE test, not the label one below. Numbers
+  // and reasons on `interiorConstrained` (item 1708); its own module because of this file's cap.
+  if (interiorConstrained(segments, interiorPred)) {
+    return swept;
+  }
+
   return (graph, params) => {
     // NO TEST CAN POLICE THIS CHOICE, and mutation says so rather than my reading it:
     // always-sweep, always-product and an INVERTED comparison all leave every test green,
@@ -5040,70 +5045,6 @@ const inlineInteriorGate = (
   }
 
   return undefined;
-};
-
-/**
- * The three-segment clause `WHERE`, SPLIT INTO CONJUNCTS and bucketed by the interior position each
- * one reads. `null` declines.
- *
- * ⚠️ IT USED TO ADMIT ONLY ONE POSITION, AND THAT WAS A 1411x EQUIVALENT-SPELLING GAP (item 1700).
- * The old test was `readsOnly(name)` — EVERY free variable of the whole clause had to be that one
- * name — so `WHERE b.k = 7 AND c.k > 60` had a free set of `{b, c}`, failed both tests, returned
- * `null`, and the query fell to the general row pipeline at **1411.1 ms against the inline
- * spelling's 1.0**, for the same count of 9,275. Only the b+c pair collapsed: a START or END
- * conjunct reaches the sweep (`a AND c` 2.2 ms, `b AND d` 1.3), and the three-segment path has no
- * second route of its own.
- *
- * ⚠️ AND THE MACHINERY WAS ALREADY THERE, which is what made this a reader bug rather than a
- * missing feature: `buildThreeHopCount` takes `{ b, c }` as two independent gate LISTS and the
- * INLINE spelling filled both. This makes the clause reader produce what the inline reader already
- * produced — item 219's "one question, one route" at the third position.
- *
- * Each conjunct must read EXACTLY ONE interior variable. A conjunct over the ends, over two
- * positions at once, or naming anything this pattern does not bind still declines, because the
- * product reaches `a` and `d` only as DEGREES and has no once-per-element place to gate them. That
- * is `chainGatesOf`'s rule (item 305) applied to the two positions this shape visits.
- *
- * `bindVar` is load-bearing: the conjunct reads `b.k`, so `inlineHolds` has to bind the element
- * under that name before evaluating it. Dropping it evaluates against an empty binding.
- *
- * ⚠️ EXPORTED BECAUSE IT IS A ROUTE CHOICE, AND A MUTATION PASS PROVED THE DIFFERENCE. Three
- * mutants — bucketing a `b` conjunct under `c`, never filling the `c` bucket, and not splitting the
- * clause at all — all SURVIVED the whole suite: each makes the reader NARROWER, so the shape
- * declines and the general pipeline returns the same answer. `interior-and-gates.test.ts`'s decline
- * cases assert answers, which cannot see a route. So the bucketing is asserted DIRECTLY here, the
- * way `csrDegreeProductApplies` and `gate-conjunct-route.test.ts` are — `perf-gate-needs-its-own-test`.
- */
-export const interiorPredOf = (where: Expr, s1: Segment, s2: Segment): InteriorGates | null => {
-  const bName = s1.node.variable;
-  const cName = s2.node.variable;
-  const b: InlinePred[] = [];
-  const c: InlinePred[] = [];
-
-  for (const conjunct of flattenConjuncts(where)) {
-    const free = freePredicateVars(conjunct);
-
-    // A constant conjunct (no free names) declines, as it did before: it is not a per-vertex test.
-    if (free.size !== 1) {
-      return null;
-    }
-
-    const [name] = free;
-
-    if (bName !== undefined && name === bName) {
-      b.push({ pred: compilePredicate(undefined, conjunct, bName), bindVar: bName });
-    } else if (cName !== undefined && name === cName) {
-      c.push({ pred: compilePredicate(undefined, conjunct, cName), bindVar: cName });
-    } else {
-      return null;
-    }
-  }
-
-  if (b.length === 0 && c.length === 0) {
-    return null;
-  }
-
-  return { b, c };
 };
 
 /**
