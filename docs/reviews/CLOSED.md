@@ -80283,7 +80283,7 @@ and 1M. Add the 1.77x process mode on top and this comparison cannot carry a 2x 
 `bun run check` 0 read through `${pipestatus[1]}`. No engine source changed;
 `packages/native/hop-proj-isolated-probe.mjs` is kept as the per-process instrument.
 
-### Item 1770 — ⚠️ **A 4.0x CEILING ON THE BIGGEST TS GREMLIN ROW, AND THE CAUSE OF ITEM 1769'S PROCESS BIMODALITY: `far.properties[valueKey]` is 60 of the 80 ns/row of `V().out(T).values(k)`, and ablating it collapses the 1.77x mode lottery to a 1.11x spread.** ⚠️ **FIVE candidate mechanisms REFUTED — not the freeze, not the variable key, not locality, not a stale box, not deopts or GC. The mechanism is OPEN; do not build against a guess**
+### Item 1770 — ⚠️ **A 4.0x CEILING ON THE BIGGEST TS GREMLIN ROW, AND THE CAUSE OF ITEM 1769'S PROCESS BIMODALITY: `far.properties[valueKey]` is 60 of the 80 ns/row of `V().out(T).values(k)`, and ablating it collapses the 1.77x mode lottery to a 1.11x spread.** ⚠️ **FIVE candidate mechanisms REFUTED — not the freeze, not the variable key, not locality, not a stale box, not deopts or GC. The mechanism is OPEN; do not build against a guess** (⚠️ ~~chase depth~~ **REFUTED at item 1771: depth saturates at 18.87 ns, ~31% of it; with a prototype accessor 25.43 ns, ~42%**)
 
 Item 1769 found `V().out(T).values(age)` bimodal across processes (77.9-138.0 ms, ~27% of runs slow:
 6 of 22). A 1.77x slow mode is a 1.77x regression for whoever lands in it, so it is a target, and
@@ -80347,9 +80347,73 @@ lesson is that a mechanism asserted without an ablation gets refuted by the next
 is measured and real, the mechanism is OPEN, and the next item owes an experiment that varies chase
 depth with everything else held constant.** Do not build the layout change against this paragraph.
 
+⚠️ **UPDATE — item 1771 RAN that experiment and REFUTED this hypothesis: depth SATURATES at 18.87
+ns for four dependent loads, so it is ~31% of the 60 ns and not the mechanism.** Depth plus a
+prototype accessor reaches 25.43 ns, ~42%. The residual is still open; see item 1771.
+
 #### Gates
 
 `bun run check` 0 read through `${pipestatus[1]}`; `hop-values.ts` confirmed byte-restored from its
 pristine copy (`git diff` empty, ablation marker absent from the rebuilt dist) before the gate ran.
 No engine source changed. New instruments kept: `packages/native/keyed-load-micro.mjs` (freeze ×
 key-constancy × order × bag count) and `packages/native/far-identity-probe.mjs`.
+
+### Item 1771 — ⚠️ **ITEM 1770'S CHASE-DEPTH HYPOTHESIS IS REFUTED: depth SATURATES — four dependent loads cost 18.87 ns, not 60.** But the experiment found something reusable: **a getter on a SHARED PROTOTYPE costs ~6.6 ns while the same getter written per-object costs 141 — 6.2x the entire chain.** ⚠️ **And my own first arm was that mistake; the tell was that the model came out WORSE than the engine it modelled.** Searched: the engine has none of it
+
+Item 1770 left exactly one untested hypothesis for its 60 ns/row, with instructions not to build
+against it: the micro chases one pointer where the walk chases several
+(`edge → .to → Vertex → #box → bag → [key]`). This is that experiment. Every arm reads the same
+200,000 values in the same random permutation and returns the same asserted sum; only the number of
+dependent loads differs, and **all levels for one element are allocated together, interleaved across
+elements**, because allocating all bags and then all holders would give each arm a different heap
+layout — and item 1770 measured locality at 2.4x here, easily enough to fake the result.
+
+```text
+  depth 1   bag[k]                  7.36 ns
+  depth 2   .bag[k]                17.53 ns   (+10.17)
+  depth 3   .box.bag[k]            16.80 ns   (-0.73)
+  depth 4   .to.box.bag[k]         18.87 ns   (+2.07)
+  depth 4 + proto getter           25.43 ns   (+6.56)
+```
+
+**Depth saturates after the second load.** Levels three and four are nearly free — the loads pipeline
+rather than serialising into independent cache misses, which is the opposite of what the hypothesis
+assumed. So depth is **~31%** of item 1770's 60 ns and cannot be the mechanism; with a prototype
+accessor on top it reaches 25.43 ns, **~42%**. The residual ~35 ns stays open. It is _consistent_ with
+working-set size — item 1770 measured 20,000 → 200,000 bags as 1.45 → 3.5 ns, and the engine's live
+set is far larger again (200k vertices, 1M edges, every box and adjacency map) — but that is a
+suspicion, not a measurement, and a micro cannot replicate it without becoming the engine.
+
+#### ⚠️ The finding worth keeping: an accessor's cost depends on whether it is SHARED
+
+The first version of the accessor arm wrote `{ get to() { … } }` per element, which creates 200,000
+**distinct** accessor closures and sends the call site megamorphic:
+
+```text
+  per-object closure getter   158.29 ns      ← 6.2x the whole shared-getter chain
+  shared prototype getter      25.43 ns
+```
+
+**141 ns of pure dispatch**, against ~6.6 ns for the identical logic reached through one shared
+accessor. `Edge.prototype` and `Vertex.prototype` each have ONE `to`/`properties` getter, so the
+class form is the faithful model and the engine is on the cheap side of this.
+
+⚠️ **The tell was that the model came out WORSE than the thing it modelled** — 158 ns against the
+engine's measured 60. A model is supposed to be a floor or a close companion; one that loses badly to
+reality is describing something reality does not do. That is a cheap, general check on any micro
+built to explain an engine number, and it is the only reason this was caught at all.
+
+#### The hazard was searched for, and the engine does not have it
+
+A 6.2x penalty for a per-object accessor is worth knowing about only if it is reachable. Across all
+non-test sources: **49 getter definitions, 47 of them on class prototypes** (`Vertex`,
+`VertexProperty`, `List`, `TreeNode`, …). The two in object literals are `packages/native/src/graph.ts:1284`
+and `packages/native/src/store.ts:257`, both on **singletons built once per backend**, so there is no
+population of distinct closures for a call site to go megamorphic over. **Nothing to fix — recorded so
+the next person does not re-derive the search.**
+
+#### Gates
+
+`bun run check` 0 read through `${pipestatus[1]}`. No engine source changed;
+`packages/native/chase-depth-micro.mjs` is kept. Item 1770's heading and body amended in this same
+commit, per the rule that a corrected entry must correct the HEADING a reader scans.
