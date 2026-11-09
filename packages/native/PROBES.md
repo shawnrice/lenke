@@ -290,15 +290,18 @@ builds graphs in a tight loop is measuring a different heap than it thinks.
 
 ## The ISOLATED ROW BENCHES — for a sub-10% question on ONE row
 
-| file                                | surface                                                                                |
-| ----------------------------------- | -------------------------------------------------------------------------------------- |
-| `isolated-row-bench.mjs`            | one GQL row (`SHAPE=hopfilter NODES= REPS= DROP=`)                                     |
-| `isolated-gremlin-bench.mjs`        | one Gremlin row (item 1368)                                                            |
-| `gremlin-hop-floor-probe.mjs`       | the Gremlin hop FLOOR, three arms (item 1411)                                          |
-| `gremlin-multitype-floor-probe.mjs` | why `out('E','F')` costs 1.86x `out('E')` — six arms, `ARM=` (item 1441)               |
-| `gql-filtered-hop-floor-probe.mjs`  | how far the FILTERED GQL hop is above a hand floor — seven arms, `ARM=` (item 1444)    |
-| `id-lookup-scaling-probe.mjs`       | is get-by-id O(1)? engine vs a raw `Map`, `MODE=hit                                    | seq | miss` (item 1451) |
-| `write-floor-probe.mjs`             | is a TS write's cost the QUERY LAYER or the CORE? three arms, `ARM=`/`OP=` (item 1457) |
+| file                                | surface                                                                                                                                                                                    |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `isolated-row-bench.mjs`            | one GQL row (`SHAPE=hopfilter NODES= REPS= DROP=`)                                                                                                                                         |
+| `isolated-gremlin-bench.mjs`        | one Gremlin row (item 1368)                                                                                                                                                                |
+| `hop-proj-isolated-probe.mjs`       | one hop PROJECTION row, `SHAPE=hop1id                                                                                                                                                      | hop2id | hop1values        | hop2values`, rows asserted and the fixture's DISTINCT out-targets checked (item 1769). ⚠️ Overlaps `isolated-gremlin-bench.mjs`; prefer that one unless you need the row-count assertion |
+| `properties-getter-probe.mjs`       | `v.properties` / `v.labels` / `v.id` on REAL vertices, random order, boxes pre-warmed, `NODES=` sweepable — the instrument that found items 1770-1772's cost to be scale (items 1772/1773) |
+| `far-identity-probe.mjs`            | does a fused hop yield the CANONICAL `Vertex` per id, or fresh instances? (item 1770)                                                                                                      |
+| `gremlin-hop-floor-probe.mjs`       | the Gremlin hop FLOOR, three arms (item 1411)                                                                                                                                              |
+| `gremlin-multitype-floor-probe.mjs` | why `out('E','F')` costs 1.86x `out('E')` — six arms, `ARM=` (item 1441)                                                                                                                   |
+| `gql-filtered-hop-floor-probe.mjs`  | how far the FILTERED GQL hop is above a hand floor — seven arms, `ARM=` (item 1444)                                                                                                        |
+| `id-lookup-scaling-probe.mjs`       | is get-by-id O(1)? engine vs a raw `Map`, `MODE=hit                                                                                                                                        | seq    | miss` (item 1451) |
+| `write-floor-probe.mjs`             | is a TS write's cost the QUERY LAYER or the CORE? three arms, `ARM=`/`OP=` (item 1457)                                                                                                     |
 
 ⚠️ **A HAND FLOOR BRACKETS; IT DOES NOT ATTRIBUTE** (item 1448). `gql-filtered-hop-floor-probe.mjs`
 correctly says `hopfiltyield` is ~1.9x off and that `engine-bare` is AT its floor — both useful, and
@@ -414,12 +417,14 @@ once.
 
 ## More bespoke probes
 
-| probe                        | question                                                                       |
-| ---------------------------- | ------------------------------------------------------------------------------ |
-| `prop-bag-regime-probe.mjs`  | WHY the property read grows with size — and three refutations (item 1363/1364) |
-| `engine-bag-shape-probe.mjs` | does bag SHAPE reach the engine? **1.11x — no** (item 1364)                    |
-| `token-drain-probe.mjs`      | `drainMutations`' duplicate-token array vs a count map (item 1360)             |
-| `ordinal-churn-probe.mjs`    | what DELETES cost a never-reused dense ordinal (item 1372)                     |
+| probe                        | question                                                                                                                                                                                             |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `prop-bag-regime-probe.mjs`  | WHY the property read grows with size — and three refutations (item 1363/1364)                                                                                                                       |
+| `engine-bag-shape-probe.mjs` | does bag SHAPE reach the engine? **1.11x — no** (item 1364)                                                                                                                                          |
+| `token-drain-probe.mjs`      | `drainMutations`' duplicate-token array vs a count map (item 1360)                                                                                                                                   |
+| `ordinal-churn-probe.mjs`    | what DELETES cost a never-reused dense ordinal (item 1372)                                                                                                                                           |
+| `keyed-load-micro.mjs`       | freeze x key-constancy x access ORDER x bag COUNT on synthetic bags (item 1770/1771). ⚠️ A MICRO: items 1770-1773 showed it cannot reach the engine's regime — see `prop-bag-regime-probe.mjs` first |
+| `chase-depth-micro.mjs`      | does dependent-load DEPTH explain the per-row read? **No — saturates at 18-20 ns at depth 4, in BOTH `ALLOC=interleaved` and `ALLOC=scattered`** (items 1771/1773)                                   |
 
 `prop-bag-regime-probe.mjs` closes three levers with numbers, so they are not re-attempted:
 megamorphic bag shapes cost **nothing at 200k** relative to one hidden class, `Object.freeze` is
@@ -459,6 +464,12 @@ can be measuring the wrong thing entirely.** It sets how many DISTINCT far endpo
 
 So: sweep `FANIN` for anything that touches a far endpoint, exactly as CLAUDE.md says to sweep the
 SIZE. A per-vertex cost and a per-edge cost scale differently, and so do a hot far pool and a cold one.
+
+**⚠️ AND READ ITEM 1392 BEFORE PRICING A PER-ROW PROPERTY READ AT ALL.** Items 1770-1773 spent four
+items re-deriving its conclusion — the cost is the cold pointer chase, not the accessor's code, and
+there is no per-row lever — having gone to a synthetic micro instead of this file. Item 1774 records
+the accounting. `prop-bag-regime-probe.mjs` above already closes the freeze and the bag shape, and
+already prices the layout lever at **3.55x and flat in size**.
 
 **`FANOUT` IS THE OTHER HALF, and the GQL bench did not have it until item 1401** — so every GQL
 number before that item came from a fixture with out-degree exactly 1, one permutation cycle, no

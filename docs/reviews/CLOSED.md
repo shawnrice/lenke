@@ -80223,7 +80223,7 @@ assertion as a separate unmeasured pass and leave a one-char sink in the loop. S
 first, which is why it is run unpiped. No engine source changed: the probe gained two arms and
 `packages/native/rando-micro.mjs` is kept.
 
-### Item 1769 — ⚠️ **THE GREMLIN BENCH'S `V().out().id()` ROW IS NOT A MISSING FUSION: isolated, the one-hop is 40.2-45.7 ms against the two-hop's 147.2-163.6, i.e. 3.5x FASTER, where the sweep reports 208.4 against 132.1.** And the row next to it, `V().out().values(age)`, is **BIMODAL ACROSS PROCESSES (77.9-138.0 ms, 1.77x)** — so no claim under ~1.8x can rest on it
+### Item 1769 — ⚠️ **THE GREMLIN BENCH'S `V().out().id()` ROW IS NOT A MISSING FUSION: isolated, the one-hop is 40.2-45.7 ms against the two-hop's 147.2-163.6, i.e. 3.5x FASTER, where the sweep reports 208.4 against 132.1.** And the row next to it, `V().out().values(age)`, is **BIMODAL ACROSS PROCESSES (77.9-138.0 ms, 1.77x)** — so no claim under ~1.8x can rest on it (⚠️ ~~which is new~~ **IT IS NOT NEW — item 1367 established that this row's noise is PROCESS-level and no within-process estimator removes it, and `PROBES.md` says so prominently; see item 1774**)
 
 `bun run bench:gremlin` showed a two-hop beating its own prefix: `V().out().id()` at 208.4 ms and
 `V().out().out().id()` at 132.1, on a fixture where the second hop multiplies the rows five-fold.
@@ -80283,7 +80283,7 @@ and 1M. Add the 1.77x process mode on top and this comparison cannot carry a 2x 
 `bun run check` 0 read through `${pipestatus[1]}`. No engine source changed;
 `packages/native/hop-proj-isolated-probe.mjs` is kept as the per-process instrument.
 
-### Item 1770 — ⚠️ **A 4.0x CEILING ON THE BIGGEST TS GREMLIN ROW, AND THE CAUSE OF ITEM 1769'S PROCESS BIMODALITY: `far.properties[valueKey]` is 60 of the 80 ns/row of `V().out(T).values(k)`, and ablating it collapses the 1.77x mode lottery to a 1.11x spread.** ⚠️ **FIVE candidate mechanisms REFUTED — not the freeze, not the variable key, not locality, not a stale box, not deopts or GC. The mechanism is OPEN; do not build against a guess** (⚠️ ~~chase depth~~ **REFUTED at item 1771: depth saturates at 18.87 ns, ~31% of it; with a prototype accessor 25.43 ns, ~42%**)
+### Item 1770 — ⚠️ **A 4.0x CEILING ON THE BIGGEST TS GREMLIN ROW, AND THE CAUSE OF ITEM 1769'S PROCESS BIMODALITY: `far.properties[valueKey]` is 60 of the 80 ns/row of `V().out(T).values(k)`, and ablating it collapses the 1.77x mode lottery to a 1.11x spread.** ⚠️ **FIVE candidate mechanisms REFUTED — not the freeze, not the variable key, not locality, not a stale box, not deopts or GC (⚠️ **the freeze and bag-shape refutations were ALREADY CLOSED at items 1363/1364 via `prop-bag-regime-probe.mjs`; see item 1774**). The mechanism is OPEN; do not build against a guess** (⚠️ ~~chase depth~~ **REFUTED at item 1771: depth saturates at 18.87 ns, ~31% of it; with a prototype accessor 25.43 ns, ~42%**)
 
 Item 1769 found `V().out(T).values(age)` bimodal across processes (77.9-138.0 ms, ~27% of runs slow:
 6 of 22). A 1.77x slow mode is a 1.77x regression for whoever lands in it, so it is a target, and
@@ -80581,8 +80581,75 @@ through the same scattered objects** — a design change, correspondingly expens
 priced against the right mechanism. Items 1770's 4.0x ceiling and this entry together are what any
 such proposal should be judged on.
 
+⚠️ **UPDATE — THIS CONCLUSION WAS ALREADY ESTABLISHED, and by a better instrument.** Item 1392 swept `FANIN` and found `far.properties` at 42.967 ms of a 61.197 ms read at in-degree 1 against 1.990 ms concentrated — **21.6x** — with a FLAT no-read control, concluding "the cost is the pointer chase to a cold far vertex, not the accessor's code, and there is no per-row lever there at all"; item 1066 had it at 9.3x from the other direction. The layout lever is priced too: `prop-bag-regime-probe.mjs` measures a `Float64Array` column at **3.55x and FLAT in size**. See item 1774 for what items 1770-1773 actually added.
+
 #### Gates
 
 `bun run check` 0 read through `${pipestatus[1]}` — it caught an unused parameter in the extended
 micro first, which is why it is run unpiped and re-run after the fix; the micro was then re-run to
 confirm it still executes. No engine source changed.
+
+### Item 1774 — ⚠️⚠️ **ITEMS 1770-1773 LARGELY RE-DERIVED ITEMS 1066, 1363/1364, 1367 AND 1392, and the preventive check cost one command.** Four items concluded "the cost is the cold pointer chase, not the accessor's code, and there is no per-row lever" — which **item 1392 had measured better, with a `FANIN` sweep and a flat control.** The genuinely new content is TWO facts, not four items. `PROBES.md` indexed and five headings corrected
+
+I went to look for a fresh surface, read `runtime-profile-probe.mjs`'s header — which names items
+1358-1362 — and followed it into `CLOSED.md` and then `packages/native/PROBES.md`. That is where the
+last four items already were.
+
+#### What was already closed, and where
+
+| already established                                                                                                                                                                                                                                                                    | by                                                         | items 1770-1773 re-derived it as                                                                                  |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| the per-row read's cost is the **cold pointer chase to a far vertex**, not the accessor's code, and **there is no per-row lever there at all** — `far.properties` 42.967 ms of a 61.197 ms read at `FANIN=1` against **1.990 ms** concentrated, **21.6x**, with a FLAT no-read control | **item 1392** (item 1066 at 9.3x from the other direction) | item 1773's "working-set effect", after seven refutations                                                         |
+| `Object.freeze` is **free at every size**; megamorphic bag shapes cost **nothing at 200k**; a `Map` per element is **3.18x worse**; a `Float64Array` column is **3.55x and FLAT in size** — the layout lever                                                                           | **items 1363/1364**, `prop-bag-regime-probe.mjs`           | item 1771's freeze arm, item 1772's hidden-class check, item 1773's "the lever is colocation or a columnar store" |
+| the noise on a 200k row is **PROCESS-level, not rep-level**, and **no within-process estimator removes it**; sampling unit is the PROCESS, `p25` within one, **arms interleaved**                                                                                                      | **item 1367**, and `PROBES.md` states it prominently       | item 1769's "bimodal across processes, which is new"                                                              |
+| one isolated Gremlin row harness                                                                                                                                                                                                                                                       | **item 1368**, `isolated-gremlin-bench.mjs`                | item 1769's new `hop-proj-isolated-probe.mjs`                                                                     |
+
+**The check that would have prevented all of it is one `grep` of `PROBES.md`** — the file item 1373
+created _for exactly this failure_, after finding that thirteen instruments from items 1358-1372 had
+been built and none indexed. I then repeated 1373's own mistake from the other side: six new
+instruments this session, none indexed until now.
+
+#### ⚠️ And item 1772's retraction was avoidable by the same route
+
+`PROBES.md` says, in bold: **"`p25` PER PROCESS, MEDIAN ACROSS PROCESSES — a MEAN inverts verdicts"**,
+and names the magnitude below which the process COUNT is inadequate too. Item 1772's in-engine A/B
+used **min across five non-interleaved processes** and had to retract its reading as an over-read of a
+bimodal shape. The prescription for that exact failure was already written down.
+
+#### What items 1770-1773 did add, stated narrowly
+
+Not nothing, and worth keeping separate from the duplication:
+
+1. **The magnitude on this specific row.** `far.properties[valueKey]` is **60 of the ~80 ns/row** of
+   `V().out(T).values(k)`, by in-engine ablation across eight processes (79.7-139.0 → 19.3-21.4), and
+   the row's **bimodality disappears with the read** (1.75x spread → 1.11x). Item 1392 priced the
+   mechanism; it did not price this row, and the 4.0x ceiling is what a layout proposal is judged on.
+2. **A per-object accessor costs 141 ns against a shared prototype's 6.6 — 6.2x** — with a search
+   showing the engine has **none** (49 getter definitions, 47 on prototypes, two on singletons). That
+   is a new hazard with a new negative result.
+3. A smaller third: **`%HasFastProperties` / `%HaveSameMap` asked V8 directly** where items 1363/1364
+   inferred bag shape from timings. Same answer, stronger evidence, and the script is in item 1772.
+
+**Three facts from four items.** The honest ratio, recorded because the next person deciding whether
+to chase a property-read number should see what that costs.
+
+#### Corrections made in this commit
+
+- **`PROBES.md`**: the six instruments from items 1769-1773 indexed, each labelled with what supersedes
+  it; a pointer added to the `FANIN` section saying to **read item 1392 before pricing a per-row
+  property read at all**.
+- **Item 1769's heading**: "which is new" struck, pointed at item 1367.
+- **Item 1770's heading**: the freeze and bag-shape refutations marked as already closed at 1363/1364.
+- **Item 1773's body**: its conclusion marked as already established by item 1392, with that item's
+  numbers and the already-priced layout lever.
+
+#### The rule, which is CLAUDE.md's own with one addition
+
+CLAUDE.md says to match the store to the kind of fact: `CLOSED.md` for "has this lever been tried".
+**Add: `packages/native/PROBES.md` for "does an instrument for this already exist" — and read it
+BEFORE building one, not after.** A new probe is the most expensive way to discover that a question is
+closed, because it answers the question and tells you nothing about whether it needed answering.
+
+#### Gates
+
+`bun run check` 0 read through `${pipestatus[1]}`. No engine source changed.
