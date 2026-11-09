@@ -76236,12 +76236,72 @@ The mechanism is almost certainly label VACUITY: with only `P` vertices, `(a:P)`
 `effectiveLabel` returns `undefined`, and `csrDegreeProductApplies` — which requires
 `aEff === undefined`, because "a label-filtered degree counts only edges whose far endpoint carries
 the label, where the CSR counts them all" — admits the arm. Four non-`P` vertices make the label
-real and the arm declines. What is NOT yet explained is why the INLINE spellings stay fast under the
-same condition, since they face the same guard; that is a route question and the next item
-route-maps it rather than guessing, which is the practice that has paid in items 1690, 1700 and this
-one.
+real and the arm declines. ~~What is NOT yet explained is why the INLINE spellings stay fast under the
+same condition~~ ⚠️ **EXPLAINED AT ITEM 1704, and it is one line: `threeSegmentRoute` skips the sweep
+whenever `interiorPred !== undefined`, which a clause `WHERE` always sets and an inline constraint on
+`c` never does.**
 
 #### Gates
 
 `bun run check` 0 read through `${pipestatus[1]}`. Two probes gained toggles; no engine behaviour
 changed.
+
+### Item 1704 — **THE 35x-44x IS ONE LINE: `threeSegmentRoute` skips the sweep whenever `interiorPred !== undefined`**, which a clause `WHERE` always sets and an inline constraint on `c` never does. ⚠️ **And the guard is there for a REASON that is itself the fix: the sweep is called WITHOUT `clauseGates`, so sweeping would silently drop the predicate — but that signature has accepted them since item 305.** Diagnosed and located; the fix is its own item
+
+Item 1703 found that four edgeless vertices under another label cost a clause-filtered three-hop
+count 35x-44x while the inline twins stayed fast, and left the asymmetry unexplained. A route counter
+at each candidate rung, 20,000 vertices, with and without those four nodes:
+
+```text
+   spelling        single-label                        + other label
+   clause eq       csrDispatch -> armGated   46.3ms    csrDispatch -> csrDeclined   66.9ms
+   clause ord      csrDispatch -> armGated    9.4      csrDispatch -> csrDeclined   57.1
+   inline where    longChain + armGated       3.6      longChain ONLY               20.6
+   inline prop     longChain + armGated       2.5      longChain ONLY                3.4
+   unfiltered      longChain + armUnfiltered  1.4      longChain ONLY                1.4
+```
+
+So with a non-vacuous start label the CSR arms decline for EVERY spelling — correctly, since `aEff`
+is real and "a label-filtered degree counts only edges whose far endpoint carries the label, where
+the CSR counts them all". The inline spellings then fall through to the SWEEP. **The clause spellings
+never reach it**, and land in the general row pipeline.
+
+#### The line, and why it is written that way
+
+```ts
+if (product === null || interiorPred !== undefined || !labelled) {
+  return product;
+}
+
+const swept = longChainCount(start, segments, rowOf);
+```
+
+`interiorPred !== undefined` is true for every clause `WHERE` that produced interior gates and false
+for an inline constraint on `c` (`inlineInteriorGate` only sets it for an inline `b`). So the clause
+spelling returns `product` — which is `null` once the arms decline — and `patternCountOf`'s
+three-segment branch returns unconditionally, so nothing downstream tries the sweep.
+
+⚠️ **The guard is not an oversight, and its own comment says so**: "dropping the `interiorPred` guard
+above loses a clause `WHERE` on the way to the sweep and fails". That is true of the call AS WRITTEN —
+`longChainCount(start, segments, rowOf)` passes no gates, so the sweep would count every path and
+silently ignore the predicate. **But `longChainCount` has taken `clauseGates` since item 305**, which
+is how the four-or-more-segment branch sweeps a clause `WHERE` correctly. The three-segment route
+simply never passes them.
+
+So the fix is to give the sweep what it already accepts: build `chainGatesOf(where, start, segments)`
+for three segments as well, pass it, and narrow the skip to the case where those gates cannot be
+built. Expected: the clause spellings join the inline ones at 3.4-20.6 ms, which on the replica
+fixture is 467 -> ~12.
+
+#### Deliberately not built in this item
+
+The same discipline as item 1700, which paid: this changes a signature and a route guard whose own
+comment records that **no test can police the choice** ("always-sweep, always-product and an INVERTED
+comparison all leave every test green"). What the tests DO catch is the predicate plumbing — so the
+fix needs the clause gates asserted on the way to the sweep, and a mutation pass that checks a
+dropped gate fails. That is a build, not a tail.
+
+#### Gates
+
+`bun run check` 0 read through `${pipestatus[1]}`. Six temporary counters applied and removed, with
+the count asserted back to 0 in both files; no engine behaviour changed.
