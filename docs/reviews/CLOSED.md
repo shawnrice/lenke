@@ -80282,3 +80282,74 @@ and 1M. Add the 1.77x process mode on top and this comparison cannot carry a 2x 
 
 `bun run check` 0 read through `${pipestatus[1]}`. No engine source changed;
 `packages/native/hop-proj-isolated-probe.mjs` is kept as the per-process instrument.
+
+### Item 1770 — ⚠️ **A 4.0x CEILING ON THE BIGGEST TS GREMLIN ROW, AND THE CAUSE OF ITEM 1769'S PROCESS BIMODALITY: `far.properties[valueKey]` is 60 of the 80 ns/row of `V().out(T).values(k)`, and ablating it collapses the 1.77x mode lottery to a 1.11x spread.** ⚠️ **FIVE candidate mechanisms REFUTED — not the freeze, not the variable key, not locality, not a stale box, not deopts or GC. The mechanism is OPEN; do not build against a guess**
+
+Item 1769 found `V().out(T).values(age)` bimodal across processes (77.9-138.0 ms, ~27% of runs slow:
+6 of 22). A 1.77x slow mode is a 1.77x regression for whoever lands in it, so it is a target, and
+diffing eight profiles by mode says exactly where it lives. Converting percentages to absolute (the
+slow run is 1.7x longer) is the step that makes the diff readable:
+
+```text
+  frame                      fast      slow     absolute ratio
+  pick                       47.1 ms   83.2 ms  1.77x  — tracks the total, i.e. neutral
+  get properties             15.3 ms   43.8 ms  2.90x  — the only frame that BLOWS UP
+  drain                      13.9 ms    6.6 ms  0.47x  — CHEAPER, i.e. attribution moved into pick
+```
+
+#### The ablation, which is the whole result
+
+`hop-values.ts:181` is `pick = (far) => far.properties[valueKey]`. Replacing it with
+`(far) => (far === undefined ? undefined : 1770)` keeps the row count, the `drops` filter and the
+`acc.push` identical and removes only the property read — and because `pick(edge.to)` evaluates its
+argument at the call site, it does NOT remove the `edge.to` resolution. Eight processes each:
+
+```text
+  real      79.7  93.4  83.8  139.0  80.4  80.5  81.0  93.5     ← 1.75x spread, bimodal
+  ablated   19.7  19.5  20.6   21.0  20.5  21.1  19.3  21.4     ← 1.11x spread, NO modes
+```
+
+**So the property read is 60 of the ~80 ns/row in the fast mode — 4.0x — and 7.0x of the slow one.
+And the mode lottery is CAUSED by it: remove the read and the bimodality is gone entirely.** That is
+the largest single ceiling measured in this family, on the row that is already the biggest absolute
+TS/native gap in the Gremlin bench.
+
+#### ⚠️ FIVE MECHANISMS REFUTED, each with its number
+
+A 4.0x with an obvious-looking cause is exactly where this audit has gone wrong before, so each
+candidate was measured rather than argued:
+
+1. **Deopts** — `--trace-deopt`, six processes: 12-13 deopts in BOTH modes, 1-2 mentioning
+   `properties`. Identical. The slow mode is not a deoptimization.
+2. **GC** — `--trace-gc`, six processes: 73-76 collections and exactly 3 major in every run,
+   regardless of mode.
+3. **The freeze.** `Vertex.properties` returns the graph's live bag, frozen, and item 1734 refuted
+   "the freeze costs the later reads" for CONSTANT keys. Re-tested for this load shape:
+   **frozen 1.45 ns/read against plain 1.47** — free.
+4. **The variable key.** Item 1450 found "the whole win came from CONSTANT property keys", and a
+   closure-captured `valueKey` cannot use a constant-key IC. Measured: **variable 1.45 ns against
+   constant 1.44** — free. (Which is just as well: specializing on a literal key needs runtime
+   codegen, and `no-runtime-codegen` forbids that outright, so that win is UNREACHABLE, not pending.)
+5. **A stale box.** The getter caches per INSTANCE (`this.#box ??= …elementProperties.get(this.#id)`),
+   so fresh `Vertex` objects per row would mean a 200k-entry `Map.get` every row — the right order of
+   magnitude. Measured instead: the walk yields **CANONICAL instances, 10,000 of 10,000, 2,000
+   distinct objects for 2,000 distinct ids.** The box is cached; amortized that is ~10 ns/row, not 60.
+6. **Locality.** 200,000 bags read in a fixed random permutation — the walk's adjacency-order shape —
+   measures **3.5 ns/read** against 1.45 sequential. Real, and still **17x short of 60 ns.**
+
+#### What is left, stated as a HYPOTHESIS and not a finding
+
+The arithmetic points at **dependent-load depth**: the micro chases one pointer (`bags[idx]` → key)
+where the walk chases four (`edge` → `to` getter → `Vertex` → `#box` → `bag` → key), and four
+dependent misses at ~15 ns is the right size. **That is untested.** It predicts a layout change
+(reaching the bag in fewer hops) rather than anything about freezing, keys or ICs — and item 1733's
+lesson is that a mechanism asserted without an ablation gets refuted by the next one. So: **the 4.0x
+is measured and real, the mechanism is OPEN, and the next item owes an experiment that varies chase
+depth with everything else held constant.** Do not build the layout change against this paragraph.
+
+#### Gates
+
+`bun run check` 0 read through `${pipestatus[1]}`; `hop-values.ts` confirmed byte-restored from its
+pristine copy (`git diff` empty, ablation marker absent from the rebuilt dist) before the gate ran.
+No engine source changed. New instruments kept: `packages/native/keyed-load-micro.mjs` (freeze ×
+key-constancy × order × bag count) and `packages/native/far-identity-probe.mjs`.
