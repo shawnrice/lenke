@@ -79321,7 +79321,7 @@ Same fixture, same queries, `createIndex({ on: 'vertex', kind: 'hash', keys: [..
 establishes it, and it was added because the first run indexed both keys and made `range`'s
 improvement unattributable.
 
-⚠️ **AND THE HOT FRAMES CHANGE IDENTITY.** Unindexed, the profile is the executor: `propOf`,
+⚠️ ~~**AND THE HOT FRAMES CHANGE IDENTITY.**~~ **REFUTED AT ITEM 1761 — that came from an ELEVEN-SAMPLE profile, and the indexed timings here are warm-up inflation: `point` is 0.2 µs/query at 3,000,000 reps, not 8.9 at 1,500, so the win is ~1250x and not 31x. `compileLinear` runs TWICE per 500 queries (the plan cache works), so planning is not a per-query cost at all.** Unindexed, the profile is the executor: `propOf`,
 anonymous scan frames, `fastPath`. Indexed, it is **`compileLinear`, `parseCached`, `isIndexed`,
 `hopSeekWithKey`** — execution has become so cheap that **PLANNING dominates**. So on an indexed
 workload the target is the planner, and the screens have never been able to say so.
@@ -79733,3 +79733,67 @@ and the profiles above are what a re-profile would find.
 
 `bun run check` 0 read through `${pipestatus[1]}`. No source changed — one probe gained `PROF_OUT`
 windowing, and this entry.
+
+### Item 1761 — ⚠️ **ITEM 1754'S "THE HOT FRAMES INVERT TO THE PLANNER" IS REFUTED: it came from an ELEVEN-SAMPLE profile.** The plan cache works — `compileLinear` runs **2 times per 500 queries** — and the indexed timings were warm-up inflation: an indexed point lookup is **0.2 µs/query**, not 8.9, so the win is **~1250x and not 31x**
+
+Item 1754 reported that with an index the hot frames become `compileLinear`, `parseCached`,
+`isIndexed`, `hopSeekWithKey` — "execution has become so cheap that PLANNING dominates" — and drew
+a conclusion about target selection from it. **Three things are wrong with that.**
+
+#### 1. The plan cache works, so planning is not per-query
+
+A counter on `compileLinear` over 500 identical queries against an indexed graph:
+
+```text
+  queries 500   compileLinearCalls 2
+```
+
+`parseCached` returns the same `Statement` object for repeated text and `planCache` is a `WeakMap`
+keyed on the `Query`, so the plan is built **twice in 500 executions**, not once per execution.
+Whatever `compileLinear`'s 8.1% in that profile was, it was not a per-query cost.
+
+#### 2. The profile had ELEVEN SAMPLES
+
+Item 1754's indexed `point` window was **26.5 ms across 11 samples, with `post` at 58.9%** — so
+every "frame" in it is one or two samples. The entry noted the `post` share and reported the frame
+inversion anyway. ⚠️ **A sample count is the first thing to read in a profile, and I read it last.**
+
+#### 3. The indexed timings were warm-up inflation — the win is far larger than reported
+
+```text
+  reps          µs/query
+  1,500             8.9      ← item 1754's figure
+  300,000           0.4
+  3,000,000         0.2
+```
+
+At 1,500 reps the JIT tiering, the two `compileLinear` calls and the cache fills are amortized over
+too little work. **Indexed `point` is 0.2 µs/query**, so against the unindexed ~250 µs the win is
+**~1250x, not the ~31x item 1754 recorded.** Its heading is corrected.
+
+#### What the shape actually looks like, at 593 samples
+
+```text
+  15.7%  indexCandidates     8.4%  fastPath         5.9%  reviveParams
+   9.9%  plan                7.8%  (anonymous)      4.7%  query
+   9.6%  hopSeekWithKey      7.0%  countEquals
+```
+
+A **flat mix** of seeding, route dispatch and per-call setup, with no dominant term — which is what a
+0.2 µs query looks like: the engine does a dozen small things and the per-call entry path _is_ the
+query. **No lever here**, and that is a result rather than a shrug: it says an indexed point lookup
+is at its floor, so the index-seed family's remaining cost (item 1760's 1.14x on wide ranges) is the
+only indexed-path target left, and it is a correctness floor.
+
+#### The method lesson, which is the reusable part
+
+**Eleven samples produced a confident structural claim that survived into a committed entry, and the
+arithmetic needed to doubt it was one counter away.** `prof-summary.mjs` prints the sample count on
+its first line precisely so this cannot happen; the fix is to read it before the ranking, and to
+distrust any window under a few hundred samples — especially one where `post` (the profiler itself)
+is the largest frame.
+
+#### Gates
+
+`bun run check` 0 read through `${pipestatus[1]}`. `rewrites.ts` restored and verified identical to
+HEAD after the counter; no source changed.
