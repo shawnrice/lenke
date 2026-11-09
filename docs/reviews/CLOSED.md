@@ -77471,3 +77471,65 @@ rediscovered by whoever next changes a comparator.**
 
 `bun run check` 0 read through `${pipestatus[1]}`. Both probes exit 0. No source changed — the only
 edit is this entry.
+
+### Item 1727 — **REFUTED: the flipped-operand spelling is NOT slower on a long chain. `chain-gate-bench`'s 1.91x (inline 1.1 ms, flipped 2.1) is a 20,000-vertex artifact; at serving size the flipped form is FASTER than the clause form and the three equivalent spellings spread 1.15x.** Both unrun chain harnesses screened; new `chain-spelling-probe.mjs` is the instrument that can resolve it
+
+`chain-gate-bench` and `chain-sweep-bench` had not been run this stretch, and the gate bench is the
+regression guard for the family items 1701/1705/1708 changed — its header names the stake outright:
+"A spelling that costs more than its twins is the bug class this repo has found four times (item
+125)", and CLAUDE.md lists this exact pair (`$x = u.k` vs `u.k = $x`) among the historical 100-300x
+defects. Both harnesses exit 0 with every answer agreeing, and the gate bench's own table flagged
+itself:
+
+```text
+    one position, three spellings      ts ms    native ms
+    inline {k: 1} at 2                  1.1          1.0
+    clause WHERE n2.k = 1               1.6          1.0
+    flipped 1 = n2.k                    2.1          1.0     <- 1.91x the inline
+    label (n2:H) at 2                   0.9          1.2
+```
+
+**⚠️ BUT ITS HARDCODED FIXTURE CANNOT RESOLVE THAT.** `NODES = 20_000`, `DEG = 3`, `REPS = 3`, no env
+knobs — so the table is `min of 3` over 0.9-2.1 ms absolutes, where a fixed per-call cost and a real
+per-row cost are indistinguishable. The native column being FLAT at 1.0 across all three is the hint
+that it is the measurement rather than the engine.
+
+**`chain-spelling-probe.mjs` (new), 200,000 vertices, 11 reps, drop 3, median, ONE SPELLING PER
+PROCESS** (the gate bench demands that for its own cases — "item 290 recorded a large speedup making
+its NEIGHBOUR read 0.87x slower purely by warming it" — and item 762's redistribution trap is the
+same hazard from the other side):
+
+```text
+    spelling                     median      min     answer
+    free (unconstrained)          10.38     9.86   48,600,000   <- the control
+    inline {k: 1}                 13.35    11.91   16,200,081
+    clause n2.k = 1               15.35    13.08   16,200,081
+    flipped 1 = n2.k              14.31    12.05   16,200,081
+    label (n2:H)                  15.86    14.05   16,200,081
+```
+
+**The flipped form is FASTER than the clause form**, and the three equivalent property spellings
+spread **1.15x** rather than 1.91x — with the constraint costing ~1.3x over the free control, which is
+inside the 1.2-1.7x the gate bench's header already records for this family. No spelling defect.
+
+**WHAT TO DO WITH THE GATE BENCH, and why not what seems obvious.** Raising its `NODES` would make the
+table resolvable, and item 1130 is the reason not to reach for it casually: widening a shared fixture
+moves every recorded number that uses it, and this harness's other table (constrained-at-position-N
+against free) is the regression guard for items 303/304 with numbers quoted in its header. So the
+fixture is left alone and the limitation is recorded instead: **the three-spellings table at 20,000
+vertices can show a ~2x that is not there; take a suspicious row to `chain-spelling-probe.mjs` before
+believing it.**
+
+`chain-sweep-bench` is also clean — 3-hop 3.7 ms and 4-hop 9.5 (the two CONTROLS the sweep cannot
+reach), 5-hop 7.3, 6-hop 7.0, 7-hop reversed 8.0, 6-hop mixed 6.6, all answers as expected.
+
+**⚠️ FOURTH INSTRUMENT, SAME LESSON.** After a bench row projecting an absent property (1716), a
+fuzzer corpus with no astral characters (1712) and a spelling probe that sorts only numeric keys
+(1726), this is the fourth harness this stretch whose VERDICT was sound and whose FIXTURE could not
+support the conclusion a reader would draw from it. The pattern is not carelessness in any one of
+them — each was built for a narrower question than it is now being read for.
+
+#### Gates
+
+`bun run check` 0 read through `${pipestatus[1]}` (after `bun run fmt`). Both harnesses exit 0. The
+only additions are the probe and this entry; no engine source changed.
