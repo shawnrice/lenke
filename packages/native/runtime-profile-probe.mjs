@@ -137,6 +137,15 @@ const SHAPES = {
   optional: 'MATCH (a:P) WHERE a.k = 5 OPTIONAL MATCH (a)-[:E]->(b:P) RETURN count(*) AS c',
   // DISTINCT over a low-cardinality key: 97 groups from NODES rows.
   distinct: 'MATCH (n:P) RETURN DISTINCT n.k AS k',
+  // ⚠️ THREE CARDINALITY TIERS, because `valueSet.add`'s cost depends on whether the value is NEW:
+  // its primitive branch runs `prim.has(v)` and then `prim.add(v)`, so a DUPLICATE costs one hash
+  // and a NEW value costs two. `distinct` above is `i % 97` -- 97 values over NODES rows, so almost
+  // every add is a duplicate and the second hash almost never runs. A lever on that second hash is
+  // invisible there and was nearly dismissed on it (item 1738).
+  //   distincthi  `n: i`           -- UNIQUE, so every add is new: the lever's best case
+  //   distinctstr `s: s${i % 1000}` -- 1000 strings: mid cardinality, and a STRING key not a number
+  distincthi: 'MATCH (n:P) RETURN DISTINCT n.n AS v',
+  distinctstr: 'MATCH (n:P) RETURN DISTINCT n.s AS v',
   // An EXISTS subquery per row — correlated, so it runs NODES times.
   existssub: 'MATCH (a:P) WHERE a.k = 5 AND EXISTS { MATCH (a)-[:E]->(b:P) } RETURN count(*) AS c',
   // A wide projection: five property reads per row, no aggregation to hide them behind.

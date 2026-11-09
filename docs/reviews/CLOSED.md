@@ -78298,7 +78298,7 @@ duplicate hits. Both arms keep the row count and the non-zero `sink` the probe a
 Noted in passing, not acted on: **`valueSet.add`'s primitive branch does TWO Set operations**
 (`prim.has(v)` then `prim.add(v)`) where a size-delta before/after `add` would do ONE. It saves a
 hash only when the value is NEW, so it is worth nothing on this low-cardinality fixture and would
-need a high-cardinality `DISTINCT` to show. Unmeasured, recorded so it is not re-derived.
+need a high-cardinality `DISTINCT` to show. ~~Unmeasured, recorded so it is not re-derived.~~ ⚠️ **MEASURED AND REFUTED AT ITEM 1739: the one-hash form is ~10-11% SLOWER wherever duplicates dominate, because `Set.add` on an existing key is dearer than `Set.has`.**
 
 #### ⚠️ THE DRIVER FAILED THREE TIMES, THREE DIFFERENT WAYS, BEFORE GIVING A NUMBER
 
@@ -78335,3 +78335,75 @@ and the working assertion form.
 `bun run check` 0 read through `${pipestatus[1]}`. Pristine `hop-projection.ts` restored and rebuilt
 by the driver, tree verified clean; **no engine source changed** — both arms were ceilings, built,
 measured and reverted.
+
+### Item 1739 — ❌ **REFUTED: replacing `valueSet.add`'s two Set operations with one plus a size delta is ~10-11% SLOWER wherever duplicates dominate.** `Set.add` on an EXISTING key is dearer than `Set.has`, so the "two hashes where one would do" reading had the cost model backwards. ⚠️ **The CONTROL moved against the change in all three rounds, which is what made it readable** — and the probe had no high-cardinality `DISTINCT` shape until this item, which is why 1738 nearly dismissed the lever instead of refuting it
+
+Item 1738 noticed that `valueSet.add`'s primitive branch runs **two** Set operations:
+
+```javascript
+if (prim.has(v)) {
+  return false;
+}
+prim.add(v);
+return true;
+```
+
+where a size delta would run one: `const before = prim.size; prim.add(v); return prim.size !== before;`
+
+**This needed no owner decision, which is why it was worth taking first.** Both forms key the Set
+itself, so both use SameValueZero and agree on NaN, on `-0` against `0`, and on everything else —
+exactly equivalent, unlike the two levers currently waiting on a semantics call (items 1733, 1736).
+
+#### ⚠️ FIRST THE INSTRUMENT, because 1738's shape could not see this lever at all
+
+The lever only pays when a value is **NEW** — a duplicate costs one hash either way. The probe's only
+`DISTINCT` shape is `n.k`, which is `i % 97` over 20,000 rows, so **almost every add is a duplicate
+and the second hash almost never runs.** Item 1738 measured on that shape and called the lever
+"worth nothing here"; it was right about the shape and would have been wrong to generalize. Added
+two tiers, so the probe now spans the axis the mechanism depends on:
+
+```text
+  distinct     n.k  = i % 97          97 distinct per run   <- duplicates dominate (the CONTROL)
+  distinctstr  n.s  = `s${i % 1000}`  1,000                 <- mid, and a STRING key
+  distincthi   n.n  = i               20,000                <- every add is NEW (the best case)
+```
+
+#### Measured, 500 runs per reading, three alternated rounds, one arm per build
+
+```text
+  shape                      base (r1/r2/r3)          sizedelta (r1/r2/r3)
+  distincthi  (20,000 new)   507.0 500.6 498.1        482.9 600.5 484.6
+  distinctstr (1,000)        169.2 156.9 155.4        178.2 172.2 175.5
+  distinct    (97, CONTROL)  124.8 123.4 125.9        140.6 140.0 136.6
+```
+
+- **The control moved AGAINST the change, consistently in all three rounds: 124 → 139, ~11% slower.**
+  `conjunct-order-chosen-for-speed`'s companion lesson is that a control moving more than the target
+  indicts the change; here it moves in the _wrong direction_, which is stronger.
+- **Mid cardinality is also slower, ~10%** (157 → 175).
+- **Even the best case is not a win**: 498-507 against 483-600. The median improvement is ~3% and one
+  arm reading was 600.5, so it is inside this instrument's noise — and CLAUDE.md's rule is that
+  anything under ~10% needs its own isolated harness.
+
+#### The mechanism, which is the reusable part
+
+**`Set.add` on a key that is already present costs MORE than `Set.has` on it.** `has` is a pure
+lookup; `add` must take the insertion path and be prepared to grow the table, then discovers the key
+is there. So for a duplicate the "one operation" form does strictly more work than the "two
+operation" form does — plus two `size` field reads. The op COUNT was the wrong cost model.
+
+That is why the shape of the data decides the sign of this change, and why a dedup is the worst place
+to apply it: **a dedup's whole purpose is that most inputs are duplicates.** The all-new case is the
+rare one, and even there the saving does not clear the noise floor.
+
+**Reverted. Recorded at `valueSet` so the next reader does not re-derive the op-count argument**, and
+item 1738's "unmeasured, recorded so it is not re-derived" line is struck in the same commit.
+
+**KEPT: the two new probe shapes** (`distincthi`, `distinctstr`). They are the reason this came out
+as a refutation with a mechanism rather than a shrug, and any future dedup or grouping lever needs
+the cardinality axis.
+
+#### Gates
+
+`bun run check` 0 read through `${pipestatus[1]}`. Pristine `shortcuts.ts` restored and rebuilt by
+the driver, tree verified clean; the only source change is the probe's shape list.

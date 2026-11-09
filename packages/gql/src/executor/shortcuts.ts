@@ -6052,6 +6052,16 @@ export const valueSet = (): { add: (v: unknown) => boolean } => {
   return {
     add: (v: unknown): boolean => {
       // `null` is a primitive but `typeof null` is 'object', so it is tested first.
+      // ❌ REJECTED, item 1739: collapsing these TWO Set operations into one plus a size delta
+      // (`const before = prim.size; prim.add(v); return prim.size !== before`) is ~10-11% SLOWER
+      // wherever duplicates dominate, which is a dedup's normal case. `Set.add` on a key that is
+      // already present costs MORE than `Set.has` on it -- `has` is a pure lookup, `add` takes the
+      // insertion path and is prepared to grow the table before discovering the key is there. So
+      // the operation COUNT is the wrong cost model. Measured over three cardinality tiers, 500
+      // runs, three alternated rounds, ms: 97 distinct (the control) 124/123/126 -> 141/140/137;
+      // 1,000 distinct 169/157/155 -> 178/172/176; 20,000 ALL-NEW 507/501/498 -> 483/601/485, a
+      // ~3% median that does not clear the noise floor. The two forms are exactly equivalent (both
+      // key the Set, so both are SameValueZero), so this was refuted on speed alone.
       if (v === null || typeof v !== 'object') {
         if (prim.has(v)) {
           return false;
