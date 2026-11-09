@@ -77416,3 +77416,58 @@ owner decision.**
 `bun run check` 0 read through `${pipestatus[1]}`. Measurement only — no source changed; the two
 throwaway probes were deleted. Pre-push gates for this stretch: core 453, gql 4424, gremlin 2109,
 serialization 144, native 1081, 0 fail each, and all seven byte-identity fuzzers 20 pass 0 fail.
+
+### Item 1726 — **A GATE I OWED AND SKIPPED: both spelling probes run CLEAN after items 1711-1713 (0 groups disagreeing on the answer, 0 over 2x, GQL and Gremlin).** ⚠️ **AND THE GQL PROBE IS BLIND TO THE CHANGE IT WAS RUN FOR — every `ORDER BY` group sorts a NUMERIC key under a `LIMIT`, so none of them reaches the string specialization at all.** Covering it needs a wider shared fixture, which the probe deliberately refuses
+
+CLAUDE.md is explicit: run the spelling probes "when you touch the TS planner or add a predicate
+form". Items 1711 (the GQL sort specialization), 1712 and 1713 (Gremlin's comparator) are squarely
+that, and I ran `check`, five suites and seven fuzzers while never running these. Found by auditing my
+own process, not by anything failing. **The lapse was treating "gates" as the list I had been running
+all session instead of re-reading which gates the KIND of change demands** — the sort cluster touches
+a different surface than the three-segment routing work before it, and the required set moved with it.
+
+**The result, `SPELL_N=200000 SPELL_REPS=9` (single runs there are bimodal) plus the Gremlin twin:**
+
+```text
+    GQL      0 group(s) disagree on the ANSWER   0 group(s) over 2x and clear of the null control
+    GREMLIN  0 group(s) disagree on the ANSWER   0 group(s) over 2x and clear of the null control
+```
+
+**⚠️ BUT THE PASS IS NOT EVIDENCE ABOUT THE SPECIALIZATION.** Reading the groups rather than the
+verdict: every `ORDER BY` group sorts `n.k` or `n.k + 1` — NUMERIC — and the two closest ones
+(`ORDER BY alias vs its expression`, items 144/145, and its hop twin at 1063) carry `LIMIT 10`, which
+`(skip + limit) * 16 <= rows.length` sends to `boundedTopRows` so `rows.sort` is never called. The
+specialization admits only STRING columns on the full-sort path. **It cannot be exercised by any group
+in the probe**, which is the same corpus blindness that hid item 1711 for ~790 items and item 1716's
+null-projecting rows.
+
+**AND THE RISK IT WOULD POLICE IS REAL**, which is why this is worth recording rather than shrugging
+at: the probe already pairs an ORDER BY alias against its expression. On a string key, if one spelling
+admits the reduced comparator and the other declines, that is ~1.45x for identical answers — exactly
+the class ("the planner recognized one spelling of a predicate and scanned for another that meant
+exactly the same thing … each returned the correct answer, so no correctness test could catch it").
+
+**WHY I DID NOT ADD A GROUP, with the two obstacles measured rather than asserted:**
+
+1. **Ties make the answer comparison false-alarm.** The fixture's string is `s${i % 7}` — SEVEN
+   distinct values over 200,000 rows. Two spellings on different routes would have different ARRIVAL
+   order, so their tie order differs; the probe compares answers and would report a DISAGREEMENT,
+   where `order-is-unspecified` makes unordered tie order won't-fix.
+2. **The unique string column is four rows.** `s: "t${i}"` exists only on the four `S`-labelled
+   nodes (deliberately tiny — "a comma product needs one, because … N x N is not a measurement, it is
+   a hang"). A sort of four rows lands in the probe's own "under 1ms, not compared" bucket.
+
+So covering it means widening a SHARED fixture that this probe constrains on purpose, and item 1130
+records what widening a shared fixture costs: it moves every recorded number that uses it. ⚠️ **A
+route assertion would be the right instrument — `perf-gate-needs-its-own-test`'s pattern — but the
+route a QUERY takes is not observable from outside the executor, and a test that only checks both
+spellings return the same rows would pass even if one declined.** That is coverage-shaped and not
+coverage, so it is not added.
+
+**Net: the gate is run and clean, and its blind spot is now written down instead of being
+rediscovered by whoever next changes a comparator.**
+
+#### Gates
+
+`bun run check` 0 read through `${pipestatus[1]}`. Both probes exit 0. No source changed — the only
+edit is this entry.
