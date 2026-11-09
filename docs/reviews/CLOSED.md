@@ -77306,3 +77306,54 @@ work to take unilaterally.** Priced here so it can be decided rather than redisc
 
 `bun run check` 0 read through `${pipestatus[1]}`. All timing instrumentation reverted and verified
 (`__zl` absent); core 453 pass, 0 fail. No behaviour changed.
+
+### Item 1724 — **THE SERVING SURFACE IS HEALTHY ON TS, and the interleaving hazard CLAUDE.md flags does NOT reproduce there: `write + point read` is 380.5k ops/s against 397.0k for the write alone and 1.69M for the read alone — the pair is FASTER than the sum of its parts.** ⚠️ **And the one apparent outlier in the table is ROW COUNT, not a seeding defect — I nearly chased it**
+
+`bench:usage` had not been run this session. CLAUDE.md singles it out as a different question from
+bulk throughput ("many small operations against a warm graph, and often reads and writes
+INTERLEAVED, which is the pattern that has historically broken things here"), so it is the surface
+most likely to hold something the `bench.ts` sweep cannot see. 20,000 users, 250 ms batches, best of
+three, ts only.
+
+**THE INTERLEAVING CHECK, which is the reason to run it.** The documented hazard is a write
+invalidating the read-side snapshot. On the native engine that is severe — one `add_edge` demotes
+every later read for the session, up to 24.07x where the queried edge type is selective. On TS:
+
+```text
+    write: property update            397.0k ops/s      2.52 us
+    read: point lookup              1,690.0k            0.59
+    interleaved: write + point read   380.5k            2.63   <- parts sum to 3.11
+    read: 2-hop recommendation        583.3k
+    interleaved: write + traversal    349.9k
+```
+
+**2.63 us against 3.11 us for the parts**, so the interleaved pair is cheaper than doing the two
+separately and there is no invalidation penalty to find. The traversal pair tells the same story. The
+native engine's `csr_fresh` demotion has no TS analogue, which is worth knowing explicitly rather
+than assumed from the absence of a complaint.
+
+**⚠️ THE OUTLIER I ALMOST CHASED.** Most reads gain 100-400x from an index (point lookup 4.3k ->
+1.69M, 393x; permission check 2.7k -> 551.2k, 204x) and these two gain **16-17x**:
+
+```text
+    read: keyed dedup lookup            6.0k -> 95.7k    16x
+    read: keyed dedup lookup [inline]   5.6k -> 96.9k    17x
+```
+
+A 100-300x spread between spellings of one predicate is EXACTLY the index-seeding class CLAUDE.md
+says was behind every such bug in the old engine, and these two sit far below their neighbours. But
+the two spellings AGREE with each other (95.7k / 96.9k), and the cause is row count: `score = $s`
+with `s = i % 100` over 20,000 users matches **~200 rows per operation** where `point lookup` matches
+**one**. The row's own comment already says so ("AT THIS FIXTURE'S 200 MATCHES THE PAIR CANNOT
+RESOLVE IT"). **Comparing ops/sec across workloads that return different row counts prices neither** —
+item 1520's error in a new place, and the second time this session that reading the note on the thing
+I was about to investigate was cheaper than investigating it.
+
+**Nothing taken.** The surface is sound; its value this tick was ruling out the interleaving hazard
+for TS with numbers, and recording why the index-gain spread is not a defect so the next reader does
+not re-derive it.
+
+#### Gates
+
+`bun run check` 0 read through `${pipestatus[1]}`. No source, bench or probe changed — the only edit
+is this entry.
