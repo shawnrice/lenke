@@ -164,6 +164,24 @@ const MODERN = [
   // is why this fuzzer ran for a long time without noticing that native's
   // `hasLabel` matched only the first and the TS engine matched any.
   '{"type":"node","id":"13","labels":["PERSON","SOFTWARE"],"properties":{"name":"hybrid","age":40,"lang":"rust"}}',
+  // ⚠️ NO ASTRAL / U+E000 STRING IN THIS CORPUS, AND THAT IS A MEASURED DECISION (item 1712).
+  // Every `name` here is ASCII, where UTF-16 order already equals code-point order -- so this
+  // fuzzer cannot see a string-ordering bug, and it did not: TS Gremlin ordered by code UNIT while
+  // the engine orders by code POINT, across 59 `order(` cases, until item 1711 found it by hand.
+  //
+  // Two vertices carrying U+1F600 and U+E000 WERE added here and then REVERTED, because adding to a
+  // shared differential corpus is not free: it reweights every random draw. Nine vertices instead of
+  // seven put `orderLocalWithNull` at 0-3 of 400 against its floor of >5 (and one run dropped
+  // `orderLocalGenerated` to 4 against >8), so the fuzzer failed on the COUNTER, not on a
+  // divergence -- the counter doing exactly its job. Adding stored nulls to both new vertices moved
+  // it to 3 at best; the `order(local)` null coverage is thin by nature (8-17 generated of 400) and
+  // cannot absorb a 29% change in vertex count.
+  //
+  // So the TS-side guard is `packages/gremlin/src/string-order.test.ts` (6 tests; 4 of them fail if
+  // the fix is reverted, verified) and the three-way view including native is
+  // `packages/native/gremlin-order-codepoint-probe.mjs`. ⚠️ STILL OPEN: nothing in CI compares TS
+  // against NATIVE on an astral column. The fix for that is a dedicated case with its OWN small
+  // corpus, not a second attempt at this one.
   '{"type":"edge","id":"7","from":"1","to":"2","labels":["KNOWS"],"properties":{"weight":0.5}}',
   '{"type":"edge","id":"8","from":"1","to":"4","labels":["KNOWS"],"properties":{"weight":1.0}}',
   '{"type":"edge","id":"9","from":"1","to":"3","labels":["CREATED"],"properties":{"weight":0.4}}',

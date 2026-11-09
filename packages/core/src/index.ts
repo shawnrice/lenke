@@ -77,6 +77,8 @@ export {
   parseDuration,
 } from './temporal.js';
 export type { Clock, Temporal } from './temporal.js';
+// The one string order both engines use; see the module for why it is not per-language.
+export { compareCodePoints, HAS_SURROGATE } from './string-order.js';
 export { defineEdge, defineNode } from './schema.js';
 export type {
   EdgeSchema,

@@ -78,8 +78,9 @@
  * O(n log n), so an O(n) scan is a much larger fraction of its work and could cost more than it saves.
  * The scan pays for itself here because ~20M comparisons are replaced in exchange for ~1M tests.
  */
+import { HAS_SURROGATE } from '@lenke/core';
+
 import type { Row } from './core.js';
-import { HAS_SURROGATE } from './values.js';
 
 /**
  * Which reduced comparator a column admits, or `generic` for the untouched `compareSort`.

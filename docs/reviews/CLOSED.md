@@ -76677,8 +76677,11 @@ data:
 code-point comparison and no surrogate guard at all**. The Rust side cannot differ by language:
 `exec/order.rs` compares `Col::Str` with `v[a].cmp(&v[b])` (Rust `str::cmp`, byte-wise UTF-8 = code
 point) and `ir.rs`'s `SortKey` doc states both languages order non-nulls by `cmp_total`, with only
-null PLACEMENT differing (GQL last, Gremlin first). Recorded as the 15th open value divergence;
-`test.failing` registration and the native-engine leg are the next item. **No fuzzer could find it:
+null PLACEMENT differing (GQL last, Gremlin first). ~~Recorded as the 15th open value divergence;
+`test.failing` registration and the native-engine leg are the next item.~~ ⚠️ **CONFIRMED AGAINST
+NATIVE AND FIXED AT ITEM 1712** — the native leg ran (the engine agrees with GQL), so no
+`test.failing` was needed; `compareCodePoints` now lives in `@lenke/core` and both engines share
+it. **No fuzzer could find it:
 `gremlin-fuzz.test.ts` calls `order(` 59 times and generates ZERO astral and ZERO U+E000..U+FFFF
 characters** — item 921's "a corpus that does not CONSTRUCT the dangerous case will agree with
 anything", firing in the other engine.
@@ -76691,3 +76694,69 @@ oracle wants (spreading a string yields code points); switched to `Array.from` w
 comment rather than silencing it. The shipped comparator is the if/return form because
 `no-nested-ternary` is an error here, and since every arm above was measured as a nested ternary the
 reshape was re-measured rather than assumed. gql suite 4424 pass, 0 fail.
+
+### Item 1712 — **FIXED, the 15th divergence: TS GREMLIN ORDERED STRINGS BY CODE UNIT WHERE THE ENGINE AND GQL USE CODE POINT.** `compareCodePoints` moves to `@lenke/core` and Gremlin's `cmpSameType` calls it, so both languages and the engine share ONE string order. ⚠️ **Found by asking whether item 1711's GQL work TRANSFERRED, not by a fuzzer — and no fuzzer could have found it: `gremlin-fuzz` calls `order(` 59 times while generating ZERO astral and ZERO U+E000..U+FFFF characters.** ⚠️ **Two vertices added to that corpus to close the gap were REVERTED: they broke a COVERAGE COUNTER, not a comparison**
+
+Three legs, one fixture, `['a', U+1F600, U+E000, 'z']` through `values('s').order()`:
+
+```text
+    BEFORE                                          AFTER
+    gremlin NAT   a  z  U+E000   U+1F600            all three agree on
+    gql     TS    a  z  U+E000   U+1F600            a  z  U+E000  U+1F600
+    gremlin TS    a  z  U+1F600  U+E000   <- wrong
+```
+
+`cmpSameType` sent a string pair to `cmpOrd`, a plain `x < y ? -1 : x > y ? 1 : 0`, with no
+code-point comparison and no surrogate guard. JS orders by UTF-16 code UNIT and Rust `str::cmp` by
+code POINT; they disagree whenever an astral char meets a BMP char in U+E000..U+FFFF, because the
+high surrogate 0xD800..0xDBFF sorts BELOW U+E000 by unit while the astral code point sorts above it.
+
+**THE RUST SIDE CANNOT DIFFER BY LANGUAGE, which is what made this a bug rather than a policy
+difference.** `exec/order.rs` compares a `Col::Str` with `v[a].cmp(&v[b])`, and `ir.rs`'s `SortKey`
+doc states both languages order non-nulls by `cmp_total` with only null PLACEMENT differing (GQL
+last, Gremlin first). So the primitive belongs in `core`, next to `temporalCmpTotal` — the exact
+precedent for a shared total-order helper — rather than being copied into the second engine.
+
+**⚠️ THE FIX MOVES PREDICATES TOO, DELIBERATELY, AND THE EVIDENCE FOR THE TWO LEGS IS NOT EQUAL.**
+`cmpSameType` has two callers: `compareTotal` (sort) and `predCmp` (`gt`/`lt`/`between`). The SORT
+leg is confirmed against native above. The PREDICATE leg is INFERRED from the same Rust primitive,
+because **native's Gremlin TEXT parser rejects an astral char in a string literal** — `lenke: query:
+unexpected character` — so the comparison cannot be expressed through that surface at all. Fixing
+only the sort was the narrower option and was rejected: it would leave `order()` and `gt` disagreeing
+about which of two strings is larger INSIDE one engine. That lexer gap is its own open question.
+
+**⚠️ THE CORPUS ADDITION THAT HAD TO BE REVERTED, which is the method finding.** The obvious close
+for "no fuzzer can see this" is to put the dangerous pair in `gremlin-fuzz`'s corpus. Done, and the
+fuzzer went red **1 fail in 4 of 4 runs — on `orderLocalWithNull`, a COVERAGE COUNTER, not on a
+divergence.** Nine vertices instead of seven reweighted every random draw: that counter read **0, 3,
+3** against its floor of `> 5`, and one run put `orderLocalGenerated` at **4** against `> 8`. Adding
+stored nulls to both new vertices moved it to 3 at best — `order(local)` null coverage is thin by
+nature (8-17 generated of 400) and cannot absorb a 29% change in vertex count. **So adding to a
+shared differential corpus is not free: it reweights the draws, and the counters have to be re-run,
+not just the comparison.** Reverted, with the measurement recorded in place so the next person does
+not retry it. The counter behaved correctly throughout — this is what items 1709/1710's coverage
+counters were added for.
+
+**WHAT GUARDS IT NOW, and what does not.** `packages/gremlin/src/string-order.test.ts`, 6 tests,
+whose teeth are verified: reverting the one-line fix fails **4 of 6**, and the 2 that still pass are
+exactly the controls (an ASCII column and a lone LOW surrogate) that agree under either order. The
+three-way view including native is `gremlin-order-codepoint-probe.mjs`, now a regression check rather
+than a diagnosis. ⚠️ **STILL OPEN: nothing in CI compares TS against NATIVE on an astral column.**
+The fix for that is a dedicated case with its OWN small corpus.
+
+**A lone LOW surrogate is deliberately still admitted by the guard**, and a test pins it: with no
+high surrogate present `codePointAt === charCodeAt` at every index and the iteration advances one
+unit per step, so the slow path degenerates to exactly the code-unit comparison a plain `<`
+performs. The guard being HIGH-surrogate-only is correct, not a gap.
+
+**Two importers had to move with the symbol, and the build found the second one.** `values.ts` and
+`scalars.ts` both imported `compareCodePoints`, and the GQL specialization imported `HAS_SURROGATE`;
+removing the re-export broke `scalars.ts` with `MISSING_EXPORT`. Worth noting because I fixed the
+first importer before enumerating them — the right order is to grep every importer FIRST, which then
+found all four at once.
+
+#### Gates
+
+`bun run check` 0 via `${pipestatus[1]}` (after `bun run fmt`, which the gate demanded twice).
+core 453, gql 4424, gremlin **2071**, serialization 144, native 1081, 0 fail each. All seven
+byte-identity fuzzers 20 pass 0 fail, and `fuzz gremlin` green 3/3 after the corpus revert.

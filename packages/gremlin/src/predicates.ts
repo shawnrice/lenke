@@ -1,5 +1,6 @@
 import {
   LocalDate,
+  compareCodePoints,
   fromTaggedJson,
   isTemporal,
   temporalCmpTotal,
@@ -198,8 +199,27 @@ const cmpSameType = (a: unknown, b: unknown): number | null => {
     return cmpOrd(a, b);
   }
 
+  // STRINGS ORDER BY CODE POINT, NOT BY UTF-16 CODE UNIT (item 1712), and this used to be `cmpOrd`
+  // — a plain `<` — which was a CONFIRMED byte-identity break against the engine. JS orders by
+  // code UNIT and Rust `str::cmp` by code POINT, and they disagree whenever an astral char meets a
+  // BMP char in U+E000..U+FFFF: the high surrogate 0xD800..0xDBFF sorts BELOW U+E000 by unit while
+  // the astral code point sorts ABOVE it. Measured before the fix, `values('s').order()` over
+  // `['a', U+1F600, U+E000, 'z']`:
+  //
+  //     gremlin NAT   a  z  U+E000   U+1F600     the engine
+  //     gremlin TS    a  z  U+1F600  U+E000      this function
+  //
+  // ⚠️ IT IS SHARED WITH GQL FROM `core`, NOT COPIED. One definition of the ordering, for the
+  // reason that module's header gives: the Rust engine has no per-language string order at all.
+  //
+  // ⚠️ AND THIS ARM SERVES BOTH `compareTotal` (sort) AND `predCmp` (`gt`/`lt`/`between`), so the
+  // predicates move with it — deliberately. Leaving them on code units would make `order()` and
+  // `gt` disagree about which of two strings is larger INSIDE one engine. The sort leg is confirmed
+  // against native above; the PREDICATE leg is inferred from the same Rust primitive, because the
+  // native Gremlin TEXT parser rejects an astral char in a string literal ("unexpected character")
+  // and so cannot express the comparison. That lexer gap is its own open question.
   if (typeof a === 'string' && typeof b === 'string') {
-    return cmpOrd(a, b);
+    return compareCodePoints(a, b);
   }
 
   if (typeof a === 'boolean' && typeof b === 'boolean') {

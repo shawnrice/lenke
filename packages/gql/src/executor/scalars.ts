@@ -19,7 +19,7 @@ import {
   ZonedDateTime,
   ZonedTime,
 } from '@lenke/core';
-import { mathSign } from '@lenke/core';
+import { compareCodePoints, mathSign } from '@lenke/core';
 import type { GraphLimits, Temporal } from '@lenke/core';
 import { ErrorCode, LenkeError } from '@lenke/errors';
 
@@ -27,14 +27,7 @@ import { AGGREGATES } from '../ast.js';
 import type { ArithOp, CompareOp, Expr } from '../ast.js';
 // Shared element guards + ordering comparator live in the executor trunk; used
 // lazily inside scalar fns, so this back-edge is a safe function-level cycle.
-import {
-  compareCodePoints,
-  compareSort,
-  isEdge,
-  isElement,
-  isNullish,
-  isVertex,
-} from './values.js';
+import { compareSort, isEdge, isElement, isNullish, isVertex } from './values.js';
 
 // --- three-valued logic & scalar helpers -------------------------------------
 
