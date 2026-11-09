@@ -271,11 +271,16 @@ if (q === undefined) {
 // `PROF_OUT` unset this is an ordinary unwindowed run and `--cpu-prof` still works.
 const g = build();
 let sink = 0;
+/** The first row of the first run, so the ANSWER can be asserted and not just the row count. */
+let rows0;
 const t0 = performance.now();
 
 await profileWindow(process.env.PROF_OUT, () => {
   for (let i = 0; i < N; i += 1) {
-    sink += query(g, q).length;
+    const rows = query(g, q);
+
+    rows0 ??= rows[0];
+    sink += rows.length;
   }
 
   return sink;
@@ -289,4 +294,53 @@ if (sink === 0) {
   throw new Error(`${SHAPE} produced NO rows across ${N} runs — the profile would be of nothing`);
 }
 
-console.log(JSON.stringify({ shape: SHAPE, n: N, ms: Number(ms.toFixed(1)), sink }));
+// ⚠️ `sink` CATCHES AN EMPTY RESULT, NOT A WRONG ONE, and item 1749 lost a whole measurement to the
+// gap. For a `count(*)` shape `sink` is the ROW count — always 1 per run whatever the count VALUE is
+// — so an ablation arm that had stopped filtering entirely (20,000 instead of 207) read IDENTICALLY
+// to base and produced a confident 1.11x that meant nothing.
+//
+// Two assertions now, and they are split by what the engine actually GUARANTEES:
+//
+//   rowsPerRun  every shape. A wrong-answer arm almost always changes how many rows survive.
+//   answer      ONLY for shapes whose first value is deterministic — a `count(*)` (one row) or an
+//               ORDERED projection. ⚠️ NOT for an unordered row shape: `order-is-unspecified` is
+//               this engine's documented stance, so asserting the first row of `RETURN n.k` would
+//               pin something it is free to change. That is why `distinct`/`wideproj`/`hoprows`
+//               carry a row count and no value.
+//
+// Values verified against HEAD at item 1749.
+const first = rows0 === undefined ? undefined : rows0[Object.keys(rows0)[0]];
+const EXPECTED = {
+  hopfilter: { rowsPerRun: 1, answer: 207 },
+  hopall: { rowsPerRun: 1, answer: 20_000 },
+  existssub: { rowsPerRun: 1, answer: 207 },
+  optional: { rowsPerRun: 1, answer: 207 },
+  join: { rowsPerRun: 1, answer: 207 },
+  point: { rowsPerRun: 1, answer: 's345' },
+  sortedpage: { rowsPerRun: 10, answer: 's0' },
+  distinct: { rowsPerRun: 97 },
+  distinctstr: { rowsPerRun: 1000 },
+  distincthi: { rowsPerRun: 20_000 },
+  grouped: { rowsPerRun: 97 },
+  wideproj: { rowsPerRun: 2070 },
+  wide2: { rowsPerRun: 2070 },
+  narrow1: { rowsPerRun: 2070 },
+  hoprows: { rowsPerRun: 20_000 },
+};
+const want = EXPECTED[SHAPE];
+
+if (want !== undefined) {
+  if (sink !== want.rowsPerRun * N) {
+    throw new Error(
+      `${SHAPE} returned ${sink} rows across ${N} runs, expected ${want.rowsPerRun * N} — this arm is NOT answer-equivalent, so its timing is meaningless`,
+    );
+  }
+
+  if (want.answer !== undefined && first !== want.answer) {
+    throw new Error(
+      `${SHAPE} answered ${String(first)}, expected ${String(want.answer)} — this arm is NOT answer-equivalent, so its timing is meaningless`,
+    );
+  }
+}
+
+console.log(JSON.stringify({ shape: SHAPE, n: N, ms: Number(ms.toFixed(1)), sink, answer: first }));

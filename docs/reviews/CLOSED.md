@@ -78993,3 +78993,79 @@ means a COUNT._
 
 `bun run check` 0 read through `${pipestatus[1]}`. Engine diff verified **comment-only** — the arm
 was built, measured and reverted.
+
+### Item 1749 — ⚠️ **I MEASURED A 1.11x THAT MEANT NOTHING, AND THE PROBE COULD NOT TELL ME: for a `count(*)` shape its `sink` assertion checks the ROW count, which is 1 per run however wrong the answer is.** The ablation had stopped filtering entirely — 20,000 instead of 207 — and timed identically. **Fixed the instrument and verified the fix has teeth.** `satisfies`' eleven-section chain is left UNPRICED, honestly
+
+`satisfies` is the GQL predicate evaluator and the cross-cutting frame on that side — **44.3% of
+`hopfilter`**, 22.4% of `existssub`. Reading it found **eleven sequential sections** per element
+(`props`, `eqProps`, `cmpProps`, `pathProps`, `memberProps`, `nullProps`, `labelTests`,
+`truthProps`, `notTruthProps`, `typedTests`, `truthTestProps`, then `where`), of which a single
+`WHERE a.k = 5` populates one.
+
+#### The call count first, because a share is uninterpretable without it
+
+A counter said **20,000 calls per query** — once per candidate, not per survivor. So 188.6 ms over
+30M calls is **6.3 ns per call**, which _implies_ the chain is nearly free. ⚠️ **That inference was
+about to become the finding.** It was tested instead.
+
+#### The ablation, and why its answer was worthless
+
+Deleting the ten unpopulated sections measured `hopfilter` **391.8 → 353.2, 1.11x, ranges
+DISJOINT** — an apparently clean refutation of the arithmetic. `existssub` went **607.8 → 1685.7**,
+2.8x SLOWER, which is what prompted a second look.
+
+**The arm was not filtering at all.** The predicate for both shapes lives in a DELETED section, not
+in `pred.where`:
+
+```text
+            base    ablated
+  hopfilter  207     20000
+  existssub  207     20000
+```
+
+So `hopfilter`'s 1.11x is an engine that matched everything measured against one that filtered, and
+`existssub`'s 2.8x is 20,000 candidates each running the EXISTS subquery instead of 207. **Both
+numbers are void.** The assumption that only `where` was populated was asserted from reading, never
+checked — the counter counted CALLS, which is a different question.
+
+#### ⚠️⚠️ THE INSTRUMENT COULD NOT CATCH IT, AND THAT IS THE REAL FINDING
+
+`runtime-profile-probe`'s guard is `if (sink === 0) throw` — and its own comment says why: _"a shape
+that silently returned nothing would profile the error path and look like a result."_ **It catches
+EMPTY, not WRONG.** For a `count(*)` shape `sink` is the number of ROWS, and a count query returns
+exactly one row whatever the count is — so `sink` read `12` in both arms, identically, while the
+answer was off by a factor of 97.
+
+**Fixed, with the split that the engine's own guarantees dictate:**
+
+```text
+  rowsPerRun  asserted for EVERY shape — a wrong answer almost always changes how many rows survive
+  answer      asserted ONLY where the first value is deterministic: a count(*) (one row) or an
+              ORDERED projection. ⚠️ NOT for an unordered row shape — `order-is-unspecified` is this
+              engine's documented stance, so pinning the first row of `RETURN n.k` would assert
+              something it is free to change.
+```
+
+Fifteen shapes carry verified expectations. **The fix was mutation-tested with the exact ablation
+that fooled the old guard: both `hopfilter` and `existssub` now THROW** instead of being timed.
+
+#### What is left open, stated rather than filed
+
+**The eleven-section chain remains UNPRICED.** The arithmetic says 6.3 ns/call leaves little; the
+ablation that would have tested it was invalid. A valid ceiling needs an arm that deletes only
+sections genuinely empty _for the shape being measured_, which means first reading which `CPredicate`
+fields each shape populates — not assuming. The "compile a specialized closure per predicate shape"
+refactor is therefore **unpriced, not rejected**.
+
+#### ⚠️ An eighth anchor failure, and a new flavour: a COMMENT cannot be a dist marker
+
+The first dist discriminator was a `// ZZ-ABLATED` comment — **count 0 in both arms, because the
+bundler strips comments.** The second, `pred.truthTestProps`, occurs **3 times** (the compiler builds
+that field). The working one counts `labelTestsHold(` and `typedTestsHold(`, which are called only
+from `satisfies`, exactly once each, so the ablation takes both to zero. **Eighth failure this
+session, eighth caught.**
+
+#### Gates
+
+`bun run check` 0 read through `${pipestatus[1]}`. `predicates.ts` verified identical to HEAD — the
+arm was built, measured, invalidated and reverted. The only change is the probe's assertions.
