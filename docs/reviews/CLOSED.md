@@ -75693,7 +75693,10 @@ The cold figure still holds in shape: the build costs more than one query saves 
 139.18, a 1.20x regression on the FIRST query), and it is slower to build here than on the grouped
 fixture (~144 ms against ~89) for the same pointer-chasing reason. The CSR is keyed on
 `topologyVersion`, so a write-heavy workload pays that build repeatedly — which is the real
-remaining question for the build, not the warm number.
+remaining question for the build, not the warm number. ⚠️ **ANSWERED AT ITEM 1695, and the answer is
+reassuring for the shipped arms but not automatic: the arm is safe under writes exactly when the WALK
+it replaces costs more than the REBUILD. The far-filtered hop passes (192 against 182) and is a win
+even at one write per read; the UNFILTERED hop does not (139 against 182).**
 
 #### What to do with the bench
 
@@ -75712,3 +75715,53 @@ probe does. Two consequences to carry instead:
 
 `bun run check` 0 read unpiped. One probe added, item 1693's heading struck and its code note
 corrected; no engine behaviour touched.
+
+### Item 1695 — **THE CSR CACHE'S INVALIDATION, MEASURED: item 1692's shipped arm is 56.7x warm and STILL 1.19x BETTER at one topology write before EVERY read.** ⚠️ **Six arms shipped on this cache and every one of their A/Bs measured consecutive reads with no writes — so this was unmeasured until now.** And the criterion it yields is shape-specific: **safe iff the walk costs more than the rebuild**, which the unfiltered hop FAILS
+
+Items 1676, 1685, 1688, 1689, 1690 and 1692 all ship arms over the `topologyVersion`-keyed CSR, and
+the cache is dropped WHOLE on any topology write (`csrFor` and `chainCsrFor` both discard the
+generation when the counter moves). Every one of those A/Bs timed 14 consecutive reads with no write
+in between, so the serving case — write, read, write, read — had never been measured. Item 1694
+named it "the real remaining question".
+
+Item 1692's arm, on a SCATTERED fixture (item 1694's lesson: a grouped build understates both the
+walk and the rebuild), per read:
+
+```text
+   write rate              PRE (no arm)    POST (arm)    ratio
+   warm, no writes             192.37          3.39      56.7x
+   1 write per 20 reads             —         14.35
+   1 write per 10 reads             —         21.37
+   1 write per read            221.62        185.77       1.19x
+```
+
+**The arm is never a regression on this shape**, because the rebuild (~182 ms on 1,000,000 scattered
+edges) is still cheaper than the walk it replaces (~192 ms). The walk is expensive enough that a
+full CSR rebuild per query beats it.
+
+#### ⚠️ THE CRITERION, AND THE SHAPE THAT FAILS IT
+
+A CSR arm is safe under arbitrary writes **iff the walk it replaces costs more than the rebuild**.
+That is not a property of the cache; it is a property of the shape:
+
+- **far-filtered hop** — walk 192.37, rebuild ~182. Passes. 56.7x warm, 1.19x at the worst write
+  rate, and monotone in between.
+- **unfiltered hop** (items 1693/1694's target) — walk 139.18, rebuild ~182. **FAILS.** Warm it is
+  6.00x; at one write per read it would be a ~1.2x regression. So that build needs either a write-rate
+  argument or an incremental update, and "item 1692 shipped it" is not that argument.
+
+The GQL arms (1685, 1688, 1689, 1690) replace walks measured at 120-460 ms against the same rebuild
+order, so they sit on the safe side of the line — but each is a separate instance of the criterion,
+not an inheritance, and none has been measured under writes.
+
+#### Why the rebuild is ~182 ms here and ~89 elsewhere
+
+The same reason item 1694 found for the walk: building the CSR iterates every vertex's adjacency, so
+on a scattered insertion order it chases the same pointers the walk does. A grouped fixture builds it
+in ~89 ms. Both figures are real; the scattered one is what a bench-like graph pays.
+
+#### Gates
+
+`bun run check` 0 read unpiped. `packages/gremlin` isolated: 2065 pass, 0 fail (the arm was stripped
+and restored for the PRE arm; the dist was asserted at 0 and back at 3). One probe added; no engine
+behaviour touched.
