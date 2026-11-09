@@ -79964,3 +79964,61 @@ numbers I would decline it, and the earlier framing overstated the case.
 
 `bun run check` 0 read through `${pipestatus[1]}`. `Vertex.ts` verified identical to HEAD after the
 ablation; no source changed. **NEW PERMANENT INSTRUMENT — `packages/native/insert-freeze-ab.sh`.**
+
+### Item 1765 — ⚠️ **MEMORY RETENTION, NOT SPEED: `elementProperties` and `elementLabels` are never deleted from, so every removed element's box survives — ~478 bytes per removed vertex, growing linearly with churn.** An empty graph holds **33.7 MB** after three 20k add/remove cycles. **Reported, not fixed: the removal site's comment makes the box's survival part of a correctness proof**
+
+Found while pricing `#commitNormalized` on the insert path (item 1764). Across `Graph.ts`,
+`Vertex.ts` and `Edge.ts` those two maps are only ever `new Map()`, `.get()` and `.set()` — **there
+is no `.delete()` anywhere.**
+
+#### Measured, forced GC, 20,000 vertices per round
+
+```text
+  state                    vertices   elementProperties   elementLabels   heapMb
+  empty                           0                   0               0      5.0
+  after add round 0          20,000              20,000          20,000     17.9
+  after REMOVE round 0            0              20,000          20,000     15.6
+  after add round 1          20,000              40,000          40,000     28.4
+  after REMOVE round 1            0              40,000          40,000     25.3
+  after add round 2          20,000              60,000          60,000     36.7
+  after REMOVE round 2            0              60,000          60,000     33.7
+```
+
+**Both maps grow with elements EVER created, not with live ones.** An empty graph — `vertexCount`
+and `edgeCount` both zero — holds **33.7 MB against 5.0 MB fresh**, i.e. **~28.7 MB retained for
+nothing, ~478 bytes per removed vertex.** A long-running process that churns a million vertices
+retains roughly half a gigabyte of boxes for elements that no longer exist.
+
+#### ⚠️ IT IS NOT A WRONG ANSWER, and that is why nothing caught it
+
+Checked before reporting: `#commitNormalized` always **REPLACES** `box.bag`, so an id that is
+removed and re-added overwrites the stale bag rather than inheriting it. Every answer stays correct,
+so no correctness test can see this — and it is memory rather than time, so no probe in the corpus
+looks at it either. **It sits in the gap between the two kinds of test this repo has.**
+
+#### ⚠️ AND IT IS KNOWN AT THE REMOVAL SITE, which is why this is reported rather than fixed
+
+`removeVertex` says it outright: _"`evict` does not touch `#box` either, so the bag outlives the
+vertex."_ That sentence is the **third of three facts in a correctness proof** — the transactional
+undo captures `vertex.properties` **by reference** (item 335, to take the O(width) cost off a
+transactional removal), and the bag's survival is what makes the reference a stable snapshot.
+
+My reading is that `elementProperties.delete(id)` would not break it, because the undo closure holds
+the **bag**, not the box, and a deleted map entry cannot invalidate a reference some closure already
+owns. **But that is a reading, in an area where `label-index-vs-setter` records a WRONG ANSWER
+reached through the public API**, and the repo's own rule is that a perf item is not the place to
+change a settled invariant. So:
+
+- **the retention is measured and documented here**, with the per-element cost;
+- **the fix is a two-line `.delete()` in `removeVertex`/`removeEdge`** plus a test that a
+  rollback after a removal still restores properties — the one case the proof above is about;
+- **it is the owner's call**, because the downside if my reading is wrong is a silently wrong
+  rollback, not a slow one.
+
+**NEW PERMANENT INSTRUMENT — `packages/native/box-retention-probe.mjs`**, reporting counts _and_
+heap, with `--expose-gc` detection so a reading that includes uncollected garbage says so instead of
+overstating retention.
+
+#### Gates
+
+`bun run check` 0 read through `${pipestatus[1]}`. No source changed — one new probe and this entry.
