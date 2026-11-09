@@ -371,6 +371,28 @@ const tally = (
         cov.hopUntypedNonZero++;
       }
     }
+
+    /**
+     * ⚠️ THREE SEGMENTS, COUNTED BECAUSE A GREEN RUN PROVES NOTHING ABOUT A SHAPE THAT WAS NEVER
+     * SAMPLED. The shapes are added to a random `pick`, so without this the only evidence they ran
+     * is that the file mentions them — and item 1710 added them precisely because the routes items
+     * 1701, 1705 and 1708 changed had NO cross-engine coverage at all.
+     *
+     * Split on whether an INTERIOR position is constrained, because that is the route boundary:
+     * `interiorConstrained` sends the gated shape to the sweep and the bare one to the degree
+     * product, so a counter that merged them could sit at zero on one arm and look covered.
+     */
+    if (/-\[:[^\]]+\]->?\([^)]*\)-\[:[^\]]+\]->?\([^)]*\)-\[/.test(q)) {
+      cov.chain3Generated++;
+
+      if (/WHERE [bc]\.|\(b \{|\(c \{|\(b WHERE|\(c WHERE/.test(q)) {
+        cov.chain3InteriorGenerated++;
+      }
+
+      if (nonEmpty) {
+        cov.chain3NonZero++;
+      }
+    }
   }
 };
 
@@ -1758,6 +1780,32 @@ const genQuery = (r: () => number): string => {
       `MATCH (a:T)-[:${t}]->(a) WHERE ${pick(r, ['a.n >= 0', 'a.n > 3', 'a.zz > 1'])} RETURN count(*) AS x`,
       `MATCH (a)-[:${t}]->(b)-[:${t}]->(a) RETURN count(*) AS x`,
       `MATCH (a)-[:${t}]->(b)-[:${t}]->(b) RETURN count(*) AS x`,
+      /**
+       * ⚠️ THREE SEGMENTS, WHICH THIS FUZZER GENERATED NONE OF (item 1710). Counted before adding
+       * them: **zero** MATCH shapes here carried three segments, and **zero** carried a clause
+       * `WHERE` on an interior position of a multi-segment chain. So every route items 1701, 1705
+       * and 1708 changed — the interior clause reader, the three-segment sweep fall-through and the
+       * shape-aware route choice — sat entirely outside the CROSS-ENGINE guard. Those items' own
+       * tests compare TS against a TS subquery route; only this fuzzer compares TS against Rust.
+       *
+       * The spellings are deliberately all three, because item 1701 closed a **1411x** gap between
+       * a clause `WHERE` and its inline twin and item 1705 a **64.6x** one — both invisible to any
+       * correctness test, and both on routes that differ ONLY by spelling. A fuzzer that generates
+       * one spelling cannot see the other diverge.
+       */
+      `MATCH (a:T)-[:${t}]->(b)-[:${t}]->(c)-[:${t}]->(d) RETURN count(*) AS x`,
+      `MATCH (a:T)-[:${t}]->(b)-[:${t}]->(c)-[:${t}]->(d) WHERE b.n > 3 RETURN count(*) AS x`,
+      `MATCH (a:T)-[:${t}]->(b)-[:${t}]->(c)-[:${t}]->(d) WHERE c.n > 3 RETURN count(*) AS x`,
+      // Item 1701's shape: a conjunction over BOTH interior positions, which declined to the general
+      // pipeline at 1411x its inline twin until that item bucketed the conjuncts per position.
+      `MATCH (a:T)-[:${t}]->(b)-[:${t}]->(c)-[:${t}]->(d) WHERE b.n > 3 AND c.n < 9 RETURN count(*) AS x`,
+      // The two INLINE spellings of the same questions — the twins those gaps were measured against.
+      `MATCH (a:T)-[:${t}]->(b {n: 3})-[:${t}]->(c)-[:${t}]->(d) RETURN count(*) AS x`,
+      `MATCH (a:T)-[:${t}]->(b)-[:${t}]->(c WHERE c.n > 3)-[:${t}]->(d) RETURN count(*) AS x`,
+      // The ENDS, which the degree product reaches only as degrees and which therefore take a
+      // different route again (item 1704's counters).
+      `MATCH (a:T)-[:${t}]->(b)-[:${t}]->(c)-[:${t}]->(d) WHERE a.n > 3 RETURN count(*) AS x`,
+      `MATCH (a:T)-[:${t}]->(b)-[:${t}]->(c)-[:${t}]->(d) WHERE d.n > 3 RETURN count(*) AS x`,
       `MATCH ${hop} RETURN count(*) AS x`,
       `MATCH ${hop} WHERE ${pick(r, preds)} RETURN count(*) AS x`,
       // The same question with the paging the shortcut must NOT answer past, and
@@ -2314,6 +2362,9 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
       hopFilterNonZero: 0,
       hopUntypedGenerated: 0,
       hopUntypedNonZero: 0,
+      chain3Generated: 0,
+      chain3InteriorGenerated: 0,
+      chain3NonZero: 0,
       pageGenerated: 0,
       pageRows: 0,
     };
@@ -2441,6 +2492,7 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
         `temp=${cov.tempGenerated}/${cov.tempNonEmpty} ` +
         `hopFilter=${cov.hopFilterGenerated}/${cov.hopFilterNonZero} ` +
         `hopUntyped=${cov.hopUntypedGenerated}/${cov.hopUntypedNonZero} ` +
+        `chain3=${cov.chain3Generated}/${cov.chain3InteriorGenerated}/${cov.chain3NonZero} ` +
         `page=${cov.pageGenerated}/${cov.pageRows}`,
     );
     expect({

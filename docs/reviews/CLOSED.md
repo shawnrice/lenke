@@ -76504,3 +76504,62 @@ mutants on the route choice, all CAUGHT** — always-sweep, never-sweep, the inl
 only the first interior position read, and the clause gates ignored. A route choice is
 answer-equivalent, so those unit tests are the whole instrument and this pass is what proves they
 have teeth.
+
+### Items 1709/1710 — ⚠️ **THE DIFFERENTIAL FUZZER GENERATED **ZERO** THREE-SEGMENT PATTERNS AND ZERO INTERIOR CLAUSE `WHERE`s, so every route items 1701, 1705 and 1708 changed had NO CROSS-ENGINE COVERAGE.** Eight shapes added in all three spellings; `chain3=48-59 / 32-42 / 48-58` across four runs, all agreeing with native. Plus a stock-take: both spelling probes are now CLEAN and the field is re-ranked
+
+Items 1701-1708 changed five GQL routes on the strength of unit tests that compare TS against a TS
+subquery route. **Only the differential fuzzer compares TS against RUST.** Counted before adding
+anything:
+
+```text
+   MATCH shapes with >= 3 segments ................................ 0
+   MATCH shapes with >= 2 segments AND a clause WHERE on b or c ... 0
+```
+
+So the interior clause reader (1701), the three-segment sweep fall-through (1705) and the shape-aware
+route choice (1708) were guarded by nothing that could see a divergence from the Rust engine. Eight
+shapes now cover them: the bare three-segment chain, a clause filter on each interior position, item
+1701's two-position conjunction, both INLINE spellings of the same questions, and the two ends.
+
+⚠️ **ALL THREE SPELLINGS DELIBERATELY.** Item 1701 closed a **1411x** gap between a clause `WHERE`
+and its inline twin and item 1705 a **64.6x** one — both invisible to any correctness test, both on
+routes that differ ONLY by spelling. A fuzzer that generates one spelling cannot see the other
+diverge, which is the same blindness `fuzzer-blind-to-one-column-group` records.
+
+#### ⚠️ A GREEN RUN PROVES NOTHING ABOUT A SHAPE THAT WAS NEVER SAMPLED
+
+The shapes go into a random `pick`, so the first green run was not evidence. A `chain3` counter was
+added in the file's own idiom — it prints coverage counters for exactly this reason — and split on
+whether an interior position is constrained, because that is the ROUTE boundary: `interiorConstrained`
+sends the gated shape to the sweep and the bare one to the degree product, so a merged counter could
+sit at zero on one arm and still look covered.
+
+```text
+   run   chain3 = generated / interior-constrained / non-empty
+    1             59 / 41 / 58
+    2             48 / 33 / 48
+    3             54 / 32 / 53
+    4             51 / 42 / 50
+```
+
+Four runs, every one green. **That is the first cross-engine confirmation these routes have ever
+had**, and it vindicates items 1701/1705/1708 against the engine that matters for byte-identity.
+
+#### The stock-take (item 1709)
+
+- **The Gremlin spelling probe is CLEAN**: 0 groups over 2x, 0 answer disagreements, 18 groups under
+  the comparison floor. Its spellings are converged.
+- **The GQL spelling probe no longer flags the 31x group** (item 1705), and its one remaining flag was
+  shown to be dispatch pollution (3.59-4.37 ms across all four spellings, isolated three times).
+- **The field, re-ranked** (73 rows, TS only, after ten items): the five decode rows lead at
+  2771-3441 ms (item 312's constant factor, re-confirmed at 1686), then `project the edge +
+materialize` at 615.5 — built and REJECTED at items 1522/1523. The live candidates are
+  **`traverse 1-hop project + order by` at 296.7**, which item 1686 flagged as having two mentions
+  and no entry of its own, `project var-length 1-3 hops + start filter [ENUMERATES]` at 282.4, and
+  `query: 2-hop subquery item` at 231.2.
+
+#### Gates
+
+`bun run check` 0 read through `${pipestatus[1]}`. Five suites isolated: core 453, gql 4394, gremlin
+2065, serialization 144, native 1081, 0 fail each. All seven byte-identity fuzzers 20 pass, 0 fail,
+and the differential fuzzer four times on random seeds with the new coverage counted each time.
