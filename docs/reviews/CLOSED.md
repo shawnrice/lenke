@@ -79893,8 +79893,7 @@ only a probe that gets both halves right can state.
 #### What the parameterised path leaves
 
 `INSERT (:P {n: $n, k: $k})` has **no MATCH at all** and costs **3.91 µs**, against `RETURN 1 AS one`
-at **103 ns** (item 1762) and the core write at **~121 ns** (item 1733). So **~97% of a parameterised
-GQL write is neither the parse nor the write** — it is the write executor, the clause runner and
+at **103 ns** (item 1762) and the core write at **~121 ns** (item 1733). So ⚠️ ~~~97% of a parameterised GQL write is neither the parse nor the write~~ **WRONG, CORRECTED AT ITEM 1764** — it is the write executor, the clause runner and
 index maintenance. That is the largest unexplained per-operation gap this stretch has found, and it
 is OPEN: the cost is spread (as item 1761's flat mix was), so it needs an ablation ladder rather than
 a profile to attribute.
@@ -79907,3 +79906,61 @@ reuse its fixture** — every rep mutates, which no read probe has to handle.
 #### Gates
 
 `bun run check` 0 read through `${pipestatus[1]}`. No source changed — one new probe and this entry.
+
+### Item 1764 — ⚠️ **TWO CORRECTIONS, AND ONE RE-PRICES A PENDING OWNER DECISION DOWNWARD: `#commitNormalized`'s 17.9% of an INSERT is NOT the freeze** (ablating it is FLAT), **and item 1733's "freeze = 30% of a write" does not reach a GQL write — it is ~1.07x of a `SET` and ~0% of an `INSERT`**
+
+Item 1763 measured the GQL write path and concluded "~97% of a parameterised GQL write is neither
+the parse nor the write". Profiled properly — 393 samples, 3.26 µs/write — that is wrong:
+
+```text
+  17.9%  #commitNormalized      5.6%  commitElementLabels    2.3%  normalizeProperties
+  10.2%  (garbage collector)    4.6%  addEntry (prop index)  2.1%  plan
+   7.1%  addVertex              3.8%  runInsert              2.1%  commitTransaction
+```
+
+**`plan` is 2.1%.** Element construction and indexing is ~42%, with GC's 10.2% being its
+allocations. The error was comparing an INSERT's 3.91 µs against item 1733's **121 ns for
+`setProperty`** — but an insert also builds a `Vertex`, commits labels, indexes the label, indexes
+the property and commits a transaction. **An insert is not a property update**, and 1763's heading
+is struck.
+
+#### ⚠️ AND `#commitNormalized`'s 17.9% IS NOT THE FREEZE
+
+The obvious reading — item 1733 priced `Object.freeze` at 30% of a property write, and here is
+`#commitNormalized` at 17.9% of an insert — is wrong. Ablated, three alternated rounds, µs/write:
+
+```text
+  shape     base                 nofreeze             verdict
+  insertp   2.35  2.40  2.45     2.47  2.33  2.42     FLAT
+  setp      2.10  2.14  2.11     2.02  2.02  1.86     ~1.07x, DISJOINT
+```
+
+**Removing the freeze changes nothing on an INSERT.** The mechanism is visible once the branch is
+read: on an insert the property box does not exist yet, so `#commitNormalized` takes its
+`box === undefined` arm — allocating `{ bag }` and doing an **`elementProperties.set(id, box)`** per
+insert. That Map insert, not the freeze, is what the frame holds. **A shared frame between two
+shapes does not mean a shared cost**, which is `frame-attribution-trap` in a new form: the trap here
+was not a getter but a function whose _body differs by path_.
+
+#### WHAT THIS DOES TO THE LAZY-FREEZE DECISION, which is the part that matters
+
+Item 1733 priced `Object.freeze` at **~30% of a property write** and left the lazy-freeze refactor to
+the owner, and I have been restating that figure every tick since. **It does not survive contact with
+a real query:**
+
+```text
+  raw `setProperty` microbench (item 1733)    ~30%
+  a GQL `SET` through the query path          ~7%     (2.11 -> 2.02, disjoint)
+  a GQL `INSERT`                               ~0%     (flat)
+```
+
+The 30% was measured against a 112 ns operation; a GQL `SET` carries ~2 µs of parse-cache lookup,
+planning, clause running and index maintenance around it, so the same absolute saving is a seventh of
+the share. **The lazy-freeze lever is worth ~7% of a user-visible write, not ~30%** — and it costs an
+internal raw accessor at 12 `.bag` sites plus a changed immutability-enforcement contract. On these
+numbers I would decline it, and the earlier framing overstated the case.
+
+#### Gates
+
+`bun run check` 0 read through `${pipestatus[1]}`. `Vertex.ts` verified identical to HEAD after the
+ablation; no source changed. **NEW PERMANENT INSTRUMENT — `packages/native/insert-freeze-ab.sh`.**
