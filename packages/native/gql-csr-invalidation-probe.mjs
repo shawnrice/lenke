@@ -48,6 +48,24 @@ for (let k = 0; k < N * 5; k += 1) {
   });
 }
 
+/**
+ * ⚠️ FOUR VERTICES THAT LACK THE ANCHOR LABEL, which makes `(a:Person)` NON-VACUOUS (item 1706).
+ *
+ * All three shared fixtures in this corpus — `bench.ts`, `bench-gremlin.ts` and
+ * `gremlin-spelling-probe.ts` — put the anchor label on EVERY vertex, so `effectiveLabel` returns
+ * `undefined` and every anchored row measures the vacuous route. Item 1703 measured that difference
+ * at 35x-44x before item 1705 fixed the fall-through, and only the GQL `spelling-probe.ts` has
+ * non-anchor vertices, which is why it was the instrument that caught it.
+ *
+ * So this toggle asks the question the benches cannot: with the anchor label real, do the rows the
+ * last six items optimised still hold their numbers?
+ */
+if (process.env.OTHERLABEL === '1') {
+  for (let i = 0; i < 4; i += 1) {
+    g.addVertex({ id: `other${i}`, labels: ['Other'], properties: { age: i } });
+  }
+}
+
 const distinct = new Set();
 
 for (const edge of g.edges) {

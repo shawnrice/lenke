@@ -76381,3 +76381,57 @@ and item 1703's measurement says that is the common case rather than the exotic 
 isolated: core 453, gql 4390, gremlin 2065, serialization 144, native 1081, 0 fail each. Seven
 byte-identity fuzzers 20 pass, 0 fail. The plumbing mutant CAUGHT; three survivors accounted for as
 unreachable, answer-equivalent, or the documented route choice.
+
+### Item 1706 — ⚠️ **ALL THREE SHARED FIXTURES PUT THE ANCHOR LABEL ON EVERY VERTEX, so every anchored row in `bench.ts`, `bench-gremlin.ts` and `gremlin-spelling-probe.ts` measures the VACUOUS-label route** — the one item 1703 showed is not what a real graph takes. ⚠️ **Post-1705 no row regresses with a real anchor, so the exposure is closed — and `+ interior filter` is 1.7x FASTER with it, because the SWEEP beats the gated CSR arm on that shape**
+
+Item 1703 found that four edgeless vertices under another label changed a route by 35x-44x, and item
+1705 fixed the fall-through. That leaves a corpus question: which fixtures have the property that
+hid it?
+
+```text
+   bench.ts (GQL)               all five node templates   ["Person"]
+   bench-gremlin.ts             every node                ["Person"]
+   gremlin-spelling-probe.ts    ["Person","Univ"] / ["Person","Univ","Mgr"]
+   spelling-probe.ts (GQL)      ["P"] + four ["S","Univ"] nodes          <- the only one
+```
+
+The Gremlin spelling probe varies its labels but keeps `Person` on EVERY vertex, so the anchor is
+vacuous there too. **Only the GQL spelling probe has non-anchor vertices, which is exactly why it was
+the instrument that caught the bug** — four nodes added for an unrelated reason (a tiny left side for
+a comma product, item 285).
+
+#### Post-1705, a real anchor label costs nothing
+
+Same fixture plus four `Other` vertices, 200,000 vertices, median of the warm reps:
+
+```text
+   row                        vacuous anchor    real anchor
+   count 3-hop                        10.53           9.36
+   + start filter                      8.88           9.54
+   + interior filter                  19.26          11.43     <- 1.7x FASTER
+   count 2-hop + start                11.27          11.84
+   var-length 1-2                     20.19          16.96
+```
+
+So the 35x-44x was the fall-through alone and item 1705 closed it. **The benches' numbers are not
+invalidated** — which is the outcome worth having, because changing a shared fixture invalidates
+every figure recorded against it (the note on the edge index records that cost) and no change is
+needed.
+
+#### ⚠️ The observation that is worth its own item
+
+`+ interior filter` runs **11.43 ms with a real anchor against 19.26 with a vacuous one**, and the
+route map explains it: a vacuous label makes `candidateCount(startLabel) === graph.vertexCount`, so
+`threeSegmentRoute`'s comparison picks the PRODUCT, while a real label picks the SWEEP. On this shape
+the sweep is the better arm and the vacuous case cannot reach it.
+
+That is a route-choice question, not a correctness one, and the comparison it would change carries
+the note that **no test can police the choice** — so it needs a clean A/B of the two routes on ONE
+fixture before anything moves. The two figures above are from fixtures differing by four vertices,
+which cannot account for 1.7x at 200,000, but they are still not the same fixture and so are not
+that A/B.
+
+#### Gates
+
+`bun run check` 0 read through `${pipestatus[1]}`. One probe gained a toggle; no engine behaviour
+changed.
