@@ -287,6 +287,31 @@ export const pathOf = (element: unknown, path: readonly string[]): unknown => {
 
   return v;
 };
+/**
+ * ❌ PRICED AND NOT BUILT, item 1750: compiling a specialized closure per predicate shape, so that
+ * only the POPULATED sections below run instead of all eleven.
+ *
+ * A field census (not an assumption — item 1749 lost a measurement to assuming) shows how little is
+ * ever populated: `MATCH … WHERE a.k = 5` sets `eqProps` ALONE; the same with an `EXISTS { … }` sets
+ * `where` + `eqProps`; an unfiltered hop sets NOTHING and still calls this. So on a typical query
+ * nine or ten of the eleven sections are an `undefined` check that always fails.
+ *
+ * Ceiling measured with the nine verified-empty sections DELETED — answer-equivalence confirmed by
+ * the probe's own assertions before timing (20000 / 207 / 207, all matching base), which is the
+ * check item 1749's invalid arm lacked. 1500 runs, three alternated rounds, ms:
+ *
+ *     existssub   598.3 617.5 611.8  ->  565.2 563.2 577.3    1.08x, ranges DISJOINT
+ *     hopfilter   386.9 388.5 391.6  ->  386.6 393.5 392.2    FLAT
+ *
+ * So the chain is **free on a simple filter and worth ~8% on a subquery shape** — the subquery calls
+ * this for the outer predicate AND inside `EXISTS`, so the per-call constant shows. 8% is under the
+ * ~10% this repo requires from a shared harness, against a refactor that would move all eleven
+ * sections behind a compile-time dispatch. Declined on that trade, with the number recorded.
+ *
+ * ⚠️ `hopall` LOOKED like the ideal ceiling row — no predicate at all — and is useless: it is
+ * BIMODAL (both arms span ~10.4-10.7 and ~13.7-14.9) and at ~7 us per query too cheap to resolve.
+ * Do not reach for it.
+ */
 export const satisfies = (
   element: Bound,
   pred: CPredicate,

@@ -79069,3 +79069,61 @@ session, eighth caught.**
 
 `bun run check` 0 read through `${pipestatus[1]}`. `predicates.ts` verified identical to HEAD — the
 arm was built, measured, invalidated and reverted. The only change is the probe's assertions.
+
+### Item 1750 — **the ceiling item 1749 left open, measured with a VALID arm this time: `satisfies`' eleven-section chain is FREE on a simple filter and worth ~8% on a subquery shape.** Priced and declined under the 10% bar. ⚠️ **The probe's new answer assertion did its job twice — it passed the valid arm and the build broke loudly on an invalid one**
+
+Item 1749 priced nothing because its ablation deleted the section holding the actual predicate. The
+fix was to stop assuming which sections a shape populates and **census them**:
+
+```text
+  MATCH … WHERE a.k = 5                            ->  eqProps ALONE
+  the same with EXISTS { … }                       ->  where + eqProps
+  MATCH (a:P)-[:E]->(b:P)  (no predicate)          ->  NOTHING, and it still calls `satisfies`
+```
+
+So on a typical query **nine or ten of the eleven sections are an `undefined` check that always
+fails** — which is exactly why a compile-time specialization looks attractive.
+
+#### The valid arm, and the two instrument checks that made it valid
+
+Deleted only the nine sections the census proved empty, keeping `props`, `eqProps` and `where`.
+**Answer-equivalence confirmed before timing** — 20000 / 207 / 207, matching base — by the
+assertions item 1749 added. 1500 runs, three alternated rounds:
+
+```text
+  shape       base                  thin                  verdict
+  existssub   598.3 617.5 611.8     565.2 563.2 577.3     1.08x, ranges DISJOINT
+  hopfilter   386.9 388.5 391.6     386.6 393.5 392.2     FLAT
+  hopall      10.4 … 14.3           10.5 … 14.9           ⚠️ BIMODAL, unreadable
+```
+
+**Free on a simple filter; ~8% on a subquery shape.** The difference has a mechanism: `existssub`
+calls `satisfies` for the outer predicate _and_ inside the `EXISTS`, so the per-call constant gets
+more calls to show up in.
+
+**Declined.** 8% is under the ~10% this repo requires from a shared harness, and the change would
+move all eleven sections behind a compile-time dispatch — a large refactor of the predicate
+evaluator for the shape where the win is _largest_. Recorded at `satisfies` with the numbers so the
+next reader sees the price rather than the opportunity.
+
+#### ⚠️ `hopall` looked like the perfect ceiling row and is useless
+
+No predicate at all, so the chain runs to do nothing — the purest possible measurement. In fact it is
+**BIMODAL** (both arms span ~10.4-10.7 and ~13.7-14.9, the same hazard item 1747 found on
+`filterchain`) and at **~7 µs per query** far too cheap to resolve anything. Recorded at the site so
+it is not reached for again.
+
+#### The instrument earned its keep twice in one item
+
+- **It passed the valid arm**, which is what licensed the timing at all.
+- **An invalid intermediate failed loudly**: a first attempt terminated each deleted block at the
+  next `  }`, which is a NESTED loop's brace — the file stopped compiling, the dist was never
+  produced, and the probe died with `ERR_MODULE_NOT_FOUND` instead of timing a stale build. Redone
+  with real brace matching plus a balanced-brace assertion. ⚠️ **A stale dist is the failure mode
+  that would have produced numbers**, and only the missing artifact prevented it — `fuzzers-read-built-dists`
+  is the same hazard from the other direction.
+
+#### Gates
+
+`bun run check` 0 read through `${pipestatus[1]}`. Engine diff verified **comment-only**;
+`predicates.ts` confirmed identical to HEAD before the comment was added.
