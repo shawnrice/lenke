@@ -4015,11 +4015,14 @@ a.k < 100` is FREE (1.05x) and `NOT (a.k <> 1)` is exactly its positive form, be
   new 91.9/54.0/50.7 — both sides bimodal at ~50 and ~90-95 ms from the same two builds. Nine reps
   collapsed it to 2.4%. The tell is **the two modes appearing on BOTH sides**; `ts-spelling-probe`
   already runs at `SPELL_REPS=9` for this reason.
-- **Still open: the TS `ORDER BY … LIMIT n` shape costs 50.1 ms against the `max` fold's 20.7 over
+- **Still open (the HEAP path only — item 1711 confirmed the `compareSort` suspect for the FULL
+  sort and deliberately left this one): the TS `ORDER BY … LIMIT n` shape costs 50.1 ms against the `max` fold's 20.7 over
   the same rows (424)**, 145 ns/row, cause NOT identified and NOT allocation. Suspects left: the
   generator layers into `boundedTopK`, the per-row-per-key `{ binding, params, graph }` env object,
   and `compareSort`'s wrapping of `compareValues`. Measure at nine reps.
-- **The TS string comparator is REFUTED as a target at 12%, and 421's dictionary trick has NO TS
+- **The TS string comparator is ~~REFUTED as a target at 12%~~ REFUTED ONLY FOR A SINGLE-PASS
+  AGGREGATE (one comparison per row); a SORT does ~n log n ≈ 20 per row, and item 1711 took it there
+  at 1.44-1.46x. 421's dictionary trick has NO TS
   twin (423).** `grep -rn dict packages/core/src/` returns nothing — the TS core stores properties
   as frozen JS objects, not columns, so there is no small distinct-value set to fold over and the
   14.5x half of 421 is native-only by construction. What remains is `compareValues`, which for a
@@ -28078,7 +28081,13 @@ statement` 969.7k / 774.8k / 973.6k (**1.26x**). It cannot resolve a 1.2x questi
   guard refused to apply it — printing VOID rather than a verdict. Without that guard it would have
   been skipped and read as a survivor of a suite that never saw it. Re-anchored, it fails 7 tests
   including four `rewrite_fuzz` ones.
-- **REFUTED and DECLINED — `compareCodePoints`' surrogate guard (item 921).** It scans BOTH WHOLE
+- **REFUTED and ~~DECLINED~~ — `compareCodePoints`' surrogate guard (item 921).** THE REGEX ARMS
+  STAND, and item 1711 reconfirmed them from the other side: in its FLOOR arms a NUMERIC column,
+  which reaches no regex at all, moved 1.25x against the string column's 1.23x — so the dispatch
+  chain is the cost and the regex is a small part of it. But the ~1.07x CEILING below bounds
+  only the shape it was measured on — `sortedpage`, `LIMIT 10`, the HEAP path, which never calls
+  `rows.sort`. On a full sort item 1711 measured **1.44-1.46x** by eliminating the whole dispatch
+  chain rather than the guard. It scans BOTH WHOLE
   STRINGS with a regex on EVERY comparison (6.9% of a sorted-page profile, with the function another
   8.0%), re-establishing a per-string fact O(log N) times in a sort. Three arms: replacing the regex
   with a manual charCode loop is **1.08x on ASCII and 3.6x WORSE on long shared prefixes** (V8's
@@ -28094,7 +28103,8 @@ statement` 969.7k / 774.8k / 973.6k (**1.26x**). It cannot resolve a 1.2x questi
   the corpus used 0xD800 for lone surrogates and 0xD83D for its astral char, so the two never met.
   One added string produced 6 mismatches. Same discipline as verifying a fuzzer's teeth by mutation,
   applied to a hand corpus; the stakes were a wrong sort order behind a hard byte-identity invariant.
-- **THE TS RUNTIME PATH HAS NO UNPRICED HOT CODE ABOVE 2% — measured, five query shapes (item
+- **THE TS RUNTIME PATH HAS NO UNPRICED HOT CODE ABOVE 2% — measured, five query shapes (item 921) — BUT NONE OF THE FIVE WAS AN UNLIMITED `ORDER BY`: the only sorted shape, `sortedpage`,
+  takes the HEAP path, so the full sort's comparator share went unpriced until item 1711. (item
   921).** New `runtime-profile-probe.mjs` + `runtime-profile-analyze.mjs` profile one shape per
   process and cross-check every frame name against THIS file and the audit. Across `control`,
   `point`, `hopfilter`, `sortedpage` and `grouped`, every hot frame carries mentions (`satisfies`
@@ -76563,3 +76573,121 @@ materialize` at 615.5 — built and REJECTED at items 1522/1523. The live candid
 `bun run check` 0 read through `${pipestatus[1]}`. Five suites isolated: core 453, gql 4394, gremlin
 2065, serialization 144, native 1081, 0 fail each. All seven byte-identity fuzzers 20 pass, 0 fail,
 and the differential fuzzer four times on random seeds with the new coverage counted each time.
+
+### Item 1711 — **THE ORDER BY COMPARATOR'S DEAD BRANCHES, ELIMINATED UNDER A CHECKED PRECONDITION: a 1,000,000-row string sort 896.9/765.6 -> 525.3/528.0 ms (1.71x / 1.45x), with the no-sort control drifting up to 16% AGAINST the change.** ⚠️ **Two CLOSED entries already priced this exact chain and neither bound this row — item 423 measured it on a SINGLE-PASS aggregate (one comparison per row, a sort does ~20) and item 921's ~1.07x ceiling was computed on `sortedpage`, which is `LIMIT 10` and takes the HEAP path.** ⚠️ **A numeric arm was built, measured six times (0.93x-1.18x, straddling 1.0) and DROPPED.** Plus the 15th cross-engine divergence, found on the way out
+
+The profile nominated it: `MATCH (a:Person)-[:KNOWS]->(x) RETURN x.name AS n ORDER BY n` is the
+largest live row in the re-ranked field, and one shape per process put the comparator chain across
+`compareCodePoints` 8.04%, `compareSort` 7.57%, `typeRank` 5.43%, `compareValues` 1.67% and the
+surrogate regex 4.13%, under a comparator closure at 16.81%.
+
+**THE FIRST THING THAT HAPPENED WAS THE FUNCTION'S OWN NOTE STOPPING A REPEAT BUILD.** `values.ts`
+carries item 921's three refuted arms and the line "If you come back to this, the hoist is the only
+live option and the ceiling above is what it has to beat" — which is exactly what I was about to
+build. Third time this session a function-level note has done that (1684, 1686, this).
+
+**WHY THE CLOSED ENTRIES DID NOT BIND, which is the reusable part.** Both priced the same chain and
+both were right about what they measured:
+
+- Item 423: "`compareValues` ... for a string pair runs ten statically-false type checks before
+  `compareCodePoints`", refuted at **12%, 11 ns/row**, "under the repo's own 10% rule, refuted
+  before any code". It measured a `max` AGGREGATE — **one comparison per row**. A sort does
+  ~n log n ≈ **20 per row**, and the chain's cost scales with COMPARISONS, not rows.
+- Item 921: the surrogate guard, declined at **~1.07x**. Measured against a `sortedpage` profile —
+  `LIMIT 10`, so `(skip+limit)*16 <= rows.length` sends it to `boundedTopRows` and `rows.sort` is
+  never called.
+
+So a refutation carries its INSTRUMENT with it. "Refuted at 12%" is a claim about the shape it ran
+on; re-ask it when the per-row comparison COUNT changes by an order of magnitude. Both headings are
+corrected in this commit, plus item 424's (its `compareSort` suspect is confirmed for the full sort
+and deliberately left on the heap path).
+
+**AND THE PROFILE CORPUS IS WHY IT SAT FOR ~790 ITEMS.** Item 921's "THE TS RUNTIME PATH HAS NO
+UNPRICED HOT CODE ABOVE 2% — measured, five query shapes" is sound for its five, and NONE of them is
+an unlimited `ORDER BY`: the only sorted shape is `sortedpage`, on the heap path. A corpus with no
+full sort in it cannot price a full sort's comparator. `isolated-row-bench.mjs` now carries
+`hopsortstr`, and that gap is closed.
+
+**THE CHANGE.** `sort-column-specialize.ts` scans a sort column once; if every value is a non-null,
+surrogate-free string it sorts with `x < y ? -1 : x > y ? 1 : 0`, else `compareSort` runs untouched.
+⚠️ **It is branch ELIMINATION WITH A PROOF, not the "second derivation of which row sorts first"
+that `sortRowsByColumns`' own note forbids**: under that precondition `compareSort` takes neither
+null branch, both `typeRank`s are 1, the temporal/array/record arms and the `ra === 4` arm are dead,
+and `compareCodePoints`' own fast path — reached when neither string holds a high surrogate — IS that
+expression, by inspection. `HAS_SURROGATE` is exported and SHARED rather than copied, so there is one
+definition of "can code-unit order disagree with code-point order".
+
+**THE NUMERIC ARM, BUILT AND DROPPED, with its numbers next to the code.** Numbers reduce equally
+exactly (`compareValues` also ends in that expression once NaN is excluded). Six readings over four
+runs: **0.93x, 1.05x, 1.06x, 1.11x, 1.14x, 1.18x** — it STRADDLES 1.0, and on the quiet machine the
+adverse round read 0.93x while the control moved 0.84x. Its best evidence was POST against a
+string-only build (1.053x, 1.112x, matched controls), which does not buy a second code path, a second
+precondition and a scan every sorted numeric column pays. ⚠️ **WHY it nets to nothing while the
+string arm nets 1.45x is the part worth keeping: a FLOOR arm (reduced comparator, NO scan) measured
+1.25x on the numeric row, so the reduction IS worth ~25% there and the O(n) scan eats it.** The
+string comparator saves far more per comparison, so the same scan is cheap against the saving. **The
+open question is a CHEAPER CLASSIFICATION, not this arm** — rebuilding it as written will measure
+~1.0x again.
+
+**A WARM-UP EXPLANATION THAT LOOKED TRUE AND WAS REFUTED.** A three-arm run put POST ahead of a
+NO-SCAN floor build in both rounds, which is impossible if the floor is the floor, and the tempting
+mechanism was that the scan pre-touches every `row[col]` so the comparator's ~20M property reads
+start monomorphic. An arm that runs the scan and `void`s its answer, keeping the pristine comparator,
+read **0.92x and 0.95x** — slower than PRE by the scan's own cost. So the scan buys nothing beyond
+classifying, the floor anomaly was drift, and the whole win is the comparator.
+
+**⚠️ 48 FOREIGN SPIN LOOPS VOIDED A RUN, AND ONLY THE CONTROL'S ABSOLUTE CAUGHT IT.** One run read
+every absolute ~1.8x high — the control went 82-92 ms to 154-165 — with the box at load 25 under 48
+`bash -c while :; do :; done` processes that were not mine (`timeout 300`, one batch, self-expiring;
+not killed). **The RATIOS still looked plausible at 1.23x and 1.53x**, which is the trap: a
+contaminated run does not announce itself in the ratio, only in the absolutes. The re-run was gated
+on `/proc/loadavg` and started itself at 2.62. It also retired an explanation I had already written
+down — the pristine spread of 738-897 that I had attributed to layout drift was partly just load.
+
+**Mutation: 8 of 8 caught on the first module, 5 of 5 after the numeric arm came out** — dropping the
+surrogate test, defeating either scan loop so it classifies from row 0, dropping the NaN rejection
+and the numeric type re-check (while that arm existed), failing to negate descending, handing a
+reduced comparator to a generic column, and removing the empty-rows guard. Unlike a route choice
+(item 1705, where every route mutant was answer-equivalent and surviving was correct), each of these
+changes the ANSWER, so a survivor here would be a real gap.
+
+⚠️ **ONE MUTANT WAS INVALID AND REPORTED SURVIVED.** My first "classify from row 0 alone" appended a
+dead `if (false) {}` AFTER the string branch's `return`, leaving the scan intact — it tested nothing
+and said so as a pass. I had asserted the marker and not the SEMANTICS, the same failure as
+identifying an A/B arm by a marker the bundler strips. Rewritten as two line-scoped mutants, both
+caught.
+
+**The crux test is a column holding both `''` and an astral char**, where code-point and
+code-unit order genuinely disagree, with the oracle derived independently (`Array.from` iterates code
+points) rather than by calling the engine's comparator. The differential fuzzer already builds this
+case — `STR_CHARS` carries `` and 20% of strings splice an astral char — and compares ORDER BY
+shapes IN ORDER, not as multisets.
+
+#### The 15th cross-engine divergence, found while checking whether this transfers to Gremlin
+
+⚠️ **TS GREMLIN ORDERS STRINGS BY CODE UNIT WHERE RUST AND TS GQL USE CODE POINT.** One process, same
+data:
+
+```text
+    gremlin TS   a  z  U+1F600  U+E000      code UNIT  (high surrogate D83D < E000)
+    gql     TS   a  z  U+E000   U+1F600     code POINT (57344 < 128512)
+```
+
+`cmpSameType` sends a string pair to `cmpOrd`, a plain `x < y ? -1 : x > y ? 1 : 0` with **no
+code-point comparison and no surrogate guard at all**. The Rust side cannot differ by language:
+`exec/order.rs` compares `Col::Str` with `v[a].cmp(&v[b])` (Rust `str::cmp`, byte-wise UTF-8 = code
+point) and `ir.rs`'s `SortKey` doc states both languages order non-nulls by `cmp_total`, with only
+null PLACEMENT differing (GQL last, Gremlin first). Recorded as the 15th open value divergence;
+`test.failing` registration and the native-engine leg are the next item. **No fuzzer could find it:
+`gremlin-fuzz.test.ts` calls `order(` 59 times and generates ZERO astral and ZERO U+E000..U+FFFF
+characters** — item 921's "a corpus that does not CONSTRUCT the dangerous case will agree with
+anything", firing in the other engine.
+
+#### Gates
+
+`bun run check` 0, read through `${pipestatus[1]}` — it caught five lint errors first, including two
+`no-misused-spread` on the test oracle, where the rule was warning about exactly the property the
+oracle wants (spreading a string yields code points); switched to `Array.from` with the reason in a
+comment rather than silencing it. The shipped comparator is the if/return form because
+`no-nested-ternary` is an error here, and since every arm above was measured as a nested ternary the
+reshape was re-measured rather than assumed. gql suite 4424 pass, 0 fail.

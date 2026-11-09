@@ -242,6 +242,12 @@ const SHAPES = {
   // with its own per-edge far-label test and no row until now.
   hopoptyield: 'MATCH (a:P) OPTIONAL MATCH (a)-[:E]->(b:P) RETURN b.n AS n',
   sortedpage: 'MATCH (n:P) WHERE n.k < 50 RETURN n.s AS s ORDER BY s LIMIT 10',
+  // Item 1711: the FULL sort, no LIMIT, so rows.sort runs on every row instead of the heap
+  // selecting a window. hopsortstr reaches the surrogate regex AND the typeRank dispatch;
+  // hopsortnum reaches ONLY the dispatch. hopsingleyield is the same hop+projection with no
+  // sort at all, so it is the control a comparator change cannot reach.
+  hopsortstr: 'MATCH (a:P)-[:E]->(b:P) RETURN b.s AS s ORDER BY s',
+  hopsortnum: 'MATCH (a:P)-[:E]->(b:P) RETURN b.n AS n ORDER BY n',
   grouped: 'MATCH (n:P) RETURN n.k AS k, count(*) AS c',
   point: 'MATCH (n:P) WHERE n.n = 12345 RETURN n.s AS s',
   scan: 'MATCH (n:P) RETURN count(*) AS c',

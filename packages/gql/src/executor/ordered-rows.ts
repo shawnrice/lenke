@@ -27,6 +27,7 @@ import type { Graph } from '@lenke/core';
 
 import type { Clause, Expr, SortItem } from '../ast.js';
 import type { Params, Row } from './core.js';
+import { reducedRowComparator, sortColumnKind } from './sort-column-specialize.js';
 import { compareSort } from './values.js';
 
 /**
@@ -462,6 +463,18 @@ export const sortRowsByColumns = (rows: Row[], plan: SortPlan): Row[] => {
     sorts.length === 1
       ? ((): Row[] => {
           const [{ col, descending, nullsFirst }] = sorts;
+
+          // A COLUMN OF ONE TYPE WITH NO NULLS SORTS WITH THE DEAD BRANCHES GONE (item 1711):
+          // ~1.45x on a 1,000,000-row string sort, ~1.06x on a numeric one. The scan decides it
+          // once; `compareSort` is still the comparator for every column it declines; and the
+          // reduction is exact rather than a second derivation. The module's note carries the
+          // numbers, why the numeric arm is kept on consistency rather than size, and the refuted
+          // warm-up explanation -- read it before changing the scan.
+          const reduced = reducedRowComparator(sortColumnKind(rows, col), col, descending);
+
+          if (reduced !== undefined) {
+            return rows.sort(reduced);
+          }
 
           return rows.sort((a, b) => compareSort(a[col], b[col], descending, nullsFirst));
         })()

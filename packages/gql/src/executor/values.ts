@@ -238,7 +238,13 @@ export const cmpKey = (a: string, b: string): number => {
 
   return a > b ? 1 : 0;
 };
-const HAS_SURROGATE = /[\uD800-\uDBFF]/;
+// ⚠️ EXPORTED SO THE SORT SPECIALIZATION SHARES THIS EXACT TEST (item 1711). A copy of the
+// regex in the other module would be a second definition of "can code-unit order disagree with
+// code-point order", and the two could drift apart. It tests HIGH surrogates only, which is correct
+// and load-bearing for the specialization as well: a string holding only LONE LOW surrogates has
+// `codePointAt === charCodeAt` at every index and advances one unit per step, so the slow path below
+// degenerates to exactly the code-unit comparison a plain `<` performs.
+export const HAS_SURROGATE = /[\uD800-\uDBFF]/;
 /**
  * Compare two strings by Unicode CODE POINT, matching Rust `str::cmp` (UTF-8 byte
  * order == code-point order). JS `<`/`>` order by UTF-16 code UNIT, which disagrees
