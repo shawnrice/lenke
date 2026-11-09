@@ -75034,3 +75034,87 @@ before it is built.
 #### Gates
 
 `bun run check` 0 read unpiped. No engine source touched — a screen and this entry.
+
+### Item 1687 — **THE FILTERED THREE-HOP COUNTS PRICED AT 67x-92x WARM AND 3.6x COLD.** Any filter costs 18x-44x over item 1685's unfiltered arm, and the profile puts 36.2% in `sweepChain`'s per-pass walk. ⚠️ **This is NOT the memo item 1106 measured as a LOSS at two passes — that one is per-query and cannot amortise; a cached one needs no amortisation.** OPEN, not built
+
+Item 1686's screen left the filtered three-hop counts as the largest genuinely-live rows. Measured
+at 200,000 vertices / 1,000,000 edges, 12 calls:
+
+```text
+   none       7.8 ms/call     <- item 1685's flat-array degree product
+   interior 141.8             18.2x
+   start    294.8             37.8x
+   end      344.2             44.1x
+```
+
+**A filter costs 18x-44x of the unfiltered arm**, because it constrains a position the degree product
+reaches only as a DEGREE, so the query falls back to `sweepChain`'s per-pass walk.
+
+#### The profile
+
+Start filter, 20 calls:
+
+```text
+   36.2%  sweepOneDirection    the per-pass walk — `edgesOfTypes` generator + string-keyed slot lookup
+   11.6%  bucketSize           the last position's degree
+    7.8%  edgesOfTypes
+    6.6%  sweepChain
+   ~22%   FIXTURE leakage (indexEdgeLabel, getEdgeById, #commitNormalized, commitElementLabels)
+    4.4%  garbage collector
+```
+
+About 62% in the walk. (`bucketSize` at 11.6% is the frame items 1416/1637 established as mostly
+misattribution — it is listed for completeness, not nominated.)
+
+#### The price
+
+```text
+   arm                      ms    vs its engine arm
+   engineStart             299.2          1.00x
+   csrStart                  3.2         92.27x
+   csrStartPlusBuild        82.3          3.64x
+   engineEnd               306.7          1.00x
+   csrEnd                    4.6         66.87x
+   csrEndPlusBuild          83.7          3.66x
+```
+
+All six arms are asserted to produce their own engine arm's count (start and end are DIFFERENT
+questions, 7,964,222 and 8,063,256, so each is checked against its own oracle rather than one
+shared number). **The cold arms win too** — 3.6x with the whole O(V+E) CSR build and the accept mask
+inside the timed region — so this is not a repeat-workload-only lever.
+
+#### ⚠️ Why this does not contradict item 1106
+
+`sweepChain` already carries `slotNbrs`, a flat per-query slot memo, gated `passes > 2` with numbers:
+`count 4-hop` went 550.5 -> 297.5 (1.85x) WITH it, while `count 3-hop + start filter` read 162.0
+against 165.7 — a small LOSS. The comment states the mechanism: "The first pass PAYS for the memo …
+and only later passes are refunded. With exactly two passes one building pass is refunded by one
+consuming pass."
+
+That is correct on its own terms, and a 3-leg chain with a START filter has `lastGated === false`, so
+`passes === 2` and it gets no memo at all. **A `topologyVersion`-keyed CSR needs no amortisation on a
+HIT**, which removes the gate's premise rather than disputing its measurement — the same distinction
+item 1683 drew and then got wrong by relaxing that gate on an assumption. The gate is not to be
+touched again without the route map.
+
+#### The design, and the hazards
+
+Seeds and the accept set are **per-query** and must stay so: the predicate reads properties, which
+deliberately do not bump `topologyVersion` (items 1674/1675), so an accept mask cached on that signal
+would go stale with no signal to catch it. That is the same split item 1680 recorded for its
+projection memo. The mask is O(V) against a walk over E per pass, so it is free.
+
+⚠️ The real obstacle is `sweepChain`'s slot numbering: `slotOf`/`idOf` are grown LAZILY in seed
+discovery order, so its slot indices are a function of the seed set and nothing about them can be
+shared between queries. The fix is the one Gremlin's item 1678 used — number every vertex eagerly by
+`verticesById` order — and the knock-ons are real: `ways`/`next` are sized by a growing `cap`, and
+the `cache`/`cached` arrays are indexed by slot too.
+
+⚠️ Two levers are already REFUTED inside this function and must not be re-attempted: the failed-gate
+memo (sign not consistent — 0.87x at a gated last position, 1.27x at an interior) and an indexed loop
+in place of `for...of` (did not reproduce; the whole side had moved). Item 1681's 1.26x polymorphism
+cost from one walk serving several shapes applies to any new arm here.
+
+#### Gates
+
+`bun run check` 0 read unpiped. One new probe, no engine change.
