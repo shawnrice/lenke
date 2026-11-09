@@ -77616,11 +77616,13 @@ measurement that makes the claim checkable.
 `bun run check` 0 read through `${pipestatus[1]}`. Both probes exit 0. Measurement only — no source,
 bench or probe changed; the only edit is this entry.
 
-### Item 1730 — **DECLINED AT A MEASURED 2.3%: routing `indexEdgeLabel`'s two id-keyed lookups through the Vertex's CACHED adjacency on insert.** The largest absolute cost in the corpus (decode ~2869 ms, 97.7% of it the APPLY phase) and the lever is 64.6 ns an edge against a 2803 ms phase. ⚠️ **My own first estimate was 7%, from a carried ~115 ns/hash figure that does not hold at this shape — 3.5x too high**
+### Item 1730 — **DECLINED AT A MEASURED 2.3%: routing `indexEdgeLabel`'s two id-keyed lookups through the Vertex's CACHED adjacency on insert.** The largest absolute cost in the corpus (decode ~2869 ms, ~~97.7% of it the APPLY phase~~ — **the 97.7% is WRONG for NDJSON, corrected to 74.4% at item 1731**) and the lever is 64.6 ns an edge against a 2803 ms phase. ⚠️ **My own first estimate was 7%, from a carried ~115 ns/hash figure that does not hold at this shape — 3.5x too high, and the phase split below is a SECOND carried figure that does not hold either (item 1731)**
 
 The decode rows are 2800-3300 ms, five times the next-largest row in the sweep, so the family is worth
 re-reading even though `ts-ingest-is-constant-factor` closes it. Item 312's phase attribution stands:
-**parse is 78 ms of 3385 and the APPLY phase is 3306, 97.7%.** Within apply, the recorded structural
+~~**parse is 78 ms of 3385 and the APPLY phase is 3306, 97.7%.**~~ ⚠️ **STRUCK — that is item 1259's
+PG-TEXT measurement and it does NOT hold for NDJSON. Measured with the real codec at item 1731:
+parse 944.9 ms of 3693.1, so parse is 25.6% and apply 74.4%.** Within apply, the recorded structural
 answer is `indexEdgeLabel`'s "seven hash operations per edge, five string-keyed (a label bucket, then
 `fromId` -> label -> Set, then `toId` -> label -> Set) … ~115ns each at a million entries", pointing
 at item 300's CSR — and that is the dense ordinal, BUILT and DISQUALIFIED at items 1369-1372/1397
@@ -77669,3 +77671,96 @@ put a number on THIS variant; the next reader should not have to re-derive 2.3%.
 
 `bun run check` 0 read through `${pipestatus[1]}`. Measurement only — no source, bench or probe
 changed; the only edit is this entry.
+
+### Item 1731 — ⚠️ **A CARRIED PHASE SPLIT WAS WRONG BY 11x: the NDJSON decode spends 25.6% in parse, not 2.3%.** Corrects item 1730's and item 1259's attribution of the largest absolute cost in the corpus. The one lever the corrected profile exposes — deferring the edge parse — measured 1.20x on that phase, **4.3% of the row, DECLINED** under this family's own 7.4% bar
+
+A CPU profile of the apply phase (200,000 nodes / 1,000,000 edges, one warm decode outside the
+window, 3 decodes inside) was taken to test item 1730's closing hypothesis that _"the apply phase's
+dominant term is not lookups at all … the expense is constructing those containers."_ It returned
+something that phase attribution had ruled out:
+
+```text
+  19.41%   2366.3ms  parseLine          <- recorded as ~2.3% of the row
+  19.40%   2365.2ms  indexEdgeLabel
+  13.44%   1638.9ms  (garbage collector)
+   7.45%    908.4ms  #commitNormalized
+   7.19%    876.2ms  commitElementLabels
+   5.83%    710.9ms  getVertexById
+   4.96%    605.2ms  getEdgeById
+   3.27%    398.4ms  requireVertex
+```
+
+#### The correction, measured with the real codec rather than read off a profile
+
+`parseLine` does a full `JSON.parse` per line (`ndjson/index.ts:89`) from inside `decode`'s first
+loop. **NEW PERMANENT INSTRUMENT — `packages/native/ndjson-phase-probe.mjs`**, min of 5:
+
+```text
+  split('\n')         50.9 ms     1.4%
+  split + parse      944.9 ms    25.6%
+  decode            3693.1 ms
+  apply (residual)              74.4%
+```
+
+**Item 1730's entry says "parse is 78 ms of 3385 and the APPLY phase is 3306, 97.7%" and applies it
+to the NDJSON row. That is item 1259's PG-TEXT measurement.** Its phases are `split('\n')` then a
+`tokenize` producing a `string[]` — 78 ms because tokenizing is nearly free there. NDJSON has no
+tokenizer at all; the structural parse IS the parse phase. The real share is **11x** the carried one,
+and item 1730's heading has been struck accordingly.
+
+⚠️ **This is the SECOND carried figure to fail inside one item.** Item 1730 already recorded that
+~115 ns per string-keyed hash did not transfer (it measured 35) and drew the lesson that _"a
+per-operation constant carried from another item is a measurement of that item's shape"_ — then
+carried a phase SPLIT in the same breath. **The rule generalizes: a phase attribution is a
+measurement of the FORMAT it was taken on.** pg-text and csv tokenize into strings; ndjson, pg-json
+and graphson each run a structural parser per record, and no item has split those three.
+
+#### And the id-lookup share is larger than the 2.3% item 1730 declined
+
+`getVertexById` 5.83% + `getEdgeById` 4.96% + `requireVertex` 3.27% is **~14% of the decode on id
+resolution** — item 1730 priced only 2 of `indexEdgeLabel`'s 5 hashes. ⚠️ **But the frames are NOT
+misattributed, and that was checked rather than assumed**: `getVertexById`'s 710.9 ms over 6M calls
+(2 per edge × 1M edges × 3 decodes) is 118 ns each, which matches item 1729's independently measured
+112 ns for a vertex lookup at 1,000,000 elements. It is real work — and **semantically required**:
+an NDJSON edge record names its endpoints by id, so something must hash them, and a decoder-local
+id map would be the same hash. `getEdgeById` is the duplicate-id check; removing it changes
+semantics. **So the 14% is priced and unavailable**, which is a stronger result than 1730's 2.3%.
+
+#### The one NEW lever, measured and declined
+
+The corrected profile's novel term is GC at 13.4%, and its cause is structural: `decode`'s first
+loop retains EVERY parsed record, so peak live is 1.2M record objects (each with a nested
+`properties` bag) on top of the 1.2M strings `split` already holds. Item 1259 priced "the two-phase
+buffering" at **17 ms** — the same cross-format error, since that measured the pg-text tokenizer
+buffering a `string[]`.
+
+Applying node records inline (safe: no edge is applied in the first loop, so `requireVertex` stays
+strict) and buffering edge LINES instead of edge RECORDS. Isolated with no graph in the loop so only
+retention differs, both arms doing the identical 1.2M `JSON.parse` calls and printing a matching
+sink, one arm per process, 3 alternated rounds of 7:
+
+```text
+  retain records     977.4 / 961.3 / 967.9 ms
+  defer edge lines   808.8 / 788.5 / 819.9 ms
+  -> 1.20x, ~159 ms, ranges DISJOINT in every round
+```
+
+**159 ms of 3693 is 4.3%, and this family's own bar is 7.4%** — the figure at which item 312
+WITHDREW `addVertex`. It also buys two hazards. Classifying a line before parsing it needs a prefix
+test (`{"type":"node"`), sound only because `encode` emits `type` first; arbitrary input with `type`
+last would be misclassified, so correctness needs a straggler sub-pass in the second loop. And a
+JSON syntax error on an edge line would surface AFTER the nodes are applied instead of before any
+mutation — a behaviour change in a codec guarded by byte-identity fuzzers, for 4.3%.
+
+Recorded next to `decode` in `packages/serialization/src/ndjson/index.ts` with its numbers, per the
+repo's rule that a rejected optimization lives beside the code it would have changed.
+
+**NET: the ingest family stays closed, but its phase attribution is now correct for the format it is
+usually quoted about.** The four terms of an NDJSON decode are parse 25.6% (a V8/JSC builtin),
+`indexEdgeLabel` ~19% (the dense ordinal, disqualified at 1369-1372/1397), id resolution ~14%
+(semantically required, priced here), and GC ~13% (priced here at 4.3% recoverable). None is open.
+
+#### Gates
+
+`bun run check` 0 read through `${pipestatus[1]}`. No engine source changed — the edits are this
+entry, item 1730's struck heading and line, a comment block on `decode`, and one new probe.

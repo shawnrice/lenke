@@ -171,6 +171,36 @@ const apply = (graph: Graph, record: NodeRecord | EdgeRecord): void => {
  * no node line anywhere in the input) is rejected with `MissingVertex`, matching
  * native `decode` and the other document codecs. (The streaming `decodeStream`
  * keeps the lenient create-bare policy for its single-pass, batch-at-a-time use.)
+ *
+ * PERFORMANCE — the phase split, and one lever measured and DECLINED (item 1731).
+ *
+ * `bun run` `packages/native/ndjson-phase-probe.mjs` at 200,000 nodes / 1,000,000
+ * edges, min of 5: split 50.9 ms, split+parse 944.9 ms, full `decode` 3693.1 ms.
+ * So **parse is 25.6% of an NDJSON decode and apply 74.4%** — NOT the "parse is
+ * 78 ms of 3385, apply 97.7%" that item 1730 carried here from item 1259, which
+ * is the PG-TEXT path where `tokenize` only produces a `string[]`. A phase split
+ * is a measurement of the format it was taken on.
+ *
+ * DECLINED AT A MEASURED 4.3%: deferring the edge parse. The first loop retains
+ * every parsed record, so the peak live set is 1.2M record objects (each with a
+ * nested `properties` bag) on top of the 1.2M strings `split` already holds — and
+ * a CPU profile puts `(garbage collector)` at 13.4% of the decode. Applying node
+ * records inline (safe: no edge is applied in the first loop, so `requireVertex`
+ * stays strict) and buffering edge LINES instead of edge RECORDS measured, with
+ * no graph in the loop and 3 alternated rounds of 7:
+ *
+ *     retain records     977.4 / 961.3 / 967.9 ms     (median per round)
+ *     defer edge lines   808.8 / 788.5 / 819.9 ms
+ *     -> 1.20x, ~159 ms saved, ranges disjoint in every round
+ *
+ * 159 ms of 3693 is 4.3%, and this family's own bar is higher: item 312 WITHDREW
+ * `addVertex` at 7.4%. It also buys two hazards for that 4.3%. Classifying a line
+ * before parsing it needs a prefix test (`{"type":"node"`), which is only sound
+ * because `encode` emits `type` first — a hand-written document with `type` last
+ * would be misclassified, so it needs a straggler sub-pass in the second loop to
+ * stay correct for arbitrary input. And a JSON syntax error on an edge line would
+ * then surface AFTER the nodes are applied rather than before any mutation. The
+ * second is a behaviour change in a codec guarded by byte-identity fuzzers.
  */
 export const decode = (input: string, graph: Graph): Graph => {
   const wasEnabled = graph.eventsEnabled();
