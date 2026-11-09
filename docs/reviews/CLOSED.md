@@ -77074,3 +77074,64 @@ screen's only durable products are the third confirmation above and the profiler
 `bun run check` 0 read through `${pipestatus[1]}`. The call-counting instrumentation was reverted and
 the tree verified clean (`__zb` absent) before gating; the only edit is the note on `hop-sides.ts` and
 this entry, so no behaviour changed.
+
+### Item 1720 — **FIRST MEASUREMENT OF THE TS ENGINE'S PER-ELEMENT MEMORY, a surface the corpus had never touched: 646 bytes a vertex and 783-990 bytes an EDGE.** ⚠️ **~90% of that is container overhead, not data — an edge property adds 10 bytes and the per-edge cost FALLS from 990 to 783 as fanout goes 2 to 5.** ⚠️ **And it is why `algo-scaling-bench` cannot reach its fourth point: at V=1,280,000 the GRAPH ALONE is ~3.3 GB against node's 4 GB default**
+
+Reached by pivoting after two consecutive screens found closed ground (items 1719 and the
+`ENUMERATES` row, whose profile matched items 733/735's "three comparable thirds, no hot spot"). The
+corpus's only bytes-per-edge figures are the RUST store's label representation (2.5 -> 9.3 at items
+682/728); the TS side had never been measured, so the largest graph an embedder can hold was unknown
+and so was the allocation floor behind every GC share in every TS profile.
+
+**THE PROMPTING OBSERVATION WAS AN OOM, NOT A HUNCH.** Running the two algorithm ratios that
+`algo-scaling-bench` itself flags as "above expectation, re-run at `SIZES=4` before believing it":
+
+```text
+    onCycle                       V=20k 7.2 ms   V=80k 38.7   V=320k 237.1    steps 5.38x, 6.13x
+    stronglyConnectedComponents         7.0            42.3          226.1          6.04x, 5.35x
+    heap                                96 MB          394          1640
+```
+
+Both exceed the 4.0x linear expectation but are **FLAT across steps rather than accelerating**, which
+is a constant factor and not a worse exponent — so the "flagged ABOVE, unconfirmed" status on both is
+resolved, by three points each instead of two. The fourth point OOMs, and the heap column says why.
+
+**`graph-memory-probe.mjs`** (new), `global.gc()` twice before each reading and every stage a DELTA
+from the previous one, so vertex and edge costs are separated rather than divided out of a total:
+
+```text
+    config                                bytes/vertex   bytes/edge   total
+    F=2, 1 vertex prop, 0 edge props           646            990     200.4 MB
+    F=5, 1 vertex prop, 0 edge props           646            783     348.1
+    F=2, + 1 EDGE property                     646           1000     201.9
+    F=2, + 2 more VERTEX properties            716            989     205.5
+```
+
+**Three readings, and together they say the cost is CONTAINERS:**
+
+1. **An edge property costs 10 bytes** (990 -> 1000) and a vertex property ~35 (646 -> 716). The
+   payload is not the expense.
+2. **Per-edge cost FALLS with fanout** (990 at F=2, 783 at F=5), which is per-VERTEX overhead
+   amortising over more edges — the `Set<Edge>` per `(vertex, label)` held in BOTH
+   `edgesFromByLabel` and `edgesToByLabel` holds 2 elements at F=2 and 5 at F=5.
+3. So ~90% of ~990 bytes is structure: that pair of Sets, plus `edgesById`, `elementLabels` and
+   `elementProperties` entries with their boxes — ~6 container entries per edge for an edge whose
+   data is an id, two endpoints and one label.
+
+**⚠️ IT IS A SPEED QUESTION AND THE COUPLING IS MEASURED, BUT THE LEVER IS NOT.** GC was **12.67%** of
+the `project var-length 1-3 hops` profile and item 1468 found 6.93% inside `labelPropagation`'s CSR
+build, so allocation per element sets that floor. What is NOT established is that reducing it speeds
+anything up by a measurable amount — that needs its own A/B, and the obvious candidates (dropping the
+properties box for a property-less element, or replacing a small `Set` with an array) are changes to
+`packages/core` that every query path reads. Nothing is taken here; this item is the measurement.
+
+**⚠️ A HARNESS BUG CAUGHT BY THE PROBE PRINTING ITS OWN INPUTS.** My first four configurations ran as
+`env $cfg node …` — and zsh does NOT word-split an unquoted parameter expansion, so the whole string
+arrived as ONE assignment and every run used the defaults. The output showed `V: null` and
+`fanout: 2` four times; had the probe printed only its result, four identical numbers would have read
+as four configurations agreeing. **Print the inputs beside the result.**
+
+#### Gates
+
+`bun run check` 0 read through `${pipestatus[1]}` (after `bun run fmt`). native 1081 pass, 0 fail. The
+only additions are the probe and this entry; no engine source changed.
