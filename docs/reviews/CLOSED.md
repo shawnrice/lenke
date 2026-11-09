@@ -79127,3 +79127,67 @@ it is not reached for again.
 
 `bun run check` 0 read through `${pipestatus[1]}`. Engine diff verified **comment-only**;
 `predicates.ts` confirmed identical to HEAD before the comment was added.
+
+### Item 1751 — ⚠️ **A BARE ROOT `bun test` REPORTS 68 FAILURES AND EXITS 0** — so it is unusable as a verdict, exactly as this repo's own execution-evidence rule warns. ⚠️ **And it is not the project's gate at all:** CI runs `nx run-many -t test` per package. Every failure examined is PRE-EXISTING and ENVIRONMENTAL, in two classes. ⚠️⚠️ **My own `tail -12` hid 65 of the 68 on the verification pass itself**
+
+Twenty items had each been gated with `bun run check` plus the suite of whichever package they
+touched (gql 4424 pass, gremlin 2109 pass) and all seven byte-identity fuzzers. What had never been
+run across the stretch was the whole repo, so that gap was closed before adding more items.
+
+```text
+  8786 pass · 68 fail · 7 errors · 8854 tests across 660 files [216.13s]
+  [exited with code 0]
+```
+
+**The exit code is 0 with 68 failures.** CLAUDE.md's rule — _"a mutation verdict needs evidence of
+EXECUTION, not an exit code"_ — was written about `bun test` reporting to stderr; this is the same
+rule's other half, demonstrated on the real suite. **Anything gating on this command's status is
+green while red.**
+
+#### ⚠️ MY OWN INSTRUMENT ERROR, ON THE VERIFICATION PASS
+
+The first run was piped through `tail -12`, so the log held **the last 3 failures of 68** and the
+summary. Fifteen items of this stretch were spent finding exactly this defect class in the repo's
+probes — a vacuous assertion, a truncated log, a banked crash line — and here it is committed by me
+while checking the repo. Re-run with every line captured.
+
+#### The failures, by class
+
+Of the 34 captured before this entry was written (the re-run was still going), **every one falls
+into one of two pre-existing, environmental classes**:
+
+- **19 `packages/react` hook tests** (`useGraphTraversal`, `useClientLiveQuery`,
+  `useGraphSubscription`, `useLiveQuery`) failing in **0.04-0.45 ms** — instant, so not logic. Run
+  isolated: **`ReferenceError: document is not defined`.** They need a DOM a root run does not
+  provide.
+- **15 timeouts at exactly 5000 ms** in `packages/sync` and `packages/native` — the two packages
+  `sync-test-flake-is-timing` names: _"flake under run-many ONLY; re-run isolated before believing
+  an exit 1."_ Confirmed: `packages/core/src/core/Graph.reactive.test.ts` timed out three times in
+  the root run and passes **15/15 in 172 ms** isolated.
+
+Neither class can be reached by this stretch's behavioural change, which is **30 non-comment lines**
+in `node-scan.ts` (22) and `runtime.ts` (8) — the other six touched files are comment-only, verified
+by diff.
+
+#### ⚠️ AND THE COMMAND WAS THE WRONG ONE
+
+`.github/workflows/ci.yml` runs
+**`bunx nx run-many -t test --exclude @lenke/node,lenke-engine,lenke-engine-core`** plus
+`cargo test` for the Rust crates — **per-package targets with their own configuration**, never a
+bare root `bun test`. 660 test files in one process with no per-package environment is why `react`
+has no DOM and why `sync`/`native` time out under the load. So the root command does not just
+mis-report its status, **it is not the gate**, and a red from it says nothing about CI.
+
+`local-gates-vs-ci` already says to run `bun run check` and then look at `gh run list`; this adds the
+test half: **the test gate is `nx run-many -t test`, and a root `bun test` is a different, misleading
+thing.**
+
+#### Still open
+
+Verification against the real command is **pending, and deliberately not run concurrently** — CPU
+contention is the documented cause of the very timeouts above, so running it beside the root suite
+would manufacture the failures it is meant to rule out.
+
+#### Gates
+
+`bun run check` 0 read through `${pipestatus[1]}`. No source changed — this item is the entry.
