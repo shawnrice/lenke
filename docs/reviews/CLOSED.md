@@ -76913,3 +76913,51 @@ would measure whichever printed last.
 `bun run check` 0 via `${pipestatus[1]}` (after `bun run fmt`, and after one `padding-lines` error in
 the new probe). native 1081 pass, 0 fail. No engine source changed — `bench.ts`, `bench-gremlin.ts`
 and a new probe only — so the suites and fuzzers are item 1713's.
+
+### Item 1717 — **REFUTED ON MEMORY, NOT ON SPEED: sorting natively via a composite key is a measured 1.37x on the sort step and costs 111 MB of transient heap on a 1,000,000-row sort (peak 51 -> 162 MB, 3.2x).** ⚠️ **`mapBucket` is refuted outright at 394.6 against 335.9.** The lever is recorded on the function with its numbers, including the two correctness costs a re-pricing would have to pay
+
+Once item 1711's reduced comparator is a bare `<`, the row's remaining cost is ~20M JS->native
+crossings, and V8's comparator-LESS `Array.prototype.sort()` avoids them: for surrogate-free strings
+it sorts by code UNIT, which is the order the arm already produces. The floor is real:
+
+```text
+    native sort(), bare strings        67.2 ms
+    JS `<` comparator, bare strings   260.7        3.88x
+    JS `<` comparator, ROW objects    331.2        4.93x   <- what ships
+```
+
+So ~264 ms of a 794 ms row sits behind the comparator boundary. Three ways to recover row order
+without a JS comparator, ONE ARM PER PROCESS, each answer compared element by element against the
+comparator's output:
+
+```text
+    current    JS comparator on rows                       335.9 ms   (min 329.7)
+    composite  `key\0paddedIndex`, native sort, decode      244.3      (min 225.1)   1.37x
+    mapBucket  native key sort + Map<key, arrivalIndex[]>   394.6      (min 378.3)   WORSE
+```
+
+**⚠️ THE DECIDING NUMBER IS MEMORY, AND I ONLY HAVE IT BECAUSE I ASKED.** Peak `heapUsed` over the
+same sort: the comparator path adds **0 MB**; the composite adds **111 MB**, because it materializes a
+second array of 1,000,000 strings. Linear in rows, so a 10M-row sort would add ~1.1 GB. This engine
+runs in embedders' browsers, and turning a working page into an OOM to make one row shape 1.3x faster
+is the wrong default — the same shape of mistake `eager-tail-cache` records, where a 4096-row tail
+cache and whole cross products under a LIMIT were the DEFECT rather than the fix.
+
+**Two correctness costs on top, for whoever re-prices it.** It is ASCENDING-ONLY: the index tiebreak
+makes ties stable ascending, and reversing for `DESC` would reverse TIE order, which is observable and
+compared against native — so descending keeps the comparator and the question acquires two routes,
+against "one question, one route". And it needs a new precondition rejecting any key containing the
+separator.
+
+**METHOD — a speed win is not a win until its MEMORY is priced.** Three arms were timed, the fastest
+verified byte-identical, and the design was nearly written before I measured allocation at all. The
+timing work was not wasted (it refuted `mapBucket` and established the 4.93x boundary cost, which is
+the real ceiling on this row), but the arm that looked shippable was disqualified by a number no
+timing harness reports. Ask for peak heap whenever an arm MATERIALIZES anything proportional to the
+input.
+
+#### Gates
+
+`bun run check` 0 read through `${pipestatus[1]}`. No behaviour changed — the only edits are this
+entry and the rejection note on `sort-column-specialize.ts` — so the suites and fuzzers are item
+1713's.

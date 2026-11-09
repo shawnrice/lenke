@@ -74,6 +74,46 @@
  * ternary, so the reshape was RE-MEASURED rather than assumed equivalent -- this repo has a recorded
  * habit of executor reshapes costing unrelated rows a few percent.
  *
+ * ⚠️ REJECTED, WITH NUMBERS — SORTING NATIVELY VIA A COMPOSITE KEY (item 1717). Once the
+ * comparator is a bare `<`, what is left is ~20M JS->native crossings, and V8's comparator-LESS
+ * `Array.prototype.sort()` avoids them entirely: for surrogate-free strings it sorts by code unit,
+ * which is the same order this arm produces. The floor is real and large — 1,000,000 keys of the
+ * bench's own `person${i}` shape:
+ *
+ * ```text
+ *     native sort(), bare strings        67.2 ms
+ *     JS `<` comparator, bare strings   260.7        3.88x
+ *     JS `<` comparator, ROW objects    331.2        4.93x   <- what ships
+ * ```
+ *
+ * Three mechanisms for getting row order back without a JS comparator, each ONE ARM PER PROCESS
+ * (the in-process run agreed, but arm order flatters arms here), answers checked against the
+ * comparator's output element by element:
+ *
+ * ```text
+ *     current    JS comparator on rows                       335.9 ms   (min 329.7)
+ *     composite  `key\0paddedIndex`, native sort, decode      244.3      (min 225.1)   1.37x
+ *     mapBucket  native key sort + Map<key, arrivalIndex[]>   394.6      (min 378.3)   WORSE
+ * ```
+ *
+ * `mapBucket` is REFUTED outright: building the Map costs more than the comparator saves.
+ * `composite` WORKS and is 1.37x on the sort step (~1.3x on the row) with byte-identical order.
+ *
+ * ⚠️ AND IT IS DECLINED ON MEMORY, WHICH IS THE NUMBER THAT DECIDES IT. Measured peak
+ * `heapUsed` over the same 1,000,000-row sort: the comparator path adds **0 MB**, the composite
+ * adds **111 MB** — peak 51 -> 162 MB, **3.2x** — because it materializes a second array of
+ * 1,000,000 strings. It scales linearly, so a 10M-row sort would add ~1.1 GB. This engine runs in
+ * embedders' browsers; turning a working page into an OOM to make one row shape 1.3x faster is the
+ * wrong default, and it is the same shape of mistake `eager-tail-cache` records (a 4096-row tail
+ * cache and whole cross products under a LIMIT were the DEFECT, not the fix).
+ *
+ * Two further costs, for whoever re-prices this: it is ASCENDING-ONLY (the index tiebreak makes
+ * ties stable ascending, and reversing would reverse TIE order, which is observable and compared
+ * against native), so descending would keep the comparator and the question would have two routes;
+ * and it needs a new precondition rejecting any key containing the separator. If sort throughput is
+ * ever wanted over memory this is the mechanism and 1.37x/111 MB is the trade — but not by
+ * default, and not without an explicit opt-in.
+ *
  * ⚠️ FULL SORT ONLY, deliberately. `boundedTopKeyed`'s heap does O(n log cap) comparisons, not
  * O(n log n), so an O(n) scan is a much larger fraction of its work and could cost more than it saves.
  * The scan pays for itself here because ~20M comparisons are replaced in exchange for ~1M tests.
