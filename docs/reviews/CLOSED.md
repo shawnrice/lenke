@@ -75422,7 +75422,7 @@ the degree sum ignoring the arrivals weight, the second leg reading the first le
 leg's direction flipped, and the middle label ignored. Interleaved A/B, two order-alternated rounds,
 one row per process, each arm asserted in the BUILT bundle.
 
-### Item 1691 — **THE WIDEST GREMLIN RATIO PRICED AT 33-42x, AND THE HEADING THAT CALLED IT "SMALL HEADROOM" WAS WRONG ON BOTH HALVES.** ⚠️ **My own probe then produced a 91x that does not exist — a mask hoisted OUT of the timed region — and a SEVEN-ARM process whose same arm read 31.9, 44.2 and 65.6 ms.** Not built; the route and the shippable form are identified
+### Item 1691 — **THE WIDEST GREMLIN RATIO PRICED AT 33-42x, AND THE HEADING THAT CALLED IT "SMALL HEADROOM" WAS WRONG ON BOTH HALVES.** ⚠️ **My own probe then produced a 91x that does not exist — a mask hoisted OUT of the timed region — and a SEVEN-ARM process whose same arm read 31.9, 44.2 and 65.6 ms.** ~~Not built; the route and the shippable form are identified~~ ⚠️ **BUILT AT ITEM 1692 at 38.08x and 29.91x — and the form it identified as shippable was WRONG: the mark pass it prescribed was justified by GQL's throw rule, which Gremlin does not share.**
 
 `V().out().has(age, eq(30)).id()` is the widest TS-vs-native ratio of any yielding row in
 `bun run bench:gremlin`: TS 159.7 ms against native 2.69. Item 1631's heading recorded it as OPEN but
@@ -75501,3 +75501,90 @@ records for both engines.
 #### Gates
 
 `bun run check` 0 read unpiped. One probe added, no engine source touched.
+
+### Item 1692 — **THE WIDEST GREMLIN ROW, TAKEN: 38.08x and 29.91x**, by resolving the far filter once per vertex into a mask and emitting from flat slot runs. ⚠️ **ITEM 1691 PRESCRIBED A THREE-PASS FORM TO AVOID A THROW — AND GREMLIN'S PREDICATES DO NOT THROW: I imported the OTHER ENGINE's rule.** ⚠️ **And a mutant proved the eligibility predicate could not decline, because its call site passed two literal constants**
+
+Item 1691 priced this at 33-42x and corrected both halves of the heading that called its headroom
+small. Built, interleaved over three order-alternated rounds, one SHAPE per process, 14 reps, median
+of the warm ones, min across rounds, each arm asserted in the BUILT bundle:
+
+```text
+   shape                                      PRE      POST    ratio
+   target        V().out(E).has(k,eq).id()   120.34     3.16   38.08x
+   targetValues  … .values(n)                113.66     3.80   29.91x
+   limited       … .id().limit(50)             0.26     0.26    1.00x   early exit intact
+   noFilter      V().out(E).values(n)        122.66   121.29    1.01x   declines
+   bothHop       V().both(E).has(k,eq).id()  335.19   324.29    1.03x   declines
+   startOnly     V().hasLabel(A).out(E)…      61.34    63.44    0.97x   declines
+```
+
+Every declining shape is within 3%, which is the attribution this win needed, and `limited` is
+EXACTLY flat — 0.26 ms for 50 rows against the arm's 3.16 for all 11,118, so the lazy path still
+short-circuits.
+
+#### ⚠️ THE THREE-PASS FORM ITEM 1691 PRESCRIBED WAS THE OTHER ENGINE'S RULE
+
+Item 1691 specified mark / resolve / emit: mark which slots an edge reaches, resolve the predicate
+for marked slots ONLY, then emit — so that the evaluated set stays exactly the walk's, because "a
+predicate can THROW (a string-vs-temporal `<=` does, which is settled policy here)".
+
+**That policy is GQL's, and Gremlin's is the opposite.** `predicates.ts` states it: for ordering
+predicates "a cross-type pair is `NaN`, so every comparison against it is false and the predicate
+FILTERS the value out rather than throwing — `g.V().has('name', gte(0))` returns nothing, exactly as
+TinkerPop (verified on createModern())". And this arm runs only when `specializePredicate` returned a
+closure, every branch of which is a total `typeof v === … && …` test. So the predicate is TOTAL on
+this route and gating a vertex the walk never reaches is UNOBSERVABLE.
+
+Which makes the mark pass pure cost — it measured **3.4 ms against the eager form's 2.9** — and a
+mutation replacing it with the eager form SURVIVED, correctly, because the two are answer-equivalent.
+The shipped arm is two passes.
+
+`CLAUDE.md` warns against reasoning about GQL from Cypher. The same applies between lenke's own two
+engines, whose comparison policies differ ON PURPOSE (`cross-type-comparison-no-error` records the
+GQL side as settled and not to be re-raised). A constraint carried across them looks like diligence
+and buys a 1.17x regression.
+
+#### ⚠️ A PREDICATE THAT COULD NOT DECLINE, AND THE MUTANT THAT FOUND IT
+
+The arm shipped with `farMaskDrainApplies({ both, fastKey })` and its own unit test. A mutant making
+it ALWAYS APPLY survived — because the call site passed two literal constants: `both: false` (this
+arm lives in the `out`/`in` branch, which the `both` hop returns before reaching) and `fastKey: true`
+(implied by the mask state existing at all). **A predicate that cannot decline is decoration, and a
+unit test for it passes vacuously while reading like coverage.** Same shape as the dead seed branch
+item 1688 removed after a mutant survived it; both were found the same way, and neither by reading.
+
+The predicate is gone, the guard is the real condition, and the two exclusions are recorded where
+they actually happen.
+
+#### Why it serves `drain` only
+
+A pass over V+E before the first row would destroy early exit — the 473x/3680x failure the
+eager-tail-cache entry records for both engines. `drain` is already eager and is read only by
+`toArray` when `rest` is empty (item 1412), so a plan carrying `limit` puts a step in `rest`, takes
+the lazy iterator, and never reaches the arm. Both lazy loop bodies stay byte for byte the code they
+were, which `start-filtered-hop-values.ts` requires: a dedicated single-gate LOOP measured WORSE
+there (719.7 -> 731, `both` 458 -> 507) and items 1441/1466 measured an edit to a hot values walk at
+up to 16% on unrelated rows.
+
+ORDER is preserved by construction, which this route requires absolutely: Gremlin streams are
+compared ORDERED by the differential fuzzer (unlike GQL rows), and `chainCsrFor` numbers slots by
+`graph.verticesById` order and fills each run from that vertex's own bucket in set order. The tests
+compare SEQUENCES, with a guard that the output is not merely sorted — a multiset comparison would
+pass for an arm that emits the right rows in the wrong order, which is the cross-engine failure
+`start-filtered-hop-values.ts` warns a "cleverer structure" would cause.
+
+A LEAF MODULE, because importing `survives`/`Gate` from the file that imports it is a cycle and
+`import/no-cycle` is an error here — the same shape `csr-cache.ts` has on the GQL side. The gate loop
+is four lines; a shared four-line loop is not worth a cycle.
+
+#### Gates
+
+`bun run check` 0 read unpiped. Five suites isolated: core 453, gql 4360, gremlin 2065,
+serialization 144, native 1081, 0 fail each — one native run reported a single failure and three
+clean isolated re-runs confirmed the known flake (`sync-test-flake-is-timing`). Seven byte-identity
+fuzzers 20 pass, 0 fail. **Eight mutants, all CAUGHT** — the accept test inverted, the emit pass
+ignoring the mask, the start-filter survival ignored in either pass, the drop sentinel ignored, the
+run length read as the offset, the CSR direction flipped, and the projection reading the source
+instead of the far end. The drop sentinel SURVIVED on the first pass for want of a test (every case
+either projected a key the filter guarantees or one every vertex carries); the case of a far vertex
+passing the filter while lacking the PROJECTED key is now covered.

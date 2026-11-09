@@ -3,6 +3,7 @@ import type { Graph, Vertex } from '@lenke/core';
 import type { Plan, Step } from '../ast.js';
 import { matches, specializePredicate } from '../predicates.js';
 import { type VertexFilter, collectVertexFilters } from './count-shortcut.js';
+import { farMaskDrain } from './far-mask-drain.js';
 import type { HopValues } from './hop-values.js';
 
 /**
@@ -145,6 +146,10 @@ export const startFilteredHopValues = (plan: Plan, graph: Graph): HopValues | un
   const valueKey = proj?.kind === 'values' && proj.keys.length === 1 ? proj.keys[0] : undefined;
   type Far = { readonly id: string; readonly properties: Record<string, unknown> };
   let pick: (far: Far) => unknown;
+  /** Set only for the single-`has` far filter the drain arm can serve (item 1692). */
+  let maskArm:
+    | { key: string; fast: (v: unknown) => boolean; inner: (far: Far) => unknown }
+    | undefined;
   // `values(k)` DROPS a far vertex lacking `k`; a bare hop and `id()` drop nothing.
   let drops = false;
   let consumed: number;
@@ -226,6 +231,11 @@ export const startFilteredHopValues = (plan: Plan, graph: Graph): HopValues | un
     if (fastOne !== undefined && only?.kind === 'has') {
       const { key } = only;
 
+      // ⚠️ KEPT FOR THE DRAIN ARM (item 1692), which applies this filter from a per-slot MASK
+      // instead of once per edge. `pick` below is unchanged, so the lazy walks stay byte for byte
+      // what they were — the arm serves `drain` only, because a mark pass before the first row
+      // would destroy early exit.
+      maskArm = { key, fast: fastOne, inner };
       pick = (far) => (fastOne(far.properties[key]) ? inner(far) : undefined);
     } else {
       pick = (far) => (survives(far as unknown as Vertex, farTests) ? inner(far) : undefined);
@@ -360,6 +370,25 @@ export const startFilteredHopValues = (plan: Plan, graph: Graph): HopValues | un
       },
       // The same loop, eager. Read only by `toArray`, and only when `rest` is empty (item 1412).
       drain() {
+        /**
+         * ⚠️ THE FLAT-ARRAY ARM (item 1692), priced by item 1691 at ~42x on the widest Gremlin
+         * ratio. It serves `drain` and NOT the iterator above: a mark pass runs O(V+E) before the
+         * first row, so wiring it into the lazy path would destroy early exit. A plan carrying
+         * `limit(1)` puts a step in `rest`, takes the iterator, and never reaches here.
+         */
+        if (maskArm !== undefined) {
+          return farMaskDrain({
+            graph,
+            forward,
+            type,
+            tests,
+            inner: maskArm.inner,
+            drops,
+            key: maskArm.key,
+            fast: maskArm.fast,
+          });
+        }
+
         const acc: unknown[] = [];
 
         for (const v of graph.vertices) {
