@@ -57,7 +57,14 @@ export const profileWindow = async (outPath, body, interval = 1000) => {
   let bodyError;
 
   try {
-    result = body();
+    // ⚠️ AWAITED. An un-awaited `body()` closes the window at the body's FIRST suspension and still
+    // returns a well-formed `.cpuprofile`, so an async body silently profiles a few milliseconds
+    // and the summary looks like a working run with an implausible ranking (item 1732 got 6 samples
+    // and `post` at 91%). Any probe that must return to the event loop mid-window needs this -- and
+    // the WRITE path is exactly that case, because `markMutated` only clears its `pendingTokens`
+    // array on a `queueMicrotask`, so a synchronous write loop profiles unbounded array growth
+    // instead of a write. `await` of a non-promise is a no-op, so sync bodies are unaffected.
+    result = await body();
   } catch (err) {
     bodyError = err;
   }

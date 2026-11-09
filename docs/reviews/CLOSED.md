@@ -26848,6 +26848,10 @@ clean on three consecutive random seeds; `bun run fuzz` (all seven byte-identity
 
 ## 861 — the TS `SET` claim corrected (TWO passes, 21-38% of a write), an undo guard REFUTED at flat, and `grep` silently finding nothing in a 165 KB file
 
+⚠️ **The six per-write "constants" this item lists but does not price are SPLIT at item 1732, and the
+list's ranking is wrong: the asserts and validations it names first are 2.3%, while event dispatch
+and reactivity are 21.3%.**
+
 **MEASUREMENT, no behaviour change** (the change was built, measured, and reverted; the refutation
 is recorded at the getter it would have changed).
 
@@ -77764,3 +77768,97 @@ usually quoted about.** The four terms of an NDJSON decode are parse 25.6% (a V8
 
 `bun run check` 0 read through `${pipestatus[1]}`. No engine source changed — the edits are this
 entry, item 1730's struck heading and line, a comment block on `decode`, and one new probe.
+
+### Item 1732 — **SHIPPED A SHARED-INSTRUMENT FIX: `profileWindow` never awaited its body, so every async probe silently profiled only up to its first suspension** and still wrote a well-formed `.cpuprofile`. ⚠️ **It mattered immediately — the WRITE path cannot be profiled synchronously at all, and the synchronous shape misattributes 4.4 points.** With the instrument fixed, item 861's six unpriced per-write constants are split
+
+Item 861 split a property write by WIDTH and found the O(K) pair (spread + freeze) is only 21% of a
+write at k=4, concluding _"62-79% is a per-write CONSTANT — the validations, three constraint
+asserts, the `key in properties` test, two box lookups, a `recordUndo` closure and an `EmitterEvent`
+allocation"_. It priced **none** of the six, and the one lever that followed (hoisting `undoWanted`
+to all eight sites) was refuted and reverted. k=4 is the serving width, so the profile was asked
+which constant it is rather than working the list in order.
+
+#### ⚠️ THE INSTRUMENT WAS BROKEN FIRST, AND IT FAILED QUIETLY
+
+`windowed-profile.mjs` ran `result = body()` — **not awaited**. An async body therefore closes the
+window at its first `await`: the run exited 0, wrote a valid profile, and `prof-summary` printed a
+ranking that merely looked odd (**6 samples, `post` at 91.3%**). Nothing announces this; a probe
+author sees a profile and reads it. Fixed to `result = await body()`, which is a no-op for the sync
+bodies every existing probe uses (verified: `parse-plan-probe.mjs` still captures 3581 samples).
+
+**And this is why no write-path profile here had ever drained microtasks — the instrument could not.**
+`markMutated` pushes one token per write into a `pendingTokens` array cleared only by
+`queueMicrotask(drainMutations)`. A synchronous write loop never yields, so the array grows to one
+entry **per write**:
+
+```text
+                      DRAIN=0 (synchronous)     DRAIN=1000 (returns to the loop)
+  pushTokens                  6.6%                        2.2%
+  drainMutations          (absent)                         4.7%
+  markMutated                 1.2%                        3.1%
+  total sampled            3636 ms                      3541 ms
+```
+
+**The totals match, so the synchronous arm looks healthy — it just charges 4.4 points to the wrong
+frame and hides the deferred cost entirely.** A write probe that does not return to the event loop
+is measuring unbounded array growth. (Same family as `graph-pinned-until-microtask-drain`.)
+
+#### The write's constants, split at last — 30M writes, k=4, 3296 samples, 121 ns/write
+
+```text
+  30.4%  #commitNormalized                        the spread + freeze + box write
+  26.1%  setProperty (self)
+  11.3%  EVENT DISPATCH    emit 4.2 + snapshotFor 3.6 + hasListeners 2.7 + Graph.emit 0.8
+  10.0%  REACTIVITY        drainMutations 4.7 + markMutated 3.1 + pushTokens 2.2
+   4.6%  get properties                           THREE reads per write
+   2.4%  (garbage collector)
+   2.3%  the three asserts + validatePropertyValue
+```
+
+121 ns/write matches item 861's 113 independently. ⚠️ Note what the list of six got wrong: the
+**asserts and validations it named first are 2.3%**, while **event dispatch and reactivity — which
+the list mentions only as "an `EmitterEvent` allocation" — are 21.3% together.**
+
+#### The 11.3% event path: BLOCKER RE-CHECKED AND IT HOLDS
+
+Items 862/863 close this (_"no restructuring of the registration can reach it. Do not re-attempt the
+merge"_), and `check-the-blocker-still-holds` says a "not built because X" note is a claim about X.
+Both halves of X verified by reading, not assumed:
+
+- `snapshotFor` genuinely is **one cached `Map.get`** on the hot path (`this.snapshots.get(type)`,
+  returning immediately), and the cache is invalidated only by `on`/`once`/`detach`. Its 3.6% is
+  ~4.2 ns — a string-keyed hit on a 16-entry map. Real, and irreducible.
+- The engine's own reactivity is registered as **two ordinary listeners on the public emitter**
+  (`this.on(type, markMutated)` and `this.on(type, onMutate)` in the constructor). **So
+  `hasListeners` can NEVER be false on a write, and the "skip the dispatch when nothing is
+  listening" lever does not exist.** Every write pays emitter dispatch to reach the engine's own
+  bookkeeping, by construction.
+
+So the 11.3% is a `Map.get` plus two internal listener bodies, and item 862 already measured those
+bodies at 32 ns. Confirmed closed, with the mechanism now written down rather than asserted.
+
+#### The one reachable candidate, and the correctness fact that bounds it
+
+`get properties` at 4.6% is **three reads per write** — `key in this.properties`,
+`this.properties[key]`, and `const previous = this.properties`. The first two are adjacent with
+nothing between them and could share one local. ⚠️ **The third CANNOT be hoisted to join them: a
+`recordUndo` and a `this.#graph?.emit(...)` sit in between, and an external listener may
+synchronously write to this vertex during that emit** (events are observation-only in the sense of
+having no VETO, but a listener can still mutate). A read hoisted across the emit would commit a
+stale bag — a wrong answer, not a slowdown. So the candidate is at most 2 of 3 reads, **≤3% by
+profile share, which is a nomination and not a price (item 1104)**. Not built: a core write-path
+edit for ≤3% is under every bar this repo applies, and item 312 withdrew `addVertex` at 7.4%.
+
+**NET: the instrument fix ships; the six-constant list is replaced by a measured split that
+re-ranks it; the 21.3% in dispatch+reactivity is accounted for and closed on a re-verified
+blocker.** `#commitNormalized` at 30.4% is now the largest single term on the write and is NOT yet
+split — its freeze, its box-vs-map resolution and its `keys = undefined` invalidation are separate
+costs and nobody has ablated them. That is the next question on this path.
+
+**NEW PERMANENT INSTRUMENT — `packages/native/set-constant-profile.mjs`**, carrying the table and
+the `DRAIN` caveat.
+
+#### Gates
+
+`bun run check` 0 read through `${pipestatus[1]}`. One source change, to a profiling helper used
+only by probes (`packages/native/windowed-profile.mjs`); no engine code touched.
