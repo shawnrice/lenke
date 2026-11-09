@@ -81,10 +81,7 @@ import { satisfies } from './predicates.js';
 import { foldFor } from './projection.js';
 import { columnName, resolveCount, valueKey } from './rows.js';
 import { AGGREGATES, asTruth } from './scalars.js';
-import {
-  csrDegreeProductApplies,
-  threeHopDegreeProductOverCsr,
-} from './three-hop-degree-product.js';
+import { threeHopCsrCount } from './three-hop-degree-product.js';
 
 export type CountFn = (graph: Graph, params: Params) => Row;
 
@@ -3173,21 +3170,29 @@ const buildThreeHopCount = <T>(
     // TIGHTENED clause — which silently abandons the arm rather than returning a wrong count — is
     // caught. `bLabel` survives because it only narrows which `b` the walk visits.
 
-    if (
-      csrDegreeProductApplies({
-        aBoth,
-        midBoth,
-        dBoth,
-        aEff,
-        cEff,
-        dEff,
-        bGated: bGate !== undefined,
-        cGated: cGate !== undefined,
-      })
-    ) {
-      return rowOf(
-        threeHopDegreeProductOverCsr(graph, bLabel, { toAOut, t1, midOut, t2, fromDOut, t3 }),
-      );
+    /**
+     * ⚠️ THE FLAT-ARRAY ARMS (items 1685 and 1689), behind one dispatcher. Each clause's reason
+     * lives on the predicate it belongs to in `three-hop-degree-product.ts` — pure functions with
+     * their own tests, precisely so a wrongly TIGHTENED clause, which silently abandons the arm
+     * rather than returning a wrong count, is caught.
+     *
+     * The split between them: a constraint on `b` or `c` says which VERTICES are accepted and is a
+     * mask over the shared slot numbering; a label at `a` or `d` says which edges a DEGREE may
+     * count, which a flat array cannot express. So the gated arm takes `cEff`, `cGate` and `bGate`,
+     * and `aEff`, `dEff` and every undirected leg still fall through to the walk below.
+     *
+     * Item 1689's row is the one the `needsC` loop gates ONCE PER MIDDLE EDGE: 526.8 ms against the
+     * same question's start- and end-filtered twins at 10.3 and 21.5 after item 1688.
+     */
+    const viaCsr = threeHopCsrCount(
+      graph,
+      bLabel,
+      { toAOut, t1, midOut, t2, fromDOut, t3 },
+      { aBoth, midBoth, dBoth, aEff, cEff, dEff, cGate, bGate, params },
+    );
+
+    if (viaCsr !== undefined) {
+      return rowOf(viaCsr);
     }
 
     let count = 0;

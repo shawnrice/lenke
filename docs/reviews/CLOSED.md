@@ -74756,9 +74756,11 @@ with `post=[64.6, 90.2]`, a 1.4x spread inside one arm, so it is noise rather th
 
 #### Still open
 
-Which route answers `count 3-hop`, `count 2-hop` and `count 3-hop + interior filter` — all three
-bypass `sweepChain`, and the first of them is the row item 1682 priced at 4.9x/20.3x. Find it before
-building there.
+~~Which route answers `count 3-hop`, `count 2-hop` and `count 3-hop + interior filter`~~ ⚠️ **TWO
+OF THE THREE ARE ANSWERED AND TAKEN: `count 3-hop` at item 1685 (81.4x) and `count 3-hop + interior
+filter` at item 1689 (14.8x), both in `buildThreeHopCount`'s closure.** `count 2-hop` remains
+unidentified. All three bypass `sweepChain`, and the first was the row item 1682 priced at
+4.9x/20.3x.
 
 #### Gates
 
@@ -75210,8 +75212,9 @@ consuming pass — correct on its own terms. A cached CSR needs no amortisation 
 removes that gate's premise rather than disputing its number. Item 1683 relaxed the gate on an
 assumption and had to revert; the route map is the price of touching it.
 
-`count 3-hop + interior filter` reads 1.05x and does not reach `longChainCount` at all, so it is
-still live at ~177 ms. `count 2-hop + start filter` reads 0.95x on a row with 28% of its own spread
+~~`count 3-hop + interior filter` reads 1.05x and does not reach `longChainCount` at all, so it is
+still live at ~177 ms.~~ ⚠️ **TAKEN AT ITEM 1689, 155.1 -> 10.5 ms (14.8x)** — it reaches item
+1685's degree-product closure instead, whose `needsC` branch gated `c` once per MIDDLE EDGE. `count 2-hop + start filter` reads 0.95x on a row with 28% of its own spread
 between two readings of the SAME code — perturbation of the kind the executor-edit entries record,
 not a cost of this arm.
 
@@ -75221,3 +75224,101 @@ not a cost of this arm.
 serialization 144, native 1081, 0 fail each. Seven byte-identity fuzzers 20 pass, 0 fail. Mutation
 passes under `timeout 300` plus a 16G cgroup cap with `MemorySwapMax=0`, the kills proven first (an
 allocation bomb at 137, a spin loop at 124).
+
+### Item 1689 — **THE INTERIOR-FILTERED THREE-HOP COUNT, TAKEN: 155.1 -> 10.5 ms (14.8x)**, by folding the accept test INTO the degree so `c` is gated once per VERTEX instead of once per middle edge. ⚠️ **A FOUR-SHAPE PROFILE ATTRIBUTED 39.2% TO A FUNCTION THE ROW NEVER ENTERS** — a call counter in the same process read ZERO. ⚠️ **And the control's 1.26x "regression" did not survive a third arm: the same build measured 7.62 where the earlier run put it at 9.97, below that run's own PRE**
+
+Item 1688 took the start- and end-filtered three-hop counts at 33.9x and 28.8x and left the interior
+one at ~177 ms, 1.05x. Same question, filter one position over, and after item 1688 it was 51x and
+24x slower than its own twins.
+
+#### ⚠️ THE PROFILE NAMED THE WRONG FUNCTION, AND ONE SHAPE PER PROCESS IS WHY
+
+A profile of a process running four query shapes put **39.20% of self time in
+`filteredChainCsrCount`** — item 1688's arm — which read as "the interior row takes the new arm and
+is slow in it". A temporary call counter in the same process says the arm is entered **0 times** for
+every interior spelling (clause `WHERE`, inline `WHERE`, inline property), and a profile of a process
+running ONE shape contains **no such node at all**.
+
+This repo already requires one shape per PROCESS for an A/B, because a two-shape process flatters
+any change that redistributes call sites (item 762). The same rule governs PROFILING, and it was not
+written down: a multi-shape process can hand a hot frame a name belonging to another shape's work,
+and the name is the whole output of a profile. **A call counter costs one line and converts an
+attribution into a fact.**
+
+The corrected single-shape profile, 12 calls at 200,000 v / 1,000,000 e, with ~19% fixture-build
+leakage (`indexEdgeLabel`, `getEdgeById`, `#commitNormalized`, `insertEdge`) excluded from the
+reading: `bucketSize` 26.5% (listed, not nominated — items 1416/1637 settled that frame as mostly
+misattribution), **`propOf` 16.3% and `get properties` 10.9% reached through `inlineHolds` per ROW**,
+`side` 8.7%. The route is `fastPath` -> `patternCountOf` -> `buildThreeHopCount`'s closure, NOT
+`sweepChain` — which is what item 1683's counters said and item 1684 left open.
+
+#### The mechanism, and what the code already said about it
+
+The closure is b-driven: `count = sum over b of ways(b) * sum over (b->c) of outdeg(c)`. Its
+`needsC` branch resolves the `c` VERTEX and tests its label and gate **once per middle edge**, with
+a comment calling that "the honest cost of this position: the walk meets `c` as an edge endpoint,
+not as something it enumerates". That is an accurate description of the walk and not a law about the
+question. The arm stops meeting `c` that way: `weight(c) = accept(c) ? outdeg(c) : 0`, memoized per
+slot, so the inner loop is one `Float64Array` read per middle edge.
+
+```text
+   count 3-hop + interior filter   155.1 ->  10.5    14.8x
+   count 3-hop (control)             7.56 ->  7.63    1.01x
+   count 3-hop + start filter         9.8 ->   9.8    flat   item 1688's arm
+   count 4-hop                        8.5 ->   8.6    flat
+   count 2-hop + end filter         132.8 -> 124.1    1.07x  a different builder
+```
+
+On the route probe's own fixture (200,000 v / 1,000,000 e, `c.age > 60`) the same change reads
+**523.2 -> 70.1 ms (7.5x)** for the clause spelling and **448.1 -> 63.3 (7.1x)** for the inline one.
+The residual 70 ms is ~200,000 single gate evaluations, which is the floor for a per-vertex
+predicate — so this arm is now gate-bound rather than walk-bound.
+
+#### ⚠️ THE MEMO IS LAZY FOR CORRECTNESS, NOT SPEED
+
+An eager mask over all V vertices was written first and is wrong: **a gate can THROW** — a
+string-vs-temporal `<=` does, which is settled policy here — so gating every vertex raises errors on
+vertices the walk never visits, for data the walk accepts today. Resolving on first arrival keeps the
+EVALUATED SET exactly the walk's: every `c` reached by a middle edge and no other. What changes is
+only how OFTEN each is evaluated, which is the whole lever. (`state` is a separate byte array
+because a weight of zero — a rejected `c`, or an accepted one with no out-edges — must not read as
+"not yet asked".)
+
+#### Three of five exclusions lift, and the split is not cosmetic
+
+A constraint on `b` or `c` says which VERTICES are accepted; a label at `a` or `d` says which edges
+a DEGREE may count. The first is a mask over the shared slot numbering at O(V) once; the second
+needs a label-filtered degree, a different array this arm does not have. So `cEff`, `cGate` and
+`bGate` lift, while `aEff`, `dEff` and every undirected leg still decline. `bGate` gets no mask at
+all: the loop already visits each `b` once, so a mask would add a pass over V to save nothing.
+
+A LITERAL SIBLING of the unfiltered arm rather than a flag on it, for item 1681's 1.26x: V8's inline
+caches live on the FUNCTION, so a branch inside the unfiltered arm would hand `count 3-hop` — 5.7 ms
+after item 1685 — a second shape to dispatch over, and a factory would not help because one closure
+body still shares the caches.
+
+#### ⚠️ THE CONTROL'S 1.26x WAS AN ARTEFACT, AND IT TOOK A THIRD ARM TO SHOW IT
+
+`count 3-hop` shares this file, so it is the control that matters. A two-arm run read PRE 7.87/8.09
+against POST 9.97/10.20 — 1.26x, item 1681's number exactly, in both rounds, which is precisely how
+a real effect looks. A third arm refuted it: POSTDIRECT (the unfiltered call restored to a direct
+one, the gated route behind a second branch, carrying a lint suppression) measured **8.19 against
+POST's 7.62 in the same round** — so the dispatcher frame is not the cost — and that POST reading
+is BELOW the earlier run's PRE. Same build, 9.97 then 7.62.
+
+Three arms, three order-alternated rounds, one shape per process, 14 reps, median of the warm ones,
+min across rounds: **PRE 7.56, POST 7.63 (1.01x), POSTDIRECT 7.82 (1.03x)**. Within one arm the row
+spans 7.62 to 13.18 across rounds, which is larger than the effect being chased. **So nothing is
+restructured, and the thing that stopped the edit was adding an arm rather than repeating two.**
+
+#### Gates
+
+`bun run check` 0 read unpiped. Five suites isolated: core 453, gql 4337, gremlin 2047,
+serialization 144, native 1081, 0 fail each. Seven byte-identity fuzzers 20 pass, 0 fail. Twelve
+real mutants, all CAUGHT — each relaxation of the gated predicate's five clauses, tightening it to
+never apply, ignoring the `c` label, the `c` gate or the `b` gate, a weight of 1 for the degree, an
+inner sum ignoring the weight, and `ways` read from the middle CSR. One survives by design: dropping
+the lazy memo flag is ANSWER-EQUIVALENT and costs only re-evaluation, which is why both route
+predicates carry their own unit tests. Six mutants ABORTED on the marker check first — oxfmt had
+joined the predicate onto one line, so the seds matched nothing — and that is the check earning its
+line rather than scoring six phantom survivors.

@@ -13,7 +13,9 @@ import type { Graph } from '@lenke/core';
 
 import type { LabelExpr } from '../ast.js';
 import { candidateVertexSource, matchesLabel } from '../graph-queries.js';
+import type { Params } from './core.js';
 import { csrFor } from './csr-cache.js';
+import type { InlineGate } from './inline-gate.js';
 
 /**
  * MAY THE THREE-HOP COUNT TAKE THE FLAT-ARRAY DEGREE PRODUCT? (item 1685.)
@@ -101,4 +103,216 @@ export const threeHopDegreeProductOverCsr = (
   }
 
   return total;
+};
+
+/**
+ * MAY THE THREE-HOP COUNT TAKE THE *GATED* FLAT-ARRAY ARM? (item 1689.)
+ *
+ * ⚠️ THREE OF {@link csrDegreeProductApplies}'s FIVE EXCLUSIONS ARE LIFTED HERE, AND THE SPLIT IS
+ * NOT COSMETIC: a constraint on `b` or `c` says which VERTICES are accepted, while a label at `a` or
+ * `d` says which edges a DEGREE may count. The first is a mask over the shared slot numbering, and
+ * costs O(V) once per query. The second would need a label-filtered degree — a different array,
+ * which this arm does not have — so `aEff`, `dEff` and every `both` leg still decline.
+ *
+ * What this buys: `count 3-hop + interior filter` measured **526.8 ms against the same question's
+ * start- and end-filtered twins at 10.3 and 21.5** (200,000 v / 1,000,000 e), because the `needsC`
+ * branch gates `c` ONCE PER MIDDLE EDGE. Its own comment called that "the honest cost of this
+ * position"; it is the honest cost of meeting `c` as an edge endpoint, and the cure is to stop
+ * meeting it that way.
+ *
+ * ⚠️ A PURE FUNCTION WITH ITS OWN TEST, for the asymmetry that governs every route choice in this
+ * file: a wrongly RELAXED clause returns a WRONG COUNT and the differential tests catch it, while a
+ * wrongly TIGHTENED one silently abandons the arm and every answer stays right.
+ */
+export const csrGatedDegreeProductApplies = (w: {
+  aBoth: boolean;
+  midBoth: boolean;
+  dBoth: boolean;
+  aEff: LabelExpr | undefined;
+  dEff: LabelExpr | undefined;
+}): boolean => !w.aBoth && !w.midBoth && !w.dBoth && w.aEff === undefined && w.dEff === undefined;
+
+/**
+ * The same degree product, with `b` and `c` constrained.
+ *
+ * ⚠️ A LITERAL SIBLING OF {@link threeHopDegreeProductOverCsr} RATHER THAN A FLAG ON IT. Item 1681
+ * measured 1.26x for one walk serving several shapes: V8's inline caches live on the FUNCTION, so a
+ * branch inside the unfiltered arm would hand `count 3-hop` — 5.7 ms after item 1685, and the row
+ * this file exists for — a second shape to dispatch over. A factory would not help, because the
+ * caches would still be shared by the one closure body.
+ *
+ * `count = sum over b of ways(b) * sum over (b->c) of weight(c)`, where `weight(c)` folds the accept
+ * test INTO the degree: `accept[c] ? outdeg(c) : 0`, precomputed once over the slot numbering. The
+ * inner loop is then one `Float64Array` read per middle edge, exactly as in the unfiltered arm,
+ * instead of a vertex resolve plus a label test plus a gate call.
+ *
+ * ⚠️ THE WEIGHTS ARE PER-QUERY AND MUST NEVER BE CACHED ON `topologyVersion`. They read PROPERTIES
+ * through the gate, and a property write deliberately does not bump that signal (items 1674/1675),
+ * so a weight array cached on it would go stale with no signal to catch it. Only the CSRs are
+ * cached — the same split items 1680, 1685 and 1688 each recorded.
+ */
+export const threeHopGatedDegreeProductOverCsr = (
+  graph: Graph,
+  bLabel: LabelExpr | undefined,
+  legs: {
+    toAOut: boolean;
+    t1: string[] | undefined;
+    midOut: boolean;
+    t2: string[] | undefined;
+    fromDOut: boolean;
+    t3: string[] | undefined;
+  },
+  constraints: {
+    cEff: LabelExpr | undefined;
+    cGate: InlineGate | undefined;
+    bGate: InlineGate | undefined;
+    params: Params;
+  },
+): number => {
+  const aSide = csrFor(graph, !legs.toAOut, legs.t1);
+  const mid = csrFor(graph, !legs.midOut, legs.t2);
+  const dSide = csrFor(graph, !legs.fromDOut, legs.t3);
+  const { idx, order } = aSide;
+  const { cEff, cGate, bGate, params } = constraints;
+  const n = order.length;
+  // ONE binding reused across slots, as the walk does: a gate here reads only its own vertex, which
+  // `inlinePredOf` guarantees by refusing any inline constraint with a free name but the node's own.
+  const binding = new Map<string, unknown>();
+  /**
+   * `accept(c) ? outdeg(c) : 0`, memoized per SLOT and resolved LAZILY on first arrival.
+   *
+   * ⚠️ LAZY RATHER THAN A PASS OVER V, AND THE REASON IS CORRECTNESS, NOT SPEED. A gate can THROW —
+   * a string-vs-temporal `<=` does, which is settled policy here — so gating every vertex would
+   * raise errors on vertices the walk never looks at, for data the walk accepts today. Resolving on
+   * first arrival keeps the EVALUATED SET exactly the walk's: every `c` reached by a middle edge,
+   * and no other. What changes is only how OFTEN each is evaluated — once per vertex instead of
+   * once per middle edge, which is the whole lever.
+   *
+   * `state` is 0 unknown / 1 resolved, so a weight of zero (a rejected `c`, or an accepted one with
+   * no out-edges) is not mistaken for "not yet asked".
+   */
+  const weight = new Float64Array(n);
+  const state = new Uint8Array(n);
+  let total = 0;
+
+  for (const b of candidateVertexSource(graph, bLabel)) {
+    if (!matchesLabel(b, bLabel)) {
+      continue;
+    }
+
+    // ⚠️ `bGate` NEEDS NO MASK AND GETS NONE. This loop already visits each `b` exactly once, so the
+    // gate is already a per-vertex cost here; a mask would add a pass over V to save nothing.
+    if (bGate !== undefined && !bGate(b, binding, params, graph)) {
+      continue;
+    }
+
+    const slot = idx.get(b);
+
+    if (slot === undefined) {
+      continue;
+    }
+
+    const ways = aSide.off[slot + 1] - aSide.off[slot];
+
+    if (ways === 0) {
+      continue;
+    }
+
+    let inner = 0;
+    const end = mid.off[slot + 1];
+
+    for (let i = mid.off[slot]; i < end; i += 1) {
+      const cs = mid.nbr[i];
+
+      if (state[cs] === 0) {
+        state[cs] = 1;
+
+        const c = order[cs];
+
+        if (
+          (cEff === undefined || matchesLabel(c, cEff)) &&
+          (cGate === undefined || cGate(c, binding, params, graph))
+        ) {
+          weight[cs] = dSide.off[cs + 1] - dSide.off[cs];
+        }
+      }
+
+      inner += weight[cs];
+    }
+
+    total += ways * inner;
+  }
+
+  return total;
+};
+
+/**
+ * PICK THE FLAT-ARRAY ARM FOR THIS THREE-HOP COUNT, or `undefined` to leave it to the walk.
+ *
+ * ⚠️ ONE ENTRY POINT BECAUSE THE CALLER IS AT ITS COMPLEXITY CEILING, and that ceiling is doing its
+ * job rather than being in the way: `buildThreeHopCount` was already at 35 of 35 when item 1685
+ * moved the first arm out here, and a second route check in the closure read 36. Dispatching once
+ * PER QUERY costs nothing — it is the per-element loops that must stay in separate functions, which
+ * they do.
+ *
+ * Order matters: the unfiltered arm is tried first because it is the cheaper of the two (no accept
+ * memo, no branch in the inner loop) and it serves `count 3-hop`, the 5.7 ms row this file exists
+ * for.
+ */
+export const threeHopCsrCount = (
+  graph: Graph,
+  bLabel: LabelExpr | undefined,
+  legs: {
+    toAOut: boolean;
+    t1: string[] | undefined;
+    midOut: boolean;
+    t2: string[] | undefined;
+    fromDOut: boolean;
+    t3: string[] | undefined;
+  },
+  shape: {
+    aBoth: boolean;
+    midBoth: boolean;
+    dBoth: boolean;
+    aEff: LabelExpr | undefined;
+    cEff: LabelExpr | undefined;
+    dEff: LabelExpr | undefined;
+    cGate: InlineGate | undefined;
+    bGate: InlineGate | undefined;
+    params: Params;
+  },
+): number | undefined => {
+  if (
+    csrDegreeProductApplies({
+      aBoth: shape.aBoth,
+      midBoth: shape.midBoth,
+      dBoth: shape.dBoth,
+      aEff: shape.aEff,
+      cEff: shape.cEff,
+      dEff: shape.dEff,
+      bGated: shape.bGate !== undefined,
+      cGated: shape.cGate !== undefined,
+    })
+  ) {
+    return threeHopDegreeProductOverCsr(graph, bLabel, legs);
+  }
+
+  if (
+    csrGatedDegreeProductApplies({
+      aBoth: shape.aBoth,
+      midBoth: shape.midBoth,
+      dBoth: shape.dBoth,
+      aEff: shape.aEff,
+      dEff: shape.dEff,
+    })
+  ) {
+    return threeHopGatedDegreeProductOverCsr(graph, bLabel, legs, {
+      cEff: shape.cEff,
+      cGate: shape.cGate,
+      bGate: shape.bGate,
+      params: shape.params,
+    });
+  }
+
+  return undefined;
 };
