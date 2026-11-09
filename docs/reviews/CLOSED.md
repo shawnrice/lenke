@@ -77900,16 +77900,20 @@ code — CLAUDE.md's rule, and here the assertion is the only thing that could c
 #### ⚠️ ITEM 861 MEASURED THE SAME THING AT ~13 ns AND WAS WRONG BY 2.6x
 
 Item 861's table reads `spread+freeze 24 / spread 11 / mutate 2` at k=4, so freeze ≈ 13 ns. In situ
-it is ~35. **The gap is not noise, it is the shape: freezing does not only cost the call.**
-`setProperty` then performs **three `this.properties` reads against a FROZEN object**, and a
-microbench that freezes an object and discards it never pays for those. (Item 1732 independently
-measured `get properties` at 4.6% of a write for exactly those three reads.)
+it is ~35. ⚠️ **THE EXPLANATION BELOW WAS REFUTED AT ITEM 1734 — the gap is real and now
+UNEXPLAINED.** ~~The gap is not noise, it is the shape: freezing does not only cost the call.
+`setProperty` then performs three `this.properties` reads against a FROZEN object, and a microbench
+that freezes an object and discards it never pays for those.~~ Item 1734 ablated the freeze and
+timed READS only: they are flat, so a frozen bag is not slower to read and the ~35 ns is the freeze
+CALL. Why an isolated call measures 13 is open.
 
 **Third time in four items that a per-operation constant failed to transfer** — item 1730's
 ~115 ns/hash (real: 35), item 1731's phase split (wrong by 11x across formats), and now an isolated
-microbench of a V8 builtin. The pattern is sharper than "constants don't transfer": **all three
+microbench of a V8 builtin. ⚠️ ~~The pattern is sharper than "constants don't transfer": all three
 underestimated by measuring an operation in ISOLATION when its real cost is partly imposed on the
-code AFTER it.** Freeze is the clearest case — its cost is mostly in later reads.
+code AFTER it.~~ **That generalization rested on the refuted mechanism and does NOT hold (1734).**
+1730 and 1731 stand on their own terms; this one has no mechanism yet. "A constant measured in
+another shape is a measurement of that shape" is as far as the three of them license.
 
 #### The lazy-freeze alternative: priced, and it does NOT work as a drop-in
 
@@ -77942,3 +77946,70 @@ dist-assertion pattern for any TS-source ablation).
 `bun run check` 0 read through `${pipestatus[1]}`. The pristine source was restored and rebuilt by
 the driver and the tree verified clean before committing; the only source change is the comment
 block recording this at the freeze site.
+
+### Item 1734 — ⚠️ **I REFUTED MY OWN MECHANISM FROM THE PREVIOUS ITEM: a frozen property bag is NOT slower to read, so item 1733's explanation of its own 2.6x gap is FALSE.** The ~35 ns is the `Object.freeze` call alone, the gap against item 861's isolated 13 ns is now unexplained, and the lazy-freeze design is correspondingly SHARPER — it cannot speed up a single read
+
+Item 1733 measured `Object.freeze` at ~35 ns of a ~112 ns property write against item 861's isolated
+~13 ns, and explained the 2.6x like this: _"freezing does not only cost the call — `setProperty`
+then makes three `this.properties` reads against a FROZEN object, and a microbench that freezes and
+discards never pays for those."_ It cited item 1732's independent 4.6% for those three reads as
+support, and generalized across three items into a pattern about costs "imposed on the code AFTER"
+an operation.
+
+**That was asserted, not measured, and it is wrong.** It had also already been written into a
+`Vertex.ts` comment and a `CLOSED.md` entry, and the lazy-freeze design in both rested on it, so it
+was worth an instrument rather than another reading of the source.
+
+#### The test: ablate the freeze, then time READS only
+
+`frozen-read-probe.mjs` builds the fixture, then times reads with no write in the measured loop at
+all — so the freeze CALL is outside the window by construction and only the state of the bag
+differs. Driven through the same restore → mutate → build → assert-the-dist arms as item 1733
+(`frozen-read-driver.sh`), ablating the freeze in **both** `Vertex.ts` and `Edge.ts` so no element
+type is left in the other state. 200,000 vertices, ns/read, median of 9 dropping 3:
+
+```text
+  shape   base r1   nofreeze r1   base r2   nofreeze r2
+  raw        8.00          8.07      7.81          7.71
+  keys      12.58         14.27     12.00         12.41
+  gql       13.50         13.55     18.32         16.77
+```
+
+**Flat on every shape.** `raw` (the getter plus a named read) is indistinguishable; `Object.keys` —
+the shape V8 is most likely to treat differently — is nominally SLOWER unfrozen in both rounds; the
+`gql` predicate is noisy enough to swing `base` from 13.50 to 18.32 between rounds, which is itself
+the answer that no systematic difference exists.
+
+⚠️ **Each arm was confirmed from the DATA, not just from the build.** The probe tries
+`Object.defineProperty` on a live bag and reports `bagIsFrozen` — true for every `base` row, false
+for every `nofreeze` row. That is the per-run twin of the dist assertion, and it is what makes the
+flatness a result rather than a suspicion that the mutant never landed.
+
+#### What this changes
+
+- **Item 1733's mechanism is struck** in its entry and in the `Vertex.ts` comment. The ~35 ns is the
+  freeze CALL; **why an isolated call measures ~13 is now OPEN**, and the next reader is told not to
+  re-explain it without an instrument.
+- **The three-item generalization is withdrawn.** Items 1730 (a hash constant from another shape)
+  and 1731 (a phase split across formats) stand on their own terms, but "its real cost is partly
+  imposed on the code after it" was true of none of them once this one was tested. What the three
+  license is only: _a constant measured in another shape is a measurement of that shape._
+- **The lazy-freeze design gets SHARPER, not weaker.** Item 1733 left open whether deferring the
+  freeze would also help the read paths; it cannot. Reads are flat, so the lever is worth ~30% of a
+  WRITE and exactly nothing to a query — which makes it an ingest/bulk-`SET` lever specifically, and
+  removes the argument that it would broadly speed up GQL and Gremlin. A read-after-write serving
+  workload gains nothing at all, since the external read pays the deferred freeze.
+
+**The useful habit here is the cheap one: the claim was one ablation away from being checkable, and
+checking it cost one probe and two rounds.** A plausible mechanism in a comment is worse than an
+admitted gap, because the next reader builds on it — `check-the-blocker-still-holds` is the same
+lesson from the other direction.
+
+**NEW PERMANENT INSTRUMENTS — `packages/native/frozen-read-probe.mjs`** (three read shapes, with the
+`bagIsFrozen` self-assertion) and **`packages/native/frozen-read-driver.sh`**.
+
+#### Gates
+
+`bun run check` 0 read through `${pipestatus[1]}`. Pristine restored and rebuilt by the driver, tree
+verified against HEAD before and after; the only source change is correcting the comment that item
+1733 added.

@@ -262,10 +262,12 @@ export class Vertex {
     // `box.keys = undefined` reads 113.3/110.7/109.0, overlapping base.
     //
     // ⚠️ ITEM 861 PRICED THIS AT ~13 ns FROM AN ISOLATED MICROBENCH (spread+freeze 24, spread 11).
-    // In situ it is ~35 — 2.6x more — because freezing does not only cost the call: `setProperty`
-    // then makes three `this.properties` reads against a FROZEN object, and a microbench that
-    // freezes and discards never pays for those. An isolated per-operation constant is a
-    // measurement of its own shape, the same lesson as items 1730 and 1731.
+    // In situ it is ~35 — 2.6x more — and THE GAP IS UNEXPLAINED. Item 1733 proposed that freezing
+    // also costs the three `this.properties` reads `setProperty` then makes against a FROZEN
+    // object; item 1734 TESTED that by ablating the freeze and timing reads only, and it is FALSE —
+    // reads are flat (raw 8.00/7.81 frozen vs 8.07/7.71 not, `Object.keys` and a GQL predicate
+    // likewise, with each arm confirmed from the data). So the ~35 ns is the freeze CALL, and why
+    // an isolated call measures 13 is still open. Do not re-explain it without an instrument.
     //
     // NOT REMOVED, because it is the enforcement of a contract, not an accident: `get properties`
     // returns the stored bag DIRECTLY with no copy, so without the freeze a caller could mutate
@@ -273,8 +275,9 @@ export class Vertex {
     // through the public getter instead of on write — does NOT work as a drop-in, and the reason
     // is worth recording: `setProperty` itself reads the PUBLIC getter three times, so the next
     // write would trigger the freeze anyway and the win would be zero. It needs an internal raw
-    // accessor at the 12 non-probe `.bag` sites first, and its win is then workload-dependent
-    // (large for write-heavy ingest, ~neutral for read-after-write serving). That is a change to
+    // accessor at the 12 non-probe `.bag` sites first, and its win is then workload-dependent —
+    // large for write-heavy ingest, and NOTHING for reads, which item 1734 settled: a frozen bag is
+    // not slower to read, so deferring the freeze cannot speed up a query. That is a change to
     // how an immutability guarantee is enforced, in an area where `label-index-vs-setter` already
     // records a wrong answer reached through the public API — so it is priced here, not taken.
     const frozen = Object.freeze(bag);
