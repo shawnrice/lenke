@@ -75021,8 +75021,9 @@ author happened to use the same words; a comment finds anyone who arrives at the
 
 #### What is actually live
 
-The filtered three-hop counts (388.0 and 383.1 ms) are the natural continuation of item 1685 and are
-NOT closed — they appear only in item 1515 (as a found target) and item 1683. ⚠️ Item 1685's arm
+~~The filtered three-hop counts (388.0 and 383.1 ms) are the natural continuation of item 1685 and are
+NOT closed~~ ⚠️ **CLOSED BY ITEM 1688 at 33.9x and 28.8x** — they appeared only in item 1515 (as a
+found target) and item 1683. ⚠️ Item 1685's arm
 cannot serve them as built: a start or end filter constrains a position the degree product reaches
 only as a DEGREE, and a predicate-filtered degree is not `off[s + 1] - off[s]`. A per-query filtered
 degree array is O(V + E) to build and cannot be cached on `topologyVersion`, because the predicate
@@ -75035,7 +75036,7 @@ before it is built.
 
 `bun run check` 0 read unpiped. No engine source touched — a screen and this entry.
 
-### Item 1687 — **THE FILTERED THREE-HOP COUNTS PRICED AT 67x-92x WARM AND 3.6x COLD.** Any filter costs 18x-44x over item 1685's unfiltered arm, and the profile puts 36.2% in `sweepChain`'s per-pass walk. ⚠️ **This is NOT the memo item 1106 measured as a LOSS at two passes — that one is per-query and cannot amortise; a cached one needs no amortisation.** OPEN, not built
+### Item 1687 — **THE FILTERED THREE-HOP COUNTS PRICED AT 67x-92x WARM AND 3.6x COLD.** Any filter costs 18x-44x over item 1685's unfiltered arm, and the profile puts 36.2% in `sweepChain`'s per-pass walk. ⚠️ **This is NOT the memo item 1106 measured as a LOSS at two passes — that one is per-query and cannot amortise; a cached one needs no amortisation.** ~~OPEN, not built~~ ⚠️ **BUILT AT ITEM 1688: 33.9x / 28.8x on the two filtered three-hop rows and 32.2x on `count 4-hop`, with both flat controls holding.**
 
 Item 1686's screen left the filtered three-hop counts as the largest genuinely-live rows. Measured
 at 200,000 vertices / 1,000,000 edges, 12 calls:
@@ -75118,3 +75119,105 @@ cost from one walk serving several shapes applies to any new arm here.
 #### Gates
 
 `bun run check` 0 read unpiped. One new probe, no engine change.
+
+### Item 1688 — **THE FILTERED THREE-HOP COUNTS, TAKEN: 33.9x and 28.8x, and `count 4-hop` 32.2x**, by making every position's constraint a per-slot mask over `topologyVersion`-keyed CSRs. ⚠️ **A mutant SURVIVED because the code it mutated was UNREACHABLE — a dead branch behind a live exclusion, which reads as a tested path.** ⚠️ **And my own fixture correlated the LABEL with the DEGREE, so two cases counted zero with both routes agreeing**
+
+Item 1687 priced this at 92.27x / 66.87x warm and ~3.6x with the CSR build inside the timed region.
+Built, the arm lands between those bounds, interleaved over two order-alternated rounds with one row
+per process and each arm asserted in the BUILT dist (min across rounds):
+
+```text
+   count 3-hop + start filter    336.0 ->   9.9    33.9x
+   count 3-hop + end filter      343.1 ->  11.9    28.8x
+   count 4-hop                   261.1 ->   8.1    32.2x
+   count 4-hop + start filter    316.0 ->   9.9    31.9x
+   count 3-hop + interior filter 176.7 -> 168.6     1.05x   does not reach the arm
+   count 3-hop (control)           5.9 ->   5.6     1.05x   item 1685's degree product
+   count 2-hop + start filter      129.8 -> 136.9   0.95x   two legs, a different builder
+```
+
+The mechanism: `count = sum over starts of surviving walks`, accumulated level by level over flat
+`off`/`nbr` arrays, with a `Uint8Array` accept mask per constrained position. That is what lets ONE
+arm serve a start, an interior and an end filter — the filter is no longer a position the walk has to
+reach, it is a multiply. An unconstrained last position is still answered by a weighted DEGREE sum
+and needs no pass, which is why `count 4-hop` (four legs, no filter) gains as much as the filtered
+three-hop rows.
+
+A mask is only sound because `inlinePredOf` refuses a correlated predicate, and that was CHECKED
+rather than assumed: it returns `null` when an inline property's value has free variables, and for
+an inline `WHERE` it refuses every free name but the node's own. So an `InlinePred` is a pure
+function of its own vertex. A clause `WHERE` cannot make that claim — `inline-gate.ts` says so
+directly — which is why the arm takes its gates from the compiled legs and asks nothing about where
+they came from.
+
+#### Two exclusions, one of which a TEST found and reasoning had missed
+
+`both`: an undirected leg walks two adjacency indexes and must count a self-loop ONCE, which item
+1097 fixed a half-answer bug over. A single CSR run cannot express it.
+
+⚠️ `seeded`: an index seed makes this arm a REGRESSION, and `seeded-sweep-start.test.ts` is what
+said so. `sweepStartSeed` returns a set when an index seek beat the label bucket (item 1330), so the
+query is already sub-linear; the arm's masks are O(V) per constrained position, which throws that
+away. That test asserts the 5,000-element label bucket is walked ZERO times for a selective
+`a.k = 7`, and with the arm taking the query it walked 5,000. **The ANSWER was right — the count
+assertion passed — and only the WORK was wrong**, which is precisely the thing a timing-based check
+cannot see and that test exists to observe.
+
+#### ⚠️ A MUTANT SURVIVED BECAUSE ITS CODE WAS UNREACHABLE
+
+The arm shipped with a seed-set branch, narrowing `ways` to `sweepStartSeed`'s vertices. A mutation
+pass replaced its condition with `false` and SURVIVED — 72 pass, 0 fail. Not a test gap: the
+`seeded` exclusion above means `startSource` is ALWAYS undefined here, so the branch could never
+execute and no test could ever distinguish it. Dead code behind a live exclusion is worse than no
+code, because it reads as a tested path. It is removed, with a note saying it comes back WITH the
+test that reaches it if the exclusion is ever lifted.
+
+Thirteen real mutants, all caught, across two valid passes — relaxing either exclusion, tightening
+the predicate to never apply, both directions of the last-pass count, dropping the degree weight,
+ignoring the start / interior / end mask, flipping the leg direction, ignoring the leg edge types,
+starting every slot dead, and dropping either half of the mask. One mutant SURVIVES by design: an
+all-ones mask where the code returns `undefined` is ANSWER-EQUIVALENT and costs only an extra pass,
+which is exactly why the eligibility predicate carries its own unit test. A wrongly RELAXED clause
+is a wrong count and the differentials catch it; a wrongly TIGHTENED one silently abandons the arm
+and every answer stays right.
+
+#### ⚠️ THREE PROCESS FAILURES, EACH OF WHICH PRODUCED A CONFIDENT WRONG READING
+
+**My own fixture correlated the label with the degree.** It labelled `i % 4 === 0` while taking the
+degree from `1 + ((i * 2654435761) % 4)` — and `i % 4 === 0` forces that product's low bits to zero,
+so every `Q` vertex had degree 1, whose single edge was the other edge type. `(b:Q)-[:E]->` counted
+ZERO, with both routes agreeing on it: a case that proved nothing while looking like a pass. This is
+the same class as items 702, 1516 and 1684 one property along — not the walk count being arithmetic,
+but the LABEL being a function of the degree. The fixture now mixes label and property differently
+from the degree and asserts its own in-degree spread.
+
+**A mutation driver's `verdict()` ran a bare `cd` and never came back,** so every later restore — a
+RELATIVE path — failed while every `sed` (an absolute path) applied. Nine mutants ACCUMULATED and
+M9's verdict was about a file carrying all of them. Every path in the replacement is absolute and
+the test run is in a subshell. This is the mechanical form of "restore before applying the next
+mutant, never only after the loop".
+
+**An arm-identity guard passed while checking nothing.** It pointed at `dist/index.js`, but the
+built bundle is `dist/esm/index.mjs`; python printed an empty string for the missing file and the
+`nonzero` branch, which only compared against `"0"`, accepted it. Both branches now demand a decimal
+count. Same shape as the `grep -c | head` trap: a check whose failure mode is silence.
+
+#### What this does NOT touch
+
+`sweepChain`'s own `passes > 2` memo gate is untouched, and deliberately. Item 1106 measured it as a
+small LOSS at two passes (162.0 against 165.7) because one building pass is refunded by one
+consuming pass — correct on its own terms. A cached CSR needs no amortisation on a hit, which
+removes that gate's premise rather than disputing its number. Item 1683 relaxed the gate on an
+assumption and had to revert; the route map is the price of touching it.
+
+`count 3-hop + interior filter` reads 1.05x and does not reach `longChainCount` at all, so it is
+still live at ~177 ms. `count 2-hop + start filter` reads 0.95x on a row with 28% of its own spread
+between two readings of the SAME code — perturbation of the kind the executor-edit entries record,
+not a cost of this arm.
+
+#### Gates
+
+`bun run check` 0 read unpiped. Five suites isolated: core 453, gql 4312, gremlin 2047,
+serialization 144, native 1081, 0 fail each. Seven byte-identity fuzzers 20 pass, 0 fail. Mutation
+passes under `timeout 300` plus a 16G cgroup cap with `MemorySwapMax=0`, the kills proven first (an
+allocation bomb at 137, a spin loop at 124).

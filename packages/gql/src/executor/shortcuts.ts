@@ -68,6 +68,7 @@ import type {
 } from './core.js';
 import { compileExpr, compilePredicate, specializeNarrowPred, percentileFraction } from './core.js';
 import { freePredicateVars } from './expr-analysis.js';
+import { filteredChainCsrApplies, filteredChainCsrCount } from './filtered-chain-csr.js';
 import { plainNode, plainRel, side as hopSide, sideOfVertex } from './hop-sides.js';
 import { composeInlineGate, inlineHolds, inlineOf, inlinePredOf, predFor } from './inline-gate.js';
 import type { InlineGate, InlinePred } from './inline-gate.js';
@@ -4248,6 +4249,19 @@ const longChainCount = <T>(
     // where `orient` reversed away from a selective start. Anyone making the flip seed-aware must
     // re-introduce a guard here, or seed a reading that was chosen for the wrong reason.
     const startSource = sweepStartSeed(graph, params, cstart, pick.startLabel);
+
+    // ⚠️ THE FLAT-ARRAY ARM (item 1688), priced by item 1687 at 92.27x / 66.87x warm and ~3.6x with
+    // the CSR build inside the timed region. Every position's constraint becomes a per-slot mask, so
+    // one arm serves a start, interior or end filter; `filteredChainCsrApplies` carries the two
+    // exclusions and their reasons — an undirected leg, and a query an index already seeded, where
+    // the arm's O(V) masks would throw away a sub-linear seek. Falls through to the sweep otherwise
+    // — and in particular
+    // this does NOT relax `sweepChain`'s own `passes > 2` memo gate, which item 1683 did on an
+    // assumption and had to revert.
+    if (filteredChainCsrApplies(pick.legs, startSource !== undefined)) {
+      // No `startSource`: the predicate above refuses a seeded query, so the arm has no seed path.
+      return rowOf(filteredChainCsrCount({ graph, params, ...pick }));
+    }
 
     return rowOf(sweepChain({ graph, params, ...pick, startSource }));
   };
