@@ -76678,7 +76678,7 @@ code-point comparison and no surrogate guard at all**. The Rust side cannot diff
 `exec/order.rs` compares `Col::Str` with `v[a].cmp(&v[b])` (Rust `str::cmp`, byte-wise UTF-8 = code
 point) and `ir.rs`'s `SortKey` doc states both languages order non-nulls by `cmp_total`, with only
 null PLACEMENT differing (GQL last, Gremlin first). ~~Recorded as the 15th open value divergence;
-`test.failing` registration and the native-engine leg are the next item.~~ ⚠️ **CONFIRMED AGAINST
+`test.failing` registration and the native-engine leg are the next item.~~ ⚠️ **ITS CI GAP IS CLOSED AT ITEM 1728** (a dedicated parity test with its own corpus; 2 of 3 fail on revert). ⚠️ **CONFIRMED AGAINST
 NATIVE AND FIXED AT ITEM 1712** — the native leg ran (the engine agrees with GQL), so no
 `test.failing` was needed; `compareCodePoints` now lives in `@lenke/core` and both engines share
 it. **No fuzzer could find it:
@@ -77533,3 +77533,43 @@ them — each was built for a narrower question than it is now being read for.
 
 `bun run check` 0 read through `${pipestatus[1]}` (after `bun run fmt`). Both harnesses exit 0. The
 only additions are the probe and this entry; no engine source changed.
+
+### Item 1728 — **THE CI GAP ITEM 1712 LEFT OPEN IS CLOSED: a dedicated TS⟷NATIVE parity test for string ordering over an ASTRAL column, with its own small corpus.** Teeth verified — reverting item 1712's one-line fix fails 2 of its 3 tests, and the one that still passes is the control that cannot see the comparator
+
+Item 1712 fixed a confirmed byte-identity break (TS Gremlin ordered strings by code UNIT where the
+engine and TS GQL use code POINT) and left this stated as open: _"nothing in CI compares TS against
+NATIVE on an astral column… The fix is a dedicated case with its own small corpus."_ The TS side was
+guarded by `gremlin/src/executor/string-order.test.ts`, but **the comparison that actually found the
+bug — the two engines against each other — ran only in a probe CI never executes.**
+
+**WHY ITS OWN CORPUS, which is the part that was already learned the hard way.** Two vertices
+carrying the pair were added to `gremlin-fuzz`'s SHARED corpus at item 1712 and REVERTED: nine
+vertices instead of seven put `orderLocalWithNull` at **0-3 of 400 against its floor of >5**, so the
+fuzzer went red on a COVERAGE COUNTER rather than on a divergence. Adding to a shared differential
+corpus reweights every random draw, and item 1130 records the same hazard for a shared bench fixture.
+`gremlin-codepoint-order-parity.test.ts` therefore builds five vertices of its own.
+
+**Three assertions, and the third is not padding:**
+
+1. both engines agree with each other AND with an oracle derived independently (`Array.from`
+   iterates code points, so it is not a second call to either engine's comparator);
+2. U+E000 precedes U+1F600 in each engine, asserted PER ENGINE so a failure names which side
+   regressed — a code-unit regression flips exactly this pair and only this pair, which is why a
+   column without it passes either way;
+3. the astral value survives the NDJSON round trip as ONE code point — because if the decoder mangled
+   a surrogate pair the two engines could agree on a value neither was given.
+
+**Teeth, verified rather than assumed:** reverting the fix fails **2 of 3**, and the survivor is
+assertion 3, which does not depend on the comparator. That is the correct profile.
+
+**Two mechanics worth recording for the next bridge test.** The values go in the DATA, never a query
+literal: the native Gremlin TEXT parser rejects an astral char inside a quoted literal
+("unexpected character"), which is exactly why item 1712's PREDICATE half could not be checked across
+the bridge at all. And these tests run under **`bun test`, not vitest** — `conformance-harness.ts`
+imports `bun:ffi`, so a `vitest` import fails at module load with a confusing pointer at the harness;
+the sibling conformance and differential tests all import from `bun:test`.
+
+#### Gates
+
+`bun run check` 0 read through `${pipestatus[1]}` (after `bun run fmt`). native **1084** pass (up 3),
+gremlin 2109, 0 fail. `packages/gremlin/src/predicates.ts` restored and verified after the mutation.
