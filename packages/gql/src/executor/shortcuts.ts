@@ -82,6 +82,7 @@ import { foldFor } from './projection.js';
 import { columnName, resolveCount, valueKey } from './rows.js';
 import { AGGREGATES, asTruth } from './scalars.js';
 import { threeHopCsrCount } from './three-hop-degree-product.js';
+import { twoHopFilteredCsrApplies, twoHopFilteredCsrCount } from './two-hop-filtered-csr.js';
 
 export type CountFn = (graph: Graph, params: Params) => Row;
 
@@ -2766,6 +2767,48 @@ const walkTwoHopFiltered = (graph: Graph, params: Params, plan: TwoHopPlan): num
   // correction is `undirectedSide`'s own; the first leg's is the `e.fromId === e.toId` skip below.
   const loop1 = firstBoth && loopsOfTypes(graph, t1);
   const loop2 = secondBoth && loopsOfTypes(graph, t2);
+
+  /**
+   * ⚠️ THE FLAT-ARRAY ARM (item 1690), priced at 51.05x / 30.19x warm and 1.73x / 1.89x with the
+   * whole O(V+E) CSR build inside the timed region. Each clause's reason lives on
+   * `twoHopFilteredCsrApplies`, a pure function with its own test, precisely so a wrongly TIGHTENED
+   * clause — which silently abandons the arm rather than returning a wrong count — is caught.
+   *
+   * Both filtered two-hop shapes land here, the END-filtered one included, because the pattern is
+   * oriented so the predicate-carrying node becomes the start. A route counter established that;
+   * reading the code had suggested the end filter fell to the general pipeline.
+   */
+  if (
+    twoHopFilteredCsrApplies({
+      firstBoth,
+      secondBoth,
+      cEff,
+      seeded: seeded !== undefined,
+      predReadsOnlyStart:
+        pred === undefined || (pred.farVar === undefined && pred.relVar === undefined),
+    })
+  ) {
+    return twoHopFilteredCsrCount(graph, params, {
+      aLabel,
+      midEff,
+      firstOut,
+      t1,
+      fromCOut,
+      t2,
+      inStart,
+      accept:
+        pred === undefined
+          ? undefined
+          : (a) => {
+              if (startVar !== undefined) {
+                binding.set(startVar, a);
+              }
+
+              return asTruth(pred.fn(env)) === true;
+            },
+    });
+  }
+
   let count = 0;
 
   for (const a of seeded ?? candidateVertexSource(graph, aLabel)) {

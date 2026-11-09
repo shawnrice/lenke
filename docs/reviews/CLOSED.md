@@ -60155,7 +60155,7 @@ No source or probe changed this tick; the only edit is this entry. `bun run chec
 suites are item 1513's (core 431/0, gql 3803/0, gremlin 1469/0, native 961/0, serialization 144/0,
 `bun run fuzz` 20/0).
 
-### Item 1515 — a new screen (the TS-vs-native ratio per row) found a live target the four previous ticks missed: **a two-segment count gets up to 1.96x SLOWER when you make it MORE selective** — `count 2-hop` 51.0 ms, `+ start filter` 88.5, `+ end filter` 100.0, `+ mid filter` 32.0. The END formula was already written in the code as OPEN, and this is the measurement it was waiting for — ⚠️ **and item 1517 then BUILT that formula and found it 2.0x WORSE** (265.5 ms against the reversed walk's 132.4): it is selectivity-blind and structurally so, so do not read this heading as pointing at an available win
+### Item 1515 — a new screen (the TS-vs-native ratio per row) found a live target the four previous ticks missed: **a two-segment count gets up to 1.96x SLOWER when you make it MORE selective** — `count 2-hop` 51.0 ms, `+ start filter` 88.5, `+ end filter` 100.0, `+ mid filter` 32.0. The END formula was already written in the code as OPEN, and this is the measurement it was waiting for — ⚠️ **and item 1517 then BUILT that formula and found it 2.0x WORSE** (265.5 ms against the reversed walk's 132.4): it is selectivity-blind and structurally so, so do not read this heading as pointing at an available win. ⚠️ **THE ROWS THEMSELVES ARE NOW TAKEN, BY A DIFFERENT OPERATION: item 1690 put the walk's per-first-leg-edge degree read on a cached CSR — `+ start filter` 137.0 -> 10.2 (13.4x) and `+ end filter` 126.7 -> 6.5 (19.5x), with `count 2-hop` and `+ mid filter` flat.**
 
 > ⚠️ **MEASURED ON A DEGENERATE FIXTURE — see item 1516.** The headline SURVIVES and grows (the
 > inversion is **2.75x**, not 1.96x), but every number here was taken over a functional graph whose
@@ -60341,7 +60341,7 @@ p|` keeps the end-filtered count on a product instead of a walk.
 serialization 144/0, `bun run fuzz` 20/0. No engine code changed — the edits are the bench fixture,
 its new self-check, and documentation.
 
-### Item 1517 — ⚠️ **BUILT the end-filtered degree product and it is 2.0x WORSE: 265.5 ms against the reversed walk's 132.4.** `patternCountOf`'s own comment predicted this ("a different cost class") and I read it as an invitation to measure rather than as the answer. The formula is **selectivity-blind and structurally so**
+### Item 1517 — ⚠️ **BUILT the end-filtered degree product and it is 2.0x WORSE: 265.5 ms against the reversed walk's 132.4.** `patternCountOf`'s own comment predicted this ("a different cost class") and I read it as an invitation to measure rather than as the answer. The formula is **selectivity-blind and structurally so**. ⚠️ **THIS REFUTATION STANDS AND THE ROW IS STILL TAKEN — by item 1690, which is not a cheaper route to the same degree lookup but an INDEX in place of it: 126.7 -> 6.5 ms. The distinction is items 1335/310's at the three-hop twin, and it is why a refuted formula does not close a row.**
 
 Item 1516 left this as the next build, and the comment in `patternCountOf` had carried the formula as
 OPEN for some time: `Σ_b indeg(b) · |out-edges of b whose target passes p|` replaces the reversed walk
@@ -74758,8 +74758,11 @@ with `post=[64.6, 90.2]`, a 1.4x spread inside one arm, so it is noise rather th
 
 ~~Which route answers `count 3-hop`, `count 2-hop` and `count 3-hop + interior filter`~~ ⚠️ **TWO
 OF THE THREE ARE ANSWERED AND TAKEN: `count 3-hop` at item 1685 (81.4x) and `count 3-hop + interior
-filter` at item 1689 (14.8x), both in `buildThreeHopCount`'s closure.** `count 2-hop` remains
-unidentified. All three bypass `sweepChain`, and the first was the row item 1682 priced at
+filter` at item 1689 (14.8x), both in `buildThreeHopCount`'s closure.** ~~`count 2-hop` remains
+unidentified.~~ ⚠️ **IDENTIFIED AT ITEM 1690 BY A ROUTE COUNTER: `buildTwoHopCount` answers the
+bare and mid-filtered shapes, and `buildFilteredTwoHopCount` answers BOTH filtered ones — the
+end-filtered row included, because the pattern is oriented so the predicate-carrying node becomes
+the start. The two filtered rows are taken at 13.4x and 19.5x.** All three bypass `sweepChain`, and the first was the row item 1682 priced at
 4.9x/20.3x.
 
 #### Gates
@@ -75322,3 +75325,99 @@ the lazy memo flag is ANSWER-EQUIVALENT and costs only re-evaluation, which is w
 predicates carry their own unit tests. Six mutants ABORTED on the marker check first — oxfmt had
 joined the predicate onto one line, so the seds matched nothing — and that is the check earning its
 line rather than scoring six phantom survivors.
+
+### Item 1690 — **THE FILTERED TWO-HOP COUNTS, TAKEN: 13.4x and 19.5x**, by putting the walk's per-first-leg-edge degree read on a cached CSR. ⚠️ **A ROUTE COUNTER CORRECTED THREE THINGS READING THE CODE HAD GOT WRONG**, including which builder answers the end-filtered row. ⚠️ **And an `assert` that PREDICTED a count instead of reading it silently discarded two file writes while the log said "instrumented"**
+
+The three-hop family was taken over items 1685, 1688 and 1689. The two-hop family was what was left,
+and item 1684's "still open" named `count 2-hop`'s route as unidentified.
+
+```text
+   count 2-hop + start filter    137.0 ->  10.2    13.4x
+   count 2-hop + end filter      126.7 ->   6.5    19.5x
+   count 2-hop (control)          49.8 ->  50.2     0.99x   the OTHER builder
+   count 2-hop + mid filter       27.1 ->  28.1     0.96x   the OTHER builder
+   count 3-hop + start filter      9.1 ->  10.0     0.91x   item 1688's arm, see below
+```
+
+Both controls answered by `buildTwoHopCount` are flat, which is the attribution this win needed. The
+three-hop row reads 0.91x on a ~10 ms row whose own spread across identical builds this session has
+measured at 7.62-13.18 (item 1689's three-arm run), so it is inside that spread rather than a cost;
+`count 2-hop + start filter` itself read 139.4 and 137.0 in the two PRE rounds.
+
+On the route probe's own fixture (200,000 v / 1,000,000 e): **start 141.4 -> 10.2 (13.9x)** and **end
+161.3 -> 6.9 (23.4x)**. The residual against a hand-rolled arm's 2.8 ms is predicate evaluation — the
+same gate-bound floor item 1689 hit, and the floor for a per-vertex predicate.
+
+#### ⚠️ WHAT THE ROUTE COUNTER CORRECTED, AND WHY READING THE CODE WAS NOT ENOUGH
+
+Item 1689 found a four-shape PROFILE attributing 39.2% to a function the row never enters. This item
+is the same lesson at the level of a function's doc comment. A counter at each candidate builder's
+entry AND at its successful return — an entry counter cannot tell "answered" from "declined" — said:
+
+```text
+   row                  answered by
+   bare 2-hop           buildTwoHopCount
+   2-hop start filter   buildFilteredTwoHopCount
+   2-hop mid filter     buildTwoHopCount
+   2-hop END filter     buildFilteredTwoHopCount      <- not the general pipeline
+   2-hop end inline     buildFilteredTwoHopCount
+```
+
+1. **The END-filtered row reaches the START-filtered builder**, because the pattern is ORIENTED so
+   the predicate-carrying node becomes the start. `buildTwoHopCount`'s comment says a constraint on
+   the end "has no once-per-element place to go", which is true of that builder and not of the
+   query; I had read it as "the end filter falls to the row pipeline".
+2. **`longChainCount` is never entered for two legs**, so item 1688's arm could not be reached by
+   relaxing a leg count — which was my first plan, and is the shape of mistake item 1683 made by
+   relaxing a gate on an assumption.
+3. **`HopPred` can carry `farVar` and `relVar`.** The walk binds only `startVar`, so in practice the
+   caller passes a start-only predicate — but the eligibility clause REFUSES the others rather than
+   trusting that, because such a predicate has no per-vertex form at all.
+
+#### The mechanism
+
+`count = sum over b of (accepted a's reaching b) * outdeg(b)`: one pass over the first leg to
+accumulate arrivals, then a weighted DEGREE SUM for the second, with no second pass because nothing
+constrains the end (`cEff` declines). The walk's own per-edge cost was already O(1) — `side` with no
+far label is `bucketSize`, and items 1416/1637 settled that there is no repeated-lookup lever there
+— but O(1) through a `Map.get` plus an `edgesOfTypes` generator frame is not O(1) through an
+`Int32Array`.
+
+⚠️ **THE ACCEPT TEST ORDER IS THE WALK'S, AND THAT IS CORRECTNESS, NOT STYLE.** The walk
+enumerates the label bucket and only then applies the predicates. A predicate can THROW (a
+string-vs-temporal `<=` does, settled policy here), so testing the LABEL first keeps the evaluated
+set exactly the walk's: a vertex outside the bucket never reaches the predicate, as it never does
+today. Item 1689 learned this with an eager mask and fixed it with a lazy one; here the ordering is
+enough.
+
+Exclusions: both `both` legs (an undirected leg must yield a self-loop ONCE — items 1092/1093 — and
+one CSR run cannot express it), an END label (it filters which edges the final DEGREE may count,
+where the CSR counts them all: the boundary item 1689 drew), an index SEED (`hopSeek` makes the
+query sub-linear and an O(V) mask throws that away — item 1688 learned this from a test rather than
+from reasoning), and a predicate that can read the far node or the edge. A MIDDLE label is on the
+other side of that boundary and is taken: the middle is a slot.
+
+#### ⚠️ AN ASSERT THAT PREDICTED A COUNT DISCARDED TWO WRITES WHILE REPORTING SUCCESS
+
+The route counters first read `{}` for every row — the builders run at PLAN time and the plan is
+cached, so resetting before the warm run measured the wrong run. Then they read `{}` again, and the
+reason is worse: a python patch script replaced two anchors, printed "instrumented" for each, and
+then raised on a THIRD assert — before the single write at the end. The file was unchanged while the
+log said otherwise. **The dist-marker check is what surfaced it** (`__r.filteredTwoHop` present 0
+times in `dist/esm/index.mjs` while two other counters were present 2 times each).
+
+And the assert itself was wrong twice in a row, the same way: each counter bump NAMES its counter
+twice, so the post-count is 2 and I predicted 1. The same slip appeared once more in this item's
+mutation driver, where the mutated text `if (w !== 0) {` also matches a branch already in the file.
+**So: count the occurrences in the mutated file; do not predict them.** A patch script that writes
+nothing looks exactly like one that worked.
+
+#### Gates
+
+`bun run check` 0 read unpiped. Five suites isolated: core 453, gql 4360, gremlin 2047,
+serialization 144, native 1081, 0 fail each. Seven byte-identity fuzzers 20 pass, 0 fail. **Fourteen
+mutants, all CAUGHT** — each of the five eligibility clauses relaxed, the predicate tightened to
+never apply, the start label / start inline pred / accept predicate ignored, arrivals weighted 0,
+the degree sum ignoring the arrivals weight, the second leg reading the first leg's CSR, the first
+leg's direction flipped, and the middle label ignored. Interleaved A/B, two order-alternated rounds,
+one row per process, each arm asserted in the BUILT bundle.
