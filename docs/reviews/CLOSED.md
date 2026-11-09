@@ -77075,7 +77075,7 @@ screen's only durable products are the third confirmation above and the profiler
 the tree verified clean (`__zb` absent) before gating; the only edit is the note on `hop-sides.ts` and
 this entry, so no behaviour changed.
 
-### Item 1720 — **FIRST MEASUREMENT OF THE TS ENGINE'S PER-ELEMENT MEMORY, a surface the corpus had never touched: 646 bytes a vertex and 783-990 bytes an EDGE.** ⚠️ **~90% of that is container overhead, not data — an edge property adds 10 bytes and the per-edge cost FALLS from 990 to 783 as fanout goes 2 to 5.** ⚠️ **And it is why `algo-scaling-bench` cannot reach its fourth point: at V=1,280,000 the GRAPH ALONE is ~3.3 GB against node's 4 GB default**
+### Item 1720 — **FIRST MEASUREMENT OF THE TS ENGINE'S PER-ELEMENT MEMORY, a surface the corpus had never touched: 646 bytes a vertex and 783-990 bytes an EDGE.** ⚠️ **AND IT IS A FOOTPRINT FINDING ONLY — ITEM 1721 REFUTED THE SPEED ANGLE: 8x the live heap leaves an unrelated query unchanged, so the GC shares in TS profiles are the query's OWN allocation.** ⚠️ **~90% of that is container overhead, not data — an edge property adds 10 bytes and the per-edge cost FALLS from 990 to 783 as fanout goes 2 to 5.** ⚠️ **And it is why `algo-scaling-bench` cannot reach its fourth point: at V=1,280,000 the GRAPH ALONE is ~3.3 GB against node's 4 GB default**
 
 Reached by pivoting after two consecutive screens found closed ground (items 1719 and the
 `ENUMERATES` row, whose profile matched items 733/735's "three comparable thirds, no hot spot"). The
@@ -77135,3 +77135,46 @@ as four configurations agreeing. **Print the inputs beside the result.**
 
 `bun run check` 0 read through `${pipestatus[1]}` (after `bun run fmt`). native 1081 pass, 0 fail. The
 only additions are the probe and this entry; no engine source changed.
+
+### Item 1721 — **REFUTED: resident graph size does NOT cost query speed. 8x the live heap (107 -> 872 MB) leaves an unrelated query unchanged (median 11.0 -> 10.0 ms, min 10.5 -> 9.5).** So item 1720's 990 bytes an edge is a FOOTPRINT finding, not a speed target, and the GC shares in TS profiles are the query's OWN allocation
+
+Item 1720 measured the TS engine at 646 bytes a vertex and 783-990 an edge, ~90% container overhead,
+and flagged the speed angle as coupled but UNPROVEN: GC is 12.67% of the `project var-length 1-3
+hops` profile and 6.93% of `labelPropagation`'s CSR build, so allocation per element plausibly sets
+that floor. "Plausibly" is exactly the kind of claim this corpus has refuted repeatedly, so it got
+its own experiment before anything in `packages/core` was touched.
+
+**The experiment separates RESIDENT size from the query's own allocation.** The query target is an
+identical 40,000-vertex / 80,000-edge graph in both arms; the only difference is a second, larger,
+INERT graph that the query never reads. If marking a bigger live set costs query time, it shows up
+here — the query's own allocation triggers the collections, and those collections must mark the
+ballast too.
+
+```text
+    arm                     heap     median    min
+    no ballast             107 MB     11.0     10.5
+    300,000-vertex ballast 872 MB     10.0      9.5
+```
+
+**8x the live heap, and the query is if anything FASTER.** So the mechanism is refuted for this
+shape: the GC share in a TS profile is the rows the query allocates (344,565 per call on the
+var-length row), not the graph it reads. Reducing per-element memory would buy footprint — a real
+thing, and it is what sets the ~800,000-vertex ceiling under node's default heap — but not speed, and
+a change to `packages/core` that every query path reads cannot be justified on a speed argument that
+does not survive its own test.
+
+⚠️ **Scope of the refutation.** One shape, an 11 ms query. It does not say a major GC can never be
+provoked by a large live set, only that 8x the live set does not move this row. The ballast is held
+alive by an ordinary reference, which `graph-pinned-until-microtask-drain` makes reliable here.
+
+**What this leaves on the algorithms surface**, which remains the ground worth working because a
+change there cannot pay the ~16% executor perturbation toll (item 1466): `neighborAggregate` at
+**2,500 ns/V** is the second-highest per-vertex cost and the one target items 1467-1470 priced and did
+NOT take (`labelPropagation` taken at 1468, `shortestPath` at 1470), with vectorizing it recorded as
+open. `peerPressure` is 48.81% in its own loop with no attackable frame — a measured
+where-not-to-look.
+
+#### Gates
+
+`bun run check` 0 read through `${pipestatus[1]}`. No source or probe changed — the only edit is this
+entry.
