@@ -78098,3 +78098,91 @@ measuring the step — so the shares are the steps' own cost. Unpriced.
 
 `bun run check` 0 read through `${pipestatus[1]}`. No engine source changed — the only edit is the
 probe's shape list plus its comment.
+
+### Item 1736 — **`Object.assign` BEATS `copyProps`' `Object.keys` LOOP BY 1.26x AT WIDTH 3, 1.63x AT 8 AND 2.42x AT 24, with a working control flat.** ⚠️ **NOT SHIPPED: it is the one copy form that excludes symbol keys, and a symbol-keyed property DOES reach a stored bag (measured). The function's own comment says a perf item is not the place to change settled key semantics — so this is an owner decision, not a judgment call**
+
+Item 1735 left `copyProps` at **42.0%** of `V().valueMap().count()`, the largest share on any real
+Gremlin step it measured and unpriced. Its no-keys arm is
+`for (const k of Object.keys(props)) out[k] = props[k]` — an array allocation per element plus
+one-at-a-time property addition into a fresh `{}`.
+
+**A spread is correctly ruled out by the source itself**: `out[k] = v` and `{ ...props }` differ for
+the key `__proto__` (assignment sets the prototype, spread defines an own property), and
+`prototype-key-class-not-a-bug` settles that as WON'T-FIX. `Object.assign` looked like the way
+through, because it reads with `[[Get]]` and writes with `[[Set]]` — **assignment semantics, so the
+`__proto__` behaviour is preserved exactly** — while being one builtin call with no `Object.keys`
+array.
+
+#### Measured: 200,000 vertices, median of 9 dropping 3, three alternated rounds, one arm per build
+
+```text
+  width   base (r1/r2/r3)           assign (r1/r2/r3)        ratio
+    3     34.4 / 33.3 / 33.8        27.8 / 26.3 / 26.6       1.26x
+    8     53.5 / 54.5 / 52.7        34.0 / 32.9 / 32.4       1.63x
+   24    107.0 / 111.7 / 108.8      44.9 / 45.1 / 46.4       2.40x
+```
+
+**The ratio rises with bag width, which is the right shape for the mechanism** — the `Object.keys`
+array and the incremental property additions are both per-property — and it is why the arms were
+swept over three widths rather than measured at one (CLAUDE.md's "match the fixture to the claim").
+Each arm was asserted present in the dist (`Object.assign(out, props)` 0 → 1) before running, and
+every row printed a matching element count.
+
+⚠️ **MY FIRST CONTROL WAS DEGENERATE AND I RAN THE WHOLE SWEEP BEFORE NOTICING.** `V().count()`
+hits the count shortcut and returns in **0.0 ms**, so it cannot detect a bad build or machine drift
+— which is a control's entire job. Re-ran with `V().values('p0').count()`, which walks every vertex
+and never reaches `copyProps`: **2.6 / 2.6 / 2.6 ms base against 2.6 / 2.6 / 2.5 assign.** Flat, so
+the 2.40x is the change. Both controls are kept in the probe, the degenerate one labelled as such.
+⚠️ And its `answer` field printed **0** — the probe applied map arithmetic to a scalar-terminal
+shape, giving a vacuous assertion on the one row whose job is to be trustworthy. Fixed per-shape;
+this is the same defect class as items 1716 and 1735, found in my own instrument this time.
+
+#### ⚠️ WHY IT IS NOT SHIPPED
+
+`Object.keys` returns own enumerable **string** keys. `Object.assign` copies own enumerable string
+**and symbol** keys. Every fast builtin copy form (spread included) copies symbols; the
+`Object.keys` loop is the only symbol-excluding one, so **the semantic question is unavoidable for
+any win here.**
+
+And symbol keys are reachable. Measured, not reasoned about — `normalizeProperties` returns the
+caller's bag unchanged when no value moves, so the user's object becomes the stored bag:
+
+```text
+  addVertex({ properties: { a: 1, [Symbol('sym')]: 'leaked' } })
+    ingest threw:  false
+    Object.keys(bag):                 ['a']
+    getOwnPropertySymbols(bag):       [Symbol(sym)]
+    bag[S]:                           'leaked'
+```
+
+So `Object.assign` would surface that key in `valueMap()` output where the loop hides it. **How much
+that matters is genuinely arguable, which is exactly why it is not mine to decide:**
+
+- It is unobservable through every documented surface — `Object.keys` on the result skips it,
+  `JSON.stringify` drops it, the GraphSON and NDJSON codecs iterate string keys, and no query
+  language can name a symbol. Only a caller already holding the symbol can see it.
+- Which makes it arguably the same settled WON'T-FIX class as the `__proto__` behaviour.
+- **But the counter-argument is in this function's own comment**, written about the sibling question:
+  _"that behaviour is settled — a perf item is not the place to change it."_ Deciding a second key
+  semantics question inside a perf item is precisely what that sentence forbids.
+- A third option exists and is a separate change: **drop symbol keys at ingest** in
+  `normalizeProperties`, which already has copy-on-change machinery. Then bags never hold symbols and
+  `Object.assign` is exactly equivalent forever. It also removes what is arguably a latent
+  cross-engine divergence — native has no symbol-keyed property, so TS storing one is state the Rust
+  engine cannot represent, and no fuzzer generates a symbol so nothing would catch it.
+
+**Priced at 1.26-2.40x and left at the decision.** The three paths are: accept the symbol exposure,
+drop symbols at ingest and then take it, or keep the loop.
+
+**NEW PERMANENT INSTRUMENTS — `packages/native/valuemap-copy-probe.mjs`** (three widths, two
+controls, per-shape answer assertions) and **`packages/native/valuemap-copy-driver.sh`** (the
+`packages/gremlin` twin of item 1733's driver; its mutation is an exact multi-line replacement with
+an asserted match count, so a drifted loop body fails to match rather than being half-rewritten).
+
+`projectStep` at 47.5% of `project('a','b')` (item 1735's other nomination) remains unpriced.
+
+#### Gates
+
+`bun run check` 0 read through `${pipestatus[1]}`. Pristine `projection.ts` restored and rebuilt by
+the driver, tree verified clean; **no engine source changed** — the arms were built, measured and
+reverted.
