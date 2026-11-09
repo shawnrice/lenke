@@ -34,6 +34,13 @@ const QUERIES = {
   // Same predicate FORM, 1000x less selective: 10,000 of 20,000 rows. If the hash index's help on
   // `range` is selectivity-driven (a seek that enumerates few values), this should not improve.
   rangewide: 'MATCH (n:P) WHERE n.n < 10000 RETURN n.s AS s',
+  // THE LADDER (item 1755): the same `<` with THRESH matching rows, to locate the crossover where
+  // taking the index stops paying. `n` is `i`, so the threshold IS the row count.
+  rangeladder: `MATCH (n:P) WHERE n.n < ${process.env.THRESH ?? 10} RETURN n.s AS s`,
+  // ⚠️ THE CARDINALITY TWIN (item 1755). Same ~50% selectivity as `n < 10000`, but on `k`, which has
+  // only 97 DISTINCT values against `n`'s 20,000. `countRange` is O(distinct values in range), so if
+  // the regression is the GATE'S INPUT rather than the seek, this must NOT regress.
+  rangelowcard: 'MATCH (n:P) WHERE n.k < 48 RETURN n.s AS s',
 };
 
 const q = QUERIES[SHAPE];
@@ -60,7 +67,14 @@ if (INDEXED || process.env.INDEXED === 'k') {
 }
 
 // Expected row counts, so an arm that stopped answering correctly cannot be timed (item 1749).
-const EXPECTED = { point: 1, band: Math.ceil(NODES / 97), range: 10, rangewide: 10_000 };
+const EXPECTED = {
+  point: 1,
+  band: Math.ceil(NODES / 97),
+  range: 10,
+  rangewide: 10_000,
+  rangeladder: Math.min(Number(process.env.THRESH ?? 10), NODES),
+  rangelowcard: 48 * Math.floor(NODES / 97) + Math.min(48, NODES % 97),
+};
 let rows0 = 0;
 const t0 = performance.now();
 

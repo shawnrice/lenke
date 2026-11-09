@@ -79298,7 +79298,7 @@ three.
 `bun run check` 0 read through `${pipestatus[1]}`. No source changed — this item is the entry and the
 verification it records.
 
-### Item 1754 — ⚠️⚠️ **A HASH INDEX MAKES A LOW-SELECTIVITY RANGE 1.9x SLOWER: the range-seek route is taken whenever an index exists, with no selectivity gate.** Found because ⚠️ **NEITHER frame screen has ever built an index**, so every target this audit has nominated came from the SCAN path — and with an index the hot frames invert to the PLANNER
+### Item 1754 — ⚠️⚠️ **A HASH INDEX MAKES A LOW-SELECTIVITY RANGE 1.9x SLOWER** ~~: the range-seek route is taken whenever an index exists, with no selectivity gate.~~ ⚠️ **THE DIAGNOSIS IS WRONG AND IS CORRECTED AT ITEM 1755: a gate EXISTS (`SEEK_MAX_FRACTION = 1/8`, measured at items 409/173). The regression is the cost of computing the gate's INPUT — `countRange` is O(distinct values in range) — so it tracks the column's CARDINALITY, not its selectivity. The 1.9x measurement stands; the explanation does not.** Found because ⚠️ **NEITHER frame screen has ever built an index**, so every target this audit has nominated came from the SCAN path — and with an index the hot frames invert to the PLANNER
 
 `point` (`WHERE n.n = 12345`, one row of 20,000) was costing **~250 µs per query** — 12.5 ns a
 vertex, which is a scan, not a lookup. The reason is the instrument: **`runtime-profile-probe.mjs`
@@ -79356,3 +79356,67 @@ assertions, and the selectivity ladder.
 #### Gates
 
 `bun run check` 0 read through `${pipestatus[1]}`. No source changed — one new probe and this entry.
+
+### Item 1755 — ⚠️ **ITEM 1754'S DIAGNOSIS WAS WRONG: the selectivity gate EXISTS. The 1.9x regression is the cost of computing the gate's INPUT — `countRange` is O(distinct values in range) — and it therefore tracks the column's CARDINALITY, not its selectivity.** Proved with a same-selectivity, different-cardinality twin. The fix is an early-terminating count, designed and not built
+
+Item 1754 measured a hash index making `WHERE n.n < 10000` **1.9x slower** than no index, and
+concluded the range-seek route "is taken because an index exists, not because it pays — … with no
+cost gate on this side." **The measurement stands. The diagnosis was wrong.**
+
+Reading the route rather than inferring it:
+
+```typescript
+export const SEEK_MAX_FRACTION = 1 / 8;           // matching.ts
+const SEEK_FLOOR_VERTICES = 4_096;
+export const seekIsWorthIt = (graph, label, count) => { … }
+```
+
+**A gate exists, and it is carefully calibrated** — its own comment brackets the break-even with two
+independent measurements (item 409's ~18%, `hop-projection`'s `SEEK_MARGIN` at 16.25% "reached after
+a plain guard measured a 3.1x REGRESSION"), and deliberately ships the lower 12.5%. My entry asserted
+its absence from a grep that searched for the wrong names.
+
+#### So why is a 50%-selective range still 1.9x slower when the gate must decline it?
+
+Because **the gate's input is not free.** `PropertyIndex.countRange` sums bucket sizes over the
+matching distinct values — its own doc says _"O(distinct values in range), so a planner can compare
+candidates before materializing the winner."_ On `n`, which is `i` and therefore **20,000 distinct
+values**, `n < 10000` walks **10,000 index entries** to produce the number the gate compares — then
+the gate declines and the scan runs anyway. **The query pays the count AND the scan.**
+
+#### The twin that proves it: same selectivity, different cardinality
+
+```text
+  query            distinct   rows     no index      indexed        verdict
+  n.n < 10000       20,000    10,000   496-503 µs    935-992 µs     1.9x SLOWER
+  n.k < 48              97     9,906   470-501 µs    448-455 µs     no regression
+```
+
+**Same ~50% selectivity, same ~10,000 rows, opposite verdicts.** The only variable is how many
+DISTINCT values the range spans — 10,000 against 48. That is `countRange`'s complexity exactly, and
+it rules out the seek itself, the gate, and the selectivity as explanations.
+
+It also re-reads item 1754's ladder correctly: the apparent crossover at ~8.5% on `n` is not the gate
+mis-calibrated at 12.5%, it is **the point where `countRange`'s cost on a 20,000-value column
+overtakes the seek's benefit.** The gate's threshold is right for what it measures; the measurement
+has a cost the gate does not account for.
+
+#### The fix, designed and NOT built
+
+`seekIsWorthIt` only compares `count` against `bucket / 8`, so **the exact count is never needed —
+only whether it exceeds the cap.** An early-terminating `countRangeAtMost(key, bound, cap)` makes the
+gate's input **O(min(matches, cap))** instead of O(matches), which bounds the waste on a declined
+seek to one-eighth of the bucket.
+
+⚠️ One caveat for whoever builds it: `count` is also used to rank several candidates and pick the
+most selective. A capped count cannot order two candidates that both exceed the cap — but both would
+be declined anyway, so ranking is unaffected for any candidate that can be admitted. That needs
+asserting in a test rather than assumed, which is why this is designed and not built here.
+
+**NEW PROBE SHAPE — `rangelowcard`**, the cardinality twin, kept because it is the control that
+separates cardinality from selectivity and nothing else in the corpus does.
+
+#### Gates
+
+`bun run check` 0 read through `${pipestatus[1]}`. No source changed — one probe shape, 1754's struck
+diagnosis, and this entry.
