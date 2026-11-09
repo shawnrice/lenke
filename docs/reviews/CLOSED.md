@@ -77179,7 +77179,7 @@ where-not-to-look.
 `bun run check` 0 read through `${pipestatus[1]}`. No source or probe changed — the only edit is this
 entry.
 
-### Item 1722 — **REFUTED: reading the endpoint ID instead of materializing the endpoint VERTEX in the algorithms' CSR fill. The target moved 1.051x/1.008x and BOTH CONTROLS moved more (1.183x/1.038x and 1.081x/1.051x).** ⚠️ **And the ~172 ns per index write that nominated it is the CALLER's loop again, not a hash lookup — the fourth instance of that trap this session**
+### Item 1722 — **REFUTED: reading the endpoint ID instead of materializing the endpoint VERTEX in the algorithms' CSR fill. ⚠️ ITS PREMISE IS ALSO CORRECTED AT 1723: the id read is 39 ns and `index.get` is 52 — the reverse of what I assumed, which is why removing the former changed nothing.** ** The target moved 1.051x/1.008x and BOTH CONTROLS moved more (1.183x/1.038x and 1.081x/1.051x).** ⚠️ **And the ~172 ns per index write that nominated it is the CALLER's loop again, not a hash lookup — the fourth instance of that trap this session**
 
 `writeIncidentEnds` profiles at **23.13%** of `labelPropagation` (the highest per-vertex procedure at
 2138 ns/V after item 1468), and the arithmetic looked decisive: ~110 ms a call for ~640,000 index
@@ -77233,3 +77233,76 @@ all, so it optimizes the bench and not the user.** Declined on that, not on feas
 `bun run check` 0 read through `${pipestatus[1]}`. Both source files reverted and verified (`idKey`
 absent); core 453 pass, 0 fail. The only edit kept is the rejection note on `writeIncidentEnds` and
 this entry.
+
+### Item 1723 — **MEASURED AND NOT BUILT: every one of the twelve algorithms runs its whole body inside a GENERATOR and the SYNC path drains it, paying a 1.59x penalty on the hot loop for yields only the ASYNC driver needs. ~49 ms of labelPropagation's 329 (≈15%).** ⚠️ **The single-body design is a documented byte-identity guarantee, so removing it is an owner decision, not a tick's work.** Plus the decomposition that found it, and the correction it forces on item 1722's arithmetic
+
+Item 1722 refuted the endpoint-id read and ended with the right question: not which cheap callee to
+replace, but what the LOOP is doing. This answers it.
+
+**First, the build's share is bigger than the profile said, measured as WALL TIME rather than a
+share.** `labelPropagation` at V=160,000, `{ iterations: 10 }`, median of 7:
+
+```text
+    total 329.0 ms    CSR build 205.0 ms    62.3%    640,000 entries    320 ns/entry
+```
+
+Item 1394 warns that a profile share overstates a realizable change by ~2.5x on the Gremlin surface;
+here the share (41%) **understated** the wall-clock cost (62.3%). The warning does not generalize —
+measure the phase, do not scale the share.
+
+**The fill decomposes cleanly** (640,000 entries, both directions, each stage adding one operation):
+
+```text
+    A  Set iteration only                 41.2 ms    64 ns/entry
+    B  + edge.toId / fromId                65.6       103      (+39)
+    C  + index.get(id)   [the real fill]   99.2       155      (+52)
+```
+
+⚠️ **This corrects item 1722's premise.** I had treated `edge[end].id` as the expensive part and
+`index.get` as incidental; it is the reverse. `edge.to` is CACHED on the edge (`#toV`), so the id read
+is 39 ns, while `index.get(id)` is a string-keyed `Map.get` on EVERY entry and never cached — 52 ns.
+The change I tested removed the cheap half and kept the expensive one, which is exactly why it
+measured nothing. **And `index.get` is 52 ns, not the ~190 ns item 194 priced** — so that figure does
+not transfer to this shape either.
+
+**Two hypotheses died before the real one.** `countIncidentEdgesFlat` does NOT re-iterate the edges —
+it sums `set.size` per label bucket, O(labels) not O(edges) — so the "counts twice" story is wrong.
+And `YIELD_EVERY` is 256, so ~2,500 suspensions over 640,000 entries cannot account for anything.
+
+**The generator FRAME is the cost, not the yields.** The same loop, same data, plain function against
+a generator drained synchronously:
+
+```text
+    plain function              83.4 ms    130 ns/entry
+    generator, drained sync    132.7 ms    207 ns/entry     1.59x
+```
+
+**49.3 ms of pure generator overhead** on a 205 ms build — ~24% of the build and ~15% of the run. V8
+pays for a generator frame throughout the body, not only at suspension points.
+
+**⚠️ AND IT IS SURFACE-WIDE.** `run-sync.ts` is `drainSync(xGen(config, graph))` for ALL TWELVE
+algorithms, which is the entry point both GQL `CALL` and Gremlin OLAP steps dispatch through. So every
+synchronous algorithm call pays this.
+
+**Why it is recorded and not built.** `runAlgorithmSync`'s own doc states the reason the bodies are
+shared: _"The generator bodies are the same ones the async functions drive, so results stay
+byte-identical to both the async path and the native engine."_ One body IS the byte-identity
+guarantee, and `label-propagation.ts` separately warns that its two existing arms must produce the
+IDENTICAL adjacency because "a permuted neighbour list changes a label tie-break, so a divergence here
+is a wrong answer". The options:
+
+1. **A sync-only non-generator copy** — ~15%, and makes FOUR arms to keep identical. This is the
+   divergence hazard the code warns about, bought with a number.
+2. **Plain functions over a vertex RANGE, with the async driver chunking by range** — one body, no
+   generator, chunking preserved. Clean, but it rewrites `async.ts`'s contract and every algorithm's
+   loop structure, and the time-bounded chunk is a user-visible responsiveness contract.
+3. **Leave it.** 15% of the algorithms surface for a guarantee that has so far kept twelve procedures
+   byte-identical across two engines and an async/sync split.
+
+⚠️ **That is an owner decision about trading a correctness guarantee for ~15%, which is not a tick's
+work to take unilaterally.** Priced here so it can be decided rather than rediscovered.
+
+#### Gates
+
+`bun run check` 0 read through `${pipestatus[1]}`. All timing instrumentation reverted and verified
+(`__zl` absent); core 453 pass, 0 fail. No behaviour changed.
