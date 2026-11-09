@@ -79680,3 +79680,56 @@ range case. A test asserting only "ranges are suppressed" would have shipped it.
 
 gremlin **2116 pass, 0 fail**, **all seven byte-identity fuzzers green**, `bun run check` 0 read
 through `${pipestatus[1]}`.
+
+### Item 1760 — **THE INDEX-SEED FAMILY IS CLOSED: the ~1.14x residual item 1759 left is the CAP'S OWN WALK, ~129 µs of 142 accounted for arithmetically — and it cannot be reduced without making the gate UNSOUND.** A correctness floor, not an unfinished optimization
+
+Items 1756/1758/1759 shipped three wins from one mechanism (an estimate costing more than the
+decision it informs: GQL 1.60x, Gremlin 2.39x, the values path 1.29x). Item 1759 recorded a residual
+rather than rounding it away, so this prices it.
+
+#### The residual is stable, disjoint, and diffuse
+
+```text
+  V().has('n', lt(10000)).values('s')     no index   1123.3  1052.4  1037.1  1040.9   median 1046
+                                           indexed   1193.1  1183.3  1193.6  1182.7   median 1188
+```
+
+**1.14x, ranges disjoint.** But the windowed profiles of the two arms are **compositionally
+identical** — `toArray`, `filterStream`, `sourceFromIds`, `projectValues`, `unwrap` in both, no frame
+unique to the indexed arm, and `countRangeAtMost` nowhere (it runs once per query, 300 times, which
+no profile at this scale can see). The largest single mover is `filterStream` at +18 ms of a +45 ms
+total, which is not an attribution so much as a statement that the cost is spread.
+
+#### The arithmetic that does attribute it
+
+The cap is `sourceSize * SEEK_MAX_FRACTION` = **2,500 entries**. Item 1757's own measurement gives
+the per-entry rate from the same probe: the uncapped walk cost 644.7 − 127.2 = **517 µs for 10,000
+entries, i.e. ~51.7 ns each**. So the capped walk is `2,500 × 51.7 ns` ≈ **129 µs**, against an
+observed residual of **142 µs** — **91% accounted for**, by a rate measured on this fixture rather
+than carried from elsewhere.
+
+#### ⚠️ AND IT IS A FLOOR, FOR A CORRECTNESS REASON
+
+The obvious next move is to shrink the cap. **It cannot be shrunk below the gate's threshold**, and
+the reason is soundness rather than taste:
+
+`countRangeAtMost` returns the running count once it passes the cap, so a count reported from a cap
+of `bucket / 64` can be just above `bucket / 64` while the TRUE count is half the bucket. The gate
+compares against `bucket / 8` and would **admit** it — materializing exactly the unselective seek
+the gate exists to refuse, which is item 409's measured 5.02x and item 1322's 5x. **So
+`cap >= the gate's threshold` is a correctness constraint, and `cap = threshold` is already the
+minimum.**
+
+The only way past it is a cardinality estimate that does not walk — and the TS planner has none
+(item 1755 checked; `hop-projection.ts` declines a different optimization for the same reason).
+`PropertyIndex.buckets.size` is an O(1) distinct-value count, but a distinct count does not bound a
+RANGE's matches, so it cannot substitute.
+
+**Family closed at three shipped wins.** The remaining 1.14x on an indexed wide range is the price of
+a sound gate, documented here so the next reader prices it as a floor instead of re-profiling it —
+and the profiles above are what a re-profile would find.
+
+#### Gates
+
+`bun run check` 0 read through `${pipestatus[1]}`. No source changed — one probe gained `PROF_OUT`
+windowing, and this entry.

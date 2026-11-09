@@ -20,6 +20,8 @@
 import { Graph } from '@lenke/core';
 import { count, has, hasLabel, lt, toArray, traversal, V, values } from '@lenke/gremlin';
 
+import { profileWindow } from './windowed-profile.mjs';
+
 const NODES = Number(process.env.NODES ?? 20_000);
 const N = Number(process.env.N ?? 300);
 const INDEXED = process.env.INDEXED === '1';
@@ -65,12 +67,17 @@ const t0 = performance.now();
 
 let rowCount = 0;
 
-for (let i = 0; i < N; i += 1) {
-  const out = toArray(plan, g);
+// Windowed so the fixture build is never in the profile (windowed-profile.mjs's own reason).
+await profileWindow(process.env.PROF_OUT, () => {
+  for (let i = 0; i < N; i += 1) {
+    const out = toArray(plan, g);
 
-  rowCount = out.length;
-  [answer] = out;
-}
+    rowCount = out.length;
+    [answer] = out;
+  }
+
+  return rowCount;
+});
 
 const ms = performance.now() - t0;
 
