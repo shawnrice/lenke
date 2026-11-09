@@ -78550,7 +78550,7 @@ and `const exactSeed = …` **6** — the file holds several near-identical clos
 anchor lands in the wrong one. Only `const cstart = cm.patterns[0].start;` is unique. That is the
 same lesson as items 1737 and 1738, now with a count.
 
-### Item 1742 — ❌ **NOT SHIPPED: the same hoist in the TOP-K arm is 1.21x on three columns but costs the SINGLE-column shape 7.6%, ranges disjoint both ways.** ⚠️ **The regressed path's code is BYTE-IDENTICAL to before — it is the CLOSURE growing a second loop, not the code it runs.** And item 1741 shipped only because its narrow path happened to stay flat; the same standard says no here
+### Item 1742 — ❌ **NOT SHIPPED ~~in this form~~: the TWO-LOOP hoist in the TOP-K arm is 1.21x on three columns but costs the SINGLE-column shape 7.6%, ranges disjoint both ways.** ⚠️ **SUPERSEDED — item 1743 took the fix this entry prescribes (the mode choice at MODULE scope, one loop) and SHIPPED it at 1.35x with the single-column shape FLAT. This entry's diagnosis stands; its verdict applies only to the two-loop spelling.** ⚠️ **The regressed path's code is BYTE-IDENTICAL to before — it is the CLOSURE growing a second loop, not the code it runs.** And item 1741 shipped only because its narrow path happened to stay flat; the same standard says no here
 
 Item 1741 shipped a per-row bag hoist in `node-scan.ts`'s main projection closure. Two sibling
 closures in the same file carry a byte-identical loop, so the obvious next step was to apply it
@@ -78621,3 +78621,53 @@ next reader reaches the top-K arm at all, and `defwide`/`defnarrow` document tha
 
 `bun run check` 0 read through `${pipestatus[1]}`. Source reverted and verified identical to HEAD;
 the only change is the probe's shape list.
+
+### Item 1743 — ✅ **SHIPPED: the fix item 1742 prescribed and did not measure — move the mode choice to MODULE scope, keep ONE loop. 1.35x on a three-column `ORDER BY … LIMIT`, the single-column shape FLAT, both main-closure shapes FLAT.** Better than the two-loop form it replaces (1.21x) and without its 7.6% regression
+
+Item 1742 declined the per-row bag hoist in `topKNodeWalk` and diagnosed why precisely: the
+single-column path lost 7.6% **although its code was byte-identical**, because `project` grew a
+second loop and a bigger closure inlines worse (`ts-closure-size-is-load-bearing`). Its own note
+prescribed the fix — _"lift both loop variants to MODULE scope so this closure stays small"_ — and
+recorded it as designed, not measured, because `project` closes over eight names.
+
+**The lighter form sidesteps that cost entirely: ONE module function, not two loops.**
+
+```ts
+const readDirect = (bag: Record<string, unknown> | undefined, v: Vertex, dk: string): unknown =>
+  bag === undefined ? propOf(v, dk) : (bag[dk] ?? null);
+```
+
+The closure grows by **one local** and keeps **one loop**, and the per-column **call count is
+unchanged** — `readDirect` replaces the `propOf` call that was already there. So nothing in the
+closure-size mechanism is triggered, and the hoist's saving (the `properties` getter, once per row
+instead of once per column) is kept.
+
+#### Measured, 1500 runs, three alternated rounds, base = HEAD after item 1742
+
+```text
+  shape                          base                oneloop             verdict
+  topkwide   (3 direct cols)     507.9 492.6         364.6 371.7 363.9   1.35x, DISJOINT
+  topknarrow (1 direct col)      364.5 369.5         379.5 360.5 357.5   FLAT
+  wideproj   (main closure)      499.3 482.1 479.4   483.4 484.4 495.1   FLAT
+  narrow1    (main closure)      288.0 290.2 289.4   288.5 286.9 286.2   FLAT
+```
+
+**1.35x beats the two-loop form's 1.21x**, which is the part worth noticing: the module-scope shape
+is not merely a way to avoid the regression, it is also faster on the target. Both main-closure
+shapes are flat, so the change is confined to the arm it edits — and that pair is the control that
+says so.
+
+⚠️ **THE FILE NOW HOLDS TWO SPELLINGS OF ONE OPTIMIZATION**, and that is deliberate: the main
+closure splits into two loops (item 1741, measured 1.30x with its narrow shape FLAT) while this arm
+calls `readDirect`. There is no defect in 1741's split to fix, and rewriting a shipped win to match a
+style is a change with a measured risk and no measured gain. Recorded at the site, with the note that
+`readDirect` is the better shape to adopt if the main closure is ever touched for another reason.
+
+#### Gates
+
+GQL suite **4424 pass, 0 fail**. **All seven byte-identity fuzzers green** (20 pass, 0 fail).
+`bun run check` 0 read through `${pipestatus[1]}`.
+
+**Three items, one lever, and the sequence is the point:** 1741 shipped it where the narrow path was
+flat, 1742 found the closure-size cost where it was not and named the fix, 1743 measured that fix.
+None of the three could have been written without the one before it.

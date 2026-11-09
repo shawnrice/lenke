@@ -744,6 +744,19 @@ export const topKPlan = (
  * slower way to sort everything. Above it this walk does what the plain arm does, which is why
  * the large-`cap` shape cannot regress past one extra array.
  */
+/**
+ * One direct-column read, with the row's property bag already in hand when the caller hoisted it.
+ *
+ * ⚠️ AT MODULE SCOPE DELIBERATELY, and that is the whole point of this shape (item 1743). Item 1742
+ * put the two modes in two LOOPS inside the per-row closure and the single-column path lost 7.6%
+ * although its code was byte-identical — `ts-closure-size-is-load-bearing`: a bigger closure body
+ * inlines worse. Here the closure grows by one local and keeps ONE loop, and the mode choice costs
+ * a module-level call that REPLACES the `propOf` call it would otherwise make, so the per-column
+ * call count is unchanged.
+ */
+const readDirect = (bag: Record<string, unknown> | undefined, v: Vertex, dk: string): unknown =>
+  bag === undefined ? propOf(v, dk) : (bag[dk] ?? null);
+
 export const topKNodeWalk = (spec: {
   cstart: CNode | undefined;
   label: Extract<LabelExpr, { kind: 'label' }> | undefined;
@@ -795,7 +808,24 @@ export const topKNodeWalk = (spec: {
       kept.push(v);
     }
 
-    // ❌ REJECTED HERE, item 1742: the per-row bag hoist item 1741 shipped in this file's MAIN
+    // ✅ SHIPPED AT ITEM 1743, after item 1742 rejected a DIFFERENT spelling of the same idea here.
+    // The two-loop form (one loop per mode, as the main closure above uses) measured 1.21x on three
+    // columns but cost the SINGLE-column shape 7.6% with disjoint ranges — although that path's code
+    // was byte-identical, because `project` grew a second loop and a bigger closure inlines worse.
+    // Moving the mode choice into the module-scope `readDirect` above keeps ONE loop and one extra
+    // local, and the per-column call count is unchanged (`readDirect` replaces the `propOf` call).
+    // 1500 runs, three alternated rounds, ms: THREE columns 508/493 -> 365/372/364, **1.35x with
+    // disjoint ranges — better than the two-loop form's 1.21x** — and ONE column 365/370 ->
+    // 380/361/358, FLAT. Both of the main closure's shapes are flat too (`wideproj` 499/482/479 ->
+    // 483/484/495; `narrow1` 288/290/289 -> 289/287/286), so this change is confined to this arm.
+    //
+    // ⚠️ The file therefore holds TWO spellings of one optimization: the main closure splits into two
+    // loops (item 1741) and this arm calls `readDirect`. Left that way deliberately — 1741's split
+    // measured 1.30x with its narrow shape FLAT, so there is no defect there to fix, and rewriting a
+    // shipped win to match a style would be a change with a measured risk and no measured gain. If
+    // the main closure is ever touched for another reason, `readDirect` is the better shape to adopt.
+    //
+    // (Historical, item 1742: the per-row bag hoist item 1741 shipped in this file's MAIN
     // projection closure. This arm is the only reachable sibling — verified with a per-closure
     // counter, since all three are returned by the same `nodeProjection` detector and the route name
     // cannot tell them apart (`topkwide` fired this one 78 times; `wideproj`, `ORDER BY` without a
@@ -810,22 +840,22 @@ export const topKNodeWalk = (spec: {
     // costing anything; it does nothing about the closure growing, and those are separate costs.
     // Item 1741 shipped because its narrow path measured FLAT, not because a split is free.
     //
-    // Declined: 7.6% is above the 7.4% at which item 312 withdrew `addVertex`, it is ~4x the cost
-    // 1741 accepted for a bigger win, and `ORDER BY … LIMIT` on one column is a common serving
-    // shape. The fix that might work is the one that note prescribes — lift both loop variants to
-    // MODULE scope so this closure stays small — but `project` closes over eight names, so that
-    // needs an args object or eight parameters. Designed, not measured.
+    // That form was declined because 7.6% is above the 7.4% at which item 312 withdrew `addVertex`.
+    // Its note prescribed lifting the loop variants to MODULE scope so this closure stays small —
+    // which is what item 1743 then did, in the lighter form above: one module function, not two.)
+    const hoistBag = directKeys.filter((k) => k !== undefined).length > 1;
     const project = (v: Vertex): Row => {
       if (!allDirect) {
         binding.set(nodeVar, v);
       }
 
       const row: Row = {};
+      const bag = hoistBag ? v.properties : undefined;
 
       for (let i = 0; i < width; i++) {
         const dk = directKeys[i];
 
-        row[cols[i]] = dk === undefined ? fns[i](env) : propOf(v, dk);
+        row[cols[i]] = dk === undefined ? fns[i](env) : readDirect(bag, v, dk);
       }
 
       return row;
