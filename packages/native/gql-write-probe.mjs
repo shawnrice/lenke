@@ -84,6 +84,23 @@ const SHAPES = {
     params: (i) => ({ n: i % SEED, k: i % 97 }),
     expect: (g) => g.vertexCount === SEED,
   },
+  // THE DIRECT-API FLOOR for `insertp`: the same write with no parse, no plan, no clause runner and
+  // no statement boundary. The GAP between them is what going through GQL costs a write, which is
+  // the only way to bound it without first knowing the mechanism (item 1766).
+  insertdirect: {
+    direct: (g, i) => g.addVertex({ labels: ['P'], properties: { n: SEED + i, k: i % 97 } }),
+    expect: (g) => g.vertexCount === SEED + BATCH,
+  },
+  setdirect: {
+    direct: (g, i) => {
+      const v = g.getVertexById(`v${i % SEED}`);
+
+      if (v) {
+        v.setProperty('k', i % 97);
+      }
+    },
+    expect: (g) => g.vertexCount === SEED,
+  },
   insertedgep: {
     q: () => 'MATCH (a:P), (b:P) WHERE a.n = $a AND b.n = $b INSERT (a)-[:E]->(b)',
     params: (i) => ({ a: i % SEED, b: (i * 7) % SEED }),
@@ -105,7 +122,11 @@ for (let r = 0; r < ROUNDS; r += 1) {
 
   await profileWindow(r === ROUNDS - 1 ? process.env.PROF_OUT : undefined, () => {
     for (let i = 0; i < BATCH; i += 1) {
-      query(g, shape.q(i), shape.params === undefined ? undefined : shape.params(i));
+      if (shape.direct !== undefined) {
+        shape.direct(g, i);
+      } else {
+        query(g, shape.q(i), shape.params === undefined ? undefined : shape.params(i));
+      }
     }
 
     return g.vertexCount;

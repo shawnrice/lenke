@@ -80022,3 +80022,60 @@ overstating retention.
 #### Gates
 
 `bun run check` 0 read through `${pipestatus[1]}`. No source changed — one new probe and this entry.
+
+### Item 1766 — **THE GQL WRITE STATEMENT DECOMPOSED against the direct-API floor: `g.addVertex` is 1.99 µs and a GQL `INSERT` 2.67 (1.34x).** ⚠️ **Two misreadings caught on the way: `toArray` at 16.5% is NOT `Array.from` — it is the generator chain it PULLS — and the "5.3x" on a `SET` compares two different lookups**
+
+Item 1764 left the write path's composition known but not bounded: how much of a GQL write is the
+engine's own write, and how much is the statement around it? The only way to bound it is the direct
+API, so the probe gained two direct arms.
+
+```text
+  operation                                              µs/write
+  insertp        GQL INSERT, parameterised, indexed          2.67
+  insertdirect   g.addVertex({ labels, properties })         1.99      ← the floor
+  setp           GQL MATCH … SET, parameterised, indexed      2.17
+  setdirect      getVertexById + setProperty                  0.41
+```
+
+**A GQL `INSERT` is 1.34x the direct call** — so 75% of it is the engine's own element construction,
+which item 312 closed as a constant factor. **`g.addVertex` at 1.99 µs is itself ~18x a property
+write** (item 1733's 112 ns), which is the Vertex construction, the label commit, the label index,
+the property index, the box and the validation.
+
+#### ⚠️ THE "5.3x" ON A SET IS NOT A FAIR COMPARISON, and saying so is the point
+
+`setp` against `setdirect` is 2.17 against 0.41 — but those are **different lookups**:
+`MATCH (n:P) WHERE n.n = $n` is a property **index seek plus a label check plus a pattern bind**,
+while `getVertexById` is a **primary-key `Map.get`**. The honest statement is not "GQL adds 5.3x to a
+write" but "expressing a lookup as a pattern over a non-id property costs ~1.76 µs more than an id
+lookup", which is a different and much less alarming claim. **A floor has to do the same work to be
+a floor.**
+
+#### ⚠️ AND `toArray` AT 16.5% IS NOT WHAT IT LOOKS LIKE
+
+The largest frame in the `setp` profile is `(anonymous) toArray.mjs:4` — 16.5% — on a statement that
+returns no rows, which is exactly the kind of thing that looks like a free win. Two reads settle it:
+
+- `packages/fp`'s `toArray` is `boundary((iterable) => Array.from(iterable))`, and **`boundary` is a
+  TYPE-ONLY brand**: its own doc says _"at runtime the value is unchanged"_ and the body is
+  `fn as Boundary<F>`. So the wrapper costs nothing.
+- `Array.from(iterable)` **drives the generator chain**, so the whole match pipeline's work is
+  attributed to the frame that pulls it — `gremlin-values-is-the-floor`'s lesson ("the reduce is
+  free; the cost is the generator chain") on the GQL side.
+
+**So it is a puller, not a cost.** Read with that correction, a GQL `MATCH … SET` with a
+single-row indexed match is:
+
+```text
+  ~37%  the MATCH        toArray 16.5 (as puller) + matchPattern 7.2 + hoistedMatch 7.2 + seedVertices 6.1
+   ~7%  the WRITE        setProperty 4.1 + #commitNormalized 3.3
+  ~13%  the STATEMENT    commitTransaction 3.6 + withBinding 3.3 + plan 3.1 + runLinearClauses 3.0
+```
+
+**The match dominates a single-row write by five to one.** That is the shape of the cost, and it is
+not a defect — it is what pattern matching costs when the pattern selects one row.
+
+#### Gates
+
+`bun run check` 0 read through `${pipestatus[1]}`. No source changed — the probe gained two direct
+arms and this entry.
