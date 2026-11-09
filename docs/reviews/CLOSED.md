@@ -76157,12 +76157,9 @@ and run ONE QUERY PER PROCESS. It reproduces:
 ```
 
 **So the gap is real and depends on the fixture.** The probe is not mismeasuring; my simpler fixture
-simply does not trigger whatever route the clause form takes there. What remains is to bisect the
-replica toward the fixture that does NOT show it — the candidates left are the edge count (`N*3`
-against `N*5`), the predicate's selectivity (`k = i % 50` against `i % 17`), the LINEAR `from`/`to`
-expressions (which make that graph a union of three permutations, so in-regular — item 1684's third
-trap), the edge properties `w`/`ew`, and the loader. Its own item, because a bisection that stops
-early names the wrong cause.
+simply does not trigger whatever route the clause form takes there. ~~What remains is to bisect the replica~~ ⚠️ **BISECTED AT ITEM 1703, and the cause is none of the
+candidates listed here: it is the FOUR EDGELESS VERTICES under another label. Every other property
+left the clause form at 374-568 ms; removing those four took it to 17.71.**
 
 ⚠️ **This does NOT contradict item 491**, which investigated the same group and found a **1.4x**
 spread to be the instrument. 1.4x and 38.7x are different claims; that item's numbers were taken
@@ -76190,3 +76187,61 @@ it the last thing before `git add`.**
 
 `bun run check` 0 read through `${pipestatus[1]}`. `packages/gql` isolated: 4381 pass, 0 fail. Two
 probes added; no engine behaviour changed.
+
+### Item 1703 — ⚠️ **FOUR EDGELESS VERTICES UNDER ANOTHER LABEL MAKE A CLAUSE-FILTERED THREE-HOP COUNT 35x-44x SLOWER, AND THE INLINE SPELLINGS ARE UNAFFECTED.** On a 200,000-vertex graph: clause 22.1 -> **781.5** ms and 22.5 -> **979.6**, inline 19.2 -> 15.1 and 19.5 -> 11.0, identical counts. ⚠️ **So the slow path is the COMMON case — a graph with one vertex label is the accident, and every fixture I measured item 1701 on had exactly that**
+
+Item 1702 reproduced a 38.7x clause-vs-inline gap on `spelling-probe.ts`'s fixture and could not
+reproduce it on an independent one. Six properties differed. Flipping each ONCE, clause spelling,
+one process per run:
+
+```text
+   control (the replica as-is)     515.07 ms
+   FANOUT=5                        568.00
+   KMOD=17                         509.19
+   SCATTER=1  (in-degree varies)   374.11
+   EDGEPROPS=0                     501.57
+   LOADER=api                      473.93
+   EXTRA=0                          17.71   <- the four `S`/`Univ` nodes
+```
+
+**It is the four nodes.** `spelling-probe.ts` adds them deliberately — "FOUR nodes under a label
+nothing else here uses … They carry no edges, so the two groups that start an UNTYPED hop scan see
+no extra rows" — and that reasoning is correct about ROWS and silent about ROUTES.
+
+#### Confirmed independently, and it is larger than the probe showed
+
+Adding the same four vertices to the fixture that showed NO gap, 200,000 vertices, median of 7:
+
+```text
+   spelling                    single-label    + 4 other-label     count
+   WHERE c.k = 2                      22.1              781.5      1,470,625    35x
+   WHERE c.k > 9                      22.5              979.6     10,293,750    44x
+   (c WHERE c.k = 2)                  19.2               15.1      1,470,625
+   (c {k: 2})                         19.5               11.0      1,470,625
+```
+
+The inline spellings do not move; both clause spellings collapse; every count is identical. So this
+is not the equality/index question item 1702 ruled out — an ORDERING clause is hit hardest.
+
+#### ⚠️ WHY THIS MATTERS MORE THAN THE RATIO
+
+**A graph with exactly one vertex label is the unrealistic case.** Four extra vertices out of 200,004
+— 0.002% of the graph, carrying no edges and matching no pattern here — flip the route. So the 35x-44x
+is what a real multi-label graph pays, and the fast numbers in items 1689, 1699 and 1701 were taken
+on accidentally single-label fixtures. **Item 1701's "1411.1 -> 2.0 ms" is a single-label figure**;
+its fix to the AND bucketing is real and independent of this, but the absolute numbers there do not
+describe a multi-label graph.
+
+The mechanism is almost certainly label VACUITY: with only `P` vertices, `(a:P)` matches everything,
+`effectiveLabel` returns `undefined`, and `csrDegreeProductApplies` — which requires
+`aEff === undefined`, because "a label-filtered degree counts only edges whose far endpoint carries
+the label, where the CSR counts them all" — admits the arm. Four non-`P` vertices make the label
+real and the arm declines. What is NOT yet explained is why the INLINE spellings stay fast under the
+same condition, since they face the same guard; that is a route question and the next item
+route-maps it rather than guessing, which is the practice that has paid in items 1690, 1700 and this
+one.
+
+#### Gates
+
+`bun run check` 0 read through `${pipestatus[1]}`. Two probes gained toggles; no engine behaviour
+changed.

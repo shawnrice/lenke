@@ -59,6 +59,21 @@ if (distinct.size < N / 2) {
   throw new Error(`FIXTURE DEGENERATE: ${distinct.size} distinct endpoints`);
 }
 
+/**
+ * ⚠️ FOUR EDGELESS VERTICES UNDER ANOTHER LABEL, which item 1703's bisection identified as the whole
+ * cause of a 29x clause-vs-inline gap: `EXTRA=0` took the replica's clause form from 515.07 ms to
+ * 17.71 while fanout, selectivity, scatter, edge properties and the loader all left it at 374-568.
+ *
+ * The mechanism to confirm: with ONLY `P` vertices, `(a:P)` is VACUOUS and `effectiveLabel` returns
+ * `undefined`, so `csrDegreeProductApplies` (which requires `aEff === undefined`) admits the arm.
+ * Four non-`P` vertices make the label real, and the arm declines.
+ */
+if (process.env.OTHERLABEL === '1') {
+  for (let i = 0; i < 4; i += 1) {
+    g.addVertex({ id: `s${i}`, labels: ['S', 'Univ'], properties: { k: i, s: `t${i}` } });
+  }
+}
+
 // ⚠️ THE ONE VARIABLE. `spelling-probe.ts` builds this index; item 1701's probe did not.
 if (ARM === 'indexed') {
   g.createIndex({ on: 'vertex', kind: 'hash', keys: ['k'] });
