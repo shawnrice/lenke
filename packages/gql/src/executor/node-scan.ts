@@ -795,6 +795,26 @@ export const topKNodeWalk = (spec: {
       kept.push(v);
     }
 
+    // ❌ REJECTED HERE, item 1742: the per-row bag hoist item 1741 shipped in this file's MAIN
+    // projection closure. This arm is the only reachable sibling — verified with a per-closure
+    // counter, since all three are returned by the same `nodeProjection` detector and the route name
+    // cannot tell them apart (`topkwide` fired this one 78 times; `wideproj`, `ORDER BY` without a
+    // `LIMIT`, and `ORDER BY` on a non-output column all took the main closure).
+    //
+    // 1500 runs, three alternated rounds, ms: THREE columns 494/501/496 -> 408/405/418, **1.21x with
+    // disjoint ranges** — but ONE column 381/360/391 -> 401/410/416, **7.6% WORSE, also disjoint.**
+    //
+    // ⚠️ The regressed path takes the guard's `else` branch, whose code is BYTE-IDENTICAL to this
+    // loop. Nothing it runs changed; `project` merely grew a second loop, and a bigger closure body
+    // inlines worse — `ts-closure-size-is-load-bearing`. The guard stops the width-1 HOIST from
+    // costing anything; it does nothing about the closure growing, and those are separate costs.
+    // Item 1741 shipped because its narrow path measured FLAT, not because a split is free.
+    //
+    // Declined: 7.6% is above the 7.4% at which item 312 withdrew `addVertex`, it is ~4x the cost
+    // 1741 accepted for a bigger win, and `ORDER BY … LIMIT` on one column is a common serving
+    // shape. The fix that might work is the one that note prescribes — lift both loop variants to
+    // MODULE scope so this closure stays small — but `project` closes over eight names, so that
+    // needs an args object or eight parameters. Designed, not measured.
     const project = (v: Vertex): Row => {
       if (!allDirect) {
         binding.set(nodeVar, v);

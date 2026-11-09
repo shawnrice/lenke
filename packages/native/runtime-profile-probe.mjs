@@ -157,6 +157,14 @@ const SHAPES = {
   // separates the two; `narrow1` reads once and cannot gain from removing a repeated read.
   wide2: 'MATCH (n:P) WHERE n.k < 10 RETURN n.k AS a, n.n AS b',
   narrow1: 'MATCH (n:P) WHERE n.k < 10 RETURN n.k AS a',
+  // ⚠️ THE SIBLING RUNGS of `nodeProjection`, both of which carry the SAME per-column direct-read
+  // loop (item 1742). They are reached by adding an ORDER BY, which routes the scan to `topKNodeWalk`
+  // (with a LIMIT) or `deferredSortedNodeWalk` (without one) instead. Each gets a WIDE and a NARROW
+  // form, because item 1741 established the hoist helps at >1 column and HURTS at 1.
+  topkwide: 'MATCH (n:P) WHERE n.k < 10 RETURN n.k AS a, n.n AS b, n.s AS c ORDER BY a LIMIT 10',
+  topknarrow: 'MATCH (n:P) WHERE n.k < 10 RETURN n.k AS a ORDER BY a LIMIT 10',
+  defwide: 'MATCH (n:P) WHERE n.k < 10 RETURN n.k AS a, n.n AS b, n.s AS c ORDER BY a',
+  defnarrow: 'MATCH (n:P) WHERE n.k < 10 RETURN n.k AS a ORDER BY a',
   // Set operation over two scans.
   unioned:
     'MATCH (n:P) WHERE n.k = 5 RETURN n.n AS x UNION ALL MATCH (n:P) WHERE n.k = 6 RETURN n.n AS x',

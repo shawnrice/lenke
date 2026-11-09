@@ -78549,3 +78549,75 @@ occurs **4** times in `node-scan.ts`, `const allDirect = …` **2**, `const widt
 and `const exactSeed = …` **6** — the file holds several near-identical closures, so an unverified
 anchor lands in the wrong one. Only `const cstart = cm.patterns[0].start;` is unique. That is the
 same lesson as items 1737 and 1738, now with a count.
+
+### Item 1742 — ❌ **NOT SHIPPED: the same hoist in the TOP-K arm is 1.21x on three columns but costs the SINGLE-column shape 7.6%, ranges disjoint both ways.** ⚠️ **The regressed path's code is BYTE-IDENTICAL to before — it is the CLOSURE growing a second loop, not the code it runs.** And item 1741 shipped only because its narrow path happened to stay flat; the same standard says no here
+
+Item 1741 shipped a per-row bag hoist in `node-scan.ts`'s main projection closure. Two sibling
+closures in the same file carry a byte-identical loop, so the obvious next step was to apply it
+there.
+
+#### First: WHICH closure runs, verified by counter rather than by route name
+
+All three closures are returned by the SAME detector, so `routes-fired`'s field name cannot tell them
+apart — `wideproj`, `topkwide`, `defwide` and an `ORDER BY` on a non-output column all report
+`nodeProjection`. Injected a per-closure counter and ran each shape:
+
+```text
+  shape                                   closures entered
+  wideproj   (no ORDER BY)                {}                 -> the MAIN closure (hoisted at 1741)
+  defwide    (ORDER BY, no LIMIT)         {}                 -> the MAIN closure
+  defoffcol  (ORDER BY a non-output col)  {}                 -> the MAIN closure
+  topkwide   (ORDER BY … LIMIT 10)        { topk: 78 }       -> topKNodeWalk
+```
+
+Two things fell out. **`topKNodeWalk` is the only reachable sibling**, and **`deferredSortedNodeWalk`
+never fired on any of the four shapes** — so its copy of the loop was left alone rather than
+optimized blind. A closure that cannot be triggered cannot be measured, and an unmeasured change to
+one is the thing this audit exists to prevent.
+
+#### Measured, 1500 runs, three alternated rounds, base = item 1741's shipped HEAD
+
+```text
+  shape                        base                topkhoist           verdict
+  topkwide  (3 direct cols)    494.5 501.3 495.5   408.1 405.0 418.1   1.21x, DISJOINT
+  topknarrow(1 direct col)     381.1 360.2 391.2   401.3 410.0 415.8   7.6% WORSE, DISJOINT
+  wideproj  (already hoisted)  482.7 491.4 488.0   484.4 490.3 499.1   flat
+```
+
+#### ⚠️ THE MECHANISM, AND WHY IT IS THE INTERESTING PART
+
+`topknarrow` has ONE direct column, so `hoistBag` is false and it takes the `else` branch — **whose
+code is byte-identical to the loop that was there before.** It still lost 7.6%, with its range
+disjoint from base's. Nothing it executes changed; what changed is that **`project` now contains two
+loops instead of one**, and a bigger closure body inlines worse.
+
+That is `ts-closure-size-is-load-bearing`, which records the same effect at a far larger magnitude
+("a walk INLINE in a returned closure gives UNRELATED queries a new slow mode, 4x") and prescribes
+the fix: **hoist to module scope.** Here that would mean lifting both loop variants out of `project`
+as module-level functions and choosing one per query — but `project` closes over `cols`, `fns`,
+`directKeys`, `env`, `binding`, `nodeVar`, `allDirect` and `width`, so passing them means an args
+object or eight parameters, each with its own cost. **Designed, not measured, and recorded as the
+thing to try if this is revisited.**
+
+#### Why not ship it anyway
+
+- **7.6% is above this family's own withdrawal bar**: item 312 withdrew `addVertex` at 7.4%.
+- **It is ~4x the cost item 1741 accepted** (~2%, and on an UNRELATED rung) for a _smaller_ win
+  (1.21x against 1.30x).
+- **`ORDER BY … LIMIT` on one column is a common serving shape** — a paged sorted list of ids — so
+  the regression lands somewhere real, not on a probe artifact.
+- ⚠️ And it clarifies item 1741 retrospectively: **that one shipped because its narrow path measured
+  FLAT, not because the guard makes a split free.** The guard prevents the width-1 _hoist_ from
+  costing anything; it does nothing about the closure growing. Those are two separate costs, and only
+  the first is what the guard was for.
+
+**Reverted; the tree is back to item 1741's shipped state and the dist rebuilt.**
+
+**KEPT: four new probe shapes** — `topkwide`, `topknarrow`, `defwide`, `defnarrow`. They are how the
+next reader reaches the top-K arm at all, and `defwide`/`defnarrow` document that the
+`ORDER BY`-without-`LIMIT` forms do NOT take a sibling closure.
+
+#### Gates
+
+`bun run check` 0 read through `${pipestatus[1]}`. Source reverted and verified identical to HEAD;
+the only change is the probe's shape list.
