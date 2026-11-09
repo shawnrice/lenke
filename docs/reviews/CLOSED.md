@@ -76574,7 +76574,7 @@ materialize` at 615.5 — built and REJECTED at items 1522/1523. The live candid
 2065, serialization 144, native 1081, 0 fail each. All seven byte-identity fuzzers 20 pass, 0 fail,
 and the differential fuzzer four times on random seeds with the new coverage counted each time.
 
-### Item 1711 — **THE ORDER BY COMPARATOR'S DEAD BRANCHES, ELIMINATED UNDER A CHECKED PRECONDITION: a 1,000,000-row string sort 896.9/765.6 -> 525.3/528.0 ms (1.71x / 1.45x), with the no-sort control drifting up to 16% AGAINST the change.** ⚠️ **Two CLOSED entries already priced this exact chain and neither bound this row — item 423 measured it on a SINGLE-PASS aggregate (one comparison per row, a sort does ~20) and item 921's ~1.07x ceiling was computed on `sortedpage`, which is `LIMIT 10` and takes the HEAP path.** ⚠️ **A numeric arm was built, measured six times (0.93x-1.18x, straddling 1.0) and DROPPED.** Plus the 15th cross-engine divergence, found on the way out
+### Item 1711 — **THE ORDER BY COMPARATOR'S DEAD BRANCHES, ELIMINATED UNDER A CHECKED PRECONDITION: a 1,000,000-row string sort 896.9/765.6 -> 525.3/528.0 ms (1.71x / 1.45x), with the no-sort control drifting up to 16% AGAINST the change.** ⚠️ **CONFIRMED ON THE SWEEP AT ITEM 1716, 1.30x-1.46x — but only after fixing the sweep row, which projected an ABSENT property and was sorting a million NULLS; it read 1.01x-1.03x until then.** ⚠️ **Two CLOSED entries already priced this exact chain and neither bound this row — item 423 measured it on a SINGLE-PASS aggregate (one comparison per row, a sort does ~20) and item 921's ~1.07x ceiling was computed on `sortedpage`, which is `LIMIT 10` and takes the HEAP path.** ⚠️ **A numeric arm was built, measured six times (0.93x-1.18x, straddling 1.0) and DROPPED.** Plus the 15th cross-engine divergence, found on the way out
 
 The profile nominated it: `MATCH (a:Person)-[:KNOWS]->(x) RETURN x.name AS n ORDER BY n` is the
 largest live row in the re-ranked field, and one shape per process put the comparator chain across
@@ -76837,3 +76837,79 @@ is struck in place.
 
 `bun run check` 0 via `${pipestatus[1]}`. core 453, gql 4424, gremlin **2109**, serialization 144,
 native 1081, 0 fail each. All seven byte-identity fuzzers 20 pass 0 fail.
+
+### Item 1716 — ⚠️ **THREE GQL BENCH ROWS PROJECTED A PROPERTY THEIR FIXTURE DOES NOT HAVE, so the whole "project" family measured NULLS** — `graphDoc`'s nodes carry only `age` and all three read `x.name`. Repointed to `hopPairDoc` (identical topology), and **every number recorded for them before this item is VOID.** ⚠️ **The corrected `+ order by` row is 1158.3 ms where the null version read 297.7 — it understated by ~4x** — and item 1711's specialization now shows on it at **1.30x-1.46x**, which four wrong hypotheses had failed to explain
+
+Found by asking whether items 1711/1713's wins reach the SWEEP rows rather than only the isolated
+harnesses they were measured on. They did not: the GQL sort row moved **1.01x-1.03x** against a
+control stable to ±1%.
+
+**Four hypotheses died first, each to a measurement rather than an argument.** Recorded because each
+is the obvious next guess, and because the fourth is the one I was most confident in:
+
+1. **A different sort site** (item 1713's exact failure mode). REFUTED: a counter on every sort site
+   plus the admit/decline decision put both shapes at the SAME site, both ADMITTED.
+2. **The sort being a small share of the row.** REFUTED by decomposition: 76.6 ms without the sort,
+   206.9 with it — **63%**.
+3. **The string shape**, from item 921's own table (`ascii` 2.1 against a 0.8 floor, but `prefixed`
+   2.7 against 1.2 — a long shared prefix makes the native compare expensive, and `bench.ts` uses
+   `person${i}`). REFUTED: four columns on one fixture all win — `short` 1.67x, **`prefixed` 1.47x**,
+   `uniqshort` 1.61x, `longuniq` 1.69x. Item 921's distinction is real for ITS question (replacing
+   the regex with a hand loop) and I over-extrapolated it to mine.
+4. **Dispatch pollution** — `BENCH_ONLY='order by'` matches TWO rows, and `query: distinct + order by`
+   runs first in the same process, so `Array.prototype.sort`'s shared comparator call site could go
+   polymorphic. REFUTED: 170.6 ms clean against 173.9 with a declined sort run before every rep, and
+   **158.8 against 165.3 on min** — the polluted arm is FASTER there.
+
+**What found it: replicating the fixture EXACTLY, which proved the replica was not one.** A
+`benchlike` column that reproduces `bench.ts`'s NDJSON lines, property order and query verbatim
+measured **1.19x/1.41x** — a win. So the fixture was not the obstacle, and the only remaining
+difference was one missing property. `propOf` is `bound?.properties?.[key] ?? null`, so `x.name` over
+`graphDoc` yields `null` for every row: **10,000 of 10,000 null on a graphDoc-shaped fixture, 0 of
+10,000 for `x.age`.** The `order by` row was sorting a million NULLS, which the specialization
+correctly declines — the specialization was right and the row was wrong.
+
+**⚠️ MY OWN EARLIER CHECK WAS THE NEAR MISS.** Two ticks before, I confirmed "same site, ADMITTED"
+on a graph **I** built with a `name` property, then reasoned about `graphDoc`. The counter was
+correct and the fixture under it was not. Verify an instrument against the REAL fixture, not a
+plausible stand-in; that would have found this four hypotheses sooner.
+
+**The fix and its blast radius.** `hopPairDoc` has the IDENTICAL topology — same `from`/`to`
+formulas, same five edges per node, so row counts and walk shape do not move — plus a unique `name`
+and an eight-value `city`; its edges drop `w`, which none of the three rows reads. A re-audit of
+every row against its fixture comes back CLEAN, so these three were the only instances.
+
+**The corrected rows, PRE against POST on item 1711's specialization, one `BENCH_ONLY` selection:**
+
+```text
+    row                                      PRE            POST         ratio
+    traverse 1-hop project + order by    1158.3/1028.2   794.5/792.0   1.46x / 1.30x
+    traverse 1-hop project + start filter 106.2/96.6     107.5/98.7    0.99x / 0.98x  <- control
+    traverse 1-hop project                102.9/101.8    100.4/101.9   1.02x / 1.00x  <- control
+```
+
+So item 1711's entry needed no correction on magnitude — **1.30x-1.46x here against 1.17x-1.69x
+across five probe fixtures** — only the note that the sweep row could not show it. The two no-sort
+rows are flat, which is what makes the sort row's movement attributable.
+
+**Also this item: `BENCH_ONLY` for the Gremlin sweep**, which `bench.ts` has had all along and
+`bench-gremlin.ts` lacked. ⚠️ **And it ruled out a regression I had half-claimed**: the three-hop row
+reads 465.2 in-sweep against item 1617's recorded "103.79 ms isolated", which looked like 4.5x. Run
+alone it reads **555.1 — SLOWER than in-sweep**, the direction `bench.ts` documents (a row gets
+slower with FEWER siblings, because they warm the same hop code), and 1617's figure was measured at
+**20,000 vertices x FANOUT 4** against this sweep's 200,000/1,000,000. Different workloads; no
+regression. Both caveats are now recorded on the flag itself.
+
+**Instrument hardening, paid for twice.** The shape probe first lived in the SCRATCHPAD, where
+`@lenke/core` cannot resolve — all eight arms crashed and `tail -1` banked `Node.js v26.13.0` as each
+measurement. The driver now pipes every line through a parse requiring a numeric `median` and records
+`NO-RESULT:` otherwise. Third instance this session of a driver accepting a non-result; the common
+shape is asserting that a command RAN rather than that its output IS a measurement. The corrected-row
+driver likewise greps each row by EXACT name, because its selection matches three rows and `tail -1`
+would measure whichever printed last.
+
+#### Gates
+
+`bun run check` 0 via `${pipestatus[1]}` (after `bun run fmt`, and after one `padding-lines` error in
+the new probe). native 1081 pass, 0 fail. No engine source changed — `bench.ts`, `bench-gremlin.ts`
+and a new probe only — so the suites and fuzzers are item 1713's.

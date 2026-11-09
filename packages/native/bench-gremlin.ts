@@ -354,7 +354,43 @@ console.log(
     `${'traversal'.padEnd(28)}${'ts'.padStart(10)}${'native'.padStart(10)}${'ts/nat'.padStart(10)}  answers`,
 );
 
-for (const [name, plan] of SHAPES) {
+/**
+ * ONE ROW, IN ITS OWN PROCESS — mirroring `bench.ts`'s `BENCH_ONLY`, which this sweep lacked
+ * (item 1714). Suffix `$` for an exact name, otherwise a substring:
+ *
+ *     BENCH_ONLY='x3.values' bun bench-gremlin.ts
+ *
+ * ⚠️ AN ABSOLUTE IS ONLY COMPARABLE WITHIN THE SAME SELECTION, and the direction is not fixed.
+ * `bench.ts` records one row reading 74.0 among four siblings, 89.2 in the full sweep and 97.0 run
+ * ALONE — SLOWER with fewer rows, because the siblings warm the same hop code first — while item
+ * 737 measured in-sweep INFLATION on a different row. So neither correction generalizes, and a
+ * number from this flag may not be compared with one from the full sweep.
+ *
+ * ⚠️ IT ALSO DOES NOT MAKE CROSS-ITEM NUMBERS COMPARABLE. Item 1617's "103.79 ms isolated" for the
+ * three-hop row was measured at 20,000 vertices x FANOUT 4; this sweep's default is a different
+ * workload entirely, and reading the two against each other suggested a 4.5x regression that does
+ * not exist. Match the FIXTURE before matching the selection.
+ */
+const ONLY = process.env.BENCH_ONLY;
+const SELECTED: [string, Plan][] = (() => {
+  if (ONLY === undefined) {
+    return SHAPES;
+  }
+
+  if (ONLY.endsWith('$')) {
+    const exact = ONLY.slice(0, -1);
+
+    return SHAPES.filter(([name]) => name === exact);
+  }
+
+  return SHAPES.filter(([name]) => name.includes(ONLY));
+})();
+
+if (SELECTED.length === 0) {
+  console.log(`BENCH_ONLY=${ONLY} matched no traversal`);
+}
+
+for (const [name, plan] of SELECTED) {
   const text = planToGremlin(plan);
   let ts = Number.NaN;
   let nat = Number.NaN;

@@ -1007,7 +1007,7 @@ const CASES: Case[] = [
     // unchanged at 0.6ms.
     name: 'traverse 1-hop project + start filter',
     ...onGraph(
-      () => graphDoc,
+      () => hopPairDoc,
       (e, g) =>
         void e.query(g, 'MATCH (a:Person)-[:KNOWS]->(x) WHERE a.age > 60 RETURN x.name AS n'),
     ),
@@ -1366,9 +1366,28 @@ const CASES: Case[] = [
     //
     // Left pointing at `name` rather than repointed at `age`, so every figure recorded against
     // these row names stays comparable — the same call item 356 made about `decode ndjson`.
+    // ⚠️ THESE THREE ROWS PROJECTED AN ABSENT PROPERTY AND SO MEASURED NOTHING (item 1716).
+    // They read `x.name`, and `graphDoc`'s nodes carry ONLY `age` — `propOf` is
+    // `bound?.properties?.[key] ?? null`, so every one of 1,000,000 rows was `null`: no property
+    // read, no string, no dictionary, and in the `order by` row a sort of a million NULLS. Verified
+    // directly: 10,000 of 10,000 rows null on a graphDoc-shaped fixture, 0 of 10,000 for `x.age`.
+    //
+    // ⚠️ EVERY NUMBER RECORDED FOR THESE THREE ROWS BEFORE ITEM 1716 IS VOID, the same way item 94
+    // voided every row that was secretly timing a decode. Nothing can be compared across the change.
+    //
+    // The fix is `hopPairDoc`, whose topology is IDENTICAL — same `from`/`to` formulas, same five
+    // edges per node, so row counts and walk shape do not move — and which adds a UNIQUE `name`
+    // plus an eight-value `city` to each node. Its edges drop `w`, which none of these three reads.
+    //
+    // HOW IT WAS FOUND: item 1711's string-sort specialization measured 1.17x-1.69x on five
+    // fixtures and moved the `order by` row 1.01x-1.03x. Four hypotheses died first (a different
+    // sort site, the sort's share, the string shape, dispatch pollution from a sibling sorted row),
+    // and what found it was replicating this fixture EXACTLY and getting the win — which proved
+    // the replica was not a replica. A specialization that declines an all-null column is correct;
+    // the row was wrong.
     name: 'traverse 1-hop project',
     ...onGraph(
-      () => graphDoc,
+      () => hopPairDoc,
       (e, g) => void e.query(g, 'MATCH (a:Person)-[:KNOWS]->(x) RETURN x.name AS n'),
     ),
   },
@@ -1380,7 +1399,7 @@ const CASES: Case[] = [
     // additionally watches that the locality win is given up only where order matters.
     name: 'traverse 1-hop project + order by',
     ...onGraph(
-      () => graphDoc,
+      () => hopPairDoc,
       (e, g) => void e.query(g, 'MATCH (a:Person)-[:KNOWS]->(x) RETURN x.name AS n ORDER BY n'),
     ),
   },
