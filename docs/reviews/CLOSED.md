@@ -78798,7 +78798,65 @@ run because `extend` builds every traverser in the engine. `bun run check` 0 rea
 
 **NEW PERMANENT INSTRUMENT — `packages/native/extend-shape-driver.sh`.**
 
+⚠️ **AND IT INTRODUCED A POLYMORPHISM WITHOUT NOTICING — see item 1746.** Giving `extend` a
+plain `sack` field made it 5 fields while `startTraverser` stayed at 4, so source and extended
+traversers got different hidden classes. The numbers above improved anyway (the spread cost
+more), which is exactly how a win hides a regression. Unifying all three constructors is a
+further **1.20x on `coalesce`**.
+
 **Method note worth keeping:** this came from noticing a frame that was _never the top one_ in any
 profile (4.9-12.6%) but appeared in _every_ profile. A ranked list invites working down from the
 largest share; the cross-cutting frame is the one that pays back on shapes the probe does not even
 contain.
+
+### Item 1746 — ✅ **SHIPPED: unify the traverser SHAPE across all three constructors — a further 1.20x on `coalesce`, ranges disjoint.** ⚠️ **Item 1745 created the split it fixes and its own numbers hid it**, because the spread it removed cost more than the new polymorphism. ⚠️⚠️ **And the multi-row sweep reported a 5% regression that an isolated per-row run refuted at 1.2%**
+
+Item 1745 removed a conditional spread from `extend`, giving it a plain `sack` field — **five**
+fields. `startTraverser` still omitted `sack` — **four**. So from that commit on, a traverser from
+the source and a traverser from a step had **different hidden classes**, and every step boundary
+crossed between them. Before 1745 the no-sack `extend` also produced four, so they matched.
+
+**1745's measurements improved anyway, which is precisely how this stays hidden**: the spread it
+removed cost more than the polymorphism it created, so the net was a win and nothing in the numbers
+pointed at the new split. Found by sweeping the repo for the same spread pattern at other
+per-element sites — `startTraverser` and `incLoops` sit immediately below `extend`.
+
+#### Measured, 300 reps, three alternated rounds, one arm per build
+
+```text
+  shape        base                 unified              verdict
+  coalesced    3172.6 3134.4        2637.7 2629.0 2606.0  1.20x, DISJOINT
+  repeated      406.7  443.7         431.5  420.5  426.9  flat
+  hopcount3     463.0  480.4 476.4   475.7  483.1  474.6  flat
+  folded        255.4  256.3 248.5   253.6  268.7  284.5  ⚠️ looked ~5% WORSE
+```
+
+**`coalesce` runs five `extend`s per vertex**, so every one of them was crossing a shape boundary —
+which is why the win lands there and not on `repeated` (one `incLoops` per iteration) or `hopcount3`.
+
+#### ⚠️ THE 5% REGRESSION WAS AN ARTIFACT OF THE MULTI-ROW SWEEP
+
+`folded` was the only row that disagreed, so it got its own run — CLAUDE.md's rule that a per-row
+question needs a per-row instrument. **Nine readings per arm, that row alone:**
+
+```text
+  base     244.6 246.6 248.6 251.0 251.3 252.1 253.5 253.6 253.7   median 251.3
+  unified  247.1 252.3 253.0 253.0 254.4 255.4 257.5 263.0 269.8   median 254.4
+```
+
+**1.2%, ranges overlapping.** The sweep's 268.7/284.5 were outliers that dragged a three-reading
+median. This is item 737's phantom reproduced exactly — a multi-row sweep reporting a regression
+that the isolated A/B refutes — and the only reason it did not become the reason to decline is that
+the disagreeing row was re-measured on its own.
+
+#### Gates
+
+Gremlin suite **2109 pass, 0 fail**. **All seven byte-identity fuzzers green** (20 pass, 0 fail).
+`bun run check` 0 read through `${pipestatus[1]}`.
+
+**NEW PERMANENT INSTRUMENT — `packages/native/traverser-shape-driver.sh`**, whose dist assertion
+checks **both** signals (the added `sack: void 0` and the removed spread) so a half-applied edit
+reports `HALF` rather than a number. ⚠️ Its first `incLoops` detector tested
+`loopCount: t.loopCount + 1`, which is present in BOTH arms, so base reported `HALF` for three full
+rounds and never ran — **the fifth anchor failure in this session and the fifth caught**, all by the
+same guard.

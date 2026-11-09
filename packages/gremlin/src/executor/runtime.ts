@@ -109,6 +109,13 @@ export const startTraverser = <T>(value: T, tracksPath = true): Traverser<T> => 
   path: tracksPath ? [value] : NO_PATH,
   loopCount: 0,
   tags: emptyTags,
+  // ⚠️ SET EXPLICITLY SO ALL THREE CONSTRUCTORS AGREE ON THE SHAPE (item 1746). Item 1745 gave
+  // `extend` a plain `sack` field (5 fields) and left this one at 4, so source traversers and
+  // extended ones had DIFFERENT hidden classes — a polymorphism that item introduced without
+  // noticing, because its own numbers improved anyway. Unifying is 1.20x on `coalesce` with
+  // disjoint ranges (3173/3134 -> 2638/2629/2606): that shape runs five `extend`s per vertex, so
+  // every one of them was crossing a shape boundary.
+  sack: undefined,
 });
 
 export const extend = <T>(prev: Traverser<unknown>, value: T): Traverser<T> => ({
@@ -136,9 +143,19 @@ export const extend = <T>(prev: Traverser<unknown>, value: T): Traverser<T> => (
   sack: prev.sack,
 });
 
+/**
+ * ⚠️ AN EXPLICIT LITERAL, NOT `{ ...t, loopCount: … }`, for the same reason as `extend` and
+ * `startTraverser` above: a spread denies V8 a fixed hidden class for the literal, and all three
+ * constructors must agree or the steps downstream see polymorphic traversers. `repeat()` is the
+ * only caller (item 1746 checked), and it measured flat there — the win is in the SHAPE agreement,
+ * which `coalesce` shows at 1.20x, not in this function's own cost.
+ */
 export const incLoops = <T>(t: Traverser<T>): Traverser<T> => ({
-  ...t,
+  value: t.value,
+  path: t.path,
   loopCount: t.loopCount + 1,
+  tags: t.tags,
+  sack: t.sack,
 });
 
 // ---------- Type guards ----------
