@@ -122,6 +122,33 @@ export const hopValuesShortcut = (plan: Plan, graph: Graph): HopValues | undefin
   // ONE key. `values()` with no key emits every property value and `values(a, b)` fans out per
   // key — both are different shapes, not this one.
   const valueKey = proj?.kind === 'values' && proj.keys.length === 1 ? proj.keys[0] : undefined;
+  /**
+   * ⚠️ REJECTED, WITH ITS NUMBERS (item 1693): a `topologyVersion`-keyed CSR drain for THIS walk,
+   * the way item 1692 built one for the far-FILTERED hop at 38.08x.
+   *
+   * It does not carry here, and the reason is that this walk is already close to its floor. One arm
+   * per process, 200,000 v / 1,000,000 e, 14 reps, median of the warm ones:
+   *
+   * ```text
+   *    engineValues       132.27 ms    1.00x
+   *    handGen            110.69       1.20x   this walk's data access, by hand
+   *    handCsr             83.81       1.58x   the same walk over flat slot runs
+   *    handCsrPlusBuild   173.11       0.76x   ⚠️ with the CSR build in the timed region: a LOSS
+   * ```
+   *
+   * The engine is within **1.20x of its own hand-written walk**, so there is no delegation left to
+   * remove — item 1614's 6.65x and item 1631's 3.91x were both removing delegation, and that work is
+   * done. What remains is the DATA STRUCTURE, and it costs ~89 ms to build against the ~48 it saves:
+   * warm 1.58x, cold a 1.3x REGRESSION. Item 1692's arm wins cold because its filter drops 99% of
+   * the rows before anything is materialized; this shape must materialize every row either way.
+   *
+   * ⚠️ So do not reach for the CSR here on the strength of item 1692. The two shapes differ in the
+   * one property that decides it: whether the walk's output is proportional to its input.
+   *
+   * (The `order()` row above this one is NOT a route for it either: items 879/890 settled that the
+   * 1M-value sort costs 88 ms, the ordering contract is free, and the residual was refuted at 1.04x
+   * "matched exactly by an unreachable control".)
+   */
   // A far vertex, structurally — enough for all three pickers and nothing more.
   type Far = { readonly id: string; readonly properties: Record<string, unknown> };
   let pick: (far: Far) => unknown;

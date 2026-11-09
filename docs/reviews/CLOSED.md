@@ -75588,3 +75588,57 @@ run length read as the offset, the CSR direction flipped, and the projection rea
 instead of the far end. The drop sentinel SURVIVED on the first pass for want of a test (every case
 either projected a key the filter guarantees or one every vertex carries); the case of a far vertex
 passing the filter while lacking the PROJECTED key is now covered.
+
+### Item 1693 — **REFUTED: a CSR drain for the UNFILTERED yielding hop is 1.58x warm and a 1.3x REGRESSION cold.** The engine is already within **1.20x of its own hand-written walk**, so there is no delegation left to remove — and ⚠️ **item 1692's 38x does NOT generalize, because the two shapes differ in whether output is proportional to input**
+
+Item 1692 took the far-FILTERED hop from 120.34 ms to 3.16. Its own A/B shows the unfiltered shapes
+untouched (`V().out(E).values(n)` 122.66 PRE against 121.29 POST), and after it they are the largest
+rows in `bun run bench:gremlin`, so the obvious next step is the same arm one shape over. It does not
+carry.
+
+One arm per process, 200,000 v / 1,000,000 e, 14 reps, median of the warm ones:
+
+```text
+   engineValues       132.27 ms    1.00x
+   handGen            110.69       1.20x   this walk's data access, by hand
+   handCsr             83.81       1.58x   the same walk over flat slot runs
+   handCsrPlusBuild   173.11       0.76x   ⚠️ with the CSR build in the timed region: a LOSS
+   engineId            61.06               (a different question; see below)
+   engineBare          33.78
+```
+
+**The engine is 1.20x its own hand floor.** Items 1614 (6.65x) and 1631 (3.91x) were both removing
+DELEGATION from these walks, and that work is done — what is left is the data structure, which costs
+~89 ms to build against the ~48 it saves. Warm, a cached CSR gives 1.58x; cold, a single query pays
+1.3x more than it does today.
+
+#### ⚠️ WHY ITEM 1692 WINS COLD AND THIS CANNOT
+
+Item 1692's arm pays the same ~89 ms build and still wins cold, because its filter drops 99% of the
+rows before anything is materialized: the build is amortized against work that disappears. This
+shape must materialize every row either way, so the build is pure addition. **The property that
+decides it is whether the walk's OUTPUT is proportional to its INPUT** — and that is the question to
+ask before carrying a CSR arm to a neighbouring shape, not "did it work next door".
+
+The `order()` row is not a route for it either, and that was checked rather than assumed: items
+879/890 settled that sorting 1M values costs 88 ms with the NaN-total order free, item 879 built the
+single-`by` specialization (1.19x), and item 890 refuted the residual at 1.04x "matched exactly by an
+unreachable control; reverted". The one idea left there is deferred to its own item on stability
+grounds (sorting an index permutation with an explicit arrival tiebreak).
+
+The numbers are recorded ON `hopValuesShortcut` in `hop-values.ts`, which is where the next profile
+points — the practice item 1686 established after a `CLOSED.md` keyword search missed items
+1522/1523 and a note on `relBoundHopWalk` is what stopped a fourth attempt.
+
+#### One observation, flagged rather than claimed
+
+`V().out().id()` reads **207.6 ms in `bench:gremlin` and 61.06 in this probe** — the same traversal,
+3.4x apart, on two fixtures. This probe's graph is 200,000 vertices with two numeric properties and
+`u<i>` ids; the bench's is `graphDoc`. That gap is a FIXTURE difference of unknown cause, not a
+measured engine effect, and it matters because the bench's ranking is what nominates targets. Worth
+one item to identify before any row is picked on the strength of its bench number alone.
+
+#### Gates
+
+`bun run check` 0 read unpiped. `packages/gremlin` isolated: 2065 pass, 0 fail. One probe added and
+one note placed; no engine behaviour touched.
