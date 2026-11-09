@@ -70402,7 +70402,7 @@ an earlier group and not a finding.
 
 ### Item 1631 — **1.06-1.077x** on a selective FAR filter over a yielding hop, the smallest win taken this session and taken only because it passes all three of item 1591's criteria. ⚠️ **But the tick's real output is three instrument defects, all mine, two of which would have published numbers for effects that do not exist** — a 1.67x target and a 1.30x regression, neither real. And `bench:gremlin` had NO ROW for this shape, which is why the TS/native gap on it (~~**62.5x**~~ **57.8x** — item 1632 found this bench's fixture was FUNCTIONAL and re-measured it) was never seen
 
-OPEN: **the ~~62.5x~~ 57.8x TS-vs-native ratio on the new `V().out().has(eq).id()` row** — TS 156.2 ms against native 2.70 at 200,000/5. ⚠️ Item 1632 corrects BOTH halves of this line: the fixture was functional (so 131.4/2.10 measured a chain) and the row projected the key it filtered on (so its `answers same` compared fifteen copies of `30`). That is the largest ratio of any yielding row in the sweep and it is now measurable; this item's 1.07x is a constant-factor shave on the TS side and says nothing about it. The far-filtered walk is **1.51x its hand floor** before this change and ~1.42x after, so the remaining TS-side headroom is small — the 62.5x is an ALGORITHMIC question (native seeks; TS scans every edge), not a closure-overhead one.
+OPEN: **the ~~62.5x~~ 57.8x TS-vs-native ratio on the new `V().out().has(eq).id()` row** — TS 156.2 ms against native 2.70 at 200,000/5. ⚠️ Item 1632 corrects BOTH halves of this line: the fixture was functional (so 131.4/2.10 measured a chain) and the row projected the key it filtered on (so its `answers same` compared fifteen copies of `30`). That is the largest ratio of any yielding row in the sweep and it is now measurable; this item's 1.07x is a constant-factor shave on the TS side and says nothing about it. ~~The far-filtered walk is **1.51x its hand floor** before this change and ~1.42x after, so the remaining TS-side headroom is small — the 62.5x is an ALGORITHMIC question (native seeks; TS scans every edge), not a closure-overhead one.~~ ⚠️ **BOTH HALVES CORRECTED BY ITEM 1691.** There is no `createIndex` anywhere in the Gremlin bench, so native has nothing to seek — what it has is COLUMNAR properties. And that hand floor was a PER-EDGE hand arm (reproduced at 1.31-1.52x), so it is a floor on tuning the same data access, not on the question: a slot-space arm measures **3.38 ms against the engine's 112.7-143.5, i.e. 33-42x**, with the walk's evaluated set preserved.
 
 #### ⚠️⚠️ THREE INSTRUMENT DEFECTS, AND THE LESSON IS THAT I MADE ALL THREE IN ONE TICK
 
@@ -75421,3 +75421,83 @@ never apply, the start label / start inline pred / accept predicate ignored, arr
 the degree sum ignoring the arrivals weight, the second leg reading the first leg's CSR, the first
 leg's direction flipped, and the middle label ignored. Interleaved A/B, two order-alternated rounds,
 one row per process, each arm asserted in the BUILT bundle.
+
+### Item 1691 — **THE WIDEST GREMLIN RATIO PRICED AT 33-42x, AND THE HEADING THAT CALLED IT "SMALL HEADROOM" WAS WRONG ON BOTH HALVES.** ⚠️ **My own probe then produced a 91x that does not exist — a mask hoisted OUT of the timed region — and a SEVEN-ARM process whose same arm read 31.9, 44.2 and 65.6 ms.** Not built; the route and the shippable form are identified
+
+`V().out().has(age, eq(30)).id()` is the widest TS-vs-native ratio of any yielding row in
+`bun run bench:gremlin`: TS 159.7 ms against native 2.69. Item 1631's heading recorded it as OPEN but
+with "small" TS-side headroom, on two grounds that are both wrong.
+
+**"Native seeks; TS scans every edge."** There is no `createIndex` anywhere in `bench-gremlin.ts`, so
+native has no index to seek. What native has is columnar properties, which let it test the predicate
+once per VERTEX and then test a bit per edge. The ratio is not a seek-versus-scan difference.
+
+**"1.51x its hand floor."** That floor was a hand arm that still resolves the far VERTEX OBJECT and
+reads `.properties` per edge — this item reproduced it at 1.31-1.52x, which is what validates the
+instrument. A floor that keeps the engine's own data access is a floor on TUNING, not on the
+question.
+
+One arm per process, 14 reps, median of the warm ones:
+
+```text
+   arm                    median ms   vs engine   what it changes
+   engine                   143.5       1.00x
+   perEdge                  109.4       1.31x     the audit's hand floor
+   perVertex                 76.4       1.88x     predicate once per vertex, Map lookup per edge
+   perEdgeCsr                67.7       2.12x     flat CSR, predicate still per edge
+   lazyMaskCsr               21.7       6.47x     CSR + resolve on FIRST ARRIVAL, in the hot loop
+   markThenMask               3.4      ~42x       CSR + mark / resolve / emit  <- the shippable form
+   perVertexCsrPlusMask       2.9      ~46x       CSR + EAGER mask over all V
+```
+
+The engine arm itself spans 112.7-143.5 across processes, so the headline is **33-42x**.
+
+#### The form that ships, and why it is not the obvious one
+
+An EAGER mask over all V is fastest and is wrong for the reason item 1689 recorded: a predicate can
+THROW (a string-vs-temporal `<=` does, settled policy here), so gating every vertex raises errors on
+vertices the walk never reaches. Resolving on FIRST ARRIVAL keeps the evaluated set exactly the
+walk's — and measured **21.7 against the eager form's 2.9**, because it puts a branch and a property
+read inside a 1,000,000-iteration loop.
+
+Three passes fix both: mark which slots an edge reaches (1M typed-array reads), resolve the predicate
+for MARKED slots only (the walk's own set), then emit. **3.4 ms**, within 17% of the eager form, with
+no change to which vertices are tested. Two passes over `nbr` instead of one is the trade, and array
+reads are cheap where the property read is not.
+
+The infrastructure exists: `chainCsrFor` (item 1678) is `topologyVersion`-keyed, numbers slots by
+`graph.verticesById` order, and already backs `hop-chain-values.ts`'s two-hop walks. **Order is
+preserved by construction**, which this route requires absolutely — Gremlin streams are compared
+ORDERED by the differential fuzzer (unlike GQL rows), and `start-filtered-hop-values.ts` says so in
+terms: "any cleverer structure — walking the edge index once, hoisting the far side — is a
+cross-engine failure and not an optimization". A CSR built per vertex in bucket order, walked in slot
+order, emits the identical sequence.
+
+#### ⚠️ TWO ERRORS IN MY OWN INSTRUMENT, BOTH CAUGHT BY WIDENING IT
+
+**A 91x that does not exist.** The eager arm reused a mask built once at module scope, so it excluded
+all 200,000 property reads and reported 80-105x. Building the mask inside the timed region puts it at
+2.9. Same class as timing a warm cache against a cold one, and it nominated a size of win that was
+never available.
+
+**A seven-arm process.** The same arm read 31.9, 44.2 and 65.6 ms across three runs and the engine arm
+108.1-145.4 — a 2x spread on identical code, wider than several differences being compared.
+`start-filtered-hop-values.ts` records exactly this about the PREVIOUS probe for this shape ("`pick`
+is called through a closure VARIABLE … several arms in one process make that call site
+polymorphic"), and item 1689 hit the same thing when a four-shape PROFILE named a function the row
+never enters. The probe now takes `ARM=<name>` and the driver runs each in its own process.
+
+#### What the build must respect
+
+`start-filtered-hop-values.ts` carries two refutations that bound the implementation. A dedicated
+single-gate LOOP measured WORSE there (719.7 -> 731, and `both` 458 -> 507), and items 1441/1466
+measured an edit to a hot values walk at up to 16% on unrelated rows — "composing `pick` once per
+QUERY is the sanctioned place to change: all three loop bodies stay byte for byte the code they
+were". So the arm goes in as a separate route selected once per query, returning its own `values`
+object, with the existing loop bodies untouched. It must supply BOTH `[Symbol.iterator]` and `drain`:
+an eager-only arm would break `limit(1)`, which is the 473x/3680x failure the eager-tail-cache entry
+records for both engines.
+
+#### Gates
+
+`bun run check` 0 read unpiped. One probe added, no engine source touched.
