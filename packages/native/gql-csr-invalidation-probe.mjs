@@ -76,6 +76,11 @@ const ROWS = {
   // — so these two rows price the dispatch against the cache miss.
   h3interiorInline:
     'MATCH (a:Person)-[:KNOWS]->(b)-[:KNOWS]->(c WHERE c.age > 60)-[:KNOWS]->(d) RETURN count(*) AS c',
+  // ⚠️ A SELECTIVE MIDDLE GATE: few `b` expand, so few `c` slots are reached. This is where the
+  // mark pass earns its keep — an eager resolve would gate all 200,000 vertices for a query that
+  // touches a few thousand.
+  h3selectiveB:
+    'MATCH (a:Person)-[:KNOWS]->(b)-[:KNOWS]->(c)-[:KNOWS]->(d) WHERE b.age = 7 AND c.age > 60 RETURN count(*) AS c',
   h3interiorProp:
     'MATCH (a:Person)-[:KNOWS]->(b)-[:KNOWS]->(c {age: 61})-[:KNOWS]->(d) RETURN count(*) AS c',
 };

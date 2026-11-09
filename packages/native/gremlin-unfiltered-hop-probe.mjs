@@ -165,7 +165,7 @@ if (PICK === 'handGen' || PICK === 'handCsr' || PICK === 'handCsrPlusBuild') {
   // arms must match the sequence, not the multiset.
   for (let i = 0; i < want.length; i += 1) {
     if (got[i] !== want[i]) {
-      throw new Error(`ARM ${PICK} diverges at row ${i}: ${got[i]} vs ${want[i]}`);
+      throw new Error(`ARM ${PICK} diverges at row ${i}: ${String(got[i])} vs ${String(want[i])}`);
     }
   }
 }

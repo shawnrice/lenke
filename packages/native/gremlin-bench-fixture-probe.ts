@@ -143,16 +143,21 @@ const ndjsonOf = (withProps: boolean): string => {
 
   return lines.map((l) => l.replace(/,"properties":\{"w":\d+\}/, ',"properties":{}')).join('\n');
 };
-const g: Graph =
-  FIXTURE === 'api'
-    ? buildApi(true, false)
-    : FIXTURE === 'grouped'
-      ? buildGrouped()
-      : FIXTURE === 'noprops'
-        ? tsDeserialize(ndjsonOf(false), 'ndjson', new Graph())
-        : FIXTURE === 'vardeg'
-          ? buildApi(true, true)
-          : tsDeserialize(lines.join('\n'), 'ndjson', new Graph());
+const buildFixture = (): Graph => {
+  switch (FIXTURE) {
+    case 'api':
+      return buildApi(true, false);
+    case 'grouped':
+      return buildGrouped();
+    case 'noprops':
+      return tsDeserialize(ndjsonOf(false), 'ndjson', new Graph());
+    case 'vardeg':
+      return buildApi(true, true);
+    default:
+      return tsDeserialize(lines.join('\n'), 'ndjson', new Graph());
+  }
+};
+const g: Graph = buildFixture();
 
 // The fixture's own statistics, as CLAUDE.md requires before any number from it is believed.
 const distinct = new Set<unknown>();

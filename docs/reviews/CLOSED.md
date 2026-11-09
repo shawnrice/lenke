@@ -75918,10 +75918,10 @@ item 1694 measured at 2.26x for the walk itself.
   `specializedConjunct` to the `bindVar !== undefined` case (by writing the binding inside the
   specialized closure) would be a general improvement across its thirteen call sites, and it is
   worth ~7 ms here, not 75. Not re-attempted on this row's strength.
-- **The real prize is a property READ, which TS stores per-vertex as an object.** Native stores
-  properties columnar, which is why its twin of this row is in the single-digit milliseconds. A
-  columnar property store for the TS core is an architecture change, not an arm, and it is the
-  honest answer to "why is this row 70 ms when its arithmetic is 15".
+- ~~**The real prize is a property READ, which TS stores per-vertex as an object.** … A columnar
+  property store for the TS core is an architecture change, not an arm~~ ⚠️ **TOO PESSIMISTIC, and item 1699 corrected it one item later: the read's ORDER was an arm.** Resolving the gate in
+  SLOT order instead of arrival order took the row 69.73 -> 18.51 (3.77x) with no change to
+  storage. A columnar store would close the rest; the scattered-access half did not need it.
 - The row's own variance is wide on this fixture: the same build read 89.82 and 69.73 across
   processes (1.29x), so neither figure should be quoted without the other.
 
@@ -75931,3 +75931,70 @@ item 1694 measured at 2.26x for the walk itself.
 instrumentations (an ablation in the arm, a route counter in `composeInlineGate`, a profile script)
 were applied and removed, with the markers asserted back to 0. Two rows added to an existing probe;
 no engine behaviour changed.
+
+### Item 1699 — **THE INTERIOR-FILTER ROW, TAKEN: 69.73 -> 18.51 ms (3.77x)**, by resolving the gate in SLOT order instead of arrival order — same reads, same set, sequential instead of scattered. ⚠️ **AND THE "A GATE CAN THROW" RULE I USED TO JUSTIFY THE LAZY FORM AT ITEM 1689, REPEATED AT 1692, AND REPEATED AGAIN IN THIS ITEM'S FIRST DRAFT IS WRONG ON THIS PATH: eighteen cross-type comparisons were tried and every one returns a clean no-match**
+
+Item 1698 sized the gate at 83% of this row and found the dispatch worth only 1.11x of it, then
+concluded the remainder was a property read and "an architecture change, not an arm". That was too
+pessimistic by a factor of 3.77.
+
+The arm already read each reached vertex's property exactly ONCE — but in ARRIVAL order, which is
+whatever order `mid.nbr` happens to hold. Resolving in SLOT order instead walks `order[]` in
+`verticesById` order, which is the order those objects were ALLOCATED in. Same reads, same evaluated
+set, sequential instead of scattered:
+
+```text
+   h3interior        (clause WHERE)   69.73 -> 18.51    3.77x
+   h3interiorInline  (inline WHERE)   62.97 -> 16.84    3.74x
+   h3  (control, the unfiltered arm)   9.12 ->  7.19    flat/better
+```
+
+This is item 1691's mark / resolve / emit shape, which that item measured on the Gremlin side at
+**3.4 ms against the lazy form's 21.7** — the mechanism transferred, and the ablated floor of 14.77
+is now 1.25x away.
+
+#### ⚠️ THE THROW RULE WAS NEVER TESTED, AND IT IS WRONG HERE
+
+Item 1689 justified the lazy memo with "a gate can THROW — a string-vs-temporal `<=` does, which is
+settled policy here". Item 1692 cited the same rule to explain why Gremlin DOESN'T need it. This
+item's first draft repeated it again. A mutation making the resolve pass eager then SURVIVED the
+whole suite, which named the claim as untested — so it was tested: eighteen combinations, the six
+ordering operators against string-vs-number, string-vs-date and number-vs-date.
+
+**Every one returns a clean no-match.** `<>` correctly returns 1. Nothing throws. The policy
+`cross-type-comparison-no-error` records is real but lives in ORDER BY / min / max, where
+`compareValues` throws — not on the predicate path these arms use. Item 1692's reasoning happened to
+reach the right conclusion for Gremlin by the wrong route: it contrasted the two engines' policies
+when in fact neither throws here.
+
+**So a test cannot catch that mutant, and one should not be written to pretend otherwise.** The
+earlier draft of this item added a "lonely vertex with an incomparable value" test which passed
+whether the pass was lazy or eager — a test with no teeth that read like coverage. It is gone.
+
+#### What the mark pass is actually for
+
+A WORK BOUND, not correctness. Measured both ways on this dense fixture, where nearly every slot is
+reached, the EAGER form is **1.08x faster** (17.65 against 19.30) — so on this row the mark pass
+costs a little. It ships anyway because the two have different WORST cases: the mark pass's downside
+is bounded at ~1.08x, while an eager resolve gates all |V| vertices even for a query whose middle is
+selective enough to touch a handful. **A bounded loss is preferred to an unbounded one**, and that is
+the justification now written on the function — replacing the one that was never true.
+
+#### ⚠️ Two things found and not fixed
+
+- **A two-variable AND clause appears to decline this arm entirely.** `WHERE b.age = 7 AND c.age > 60`
+  did not finish in 600 seconds on the 200,000-vertex fixture, where each conjunct alone is ~20 ms.
+  That is a plausible rung gap, not a measured one — the run was stopped, so all that is established
+  is "slow and unexplained". Its own item.
+- **Items 1693 and 1694 each committed a lint-failing probe.** Both passed `bun run check` and were
+  then edited further before the commit. The gate has to be the LAST step before `git add`, not an
+  earlier one; both are fixed here.
+
+#### Gates
+
+`bun run check` 0 read unpiped. Suites isolated: gql 4361, gremlin 2065, core 453, 0 fail each. Nine
+mutants CAUGHT (the mark pass marking nothing, the resolve pass skipping marked slots instead, a
+weight of 1, the emit pass ignoring the weight or `ways`, the ways/slot hand-off between passes
+mismatched, and the `c` label or gate ignored). ONE survives by construction — the eager resolve, for
+the reason above. Two mutants aborted first on a sed delimiter collision (`||` inside `s|…|…|`) and
+were re-run with `@`.

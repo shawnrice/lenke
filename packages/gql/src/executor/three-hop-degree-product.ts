@@ -195,22 +195,44 @@ export const threeHopGatedDegreeProductOverCsr = (
   // `inlinePredOf` guarantees by refusing any inline constraint with a free name but the node's own.
   const binding = new Map<string, unknown>();
   /**
-   * `accept(c) ? outdeg(c) : 0`, memoized per SLOT and resolved LAZILY on first arrival.
+   * `accept(c) ? outdeg(c) : 0`, per SLOT — MARKED on arrival, RESOLVED in slot order, then EMITTED.
    *
-   * ⚠️ LAZY RATHER THAN A PASS OVER V, AND THE REASON IS CORRECTNESS, NOT SPEED. A gate can THROW —
-   * a string-vs-temporal `<=` does, which is settled policy here — so gating every vertex would
-   * raise errors on vertices the walk never looks at, for data the walk accepts today. Resolving on
-   * first arrival keeps the EVALUATED SET exactly the walk's: every `c` reached by a middle edge,
-   * and no other. What changes is only how OFTEN each is evaluated — once per vertex instead of
-   * once per middle edge, which is the whole lever.
+   * ⚠️ NOT A PASS OVER V — AND THE REASON IS A WORK BOUND, NOT CORRECTNESS. Items 1689 and the first
+   * draft of 1699 both justified this by "a gate can THROW", and that is WRONG in a predicate
+   * context: eighteen cross-type ordering comparisons were tried here (`> >= < <= = <>` against
+   * string-vs-number, string-vs-date and number-vs-date) and **every one returns a clean no-match**.
+   * The GQL throw rule `cross-type-comparison-no-error` records lives in ORDER BY / min / max, where
+   * `compareValues` throws — not on this path. A mutation making the resolve pass eager SURVIVES the
+   * whole suite, correctly, because the two forms are answer-equivalent and both total.
    *
-   * `state` is 0 unknown / 1 resolved, so a weight of zero (a rejected `c`, or an accepted one with
-   * no out-edges) is not mistaken for "not yet asked".
+   * What the mark pass actually buys is that the gate is evaluated once per REACHED slot rather than
+   * once per vertex. Measured both ways on a dense fixture, where nearly every slot is reached, the
+   * eager form is **1.08x FASTER** (17.65 against 19.30) — so on this row the mark pass costs a
+   * little. It is kept because the two have different WORST cases: the mark pass's downside is
+   * bounded at ~1.08x, while an eager resolve gates all |V| vertices even for a query whose middle
+   * is selective enough to touch a handful. A bounded loss is preferred to an unbounded one.
+   *
+   * ⚠️ AND NOT RESOLVED ON FIRST ARRIVAL EITHER, WHICH IS WHAT THIS USED TO DO (item 1699). Arrival
+   * order is the order `mid.nbr` happens to hold, so a lazy resolve touches 200,000 vertex objects
+   * at RANDOM while a resolve pass in SLOT order walks them in `verticesById` order — which is the
+   * order they were allocated in. Same reads, same set, sequential instead of scattered. Item 1691
+   * measured exactly this shape on the Gremlin side at **3.4 ms against the lazy form's 21.7**, and
+   * item 1698 established that the gate is 83% of this row with only 1.11x of it dispatch: the rest
+   * is the property READ, and its cost is where it lands in memory.
+   *
+   * `reached` is marked, `state` is resolved, so a weight of zero — a rejected `c`, or an accepted
+   * one with no out-edges — is never mistaken for "not yet asked".
    */
   const weight = new Float64Array(n);
-  const state = new Uint8Array(n);
+  const reached = new Uint8Array(n);
+  /** The `b` slots the walk expands, recorded by the mark pass so the emit pass does not re-derive
+   *  them — the guards below (`bLabel`, `bGate`, a missing slot, `ways === 0`) all decide whether a
+   *  `b`'s middle edges are walked at all, and the two passes must agree on that exactly. */
+  const liveB: number[] = [];
+  const liveWays: number[] = [];
   let total = 0;
 
+  // 1. MARK: which `b` the walk expands, and which `c` slots its middle edges reach.
   for (const b of candidateVertexSource(graph, bLabel)) {
     if (!matchesLabel(b, bLabel)) {
       continue;
@@ -234,29 +256,44 @@ export const threeHopGatedDegreeProductOverCsr = (
       continue;
     }
 
+    liveB.push(slot);
+    liveWays.push(ways);
+
+    const end = mid.off[slot + 1];
+
+    for (let i = mid.off[slot]; i < end; i += 1) {
+      reached[mid.nbr[i]] = 1;
+    }
+  }
+
+  // 2. RESOLVE, in SLOT order and only for marked slots — the walk's own evaluated set, read
+  //    sequentially rather than in arrival order.
+  for (let s = 0; s < n; s += 1) {
+    if (reached[s] === 0) {
+      continue;
+    }
+
+    const c = order[s];
+
+    if (
+      (cEff === undefined || matchesLabel(c, cEff)) &&
+      (cGate === undefined || cGate(c, binding, params, graph))
+    ) {
+      weight[s] = dSide.off[s + 1] - dSide.off[s];
+    }
+  }
+
+  // 3. EMIT.
+  for (let k = 0; k < liveB.length; k += 1) {
+    const slot = liveB[k];
     let inner = 0;
     const end = mid.off[slot + 1];
 
     for (let i = mid.off[slot]; i < end; i += 1) {
-      const cs = mid.nbr[i];
-
-      if (state[cs] === 0) {
-        state[cs] = 1;
-
-        const c = order[cs];
-
-        if (
-          (cEff === undefined || matchesLabel(c, cEff)) &&
-          (cGate === undefined || cGate(c, binding, params, graph))
-        ) {
-          weight[cs] = dSide.off[cs + 1] - dSide.off[cs];
-        }
-      }
-
-      inner += weight[cs];
+      inner += weight[mid.nbr[i]];
     }
 
-    total += ways * inner;
+    total += liveWays[k] * inner;
   }
 
   return total;
