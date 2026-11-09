@@ -77573,3 +77573,45 @@ the sibling conformance and differential tests all import from `bun:test`.
 
 `bun run check` 0 read through `${pipestatus[1]}` (after `bun run fmt`). native **1084** pass (up 3),
 gremlin 2109, 0 fail. `packages/gremlin/src/predicates.ts` restored and verified after the mutation.
+
+### Item 1729 — **THE STANDING O(1)-BY-ID REQUIREMENT IS VERIFIED, not assumed: the engine scales AS A RAW `Map` DOES (growth 2.67x against the map's 2.57x over 100x the elements — 1.04x relative) and adds a 1.26x constant over a bare `Map.get` at 1,000,000 elements.** First check of it this stretch, after eighteen items that touched comparators, sort routes, fixtures and the algorithms' adjacency
+
+"Keep good O(1) access to get a vertex or edge by id" is a standing requirement of this work rather
+than a hypothesis, and nothing this stretch had tested it — every statement about it was a reading of
+`Graph.ts`. Both probes exist precisely because, as `id-lookup-scaling-probe`'s header puts it, _"it
+is a `Map`" is a claim about the source and not about the build_. The two ways it regresses are both
+invisible to a correctness test: a lookup that becomes a SCAN still returns the right element, and a
+lookup that stays O(1) while gaining a constant costs every query that resolves an id.
+
+```text
+    elements     vertex ns    edge ns    raw Map    v/raw   e/raw
+       10,000         42.0       51.2       34.7     1.21    1.48
+      100,000         33.6       61.5       17.2     1.96    3.58
+    1,000,000        112.4      112.7       89.2     1.26    1.26
+
+    over 10,000 -> 1,000,000: engine grows 2.67x per lookup, raw Map 2.57x
+    engine growth relative to the map: 1.04x   -> the growth is CACHE, not complexity
+```
+
+**The invariant holds and the constant is small and measured: 1.26x over a raw `Map` at 1M, for both
+vertices and edges.** The companion `by-id-scaling-probe` reads the same thing less precisely —
+`vertexById` 12.3 -> 50.4 ns and `edgeById` 12.7 -> 53.8 over a **100x** increase in N, a 4.11x /
+4.22x ratio that would be ~100x if the lookup had become a scan. ⚠️ **Its own caveat applies to the
+base row** (at 10,000 the reading comes out ABOVE the 100,000 one — warm-up, non-monotonic), which is
+why the relative-to-map verdict is the one to read.
+
+**`gremlinVById` at 1,075-1,628 ns a lookup is NOT a scaling fault and should not be read as one.**
+That arm is a Gremlin `V(id)` traversal, which builds a plan and a traverser per call, so it prices a
+different thing; its ratio column _falls_ with N (1.00x -> 0.66x), which is warm-up, not improvement.
+
+**Why this is worth an item rather than a silent green.** Nothing I shipped this stretch touches the
+id path — the sort specialization, the Gremlin comparator and the bench fixture fix are all elsewhere
+— but "nothing I touched should have affected it" is exactly the reasoning that item 1722 showed can
+be wrong about a mechanism (`edge.to` is cached, so the lookup I "removed" was never running). A
+standing requirement that is only ever reasoned about is one that can regress silently; this is the
+measurement that makes the claim checkable.
+
+#### Gates
+
+`bun run check` 0 read through `${pipestatus[1]}`. Both probes exit 0. Measurement only — no source,
+bench or probe changed; the only edit is this entry.
