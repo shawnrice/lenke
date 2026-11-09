@@ -75982,10 +75982,10 @@ the justification now written on the function — replacing the one that was nev
 
 #### ⚠️ Two things found and not fixed
 
-- **A two-variable AND clause appears to decline this arm entirely.** `WHERE b.age = 7 AND c.age > 60`
-  did not finish in 600 seconds on the 200,000-vertex fixture, where each conjunct alone is ~20 ms.
-  That is a plausible rung gap, not a measured one — the run was stopped, so all that is established
-  is "slow and unexplained". Its own item.
+- ~~**A two-variable AND clause appears to decline this arm entirely.**~~ ⚠️ **DIAGNOSED AT ITEM
+  1700: it is a 1411x EQUIVALENT-SPELLING GAP — the clause form reads 1411.1 ms against its inline
+  twin's 1.0 for the same count, because `interiorPredOf` refuses a conjunction naming both interior
+  positions and the three-segment path has no second route.**
 - **Items 1693 and 1694 each committed a lint-failing probe.** Both passed `bun run check` and were
   then edited further before the commit. The gate has to be the LAST step before `git add`, not an
   earlier one; both are fixed here.
@@ -75998,3 +75998,66 @@ weight of 1, the emit pass ignoring the weight or `ways`, the ways/slot hand-off
 mismatched, and the `c` label or gate ignored). ONE survives by construction — the eager resolve, for
 the reason above. Two mutants aborted first on a sed delimiter collision (`||` inside `s|…|…|`) and
 were re-run with `@`.
+
+### Item 1700 — ⚠️ **A 1411x EQUIVALENT-SPELLING GAP, FOUND: a clause `WHERE b.age = 7 AND c.age > 60` costs 1411.1 ms where the same question spelled inline costs 1.0 — same count, 9,275.** The machinery to answer it already exists and only the CLAUSE READER refuses. Diagnosed and priced; the fix is its own item
+
+Item 1699 left this as "slow and unexplained" after a 200,000-vertex run did not finish in 600
+seconds. At 20,000 vertices / 100,000 edges, warm, median of 5:
+
+```text
+   WHERE b.age = 7                           1.0 ms   count    27,875
+   WHERE c.age > 60                          2.2      count   804,750
+   WHERE b.age = 7 AND c.age > 60         1411.1      count     9,275   <- the gap
+   (b {age: 7}) + (c WHERE c.age > 60)       1.0      count     9,275   <- same answer
+   WHERE a.age = 7 AND c.age > 60            2.2      count     9,290
+   WHERE b.age = 7 AND d.age > 60            1.3      count     9,290
+```
+
+**This is the failure family the repo's spelling discipline exists for**, in its textbook form: "the
+planner recognized one spelling of a predicate and scanned for another that meant exactly the same
+thing … each cost 100-300x and each returned the correct answer, so no correctness test could catch
+it". This one is 1411x, and the two spellings' counts are asserted equal in the probe so the
+comparison cannot be of two different questions.
+
+#### Only the b+c pair collapses, and a route counter says why
+
+```text
+   b only      neither counter      -> the gated degree product (item 1689)
+   b AND c     threeSegDecline      -> declines, and NO sweep route exists at 3 segments
+   a AND c     longChain            -> the sweep
+   b AND d     longChain            -> the sweep
+```
+
+`interiorPredOf`'s `readsOnly(name)` requires EVERY free variable of the clause to be that one name:
+
+```ts
+const onB = readsOnly(bName);
+
+if (free.size === 0 || !(onB || readsOnly(cName))) {
+  return null;
+}
+```
+
+For `b.age = 7 AND c.age > 60` the free set is `{b, c}`, so both tests fail and it returns `null`.
+`patternCountOf` then declines, and the three-segment path has no second route — the sweep is
+entered at `>= 4` segments, or through `endGatedChainCount` when the END is constrained, which is
+exactly why `a AND c` and `b AND d` are fast and `b AND c` is not. The query falls to the general row
+pipeline.
+
+#### ⚠️ THE MACHINERY TO ANSWER IT IS ALREADY THERE
+
+`threeSegmentCount` carries `interior: { b: readonly InlinePred[]; c: readonly InlinePred[] }` — two
+independent gate LISTS — and the closure composes `bGate` and `cGate` from them. The INLINE spelling
+fills both, which is why it answers in 1.0 ms. Only the clause reader refuses to produce two. And
+the splitting logic exists as well: `chainGatesOf` already buckets a clause `WHERE` by the variable
+each conjunct reads (item 305), for the sweep.
+
+So the fix is to make the clause reader produce what the inline reader already produces, not to add
+a route. Deliberately NOT done in this item: it changes a signature threaded through
+`patternCountOf`, `threeSegmentCount` and the closure, and this session has twice shipped a
+regression by making a change in the same tick it was diagnosed.
+
+#### Gates
+
+`bun run check` 0 read unpiped, run immediately before the commit — items 1693/1694 each shipped a
+lint-failing probe by gating before a later edit. One probe added; no engine behaviour changed.
