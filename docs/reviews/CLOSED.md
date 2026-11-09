@@ -80222,3 +80222,63 @@ assertion as a separate unmeasured pass and leave a one-char sink in the loop. S
 `bun run check` 0 read through `${pipestatus[1]}` — and it caught a `prefer-const` in the new micro
 first, which is why it is run unpiped. No engine source changed: the probe gained two arms and
 `packages/native/rando-micro.mjs` is kept.
+
+### Item 1769 — ⚠️ **THE GREMLIN BENCH'S `V().out().id()` ROW IS NOT A MISSING FUSION: isolated, the one-hop is 40.2-45.7 ms against the two-hop's 147.2-163.6, i.e. 3.5x FASTER, where the sweep reports 208.4 against 132.1.** And the row next to it, `V().out().values(age)`, is **BIMODAL ACROSS PROCESSES (77.9-138.0 ms, 1.77x)** — so no claim under ~1.8x can rest on it
+
+`bun run bench:gremlin` showed a two-hop beating its own prefix: `V().out().id()` at 208.4 ms and
+`V().out().out().id()` at 132.1, on a fixture where the second hop multiplies the rows five-fold.
+That is a strong shape of evidence for a missing fusion, and items 877-882 make it plausible — they
+record that `V().out()` and `V().out().id()` once had no fused walk while `values(k)` did, which
+made ADDING a step 1.9x faster (item 880).
+
+**It is not that.** Both fusions claim `id`: `hop-values.ts:187` for the one-hop and
+`hop-chain-values.ts:711` for the chain item 1614 built. So the reading was tested rather than
+explained, with a new instrument — **one shape per process** (item 1640's lesson, which found
+"1.9-2.0x engine-vs-floor gaps" to be substantially the instrument), **row counts asserted**, and
+the fixture's **distinct out-targets per vertex** checked rather than its out-degree:
+
+```text
+  shape                     rows        min ms (separate processes)
+  V().out(T).id()           1,000,000   45.7  42.6  42.3  43.1  40.2     tight, 1.14x spread
+  V().out(T).out(T).id()    5,000,000   163.6 159.9 147.2                tight
+```
+
+**The one-hop is 3.5x FASTER, disjoint and tight — the inversion does not reproduce at all.** Note
+what that means for the sweep's numbers: its two-hop figure (132.1) is in the right neighbourhood of
+the isolated 147-164, while its one-hop figure (208.4) is **~4.5x** the isolated 40-46. My fixture is
+generated in-process where the bench's is deserialized from NDJSON, so I am NOT claiming to have
+fully explained the 4.5x — only that the ORDERING the sweep reports is an artefact, and that is
+enough to retire the target.
+
+#### ⚠️ The neighbouring row is bimodal across PROCESSES, which is new
+
+Five processes, identical configuration, same binary:
+
+```text
+  V().out(T).values(age)   79.6  77.9  138.0  93.5  80.9      ← 1.77x, and it is a MODE
+  V().out(T).id()          45.7  42.6   42.3  43.1  40.2      ← 1.14x
+```
+
+The outlier is not a blip inside one run: process 3's **whole series** is shifted (138-198 ms against
+77-154 for its neighbours), so the process picks a mode and keeps it. `id()` on the same fixture does
+not do this. CLAUDE.md already records bimodality for `nullif` and `filterchain` WITHIN a process;
+this is the same hazard one level up, and min-of-N inside a single process cannot see it.
+
+**So the practical rule: `V().out(T).values(k)` needs min-across-PROCESSES, and the Gremlin bench —
+one process — can land in either mode.** A 1.5x reading on that row is inside its own spread.
+
+#### What was NOT concluded, and why
+
+The isolated numbers invite a per-row comparison — 1-hop `values` at 80.4 ns/row against 2-hop at
+34.5 — and at equal row counts it looks like 7.2x. **Both readings are confounded and neither is
+reported as a result.** Rows are `N·Fᵏ`, so holding the row count equal while varying the hop count
+forces the graph to shrink (the 2-hop arm then runs on a 5x smaller, fully cache-resident graph), and
+holding the graph equal forces the row counts apart. A size sweep settles the one thing it can:
+per-row cost **RISES** with scale (42.9 → 52.9 → 55.5 → 80.4 ns/row from 125k to 1M rows), so there
+is **no large fixed cost** to amortize — the rise is the cache transition CLAUDE.md puts between 200k
+and 1M. Add the 1.77x process mode on top and this comparison cannot carry a 2x claim, let alone 7x.
+
+#### Gates
+
+`bun run check` 0 read through `${pipestatus[1]}`. No engine source changed;
+`packages/native/hop-proj-isolated-probe.mjs` is kept as the per-process instrument.
