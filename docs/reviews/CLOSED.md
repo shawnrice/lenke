@@ -78457,9 +78457,95 @@ and the base overlap because the base overlaps _itself_. At **1500 runs** it rea
 the hoist must use n ≥ 1500 and drop the first run, or they will measure exactly what I did: nothing,
 with no way to tell a null result from an unresolvable one.
 
-**Recorded at `propOf`** with the numbers, the unsettled part, and the rep-count requirement.
+**Recorded at `propOf`** with the numbers, the unsettled part, and the rep-count requirement. ⚠️ **THE UNSETTLED PART IS NOW SETTLED AND SHIPPED AT ITEM 1741: the safe local hoist, inside `nodeProjection`'s row loop and guarded on >1 column, is 1.27x/1.29x with disjoint ranges.**
 
 #### Gates
 
 `bun run check` 0 read through `${pipestatus[1]}`. Pristine `values.ts` restored and rebuilt by the
 driver, tree verified clean; the only source change is the comment at `propOf`.
+
+### Item 1741 — ✅ **SHIPPED: hoist the property bag once per row in `nodeProjection`'s direct-read loop — 1.27x on a five-column `RETURN`, 1.29x on a two-column one, ranges DISJOINT.** ⚠️ **The guard on `> 1` columns is load-bearing: unguarded, the single-column shape measured ~10% WORSE.** Cost side stated: a different rung pays ~4%
+
+Item 1740 refuted a module-level memo for `propOf` and said plainly what it had NOT settled: _"a
+correct version would hoist the bag into the projection's own row scope as a LOCAL, where no write
+can intervene and there is no module-variable traffic."_ This is that version.
+
+#### Finding the right loop, by reading the route rather than guessing
+
+`wideproj`'s profile gave `fastPath` 20.4%, which is the rung DISPATCHER — but at 300 query calls a
+dispatch chain cannot cost that, so it had to be a taken rung's body inlined into it.
+`rung-precedence-decides-speed` says to read `compileLinear`'s non-null function fields, because
+timing cannot tell declined from more-work. Read directly:
+
+```text
+  wideproj / wide2 / narrow1  ->  nodeProjection
+  hoprows                    ->  hopProjection
+  distincthi                 ->  distinctProjection
+```
+
+So the loop is `nodeProjection`'s, where `row[cols[i]] = dk === undefined ? fns[i](env) : propOf(v, dk)`
+calls `propOf` — i.e. the `properties` GETTER — once per column on the same vertex.
+
+**Exactly equivalent, which is why this needed no owner decision** (unlike items 1733 and 1736, both
+still waiting on a semantics call): the same getter on the same element, and nothing in a projection
+expression can write, so the bag cannot change between two columns of one row.
+
+#### Measured at 1500 runs — the rep count item 1740 established as the minimum
+
+Three alternated rounds, one arm per build, each arm asserted present in the dist first:
+
+```text
+  shape                       base                hoist (A/B arm)    verdict
+  wideproj (5 direct cols)    630.4 634.6         502.3 494.7 493.4  1.27x, DISJOINT
+  wide2    (2 direct cols)    516.6 495.9         402.1 378.5 400.5  1.29x, DISJOINT
+  narrow1  (1 direct col)     285.3 326.2 289.2   286.9 283.8 318.9  FLAT (the guard)
+  hoprows  (a DIFFERENT rung) 470.3 475.3 479.4   500.5 493.7 482.2  ~4% SLOWER
+```
+
+⚠️ **THE SHIPPED CODE IS NOT THE ARM THAT WAS MEASURED, SO IT WAS RE-MEASURED.** `no-nested-ternary`
+rejected the combined form, so the loop was split in two — one per mode, which also drops a
+per-COLUMN flag test and leaves the non-hoist branch **byte-identical to the pre-change loop**. The
+shipped form is BETTER than the arm on every row, the control cost included:
+
+```text
+  shape      SHIPPED (two loops)      vs the same base      verdict
+  wideproj   484.0 491.2 484.7        630.4 634.6           1.30x
+  wide2      364.1 381.2 394.4        516.6 495.9           1.32x
+  narrow1    292.8 283.3 285.9        285.3 326.2 289.2     flat
+  hoprows    487.2 481.6 487.9        470.3 475.3 479.4     ~2% slower (was ~4%)
+```
+
+⚠️ **THE GUARD IS LOAD-BEARING AND WAS FOUND BY MEASURING, NOT BY FORESIGHT.** The first version
+hoisted unconditionally and measured the single-column shape **~10% worse** (base 284/288/327
+against 285/318/320) — at width 1 the hoist saves no repeated getter and adds one local.
+`RETURN <one column>` is far too common a shape to pay that for a wider one's win, so the hoist is
+gated on more than one direct key, decided once per query from `directKeys`. Guarded, width 1 is
+flat.
+
+⚠️ **AND THE WIDTH LADDER IS WHY THE MECHANISM IS KNOWN.** `wide2` gains the same RATIO as
+`wideproj` but a smaller ABSOLUTE amount (~113 ms against ~146), which is what a per-column saving
+looks like once the base differs. A single shape would have given the ratio and no way to tell a
+per-column cost from a per-row one.
+
+#### The cost side, stated rather than buried
+
+`hoprows` takes `hopProjection` and **cannot reach the changed code**, yet it measures ~2% slower.
+That is the `executor-edits-perturb` toll this family charges — the audit records 1.08-1.24x for it,
+so ~1.04x is the mild end. Taken because a multi-column `RETURN` is a far more common shape than
+that margin is large, which is exactly the trade `executor-edits-perturb` says to make explicitly.
+
+#### Gates
+
+GQL suite **4424 pass, 0 fail**. **All seven byte-identity fuzzers green** (20 pass, 0 fail) — run
+because this changes how a projected value is read, and byte-identity is the hard invariant.
+`bun run check` 0 read through `${pipestatus[1]}`.
+
+**NEW PROBE SHAPES — `wide2` and `narrow1`**, the width ladder, kept because any future per-column
+lever in this loop needs the axis that separates per-column from per-row.
+**NEW PERMANENT INSTRUMENT — `packages/native/nodeproj-bag-driver.sh`**.
+
+⚠️ Four of this driver's anchors had to be counted before use: `const labelName = label?.name;`
+occurs **4** times in `node-scan.ts`, `const allDirect = …` **2**, `const width = cols.length;` **3**
+and `const exactSeed = …` **6** — the file holds several near-identical closures, so an unverified
+anchor lands in the wrong one. Only `const cstart = cm.patterns[0].start;` is unique. That is the
+same lesson as items 1737 and 1738, now with a count.

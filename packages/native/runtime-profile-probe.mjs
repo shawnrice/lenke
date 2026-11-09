@@ -150,6 +150,13 @@ const SHAPES = {
   existssub: 'MATCH (a:P) WHERE a.k = 5 AND EXISTS { MATCH (a)-[:E]->(b:P) } RETURN count(*) AS c',
   // A wide projection: five property reads per row, no aggregation to hide them behind.
   wideproj: 'MATCH (n:P) WHERE n.k < 10 RETURN n.k AS a, n.n AS b, n.s AS c, n.k AS d, n.n AS e',
+  // ⚠️ THE WIDTH LADDER for the nodeProjection rung's direct-read loop (item 1741). All three take
+  // the SAME route (verified by reading compileLinear's non-null function fields, not inferred from
+  // timing), and they differ only in how many `<nodeVar>.<key>` columns the row loop reads -- 5, 2
+  // and 1. A per-COLUMN cost scales across them and a per-ROW cost does not, so the ladder is what
+  // separates the two; `narrow1` reads once and cannot gain from removing a repeated read.
+  wide2: 'MATCH (n:P) WHERE n.k < 10 RETURN n.k AS a, n.n AS b',
+  narrow1: 'MATCH (n:P) WHERE n.k < 10 RETURN n.k AS a',
   // Set operation over two scans.
   unioned:
     'MATCH (n:P) WHERE n.k = 5 RETURN n.n AS x UNION ALL MATCH (n:P) WHERE n.k = 6 RETURN n.n AS x',

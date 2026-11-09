@@ -1091,6 +1091,38 @@ export const detectNodeProjection = (
   const labelName = label?.name;
   const width = cols.length;
 
+  /**
+   * HOIST THE PROPERTY BAG ONCE PER ROW when the projection reads MORE THAN ONE direct key off the
+   * scan's own element (item 1741).
+   *
+   * `propOf(v, key)` is `v?.properties?.[key] ?? null`, so the loop below called the `properties`
+   * GETTER once per column on the SAME vertex — five times a row for
+   * `RETURN n.k, n.n, n.s, n.k, n.n`. Resolving it once is EXACTLY equivalent: the same getter on
+   * the same element, and nothing in a projection expression can write, so the bag cannot change
+   * between two columns of one row. Same values, same column order, byte-identical.
+   *
+   * ⚠️ GUARDED ON `> 1`, AND THE GUARD IS LOAD-BEARING. At width 1 the hoist saves no repeated
+   * getter and adds one local, and the unguarded version measured the single-column shape ~10%
+   * WORSE (`RETURN n.k AS a`: base 284/288/327 against 285/318/320). `RETURN <one column>` is far
+   * too common to pay that for a wider shape's win. Guarded, it is flat: 285/326/289 -> 287/284/319.
+   *
+   * MEASURED at 1500 runs — NOT 300, which item 1740 established spreads 18% on this shape and
+   * cannot resolve the effect — three alternated rounds, one arm per build, ms:
+   *
+   *     5 direct columns   630/635  ->  502/495/493     1.27x, ranges DISJOINT
+   *     2 direct columns   517/496  ->  402/379/401     1.29x, ranges DISJOINT
+   *     1 direct column    285/326/289 -> 287/284/319   flat (the guard)
+   *     a DIFFERENT rung   470/475/479 -> 501/494/482   ~4% slower, the `executor-edits-perturb` toll
+   *
+   * The last row is the cost side and it is real: `hoprows` takes `hopProjection` and cannot reach
+   * this code, so its ~4% is the perturbation an edit in this family imposes on neighbours (the
+   * audit records 1.08-1.24x for that, so this is at the mild end). Taken because a multi-column
+   * `RETURN` is a far more common shape than the margin is large.
+   *
+   * Per QUERY, from `directKeys` — which is already decided at compile time, like `allDirect`.
+   */
+  const hoistBag = directKeys.filter((k) => k !== undefined).length > 1;
+
   const cstart = cm.patterns[0].start;
 
   return (graph, params) => {
@@ -1179,10 +1211,21 @@ export const detectNodeProjection = (
 
       const row: Row = {};
 
-      for (let i = 0; i < width; i++) {
-        const dk = directKeys[i];
+      if (hoistBag) {
+        const bag = v.properties;
 
-        row[cols[i]] = dk === undefined ? fns[i]({ binding, params, graph }) : propOf(v, dk);
+        for (let i = 0; i < width; i++) {
+          const dk = directKeys[i];
+
+          row[cols[i]] =
+            dk === undefined ? fns[i]({ binding, params, graph }) : (bag?.[dk] ?? null);
+        }
+      } else {
+        for (let i = 0; i < width; i++) {
+          const dk = directKeys[i];
+
+          row[cols[i]] = dk === undefined ? fns[i]({ binding, params, graph }) : propOf(v, dk);
+        }
       }
 
       out.push(row);
