@@ -75326,7 +75326,7 @@ predicates carry their own unit tests. Six mutants ABORTED on the marker check f
 joined the predicate onto one line, so the seds matched nothing — and that is the check earning its
 line rather than scoring six phantom survivors.
 
-### Item 1690 — **THE FILTERED TWO-HOP COUNTS, TAKEN: 13.4x and 19.5x**, by putting the walk's per-first-leg-edge degree read on a cached CSR. ⚠️ **A ROUTE COUNTER CORRECTED THREE THINGS READING THE CODE HAD GOT WRONG**, including which builder answers the end-filtered row. ⚠️ **And an `assert` that PREDICTED a count instead of reading it silently discarded two file writes while the log said "instrumented"**
+### Item 1690 — **THE FILTERED TWO-HOP COUNTS, TAKEN: 13.4x and 19.5x**, by putting the walk's per-first-leg-edge degree read on a cached CSR. ⚠️ **AND IT IS A 1.53x REGRESSION UNDER WRITE-EVERY-READ (item 1696): this is the one arm of the six that FAILS item 1695's criterion, because the two-hop walk (101 ms) is cheaper than the CSR rebuild (~147).** The warm numbers below stand; the write-rate caveat is new and was unmeasured when this shipped. ⚠️ **A ROUTE COUNTER CORRECTED THREE THINGS READING THE CODE HAD GOT WRONG**, including which builder answers the end-filtered row. ⚠️ **And an `assert` that PREDICTED a count instead of reading it silently discarded two file writes while the log said "instrumented"**
 
 The three-hop family was taken over items 1685, 1688 and 1689. The two-hop family was what was left,
 and item 1684's "still open" named `count 2-hop`'s route as unidentified.
@@ -75765,3 +75765,60 @@ in ~89 ms. Both figures are real; the scattered one is what a bench-like graph p
 `bun run check` 0 read unpiped. `packages/gremlin` isolated: 2065 pass, 0 fail (the arm was stripped
 and restored for the PRE arm; the dist was asserted at 0 and back at 3). One probe added; no engine
 behaviour touched.
+
+### Item 1696 — **ITEM 1695's CRITERION APPLIED TO THE FOUR GQL ARMS: three pass, and `count 2-hop + start filter` FAILS — a 1.53x regression under write-every-read.** ⚠️ **That arm shipped at item 1690 with the write case unmeasured, and this is the first measurement of it.** The rebuild scales with the number of DISTINCT `(direction, types)` CSR shapes a query needs, which is why the three-hop rows pay ~345 ms and the two-hop row ~147
+
+Item 1695 established the criterion — a CSR arm is safe under arbitrary writes iff the walk it
+replaces costs more than the rebuild — and said in terms that the GQL arms were "a separate instance
+of the criterion, not an inheritance, and none has been measured under writes". Measured now, on a
+SCATTERED fixture (item 1694: a grouped build understates both walk and rebuild), ms per read:
+
+```text
+   row                        PRE warm   POST warm   warm    PRE wr1   POST wr1    wr1
+   count 3-hop (1685)           438.08        9.12   48.0x    427.71     354.84   1.21x  ✓
+   + start filter (1688)        261.64        9.01   29.0x    275.75     160.19   1.72x  ✓
+   + interior filter (1689)     549.76       89.82    6.1x    545.74     415.10   1.31x  ✓
+   count 2-hop + start (1690)   101.08       10.75    9.4x    102.72     157.36   0.65x  ✗
+```
+
+`wr1` is one `addEdge` before EVERY read — the worst case, since one topology write drops the whole
+cached generation. The PRE walks are flat across write rates, as they must be: they cache nothing.
+
+#### ⚠️ THE ONE THAT FAILS, AND WHAT IT COSTS
+
+`count 2-hop + start filter` is **9.4x faster warm and 1.53x SLOWER when a write precedes every
+read** (157.36 against the walk's 102.72). The criterion predicts it exactly: the two-hop walk is
+101 ms and its rebuild is ~147, so there is nothing for the rebuild to amortize against.
+
+This is a real property of shipped code, recorded rather than fixed, because the fix is a policy
+trade and not mine to make silently: the alternatives are to keep 9.4x on read-mostly traffic with a
+1.53x pathological worst case, or to gate the arm on a cache HIT — which would mean the first query
+after every write takes the walk, and the CSR would then never be built at all unless something else
+builds it. A per-shape "reads since the last write" counter would decide it properly and is more
+state than this question has earned. **The 13.4x and 19.5x in item 1690's heading are correct for a
+read-mostly workload and that heading now says so.**
+
+#### The rebuild scales with DISTINCT CSR SHAPES, not with legs
+
+`count 3-hop` pays ~345 ms of rebuild and `count 2-hop` ~147, and the ratio is not 3:2. The key in
+`csrFor` is `(direction, types)`, so legs sharing a shape share one build:
+
+- `(a)-[:K]->(b)-[:K]->(c)-[:K]->(d)` needs `aSide = csrFor(inward=true)` and
+  `mid = dSide = csrFor(inward=false)` — **two** distinct shapes, ~2 x 172 ms.
+- `(a)-[:K]->(b)-[:K]->(c)` needs `csrFor(inward=false)` for both legs — **one**, ~147 ms.
+
+So a query whose legs alternate direction pays more rebuild than one that does not, independently of
+its depth. Worth knowing before adding an arm to a mixed-direction shape.
+
+#### What is still unmeasured
+
+Item 1676's bounded var-length arm (3.8x-27.2x) is the sixth CSR consumer and is not in this table.
+Its walk is the expensive one in that family, so it is very likely on the safe side — but "likely"
+is what this item exists to replace, and it has its own fixture shape (a quantified path) that none
+of these four rows exercises.
+
+#### Gates
+
+`bun run check` 0 read unpiped. `packages/gql` isolated: 4360 pass, 0 fail. The three arm modules
+were disabled and restored for the PRE measurement, with the temporary markers asserted back to 0.
+One probe added; no engine behaviour changed.

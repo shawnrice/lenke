@@ -27,6 +27,24 @@
  * so. This is not a cheaper route to the same degree lookup; it is an INDEX in place of the lookup,
  * which is the distinction items 1335 and 310 record at the three-hop twin.
  *
+ * ⚠️ THIS ARM IS A 1.53x REGRESSION UNDER WRITE-EVERY-READ, AND IT IS THE ONLY CSR ARM THAT IS
+ * (item 1696). Item 1695's criterion: an arm is safe under arbitrary writes iff the walk it replaces
+ * costs more than the rebuild. On a scattered fixture, ms per read:
+ *
+ * ```text
+ *    warm, no writes      walk 101.08   arm  10.75    9.4x
+ *    1 write per read     walk 102.72   arm 157.36    0.65x   <- the rebuild has nothing to amortize
+ * ```
+ *
+ * The two-hop walk is cheap (101 ms) and the rebuild is not (~147), so a write before every read
+ * loses. Every other CSR arm replaces a 192-550 ms walk and stays ahead at any write rate.
+ *
+ * KEPT, as a documented trade rather than a defect: 9.4x-19.5x on read-mostly traffic against a
+ * 1.53x pathological worst case. Gating the arm on a cache HIT does not work — the first query after
+ * each write would take the walk and nothing would ever build the CSR. A per-shape "reads since the
+ * last write" counter would decide it properly and is more state than this question has earned. If
+ * a serving workload ever shows this shape under heavy writes, that counter is the fix.
+ *
  * ⚠️ THE MASK IS PER-QUERY AND MUST NEVER BE CACHED ON `topologyVersion`. It reads PROPERTIES
  * through the predicate, and a property write deliberately does not bump that signal (items
  * 1674/1675), so a mask cached on it would go stale with no signal to catch it. Only the CSRs are
