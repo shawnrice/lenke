@@ -74764,7 +74764,7 @@ building there.
 
 `bun run check` 0 read unpiped. `packages/gql` isolated: 4268 pass, 0 fail.
 
-### Item 1684 — ⚠️ **A THIRD VARIANT OF THE FIXTURE TRAP, WHICH PASSES BOTH EXISTING CHECKS: the fixture was IN-regular while its out-degrees varied, so a 3-walk count was `N * F^k` by arithmetic anyway.** And with it fixed, the GQL hop count's real lever is a DEGREE PRODUCT over flat arrays at **243x-298x warm / 3.8x-4.8x cold, stable across fanout** — where item 1682's path-counting arm decays from 22x to 7.5x. The route is identified. OPEN, not built
+### Item 1684 — ⚠️ **A THIRD VARIANT OF THE FIXTURE TRAP, WHICH PASSES BOTH EXISTING CHECKS: the fixture was IN-regular while its out-degrees varied, so a 3-walk count was `N * F^k` by arithmetic anyway.** And with it fixed, the GQL hop count's real lever is a DEGREE PRODUCT over flat arrays at **243x-298x warm / 3.8x-4.8x cold, stable across fanout** — where item 1682's path-counting arm decays from 22x to 7.5x. The route is identified. ~~OPEN, not built~~ ⚠️ **BUILT AT ITEM 1685: `count 3-hop` 463.9 → 5.7 ms, 81.4x**
 
 Item 1683 left two questions: which route answers `count 3-hop`, and whether item 1682's pricing
 holds. Both are answered, and both answers correct something.
@@ -74849,3 +74849,103 @@ one walk serving several shapes.
 
 `bun run check` 0 read unpiped. Probe only; the call-site instrumentation was removed again and
 `shortcuts.ts` is byte-identical to item 1683's commit.
+
+### Item 1685 — **THE GQL FIXED-DEPTH HOP COUNT, TAKEN: `count 3-hop` 463.9 → 5.7 ms, 81.4x**, by answering the degree product from flat arrays instead of |V| + |E| string-keyed map lookups. ⚠️ **And a 2.623x "regression" on another row was the MIN ESTIMATOR picking different modes of a bimodal row** — six extra runs put it at 1.028x by median
+
+Item 1684 identified the route (`buildThreeHopCount`, `shortcuts.ts`) and priced the lever at
+243x-298x warm / 3.8x-4.8x cold. This builds it.
+
+#### The change
+
+The route computes `count = sum over b of indeg(b) * sum over (b->c) of outdeg(c)` and pays a
+string-keyed `edgesFromByLabel.get(id)` for each degree — one per VERTEX for the `a` side and one per
+EDGE for the `d` side. Three `topologyVersion`-keyed CSRs replace both with `off[s + 1] - off[s]`, at
+the same complexity. The legs may differ in direction and type, and the CSRs are keyed independently
+on `(direction, types)`; they share one slot numbering because every CSR numbers by `verticesById`
+order.
+
+```text
+   count 3-hop   463.9 -> 5.7 ms   81.4x   (interleaved, both rounds: pre 518.9/463.9, post 7.7/5.7)
+```
+
+On the probe's own fixtures the engine reads 3.3 / 3.7 / 4.9 ms against 119.3 / 216.3 / 350.2 at
+fanout 3 / 8 / 15 — **36x / 58x / 71x**, rising with fanout because the complexity matches. The
+residual gap to the raw arm (6.7x down to 3.9x) is parse, plan, dispatch and the per-vertex
+`candidateVertexSource`/`matchesLabel`, which the probe's arm does not pay.
+
+Every other row is unchanged: only this shape takes the arm. median 1.000x across 70 rows.
+
+#### ⚠️ The 2.623x that was not a regression, and what it cost to establish that
+
+`count var-length 1-3 hops [WALK]` read **2.623x worse** in the A/B — and it is item 1676's route,
+which this item touched by MOVING the CSR cache to its own module, so it was a plausible real cost
+rather than obvious noise. Its per-rep readings were the first clue:
+
+```text
+   pre  = [6.9, 20.7]     a 3.0x spread INSIDE one arm
+   post = [18.1, 19.5]    tight
+```
+
+Min-of-2 caught PRE's fast mode and missed it in POST. Three more runs per arm, with the dist-identity
+guard in place:
+
+```text
+   PRE  = [18.0, 6.2, 18.2]    median 18.0
+   POST = [19.3, 18.1, 18.5]   median 18.5    ->  1.028x, FLAT
+```
+
+So the row is **bimodal** — roughly 6 and roughly 18-20 — and the ratio was an artefact of the
+estimator, not a cost. This is `min`-of-N failing exactly as this file records for bimodal shapes:
+print the series, take the median.
+
+⚠️ **ONE RESIDUAL UNCERTAINTY, STATED RATHER THAN SMOOTHED OVER.** Pooling all readings, the fast mode
+appears in 2 of 5 PRE observations and 0 of 5 POST. Under PRE's own rate that is p ~ 0.08 — suggestive
+that POST hits the fast mode less often, not conclusive at n=5. It is immaterial either way: the fast
+mode is a minority mode in both arms and the MEDIANS differ by 2%. Worth re-checking if that row ever
+becomes a target.
+
+(`count 4-hop quantified [TRAIL]` read 1.388x from the same cause, pre=[64.9, 91.7].)
+
+#### Three structural constraints, each enforced by a limit rather than by judgement
+
+- `buildThreeHopCount` hit **complexity 47 against a cap of 35** with the arm inlined, and 42 with
+  only the loop extracted. So the walk and the eligibility predicate are each their own function.
+- `shortcuts.ts` then crossed the **3,000-line cap**, which is what moved the new code into
+  `three-hop-degree-product.ts`. The limit that fired is the one that says "this belongs elsewhere".
+- The cache could not simply be exported from `var-length-count.ts`, because that file imports
+  `shortcuts.ts` — importing it back is the CYCLE `import/no-cycle` forbids. Hence `csr-cache.ts`, a
+  leaf module both can use.
+
+#### The guards, and why they are narrow
+
+`csrDegreeProductApplies` is a pure function with its own test. ⚠️ Unlike the route thresholds this
+file also carries, a wrongly RELAXED clause here returns a WRONG COUNT, so the differential tests
+catch it; what they cannot catch is a clause wrongly TIGHTENED, which silently abandons the arm. That
+is the direction the unit test covers.
+
+Each clause excludes something a degree array cannot express: an undirected leg is `undirectedSide`'s
+two buckets minus the self-loops counted twice (item 1097 fixed a half-answer bug there); a
+label-filtered degree counts only edges whose far endpoint carries the label; a gate is a predicate
+over a vertex the array has reduced to a number. ⚠️ A VACUOUS label is already `undefined`, so
+`(a:Person)` on an all-`Person` graph still qualifies while `(a:Q)` declines — the two are
+indistinguishable from the pattern text, and the test pins both.
+
+#### ⚠️ Not the levers refuted at this loop
+
+Item 1335 replaced the id-string lookup with `b`'s own box read and measured **0.99x**; item 310
+memoized the `d`-side degree per `c` and was rejected on alternated rounds despite a 1.063x first
+reading. Both keep a HASH LOOKUP per unit. This replaces it with an index — a different operation,
+not a cheaper route to the same one.
+
+#### Gates
+
+`bun run check` 0 read unpiped. All five package suites isolated, 0 fail each: core 453, gql 4285,
+gremlin 2047, serialization 144, native 1081. All seven byte-identity fuzzers: 20 pass, 0 fail. The
+substrate probe asserts all four arms agree and the counts are bit-identical to pre-change
+(2,707,602 / 51,281,540 / 337,840,609). 17 new tests, six directional variants against an
+independent subquery route plus every declining clause.
+
+⚠️ One of those tests failed first and it was the TEST: it asserted an added edge "changes the count",
+but adding `v0 -> v1` legitimately changes nothing when `v0` has no in-edges, since `indeg(v0) * …`
+is zero however many edges leave it. Rewritten to assert the real invariant — agreement with the
+oracle after the write — and to choose an endpoint that must move the number.

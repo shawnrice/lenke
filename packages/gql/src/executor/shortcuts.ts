@@ -80,6 +80,10 @@ import { satisfies } from './predicates.js';
 import { foldFor } from './projection.js';
 import { columnName, resolveCount, valueKey } from './rows.js';
 import { AGGREGATES, asTruth } from './scalars.js';
+import {
+  csrDegreeProductApplies,
+  threeHopDegreeProductOverCsr,
+} from './three-hop-degree-product.js';
 
 export type CountFn = (graph: Graph, params: Params) => Row;
 
@@ -2996,6 +3000,26 @@ const buildFilteredTwoHopCount = <T>(
  * as it did before — the start-driven walk would have to grow a leg, which is a separate question
  * with its own measurement.
  */
+/**
+ * THE DEGREE PRODUCT OVER FLAT ARRAYS — {@link buildThreeHopCount}'s fast arm (item 1685).
+ *
+ * ⚠️ ITS OWN FUNCTION BECAUSE THE CALLER SITS ON THE COMPLEXITY BUDGET, which is this file's
+ * standing precedent (`hopChainShape`, and `hopChainCount`'s own note). Inlined it took
+ * `buildThreeHopCount` to 47 against a maximum of 35.
+ *
+ * The arithmetic is the caller's, unchanged: `sum over b of indeg(b) * sum over (b->c) of outdeg(c)`.
+ * What changes is where each degree comes from — `off[s + 1] - off[s]` on a `topologyVersion`-keyed
+ * CSR instead of a string-keyed `edgesFromByLabel.get(id)`, which item 1684 counted at |V| + |E|
+ * lookups for this shape and measured at 242.94x / 297.93x / 278.24x (fanout 3 / 8 / 15), or
+ * 4.76x / 4.38x / 3.76x with the whole CSR build inside the timed region.
+ *
+ * ⚠️ NOT THE LEVER ITEMS 1335 AND 310 REFUTED AT THIS LOOP. Item 1335 read `b`'s own adjacency box
+ * instead of the id string (0.99x); item 310 memoized the `d`-side degree per `c` (rejected on
+ * alternated rounds). Both keep a HASH LOOKUP per unit. This replaces it with an index.
+ *
+ * The three CSRs are keyed `(direction, types)` independently, so the legs may differ in both — and
+ * they share one slot numbering because every CSR numbers by `verticesById` order.
+ */
 const buildThreeHopCount = <T>(
   s1: Segment,
   s2: Segment,
@@ -3113,6 +3137,58 @@ const buildThreeHopCount = <T>(
     // neither, the edge's stored ID is all the `d` side needs (items 140, 218).
     const needsC = cEff !== undefined || cGate !== undefined;
     const binding = new Map<string, unknown>();
+    /**
+     * ⚠️ THE SAME ARITHMETIC OVER FLAT ARRAYS (item 1685). This route is a degree product —
+     * `count = sum over b of indeg(b) * sum over (b->c) of outdeg(c)` — and it pays a STRING-KEYED
+     * `edgesFromByLabel.get(id)` for each of those degrees: one per VERTEX for the `a` side and one
+     * per MIDDLE EDGE for the `d` side, which item 1684 counted as |V| + |E| lookups. Over a
+     * `topologyVersion`-keyed CSR each becomes one `Int32Array` read at the same complexity.
+     *
+     * Item 1684 measured 242.94x / 297.93x / 278.24x against this loop at fanout 3 / 8 / 15, and
+     * 4.76x / 4.38x / 3.76x with the whole CSR build inside the timed region — so it wins on a cold
+     * first call too, and the ratio holds across fanout because the complexity matches.
+     *
+     * ⚠️ NOT THE LEVER ITEMS 1335 AND 310 REFUTED AT THIS EXACT LOOP. Item 1335 replaced the
+     * id-string lookup with `b`'s own box read (0.99x) and item 310 memoized the `d`-side degree per
+     * `c` (rejected on alternated rounds). Both keep a HASH LOOKUP per unit; this replaces it with an
+     * index, which is a different operation rather than a cheaper route to the same one.
+     *
+     * ⚠️ THE GUARDS ARE NARROW ON PURPOSE, because a degree array cannot express any of what they
+     * exclude:
+     *
+     *   - every leg DIRECTED: an undirected leg is `undirectedSide`'s sum of two buckets minus the
+     *     self-loops counted twice, which item 1097 fixed a half-answer bug in. Not a `len[]`.
+     *   - no EFFECTIVE label at `a`, `c` or `d`: a label-filtered degree counts only edges whose far
+     *     endpoint carries it, where `len[]` counts them all. (A VACUOUS label is already
+     *     `undefined` here, so `(a:Person)` on an all-Person graph still takes this path.)
+     *   - no `b` or `c` GATE: both are predicates over a vertex the array has reduced to a number.
+     *
+     * `bLabel` is the one constraint that survives, because it only narrows which `b` slots are
+     * visited and `verticesByLabel` still supplies them.
+     */
+    // ⚠️ THE FLAT-ARRAY DEGREE PRODUCT (item 1685), when every leg is directed and nothing
+    // constrains a position the arm reduces to a number. Each clause's reason lives on
+    // `csrDegreeProductApplies`, which is a pure function with its own test precisely so a wrongly
+    // TIGHTENED clause — which silently abandons the arm rather than returning a wrong count — is
+    // caught. `bLabel` survives because it only narrows which `b` the walk visits.
+
+    if (
+      csrDegreeProductApplies({
+        aBoth,
+        midBoth,
+        dBoth,
+        aEff,
+        cEff,
+        dEff,
+        bGated: bGate !== undefined,
+        cGated: cGate !== undefined,
+      })
+    ) {
+      return rowOf(
+        threeHopDegreeProductOverCsr(graph, bLabel, { toAOut, t1, midOut, t2, fromDOut, t3 }),
+      );
+    }
+
     let count = 0;
 
     for (const b of candidateVertexSource(graph, bLabel)) {
