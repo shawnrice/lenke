@@ -167,7 +167,18 @@ const SHAPES = {
   // A named step and a select, the shape a join is written as.
   selected: traversal(V(), as_('a'), out('E'), select('a'), count()),
   // Grouping with a REDUCER, which `groupCount` above does not exercise.
-  groupreduce: traversal(V(), group({ by: 'k' }), count()),
+  // ⚠️ `keyBy`, NOT `by`. `group`'s config form is `{ keyBy, valueBy }` while `groupCount`'s is
+  // `{ by }`, and this row passed `{ by: 'k' }` for eight hundred items. A stray property is spread
+  // into the step and `keyBy` is left undefined, which means GROUP BY SELF: measured at item 1735,
+  // `group({by:'k'})` returns 2000 buckets over 2000 vertices where `group({keyBy:'k'})` returns 97.
+  // So this row was profiling a 200,000-entry Map of 200,000 single-element arrays, which is what
+  // its `groupStep` 54.5% + `(garbage collector)` 25.7% actually measured. A `.mjs` probe gets no
+  // excess-property check, so TypeScript could not catch it.
+  groupreduce: traversal(V(), group({ keyBy: 'k' }), count()),
+  // The degenerate shape kept deliberately, under a name that says what it is -- grouping every
+  // element into its own bucket is a real (if unwise) query, and it is the control that shows how
+  // much of this row's cost is bucket COUNT rather than grouping.
+  groupbyself: traversal(V(), group(), count()),
   // Barrier: the whole stream collapsed into one list.
   folded: traversal(V(), values('k'), fold(), count()),
   // ⚠️ `values()` DIRECTLY, with nothing after it to dilute the measurement. Item 1476 found

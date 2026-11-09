@@ -78013,3 +78013,88 @@ lesson from the other direction.
 `bun run check` 0 read through `${pipestatus[1]}`. Pristine restored and rebuilt by the driver, tree
 verified against HEAD before and after; the only source change is correcting the comment that item
 1733 added.
+
+### Item 1735 — ⚠️ **THE GREMLIN PROBE'S `groupreduce` ROW WAS GROUPING EVERY VERTEX INTO ITS OWN BUCKET: it passes `group({ by: 'k' })` where the config key is `keyBy`.** Its `groupStep` 54.5% + GC 25.7% — which I was one step from chasing as a live target — is a 200,000-entry Map of 200,000 single-element arrays. Corrected, the same row is **2.8x cheaper and has no GC problem at all**
+
+Profiled five under-mined Gremlin shapes to let the frames nominate a target. `groupreduce` came
+back at `groupStep` **54.5%** with `(garbage collector)` at **25.7%** — and item 1474 had profiled
+`group().by('k')` at `groupStep` **48.9%** with GC at **26%** BEFORE fixing it, so this looked like
+either a regression or a fix that never landed.
+
+It was neither. **The probe does not group by `k`.**
+
+```javascript
+export const group = (config: { keyBy?: string; valueBy?: string } = {}) => …   // group:      keyBy
+export const groupCount = (config: { by?: string } = {}) => …                   // groupCount: by
+```
+
+The row passes `group({ by: 'k' })`. `by` is not a key `group` accepts, so it is spread into the
+step object as a stray property and `keyBy` is left undefined — which means **GROUP BY SELF**.
+Measured, rather than read off the signature:
+
+```text
+  2000 vertices, 97 distinct values of k
+    group({by:'k'})     -> 2000 buckets      <- what the probe passed
+    group({keyBy:'k'})  ->   97 buckets      <- the real spelling
+    groupCount({by:'k'})->   97 buckets      <- correct; groupCount's key IS `by`
+```
+
+⚠️ **The two steps' config keys differ, which is what made this survive.** `groupCount({ by: … })`
+sits a few lines away in the same probe and is RIGHT, so the spelling looks consistent with its
+neighbour. And a `.mjs` probe gets no excess-property check, so TypeScript — which would reject the
+object literal — never saw it.
+
+#### The corrected row, with the degenerate one kept as a control
+
+600 reps, windowed past the fixture build:
+
+```text
+  row                               total      groupStep    GC
+  groupreduce (97 buckets)         596.7 ms       30.1%     below top-6 (<2.5%)
+  groupbyself (200,000 buckets)   1678.4 ms       66.7%     16.3%
+```
+
+**The real grouping shape is 2.8x cheaper and its GC term disappears entirely.** So item 1474's
+insertion-time evaluation works exactly as recorded, and the 25.7% GC was never grouping's cost —
+it was the cost of 200,000 buckets. The corrected profile has **no dominant term**: `groupStep`
+30.1%, `countStep` 20.3%, `sourceFromIds` 17.4%, `evalBy` 14.8%. Nothing to take.
+
+The degenerate shape is kept as **`groupbyself`**, named for what it does. It is a real (if unwise)
+query, and it is the control that separates bucket COUNT from grouping — which is the distinction
+this row obscured for its whole life.
+
+⚠️ Only ONE instrument carried the misspelling (checked across every `.mjs` and `.ts` under
+`packages/`, excluding the correct `groupCount` form) — contained, unlike item 1518's six generators.
+
+#### ⚠️ AND A METHOD ERROR OF MY OWN, recorded because it nearly produced the same kind of wrong answer
+
+My first pass ran the probe under `node --cpu-prof`, which profiles start to exit. For the three
+CHEAP shapes the fixture build then dominates, and the rankings came back as `indexEdgeLabel`
+12-16%, `getVertexById` 6-8%, `commitElementLabels`, `#commitNormalized` — **all of them the LOAD,
+none of them the query.** That is the exact failure `windowed-profile.mjs` was written to prevent,
+and the probe already supports `PROF_OUT`; I did not use it. Windowed, the same three shapes invert
+completely:
+
+```text
+  shape         unwindowed top frame            windowed top frame
+  valuemapped   indexEdgeLabel  12.1%           copyProps     42.0%
+  projected     indexEdgeLabel  16.0%           projectStep   47.5%
+  groupreduce   groupStep       23.2%           groupStep     54.5%
+```
+
+**Two different instrument faults in one tick, each of which would have nominated a target that does
+not exist.** The cheap check that caught the first was comparing a profile against a recorded
+earlier one for the same shape (54.5% against item 1474's pre-fix 48.9% was the thing that did not
+add up); the cheap check for the second was that the top frames were names from the LOAD path.
+
+#### Carried forward, genuinely open
+
+The windowed profiles leave two legitimate nominations on real steps, neither of which is a
+spelling artifact: **`copyProps` at 42.0% of `valueMap()`** and **`projectStep` at 47.5% of
+`project('a','b')`**. Both rows terminate in `count()` deliberately, to force consumption while
+measuring the step — so the shares are the steps' own cost. Unpriced.
+
+#### Gates
+
+`bun run check` 0 read through `${pipestatus[1]}`. No engine source changed — the only edit is the
+probe's shape list plus its comment.
