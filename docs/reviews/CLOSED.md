@@ -77026,3 +77026,51 @@ such mechanisms are now both refuted with numbers.
 `bun run check` 0 read through `${pipestatus[1]}`. All instrumentation was reverted and the tree
 verified clean (`__zt`/`__zrows` absent, the specialization's two references intact) before gating;
 no behaviour changed, so the suites and fuzzers are item 1713's.
+
+### Item 1719 — **A SCREEN THAT FOUND ITS OWN NOMINATION ALREADY CLOSED, for the third time on the same frame: `bucketSize` profiles at 55% of `COUNT { 2 hops }` and all 322,190 of its calls take the O(1) branch**, which would make that share **278 ns for one `Map.get(…)?.size`**. ⚠️ **And my profile had a 45% INSTRUMENT ARTIFACT I had to discount before reading it at all**
+
+With the sort cluster closed, the live GQL rows were `project var-length 1-3 hops + start filter
+[ENUMERATES]` (265.5 ms) and `query: 2-hop subquery item` (231.2). `CLOSED.md` already held the
+latter's native half (**1.3x, not the carried 28x**, flat across 4x of N) and said the TS side was
+taken at item 495 with item 1126's ~140 ns/edge floor as what remains — so rather than read further,
+I profiled it and let the frames nominate, which is what the loop asks for.
+
+**⚠️ THE PROFILE NEEDED CORRECTING BEFORE IT COULD BE READ.** Its top frame was
+`post [node:inspector:114]` at **45.50%** — the profiler's own stop-and-serialize, not the query. The
+windowed profiler exists to keep the FIXTURE BUILD out of a profile and does that correctly; what it
+cannot fix is a window too SHORT relative to its own teardown. Mine was ~1.4 s. Renormalised over the
+remaining 756 ms: `bucketSize` 55%, `twoHopSide` 15%, `side` 8.6%, `edgesOfTypes` 8%. **Profile a
+window long enough that the inspector's own frames are noise, and check for them before ranking.**
+
+**THE NOMINATION IS DOCUMENTED MISATTRIBUTION, AND THE NOTE IS ON THE FUNCTION.** Items 1416
+(`chain3`, 72.6%) and 1637 (`count3`, 76.7%) both found this and both proved it by COUNTING the
+calls. The note was established on those two shapes, so I verified it transfers rather than assuming:
+
+```text
+    bucketSize calls   322,190
+    O(1) branch        322,190     <- every one
+    countEdges fallback      0
+    => if the 55% share were real: 278 ns for one `Map.get(…)?.size`
+```
+
+322,190 is `|anchors| + |first-hop edges|` for 64,438 anchors — one call per anchor plus one per
+first-hop neighbour, each a single `size` read. So the share is the CALLERS' per-edge loops credited
+to a small hot callee, for the third time on this frame, and a degree memo would still save nothing
+because no vertex's degree is read twice. Recorded as a third confirmation ON the function, with the
+rule stated: treat a high share here as the caller's loop until a DELETION TEST WITH A CONTROL says
+otherwise (`frame-attribution-trap`).
+
+**Fifth time this session that a function-level note stopped a repeat build** — items 1684, 1686,
+921's comparator block, 1522/1523's rejected far-resolve guard, and now 1416/1637. The pattern is
+worth stating plainly: on this corpus the profile still nominates correctly, and the nominations are
+very often already answered, so **reading the note on the nominated function is cheaper than any
+measurement and has yet to be wasted.**
+
+**Nothing taken, nothing open found.** The row's cost is where the earlier entries put it, and this
+screen's only durable products are the third confirmation above and the profiler-window caveat.
+
+#### Gates
+
+`bun run check` 0 read through `${pipestatus[1]}`. The call-counting instrumentation was reverted and
+the tree verified clean (`__zb` absent) before gating; the only edit is the note on `hop-sides.ts` and
+this entry, so no behaviour changed.

@@ -164,6 +164,15 @@ export const side = (
  * per-edge loop credited to a small hot callee. So there is no repeated-lookup lever here — a
  * per-vertex degree memo would save nothing, because no vertex's degree is read twice.
  *
+ * ⚠️ THIRD CONFIRMATION, ON A THIRD SHAPE (item 1719). A windowed profile of
+ * `COUNT { (n)-[:KNOWS]->(m)-[:KNOWS]->(f) }` nominated this function at **55% of the real work**,
+ * and counting its calls says the same thing again: **322,190 calls, ALL 322,190 on the
+ * single-named-type O(1) branch, zero fallbacks** — which would make that share **278 ns for one
+ * `Map.get(…)?.size`**. The row's real cost was already priced elsewhere (1,000,000 inner degree
+ * reads at ~4 ns, against the ~140 ns/edge TS floor of item 1126). So this frame has now mis-nominated
+ * itself on `chain3`, `count3` AND the two-hop subquery: treat a high share here as the caller's loop
+ * until a DELETION TEST WITH A CONTROL says otherwise.
+ *
  * Mirrors that function's cases exactly, which is the whole requirement: a single named type, or
  * a single bucket when every type is wanted, is one `size` read. Several buckets are NOT a sum —
  * one edge can carry several labels and so sit in more than one of them, which is why
