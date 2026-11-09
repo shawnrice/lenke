@@ -154,8 +154,19 @@ const fromBinding = (t: Traverser<unknown>, value: unknown): Traverser<unknown> 
  *     14940 / 15162 against a 14781 baseline). The `done` set copy is not a cost; only the TAG map
  *     copy is, because `done` holds one small int per pattern while the tags hold boxed values.
  *   * `{ ...t, tags }` replaced by an explicit `{ value, path, loopCount, tags }` literal —
- *     **WORSE**, 15858 / 17275 / 15885. The spread is not the problem and hand-writing the literal
- *     loses whatever shape the spread was preserving.
+ *     **WORSE**, 15858 / 17275 / 15885. ⚠️ **RE-TESTED AT ITEM 1748 AND THE VERDICT CHANGED TO FLAT,
+ *     WHILE THE DECISION STANDS.** The stated reason — "hand-writing the literal loses whatever
+ *     shape the spread was preserving" — was conditional on something that has since changed: item
+ *     1746 unified all three traverser constructors on a 5-field shape including `sack`, so there is
+ *     no longer a shape for the spread to preserve, and the old literal's omission of `sack` would
+ *     itself create the polymorphism 1746 removed. Re-measured with `sack` carried, 9 readings per
+ *     arm at 10 reps: `matchedsel` medians **4430.9 -> 4379.4, 1.2% with ranges overlapping**
+ *     (4379-4482 against 4257-4450), and the `matched` CONTROL — which never reaches this line,
+ *     since `tagsObserved` is false for `match(…).count()` — nominally 3.8% worse. So the spread
+ *     costs nothing MEASURABLE here: `new Map(tags)` dominates the site.
+ *     ⚠️ **Do not read items 1745/1746 as "spreads are slow."** Those removed a conditional spread
+ *     that allocated an empty object per call AND unified a constructor shape; neither applies to a
+ *     one-field override of an already-uniform object. Tested, not assumed.
  */
 type PatternOutcome =
   | { readonly kind: 'drop' }

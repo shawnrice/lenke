@@ -78924,3 +78924,72 @@ the other two are inside the same two-reading unreliability.
 
 **The standing rule this adds:** a wide sweep is for _finding rows to measure_, and its own verdicts
 need 9 readings at 300 reps before they mean anything — in either direction.
+
+### Item 1748 — **a recorded rejection's VERDICT changed (WORSE → flat) while its DECISION stood, because items 1745/1746 invalidated its stated REASON.** The largest row in the Gremlin corpus profiled, and the one unpriced lever in it was already refuted. ⚠️ **Two more anchor failures, both caught — the sixth and seventh this session**
+
+Picked the target by absolute cost, as item 1244's rule says: item 1747's sweep incidentally ranked
+the corpus, and **`matchedsel` is ~450 ms per query, 7x the next-largest row**. Profiled windowed:
+
+```text
+  32.5%  solve          16.6%  applyPattern     6.2%  soleTypeBucket
+  17.5%  next            7.5%  bucketEnds       3.9%  matchStep
+```
+
+**74% in the `match()` solver's four frames.** Two things fell out of reading it, and both were
+already known:
+
+- `matchedsel`'s 7.5x over `matched` is the **tags snapshot** (`new Map(tags)` per solution), which
+  item 1559 priced at 82% of the shape and already skips when nothing downstream reads tags —
+  `matchedsel` has a `select('c')`, so it cannot skip.
+- `const next = new Set(done).add(idx)` per DFS node **was already tried** (shared mutable set,
+  **flat**: 15386/14940/15162 against 14781), with the reason recorded: `done` holds one small int
+  per pattern while the tags hold boxed values.
+
+#### The one claim worth re-testing, and why re-testing was not a re-derivation
+
+The same header records a second rejection: _"`{ ...t, tags }` replaced by an explicit
+`{ value, path, loopCount, tags }` literal — **WORSE**, 15858/17275/15885. The spread is not the
+problem and hand-writing the literal loses whatever shape the spread was preserving."_
+
+⚠️ **That reason was conditional on something item 1746 changed.** The traverser had two shapes then;
+1746 unified all three constructors on five fields including `sack`. So "whatever shape the spread
+was preserving" no longer differs from a hand-written literal — and the old literal's omission of
+`sack` would itself create the polymorphism 1746 removed. `check-the-blocker-still-holds`: a
+"rejected because X" note is a claim about X.
+
+Re-measured with `sack` carried, 9 readings per arm at 10 reps:
+
+```text
+  matchedsel  base      4379.4 4393.7 4409.7 4414.2 4430.9 4449.1 4461.4 4464.8 4482.4   median 4430.9
+              explicit  4256.5 4299.1 4312.4 4377.5 4379.4 4393.5 4420.2 4423.1 4450.3   median 4379.4
+  matched (CONTROL, never reaches the line)  623.8 647.0 616.7  ->  647.7 640.9 664.4
+```
+
+**1.2%, ranges overlapping (4379-4482 against 4257-4450)** — and the control nominally 3.8% worse,
+also overlapping. So the verdict is now **flat**, not worse, and **the decision to keep the spread
+stands**: `new Map(tags)` dominates the site and the spread costs nothing measurable.
+
+⚠️ **THE CORRECTION THAT MATTERS IS THE REASON, NOT THE NUMBER.** A reader following the old note
+would conclude "unify the shape and this becomes a win" — which is now tested and false. The note is
+updated in place: decision kept, reason replaced, with an explicit warning **not to read items
+1745/1746 as "spreads are slow."** Those removed a conditional spread that allocated an empty object
+per call _and_ unified a constructor shape; neither applies to a one-field override of an
+already-uniform object. **This is the generalization I would otherwise have made, now measured and
+refused.**
+
+#### ⚠️ Two more anchor failures, both caught
+
+1. `'...t,' in dist` — matches `solve`'s own `{ ...t, tags: work }` and `projection.ts`'s
+   `{ ...t, tags }`, so the explicit arm reported `AMBIGUOUS` for three rounds and never ran.
+2. `'loopCount: t.loopCount,'` — **already present TWICE in base**, so presence discriminated
+   nothing either.
+
+Fixed with a count (2 = base, 3 = explicit). **Sixth and seventh anchor failures this session, all
+seven caught by the same guard**, and the rule holds without amendment: _a dist discriminator must be
+something the mutation uniquely produces, and in a bundle full of structurally similar literals that
+means a COUNT._
+
+#### Gates
+
+`bun run check` 0 read through `${pipestatus[1]}`. Engine diff verified **comment-only** — the arm
+was built, measured and reverted.
