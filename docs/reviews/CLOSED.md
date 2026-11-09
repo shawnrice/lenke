@@ -74949,3 +74949,88 @@ independent subquery route plus every declining clause.
 but adding `v0 -> v1` legitimately changes nothing when `v0` has no in-edges, since `indeg(v0) * …`
 is zero however many edges leave it. Rewritten to assert the real invariant — agreement with the
 oracle after the write — and to choose an endpoint that must move the number.
+
+### Item 1686 — **A FIELD SCREEN AFTER ITEM 1685, AND THE TOP SIX ABSOLUTE ROWS ARE ALL ALREADY CLOSED.** ⚠️ **I reached for the biggest non-decode row and a note ON THE FUNCTION stopped a FOURTH pass at a target items 1522/1523 built and rejected** — the second time in one session that a function-level note did what a `CLOSED.md` keyword search did not
+
+Item 1685 took `count 3-hop` from 463.9 ms to 5.7. Re-ranking the corpus by absolute TS cost to pick
+the next target found that the whole top of the list is settled.
+
+```text
+   3551.3  decode pg-text (5 edges/node)      CLOSED — item 312, re-confirmed at 1259
+   3369.5  decode csv (5 edges/node)          CLOSED
+   2938.3  decode graphson (5 edges/node)     CLOSED
+   2906.6  decode ndjson (5 edges/node)       CLOSED
+   2754.6  decode pg-json (5 edges/node)      CLOSED
+    590.4  query: project the edge + materialize   CLOSED — items 1522/1523
+    388.0  count 3-hop + end filter           live
+    383.1  count 3-hop + start filter         live
+    322.6  count 4-hop + start filter         live (sweepChain, has the memo)
+    320.7  count 4-hop                        live
+    300.9  traverse 1-hop project + order by  barely examined (2 mentions, no entry)
+```
+
+#### The decode family, checked rather than recalled
+
+Item 1259 already ranked the field this way, already found the decode rows on top, and already
+recorded someone arguing the closed explanation could not cover them — refuted by phase attribution:
+
+```text
+   split + tokenize + buffer     78 ms      the PARSE side
+   APPLY phase                 3306 ms      97.7% of the total
+   ---- within apply ----
+   addVertex x200,000           181 ms      0.91 us each,  5.5%
+   addEdge   x1,000,000        2398 ms      2.40 us each,  73%
+```
+
+So TS's apply cost is format-INDEPENDENT and the ratio spread is native's parse speed varying by
+format. ⚠️ **The lesson I took from this is to read the entry rather than re-derive it**: my own
+instinct was the same as the one 1259 recorded and refuted (pg-text and csv are not JSON, so how can
+`JSON.parse` explain them?).
+
+#### ⚠️ The near-miss, which is the actual content of this item
+
+`query: project the edge + materialize` at 590.4 ms is the biggest non-decode row, and item 1521
+diagnosed a real inefficiency in `relBoundHopWalk`: it resolves `far = edge.to` and writes
+`binding.set(farVar, far)` on every row even when the far node is ANONYMOUS and unlabelled, where
+nothing can read it. 1521 explicitly did NOT build it and named the `RETURN *` hazard to clear first.
+
+That reads like an open target. It is not — **items 1522 and 1523 built it, measured it, and rejected
+it**:
+
+```text
+               RETURN r          RETURN r.w
+   PRE          236.4 ns/row      346.2 ns/row
+   one loop     209.5  (1.13x)    402.0  (-16%)
+   two loops    228.4  (1.03x)    395.5  (-14%)
+```
+
+The GAIN is not robust to the implementation and the REGRESSION is, `RETURN r.w` is at least as
+common a shape, and the alternative cure (the far-driven route) is structurally unreachable because
+that route never iterates the edges at all. The `RETURN *` hazard was cleared by measurement, not
+reasoning.
+
+⚠️ **A `CLOSED.md` SEARCH FOR THE ROW NAME FOUND 1521 AND MISSED 1522/1523**, because their headings
+do not carry the phrase "project the edge". What caught it was the note parked on
+`relBoundHopWalk` itself — carrying the numbers, the two implementations tried, and the structural
+argument. **That is the second time this session**: item 1637's note on `bucketSize` stopped a third
+degree-memo attempt at item 1684 the same way.
+
+So the practice is worth stating as a practice: when a lever is refuted, the note goes **on the
+function the next profile will point at**, not only in this file. A keyword search finds entries whose
+author happened to use the same words; a comment finds anyone who arrives at the code.
+
+#### What is actually live
+
+The filtered three-hop counts (388.0 and 383.1 ms) are the natural continuation of item 1685 and are
+NOT closed — they appear only in item 1515 (as a found target) and item 1683. ⚠️ Item 1685's arm
+cannot serve them as built: a start or end filter constrains a position the degree product reaches
+only as a DEGREE, and a predicate-filtered degree is not `off[s + 1] - off[s]`. A per-query filtered
+degree array is O(V + E) to build and cannot be cached on `topologyVersion`, because the predicate
+reads properties — which is the same split item 1680 recorded for its projection memo. To be PRICED
+before it is built.
+
+`traverse 1-hop project + order by` at 300.9 ms has two mentions in this file and no entry of its own.
+
+#### Gates
+
+`bun run check` 0 read unpiped. No engine source touched — a screen and this entry.
