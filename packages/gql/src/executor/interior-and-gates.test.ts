@@ -228,7 +228,7 @@ describe('interiorPredOf — the BUCKETING asserted directly', () => {
     };
     const match = ast.parts[0].clauses.find((c) => c.kind === 'match');
 
-    if (match === undefined || match.where === undefined) {
+    if (match?.where === undefined) {
       throw new Error('the probe query must have a MATCH with a WHERE');
     }
 

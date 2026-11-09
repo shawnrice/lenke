@@ -76125,3 +76125,68 @@ shapes already have the sweep, which is why `a AND c` and `b AND d` were never s
 `bun run check` 0 read unpiped immediately before the commit. Five suites isolated: core 453, gql
 4381, gremlin 2065, serialization 144, native 1081, 0 fail each. Seven byte-identity fuzzers 20 pass,
 0 fail. Eight mutants CAUGHT, one unreachable.
+
+### Item 1702 — **`bun run spelling` FLAGS A REAL 38.7x CLAUSE-vs-INLINE GAP, REPRODUCED OUTSIDE THE PROBE: `WHERE c.k = 2` 467.68 ms against 12.07 and 12.27 for its two inline twins, same count.** ⚠️ **An independent fixture with the SAME QUERY STRINGS shows NO gap, and four candidate causes are ruled out — so it depends on a fixture property not yet isolated.** ⚠️ **And my own gate reading was broken: `check | tail > /dev/null; echo $?` reports TAIL's status, which is how item 1701 shipped a lint error**
+
+Item 1701 closed a 1411x gap found by COMPARING SPELLINGS rather than profiling, so this item used the
+instrument built for that: `bun run spelling` at `SPELL_N=200000 SPELL_REPS=9`. It flags exactly one
+group, `three hops, THIRD position filtered (item 222)`, and the probe's own rule is "a flagged group
+is a finding". Confirmed alone, three times, as that rule requires: **29.18x, 31.18x, 29.33x**, zero
+answer disagreements.
+
+#### It is the FIXTURE, not the probe's in-process measurement
+
+An independent fixture running the same three query strings showed no gap at all, and four candidates
+were ruled out one at a time (200,000 vertices unless noted, median of 7):
+
+```text
+   no index, 50k        clause  3.9   inline  3.0 / 3.4
+   hash index on `k`    clause  4.0   inline  3.5 / 3.6     (and the probe indexes AFTER the group)
+   no index, 200k       clause 21.2   inline 19.7 / 19.2
+   one edge in 11 multi-labelled   clause 22.1   inline 17.6 / 29.2
+```
+
+So a replica was built: `spelling-probe.ts`'s NDJSON byte for byte — its `tsDeserialize` loader,
+`N * 3` edges, `k = i % 50`, the one-in-eleven second edge label, the four extra `S`/`Univ` nodes —
+and run ONE QUERY PER PROCESS. It reproduces:
+
+```text
+   clause        467.68 ms    count 108,000
+   inlineWhere    12.07             108,000      38.7x
+   inlineProp     12.27             108,000
+```
+
+**So the gap is real and depends on the fixture.** The probe is not mismeasuring; my simpler fixture
+simply does not trigger whatever route the clause form takes there. What remains is to bisect the
+replica toward the fixture that does NOT show it — the candidates left are the edge count (`N*3`
+against `N*5`), the predicate's selectivity (`k = i % 50` against `i % 17`), the LINEAR `from`/`to`
+expressions (which make that graph a union of three permutations, so in-regular — item 1684's third
+trap), the edge properties `w`/`ew`, and the loader. Its own item, because a bisection that stops
+early names the wrong cause.
+
+⚠️ **This does NOT contradict item 491**, which investigated the same group and found a **1.4x**
+spread to be the instrument. 1.4x and 38.7x are different claims; that item's numbers were taken
+before items 1685/1688/1689/1699 and 1701 changed every route this group touches.
+
+#### ⚠️ MY GATE READING WAS BROKEN, AND IT SHIPPED A LINT ERROR
+
+Several recent items report `check exit 0` from
+
+```sh
+timeout 900 bun run check 2>&1 | tail -3 > /dev/null; echo "check exit $?"
+```
+
+`$?` there is **`tail`'s** status, which is always 0. That is the exact trap `CLAUDE.md` documents
+for piping clippy into `grep -c`, and it means those readings said nothing. Item 1701 was committed
+with a `prefer-optional-chain` error in its own new test file as a result; it and one in this item's
+replica probe are fixed here, and the gate is read through `${pipestatus[1]}`.
+
+Items 1693 and 1694 shipped lint-failing probes for a DIFFERENT reason — gating before a later edit —
+so this is the second distinct way the same gate has been defeated in one session. The rule that
+covers both: **run the gate as its own command, read `${pipestatus[1]}` or no pipe at all, and make
+it the last thing before `git add`.**
+
+#### Gates
+
+`bun run check` 0 read through `${pipestatus[1]}`. `packages/gql` isolated: 4381 pass, 0 fail. Two
+probes added; no engine behaviour changed.
