@@ -254,6 +254,29 @@ export class Vertex {
 
     // REPLACE the box's bag rather than the map entry, so every instance holding this box —
     // there can be more than one for an id — sees the write. The bag itself stays frozen.
+    // PERFORMANCE — this freeze is THIRTY PERCENT of a property write, measured in situ by
+    // ablation (item 1733, `packages/native/commit-ablate-probe.mjs`), ns/write at k=4, median of
+    // 9, three alternated rounds: base 115.7/110.6/112.1 against nofreeze 100.1/78.7/74.1, with a
+    // null control (removing the `??` below, whose right side never evaluates) flat at
+    // 111.8/120.9/110.0. The other parts of this method are NOT measurable: dropping
+    // `box.keys = undefined` reads 113.3/110.7/109.0, overlapping base.
+    //
+    // ⚠️ ITEM 861 PRICED THIS AT ~13 ns FROM AN ISOLATED MICROBENCH (spread+freeze 24, spread 11).
+    // In situ it is ~35 — 2.6x more — because freezing does not only cost the call: `setProperty`
+    // then makes three `this.properties` reads against a FROZEN object, and a microbench that
+    // freezes and discards never pays for those. An isolated per-operation constant is a
+    // measurement of its own shape, the same lesson as items 1730 and 1731.
+    //
+    // NOT REMOVED, because it is the enforcement of a contract, not an accident: `get properties`
+    // returns the stored bag DIRECTLY with no copy, so without the freeze a caller could mutate
+    // graph state through the returned object. The lazy alternative — freeze on first escape
+    // through the public getter instead of on write — does NOT work as a drop-in, and the reason
+    // is worth recording: `setProperty` itself reads the PUBLIC getter three times, so the next
+    // write would trigger the freeze anyway and the win would be zero. It needs an internal raw
+    // accessor at the 12 non-probe `.bag` sites first, and its win is then workload-dependent
+    // (large for write-heavy ingest, ~neutral for read-after-write serving). That is a change to
+    // how an immutability guarantee is enforced, in an area where `label-index-vs-setter` already
+    // records a wrong answer reached through the public API — so it is priced here, not taken.
     const frozen = Object.freeze(bag);
     const box = this.#box ?? this.#graph.elementProperties.get(this.#id);
 

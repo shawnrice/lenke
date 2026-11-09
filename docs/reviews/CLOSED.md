@@ -26852,6 +26852,10 @@ clean on three consecutive random seeds; `bun run fuzz` (all seven byte-identity
 list's ranking is wrong: the asserts and validations it names first are 2.3%, while event dispatch
 and reactivity are 21.3%.**
 
+⚠️ **AND ITS `spread+freeze 24 / spread 11` TABLE UNDERSTATES THE FREEZE BY 2.6x** — in situ it is
+~35 ns, 30% of a write (item 1733), because `setProperty` then makes three reads against the FROZEN
+object and an isolated microbench never pays for those.
+
 **MEASUREMENT, no behaviour change** (the change was built, measured, and reverted; the refutation
 is recorded at the getter it would have changed).
 
@@ -77851,8 +77855,9 @@ edit for ≤3% is under every bar this repo applies, and item 312 withdrew `addV
 
 **NET: the instrument fix ships; the six-constant list is replaced by a measured split that
 re-ranks it; the 21.3% in dispatch+reactivity is accounted for and closed on a re-verified
-blocker.** `#commitNormalized` at 30.4% is now the largest single term on the write and is NOT yet
-split — its freeze, its box-vs-map resolution and its `keys = undefined` invalidation are separate
+blocker.** ~~`#commitNormalized` at 30.4% is now the largest single term on the write and is NOT yet
+split~~ **SPLIT AT ITEM 1733: it is the `Object.freeze`, worth 30% of a write; the rest of the method
+is not measurable** — its freeze, its box-vs-map resolution and its `keys = undefined` invalidation are separate
 costs and nobody has ablated them. That is the next question on this path.
 
 **NEW PERMANENT INSTRUMENT — `packages/native/set-constant-profile.mjs`**, carrying the table and
@@ -77862,3 +77867,78 @@ the `DRAIN` caveat.
 
 `bun run check` 0 read through `${pipestatus[1]}`. One source change, to a profiling helper used
 only by probes (`packages/native/windowed-profile.mjs`); no engine code touched.
+
+### Item 1733 — ⚠️ **`Object.freeze` IS 30% OF A PROPERTY WRITE, and item 861's isolated microbench understated it by 2.6x.** Ablated in the real source with a null control that behaved as predicted. The rest of `#commitNormalized` is NOT measurable. The lazy-freeze alternative is priced and **does not work as a drop-in** — and the reason is the interesting part
+
+Item 1732 split a property write and left `#commitNormalized` at **30.4%**, the largest single term
+and never decomposed. Its body is a `#graph` null check, an `Object.freeze`, a box resolution
+(`this.#box ?? elementProperties.get(this.#id)`) and two field stores. Ablated one at a time in
+`packages/core/src/core/Vertex.ts`, rebuilt per arm, **one arm per build and per process**, ns/write
+at k=4, median of 9 reps dropping 3, three alternated rounds:
+
+```text
+  arm                  r1       r2       r3
+  base              115.66   110.55   112.06
+  nofreeze          100.12    78.69    74.09
+  nokeys            113.25   110.68   108.99
+  nobox (control)   111.76   120.86   110.01
+```
+
+- **`Object.freeze` is ~35 ns of a ~112 ns write — 30%.** (`nofreeze`'s r1 was still warming: its
+  series declines 466 → 387 while r2/r3 are flat at 315 and 296. The settled figure is 74-79.)
+- **`box.keys = undefined` is NOT measurable** — 109.0-113.3 overlaps base entirely.
+- **The NULL CONTROL behaved as predicted, which is what makes the above trustworthy.** `nobox`
+  removes the `??` fallback, and `this.#box` is already populated by the `properties` getter before
+  `#commitNormalized` runs — so it deletes a branch whose right side never evaluates. It measured
+  flat (110.0-120.9). A control that moved would have invalidated the arm.
+
+**Each arm was asserted present IN THE DIST before it ran** (`freeze(bag)` 2 → 1, `keys = void 0`
+2 → 1, `#box ?? ` 2 → 1; Edge.ts keeps its copy, which is what makes the count a discriminator). A
+build that silently fails leaves the previous arm in place and the "after" reading is the "before"
+code — CLAUDE.md's rule, and here the assertion is the only thing that could catch it.
+
+#### ⚠️ ITEM 861 MEASURED THE SAME THING AT ~13 ns AND WAS WRONG BY 2.6x
+
+Item 861's table reads `spread+freeze 24 / spread 11 / mutate 2` at k=4, so freeze ≈ 13 ns. In situ
+it is ~35. **The gap is not noise, it is the shape: freezing does not only cost the call.**
+`setProperty` then performs **three `this.properties` reads against a FROZEN object**, and a
+microbench that freezes an object and discards it never pays for those. (Item 1732 independently
+measured `get properties` at 4.6% of a write for exactly those three reads.)
+
+**Third time in four items that a per-operation constant failed to transfer** — item 1730's
+~115 ns/hash (real: 35), item 1731's phase split (wrong by 11x across formats), and now an isolated
+microbench of a V8 builtin. The pattern is sharper than "constants don't transfer": **all three
+underestimated by measuring an operation in ISOLATION when its real cost is partly imposed on the
+code AFTER it.** Freeze is the clearest case — its cost is mostly in later reads.
+
+#### The lazy-freeze alternative: priced, and it does NOT work as a drop-in
+
+The freeze enforces a real contract: `get properties` returns the stored bag **directly, with no
+copy**, so without it a caller could mutate graph state through the returned object. The obvious
+alternative is to freeze on first escape through the public getter rather than on every write —
+a pure win for write-heavy ingest, where a bag is written and never externally read.
+
+⚠️ **It buys exactly ZERO as a drop-in, and this is the trap worth recording: `setProperty` reads
+the PUBLIC `properties` getter three times per write.** A freeze hook in that getter therefore fires
+on the very next write, so one freeze per write still happens and nothing is saved. Making it work
+needs an internal raw accessor substituted at the **12 non-probe `.bag` sites** (Vertex 4, Edge 4,
+Graph 3, validate 1 — a tractable audit, which was counted rather than guessed) so engine-internal
+reads bypass the freeze point.
+
+Even then the win is **workload-dependent**: large for bulk ingest and bulk `SET`, roughly neutral
+for read-after-write serving, where the external read pays the freeze anyway. And it changes how an
+immutability guarantee is ENFORCED, in an area where `label-index-vs-setter` already records a wrong
+answer reached through the public API (a stale index trusted by one path and not maintained by
+another). **So it is priced and left to the owner, not taken** — a 30% write lever is worth the
+decision being made deliberately rather than as a side effect of an optimization loop.
+
+**NEW PERMANENT INSTRUMENTS — `packages/native/commit-ablate-probe.mjs`** (the per-arm timing probe,
+carrying the table) and **`packages/native/commit-ablate-driver.sh`** (restore → mutate → build →
+**assert the arm is in the dist** → run, three alternated rounds; a worked example of the
+dist-assertion pattern for any TS-source ablation).
+
+#### Gates
+
+`bun run check` 0 read through `${pipestatus[1]}`. The pristine source was restored and rebuilt by
+the driver and the tree verified clean before committing; the only source change is the comment
+block recording this at the freeze site.
