@@ -79297,3 +79297,62 @@ three.
 
 `bun run check` 0 read through `${pipestatus[1]}`. No source changed — this item is the entry and the
 verification it records.
+
+### Item 1754 — ⚠️⚠️ **A HASH INDEX MAKES A LOW-SELECTIVITY RANGE 1.9x SLOWER: the range-seek route is taken whenever an index exists, with no selectivity gate.** Found because ⚠️ **NEITHER frame screen has ever built an index**, so every target this audit has nominated came from the SCAN path — and with an index the hot frames invert to the PLANNER
+
+`point` (`WHERE n.n = 12345`, one row of 20,000) was costing **~250 µs per query** — 12.5 ns a
+vertex, which is a scan, not a lookup. The reason is the instrument: **`runtime-profile-probe.mjs`
+and `runtime-profile-gremlin-probe.mjs` — this repo's two unpriced-frame screens, the instruments
+that pick targets — never call `createIndex`. Nor does `bench.ts`.** Ten other probes do, so the
+capability is exercised; the SCREENS are blind to it.
+
+#### What indexing is worth, and the frame inversion
+
+Same fixture, same queries, `createIndex({ on: 'vertex', kind: 'hash', keys: [...] })`, µs/query:
+
+```text
+  shape                      no index    only `k`    both        verdict
+  point   (n = 12345)          279.4       247.4       8.9       ~31x, and ONLY with `n` indexed
+  band    (k = 5, 207 rows)    258.6        14.6      14.5       ~18x, and ONLY with `k` indexed
+  range   (n < 10, 10 rows)    234.5       231.0      14.8       ~16x, and ONLY with `n` indexed
+```
+
+**Each shape improves only when its OWN key is indexed** — the `only k` column is the control that
+establishes it, and it was added because the first run indexed both keys and made `range`'s
+improvement unattributable.
+
+⚠️ **AND THE HOT FRAMES CHANGE IDENTITY.** Unindexed, the profile is the executor: `propOf`,
+anonymous scan frames, `fastPath`. Indexed, it is **`compileLinear`, `parseCached`, `isIndexed`,
+`hopSeekWithKey`** — execution has become so cheap that **PLANNING dominates**. So on an indexed
+workload the target is the planner, and the screens have never been able to say so.
+
+#### ⚠️ THE DEFECT: no selectivity gate on the range route
+
+`range` is a hash index serving a `<` predicate, which raised the question of what the route costs
+when the range is NOT selective. Same predicate form, 1000x less selective:
+
+```text
+  n < 10      (10 of 20,000)      234.5 µs  ->   14.8 µs     16x FASTER
+  n < 10000   (10,000 of 20,000)  496-503   ->  935-992      1.9x SLOWER
+```
+
+Ranges disjoint; both arms answer-asserted (10 and 10,000 rows) by the probe, so neither is the
+wrong-answer artefact item 1749 was caught by. **The route is taken because an index exists, not
+because it pays** — a textbook index-selectivity crossover with no cost gate on this side.
+
+`cost-estimator` records a `cost.rs` cardinality estimator for fast-path routing; whatever guards the
+equality seeks, the range route on this path is reaching a 1.9x regression on an ordinary query
+(`WHERE n.n < <half the range>`). **OPEN, not built** — the fix is a gate, and the crossover point
+needs locating before one can be written.
+
+#### What this changes about target selection
+
+Every item in this stretch picked its target from a screen that measures only unindexed scans. That
+is not wrong — an unindexed scan is a real workload — but it is **half the surface**, and the half it
+omits has a different bottleneck (planning) and at least one regression (above). **NEW PERMANENT
+INSTRUMENT — `packages/native/indexed-screen-probe.mjs`**, with `INDEXED=0|k|1`, per-shape row-count
+assertions, and the selectivity ladder.
+
+#### Gates
+
+`bun run check` 0 read through `${pipestatus[1]}`. No source changed — one new probe and this entry.
