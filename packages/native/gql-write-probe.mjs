@@ -101,6 +101,23 @@ const SHAPES = {
     },
     expect: (g) => g.vertexCount === SEED,
   },
+  /**
+   * THE EDGE FLOOR (item 1767). ⚠️ Like `setdirect`, this is NOT the same lookup as its GQL twin:
+   * `insertedgep` seeks BOTH endpoints by a property, this resolves both by id. So the gap prices
+   * "two pattern-matched endpoints" against "two id lookups" plus whatever the edge write itself
+   * costs — which is the number the `addEdge` call here isolates.
+   */
+  insertedgedirect: {
+    direct: (g, i) => {
+      const a = g.getVertexById(`v${i % SEED}`);
+      const b = g.getVertexById(`v${(i * 7) % SEED}`);
+
+      if (a && b) {
+        g.addEdge({ from: a, to: b, labels: ['E'] });
+      }
+    },
+    expect: (g) => g.edgeCount === BATCH,
+  },
   insertedgep: {
     q: () => 'MATCH (a:P), (b:P) WHERE a.n = $a AND b.n = $b INSERT (a)-[:E]->(b)',
     params: (i) => ({ a: i % SEED, b: (i * 7) % SEED }),

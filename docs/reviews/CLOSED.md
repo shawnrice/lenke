@@ -80079,3 +80079,64 @@ not a defect — it is what pattern matching costs when the pattern selects one 
 
 `bun run check` 0 read through `${pipestatus[1]}`. No source changed — the probe gained two direct
 arms and this entry.
+
+### Item 1767 — **the EDGE insert gets its floor: a parameterised GQL edge `INSERT` is 5.83 µs against `g.addEdge`'s 2.47 (2.36x, the widest of the three write shapes).** ⚠️ **And `countEquals` at 7.1% of it is REFUTED as a lever — collapsing the gate's count into the seed's fetch measured ~3% with overlapping ranges and a control that moved as much**
+
+Item 1766 bounded the vertex `INSERT` and the `SET` against the direct API but left out the shape
+ingest actually pays for. With the edge arm added:
+
+```text
+  operation                                                       µs/write
+  insertedgep        GQL MATCH two endpoints + INSERT edge             5.83
+  insertedgedirect   getVertexById ×2 + g.addEdge                      2.47   ← the floor
+```
+
+**2.36x**, against 1.34x for the vertex insert — and the same caveat item 1766 insisted on applies
+here and is larger: `insertedgep` seeks **both** endpoints by a property while the floor resolves
+both by id, so the gap prices "two pattern-matched endpoints" and not "GQL overhead". Consistent
+with item 1766's single-seek `SET` arithmetic (one seek plus statement ≈ 1.76 µs), two seeks plus
+the statement ≈ 3.36 µs is close to twice it, which is what a per-endpoint seek cost predicts.
+
+#### The profile, and the lever it nominated
+
+340 samples at BATCH=60000:
+
+```text
+   8.5%  (garbage collector)      7.1%  countEquals          5.3%  propOf
+   8.2%  indexEdgeLabel           6.2%  commitElementLabels  4.7%  seedVertices
+   5.9%  visitRemaining           4.1%  get properties       4.1%  matchPattern
+```
+
+`countEquals` at 7.1% looked like a free win with a mechanism already in hand: `eqCandidate` builds
+`count: idx.countEquals(key, v)` for the gate and `build: () => idx.equals(key, v)` for the seed, so
+a **taken** exact seed does both for the same `(key, value)` — four `Map.get`s where two would do,
+twice over on a two-endpoint pattern. The collapse is exactly answer-equivalent (`equals` returns
+`undefined` in precisely the cases where `countEquals` returns `undefined` or `0`, and both arms
+`?? 0`), so it is the kind of change that is easy to believe without measuring.
+
+#### ⚠️ IT IS NOT THERE. Three alternated rounds, dist asserted per arm by count:
+
+```text
+  shape                      pre (3 rounds)        post (3 rounds)
+  insertedgep   TARGET ×2    5.99  6.19  6.36      5.77  6.03  5.97
+  setp          TARGET ×1    2.68  2.65  2.81      2.61  2.69  2.81
+  insertp       CONTROL      2.72  2.64  2.70      2.59  2.84  2.57
+```
+
+Best case ~3% on the nominating shape, **ranges that overlap** (post's 6.03 is above pre's 5.99),
+`setp` flat, and — the decisive reading — **the CONTROL moves as much as the target**, on a shape
+that cannot reach `eqCandidate` at all. That is `frame-attribution-trap`'s signature, and the
+deletion test is the strong form of it: one of the two lookups was removed **entirely** and nothing
+moved, so the 7.1% is the frame absorbing its callers' work rather than the cost of the duplicate.
+`countEquals` really is two `Map.get`s and a type check; a profile saying otherwise was saying
+something else.
+
+**So the surviving nomination from this profile is not the seed path but edge-write index
+maintenance** — `indexEdgeLabel` 8.2% plus `commitElementLabels` 6.2%, ~15% between them, which is
+on the direct-API side of the floor and therefore reachable without touching GQL at all.
+
+#### Gates
+
+`bun run check` 0 read through `${pipestatus[1]}`; `matching.ts` confirmed byte-restored from the
+pristine copy (`git diff` empty) before the gate ran. No source changed — the probe gained the
+`insertedgedirect` arm and the A/B driver is kept as `packages/native/eqcand-collapse-ab.sh`.
