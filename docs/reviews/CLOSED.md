@@ -79550,3 +79550,72 @@ design settled and the regression priced.**
 `bun run check` 0 read through `${pipestatus[1]}`. The only source change is the corrected comment;
 **NEW PERMANENT INSTRUMENT — `packages/native/gremlin-range-count-probe.mjs`**, with the
 cardinality control and an asserted answer.
+
+### Item 1758 — ✅ **SHIPPED: the Gremlin twin of item 1756's capped range count — 2.39x on the 5.07x regression item 1757 priced, both controls flat.** The cap is `sourceSize`-based, not the gate's threshold, and **that difference is the whole correctness argument**
+
+Item 1757 measured the regression (`has('n', lt(10000))` over 20,000 distinct values: **127.2 µs
+with no index, 644.7 with one — 5.07x**) and derived the cap without building it, because the change
+threads an exported signature. Built here.
+
+```typescript
+export const rangeCap = (sourceSize: number): number =>
+  sourceSize < SEEK_FLOOR_ELEMENTS ? Number.POSITIVE_INFINITY : sourceSize * SEEK_MAX_FRACTION;
+```
+
+Threaded `rangeCandidate` (**8 call sites**) → `seedForPred` → `seedForStep`, which takes the cap as
+an **optional parameter defaulting to `Infinity`** — so the two external callers in `node-values.ts`
+are untouched by construction.
+
+#### ⚠️ WHY THE CAP IS NOT THE GATE'S THRESHOLD, which is where GQL's twin does not carry over
+
+`seekIsWorthIt(count, scan, total)` is asked with `scan = exact?.count ?? sourceSize` — **another
+candidate's count, discovered after this one** — so the real threshold is unknown when the count is
+taken. `sourceSize * SEEK_MAX_FRACTION` is the **largest** threshold either call site can use
+(`scan <= sourceSize`), which gives the three properties the substitution needs:
+
+- a count above the cap is declined at **both** sites, so its exact value is dead information;
+- counts at or below it are **exact**, so `fromIndex.count < seek.count` still ranks every
+  admissible candidate correctly;
+- ⚠️ **below `SEEK_FLOOR_ELEMENTS` the gate admits at ANY count**, so there the ranking between two
+  over-cap candidates _would_ decide the seed — hence no cap at all below the floor.
+
+#### Measured, three alternated rounds, one build per arm, answers asserted, µs/query
+
+```text
+  shape                            base                   capped                 verdict
+  rangewide    (20k distinct)      586.7  590.3  613.4    250.2  247.9  246.0    2.39x, DISJOINT
+  rangelowcard (97 distinct)       112.3  123.3  126.1    114.1  124.4  118.2    flat
+  rangetight   (selective)          32.8   30.4   34.0     31.1   32.0   32.2    flat
+```
+
+The remaining gap against _no_ index is ~2.2x (246 against 112.8), down from 5.07x — the residual is
+the capped walk of `sourceSize / 8` = 2,500 entries plus the scan, bounded by the cap now instead of
+by the range's width.
+
+#### The test, and its teeth — TWO mutants, because one property carries the argument
+
+A seed only has to be a superset, so this is invisible to every answer-based test: the gremlin suite
+and all seven fuzzers pass either way. `rangeCap` is therefore exported and tested directly — four
+cases covering the sub-floor `Infinity`, the above-floor fraction, the exact floor boundary, and the
+relation to the gate's largest threshold.
+
+**Verified with two real mutants:**
+
+```text
+  drop the sub-floor Infinity        2 of 4 FAIL   (the property that makes it identical)
+  off-by-one on the floor boundary   3 of 4 FAIL
+  restored                           4 pass
+```
+
+The off-by-one matters in both directions — too low and a sub-floor graph gets capped (changing
+which seed it picks), too high and a graph at exactly 4,096 elements keeps the regression.
+
+#### Gates
+
+gremlin **2113 pass, 0 fail** (including `seek-gate.test.ts`), **all seven byte-identity fuzzers
+green**, new test **4 pass**, `bun run check` 0 read through `${pipestatus[1]}`.
+
+**NEW PERMANENT INSTRUMENT — `packages/native/gremlin-range-cap-ab.sh`.**
+
+**Both engines are now capped**, and `seedForStep`'s corrected doc (item 1757) no longer claims a
+range count is free.

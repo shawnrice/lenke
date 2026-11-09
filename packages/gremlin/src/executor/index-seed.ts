@@ -101,8 +101,10 @@ const rangeCandidate = <E>(
   index: PropertyIndex<E>,
   key: string,
   bound: RangeBound,
+  cap: number,
 ): Candidate<E> | null => {
-  const count = index.countRange(key, bound);
+  // CAPPED, because the only consumer is a gate comparing against a threshold — see `rangeCap`.
+  const count = index.countRangeAtMost(key, bound, cap);
 
   return count === undefined
     ? null
@@ -119,6 +121,7 @@ const seedForPred = <E>(
   key: string,
   pred: Predicate,
   plainHas: boolean,
+  cap: number,
 ): Candidate<E> | null => {
   switch (pred.op) {
     case 'eq': {
@@ -168,20 +171,20 @@ const seedForPred = <E>(
       return { count, build: () => unionBuckets(index, key, values), removable: plainHas };
     }
     case 'gt':
-      return isScalar(pred.value) ? rangeCandidate(index, key, { gt: pred.value }) : null;
+      return isScalar(pred.value) ? rangeCandidate(index, key, { gt: pred.value }, cap) : null;
     case 'gte':
-      return isScalar(pred.value) ? rangeCandidate(index, key, { gte: pred.value }) : null;
+      return isScalar(pred.value) ? rangeCandidate(index, key, { gte: pred.value }, cap) : null;
     case 'lt':
-      return isScalar(pred.value) ? rangeCandidate(index, key, { lt: pred.value }) : null;
+      return isScalar(pred.value) ? rangeCandidate(index, key, { lt: pred.value }, cap) : null;
     case 'lte':
-      return isScalar(pred.value) ? rangeCandidate(index, key, { lte: pred.value }) : null;
+      return isScalar(pred.value) ? rangeCandidate(index, key, { lte: pred.value }, cap) : null;
     case 'between':
       return isScalar(pred.min) && isScalar(pred.max)
-        ? rangeCandidate(index, key, { gte: pred.min, lt: pred.max })
+        ? rangeCandidate(index, key, { gte: pred.min, lt: pred.max }, cap)
         : null;
     case 'inside':
       return isScalar(pred.min) && isScalar(pred.max)
-        ? rangeCandidate(index, key, { gt: pred.min, lt: pred.max })
+        ? rangeCandidate(index, key, { gt: pred.min, lt: pred.max }, cap)
         : null;
     case 'startsWith': {
       // A prefix search is the string slice [prefix, succ(prefix)) — a range
@@ -196,6 +199,7 @@ const seedForPred = <E>(
         index,
         key,
         upper === null ? { gte: pred.value } : { gte: pred.value, lt: upper },
+        cap,
       );
     }
     default:
@@ -223,7 +227,11 @@ const seedForPred = <E>(
  * the count at the gate's own threshold; the twin fix here is described in that item's entry and
  * is NOT yet built.
  */
-export const seedForStep = <E>(step: Step, index: PropertyIndex<E>): Candidate<E> | null => {
+export const seedForStep = <E>(
+  step: Step,
+  index: PropertyIndex<E>,
+  cap: number = Number.POSITIVE_INFINITY,
+): Candidate<E> | null => {
   if (step.kind !== 'has' && step.kind !== 'hasLabelAnd') {
     return null;
   }
@@ -232,7 +240,7 @@ export const seedForStep = <E>(step: Step, index: PropertyIndex<E>): Candidate<E
     return null;
   }
 
-  const seed = seedForPred(index, step.key, step.pred, step.kind === 'has');
+  const seed = seedForPred(index, step.key, step.pred, step.kind === 'has', cap);
 
   // A `hasLabelAnd` carries a label constraint the bucket doesn't capture, so
   // its step can never be dropped.
@@ -519,6 +527,29 @@ const SEEK_MAX_FRACTION = 1 / 8;
 const SEEK_FLOOR_ELEMENTS = 4_096;
 
 /**
+ * The cap for a RANGE candidate's count (item 1758) — the point past which the exact number cannot
+ * change any decision here.
+ *
+ * ⚠️ IT IS `sourceSize`-BASED AND NOT THE GATE'S ACTUAL THRESHOLD, which is the one thing that does
+ * not carry over from GQL's twin (item 1756). `seekIsWorthIt(count, scan, total)` is asked with
+ * `scan = exact?.count ?? sourceSize` — ANOTHER candidate's count, discovered after this one — so
+ * the real threshold is not known when the count is taken. `sourceSize * SEEK_MAX_FRACTION` is the
+ * LARGEST threshold either call site can use (`scan <= sourceSize`), which gives the three
+ * properties the substitution needs:
+ *
+ *   - a count above this cap is declined at BOTH call sites, so its exact value is dead;
+ *   - counts at or below it are EXACT, so `fromIndex.count < seek.count` still ranks admissible
+ *     candidates correctly;
+ *   - below `SEEK_FLOOR_ELEMENTS` the gate admits at ANY count, so ranking there WOULD decide the
+ *     seed — hence no cap at all below the floor.
+ *
+ * Measured at item 1757: uncapped, `has('n', lt(10000))` over 20,000 distinct values cost
+ * **5.07x MORE with the index than without** (127.2 µs against 644.7).
+ */
+export const rangeCap = (sourceSize: number): number =>
+  sourceSize < SEEK_FLOOR_ELEMENTS ? Number.POSITIVE_INFINITY : sourceSize * SEEK_MAX_FRACTION;
+
+/**
  * Is materializing an index seek of `count` elements worth it against a `scan` of that many?
  *
  * **THE THIRD COPY OF ONE RULE, and Gremlin was the one missing it (item 1322).** Native has had
@@ -592,7 +623,7 @@ export const seekWorthTaking = <E>(
   index: PropertyIndex<E>,
   sourceSize: number,
 ): boolean => {
-  const candidate = seedForStep(step, index);
+  const candidate = seedForStep(step, index, rangeCap(sourceSize));
 
   return candidate !== null && seekIsWorthIt(candidate.count, sourceSize, sourceSize);
 };
@@ -627,7 +658,7 @@ const seedRest = <E>(
       break;
     }
 
-    const fromIndex = seedForStep(step, index);
+    const fromIndex = seedForStep(step, index, rangeCap(sourceSize));
 
     if (fromIndex !== null && fromIndex.count < (seek?.count ?? Infinity)) {
       seek = fromIndex;
