@@ -77357,3 +77357,62 @@ not re-derive it.
 
 `bun run check` 0 read through `${pipestatus[1]}`. No source, bench or probe changed — the only edit
 is this entry.
+
+### Item 1725 — **THE GENERATOR QUESTION, SCOPED AND MEASURED FOR THE OWNER DECISION item 1723 raised.** Asked whether the algorithm generators protect against OOM by freeing memory quickly. ⚠️ **For the two algorithms measured they do NOT: sync and async drains have the SAME heap floor** (labelPropagation both survive 550 MB at V=160,000; betweenness both survive 80 MB at V=3,000). ⚠️ **But the yields are GC-relevant on the ASYNC path only, and that asymmetry is the thing to design around**
+
+**EXACTLY WHICH GENERATORS.** Only the twelve `computeGen` bodies in `packages/core/src/algorithms/`,
+reached through `runAlgorithmSync` -> `drainSync`. **NOT** the query executors' stream generators in
+`gql`/`gremlin` — those are a different mechanism, they were never measured here, and nothing in item
+1723 proposes touching them. The distinction matters because a lazy query stream genuinely bounds
+memory (it never materializes the result), where these do not.
+
+**WHAT THE YIELDS DO ON EACH PATH, read off the drivers:**
+
+```text
+    drainSync   while (!step.done) step = gen.next();        fully synchronous
+    drain       ... if (now() >= deadline) await nextTick();  yields to the event loop
+```
+
+So on the ASYNC path a yield plus `await` is a real GC opportunity — a long synchronous run cannot
+collect, and `drain` breaks it into `BUDGET_MS` chunks. **On the SYNC path a yield returns control to
+a loop that immediately calls `next()` again**, so no collection can happen and the suspension buys
+nothing but its own cost. That is the asymmetry item 1723 priced at 1.59x on the hot loop.
+
+**AND THE WORKING SET IS NOT TRANSIENT, WHICH IS WHY THE HEAP FLOOR DOES NOT MOVE.** The smallest
+`--max-old-space-size` each form completes in:
+
+```text
+    labelPropagation, V=160,000     900  700  600  550 MB
+      sync                           OK   OK   OK   OK
+      async                          OK   OK   OK   OK      floor is the GRAPH (~420 MB, item 1720)
+
+    betweenness, V=3,000            300  120   90   80 MB
+      sync                           OK   OK   OK   OK
+      async                          OK   OK   OK   OK      (async 1006 ms at 90 MB vs 666 — GC
+                                                             pressure, but it completes)
+```
+
+Neither form OOMs where the other survives, at either shape. `labelPropagation` holds its CSR
+(`off`/`data` as `Int32Array`s) and its result array for the whole run; `betweenness` reuses its
+per-source buffers. There is no large transient that a yield could let go of, which is why the floors
+coincide. ⚠️ **Measured for TWO of the twelve** — chosen as the worst whole-graph case and the worst
+O(V·E) case — so this does not license a claim about all twelve.
+
+**⚠️ WHAT THIS DOES NOT SAY.** It does not say the async path's yields are pointless: they keep the
+event loop responsive, which is a user-visible contract, and the 90 MB betweenness row shows the GC
+doing real work between chunks. It says only that on these two algorithms the yields are not what
+keeps the process alive.
+
+**SO THE TRADE IS UNCHANGED IN SHAPE, and the cost is correctness, not memory.**
+`runAlgorithmSync`'s doc states the reason one body is shared: _"The generator bodies are the same
+ones the async functions drive, so results stay byte-identical to both the async path and the native
+engine."_ The options stay as item 1723 recorded them — leave it; range-chunked plain functions (one
+body, rewrites `async.ts`'s contract); a sync-only copy (four arms to keep byte-identical); or
+prototype one algorithm and measure it end to end first. **Nothing is built, and this remains an
+owner decision.**
+
+#### Gates
+
+`bun run check` 0 read through `${pipestatus[1]}`. Measurement only — no source changed; the two
+throwaway probes were deleted. Pre-push gates for this stretch: core 453, gql 4424, gremlin 2109,
+serialization 144, native 1081, 0 fail each, and all seven byte-identity fuzzers 20 pass 0 fail.
