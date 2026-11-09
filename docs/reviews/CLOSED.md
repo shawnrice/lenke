@@ -77615,3 +77615,57 @@ measurement that makes the claim checkable.
 
 `bun run check` 0 read through `${pipestatus[1]}`. Both probes exit 0. Measurement only — no source,
 bench or probe changed; the only edit is this entry.
+
+### Item 1730 — **DECLINED AT A MEASURED 2.3%: routing `indexEdgeLabel`'s two id-keyed lookups through the Vertex's CACHED adjacency on insert.** The largest absolute cost in the corpus (decode ~2869 ms, 97.7% of it the APPLY phase) and the lever is 64.6 ns an edge against a 2803 ms phase. ⚠️ **My own first estimate was 7%, from a carried ~115 ns/hash figure that does not hold at this shape — 3.5x too high**
+
+The decode rows are 2800-3300 ms, five times the next-largest row in the sweep, so the family is worth
+re-reading even though `ts-ingest-is-constant-factor` closes it. Item 312's phase attribution stands:
+**parse is 78 ms of 3385 and the APPLY phase is 3306, 97.7%.** Within apply, the recorded structural
+answer is `indexEdgeLabel`'s "seven hash operations per edge, five string-keyed (a label bucket, then
+`fromId` -> label -> Set, then `toId` -> label -> Set) … ~115ns each at a million entries", pointing
+at item 300's CSR — and that is the dense ordinal, BUILT and DISQUALIFIED at items 1369-1372/1397
+(deletes 6.18x/11.34x under churn), with seven items having arrived there before me.
+
+**But the same note points somewhere the ordinal does not:** _"The INSERT side is the one place not
+blocked by `edge.to` costing a lookup, since `addEdge` already holds both endpoint Vertex objects."_
+And `Vertex.adjFrom` is a LAZY CACHE of exactly the lookup in question —
+`this.#adjFrom ??= this.#graph?.edgesFromByLabel.get(this.id)` — so after a vertex's first edge the
+`fromId`/`toId` map lookups could be cached field reads. At fanout 5 that is one hash plus four field
+reads per direction instead of five hashes. Nothing in `CLOSED.md` had tried it.
+
+**MEASURED BEFORE BUILDING, at insert scale (1,000,000 entries, median of 7, drop 2):**
+
+```text
+    2 string-keyed Map.get per edge    69.9 ms    69.9 ns/edge
+    2 cached field reads per edge       5.3 ms     5.3 ns/edge
+    -> saving                                     64.6 ns/edge
+```
+
+**64.6 ms against an apply phase of ~2803 ms is 2.3%** — and ⚠️ **my first estimate from the carried
+figure was ~7%, because ~115 ns per string-keyed hash does not hold here.** Item 1722 had already
+measured the same operation at 52 ns in a different shape; at insert scale two of them are 69.9 ns
+together, i.e. ~35 each. **A per-operation constant carried from another item is a measurement of
+that item's shape**, which is the same lesson as item 1394's share-overstates rule failing to
+generalize (1723) and item 194's ~190 ns not transferring (1723).
+
+**WHY 2.3% IS NOT WORTH IT HERE, stated as a trade rather than a shrug:**
+
+- It rewrites **index maintenance**, and `label-index-vs-setter` records that this exact area has
+  already produced a **WRONG ANSWER through the public API** (label elisions trust `verticesByLabel`
+  which `v.labels =` does not maintain). A stale `#adjFrom` after an `evict` or a `set graph` is
+  wrong adjacency, which is wrong answers that a count-based test cannot see.
+- `#adjFrom` is cleared in the constructor and on re-parenting; an insert path that POPULATES it
+  takes on the invalidation contract rather than just reading it.
+- The apply phase's dominant term is not lookups at all. Item 1720 measured **990 bytes an edge
+  across ~6 container entries**, and per-edge cost FALLING with fanout (990 -> 783 from F=2 to F=5)
+  says the expense is constructing those containers. Removing two lookups cannot reach it, and the
+  structural fix that could is the disqualified ordinal.
+
+**So the ingest family stays closed, and now with an insert-side candidate priced rather than
+unexamined.** Recorded here because it is the eighth arrival at this structural area and the first to
+put a number on THIS variant; the next reader should not have to re-derive 2.3%.
+
+#### Gates
+
+`bun run check` 0 read through `${pipestatus[1]}`. Measurement only — no source, bench or probe
+changed; the only edit is this entry.
