@@ -143,6 +143,29 @@ const idSetFrom = (graph: Graph, list: readonly unknown[]): ReadonlySet<Vertex> 
  * Each candidate carries a cardinality estimate (computed without touching a
  * set) and a thunk that builds the set only if it's chosen.
  */
+/**
+ * The cap for a range candidate's count — the point past which the exact number cannot change any
+ * decision (item 1756).
+ *
+ * `seekIsWorthIt` declines a seek covering more than `SEEK_MAX_FRACTION` of the label bucket, and
+ * `seedVertices` takes the SMALLEST count among the candidates. So above that fraction the exact
+ * count is dead information: whichever over-cap candidate wins the ranking is declined anyway.
+ *
+ * ⚠️ NO CAP BELOW THE FLOOR, and that is what makes this provably behaviour-identical rather than
+ * merely harmless. Below `SEEK_FLOOR_VERTICES` the gate admits a seek at ANY count, so there the
+ * ranking between two over-cap candidates WOULD decide which seed is used — and a capped count
+ * cannot order them. Returning `Infinity` keeps those graphs on the exact count. Above the floor,
+ * counts at or below the cap stay exact (so ranking among ADMITTED candidates is unchanged) and
+ * every count above it is declined (so ranking among them is never consulted).
+ *
+ * The walk is bounded by the cap and not by the range's width, which is the whole point:
+ * `countRange` is O(distinct values in range).
+ */
+const rangeCountCap = (graph: Graph, label: LabelExpr | undefined): number =>
+  graph.verticesById.size < SEEK_FLOOR_VERTICES
+    ? Number.POSITIVE_INFINITY
+    : candidateCount(graph, label) * SEEK_MAX_FRACTION;
+
 export const indexCandidates = function* (
   graph: Graph,
   node: CNode,
@@ -350,7 +373,7 @@ export const indexCandidates = function* (
 
       if (bound) {
         yield {
-          count: idx.countRange(hint.key, bound) ?? 0,
+          count: idx.countRangeAtMost(hint.key, bound, rangeCountCap(graph, node.label)) ?? 0,
           build: () => idx.range(hint.key, bound) ?? EMPTY,
         };
       }

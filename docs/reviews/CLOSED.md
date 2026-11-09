@@ -79420,3 +79420,73 @@ separates cardinality from selectivity and nothing else in the corpus does.
 
 `bun run check` 0 read through `${pipestatus[1]}`. No source changed — one probe shape, 1754's struck
 diagnosis, and this entry.
+
+### Item 1756 — ✅ **SHIPPED: cap the range candidate's count at the gate's own threshold — 1.60x on the regression item 1755 diagnosed, every control flat.** The change is **provably behaviour-identical**, not merely safe, and the mutation test says so
+
+Item 1755 established the mechanism: `countRange` is **O(distinct values in range)** and its only
+consumer is a gate comparing the count against `bucket * SEEK_MAX_FRACTION`. On a high-cardinality
+column the estimate cost more than the decision saved — `WHERE n.n < 10000` over 20,000 distinct
+values walked 10,000 index entries to produce a number, the gate declined, and the scan ran anyway.
+
+**The fix is to stop counting once the answer cannot matter.**
+
+```typescript
+countRangeAtMost(key, bound, cap) {           // PropertyIndex
+  …
+  for (const value of this.rangeValues(idx, bound)) {
+    count += idx.buckets.get(value)!.size;
+    if (count > cap) { return count; }        // past the cap the exact value is dead information
+  }
+  return count;
+}
+```
+
+#### ⚠️ WHY IT IS BEHAVIOUR-IDENTICAL, AND WHY THE SUB-FLOOR CASE IS THE WHOLE ARGUMENT
+
+`seedVertices` takes the **smallest** count among candidates, then `seekIsWorthIt` declines anything
+over `bucket * 1/8`. So:
+
+- **At or below the cap the count is exact** → ranking among ADMITTED candidates is unchanged.
+- **Above the cap every candidate is declined** → whichever wins a ranking among them is never used,
+  so the ordering is not consulted.
+- ⚠️ **EXCEPT below `SEEK_FLOOR_VERTICES`, where the gate admits a seek at ANY count** — there the
+  ranking between two over-cap candidates WOULD decide the seed, and a capped count cannot order
+  them. `rangeCountCap` returns `Infinity` below the floor, keeping those graphs on the exact count.
+  That case is what turns "probably harmless" into "identical", and it is the part a reviewer should
+  check first.
+
+#### Measured, N=400, three alternated rounds, one build per arm, µs/query
+
+```text
+  shape                        base                   capped                 verdict
+  rangewide (the regression)   947.3  900.6  901.3    562.5  584.2  565.8    1.60x, DISJOINT
+  rangelowcard (card. twin)    463.5  481.5  453.4    447.2  456.4  451.4    flat
+  range     (selective seek)    33.0   37.6   36.7     35.8   33.5   34.0    flat
+  point                         24.4   25.0   25.3     24.8   29.4   24.9    flat
+  band                          42.5   36.0   37.5     39.8   35.9   37.2    flat
+```
+
+Every row answer-asserted by the probe, so no arm is the wrong-answer artefact of item 1749. The
+residual against _no_ index is ~1.13x (565 against ~500) rather than 1.0x, because the capped walk
+still covers `bucket / 8` = 2,500 entries before declining — bounded by the cap now instead of by the
+range's width, which is the whole change.
+
+#### ⚠️ THE TEST, AND ITS TEETH — because the change is invisible to every other test
+
+A seed only has to be a **superset**, so breaking the count cannot change any query answer: the gql
+suite, the differential tests and all seven fuzzers pass either way. `perf-gate-needs-its-own-test`
+is the rule, so the arithmetic is tested directly — five cases covering exactness at and below the
+cap, the `> cap` report, equality with `countRange` at an infinite cap, bucket-size (not value-count)
+termination, and the unindexed `undefined`.
+
+**Teeth verified by mutation:** removing the early return — the one edit that makes the fix inert —
+fails **2 of the 5**. The assertion that catches it is the one asserting the capped answer is
+`< 400` (the exact total), not merely `> cap`; a test checking only the lower bound would have
+passed the mutant.
+
+#### Gates
+
+core **453 pass**, gql **4424 pass**, **all seven byte-identity fuzzers green**, new test **5 pass**,
+`bun run check` 0 read through `${pipestatus[1]}`.
+
+**NEW PERMANENT INSTRUMENT — `packages/native/range-count-cap-ab.sh`.**

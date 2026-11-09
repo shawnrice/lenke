@@ -629,6 +629,39 @@ export class PropertyIndex<E> {
    * sizes over the matching distinct values. O(distinct values in range), so a
    * planner can compare candidates before materializing the winner.
    */
+  /**
+   * `countRange`, but it stops once the count passes `cap` — so the answer is EXACT at or below the
+   * cap and merely "greater than `cap`" above it.
+   *
+   * ⚠️ WHY THIS EXISTS (item 1756). `countRange` is O(distinct values in range), and its only
+   * consumer is a GATE that compares the count against a threshold. On a high-cardinality column
+   * that made the estimate cost more than the decision saved: item 1755 measured
+   * `WHERE n.n < 10000` over 20,000 DISTINCT values at **1.9x SLOWER with the index than without**
+   * — 10,000 index entries walked to produce a number, the gate then declining, and the scan
+   * running anyway. The same query shape on a 97-value column showed NO regression, which is what
+   * identified the complexity rather than the seek as the cost.
+   */
+  countRangeAtMost(key: string, bound: RangeBound, cap: number): number | undefined {
+    const idx = this.indexes.get(key);
+
+    if (!idx) {
+      return undefined;
+    }
+
+    let count = 0;
+
+    for (const value of this.rangeValues(idx, bound)) {
+      count += idx.buckets.get(value)!.size;
+
+      // Past the cap the exact value cannot change any caller's decision, so stop walking.
+      if (count > cap) {
+        return count;
+      }
+    }
+
+    return count;
+  }
+
   countRange(key: string, bound: RangeBound): number | undefined {
     const idx = this.indexes.get(key);
 
