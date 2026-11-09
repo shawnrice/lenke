@@ -123,11 +123,31 @@ export const hopValuesShortcut = (plan: Plan, graph: Graph): HopValues | undefin
   // key — both are different shapes, not this one.
   const valueKey = proj?.kind === 'values' && proj.keys.length === 1 ? proj.keys[0] : undefined;
   /**
-   * ⚠️ REJECTED, WITH ITS NUMBERS (item 1693): a `topologyVersion`-keyed CSR drain for THIS walk,
-   * the way item 1692 built one for the far-FILTERED hop at 38.08x.
+   * ⚠️ PRICED AND OPEN (items 1693/1694): a `topologyVersion`-keyed CSR drain for THIS walk, the way
+   * item 1692 built one for the far-FILTERED hop at 38.08x.
    *
-   * It does not carry here, and the reason is that this walk is already close to its floor. One arm
-   * per process, 200,000 v / 1,000,000 e, 14 reps, median of the warm ones:
+   * ⚠️ ITEM 1693 REFUTED IT AT 1.58x AND THAT REFUTATION IS WITHDRAWN. It was measured on a
+   * GROUPED-insertion fixture — a vertex's edges added consecutively — which is the best case for a
+   * pointer-chasing walk and therefore the worst case for the lever that replaces it. On the
+   * Gremlin bench's own scattered layout, item 1694 measured the identical arms at:
+   *
+   * ```text
+   *    engine id            139.18 ms    1.00x
+   *    handGen               95.78       1.45x
+   *    handCsr               23.21       6.00x   <- against 1.58x on the grouped fixture
+   *    handCsrPlusBuild     167.00       0.83x   the FIRST query only; the CSR is cached
+   * ```
+   *
+   * Edge INSERTION ORDER alone is worth 2.26x on the same graph (61.59 grouped against 139.18
+   * scattered, identical edges and bucket order), so a probe that groups its inserts understates
+   * this walk by ~2.3x. Most probes in this corpus group.
+   *
+   * The open question for the build is NOT the warm number but the CSR's invalidation: it is keyed
+   * on `topologyVersion`, the build costs ~144 ms on a scattered layout, and a write-heavy workload
+   * pays that repeatedly. The first query is a 1.20x regression either way.
+   *
+   * The reading below stands as measured, on the grouped fixture, and is kept because the 1.20x hand
+   * floor it establishes is a fact about DELEGATION that the layout does not change:
    *
    * ```text
    *    engineValues       132.27 ms    1.00x
@@ -138,12 +158,12 @@ export const hopValuesShortcut = (plan: Plan, graph: Graph): HopValues | undefin
    *
    * The engine is within **1.20x of its own hand-written walk**, so there is no delegation left to
    * remove — item 1614's 6.65x and item 1631's 3.91x were both removing delegation, and that work is
-   * done. What remains is the DATA STRUCTURE, and it costs ~89 ms to build against the ~48 it saves:
-   * warm 1.58x, cold a 1.3x REGRESSION. Item 1692's arm wins cold because its filter drops 99% of
-   * the rows before anything is materialized; this shape must materialize every row either way.
+   * done. What remains is the DATA STRUCTURE, and on that fixture it cost ~89 ms to build against
+   * the ~48 it saved.
    *
-   * ⚠️ So do not reach for the CSR here on the strength of item 1692. The two shapes differ in the
-   * one property that decides it: whether the walk's output is proportional to its input.
+   * ⚠️ Item 1692's arm still wins COLD where this one cannot, and for a reason the layout does not
+   * change: its filter drops 99% of the rows before anything is materialized, so its build is
+   * amortized against work that disappears, while this shape materializes every row either way.
    *
    * (The `order()` row above this one is NOT a route for it either: items 879/890 settled that the
    * 1M-value sort costs 88 ms, the ordering contract is free, and the residual was refuted at 1.04x

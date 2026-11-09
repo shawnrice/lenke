@@ -75589,7 +75589,7 @@ instead of the far end. The drop sentinel SURVIVED on the first pass for want of
 either projected a key the filter guarantees or one every vertex carries); the case of a far vertex
 passing the filter while lacking the PROJECTED key is now covered.
 
-### Item 1693 — **REFUTED: a CSR drain for the UNFILTERED yielding hop is 1.58x warm and a 1.3x REGRESSION cold.** The engine is already within **1.20x of its own hand-written walk**, so there is no delegation left to remove — and ⚠️ **item 1692's 38x does NOT generalize, because the two shapes differ in whether output is proportional to input**
+### Item 1693 — ~~**REFUTED: a CSR drain for the UNFILTERED yielding hop is 1.58x warm and a 1.3x REGRESSION cold.**~~ ⚠️ **THE REFUTATION IS WITHDRAWN BY ITEM 1694: it was measured on a GROUPED-insertion fixture, which is the best case for a pointer-chasing walk. On the bench's own scattered layout the same arm is 6.00x warm (139.18 -> 23.21), not 1.58x.** The rest of this entry — the 1.20x hand floor, the output-proportional-to-input argument, the `order()` checks — stands as measured on that fixture. The engine is already within **1.20x of its own hand-written walk**, so there is no delegation left to remove — and ⚠️ **item 1692's 38x does NOT generalize, because the two shapes differ in whether output is proportional to input**
 
 Item 1692 took the far-FILTERED hop from 120.34 ms to 3.16. Its own A/B shows the unfiltered shapes
 untouched (`V().out(E).values(n)` 122.66 PRE against 121.29 POST), and after it they are the largest
@@ -75642,3 +75642,73 @@ one item to identify before any row is picked on the strength of its bench numbe
 
 `bun run check` 0 read unpiped. `packages/gremlin` isolated: 2065 pass, 0 fail. One probe added and
 one note placed; no engine behaviour touched.
+
+### Item 1694 — ⚠️ **THE GREMLIN BENCH'S FIXTURE IS CACHE-HOSTILE, AND IT IS WORTH 2.26x ON THE SAME GRAPH.** Edge INSERTION ORDER alone: 61.59 ms grouped against 139.18 scattered, identical vertices, edges and per-vertex bucket order. ⚠️ **This WITHDRAWS item 1693's refutation — the lever it priced at 1.58x is 6.00x on the bench's layout** — and it means every adjacency-walking TS row in that bench is inflated relative to a grouped build, while standalone probes that group UNDERSTATE it
+
+Item 1693 flagged that `V().out().id()` reads **207.6 ms in `bench:gremlin` and 61.06 in a
+standalone probe** — the same traversal, 3.4x apart — and said it mattered because the bench's
+ranking nominates every target. It does, and the cause is worse than a quirk.
+
+#### The decomposition
+
+```text
+   61.06 ms   standalone probe: own fixture, one shape per process
+   61.59      bench's EDGE SET, inserted GROUPED BY SOURCE, one shape per process
+  139.18      bench's fixture as built (scattered), one shape per process
+  207.6       bench's fixture, 31 shapes in one process          <- as the bench reports it
+```
+
+So the 3.4x is **2.26x of fixture locality and 1.39x of multi-shape polymorphism**, and the two are
+independent.
+
+The loader and the edge properties were ruled out one at a time, which is why the locality claim is
+attributable rather than inferred: the bench's own NDJSON deserialization reads 147.6, the same
+values built through `addVertex`/`addEdge` read 140.7, and the same NDJSON with the edge property
+`w` removed reads 144.9 — all within noise of each other. The only remaining difference was
+INSERTION ORDER: the bench's `from = (k * 7919) % N` scatters each vertex's five edges ~200,000
+insertions apart, so its `Edge` objects land far apart in allocation order and walking one vertex's
+adjacency chases pointers across the heap. Re-inserting the identical edge set grouped by source —
+same graph, same bucket order, same emitted sequence, only the layout changed — gives **61.59**.
+
+#### ⚠️ WHAT THIS DOES TO ITEM 1693, AND WHY IT IS THE LESSON
+
+Item 1693 refuted a CSR drain for the unfiltered hop at **1.58x warm and 0.76x cold**, measured on
+the standalone probe's grouped fixture. On the bench's scattered layout, the same arms:
+
+```text
+   engine id            139.18 ms    1.00x
+   handGen               95.78       1.45x
+   handCsr               23.21       6.00x   ⚠️ against 1.58x on the grouped fixture
+   handCsrPlusBuild     167.00       0.83x   the first query only; the CSR is cached
+```
+
+**A grouped-insertion fixture is the best case for a pointer-chasing walk and therefore the worst
+case for the lever that replaces it.** CLAUDE.md's rule is "match the fixture to the claim", and the
+claim here was about a DATA LAYOUT — so the one fixture property that could not be allowed to vary
+was the one I varied. The refutation understated the win by ~4x and would have steered the next
+reader away from it; its heading is struck and the note on `hopValuesShortcut` is corrected in the
+same commit.
+
+The cold figure still holds in shape: the build costs more than one query saves (167.00 against
+139.18, a 1.20x regression on the FIRST query), and it is slower to build here than on the grouped
+fixture (~144 ms against ~89) for the same pointer-chasing reason. The CSR is keyed on
+`topologyVersion`, so a write-heavy workload pays that build repeatedly — which is the real
+remaining question for the build, not the warm number.
+
+#### What to do with the bench
+
+Nothing, yet — and deliberately. A scattered insertion order is not unrealistic (a real graph is
+rarely built source-by-source), so the bench is not WRONG; it measures a harder case than a grouped
+probe does. Two consequences to carry instead:
+
+- **A standalone probe that groups its inserts understates the bench's adjacency rows by ~2.3x.**
+  Every probe in this corpus that builds a graph with a `for (i) { for (r) { addEdge } }` loop is
+  grouped. That is most of them, including the ones used in items 1691-1693.
+- **The bench's TS/native ratios partly reflect layout, not just engine work.** Native stores
+  adjacency flat, so it is immune to the insertion order that costs TS 2.26x here. A ratio on an
+  adjacency-walking row is therefore an upper bound on the engine-work gap.
+
+#### Gates
+
+`bun run check` 0 read unpiped. One probe added, item 1693's heading struck and its code note
+corrected; no engine behaviour touched.
