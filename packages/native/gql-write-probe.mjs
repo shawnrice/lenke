@@ -55,6 +55,15 @@ const seeded = () => {
  * shapes below are the ones that measure the engine rather than the probe; the literal ones are
  * kept because the GAP between them is a user-facing number (what not parameterising costs).
  */
+/**
+ * 36-character ids, UUID-shaped and unique, built before any window opens (item 1768). The shape
+ * matters and the randomness does not: what is being held constant is the KEY LENGTH.
+ */
+const LONG_IDS = Array.from(
+  { length: BATCH },
+  (_, i) => `${String(i).padStart(8, '0')}-0000-4000-8000-${String(i).padStart(12, '0')}`,
+);
+
 /** Each shape: a query template, and the element delta one batch must produce. */
 const SHAPES = {
   // One vertex per rep, with properties — the plainest write.
@@ -114,6 +123,48 @@ const SHAPES = {
 
       if (a && b) {
         g.addEdge({ from: a, to: b, labels: ['E'] });
+      }
+    },
+    expect: (g) => g.edgeCount === BATCH,
+  },
+  /**
+   * ⚠️ WHAT DOES OMITTING AN EDGE ID COST? (item 1768). `insertedgedirect` does not pass one, so
+   * `addEdge` mints a UUID — and that showed up in its profile as `rando` 2.5% + `randomFillSync`
+   * 1.0% + `serializeUUID` 1.0%. CLAUDE.md's bench rule ("give edges ids") is about fixture
+   * fidelity; this arm asks the engine-facing question instead, and the two arms differ in exactly
+   * one thing, so the gap IS the minting.
+   */
+  insertedgedirectid: {
+    direct: (g, i) => {
+      const a = g.getVertexById(`v${i % SEED}`);
+      const b = g.getVertexById(`v${(i * 7) % SEED}`);
+
+      if (a && b) {
+        g.addEdge({ id: `e${i}`, from: a, to: b, labels: ['E'] });
+      }
+    },
+    expect: (g) => g.edgeCount === BATCH,
+  },
+  /**
+   * ⚠️ THE CONFOUND IN `insertedgedirectid`, and why this third arm exists (item 1768). That arm
+   * passes `e${i}` — SIX characters — against a minted UUID's THIRTY-SIX, and the id becomes a key
+   * in `edgesById` and the endpoint maps. So its gap conflates two different things: the minting,
+   * and hashing/storing a long string instead of a short one. This arm holds the key LENGTH at 36
+   * and removes only the minting, so the three arms together separate them:
+   *
+   *     insertedgedirect        mint + 36-char key
+   *     insertedgedirectlongid  no mint + 36-char key   <- isolates the MINTING
+   *     insertedgedirectid      no mint + 6-char key     <- isolates the KEY LENGTH
+   *
+   * The ids are built OUTSIDE the measured window, which is the whole point of pre-generating them.
+   */
+  insertedgedirectlongid: {
+    direct: (g, i) => {
+      const a = g.getVertexById(`v${i % SEED}`);
+      const b = g.getVertexById(`v${(i * 7) % SEED}`);
+
+      if (a && b) {
+        g.addEdge({ id: LONG_IDS[i], from: a, to: b, labels: ['E'] });
       }
     },
     expect: (g) => g.edgeCount === BATCH,

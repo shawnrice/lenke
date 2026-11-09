@@ -80140,3 +80140,85 @@ on the direct-API side of the floor and therefore reachable without touching GQL
 `bun run check` 0 read through `${pipestatus[1]}`; `matching.ts` confirmed byte-restored from the
 pristine copy (`git diff` empty) before the gate ran. No source changed — the probe gained the
 `insertedgedirect` arm and the A/B driver is kept as `packages/native/eqcand-collapse-ab.sh`.
+
+### Item 1768 — **omitting an edge id costs 1.21x of a direct edge insert, and the key's LENGTH is free.** `rando` is `crypto.randomUUID()` at 181 ns, an equal-entropy base-36 is 1.38x faster and hand-rolled hex **5.0x worse** — so **NOT TAKEN: the id format is a collision-safety contract, for ~2% of a write.** ⚠️ **And my own micro's uniqueness assertion, inside the timed loop, compressed that 1.38x to 1.06x**
+
+Item 1767's surviving nomination was edge-write index maintenance on the direct-API side. Profiling
+the floor arm with no GQL in the picture (201 samples, BATCH=80000):
+
+```text
+  17.9%  indexEdgeLabel        10.4%  #commitNormalized      4.5%  insertEdge
+  16.4%  getVertexById          9.0%  (garbage collector)    4.0%  set labels
+  14.4%  commitElementLabels    5.0%  direct (the probe)     2.5%  rando
+```
+
+**`indexEdgeLabel` + `commitElementLabels` + `set labels` ≈ 36% is label handling** for a
+single-label `['E']` — and it is already priced THREE times: item 140 collapsed its twelve lookups
+to six and stopped resolving `edge.from.id`, item 312 priced the whole function at 810 ns across
+seven hash operations, and **item 323 rejected threading the endpoint vertices in** (four alternated
+rounds, 2621.0-2756.6 ms against 2670.2-2707.7, overlapping with the min slightly worse). Its own
+doc-comment says what dominates is the inner per-label `Map`/`Set` work. I did not re-derive it a
+fourth time; this item took the one frame nobody had priced instead.
+
+#### Omitting an edge id costs 1.21x — and the obvious reading of that is wrong
+
+`addEdge` without an `id` mints one. Three arms, each differing from its neighbour in exactly one
+thing, with the explicit ids pre-generated outside the window:
+
+```text
+  arm                                             µs/write (3 rounds)
+  insertedgedirect        mint + 36-char key      2.79  2.55  2.51
+  insertedgedirectlongid  no mint + 36-char key   2.08  2.31  2.28   ← isolates the MINTING
+  insertedgedirectid      no mint + 6-char key    2.27  2.06  2.31   ← isolates the KEY LENGTH
+```
+
+⚠️ **The two-arm version of this experiment is a trap, and I walked into it first.** Comparing a
+minted UUID against `e${i}` gives 1.20x, but that arm changes TWO things — the minting and a key
+that is 6 characters instead of 36, hashed into `edgesById` and both endpoint maps. The third arm
+separates them: **36 characters against 6 is 2.08 against 2.06, i.e. FREE**, so the whole gap is the
+minting, 2.51 against 2.08 with disjoint ranges — **~0.43 µs per edge.**
+
+#### What `rando` is, and what it could be
+
+`packages/utils`'s `rando` is `crypto.randomUUID()`, and it mints the default id for `Vertex`,
+`Edge`, `VertexProperty` and `TreeNode`. Its own doc calls it "a not-cryptographically-secure random
+string", which the implementation is not — but that mismatch is the doc's, not a licence to weaken
+it: these ids reach snapshots and cross **sync peers**, so two clients minting independently must not
+collide. Every arm below therefore holds ~122+ bits.
+
+```text
+  randomUUID   181.0 ns/id   len 36    the baseline
+  base36       131.3 ns/id   len 25    1.38x faster, same entropy, bulk getRandomValues
+  hex          899.3 ns/id   len 32    5.0x WORSE — hand-rolled formatting is not the win
+```
+
+**NOT TAKEN, and the reason is the payoff rather than the risk alone.** 50 ns off a 181 ns mint is
+~2% of a 2.5 µs edge insert, against changing the id FORMAT — observable in snapshots, in the wire
+format, in `id-space-contract.test.ts` and to every embedder that has stored an id. That is an
+owner's call on a wire contract, and it is not worth asking for 2%. The useful half of the result is
+the other direction: **hand-rolled formatting is 5.0x worse, so `crypto.randomUUID()` is already
+near the floor** and nobody should try to beat it again. The real lever stays where callers already
+control it — **pass an id** (1.21x), which is also what CLAUDE.md's bench rule asks for.
+
+#### ⚠️ AND THE MICRO'S FIRST VERSION WAS CONFOUNDED BY ITS OWN CORRECTNESS CHECK
+
+The uniqueness assertion — there because a minting function that returned a constant would win every
+round — interned each id into a 300,000-entry `Set` **inside the timed loop**. That added ~330 ns of
+string hashing to every arm:
+
+```text
+                 with the Set in the loop      assertion moved out
+  randomUUID            439.6 ns                     181.0 ns
+  base36                413.2 ns  (1.06x)             131.3 ns  (1.38x)
+```
+
+A cost common to all arms does not cancel — **it compresses ratios toward 1x**, and the reported
+conclusion would have been "no alternative wins" when one wins by 1.38x. The fix is to run the
+assertion as a separate unmeasured pass and leave a one-char sink in the loop. Same family as item
+1766's puller and the frame-attribution trap: **the instrument was measuring itself.**
+
+#### Gates
+
+`bun run check` 0 read through `${pipestatus[1]}` — and it caught a `prefer-const` in the new micro
+first, which is why it is run unpiped. No engine source changed: the probe gained two arms and
+`packages/native/rando-micro.mjs` is kept.
