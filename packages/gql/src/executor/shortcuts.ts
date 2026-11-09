@@ -3878,7 +3878,7 @@ export const patternCountOf = <T>(
   if (segments.length === 3) {
     // See `threeSegmentRoute` — extracted because this function tripped both the complexity and
     // max-statements caps, as it did at item 427.
-    return threeSegmentRoute(start, segments, rowOf, interiorPred);
+    return threeSegmentRoute(start, segments, rowOf, interiorPred, where, cstart);
   }
 
   // FOUR OR MORE segments, as a SWEEP. Item 290 added a four-segment degree product and left
@@ -4071,6 +4071,10 @@ const threeSegmentRoute = <T>(
   segments: readonly Segment[],
   rowOf: (n: number) => T,
   interiorPred: InteriorGates | null | undefined,
+  /** The clause `WHERE`, so the SWEEP can be given its gates (item 1705). */
+  where: Expr | undefined,
+  /** Carried only so the sweep can seed its start set from an index (item 1330). */
+  cstart: CNode | undefined,
 ): CountOf<T> | null => {
   const product = threeSegmentCount(
     start,
@@ -4085,11 +4089,40 @@ const threeSegmentRoute = <T>(
   const labelled =
     endLabel?.kind === 'label' || (endLabel === undefined && startLabel?.kind === 'label');
 
-  if (product === null || interiorPred !== undefined || !labelled) {
-    return product;
-  }
+  /**
+   * ⚠️ THE SWEEP IS GIVEN THE CLAUSE'S GATES (item 1705), AND THAT IS THE WHOLE FIX. This used to
+   * read `if (product === null || interiorPred !== undefined || !labelled) return product;` — so
+   * ANY clause `WHERE` skipped the sweep, because the call below passed no gates and sweeping would
+   * have silently dropped the predicate. Its comment said exactly that, and it was true of the call
+   * rather than of the sweep: `longChainCount` has taken `clauseGates` since item 305, which is how
+   * the four-or-more-segment branch sweeps a clause correctly.
+   *
+   * What that cost: once the CSR arms decline — which they do whenever the start label is NOT
+   * VACUOUS, since a label-filtered degree is not an `off` delta — `product` is `null` and the
+   * three-segment branch returns unconditionally, so a clause-filtered count fell to the general row
+   * pipeline while its INLINE twin swept. Item 1703 measured 35x-44x for four edgeless vertices
+   * under another label, and item 1704's route counters located it here.
+   *
+   * `chainGatesOf` returns `null` when a conjunct is not a per-vertex test on a position — a
+   * correlation, a constant, or an unbound name — and THAT is the case the sweep genuinely cannot
+   * take, so it is the only one that still skips.
+   *
+   * ⚠️ AND THAT NULL CHECK IS UNREACHABLE TODAY, which a mutation pass established rather than a
+   * reading: removing it SURVIVES the whole suite. `patternCountOf` returns `null` at
+   * `interiorPred === null` BEFORE calling this, and `interiorPredOf` declines any conjunct that is
+   * not a per-vertex test on `b` or `c` — a stricter rule than `chainGatesOf`'s. So inside this
+   * function `where !== undefined` implies `gates !== null`. It is kept as the honest statement of
+   * what the sweep requires, not as a live branch; if the interior reader is ever widened to admit
+   * the ends, this is the check that must already be here.
+   */
+  const gates = where === undefined ? undefined : chainGatesOf(where, start, segments);
+  const swept =
+    labelled && gates !== null ? longChainCount(start, segments, rowOf, gates, cstart) : null;
 
-  const swept = longChainCount(start, segments, rowOf);
+  // The product declining is no longer the end of the road: the sweep may still answer.
+  if (product === null) {
+    return swept;
+  }
 
   if (swept === null) {
     return product;

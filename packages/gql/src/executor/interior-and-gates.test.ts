@@ -280,3 +280,62 @@ describe('interiorPredOf — the BUCKETING asserted directly', () => {
     expect(readerFor(q('b.k = 7 OR c.k > 9')).gates).toBeNull();
   });
 });
+
+describe('⚠️ the SWEEP path, which needs a NON-VACUOUS start label to reach', () => {
+  /**
+   * ⚠️ EVERY TEST ABOVE LABELS EVERY VERTEX `P`, SO `P` IS VACUOUS — `effectiveLabel` returns
+   * `undefined`, the CSR degree product applies, and the sweep is never consulted for an answer.
+   * Two mutants proved that blind spot: sweeping a clause whose gates CANNOT be built, and building
+   * those gates from the wrong pattern positions, both SURVIVED the whole suite.
+   *
+   * Four vertices under another label make `P` real. The arms then decline — a label-filtered degree
+   * is not an `off` delta — and the sweep answers, which is item 1705's fix and the 64.6x-77.7x it
+   * measured. Item 1703 is the measurement: four edgeless vertices out of 200,004 flip the route.
+   */
+  const build2 = (n = 300): Graph => {
+    const g2 = build(n);
+
+    for (let i = 0; i < 4; i += 1) {
+      g2.addVertex({ id: `other${i}`, labels: ['S'], properties: { k: i, j: i } });
+    }
+
+    return g2;
+  };
+  const h = build2();
+  const countIn = (q: string): number => Number(query(h, q)[0].c);
+  const sub = (pattern: string, where = ''): number =>
+    Number(query(h, `MATCH (a:P) RETURN sum(COUNT { (a)${pattern}${where} }) AS c`)[0].c);
+
+  test('the start label is genuinely NOT vacuous in this fixture', () => {
+    expect([...h.vertices].some((v) => !v.labels.has('P'))).toBe(true);
+    expect([...h.vertices].filter((v) => v.labels.has('P')).length).toBeLessThan(h.vertexCount);
+  });
+
+  const CASES: [string, string][] = [
+    ['one interior conjunct', ' WHERE c.k > 9'],
+    ['both interior positions', ' WHERE b.k = 7 AND c.k > 9'],
+    ['two conjuncts on one position', ' WHERE b.k > 2 AND b.j < 9'],
+    // ⚠️ A clause whose gates CANNOT be built — `chainGatesOf` returns `null` for a conjunct
+    // spanning two variables — so the sweep must NOT be taken. M2 swept it anyway and survived.
+    ['a conjunct spanning two positions', ' WHERE b.k = c.k'],
+    ['a constant conjunct', ' WHERE 1 = 1 AND c.k > 9'],
+    ['an end conjunct', ' WHERE d.k > 9'],
+    ['a start conjunct', ' WHERE a.k > 9'],
+  ];
+
+  for (const [name, where] of CASES) {
+    test(`${name} — agrees with the subquery route on a multi-label graph`, () => {
+      const pattern = '-[:E]->(b)-[:E]->(c)-[:E]->(d)';
+      const direct = countIn(`MATCH (a:P)${pattern}${where} RETURN count(*) AS c`);
+
+      expect(direct).toBe(sub(pattern, where));
+      expect(direct).toBeGreaterThan(0);
+    });
+  }
+
+  test('⚠️ and the clause still agrees with its inline twin here', () => {
+    expect(
+      countIn('MATCH (a:P)-[:E]->(b)-[:E]->(c)-[:E]->(d) WHERE c.k = 3 RETURN count(*) AS c'),
+    ).toBe(countIn('MATCH (a:P)-[:E]->(b)-[:E]->(c {k: 3})-[:E]->(d) RETURN count(*) AS c'));
+  });
+});

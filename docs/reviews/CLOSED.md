@@ -76246,7 +76246,7 @@ whenever `interiorPred !== undefined`, which a clause `WHERE` always sets and an
 `bun run check` 0 read through `${pipestatus[1]}`. Two probes gained toggles; no engine behaviour
 changed.
 
-### Item 1704 — **THE 35x-44x IS ONE LINE: `threeSegmentRoute` skips the sweep whenever `interiorPred !== undefined`**, which a clause `WHERE` always sets and an inline constraint on `c` never does. ⚠️ **And the guard is there for a REASON that is itself the fix: the sweep is called WITHOUT `clauseGates`, so sweeping would silently drop the predicate — but that signature has accepted them since item 305.** Diagnosed and located; the fix is its own item
+### Item 1704 — **THE 35x-44x IS ONE LINE: `threeSegmentRoute` skips the sweep whenever `interiorPred !== undefined`**, which a clause `WHERE` always sets and an inline constraint on `c` never does. ⚠️ **And the guard is there for a REASON that is itself the fix: the sweep is called WITHOUT `clauseGates`, so sweeping would silently drop the predicate — but that signature has accepted them since item 305.** ~~Diagnosed and located; the fix is its own item~~ ⚠️ **FIXED AT ITEM 1705: 64.6x and 77.7x on a multi-label graph, 40.8x on the probe's fixture, and the spelling probe no longer flags the group.**
 
 Item 1703 found that four edgeless vertices under another label cost a clause-filtered three-hop
 count 35x-44x while the inline twins stayed fast, and left the asymmetry unexplained. A route counter
@@ -76305,3 +76305,79 @@ dropped gate fails. That is a build, not a tail.
 
 `bun run check` 0 read through `${pipestatus[1]}`. Six temporary counters applied and removed, with
 the count asserted back to 0 in both files; no engine behaviour changed.
+
+### Item 1705 — **THE CLAUSE SPELLING NOW SWEEPS: 781.5 -> 12.1 ms (64.6x) and 979.6 -> 12.6 (77.7x) on a multi-label graph, 467.68 -> 11.45 (40.8x) on the spelling probe's own fixture, and `bun run spelling` no longer flags the group.** The fix is to give the three-segment sweep the `clauseGates` it has accepted since item 305. ⚠️ **Two surviving mutants turned out to be unreachable and answer-equivalent rather than untested — and my first explanation of WHY was wrong**
+
+Item 1704 located the 35x-44x to one guard: `threeSegmentRoute` skipped the sweep whenever
+`interiorPred !== undefined`, because the call below it passed no gates and sweeping would have
+dropped the predicate. `longChainCount` has taken `clauseGates` since item 305. So:
+
+```ts
+const gates = where === undefined ? undefined : chainGatesOf(where, start, segments);
+const swept =
+  labelled && gates !== null ? longChainCount(start, segments, rowOf, gates, cstart) : null;
+
+// The product declining is no longer the end of the road: the sweep may still answer.
+if (product === null) {
+  return swept;
+}
+```
+
+Measured, median of 7, one query per process:
+
+```text
+   fixture / row                              before     after
+   multi-label, WHERE c.k = 2                  781.5      12.1    64.6x
+   multi-label, WHERE c.k > 9                  979.6      12.6    77.7x
+   multi-label, inline twins                11.0-15.1   11.4-12.2  flat
+   SINGLE-label, WHERE c.k = 2                  22.1      22.1    unchanged
+   the replica (the probe's fixture)          467.68     11.45    40.8x
+   the replica, inline twin                    12.07     11.54    flat
+```
+
+Counts identical throughout, the two spellings converge (11.45 against 11.54), and the single-label
+case is untouched — `candidateCount` equals `vertexCount` when the label is vacuous, so the runtime
+comparison still picks the product there.
+
+**`bun run spelling` no longer flags the group.** The one group it flags afterwards — `SEEK: a param
+equality AND a second conjunct` at 2.10x — is dispatch pollution, not a regression: isolated three
+times it reads 3.59-4.37 ms across all four spellings with zero flags, which is the contamination the
+probe's own header describes.
+
+#### ⚠️ A SURVIVING MUTANT IS NOT ALWAYS A MISSING TEST, AND I GOT THIS WRONG FIRST
+
+The mutation pass caught the one that matters — passing NO gates to the sweep, the pre-fix call, fails
+6 tests — and lost two:
+
+```text
+   M1 the sweep is given NO gates            CAUGHT (6 fail)
+   M2 a NON-sweepable clause is swept        SURVIVED
+   M3 gates built from the wrong positions   SURVIVED
+   M5 always sweep (route choice)            SURVIVED — expected, see below
+```
+
+My first explanation was that the test fixture labels every vertex `P`, so `P` is vacuous, the
+product always applies and the sweep is never exercised. That was worth fixing on its own — nothing
+in the suite reached the sweep path — so a non-vacuous fixture and eight cases were added. **M2 and
+M3 still survived**, so the explanation was wrong.
+
+What is actually true: `patternCountOf` returns `null` at `interiorPred === null` BEFORE calling
+`threeSegmentRoute`, and `interiorPredOf` declines any conjunct that is not a per-vertex test on `b`
+or `c` — a stricter rule than `chainGatesOf`'s. So inside that function `where !== undefined` implies
+`gates !== null`: **M2 is unreachable**, and M3 only turns a `b`-clause into a decline, which is
+answer-equivalent. M5 is the route choice the function's own comment already says no test can police.
+
+So the `gates !== null` check is dead today. It is KEPT with that stated on it, as the honest
+statement of what the sweep requires — unlike item 1688's dead seed BRANCH, which was removed
+because it contained logic that read as a tested path. A one-term guard documented as unreachable is
+not the same hazard.
+
+The new multi-label tests stay regardless: they are the only ones that reach the sweep for an answer,
+and item 1703's measurement says that is the common case rather than the exotic one.
+
+#### Gates
+
+`bun run check` 0 read through `${pipestatus[1]}`, immediately before the commit. Five suites
+isolated: core 453, gql 4390, gremlin 2065, serialization 144, native 1081, 0 fail each. Seven
+byte-identity fuzzers 20 pass, 0 fail. The plumbing mutant CAUGHT; three survivors accounted for as
+unreachable, answer-equivalent, or the documented route choice.
