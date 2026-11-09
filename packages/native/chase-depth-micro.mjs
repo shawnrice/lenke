@@ -49,6 +49,46 @@ class EdgeLike {
   }
 }
 
+/**
+ * ⚠️ ALLOCATION ORDER IS NOW A VARIABLE, and item 1773 is why. Interleaving every level of one
+ * element was chosen to stop heap layout differing BETWEEN arms — but it also colocates a holder,
+ * its box and its bag into neighbouring cache lines, which removes the very effect depth was being
+ * tested for. The engine does NOT allocate that way: a box is created by `Graph` and its bag comes
+ * from `normalizeProperties`, at different moments, with other objects in between.
+ *
+ *   ALLOC=interleaved   all levels of element i allocated together   (item 1771's original)
+ *   ALLOC=scattered     each level allocated in its own pass         (the engine's shape)
+ *
+ * Holding the arms' SHAPES identical and varying only this is what separates "depth is free" from
+ * "depth is free WHEN COLOCATED".
+ */
+const ALLOC = process.env.ALLOC ?? 'interleaved';
+const bagsFor = () => {
+  const out = new Array(COUNT);
+
+  for (let i = 0; i < COUNT; i += 1) {
+    out[i] = Object.freeze({ age: 20 + (i % 60), name: `n${i}` });
+  }
+
+  return out;
+};
+
+// In scattered mode every level is a separate allocation pass, so an element's levels end up far
+// apart; in interleaved mode these stay unused and the per-element loop below allocates instead.
+const sBags = ALLOC === 'scattered' ? Array.from({ length: 5 }, bagsFor) : undefined;
+const sBoxes =
+  ALLOC === 'scattered'
+    ? [
+        sBags[2].map((bag) => ({ bag })),
+        sBags[3].map((bag) => ({ bag })),
+        sBags[4].map((bag) => ({ bag })),
+      ]
+    : undefined;
+const sVerts =
+  ALLOC === 'scattered'
+    ? [sBoxes[1].map((box) => ({ box })), sBoxes[2].map((box) => ({ box }))]
+    : undefined;
+
 for (let i = 0; i < COUNT; i += 1) {
   const age = 20 + (i % 60);
 
@@ -76,6 +116,16 @@ for (let i = 0; i < COUNT; i += 1) {
   // worse number than the engine it was modelling, which is what gave it away. `Edge.prototype`
   // has ONE `to` getter shared by every edge, so the class form below is the faithful model.
   d5[i] = new EdgeLike({ box: { bag: bag5 } });
+}
+
+if (ALLOC === 'scattered') {
+  for (let i = 0; i < COUNT; i += 1) {
+    d1[i] = sBags[0][i];
+    d2[i] = { bag: sBags[1][i] };
+    d3[i] = { box: sBoxes[0][i] };
+    d4[i] = { to: sVerts[0][i] };
+    d5[i] = new EdgeLike(sVerts[1][i]);
+  }
 }
 
 // A fixed permutation, built once outside every timed loop.

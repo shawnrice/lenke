@@ -80498,3 +80498,91 @@ is present by construction. And whatever it measures, it must not be adjudicated
 why the probe is embedded above rather than committed. `hop-values.ts` confirmed byte-restored from
 its pristine copy (`git diff` empty) with the real arm rebuilt into the dist. Kept:
 `packages/native/properties-getter-probe.mjs`.
+
+### Item 1773 — ✅ **THE MECHANISM, FOUND: item 1770's 4.0x is a WORKING-SET effect, and the 8-18x micro-vs-engine discrepancy three items chased is entirely SCALE.** Measured in the real engine across six graph sizes: `v.properties[k]` is **13.65 ns at 12,500 nodes and 73.28 at 200,000** — and a PLAIN FIELD READ triples at the same point. ⚠️ **One prediction test came back INCONCLUSIVE because the control did not exhibit the phenomenon**
+
+Items 1770-1772 refuted seven mechanisms for 60 ns/row (deopts, GC, the freeze, key constancy, a
+stale box, chase depth, dictionary mode) and kept arriving at the same residual: a load that reads
+1.5-3.5 ns synthetically costs 27 ns in the engine. Two experiments close it.
+
+#### First: allocation order, which was a flaw in item 1771's own method
+
+Item 1771 interleaved every level of one element deliberately, so heap layout would not differ
+between arms — but that colocates a holder, its box and its bag into neighbouring lines, which is not
+how the engine allocates (a box comes from `Graph`, its bag from `normalizeProperties`, at different
+moments). So the micro gained an `ALLOC` variable:
+
+```text
+  depth                     interleaved   scattered
+  1  bag[k]                    7.43 ns      3.40 ns
+  2  .bag[k]                  15.28         5.68
+  3  .box.bag[k]              18.99        10.80
+  4  .to.box.bag[k]           18.11        19.70
+  4 + proto getter            25.44        20.40
+```
+
+**Scattering made the SHALLOW arms faster, not the deep ones slower** — each level allocated in its
+own pass is contiguous, where interleaving makes a single-level walk stride over ~8-object gaps. So
+interleaving was pessimistic about depth 1-3 and **depth 4 lands at 18-20 ns in BOTH modes**: item
+1771's conclusion is robust, for a different reason than it gave.
+
+#### Then: scale, in the real engine, which settles it
+
+The accessor read on real `Vertex` objects, boxes pre-warmed, fixed random permutation, graph size
+swept:
+
+```text
+  NODES      v.id    getter   getter+load   v.labels
+  12,500     3.20     8.55        13.65       12.95
+  25,000     3.83     9.02        13.41       14.01
+  50,000     4.04     9.49        15.03       16.12
+  100,000    5.25    11.77        27.96       53.20
+  200,000   15.06    29.74        73.28       84.62
+  400,000   15.88    38.47        82.90       92.26
+```
+
+**At 12,500 nodes the whole read is 13.65 ns — the synthetic micro's own territory — and at 200,000
+it is 73.28.** Nothing about the code changed between those rows. And the giveaway that this is
+memory and not any property of the accessor: **`v.id`, a plain field read, triples (5.25 → 15.06) at
+exactly the same point**, which is CLAUDE.md's documented cache transition between 200k and 1M
+elements. The ratio of `getter+load` to a field read stays ~4-5x at every size, so the chain's SHAPE
+is constant and only the cost of each link moves.
+
+**So the 8-18x "anomaly" that items 1770, 1771 and 1772 each failed to explain was never structural.
+It was that the micros ran at 20k-200k objects and the engine's live set at 200k vertices is several
+million.** Seven mechanism hypotheses died because the answer was not a mechanism.
+
+#### ⚠️ A prediction test that did NOT work, recorded as such
+
+If the 1.77x process bimodality of item 1769 is the graph sitting ON the cliff, it should vanish well
+below it. Six processes each:
+
+```text
+  NODES=50,000     12.2  14.5  12.4  11.1  11.5  11.8     spread 1.31x
+  NODES=200,000    80.1  81.0  83.6  84.1  90.9  79.4     spread 1.14x  ← NO slow mode appeared
+```
+
+**The test is inconclusive, because the control did not reproduce the phenomenon.** The slow mode
+fires in ~27% of processes (6 of 22 at item 1769), so six draws miss it entirely about 15% of the
+time — which is what happened. Comparing a 1.31x spread against a control that happened not to be
+bimodal says nothing. The prediction stands untested; establishing it needs a base rate at 200k
+(20+ processes), which is not worth the minutes it costs for a confirmation that changes no decision.
+Recorded so it is not mistaken later for a confirmed result.
+
+#### ⚠️ The consequence for optimization, which is the useful part
+
+**A memory-bound cost is attacked by touching fewer cache lines, not by writing cheaper code.** Every
+lever this family tried — collapsing lookups, cheaper accessors, avoiding the freeze, specializing the
+key — aims at instruction count, and the measurements say instruction count is not what is being
+paid. It also explains the native comparison directly: the Rust engine stores properties in per-type
+SoA columns, so a values scan touches a dense run of memory, and it measures **6.5x** faster on this
+exact row. **The reachable TS lever is colocation or a per-key columnar store, not a faster path
+through the same scattered objects** — a design change, correspondingly expensive, and now at least
+priced against the right mechanism. Items 1770's 4.0x ceiling and this entry together are what any
+such proposal should be judged on.
+
+#### Gates
+
+`bun run check` 0 read through `${pipestatus[1]}` — it caught an unused parameter in the extended
+micro first, which is why it is run unpiped and re-run after the fix; the micro was then re-run to
+confirm it still executes. No engine source changed.
