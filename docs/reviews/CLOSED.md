@@ -79249,3 +79249,51 @@ correctly for `bun run check` all stretch while getting it wrong here.
 #### Gates
 
 `bun run check` 0 read through `${pipestatus[1]}`. No source changed.
+
+### Item 1753 — ✅ **THE STRETCH IS VERIFIED AGAINST THE ACTUAL CI STEPS, ALL GREEN.** Items 1751/1752 established that the root `bun test` is the wrong command; this runs the right ones. ⚠️ **A THIRD wrong-command error on the way: `node --test` is scoped to `packages/node` and needs its napi build first**
+
+Items 1731-1752 had each been gated with `bun run check` plus the suite of whichever package they
+touched, but the stretch had never been checked against what `ci.yml` actually runs. Item 1751 found
+the root `bun test` is not that, and item 1752 found its own "exits 0" was a pipe artefact. This
+closes the question properly — **every CI step, with all 22 commits applied:**
+
+```text
+  step                                                            result
+  bun run check   (typecheck + oxlint + oxfmt)                    0
+  bunx nx run-many -t test  (18 projects, 16 dependent tasks)     0   "Successfully ran target test"
+  bun test packages/native/src/backend-engine.test.ts             0   0 fail
+  cargo test lenke-engine         (1349 + 13 + 725 passed)        0   0 failed
+  cargo test lenke-engine-core                                    0
+  nx build @lenke/node  →  node --test  in packages/node          0
+```
+
+Plus, earlier in the stretch and on exactly this code: **all seven byte-identity fuzzers green**, the
+gql suite at **4424 pass** and the gremlin suite at **2109 pass**.
+
+**So the 68 root-`bun test` failures were environmental in full, as item 1752 attributed them**, and
+the stretch's 30 non-comment lines (`node-scan.ts` 22, `runtime.ts` 8) are verified by the gate the
+project actually uses.
+
+#### ⚠️ AND A THIRD WRONG-COMMAND ERROR, WHICH IS THE PATTERN WORTH RECORDING
+
+Run at the repo root, `node --test` exits 1 with a wall of
+`ERR_UNSUPPORTED_ESM_URL_SCHEME … protocol 'bun:'` — it walks into `*.test.ts` files that import
+`bun:test`, which Node's ESM loader cannot resolve. **`ci.yml` scopes it to
+`working-directory: packages/node` and runs it only after `bunx nx build @lenke/node`** — and
+`@lenke/node` is one of the three projects EXCLUDED from the `nx run-many` test target, which is
+precisely why it has a step of its own. Run as CI runs it: **EXIT 0.**
+
+**Three command errors in three ticks, all mine, all producing a red that was not there:** a root
+`bun test` (wrong runner for `react`/`sync`), a pipe into `tail` (swallowed the status), and a root
+`node --test` (wrong directory and missing build). The shape is identical every time — **I inferred
+the project's gate instead of reading `ci.yml` first.** Reading it took one command and settled all
+three.
+
+`local-gates-vs-ci` gets the concrete list it was missing: **the gate is `bun run check`, then
+`nx run-many -t test`, then the two `cargo test` crates, then `backend-engine.test.ts`, then
+`node --test` inside `packages/node` after its build** — not any single root-level command.
+
+#### Gates
+
+`bun run check` 0 read through `${pipestatus[1]}`. No source changed — this item is the entry and the
+verification it records.
