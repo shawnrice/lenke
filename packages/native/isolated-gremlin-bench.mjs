@@ -140,6 +140,15 @@ const SHAPES = {
   grouped: () => traversal(V(), groupCount({ by: 'k' })),
   hopbare: () => traversal(V(), out('E')),
   hoporder: () => traversal(V(), out('E'), values('k'), order()),
+  // A STRING sort, which this harness did not have (item 1713). `hoporder` sorts `k`, a NUMBER, so
+  // nothing here reached the string comparator -- the same corpus gap `gremlin-fuzz` had, and the
+  // reason item 1712's correctness fix (code-point ordering, which ADDS a surrogate regex and a
+  // code-point path to every string comparison) shipped with no perf row that could see it.
+  hoporderstr: () => traversal(V(), out('E'), values('s'), order()),
+  // The `order().by(key)` shape, which reaches `sortByBys` rather than `fusedProjectedOrder` --
+  // two DIFFERENT sort sites, and item 1713's first attempt wired only the latter and changed
+  // nothing. Verify the site with a counter, not by reading the code.
+  hoporderbystr: () => traversal(V(), out('E'), order().by('s')),
   hopdedupe: () => traversal(V(), out('E'), dedupe(), count()),
   // THE MULTI-LABEL EDGE-STEP PAIR (item 1378). `iterLabeled` in `graph-queries.ts` builds a
   // `seen` Set and pays has+add per edge once more than one label is named — the same shape the

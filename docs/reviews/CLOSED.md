@@ -49861,7 +49861,7 @@ disproved.
 core **383/0** (13 new), gql 3570/0, gremlin 1157/0, serialization 144/0, `bun run fuzz` 20/0,
 `bun run check` 0 (read unpiped). Both drivers restored their arm in a `finally` and verified it.
 
-### Item 1394 — the windowed GREMLIN screen finds **no unpriced frame over 2%** in four shapes, and prices the **three candidates item 879 left open**: `evalBy` **0.1%** (refuted), the comparator **~4.3%**, the stream materialization **~5%**. `hoporder` is **36% far-vertex locality**, which item 1392 closed. ⚠️ ~~Nothing is open on this row~~ — **item 1630 took 2.33x out of it.** Every number here still stands; what it could not price is a composite ROUTE, since a share prices one FRAME
+### Item 1394 — the windowed GREMLIN screen finds **no unpriced frame over 2%** in four shapes, and prices the **three candidates item 879 left open**: `evalBy` **0.1%** (refuted), the comparator ~~**~4.3%**~~ **~4.3% ON A NUMERIC KEY ONLY — item 1713 measured the STRING comparator at 1.55x-1.68x of the row and took 1.50x back**, the stream materialization **~5%**. `hoporder` is **36% far-vertex locality**, which item 1392 closed. ⚠️ ~~Nothing is open on this row~~ — **item 1630 took 2.33x out of it.** Every number here still stands; what it could not price is a composite ROUTE, since a share prices one FRAME
 
 Items 1391 and 1392 gave both isolated benches profile windowing. This is the first windowed screen
 over the Gremlin shapes that are not yields: `filterchain`, `grouped`, `hopdedupe`, `hoporder`.
@@ -76760,3 +76760,80 @@ found all four at once.
 `bun run check` 0 via `${pipestatus[1]}` (after `bun run fmt`, which the gate demanded twice).
 core 453, gql 4424, gremlin **2071**, serialization 144, native 1081, 0 fail each. All seven
 byte-identity fuzzers 20 pass 0 fail, and `fuzz gremlin` green 3/3 after the corpus revert.
+
+### Item 1713 — **BOTH OF GREMLIN'S SORT SITES SPECIALIZED, AND IT IS WHAT PAYS FOR ITEM 1712'S CORRECTNESS FIX.** `values('s').order()` 637.5-725.3 -> 431.6 ms (**1.48x-1.68x**) and `order().by('s')` 1255.5-1434.3 -> ~1050 (**1.18x-1.37x**). ⚠️ **THE FIRST WIRING CHANGED NOTHING AT ALL — I attached it to `sortByBys` and the row goes through `fusedProjectedOrder`; a counter on all six sort sites showed the admit/decline counter never firing once.** ⚠️ **And item 1712 shipped a 1.55x-1.68x REGRESSION that no row in this harness could see**
+
+**WHAT 1712 COST, measured only because I went looking.** Making Gremlin order strings by code point
+was required — a plain `<` disagreed with the engine — but it adds a `compareCodePoints` call and a
+surrogate regex over BOTH strings to a comparator run ~20M times per 1,000,000-row sort. It shipped
+with no perf number, and the reason is the same blind spot that hid the bug: `isolated-gremlin-bench`'s
+only sort row was `hoporder`, which sorts `k`, a **NUMBER**. Nothing in the harness reached the string
+comparator. With `hoporderstr` added:
+
+```text
+    out('E').values('s').order()      PRE (cmpOrd)   POST (code point)   cost
+                                       442.3/443.3     686.6/746.2      1.55x / 1.68x
+    the same over a NUMBER key         403.3/338.6     349.6/343.6      0.87x / 1.02x
+    a bare hop, NO sort                197.1/228.8     238.0/214.0      1.21x / 0.94x
+```
+
+So **correctness cost 55-68% on that row**, well outside the controls' straddle. The fuzzer gap and
+the bench gap were one blind spot wearing two hats.
+
+**THE FIX, and the mistake in the middle of it.** The specialization scans the key column once and,
+when every key is a non-null surrogate-free string, sorts with the reduced comparator — the same
+branch-elimination-with-a-proof as item 1711's GQL twin (for two non-null strings `compareTotal`
+takes none of its null arms, both `typeRank`s are 1, and `cmpSameType`'s string arm is
+`compareCodePoints`, whose surrogate-free fast path IS `a < b ? -1 : a > b ? 1 : 0`).
+
+⚠️ **I WIRED IT TO THE WRONG SITE FIRST AND THE TIMING COULD NOT TELL ME.** `order()` has TWO sort
+sites: `fusedProjectedOrder` sorts a FLAT array of values (the `values(k).order()` fusion, item 1586)
+and `sortByBys` sorts `{item, key}` WRAPPERS (the `order().by(...)` shapes). I wired `sortByBys`,
+rebuilt, and the row read 680.9 against 686.6 — unchanged. **An unreached specialization and an
+ineffective one are the same reading.** A counter on all six `.sort(` sites in `aggregation.ts` plus
+the admit/decline decision settled it in one run:
+
+```text
+    values('s').order()   ->  {"FUSED":1,"FLAT-ADMITTED":1}
+    order().by('s')       ->  {"KEYS-ADMITTED":1,"SORTBYBYS1":1}
+```
+
+So two arms, each with a row that provably reaches it, and `hoporderbystr` added because the harness
+had no `order().by()` row at all. Confirming A/B, four rows, bundle-hashed arms, alternated rounds:
+
+```text
+    row                                      PRE            POST         ratio
+    hoporderstr    fused, string  ADMITTED   637.5/725.3    431.6/432.8  1.48x / 1.68x
+    hoporderbystr  byBys, string  ADMITTED  1434.3/1255.5  1044.9/1062.5 1.37x / 1.18x
+    hoporder       fused, number  DECLINED   334.1/345.9    336.3/386.0  0.99x / 0.90x
+    hopyieldsingle no sort        (gauge)    188.2/220.0    196.0/205.1  0.96x / 1.07x
+```
+
+**THE DECLINED ROW IS THE ONE THAT MATTERED**, because every sorted numeric column now pays a scan
+that can never admit. Its 0.90x is a median outlier — **p25 341.8 against PRE's 345.6, faster in both
+rounds** — and the reason it costs nothing is the early exit: on a numeric column the scan fails at
+element 0, so it is O(1) there, not O(n).
+
+**Mutation: 8 of 8 caught, and the 8th was a real test gap.** M6 flips the FLAT descending branch's
+`x > y` arm to `1`, giving a comparator that returns 1 whichever way round its arguments arrive — no
+ordering at all — and it **SURVIVED all 2105 tests**, because my test asserted only
+`desc('a','b') === 1`, which the mutant satisfies. ⚠️ **Checking one argument order checks half a
+comparator**, and there was no end-to-end descending case at either site either. Both directions are
+now asserted for both arms plus two engine-level descending cases; the mutant is caught at both sites
+(1 and 8 failures).
+
+**Three closed entries and two harnesses were narrow in the SAME direction, and that is the finding
+worth keeping.** Item 423 refuted this chain at 12% on a single-pass aggregate (one comparison per
+row; a sort does ~20). Item 921 declined the guard at ~1.07x against a `sortedpage` profile (`LIMIT
+10`, the heap path, which never calls `rows.sort`). Item 1394 priced the comparator at ~4.3% off
+`hoporder` (a numeric key). The GQL differential fuzzer builds astral strings; the Gremlin one does
+not. Neither bench had a string sort row. **Every one of those measurements was right about what it
+measured** — none of the instruments carried a string column under a full sort, which is how one
+blind spot survived ~790 items across two engines, two fuzzers, two benches and three closed entries
+at once. All three headings are corrected, and `aggregation.ts`'s own "Nothing is open on this row"
+is struck in place.
+
+#### Gates
+
+`bun run check` 0 via `${pipestatus[1]}`. core 453, gql 4424, gremlin **2109**, serialization 144,
+native 1081, 0 fail each. All seven byte-identity fuzzers 20 pass 0 fail.

@@ -12,6 +12,12 @@ import {
   startTraverser,
   type Traverser,
 } from './runtime.js';
+import {
+  allPlainStringKeys,
+  allPlainStrings,
+  reducedKeyComparator,
+  reducedValueComparator,
+} from './sort-key-specialize.js';
 
 /** Coerce a numeric-aggregate element, throwing on a non-number (TinkerPop's
  * `sum`/`mean` require `Number`s and raise on anything else, rather than
@@ -472,7 +478,7 @@ export const fusedProjectedOrder = (
   values: Iterable<unknown> & { readonly drain?: () => unknown[] },
   opts: { readonly desc: boolean },
 ): Iterable<unknown> & { drain: () => unknown[] } => {
-  const cmp = opts.desc
+  const general = opts.desc
     ? (a: unknown, b: unknown): number => -compareTotal(a, b)
     : (a: unknown, b: unknown): number => compareTotal(a, b);
 
@@ -496,7 +502,14 @@ export const fusedProjectedOrder = (
       }
     }
 
-    acc.sort(cmp);
+    // A COLUMN OF ONE TYPE WITH NO NULLS SORTS WITH THE DEAD BRANCHES GONE (item 1713), which is
+    // what makes item 1712's correct code-point ordering affordable — that fix cost 1.55x-1.68x
+    // here. The scan runs once; `compareTotal` still answers every column it declines.
+    //
+    // ⚠️ THIS IS THE SITE THE `values(k).order()` ROW ACTUALLY REACHES. The first attempt wired
+    // only `sortByBys` and changed nothing at all: a counter on all six sort sites showed the row
+    // entering HERE and the admit/decline counter never firing.
+    acc.sort(allPlainStrings(acc) ? reducedValueComparator(opts.desc) : general);
 
     return acc;
   };
@@ -752,14 +765,24 @@ const sortByBys = <T>(
   // unpriced this long:
   //
   //   `evalBy` plus `project`   0.1%  REFUTED — listed first, and it is not a cost at all
-  //   the comparator          ~4.3%  `compareTotal` is inlined into the `sortByBys` closure
+  //   the comparator          ~4.3%  ON A NUMERIC KEY ONLY — see below; the STRING comparator was
+  //                                  never profiled and is worth far more
   //   `[...stream]`           ~5.0%  startTraverser 1.4 + unwrap 1.9 + toArray 1.8
   //
   // A share overstates a realizable change by ~2.5x here, so the latter two are ~2% each — under
   // what this row resolves even at 106 ms a rep. And the row's dominant term is not the sort:
   // **36% of what `values(k).order()` adds over a bare hop is FAR-VERTEX LOCALITY** (115.9 ms at
   // fan-in 1 against 73.5 at fan-in 100, with the bare-hop control flat at 75.9/77.6), which item
-  // 1392 closed as having no per-row lever. Nothing is open on this row.
+  // 1392 closed as having no per-row lever. ~~Nothing is open on this row.~~
+  //
+  // ⚠️ THE ~4.3% ABOVE IS THE NUMERIC COMPARATOR, AND THE STRING ONE IS A DIFFERENT QUESTION
+  // (item 1713). `hoporder` — the row every figure above was measured on — sorts `k`, a NUMBER,
+  // where UTF-16 order already equals code-point order and `compareTotal` falls through its cheapest
+  // path. A STRING key pays the whole dispatch chain plus `compareCodePoints` plus a surrogate regex
+  // over both strings, and at 1,000,000 rows that is not 4.3% of anything: `values('s').order()`
+  // measured 637.5-725.3 ms against 431.6 specialized (**1.48x-1.68x**), and `order().by('s')`
+  // 1255.5-1434.3 against ~1050 (**1.18x-1.37x**). Neither row existed in this harness until 1713
+  // added them, which is why a correct closure of the NUMERIC row read as a closure of the row.
   if (bys.length === 1) {
     const [by] = bys;
     const descending = (by.direction ?? (desc ? 'desc' : 'asc')) === 'desc';
@@ -776,9 +799,17 @@ const sortByBys = <T>(
     }
 
     const live1 = keyed1.filter((k) => k.key !== NO_VALUE);
-    const cmp1 = descending
-      ? (a: { key: unknown }, b: { key: unknown }): number => -compareTotal(a.key, b.key)
-      : (a: { key: unknown }, b: { key: unknown }): number => compareTotal(a.key, b.key);
+    // A KEY COLUMN OF ONE TYPE WITH NO NULLS SORTS WITH THE DEAD BRANCHES GONE (item 1713). This is
+    // what makes item 1712's correct code-point ordering affordable: that fix cost 1.55x-1.68x on a
+    // 1,000,000-row string sort, and the scan replaces ~20M dispatch chains with ~1M tests.
+    // `compareTotal` is still the comparator for every column the scan declines, and the reduction
+    // is exact rather than a second ordering — see the module's note.
+    const reduced1 = allPlainStringKeys(live1) ? reducedKeyComparator(descending) : undefined;
+    const cmp1 =
+      reduced1 ??
+      (descending
+        ? (a: { key: unknown }, b: { key: unknown }): number => -compareTotal(a.key, b.key)
+        : (a: { key: unknown }, b: { key: unknown }): number => compareTotal(a.key, b.key));
 
     if (cap !== undefined && cap < live1.length) {
       return boundedTop(live1, cap, cmp1).map((k) => k.item);
