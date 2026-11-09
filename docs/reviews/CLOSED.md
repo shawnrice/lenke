@@ -78741,3 +78741,64 @@ presence test.**
 **1.35x** (1743, `readDirect` form, after 1742 measured the two-loop form costing 7.6% there), and
 this one **flat**. Two shipped, one declined, one superseded spelling — and the surface is now
 exhausted.
+
+### Item 1745 — ✅ **SHIPPED, and it refutes a "no cost" comment at the site: `extend`'s conditional SPREAD cost 1.14x on `fold`, 1.08x on `coalesce` and 1.7% on a 3-hop count, every range DISJOINT.** One line, and `extend` runs once per traverser per step, so it reaches the whole Gremlin engine
+
+Windowed-profiled four Gremlin shapes. `extend` kept appearing across all of them — 12.6% of
+`folded`, 9.8% of `coalesced`, 6.7% of `projected`, 4.9% of `valuemapped` — which made it
+cross-cutting rather than one step's problem. Its body ended with a conditional spread:
+
+```javascript
+export const extend = (prev, value) => ({
+  value,
+  path: prev.path === NO_PATH ? NO_PATH : [...prev.path, value],
+  loopCount: prev.loopCount,
+  tags: prev.tags,
+  // Propagate the sack … so the common no-sack path carries `undefined` (no cost).
+  ...(prev.sack === undefined ? {} : { sack: prev.sack }),
+});
+```
+
+⚠️ **"(no cost)" is a claim about cost, and it was wrong.** Two things it misses: the no-sack path
+allocates an **empty object on every extend**, and a **spread inside an object literal denies V8 a
+fixed hidden class for the whole literal** — so every field of every traverser is built on the slow
+path, not just the sack.
+
+#### Equivalence established by reading every consumer, before measuring
+
+`sack` has exactly one reader: `sack.ts`'s `const current = t.sack === undefined ? cfg.value : t.sack`,
+which tests the **value**. Nothing in the repo asks `'sack' in t`, and nothing enumerates a
+traverser's keys. So `sack: prev.sack` — an explicit `undefined` instead of an absent key — is
+indistinguishable here. **No owner decision needed**, unlike items 1733 and 1736.
+
+#### Measured, 300 reps, three alternated rounds, one arm per build
+
+```text
+  shape        base                      fixed                     verdict
+  folded        283.3  285.1  276.5       255.8  248.8  247.0       1.14x, DISJOINT
+  coalesced    3244.8 3244.9 3224.5      2996.5 3186.0 2938.2       1.08x, DISJOINT
+  hopcount3     477.9  481.6  478.4       473.5  473.7  468.6       1.7%,  DISJOINT
+  control (V().count(), no `extend`)      7.2 6.8 7.0 -> 4.3 7.1 7.3   flat
+```
+
+**Every `extend`-using shape improved and every range is disjoint** — including `hopcount3`'s 1.7%,
+which is small but separated in all three rounds, exactly what a per-traverser constant looks like on
+a shape dominated by other work.
+
+⚠️ **THE CONTROL IS WEAK AND SAYS SO.** `V().count()` genuinely never calls `extend` (the source uses
+`startTraverser`), which makes it the right control in principle — but it runs in ~7 ms, where this
+harness cannot resolve anything. It establishes only "no gross regression". The real evidence is the
+three disjoint improvements and the fact that the change is one field in one function.
+
+#### Gates
+
+Gremlin suite **2109 pass, 0 fail**. **All seven byte-identity fuzzers green** (20 pass, 0 fail) —
+run because `extend` builds every traverser in the engine. `bun run check` 0 read through
+`${pipestatus[1]}`.
+
+**NEW PERMANENT INSTRUMENT — `packages/native/extend-shape-driver.sh`.**
+
+**Method note worth keeping:** this came from noticing a frame that was _never the top one_ in any
+profile (4.9-12.6%) but appeared in _every_ profile. A ranked list invites working down from the
+largest share; the cross-cutting frame is the one that pays back on shapes the probe does not even
+contain.

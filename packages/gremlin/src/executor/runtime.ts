@@ -117,9 +117,23 @@ export const extend = <T>(prev: Traverser<unknown>, value: T): Traverser<T> => (
   path: prev.path === NO_PATH ? NO_PATH : [...prev.path, value],
   loopCount: prev.loopCount,
   tags: prev.tags,
-  // Propagate the sack (split-on-branch = clone). Only defined once a sack write
-  // has run, so the common no-sack path carries `undefined` (no cost).
-  ...(prev.sack === undefined ? {} : { sack: prev.sack }),
+  // Propagate the sack (split-on-branch = clone).
+  //
+  // ⚠️ WRITTEN AS A PLAIN FIELD, NOT A CONDITIONAL SPREAD, and the previous form's comment claimed
+  // the no-sack path cost nothing (item 1745 measured that claim and it was false). The spread
+  //     ...(prev.sack === undefined ? {} : { sack: prev.sack })
+  // allocated an empty object on EVERY no-sack extend and, worse, a spread inside an object literal
+  // denies V8 a fixed hidden class for the whole literal — and `extend` runs once per traverser per
+  // step, so that reaches the entire Gremlin engine. 300 reps, three alternated rounds, ms:
+  //
+  //     folded      283.3 285.1 276.5  ->  255.8 248.8 247.0   1.14x, ranges DISJOINT
+  //     coalesced  3244.8 3244.9 3224.5 -> 2996.5 3186.0 2938.2 1.08x, ranges DISJOINT
+  //     hopcount3   477.9 481.6 478.4  ->  473.5 473.7 468.6    1.7%, ranges DISJOINT
+  //
+  // EXACTLY EQUIVALENT: the only consumer is `sack.ts`'s `t.sack === undefined ? cfg.value : t.sack`,
+  // which tests the VALUE; nothing in the repo asks `'sack' in t` or enumerates a traverser's keys,
+  // so an explicit `undefined` is indistinguishable from an absent key here.
+  sack: prev.sack,
 });
 
 export const incLoops = <T>(t: Traverser<T>): Traverser<T> => ({
