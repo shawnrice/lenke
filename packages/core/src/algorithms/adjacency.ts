@@ -97,6 +97,37 @@ export const countIncidentEdgesFlat = (
  * Bucket order and within-bucket order match `incidentEdges` exactly, so the adjacency this produces
  * is identical to the one built through the generator — which byte-identity with the native engine
  * requires, since a permuted neighbour list changes a tie-break.
+ *
+ * ⚠️ REJECTED, WITH NUMBERS — `index.get(edge.toId)` INSTEAD OF `index.get(edge[end].id)`
+ * (item 1722). This profiled at 23.13% of `labelPropagation` and ~172 ns per index write, where a
+ * typed-array store is ~1 ns, and `edge.to` / `edge.from` are getters that call
+ * `graph.getVertexById(...)` on first touch — item 194 priced a string-keyed `Map.get` at
+ * ~190 ns. `edge.toId` / `fromId` are a bare private-field read, `Edge` documents them as "the
+ * endpoint IDS, without materializing the vertices", and `neighborAggregate`'s build already uses
+ * them. Answer-identical by construction: `to` is resolved BY that id.
+ *
+ * It measures NOTHING. One algorithm per process, two rounds, 40,000 vertices:
+ *
+ * ```text
+ *     algorithm              PRE           POST          ratio
+ *     labelPropagation    71.78/69.40   68.27/68.87   1.051x / 1.008x   <- the only row it reaches
+ *     connectedComponents  8.46/8.47     7.15/8.16    1.183x / 1.038x   <- CONTROL
+ *     degree              14.47/12.88   13.39/12.26   1.081x / 1.051x   <- CONTROL
+ * ```
+ *
+ * ⚠️ THE TARGET MOVED LESS THAN BOTH CONTROLS. Only `label-propagation.ts` uses this function,
+ * so `connectedComponents` and `degree` cannot reach the change, and they moved MORE — drift.
+ *
+ * AND THE MECHANISM IS NOT WHAT THE ARITHMETIC SUGGESTED. `addEdge` is normally handed VERTEX
+ * objects, so `#fromV`/`#toV` are populated at construction and no lookup ever runs in this fill.
+ * On a DESERIALIZED graph the first touch is lazy, but it costs ~10 ns an edge, not ~190: a fresh
+ * pass over `edge.to.id` reads 4.3 ms against 2.7 warm over 160,000 edges. That caps the whole
+ * change at ~3 ms of a 68 ms run (~4%), under this instrument's drift.
+ *
+ * So the ~172 ns a write is the Set iteration and the generator machinery — the CALLER's loop
+ * credited to a small callee, which is the same trap `bucketSize` has now mis-nominated itself with
+ * three times (items 1416/1637/1719). A per-write cost that implies a hash lookup where none can be
+ * happening is the tell.
  */
 export const writeIncidentEnds = (
   byLabel: Map<string, Set<Edge>> | undefined,

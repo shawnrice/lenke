@@ -77178,3 +77178,58 @@ where-not-to-look.
 
 `bun run check` 0 read through `${pipestatus[1]}`. No source or probe changed — the only edit is this
 entry.
+
+### Item 1722 — **REFUTED: reading the endpoint ID instead of materializing the endpoint VERTEX in the algorithms' CSR fill. The target moved 1.051x/1.008x and BOTH CONTROLS moved more (1.183x/1.038x and 1.081x/1.051x).** ⚠️ **And the ~172 ns per index write that nominated it is the CALLER's loop again, not a hash lookup — the fourth instance of that trap this session**
+
+`writeIncidentEnds` profiles at **23.13%** of `labelPropagation` (the highest per-vertex procedure at
+2138 ns/V after item 1468), and the arithmetic looked decisive: ~110 ms a call for ~640,000 index
+writes is **~172 ns a write** where a typed-array store is ~1 ns. It used
+`index.get(edge[end].id)`, and `edge.to`/`edge.from` are getters that call `graph.getVertexById(...)`
+on first touch — item 194 priced a string-keyed `Map.get` at ~190 ns, which matches almost exactly.
+`edge.toId`/`fromId` are a bare private-field read, `Edge` documents them as "the endpoint IDS,
+without materializing the vertices", and `neighborAggregate`'s own build already uses them. The
+change is answer-identical by construction (`to` is resolved BY that id) and strictly more robust
+(it survives a detached edge where `edge.to` is undefined).
+
+**It measures nothing.** One algorithm per process, two rounds, 40,000 vertices:
+
+```text
+    algorithm              PRE           POST          ratio
+    labelPropagation    71.78/69.40   68.27/68.87   1.051x / 1.008x   <- the only row it reaches
+    connectedComponents  8.46/8.47     7.15/8.16    1.183x / 1.038x   <- CONTROL
+    degree              14.47/12.88   13.39/12.26   1.081x / 1.051x   <- CONTROL
+```
+
+⚠️ **THE TARGET MOVED LESS THAN BOTH CONTROLS.** Only `label-propagation.ts` uses this function
+(`shortest-path.ts` uses `incidentEdges`, nothing else touches either), so the other two rows cannot
+reach the change — and they moved more. That is item 762's rule read in the honest direction.
+
+**THE MECHANISM IS NOT WHAT THE ARITHMETIC SUGGESTED, and this is the part worth keeping.** `addEdge`
+is normally handed VERTEX objects, so `#fromV`/`#toV` are populated at construction and **no lookup
+ever runs in this fill**. On a DESERIALIZED graph the first touch is genuinely lazy, but it costs
+**~10 ns an edge, not ~190**: a fresh pass over `edge.to.id` reads 4.3 ms against 2.7 ms warm over
+160,000 edges. That caps the entire change at ~3 ms of a 68 ms run (~4%) — under the drift above.
+
+So the ~172 ns a write is the Set iteration plus the generator machinery: **the caller's loop credited
+to a small hot callee.** That is the fourth instance this session, after `bucketSize` mis-nominated
+itself on `chain3`, `count3` and the two-hop subquery (items 1416/1637/1719). ⚠️ **The tell is now
+nameable: a per-operation cost that implies a hash lookup where none can be happening.** 172 ns for
+an `Int32Array` store is not a slow store, and the right next question is what the LOOP around it is
+doing — not which cheap callee to replace.
+
+**Also established and not taken: a SHARED adjacency cache across algorithms is blocked by design.**
+No algorithm caches its adjacency (zero `topologyVersion` references under `algorithms/`, while nine
+files build their own), and `topologyVersion` would be a sound key — `count-shortcut.ts` records that
+it covers edge-LABEL writes where `version`/`epoch` advance on a deferred step and
+`vertexCount`/`edgeCount` miss a delete-plus-add. But `shortest-path.ts` states outright that "the
+two procedures genuinely differ, so the orders cannot be shared": labelPropagation wants out-targets
+then in-sources, `neighborAggregate` ascending eidx, `shortestPath` out-then-in unmerged, and all
+three are byte-identity-load-bearing. ⚠️ **What remains is a PER-ALGORITHM cache of repeated
+identical calls — which `REPS=5 DROP=1` would show in full and a single cold call would not see at
+all, so it optimizes the bench and not the user.** Declined on that, not on feasibility.
+
+#### Gates
+
+`bun run check` 0 read through `${pipestatus[1]}`. Both source files reverted and verified (`idKey`
+absent); core 453 pass, 0 fail. The only edit kept is the rejection note on `writeIncidentEnds` and
+this entry.
