@@ -78407,3 +78407,59 @@ the cardinality axis.
 
 `bun run check` 0 read through `${pipestatus[1]}`. Pristine `shortcuts.ts` restored and rebuilt by
 the driver, tree verified clean; the only source change is the probe's shape list.
+
+### Item 1740 — ❌ **REFUTED: a one-entry memo of the last element's property bag is FLAT on the five-column shape it targets and 3-10% WORSE on both one-read controls.** ⚠️ **But it is a CONFOUNDED ceiling, not a clean one, and the entry says so: a safe local hoist inside the projection's row scope would not pay the memo's own cost, and that remains unmeasured.** ⚠️⚠️ **And `wideproj` at 300 runs spreads 18% — it cannot resolve the effect at all; at 1500 it is 1.3%**
+
+`propOf(bound, key)` is `bound?.properties?.[key] ?? null`, so it calls the `properties` GETTER on
+every read. A multi-column `RETURN` calls it once per column **on the same element**: `wideproj`
+(`RETURN n.k AS a, n.n AS b, n.s AS c, n.k AS d, n.n AS e`) makes **five getter calls per row where
+one would do**, and item 1735's windowed profile gave `propOf` **16.5%** plus `get properties`
+**7.6%** there. Four redundant calls out of five looked like ~19%.
+
+#### Measured first, 300 runs per reading, three alternated rounds, one arm per build
+
+```text
+  shape                        base (r1/r2/r3)        memo (r1/r2/r3)
+  wideproj  (5 reads/row)      163.5 171.9 144.9      158.8 159.5 155.8
+  hoprows   (1 read, CONTROL)  253.7 252.8 261.3      269.9 277.4 287.9
+  distincthi(1 read, CONTROL)  317.3 316.0 322.8      325.1 326.5 340.0
+```
+
+- **The target is FLAT and base's range ENCLOSES the arm's** (144.9-171.9 against 155.8-159.5).
+- **Both one-read controls got WORSE — 7-10% and 3-5%.** They cannot gain from removing redundancy,
+  only lose the memo's extra branch, and they did. A control moving the wrong way is the clearest
+  verdict this harness produces.
+- **Mechanism: the memo's identity test plus its module-scope variable traffic costs about what it
+  saves.** Module-scope `let` access is dearer than a local, and it is written on every miss.
+
+The arm was also **knowingly unsafe and never a candidate** — a write REPLACES an element's bag
+without changing the element object, so `MATCH (n) SET n.x = 1 RETURN n.x` would read a stale bag.
+It existed only to price the redundancy before designing anything.
+
+#### ⚠️ WHAT THIS DOES NOT SETTLE, stated plainly rather than filed as "refuted"
+
+**This is a confounded ceiling.** A correct version would hoist the bag into the **projection's own
+row scope as a local**, where no write can intervene and there is no module-variable traffic — so it
+would not pay the cost that killed this arm. Whether the redundancy is worth that plumbing is
+**still open**, and this item cannot close it. Writing it up as a flat refutation would have retired
+a live question on evidence that does not reach it — the failure mode `check-the-blocker-still-holds`
+describes.
+
+What the item DOES establish: the profile's 24% across `propOf` and `get properties` is **not 24% of
+recoverable cost**, because removing four of five calls — even with the memo's overhead subtracted
+generously — does not show above this shape's noise.
+
+#### ⚠️ AND THE INSTRUMENT FINDING THAT MAKES A RETRY POSSIBLE
+
+`wideproj` at **300 runs spreads 18%** (144.9 to 171.9), so it cannot resolve a 5% effect; the arm
+and the base overlap because the base overlaps _itself_. At **1500 runs** it reads
+`652.8 / 615.3 / 617.5 / 622.7` — **1.3% once the first (warm-up) run is dropped**. Anyone retrying
+the hoist must use n ≥ 1500 and drop the first run, or they will measure exactly what I did: nothing,
+with no way to tell a null result from an unresolvable one.
+
+**Recorded at `propOf`** with the numbers, the unsettled part, and the rep-count requirement.
+
+#### Gates
+
+`bun run check` 0 read through `${pipestatus[1]}`. Pristine `values.ts` restored and rebuilt by the
+driver, tree verified clean; the only source change is the comment at `propOf`.

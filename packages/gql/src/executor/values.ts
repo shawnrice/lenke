@@ -255,5 +255,19 @@ export const cmpKey = (a: string, b: string): number => {
 // ISO GQL: accessing a property that is absent — or a property of a NULL element
 // (e.g. an unmatched OPTIONAL variable) — yields NULL, not `undefined`. Coalesce
 // here so the whole pipeline (output rows, IS NULL, arithmetic) sees ISO's NULL.
+// ❌ REJECTED, item 1740: a one-entry MEMO of the last bound object's bag, to spare a multi-column
+// RETURN its repeated `properties` getter calls. `wideproj` (five columns off one element) makes five
+// getter calls per row where one would do, and the profile gave `propOf` 16.5% + `get properties`
+// 7.6% there, so four redundant calls looked like ~19%. Measured (300 runs, three alternated rounds,
+// ms): wideproj 163/172/145 -> 159/160/156, FLAT with base's range enclosing the arm's; and both
+// ONE-READ controls got WORSE -- hoprows 254/253/261 -> 270/277/288 and distincthi 317/316/323 ->
+// 325/327/340. The memo's own identity test plus its module-scope variable traffic costs about what
+// it saves, which is what a control moving 3-10% the wrong way means.
+//
+// ⚠️ WHAT THIS DOES **NOT** SETTLE. The arm is a CONFOUNDED ceiling, not a clean one: a safe version
+// would hoist the bag into the projection's own row scope as a LOCAL, where no write can intervene
+// and there is no module-variable traffic to pay. That remains unmeasured. ⚠️ And whoever measures
+// it must not use `wideproj` at 300 runs: it spreads 18% there (144.9-171.9) and cannot resolve a 5%
+// effect. At 1500 runs it reads 652.8/615.3/617.5/622.7 -- 1.3% once the warm-up run is dropped.
 export const propOf = (bound: unknown, key: string): unknown =>
   (bound as { properties?: Record<string, unknown> } | undefined)?.properties?.[key] ?? null;
