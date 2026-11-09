@@ -80417,3 +80417,84 @@ the next person does not re-derive the search.**
 `bun run check` 0 read through `${pipestatus[1]}`. No engine source changed;
 `packages/native/chase-depth-micro.mjs` is kept. Item 1770's heading and body amended in this same
 commit, per the rule that a corrected entry must correct the HEADING a reader scans.
+
+### Item 1772 — **item 1770's 60 ns/row DECOMPOSED on real vertices: the `properties` getter is +13.1 ns and the KEYED LOAD +27.0 over a plain field read.** ⚠️ **DICTIONARY MODE REFUTED by V8 itself — an engine bag has fast properties AND the SAME HIDDEN CLASS as a synthetic one.** ⚠️ **And I RETRACT an intermediate reading of my own from this item: "the keyed load is free" was me over-reading a bimodal shape**
+
+Item 1771 exhausted the micro route (depth saturates; a shared accessor is 6.6 ns), leaving the
+residual to an in-engine experiment. `pick` was set to three arms differing in one thing each, with
+identical row counts (`age` is always defined and the getter never returns `undefined`, so every arm
+pushes one value per row), dist-asserted by a marker count, five processes per arm:
+
+```text
+  arm                            min ms across 5 processes
+  real     getter + keyed load   80.1  84.1  80.1  80.9  81.2
+  getter   getter only           90.7  92.4  73.0  93.7  92.0
+  neither  neither               21.5  20.2  19.5  20.2  22.2
+```
+
+#### ⚠️ WHAT I FIRST READ OFF THAT TABLE WAS WRONG
+
+I read "getter-only costs as much as getter-plus-load, therefore the keyed load is free". **That is
+over-reading a bimodal shape.** Item 1769 measured this exact row at a 1.77x process spread, and the
+two arms' mins (73.0 against 80.1) and medians (92 against 81) point in OPPOSITE directions — which
+is the signature of two samples from the same distribution, not a separation. Five processes is
+enough to see the modes and not enough to rank two arms ~10% apart through them. **A shape with a
+known 1.77x mode lottery cannot adjudicate a 10% difference, however many processes it gets.**
+
+So the question went to an instrument without that problem: the accessor read directly on 200,000
+real `Vertex` objects from a real `Graph`, every box pre-warmed, in a fixed random permutation.
+
+```text
+  v.id            plain field            12.89 ns      ← reaching a random vertex at all
+  v.properties    getter only            26.03 ns      +13.14   the getter
+  v.properties[k] getter + keyed load    53.04 ns      +27.01   THE KEYED LOAD
+  v.labels        sibling accessor       63.42 ns               (a second nomination)
+```
+
+**The keyed load is the single largest term, at 27 ns** — and that is the real anomaly, because item
+1771 measured the identical load on a synthetic frozen bag at **1.5-3.5 ns**, 8-18x less. The getter
+itself, at +13.1 ns, is close to item 1771's 6.6 ns prediction and is NOT the story.
+
+#### ⚠️ Dictionary mode: refuted by V8 directly, not inferred
+
+A dictionary-mode (slow-properties) bag answers a keyed load with a hash probe instead of an IC hit,
+which is exactly the right size for an 8-18x gap, and `#commitNormalized` REPLACING `box.bag` on
+every write is a plausible route into it. `%HasFastProperties` settles it rather than arguing:
+
+```js
+// node --allow-natives-syntax, against @lenke/core
+const v = g.addVertex({ id: 'v0', labels: ['P'], properties: { age: 40, name: 'n' } });
+const u = g.addVertex({ id: 'v1', labels: ['P'], properties: { age: 41, name: 'm' } });
+const synth = Object.freeze({ age: 40, name: 'n' });
+v.setProperty('age', 50); // the path that replaces box.bag
+((((%HasFastProperties(v.properties) % // => true
+  HasFastProperties(u.properties)) % // => true
+  HasFastProperties(synth)) % // => true
+  HasFastProperties(v.properties)) % // after the write => true
+  HaveSameMap(v.properties, u.properties)) % // => true
+  HaveSameMap(u.properties, synth); // => true   ⚠️ SAME HIDDEN CLASS AS THE SYNTHETIC
+```
+
+**Every bag has fast properties, before and after a write, and an engine bag shares its hidden class
+with the synthetic bag that reads 8-18x faster.** So the bags are structurally identical to the fast
+ones: the gap is not slow-mode properties, not the freeze (item 1771), not key constancy (item 1771),
+not depth (item 1771) and not a stale box (item 1770). **The probe file is not kept** — `%natives`
+is not valid TypeScript and breaks `bun run check` — so the script above is the record, runnable as
+written.
+
+#### Where this leaves the 4.0x
+
+Seven mechanisms are now refuted with numbers. The decomposition is solid (12.89 / +13.14 / +27.01),
+the 27 ns is the target, and the only surviving candidate remains **working-set size / heap layout**,
+which three items have now failed to isolate with a micro — item 1770 saw 20k → 200k bags move
+1.45 → 3.5 ns, so the direction is right and the magnitude is not. **The next attempt should stop
+hunting the mechanism and A/B an alternative ACCESS PATH in the engine instead**, where the real heap
+is present by construction. And whatever it measures, it must not be adjudicated on
+`V().out(T).values(k)` alone at under ~1.8x, for the reason this item had to retract.
+
+#### Gates
+
+`bun run check` 0 read through `${pipestatus[1]}` — it caught the `%natives` syntax first, which is
+why the probe is embedded above rather than committed. `hop-values.ts` confirmed byte-restored from
+its pristine copy (`git diff` empty) with the real arm rebuilt into the dist. Kept:
+`packages/native/properties-getter-probe.mjs`.
