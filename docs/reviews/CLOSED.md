@@ -75999,7 +75999,7 @@ mismatched, and the `c` label or gate ignored). ONE survives by construction —
 the reason above. Two mutants aborted first on a sed delimiter collision (`||` inside `s|…|…|`) and
 were re-run with `@`.
 
-### Item 1700 — ⚠️ **A 1411x EQUIVALENT-SPELLING GAP, FOUND: a clause `WHERE b.age = 7 AND c.age > 60` costs 1411.1 ms where the same question spelled inline costs 1.0 — same count, 9,275.** The machinery to answer it already exists and only the CLAUSE READER refuses. Diagnosed and priced; the fix is its own item
+### Item 1700 — ⚠️ **A 1411x EQUIVALENT-SPELLING GAP, FOUND: a clause `WHERE b.age = 7 AND c.age > 60` costs 1411.1 ms where the same question spelled inline costs 1.0 — same count, 9,275.** The machinery to answer it already exists and only the CLAUSE READER refuses. ~~Diagnosed and priced; the fix is its own item~~ ⚠️ **FIXED AT ITEM 1701: 1411.1 -> 2.0 ms, and the two spellings now converge.**
 
 Item 1699 left this as "slow and unexplained" after a 200,000-vertex run did not finish in 600
 seconds. At 20,000 vertices / 100,000 edges, warm, median of 5:
@@ -76061,3 +76061,67 @@ regression by making a change in the same tick it was diagnosed.
 
 `bun run check` 0 read unpiped, run immediately before the commit — items 1693/1694 each shipped a
 lint-failing probe by gating before a later edit. One probe added; no engine behaviour changed.
+
+### Item 1701 — **THE 1411x SPELLING GAP, CLOSED: `WHERE b.k = 7 AND c.k > 60` goes 1411.1 -> 2.0 ms and now converges with its inline twin.** The clause reader was widened to bucket conjuncts per interior position, which is what the inline reader already did. ⚠️ **THREE MUTANTS SURVIVED THE WHOLE SUITE because every one made the reader NARROWER — the shape then declines, the general pipeline answers, and no count moves**
+
+Item 1700 diagnosed this: `interiorPredOf`'s `readsOnly(name)` required EVERY free variable of the
+clause to be one name, so a conjunction over both interior positions returned `null` and the
+three-segment path had no second route. The machinery to answer it was already there —
+`buildThreeHopCount` takes `{ b, c }` as two independent gate LISTS, which the inline spelling fills.
+
+The fix is the reader: split the clause with `flattenConjuncts`, require each conjunct to read
+exactly one interior variable, and bucket it. 20,000 vertices / 100,000 edges, warm, median of 5:
+
+```text
+   row                                     before      after
+   WHERE b.k = 7 AND c.k > 60             1411.1        2.0     706x
+   (b {k: 7}) + (c WHERE c.k > 60)            1.0        0.9     the twin it now matches
+   WHERE b.k = 7                              1.0        4.0     flat (see the variance note)
+   WHERE c.k > 60                             2.2        2.0     flat
+   WHERE a.k = 7 AND c.k > 60                 2.2        1.8     flat — still the sweep
+   WHERE b.k = 7 AND d.k > 60                 1.3        1.2     flat — still the sweep
+```
+
+An earlier run of the same build read the fixed row at **0.9**, so the honest range is **706x-1568x**.
+At these magnitudes the rows carry real run-to-run spread — `WHERE b.k = 7` alone read 1.0 and 4.0
+across two runs of identical code — so the residual clause-vs-inline difference (2.0 against 0.9) is
+inside that spread rather than a remaining gap.
+
+#### ⚠️ THREE MUTANTS SURVIVED, AND ALL THREE FAILED THE SAME WAY
+
+A mutation pass on the new reader caught five and lost three:
+
+```text
+   bucketing a `b` conjunct under `c`        SURVIVED
+   never filling the `c` bucket              SURVIVED
+   not splitting the clause at all           SURVIVED
+```
+
+Each makes the reader NARROWER, so the conjunct falls to the `return null`, the shape declines, and
+the general row pipeline returns the identical count. `interior-and-gates.test.ts`'s decline cases
+assert ANSWERS — which is right for them, since the route is not observable from a count — so they
+cannot see this. **A route choice is answer-equivalent when tightened**, which is
+`perf-gate-needs-its-own-test`'s rule and the reason `csrDegreeProductApplies` and
+`gate-conjunct-route.test.ts` exist in this shape.
+
+So `interiorPredOf` is now EXPORTED and its bucketing asserted directly: which bucket each conjunct
+lands in, that three conjuncts become three gates, that each carries its own `bindVar`, and that the
+five declining shapes return `null`. The inputs are PARSED rather than hand-built, so the test feeds
+the reader exactly what the engine feeds it. All three mutants are then CAUGHT.
+
+One mutant remains SURVIVED and is unreachable rather than untested: admitting an empty gate set
+(`b.length === 0 && c.length === 0`) cannot happen, because `flattenConjuncts` never returns an empty
+list.
+
+#### What still declines, and why it should
+
+A conjunct on the START or the END, one spanning two variables, a constant, and an `OR` all still
+decline. The product reaches `a` and `d` only as DEGREES, so a conjunct there has no once-per-element
+place to go — `chainGatesOf`'s rule (item 305) at the two positions this shape visits — and those
+shapes already have the sweep, which is why `a AND c` and `b AND d` were never slow.
+
+#### Gates
+
+`bun run check` 0 read unpiped immediately before the commit. Five suites isolated: core 453, gql
+4381, gremlin 2065, serialization 144, native 1081, 0 fail each. Seven byte-identity fuzzers 20 pass,
+0 fail. Eight mutants CAUGHT, one unreachable.

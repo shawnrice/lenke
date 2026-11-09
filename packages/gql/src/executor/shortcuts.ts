@@ -67,7 +67,7 @@ import type {
   Row,
 } from './core.js';
 import { compileExpr, compilePredicate, specializeNarrowPred, percentileFraction } from './core.js';
-import { freePredicateVars } from './expr-analysis.js';
+import { flattenConjuncts, freePredicateVars } from './expr-analysis.js';
 import { filteredChainCsrApplies, filteredChainCsrCount } from './filtered-chain-csr.js';
 import { plainNode, plainRel, side as hopSide, sideOfVertex } from './hop-sides.js';
 import { composeInlineGate, inlineHolds, inlineOf, inlinePredOf, predFor } from './inline-gate.js';
@@ -740,6 +740,9 @@ const relHopPred = (
  * against the inline 33.9 — 139x, item 125's bug class at the far end of the family. Native had
  * the same gap for the same reason and item 304 closed it the same way.
  */
+/** Interior gates for a three-segment count, bucketed by the position each conjunct reads. */
+export type InteriorGates = { b: readonly InlinePred[]; c: readonly InlinePred[] };
+
 export const chainGatesOf = (
   where: Expr,
   start: NodePattern,
@@ -3642,9 +3645,9 @@ export const patternCountOf = <T>(
   let midPred: InlinePred | undefined;
   // An END-only clause predicate, shaped for the REVERSED reading where the end node is the start.
   let endPred: HopPred | undefined;
-  // A THREE-segment clause predicate over one INTERIOR node, and which of the two it reads.
-  // `null` means the predicate names something this shape cannot gate, which declines.
-  let interiorPred: { pred: InlinePred; onB: boolean } | null | undefined;
+  // THREE-segment interior gates, bucketed by the position each conjunct reads.
+  // `null` means a conjunct names something this shape cannot gate, which declines.
+  let interiorPred: InteriorGates | null | undefined;
 
   // The interior gate an INLINE constraint gives (item 456). Every condition lives in the helper
   // so the call site is ONE branch: inline, this put `patternCountOf` at 38 against a limit of
@@ -4067,7 +4070,7 @@ const threeSegmentRoute = <T>(
   start: NodePattern,
   segments: readonly Segment[],
   rowOf: (n: number) => T,
-  interiorPred: { pred: InlinePred; onB: boolean } | null | undefined,
+  interiorPred: InteriorGates | null | undefined,
 ): CountOf<T> | null => {
   const product = threeSegmentCount(
     start,
@@ -4985,8 +4988,8 @@ const sweepChain = ({ graph, params, legs, startLabel, startGate, startSource }:
  */
 const inlineInteriorGate = (
   segments: readonly Segment[],
-  current: { pred: InlinePred; onB: boolean } | null | undefined,
-): { pred: InlinePred; onB: boolean } | null | undefined => {
+  current: InteriorGates | null | undefined,
+): InteriorGates | null | undefined => {
   // A clause `WHERE` has already supplied one, or this is not the three-segment shape: pass the
   // caller's value straight back, so the call site needs no condition of its own.
   if (current !== undefined || segments.length !== 3) {
@@ -5000,37 +5003,74 @@ const inlineInteriorGate = (
   }
 
   if (inB !== undefined && inlineOf(segments[1].node) === undefined) {
-    return { pred: inB, onB: true };
+    return { b: [inB], c: [] };
   }
 
   return undefined;
 };
 
-const interiorPredOf = (
-  where: Expr,
-  s1: Segment,
-  s2: Segment,
-): { pred: InlinePred; onB: boolean } | null => {
-  const free = freePredicateVars(where);
+/**
+ * The three-segment clause `WHERE`, SPLIT INTO CONJUNCTS and bucketed by the interior position each
+ * one reads. `null` declines.
+ *
+ * ⚠️ IT USED TO ADMIT ONLY ONE POSITION, AND THAT WAS A 1411x EQUIVALENT-SPELLING GAP (item 1700).
+ * The old test was `readsOnly(name)` — EVERY free variable of the whole clause had to be that one
+ * name — so `WHERE b.k = 7 AND c.k > 60` had a free set of `{b, c}`, failed both tests, returned
+ * `null`, and the query fell to the general row pipeline at **1411.1 ms against the inline
+ * spelling's 1.0**, for the same count of 9,275. Only the b+c pair collapsed: a START or END
+ * conjunct reaches the sweep (`a AND c` 2.2 ms, `b AND d` 1.3), and the three-segment path has no
+ * second route of its own.
+ *
+ * ⚠️ AND THE MACHINERY WAS ALREADY THERE, which is what made this a reader bug rather than a
+ * missing feature: `buildThreeHopCount` takes `{ b, c }` as two independent gate LISTS and the
+ * INLINE spelling filled both. This makes the clause reader produce what the inline reader already
+ * produced — item 219's "one question, one route" at the third position.
+ *
+ * Each conjunct must read EXACTLY ONE interior variable. A conjunct over the ends, over two
+ * positions at once, or naming anything this pattern does not bind still declines, because the
+ * product reaches `a` and `d` only as DEGREES and has no once-per-element place to gate them. That
+ * is `chainGatesOf`'s rule (item 305) applied to the two positions this shape visits.
+ *
+ * `bindVar` is load-bearing: the conjunct reads `b.k`, so `inlineHolds` has to bind the element
+ * under that name before evaluating it. Dropping it evaluates against an empty binding.
+ *
+ * ⚠️ EXPORTED BECAUSE IT IS A ROUTE CHOICE, AND A MUTATION PASS PROVED THE DIFFERENCE. Three
+ * mutants — bucketing a `b` conjunct under `c`, never filling the `c` bucket, and not splitting the
+ * clause at all — all SURVIVED the whole suite: each makes the reader NARROWER, so the shape
+ * declines and the general pipeline returns the same answer. `interior-and-gates.test.ts`'s decline
+ * cases assert answers, which cannot see a route. So the bucketing is asserted DIRECTLY here, the
+ * way `csrDegreeProductApplies` and `gate-conjunct-route.test.ts` are — `perf-gate-needs-its-own-test`.
+ */
+export const interiorPredOf = (where: Expr, s1: Segment, s2: Segment): InteriorGates | null => {
   const bName = s1.node.variable;
   const cName = s2.node.variable;
-  const readsOnly = (name: string | undefined): boolean =>
-    name !== undefined && [...free].every((n) => n === name);
-  const onB = readsOnly(bName);
+  const b: InlinePred[] = [];
+  const c: InlinePred[] = [];
 
-  if (free.size === 0 || !(onB || readsOnly(cName))) {
+  for (const conjunct of flattenConjuncts(where)) {
+    const free = freePredicateVars(conjunct);
+
+    // A constant conjunct (no free names) declines, as it did before: it is not a per-vertex test.
+    if (free.size !== 1) {
+      return null;
+    }
+
+    const [name] = free;
+
+    if (bName !== undefined && name === bName) {
+      b.push({ pred: compilePredicate(undefined, conjunct, bName), bindVar: bName });
+    } else if (cName !== undefined && name === cName) {
+      c.push({ pred: compilePredicate(undefined, conjunct, cName), bindVar: cName });
+    } else {
+      return null;
+    }
+  }
+
+  if (b.length === 0 && c.length === 0) {
     return null;
   }
 
-  const bindVar = onB ? bName : cName;
-
-  if (bindVar === undefined) {
-    return null;
-  }
-
-  // `bindVar` is load-bearing: the predicate reads `b.k`, so `inlineHolds` has to bind the element
-  // under that name before evaluating it. Dropping it evaluates against an empty binding.
-  return { pred: { pred: compilePredicate(undefined, where, bindVar), bindVar }, onB };
+  return { b, c };
 };
 
 /**
@@ -5048,7 +5088,7 @@ const threeSegmentCount = <T>(
   s2: Segment,
   s3: Segment,
   rowOf: (n: number) => T,
-  interiorPred: { pred: InlinePred; onB: boolean } | null | undefined,
+  interiorPred: InteriorGates | null | undefined,
 ): CountOf<T> | null => {
   // `inlineOf(start)` directly, NOT `patternCountOf`'s `inStart`: that is computed only for one and
   // two segments, so it is `undefined` here whether or not the start carries a constraint, and
@@ -5076,7 +5116,10 @@ const threeSegmentCount = <T>(
   // `(b {k: 2})` are one question on one route. They were 9360.5, 3945.9 and 560.7ms before this
   // item — a 2.4x and a 13.3x equivalent-spelling gap, sitting in the open.
   if (interiorPred !== null && interiorPred !== undefined) {
-    (interiorPred.onB ? bPreds : cPreds).push(interiorPred.pred);
+    // BOTH positions, which is item 1700's fix: the clause reader now buckets per position exactly
+    // as the inline reader does, so `WHERE b.k = 7 AND c.k > 60` lands here instead of declining.
+    bPreds.push(...interiorPred.b);
+    cPreds.push(...interiorPred.c);
   }
 
   return buildThreeHopCount(s1, s2, s3, start, rowOf, { b: bPreds, c: cPreds });
