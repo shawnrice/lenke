@@ -78860,3 +78860,67 @@ reports `HALF` rather than a number. ⚠️ Its first `incLoops` detector tested
 `loopCount: t.loopCount + 1`, which is present in BOTH arms, so base reported `HALF` for three full
 rounds and never ran — **the fifth anchor failure in this session and the fifth caught**, all by the
 same guard.
+
+### Item 1747 — **THE REGRESSION PASS items 1745/1746 owed: 46 shapes, two arms, NO regression anywhere — and the win is a FAMILY, not one row (`optional()` verified at 1.15x, disjoint).** ⚠️⚠️ **But the sweep's own verdicts are NOT prices: its one "SLOWER 1.42x" is refuted as BIMODAL mode-sampling, and its "1.63x" overstates a properly measured 1.20x**
+
+Items 1745 and 1746 changed `extend`, `startTraverser` and `incLoops` — the three constructors every
+Gremlin traverser passes through — on the evidence of **four shapes**. Item 1746 had just shown how a
+win on one shape can hide a cost on another, so the breadth check came before the next candidate.
+
+**46 shapes, pre-1745 against HEAD, two alternated rounds, one build per arm**, with the dist
+assertion discriminating on the spread's presence. 15 rows came back with disjoint arm ranges:
+
+```text
+  FASTER   coalesced 1.63x · coalesced2 1.54x · hopcount2 1.31x · hopbare 1.19x · optionald 1.19x
+           selected 1.11x · hopcount3 1.07x · control 1.06x · matchedsel 1.03x · matched 1.02x
+           hoporderdesc 1.02x · hopfarhasid 1.02x
+  SLOWER   filterchain 1.42x · bothcount 1.07x · hopdedupe 1.05x
+```
+
+#### ⚠️ THE ONE REAL-MAGNITUDE REGRESSION IS AN ARTIFACT, AND THE MECHANISM IS BIMODALITY
+
+`filterchain`'s 1.42x got its own run — 300 reps, 9 readings per arm:
+
+```text
+  pre   38.0 38.3 38.9 42.5 | 59.3 61.4 62.1 63.7 71.0
+  now   34.1 38.3 38.6 38.8 40.7 | 62.0 62.1 62.9 64.3
+```
+
+**The shape is BIMODAL — a ~38 ms mode and a ~62 ms mode — and both arms hit both in near-equal
+proportion (4/5 against 5/4).** The sweep's two readings per arm had simply caught `pre` low and
+`now` high. `ts-spelling-probe` records the same hazard ("some shapes are outright BIMODAL"), and
+this is the first time it has manufactured a _verdict_ rather than just noise.
+
+**The inflation runs both ways**, which is the part that matters for reading any sweep: `coalesced`
+read **1.63x** here against the **1.20x** item 1746 measured properly on the same change. So at two
+readings per arm, "disjoint" is far too easy to reach — and every low-magnitude row above
+(`control` 1.06x on a 4-7 ms shape, `matched` 1.02x, `hopfarhasid` 1.02x, `bothcount`, `hopdedupe`)
+is unreadable for the same reason.
+
+#### What actually survives
+
+**`optionald` isolated, 300 reps, 9 readings per arm:**
+
+```text
+  pre   3156.1 3195.1 3230.9 3271.9 3327.4 3385.5 3419.6 3519.7 3595.3   median 3327.4
+  now   2643.8 2736.3 2749.1 2824.0 2883.9 2947.0 2992.2 3006.7 3039.9   median 2883.9
+```
+
+**1.15x, ranges DISJOINT** (pre's minimum 3156.1 exceeds now's maximum 3039.9). So the win is not
+confined to `coalesce`: **`optional()` gains too**, and both are branch steps that call `extend` once
+per inner result — which is the mechanism items 1745/1746 identified, now confirmed on a second
+member rather than asserted.
+
+**NO REGRESSION FOUND.** The only disjoint SLOWER row with a magnitude worth chasing was refuted;
+the other two are inside the same two-reading unreliability.
+
+#### Two new permanent instruments
+
+- **`packages/native/gremlin-sweep-driver.sh`** — the two-arm corpus sweep, carrying the
+  nominates-but-does-not-price warning and this item's numbers as the reason for it.
+- **`packages/native/sweep-compare.mjs`** — reads the sweep log and reports **DISJOINTNESS, not a
+  ratio**: a row whose arm ranges overlap prints `flat` whatever its medians say, because a ratio of
+  medians over few rounds is what produced item 1746's phantom 5%.
+
+**The standing rule this adds:** a wide sweep is for _finding rows to measure_, and its own verdicts
+need 9 readings at 300 reps before they mean anything — in either direction.
