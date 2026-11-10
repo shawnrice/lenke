@@ -181,7 +181,39 @@ export const hopValuesShortcut = (plan: Plan, graph: Graph): HopValues | undefin
     pick = (far) => far.properties[valueKey];
     drops = true;
     consumed = 3;
-  } else if (proj === undefined) {
+  } else if (proj === undefined || proj.kind === 'order') {
+    /**
+     * ⚠️ `order` RIDES AS A RESIDUAL OVER THE BARE HOP (item 1783), which is the one other step
+     * kind this shortcut names.
+     *
+     * `V().out(T).order().by(k)` was the heaviest row on the Gremlin bench at **1537.5 ns/row**
+     * (item 1782's ranking) for a reason that is entirely routing: an unrecognised third step
+     * declined the WHOLE shortcut, so the row fell to the generic traverser pipeline and paid the
+     * generator chain per edge. Route markers put it at `projected=UNDEFINED`, and the profile put
+     * **70% of the row in the traversal** — `iterLabeled` 32.7% alone — while `hopbare` performs
+     * the IDENTICAL `V().out('E')` walk in 8.5 ms against this row's ~43. Five times the cost for
+     * the same walk, which is the generator chain `gremlin-values-is-the-floor` records.
+     *
+     * Treated exactly like `proj === undefined`: the walk emits far ELEMENTS and the `order` plus
+     * anything after it becomes the residual, which item 608's path wraps as traversers and runs
+     * normally. So the sort itself is untouched — same `orderStep`, same `sortByBys`, same key
+     * evaluation and the same comparator (item 1713's) — and ONLY the source of the frontier
+     * changes, from the generic pipeline to the fused walk. That is what makes it
+     * answer-equivalent: the file's own note on iterating the adjacency `Set` directly is that it
+     * is "the SAME order and the same edges — not a second derivation".
+     *
+     * ⚠️ NAMED, NOT "ANYTHING UNRECOGNISED", and the distinction is this file's own warning a few
+     * lines above: treating an unrecognised step as a residual over a bare hop "would quietly
+     * re-route a large family of plans that nothing here has measured". One named step kind, with
+     * its own measurement, is the bounded version of that change.
+     *
+     * ⚠️ AND IT DOES NOT MAKE AN ILLEGAL SORT LEGAL. `order()` over graph ELEMENTS throws by
+     * contract, and `assertFrontierTypes` raises at PLAN-CHECK time, before any route is chosen —
+     * so the bare `V().out(T).order()` spelling still throws, by the same mechanism, whichever
+     * route this gate would have picked. What rides here is `order().by(k)`, which sorts by a
+     * property and is legal on either route. `fusableProjectedOrder` still declines this shape
+     * (its last consumed step is the hop, not a `values`), so the VALUE-mode fusion is untouched.
+     */
     pick = (far) => far;
     consumed = 2;
   } else if (proj.kind === 'id') {

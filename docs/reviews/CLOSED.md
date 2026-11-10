@@ -81673,7 +81673,7 @@ Item 1780's heading and its two wrong claims corrected in this commit.
   order-independent and `truthProps`' message is provably class-fixed, so both may be admissible;
   each needs its own fault argument rather than this item's.
 
-### Item 1782 — the GREMLIN surface ranked (31 shapes), and its new heaviest row is the ONE SORT SPELLING THE FUSION NEVER REACHED: `out(T).order().by(k)` takes **no shortcut at all** (`projected=UNDEFINED`, verified with route markers), so the same `V().out('E')` walk costs **~43 ms here against `hopbare`'s 8.5** — **2.51x its fused twin at fan-in 1 and 3.18x at fan-in 100**. Two obvious causes refuted by measurement first. Priced, NOT BUILT
+### Item 1782 — the GREMLIN surface ranked (31 shapes), and its new heaviest row is the ONE SORT SPELLING THE FUSION NEVER REACHED: `out(T).order().by(k)` takes **no shortcut at all** (`projected=UNDEFINED`, verified with route markers), so the same `V().out('E')` walk costs **~43 ms here against `hopbare`'s 8.5** — **2.51x its fused twin at fan-in 1 and 3.18x at fan-in 100**. Two obvious causes refuted by measurement first. Priced, NOT BUILT — ✅ **TAKEN AT ITEM 1783: 1.536x, and the over-wide form of the fix turns out to FAIL 19 TESTS**
 
 Four consecutive items had been GQL, so this one ranked the other surface. `isolated-gremlin-bench.mjs`,
 31 shapes, 100,000 nodes, `MULTILABEL=-1` (disjoint types, the common case — at `0` a two-label hop
@@ -81751,7 +81751,7 @@ the fused route does not use, which `hopbare`'s 8.5 ms proves. [[frame-attributi
 form: a frame can be hot because of the ROUTE that reaches it, not because of its own code, and the
 control that separates the two is the same walk on the other route.
 
-#### The target, not built here
+#### ~~The target, not built here~~ ✅ TAKEN AT ITEM 1783 — **1.536x** by admitting `order` as a residual over the bare hop (one named step kind), with the fully fused element sort still open for the rest of the ~3.2x
 
 A fused element-order shortcut: walk the hop directly as `hopValuesShortcut` does, collect the far
 ELEMENTS with their sort key, sort, and emit elements — bypassing the traverser pipeline. The
@@ -81774,3 +81774,126 @@ other one is not.
 No engine code changed. The route markers were temporary, reverted, and the revert verified with
 `git diff --stat` empty on `packages/gremlin/` before the dist was rebuilt clean. Every sweep and
 profile process capped at `MemoryMax=16G`, `MemorySwapMax=0`, `timeout 600`.
+
+### Item 1783 — ✅ **SHIPPED: item 1782's target TAKEN by ONE NAMED STEP KIND.** `order` now rides as a residual over the bare hop, so Gremlin's heaviest row stops paying the generic traverser pipeline: **1.536x** (79.4 → 51.7 ms), five alternated rounds, every round below the base median, controls clean. The over-wide version this file warned was merely _unmeasured_ turns out to **FAIL 19 TESTS** — and the parity probe I wrote for it was BLIND until its fixture was fixed
+
+Item 1782 ranked `V().out(T).order().by(k)` as the heaviest row on the Gremlin bench (**1537.5
+ns/row**) and verified with route markers that it takes no shortcut at all: `hopValuesShortcut`
+destructures `[V, hop, proj]` and needs a `values()` step, so an `order` third step declined the
+whole thing and the row fell to the generic traverser pipeline. The profile put **70% of the row in
+the traversal** — `iterLabeled` 32.7% alone — while `hopbare` performs the IDENTICAL `V().out('E')`
+walk in 8.5 ms against this row's ~43.
+
+#### The change is one token
+
+```ts
+-  } else if (proj === undefined) {
++  } else if (proj === undefined || proj.kind === 'order') {
+```
+
+That arm already emits far ELEMENTS with `consumed = 2`, so admitting `order` to it makes the order
+step (and anything after it) the RESIDUAL, which item 608's path wraps as traversers and runs
+normally. **The sort itself is untouched** — same `orderStep`, same `sortByBys`, same key evaluation,
+same item-1713 comparator — and only the SOURCE of the frontier changes, from the generic pipeline to
+the fused walk. That is what makes it answer-equivalent: this file's own note on iterating the
+adjacency `Set` directly is that it is "the SAME order and the same edges — not a second derivation".
+
+#### Measured, alternated across builds with every arm asserted
+
+⚠️ This is a CROSS-BUILD A/B, which item 737 is the warning about (a two-build sweep once reported a
+1.66x regression that did not exist). All three mitigations are in `order-residual-ab.sh`: alternated
+rounds, one shape per PROCESS, and **every arm asserted to BE its own code by a COUNT** before it is
+measured — `=== "order"` already occurs twice in the base bundle, so the arms are 2 and 3 (item
+1744's rule: a count, not a presence test). 11/11 assertions passed, 0 build failures.
+
+| shape                                         | rows   | base   | residual   | gain       | rounds below base median |
+| --------------------------------------------- | ------ | ------ | ---------- | ---------- | ------------------------ |
+| `hoporderbystr` **TARGET**                    | 50,000 | 79.423 | **51.716** | **1.536x** | 5/5                      |
+| `hoporder` (value-mode fusion — control)      | 50,000 | 26.111 | 24.154     | 1.081x     | 5/5                      |
+| `hopyieldsingle` (fused value walk — control) | 50,000 | 16.674 | 16.659     | 1.001x     | 3/5 (chance)             |
+| `hopbare` (bare hop, rest empty — control)    | 50,000 | 8.333  | 8.066      | 1.03x      | —                        |
+| `hoporderstr` (value-mode order — control)    | 50,000 | 31.654 | 28.082     | 1.13x      | —                        |
+
+⚠️ **A CONTROL READ 0.95x AT THREE ROUNDS AND 1.081x AT FIVE.** `hoporder` looked like a real ~5%
+regression — tight inside each arm (22.8/23.8/22.8 against 24.0/24.4/23.1) and with no mechanism,
+since a value-mode plan takes the `valueKey !== undefined` branch and never evaluates the added
+condition. At five rounds its base reads 23.5/24.7/26.1/27.0/33.7 and the earlier fast triple is
+plainly a draw from that spread. **CLAUDE.md's "anything under ~10% needs its own isolated harness"
+earned itself again**, in the direction of NOT reporting a regression that was not there.
+
+The residual arm is also markedly TIGHTER than the base — 50.7-51.7 across five rounds against
+76.2-80.9 — which is what a route that stops paying a per-edge generator chain should look like.
+
+#### ⚠️ THE OVER-WIDE VERSION IS WRONG, NOT MERELY UNMEASURED
+
+This gate's own comment warned that treating an unrecognised step as a residual over a bare hop
+"would quietly re-route a large family of plans that nothing here has measured". So the change names
+`order` and nothing else — and the mutation pass priced the alternative:
+
+| mutant                                      | verdict                                  |
+| ------------------------------------------- | ---------------------------------------- |
+| revert the arm (`proj === undefined` alone) | **CAUGHT**, 1 fail — the gate's own test |
+| widen it to `proj.kind !== 'values'`        | **CAUGHT, 19 fail**                      |
+
+**19 failures is the finding.** The broad form is not an unpriced risk, it is a wrong answer, so
+naming one step kind is the only correct shape of this change rather than the cautious one. The
+comment was right and is now backed by a number.
+
+#### The gate needs its own test, and here even ROW ORDER cannot see the route
+
+A route change is answer-equivalent, so no differential test can fail on it
+(`perf-gate-needs-its-own-test`). This one is worse than usual: **the step under test is a sort**, so
+it defines the order on either route and even a positional comparison of the query's own output is
+blind. The only observable is the function's contract, which is exactly what
+`hop-values-residual.test.ts` exists for ("a mutant restoring the old exact-3-step gate SURVIVES
+every answer-based test in the package"). Three tests added there: the gate claims the shape with
+`rest = [order]` in bare-hop mode, the sorted ELEMENTS are correct against a walk order that is not
+already sorted, and a bare `V().out(K).order()` still THROWS — because `assertFrontierTypes` raises
+at plan-check before any route is chosen, so admitting an `order` step over an element walk must not
+make an illegal element sort legal.
+
+#### ⚠️ THE FUZZER CANNOT GENERATE THIS SHAPE, AND THE PROBE I WROTE FOR IT WAS BLIND
+
+All seven fuzzers pass, and that says nothing here. Every `by()` modulator in `gremlin-fuzz.test.ts`
+is a COMPARATOR TOKEN — 8 × `.by(desc)`, 3 × `.by(Order.desc)`, **zero with a property key** — so
+`order().by('s')` is outside its corpus. Found by enumerating the generator's `by()` calls.
+
+**Third blindness finding in this arc and all three are different**: item 1776's unordered page was
+ABSENT from the corpus; item 1781's filtered hop projection was PRESENT UNDER A COUNTER THAT NAMED IT
+(`hopFilter`, which requires `count(*)`); this step is generated 59 times but only ever with the
+wrong modulator KIND. **The generator's shape space has to be read on the axis the change moves** —
+here the `by()` argument, not the `order()` step.
+
+⚠️ **AND THE PROBE WAS VACUOUS ON ITS FIRST RUN.** `gremlin-order-by-key-parity.ts` derived its sort
+key from the same `(i * 7 + 3) % NODES` permutation as its edge targets, which made the walk order
+already EQUAL the sorted order — sorted and UNSORTED output were byte-identical, so all five
+"IDENTICAL" verdicts held for a reason unrelated to sorting and a route that dropped the sort
+entirely would have passed. Caught by asking the probe to prove it could fail. The key is now
+descending in `i`, and `assertFixtureCanFail` is a GUARD rather than a comment: the probe exits 1 if
+sorted ever equals the walk order. Items 1064, 1777 and 1781 each paid for this same fixture defect;
+this is the fourth, and the first to leave an automated check behind.
+
+⚠️ **ITS ORACLE IS POSITIONAL, WHICH IS THE OPPOSITE OF THE GQL ONE.** Item 1781's
+`far-driven-predicated-parity.ts` compares MULTISETS because an unordered GQL projection's row order
+is unspecified. Here order IS the contract — Gremlin stream order is TinkerPop's and its fuzzer
+compares it ordered, which is precisely why item 1781's far-driven route is unavailable on this
+surface. A positional difference here would be a bug, not a licensed reordering. Result: all five
+cases IDENTICAL between TS and native, **including a TIED key**, which is the stability property a
+route change is most likely to break.
+
+#### What is still open
+
+**1.536x against a ~3.2x ceiling.** The residual path still wraps 50,000 elements in traversers and
+`orderStep` still spreads them back into an array; item 1630 priced that wrapper at **48.9 ms of a
+325 ms gap** on the values spelling. A fully fused element sort — walking the hop and sorting
+`{element, key}` without ever building a traverser, the element twin of `fusedProjectedOrder` — would
+claim the rest. This item is the bounded step one named step kind buys, and the remaining work has a
+measured floor rather than a guess.
+
+#### Gates
+
+`bun run check` 0 read unpiped. gremlin **2,119 pass / 0 fail**; `nx run-many -t test` green across 21
+projects (⚠️ one run exited 1 on `@lenke/native:test`, which Nx itself labelled a flaky task and
+which passes isolated at 1,084/0 — the documented `sync-test-flake-is-timing` behaviour, re-run
+before being believed rather than after); all seven fuzzers pass;
+`gremlin-order-by-key-parity.ts` exit 0.

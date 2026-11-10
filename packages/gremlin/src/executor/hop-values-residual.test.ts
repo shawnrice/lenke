@@ -192,4 +192,75 @@ describe('the hop-values shortcut and its residual', () => {
     expect(unordered).not.toEqual(ordered);
     expect(ordered).toHaveLength(12);
   });
+
+  /**
+   * ⚠️ `order` AS A THIRD STEP OVER THE BARE HOP (item 1783), AND NO ANSWER-BASED TEST CAN SEE IT.
+   *
+   * The other residual shapes above at least change which VALUES come out. This one cannot even be
+   * distinguished by row ORDER, because the step under test is a sort — it defines the order on
+   * either route. So the gate's contract is the only observable, exactly as this file's header says
+   * for the 3-step gate, and a mutant dropping `|| proj.kind === 'order'` reverts the whole item
+   * while leaving every answer in the package identical.
+   *
+   * Item 1782 measured what the decline cost: `V().out(T).order().by(k)` was the heaviest row on
+   * the Gremlin bench at 1537.5 ns/row with `projected=UNDEFINED`, and admitting it reads **1.51x**
+   * (79.4 -> 51.7 ms, five alternated rounds, every round below the base median).
+   */
+  test('`order` as a third step is claimed as a RESIDUAL over the bare hop, not declined', () => {
+    const g = twoHop();
+    const claimed = hopValuesShortcut(traversal(V(), out('K'), order().by('age')), g);
+
+    expect(claimed).toBeDefined();
+    // `consumed = 2`, so the order step and anything after it is the residual.
+    expect(claimed?.rest).toHaveLength(1);
+    expect(claimed?.rest[0]?.kind).toBe('order');
+    // BARE-HOP MODE: the walk emits far ELEMENTS, not values — which is what lets the residual's
+    // `by('age')` read the property and what makes `fusableProjectedOrder` decline (its last
+    // consumed step is the hop, not a `values`), leaving the VALUE-mode fusion untouched.
+    const walked = [...(claimed?.values ?? [])] as { id: string }[];
+
+    expect(walked.map((v) => v.id)).toEqual(['b']);
+  });
+
+  test('the sorted ELEMENTS are right, and the walk order is not already sorted', () => {
+    const g = new Graph();
+    const vs = [];
+
+    for (let i = 0; i < 12; i += 1) {
+      vs.push(g.addVertex({ id: `v${i}`, labels: ['P'], properties: { age: (i * 5) % 12 } }));
+    }
+
+    for (let i = 0; i < 12; i += 1) {
+      g.addEdge({
+        id: `e${i}`,
+        from: vs[i],
+        to: vs[(i * 7 + 1) % 12],
+        labels: ['K'],
+        properties: {},
+      });
+    }
+
+    const bare = toArray(traversal(V(), out('K')), g) as { properties: { age: number } }[];
+    const sorted = toArray(traversal(V(), out('K'), order().by('age')), g) as {
+      properties: { age: number };
+    }[];
+
+    const ages = (rows: { properties: { age: number } }[]): number[] =>
+      rows.map((v) => v.properties.age);
+
+    // The same multiset, sorted by the `by` key.
+    expect(ages(sorted)).toEqual([...ages(bare)].sort((x, y) => x - y));
+    // And it really sorted — a residual that did nothing would fail this.
+    expect(ages(bare)).not.toEqual(ages(sorted));
+    expect(sorted).toHaveLength(12);
+  });
+
+  test('a bare `order()` over ELEMENTS still throws, so the gate did not make an illegal sort legal', () => {
+    // `assertFrontierTypes` raises at PLAN-CHECK time, before any route is chosen, so this throws
+    // whichever way the gate routes it. Pinned because the gate now admits an `order` step over an
+    // ELEMENT walk, and the one thing that must not follow from that is an element sort succeeding.
+    const g = twoHop();
+
+    expect(() => toArray(traversal(V(), out('K'), order()), g)).toThrow();
+  });
 });

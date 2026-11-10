@@ -32,6 +32,8 @@ return the same rows.
 | `skip-only-page-parity.ts`        | do TS and NATIVE agree POSITIONALLY on an UNORDERED skip-only page — the shape every fuzzer is blind to (item 1776)                                                   | node proj / 2col / `WHERE` IDENTICAL paged AND unpaged; **hop FAR's UNPAGED order already differs between the engines**                                                                                                                                                                                                                                                                                 |
 | `hop-walk-fanin-ab.sh`            | FAR-driven against START-driven on the SINGLE-type hop, the walk choice NO gate guards, swept over `FANIN` × `FANOUT` × `STRIDE` (item 1779)                          | far-driven wins **7 of 8 cells, 1.91x-8.26x**, and its margin GROWS as fan-in concentrates; the sole dissenter is `small`/fanout 1. Reproduces item 1438's cells to **0.01x** on a harness sharing no code with it                                                                                                                                                                                      |
 | `far-driven-predicated-parity.ts` | do TS and NATIVE still agree as MULTISETS on a filtered hop projection now that TS far-drives it (item 1781) — ⚠️ the shape `bun run fuzz` does NOT cover             | all 7 admitted shapes **SAME SET, DIFFERENT ORDER** against native, every DECLINED control **IDENTICAL** — so the order difference is attributable to the new route and the multiset never moves                                                                                                                                                                                                        |
+| `order-residual-ab.sh`            | does admitting `order` as a residual over the bare hop pay, and what does it cost the rows it cannot reach (item 1783)                                                | target **1.536x** (79.4 -> 51.7 ms), 5/5 rounds below the base median, 11/11 arm assertions; ⚠️ a control read **0.95x at three rounds and 1.081x at five** — the 5% was never there                                                                                                                                                                                                                    |
+| `gremlin-order-by-key-parity.ts`  | do TS and NATIVE agree POSITIONALLY on `V().out(T).order().by(k)` (item 1783) — ⚠️ the Gremlin fuzzer generates ZERO property-key `by()` modulators                   | all 5 cases IDENTICAL incl. a TIED key; ⚠️ **it was VACUOUS on its first run** (key derived from the edge permutation, so walk order == sorted order) and now carries a can-fail GUARD                                                                                                                                                                                                                  |
 | `walk-ab-aggregate.mjs`           | reduces that driver's log to one row per cell — `p25` per process, median across rounds — and REFUSES a table whose arms stopped answering the same question          | guard mutated (one arm's `rowCount` rewritten): **3 cells flagged, exit 1**                                                                                                                                                                                                                                                                                                                             |
 
 ⚠️ **A PROBE CAN GO TAUTOLOGICAL WHEN THE CHANGE IT INFORMED SHIPS, and that is the dead oracle's
@@ -61,6 +63,22 @@ nothing at all about the route item 1776 changed. Found by reading the generator
 suite; the same failure mode as `fuzzer-blind-to-one-column-group`. `skip-only-page-parity.ts` is the
 oracle that covers it, and it reads each paged shape against its own UNPAGED control, because a page
 cannot be expected to agree where the unpaged orders already do not.
+
+⚠️ **READ THE GENERATOR'S SHAPE SPACE ON THE AXIS THE CHANGE MOVES** (item 1783). The Gremlin fuzzer
+calls `order(` 59 times, so it looks like coverage for any order-step change. Every `by()` modulator
+it generates is a COMPARATOR TOKEN — 8 × `.by(desc)`, 3 × `.by(Order.desc)`, **zero with a property
+key** — so `order().by('s')` is outside its corpus entirely. The step is generated; the MODULATOR
+KIND is not. Third blindness finding in one arc and all three are different: item 1776's page was
+ABSENT, item 1781's shape was PRESENT UNDER A COUNTER THAT NAMED IT, this one's step is present with
+the wrong argument.
+
+⚠️ **AND A PARITY PROBE CAN BE VACUOUS ON ITS FIRST RUN — ASK IT TO PROVE IT CAN FAIL.**
+`gremlin-order-by-key-parity.ts` derived its sort key from the same permutation as its edge targets,
+so the walk order already EQUALED the sorted order: sorted and unsorted output were byte-identical
+and all five `IDENTICAL` verdicts held for a reason unrelated to sorting. A route that dropped the
+sort entirely would have passed it. It now carries a GUARD rather than a comment — it exits 1 if
+sorted ever equals the walk order. Items 1064, 1777 and 1781 each paid for this same fixture defect;
+this is the fourth and the first to leave an automated check behind.
 
 ⚠️ **RE-RANK A BENCH AFTER FUSION WORK, BECAUSE A FUSION PROMOTES THE SPELLING IT DID NOT REACH**
 (item 1782). Item 1439 ranked the Gremlin bench with `hoporder` on top at 89.48 ms; items 1586, 1630
