@@ -61,6 +61,21 @@ suite; the same failure mode as `fuzzer-blind-to-one-column-group`. `skip-only-p
 oracle that covers it, and it reads each paged shape against its own UNPAGED control, because a page
 cannot be expected to agree where the unpaged orders already do not.
 
+⚠️ **THE FILTERED-HOP ROWS WERE ALL ONE PREDICATE CLASS, AND IT IS THE CLASS THAT CANNOT TAKE THE
+ROUTE** (item 1780). Every filtered row in `isolated-row-bench.mjs` was an ORDERING comparison
+(`b.n > 5`, `b.n > -1`, `b.k > -1`), which can raise on a cross-type pair — so the whole family
+declined item 936's candidate design (gate a far-driven filter on a raise-free predicate) for a
+reason that is a property of the FIXTURE's predicates, not of the engine. `=`, `<>`, `IS [NOT] NULL`
+and label tests cannot raise (`cross-type-comparison-no-error`), and the equality form is also the
+only SELECTIVE one — every `>` row here passes ~100%. `hopfiltfareq` and `hopfiltneq` are those two
+rows; the pair separates raise-freedom from selectivity, which one row would conflate. **A filter
+family measured only with `>` is measuring neither property.**
+
+⚠️ **AND `truthCannotRaise` IS NOT THE KEY FOR SUCH A GATE, though it is imported two files away and
+reads like one.** For `'compare'` it admits EVERY operator on purpose — a narrower TS key produced 41
+divergences in one fuzzer run — so it means "safe to reorder inside a filter", not "cannot raise". Its
+own comment says so: hoisting a comparison that can fault just makes it run earlier.
+
 ✅ **AND THAT SAME COUPLING IS NOW A TOOL: `OFFSET 1` IS A START-DRIVEN FORCER** (item 1779). Item
 1777 gave `hopOrderPlan` a `pageSkip !== 0` arm of its `startDriven` flag, so adding `OFFSET 1` to a
 hop flips the walk while changing nothing else — same detector, same exit, one fewer row. **That

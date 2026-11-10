@@ -28679,7 +28679,18 @@ contributes nothing` — the far-driven mistake reports 2 where the answer is 1,
   unobservable for a COUNT, which emits one row so the only observable is the escaping message —
   needs a real answer on what `fault-precedence.test.ts` pins and what the differential fuzzers
   compare for a faulting query, where a TS-raises/native-fails-the-rep divergence is already open.
-  **Price ~2x, and no more:** CLOSED.md's item 167 line records that its 2.3x _is_ the `projectRow`
+  ~~**Price ~2x, and no more:**~~ ⚠️ **THAT PRICE IS A FLOOR, NOT A CEILING, AND ITEM 1780 MEASURED
+  WHY: it was taken at ONE fan-in, and this win IS fan-in.** The gap between the filtered start-driven
+  row and its unfiltered far-driven twin is **2.02x at `FANIN=1`, 5.87x at 0.1 and 9.11x at 0.01** —
+  because the unfiltered row improves 7.64x as fan-in concentrates while every filtered row improves
+  only 1.57-1.69x. The bullet's own reasoning is what predicts this: it prices the gain as item 167's
+  `projectRow` hoist to once per far VERTEX, and a once-per-far-vertex hoist is worth exactly the
+  number of rows per far vertex. Quoting it at in-degree 1 quotes it where it is smallest.
+  Item 1780 also found that **design (1) was dismissed against a predicate class the bench did not
+  contain** — every filtered row there is an ORDERING comparison, which can raise; `=`, `<>`,
+  `IS [NOT] NULL` and label tests cannot (`cross-type-comparison-no-error`), and the equality form is
+  both raise-free AND selective. The original reasoning follows:
+  CLOSED.md's item 167 line records that its 2.3x _is_ the `projectRow`
   hoist to once per far vertex, so a rel-reading or start-reading shape must take the start-driven
   walk regardless.
 - **⚠️ RETRACTED — item 936's claim that GQL's filtered hop tally is EDGE-driven is FALSE
@@ -81359,3 +81370,101 @@ stopped the second item from running at all is one grep of CLOSED.md.
 queries, so `git diff --stat` touches only the bench, the driver, the aggregator, `PROBES.md` and
 this file. Every sweep process capped at `MemoryMax=16G`, `MemorySwapMax=0`, `timeout 600`, per
 CLAUDE.md — a probe over a generated fixture is the class that took the box down four times.
+
+### Item 1780 — the filtered hop is the whole TOP of the bench (827.9 ns/row, 3.15x its unfiltered twin), and item 936's "price ~2x, and no more" is a **FLOOR**: the gap is **2.02x at `FANIN=1` and 9.11x at 0.01**, because the win it priced IS fan-in. Item 936's design (1) was also dismissed against a predicate class **no row in the bench contained**
+
+Ranked all 38 rows of `isolated-row-bench.mjs` profile-first rather than picking from an open heading
+— which is what item 1779 had just demonstrated the cost of. The top of the table is one family:
+
+```text
+  hopfiltallpass    827.9 ns/row    WHERE b.n > -1
+  hopfiltdiffprop   805.0           WHERE b.k > -1
+  hopfiltyield      772.9           WHERE b.n > 5
+  hopfiltwtrue      648.0           WHERE true
+  hopsingleyield    262.4           no WHERE          ← the unfiltered twin
+```
+
+Every filtered shape goes to `filteredHopWalk`, which is START-driven; the unfiltered one takes
+`farDrivenHopWalk`. `farDrivenHopWalk`'s selection is `farPred === undefined && gate === undefined &&
+!needsStart`, so **nothing on the projection path has ever far-driven a filter** — item 936 recorded
+exactly this and priced it at "~2x, and no more".
+
+#### That price is a floor, and its own reasoning says so
+
+Item 936 priced the gain as item 167's `projectRow` hoist to once per far VERTEX. **A
+once-per-far-vertex hoist is worth exactly the number of rows per far vertex**, so pricing it at
+in-degree 1 prices it where it is smallest by construction. Swept, 200,000 nodes, `MULTILABEL=0`,
+random stride, three interleaved rounds, `p25` per process and the median across:
+
+| `FANIN` | unfiltered (far-driven) | `hopfiltyield` | `hopfiltallpass` | `hopstartonlyyield` | gap       |
+| ------- | ----------------------- | -------------- | ---------------- | ------------------- | --------- |
+| 1       | 65.836                  | 133.032        | 136.344          | 133.048             | **2.02x** |
+| 0.1     | 14.117                  | 82.855         | 85.793           | 93.818              | **5.87x** |
+| 0.01    | 8.620                   | 78.568         | 80.853           | 84.619              | **9.11x** |
+
+The unfiltered row improves **7.64x** as fan-in concentrates. Every filtered row improves
+**1.57-1.69x**. The gap is the difference between a walk that amortizes over a far vertex's bucket and
+one that cannot.
+
+⚠️ **`hopstartonlyyield` IS THE CONTROL AND IT TRACKS THE FILTERED ROWS** (133.048 / 84.619). Its
+predicate reads the START (`WHERE a.n > 5`), so it must be start-driven — there is no far vertex to
+hang the test on — and it is therefore the row where no route change is available. That it moves with
+the far-filtered rows rather than with the unfiltered one is what says the 9.11x is the ROUTE and not
+the predicate's own per-row cost. `hopfiltwtrue` at 648.0 against the bare 262.4 is the same statement
+from the other side: a predicate that is literally `true` still costs 2.47x, because it changes the
+route (item 1438's rule — a surprising ratio between two SPELLINGS is a route question first).
+
+#### Item 936's design (1) was dismissed against a shape the bench could not produce
+
+Item 936 named two candidate designs and dismissed the sound one:
+
+> **(1)** gate the arm on a raise-free far predicate — sound with no fault reasoning, but `b.k > -1`
+> can raise when `k` is a string, so it would decline the measured shape and probably buy little
+
+**The measured shape could raise because every filtered row in this bench is an ORDERING comparison.**
+`cross-type-comparison-no-error` is the policy that splits the operators: `=` on a cross-type pair is
+a NO-MATCH, where `<=` THROWS. So the raise-free far-predicate set is real and includes the most
+common filter form there is — `=`, `<>`, `IS [NOT] NULL`, label tests, and conjunctions of those. None
+of them had a row. Added `hopfiltfareq` (`b.k = 5`) and `hopfiltneq` (`b.k <> 5`):
+
+| shape            | rows      | `FANIN=1` | `FANIN=0.01` | gap to unfiltered |
+| ---------------- | --------- | --------- | ------------ | ----------------- |
+| `hopsingleyield` | 200,000   | 56.213    | 8.462        | —                 |
+| `hopfiltneq`     | 197,900   | 134.599   | 80.881       | 2.39x / **9.56x** |
+| `hopfiltfareq`   | **2,100** | 100.486   | 69.996       | 1.79x / **8.27x** |
+
+⚠️ **`hopfiltfareq` RETURNS 1% OF THE ROWS AND COSTS 75% AS MUCH**, which is the sharpest statement of
+the defect in the table. The start-driven walk visits every edge and reads every far vertex's property
+whatever the selectivity, so a 1-in-97 filter buys almost nothing. A far-driven walk would evaluate
+that predicate once per far vertex and skip the entire bucket on failure, so **selectivity would
+multiply the fan-in win rather than being invisible to it**. The pair also separates the two
+properties a single row would conflate: `hopfiltneq` is raise-free and NOT selective, `hopfiltfareq`
+is both.
+
+#### Why `truthCannotRaise` is the WRONG key for this, which I nearly used
+
+`hop-projection.ts` already imports `truthCannotRaise`, it is described as "a key it shares with the
+Rust engine", and reaching for it looked obvious. It is not the right key: for `'compare'` it returns
+`valueCannotRaise(left) && valueCannotRaise(right)` — **every operator**, deliberately, because the
+engine's `narrowing_is_transparent` admits any operator and a narrower TS key produced 41 divergences
+in one fuzzer run. Its own comment states the semantics plainly: "hoisting a comparison that CAN fault
+makes it run earlier, never makes a skipped fault appear."
+
+So `truthCannotRaise` means _safe to reorder within a filter_, not _cannot raise_. Gating a route
+change on it would admit `b.n > 5`, whose cross-type compare still throws — and far-driving reorders
+WHICH far vertex faults first, which is the one thing item 936 identified as the obstacle. The trio's
+`cannotFault` is the narrow one (`lit | var | prop`) and does not answer a predicate either, so
+design (1) needs its own key over the raise-free operator set above. **Recorded because the wrong key
+is in the file, is adjacent, and carries a comment that reads like a licence.**
+
+#### Not built in this item
+
+The route change itself is the next item. It adds a predicate to `farDrivenHopWalk`, which is a new
+walk variant in the file `executor-edits-perturb` prices at up to 16% on rows a change cannot reach —
+so it needs its own cost side, and the ~10% rule applies before the win is believed.
+
+#### Gates
+
+`bun run check` 0 read unpiped. gql 4,478 pass / 0 fail. No engine code changed: the diff is two bench
+rows, `PROBES.md` and this file. Every sweep process capped at `MemoryMax=16G`, `MemorySwapMax=0`,
+`timeout 600`.

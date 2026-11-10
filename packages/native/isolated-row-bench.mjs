@@ -228,6 +228,25 @@ const SHAPES = {
   // Each is a PROJECTION, not a count, so they exercise row construction the way the yield rows do
   // — which is what item 1407's change touched and what these would have caught had they existed.
   hopfiltyield: 'MATCH (a:P)-[:E]->(b:P) WHERE b.n > 5 RETURN b.n AS n',
+  /**
+   * ⚠️ THE RAISE-FREE FAR PREDICATE, WHICH THIS BENCH COULD NOT SEE (item 1780). Every other
+   * filtered row here is an ORDERING comparison (`>`), and `cross-type-comparison-no-error` is the
+   * policy that splits them: `=` on a cross-type pair is a NO-MATCH where `<=` THROWS. So `b.k = 5`
+   * cannot raise while `b.n > 5` can, and that distinction is the whole of item 936's candidate
+   * design (1) — "gate the far-driven arm on a raise-free far predicate" — which it dismissed on
+   * the grounds that the shape it had measured could raise. The shape that cannot was never
+   * measured, because no row here had one.
+   *
+   * ⚠️ IT IS ALSO THE SELECTIVE ONE, which is a second reason the family needed it. Every `>` row
+   * here passes ~100% of rows (`b.n > -1`, `b.n > 5` over `n = i`), so they measure a filter that
+   * rejects nothing. An equality over `k = i % 97` passes ~1/97, so the two differ in what a walk
+   * could SKIP as well as in whether it may reorder faults.
+   *
+   * `hopfiltneq` is its near-twin on the other raise-free operator and passes ~96/97 — the pair
+   * separates "raise-free" from "selective", which a single row would conflate.
+   */
+  hopfiltfareq: 'MATCH (a:P)-[:E]->(b:P) WHERE b.k = 5 RETURN b.n AS n',
+  hopfiltneq: 'MATCH (a:P)-[:E]->(b:P) WHERE b.k <> 5 RETURN b.n AS n',
   // ⚠️ THE DECOMPOSITION OF `hopfiltyield`, which is the heaviest OPEN row in this bench at **644
   // ns/row** (item 1437). Profiling it nominated nothing routable — `get adjFrom` is 1.1%, so the
   // edge-index trick item 1431 took for the undirected walk is worth ~nothing here — and the
