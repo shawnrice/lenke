@@ -80859,7 +80859,7 @@ needed: **a shape on the general path is only slow if it cannot stop early.**
 `bun run check` 0 read through `${pipestatus[1]}`, unpiped. No engine source changed; one dead probe
 import repaired, one scratch explorer deleted rather than left to become the 143rd instrument.
 
-### Item 1776 — item 1775's 7.9x target TAKEN: the skip-only page now rides the node-projection rung, measured at **7.37x at 200,000 and 10.56x at 20,000** against the same query down the other route in the SAME build, with the untouched hop pair FLAT at 1.00x — and the fuzzers turn out to be BLIND to the whole shape, so a new cross-engine oracle was needed to say byte-identity held
+### Item 1776 — item 1775's 7.9x target TAKEN: the skip-only page now rides the node-projection rung, measured at **7.37x at 200,000 and 10.56x at 20,000** against the same query down the other route in the SAME build, with the untouched hop pair FLAT at 1.00x — and the fuzzers turn out to be BLIND to the whole shape, so a new cross-engine oracle was needed to say byte-identity held — ⚠️ **ITS "NOT TAKEN" SECTION ON THE HOP IS SUPERSEDED: item 1777 takes both halves of the hop page (8.14x and 4.87x), because the blocker named here was the SYMPTOM (which end is projected) and the cause was the WALK CHOICE**
 
 Item 1775 found it and deliberately did not build it. This builds it, on a branch
 (`perf/skip-only-page-rung`), measured after the work rather than during it.
@@ -80967,7 +80967,7 @@ fact, and it is the whole argument for the carve-out below.
   that mutant with three errors, so the typechecker is the gate with teeth on it. Item 475's rule,
   recorded on the function rather than left as an unexplained survivor.
 
-#### NOT TAKEN: the same page on the hop rung, and it is the BIGGER number
+#### NOT TAKEN HERE: the same page on the hop rung, and it is the BIGGER number — ⚠️ TAKEN AT ITEM 1777, where forcing the start-driven walk (item 551's own mechanism) makes BOTH ends answer-equivalent and no end-carve-out is needed
 
 Priced here, same run: `hopoffset` 175.107 against `hoplist` 45.193 — **3.87x, and 130 ms of
 absolute cost against the node shape's 42**. It is deliberately left, and the blocker is a measured
@@ -81001,3 +81001,114 @@ either. Unmeasured; a separate shape from this one.
 `bun run check` 0 read through `${pipestatus[1]}`, unpiped. gql suite 4,452 pass / 0 fail (28 new).
 All seven fuzzers pass — and see above for exactly how little that is worth for this shape.
 `skip-only-page-parity.ts` exits 0.
+
+### Item 1777 — the hop half of the skip-only page, which item 1776 declined on a MEASURED answer difference and which turns out to be takeable after all: forcing the walk item 551 already built for this makes it answer-equivalent, **8.14x on the start-read hop and 4.87x on the far-read one** — and the paged far hop now beats its own UNPAGED spelling by 1.28x, which says the unpaged walk choice is itself suspect
+
+Item 1776 left this with a specific blocker, not a doubt: the hop projection's rung picks between a
+start-driven and a far-driven walk, the far-driven one reorders rows deliberately, and
+`offset-order-equiv.mjs` measured the result differing from the general path **at index 0 with a
+different multiset** while `skip-only-page-parity.ts` measured the two ENGINES already disagreeing on
+that same unpaged order. Slicing whichever walk happened to be chosen would therefore have returned
+rows different from native's — and graph-dependently, because that choice is made PER CALL from the
+start label's vacuity and the fan-in.
+
+#### The mechanism was already in the file, built for this exact problem
+
+`detectHopProjection`'s own `forceStartDriven` parameter, from item 551, with its measurement
+attached:
+
+> `MATCH (a)-[:K]->(b) RETURN b.age AS k` reads `ts [0,0,1,2,2,3,4,5]`, `native [5,2,3,4,0,0,2,1]`
+> … With a non-vacuous start label the same query reads `[5,2,3,4,0,0,2,1]` in **both engines**,
+> which is what says the start-driven walk's order is the general path's. So an order-sensitive fold
+> may ride THIS walk, and only this one.
+
+A skip-only page is an order-sensitive consumer in exactly that sense: it INHERITS the walk's visit
+order rather than deciding one. So `hopOrderPlan` now forces the start-driven walk whenever the page
+is non-zero, the same way it already does for a sort, and `pagedRows` slices at the single `sorted`
+wrapper every one of the detector's four exits already goes through. **No carve-out by which end the
+projection reads was needed** — the far-read hop becomes answer-equivalent too, because the force is
+what fixes the order, and reading the far end was never the cause.
+
+That is the correction worth naming: item 1776 priced the blocker on the SYMPTOM
+(`projectedEndsOnly` says this shape reads the far end, and that shape's order differs) when the
+cause was the WALK CHOICE. `check-the-blocker-still-holds` in one item flat — a "not built because
+X" note is a claim about X.
+
+#### Measured, before and after in one build
+
+Same method as item 1776 and the same reason for it: the parameterized `OFFSET $s` spelling declines
+the rung on purpose, so both routes are measurable in the build under test rather than across a
+rebuild. `page-rung-ab.sh`, five interleaved rounds, one shape per process, `p25` per process and
+the median across, row counts asserted per rep, 200,000 edges:
+
+| arm                   | route                                 | rows    | median p25 |
+| --------------------- | ------------------------------------- | ------- | ---------- |
+| `hopstartoffsetparam` | general path (BEFORE)                 | 199,990 | 134.931    |
+| `hopstartoffset`      | `hopProjection`, start-driven + slice | 199,990 | **16.577** |
+| `hopstart`            | `hopProjection`, unpaged              | 200,000 | 16.190     |
+| `hopoffsetparam`      | general path (BEFORE)                 | 199,990 | 170.889    |
+| `hopoffset`           | `hopProjection`, start-driven + slice | 199,990 | **35.057** |
+| `hoplist`             | `hopProjection`, unpaged (far-driven) | 200,000 | 44.954     |
+| `count`               | control                               | 1       | 0.001      |
+
+**8.14x on the start-read hop** (134.931 -> 16.577) and **4.87x on the far-read one** (170.889 ->
+35.057), ranges nowhere near overlapping, control flat. At 20,000: **7.27x** and **9.14x**. The
+start-read arm lands within **2%** of its own unpaged spelling (16.577 against 16.190), which is the
+same confirmation item 1776 got on the node shape: the page itself costs nothing, losing the rung
+was the whole bill.
+
+**AND THE PERTURBATION TOLL DID NOT APPEAR, in the file it was predicted for.** This edit is in
+`hop-projection.ts`, which `executor-edits-perturb` prices at up to 16% on unrelated rows and where
+item 1466 declined a 3.3x win on that ground. Against item 1776's run on the same machine: `hoplist`
+44.954 against 45.193, `list` 6.218 against 5.964, `offset` 6.648 against 6.596, `count` identical.
+Flat or inside the noise on every one. **That does not refute `executor-edits-perturb`** — it is one
+edit that adds no walk variant and no branch to any inner loop, which is exactly the kind the audit's
+1.08-1.24x readings did not come from. It does mean the toll is a cost to WEIGH, not a veto to apply.
+
+#### A finding that fell out: the UNPAGED far hop may be choosing the wrong walk
+
+`hopoffset` at 35.057 is **1.28x FASTER than `hoplist` at 44.954** — the PAGED query beating the
+unpaged one over ten more rows. Both now take the rung; the only difference is that the page forces
+the start-driven walk while the unpaged shape lets `farDrivenPaysForMultiType` and the vacuity test
+choose far-driven. On this fixture that choice costs 28%.
+
+⚠️ **ONE FIXTURE, AND ITS FAN-IN IS THE POINT.** `page-rung-probe.mjs` builds one out-edge per vertex,
+so the fan-in is ~1, and the far-driven walk's win is a HIGH-fan-in effect — item 1390 measured it at
+74% where it pays. So this is not "the heuristic is wrong"; it is "the heuristic's threshold has a
+measurable wrong side, and nobody has swept it". Unpriced, needs a fan-in sweep, and `hopstart` vs
+`hoplist` (16.190 against 44.954 for the same walk shape, differing only in which end is projected)
+says there is more than one effect in that 2.8x.
+
+#### Teeth
+
+The forced walk is the whole correctness argument, so it is mutated: removing `|| pageSkip > 0` from
+`hopOrderPlan`'s `startDriven` **fails 3 of 35** rows in `skip-only-page.test.ts`, all three the
+far-read hop.
+
+⚠️ **AND IT SURVIVED THE FIRST ATTEMPT, WHICH IS WHY THERE ARE NOW TWO FIXTURES.** The hop rows were
+first written against the node fixture, which carries a stray `:M` vertex so a wrong candidate set
+shows up as a row count — and that makes `:L` NON-VACUOUS, so the far-driven walk is never eligible,
+the walk is start-driven anyway, and dropping the force left all 35 tests green. `buildVacuous()`
+gives every vertex the same label, which is the state the far-driven walk needs. Item 1064's lesson
+in `topk-node-scan.test.ts` ("the size is load-bearing") in a new place: **a fixture that cannot
+reach the branch passes for a reason that has nothing to do with the code.** The edges are also
+crossed (`* 7 + 3`, coprime with 24) so the two walks genuinely differ — on an `i -> i` fixture the
+orders coincide and the guard is invisible again.
+
+#### Also now visible: `offset-order-equiv.mjs` had to be rewritten to stay falsifiable
+
+Its original comparison was the UNPAGED query sliced against the PAGED one — two different routes
+while every rung declined a page, and the rung against itself the moment item 1776 shipped. It now
+reports **ROUTE** (the literal against the parameterized spelling, which is the general path) and
+**SELF** (paged against unpaged-sliced) separately, and only ROUTE decides its exit code. SELF now
+DIFFERS for the far-read hop and that is informative rather than wrong: the paged shape is
+start-driven by construction and the unpaged one is not. The rule item 1775 left was "run a probe
+before citing it"; this is the other half — **check that it can still FAIL.**
+
+#### Gates
+
+`bun run check` 0 read through `${pipestatus[1]}`, unpiped. gql suite 4,464 pass / 0 fail;
+`nx run-many -t test` green. All seven fuzzers pass — and as item 1776 recorded, they generate no
+unordered page at all, so `offset-order-equiv.mjs` (exit 0, ROUTE identical on all 16 rows) and
+`skip-only-page-parity.ts` (exit 0, paged IDENTICAL to native on all five shapes) are the instruments
+that actually cover this.

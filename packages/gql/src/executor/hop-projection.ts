@@ -30,7 +30,13 @@ import { plainNode, plainRel } from './hop-sides.js';
 import { vacuousLabel } from './labels.js';
 import { indexCandidates } from './matching.js';
 import type { SortPlan } from './ordered-rows.js';
-import { outputColumnSorts, sortRowsByColumns, sortedRows } from './ordered-rows.js';
+import {
+  outputColumnSorts,
+  pagedRows,
+  sortRowsByColumns,
+  sortedRows,
+  unsortedPageRoute,
+} from './ordered-rows.js';
 import { satisfies } from './predicates.js';
 import { foldFor } from './projection.js';
 import { projectRow } from './rows.js';
@@ -887,6 +893,12 @@ const hopOrderPlan = (
     return null;
   }
 
+  // ITEM 1776's SKIP-ONLY PAGE. Derived HERE rather than passed in, for two reasons: this function
+  // already owns the order decision the page depends on, and `detectHopProjection` sits on the
+  // complexity cap — the `??` alone took it to 36 against 35. `projectionIsStreamable` has already
+  // admitted the shape by the time this runs, so the `null` arm is the no-page case.
+  const pageSkip = unsortedPageRoute(proj) ?? 0;
+
   // 🛑 `sorts !== undefined` FORCING THE START-DRIVEN WALK IS THE SORTED-HOP COST, and it is
   // REFUTED as a target at item 698 (re-priced at 697) — do not re-derive it. The far-driven walk
   // is cheaper and cannot be used here: it REORDERS rows deliberately, and
@@ -900,9 +912,29 @@ const hopOrderPlan = (
   // Comparing against the unordered row alone overstates it ~1.9x, which is items 659/660's
   // lesson and the mistake item 727 walked into from the other direction: the bench's
   // `+ order by` row looks 2.6x worse than `traverse 1-hop project` and most of that is the floor.
+  /**
+   * ITEM 1776's SKIP-ONLY PAGE, and it forces the START-DRIVEN walk for the SAME reason item 551's
+   * order-sensitive fold does: the page INHERITS the walk's visit order, so it is only sliceable on
+   * the walk whose order is the general path's. `forceStartDriven`'s doc above measures that — with
+   * a non-vacuous start label both engines read `[5,2,3,4,0,0,2,1]`, which is what says the
+   * start-driven walk's order IS the general path's, while the far-driven walk reorders deliberately.
+   *
+   * WITHOUT THE FORCE THIS WOULD BE A WRONG ANSWER, not a slow one, and it would be
+   * graph-dependent: the far/start choice is made PER CALL from the start label's vacuity and the
+   * fan-in, so the same compiled query would slice a far-driven order on one graph and a
+   * start-driven one on another. `offset-order-equiv.mjs` measured that difference as "DIFFERS at
+   * index 0, different multiset", and `skip-only-page-parity.ts` then measured the two ENGINES
+   * already disagreeing on that unpaged far-driven order — so the rows would have differed from
+   * native's, which is the hard invariant rather than a style question.
+   *
+   * It costs the far-driven walk's advantage on this one shape, and the trade is not close: the
+   * page was costing **8.3x** against the unpaged rung (132.541 ms against 15.978 at 200,000 edges,
+   * `page-rung-probe.mjs`'s `hopstart` arms), where the far-driven route's own win over start-driven
+   * is the ~74%-at-high-fan-in margin item 1390 measured.
+   */
   return {
-    sorted: (inner) => sortedRows(inner, sorts ?? undefined),
-    startDriven: forceStartDriven || sorts !== undefined,
+    sorted: (inner) => pagedRows(sortedRows(inner, sorts ?? undefined), pageSkip),
+    startDriven: forceStartDriven || sorts !== undefined || pageSkip > 0,
   };
 };
 
@@ -1069,7 +1101,12 @@ const projectionIsStreamable = (proj: CProjection): boolean =>
   // `LIMIT 5` short-circuits where a materializing rung scans everything (`sortOf` records that
   // as ~280x for the DISTINCT walk). The two clauses are one rule, which is why they are one
   // condition rather than two.
-  (proj.orderBy.length > 0 || (proj.skip === undefined && proj.limit === undefined));
+  // ⚠️ SINCE ITEM 1776 A SKIP-ONLY PAGE IS ADMITTED, and it is the one window with no laziness to
+  // lose: the engine emits `N - skip` rows on either route, where a `LIMIT` lets the general path
+  // stop. `unsortedPageRoute` is that whole rule and why each half of it is the way it is. The
+  // route is only SOUND because `hopOrderPlan` then forces the start-driven walk for it — see
+  // `pagedRows`, and `forceStartDriven`'s own doc on why that walk's order is the general path's.
+  (proj.orderBy.length > 0 || unsortedPageRoute(proj) !== null);
 
 /**
  * The REL-BOUND hop projection: the start-driven walk, binding the edge as well as the far end.

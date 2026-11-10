@@ -101,7 +101,10 @@ const cannotFault = (e: Expr): boolean =>
  * complexity cap, which objected at 41 against 35 with the rule written inline.
  */
 export const unsortedPageRoute = (proj: {
-  readonly orderBy?: readonly SortItem[];
+  // `unknown[]` because the AST's `SortItem` and the compiled `CSortItem` are different types and
+  // both callers pass their own: only the LENGTH is read here, so narrowing further would buy a
+  // cast at each call site and no safety.
+  readonly orderBy?: readonly unknown[];
   readonly skip?: number | { param: string };
   readonly limit?: number | { param: string };
 }): number | null => {
@@ -582,5 +585,31 @@ export const sortedRows = (
     const rows = inner(graph, params);
 
     return rows === null ? null : sortRowsByColumns(rows, plan);
+  };
+};
+/**
+ * The same wrapper for item 1776's SKIP-ONLY PAGE: drop the first `skip` rows a rung produced, or
+ * return it unchanged when there is no such page (`skip === 0`).
+ *
+ * ⚠️ IT IS THE CALLER'S JOB TO HAVE FORCED AN ORDER THIS MAY BE SLICED. A sort is
+ * order-INVARIANT in the sense that matters here — it decides the order itself — while a skip
+ * INHERITS whichever order the walk produced, so slicing a walk whose visit order differs from the
+ * general path's returns different ROWS, not merely different order. For the hop rung that means
+ * the START-DRIVEN walk, whose order `detectHopProjection`'s own `forceStartDriven` doc records as
+ * the general path's, measured in both engines at item 551.
+ *
+ * ONE WRAPPER AROUND WHICHEVER WALK IS CHOSEN, and the run-time null passed THROUGH, both for the
+ * reasons `sortedRows` states above: a detector with four exits is exactly where one of them
+ * quietly misses the page, and a declined walk must stay declined rather than answering `[]`.
+ */
+export const pagedRows = (inner: RowsProducer | null, skip: number): RowsProducer | null => {
+  if (inner === null || skip <= 0) {
+    return inner;
+  }
+
+  return (graph, params) => {
+    const rows = inner(graph, params);
+
+    return rows === null ? null : rows.slice(skip);
   };
 };

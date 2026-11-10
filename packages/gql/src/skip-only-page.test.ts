@@ -73,34 +73,91 @@ describe('unsortedPageRoute — the admission rule, tested as a function', () =>
 const build = (): Graph => {
   const g = new Graph();
 
+  const verts = [];
+
   for (let i = 0; i < 24; i++) {
-    g.addVertex({
-      id: `v${i}`,
-      labels: ['L'],
-      // `k` repeats every 5, so a positional comparison can fail where a value-wise one passes.
-      properties: { k: i % 5, n: 100 - i, s: `s${i}` },
-    });
+    verts.push(
+      g.addVertex({
+        id: `v${i}`,
+        labels: ['L'],
+        // `k` repeats every 5, so a positional comparison can fail where a value-wise one does not.
+        properties: { k: i % 5, n: 100 - i, s: `s${i}` },
+      }),
+    );
   }
 
   // A second label the scan must not emit, so a wrong candidate set shows up as a row count.
   g.addVertex({ id: 'other', labels: ['M'], properties: { k: 0, n: 0, s: 'x' } });
 
+  // One out-edge per :L vertex, CROSSED (`* 7 + 3`, coprime with 24) so the far-driven and
+  // start-driven walks visit rows in genuinely different orders — on a fixture whose edges run
+  // `i -> i` the two orders coincide and the hop rows below would pass without the forced walk.
+  for (let i = 0; i < 24; i++) {
+    g.addEdge({ id: `e${i}`, from: verts[i], to: verts[(i * 7 + 3) % 24], labels: ['R'] });
+  }
+
+  return g;
+};
+
+/**
+ * THE SAME GRAPH WITH NO SECOND LABEL, and it is load-bearing for every hop row below.
+ *
+ * ⚠️ MUTATION IS WHY THIS EXISTS RATHER THAN MY READING IT. The hop rung picks the far-driven walk
+ * only where no vertex could fail the START label — `vacuousLabel` — so on `build()`, whose stray
+ * `:M` vertex makes `:L` non-vacuous, the walk is start-driven ANYWAY and the forced-walk guard is
+ * never reached. Removing the force left all 35 tests green against that fixture: item 1064's
+ * lesson in `topk-node-scan.test.ts` ("the size is load-bearing"), in a new place. Here every
+ * vertex is `:L`, so the far-driven walk is eligible and dropping the force FAILS.
+ */
+const buildVacuous = (): Graph => {
+  const g = new Graph();
+  const verts = [];
+
+  for (let i = 0; i < 24; i++) {
+    verts.push(g.addVertex({ id: `v${i}`, labels: ['L'], properties: { k: i % 5, n: 100 - i } }));
+  }
+
+  for (let i = 0; i < 24; i++) {
+    g.addEdge({ id: `e${i}`, from: verts[i], to: verts[(i * 7 + 3) % 24], labels: ['R'] });
+  }
+
   return g;
 };
 
 describe('a skip-only page on the node-projection rung', () => {
-  const CASES: ReadonlyArray<readonly [string, string]> = [
-    ['one column', 'MATCH (n:L) RETURN n.k AS k OFFSET '],
-    ['two columns', 'MATCH (n:L) RETURN n.k AS k, n.n AS t OFFSET '],
-    ['an expression column', 'MATCH (n:L) RETURN n.k + 1 AS k, n.s AS s OFFSET '],
-    ['a clause WHERE', 'MATCH (n:L) WHERE n.n > 110 RETURN n.k AS k OFFSET '],
-    ['an inline property', 'MATCH (n:L {k: 2}) RETURN n.n AS t OFFSET '],
+  /** `[name, the query prefix, which fixture]` — `vacuous` reaches the far-driven walk. */
+  const CASES: ReadonlyArray<readonly [string, string, 'labelled' | 'vacuous']> = [
+    ['one column', 'MATCH (n:L) RETURN n.k AS k OFFSET ', 'labelled'],
+    ['two columns', 'MATCH (n:L) RETURN n.k AS k, n.n AS t OFFSET ', 'labelled'],
+    ['an expression column', 'MATCH (n:L) RETURN n.k + 1 AS k, n.s AS s OFFSET ', 'labelled'],
+    ['a clause WHERE', 'MATCH (n:L) WHERE n.n > 110 RETURN n.k AS k OFFSET ', 'labelled'],
+    ['an inline property', 'MATCH (n:L {k: 2}) RETURN n.n AS t OFFSET ', 'labelled'],
+    // --- the hop rung (item 1776's second half) ---------------------------------------------
+    //
+    // ⚠️ THE FAR-READ HOP IS THE ONE THAT NEEDED THE WALK FORCED. Its rung chooses between a
+    // start-driven and a far-driven walk PER CALL, from the start label's vacuity and the fan-in,
+    // and the far-driven walk reorders rows deliberately — so slicing whichever walk happened to
+    // be chosen would have returned different ROWS, graph-dependently. `hopOrderPlan` forces the
+    // start-driven walk for a paged hop, whose order `forceStartDriven`'s doc measures as the
+    // general path's. These rows are what pins that: without the force they fail.
+    ['a hop reading the FAR end', 'MATCH (a:L)-[:R]->(b) RETURN b.k AS k OFFSET ', 'vacuous'],
+    ['a hop reading the START end', 'MATCH (a:L)-[:R]->(b) RETURN a.k AS k OFFSET ', 'vacuous'],
+    [
+      'a hop reading BOTH ends',
+      'MATCH (a:L)-[:R]->(b) RETURN a.k AS s, b.k AS f OFFSET ',
+      'vacuous',
+    ],
+    [
+      'a hop with a clause WHERE',
+      'MATCH (a:L)-[:R]->(b) WHERE b.n > 108 RETURN b.k AS k OFFSET ',
+      'vacuous',
+    ],
   ];
 
-  for (const [name, prefix] of CASES) {
+  for (const [name, prefix, fixture] of CASES) {
     for (const skip of [1, 7, 23]) {
       it(`${name}, OFFSET ${skip} — identical rows and order to the general path`, () => {
-        const g = build();
+        const g = fixture === 'vacuous' ? buildVacuous() : build();
         const viaRung = query(g, `${prefix}${skip}`);
         const viaGeneral = query(g, `${prefix}$s`, { s: skip });
 

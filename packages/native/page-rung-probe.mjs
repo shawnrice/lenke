@@ -142,6 +142,29 @@ const SHAPES = {
     group: 'hopoffset',
   },
 
+  /**
+   * --- group "hopstart": the ADMISSIBLE half of the hop page (item 1776) ---
+   *
+   * The hop rows above read the FAR end, which is the shape that may NOT take the page: its rung
+   * order differs from the TS general path's at index 0 with a different multiset
+   * (`offset-order-equiv.mjs`), and the engines already disagree on its unpaged order
+   * (`skip-only-page-parity.ts`), so slicing the rung there would return rows different from
+   * native's. The START-read projection is positionally identical on both checks, so it is the half
+   * a hop change could actually take — and pricing the FAR shape would have priced the wrong one.
+   */
+  hopstart: { q: `MATCH (a:P)-[:E]->(b) RETURN a.k`, rows: NODES, group: 'hopstartall' },
+  hopstartoffset: {
+    q: `MATCH (a:P)-[:E]->(b) RETURN a.k OFFSET ${LIMIT}`,
+    rows: NODES - LIMIT,
+    group: 'hopstart',
+  },
+  hopstartoffsetparam: {
+    q: `MATCH (a:P)-[:E]->(b) RETURN a.k OFFSET $s`,
+    params: { s: LIMIT },
+    rows: NODES - LIMIT,
+    group: 'hopstart',
+  },
+
   // --- group "control": keeps its rung WITH the page on it ------------------
   count: { q: `MATCH (n:P) RETURN count(*) AS c LIMIT 1`, rows: 1, group: 'control' },
   hopcount: { q: `MATCH (a:P)-[:E]->(b) RETURN count(*) AS c LIMIT 1`, rows: 1, group: 'control' },
