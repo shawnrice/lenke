@@ -82069,7 +82069,7 @@ remedy: ask `compileLinear` which rung fires, and never label a row from expecta
 within one tick because the 1.09x looked wrong for a route difference — the number questioned the
 label, which is the only reason the label got checked.
 
-#### `varlen*` is the biggest number and the WORST fixture to price it on
+#### ~~`varlen*` is the biggest number and the WORST fixture to price it on~~ ✅ SWEPT AT ITEM 1786: no superlinearity (`varlenproj` 20.31x the time for 28.0x the rows, per-row cost FALLING), and the general-path overhead priced at **11.6x per row** against a rung on the same fixture
 
 `varlenproj` (934.9 ms, 599,910 rows, 1558 ns/row) and `varlendistinctcount` (979.7) are the two
 largest absolute figures here, so they look like the obvious target. ⚠️ **They are measured at
@@ -82098,3 +82098,87 @@ The cross-end grouped aggregate, at **2.38x**, is the only one of the eight with
 named mechanism. It is also a realistic shape — "per group, aggregate over the other end" is what a
 join-and-aggregate looks like. The `hop2*` cluster is 420-510 ms with no twin and no identified rung,
 and `varlen*` needs a non-degenerate fixture before any number from it is worth acting on.
+
+### Item 1786 — ❌ **NO SUPERLINEARITY: the `varlen*` and `hop2*` general-path rows all AMORTIZE as fanout rises**, so the degenerate fixture was hiding nothing. `varlenproj` takes 20.31x the time for 28.0x the rows and its per-row cost FALLS 952 → 690 ns. What the sweep does price is the prize: **689.7 ns/row against a rung's 59.7 — 11.6x — on the same fixture**, which is the general-path overhead and the ceiling for any rung built here
+
+Item 1785 measured the eight general-path shapes and flagged two of them as the largest numbers on the
+table (`varlenproj` 934.9 ms, `varlendistinctcount` 979.7) **and not yet priceable**, because
+`FANOUT=1` makes the graph functional: a `{1,3}` tail is exactly `3 × NODES` rows by construction and
+every structure the trail correction exists for is absent. This is that sweep.
+
+#### The fixture was verified BEFORE being measured on
+
+Raising fanout is exactly when the generator defect CLAUDE.md documents bites — `to = (a*k + b) % N`
+is invariant under `k → k + N`, so a vertex's FANOUT edges all land on ONE target while out-degree,
+in-degree and isolated counts all look perfect, and every k-hop count becomes `F^k · N` by
+construction. Items 1516/1518 found it in six probe generators after a parenthetical claimed the
+repo's own were fine. Counted directly rather than argued:
+
+```text
+   FANOUT=1  STRIDE=random   distinct targets 20000/20000   sources with >1 distinct target      0
+   FANOUT=1  STRIDE=small    distinct targets 20000/20000   sources with >1 distinct target      0
+   FANOUT=4  STRIDE=random   distinct targets 20000/20000   sources with >1 distinct target  20000
+   FANOUT=4  STRIDE=small    distinct targets 20000/20000   sources with >1 distinct target  20000
+```
+
+So `isolated-row-bench.mjs`'s `hop = Math.floor(k / NODES)` offset is the fix working: at fanout 4
+every source genuinely branches. (At fanout 1 "0 sources with >1 target" is correct, not a defect —
+degree 1 cannot branch.)
+
+⚠️ **AND THE SIZE HAD TO DROP TO 20,000, WHICH IS FORCED RATHER THAN CHOSEN.** A `{1,3}` tail at
+fanout 4 is `(4 + 16 + 64) × NODES` ≈ 1.68M rows; holding 200,000 would measure allocation limits
+instead of the engine. Both arms run at the same size, so the comparison is fanout alone.
+
+#### Measured, `NODES=20000`, three interleaved rounds, `p25` per process
+
+| shape                                         | `F=1` ms | rows   | `F=4` ms | rows      | time       | rows        | ns/row `F=1` | ns/row `F=4` |
+| --------------------------------------------- | -------- | ------ | -------- | --------- | ---------- | ----------- | ------------ | ------------ |
+| `varlenproj`                                  | 57.04    | 59,910 | 1158.57  | 1,679,850 | **20.31x** | **28.0x**   | 952.1        | **689.7**    |
+| `varlendistinctcount`                         | 55.66    | 1      | 1189.37  | 1         | 21.37x     | (16x paths) | —            | —            |
+| `hop2sumend`                                  | 32.00    | 1      | 260.09   | 1         | 8.13x      | (16x paths) | —            | —            |
+| `hop2groupend`                                | 33.70    | 97     | 231.68   | 97        | 6.88x      | (16x paths) | —            | —            |
+| `hop2distinctrows`                            | 37.38    | 97     | 313.84   | 97        | 8.40x      | (16x paths) | —            | —            |
+| `hopsingleyield` **(takes a rung — control)** | 2.22     | 20,000 | 4.77     | 80,000    | 2.15x      | 4.0x        | 110.8        | **59.7**     |
+
+**EVERY SHAPE AMORTIZES.** `varlenproj` is the clearest because its row count is observable: 20.31x
+the time for 28.0x the rows, so per-row cost FALLS. The `hop2*` rows emit a fixed answer, but their
+underlying work is paths — `20,000 × 4² = 320,000` at fanout 4 against 20,000 at fanout 1, so 16x the
+paths — and they take 6.88x-8.40x. The control amortizes too (110.8 → 59.7).
+
+So **there is no var-length-specific or 2-hop-specific defect**, and the degenerate fixture was hiding
+nothing rather than hiding something. That is the question this sweep existed to answer, and the
+answer closes it: these rows are large because they are large, not because anything in the quantifier
+or chain machinery is superlinear in branching.
+
+#### What it DOES price: the general-path overhead at 11.6x per row
+
+The comparison worth keeping is `varlenproj` against `hopsingleyield` at `FANOUT=4` on the same
+fixture: **689.7 ns/row against 59.7 — 11.6x**. Both emit one-column rows, so the normalization is
+sound (item 1784's rule: neither is a filtered shape, so dividing by emitted rows is right here).
+
+That 11.6x is the general path re-paying `withBinding` / `matchPattern` / `projectBinding` /
+`recordTail` / `evalLabelExpr` per row, which item 1775's profile put at **96%** of such a shape. It
+is therefore **the ceiling for any rung built for these shapes, and it is large** — but it is a
+ceiling, not a lever: capturing it means writing a var-length projection rung, with trail semantics.
+
+⚠️ **AND THAT IS THE MOST CORRECTNESS-LOADED RUNG ON THE BOARD.** Item 1399 measured removing the
+depth-4 endpoint-mask gate as "correct and 9.9x faster" on a fanout-1 fixture; item 1400 found the
+same change answers **−3** on randomized multigraphs, because the structures the trail correction
+exists for were all absent. So a var-length rung needs its correctness evidence at `FANOUT=4` BEFORE
+any timing claim, and this item deliberately does not start it.
+
+#### Where this leaves the eight
+
+- `varlenproj` / `varlendistinctcount` — priceable now, no hidden superlinearity, ceiling ~11.6x,
+  gated behind trail-semantics correctness work. The largest prize and the largest risk.
+- `hop2sumend` / `hop2distinctcount` / `hop2distinctrows` / `hop2groupend` — amortize, no twin, no
+  identified rung. Nothing nominates one of them over another.
+- `optgroup` — 370.9 ms, untouched by this sweep.
+- `hopgroupsumcrossend` — still the only one with a measured twin (**2.38x**, item 1785) and a named
+  mechanism (`grouped-hop.ts` binds one node; a cross-end rung binds both). Below item 1466's 3.3x
+  decline bar, which is why it is the owner's call rather than mine.
+
+#### Gates
+
+No engine code changed; this file only. `bun run check` 0 read unpiped. Every sweep process capped at
+`MemoryMax=16G`, `MemorySwapMax=0`, `timeout 600` — which matters at 1.68M rows per rep.
