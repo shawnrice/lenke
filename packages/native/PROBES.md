@@ -16,15 +16,37 @@ Each of these was built because a violation was FOUND. A violation is a planner 
 for a reason other than cost, and it is invisible to every correctness test, because both routes
 return the same rows.
 
-| probe                        | the property                                                                                | last run                                                                                                          |
-| ---------------------------- | ------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| `spelling-probe.ts`          | equivalent GQL spellings of one predicate cost the same                                     | clean; one flag is item 644's reverted product lever. **Gained TEMPORAL groups at 1490 (2.29x)**                  |
-| `gremlin-spelling-probe.ts`  | the same for Gremlin (item 1305)                                                            | zero flagged AT `SPELL_N=200000`; **1M flagged a new 2.00x group** (item 1332)                                    |
-| `surface-parity-probe.ts`    | GQL and Gremlin cost the same for ONE question                                              | found 1322's 5.78x and 1334's 1.92x; `two-hop-count` now GQL 1.35x FASTER, gap reversed                           |
-| `index-never-hurts-probe.ts` | adding an index never makes a query slower (item 1324)                                      | holds on 17 shapes, both surfaces                                                                                 |
-| `id-lookup-is-o1-probe.ts`   | lookup by id is FLAT in graph size (item 1326)                                              | holds on 8 arms over a 16x range                                                                                  |
-| `id-lookup-hotset-probe.mjs` | whether that probe's residual drift is CACHE or COMPLEXITY (item 1395)                      | CACHE: flat in N at a fixed hot set, rising in hot set at fixed N — O(1) confirmed at **~5 ns hot / ~18 ns cold** |
-| `order-probe-1389.mjs`       | a rewritten adjacency walk yields the SAME SEQUENCE, not just the same multiset (item 1389) | BASE vs HAND identical for both `out('E','F')` and `out('F','E')`                                                 |
+| probe                        | the property                                                                                  | last run                                                                                                                     |
+| ---------------------------- | --------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `spelling-probe.ts`          | equivalent GQL spellings of one predicate cost the same                                       | clean; one flag is item 644's reverted product lever. **Gained TEMPORAL groups at 1490 (2.29x)**                             |
+| `gremlin-spelling-probe.ts`  | the same for Gremlin (item 1305)                                                              | zero flagged AT `SPELL_N=200000`; **1M flagged a new 2.00x group** (item 1332)                                               |
+| `surface-parity-probe.ts`    | GQL and Gremlin cost the same for ONE question                                                | found 1322's 5.78x and 1334's 1.92x; `two-hop-count` now GQL 1.35x FASTER, gap reversed                                      |
+| `index-never-hurts-probe.ts` | adding an index never makes a query slower (item 1324)                                        | holds on 17 shapes, both surfaces                                                                                            |
+| `id-lookup-is-o1-probe.ts`   | lookup by id is FLAT in graph size (item 1326)                                                | holds on 8 arms over a 16x range                                                                                             |
+| `id-lookup-hotset-probe.mjs` | whether that probe's residual drift is CACHE or COMPLEXITY (item 1395)                        | CACHE: flat in N at a fixed hot set, rising in hot set at fixed N — O(1) confirmed at **~5 ns hot / ~18 ns cold**            |
+| `order-probe-1389.mjs`       | a rewritten adjacency walk yields the SAME SEQUENCE, not just the same multiset (item 1389)   | BASE vs HAND identical for both `out('E','F')` and `out('F','E')`                                                            |
+| `rung-precedence-census.mjs` | **WHICH of the 20 rungs answers each shape, and which willing rungs are STARVED** (item 1775) | 79 shapes: only 5 contested, 3 pairs, all 3 correctly ordered. 10 shapes on the GENERAL PATH — that list is the open surface |
+| `page-rung-probe.mjs`        | what LOSING a projection rung to a page costs, one shape per process (item 1775)              | skip-only page **7.9x** at 200k (5.4x at 20k); bare `LIMIT` the OTHER way, 360x in the general path's favour                 |
+| `offset-order-equiv.mjs`     | is "take the rung, then slice" answer-equivalent to the general path's `OFFSET k`? (1775)     | IDENTICAL for node proj / node 2col / hop START proj; **hop FAR proj DIFFERS at index 0, different multiset**                |
+| `offset-rung-profile.mjs`    | the two profiles behind that 7.9x, windowed past the fixture build (item 1775)                | general path 3424 ms engine vs the rung's 426; **`internalSkip` is 3.7% — losing the rung is the other 96%**                 |
+
+⚠️ **`rung-precedence-census.mjs` ASSERTS THE ASSUMPTION IT RESTS ON, and a reader changing either
+file must know why.** It reads `compileLinear`'s non-null fields to name the rung that fires, which is
+only sound because `compileLinear`'s returned field order is kept IDENTICAL to `runLinear`'s lazy
+`if (linear.<rung>)` chain in `executor/clauses.ts` — deliberately, and `rewrites.ts` records that the
+two once DRIFTED in their first five entries while matching in the last fourteen. The census
+transcribes the chain and refuses to report if the orders disagree, rather than producing a confident
+census of the wrong precedence. ⚠️ **AND A STARVED RUNG IS A CANDIDATE, NOT A FINDING** — item 418
+measured a branch moved ahead of a hot dispatch costing the shape it does not claim 1.12x, so a
+broader rung firing first is often right. All three contested pairs the census found were correct.
+
+⚠️ **`hop-distinct-route-probe.mjs` WAS DEAD FOR AN UNKNOWN NUMBER OF ITEMS** and item 1775 found it
+by accident, copying its import. It read `../gql/src/executor.ts`, which stopped existing when the
+executor was split into modules — so item 1583's own oracle, the instrument that found a 6.00x rung
+starvation, had been silently unrunnable while `CLOSED.md` went on citing it. Nothing noticed, because
+a probe has no gate. **A probe that imports engine internals is a probe that a refactor can kill
+without failing anything**, so run the ones you cite before citing them, and prefer the import path a
+TEST uses (`routes-fired.test.ts` names `./executor/rewrites.ts`) since a test's path is maintained.
 
 ⚠️ `order-probe-1389.mjs` CARRIES ITS OWN VACUITY CHECK, and it needs one. Gremlin stream order is a
 TinkerPop contract and the differential fuzzer compares ORDERED, so a walk that replaces

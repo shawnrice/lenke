@@ -66015,7 +66015,7 @@ is to run the gate AFTER writing the entry, which is the order this item used.
 `bun run check` 0 read unpiped. Suites gql 3993, core 431, gremlin 1551, native 985, serialization
 144 — 0 fail. `bun run fuzz` 20/0 under the 16G cap.
 
-### Item 1583 — **up to 6.00x on `count(DISTINCT …)` over a hop**, because the dedup-while-walking rung was WRITTEN, CORRECT AND WILLING and a broader rung sat ahead of it in the chain: `hopAggregate` took every such shape and `distinctCount` never ran. The node-only twin reached it and was 10x faster, decided entirely by which detector happened to be listed first
+### Item 1583 — **up to 6.00x on `count(DISTINCT …)` over a hop**, because the dedup-while-walking rung was WRITTEN, CORRECT AND WILLING and a broader rung sat ahead of it in the chain: `hopAggregate` took every such shape and `distinctCount` never ran. The node-only twin reached it and was 10x faster, decided entirely by which detector happened to be listed first — ⚠️ **ITS ORACLE `hop-distinct-route-probe.mjs` WAS DEAD (a stale `executor.ts` import) until item 1775 repaired it; the gate itself is CONFIRMED STILL HOLDING there, and 1775 generalized this diagnosis to all 20 rungs in `rung-precedence-census.mjs` — starvation turns out to be RARE**
 
 Item 1581's cross-surface probe flagged `MATCH (a:P)-[:E]->(b) RETURN count(DISTINCT b)` at **52.37x**
 its Gremlin twin. The useful part was not the ratio but what the diagnosis turned out to be.
@@ -80653,3 +80653,208 @@ closed, because it answers the question and tells you nothing about whether it n
 #### Gates
 
 `bun run check` 0 read through `${pipestatus[1]}`. No engine source changed.
+
+### Item 1775 — the RUNG PRECEDENCE CENSUS, built because item 1583 found a 6.00x starvation BY HAND and nothing ever enumerated the other nineteen rungs: **starvation is RARE (5 contested shapes of 83, 3 pairs, all 3 correctly ordered)** — but the census's GENERAL-PATH rows carry a **7.9x** target, a skip-only page that declines every projection rung for nothing, profiled to the decline itself (`internalSkip` is 3.7%)
+
+Asked as a consolidation question — after ~1,775 items, what has happened to the code? — and the
+answer to that is at the bottom of this entry. The pass itself picked the rung thicket, because two
+notes in CLAUDE.md say it is where speed now leaks: [[rung-precedence-decides-speed]] (a willing fast
+rung starved by a broader one above it, **1.80-6.00x** at item 1583) and [[executor-edits-perturb]].
+
+#### The instrument, and why `compileLinear` is a sound oracle where timing is not
+
+Item 1583's diagnosis is the model: `MATCH (a:P)-[:E]->(b) RETURN count(DISTINCT b)` was 52.37x its
+Gremlin twin, and **timing could not say whether the slow arm DECLINED the narrow rung or took it and
+had 150,000 edges to walk instead of 50,000 vertices.** `compileLinear` could, because it runs every
+detector and returns the set. That gave the answer at once: `distinctCount` was willing for every hop
+spelling and `hopAggregate` sat ahead of it in the chain, so it never ran.
+
+That diagnostic was never generalized. There are **twenty** rungs; item 1583's is the one that
+happened to be noticed. `rung-precedence-census.mjs` generalizes it:
+
+    the FIRST non-null field, in declaration order, is the rung that FIRES
+    every LATER non-null field is a rung that was WILLING and did not run
+
+⚠️ **THAT IDENTITY IS AN ASSUMPTION ABOUT TWO FILES AGREEING, so the census ASSERTS IT.** It holds
+only because `compileLinear`'s returned field order is kept identical to `runLinear`'s lazy chain in
+`executor/clauses.ts`, deliberately — and `rewrites.ts` records that the two **once drifted in their
+first five entries while matching in the last fourteen**, carrying a comment that described the
+literal's order and contradicted the chain. The census transcribes the chain, checks it against the
+returned key order, and refuses to report on a mismatch rather than publishing a confident census of
+the wrong precedence.
+
+#### The census: the thicket is NOT broadly mis-ordered
+
+83 shapes across pattern depth, tail kind, grouping, OPTIONAL, `WHERE`, page and which end a tail
+reads:
+
+```text
+   shapes with a willing rung         73/83
+   shapes on the GENERAL PATH         10
+   shapes with a CONTESTED choice      5      (>=2 willing rungs)
+
+   2x  distinctCount      >  nodeAggregate          <- item 1583's own fix, working
+   2x  groupHopShortcut   >  groupedHopAggregate
+   1x  groupCountShortcut >  groupedNodeAggregate
+```
+
+**All three pairs are correctly ordered**, and that is the headline: the narrower rung wins in each.
+Item 1583's compile-time gate is confirmed holding — `distinctCount` now fires on all five hop
+`count(DISTINCT)` spellings, where before `hopAggregate` took every one of them.
+
+⚠️ **A STARVED RUNG IS A CANDIDATE, NOT A FINDING, and this census is the evidence for that rule
+rather than against it.** `groupedHopAggregate` printed as _"willing somewhere but ALWAYS starved"_ —
+item 1583's exact signature, on the first 79 shapes. It is nothing of the kind: `groupHopShortcut` is the
+count-specific rung and correctly beats the general grouped-aggregate one, and
+`groupedHopAggregate` has a shape of its own that the corpus simply never contained (the key and the
+aggregate on the **same** end: `RETURN b.k AS g, sum(b.n) AS s` reaches it, `RETURN a.k AS g,
+sum(b.k) AS s` reaches nothing). A corpus gap reads exactly like a starvation and must be ruled out
+before either is reported.
+
+Both corrections are IN the instrument, not only recorded here: those two shapes are now in the
+corpus, so the rung fires and the false alarm is gone, and the never-fires line no longer asserts
+starvation — it names the two readings and says to rule out the gap first. Leaving a misleading line
+in a probe is item 1774's lesson, and this one had already misled its own author once.
+
+#### The real target was in the GENERAL-PATH rows, and it runs BACKWARDS at first reading
+
+```text
+   MATCH (n:P) RETURN n.k                        -> nodeProjection
+   MATCH (n:P) RETURN n.k LIMIT 10               -> GENERAL PATH     <- adding a LIMIT loses the rung
+   MATCH (n:P) RETURN n.k ORDER BY n.k LIMIT 10  -> nodeProjection   <- adding a SORT regains it
+```
+
+The projection rungs decline a page outright (`proj.skip !== undefined || proj.limit !== undefined`),
+and `foldPageIntoReturn` folds an ORDER BY + LIMIT into a top-K and clears it. So the spelling that
+does **strictly more work** is the one that keeps the fast route, and `node count + LIMIT` keeps
+`countShortcut`, so it is specific to the projection rungs.
+
+⚠️ **AND THAT HALF OF IT IS A CORRECT DECLINE — I measured it as a finding and it refuted itself.**
+Five interleaved processes, `p25` per process, median across:
+
+```text
+   limit          0.035 ms   GENERAL PATH          <- 10 rows
+   orderlimit    12.565 ms   nodeProjection rung   <- 10 rows, and 360x SLOWER
+   list           6.194 ms   nodeProjection rung   <- 200,000 rows
+```
+
+The general pipeline is **lazy**: a bare `LIMIT 10` stops after ten rows (0.035 against 6.194 to
+materialize all 200,000). Forcing that shape onto `nodeProjection`, which materializes then slices,
+would be ~360x worse. This is item 1375's trap exactly — a near-5000x "spelling gap" that was a
+correct decline — and the probe was written expecting it, which is the only reason it was read right.
+
+#### The skip-only page is the OPPOSITE verdict on the same decline: **7.9x, and it grows with N**
+
+A skip with no limit cannot stop early — the engine must still emit N−k rows — so there is no
+laziness to collect and the rung's loss is pure. Same fixture, interleaved, `count` control flat:
+
+```text
+                          p25 per process (5)                    median    rows
+   list      (rung)       6.554 6.906 6.194 5.952 5.735           6.194    200,000
+   offset    (general)   48.010 46.158 49.078 51.354 51.092      49.078    199,990
+   count     (control)    0.001 x5                                0.001    flat
+```
+
+**7.9x for TEN FEWER ROWS**, ranges nowhere near overlapping, and **5.4x at 20,000 against 7.9x at
+200,000** — so it scales. Under `node` rather than `bun` the same pair is 88.888 against 13.990, 6.35x.
+
+The profiles name the cause rather than leaving it to inference (`offset-rung-profile.mjs`, windowed
+past the fixture build so item 1362's inversion cannot happen):
+
+```text
+   list.cpuprofile     426 ms engine        offset.cpuprofile   3424 ms engine
+     174.0  40.8%  detectNodeProjection      633.6  18.5%  matchPattern
+      23.2   5.4%  propOf                    423.5  12.4%  withBinding
+      12.7   3.0%  get properties            209.0   6.1%  mapToArray
+                                             200.3   5.9%  hoistedMatch
+                                             146.4   4.3%  evalLabelExpr
+                                             127.5   3.7%  internalSkip   <- the skip ITSELF
+```
+
+**`internalSkip` is 3.7%. Losing the rung is the other 96%** — the general path re-pays `withBinding`
+/ `matchPattern` / `projectBinding` / `recordTail` / `evalLabelExpr` per row, for all 200,000, to
+produce an answer the rung's one fused closure produces in 174 ms.
+
+#### Whether "take the rung, then slice" is LEGAL splits by shape, and 3 of 4 are free
+
+Being faster and being allowed are different questions, and the hazard is specific: `OFFSET` without
+`ORDER BY` skips an **unspecified** set of rows. [[order-is-unspecified]] is this repo's standing
+position and cross-engine comparisons are multiset comparisons for that reason — but **a skip is not
+order-invariant the way a projection is.** Skipping the first ten of one visit order and the first ten
+of another yields DIFFERENT MULTISETS, so "order is unspecified" does not by itself license the
+rewrite; it says a reader may not rely on which rows come back, which is weaker than the two engines
+being free to disagree with each other, and byte-identity is a hard invariant.
+
+`offset-order-equiv.mjs` settles the cheap half empirically — if the rung's order already equals the
+general path's, slicing it returns the identical rows and no semantics decision is needed:
+
+```text
+   node proj        OFFSET 1 / 10 / 97 / 1000    IDENTICAL (positional)
+   node proj 2col   OFFSET 1 / 10 / 97 / 1000    IDENTICAL (positional)
+   hop proj START   OFFSET 1 / 10 / 97 / 1000    IDENTICAL (positional)
+   hop proj FAR     OFFSET 1 / 10 / 97 / 1000    DIFFERS at index 0, NOT the same multiset
+```
+
+So for three of the four the rewrite is answer-equivalent in the strict positional sense and the 7.9x
+is free. The **far**-projection hop visits in a different order from the general path, so there it
+needs an owner decision and the ISO question answered from the grammar — not a patch.
+
+⚠️ **NOT BUILT HERE, and the reason is a priced toll rather than doubt.**
+[[executor-edits-perturb]] measures any edit to `hop-projection.ts` / `node-scan.ts` costing unrelated
+rows up to **~16%**, and item 1466 declined a 3.3x win on exactly that ground. 7.9x is well clear of
+3.3x, so this probably survives the toll — but it is a judgment with a measured cost attached, on the
+most central files in the executor, and it is the owner's.
+
+#### ⚠️ Item 1583's OWN ORACLE HAD BEEN DEAD, and nothing noticed
+
+`hop-distinct-route-probe.mjs` imported `../gql/src/executor.ts`, which **stopped existing when the
+executor was split into modules.** So the instrument that found a 6.00x starvation has been silently
+unrunnable for an unknown number of items while `CLOSED.md` went on citing its table. Found by
+accident, copying its import line into the census.
+
+**A probe that imports engine internals is a probe that a refactor can kill without failing
+anything** — there is no gate on `packages/native/*.mjs`. Repaired in this commit (it runs, and
+independently re-confirms item 1583's gate: `distinctCount` on all five hop spellings). Two rules
+follow, both now in `PROBES.md`: run a probe before citing it, and prefer the import path a **TEST**
+uses — `routes-fired.test.ts` names `./executor/rewrites.ts`, and a test's path stays maintained
+because a gate breaks when it rots.
+
+#### `-->` IS CYPHER
+
+The census's untyped-edge row failed to parse. `-->` is Cypher's abbreviated edge; ISO-GQL spells it
+`->` or `-[]->`, and both route identically to the typed form. CLAUDE.md's standing warning —
+**ISO-GQL is NOT Cypher** — arriving as a parse failure in my own corpus. The row is now both
+spellings, and the failure was _reported_ rather than skipped, which is why it was seen at all: a
+silently dropped shape would have understated the census exactly where the grammar is least familiar.
+
+#### The consolidation accounting that prompted this
+
+Measured from the log, not impression. Of the last 300 commits **176 touched `packages/*/src`**
+(+73,814/−28,947 lines), and the shipped wins compound: 24.7x on the one-column grouped count, 14.5x
+on the `dedup` family, 5.67x on the `runLinear` clause arc, 4.4x on `V(id).values(k)`, 4.01x on
+`UNION`, 2.97x on Gremlin paging. The code did change and it did get faster.
+
+Two things have not been going well, and both are visible only in aggregate:
+
+- **Shipping stalled.** Source-touching commits per 50, newest first: **18**, 29, 27, **45**, 30, 27,
+  22, 26, 17, 26, 25 — and **items 1760-1774 changed no source at all**, fifteen consecutive
+  measurement items, four of which item 1774 found had re-derived closed work.
+- **The instruments outgrew the engine.** Over those same 300 commits, probes and review docs took
+  **+40,824 lines against −625 deleted** — effectively append-only. There are **142** probe files in
+  `packages/native` and 30 bench/probe npm scripts; `CLOSED.md` is 80,655 lines and the audit 109,561.
+  The dead oracle above is what that looks like from the inside: an instrument corpus large enough
+  that a load-bearing member can rot unnoticed.
+
+⚠️ **The lever the thicket was suspected of is NOT where the leak is.** 241 top-level functions across
+`shortcuts.ts` (7,064 lines), `hop-projection.ts` (5,836) and `count-shortcut.ts` (3,692) _look_ like
+a precedence hazard, and 20 rungs with one hand-found starvation made that the obvious bet. The census
+says the ordering is almost entirely right, and that **the 10 GENERAL-PATH rows are the open surface**
+— shapes with no rung at all: every 2-hop aggregate and distinct tail, every var-length tail but the
+count, `OPTIONAL` + grouping, and the cross-end grouped hop sum. That list did not exist before this
+item and is the thing to price next, one shape at a time, against the laziness control this item
+needed: **a shape on the general path is only slow if it cannot stop early.**
+
+#### Gates
+
+`bun run check` 0 read through `${pipestatus[1]}`, unpiped. No engine source changed; one dead probe
+import repaired, one scratch explorer deleted rather than left to become the 143rd instrument.

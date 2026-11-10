@@ -1,5 +1,5 @@
 // eslint-disable-next-line boundaries/no-cross-package-relative-import -- internal planner entry point, read pre-build; see above
-import { compileLinear } from '../gql/src/executor.ts';
+import { compileLinear } from '../gql/src/executor/rewrites.ts';
 /**
  * WHICH RUNG answers each `count(DISTINCT …)` spelling? (item 1583)
  *
