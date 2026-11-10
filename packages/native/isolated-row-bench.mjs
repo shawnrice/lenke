@@ -307,6 +307,52 @@ const SHAPES = {
   hopsortstr: 'MATCH (a:P)-[:E]->(b:P) RETURN b.s AS s ORDER BY s',
   hopsortnum: 'MATCH (a:P)-[:E]->(b:P) RETURN b.n AS n ORDER BY n',
   grouped: 'MATCH (n:P) RETURN n.k AS k, count(*) AS c',
+  /**
+   * ⚠️ THE EIGHT GENERAL-PATH SHAPES `rung-precedence-census.mjs` HAS BEEN NAMING SINCE ITEM 1775,
+   * AND NONE OF THEM HAD A ROW HERE (item 1785) — which is why no ranking ever nominated them.
+   *
+   * The census reports "10 shapes on the GENERAL PATH — that list is the open surface", and two of
+   * the ten are CORRECT declines that must stay: `node.limit` and `hop.limit`, where the general
+   * pipeline's laziness beats a rung that materializes then slices by **360x** (item 1775 measured
+   * that and it refuted itself as a finding). These are the other eight. They take NO rung at all,
+   * so they re-pay `withBinding` / `matchPattern` / `projectBinding` / `recordTail` /
+   * `evalLabelExpr` per row — the 96% item 1775's profile attributed to losing the rung.
+   *
+   * ⚠️ `hop2*` AND `varlen*` ARE SUPERLINEAR IN FANOUT, so they are kept at the bench's default
+   * `FANOUT=1` meaning: one out-edge per vertex, so a 2-hop is NODES rows and a `{1,3}` is 3*NODES.
+   * At `FANOUT=4` the same shapes are 16x and 84x that, which is a different question (and the one
+   * `scale_bench` exists for) rather than a harder version of this one.
+   */
+  hop2sumend: 'MATCH (a:P)-[:E]->(b)-[:E]->(c) RETURN sum(c.k) AS s',
+  hop2distinctcount: 'MATCH (a:P)-[:E]->(b)-[:E]->(c) RETURN count(DISTINCT c) AS c',
+  hop2distinctrows: 'MATCH (a:P)-[:E]->(b)-[:E]->(c) RETURN DISTINCT c.k',
+  hop2groupend: 'MATCH (a:P)-[:E]->(b)-[:E]->(c) RETURN c.k AS g, count(*) AS n',
+  varlenproj: 'MATCH (a:P)-[:E]->{1,3}(b) RETURN b.k',
+  varlendistinctcount: 'MATCH (a:P)-[:E]->{1,3}(b) RETURN count(DISTINCT b) AS c',
+  optgroup: 'MATCH (a:P) OPTIONAL MATCH (a)-[:E]->(b) RETURN a.k AS g, count(*) AS c',
+  hopgroupsumcrossend: 'MATCH (a:P)-[:E]->(b) RETURN a.k AS g, sum(b.k) AS s',
+  /**
+   * ⚠️ ONE OF THESE IS A RUNG-TAKING TWIN AND THE OTHER IS NOT — VERIFIED WITH `compileLinear`, after
+   * I wrote the opposite here (item 1785).
+   *
+   *   hopgroupsumsameend   `b.k AS g, sum(b.n)` — takes `groupedHopAggregate`. A REAL twin of
+   *                        `hopgroupsumcrossend`: same edges, same 97 groups, differing only in
+   *                        which end carries the key and which the aggregate. **2.38x** at 200,000.
+   *   hop2groupstart       `a.k AS g, count(*)` on a 2-hop — I claimed this "reaches a rung". It
+   *                        does NOT: `compileLinear` reports GENERAL PATH for it exactly as for
+   *                        `hop2groupend`, and the 1.09x between them is two general-path shapes
+   *                        differing only in a property read, not a route gap. Kept as a row —
+   *                        it is a legitimate shape and its number is real — but it is a SIBLING,
+   *                        not a control, and nothing about a rung can be read off it.
+   *
+   * Which is item 1775's own lesson arriving from the other side: it found `groupedHopAggregate`
+   * looking "willing but ALWAYS starved" when the corpus simply never contained the shape that
+   * reaches it. A corpus gap reads like a starvation; an ASSUMED twin reads like a route gap. Both
+   * are fixed the same way — ask `compileLinear` which rung fires, and never label a row from
+   * expectation.
+   */
+  hop2groupstart: 'MATCH (a:P)-[:E]->(b)-[:E]->(c) RETURN a.k AS g, count(*) AS n',
+  hopgroupsumsameend: 'MATCH (a:P)-[:E]->(b) RETURN b.k AS g, sum(b.n) AS s',
   point: 'MATCH (n:P) WHERE n.n = 12345 RETURN n.s AS s',
   scan: 'MATCH (n:P) RETURN count(*) AS c',
 };

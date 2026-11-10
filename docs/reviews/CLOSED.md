@@ -81989,3 +81989,112 @@ the other surface or a different axis, not another pass at this table.
 
 No engine code changed; docs and the ranking only. `bun run check` 0 read unpiped. Every sweep and
 profile process capped at `MemoryMax=16G`, `MemorySwapMax=0`, `timeout 600`.
+
+### Item 1785 — the EIGHT general-path shapes the census has named since item 1775 now have BENCH ROWS, which is why no ranking ever nominated them: 350-980 ms at 200,000 against a rung's 2.7. The one real twin prices losing the rung at **2.38x** — ⚠️ **not the 5.04x the 20,000-node fixture said**, and ⚠️ **the second "twin" I added is NOT one**, verified with `compileLinear` after I wrote the opposite
+
+Both surfaces' ranked tops are now at their floors or blocked (items 1784 for Gremlin; for GQL the sort
+comparator is specialized at item 1711, `hopsortnum`'s remaining ~25% sits behind an O(n) scan whose
+removal needs a branch in a loop item 159 measured at 1.6x, and the start/rel-predicate rows must
+visit the start/rel by definition). **A bench can only nominate what it contains**, and it contained
+none of the shapes that take no rung at all.
+
+`rung-precedence-census.mjs` has been printing "10 shapes on the GENERAL PATH — that list is the open
+surface" since item 1775. Run rather than cited (item 1775's own rule), it still prints 10, and **two
+are CORRECT declines that must stay**: `node.limit` and `hop.limit`, where the general pipeline is
+lazy and forcing a materializing rung would be ~360x worse — item 1775 measured that as a finding and
+it refuted itself. The other eight are now rows here.
+
+#### Measured, 200,000 nodes, `FANOUT=1`, `MULTILABEL=0`, three interleaved rounds
+
+| shape                                  | rows    | median `p25` | rounds                 |
+| -------------------------------------- | ------- | ------------ | ---------------------- |
+| `varlendistinctcount`                  | 1       | **979.709**  | 928.3 / 1036.1 / 979.7 |
+| `varlenproj`                           | 599,910 | **934.873**  | 926.6 / 939.5 / 934.9  |
+| `hop2distinctrows`                     | 97      | 511.501      | 511.8 / 511.5 / 497.1  |
+| `hop2distinctcount`                    | 1       | 495.008      | 483.5 / 495.0 / 501.9  |
+| `hop2sumend`                           | 1       | 472.032      | 472.0 / 470.6 / 480.9  |
+| `hop2groupend`                         | 97      | 460.236      | 469.0 / 456.1 / 460.2  |
+| `hop2groupstart`                       | 97      | 422.001      | 429.0 / 417.4 / 422.0  |
+| `optgroup`                             | 97      | 370.946      | 377.7 / 370.8 / 370.9  |
+| `hopgroupsumcrossend`                  | 97      | **356.750**  | 356.8 / 360.7 / 352.5  |
+| `hopgroupsumsameend` **(the rung)**    | 97      | **149.911**  | 149.7 / 151.8 / 149.9  |
+| `grouped` (node-grouped rung, control) | 97      | 2.727        | 2.8 / 2.7 / 2.7        |
+
+Every row is tight across rounds, and none is vacuous — each was checked for a live answer before the
+sweep (`hop2sumend` sums to 959,289, `optgroup` returns 97 groups, and so on), because a shape that
+matches nothing agrees with a broken one trivially.
+
+#### The one REAL twin: 2.38x, and the small fixture overstated it by 2x
+
+`hopgroupsumcrossend` and `hopgroupsumsameend` differ only in which end carries the group key and
+which the aggregate — same edges, same 97 groups. `compileLinear` confirms the split:
+cross-end GENERAL PATH, same-end `groupedHopAggregate`. **356.750 against 149.911 = 2.38x.**
+
+⚠️ **I REPORTED 5.04x FROM THE 20,000-NODE SMOKE TEST AND IT IS WRONG** (29.600 against 5.875). One
+process per arm at a tenth the size, before the sweep — exactly the reading CLAUDE.md's "match sample
+counts on both sides, and prefer min or p25 over the mean" rule exists to stop being quoted. At
+200,000 with three interleaved rounds it is 2.38x. **The direction held and the magnitude did not**,
+which is the usual way a small-fixture number fails.
+
+That 2.38x matters for the decision rather than only for the record: [[executor-edits-perturb]] prices
+an edit in these files at up to 16% on rows a change cannot reach, and **item 1466 declined a 3.3x win
+on exactly that ground**. 2.38x is BELOW that bar. What makes it still arguable is items 1781 and
+1783: both added a new route without editing an existing hot loop, and both measured their controls
+flat — so the toll is avoidable by construction rather than by luck. A cross-end rung would be a new
+detector and a new walk, not an edit to `groupedHopAggregate`'s.
+
+#### Why the cross-end shape declines, and it is structural
+
+`grouped-hop.ts` states it: **"Every aggregate argument must read the KEYED end only — it is the one
+node this walk binds."** So `RETURN a.k AS g, sum(b.k) AS s` is refused because the key is on the
+start and the aggregate reads the far end. Widening that gate is not the change; a walk that binds
+BOTH ends is — group by one, accumulate from the other, one pass over the typed edges with two
+property reads. The general path already does exactly that per row, and what it ALSO does per row is
+`withBinding` / `matchPattern` / `projectBinding` / `recordTail` / `evalLabelExpr` — the 96% item
+1775's profile attributed to losing the rung. So the available win is machinery, not algorithm, and
+the far-vertex pointer chase (item 1392) is paid by both routes and is not part of it.
+
+#### ⚠️ AND THE SECOND "TWIN" I ADDED IS NOT A TWIN
+
+I added `hop2groupstart` as a rung-taking control for `hop2groupend` and wrote in the bench that it
+"reaches a rung". **It does not.** `compileLinear` reports GENERAL PATH for both, so the 1.09x between
+them is two general-path shapes differing by one property read — not a route gap. The row stays
+(it is a legitimate shape and its number is real) but it is relabelled a SIBLING, and the comment now
+says what it is not.
+
+This is item 1775's lesson arriving from the other side. It found `groupedHopAggregate` looking
+"willing but ALWAYS starved" when the corpus merely never contained the shape that reaches it. **A
+corpus gap reads like a starvation; an ASSUMED twin reads like a route gap.** Both have the same
+remedy: ask `compileLinear` which rung fires, and never label a row from expectation. Caught here
+within one tick because the 1.09x looked wrong for a route difference — the number questioned the
+label, which is the only reason the label got checked.
+
+#### `varlen*` is the biggest number and the WORST fixture to price it on
+
+`varlenproj` (934.9 ms, 599,910 rows, 1558 ns/row) and `varlendistinctcount` (979.7) are the two
+largest absolute figures here, so they look like the obvious target. ⚠️ **They are measured at
+`FANOUT=1`, which is the DEGENERATE case for a var-length path**: one out-edge per vertex makes the
+graph functional, so a `{1,3}` tail is exactly `3 × NODES` rows by construction and every structure
+the trail correction exists for is absent. Item 1399 measured removing the depth-4 endpoint-mask gate
+as "correct and 9.9x faster" on such a fixture, and item 1400 found it answers **−3** on randomized
+multigraphs. So the honest statement is that these rows are large and **not yet priceable**: a
+var-length lever needs `FANOUT=4` readings first, which is a different sweep and a different item.
+
+#### Instrument fix on the way past
+
+⚠️ **`rung-precedence-census.mjs` DIES UNDER `node`** — it imports `rewrites.ts`, so resolution fails
+on `auto-param.js` — and `PROBES.md` did not say to run it with `bun`. A probe that cannot be run is
+the dead-oracle failure item 1775 was itself built after (`hop-distinct-route-probe.mjs` had imported
+a module that stopped existing). The row now says `bun`.
+
+#### Gates
+
+No engine code changed; ten bench rows, `PROBES.md` and this file. `bun run check` 0 read unpiped.
+Every sweep process capped at `MemoryMax=16G`, `MemorySwapMax=0`, `timeout 600`.
+
+#### What this nominates
+
+The cross-end grouped aggregate, at **2.38x**, is the only one of the eight with a measured twin and a
+named mechanism. It is also a realistic shape — "per group, aggregate over the other end" is what a
+join-and-aggregate looks like. The `hop2*` cluster is 420-510 ms with no twin and no identified rung,
+and `varlen*` needs a non-degenerate fixture before any number from it is worth acting on.
