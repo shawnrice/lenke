@@ -23,15 +23,20 @@ import { query } from '@lenke/gql';
  * was built to watch. This is the dead oracle of item 1775 in its quieter form: not a probe that
  * will not RUN, but one that will not FAIL. So it now asks both questions and labels them:
  *
- *   - **ROUTE** — the literal `OFFSET k` (the rung) against the PARAMETERIZED `OFFSET $s` (the
- *     general path, which declines on purpose because the route is chosen at compile time while the
- *     value lives in `params`). This is the real cross-route claim, and the one that must hold.
+ *   - **SPELLING** — the literal `OFFSET k` against the PARAMETERIZED `OFFSET $s`. ⚠️ This was the
+ *     cross-ROUTE comparison when it was written at item 1777, because the parameterized spelling
+ *     declined the rung; item 1778 gave it the rung as well, closing a 7.3x gap between two
+ *     spellings of one query — so it is now a SPELLING check, which is weaker but not empty: the
+ *     two must still agree to the row, and nothing else here asserts that. **There is no
+ *     general-path spelling of this shape left in the engine**, so the cross-route question is now
+ *     answered by `skip-only-page.test.ts`, whose expectation is an ABSOLUTE enumerated row list
+ *     rather than another route, and by `skip-only-page-parity.ts` against native.
  *   - **SELF** — the paged query against the unpaged query sliced. For a shape whose rung changes
  *     its walk when paged this legitimately DIFFERS, and that is informative rather than wrong:
  *     item 1776 forces the START-DRIVEN walk for a paged hop, whose order is the general path's,
  *     where the unpaged shape may take the far-driven walk, whose order is deliberately different.
  *
- * Only ROUTE decides the exit code. `skip-only-page-parity.ts` is the cross-ENGINE half.
+ * Only SPELLING decides the exit code. `skip-only-page-parity.ts` is the cross-ENGINE half.
  *
  *     cd packages/native && bun offset-order-equiv.mjs
  */
@@ -94,7 +99,7 @@ const verdict = (a, b) => {
     : `DIFFERS at ${d === -2 ? 'LENGTH' : `index ${d}`}${sameMultiset(a, b) ? ' (same multiset)' : ' (different rows)'}`;
 };
 
-let routeBad = 0;
+let spellingBad = 0;
 
 for (const [name, unpaged, pagedPrefix] of CASES) {
   const base = query(g, unpaged);
@@ -103,26 +108,26 @@ for (const [name, unpaged, pagedPrefix] of CASES) {
     // `skip` is `Number()`-coerced from `SKIPS` at the top of this file, so it is a number and
     // cannot carry query text. A `$param` IS used for the other arm, deliberately: that spelling is
     // the general path, which is the whole point of the ROUTE comparison.
-    // eslint-disable-next-line lenke/no-raw-interpolation -- numeric, Number()-coerced above; the parameterized arm below is the general-path route under test
+    // eslint-disable-next-line lenke/no-raw-interpolation -- numeric, Number()-coerced above; the parameterized arm below is the other SPELLING under test
     const viaRung = query(g, `${pagedPrefix}${skip}`);
     // eslint-disable-next-line lenke/no-raw-interpolation -- `pagedPrefix` is a literal from CASES above; the only VALUE here is the `$s` param, which is the point of this arm
     const viaGeneral = query(g, `${pagedPrefix}$s`, { s: skip });
-    const route = verdict(viaRung, viaGeneral);
+    const spelling = verdict(viaRung, viaGeneral);
     const self = verdict(viaRung, base.slice(skip));
 
-    if (route !== 'IDENTICAL') {
-      routeBad += 1;
+    if (spelling !== 'IDENTICAL') {
+      spellingBad += 1;
     }
 
     console.log(
-      `${name.padEnd(16)} OFFSET ${String(skip).padStart(5)}  ROUTE ${route.padEnd(40)} SELF ${self.padEnd(40)} rows ${viaRung.length}`,
+      `${name.padEnd(16)} OFFSET ${String(skip).padStart(5)}  SPELLING ${spelling.padEnd(40)} SELF ${self.padEnd(40)} rows ${viaRung.length}`,
     );
   }
 }
 
 console.log(
-  routeBad === 0
-    ? '\nROUTE identical everywhere — the rung answers what the general path answers.'
-    : `\n${routeBad} ROUTE case(s) DIFFER — the rung does NOT answer what the general path answers.`,
+  spellingBad === 0
+    ? '\nSPELLING identical everywhere — the literal and parameterized bounds are one answer.'
+    : `\n${spellingBad} SPELLING case(s) DIFFER — two spellings of one query disagree on the rows.`,
 );
-process.exit(routeBad === 0 ? 0 : 1);
+process.exit(spellingBad === 0 ? 0 : 1);

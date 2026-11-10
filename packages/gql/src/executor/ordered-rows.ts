@@ -25,8 +25,9 @@
  */
 import type { Graph } from '@lenke/core';
 
-import type { Clause, Expr, SortItem } from '../ast.js';
+import type { Clause, CountValue, Expr, SortItem } from '../ast.js';
 import type { Params, Row } from './core.js';
+import { resolveCount } from './rows.js';
 import { reducedRowComparator, sortColumnKind } from './sort-column-specialize.js';
 import { compareSort } from './values.js';
 
@@ -105,9 +106,9 @@ export const unsortedPageRoute = (proj: {
   // both callers pass their own: only the LENGTH is read here, so narrowing further would buy a
   // cast at each call site and no safety.
   readonly orderBy?: readonly unknown[];
-  readonly skip?: number | { param: string };
-  readonly limit?: number | { param: string };
-}): number | null => {
+  readonly skip?: CountValue;
+  readonly limit?: CountValue;
+}): CountValue | null => {
   if ((proj.orderBy?.length ?? 0) > 0) {
     return 0;
   }
@@ -116,9 +117,29 @@ export const unsortedPageRoute = (proj: {
     return 0;
   }
 
-  return proj.limit === undefined && typeof proj.skip === 'number' && proj.skip > 0
-    ? proj.skip
-    : null;
+  return proj.limit === undefined && proj.skip !== undefined && proj.skip !== 0 ? proj.skip : null;
+};
+/**
+ * The rows a rung produced, with item 1776's skip-only page applied — `0` being the no-page case.
+ *
+ * ⚠️ THE BOUND IS RESOLVED PER CALL, which is what lets a PARAMETERIZED page take a rung at all
+ * (item 1778). `deferredRoute` and `outputColumnSorts` both decline a parameterized window, and
+ * that is right for THEM: a `LIMIT $n` decides between a heap and a sort-and-slice, so the ROUTE
+ * depends on the value while the plan cache is shared across params. A skip-only page has no such
+ * dependence — every non-negative skip takes the same route and differs only in where the slice
+ * lands — so the only thing that must wait for `params` is the number, and that waits here.
+ *
+ * ⚠️ AND THE VALUE IS ALREADY VALIDATED BY THE TIME THIS RUNS, which is the other half of why this
+ * is safe rather than merely faster. `noteCountParam` registers a bound's `$param` at compile time
+ * and `compile.ts` checks it eagerly before a row is produced — non-negative integer, bound at all
+ * — so a negative or fractional bound raises `E_INVALID_VALUE` on EITHER route, and `rows.slice()`
+ * here can never see the negative index that would silently return the LAST k rows. That check is
+ * route-independent, so it protects a rung it was not written for; the tests pin it anyway.
+ */
+export const pageSlice = (rows: Row[], skip: CountValue, params: Params): Row[] => {
+  const n = typeof skip === 'number' ? skip : (resolveCount(skip, params) ?? 0);
+
+  return n > 0 ? rows.slice(n) : rows;
 };
 /** One `ORDER BY` key, resolved to the output column it names. */
 export type ColSort = { col: string; descending: boolean; nullsFirst: boolean | undefined };
@@ -602,14 +623,14 @@ export const sortedRows = (
  * reasons `sortedRows` states above: a detector with four exits is exactly where one of them
  * quietly misses the page, and a declined walk must stay declined rather than answering `[]`.
  */
-export const pagedRows = (inner: RowsProducer | null, skip: number): RowsProducer | null => {
-  if (inner === null || skip <= 0) {
+export const pagedRows = (inner: RowsProducer | null, skip: CountValue): RowsProducer | null => {
+  if (inner === null || skip === 0) {
     return inner;
   }
 
   return (graph, params) => {
     const rows = inner(graph, params);
 
-    return rows === null ? null : rows.slice(skip);
+    return rows === null ? null : pageSlice(rows, skip, params);
   };
 };

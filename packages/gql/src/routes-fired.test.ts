@@ -209,10 +209,28 @@ describe('every fast-path detector fires for its own shape', () => {
     ],
     ['a bare LIMIT still declines', 'MATCH (n:L) RETURN n.k AS k LIMIT 2', []],
     ['a skip WITH a limit still declines', 'MATCH (n:L) RETURN n.k AS k OFFSET 2 LIMIT 2', []],
-    // A PARAMETERIZED skip declines: the route is chosen once at compile time while the value
-    // lives in `params`, which the plan cache is shared across. This spelling is also the oracle
-    // `skip-only-page.test.ts` compares the rung against, so its route is doubly load-bearing.
-    ['a PARAMETERIZED skip declines', 'MATCH (n:L) RETURN n.k AS k OFFSET $s', []],
+    // ⚠️ A PARAMETERIZED SKIP TAKES THE RUNG TOO, SINCE ITEM 1778. The sibling rules decline a
+    // parameterized window because a `LIMIT $n` decides between a heap and a sort-and-slice — the
+    // ROUTE depends on the value, while the plan cache is shared across params. A skip-only page
+    // has no such dependence, so declining it only cost a 7.3x gap between two spellings of one
+    // query. A parameterized LIMIT still declines, which is the row below.
+    [
+      'a PARAMETERIZED skip takes the rung',
+      'MATCH (n:L) RETURN n.k AS k OFFSET $s',
+      ['nodeProjection'],
+    ],
+    ['a PARAMETERIZED limit still declines', 'MATCH (n:L) RETURN n.k AS k LIMIT $n', []],
+    // The hop rung too (item 1777 gave it the page, 1778 the parameterized spelling).
+    [
+      'a skip-only page on a hop',
+      'MATCH (a:L)-[:R]->(b) RETURN b.k AS k OFFSET 2',
+      ['hopProjection'],
+    ],
+    [
+      'a PARAMETERIZED skip-only page on a hop',
+      'MATCH (a:L)-[:R]->(b) RETURN b.k AS k OFFSET $s',
+      ['hopProjection'],
+    ],
 
     // --- optional hops ------------------------------------------------------------------
     [

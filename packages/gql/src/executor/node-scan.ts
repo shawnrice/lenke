@@ -43,6 +43,7 @@ import { effectiveLabel } from './labels.js';
 import {
   boundedTopKeyed,
   outputColumnSorts,
+  pageSlice,
   sortRowsByColumns,
   unsortedPageRoute,
 } from './ordered-rows.js';
@@ -1343,8 +1344,8 @@ export const detectNodeProjection = (
     // `pageSkip` is item 1776's skip-only page, and it is NON-ZERO only when `sorts` is
     // `undefined`: it requires no `ORDER BY`, and `outputColumnSorts` returns `undefined` for
     // exactly that. A sorted window still rides `sortRowsByColumns`'s own plan, untouched here.
-    if (pageSkip > 0) {
-      return out.slice(pageSkip);
+    if (pageSkip !== 0) {
+      return pageSlice(out, pageSkip, params);
     }
 
     return sorts === undefined ? out : sortRowsByColumns(out, sorts);

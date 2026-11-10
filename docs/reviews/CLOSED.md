@@ -80859,7 +80859,7 @@ needed: **a shape on the general path is only slow if it cannot stop early.**
 `bun run check` 0 read through `${pipestatus[1]}`, unpiped. No engine source changed; one dead probe
 import repaired, one scratch explorer deleted rather than left to become the 143rd instrument.
 
-### Item 1776 — item 1775's 7.9x target TAKEN: the skip-only page now rides the node-projection rung, measured at **7.37x at 200,000 and 10.56x at 20,000** against the same query down the other route in the SAME build, with the untouched hop pair FLAT at 1.00x — and the fuzzers turn out to be BLIND to the whole shape, so a new cross-engine oracle was needed to say byte-identity held — ⚠️ **ITS "NOT TAKEN" SECTION ON THE HOP IS SUPERSEDED: item 1777 takes both halves of the hop page (8.14x and 4.87x), because the blocker named here was the SYMPTOM (which end is projected) and the cause was the WALK CHOICE**
+### Item 1776 — item 1775's 7.9x target TAKEN: the skip-only page now rides the node-projection rung, measured at **7.37x at 200,000 and 10.56x at 20,000** against the same query down the other route in the SAME build, with the untouched hop pair FLAT at 1.00x — and the fuzzers turn out to be BLIND to the whole shape, so a new cross-engine oracle was needed to say byte-identity held — ⚠️ **ITS "NOT TAKEN" SECTION ON THE HOP IS SUPERSEDED: item 1777 takes both halves of the hop page (8.14x and 4.87x), because the blocker named here was the SYMPTOM (which end is projected) and the cause was the WALK CHOICE** — and ⚠️ **ITS PARAMETERIZED DECLINE IS ALSO SUPERSEDED, at item 1778: the reason given for it is true of a `LIMIT` and false of a SKIP, and it left a 7.3x gap between two spellings of one query**
 
 Item 1775 found it and deliberately did not build it. This builds it, on a branch
 (`perf/skip-only-page-rung`), measured after the work rather than during it.
@@ -81002,7 +81002,7 @@ either. Unmeasured; a separate shape from this one.
 All seven fuzzers pass — and see above for exactly how little that is worth for this shape.
 `skip-only-page-parity.ts` exits 0.
 
-### Item 1777 — the hop half of the skip-only page, which item 1776 declined on a MEASURED answer difference and which turns out to be takeable after all: forcing the walk item 551 already built for this makes it answer-equivalent, **8.14x on the start-read hop and 4.87x on the far-read one** — and the paged far hop now beats its own UNPAGED spelling by 1.28x, which says the unpaged walk choice is itself suspect
+### Item 1777 — the hop half of the skip-only page, which item 1776 declined on a MEASURED answer difference and which turns out to be takeable after all: forcing the walk item 551 already built for this makes it answer-equivalent, **8.14x on the start-read hop and 4.87x on the far-read one** — and the paged far hop now beats its own UNPAGED spelling by 1.28x, which says the unpaged walk choice is itself suspect — ⚠️ **and it inherited item 1776's parameterized decline, which item 1778 then removed as a `LIMIT`'s argument rather than a skip's**
 
 Item 1776 left this with a specific blocker, not a doubt: the hop projection's rung picks between a
 start-driven and a far-driven walk, the far-driven one reorders rows deliberately, and
@@ -81112,3 +81112,120 @@ before citing it"; this is the other half — **check that it can still FAIL.**
 unordered page at all, so `offset-order-equiv.mjs` (exit 0, ROUTE identical on all 16 rows) and
 `skip-only-page-parity.ts` (exit 0, paged IDENTICAL to native on all five shapes) are the instruments
 that actually cover this.
+
+### Item 1778 — the gap items 1776 and 1777 LEFT BEHIND, and it is the one this repo is named after: a parameterized `OFFSET $s` was **7.3x slower than the literal spelling of the same query**, because the rung declined it for a reason that is true of a `LIMIT` and false of a skip. Admitted: **7.14x, 4.81x and 7.98x** on the three paged shapes, every spelling pair now FLAT — and the fix cost the verification oracle the two previous items were using, so that is rebuilt on an absolute enumeration
+
+Items 1776 and 1777 gave the skip-only page to the node and hop projection rungs for a LITERAL bound
+and left `OFFSET $s` on the general path. The stated reason was inherited from the sibling rules:
+`deferredRoute` and `outputColumnSorts` both decline a parameterized window because the route is
+chosen once at compile time while the value lives in `params`, which the plan cache is shared
+across.
+
+⚠️ **THAT REASON IS TRUE OF A `LIMIT` AND FALSE OF A SKIP, and nothing in those two items noticed.**
+A `LIMIT $n` decides between a heap and a sort-and-slice — `heapBeatsSort` reads the k — so the ROUTE
+genuinely depends on the value. A skip-only page has no such dependence: every non-negative skip
+takes the same route and differs only in where the slice lands. The only thing that had to wait for
+`params` was the NUMBER, and a rung's closure already receives `params`.
+
+So declining it bought nothing and cost **7.3x between two spellings of one query** — the defect
+class this repo is named after, introduced by the two items that were closing instances of it. It is
+also the spelling that matters in practice: an application pages with a parameter, not a literal.
+
+#### Measured, on the same machine as items 1776/1777
+
+`page-rung-ab.sh`, five interleaved rounds, one shape per process, `p25` per process, median across:
+
+| arm                   | before 1778 (general path) | after (the rung) | gain  | gap to its literal twin |
+| --------------------- | -------------------------- | ---------------- | ----- | ----------------------- |
+| `offsetparam`         | 48.314                     | **6.770**        | 7.14x | 0.97x                   |
+| `hopstartoffsetparam` | 134.931                    | **16.900**       | 7.98x | 0.93x                   |
+| `hopoffsetparam`      | 170.889                    | **35.494**       | 4.81x | 0.99x                   |
+| `count` (control)     | 0.001                      | 0.001            | —     | —                       |
+
+Every spelling pair reads flat, which is the invariant restored rather than a speed claim.
+
+#### THE SAFETY THAT MAKES THIS A ROUTE CHANGE RATHER THAN A WRONG ANSWER
+
+`rows.slice(-2)` returns the LAST two rows. A negative bound reaching `pageSlice` would therefore be
+a silent wrong answer of exactly the kind this engine is least able to detect — so the question is
+not "is the slice guarded" but "can a bad bound get here at all".
+
+It cannot, and the check is route-independent: `noteCountParam` registers a bound's `$param` at
+compile time and `compile.ts` validates it eagerly, before a row is produced — bound at all
+(`E_MISSING_PARAMETER`) and a non-negative integer (`E_INVALID_VALUE`). Measured on the general path
+before the change and pinned on the rung after it: `-2`, `1.5`, `'3'` and `null` all raise, `0`
+returns every row. **A check written for one route protecting a rung it was not written for is worth
+stating out loud** — it is also exactly the kind of coupling that breaks silently, which is why the
+test is in `skip-only-page.test.ts` rather than left as a comment.
+
+#### AND THE FIX ATE THE ORACLE, WHICH IS THE PART WORTH REMEMBERING
+
+Items 1776 and 1777 verified answer-equivalence by comparing the rung against the general path — and
+they reached the general path THROUGH the parameterized spelling, because it declined. Admitting it
+removes the last general-path spelling of this shape from the engine, so that comparison becomes the
+rung against itself. **A fix that closes a gap can delete the instrument that proved the previous fix
+correct**, and it happens silently, two items apart.
+
+Rebuilt rather than patched over:
+
+- `skip-only-page.test.ts`'s expectation is now an **absolute enumerated row list** — `EXPECTED`
+  states the rows and their order outright and the page is that list sliced — plus one assertion per
+  case that the UNPAGED query already produces it. That is the stronger claim: a route oracle only
+  says two paths agree, while this says WHICH rows in WHICH order, so it cannot be satisfied by both
+  routes drifting together. It is also what `count-shortcut.test.ts` already did.
+- The hop rows' expected order is the START-DRIVEN one — start vertices in insertion order, each
+  followed by its out-edges — which is what item 1777 forces for a paged hop and is NOT the unpaged
+  far-driven order. So the hop's unpaged assertion pins only its multiset, deliberately, and the
+  paged rows pin the order.
+- `offset-order-equiv.mjs`'s ROUTE column is relabelled **SPELLING** and its header says why: it is
+  weaker now, but not empty — two spellings of one query must still agree to the row, and nothing
+  else asserts that.
+- `page-rung-probe.mjs`'s `*param` arms are relabelled from BEFORE arms to SPELLING TWINS, with the
+  before/after figures of items 1776/1777 moved into the comment, because the probe can no longer
+  reproduce them. What remains a true null control is `count`/`hopcount`, which keep their rung with
+  a page on them.
+
+#### Teeth
+
+- `pageSlice` ignoring the resolved param (`? skip : 0`): **CAUGHT**, 22 of 46 failures.
+- `n > 0` -> `n !== 0`, i.e. admitting a negative slice: **SURVIVED**, and it is defence in depth
+  rather than an untested guard — the eager validation above means no negative bound can reach it.
+  Item 475's rule once more: a surviving mutant means "redundant" as readily as "untested", and the
+  two have opposite fixes. It stays because the implication runs through `compile.ts` rather than
+  anything local.
+- Items 1776/1777's own mutants still hold: dropping the slice fails 22, dropping the hop's forced
+  start-driven walk fails 3 (the far-read hop), making the rung decline fails the route rows.
+
+#### THE COST SIDE, for all three items together: eight UNTOUCHED arms, and none moved
+
+`hop-projection.ts` charges a toll — items 1413/1415 measured two unrelated changes there making
+rows on walks they CANNOT REACH 3.4-5.8% slower, with concordance against the change, and PROBES.md's
+standing rule is to **price a target against ~10% before attempting it**. Items 1776-1778 edit that
+file, `node-scan.ts` and `ordered-rows.ts`, so the arms that cannot reach any of it are the cost
+side. Interleaved, same method, against their readings from item 1776's run:
+
+| arm             | post-1778 | item 1776's run | ratio     |
+| --------------- | --------- | --------------- | --------- |
+| `list`          | 6.401     | 5.964           | 1.07x     |
+| `limit`         | 0.031     | 0.029           | 1.07x     |
+| `orderlimit`    | 12.020    | 12.099          | 0.99x     |
+| `hoplist`       | 45.196    | 45.193          | **1.00x** |
+| `hoplimit`      | 0.046     | 0.049           | 0.94x     |
+| `hoporderlimit` | 48.683    | 48.238          | 1.01x     |
+| `count`         | 0.001     | 0.001           | 1.00x     |
+| `hopcount`      | 0.002     | 0.002           | 1.00x     |
+
+Nothing moved beyond the band it already occupies: the largest nominal move is `list` at 1.07x, whose
+own readings across four runs of this probe are 5.96, 6.19, 6.22 and 6.40, and the two biggest arms
+are flat to three digits. **That is not a refutation of `executor-edits-perturb`** — all three items
+add compile-time branches and one wrapper that is `inner` itself when there is no page, so no walk
+variant and no inner-loop branch, which is not what items 1413/1415 measured. It does mean the toll
+is a cost to WEIGH against the win rather than a veto, which is what item 1466 applied it as when it
+declined 3.3x.
+
+#### Gates
+
+`bun run check` 0 read through `${pipestatus[1]}`, unpiped. gql suite 4,478 pass / 0 fail;
+`nx run-many -t test` green across 21 projects; all seven fuzzers pass (and generate no unordered
+page, as item 1776 recorded). `offset-order-equiv.mjs` exit 0, SPELLING identical on all 16 rows;
+`skip-only-page-parity.ts` exit 0, paged identical to native on all five shapes.

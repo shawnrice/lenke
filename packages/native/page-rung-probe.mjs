@@ -106,23 +106,25 @@ const SHAPES = {
   /**
    * --- group "offset": THE BEFORE/AFTER PAIR, IN ONE BUILD (item 1776) ------
    *
-   * ⚠️ `offsetparam` IS THE "BEFORE" ARM AND IT IS NOT A RECONSTRUCTION. Item 1776 gave the literal
+   * ⚠️ `offsetparam` WAS THE "BEFORE" ARM AND IS NOW THE SPELLING TWIN. Item 1776 gave the literal
    * skip-only page to the node-projection rung and left the PARAMETERIZED spelling on the general
-   * path on purpose — the route is chosen once at compile time while the value lives in `params`,
-   * which the plan cache is shared across. So `OFFSET 10` and `OFFSET $s` with `s = 10` are the
-   * same query, over the same rows, down the two routes, and BOTH are measurable in the build under
-   * test.
+   * path, so `OFFSET 10` and `OFFSET $s` with `s = 10` were the same query down the two routes and
+   * both measurable in one build — which is how items 1776/1777's before/after figures were taken
+   * (node 7.27x, hop START 8.14x, hop FAR 4.87x at 200,000; they are in `CLOSED.md`, because this
+   * probe can no longer reproduce them). **Item 1778 gave the parameterized spelling the rung too**,
+   * closing a 7.3x gap between two spellings of one query, so these pairs must now read FLAT and a
+   * gap between them is a REGRESSION rather than the measurement.
    *
    * That is strictly better than timing two builds: a cross-build A/B compares arms separated by a
    * rebuild and whatever the machine did in between, which is the trap item 737 priced at a 1.66x
    * regression that did not exist. Here the only thing that differs between the two arms is the
    * route, which is the whole claim.
    *
-   * `hopoffset` / `hopoffsetparam` are the NULL CONTROL: item 1776 did not give the page to the hop
-   * rung (`offset-order-equiv.mjs` found the hop FAR projection's order differing from the general
-   * path's, and `skip-only-page-parity.ts` then found it differing from NATIVE's), so both hop arms
-   * stay on the general path and the pair must read FLAT. A control that moves with the target is
-   * the `executor-edits-perturb` toll showing up, not the win.
+   * `hopoffset` / `hopoffsetparam` were item 1776's NULL CONTROL, when the hop rung had no page at
+   * all and both arms were on the general path; item 1777 gave it the page and 1778 the
+   * parameterized spelling, so that pair is now a spelling twin as well. **Every `*param` pair in
+   * this file must read flat.** What is left as a true null control is `count` / `hopcount`, which
+   * keep their rung WITH a page on them.
    */
   offsetparam: {
     q: `MATCH (n:P) RETURN n.k OFFSET $s`,

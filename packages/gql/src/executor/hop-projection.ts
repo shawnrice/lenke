@@ -934,7 +934,7 @@ const hopOrderPlan = (
    */
   return {
     sorted: (inner) => pagedRows(sortedRows(inner, sorts ?? undefined), pageSkip),
-    startDriven: forceStartDriven || sorts !== undefined || pageSkip > 0,
+    startDriven: forceStartDriven || sorts !== undefined || pageSkip !== 0,
   };
 };
 

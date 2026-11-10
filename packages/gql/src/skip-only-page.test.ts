@@ -25,6 +25,7 @@ import { describe, expect, it } from 'bun:test';
 
 import { Graph } from '@lenke/core';
 
+import type { Row } from './executor/core.ts';
 import { unsortedPageRoute } from './executor/ordered-rows.ts';
 import { query } from './index.ts';
 
@@ -47,9 +48,22 @@ describe('unsortedPageRoute — the admission rule, tested as a function', () =>
     expect(unsortedPageRoute({ limit: 0 })).toBeNull();
   });
 
-  it('declines a PARAMETERIZED skip — the plan cache is shared across params', () => {
-    expect(unsortedPageRoute({ skip: { param: 's' } })).toBeNull();
+  /**
+   * ⚠️ REVERSED AT ITEM 1778, and the reason is worth stating because the sibling rules go the
+   * other way. `deferredRoute` and `outputColumnSorts` decline a parameterized window because a
+   * `LIMIT $n` decides between a heap and a sort-and-slice — the ROUTE depends on the value, while
+   * the plan cache is shared across params. A skip-only page has no such dependence: every
+   * non-negative skip takes the same route and differs only in where `pageSlice` cuts. Declining it
+   * cost a **7.3x gap between two spellings of one query**, which is the defect class this repo is
+   * named after.
+   */
+  it('ADMITS a parameterized skip — the route does not depend on its value', () => {
+    expect(unsortedPageRoute({ skip: { param: 's' } })).toEqual({ param: 's' });
+  });
+
+  it('still declines a parameterized skip WITH a limit', () => {
     expect(unsortedPageRoute({ skip: { param: 's' }, limit: 10 })).toBeNull();
+    expect(unsortedPageRoute({ limit: { param: 'n' } })).toBeNull();
   });
 
   it('declines a vacuous SKIP 0 rather than admitting it as a no-op page', () => {
@@ -154,23 +168,103 @@ describe('a skip-only page on the node-projection rung', () => {
     ],
   ];
 
-  for (const [name, prefix, fixture] of CASES) {
-    for (const skip of [1, 7, 23]) {
-      it(`${name}, OFFSET ${skip} — identical rows and order to the general path`, () => {
-        const g = fixture === 'vacuous' ? buildVacuous() : build();
-        const viaRung = query(g, `${prefix}${skip}`);
-        const viaGeneral = query(g, `${prefix}$s`, { s: skip });
+  /**
+   * ⚠️ THE ORACLE IS AN ABSOLUTE ROW LIST, NOT ANOTHER ROUTE, AND ITEM 1778 IS WHY.
+   *
+   * Items 1776/1777 compared the rung's rows against the general path's by reaching the general
+   * path through the parameterized `OFFSET $s` spelling, which declined the rung on purpose. Item
+   * 1778 then gave that spelling the rung too — closing a 7.3x gap between two spellings of one
+   * query — and with it went the last general-path spelling of this shape, so that comparison
+   * became the rung against itself. Rather than keep a slower route alive to serve as a test
+   * fixture, the expectation is now ENUMERATED FROM THE GRAPH: `EXPECTED` below states the rows and
+   * their order outright, and the page is that list sliced.
+   *
+   * It is the stronger assertion of the two. A route oracle only says two paths agree; this says
+   * WHICH rows, in WHICH order, so it cannot be satisfied by both routes drifting together — and it
+   * is what `count-shortcut.test.ts` and its siblings already do ("the shortcut's ANSWER against an
+   * independent enumeration"). The order it pins is the one both engines produce for the unpaged
+   * query, which `skip-only-page-parity.ts` reads against native directly.
+   *
+   * The hop rows are the ones that need it most: their expected order is the START-DRIVEN one —
+   * start vertices in insertion order, each followed by its out-edges — which is the order
+   * `hopOrderPlan` forces for a paged hop and NOT the order the unpaged far-driven walk produces.
+   */
+  const V = Array.from({ length: 24 }, (_, i) => ({ k: i % 5, n: 100 - i, s: `s${i}` }));
+  /** The hop fixture's one out-edge per vertex: `i -> (i * 7 + 3) % 24`. */
+  const FAR = (i: number): number => (i * 7 + 3) % 24;
+  const EXPECTED: Record<string, readonly Row[]> = {
+    'one column': V.map((v) => ({ k: v.k })),
+    'two columns': V.map((v) => ({ k: v.k, t: v.n })),
+    'an expression column': V.map((v) => ({ k: v.k + 1, s: v.s })),
+    'a clause WHERE': V.filter((v) => v.n > 110).map((v) => ({ k: v.k })),
+    'an inline property': V.filter((v) => v.k === 2).map((v) => ({ t: v.n })),
+    'a hop reading the FAR end': V.map((_, i) => ({ k: V[FAR(i)].k })),
+    'a hop reading the START end': V.map((v) => ({ k: v.k })),
+    'a hop reading BOTH ends': V.map((v, i) => ({ s: v.k, f: V[FAR(i)].k })),
+    'a hop with a clause WHERE': V.map((_, i) => V[FAR(i)])
+      .filter((far) => far.n > 108)
+      .map((far) => ({ k: far.k })),
+  };
 
-        expect(viaRung).toEqual(viaGeneral);
+  for (const [name, prefix, fixture] of CASES) {
+    const want = EXPECTED[name];
+
+    // The UNPAGED query must already produce that list, or every paged row below is testing a
+    // different graph than the comment claims. One assertion per case, before the pages.
+    it(`${name}, unpaged — the enumerated rows, in the enumerated order`, () => {
+      const g = fixture === 'vacuous' ? buildVacuous() : build();
+      const unpaged = query(g, prefix.replace(/ OFFSET $/, ''));
+
+      // ⚠️ THE HOP's UNPAGED SHAPE IS NOT START-DRIVEN, so only its MULTISET is pinned here — the
+      // paged rows below are what pin the forced order. `order-is-unspecified` is exactly this:
+      // the unpaged walk choice is the engine's, and it is the PAGE that must be sliceable.
+      if (fixture === 'vacuous') {
+        expect([...unpaged].map((r) => JSON.stringify(r)).sort()).toEqual(
+          [...want].map((r) => JSON.stringify(r)).sort(),
+        );
+      } else {
+        expect(unpaged).toEqual([...want]);
+      }
+    });
+
+    for (const skip of [1, 7, 23]) {
+      it(`${name}, OFFSET ${skip} — the enumerated rows, sliced, in both spellings`, () => {
+        const g = fixture === 'vacuous' ? buildVacuous() : build();
+
+        expect(query(g, `${prefix}${skip}`)).toEqual(want.slice(skip));
+        // ⚠️ AND THE TWO SPELLINGS MUST AGREE, which is the invariant item 1778 exists to restore:
+        // a literal and a parameterized bound are one query, so they take one route and cost the
+        // same. Before 1778 the parameterized one was 7.3x slower by construction.
+        expect(query(g, `${prefix}$s`, { s: skip })).toEqual(want.slice(skip));
       });
     }
   }
 
-  it('a skip past the end returns no rows, on both routes', () => {
+  it('a skip past the end returns no rows, in both spellings', () => {
     const g = build();
 
     expect(query(g, 'MATCH (n:L) RETURN n.k AS k OFFSET 99')).toEqual([]);
     expect(query(g, 'MATCH (n:L) RETURN n.k AS k OFFSET $s', { s: 99 })).toEqual([]);
+  });
+
+  /**
+   * ⚠️ A PARAMETERIZED BOUND IS VALIDATED BEFORE ANY ROW IS PRODUCED, and that check is what makes
+   * item 1778's route safe rather than merely faster: `rows.slice(-2)` would silently return the
+   * LAST two rows, which is the wrong-answer shape this engine is least able to detect.
+   * `noteCountParam` registers the bound's param at compile time and `compile.ts` validates it
+   * eagerly — so the rung can never see a negative, fractional or non-numeric bound. Route-
+   * independent, and pinned here because the rung now depends on it.
+   */
+  it('a negative, fractional or non-numeric parameterized bound raises, not slices', () => {
+    const g = build();
+
+    for (const s of [-2, 1.5, '3', null]) {
+      expect(() => query(g, 'MATCH (n:L) RETURN n.k AS k OFFSET $s', { s })).toThrow();
+    }
+
+    expect(query(g, 'MATCH (n:L) RETURN n.k AS k OFFSET $s', { s: 0 })).toEqual([
+      ...EXPECTED['one column'],
+    ]);
   });
 
   /**
