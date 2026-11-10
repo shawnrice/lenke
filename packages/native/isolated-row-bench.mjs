@@ -196,6 +196,27 @@ const SHAPES = {
   hopsingleyield: 'MATCH (a:P)-[:E]->(b:P) RETURN b.n AS n',
   hopmultiyield: 'MATCH (a:P)-[:E|F]->(b:P) RETURN b.n AS n',
   hopmultiyieldrev: 'MATCH (a:P)-[:F|E]->(b:P) RETURN b.n AS n',
+  /**
+   * ⚠️ THE START-DRIVEN TWINS OF THE TWO ROWS ABOVE, AND `OFFSET 1` IS WHAT FORCES THAT WALK.
+   *
+   * The single-type far-read hop takes the far-driven walk UNCONDITIONALLY whenever the start label
+   * is vacuous — `hop-projection.ts`'s single-type exit has no degree gate at all, unlike the
+   * multi-type one, whose `farDrivenPaysForMultiType` is what items 1390/1404/1406/1434 measured.
+   * So there was no way to read the two walks against each other on a single-type hop, and no row
+   * here did.
+   *
+   * Item 1777 gave `hopOrderPlan` a `pageSkip !== 0` arm of its `startDriven` flag, because a
+   * skip-only page inherits the walk's order and the start-driven one is the general path's. That
+   * makes `OFFSET 1` a START-DRIVEN FORCER: same detector, same exit, same walk machinery, one
+   * fewer row out of `NODES` — which is the cheapest route A/B available, and it needs no source
+   * edit, so both arms are ONE BUILD (item 737's trap, avoided the way items 1776-1778 avoided it).
+   *
+   * ⚠️ SO THEIR `digest` AND `rowCount` LEGITIMATELY DIFFER from the unpaged rows by exactly one
+   * row. Compare a paged arm against a paged arm across fixture knobs, never against its unpaged
+   * twin, for anything but the route question these exist to answer.
+   */
+  hopsingleyieldpage: 'MATCH (a:P)-[:E]->(b:P) RETURN b.n AS n OFFSET 1',
+  hopmultiyieldpage: 'MATCH (a:P)-[:E|F]->(b:P) RETURN b.n AS n OFFSET 1',
   // THE OTHER THREE WALKS IN `hop-projection.ts` (item 1408). Items 1388, 1390 and 1407 all edited
   // that file and only two of its five walks had a row here — `startDriven`/`startDrivenMany` and
   // the far-driven pair. These are the rest, each reached by a clause the measured ones decline:

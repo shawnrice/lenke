@@ -52957,7 +52957,7 @@ new, which also confirms no existing file was overwritten), gremlin 1218/0, core
 serialization 144/0, native 961/0. `bun run fuzz` 20/0 — byte-identity intact, which is the real risk
 on a route change, since the two walks visit rows in different orders.
 
-### Item 1438 — ❌ DECLINED and CORRECTING ITEM 1437: the single-type far-driven route is SOUND. It loses 40% on ONE fixture (`small`/degree 1) and wins **1.90x and 2.99x** at random stride. Item 1437's "lever on `hopsingleyield`" was me reading a fixture artifact as a finding
+### Item 1438 — ❌ DECLINED and CORRECTING ITEM 1437: the single-type far-driven route is SOUND. It loses 40% on ONE fixture (`small`/degree 1) and wins **1.90x and 2.99x** at random stride. Item 1437's "lever on `hopsingleyield`" was me reading a fixture artifact as a finding — ✅ **CONFIRMED AND EXTENDED AT ITEM 1779, which swept the `FANIN` axis this item left at its default: far-driven wins 7 of 8 cells, and its margin GROWS monotonically as fan-in concentrates (1.91x → 5.73x → 8.26x at fanout 1), which is the template clone amortizing. Item 1779 reproduced two of this item's four cells to within 0.01x on a different harness at double the node count**
 
 Item 1437 shipped the invariant-`WHERE` carry and recorded, as open work, that at `small`/fanout 1
 the fixed `WHERE true` row (8.48 ms) BEAT its bare twin (13.78) — concluding "whatever the start-gated
@@ -81002,7 +81002,7 @@ either. Unmeasured; a separate shape from this one.
 All seven fuzzers pass — and see above for exactly how little that is worth for this shape.
 `skip-only-page-parity.ts` exits 0.
 
-### Item 1777 — the hop half of the skip-only page, which item 1776 declined on a MEASURED answer difference and which turns out to be takeable after all: forcing the walk item 551 already built for this makes it answer-equivalent, **8.14x on the start-read hop and 4.87x on the far-read one** — and the paged far hop now beats its own UNPAGED spelling by 1.28x, which says the unpaged walk choice is itself suspect — ⚠️ **and it inherited item 1776's parameterized decline, which item 1778 then removed as a `LIMIT`'s argument rather than a skip's**
+### Item 1777 — the hop half of the skip-only page, which item 1776 declined on a MEASURED answer difference and which turns out to be takeable after all: forcing the walk item 551 already built for this makes it answer-equivalent, **8.14x on the start-read hop and 4.87x on the far-read one** — ~~and the paged far hop now beats its own UNPAGED spelling by 1.28x, which says the unpaged walk choice is itself suspect~~ ⚠️ **THAT 1.28x WAS ALREADY MEASURED AND DECLINED AT ITEM 1438, and item 1779 confirms the decline and sweeps the fan-in axis 1438 left at its default: the far-driven route wins 7 of 8 cells, 1.91x-8.26x, and the sole dissenter is this probe's degenerate fixture. The gate named here is also the WRONG one — `hoplist` is single-type, so `farDrivenPaysForMultiType` is never consulted** — ⚠️ **and it inherited item 1776's parameterized decline, which item 1778 then removed as a `LIMIT`'s argument rather than a skip's**
 
 Item 1776 left this with a specific blocker, not a doubt: the hop projection's rung picks between a
 start-driven and a far-driven walk, the far-driven one reorders rows deliberately, and
@@ -81065,19 +81065,29 @@ Flat or inside the noise on every one. **That does not refute `executor-edits-pe
 edit that adds no walk variant and no branch to any inner loop, which is exactly the kind the audit's
 1.08-1.24x readings did not come from. It does mean the toll is a cost to WEIGH, not a veto to apply.
 
-#### A finding that fell out: the UNPAGED far hop may be choosing the wrong walk
+#### ~~A finding that fell out: the UNPAGED far hop may be choosing the wrong walk~~ ⚠️ RE-DERIVED, NOT FOUND — ITEM 1438 HAD ALREADY MEASURED AND DECLINED IT
 
 `hopoffset` at 35.057 is **1.28x FASTER than `hoplist` at 44.954** — the PAGED query beating the
 unpaged one over ten more rows. Both now take the rung; the only difference is that the page forces
-the start-driven walk while the unpaged shape lets `farDrivenPaysForMultiType` and the vacuity test
-choose far-driven. On this fixture that choice costs 28%.
+the start-driven walk while the unpaged shape chooses far-driven.
 
-⚠️ **ONE FIXTURE, AND ITS FAN-IN IS THE POINT.** `page-rung-probe.mjs` builds one out-edge per vertex,
-so the fan-in is ~1, and the far-driven walk's win is a HIGH-fan-in effect — item 1390 measured it at
-74% where it pays. So this is not "the heuristic is wrong"; it is "the heuristic's threshold has a
-measurable wrong side, and nobody has swept it". Unpriced, needs a fan-in sweep, and `hopstart` vs
-`hoplist` (16.190 against 44.954 for the same walk shape, differing only in which end is projected)
-says there is more than one effect in that 2.8x.
+⚠️ **TWO THINGS IN THAT PARAGRAPH WERE WRONG, and item 1779 is the correction.**
+
+1. **It names the wrong gate.** This entry originally credited the choice to
+   `farDrivenPaysForMultiType` and the vacuity test. `hoplist` is `-[:E]->`, a SINGLE-type hop, and
+   that gate guards only the MULTI-type exit — the single-type exit has no degree term at all, as
+   item 1438's entry states in so many words. Everything items 1390/1404/1406/1434 swept was the
+   other branch.
+2. **It was already closed.** Item 1438 ran this exact ablation — force start-driven under a fixed
+   spelling, each arm asserted to BE its own code — and declined the gate, because 3 of its 4 cells
+   said the shipped route is right and the dissenter was `small` stride at fanout 1. **That is this
+   probe's fixture:** `page-rung-probe.mjs` builds `(i * 31 + 17) % NODES`, an affine bijection at
+   out-degree 1, which is the `small` family. So the 1.28x IS item 1438's `small`/1 cell, re-derived
+   two items later and read as new.
+
+Item 1779 swept the axis 1438 genuinely left open (it varied stride and fanout with `FANIN` at its
+default throughout) and the decline holds in every new cell. CLOSED.md was the thing that would have
+prevented this, and it was not read before the claim was written — the same accounting as item 1774.
 
 #### Teeth
 
@@ -81229,3 +81239,123 @@ declined 3.3x.
 `nx run-many -t test` green across 21 projects; all seven fuzzers pass (and generate no unordered
 page, as item 1776 recorded). `offset-order-equiv.mjs` exit 0, SPELLING identical on all 16 rows;
 `skip-only-page-parity.ts` exit 0, paged identical to native on all five shapes.
+
+### Item 1779 — ❌ DECLINED, and the target was ALREADY DECLINED at item 1438: item 1777's "the unpaged walk choice looks wrong at low fan-in" is that item's `small`/1 cell re-derived. What is new is the axis 1438 left at its default — the **`FANIN` sweep, where far-driven wins 7 of 8 cells at 1.91x-8.26x and its margin GROWS as fan-in concentrates**. One grep of CLOSED.md would have cost nothing and saved the item
+
+Item 1777 recorded, as its one open finding, that `hopoffset` (35.057, forced start-driven) was
+**1.28x FASTER than `hoplist`** (44.954, far-driven) — the paged query beating the unpaged one over
+ten more rows — and filed it as "the heuristic's threshold has a measurable wrong side and nobody has
+swept it. Unpriced, needs a fan-in sweep."
+
+**Somebody had swept it: item 1438, on the same route, with the same instrument form, 300 items
+earlier.** Its verdict was ❌ DECLINED, and its grid says why:
+
+```text
+  stride  fanout   far-driven   start-driven   start/far   verdict
+  small        1        14.46           8.71       0.60x   start-driven wins 40%
+  random       1        25.73          48.88       1.90x   far-driven is RIGHT
+  small        4        17.51          58.80       3.36x   far-driven is RIGHT
+  random       4        33.69         100.89       2.99x   far-driven is RIGHT
+```
+
+`page-rung-probe.mjs` builds `(i * 31 + 17) % NODES` — an affine bijection at out-degree 1, which is
+the `small` family. **So item 1777's 1.28x is item 1438's top row**, the one cell that item had
+already judged the least realistic fixture in the bench and declined a gate for.
+
+#### What was genuinely open, and is now closed
+
+Item 1438 swept STRIDE and FANOUT. It did not touch `FANIN` — every one of its four cells ran at the
+default 1. That matters more here than anywhere, because `PROBES.md` calls `FANIN` load-bearing for
+exactly this reason: item 1390 measured this walk family at **86.1 against 69.3 at `FANIN=1` and 16.1
+at `FANIN=0.01`** — a refutation and a 4.3x win from the same code, decided entirely by the knob. A
+route whose only sweep held that knob fixed was one cell wide on the axis that decides it.
+
+Swept, 200,000 nodes, random stride, `MULTILABEL=0`, three interleaved rounds per cell, `p25` per
+process and the median across rounds:
+
+| stride  | fanout | fanin | far-driven | start-driven | start/far | verdict      |
+| ------- | ------ | ----- | ---------- | ------------ | --------- | ------------ |
+| random  | 1      | 1     | 55.524     | 106.152      | **1.91x** | far-driven   |
+| random  | 1      | 0.1   | 13.802     | 79.017       | **5.73x** | far-driven   |
+| random  | 1      | 0.01  | 9.063      | 74.888       | **8.26x** | far-driven   |
+| random  | 4      | 1     | 99.195     | 304.484      | **3.07x** | far-driven   |
+| random  | 4      | 0.1   | 44.467     | 188.223      | **4.23x** | far-driven   |
+| random  | 4      | 0.01  | 39.972     | 182.847      | **4.57x** | far-driven   |
+| `small` | 1      | 1     | 27.857     | 26.031       | 0.93x     | start-driven |
+| `small` | 4      | 1     | 59.419     | 194.868      | **3.28x** | far-driven   |
+
+**Seven of eight cells say the shipped route is right, and the fan-in axis says it gets MORE right as
+fan-in concentrates** — 1.91x → 5.73x → 8.26x at fanout 1. That monotonicity is the mechanism item
+1438 named and item 167 built: `farDrivenHopWalk` calls `projectRow` once per far VERTEX and clones
+`{ ...template }` for the rest of that vertex's bucket, so at in-degree 1 there is one clone per
+`projectRow` and nothing is amortized, while at in-degree ~100 the call is paid once per hundred
+rows. The route's win is not incidental to fan-in; it IS fan-in.
+
+⚠️ **AND THE DISSENTER IS THE SAME CELL, THREE TIMES, WEAKENING EACH TIME IT IS MEASURED** — item
+1438's ablation 0.60x, `page-rung-probe.mjs` ~0.78x, this sweep 0.93x. Three harnesses agree on the
+sign and disagree on the size by 1.55x, which is itself the argument against tuning a gate to it:
+the only cell that wants a gate cannot say how much it wants one. **Declined; the single-type exit
+stays ungated**, as item 1438 left it.
+
+#### Two of item 1438's cells reproduced to 0.01x, on a different harness
+
+| cell        | item 1438 (100k, source ablation) | item 1779 (200k, `OFFSET 1` forcer) |
+| ----------- | --------------------------------- | ----------------------------------- |
+| random / 1  | 1.90x                             | **1.91x**                           |
+| `small` / 4 | 3.36x                             | **3.28x**                           |
+
+Worth recording because the two instruments share no code. Item 1438 hand-patched `hop-projection.ts`
+to force the walk and rebuilt between arms; this item changes no source at all. Agreement that close
+across a rebuild boundary is the strongest statement available that the forcer measures the ROUTE and
+not itself — and it is the check item 737's cross-build trap exists to demand.
+
+#### The instrument, and why it costs nothing
+
+Item 1777 gave `hopOrderPlan` a `pageSkip !== 0` arm of its `startDriven` flag. **That makes
+`OFFSET 1` a start-driven forcer**, so the two arms are two QUERIES IN ONE BUILD:
+
+```text
+  unpaged  MATCH (a:P)-[:E]->(b:P) RETURN b.n AS n             far-driven
+  paged    MATCH (a:P)-[:E]->(b:P) RETURN b.n AS n OFFSET 1    start-driven
+```
+
+Same detector, same exit (verified: both fire `hopProjection` and nothing else), same walk machinery,
+one fewer row out of 200,000. No source edit and no rebuild between arms, so item 737's cross-build
+trap cannot apply — the same trick items 1776-1778 used to measure a decline against a rung, pointed
+the other way. `hopsingleyieldpage` and `hopmultiyieldpage` in `isolated-row-bench.mjs`,
+`hop-walk-fanin-ab.sh` driving, `walk-ab-aggregate.mjs` reducing.
+
+⚠️ **THE INSTRUMENT DEPENDS ON A SHIPPED BEHAVIOUR, which is a coupling worth naming.** If item
+1777's forced walk were ever removed, both arms would be far-driven and this sweep would compare a
+route against itself — a probe that cannot fail, the rot mode items 1776-1778 hit twice. It is not
+left on trust: `skip-only-page.test.ts` pins the paged far-read hop's rows in START-DRIVEN order, and
+item 1777's mutant confirms dropping the force fails 3 of those rows. The guard exists; the
+dependency is recorded here so a reader of the bench knows the probe is downstream of it.
+
+#### Teeth on the aggregator
+
+`walk-ab-aggregate.mjs` refuses a table whose arms stopped answering the same question — `rowCount`
+differing by anything but 1, or item 1416's vacuous-zero answer. Mutated by rewriting one arm's
+`rowCount` in a captured log: **3 cells flagged, exit 1**. Without that it would have printed a
+ratio between two different queries, which is the failure the whole table rests on not having.
+
+It also names its arms by SUFFIX rather than by sort order. The first version sorted the shape names
+and took `[far, start]`, which happens to be correct for `hopsingleyield` / `hopsingleyieldpage` and
+would silently mislabel both arms — inverting every verdict in the table — for any future pair that
+collates the other way. A table that is confidently backwards is worse than one that errors.
+
+#### What this says about the ratio that started it
+
+Item 1438's own rule, earned there and re-earned here: **a surprising ratio between two SPELLINGS is
+a route question before it is a cost question.** Item 1777 had the route identified correctly and
+still mis-filed the result, because it compared a paged query against an unpaged one and read the
+difference as the heuristic's error rather than as the fixture's. The instrument that settles it is
+the one both items used — flip the route under a fixed spelling — and the thing that would have
+stopped the second item from running at all is one grep of CLOSED.md.
+
+#### Gates
+
+`bun run check` 0, read through `${pipestatus[1]}`, unpiped. No engine code changed: the arms are
+queries, so `git diff --stat` touches only the bench, the driver, the aggregator, `PROBES.md` and
+this file. Every sweep process capped at `MemoryMax=16G`, `MemorySwapMax=0`, `timeout 600`, per
+CLAUDE.md — a probe over a generated fixture is the class that took the box down four times.
