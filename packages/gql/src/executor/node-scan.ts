@@ -40,7 +40,12 @@ import { plainNode } from './hop-sides.js';
 import type { InlineGate, InlinePred } from './inline-gate.js';
 import { composeInlineGate, inlineOf, predFor } from './inline-gate.js';
 import { effectiveLabel } from './labels.js';
-import { boundedTopKeyed, outputColumnSorts, sortRowsByColumns } from './ordered-rows.js';
+import {
+  boundedTopKeyed,
+  outputColumnSorts,
+  sortRowsByColumns,
+  unsortedPageRoute,
+} from './ordered-rows.js';
 import type { SortPlan } from './ordered-rows.js';
 import { foldFor } from './projection.js';
 import { columnName, valueKey } from './rows.js';
@@ -1014,7 +1019,30 @@ export const detectNodeProjection = (
   // also decline, since the general path is LAZY for it and a `LIMIT 5` short-circuits after a
   // few rows where this path materializes everything — `sortOf` records that as a ~280x
   // regression for the DISTINCT walk, which is the same trade in the same place.
-  if ((proj.orderBy?.length ?? 0) === 0 && (proj.skip !== undefined || proj.limit !== undefined)) {
+  /**
+   * ⚠️ WITH ONE EXCEPTION SINCE ITEM 1776: a SKIP with NO LIMIT is admitted and sliced, because the
+   * decline above is a statement about LAZINESS and a skip alone has no brake to collect — the
+   * engine emits `N - skip` rows either way, so declining cost **7.9x** over 200,000 vertices for
+   * TEN FEWER ROWS than the unpaged spelling (item 1775). `unsortedPageRoute` is that whole rule,
+   * including why a `LIMIT` must keep declining and why a PARAMETERIZED skip does.
+   *
+   * ANSWER-EQUIVALENCE is the part that had to be settled before the speed mattered, and it is
+   * settled POSITIONALLY rather than as a multiset: `skip-only-page.test.ts` compares this rung's
+   * rows against the general path's for the same query (reached through the parameterized spelling,
+   * which declines on purpose), and `offset-order-equiv.mjs` does the same at 5,000 vertices for
+   * four skip values. A skip is NOT order-invariant the way a projection is — skipping the first k
+   * of two different visit orders yields different multisets — so `order-is-unspecified` licenses
+   * nothing here. The orders being identical is also what keeps byte-identity against native
+   * intact, the general path being what native agrees with today.
+   *
+   * FAULTS LINE UP IN BOTH DIRECTIONS. Where the projection CANNOT fault, `pagedFaultFreeRows`
+   * pages the BINDINGS and there is nothing to observe. Where it CAN, the general path projects
+   * every row and pages the PROJECTED ones — so a skipped row's `CAST` does raise
+   * (`skipcast_426`) — and this rung projects every row and slices, which raises the same.
+   */
+  const pageSkip = unsortedPageRoute(proj);
+
+  if (pageSkip === null) {
     return null;
   }
 
@@ -1312,6 +1340,13 @@ export const detectNodeProjection = (
     // path does, so a stable sort preserves that agreement.
     // `sortRowsByColumns`, not `sortGroupRows`: the plan may carry a WINDOW (item 610), which
     // the tally's wrapper does not take — it pages through `pageGroups` instead.
+    // `pageSkip` is item 1776's skip-only page, and it is NON-ZERO only when `sorts` is
+    // `undefined`: it requires no `ORDER BY`, and `outputColumnSorts` returns `undefined` for
+    // exactly that. A sorted window still rides `sortRowsByColumns`'s own plan, untouched here.
+    if (pageSkip > 0) {
+      return out.slice(pageSkip);
+    }
+
     return sorts === undefined ? out : sortRowsByColumns(out, sorts);
   };
 };

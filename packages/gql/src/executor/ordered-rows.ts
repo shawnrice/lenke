@@ -59,6 +59,64 @@ import { compareSort } from './values.js';
 const cannotFault = (e: Expr): boolean =>
   e.kind === 'var' || e.kind === 'prop' || e.kind === 'lit' || e.kind === 'param';
 
+/**
+ * THE UNSORTED-WINDOW RULE, as a pure function: `null` declines the rung, a number is the literal
+ * `SKIP` the rung must slice off its own rows, and `0` means "no unsorted window here" (either
+ * there is no window at all, or there is an `ORDER BY` and `outputColumnSorts` owns the decision).
+ *
+ * ⚠️ THE TWO HALVES OF THE RULE PULL OPPOSITE WAYS, which is why it is one function rather than a
+ * condition inline (item 1776).
+ *
+ *   - A `LIMIT`, with or without a skip, DECLINES — and the decline is a statement about
+ *     LAZINESS, not about windows. The general path stops after `skip + limit` rows where a
+ *     materializing rung scans everything: item 1775 measured `RETURN n.k LIMIT 10` at 0.035 ms
+ *     on the general path against 12.565 for the rung on the `ORDER BY … LIMIT` spelling, 360x in
+ *     the general path's favour. `sortOf` records the same trade as ~280x for the DISTINCT walk.
+ *   - A SKIP ALONE IS ADMITTED, because that brake does not exist for it. The engine must emit
+ *     `N - skip` rows either way, so there is no laziness to collect and the decline was pure
+ *     loss: **7.9x** over 200,000 vertices, for TEN FEWER ROWS than the unpaged spelling that took
+ *     the rung (item 1775, five interleaved processes, p25 per process; 5.4x at 20,000, so it
+ *     grows with N).
+ *
+ * A LITERAL skip only. A parameterized one resolves against `params`, which the plan cache is
+ * shared across, so the route would be chosen for one page and reused for another — `deferredRoute`
+ * declines a parameterized window for exactly this reason.
+ *
+ * `skip === 0` is left to the general path rather than admitted as a no-op page: `dropVacuousPage`
+ * already owns vacuous windows, and a second opinion about them here is a second thing to be wrong
+ * about.
+ *
+ * ⚠️ `typeof proj.skip === 'number'` IS REDUNDANT AT RUNTIME and is kept because the TYPECHECKER
+ * is what enforces it — mutation established that rather than my reading it. Replacing it with
+ * `true` leaves all 23 tests in `skip-only-page.test.ts` green, because `{ param: 's' } > 0` is
+ * already false, so the `> 0` test declines a parameterized skip on its own. It is not a survivor
+ * to delete: `tsc` rejects that mutant with three errors (`'proj.skip' is possibly 'undefined'`,
+ * `Operator '>' cannot be applied`, and the return type), so the guard has teeth in the gate that
+ * actually runs on it. Item 475's rule — a surviving mutant means "redundant" as readily as
+ * "untested", and the two have opposite fixes.
+ *
+ * A PURE FUNCTION WITH ITS OWN TEST because this is a route CHOICE, and a route choice is
+ * answer-equivalent — so every mutant of it survives the differential tests
+ * ([[perf-gate-needs-its-own-test]]). It is also what kept `detectNodeProjection` under the
+ * complexity cap, which objected at 41 against 35 with the rule written inline.
+ */
+export const unsortedPageRoute = (proj: {
+  readonly orderBy?: readonly SortItem[];
+  readonly skip?: number | { param: string };
+  readonly limit?: number | { param: string };
+}): number | null => {
+  if ((proj.orderBy?.length ?? 0) > 0) {
+    return 0;
+  }
+
+  if (proj.skip === undefined && proj.limit === undefined) {
+    return 0;
+  }
+
+  return proj.limit === undefined && typeof proj.skip === 'number' && proj.skip > 0
+    ? proj.skip
+    : null;
+};
 /** One `ORDER BY` key, resolved to the output column it names. */
 export type ColSort = { col: string; descending: boolean; nullsFirst: boolean | undefined };
 

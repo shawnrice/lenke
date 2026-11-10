@@ -13,7 +13,7 @@ set -u
 ROUNDS="${ROUNDS:-5}"
 NODES="${NODES:-200000}"
 LIMIT="${LIMIT:-10}"
-SHAPES="${SHAPES:-list limit orderlimit hoplist hoplimit hoporderlimit offset count hopcount}"
+SHAPES="${SHAPES:-list limit orderlimit hoplist hoplimit hoporderlimit offset offsetparam hopoffset hopoffsetparam count hopcount}"
 
 cd "$(dirname "$0")" || exit 1
 

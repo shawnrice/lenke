@@ -16,19 +16,39 @@ Each of these was built because a violation was FOUND. A violation is a planner 
 for a reason other than cost, and it is invisible to every correctness test, because both routes
 return the same rows.
 
-| probe                        | the property                                                                                  | last run                                                                                                                     |
-| ---------------------------- | --------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `spelling-probe.ts`          | equivalent GQL spellings of one predicate cost the same                                       | clean; one flag is item 644's reverted product lever. **Gained TEMPORAL groups at 1490 (2.29x)**                             |
-| `gremlin-spelling-probe.ts`  | the same for Gremlin (item 1305)                                                              | zero flagged AT `SPELL_N=200000`; **1M flagged a new 2.00x group** (item 1332)                                               |
-| `surface-parity-probe.ts`    | GQL and Gremlin cost the same for ONE question                                                | found 1322's 5.78x and 1334's 1.92x; `two-hop-count` now GQL 1.35x FASTER, gap reversed                                      |
-| `index-never-hurts-probe.ts` | adding an index never makes a query slower (item 1324)                                        | holds on 17 shapes, both surfaces                                                                                            |
-| `id-lookup-is-o1-probe.ts`   | lookup by id is FLAT in graph size (item 1326)                                                | holds on 8 arms over a 16x range                                                                                             |
-| `id-lookup-hotset-probe.mjs` | whether that probe's residual drift is CACHE or COMPLEXITY (item 1395)                        | CACHE: flat in N at a fixed hot set, rising in hot set at fixed N — O(1) confirmed at **~5 ns hot / ~18 ns cold**            |
-| `order-probe-1389.mjs`       | a rewritten adjacency walk yields the SAME SEQUENCE, not just the same multiset (item 1389)   | BASE vs HAND identical for both `out('E','F')` and `out('F','E')`                                                            |
-| `rung-precedence-census.mjs` | **WHICH of the 20 rungs answers each shape, and which willing rungs are STARVED** (item 1775) | 79 shapes: only 5 contested, 3 pairs, all 3 correctly ordered. 10 shapes on the GENERAL PATH — that list is the open surface |
-| `page-rung-probe.mjs`        | what LOSING a projection rung to a page costs, one shape per process (item 1775)              | skip-only page **7.9x** at 200k (5.4x at 20k); bare `LIMIT` the OTHER way, 360x in the general path's favour                 |
-| `offset-order-equiv.mjs`     | is "take the rung, then slice" answer-equivalent to the general path's `OFFSET k`? (1775)     | IDENTICAL for node proj / node 2col / hop START proj; **hop FAR proj DIFFERS at index 0, different multiset**                |
-| `offset-rung-profile.mjs`    | the two profiles behind that 7.9x, windowed past the fixture build (item 1775)                | general path 3424 ms engine vs the rung's 426; **`internalSkip` is 3.7% — losing the rung is the other 96%**                 |
+| probe                        | the property                                                                                                                | last run                                                                                                                                                               |
+| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `spelling-probe.ts`          | equivalent GQL spellings of one predicate cost the same                                                                     | clean; one flag is item 644's reverted product lever. **Gained TEMPORAL groups at 1490 (2.29x)**                                                                       |
+| `gremlin-spelling-probe.ts`  | the same for Gremlin (item 1305)                                                                                            | zero flagged AT `SPELL_N=200000`; **1M flagged a new 2.00x group** (item 1332)                                                                                         |
+| `surface-parity-probe.ts`    | GQL and Gremlin cost the same for ONE question                                                                              | found 1322's 5.78x and 1334's 1.92x; `two-hop-count` now GQL 1.35x FASTER, gap reversed                                                                                |
+| `index-never-hurts-probe.ts` | adding an index never makes a query slower (item 1324)                                                                      | holds on 17 shapes, both surfaces                                                                                                                                      |
+| `id-lookup-is-o1-probe.ts`   | lookup by id is FLAT in graph size (item 1326)                                                                              | holds on 8 arms over a 16x range                                                                                                                                       |
+| `id-lookup-hotset-probe.mjs` | whether that probe's residual drift is CACHE or COMPLEXITY (item 1395)                                                      | CACHE: flat in N at a fixed hot set, rising in hot set at fixed N — O(1) confirmed at **~5 ns hot / ~18 ns cold**                                                      |
+| `order-probe-1389.mjs`       | a rewritten adjacency walk yields the SAME SEQUENCE, not just the same multiset (item 1389)                                 | BASE vs HAND identical for both `out('E','F')` and `out('F','E')`                                                                                                      |
+| `rung-precedence-census.mjs` | **WHICH of the 20 rungs answers each shape, and which willing rungs are STARVED** (item 1775)                               | 79 shapes: only 5 contested, 3 pairs, all 3 correctly ordered. 10 shapes on the GENERAL PATH — that list is the open surface                                           |
+| `page-rung-probe.mjs`        | what LOSING a projection rung to a page costs, one shape per process (1775); since 1776 it also holds the BEFORE/AFTER pair | **7.37x at 200k, 10.56x at 20k** (`offsetparam` vs `offset`), null control `hopoffset`/`hopoffsetparam` **1.00x**; bare `LIMIT` the OTHER way, 417x the general path's |
+| `offset-order-equiv.mjs`     | is "take the rung, then slice" answer-equivalent to the general path's `OFFSET k`? (1775)                                   | IDENTICAL for node proj / node 2col / hop START proj; **hop FAR proj DIFFERS at index 0, different multiset**. ⚠️ Its NODE rows went tautological at 1776 — see below  |
+| `offset-rung-profile.mjs`    | the two profiles behind that 7.9x, windowed past the fixture build (item 1775)                                              | general path 3424 ms engine vs the rung's 426; **`internalSkip` is 3.7% — losing the rung is the other 96%**                                                           |
+| `skip-only-page-parity.ts`   | do TS and NATIVE agree POSITIONALLY on an UNORDERED skip-only page — the shape every fuzzer is blind to (item 1776)         | node proj / 2col / `WHERE` IDENTICAL paged AND unpaged; **hop FAR's UNPAGED order already differs between the engines**                                                |
+
+⚠️ **A PROBE CAN GO TAUTOLOGICAL WHEN THE CHANGE IT INFORMED SHIPS, and that is the dead oracle's
+quieter sibling.** `offset-order-equiv.mjs` compares the UNPAGED query's rows, sliced, against the
+PAGED query's. Before item 1776 those were two different ROUTES for the node shapes — the rung and
+the general path — which is what made its `IDENTICAL` verdict evidence. Item 1776 gave the paged
+shape to the same rung, so for the node rows it now compares the rung against itself and cannot fail.
+It is still the right assertion (the paged answer must equal the unpaged sliced) and it still earns
+its keep on the HOP rows, which are unchanged — but **the cross-route question for the node shapes
+now lives in `skip-only-page.test.ts`**, which reaches the general path through the parameterized
+`OFFSET $s` spelling, and the cross-ENGINE question in `skip-only-page-parity.ts`. Item 1775's rule
+was "run a probe before citing it"; this is the other half: **check that the probe can still FAIL.**
+
+⚠️ **AND THE FUZZERS WERE BLIND TO THE WHOLE SHAPE** (item 1776). Every page the differential fuzzer
+generates rides an `ORDER BY` — `… ORDER BY t SKIP n LIMIT m`, and `ORDER BY … OFFSET 1` in statement
+position — so an UNORDERED `RETURN n.k OFFSET k` is outside its corpus, and `bun run fuzz` green said
+nothing at all about the route item 1776 changed. Found by reading the generator, not by trusting the
+suite; the same failure mode as `fuzzer-blind-to-one-column-group`. `skip-only-page-parity.ts` is the
+oracle that covers it, and it reads each paged shape against its own UNPAGED control, because a page
+cannot be expected to agree where the unpaged orders already do not.
 
 ⚠️ **`rung-precedence-census.mjs` ASSERTS THE ASSUMPTION IT RESTS ON, and a reader changing either
 file must know why.** It reads `compileLinear`'s non-null fields to name the rung that fires, which is

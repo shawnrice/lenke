@@ -103,6 +103,45 @@ const SHAPES = {
   // An OFFSET with no LIMIT returns NODES - LIMIT rows, so it is its own group.
   offset: { q: `MATCH (n:P) RETURN n.k OFFSET ${LIMIT}`, rows: NODES - LIMIT, group: 'offset' },
 
+  /**
+   * --- group "offset": THE BEFORE/AFTER PAIR, IN ONE BUILD (item 1776) ------
+   *
+   * ⚠️ `offsetparam` IS THE "BEFORE" ARM AND IT IS NOT A RECONSTRUCTION. Item 1776 gave the literal
+   * skip-only page to the node-projection rung and left the PARAMETERIZED spelling on the general
+   * path on purpose — the route is chosen once at compile time while the value lives in `params`,
+   * which the plan cache is shared across. So `OFFSET 10` and `OFFSET $s` with `s = 10` are the
+   * same query, over the same rows, down the two routes, and BOTH are measurable in the build under
+   * test.
+   *
+   * That is strictly better than timing two builds: a cross-build A/B compares arms separated by a
+   * rebuild and whatever the machine did in between, which is the trap item 737 priced at a 1.66x
+   * regression that did not exist. Here the only thing that differs between the two arms is the
+   * route, which is the whole claim.
+   *
+   * `hopoffset` / `hopoffsetparam` are the NULL CONTROL: item 1776 did not give the page to the hop
+   * rung (`offset-order-equiv.mjs` found the hop FAR projection's order differing from the general
+   * path's, and `skip-only-page-parity.ts` then found it differing from NATIVE's), so both hop arms
+   * stay on the general path and the pair must read FLAT. A control that moves with the target is
+   * the `executor-edits-perturb` toll showing up, not the win.
+   */
+  offsetparam: {
+    q: `MATCH (n:P) RETURN n.k OFFSET $s`,
+    params: { s: LIMIT },
+    rows: NODES - LIMIT,
+    group: 'offset',
+  },
+  hopoffset: {
+    q: `MATCH (a:P)-[:E]->(b) RETURN b.k OFFSET ${LIMIT}`,
+    rows: NODES - LIMIT,
+    group: 'hopoffset',
+  },
+  hopoffsetparam: {
+    q: `MATCH (a:P)-[:E]->(b) RETURN b.k OFFSET $s`,
+    params: { s: LIMIT },
+    rows: NODES - LIMIT,
+    group: 'hopoffset',
+  },
+
   // --- group "control": keeps its rung WITH the page on it ------------------
   count: { q: `MATCH (n:P) RETURN count(*) AS c LIMIT 1`, rows: 1, group: 'control' },
   hopcount: { q: `MATCH (a:P)-[:E]->(b) RETURN count(*) AS c LIMIT 1`, rows: 1, group: 'control' },
@@ -120,7 +159,7 @@ let got = -1;
 
 for (let r = 0; r < REPS; r += 1) {
   const t = performance.now();
-  const rows = query(g, arm.q);
+  const rows = arm.params === undefined ? query(g, arm.q) : query(g, arm.q, arm.params);
 
   series.push(performance.now() - t);
   got = rows.length;

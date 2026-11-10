@@ -193,6 +193,27 @@ describe('every fast-path detector fires for its own shape', () => {
       ['distinctCount', 'nodeAggregate'],
     ],
 
+    // --- the skip-only page (item 1776) -------------------------------------------------
+    //
+    // A `SKIP` with no `LIMIT` takes the node-projection rung and slices; a `LIMIT`, with or
+    // without a skip, must still decline, because the general path is LAZY for it and stops after
+    // `skip + limit` rows where this rung materializes everything (360x in the general path's
+    // favour, item 1775). The four rows below are that one rule's whole truth table, and the
+    // negative three are the load-bearing half: `skip-only-page.test.ts` compares the rung's rows
+    // against the general path's and so passes either way if the ROUTE silently changes.
+    ['a skip-only page', 'MATCH (n:L) RETURN n.k AS k OFFSET 2', ['nodeProjection']],
+    [
+      'a skip-only page, two columns',
+      'MATCH (n:L) RETURN n.k AS k, n.n AS t OFFSET 2',
+      ['nodeProjection'],
+    ],
+    ['a bare LIMIT still declines', 'MATCH (n:L) RETURN n.k AS k LIMIT 2', []],
+    ['a skip WITH a limit still declines', 'MATCH (n:L) RETURN n.k AS k OFFSET 2 LIMIT 2', []],
+    // A PARAMETERIZED skip declines: the route is chosen once at compile time while the value
+    // lives in `params`, which the plan cache is shared across. This spelling is also the oracle
+    // `skip-only-page.test.ts` compares the rung against, so its route is doubly load-bearing.
+    ['a PARAMETERIZED skip declines', 'MATCH (n:L) RETURN n.k AS k OFFSET $s', []],
+
     // --- optional hops ------------------------------------------------------------------
     [
       'optional hop count',
