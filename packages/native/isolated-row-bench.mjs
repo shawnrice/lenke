@@ -247,6 +247,24 @@ const SHAPES = {
    */
   hopfiltfareq: 'MATCH (a:P)-[:E]->(b:P) WHERE b.k = 5 RETURN b.n AS n',
   hopfiltneq: 'MATCH (a:P)-[:E]->(b:P) WHERE b.k <> 5 RETURN b.n AS n',
+  /**
+   * ⚠️ THE START-DRIVEN TWINS OF THE FILTERED ROWS — i.e. THE ROUTE AS IT WAS BEFORE ITEM 1781.
+   *
+   * Item 1781 gave a raise-free far predicate the far-driven walk. `OFFSET 1` forces the
+   * start-driven arm (item 1777's `pageSkip !== 0` arm of `startDriven`, made an instrument at item
+   * 1779), so each pair measures the OLD route against the NEW one in ONE BUILD — no source patch,
+   * no rebuild between arms, and item 737's cross-build trap cannot apply.
+   *
+   * ⚠️ THE PAGED ARM ALSO PAYS FOR THE PAGE, which is why that cost is bounded rather than assumed:
+   * item 1775 profiled `internalSkip` at 3.7% of the general path, and on a rung the page is one
+   * `rows.slice`. Item 1779's spelling pairs read 0.93-0.99x across six cells, so the page is worth
+   * about a percent here — small against the gap these rows measure, and it biases AGAINST the new
+   * route, since the slice is charged to the arm being beaten.
+   */
+  hopfiltyieldpage: 'MATCH (a:P)-[:E]->(b:P) WHERE b.n > 5 RETURN b.n AS n OFFSET 1',
+  hopfiltallpasspage: 'MATCH (a:P)-[:E]->(b:P) WHERE b.n > -1 RETURN b.n AS n OFFSET 1',
+  hopfiltfareqpage: 'MATCH (a:P)-[:E]->(b:P) WHERE b.k = 5 RETURN b.n AS n OFFSET 1',
+  hopfiltneqpage: 'MATCH (a:P)-[:E]->(b:P) WHERE b.k <> 5 RETURN b.n AS n OFFSET 1',
   // ⚠️ THE DECOMPOSITION OF `hopfiltyield`, which is the heaviest OPEN row in this bench at **644
   // ns/row** (item 1437). Profiling it nominated nothing routable — `get adjFrom` is 1.1%, so the
   // edge-index trick item 1431 took for the undirected walk is worth ~nothing here — and the

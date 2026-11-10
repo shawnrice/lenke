@@ -312,6 +312,31 @@ export const pathOf = (element: unknown, path: readonly string[]): unknown => {
  * BIMODAL (both arms span ~10.4-10.7 and ~13.7-14.9) and at ~7 us per query too cheap to resolve.
  * Do not reach for it.
  */
+/**
+ * Can applying this predicate with {@link satisfies} RAISE?
+ *
+ * Only three of `CPredicate`'s twelve families can, and `satisfies` already says which: its blocks
+ * are deliberately ordered NON-RAISING FIRST (item 1169, re-established by items 1269/1270 with the
+ * measured table), and the reason given there is the partition this function returns. `eqProps`,
+ * `cmpProps`, `pathProps`, `memberProps`, `nullProps`, `truthTestProps`, `typedTests`, `labelTests`
+ * and the inline `props` all settle a row by READING a value and comparing it — a cross-type
+ * comparison is UNKNOWN and a filter keeps only TRUE, so the row drops rather than faulting.
+ * `truthProps` and `notTruthProps` COERCE through `asTruth`, which raises on a non-boolean, and
+ * `where` is the generic evaluator and can raise anything at all.
+ *
+ * ⚠️ **NOT A SUBSTITUTE FOR `truthCannotRaise`, AND NEITHER SUBSUMES THE OTHER.** This answers a
+ * question about the COMPILED predicate's shape; `truthCannotRaise` answers it about the AST,
+ * including the operand side (`b.k > b.s / 2` has a raising VALUE inside a non-raising family). A
+ * caller that needs "this predicate cannot raise at runtime" wants BOTH — the compiled families
+ * here, and `truthCannotRaise` on the expression they were lifted from. Item 1781 uses it that way
+ * and says why at its call site.
+ *
+ * ⚠️ PURE, and exported for its tests. A route gated on it is answer-equivalent, so no differential
+ * test can fail when it is wrong (`perf-gate-needs-its-own-test`).
+ */
+export const predicateCannotRaise = (pred: CPredicate): boolean =>
+  pred.where === undefined && pred.truthProps === undefined && pred.notTruthProps === undefined;
+
 export const satisfies = (
   element: Bound,
   pred: CPredicate,

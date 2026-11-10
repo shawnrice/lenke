@@ -81371,7 +81371,7 @@ queries, so `git diff --stat` touches only the bench, the driver, the aggregator
 this file. Every sweep process capped at `MemoryMax=16G`, `MemorySwapMax=0`, `timeout 600`, per
 CLAUDE.md — a probe over a generated fixture is the class that took the box down four times.
 
-### Item 1780 — the filtered hop is the whole TOP of the bench (827.9 ns/row, 3.15x its unfiltered twin), and item 936's "price ~2x, and no more" is a **FLOOR**: the gap is **2.02x at `FANIN=1` and 9.11x at 0.01**, because the win it priced IS fan-in. Item 936's design (1) was also dismissed against a predicate class **no row in the bench contained**
+### Item 1780 — the filtered hop is the whole TOP of the bench (827.9 ns/row, 3.15x its unfiltered twin), and item 936's "price ~2x, and no more" is a **FLOOR**: the gap is **2.02x at `FANIN=1` and 9.11x at 0.01**, because the win it priced IS fan-in. Item 936's design (1) was also dismissed against a predicate class **no row in the bench contained** — ✅ **TAKEN AT ITEM 1781: 1.70x-1.89x at fan-in 1, 6.77x-10.57x at 10 and 7.18x-17.30x at 100, controls flat** — and ⚠️ **TWO OF THIS ITEM'S CLAIMS ARE CORRECTED THERE: `truthCannotRaise` IS the right gate key (this item said it was not, which would have excluded the three rows at the top of its own table), and "nothing has ever far-driven a filter" is overstated — `farDrivenFilteredHopWalk` exists since item 232, it just resolves the start per edge**
 
 Ranked all 38 rows of `isolated-row-bench.mjs` profile-first rather than picking from an open heading
 — which is what item 1779 had just demonstrated the cost of. The top of the table is one family:
@@ -81386,8 +81386,13 @@ Ranked all 38 rows of `isolated-row-bench.mjs` profile-first rather than picking
 
 Every filtered shape goes to `filteredHopWalk`, which is START-driven; the unfiltered one takes
 `farDrivenHopWalk`. `farDrivenHopWalk`'s selection is `farPred === undefined && gate === undefined &&
-!needsStart`, so **nothing on the projection path has ever far-driven a filter** — item 936 recorded
-exactly this and priced it at "~2x, and no more".
+!needsStart`, so ~~**nothing on the projection path has ever far-driven a filter**~~ ⚠️ **THAT IS
+OVERSTATED AND ITEM 1781 CORRECTS IT: `farDrivenFilteredHopWalk` ALREADY EXISTS** (item 232) — it
+enumerates the far candidates but still RESOLVES THE START PER EDGE and is gated on `hopDrivesFar`
+(label candidate counts), so it gets neither the predicate hoist nor item 167's `projectRow` hoist,
+and on a fixture where both ends share a label its `<` on equal counts never fires. What had never
+been far-driven is a filter on the walk that needs NO START VERTEX — which is what item 1781 built.
+Item 936 priced it at "~2x, and no more".
 
 #### That price is a floor, and its own reasoning says so
 
@@ -81441,7 +81446,20 @@ multiply the fan-in win rather than being invisible to it**. The pair also separ
 properties a single row would conflate: `hopfiltneq` is raise-free and NOT selective, `hopfiltfareq`
 is both.
 
-#### Why `truthCannotRaise` is the WRONG key for this, which I nearly used
+#### ~~Why `truthCannotRaise` is the WRONG key for this, which I nearly used~~ ⚠️ WRONG — IT IS THE RIGHT KEY, CORRECTED AT ITEM 1781
+
+**Everything in this section's conclusion is mistaken, and the error would have cost the item.** I
+read the `compare` arm's parenthetical about hoisting a faulting comparison as a statement that a
+comparison itself faults. The function's doc HEADER states its actual contract — "whether evaluating
+`e` as a TRUTH VALUE cannot raise — the question a conjunct of a filter poses" — which is exactly the
+question a far-predicate gate asks. Item 1781 verified it against the engine instead of re-reasoning:
+20 far predicates, keys read for all 20, **zero cases of a key-true predicate raising**, and the only
+three raising shapes all key false. A cross-type comparison yields UNKNOWN in value position and
+no-match in filter position; it does not throw, so this section's premise — inherited from the
+`cross-type-comparison-no-error` memory's "`<=` → throw" — is itself stale.
+**Had this stood, the gate would have been narrowed to equality and would have excluded `b.n > 5`,
+`b.n > -1` and `b.k > -1` — the three rows at the top of this very item's table.** The reasoning as
+originally written follows.
 
 `hop-projection.ts` already imports `truthCannotRaise`, it is described as "a key it shares with the
 Rust engine", and reaching for it looked obvious. It is not the right key: for `'compare'` it returns
@@ -81468,3 +81486,189 @@ so it needs its own cost side, and the ~10% rule applies before the win is belie
 `bun run check` 0 read unpiped. gql 4,478 pass / 0 fail. No engine code changed: the diff is two bench
 rows, `PROBES.md` and this file. Every sweep process capped at `MemoryMax=16G`, `MemorySwapMax=0`,
 `timeout 600`.
+
+### Item 1781 — ✅ **SHIPPED: item 1780's target TAKEN.** A raise-free far predicate now takes a far-driven walk that never visits a start vertex, hoisting the predicate from once per EDGE to once per FAR VERTEX: **1.70x-1.89x at fan-in 1, 6.77x-10.57x at 10, 7.18x-17.30x at 100**, the SELECTIVE equality winning biggest at 17.30x as item 1780 predicted — the filter now costs 21% of its unfiltered twin where it cost 940%. Controls flat, so `executor-edits-perturb`'s toll did not appear. And item 1780's own gate-key claim was WRONG, which would have excluded the three rows at the top of its table
+
+Item 1780 ranked the filtered hop to the top of the bench (827.9 ns/row, 3.15x its unfiltered twin),
+corrected item 936's "price ~2x, and no more" to a fan-in-dependent 2.02x-9.11x, and left the route
+change as the next item. This is it.
+
+#### What it does, and why the answer cannot change
+
+A far predicate reads nothing but the far variable — `liftFarOnlyClause`'s `ownVar` contract is a
+PROOF of that, not a convention — so its value is a function of the far vertex alone, and every row
+a walk emits for one far vertex shares it. Testing it once per far vertex instead of once per edge is
+therefore the same decision applied to the same rows. **That is the identical argument item 167 used
+to hoist `projectRow` out of this loop**, which is why the two hoists land in the same place:
+`farDrivenPredicatedHopWalk` is the unfiltered far-driven walk with one test added, so it inherits
+item 167's hoist and item 1407's `{ ...template }` clone by construction.
+
+Both hoists pay in proportion to ROWS PER FAR VERTEX, which is why the win is fan-in — and because a
+failing far vertex skips its WHOLE bucket, a selective filter multiplies that instead of being paid
+for and discarded.
+
+#### Measured, before and after in ONE build
+
+`OFFSET 1` forces the start-driven arm (item 1777's `pageSkip !== 0` arm of `startDriven`, made an
+instrument at 1779), so each pair is the OLD route against the NEW one with no source patch and no
+rebuild — item 737's cross-build trap cannot apply. 200,000 nodes, random stride, `MULTILABEL=0`,
+three interleaved rounds, `p25` per process and the median across:
+
+| far predicate           | rows    | fan-in 1                 | fan-in 10               | fan-in 100              |
+| ----------------------- | ------- | ------------------------ | ----------------------- | ----------------------- |
+| `b.n > 5`               | 199,400 | 133.04 → 70.21 **1.89x** | 82.85 → 17.76 **4.67x** | 75.75 → 10.55 **7.18x** |
+| `b.n > -1`              | 200,000 | 137.94 → 76.33 **1.81x** | 92.37 → 13.03 **7.09x** | 83.69 → 9.79 **8.55x**  |
+| `b.k <> 5`              | 197,900 | 135.31 → 78.62 **1.72x** | 92.81 → 13.71 **6.77x** | 82.96 → 8.13 **10.21x** |
+| `b.k = 5` **selective** | 2,100   | 89.87 → 52.94 **1.70x**  | 71.79 → 6.79 **10.57x** | 68.53 → 3.96 **17.30x** |
+
+**The selective equality wins biggest, which is item 1780's prediction confirmed rather than
+restated.** It returned 1% of the rows for 75% of the cost on the old route, because a start-driven
+walk resolves a far vertex and reads its property per edge whatever the selectivity. At fan-in 100 it
+is now 17.30x.
+
+The cleanest single statement: `b.n > -1` at fan-in 100 reads **9.79 against its UNFILTERED twin's
+8.09**. The filter costs ~21% where it cost ~940%.
+
+⚠️ The paged arm also pays for the page, and that cost is charged to the arm being BEATEN — item
+1779's spelling pairs put it at 0.93-0.99x, about a percent — so the bias runs against the new route.
+
+#### The cost side, which was the real risk
+
+`executor-edits-perturb` prices an edit in `hop-projection.ts` at **up to 16% on rows a change cannot
+reach**, and item 1466 declined a 3.3x win on that ground. Against items 1779/1780's runs on the same
+machine:
+
+| control                                    | then                   | now                    |
+| ------------------------------------------ | ---------------------- | ---------------------- |
+| unfiltered far-driven, fan-in 1 / 10 / 100 | 55.52 / 13.80 / 9.06   | 55.47 / 14.28 / 8.09   |
+| `hopstartonlyyield` (declined route)       | 133.05 / 93.82 / 84.62 | 133.91 / 90.22 / 83.84 |
+
+Flat. **That is the separate-factory decision paying off rather than a refutation of the toll**:
+item 159 measured that adding even a branch to the unfiltered inner loop costs the hot shape 1.6x,
+and a SHARED module-scope walk cost 1.29x by going polymorphic, so the new walk is a third factory
+and nothing inside the existing loops was edited. There is no mechanism by which an untouched row
+could move, which is a better reason to believe the controls than the controls themselves.
+
+#### ⚠️ IT WAS NEARLY A DUPLICATE: `farDrivenFilteredHopWalk` ALREADY EXISTS
+
+The build stopped on `Cannot redeclare 'farDrivenFilteredHopWalk'`. Item 232 built one, and item
+936's bullet — "nothing on this path has ever far-driven a FILTER", which item 1780 repeated — is
+overstated. The existing walk is a DIFFERENT route:
+
+- it enumerates far candidates but **resolves the START endpoint per edge**, so it gets neither hoist;
+- it checks `farPred` INSIDE the edge loop deliberately, for raise parity with its start-label test;
+- it is gated on `hopDrivesFar` — `candidateCount(far) < candidateCount(start)`, a label-count
+  comparison that fixes a 17.4x asymmetry between two spellings of a START-reading hop — so on a
+  fixture where both ends carry the same label its strict `<` never fires at all.
+
+What had never been far-driven is a filter on the walk that needs NO start vertex. The new one is
+`farDrivenPredicatedHopWalk`, and both now carry a comment distinguishing them. **Had the name been
+free, this would have shipped as a confusing near-duplicate.**
+
+#### ⚠️ FAULT ORDER — ITEM 936'S WHOLE OBSTACLE — IS NOT THE OBSERVABLE HERE
+
+Item 936 declined this because far-driving changes which far vertex is evaluated first. Both routes
+evaluate over the same SET (far vertices with a bucket of this type passing the far label), so no
+fault appears or disappears; only WHICH message escapes could differ. Measured rather than reasoned:
+
+- the raising families that actually REACH this gate are `truthProps`/`notTruthProps`, whose message
+  is fixed per error class (`a boolean is required — …`) and so identical whichever vertex raises;
+- the value-dependent messages (`cannot cast string "BETA" to number`) belong to predicates that
+  never produce a `farPred` at all — a `CAST` does not lift, so it stays in `gate` and the route
+  declines on `farPred !== undefined` before any key is consulted. **Confirmed by applying the
+  mutant and watching the message NOT change.**
+
+So the keys do a ROUTING job here, not a fault-ordering one. The soundness argument they support is
+the one that would be needed if a value-dependent raising family ever did lift.
+
+#### Teeth: 8 of 10 mutants caught, and the two survivors are REDUNDANT rather than untested
+
+| mutant                                                     | verdict                |
+| ---------------------------------------------------------- | ---------------------- |
+| walk: drop the `satisfies` check                           | **CAUGHT** 27 fail     |
+| walk: negate the `satisfies` check                         | **CAUGHT** 31 fail     |
+| route: never decline (ignore the gate)                     | **CAUGHT** 25 fail     |
+| walk: one row per far vertex, not per edge                 | **CAUGHT** 5 fail      |
+| route: drop the per-call vacuity test                      | **CAUGHT** 1 fail      |
+| gate: drop `closedFar === undefined`                       | **CAUGHT** 1 fail      |
+| `predicateCannotRaise`: admit `truthProps` / admit `where` | **CAUGHT** 1 fail each |
+| gate: drop `predicateCannotRaise`                          | SURVIVED               |
+| gate: drop `truthCannotRaise`                              | SURVIVED               |
+
+⚠️ **THE FIRST PASS CAUGHT EVERY WALK MUTANT AND LOST ALL THREE GATE MUTANTS** — the answer does not
+change, so only the ROUTE distinguishes them, which is `perf-gate-needs-its-own-test` arriving on
+schedule. The route is read off ROW ORDER (the far-driven walk enumerates far candidates, so `b.n`
+comes out ascending; the start-driven one resolves `FAR(i)` per edge and does not), and each gate
+conjunct now has a witness shape: `b.flag` for `predicateCannotRaise`, `b.n > b.m / 1` for
+`truthCannotRaise`, an inline `{m: 3}` for `closedFar`.
+
+⚠️ **AND ONE OF MY OWN FIXTURES HAD ITEM 1777'S DEFECT AGAIN.** The non-vacuous-start-label test gave
+its stray `:M` vertex NO EDGES, so the far-driven walk would answer correctly even with the vacuity
+check removed and that mutant would have survived against a fixture which cannot reach the branch.
+With an out-edge present the two routes genuinely disagree. Third time this family of fixture defect
+has cost something (items 1064, 1777, here).
+
+**The two survivors are MUTUALLY REDUNDANT, and that is item 475's rule resolved rather than
+deferred.** Every shape failing one key fails the other: `b.flag` keys false both ways, and
+`b.n > b.m / 1` — a non-raising FAMILY with a raising OPERAND, the exact case `truthCannotRaise` is
+there for — turns out to lift into `where` rather than `cmpProps`, so `predicateCannotRaise` declines
+it too. No shape separating them could be built. **Both stay**, because dropping either moves the
+soundness argument into another module (`liftFarOnlyClause` / `compilePredicate`) where nothing here
+would notice it changing, and the pair costs one comparison at COMPILE time.
+
+#### ⚠️ A COVERAGE COUNTER NAMED THE SHAPE AND DID NOT COUNT IT
+
+`bun run fuzz` passes all seven, and the differential fuzzer prints `hopFilter=172/156` — which reads
+as coverage of exactly this family. Its test is
+
+```js
+/^MATCH \([ab]?[^()]*\)[-<]/.test(q) && q.includes(' WHERE ') && q.includes('count(*)');
+```
+
+so it tallies the filtered **`count(*)`** ladder; `groupHopPred` is the GROUPED form. A plain
+yielding `MATCH (a:L)-[:E]->(b:L) WHERE <far pred> RETURN b.k` is tallied by neither, so the green
+run said nothing about the route this item changed.
+
+**Third blindness finding in six items, and this is the worst of the three.** Item 1776's page was
+ABSENT from the corpus; this shape is PRESENT UNDER A NAME THAT MATCHES, so the counter is non-zero
+and reading it is what convinces you not to look. The rule gains a second form: **read the
+generator's PREDICATE, not its counter's name.**
+
+`far-driven-predicated-parity.ts` is the oracle that covers it. Result: all 7 admitted shapes **SAME
+SET, DIFFERENT ORDER** against native, every DECLINED control **IDENTICAL**, no empty shape.
+
+#### Why the order difference is licensed here and the Gremlin twin is NOT available
+
+The probe's pattern is the finding: the multiset never moves, but TS's row ORDER now differs from
+native's on the admitted shapes, where the declined controls stay identical. That is permitted
+because an unordered GQL projection's row order is unspecified
+([[order-is-unspecified]], a settled won't-fix compared as multisets) — and it is not a new class:
+`skip-only-page-parity.ts` already records the unfiltered far-read hop's order differing between the
+engines, which item 167 established.
+
+⚠️ **GREMLIN CANNOT HAVE THIS, BY CONTRACT RATHER THAN FOR WANT OF EFFORT**, and its own tests say
+so. `far-filtered-hop-values.test.ts`: "Gremlin stream order is a TinkerPop contract that the
+differential fuzzer compares ORDERED … The admitted route therefore has to stay START-DRIVEN — the
+far-driven shape `filteredHopCount` uses (one test per far vertex, contributing its degree) is
+**3-4x faster** and emits in the wrong order, so it is not available to a yielding walk." That 3-4x
+is independent corroboration of this item's win from the other surface and a different fixture.
+Gremlin's COUNT path already far-drives (`filteredHopCount`); only the yielding path is blocked.
+
+#### Gates
+
+`bun run check` 0 read unpiped. gql **4,505 pass / 0 fail**; `nx run-many -t test` green across 21
+projects; all seven fuzzers pass; `far-driven-predicated-parity.ts` exit 0. Every sweep process
+capped at `MemoryMax=16G`, `MemorySwapMax=0`, `timeout 600`.
+
+Item 1780's heading and its two wrong claims corrected in this commit.
+
+#### Still open on this family
+
+- **The multi-type form.** `types.length === 1` declines it; `declinesDisjunction` already sends
+  every multi-type shape with a far predicate down the start-driven path, so this would need the
+  union-count walk's bucket handling as well. Unmeasured.
+- **An inline far constraint** (`closedFar !== undefined`) declines, conservatively — the detector
+  cannot see the expression those families were compiled from. The measured shapes have none.
+- **`memberProps` (`IN`) and `truthProps` (`b.flag`)** decline. `IN`'s faults look
+  order-independent and `truthProps`' message is provably class-fixed, so both may be admissible;
+  each needs its own fault argument rather than this item's.

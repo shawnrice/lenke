@@ -37,7 +37,7 @@ import {
   sortedRows,
   unsortedPageRoute,
 } from './ordered-rows.js';
-import { satisfies } from './predicates.js';
+import { predicateCannotRaise, satisfies } from './predicates.js';
 import { foldFor } from './projection.js';
 import { projectRow } from './rows.js';
 import { plainRowProjection } from './rows.js';
@@ -2766,28 +2766,111 @@ export const detectHopProjection = (
   // reading one projection and the walk building from another. Item 1447 carried this same guard.
   const farProp = walkProj === proj ? farPropRow(ret.projection, proj, farVar) : undefined;
 
+  const filtered = filteredHopWalk({
+    farProp,
+    forceStartDriven: startDrivenForOrder,
+    startLabel,
+    typeName,
+    out,
+    farVar,
+    farLabel,
+    proj: walkProj,
+    farPred,
+    gate,
+    startOnly: carried.startOnly,
+    projStartOnly,
+    cstart: cm.patterns[0].start,
+    startVar: needsStart ? startVar : undefined,
+    // The COMPILED far node carries both the inline equalities and the seed hints lifted from
+    // the clause `WHERE`, which are the two things `indexCandidates` reads — so one value
+    // answers "could the far end seek?" for both spellings.
+    cfar: compiledFarNode(cm),
+  });
+
+  const farDrivenPredicated = farDrivenPredicatedApplies({
+    farPred,
+    gate,
+    needsStart,
+    typeCount: types.length,
+    closedFar,
+    clauseWhere: m.where,
+  });
+
   return sorted(
-    filteredHopWalk({
-      farProp,
-      forceStartDriven: startDrivenForOrder,
+    predicatedHopRoute({
+      filtered,
+      applies: farDrivenPredicated,
       startLabel,
+      startDrivenForOrder,
       typeName,
       out,
       farVar,
       farLabel,
       proj: walkProj,
       farPred,
-      gate,
-      startOnly: carried.startOnly,
-      projStartOnly,
-      cstart: cm.patterns[0].start,
-      startVar: needsStart ? startVar : undefined,
-      // The COMPILED far node carries both the inline equalities and the seed hints lifted from
-      // the clause `WHERE`, which are the two things `indexCandidates` reads — so one value
-      // answers "could the far end seek?" for both spellings.
-      cfar: compiledFarNode(cm),
     }),
   );
+};
+
+/**
+ * The per-call choice between {@link farDrivenPredicatedHopWalk} and the start-driven
+ * `filteredHopWalk` it replaces (item 1781).
+ *
+ * ⚠️ ITS OWN FACTORY, not an inline closure, because inline it put `detectHopProjection` at a
+ * complexity of 37 against this file's limit of 35 — and because the file's other walks are
+ * factories for the measured reason `filteredHopWalk`'s header gives: a second hot loop built
+ * inside the detect function costs the first one (`ts-closure-size-is-load-bearing`), while a
+ * SHARED module-scope walk goes polymorphic across compiles. A factory is the arrangement that
+ * avoids both.
+ *
+ * ⚠️ THE FAR-DRIVEN WALK IS BUILT LAZILY, ON FIRST USE. A closure that every compile allocates and
+ * the declining path never calls read the gate-declines control at **-3.7%, away from chance**
+ * (the defect item 1388 fixed for `startDrivenMany` and item 1390 reintroduced one item later). A
+ * route that wins where it applies has to cost nothing where it is refused.
+ *
+ * ⚠️ AND THE CHOICE IS PER CALL, NOT PER COMPILE, because vacuity is a property of the GRAPH. The
+ * far-driven walk never visits a start vertex, so it cannot apply a START label and runs only when
+ * no vertex could fail one; and a sort or a page forces the start-driven arm, because an
+ * order-sensitive consumer inherits the walk's order (item 1777).
+ */
+const predicatedHopRoute = (w: {
+  filtered: RowsFn;
+  applies: boolean;
+  startLabel: LabelExpr | undefined;
+  startDrivenForOrder: boolean;
+  typeName: string;
+  out: boolean;
+  farVar: string;
+  farLabel: LabelExpr | undefined;
+  proj: CProjection;
+  farPred: CPredicate | undefined;
+}): RowsFn => {
+  const { filtered, applies, farPred, startLabel, startDrivenForOrder } = w;
+
+  // ⚠️ THE DECLINE LIVES HERE, NOT AT THE CALL SITE, and that is a complexity-cap decision rather
+  // than a stylistic one: an `if` around the call put `detectHopProjection` at 37 against this
+  // file's limit of 35, which is the same cap that made `hopPredicates`, `farPredAndGate` and
+  // `farDrivenPredicatedApplies` their own functions. Returning the start-driven walk unchanged
+  // also means a declining compile allocates nothing beyond what it allocated before this item.
+  //
+  // `farPred !== undefined` is re-tested rather than asserted: `applies` already implies it, but a
+  // boolean does not narrow the variable for the compiler, and a non-null assertion would be a
+  // claim maintained by hand across any future edit to the gate.
+  if (!applies || farPred === undefined) {
+    return filtered;
+  }
+
+  let farDrivenWalk: ((graph: Graph, params: Params) => Row[]) | undefined;
+
+  return (graph, params) => {
+    if (startDrivenForOrder || !(startLabel === undefined || vacuousLabel(graph, startLabel))) {
+      return filtered(graph, params);
+    }
+
+    farDrivenWalk ??= farDrivenPredicatedHopWalk({ ...w, farPred });
+
+    return farDrivenWalk(graph, params);
+  };
 };
 
 /**
@@ -2984,6 +3067,167 @@ const inEarlier = (buckets: readonly ReadonlySet<Edge>[], i: number, e: Edge): b
   }
 
   return false;
+};
+
+/**
+ * THE FAR-DRIVEN ROUTE FOR A RAISE-FREE FAR PREDICATE (item 1781). Item 1780 measured this family
+ * at the top of the bench — 827.9 ns/row, 3.15x its unfiltered twin — and the cause is the route:
+ * `farDrivenHopWalk`'s selection reads `farPred === undefined`, so nothing on the projection path
+ * had ever far-driven a filter. Item 936 priced it at "~2x, and no more"; item 1780 showed that
+ * price is a FLOOR taken at one fan-in, the gap reaching 9.11x at in-degree ~100.
+ *
+ * EVERY CONJUNCT IS LOAD-BEARING, so each says what it is for.
+ *
+ * ⚠️ PURE AND EXPORTED FOR ITS TESTS, and it is a function rather than an inline conjunction for
+ * two reasons: a route choice is ANSWER-EQUIVALENT, so it needs its own tests
+ * (`perf-gate-needs-its-own-test`), and inline it put `detectHopProjection` at a complexity of 44
+ * against this file's limit of 35 — the same cap that made `hopPredicates` and `farPredAndGate`
+ * their own functions.
+ */
+export const farDrivenPredicatedApplies = (w: {
+  farPred: CPredicate | undefined;
+  gate: CompiledExpr | undefined;
+  needsStart: boolean;
+  typeCount: number;
+  closedFar: CPredicate | undefined;
+  clauseWhere: Expr | undefined;
+}): boolean =>
+  // The predicate must exist and be the ONLY thing standing between this and the unfiltered
+  // route — a residual start-reading gate has to run per start vertex, which this walk never
+  // visits. (`itemsReadRel`, `carried.needsRel` and `relPred` are already excluded above.)
+  w.farPred !== undefined &&
+  w.gate === undefined &&
+  !w.needsStart &&
+  // ONE edge type. The multi-type form would need the union-count walk's bucket handling as
+  // well, and `declinesDisjunction` has already sent every multi-type shape with a far
+  // predicate down the start-driven path, so this is an assertion as much as a condition.
+  w.typeCount === 1 &&
+  // ⚠️ NO INLINE FAR CONSTRAINT. With `closedFar === undefined`, `hopPredicates` can only have
+  // produced this `farPred` by lifting the clause `WHERE` whole (`liftFarOnlyClause`), which is
+  // what makes the AST test on the next line a test of the ENTIRE predicate. An inline
+  // constraint would contribute families whose expression this detector cannot see, so it
+  // declines rather than guessing. Conservative on purpose, and it declines no measured shape.
+  w.closedFar === undefined &&
+  // ⚠️ THE TWO RAISE-FREEDOM TESTS, AND NEITHER SUBSUMES THE OTHER. `truthCannotRaise` is the
+  // AST-level key, shared with the Rust engine, and it is the one that covers the OPERAND side:
+  // it answers false for `b.k > b.s / 2`, whose family (`cmpProps`) is non-raising while its
+  // value expression is not. `predicateCannotRaise` is the compiled-shape key and rules out
+  // `where`, `truthProps` and `notTruthProps` — the three families `satisfies` identifies as
+  // coercing. A route that reorders which far vertex is evaluated first needs BOTH.
+  //
+  // Verified against the engine rather than reasoned about (item 1781): 20 far predicates,
+  // keys read for all 20, zero cases of a key-true predicate raising, and the only three
+  // raising shapes (`b.k / 2 > 1`, a `CAST`, a bare `b.s`) all key false.
+  //
+  // ⚠️ THE TWO KEYS ARE MUTUALLY REDUNDANT TODAY AND BOTH MUTANTS SURVIVE — item 475's rule, and
+  // resolved in the REDUNDANT direction rather than left as an untested guard. Dropping either
+  // one alone leaves 4,505 pass / 0 fail, because every shape that fails one also fails the
+  // other: `b.flag` keys false both ways, and `b.n > b.m / 1` — a non-raising FAMILY with a
+  // raising OPERAND, the case `truthCannotRaise` is here for — turns out to lift into `where`
+  // rather than `cmpProps`, so `predicateCannotRaise` declines it too. No shape could be built
+  // that separates them.
+  //
+  // BOTH STAY, and the reason is which file the implication runs through. Keeping only
+  // `predicateCannotRaise` would make soundness depend on "no predicate with a raising operand
+  // ever lifts into a non-raising family" — a property of `liftFarOnlyClause` and
+  // `compilePredicate`, in another module, that nothing here would notice changing. Keeping only
+  // `truthCannotRaise` would depend on the compiled families never gaining a raising member.
+  // Each is cheap and local; the pair costs one comparison at COMPILE time.
+  w.clauseWhere !== undefined &&
+  truthCannotRaise(w.clauseWhere) &&
+  predicateCannotRaise(w.farPred);
+
+/**
+ * {@link farDrivenHopWalk} with a RAISE-FREE far predicate applied ONCE PER FAR VERTEX (item 1781).
+ *
+ * ⚠️ **NOT `farDrivenFilteredHopWalk`, WHICH ALREADY EXISTS AND IS A DIFFERENT ROUTE.** That one
+ * (item 232) is the mirror of `filteredHopWalk`'s general closure: it enumerates the far candidates
+ * but still RESOLVES THE START ENDPOINT PER EDGE, and it is gated on `hopDrivesFar` — a comparison
+ * of the two sides' label candidate counts, which fixes a 17.4x asymmetry between two spellings of
+ * a start-reading hop. It therefore keeps the per-edge predicate check (deliberately, for raise
+ * parity with its start-label test) and gets neither of the two hoists below. On a fixture where
+ * both ends carry the same label its gate is `<` on equal counts and it does not fire at all.
+ *
+ * This walk is for the shape that needs no start vertex AT ALL — `needsStart` false, nothing
+ * projecting or filtering on the start — where two hoists become available that the walk above
+ * cannot take:
+ *
+ *   THE PREDICATE, from once per EDGE to once per FAR VERTEX. It reads nothing but the far variable
+ *   (`liftFarOnlyClause`'s `ownVar` contract is a PROOF of that), so its value is a function of the
+ *   far vertex alone and every row for that vertex shares it.
+ *
+ *   `projectRow`, from once per EDGE to once per FAR VERTEX, plus `{ ...template }` for the rest of
+ *   the bucket — item 167's hoist and item 1407's clone, which this walk inherits by construction
+ *   because it is the unfiltered walk with one test added.
+ *
+ * Both hoists pay off in proportion to the ROWS PER FAR VERTEX, which is why the win is fan-in and
+ * why item 936's "price ~2x, and no more" was a floor: item 1780 measured the gap at 2.02x at
+ * in-degree 1 and 9.11x at ~100. And because a failing far vertex skips its WHOLE bucket, a
+ * SELECTIVE filter multiplies that rather than being paid for and discarded — item 1780's
+ * `hopfiltfareq` returned 1% of the rows for 75% of the cost on the start-driven route.
+ *
+ * ⚠️ A SEPARATE FACTORY, NOT A BRANCH IN {@link farDrivenHopWalk}, and this file has paid to learn
+ * it twice: item 159 measured that adding even a branch to that inner loop costs the hot unfiltered
+ * shape 1.6x, and a SHARED module-scope walk cost 1.29x by going polymorphic across compiles.
+ * Nothing inside the unfiltered walks is edited, which is also what makes this item's cost side
+ * readable — an unfiltered row that moves cannot have moved because of code added here.
+ *
+ * ⚠️ RAISE-FREEDOM IS THE CALLER'S GATE AND IS REQUIRED, NOT PREFERRED. Both routes evaluate the
+ * predicate over the same SET of far vertices (those with a bucket of this type that pass the far
+ * label, the start label being vacuous when this is chosen), so no fault can appear or disappear —
+ * but they reach that set in different ORDERS, so with two faulting far vertices a different
+ * message escapes. That is the obstacle item 936 identified and declined to reason past; a
+ * predicate that cannot raise makes the question vacuous rather than answered, which is the sound
+ * half of item 936's own design (1). See the gate in `detectHopProjection` for the two keys.
+ */
+const farDrivenPredicatedHopWalk = (w: {
+  typeName: string;
+  out: boolean;
+  farVar: string;
+  farLabel: LabelExpr | undefined;
+  proj: CProjection;
+  farPred: CPredicate;
+}): ((graph: Graph, params: Params) => Row[]) => {
+  const { typeName, out, farVar, farLabel, proj, farPred } = w;
+
+  return (graph, params) => {
+    const rows: Row[] = [];
+    const binding = new Map<string, unknown>();
+
+    for (const far of candidateVertexSource(graph, farLabel)) {
+      const bucket = (out ? far.adjTo : far.adjFrom)?.get(typeName);
+
+      // Guarded for the reason the unfiltered twin states: the spread form pushes the template
+      // FIRST and would emit one spurious row for an empty bucket.
+      if (bucket === undefined || bucket.size === 0) {
+        continue;
+      }
+
+      if (farLabel !== undefined && !matchesLabel(far, farLabel)) {
+        continue;
+      }
+
+      binding.set(farVar, far);
+
+      // ⚠️ ONCE PER FAR VERTEX, AND AFTER THE BUCKET AND LABEL TESTS — the whole item. The ordering
+      // is what keeps the EVALUATED SET identical to the start-driven walk's: a far vertex this
+      // walk could emit no rows for is never evaluated, so the fault set matches even though the
+      // caller's gate means neither route can fault.
+      if (!satisfies(far, farPred, binding, params, graph)) {
+        continue;
+      }
+
+      const template = projectRow(proj, binding, params, graph);
+
+      rows.push(template);
+
+      for (let n = bucket.size - 1; n > 0; n -= 1) {
+        rows.push({ ...template });
+      }
+    }
+
+    return rows;
+  };
 };
 
 const farDrivenHopWalk = (w: {
