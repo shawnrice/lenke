@@ -64,6 +64,18 @@ suite; the same failure mode as `fuzzer-blind-to-one-column-group`. `skip-only-p
 oracle that covers it, and it reads each paged shape against its own UNPAGED control, because a page
 cannot be expected to agree where the unpaged orders already do not.
 
+⚠️ **NORMALIZE BY THE QUANTITY THE LOOP IS OVER, NOT BY THE QUANTITY IT EMITS** (item 1784). A
+re-rank after item 1783 put the four `hasLabel('Q')` hop rows at 2.1x-2.9x their unlabeled twins per
+ROW — and they are CHEAPER per VERTEX SCANNED (`hopyieldq` 117.7 ns against `hopyieldsingle` 167.5;
+`hopbareq` 85.7 against `hopbare` 88.0, so the label test costs ~2 ns). The fused walk is
+`for (const v of graph.vertices)` and scans every vertex whatever the filter admits, so `VLABEL=3`
+emits a third of the rows for the same scan and `ns/row` inflates the filtered shape by exactly the
+selectivity. **A shape whose filter sits UPSTREAM of its row count has a row count that is an output
+of the filter, so dividing by it divides by the thing under test.** Both columns are computable from
+what the bench already prints (`nodes`, `rowCount`); neither is assumption-free, which is why the
+ranking now carries both. Same family as item 1437's "divide before comparing", pointed the other
+way: divide when the arms differ in rows for a reason OUTSIDE the change.
+
 ⚠️ **READ THE GENERATOR'S SHAPE SPACE ON THE AXIS THE CHANGE MOVES** (item 1783). The Gremlin fuzzer
 calls `order(` 59 times, so it looks like coverage for any order-step change. Every `by()` modulator
 it generates is a COMPARATOR TOKEN — 8 × `.by(desc)`, 3 × `.by(Order.desc)`, **zero with a property

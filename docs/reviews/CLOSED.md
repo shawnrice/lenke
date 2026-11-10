@@ -81897,3 +81897,95 @@ projects (⚠️ one run exited 1 on `@lenke/native:test`, which Nx itself label
 which passes isolated at 1,084/0 — the documented `sync-test-flake-is-timing` behaviour, re-run
 before being believed rather than after); all seven fuzzers pass;
 `gremlin-order-by-key-parity.ts` exit 0.
+
+### Item 1784 — ❌ NO TARGET, and the reason is the INSTRUMENT: **`ns/row` mis-ranks every shape whose filter is upstream of its row count.** The four `hasLabel('Q')` hop rows look 2.1x-2.9x worse per row than their unlabeled twins and are **CHEAPER per VERTEX SCANNED** — 117.7 against 167.5 ns, with the label test itself costing ~2 ns. The lever this would have nominated is also documented-rejected on two grounds. Item 1783's own row re-checked and left at its floor
+
+Re-ranked the Gremlin bench after item 1783 — which is item 1782's own rule, that a fusion promotes
+the spelling it did not reach — and the table nominated a cluster that turns out to be an artifact of
+how it was sorted.
+
+#### Item 1783's row first: it is near its floor, and the remaining plan was WRONG
+
+Item 1783 closed at 1.536x and recorded "a fully fused element sort would claim the rest" of the
+~3.2x, citing item 1630's wrapper price of 48.9 ms in a 325 ms gap. **A post-1783 profile refutes
+that**, and it was my own stated next step:
+
+```text
+  the fused walk itself      ~61%   (`values` 53.6%, `get to` 4.8%, `get adjFrom` 2.5%)
+  the sort                   ~25%   (`sortByBys` 19.1%, `orderStep` 3.8%, `evalBy` 1.6%)
+  the traverser round-trip   ~5.6%  (wrapper 1.7%, `unwrap` 2.3%, `toArray` 1.6%)
+```
+
+Item 1630's 48.9 ms was the VALUES case at 1,000,000 edges; here the round-trip a fully fused element
+sort would remove is **~6%, not 2x**. The traversal cluster is gone, which is item 1783's route change
+working — and what replaced it is the fused walk's own loop.
+
+That 61% has a measured ceiling rather than an open one. Item 1693 put the engine at **1.20x its own
+hand-written walk** ("there is no delegation left to remove", items 1614 and 1631 having taken the
+delegation wins), and its CSR drain reads **0.76x COLD** for a structural reason: it wins only where
+the walk's OUTPUT IS NOT PROPORTIONAL TO ITS INPUT. Item 1692's filtered hop wins cold because it
+drops 99% of rows before materializing; a sort must materialize every row, so the ~89 ms build is pure
+addition. **Left at its floor rather than ground on.**
+
+#### The cluster the re-rank nominated, and why it is not real
+
+| shape                                            | rows    | `p25`  | ns/row | **ns/VERTEX scanned** |
+| ------------------------------------------------ | ------- | ------ | ------ | --------------------- |
+| `hopyieldq` `hasLabel('Q').out('E').values('k')` | 16,667  | 11.769 | 706.1  | **117.7**             |
+| `hopyieldsingle` `out('E').values('k')`          | 50,000  | 16.746 | 334.9  | **167.5**             |
+| `hopbareq`                                       | 16,667  | 8.569  | 514.1  | **85.7**              |
+| `hopbare`                                        | 50,000  | 8.804  | 176.1  | **88.0**              |
+| `hopidq`                                         | 16,667  | 9.094  | 545.6  | **90.9**              |
+| `hopidsingle`                                    | 50,000  | 10.046 | 200.9  | **100.5**             |
+| `hopbothq`                                       | 33,334  | 16.552 | 496.6  | **165.5**             |
+| `hopbothyield`                                   | 100,000 | 32.471 | 324.7  | **324.7**             |
+
+⚠️ **EVERY `Q` ROW IS CHEAPER THAN ITS TWIN ON THE AXIS THAT DRIVES ITS COST.** The fused walk is
+`for (const v of graph.vertices)` — it scans every vertex whatever the filter admits — so `VLABEL=3`
+emits a third of the rows for the same scan. Dividing by EMITTED rows then inflates the filtered
+shape by exactly the selectivity, and `ns/row` reported a 2.9x "penalty" where the label test costs
+**~2 ns a vertex** (`hopbareq` 85.7 against `hopbare` 88.0) and saves two thirds of the row emission.
+
+**RULE: normalize by the quantity the loop is over, not by the quantity it emits.** A shape whose
+filter sits UPSTREAM of its row count has a row count that is an output of the filter, so `ns/row`
+divides by the thing under test. The bench already prints `nodes` and `rowCount`, so both
+normalizations are available and neither is free of assumption — which is why the table now carries
+both.
+
+This is the same family as item 1437's lesson ("two arms answering different row counts are not
+comparable until divided") pointed the other way: dividing is right when the arms differ in rows for
+a reason OUTSIDE the change, and wrong when the row count is itself the filtered quantity.
+
+#### And the lever it would have nominated is documented-rejected, twice over
+
+Had the per-row reading stood, the obvious fix is seeding from `graph.verticesByLabel.get('Q')`
+instead of scanning. `start-filtered-hop-values.ts` already rejects that in a comment at its own
+walk, for two reasons a COUNT cannot observe and a yielded stream can:
+
+- **ORDER.** Gremlin stream order is a TinkerPop contract the differential fuzzer compares ORDERED.
+  The general pipeline reaches this shape as a filter over `graph.vertices`, so an admitted route
+  must emit in GLOBAL vertex order, not label-bucket order. (The same contract that makes item
+  1781's GQL far-driven route unavailable on this surface — third time this session that Gremlin's
+  order contract is the binding constraint.)
+- **STALENESS, which is a WRONG-ANSWER risk and an OPEN OWNER DECISION.** The raw `labels` SETTER has
+  never maintained `verticesByLabel`; only `addLabelToVertex`/`removeLabelFromVertex` index, and
+  `core`'s `label-box.test.ts` pins the stale bucket **on purpose**. So the bucket is neither a
+  subset nor a superset of the truth after a setter write, and seeding from it would both over- and
+  under-yield where `labels.has` is right. [[label-index-vs-setter]] records this as an open
+  decision; it is not something a perf item should settle on its own.
+
+`startFilteredHopCount` DOES seed from the bucket — one line, and correct there, because a count
+observes neither order nor (for its purposes) the per-element truth the same way. **That asymmetry
+is the thing to remember: the same one-line optimization is right in the count path and wrong in the
+yielding one.**
+
+#### What this leaves
+
+The Gremlin surface has no row nominated by measurement that is not either at its floor
+(`hoporderbystr`, `hopbare` at 88 ns/vertex) or blocked by the order contract. The honest next move is
+the other surface or a different axis, not another pass at this table.
+
+#### Gates
+
+No engine code changed; docs and the ranking only. `bun run check` 0 read unpiped. Every sweep and
+profile process capped at `MemoryMax=16G`, `MemorySwapMax=0`, `timeout 600`.
