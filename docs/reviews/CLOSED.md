@@ -81672,3 +81672,105 @@ Item 1780's heading and its two wrong claims corrected in this commit.
 - **`memberProps` (`IN`) and `truthProps` (`b.flag`)** decline. `IN`'s faults look
   order-independent and `truthProps`' message is provably class-fixed, so both may be admissible;
   each needs its own fault argument rather than this item's.
+
+### Item 1782 — the GREMLIN surface ranked (31 shapes), and its new heaviest row is the ONE SORT SPELLING THE FUSION NEVER REACHED: `out(T).order().by(k)` takes **no shortcut at all** (`projected=UNDEFINED`, verified with route markers), so the same `V().out('E')` walk costs **~43 ms here against `hopbare`'s 8.5** — **2.51x its fused twin at fan-in 1 and 3.18x at fan-in 100**. Two obvious causes refuted by measurement first. Priced, NOT BUILT
+
+Four consecutive items had been GQL, so this one ranked the other surface. `isolated-gremlin-bench.mjs`,
+31 shapes, 100,000 nodes, `MULTILABEL=-1` (disjoint types, the common case — at `0` a two-label hop
+walks one real bucket and one empty one, which cost item 1413 a verdict), `VLABEL=3` so label filters
+partition, random stride, 14 reps dropping 3, one shape per process:
+
+```text
+  hoporderbystr     1537.5 ns/row   V().out('E').order().by('s')      ← the new peak
+  hoporderstr        682.5          V().out('E').values('s').order()
+  hopbothq           668.8
+  hopyieldq          677.7
+  hoporder           481.3          V().out('E').values('k').order()
+  hopyieldmultirev   470.2
+  hopbothyield       437.1
+  …
+  hopbare            153.6          V().out('E')                      ← the same walk, fused
+```
+
+⚠️ **THE RANKING HAS MOVED SINCE ITEM 1439 RANKED IT, AND THE FUSION WORK IS WHY.** That item's top
+row was `hoporder` at 89.48 ms; it now reads **24.07**, because items 1586, 1630 and 1713 fused and
+specialized the projected-order path. What those items left behind is the spelling they could not
+reach, and it is now the peak. **A fusion that serves one spelling promotes the other to the top of
+the table** — which is only visible if the table is re-ranked after the work, not before.
+
+#### Two obvious causes, both refuted before anything was built
+
+1. **"It is a sort problem — read the key once instead of per comparison."** Already built: item 1713
+   specialized both sort sites and `sortByBys` decorates into `{ item, key }` wrappers, so the key is
+   read once. A windowed profile at `FANIN=0.01`, profiler frames excluded, puts the whole sort
+   cluster at **17.4%** (`sortByBys` 11.7%, `orderStep` 4.6%, `evalBy` 1.1%).
+2. **"It is item 1392's cold far-vertex pointer chase."** My own notes say to check 1392 before
+   pricing any per-row property read, because items 1770-1773 spent four items re-deriving it. Swept,
+   and the controls are what make it readable:
+
+   | shape                                  | rows   | `FANIN=1` | `FANIN=0.01` | ratio     |
+   | -------------------------------------- | ------ | --------- | ------------ | --------- |
+   | `hoporderbystr`                        | 50,000 | 76.556    | 61.762       | **1.24x** |
+   | `hoporderstr`                          | 50,000 | 30.519    | 19.448       | 1.57x     |
+   | `hopbare` (no property read — CONTROL) | 50,000 | 8.818     | 8.544        | 1.03x     |
+   | `hopyieldsingle` (IS the chase)        | 50,000 | 17.366    | 9.981        | **1.74x** |
+
+   The knob works — `hopbare` flat, `hopyieldsingle` 1.74x, and `evalBy` collapses from 6.15% to
+   1.07% in the profile — so item 1392's effect is present and **small here**. The target row moves
+   only 1.24x, and **the two-spelling gap WIDENS as the chase is removed: 2.51x → 3.18x.**
+
+#### What it actually is, VERIFIED BY ROUTE MARKERS RATHER THAN READ OFF THE CODE
+
+Item 1713's scar is the reason this step was taken: its first wiring "changed nothing at all — I
+attached it to `sortByBys` and the row goes through `fusedProjectedOrder`; a counter on all six sort
+sites showed the admit/decline counter never firing once." So markers went in temporarily, the dist
+was rebuilt, and each shape was asked which route it takes:
+
+```text
+  hoporderbystr   out('E').order().by('s')       projected=UNDEFINED        -> generic orderStep
+  hoporderstr     out('E').values('s').order()   rest=1, ADMITTED           -> fusedProjectedOrder
+  hoporder        out('E').values('k').order()   rest=1, ADMITTED           -> fusedProjectedOrder
+  hopbare         out('E')                       (returns before the marker) -> fused, rest=0
+```
+
+**`order().by(k)` gets no shortcut at all.** `hopValuesShortcut` destructures `[V, hop, proj]` and
+needs a `values()` step; `order().by('s')` has none, so the shortcut declines and the WHOLE fused
+walk goes with it. The row then falls to the generic traverser pipeline, where `orderStep` spreads a
+generator chain of 50,000 traversers (`sortByBys([...stream], …)`).
+
+That is why the traversal, not the sort, dominates. At `FANIN=0.01` the traversal cluster is **70%**
+of the row — `iterLabeled` 32.7%, `iterByLabel` 11.3%, `outEdgesOf` 8.9%, `otherEndpoint` 6.4%,
+`traverseToVertex` 4.7% — about **43 ms**, where `hopbare` performs the identical `V().out('E')` walk
+in **8.5 ms**. **Five times the cost for the same walk**, which is the generator chain
+[[gremlin-values-is-the-floor]] records as the real cost of this family ("the reduce is free; the cost
+is the generator chain", fused at item 1586 for 1.90x).
+
+⚠️ **AND THE FRAMES WOULD HAVE MISLED A LEVER-SHAPED READING.** `iterLabeled` at 32.7% invites a
+micro-optimization of the adjacency iterator. It is not slow — it is being called through a pipeline
+the fused route does not use, which `hopbare`'s 8.5 ms proves. [[frame-attribution-trap]] in a new
+form: a frame can be hot because of the ROUTE that reaches it, not because of its own code, and the
+control that separates the two is the same walk on the other route.
+
+#### The target, not built here
+
+A fused element-order shortcut: walk the hop directly as `hopValuesShortcut` does, collect the far
+ELEMENTS with their sort key, sort, and emit elements — bypassing the traverser pipeline. The
+difference from `fusedProjectedOrder` is only what is carried (elements, not values), and item 1630
+measured that route's own win on the values spelling at **3.22x**.
+
+**Price: up to ~3.2x on this row**, bounded below by `hoporderstr`'s 19.4 ms at `FANIN=0.01` plus
+whatever element carriage costs over value carriage. Not built in this item because the ranking,
+the two refutations and the dispatch verification are what make it a target rather than a guess, and
+because it needs its own cost side — `index.ts`'s dispatch is consulted by every plan.
+
+⚠️ **IT IS NOT THE GQL ITEM 1781 IN DISGUISE.** That one far-drives a filtered hop, which Gremlin
+cannot do at all: stream order is a TinkerPop contract its differential fuzzer compares ORDERED
+(`far-filtered-hop-values.test.ts`, which prices the route it must refuse at 3-4x). This target
+changes no order — a sort defines the order — so it is available on this surface precisely where the
+other one is not.
+
+#### Gates
+
+No engine code changed. The route markers were temporary, reverted, and the revert verified with
+`git diff --stat` empty on `packages/gremlin/` before the dist was rebuilt clean. Every sweep and
+profile process capped at `MemoryMax=16G`, `MemorySwapMax=0`, `timeout 600`.

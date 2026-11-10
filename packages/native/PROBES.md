@@ -62,6 +62,21 @@ suite; the same failure mode as `fuzzer-blind-to-one-column-group`. `skip-only-p
 oracle that covers it, and it reads each paged shape against its own UNPAGED control, because a page
 cannot be expected to agree where the unpaged orders already do not.
 
+⚠️ **RE-RANK A BENCH AFTER FUSION WORK, BECAUSE A FUSION PROMOTES THE SPELLING IT DID NOT REACH**
+(item 1782). Item 1439 ranked the Gremlin bench with `hoporder` on top at 89.48 ms; items 1586, 1630
+and 1713 fused and specialized the projected-order path and it now reads **24.07**, which puts
+`hoporderbystr` — `order().by(k)`, the one sort spelling the fusion never reached — at the top at
+**1537.5 ns/row**. Route markers confirm it takes NO shortcut at all (`projected=UNDEFINED`), because
+`hopValuesShortcut` needs a `values()` step. **The new peak was created by the previous wins, and
+only a re-rank shows it.**
+
+⚠️ **AND A HOT FRAME CAN BE HOT BECAUSE OF THE ROUTE THAT REACHES IT.** That row's profile puts
+`iterLabeled` at 32.7% and the whole traversal cluster at 70%, which invites optimizing the adjacency
+iterator. It is not slow: `hopbare` runs the IDENTICAL `V().out('E')` walk in 8.5 ms against this
+row's ~43, because the fused route does not go through the generic traverser pipeline.
+`frame-attribution-trap` in a new form — and the control that separates the two readings is the same
+walk on the other route, not a deletion test.
+
 ⚠️ **AND A COVERAGE COUNTER CAN NAME A SHAPE IT DOES NOT COUNT — `hopFilter` IS THE COUNT LADDER**
 (item 1781). The differential fuzzer prints `hopFilter=172/156`, which reads as coverage of the
 filtered one-hop family. Its test is
