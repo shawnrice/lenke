@@ -82635,3 +82635,83 @@ from a captured log rather than through a pipe. The sentinel runs were done with
 between the src edit and the native/fuzzer rows, without which those two rows would have been clean
 runs against a dist that did not contain the sentinel. Pristine copy under
 `crates/lenke-engine/target/`, restored before each probe variant.
+
+### Item 1791 — **A REAL GAP THIS TIME, AND IT NEEDED TWO CONDITIONS AT ONCE.** The sweep's slot-memo READ-BACK (item 1106's 1.85x) and its start-slot array growth were reached **zero times** by 4,518 tests; a counter put the memo's WRITE side at 14 calls and its READ side at 0. Both now covered, **7 of 8 mutants caught** including the two copy-length mutants of item 1418's surviving class. ⚠️ **And the first fixture was INVARIANT to the sharpest mutant — caught by checking the number directly rather than by a green test**
+
+Item 1790's corrected gap list left 506 uncovered src lines. The largest survivors in `shortcuts.ts`
+are not dead (item 1788/1790's answer) and not covered elsewhere (item 1789's answer) — they are
+genuinely unreached, and they are both in the chain-count sweep.
+
+#### What was dark, measured by counter rather than by lcov
+
+| path                                                 | calls across the gql suite                        |
+| ---------------------------------------------------- | ------------------------------------------------- |
+| `sweepChain`                                         | 65                                                |
+| `sweepSlotCached` ENTRY (the memo is BUILT)          | 14                                                |
+| the memo's READ-BACK, `memo.len[slot] !== undefined` | **0 — every one of the 14 was a first visit**     |
+| the start-slot `ways` growth, `cap *= 2`             | **0 — no query ever seeded > 256 start vertices** |
+| item 1688's flat-array CSR arm                       | 333                                               |
+
+#### ⚠️ TWO CONDITIONS HAVE TO HOLD AT ONCE, which is why no fixture had stumbled into these
+
+**(a) The query must be SEEDED or `sweepChain` is never entered.**
+`filteredChainCsrApplies` is `legs.length > 0 && !seeded && legs.every((l) => !l.both)`, so an
+ordinary unseeded chain count takes the CSR arm — 333 of the suite's 398 chain calls do. The only
+other exit is an undirected leg, which is useless here: `uniform` is a precondition of the memo, so
+a `both` leg disables the path under test. So the fixture needs an index seek, and the seek must
+survive `seekIsWorthIt` — hence 4,000 vertices with 300 seeded rather than 400 with 300. **A
+selective seed and a large seed are opposing requirements, and that is the whole reason this was
+never reached by accident.**
+
+**(b) A slot must appear at TWO DIFFERENT DEPTHS or the memo is written and never read.**
+`slot-memo-growth.test.ts` already grows the memo's flat buffer on a 4,096-vertex PATH — but a path
+visits each slot at one depth only, so pass 2's frontier is disjoint from pass 1's. Revisits need a
+cycle.
+
+#### ⚠️ AND THE FIRST FIXTURE WAS INVARIANT TO THE SHARPEST MUTANT
+
+`flat[base + i]` → `flat[base + i + 1]`, a one-entry shift in the memo read-back, **SURVIVED** the
+first fixture (a path plus hub back-edges). Not a coverage miss — the path fired the read-back 3,458
+times. With almost every slot at out-degree 1 and the flat runs laid out in path order, shifting
+each run by one just moved every target one step along a homogeneous path and the total did not
+move: **470 either way, checked by running the mutant and printing the count rather than inferred
+from a green test.**
+
+That is item 1418's lesson arriving a third time, and item 702's a fourth: an answer invariant to
+the corruption cannot validate the fixture. The fix is two irregular edge rules (`v{5k} → v{(35k+3)
+mod n}` and `v{11k} → v{k}`) giving the runs different LENGTHS and unrelated destinations, so a
+shifted read crosses a run boundary into a target with a different continuation count. The mutant is
+caught immediately after.
+
+#### Mutation: 8 mutants, 7 caught, and the survivor is the control
+
+| mutant                                                        | verdict                                                                                                                                              |
+| ------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| memo read-back off by one (`base + i + 1`)                    | caught — **only after the fixture was fixed**                                                                                                        |
+| memo read-back drops the last entry (`i < n0 - 1`)            | caught                                                                                                                                               |
+| memo read-back adds 1 instead of `w`                          | caught                                                                                                                                               |
+| memo read-back skips the frontier push                        | caught                                                                                                                                               |
+| start growth copies one short (`subarray(0, len - 1)`)        | caught — item 1418's surviving class                                                                                                                 |
+| start growth forgets the copy entirely                        | caught                                                                                                                                               |
+| slot growth drops `grownNext.set(st.next)` — **cached** sweep | caught                                                                                                                                               |
+| …the same in the **uncached** sweep                           | SURVIVED — that growth is not reached by this fixture, and the note says so rather than claiming it                                                  |
+| CONTROL: memo never read (`false && n0 !== undefined`)        | SURVIVED, as it must — the fallback recomputes the same slots, so the memo is a PERF choice and answer-equivalent ([[perf-gate-needs-its-own-test]]) |
+
+#### The oracle
+
+An independent level-by-level walk DP over an adjacency built from the fixture's own construction
+rules — not a second spelling of the query, because a count shortcut and another query can share a
+route and agree while both are wrong (item 930). The test also asserts the count MOVES with the seed
+size and the hop count, which is the standing guard against asserting an invariant number.
+
+#### No speed claim
+
+A test item. The sweep is unchanged.
+
+#### Gates
+
+`bun run check` 0 read unpiped. `nx run-many -t test` **21 projects green**. Mutation under
+`timeout 300 systemd-run --user --scope -p MemoryMax=16G -p MemorySwapMax=0`, pristine copy under
+`crates/lenke-engine/target/`, restored BEFORE each mutant, anchors asserted to appear exactly once
+— one mutant was SKIPPED on a duplicate anchor and then run against each of the two sites
+separately rather than left unreported.
