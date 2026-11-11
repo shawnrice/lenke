@@ -1602,11 +1602,127 @@ const graphFreePrefix = (plan: Plan): Plan => {
   return prefix;
 };
 
+/**
+ * `match(as(a).out(T).as(b), as(b).out(T).as(c))` + `count()` becomes `out(T).out(T).count()`
+ * (item 1797), which is the difference between the solver's depth-first join and a closed-form
+ * degree product.
+ *
+ * ```text
+ *   V().match(a-E->b, b-E->c).count()    4719.7 ms      (20 reps, item 1797's measurement)
+ *   V().out('E').out('E').count()          55.9
+ * ```
+ *
+ * ⚠️ **ITEM 1655 BUILT THIS AND REVERTED IT AS A WRONG ANSWER, AND ITS REASON WAS A BUG RATHER THAN
+ * A SEMANTIC DIFFERENCE.** It concluded "`match()` counts distinct variable BINDINGS; a hop chain
+ * counts PATHS", from a fixture where one parallel edge made the two disagree. TinkerPop 3.7.3,
+ * asked directly at item 1793, answers the CHAIN's number for both — the TS solver was deduping
+ * solutions, which items 1793 and 1794 fixed in its two arms. So the spellings do agree, and this
+ * is the same normalise-to-the-spelling-with-rungs move as item 1307's `outE(T).inV()` -> `out(T)`.
+ *
+ * ⚠️ **ITEM 1655's OTHER OBJECTION IS WHY THE TAIL MUST BE `count()` AND NOTHING ELSE**: a `match`
+ * step emits a TAG MAP as its value, while the chain emits the end ELEMENT. They are not
+ * interchangeable mid-plan, so this refuses anything that could observe the difference. `count()`
+ * as the final step observes only how many.
+ *
+ * THE CONDITIONS, each refusing a real non-equivalence rather than an unusual spelling:
+ *
+ *   * **Every pattern is `as(x).<one movement>.as(y)`.** A longer inner plan is an arbitrary
+ *     traversal — it can filter, branch or emit values — and nothing about it is a hop.
+ *   * **The patterns form a LINEAR chain in written order**, each starting where the previous one
+ *     ended. The solver is free to reorder patterns, but a chain cannot; requiring written order
+ *     makes the two agree by construction instead of by argument.
+ *   * **Every tag is distinct.** A repeated tag is a JOIN the chain cannot express: `match(a->b,
+ *     b->a)` constrains the walk to return to its start, while `out(T).out(T)` does not.
+ *   * **`count()` is the step immediately after, and the last.** See above.
+ *
+ * ⚠️ A `both` LEG IS ADMITTED and that is deliberate — `as(a).both(T).as(b)` and `both(T)` are the
+ * same walk, including the vertex reached twice by a self loop. `match.ts`'s own `bucketEnds`
+ * refuses `both`, but that is an internal fast path choosing an index, not a statement about
+ * semantics.
+ *
+ * EQUIVALENCE IS MEASURED, NOT ASSUMED — item 1307's rule, and item 1655 is the cautionary tale for
+ * exactly this rewrite. `match-flatten.test.ts` checks the rewritten and unrewritten plans on a
+ * fixture carrying PARALLEL edges, a SELF LOOP, a MULTI-LABEL edge and a sink, and the differential
+ * suite in `gremlin-fuzz.test.ts` checks both against the Rust engine.
+ */
+// EXPORTED for its own assertion, like `fuseEdgeHop` and `fuseUnionBoth` beside it.
+export const flattenLinearMatch = (plan: Plan): Plan => {
+  // The item 1505 gate: a plan with no `match` cannot be changed by this pass.
+  if ((plan.kinds & KIND_BITS.match) === 0) {
+    return plan;
+  }
+
+  const n = plan.steps.length;
+
+  for (let i = 0; i < n; i += 1) {
+    const step = plan.steps[i];
+
+    if (step.kind !== 'match') {
+      continue;
+    }
+
+    const tail = plan.steps[i + 1];
+
+    // `count()` immediately after, and nothing after that. A `count(Scope.local)` counts INSIDE
+    // each value, which is a different question about a different value.
+    if (i + 2 !== n || tail?.kind !== 'count' || tail.scope === 'local') {
+      return plan;
+    }
+
+    const hops: Step[] = [];
+    let expected: string | undefined;
+    const seen = new Set<string>();
+
+    for (const pattern of step.patterns) {
+      if (pattern.steps.length !== 3) {
+        return plan;
+      }
+
+      const [head, mid, last] = pattern.steps;
+
+      if (
+        head.kind !== 'as' ||
+        last.kind !== 'as' ||
+        (mid.kind !== 'out' && mid.kind !== 'in' && mid.kind !== 'both')
+      ) {
+        return plan;
+      }
+
+      if (expected === undefined) {
+        seen.add(head.label);
+      } else if (head.label !== expected) {
+        return plan; // not a chain in written order
+      }
+
+      if (seen.has(last.label)) {
+        return plan; // a repeated tag is a join, not a chain
+      }
+
+      seen.add(last.label);
+      expected = last.label;
+      hops.push(mid);
+    }
+
+    if (hops.length === 0) {
+      return plan;
+    }
+
+    return rewritten(plan, [...plan.steps.slice(0, i), ...hops, tail]);
+  }
+
+  return plan;
+};
+
 export const effectivePlan = (plan: Plan, graph: Graph, tracksPath: boolean): Plan =>
   tracksPath
     ? plan
     : fuseOrderTake(
-        dropUnreadAs(dropVacuousLabels(fuseUnionSameDir(graphFreePrefix(plan), graph), graph)),
+        dropUnreadAs(
+          dropVacuousLabels(
+            fuseUnionSameDir(flattenLinearMatch(graphFreePrefix(plan)), graph),
+            graph,
+          ),
+        ),
       );
 
 /**

@@ -72597,7 +72597,7 @@ Not built: this is a planner-route change and deserves its own tick.
 No engine change — two probe arms. `bun run check` 0 read unpiped; gql suite 4230 pass / 0 fail, run
 under both arms of the refuted change.
 
-### Item 1655 — ⚠️⚠️ ~~**A 237x "EQUIVALENT-SPELLING GAP" THAT IS A WRONG ANSWER.** `match()` counts distinct variable BINDINGS; a hop chain counts PATHS.~~ ⚠️ **THE PREMISE IS FALSE AND ITEM 1793 FIXED IT: TinkerPop 3.7.3 and this repo's own RUST engine both answer the chain's number on that very fixture (3/2/2 where TS said 2/1/1). The TS solver was DEDUPING solutions, which is a TS-only WRONG ANSWER on any multigraph, not a semantic difference. So this revert's reason is gone and the 237x is a live gap again** — though the second objection recorded below (a `match` step emits a TAG MAP, not the chain's end element) still stands on its own evidence. The flattening rewrite was built, verified against a fixture that confirmed it, and REVERTED on the strength of the table above read the wrong way round
+### Item 1655 — ⚠️⚠️ ~~**A 237x "EQUIVALENT-SPELLING GAP" THAT IS A WRONG ANSWER.** `match()` counts distinct variable BINDINGS; a hop chain counts PATHS.~~ ⚠️ **THE PREMISE IS FALSE AND ITEM 1793 FIXED IT: TinkerPop 3.7.3 and this repo's own RUST engine both answer the chain's number on that very fixture (3/2/2 where TS said 2/1/1). The TS solver was DEDUPING solutions, which is a TS-only WRONG ANSWER on any multigraph, not a semantic difference. So this revert's reason is gone and the 237x is a live gap again — AND ITEM 1797 BUILT IT: 188x on the one-pattern shape and 87x on the two-pattern one, gated to a linear chain with a bare `count()` tail, with `matchedsel` (declined) flat as the control** — though the second objection recorded below (a `match` step emits a TAG MAP, not the chain's end element) still stands on its own evidence. The flattening rewrite was built, verified against a fixture that confirmed it, and REVERTED on the strength of the table above read the wrong way round
 
 REFUTED, no engine change. One guard test added (`match-binding-semantics.test.ts`).
 
@@ -83085,3 +83085,62 @@ astral-string attempt, so it is its own piece of work with its own calibration.
 GATES. bun run check 0 read unpiped. nx run-many -t test --skip-nx-cache 21 projects green. bun run
 fuzz 55 pass / 0 fail with FUZZ_EXIT=0 (20 before item 1794, 32 after it). Every emitted spelling
 verified by round-trip against the native parser, not by reading the Rust source.
+
+### Item 1797 — **item 1797 - SHIPPED, 188x AND 87x: a linear match() whose only tail is count() becomes the hop chain it is equivalent to. Item 1655 BUILT this and reverted it as a wrong answer, and its reason was a BUG rather than a semantic difference - the TS solver was deduping solutions, which items 1793/1794 fixed. So the parallel-edge fixture that REFUTED the rewrite is now the fixture that validates it. Two controls flat, 4 of 4 gate mutants caught**
+
+THE MEASUREMENT (gremlin probe, 20 reps, median of three post rounds against the pre number from
+the same instrument in the same session)
+
+    V().match(a-T->b).count()             863.8 ms  ->   4.6     188x
+    V().match(a-T->b, b-T->c).count()    4719.7     ->  54.3      87x
+    V().match(...).select('c').count()   6684       -> 6626       DECLINED - the control, 0.9%
+    V().hasLabel(P).out(T).out(T).count()  55.9     ->  60        untouched control, within the
+                                                                  ~10% floor
+
+The statement worth keeping is the last pairing: matched2 now costs 54.3 where its CHAIN TWIN costs
+55.9-60. The shape does not merely get faster, it lands on the spelling it is equivalent to - which
+is what "equivalent spellings must cost the same" asks for.
+
+WHY THIS IS NOT A RE-DERIVATION OF A REFUTED LEVER
+
+Item 1655 measured the same gap at 237x, built the rewrite, and REVERTED it, concluding "match()
+counts distinct variable BINDINGS; a hop chain counts PATHS" from a fixture where one parallel edge
+separated the two. TinkerPop 3.7.3, asked directly at item 1793, answers the CHAIN's number for
+both. The TS solver was deduping solutions - in two different arms, fixed at 1793 and 1794. The
+spellings do agree, and the fixture that refuted the rewrite is the first thing the new test
+asserts.
+
+ITEM 1655's SECOND OBJECTION STANDS AND IS THE GATE. A match step emits a TAG MAP as its value
+while the chain emits the end ELEMENT, so they are not interchangeable mid-plan. The tail must be
+`count()` and nothing else; `select('c')`, a `take`, and a bare match all decline.
+
+THE FOUR CONDITIONS, each refusing a real non-equivalence:
+
+- every pattern is exactly as(x).<one movement>.as(y) - a longer inner plan is an arbitrary
+  traversal, not a hop
+- the patterns form a LINEAR chain in WRITTEN order; the solver may reorder patterns and a chain
+  cannot, so written order makes them agree by construction rather than by argument
+- every tag is DISTINCT - a repeated tag is a join: match(a->b, b->a) requires the walk to come
+  back, out(T).out(T) does not. The test asserts those two genuinely differ, so the guard earns
+  its place
+- count() is the step immediately after, and the last
+
+A `both` leg IS admitted: as(a).both(T).as(b) and both(T) are the same walk. match.ts's bucketEnds
+refuses `both`, but that is an internal index choice, not semantics.
+
+EQUIVALENCE MEASURED, NOT ASSUMED - item 1307's rule, with item 1655 as the cautionary tale for
+this exact rewrite. match-flatten.test.ts runs both spellings over a fixture carrying PARALLEL
+edges, a SELF LOOP, a MULTI-LABEL edge, a sink and a second edge type; the MULTIGRAPH differential
+suite checks the rewritten TS plan against the Rust engine's unrewritten match on the same kind of
+graph.
+
+MUTATION: 4 GATE MUTANTS, 4 CAUGHT. Dropping the repeated-tag guard, dropping the written-order
+guard, admitting any tail, and dropping the hop's labels each fail the suite (9, 10, 10 and 8 of 11
+passing).
+
+THE PASS IS GATED ON A KIND BIT, item 1505's rule: KIND_BITS.match is new, so a plan with no match
+cannot be changed by this pass and does not pay a walk to find out. That chain was once 32.2% of a
+208 ns reused-plan call.
+
+GATES. bun run check 0 read unpiped. nx run-many -t test --skip-nx-cache 21 projects green. bun run
+fuzz 55 pass / 0 fail with FUZZ_EXIT=0. Every mutation run rebuilt dist before testing.

@@ -644,6 +644,11 @@ export const KIND_BITS: Readonly<Record<string, number>> = {
   // Item 1643. `seedSingleHasId` turns `V().hasId(x)` into the seeded source `V(x)`, so a plan with
   // no `hasId` has nothing for it to do — the same gate reasoning as `as` and `hasLabel` above.
   hasId: 16_384,
+  // Item 1797. `flattenLinearMatch` turns a linear `match(...)` + `count()` into the hop chain it
+  // is equivalent to, so a plan with no `match` has nothing for it to do — the same gate reasoning
+  // as `as`, `hasLabel` and `hasId` above, and the same measured reason (item 1505: the pass chain
+  // was 32.2% of a reused-plan call, almost all of it looking for steps that were not there).
+  match: 32_768,
 };
 
 /** Every bit an edge-hop fusion cares about. */
