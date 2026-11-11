@@ -1259,6 +1259,12 @@ suite('differential fuzz: gremlin MATCH over a MULTIGRAPH (TS engine vs Rust ENG
     // solver's own rather than an artefact of counting the step's output value.
     ['match two patterns, select(c), count', traversal(V(), match(ONE, TWO), select('c'), count())],
     ['match two patterns, select(a,b)', traversal(V(), match(ONE, TWO), select('a', 'b'))],
+    // ⚠️ THE ORACLE FOR ITEM 1798's REWRITE, and the only sound one: TS rewrites this into
+    // `out(T).out(T)` while native runs the solver, so the comparison is the rewrite against the
+    // thing it claims to equal — ROWS AND ORDER, on a multigraph. A TS-only check would compare
+    // the chain to itself.
+    ['match two patterns, select(c) ROWS', traversal(V(), match(ONE, TWO), select('c'))],
+    ['match one pattern, select(b) ROWS', traversal(V(), match(ONE), select('b'))],
     // ⚠️ THE OTHER SOLVER ARM: `a` is bound by the first pattern, so `BACK` never builds a
     // candidate list and takes the already-bound consistency path instead. Its multiplicity over
     // the two parallel `m3 -> m1` edges is a DIFFERENT question from the one item 1793 fixed, and

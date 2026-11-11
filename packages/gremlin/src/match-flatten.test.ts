@@ -90,7 +90,23 @@ describe('⚠️ the rewrite DECLINES everything it cannot prove equal', () => {
   });
 
   test('a tail that can OBSERVE the step value — item 1655 standing objection', () => {
+    // ⚠️ `select(<the LAST tag>)` is the one exception, added at item 1798: it rewrites the step's
+    // VALUE to that binding, which is exactly the element the chain ends on — so the select itself
+    // disappears and the two plans are identical from there. `matchedsel` was 6.6 SECONDS.
     expect(kindsOf(traversal(V(), match(ONE, TWO), select('c'), count()))).toEqual([
+      'V',
+      'out',
+      'out',
+      'count',
+    ]);
+    // …and selecting any OTHER tag is still refused, because the chain never bound it.
+    expect(kindsOf(traversal(V(), match(ONE, TWO), select('a'), count()))).toEqual([
+      'V',
+      'match',
+      'select',
+      'count',
+    ]);
+    expect(kindsOf(traversal(V(), match(ONE, TWO), select('a', 'c'), count()))).toEqual([
       'V',
       'match',
       'select',
@@ -142,6 +158,17 @@ describe('⚠️ the ANSWER is unchanged, on the fixture that refuted item 1655'
     expect(cyclic).not.toEqual(answer(traversal(V(), out('T'), out('T'), count())));
   });
 
+  /**
+   * ⚠️ **THERE IS NO TS-ONLY ORACLE FOR THE `select` FORM, AND THE OBVIOUS ONE IS VACUOUS.**
+   * Comparing `match(…).select('c')` against `out(T).out(T)` here compares the chain to ITSELF,
+   * because the first plan is rewritten into the second before it runs. The first cut of this file
+   * did exactly that and passed, which proves nothing at all.
+   *
+   * The sound check is the differential one: the REWRITTEN TS plan against the Rust engine's
+   * UNREWRITTEN match, rows and order both, which lives in `gremlin-fuzz.test.ts`'s MULTIGRAPH
+   * suite over a fixture with parallel edges and a self loop. Order matters there and is compared,
+   * because `toArray` returns a sequence.
+   */
   test('a typed hop still excludes the other type', () => {
     // `a -S-> d` must not be walked by `out('T')`, and `d` is a sink, so a rewrite that dropped
     // the labels would change the count.

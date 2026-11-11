@@ -1645,6 +1645,42 @@ const graphFreePrefix = (plan: Plan): Plan => {
  * fixture carrying PARALLEL edges, a SELF LOOP, a MULTI-LABEL edge and a sink, and the differential
  * suite in `gremlin-fuzz.test.ts` checks both against the Rust engine.
  */
+/**
+ * The steps after a `match` that `flattenLinearMatch` may look through, and the ONE reason the list
+ * is this short: a `match` step's value is a TAG MAP where the chain's is the end ELEMENT, so
+ * anything that can read either the value or a tag sees the difference (item 1655's standing
+ * objection, which items 1793/1794 did NOT retire).
+ *
+ * Two tails qualify:
+ *
+ *   `count()`                  — observes only HOW MANY, which the two spellings agree on.
+ *   `select(<the last tag>)`   — rewrites the VALUE to that binding, which is exactly the element
+ *                                the chain ends on. Anything after it would then be identical in
+ *                                both plans, but only `count()` is admitted for now: a later step
+ *                                could still read ANOTHER tag (`select('a')`), which the chain
+ *                                never bound. Widening this means scanning the rest for tag reads.
+ *
+ * ⚠️ `count(Scope.local)` counts INSIDE each value — a different question about a different value —
+ * so it is refused along with everything else.
+ */
+const tailIsBlindToTags = (tail: readonly Step[]): boolean => {
+  const [head] = tail;
+  const steps = head?.kind === 'select' ? tail.slice(1) : tail;
+
+  if (
+    head?.kind === 'select' &&
+    (head.labels.length !== 1 || head.bys !== undefined || head.pop === 'all')
+  ) {
+    return false;
+  }
+
+  if (steps.length === 0) {
+    return head?.kind === 'select';
+  }
+
+  return steps.length === 1 && steps[0].kind === 'count' && steps[0].scope !== 'local';
+};
+
 // EXPORTED for its own assertion, like `fuseEdgeHop` and `fuseUnionBoth` beside it.
 export const flattenLinearMatch = (plan: Plan): Plan => {
   // The item 1505 gate: a plan with no `match` cannot be changed by this pass.
@@ -1661,11 +1697,9 @@ export const flattenLinearMatch = (plan: Plan): Plan => {
       continue;
     }
 
-    const tail = plan.steps[i + 1];
+    const tail = plan.steps.slice(i + 1);
 
-    // `count()` immediately after, and nothing after that. A `count(Scope.local)` counts INSIDE
-    // each value, which is a different question about a different value.
-    if (i + 2 !== n || tail?.kind !== 'count' || tail.scope === 'local') {
+    if (!tailIsBlindToTags(tail)) {
       return plan;
     }
 
@@ -1707,7 +1741,15 @@ export const flattenLinearMatch = (plan: Plan): Plan => {
       return plan;
     }
 
-    return rewritten(plan, [...plan.steps.slice(0, i), ...hops, tail]);
+    // The `select(<last tag>)` form drops the select itself: once the chain's current element IS
+    // that binding, the two plans are identical from there on.
+    const rest = tail[0]?.kind === 'select' ? tail.slice(1) : tail;
+
+    if (tail[0]?.kind === 'select' && tail[0].labels[0] !== expected) {
+      return plan; // selecting a tag the chain does not end on
+    }
+
+    return rewritten(plan, [...plan.steps.slice(0, i), ...hops, ...rest]);
   }
 
   return plan;

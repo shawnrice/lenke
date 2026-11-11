@@ -83093,7 +83093,7 @@ the same instrument in the same session)
 
     V().match(a-T->b).count()             863.8 ms  ->   4.6     188x
     V().match(a-T->b, b-T->c).count()    4719.7     ->  54.3      87x
-    V().match(...).select('c').count()   6684       -> 6626       DECLINED - the control, 0.9%
+    V().match(...).select('c').count()   6684       -> 6626       DECLINED here; ITEM 1798 TOOK IT, 122x
     V().hasLabel(P).out(T).out(T).count()  55.9     ->  60        untouched control, within the
                                                                   ~10% floor
 
@@ -83144,3 +83144,45 @@ cannot be changed by this pass and does not pay a walk to find out. That chain w
 
 GATES. bun run check 0 read unpiped. nx run-many -t test --skip-nx-cache 21 projects green. bun run
 fuzz 55 pass / 0 fail with FUZZ_EXIT=0. Every mutation run rebuilt dist before testing.
+
+### Item 1798 — **item 1798 - SHIPPED, 122x: the select(<last tag>) tail joins item 1797's rewrite, because selecting the tag the chain ENDS ON turns the match's tag-map value into exactly the element the chain already carries - so the select disappears with the match. matchedsel 6684 ms -> 54.8, which puts all three match shapes on the SAME FLOOR as their chain twins. And the obvious TS-side oracle for it is VACUOUS - it compares the chain to itself**
+
+THE MEASUREMENT (gremlin probe, 20 reps)
+
+    V().match(a-T->b, b-T->c).select('c').count()   6684 ms -> 54.8   122x  (54.8/54.9/55.9)
+    V().match(a-T->b, b-T->c).count()                           53.4   item 1797, unchanged
+    V().hasLabel(P).out(T).out(T).count()                       53.8   the untouched twin
+
+All three now sit within 2.5% of each other. That is the point rather than the ratio: three
+spellings of one question cost the same, which is what CLAUDE.md opens by asking for.
+
+WHY THE select FORM IS ADMISSIBLE WHERE EVERY OTHER TAIL IS NOT
+
+Item 1655's standing objection - which items 1793/1794 did NOT retire - is that a match step's
+VALUE is a tag map while the chain's is the end ELEMENT, so the spellings are not interchangeable
+mid-plan. `select(<the last tag>)` is the one tail that REMOVES that difference: it rewrites the
+value to that binding, and that binding is precisely the element the chain ends on. So the select
+is dropped along with the match rather than kept.
+
+The gate stays narrow on three points, each a real non-equivalence:
+
+- the selected tag must be the LAST one. select('a') asks for a binding the chain never made.
+- exactly one label, no by() modulator, and not pop:'all' - 'all' returns the whole binding
+  list for the tag, which is a different value.
+- after the select, only count() or nothing. Once the value is the element the two plans are
+  identical from there, but a LATER step could still read another tag (select('a')), which the
+  chain never bound. Widening this means scanning the rest for tag reads, and that is its own
+  piece of work.
+
+THE OBVIOUS TS-SIDE ORACLE IS VACUOUS, AND THE FIRST CUT OF THE TEST USED IT
+
+Comparing `match(...).select('c')` against `out(T).out(T)` inside this package compares the chain
+to ITSELF, because the first plan is rewritten into the second before it runs. It passed, and
+proved nothing. The sound oracle is the DIFFERENTIAL one: the rewritten TS plan against the Rust
+engine's unrewritten match, ROWS AND ORDER, on the multigraph fixture with parallel edges and a
+self loop - order is observable here because toArray returns a sequence. Two cases added there
+(`select(c) ROWS`, `select(b) ROWS`), and the unit test now says why it does NOT make the TS-only
+comparison.
+
+GATES. bun run check 0 read unpiped. nx run-many -t test --skip-nx-cache 21 projects green. bun run
+fuzz 57 pass / 0 fail with FUZZ_EXIT=0.
