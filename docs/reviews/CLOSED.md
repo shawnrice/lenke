@@ -83314,3 +83314,82 @@ new shape.
 GATES. bun run check 0 read unpiped. nx run-many -t test --skip-nx-cache 21 projects green. bun run
 fuzz 57 pass / 0 fail with FUZZ_EXIT=0. Each A/B arm asserted to BE the code it claims before being
 built, which caught my own wrong marker expectation rather than silently measuring one arm twice.
+
+### Item 1801 — **item 1801 - NO CHANGE, TWO THINGS LEARNED: the GQL side's top shape by absolute cost is hop3rows at 890.7 ms, 11x the next, and its only surviving label-test traffic is the pattern START - 6.2%, which the segments have had elided since item 1623. Eliding it too is worth that 6% and is BLOCKED by an open owner decision, not by oversight: every elision trusts verticesByLabel and the public `v.labels =` setter does not maintain it. Built, measured against the suite, REVERTED. And the per-seed effectiveLabels call that looked like item 1609's lesson one loop out is a NULL at 1.028x with overlapping ranges - while the EAGER form cost `point` 13%**
+
+PROFILE-FIRST ON THE GQL SIDE, WHICH HAS NOT HAD AN ITEM SINCE 1792
+
+Ranked all 28 GQL probe shapes at 20 reps. hop3rows - MATCH (a:P)-[:E]->(b:P)-[:E]->(c:P)-[:E]->(d:P)
+RETURN d.k - is 890.7 ms against hop2rows' 78.4, so it is the target by absolute cost (item 1244's
+rule) by a factor of 11. Profiled at 20 reps:
+
+    expand 36.1%   walkSegments 16.5%   withBinding 9.8%   GC 7.8%   evalLabelExpr 6.2%
+
+The screen reports no unpriced frame, so the nominations had to be chased by hand - PROBES.md's own
+warning that "has mentions is not is optimized".
+
+WHERE THE 6.2% ACTUALLY COMES FROM, ATTRIBUTED RATHER THAN GUESSED
+
+I read it as the per-edge `:E` type test and was wrong; `edgesMatching` already hits the single-type
+bucket directly and never calls evalLabelExpr. Extracting the caller chain from the .cpuprofile
+instead:
+
+    hoistedMatch -> recordTail -> matchPattern -> matchNode -> matchNodeLabelled -> matchesLabel
+      -> evalLabelExpr
+
+It is the pattern START's vertex label test, run once per seed - 20,000 times a rep on this fixture.
+The SEGMENTS do not pay it: item 1623 threads `effectiveLabels` through `walkSegments`, and
+`bindings.ts` says at the definition that `matchNodeLabelled` exists precisely so a caller with a
+resolved label can skip the test. The start was never threaded.
+
+WHY IT STAYS UNTHREADED, WHICH IS THE POINT OF THIS ITEM
+
+Eliding it is four characters of change and it widens a known WRONG ANSWER. Every label elision
+trusts `graph.verticesByLabel`, and the public `v.labels = [...]` setter deliberately does not
+maintain that index (items 1549-1553, OPEN owner decision, and the note says in terms: do not add
+another elision that reads verticesByLabel without raising this).
+
+Built it anyway to see what would object, and the suite answered immediately - two PRE-EXISTING
+tests, both naming the same decision:
+
+    vacuous-label-elision.test.ts   "a spelling that DECLINES its shortcut honours the label -
+                                     pre-existing, same as hops"   answered 6, truth 5
+    product-count.test.ts           a path variable colliding with a node variable must RAISE
+                                     answered 0 instead
+
+The first test's own name says the segments already behave this way. So the gap is not an oversight:
+the start is the last place the elision has NOT been extended, and extending it is the owner's call
+on the setter, not a perf decision. ~6% of this shape is available the moment that is settled.
+
+THE OTHER HALF IS A MEASURED NULL
+
+`effectiveLabels(graph, path)` was being called INSIDE the seed loop, so a 20,000-vertex scan
+resolved the same four vacuity answers 20,000 times. That is item 1609's lesson one loop out, and it
+looked free. Three alternated rounds of 20 reps per arm:
+
+    EAGER (hoisted above the loop)
+      hop3rows  903.7 -> 877.7   1.030x        point  30.5 -> 34.9   0.874x   <- 13% WORSE
+      hop2rows   80.4 ->  76.8   1.047x (ranges overlap)
+
+    LAZY (`walkLabels ??=` at the one call site)
+      hop3rows  892.8 -> 868.6   1.028x (ranges OVERLAP: 892-901.7 against 864.1-901)
+      hop2rows, point, hopfilter                0.997x / 1.010x / 1.003x
+
+The eager form is [[executor-edits-perturb]] exactly: `matchPattern` is central, and work added
+above a branch is paid by every shape that does not take it - a seeded point lookup never reaches
+the walk. The lazy form fixes that and is then worth 2.8% with overlapping ranges, which by this
+file's own standard is nothing (item 726 reverted at 1.05x, item 704 refuted at 1.02x).
+
+So: no code change. The per-seed call is real and its removal is worth nothing measurable, which is
+worth recording precisely because it looks like a certain win.
+
+WHAT THIS LEAVES, PRICED
+
+hop3rows' remaining 60% is `expand` (36.1%) plus `withBinding` (9.8%) plus GC (7.8%) - the
+general-path per-row cost items 1785/1786 priced at 689.7 ns/row against a rung's 59.7, 11.6x. The
+Gremlin side HAS a rung for this exact shape (`hop-chain-values.ts`, a typed-hop chain projecting a
+far value, which item 1799 just made 1.13-1.20x faster); GQL has none. That asymmetry, not the label
+test, is where this shape's order of magnitude lives.
+
+GATES. No source change to ship. bun run check 0 read unpiped, gql suite 4,522 pass / 0 fail on the
+restored tree. Both A/B arms were asserted to BE the code they claimed before being built.
