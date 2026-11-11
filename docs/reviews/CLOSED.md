@@ -83900,8 +83900,12 @@ trap"). A concurrent second probe is exactly that contamination, self-inflicted.
 
 TWO FOLLOW-UPS, NAMED WITH THEIR REASON
 
-1. Raise `SPELL_N` (or `SPELL_FLOOR` for the groups that are fast BECAUSE they seek) until the 30
-   uncompared groups are measurable. An uncompared group is not a clean one.
+1. ~~Raise `SPELL_N`~~ ⚠️ **`SPELL_FLOOR`, NOT `SPELL_N`, and item 1812 did it and corrects this:**
+   item 1644 already gave every group calibrated inner iterations, so the floor does not guard timing
+   RESOLUTION — and an id lookup is O(1), so a bigger graph does not make the call slower. Lowering
+   the floor compares the 18 Gremlin groups and flags three, all PLAN-IDENTICAL after
+   `effectivePlan`: the ratio is that rewrite's own per-execution cost, not a spelling gap. An
+   uncompared group is still not a clean one, but comparing it answers a different question.
 2. Find out why one Gremlin traversal against itself spreads 1.63x at 66 ms with SPELL_REPS=9. The
    probe's own note says single runs are bimodal and 9 reps is the tighter setting, so a bimodal
    group at that cost is either a real engine bimodality worth knowing about or a harness artifact
@@ -83909,3 +83913,75 @@ TWO FOLLOW-UPS, NAMED WITH THEIR REASON
 
 GATES. No source change. Both probes exit 0; `SPELL_N=200000 SPELL_REPS=9` per the probe's own
 guidance (single runs are bimodal), each under `timeout` and `MemoryMax=16G`.
+
+### Item 1812 — **item 1812 - THE 18 GROUPS THE SPELLING PROBE SKIPS ARE NOW COMPARED, AND THE THREE FLAGS ARE NOT SPELLING GAPS: all three are PLAN-IDENTICAL after effectivePlan, so the 4.07x-4.49x is the per-execution REWRITE's own cost measured against a spelling that needs no rewrite. Below the floor the probe answers a different question than it is for. And the O(1)-by-id surface the loop brief protects is intact: single-id hasId is plan-identical to V(id), and the multi-id gap is item 1306's CORRECTNESS block, not an oversight**
+
+ITEM 1811 LEFT TWO FOLLOW-UPS AND THE FIRST ONE WAS WRONG
+
+I wrote "raise SPELL_N until the uncompared groups are measurable". Reading the probe first changed
+that: item 1644 already gave every group a calibrated inner iteration count, so the floor no longer
+guards timing RESOLUTION - and an id lookup is O(1), so a bigger graph does not make the call
+slower. `SPELL_FLOOR` is the knob, which is why the report names it "for a group that is fast
+because it SEEKS".
+
+WHAT LOWERING IT SHOWS
+
+`SPELL_FLOOR=0.000001` compares all 18 and flags three, clear of the nearest null control:
+
+    edge-type union vs an explicit union: out(T, U) vs union(out(T), out(U))   4.49x
+    label, VACUOUS: hasLabel(Univ) vs no label                                 4.11x
+    label, VACUOUS, before a hop: hasLabel(Univ).out vs out                    4.07x
+
+⚠️ ALL THREE ARE PLAN-IDENTICAL, CHECKED RATHER THAN ASSUMED. `effectivePlan` on a graph where the
+label is universal:
+
+    out(T,U).count()                   ->  V,out,count
+    union(out(T),out(U)).count()       ->  V,out,count
+    hasLabel(Univ).count()             ->  V,count        (and V().count() is V,count)
+    hasLabel(Univ).out(T).count()      ->  V,out,count
+    hasLabel(Univ) on a MIXED graph     ->  V,hasLabel,count   <- the elision correctly declines
+
+So there is no routing gap. The ratio is the cost of the REWRITE that makes them identical:
+`dropVacuousLabels` and `fuseUnionSameDir` run PER EXECUTION - universality is a property of the
+graph (item 1551), so a cached plan cannot carry it - and allocate a new plan when they fire. At
+50-300 ns that term dominates; at 1 ms it is invisible. A flag below the floor is therefore an
+`effectivePlan` COST finding, and items 1505-1507's kind-bit gates are what that wants, not a
+re-route.
+
+CONFIRMING ALONE EARNED ITSELF AGAIN. In-sweep the vacuous label read 4.11x; alone, three times, it
+reads 180.0/200.6/211.4 ns against 72.6/73.8/73.7 - 2.6-2.9x, ranges not overlapping. The in-sweep
+figure is inflated ~1.5x, which is why the report tells you to re-run a flagged group by itself
+(item 1073: one isolated run is still one reading, so three).
+
+THE O(1)-BY-ID SURFACE, WHICH IS THE PART THE LOOP BRIEF NAMES
+
+Those groups had never been compared. Now:
+
+    id lookup: V(id) vs hasId(id)              82.1 vs  71.5 ns   1.15x
+    id lookup, projected                        64.9 vs  87.0      1.34x
+    multi-id: V(ids) vs hasId(ids)              77.2 vs 144.1      1.87x
+    multi-id, then a hop                       163.0 vs 231.0      1.42x
+    multi-id, dedupe tail                      710.5 vs 1340.8     1.89x
+    edge id: E(id) vs hasId(id)                 97.0 vs  81.1      1.20x
+    multi-id EDGE: E(ids) vs hasId(ids)         77.3 vs 120.8      1.56x
+
+SINGLE id is plan-identical: `hasId('v1')` becomes `V('v1')` (item 1643's `seedSingleHasId`), so its
+1.15x is the rewrite's own cost, same as above. MULTI id is deliberately NOT rewritten, and
+`seedSingleHasId`'s header says why with its own measurements: `V().hasId(v3,v1).id()` yields GRAPH
+order while `V(v3,v1).id()` yields the order the IDS were given, and `hasId(v1,v1)` yields ONE
+element where `V(v1,v1)` yields TWO. Gremlin stream order is a TinkerPop contract the differential
+fuzzer compares ORDERED, and the multiplicity difference is a wrong answer outright. So the 1.87x is
+CORRECTNESS-BLOCKED, not an oversight - and `count-shortcut.ts` records that the COUNT case is
+seeded from the id map anyway.
+
+O(1) access by id is intact: the point lookup is 71-82 ns at 200,000 vertices and both spellings
+reach the same seeded plan.
+
+WHAT THIS LEAVES: the second follow-up from item 1811 stands - one Gremlin traversal against itself
+spread 1.63x at 66 ms in that run (1.13x at 44.6 ms in this one), so the expensive band's null
+control is unstable and worth its own look. And the probe should grow a null control IN the
+nanosecond band: all three flags were judged against a control at 2.7 ms, which is no yardstick for
+a 70 ns group. That is named rather than built, because adding a control reweights the sweep.
+
+GATES. No engine source change; the finding is recorded in the probe's own header so the next person
+to lower the floor reads it before interpreting a flag. bun run check 0 read unpiped.

@@ -81,6 +81,32 @@ const TOL = Number(process.env.SPELL_TOL ?? 2);
 // and GC swamp a real difference. At 1ms it skipped 19 of this probe's groups, one of which hid a
 // 2.36x (item 1643).
 const FLOOR_MS = Number(process.env.SPELL_FLOOR ?? 0.0005);
+/**
+ * ⚠️ **AND BELOW THE FLOOR THE PROBE MEASURES A DIFFERENT QUANTITY, WHICH ITEM 1812 FOUND BY
+ * LOWERING IT.** `SPELL_FLOOR=0.000001` compares the 18 groups the default skips and flags three at
+ * 4.07x-4.49x:
+ *
+ * ```text
+ *    edge-type union vs an explicit union: out(T, U) vs union(out(T), out(U))   4.49x
+ *    label, VACUOUS: hasLabel(Univ) vs no label                                 4.11x
+ *    label, VACUOUS, before a hop: hasLabel(Univ).out vs out                    4.07x
+ * ```
+ *
+ * All three are PLAN-IDENTICAL after `effectivePlan` — checked, not assumed: `out(T,U)` and
+ * `union(out(T),out(U))` both become `V,out,count`, and both vacuous-label forms lose the
+ * `hasLabel` entirely. So the ratio is not a routing gap. It is the cost of the REWRITE that makes
+ * them identical — `fuseUnionSameDir` and `dropVacuousLabels` run PER EXECUTION (universality is a
+ * property of the graph, item 1551, so a cached plan cannot carry it) and allocate a new plan when
+ * they fire — measured against a spelling that needs no rewrite at all. At 50-300 ns that term
+ * dominates; at 1 ms it is invisible.
+ *
+ * So a flag below the floor is an `effectivePlan` COST finding, not a spelling finding, and the two
+ * want different fixes: items 1505-1507's kind-bit gates are the former's answer.
+ *
+ * ⚠️ CONFIRMING ALONE EARNED ITSELF AGAIN. In-sweep the vacuous label read 4.11x; alone, three
+ * times, it reads 180.0/200.6/211.4 ns against 72.6/73.8/73.7 — **2.6-2.9x**. The in-sweep number
+ * is inflated by ~1.5x, which is exactly why the report tells you to re-run the group by itself.
+ */
 const ONLY = process.env.SPELL_ONLY ?? '';
 
 // THE FIXTURE, and its statistics are asserted below rather than assumed.
