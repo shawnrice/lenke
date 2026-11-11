@@ -80668,7 +80668,10 @@ closed, because it answers the question and tells you nothing about whether it n
 ### Item 1775 — the RUNG PRECEDENCE CENSUS, built because item 1583 found a 6.00x starvation BY HAND and nothing ever enumerated the other nineteen rungs: **starvation is RARE (5 contested shapes of 83, 3 pairs, all 3 correctly ordered)** — but the census's GENERAL-PATH rows carry a **7.9x** target, a skip-only page that declines every projection rung for nothing, profiled to the decline itself (`internalSkip` is 3.7%) — ⚠️ **THAT TARGET IS TAKEN at item 1776 for the NODE projection: 7.37x at 200,000 and 10.56x at 20,000, same-build A/B, and the perturbation toll this item held off for did NOT materialize. The HOP half is still open and is the bigger number (3.87x, 130 ms), blocked on a measured answer difference rather than a toll**
 
 Asked as a consolidation question — after ~1,775 items, what has happened to the code? — and the
-answer to that is at the bottom of this entry. The pass itself picked the rung thicket, because two
+answer to that is at the bottom of this entry. ⚠️ **ITEM 1787 ANSWERS THE OTHER HALF OF IT AND LARGELY
+REFUTES THE FRAGMENTATION PREMISE**: all 20 rungs are reachable (the 3 this census says never fire
+are CORPUS GAPS), 1 of 969 top-level functions is unreferenced, and the duplication that exists is
+mostly deliberate — the top near-duplicate pair is 122 lines byte-identical ON PURPOSE (item 1681). The pass itself picked the rung thicket, because two
 notes in CLAUDE.md say it is where speed now leaks: [[rung-precedence-decides-speed]] (a willing fast
 rung starved by a broader one above it, **1.80-6.00x** at item 1583) and [[executor-edits-perturb]].
 
@@ -80857,7 +80860,9 @@ Two things have not been going well, and both are visible only in aggregate:
   that a load-bearing member can rot unnoticed.
 
 ⚠️ **The lever the thicket was suspected of is NOT where the leak is.** 241 top-level functions across
-`shortcuts.ts` (7,064 lines), `hop-projection.ts` (5,836) and `count-shortcut.ts` (3,692) _look_ like
+`shortcuts.ts` (7,064 lines), `hop-projection.ts` (5,836) and ~~`count-shortcut.ts` (3,692)~~
+**[item 1787: that third file is 166 lines — the `0939b347` split CREATED it; the third-largest is
+`core.ts` at 6,101]** _look_ like
 a precedence hazard, and 20 rungs with one hand-found starvation made that the obvious bet. The census
 says the ordering is almost entirely right, and that **the 10 GENERAL-PATH rows are the open surface**
 — shapes with no rung at all: every 2-hop aggregate and distinct tail, every var-length tail but the
@@ -82182,3 +82187,157 @@ any timing claim, and this item deliberately does not start it.
 
 No engine code changed; this file only. `bun run check` 0 read unpiped. Every sweep process capped at
 `MemoryMax=16G`, `MemorySwapMax=0`, `timeout 600` — which matters at 1.68M rows per rep.
+
+### Item 1787 — ⚠️ **THE REFACTOR'S PREMISE IS LARGELY REFUTED: there is no speed hiding in dead code.** All 20 rungs are reachable, **1 of 969** top-level functions is unreferenced, and the duplication that exists is mostly DELIBERATE — the top near-duplicate pair is 122 lines byte-identical ON PURPOSE (item 1681) and collapsing it costs 1.26x. The one real instance of "an optimization stopped being hit" is a compile-time AST walk written THREE times where item 1500's fix reached ONE copy — now collapsed, **−39 engine lines**, and its speed component is BELOW MEASURABILITY and said so rather than banked
+
+This branch was opened after item 1775 to step back from rung-chasing and ask whether fragmentation
+had stranded optimizations. Items 1776-1786 then spent eleven items on rungs and measurement, which
+is the thing it existed to step away from. This item is the question it was for.
+
+#### Three checks, and they refute the simple forms of the hypothesis
+
+| check                                                                   | result                                                                                                                                                                      |
+| ----------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| all 20 rungs                                                            | every one REACHABLE; the 3 the census says never fire are `FOR`/reachability **corpus gaps**, each wired to a live detector in `rewrites.ts` and dispatched in `clauses.ts` |
+| 969 top-level functions, both executors                                 | **1** unreferenced (`farMaskSlotOrder`, `gremlin/far-mask-drain.ts`), 1 test-only (`estimateSeed`)                                                                          |
+| 720 uncovered executor code lines, 71 blocks, under 4,505 passing tests | **test gaps, not dead code**                                                                                                                                                |
+
+The definition scan counts with python `str.count` over decoded text, never `grep`, for the reason
+CLAUDE.md gives: `grep` silently skips Unicode files and files with NUL bytes, and `shortcuts.ts` is
+exactly where that has bitten before.
+
+⚠️ **AND THE BIGGEST UNCOVERED BLOCK IS A MEASURED OPTIMIZATION WITH NO TEST, WHICH IS THE OPPOSITE
+OF DEAD CODE.** `var-length-count.ts:709-796` is the hop-INVERSION route (items 584/585): accumulate
+the passing out-degree backwards from each passing vertex's in-edges, which scales with selectivity
+where the forward walk does not. Three blocks, 39 lines, and the gate
+`!passesIsVacuous && max >= 2 && reachedEst !== null` is never satisfied by any of the 4,505 tests.
+So test coverage answers "what is untested", not "what is unreachable" — a distinction this item
+needed to make before reading any of the other 70 blocks as a deletion candidate.
+
+#### The new instrument, and why its top row is a WARNING rather than a win
+
+`executor-duplication-census.mjs` is the companion to `rung-precedence-census.mjs`: that probe asks
+which of the twenty rungs answers each shape, this one asks what the rungs are MADE of. Token-bigram
+similarity over every pair of top-level functions, identifier names KEPT (two walks differing only in
+which variable they bind are the interesting case). 611 functions at >= 12 code lines, **28 pairs at
+or above 0.80**.
+
+⚠️ **ITS TOP RESULT IS A PAIR THAT MUST NOT BE COLLAPSED, AND THE FILE SAYS SO.** `stackedWalk` and
+`pairSlotWalk` in `gremlin/hop-chain-values.ts` are **122 lines, byte-identical except for the
+name** — a hand diff reports six changed lines, all of them the declaration. Item 1681 made them so
+deliberately: routing depth 2 through the generic walk is worth 7.2-9.5x on four rows and costs the
+depth-3 row **1.26x**, because V8's inline caches live on the FUNCTION and not the call site, so one
+function serving depths 2-5 has worse caches for each than one function per depth. Its header states
+that a factory, a wrapper or a parameterised shim "would test nothing and fix nothing", and item
+1616's screen mutates every duplicated loop in that executor so a drift between the twins is caught
+rather than reasoned about.
+
+That is the strongest available evidence that this executor's fragmentation is measured rather than
+accidental, and it is why this probe's header says a high score is a CANDIDATE and never a finding —
+the same thing item 1775 says about a starved rung.
+
+#### The ONE real instance: a compile-time walk written three times, fixed in one
+
+`hasSubquery` (`expr-analysis.ts`), `containsSubquery` (`hop-projection.ts`) and `hasSubqueryExpr`
+(`node-scan.ts`) were three copies of one generic AST walk, with `SUBQUERY_KINDS` defined **three
+times** and identical in all three (`exists`, `countSubquery`, `valueSubquery`). Item 1500 replaced
+`Object.values(...).some(...)` with `for...in` in exactly ONE of them, because the array form
+allocated one array per visited node and the walk visits 10-34 nodes per compile. **The other two
+never got it.** Nothing failed and no test could notice: all three agreed on every answer.
+
+This is the precise mechanism the branch was opened to look for — not code that stopped running, but
+a fix that stopped propagating.
+
+Collapsed to the one that carries the fix: `+13/−52`, **net −39 engine lines**, the first
+deletion-positive engine commit on this branch. Neither of the deleted exports was imported anywhere
+outside its own module, and `node-scan.ts` keeps importing `SUBQUERY_KINDS` because a second function
+there (`itemLocal`) reads it.
+
+⚠️ **THE SPEED COMPONENT IS BELOW MEASURABILITY AND IS NOT CLAIMED.** It is compile-time, behind the
+parse and plan caches (items 228/229), so it is paid only on a cache MISS, where it saves ~10-34
+array allocations. CLAUDE.md puts the noise floor at ~10% and this is orders of magnitude under it.
+The justification is the drift, not the clock. **So the answer to "can we get speed by deleting
+code?" is NO on this surface, and the honest version of that is worth more than a number.**
+
+#### A PRE-EXISTING divergence found on the way past, and RULED OUT structurally
+
+`bun run fuzz` came back **19 pass / 1 fail** on the differential fuzzer, on this query:
+
+```text
+MATCH (t:T) OPTIONAL MATCH (t)-[:E]->(n WHERE ((log(100, zoned_datetime('2020-01-01T00:00:00Z')) < n.m)
+  AND ((n.m.k < 3) AND (n.s = 'm')))) RETURN t.n AS x, n.n AS y ORDER BY x, y
+
+    ts:     ok [{"x":3,"y":null}, … six all-null-far rows]
+    native: err E_INVALID_VALUE                                   FUZZ_SEED=1996533560
+```
+
+**Ruled out as NOT caused by this change, by the structural method `gremlin-fuzz-families` prescribes
+rather than by counting failures:** a detached worktree at `HEAD`, bootstrapped with `bun install` +
+`bun run build` and verified pre-change (7 `hasSubqueryExpr` occurrences), replays the same seed to
+the **byte-identical** failure. There is also an a-priori argument that agrees: the query contains no
+subquery at all, so all three collapsed functions return `false` on it identically and no route can
+move.
+
+It is the family item 451 recorded, on the same template — `MATCH (t:T) OPTIONAL MATCH (t)-[:E]->(n
+WHERE (<faulting operand> AND (…))) RETURN t.n AS x, n.n AS y ORDER BY x, y` — but **the direction is
+REVERSED**: item 451 had native rejecting a non-boolean and TS raising, while here native raises and
+TS answers. The mechanism differs too: `log()` of a temporal is an invalid ARGUMENT, and TS never
+evaluates it because the `OPTIONAL` hop has no candidate edge, so the predicate is inessential.
+
+⚠️ **IT MAY NOT BE REGISTERED AWAY, AND `divergence-registry.ts` ITSELF SAYS WHY.** A one-sided
+non-resource error classifies as `evaluation-order` whether it is the accepted boolean-context
+residual (**an error against an EMPTY result**) or a laziness bug (**an error against ROWS**) — and
+this one is against ROWS. The registry adds that "being FIXABLE disqualifies an entry". So it stays
+an open question for the owner rather than an entry, and it is NOT one of the `value` divergences in
+`cross-engine-divergences-open`, which is a different class.
+
+#### ⚠️ TWO GATE DEFECTS, both of which would have let a false green through
+
+**1. The fuzz run reported exit code 0 while `bun run fuzz` exited 1**, because it was piped into
+`tail` and `tail` succeeded. That is CLAUDE.md's `clippy | grep` trap arriving in a different
+command, and the file's own rule is the fix: concatenate the streams, find the RESULT line, and only
+then read the status. Re-run unpiped with an explicit `echo "FUZZ_EXIT=$?"` it reads 1 and
+`19 pass / 1 fail`. Had the pipe stood, this item would have committed on a green that did not exist.
+
+**2. `hopUntypedGenerated > 19` is a floor set one below the lowest value ever observed.** A separate
+sweep failed on it rather than on the divergence: the test's own recorded history gives mean 39.4 and
+sd 4.93 with a minimum of 20, so an ordinary seed dipping ~4 sd trips a _coverage_ assertion and
+reports as a byte-identity failure. Three isolated differential runs here read 30/28, 34/29 and
+29/26 — healthy, and nothing in this change touches the generator. **The floor, not the corpus, is
+the defect**, and two different seeds producing two different failures in one sitting is how a flaky
+gate looks from the inside.
+
+#### Instrument defect caught by cross-checking, not by running
+
+⚠️ **THE ASYMMETRY SCREEN READS COMMENTS, AND ITS FIRST CUT SCANNED THE COMMENT-STRIPPED BODY.** It
+reported `startOnlyHopCount` as citing nothing while `farOnlyHopCount` cited six items — exactly the
+shape of a one-sided fix, and **backwards**: `startOnlyHopCount`'s own body cites items 1067, 119,
+162, 321, 164 and 163 in inline comments that the stripped text no longer held. Caught only by
+diffing that pair by hand against the screen's claim, which is the same discipline that caught the
+vacuous parity probe at item 1783. Fixed to scan the RAW body, and the row now reads as mutual
+divergence of a deliberate MIRROR pair — each side saying "see the twin" instead of repeating the
+other's items, which is itself a false-positive mode the header now names.
+
+#### Where this leaves the refactor
+
+- **Dead code**: none worth deleting. One function, `farMaskSlotOrder`, left in place rather than
+  swept in with an unrelated change.
+- **Collapsible duplication**: 28 pairs, most deliberate. 17 are asymmetric; the ones that are
+  one-sided with NO counter-citation are the remaining triage, and the subquery triplet was the
+  cleanest of them.
+- **Structural debt**: 25 files still exempted from `import/no-cycle` — 17 in `gremlin/src/executor`,
+  6 in `list`, 2 in `tree`. `@lenke/gql` reached zero in the item 1663-1670 arc; Gremlin never got
+  that pass. That is the real continuation, and it is hygiene rather than speed.
+- **The 54% figure worth keeping**: the `gql` executor is 42,379 lines and **19,705 of code**, so the
+  size that reads as sprawl is mostly the documentation that made every judgement above checkable.
+
+#### Gates
+
+`bun run check` 0 read unpiped. gql suite **4,505 pass / 0 fail, identical counts to pre-change**.
+`bun run fuzz` 19/1 with the single failure proven pre-existing at `HEAD` on the same seed. Every
+probe, sweep and worktree run capped at `MemoryMax=16G`, `MemorySwapMax=0`, `timeout`.
+
+⚠️ **Item 1775's heading figures are STALE and corrected there in this commit**: it nominated the
+thicket as "241 functions across `shortcuts.ts` (7,064), `hop-projection.ts` (5,836) and
+`count-shortcut.ts` (3,692)". `count-shortcut.ts` is **166 lines** — the `0939b347` split CREATED it
+— and the third-largest file is `core.ts` at 6,101.

@@ -35,7 +35,7 @@ import {
   sortsOnOutputOnly,
 } from './core.js';
 import type { AggFold, CClause, CNode, CompiledExpr, EvalEnv, Params, Row } from './core.js';
-import { freePredicateVars } from './expr-analysis.js';
+import { freePredicateVars, hasSubquery, SUBQUERY_KINDS } from './expr-analysis.js';
 import { plainNode } from './hop-sides.js';
 import type { InlineGate, InlinePred } from './inline-gate.js';
 import { composeInlineGate, inlineOf, predFor } from './inline-gate.js';
@@ -94,11 +94,6 @@ import { isNullish, propOf } from './values.js';
  * scanned vertex against the fast path's 38.2, and a ONE-HOP `COUNT{}` item measured 90.7ns, so
  * the subquery itself is ~4ns of it and the rest is the general-path scan (audit item 208).
  */
-export const SUBQUERY_KINDS: ReadonlySet<string> = new Set([
-  'exists',
-  'countSubquery',
-  'valueSubquery',
-]);
 /**
  * One projected ITEM: row-local, but allowed to contain a subquery.
  *
@@ -156,24 +151,6 @@ export const itemLocalChild = (child: unknown): boolean => {
     ? itemLocal(child as Expr)
     : Object.values(rec).every(itemLocalChild);
 };
-/** Does this expression contain a subquery anywhere? */
-export const hasSubqueryExpr = (e: unknown): boolean => {
-  if (Array.isArray(e)) {
-    return e.some(hasSubqueryExpr);
-  }
-
-  if (typeof e !== 'object' || e === null) {
-    return false;
-  }
-
-  const rec = e as Record<string, unknown>;
-
-  if (typeof rec.kind === 'string' && SUBQUERY_KINDS.has(rec.kind)) {
-    return true;
-  }
-
-  return Object.values(rec).some(hasSubqueryExpr);
-};
 /**
  * The node scan's clause `WHERE`, compiled into one `InlinePred` — or `'decline'` when this path
  * cannot carry it.
@@ -214,11 +191,11 @@ export const nodeWhereOf = (where: Expr, nodeVar: string): InlinePred | 'decline
   // Skipped for a subquery-bearing predicate for the reason given above the items' copy of this
   // check: `freePredicateVars` reports the variables bound INSIDE a subquery, so it would
   // refuse every one of them, and `nodeVar` is the only name anything here can be bound to.
-  // COMPUTED ONCE (item 919). `hasSubqueryExpr` is a generic structural walk of the whole
+  // COMPUTED ONCE (item 919). `hasSubquery` is a generic structural walk of the whole
   // expression and was called twice on the same `where` — here, negated, and again in the ternary
   // at the end of this function. A CPU profile put it at 184.2 ms of a clause-`WHERE` compile
   // against 31.9 for the inline spelling.
-  const hasSub = hasSubqueryExpr(where);
+  const hasSub = hasSubquery(where);
 
   if (!hasSub) {
     for (const nameRead of freePredicateVars(where)) {
@@ -530,7 +507,7 @@ export const deferredSortKeys = (
         : undefined;
     const expr = named === undefined ? key : named.expr;
 
-    if (!itemLocal(expr) || hasSubqueryExpr(expr)) {
+    if (!itemLocal(expr) || hasSubquery(expr)) {
       return null;
     }
 
@@ -1109,7 +1086,7 @@ export const detectNodeProjection = (
     // against a binding holding exactly that one name: a reference to any other name resolves
     // identically, or raises identically, on either. That is the same argument the check itself
     // rests on (see above), and mutation confirms removing it changes no answer.
-    if (!hasSubqueryExpr(item.expr)) {
+    if (!hasSubquery(item.expr)) {
       for (const nameRead of freePredicateVars(item.expr)) {
         if (nameRead !== nodeVar) {
           return null;

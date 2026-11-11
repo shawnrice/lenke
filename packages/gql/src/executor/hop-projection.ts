@@ -24,7 +24,12 @@ import {
   percentileFraction,
   sortsOnOutputOnly,
 } from './core.js';
-import { flattenConjuncts, freePredicateVars, truthCannotRaise } from './expr-analysis.js';
+import {
+  flattenConjuncts,
+  freePredicateVars,
+  hasSubquery,
+  truthCannotRaise,
+} from './expr-analysis.js';
 import { primedEndpointExtremum, withPrimedEndpointExtremum } from './hop-endpoint-extremum.js';
 import { plainNode, plainRel } from './hop-sides.js';
 import { vacuousLabel } from './labels.js';
@@ -700,27 +705,6 @@ const mentionsName = (node: unknown, name: string): boolean => {
   }
 
   return Object.values(node as Record<string, unknown>).some((child) => mentionsName(child, name));
-};
-
-const SUBQUERY_KINDS: ReadonlySet<string> = new Set(['exists', 'countSubquery', 'valueSubquery']);
-
-/** Does a subquery appear anywhere in this AST fragment? A generic walk, like `mentionsName`. */
-const containsSubquery = (node: unknown): boolean => {
-  if (node === null || typeof node !== 'object') {
-    return false;
-  }
-
-  if (Array.isArray(node)) {
-    return node.some(containsSubquery);
-  }
-
-  const rec = node as Record<string, unknown>;
-
-  if (typeof rec.kind === 'string' && SUBQUERY_KINDS.has(rec.kind)) {
-    return true;
-  }
-
-  return Object.values(rec).some(containsSubquery);
 };
 
 /**
@@ -2008,7 +1992,7 @@ const relBoundRoute = (r: {
  *
  * So a mention is HIDDEN when a subquery is present, and the pair of checks is deliberately
  * asymmetric: `mentionsName` is over-broad (it compares every string, so a literal `'r'`
- * counts) and `containsSubquery` is over-broad too, and both err toward declining. With no
+ * counts) and `hasSubquery` is over-broad too, and both err toward declining. With no
  * subquery anywhere, `freePredicateVars` is complete over this fragment and every read of the
  * rel variable is visible, which is the condition item 446's binding relies on.
  *
@@ -2023,7 +2007,7 @@ const relVariableHidden = (
 ): boolean =>
   relVar !== undefined &&
   (mentionsName(projection, relVar) || mentionsName(where, relVar)) &&
-  (containsSubquery(projection) || containsSubquery(where));
+  (hasSubquery(projection) || hasSubquery(where));
 
 /**
  * `MATCH (a:L) OPTIONAL MATCH (a)-[:T]->(x) RETURN …` — the left-outer hop's PROJECTION.
