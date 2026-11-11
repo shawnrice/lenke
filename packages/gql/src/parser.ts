@@ -34,6 +34,7 @@ import { ErrorCode, LenkeError } from '@lenke/errors';
 import type {
   ArithOp,
   Clause,
+  ScalarCategory,
   CompareOp,
   CountValue,
   DeleteClause,
@@ -340,7 +341,7 @@ const NOW_FUNCTIONS = new Map<string, string>([
 // vocabulary + temporal kinds + `null`/`nothing`/`any`. Mirrors Rust
 // `exec::scalar::scalar_is_typed`. The `integer` vs `float` split is resolved at eval by
 // boundary inference (one f64 numeric type).
-const typeTestCategory = (typeName: string): string | null => {
+const typeTestCategory = (typeName: string): ScalarCategory | null => {
   const t = typeName.toLowerCase();
 
   if (CAST_INT.has(t)) {
@@ -366,7 +367,7 @@ const typeTestCategory = (typeName: string): string | null => {
   if (CAST_TEMPORAL.has(t)) {
     return CAST_TEMPORAL.get(t) === 'datetime'
       ? 'local_datetime'
-      : (CAST_TEMPORAL.get(t) as string);
+      : (CAST_TEMPORAL.get(t) as ScalarCategory);
   }
 
   if (t === 'null' || t === 'nothing') {

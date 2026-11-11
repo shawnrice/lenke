@@ -111,7 +111,16 @@ const sameElement = (a: unknown, b: unknown): boolean => {
 // The graph-element predicates (`IS DIRECTED` / `IS SOURCE|DESTINATION OF` /
 // `ALL_DIFFERENT` / `SAME`). Three-valued: `null` on a null operand or a type
 // mismatch. Mirrors the `Expr::GraphPred` arm of `exec::evaluator::eval`.
-const graphPredResult = (predKind: string, vals: readonly unknown[]): boolean | null => {
+//
+// `predKind` was typed `string` here, which bought a `default: return null` arm that nothing
+// could reach: the AST's `graphPred` node declares a CLOSED five-member union and the parser
+// is its only producer. Item 1789 took the parameter's type from the AST, which turns the
+// switch exhaustive and makes any sixth kind a COMPILE error at the arm that forgot it
+// rather than a silent UNKNOWN at runtime. Pinned by `graph-element-predicates.test.ts`.
+const graphPredResult = (
+  predKind: Extract<Expr, { kind: 'graphPred' }>['predKind'],
+  vals: readonly unknown[],
+): boolean | null => {
   switch (predKind) {
     case 'directed':
       return isEdge(vals[0]) ? true : null; // every edge is directed; else unknown
@@ -145,8 +154,6 @@ const graphPredResult = (predKind: string, vals: readonly unknown[]): boolean | 
 
       return true;
     }
-    default:
-      return null;
   }
 };
 

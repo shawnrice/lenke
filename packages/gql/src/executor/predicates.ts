@@ -31,7 +31,7 @@ import {
 } from '@lenke/core';
 import type { Edge, Graph, Vertex } from '@lenke/core';
 
-import type { CompareOp, TypeTest } from '../ast.js';
+import type { CompareOp, ScalarCategory, TypeTest } from '../ast.js';
 import { labelsMatch } from '../graph-queries.js';
 import type {
   Binding,
@@ -51,7 +51,13 @@ import { isNullish } from './values.js';
 // a whole-valued number, `float` = any number (one f64 numeric type; boundary
 // inference). The open record (`ANY RECORD`) is a `TypeTest`, not a category —
 // handled in `valueIsTypedTy`. Mirrors the Rust `category_matches`.
-export const categoryMatches = (v: unknown, category: string): boolean => {
+//
+// `category` is the AST's CLOSED `ScalarCategory` union, not `string`. Typed `string` it had a
+// `default: return false` arm that nothing could reach — `typeTestCategory` is the only
+// producer and rejects an unknown type name at PARSE time with a syntax error, so no unknown
+// category ever arrives here. Item 1789 deleted the arm; the exhaustive switch now makes a new
+// category a compile error instead of a silent FALSE.
+export const categoryMatches = (v: unknown, category: ScalarCategory): boolean => {
   switch (category) {
     case 'any':
       return true;
@@ -79,8 +85,6 @@ export const categoryMatches = (v: unknown, category: string): boolean => {
       return v instanceof ZonedDateTime;
     case 'duration':
       return v instanceof Duration;
-    default:
-      return false;
   }
 };
 // The ISO value-type predicate `x IS TYPED <value type> [NOT NULL]`. Null conforms

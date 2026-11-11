@@ -82196,11 +82196,11 @@ is the thing it existed to step away from. This item is the question it was for.
 
 #### Three checks, and they refute the simple forms of the hypothesis
 
-| check                                                                   | result                                                                                                                                                                      |
-| ----------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| all 20 rungs                                                            | every one REACHABLE; the 3 the census says never fire are `FOR`/reachability **corpus gaps**, each wired to a live detector in `rewrites.ts` and dispatched in `clauses.ts` |
-| 969 top-level functions, both executors                                 | **1** unreferenced (`farMaskSlotOrder`, `gremlin/far-mask-drain.ts`), 1 test-only (`estimateSeed`)                                                                          |
-| 720 uncovered executor code lines, 71 blocks, under 4,505 passing tests | ~~**test gaps, not dead code**~~ ⚠️ **WRONG for the biggest block — item 1788 proved `var-length-count.ts:709-796` UNREACHABLE and deleted it**                             |
+| check                                                                   | result                                                                                                                                                                                                                                                                                                                                                |
+| ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| all 20 rungs                                                            | every one REACHABLE; the 3 the census says never fire are `FOR`/reachability **corpus gaps**, each wired to a live detector in `rewrites.ts` and dispatched in `clauses.ts`                                                                                                                                                                           |
+| 969 top-level functions, both executors                                 | **1** unreferenced (`farMaskSlotOrder`, `gremlin/far-mask-drain.ts`), 1 test-only (`estimateSeed`)                                                                                                                                                                                                                                                    |
+| 720 uncovered executor code lines, 71 blocks, under 4,505 passing tests | ~~**test gaps, not dead code**~~ ⚠️ **WRONG TWICE — item 1788 proved the biggest block (`var-length-count.ts:709-796`) UNREACHABLE and deleted it, and item 1789 found the number itself INFLATED: this census ran ONE package's suite, so every line reached only from `packages/native`'s cross-engine conformance suite counts as uncovered here** |
 
 The definition scan counts with python `str.count` over decoded text, never `grep`, for the reason
 CLAUDE.md gives: `grep` silently skips Unicode files and files with NUL bytes, and `shortcuts.ts` is
@@ -82461,3 +82461,97 @@ fewer test that proves nothing.
 place and after the deletion. `bun run fuzz` green after the deletion. Every run capped at
 `MemoryMax=16G`, `MemorySwapMax=0`, `timeout`; pristine copy kept under
 `crates/lenke-engine/target/` and restored before each sentinel variant, per CLAUDE.md.
+
+### Item 1789 — **TWO MORE UNREACHABLE ARMS DELETED, BOTH THE SAME MISTAKE: a `string` parameter where the AST declares a CLOSED union, which buys a `default` nothing can reach.** `graphPredResult` and `categoryMatches` now take their key from the AST, so both switches are exhaustive and a new kind is a COMPILE error instead of a silent UNKNOWN/FALSE. 23 tests / 80 assertions added for the arms, 17 of 19 mutants caught, **and both survivors are answer-equivalent rather than untested — said so instead of claiming teeth.** ⚠️ **Also: item 1787's 720-line gap count is INFLATED, because that census ran ONE package's suite**
+
+Item 1787 read the executor's uncovered blocks as test gaps and item 1788 found the biggest one
+unreachable. This item took the next two on the list — `graphPredResult` (the ISO graph-element
+predicates) and `categoryMatches` (`IS TYPED`) — and found a third thing: part of the count is an
+artifact of how it was measured.
+
+#### ⚠️ THE GAP NUMBER IS INFLATED, AND THE REASON IS WORTH MORE THAN THE TESTS
+
+`graphPredResult` was named as 19 uncovered lines with "no test exercises it". It is exercised, by
+`packages/native/src/gql-conformance.test.ts`, which runs `IS DIRECTED` / `IS SOURCE|DESTINATION OF`
+/ `ALL_DIFFERENT` / `SAME` through `@lenke/gql`'s DIST and compares byte-for-byte against the Rust
+engine. Item 1787's census ran `packages/gql`'s own suite, where that file does not exist, so **every
+executor line reached only from another package's tests counts as uncovered.** `categoryMatches` is
+the same story: ten of its thirteen categories are already pinned cross-engine.
+
+So the honest reading of the 720 is "lines this package's own suite does not reach", not "untested
+code" — and a per-package coverage number can never say which. What the conformance suite pins is
+AGREEMENT on a handful of queries; it does not pin the arms, which is why the tests below were still
+worth writing. But the next person pricing this list should expect the real gap to be smaller than
+720 and should check `packages/native` before calling a block untested.
+
+#### The dead code: `default` arms behind a `string` parameter
+
+Both functions took their discriminator as `string` and ended in a `default` that cannot fire,
+because in both cases the AST declares a closed union and the parser is the only producer:
+
+```ts
+const graphPredResult = (predKind: string, …)            // 5 kinds in the AST; default → null
+export const categoryMatches = (v: unknown, category: string, …)  // 13; default → false
+```
+
+For `categoryMatches` the parser makes it stronger than a type argument: `typeTestCategory` rejects
+an unrecognized type NAME with a syntax error, so an unknown category never exists to be switched
+on. Fixed by closing the AST's `category` to a new `ScalarCategory` union and taking
+`graphPredResult`'s parameter from `Extract<Expr, { kind: 'graphPred' }>['predKind']`.
+
+**The proof that the arms were unreachable is the typechecker: with both `default`s deleted,
+`bun run typecheck` is still 0.** A non-exhaustive switch would be a missing return on a
+`boolean | null` return type. That is a cheaper and stronger oracle than item 1788's sentinel
+campaign — but it only works for a discriminator the TYPE system can close, which is exactly why
+these two were worth the look and the hop inversion needed four sentinel positions.
+
+#### The tests, and what each exists to separate
+
+`packages/gql/src/graph-element-predicates.test.ts` (16 tests, 55 assertions) and
+`is-typed-categories.test.ts` (7 tests, 25 assertions). The cases chosen for teeth rather than
+coverage:
+
+- **A non-edge `IS DIRECTED` is UNKNOWN, not FALSE**, and `IS NOT DIRECTED` on a vertex stays
+  UNKNOWN — the negation is applied after the three-valued result.
+- **`SOURCE OF` and `DESTINATION OF` are distinct**: a mutant reading `edge.from` for both is caught
+  by the pair, not by either alone.
+- **`ALL_DIFFERENT` compares ALL pairs**: the duplicate sits at positions 0 and 2, so an
+  adjacent-only loop answers TRUE.
+- **Two parallel edges on the same vertex pair are different elements** — fails for any identity
+  keyed on endpoints rather than edge id.
+- **The three temporal categories nothing reached anywhere** (`LOCAL TIME`, `ZONED TIME`,
+  `ZONED DATETIME`), each asserted against its siblings, because a single positive assertion passes
+  for an `instanceof` chain testing the wrong class.
+
+**Mutation: 19 mutants, 17 caught.** Both survivors are ANSWER-EQUIVALENT, and the test file says so
+at the assertion rather than claiming teeth it does not have:
+
+| survivor                                                             | why no test can kill it                                                                                                                                                                                                                                                                  |
+| -------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SAME` folds against its PREDECESSOR instead of the first operand    | `sameElement` is an equivalence relation (id equality, or `structuralEq` ending at `===`), so an adjacent-equal chain is equal throughout. The two formulations agree on every input. The draft comment claimed `SAME(a, b, b)` separated them; it does not, and that claim was removed. |
+| `sameElement`'s `isElement(a) \|\| isElement(b)` early FALSE deleted | With the vertex and edge arms taken above it, only MIXED operands reach it, and `structuralEq` ends at `a === b` — false for two different objects whatever their kinds. The line stays as the statement of intent; it is a readability guard, not a tested one.                         |
+
+#### ⚠️ THE FIRST FIXTURE WAS CORRUPT, AND IT WAS THE 14th DIVERGENCE
+
+The one fixture that COULD have given the second survivor teeth is a vertex and an edge sharing an
+id — the only shape that separates "check the kinds, then the ids" from "compare the ids". It cannot
+be built: `addEdge` with an existing vertex's id replaces that vertex's labels and properties, because
+`elementProperties` and `elementLabels` are one `Map` each keyed by bare id across two id spaces
+(item 1588, TS-only, owner-decided WON'T FIX as out of contract). The draft fixture did exactly that
+and nine of sixteen tests came back with zero rows. Recorded at the fixture and at the assertion,
+and it is a second instance of [[element-dedup-identity-vs-key]]'s rule: the collision shape cannot
+validate an element-identity change, because the graph is already corrupt there.
+
+#### No speed claim
+
+None, and none is possible: two deleted `default` arms are unreachable, so they cost nothing at
+runtime, and the type changes are erased. This is a correctness-surface item.
+
+#### Gates
+
+`bun run check` 0 read unpiped (the two new test files needed `bun run fmt` first).
+`nx run-many -t test` **21 projects green**. `bun run fuzz` **20 pass / 0 fail, `FUZZ_EXIT=0`** —
+re-run capturing both streams to a file after the first run read its status with stdout discarded,
+since a verdict needs the result line and not just the code. Mutation runs under
+`timeout 180 systemd-run --user --scope -p MemoryMax=16G -p MemorySwapMax=0`, pristine copies under
+`crates/lenke-engine/target/`, restored BEFORE each mutant, anchors asserted to appear exactly once.

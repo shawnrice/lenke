@@ -462,6 +462,26 @@ export type CompareOp = '=' | '<>' | '<' | '>' | '<=' | '>=';
  */
 export type ArithOp = '+' | '-' | '*' | '/' | '%';
 
+// The normalized scalar type categories `IS TYPED` resolves a type NAME to (many names per
+// category: `BOOL`/`BOOLEAN`, `LIST`/`ARRAY`, `DATETIME`/`TIMESTAMP` → `local_datetime`, …).
+// A CLOSED union rather than `string`, so that `categoryMatches`'s switch is exhaustive and a
+// new category is a compile error at every arm that forgot it. It was `string`, which bought
+// that function an unreachable `default: return false` (item 1789).
+export type ScalarCategory =
+  | 'any'
+  | 'null'
+  | 'bool'
+  | 'string'
+  | 'integer'
+  | 'float'
+  | 'list'
+  | 'date'
+  | 'local_time'
+  | 'local_datetime'
+  | 'zoned_time'
+  | 'zoned_datetime'
+  | 'duration';
+
 /**
  * A `<value type>` in the `IS TYPED` predicate. A scalar leaf carries a normalized
  * category (integer/float/string/…/any); `anyRecord` is the open record; `record`
@@ -469,7 +489,7 @@ export type ArithOp = '+' | '-' | '*' | '/' | '%';
  * nullable/optional unless NOT NULL. Mirrors native `TypeTest`.
  */
 export type TypeTest =
-  | { kind: 'scalar'; category: string }
+  | { kind: 'scalar'; category: ScalarCategory }
   | { kind: 'anyRecord' }
   | { kind: 'record'; fields: ReadonlyArray<readonly [string, TypeTest, boolean]> };
 
