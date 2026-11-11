@@ -27,7 +27,6 @@ import {
   recallTag,
   type RunContext,
   type Traverser,
-  tupleKey,
   unwrap,
 } from './runtime.js';
 
@@ -337,20 +336,8 @@ const applyPattern = (
     return DROP;
   }
 
-  // The end label's distinct candidate values. `solve` binds each one in turn.
-  const seen = new Set<string>();
-  const values: unknown[] = [];
-
-  for (const v of out) {
-    const k = tupleKey([v]);
-
-    if (seen.has(k)) {
-      continue;
-    }
-
-    seen.add(k);
-    values.push(v);
-  }
+  // The end label's candidate values, WITH DUPLICATES. `solve` binds each one in turn.
+  const values = [...out];
 
   return values.length === 0 ? DROP : { kind: 'bind', key: p.endKey, values };
 };

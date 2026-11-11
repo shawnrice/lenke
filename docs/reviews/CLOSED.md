@@ -72597,7 +72597,7 @@ Not built: this is a planner-route change and deserves its own tick.
 No engine change — two probe arms. `bun run check` 0 read unpiped; gql suite 4230 pass / 0 fail, run
 under both arms of the refuted change.
 
-### Item 1655 — ⚠️⚠️ **A 237x "EQUIVALENT-SPELLING GAP" THAT IS A WRONG ANSWER.** `match()` counts distinct variable BINDINGS; a hop chain counts PATHS. The flattening rewrite was built, verified against a fixture that confirmed it, and REVERTED when a fixture with ONE parallel edge separated the two spellings
+### Item 1655 — ⚠️⚠️ ~~**A 237x "EQUIVALENT-SPELLING GAP" THAT IS A WRONG ANSWER.** `match()` counts distinct variable BINDINGS; a hop chain counts PATHS.~~ ⚠️ **THE PREMISE IS FALSE AND ITEM 1793 FIXED IT: TinkerPop 3.7.3 and this repo's own RUST engine both answer the chain's number on that very fixture (3/2/2 where TS said 2/1/1). The TS solver was DEDUPING solutions, which is a TS-only WRONG ANSWER on any multigraph, not a semantic difference. So this revert's reason is gone and the 237x is a live gap again** — though the second objection recorded below (a `match` step emits a TAG MAP, not the chain's end element) still stands on its own evidence. The flattening rewrite was built, verified against a fixture that confirmed it, and REVERTED on the strength of the table above read the wrong way round
 
 REFUTED, no engine change. One guard test added (`match-binding-semantics.test.ts`).
 
@@ -82795,3 +82795,99 @@ that way deliberately so the sentinel build could not be answered from cache. `b
 **20 pass / 0 fail, `FUZZ_EXIT=0`** after the floor fix, with the result line grepped from a
 captured log. Sentinel runs had `bun run build` between the src edit and the native/fuzzer rows.
 Pristine copy under `crates/lenke-engine/target/`, restored before each probe variant.
+
+### Item 1793 — ⚠️⚠️ **A TS-ONLY WRONG ANSWER IN GREMLIN'S `match()`, FOUND BY A PROFILE AND SETTLED BY TINKERPOP: the solver DEDUPED solutions, so every parallel edge lost one.** TinkerPop 3.7.3 and this repo's own Rust engine both disagree with it, on a THREE-VERTEX graph. Fixed — one block, −13 lines — and all three engines now agree. ⚠️ **It overturns item 1655, whose "the 237x is a semantics difference, not a defect" rested on this bug**, and it is a cross-engine divergence the gremlin fuzzer cannot see because its generator builds no PARALLEL EDGES
+
+#### How a profile found a correctness bug
+
+Profile-first, per the standing brief: five GQL shapes and six Gremlin shapes at 60 reps, through
+the screen. The nomination was unambiguous — `grem-matched` at **3,511 ms engine against 92-538 ms
+for everything else**, with 74% in four solver frames (`solve` 22.5%, `applyPattern` 20.5%, `next`
+19.2%, `bucketEnds` 9.3%). That is a priced, open target (items 1656/1657, a join operator), so the
+profile alone offered nothing new.
+
+What was new came from asking what the shape SHOULD cost.
+`V().match(as('a').out('E').as('b')).count()` binds `a` to each vertex and `b` to each `E`
+neighbour, so its solution count ought to be Σ outdeg_E(v) — exactly `V().out('E').count()`. On a
+20,000-vertex fixture built with parallel edges and self loops:
+
+```text
+  matched  35843   =  the DISTINCT (from, to) pairs
+  bare     37162   =  the EDGES            (1,319 parallel extras)
+```
+
+Not equivalent — so either the shortcut idea was wrong, or the engine was.
+
+#### TinkerPop settles it, and the Rust engine was right all along
+
+`podman run -i docker.io/tinkerpop/gremlin-console:3.7.3`, two `a→b` edges plus one `a→c` and a
+`b→b` loop:
+
+```text
+  matchPairs = [[a:1, b:2], [a:1, b:2], [a:1, b:3], [a:2, b:2]]      ← the pair appears TWICE
+```
+
+| query (on item 1655's own 3-vertex fixture) | TinkerPop | lenke TS | lenke native |
+| ------------------------------------------- | --------: | -------: | -----------: |
+| `match(a-T->b).count()`                     |         3 |    **2** |            3 |
+| `out(T).count()`                            |         3 |        3 |            3 |
+| `match(a-T->b, b-T->c).count()`             |         2 |    **1** |            2 |
+| `out(T).out(T).count()`                     |         2 |        2 |            2 |
+| `match(…).select('c').count()`              |         2 |    **1** |            2 |
+
+A match solution is a TRAVERSAL RESULT, not a distinct binding assignment. **The match and the chain
+agree on every row**, and TS was the only one of the three that disagreed.
+
+#### The cause, and the fix
+
+`executor/match.ts`, the arm taken when a pattern's end tag is unbound: it collected the inner
+traversal's outputs into a `Set` keyed by `tupleKey` and bound each DISTINCT value once. Two parallel
+edges produce the same end value twice and became one solution. The fix is the dedup deleted —
+`const values = [...out]` — which also drops a `Set` and a `tupleKey` per pattern application.
+
+#### ⚠️ WHAT THIS DOES TO ITEM 1655
+
+Item 1655 measured `match(p1, p2).count()` at **332.4 ms a call against the chain's 1.40 — 237x**
+(313x with a `select('c')` tail), built the flattening rewrite, and REVERTED it as a wrong answer
+because a one-parallel-edge fixture "separated the two spellings". It did not: the separation was
+this bug. **That revert's reason is gone and the 237x is a live equivalent-spelling gap again.**
+
+It is NOT re-opened here, because item 1655 recorded a SECOND objection that stands on its own
+evidence: a `match` step's output value is a TAG MAP, not the chain's end element, so even where the
+counts agree the spellings are not interchangeable mid-plan. A rewrite must still prove nothing
+downstream reads the step's value as an element. Both halves are now in
+`match-binding-semantics.test.ts`, which asserted the wrong semantics until this item and now
+asserts TinkerPop's with the ground-truth table inline.
+
+#### ⚠️ THE FUZZERS COULD NOT HAVE CAUGHT IT
+
+The engines diverge on a THREE-VERTEX graph, so nothing subtle was required: `gremlin-fuzz` never
+builds PARALLEL EDGES. 20,000 generated queries passing is a statement about the generator, not
+about the engines — the same blindness class as [[fuzzer-blind-to-one-column-group]]. Adding
+parallel edges to that generator is the follow-up this leaves, and it is the kind of change that
+should be mutation-checked (re-introduce this bug and confirm the fuzzer goes red) rather than
+assumed.
+
+#### Speed, NOT banked
+
+All three match shapes got faster — `matched` 1213 → 841 ms, `matched2` 6775 → 4680,
+`matchedsel` 8867 → 6639 at 20 reps, 1.34-1.45x. **This is reported and not claimed**, for a reason
+that is the point of the item: the change alters how many solutions exist on a multigraph, so a
+timing comparison across it is only sound on a fixture proven free of parallel edges, and the
+gremlin probe's fixture has no answer guard to establish that. A change that moves the ANSWER cannot
+be A/B'd on time alone.
+
+#### Also found: PROBES.md's own example command fails
+
+`NODES=200000 node runtime-profile-probe.mjs hopfilter` throws — the probe's `EXPECTED` answers are
+calibrated for the default `NODES=20000` (207 solutions), and at 200,000 the correct answer is
+2,062. The guard is right to fire; the documented invocation is what is wrong. Corrected in
+`PROBES.md`.
+
+#### Gates
+
+`bun run check` 0 read unpiped. `nx run-many -t test --skip-nx-cache` **21 projects green** (3 tests
+in `match-binding-semantics.test.ts` failed first and were CORRECTED rather than deleted — they
+encoded the old semantics). `bun run fuzz` **20 pass / 0 fail, `FUZZ_EXIT=0`**. The three-way check
+is kept as `packages/native/match-parallel-edges-1793.mjs`; `bun run build` is load-bearing for it,
+since it reads `@lenke/gremlin`'s DIST and the first run after the fix still printed the old answer.
