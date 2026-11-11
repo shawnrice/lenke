@@ -168,7 +168,7 @@ export const fusableValuesAggregate = (
 };
 
 /** What `normalizeBys` supplies for a bare `order()`; shared so the fusion allocates none. */
-const IDENTITY_BYS: readonly By[] = [{ kind: 'identity' }];
+const IDENTITY_BY: By = { kind: 'identity' };
 
 export const fusedValuesAggregate = function* (
   stream: Iterable<Traverser<unknown>>,
@@ -325,7 +325,7 @@ export const fusedValuesTopK = function* (
     }
   };
 
-  for (const v of streamTopByBys(values(), (x) => x, IDENTITY_BYS, opts, graph, ctx)) {
+  for (const v of streamTopByKey(values(), (x) => x, IDENTITY_BY, opts, graph, ctx)) {
     yield startTraverser(v, false);
   }
 };
@@ -850,6 +850,140 @@ const sortByBys = <T>(
  * pays off over `n log n` comparisons; a bounded heap does ~`n` of them — one against the root per
  * item — so the multi-key loop is a constant on a term that is already linear.
  */
+/**
+ * The ONE-identity-`by` capped order, with NO per-item allocation (item 1810).
+ *
+ * `streamTopByBys`'s general ingest costs, for EVERY item of the stream: a `bys.map(...)` array for
+ * a one-element `bys`, two `keys.some(...)` closure iterations, and an `Entry` object — on a
+ * 400,000-item stream where `cap` is 10 and everything else is thrown away. Item 1809 proved by
+ * deletion that this, and not the generator above it, is where `hopordercap`'s time goes: removing
+ * the generator measured 1.014x on the target while the control moved 10% in the change's favour.
+ *
+ * Here an item costs one `evalBy`, two scalar tests, and an object ONLY IF IT ENTERS THE HEAP.
+ * That is the shape GQL's `boundedTopKeyed` already uses — item 1474's note describes it as
+ * rejecting "most values in O(1) against its heap root (`beatsRoot`)" — so this is the Gremlin side
+ * adopting a measured idea rather than a new one.
+ *
+ * ⚠️ FOUR BEHAVIOURS ARE COPIED EXACTLY, NOT RE-DERIVED, because each is observable:
+ *
+ *   1. `at` increments for EVERY item, including the ones skipped, because ties break on ARRIVAL
+ *      and the general path increments before any skip can happen.
+ *   2. The key is evaluated FIRST and unconditionally — "a throwing `by` must win over the element
+ *      fault" — so `evalBy` runs before the element test.
+ *   3. An element KEY sets a flag and the fault is raised AFTER the loop, not at the item.
+ *   4. A `NO_VALUE` key filters the item out of the ordering entirely (TinkerPop).
+ */
+const streamTopByKey = <T>(
+  stream: Iterable<T>,
+  project: (item: T) => unknown,
+  by: By,
+  opts: { readonly desc: boolean; readonly cap: number },
+  graph: Graph,
+  ctx: RunContext,
+): T[] => {
+  const { desc, cap } = opts;
+  const sign = desc ? -1 : 1;
+
+  type Entry = { item: T; key: unknown; at: number };
+
+  const cmp = (a: Entry, b: Entry): number => {
+    const c = compareTotal(a.key, b.key) * sign;
+
+    return c !== 0 ? c : a.at - b.at;
+  };
+  /** Does `(key, at)` belong above the root — i.e. is the root the worse entry? */
+  const beatsRoot = (root: Entry, key: unknown, at: number): boolean => {
+    const c = compareTotal(root.key, key) * sign;
+
+    return c !== 0 ? c > 0 : root.at > at;
+  };
+  const heap: Entry[] = [];
+  const swap = (x: number, y: number): void => {
+    const t = heap[x];
+
+    heap[x] = heap[y];
+    heap[y] = t;
+  };
+  const up = (from: number): void => {
+    let i = from;
+
+    while (i > 0) {
+      const parent = (i - 1) >> 1;
+
+      if (cmp(heap[i], heap[parent]) <= 0) {
+        break;
+      }
+
+      swap(i, parent);
+      i = parent;
+    }
+  };
+  const down = (): void => {
+    let i = 0;
+
+    for (;;) {
+      const l = i * 2 + 1;
+      const r = l + 1;
+      let big = i;
+
+      if (l < heap.length && cmp(heap[l], heap[big]) > 0) {
+        big = l;
+      }
+
+      if (r < heap.length && cmp(heap[r], heap[big]) > 0) {
+        big = r;
+      }
+
+      if (big === i) {
+        break;
+      }
+
+      swap(i, big);
+      i = big;
+    }
+  };
+  let sawElement = false;
+  let at = 0;
+
+  for (const item of stream) {
+    const key = evalBy(by, project(item), graph, ctx);
+
+    at += 1;
+
+    if (isElement(key)) {
+      sawElement = true;
+      continue;
+    }
+
+    if (key === NO_VALUE) {
+      continue;
+    }
+
+    if (heap.length < cap) {
+      heap.push({ item, key, at });
+      up(heap.length - 1);
+      continue;
+    }
+
+    if (cap > 0 && beatsRoot(heap[0], key, at)) {
+      heap[0] = { item, key, at };
+      down();
+    }
+  }
+
+  if (sawElement) {
+    throw new LenkeError(
+      `order() over graph elements is not supported — elements have no natural order; ` +
+        `use order().by('<key>')`,
+      { code: ErrorCode.Syntax },
+    );
+  }
+
+  heap.sort(cmp);
+
+  return heap.map((e) => e.item);
+};
+
 const streamTopByBys = <T>(
   stream: Iterable<T>,
   project: (item: T) => unknown,
@@ -994,9 +1128,24 @@ export const orderStep = function* (
   /** The fused `take(n)` bound, if `fuseOrderTake` set one (item 1574). */
   cap?: number,
 ): Iterable<Traverser<unknown>> {
-  yield* cap === undefined
-    ? sortByBys([...stream], (t) => t.value, bys, { desc }, graph, ctx)
-    : streamTopByBys(stream, (t) => t.value, bys, { desc, cap }, graph, ctx);
+  if (cap === undefined) {
+    yield* sortByBys([...stream], (t) => t.value, bys, { desc }, graph, ctx);
+
+    return;
+  }
+
+  /**
+   * ⚠️ ONE `by` WITH NO DIRECTION OF ITS OWN takes the allocation-free ingest (item 1810). A
+   * per-`by` direction is refused because `streamTopByKey` folds the step-level `desc` into one
+   * `sign`; a `by` that overrides it would need the general path's `dirs` array.
+   */
+  if (bys.length === 1 && bys[0].direction === undefined) {
+    yield* streamTopByKey(stream, (t) => t.value, bys[0], { desc, cap }, graph, ctx);
+
+    return;
+  }
+
+  yield* streamTopByBys(stream, (t) => t.value, bys, { desc, cap }, graph, ctx);
 };
 
 // `order(Scope.local)` sorts WITHIN each traverser's value instead of across the

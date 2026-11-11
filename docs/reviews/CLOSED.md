@@ -83753,7 +83753,7 @@ NO CODE CHANGE. Two comments and the module's cross-reference.
 
 GATES. bun run check 0 read unpiped. gql suite 4,522 pass / 0 fail.
 
-### Item 1809 — **item 1809 - NO CHANGE: the 54% frame in hopordercap is ATTRIBUTION, and this time the deletion test is on the record. fusedValuesTopK's inner `values` generator profiles at 54.0% - one resume per element for a property read - and removing the layer outright measures 1.014x on the target while hopvaluesn goes 0.874x and the hopcount3 CONTROL goes 1.099x in the change's favour. A flat target with unrelated rows moving 10-13% in BOTH directions is noise. The reachable target is the per-item allocation inside streamTopByBys, which that frame was being charged for**
+### Item 1809 — **item 1809 - NO CHANGE: the 54% frame in hopordercap is ATTRIBUTION, and this time the deletion test is on the record. fusedValuesTopK's inner `values` generator profiles at 54.0% - one resume per element for a property read - and removing the layer outright measures 1.014x on the target while hopvaluesn goes 0.874x and the hopcount3 CONTROL goes 1.099x in the change's favour. A flat target with unrelated rows moving 10-13% in BOTH directions is noise. The reachable target is the per-item allocation inside streamTopByBys, which that frame was being charged for — ⚠️ **AND ITEM 1810 TOOK IT: 1.141x, both other rows flat**
 
 THE NOMINATION AND THE BUILD
 
@@ -83799,3 +83799,56 @@ different change from the one this item refutes - which is exactly why it is not
 GATES. No source change to ship. bun run check 0 read unpiped, gremlin 2,134 pass / 0 fail on the
 restored tree. The finding is recorded at the generator itself, so the next reader sees the deletion
 test rather than the share. Each A/B arm asserted to BE the code it claims before being built.
+
+### Item 1810 — **item 1810 - SHIPPED, 1.141x on hopordercap with both other rows flat: the capped order's ingest allocated a keys ARRAY, ran two `.some` closures and built an Entry FOR EVERY ITEM of a 400,000-element stream in which 10 survive. The one-identity-by case now costs one evalBy, two scalar tests, and an object only if the item enters the heap. This is the target item 1809 named after proving the 54% frame above it was attribution**
+
+THE TARGET CAME FROM A REFUTATION, WHICH IS THE POINT
+
+Item 1809 deleted the generator that profiled at 54.0% of this shape and measured 1.014x, with the
+control moving 10% in the change's favour - so the 54% was attribution, and what it was attributing
+was the heap ingest inside `streamTopByBys`:
+
+    per item, for every item:   bys.map(...)          an ARRAY for a ONE-element `bys`
+                                keys.some(isElement)  a closure iteration
+                                keys.some(NO_VALUE)   a second closure iteration
+                                { item, keys, at }    an Entry object
+
+`cap` is 10 and the stream is 400,000 items. `streamTopByKey` keeps the same heap and the same
+comparator semantics and spends, per item, one `evalBy`, `isElement`, a `=== NO_VALUE`, and - only
+for an item that actually enters the heap - one object. Rejection is `beatsRoot(root, key, at)`
+against the heap root, which is the shape GQL's `boundedTopKeyed` already uses (item 1474 describes
+it as rejecting "most values in O(1) against its heap root").
+
+MEASURED, three alternated rounds of 20 reps, dist rebuilt between arms:
+
+    hopordercap  TARGET    461.8 -> 404.6   1.141x   pre [454, 461.8, 464.6] post [366, 404.6, 423.5]
+    hoporder               393.1 -> 404.4   0.972x   overlapping - the UNCAPPED path, untouched
+    hopcount3    CONTROL    69.0 ->  70.3   0.982x   overlapping
+
+The target's ranges do not overlap; both other rows do.
+
+FOUR BEHAVIOURS ARE COPIED EXACTLY RATHER THAN RE-DERIVED, and each is observable:
+
+- `at` increments for EVERY item including the skipped ones, because ties break on ARRIVAL and the
+  general path increments before any skip
+- the key is evaluated FIRST and unconditionally - "a throwing `by` must win over the element
+  fault"
+- an element KEY sets a flag and the fault is raised AFTER the loop, not at the item
+- a NO_VALUE key filters the item out of the ordering entirely (TinkerPop)
+
+THE GATE REFUSES A PER-`by` DIRECTION. `streamTopByKey` folds the step-level `desc` into one `sign`;
+a `by` carrying its own direction needs the general path's `dirs` array, so `bys[0].direction ===
+undefined` is required. `fusedValuesTopK` passes a shared module-scope identity `by` and allocates
+nothing to say so.
+
+⚠️ AND THE NEW PATH IS PROVEN REACHED, not assumed. A green suite after a specialization says
+nothing - an unreached arm and an ineffective one both read as "no change", which is the mistake
+item 1713 made. A `throw` at `streamTopByKey`'s first statement fails 4 of the 11 tests in
+`order-take-topk.test.ts`, the file that pins item 1574's two answer-visible properties (the top-k
+is exactly the stable full sort's prefix, and a throwing `by` still raises for an item that would
+not have been kept). So those properties are being checked on THIS path.
+
+GATES. bun run check 0 read unpiped. nx run-many -t test --skip-nx-cache 21 projects green (gremlin
+2,134 pass / 0 fail). bun run fuzz 57 pass / 0 fail with FUZZ_EXIT=0 - load-bearing, because a
+selection change is a ROW ORDER change and order is compared byte-for-byte against the Rust engine.
+Each A/B arm asserted to BE the code it claims before being built.
