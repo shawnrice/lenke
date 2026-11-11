@@ -83451,3 +83451,53 @@ GATES. bun run check 0 read unpiped. nx run-many -t test --skip-nx-cache 21 proj
 because this is a WALK ORDER question: the bucket yields the same edges in the same order as
 `edgesMatching`'s single-label fast path, which is what `expand`'s own comment states and what the
 fuzzers check. Each A/B arm asserted to BE the code it claims before being built.
+
+### Item 1803 — **item 1803 - SHIPPED, 1.178x on the undirected row walk, which after item 1802 is where ALL of the GQL probe's remaining `expand` traffic lives. A `both` single-type hop was running three generator layers per edge (expand -> outSteps/inSteps -> edgesMatching); it now reads the two buckets directly. And the arm is EXTRACTED rather than inlined, because inlining it cost the directed family 2.2% and tripped the complexity gate at 38 against 35**
+
+PROFILE-FIRST, AND THE PROFILE SAID SOMETHING NEW AFTER 1802
+
+Attributed `expand`'s samples to their callers across four GQL shapes. After item 1802 the directed
+family has NO expand traffic at all - the bucket arm took it - and every remaining sample is
+`hop3rowsboth`, about 31% of it across `edgesMatching <- inSteps <- expand` and its out twin. So the
+`both` walk is the whole of what is left, and its cost is three generator layers to produce one
+`{ edge, node }`.
+
+`bothBuckets` is the `both` companion to `directedBucket`: the out bucket and the in bucket for a
+single concrete type, in that order, and the caller loops them.
+
+MEASURED, three alternated rounds, dist rebuilt between arms:
+
+    hop3rowsboth   PRE 1112.0 -> POST 943.7   1.178x   pre [1111.8, 1112, 1112.5]
+                                                       post [937.2, 943.7, 979.4]
+    hop3rows       PRE  841.2 -> POST 850.7   0.989x   ranges OVERLAP - the directed family is flat
+    hop2rows       PRE   82.6 -> POST 76.6    1.078x   (measured on the inlined arm)
+
+I GOT THE SELF-LOOP BACKWARDS AND 39 TESTS SAID SO
+
+My first version, and its comment, claimed a `both` hop yields a self-loop TWICE - once per
+direction. `expand` says the opposite in its own words: "a self-loop is indexed under both
+`edgesFromByLabel` and `edgesToByLabel` for `v`, so an undirected (`both`) walk would yield it twice
+... The out-step already emitted it; skip the duplicate. (Directed `in` keeps it.)" 39 gql tests
+failed on the first build, which is the only reason the assumption did not ship. The in-pass now
+skips it, the directed arm still does not, and both comments are corrected to say why.
+
+THE ARM IS EXTRACTED, AND THAT IS A MEASUREMENT RATHER THAN TIDINESS
+
+Inlined as a third arm in `walkSegments` it read 1.201x on `both` - but cost the directed 3-segment
+row 2.2% while the directed 2-segment row GAINED 7.8%, a wobble in both directions on rows the
+change cannot reach, which is [[executor-edits-perturb]]'s signature. It also put that generator at
+complexity 38 against a limit of 35. A module-scope generator keeps `walkSegments` the size it was:
+the directed row goes back to flat (0.989x, overlapping ranges) and `both` keeps 1.178x of the
+1.201x. The 2% difference is the one generator layer the extraction adds - which is the cost item
+1622's refutation was about, and still the right trade here, because `both` runs THREE layers today.
+One is not three.
+
+It takes the caller's own `WalkCursor` rather than six more parameters: a seventh positional
+argument trips `max-params` and `sortByBys` records the same choice for the same reason, while
+bundling into a NEW object would allocate once per visited vertex - the cost this item removes.
+
+GATES. bun run check 0 read unpiped. nx run-many -t test --skip-nx-cache 21 projects green (gql
+4,522 pass / 0 fail). bun run fuzz 57 pass / 0 fail with FUZZ_EXIT=0 - load-bearing here because
+this is a ROW ORDER question: out-bucket then in-bucket is `expand`'s documented order, and row
+order is compared byte-for-byte against the Rust engine. Each A/B arm asserted to BE the code it
+claims before being built.

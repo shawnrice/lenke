@@ -121,6 +121,42 @@ export const directedBucket = (
 const EMPTY_EDGES: ReadonlySet<Edge> = new Set();
 
 /**
+ * The TWO buckets an UNDIRECTED single-type hop reads, out first then in, or `undefined` when the
+ * shape needs `expand` (item 1803).
+ *
+ * The `both` companion to {@link directedBucket}, and the shape item 1802 left on the slow path.
+ * After 1802 the directed family reads its bucket directly and `expand` has NO traffic left on it;
+ * every remaining `expand` sample in the GQL probe is `both`, three generator layers deep —
+ * `expand` → `outSteps`/`inSteps` → `edgesMatching` — at ~31% of `hop3rowsboth`.
+ *
+ * ⚠️ ORDER IS THE CONTRACT, NOT AN INCIDENT. `expand` walks outgoing then incoming "matching the
+ * natural read order of an undirected pattern", so this returns the pair in that order and the
+ * caller must keep it. Row order is compared byte-for-byte against the Rust engine, so getting this
+ * backwards is a divergence, not a cosmetic difference.
+ *
+ * ⚠️ A SELF-LOOP IS IN BOTH BUCKETS AND MUST BE EMITTED ONCE, so the CALLER skips it on the
+ * in-pass. `expand` does the same and says why in its own words: "a self-loop is indexed under both
+ * `edgesFromByLabel` and `edgesToByLabel` for `v`, so an undirected (`both`) walk would yield it
+ * twice — once as an out-step, once as an in-step. The out-step already emitted it; skip the
+ * duplicate. (Directed `in` keeps it.)" This helper returns the raw buckets and leaves that to the
+ * caller, because the directed arm must NOT skip it. ⚠️ I wrote the opposite here first and 39 gql
+ * tests said so on the first build. (The DEDUPE `directedBucket`'s header mentions is a different
+ * thing: the multi-type case in `edgesMatching`, which both helpers refuse.)
+ */
+export const bothBuckets = (
+  v: Vertex,
+  rel: Adjacency,
+): readonly [ReadonlySet<Edge>, ReadonlySet<Edge>] | undefined => {
+  const { label, direction } = rel;
+
+  if (direction !== 'both' || label?.kind !== 'label') {
+    return undefined;
+  }
+
+  return [v.adjFrom?.get(label.name) ?? EMPTY_EDGES, v.adjTo?.get(label.name) ?? EMPTY_EDGES];
+};
+
+/**
  * ⚠️ `incidentEdges` / `farEnd` WERE HERE AND ARE GONE — item 1622 built them, measured them, and
  * REFUTED the lever. Do not re-attempt without reading `docs/reviews/CLOSED.md` item 1622.
  *

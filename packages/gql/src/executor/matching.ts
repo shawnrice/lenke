@@ -7,7 +7,13 @@ import type { Edge, Graph, IndexableValue, RangeBound, Vertex } from '@lenke/cor
 import { ErrorCode, LenkeError } from '@lenke/errors';
 
 import type { LabelExpr, PathMode, PathSelector, RelPattern } from '../ast.js';
-import { candidateCount, candidateVertices, directedBucket, expand } from '../graph-queries.js';
+import {
+  bothBuckets,
+  candidateCount,
+  candidateVertices,
+  directedBucket,
+  expand,
+} from '../graph-queries.js';
 import { consistent, hasPredicate, unitExposes, unitIsFlat, withBinding } from './bindings.js';
 import { matchNode, matchNodeLabelled } from './bindings.js';
 // Compiled pattern types + binding helpers live in the executor trunk; the value
@@ -2192,6 +2198,80 @@ export const effectiveLabels = (
   return out;
 };
 
+/**
+ * The `both` half of a fixed-length segment walk, EXTRACTED (item 1803) — and the extraction is not
+ * only for the complexity gate.
+ *
+ * Inlining this as a third arm in `walkSegments` put that generator at complexity 38 against a
+ * limit of 35, and cost the DIRECTED 3-segment row 2.2% while the directed 2-segment row gained
+ * 7.8% — [[executor-edits-perturb]]'s signature, a wobble in both directions on rows the change
+ * cannot reach. A module-scope generator keeps `walkSegments` the size it was.
+ *
+ * ⚠️ IT ADDS ONE GENERATOR LAYER TO THE `both` PATH, which is the cost item 1622's refutation was
+ * about — and it is still the right trade here, because `both` runs THREE layers today (`expand` →
+ * `outSteps`/`inSteps` → `edgesMatching`). One is not three.
+ *
+ * ⚠️ OUT THEN IN, and the IN pass SKIPS A SELF-LOOP: it is indexed under both `adjFrom` and `adjTo`,
+ * so `expand` emits it on the out-pass only ("the out-step already emitted it; skip the duplicate.
+ * (Directed `in` keeps it.)"). I wrote the opposite first and 39 gql tests said so.
+ */
+const walkBothSegment = function* (
+  graph: Graph,
+  pattern: CPath,
+  pair: readonly [ReadonlySet<Edge>, ReadonlySet<Edge>],
+  binding: Binding,
+  params: Params,
+  /**
+   * ⚠️ THE CALLER'S OWN CURSOR, passed through rather than destructured into more parameters: a
+   * seventh positional argument trips `max-params`, and `sortByBys` records the same choice for the
+   * same reason ("the rule is right"). Bundling into a NEW object would allocate once per visited
+   * vertex on this path, which is the cost this item exists to remove.
+   */
+  walk: WalkCursor,
+): Iterable<Binding> {
+  const { index, pathAcc, labels } = walk;
+  const { rel, node } = pattern.segments[index];
+  const nodeLabel = labels === undefined ? node.label : labels[index + 1];
+
+  for (let half = 0; half < 2; half += 1) {
+    const forward = half === 0;
+
+    for (const edge of pair[half]) {
+      if (!forward && edge.from === edge.to) {
+        continue;
+      }
+
+      if (!consistent(binding, rel.variable, edge)) {
+        continue;
+      }
+
+      const withEdge = withBinding(binding, rel.variable, edge);
+
+      if (!satisfies(edge, rel.pred, withEdge, params, graph)) {
+        continue;
+      }
+
+      const nextVertex = forward ? edge.to : edge.from;
+      const matched = matchNodeLabelled(withEdge, node, nextVertex, params, graph, nodeLabel);
+
+      if (matched) {
+        const nextAcc =
+          pathAcc &&
+          ({
+            origin: pathAcc.origin,
+            steps: [...pathAcc.steps, { edge, vertex: nextVertex }],
+          } satisfies typeof pathAcc);
+
+        yield* walkSegments(graph, pattern, nextVertex, matched, params, {
+          index: index + 1,
+          pathAcc: nextAcc,
+          labels,
+        });
+      }
+    }
+  }
+};
+
 export const walkSegments = function* (
   graph: Graph,
   pattern: CPath,
@@ -2307,6 +2387,25 @@ export const walkSegments = function* (
    * mistake `directedBucket`'s own header says it returns `forward` to prevent.
    */
   const bucket = directedBucket(from, rel);
+  /**
+   * ⚠️ `both` GOES THROUGH THE SAME BODY (item 1803), not a third copy of it: the pair is walked
+   * OUT THEN IN, which is `expand`'s documented order and therefore the row order the Rust engine
+   * is compared against. `forward` comes from which half is being walked, so the body reads the
+   * right endpoint without re-deriving it.
+   *
+   * ⚠️ AND THE IN-PASS SKIPS A SELF-LOOP, WHICH I GOT BACKWARDS FIRST. My comment here said a
+   * self-loop is yielded TWICE, once per direction; `expand` says the opposite in its own words —
+   * "the out-step already emitted it; skip the duplicate. (Directed `in` keeps it.)" — because a
+   * self-loop is indexed under both `adjFrom` and `adjTo`. 39 gql tests failed on the first build,
+   * which is the only reason the assumption did not ship.
+   */
+  const pair = bucket === undefined ? bothBuckets(from, rel) : undefined;
+
+  if (pair !== undefined) {
+    yield* walkBothSegment(graph, pattern, pair, binding, params, walk);
+
+    return;
+  }
 
   if (bucket !== undefined) {
     const { set, forward } = bucket;
