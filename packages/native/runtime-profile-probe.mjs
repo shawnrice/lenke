@@ -110,6 +110,14 @@ const SHAPES = {
    * makes it the right profile for the five `expand` call sites item 1621 left open.
    */
   hop3rows: 'MATCH (a:P)-[:E]->(b:P)-[:E]->(c:P)-[:E]->(d:P) RETURN d.k AS k',
+  /**
+   * ⚠️ THE DECLINED TWIN OF `hop3rows`, added at item 1802 and the row that decides the question.
+   * `directedBucket` refuses `both` (two buckets, and a dedupe across them), so this shape stays on
+   * `expand` whatever happens to the directed one — which is exactly where item 1622's edge-only
+   * adapter LOST 3.7% while gaining 9% on the directed family, and was rejected for it. Without
+   * this row the trade cannot be seen, and item 1622's own arms had to be written by hand.
+   */
+  hop3rowsboth: 'MATCH (a:P)-[:E]-(b:P)-[:E]-(c:P)-[:E]-(d:P) RETURN d.k AS k',
   // A projection with ORDER BY + LIMIT, the serving shape.
   sortedpage: 'MATCH (n:P) WHERE n.k < 50 RETURN n.s AS s ORDER BY s LIMIT 10',
   // A grouped aggregate.

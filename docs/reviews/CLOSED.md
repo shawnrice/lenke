@@ -69848,7 +69848,7 @@ The single survivor is `route/never-taken`, which is item 1619's recorded limit:
 
 `bun run check` 0 read unpiped. Suites gql 4199 (8 new), core 435, native 1076, gremlin 1765, serialization 144 — 0 fail. `bun run fuzz` 20/0 under the 16G cap.
 
-### Item 1622 — ⚠️ **A REFUTATION with its numbers.** `expand` was **28.2%** of the generic matcher's profile — three times the next frame — and removing its generator and its per-edge allocation was worth **+9% on the family it serves and −3.7% on the family it declines**. Not taken. And the first attempt measured at NOTHING for a reason worth more than the lever: it replaced `expand`'s generator with ANOTHER generator
+### Item 1622 — ⚠️ **ITEM 1802 TOOK THIS TARGET BY THE OTHER ROUTE: 1.109x on `hop3rows` with the declined `both` family FLAT at 1.011x — the trade this item could not get. The refutation below stands for ITS approach (an edge-only ADAPTER wrapping `expand`, so the declined path ran two generator layers); 1802 leaves `expand` untouched and has the caller loop `directedBucket`'s set, which is item 1621's shape at the call site 1621 left open.** ~~A REFUTATION with its numbers.~~ `expand` was **28.2%** of the generic matcher's profile — three times the next frame — and removing its generator and its per-edge allocation was worth **+9% on the family it serves and −3.7% on the family it declines**. Not taken. And the first attempt measured at NOTHING for a reason worth more than the lever: it replaced `expand`'s generator with ANOTHER generator
 
 OPEN: nothing here. The remaining six `expand` call sites are priced by this: the same substitution, the same trade. `directedBucket` (item 1621, 1.83x) is the version of the idea that pays, and it pays where the CALLER loops the `Set` directly.
 
@@ -83393,3 +83393,61 @@ test, is where this shape's order of magnitude lives.
 
 GATES. No source change to ship. bun run check 0 read unpiped, gql suite 4,522 pass / 0 fail on the
 restored tree. Both A/B arms were asserted to BE the code they claimed before being built.
+
+### Item 1802 — **item 1802 - SHIPPED, 1.109x on the GQL side's biggest shape, AND THE DECLINED FAMILY IS FLAT at 1.011x - which is the trade item 1622 could not get and was rejected for. Its refutation stands for ITS approach: an edge-only ADAPTER wrapping expand, so the declined path ran TWO generator layers. This leaves expand untouched and has the caller loop directedBucket's set, which is item 1621's shape at the call site 1621 explicitly left open. A `both` control shape was added to the probe, because without it the trade cannot be seen**
+
+I NEARLY RE-DERIVED A REFUTED LEVER, AND THE FILE STOPPED ME
+
+hop3rows is the GQL probe's largest shape at 890.7 ms, 11x the next (item 1801), and `expand` is
+36.1% of it: a generator yielding a fresh `{ edge, node }` per edge. Reaching for an edge-only
+iterable is the obvious move - and `graph-queries.ts` carries a warning at exactly that spot:
+"`incidentEdges` / `farEnd` WERE HERE AND ARE GONE - item 1622 built them, measured them, and
+REFUTED the lever. Do not re-attempt without reading docs/reviews/CLOSED.md item 1622." That note
+is the reason this item exists in its current form rather than as a repeat.
+
+WHAT 1622 MEASURED, AND WHY IT DOES NOT APPLY HERE
+
+Its adapter let ONE loop body serve both cases, at the cost of wrapping `expand`:
+
+    3 single-type segments   PRE 843.09 824.14 820.77   POST 741.68 773.52 756.15   1.09x
+    3 `both` segments        PRE 711.84 707.74 703.92   POST 737.09 733.66 730.37   0.96x
+
++9% on the admitted family and -3.7% on the declined one, because the declined path then ran
+`expand` wrapped in the adapter - two generator layers where it had one. "9% in exchange for 4%
+elsewhere, in the generic matcher, is not the trade executor-edits-perturb and item 1466 say to
+take." Correct.
+
+This takes the same 9% by item 1621's route instead: `walkSegments` asks `directedBucket` first and
+loops the `Set` directly, and `expand` is untouched for everything else. The declined path pays one
+`directedBucket` call - a `direction` test and a `label.kind` test, no generator - and item 1621
+already measured this pattern at 1.83x "where the caller loops the Set directly", at one of the five
+`expand` call sites it left open.
+
+MEASURED, three alternated rounds, dist rebuilt between arms:
+
+    hop3rows       PRE 912.7  -> POST 822.7   1.109x   pre [906.9, 912.7, 916.4]  post [812.1, 822.7, 839]
+    hop3rowsboth   PRE 1121.9 -> POST 1110.1  1.011x   THE DECLINED FAMILY, FLAT
+    hop2rows       PRE 84.8   -> POST 78.8    1.076x   (ranges overlap)
+    point          PRE 33.4   -> POST 30.2    1.106x   (ranges overlap - noise, it has no segments)
+
+hop3rows' ranges do not overlap. hop3rowsboth's post range (1108.1-1111.9) sits inside its pre
+range, which is the row item 1622 lost 3.7% on.
+
+THE CONTROL SHAPE IS NEW, AND THE ITEM NEEDED IT. `hop3rowsboth` -
+MATCH (a:P)-[:E]-(b:P)-[:E]-(c:P)-[:E]-(d:P) RETURN d.k - did not exist; item 1622 wrote its `both`
+arm by hand. directedBucket refuses `both` (two buckets and a dedupe across them), so that shape
+stays on `expand` whatever happens to the directed one, and without the row in the probe the trade
+is invisible. It is now a permanent row.
+
+THE BODY IS DUPLICATED ON PURPOSE. Sharing it through a module-scope helper is item 159's
+measurement - 1.29x WORSE for a shared walk - and a closure per call is what
+ts-closure-size-is-load-bearing warns about; item 1681 duplicated a 122-line walk for the same
+reason. The two bodies differ only in where `nextVertex` comes from, and `forward` is read off the
+bucket rather than re-derived, which is the mistake directedBucket's own header says it returns
+`forward` to prevent.
+
+GATES. bun run check 0 read unpiped. nx run-many -t test --skip-nx-cache 21 projects green (gql
+4,522 pass / 0 fail). bun run fuzz 57 pass / 0 fail with FUZZ_EXIT=0 - byte-identity matters here
+because this is a WALK ORDER question: the bucket yields the same edges in the same order as
+`edgesMatching`'s single-label fast path, which is what `expand`'s own comment states and what the
+fuzzers check. Each A/B arm asserted to BE the code it claims before being built.

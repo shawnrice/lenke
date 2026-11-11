@@ -7,7 +7,7 @@ import type { Edge, Graph, IndexableValue, RangeBound, Vertex } from '@lenke/cor
 import { ErrorCode, LenkeError } from '@lenke/errors';
 
 import type { LabelExpr, PathMode, PathSelector, RelPattern } from '../ast.js';
-import { candidateCount, candidateVertices, expand } from '../graph-queries.js';
+import { candidateCount, candidateVertices, directedBucket, expand } from '../graph-queries.js';
 import { consistent, hasPredicate, unitExposes, unitIsFlat, withBinding } from './bindings.js';
 import { matchNode, matchNodeLabelled } from './bindings.js';
 // Compiled pattern types + binding helpers live in the executor trunk; the value
@@ -2287,6 +2287,62 @@ export const walkSegments = function* (
   // so a segment at `index` lands at `index + 1`. Off by one here applies the wrong node's label,
   // which the mutation pass covers.
   const nodeLabel = labels === undefined ? node.label : labels[index + 1];
+
+  /**
+   * ⚠️ THE DIRECTED SINGLE-TYPE BUCKET, LOOPED DIRECTLY (item 1802) — and the reason this is not
+   * item 1622's refuted lever is the shape of the fallback, not the shape of the win.
+   *
+   * Item 1622 built an EDGE-ONLY ADAPTER so one loop body could serve both cases: `+9%` on the
+   * directed family, `−3.7%` on `both`, rejected because the declined path then ran `expand`
+   * wrapped in the adapter — TWO generator layers where it had one. Here `expand` is untouched and
+   * the declined path pays one `directedBucket` call, which is a `direction` test and a
+   * `label.kind` test. The win is item 1621's, measured at 1.83x "where the caller loops the `Set`
+   * directly", at the call site item 1621 explicitly left open.
+   *
+   * ⚠️ THE BODY IS DUPLICATED ON PURPOSE. Sharing it through a module-scope helper is item 159's
+   * measurement — 1.29x WORSE for a shared walk — and a closure per call is what
+   * [[ts-closure-size-is-load-bearing]] warns about. Item 1681 duplicated a 122-line walk for the
+   * same reason. The two bodies differ only in where `nextVertex` comes from, so a drift between
+   * them is a wrong answer: `forward` is read off the bucket rather than re-derived, which is the
+   * mistake `directedBucket`'s own header says it returns `forward` to prevent.
+   */
+  const bucket = directedBucket(from, rel);
+
+  if (bucket !== undefined) {
+    const { set, forward } = bucket;
+
+    for (const edge of set) {
+      if (!consistent(binding, rel.variable, edge)) {
+        continue;
+      }
+
+      const withEdge = withBinding(binding, rel.variable, edge);
+
+      if (!satisfies(edge, rel.pred, withEdge, params, graph)) {
+        continue;
+      }
+
+      const nextVertex = forward ? edge.to : edge.from;
+      const matched = matchNodeLabelled(withEdge, node, nextVertex, params, graph, nodeLabel);
+
+      if (matched) {
+        const nextAcc =
+          pathAcc &&
+          ({
+            origin: pathAcc.origin,
+            steps: [...pathAcc.steps, { edge, vertex: nextVertex }],
+          } satisfies typeof pathAcc);
+
+        yield* walkSegments(graph, pattern, nextVertex, matched, params, {
+          index: index + 1,
+          pathAcc: nextAcc,
+          labels,
+        });
+      }
+    }
+
+    return;
+  }
 
   for (const { edge, node: nextVertex } of expand(graph, from, rel)) {
     if (!consistent(binding, rel.variable, edge)) {
