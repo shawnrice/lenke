@@ -987,11 +987,25 @@ suite('differential fuzz: gremlin (TS engine vs Rust ENGINE)', () => {
         `  order(local)=${orderLocalGenerated}/${orderLocalNonEmpty}/${orderLocalWithNull} of ${ITERATIONS} ` +
           'generated/non-empty/with-a-null',
       );
-      // Measured 20-40 generated and 15-35 of those non-empty, of 400.
+      // ⚠️ `orderLocalWithNull` WAS `> 5` AND FAILED A CLEAN RUN (item 1792). It reported a
+      // coverage miss as a fuzzer failure on a GQL-only change, which is the worst thing a gate
+      // can do: it costs a real investigation to clear. These three floors were set from a RANGE,
+      // the method item 280 called unsafe and item 1098 replaced with mean − 4σ rounded down.
+      // Measured over SIXTEEN runs of 400 (12 of the gremlin fuzzer alone plus 4 full sweeps):
+      //
+      //   band                    floor   min   mean  sigma   was      now
+      //   orderLocalWithNull          5     5  16.75   5.60   2.10σ -> 0 (the limit)
+      //   orderLocalNonEmpty          5    42  53.75   7.92   6.15  -> unchanged (over-safe)
+      //   orderLocalGenerated         8    49  62.75   7.21   7.59  -> unchanged (over-safe)
+      //
+      // Four sigma below `withNull`'s mean is NEGATIVE, so 0 is the only floor it can carry — the
+      // small-count case item 1098 hit with `subOr`: for a band this wide relative to its mean,
+      // catching a collapse to ZERO is all a floor can safely do. The other two are 6σ and 7.5σ,
+      // and an over-safe floor costs only its own irrelevance.
       expect({
         orderLocalGenerated: orderLocalGenerated > 8,
         orderLocalNonEmpty: orderLocalNonEmpty > 5,
-        orderLocalWithNull: orderLocalWithNull > 5,
+        orderLocalWithNull: orderLocalWithNull > 0,
       }).toEqual({
         orderLocalGenerated: true,
         orderLocalNonEmpty: true,

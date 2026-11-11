@@ -82715,3 +82715,83 @@ A test item. The sweep is unchanged.
 `crates/lenke-engine/target/`, restored BEFORE each mutant, anchors asserted to appear exactly once
 — one mutant was SKIPPED on a duplicate anchor and then run against each of the two sites
 separately rather than left unreported.
+
+### Item 1792 — **THREE MORE UNREACHABLE FALLBACKS, AND THE REASON IS THE SAME EVERY TIME: a second implementation kept for a `null` the gate above it cannot produce.** `detectNodeAggregate`'s two row-reading arms and `detectMultiNodeAggregate`'s — each the `vs === null` branch under a `rowsFn !== null` that already implies `vs !== null`. **−70 lines.** ⚠️ **And the gate run that cleared the change failed on a COVERAGE FLOOR, not on byte-identity: `orderLocalWithNull > 5` sits 2.1σ inside its own distribution. Re-set to the limit by item 1098's method, with the 16-run measurement**
+
+Item 1790's corrected list put `node-scan.ts` at 32 uncovered src lines in five blocks. Three of
+them are the fallbacks, and they are the fourth instance in five items of one mechanism: **a branch
+that was a real implementation when it was written, orphaned by a later change to its gate, and kept
+because nothing re-asks whether its condition can still occur.**
+
+#### The argument, which is two gates side by side
+
+```ts
+const rowsFn = detectNodeProjection([m, synthRet], compiled);
+if (rowsFn === null) { return null; }
+const vs = valueScanOf(m, compiled[0], argExpr);   // === nodeScanOf + compileExpr
+if (vs !== null) { …the streaming walk… }
+return …the row-reading fallback…                  // ← unreachable
+```
+
+`nodeScanOf` declines on: not a single-pattern `match`, no bound node variable, a label EXPRESSION
+rather than a plain `:label`, or a null `nodeScanGate`. `detectNodeProjection` applies **every one of
+those**, plus `optional`, `star`, `distinct`, `groupBy`, `having` and an empty projection. So its
+acceptance is strictly stronger and `rowsFn !== null ⟹ vs !== null`.
+
+Proven the way items 1788 and 1790 established theirs, probe liveness FIRST:
+
+| probe                                                  | result                                                          |
+| ------------------------------------------------------ | --------------------------------------------------------------- |
+| the GATE instrumented (`vsnull=${vs === null}`)        | **296 arrivals across the gql suite — every one `vs !== null`** |
+| `throw` in all three fallback bodies, gql suite        | 4,522 pass                                                      |
+| the same after `bun run build`, all projects + fuzzers | 21 projects green, `bun run fuzz` 20/0, zero raises             |
+
+Two candidate shapes were tried by hand first and both were refuted rather than assumed: `MATCH
+(n:A|B) RETURN sum(n.k)` and the bare `MATCH (n) RETURN …` both decline at `detectNodeProjection`
+too, so they never reach the fallback either.
+
+#### DECLINING, not asserting
+
+The branches now `return null`, which sends such a query to the general path. A thrown invariant
+would turn a future planner change into a user-visible crash; declining makes the same drift cost
+only speed, which is what this file can afford. The stale comment promising that a null "falls
+through to the row-reading loops below" is corrected in place.
+
+#### ⚠️ THE GATE RUN FAILED, AND IT WAS THE GATE'S FAULT
+
+`bun run fuzz` came back **19 pass / 1 fail** on this change. It was not byte-identity: the gremlin
+fuzzer's `orderLocalWithNull` coverage counter read **5** against a floor of `> 5`. A GQL-only
+deletion cannot move a Gremlin coverage counter, and three immediate re-runs read 25, 19 and 17.
+
+Those three floors were set from a RANGE — the method item 280 called unsafe and item 1098 replaced
+with **mean − 4σ rounded down**. Measured over SIXTEEN runs of 400 (12 of the gremlin fuzzer alone
+plus 4 full sweeps):
+
+```text
+  band                    floor   min   mean  sigma   was      now
+  orderLocalWithNull          5     5  16.75   5.60   2.10σ -> 0 (the limit)
+  orderLocalNonEmpty          5    42  53.75   7.92   6.15  -> unchanged (over-safe)
+  orderLocalGenerated         8    49  62.75   7.21   7.59  -> unchanged (over-safe)
+```
+
+Four sigma below `withNull`'s mean is NEGATIVE, so 0 is the only floor it can carry — item 1098's
+`subOr` case, where for a band this wide relative to its mean, catching a collapse to zero is all a
+floor can safely do.
+
+⚠️ **AND A CLAIM OF MINE FROM ITEM 1788 WAS WRONG.** I reported `hopUntypedGenerated > 19` as "a
+floor set one below the lowest value ever observed". It is not: item 1098's table gives that band
+min 33, mean 39.4, σ 4.93, and the floor was moved 20 → 19 precisely to put it at 4.14σ. I had read
+the OLD FLOOR as the minimum. That band is sound and needs nothing.
+
+#### No speed claim
+
+Three unreachable branches cost nothing at runtime. The gain is 70 fewer lines and three fewer
+second implementations to keep in step with the walks beside them.
+
+#### Gates
+
+`bun run check` 0 read unpiped. `nx run-many -t test --skip-nx-cache` **21 projects green**, run
+that way deliberately so the sentinel build could not be answered from cache. `bun run fuzz`
+**20 pass / 0 fail, `FUZZ_EXIT=0`** after the floor fix, with the result line grepped from a
+captured log. Sentinel runs had `bun run build` between the src edit and the native/fuzzer rows.
+Pristine copy under `crates/lenke-engine/target/`, restored before each probe variant.

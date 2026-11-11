@@ -1721,9 +1721,14 @@ export const detectNodeAggregate = (
   }
 
   // `rowsFn` above decided WHETHER to claim this shape; `vs` only changes HOW it runs — folding
-  // the argument's values during the walk instead of materializing a `Row` per vertex. `null`
-  // falls through to the row-reading loops below, which stay the only implementation for
-  // anything this cannot drive. See `valueScanOf`.
+  // the argument's values during the walk instead of materializing a `Row` per vertex.
+  //
+  // ⚠️ `vs` CANNOT BE NULL HERE, which is a change of reading rather than of code (item 1792).
+  // This comment used to say a null "falls through to the row-reading loops below", and those
+  // loops existed — but `detectNodeProjection` applies every condition `nodeScanOf` applies, so
+  // `rowsFn !== null` already implies `vs !== null` and the fallback never ran. It is gone; the
+  // branch DECLINES instead, which sends such a query to the general path rather than to a second
+  // implementation that had to be kept in step with this one. See `valueScanOf`.
   //
   // `detectMultiNodeAggregate` materializes the same way and is NOT wired here: it reads SEVERAL
   // columns off each row, so it needs a per-aggregate accumulator set rather than one argument
@@ -1782,19 +1787,19 @@ export const detectNodeAggregate = (
       });
     }
 
-    return applyOuter((graph, params) => {
-      const values: unknown[] = [];
-
-      for (const row of rowsFn(graph, params)) {
-        const v = row[VALUE_COL];
-
-        if (!isNullish(v)) {
-          values.push(v);
-        }
-      }
-
-      return [{ [outName]: aggregateOverValues(aggName, values, frac) }];
-    });
+    // ⚠️ UNREACHABLE, AND IT USED TO BE A ROW-READING FALLBACK. `rowsFn` is non-null above, and
+    // `detectNodeProjection` applies every condition `nodeScanOf` applies — one pattern, a bound
+    // node variable, a plain `:label` rather than a label EXPRESSION, and a non-null
+    // `nodeScanGate` — plus more of its own. So `rowsFn !== null` implies `nodeScanOf !== null`
+    // and `vs` cannot be null here. Item 1792 deleted the fallback body: 296 arrivals at this
+    // gate across the gql suite, every one `vs !== null`, and a `throw` placed in the body raised
+    // nothing across 21 projects or the seven fuzzers' 20,000 queries.
+    //
+    // DECLINING rather than asserting: if the two gates are ever allowed to drift apart, the
+    // query goes to the general path and is answered correctly but slower, which is the failure
+    // this file can afford. A thrown invariant would turn a planner change into a user-visible
+    // crash.
+    return null;
   }
 
   const { fold } = agg!;
@@ -1846,25 +1851,19 @@ export const detectNodeAggregate = (
     });
   }
 
-  return applyOuter((graph, params) => {
-    const rows = rowsFn(graph, params);
-    let acc = fold.init();
-
-    for (const row of rows) {
-      const v = row[VALUE_COL];
-
-      // The array path folds over the non-null values and the streaming step skips nullish the
-      // same way; this is the fourth place that rule lives, so it reads the same as the others.
-      if (!isNullish(v)) {
-        acc = fold.step(acc, v);
-      }
-    }
-
-    // `fold.finish` over an untouched accumulator is what gives an EMPTY scan its one row holding
-    // null, which is what an ungrouped aggregate owes ISO — and it is the same `finish` the
-    // general path calls, so the two cannot drift.
-    return [{ [outName]: fold.finish(acc) }];
-  });
+  // ⚠️ UNREACHABLE, AND IT USED TO BE A ROW-READING FALLBACK. `rowsFn` is non-null above, and
+  // `detectNodeProjection` applies every condition `nodeScanOf` applies — one pattern, a bound
+  // node variable, a plain `:label` rather than a label EXPRESSION, and a non-null
+  // `nodeScanGate` — plus more of its own. So `rowsFn !== null` implies `nodeScanOf !== null`
+  // and `vs` cannot be null here. Item 1792 deleted the fallback body: 296 arrivals at this
+  // gate across the gql suite, every one `vs !== null`, and a `throw` placed in the body raised
+  // nothing across 21 projects or the seven fuzzers' 20,000 queries.
+  //
+  // DECLINING rather than asserting: if the two gates are ever allowed to drift apart, the
+  // query goes to the general path and is answered correctly but slower, which is the failure
+  // this file can afford. A thrown invariant would turn a planner change into a user-visible
+  // crash.
+  return null;
 };
 /**
  * One projected aggregate's accumulator in the MULTI-aggregate scan path (item 469).
@@ -2153,41 +2152,19 @@ export const detectMultiNodeAggregate = (
     };
   }
 
-  return (graph, params) => {
-    const state = accs.map((a) => (a.kind === 'fold' ? a.fold.init() : ([] as unknown[])));
-    let n = 0;
-
-    for (const row of rowsFn(graph, params)) {
-      n += 1;
-
-      // An INDEX loop, not `accs.entries()`: the iterator allocates a `[i, a]` tuple per
-      // accumulator per row, and at 200,000 rows that alone cost `count(n.age), count(*)`
-      // 17.8 ms against 9.4 for the single-item path over the same column (item 469).
-      for (let i = 0; i < accs.length; i += 1) {
-        const a = accs[i];
-
-        if (a.kind === 'rows') {
-          continue;
-        }
-
-        const v = row[a.col];
-
-        // The nullish skip is the same rule the fold path and the general path's `stepFolded`
-        // apply — the fourth and fifth places it lives read alike on purpose.
-        if (isNullish(v)) {
-          continue;
-        }
-
-        if (a.kind === 'fold') {
-          state[i] = a.fold.step(state[i], v);
-        } else {
-          (state[i] as unknown[]).push(v);
-        }
-      }
-    }
-
-    return [finishMultiAccs(accs, state, n)];
-  };
+  // ⚠️ UNREACHABLE, AND IT USED TO BE A ROW-READING FALLBACK. `rowsFn` is non-null above, and
+  // `detectNodeProjection` applies every condition `nodeScanOf` applies — one pattern, a bound
+  // node variable, a plain `:label` rather than a label EXPRESSION, and a non-null
+  // `nodeScanGate` — plus more of its own. So `rowsFn !== null` implies `nodeScanOf !== null`
+  // and `vs` cannot be null here. Item 1792 deleted the fallback body: 296 arrivals at this
+  // gate across the gql suite, every one `vs !== null`, and a `throw` placed in the body raised
+  // nothing across 21 projects or the seven fuzzers' 20,000 queries.
+  //
+  // DECLINING rather than asserting: if the two gates are ever allowed to drift apart, the
+  // query goes to the general path and is answered correctly but slower, which is the failure
+  // this file can afford. A thrown invariant would turn a planner change into a user-visible
+  // crash.
+  return null;
 };
 /**
  * `MATCH (n:L) [WHERE <row-local>] RETURN n.k AS key, <aggregates…>` — a GROUPED aggregate over
