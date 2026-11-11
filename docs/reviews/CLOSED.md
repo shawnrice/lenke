@@ -82891,3 +82891,81 @@ in `match-binding-semantics.test.ts` failed first and were CORRECTED rather than
 encoded the old semantics). `bun run fuzz` **20 pass / 0 fail, `FUZZ_EXIT=0`**. The three-way check
 is kept as `packages/native/match-parallel-edges-1793.mjs`; `bun run build` is load-bearing for it,
 since it reads `@lenke/gremlin`'s DIST and the first run after the fix still printed the old answer.
+
+### Item 1794 — **BUILDING THE GUARD FOR ITEM 1793 FOUND A SECOND WRONG ANSWER IN THE SAME FUNCTION, in the arm nothing had asked about: a cycle closing onto an ALREADY-BOUND tag returned `KEEP` on the first match, so two parallel edges were one solution.** TinkerPop 3.7.3 says 13, native said 13, TS said 9 — now 13. ⚠️ **And the fuzzer could not have covered `match()` for a THIRD reason neither item saw: `planToGremlin` had no `match` arm, so the step could not even be fed to the Rust engine.** 11 cases over a multigraph corpus, both bugs re-introduced and caught
+
+#### Three reasons, not one
+
+Item 1793 said the gremlin fuzzer missed its divergence because the corpus has no parallel edges.
+That was incomplete. Writing the guard turned up all three:
+
+1. **No parallel edges in `MODERN`** — every `(from, to, type)` is unique.
+2. **`match` is not in the generated step pool** — the fuzzer has never emitted one.
+3. **`planToGremlin` threw `unsupported: step match`** — the differential harness feeds the Rust
+   engine by emitting Gremlin TEXT, so a step the emitter cannot write is unreachable for it no
+   matter what the generator does. **A step missing from the emitter is a silent hole in the hard
+   invariant**, and nothing reports it: the fuzzer simply never builds that plan.
+
+The emitter now has a `match` arm. ⚠️ It is `__.`-prefixed where every other nested step is not, and
+that is not style: a pattern begins with `as(…)`, and a bare `as('a')` in argument position reads as
+the enclosing traversal's own step. Checked against the Rust parser rather than assumed.
+
+#### The second bug, found by the guard rather than by reading
+
+`applyPattern`'s OTHER arm. When a pattern's end tag is already bound — a cycle, `as('c').out('T')
+.as('a')` — the solver tested consistency and returned `KEEP` on the first matching output. One
+solution, whatever the multiplicity. Over two parallel `m3 → m1` edges TinkerPop emits two:
+
+```text
+  match(a-T->b, b-T->c, c-T->a).count()      TinkerPop 13    native 13    TS 9
+  …select('a').by('n')                        [1,1,1,1, 2,2,2,2, 3,3,3,3,3]
+```
+
+The fix expresses multiplicity by **re-binding the tag to the value it already holds**, once per
+matching result: `solve`'s bind arm does `tags.set(key, [value])` and restores on the way out, so k
+copies of one value give k branches with byte-identical tag state at every one. A new outcome kind
+would have needed its own arm in `solve` doing exactly that.
+
+⚠️ **ITEM 1793's FIX WAS NOT WRONG, IT WAS INCOMPLETE**, and the distinction matters for how the
+next one of these is hunted: both arms of one function had the same defect, one was found by a
+profile asking what a spelling should cost, and the other only by a fixture built to be hostile. The
+arm nobody had a question about is the one that stayed broken.
+
+#### The guard: a dedicated case, not a wider shared corpus
+
+`differential fuzz: gremlin MATCH over a MULTIGRAPH` — one NDJSON corpus deserialized for TS and
+decoded for native (one source of truth, the drift lesson the suite above paid for), 4 vertices, two
+parallel pairs, a self loop, a second edge type, a sink, and a 2-cycle so BOTH solver arms are
+reached. 11 cases: every match shape paired with its CHAIN TWIN, since TinkerPop answers the same
+number for both and a divergence that moved both engines together would still show as the pair
+disagreeing.
+
+**Not added to the shared corpus, deliberately.** Its coverage floors are calibrated on `MODERN`'s
+exact seven vertices; adding two for the astral-string question put `orderLocalWithNull` under its
+floor and was reverted, "the counter doing exactly its job". Same decision as the DENSE route's.
+
+#### ⚠️ TEETH VERIFIED, NOT ASSUMED
+
+Both bugs re-introduced into the restored source, each rebuilt to dist and run:
+
+```text
+  BASELINE                                  GREEN  [12 pass]
+  reintroduce 1793's dedup (unbound end)    caught [5 pass]
+  reintroduce 1794's KEEP (bound end)       caught [10 pass]
+```
+
+A generative test whose teeth were never verified is worse than none, because it is believed.
+
+#### What is still open here
+
+A pattern with NO end tag (`as('a').out('T')`) is treated as a pure filter — `hasAny(out) ? KEEP :
+DROP` — which has the same shape as the bug fixed here and was NOT investigated, because the
+multiplicity TinkerPop gives that form was not measured. It is named rather than assumed safe.
+
+#### Gates
+
+`bun run check` 0 read unpiped. `nx run-many -t test --skip-nx-cache` **21 projects green**.
+`bun run fuzz` **32 pass / 0 fail** (was 20 — the new cases run inside the fuzz runner),
+`FUZZ_EXIT=0`. Every mutation run rebuilt `dist` before testing, since the harness reads
+`@lenke/gremlin`'s DIST; pristine copy under `crates/lenke-engine/target/`, restored before each
+mutant.

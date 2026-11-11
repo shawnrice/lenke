@@ -57,6 +57,10 @@ import {
   toArray,
   traversal,
   values,
+  as_,
+  match,
+  pipe,
+  select,
   createTestTinkerGraph,
   choose,
   coalesce,
@@ -1114,6 +1118,148 @@ suite('differential fuzz: gremlin DENSE multi-hop route (TS engine vs Rust ENGIN
       const text = planToGremlin(plan);
       const ts = canonJson(toArray(plan, tsDense));
       const native = canonJson(nativeDense(text));
+
+      expect({ case: name, gremlin: text, result: ts }).toEqual({
+        case: name,
+        gremlin: text,
+        result: native,
+      });
+    });
+  }
+});
+
+/**
+ * ⚠️ `match()` OVER A MULTIGRAPH — the case that would have caught item 1793's wrong answer, and
+ * the TWO reasons the suite above could not.
+ *
+ *   1. **It never generates `match()` at all.** The step pool has no `match` arm, so no number of
+ *      iterations reaches the solver.
+ *   2. **Its corpus has no PARALLEL EDGES.** Every `(from, to, type)` in `MODERN` is unique, and
+ *      item 1793's divergence needs exactly one repeat: the TS solver deduped a pattern's candidate
+ *      end values, so two parallel edges collapsed into one solution where TinkerPop 3.7.3 and the
+ *      Rust engine both emit two.
+ *
+ * ⚠️ A DEDICATED CASE RATHER THAN A WIDER SHARED CORPUS, which is the decision the suite above
+ * records twice. Its coverage floors are calibrated on `MODERN`'s exact seven vertices — adding two
+ * for the astral-string question put `orderLocalWithNull` at 0-3 against its floor and had to be
+ * REVERTED, "the counter doing exactly its job". A parallel edge would reweight every draw the same
+ * way for a question that needs four vertices, so this gets its own fixed corpus and its own fixed
+ * plans, exactly as the DENSE route above does.
+ *
+ * ONE SOURCE OF TRUTH: the NDJSON below is deserialized for TS and decoded for native, so the two
+ * definitions cannot drift.
+ *
+ * ⚠️ EVERY MATCH CASE HAS ITS CHAIN TWIN, and that pairing is the point rather than decoration.
+ * TinkerPop answers the same number for both (verified against `gremlin-console:3.7.3` at item
+ * 1793: `match(a-T->b).count()` and `out(T).count()` are both 3 on a one-parallel-edge chain), so a
+ * divergence that moved BOTH engines together would still show up as the match and the chain
+ * disagreeing — a second, independent reading of the same question.
+ */
+const MULTI_DOC = [
+  '{"type":"node","id":"m1","labels":["P"],"properties":{"n":1}}',
+  '{"type":"node","id":"m2","labels":["P"],"properties":{"n":2}}',
+  '{"type":"node","id":"m3","labels":["P"],"properties":{"n":3}}',
+  // A SINK: no out-edges at all, so a pattern that must bind an end has somewhere to fail.
+  '{"type":"node","id":"m4","labels":["P"],"properties":{"n":4}}',
+  // THE PARALLEL PAIR — same endpoints, same type, different ids and weights. This is the whole
+  // fixture: with only one of these the TS engine answered correctly for two years.
+  '{"type":"edge","id":"me1","labels":["T"],"from":"m1","to":"m2","properties":{"w":1}}',
+  '{"type":"edge","id":"me2","labels":["T"],"from":"m1","to":"m2","properties":{"w":2}}',
+  '{"type":"edge","id":"me3","labels":["T"],"from":"m2","to":"m3","properties":{"w":3}}',
+  // A SELF LOOP, where a pattern binds `a` and `b` to the same vertex.
+  '{"type":"edge","id":"me4","labels":["T"],"from":"m3","to":"m3","properties":{"w":4}}',
+  // A SECOND TYPE on the same endpoints as the parallel pair, so a typed pattern and an untyped
+  // one are different questions — without it `out('T')` and `out()` would agree for the wrong
+  // reason.
+  '{"type":"edge","id":"me5","labels":["U"],"from":"m1","to":"m2","properties":{"w":5}}',
+  // A 2-CYCLE, which is what reaches the solver's OTHER arm: when a later pattern's end tag is
+  // ALREADY BOUND, the candidate list is not built at all and the pattern is a consistency test.
+  // Parallel edges there are a separate multiplicity question from the one item 1793 fixed.
+  '{"type":"edge","id":"me6","labels":["T"],"from":"m3","to":"m1","properties":{"w":6}}',
+  '{"type":"edge","id":"me7","labels":["T"],"from":"m3","to":"m1","properties":{"w":7}}',
+].join('\n');
+
+suite('differential fuzz: gremlin MATCH over a MULTIGRAPH (TS engine vs Rust ENGINE)', () => {
+  const tsMulti = tsDeserialize(MULTI_DOC, 'ndjson', new Graph());
+  const multiBytes = new TextEncoder().encode(MULTI_DOC);
+
+  const nativeMulti = (text: string): unknown[] => {
+    const handle = backend!.graphFromNdjson(multiBytes);
+
+    try {
+      return JSON.parse(decoder.decode(backend!.gremlinJson(handle, text))) as unknown[];
+    } finally {
+      backend!.graphFree(handle);
+    }
+  };
+
+  /**
+   * ⚠️ THE FIXTURE MUST ACTUALLY BE A MULTIGRAPH, asserted rather than assumed — this whole suite
+   * exists because a corpus that looked adequate was not, and a fixture that lost its parallel
+   * edges would make every case below pass by answering an easier question.
+   */
+  test('the fixture has parallel edges, a self loop and a sink', () => {
+    const pairs = new Map<string, number>();
+    let loops = 0;
+
+    for (const edge of tsMulti.edges) {
+      if (!edge.labels.has('T')) {
+        continue;
+      }
+
+      const key = `${edge.from.id}->${edge.to.id}`;
+
+      pairs.set(key, (pairs.get(key) ?? 0) + 1);
+
+      if (edge.from.id === edge.to.id) {
+        loops += 1;
+      }
+    }
+
+    const repeated = [...pairs.values()].filter((n) => n > 1).length;
+
+    const sink = tsMulti.getVertexById('m4');
+
+    expect({ repeated, loops, sinkOut: sink?.adjFrom?.size ?? 0 }).toEqual({
+      repeated: 2, // m1->m2 twice and m3->m1 twice
+      loops: 1,
+      sinkOut: 0,
+    });
+  });
+
+  const ONE = pipe(as_('a'), out('T'), as_('b'));
+  const TWO = pipe(as_('b'), out('T'), as_('c'));
+  const BACK = pipe(as_('c'), out('T'), as_('a')); // closes the cycle onto an ALREADY-BOUND tag
+  const CASES: readonly [string, Plan][] = [
+    // Item 1793's exact shape: TS answered the distinct (from, to) pairs, TinkerPop and native the
+    // traversal results.
+    ['match one pattern, count', traversal(V(), match(ONE), count())],
+    ['CHAIN TWIN of one pattern', traversal(V(), out('T'), count())],
+    ['match two patterns, count', traversal(V(), match(ONE, TWO), count())],
+    ['CHAIN TWIN of two patterns', traversal(V(), out('T'), out('T'), count())],
+    // A `select` tail reads a BINDING rather than the tag map, so it checks the multiplicity is the
+    // solver's own rather than an artefact of counting the step's output value.
+    ['match two patterns, select(c), count', traversal(V(), match(ONE, TWO), select('c'), count())],
+    ['match two patterns, select(a,b)', traversal(V(), match(ONE, TWO), select('a', 'b'))],
+    // ⚠️ THE OTHER SOLVER ARM: `a` is bound by the first pattern, so `BACK` never builds a
+    // candidate list and takes the already-bound consistency path instead. Its multiplicity over
+    // the two parallel `m3 -> m1` edges is a DIFFERENT question from the one item 1793 fixed, and
+    // this case is here to answer it rather than to confirm it.
+    ['match a CYCLE onto a bound tag', traversal(V(), match(ONE, TWO, BACK), count())],
+    ['match a cycle, select(a)', traversal(V(), match(ONE, TWO, BACK), select('a'))],
+    // Untyped and second-type patterns, so the parallel pair is reached by more than one spelling.
+    ['match untyped hop', traversal(V(), match(pipe(as_('a'), out(), as_('b'))), count())],
+    ['CHAIN TWIN untyped', traversal(V(), out(), count())],
+    // The CONTROL: a pattern whose end can never bind, so every row drops. If only this diverges
+    // the cause is not the multiplicity.
+    ['CONTROL match from the sink', traversal(V(), hasLabel('P'), has('n', eq(4)), match(ONE))],
+  ];
+
+  for (const [name, plan] of CASES) {
+    test(`${name} agrees across the engines`, () => {
+      const text = planToGremlin(plan);
+      const ts = canonJson(toArray(plan, tsMulti));
+      const native = canonJson(nativeMulti(text));
 
       expect({ case: name, gremlin: text, result: ts }).toEqual({
         case: name,

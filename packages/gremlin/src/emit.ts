@@ -298,6 +298,19 @@ const emitNestedStep = (step: Step): string | null => {
   switch (step.kind) {
     case 'union':
       return `union(${step.plans.map(emitSubPlan).join(', ')})`;
+    /**
+     * ⚠️ `__.`-PREFIXED, UNLIKE EVERY OTHER NESTED STEP HERE, and that is not a style choice: a
+     * match pattern begins with `as(…)`, and a BARE `as('a')` at the head of an argument reads as
+     * the enclosing traversal's own step rather than an anonymous sub-traversal. The forms were
+     * checked against the Rust parser rather than assumed (item 1794).
+     *
+     * This arm did not exist until item 1794, which is the THIRD reason the differential fuzzer had
+     * no `match()` coverage — the other two being that the step pool never generates one and that
+     * the shared corpus has no parallel edges. A step the emitter cannot write cannot be fed to the
+     * engine at all, so no amount of generating would have helped.
+     */
+    case 'match':
+      return `match(${step.patterns.map((pattern) => `__.${emitSubPlan(pattern)}`).join(', ')})`;
     case 'coalesce':
       return `coalesce(${step.plans.map(emitSubPlan).join(', ')})`;
     case 'optional':

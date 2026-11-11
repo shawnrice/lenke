@@ -327,13 +327,29 @@ const applyPattern = (
   }
 
   if (boundEnd?.ok) {
+    /**
+     * ⚠️ ONE SOLUTION PER MATCHING RESULT, NOT ONE PER CONSISTENT BINDING — this returned `KEEP`
+     * on the FIRST match until item 1794, which is the same bug item 1793 fixed in the arm below,
+     * in the arm nothing had asked about. A cycle closing onto an already-bound tag over two
+     * parallel edges is TWO solutions, and TinkerPop 3.7.3 says so directly: on this suite's
+     * multigraph fixture `match(a-T->b, b-T->c, c-T->a).count()` is **13**, which is what the Rust
+     * engine answered while this engine said 9.
+     *
+     * Re-binding the tag to the value it ALREADY HOLDS is how the multiplicity is expressed,
+     * rather than a new outcome kind: `solve`'s bind arm does `tags.set(key, [value])` and
+     * restores the previous binding on the way out, so k copies of the same value give k branches
+     * with byte-identical tag state at every one. A `repeat` outcome would need its own arm in
+     * `solve` to do exactly that.
+     */
+    const consistent = [];
+
     for (const v of out) {
       if (sameValue(v, boundEnd.value)) {
-        return KEEP; // end already bound and consistent
+        consistent.push(v);
       }
     }
 
-    return DROP;
+    return consistent.length === 0 ? DROP : { kind: 'bind', key: p.endKey, values: consistent };
   }
 
   // The end label's candidate values, WITH DUPLICATES. `solve` binds each one in turn.
