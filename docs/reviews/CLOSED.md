@@ -83985,3 +83985,53 @@ a 70 ns group. That is named rather than built, because adding a control reweigh
 
 GATES. No engine source change; the finding is recorded in the probe's own header so the next person
 to lower the floor reads it before interpreting a flag. bun run check 0 read unpiped.
+
+### Item 1813 — **item 1813 - THE CHAIN-ROWS RUNG IS SPECIFIED, NOT BUILT, AND THE REASON IT IS AVAILABLE AT ALL IS THAT A FAR-END-ONLY PROJECTION NEEDS NO PATH ENUMERATION: the existing CSR count recurrence already computes the multiplicity of every end slot, so `RETURN d.k` is that recurrence plus an emit loop. This is items 1785/1786's 11.6x prize on the GQL probe's largest shape, and it is left for a dedicated run with its controls chosen in advance rather than started at the tail of a long session**
+
+WHY IT IS AVAILABLE, WHICH IS THE PART WORTH RECORDING
+
+`hop3rowsboth` is 1816 ms over 10 reps and `hop3rows` 458 - the two largest shapes in either
+engine's probe, and both run the GENERAL matcher: `hoistedMatch -> recordTail -> matchPattern ->
+walkSegments`, at 689.7 ns/row against a rung's 59.7 (item 1786). Gremlin HAS a rung for this exact
+shape (`hop-chain-values.ts`); GQL has none.
+
+The thing that makes it tractable is a property of the SHAPE rather than new machinery:
+
+    MATCH (a:P)-[:E]->(b:P)-[:E]->(c:P)-[:E]->(d:P) RETURN d.k AS k
+
+reads NOTHING but the far end. `filteredChainCsrCount` already runs the weighted recurrence that
+leaves `ways[s]` = how many chains land on slot `s`, so the rows are "for each slot, emit `ways[s]`
+copies of `propOf(order[s], 'k')`". No path is enumerated, because no intermediate variable is
+projected - which is exactly why the COUNT rung could exist and the ROWS rung was assumed not to.
+
+THE DESIGN
+
+- a detector beside the other 52 in `rewrites.ts`, admitted by `compileLinear`, dispatched from
+  `runLinear`'s lazy chain in `clauses.ts` (one more `if (linear.<rung>)`), and added to
+  `rung-precedence-census.mjs` so the precedence question stays answerable
+- reuse `csrFor` (topology-version-keyed cache, items 1674-1676) and the recurrence in
+  `filtered-chain-csr.ts` rather than a second copy of either
+- ADMIT: N single-type directed legs, a projection of exactly one `<farVar>.<key>`
+- REFUSE: any other projected variable or edge variable, DISTINCT (the multiplicity is the
+  answer), an aggregate, a path variable, a quantifier, an undirected leg, and a seeded start -
+  `filteredChainCsrApplies` already refuses the last two for the count and the same reasons hold
+
+⚠️ THE RISK IS ROW ORDER, AND IT HAS A PRECEDENT RATHER THAN A GUESS. The emit order is slot order,
+which is not the general matcher's order. `order-is-unspecified` is this engine's documented stance
+for an unordered result, and item 1781 shipped a far-driven route that changed row order on exactly
+this family - its parity probe reported "all 7 admitted shapes SAME SET, DIFFERENT ORDER against
+native, every DECLINED control IDENTICAL". So the gate for this rung is a multiset-parity probe of
+the same shape, and the thing to check BEFORE building is whether the GQL differential fuzzer
+compares these rows ORDERED; if it does, that is the first thing to settle.
+
+⚠️ AND THE PRICE IS A CEILING, NOT A PROMISE. 689.7 vs 59.7 ns/row is 11.6x on the fixture item 1786
+measured; this session has twice watched a profile share fail to convert (items 1804, 1809), and a
+rung that must also build masks per position pays something the count does not. Expect less, measure
+it on `hop3rows` AND `hop3rowsboth` with `hop2rows` as the shape it must not perturb.
+
+WHY NOT NOW: it is a new rung in the hottest part of the GQL engine - a detector, a dispatch arm, a
+census row and a parity probe - and `executor-edits-perturb` prices a central edit at up to 16% on
+rows it cannot reach. Item 1806 made the same call about a smaller refactor for the same reason: a
+change that size wants a run of its own, with the controls named before the first line is written.
+
+GATES. No source change. bun run check 0 read unpiped.
