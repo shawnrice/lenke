@@ -124,6 +124,13 @@ const EMPTY_EDGES: ReadonlySet<Edge> = new Set();
  * The TWO buckets an UNDIRECTED single-type hop reads, out first then in, or `undefined` when the
  * shape needs `expand` (item 1803).
  *
+ * ⚠️ **THE TUPLE IS NOT A COST TO REMOVE, AND ITEM 1804 MEASURED THAT.** This frame profiles at
+ * 9.9% of `hop3rowsboth` and allocates once per visited vertex, so returning the two sets
+ * SEPARATELY (one `typeBucket(v, label, forward)` call per half, nothing allocated) is the obvious
+ * next move. It is **0.971x — 2.9% SLOWER**, three alternated rounds, ranges not overlapping: the
+ * tuple is a local consumed in the same function, which V8 scalar-replaces, while two calls and two
+ * `kind` tests per visit are real. The 9.9% is the two `Map.get`s this frame is credited with.
+ *
  * The `both` companion to {@link directedBucket}, and the shape item 1802 left on the slow path.
  * After 1802 the directed family reads its bucket directly and `expand` has NO traffic left on it;
  * every remaining `expand` sample in the GQL probe is `both`, three generator layers deep —

@@ -83501,3 +83501,51 @@ GATES. bun run check 0 read unpiped. nx run-many -t test --skip-nx-cache 21 proj
 this is a ROW ORDER question: out-bucket then in-bucket is `expand`'s documented order, and row
 order is compared byte-for-byte against the Rust engine. Each A/B arm asserted to BE the code it
 claims before being built.
+
+### Item 1804 — **item 1804 - NO CHANGE, A REFUTATION WITH ITS NUMBERS: item 1803's `bothBuckets` profiles at 9.9% of hop3rowsboth and returns a 2-tuple per visited vertex, so removing that allocation looked free. Allocation-free is 0.971x - 2.9% SLOWER, ranges not overlapping. The 9.9% is the two Map.get calls the frame is credited with, not a tuple V8 was keeping; two calls and two kind-tests cost more than the object did**
+
+THE NOMINATION
+
+After item 1803 the `both` row walk is the GQL probe's top shape at 3532 ms over 20 reps, and its
+profile is: walkBothSegment 31.4%, withBinding 12.1%, GC 11.2%, **bothBuckets 9.9%**, walkSegments
+9.7%. A 9.9% frame whose whole job is to package two `Map.get`s into a tuple - allocated once per
+VISITED VERTEX, with GC sitting at 11.2% beside it - is the most obvious thing on the list.
+
+WHAT WAS BUILT
+
+`typeBucket(v, label, forward)` returning ONE set, called twice inside `walkBothSegment`, with the
+loop picking `forward ? outEdges : inEdges`. No tuple, nothing to collect. It also kept the
+parameter count at six by taking the label EXPRESSION rather than a pre-narrowed name, so the
+`kind === 'label'` test moved inside.
+
+MEASURED, three alternated rounds, dist rebuilt between arms:
+
+    hop3rowsboth   PAIR 933.2 -> NOALLOC 961.0   0.971x   pair [931.7, 933.2, 936.9]
+                                                          noalloc [952.8, 961, 981.2]
+    hop3rows       PAIR 836.0 -> NOALLOC 830.6   1.007x   unaffected, as expected
+
+Ranges do not overlap. The allocation-free version is REPRODUCIBLY slower, so item 1803's tuple
+stays.
+
+WHY, AND THE GENERAL FORM IS WORTH MORE THAN THE LEVER
+
+The tuple is a local, built and consumed immediately inside one function - the textbook shape for
+V8's escape analysis to scalar-replace, so there was probably no allocation to remove. What the
+change DID add is real: two function calls instead of one, and the `label?.kind` test twice per
+visit instead of once. The profiler credits `bothBuckets`'s 9.9% to the two `Map.get`s it performs,
+which do not go away by moving them.
+
+So this is item 1394's rule arriving from a new direction: a SHARE IS A NOMINATION, AND AN ABLATION
+IS THE PRICE. The previous four instances were shares that OVERSTATED a realizable win by ~2.5x;
+this one is a share whose realizable win is NEGATIVE, because the frame's cost is work that has to
+happen somewhere rather than overhead that can be deleted. ⚠️ Before attacking an allocation in a
+hot frame, check whether it can ESCAPE: a local tuple consumed in the same function is not the same
+target as an object that is returned, stored, or captured.
+
+GC at 11.2% beside it is unexplained by this and remains open; `withBinding` at 12.1% is the next
+candidate, and that one allocates a Binding that DOES escape - it is handed to the recursive walk.
+
+GATES. No source change to ship. bun run check 0 read unpiped, gql suite 4,522 pass / 0 fail on the
+restored tree. Each A/B arm asserted to BE the code it claims before being built - and the first run
+FAILED that assertion because my marker (`bothBuckets`) also appears in the new file's prose; a
+code-specific marker (`export const bothBuckets`) is what the check needs.
