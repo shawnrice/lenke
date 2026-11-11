@@ -600,126 +600,41 @@ const reduceComparable = (items: readonly unknown[], kind: 'min' | 'max'): unkno
 // Sort `items` IN PLACE by projecting each through the `bys` (first = primary
 // key, rest = tie-breakers, in order). Per-by direction prefers the By's
 // `direction`; falls back to the step-level `desc` (legacy `order({desc})` form).
-/**
- * The `cap` BEST entries of `xs` by `cmp`, in sorted order — the same prefix a stable full sort
- * would produce (item 1574).
- *
- * ⚠️ TIES BREAK ON ARRIVAL INDEX, which is what makes this equal to `Array.prototype.sort`'s
- * stability rather than merely similar. Gremlin's sort is stable today and tie order is compared
- * against native, so a selection that picked an arbitrary member of a tie group straddling the
- * boundary would be an answer change.
- *
- * Indices, not wrappers: the heap holds positions into `xs`, so a 200,000-element stream allocates
- * one `number[]` of length `cap` rather than an object per candidate.
- *
- * This is the algorithm GQL's `boundedTopK` uses (item 1064), re-implemented rather than imported:
- * ordering is per-language by design, and the two engines' comparators differ.
- */
-const boundedTop = <E>(xs: readonly E[], cap: number, cmp: (a: E, b: E) => number): E[] => {
-  // ⚠️ A ZERO CAP RETURNS EARLY, and leaving this out is a CRASH rather than a wrong answer: the
-  // heap stays empty, `worse(heap[0], i)` dereferences `undefined`, and `order().limit(0)` throws
-  // a TypeError. GQL's `boundedTopK` has the same guard as its first line; I did not copy it, and
-  // the cap-0 test is what found it.
-  if (cap <= 0) {
-    return [];
-  }
-
-  // `true` when `i` belongs ABOVE `j` in a max-heap whose root is the worst kept entry.
-  const worse = (i: number, j: number): boolean => {
-    const c = cmp(xs[i], xs[j]);
-
-    return c !== 0 ? c > 0 : i > j;
-  };
-  const heap: number[] = [];
-  const swap = (x: number, y: number): void => {
-    const t = heap[x];
-
-    heap[x] = heap[y];
-    heap[y] = t;
-  };
-  const up = (from: number): void => {
-    let i = from;
-
-    while (i > 0) {
-      const parent = (i - 1) >> 1;
-
-      if (!worse(heap[i], heap[parent])) {
-        break;
-      }
-
-      swap(i, parent);
-      i = parent;
-    }
-  };
-  const down = (): void => {
-    let i = 0;
-
-    for (;;) {
-      const l = i * 2 + 1;
-      const r = l + 1;
-      let big = i;
-
-      if (l < heap.length && worse(heap[l], heap[big])) {
-        big = l;
-      }
-
-      if (r < heap.length && worse(heap[r], heap[big])) {
-        big = r;
-      }
-
-      if (big === i) {
-        break;
-      }
-
-      swap(i, big);
-      i = big;
-    }
-  };
-
-  for (let i = 0; i < xs.length; i += 1) {
-    if (heap.length < cap) {
-      heap.push(i);
-      up(heap.length - 1);
-      continue;
-    }
-
-    if (worse(heap[0], i)) {
-      heap[0] = i;
-      down();
-    }
-  }
-
-  heap.sort((a, b) => {
-    const c = cmp(xs[a], xs[b]);
-
-    return c !== 0 ? c : a - b;
-  });
-
-  return heap.map((i) => xs[i]);
-};
+// ⚠️ `boundedTop` LIVED HERE — a heap keeping the `cap` best entries, items 1064/1574, with the
+// stable tie-break on arrival index that made it equal to a full sort's prefix. Item 1790 DELETED
+// it as UNREACHABLE, and the reason is that `sortByBys` is only ever called WITHOUT a cap: item
+// 1576 moved every capped `order()` to `streamTopByBys`, which keeps its own heap and never
+// materialises the stream, leaving the array-based selection below with no caller that could
+// enable it. The gate was instrumented before the deletion: 145 arrivals across the gremlin
+// suite, every one `cap=undefined`.
+//
+// It was SUPERSEDED, not lost. `streamTopByBys` is the same algorithm on a stream, keeps the same
+// arrival-index tie-break, and item 1574's answer properties are pinned by
+// `order-take-topk.test.ts`, which goes through it. Rebuilding a capped ARRAY sort means first
+// finding a caller that wants one.
 
 const sortByBys = <T>(
   items: readonly T[],
   project: (item: T) => unknown,
   bys: readonly By[],
   /**
-   * `desc` is the step-level direction; `cap` keeps only the best N via {@link boundedTop}
-   * (item 1574), `undefined` sorting everything.
+   * `desc` is the step-level direction. There is no `cap`: a capped `order()` goes to
+   * `streamTopByBys` instead and never reaches here (item 1790 deleted the dead branch).
    *
-   * ⚠️ ONE OBJECT RATHER THAN TWO PARAMETERS because a seventh positional argument trips
-   * `max-params`, and the rule is right: `(items, project, bys, desc, graph, ctx, cap)` is four
+   * ⚠️ ONE OBJECT RATHER THAN A SECOND PARAMETER because a seventh positional argument trips
+   * `max-params`, and the rule is right: `(items, project, bys, desc, graph, ctx)` is three
    * trailing values nobody can read at a call site.
    *
-   * ⚠️ AND THE KEYS ARE STILL EVALUATED FOR EVERY ITEM when `cap` is set, with the element check
-   * still running over all of them, both ABOVE the selection. Not incidental: `sortByBys` evaluates
-   * every key before the element check precisely so a throwing `by` wins over the element fault,
-   * and a selection that skipped rejected items would silently drop both faults.
+   * ⚠️ THE KEYS ARE EVALUATED FOR EVERY ITEM, with the element check running over all of them,
+   * before anything is ordered. Not incidental: `sortByBys` evaluates every key before the element
+   * check precisely so a throwing `by` wins over the element fault, and skipping rejected items
+   * would silently drop both faults. `streamTopByBys` carries the same rule for the capped shape.
    */
-  opts: { readonly desc: boolean; readonly cap?: number },
+  opts: { readonly desc: boolean },
   graph: Graph,
   ctx: RunContext,
 ): T[] => {
-  const { desc, cap } = opts;
+  const { desc } = opts;
 
   // ONE `by` — the common case — gets a SCALAR key and a comparator with no loop (item 879).
   //
@@ -811,10 +726,6 @@ const sortByBys = <T>(
         ? (a: { key: unknown }, b: { key: unknown }): number => -compareTotal(a.key, b.key)
         : (a: { key: unknown }, b: { key: unknown }): number => compareTotal(a.key, b.key));
 
-    if (cap !== undefined && cap < live1.length) {
-      return boundedTop(live1, cap, cmp1).map((k) => k.item);
-    }
-
     live1.sort(cmp1);
 
     return live1.map((k) => k.item);
@@ -854,10 +765,6 @@ const sortByBys = <T>(
 
     return 0;
   };
-
-  if (cap !== undefined && cap < live.length) {
-    return boundedTop(live, cap, cmpN).map((k) => k.item);
-  }
 
   live.sort(cmpN);
 

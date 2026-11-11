@@ -82196,11 +82196,11 @@ is the thing it existed to step away from. This item is the question it was for.
 
 #### Three checks, and they refute the simple forms of the hypothesis
 
-| check                                                                   | result                                                                                                                                                                                                                                                                                                                                                |
-| ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| all 20 rungs                                                            | every one REACHABLE; the 3 the census says never fire are `FOR`/reachability **corpus gaps**, each wired to a live detector in `rewrites.ts` and dispatched in `clauses.ts`                                                                                                                                                                           |
-| 969 top-level functions, both executors                                 | **1** unreferenced (`farMaskSlotOrder`, `gremlin/far-mask-drain.ts`), 1 test-only (`estimateSeed`)                                                                                                                                                                                                                                                    |
-| 720 uncovered executor code lines, 71 blocks, under 4,505 passing tests | ~~**test gaps, not dead code**~~ ⚠️ **WRONG TWICE — item 1788 proved the biggest block (`var-length-count.ts:709-796`) UNREACHABLE and deleted it, and item 1789 found the number itself INFLATED: this census ran ONE package's suite, so every line reached only from `packages/native`'s cross-engine conformance suite counts as uncovered here** |
+| check                                                                   | result                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| ----------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| all 20 rungs                                                            | every one REACHABLE; the 3 the census says never fire are `FOR`/reachability **corpus gaps**, each wired to a live detector in `rewrites.ts` and dispatched in `clauses.ts`                                                                                                                                                                                                                                                            |
+| 969 top-level functions, both executors                                 | **1** unreferenced (`farMaskSlotOrder`, `gremlin/far-mask-drain.ts`), 1 test-only (`estimateSeed`)                                                                                                                                                                                                                                                                                                                                     |
+| 720 uncovered executor code lines, 71 blocks, under 4,505 passing tests | ~~**test gaps, not dead code**~~ ⚠️ **WRONG TWICE — items 1788 and 1790 each proved one of the biggest blocks UNREACHABLE and deleted it (`var-length-count.ts:709-796`; gremlin `boundedTop`), and item 1790 MEASURED the inflation this census's method causes: a union with the cross-package bundle coverage takes 1,298 uncovered src lines to 506, so 61% were reached only from another package's tests. `sack()` goes 37 → 6** |
 
 The definition scan counts with python `str.count` over decoded text, never `grep`, for the reason
 CLAUDE.md gives: `grep` silently skips Unicode files and files with NUL bytes, and `shortcuts.ts` is
@@ -82555,3 +82555,83 @@ re-run capturing both streams to a file after the first run read its status with
 since a verdict needs the result line and not just the code. Mutation runs under
 `timeout 180 systemd-run --user --scope -p MemoryMax=16G -p MemorySwapMax=0`, pristine copies under
 `crates/lenke-engine/target/`, restored BEFORE each mutant, anchors asserted to appear exactly once.
+
+### Item 1790 — **THE GAP LIST WAS 61% MEASUREMENT ARTIFACT, AND THE INSTRUMENT THAT SAYS SO FOUND THE SECOND DEAD OPTIMIZATION IN THREE ITEMS.** A union of per-package src coverage with the cross-package BUNDLE coverage, projected back through the dist sourcemap, takes the uncovered-line count from **1,298 to 506** — 792 lines are reached only from another package's tests. Of what survives, the worst file is `gremlin/executor/aggregation.ts` (59 of 62), and that is `boundedTop`: items 1064/1574's capped-order heap, **unreachable since item 1576 routed every capped `order()` to `streamTopByBys`. Deleted, −93 lines.** ⚠️ And it corrects item 1787's "the entire `sack()` feature has zero coverage" — `sack` goes from 37 uncovered lines to 6
+
+#### The instrument: why a per-package coverage number cannot answer this question
+
+Item 1789 found `graphPredResult` was covered after all, by `packages/native`'s cross-engine
+conformance suite, which item 1787's census could not see. That is not a one-off. Those tests import
+`@lenke/gql` / `@lenke/gremlin`, which resolve to DIST
+([[fuzzers-read-built-dists]]), so bun's lcov names `../gql/dist/esm/index.mjs` and nothing under
+`src/`. `cov-union-1790.py` (scratchpad) decodes the dist sourcemap's VLQ mappings, projects every
+HIT generated line onto the original src lines it maps to, and unions that with each package's own
+src lcov.
+
+```text
+UNCOVERED CODE LINES under packages/*/src
+  own suite only : 1298
+  after UNION    :  506   (792 reached only via the bundle — from another package's tests)
+  blocks >= 4    :   37
+```
+
+⚠️ **WHAT IT IS AND IS NOT.** A generated line can map to several original lines, and a src line
+counts as covered if ANY generated line mapping to it was hit — the union direction, so the
+instrument can only SHRINK the gap list, never invent a gap. It is an upper bound on coverage and a
+lower bound on the gaps: a line it still calls uncovered is a real candidate, a line it calls
+covered could in principle be a mapping artifact. **And it does not model branches at all.** A
+statement counts as reached if it ran, so an `if` whose else-arm never ran reads as covered. Arms
+need mutation, which is what item 1789 did by hand.
+
+Corrections to item 1787's named gaps, measured rather than argued:
+
+| 1787 said                                           | union says                                                                                                            |
+| --------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| the whole `sack()` feature, 37 lines, zero coverage | **6** — `packages/native/src/gremlin-conformance.test.ts` runs `withSack`/`sack(op).by()`/`sack()` against the engine |
+| `graphPredResult`, 19 lines, "entirely untested"    | 0 after item 1789; it was already covered cross-engine                                                                |
+| `boundedTop`, 38 lines across 2 blocks              | **59 of that file's 62 — the number went UP, and it is the real find**                                                |
+
+#### `boundedTop` is dead, and it is item 1788's shape exactly
+
+Its only two call sites are both inside `sortByBys`, behind `if (cap !== undefined && …)`. And
+`sortByBys` has exactly two callers in the executor, **both of which pass `{ desc }` and no cap** —
+because item 1576 sent every capped `order()` to `streamTopByBys`, which keeps its own heap and
+never materialises the stream:
+
+```ts
+cap === undefined ? sortByBys([...stream], …, { desc }, …)   // the only route that reaches here
+                  : streamTopByBys(stream, …, { desc, cap }, …)
+```
+
+Proven the way item 1788 established its claim, with the probe's own liveness FIRST:
+
+| probe                                         | result                                                                                    |
+| --------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `throw` at `boundedTop`'s first statement     | gremlin suite **2,119 pass** — never entered                                              |
+| same, with `bun run build` so dist carries it | native suite **1,084 pass**, `bun run fuzz` **20/0** — zero hits                          |
+| the GATE instrumented instead (`cap=${cap}`)  | **145 arrivals, every one `cap=undefined`** — the probe is live and the reason is visible |
+
+The gate instrumentation is what makes this more than a clean run: a sentinel that cannot fire
+reports "unreachable" for everything (items 1783/1787), and 145 arrivals at the branch with the cap
+never set is the positive form of the same evidence.
+
+**SUPERSEDED, not lost.** `streamTopByBys` is the same algorithm on a stream and carries the same
+arrival-index tie-break, so item 1574's two answer-visible properties — the top-k is exactly the
+stable full sort's prefix, and a throwing `by` still raises for an item that would not have been
+kept — are pinned where they always were, in `order-take-topk.test.ts`, which goes through the
+streaming route. Deleted with it: `sortByBys`' `cap` option, its two `cap !== undefined` branches,
+and the doc paragraph that described a parameter nobody passes. **−93 lines net.**
+
+#### No speed claim
+
+None: an unreachable branch costs nothing. The gain is 93 fewer lines, one fewer heap to keep
+correct, and `sortByBys` no longer advertising a capped mode it cannot do.
+
+#### Gates
+
+`bun run check` 0 read unpiped. `nx run-many -t test` **21 projects green**. `bun run fuzz`
+**20 pass / 0 fail, `FUZZ_EXIT=0`**, read with an explicit status echo and the result line grepped
+from a captured log rather than through a pipe. The sentinel runs were done with `bun run build`
+between the src edit and the native/fuzzer rows, without which those two rows would have been clean
+runs against a dist that did not contain the sentinel. Pristine copy under
+`crates/lenke-engine/target/`, restored before each probe variant.
