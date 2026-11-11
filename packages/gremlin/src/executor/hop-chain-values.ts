@@ -339,17 +339,46 @@ const stackedWalk = (
     return ok;
   };
 
-  /** The projection, memoized per slot — 0 = not yet evaluated. */
+  /**
+   * The projection per slot, EAGER (item 1799) — one pass over the slots, then a plain array read
+   * per emitted row.
+   *
+   * It was a lazy memo: `vals[slot]` guarded by a parallel `Uint8Array`, filled on first use. The
+   * screen put that `valueAt` at **13.6% of `hop3valuesrows` with ZERO mentions anywhere**, which
+   * is what an untouched frame looks like, and the memo's bookkeeping was the whole of it — `pick`
+   * has its own frame at 4.3%. A slot is emitted once per PATH that reaches it, so on a 3-hop walk
+   * the branch and the two array reads are paid per row while the pick itself is paid per slot.
+   *
+   * Measured, three alternated rounds of 20 reps per arm, medians, with `hoporder` as a control
+   * the change cannot reach:
+   *
+   * ```text
+   *   hop3valuesrows   817.0 -> 721.4   1.13x      hop2midhas       170.6 -> 148.4   1.15x
+   *   hop2valuesrows   203.2 -> 169.8   1.20x      hop2trailinghas  196.5 -> 182.3   1.08x
+   *   hopvaluesn       177.1 -> 169.8   1.04x      hopfarhasvalues   33.4 ->  33.3   1.00x
+   *   hoporder (CONTROL)                           462.6 -> 462.5   1.00x
+   * ```
+   *
+   * ⚠️ A SENTINEL-IN-`vals` ARM WAS MEASURED AND IS NULL — 0.98x/1.02x — so the saving is NOT the
+   * second array read. It is the branch, and only removing it entirely pays.
+   *
+   * ⚠️ EAGER IS SAFE HERE BECAUSE `pick` IS PURE AND CANNOT FAULT: `projectionOf` returns either a
+   * property read (`far.properties[key]`) or the identity for a bare hop. A `by()` sub-traversal
+   * never reaches this path. If that ever changes, this must go back to lazy, because a prefill
+   * would then evaluate a projection for slots the walk never emits.
+   *
+   * ⚠️ AND ITS COST IS O(slots) ON A HIGHLY SELECTIVE FILTER — picks for slots nothing reaches. The
+   * filtered shapes above are the check on that and they all IMPROVED, because the walk still
+   * visits most slots; a filter admitting a handful out of 200,000 is the shape that would lose,
+   * and no probe covers it.
+   */
   const vals: unknown[] = Array.from({ length: n });
-  const valSeen = new Uint8Array(n);
-  const valueAt = (slot: number): unknown => {
-    if (valSeen[slot] === 0) {
-      vals[slot] = pick(vtx[slot]);
-      valSeen[slot] = 1;
-    }
 
-    return vals[slot];
-  };
+  for (let s = 0; s < n; s += 1) {
+    vals[s] = pick(vtx[s]);
+  }
+
+  const valueAt = (slot: number): unknown => vals[slot];
 
   /**
    * ⚠️ STILL WRITTEN TWICE, LAZY AND EAGER, and the sink closure does not avoid it — a generator
@@ -532,17 +561,17 @@ const pairSlotWalk = (
     return ok;
   };
 
-  /** The projection, memoized per slot — 0 = not yet evaluated. */
+  /**
+   * The projection per slot, EAGER — item 1799, and `stackedWalk`'s copy above carries the
+   * measurement and the two conditions (a pure `pick`, and a walk that visits most slots).
+   */
   const vals: unknown[] = Array.from({ length: n });
-  const valSeen = new Uint8Array(n);
-  const valueAt = (slot: number): unknown => {
-    if (valSeen[slot] === 0) {
-      vals[slot] = pick(vtx[slot]);
-      valSeen[slot] = 1;
-    }
 
-    return vals[slot];
-  };
+  for (let s = 0; s < n; s += 1) {
+    vals[s] = pick(vtx[s]);
+  }
+
+  const valueAt = (slot: number): unknown => vals[slot];
 
   /**
    * ⚠️ STILL WRITTEN TWICE, LAZY AND EAGER, and the sink closure does not avoid it — a generator

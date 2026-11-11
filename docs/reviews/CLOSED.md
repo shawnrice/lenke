@@ -83186,3 +83186,63 @@ comparison.
 
 GATES. bun run check 0 read unpiped. nx run-many -t test --skip-nx-cache 21 projects green. bun run
 fuzz 57 pass / 0 fail with FUZZ_EXIT=0.
+
+### Item 1799 — **item 1799 - SHIPPED, 1.04-1.20x on six shapes with the control flat: the hop-chain walk's per-slot projection memo was paying a branch and two array reads PER EMITTED ROW to save a pick PER SLOT. Made eager - one pass over the slots, then a plain array read. The screen nominated it at 13.6% of hop3valuesrows with ZERO mentions anywhere, which is exactly what an untouched frame looks like. A sentinel arm that kept the laziness is NULL, so the saving is the branch and nothing else**
+
+PROFILE-FIRST, AND THE MATCH COLLAPSE CHANGED THE RANKING
+
+Items 1797/1798 took the match family from 4.7-6.7 SECONDS to ~55 ms, so the probe's ranking is a
+different list now. Re-ranked all 49 Gremlin shapes at 10 reps: hop3valuesrows 433.2 ms is the new
+top, then the order family (245-278) and the optional/coalesce family (140-204). Profiled the top
+four at 40 reps through the mention screen, which named ONE unpriced frame over 2%:
+
+    valueAt @ hop-chain-values.ts   221.9 ms   13.6% of hop3valuesrows   ZERO mentions
+
+THE MECHANISM, AND WHY THE SHARE WAS REALIZABLE WHERE THE SCREEN'S USUALLY OVERSTATE
+
+`valueAt` memoized the far-end projection per slot: `vals[slot]` guarded by a parallel Uint8Array,
+filled on first use. A slot is emitted once per PATH that reaches it, so on a 3-hop walk the branch
+and the two array reads are paid PER ROW while the pick itself is paid PER SLOT. `pick` has its own
+frame at 4.3%, so the 13.6% really was bookkeeping.
+
+Eager: one `pick` per slot up front, then `valueAt` is a plain array read.
+
+MEASURED - three alternated rounds of 20 reps per arm, medians, dist rebuilt between arms, with
+`hoporder` as a control the change cannot reach:
+
+    hop3valuesrows   817.0 -> 721.4   1.13x        hop2midhas        170.6 -> 148.4   1.15x
+    hop2valuesrows   203.2 -> 169.8   1.20x        hop2trailinghas   196.5 -> 182.3   1.08x
+    hopvaluesn       177.1 -> 169.8   1.04x        hopfarhasvalues    33.4 ->  33.3   1.00x
+    hoporder (CONTROL)                             462.6 -> 462.5   1.00x
+
+The hop3/hop2 ranges do not overlap between arms (721.4/709.3/724.2 against 816.5/854.9/817.0 and
+169.8/172.0/169.8 against 203.6/198.6/203.2).
+
+A SENTINEL ARM WAS MEASURED AND IS NULL. Keeping the laziness but dropping the parallel Uint8Array
+
+- a private Symbol in `vals`, one array read on the hit path instead of two - read 0.98x and 1.02x.
+  So the cost is the BRANCH, not the second read, and only removing it entirely pays. Recorded
+  because the sentinel is the obvious next idea for anyone reading this frame.
+
+ONE EARLIER READING WAS NOISE AND THE SECOND ROUND CORRECTED IT: hopvaluesn first measured 0.95x,
+which looked like the predicted selectivity regression. Re-run with two more filtered shapes it is
+1.04x, and its two arms' ranges overlapped in the first run. The filtered shapes are the check on
+the eager pass wasting picks, and all three IMPROVED.
+
+TWO CONDITIONS, BOTH STATED AT THE CODE:
+
+- EAGER IS SAFE BECAUSE `pick` IS PURE AND CANNOT FAULT. projectionOf returns either a property
+  read (far.properties[key]) or the identity for a bare hop; a by() sub-traversal never reaches
+  this path. If that changes, this must go back to lazy.
+- ITS COST IS O(slots) ON A HIGHLY SELECTIVE FILTER - picks for slots nothing reaches. The three
+  filtered shapes above all improved because the walk still visits most slots; a filter admitting
+  a handful out of 200,000 is the shape that would lose, and no probe covers it.
+
+Both copies of the memo are changed - the lazy/eager walk pair is written twice on purpose (item
+1681's duplication), and item 1616's screen mutates both halves of every such loop precisely so a
+drift between them is caught rather than reasoned about.
+
+GATES. bun run check 0 read unpiped. nx run-many -t test --skip-nx-cache 21 projects green. bun run
+fuzz 57 pass / 0 fail with FUZZ_EXIT=0. Each A/B arm asserted to BE the code it claims before being
+built (a marker count per arm), which caught my own wrong expectation on the first run rather than
+silently measuring the previous arm.
