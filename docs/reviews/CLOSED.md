@@ -82970,7 +82970,7 @@ multiplicity TinkerPop gives that form was not measured. It is named rather than
 `@lenke/gremlin`'s DIST; pristine copy under `crates/lenke-engine/target/`, restored before each
 mutant.
 
-### Item 1795 — **THE HARD INVARIANT HAS 19 HOLES OF THE SHAPE THAT HID TWO WRONG ANSWERS: steps BOTH engines implement that `planToGremlin` cannot write, so nothing has ever compared them.** `where`, `and`, `or`, `properties`, `propertyMap`, `elementMap`, `store`, `cap`, `aggregate`, `sample`, `barrier`, `index`, `none`, `hasId`, `hasNot`, `hasValue`, `sideEffect`, `subgraph`, `shortestPath` — measured by running all three sides, not by reading any of them. ⚠️ **And the probe's first cut lied twice before it was trusted**
+### Item 1795 — ⚠️ **ITEM 1796 CLOSED 18 OF THESE 19 AND FOUND A THIRD WRONG ANSWER DOING IT (native's `properties()` with no key); only `shortestPath` is left.** **THE HARD INVARIANT HAS 19 HOLES OF THE SHAPE THAT HID TWO WRONG ANSWERS: steps BOTH engines implement that `planToGremlin` cannot write, so nothing has ever compared them.** `where`, `and`, `or`, `properties`, `propertyMap`, `elementMap`, `store`, `cap`, `aggregate`, `sample`, `barrier`, `index`, `none`, `hasId`, `hasNot`, `hasValue`, `sideEffect`, `subgraph`, `shortestPath` — measured by running all three sides, not by reading any of them. ⚠️ **And the probe's first cut lied twice before it was trusted**
 
 #### Why an emitter gap is invisible rather than merely missing
 
@@ -83031,3 +83031,57 @@ machinery that was wrong in `match`) and nothing in the shallow projections.
 `bun run check` 0 read unpiped. No engine code changed — this item adds an instrument and a
 measurement. The census needs the `.so` (`--features capi`) and reads `@lenke/gremlin` from source
 through the package export, so it is run with `bun`, not `node`.
+
+### Item 1796 — **item 1796 - 18 OF ITEM 1795's 19 EMITTER GAPS CLOSED, AND THE FIRST ARM THAT COULD ASK THE QUESTION FOUND A THIRD WRONG ANSWER - this time on the RUST side: g.V().properties() with no key answers 4 (one per VERTEX) where TinkerPop 3.7.3 and the TS engine both answer one per PROPERTY. Pinned as test.failing rather than registered, because a value divergence may never be excused. 22 differential cases, every spelling round-tripped through the native parser rather than assumed**
+
+WHY ARMS AND NOT A FEATURE
+
+Item 1795 measured 19 steps that both engines implement and planToGremlin could not render. A step
+the emitter cannot write has NO differential coverage, because the gremlin fuzzer feeds the Rust
+engine by emitting TEXT - that is how match() carried two wrong answers through 20,000 queries a
+run (items 1793/1794). The emitter is where the hard invariant is actually bounded.
+
+18 arms added: and, or, where(sub-plan), sideEffect, properties, propertyMap, elementMap, hasId,
+hasNot, hasValue, store, cap, aggregate, subgraph, sample, index, barrier, none(). The census now
+reports ONE remaining gap, shortestPath, whose optional target/direction arguments have no verified
+spelling yet.
+
+EMITTING IS NOT EMITTING CORRECTLY, which is what the new suite is for. A new arm can render a
+syntactically valid query that means something ELSE, and the census cannot see it: it only asks
+whether the parser accepted the text. `differential fuzz: gremlin EMITTER ARMS` runs the plan
+through TS and the emitted text through native and compares the answers, on its own small corpus
+(MODERN's coverage floors are calibrated on its exact seven vertices - widening it has been
+reverted once already).
+
+THE THIRD WRONG ANSWER, AND IT IS STRUCTURAL
+
+    g.V().properties().count()      TinkerPop 3.7.3   8 on its own copy (one per PROPERTY)
+                                    lenke TS          9 here - same rule plus the stored null
+                                    lenke native      4 - one per VERTEX
+
+The Rust side says why in its own comment: "The engine has no Property value; instead the element
+stays current, present-filtered on the key(s)". With ONE key that coincides with TinkerPop's count,
+which is why properties('name') passes; with none or several there is nothing to fan out to.
+
+So this is a feature, not a slip: native needs a Property value type, or properties() with zero or
+many keys must fan out one row per property. Pinned as `test.failing` plus a CONTROL asserting both
+engines are self-consistent and that they AGREE on the single-key spelling, which is what localizes
+the gap to the no-key fan-out. Not registered: a `value` divergence is a bug in one of the engines
+by the registry's own rule, and test.failing turns green and shouts the moment it is fixed.
+
+TWO FORMS DELIBERATELY LEFT AS REPORTED GAPS rather than guessed: where() over a PREDICATE (two AST
+shapes, comparing tags, spelling unverified) and none(<predicate>) (TinkerPop 3.8, while the pinned
+console is 3.7.3). Both throw `unsupported` rather than tsOnly, so the fuzzer keeps treating them
+as findings.
+
+THE ARMS LIVE IN THEIR OWN FAMILY EMITTER. Eighteen more cases put emitStep at complexity 50
+against a limit of 35, and the limit is right - the family split is what keeps that file readable.
+`emitCollectorStep` joins the chain next to emitNestedStep.
+
+STILL OPEN: the generator's step pool is unchanged, so these are FIXED cases rather than fuzzed
+ones. Adding them to the pool reweights every coverage floor, which is the trap recorded at the
+astral-string attempt, so it is its own piece of work with its own calibration.
+
+GATES. bun run check 0 read unpiped. nx run-many -t test --skip-nx-cache 21 projects green. bun run
+fuzz 55 pass / 0 fail with FUZZ_EXIT=0 (20 before item 1794, 32 after it). Every emitted spelling
+verified by round-trip against the native parser, not by reading the Rust source.

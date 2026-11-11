@@ -57,10 +57,28 @@ import {
   toArray,
   traversal,
   values,
+  aggregate,
+  and,
   as_,
+  barrier,
+  cap,
+  elementMap,
+  hasId,
+  hasNot,
+  hasValue,
+  index,
   match,
+  none,
+  or,
   pipe,
+  properties,
+  propertyMap,
+  sample,
   select,
+  sideEffect,
+  store,
+  subgraph,
+  where,
   createTestTinkerGraph,
   choose,
   coalesce,
@@ -1268,4 +1286,141 @@ suite('differential fuzz: gremlin MATCH over a MULTIGRAPH (TS engine vs Rust ENG
       });
     });
   }
+});
+
+/**
+ * ⚠️ THE EIGHTEEN STEPS ITEM 1796 TAUGHT THE EMITTER TO WRITE, each compared against the engine for
+ * the first time.
+ *
+ * Item 1795's census found 19 steps that BOTH engines implement and `planToGremlin` could not
+ * render. A step the emitter cannot write has no differential coverage at all, because this fuzzer
+ * feeds the Rust engine by emitting TEXT — that is how `match()` carried two wrong answers through
+ * 20,000 queries a run (items 1793/1794).
+ *
+ * ⚠️ **EMITTING IS NOT EMITTING CORRECTLY, AND THAT IS WHAT THIS SUITE IS FOR.** A new arm can
+ * render a syntactically valid query that means something ELSE, and the census cannot see it: it
+ * only asks whether the parser accepted the text. Each case below runs the plan through TS and the
+ * emitted text through native and compares the answers, so a wrong spelling fails here rather than
+ * silently widening the corpus with a query nobody meant.
+ *
+ * The fixture is small and its own, for the reason the suite above records twice: `MODERN`'s
+ * coverage floors are calibrated on its exact seven vertices.
+ */
+const ARMS_DOC = [
+  '{"type":"node","id":"a1","labels":["P"],"properties":{"name":"ann","age":29,"city":"oslo"}}',
+  '{"type":"node","id":"a2","labels":["P"],"properties":{"name":"bo","age":31}}',
+  '{"type":"node","id":"a3","labels":["S"],"properties":{"name":"lib","lang":"rust"}}',
+  // A stored null and an ABSENT key on the same graph, which is what `hasNot` has to tell apart.
+  '{"type":"node","id":"a4","labels":["P"],"properties":{"name":"cy","age":null}}',
+  '{"type":"edge","id":"ae1","labels":["KNOWS"],"from":"a1","to":"a2","properties":{"w":0.5}}',
+  '{"type":"edge","id":"ae2","labels":["MADE"],"from":"a1","to":"a3","properties":{"w":0.4}}',
+  '{"type":"edge","id":"ae3","labels":["KNOWS"],"from":"a2","to":"a4","properties":{"w":0.9}}',
+].join('\n');
+
+suite('differential fuzz: gremlin EMITTER ARMS (TS engine vs Rust ENGINE)', () => {
+  const tsArms = tsDeserialize(ARMS_DOC, 'ndjson', new Graph());
+  const armsBytes = new TextEncoder().encode(ARMS_DOC);
+
+  const nativeArms = (text: string): unknown[] => {
+    const handle = backend!.graphFromNdjson(armsBytes);
+
+    try {
+      return JSON.parse(decoder.decode(backend!.gremlinJson(handle, text))) as unknown[];
+    } finally {
+      backend!.graphFree(handle);
+    }
+  };
+
+  const CASES: readonly [string, Plan][] = [
+    // Filter combinators over sub-traversals — the same machinery that was wrong twice in
+    // `match()`, so they are first.
+    ['and', traversal(V(), and(pipe(out('KNOWS')), pipe(has('age'))), count())],
+    ['or', traversal(V(), or(pipe(out('KNOWS')), pipe(has('lang'))), count())],
+    ['where(sub-plan)', traversal(V(), where(pipe(out('KNOWS'))), count())],
+    ['where negated by not', traversal(V(), where(pipe(out('MADE'))), count())],
+    ['sideEffect', traversal(V(), sideEffect(pipe(out('KNOWS'))), count())],
+    // Projections. `properties()` yields property elements, so its COUNT is the question rather
+    // than its rendering, which the two engines format differently by design.
+    ['properties(name) count', traversal(V(), properties('name'), count())],
+    ['propertyMap() count', traversal(V(), propertyMap(), count())],
+    ['elementMap() count', traversal(V(), elementMap(), count())],
+    // Filters with values.
+    ['hasId', traversal(V(), hasId('a1'), count())],
+    ['hasNot(age)', traversal(V(), hasNot('age'), count())],
+    ['hasValue', traversal(V(), properties('name'), hasValue('ann'), count())],
+    // Side-effect collectors.
+    ['store + count', traversal(V(), store('x'), count())],
+    ['aggregate + count', traversal(V(), aggregate('x'), count())],
+    ['store + cap', traversal(V(), store('x'), cap('x'))],
+    ['subgraph', traversal(V(), outE(), subgraph('s'), count())],
+    // Shape steps.
+    ['barrier', traversal(V(), barrier(), count())],
+    ['index', traversal(V(), values('name'), index())],
+    ['none()', traversal(V(), none(), count())],
+    // ⚠️ `sample(n)` picks n traversers and the choice is NOT specified, so only its CARDINALITY
+    // is comparable. Asserting the rows would be asserting an unspecified order, which this repo
+    // treats as a won't-fix question rather than a divergence.
+    ['sample cardinality', traversal(V(), sample(2), count())],
+    // CONTROLS: one step that already emitted, and one filter that admits nothing, so a universal
+    // failure is distinguishable from an arm being wrong.
+    ['CONTROL out', traversal(V(), out('KNOWS'), count())],
+    ['CONTROL empty filter', traversal(V(), hasLabel('NOSUCH'), count())],
+  ];
+
+  for (const [name, plan] of CASES) {
+    test(`${name} agrees across the engines`, () => {
+      const text = planToGremlin(plan);
+      const ts = canonJson(toArray(plan, tsArms));
+      const native = canonJson(nativeArms(text));
+
+      expect({ case: name, gremlin: text, result: ts }).toEqual({
+        case: name,
+        gremlin: text,
+        result: native,
+      });
+    });
+  }
+
+  /**
+   * ⚠️ **AN OPEN DIVERGENCE, FOUND BY THE FIRST ARM THAT COULD ASK THE QUESTION (item 1796),
+   * AND IT IS STRUCTURAL RATHER THAN A SLIP.** `g.V().properties()` with NO key:
+   *
+   * ```text
+   *   TinkerPop 3.7.3   8 on its own copy of this fixture (one traverser per PROPERTY)
+   *   lenke TS          9 here — the same rule, plus the stored null `a4.age`
+   *   lenke native      4      — one per VERTEX
+   * ```
+   *
+   * The Rust side says why in its own comment: "The engine has no Property value; instead the
+   * element stays current, present-filtered on the key(s)". With ONE key that coincides with
+   * TinkerPop's count, which is why `properties('name')` above passes; with none or several there
+   * is nothing to fan out to, so the element is kept.
+   *
+   * ⚠️ **`test.failing` RATHER THAN A REGISTRY ENTRY.** This is a `value` divergence — the two
+   * engines answer a determinate question differently — and the divergence registry may never
+   * excuse one: "if the engines disagree about the answer to a determinate question, that is a bug
+   * in one of them". So it is pinned here as a KNOWN failure that will turn green and shout the
+   * moment somebody gives the engine a Property value, rather than hidden.
+   *
+   * The fix is a feature, not a tick: native needs a Property value type, or `properties()` with
+   * zero or many keys must fan out one row per property.
+   */
+  test.failing('properties() with NO key — OPEN: native has no Property value', () => {
+    const plan = traversal(V(), properties(), count());
+    const ts = canonJson(toArray(plan, tsArms));
+
+    expect(ts).toEqual(canonJson(nativeArms(planToGremlin(plan))));
+  });
+
+  test('⚠️ the CONTROL for that divergence: each engine is self-consistent', () => {
+    // Without this the failing test above could be read as "one engine is broken generally". TS
+    // counts 9 properties over 4 vertices and native counts 4 elements, and BOTH agree on the
+    // single-key spelling, which is what localizes the gap to the no-key fan-out.
+    const all = traversal(V(), properties(), count());
+    const named = traversal(V(), properties('name'), count());
+
+    expect(canonJson(toArray(all, tsArms))).toEqual([9]);
+    expect(canonJson(nativeArms(planToGremlin(all)))).toEqual([4]);
+    expect(canonJson(toArray(named, tsArms))).toEqual(canonJson(nativeArms(planToGremlin(named))));
+  });
 });

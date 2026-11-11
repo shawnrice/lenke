@@ -323,6 +323,30 @@ const emitNestedStep = (step: Step): string | null => {
         : `choose(${emitSubPlan(step.test)}, ${emitSubPlan(step.thenPlan)}, ${emitSubPlan(step.elsePlan)})`;
     case 'not':
       return `not(${emitSubPlan(step.plan)})`;
+    /**
+     * ⚠️ ITEM 1796 ADDED THIS BLOCK, and the reason is item 1795's census rather than a feature
+     * request: a step `planToGremlin` cannot write has NO differential coverage at all, because
+     * the gremlin fuzzer feeds the Rust engine by emitting TEXT. Nineteen steps both engines
+     * implement were in that state. The emitter is where the invariant is actually bounded.
+     *
+     * Every spelling below was round-tripped through the NATIVE parser rather than assumed (see
+     * the `EMITTER ARMS` suite in `gremlin-fuzz.test.ts`), which is the discipline item 1794 set
+     * after `match()` needed a `__.` prefix the other nested steps do not.
+     */
+    case 'and':
+      return `and(${step.plans.map((pl) => `__.${emitSubPlan(pl)}`).join(', ')})`;
+    case 'or':
+      return `or(${step.plans.map((pl) => `__.${emitSubPlan(pl)}`).join(', ')})`;
+    case 'sideEffect':
+      return `sideEffect(__.${emitSubPlan(step.plan)})`;
+    // `where` has THREE shapes in the AST and only the sub-plan one is written here. The two
+    // PREDICATE forms (`where('a', eq('b')).by(…)` and the bare `where(eq('a'))`) compare TAGS,
+    // and their Groovy spelling was not verified against the native parser, so they stay an
+    // honest gap the fuzzer reports rather than a guess that silently emits the wrong query.
+    case 'where':
+      return 'plan' in step
+        ? `where(__.${emitSubPlan(step.plan)})`
+        : raise('where(<predicate>) spelling not yet verified against the native parser');
     case 'map':
       // map(<sub-plan>): the native parser handles a navigating/value/write body
       // uniformly, so a straight sub-plan emit round-trips.
@@ -386,14 +410,72 @@ const emitWriteStep = (step: Step): string | null => {
 // Family sub-emitters tried in order; each returns null for a kind it does not own, so
 // the `emitStep` switch below stays the simple-step case. A loop (rather than a `??`
 // chain) keeps `emitStep`'s cyclomatic complexity off the dispatch switch.
+/**
+ * Item 1796's batch: the PROJECTION, VALUE-FILTER and SIDE-EFFECT-COLLECTOR steps, each implemented
+ * on BOTH sides and uncomparable purely because nothing could write it as text (item 1795's census
+ * found nineteen such). ⚠️ Its own family emitter rather than more arms in `emitStep`, because
+ * eighteen of them put that switch at complexity 50 against a limit of 35 — and the limit is right:
+ * the families are what keep this file readable.
+ */
+const emitCollectorStep = (step: Step): string | null => {
+  switch (step.kind) {
+    case 'properties':
+      return `properties(${step.keys.map(emitLiteral).join(', ')})`;
+    case 'propertyMap':
+      return `propertyMap(${(step.keys ?? []).map(emitLiteral).join(', ')})`;
+    case 'elementMap':
+      return `elementMap(${(step.keys ?? []).map(emitLiteral).join(', ')})`;
+    case 'hasId':
+      return `hasId(${step.ids.map(emitLiteral).join(', ')})`;
+    case 'hasNot':
+      return `hasNot(${step.keys.map(emitLiteral).join(', ')})`;
+    case 'hasValue':
+      return `hasValue(${step.values.map(emitLiteral).join(', ')})`;
+    case 'store':
+      return `store(${emitLiteral(step.key)})`;
+    case 'cap':
+      return `cap(${emitLiteral(step.key)})`;
+    case 'aggregate':
+      return `aggregate(${emitLiteral(step.key)})`;
+    case 'subgraph':
+      return `subgraph(${emitLiteral(step.key)})`;
+    case 'sample':
+      return `sample(${emitLiteral(step.n)})`;
+    case 'index':
+      return 'index()';
+    case 'barrier':
+      return 'barrier()';
+    // `none()` is the legacy drain; `none(<predicate>)` is TinkerPop 3.8's "no element satisfies",
+    // and the console this repo pins is 3.7.3, so only the niladic form has a verified ground
+    // truth. The predicate form stays a reported gap rather than an unverified spelling.
+    case 'none':
+      return step.pred === undefined
+        ? 'none()'
+        : raise('none(<predicate>) is TinkerPop 3.8 and has no verified spelling here');
+    default:
+      return null;
+  }
+};
+
 const FAMILY_EMITTERS: readonly ((step: Step) => string | null)[] = [
   emitEdgeStep,
   emitSliceStep,
   emitScopedAgg,
   emitModulatedStep,
   emitNestedStep,
+  emitCollectorStep,
   emitWriteStep,
 ];
+
+/**
+ * Throw an `unsupported` gap from inside an expression position. ⚠️ `'unsupported'` rather than a
+ * `tsOnly` reason ON PURPOSE: the fuzzer classifies the two differently — a tsOnly throw is a skip,
+ * an unsupported one is a FINDING — and these forms are not TS-superset, they are forms whose
+ * spelling nobody has checked. Reporting them is the point.
+ */
+const raise = (why: string): never => {
+  throw new EmitUnsupported('unsupported', why);
+};
 
 const emitStep = (step: Step): string => {
   for (const emit of FAMILY_EMITTERS) {
