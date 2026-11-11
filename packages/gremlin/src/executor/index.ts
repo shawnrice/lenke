@@ -1755,13 +1755,107 @@ export const flattenLinearMatch = (plan: Plan): Plan => {
   return plan;
 };
 
+/**
+ * Steps between an `as(x)` and a `select(x)` that cannot produce a traverser WITHOUT that tag:
+ * each one derives its output from its input and carries the tag map through `extend`.
+ *
+ * ⚠️ THE LIST IS A WHITELIST BECAUSE THE DANGEROUS CASES ARE THE INTERESTING ONES. `inject(1)`
+ * starts a traverser with no tags at all, `union(…)` can contain an arm that does, and a second
+ * `V()` re-sources the stream — after any of those a `select('a')` legitimately DROPS rows, and
+ * dropping the select would count them. Anything not named here declines.
+ */
+const TAG_PRESERVING = new Set([
+  'out',
+  'in',
+  'both',
+  'outE',
+  'inE',
+  'bothE',
+  'inV',
+  'outV',
+  'otherV',
+  'has',
+  'hasLabel',
+  'hasId',
+  'hasNot',
+  'hasKey',
+  'hasLabelAnd',
+  'dedupe',
+  'take',
+  'skip',
+  'order',
+  'as',
+  'identity',
+  'simplePath',
+  'cyclicPath',
+]);
+
+/**
+ * `as(x) … select(x).count()` drops the `select` (item 1800), which lets `dropUnreadAs` drop the
+ * `as` and the count rungs see a plain walk again.
+ *
+ * ```text
+ *   V().as('a').out('E').select('a').count()    932 ms engine over 40 reps, profiled
+ *   V().out('E').count()                        a closed-form degree sum
+ * ```
+ *
+ * `select` is a PROJECTION, not a filter, for a traverser that HAS the tag: it rewrites the value
+ * and yields. A `count()` tail observes only how many, so the projection is dead — and the `as`
+ * then has no reader, which is exactly what `dropUnreadAs` (item 1572) already removes. This pass
+ * runs INSIDE it for that reason.
+ *
+ * ⚠️ IT IS A FILTER FOR A TRAVERSER THAT LACKS THE TAG — `selectStep` does `continue` when
+ * `recallTag` misses — so the whole question is whether every traverser reaching the select is
+ * guaranteed to carry it. That is what `TAG_PRESERVING` answers, conservatively: an unconditional
+ * top-level `as(x)` earlier, and nothing between the two that could introduce a traverser from
+ * elsewhere.
+ *
+ * ⚠️ AND `select` WITH A `by()` CAN FILTER EVEN WHEN THE TAG RESOLVES — `select('a').by('age')`
+ * drops a selected element with no `age` — so a modulated select is refused outright.
+ */
+// EXPORTED for its own assertion, like `fuseEdgeHop` and `fuseUnionBoth` beside it.
+export const dropCountedSelect = (plan: Plan): Plan => {
+  const n = plan.steps.length;
+  const last = plan.steps[n - 1];
+  const sel = plan.steps[n - 2];
+
+  if (
+    last?.kind !== 'count' ||
+    last.scope === 'local' ||
+    sel?.kind !== 'select' ||
+    sel.labels.length !== 1 ||
+    sel.bys !== undefined ||
+    sel.pop === 'all'
+  ) {
+    return plan;
+  }
+
+  const [label] = sel.labels;
+  let bound = false;
+
+  for (let i = 0; i < n - 2; i += 1) {
+    const step = plan.steps[i];
+
+    if (step.kind === 'as' && step.label === label) {
+      bound = true;
+      continue;
+    }
+
+    if (bound && !TAG_PRESERVING.has(step.kind)) {
+      return plan;
+    }
+  }
+
+  return bound ? rewritten(plan, [...plan.steps.slice(0, n - 2), last]) : plan;
+};
+
 export const effectivePlan = (plan: Plan, graph: Graph, tracksPath: boolean): Plan =>
   tracksPath
     ? plan
     : fuseOrderTake(
         dropUnreadAs(
           dropVacuousLabels(
-            fuseUnionSameDir(flattenLinearMatch(graphFreePrefix(plan)), graph),
+            fuseUnionSameDir(dropCountedSelect(flattenLinearMatch(graphFreePrefix(plan))), graph),
             graph,
           ),
         ),

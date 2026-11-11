@@ -83246,3 +83246,71 @@ GATES. bun run check 0 read unpiped. nx run-many -t test --skip-nx-cache 21 proj
 fuzz 57 pass / 0 fail with FUZZ_EXIT=0. Each A/B arm asserted to BE the code it claims before being
 built (a marker count per arm), which caught my own wrong expectation on the first run rather than
 silently measuring the previous arm.
+
+### Item 1800 — **item 1800 - SHIPPED, 72.5x: `as(x) ... select(x).count()` loses the select, which lets dropUnreadAs lose the as and puts the shape back on the count rungs. 522.0 -> 7.2 ms, control flat at 1.01x, 4 of 4 gate mutants caught. And a 3.2x coalesce-vs-optional gap I nominated first is REFUTED - it came from comparing a 40-rep profile number against a 10-rep ranking number, which is a methodology error, not a finding**
+
+THE REFUTATION FIRST, BECAUSE IT NEARLY BECAME A BUILD
+
+The screen put coalesceStep at 42.1% of `coalescevalues`, 657 ms engine, with only 2 mentions. Next
+to it the ranking showed optionalvalues at 203 ms - and since TinkerPop defines optional(t) as
+coalesce(t, identity()), a 3.2x gap between two spellings of one question looked like this repo's
+named defect class, with an obvious fix (normalise coalesce(p, identity()) -> optional(p), which
+already has a fused path from items 1627/1628).
+
+Measured like-for-like at 20 reps, they are ALREADY THE SAME:
+
+    coalescevalues   368.5        optionalvalues   382.0
+    coalesced2       248.5        optionald        244.1
+
+The 657 came from a 40-rep PROFILED run and the 203 from a 10-rep ranking. Comparing numbers from
+runs with different rep counts is not a comparison. The fused coalesce arm (item 1629) is doing its
+job and nothing is open here; coalesceStep's 42.1% is simply where that shape's time goes.
+
+THE REAL TARGET, FROM PROFILING THE SHAPE NOBODY HAD PROFILED
+
+`selected` - V().as('a').out('E').select('a').count() - was 273.6 ms in the re-ranking and had no
+profile at all. Taken at 40 reps: iterLabeled 22.3%, otherEndpoint 21.9%, traverseToVertex 9.6%,
+asStep 9.5%, selectStep 8.0%. The frames are the GENERIC traverser pipeline, which is the tell: the
+as/select pair blocks the count rungs, so a question a degree sum answers is walking every edge and
+allocating a traverser per row.
+
+And the pair is dead for a count tail. `select` is a PROJECTION for a traverser that has the tag -
+it rewrites the value and yields - so with `count()` as the only tail the projection is unobservable.
+Drop it, and the `as` has no reader left, which is exactly what dropUnreadAs (item 1572) already
+removes. This pass therefore runs INSIDE it.
+
+MEASURED, three alternated rounds of 20 reps, dist rebuilt between arms:
+
+    selected    PRE 522.0  ->  POST 7.2    72.50x     pre [507, 522, 524.5]  post [7.2, 7.2, 7.3]
+    hopcount2   PRE  57.9  ->  POST 57.3    1.01x     the control the change cannot reach
+
+SELECT IS A FILTER FOR A TRAVERSER THAT LACKS THE TAG, AND THAT IS THE WHOLE GATE
+
+selectStep does `continue` when recallTag misses, so the question is whether every traverser
+reaching the select is guaranteed to carry the tag. The gate answers it conservatively: an
+unconditional top-level as(x) earlier, and between the two only steps from a WHITELIST that cannot
+introduce a traverser from elsewhere. The dangerous cases are the interesting ones and each has a
+test:
+
+    inject(1)   starts a traverser with NO tags at all
+    union(...)  can hold an arm that does
+    a second V() re-sources the stream
+
+The inject test asserts the ANSWER too, not just the refusal: with the select kept the count is 3
+and without it 4, so the guard is load-bearing rather than pedantic.
+
+A MODULATED SELECT IS REFUSED OUTRIGHT, because select('a').by('age') filters even when the tag
+resolves - a selected element with no `age` is dropped.
+
+MUTATION: 4 GATE MUTANTS, 4 CAUGHT - dropping the whitelist, dropping the as requirement, admitting
+a modulated select, and admitting any tail (7, 7, 8 and 8 of 9 passing).
+
+ONE EXISTING TEST WAS REPOINTED RATHER THAN DELETED. drop-unread-as.test.ts asserted that
+`as('x').out('E').select('x').count()` keeps both steps - which is now false, and for a good reason.
+Its invariant ("dropUnreadAs must not drop an as a later step reads") is intact, so the case now
+uses a tail item 1800 declines (`select('x').values('k')`) and additionally pins the counted form's
+new shape.
+
+GATES. bun run check 0 read unpiped. nx run-many -t test --skip-nx-cache 21 projects green. bun run
+fuzz 57 pass / 0 fail with FUZZ_EXIT=0. Each A/B arm asserted to BE the code it claims before being
+built, which caught my own wrong marker expectation rather than silently measuring one arm twice.

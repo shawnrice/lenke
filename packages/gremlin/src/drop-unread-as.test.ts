@@ -92,11 +92,22 @@ describe('an unread as() label is dropped', () => {
 
 describe('⚠️ the refusals, each of which a mutant removes', () => {
   test('a select READS the tag', () => {
-    expect(kindsOf(traversal(V(), as_('x'), out('E'), select('x'), count()), g())).toEqual([
+    // ⚠️ THE TAIL IS DELIBERATELY NOT A BARE `count()`. It was, until item 1800 taught the chain to
+    // drop a `select(tag)` whose only tail is `count()` — after which this plan legitimately
+    // becomes `V().out('E').count()` and says nothing about THIS pass's refusal. The invariant
+    // under test is "`dropUnreadAs` must not drop an `as` a later step reads", so the shape has to
+    // be one item 1800 declines: a select whose value is observed.
+    expect(kindsOf(traversal(V(), as_('x'), out('E'), select('x'), values('k')), g())).toEqual([
       'V',
       'as',
       'out',
       'select',
+      'values',
+    ]);
+    // …and the counted form, which item 1800 rewrites, no longer carries either step.
+    expect(kindsOf(traversal(V(), as_('x'), out('E'), select('x'), count()), g())).toEqual([
+      'V',
+      'out',
       'count',
     ]);
   });
