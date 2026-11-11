@@ -334,6 +334,33 @@ const EXPECTED = {
   wide2: { rowsPerRun: 2070 },
   narrow1: { rowsPerRun: 2070 },
   hoprows: { rowsPerRun: 20_000 },
+  /**
+   * ⚠️ ADDED AT ITEM 1805 BECAUSE ITS ABSENCE COST A MEASUREMENT — item 1749's lesson, a second
+   * time. These are the hop-ROW shapes, and the five largest rows in the probe had NO guard at
+   * all: an ablation of the matcher's binding copy (a deliberate wrong answer, run only to price
+   * the copy) emitted **5 rows where the shape returns 160,000** and reported 18.7 ms against
+   * 933 — a 50x "win" that was the walk collapsing. `sink` was printed and ignored, which is
+   * exactly what a guard is for.
+   *
+   * Row counts only, no `answer`: these are UNORDERED row shapes, and pinning their first value
+   * would assert something `order-is-unspecified` leaves the engine free to change. `hop2rowswhere`
+   * carries a value because its `WHERE c.k = 5` makes it determinate.
+   */
+  hop2rows: { rowsPerRun: 20_000 },
+  hop2rowswhere: { rowsPerRun: 207, answer: 5 },
+  hop3rows: { rowsPerRun: 20_000 },
+  hop3rowsboth: { rowsPerRun: 160_000 },
+  // The paging and set-operation shapes, same gap.
+  topkwide: { rowsPerRun: 10 },
+  topknarrow: { rowsPerRun: 10 },
+  defwide: { rowsPerRun: 2070 },
+  defnarrow: { rowsPerRun: 2070 },
+  defsortwide: { rowsPerRun: 5, answer: 1 },
+  defsortnarrow: { rowsPerRun: 5, answer: 1 },
+  unioned: { rowsPerRun: 414 },
+  unioneddistinct: { rowsPerRun: 414 },
+  excepted: { rowsPerRun: 1863 },
+  control: { rowsPerRun: 1, answer: 1 },
 };
 const want = EXPECTED[SHAPE];
 

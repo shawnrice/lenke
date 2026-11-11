@@ -83549,3 +83549,58 @@ GATES. No source change to ship. bun run check 0 read unpiped, gql suite 4,522 p
 restored tree. Each A/B arm asserted to BE the code it claims before being built - and the first run
 FAILED that assertion because my marker (`bothBuckets`) also appears in the new file's prose; a
 code-specific marker (`export const bothBuckets`) is what the check needs.
+
+### Item 1805 — **item 1805 - MY OWN ABLATION PRODUCED A 50x PHANTOM AND THE PROBE LET IT THROUGH: the five largest shapes in the GQL probe had NO answer guard, so an arm that emitted 5 rows where the shape returns 160,000 reported 18.7 ms against 933 and called it a win. 14 shapes guarded, and the guard verified by re-applying the broken arm. That is item 1749's lesson a second time, and this time it cost nothing because the row count was printed in the same line I was reading**
+
+WHAT HAPPENED
+
+`withBinding` is 12.1% of hop3rowsboth and allocates a Map COPY per bound name per edge - an
+allocation that genuinely ESCAPES (it is handed to the recursive walk and yielded as a row), which
+is the property item 1804 found the `bothBuckets` tuple lacked. To price the ceiling I ablated the
+copy into a mutation, which is a wrong answer by construction and measured only to price the right
+one - this file's own method.
+
+It read 18.7 ms against 933. A 50x "win". And `sink` - the row count the probe prints on the same
+line - had fallen from 800,000 to 5: the mutation had broken the walk so thoroughly that it emitted
+almost nothing. The number was the cost of NOT WALKING.
+
+WHY THE PROBE DID NOT CATCH IT
+
+`EXPECTED` carries `rowsPerRun` per shape for exactly this reason, and its own header records the
+cost of the gap: "⚠️ `sink` CATCHES AN EMPTY RESULT, NOT A WRONG ONE, and item 1749 lost a whole
+measurement to the gap." But the table covered 15 of 28 shapes, and the five largest - hop2rows,
+hop2rowswhere, hop3rows, hop3rowsboth, and every paging/set-operation shape - were not among them.
+The guard existed; it simply was not pointed at the rows anyone profiles.
+
+14 entries added, measured against HEAD: hop2rows 20,000, hop2rowswhere 207, hop3rows 20,000,
+hop3rowsboth 160,000, topkwide/topknarrow 10, defwide/defnarrow 2,070, defsortwide/defsortnarrow 5,
+unioned/unioneddistinct 414, excepted 1,863, control 1.
+
+ROW COUNTS ONLY FOR THE UNORDERED SHAPES, which is the table's own rule rather than caution: pinning
+the first VALUE of `RETURN d.k` would assert something `order-is-unspecified` leaves the engine free
+to change. `hop2rowswhere`, `defsortwide`/`defsortnarrow` and `control` carry a value because
+`WHERE c.k = 5`, an ORDER BY, and a literal respectively make them determinate.
+
+THE GUARD IS VERIFIED, NOT ASSUMED. The broken ablation was re-applied after the guards went in:
+
+    hop3rowsboth returned 5 rows across 5 runs, expected 800000 - this arm is NOT answer-equivalent
+    hop3rows     returned 5 rows across 5 runs, expected 100000 - this arm is NOT answer-equivalent
+
+A generative guard whose teeth were never checked is worse than none, because it is believed.
+
+WHAT THE ABLATION STILL OWES, PRICED BUT NOT BUILT
+
+The `withBinding` copy is a real target and the arithmetic is clean: a k-segment walk pays k copies
+of sizes 1..k (6 entry-copies at k=3), where mutate-and-undo with ONE snapshot at the leaf pays a
+single copy of size k (3 at k=3), plus k-1 fewer Map allocations. The Gremlin `match()` solver
+already works this way - "bind each candidate in turn and UNDO on the way out" - so the pattern is
+proven in this codebase.
+
+It is NOT a tick: the binding escapes as a row, so the snapshot has to move to the yield point, and
+`consistent`'s join semantics mean a repeated name must still be checked rather than overwritten
+(`bindings.ts` records that item 1661's surviving mutant was precisely a shared-instead-of-copied
+binding map). Doing that halfway in the core matcher is how a wrong answer ships. Named here with
+its arithmetic so the next attempt starts from the price rather than from the profile share.
+
+GATES. bun run check 0 read unpiped. gql suite 4,522 pass / 0 fail. No engine source changed - the
+diff is the probe's guard table.
