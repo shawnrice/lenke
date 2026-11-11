@@ -1994,8 +1994,12 @@ const dropUnreadGroupBinds = (clauses: readonly Clause[]): readonly Clause[] => 
 // a shape summary that silently stops a shortcut firing.
 //
 // `routes-fired.test.ts` calls this and reads which fields came back non-null. Exported from this
-// module only, the way `predFor`, `selectiveFirst` and `invertedHopBudget` already are for their
-// own tests; the package's public surface is unchanged.
+// module only, the way `predFor` and `selectiveFirst` already are for their own tests; the
+// package's public surface is unchanged. (`invertedHopBudget` was a third example until item 1788
+// deleted it: it was exported for a unit test because a route CHOICE is answer-equivalent and every
+// mutant of it survives the differential tests — and that unit test went on passing for the whole
+// time its only production caller was unreachable. An export-for-testing keeps a function's
+// COVERAGE alive independently of whether anything still calls it.)
 export const compileLinear = (linear: LinearQuery): CLinear => {
   // `liftStartProps` runs OUTSIDE `fuseAnchorThenHop` so a FUSED clause gets the lift too: the
   // fused pattern's start is the anchor's, and an anchor written `MATCH (a:P {k: 5})` carries

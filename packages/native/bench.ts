@@ -1195,6 +1195,13 @@ const CASES: Case[] = [
     // precomputes a per-node passing out-degree (item 570's `node_pass_mask`), and doing the same
     // in TS was "the open lever this pair exists to watch".
     //
+    // ⚠️ ITEM 585 LANDED IT AND ITEM 1788 DELETED IT AS UNREACHABLE — the numbers below are a
+    // RECORD, not the behaviour of today's engine. `takesTheLevelRecurrence` sends every
+    // `max >= 2` spec to `walkLevelCount` before the inversion's gate (which itself required
+    // `max >= 2`) could be read, so it was orphaned by items 588/699 and never fired again. It was
+    // SUPERSEDED rather than lost: the selectivity ratio item 584 measured (1.26x) is unchanged on
+    // `walkLevelCount`, but in milliseconds rather than hundreds of them.
+    //
     // ITEM 585 LANDED IT. `varLengthDegreeCount` now accumulates the second hop BACKWARDS when
     // that is cheaper — for each passing `z`, every in-edge of `z` adds one to its source's
     // count, costing one visit per edge INTO a passing vertex, which scales with selectivity:

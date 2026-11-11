@@ -82200,14 +82200,18 @@ is the thing it existed to step away from. This item is the question it was for.
 | ----------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | all 20 rungs                                                            | every one REACHABLE; the 3 the census says never fire are `FOR`/reachability **corpus gaps**, each wired to a live detector in `rewrites.ts` and dispatched in `clauses.ts` |
 | 969 top-level functions, both executors                                 | **1** unreferenced (`farMaskSlotOrder`, `gremlin/far-mask-drain.ts`), 1 test-only (`estimateSeed`)                                                                          |
-| 720 uncovered executor code lines, 71 blocks, under 4,505 passing tests | **test gaps, not dead code**                                                                                                                                                |
+| 720 uncovered executor code lines, 71 blocks, under 4,505 passing tests | ~~**test gaps, not dead code**~~ ⚠️ **WRONG for the biggest block — item 1788 proved `var-length-count.ts:709-796` UNREACHABLE and deleted it**                             |
 
 The definition scan counts with python `str.count` over decoded text, never `grep`, for the reason
 CLAUDE.md gives: `grep` silently skips Unicode files and files with NUL bytes, and `shortcuts.ts` is
 exactly where that has bitten before.
 
-⚠️ **AND THE BIGGEST UNCOVERED BLOCK IS A MEASURED OPTIMIZATION WITH NO TEST, WHICH IS THE OPPOSITE
-OF DEAD CODE.** `var-length-count.ts:709-796` is the hop-INVERSION route (items 584/585): accumulate
+⚠️ ~~**AND THE BIGGEST UNCOVERED BLOCK IS A MEASURED OPTIMIZATION WITH NO TEST, WHICH IS THE OPPOSITE
+OF DEAD CODE.**~~ **THAT IS WRONG, AND ITEM 1788 DELETED IT**: the block is unreachable, because
+`takesTheLevelRecurrence` returns every `max >= 2` spec into `walkLevelCount` before the inversion's
+own `max >= 2` gate can be read. The paragraph below describes it as reachable-but-untested; it is
+neither. What stands is the narrower rule it was drawn from — coverage answers "what is untested",
+and distinguishing that from "what is unreachable" needs a sentinel, which is what item 1788 ran. `var-length-count.ts:709-796` is the hop-INVERSION route (items 584/585): accumulate
 the passing out-degree backwards from each passing vertex's in-edges, which scales with selectivity
 where the forward walk does not. Three blocks, 39 lines, and the gate
 `!passesIsVacuous && max >= 2 && reachedEst !== null` is never satisfied by any of the 4,505 tests.
@@ -82341,3 +82345,119 @@ probe, sweep and worktree run capped at `MemoryMax=16G`, `MemorySwapMax=0`, `tim
 thicket as "241 functions across `shortcuts.ts` (7,064), `hop-projection.ts` (5,836) and
 `count-shortcut.ts` (3,692)". `count-shortcut.ts` is **166 lines** — the `0939b347` split CREATED it
 — and the third-largest file is `core.ts` at 6,101.
+
+### Item 1788 — ⚠️ **ITEM 585's HOP INVERSION WAS DEAD CODE AND IS DELETED: 39 lines of a measured optimization, two exported helpers and a 102-line unit test that went on passing the whole time its only production caller was unreachable.** `takesTheLevelRecurrence` sends every `max >= 2` spec to `walkLevelCount` BEFORE the inversion's own `max >= 2` gate can be read, so items 588/699 orphaned it. **Net −235 lines.** It was SUPERSEDED, not lost — item 584's selectivity ratio is unchanged at 1.26x on the new route but in milliseconds rather than hundreds of them. ⚠️ **And item 1787's "the 720 uncovered lines are test gaps, not dead code" is WRONG for the biggest block, corrected there**
+
+Item 1787 enumerated the executor's uncovered blocks and read them as test gaps. The largest —
+`var-length-count.ts:709-796`, three blocks, 39 lines — is the hop INVERSION of items 584/585, and it
+is not a test gap. It cannot be reached.
+
+#### Why it is unreachable, and the argument is two lines of code
+
+```ts
+// varLengthDegreeCount's FIRST statement
+if (takesTheLevelRecurrence(spec)) { return walkLevelCount(graph, spec); }
+//   takesTheLevelRecurrence = spec.max >= 2 && (!spec.isTrail || spec.max <= 4)
+
+// ...and the inversion's own gate, 40 lines below it
+if (!passesIsVacuous && max >= 2 && reachedEst !== null) { … }
+```
+
+Anything still running below the early return has `max < 2 || (isTrail && max > 4)`. The detector
+refuses the second disjunct outright — `if (max === null || max < 1 || (max > 4 && pattern.mode !==
+'walk')) return null` — so below that return **`max` can only be 1**, and the block requires
+`max >= 2`. The two conditions cannot both hold.
+
+#### Proven, not argued — and the sentinel was proven LIVE first
+
+A sentinel that cannot fire reports "unreachable" for everything, which is the vacuous-oracle failure
+of items 1783 and 1787. So the sentinel's own liveness was established before any clean run counted:
+
+| sentinel position                     | result                                                                                                                                               |
+| ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `varLengthDegreeCount` ENTRY          | **fires for 10 of 17** corpus shapes — the probe is live                                                                                             |
+| immediately BELOW the early return    | **2 of 4,505 gql tests fail** — the region is reachable, with `max=1`                                                                                |
+| conjuncts instrumented at the gate    | the only traffic is **`max=1 vac=true budget=3`** — both required conjuncts fail                                                                     |
+| INSIDE the inversion block, real gate | **0 hits**: 4,505 gql tests, all 21 projects, the seven fuzzers' 20,000 random queries, and a 17-shape corpus spanning both path modes at depths 1-6 |
+
+⚠️ **THE DIST REBUILD IS LOAD-BEARING FOR THAT TABLE.** `@lenke/*` resolve to dist
+([[fuzzers-read-built-dists]]), so a sentinel in `src` is invisible to the fuzzers and to every other
+package's tests until `bun run build` runs. Without it the fuzzer row would have been a clean run
+against code that did not contain the sentinel at all.
+
+⚠️ **AND ONE INTERMEDIATE CLAIM HERE WAS WRONG, caught by the suite rather than by reasoning.** From
+the 17-shape corpus alone I concluded that the ENTIRE remainder of the function was dead. The
+below-early-return sentinel then failed 2 tests — `{1,1}` shapes, `max=1`, which the corpus had
+missed. The region is reachable; only the inversion inside it is not. A hand corpus of 17 shapes is
+not a substitute for 4,505 tests, and the narrower claim is the one the evidence supports.
+
+#### It was SUPERSEDED rather than lost, which is why deleting is right
+
+Dead code is only a lost win if the route that replaced it is worse at the thing it existed for.
+Item 584 names that thing precisely: the forward walk is FLAT in endpoint selectivity — "rejecting
+every vertex (355.24ms) costs nearly what accepting every vertex does (446.49)" — while inversion
+scales with it. Run as item 584's own test against `walkLevelCount`, which now owns all `max >= 2`
+traffic (and contains none of the inversion machinery: no `passdeg`, no `adjTo`, no `passing` sweep):
+
+```text
+   200,000 vertices / 400,000 edges, 9 reps, drop 3, median
+     accept-all   16.5 ms     reject-all   13.1 ms     ratio 1.26x
+```
+
+**The ratio is unchanged — 1.26x against item 584's 1.26x — but in MILLISECONDS rather than hundreds
+of them.** The level recurrence is roughly 27x faster than the route item 585 optimized, so the win
+inversion bought no longer exists to buy. (The absolute figures are cross-fixture and so indicative;
+the matching ratio is what makes the comparison apples-to-apples.) Rebuilding selectivity-awareness
+belongs on `walkLevelCount` or nowhere, and that is recorded in the file where the block used to be.
+
+#### ⚠️ A UNIT TEST KEPT A DEAD FUNCTION LOOKING ALIVE, AND THIS IS THE GENERAL LESSON
+
+`invertedHopBudget` and `sampleRulesOutInversion` were exported **specifically so they could be unit
+tested** — for a good reason, which `rewrites.ts` still states: a route CHOICE is answer-equivalent,
+so every mutant of it survives the differential tests ([[perf-gate-needs-its-own-test]]). Item 585
+ran three such mutants and all three passed, as they had to.
+
+So `packages/gql/src/inverted-hop-budget.test.ts` held ~10 assertions over two functions whose only
+production call site was unreachable, and it passed every run. **An export-for-testing keeps a
+function's COVERAGE alive independently of whether anything still calls it**, which is exactly why
+item 1787's reference-counting scan found only ONE dead function in 969: these two were referenced by
+their test and by the dead block, so both looked live. Reference counting cannot see code that is
+dead because its _caller_ is unreachable. Deleted with the code it tested.
+
+#### ⚠️ WHAT WAS **NOT** DELETED, AND WHY — the clause that looks identical and is not
+
+`takesTheLevelRecurrence`'s `(!spec.isTrail || spec.max <= 4)` is also redundant today: a trail is
+capped at 4 by the detector so the right disjunct holds, and a walk makes the left one hold. Its own
+comment says a mutant removing it SURVIVES. By the standing rule — keeping dead code against
+speculation about future changes is not a reason — it should go.
+
+**It stays, because the scenario is not speculative: it already happened.** The same comment records
+it. At item 692 the depth-4 closed form relaxed the detector's bound to 4 and left this bound at 3, a
+depth-4 trail fell through to the `max <= 2` arithmetic, and it **answered the WALK count — 3 where
+the trail answers 0 on a triangle**, caught by item 690's brute-force oracle on its first run.
+
+That is the distinction worth keeping: the inversion was 39 lines of superseded CAPABILITY with
+nothing to protect, while this is one line of CORRECTNESS guard whose redundancy has been broken once
+already and produced a wrong answer when it was. "Provably redundant today" and "safe to delete" are
+the same claim only when nothing depends on the proof staying true.
+
+#### What was deleted
+
+- the inversion block and its `srcCount` / `reachedEst` / `passdeg` declarations
+- the now-unreachable `passdeg !== undefined` branch in `degreeOf`
+- `invertedHopBudget` and `sampleRulesOutInversion`, with their doc blocks
+- `packages/gql/src/inverted-hop-budget.test.ts` (102 lines)
+- stale references corrected: `rewrites.ts`'s export-for-testing example, and `bench.ts`'s item 585
+  paragraph now marked a RECORD rather than today's behaviour
+
+**No measurable speed change is claimed and none is expected.** The only runtime cost removed was two
+cheap per-QUERY computations on the `max=1` path — a label-bucket lookup and `invertedHopBudget` —
+not per-row work, so it sits far below the ~10% noise floor. The gain is 235 fewer lines and one
+fewer test that proves nothing.
+
+#### Gates
+
+`bun run check` 0 read unpiped. `nx run-many -t test` **21 projects green** both with the sentinel in
+place and after the deletion. `bun run fuzz` green after the deletion. Every run capped at
+`MemoryMax=16G`, `MemorySwapMax=0`, `timeout`; pristine copy kept under
+`crates/lenke-engine/target/` and restored before each sentinel variant, per CLAUDE.md.
