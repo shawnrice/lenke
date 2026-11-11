@@ -83752,3 +83752,50 @@ contradiction named so the correction cannot read as a rewrite of history.
 NO CODE CHANGE. Two comments and the module's cross-reference.
 
 GATES. bun run check 0 read unpiped. gql suite 4,522 pass / 0 fail.
+
+### Item 1809 — **item 1809 - NO CHANGE: the 54% frame in hopordercap is ATTRIBUTION, and this time the deletion test is on the record. fusedValuesTopK's inner `values` generator profiles at 54.0% - one resume per element for a property read - and removing the layer outright measures 1.014x on the target while hopvaluesn goes 0.874x and the hopcount3 CONTROL goes 1.099x in the change's favour. A flat target with unrelated rows moving 10-13% in BOTH directions is noise. The reachable target is the per-item allocation inside streamTopByBys, which that frame was being charged for**
+
+THE NOMINATION AND THE BUILD
+
+`hopordercap` - V().out('E').values('k').order().limit(10) - is the Gremlin probe's second shape at
+264 ms after item 1807 took the order family down, and its profile is lopsided: `values` 54.0%,
+`pick` 10.3%, `get properties` 7.9%, `streamTopByBys` 7.8%, `get to` 7.0%.
+
+`values` is a `function*` wrapping the stream and yielding `props[key]`, with `streamTopByBys` given
+the identity projection. One generator resume per element for a property read, on the whole stream,
+so that `cap` items survive - and item 1411 measured the generator protocol at 1.9-2.2x. Removing
+it is mechanical: `streamTopByBys` already iterates its input and applies `project`, so hand it the
+TRAVERSER stream with the property read as the projection. Filtering is preserved by NO_VALUE (the
+old generator skipped a non-element and an absent key; `streamTopByBys` skips a NO_VALUE key, and
+`evalBy`'s identity arm passes NO_VALUE through unchanged), and the survivors are re-projected -
+`cap` of them against the whole stream.
+
+WHAT IT MEASURED, three alternated rounds of 20 reps, dist rebuilt between arms:
+
+    hopordercap  TARGET    475.7 -> 469.0   1.014x   pre [452.1, 475.7, 485.7] post [462.7, 469, 486.6]
+    hoporder               406.7 -> 393.0   1.035x
+    hopvaluesn            142.2 -> 162.7   0.874x   13% SLOWER
+    hopcount3    CONTROL    71.0 ->  64.6   1.099x   10% faster, and it cannot reach this code
+
+The control moving 10% IN THE CHANGE'S FAVOUR is what settles it: the machine was kinder to the
+POST arm, and even so the target did not move. The true effect is at best nothing.
+
+SO THE 54% IS ATTRIBUTION. What the deletion test leaves standing is where the time actually goes:
+`streamTopByBys`'s ingest does `bys.map(...)` - an array allocation per item for a ONE-element
+`bys` - plus `keys.some(isElement)` and `keys.some(k => k === NO_VALUE)`, two closure-calling
+iterations, plus an `Entry` object, for every item in a 400,000-element stream of which 10 survive.
+That work was being charged to the enclosing generator frame.
+
+[[frame-attribution-trap]] records four instances of a frame that is attribution until a deletion
+test with a CONTROL says otherwise. This is the fifth, and the first where the deletion was actually
+performed rather than reasoned about - which is the only reason the 54% can be dismissed rather than
+re-attacked.
+
+THE REACHABLE TARGET IS NAMED AND NOT BUILT: specialize `streamTopByBys` for the one-identity-by
+case so an item costs one `evalBy` and two scalar tests instead of an array, two `.some` closures
+and an object. That is a real per-item allocation on a path where the cap is tiny, and it is a
+different change from the one this item refutes - which is exactly why it is not folded in here.
+
+GATES. No source change to ship. bun run check 0 read unpiped, gremlin 2,134 pass / 0 fail on the
+restored tree. The finding is recorded at the generator itself, so the next reader sees the deletion
+test rather than the share. Each A/B arm asserted to BE the code it claims before being built.

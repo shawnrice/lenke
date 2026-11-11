@@ -281,8 +281,22 @@ export const fusedValuesTopK = function* (
   graph: Graph,
   ctx: RunContext,
 ): Iterable<Traverser<unknown>> {
-  // A generator, NOT an array: the whole point of a capped order is that the stream is never
-  // materialised, which item 1576 established for this shape.
+  /**
+   * A generator, NOT an array: the whole point of a capped order is that the stream is never
+   * materialised, which item 1576 established for this shape.
+   *
+   * ⚠️ **ITS 54% IS ATTRIBUTION, NOT COST — PROVED BY DELETING IT (item 1809).** This frame
+   * profiles at **54.0% of `hopordercap`**, which reads as one generator resume per element for a
+   * property read. Removing the layer entirely — hand `streamTopByBys` the TRAVERSER stream with
+   * this read as its `project`, which it already applies per item — measured **1.014x on the
+   * target**, with `hopvaluesn` 0.874x and the `hopcount3` CONTROL 1.099x in the change's favour.
+   * A flat target while unrelated rows move 10-13% in both directions is noise, not a win.
+   *
+   * So the 54% is the heap ingest (`bys.map`, two `.some` closures and an `Entry` per item inside
+   * `streamTopByBys`) charged to the enclosing generator frame — [[frame-attribution-trap]] again,
+   * and this time the deletion test is on the record. The reachable target here is that per-item
+   * allocation in `streamTopByBys`, NOT this generator.
+   */
   const values = function* (): Iterable<unknown> {
     for (const t of stream) {
       const el = t.value;
