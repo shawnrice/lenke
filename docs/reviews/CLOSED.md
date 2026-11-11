@@ -83707,3 +83707,48 @@ GATES. bun run check 0 read unpiped. nx run-many -t test --skip-nx-cache 21 proj
 2,134 pass / 0 fail). bun run fuzz 57 pass / 0 fail with FUZZ_EXIT=0 - load-bearing, because a
 comparator change is a ROW ORDER change and order is compared byte-for-byte against the Rust engine.
 Each A/B arm asserted to BE the code it claims before being built.
+
+### Item 1808 — **item 1808 - ITEM 1807's TRICK DOES NOT TRANSFER TO THE GQL SORT, AND THE REASON IS IN THE TWO SCANS' SHAPES: Gremlin classifies a FLAT ARRAY while GQL classifies rows[i][col], a PROPERTY read per row - which is what the six straddling readings are made of. And the GQL call site claimed a numeric arm that does not exist: SortColumnKind is 'string' | 'generic', the arm was built, measured and dropped. A comment describing a code path that is not there is worse than silence**
+
+THE QUESTION ITEM 1807 LEFT
+
+1807 made Gremlin's numeric sort arm free by folding the type test into a pass that had to happen
+anyway, and left the obvious follow-up: does the GQL twin have such a pass to ride? Answering it
+required reading both sort sites rather than assuming symmetry, and the answer is NO at this module
+and YES one level up, with a cost.
+
+WHY IT DOES NOT TRANSFER AS WRITTEN
+
+    Gremlin  allPlainStrings/fused   acc[i]          an ELEMENT read on a flat array
+    GQL      sortColumnKind          rows[i][col]    a PROPERTY read on a Row object, per row
+
+That difference is the whole of it. The GQL module's own six readings for a numeric arm with a scan
+
+- 0.93x, 1.05x, 1.06x, 1.11x, 1.14x, 1.18x - straddle 1.0, and its floor arm (reduced comparator,
+  NO scan) measured 1.25x, so the scan eats the win. On the Gremlin side the identical reduction nets
+  1.19x once the scan is gone. Same comparator, same precondition, different classification cost.
+
+It is also why the GQL string arm nets 1.45x where its numeric arm nets nothing: for strings the
+per-comparison saving is a `compareCodePoints` call plus two regex tests plus the ladder, against
+the ladder alone for numbers. A scan that is cheap relative to the first saving is expensive
+relative to the second.
+
+THERE IS A PASS TO RIDE, AND IT IS NOT IN THIS MODULE. The PROJECTION builds each `Row`, so it holds
+`row[col]` in hand already, and the plan knows at COMPILE time whether there is a single ORDER BY
+key and which column it is. Threading that into the projection would make the classification free on
+this side too - at the cost of a flag on the hottest row-building loop in the engine, paid only by
+sorted queries. Named with the condition for trying it: measure the projection's own rows as
+controls first, because that loop runs for every query.
+
+THE STALE COMMENT, WHICH IS THE PART THAT COULD HAVE COST SOMEONE A TICK
+
+`ordered-rows.ts` told the reader at the call site: "~1.06x on a numeric one" and "why the numeric
+arm is KEPT on consistency rather than size". `SortColumnKind` is `'string' | 'generic'`; there is
+no numeric arm, and the module's own header says it was built, measured and DROPPED. A reader
+trusting the call site would conclude the arm exists and look for why it is slow, which is the
+failure CLOSED.md's heading rule exists to prevent, one level down. Corrected in place, with the
+contradiction named so the correction cannot read as a rewrite of history.
+
+NO CODE CHANGE. Two comments and the module's cross-reference.
+
+GATES. bun run check 0 read unpiped. gql suite 4,522 pass / 0 fail.

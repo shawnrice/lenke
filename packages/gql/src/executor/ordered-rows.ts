@@ -547,11 +547,17 @@ export const sortRowsByColumns = (rows: Row[], plan: SortPlan): Row[] => {
           const [{ col, descending, nullsFirst }] = sorts;
 
           // A COLUMN OF ONE TYPE WITH NO NULLS SORTS WITH THE DEAD BRANCHES GONE (item 1711):
-          // ~1.45x on a 1,000,000-row string sort, ~1.06x on a numeric one. The scan decides it
-          // once; `compareSort` is still the comparator for every column it declines; and the
-          // reduction is exact rather than a second derivation. The module's note carries the
-          // numbers, why the numeric arm is kept on consistency rather than size, and the refuted
+          // ~1.45x on a 1,000,000-row STRING sort. The scan decides it once; `compareSort` is
+          // still the comparator for every column it declines; and the reduction is exact rather
+          // than a second derivation. The module's note carries the numbers and the refuted
           // warm-up explanation -- read it before changing the scan.
+          //
+          // ⚠️ THIS SAID "~1.06x on a numeric one" AND "why the numeric arm is KEPT", AND BOTH
+          // WERE WRONG (item 1808). `SortColumnKind` is `'string' | 'generic'`: there is no
+          // numeric arm. It was built, measured six times across four runs (0.93x-1.18x,
+          // straddling 1.0) and DROPPED, which the module says in terms. A call-site comment
+          // claiming a code path that does not exist is the failure `CLOSED.md`'s heading rule
+          // exists to prevent, one level down.
           const reduced = reducedRowComparator(sortColumnKind(rows, col), col, descending);
 
           if (reduced !== undefined) {

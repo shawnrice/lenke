@@ -64,9 +64,25 @@
  * ⚠️ **THE GREMLIN SIDE ANSWERED THAT QUESTION AT ITEM 1807, AND THE ANSWER IS TO STOP SCANNING.**
  * Its `fusedProjectedOrder` already walks every value before sorting, to raise the graph-element
  * fault — so the type test rides that pass and the separate scan disappears: **1.19x on the
- * descending row, 1.10x ascending, control flat**, with the numeric arm included for free. The
- * question to ask before rebuilding the arm HERE is whether this module has such a pass to ride; if
- * every value is already touched for another reason, the scan is not a new cost.
+ * descending row, 1.10x ascending, control flat**, with the numeric arm included for free.
+ *
+ * ⚠️ **AND IT DOES NOT TRANSFER HERE, FOR A REASON THAT IS IN THE TWO SCANS' SHAPES** (item 1808).
+ * Gremlin classifies a FLAT ARRAY — `acc[i]`, an element read — while this one classifies
+ * `rows[i][col]`, a PROPERTY read on a `Row` object, once per row. That is the cost the six
+ * straddling readings above are made of, and it is also why the same reduction nets 1.45x on
+ * strings here (where the per-comparison saving is a `compareCodePoints` call plus two regex tests)
+ * and nothing on numbers (where it is one ladder).
+ *
+ * There IS a pass to ride on this side, but it is not in this module: the PROJECTION builds each
+ * `Row`, so it holds `row[col]` in hand already, and the plan knows at COMPILE time whether there
+ * is a single `ORDER BY` key and which column it is. Threading that into the projection would make
+ * the classification free here too — at the cost of a flag on the hottest row-building loop, paid
+ * only by sorted queries. Measure the projection's own rows as controls before trying it; that loop
+ * runs for every query in the engine.
+ *
+ * ⚠️ A SECOND THING WAS WRONG AND IS FIXED: `ordered-rows.ts`'s call-site comment claimed "~1.06x
+ * on a numeric one" and "why the numeric arm is KEPT". `SortColumnKind` is `'string' | 'generic'`.
+ * There is no numeric arm, and a comment at the call site that describes one is worse than silence.
  *
  * ⚠️ THE SCAN IS PURE COST AND BUYS NO WARM-UP — tested, because the OPPOSITE looked true. A
  * three-arm run put POST ahead of a NO-SCAN floor build in both rounds, which is impossible if the
