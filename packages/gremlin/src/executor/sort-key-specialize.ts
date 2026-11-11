@@ -58,25 +58,26 @@ import { HAS_SURROGATE } from '@lenke/core';
  */
 
 /**
- * Is every value a non-null, surrogate-free string? The FLAT form, for `fusedProjectedOrder`.
+ * ⚠️ `allPlainStrings` WAS HERE AND IS GONE (item 1807). It scanned the flat column for
+ * `fusedProjectedOrder`, which ALREADY walks every value to raise the graph-element fault — so the
+ * classification was a second pass over the same array. It now rides that pass, which is what made
+ * the NUMERIC arm affordable: both modules recorded it as built, measured and dropped with "THE
+ * OPEN QUESTION IS THEREFORE A CHEAPER CLASSIFICATION, NOT THIS ARM", and a scan folded into a pass
+ * that has to happen anyway is that cheaper classification.
+ *
+ * Its unit test went with it; the cases it covered — an astral string, a lone LOW surrogate, a
+ * later disqualifying element, an empty column — are now asserted through `order()` itself in
+ * `sort-key-specialize.test.ts`, which is where the behaviour they protect is observable.
  */
-export const allPlainStrings = (xs: readonly unknown[]): boolean => {
-  if (xs.length === 0) {
-    return false;
-  }
-
-  for (const x of xs) {
-    if (typeof x !== 'string' || HAS_SURROGATE.test(x)) {
-      return false;
-    }
-  }
-
-  return true;
-};
 
 /**
  * The reduced comparator over FLAT values. Negates for `descending` so ties stay 0 and the sort
  * remains stable, exactly as `-compareTotal(a, b)` does.
+ *
+ * ⚠️ IT SERVES NUMBERS AS WELL AS STRINGS (item 1807), and that is exact rather than a liberty: for
+ * two non-null surrogate-free strings AND for two non-null NaN-free numbers, `compareTotal` reduces
+ * to the same expression this body is — `x < y ? -1 : x > y ? 1 : 0`. The `as string` casts are
+ * erased at runtime, and `<`/`>` on two numbers is the numeric comparison.
  */
 export const reducedValueComparator = (
   descending: boolean,

@@ -24,7 +24,6 @@ import { Graph } from '@lenke/core';
 import { Order, order, out, toArray, traversal, V, values } from '../index.js';
 import {
   allPlainStringKeys,
-  allPlainStrings,
   reducedKeyComparator,
   reducedValueComparator,
 } from './sort-key-specialize.js';
@@ -57,51 +56,88 @@ const byCodePoint = (a: string, b: string): number => {
   return xs.length < ys.length ? -1 : 1;
 };
 
-describe('allPlainStrings (the FLAT arm)', () => {
-  test('admits a column of plain strings', () => {
-    expect(allPlainStrings(['b', 'a', 'c'])).toBe(true);
+/**
+ * ⚠️ THE FLAT ARM'S CLASSIFICATION IS NO LONGER A FUNCTION, SO IT IS TESTED THROUGH `order()`
+ * (item 1807). `allPlainStrings` scanned the column; the classification now rides
+ * `fusedProjectedOrder`'s existing element-fault pass, which is what made the numeric arm free.
+ * These are the same columns its unit test covered, asserted where the behaviour is observable —
+ * and that is strictly better, because a unit test of the scanner could not have caught a wrong
+ * comparator being SELECTED.
+ */
+describe('the FLAT arm, through order() — the columns the scanner used to classify', () => {
+  /** One vertex per value, so `values('k').order()` sorts exactly this column. */
+  const columnOf = (xs: readonly unknown[]): Graph => {
+    const g = new Graph();
+
+    for (const [i, k] of xs.entries()) {
+      g.addVertex({ id: `v${i}`, labels: ['P'], properties: { k } });
+    }
+
+    // One edge per vertex pair so `out('E')` is not needed: the shape below reads V() directly.
+    return g;
+  };
+
+  const sortedColumn = (xs: readonly unknown[], desc = false): unknown[] =>
+    toArray(traversal(V(), values('k'), desc ? order(Order.desc) : order()), columnOf(xs));
+
+  test('a column of plain strings sorts by code point', () => {
+    expect(sortedColumn(['b', 'a', 'c'])).toEqual(['a', 'b', 'c']);
   });
 
-  // The disagreement column. Both members are strings, so only the surrogate test can decline it —
-  // this is the assertion that fails if that test is dropped.
-  test('declines the column where code-unit and code-point order disagree', () => {
-    expect(allPlainStrings([BMP_HIGH, ASTRAL])).toBe(false);
+  // The disagreement column: both members are strings, so only the surrogate test can decline the
+  // reduced comparator. If it is dropped, the reduced comparator's `<` gives code-UNIT order and
+  // this assertion fails — which is item 1712's divergence, the whole reason the test exists.
+  test('the column where code-unit and code-point order disagree', () => {
+    expect(sortedColumn([BMP_HIGH, ASTRAL])).toEqual([BMP_HIGH, ASTRAL].sort(byCodePoint));
+    expect(sortedColumn([ASTRAL, BMP_HIGH])).toEqual([BMP_HIGH, ASTRAL].sort(byCodePoint));
   });
 
-  test('declines any column holding an astral character', () => {
-    expect(allPlainStrings(['a', ASTRAL, 'b'])).toBe(false);
+  test('a column holding an astral character anywhere', () => {
+    expect(sortedColumn(['a', ASTRAL, 'b'])).toEqual(['a', ASTRAL, 'b'].sort(byCodePoint));
   });
 
-  // HIGH-surrogate-only is correct, not a gap: with no high surrogate `codePointAt === charCodeAt`
-  // at every index and the iteration advances one unit per step, so `compareCodePoints` degenerates
-  // to exactly the code-unit comparison a plain `<` performs.
-  test('admits a string holding only a LONE LOW surrogate', () => {
-    expect(allPlainStrings(['a', LONE_LOW])).toBe(true);
+  // A LONE LOW surrogate is admitted rather than declined, and that is correct: with no HIGH
+  // surrogate `codePointAt === charCodeAt` at every index, so code-point order IS code-unit order.
+  test('a string holding only a lone LOW surrogate', () => {
+    expect(sortedColumn(['a', LONE_LOW])).toEqual(['a', LONE_LOW].sort(byCodePoint));
   });
 
-  test.each([
-    ['numbers', [1, 2]],
-    ['a mixed column', ['a', 1]],
-    ['null', ['a', null]],
-    ['undefined', ['a', undefined]],
-    ['booleans', [true, false]],
-    ['lists', [[1], [2]]],
-    ['objects', [{ a: 1 }, { a: 2 }]],
-  ])('declines %s', (_label, xs) => {
-    expect(allPlainStrings(xs)).toBe(false);
+  // ⚠️ THE NUMERIC ARM, NEW AT ITEM 1807 and the reason the scan had to get cheaper.
+  test('a column of plain numbers, both directions', () => {
+    expect(sortedColumn([3, 1, 2])).toEqual([1, 2, 3]);
+    expect(sortedColumn([3, 1, 2], true)).toEqual([3, 2, 1]);
+    expect(sortedColumn([-0, 0, -1, 1])).toEqual([-1, -0, 0, 1]);
   });
 
-  // The scan must not decide from element 0 alone.
-  test.each([
-    ['a later number', ['a', 'b', 7]],
-    ['a later null', ['a', 'b', null]],
-    ['a later astral string', ['a', 'b', ASTRAL]],
-  ])('declines on %s', (_label, xs) => {
-    expect(allPlainStrings(xs)).toBe(false);
+  // Each of these must FALL BACK to `compareTotal`, and each has an answer the reduced comparator
+  // would get wrong: a null sorts FIRST, a NaN LAST, and a mixed column by type rank.
+  test('a null in the column sorts FIRST, which the reduced comparator has no arm for', () => {
+    expect(sortedColumn(['b', null, 'a'])).toEqual([null, 'a', 'b']);
+    expect(sortedColumn([2, null, 1])).toEqual([null, 1, 2]);
   });
 
-  test('declines an empty column', () => {
-    expect(allPlainStrings([])).toBe(false);
+  test('a NaN sorts LAST by the engine total order', () => {
+    const out = sortedColumn([2, Number.NaN, 1]) as number[];
+
+    expect(out.slice(0, 2)).toEqual([1, 2]);
+    expect(Number.isNaN(out[2])).toBe(true);
+  });
+
+  test('a mixed column orders by TYPE RANK, which is not the order I guessed', () => {
+    // Numbers before strings, and BOOLEANS AFTER BOTH. I wrote `[true, 1, 'a']` first, on the
+    // assumption that a boolean ranks lowest; `compareTotal`'s rank puts it last. Asserting the
+    // engine's actual order rather than my model of it is the point of a black-box test.
+    expect(sortedColumn(['a', 1])).toEqual([1, 'a']);
+    expect(sortedColumn([true, 1, 'a'])).toEqual([1, 'a', true]);
+  });
+
+  test('a later disqualifying element still declines — the scan cannot stop at index 0', () => {
+    expect(sortedColumn(['a', 'b', 7])).toEqual([7, 'a', 'b']);
+    expect(sortedColumn(['a', 'b', null])).toEqual([null, 'a', 'b']);
+  });
+
+  test('an empty column', () => {
+    expect(sortedColumn([])).toEqual([]);
   });
 });
 

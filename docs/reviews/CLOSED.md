@@ -83659,3 +83659,51 @@ controls chosen before it starts.
 
 GATES. No source change to ship. bun run check 0 read unpiped, gql suite 4,522 pass / 0 fail on the
 restored tree.
+
+### Item 1807 — **item 1807 - SHIPPED, 1.19x and 1.10x on the order family by ANSWERING THE OPEN QUESTION TWO MODULES ALREADY NAMED. A numeric arm for the sort-key specialization was built, measured and dropped twice - six GQL readings straddling 1.0 - and both modules recorded the same conclusion: "a FLOOR arm (reduced comparator, NO scan) measured 1.25x on the numeric row, so the comparator reduction IS worth ~25% there - the O(n) scan eats it. THE OPEN QUESTION IS THEREFORE A CHEAPER CLASSIFICATION, NOT THIS ARM." The cheaper classification is to stop scanning: fusedProjectedOrder ALREADY walks every value to raise the graph-element fault, so the type test rides that pass and costs nothing**
+
+THE MEASUREMENT (gremlin probe, 20 reps, FIVE alternated rounds, dist rebuilt between arms)
+
+    hoporder      PRE [428.3, 441, 451.3, 463.2, 469]     POST [403.4, 408, 410.9, 418.3, 441]
+                  medians 451.3 -> 410.9    1.098x
+    hoporderdesc  PRE [483.3, 485.8, 488.6, 497.1, 505.7] POST [382.1, 401.9, 409.7, 415, 428.7]
+                  medians 488.6 -> 409.7    1.193x   ranges do NOT overlap
+    hopcount3     CONTROL                             69.2 -> 69.5   0.996x
+    hopordercap   1.017x - it takes the STREAMING topK path, not this sort, and should not move
+
+DESC GAINS MORE THAN ASC, which is the mechanism rather than noise: the descending PRE comparator is
+`-compareTotal(a, b)`, so it pays the negation wrapper AND the dispatch chain, where the reduced
+descending comparator pays neither.
+
+WHY THE SCAN WAS THE WHOLE PROBLEM, AND WHY IT IS NOW FREE
+
+`fusedProjectedOrder` has to walk the array before sorting anyway - the graph-element fault must be
+raised before any comparison, even for a stream of one where no comparison happens. `allPlainStrings`
+then walked the SAME array a second time. Folding the type test into the existing pass costs one
+`typeof` on a value already in hand and REMOVES a whole pass, so the numeric arm arrives with no
+scan to eat it and the string arm gets cheaper on the way past.
+
+ONE COMPARATOR SERVES BOTH, exactly rather than conveniently: for two non-null surrogate-free
+strings and for two non-null NaN-free numbers, `compareTotal` reduces to the SAME expression -
+`x < y ? -1 : x > y ? 1 : 0` - which is `reducedValueComparator`'s body. Its `as string` casts are
+erased at runtime and `<`/`>` on two numbers is the numeric comparison.
+
+`allPlainStrings` IS DELETED, AND IT WAS DEAD THE MOMENT THE PASS FUSED. Only its own unit test
+referenced it afterwards - the "export-for-testing keeps a dead function looking alive" pattern item
+1788 recorded. Its cases did not vanish: they moved to BLACK-BOX tests through `order()` in the same
+file, which is strictly better, because a unit test of the scanner could not catch a wrong
+comparator being SELECTED. The migrated columns: plain strings, the code-unit/code-point
+disagreement pair, an astral string anywhere, a lone LOW surrogate (admitted, correctly - with no
+HIGH surrogate code-point order IS code-unit order), a later disqualifying element, and the empty
+column. Plus the new arm's own cases: plain numbers both directions, -0 against 0, a null (FIRST), a
+NaN (LAST), and a mixed column.
+
+⚠️ AND ONE OF MY EXPECTATIONS WAS WRONG, WHICH IS WHY THAT TEST IS BLACK-BOX. I asserted a mixed
+column orders `[true, 1, 'a']` on the assumption that a boolean ranks lowest. `compareTotal` puts it
+LAST: `[1, 'a', true]`. The test now asserts the engine's order with a note, rather than my model of
+it.
+
+GATES. bun run check 0 read unpiped. nx run-many -t test --skip-nx-cache 21 projects green (gremlin
+2,134 pass / 0 fail). bun run fuzz 57 pass / 0 fail with FUZZ_EXIT=0 - load-bearing, because a
+comparator change is a ROW ORDER change and order is compared byte-for-byte against the Rust engine.
+Each A/B arm asserted to BE the code it claims before being built.

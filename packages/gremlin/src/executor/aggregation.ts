@@ -1,4 +1,4 @@
-import { type Graph, isElement } from '@lenke/core';
+import { HAS_SURROGATE, isElement, type Graph } from '@lenke/core';
 import { ErrorCode, LenkeError } from '@lenke/errors';
 
 import type { By, Step } from '../ast.js';
@@ -14,7 +14,6 @@ import {
 } from './runtime.js';
 import {
   allPlainStringKeys,
-  allPlainStrings,
   reducedKeyComparator,
   reducedValueComparator,
 } from './sort-key-specialize.js';
@@ -492,6 +491,28 @@ export const fusedProjectedOrder = (
     // property value cannot be a Vertex or Edge, which makes this the same deliberately-unreachable
     // guard `fusedValuesTopK` documents above: the static shape is a SEPARATE mechanism that could
     // narrow, and without this the fault would surface from inside a sort rather than at the step.
+    /**
+     * ⚠️ THE CLASSIFICATION RIDES THIS PASS, WHICH IS WHY THE NUMERIC ARM IS FREE HERE (item 1807).
+     *
+     * Both specialization modules record a numeric arm as BUILT, MEASURED and DROPPED — six GQL
+     * readings straddling 1.0 — and both name the same reason and the same open question: "a FLOOR
+     * arm (reduced comparator, NO scan) measured 1.25x on the numeric row, so the comparator
+     * reduction IS worth ~25% there — the O(n) scan eats it. THE OPEN QUESTION IS THEREFORE A
+     * CHEAPER CLASSIFICATION, NOT THIS ARM."
+     *
+     * This pass ALREADY touches every value, because the element fault has to be raised before any
+     * comparison. Folding the type test into it costs one `typeof` on a value already in hand and
+     * REMOVES `allPlainStrings`'s separate scan, so the numeric arm arrives with no scan to eat it
+     * and the string arm gets cheaper on the way past.
+     *
+     * ⚠️ ONE COMPARATOR SERVES BOTH, and that is exact rather than convenient: for two non-null
+     * surrogate-free strings and for two non-null NaN-free numbers, `compareTotal` reduces to the
+     * SAME expression — `x < y ? -1 : x > y ? 1 : 0` — which is `reducedValueComparator`'s body.
+     * The casts inside it are erased at runtime.
+     */
+    let allStr = acc.length > 0;
+    let allNum = acc.length > 0;
+
     for (const v of acc) {
       if (isElement(v)) {
         throw new LenkeError(
@@ -499,6 +520,21 @@ export const fusedProjectedOrder = (
             `use order().by('<key>')`,
           { code: ErrorCode.Syntax },
         );
+      }
+
+      if (typeof v === 'string') {
+        allNum = false;
+
+        if (allStr && HAS_SURROGATE.test(v)) {
+          allStr = false;
+        }
+      } else if (typeof v === 'number' && !Number.isNaN(v)) {
+        // NaN is rejected: `compareTotal` orders it LAST by its own total order and the reduced
+        // comparator has no arm for it.
+        allStr = false;
+      } else {
+        allStr = false;
+        allNum = false;
       }
     }
 
@@ -509,7 +545,7 @@ export const fusedProjectedOrder = (
     // ⚠️ THIS IS THE SITE THE `values(k).order()` ROW ACTUALLY REACHES. The first attempt wired
     // only `sortByBys` and changed nothing at all: a counter on all six sort sites showed the row
     // entering HERE and the admit/decline counter never firing.
-    acc.sort(allPlainStrings(acc) ? reducedValueComparator(opts.desc) : general);
+    acc.sort(allStr || allNum ? reducedValueComparator(opts.desc) : general);
 
     return acc;
   };

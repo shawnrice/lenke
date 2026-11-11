@@ -61,6 +61,13 @@
  * alone), so the same scan is cheap relative to the saving. THE OPEN QUESTION IS THEREFORE A
  * CHEAPER CLASSIFICATION, NOT THIS ARM. Rebuilding the arm as written will measure ~1.0x again.
  *
+ * ⚠️ **THE GREMLIN SIDE ANSWERED THAT QUESTION AT ITEM 1807, AND THE ANSWER IS TO STOP SCANNING.**
+ * Its `fusedProjectedOrder` already walks every value before sorting, to raise the graph-element
+ * fault — so the type test rides that pass and the separate scan disappears: **1.19x on the
+ * descending row, 1.10x ascending, control flat**, with the numeric arm included for free. The
+ * question to ask before rebuilding the arm HERE is whether this module has such a pass to ride; if
+ * every value is already touched for another reason, the scan is not a new cost.
+ *
  * ⚠️ THE SCAN IS PURE COST AND BUYS NO WARM-UP — tested, because the OPPOSITE looked true. A
  * three-arm run put POST ahead of a NO-SCAN floor build in both rounds, which is impossible if the
  * floor is really the floor, and the tempting story was that the scan pre-touches every `row[col]`
