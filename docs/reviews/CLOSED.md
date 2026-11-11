@@ -83604,3 +83604,58 @@ its arithmetic so the next attempt starts from the price rather than from the pr
 
 GATES. bun run check 0 read unpiped. gql suite 4,522 pass / 0 fail. No engine source changed - the
 diff is the probe's guard table.
+
+### Item 1806 — **item 1806 - NO CHANGE, AND THE BLOCKER IS A TYPE RATHER THAN A JUDGEMENT CALL: item 1805 priced the matcher's binding copy (k copies of sizes 1..k per row against ONE snapshot of size k) and left it as a follow-up. Built it in the `both` walk, and `Binding` is `ReadonlyMap<string, unknown>` - the mutation does not COMPILE. The win needs a distinct mutable type threaded through the matcher, which is a refactor; casting the invariant away for ~6% in the core matcher is the trade this codebase has already declined**
+
+WHAT WAS BUILT, AND HOW FAR IT GOT
+
+Item 1805's arithmetic: `withBinding` copies, so a k-segment walk pays k copies of sizes 1..k (6
+entry-copies at k=3) where mutate-and-undo with one snapshot at the leaf pays a single copy of size
+k (3), plus k-1 fewer Map allocations. It profiled at 12.1% of `hop3rowsboth`.
+
+The design, narrowed to be safe:
+
+- mutate ONLY in `walkBothSegment`, the function this session added, so the blast radius is one
+  walk rather than the whole matcher
+- a `mutated` flag on `WalkCursor`, threaded down, so the base case yields a SNAPSHOT
+  (`new Map(binding)`) exactly when an ancestor mutated and the bare binding otherwise
+- in-place only when the node has NO predicate, because `matchNodeLabelled` binds BEFORE testing
+  `node.pred` on purpose - the predicate may read the variable just bound, and the copy is how
+  that ordering is expressed
+- `consistent`'s join semantics kept: read the held value first, set only an unbound name, delete
+  only a name this frame set
+
+All of that is written and it typechecks until the two lines that matter:
+
+    packages/gql/src/executor/matching.ts(2305,20): Property 'set' does not exist on type 'Binding'
+    packages/gql/src/executor/matching.ts(2316,20): Property 'delete' does not exist on type 'Binding'
+
+`export type Binding = ReadonlyMap<string, unknown>` (core.ts:53). The copy-on-extend design is not
+a convention anyone has to remember - it is enforced, and `bindings.ts` says why at the definition:
+"`withBinding` COPIES, AND `consistent` IS WHY ... Item 1661's surviving mutant was precisely a
+shared-instead-of-copied binding map; it was unobservable only because the one clause path that
+writes in place is followed by a projection that drops the leaked name."
+
+WHY NOT JUST CAST
+
+`as Map<string, unknown>` would compile and the tests would probably pass. That is the shape of
+every wrong answer this file records: a shared-instead-of-copied binding is UNOBSERVABLE until a
+consumer holds a row across a yield, and the matcher's consumers include ORDER BY, which collects
+rows before reading them. The type is the only thing standing between that and a 6% win.
+
+WHAT WOULD UNLOCK IT, SPECIFIED RATHER THAN HAND-WAVED
+
+A second type - `MutableBinding = Map<string, unknown>` - owned by the walk and never escaping it:
+`walkSegments` and its helpers take it, the base case converts to a `Binding` by snapshot, and
+nothing outside the walk sees the mutable form. Every other `Binding` consumer keeps the readonly
+type, so the compiler does the proving rather than a comment. That is a contained refactor of
+`matching.ts`'s walk family (walkSegments, walkBothSegment, matchPattern's two call sites) plus a
+mutating twin of `matchNodeLabelled` for the no-predicate case.
+
+PRICED AT ~6-8% OF ONE SHAPE, which is why it is named rather than attempted in a tick: the
+arithmetic halves a frame that is 12.1% of `hop3rowsboth`, and `executor-edits-perturb` says a
+central edit costs unrelated rows up to 16%. A refactor that large wants its own run, with the
+controls chosen before it starts.
+
+GATES. No source change to ship. bun run check 0 read unpiped, gql suite 4,522 pass / 0 fail on the
+restored tree.

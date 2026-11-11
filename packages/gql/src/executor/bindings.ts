@@ -4,6 +4,13 @@
  * The smallest leaf (item 1666) — 7 symbols, no value imports — and the most-reached-for: `matching.ts`
  * needed five of these back from `core.ts`, which was one of the import cycles.
  *
+ * ⚠️ **THE COPY IS PRICED AND THE REPLACEMENT IS BLOCKED BY THE TYPE, NOT BY NERVE** (items
+ * 1805/1806). It is 12.1% of `hop3rowsboth`, and mutate-and-undo with one snapshot at the leaf
+ * would turn k copies of sizes 1..k into a single copy of size k. It does not compile: `Binding` is
+ * `ReadonlyMap`, so `set`/`delete` are type errors — deliberately. Unlocking it means a separate
+ * `MutableBinding` owned by the walk and never escaping it, which is a contained refactor of
+ * `matching.ts`'s walk family rather than a tick; item 1806 has the design.
+ *
  * ⚠️ `withBinding` COPIES, AND `consistent` IS WHY. A matcher extends a row by name, and if two
  * pattern positions bind the same name they must agree rather than overwrite — `consistent` is that
  * check, and it is the reason this is a copy-on-extend `Map` rather than a mutable one. Item 1661's
