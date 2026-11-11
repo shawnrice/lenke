@@ -82969,3 +82969,65 @@ multiplicity TinkerPop gives that form was not measured. It is named rather than
 `FUZZ_EXIT=0`. Every mutation run rebuilt `dist` before testing, since the harness reads
 `@lenke/gremlin`'s DIST; pristine copy under `crates/lenke-engine/target/`, restored before each
 mutant.
+
+### Item 1795 — **THE HARD INVARIANT HAS 19 HOLES OF THE SHAPE THAT HID TWO WRONG ANSWERS: steps BOTH engines implement that `planToGremlin` cannot write, so nothing has ever compared them.** `where`, `and`, `or`, `properties`, `propertyMap`, `elementMap`, `store`, `cap`, `aggregate`, `sample`, `barrier`, `index`, `none`, `hasId`, `hasNot`, `hasValue`, `sideEffect`, `subgraph`, `shortestPath` — measured by running all three sides, not by reading any of them. ⚠️ **And the probe's first cut lied twice before it was trusted**
+
+#### Why an emitter gap is invisible rather than merely missing
+
+The gremlin differential fuzzer feeds the Rust engine by emitting Gremlin TEXT. It already treats an
+emitter failure as a FINDING rather than a skip — that check is what surfaced `simplePath`/
+`cyclicPath` costing 28 of every 400 plans. But it only fires for a step the GENERATOR builds. A
+step in neither the generator's pool nor the emitter produces no plan, no skip and no finding: it
+simply has no differential coverage, and nothing says so. That is exactly how `match()` carried two
+wrong answers (items 1793/1794) through 20,000 queries a run.
+
+`packages/native/emitter-gap-census.mjs` asks three questions per step and answers each **by
+running**:
+
+|                |                                                                                                              |
+| -------------- | ------------------------------------------------------------------------------------------------------------ |
+| `nativeParses` | feed the step as TEXT to the Rust engine — a string literal in the crate is as likely to be an error message |
+| `tsBuilds`     | call `@lenke/gremlin`'s builder and see if a plan comes back                                                 |
+| `emits`        | call `planToGremlin` on that plan                                                                            |
+
+**19 steps answer yes, yes, NO.** Both engines implement them; nothing can compare them.
+
+```text
+  where  and  or  properties  propertyMap  elementMap  store  cap  aggregate  sample
+  barrier  index  none  hasId  hasNot  hasValue  sideEffect  subgraph  shortestPath
+```
+
+`loops` is a separate case — the native parser rejects `__.loops().is(2)` (`expected identifier`),
+so that one is a SURFACE gap on the Rust side rather than an emitter gap, and it is not in the 19.
+
+#### ⚠️ THE FIRST CUT OF THE PROBE LIED TWICE, and both lies read as findings
+
+It scanned `emit.ts` for `case '<kind>'` instead of calling the emitter:
+
+1. **`as` is handled by an `if` ABOVE the switch**, and the algorithm steps by a table, so both read
+   as missing when they emit perfectly well.
+2. **The control rows were keyed by DISPLAY NAME** (`CONTROL out (emits)`), which no `case` can
+   match, so `out` — a step that obviously emits — printed "⚠️ NO ARM IN emit.ts".
+
+Two controls printing a false positive is what caught it, which is the whole reason they were there.
+The source scan is DELETED rather than fixed: calling the emitter is the only oracle that cannot be
+fooled by how the emitter happens to be written, and keeping a weaker second one invites a reader to
+believe whichever agrees with them.
+
+#### What this does and does not say
+
+⚠️ **A GAP IS NOT A BUG.** Nineteen uncompared steps means nineteen places a divergence COULD hide,
+not nineteen divergences — `match()` happened to have two, and `simplePath`/`cyclicPath` had none
+when their arms were added. The value is that the question becomes answerable at all.
+
+The work this leaves is one arm per step plus a differential case, in the shape item 1794 used:
+build the arm, check the spelling against the Rust parser rather than assuming it, then pair every
+case with a twin whose answer is known independently. **Expect to find wrong answers in the ones
+with real semantics** (`where`/`and`/`or` are filter combinators over sub-traversals, the same
+machinery that was wrong in `match`) and nothing in the shallow projections.
+
+#### Gates
+
+`bun run check` 0 read unpiped. No engine code changed — this item adds an instrument and a
+measurement. The census needs the `.so` (`--features capi`) and reads `@lenke/gremlin` from source
+through the package export, so it is run with `bun`, not `node`.
