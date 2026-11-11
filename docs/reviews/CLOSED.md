@@ -83852,3 +83852,60 @@ GATES. bun run check 0 read unpiped. nx run-many -t test --skip-nx-cache 21 proj
 2,134 pass / 0 fail). bun run fuzz 57 pass / 0 fail with FUZZ_EXIT=0 - load-bearing, because a
 selection change is a ROW ORDER change and order is compared byte-for-byte against the Rust engine.
 Each A/B arm asserted to BE the code it claims before being built.
+
+### Item 1811 — **item 1811 - BOTH SPELLING PROBES RUN AFTER FOURTEEN ITEMS, AND BOTH ARE CLEAN: 0 groups over 2x clear of the null control and 0 groups disagreeing on the ANSWER, on the GQL and the Gremlin surface. This session added two plan rewrites, two matcher arms, a fused sort classification and a new top-k ingest without running either probe once - CLAUDE.md says to run them when you touch the planner, and that debt is now paid. And the verdict is BOUNDED, not absolute: 30 groups were too fast to compare and the Gremlin null control is 1.63x at its expensive band**
+
+WHY THIS TICK INSTEAD OF ANOTHER TARGET
+
+Both engines' top shapes are saturated for tick-sized work. GQL `hop3rowsboth` is 1816 ms over 10
+reps, 4x anything else, and its remaining frames are each accounted for: `withBinding` is blocked by
+`Binding = ReadonlyMap` (item 1806), the bucket tuple is refuted (1804), the terminal generator frame
+measured neutral at item 737, and what is left is the chain-rows RUNG that does not exist - items
+1785/1786's 11.6x prize, a feature rather than a tick. Gremlin `hop3valuesrows` is the same story one
+level down.
+
+Meanwhile this session changed the planner six times - `flattenLinearMatch` (1797), the `select` tail
+(1798), `dropCountedSelect` (1800), the `directedBucket` and `bothBuckets` matcher arms (1802/1803),
+the fused sort classification (1807) and `streamTopByKey` (1810) - and CLAUDE.md is explicit: "Run it
+when you touch the TS planner or add a predicate form". Neither probe had run.
+
+THE RESULT
+
+    GQL      0 group(s) over 2x AND clear of the nearest null control
+             0 group(s) disagree on the ANSWER          null control 1.00x at 7.0ms
+    Gremlin  0 group(s) over 2x AND clear of the nearest null control
+             0 group(s) disagree on the ANSWER          null controls 1.08x at 2.8ms, 1.63x at 66.4ms
+
+The answer check is the half that matters most: a rewrite that changed an ANSWER would pass every
+timing comparison in this session's A/Bs, and two of this session's items (1797/1798) rewrite one
+spelling into another outright.
+
+⚠️ RUN SEQUENTIALLY, NOT IN PARALLEL. The Gremlin probe was started only after the GQL one finished.
+Both measure time on one machine, and the GQL module's own note records a run voided by foreign load
+("48 foreign spinners had the box at load 25 ... the RATIOS still looked plausible, which is the
+trap"). A concurrent second probe is exactly that contamination, self-inflicted.
+
+⚠️ WHAT THE ALL-CLEAR DOES NOT COVER, because the probes say so themselves:
+
+- 12 GQL groups ran under 1 ms and were NOT compared: the vacuous-quantifier pair, four keyless
+  LIMIT statement-vs-clause pairs, the edge-seed routes, and two seek groups (items 578/580).
+  Several of those cover the paging surface items 1776-1778 worked on.
+- 18 Gremlin groups ran under 0.0005 ms per call and were not compared: every id-lookup pair, the
+  vacuous-label pairs, and the hop spellings `out(T)` vs `outE(T).inV()` (item 1307's own lever).
+- The Gremlin NULL CONTROL is 1.63x at 66.4 ms - one traversal against ITSELF reading 40.630 and
+  66.362 ms. So at that cost band the instrument cannot resolve anything under 1.63x, which means
+  it could not have seen item 1810's 1.14x or item 1807's 1.19x. Those were measured on the
+  dedicated probe with alternated rounds, which is the right instrument; the point is that "0
+  flagged" here is not evidence that a 1.1-1.6x spelling gap does not exist at that band.
+
+TWO FOLLOW-UPS, NAMED WITH THEIR REASON
+
+1. Raise `SPELL_N` (or `SPELL_FLOOR` for the groups that are fast BECAUSE they seek) until the 30
+   uncompared groups are measurable. An uncompared group is not a clean one.
+2. Find out why one Gremlin traversal against itself spreads 1.63x at 66 ms with SPELL_REPS=9. The
+   probe's own note says single runs are bimodal and 9 reps is the tighter setting, so a bimodal
+   group at that cost is either a real engine bimodality worth knowing about or a harness artifact
+   - and either answer changes what this probe can be used for.
+
+GATES. No source change. Both probes exit 0; `SPELL_N=200000 SPELL_REPS=9` per the probe's own
+guidance (single runs are bimodal), each under `timeout` and `MemoryMax=16G`.
