@@ -82104,7 +82104,7 @@ named mechanism. It is also a realistic shape — "per group, aggregate over the
 join-and-aggregate looks like. The `hop2*` cluster is 420-510 ms with no twin and no identified rung,
 and `varlen*` needs a non-degenerate fixture before any number from it is worth acting on.
 
-### Item 1786 — ❌ **NO SUPERLINEARITY: the `varlen*` and `hop2*` general-path rows all AMORTIZE as fanout rises**, so the degenerate fixture was hiding nothing. `varlenproj` takes 20.31x the time for 28.0x the rows and its per-row cost FALLS 952 → 690 ns. What the sweep does price is the prize: **689.7 ns/row against a rung's 59.7 — 11.6x — on the same fixture**, which is the general-path overhead and the ceiling for any rung built here
+### Item 1786 — ❌ **NO SUPERLINEARITY: the `varlen*` and `hop2*` general-path rows all AMORTIZE as fanout rises**, so the degenerate fixture was hiding nothing. `varlenproj` takes 20.31x the time for 28.0x the rows and its per-row cost FALLS 952 → 690 ns. What the sweep does price is the prize: **689.7 ns/row against a rung's 59.7 — 11.6x — on the same fixture**, which is the general-path overhead and the ceiling for any rung built here — ⚠️ **TAKEN AT ITEM 1814 and the ceiling held: the rung measured 5.851x, not 11.6x, so about half the priced gap was reachable**
 
 Item 1785 measured the eight general-path shapes and flagged two of them as the largest numbers on the
 table (`varlenproj` 934.9 ms, `varlendistinctcount` 979.7) **and not yet priceable**, because
@@ -83986,7 +83986,7 @@ a 70 ns group. That is named rather than built, because adding a control reweigh
 GATES. No engine source change; the finding is recorded in the probe's own header so the next person
 to lower the floor reads it before interpreting a flag. bun run check 0 read unpiped.
 
-### Item 1813 — **item 1813 - THE CHAIN-ROWS RUNG IS SPECIFIED, NOT BUILT, AND THE REASON IT IS AVAILABLE AT ALL IS THAT A FAR-END-ONLY PROJECTION NEEDS NO PATH ENUMERATION: the existing CSR count recurrence already computes the multiplicity of every end slot, so `RETURN d.k` is that recurrence plus an emit loop. This is items 1785/1786's 11.6x prize on the GQL probe's largest shape, and it is left for a dedicated run with its controls chosen in advance rather than started at the tail of a long session**
+### Item 1813 — ~~SPECIFIED, NOT BUILT~~ **BUILT AT ITEM 1814 — 5.851x on `hop3rows`, and three of this item's decisions were CORRECTED there: `hop3rowsboth` is a DECLINED control and never was a possible target, the rung generalises `hop2Projection`'s WALK rather than the CSR recurrence designed below, and it admits any plain row projection at `segments.length >= 3`.** ~~**item 1813 - THE CHAIN-ROWS RUNG IS SPECIFIED, NOT BUILT, AND THE REASON IT IS AVAILABLE AT ALL IS THAT A FAR-END-ONLY PROJECTION NEEDS NO PATH ENUMERATION: the existing CSR count recurrence already computes the multiplicity of every end slot, so `RETURN d.k` is that recurrence plus an emit loop. This is items 1785/1786's 11.6x prize on the GQL probe's largest shape, and it is left for a dedicated run with its controls chosen in advance rather than started at the tail of a long session**~~
 
 WHY IT IS AVAILABLE, WHICH IS THE PART WORTH RECORDING
 
@@ -84035,3 +84035,87 @@ rows it cannot reach. Item 1806 made the same call about a smaller refactor for 
 change that size wants a run of its own, with the controls named before the first line is written.
 
 GATES. No source change. bun run check 0 read unpiped.
+
+### Item 1814 — ✅ **SHIPPED: the chain-rows rung, 5.851x on `hop3rows` with every control flat** — and the cliff it closes was between two ADJACENT shapes rather than between a rung and none: two hops have had `hop2Projection` since item 1619 while the three-hop twin fell to the general matcher, so `hop2rows` ran at 116 ns/row and `hop3rows` at 2180. ⚠️ **Item 1813 designed this as a CSR recurrence and that is NOT what shipped**, and three of its decisions are corrected rather than followed
+
+THE MEASUREMENT. Three order-alternated rounds, dist rebuilt between arms, one shape per PROCESS
+(item 762), each arm asserted to BE its code by a `chainProjection` marker in the BUILT dist before
+any shape ran:
+
+```text
+    shape            main    branch   ratio   resolved   rows
+    hop3rows   TARGET  818.5   139.9   5.851x   YES       SAME
+    hop2rows           360.4   333.4   1.081    no        SAME   <- the OTHER rung
+    hop3rowsboth      1116.1  1149.5   0.971    no        SAME   <- DECLINED by this rung
+    hoprows            222.4   205.3   1.083    no        SAME
+    sortedpage         185.8   185.4   1.002    no        SAME
+    control              9.0     9.0   1.000    no        SAME
+    point              101.6    99.9   1.017    no        SAME
+```
+
+The target's ranges do not overlap (main 810.8-1249.9 against the branch's 136.3-313.2); every other
+row overlaps. Row counts are identical on every shape in both arms.
+
+⚠️ **5.851x AGAINST ITEM 1786'S 11.6x CEILING, WHICH IS THE HONEST HALF OF THIS.** 1813 wrote "THE
+PRICE IS A CEILING, NOT A PROMISE … expect less", and about half the priced gap was reachable. The
+residual is visible in the per-row figures: the rung answers `hop3rows` at 350 ns/row where
+`hop2Projection` answers `hop2rows` at 111, so it costs 3.15x per row for 1.33x the levels. ⚠️ **That
+gap is NOT YET EXPLAINED and is not claimed as inherent** — the recursive descent, `projectRow`'s
+per-row allocation and the per-level bucket lookup are each candidates, and none has been ablated.
+A follow-up with its own control, not a conclusion.
+
+WHAT CHANGED FROM 1813'S DESIGN, AND WHY. Reading the engine first is what moved it:
+`hop2Projection` already answers this family one segment down, carrying ~100 lines of
+individually-measured admission rules — a clause `WHERE` carried and evaluated at the DEEPEST level,
+a MEASURED refusal of a start-reading predicate (3.7x WORSE when admitted at two hops), the path-mode
+question settled by experiment rather than reasoning. A CSR recurrence beside it would have to
+re-derive all of that. Generalising the walk reuses it.
+
+- ⚠️ **`hop3rowsboth` IS A DECLINED CONTROL AND NEVER WAS A POSSIBLE TARGET.** 1813 said to measure
+  the win on `hop3rows` AND `hop3rowsboth`. An undirected leg declines in BOTH designs — `both`
+  visits a self-loop from both ends — so the probe's largest shape (1816 ms over 10 reps) cannot be
+  taken by this rung at all. It is in the table above as the control it actually is.
+- ADMIT any plain row projection, not only one `<farVar>.<key>`: `plainRowProjection` plus the
+  free-variable test is what hop2 already uses, and it admits interior variables and multi-column
+  rows on the same guarantees.
+- ADMIT `segments.length >= 3`, leaving two to `hop2Projection`. Two detectors on one family would
+  let `runLinear`'s chain order decide which answers it — `rung-precedence-decides-speed`'s
+  recorded failure, 1.80-6.00x at item 1583. The two rungs are disjoint by construction, and
+  `routes-fired.test.ts`'s three-hop and four-hop rows are what hold that boundary.
+
+THE ROW-ORDER PRE-CONDITION, SETTLED BEFORE THE FIRST LINE as 1813 instructed. The GQL differential
+fuzzer compares this family as a MULTISET: `totallyOrdered(q)` admits a query only when it contains
+the literal `n.n AS t` AND its final sort key is `t`, so an `ORDER BY`-less chain falls to
+`resultsEqual`, which sorts the rows away. Row order is genuinely free (item 198,
+`order-is-unspecified`).
+
+⚠️ AND A HAZARD 1813'S REFUSE LIST DID NOT NAME: a bare `LIMIT` with no `ORDER BY` makes row order
+decide WHICH rows survive, turning a free choice into an observable one. `plainRowProjection` already
+declines paging so the rung inherits the refusal — now written down rather than relied on by
+accident.
+
+PROVEN REACHED, NOT ASSUMED. A green suite after adding a rung says nothing: an unreached arm and an
+ineffective one both read as "no change", which is item 1713's mistake. A `throw` at `descend`'s
+first statement fails **24 tests in this item's own file AND 69 across the existing gql suite** — so
+three-plus-segment chain projections were already exercised by tests written before this rung, and
+those 69 now pass THROUGH it. ⚠️ The new file's oracle is the second half: the engine's own general
+matcher, reached by RESPELLING the query with an unused relationship variable (`hopOf` refuses
+`rel.variable !== undefined`, so `-[r:R]->` declines the rung while meaning exactly what `-[:R]->`
+means when `r` is never read). A differential inside one engine, which this family needs because the
+route is answer-equivalent.
+
+TWO THINGS I ASSERTED WRONGLY AND THE ENGINE CORRECTED:
+
+- An UNREAD path variable is **ADMITTED**. `compileLinear` rewrites the clauses before any detector
+  runs and one rewrite ELIDES a path variable nothing reads, so there is no `pathVar` left to
+  refuse — checked across the family, the one-hop and two-hop rungs admit their own shape with an
+  unread `p` identically. The module's `pathVar` guard is defence in depth, the same status
+  `hop2-projection.ts` records for its copy; what actually declines is READING it.
+- The fixture's hand-written multiplicity was `[7,7,7,8]` and is `[7,7,7,8,9,9,9,10]`: every vertex
+  carries `:L`, so adding a fourth level — needed because the four-segment case was comparing two
+  EMPTY results and asserting nothing — also created new three-hop paths one level down.
+
+GATES. bun run check 0 read unpiped. gql 4,544 pass / 0 fail. bun run fuzz 57 pass / 0 fail —
+load-bearing here, because the differential fuzzer's `chain3` band compares this exact family against
+the Rust engine. `routes-fired.test.ts`'s own census guard caught the detector count going 20 -> 21,
+corrected in the four places that state it.
