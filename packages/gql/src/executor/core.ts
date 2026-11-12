@@ -5525,6 +5525,8 @@ export type CLinear = {
   hopProjection: RowsFn | null;
   /** A two-segment pattern projecting rows (item 1619) — `detectHop2Projection`. */
   hop2Projection: AlwaysRowsFn | null;
+  /** THREE OR MORE segments projecting rows (item 1814) — `detectChainProjection`. */
+  chainProjection: AlwaysRowsFn | null;
   /** The same walk under ONE foldable aggregate — `RETURN max(x.k)`; else null. */
   hopAggregate: RowsFn | null;
   /** The same walk under TWO OR MORE foldable aggregates — `RETURN count(*), max(x.k)`. */

@@ -1572,7 +1572,7 @@ const fastPath = (linear: CLinear, graph: Graph, params: Params): Row[] | undefi
    * one extra null check and nothing more, which the controls confirm is flat.
    */
   /**
-   * ⚠️ THIS BRANCH IS NOT PINNED BY ANY TEST, and that is true of all twenty rungs rather than of
+   * ⚠️ THIS BRANCH IS NOT PINNED BY ANY TEST, and that is true of all twenty-one rungs rather than of
    * this one. `routes-fired.test.ts` asserts that each DETECTOR fires for its shape — which is what
    * catches a compile-time regression — but removing the branch that CONSUMES it is
    * answer-equivalent and the whole suite passes. Item 1619 checked whether row ORDER could
@@ -1583,6 +1583,20 @@ const fastPath = (linear: CLinear, graph: Graph, params: Params): Row[] | undefi
    */
   if (linear.hop2Projection) {
     return linear.hop2Projection(graph, params);
+  }
+
+  /**
+   * THREE OR MORE segments, the same walk one level deeper (item 1814).
+   *
+   * ⚠️ ITS POSITION IS FOR READING, NOT FOR CORRECTNESS OR COST, and the two rungs cannot compete:
+   * `detectChainProjection` requires `segments.length >= 3` and `detectHop2Projection` requires
+   * exactly 2, so the shapes are disjoint by construction and either order answers the same
+   * queries. It sits here because that is where a reader looks for it. The branch itself is not
+   * free — item 418 measured a branch ahead of a hot dispatch costing the shape it does not claim
+   * 1.12x — which is why it goes BELOW both hop rungs rather than above them.
+   */
+  if (linear.chainProjection) {
+    return linear.chainProjection(graph, params);
   }
 
   // The same walk under ONE foldable aggregate — `RETURN max(b.k)` — folded as the rows are

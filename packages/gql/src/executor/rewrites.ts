@@ -14,7 +14,7 @@
  * ⚠️ SO THE COMPOSITION IN `compileLinear` IS THE MOST LOAD-BEARING THING HERE. Each rewrite's
  * nesting is a measured choice with a comment saying why, and "answer-equivalent" does NOT mean
  * "order-independent": a rewrite that emits a clause another pass folds must run INSIDE that pass,
- * or the clause stands and a standing `LET` is off every one of the twenty rungs.
+ * or the clause stands and a standing `LET` is off every one of the twenty-one rungs.
  *
  * WHY IT IS A MODULE. Measured before moving it: 23 symbols, 2,005 lines, importing 33 values from
  * `core.ts` and — once `compile` moved to `compile.ts` — exporting NOTHING that `core.ts` reads
@@ -34,6 +34,7 @@ import type {
   SortItem,
 } from '../ast.js';
 import { isSyntheticParam } from '../auto-param.js';
+import { detectChainProjection } from './chain-projection.js';
 import { WRITE_CLAUSES, procedureSpec } from './clauses.js';
 import type { CClause, CLinear, CMergeUpdate, CNode, CSeedHint, HintMap } from './core.js';
 import {
@@ -1987,7 +1988,7 @@ const dropUnreadGroupBinds = (clauses: readonly Clause[]): readonly Clause[] => 
 };
 // EXPORTED for ROUTE ASSERTIONS, and deliberately not from `index.ts` (item 911).
 //
-// The twenty detectors below are answer-equivalent routes: a query whose shortcut stops firing
+// The twenty-one detectors below are answer-equivalent routes: a query whose shortcut stops firing
 // returns the same rows by the general pipeline, so NO correctness test can see the difference.
 // Item 910 priced them at 25% of planning the big query and named "a route assertion per detector"
 // as the prerequisite for sharing work between them — because the failure mode of that refactor is
@@ -2014,7 +2015,7 @@ export const compileLinear = (linear: LinearQuery): CLinear => {
       // OUTSIDE UNTIL ITEM 1662 MEASURED WHAT THAT COST. Once that rewrite could emit a `LET` of
       // its own (a computed yield, `RETURN x.k AS c`), running it after the `LET`-folding pass
       // left the `LET` standing, and a standing `LET` is OFF EVERY RUNG — `[match, let, return]`
-      // carries none of the twenty, where the folded `[match, return]` carries `hopAggregate`.
+      // carries none of the twenty-one, where the folded `[match, return]` carries `hopAggregate`.
       // Measured: the rewrite fired, the route assertion passed, and the arm went 3110 -> 2165
       // ns an outer row against the 330 its hand-written twin reaches. 1.44x of an available
       // 9.4x, with the whole gap in the composition rather than in either rewrite.
@@ -2068,7 +2069,7 @@ export const compileLinear = (linear: LinearQuery): CLinear => {
   // and an empty list matches none of them.
   const fast = repeatsNodeVariable(source) ? [] : source;
 
-  // EVERY detector RUNS — this is twenty independent compile-time probes, not a ladder, and
+  // EVERY detector RUNS — this is twenty-one independent compile-time probes, not a ladder, and
   // the field order below carries no precedence whatsoever. PRECEDENCE LIVES IN ONE PLACE:
   // `runLinear`'s `if (linear.…)` chain in `executor/clauses.ts`, which is lazy and therefore
   // the only thing that decides which rung answers a shape. Read that chain's comments before
@@ -2127,6 +2128,7 @@ export const compileLinear = (linear: LinearQuery): CLinear => {
     reachShortcut: detectReachableShortcut(fast, clauses),
     hopProjection: detectHopProjection(fast, clauses),
     hop2Projection: detectHop2Projection(fast, clauses),
+    chainProjection: detectChainProjection(fast, clauses),
     hopAggregate,
     multiHopAggregate: detectMultiHopAggregate(fast, clauses),
     distinctProjection: detectDistinctProjection(fast, clauses),
