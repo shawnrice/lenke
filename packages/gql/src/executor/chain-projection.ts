@@ -151,7 +151,14 @@ export const detectChainProjection = (
     return null;
   }
 
-  return walk(nodes, hops, projection, gate);
+  // ⚠️ THE TWO WALKS ANSWER THE SAME QUERIES; the gate picks the one that CAN. Item 1816 measured
+  // the blocked sweep at 1.49-2.79x of the descent where locality is poor and 0.95-0.97x (ranges
+  // overlapping) where it is already good, so it is taken whenever it is applicable rather than
+  // behind a topology predictor — the engine has no cheap way to know a graph's locality, and
+  // `hasFastPath`-style gating was DECLINED at item 1511.
+  return farEndOnly(ret.projection.items, where, nodes[nodes.length - 1].variable)
+    ? sweep(nodes, hops, projection, gate)
+    : walk(nodes, hops, projection, gate);
 };
 
 /**
@@ -282,6 +289,218 @@ const descend = (level: number, v: Vertex, d: Descent): void => {
 
     d.out.push(projectRow(d.projection, d.binding, d.params, d.graph));
   }
+};
+
+/**
+ * The BLOCKED LEVEL-SYNCHRONOUS sweep's state. Separate from `Descent` because the two walks need
+ * different things: the descent carries a path's worth of bindings, this carries two frontier
+ * buffers and only the far variable.
+ */
+type Sweep = {
+  graph: Graph;
+  params: Params;
+  hops: readonly Hop[];
+  labels: readonly (LabelExpr | undefined)[];
+  last: number;
+  farVar: string | undefined;
+  binding: Map<string, unknown>;
+  projection: CProjection;
+  gate: CompiledExpr | undefined;
+  out: Row[];
+  cur: Vertex[];
+  nxt: Vertex[];
+};
+
+/**
+ * How many starts one sweep carries. Chosen so the live frontier stays small enough to be resident
+ * rather than sized to the graph: item 1816 measured the unblocked whole-graph frontier LOSING
+ * 1.4-1.7x against the depth-first descent at 200,000 vertices on a cache-friendly topology, because
+ * it allocates an array per level for a walk already running at ~16 ns/row. Blocking is what keeps
+ * the batching while giving that back — same measurement, 0.95-0.97x on the cells where the
+ * unblocked form lost, and 1.49-2.79x where it won.
+ */
+const SWEEP_BLOCK = 4096;
+
+/**
+ * One block, level by level: expand `cur[0..len)` into `nxt`, swap, and emit at the deepest level.
+ *
+ * ⚠️ AT MODULE SCOPE ON PURPOSE. `ts-closure-size-is-load-bearing` records a walk written INLINE in
+ * a returned closure giving UNRELATED queries a new slow mode at 4x, so this is hoisted exactly as
+ * `descend` is.
+ *
+ * ⚠️ THE ROW ORDER DIFFERS FROM `descend`'S and that is free here, not overlooked: row order is
+ * unspecified (item 198) and `plainRowProjection` declines every pager, so nothing can observe which
+ * rows survive. A bare `LIMIT` is the case that would make order observable and it is already
+ * refused one level up.
+ */
+const sweepBlock = (s: Sweep, len: number): void => {
+  let curLen = len;
+
+  for (let level = 0; level < s.last; level += 1) {
+    const hop = s.hops[level];
+    const landed = level + 1;
+    const label = s.labels[landed];
+    const emitting = landed === s.last;
+    let nxtLen = 0;
+
+    for (let i = 0; i < curLen; i += 1) {
+      const v = s.cur[i];
+      const bucket = (hop.forward ? v.adjFrom : v.adjTo)?.get(hop.type);
+
+      if (bucket === undefined) {
+        continue;
+      }
+
+      for (const e of bucket) {
+        const w: Vertex = hop.forward ? e.to : e.from;
+
+        if (!matchesLabel(w, label)) {
+          continue;
+        }
+
+        if (!emitting) {
+          if (nxtLen === s.nxt.length) {
+            s.nxt.push(w);
+          } else {
+            s.nxt[nxtLen] = w;
+          }
+
+          nxtLen += 1;
+          continue;
+        }
+
+        if (s.farVar !== undefined) {
+          s.binding.set(s.farVar, w);
+        }
+
+        /** `asTruth(...) !== true` for the same reason `descend` uses it: UNKNOWN drops like FALSE. */
+        if (
+          s.gate !== undefined &&
+          asTruth(s.gate({ binding: s.binding, params: s.params, graph: s.graph })) !== true
+        ) {
+          continue;
+        }
+
+        s.out.push(projectRow(s.projection, s.binding, s.params, s.graph));
+      }
+    }
+
+    if (emitting) {
+      return;
+    }
+
+    const swap = s.cur;
+
+    s.cur = s.nxt;
+    s.nxt = swap;
+    curLen = nxtLen;
+  }
+};
+
+/**
+ * The blocked sweep, for a chain NOTHING BUT THE FAR END READS.
+ *
+ * ⚠️ WHY IT NEEDS ITS OWN GATE AND CANNOT REPLACE `descend`. A level-synchronous walk batches a
+ * whole level, which DISCARDS the path that reached each vertex — so the moment a projected item or
+ * a carried `WHERE` reads an INTERIOR variable (`RETURN b.k, d.k` over a four-node chain, which the
+ * rung admits today), the information needed to answer is already gone. Carrying it back would mean
+ * materializing a path per frontier entry, which is the allocation this arm exists to avoid.
+ *
+ * ⚠️ ITEM 1813 SPECIFIED EXACTLY THIS CONDITION — "a far-end-only projection needs no path
+ * enumeration" — and item 1814 OVERRODE it, correctly, because the general rung admits interior
+ * reads on the same guarantees. It returns here as the gate rather than the shape rule: 1813's
+ * insight was about which walks can skip the path, not about which queries the rung should admit.
+ */
+const sweep = (
+  nodes: readonly NodePattern[],
+  hops: readonly Hop[],
+  projection: CProjection,
+  gate: CompiledExpr | undefined,
+): AlwaysRowsFn => {
+  const rawLabels = nodes.map((n) => n.label);
+  const last = nodes.length - 1;
+  const farVar = nodes[last].variable;
+
+  return (graph: Graph, params: Params): Row[] => {
+    const labels = rawLabels.map((l) => effectiveLabel(graph, l));
+    const out: Row[] = [];
+    const s: Sweep = {
+      graph,
+      params,
+      hops,
+      labels,
+      last,
+      farVar,
+      binding: new Map<string, unknown>(),
+      projection,
+      gate,
+      out,
+      cur: [],
+      nxt: [],
+    };
+    const [startLabel] = labels;
+    let len = 0;
+
+    for (const a of graph.vertices) {
+      if (!matchesLabel(a, startLabel)) {
+        continue;
+      }
+
+      if (len === s.cur.length) {
+        s.cur.push(a);
+      } else {
+        s.cur[len] = a;
+      }
+
+      len += 1;
+
+      if (len === SWEEP_BLOCK) {
+        sweepBlock(s, len);
+        len = 0;
+      }
+    }
+
+    if (len > 0) {
+      sweepBlock(s, len);
+    }
+
+    return out;
+  };
+};
+
+/**
+ * Does nothing but the FAR variable get read? The gate for `sweep` above.
+ *
+ * An unnamed or unread interior variable is fine — what matters is whether anything READS one, since
+ * that is what the batched walk cannot answer. A projected item reading no variable at all (a
+ * literal) is admitted for the same reason.
+ */
+export const farEndOnly = (
+  items: readonly { readonly expr: unknown }[],
+  where: unknown,
+  farVar: string | undefined,
+): boolean => {
+  if (farVar === undefined) {
+    return false;
+  }
+
+  for (const item of items) {
+    for (const name of freePredicateVars(item.expr as never)) {
+      if (name !== farVar) {
+        return false;
+      }
+    }
+  }
+
+  if (where !== undefined) {
+    for (const name of freePredicateVars(where as never)) {
+      if (name !== farVar) {
+        return false;
+      }
+    }
+  }
+
+  return true;
 };
 
 /**

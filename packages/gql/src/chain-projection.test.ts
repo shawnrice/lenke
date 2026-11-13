@@ -18,6 +18,7 @@ import { describe, expect, it } from 'bun:test';
 import { Graph } from '@lenke/core';
 import type { Vertex } from '@lenke/core';
 
+import { farEndOnly } from './executor/chain-projection.ts';
 import { compileLinear } from './executor/rewrites.ts';
 import { query } from './index.ts';
 import { parse } from './parser.ts';
@@ -347,5 +348,163 @@ describe('a self-loop at depth three', () => {
 
       expect(sorted(a)).toEqual(sorted(b));
     }
+  });
+});
+
+/**
+ * Item 1816 — the BLOCKED LEVEL-SYNCHRONOUS sweep and the gate that chooses it.
+ *
+ * ⚠️ TWO THINGS HERE ARE NOT COVERED BY THE SUITE ABOVE, AND BOTH WERE MEASURED TO BE UNCOVERED.
+ *
+ * The first is the BLOCK BOUNDARY. `SWEEP_BLOCK` is 4096 starts and every fixture in this file is
+ * three orders of magnitude smaller, so the 33 pre-existing tests that a `throw` in `sweepBlock`
+ * proved reach it all run a SINGLE block — the buffer swap, the reuse across blocks and the
+ * `nxtLen === nxt.length` growth path are exercised by none of them. A fixture that crosses the
+ * boundary is the only way to reach that code.
+ *
+ * The second is the GATE. Choosing between two answer-equivalent walks is invisible to a
+ * differential test by construction — `perf-gate-needs-its-own-test`'s rule — so `farEndOnly` is
+ * exported and tested as a pure function rather than inferred from timings.
+ */
+describe('item 1816 — the blocked sweep', () => {
+  /** Crosses `SWEEP_BLOCK` (4096): 5,000 starts over four levels, so there are at least two blocks. */
+  const wide = (): Graph => {
+    const g = new Graph();
+    const n = 5000;
+
+    for (let i = 0; i < n; i += 1) {
+      g.addVertex({ id: `w${i}`, labels: ['W'], properties: { k: i % 7 } });
+    }
+
+    // Two out-edges per vertex, so multiplicity is not 1 and a dropped copy is visible, and the
+    // targets are NOT a single linear map (items 1516/1518: `(a*k+b) % N` collapses a fanout).
+    for (let i = 0; i < n; i += 1) {
+      g.addEdge({
+        id: `we${i}a`,
+        from: g.getVertexById(`w${i}`) as Vertex,
+        to: g.getVertexById(`w${(i + 1) % n}`) as Vertex,
+        labels: ['R'],
+        properties: {},
+      });
+      g.addEdge({
+        id: `we${i}b`,
+        from: g.getVertexById(`w${i}`) as Vertex,
+        to: g.getVertexById(`w${(i * 13 + 5) % n}`) as Vertex,
+        labels: ['R'],
+        properties: {},
+      });
+    }
+
+    return g;
+  };
+
+  it('agrees with the general matcher across a block boundary', () => {
+    agrees(
+      wide(),
+      'MATCH (a:W)-[:R]->(b:W)-[:R]->(c:W)-[:R]->(d:W) RETURN d.k AS k',
+      'MATCH (a:W)-[r1:R]->(b:W)-[r2:R]->(c:W)-[r3:R]->(d:W) RETURN d.k AS k',
+    );
+  });
+
+  it('emits the full multiplicity across a block boundary', () => {
+    // Out-degree 2 at every level over 5,000 starts and three hops: 5000 * 2^3 rows, and a walk
+    // that lost a copy per block or reused a buffer wrongly would come up short rather than wrong.
+    const rows = query(
+      wide(),
+      'MATCH (a:W)-[:R]->(b:W)-[:R]->(c:W)-[:R]->(d:W) RETURN d.k AS k',
+    ) as Record<string, unknown>[];
+
+    expect(rows.length).toBe(5000 * 8);
+  });
+
+  it('agrees across a block boundary with a carried WHERE on the far end', () => {
+    agrees(
+      wide(),
+      'MATCH (a:W)-[:R]->(b:W)-[:R]->(c:W)-[:R]->(d:W) WHERE d.k = 3 RETURN d.k AS k',
+      'MATCH (a:W)-[r1:R]->(b:W)-[r2:R]->(c:W)-[r3:R]->(d:W) WHERE d.k = 3 RETURN d.k AS k',
+    );
+  });
+
+  /**
+   * ⚠️ THE CASE THE SWEEP CANNOT ANSWER, which is why the gate exists. Batching a level discards the
+   * path that reached it, so an INTERIOR read has to route to the depth-first descent. If the gate
+   * ever admitted this, the rows would be wrong rather than slow.
+   */
+  it('agrees when an INTERIOR variable is read, which routes to the descent', () => {
+    agrees(
+      wide(),
+      'MATCH (a:W)-[:R]->(b:W)-[:R]->(c:W)-[:R]->(d:W) RETURN b.k AS bk, d.k AS k',
+      'MATCH (a:W)-[r1:R]->(b:W)-[r2:R]->(c:W)-[r3:R]->(d:W) RETURN b.k AS bk, d.k AS k',
+    );
+  });
+
+  it('agrees when a carried WHERE reads an interior variable', () => {
+    agrees(
+      wide(),
+      'MATCH (a:W)-[:R]->(b:W)-[:R]->(c:W)-[:R]->(d:W) WHERE c.k = 2 RETURN d.k AS k',
+      'MATCH (a:W)-[r1:R]->(b:W)-[r2:R]->(c:W)-[r3:R]->(d:W) WHERE c.k = 2 RETURN d.k AS k',
+    );
+  });
+
+  it('still takes the rung in both routes', () => {
+    expect(takesRung('MATCH (a:W)-[:R]->(b:W)-[:R]->(c:W)-[:R]->(d:W) RETURN d.k AS k')).toBe(true);
+    expect(
+      takesRung('MATCH (a:W)-[:R]->(b:W)-[:R]->(c:W)-[:R]->(d:W) RETURN b.k AS bk, d.k AS k'),
+    ).toBe(true);
+  });
+});
+
+/**
+ * The gate as a PURE FUNCTION. A route choice is answer-equivalent, so a mutant that inverts it
+ * survives every differential test in this file — `perf-gate-needs-its-own-test`'s rule, and the
+ * reason `farEndOnly` is exported at all.
+ */
+describe('item 1816 — farEndOnly', () => {
+  /**
+   * ⚠️ EXPRESSIONS COME FROM THE PARSER, NOT FROM HAND. The first cut of this test built
+   * `{kind: 'property', target: {kind: 'variable', …}}` by hand and every case threw:
+   * `freePredicateVars` has an exhaustive `never` arm, the real node is `{kind: 'prop', variable,
+   * key}`, and a hand-written AST is a guess about the grammar that drifts the moment the grammar
+   * moves. Parsing a one-line query instead makes the fixture the grammar's own.
+   */
+  const partOf = (src: string) =>
+    (parse(src) as never as { parts: readonly { clauses: readonly Record<string, never>[] }[] })
+      .parts[0];
+
+  const v = (name: string) => {
+    const ret = partOf(`MATCH (${name}:W) RETURN ${name}.k AS k`).clauses.find(
+      (c) => c.kind === ('return' as never),
+    ) as never as { projection: { items: readonly { expr: unknown }[] } };
+
+    return ret.projection.items[0];
+  };
+
+  const whereOn = (name: string) => {
+    const m = partOf(`MATCH (${name}:W) WHERE ${name}.k = 3 RETURN ${name}.k AS k`).clauses.find(
+      (c) => c.kind === ('match' as never),
+    ) as never as { where: unknown };
+
+    return m.where;
+  };
+
+  it('admits a projection reading only the far variable', () => {
+    expect(farEndOnly([v('d')], undefined, 'd')).toBe(true);
+  });
+
+  it('refuses a projection reading an interior variable', () => {
+    expect(farEndOnly([v('d'), v('b')], undefined, 'd')).toBe(false);
+  });
+
+  it('refuses a WHERE reading an interior variable even when the projection is clean', () => {
+    expect(farEndOnly([v('d')], whereOn('c'), 'd')).toBe(false);
+  });
+
+  it('admits a WHERE reading only the far variable', () => {
+    expect(farEndOnly([v('d')], whereOn('d'), 'd')).toBe(true);
+  });
+
+  /** An UNNAMED far node cannot be read, so nothing could project it — and the sweep needs the key. */
+  it('refuses an unnamed far node', () => {
+    expect(farEndOnly([v('d')], undefined, undefined)).toBe(false);
   });
 });

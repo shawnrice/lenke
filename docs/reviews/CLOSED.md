@@ -82104,7 +82104,7 @@ named mechanism. It is also a realistic shape — "per group, aggregate over the
 join-and-aggregate looks like. The `hop2*` cluster is 420-510 ms with no twin and no identified rung,
 and `varlen*` needs a non-degenerate fixture before any number from it is worth acting on.
 
-### Item 1786 — ❌ **NO SUPERLINEARITY: the `varlen*` and `hop2*` general-path rows all AMORTIZE as fanout rises**, so the degenerate fixture was hiding nothing. `varlenproj` takes 20.31x the time for 28.0x the rows and its per-row cost FALLS 952 → 690 ns. What the sweep does price is the prize: **689.7 ns/row against a rung's 59.7 — 11.6x — on the same fixture**, which is the general-path overhead and the ceiling for any rung built here — ⚠️ **TAKEN AT ITEM 1814 and the ceiling held: the rung measured 5.851x, not 11.6x, so about half the priced gap was reachable**
+### Item 1786 — ❌ **NO SUPERLINEARITY: the `varlen*` and `hop2*` general-path rows all AMORTIZE as fanout rises**, so the degenerate fixture was hiding nothing. `varlenproj` takes 20.31x the time for 28.0x the rows and its per-row cost FALLS 952 → 690 ns. What the sweep does price is the prize: **689.7 ns/row against a rung's 59.7 — 11.6x — on the same fixture**, which is the general-path overhead and the ceiling for any rung built here — ⚠️ **TAKEN AT ITEM 1814 and the ceiling held: the rung measured 5.851x, not 11.6x, so about half the priced gap was reachable** — ⚠️ **AND EXTENDED AT ITEM 1816 by a further 1.424x on the same row, so the cumulative take against this item's 11.6x is now ~8.33x. The remaining gap is NOT a residual in the rung: item 1815 refuted that framing and showed the per-row figure this ceiling was read off is dominated by the probe fixture's compounding stride**
 
 Item 1785 measured the eight general-path shapes and flagged two of them as the largest numbers on the
 table (`varlenproj` 934.9 ms, `varlendistinctcount` 979.7) **and not yet priceable**, because
@@ -84036,7 +84036,7 @@ change that size wants a run of its own, with the controls named before the firs
 
 GATES. No source change. bun run check 0 read unpiped.
 
-### Item 1814 — ✅ **SHIPPED: the chain-rows rung, 5.851x on `hop3rows` with every control flat** — and the cliff it closes was between two ADJACENT shapes rather than between a rung and none: two hops have had `hop2Projection` since item 1619 while the three-hop twin fell to the general matcher, so `hop2rows` ran at 116 ns/row and `hop3rows` at 2180. ⚠️ **Item 1813 designed this as a CSR recurrence and that is NOT what shipped**, and three of its decisions are corrected rather than followed. ⚠️ **AND THIS ITEM'S OWN "UNEXPLAINED 3.15x PER-ROW RESIDUAL" IS REFUTED AT ITEM 1815: all three candidates it named were ablated and none was the cause — the per-row gap is the PROFILE PROBE'S COMPOUNDING STRIDE, not the rung. The 5.851x stands; the residual was never there to optimize**
+### Item 1814 — ✅ **SHIPPED: the chain-rows rung, 5.851x on `hop3rows` with every control flat** — and the cliff it closes was between two ADJACENT shapes rather than between a rung and none: two hops have had `hop2Projection` since item 1619 while the three-hop twin fell to the general matcher, so `hop2rows` ran at 116 ns/row and `hop3rows` at 2180. ⚠️ **Item 1813 designed this as a CSR recurrence and that is NOT what shipped**, and three of its decisions are corrected rather than followed. ⚠️ **AND THIS ITEM'S OWN "UNEXPLAINED 3.15x PER-ROW RESIDUAL" IS REFUTED AT ITEM 1815: all three candidates it named were ablated and none was the cause — the per-row gap is the PROFILE PROBE'S COMPOUNDING STRIDE, not the rung. The 5.851x stands; the residual was never there to optimize.** ⚠️⚠️ **AND THIS ITEM'S CLAIM OF CROSS-ENGINE COVERAGE IS FALSE, CORRECTED AT ITEM 1816: `chain3=57/34/55` counted `count(*)` shapes, which this rung DECLINES, so the row route had NO byte-identity coverage — proven by a `throw` in the row walk leaving `bun run fuzz differential` green. `packages/native/src/chain-rows-parity.test.ts` is the coverage**
 
 THE MEASUREMENT. Three order-alternated rounds, dist rebuilt between arms, one shape per PROCESS
 (item 762), each arm asserted to BE its code by a `chainProjection` marker in the BUILT dist before
@@ -84224,3 +84224,110 @@ GATES. bun run check 0 read unpiped. gql 4,544 pass / 0 fail. ⚠️ `bun run fu
 not load-bearing for this item: no engine source changed — the diff is one new probe, PROBES.md and
 this file — and the two measurement mutants were restored from pristine copies under
 `crates/lenke-engine/target/pristine-1815/` with `git status` verified clean after each.
+
+### Item 1816 — ✅ **SHIPPED: a BLOCKED LEVEL-SYNCHRONOUS sweep inside the chain rung, 1.424x on `hop3rows` with every control overlapping** — taken only when the projection and carried `WHERE` read the FAR END ONLY, because batching a level discards the path that reached it. ⚠️ **AND IT FOUND THAT ITEM 1814'S CLAIM OF CROSS-ENGINE COVERAGE FOR THIS RUNG WAS FALSE: every `chain3` shape the differential fuzzer generates is a `count(*)`, which the rung DECLINES, so the row route had no byte-identity coverage at all.** A dedicated parity test closes that, with teeth verified on BOTH walks
+
+THE MEASUREMENT. Five order-alternated rounds, dist rebuilt between arms, one shape per PROCESS
+(item 762), each arm asserted to BE its code by a `sweepBlock` marker in the BUILT dist before any
+shape ran:
+
+```text
+    shape          descent     sweep   ratio  resolved  answer  rows
+    hop3rows TARGET  135.1      94.9   1.424   YES      SAME    SAME
+    hoprows          285.8     292.6   0.977   no       SAME    SAME
+    sortedpage       260.4     259.2   1.005   no       SAME    SAME
+    control            9.1       9.0   1.011   no       SAME    SAME
+```
+
+Target `[131, 143.3]` against `[91.3, 103.1]`, non-overlapping; every control overlaps. A separate
+three-round pass also read `hop3rowsboth` at 0.995 and `hop2rows` at 1.093, both overlapping — the
+first is DECLINED by the rung entirely and is in the table as the control it is.
+
+⚠️ **A FALSE REGRESSION WORTH RECORDING, BECAUSE IT WOULD HAVE KILLED THIS ITEM.** The first
+three-round A/B read `hoprows` at **0.941** and `sortedpage` at **0.947** with ranges RESOLVED
+against the sweep, which is `executor-edits-perturb`'s exact signature and reason enough to decline
+a win (item 1466 declined 3.3x on `simplePath` for it). Both refuted at five rounds and 300 reps:
+0.977 and 1.005, overlapping. **A 6% effect read off three rounds at 200 reps is the estimator, not
+the code** — CLAUDE.md's "anything under ~10% needs its own isolated harness", and the cost of
+believing the first pass would have been the whole item.
+
+WHAT THE MECHANISM IS, AND THE TWO ARMS THAT ARE NOT IT. `frontier-order-probe.mjs` prices visit
+order over ONE fixed graph, which is the question that matters — item 1815 measured a 9x locality
+spread by CHANGING the graph, which a user cannot do:
+
+```text
+  nodes stride      d     dfs   blocked    level   bl/dfs  lv/dfs
+  20000 compound    3   3.813     1.857    1.676     2.05    2.27
+  20000 chain       3   0.887     1.665    0.859     0.53*   1.03
+  20000 scattered   3   4.056     2.376    1.982     1.71    2.05
+ 200000 compound    3 229.556    82.393   82.274     2.79    2.79
+ 200000 chain       3   9.803    10.055   15.717     0.97    0.62
+ 200000 scattered   3 215.103   113.425  115.279     1.90    1.87
+```
+
+- ⚠️ **SORTING THE FRONTIER LOSES EVERYWHERE**, 0.14-0.67x. The sort costs more than the locality
+  it buys, and exactly one of eighteen cells exceeded 1.0 (at 1.032, inside noise). That matters
+  beyond this item: the ordering key would have been the dense vertex ordinal BUILT AND
+  DISQUALIFIED at items 1369-1372/1397, and **seven items had already arrived at that ordinal.**
+  This is the eighth and it did not need it — the win is the restructuring, not the order.
+- ⚠️ **THE UNBLOCKED WHOLE-GRAPH FRONTIER LOSES 1.4-1.7x at 200,000 on a cache-friendly
+  topology** (`lv/dfs` 0.62), because it allocates an array per level for a walk already running
+  at ~16 ns/row. Diagnosing that as ALLOCATION rather than batching predicted that a bounded
+  reused window would keep the win and drop the loss, and it does: `bl/dfs` 0.97 on the same cell.
+- `*` The one `blocked` cell reading 0.53 is the 8-rep median landing on a rare slow rep
+  (max 2.052 against a 0.718 median). Re-measured at 60 reps it reads **1.221, 1.232, 1.213** —
+  a consistent WIN. Same estimator lesson as the false regression above, twice in one item.
+
+THE GATE, AND ⚠️ **ITEM 1813 WAS RIGHT ABOUT SOMETHING ITEM 1814 OVERRODE.** A level-synchronous
+walk batches a level, which DISCARDS the path that reached each vertex — so the moment a projected
+item or carried `WHERE` reads an INTERIOR variable (`RETURN b.k, d.k`, which the rung admits today)
+the information needed is already gone. Carrying it back means materializing a path per frontier
+entry, which is the allocation this arm exists to avoid. So the sweep is gated on FAR-END-ONLY, and
+that is precisely 1813's "a far-end-only projection needs no path enumeration", which 1814 overrode
+— correctly, for the SHAPE RULE. 1813's insight was about which WALKS can skip the path, not which
+queries the rung should admit. Both items were right about different things.
+
+⚠️⚠️ **THE COVERAGE GAP THIS ITEM FOUND, WHICH IS WORSE THAN THE PERF WIN IS GOOD.** Item 1814
+recorded `bun run fuzz` green with `chain3=57/34/55` as evidence that the differential fuzzer
+"actually compared three-hop chains against the Rust engine rather than passing vacuously". **Every
+`chain3` shape that fuzzer generates ends in `RETURN count(*)`, and `detectChainProjection` declines
+an aggregating projection outright** — so the counter was measuring the degree-product and
+var-length-count routes, and the ROW rung had no cross-engine coverage whatsoever. The claim was
+true of chain COUNTS and false of chain ROWS.
+
+Found by deletion, not by reading: a `throw` at the row walk's first statement, and
+`bun run fuzz differential` still **PASSED**. Widening the fuzzer's band was tried FIRST and
+abandoned — the shapes were added to the `shape` array and sampled ZERO times in 4,678 queries, and
+a counter sitting at 0 forever is the very false signal that file's own comments warn about ("a band
+that generates NOTHING passes exactly like one that works"). So the gap is closed the way items 1582
+and 1728 closed theirs: **`packages/native/src/chain-rows-parity.test.ts`**, 30 explicit TS-vs-native
+cases over one NDJSON fixture, rows as multisets and COLUMN order exact.
+
+⚠️ **ITS TEETH ARE VERIFIED ON BOTH WALKS SEPARATELY**, which is the point of having a corpus rather
+than a shape: a `throw` in `sweepBlock` fails **15 of 30**, and a `throw` in `descend` fails **7**.
+Neither walk is covered by accident, and a corpus covering only one would have left the other exactly
+as uncovered as the fuzzer did.
+
+The in-engine evidence as well, since the route is answer-equivalent and a green suite proves nothing
+(item 1713): a `throw` in `sweepBlock` fails **33 PRE-EXISTING** gql tests, so the sweep is on the
+hot route and those 33 now pass THROUGH it. ⚠️ And `SWEEP_BLOCK` is 4096 while every fixture in
+`chain-projection.test.ts` was three orders of magnitude smaller, so the buffer swap, the cross-block
+reuse and the growth path were reached by NONE of those 33 — six new cases over a 5,000-start fixture
+cover the boundary, including a full-multiplicity assertion (`5000 * 2^3`) that a walk losing a copy
+per block would fail SHORT rather than wrong. The gate itself is exported and unit-tested as a pure
+function (`perf-gate-needs-its-own-test`: a route choice is answer-equivalent, so every mutant
+survives a differential), and a mutant making `farEndOnly` always admit **fails 7** of them.
+
+TWO THINGS I GOT WRONG IN THIS ITEM AND THE ENGINE CORRECTED:
+
+- The gate's unit tests were first written against a HAND-BUILT AST
+  (`{kind: 'property', target: {kind: 'variable', …}}`) and all four threw: `freePredicateVars`
+  has an exhaustive `never` arm and the real node is `{kind: 'prop', variable, key}`. A
+  hand-written AST is a guess about the grammar; the fixtures now come from the parser.
+- The A/B built `descent` LAST and restored the sweep SOURCE without rebuilding, so dist and src
+  disagreed. Caught before fuzzing — `fuzzers-read-built-dists` — and fuzzing it would have
+  exercised the descent while reporting on the sweep.
+
+GATES. bun run check 0 read unpiped. gql 4,555 pass / 0 fail. native 1,151 pass / 0 fail.
+bun run fuzz 57 pass / 0 fail — load-bearing here because executor source changed, and ⚠️ its
+`chain3=55/46/52` is NOT evidence for this rung, which is the whole finding above.
