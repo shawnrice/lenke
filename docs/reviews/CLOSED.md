@@ -84036,7 +84036,7 @@ change that size wants a run of its own, with the controls named before the firs
 
 GATES. No source change. bun run check 0 read unpiped.
 
-### Item 1814 — ✅ **SHIPPED: the chain-rows rung, 5.851x on `hop3rows` with every control flat** — and the cliff it closes was between two ADJACENT shapes rather than between a rung and none: two hops have had `hop2Projection` since item 1619 while the three-hop twin fell to the general matcher, so `hop2rows` ran at 116 ns/row and `hop3rows` at 2180. ⚠️ **Item 1813 designed this as a CSR recurrence and that is NOT what shipped**, and three of its decisions are corrected rather than followed
+### Item 1814 — ✅ **SHIPPED: the chain-rows rung, 5.851x on `hop3rows` with every control flat** — and the cliff it closes was between two ADJACENT shapes rather than between a rung and none: two hops have had `hop2Projection` since item 1619 while the three-hop twin fell to the general matcher, so `hop2rows` ran at 116 ns/row and `hop3rows` at 2180. ⚠️ **Item 1813 designed this as a CSR recurrence and that is NOT what shipped**, and three of its decisions are corrected rather than followed. ⚠️ **AND THIS ITEM'S OWN "UNEXPLAINED 3.15x PER-ROW RESIDUAL" IS REFUTED AT ITEM 1815: all three candidates it named were ablated and none was the cause — the per-row gap is the PROFILE PROBE'S COMPOUNDING STRIDE, not the rung. The 5.851x stands; the residual was never there to optimize**
 
 THE MEASUREMENT. Three order-alternated rounds, dist rebuilt between arms, one shape per PROCESS
 (item 762), each arm asserted to BE its code by a `chainProjection` marker in the BUILT dist before
@@ -84058,11 +84058,20 @@ row overlaps. Row counts are identical on every shape in both arms.
 
 ⚠️ **5.851x AGAINST ITEM 1786'S 11.6x CEILING, WHICH IS THE HONEST HALF OF THIS.** 1813 wrote "THE
 PRICE IS A CEILING, NOT A PROMISE … expect less", and about half the priced gap was reachable. The
-residual is visible in the per-row figures: the rung answers `hop3rows` at 350 ns/row where
-`hop2Projection` answers `hop2rows` at 111, so it costs 3.15x per row for 1.33x the levels. ⚠️ **That
+residual is visible in the per-row figures: ~~the rung answers `hop3rows` at 350 ns/row where
+`hop2Projection` answers `hop2rows` at 111, so it costs 3.15x per row for 1.33x the levels~~
+**(REFUTED AT ITEM 1815 — that comparison is the instrument, not the rung)**. ~~⚠️ **That
 gap is NOT YET EXPLAINED and is not claimed as inherent** — the recursive descent, `projectRow`'s
 per-row allocation and the per-level bucket lookup are each candidates, and none has been ablated.
-A follow-up with its own control, not a conclusion.
+A follow-up with its own control, not a conclusion.~~ **ALL THREE CANDIDATES WERE ABLATED AT ITEM
+1815 AND ALL THREE ARE REFUTED.**
+
+⚠️ **WHY THE PER-ROW RESIDUAL WAS AN ARTIFACT.** The per-row comparison is between two shapes whose CACHE
+behaviour differs by construction: the profile probe's `sequential` stride wires
+`v_i -> v_((7i+3) % N)`, so consecutive starts land 7, 49, 343 then 2401 apart and `hop2rows` is a
+prefetchable sweep where `hop3rows` is a scatter. ⚠️ **THE 5.851x ITSELF STANDS** — an A/B on ONE
+fixture survives a fixture defect because both arms saw the same graph (CLAUDE.md's own rule), and
+only the per-row CLAIM about where the cost lives does not. Item 1815 has the grid.
 
 WHAT CHANGED FROM 1813'S DESIGN, AND WHY. Reading the engine first is what moved it:
 `hop2Projection` already answers this family one segment down, carrying ~100 lines of
@@ -84119,3 +84128,99 @@ GATES. bun run check 0 read unpiped. gql 4,544 pass / 0 fail. bun run fuzz 57 pa
 load-bearing here, because the differential fuzzer's `chain3` band compares this exact family against
 the Rust engine. `routes-fired.test.ts`'s own census guard caught the detector count going 20 -> 21,
 corrected in the four places that state it.
+
+### Item 1815 — ⚠️ **NO CODE CHANGE, AND THAT IS THE RESULT: item 1814's unexplained per-row residual does not exist. All three candidates it named are ABLATED AND REFUTED, and the gap is the PROFILE PROBE'S OWN FIXTURE — a `(7i+3) % N` stride whose multiplier COMPOUNDS with depth (7, 49, 343, 2401), so `hop2rows` is a prefetchable sweep and `hop3rows` is a scatter.** The rung's marginal cost per hop is FLAT in depth once locality is held fixed. ⚠️ **The 5.851x item 1814 shipped STANDS** — a same-fixture A/B survives a fixture defect; only the claim about WHERE the remaining cost lives does not
+
+WHY THIS ITEM EXISTS. Item 1814 shipped `chainProjection` at 5.851x and recorded an honest
+shortfall against item 1786's 11.6x ceiling, naming three unablated candidates for the remainder:
+the recursive descent's call per level, `projectRow`'s fresh `Row` per row, and the per-level
+`adjFrom`/`adjTo` bucket lookup. Item 1809's standing rule is that a hot frame is attribution until
+a deletion test WITH A CONTROL says otherwise. This is that test, three times over.
+
+THE THREE CANDIDATES, EACH KILLED BY ITS OWN MEASUREMENT:
+
+- **`projectRow` + the far-end property read + the per-row allocation: 24% of the shape, and
+  SHARED.** An arm replacing the emit with a constant row measured **1.319x on `hop3rows`,
+  RESOLVED** (baseline `[130.8, 139.7, 150.8]` against ablated `[103.7, 105.9, 109.9]`), both
+  controls flat, and `answer: 74 -> None` is the liveness proof that the arm was reached. ⚠️ But
+  `hop2Projection` emits through the SAME `projectRow`, so the cost is common to both sides of the
+  comparison and cannot explain a gap between them.
+- **The recursive descent: 1.052x.** The decisive arm, because it holds DEPTH FIXED — lower
+  `chainProjection`'s guard to 2 and null `hop2Projection`, and `hop2rows` runs the recursive
+  descent instead of two nested inline loops on the SAME query, row count and edge count.
+  `hop2rung [335.3, 352, 358.2]` against `chain@2 [358.5, 370.2, 374.7]`, RESOLVED, answers SAME.
+  ⚠️ **5.2% is not a 3.15x**, and the same-answer result is a free correctness datum: the two rungs
+  agree at depth 2.
+- **The per-level bucket lookup: 1.6% of self time** in a `--cpu-prof` of the shape (`get adjFrom`
+  9.5 ms of 595.7). The profile also named two frames item 1814 had NOT listed — `propOf` +
+  `get properties` at 12.7% and `e.to` resolving through `getVertexById` at 5.2% — which is why
+  the emit ablation above cut all of them at once rather than guessing between them.
+
+⚠️ **WHAT THE RESIDUAL ACTUALLY WAS: THE GENERATOR, AND IT IS ITEM 1516/1518'S FAMILY AGAIN.** With
+`FANOUT=1` the profile probe's fixture is FUNCTIONAL, so every depth emits exactly 20,000 rows over
+exactly 20,000 edge visits per level — per-level work is identical and normalization is not the
+explanation. But the `sequential` stride wires `v_i -> v_((7i + 3) % N)`, so the multiplier
+compounds: consecutive starts land 7 apart at depth 1, then 49, 343, 2401. One hop is a stride-7
+sweep; three hops is a scatter. Out-degree, in-degree and distinct-endpoint counts are all perfect
+(the census prints 20,000 distinct targets at every depth), which is exactly why this survived.
+
+THE GRID THAT SETTLED IT, with the predictions written into the script BEFORE the run so the result
+could refute them rather than be fitted to. `chain` is the load-bearing arm: it holds work, rows and
+out-degree identical to `compound` and changes ONLY how far apart consecutive hops land.
+
+```text
+  nodes stride          d1      d2      d3      d4     marginal ns per hop
+   2000 compound      90.1   154.4   212.0   275.8     +64.3   +57.6   +63.8
+   2000 chain         82.7    93.9   109.6   124.9     +11.2   +15.7   +15.3
+   2000 scattered     98.9   154.6   197.9   231.9     +55.7   +43.3   +34.0
+  20000 compound      76.2   140.7   232.5   344.1     +64.5   +91.8  +111.6
+  20000 chain         48.6    82.9    77.6   118.5     +34.3    -5.3   +40.9
+  20000 scattered     89.6   139.6   235.9   309.1     +50.0   +96.3   +73.2
+ 200000 compound     166.7   452.0  1362.4  1869.2    +285.3  +910.4  +506.8
+ 200000 chain        108.6   102.2   153.1   140.6      -6.4   +50.9   -12.5
+ 200000 scattered    361.5   799.6  1276.1  2263.7    +438.1  +476.5  +987.6
+```
+
+Read it as resolved-vs-not rather than off the medians, because the negative marginals under `chain`
+are the noise band talking:
+
+- **`chain` DOES NOT RESOLVE IN DEPTH.** At 200,000 nodes depth-1 `[12.3, 23.2]` ms OVERLAPS
+  depth-4 `[20.2, 28.7]`. Four levels of walking cost what one costs, within the instrument.
+- **`compound` resolves hard.** Depth-1 `[27.3, 37.0]` against depth-4 `[366.8, 431.4]`, **11.2x**,
+  nowhere near touching.
+- ⚠️ **AND THE MECHANISM CONFIRMS ITSELF ON THE SIZE AXIS: `compound` is FLAT at 2,000 nodes**
+  (+64.3, +57.6, +63.8) and explodes at 200,000. Stride-343 is harmless until the vertex array
+  outgrows cache, which is what makes this the working set rather than the arithmetic.
+- `scattered` is hostile at depth 1 already and still grows, so it brackets rather than controls —
+  item 1487's caveat, restated.
+
+WHY A NEW INSTRUMENT (`chain-depth-locality-probe.mjs`) AND NOT AN EXISTING ONE. PROBES.md was read
+first, as CLAUDE.md requires. `chase-depth-micro.mjs` asks this of a BARE dependent-load chain and
+answers it — 18-20 ns by depth 4 under both allocation strides (items 1771/1773) — which bounds the
+pure pointer-chase term an order of magnitude below the ~215 ns seen here and is precisely why the
+engine-level sweep was worth building. Nothing swept depth against WORKING-SET SIZE through the
+engine's own chain walk. ⚠️ Its row guard SCALES with N (`rows === N * reps`), which the profile
+probe's absolute `rowsPerRun: 20_000` could not do — and that guard is load-bearing, not decoration:
+it is what refused a 2,000-node run outright instead of quietly timing a non-equivalent arm.
+
+⚠️ **THE INSTRUMENT CONSEQUENCE, WHICH OUTLIVES THIS ITEM.** `runtime-profile-probe.mjs`'s
+`hop2rows`/`hop3rows`/`hop3rowsboth` rows do not measure per-level walk cost — at 20,000 nodes their
+marginal hop is 64, 92, 112 ns where a locality-matched walk pays a flat ~15-40. **So do not price a
+chain-walk change by comparing those rows to each other**, and do not read a per-row figure off one
+of them as the rung's cost. A single-shape A/B across two arms is still sound (both arms see the same
+graph); a cross-SHAPE per-row ratio is not. This is the GQL twin of items 1486/1487, which found the
+same stride inflating a Gremlin hop ratio by 3.6x.
+
+WHAT IS GENUINELY OPEN, AND IT IS A TARGET RATHER THAN A CORRECTION. The 9x spread between `chain`
+and `compound` at 200,000 nodes is the cost of VISIT ORDER, and `descend` is depth-first: it chases
+one path to the leaf before touching the next edge of the level above. A level-synchronous walk that
+ordered each level's frontier before descending would recover some of `chain`'s locality on a
+graph whose topology the user does not control. ⚠️ **NOT PRICED HERE AND NOT A RECOMMENDATION** — a
+dense vertex ordinal was BUILT AND DISQUALIFIED at items 1369-1372/1397 (deletes 6.18x/11.34x under
+churn), so the ordering key is the hard part and seven items have already arrived at it. The right
+next move is to price the CEILING on a scattered fixture before designing anything.
+
+GATES. bun run check 0 read unpiped. gql 4,544 pass / 0 fail. ⚠️ `bun run fuzz` was NOT run and is
+not load-bearing for this item: no engine source changed — the diff is one new probe, PROBES.md and
+this file — and the two measurement mutants were restored from pristine copies under
+`crates/lenke-engine/target/pristine-1815/` with `git status` verified clean after each.
