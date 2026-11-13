@@ -1,3 +1,4 @@
+import { describe, expect, test } from 'bun:test';
 // Differential fuzzer: generate random GQL queries from a seeded PRNG, run each
 // through BOTH engines (the TS @lenke/gql engine and the Rust engine over bun:ffi),
 // and assert byte-identical behavior — the same JSON when both succeed, and
@@ -15,7 +16,7 @@
 // ORDER BY queries always carry `n.n` as a final sort key: row order is otherwise
 // unspecified (see the ORDER-BY-less contract), and a tie would make the comparison
 // flag a non-bug.
-import { describe, expect, test } from 'bun:test';
+import { writeFileSync } from 'node:fs';
 
 import { Graph } from '@lenke/core';
 import { query as tsQuery } from '@lenke/gql';
@@ -30,6 +31,7 @@ import {
 } from './conformance-harness.js';
 import { accept, resetUsage, usageCounts } from './divergence-registry.js';
 import { graphFromNdjson } from './graph.js';
+import { WORKLOAD_FAMILY_NAMES, genWorkload } from './workload-queries.js';
 
 /// The quantified-subpath-GROUP counters: the peeled-endpoint form, the unanchored form that
 /// reaches native's counting sink, the per-repetition `WHERE`, and a group under an explicit
@@ -2272,9 +2274,16 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
     nativeGraph.query(q);
   }
 
-  const run = (engine: 'ts' | 'native', q: string): Outcome => {
+  /**
+   * ⚠️ `params` IS THE SURFACE THE WORKLOAD ARM EXISTS FOR. Until item 1817 this took only the
+   * query text, so a parameterized query was not merely unsampled but UNREACHABLE: the fuzzer
+   * could not have generated one if a band had tried. Both engines have accepted a params
+   * argument throughout, and the planner SEEKS on `$param`, so the whole parameterized surface
+   * sat outside the only harness that compares TS against Rust.
+   */
+  const run = (engine: 'ts' | 'native', q: string, params?: Record<string, unknown>): Outcome => {
     try {
-      const rows = engine === 'ts' ? tsQuery(tsGraph, q) : nativeGraph.query(q);
+      const rows = engine === 'ts' ? tsQuery(tsGraph, q, params) : nativeGraph.query(q, params);
 
       return { ok: true, json: JSON.stringify(rows) };
     } catch (e) {
@@ -2315,6 +2324,19 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
 
   test(`${ITERATIONS} random queries render byte-identically across engines`, () => {
     const divergences: string[] = [];
+    /** Per-family draw and non-empty counts for the realistic-workload arm (item 1817). */
+    const famCov: Record<string, number> = {};
+    const famRows: Record<string, number> = {};
+    /**
+     * How many executed queries carried a PARAMETER at all.
+     *
+     * Its own counter rather than a derived one, because this number was ZERO for the life of
+     * the fuzzer and the floor on it is the guard that it cannot quietly return there — the
+     * params argument could be dropped from `run` and every family would still pass.
+     */
+    let paramQueries = 0;
+    /** Chain queries drawn WITHOUT an `ORDER BY` — the only spelling the chain rung accepts. */
+    let bareChainRows = 0;
     // Coverage counters for the per-repetition `WHERE` over a quantified group. Both are
     // needed: the first says the shape is GENERATED, the second that it MATCHES SOMETHING.
     // Generation alone is not coverage — before the fixture gained a second in-edge into
@@ -2386,13 +2408,69 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
 
     resetUsage();
 
-    for (let i = 0; i < ITERATIONS; i++) {
-      const q = genQuery(mulberry32(caseSeed(SEED, i)));
-      const ts = run('ts', q);
-      const nat = run('native', q);
+    /**
+     * ⚠️ THE CENSUS KNOB, AND WHY A FUZZER NEEDS ONE.
+     *
+     * `FUZZ_DUMP=<path>` writes every generated query, one per line, and skips execution.
+     * Coverage COUNTERS answer "did this one shape appear"; they cannot answer "what is the
+     * MIX", and the mix is a property of the generator that nothing else here measures. Item
+     * 1816 is why it exists: item 1814 read `chain3=57/34/55` off a counter and recorded it as
+     * cross-engine coverage for a rung that DECLINES every query the counter counted. A census
+     * of the actual text would have shown in one line that every `chain3` ends in `count(*)`.
+     *
+     * Dump mode does NOT run the engines: it is an instrument for the generator, and 20,000
+     * queries of text cost a second against minutes of execution.
+     */
+    const DUMP = process.env.FUZZ_DUMP;
 
-      tally(cov, q, ts);
+    if (DUMP !== undefined) {
+      const lines: string[] = [];
 
+      for (let i = 0; i < ITERATIONS; i++) {
+        lines.push(genQuery(mulberry32(caseSeed(SEED, i))));
+      }
+
+      // The workload arm goes in the SAME dump, so a census reads the mix that is actually
+      // executed rather than one arm of it. `FUZZ_DUMP_ARM=adversarial|workload` narrows it.
+      const arm = process.env.FUZZ_DUMP_ARM;
+
+      if (arm === 'adversarial') {
+        lines.length = ITERATIONS;
+      } else {
+        if (arm === 'workload') {
+          lines.length = 0;
+        }
+
+        const wSeed = (SEED ^ 0x9e37_79b9) >>> 0;
+
+        for (let i = 0; i < Number(process.env.FUZZ_WORKLOAD_ITERATIONS ?? 20_000); i++) {
+          lines.push(genWorkload(mulberry32(caseSeed(wSeed, i))).text);
+        }
+      }
+
+      writeFileSync(DUMP, `${lines.join('\n')}\n`);
+      expect(lines.length).toBeGreaterThan(0);
+
+      return;
+    }
+
+    /**
+     * Compare one query's two outcomes, appending to `divergences`.
+     *
+     * Lifted out of the loop at item 1817 so the WORKLOAD arm reuses it rather than growing a
+     * second copy. ⚠️ `inOrder` is now a PARAMETER rather than always `totallyOrdered(q)`: the
+     * workload generator STATES whether its `ORDER BY` is total, because item 1040's band
+     * generated the right ordered query and had it compared as a multiset anyway — the sentinel
+     * regex could not see an ordering the band expressed differently. Nothing about the
+     * adversarial arm's behaviour changes; it still passes `totallyOrdered(q)`.
+     */
+    const compare = (
+      label: string,
+      q: string,
+      ts: Outcome,
+      nat: Outcome,
+      inOrder: boolean,
+    ): void => {
       // Both errored → acceptable (both reject the input); a shape divergence is
       // when exactly one succeeds, or both succeed with different JSON.
       if (ts.ok && nat.ok) {
@@ -2404,50 +2482,114 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
 
         if (tsCols !== natCols) {
           divergences.push(
-            `[seed ${caseSeed(SEED, i)}] ${q}\n    ts cols:     ${tsCols}` +
+            `[${label}] ${q}\n    ts cols:     ${tsCols}` +
               `\n    native cols: ${natCols}` +
               `\n    (column order: fixed by RETURN, so this is a value difference no registry entry may excuse)`,
           );
         }
 
-        const agree = totallyOrdered(q)
+        const agree = inOrder
           ? resultsEqualInOrder(ts.json, nat.json)
           : resultsEqual(ts.json, nat.json);
 
         if (!agree && !numericTextTie(ts.json, nat.json)) {
-          // Routed through the registry like the one-sided case, so an `order` or
-          // `float-reduction` entry would apply here if one is ever declared. With none, this
-          // classifies and is reported exactly as before.
           const verdict = accept({ query: q, ts, native: nat });
 
           if (!verdict.accepted) {
             divergences.push(
-              `[seed ${caseSeed(SEED, i)}] ${q}\n    ts:     ${ts.json}\n    native: ${nat.json}` +
+              `[${label}] ${q}\n    ts:     ${ts.json}\n    native: ${nat.json}` +
                 `\n    (${verdict.observed}: ${verdict.why})`,
             );
           }
         }
       } else if (ts.ok !== nat.ok) {
-        // A DECLARED divergence, or a real one. `divergence-registry.ts` holds the list and
-        // the rules — notably that a VALUE difference is refused whatever the list says, so
-        // this cannot be used to turn a wrong answer green. The schemaless
-        // boolean-context/dynamic-operand residual that used to be an `if` here with a long
-        // comment is now an entry in that file, where it is narrow (an `E_INVALID_VALUE`
-        // against an EMPTY result, never against rows) and its usage is counted.
         const verdict = accept({ query: q, ts, native: nat });
 
         if (!verdict.accepted) {
           const tsSide = ts.ok ? `ok ${ts.json}` : `err ${(ts as { code: string }).code}`;
           const natSide = nat.ok ? `ok ${nat.json}` : `err ${(nat as { code: string }).code}`;
           divergences.push(
-            `[seed ${caseSeed(SEED, i)}] ${q}\n    ts:     ${tsSide}\n    native: ${natSide}` +
+            `[${label}] ${q}\n    ts:     ${tsSide}\n    native: ${natSide}` +
               `\n    (${verdict.observed}: ${verdict.why})`,
           );
         }
       }
+    };
+
+    for (let i = 0; i < ITERATIONS; i++) {
+      const q = genQuery(mulberry32(caseSeed(SEED, i)));
+      const ts = run('ts', q);
+      const nat = run('native', q);
+
+      tally(cov, q, ts);
+      // The registry, the column-order check and the ordered-vs-multiset choice all live in
+      // `compare` since item 1817; this arm's behaviour is unchanged (`totallyOrdered(q)` is
+      // still what decides its comparison).
+      compare(`seed ${caseSeed(SEED, i)}`, q, ts, nat, totallyOrdered(q));
 
       // Cap the report (raise via FUZZ_MAX_DIV to enumerate the whole landscape
       // during triage — e.g. FUZZ_MAX_DIV=300 for a full divergence survey).
+      if (divergences.length >= Number(process.env.FUZZ_MAX_DIV ?? 10)) {
+        break;
+      }
+    }
+
+    /**
+     * ⚠️ THE REALISTIC-WORKLOAD ARM (item 1817).
+     *
+     * A census of the arm above said 60.8% of its queries traverse no edge at all, 2.2% are
+     * multi-hop, 0.0% are multi-hop RETURNING ROWS, and 0.0% carry a parameter. That is a
+     * generator aimed almost entirely at the scalar-expression grammar — which is where the
+     * coercion bugs live and is worth keeping exactly as it is — but it leaves the shapes an
+     * application actually issues nearly unguarded, and it is how item 1814 recorded
+     * cross-engine coverage for a row rung that declines every query the counter counted.
+     *
+     * This arm is ADDITIVE and its draw over families is FLAT, so no band boundary above moves
+     * and no floor above changes meaning. Its own floors are at the end of this test.
+     *
+     * The seed stream is deliberately offset from the arm above (`SEED ^ 0x9e37_79b9`) so the
+     * two arms do not draw correlated sequences from the same `caseSeed` ladder.
+     */
+    const WORKLOAD_ITERATIONS = Number(process.env.FUZZ_WORKLOAD_ITERATIONS ?? 20_000);
+    const WORKLOAD_SEED = (SEED ^ 0x9e37_79b9) >>> 0;
+
+    for (let i = 0; i < WORKLOAD_ITERATIONS; i++) {
+      const w = genWorkload(mulberry32(caseSeed(WORKLOAD_SEED, i)));
+      const ts = run('ts', w.text, w.params);
+      const nat = run('native', w.text, w.params);
+
+      famCov[w.family] = (famCov[w.family] ?? 0) + 1;
+
+      // ⚠️ NON-EMPTY IS THE LOAD-BEARING COUNTER, same as every floor above. A family that
+      // generates well-formed queries matching nothing compares an empty result against an
+      // empty result and passes exactly like one that works.
+      if (ts.ok && ts.json !== '[]') {
+        famRows[w.family] = (famRows[w.family] ?? 0) + 1;
+      }
+
+      if (Object.keys(w.params).length > 0) {
+        paramQueries += 1;
+      }
+
+      // ⚠️ THE BARE (UNORDERED) CHAIN SPELLING, COUNTED SEPARATELY BECAUSE ITS ABSENCE IS
+      // INVISIBLE EVERYWHERE ELSE. The chain rung DECLINES an `ORDER BY`, so a `chain-rows`
+      // family that only ever emits the ordered spelling generates perfectly good queries, keeps
+      // every other counter here at its usual value, and reaches the rung ZERO times. That is
+      // not hypothetical: the first draft of this arm did exactly that, and a `throw` at the
+      // rung's first statement left 20,000 workload queries green. This counter is what makes
+      // that failure loud instead of silent.
+      if (w.family === 'chain-rows' && !w.ordered) {
+        bareChainRows += 1;
+      }
+
+      compare(
+        `workload seed ${caseSeed(WORKLOAD_SEED, i)} (${w.family})`,
+        w.text,
+        ts,
+        nat,
+        w.ordered,
+      );
+
       if (divergences.length >= Number(process.env.FUZZ_MAX_DIV ?? 10)) {
         break;
       }
@@ -2494,6 +2636,13 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
         `hopUntyped=${cov.hopUntypedGenerated}/${cov.hopUntypedNonZero} ` +
         `chain3=${cov.chain3Generated}/${cov.chain3InteriorGenerated}/${cov.chain3NonZero} ` +
         `page=${cov.pageGenerated}/${cov.pageRows}`,
+    );
+    // The realistic-workload arm, printed as generated/non-empty per family so a family that
+    // stops MATCHING is as visible as one that stops being generated (item 1817).
+    console.log(
+      `WORKLOAD params=${paramQueries} bareChain=${bareChainRows} ${WORKLOAD_FAMILY_NAMES.map(
+        (n) => `${n}=${famCov[n] ?? 0}/${famRows[n] ?? 0}`,
+      ).join(' ')}`,
     );
     expect({
       // RE-MEASURED AND LOWERED at item 244. The group arm gained a NESTED sub-group unit at a
@@ -2768,6 +2917,76 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
       hopUntypedNonZero: true,
       pageGenerated: true,
       pageRows: true,
+    });
+
+    /**
+     * FLOORS ON THE REALISTIC-WORKLOAD ARM (item 1817).
+     *
+     * ⚠️ THE NON-EMPTY FLOORS ARE THE ONES WITH TEETH, AND NOT ONLY FOR THE USUAL REASON. The
+     * usual reason is this file's oldest lesson: a family generating well-formed queries that
+     * match nothing compares `[]` against `[]`. The second reason is specific to this arm —
+     * `params` reaches the engines only because `run` forwards it, and if that argument were
+     * dropped every parameterized query would raise `E_MISSING_PARAMETER` on BOTH engines,
+     * which the comparison reads as agreement and reports as a pass. A counter on "the
+     * generator produced params" cannot see that; a floor on "the query MATCHED SOMETHING"
+     * can, and does. VERIFIED by dropping the argument: `params` still read 20,000 — the
+     * generator-side counter is blind — while five families collapsed to ZERO non-empty and
+     * TWELVE of the seventeen fell under their floor, failing the test.
+     *
+     * Measured over six seeds of 20,000 (101/202/303/404/505/777). Generated per family ranges
+     * 1094-1269 — a flat draw by construction, so ONE floor serves all seventeen and a family
+     * falling out of the uniform draw shows up as a failure rather than as silence. Non-empty
+     * ranges per family and is floored per family at roughly 25% under that family's observed
+     * minimum, the margin this block uses throughout.
+     */
+    const famFloor = Object.fromEntries(
+      WORKLOAD_FAMILY_NAMES.map((n) => [n, (famCov[n] ?? 0) > 800]),
+    );
+    const NON_EMPTY_FLOOR: Record<string, number> = {
+      // family          floor   observed minimum over six seeds
+      aggregate: 820, //         1103
+      'chain-rows': 690, //       927
+      distinct: 800, //          1075
+      'edge-filter': 590, //      798
+      existence: 700, //          940
+      grouped: 830, //           1109
+      'in-list': 810, //         1083
+      'multi-pattern': 750, //   1012
+      neighbors: 370, //          505  (an anchored hop on a 6-vertex fixture misses often)
+      optional: 820, //          1095
+      // 416, the lowest here, and deliberately so: this family draws the selective `U` label,
+      // the absent `zz` key and the `IS NULL` bodies, each of which matches little or nothing by
+      // design. Low is the price of reaching those routes, not a defect — the floor is what says
+      // the family has not collapsed past it.
+      'point-lookup': 310, //     416
+      projection: 830, //        1116
+      'range-scan': 450, //       610  (two independent bounds, so the window is often empty)
+      'string-lookup': 700, //    946
+      'temporal-range': 680, //   914
+      union: 810, //             1089
+      'var-length': 660, //       883
+    };
+
+    expect({
+      everyFamilyDrawn: famFloor,
+      everyFamilyMatches: Object.fromEntries(
+        WORKLOAD_FAMILY_NAMES.map((n) => [n, (famRows[n] ?? 0) > NON_EMPTY_FLOOR[n]]),
+      ),
+      // Zero for the entire life of this fuzzer before item 1817, and structurally so — `run`
+      // took no params argument at all. The floor is what keeps it from returning there.
+      parameterized: paramQueries > 15_000,
+      // Measured 525-607 over six seeds; floored at roughly 25% under. See the counter's note —
+      // this is the guard on the ROUTE, which no count of generated queries can supply.
+      bareChainRows: bareChainRows > 390,
+      // Every family must have a floor, or a family added without one is unguarded — the exact
+      // silence this block exists to prevent.
+      everyFamilyFloored: WORKLOAD_FAMILY_NAMES.every((n) => NON_EMPTY_FLOOR[n] !== undefined),
+    }).toEqual({
+      everyFamilyDrawn: Object.fromEntries(WORKLOAD_FAMILY_NAMES.map((n) => [n, true])),
+      everyFamilyMatches: Object.fromEntries(WORKLOAD_FAMILY_NAMES.map((n) => [n, true])),
+      parameterized: true,
+      bareChainRows: true,
+      everyFamilyFloored: true,
     });
     // 20 000 queries × two engines is well under a second locally but exceeds Bun's default
     // 5 s test timeout on the slower CI runners (~5.5–6 s) — give this heavy differential fuzz

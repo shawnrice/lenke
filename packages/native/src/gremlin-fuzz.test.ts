@@ -14,7 +14,7 @@
 //
 // Seed: random each run (FUZZ_SEED=<n> to replay); the failing seed is printed.
 import { describe, expect, test } from 'bun:test';
-import { existsSync } from 'node:fs';
+import { existsSync, writeFileSync } from 'node:fs';
 
 import { Edge, Graph, isElement } from '@lenke/core';
 import {
@@ -868,6 +868,8 @@ suite('differential fuzz: gremlin (TS engine vs Rust ENGINE)', () => {
     let skippedUnordered = 0;
     let skippedUnbuildable = 0;
     let skippedLazySlice = 0;
+    /** Every emitted traversal, written out when `GREMLIN_DUMP` is set — see its note below. */
+    const dumped: string[] = [];
 
     for (let i = 0; i < ITERATIONS && divergences.length < 5; i++) {
       const r = mulberry32(caseSeed(SEED, i));
@@ -915,6 +917,12 @@ suite('differential fuzz: gremlin (TS engine vs Rust ENGINE)', () => {
           return `ERR ${(e as { code?: string }).code ?? 'throw'}`;
         }
       };
+
+      // ⚠️ THE CENSUS KNOB (item 1817), matching the differential fuzzer's. `GREMLIN_DUMP=<path>`
+      // appends every EMITTED traversal, which is the only way to ask what MIX this generator
+      // produces — coverage counters answer "did this one step appear" and cannot answer "is the
+      // generator skewed", which is the question that turned out to matter for its GQL twin.
+      dumped.push(text);
 
       if (text.includes('order(local)')) {
         orderLocalGenerated += 1;
@@ -1002,6 +1010,10 @@ suite('differential fuzz: gremlin (TS engine vs Rust ENGINE)', () => {
         `  ${skippedLazySlice}/${ITERATIONS} plans skipped: a zero-row slice below an ` +
           'early-yielding step — the engines differ on whether the upstream runs',
       );
+    }
+
+    if (process.env.GREMLIN_DUMP !== undefined) {
+      writeFileSync(process.env.GREMLIN_DUMP, `${dumped.join('\n')}\n`);
     }
 
     if (skippedUnordered > 0) {

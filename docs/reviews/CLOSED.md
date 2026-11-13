@@ -84225,7 +84225,7 @@ not load-bearing for this item: no engine source changed — the diff is one new
 this file — and the two measurement mutants were restored from pristine copies under
 `crates/lenke-engine/target/pristine-1815/` with `git status` verified clean after each.
 
-### Item 1816 — ✅ **SHIPPED: a BLOCKED LEVEL-SYNCHRONOUS sweep inside the chain rung, 1.424x on `hop3rows` with every control overlapping** — taken only when the projection and carried `WHERE` read the FAR END ONLY, because batching a level discards the path that reached it. ⚠️ **AND IT FOUND THAT ITEM 1814'S CLAIM OF CROSS-ENGINE COVERAGE FOR THIS RUNG WAS FALSE: every `chain3` shape the differential fuzzer generates is a `count(*)`, which the rung DECLINES, so the row route had no byte-identity coverage at all.** A dedicated parity test closes that, with teeth verified on BOTH walks
+### Item 1816 — ✅ **SHIPPED: a BLOCKED LEVEL-SYNCHRONOUS sweep inside the chain rung, 1.424x on `hop3rows` with every control overlapping** — taken only when the projection and carried `WHERE` read the FAR END ONLY, because batching a level discards the path that reached it. ⚠️ **AND IT FOUND THAT ITEM 1814'S CLAIM OF CROSS-ENGINE COVERAGE FOR THIS RUNG WAS FALSE: every `chain3` shape the differential fuzzer generates is a `count(*)`, which the rung DECLINES, so the row route had no byte-identity coverage at all.** A dedicated parity test closes that, with teeth verified on BOTH walks — and ⚠️ **item 1817 closes the FUZZER side of it too**: the differential fuzzer now generates three- and four-segment chain ROWS, in the bare (unordered) spelling the rung actually accepts, and CATCHES the `sweepBlock` mutant this item showed it was blind to
 
 THE MEASUREMENT. Five order-alternated rounds, dist rebuilt between arms, one shape per PROCESS
 (item 762), each arm asserted to BE its code by a `sweepBlock` marker in the BUILT dist before any
@@ -84331,3 +84331,126 @@ TWO THINGS I GOT WRONG IN THIS ITEM AND THE ENGINE CORRECTED:
 GATES. bun run check 0 read unpiped. gql 4,555 pass / 0 fail. native 1,151 pass / 0 fail.
 bun run fuzz 57 pass / 0 fail — load-bearing here because executor source changed, and ⚠️ its
 `chain3=55/46/52` is NOT evidence for this rung, which is the whole finding above.
+
+### Item 1817 — ✅ **THE DIFFERENTIAL FUZZER WAS 60.8% ONE SHAPE AND 0.0% PARAMETERIZED, AND THE SECOND NUMBER WAS STRUCTURAL** — a realistic-workload arm of 17 equally-drawn families closes both, and it CATCHES THE MUTANT ITEM 1816 PROVED THE FUZZER WAS BLIND TO
+
+THE CENSUS, WHICH IS THE INSTRUMENT THIS ITEM MOSTLY IS. Coverage counters answer "did this one
+shape appear" and cannot answer "what is the MIX" — so `FUZZ_DUMP=<path>` was added first, writing
+every generated query without running it (20,000 lines in 54 ms). Over 20,000 queries the existing
+generator read:
+
+```text
+  node-only (no edge traversed)   60.8%        ORDER BY   56.3%
+  1-hop                           22.8%        WHERE      19.5%
+  quantified                       8.3%        subquery    1.6%
+  no MATCH                         5.9%
+  2-hop                            1.9%        3-hop returning ROWS   0.0%
+  3-hop                            0.3%        carrying a PARAMETER   0.0%
+```
+
+⚠️ **THE TWO ZEROES ARE HOLES, NOT THIN SPOTS, AND ONE OF THEM IS STRUCTURAL.** Three-hop ROW
+queries were generated zero times — the hole item 1816 found from the other end, where item 1814
+recorded `chain3=57/34/55` as cross-engine coverage for a row rung whose every sampled query is a
+`count(*)` it declines. And parameters were not merely unsampled: **`run` took only the query
+text**, so no band could have generated one however it was written. Both engines have accepted a
+params argument throughout, and the planner SEEKS on `$param`, so this repo's whole "equivalent
+spellings must cost the same" rule — built on the `$x = u.k` / `u.k = $x` pair — sat outside the
+only harness that compares TS against Rust.
+
+⚠️ **WHY A SECOND ARM RATHER THAN A REBALANCE, AND THE EVIDENCE THAT IT COST NOTHING.** Roughly
+twenty coverage floors are calibrated against the shares the existing bands produce, and this
+file records three separate occasions where a new arm diluted a neighbour's counter and had to be
+re-measured. Compressing those bands would have dropped every floor proportionally and silently.
+So the arm is ADDITIVE — its own iterations, its own counters, its own floors — and the proof is
+that every adversarial counter is BYTE-IDENTICAL before and after
+(`PRED generated=4760 rows=2326 … chain3=51/33/48 page=351/152` on seed 777, both runs). The whole
+fuzzer went 2.01 s to 3.18 s.
+
+THE RESULT, over the SAME 20,000-query census plus the new arm's 20,000:
+
+```text
+                      before    after
+  node-only            60.8%    50.9%
+  multi-hop (2+)        2.2%    11.2%      3-hop 0.3% -> 2.8%
+  multi-hop ROWS         355     3795
+  parameterized          0.0%    50.0%     (every workload query)
+  reads stored data     88.9%    94.4%
+```
+
+Seventeen families, drawn FLAT (1,094-1,269 each per 20,000, asserted within 1.5x of the 1/17
+share): point-lookup, string-lookup, range-scan, in-list, neighbors, chain-rows, edge-filter,
+aggregate, grouped, existence, optional, distinct, multi-pattern, temporal-range, var-length,
+projection, union. ⚠️ **Flat over the family LIST, deliberately** — the complaint being answered is
+a generator skewed onto one shape, so the fix is not a different skew, and a flat draw means
+adding a family rebalances automatically instead of needing a band boundary moved by hand.
+
+⚠️⚠️ **THE MISTAKE THIS ITEM MADE, WHICH IS THE PART WORTH KEEPING: REALISTIC IS NOT THE SAME AS
+ROUTED.** The first draft put an `ORDER BY` on every query so the comparison could be made in
+order. Every family parsed, every family matched rows, every census axis improved — and the
+`chain-rows` family reached the rung it was written for **ZERO times**, because that rung DECLINES
+an `ORDER BY` outright and falls to the general matcher. Found the only way it can be found, by
+deletion: with a `throw` at the sweep's first statement, 20,000 workload queries left the fuzzer
+GREEN, and the same query with its `ORDER BY` removed threw immediately. That is item 1040's
+lesson pointing the other way — there a band generated the right ordered query and the HARNESS
+compared it wrongly; here a band generated the right query and the ENGINE sent it elsewhere. A
+generator that only ever spells a query one way guards only the route that spelling takes, and no
+census can tell you which route that is.
+
+So both spellings are drawn (`withOrder`), unordered compared as a multiset, and the guard is a
+counter on the BARE chain spelling (525-607 per run, floored at 390) — because a family that
+quietly re-acquires an `ORDER BY` everywhere keeps every other counter at its usual value.
+
+⚠️ **PAGING ONLY ON THE ORDERED BRANCH.** A `LIMIT` with no `ORDER BY` lets row order decide WHICH
+rows survive, so two correct engines can differ; generating it would manufacture divergences out
+of a settled non-question (`order-is-unspecified`). Asserted as a unit test, not a convention.
+
+**TEETH, VERIFIED TWICE, BOTH BY DELETION:**
+
+- ⚠️ **The mutant item 1816 proved this fuzzer was blind to is now CAUGHT.** A `throw` in the chain
+  rung's sweep, dist rebuilt (`fuzzers-read-built-dists`): the fuzzer reports it in the
+  `chain-rows` family within the first hundred draws. Before this item the same mutant left
+  `bun run fuzz differential` passing.
+- ⚠️ **A counter on "the generator produced params" is BLIND, and the non-empty floors are not.**
+  `params` reaches the engines only because `run` forwards it; drop that argument and every
+  parameterized query raises `E_MISSING_PARAMETER` on BOTH engines, which the comparison reads as
+  agreement. Measured: `params` still printed **20,000** — the generator-side counter sees nothing
+  — while five families collapsed to ZERO non-empty and **twelve of seventeen** fell under their
+  floor and failed the test. This is why every family has a NON-EMPTY floor and not just a
+  generated one.
+
+THE GENERATOR HAS ITS OWN UNIT TESTS (`workload-queries.test.ts`, 9 tests / 21,673 assertions),
+for the reason `perf-gate-needs-its-own-test` gives: anything answer-equivalent across the two
+engines survives every differential, so a family going vacuous, a family dropping out of the draw,
+a `ordered` flag disagreeing with its own text, or paging without a sort cannot be caught by the
+fuzzer that uses it.
+
+⚠️ **A LIVE DIVERGENCE FOUND BEFORE A LINE OF THE ARM WAS WRITTEN.** `param-support-probe.mjs`
+priced twenty parameter spellings against both engines first, because a spelling one engine
+rejects makes the gate red for a known question rather than for a regression. **19 of 20 agree;
+`SKIP $k` does not** — TS raises `E_SYNTAX` (its parser passes `allowParam` only for the ISO
+`OFFSET` spelling, commented "SKIP is the Cypher synonym and stays literal-only") while native
+accepts it and pages. Not a value divergence — no query returns different ROWS — so it is pinned
+as `test.failing` in `skip-param-divergence.test.ts` with both a literal-`SKIP` control and an
+`OFFSET $k` control, NOT registered: the registry has no `value` axis and this is a parse-surface
+disagreement about a non-ISO spelling. ⚠️ **WHICH ENGINE MOVES IS AN OWNER DECISION** and is left
+open: TS's restriction is consistent with "ISO-GQL is NOT Cypher", native's acceptance is
+consistent with "equivalent spellings must cost the same", and only the current state — the two
+engines disagreeing about whether a query is VALID — is indefensible.
+
+⚠️ **THE GREMLIN FUZZER WAS MEASURED AND NEEDS NO SUCH REBALANCE, WHICH IS A FINDING AND NOT AN
+OMISSION.** Same instrument (`GREMLIN_DUMP`), 4,000 traversals over ten seeds: **74.6% traverse at
+least one edge, 37.3% are multi-hop, 3,296 of 4,000 are distinct**, and no step exceeds 41% of
+traversals. It composes a chain of random steps rather than picking a whole-query template, which
+is structurally why it does not have its twin's problem — worth recording so the next pass does
+not go looking. Its open gap is a different one, already visible in its own output: 43-54 of 400
+plans skipped per run.
+
+A DEEP SWEEP, since the arm is 20,000 query shapes nothing had ever compared: eight seeds at
+200,000 per arm, **1.6M realistic queries, zero divergences from the workload arm**. Seed 1 did
+report one — `MATCH (t:T) OPTIONAL MATCH (t)-[:E]->(n WHERE ((reverse(n.nan) <> ('…' % null)) AND
+(n.m.zz > 1)))`, TS returning null-padded rows where native raises `E_INVALID_VALUE` — ⚠️ but it
+is from the ADVERSARIAL arm and PRE-EXISTING: it reproduces with `FUZZ_WORKLOAD_ITERATIONS=0`, and
+is recorded here as an open `evaluation-order` divergence rather than claimed as this item's find.
+
+GATES. bun run check 0 read unpiped. gql 4,555 pass / 0 fail. native 1,165 pass / 0 fail.
+bun run fuzz 57 pass / 0 fail.
