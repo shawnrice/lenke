@@ -26,9 +26,20 @@ screen accumulates 60 queries a family. **Run it at `NODES=20000 FANOUT=5`** to 
 the small default is kept because it is the GQL screen's size and makes the two comparable.
 
 First run (20000/5): `edge: outE.has(w).inV` is the top shape at **21.56 ms / 45,713 rows = 472 ns a
-row**, against `hop1: values` at 51 ns a row — **9.3x the per-row cost**, and the shape is fused
-already (route-checked). ~216 ns per edge visit against the vertex-side `has(gt)` doing the same kind
-of work at 93 ns an element. Open at item 1881.
+row**, against `hop1: values` at 51 ns a row — **9.3x the per-row cost**.
+
+⚠️ **ITEM 1881 RECORDED THAT SHAPE AS "already fused (route-checked)" AND THAT WAS WRONG.** Item 1882
+asked `gremlin-route-screen.mjs` instead of a one-off instrumentation: the shape is **GENERIC** (4
+`applyStep` calls) while the same walk WITHOUT the predicate is fused, and every one of the family's
+seven filtered spellings is generic. Priced one-shape-per-process at **225 ns an edge visit against
+the fused sibling's 31 — 7.2x**. The two instruments are below; the rung is not built yet.
+
+- **`edge-filter-prof-1882.mjs`** — the self-time profile of the nominated shape. It prints the
+  fixture's own share of the process (item 1875 took two profiles that were 76% and 40% fixture);
+  use `REPS=50` to get the query to 75%.
+- **`edge-filter-floor-1882.mjs`** — its price. `SHAPE=filtered|unfiltered|hop`, ONE PER PROCESS,
+  and it reports **ns per EDGE VISIT** as well as per row, because the filtered shape emits 46% of
+  the rows and a per-row ratio flatters it (item 1858 declined a target for exactly that).
 
 ## Start here: `family-split-1880.ts` — which SHAPE owns a family's milliseconds
 

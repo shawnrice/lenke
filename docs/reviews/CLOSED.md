@@ -88231,7 +88231,7 @@ a single command instead of a tick.
 
 GATES. bun run check 0 read unpiped; no source touched.
 
-## Item 1881 — built the GREMLIN workload screen, the instrument that surface never had; its first run nominates a fused shape at 9.3x the per-row cost of its unfiltered sibling
+## Item 1881 — built the GREMLIN workload screen, the instrument that surface never had; its first run nominates a shape at 9.3x the per-row cost of its unfiltered sibling (⚠️ ~~a fused shape~~ — THE ROUTE CLAIM IN THIS ENTRY IS WRONG, corrected at item 1882: the shape is GENERIC, which makes it a MISSING RUNG and a better target, 7.2x per edge visit)
 
 Item 1880 established that the GQL screen's addressable time is accounted for shape by shape. So this
 tick looked OUTSIDE it, and the gap was glaring: **Gremlin is half the product and had no workload
@@ -88269,10 +88269,13 @@ the header now says to run it at `NODES=20000 FANOUT=5`.
 **9.3x the per-row cost of a plain hop projection**, on an entirely ordinary traversal: follow `E`
 edges whose weight exceeds 3, give me the targets' property. No row is empty and none raises.
 
-🔬 **AND IT IS NOT A MISSING RUNG — route-checked before pricing.** Instrumenting `applyStep` (the
-generic pipeline's single entry) shows `outE.has(w).inV.values`, `outE.inV.values`, `out.values` and
-`out.has(n).values` ALL answered with **0 applyStep calls** — every one is fused. So the 9.3x is
-inside fused code.
+❌ **THE ROUTE CLAIM I MADE HERE IS WRONG AND ITEM 1882 REFUTED IT WITH THE REPO'S OWN SCREEN.** What
+this entry said: "instrumenting `applyStep` shows `outE.has(w).inV.values`, `outE.inV.values`,
+`out.values` and `out.has(n).values` ALL answered with 0 applyStep calls — every one is fused, so the
+9.3x is inside fused code." The first of those four is GENERIC — 4 `applyStep` calls, step kinds
+`[has inV outE values]` — and the profile said so before the census did: `filterStream` and
+`projectValues` are reachable ONLY from `dispatch.ts`, which `run` reaches only through `applyStep`.
+The shape is a MISSING RUNG, which makes the nomination better, not worse. See item 1882.
 
 The arithmetic that makes it a candidate: the predicate is evaluated on ~100,000 edges and emits
 45,713, i.e. **~216 ns an edge visit**, against the vertex-side `range: has(gt)` doing the same kind
@@ -88287,3 +88290,79 @@ NO ENGINE CODE CHANGED. The `applyStep` instrumentation was a measurement patch,
 byte-identically (`git diff` empty on `dispatch.ts`).
 
 GATES. bun run check 0 read unpiped; no source touched.
+
+## Item 1882 — a profile refuted my OWN route claim from the previous item: the edge-property filter is not fused, it is a whole FAMILY of seven ordinary spellings falling off every rung, and it costs 7.2x per edge visit
+
+Item 1881 nominated `V().outE('E').has('w', gt(3)).inV().values('n')` — 21.56 ms, the largest
+absolute on the new Gremlin workload screen — and recorded it as **already fused**, on an
+`applyStep` instrumentation that reported 0 calls. This item profiled it, and the profile contained
+frames that cannot be there if that were true.
+
+❌ **THE REFUTATION CAME FROM THE PROFILE'S CALL GRAPH, NOT FROM A SECOND OPINION.** Self-time, 20k
+vertices / 100k edges, REPS=50 (query 75% of the process):
+
+      12.5%  isVertexShaped       core/Element.ts
+      11.5%  get properties       core
+       9.3%  iterLabeled          gremlin/graph-queries.ts
+       5.9%  (anon)               gremlin dist :2469
+       5.4%  traverseToEdge       gremlin/executor/movement.ts
+       5.2%  iterByLabel          gremlin/graph-queries.ts
+       4.7%  projectValues        gremlin/executor/aggregation.ts
+       4.5%  filterStream         gremlin/executor/runtime.ts
+       3.2%  outEdgesOf           gremlin/graph-queries.ts
+
+`filterStream` and `projectValues` are called from **`dispatch.ts` and nowhere else** (checked with
+python `str.count`, not grep — CLAUDE.md records grep silently skipping these files), and `run`
+reaches `dispatch.ts` only through `applyStep`. A shape cannot be fused and run `filterStream`.
+
+✅ **SO THE SCREEN WAS ASKED PROPERLY, AND THE ANSWER IS A FAMILY.** `gremlin-route-screen.mjs` now
+carries an `edgef:` family (eight rows, permanent — the screen had no edge-PREDICATE row at all,
+which is why the previous item could get this wrong unchallenged):
+
+      generic   edgef: outE has inV values       4 applyStep calls   [has inV outE values]
+      generic   edgef: outE has inV count        4                   [count has inV outE]
+      generic   edgef: outE has count            3                   [count has outE]
+      generic   edgef: outE has values           3                   [has outE values]
+      generic   edgef: outE eq inV values        4                   [has inV outE values]
+      generic   edgef: inE has outV values       4                   [has inE outV values]
+      generic   edgef: bothE has otherV count    4                   [bothE count has otherV]
+      SHORTCUT  edgef: outE inV values           0   ⬅ the SAME walk without the predicate
+
+**Every filtered spelling is generic and the unfiltered one is fused.** The predicate is the entire
+difference — not the direction, not the projection, not the terminal: `gt` and `=` route alike, and
+so do `inE/outV` and `bothE/otherV`. Seven of the eight rows, and the screen has 54 rows in total.
+
+📏 **AND THE PRICE IS MEASURED PER EDGE VISIT, ONE SHAPE PER PROCESS, IN BOTH ORDERS.** Item 1874
+retracted a 1.73x that was a within-process cross-row ratio, so nothing here times two shapes in one
+process; `SHAPE` selects one and the comparison is made between runs. The per-ROW figure would
+flatter the filtered shape (it emits 46% of the rows) — item 1858 declined a target for exactly that
+reason — so the denominator is the **80,000 `E` edges all three shapes visit**:
+
+      filtered     18.04 ms   45,713 rows   395 ns/row   225 ns/edge-visit
+      unfiltered    2.44       80,000        31           31
+      hop           2.56       80,000        32           32
+      ... reversed order: 17.55 / 2.52 / 3.12 — the ordering moves nothing
+
+**7.2x per edge visit for one property read and one comparison**, over the identical adjacency walk.
+The fused sibling is the floor and it is not a guess: it is the same traversal with the `has`
+deleted, measured in its own process.
+
+🔭 **THE TARGET, sized but not built this tick.** The fused walks already in the tree
+(`hop-values.ts`, `hop-chain-values.ts`, `start-filtered-hop-values.ts`) hand-walk the adjacency and
+skip the `iterLabeled`/`iterByLabel`/`outEdgesOf` delegation chain — four of this profile's nine
+frames, ~23%, plus the traverser machinery behind `isVertexShaped`/`filterStream`/`projectValues`.
+None of them admits an EDGE predicate between the hop's two halves. That is the rung to add, and the
+family census says one rung covering `(out|in|both)E(L).has(k, pred).(inV|outV|otherV)` reaches seven
+ordinary spellings rather than one.
+
+NO ENGINE CODE CHANGED. Two instruments (`edge-filter-prof-1882.mjs`, `edge-filter-floor-1882.mjs`)
+and the `edgef:` family in the route screen. Item 1881's entry heading and its route paragraph are
+corrected in this same commit, per the heading rule.
+
+⚠️ **THE METHOD LESSON, which is the reason this entry leads with the refutation.** The previous item
+route-checked BEFORE pricing, which is the right order, and still got it wrong — because the check
+was a one-off hand instrumentation when the repo already owns a screen for exactly that question.
+The screen would have been right, and it is now permanently wider for it. A one-off that agrees with
+what you expect is the easiest kind of measurement to not re-check.
+
+GATES. bun run check 0 read unpiped; no engine source touched.

@@ -107,10 +107,22 @@ const SHAPES = {
   'edge: E count': 'traversal(E(), count())',
   'edge: E values': "traversal(E(), values('w'))",
   'edge: outE count': "traversal(V(), outE('E'), count())",
+  // ⚠️ THE EDGE-PROPERTY FILTER FAMILY, added at item 1882 because the screen had no row for it and
+  // item 1881 consequently nominated one of these shapes as "already fused" when it is not. An edge
+  // predicate between a hop's two halves (`outE(L).has(w, …).inV()`) is an entirely ordinary
+  // traversal and the single biggest absolute on the Gremlin workload screen.
+  'edgef: outE has inV values': "traversal(V(), outE('E'), has('w', gt(3)), inV(), values('k'))",
+  'edgef: outE has inV count': "traversal(V(), outE('E'), has('w', gt(3)), inV(), count())",
+  'edgef: outE has count': "traversal(V(), outE('E'), has('w', gt(3)), count())",
+  'edgef: outE has values': "traversal(V(), outE('E'), has('w', gt(3)), values('w'))",
+  'edgef: outE eq inV values': "traversal(V(), outE('E'), has('w', 3), inV(), values('k'))",
+  'edgef: inE has outV values': "traversal(V(), inE('E'), has('w', gt(3)), outV(), values('k'))",
+  'edgef: bothE has otherV count': "traversal(V(), bothE('E'), has('w', gt(3)), otherV(), count())",
+  'edgef: outE inV values': "traversal(V(), outE('E'), inV(), values('k'))",
 };
 
 const IMPORTS =
-  "import { E, V, both, count, dedupe, fold, groupCount, has, hasId, hasLabel, id, inV, limit, min, order, out, outE, sum, toArray, traversal, values } from '@lenke/gremlin';";
+  "import { E, V, both, bothE, count, dedupe, fold, groupCount, gt, has, hasId, hasLabel, id, inE, inV, limit, min, order, otherV, out, outE, outV, sum, toArray, traversal, values } from '@lenke/gremlin';";
 
 const build = () => execFileSync('bun', ['run', 'build'], { cwd: ROOT, stdio: 'ignore' });
 
@@ -127,7 +139,7 @@ for (let i = 0; i < N; i += 1) {
   g.addVertex({ id: 'v' + i, labels: ['T'], properties: { k: i % 7 } });
 }
 for (let i = 0; i < N; i += 1) {
-  g.addEdge({ id: 'e' + i, from: g.getVertexById('v' + i), to: g.getVertexById('v' + ((i * 7 + 3) % N)), labels: ['E'] });
+  g.addEdge({ id: 'e' + i, from: g.getVertexById('v' + i), to: g.getVertexById('v' + ((i * 7 + 3) % N)), labels: ['E'], properties: { w: [1, 2, 3, 4, 5, 7, 9][i % 7] } });
 }
 globalThis.${MARKER} = [];
 toArray(${src}, g);
