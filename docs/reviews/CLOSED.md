@@ -86162,3 +86162,48 @@ tuned for one-off texts and this bench is the case it does not serve.
 NO ENGINE CODE CHANGED. Both experimental edits were reverted and the restore verified.
 
 GATES. bun run check 0 read unpiped.
+
+### Item 1841 — ✅ **GREMLIN HAS NO PER-QUERY BUILD COST WORTH CHASING: constructing a traversal is 0.188 us, ~5% of a 3.6 us execution on the smallest realistic graph.** The GQL/Gremlin asymmetry is now measured on both sides. ⚠️ And the subtraction disagreed with the direct arm by 2.2x — the cross-check I added after item 1839 earned itself immediately
+
+THE QUESTION, the Gremlin twin of item 1840's. ⚠️ `runtime-profile-gremlin-probe.mjs`'s own header
+flags this and then relies on it: "EVERY `SHAPES` ENTRY IS BUILT ONCE, AT MODULE LEVEL, AND THE PLAN
+OBJECT IS REUSED ACROSS REPS." That is correct for measuring a WALK — building per rep would time
+the builder — but it means no instrument here had measured the builder, and a real caller writes
+`g.V().out('E').values('k')` inline and builds a fresh object every time.
+
+THREE ARMS, one configuration per process, 2,000 calls a rep, median of 11 kept:
+
+```text
+  build     (construct and discard)            0.188 us/call
+  execute   (prebuilt plan, the probe's way)   3.598 us/call
+  both      (build fresh AND run, real use)    4.011 us/call
+```
+
+✅ **THE BUILDER IS NEGLIGIBLE.** 0.188 us against a 3.598 us execution is ~5% — and that is an
+UPPER BOUND by construction: the graph is 200 vertices precisely so execution cannot bury the
+builder, so on any real graph the same absolute cost is a smaller share.
+
+⚠️⚠️ **AND THE SUBTRACTION SAID 0.413 us WHERE THE DIRECT ARM SAYS 0.188 — a 2.2x disagreement, on
+a bench where I added the direct arm specifically to catch that.** Item 1839's subtraction sat
+inside its own noise band and I could not tell; here the two methods are in the same output. The
+subtraction is the wrong one: `both` and `execute` are ~4 us readings with series spanning 3.4-7.5,
+so a 0.4 us difference between them is below what differencing two such numbers can resolve. **A
+subtraction between two large noisy numbers cannot settle a small one; a direct measurement of the
+small thing can.**
+
+✅ **AND REUSE AMORTIZES NOTHING, CHECKED RATHER THAN ASSUMED.** My first explanation for the gap was
+that a reused plan memoizes its lowering while a fresh one re-pays it. It does not: `effectivePlan`
+runs its seven-rewrite chain (`fuseOrderTake`, `dropUnreadAs`, `dropVacuousLabels`,
+`fuseUnionSameDir`, `dropCountedSelect`, `flattenLinearMatch`, `graphFreePrefix`) on EVERY call, and
+the module holds no `planCache` and no `WeakMap` — grepped, not inferred. So both arms pay it
+identically and it is part of the 3.598 us, not something reuse avoids.
+
+**THE ASYMMETRY, NOW MEASURED ON BOTH SIDES.** GQL takes TEXT, so it parses, so it caches, so a
+workload wider than the cache pays **2.4x** (item 1840). Gremlin takes an OBJECT, so there is
+nothing to parse and nothing to cache, and the equivalent per-query cost is **5% at its worst**.
+That is a property of the two surfaces rather than a defect in either, and it is worth recording
+because the natural assumption — "both engines must have a per-query compile cost" — is half wrong.
+
+NO ENGINE CODE CHANGED, and no target found. Recorded so the next pass does not re-ask it.
+
+GATES. bun run check 0 read unpiped.
