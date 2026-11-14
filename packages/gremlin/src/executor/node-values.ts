@@ -76,11 +76,42 @@ export const nodeValuesShortcut = (plan: Plan, graph: Graph): NodeValues | undef
     return undefined;
   }
 
-  const { label, key } = shape;
-  // ⚠️ `hasLabel`'s OWN RULE, restated from the dispatcher: ANY of the named labels matching is a
-  // pass (`step.labels.some((l) => v.labels.has(l))`), not all of them. Iterating `graph.vertices`
-  // makes the dispatcher's is-element guard vacuous — everything here is a vertex.
-  const labels = label?.labels;
+  /**
+   * ⚠️⚠️ A `hasLabel` IS REFUSED SINCE ITEM 1870, AND IT USED TO BE THE RUNG'S HEADLINE CASE.
+   * Item 1482 shipped this rung on exactly that shape at **2.39x** (PRE 13.11-14.18 ms, POST
+   * 5.67-5.86). That measurement was right when it was taken and is now inverted: the PIPELINE
+   * learned to seed a leading `hasLabel` from `graph.verticesByLabel` (`seedFromIndex`), so it
+   * visits only the labelled vertices while this rung scans ALL of them and tests
+   * `labels.some(...)` on each. Measured with a kill switch, one arm per build, at 200,000
+   * vertices:
+   *
+   *     label covers    THIS RUNG    PIPELINE    pipeline faster by
+   *     1 in 1             5.46 ms      5.61 ms   tie
+   *     1 in 2             8.51         4.41      1.93x
+   *     1 in 3            10.51         3.14      3.35x
+   *     1 in 10            7.74         0.97      7.98x
+   *     1 in 100           6.93         0.15      46x
+   *     1 in 1000          6.78         0.01      678x
+   *
+   * The rung's cost is a FULL SCAN whatever the label matches; the pipeline's scales with the
+   * label's size. So it loses for every selective label, ties when the label covers everything,
+   * and **never wins** — which is why the refusal is unconditional rather than a crossover test.
+   *
+   * ⚠️ AN A/B's VERDICT DECAYS WHEN THE ARM IT BEAT GETS FASTER, and nothing here was watching.
+   * The rung kept returning correct answers, and no test asserted it CLAIMED this shape — the
+   * whole gremlin suite passes with the refusal in place — so a 678x regression sat in a shipped
+   * rung invisibly. `node-values-label-refusal.test.ts` now pins the route so it cannot flip back
+   * unnoticed.
+   *
+   * ⚠️ AND THIS ADDS NO READER OF `verticesByLabel`, which is the open owner decision it would
+   * otherwise have run into (the public `v.labels = [...]` setter leaves that index stale).
+   * Refusing simply lets `seedFromIndex`, which already reads it, do the work.
+   */
+  if (shape.label !== undefined) {
+    return undefined;
+  }
+
+  const { key } = shape;
 
   // ⚠️ ONE loop body, used by BOTH the iterator and `drain`. Writing `drain` as a second derivation
   // is item 169's lesson, and Gremlin results are compared ORDERED by the differential fuzzer, so a
@@ -88,10 +119,6 @@ export const nodeValuesShortcut = (plan: Plan, graph: Graph): NodeValues | undef
   // liberty.
   const walk = function* (): Generator<unknown> {
     for (const v of graph.vertices) {
-      if (labels !== undefined && !labels.some((l) => v.labels.has(l))) {
-        continue;
-      }
-
       const props = v.properties;
 
       if (key in props) {

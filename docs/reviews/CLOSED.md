@@ -57425,7 +57425,16 @@ real queries. That trade needs its own A/B and control band, not the tail of a t
 
 `bun run check` 0 read unpiped. One new instrument; no engine code changed.
 
-### Item 1482 — SHIPPED, **2.39x** on `V().hasLabel(L).values(k)` (3/3, arms nowhere near overlapping, FOUR controls flat): the no-hop sibling of `hopValuesShortcut`. Gremlin now BEATS ISO-GQL on the pair where it was 1.63x behind — and the ~16% perturbation was sidestepped by putting it in a NEW FILE
+### Item 1482 — SHIPPED, ~~**2.39x** on `V().hasLabel(L).values(k)`~~ — ⚠️ **THE LABELLED HALF WAS OVERTAKEN AND IS REFUSED SINCE ITEM 1870 (it had become up to 678x SLOWER than the pipeline)**; the UNLABELLED half stands
+
+⚠️⚠️ **THIS MEASUREMENT WAS RIGHT WHEN TAKEN AND IS NOW INVERTED.** The pipeline has since learned
+to seed a leading `hasLabel` from `graph.verticesByLabel` (`seedFromIndex`) — the ~2.4x that flipped
+it. Item 1870 measured the rung against the pipeline with a kill switch across label selectivity:
+tie at 1-in-1, **1.93x at 1-in-2, 3.35x at 1-in-3, 7.98x at 1-in-10, 46x at 1-in-100 and 678x at
+1-in-1000**, all in the PIPELINE's favour. `V().values(k)` — the no-label half — is untouched and
+still the rung's.
+
+### Item 1482 (original entry follows) — SHIPPED, **2.39x** on `V().hasLabel(L).values(k)` (3/3, arms nowhere near overlapping, FOUR controls flat): the no-hop sibling of `hopValuesShortcut`. Gremlin now BEATS ISO-GQL on the pair where it was 1.63x behind — and the ~16% perturbation was sidestepped by putting it in a NEW FILE
 
 Item 1481 priced this and declined it, because the obvious home is `hop-values.ts` — the file
 [[executor-edits-perturb]] measures at up to ~16% on unrelated rows per edit, which a ~29% ceiling
@@ -87498,3 +87507,64 @@ composite path, which keys them STRUCTURALLY and so dedupes them into the same c
   coincide, so its mutant survived. Over temporals they diverge, which is the fixture it uses now.
 
 GATES. bun run check 0 read unpiped; gremlin 2179 tests green; all seven byte-identity fuzzers green.
+
+## Item 1870 — a SHIPPED rung was up to 678x slower than the route it displaced, and item 1482's 2.39x in its favour was correct when taken; an A/B's verdict DECAYS when the arm it beat gets faster
+
+Item 1869 refused a `hasLabel` in its new deduped rung after measuring 2.3x against the pipeline, and
+noticed that `nodeValuesShortcut` — which SHIPS — accepts one. That was evidence, not a measurement:
+it compared two different questions. A kill switch settles it.
+
+❌ **THE RUNG IS NET-NEGATIVE FOR EVERY SELECTIVE LABEL, AND IT NEVER WINS.** One arm per build,
+marker asserted in the dist, 200,000 vertices, median of 9 after 2 warm-ups. The axis is SELECTIVITY
+because a single number cannot answer it — the rung's cost is a FULL SCAN whatever the label matches,
+and the pipeline's scales with the label's size:
+
+      label covers    THE RUNG    PIPELINE    pipeline faster by
+      1 in 1            5.46 ms     5.61 ms   tie
+      1 in 2            8.51        4.41      1.93x
+      1 in 3           10.51        3.14      3.35x
+      1 in 10           7.74        0.97      7.98x
+      1 in 100          6.93        0.15      46x
+      1 in 1000         6.78        0.01      678x
+
+**`V().hasLabel('Person').values('name')` is about the most ordinary Gremlin query there is**, and on
+a label covering a tenth of the graph it was paying 8x. The refusal is UNCONDITIONAL rather than a
+crossover test, because the rung ties at best.
+
+⚠️⚠️ **ITEM 1482'S 2.39x WAS NOT WRONG — IT WAS OVERTAKEN.** That item shipped this rung on exactly
+this shape at PRE 13.11-14.18 against POST 5.67-5.86, with four controls flat. The pipeline has since
+learned to seed a leading `hasLabel` from `graph.verticesByLabel` (`seedFromIndex`), which is the
+~2.4x that inverted the verdict: the pipeline now reads 5.61 where item 1482 measured it at 13-14.
+
+**This is the sharpest instance yet of a measurement decaying.** `CLOSED.md`'s discipline is about
+headings that advertise work already done; this is the mirror — a heading that advertises a WIN that
+is now a loss, with nothing in the file able to say so, because the evidence lives in a different
+item that made a different arm faster.
+
+⚠️ **AND NOTHING WAS WATCHING, which is the part to fix rather than regret.** The rung kept returning
+correct answers, and **no test asserted which route claimed the shape — the entire gremlin suite
+passes with the refusal in place.** So a 678x regression sat in shipped code with no signal at all.
+`node-values-label-refusal.test.ts` now pins the route; its teeth are verified (a mutant deleting
+the refusal fails FOUR of five tests, because the walk no longer filters labels, so removing the
+refusal is a WRONG ANSWER rather than a slow one — the two are coupled and the source says so).
+
+✅ **AND IT ADDS NO READER OF `verticesByLabel`**, which is the open owner decision this would
+otherwise have run into (the public `v.labels = [...]` setter leaves that index stale). Refusing
+simply lets `seedFromIndex`, which already reads it, do the work — so the fix sidesteps the decision
+instead of forcing it.
+
+⚠️⚠️ **A 2.5x I ALMOST CLAIMED, RETRACTED BEFORE IT WAS WRITTEN DOWN.** The probe's unlabelled
+control read **12.01 ms in the first arm and ~4.9 after the change** — which looks like a large bonus
+win on `V().values(k)`. It is not. The control ran LAST, after six labelled rows, and those rows
+pollute it: `CONTROL_FIRST=1` reads 5.07 against the same run's trailing 8.74 **in the post-change
+arm too**, so the ordering moves it in both arms and the cross-arm comparison is meaningless. First
+suspicion was that removing the per-vertex `labels !== undefined` test had sped the walk up;
+restoring that test with the refusal held constant read 4.66/5.04/5.30 — unchanged — which refuted
+it. **Item 762's trap one level in: not two arms sharing a process, but two ROWS.** The probe now
+carries the knob and the reason.
+
+The sweep rows themselves ARE comparable: each row occupies the same position in both arms, and the
+arms differ by build. The 8x-678x rows are unambiguous; 1-in-1 and 1-in-2 move a few tenths between
+runs.
+
+GATES. bun run check 0 read unpiped; gremlin 2184 tests green; all seven byte-identity fuzzers green.
