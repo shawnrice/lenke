@@ -270,6 +270,60 @@ describe('optionalHopValues — the multi-step chain', () => {
     ).toStrictEqual([40, 10, 20, 30, 40]);
   });
 
+  /**
+   * ⚠️ THE CHAIN WALK IS ALSO WRITTEN TWICE SINCE ITEM 1894 — a lazy iterator and an eager `drain` —
+   * and `toArray` reads only the second. Without this, half of it has no test; item 1893 lost a
+   * mutant to exactly that on the edge rung and item 1891 lost five on the single-hop one.
+   */
+  it("the chain walk's LAZY iterator agrees with its eager drain", () => {
+    const g = fixture();
+    const make = () => traversal(V(), optional(traversal(out('E'), out('E'))), values('n'));
+
+    expect([...run(make(), g)]).toStrictEqual(toArray(make(), g));
+    expect([...run(make(), g)]).toStrictEqual([3, 2, 3, 4, 5, 8]);
+
+    // `in` as well, so the chain's DIRECTION is observable through the iterator.
+    const back = () => traversal(V(), optional(traversal(in_('E'), in_('E'))), values('n'));
+
+    expect([...run(back(), g)]).toStrictEqual(toArray(back(), g));
+    expect([...run(back(), g)]).toStrictEqual([1, 2, 1, 3, 4, 5, 8]);
+  });
+
+  /**
+   * ⚠️ A CHAIN WHOSE FAR END LACKS THE KEY, on its own fixture — the shared one has none, and a
+   * mutant removing the chain drain's drop therefore SURVIVED. The row still COUNTS as a row (so the
+   * start does not emit itself), which is the pairing the `any`-at-the-end rule and the drop rule
+   * make together.
+   */
+  it('drops a chain row whose far end lacks the key, without emitting the start', () => {
+    const g = new Graph();
+
+    g.addVertex({ id: 'k0', labels: ['T'], properties: { n: 10 } });
+    g.addVertex({ id: 'k1', labels: ['T'], properties: { n: 20 } });
+    // `k2` has NO `n`, and is the only two-hop far end from `k0`.
+    g.addVertex({ id: 'k2', labels: ['T'], properties: { other: 1 } });
+    g.addEdge({
+      id: 'ke0',
+      from: g.getVertexById('k0') as never,
+      to: g.getVertexById('k1') as never,
+      labels: ['E'],
+    });
+    g.addEdge({
+      id: 'ke1',
+      from: g.getVertexById('k1') as never,
+      to: g.getVertexById('k2') as never,
+      labels: ['E'],
+    });
+
+    const make = () => traversal(V(), optional(traversal(out('E'), out('E'))), values('n'));
+
+    // k0: k0->k1->k2, whose `n` is absent => the row is DROPPED and k0 does NOT emit itself.
+    // k1: k1->k2, then k2 has no out => the chain dies => k1 emits itself (20).
+    // k2: no out => itself, no `n` => dropped.
+    expect(toArray(make(), g)).toStrictEqual([20]);
+    expect([...run(make(), g)]).toStrictEqual([20]);
+  });
+
   it('serves THREE hops, where the recursion runs instead of the unrolled pair', () => {
     const g = fixture();
 

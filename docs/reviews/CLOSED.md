@@ -89299,3 +89299,61 @@ INVARIANTS. All seven byte-identity fuzzers green. `edge-filtered-oracle-1883.mj
 ORDERED, every one identical. `bun run spelling:gremlin`: 0 answer disagreements, 0 groups over 2x.
 
 GATES. bun run check 0 and bun run test -- --skip-nx-cache across 21 projects, each read unpiped.
+
+## Item 1894 — the `drain` CENSUS item 1893 asked for: one walk was missing it on the surface's largest absolute (**1.57x warm, 1.32x cold**), and the rest are priced as too small to matter
+
+Item 1893's rule — _check for an eager fill before pricing any fused walk_ — came from three items in
+a row where it was most of the available win. So this tick counted them, which is a `grep` and not a
+guess:
+
+      hop-values.ts                  4 drains  (4 walks)
+      start-filtered-hop-values.ts   2
+      hop-chain-values.ts            2
+      hop-values-csr.ts              2        (item 1889)
+      edge-filtered-hop-values.ts    1        (item 1893)
+      optional-hop-values.ts         1        ⬅ FOUR walks, ONE drain
+      node-values.ts                 1        ⬅ FIVE iterators, ONE drain
+
+✅ **THE ONE THAT MATTERED WAS THE OPTIONAL CHAIN**, whose CSR walk (item 1888) was spreading a
+generator over 3,200,000 rows — the largest absolute this surface has at scale. A dist-rename A/B
+(`toArray` reads `drain` only when it is a function on the walk, so renaming it IS the previous
+state), 3 order-alternated rounds, one shape per process, 200,000 vertices / 1,000,000 edges:
+
+      opt2      WARM  493.1 532.4 476.1  ->  311.6 314.4 313.7   1.57x
+      opt2      COLD  585.2 601.2 529.2  ->  423.1 444.0 468.7   1.32x
+      optional  [CONTROL]                                         0.98x
+      hop       [CONTROL]                                         1.01x
+      hop2      [CONTROL]                                         0.96x
+
+❌ **AND THE REST ARE MEASURED AS NOT WORTH IT, which is the other half of a census.** `node-values.ts`
+has four walks without an eager fill, and all four serve SCAN shapes whose absolutes at 200,000
+vertices are small:
+
+      scan: valueMap   16.64 ms      scan: id   10.51      scan: values   5.92
+
+`scan: values` is 30 ns a row already. Four more copies of a loop in a hot module — which
+`ts-closure-size-is-load-bearing` and `executor-edits-perturb` both price — for a few milliseconds
+is the trade item 1878 exists to stop me making. The two chain arms that keep the generator
+(`chainWalk`, for `both`/untyped/multi-type chains) are left for the same reason: they are the arms
+the CSR declines, which is the rare spelling.
+
+🦷 **MUTATION, AND THE FOURTH REPEAT OF THE SAME LESSON.** The new drain made FOUR anchors ambiguous
+(the chain walk's `if (!any) {` now appears four times across the file's arms) and the anchor
+assertion caught each one rather than half-applying a patch — the `which` facility from item 1888
+earning its place for the third runner. Then:
+
+- **`the chain drain drops nothing` SURVIVED**, because no fixture in the file has a two-hop path
+  whose FAR end lacks the projected key: on the shared fixture every two-hop far end carries `n`.
+  A dedicated three-vertex fixture (`k0 -> k1 -> k2`, where `k2` has no `n`) makes the pairing
+  observable — the row is dropped AND the start does not emit itself, which is the `any`-at-the-end
+  rule and the drop rule together.
+- And the chain walk's LAZY iterator needed its own test for item 1893's reason: `toArray` now
+  reads the drain, so every existing assertion had stopped covering the generator. Added with an
+  `in`/`in` case so the direction is observable there too.
+
+After both: all mutants caught, 1 expected survivor (the unreachable chain-gate guard).
+
+INVARIANTS. All seven byte-identity fuzzers green. `optional-oracle-1884.mjs`: 75 pairs, ORDERED,
+every one identical.
+
+GATES. bun run check 0 and bun run test -- --skip-nx-cache across 21 projects, each read unpiped.

@@ -75,6 +75,13 @@ generator hand tied. `edge-csr-ceiling-1893.mjs` is the shape of probe that find
 arm (the same walk by hand over the same structure) separates DELEGATION from LAYOUT, and it said
 2.08x of the gap was delegation before any structure was blamed.
 
+**ITEM 1894 THEN COUNTED THEM ALL** (one `grep` over the walk modules): the only missing fill that
+mattered was the optional CHAIN's CSR walk — **1.57x warm, 1.32x cold** on the surface's largest
+absolute (`chain-drain-ab-1894.mjs`, which kills the drain by RENAMING it in the dist). The four
+walks in `node-values.ts` that still lack one serve scan shapes measuring 5.92-16.64 ms at 200,000
+vertices, so they are left alone deliberately — four more loop copies in a hot module for a few
+milliseconds is the trade item 1878 exists to stop.
+
 So: **re-run the screens at 10x before concluding a surface is done.** The instruments:
 
 - **`hop-csr-ab-1889.mjs`** — the warm AND cold A/B. ⚠️ Its cold column is the point: before the

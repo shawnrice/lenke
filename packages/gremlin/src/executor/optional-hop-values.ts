@@ -237,7 +237,7 @@ const csrChainWalk = (
   graph: Graph,
   spec: ChainSpec,
   shape: readonly { forward: boolean; label: string }[],
-): Iterable<unknown> => ({
+): HopWalk => ({
   *[Symbol.iterator]() {
     const { pick, drops } = spec;
     const csrs: ChainCsr[] = shape.map((h) => chainCsrFor(graph, h.forward, [h.label]));
@@ -295,10 +295,73 @@ const csrChainWalk = (
       }
     }
   },
-});
+  /**
+   * ⚠️ THE EAGER FILL (item 1894). `toArray` prefers `drain` (item 1412) and item 1893 measured the
+   * same omission on the edge rung at **1.64x** — the third item in a row where it was most of the
+   * available win. Same loop written twice (item 169), because Gremlin results are compared ORDERED.
+   */
+  drain() {
+    const { pick, drops } = spec;
+    const csrs: ChainCsr[] = shape.map((h) => chainCsrFor(graph, h.forward, [h.label]));
+    const [{ vtx }] = csrs;
+    const last = csrs.length - 1;
+    // One cursor and one bound per LEVEL, allocated once per query rather than per vertex.
+    const out: unknown[] = [];
+    const cur = new Int32Array(csrs.length);
+    const end = new Int32Array(csrs.length);
 
-/** The CSR walk where every hop is a directed single type, and the generator walk otherwise. */
-const chainValues = (graph: Graph, spec: ChainSpec): Iterable<unknown> => {
+    for (let slot = 0; slot < vtx.length; slot += 1) {
+      const start = vtx[slot];
+      let any = false;
+      let level = 0;
+
+      cur[0] = csrs[0].memo.off[slot];
+      end[0] = cur[0] + csrs[0].memo.len[slot];
+
+      while (level >= 0) {
+        if (cur[level] >= end[level]) {
+          level -= 1;
+
+          if (level >= 0) {
+            cur[level] += 1;
+          }
+
+          continue;
+        }
+
+        const target = csrs[level].memo.flat[cur[level]];
+
+        if (level === last) {
+          any = true;
+
+          const value = pick(vtx[target]);
+
+          if (!drops || value !== undefined) {
+            out.push(value);
+          }
+
+          cur[level] += 1;
+          continue;
+        }
+
+        level += 1;
+        cur[level] = csrs[level].memo.off[target];
+        end[level] = cur[level] + csrs[level].memo.len[target];
+      }
+
+      if (!any) {
+        const value = pick(start);
+
+        if (!drops || value !== undefined) {
+          out.push(value);
+        }
+      }
+    }
+
+    return out;
+  },
+});
+const chainValues = (graph: Graph, spec: ChainSpec): HopWalk => {
   const shape = csrShape(spec.hops);
 
   return shape === undefined ? chainWalk(graph, spec) : csrChainWalk(graph, spec, shape);

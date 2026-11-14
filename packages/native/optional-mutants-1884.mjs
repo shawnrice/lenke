@@ -30,9 +30,10 @@ const MUTANTS = [
   // anchor assertion is what said so rather than a silent half-applied patch. The count is declared
   // as 2 and `replace` takes the FIRST, which is the single-hop walk; the chain's own empty branch
   // has its own entry below.
-  ['empty branch deleted (single-hop walk)', 'if (!any) {', 'if (false) {', 3, 1],
-  ['empty branch deleted (generator chain)', 'if (!any) {', 'if (false) {', 3, 0],
-  ['empty branch deleted (CSR chain)', 'if (!any) {', 'if (false) {', 3, 2],
+  ['empty branch deleted (single-hop walk)', 'if (!any) {', 'if (false) {', 4, 1],
+  ['empty branch deleted (generator chain)', 'if (!any) {', 'if (false) {', 4, 0],
+  ['empty branch deleted (CSR chain)', 'if (!any) {', 'if (false) {', 4, 2],
+  ['empty branch deleted (CSR chain DRAIN)', 'if (!any) {', 'if (false) {', 4, 3],
   [
     'any set from the VALUE, not the edge',
     'any = true;\n\n          const value = pick(forward ? e.to : e.from);',
@@ -109,25 +110,28 @@ const MUTANTS = [
     1,
   ],
   [
-    'CSR: the cursor bound is off by one (one extra neighbour per run)',
+    'CSR iterator: the cursor bound is off by one',
     'if (cur[level] >= end[level]) {',
     'if (cur[level] > end[level]) {',
-    1,
+    2,
+    0,
   ],
   [
-    'CSR: the far end is the START vertex, not the target slot',
+    'CSR iterator: the far end is the START vertex',
     'const value = pick(vtx[target]);',
     'const value = pick(vtx[slot]);',
-    1,
+    2,
+    0,
   ],
   [
-    'CSR: `any` is set when the FIRST hop has a neighbour',
+    'CSR iterator: `any` is set on the FIRST hop',
     `        if (level === last) {
           any = true;`,
     `        any = true;
 
         if (level === last) {`,
-    1,
+    2,
+    0,
   ],
   [
     'CSR: a MULTI-TYPE hop is admitted — an edge with two named types counts twice',
@@ -136,20 +140,22 @@ const MUTANTS = [
     1,
   ],
   [
-    "CSR: the second level reads the START slot's run, not the target's",
+    "CSR iterator: the second level reads the START slot's run",
     'cur[level] = csrs[level].memo.off[target];',
     'cur[level] = csrs[level].memo.off[slot];',
-    1,
+    2,
+    0,
   ],
   [
-    'CSR: the self-emit branch drops nothing',
+    'CSR iterator: the self-emit branch drops nothing',
     `        const value = pick(start);
 
         if (!drops || value !== undefined) {`,
     `        const value = pick(start);
 
         if (true) {`,
-    1,
+    2,
+    0,
   ],
   [
     'ONE-HOP CSR: the empty branch is gone (a lone vertex emits nothing)',
@@ -187,6 +193,20 @@ const MUTANTS = [
     'ONE-HOP CSR: `both` and multi-type are admitted',
     "if (kind === 'both' || labels.length !== 1 || !seenBefore(graph, kind === 'out', labels[0])) {",
     "if (!seenBefore(graph, kind === 'out', labels[0])) {",
+    1,
+  ],
+  [
+    'CHAIN CSR drain: drops nothing (disagrees with the iterator)',
+    `          if (!drops || value !== undefined) {
+            out.push(value);
+          }`,
+    `          out.push(value);`,
+    1,
+  ],
+  [
+    'CHAIN CSR drain: the far end is the start slot',
+    'const value = pick(vtx[target]);\n\n          if (!drops || value !== undefined) {\n            out.push(value);',
+    'const value = pick(vtx[slot]);\n\n          if (!drops || value !== undefined) {\n            out.push(value);',
     1,
   ],
 ];
