@@ -86850,3 +86850,75 @@ NO ENGINE CODE CHANGED. The kill switch was a measurement patch: pristine copy u
 rebuilt and re-checked for the marker, and the probe re-run against the restored engine.
 
 GATES. bun run check 0 read unpiped; gremlin 2166 tests green against the restored dist.
+
+## Item 1862 — the FORKED multi-pattern has no rung: 6.5x on rows and 125x on `count(*)`, and it JOINS rather than products, so my quadratic hypothesis was wrong for the third tick running
+
+Item 1859 nominated the workload screen's `multi-pattern` family — 97% of the screen, 1376 ns/row
+against `chain-rows`' 138. **Reading the four bodies it draws from is what made the item tractable**,
+because they are four different questions and only one is open:
+
+      1. (a)-[:E]->(b), (b)-[:E]->(c)          a CHAIN         CLOSED at item 1844, 9.83x
+      2. (a)-[:E]->(b), (a)-[:E]->(c)          a FORK          ⬅ the open one
+      3. (a:T), (b:T) WHERE a.n = $p0 AND …    filtered product    row count IS the answer
+      4. (a)-[:E]->(b), (c)-[:F]->(d)          genuine product     row count IS the answer
+
+❌ **AND THE QUADRATIC HYPOTHESIS IS REFUTED.** The fork shares `a` as the START of both patterns, so
+`spliceChainedPatterns` cannot merge it, and a product-then-filter would be `(N*F)^2` where a join on
+`a` is `N*F^2` — 36,000,000 against 24,000 at N=1500, F=4. A size sweep settles it with no baseline
+needed, because doubling N multiplies a join's work by 2 and a product's by 4:
+
+      fork    N=400 → 800 → 1600 → 3200      2.06x, 1.10x, 1.76x per doubling
+      product (the control that MUST be 4x)  answered in 0.0 ms from a closed form
+
+**It joins.** It also shows the `product` control answering 40,960,000 rows instantly, which is
+`count(*)` over two independent patterns being computed as a product of two counts — correct, and the
+reason a sweep needs a control that must be quadratic: one that is fast everywhere would have meant
+a broken instrument rather than good news.
+
+✅ **THE REAL FINDING IS A CONSTANT FACTOR, AND THERE ARE TWO OF THEM.** At N=3200, both shapes emit
+exactly the same 51,200 rows:
+
+      shape        ms      rows     vs its twin
+      forkRows    26.0    51200     6.5x   chainRows 4.0    ⬅ the shape the SCREEN draws
+      fork        25.0    51200     125x   chain     0.2    ⬅ count(*) has NO rung at all
+
+**The fork's `count(*)` costs the same as emitting its rows** (25.0 against 26.0), which says the
+count is materialized and counted rather than computed — where the chain's count rung answers in
+0.2 ms flat across every size.
+
+🔬 **THE MECHANISM, PROFILED.** A constant factor is what a profile can attribute, and the fork is on
+the GENERAL matcher:
+
+      13.8%  (garbage collector)
+      11.7%  walkSegments
+      15.0%  withBinding          (10.0 + 2.6 + 2.3 across three frames)
+      14.4%  visitRemaining       (9.2 + 4.4 + 1.7)
+       6.7%  matchPattern
+       3.8%  hoistedMatch
+       2.7%  mapToArray
+       2.7%  projectRow
+
+`withBinding` plus `mapToArray` is **~18%**, and it is the per-row `Map` that item 285's note already
+named in passing: "a binding over a product is a `Map` materialized per product row". The 13.8% GC is
+that Map's churn. The chain twin rides a fused rung and allocates none of it.
+
+🔭 **THE BUILD, SCOPED — and the shape is simpler than a general join.** Because the shared variable
+is the START of both patterns, no join table is needed at all: it is a triple nested loop.
+
+      for a in scan(L1):  for b in out_T1(a):  for c in out_T2(a):  emit
+
+One fused walk gets BOTH gaps — emit for the row shape, increment for `count(*)` — so the 125x comes
+almost free with the 6.5x.
+
+⚠️ **REFUSALS TO SETTLE BEFORE BUILDING, one of which decides whether this reaches the screen.** The
+screen's own fork body carries `WHERE b.n <> c.n`, a predicate over BOTH far variables. Evaluating it
+inside the innermost loop is what the general path already does — minus the Map — so admitting it is
+plausible rather than obviously out, but it needs a cheap positional binding for the evaluator and
+that is the part to measure rather than assume. **The first build refuses a residual `WHERE` and
+takes the two unconditional gaps**; whether the predicate case can ride the same loop is its own
+item, and until it does, this win does NOT reach the screen's `multi-pattern` row.
+
+NOT YET BUILT. Two instruments (`fork-join-scaling-1862.mjs`, `fork-prof-1862.mjs`); the refutation,
+the two numbers and the mechanism are this item's deliverable, and the rung is the next one.
+
+GATES. bun run check 0 read unpiped.
