@@ -87106,3 +87106,74 @@ price edits in that area in UNRELATED regressions.
 GATES. bun run check 0 read unpiped; gql 4721 tests green; all seven byte-identity fuzzers green
 (the differential fuzzer draws `multi-pattern` ~1,100 plans a run, so the rewrite is exercised
 against the Rust engine rather than only against itself).
+
+## Item 1865 — SORTING IS 28% OF A REALISTIC MIXED WORKLOAD, the largest single cluster; and my first profile of it was INVALID because two of this repo's own arrays are not index-aligned
+
+The screen runs one child process per family and reports wall time, so it answers "which family is
+expensive" and nothing about frames. Every profile in this stretch then profiled ONE shape (items
+1843, 1859, 1862). Neither asks what a user actually experiences: a MIX of shapes through one
+engine, where a frame shared by six families matters more than the slowest family's own hot loop.
+`mixed-workload-prof-1865.mjs` plus `gen-mixed-workload-1865.ts` is that instrument.
+
+⚠️⚠️ **AND THE FIRST RUN OF IT WAS WORTHLESS, WHICH IS THE PART WORTH KEEPING.**
+`WORKLOAD_FAMILY_NAMES` is `.sort()`ed and `WORKLOAD_FAMILIES` is in declaration order — **they are
+not index-aligned.** Pairing them by index mislabelled every family, and sorted index 12 is
+`range-scan` where `WORKLOAD_FAMILIES[12]` is `multiPattern`, so:
+
+- the queries labelled `range-scan` WERE `multi-pattern`;
+- `SKIP=multi-pattern` dropped `aggregate` instead;
+- the profile came back **97% multi-pattern** — the one family the exclusion existed to remove,
+  and one item 1864 had already closed as NOT ADDRESSABLE.
+
+**It read as a completely plausible finding**: GC at 21.6%, `visitRemaining` at 21.0%, and a
+general-matcher binding cluster near 40% — which is exactly multi-pattern's binding loop, exactly
+what item 1862's fork profile already showed, and exactly what item 285's note named years of items
+ago. Had I not run a census I would have rediscovered a closed result and presented it as new.
+
+**What caught it was CLAUDE.md's own rule — check the fixture's own statistics, not just its
+output.** A per-family row and time census said `range-scan` was 97.4% of the time and 96.9% of the
+rows, and 1.55M rows a query is impossible for a 1,500-vertex node scan. The number that was wrong
+was not in the profile; it was in the composition of what was profiled. `workload-queries.ts` now
+carries the warning at the list itself, because the existing comment there guards against a name
+being MISSING and nothing guarded against the two orders differing — which they always do.
+
+✅ **THE VALID PROFILE IS FLATTER AND POINTS SOMEWHERE ELSE.** 640 queries over 16 families, 20
+rounds, composition verified first (`chain-rows` 26.1%, `var-length` 25.8%, then six families at
+3-7%, no dominator):
+
+       6.5%  (garbage collector)
+       6.5%  walkSegments
+       6.4%  sortRowsByColumns   )
+       4.7%  (anon) @4970        )  the SORT path
+       4.6%  compareValues       )  ~22% of samples
+       2.4%  (anon) @4965        )
+       2.2%  compareSort         )
+       2.0%  (anon) @4969        )
+       5.2%  withBinding
+       4.2%  projectRow
+
+✅ **AND THE DELETION TEST CONFIRMS IT, which `frame-attribution-trap` requires before a frame
+becomes a target.** Stripping `ORDER BY` from the 294 queries that carry one (46% of the workload —
+`withOrder` fires at p=0.5, so this is not an instrument that sorts everything):
+
+      ORDER BY kept      725.2 ms
+      ORDER BY REMOVED   376.6 ms      the sort is 348.6 ms, 48% of those queries
+      (reference)        529.2 ms      the queries that never sorted
+
+**So sorting is ~28% of the whole mixed workload** (348.6 of 1,254.4 ms). The reference arm is a
+reference and not a differential control — both arms are the same queries with one thing removed,
+which is tighter than a control can be — and that is stated rather than dressed up.
+
+⚠️ **THIS IS NOT A CLAIM THAT THE SORT PATH IS UNEXAMINED — it has had five items**, and anyone
+pricing it must read them first: **582** (the comparator walked `sorts` through the iterator
+protocol, 2.0-2.8x), **588** (partial selection for a small window, plus an all-equal
+short-circuit), **843** (the single-`by` specialization, 1.19x/1.33x; and it records the multi-key
+hoist measuring 1.00-1.02x and being REVERTED), **890** (refuted at 1.04x), **1711** (branch
+elimination with a proof). What is new here is the SHARE on a realistic mixed workload, which
+per-shape items cannot show. Whether anything is left is the next item's question, not this one's
+claim.
+
+NO ENGINE CODE CHANGED. Two instruments, one source-level warning, and one invalidated profile
+reported rather than quietly discarded.
+
+GATES. bun run check 0 read unpiped.

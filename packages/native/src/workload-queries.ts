@@ -536,6 +536,21 @@ export const WORKLOAD_FAMILIES: readonly ((r: () => number) => Workload)[] = [
  * twin of this list would be one more thing that can silently disagree with the generator, which
  * is the failure mode this whole item is about.
  */
+/**
+ * ⚠️⚠️ THIS LIST IS SORTED AND {@link WORKLOAD_FAMILIES} IS NOT, SO THEY ARE **NOT INDEX-ALIGNED**.
+ * `WORKLOAD_FAMILY_NAMES[i]` does NOT name `WORKLOAD_FAMILIES[i]` — sorted index 12 is
+ * `range-scan` while `WORKLOAD_FAMILIES[12]` is `multiPattern`.
+ *
+ * Item 1865 paired them by index and the mistake invalidated a whole CPU profile silently: every
+ * family was mislabelled, `SKIP=multi-pattern` dropped `aggregate` instead, and the profile came
+ * back 97% multi-pattern — the one family the exclusion existed to remove. It read as a plausible
+ * finding (a general-matcher binding loop at 40% with GC at 21.6%) and only a per-family row and
+ * time census caught it.
+ *
+ * **To name a generator, ask the generator**: `gen(() => 0).family`, which is how this list
+ * derives itself. The note below guards against a name being MISSING; nothing guards against the
+ * two orders differing, because they always do.
+ */
 export const WORKLOAD_FAMILY_NAMES: readonly string[] = [
   ...new Set(WORKLOAD_FAMILIES.map((f) => f(() => 0).family)),
 ].sort();
