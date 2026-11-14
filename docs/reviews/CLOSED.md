@@ -86052,3 +86052,52 @@ and the cache, not as a target.
 NO ENGINE CODE CHANGED.
 
 GATES. bun run check 0 read unpiped. The `NODES=20000` readings are unchanged after the guard edit.
+
+### Item 1839 — ⚠️ **A SURFACE NO PROBE COVERS: what the engine costs when the query TEXT is never the same twice.** The mechanism turns out to be well designed and partly MEASURED here; the remaining half is left properly framed, with the reason the easy measurement cannot answer it
+
+⚠️ **THE HOLE.** Every probe in this directory runs ONE text in a loop, so the parse+plan caches
+(items 228/229) hit on every rep after the first and their cost is divided away by the rep count.
+A real application issues hundreds of distinct texts. Nothing here measures that — a hole in the
+screen rather than a known-good result.
+
+✅ **WHAT THE ENGINE ACTUALLY DOES, read from source and then confirmed by the counters:**
+
+```text
+  parse cache cap            64 entries
+  ADMISSION FILTER           a text's statement is retained on its SECOND sighting, not its first
+  auto-parameterization      literal-varying texts normalize to ONE cached template (item 1502)
+```
+
+The admission filter carries its own measurement: "admitting here is what made an all-miss workload
+**16% slower**". So a one-off text is parsed and discarded rather than evicting something useful —
+the sloppy caller is deliberately not subsidised by the careful one.
+
+✅ **AND AUTO-PARAMETERIZATION IS CONFIRMED WORKING ON THE DIVERSITY THAT MATTERS MOST.** 130
+distinct texts differing only in a literal (`n.n > 0`, `n.n > 1`, …) produce a cache `size` of
+**1**: they all normalize to the same template, which is parsed once and hit thereafter. The
+`liftStores: 130, liftHits: 0` reading is what the design predicts for texts each seen once — a
+memo cannot hit on a first sighting — and NOT a miss pattern, which is what it looks like until the
+source is read.
+
+⚠️⚠️ **THE REMAINING QUESTION IS STRUCTURAL DIVERSITY, AND NEITHER OF MY TWO MEASUREMENTS CAN
+RESOLVE IT.** A workload cycling through MORE distinct texts than the cap may never reach a second
+sighting — `seenOnce` is itself capped at 64 with FIFO eviction — so nothing is ever admitted. Both
+attempts failed, each in a way worth recording:
+
+- **By subtraction** (`compile-cache-diversity-probe.mjs`): cold/warm delta 244.2 ms over 500 texts,
+  which reads as 488 us a text — except the warm/warm rounds, which should be EQUAL, gave
+  48.9 / 87.5 / **−178.6** / 13.2 ms. A ±180 ms band cannot resolve a 244 ms signal. ⚠️ The probe's
+  own guard line says this; the number above it is otherwise quotable.
+- **By an in-process cycle**: 32 / 64 / 200 / 500 distinct texts gave 22.4 / 2.4 / 1.8 us a query
+  across three rounds for the SAME configuration — a **12x spread**, with every round faster than
+  the last because the JIT is still tiering up. Configurations sharing a moving JIT state cannot be
+  compared, which is item 762's one-shape-per-process rule arriving from a new direction.
+
+⚠️ **AND MY FIRST READING OF THE COUNTERS WAS WRONG IN THE ALARMING DIRECTION** — "130 stores, 0
+hits" looked like a cache that never works. It is correct behaviour for texts seen once each. The
+check that settled it was reading where the counters increment, not running more queries.
+
+NO ENGINE CODE CHANGED. The axis is open and now documented; answering the structural half needs the
+isolated per-process harness, which is a tick of its own rather than a line in this one.
+
+GATES. bun run check 0 read unpiped.
