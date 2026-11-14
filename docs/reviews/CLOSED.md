@@ -85275,7 +85275,7 @@ and the way to find them is to run the same grid against a second engine whose n
 compare marginal-for-marginal. One engine alone cannot tell "expensive because the work is real"
 from "expensive because the route was lost".
 
-NOT BUILT HERE. Admitting `ORDER BY` into the two-hop and chain rungs is not item 1821's wrapper:
+~~NOT BUILT HERE.~~ **BUILT AND CLOSED BY ITEM 1827 AT 9.8x-12.1x.** Admitting `ORDER BY` into the two-hop and chain rungs is not item 1821's wrapper:
 the sort interacts with the pager (`SKIP`/`LIMIT` with a sort is a top-k question, not a sort-then-
 slice one — `sortOf` records ~280x for the materializing route under a `LIMIT`), and
 `outputColumnSorts` already encodes which sorts are admissible. Priced and left open with the floor
@@ -85283,3 +85283,82 @@ it has to beat: **`orderby` depth2-5 at 50.9/59.2/79.7/95.8 ms should land near 
 plus a ~1.3 ms sort, i.e. ~6-8 ms.**
 
 GATES. bun run check 0 read unpiped. No engine code changed.
+
+### Item 1827 — ✅ **`ORDER BY` NOW HAS A RUNG AT EVERY WIDTH: 9.8x / 10.0x / 10.6x / 12.1x** at depths 2-5, taking item 1826's cross-engine find. ⚠️ **AND MY CROSS-ROUTE ORACLE WAS NOT AN ORACLE** — it compared the rung against itself, and a mutant walked through every assertion in the file
+
+THE TARGET, found only by comparing two engines marginal-for-marginal at item 1826: GQL's `ORDER BY`
+marginal cost over its own `rows` cell ran **1.3 -> 46.5 -> 53.2 -> 75.3 -> 88.6 ms** across depths
+1-5 where Gremlin's `order()` is flat at ~1.2-1.6. `hop-projection.ts` has admitted a sort since
+item 607; the deeper rungs refused one.
+
+```text
+  orderby    depth1  depth2  depth3  depth4  depth5
+  before        3.3    50.9    59.2    79.7    95.8
+  after         3.3     5.2     5.9     7.5     7.9      9.8x 10.0x 10.6x 12.1x
+  rows          1.5     6.4     7.0     6.5     6.5      the twin it must sit beside
+```
+
+The marginal is now **flat and matches Gremlin's**, which is the property item 1826's third flag
+watches — and that flag is silent again. The grid is down to its last flag (multi-column keying).
+
+⚠️ **IT REUSES THE ENGINE'S OWN SORT AND ITS OWN ADMISSIBILITY RULE.** `outputColumnSorts` already
+decides which sorts can ride a rung — every key must resolve to a `var` naming a projected OUTPUT
+COLUMN, which is exactly what makes sorting the rung's rows equivalent to sorting the general path's
+— and `sortedRows` is the existing wrapper that applies a `SortPlan` and passes a run-time `null`
+THROUGH. Nothing here re-derives either.
+
+⚠️ **A WINDOW DECLINES, AND IT IS A SPEED GUARD, NOT A SAFETY ONE — I wrote the opposite and a mutant
+corrected me.** Admitting `SKIP`/`LIMIT` is ANSWER-EQUIVALENT: the sort decides the order, so
+sort-then-slice gives exactly the general path's answer, and the mutant dropping the check passed
+every value test. What it loses is `boundedTopRows`' heap (`sortOf`: ~280x where the general path is
+lazy). That is `perf-gate-needs-its-own-test` exactly, so the guard is a ROUTE assertion — two cases
+in `routes-fired.test.ts` pinning that a sorted `LIMIT`/`SKIP` fires NO rung.
+
+⚠️⚠️ **AND THE PART WORTH KEEPING: MY CROSS-ROUTE ORACLE WAS COMPARING THE RUNG WITH ITSELF.** I built
+this file's oracles on the belief that a sort key written as an expression (`ORDER BY c.k`) declines
+the rung, giving a free general-path comparison. **It does not** — `compileLinear` resolves `c.k` to
+the output column `k` before any detector runs, so both spellings take the SAME rung. Asked directly:
+
+```text
+  ORDER BY k       -> hop2OrderedProjection
+  ORDER BY c.k     -> hop2OrderedProjection     <- NOT a different route
+  ORDER BY c.s     -> []                        (a column the projection does not return)
+  ORDER BY k + 1   -> []                        (an expression over the column)
+```
+
+The mutant that ignores `outputColumnSorts`' decline broke BOTH sides equally, so every
+"cross-route" assertion still agreed and it survived. **A cross-route oracle is only an oracle while
+the two routes stay different, and that is a property to CHECK rather than assume** — one call to
+`compileLinear` would have shown it. Every oracle here is now an EXPLICIT expected order, and the
+genuinely declining spellings get their own explicit assertions.
+
+MUTATION, 4 of 4 caught (`chain-ordered-answers.test.ts`, 9 tests, every assertion an ARRAY equality
+because this is the one family where row order IS the answer):
+
+```text
+  drop the sort entirely              CAUGHT
+  admit a WINDOW                      CAUGHT — only after the ROUTE assertions
+  don't strip the orderBy             CAUGHT
+  ignore outputColumnSorts' decline   CAUGHT — only after the oracles were made independent
+```
+
+Two of the four were caught ONLY after the test design was fixed, and both fixes came from the
+mutant rather than from reading.
+
+NINE CONTROLS FLAT, five alternated rounds, arms asserted by a marker count in the built DIST:
+
+```text
+  topkhop 0.98x/0.97x   sortedpage 1.00x/1.01x   hop3rows 1.04x/1.02x   hop2rows 1.02x/1.00x
+  hoprows 1.00x/0.96x   distinct 0.99x/0.97x     point 1.02x/1.03x      grouped 1.01x/0.96x
+  join 0.99x/0.95x                                                              (min / median)
+```
+
+`topkhop` (`ORDER BY … LIMIT` at one hop) at 0.98x is the control that matters: the existing
+bounded-top-k route is untouched, which is what the window decline exists to protect.
+
+CORRECTNESS. gql 4,611 / gremlin 2,134 / native 1,165 / core 458 pass, 0 fail; `bun run fuzz` 57/0.
+Plus two seeds at 60,000 workload queries - **120,000 queries, 0 divergences**. `routes-fired.test.ts`
+goes 24 -> 26 detectors.
+
+GATES. bun run check 0 read unpiped. gql 4,611 pass / 0 fail. gremlin 2,134 pass / 0 fail.
+native 1,165 pass / 0 fail. core 458 pass / 0 fail. bun run fuzz 57 pass / 0 fail.

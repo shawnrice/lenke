@@ -5540,6 +5540,12 @@ export type CLinear = {
    * `AlwaysRowsFn`: it delegates to `detectHopProjection`, whose `null` is a RUNTIME decline.
    */
   hopDistinctProjection: RowsFn | null;
+  /**
+   * The two-hop and chain rungs under `ORDER BY <output columns>` — item 1827. `RowsFn`, because
+   * `sortedRows` passes a run-time decline THROUGH rather than answering `[]`.
+   */
+  hop2OrderedProjection: RowsFn | null;
+  chainOrderedProjection: RowsFn | null;
   /** The same walk under ONE foldable aggregate — `RETURN max(x.k)`; else null. */
   hopAggregate: RowsFn | null;
   /** The same walk under TWO OR MORE foldable aggregates — `RETURN count(*), max(x.k)`. */

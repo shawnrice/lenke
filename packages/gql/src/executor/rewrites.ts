@@ -34,7 +34,11 @@ import type {
   SortItem,
 } from '../ast.js';
 import { isSyntheticParam } from '../auto-param.js';
-import { detectChainDistinctCount, detectChainProjection } from './chain-projection.js';
+import {
+  detectChainDistinctCount,
+  detectChainOrderedProjection,
+  detectChainProjection,
+} from './chain-projection.js';
 import { WRITE_CLAUSES, procedureSpec } from './clauses.js';
 import type { CClause, CLinear, CMergeUpdate, CNode, CSeedHint, HintMap } from './core.js';
 import {
@@ -85,7 +89,11 @@ import {
   detectMultiHopAggregate,
   detectOptionalHopProjection,
 } from './hop-projection.js';
-import { detectHop2DistinctCount, detectHop2Projection } from './hop2-projection.js';
+import {
+  detectHop2DistinctCount,
+  detectHop2OrderedProjection,
+  detectHop2Projection,
+} from './hop2-projection.js';
 import {
   detectGroupedNodeAggregate,
   detectGroupedNodeCount,
@@ -2133,6 +2141,8 @@ export const compileLinear = (linear: LinearQuery): CLinear => {
     chainDistinctCount: detectChainDistinctCount(fast, clauses),
     hop2DistinctCount: detectHop2DistinctCount(fast, clauses),
     hopDistinctProjection: detectHopDistinctProjection(fast, clauses),
+    hop2OrderedProjection: detectHop2OrderedProjection(fast, clauses),
+    chainOrderedProjection: detectChainOrderedProjection(fast, clauses),
     hopAggregate,
     multiHopAggregate: detectMultiHopAggregate(fast, clauses),
     distinctProjection: detectDistinctProjection(fast, clauses),

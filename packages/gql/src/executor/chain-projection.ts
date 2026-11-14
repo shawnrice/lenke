@@ -5,9 +5,10 @@ import { matchesLabel } from '../graph-queries.js';
 import { distinctRows } from './clauses.js';
 import type { CClause, CompiledExpr, CProjection, Params, Row } from './core.js';
 import { freePredicateVars } from './expr-analysis.js';
-import type { AlwaysRowsFn } from './hop-projection.js';
+import type { AlwaysRowsFn, RowsFn } from './hop-projection.js';
 import { plainNode, plainRel } from './hop-sides.js';
 import { effectiveLabel } from './labels.js';
+import { outputColumnSorts, sortedRows } from './ordered-rows.js';
 import { distinctCountFold } from './projection.js';
 import { plainRowProjectionIgnoringDistinct, projectRow } from './rows.js';
 import { asTruth } from './scalars.js';
@@ -688,4 +689,91 @@ export const detectChainDistinctCount = (
 
     return [{ [outName]: distinctCountFold.finish(acc) }];
   };
+};
+
+/**
+ * A `RETURN` clause with its sort and window removed — item 1827.
+ *
+ * ⚠️ THE SORT IS STRIPPED FROM BOTH THE AST AND THE COMPILED CLAUSE. The ordered rung gates on the
+ * AST projection (`plainRowProjectionIgnoringDistinct` refuses an `orderBy`) and builds rows from
+ * the compiled one, so leaving either in place would make it decline the shape it is being handed.
+ *
+ * At MODULE SCOPE because it captures nothing: `consistent-function-scoping` is right that a
+ * closure rebuilt per compile buys nothing, and `ts-closure-size-is-load-bearing` records that
+ * closure shape in this package is not free.
+ */
+const withoutSortOrWindow = <T extends Clause | CClause>(c: T): T =>
+  c.kind === 'return'
+    ? {
+        ...c,
+        projection: { ...c.projection, orderBy: undefined, skip: undefined, limit: undefined },
+      }
+    : c;
+
+/**
+ * `MATCH <chain> RETURN <items> ORDER BY <output columns>` — item 1827 (three-plus segments).
+ *
+ * ⚠️ THE LARGEST ROUTE GAP THIS FAMILY HAS PRODUCED, and it was invisible until two engines were
+ * compared marginal-for-marginal (item 1826). GQL's `ORDER BY` marginal cost over its own `rows`
+ * cell runs **1.3 → 46.5 → 53.2 → 75.3 → 88.6 ms** across depths 1-5, where Gremlin's `order()` is
+ * **1.2 → 1.1 → 1.6 → 1.7 → 1.6** — flat. 1.1x at one hop and 42x at two, because
+ * `hop-projection.ts` admits a sort (`outputColumnSorts`, item 607) and the deeper rungs refuse one.
+ *
+ * ⚠️ IT REUSES THE ENGINE'S OWN SORT, NOT A NEW ONE. `outputColumnSorts` decides which sorts are
+ * admissible — every key must resolve to a `var` naming a projected OUTPUT COLUMN, which is
+ * precisely what makes sorting the rung's rows equivalent to sorting the general path's — and
+ * `sortedRows` is the existing wrapper that applies a `SortPlan` and passes a run-time `null`
+ * THROUGH. Both already carry the analysis this route needs; re-deriving either would be the
+ * "two copies of one shape rule" failure `detectDistinctCount`'s note records.
+ *
+ * ⚠️ A WINDOW DECLINES, AND THAT IS A SPEED GUARD, NOT A SAFETY ONE — I wrote the opposite first and
+ * a mutant corrected me. Admitting a `SKIP`/`LIMIT` here is ANSWER-EQUIVALENT: the sort decides the
+ * order, so sorting the rung's rows and then slicing gives exactly what the general path gives, and
+ * the mutant that drops this check passes every answer test. What it would lose is the BOUNDED TOP-K:
+ * `boundedTopRows` answers `ORDER BY … LIMIT n` from a heap, and `sortOf` records ~280x for a
+ * materializing route where the general path is lazy. So this is `perf-gate-needs-its-own-test`'s
+ * exact situation — a route choice no answer can distinguish — and the guard that catches it is the
+ * ROUTE assertion in `routes-fired.test.ts`, not a value.
+ */
+export const detectChainOrderedProjection = (
+  clauses: readonly Clause[],
+  compiled: readonly CClause[],
+): RowsFn | null => {
+  if (clauses.length !== 2) {
+    return null;
+  }
+
+  const [, ret] = clauses;
+
+  if (ret.kind !== 'return') {
+    return null;
+  }
+
+  const { projection } = ret;
+
+  // A window declines — see the header. Checked BEFORE `outputColumnSorts`, so none of its
+  // window rules are relied on here.
+  if (
+    (projection.orderBy?.length ?? 0) === 0 ||
+    projection.skip !== undefined ||
+    projection.limit !== undefined
+  ) {
+    return null;
+  }
+
+  const cols = projection.items.map((item, i) => item.alias ?? `__col${i}`);
+  const plan = outputColumnSorts(ret, cols);
+
+  // `undefined` is "no sort" (impossible here, the orderBy is non-empty) and `null` is a DECLINE:
+  // a key that does not name an output column cannot be answered by sorting the rung's rows.
+  if (plan === undefined || plan === null) {
+    return null;
+  }
+
+  const rows = detectChainProjection(
+    clauses.map((c, i) => (i === 1 ? withoutSortOrWindow(c) : c)),
+    compiled.map((c, i) => (i === 1 ? withoutSortOrWindow(c) : c)),
+  );
+
+  return sortedRows(rows, plan);
 };

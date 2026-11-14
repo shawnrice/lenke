@@ -152,6 +152,44 @@ describe('every fast-path detector fires for its own shape', () => {
       'MATCH (a:L)-[:R]->(b:L) RETURN DISTINCT b.k AS k',
       ['distinctProjection'],
     ],
+    /**
+     * ⚠️ `ORDER BY` over the deeper widths — item 1827. Disjoint from every projection rung by
+     * construction: those gate on `plainRowProjectionIgnoringDistinct`, which refuses an `orderBy`,
+     * and these REQUIRE one — so no chain ordering between them can starve anything (item 1825's
+     * lesson). The one-hop twin is `hopProjection`, which has admitted a sort since item 607.
+     */
+    [
+      'two-hop ordered projection',
+      'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L) RETURN c.k AS k ORDER BY k',
+      ['hop2OrderedProjection'],
+    ],
+    [
+      'three-hop ordered projection',
+      'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L)-[:R]->(d:L) RETURN d.k AS k ORDER BY k',
+      ['chainOrderedProjection'],
+    ],
+    [
+      'one-hop ordered projection keeps its own rung',
+      'MATCH (a:L)-[:R]->(b:L) RETURN b.k AS k ORDER BY k',
+      ['hopProjection'],
+    ],
+    /**
+     * ⚠️ A WINDOWED SORT MUST NOT REACH THE DEEPER ORDERED RUNGS, and this is the ONLY guard that
+     * can catch it: admitting one is answer-equivalent (the sort decides the order, so
+     * sort-then-slice is correct), and the mutant that drops the check passes every value test.
+     * What it loses is `boundedTopRows`' heap — ~280x per `sortOf` — so the defect is a route, and
+     * a route needs a route assertion. `perf-gate-needs-its-own-test` names this exact case.
+     */
+    [
+      'a two-hop sorted LIMIT stays off the ordered rung',
+      'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L) RETURN c.k AS k ORDER BY k LIMIT 3',
+      [],
+    ],
+    [
+      'a three-hop sorted SKIP stays off the ordered rung',
+      'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L)-[:R]->(d:L) RETURN d.k AS k ORDER BY k SKIP 2',
+      [],
+    ],
     ['distinct projection', 'MATCH (n:L) RETURN DISTINCT n.k AS k', ['distinctProjection']],
 
     // --- aggregates ---------------------------------------------------------------------
@@ -328,7 +366,7 @@ describe('every fast-path detector fires for its own shape', () => {
 
   // Every one of the twenty-one is covered by the table above. Asserted rather than claimed, so a
   // detector added later without a route case fails HERE instead of going unguarded.
-  it('covers all twenty-four detectors', () => {
+  it('covers all twenty-six detectors', () => {
     const covered = new Set(CASES.flatMap(([, , want]) => want));
     const all = new Set(
       Object.keys(
@@ -340,7 +378,7 @@ describe('every fast-path detector fires for its own shape', () => {
     );
 
     expect([...all].filter((k) => !covered.has(k)).sort()).toEqual([]);
-    expect(all.size).toBe(24);
+    expect(all.size).toBe(26);
   });
 });
 

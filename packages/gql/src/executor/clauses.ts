@@ -1676,6 +1676,33 @@ const fastPath = (linear: CLinear, graph: Graph, params: Params): Row[] | undefi
     return linear.hop2DistinctCount(graph, params);
   }
 
+  /**
+   * The same two rungs under `ORDER BY <output columns>` — item 1827.
+   *
+   * ⚠️ DISJOINT FROM EVERY PROJECTION RUNG ABOVE, not merely ordered after them: those gate on
+   * `plainRowProjectionIgnoringDistinct`, which refuses an `orderBy`, and these two REQUIRE one. So
+   * no ordering between them can starve anything — the lesson item 1825 learned by writing an
+   * untestable precedence dependency and having a mutant walk through it.
+   *
+   * ⚠️ `null` IS A DECLINE, passed through from `sortedRows`: the walk it wraps can hand the query
+   * back per call, and answering that with `[]` would be rows missing rather than a slower route.
+   */
+  if (linear.chainOrderedProjection) {
+    const rows = linear.chainOrderedProjection(graph, params);
+
+    if (rows !== null) {
+      return rows;
+    }
+  }
+
+  if (linear.hop2OrderedProjection) {
+    const rows = linear.hop2OrderedProjection(graph, params);
+
+    if (rows !== null) {
+      return rows;
+    }
+  }
+
   // The same walk under ONE foldable aggregate — `RETURN max(b.k)` — folded as the rows are
   // produced. It delegates to `detectHopProjection`'s walk, so it sits AFTER that branch: the
   // two shapes are disjoint (a projection declines an aggregating one), and placing it FIRST
