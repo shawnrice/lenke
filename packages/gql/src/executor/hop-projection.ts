@@ -1059,7 +1059,7 @@ const deferredHopOrder = (s: {
               return null;
             }
 
-            const picked = sortRowsByColumns(keyed, plan);
+            const picked = sortRowsByColumns(keyed, plan, params);
             const out: Row[] = [];
             // ONE binding for the re-projection, the same reuse the walks make.
             const binding = new Map<string, unknown>();

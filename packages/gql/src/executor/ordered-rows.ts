@@ -144,8 +144,22 @@ export const pageSlice = (rows: Row[], skip: CountValue, params: Params): Row[] 
 /** One `ORDER BY` key, resolved to the output column it names. */
 export type ColSort = { col: string; descending: boolean; nullsFirst: boolean | undefined };
 
-/** A resolved sort, plus the window to apply AFTER it (item 610). */
-export type SortPlan = { sorts: readonly ColSort[]; skip: number; limit: number | undefined };
+/**
+ * A resolved sort, plus the window to apply AFTER it (item 610).
+ *
+ * ⚠️ `page` CARRIES AN UNRESOLVED, PARAMETERIZED WINDOW and is absent for a literal one (item
+ * 1867). `skip`/`limit` stay NUMBERS so `sortRowsByColumns` and every other caller are untouched —
+ * `reachability.ts` and `node-scan.ts`'s top-k arms build their own plans and never set this — and
+ * `sortedRows` resolves it per call into exactly those two fields. Keeping the numeric pair as the
+ * only thing the sort reads is what makes this additive rather than a signature change through
+ * central code, which `executor-edits-perturb` prices in unrelated regressions.
+ */
+export type SortPlan = {
+  sorts: readonly ColSort[];
+  skip: number;
+  limit: number | undefined;
+  page?: { skip: CountValue; limit: CountValue | undefined };
+};
 
 /**
  * The projection's `ORDER BY` as column sorts, or `null` to decline.
@@ -166,13 +180,33 @@ export const outputColumnSorts = (
 
   const { skip, limit } = ret.projection;
   const windowed = skip !== undefined || limit !== undefined;
-  // A `CountValue` may be a PARAMETER (`LIMIT $n`), not a number — the AST type says so and the
-  // slice below cannot take one. A parameterized window declines rather than being resolved here:
-  // the value lives in `params` at run time while this decision is made once at compile time, and
-  // resolving it would make the route depend on a binding the plan is cached across.
-  const numericWindow =
-    (skip === undefined || typeof skip === 'number') &&
-    (limit === undefined || typeof limit === 'number');
+  /**
+   * ⚠️⚠️ A PARAMETERIZED WINDOW IS NOW ADMITTED, AND THIS USED TO DECLINE IT (item 1867). The
+   * reason it gave was that *"resolving it would make the route depend on a binding the plan is
+   * cached across"* — and the plan cache really is shared that way (`planCache` is a
+   * `WeakMap<Query, Plan>` keyed on the AST, which `parseCache` keys by TEXT), so that concern is
+   * about the right thing. **It just does not apply here.**
+   *
+   * The route this function picks is "rung, then sort, then slice". Whether the SORT uses a heap or
+   * a full sort is decided inside `sortRowsByColumns` **at run time**, against the actual
+   * `rows.length` — so no compile-time choice depends on the bound, and the only thing that has to
+   * wait for `params` is the number. `sortedRows` waits for it, exactly as `pageSlice` does for
+   * item 1778's skip-only page.
+   *
+   * ⚠️ AND THE DISTINCTION FROM THE TOP-K RUNGS IS LOAD-BEARING, because they share this one's
+   * stated reason and do NOT share its verdict. `deferredRoute` and `deferredSortedNodeWalk` pick
+   * the HEAP at compile time and size it from the bound, so for them the route genuinely does
+   * depend on the value and `typeof limit !== 'number'` must stay. Two gates, one reason between
+   * them, one of which was overstated.
+   *
+   * THE COST OF THE REFUSAL, measured at item 1866: a literal page took the rung and a
+   * parameterized one took NONE — `projection` family 31.6 ms against 3.0 with `ORDER BY`
+   * deleted, **10.5x** — and `OFFSET $skip LIMIT $n` is what every paginated endpoint sends, while
+   * the literal spelling it admitted is one no application writes.
+   */
+  const paramWindow =
+    (skip !== undefined && typeof skip !== 'number') ||
+    (limit !== undefined && typeof limit !== 'number');
 
   // A WINDOW RIDES A SORT only when no projected item can fault (item 610). With a window the
   // general path projects only the survivors, so an item that faults on a discarded row never
@@ -186,10 +220,12 @@ export const outputColumnSorts = (
   // answer `[]`. What the clause avoids is doing the work: sorting every row to return none.
   // Keeping a guard whose removal is answer-equivalent is the same call item 601 made, and it is
   // labelled as the perf guard it is rather than borrowing the raise-parity argument above.
-  if (
-    windowed &&
-    (!numericWindow || limit === 0 || !ret.projection.items.every((it) => cannotFault(it.expr)))
-  ) {
+  /**
+   * `limit === 0` is still refused for SPEED, and it is only ASKABLE of a literal — a `$n` that
+   * happens to be 0 reaches the slice and answers `[]` there, which the comment below says is the
+   * same answer by a slower road. The fault rule applies to BOTH window kinds and is unchanged.
+   */
+  if (windowed && (limit === 0 || !ret.projection.items.every((it) => cannotFault(it.expr)))) {
     return null;
   }
 
@@ -252,9 +288,12 @@ export const outputColumnSorts = (
 
   return {
     sorts: out,
-    // Narrowed by `numericWindow` above; a non-numeric window has already declined.
+    // A PARAMETERIZED window leaves these two at their no-window values and travels in `page`,
+    // which `sortedRows` resolves per call. A literal one is narrowed here and carries no `page`,
+    // so every other caller of `sortRowsByColumns` sees exactly what it saw before.
     skip: typeof skip === 'number' ? skip : 0,
     limit: typeof limit === 'number' ? limit : undefined,
+    ...(paramWindow ? { page: { skip: skip ?? 0, limit } } : {}),
   };
 };
 
@@ -514,7 +553,51 @@ export const boundedTopKeyed = <T>(
  * only use this if it produces rows in the same order the general path would. A walk that reorders
  * rows deliberately (`farDrivenHopWalk`) must therefore decline the sort rather than sort here.
  */
-export const sortRowsByColumns = (rows: Row[], plan: SortPlan): Row[] => {
+/**
+ * ⚠️ `params` IS REQUIRED, AND THAT IS THE POINT (item 1867). A parameterized window travels on
+ * `plan.page` and has to be resolved per call; the first cut of that change made `page` an OPTIONAL
+ * field resolved only in `sortedRows`, and `node-scan.ts` calls this function DIRECTLY — so the
+ * window was silently dropped and `ORDER BY x LIMIT $n` returned **600 rows where 5 were
+ * expected**. A wrong answer, caught by the suite rather than by review.
+ *
+ * Making the argument required turns a missed call site into a COMPILE ERROR instead of a dropped
+ * window. A caller with no parameterized window may pass `{}`; the resolution below is a no-op for
+ * a literal plan, which carries no `page` at all.
+ */
+export const sortRowsByColumns = (rows: Row[], plan: SortPlan, params: Params): Row[] => {
+  /**
+   * ⚠️⚠️ THE PARAMETERIZED WINDOW IS RESOLVED AND THE FUNCTION RE-ENTERED, rather than resolved
+   * inline — and that shape is MEASURED, not stylistic. The first cut destructured `page` and ran
+   * two ternaries at the top of this function, which EVERY projection rung calls. The literal
+   * controls moved the wrong way for it: `OFFSET 100 LIMIT 20` went **0.68 -> 1.00 ms (1.47x
+   * SLOWER)** and `LIMIT 20` 0.40 -> 0.46, while the parameterized arms won 3.35-4.21x. That is
+   * `executor-edits-perturb` and `pull-alignment-is-load-bearing` in one: an edit to central code
+   * costs the rows it does not claim.
+   *
+   * With the branch here, a literal plan pays ONE `!== undefined` test and then runs the body it
+   * always ran, below, byte for byte. The recursion terminates immediately: the resolved plan
+   * carries no `page`.
+   */
+  if (plan.page !== undefined) {
+    return sortRowsByColumns(
+      rows,
+      {
+        sorts: plan.sorts,
+        // ⚠️ `?? 0` IS REDUNDANT AT RUNTIME and is kept because the TYPECHECKER enforces it —
+        // mutation established that rather than my reading it. `page.skip` is built as
+        // `skip ?? 0`, so it is never `undefined`, and `resolveCount` returns `undefined` only
+        // for an `undefined` input; a mutant making this `?? 1` therefore SURVIVES. It is not a
+        // survivor to delete: `resolveCount` returns `number | undefined` and `SortPlan.skip` is
+        // `number`, so `tsc` rejects its removal. Exactly the case this file already documents
+        // for `typeof proj.skip === 'number'`, and item 475's rule — a surviving mutant means
+        // "redundant" as readily as "untested", and the two have opposite fixes.
+        skip: resolveCount(plan.page.skip, params) ?? 0,
+        limit: resolveCount(plan.page.limit, params),
+      },
+      params,
+    );
+  }
+
   const { sorts, skip, limit } = plan;
 
   if (sorts.length === 0) {
@@ -528,6 +611,21 @@ export const sortRowsByColumns = (rows: Row[], plan: SortPlan): Row[] => {
   // 2.1x at 5,000, 1.45x at 10,000 and 0.99x at 20,000 — so the heap stops paying at about `n/10`
   // and this admits to `n/16`, inside the win. A looser `* 8` was built first and measured 0.95x
   // on `LIMIT 20,000`, which is the regression this constant exists to keep out.
+  /**
+   * ⚠️ A ZERO LIMIT IS ANSWERED HERE, AND IT HAS TO BE (item 1867). `outputColumnSorts` refuses a
+   * LITERAL `LIMIT 0` at compile time, and its note calls that guard "SPEED, not correctness" on
+   * the grounds that a mutant admitting it SURVIVES — which was true while the only way in was the
+   * slice below, where `slice(skip, skip)` is `[]`. A PARAMETERIZED `LIMIT $n` cannot be refused at
+   * compile time, so `n = 0` now reaches this line, and it took the heap with `cap = 0`:
+   * `boundedTopRows` then read `h[0]` of an EMPTY heap and threw `undefined is not an object`.
+   *
+   * A crash, not a wrong answer, and caught by `param-page-rung.test.ts` rather than by review. The
+   * window is empty, so the answer is `[]` without sorting anything.
+   */
+  if (limit === 0) {
+    return [];
+  }
+
   if (limit !== undefined && (skip + limit) * 16 <= rows.length) {
     return boundedTopRows(rows, sorts, skip + limit).slice(skip);
   }
@@ -611,7 +709,7 @@ export const sortedRows = (
   return (graph, params) => {
     const rows = inner(graph, params);
 
-    return rows === null ? null : sortRowsByColumns(rows, plan);
+    return rows === null ? null : sortRowsByColumns(rows, plan, params);
   };
 };
 /**

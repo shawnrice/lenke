@@ -87178,7 +87178,13 @@ reported rather than quietly discarded.
 
 GATES. bun run check 0 read unpiped.
 
-## Item 1866 — a PARAMETERIZED page falls off every projection rung where the LITERAL spelling takes it, 10.5x; and the documented reason for refusing it looks OVERSTATED
+## Item 1866 — a PARAMETERIZED page falls off every projection rung where the LITERAL spelling takes it, 10.5x; and the documented reason for refusing it looks OVERSTATED — ✅ **BUILT at item 1867, 4.2-5.5x**
+
+⚠️ **THE THREE OPEN QUESTIONS BELOW ARE ALL ANSWERED (item 1867), and two changed the design.** The
+plan cache IS shared across params, so that half of the blocker was about the right thing; the top-k
+rungs ARE different and keep their refusal, because they size a heap at compile time; and the null
+control earned itself — the literal path paid **1.47x** until `sortRowsByColumns` was restructured
+to branch once instead of destructuring on every call.
 
 Item 1865 put sorting at 28% of a mixed workload. **Pricing it against the five prior sort items
 first is what turned the target into a different one**: items 582 (comparator iterator protocol,
@@ -87251,3 +87257,94 @@ deliverable; `check-the-blocker-still-holds` is the rule being followed — a "n
 note is a claim about X, and three were overstated in one earlier session.
 
 GATES. bun run check 0 read unpiped.
+
+## Item 1867 — SHIPPED: a parameterized page now takes the projection rungs, 4.2-5.5x; the blocker was half right, and the half that is right is why the top-k rungs still refuse
+
+Item 1866 found `ORDER BY x LIMIT 3` taking a rung and `ORDER BY x LIMIT $n` taking none, and left
+three things to settle before building. All three are settled, and two of them changed the design.
+
+✅ **Q2 — IS THE PLAN CACHE REALLY SHARED ACROSS PARAMS? YES, and the concern was about the right
+thing.** `planCache` is a `WeakMap<Query, Plan>` keyed on the AST, which `parseCache` keys by TEXT,
+so one compiled plan IS reused across different `$n`. A route that depended on the value would be
+wrong for the next page.
+
+✅ **Q1 — ARE THE TOP-K RUNGS DIFFERENT? YES, and this is the distinction the one stated reason was
+hiding.** `deferredRoute`/`deferredSortedNodeWalk` pick the HEAP at compile time and size it from
+the bound, so for them the route genuinely does depend on the value: `typeof limit !== 'number'`
+STAYS. `outputColumnSorts` only builds a `SortPlan` that `sortRowsByColumns` consumes, and
+`sortRowsByColumns` chooses heap-vs-sort **at run time** against the real `rows.length` — so
+nothing it decides depends on the bound, and only the NUMBER has to wait for `params`. Two gates,
+one reason between them, one of which was overstated.
+
+✅ **MEASURED, PRE as a precise revert of the one gate with its marker asserted in the DIST, three
+runs per arm because the controls are sub-millisecond:**
+
+      TARGETS (min of 3)                 PRE     POST    ratio
+      node  OFFSET $s LIMIT $n          4.51    0.85     5.3x
+      node  LIMIT $n                    3.31    0.60     5.5x
+      hop   OFFSET $s LIMIT $n         17.32    4.16     4.2x
+
+      CONTROLS
+      node  OFFSET 100 LIMIT 20         0.68    0.77     ranges overlap
+      node  LIMIT 20                    0.36    0.45     +0.09 ms absolute
+      hop   OFFSET 100 LIMIT 20         4.60    3.79     POST FASTER
+      node  ORDER BY only               1.19    1.08     overlap
+
+On the workload screen's own families the `projection` row goes **31.6 -> 12.0 ms (2.63x)**, its
+sort cost 28.6 -> 8.8 ms, while `chain-rows` — the only row that is a genuine sort — is flat at
+188.0 against 188.7.
+
+⚠️ **AND THE PARAMETERIZED PAGE IS STILL BEHIND ITS LITERAL TWIN (0.85 against 0.77), which is
+stated rather than buried**: it takes the projection rung now but not the top-k heap, by Q1's
+verdict. "Off every rung" to "on the general rung" is the win; the heap stays literal-only.
+
+⚠️⚠️ **THE FIRST CUT WAS A WRONG ANSWER, AND THE SUITE CAUGHT IT IN ONE RUN.** I made `page` an
+OPTIONAL field resolved only in `sortedRows` — "additive, no signature churn". But `node-scan.ts`
+calls `sortRowsByColumns` DIRECTLY, so the window was silently dropped there and
+`ORDER BY x LIMIT $n` returned **600 rows where 5 were expected**. The fix is structural rather than
+another call-site patch: `params` is now a REQUIRED third argument, so a missed call site is a
+COMPILE ERROR instead of a dropped window. `tsc` then named all six, which is the whole argument for
+doing it that way.
+
+⚠️⚠️ **AND A ZERO PARAM BOUND CRASHED.** `outputColumnSorts` refuses a LITERAL `LIMIT 0`, and its
+note calls that guard "SPEED, not correctness" because a mutant admitting it SURVIVES — true while
+the only way in was the slice, where `slice(skip, skip)` is `[]`. A `$n` of 0 cannot be refused at
+compile time, reached the bounded heap with `cap = 0`, and `boundedTopRows` read `h[0]` of an empty
+heap: `undefined is not an object`. `sortRowsByColumns` now answers a zero window directly. **The
+guard's "not correctness" claim was true of its route and false of the new one** — which is what a
+route change does to a comment like that.
+
+⚠️ **AND THE LITERAL PATH PAID 1.47x BEFORE THE STRUCTURE WAS FIXED.** Destructuring `page` and
+running two ternaries at the top of `sortRowsByColumns` — which every projection rung calls — moved
+the literal `OFFSET 100 LIMIT 20` control from 0.68 to 1.00 ms while the targets won 3-4x. That is
+`executor-edits-perturb` and `pull-alignment-is-load-bearing` in one. It now branches ONCE on
+`plan.page !== undefined` and re-enters with a resolved plan, so a literal plan runs the body it
+always ran, byte for byte.
+
+**5 of 6 MUTANTS CAUGHT.** The survivor is `?? 0` on the skip resolution, and it is REDUNDANT rather
+than untested: `page.skip` is built as `skip ?? 0` so it is never `undefined`, and `resolveCount`
+returns `undefined` only for an `undefined` input. It stays because `tsc` rejects its removal
+(`number | undefined` into a `number` field) — the case this file already documents for
+`typeof proj.skip === 'number'`, and item 475's rule that a survivor means "redundant" as readily as
+"untested".
+
+      skip and limit swapped on resolution              CAUGHT
+      an absent skip resolves to 1 instead of 0         SURVIVED — redundant, tsc-enforced
+      the zero-window guard removed (the crash)         CAUGHT
+      the page is built from skip only, limit dropped   CAUGHT
+      a LITERAL window also routed through page         CAUGHT — after a gate test was added
+      CONTROL - the parameterized window declines again CAUGHT
+
+**"A LITERAL WINDOW ALSO ROUTED THROUGH PAGE" SURVIVED THE FIRST RUN, and it is the perf-gate class
+exactly**: routing a literal through `page` is answer-equivalent, so no answer test can see it, and
+it is the 1.47x above. `param-page-rung.test.ts` now asserts the gate directly — a literal window
+carries NO `page`, a parameterized one carries it, and a MIXED window counts as parameterized.
+
+**Two tests that pinned the old refusal are updated with the correction stated in place**, not
+silently flipped: `optional-ordered-answers` and `windowed-sort-answers` both asserted "a
+parameterised window declines" from items 1849/1852. Each now asserts it TAKES the rung and, newly,
+that its rows equal the general route's — a length check alone would accept the wrong three rows.
+
+GATES. bun run check 0 read unpiped; gql 4730 tests green; all seven byte-identity fuzzers green
+(the workload fuzzer draws every family at `params=20000`, and `projection=1231/1231`, so the new
+route is checked against the Rust engine rather than only against itself).

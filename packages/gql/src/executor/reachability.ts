@@ -121,12 +121,19 @@ export const reachSortApplier = (
   // the order is established before anything is dropped.
   const { skip, limit } = ret.projection;
 
+  // ⚠️ THIS ARM RESOLVES ITS OWN BOUNDS (below), so its plan is already numeric and carries no
+  // `page`. `params` is passed because the signature requires it — item 1867 made it required so a
+  // call site that DOES need the resolution cannot silently skip it — and it is a no-op here.
   return (rows, params) =>
-    sortRowsByColumns(rows, {
-      sorts: out,
-      skip: resolveCount(skip ?? 0, params) ?? 0,
-      limit: resolveCount(limit, params),
-    });
+    sortRowsByColumns(
+      rows,
+      {
+        sorts: out,
+        skip: resolveCount(skip ?? 0, params) ?? 0,
+        limit: resolveCount(limit, params),
+      },
+      params,
+    );
 };
 /**
  * Reachability shortcut for **unbounded var-length with DISTINCT**:

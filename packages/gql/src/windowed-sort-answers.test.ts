@@ -60,8 +60,8 @@ const build = (): Graph => {
 };
 
 /** The row SEQUENCE — with a window the order IS the answer, so nothing here sorts. */
-const seq = (g: Graph, text: string): string[] =>
-  query(g, text).map((r) => Object.values(r).map(String).join('/'));
+const seq = (g: Graph, text: string, params: Record<string, unknown> = {}): string[] =>
+  query(g, text, params).map((r) => Object.values(r).map(String).join('/'));
 
 /** The same question with an unread edge variable, which the chain rungs refuse. */
 const viaGeneral = (text: string): string => text.replace('-[:E]->(b:T)', '-[z:E]->(b:T)');
@@ -141,12 +141,21 @@ describe('a windowed sort on the deeper ordered rungs', () => {
     expect(seq(g, text)).toEqual([]);
   });
 
-  /** A parameterised window declines: its value is unknown when the route is chosen. */
-  test('a parameterised window declines, and still answers', () => {
+  /**
+   * ⚠️ ~~A parameterised window declines~~ — **ADMITTED SINCE ITEM 1867.** "Its value is unknown
+   * when the route is chosen" is true and was the wrong conclusion: the route here is
+   * sort-then-slice either way, and `sortRowsByColumns` chooses heap-vs-sort at RUN time against
+   * the real row count, so nothing decided at compile time depends on the bound. Only the number
+   * waits for `params`. It cost 10.5x on the `projection` family of the workload screen, measured
+   * at item 1866.
+   */
+  test('a parameterised window takes the rung, and answers the same', () => {
     const g = build();
     const text = 'MATCH (a:T)-[:E]->(b:T)-[:E]->(c:T) RETURN c.k AS x ORDER BY x LIMIT $n';
 
-    expect(routes(text)).not.toContain('hop2OrderedProjection');
+    expect(routes(text)).toContain('hop2OrderedProjection');
     expect(query(g, text, { n: 4 }).length).toBe(4);
+    // The ROWS, not just how many — see the sibling note in `optional-ordered-answers`.
+    expect(seq(g, text, { n: 4 })).toEqual(seq(g, viaGeneral(text), { n: 4 }));
   });
 });

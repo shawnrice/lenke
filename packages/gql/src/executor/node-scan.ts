@@ -609,7 +609,7 @@ export const deferredSortedNodeWalk = (spec: {
 
     // The ONE sorter, so the comparator, the bounded heap and the window all stay shared with the
     // plain arm — the key rows carry fewer columns, and nothing in there reads any other.
-    const picked = sortRowsByColumns(keyed, plan) as KeyRow[];
+    const picked = sortRowsByColumns(keyed, plan, params) as KeyRow[];
     const out: Row[] = [];
 
     for (const kr of picked) {
@@ -868,7 +868,7 @@ export const topKNodeWalk = (spec: {
     // ABOVE THE CROSSOVER, do what the plain arm does: project everything and let
     // `sortRowsByColumns` sort and slice. Same answer, and the only extra is the `kept` array.
     if (!heapBeatsSort(cap, kept.length)) {
-      return sortRowsByColumns(kept.map(project), plan);
+      return sortRowsByColumns(kept.map(project), plan, params);
     }
 
     const top = boundedTopKeyed(kept, (v, i) => propOf(v, keyProps[i]), plan.sorts, cap);
@@ -1327,7 +1327,7 @@ export const detectNodeProjection = (
       return pageSlice(out, pageSkip, params);
     }
 
-    return sorts === undefined ? out : sortRowsByColumns(out, sorts);
+    return sorts === undefined ? out : sortRowsByColumns(out, sorts, params);
   };
 };
 export const detectGroupedNodeCount = (clauses: readonly Clause[]): ReachFn | null => {

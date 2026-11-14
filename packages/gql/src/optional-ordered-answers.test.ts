@@ -65,8 +65,8 @@ const build = (): Graph => {
 };
 
 /** The row SEQUENCE, rendered so a null is distinguishable from the string "null". */
-const seq = (g: Graph, text: string): string[] =>
-  query(g, text).map((r) =>
+const seq = (g: Graph, text: string, params: Record<string, unknown> = {}): string[] =>
+  query(g, text, params).map((r) =>
     Object.values(r)
       .map((v) => (v === null ? '<null>' : JSON.stringify(v)))
       .join('/'),
@@ -160,14 +160,27 @@ describe('the ordered optional rung declines what it must', () => {
     }
   });
 
-  /** A PARAMETERISED window still declines — its value is not known when the route is chosen. */
-  test('a parameterised window still declines, and still answers', () => {
+  /**
+   * ⚠️ ~~A PARAMETERISED window still declines~~ — **ADMITTED SINCE ITEM 1867**, and the reason
+   * this note gave ("its value is not known when the route is chosen") was the overstated half of
+   * a real concern. The ROUTE does not depend on the value: this rung sorts and slices, and
+   * `sortRowsByColumns` picks heap-vs-sort at RUN time against the actual row count. Only the
+   * NUMBER waits for `params`, which it now does. The top-k rungs are the ones where the refusal
+   * is genuine, because they size a heap at compile time.
+   *
+   * The answer assertion is unchanged and still passes — it is what says the admission is correct
+   * rather than merely different.
+   */
+  test('a parameterised window takes the rung, and answers the same', () => {
     const g = build();
     const text =
       'MATCH (a:T) OPTIONAL MATCH (a)-[:E]->(b:T) RETURN a.k AS x, b.k AS y ORDER BY x, y LIMIT $n';
 
-    expect(routes(text)).not.toContain('optionalOrderedProjection');
+    expect(routes(text)).toContain('optionalOrderedProjection');
     expect(query(g, text, { n: 3 }).length).toBe(3);
+    // ⚠️ AND AGAINST THE GENERAL ROUTE, which a length check alone cannot do: three rows of the
+    // WRONG three would satisfy it.
+    expect(seq(g, text, { n: 3 })).toEqual(seq(g, viaGeneral(text), { n: 3 }));
   });
 
   /** A sort key that is not an output column cannot be answered by sorting the rung's rows. */

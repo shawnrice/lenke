@@ -6428,8 +6428,9 @@ export const groupIndex = (): {
  * rather than being re-derived.
  */
 export const sortGroupRows = (rows: Row[], sort: readonly ColSort[]): Row[] =>
-  // The tally's own sort has no window — it pages through its `pageGroups` instead.
-  sortRowsByColumns(rows, { sorts: sort, skip: 0, limit: undefined });
+  // The tally's own sort has no window — it pages through its `pageGroups` instead — so there is
+  // nothing for item 1867's per-call resolution to resolve and `{}` is the honest argument.
+  sortRowsByColumns(rows, { sorts: sort, skip: 0, limit: undefined }, {});
 
 /**
  * Every `ORDER BY` key resolved to one of the tally's two output columns, or `null` to decline.
