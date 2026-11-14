@@ -85888,7 +85888,7 @@ CELL, and the same argument applies to whatever a ratio is divided BY. The denom
 the same `FLOOR_MS`, and every `where` flag disappears — correctly, because there was never anything
 there.
 
-⚠️ **ONE GENUINELY NEW, SIZE-DEPENDENT NOMINATION SURVIVES IT.** `orderby`'s marginal at 200,000 is
+~~⚠️ **ONE GENUINELY NEW, SIZE-DEPENDENT NOMINATION SURVIVES IT.**~~ **— REFUTED BY ITEM 1837 on the isolated harness: the marginal does NOT grow with depth.** `orderby`'s marginal at 200,000 is
 **18.1 / 22.1 / 25.9 ms at depths 3-5 against 3.5 at depth 1** — 5.2x to 7.4x, and INVISIBLE at
 20,000 where the whole marginal is under a millisecond. At `FANOUT=1` every depth sorts the same
 200,000 rows, so the sort itself cannot be the difference: the one-hop route sorts on the way out
@@ -85938,7 +85938,7 @@ earlier item left on the general path on purpose. The four rungs built at items 
 roughly what producing their rows costs at a 5:1 ratio, which is the same verdict item 1835 reached
 on the size axis by a different route.
 
-⚠️ **AND THE ONE OPEN NOMINATION IS CORROBORATED, which is worth more than a new one.** `orderby`
+~~⚠️ **AND THE ONE OPEN NOMINATION IS CORROBORATED, which is worth more than a new one.**~~ **— BOTH READINGS CAME FROM THE SAME INSTRUMENT AND ARE REFUTED AT ITEM 1837.** `orderby`
 sits at **1.56-1.57x its own `rows` cell** here, where at `FANOUT=1` it is ~1.0x. Item 1835 found the
 same thing on the size axis (a marginal of 18-26 ms at 200,000 against 3.5 at depth 1). Two
 independent axes now say the deeper widths' sort carries a real marginal that the one-hop route does
@@ -85950,3 +85950,56 @@ harness rather than a shared grid.
 NO ENGINE CODE CHANGED.
 
 GATES. bun run check 0 read unpiped. The `FANOUT=1` run is unchanged, checked after the edit.
+
+### Item 1837 — ❌ **THE ORDER BY NOMINATION IS REFUTED: the marginal is ~26 ms at ONE hop and ~27 ms at THREE — it does not grow with depth.** ⚠️ And the deeper lesson is about my own method: items 1835 and 1836 "corroborated each other" while reading the SAME instrument, so they were never independent evidence
+
+THE CLAIM, carried by two items: the deeper widths' `ORDER BY` costs more than the one-hop route's
+because the one-hop path sorts on the way out (`outputColumnSorts`) while the deeper widths
+materialize and then sort (item 1827's `sortedRows`). Item 1835 measured it on the SIZE axis (a
+marginal of 18-26 ms at 200,000 against 3.5 at depth 1) and item 1836 on the FANOUT axis (1.56x its
+own `rows` cell at fanout 5 against ~1.0x at fanout 1).
+
+⚠️ **AND THE HARNESS FOR IT ALREADY EXISTED, which PROBES.md's "look before you build" rule is for.**
+`isolated-row-bench.mjs` is the instrument CLAUDE.md asks for at this resolution — per-rep timing,
+14 reps dropping 3, median of the kept, the whole distribution printed, GC inside the window
+reported, one shape per process. Four shapes added to it; nothing new built.
+
+❌ **THE RESULT, at 200,000 vertices, median of 11 kept reps:**
+
+```text
+  hop1raw      33.78 ms      hop1ordered   59.68 ms      marginal  25.9 ms
+  hop3raw     143.97 ms      hop3ordered  170.69 ms      marginal  26.7 ms
+```
+
+**The two marginals are equal within 3%.** Both sort 200,000 rows and both pay ~26 ms for it. There
+is no deeper-width sort penalty. Item 1827's wrapper costs what sorting costs.
+
+⚠️⚠️ **SO WHERE DID 3.5 ms COME FROM? THE GRID'S OWN CELLS, AND THEY DISAGREE WITH THIS HARNESS BY
+5x ON THE SAME QUERY AT THE SAME SIZE.** The grid reads one-hop `rows` 38.8 and `orderby` 43.6 — a
+marginal of **4.8 ms** where the isolated harness reads **25.9**. Re-running the grid with the
+documented 14/3 sample count instead of its 5/2 did not close the gap, so it is not only sampling:
+the two use DIFFERENT FIXTURES, and sorting 200,000 values costs 5x more in one than the other. A
+sort's cost depends on the key distribution it is handed, which is a property of the fixture and not
+of the route.
+
+⚠️ **THE METHODOLOGICAL FINDING IS THE ONE WORTH KEEPING, AND IT IS ABOUT MY OWN REASONING.** Item
+1836's headline was "the one open nomination is CORROBORATED from a second direction, which is worth
+more than a new one". It was not corroborated. **Both axes read the same instrument's cells** — the
+size sweep and the fanout sweep are two configurations of `rung-gap-screen.mjs`, sharing its fixture
+builder, its timing loop and its sample count. Agreeing with itself is not independent evidence, and
+calling it "a second direction" made a single under-resolved reading sound like two.
+
+The grid's own header already said it: it is built to find 2-5x route gaps, and its first comment
+block says a share is a nomination rather than a finding. **Two nominations from one instrument are
+still one nomination.** What settles a sub-15% question is the harness built for sub-15% questions,
+and running it took one tick.
+
+✅ **AND THE GRID IS NOT WRONG ABOUT WHAT IT IS FOR.** Every route gap it found this session —
+1821/1822/1824/1827/1830/1832/1834 — was 4x to 24x and reproduced on the isolated instruments and in
+A/Bs with asserted arms. The failure here is at 8-15%, an order of magnitude below its resolution,
+and it failed in the direction that costs a tick rather than a wrong answer.
+
+NO ENGINE CODE CHANGED. The `orderby` nomination is CLOSED as refuted; items 1835 and 1836's
+headings are corrected in the same commit.
+
+GATES. bun run check 0 read unpiped.

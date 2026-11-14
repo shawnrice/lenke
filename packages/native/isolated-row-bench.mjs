@@ -194,6 +194,22 @@ const SHAPES = {
   // so this is the instrument for whatever disparity survives on the yield side. Same two spellings
   // over the same edge set, so they must cost the same.
   hopsingleyield: 'MATCH (a:P)-[:E]->(b:P) RETURN b.n AS n',
+  /**
+   * ⚠️ THE ORDERED PAIRS — item 1837. Two independent axes say the deeper widths' `ORDER BY` carries
+   * a marginal the one-hop route does not: the SIZE axis (item 1835, a marginal of 18-26 ms at
+   * 200,000 against 3.5 at depth 1) and the FANOUT axis (item 1836, 1.56x its own `rows` cell at
+   * fanout 5 against ~1.0x at fanout 1). Both readings come from `rung-gap-screen.mjs`, whose own
+   * header says it cannot resolve a sub-15% question — and the effect is 8-15% of the query.
+   *
+   * So the question needs THIS harness, and it needs the pairs rather than the ordered rows alone:
+   * the quantity is `ordered - raw` AT THE SAME WIDTH, because the one-hop route sorts on the way
+   * out (`outputColumnSorts`) while the deeper widths materialize and then sort through item 1827's
+   * `sortedRows`. Comparing ordered-hop1 against ordered-hop3 directly would measure the extra hops.
+   */
+  hop1raw: 'MATCH (a:P)-[:E]->(b:P) RETURN b.k AS k',
+  hop1ordered: 'MATCH (a:P)-[:E]->(b:P) RETURN b.k AS k ORDER BY k',
+  hop3raw: 'MATCH (a:P)-[:E]->(b:P)-[:E]->(c:P)-[:E]->(d:P) RETURN d.k AS k',
+  hop3ordered: 'MATCH (a:P)-[:E]->(b:P)-[:E]->(c:P)-[:E]->(d:P) RETURN d.k AS k ORDER BY k',
   hopmultiyield: 'MATCH (a:P)-[:E|F]->(b:P) RETURN b.n AS n',
   hopmultiyieldrev: 'MATCH (a:P)-[:F|E]->(b:P) RETURN b.n AS n',
   /**
