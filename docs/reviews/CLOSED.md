@@ -23,6 +23,39 @@ here in the same commit.
 
 ## 1. Refuted perf levers — DO NOT RE-MEASURE
 
+**Item 1845 — the Gremlin TWO-HOP count is NOT anomalously slow, and three hypotheses died proving
+it.** `bench:gremlin` shows `V().out().out().count()` at **51.5 ms** against the THREE-hop row's
+**22.9** — 5x fewer paths, 2.25x the time, reproduced one-row-per-process. That reads exactly like a
+rung declining at depth 2. It is not:
+
+- **"The estimator"** — `timed` took min-of-5 with no warm-up, and the two-hop series descends
+  `26.7 11.1 9.3 8.3 17.8 … 4.0`. REFUTED: with 3 warm-up reps the row still reads 51.2. (The
+  warm-up is kept anyway — `min` over unwarmed reps is not the plateau — but it explained nothing
+  here.)
+- **"A broader rung above it is starving the inner product"** (`rung-precedence-decides-speed`'s
+  shape). REFUTED by DELETION, not by reading: `rung-starve-probe-1845.mjs` disables
+  `filterChainCount`, `startFilteredHopCount` and `bothFilteredHopCount` in turn, one arm per
+  process, each asserted by a marker in the built dist. All three leave the two-hop row at
+  51.1-53.1 ms. Instrumenting `countShortcut` directly then showed the degree-inner-product arm
+  (item 590) **does fire** at depth 2 and does not at depth 3.
+- **"The rung has overhead above its own arithmetic"** — REFUTED: a HAND-WRITTEN inner product over
+  the same graph costs **43.4 ms against the engine's 41.0**, so the rung is at the floor of the
+  arithmetic it implements.
+
+**And the arm earns its place 9.9x over**: forced to decline, the same query costs **405.4 ms**. So
+the depth-2/depth-3 inversion is two different arithmetics with different constants — O(V) with two
+adjacency-box touches per vertex, against O(E) with one degree read per edge — and at fan-out 5
+those are the same order, with the per-vertex double touch the dearer unit. 205 ns a vertex is
+`Vertex.adjTo`/`adjFrom` plus the `Set.size` reads, i.e. data layout.
+The only remaining lever is a per-vertex per-type degree cache, which is index-shaped and is the
+family `no-dense-vertex-ordinal` records as **BUILT AND DISQUALIFIED** (deletes 6.18x/11.34x under
+churn). Item 1546 reached the same wall from `degreeOfTypes` and refuted a single-type fast path
+there at a measured null.
+⚠️ **So a big `ts/nat` ratio in `bench:gremlin` is not a nomination on its own.** The `has()` rows
+(92.9x, 87.9x, 66.2x, 58.6x) are the UNINDEXED scan against native's columnar one: with an index
+both engines seek — GQL 7.19 -> 0.07 ms, Gremlin 4.79 -> 0.08 — so those ratios price a fixture
+choice, not a missing path.
+
 Each of these was built or priced and **rejected with numbers**. Re-attempting one costs a tick and
 produces the same answer.
 

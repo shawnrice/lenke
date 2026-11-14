@@ -336,7 +336,28 @@ const SHAPES: [string, Plan][] = [
  */
 const plain = (x: unknown): unknown => (x instanceof Map ? Object.fromEntries(x) : x);
 
+/**
+ * ⚠️ WARM-UP REPS THAT ARE NOT TIMED — item 1845, and the row that forced it is in this sweep.
+ *
+ * `min` over an UNWARMED series is not the plateau when the series is still descending at rep
+ * `REPS`. The two-hop count measured a series of `26.7 11.1 9.3 8.3 17.8 5.9 … 4.2 4.0` in its own
+ * process: `min` of the first five is 8.3 against a plateau near 4.0, and in this sweep that row
+ * read **51.8 ms against the THREE-hop row's 23.8** — a two-hop count appearing 2.2x slower than a
+ * three-hop one with five times the paths. That reads exactly like a rung declining at depth 2,
+ * and it is not: `hopChainCount`'s degree inner product (item 590) answers it in one pass over
+ * vertices. The whole gap was the estimator.
+ *
+ * So the warm-up is not a nicety here — without it this sweep NOMINATES WORK THAT DOES NOT EXIST.
+ * `min` is kept rather than swapped for a trimmed median so numbers stay the same KIND of estimate
+ * as the ones already recorded against this file; what changes is that `min` now sees warmed reps.
+ */
+const WARM = Number(process.env.PROBE_WARM ?? 3);
+
 const timed = (f: () => void): number => {
+  for (let i = 0; i < WARM; i++) {
+    f();
+  }
+
   let best = Infinity;
 
   for (let i = 0; i < REPS; i++) {
@@ -350,7 +371,7 @@ const timed = (f: () => void): number => {
 };
 
 console.log(
-  `${N} vertices / ${N * 5} edges, min of ${REPS}\n` +
+  `${N} vertices / ${N * 5} edges, min of ${REPS} after ${WARM} warm-up reps\n` +
     `${'traversal'.padEnd(28)}${'ts'.padStart(10)}${'native'.padStart(10)}${'ts/nat'.padStart(10)}  answers`,
 );
 
