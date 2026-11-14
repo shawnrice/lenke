@@ -96,6 +96,20 @@ const FLOOR_MS = Number(process.env.FLOOR_MS ?? 3);
  * marginal that explodes with depth means the modifier lost its route at some width.
  */
 const JUMP_FLAG = Number(process.env.JUMP_FLAG ?? 5);
+/**
+ * ⚠️ FANOUT IS A KNOB AT ITEM 1836, AND RAISING IT SUPPRESSES THE TWO DEPTH-BASED FLAGS rather than
+ * merely changing their numbers. CLAUDE.md: "One edge per node is sparse — per-edge costs scale with
+ * the edge:node ratio, per-node costs do not", so every route this grid has pair-tested so far has
+ * been measured at ONE out-edge per vertex. The PAIR flag survives a higher fanout untouched,
+ * because it compares a modifier against its OWN `rows` cell at the SAME depth.
+ *
+ * ⚠️ THE DEPTH FLAGS DO NOT SURVIVE IT, and that is why this is a knob with consequences rather than
+ * a free parameter. Above fanout 1 the row count is `F^k`, so a deeper cell legitimately does `F`
+ * times the work and both "non-monotonic in depth" and "the marginal grew with depth" become
+ * statements about the FIXTURE rather than the route — item 1815's finding exactly, where a
+ * compounding stride made a rung look 11.2x worse with depth while its per-hop cost was flat.
+ */
+const FANOUT = Number(process.env.FANOUT ?? 1);
 const ENGINE = process.env.ENGINE ?? 'gql';
 
 if (ENGINE !== 'gql' && ENGINE !== 'gremlin') {
@@ -113,13 +127,19 @@ const build = () => {
     });
   }
 
-  for (let i = 0; i < NODES; i += 1) {
+  for (let e = 0; e < NODES * FANOUT; e += 1) {
+    const i = e % NODES;
+    const hop = Math.floor(e / NODES);
+
     g.addEdge({
-      id: `e${i}`,
+      id: `e${e}`,
+      // ⚠️ Splits on the REPEAT INDEX, CLAUDE.md's fix for the `(a*k+b) % N` degeneracy: without it
+      // one vertex's FANOUT edges all land on the SAME target, every k-hop count is `F^k` by
+      // construction, and every degree still looks perfect.
       from: g.getVertexById(`v${i}`),
-      to: g.getVertexById(`v${(i * 7 + 3) % NODES}`),
+      to: g.getVertexById(`v${(i * 7 + 3 + hop * 2_654_435_761) % NODES}`),
       labels: ['E'],
-      properties: { w: i % 13 },
+      properties: { w: e % 13 },
     });
   }
 
@@ -200,11 +220,14 @@ const median = (xs) => {
 const g = build();
 
 console.log(
-  `# rung-gap-screen ENGINE=${ENGINE} NODES=${NODES} FANOUT=1 reps=${REPS} drop=${WARMUP}`,
+  `# rung-gap-screen ENGINE=${ENGINE} NODES=${NODES} FANOUT=${FANOUT} reps=${REPS} drop=${WARMUP}`,
 );
 console.log(`# vertices=${g.vertexCount} edges=${g.edgeCount}`);
 console.log(
-  '# FANOUT=1 so every depth returns the same row count — a depth difference is ROUTE.\n',
+  FANOUT === 1
+    ? '# FANOUT=1 so every depth returns the same row count — a depth difference is ROUTE.\n'
+    : `# ⚠️ FANOUT=${FANOUT}: rows are F^k, so the DEPTH flags are SUPPRESSED — they would measure\n` +
+        '#    the fixture rather than the route (item 1815). Only the PAIR flag is reported.\n',
 );
 
 /**
@@ -282,6 +305,7 @@ for (const [name, row] of grid) {
     const b = row[i + 1];
 
     if (
+      FANOUT === 1 &&
       !Number.isNaN(a.ms) &&
       !Number.isNaN(b.ms) &&
       a.ms >= FLOOR_MS &&
@@ -344,7 +368,7 @@ for (const [name, row] of grid) {
    * CELL, and the same argument applies to whatever a ratio is divided BY. A ratio needs an
    * absolute magnitude on BOTH sides.
    */
-  if (Number.isNaN(first) || first < FLOOR_MS) {
+  if (FANOUT !== 1 || Number.isNaN(first) || first < FLOOR_MS) {
     continue;
   }
 

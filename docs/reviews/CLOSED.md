@@ -85900,3 +85900,53 @@ target rather than a cliff — recorded with that proportion stated, because a 7
 NO ENGINE CODE CHANGED. The sweep is the deliverable, plus the flag fix.
 
 GATES. bun run check 0 read unpiped.
+
+### Item 1836 — ✅ **THE FANOUT AXIS: no new gap, the rungs hold at a 5:1 edge:node ratio, and the one open nomination is CORROBORATED from a second direction.** ⚠️ Raising fanout SUPPRESSES the two depth-based flags rather than just changing their numbers, which is the part that needed building carefully
+
+⚠️ **WHY THIS AXIS.** CLAUDE.md: "One edge per node is sparse — per-edge costs scale with the
+edge:node ratio, per-node costs do not", with a change that "measured flat at 1:1 and −5% at 5:1".
+This grid has run at **FANOUT=1 throughout** — deliberately, because that is what makes its depth
+axis comparable — so no route it has pair-tested had ever been measured where a source actually
+fans out.
+
+⚠️⚠️ **AND THE KNOB CANNOT JUST BE ADDED: TWO OF THE THREE FLAGS BECOME WRONG ABOVE FANOUT 1.** With
+`F` out-edges per vertex the row count is `F^k`, so a deeper cell legitimately does `F` times the
+work — and both "non-monotonic in depth" and "the marginal grew with depth" stop being statements
+about the ROUTE. **That is item 1815's finding exactly**, where a compounding stride made a rung look
+11.2x worse with depth while its per-hop cost was flat. So `FANOUT > 1` now SUPPRESSES both depth
+flags and says so in the header; only the PAIR flag, which compares a modifier against its own
+`rows` cell at the SAME depth, survives untouched.
+
+THE RESULT at `FANOUT=5` (20,000 vertices, 100,000 edges, 2.5M rows at depth 3) — every modifier
+against its own `rows` cell:
+
+```text
+                depth2   depth3        ratio to rows
+  rows            76.3    392.9        —
+  maxagg          69.3    414.3        0.91x / 1.05x     item 1830 holds
+  grouped         92.9    446.8        1.22x / 1.14x     item 1832 holds
+  countdist      104.8    487.0        1.37x / 1.24x     item 1824 holds
+  orderby        119.5    613.3        1.57x / 1.56x     see below
+  topk           231.2   1052.1        3.0x / 2.7x       deliberately unfused (1827)
+  skiponly       303.5   1582.1        4.0x / 4.0x       deliberately unfused (1827)
+  sum            254.2   1348.2        3.3x / 3.4x       deliberately refused (1829)
+  collect        237.7   1229.5        3.1x / 3.1x       deliberately refused (1829)
+```
+
+✅ **NO NEW GAP.** Every flag is either the multi-column keying already on record or a route an
+earlier item left on the general path on purpose. The four rungs built at items 1824/1830/1832 cost
+roughly what producing their rows costs at a 5:1 ratio, which is the same verdict item 1835 reached
+on the size axis by a different route.
+
+⚠️ **AND THE ONE OPEN NOMINATION IS CORROBORATED, which is worth more than a new one.** `orderby`
+sits at **1.56-1.57x its own `rows` cell** here, where at `FANOUT=1` it is ~1.0x. Item 1835 found the
+same thing on the size axis (a marginal of 18-26 ms at 200,000 against 3.5 at depth 1). Two
+independent axes now say the deeper widths' sort carries a real marginal that the one-hop route does
+not — the one-hop path sorts on the way out through `outputColumnSorts`, the deeper ones materialize
+and then sort through item 1827's `sortedRows`. ⚠️ Still 8-15% of the query in absolute terms, so
+still a modest target, and still below the ~10% threshold CLAUDE.md says needs its own isolated
+harness rather than a shared grid.
+
+NO ENGINE CODE CHANGED.
+
+GATES. bun run check 0 read unpiped. The `FANOUT=1` run is unchanged, checked after the edit.
