@@ -87349,7 +87349,11 @@ GATES. bun run check 0 read unpiped; gql 4730 tests green; all seven byte-identi
 (the workload fuzzer draws every family at `params=20000`, and `projection=1231/1231`, so the new
 route is checked against the Rust engine rather than only against itself).
 
-## Item 1868 — item 1867's gap has NO Gremlin twin, and the Gremlin scan family's "disagreements" were already answered; one shape is open at ~2.4x
+## Item 1868 — item 1867's gap has NO Gremlin twin, and the Gremlin scan family's "disagreements" were already answered; ~~one shape is open at ~2.4x~~ ✅ **BUILT at item 1869, 2.20x**
+
+⚠️ **AND THE ~2.4x ESTIMATE WAS CLOSE BUT THE INSTRUMENT WAS NOT THE SAME ONE.** Item 1869's A/B,
+with edges in the fixture and one arm per build, reads PRE 9.05 -> POST 4.12 (**2.20x**) where this
+item's standalone pricing read 11.96 against a 5.81 floor. Quote 1869's numbers, not these.
 
 Two cross-surface checks, both negative, both recorded so the next pass does not spend a tick
 re-deriving them — and one target left standing.
@@ -87401,3 +87405,96 @@ NO ENGINE CODE CHANGED. Two negative cross-surface results, five verdicts moved 
 that needed them, and one priced target.
 
 GATES. bun run check 0 read unpiped.
+
+## Item 1869 — SHIPPED: the fused scan dedupe, 2.20x; the dedupe predicate was EXTRACTED rather than copied, and admitting a `hasLabel` was a 2.3x REGRESSION I had to measure to find
+
+Item 1868 priced `V().values(k).dedupe()` as the one open shape on the Gremlin scan family.
+`nodeValuesShortcut` requires NOTHING after `values`, so a trailing `dedupe` fell to the traverser
+pipeline — which builds a traverser per value to keep 997 of 200,000.
+
+✅ **MEASURED, PRE as a precise unwiring of the rung with its marker asserted in the DIST:**
+
+      shape                                          PRE      POST    note
+      V().values(k).dedupe()            TARGET      9.05     4.12    2.20x
+      V().values(k)                     floor       9.08     8.32    the walk it beats
+      V().hasLabel(U).values(k).dedupe()            3.43     3.61    REFUSED — see below
+      V().out(E).values(k).dedupe()     CONTROL    29.35    29.49    the pipeline's own dedupe
+      V().values(k).order()             CONTROL    45.51    45.67    untouched
+
+**The deduped walk is FASTER than the undeduped floor** (4.12 against 8.32), which is the shape of
+the win: it emits 997 rows where the floor emits 200,000.
+
+⚠️⚠️ **THE GAP WAS DIAGNOSED IN THE ENGINE'S OWN SOURCE YEARS OF ITEMS AGO.** `dedupe`'s note records
+`values(k).dedup()` at 3.4-3.6x the GQL `RETURN DISTINCT` spelling for num and str columns, and says
+in terms that the residual "is the TRAVERSAL STREAM'S own cost and NOT a keying defect — this change
+cannot reach them, which is what makes them its controls". That sentence IS the nomination: removing
+the stream is exactly what a fused walk does, and the keying is reused untouched.
+
+✅ **THE PREDICATE WAS EXTRACTED, NOT COPIED, and that was the whole design question.** `dedupe`'s
+value keying is FIVE key spaces — a plain `Set`, a structural-string `Set` with a `WeakSet`
+short-circuit, `LocalDate` on `days`, a nested container for the other temporal kinds, and
+`NO_VALUE` — each carrying a measured decision from items 850, 857, 1015 and 1017. Re-deriving them
+in a second place is item 1832's drift hazard in its worst form, with byte-identity against the Rust
+engine riding on two copies of "which values are the same value" agreeing forever. So
+`valueDedupeFilter` is now ONE definition with two callers, and the pipeline's own dedupe control is
+flat (29.35 -> 29.49), which is what says the extraction cost nothing.
+
+⚠️ **IT LIVES IN `runtime.ts`, NOT A MODULE OF ITS OWN, AND THAT WAS NOT THE FIRST ATTEMPT.**
+`tupleKey` and `NO_VALUE` are defined in `runtime.ts`, which imports `dispatch.js` for
+`applyPlanToStream` — so a separate `dedupe-filter.ts` importing both closed a dependency cycle and
+`oxlint` rejected it. An added export is not a new node in the import graph; a new file was.
+
+⚠️⚠️ **AND ADMITTING A `hasLabel` WAS A 2.3x REGRESSION — found by measuring, not by reading.** The
+first cut accepted the labelled shape, mirroring `nodeValuesShortcut`. It measured **3.43 -> 7.91 ms,
+2.3x SLOWER than the pipeline it replaced.** The pipeline SEEDS from the label index, so
+`V().hasLabel(U)` visits 66,667 vertices; a whole-graph walk visits 200,000 and tests
+`labels.some(...)` on every one. No amount of saved traverser allocation covers 3x the vertices —
+and the unlabelled shape wins precisely because a bare `V()` scan IS the whole graph either way.
+The rung now refuses a label, and the refusal carries the number.
+
+🔭 **WHICH LEAVES A REAL NOMINATION: `nodeValuesShortcut` BESIDE IT MAY CARRY THE SAME LATENT
+REGRESSION.** It ACCEPTS a `hasLabel` and walks `graph.vertices`. The same probe reads:
+
+      V().hasLabel(U).values(k)   9.22 ms    66,667 rows   (the shipped rung, whole-graph scan)
+      V().values(k)               8.32       200,000 rows  (the same rung, no label)
+
+**The labelled form costs MORE than the unlabelled one while emitting 3x fewer rows**, and the
+pipeline does strictly more work on the same shape (a dedupe as well) in 3.61 ms. That is strong
+evidence the shipped rung is net-negative for a labelled scan — but it is EVIDENCE, not a
+measurement: confirming it needs a kill switch on `nodeValuesShortcut` itself, which is the next
+item rather than a claim here.
+
+⚠️ **AND THE OBVIOUS FIX IS NOT FREE.** Seeding from `graph.verticesByLabel` is the index every GQL
+label elision trusts and the public `v.labels = [...]` setter does NOT maintain — an OPEN owner
+decision with a wrong answer reachable through the public API. Adding another reader of it is a
+thing to RAISE, not to slip into a speedup.
+
+**7 of 9 MUTANTS CAUGHT, two survivors expected and documented:**
+
+      the dedupe predicate never filters                        CAUGHT
+      an absent key is emitted as undefined                     CAUGHT
+      a LABELLED dedupe is admitted                             CAUGHT
+      a by-modulated dedupe is admitted                         CAUGHT  (after a fixture fix)
+      a labelled (tagged) dedupe is admitted                    CAUGHT  (after a fixture fix)
+      EXTRACTED: dates fall to the composite path               SURVIVED — perf only, by design
+      EXTRACTED: NO_VALUE is kept instead of filtered           CAUGHT  (after a fixture fix)
+      EXTRACTED: composites key by reference only               CAUGHT
+      CONTROL - the rung never selected                         SURVIVED — the pipeline agrees
+
+The `LocalDate` branch is item 857's PERFORMANCE decision: deleting it sends dates down the
+composite path, which keys them STRUCTURALLY and so dedupes them into the same classes. Same answer,
+2.0x slower — invisible to any answer test, recorded at the branch rather than left unexplained.
+
+⚠️⚠️ **THREE OF MY OWN ASSERTIONS WERE WRONG ABOUT `by`, AND ALL THREE WERE FOUND BY RUNNING THEM.**
+
+- The ORACLE used `values(k).dedupe().by(k)`, reasoning that a `by` is refused by the rung and
+  dedupes on the same value anyway. By that point the stream holds VALUES, so `by('k')` reads
+  property `k` OF A NUMBER — it answered `[5]` where the right answer is three values. **The rung
+  was right and my check was wrong.** Replaced with a seeded source (item 1858's device).
+- Then `by('nope')` over values was asserted to filter everything via `NO_VALUE`. It does not:
+  `evalBy` on a PRIMITIVE yields the primitive whatever key is named. The `NO_VALUE` branch needs
+  a stream of ELEMENTS, and the test now uses one.
+- And the by-modulated REFUSAL test passed on a numeric fixture where the right and wrong answers
+  coincide, so its mutant survived. Over temporals they diverge, which is the fixture it uses now.
+
+GATES. bun run check 0 read unpiped; gremlin 2179 tests green; all seven byte-identity fuzzers green.

@@ -31,6 +31,7 @@ import type { Graph } from '@lenke/core';
 
 import type { ID, Plan, Step } from '../ast.js';
 import { seedForStep } from './index-seed.js';
+import { valueDedupeFilter } from './runtime.js';
 import { asStringId } from './sources.js';
 
 /** The same shape `hopValuesShortcut` returns, so `run` can treat both identically. */
@@ -102,6 +103,123 @@ export const nodeValuesShortcut = (plan: Plan, graph: Graph): NodeValues | undef
   return {
     [Symbol.iterator]: walk,
     drain: () => [...walk()],
+  };
+};
+
+/**
+ * ONE loop body for both the iterator and `drain`, AT MODULE SCOPE — the fused scan DEDUPE walk
+ * (item 1869).
+ *
+ * ⚠️ MODULE SCOPE FOR THE REASON THE NEXT NOTE SPELLS OUT: a per-call generator definition made the
+ * sibling vertex rung **1.2x SLOWER than the pipeline it replaces**. The parameters carry what a
+ * closure would have captured.
+ *
+ * ⚠️ THE DEDUPE PREDICATE IS THE ENGINE'S OWN, not a second derivation. `valueDedupeFilter` is the
+ * exact code `dispatch.ts` runs — extracted at item 1869 rather than copied — so the dedup CLASSES
+ * here are the pipeline's by construction, including the `LocalDate`-on-`days` space and the
+ * composite `WeakSet` short-circuit. Re-deriving "which values are the same value" is the one thing
+ * byte-identity against the Rust engine cannot survive.
+ *
+ * ⚠️ AND THE ORDER IS FIRST-OCCURRENCE, which is `dedupe()`'s contract and the pipeline's own
+ * behaviour. It holds here because this scans `graph.vertices` in the same order the pipeline's
+ * source does and filters in place — it does not collect a `Set` and emit its contents, which would
+ * be insertion order only by accident of the implementation. Gremlin results are compared ORDERED
+ * by the differential fuzzer, so the test file asserts the sequence rather than the set.
+ */
+const nodeValuesDedupeWalk = function* (
+  graph: Graph,
+  labels: readonly string[] | undefined,
+  key: string,
+): Generator<unknown> {
+  const keep = valueDedupeFilter();
+
+  for (const v of graph.vertices) {
+    if (labels !== undefined && !labels.some((l) => v.labels.has(l))) {
+      continue;
+    }
+
+    const props = v.properties;
+
+    if (key in props && keep(props[key])) {
+      yield props[key];
+    }
+  }
+};
+
+/**
+ * `V()[.hasLabel(L)].values(k).dedupe()` — the fused scan projection with its dedupe folded in.
+ *
+ * ⚠️ FOUND BY A ROUTE SCREEN AND PRICED BEFORE IT WAS BUILT (items 1868/1869). `nodeValuesShortcut`
+ * requires NOTHING after `values`, so a trailing `dedupe` fell to the traverser pipeline — which
+ * builds a traverser per value to keep 997 of 200,000:
+ *
+ *     V().values(k)                  5.81 ms   200000 rows   the fused floor
+ *     V().values(k).dedupe()        11.96        997 rows    the pipeline
+ *     V().values(k).count()          2.42          1 row     a fused sibling
+ *
+ * ⚠️ AND THE GAP WAS ALREADY DIAGNOSED IN THE ENGINE'S OWN SOURCE. `dedupe`'s note records
+ * `values(k).dedup()` at 3.4-3.6x the GQL `RETURN DISTINCT` spelling for num and str columns and
+ * says in terms that this residual "is the TRAVERSAL STREAM'S own cost and not a keying defect".
+ * That sentence is the whole nomination: removing the stream is exactly what this does, and the
+ * keying is reused untouched.
+ *
+ * ⚠️ A LABELLED OR MODULATED `dedupe` IS REFUSED. `dedupe('a')` keys on tagged values and
+ * `dedupe().by(k)` on something other than the element — the same refusal `distinctHopCount` and
+ * `dedupedHopChainCount` make. Only the BARE form reaches this.
+ */
+export const nodeValuesDedupeShortcut = (plan: Plan, graph: Graph): NodeValues | undefined => {
+  const { steps } = plan;
+  const last = steps[steps.length - 1];
+
+  if (
+    last?.kind !== 'dedupe' ||
+    (last.labels?.length ?? 0) > 0 ||
+    (last.bys?.length ?? 0) > 0
+    // ⚠️ NO `scope` CHECK: `dedupe` has no local form in this AST (`{ kind, labels?, bys? }`), so a
+    // `scope === 'local'` guard was written here and `tsc` rejected it. A gate nothing can observe
+    // comes out rather than staying untested — item 1016's rule, and the typechecker caught this
+    // one before a mutant could report it as a survivor.
+  ) {
+    return undefined;
+  }
+
+  // Everything before the `dedupe` must be exactly the shape the plain rung answers — reusing its
+  // `matchShape` rather than restating the source/label/one-key conditions, so the two cannot
+  // drift about which scans they claim.
+  const shape = matchShape(steps.slice(0, -1));
+
+  if (shape === undefined) {
+    return undefined;
+  }
+
+  /**
+   * ⚠️⚠️ A `hasLabel` IS REFUSED, AND THE REASON IS A MEASURED REGRESSION — admitting it made this
+   * rung **2.3x SLOWER than the pipeline it replaces** (3.43 -> 7.91 ms at 200,000 vertices with
+   * `U` on one in three).
+   *
+   * The pipeline SEEDS from the label index, so `V().hasLabel(U)` visits 66,667 vertices; a
+   * whole-graph walk visits 200,000 and tests `labels.some(...)` on every one. No amount of saved
+   * traverser allocation covers 3x the vertices. The unlabelled shape has no such alternative — a
+   * bare `V()` scan IS the whole graph either way — which is why it wins 1.58x and this loses.
+   *
+   * ⚠️ AND SEEDING FROM `graph.verticesByLabel` IS NOT A FREE FIX. It is the index every GQL label
+   * elision trusts and the public `v.labels = [...]` setter does NOT maintain — an OPEN owner
+   * decision, with a wrong answer reachable through the public API. Adding another reader of it is
+   * a thing to RAISE, not to slip into a speedup.
+   *
+   * ⚠️ IT ALSO MEANS `nodeValuesShortcut` BESIDE THIS ONE MAY CARRY THE SAME LATENT REGRESSION: it
+   * accepts `hasLabel` and walks `graph.vertices`. Measured separately at item 1869 rather than
+   * assumed from this result.
+   */
+  if (shape.label !== undefined) {
+    return undefined;
+  }
+
+  const { key } = shape;
+
+  return {
+    [Symbol.iterator]: () => nodeValuesDedupeWalk(graph, undefined, key),
+    drain: () => [...nodeValuesDedupeWalk(graph, undefined, key)],
   };
 };
 

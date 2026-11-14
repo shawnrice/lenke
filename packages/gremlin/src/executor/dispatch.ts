@@ -9,13 +9,6 @@
 // neither side dereferences the other at module-init — `applyStep` and
 // `applyPlanToStream` are only called inside generator bodies.
 
-import {
-  isTemporal,
-  LocalDate,
-  temporalKeyAdd,
-  temporalKeyFields,
-  type TemporalKeyNode,
-} from '@lenke/core';
 import type { Graph } from '@lenke/core';
 import { ErrorCode, LenkeError } from '@lenke/errors';
 
@@ -81,6 +74,7 @@ import {
 } from './projection.js';
 import {
   closureView,
+  evalBy,
   filterStream,
   filterTraverser,
   firstLabel,
@@ -91,11 +85,10 @@ import {
   mapTraverser,
   newContext,
   normalizeBys,
-  NO_VALUE,
+  tupleKey,
   type RunContext,
   type Traverser,
-  tupleKey,
-  evalBy,
+  valueDedupeFilter,
 } from './runtime.js';
 import { sackStep, withSackStep } from './sack.js';
 import { shortestPathStep } from './shortest-path.js';
@@ -223,25 +216,15 @@ export const applyStep = (
       return filterTraverser(stream, (t) => hasRevisit(t.path));
 
     case 'dedupe': {
-      // Primitives and stable graph-element references dedupe directly in this
-      // Set — value/identity equality, no allocation (the hot path). Composite
-      // values (lists / plain-object maps) are distinct references even when
-      // structurally equal, so they upgrade to a structural string key in a
-      // second, lazily-created Set. A recurring *reference* short-circuits via
-      // the WeakSet, so each composite is keyed at most once: slow the first
-      // time, an O(1) pointer hit on every repeat.
-      const seen = new Set<unknown>();
-      let seenComposite: Set<string> | null = null;
-      let seenRefs: WeakSet<object> | null = null;
-      // A `LocalDate` keys on its epoch-day count, in its own `Set` (item 857). See the branch
-      // below for why it is lifted out of the composite path and why the container is separate.
-      let seenDates: Set<number> | null = null;
-      // The OTHER temporal kinds (item 1017). `LocalDate` keeps its own flat `Set` above — the
-      // Rust twin measured folding a date into the wider container at 2.0x on the date column
-      // alone (item 1015) — and everything else lands in this nested one, keyed by the fields
-      // `temporalKeyFields` names — which lead with a KIND RANK, so one container holds every
-      // kind without two of them ever sharing a key.
-      let seenTemporals: TemporalKeyNode | null = null;
+      /**
+       * ⚠️ THE VALUE-KEYED HALF LIVES IN `dedupe-filter.ts` SINCE ITEM 1869, so the fused
+       * `V().values(k).dedupe()` walk can reuse it instead of re-deriving five key spaces. Every
+       * measured decision that was here moved WITH the code — read it there before touching a key
+       * space. The multi-label form stays below because it reads `t.tags`, not a value.
+       */
+      const keep = valueDedupeFilter();
+      // For the multi-label form only: a stable NUL-joined key per tag tuple.
+      const seenTuples = new Set<string>();
       const { labels } = step;
       const by = step.bys?.[0];
 
@@ -251,124 +234,16 @@ export const applyStep = (
         if (labels && labels.length > 0) {
           const k = tupleKey(labels.map((l) => t.tags.get(l)));
 
-          if (seen.has(k)) {
+          if (seenTuples.has(k)) {
             return false;
           }
 
-          seen.add(k);
+          seenTuples.add(k);
 
           return true;
         }
 
-        const v = by !== undefined ? evalBy(by, t.value, graph, ctx) : t.value;
-
-        // TinkerPop: a dedup-by that yields no value (absent property) FILTERS the
-        // traverser — `dedup().by('age')` drops elements without `age` rather than
-        // collapsing them into one null bucket.
-        if (v === NO_VALUE) {
-          return false;
-        }
-
-        // Plain lists/maps AND value-typed instances (temporals) need structural
-        // keying — a temporal is a distinct object per vertex, so reference identity
-        // would never dedup equal dates (native keys by value; `group`/`groupCount`
-        // already do too via `tupleKey`, which stringifies a temporal's tagged form).
-        // Elements (stable refs), JS `Map`s, and other class instances keep cheap
-        // reference identity.
-        // A `LocalDate` IS raw-keyable, on `days` — lifted out of the composite path below
-        // (item 857). The composite path costs a date THREE things per row: a `WeakSet` insert,
-        // a `tupleKey` string build, and a string-`Set` probe. The `WeakSet` is there to
-        // short-circuit a repeated REFERENCE, and every vertex carries its own `LocalDate`
-        // object, so for this type it never hits — 200,000 distinct objects inserted for nothing.
-        //
-        // Measured at 200,000 vertices over 1,000 distinct values, against the GQL spelling of
-        // the same question in the same engine:
-        //
-        // ```text
-        //   values('hired').dedup()   105.35 ms   vs  RETURN DISTINCT p.hired   4.49   23.5x
-        //   values('score').dedup()    14.99       vs  RETURN DISTINCT p.score   4.17    3.6x
-        //   values('name').dedup()     18.59       vs  RETURN DISTINCT p.name    5.48    3.4x
-        // ```
-        //
-        // The num and str rows take the cheap `seen` path already, so their 3.4-3.6x is the
-        // traversal stream's own cost and NOT a keying defect — this change cannot reach them,
-        // which is what makes them its controls.
-        //
-        // `days` is in bijection with the rendering `tupleKey` would produce (items 843/847/848),
-        // so the dedup classes are unchanged. A SEPARATE container because a raw `5` and
-        // `LocalDate(5)` would otherwise collide in `seen` — the same reason item 850 gave for
-        // the TS GQL executor's third container.
-        //
-        // FINITE only: `tupleKey` renders a non-finite field the way `JSON.stringify` does, so
-        // `LocalDate(NaN)` and `LocalDate(Infinity)` are ONE key there and two under a raw
-        // `days`. Item 850 pinned that collapse rather than "improving" it inside a speedup, and
-        // this keeps the same decision.
-        if (v instanceof LocalDate && Number.isFinite(v.days)) {
-          seenDates ??= new Set();
-
-          if (seenDates.has(v.days)) {
-            return false;
-          }
-
-          seenDates.add(v.days);
-
-          return true;
-        }
-
-        // Item 1017: every other raw-keyable temporal kind, by the fields `@lenke/core` names
-        // rather than by a `tupleKey` string plus a `WeakSet` insert that can never hit (each
-        // vertex carries its own temporal object — item 857's finding for dates, which is true of
-        // every kind). Measured on the TS Gremlin dedup at 200,000 rows / 1,000 distinct values:
-        // `datetime` 64.0 ms, `localtime` 55.8, `zoned` 74.7 against a raw-keyed `date`'s 12.3
-        // and a plain number's 12.9.
-        //
-        // The separation between kinds comes from `temporalKeyFields`' leading kind rank, not
-        // from a container per kind — see its doc for the collision that makes it necessary.
-        if (isTemporal(v) && !(v instanceof LocalDate)) {
-          const fields = temporalKeyFields(v);
-
-          if (fields !== undefined) {
-            seenTemporals ??= new Map();
-
-            return temporalKeyAdd(seenTemporals, fields);
-          }
-        }
-
-        const proto =
-          v !== null && typeof v === 'object' ? (Object.getPrototypeOf(v) as unknown) : false;
-        const isComposite =
-          Array.isArray(v) || proto === Object.prototype || proto === null || isTemporal(v);
-
-        if (isComposite) {
-          const ref = v as object;
-
-          seenRefs ??= new WeakSet();
-
-          if (seenRefs.has(ref)) {
-            return false; // same reference already processed → duplicate, no re-key
-          }
-
-          seenRefs.add(ref);
-
-          const k = tupleKey([v]);
-          seenComposite ??= new Set();
-
-          if (seenComposite.has(k)) {
-            return false;
-          }
-
-          seenComposite.add(k);
-
-          return true;
-        }
-
-        if (seen.has(v)) {
-          return false;
-        }
-
-        seen.add(v);
-
-        return true;
+        return keep(by !== undefined ? evalBy(by, t.value, graph, ctx) : t.value);
       });
     }
 

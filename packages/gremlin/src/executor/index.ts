@@ -42,6 +42,7 @@ import type { NodeValues } from './node-values.js';
 import {
   edgeValuesShortcut,
   idSeededValuesShortcut,
+  nodeValuesDedupeShortcut,
   nodeValuesShortcut,
   seededNodeCountShortcut,
   seededNodeValuesShortcut,
@@ -2386,7 +2387,12 @@ const scanValuesShortcut = (
 ): NodeValues | undefined =>
   tracksPath
     ? undefined
-    : (nodeValuesShortcut(effective, graph) ?? edgeValuesShortcut(effective, graph));
+    : (nodeValuesShortcut(effective, graph) ??
+      edgeValuesShortcut(effective, graph) ??
+      // The DEDUPED scan (item 1869), below its two undeduped siblings: each of those requires
+      // NOTHING after `values`, so all three are disjoint by shape and the order cannot change
+      // which plans they answer. It reads last only because it is the narrowest.
+      nodeValuesDedupeShortcut(effective, graph));
 
 export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
   // Before anything runs: static faults the engine raises at parse time — a plan that

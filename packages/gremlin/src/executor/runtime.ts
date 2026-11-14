@@ -9,7 +9,15 @@
 // `./dispatch.ts`). Those depend on each other recursively, so they stay
 // adjacent.
 
-import { isEdgeShaped, isVertexShaped } from '@lenke/core';
+import {
+  isEdgeShaped,
+  isTemporal,
+  isVertexShaped,
+  LocalDate,
+  temporalKeyAdd,
+  temporalKeyFields,
+} from '@lenke/core';
+import type { TemporalKeyNode } from '@lenke/core';
 import type { Edge, Graph, Vertex } from '@lenke/core';
 
 import type { By, Plan } from '../ast.js';
@@ -469,4 +477,174 @@ export const evalBy = (by: By, value: unknown, graph: Graph, ctx: RunContext): u
 
       return value;
   }
+};
+
+/**
+ * THE VALUE-KEYED HALF OF `dedupe`'s FILTER — ONE DEFINITION, TWO CALLERS (item 1869).
+ *
+ * ⚠️ IT LIVES IN `runtime.ts` AND NOT IN A MODULE OF ITS OWN, because `tupleKey` and `NO_VALUE` are
+ * defined HERE and `runtime.ts` imports `dispatch.js` for `applyPlanToStream` — so a separate file
+ * importing both closed a dependency cycle that `oxlint` rejected. An added export is not a new
+ * node in the import graph; a new file was.
+ *
+ * ⚠️ IT IS ONE DEFINITION RATHER THAN A SECOND COPY, AND THAT IS THE WHOLE POINT. `dispatch.ts` built this
+ * predicate inline, and item 1869 needed the same classes for a FUSED `V().values(k).dedupe()` walk
+ * that skips the traverser stream. Re-deriving them there would have meant duplicating FIVE key
+ * spaces — a plain `Set`, a structural-string `Set` with a `WeakSet` short-circuit, a `LocalDate`
+ * `Set` on `days`, and a nested container for the other temporal kinds — each of which carries a
+ * measured decision from items 850, 857, 1015 and 1017. That is item 1832's drift hazard in its
+ * worst form: two copies of "which values are the same value", with byte-identity against the Rust
+ * engine riding on them agreeing forever.
+ *
+ * ⚠️ THE MULTI-LABEL FORM IS **NOT** HERE, deliberately. `dedupe('a', 'b')` keys on the tuple of
+ * TAGGED values, so it reads `t.tags` and needs the traverser rather than a value. It stays in
+ * `dispatch.ts`, and the fused rung refuses a labelled `dedupe` outright — the same refusal
+ * `distinctHopCount` and `dedupedHopChainCount` make, for the same reason.
+ *
+ * ⚠️ EVERY COMMENT BELOW CAME WITH THE CODE AND IS NOT NEW REASONING. The measurements, the
+ * `LocalDate`-out-of-the-composite-path decision and the `NaN`/`Infinity` collapse item 850 pinned
+ * are all load-bearing; a reader deciding whether to touch a key space needs them here, next to the
+ * space, rather than in the file this moved out of.
+ */
+/**
+ * A fresh dedupe predicate: `true` the first time a value is seen, `false` afterwards.
+ *
+ * Stateful by construction — one call per `dedupe` step occurrence, never shared — because the
+ * containers ARE the dedupe. A caller that reused one across two steps would merge their classes.
+ */
+export const valueDedupeFilter = (): ((v: unknown) => boolean) => {
+  // Primitives and stable graph-element references dedupe directly in this Set — value/identity
+  // equality, no allocation (the hot path). Composite values (lists / plain-object maps) are
+  // distinct references even when structurally equal, so they upgrade to a structural string key in
+  // a second, lazily-created Set. A recurring *reference* short-circuits via the WeakSet, so each
+  // composite is keyed at most once: slow the first time, an O(1) pointer hit on every repeat.
+  const seen = new Set<unknown>();
+  let seenComposite: Set<string> | null = null;
+  let seenRefs: WeakSet<object> | null = null;
+  // A `LocalDate` keys on its epoch-day count, in its own `Set` (item 857). See the branch below
+  // for why it is lifted out of the composite path and why the container is separate.
+  let seenDates: Set<number> | null = null;
+  // The OTHER temporal kinds (item 1017). `LocalDate` keeps its own flat `Set` above — the Rust
+  // twin measured folding a date into the wider container at 2.0x on the date column alone (item
+  // 1015) — and everything else lands in this nested one, keyed by the fields `temporalKeyFields`
+  // names, which lead with a KIND RANK so one container holds every kind without two of them ever
+  // sharing a key.
+  let seenTemporals: TemporalKeyNode | null = null;
+
+  return (v) => {
+    // TinkerPop: a dedup-by that yields no value (absent property) FILTERS the traverser —
+    // `dedup().by('age')` drops elements without `age` rather than collapsing them into one null
+    // bucket.
+    if (v === NO_VALUE) {
+      return false;
+    }
+
+    /**
+     * Plain lists/maps AND value-typed instances (temporals) need structural keying — a temporal is
+     * a distinct object per vertex, so reference identity would never dedup equal dates (native
+     * keys by value; `group`/`groupCount` already do too via `tupleKey`, which stringifies a
+     * temporal's tagged form). Elements (stable refs), JS `Map`s, and other class instances keep
+     * cheap reference identity.
+     *
+     * A `LocalDate` IS raw-keyable, on `days` — lifted out of the composite path below (item 857).
+     * The composite path costs a date THREE things per row: a `WeakSet` insert, a `tupleKey` string
+     * build, and a string-`Set` probe. The `WeakSet` is there to short-circuit a repeated
+     * REFERENCE, and every vertex carries its own `LocalDate` object, so for this type it never
+     * hits — 200,000 distinct objects inserted for nothing.
+     *
+     * Measured at 200,000 vertices over 1,000 distinct values, against the GQL spelling of the
+     * same question in the same engine:
+     *
+     * ```text
+     *   values('hired').dedup()   105.35 ms   vs  RETURN DISTINCT p.hired   4.49   23.5x
+     *   values('score').dedup()    14.99       vs  RETURN DISTINCT p.score   4.17    3.6x
+     *   values('name').dedup()     18.59       vs  RETURN DISTINCT p.name    5.48    3.4x
+     * ```
+     *
+     * ⚠️ THE NUM AND STR ROWS TAKE THE CHEAP `seen` PATH ALREADY, so their 3.4-3.6x is the
+     * TRAVERSAL STREAM'S own cost and not a keying defect — that reading is what nominated item
+     * 1869's fused walk, which removes the stream and leaves this predicate untouched.
+     *
+     * `days` is in bijection with the rendering `tupleKey` would produce (items 843/847/848), so
+     * the dedup classes are unchanged. A SEPARATE container because a raw `5` and `LocalDate(5)`
+     * would otherwise collide in `seen` — the same reason item 850 gave for the TS GQL executor's
+     * third container.
+     *
+     * FINITE only: `tupleKey` renders a non-finite field the way `JSON.stringify` does, so
+     * `LocalDate(NaN)` and `LocalDate(Infinity)` are ONE key there and two under a raw `days`. Item
+     * 850 pinned that collapse rather than "improving" it inside a speedup, and this keeps the same
+     * decision.
+     */
+    // ⚠️ THIS BRANCH IS A PERFORMANCE DECISION AND ITS MUTANT MUST SURVIVE (item 1869's run
+    // confirms it does). Deleting it sends dates down the composite path, which keys them
+    // STRUCTURALLY and therefore dedupes them into the same classes — the same answer, item 857's
+    // measured 2.0x slower. An answer test cannot see it, so the guard is the benchmark's, not the
+    // suite's; recorded here rather than left as an unexplained survivor (item 475).
+    if (v instanceof LocalDate && Number.isFinite(v.days)) {
+      seenDates ??= new Set();
+
+      if (seenDates.has(v.days)) {
+        return false;
+      }
+
+      seenDates.add(v.days);
+
+      return true;
+    }
+
+    // Item 1017: every other raw-keyable temporal kind, by the fields `@lenke/core` names rather
+    // than by a `tupleKey` string plus a `WeakSet` insert that can never hit (each vertex carries
+    // its own temporal object — item 857's finding for dates, which is true of every kind).
+    // Measured on the TS Gremlin dedup at 200,000 rows / 1,000 distinct values: `datetime` 64.0 ms,
+    // `localtime` 55.8, `zoned` 74.7 against a raw-keyed `date`'s 12.3 and a plain number's 12.9.
+    //
+    // The separation between kinds comes from `temporalKeyFields`' leading kind rank, not from a
+    // container per kind — see its doc for the collision that makes it necessary.
+    if (isTemporal(v) && !(v instanceof LocalDate)) {
+      const fields = temporalKeyFields(v);
+
+      if (fields !== undefined) {
+        seenTemporals ??= new Map();
+
+        return temporalKeyAdd(seenTemporals, fields);
+      }
+    }
+
+    const proto =
+      v !== null && typeof v === 'object' ? (Object.getPrototypeOf(v) as unknown) : false;
+    const isComposite =
+      Array.isArray(v) || proto === Object.prototype || proto === null || isTemporal(v);
+
+    if (isComposite) {
+      const ref = v as object;
+
+      seenRefs ??= new WeakSet();
+
+      if (seenRefs.has(ref)) {
+        return false; // same reference already processed → duplicate, no re-key
+      }
+
+      seenRefs.add(ref);
+
+      const k = tupleKey([v]);
+
+      seenComposite ??= new Set();
+
+      if (seenComposite.has(k)) {
+        return false;
+      }
+
+      seenComposite.add(k);
+
+      return true;
+    }
+
+    if (seen.has(v)) {
+      return false;
+    }
+
+    seen.add(v);
+
+    return true;
+  };
 };
