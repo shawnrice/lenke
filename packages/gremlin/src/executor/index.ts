@@ -43,7 +43,14 @@ import {
 } from './node-values.js';
 import { groupCountShortcut, tallyProjectedGroupCount } from './projection.js';
 import type { RunContext } from './runtime.js';
-import { newContext, planReadsPath, startTraverser, type Traverser, unwrap } from './runtime.js';
+import {
+  keyToBy,
+  newContext,
+  planReadsPath,
+  startTraverser,
+  type Traverser,
+  unwrap,
+} from './runtime.js';
 import { applySource } from './sources.js';
 import { startFilteredHopValues } from './start-filtered-hop-values.js';
 
@@ -2178,7 +2185,15 @@ const assertPlanIsSatisfiable = (plan: Plan): void => {
  * not a bare property (or more than one of them) groups by something this swap would not reproduce,
  * so it declines rather than guessing.
  */
-const asGroupCountByKey = (plan: Plan): { plan: Plan } | undefined => {
+/**
+ * ⚠️ EXPORTED FOR ITS OWN TEST, like `dropUnreadPathVar` on the GQL side — a route choice is
+ * ANSWER-EQUIVALENT, so no value test can see it. Item 1856's four gate mutants all SURVIVED the
+ * answer tests for exactly that reason: rejecting the modulator spelling, admitting a non-`key`
+ * by, admitting an ambiguous plan and admitting a multi-`by` all leave the answers alone and
+ * change only which route runs. The gate is therefore tested as a FUNCTION, on the plans it is
+ * meant to claim and refuse.
+ */
+export const asGroupCountByKey = (plan: Plan): { plan: Plan } | undefined => {
   const last = plan.steps[plan.steps.length - 1];
 
   if (last?.kind !== 'groupCount') {
@@ -2186,9 +2201,36 @@ const asGroupCountByKey = (plan: Plan): { plan: Plan } | undefined => {
   }
 
   const bys = last.bys ?? [];
-  const key = last.by ?? (bys.length === 1 && typeof bys[0] === 'string' ? bys[0] : undefined);
 
-  if (key === undefined || (last.by !== undefined && bys.length > 0)) {
+  // An ambiguous plan carrying BOTH spellings, or more than one `by`, is refused outright rather
+  // than reasoned about.
+  if ((last.by !== undefined && bys.length > 0) || bys.length > 1) {
+    return undefined;
+  }
+
+  /**
+   * ⚠️ THE SAME DERIVATION `dispatch` AND `groupCountShortcut` USE — and it was NOT, until item
+   * 1856. This read `typeof bys[0] === 'string'`, but `.by('k')` builds `{ kind: 'key', key: 'k' }`
+   * while `groupCount({ by: 'k' })` sets the legacy `by` field, so the modulator spelling never
+   * matched and the whole fused hop chain declined for it:
+   *
+   *     V().out(E).groupCount({by:k})          13.96 ms      V().out(E).groupCount().by(k)    41.15
+   *     V().out(E).out(E).groupCount({by:k})   14.69 ms      …out(E).out(E).groupCount().by(k) 281.59
+   *
+   * **2.9x at one hop and 19.2x at two, for the SAME SEVEN GROUPS** — the defect class CLAUDE.md
+   * opens with, where the planner recognises one spelling of a predicate and scans for another
+   * that means exactly the same thing. `keyToBy` is the shared derivation, so the two spellings
+   * cannot drift apart again.
+   *
+   * ⚠️ THE MAP ORDER WAS CHECKED FIRST, because a `groupCount` returns a Map and its iteration
+   * order IS part of the answer (item 1834). Both spellings already produced the same order at
+   * every width, so routing the modulator through the fused walk preserves its answer exactly
+   * rather than merely producing the same groups.
+   */
+  const by = bys[0] ?? keyToBy(last.by);
+  const key = by.kind === 'key' ? by.key : undefined;
+
+  if (key === undefined) {
     return undefined;
   }
 

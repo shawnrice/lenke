@@ -52,6 +52,7 @@ import {
   hasKey,
   hasLabel,
   hasNot,
+  groupCount,
   in_,
   inE,
   inV,
@@ -217,6 +218,30 @@ const GROUPS: readonly Group[] = [
   //
   // The size disparity is the point of the second pair: `Univ` is every vertex and `Mgr` every
   // third, so an unsorted walk pays 3x more one way round than the other.
+  /**
+   * ⚠️ THE `groupCount` BY-SPELLINGS (item 1856), and this group is the one that would have caught
+   * the defect it was added for. `groupCount({ by: 'k' })` sets a legacy `by` field while
+   * `.by('k')` builds a `{ kind: 'key' }` modulator, and `asGroupCountByKey` tested only for a
+   * raw string — so the modulator spelling fell off the fused hop chain entirely: **2.9x at one
+   * hop and 19.2x at two**, for the same seven groups.
+   *
+   * Both widths are here because the gap GREW with depth: a group at one hop alone would have
+   * flagged 2.9x, which is inside the noise some rows here carry.
+   */
+  [
+    'groupCount by-spelling, one hop: {by: k} vs .by(k)',
+    [
+      traversal(V(), out('T'), groupCount({ by: 'k' })),
+      traversal(V(), out('T'), groupCount().by('k')),
+    ],
+  ],
+  [
+    'groupCount by-spelling, two hops: {by: k} vs .by(k)',
+    [
+      traversal(V(), out('T'), out('T'), groupCount({ by: 'k' })),
+      traversal(V(), out('T'), out('T'), groupCount().by('k')),
+    ],
+  ],
   [
     'label disjunction order: (Person, Mgr) vs (Mgr, Person)',
     [

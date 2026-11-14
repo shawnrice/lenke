@@ -219,6 +219,37 @@ absence** — `{k: null}` is the one place in a pattern where that distinction i
 
 ## 5. Open — unblocked and priced
 
+- ~~**The two `groupCount` BY-SPELLINGS cost up to 19.2x apart**~~ - **CLOSED by item 1856**, at
+  **2.25x** (one hop), **19.86x** (two) and **15.00x** (three). CLAUDE.md's opening defect class:
+  the planner recognised one spelling and scanned for another that means exactly the same thing.
+  `groupCount({ by: 'k' })` sets a legacy `by` field while `.by('k')` builds a
+  `{ kind: 'key', key: 'k' }` modulator, and `asGroupCountByKey` tested `typeof bys[0] ===
+'string'` — so the modulator spelling never matched and the fused hop chain declined for it,
+  **for the same seven groups**. `keyToBy` is now the shared derivation, the same one `dispatch`
+  and `groupCountShortcut` already used.
+  **The convergence is the claim, not the ratio:** modulator POST 19.07 ms against the config
+  spelling's 19.37 at one hop, 13.66 against 13.81 at two — and the config spelling, which already
+  took the fused walk, measured 1.01x and 1.00x, i.e. unmoved.
+  **The Map ORDER was checked before the route changed.** `groupCount` returns a Map whose
+  iteration order is part of its answer (item 1834), and both spellings already produced the same
+  order at every width — so routing the modulator through the fused walk preserves its answer
+  rather than merely producing the same groups.
+  Two permanent groups added to `gremlin-spelling-probe.ts`, at one hop AND two: the gap GREW with
+  depth, and a one-hop group alone would have flagged 2.9x, which is inside the noise some rows
+  there carry.
+  ⚠️ **4 mutants, and ALL FOUR survived the answer tests — correctly.** The whole change is a ROUTE
+  choice, so the general pipeline computes the same Map and no value test can see it
+  (`perf-gate-needs-its-own-test`). `asGroupCountByKey` is therefore EXPORTED FOR ITS OWN TEST, as
+  `dropUnreadPathVar` is on the GQL side, and tested as a function on the plans it must claim and
+  refuse. With that, 4 of 4 caught.
+  ⚠️ **TWO INSTRUMENT FAILURES, both silent, both of the same shape.** The spelling-probe groups
+  first used an edge label the fixture does not carry, so both arms answered an EMPTY Map and
+  converged trivially — a vacuous group that would have passed whatever the routes did. And the
+  mutation runner's test-path replacement missed its target (`fmt` had split the array across
+  lines), so it executed the PREVIOUS item's test files and reported four survivors while testing
+  something else. **A runner that tests the wrong thing says "survived" in exactly the same words
+  as one that tests the right thing and finds a hole.**
+
 - ~~**A DEDUPED count past one hop fell to the traverser pipeline**~~ - **CLOSED by item 1855**, at
   **5.55x** (2 hops), **12.53x** (3) and **36.24x** (4) — the win GROWS with depth, which is what a
   set expansion predicts against path enumeration. Gremlin side.
