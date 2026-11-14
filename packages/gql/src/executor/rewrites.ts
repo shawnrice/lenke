@@ -1435,6 +1435,130 @@ const unoptionalizeForAggregate = (clauses: readonly Clause[]): readonly Clause[
 // with the fold disabled. Measured, not assumed — with the fold turned off, five of six route
 // twins still passed and only the projection twin failed. The rewrite has to be asserted as a
 // rewrite: the label lands on the node and the `WHERE` is gone.
+/**
+ * `MATCH (a)-[:E]->(b), (b)-[:E]->(c)` IS A CHAIN, AND USED TO COST 9.1x ONE — item 1844.
+ *
+ * A comma-separated pattern whose start is a variable the PREVIOUS pattern already ends on is not
+ * a product at all: it is the same walk, spelled with a comma. The engine had no way to see that,
+ * so the two patterns went to the general multi-pattern path (a product, then a join) while the
+ * arrow spelling took the chain rung. Same answer, 49.4 ms against 5.4 ms on 1,500 vertices —
+ * CLAUDE.md's "equivalent spellings must cost the same", in the shape that rule was written for.
+ *
+ * Splicing is a pure AST transform: the two patterns become one, every node and edge variable
+ * keeps its name, and every downstream rewrite and all twenty-odd rungs then see a chain. That is
+ * why it runs FIRST in `compileLinear`'s pipeline rather than last.
+ *
+ * ⚠️ A REPEATED VARIABLE IS ADMITTED, and that was checked rather than assumed. Splicing
+ * `(a)-[:E]->(b), (b)-[:E]->(a)` produces `(a)-[:E]->(b)-[:E]->(a)`, where the final node names an
+ * ALREADY-BOUND variable — sound only if the chain matcher CONSTRAINS to the existing binding
+ * instead of rebinding over it. Measured on a 2-cycle: both spellings return the same two rows.
+ * `splice-chained-patterns.test.ts` pins it, because a matcher that started rebinding would turn
+ * this rewrite into a wrong answer with no other symptom.
+ *
+ * ⚠️ A QUANTIFIED SEGMENT IS REFUSED, AND I COULD NOT PROVE THE REFUSAL IS NECESSARY. The reason
+ * to suspect it: the default path mode is `trail` (no repeated edge WITHIN a path), so two
+ * patterns carry two restrictors while a merged pattern carries one across the whole walk, which
+ * could drop rows the comma spelling keeps. The reason it is only a SUSPICION: a mutant that
+ * admits quantified segments SURVIVES the test file, and a hand-built 2-cycle fixture designed to
+ * make the two restrictors disagree returned the same rows either way.
+ *
+ * So this is conservatism, recorded as conservatism rather than dressed up as a correctness
+ * condition. Lifting it is a real (small) extension with a real question attached — what ISO says
+ * about merging two path patterns' restrictors — and that question is not answered here. Anyone
+ * widening it needs a discriminating fixture FIRST; without one the mutant stays invisible.
+ *
+ * ⚠️ AND SO ARE `pathVar`, `selector` AND `mode`. A path variable would have to bind the merged
+ * path rather than either original; a selector (`ANY SHORTEST`) and an explicit mode both scope to
+ * one path pattern. None can survive a merge, so a pattern carrying any of them ends the splice.
+ */
+const quantified = (p: PathPattern): boolean =>
+  p.segments.some((s) => s.rel.quantifier !== undefined);
+
+/**
+ * Nothing scoped to a single path pattern, so two of them may become one.
+ *
+ * ⚠️ THE DEFAULTS ARE SPELLED OUT BY THE PARSER, NOT LEFT `undefined`, and the first version of
+ * this rewrite tested for `undefined` and therefore never fired once — the measurement was flat
+ * and looked like a null result. `parse` sets `selector: 'walk'` and `mode: 'trail'` on every
+ * pattern, so those two VALUES are what "no selector, default mode" looks like in the AST.
+ *
+ * `trail` is safe to merge across only because `quantified` is refused above: on fixed-length
+ * segments this engine does not enforce it at all (a chain over a self-loop returns the
+ * repeated-edge path), so two trail patterns and one merged trail pattern agree.
+ */
+const spliceable = (p: PathPattern): boolean =>
+  p.pathVar === undefined &&
+  (p.selector === undefined || p.selector === 'walk') &&
+  (p.mode === undefined || p.mode === 'trail') &&
+  !quantified(p);
+
+/** The variable the pattern ENDS on, or `undefined` when its last node is unnamed. */
+const lastNodeVar = (p: PathPattern): string | undefined =>
+  p.segments.length === 0 ? p.start.variable : p.segments[p.segments.length - 1].node.variable;
+
+/**
+ * A BARE back-reference: a variable and nothing else. A label, an inline property or a node
+ * `WHERE` on the joining node would have to be merged onto the previous pattern's end node, and a
+ * rewrite that silently dropped one would be a wrong answer — so those simply do not splice.
+ */
+const bareBackReference = (n: NodePattern): boolean =>
+  n.variable !== undefined &&
+  n.label === undefined &&
+  (n.properties === undefined || n.properties.length === 0) &&
+  n.where === undefined;
+
+const spliceOnce = (patterns: readonly PathPattern[]): readonly PathPattern[] | null => {
+  for (let i = 0; i + 1 < patterns.length; i += 1) {
+    const left = patterns[i];
+    const right = patterns[i + 1];
+    const joinOn = lastNodeVar(left);
+
+    if (
+      joinOn === undefined ||
+      right.segments.length === 0 ||
+      !spliceable(left) ||
+      !spliceable(right) ||
+      !bareBackReference(right.start) ||
+      right.start.variable !== joinOn
+    ) {
+      continue;
+    }
+
+    const merged: PathPattern = { ...left, segments: [...left.segments, ...right.segments] };
+
+    return [...patterns.slice(0, i), merged, ...patterns.slice(i + 2)];
+  }
+
+  return null;
+};
+
+export const spliceChainedPatterns = (clauses: readonly Clause[]): readonly Clause[] => {
+  const splicable = clauses.some(
+    (clause) => clause?.kind === 'match' && clause.patterns.length > 1,
+  );
+
+  if (!splicable) {
+    return clauses;
+  }
+
+  return clauses.map((clause) => {
+    if (clause?.kind !== 'match' || clause.patterns.length < 2) {
+      return clause;
+    }
+
+    let { patterns } = clause;
+    let next = spliceOnce(patterns);
+
+    // To a fixpoint: three comma patterns forming one chain collapse in two passes.
+    while (next !== null) {
+      patterns = next;
+      next = spliceOnce(patterns);
+    }
+
+    return patterns === clause.patterns ? clause : ({ ...clause, patterns } satisfies MatchClause);
+  });
+};
+
 export const foldLabelTestsIntoPatterns = (clauses: readonly Clause[]): readonly Clause[] => {
   // `optional` is excluded, and it is the one exclusion that is about a question rather than a
   // mechanism: moving a filter into an OPTIONAL pattern changes which rows are PRESERVED with
@@ -2061,7 +2185,9 @@ export const compileLinear = (linear: LinearQuery): CLinear => {
                       // expect.
                       dropUnreadEdgeVar(
                         dropVacuousPage(
-                          dropVacuousQuantifier(foldLabelTestsIntoPatterns(linear.clauses)),
+                          dropVacuousQuantifier(
+                            foldLabelTestsIntoPatterns(spliceChainedPatterns(linear.clauses)),
+                          ),
                         ),
                       ),
                     ),

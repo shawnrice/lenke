@@ -162,6 +162,43 @@ absence** — `{k: null}` is the one place in a pattern where that distinction i
 
 ## 5. Open — unblocked and priced
 
+- ~~**A comma pattern that CONTINUES the previous one went to the product path**~~ — **CLOSED by
+  item 1844** (2026-11-14), at **9.83x** and converging on the spelling it is equivalent to.
+  `MATCH (a)-[:E]->(b), (b)-[:E]->(c)` is the same walk as `(a)-[:E]->(b)-[:E]->(c)` — a comma, not
+  a product — but nothing recognized that, so it took the general multi-pattern path at 44.0 ms
+  while the arrow spelling took the chain rung at 4.8 ms. `spliceChainedPatterns` merges the two
+  patterns in the AST and runs FIRST in `compileLinear`'s pipeline, so every downstream rewrite and
+  all twenty-odd rungs then see one chain. POST lands at **4.5 ms against the arrow twin's 4.6**,
+  which is the real claim — not "faster" but "the two spellings now cost the same". CLAUDE.md's
+  equivalent-spellings rule, in the shape it was written for.
+  It COMPOUNDS, because the spliced shape reaches rungs the comma form never could: **26.77x** with
+  a `RETURN DISTINCT` (item 1843's fusion) and **54.26x** with `count(*)` (the count shortcut).
+  Three comma patterns collapse in two passes: **8.38x**. A true product — two patterns sharing no
+  variable — is refused and measured flat (0.98x), as is the arrow twin (1.06x).
+  **Refusals, each a correctness condition except one:** a `pathVar` (it would bind the merged path
+  rather than either original), a non-default `selector` or `mode`, and a joining node that is not a
+  BARE back-reference (a label, inline property or node `WHERE` there would have to be merged onto
+  the previous pattern's end node, and dropping one is a wrong answer). A REPEATED variable IS
+  admitted — splicing `(a)-[:E]->(b), (b)-[:E]->(a)` names an already-bound variable in the final
+  position, which is sound only because the chain matcher constrains rather than rebinds; measured
+  on a 2-cycle and pinned by a test, since a matcher that started rebinding would turn this rewrite
+  into a wrong answer with no other symptom.
+  ⚠️ **The QUANTIFIED-segment refusal is conservatism and is NOT proven.** The suspicion is that
+  two patterns carry two `trail` restrictors where a merged one carries a single restrictor across
+  the whole walk — but the mutant that admits quantified segments **SURVIVES**, and a 2-cycle
+  fixture built to make the restrictors disagree returned the same rows either way. Recorded as
+  unproven in both directions; widening it needs a discriminating fixture first.
+  5 mutants, **4 caught** (the 5th is the quantifier one above) — and THREE of the four only after
+  their tests were rewritten, each having survived a test that looked right:
+  the "true product" case gave the second pattern a LABELLED start, so it never reached the
+  join-variable check and a mutant merging any bare-started pattern turned a four-row product into
+  **zero rows**; the labelled-joining-node case put `:U` on BOTH patterns, so the left one kept the
+  filter when the right start was discarded; and the path-variable case returned `a.n, c.n`, which
+  cannot observe which pattern `p` bound (`size(edges(p))` can). **And the rewrite's own first
+  version never fired at all** — it tested `selector === undefined`, but `parse` writes
+  `selector: 'walk'` and `mode: 'trail'` explicitly, so the gate rejected every pattern and the
+  measurement read as a clean null.
+
 - ~~**Both `DISTINCT` rungs materialize the undeduped rows before deduping**~~ — **CLOSED by item
   1843** (2026-11-14), at **2.27x** (two segments) and **2.69x** (three). Items 1821/1822 admitted
   `RETURN DISTINCT` to the hop-2 and chain rungs by building every row and calling `distinctRows`
