@@ -84657,3 +84657,102 @@ already had 1,800 items of attention.
 
 GATES. bun run check 0 read unpiped. core 458 pass / 0 fail. gql 4,563 pass / 0 fail.
 native 1,165 pass / 0 fail. bun run fuzz 57 pass / 0 fail.
+
+### Item 1820 — ⚠️ **OPEN, PRICED, AND THE MECHANISM IS PROVEN**: `RETURN DISTINCT` over a three-hop chain costs **5.8x MORE than emitting every one of the 625,000 rows it dedupes**, because `DISTINCT` makes the chain rung DECLINE. Plus a new screen that found it — the realistic-workload corpus had never been timed
+
+WHY A NEW INSTRUMENT AND NOT ANOTHER PROFILE. Items 1818 and 1819 screened 22 shapes for unpriced
+hot frames and came back CLEAN on all of them — two refutations and one 1.36x for the whole pass.
+That is what a surface looks like when every shape anyone suspected has already been profiled.
+⚠️ **The limitation is structural: every perf instrument here measures a query SOMEONE ALREADY
+SUSPECTED.** `runtime-profile-probe.mjs` has 40-odd hand-picked shapes, `isolated-row-bench.mjs` the
+rows one item was arguing about. A screen built from those cannot find a shape nobody thought of.
+
+Item 1817's seventeen workload families are the one list in this repo of "queries a user would
+actually write" that was assembled for a CORRECTNESS reason — each asserted to parse, match rows and
+agree across engines — so it is the one corpus a cost screen cannot be circular about. **It had
+never been timed.** `workload-perf-screen.mjs` times it, at a size the fuzzer never runs it at
+(the fuzzer's fixture is six vertices, where everything is free), over a graph built on the SAME
+schema and the SAME value domain so every family's literals stay selective.
+
+⚠️ **THE SCREEN TOOK THREE ATTEMPTS AND BOTH FAILURES ARE RECORDED IN IT**, because each made it
+useless rather than wrong:
+
+1. At 20,000 vertices it hit `timeout 600` and printed **NOTHING** — exit 124, every family's row
+   still buffered behind one report at the end. A screen whose output is one block cannot localize
+   a hang, which is the thing it most needs to do. Families now print as they finish.
+2. With every family in one process it died at **exit 137**, the cgroup OOM kill, on the family
+   after `in-list` — taking the seven already-measured families with it. A comma join over
+   `(a:T), (b:T)` materializes 25,000,000 rows at 5,000 vertices, so that family is SUPPOSED to
+   die. ⚠️ **No `try/catch` can fix it**: an OOM kill and a timeout arrive as a SIGNAL, not a
+   JavaScript exception, so the only way to survive one is for the measurement to be in a process
+   you are willing to lose. One child per family now, which also buys item 762's one-shape-per-
+   process rule.
+
+THE SCREEN, 5,000 vertices / 25,000 edges, 100 queries a family, median of 3 rounds:
+
+```text
+  family              ns/query     ns/row        rows  empty%   flag
+  chain-rows       1015903601       1787    10232500       6    OVER BUDGET, 18/100 queries
+  distinct          110129948   14414915         764       0
+  var-length         95991346   17272248         571       0
+  optional           17340379       1279     1356250       0
+  grouped            12879198    1839885         700       0
+  edge-filter        10471406       1766      592966       7
+  existence           2416213        738      327500      22
+  projection          2023675        326      620028       0
+  neighbors           1620063        532      304485      17
+  temporal-range       957828        152      628750      15
+  range-scan           679148        554      122594      30
+  aggregate            590489     590489         100       0
+  union                560154         77      725236       0
+  point-lookup         439433        730       60205      59    59% empty
+  in-list              305137        149      204375       0
+  string-lookup        154652         88      175000       0
+  multi-pattern               NOT MEASURABLE AT THIS SIZE — KILLED BY SIGTERM
+```
+
+⚠️ **AND THE OBVIOUS READING OF THAT TABLE IS WRONG, WHICH IS WHY THE FILE SAYS SO TWICE.** `ns/row`
+is NOT comparable across families — an aggregate does O(N) work and returns one row, so it always
+looks catastrophic per row and that means nothing. `distinct` and `var-length` top the list because
+their bodies include a THREE-HOP chain, which is 625,000 paths at this size: the ranking is mostly
+how much work each shape IMPLIES. A nomination needs its own floor before it is a finding, and
+`empty%` must be read first, because a family whose queries stopped matching at scale would be the
+"fastest" row on the screen.
+
+✅ **AND ONE NOMINATION SURVIVED ITS FLOOR, BADLY.** `distinct` priced against the two queries it
+should sit between, median of 6 at 5,000 vertices:
+
+```text
+  hop3 RETURN DISTINCT d.n      418.6 ms        8 rows
+  hop3 RETURN d.n (raw rows)     72.2 ms  625,000 rows      <- the FLOOR
+  hop3 RETURN count(*)            0.7 ms        1 row
+  hop1 RETURN DISTINCT b.n        1.0 ms        8 rows
+  hop1 RETURN b.n                 0.7 ms   25,000 rows
+```
+
+**Deduping to 8 rows costs 5.8x MORE than emitting all 625,000 rows undeduped.** That is backwards
+on its face — a dedupe should be the raw walk plus a hash — and the one-hop pair shows it is not a
+`DISTINCT` cost as such (1.4x there).
+
+⚠️ **MECHANISM PROVEN BY DELETION, NOT BY READING THE GATE** (item 1817's rule, and the first cut of
+this test got it wrong). A `throw` at `detectChainProjection`'s ENTRY threw for raw rows, `DISTINCT`
+and `ORDER BY` alike — because a detector being CALLED is not the detector ADMITTING, and that test
+proves nothing. Moved to the admission point, immediately before the `sweep`/`walk` return:
+
+```text
+  hop3 RETURN d.n           ADMITTED=YES — the rung serves this
+  hop3 RETURN DISTINCT d.n  ADMITTED=NO  — declines to the general matcher
+```
+
+So `DISTINCT` disqualifies the chain rung items 1814/1816 built, and the query falls to the general
+matcher at ~670 ns a path against the rung's 116. This is `rung-precedence-decides-speed` again, and
+the third time a modifier on the RETURN has silently cost this rung its route — `ORDER BY` was item
+1817's, `count(*)` was item 1816's.
+
+**NOT BUILT HERE, DELIBERATELY.** Admitting `DISTINCT` is not a one-line gate change: dedupe keys
+over multiple columns, null handling, and the interaction with the `ORDER BY` branch all need
+settling, plus the rung's own tests and a mutation pass. Priced and left open with the floor it has
+to beat: **418.6 ms against a 72.2 ms raw-row floor, so a correct admission should land near 75 ms.**
+
+GATES. bun run check 0 read unpiped. No engine code changed; the rung was restored from its
+pristine copy and the dist rebuilt with 0 markers in src and dist.
