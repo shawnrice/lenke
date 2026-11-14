@@ -9,6 +9,14 @@ import { describe, expect, test } from 'bun:test';
  * vertices), and the gap grows with degree because one side sums squares and the other enumerates
  * pairs.
  *
+ * ⚠️⚠️ **ITEM 1864 SHADOWED THE START-START SHAPE, AND THIS FILE SAYS SO RATHER THAN QUIETLY
+ * PASSING.** That item splices `(a)-[:E]->(b), (a)-[:E]->(c)` into the single pattern
+ * `(b)<-[:E]-(a)-[:E]->(c)` BEFORE any rung is offered the clause list, so the start-start cases
+ * below now take the CHAIN count rung and never reach `keyedCountOf` at all — their
+ * `takesTheRung` assertions still pass, for a different reason than they were written for. The
+ * MIXED case is what still uniquely exercises this item's widening, because the splice declines it
+ * (the two patterns start on different variables). Keep the mixed case if these are ever pruned.
+ *
  * ⚠️ **A RING FIXTURE CANNOT CHECK THIS, which `keyedCountOf`'s own doc says in terms**: with every
  * degree 1, `SUM d^2`, `SUM d` and the edge count all coincide, so a wrong formula agrees with a
  * right one. The fixture below is a STAR with uneven out-degrees (3, 2, 1, 0) whose squares

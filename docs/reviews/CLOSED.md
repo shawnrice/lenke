@@ -86687,8 +86687,11 @@ nothing.
 
 🔭 **TWO NOMINATIONS FOR THE NEXT PASS, both found by these two instruments rather than by a profile.**
 
-1. **`multi-pattern` is 18.7 s of a 20.7 s screen — 97% of it — at 1376 ns/row against
-   `chain-rows`' 138.** The row COUNT is the genuine product and is not reducible, but a **10x
+1. ~~**`multi-pattern` is 18.7 s of a 20.7 s screen — 97% of it — at 1376 ns/row against
+   `chain-rows`' 138.**~~ ❌ **CLOSED at item 1864 as NOT ADDRESSABLE at the family level**: the
+   family's time is body #4, a genuine cross product emitting 13.6M rows whose count IS its answer.
+   The fork body inside it was fixed (4.3-5.1x) and the family's row did not move — 18,639 ms
+   against 18,679. The row COUNT is the genuine product and is not reducible, but a **10x
    per-row gap on the same kind of row production** is a separate question from the product, and it
    has not been asked.
 
@@ -86929,7 +86932,15 @@ the two numbers and the mechanism are this item's deliverable, and the rung is t
 
 GATES. bun run check 0 read unpiped.
 
-## Item 1863 — SHIPPED: the shared-variable count answered one orientation in closed form and sent its MIRROR to the general matcher, 25.7-37.9x; and three of my own mutants survived against a fixture where wrong formulas coincided with right ones
+## Item 1863 — SHIPPED: the shared-variable count answered one orientation in closed form and sent its MIRROR to the general matcher, ~~25.7-37.9x~~ **on the MIXED orientation only — the start-start shape was SHADOWED by item 1864 the next tick**; and three of my own mutants survived against a fixture where wrong formulas coincided with right ones
+
+⚠️⚠️ **READ THIS BEFORE QUOTING THE NUMBER BELOW.** Item 1864 splices a forked pair into a single
+reversed-chain pattern BEFORE any rung sees the clause list, so `(a)-[:E]->(b), (a)-[:E]->(c)` — the
+shape the 25.7-37.9x was measured on — now takes the CHAIN count rung and is **faster still (0.9 ms
+-> 0.3)**. This item's widening is NOT dead: the MIXED orientation (`(a)-[:E]->(b), (c)-[:E]->(a)`)
+and the original end-end in-star both decline the splice and are still answered here. But the
+headline shape moved, and two consecutive items of my own overlapping is exactly what a stale
+heading hides.
 
 Item 1862 scoped this as "build a fused fork rung". **Reading `count-shortcut.ts` first is what made it
 a six-line change instead**: `keyedCountOf` already computes the shared-variable count as a sum of
@@ -87008,3 +87019,90 @@ the two sides. **This win does not move the workload screen's `multi-pattern` ro
 GATES. bun run check 0 read unpiped; gql 4710 tests green; all seven byte-identity fuzzers green
 (the differential fuzzer draws `multi-pattern=1133/1018`, so the new route is exercised against the
 Rust engine rather than only against itself).
+
+## Item 1864 — SHIPPED: a FORK is a chain with its first leg reversed, 4.3-5.1x on rows and a further 3x on the count; one rewrite instead of a twenty-first rung, and it shadows my own previous item
+
+Item 1862 left the ROW half of the fork open and item 1863 scoped a new fused rung for it. **Neither
+was needed.** Every projection rung requires `patterns.length === 1`, so the fork reached none of
+them — but a fork IS a single pattern, written differently:
+
+      MATCH (a:T)-[:E]->(b:T), (a)-[:E]->(c:T)    35.0 ms   the general matcher
+      MATCH (b:T)<-[:E]-(a:T)-[:E]->(c:T)          4.9 ms   the chain rung
+      MATCH (a:T)-[:E]->(b:T)-[:E]->(c:T)          3.8 ms   (the forward control)
+
+**7.1x between two spellings of one question**, which is the rule CLAUDE.md opens with. Reversing
+the left leg inside `spliceChainedPatterns` makes the fork inherit twenty rungs instead of adding a
+twenty-first — item 1844's own move, one shape over.
+
+✅ **MEASURED, two instruments agreeing on the direction and differing on the size as they should:**
+
+      instrument                        PRE      POST     ratio
+      reversed-chain-route (N=3200)    35.0 ms   6.8 ms   5.1x
+      fork-join-scaling  (N=3200)      27.2      6.3      4.3x
+      fork COUNT (already 25.7x at 1863)  0.9     0.3      3.0x further
+
+`forkRows` is now within **1.6x** of its chain twin (6.3 against 3.9), down from 6.8x. Controls flat:
+`chainRows` 3.8 -> 3.9, `product` 0.0 throughout.
+
+⚠️⚠️ **THE EQUIVALENCE TURNS ON THE DIAGONAL, AND THAT EXPERIMENT RAN BEFORE ANY CODE WAS WRITTEN.**
+In the comma form the two patterns are independent, so the two legs may be the SAME EDGE — an `a`
+with ONE out-edge still matches once, `b` and `c` both bound to that target. A single path pattern
+carries `mode: 'trail'`, and had this engine enforced it on fixed-length segments the rewrite would
+have silently dropped rows. It does not: on one, two and three out-edges the spellings return 1/1,
+4/4 and 9/9, and the row MULTISETS agree. Had that come out the other way the whole design was dead,
+which is why it was the first thing asked rather than a test written afterwards to confirm a hope.
+
+⚠️ **AND IT SHADOWS ITEM 1863, WHICH I SHIPPED THE PREVIOUS TICK.** The splice runs first in
+`compileLinear`'s pipeline, so the start-start fork never reaches `keyedCountOf` any more. That
+item is not dead — the MIXED orientation (`(a)-[:E]->(b), (c)-[:E]->(a)`) and the original end-end
+in-star both decline the splice and are still answered there, verified by printing the spliced
+pattern count for all three shapes (1, 2, 2). But its HEADLINE shape moved, its heading is corrected
+in this commit, and its test file now records that its start-start route assertions pass for a
+different reason than they were written for. **Two consecutive items of my own overlapping is
+exactly what a stale heading hides**, which is why the rule is to edit the earlier heading rather
+than only to write a new entry.
+
+**6 of 6 MUTANTS CAUGHT**, including the null control (the splice never fires), which dies on the
+AST-shape assertions while surviving every answer test — the reason this rewrite is asserted as a
+REWRITE and not through a route. Item 1844's note says why: `countShortcut` fires for both
+spellings, so "which detector fired" is identical either way.
+
+      direction NOT flipped                       CAUGHT
+      start and far node NOT swapped              CAUGHT
+      a multi-segment left leg ADMITTED           CAUGHT
+      fork taken without a shared start variable  CAUGHT
+      an UNDIRECTED leg admitted                  CAUGHT
+      CONTROL - the fork splice never fires       CAUGHT
+
+⚠️ **ONE GATE CAME OUT BECAUSE ITS MUTANT SURVIVED AND THE REASON WAS REDUNDANCY, NOT A WEAK TEST.**
+An explicit `left.start.variable !== joinOn` is strictly implied inside `right.start.variable !==
+joinOn` once the fork test holds, so `(a)-[:E]->(a)` takes the chain branch and never reaches the
+fork one. Removed per item 1016's rule, with the replacement mutant testing the half that is live.
+
+**REFUSALS, both recorded as conservatism rather than dressed up as correctness**: a multi-segment
+left leg (reversing one is mechanical — reverse, flip, shift — but it is not what was measured), and
+an UNDIRECTED leg (`both` reversed is `both`, which looks free; `undirectedSide` counts a self-loop
+in both buckets and item 1097 fixed a half-answer bug there, so it needs its own discriminating
+fixture rather than an argument from symmetry).
+
+❌ **AND THE WORKLOAD SCREEN DID NOT MOVE — MEASURED, NOT ASSUMED, AND IT CLOSES ITEM 1859'S OTHER
+NOMINATION.** The screen's fork body carries `WHERE b.n <> c.n`; the splice rewrites PATTERNS and
+does not care about a clause `WHERE`, so that body does now splice to one pattern (verified
+directly). The family's row is unchanged anyway: **18,639 ms against 18,679 before.**
+
+The reason is the family's composition, which item 1862 already laid out and which this now
+confirms with a number. `multi-pattern` draws from four bodies, and the 4-of-60 queries that blow
+the 15-second budget are body #4 — `(a)-[:E]->(b), (c)-[:F]->(d)`, a GENUINE cross product emitting
+13.6M rows. Its row count IS its answer, so nothing can reduce it, and it swamps the fork body's
+share of the family.
+
+**So item 1859's nomination #1 — "multi-pattern at 1376 ns/row against chain-rows' 138" — is CLOSED
+as not addressable at the family level.** The per-row figure is a genuine product's binding cost,
+not a missing rung. What remains underneath it is the general matcher's per-row `Map`
+(`withBinding` + `mapToArray`, ~18% of the fork profile), which is a much larger and riskier piece
+of work than a rewrite — and `pull-alignment-is-load-bearing` and `executor-edits-perturb` both
+price edits in that area in UNRELATED regressions.
+
+GATES. bun run check 0 read unpiped; gql 4721 tests green; all seven byte-identity fuzzers green
+(the differential fuzzer draws `multi-pattern` ~1,100 plans a run, so the rewrite is exercised
+against the Rust engine rather than only against itself).

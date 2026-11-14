@@ -1509,6 +1509,68 @@ const bareBackReference = (n: NodePattern): boolean =>
   (n.properties === undefined || n.properties.length === 0) &&
   n.where === undefined;
 
+/**
+ * `MATCH (a)-[:E]->(b), (a)-[:E]->(c)` IS A CHAIN WITH ITS FIRST LEG REVERSED — item 1864.
+ *
+ * The splice above joins where the right pattern STARTS on the variable the left pattern ENDS on.
+ * The other way two patterns can share a variable is for both to START on it — a FORK — and that
+ * shape reached no rung at all, because every projection rung requires `patterns.length === 1`:
+ *
+ *     MATCH (a:T)-[:E]->(b:T), (a)-[:E]->(c:T)   35.0 ms   the general matcher
+ *     MATCH (b:T)<-[:E]-(a:T)-[:E]->(c:T)         4.9 ms   the chain rung
+ *     MATCH (a:T)-[:E]->(b:T)-[:E]->(c:T)         3.8 ms   (the forward control)
+ *
+ * **7.1x between two spellings of one question**, which is the rule CLAUDE.md opens with. Reversing
+ * the left leg turns the fork into a single path, so it inherits the twenty rungs rather than
+ * needing a twenty-first.
+ *
+ * ⚠️ THE EQUIVALENCE TURNS ON THE DIAGONAL, AND IT WAS MEASURED BEFORE THIS WAS WRITTEN. In the
+ * comma form the two patterns are independent, so an `a` with ONE out-edge still matches once with
+ * `b` and `c` both bound to that edge's target — the two legs may be the SAME EDGE. Had the single
+ * path spelling refused a repeated edge (its mode is `trail`), this rewrite would drop rows. On
+ * one, two and three out-edges the two spellings return 1/1, 4/4 and 9/9, and the row MULTISETS
+ * agree — `fork-as-reversed-chain-1864.mjs` is that experiment, and it ran first.
+ *
+ * ⚠️ ONE SEGMENT ON THE LEFT ONLY. Reversing a k-segment leg is mechanical — reverse the order,
+ * flip each direction, shift the nodes — but it is not what the measurement covered, and the
+ * shape that pays is the one-hop fork. Conservatism recorded as conservatism, per the note above.
+ *
+ * ⚠️ AND AN UNDIRECTED LEG IS REFUSED. `both` reversed is `both`, so it looks like a free case;
+ * the reason it is not taken is that `undirectedSide` counts a self-loop in both buckets and item
+ * 1097 fixed a half-answer bug there, so an undirected leg under reversal needs its own
+ * discriminating fixture rather than an argument from symmetry.
+ */
+const REVERSED: Record<string, 'out' | 'in' | 'both'> = { out: 'in', in: 'out' };
+
+/** The left leg of a fork, reversed, so `(a)-[:E]->(b)` becomes the head of `(b)<-[:E]-(a)…`. */
+const reversedLeg = (left: PathPattern): PathPattern | null => {
+  if (left.segments.length !== 1) {
+    return null;
+  }
+
+  const [seg] = left.segments;
+  const flipped = REVERSED[seg.rel.direction];
+
+  if (
+    flipped === undefined ||
+    seg.hopFrom !== undefined ||
+    seg.hopTo !== undefined ||
+    (seg.unitRest?.length ?? 0) > 0 ||
+    seg.innerQ !== undefined
+  ) {
+    return null;
+  }
+
+  // The far node becomes the START and the old start becomes the segment's node; each keeps its
+  // own label, inline properties and `WHERE`, because they are the same NodePattern objects moved
+  // rather than rebuilt. A rewrite that dropped one would be a wrong answer.
+  return {
+    ...left,
+    start: seg.node,
+    segments: [{ ...seg, rel: { ...seg.rel, direction: flipped }, node: left.start }],
+  };
+};
+
 const spliceOnce = (patterns: readonly PathPattern[]): readonly PathPattern[] | null => {
   for (let i = 0; i + 1 < patterns.length; i += 1) {
     const left = patterns[i];
@@ -1520,10 +1582,38 @@ const spliceOnce = (patterns: readonly PathPattern[]): readonly PathPattern[] | 
       right.segments.length === 0 ||
       !spliceable(left) ||
       !spliceable(right) ||
-      !bareBackReference(right.start) ||
-      right.start.variable !== joinOn
+      !bareBackReference(right.start)
     ) {
       continue;
+    }
+
+    /**
+     * THE FORK: both patterns start on the same variable, reached only once the chain reading
+     * above has declined.
+     *
+     * ⚠️ AN EXPLICIT `left.start.variable !== joinOn` GUARD WAS HERE AND CAME OUT, because its
+     * mutant SURVIVED and the reason is that it is strictly implied: inside
+     * `right.start.variable !== joinOn`, the fork test `right.start.variable ===
+     * left.start.variable` already forces `left.start.variable !== joinOn`. So `(a)-[:E]->(a)`,
+     * where start and end coincide, takes the CHAIN branch above and never reaches this one.
+     * Item 1016's rule — a gate nothing can observe comes out rather than staying untested — and
+     * the same move `count-shortcut.ts` records for its `widen-arity` survivor.
+     */
+    if (right.start.variable !== joinOn) {
+      const forked =
+        left.start.variable !== undefined && right.start.variable === left.start.variable
+          ? reversedLeg(left)
+          : null;
+
+      if (forked === null) {
+        continue;
+      }
+
+      return [
+        ...patterns.slice(0, i),
+        { ...forked, segments: [...forked.segments, ...right.segments] },
+        ...patterns.slice(i + 2),
+      ];
     }
 
     const merged: PathPattern = { ...left, segments: [...left.segments, ...right.segments] };
