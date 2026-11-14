@@ -22,9 +22,14 @@
 // this harness's 18.6 — the ABSOLUTES here are inflated ~6x. The RATIO survived and grew (2.6-3.6x),
 // so a flag is still worth chasing; the number beside it is not worth quoting.
 //
-// STILL OPEN from item 1877: `seek-count`, GQL 2.6-3.6x slower than Gremlin, because GQL's seeked
-// count is O(matches) where Gremlin's reads the index bucket's SIZE. Scaling says so: GQL
-// 2.40/3.68/6.16 us at 1111/2222/4444 matches against Gremlin's 1.01/1.20/1.31.
+// ⚠️ `seek-count` IS 2.6-3.6x AND WITHDRAWN AS A TARGET (item 1878) — READ THE FLOOR, NOT THE RATIO.
+// GQL's seeked count is O(matches) where Gremlin's reads the index bucket's SIZE, and scaling says
+// so: GQL 2.40/3.68/6.16 us at 1111/2222/4444 matches against Gremlin's 1.01/1.20/1.31. But the
+// ABSOLUTE is 2 us a query — ~2% of one core at 10,000 queries a second, on a shape that needs a
+// vacuous label. Item 1877 measured the ratio with care and never asked what it was a ratio of.
+//
+// **This probe reports RATIOS and cannot know what absolute matters.** A flag here is a candidate
+// until someone divides it into a workload.
 //
 // Users pick GQL xor Gremlin (`single-engine-parallel-naming`), so a surface that is much slower
 // for an identical question costs HALF the users and nothing measures it: `bench:usage` runs GQL

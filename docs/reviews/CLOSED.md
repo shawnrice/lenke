@@ -87950,7 +87950,13 @@ deliverable is the table.
 GATES. bun run check 0 read unpiped. No source touched, so the suites are unaffected; they were
 verified green across all 21 projects at item 1875 with `--skip-nx-cache`.
 
-## Item 1877 — three invariant probes I owed after four planner changes: both spelling probes CLEAN, and surface parity found a real one — GQL's seeked count is O(matches) where Gremlin's is O(1), 4.7x and growing
+## Item 1877 — three invariant probes I owed after four planner changes: both spelling probes CLEAN, and surface parity found a real one — GQL's seeked count is O(matches) where Gremlin's is O(1), ~~4.7x and growing~~ **WITHDRAWN at item 1878: the 4.7x is 2 MICROSECONDS**
+
+⚠️⚠️ **THE RATIO IS REAL AND THE TARGET IS NOT.** GQL 2.86 us against Gremlin's 0.83 — a 2 us saving
+on a narrow shape, which is ~2% of one core at 10,000 queries a second. This item measured a ratio
+with care and never floored it, which is the one thing `workload-perf-screen.mjs`'s header asks for.
+See item 1878, which also records that the write-cost tradeoff this item put to the owner **does not
+exist**: `addVertex` already maintains `verticesByLabel`.
 
 I shipped four planner changes this stretch (items 1863 fork-splice precursor, 1864 fork splice, 1867
 param page, 1873 reach refusal) and ran **none** of the cross-cutting invariant probes, each of which
@@ -88034,5 +88040,62 @@ is the index the public `v.labels = [...]` setter does not maintain. Gremlin alr
 decision to RAISE, not to slip into a speedup, and that is why this item stops at the measurement.
 
 NO ENGINE CODE CHANGED. Two instruments (`seek-count-prof-1877.mjs`, `seek-parity-loop-1877.mjs`).
+
+GATES. bun run check 0 read unpiped; no source touched.
+
+## Item 1878 — WITHDRAWN: item 1877's 4.7x is 2 MICROSECONDS, I never floored it, and the write-cost tradeoff I put to the owner does not exist
+
+Item 1877 confirmed a cross-surface gap carefully — three rounds, a loop-amortized harness, fixed
+cost ruled out, the mechanism settled by scaling, both engines checked for correctness on a
+discriminating fixture. Then it asked the owner to decide whether to widen `verticesByLabel`'s
+readers to take it. **The owner's reply was "do we need this?" and the answer is no.**
+
+❌ **THE ABSOLUTE IS 2 us PER QUERY.** GQL 2.86 us against Gremlin's 0.83 on a 200,000-vertex graph.
+At 10,000 queries a second that is 2% of one core, on a narrow shape — a seeked equality count whose
+label happens to cover every vertex. **I measured a ratio for a whole item and never asked what it
+was a ratio of.**
+
+That is the failure `workload-perf-screen.mjs`'s own header warns about in one line — _"A NOMINATION
+needs its own floor before it is a finding"_ — and CLAUDE.md's bench section opens with the same
+rule. The 4.7x is real, reproducible and correctly attributed. It is also not worth a gate on a hot
+rung.
+
+⚠️⚠️ **AND THE TRADEOFF I PUT TO THE OWNER DOES NOT EXIST.** I asked whether to accept extra write
+bookkeeping to make the label index trustworthy. `Graph.ts:4498-4510` already maintains
+`verticesByLabel` on insert and delete — **`addVertex` pays that cost today.** Only the
+`v.labels = [...]` SETTER skips it, and relabelling an existing element is a rare operation, not the
+write path. So "fix the setter" would have cost the common path nothing, and I described a hazard I
+had not checked.
+
+⚠️ **I HAD ALSO ASKED THIS BEFORE.** The label-index-vs-setter question is already recorded as an
+open owner decision from an earlier session. Re-asking it, with less context than the first time, is
+its own waste.
+
+### And the other three "decisions" were over-escalated
+
+The owner's second answer was that two sentences each is not enough to decide a design question, and
+that is correct. Re-asking with more words is the wrong fix; most of these are not owner decisions:
+
+- **`PARSE_CACHE_CAP` 64 -> 1024** — the engineering answer is a SETTING, not a question. This repo
+  already has one namespaced settings space fixed at construction, so a cap that trades ~2 MB for
+  ~2.4x on a many-shape workload belongs there, chosen per embedder. That is a proposal to write up
+  with its numbers and its API, not a multiple choice.
+- **The `CASE`-element divergence (item 1873)** — not a decision at all. Native emits an integer
+  where a vertex belongs; TS is right by ISO's conditional-expression semantics. It is a Rust bug
+  with a pinned failing test, and it needs fixing rather than choosing.
+- **`SKIP $param` (item 1817)** — has a stance-consistent answer in the repo's own rule: `SKIP` is a
+  Cypher synonym, `OFFSET` is ISO, and this project's stated position is that ISO-GQL is NOT Cypher.
+  That points at native tightening rather than TS loosening. Still an owner call, but one that should
+  arrive as a written argument, not a menu.
+
+### What this item changes
+
+`surface-parity-probe.ts`'s `seek-count` line now carries the floor beside the ratio, so the next
+reader sees 2 us before they see 4.7x. Item 1877's entry is corrected at its heading. No engine code
+was ever written for this.
+
+**THE RULE I BROKE IS WORTH MORE THAN THE TARGET WAS.** Every instrument in this package reports
+ratios, three of them flag on a ratio THRESHOLD, and none of them knows what absolute matters. The
+floor is the reader's job and I skipped it through an entire item of careful work.
 
 GATES. bun run check 0 read unpiped; no source touched.
