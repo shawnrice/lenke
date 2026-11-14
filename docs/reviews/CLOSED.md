@@ -85435,3 +85435,64 @@ meant to guard.
 
 GATES. bun run check 0 read unpiped. gql 4,611 pass / 0 fail. core 458 pass / 0 fail.
 gremlin 2,134 pass / 0 fail. native 1,165 pass / 0 fail. bun run fuzz 57 pass / 0 fail (x3).
+
+### Item 1829 — ⚠️ **SIX MORE MODIFIERS, AND THE WHOLE AGGREGATE FAMILY LOSES ITS ROUTE PAST ONE HOP IN GQL**: `sum`, `max`, `collect`, `grouped`, `topk` and a skip-only page all jump **~15-25x between depth 1 and depth 2**, where Gremlin is FLAT on every one of them but `grouped`. Priced and open, with the order-sensitivity analysis a fix must respect
+
+EVERY WIDENING OF THIS AXIS HAS FOUND SOMETHING, so the axis was widened again — six modifiers added
+to BOTH arms (`topk`, `skiponly`, `sum`, `maxagg`, `grouped`, `collect`). The result is the largest
+single haul the grid has produced: **24 flags**, covering a whole family rather than one shape.
+
+```text
+  ENGINE=gql      depth1  depth2  depth3  depth4  depth5     ENGINE=gremlin, same cells
+  rows               1.5     6.1     5.2     4.6     5.4       1.5  0.9  1.1  1.1  1.3
+  topk               1.4    26.8    34.4    46.7    58.9       1.8  1.1  1.2  1.2  1.3
+  skiponly           2.0    25.3    34.8    49.5    57.1       2.0  1.1  1.2  1.5  1.6
+  sum                2.8    25.6    35.4    54.6    58.4       1.7  1.0  0.9  1.1  1.3
+  maxagg             1.9    23.3    31.3    46.7    55.1       1.7  0.9  0.9  1.1  1.3
+  collect            3.0    27.5    35.7    46.0    60.6       1.5  0.9  1.0  1.2  1.4
+  grouped            1.4    30.0    38.3    50.9    61.1       4.8 13.4 16.5 22.8 27.9
+```
+
+⚠️ **THE CLIFF IS BETWEEN DEPTH 1 AND DEPTH 2 IN EVERY ROW**, which is the signature this grid was
+built for: `detectHopAggregate` serves one hop, and the two-hop and chain rungs refuse an
+aggregating projection outright. Marginal jumps run to **191x** (`collect` depth5: 53.6 ms against
+0.3 at depth 1).
+
+✅ **GREMLIN IS FLAT ON EVERY SCALAR AGGREGATE** — `sum`, `max`, `collect`, `topk` and the page all
+sit at 0.9-2.0 ms at every depth. Only `grouped` (`groupCount`) degrades there, 14.3-21.9x its own
+`rows` cell. So the two engines have ONE shared gap (grouping) and GQL has a whole family Gremlin
+does not.
+
+⚠️⚠️ **AND THE OBVIOUS FIX IS A WRONG ANSWER FOR THREE OF THE SIX, WHICH IS THE PART THIS ITEM
+EXISTS TO RECORD.** Item 1824's synthetic-projection trick generalizes mechanically — `foldedAggs`
+carries both the `fold` and the compiled `argFn`, so any single foldable aggregate could ride the
+chain rung and be folded over its rows. **It must not be applied uniformly**, because the folds
+differ in whether ROW ORDER changes their answer:
+
+```text
+  min / max        ORDER-INVARIANT over a total order        -> safe to admit
+  count(DISTINCT)  order-invariant (a set)                   -> already admitted, item 1824
+  sum / avg        order-SENSITIVE in the last ulp (f64)     -> must NOT be admitted blind
+  collect          its order IS its answer                   -> must NOT be admitted blind
+  grouped          needs GROUPING, not a single fold         -> a different shape entirely
+```
+
+`foldFor`'s own comment states the first two of those ("`sum`/`avg` are order-sensitive in the last
+ulp whether or not they dedup first, `collect`'s order IS its answer"), and this engine's hard
+invariant is BYTE-IDENTITY with Rust — so a rung whose walk order differs from the general path's
+would make `sum` disagree in the last ulp and `collect` disagree outright. ⚠️ That is exactly the
+`forceStartDriven` question items 419 and 551 settled for the one-hop rung, and it has NOT been
+settled for the deeper widths. **A fix takes `min`/`max` first; `sum`, `avg` and `collect` need the
+chain rungs' walk order proved equal to the general path's BEFORE they are admitted, not after.**
+
+⚠️ `topk` AND `skiponly` ARE HERE TO WATCH, NOT TO FIX — item 1827 left both windows on the general
+path deliberately (a sorted `LIMIT` is a bounded-top-k question, and `boundedTopRows` answers it
+from a heap). Their flags confirm the cost of that decision rather than contradicting it, and the
+marginal-jump flag does NOT fire on `topk`, which is the honest reading: its cost tracks its own
+depth-1 marginal.
+
+NO ENGINE CODE CHANGED. Priced and left open with the floors a fix has to beat: **`maxagg` depths
+2-5 at 23.3/31.3/46.7/55.1 ms should land near their `rows` cells (~5-6 ms)**, and the same for
+`sum` once the order question is answered.
+
+GATES. bun run check 0 read unpiped.

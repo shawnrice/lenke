@@ -47,11 +47,17 @@ import {
   V,
   count,
   dedupe,
+  fold,
+  groupCount,
   gt,
   has,
   hasLabel,
+  limit,
+  max,
   order,
   out,
+  skip,
+  sum,
   toArray,
   traversal,
   values,
@@ -146,6 +152,17 @@ const MODIFIERS = {
   where: ({ text, far }) => `${text} WHERE ${far}.k > 44 RETURN ${far}.k AS k`,
   twocol: ({ text, far }) => `${text} RETURN ${far}.k AS k, ${far}.s AS s`,
   orderby: ({ text, far }) => `${text} RETURN ${far}.k AS k ORDER BY k`,
+  // ── Item 1829: six more modifiers, because every widening of this axis has found something ──
+  //
+  // ⚠️ `topk` and `skiponly` are the WINDOWS item 1827 deliberately left on the general path, so
+  // they are here to watch rather than to fix: a marginal that grows with depth would mean the
+  // bounded-top-k route is itself width-limited, which is a different claim from the one 1827 made.
+  topk: ({ text, far }) => `${text} RETURN ${far}.k AS k ORDER BY k LIMIT 10`,
+  skiponly: ({ text, far }) => `${text} RETURN ${far}.k AS k SKIP 5`,
+  sum: ({ text, far }) => `${text} RETURN sum(${far}.k) AS s`,
+  maxagg: ({ text, far }) => `${text} RETURN max(${far}.k) AS m`,
+  grouped: ({ text, far }) => `${text} RETURN ${far}.k AS k, count(*) AS c`,
+  collect: ({ text, far }) => `${text} RETURN collect(${far}.k) AS ks`,
 };
 
 /**
@@ -162,6 +179,12 @@ const GREMLIN_MODIFIERS = {
   countdist: (d) => traversal(V(), hasLabel('P'), ...hops(d), values('k'), dedupe(), count()),
   where: (d) => traversal(V(), hasLabel('P'), ...hops(d), has('k', gt(44)), values('k')),
   orderby: (d) => traversal(V(), hasLabel('P'), ...hops(d), values('k'), order()),
+  topk: (d) => traversal(V(), hasLabel('P'), ...hops(d), values('k'), order(), limit(10)),
+  skiponly: (d) => traversal(V(), hasLabel('P'), ...hops(d), values('k'), skip(5)),
+  sum: (d) => traversal(V(), hasLabel('P'), ...hops(d), values('k'), sum()),
+  maxagg: (d) => traversal(V(), hasLabel('P'), ...hops(d), values('k'), max()),
+  grouped: (d) => traversal(V(), hasLabel('P'), ...hops(d), groupCount({ by: 'k' })),
+  collect: (d) => traversal(V(), hasLabel('P'), ...hops(d), values('k'), fold()),
 };
 
 /** `d` repetitions of `out('E')`, so the depth axis is the same quantity on both surfaces. */
