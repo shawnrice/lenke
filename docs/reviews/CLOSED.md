@@ -87348,3 +87348,56 @@ that its rows equal the general route's — a length check alone would accept th
 GATES. bun run check 0 read unpiped; gql 4730 tests green; all seven byte-identity fuzzers green
 (the workload fuzzer draws every family at `params=20000`, and `projection=1231/1231`, so the new
 route is checked against the Rust engine rather than only against itself).
+
+## Item 1868 — item 1867's gap has NO Gremlin twin, and the Gremlin scan family's "disagreements" were already answered; one shape is open at ~2.4x
+
+Two cross-surface checks, both negative, both recorded so the next pass does not spend a tick
+re-deriving them — and one target left standing.
+
+❌ **THE PARAMETER AXIS DOES NOT EXIST ON THE GREMLIN SURFACE, so item 1867's defect cannot.** That
+item fixed "a literal page takes the rung, a parameterized one takes none" for GQL. A Gremlin
+traversal is an OBJECT carrying literal numbers — **there is no `Params` type anywhere in
+`packages/gremlin/src`** — so there is no spelling of a page whose value is unknown at plan time.
+Checked by grep rather than assumed, and it is consistent with item 1841's finding that Gremlin has
+no parse step and therefore nothing to cache a plan against params for.
+
+❌ **AND THE ROUTE SCREEN'S SCAN-FAMILY FLAGS ARE MOSTLY SETTLED QUESTIONS.** At `hop1:` nearly
+everything is fused (`order values`, `min`, `dedupe count`, `has count`, `id`), so the depth-0
+`scan:` rows read as a cliff and the screen flags six. Five have verdicts already:
+
+      scan: order values   NOT a gap. Items 1574/1576 took `values(k).order().limit(10)` from
+                           55.2 -> 18.6 ms (2.97x cumulative) and kept the FULL sort as a
+                           deliberately FLAT control — 66.2 / 67.8 / 72.0 across those items.
+      scan: fold           FLAT. Item 1585: 2.189 against `values(k)`'s 2.181.
+      scan: limit values   TINY. Item 1660: `values(k).limit(10)` drain-all 0.073 ms.
+      scan: has values     DECLINED at 1858 (~1.3x), with its reason: the same 200,000 vertices
+                           visited and 7x fewer rows emitted, so the per-ROW figure overstates it.
+      scan: id             DECLINED at 1858 (~1.6x).
+
+**The screen now carries all five verdicts in its own header**, with the item numbers. Its output
+said "these disagree and each needs pricing" — correct, and it had no way to say which had been
+priced already. That is the `CLOSED.md` heading problem one level down: an instrument that re-flags
+answered shapes costs a tick every time it is run.
+
+🔭 **ONE SHAPE IS GENUINELY OPEN, and it is priced rather than assumed.** At 200,000 vertices,
+median of 7 after 2 warm-ups:
+
+      V().values(k)                 (the fused floor)      5.81 ms   200000 rows
+      V().values(k).dedupe()        (generic)             11.96        997 rows
+      V().values(k).count()         (fused sibling)        2.42          1 row
+      V().values(k).order()         (generic, 1574's control) 45.37   200000 rows
+
+`dedupe` costs **6.15 ms on top of a walk that emits 200x more rows than it keeps**. A fused walk
+accumulating into a `Set` would emit 997 rows instead of 200,000, so it should land at or below the
+5.81 floor — ~2.4x. The shape mirrors item 1857's residual fold exactly: walk, accumulate, emit.
+
+⚠️ **THE REFUSAL TO CHECK BEFORE BUILDING IT: ORDER.** Gremlin results are compared ORDERED by the
+differential fuzzer, and `dedupe()` keeps FIRST-OCCURRENCE order. The fused walk scans in
+`graph.verticesById` order, which is the pipeline's own order, so the sequences should agree — but
+"should" is what item 1858's test file had to assert explicitly, and the same assertion is required
+here before the rung ships.
+
+NO ENGINE CODE CHANGED. Two negative cross-surface results, five verdicts moved into the instrument
+that needed them, and one priced target.
+
+GATES. bun run check 0 read unpiped.

@@ -23,6 +23,31 @@
  * NEIGHBOUR is fused while it is not — `out().values()` fused but `out().out().values()` not, say.
  * So the output groups by base and marks the shapes whose siblings differ.
  *
+ * ⚠️⚠️ **THE SCAN FAMILY'S DISAGREEMENTS ARE MOSTLY ALREADY ANSWERED — read this before pricing
+ * one again (item 1868).** At `hop1:` nearly everything is fused, so the depth-0 `scan:` rows look
+ * like a cliff and the screen flags six of them. Five are settled:
+ *
+ *     scan: order values   NOT a gap. Item 1574/1576 took `values(k).order().limit(10)` 55.2 ->
+ *                          18.6 ms (2.97x cumulative) and kept the FULL sort as a deliberately
+ *                          flat control: 66.2 / 67.8 / 72.0 across those items. A full sort of
+ *                          200,000 values is a full sort.
+ *     scan: fold           FLAT. Item 1585 measured `values(k).fold()` at 2.189 against
+ *                          `values(k)`'s 2.181.
+ *     scan: limit values   TINY. Item 1660 measured `values(k).limit(10)` drain-all at 0.073 ms.
+ *     scan: has values     DECLINED at item 1858, ~1.3x, with the reason: it visits the same
+ *                          200,000 vertices and emits 7x fewer rows, so the per-ROW figure
+ *                          overstates it badly.
+ *     scan: id             DECLINED at item 1858, ~1.6x.
+ *
+ * The one still open is `scan: dedupe values`, priced at item 1868: **11.96 ms** producing 997
+ * rows from 200,000 values, against the fused floor's 5.81 ms for emitting all 200,000. A fused
+ * walk accumulating into a `Set` emits 200x fewer rows, so ~2.4x looks available.
+ *
+ * ⚠️ AND THE PARAMETER-AXIS GAP ITEM 1867 FIXED ON THE GQL SIDE HAS NO TWIN HERE. A Gremlin
+ * traversal is an OBJECT with literal numbers — there is no `Params` type anywhere in
+ * `packages/gremlin/src` — so "a literal page routes and a parameterized one does not" cannot
+ * arise on this surface. Checked rather than assumed.
+ *
  *     bun gremlin-route-screen.mjs
  */
 import { execFileSync } from 'node:child_process';
