@@ -67,6 +67,14 @@ measures the OLD route.** When an arm is gated on a second ask, its tests must a
 mutation run is what proves they do. Three arms in this package are now gated that way
 (`hopValuesCsr`, `oneHopValues`, `twoHopCsrProduct`).
 
+⚠️⚠️ **AND CHECK FOR A `drain` BEFORE PRICING ANY FUSED WALK.** Three items in a row found the eager
+fill was most of the available win — 1889 (one-hop values), 1891 (optional) and 1893 (the edge
+filter, 129.40 → 79.04 ms from twenty lines). `toArray` prefers `drain` when the walk offers one
+(item 1412), so a walk WITHOUT one is being compared against neighbours that have it, with its
+generator hand tied. `edge-csr-ceiling-1893.mjs` is the shape of probe that finds this: a `handSet`
+arm (the same walk by hand over the same structure) separates DELEGATION from LAYOUT, and it said
+2.08x of the gap was delegation before any structure was blamed.
+
 So: **re-run the screens at 10x before concluding a surface is done.** The instruments:
 
 - **`hop-csr-ab-1889.mjs`** — the warm AND cold A/B. ⚠️ Its cold column is the point: before the

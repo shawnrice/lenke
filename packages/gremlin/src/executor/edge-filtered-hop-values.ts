@@ -2,7 +2,7 @@ import type { Edge, Graph } from '@lenke/core';
 
 import type { Plan, Step } from '../ast.js';
 import { matches, specializePredicate } from '../predicates.js';
-import type { HopValues } from './hop-values.js';
+import type { HopValues, HopWalk } from './hop-values.js';
 
 /**
  * `V().outE(T).has(k, pred).inV().values(j)` — a hop with a predicate on the EDGE, which every
@@ -204,7 +204,7 @@ type WalkSpec = {
  * INSIDE the returned closure gave unrelated queries a new slow mode at 4x (item 1413's family), so
  * the body lives here and takes its spec as an argument.
  */
-const walk = (graph: Graph, spec: WalkSpec): Iterable<unknown> => ({
+const walk = (graph: Graph, spec: WalkSpec): HopWalk => ({
   *[Symbol.iterator]() {
     const { type, outward, edgeTest, pick, drops } = spec;
 
@@ -227,5 +227,48 @@ const walk = (graph: Graph, spec: WalkSpec): Iterable<unknown> => ({
         }
       }
     }
+  },
+  /**
+   * ⚠️ THE EAGER FILL, AND IT IS HALF THIS SHAPE'S COST (item 1893). `toArray` prefers `drain` when
+   * the walk offers one (item 1412) and every arm of `hopValuesShortcut` offers one — so this rung
+   * was spreading a GENERATOR over 457,142 rows where its neighbours fill an array. Priced against a
+   * hand-written walk over the same `Set`s at 200,000 vertices / 1,000,000 edges:
+   *
+   * ```text
+   *   the engine's rung, generator only   129.40 ms
+   *   the same walk BY HAND               62.23      ⬅ 2.08x, all of it delegation
+   *   the same walk over a flat array     34.69      ⬅ what an edge-indexed CSR could add
+   * ```
+   *
+   * ⚠️ IT NEVER REPLACES THE ITERABLE, which is `hop-values.ts`'s rule: `run` stays as lazy as it
+   * was for a caller that `break`s out, and `drain` is read only where the shortcut consumed the
+   * whole plan. And it is the SAME loop written twice (item 169), because Gremlin results are
+   * compared ORDERED.
+   */
+  drain() {
+    const { type, outward, edgeTest, pick, drops } = spec;
+    const out: unknown[] = [];
+
+    for (const v of graph.vertices) {
+      const bucket = outward ? v.adjFrom?.get(type) : v.adjTo?.get(type);
+
+      if (bucket === undefined) {
+        continue;
+      }
+
+      for (const edge of bucket) {
+        if (!edgeTest(edge)) {
+          continue;
+        }
+
+        const value = pick(outward ? edge.to : edge.from);
+
+        if (!drops || value !== undefined) {
+          out.push(value);
+        }
+      }
+    }
+
+    return out;
   },
 });

@@ -89244,3 +89244,58 @@ INVARIANTS. All seven byte-identity fuzzers green. `bun run spelling:gremlin`: 0
 disagreements, 0 groups over 2x clear of the null control.
 
 GATES. bun run check 0 and bun run test -- --skip-nx-cache across 21 projects, each read unpiped.
+
+## Item 1893 — the edge-filter rung was **2.08x its own hand-written walk over the same data**, and half of that was the missing eager fill: **1.64x for a `drain`**. The edge-indexed CSR two items had named is priced at a further 1.79x and NOT built
+
+Items 1891 and 1892 both ended by naming `V().outE(T).has(k, p).inV().values(j)` as the Gremlin
+screen's top shape at scale and saying it "wants an edge-indexed CSR". This item priced that claim
+before building anything — items 1693/1694's method, where a `handCsr` arm's two numbers were the
+whole decision.
+
+      HAND ARMS, 200,000 vertices / 1,000,000 edges, one arm per process, median of 9:
+        the engine's rung                        129.40 ms   457,142 rows
+        the same walk BY HAND over the Sets       62.23      ⬅ 2.08x, pure delegation
+        the same walk over a FLAT edge array      34.69      ⬅ what an edge CSR could add: 1.79x
+        the same with both property bags hoisted   2.46      ⬅ unreachable; prices the getters
+
+⚠️ **THE FIRST ROW IS THE FINDING AND IT IS NOT THE STRUCTURE.** The engine was 2.08x a hand walk
+over the _identical_ `Set`s — so the layout was never the first problem. The profile had pointed
+elsewhere (`pick` 14.3%, the walk 12.7%, the gate 7.1%, the two `properties` getters 11.8%) and a
+`handSet` arm is what turned "spread across frames" into "2x of delegation".
+
+✅ **AND HALF OF IT WAS THE MISSING `drain`.** `toArray` prefers an eager fill when the walk offers
+one (item 1412) and every arm of `hopValuesShortcut` offers one — so this rung was spreading a
+GENERATOR over 457,142 rows while its neighbours filled an array. Adding the eager fill:
+**129.40 → 79.04 ms, 1.64x**, and on the shape's own floor probe **125.38 → 78.95**, i.e. 157 → 99 ns
+an edge visit. This is the third item in a row where `drain` was most of the available win (1889 on
+the one-hop values walk, 1891 on the optional walk, this one) — **a fused walk without a `drain` is
+measured with its generator hand tied**, and that is now the first thing to check on any walk this
+family adds.
+
+🔭 **WHAT IS LEFT, PRICED, WITH WHAT EACH WOULD TAKE:**
+
+| from  | to    | what it is                                                                                                                                                                                                                                                                                    |
+| ----- | ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 79.04 | 62.23 | **1.27x** — the `pick` and `edgeTest` CLOSURES, one call each per row where the hand walk inlines both. Reaching it means plumbing the predicate's operator into the walk so the comparison can be written inline, not another closure. `specializePredicate` hands back a closure by design. |
+| 62.23 | 34.69 | **1.79x** — the edge-indexed CSR: a flat `Edge[]` per slot replacing the `Map.get` + `Set` iterator. Its build measured **25 ms** at this size, so it inherits items 1889/1890's second-ask policy wholesale.                                                                                 |
+| 34.69 | 2.46  | not reachable — it hoists both property BAGS into `Float64Array`s, which is a columnar store, not a graph. It is in the probe to price the two getters (~32 ms) so the rows above are not read as the ceiling.                                                                                |
+
+**NOT BUILT, deliberately**: the CSR arm is a new structure plus a cache plus a policy for 1.79x on
+one shape, where this tick's `drain` was 1.64x for twenty lines. The probe stays so the next attempt
+starts from the numbers rather than from the claim.
+
+🦷 **MUTATION: 10 CAUGHT, 0 SURVIVORS — and the eager fill made three anchors ambiguous**, which the
+anchor assertion caught three times in a row rather than half-applying a patch (the `which`
+facility from item 1888 is now in this runner too). Two lessons repeated:
+
+- **A new `drain` needs its own mutants**: "the drain drops nothing", "the drain skips the
+  predicate" and "the drain reads the NEAR end" are all invisible to the lazy iterator's tests.
+- **And the ITERATOR needs its own test**, because `toArray` now reads the drain. A mutant
+  hard-coding the out-adjacency in the iterator SURVIVED until the lazy test covered `inE`/`outV`
+  — every lazy case had used `outE`, where the mutant is inert. Same shape as item 1891's five
+  survivors.
+
+INVARIANTS. All seven byte-identity fuzzers green. `edge-filtered-oracle-1883.mjs`: 69 pairs,
+ORDERED, every one identical. `bun run spelling:gremlin`: 0 answer disagreements, 0 groups over 2x.
+
+GATES. bun run check 0 and bun run test -- --skip-nx-cache across 21 projects, each read unpiped.

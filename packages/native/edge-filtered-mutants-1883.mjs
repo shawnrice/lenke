@@ -26,16 +26,18 @@ const TEST = 'src/executor/edge-filtered-hop-values.test.ts';
 /** `[name, from, to, expectedOccurrences]` — each a change that must break at least one test. */
 const MUTANTS = [
   [
-    'far end swapped',
+    'far end swapped (lazy iterator)',
     'pick(outward ? edge.to : edge.from)',
     'pick(outward ? edge.from : edge.to)',
-    1,
+    2,
+    0,
   ],
   [
-    'edge predicate deleted',
+    'edge predicate deleted (lazy iterator)',
     'if (!edgeTest(edge)) {\n          continue;\n        }',
     'if (false) {\n          continue;\n        }',
-    1,
+    2,
+    0,
   ],
   ['no-predicate shape admitted', 'if (at === 2) {', 'if (at === 1) {', 1],
   [
@@ -57,9 +59,44 @@ const MUTANTS = [
     1,
   ],
   [
-    'bucket direction ignored',
+    'bucket direction ignored (lazy iterator)',
     'outward ? v.adjFrom?.get(type) : v.adjTo?.get(type)',
     'v.adjFrom?.get(type)',
+    2,
+    0,
+  ],
+  [
+    'the eager drain drops nothing (disagrees with the iterator)',
+    `        if (!drops || value !== undefined) {
+          out.push(value);
+        }`,
+    `        out.push(value);`,
+    1,
+  ],
+  [
+    'the eager drain skips the edge predicate',
+    `      for (const edge of bucket) {
+        if (!edgeTest(edge)) {
+          continue;
+        }
+
+        const value = pick(outward ? edge.to : edge.from);
+
+        if (!drops || value !== undefined) {
+          out.push(value);
+        }`,
+    `      for (const edge of bucket) {
+        const value = pick(outward ? edge.to : edge.from);
+
+        if (!drops || value !== undefined) {
+          out.push(value);
+        }`,
+    1,
+  ],
+  [
+    'the eager drain reads the NEAR end',
+    'const value = pick(outward ? edge.to : edge.from);\n\n        if (!drops || value !== undefined) {\n          out.push(value);',
+    'const value = pick(outward ? edge.from : edge.to);\n\n        if (!drops || value !== undefined) {\n          out.push(value);',
     1,
   ],
 ];
@@ -95,7 +132,7 @@ try {
 
   console.log(`baseline: ${/(\d+ pass)/.exec(base.text)?.[1] ?? '?'}\n`);
 
-  for (const [name, from, to, want] of MUTANTS) {
+  for (const [name, from, to, want, which = 0] of MUTANTS) {
     // RESTORE BEFORE applying the next mutant, never only after the loop — an interrupted run must
     // not leave a mutant in the tree for `git diff` to be the only thing standing in its way.
     writeFileSync(SRC, pristine);
@@ -108,7 +145,14 @@ try {
       );
     }
 
-    writeFileSync(SRC, pristine.replace(from, to));
+    // ⚠️ WHICH OCCURRENCE — since item 1893 this module holds the walk TWICE (the lazy iterator and
+    // the eager `drain`), so an anchor that was unique is no longer. The facility is item 1888's.
+    const parts = pristine.split(from);
+
+    writeFileSync(
+      SRC,
+      `${parts.slice(0, which + 1).join(from)}${to}${parts.slice(which + 1).join(from)}`,
+    );
 
     const r = run();
     const result = /(\d+ pass, )?(\d+) fail/.exec(r.text);

@@ -15,6 +15,7 @@ import {
   otherV,
   outE,
   outV,
+  run,
   toArray,
   traversal,
   values,
@@ -176,6 +177,30 @@ describe('edgeFilteredHopValues — the answer', () => {
     expect(
       toArray(traversal(V(), outE('F'), has('w', gt(5)), inV(), values('n')), g),
     ).toStrictEqual([5, 4]);
+  });
+
+  /**
+   * ⚠️ THE LAZY ITERATOR AND THE EAGER `drain` ARE TWO COPIES OF ONE LOOP (item 1893), and `toArray`
+   * reads only the second — so without this, half the walk has no test. Item 1889 lost a mutant to
+   * exactly this and item 1891 lost five.
+   */
+  it('the LAZY iterator agrees with the eager drain', () => {
+    const g = fixture();
+    const make = () => traversal(V(), outE('E'), has('w', gt(3)), inV(), values('n'));
+
+    expect([...run(make(), g)]).toStrictEqual(toArray(make(), g));
+    expect([...run(make(), g)]).toStrictEqual([3, 4, 4, 4]);
+
+    const ids = () => traversal(V(), outE('E'), has('w', gt(3)), inV(), id());
+
+    expect([...run(ids(), g)]).toStrictEqual(toArray(ids(), g));
+
+    // ⚠️ `inE`/`outV` THROUGH THE ITERATOR, because the bucket DIRECTION is only observable there:
+    // a mutant hard-coding the out-adjacency survived while every lazy case used `outE`.
+    const back = () => traversal(V(), inE('E'), has('w', gt(3)), outV(), values('n'));
+
+    expect([...run(back(), g)]).toStrictEqual(toArray(back(), g));
+    expect([...run(back(), g)]).toStrictEqual([1, 2, 3, 4, 1]);
   });
 
   it('carries a residual step over the fused values', () => {
