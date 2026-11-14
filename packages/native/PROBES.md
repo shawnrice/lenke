@@ -10,6 +10,21 @@ reading three file headers feels like overhead. It is the other way round."_ The
 here, and more so — the Rust side is indexed by question in `crates/lenke-engine/examples/README.md`
 and this side was not indexed at all.
 
+## Start here: `family-split-1880.ts` — which SHAPE owns a family's milliseconds
+
+`workload-perf-screen.mjs` reports one number per family, and a family is a generator. Item 1879
+found `var-length`'s 543 ms was ~70% ONE bound (`{2,3}` at 45.1 ms against its `{1,3}` twin's 0.8,
+same eight rows), which no family total could show. This drives the real `WORKLOAD_FAMILIES`, dedupes
+the realized texts, times each, and **sorts by absolute ms**.
+
+Run it before hunting. As of item 1880 the four biggest shapes on the screen are each already
+accounted for — `multi-pattern` a genuine product (1864), `chain-rows` a layout ceiling (1859),
+`var-length` `{2,3}` a TRAIL correctness refusal (1879/1252), `aggregate` `sum`/`avg` the
+byte-identity summation order (1830/376) — so a NEW big number from this probe is the signal.
+
+⚠️ `worst owns N%` is a share of the sum over DISTINCT shapes, not weighted by the generator's draw
+rate. It names the slowest shape, not necessarily the one owning the family's screen time.
+
 ## ⚠️ `surface-parity-probe.ts` TIMES ONE CALL PER REP — its fast arms' ABSOLUTES are inflated ~6x
 
 Item 1877 looped its `seek-count` arm 20,000 times inside the timed region and read **2.86 us against

@@ -88170,3 +88170,63 @@ NO ENGINE CODE CHANGED. One instrument (`varlength-split-1879.mjs`), which split
 reports as a single row.
 
 GATES. bun run check 0 read unpiped; no source touched.
+
+## Item 1880 — the general family splitter, and what it shows: the screen's FOUR biggest shapes are each a documented refusal or a measured ceiling, so the addressable time is exhausted
+
+Item 1879 split one family by hand and found that `var-length`'s 543 ms was ~70% one bound. A
+per-family total cannot show that, so **every** family number on the screen is a blended average
+hiding its worst shape. `family-split-1880.ts` generalizes it: it drives the real
+`WORKLOAD_FAMILIES` (not a hand-copied shape list, which is one more thing that goes stale), dedupes
+the realized texts per family, times each, and **sorts by absolute milliseconds** — item 1878's
+lesson, which cost a whole item to a 4.7x that was 2 microseconds.
+
+      worst single shape per family, by absolute ms
+      multi-pattern    9959.1 ms    80% of 8 shapes
+      chain-rows         88.3        17% of 66
+      var-length         65.2        20% of 44
+      aggregate          17.7        23% of 34
+      optional           11.0        29% of 18
+      edge-filter        10.9         6% of 110
+      grouped             8.6        24% of 14
+      neighbors           6.0         8% of 207
+      ... every other family's worst shape is <= 6 ms
+
+✅ **AND ALL FOUR OF THE BIG ONES ARE ACCOUNTED FOR.** This is the useful result: the screen's
+addressable time is not hiding a gap.
+
+| shape                   | what it is                                                                                                                                                                 |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `multi-pattern` 9959 ms | a GENUINE cross product whose row count IS the answer — closed at item 1864                                                                                                |
+| `chain-rows` 88.3 ms    | the fused chain walk at its LAYOUT ceiling — 80% in one inlined frame, item 1859                                                                                           |
+| `var-length` 65.2 ms    | `{2,3}`, i.e. `min >= 2`, refused because a length-in-[2,3] TRAIL is not a level-BFS question — item 1879, and item 1252 measured the wrong answer that admitting it gives |
+| `aggregate` 17.7 ms     | `sum`/`avg` over a chain, refused because f64 addition is order-sensitive and byte-identity pins the summation order                                                       |
+
+🔬 **THE AGGREGATE ONE IS THE MIRROR OF A WIN, which is what makes it legible rather than suspicious.**
+At three hops, same walk, same single row:
+
+      avg(d.n)  19.6 ms          min(d.n)  3.8 ms
+      sum(d.n)  19.2            max(d.n)  3.6          **5.2x**
+
+Item 1830 took `min`/`max`/`count(x)` over a chain at 5.8-10.4x and names itself "the order-INVARIANT
+half of item 1829's aggregate family". **So the 5.2x is the gap that item created by taking one
+half**, and the other half is refused on the same grounds the Rust side records at item 376: "a
+frontier `sum`/`avg` fast path is REFUTED — the 2.5x is the price of byte-identity."
+
+⚠️ **ONE THING ABOUT THAT REFUSAL IS WORTH KNOWING AND IS NOT A RECOMMENDATION.** Item 1831 answered
+the walk-order question empirically — 25 cases, identical sequences — so the fused walk's visit order
+is OBSERVED to match the general path's. That is evidence, not proof, and byte-identity with the Rust
+engine is a hard invariant rather than a target. Trading a hard invariant for 5.2x on 25 agreeing
+cases is a judgement about what the invariant is for, so it is recorded here with its numbers and
+left alone rather than put to the owner as a menu — item 1878's other lesson.
+
+⚠️ **THE SPLITTER'S OWN LIMIT, stated so its output is not over-read:** "worst owns N%" is a share of
+the sum over DISTINCT shapes, NOT weighted by how often the generator draws each. It therefore names
+the SLOWEST shape in a family, which is not automatically the shape owning that family's screen time.
+For `var-length` the two coincided (one bound in four, drawn near-uniformly); for a family whose slow
+shape is rare they would not. A draw-weighted version would need the generator's probabilities, which
+`pick` does not expose.
+
+NO ENGINE CODE CHANGED. One instrument, and it is the one that makes "is the screen hiding a gap?"
+a single command instead of a tick.
+
+GATES. bun run check 0 read unpiped; no source touched.
