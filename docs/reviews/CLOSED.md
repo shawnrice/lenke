@@ -86730,6 +86730,15 @@ cap and are quoted above.
 
 ## Item 1860 — the dense two-hop count is a REAL 4.05x and is DECLINED, because item 1695's criterion says so; and the chain arm's own write exposure is 7.95x, which that item did not measure
 
+⚠️ **TWO CORRECTIONS FROM ITEM 1861, both to numbers below rather than to the decline.** (1) The
+rebuild is **~160 ms, not the 221 ms quoted here**: `cold - warm` also contains the JIT tiering up,
+which item 1861 measured at 157 ms on its own with the dense arm killed. The decline stands and is
+if anything on firmer ground — the two-hop walk is 52 ms against a 160 ms rebuild. (2) **The 7.95x
+write exposure is NOT a defect, and the suspicion recorded below that the shipped chain arm is
+"likely net-NEGATIVE under write-per-read" is REFUTED**: the walk-only three-hop cost is **437 ms**,
+not the ~52 ms inferred from the two-hop arm, so the arm is still 2.46x ahead under one write per
+read. See item 1861.
+
 Item 1859 nominated `V().hasLabel(L).out(T).out(T).count()` — 51.6 ms on the Gremlin bench against
 native's 2.87 — and framed it as nearly free, since `denseChainCount`/`slotChainCount` already exist
 and are wired for three hops and up while the two-hop arm never tries them. That framing was wrong,
@@ -86790,3 +86799,54 @@ line counting v0's distinct targets.
 NO ENGINE CODE CHANGED. Two instruments; the decline and the 7.95x are the deliverable.
 
 GATES. bun run check 0 read unpiped.
+
+## Item 1861 — the shipped chain CSR arm is VINDICATED, 2.46x ahead even at one write per read; my own suspicion from item 1860 was wrong, and so was its build number
+
+Item 1860 ended with a suspicion: the chain arm (item 1110/1678, `slotChainCount`) pays 8x its warm
+cost when a write invalidates the memo, and by item 1695's criterion — _safe iff the walk costs more
+than the rebuild_ — it looked likely to be net-NEGATIVE. That inference rested on one guess, stated
+as a guess at the time: "a 3-hop walk should cost on the order of the 53.58 ms two-hop walk". It does
+not.
+
+❌ **THE GUESS WAS OFF BY 8.4x, and the kill switch is what says so.** `denseChainCount` patched to
+decline unconditionally, the `@lenke/gremlin` dist rebuilt, and the marker asserted in the dist
+before measuring (2 occurrences) and again after restoring (0):
+
+      arm                           3-hop WARM     3-hop INTERLEAVED (1 write per read)
+      dense (ships today)              22.70 ms                  182.71 ms
+      walk only (dense KILLED)        437.31 ms                  444.41 ms
+
+**The walk is 437 ms, not ~52.** `mapChainCount` carries a `Map<Vertex, number>` frontier across two
+levels, where the two-hop arm's no-map double loop carries nothing — so the two are not on the same
+scale and the two-hop figure could not have stood in for it. ✅ **The arm is therefore 19.3x ahead
+warm and still 2.46x ahead under one write per read**, which passes item 1695's criterion
+comfortably: walk 437 ms against a 160 ms rebuild.
+
+✅ **AND THE CRITERION CLEANLY SEPARATES THE TWO SHAPES, which is the satisfying part.** Same cache,
+same rebuild, opposite verdicts, entirely from the walk each one replaces:
+
+      shape        walk      rebuild    1695's verdict
+      two-hop      52 ms     160 ms     FAILS   — declined at item 1860
+      three-hop   437 ms     160 ms     PASSES  — ships, correctly
+
+⚠️⚠️ **AND A CORRECTION TO ITEM 1860'S BUILD NUMBER: `cold - warm` IS NOT THE BUILD COST.** It
+reported 221 ms for the rebuild. With the dense arm killed, so that no CSR is built at all,
+`cold - warm` STILL reads **157 ms** — that is the JIT tiering up, not a build. The honest
+measurement is the INTERLEAVED subtraction, where the code is already warm and a write's only effect
+is the rebuild: **160 ms**, and with dense killed the same subtraction goes to ~7 ms, which is the
+control saying it isolates the rebuild rather than some other per-write cost.
+
+**This is the confounded-subtraction trap for the third time in this stretch** — item 1842's "SET
+costs 5.27 us", item 1841's 2.2x disagreement between a subtraction and a direct arm, and now this.
+The pattern is identical every time: two large numbers differenced to attribute a smaller one inside
+them. The probe now prints `cold - warm` labelled `⚠️ NOT the build alone` and the direct figure
+beside it, so the misleading line cannot be quoted again on its own.
+
+**NEITHER CONCLUSION OF ITEM 1860 CHANGES** — the two-hop decline holds on a firmer number, and the
+7.95x is real but is not a defect. Its heading carries both corrections.
+
+NO ENGINE CODE CHANGED. The kill switch was a measurement patch: pristine copy under
+`crates/lenke-engine/target/pristine-1861/`, restored byte-identically (`git diff` empty), the dist
+rebuilt and re-checked for the marker, and the probe re-run against the restored engine.
+
+GATES. bun run check 0 read unpiped; gremlin 2166 tests green against the restored dist.

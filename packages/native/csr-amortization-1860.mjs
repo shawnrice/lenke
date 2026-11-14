@@ -59,15 +59,22 @@ console.log(
   `  3-hop COLD (builds the CSR)   ${cold.ms.toFixed(2)} ms   answer ${String(cold.answer)}`,
 );
 console.log(`  3-hop WARM (min of 4)         ${warmMin.toFixed(2)} ms`);
-console.log(`  => the engine's build costs    ${(cold.ms - warmMin).toFixed(2)} ms`);
+/**
+ * ⚠️⚠️ `cold - warm` IS NOT THE BUILD COST, and item 1860 quoted it as though it were — reporting
+ * 221 ms for a build that is really ~158. The first call in a process also pays the JIT tiering up,
+ * and item 1861 measured exactly how much: with the dense arm KILLED, so no CSR is built at all,
+ * `cold - warm` still read **157 ms**. A subtraction that large cannot be attributed to one of two
+ * things happening inside it. The INTERLEAVED arm below is the direct measurement, because by then
+ * the code is warm and the only thing a write changes is that the memo must be rebuilt.
+ */
+console.log(
+  `  => cold-warm (build AND JIT)   ${(cold.ms - warmMin).toFixed(2)} ms   ⚠️ NOT the build alone`,
+);
 
-// THE TWO-HOP ROW, for the saving the build would buy it. It does NOT use the CSR today.
+// THE TWO-HOP ROW, which does NOT use the CSR today — the shape item 1860 declined.
 const twoWarm = Math.min(once(TWO).ms, once(TWO).ms, once(TWO).ms);
 
 console.log(`  2-hop today (min of 3)        ${twoWarm.toFixed(2)} ms   (no CSR)`);
-console.log(
-  `  => payback after              ${((cold.ms - warmMin) / (twoWarm - 12.68)).toFixed(1)} two-hop queries of one shape`,
-);
 
 /**
  * ⚠️ THE INTERLEAVED ARM. One `addVertex` with one edge advances `topologyVersion`, which drops the
@@ -88,7 +95,19 @@ for (let r = 0; r < 3; r += 1) {
   interleaved += performance.now() - t0;
 }
 
-console.log(`  3-hop INTERLEAVED with a write ${(interleaved / 3).toFixed(2)} ms   mean of 3`);
+const interMean = interleaved / 3;
+
+console.log(`  3-hop INTERLEAVED with a write ${interMean.toFixed(2)} ms   mean of 3`);
+console.log(`  => a write costs this row      ${(interMean / warmMin).toFixed(2)}x its warm cost`);
+/**
+ * THE REBUILD, MEASURED DIRECTLY: the code is warm by now, so the only thing the write adds is the
+ * rebuild. This is the number item 1695's criterion needs — "safe iff the walk costs more than the
+ * rebuild" — and it is the one to quote, not `cold - warm` above.
+ *
+ * ⚠️ WITH THE DENSE ARM KILLED THIS GOES TO ~0 (444.41 against a 437.31 warm), which is the control
+ * that says the subtraction really is isolating the rebuild rather than some other per-write cost.
+ */
+console.log(`  => ONE rebuild costs           ${(interMean - warmMin).toFixed(2)} ms   (direct)`);
 console.log(
-  `  => a write costs this row      ${(interleaved / 3 / warmMin).toFixed(2)}x its warm cost`,
+  `  => 1695's criterion: walk ${twoWarm.toFixed(0)} ms vs rebuild ${(interMean - warmMin).toFixed(0)} ms — two-hop ${twoWarm > interMean - warmMin ? 'PASSES' : 'FAILS'}`,
 );
