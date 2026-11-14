@@ -75,6 +75,13 @@ generator hand tied. `edge-csr-ceiling-1893.mjs` is the shape of probe that find
 arm (the same walk by hand over the same structure) separates DELEGATION from LAYOUT, and it said
 2.08x of the gap was delegation before any structure was blamed.
 
+**ITEM 1896 ADDED THE ARM THAT MAKES THIS METHOD ANSWER "WHICH PART"**: a hand walk PLUS the
+engine's own per-row work (label tests, bindings). On the two-hop projection it priced those at
+**5 ms of a 28 ms delegation gap**, which redirected the item from "remove the per-row overhead" to
+"it is the adjacency reads". `gql-hop2-ceiling-1896.mjs` has five arms for that reason — and its
+other result is a NULL: a one-item projection fast path, which looked like item 1893's twenty-line
+win, measured 78.36 → 76.67 ms and was reverted.
+
 **ITEM 1895 RAN THE SAME `handSet` METHOD ON THE GQL SIDE AND GOT THE OPPOSITE ANSWER**, which is
 why both probes are worth keeping: the Gremlin edge rung was 2.08x its hand walk (all delegation),
 while the GQL hop projection is **1.09x** its hand walk — nothing left to remove — and its whole gap

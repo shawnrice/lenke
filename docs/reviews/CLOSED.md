@@ -89425,3 +89425,59 @@ INVARIANTS. All seven byte-identity fuzzers green. `bun run spelling` at `SPELL_
 SPELL_REPS=9`: 0 answer disagreements, 0 groups over 2x clear of the null control.
 
 GATES. bun run check 0 and bun run test -- --skip-nx-cache across 21 projects, each read unpiped.
+
+## Item 1896 — the two-hop projection's 9.5x-per-extra-hop, split into its parts: **1.57x delegation + 3.48x layout**, with the obvious cheap half BUILT, measured NEUTRAL and REVERTED
+
+After item 1895 the GQL grid's depth-1 cells are 9-12 ms and depth 2 is 128.9 — and at FANOUT=1
+every depth returns the SAME 200,000 rows, so one more hop costing 9.5x is a route question, not a
+work question. Isolated, one shape per process, 200,000 vertices:
+
+      MATCH (a:P)-[:E]->(b:P) RETURN b.k AS k                  8.22 ms   200,000 rows
+      MATCH (a:P)-[:E]->(b:P)-[:E]->(c:P) RETURN c.k AS k     77.18      200,000
+
+📏 **THE HAND ARMS SPLIT IT, which is the only way to tell delegation from layout** (a profile
+spreads this cost over `projectRow`, the bindings, the label tests and two `Map.get`s).
+`gql-hop2-ceiling-1896.mjs`, same size, median of 9:
+
+      the engine's rung                             78.36 ms
+      the same two-hop walk BY HAND                 50.04      ⬅ 1.57x of delegation
+      the same PLUS labels and bindings per row      55.21      ⬅ those cost only 5 ms of it
+      the same over two CSR levels                   14.63      ⬅ 3.48x of layout
+      the same pushing bare values                   11.51      ⬅ the row object is ~3 ms
+
+⚠️ **AND THE OBVIOUS CHEAP HALF IS A NULL.** The engine's gap over the engine-ish hand arm is
+**23 ms**, and `projectRow` — a loop over the projection's items plus a key list — is what sits in
+it, so a one-item fast path looked like the twenty-line win item 1893 found. It is already written
+in the file for the DISTINCT arm, with the correctness argument ("byte-identical to `projectRow` for
+a one-item, non-star projection"), so this was that push for the non-distinct case.
+
+**Measured 78.36 → 76.67 ms. Two percent. Reverted** (item 737's precedent: built, neutral,
+reverted). So the 23 ms is NOT the projection's item loop, and whatever it is has no name yet —
+recorded as unexplained rather than guessed at.
+
+🔭 **WHAT IS PRICED AND NOT BUILT: the two CSR levels, at ~1.8x.** The arithmetic, from the arms
+above: the CSR saves 55.21 − 14.63 ≈ 40 ms of adjacency work but cannot touch the 23 ms the engine
+spends above the hand arm, so a CSR arm lands near **43 ms against 77 — 1.8x**, not the 5.3x the
+bare `handCsr` row suggests. What it would take:
+
+- the walk's nested loop duplicated with `off`/`nbr` reads in place of two `Map.get`s, which is
+  ~60 lines of hot loop in a file already at the complexity and line caps;
+- a decline for a selective label at any of the THREE positions (item 1688's lesson: the existing
+  walk iterates the start label's bucket, where a slot walk is O(V));
+- item 1890's second-ask policy, since two levels mean two CSR builds (~38 ms here).
+
+Against item 1895's 2.96x for twenty lines, and item 1466's precedent of declining 3.3x on
+perturbation grounds in a hot projection file, that is not this tick's trade. The probe stays so the
+next attempt starts from 43 ms rather than from 14.63.
+
+⚠️ **ONE METHOD NOTE WORTH MORE THAN THE NUMBERS.** The `handWalkEngineish` arm — the hand walk plus
+the label tests and bindings the engine does per row — exists because "1.57x of delegation" is not a
+target: it names a gap without saying which part is addressable. Adding the engine's own per-row
+work to the hand arm priced those at **5 ms of the 28**, which is what redirected this item from
+"remove the per-row overhead" to "it is the adjacency reads, and they cost 40 of the 63 ms
+available".
+
+NO ENGINE CODE CHANGED. One probe, and a null recorded with its number.
+
+GATES. bun run check 0; no source touched (the reverted file is byte-identical — `git status` clean
+apart from the new probe).
