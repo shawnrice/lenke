@@ -10,6 +10,14 @@ reading three file headers feels like overhead. It is the other way round."_ The
 here, and more so — the Rust side is indexed by question in `crates/lenke-engine/examples/README.md`
 and this side was not indexed at all.
 
+## ⚠️ `surface-parity-probe.ts` TIMES ONE CALL PER REP — its fast arms' ABSOLUTES are inflated ~6x
+
+Item 1877 looped its `seek-count` arm 20,000 times inside the timed region and read **2.86 us against
+the probe's 18.6**. `performance.now()` around a single 1.5-20 us call is close to its own resolution,
+and four of the six arms land in that band. **The RATIO is still worth chasing** — it survived the
+loop and grew, 2.17x to 2.6-3.6x — but the millisecond figure beside a fast arm is not worth quoting,
+and a flag should be re-measured with a loop before it is priced.
+
 ## ⚠️ FRAMES THAT ARE CLOSED — read this BEFORE nominating anything from a profile
 
 Every profile taken in this package surfaces the same handful of frames, because a write is not

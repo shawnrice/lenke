@@ -13,8 +13,18 @@
 // `bench:gremlin` compares Gremlin against native, and both spelling probes compare spellings
 // WITHIN one surface.
 //
-// STILL OPEN from its last run: `two-hop-count` with GQL 1.84x SLOWER than Gremlin (18.17 ms
-// against 9.85) — the other direction, unexamined.
+// ⚠️ ~~STILL OPEN: `two-hop-count` with GQL 1.84x SLOWER~~ — REVERSED at item 1877: GQL 8.82 ms
+// against Gremlin's 10.92, so GQL is now 1.24x FASTER and Gremlin's absolute fell from 18.17.
+//
+// ⚠️⚠️ AND THIS HARNESS TIMES ONE CALL PER REP, which is close to `performance.now()`'s resolution
+// for the fast arms (`count-all`, `hop-count`, `both-count` and `seek-count` all land at 1.5-20 us).
+// Item 1877 looped `seek-count` 20,000 times inside the timed region and read GQL 2.86 us against
+// this harness's 18.6 — the ABSOLUTES here are inflated ~6x. The RATIO survived and grew (2.6-3.6x),
+// so a flag is still worth chasing; the number beside it is not worth quoting.
+//
+// STILL OPEN from item 1877: `seek-count`, GQL 2.6-3.6x slower than Gremlin, because GQL's seeked
+// count is O(matches) where Gremlin's reads the index bucket's SIZE. Scaling says so: GQL
+// 2.40/3.68/6.16 us at 1111/2222/4444 matches against Gremlin's 1.01/1.20/1.31.
 //
 // Users pick GQL xor Gremlin (`single-engine-parallel-naming`), so a surface that is much slower
 // for an identical question costs HALF the users and nothing measures it: `bench:usage` runs GQL

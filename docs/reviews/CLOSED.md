@@ -87949,3 +87949,90 @@ deliverable is the table.
 
 GATES. bun run check 0 read unpiped. No source touched, so the suites are unaffected; they were
 verified green across all 21 projects at item 1875 with `--skip-nx-cache`.
+
+## Item 1877 — three invariant probes I owed after four planner changes: both spelling probes CLEAN, and surface parity found a real one — GQL's seeked count is O(matches) where Gremlin's is O(1), 4.7x and growing
+
+I shipped four planner changes this stretch (items 1863 fork-splice precursor, 1864 fork splice, 1867
+param page, 1873 reach refusal) and ran **none** of the cross-cutting invariant probes, each of which
+CLAUDE.md or its own header says to run when the planner changes. This item runs them.
+
+✅ **BOTH SPELLING PROBES CLEAN.** `bun run spelling` at `SPELL_N=200000 SPELL_REPS=9`: **0 groups
+over 2x, 0 answer disagreements.** `bun run spelling:gremlin`: the same, against null controls of
+1.21x at 3.1 ms and 1.04x at 40.3 ms. So none of the four changes created a spelling gap — which is
+the defect class they could most easily have created, since three of them added or widened a rung.
+
+⚠️ **AND THE GREMLIN PROBE'S 18 "NOT COMPARED" GROUPS ARE NOT A BLIND SPOT** — I checked before
+treating them as one. They include `id lookup: seeded V(id) vs hasId`, which item 1649 once measured
+at 13-16x, so the worry was reasonable. Item 1812 already lowered the floor, compared all 18, flagged
+three at 4.07-4.49x, confirmed them alone at 2.6-2.9x, and explained all three as `effectivePlan`
+REWRITE cost (per-execution, because universality is a property of the graph) rather than routing.
+The id-lookup groups were among the clean fifteen.
+
+## 🔭 THE SURFACE-PARITY PROBE FOUND ONE, and it is well characterized
+
+`surface-parity-probe.ts` asks whether the two surfaces cost the same for ONE question. Its header
+says to re-run it whenever either planner changes, and it carried an open finding. All 12 arms, one
+per process, answers matched on every pair:
+
+      question        GQL        Gremlin
+      count-all       0.00182    0.00339    GQL 1.86x faster
+      filter-count    2.87784    1.99217    Gremlin 1.44x
+      seek-count      0.01951    0.00898    Gremlin 2.17x    ⬅ over its own 2x threshold
+      hop-count       0.00190    0.00380    GQL 2.0x faster
+      both-count      0.00152    0.00377    GQL 2.5x faster
+      two-hop-count   8.82197   10.91562    GQL 1.24x faster
+
+✅ **`two-hop-count` HAS REVERSED and the probe's header is now stale**: it records "STILL OPEN:
+`two-hop-count` with GQL 1.84x SLOWER than Gremlin (18.17 ms)". GQL is now 1.24x FASTER and Gremlin's
+absolute fell 18.17 -> 10.92.
+
+⚠️ **THE PROBE'S HARNESS INFLATES THE ABSOLUTES ~6x AND UNDERSTATES THE RATIO.** It times ONE CALL
+PER REP with `performance.now()`, and at 5-19 us that is close to timer resolution. Looping the same
+query 20,000 times inside the timed region, on a fixture built the probe's own way, one surface per
+process:
+
+      seek   GQL 2.86 / 2.86 / 2.88 us      Gremlin 1.09 / 0.79 / 0.83      **2.6-3.6x**
+
+So the gap is real and LARGER than the probe said; its fast arms want a loop.
+
+❌ **THE FIXED-COST EXPLANATION IS RULED OUT.** GQL takes TEXT and parses; Gremlin takes an OBJECT
+and item 1841 priced its builder at 0.188 us. So a near-empty query separates the two terms:
+
+      floor (RETURN 1 / an empty label bucket)   GQL 0.25 us      Gremlin 0.30 us
+      seek                                       GQL 2.88         Gremlin 0.83
+      => the SEEK WORK                           GQL 2.63         Gremlin 0.53
+
+**GQL's fixed cost is if anything LOWER.** The whole gap is the seeked count itself.
+
+🔬 **AND THE MECHANISM IS SETTLED BY SCALING THE MATCH COUNT:**
+
+      N         matches    GQL       Gremlin
+      100,000     1111     2.40 us   1.01 us
+      200,000     2222     3.68      1.20
+      400,000     4444     6.16      1.31
+                           ⬆ linear  ⬆ nearly flat
+
+**GQL's seeked count is O(matches); Gremlin's is O(1) in the match count.** Gremlin reads the index
+bucket's SIZE where GQL iterates the bucket and counts. 4.7x at 4,444 matches, and it grows with the
+bucket — a less selective key pays more.
+
+⚠️⚠️ **BOTH ENGINES ARE CORRECT, and my first fixture could not have told me.** The obvious worry was
+that Gremlin reads the bucket size without applying a NON-vacuous label. It does not: on a
+discriminating fixture the truth is 100 for `:P` and 15 for `:Mgr`, and both engines answer 15.
+
+**My first attempt at that check was vacuous and reported "ok".** `age = i % 90` means the matches are
+`i ≡ 42 (mod 90)`, and 90 = 2·3²·5 — so a label on `i % 3` (or `i % 2`) is CONSTANT across the whole
+bucket and every age-42 vertex was also a `Mgr`, truth 100 against 100. The label condition has to be
+COPRIME to the age modulus; `i % 7` splits it. Same "one fixture cannot test a branch" failure this
+session has now hit five times.
+
+**THE TARGET, PRICED AND NOT BUILT:** GQL's `countShortcut` should read the seeked bucket's size
+instead of iterating it, when nothing else has to be checked per candidate. ⚠️ **The condition is
+label VACUITY, which is the open owner decision this stretch has routed around twice** — `verticesByLabel`
+is the index the public `v.labels = [...]` setter does not maintain. Gremlin already reads it
+(`dropVacuousLabels`, item 540), so GQL doing the same is consistent rather than novel — but it is a
+decision to RAISE, not to slip into a speedup, and that is why this item stops at the measurement.
+
+NO ENGINE CODE CHANGED. Two instruments (`seek-count-prof-1877.mjs`, `seek-parity-loop-1877.mjs`).
+
+GATES. bun run check 0 read unpiped; no source touched.
