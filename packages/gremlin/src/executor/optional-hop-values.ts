@@ -1,6 +1,7 @@
 import type { Edge, Graph, Vertex } from '@lenke/core';
 
 import type { Plan, Step } from '../ast.js';
+import { type ChainCsr, chainCsrFor } from './count-shortcut.js';
 import type { HopValues } from './hop-values.js';
 import { adjacentEdges, otherEndpoint, soleTypeBucket } from './movement.js';
 import { optionalSingleHop } from './optional-hop.js';
@@ -91,7 +92,7 @@ export const optionalHopValues = (plan: Plan, graph: Graph): HopValues | undefin
     values:
       chain === undefined
         ? walk(graph, { hop: hop as Hop, ...picked })
-        : chainWalk(graph, { hops: chain, ...picked }),
+        : chainValues(graph, { hops: chain, ...picked }),
   };
 };
 
@@ -185,6 +186,123 @@ type ChainSpec = {
  * `run` pays for: the chain's INTERMEDIATE vertices are on the general path's `path()` and are not
  * materialized here at all.
  */
+/**
+ * Every hop as a DIRECTED SINGLE TYPE, which is what the CSR can answer — or `undefined`.
+ *
+ * ⚠️ `both` AND MULTI-TYPE ARE REFUSED, and the second is a correctness refusal rather than a
+ * coverage one: `buildChainCsr` appends one named bucket at a time and is sound only because "the
+ * multi-type guard has already cleared", so an edge carrying two of the named types would be
+ * appended TWICE where `iterLabeled` dedupes it. `hop-chain-values.ts` passes a single type per hop
+ * for the same reason. An UNTYPED hop is refused too: it would walk every bucket, and the same
+ * double-append argument applies to an edge carrying two types.
+ */
+const csrShape = (
+  hops: readonly Hop[],
+): readonly { forward: boolean; label: string }[] | undefined => {
+  const out: { forward: boolean; label: string }[] = [];
+
+  for (const hop of hops) {
+    if (hop.kind === 'both' || hop.labels.length !== 1) {
+      return undefined;
+    }
+
+    out.push({ forward: hop.kind === 'out', label: hop.labels[0] });
+  }
+
+  return out;
+};
+
+/**
+ * The chain over the CSR: one flat `Int32Array` of neighbour SLOTS per hop, walked depth-first with
+ * an explicit index stack (item 1888).
+ *
+ * ⚠️ IT IS THE SAME STRUCTURE `hopChainValuesShortcut` USES, and that is why it is worth having:
+ * item 1887 left this walk at **44.83 ms against the two-hop fused walk's 3.77** for comparable
+ * rows, and named the gap as the CSR. `chainCsrFor` is cached per graph per `topologyVersion` per
+ * shape, so the build amortizes across calls and is dropped WHOLE on any topology write.
+ *
+ * ⚠️ THE ORDER IS THE GENERATOR WALK'S, which the differential fuzzer compares ORDERED for Gremlin.
+ * `far-mask-drain.ts` states the argument this inherits: "`chainCsrFor` numbers slots by
+ * `graph.verticesById` iteration order and fills each slot's run from that vertex's own bucket in
+ * set order, so walking slots in order and each run in order emits the identical sequence to the
+ * generator walk. Nothing is hoisted across vertices."
+ *
+ * ⚠️ AN EXPLICIT STACK, NOT RECURSION AND NOT NESTED GENERATORS. Item 1887 measured the three
+ * shapes: nested generators 78.78 ms, an unrolled double loop 68.75, and a per-hop helper that
+ * YIELDS **73.13 — worse than plain adjacency**. The frame is the cost, so there are none here: two
+ * `Int32Array`s hold the cursor and the bound per level.
+ */
+const csrChainWalk = (
+  graph: Graph,
+  spec: ChainSpec,
+  shape: readonly { forward: boolean; label: string }[],
+): Iterable<unknown> => ({
+  *[Symbol.iterator]() {
+    const { pick, drops } = spec;
+    const csrs: ChainCsr[] = shape.map((h) => chainCsrFor(graph, h.forward, [h.label]));
+    const [{ vtx }] = csrs;
+    const last = csrs.length - 1;
+    // One cursor and one bound per LEVEL, allocated once per query rather than per vertex.
+    const cur = new Int32Array(csrs.length);
+    const end = new Int32Array(csrs.length);
+
+    for (let slot = 0; slot < vtx.length; slot += 1) {
+      const start = vtx[slot];
+      let any = false;
+      let level = 0;
+
+      cur[0] = csrs[0].memo.off[slot];
+      end[0] = cur[0] + csrs[0].memo.len[slot];
+
+      while (level >= 0) {
+        if (cur[level] >= end[level]) {
+          level -= 1;
+
+          if (level >= 0) {
+            cur[level] += 1;
+          }
+
+          continue;
+        }
+
+        const target = csrs[level].memo.flat[cur[level]];
+
+        if (level === last) {
+          any = true;
+
+          const value = pick(vtx[target]);
+
+          if (!drops || value !== undefined) {
+            yield value;
+          }
+
+          cur[level] += 1;
+          continue;
+        }
+
+        level += 1;
+        cur[level] = csrs[level].memo.off[target];
+        end[level] = cur[level] + csrs[level].memo.len[target];
+      }
+
+      if (!any) {
+        const value = pick(start);
+
+        if (!drops || value !== undefined) {
+          yield value;
+        }
+      }
+    }
+  },
+});
+
+/** The CSR walk where every hop is a directed single type, and the generator walk otherwise. */
+const chainValues = (graph: Graph, spec: ChainSpec): Iterable<unknown> => {
+  const shape = csrShape(spec.hops);
+
+  return shape === undefined ? chainWalk(graph, spec) : csrChainWalk(graph, spec, shape);
+};
+
 const chainWalk = (graph: Graph, spec: ChainSpec): Iterable<unknown> => ({
   *[Symbol.iterator]() {
     const { hops, pick, drops } = spec;

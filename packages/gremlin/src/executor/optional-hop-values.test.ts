@@ -259,6 +259,73 @@ describe('optionalHopValues — the multi-step chain', () => {
     ).toStrictEqual([1, 1, 3, 2, 1, 3, 4, 5, 8]);
   });
 
+  /**
+   * ⚠️ AN EDGE CARRYING TWO OF THE NAMED TYPES, which is the one case the CSR arm must REFUSE. The
+   * CSR appends one named bucket at a time (`buildChainCsr`, sound only "because the multi-type
+   * guard has already cleared"), so such an edge would be appended TWICE where `iterLabeled`
+   * dedupes it. No other fixture in this file or in `optional-oracle-1884.mjs` has one, so without
+   * this test a mutant admitting multi-type hops into the CSR passes everything.
+   */
+  it('counts an edge carrying TWO of the named types ONCE', () => {
+    const g = new Graph();
+    const vs = [];
+
+    for (let i = 0; i < 3; i += 1) {
+      vs.push(g.addVertex({ id: `m${String(i)}`, labels: ['T'], properties: { n: i } }));
+    }
+
+    // ⚠️ m0 -> m1 carries BOTH types and m1 -> m2 carries ONLY `F`, which is what makes the test
+    // discriminating in both directions: an arm that double-appends the two-type edge yields `2`
+    // TWICE for m0, and an arm that reads only the FIRST named type never reaches m2 at all.
+    g.addEdge({ id: 'me0', from: vs[0], to: vs[1], labels: ['E', 'F'] });
+    g.addEdge({ id: 'me1', from: vs[1], to: vs[2], labels: ['F'] });
+
+    // One two-hop path (m0 -> m1 -> m2), so `m0` yields 2 exactly once. m1's chain dies at m2
+    // (no out-edge) so m1 emits itself; m2 has none so it emits itself.
+    expect(
+      toArray(traversal(V(), optional(traversal(out('E', 'F'), out('E', 'F'))), values('n')), g),
+    ).toStrictEqual([2, 1, 2]);
+  });
+
+  /**
+   * ⚠️ TWO SHAPES THAT KEEP THE GENERATOR ARM, added because the CSR arm took over every single-type
+   * chain and left three mutants aimed at the generator arm surviving vacuously. `both` in ANY
+   * position sends the whole chain to the generator walk, so these exercise its unrolled pair and
+   * its recursion with a hop whose direction still matters.
+   */
+  it('serves a `both`-led pair, where the SECOND hop is still directed', () => {
+    const g = fixture();
+
+    // both(E) then out(E): a: both = [b, c]; b's out = none; c's out = [c] => 3
+    //   b: both = [a]; a's out = [b, c] => 2, 3        c: both = [c, a, c] => c's out = c (3),
+    //   a's out = b(2), c(3), c's out = c(3)           d/e: none => themselves (4, 5)
+    //   h: both = [g]; g's out = none => dies => itself (8)
+    //   g: both = [h]; h's out = [g] => g has no `n` => dropped
+    expect(
+      toArray(traversal(V(), optional(traversal(both('E'), out('E'))), values('n')), g),
+    ).toStrictEqual([3, 2, 3, 3, 2, 3, 3, 4, 5, 8]);
+  });
+
+  it('serves a THREE-hop chain containing a `both`, which takes the recursion', () => {
+    const g = new Graph();
+    const vs = [];
+
+    for (let i = 0; i < 5; i += 1) {
+      vs.push(g.addVertex({ id: `q${String(i)}`, labels: ['T'], properties: { n: i * 10 } }));
+    }
+
+    for (let i = 0; i < 4; i += 1) {
+      g.addEdge({ id: `qe${String(i)}`, from: vs[i], to: vs[i + 1], labels: ['E'] });
+    }
+
+    // out(E).out(E).both(E) on a line: q0 -> q1 -> q2, then both(E) of q2 = [q3, q1] => 30, 10.
+    //   q1 -> q2 -> q3, both of q3 = [q4, q2] => 40, 20.      q2 -> q3 -> q4, both of q4 = [q3]
+    //   => 30.    q3, q4: the chain dies => themselves (30, 40).
+    expect(
+      toArray(traversal(V(), optional(traversal(out('E'), out('E'), both('E'))), values('n')), g),
+    ).toStrictEqual([30, 10, 40, 20, 30, 30, 40]);
+  });
+
   it('serves `id()` and a bare chain', () => {
     const g = fixture();
 

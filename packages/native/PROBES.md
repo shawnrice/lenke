@@ -106,8 +106,18 @@ first A/B on it reported a NULL that did not exist. Print the series.
 `gremlin-generic-floor-1887.mjs` is the floor that chose it over three other generic shapes.
 ⚠️ **Read that file's header before pricing anything off a route screen**: this shape's 4,002
 `applyStep` calls looked like the whole bill and fusing the step measured 92.42 -> 91.64 ms. A
-dispatch count says WHERE to measure, never HOW MUCH. The remaining 12x against `hop2: values` is
-the CSR (`chainCsrFor`), named and not built.
+dispatch count says WHERE to measure, never HOW MUCH. **Item 1888 then took the remaining gap with
+the CSR (`chainCsrFor`): 5.42x, 94.68 -> 17.47 ms.**
+
+⚠️ **`optional-mutants-1884.mjs` NOW TAKES A `which` OCCURRENCE** because that module holds three
+near-identical walks, and its first splice was WRONG in a way worth knowing: it emitted both the
+anchor and the replacement, the file stopped parsing, and **every mutant reported exactly `1
+failing` — including the one expected to survive.** A uniform failure count across every mutant is
+evidence of a broken harness, not of teeth.
+
+⚠️ **`optional-hop-floor-1884.mjs` REPORTS ITS COLD REPS** (`SERIES=1`), because a cached CSR build
+is paid on rep 1 and invisible afterwards — item 1695's "safe iff the walk costs more than the
+rebuild" can only be read there.
 
 ## Start here: `family-split-1880.ts` — which SHAPE owns a family's milliseconds
 

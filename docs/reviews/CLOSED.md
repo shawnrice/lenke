@@ -88764,7 +88764,7 @@ cleanest that probe has read in this stretch.
 
 GATES. bun run check 0 and bun run test -- --skip-nx-cache across 21 projects, each read unpiped.
 
-## Item 1887 — the multi-step `optional` chain: **2.14x**. ⚠️ And the OBVIOUS fix — the one the route screen's 4,002 dispatches point straight at — was built first, measured NEUTRAL, and reverted: a dispatch count is a route fact, not a price
+## Item 1887 — the multi-step `optional` chain: **2.14x** (⚠️ **5.42x after item 1888 gave it the CSR walk this entry named**). ⚠️ And the OBVIOUS fix — the one the route screen's 4,002 dispatches point straight at — was built first, measured NEUTRAL, and reverted: a dispatch count is a route fact, not a price
 
 Items 1883/1884 left four shapes the Gremlin route screen still reads as `generic`. **Floored first**
 (item 1878's rule), 20,000 vertices / 100,000 edges, one shape per process, median of 20 less 3
@@ -88824,7 +88824,8 @@ order-alternated rounds, one shape per process** (`optional-ab-1884.mjs`, now ca
 The floor probe's 63.08 and the A/B's 44.83 are the same code measured with 20 and 30 reps — item
 1884's warm-up finding again, and the reason the A/B's estimator is the one quoted.
 
-🔭 **AND THE REMAINING 12x IS NAMED AND PRICED: it is the CSR.** `hop2` does comparable rows in
+🔭 ~~**AND THE REMAINING 12x IS NAMED AND PRICED: it is the CSR.**~~ **TAKEN AT ITEM 1888: 44.83 →
+17.47 ms, 5.42x cumulative.** `hop2` does comparable rows in
 3.77 ms because `hopChainValuesShortcut` walks `chainCsrFor`'s flat buffer (items 1106/1418), where
 this walk does a `Map.get` per vertex per hop and iterates a `Set`. Giving the optional chain the
 same CSR walk is the next item, and it inherits the CSR's own burden — `csr_fresh` invalidation
@@ -88859,5 +88860,83 @@ is visible.
 
 INVARIANTS. All seven byte-identity fuzzers green. `bun run spelling:gremlin`: 0 answer
 disagreements, 0 groups over 2x clear of the null control.
+
+GATES. bun run check 0 and bun run test -- --skip-nx-cache across 21 projects, each read unpiped.
+
+## Item 1888 — the CSR walk item 1887 named: the `optional` chain goes **2.14x → 5.42x** (94.68 → 17.47 ms). And a uniform `1 failing` across every mutant was a BROKEN HARNESS, not nineteen caught mutants
+
+Item 1887 left this priced: its chain arm reached 2.14x and sat at **44.83 ms against the fused
+two-hop walk's 3.77** for comparable rows, with the gap named — `hopChainValuesShortcut` walks
+`chainCsrFor`'s flat `Int32Array` where that walk did a `Map.get` per vertex per hop and iterated a
+`Set`.
+
+✅ **THE CSR ARM, with the same structure and an explicit index stack.** `csrChainWalk` takes one
+CSR per hop (`chainCsrFor`, cached per graph per `topologyVersion` per shape) and walks depth-first
+with two `Int32Array`s holding a cursor and a bound per LEVEL — no recursion, no nested generators.
+Item 1887's three measurements are why: nested generators 78.78 ms, an unrolled double loop 68.75,
+and a per-hop helper that YIELDS **73.13, worse than plain adjacency**. The frame was the cost, so
+there are none.
+
+      shape         PRE (ms)              POST (ms)             verdict
+      opt2          94.33 94.68 96.82     17.37 17.64 17.47     5.42x   (2.14x at item 1887)
+      optional      11.09 9.34 8.54       6.81 6.90 7.04        1.35x   (item 1884, re-confirmed)
+      optional_id   6.50 6.94 7.56        6.37 4.37 4.69        1.48x
+      hop  [CONTROL]                                            1.10x
+      hop2 [CONTROL]                                            1.01x
+
+Kill-switch A/B, 30 reps less 2, median of three order-alternated rounds, one shape per process.
+Cumulatively the shape is **92.42 → 17.43 ms, 5.3x**, and the Gremlin workload screen's
+`optional: hop` row is 7.08 ms with `edge: outE.has(w).inV` (item 1883's shape) now the top row at
+7.16 — the screen has no shape above 7.2 ms left.
+
+📏 **ITEM 1695'S CRITERION IS CHECKED, NOT ASSUMED** — "safe iff the walk costs more than the
+rebuild". The floor probe now reports the COLD reps it drops, because a one-shot query is where a
+cached build is paid and from rep 2 it is invisible:
+
+      opt2  COLD 30.5 20.2  then 17.3 17.7 17.4 17.3 17.4 17.4
+      hop2  COLD 19.1  6.1  then  6.3  5.4  5.2  4.0  3.8  3.8
+
+Rep 1 carries ~13 ms over steady state (JIT and the CSR build together; `hop2`, which builds the
+same shared entry, carries ~15 ms the same way). Against the un-fused route's **94 ms steady**, a
+single cold call is still three times cheaper. The criterion holds with margin.
+
+⚠️ **AND THE MULTI-TYPE REFUSAL IS A CORRECTNESS CONDITION, not a coverage gap.** `buildChainCsr`
+appends one named bucket at a time and is sound only "because the multi-type guard has already
+cleared", so an edge carrying two of the named types would be appended TWICE where `iterLabeled`
+dedupes it. `csrShape` therefore refuses `both`, multi-type and untyped hops, and those keep item
+1887's generator walk exactly as it was.
+
+🦷 **MUTATION: 18 CAUGHT, 1 EXPECTED SURVIVOR — and getting there found three defects in my own
+instruments and tests.**
+
+⚠️⚠️ **FIRST, A BROKEN HARNESS THAT LOOKED LIKE A PERFECT RESULT.** Teaching the runner to pick WHICH
+occurrence to mutate (needed because this file now holds three near-identical walks) I wrote the
+splice as `[...parts.slice(0, which + 1), to + rest].join(from)`, which emits both `from` AND `to`.
+The file stopped parsing, so **every mutant reported exactly `1 failing` — including the one expected
+to survive.** Nineteen "catches" and a uniform failure count is evidence of a broken harness, not of
+teeth; CLAUDE.md's rule is that a verdict needs evidence of EXECUTION, and "every mutant breaks
+exactly one thing, identically" is the shape that rule is for.
+
+⚠️ **SECOND, THE CSR ARM MADE THREE EXISTING MUTANTS SURVIVE VACUOUSLY** by taking over the shapes
+their tests exercised: every single-type chain now routes to the CSR, so the mutants aimed at the
+generator arm's unrolled pair and its recursion were no longer reachable from any test. Two shapes
+that KEEP the generator arm were added — a `both`-led pair where the second hop is still directed,
+and a three-hop chain containing a `both` — each with a hand-derived oracle.
+
+⚠️ **THIRD, MY TWO-TYPE TEST WAS THE WRONG TEST.** It had `m0 -E,F-> m1 -E-> m2`, where walking only
+the FIRST named type reaches the same rows, so a mutant admitting multi-type hops into the CSR
+passed. Making the second edge `F`-only discriminates in both directions: a first-label-only arm
+never reaches `m2`, and a double-appending arm yields the row twice.
+
+The expected survivor is unchanged — the chain gate's `length < 2`, UNREACHABLE rather than untested
+(item 475's distinction), because `optionalSingleHop` is tried first.
+
+🔭 **THE ROUTE CONTRACT: `optional-oracle-1884.mjs` runs 25 traversals over three fixtures — 75
+pairs, ORDERED, every one identical**, 63 claimed and the controls none, both arms asserted. The
+chain2/chain3 single-type queries exercise the CSR arm and the `both`/untyped/multi-type ones the
+generator arm, so both routes are covered by the same oracle.
+
+INVARIANTS. All seven byte-identity fuzzers green. `bun run spelling:gremlin`: 0 answer
+disagreements, 0 groups over 2x clear of the null control. `bun run bench:gremlin`: every row `same`.
 
 GATES. bun run check 0 and bun run test -- --skip-nx-cache across 21 projects, each read unpiped.

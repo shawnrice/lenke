@@ -90,6 +90,14 @@ const plan = SHAPES[SHAPE]();
 const series = [];
 let rows = 0;
 
+/**
+ * ⚠️ EVERY REP IS RECORDED AND THE WARM-UPS ARE REPORTED SEPARATELY, because rep 1 is where a
+ * one-shot query's costs live — including item 1888's CSR build, which is cached per graph per
+ * `topologyVersion` and so is invisible from rep 2 onwards. Item 1695's criterion for an arm like
+ * that is "safe iff the walk costs more than the rebuild", and only the cold rep can say.
+ */
+const cold = [];
+
 for (let r = 0; r < REPS + 2; r += 1) {
   const t0 = performance.now();
 
@@ -99,7 +107,15 @@ for (let r = 0; r < REPS + 2; r += 1) {
 
   if (r >= 2) {
     series.push(ms);
+  } else {
+    cold.push(ms);
   }
+}
+
+if (process.env.SERIES === '1') {
+  console.log(
+    `# ${SHAPE} COLD reps (dropped from the median): ${cold.map((x) => x.toFixed(1)).join(' ')}`,
+  );
 }
 
 // ⚠️ THE SERIES IS PRINTABLE AND THAT IS NOT A CONVENIENCE. CLAUDE.md: "for the TS per-row path,

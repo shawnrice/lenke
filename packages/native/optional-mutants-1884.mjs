@@ -23,14 +23,16 @@ const SRC = `${ROOT}/packages/gremlin/src/executor/optional-hop-values.ts`;
 const PRISTINE = `${ROOT}/crates/lenke-engine/target/pristine-1884-edge-filtered.ts`;
 const TEST = 'src/executor/optional-hop-values.test.ts';
 
-/** `[name, from, to, expectedOccurrences]` — each a change that must break at least one test. */
+/** `[name, from, to, expectedOccurrences, whichOccurrence = 0]`. */
 const MUTANTS = [
   ['far end swapped', 'pick(forward ? e.to : e.from)', 'pick(forward ? e.from : e.to)', 1],
   // ⚠️ `if (!any) {` NOW APPEARS TWICE — the single-hop walk and item 1887's chain walk — and the
   // anchor assertion is what said so rather than a silent half-applied patch. The count is declared
   // as 2 and `replace` takes the FIRST, which is the single-hop walk; the chain's own empty branch
   // has its own entry below.
-  ['empty branch deleted (single-hop walk)', 'if (!any) {', 'if (false) {', 2],
+  ['empty branch deleted (single-hop walk)', 'if (!any) {', 'if (false) {', 3, 1],
+  ['empty branch deleted (generator chain)', 'if (!any) {', 'if (false) {', 3, 0],
+  ['empty branch deleted (CSR chain)', 'if (!any) {', 'if (false) {', 3, 2],
   [
     'any set from the VALUE, not the edge',
     'any = true;\n\n          const value = pick(forward ? e.to : e.from);',
@@ -43,6 +45,7 @@ const MUTANTS = [
     'const value = pick(v);\n\n        if (!drops || value !== undefined) {',
     'const value = pick(v);\n\n        if (true) {',
     2,
+    1,
   ],
   [
     'missing-key drop disabled',
@@ -105,6 +108,49 @@ const MUTANTS = [
   const hops: Hop[] = [];`,
     1,
   ],
+  [
+    'CSR: the cursor bound is off by one (one extra neighbour per run)',
+    'if (cur[level] >= end[level]) {',
+    'if (cur[level] > end[level]) {',
+    1,
+  ],
+  [
+    'CSR: the far end is the START vertex, not the target slot',
+    'const value = pick(vtx[target]);',
+    'const value = pick(vtx[slot]);',
+    1,
+  ],
+  [
+    'CSR: `any` is set when the FIRST hop has a neighbour',
+    `        if (level === last) {
+          any = true;`,
+    `        any = true;
+
+        if (level === last) {`,
+    1,
+  ],
+  [
+    'CSR: a MULTI-TYPE hop is admitted — an edge with two named types counts twice',
+    "if (hop.kind === 'both' || hop.labels.length !== 1) {",
+    "if (hop.kind === 'both') {",
+    1,
+  ],
+  [
+    "CSR: the second level reads the START slot's run, not the target's",
+    'cur[level] = csrs[level].memo.off[target];',
+    'cur[level] = csrs[level].memo.off[slot];',
+    1,
+  ],
+  [
+    'CSR: the self-emit branch drops nothing',
+    `        const value = pick(start);
+
+        if (!drops || value !== undefined) {`,
+    `        const value = pick(start);
+
+        if (true) {`,
+    1,
+  ],
 ];
 
 /**
@@ -152,7 +198,7 @@ try {
 
   console.log(`baseline: ${/(\d+ pass)/.exec(base.text)?.[1] ?? '?'}\n`);
 
-  for (const [name, from, to, want] of MUTANTS) {
+  for (const [name, from, to, want, which = 0] of MUTANTS) {
     // RESTORE BEFORE applying the next mutant, never only after the loop — an interrupted run must
     // not leave a mutant in the tree for `git diff` to be the only thing standing in its way.
     writeFileSync(SRC, pristine);
@@ -165,7 +211,20 @@ try {
       );
     }
 
-    writeFileSync(SRC, pristine.replace(from, to));
+    // ⚠️ WHICH OCCURRENCE, because this file now holds THREE near-identical walks (the single hop,
+    // the generator chain and the CSR chain) and `replace` takes the first. A mutant aimed at one
+    // walk silently landing in another is a mutant that proves nothing — three of them did exactly
+    // that when the CSR arm took over the shapes their tests exercised.
+    const parts = pristine.split(from);
+
+    // ⚠️ THE FIRST VERSION OF THIS SPLICE WAS WRONG AND THE TELL WAS A UNIFORM `1 failing` ON EVERY
+    // MUTANT (including the one expected to survive): it emitted both `from` AND `to`, so the file
+    // no longer parsed and every run failed identically. A mutation verdict needs evidence of
+    // EXECUTION, and "every mutant breaks exactly one thing" is evidence of a broken harness.
+    writeFileSync(
+      SRC,
+      `${parts.slice(0, which + 1).join(from)}${to}${parts.slice(which + 1).join(from)}`,
+    );
 
     const r = run();
     const result = /(\d+ pass, )?(\d+) fail/.exec(r.text);
