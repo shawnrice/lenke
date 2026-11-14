@@ -26,7 +26,7 @@
 import type { Graph } from '@lenke/core';
 
 import type { Clause, CountValue, Expr, SortItem } from '../ast.js';
-import type { Params, Row } from './core.js';
+import type { CClause, Params, Row } from './core.js';
 import { resolveCount } from './rows.js';
 import { reducedRowComparator, sortColumnKind } from './sort-column-specialize.js';
 import { compareSort } from './values.js';
@@ -640,3 +640,27 @@ export const pagedRows = (inner: RowsProducer | null, skip: CountValue): RowsPro
     return rows === null ? null : pageSlice(rows, skip, params);
   };
 };
+
+/**
+ * A `RETURN` clause with its sort and window removed — item 1827, shared since item 1849.
+ *
+ * ⚠️ THE SORT IS STRIPPED FROM BOTH THE AST AND THE COMPILED CLAUSE. An ordered rung gates on the
+ * AST projection (`plainRowProjection` refuses an `orderBy`) and builds rows from the compiled one,
+ * so leaving either in place would make the base detector decline the shape it is being handed.
+ *
+ * ⚠️ IT LIVES HERE BECAUSE THREE RUNGS NOW USE IT. `chain-projection` and `hop2-projection` each
+ * carried their own copy, which is item 1832's near-twin hazard: two identical helpers that must
+ * stay identical, with nothing to make a drift loud. `outputColumnSorts` and `sortedRows` — the
+ * other two halves of the same trick — already live here.
+ *
+ * At MODULE SCOPE because it captures nothing: `consistent-function-scoping` is right that a
+ * closure rebuilt per compile buys nothing, and `ts-closure-size-is-load-bearing` records that
+ * closure shape in this package is not free.
+ */
+export const withoutSortOrWindow = <T extends Clause | CClause>(c: T): T =>
+  c.kind === 'return'
+    ? {
+        ...c,
+        projection: { ...c.projection, orderBy: undefined, skip: undefined, limit: undefined },
+      }
+    : c;

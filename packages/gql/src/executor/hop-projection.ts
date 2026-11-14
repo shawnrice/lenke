@@ -42,6 +42,7 @@ import {
   sortRowsByColumns,
   sortedRows,
   unsortedPageRoute,
+  withoutSortOrWindow,
 } from './ordered-rows.js';
 import { predicateCannotRaise, satisfies } from './predicates.js';
 import { foldFor } from './projection.js';
@@ -2209,6 +2210,82 @@ export const detectOptionalHopProjection = (
 
     return rows;
   };
+};
+
+/**
+ * `MATCH <anchor> OPTIONAL MATCH <hop> RETURN <items> ORDER BY <output columns>` — item 1849.
+ *
+ * ⚠️ THE THIRD MODIFIER CLIFF FOUND ON THIS RUNG, and the largest. `detectOptionalHopProjection`
+ * gates on `plainRowProjection`, which refuses an `orderBy`, so adding an `ORDER BY` to an
+ * OPTIONAL hop dropped it to the general matcher: **2081 ns a row against the unordered shape's
+ * 111 — 18.7x**, at 20,000 vertices. The two siblings are measured and recorded as still open: an
+ * edge VARIABLE (`-[e:E]->` reading `e.w`) costs 1045 ns a row and an outer clause `WHERE` 1028,
+ * both ~9.4x, and neither is a sort problem.
+ *
+ * ⚠️ IT REUSES THE BASE DETECTOR'S WHOLE GATE by handing it the same clauses with the sort
+ * stripped — item 1827's trick, now at its third call site. Restating the gate here would be a
+ * second place for the two to disagree about which shapes are admissible, and that disagreement
+ * would be a wrong ROUTE rather than a wrong answer, so nothing would fail loudly.
+ *
+ * ⚠️ SORTING IS SOUND ON TOP OF THIS WALK and that is not inherited from the chain case. Row order
+ * is unspecified (item 198), so the rung may emit in its own order and be sorted afterwards — but
+ * only because `outputColumnSorts` refuses a sort key that does not name an OUTPUT COLUMN, and
+ * because the window is refused outright above. With a `SKIP`/`LIMIT` the order would decide WHICH
+ * rows survive, and the OPTIONAL walk's NULL-filled rows make that especially visible.
+ *
+ * ⚠️ TWO MUTANTS SURVIVE HERE AND BOTH ARE DEFENSIVE, recorded so the zeroes are not later read as
+ * load-bearing (item 1849's mutation run):
+ *
+ *   - stripping the sort from the COMPILED clause as well as the AST one. The base detector reads
+ *     the compiled clause only for `projection.aggregating`, so the compiled strip changes nothing
+ *     HERE. It is kept because it mirrors the chain and hop-2 call sites exactly — one trick, one
+ *     shape — and because a base detector that later consulted the compiled `orderBy` would
+ *     otherwise decline silently.
+ *   - the shared `withoutSortOrWindow` dropping its window clearing. Unreachable from this rung,
+ *     because a window is refused above before the strip is ever called.
+ *
+ * A mutant that survives for a stated reason is a different thing from one nobody tried.
+ */
+export const detectOptionalOrderedProjection = (
+  clauses: readonly Clause[],
+  compiled: readonly CClause[],
+): RowsFn | null => {
+  if (clauses.length !== 3) {
+    return null;
+  }
+
+  const [, , ret] = clauses;
+
+  if (ret.kind !== 'return') {
+    return null;
+  }
+
+  const { projection } = ret;
+
+  if (
+    (projection.orderBy?.length ?? 0) === 0 ||
+    projection.skip !== undefined ||
+    projection.limit !== undefined
+  ) {
+    return null;
+  }
+
+  const cols = projection.items.map((item, i) => item.alias ?? `__col${i}`);
+  const plan = outputColumnSorts(ret, cols);
+
+  // `undefined` is "no sort" (impossible here, the orderBy is non-empty) and `null` is a DECLINE:
+  // a key that does not name an output column cannot be answered by sorting the rung's rows.
+  if (plan === undefined || plan === null) {
+    return null;
+  }
+
+  return sortedRows(
+    detectOptionalHopProjection(
+      clauses.map((c, i) => (i === 2 ? withoutSortOrWindow(c) : c)),
+      compiled.map((c, i) => (i === 2 ? withoutSortOrWindow(c) : c)),
+    ),
+    plan,
+  );
 };
 
 export const detectHopProjection = (

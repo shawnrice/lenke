@@ -1589,8 +1589,14 @@ const fastPath = (linear: CLinear, graph: Graph, params: Params): Row[] | undefi
   }
 
   // The OPTIONAL-hop PROJECTION (item 511) — one row per match, or one null-filled row.
-  if (linear.optionalHopProjection) {
-    return linear.optionalHopProjection(graph, params) ?? undefined;
+  // The OPTIONAL-hop pair, unordered first (item 1849). `??` keeps the same precedence two `if`s
+  // would, in ONE branch: the ordered rung is strictly narrower — it requires a sort — so the two
+  // never claim the same shape, and collapsing them keeps this function under the complexity gate
+  // that adding a twenty-ninth rung otherwise breaks.
+  const optional = linear.optionalHopProjection ?? linear.optionalOrderedProjection;
+
+  if (optional) {
+    return optional(graph, params) ?? undefined;
   }
 
   // Grouped `count(*)` off the label bucket — many rows, so its own hook. See

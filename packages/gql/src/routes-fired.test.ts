@@ -418,6 +418,13 @@ describe('every fast-path detector fires for its own shape', () => {
       'MATCH (a:L) OPTIONAL MATCH (a)-[:R]->(b) RETURN b.k AS k',
       ['optionalHopProjection'],
     ],
+    [
+      // Item 1849: the same shape with a sort over an output column, which used to fall off the
+      // rung entirely at 18.7x a row.
+      'optional hop projection, ordered',
+      'MATCH (a:L) OPTIONAL MATCH (a)-[:R]->(b) RETURN b.k AS k ORDER BY k',
+      ['optionalOrderedProjection'],
+    ],
 
     // --- reachability and FOR -----------------------------------------------------------
     [
@@ -456,7 +463,7 @@ describe('every fast-path detector fires for its own shape', () => {
 
   // Every one of the twenty-one is covered by the table above. Asserted rather than claimed, so a
   // detector added later without a route case fails HERE instead of going unguarded.
-  it('covers all twenty-eight detectors', () => {
+  it('covers all twenty-nine detectors', () => {
     const covered = new Set(CASES.flatMap(([, , want]) => want));
     const all = new Set(
       Object.keys(
@@ -468,7 +475,7 @@ describe('every fast-path detector fires for its own shape', () => {
     );
 
     expect([...all].filter((k) => !covered.has(k)).sort()).toEqual([]);
-    expect(all.size).toBe(28);
+    expect(all.size).toBe(29);
   });
 });
 

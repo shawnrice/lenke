@@ -10,7 +10,7 @@ import type { AlwaysRowsFn, RowsFn } from './hop-projection.js';
 import type { UnionHop } from './hop-sides.js';
 import { claimedByEarlierType, plainNode, plainRel, unionHopOf } from './hop-sides.js';
 import { effectiveLabel } from './labels.js';
-import { outputColumnSorts, sortedRows } from './ordered-rows.js';
+import { outputColumnSorts, sortedRows, withoutSortOrWindow } from './ordered-rows.js';
 import { plainRowProjectionIgnoringDistinct, projectRow, valueKey } from './rows.js';
 import { asTruth } from './scalars.js';
 import { rowLocal } from './shortcuts.js';
@@ -1126,25 +1126,6 @@ export const detectChainFoldedAggregate = (
     return [{ [outName]: agg.fold.finish(acc) }];
   };
 };
-
-/**
- * A `RETURN` clause with its sort and window removed — item 1827.
- *
- * ⚠️ THE SORT IS STRIPPED FROM BOTH THE AST AND THE COMPILED CLAUSE. The ordered rung gates on the
- * AST projection (`plainRowProjectionIgnoringDistinct` refuses an `orderBy`) and builds rows from
- * the compiled one, so leaving either in place would make it decline the shape it is being handed.
- *
- * At MODULE SCOPE because it captures nothing: `consistent-function-scoping` is right that a
- * closure rebuilt per compile buys nothing, and `ts-closure-size-is-load-bearing` records that
- * closure shape in this package is not free.
- */
-const withoutSortOrWindow = <T extends Clause | CClause>(c: T): T =>
-  c.kind === 'return'
-    ? {
-        ...c,
-        projection: { ...c.projection, orderBy: undefined, skip: undefined, limit: undefined },
-      }
-    : c;
 
 /**
  * `MATCH <chain> RETURN <items> ORDER BY <output columns>` — item 1827 (three-plus segments).

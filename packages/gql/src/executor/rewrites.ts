@@ -89,6 +89,7 @@ import {
   detectHopProjection,
   detectMultiHopAggregate,
   detectOptionalHopProjection,
+  detectOptionalOrderedProjection,
 } from './hop-projection.js';
 import {
   detectHop2FoldedAggregate,
@@ -2260,6 +2261,7 @@ export const compileLinear = (linear: LinearQuery): CLinear => {
     forCount: detectForCount(fast, clauses),
     forProjection: detectForProjection(fast, clauses),
     optionalHopProjection: detectOptionalHopProjection(fast, clauses),
+    optionalOrderedProjection: detectOptionalOrderedProjection(fast, clauses),
     groupCountShortcut: detectGroupedNodeCount(fast),
     groupHopShortcut: detectGroupedHopCount(fast),
     reachShortcut: detectReachableShortcut(fast, clauses),

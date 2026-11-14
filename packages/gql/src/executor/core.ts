@@ -5510,6 +5510,8 @@ export type CLinear = {
   forProjection: ((graph: Graph, params: Params) => Row[]) | null;
   optionalHopCount: ((graph: Graph, params: Params) => Row[]) | null;
   optionalHopProjection: RowsFn | null;
+  /** The same shape with an `ORDER BY` over output columns — item 1849. */
+  optionalOrderedProjection: RowsFn | null;
   countShortcut: ((graph: Graph, params: Params) => Row[]) | null;
   /** The DEGREE-ALGEBRA count over a bounded var-length OUT hop (item 573); else null. */
   // `Row[] | undefined` — the one rung that may decline at RUNTIME, because an endpoint label's

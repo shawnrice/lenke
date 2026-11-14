@@ -195,6 +195,33 @@ absence** — `{k: null}` is the one place in a pattern where that distinction i
 
 ## 5. Open — unblocked and priced
 
+- ~~**An `ORDER BY` dropped the OPTIONAL-hop rung**~~ - **CLOSED by item 1849** (2026-11-14), at
+  **11.24x** (two sort keys), **13.83x** (one) and **9.37x** (over a type union).
+  `detectOptionalHopProjection` gates on `plainRowProjection`, which refuses an `orderBy`, so
+  `MATCH (a) OPTIONAL MATCH (a)-[:E]->(b) RETURN … ORDER BY …` fell to the general matcher at
+  **2081 ns a row against the unordered shape's 111**. The new rung strips the sort, reuses the base
+  detector's WHOLE gate, and sorts the rows - item 1827's trick at its third call site.
+  **Four controls flat:** the plain optional 1.05x, a plain hop with ORDER BY 0.98x, and the two
+  SIBLING CLIFFS below at 1.01x each, which is why they are in the table.
+  **TWO MORE CLIFFS ON THIS RUNG ARE MEASURED AND STILL OPEN**, found by the same sweep and left
+  deliberately: an edge VARIABLE (`-[e:E]->` reading `e.w`) costs **1045 ns a row** and an OUTER
+  clause `WHERE` **1028**, both ~9.4x against the 111 baseline, and neither is a sort problem. Each
+  makes the rung decline outright (`routes()` returns `[]`).
+  **`withoutSortOrWindow` is now shared** from `ordered-rows.ts` beside `outputColumnSorts` and
+  `sortedRows`, instead of being copied in `chain-projection` and `hop2-projection` - item 1832's
+  near-twin hazard, two identical helpers that must stay identical with nothing to make a drift
+  loud.
+  **The oracle is `WHERE true`**, a no-op that declines the rung (an outer `WHERE` is one of the
+  three refusals), so the same question runs down the general path. Every assertion compares
+  ARRAYS: with an `ORDER BY` the sequence IS the contract, and the fixture leaves half its vertices
+  unmatched so the NULL-filled rows have to sort where the general path puts them.
+  5 mutants, **3 caught** including the null-result control. The 2 survivors are DEFENSIVE and are
+  documented in place rather than left as apparent holes: stripping the sort from the COMPILED
+  clause changes nothing here (the base detector reads it only for `aggregating`), and the shared
+  strip's window clearing is unreachable because a window is refused before it is called.
+  The ladder now collapses the two OPTIONAL rungs into one `??` branch - same precedence, and it
+  keeps `fastPath` under the complexity gate that a twenty-ninth rung otherwise breaks.
+
 - ~~**The reachability rung refused a BOUNDED quantifier**~~ - **CLOSED by item 1848**
   (2026-11-14), at **36.56x**. `detectReachableShortcut` required `q.max === null`, so an unbounded
   `->+` got a BFS over the reached set while `-[:E]->{1,3}` was sent to path ENUMERATION:
