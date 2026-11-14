@@ -99,10 +99,20 @@ const QUERIES = {
   'optional multi-type out values': () => traversal(V(), optional(traversal(out('E', 'F'))), values('n')),
   'optional F out values': () => traversal(V(), optional(traversal(out('F'))), values('n')),
   'optional out values count': () => traversal(V(), optional(traversal(out('E'))), values('n'), count()),
+  // The CHAIN arm (item 1887): two and three steps, each direction, and a mixed chain.
+  'optional chain2 values': () => traversal(V(), optional(traversal(out('E'), out('E'))), values('n')),
+  'optional chain2 id': () => traversal(V(), optional(traversal(out('E'), out('E'))), id()),
+  'optional chain2 bare': () => traversal(V(), optional(traversal(out('E'), out('E')))),
+  'optional chain3 values': () => traversal(V(), optional(traversal(out('E'), out('E'), out('E'))), values('n')),
+  'optional chain2 in': () => traversal(V(), optional(traversal(in_('E'), in_('E'))), values('n')),
+  'optional chain2 both': () => traversal(V(), optional(traversal(both('E'), both('E'))), values('n')),
+  'optional chain2 mixed': () => traversal(V(), optional(traversal(out('E'), in_('E'))), values('n')),
+  'optional chain2 untyped': () => traversal(V(), optional(traversal(out(), out())), values('n')),
+  'optional chain2 multi-type': () => traversal(V(), optional(traversal(out('E', 'F'), out('E', 'F'))), values('n')),
   'optional out values order': () => traversal(V(), optional(traversal(out('E'))), values('n'), order()),
   // CONTROLS the rung declines.
   'CONTROL out values': () => traversal(V(), out('E'), values('n')),
-  'CONTROL optional two hops': () => traversal(V(), optional(traversal(out('E'), out('E'))), values('n')),
+  
   'CONTROL seeded optional': () => traversal(V('v1'), optional(traversal(out('E'))), values('n')),
   'CONTROL optional values two keys': () => traversal(V(), optional(traversal(out('E'))), values('n', 's')),
 };

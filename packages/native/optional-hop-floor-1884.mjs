@@ -81,6 +81,9 @@ const SHAPES = {
   optional_id: () => traversal(V(), optional(traversal(out('E'))), id()),
   sparse_optional: () => traversal(V(), optional(traversal(out('E'))), values('n')),
   sparse_hop: () => traversal(V(), out('E'), values('n')),
+  // The CHAIN arm (item 1887), beside the two-hop walk that bounds it.
+  opt2: () => traversal(V(), optional(traversal(out('E'), out('E'))), values('n')),
+  hop2: () => traversal(V(), out('E'), out('E'), values('n')),
 };
 
 const plan = SHAPES[SHAPE]();

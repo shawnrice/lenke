@@ -26,7 +26,11 @@ const TEST = 'src/executor/optional-hop-values.test.ts';
 /** `[name, from, to, expectedOccurrences]` — each a change that must break at least one test. */
 const MUTANTS = [
   ['far end swapped', 'pick(forward ? e.to : e.from)', 'pick(forward ? e.from : e.to)', 1],
-  ['empty branch deleted', 'if (!any) {', 'if (false) {', 1],
+  // ⚠️ `if (!any) {` NOW APPEARS TWICE — the single-hop walk and item 1887's chain walk — and the
+  // anchor assertion is what said so rather than a silent half-applied patch. The count is declared
+  // as 2 and `replace` takes the FIRST, which is the single-hop walk; the chain's own empty branch
+  // has its own entry below.
+  ['empty branch deleted (single-hop walk)', 'if (!any) {', 'if (false) {', 2],
   [
     'any set from the VALUE, not the edge',
     'any = true;\n\n          const value = pick(forward ? e.to : e.from);',
@@ -34,10 +38,11 @@ const MUTANTS = [
     1,
   ],
   [
-    'self-emit drops nothing',
+    // Two walks have this branch since item 1887; `replace` takes the first (the single-hop walk).
+    'self-emit drops nothing (single-hop walk)',
     'const value = pick(v);\n\n        if (!drops || value !== undefined) {',
     'const value = pick(v);\n\n        if (true) {',
-    1,
+    2,
   ],
   [
     'missing-key drop disabled',
@@ -57,6 +62,49 @@ const MUTANTS = [
     'const { set } = direct;\n        const forward = true;',
     1,
   ],
+  [
+    'chain: the depth-2 arm reads the FIRST hop twice (mid ignored)',
+    'soleTypeBucket(mid, two[1].kind, two[1].labels)',
+    'soleTypeBucket(v, two[1].kind, two[1].labels)',
+    1,
+  ],
+  [
+    'chain: `any` is set on the FIRST hop, so a dead chain emits nothing',
+    `          for (const e2 of edges2) {
+            any = true;`,
+    `          any = true;
+
+          for (const e2 of edges2) {`,
+    1,
+  ],
+  [
+    'chain: the recursion is one hop short',
+    'const last = at === hops.length - 1;',
+    'const last = at === hops.length - 2;',
+    1,
+  ],
+  /**
+   * ⚠️ AN EXPECTED SURVIVOR, and item 475's rule says why it is kept rather than deleted: it is
+   * UNREACHABLE, not untested. `optionalSingleHop` is tried first and only its `undefined` reaches
+   * `hopChain`, so a one-step plan never gets here — and a one-step plan it WOULD decline (say
+   * `optional(count())`) fails the vertex-step test inside the loop anyway. The guard stays because
+   * it states the contract between the two arms, which is what keeps them disjoint if either gate
+   * is widened.
+   */
+  [
+    'EXPECTED SURVIVOR — chain: the gate admits a ONE-step sub-plan too',
+    `  if (plan.steps.length < 2) {
+    return undefined;
+  }
+
+  const hops: Hop[] = [];`,
+    `  if (plan.steps.length < 1) {
+    return undefined;
+  }
+
+  const hops: Hop[] = [];`,
+    1,
+  ],
 ];
 
 /**
@@ -65,6 +113,15 @@ const MUTANTS = [
  * first cut of this file read an empty result on the passing baseline and declared it broken. Item
  * 767 made the same mistake in the other direction.
  */
+/** The three outcomes as a label; a nested ternary is what the linter objects to. */
+const verdictLabel = (caught, expected) => {
+  if (caught !== false) {
+    return '✅ caught   ';
+  }
+
+  return expected ? '➖ survived (expected)' : '❌ SURVIVED';
+};
+
 const run = () => {
   const r = spawnSync('timeout', ['300', 'bun', 'test', TEST], {
     cwd: `${ROOT}/packages/gremlin`,
@@ -75,6 +132,11 @@ const run = () => {
 };
 
 copyFileSync(SRC, PRISTINE);
+
+/** Names that MUST survive, each with its reason stated at the entry above. */
+const EXPECTED_SURVIVORS = new Set([
+  'EXPECTED SURVIVOR — chain: the gate admits a ONE-step sub-plan too',
+]);
 
 const survivors = [];
 
@@ -117,12 +179,18 @@ try {
 
     const caught = r.code === 124 ? 'TIMEOUT (caught)' : r.code !== 0;
 
-    if (caught === false) {
+    const expected = EXPECTED_SURVIVORS.has(name);
+
+    if (caught === false && !expected) {
       survivors.push(name);
     }
 
+    if (caught !== false && expected) {
+      survivors.push(`${name} (was expected to SURVIVE and did not — update the entry)`);
+    }
+
     console.log(
-      `  ${caught === false ? '❌ SURVIVED' : '✅ caught   '}  ${name.padEnd(30)} ` +
+      `  ${verdictLabel(caught, expected)}  ${name.padEnd(30)} ` +
         `${result === null ? '' : `${result[2]} failing`}${r.code === 124 ? ' — timed out' : ''}`,
     );
   }

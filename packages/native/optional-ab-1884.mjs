@@ -31,7 +31,7 @@ const PRISTINE = `${ROOT}/crates/lenke-engine/target/pristine-1884-dist.mjs`;
 const CALL = 'optionalHopValues(effective, graph)';
 const KILLED = '(void 0 /* KILL_1884 */)';
 const REPS = process.env.REPS ?? '30';
-const SHAPES = ['optional', 'optional_id', 'hop'];
+const SHAPES = ['optional', 'opt2', 'optional_id', 'hop', 'hop2'];
 
 const med = (xs) => [...xs].sort((a, b) => a - b)[xs.length >> 1];
 

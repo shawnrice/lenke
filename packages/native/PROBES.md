@@ -102,6 +102,13 @@ first A/B on it reported a NULL that did not exist. Print the series.
   ignores `undefined` entries and that `in()` is the only spelling where the bucket's direction flag
   is observable.
 
+**Item 1887 extended all four to the multi-step chain** (`optional(out, out)`), 2.14x — and
+`gremlin-generic-floor-1887.mjs` is the floor that chose it over three other generic shapes.
+⚠️ **Read that file's header before pricing anything off a route screen**: this shape's 4,002
+`applyStep` calls looked like the whole bill and fusing the step measured 92.42 -> 91.64 ms. A
+dispatch count says WHERE to measure, never HOW MUCH. The remaining 12x against `hop2: values` is
+the CSR (`chainCsrFor`), named and not built.
+
 ## Start here: `family-split-1880.ts` — which SHAPE owns a family's milliseconds
 
 `workload-perf-screen.mjs` reports one number per family, and a family is a generator. Item 1879

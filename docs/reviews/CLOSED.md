@@ -88550,9 +88550,11 @@ is why this gap was invisible to it:
       generic   opt: optional count          2 applyStep calls
       generic   opt: optional two hops    4002 applyStep calls   ⬅ the sub-plan dispatch, per row
 
-That last row is the next candidate on this surface: `optionalSingleHop` refuses a multi-step
-sub-plan, so `optional(out, out)` still pays item 1480's per-traverser dispatch — 4,002 calls for
-2,000 vertices.
+~~That last row is the next candidate on this surface~~ — **TAKEN AT ITEM 1887, 2.14x, and the
+dispatch count turned out NOT to be the bill: fusing the STEP measured 92.42 -> 91.64 ms (neutral,
+reverted) and the win came from a chain arm in the VALUES rung.** `optionalSingleHop` refuses a
+multi-step sub-plan, so `optional(out, out)` paid item 1480's per-traverser dispatch — 4,002 calls
+for 2,000 vertices — and that was a route fact rather than a price.
 
 ⚠️ **ALSO EXTRACTED**: the five-rung `??` chain in `run` is now `fusedProjectedValues`, because the
 fifth rung took `run`'s complexity to 36 against a limit of 35 — the same extraction
@@ -88759,5 +88761,103 @@ collect-order refusals item 1829 states — plus two small depth2-vs-depth3 non-
 INVARIANTS. All seven byte-identity fuzzers green. `bun run spelling` at `SPELL_N=200000
 SPELL_REPS=9`: **0 answer disagreements and 0 groups over 2x clear of the null control** — the
 cleanest that probe has read in this stretch.
+
+GATES. bun run check 0 and bun run test -- --skip-nx-cache across 21 projects, each read unpiped.
+
+## Item 1887 — the multi-step `optional` chain: **2.14x**. ⚠️ And the OBVIOUS fix — the one the route screen's 4,002 dispatches point straight at — was built first, measured NEUTRAL, and reverted: a dispatch count is a route fact, not a price
+
+Items 1883/1884 left four shapes the Gremlin route screen still reads as `generic`. **Floored first**
+(item 1878's rule), 20,000 vertices / 100,000 edges, one shape per process, median of 20 less 3
+warm-up (`gremlin-generic-floor-1887.mjs`):
+
+      optional(out(E), out(E)).values(n)   92.42 ms   320,000 rows   289 ns a row   ⬅ 8x the rest
+      optional(out(E)).values(n)            6.41       80,000         80
+      outE(E).has(w, gt 3).inV().count()   12.31            1 row
+      outE(E).has(w, gt 3).count()         11.41            1
+      outE(E).has(w, gt 3).values(w)       11.42       45,713
+      outE(E).values(w)        [FUSED]     11.49       80,000
+
+✅ **AND THAT LAST PAIR IS A RESULT, NOT A CONTROL: the generic edge-values shape is AT PARITY with
+its fused twin** (11.42 against 11.49, within 1%). Item 1854's caveat in the flesh — a route
+difference is not automatically a cost one — so `edgef: outE has values` is struck off as a target
+rather than left looking open. The two filtered COUNTS are real but middling (~11-12 ms against a
+~6 ms rung-shaped floor), and they are recorded rather than taken.
+
+⚠️⚠️ **THE OBVIOUS FIX WAS BUILT, MEASURED NEUTRAL, AND REVERTED — the most useful finding here.**
+The route screen reads this shape as **4,002 `applyStep` calls for 2,000 vertices**: item 1480's
+per-traverser sub-plan dispatch in full (a one-element input array, a 103-arm dispatch, a generator
+per step, then the whole output materialized just to test non-emptiness). Fusing the STEP — exactly
+what item 1480 did for one hop — took **92.42 ms to 91.64**. Nothing. The dispatch count is not the
+cost at this width; the **320,000 traversers** are, and only a whole-plan rung emitting bare values
+removes those. `git checkout` on `dispatch.ts` and `optional-hop.ts`, both back to byte-identical.
+
+**A dispatch count is a route fact, not a price** — and this is the second time in three items that
+a route screen's most damning-looking number turned out not to be the bill (item 1887's 4,002 here;
+item 1882's finding was the opposite direction, where the screen was right and my one-off check was
+wrong). Both say the same thing: the screen says WHERE to measure, never HOW MUCH.
+
+✅ **WHAT WORKED is a chain arm in item 1884's values rung**, and it took three measurements to get
+there — each one a smaller generator chain than the last:
+
+      the recursive generator walk                       78.78 ms   (1.17x)
+      depth 2 unrolled to a double loop                  68.75      (the generator per vertex per hop)
+      the per-vertex BUCKET read through a yielding fn    73.13      ⬅ WORSE than plain adjacency
+      the bucket's `Set` iterated DIRECTLY, no frame      63.08      (1.46x on this probe)
+
+⚠️ **THE THIRD ROW IS THE lesson**: `soleTypeBucket` is the right structure — it is what
+`optional-hop.ts`'s single-hop walk already uses — but reading it through a helper that YIELDS put
+the generator frame straight back and measured worse than not bothering. A `Set` is directly
+iterable, so the bucket costs no frame at all; the branch is per vertex and the far-end pick is a
+plain function (`farEnd`) that inlines.
+
+📏 **THE AUTHORITATIVE NUMBER IS THE KILL-SWITCH A/B, 30 reps less 2, median of three
+order-alternated rounds, one shape per process** (`optional-ab-1884.mjs`, now carrying `opt2` and a
+`hop2` control):
+
+      shape         PRE (ms)              POST (ms)             verdict
+      opt2          97.38 95.25 95.84     42.46 47.52 44.83     2.14x
+      optional      9.82 9.10 8.90        6.50 7.00 6.49        1.40x  (item 1884, re-confirmed)
+      optional_id   6.80 6.60 6.94        4.28 4.82 4.64        1.47x  (ditto)
+      hop  [CONTROL]                                            0.99x
+      hop2 [CONTROL]                                            1.09x
+
+The floor probe's 63.08 and the A/B's 44.83 are the same code measured with 20 and 30 reps — item
+1884's warm-up finding again, and the reason the A/B's estimator is the one quoted.
+
+🔭 **AND THE REMAINING 12x IS NAMED AND PRICED: it is the CSR.** `hop2` does comparable rows in
+3.77 ms because `hopChainValuesShortcut` walks `chainCsrFor`'s flat buffer (items 1106/1418), where
+this walk does a `Map.get` per vertex per hop and iterates a `Set`. Giving the optional chain the
+same CSR walk is the next item, and it inherits the CSR's own burden — `csr_fresh` invalidation
+(ONE `add_edge` demotes every later read) and the emission-order argument `far-mask-drain.ts`
+states.
+
+🦷 **MUTATION: 10 CAUGHT, 1 EXPECTED SURVIVOR, and the anchor assertion fired TWICE in the right
+way.** Adding a second walk to the file made `if (!any) {` and the self-emit branch appear twice, and
+the runner refused to proceed rather than half-applying a patch — items 1870/1873's rule earning
+itself. Two chain mutants also exposed a vacuous test:
+
+- **`the recursion is one hop short` survived the three-hop test**, because on the shared fixture
+  only `c`'s self-loop extends a path, so the two-hop and three-hop answers are the SAME list. A
+  separate purely linear fixture (`p0 -> p1 -> … -> p4`) makes the depths distinguishable by
+  construction, and depths 2, 3 and 4 are now each pinned.
+- The expected survivor is the chain gate's `length < 2`, which is UNREACHABLE rather than
+  untested (item 475's distinction): `optionalSingleHop` is tried first, so a one-step plan never
+  reaches it. Kept because it states the contract that keeps the two arms disjoint.
+
+⚠️ **AND THREE OF MY HAND ORACLES WERE WRONG AND WERE RE-DERIVED, not copied from the engine.** The
+`in`/`both`/mixed chains over the shared fixture; the walk's answers then matched the corrected
+derivation exactly, vertex by vertex. Two details I had wrong, both properties of
+`bothEdgesOf`/`inEdgesOf` rather than of this walk: a SELF-LOOP appears in BOTH the out and in
+buckets (so `both(E)` on `c` yields `c` twice and `a` once), and a vertex whose chain SURVIVES but
+whose values all drop emits nothing, where one whose chain DIES emits itself.
+
+🔭 **THE ROUTE CONTRACT IS CHECKED AGAINST THE ROUTE IT DISPLACES**: `optional-oracle-1884.mjs` now
+runs 25 traversals over three fixtures — **75 pairs, ORDERED, every one identical**, 63 claimed and
+the controls none, both arms asserted. One route assertion FLIPPED deliberately (item 1884 pinned the
+multi-step sub-plan as declined; it is now claimed) and the old row is kept as a comment so the flip
+is visible.
+
+INVARIANTS. All seven byte-identity fuzzers green. `bun run spelling:gremlin`: 0 answer
+disagreements, 0 groups over 2x clear of the null control.
 
 GATES. bun run check 0 and bun run test -- --skip-nx-cache across 21 projects, each read unpiped.

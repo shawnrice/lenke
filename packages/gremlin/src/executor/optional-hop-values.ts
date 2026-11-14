@@ -1,4 +1,4 @@
-import type { Graph } from '@lenke/core';
+import type { Edge, Graph, Vertex } from '@lenke/core';
 
 import type { Plan, Step } from '../ast.js';
 import type { HopValues } from './hop-values.js';
@@ -67,8 +67,12 @@ export const optionalHopValues = (plan: Plan, graph: Graph): HopValues | undefin
   }
 
   const hop = optionalSingleHop(wrapper.plan);
+  // ⚠️ THE CHAIN IS TRIED SECOND, so the single-hop walk above keeps every plan it already served:
+  // `hopChain` requires TWO OR MORE steps, so the two are disjoint by length and the order is for
+  // reading. See `optionalHopChainValues` for what the extra width costs and why `any` moves.
+  const chain = hop === undefined ? hopChain(wrapper.plan) : undefined;
 
-  if (hop === undefined) {
+  if (hop === undefined && chain === undefined) {
     return undefined;
   }
 
@@ -84,8 +88,199 @@ export const optionalHopValues = (plan: Plan, graph: Graph): HopValues | undefin
 
   return {
     rest: steps.slice(proj === undefined ? 2 : 3),
-    values: walk(graph, { hop, ...picked }),
+    values:
+      chain === undefined
+        ? walk(graph, { hop: hop as Hop, ...picked })
+        : chainWalk(graph, { hops: chain, ...picked }),
   };
+};
+
+/** One vertex-moving step, as `optionalSingleHop` reports it. */
+type Hop = { kind: 'out' | 'in' | 'both'; labels: readonly string[] };
+
+/**
+ * The sub-plan as a CHAIN of two or more vertex steps, or `undefined` for every other shape
+ * (item 1887).
+ *
+ * ⚠️ TWO OR MORE. One step is `optionalSingleHop`'s and must stay there — the walks differ in more
+ * than width (see `chainWalk`), so overlapping them would be two routes for one shape.
+ */
+const hopChain = (plan: Plan): readonly Hop[] | undefined => {
+  if (plan.steps.length < 2) {
+    return undefined;
+  }
+
+  const hops: Hop[] = [];
+
+  for (const step of plan.steps) {
+    if (step.kind !== 'out' && step.kind !== 'in' && step.kind !== 'both') {
+      return undefined;
+    }
+
+    hops.push({ kind: step.kind, labels: step.labels });
+  }
+
+  return hops;
+};
+
+/**
+ * The far end of `e` for this hop, given the bucket shape `soleTypeBucket` reported.
+ *
+ * ⚠️ A PLAIN FUNCTION, NOT A GENERATOR, and that distinction is measured: reading each hop's targets
+ * through a function that YIELDS put a generator frame back per vertex per hop and measured
+ * **73.13 ms against the 68.75 of plain `adjacentEdges`**. This one is called per EDGE and returns a
+ * vertex, so it inlines — and it exists at all only because the nested ternary it replaces is a
+ * lint error.
+ */
+const farEnd = (
+  hop: Hop,
+  bucket: { readonly forward: boolean } | undefined,
+  e: Edge,
+  from: Vertex,
+): Vertex => {
+  if (bucket === undefined) {
+    return otherEndpoint(hop.kind, e, from);
+  }
+
+  return bucket.forward ? e.to : e.from;
+};
+
+type ChainSpec = {
+  readonly hops: readonly Hop[];
+  readonly pick: (e: Element) => unknown;
+  readonly drops: boolean;
+};
+
+/**
+ * `V().optional(out(T), out(T)).values(k)` and deeper — item 1887.
+ *
+ * ⚠️ IT IS THE LARGEST GENERIC SHAPE THE GREMLIN ROUTE SCREEN HAD LEFT, by a factor of eight
+ * (`gremlin-generic-floor-1887.mjs`, 20,000 vertices / 100,000 edges, one shape per process, median
+ * of 20 less 3 warm-up):
+ *
+ * ```text
+ *   optional(out(E), out(E)).values(n)   92.42 ms   320,000 rows   289 ns a row
+ *   optional(out(E)).values(n)            6.41       80,000         80          ⬅ item 1884's twin
+ *   outE(E).has(w, gt 3).count()         11.41            1 row
+ *   outE(E).has(w, gt 3).values(w)       11.42       45,713
+ *   outE(E).values(w)        [FUSED]     11.49       80,000         ⬅ at PARITY, so not a target
+ * ```
+ *
+ * ⚠️⚠️ AND THE OBVIOUS FIX WAS BUILT FIRST, MEASURED NEUTRAL, AND REVERTED — which is the finding
+ * worth keeping. The route screen reads this shape as **4,002 `applyStep` calls for 2,000
+ * vertices**, i.e. item 1480's per-traverser sub-plan dispatch in full: a one-element input array, a
+ * 103-arm dispatch and a generator per step, then the whole output materialized just to test
+ * non-emptiness. Fusing the STEP — the exact change item 1480 made for one hop — took 92.42 ms to
+ * **91.64**. The dispatch count is not the cost at this width; the 320,000 TRAVERSERS are, and only
+ * a whole-plan rung emitting bare values removes those. A dispatch count is a route fact, not a
+ * price.
+ *
+ * ⚠️ `any` MOVES TO THE END OF THE CHAIN, and that is a correctness difference rather than a loop
+ * shape. At one hop every adjacent edge produces an output, so "has an edge" and "produced a row"
+ * are the same question; at two they are not — a vertex whose neighbours have no out-edges produces
+ * NOTHING and must therefore emit ITSELF. The single-hop walk's `any = true` sits inside its edge
+ * loop and must stay there; this one sets it only where a row is actually emitted.
+ *
+ * ⚠️ NO TRAVERSER AND NO PATH, like every walk in this file, which is what the `tracksPath` guard in
+ * `run` pays for: the chain's INTERMEDIATE vertices are on the general path's `path()` and are not
+ * materialized here at all.
+ */
+const chainWalk = (graph: Graph, spec: ChainSpec): Iterable<unknown> => ({
+  *[Symbol.iterator]() {
+    const { hops, pick, drops } = spec;
+    // Hoisted once per QUERY, not per vertex: which arm runs is a property of the plan.
+    const two = hops.length === 2 ? hops : undefined;
+
+    for (const v of graph.vertices) {
+      let any = false;
+
+      /**
+       * ⚠️ DEPTH TWO IS A DOUBLE LOOP, NOT THE RECURSION, AND THE DIFFERENCE IS MOST OF THE WIN.
+       * The recursive `descend` below is correct and was the whole walk at first: it took the shape
+       * from **92.42 ms to 78.78**, 1.17x, where the fused two-hop values walk does 320,000 rows in
+       * ~4.4 ms. The cost is the GENERATOR per vertex per hop plus a `yield*` delegation per row —
+       * 100,000 generator objects on this fixture — which is the same delegation chain
+       * `hop-values.ts` and `hop-chain-values.ts` each removed by hand-walking. Two hops is the
+       * spelling anyone writes, so it gets the loop and deeper chains keep the recursion.
+       */
+      if (two !== undefined) {
+        const b1 = soleTypeBucket(v, two[0].kind, two[0].labels);
+        // ⚠️ A `Set` IS DIRECTLY ITERABLE, so taking the bucket costs NO generator frame — which is
+        // the whole point of this arm. Reading it through a helper that yields (the first cut) put
+        // the frame straight back and measured WORSE than plain `adjacentEdges`: 73.13 ms against
+        // 68.75. The branch is per vertex, not per edge.
+        const edges1 =
+          b1 === undefined ? adjacentEdges(two[0].kind, graph, v, two[0].labels) : b1.set;
+
+        for (const e1 of edges1) {
+          const mid = farEnd(two[0], b1, e1, v);
+          const b2 = soleTypeBucket(mid, two[1].kind, two[1].labels);
+          const edges2 =
+            b2 === undefined ? adjacentEdges(two[1].kind, graph, mid, two[1].labels) : b2.set;
+
+          for (const e2 of edges2) {
+            any = true;
+
+            const value = pick(farEnd(two[1], b2, e2, mid));
+
+            if (!drops || value !== undefined) {
+              yield value;
+            }
+          }
+        }
+      } else {
+        for (const far of descend(v, hops, 0, graph)) {
+          any = true;
+
+          const value = pick(far);
+
+          if (!drops || value !== undefined) {
+            yield value;
+          }
+        }
+      }
+
+      if (!any) {
+        const value = pick(v);
+
+        if (!drops || value !== undefined) {
+          yield value;
+        }
+      }
+    }
+  },
+});
+
+/**
+ * The chain walked DEPTH-FIRST from `v`, yielding each path's far endpoint.
+ *
+ * ⚠️ DEPTH-FIRST IS WHAT REPRODUCES THE GENERAL PATH'S ORDER, which the differential fuzzer compares
+ * ORDERED for Gremlin: the generic route runs hop 2 over hop 1's output through lazily-pulled
+ * generators, so the emitted sequence is the depth-first one. It calls `adjacentEdges` and
+ * `otherEndpoint` — the same helpers the general step calls — rather than re-deriving adjacency
+ * order.
+ *
+ * ⚠️ AT MODULE SCOPE ([[ts-closure-size-is-load-bearing]]). The recursion depth is the sub-plan's
+ * step count, two or three in any spelling anyone writes, not the graph's.
+ */
+const descend = function* (
+  v: Vertex,
+  hops: readonly Hop[],
+  at: number,
+  graph: Graph,
+): Iterable<Vertex> {
+  const hop = hops[at];
+  const last = at === hops.length - 1;
+
+  for (const e of adjacentEdges(hop.kind, graph, v, hop.labels)) {
+    const far = otherEndpoint(hop.kind, e, v);
+
+    if (last) {
+      yield far;
+    } else {
+      yield* descend(far, hops, at + 1, graph);
+    }
+  }
 };
 
 type Element = { readonly id: string; readonly properties: Record<string, unknown> };
