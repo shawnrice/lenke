@@ -84940,3 +84940,85 @@ has to reach THREE row-building points rather than two, with 167.3 / 210.8 ms as
 
 GATES. bun run check 0 read unpiped. gql 4,577 pass / 0 fail. gremlin 2,134 pass / 0 fail.
 native 1,165 pass / 0 fail. bun run fuzz 57 pass / 0 fail.
+
+### Item 1823 — ⚠️ **THE BETWEEN-RUNGS GAP IS NOW MECHANIZED, AND IT FOUND SIX FLAGS ON ITS FIRST RUN** — including a DEPTH-1 inversion (multi-column `DISTINCT` at one hop costs **22.7x its own undeduped twin and 3.3x the DEEPER two-hop cell**) and `count(DISTINCT …)` at 4.8-10.3x across every depth ≥2. No engine change; both targets priced and open
+
+WHY A GRID, AND WHY NOTHING ELSE HERE CAN FIND THIS. Items 1821 and 1822 each found a rung gap BY
+HAND, and the second existed only because the first happened to measure three widths on one fixture
+and notice the order was wrong. ⚠️ **A gap between two rungs is invisible to every other instrument
+in this repo, and for three separate reasons:**
+
+- each rung's own tests PASS — each correctly serves its own width;
+- the unpriced-frame screen sees nothing, because the general matcher is not a hot frame: it is the
+  ABSENCE of a rung, and absence has no frame;
+- a single shape measured alone looks merely slow, not anomalous.
+
+The signal exists only in the COMPARISON between neighbouring cells. So `rung-gap-screen.mjs` is a
+depth x modifier grid (depths 1-5 x `rows`, `distinct`, `distinct2`, `count`, `countdist`, `where`,
+`twocol`, `orderby`) with two flags, each the generalization of one of those two items:
+
+- **NON-MONOTONIC IN DEPTH** — depth k costing materially more than depth k+1. Item 1822's
+  signature: a shorter chain costing more means that depth fell between two rungs.
+- **PAIR GAP** — a modifier cell costing much more than its own `rows` twin at the same depth. Item
+  1821's lesson stated as a rule: `DISTINCT` can only ever be the walk plus a hash, so the two must
+  sit together; a modifier that MULTIPLIES the cost is one that disqualified the rung.
+
+⚠️ **`FANOUT=1` IS WHAT MAKES THE DEPTH AXIS MEAN ANYTHING.** With one out-edge per vertex every
+depth returns exactly N rows, so a cost difference across depth is about the ROUTE. At a higher
+fanout the row count is `F^k` and the depth axis measures the FIXTURE instead — which is item 1815's
+entire finding, arrived at the hard way.
+
+THE FIRST RUN (20,000 vertices, 20,000 edges, median of 9 less 3 warm-up):
+
+```text
+  modifier     depth1   depth2   depth3   depth4   depth5    rows
+  rows            1.4      5.9      5.2      4.7      5.5    20000
+  distinct        0.8      4.4      4.3      4.8      5.6       97
+  distinct2      32.5      9.8     10.5      9.3     10.0    20000
+  count           0.0      1.1      0.5      1.0      1.0        1
+  countdist       0.5     28.2     35.6     46.8     56.7        1
+  where           2.4      5.8      5.5      6.3      7.0    10712
+  twocol          1.3      3.2      3.5      4.3      5.3    20000
+  orderby         3.3     47.4     66.4     86.1     86.1    20000
+```
+
+✅ **Items 1821 and 1822's work shows as the `distinct` row being flat and beside `rows`** at every
+depth from 2 to 5 — which is the regression evidence those items wanted and could not express as a
+single number.
+
+⚠️ **FLAG 1, AND IT IS AN INVERSION AT DEPTH 1**: `distinct2` (two-column `DISTINCT`) reads **32.5 ms
+at ONE hop against 9.8 at two** — 3.3x the deeper cell, and **22.7x its own `rows` twin (1.4 ms)**.
+The cause is structural and is the mirror of item 1822: `distinctShape` serves one-hop `DISTINCT`
+but is built around a single `source` reading exactly one end, so MULTI-COLUMN declines; items 1821
+and 1822 then gave the two-hop and chain rungs multi-column `DISTINCT`, which left ONE hop as the
+only width without it. **The fix is not the same one-liner**: `detectHopProjection` gates on
+`projectionIsStreamable` (which refuses `distinct`) and routes through `hopOrderPlan`'s streaming
+arms, and that module records a ~280x cost for materializing where the general path is lazy. So it
+needs its own item rather than a wrapper.
+
+⚠️ **FLAG 2**: `count(DISTINCT far.k)` is **4.8x, 6.8x, 10.1x and 10.3x** its own `rows` cell at
+depths 2-5, and it RISES with depth (28.2 → 56.7 ms) while the `rows` cell stays flat. Same shape as
+flag 1 one axis over: `distinctShape(clauses, compiled, 'count')` serves ONE hop (0.5 ms) and the
+two-hop and chain rungs refuse any aggregate outright (`projection.aggregating`), so every deeper
+width falls to the general matcher. ⚠️ `count(DISTINCT x)` is arithmetically just the size of the
+distinct set over rows those rungs ALREADY produce — but the projected item is the aggregate, not
+`far.k`, so admitting it means extracting the argument the way `sourceFor` does in count mode. Also
+its own item.
+
+⚠️ **A SCREEN DEFECT CAUGHT ON THE FIRST RUN AND FIXED**: it flagged `count: depth2 1.0 ms costs
+2.0x depth3 (0.5)`. Both cells are a closed-form count answered without walking, so the "2.0x" is
+0.5 ms of timer resolution — a ratio between two numbers that are both essentially zero. There is
+now a `FLOOR_MS` (3 ms) below which cells are compared but never flagged. **A ratio needs an
+absolute magnitude before it means anything**, which is the same rule CLAUDE.md states for the 10%
+noise floor.
+
+⚠️ `orderby` IS EXCLUDED FROM THE PAIR FLAG ON PURPOSE — a global sort is real extra work, not a
+route it should have taken, so its large ratios are expected and would be noise. ⚠️ And every cell
+prints its ROW COUNT, because a cell returning nothing is the "fastest" cell on any screen (item
+1820 learned this the same way).
+
+NO ENGINE CODE CHANGED. Both flags are priced and left open with the numbers a fix has to beat:
+**`distinct2` depth1 32.5 → should land near its 1.4 ms twin**, and **`countdist` depths 2-5
+28.2/35.6/46.8/56.7 → should land near their ~5 ms twins.**
+
+GATES. bun run check 0 read unpiped.
