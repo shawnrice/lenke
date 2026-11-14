@@ -21,7 +21,7 @@
  *       SHAPE=$s bun optional-hop-floor-1884.mjs; done
  */
 import { Graph } from '@lenke/core';
-import { V, id, optional, out, toArray, traversal, values } from '@lenke/gremlin';
+import { V, groupCount, id, optional, out, toArray, traversal, values } from '@lenke/gremlin';
 
 const N = Number(process.env.N ?? 20_000);
 const FANOUT = Number(process.env.FANOUT ?? 5);
@@ -84,6 +84,9 @@ const SHAPES = {
   // The CHAIN arm (item 1887), beside the two-hop walk that bounds it.
   opt2: () => traversal(V(), optional(traversal(out('E'), out('E'))), values('n')),
   hop2: () => traversal(V(), out('E'), out('E'), values('n')),
+  // Item 1892: the grouped count over a hop, which had its OWN copy of the rung chain.
+  group: () => traversal(V(), out('E'), groupCount().by('n')),
+  group2: () => traversal(V(), out('E'), out('E'), groupCount().by('n')),
 };
 
 const plan = SHAPES[SHAPE]();

@@ -22,7 +22,10 @@ const DIST = `${ROOT}/packages/gremlin/dist/esm/index.mjs`;
 const PRISTINE = `${ROOT}/crates/lenke-engine/target/pristine-1889-dist.mjs`;
 
 const REPS = process.env.REPS ?? '30';
-const SHAPES = ['hop', 'hop2', 'optional'];
+// ⚠️ `group`/`group2` ARE HERE SINCE ITEM 1892, which routed the grouped count through the shared
+// rung chain instead of its own copy — so this kill reaches them too. `optional` has its OWN CSR
+// arm (item 1891) and is therefore the control this kill cannot touch.
+const SHAPES = ['hop', 'group', 'group2', 'hop2', 'optional'];
 
 const KILLS = [['hopValuesCsr(effective, graph)', '(void 0 /* KILL_1889 */)']];
 

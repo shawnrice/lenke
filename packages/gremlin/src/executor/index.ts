@@ -2311,10 +2311,21 @@ const fusedHopChainGroupCount = (
    * neighbour into the anomaly. The order is item 1535's — no plan an earlier rung already admits
    * can change route — so it is copied rather than re-chosen.
    */
-  const walked =
-    hopValuesShortcut(byKey.plan, graph) ??
-    startFilteredHopValues(byKey.plan, graph) ??
-    hopChainValuesShortcut(byKey.plan, graph);
+  /**
+   * ⚠️⚠️ THE SHARED CHAIN, NOT A SECOND COPY OF IT (item 1892) — and the second copy is why this
+   * shape was the Gremlin screen's slowest at scale. It listed `hopValuesShortcut`,
+   * `startFilteredHopValues` and `hopChainValuesShortcut` by hand, so when item 1889 put the CSR
+   * walk at the TOP of `fusedProjectedValues` and items 1883/1884 added two more rungs below it,
+   * none of the three reached this call site: `V().out(E).groupCount().by(k)` kept the per-vertex
+   * bucket walk and read **142.58 ms** on the 200,000-vertex screen where its own `values` twin read
+   * 71.24.
+   *
+   * `fusedProjectedValues` is the one chain, with the `tracksPath` guard folded in — already
+   * checked above, and passing `false` here would be a second opinion about it. Two copies of one
+   * route list is the hazard `detectDistinctCount`'s note names on the GQL side, and this is the
+   * Gremlin instance of it.
+   */
+  const walked = fusedProjectedValues(byKey.plan, graph, ctx.tracksPath);
 
   return walked?.rest.length === 0 ? [tallyProjectedGroupCount(walked.values)] : undefined;
 };

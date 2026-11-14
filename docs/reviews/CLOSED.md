@@ -89181,3 +89181,66 @@ INVARIANTS. All seven byte-identity fuzzers green. `optional-oracle-1884.mjs`: 7
 every one identical. `bun run spelling:gremlin`: 0 answer disagreements, 0 groups over 2x.
 
 GATES. bun run check 0 and bun run test -- --skip-nx-cache across 21 projects, each read unpiped.
+
+## Item 1892 — the grouped count had its OWN COPY of the rung chain, so three items' worth of new rungs never reached it: **2.04x** for deleting the copy
+
+After items 1889 and 1891 the Gremlin workload screen's slowest shape at 200,000 vertices was
+`group: hop groupCount` at **142.58 ms**, against its own `values` twin's 71.24 — the same walk plus
+a tally over one row of output.
+
+🔬 **AND THE CAUSE WAS A DUPLICATED ROUTE LIST, not the tally.** `fusedHopChainGroupCount` builds a
+synthetic plan (item 1834's trick: swap the trailing `groupCount` for the `values(key)` it groups by)
+and then asked for a walk with its own hand-written chain:
+
+      hopValuesShortcut(byKey.plan, graph) ??
+      startFilteredHopValues(byKey.plan, graph) ??
+      hopChainValuesShortcut(byKey.plan, graph)
+
+Items 1883, 1884 and 1889 added three rungs to `fusedProjectedValues` — `edgeFilteredHopValues`,
+`optionalHopValues` and, at the TOP, item 1889's CSR walk — and **not one of them reached this call
+site.** The fix is one line: ask the shared chain, with the `tracksPath` guard folded in (it is
+checked above, so passing `false` here would be a second opinion about it).
+
+      kill-switch A/B on item 1889's CSR arm — which this change is what exposes the shape to —
+      3 order-alternated rounds, one shape per process, 200,000 vertices / 1,000,000 edges:
+
+        group    WARM  108.4 109.0 109.1  ->  53.4 55.6 52.5    2.04x
+        group    COLD  152.1 156.3 150.6  -> 152.1 156.7 149.4   1.00x
+        hop      WARM   83.5  85.1  82.7  ->  43.1 41.8 41.8    2.00x  (item 1889, re-confirmed)
+        group2   [CONTROL — two hops, a different rung]          1.00x
+        hop2     [CONTROL]                                       1.02x
+        optional [CONTROL — its own arm, item 1891]              0.98x
+
+On the screen the row goes **142.58 → 83.88 ms**. Two copies of one route list is the hazard
+`detectDistinctCount`'s note names on the GQL side; this is the Gremlin instance of it, and the
+cost was 2x on the surface's slowest shape.
+
+⚠️ **THE TEST GUARDS GROUP ORDER, WHICH IS THE ACTUAL RISK AND NOT THE COUNTS.** `groupCount` returns
+a `Map`, whose iteration order is FIRST-OCCURRENCE order of the keys — observable, and byte-identity
+with Rust is a hard invariant. The tally now rides a different walk, so the keys are first seen in
+that walk's order. Item 1889's oracle established the CSR walk emits the identical SEQUENCE; the new
+tests pin the consequence for the tally directly, with a fixture whose first-occurrence order
+(`3, 1, 7`) is neither sorted nor the vertices' insertion order — so a reordering cannot hide.
+
+⚠️ AND EVERY CASE RUNS TWICE, for item 1891's reason: the CSR arm declines its own first ask, so a
+single call measures the old walk and says nothing about the new route.
+
+⚠️ **ONE HAND ORACLE WAS WRONG AGAIN** (the fourth time in this stretch): the `both` case's `n = 7`
+group is 5, not 3 — `b->c`, `b->a`, `d->a`, `e->a` and `f->c` all reach a 7. Re-derived, and the
+engine matches.
+
+🔭 **THE SCREEN'S TOP SHAPE AT SCALE IS NOW `edge: outE.has(w).inV` at 171.86 ms**, which this family
+of levers cannot reach: the CSR holds neighbour SLOTS and an edge PREDICATE needs the edge object, so
+it wants an edge-indexed structure with its own build cost. `agg: hop values min` is next at 88.67
+against the same walk's 71.65 — ~17 ms for an order-invariant fold over 800,000 values, which is not
+a route gap.
+
+⚠️ **WHAT THIS ITEM CANNOT PIN, stated plainly**: reverting the one-line route swap is
+answer-equivalent, so the mutant survives every test here — the same class `clauses.ts` records for
+all its consuming branches and item 1885 hit head-on. The answer tests are what make the NEW route
+safe; the route itself is held by the A/B, not by a test.
+
+INVARIANTS. All seven byte-identity fuzzers green. `bun run spelling:gremlin`: 0 answer
+disagreements, 0 groups over 2x clear of the null control.
+
+GATES. bun run check 0 and bun run test -- --skip-nx-cache across 21 projects, each read unpiped.
