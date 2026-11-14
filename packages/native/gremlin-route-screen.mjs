@@ -43,6 +43,10 @@ const SHAPES = {
   'scan: dedupe values': "traversal(V(), values('k'), dedupe())",
   'scan: order values': "traversal(V(), values('k'), order())",
   'scan: limit values': "traversal(V(), values('k'), limit(10))",
+  'scan: has count': "traversal(V(), has('k', 3), count())",
+  'scan: has values': "traversal(V(), has('k', 3), values('k'))",
+  'scan: fold': "traversal(V(), values('k'), fold())",
+  'scan: id': 'traversal(V(), id())',
   'hop1: values': "traversal(V(), out('E'), values('k'))",
   'hop1: count': "traversal(V(), out('E'), count())",
   'hop1: id': "traversal(V(), out('E'), id())",
@@ -50,21 +54,38 @@ const SHAPES = {
   'hop1: has count': "traversal(V(), out('E'), has('k', 3), count())",
   'hop1: order values': "traversal(V(), out('E'), values('k'), order())",
   'hop1: limit values': "traversal(V(), out('E'), values('k'), limit(10))",
+  'hop1: min': "traversal(V(), out('E'), values('k'), min())",
+  'hop1: fold': "traversal(V(), out('E'), values('k'), fold())",
+  'hop1: both': "traversal(V(), both('E'), count())",
+  'hop1: outE inV': "traversal(V(), outE('E'), inV(), count())",
   'hop2: values': "traversal(V(), out('E'), out('E'), values('k'))",
   'hop2: count': "traversal(V(), out('E'), out('E'), count())",
   'hop2: dedupe count': "traversal(V(), out('E'), out('E'), dedupe(), count())",
   'hop2: order values': "traversal(V(), out('E'), out('E'), values('k'), order())",
+  'hop2: min': "traversal(V(), out('E'), out('E'), values('k'), min())",
+  'hop2: has count': "traversal(V(), out('E'), out('E'), has('k', 3), count())",
+  'hop2: mid filter count': "traversal(V(), out('E'), has('k', 3), out('E'), count())",
   'hop3: values': "traversal(V(), out('E'), out('E'), out('E'), values('k'))",
   'hop3: count': "traversal(V(), out('E'), out('E'), out('E'), count())",
+  'hop3: dedupe count': "traversal(V(), out('E'), out('E'), out('E'), dedupe(), count())",
   'agg: values sum': "traversal(V(), values('k'), sum())",
   'agg: hop values sum': "traversal(V(), out('E'), values('k'), sum())",
-  'agg: groupCount': "traversal(V(), groupCount().by('k'))",
-  'agg: hop groupCount': "traversal(V(), out('E'), groupCount().by('k'))",
-  'agg: hop2 groupCount': "traversal(V(), out('E'), out('E'), groupCount().by('k'))",
+  'agg: groupCount cfg': "traversal(V(), groupCount({ by: 'k' }))",
+  'agg: groupCount mod': "traversal(V(), groupCount().by('k'))",
+  'agg: hop groupCount cfg': "traversal(V(), out('E'), groupCount({ by: 'k' }))",
+  'agg: hop groupCount mod': "traversal(V(), out('E'), groupCount().by('k'))",
+  'agg: hop2 groupCount mod': "traversal(V(), out('E'), out('E'), groupCount().by('k'))",
+  'seed: V(id) values': "traversal(V('v7'), values('k'))",
+  'seed: V(id) hop count': "traversal(V('v7'), out('E'), count())",
+  'seed: hasId values': "traversal(V(), hasId('v7'), values('k'))",
+  'seed: hasId hop count': "traversal(V(), hasId('v7'), out('E'), count())",
+  'edge: E count': 'traversal(E(), count())',
+  'edge: E values': "traversal(E(), values('w'))",
+  'edge: outE count': "traversal(V(), outE('E'), count())",
 };
 
 const IMPORTS =
-  "import { V, count, dedupe, groupCount, has, hasLabel, id, limit, order, out, sum, toArray, traversal, values } from '@lenke/gremlin';";
+  "import { E, V, both, count, dedupe, fold, groupCount, has, hasId, hasLabel, id, inV, limit, min, order, out, outE, sum, toArray, traversal, values } from '@lenke/gremlin';";
 
 const build = () => execFileSync('bun', ['run', 'build'], { cwd: ROOT, stdio: 'ignore' });
 

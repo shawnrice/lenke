@@ -219,6 +219,28 @@ absence** — `{k: null}` is the one place in a pattern where that distinction i
 
 ## 5. Open — unblocked and priced
 
+- ~~**`E().values(k)` had no rung while `V().values(k)` and `E().count()` both did**~~ - **CLOSED by
+  item 1858** at **2.15x** (15.34 -> 7.14 ms over 200,000 edges, 77 -> 36 ns a row). The vertex
+  shortcut's `matchShape` requires a `V` source, so the EDGE spelling of the same question reached
+  neither it nor the count rung and fell to the traverser pipeline. `edgeValuesShortcut` is its
+  twin, with the generator at MODULE SCOPE — this file records a per-call generator definition
+  making the vertex rung **1.2x SLOWER than the pipeline it replaces**.
+  Found by WIDENING item 1855's route screen from 24 shapes to 45. Three new disagreements came
+  out; all three were priced before anything was built, and the other two were **declined on their
+  numbers**: `V().has(k,v).values(k)` is ~1.3x (it visits the same vertices and emits fewer rows)
+  and `V().id()` ~1.6x. Recorded so neither is re-derived.
+  ⚠️ **THE SURFACE IS NOW MINED TO ~2x.** Items 1855-1857 took 5.6-36x from this engine; the route
+  gaps left on it are 1.3-2.6x. That is a statement about where the remaining work is, not a claim
+  that none exists.
+  6 mutants, **5 caught** (label filter ignored, absent key emitted, seeded source admitted,
+  multi-key admitted, `hasLabel` requiring ALL instead of ANY). V1 — the shortcut never selected —
+  survives and must: declining computes the same values down the pipeline.
+  ⚠️ **One of my own tests compared `drain` against itself.** It iterated `toArray`'s result, which
+  is the array `drain` had already produced, so both sides were one call. The lazy side must come
+  from `run`. `drain` and the iterator are two consumers of one loop body and the differential
+  fuzzer compares Gremlin results ORDERED, so a drift between them would be a cross-engine failure
+  rather than an unspecified-order liberty (item 169).
+
 - ~~**A residual `min`/`max` over the fused values walk went through the traverser pipeline**~~ -
   **CLOSED by item 1857** at **1.77x** (`min`) and **2.47x** (`max`). Gremlin side. The fused walk
   already produced the values; the trailing terminal then wrapped every one of them in a traverser,

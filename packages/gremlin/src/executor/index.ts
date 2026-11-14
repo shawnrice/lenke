@@ -38,7 +38,9 @@ import type { HopValues } from './hop-values.js';
 import { hopValuesShortcut } from './hop-values.js';
 import { seedFromIndex, tailIsOrderFree } from './index-seed.js';
 import { matchStep } from './match.js';
+import type { NodeValues } from './node-values.js';
 import {
+  edgeValuesShortcut,
   idSeededValuesShortcut,
   nodeValuesShortcut,
   seededNodeCountShortcut,
@@ -2361,6 +2363,31 @@ const fusedProjectedResidual = (
   return sortable === undefined ? undefined : fusedProjectedOrder(projected.values, sortable);
 };
 
+/**
+ * `V()`/`E()` + an optional `hasLabel` + a single-key `values`, answered by a scan that builds no
+ * traverser — the vertex rung (item 1481) and its EDGE twin (item 1858).
+ *
+ * ⚠️ EXTRACTED FOR THE COMPLEXITY GATE, as `fusedProjectedResidual` was at item 1857 and
+ * `asGroupCountByKey` at item 1834: adding the edge twin took `run` to **36 against a limit of
+ * 35**, even written as a `??`.
+ *
+ * The two are DISJOINT BY SOURCE — one matches a `V` source and the other an `E` — so the order
+ * cannot change which shapes are answered.
+ *
+ * ⚠️ ONE `tracksPath` GUARD COVERS BOTH, and for the same reason: each walk emits bare values and
+ * builds no path, so a plan that reads the path must not take either. The vertex rung's own note
+ * records that its guard is UNREACHABLE for today's shape list and kept because it belongs to the
+ * shortcut's contract; the edge twin inherits exactly that argument.
+ */
+const scanValuesShortcut = (
+  effective: Plan,
+  graph: Graph,
+  tracksPath: boolean,
+): NodeValues | undefined =>
+  tracksPath
+    ? undefined
+    : (nodeValuesShortcut(effective, graph) ?? edgeValuesShortcut(effective, graph));
+
 export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
   // Before anything runs: static faults the engine raises at parse time — a plan that
   // cannot succeed on any graph, and an aggregate/sort/vertex-move on the wrong frontier.
@@ -2432,7 +2459,14 @@ export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
   // whole suite (item 1482). It stays because the gate belongs to the SHORTCUT'S CONTRACT, not to
   // today's shape list: widen `matchShape` to admit a path-dependent kind and this guard is what
   // stops that becoming a wrong answer.
-  const nodeValues = ctx.tracksPath ? undefined : nodeValuesShortcut(effective, graph);
+  // ⚠️ `??` RATHER THAN A SECOND `if`, so the EDGE twin (item 1858) costs this function no
+  // complexity: the two are DISJOINT BY SOURCE — one matches a `V` source and the other an `E` —
+  // so which is present cannot change which shapes are answered. `run` is already at the
+  // complexity gate, and a second branch here is what pushed it over at items 1834 and 1857.
+  //
+  // The same `tracksPath` guard covers both, and for the same reason: each walk emits bare values
+  // and builds no path.
+  const nodeValues = scanValuesShortcut(effective, graph, ctx.tracksPath);
 
   if (nodeValues !== undefined) {
     return nodeValues;

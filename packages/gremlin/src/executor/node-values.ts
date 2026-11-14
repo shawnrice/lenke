@@ -502,3 +502,85 @@ export const seededNodeCountShortcut = (plan: Plan, graph: Graph): number | unde
 
   return n;
 };
+
+/**
+ * `E()[.hasLabel(L)].values(k)` — the EDGE twin of {@link nodeValuesShortcut}, item 1858.
+ *
+ * ⚠️ FOUND BY A ROUTE SCREEN, NOT A PROFILE, and the asymmetry is the whole finding: `E().count()`
+ * is answered from a counter, `V().values(k)` rides the fused scan at **30 ns a row** — and
+ * `E().values(k)` reached neither, at **77 ns a row** (15.34 ms over 200,000 edges). The vertex
+ * shortcut's own `matchShape` requires a `V` source, so the edge spelling of the same question fell
+ * to the traverser pipeline. 2.6x a row, on the shape that reads one property off every edge.
+ *
+ * ⚠️ THE GENERATOR IS AT MODULE SCOPE, which this file records as load-bearing rather than tidy: a
+ * per-call generator definition made the vertex rung **1.2x SLOWER than the pipeline it replaces**
+ * (346 ns against 283), all of it the closure. The parameters carry what it would have captured.
+ *
+ * ⚠️ AND ONE LOOP BODY SERVES BOTH `drain` AND ITERATION, for `nodeValuesShortcut`'s reason: Gremlin
+ * results are compared ORDERED by the differential fuzzer, so two derivations that could drift
+ * would be a cross-engine failure rather than an unspecified-order liberty (item 169).
+ */
+export const edgeValuesWalk = function* (
+  labels: readonly string[] | undefined,
+  key: string,
+  graph: Graph,
+): Generator<unknown> {
+  for (const e of graph.edges) {
+    if (labels !== undefined && !labels.some((l) => e.labels.has(l))) {
+      continue;
+    }
+
+    const props = e.properties;
+
+    if (key in props) {
+      yield props[key];
+    }
+  }
+};
+
+/**
+ * `E()` + an optional `hasLabel` + a single-key `values`, or `undefined`.
+ *
+ * A SEEDED `E(id, …)` is refused: it enumerates a given set rather than every edge, which is a
+ * different walk and has its own rungs — the same refusal `countShortcut` makes at its source.
+ */
+const matchEdgeShape = (
+  steps: readonly Step[],
+): { label: Extract<Step, { kind: 'hasLabel' }> | undefined; key: string } | undefined => {
+  const [source, second, third] = steps;
+
+  if (source?.kind !== 'E' || (source.ids?.length ?? 0) > 0) {
+    return undefined;
+  }
+
+  if (steps.length === 2 && second?.kind === 'values' && second.keys.length === 1) {
+    return { label: undefined, key: second.keys[0] };
+  }
+
+  if (
+    steps.length === 3 &&
+    second?.kind === 'hasLabel' &&
+    third?.kind === 'values' &&
+    third.keys.length === 1
+  ) {
+    return { label: second, key: third.keys[0] };
+  }
+
+  return undefined;
+};
+
+export const edgeValuesShortcut = (plan: Plan, graph: Graph): NodeValues | undefined => {
+  const shape = matchEdgeShape(plan.steps);
+
+  if (shape === undefined) {
+    return undefined;
+  }
+
+  const labels = shape.label?.labels;
+  const { key } = shape;
+
+  return {
+    [Symbol.iterator]: () => edgeValuesWalk(labels, key, graph),
+    drain: () => [...edgeValuesWalk(labels, key, graph)],
+  };
+};
