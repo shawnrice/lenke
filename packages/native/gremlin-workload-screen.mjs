@@ -59,6 +59,15 @@ import {
   valueMap,
   values,
   within,
+  as_,
+  select,
+  project,
+  where,
+  neq,
+  path,
+  range,
+  aggregate,
+  cap,
 } from '@lenke/gremlin';
 
 const NODES = Number(process.env.NODES ?? 1500);
@@ -148,6 +157,22 @@ const SHAPES = {
   'union: out + in': () => traversal(V(), union(out('E'), in_('E')), count()),
   'repeat: times 2': () => traversal(V(), repeat(traversal(out('E'))).times(2), count()),
   'repeat: times 3': () => traversal(V(), repeat(traversal(out('E'))).times(3), count()),
+  /**
+   * ⚠️ NINE FAMILIES NEITHER SCREEN COVERED (item 1898), added because every widening of an axis in
+   * this corpus has found something and these are the steps an application actually writes next
+   * after a hop: naming a step and reading it back (`as`/`select`), shaping a row (`project`),
+   * filtering by a sub-traversal (`where`), the path itself, paging (`range`), keyed dedupe, and the
+   * two set-ish side effects (`aggregate`/`cap`, `store`).
+   */
+  'select: as + select one': () => traversal(V(), as_('a'), out('E'), select('a'), values('n')),
+  'select: as + select two': () => traversal(V(), as_('a'), out('E'), as_('b'), select('a', 'b')),
+  'project: two keys': () => traversal(V(), project('n', 'i').by('n').by('k')),
+  'where: sub-traversal': () => traversal(V(), where(traversal(out('E'))), values('n')),
+  'where: neq filter': () => traversal(V(), as_('a'), out('E'), where(neq('a')), values('n')),
+  'path: hop path': () => traversal(V(), out('E'), path()),
+  'page: range mid': () => traversal(V(), out('E'), values('n'), range(1000, 1010)),
+  'dedupe: by key': () => traversal(V(), out('E'), dedupe().by('n'), values('n')),
+  'sideeffect: aggregate + cap': () => traversal(V(), out('E'), aggregate('x'), cap('x')),
 };
 
 const names = Object.keys(SHAPES).filter((k) => ONLY === '' || k.includes(ONLY));

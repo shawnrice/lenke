@@ -89532,3 +89532,55 @@ NO ENGINE CODE CHANGED: 1.12x in `projectRow`, which every rung in the package c
 trade [[executor-edits-perturb]] prices at up to 16% on unrelated rows.
 
 GATES. bun run check 0; the only source edit is `propOf`'s corrected note.
+
+## Item 1898 — nine families neither screen covered, and **all five of the biggest shapes on the Gremlin surface at scale are among them**: 432 / 310 / 272 / 203 / 160 ms, against a plain hop's 43
+
+Items 1889-1897 took both surfaces' hop, projection, count, optional and grouped shapes to measured
+ceilings. So this tick asked what the screens DO NOT ASK, which is a different question from "what is
+slow" — and the answer is most of what an application writes after a hop: naming a step and reading
+it back, shaping a row, filtering by a sub-traversal, the path itself, paging, keyed dedupe, and the
+set-ish side effects.
+
+      ADDED (permanent, on `gremlin-workload-screen.mjs`): select one / select two, project, where
+      (sub-traversal), where(neq), path, range, dedupe().by(k), aggregate+cap.
+
+⚠️⚠️ **AND THEY ARE NOT A LONG TAIL — THEY ARE THE TOP OF THE SCREEN.** At 200,000 vertices /
+1,000,000 edges the five slowest shapes on the whole surface are all new:
+
+      432.27 ms   799,998 rows   where: neq filter
+      310.15             8 rows  dedupe: by key          ⬅ 310 ms to return EIGHT rows
+      271.73       800,000       select: as + select two
+      202.99       800,000       select: as + select one
+      160.21       800,000       path: hop path
+      ---------------------------------------------------
+      103.02       457,142       edge: outE.has(w).inV   (the previous top shape)
+       43.04       800,000       hop1: values            (the floor, after item 1889)
+
+Isolated, one shape per process, median of 7 — because the screen shares a process and item 1871
+retracted a flag for exactly that:
+
+      dedupe().by('n').values('n')     264.36 ms        8 rows    ⬅ 6.2x the plain hop
+      dedupe().values('n')             232.11      200,000
+      where(neq('a')) after as_('a')   338.08      799,998
+      select('a') after as_('a')       179.39      800,000
+      out('E').values('n')              42.61      800,000        the floor
+
+🔬 **AND THE MECHANISM IS ALREADY VISIBLE for three of the five**: `as_`, `select` and `path` all make
+`planReadsPath` true, and EVERY fused walk in this package is gated on `!tracksPath` — the walks emit
+bare values and build no traverser, so a plan that reads the path cannot ride one. Those three
+therefore run the generic pipeline with full path bookkeeping by construction, and their cost is a
+question about that bookkeeping rather than a missing rung.
+
+🔭 **THE TWO THAT ARE NOT PATH-GATED ARE THE NOMINATION**: `dedupe().by(k)` at 264 ms for 8 rows, and
+bare `dedupe()` at 232 ms. Neither reads the path, so a fused walk is available in principle: item
+1869 already built `valueDedupeFilter` (five key spaces, the dedupe step's own keying) and a
+`nodeValuesDedupeShortcut` for `V().values(k).dedupe()` — but the plan here is
+`[V, out, dedupe(by), values]`, where `hopValuesShortcut` wants exactly `[source, hop, proj]` and
+`startFilteredHopValues` admits far-side FILTERS rather than a dedupe. ⚠️ `element-dedup-identity-vs-key`
+records that identity keying was REFUTED at item 1589 and that the answer came from profiling the
+OTHER engine, so whoever takes this should read that memo first.
+
+NO ENGINE CODE CHANGED. Nine screen rows, and the finding that the surface's five largest absolutes
+were all outside the corpus until this tick.
+
+GATES. bun run check 0.

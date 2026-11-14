@@ -42,6 +42,16 @@ how an incomplete kill switch hides.** `CARD=` sweeps the cardinality axis that 
 map against a string key. After it, every remaining flag on the grid is `sum`/`collect` — the
 documented byte-identity refusal — or noise-sized.
 
+## ⚠️ AND ASK WHAT THE SCREEN DOES NOT ASK (item 1898)
+
+A clean screen means the shapes IT HAS are fast. Item 1898 added nine families the Gremlin screen had
+never carried — `select`/`as`, `project`, `where(sub)`, `where(neq)`, `path`, `range`,
+`dedupe().by(k)`, `aggregate`+`cap` — and **all five of the biggest shapes on the surface at 200,000
+vertices turned out to be among them** (432 / 310 / 272 / 203 / 160 ms against a plain hop's 43).
+Three of the five are path-gated by construction (`as_`/`select`/`path` make `planReadsPath` true,
+and every fused walk is gated on `!tracksPath`); the two that are not — `dedupe().by(k)` at 264 ms
+for EIGHT rows, and bare `dedupe()` at 232 — are the open nomination.
+
 ## ⚠️ SWEEP THE SIZE BEFORE BELIEVING A CLEAN SCREEN (item 1889)
 
 Every screen in this directory runs at **20,000 vertices** by default, and at item 1889 both of them
