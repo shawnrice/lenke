@@ -87626,3 +87626,60 @@ that the rungs are sound.
 
 GATES. bun run check 0 read unpiped; the engine tree verified clean after every measurement patch
 (`git diff --stat` empty on all three files touched).
+
+## Item 1872 — the GQL rung census: ALL 50 rungs still beat the general matcher, zero flags, and the margins say WHY the item-1870 failure was Gremlin-specific
+
+The GQL twin of item 1871's census, built for item 1870's reason: a rung's A/B verdict decays when
+the arm it beat gets faster, nothing notices, and on the Gremlin side that hid a **678x** loss for
+~390 items.
+
+✅ **ZERO FLAGS ACROSS 50 RUNG-CLAIMING SHAPES, and not one reading is close to the threshold.** At
+20,000 vertices / 20,000 edges, median of 7 (rung / general matcher / ratio):
+
+      reachability (unbounded + DISTINCT)   12.47 / 4520.75 / 0.003x   ⬅ 362x
+      optional hop count                     0.26 /   28.46 / 0.01x
+      node count                             0.00 /    5.12 / 0.00x
+      hop count                              0.00 /   10.56 / 0.00x
+      bounded var-length count               2.84 /   51.80 / 0.05x
+      distinct projection                    0.23 /   10.63 / 0.02x
+      FOR projection over a property list    0.13 /    5.44 / 0.02x
+      four-hop projection                    4.49 /   47.55 / 0.09x
+      ...
+      two-hop count(DISTINCT)                8.63 /   25.40 / 0.34x   ⬅ the WORST, still 3x ahead
+
+`reachability` without its rung takes **4.5 seconds**. The arms agreed on which shapes raise, so no
+row is comparing an answer against an error.
+
+🔬 **AND THE MARGIN DISTRIBUTION IS THE REAL FINDING, because it explains why item 1870 happened on
+the other surface.** The worst GQL ratio is **0.34x** — a 3x cushion. The Gremlin census has shapes
+at **0.94x and 1.04x**, i.e. no cushion at all, which is exactly where a later improvement to the
+other arm can invert the verdict. `nodeValuesShortcut`'s labelled arm was a 2.39x win in a family
+whose margins are thin; `seedFromIndex` then took ~2.4x out of the pipeline and the sign flipped.
+**No plausible improvement to GQL's general matcher could invert a 3x cushion, let alone a 362x
+one** — so the GQL corpus is not merely clean today, it has headroom against the same failure.
+
+⚠️ **THE SHAPE CORPUS IS `routes-fired.test.ts`'s OWN TABLE, parsed rather than retyped** (with a
+guard that refuses to run if fewer than 30 shapes come back, so a change to that file's shape is
+loud rather than silently narrowing the census). Rows whose expected route list is EMPTY are
+skipped: a shape no rung claims has no verdict that could decay. Disabling the rungs took ONE edit
+here against Gremlin's eight — `compileLinear` returns a `CLinear` whose fields ARE the routes, so
+nulling every function-valued field disables all ~30 detectors.
+
+⚠️ **IT CARRIES ITEM 1871'S CORRECTION, NOT ITS ORIGINAL CLAIM.** Many shapes share a process and
+the cross-row cache pollution is NOT symmetric between arms — arm B's shared path is warmer by the
+time a shape runs, which favours the arm a flag accuses. So this is a SCREEN: a flag is a candidate
+to isolate, a ratio near 1.0 means nothing, and the margin is what carries signal. Here every margin
+is enormous, which is the one case where a screen's verdict needs no isolation.
+
+🔍 **AND THREE SUSPICIOUS-LOOKING ROWS WERE CHECKED AND ARE FINE** — `routes-fired` asserts that a
+bare `LIMIT`, a `SKIP`+`LIMIT` and a parameterized `LIMIT` all DECLINE, which looked stale after
+item 1867 taught the projection rungs a parameterized page. They are not: all three have NO
+`ORDER BY`, so they are governed by `unsortedPageRoute`, which item 1867 did not touch — and item
+1854 already settled that a bare `LIMIT` declining costs nothing because the general path streams
+and stops early (0.22 against 6.41 ms).
+
+NO ENGINE CODE CHANGED. One instrument; the negative result and the margin reading are the
+deliverable.
+
+GATES. bun run check 0 read unpiped; the engine tree verified clean after the measurement patch
+(`git diff --stat` empty on `rewrites.ts`).
