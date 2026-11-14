@@ -5532,9 +5532,9 @@ export type CLinear = {
    * `chainProjection` by construction: that rung refuses an aggregating projection and this one
    * requires one.
    */
-  chainDistinctCount: AlwaysRowsFn | null;
-  /** The two-hop twin of `chainDistinctCount` — item 1824. */
-  hop2DistinctCount: AlwaysRowsFn | null;
+  chainFoldedAggregate: AlwaysRowsFn | null;
+  /** The two-hop twin of `chainFoldedAggregate` — item 1824. */
+  hop2FoldedAggregate: AlwaysRowsFn | null;
   /**
    * One hop under `RETURN DISTINCT <several columns>` — item 1825. A `RowsFn`, not an
    * `AlwaysRowsFn`: it delegates to `detectHopProjection`, whose `null` is a RUNTIME decline.

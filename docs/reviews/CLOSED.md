@@ -85491,8 +85491,72 @@ from a heap). Their flags confirm the cost of that decision rather than contradi
 marginal-jump flag does NOT fire on `topk`, which is the honest reading: its cost tracks its own
 depth-1 marginal.
 
-NO ENGINE CODE CHANGED. Priced and left open with the floors a fix has to beat: **`maxagg` depths
-2-5 at 23.3/31.3/46.7/55.1 ms should land near their `rows` cells (~5-6 ms)**, and the same for
+NO ENGINE CODE CHANGED. ~~Priced and left open with the floors a fix has to beat:~~ **`maxagg` CLOSED BY ITEM 1830 AT 5.8x-10.4x** — depths
+2-5 at 23.3/31.3/46.7/55.1 ms, and the same for
 `sum` once the order question is answered.
 
 GATES. bun run check 0 read unpiped.
+
+### Item 1830 — ✅ **`min`/`max`/`count(x)` OVER A CHAIN: 5.8x / 6.5x / 7.2x / 10.4x** at depths 2-5, taking the order-INVARIANT half of item 1829's aggregate family. ⚠️ **AND MUTATION SHOWED THE GUARD I BUILT IS REDUNDANT — kept anyway, because this item's own predecessor supplies the motive to break it**
+
+THE TARGET, item 1829's largest flag and the half that is safe to take:
+
+```text
+  maxagg   depth1  depth2  depth3  depth4  depth5
+  before      1.9    23.3    31.3    46.7    55.1
+  after       2.1     4.0     4.8     6.5     5.3     5.8x 6.5x 7.2x 10.4x
+  rows        1.5     6.9     7.0     5.9     7.3     the twin it must sit beside
+```
+
+Item 1824's `count(DISTINCT)` detector is WIDENED rather than copied: `foldedAggs` already carries a
+ready `fold` and the compiled `argFn`, so one detector per width now serves every admitted
+aggregate. ⚠️ `sum`, `avg`, `collect` and `grouped` are untouched and still at 25-62 ms, by design.
+
+⚠️ **THE ADMISSION IS BY AGGREGATE NAME, NOT BY FOLD IDENTITY**, and the obvious spelling is a silent
+failure: `extremumFold(wantMin)` builds a NEW object per call, so an identity check works for the
+singleton `distinctCountFold` and quietly never matches `min`/`max`.
+
+⚠️⚠️ **MUTATION SHOWED THE ALLOWLIST IS REDUNDANT, AND THE EVIDENCE IS WHY IT STAYS.** Two mutants
+SURVIVE — dropping the set entirely, and adding `sum` to it. Both survive because `foldFor` itself
+only returns a fold for four things, verified by calling it rather than reading it:
+
+```text
+  count  foldable     min  foldable     max  foldable     count(DISTINCT)  foldable
+  sum    NOT FOLDABLE avg  NOT FOLDABLE collect NOT FOLDABLE  stdev  NOT FOLDABLE
+  min/max DISTINCT    NOT FOLDABLE
+```
+
+So what keeps the order-sensitive folds off this rung TODAY is `foldFor`'s switch, not the
+allowlist — and the item's design note claiming otherwise was wrong until the mutant corrected it.
+**It is kept as defence-in-depth for a specific, now-likely reason**: `foldFor`'s own comment
+declines to widen itself because doing so "would be scope without a number behind it" — and **item
+1829 has now produced that number** (`sum` at 25-62 ms against a ~6 ms `rows` cell). The next person
+to widen `foldFor` for speed would, without this set, silently hand an order-sensitive fold to a
+walk whose order has never been proved equal to the general path's: a wrong answer in the last ulp,
+invisible to every integer fixture.
+
+MUTATION, 2 of 4 caught and 2 deliberate survivors documented with their evidence:
+
+```text
+  count nulls into the fold                 CAUGHT (8 fail)
+  drop the item-IS-the-aggregate test       CAUGHT (2 fail)
+  drop the allowlist                        SURVIVES — foldFor already refuses them
+  add `sum` to the allowlist                SURVIVES — `sum` is not foldable at all
+```
+
+⚠️ **THE ORACLE WAS VERIFIED TO DECLINE BEFORE BEING USED** (item 1827's lesson applied rather than
+re-learned): `compileLinear` was asked directly, and `max(d.k) + 0` fires NO rung while `max(d.k)`
+fires `chainFoldedAggregate` — so the cross-route comparison really crosses routes this time.
+
+ELEVEN CONTROLS FLAT, five alternated rounds, arms asserted by a marker count in the built DIST:
+`hop3rows` 1.02x/0.98x, `hop2rows` 0.99x/0.98x, `hoprows` 1.06x/1.00x, `distinct` 1.00x/0.97x,
+`point` 1.05x/1.04x, `grouped` 1.06x/1.04x, `join` 0.99x/1.00x, `count2` 1.05x/0.99x, `count3`
+0.98x/1.08x, `topkhop` 0.98x/0.98x, `sortedpage` 1.01x/1.04x (min / median).
+
+CORRECTNESS. gql 4,624 / gremlin 2,134 / native 1,165 pass, 0 fail; `bun run fuzz` 57/0. Plus three
+seeds at 60,000 workload queries — **180,000 queries, 0 divergences**. `routes-fired.test.ts` pins
+both the admissions AND the refusals, because no ANSWER test can catch `sum` being admitted on an
+integer fixture.
+
+GATES. bun run check 0 read unpiped. gql 4,624 pass / 0 fail. gremlin 2,134 pass / 0 fail.
+native 1,165 pass / 0 fail. bun run fuzz 57 pass / 0 fail.

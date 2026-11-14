@@ -176,3 +176,83 @@ describe('count(DISTINCT) over a chain', () => {
     expect(query(g, `${HOP2} RETURN count(*) AS c`)).toEqual([{ c: 27 }]);
   });
 });
+
+/**
+ * `min`/`max` and plain `count(x)` over the same chains — item 1830, which widened item 1824's
+ * `count(DISTINCT)` detector into an ALLOWLIST of order-invariant folds.
+ *
+ * ⚠️ THE ORACLE IS VERIFIED TO DECLINE BEFORE IT IS USED, which item 1827 learned the hard way: a
+ * "cross-route" comparison is worthless if both spellings take the same route. Asked directly of
+ * `compileLinear`:
+ *
+ * ```text
+ *   RETURN max(d.k) AS m          -> chainFoldedAggregate
+ *   RETURN max(d.k) + 0 AS m      -> []   (the wrapping refusal — a real second route)
+ *   RETURN max(d.k) AS m ORDER BY m -> [] (a sort declines it too)
+ *   RETURN max(d.k), min(d.k)     -> []   (one aggregate only)
+ * ```
+ *
+ * ⚠️ AND THE REFUSALS MATTER MORE THAN THE ADMISSIONS HERE. `sum`/`avg` are order-sensitive in the
+ * last ulp and `collect`'s order IS its answer, so a rung whose walk order differs from the general
+ * path's would break byte-identity with Rust. Those three are asserted to stay OFF this rung in
+ * `routes-fired.test.ts`; what follows is the answers for the ones that are on it.
+ */
+describe('min/max and count(x) over a chain', () => {
+  test('max and min take the extremes, not the first row', () => {
+    const g = levels([5, 2, 9, 1]);
+
+    expect(query(g, `${HOP3} RETURN max(d.k) AS m`)).toEqual([{ m: 9 }]);
+    expect(query(g, `${HOP3} RETURN min(d.k) AS m`)).toEqual([{ m: 1 }]);
+    expect(query(g, `${HOP2} RETURN max(c.k) AS m`)).toEqual([{ m: 9 }]);
+    expect(query(g, `${HOP2} RETURN min(c.k) AS m`)).toEqual([{ m: 1 }]);
+  });
+
+  /** ⚠️ Nulls never reach `step`, so they neither win nor poison the extremum. */
+  test('a null and an absent property are ignored by the extremum', () => {
+    const g = levels([5, null, undefined, 2]);
+
+    expect(query(g, `${HOP3} RETURN max(d.k) AS m`)).toEqual([{ m: 5 }]);
+    expect(query(g, `${HOP3} RETURN min(d.k) AS m`)).toEqual([{ m: 2 }]);
+  });
+
+  /** ⚠️ Every value null/absent means NO value reached the fold — the answer is null, not 0. */
+  test('an extremum over nothing is null', () => {
+    const g = levels([null, undefined]);
+
+    expect(query(g, `${HOP3} RETURN max(d.k) AS m`)).toEqual([{ m: null }]);
+    expect(query(g, `${HOP2} RETURN min(c.k) AS m`)).toEqual([{ m: null }]);
+    expect(query(g, `${HOP3} RETURN max(d.missing) AS m`)).toEqual([{ m: null }]);
+  });
+
+  test('count(x) counts the non-null values, not the rows', () => {
+    const g = levels([5, null, undefined, 2]);
+
+    // 4^4 = 256 rows at three hops; half the far values are null or absent.
+    expect(query(g, `${HOP3} RETURN d.k AS k`).length).toBe(256);
+    expect(query(g, `${HOP3} RETURN count(d.k) AS c`)).toEqual([{ c: 128 }]);
+    expect(query(g, `${HOP3} RETURN count(*) AS c`)).toEqual([{ c: 256 }]);
+  });
+
+  /**
+   * ⚠️ THE VERIFIED CROSS-ROUTE ORACLE. `max(d.k) + 0` is the WRAPPING refusal, confirmed above to
+   * fire no rung at all — so this compares the rung against the general matcher on the same data,
+   * rather than against itself.
+   */
+  test('agrees with the general path on the same question', () => {
+    const g = levels([5, 2, 9, 1, null]);
+    const viaRung = query(g, `${HOP3} RETURN max(d.k) AS m`)[0].m;
+    const viaGeneral = query(g, `${HOP3} RETURN max(d.k) + 0 AS m`)[0].m;
+
+    expect(viaRung).toBe(viaGeneral);
+    expect(viaRung).toBe(9);
+  });
+
+  /** The two widths against each other, which neither rung's own tests can ask. */
+  test('the two widths agree', () => {
+    const g = levels([7, 3, 7, 1]);
+
+    expect(query(g, `${HOP2} RETURN max(c.k) AS m`)).toEqual(
+      query(g, `${HOP3} RETURN max(d.k) AS m`),
+    );
+  });
+});

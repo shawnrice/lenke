@@ -9,7 +9,6 @@ import type { AlwaysRowsFn, RowsFn } from './hop-projection.js';
 import { plainNode, plainRel } from './hop-sides.js';
 import { effectiveLabel } from './labels.js';
 import { outputColumnSorts, sortedRows } from './ordered-rows.js';
-import { distinctCountFold } from './projection.js';
 import { plainRowProjectionIgnoringDistinct, projectRow } from './rows.js';
 import { asTruth } from './scalars.js';
 import { rowLocal } from './shortcuts.js';
@@ -590,6 +589,48 @@ const walk = (
 };
 
 /**
+ * The aggregates these rungs may fold — item 1830, widening item 1824's `count(DISTINCT …)`.
+ *
+ * ⚠️⚠️ **AN ALLOWLIST BY NAME, AND THE REFUSALS ARE THE POINT.** `foldedAggs` carries a ready `fold`
+ * and the compiled `argFn` for EVERY foldable aggregate, so folding any of them over the rung's rows
+ * is mechanically identical — and would be a WRONG ANSWER for three of them, because the folds
+ * differ in whether ROW ORDER changes their result:
+ *
+ * ```text
+ *   min / max        order-INVARIANT over a total order        ADMITTED
+ *   count(x)         order-invariant (a tally)                 ADMITTED
+ *   count(DISTINCT)  order-invariant (a set)                   ADMITTED, item 1824
+ *   sum / avg        order-SENSITIVE in the last ulp (f64)     REFUSED
+ *   collect          its order IS its answer                   REFUSED
+ * ```
+ *
+ * `foldFor`'s own comment states the last two. This engine's hard invariant is BYTE-IDENTITY with
+ * the Rust engine, so admitting `sum` would make the two disagree in the last ulp wherever this
+ * walk's order differs from the general path's — and whether it differs is the `forceStartDriven`
+ * question items 419 and 551 settled FOR ONE HOP ONLY. It is not settled for these widths, so the
+ * order-sensitive folds wait for someone to settle it rather than riding on the assumption.
+ *
+ * ⚠️⚠️ **THIS SET IS REDUNDANT TODAY, AND MUTATION SAID SO — it is kept as the guard against a
+ * change someone is now MOTIVATED to make.** Two mutants SURVIVE: dropping the set entirely, and
+ * adding `sum` to it. Both survive because `foldFor` itself only ever returns a fold for
+ * `count`, `count(DISTINCT)`, `min` and `max` — verified by calling it: `sum`, `avg`, `collect` and
+ * `stdev` are NOT FOLDABLE, so they never reach `foldedAggs` and cannot reach this rung however
+ * this set is written.
+ *
+ * So what actually keeps them off today is `foldFor`'s switch, not this line. It is kept anyway
+ * because `foldFor`'s comment declines to widen itself on the grounds that doing so "would be scope
+ * without a number behind it" — and item 1829 has now PRODUCED that number (`sum` at 25-62 ms
+ * against a ~6 ms `rows` cell). The next person to widen `foldFor` for speed would, without this
+ * set, silently hand an order-sensitive fold to a walk whose order has never been proved equal to
+ * the general path's. That is a wrong answer in the last ulp, invisible to every integer fixture.
+ *
+ * ⚠️ A NAME, NOT THE FOLD OBJECT: `extremumFold(wantMin)` builds a NEW object per call, so identity
+ * works for the singleton `distinctCountFold` and silently fails for `min`/`max`. The aggregate's
+ * own AST node carries the name, which is the thing actually being allowed.
+ */
+const ORDER_INVARIANT_AGGREGATES: ReadonlySet<string> = new Set(['min', 'max', 'count']);
+
+/**
  * `MATCH <chain of 3+ segments> RETURN count(DISTINCT <expr over the far end>)` — item 1824.
  *
  * ⚠️ WHY THIS EXISTS, with the number. `rung-gap-screen.mjs` flagged `count(DISTINCT far.k)` at
@@ -619,7 +660,7 @@ const walk = (
  * `distinctCountFold` itself — the same object the general path uses, keying by `valueKey` — so the
  * two cannot disagree about what counts as distinct, or about nulls.
  */
-export const detectChainDistinctCount = (
+export const detectChainFoldedAggregate = (
   clauses: readonly Clause[],
   compiled: readonly CClause[],
 ): AlwaysRowsFn | null => {
@@ -641,7 +682,10 @@ export const detectChainDistinctCount = (
     !proj.aggregating ||
     proj.items.length !== 1 ||
     agg === undefined ||
-    agg.fold !== distinctCountFold ||
+    !ORDER_INVARIANT_AGGREGATES.has(agg.expr.name) ||
+    // `count(*)` has its own closed-form route and never reaches `foldedAggs`; a DISTINCT `min`/
+    // `max` is not foldable at all (`foldFor` returns undefined), so it cannot arrive here either.
+    agg.expr.star ||
     ret.projection.items.length !== 1 ||
     /**
      * ⚠️ THE ITEM MUST *BE* THE AGGREGATE, NOT AN EXPRESSION WRAPPING IT. `count(DISTINCT x) + 1`
@@ -674,7 +718,7 @@ export const detectChainDistinctCount = (
   }
 
   return (graph, params) => {
-    let acc = distinctCountFold.init();
+    let acc = agg.fold.init();
 
     for (const row of rows(graph, params)) {
       const v = (row as Record<string, unknown>)[column];
@@ -683,11 +727,11 @@ export const detectChainDistinctCount = (
       // it must not: a null in the set would make a later non-null the SECOND distinct value where
       // it is the first.
       if (v !== null && v !== undefined) {
-        acc = distinctCountFold.step(acc, v);
+        acc = agg.fold.step(acc, v);
       }
     }
 
-    return [{ [outName]: distinctCountFold.finish(acc) }];
+    return [{ [outName]: agg.fold.finish(acc) }];
   };
 };
 

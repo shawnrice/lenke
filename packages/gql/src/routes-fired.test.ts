@@ -127,12 +127,54 @@ describe('every fast-path detector fires for its own shape', () => {
     [
       'three-hop count(DISTINCT)',
       'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L)-[:R]->(d:L) RETURN count(DISTINCT d.k) AS c',
-      ['chainDistinctCount'],
+      ['chainFoldedAggregate'],
     ],
     [
       'two-hop count(DISTINCT)',
       'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L) RETURN count(DISTINCT c.k) AS c',
-      ['hop2DistinctCount'],
+      ['hop2FoldedAggregate'],
+    ],
+    /**
+     * ⚠️ ITEM 1830's ALLOWLIST, ADMISSIONS AND REFUSALS BOTH. The refusals are the load-bearing
+     * half: `sum`/`avg` are order-sensitive in the last ulp and `collect`'s order IS its answer, so
+     * admitting any of them would break byte-identity with Rust wherever this walk's order differs
+     * from the general path's — a question settled for ONE hop only (items 419, 551). No ANSWER test
+     * can catch that regression on integer fixtures, which is why it is pinned as a route.
+     */
+    [
+      'three-hop max',
+      'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L)-[:R]->(d:L) RETURN max(d.k) AS m',
+      ['chainFoldedAggregate'],
+    ],
+    [
+      'two-hop min',
+      'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L) RETURN min(c.k) AS m',
+      ['hop2FoldedAggregate'],
+    ],
+    [
+      'three-hop count(x)',
+      'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L)-[:R]->(d:L) RETURN count(d.k) AS c',
+      ['chainFoldedAggregate'],
+    ],
+    [
+      'SUM must stay OFF the rung',
+      'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L)-[:R]->(d:L) RETURN sum(d.k) AS s',
+      [],
+    ],
+    [
+      'AVG must stay OFF the rung',
+      'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L)-[:R]->(d:L) RETURN avg(d.k) AS a',
+      [],
+    ],
+    [
+      'COLLECT must stay OFF the rung',
+      'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L)-[:R]->(d:L) RETURN collect(d.k) AS ks',
+      [],
+    ],
+    [
+      'a WRAPPED aggregate stays off',
+      'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L)-[:R]->(d:L) RETURN max(d.k) + 0 AS m',
+      [],
     ],
     /**
      * ⚠️ MULTI-COLUMN `DISTINCT` at ONE hop — item 1825, and the pair below is what keeps the two

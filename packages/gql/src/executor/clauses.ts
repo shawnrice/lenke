@@ -1667,13 +1667,13 @@ const fastPath = (linear: CLinear, graph: Graph, params: Params): Row[] | undefi
    * branch ahead of a hot dispatch cost the shape it does not claim 1.12x — so the plain chain
    * projection pays one null check and nothing more.
    */
-  if (linear.chainDistinctCount) {
-    return linear.chainDistinctCount(graph, params);
+  if (linear.chainFoldedAggregate) {
+    return linear.chainFoldedAggregate(graph, params);
   }
 
   /** The two-hop twin, disjoint from every rung above for the same reason — item 1824. */
-  if (linear.hop2DistinctCount) {
-    return linear.hop2DistinctCount(graph, params);
+  if (linear.hop2FoldedAggregate) {
+    return linear.hop2FoldedAggregate(graph, params);
   }
 
   /**

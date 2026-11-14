@@ -35,7 +35,7 @@ import type {
 } from '../ast.js';
 import { isSyntheticParam } from '../auto-param.js';
 import {
-  detectChainDistinctCount,
+  detectChainFoldedAggregate,
   detectChainOrderedProjection,
   detectChainProjection,
 } from './chain-projection.js';
@@ -90,7 +90,7 @@ import {
   detectOptionalHopProjection,
 } from './hop-projection.js';
 import {
-  detectHop2DistinctCount,
+  detectHop2FoldedAggregate,
   detectHop2OrderedProjection,
   detectHop2Projection,
 } from './hop2-projection.js';
@@ -2138,8 +2138,8 @@ export const compileLinear = (linear: LinearQuery): CLinear => {
     hopProjection: detectHopProjection(fast, clauses),
     hop2Projection: detectHop2Projection(fast, clauses),
     chainProjection: detectChainProjection(fast, clauses),
-    chainDistinctCount: detectChainDistinctCount(fast, clauses),
-    hop2DistinctCount: detectHop2DistinctCount(fast, clauses),
+    chainFoldedAggregate: detectChainFoldedAggregate(fast, clauses),
+    hop2FoldedAggregate: detectHop2FoldedAggregate(fast, clauses),
     hopDistinctProjection: detectHopDistinctProjection(fast, clauses),
     hop2OrderedProjection: detectHop2OrderedProjection(fast, clauses),
     chainOrderedProjection: detectChainOrderedProjection(fast, clauses),
