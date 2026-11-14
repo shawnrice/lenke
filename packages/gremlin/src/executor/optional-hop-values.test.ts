@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 
 import { Graph } from '@lenke/core';
 
-import { V, both, id, in_, optional, out, toArray, traversal, values } from '../index.js';
+import { V, both, id, in_, optional, out, run, toArray, traversal, values } from '../index.js';
 import { optionalHopValues } from './optional-hop-values.js';
 
 /**
@@ -159,6 +159,63 @@ describe('optionalHopValues — the answer', () => {
  * edge goes to `g`, which has no `E` out-edge at all — so `h` produces NOTHING at two hops and must
  * emit ITSELF, where a first-hop `any` would emit nothing for it.
  */
+/**
+ * ⚠️ THE SINGLE-HOP CSR ARM IS ONLY REACHED ON A REPEAT CALL (item 1891), and this block exists
+ * because FIVE mutants aimed at it survived without it. `seenBefore` declines the first ask on any
+ * topology version — the amortization policy item 1889 built — so every assertion in this file that
+ * calls `toArray` ONCE measures the bucket walk and says nothing about the CSR arm.
+ *
+ * Each case therefore runs TWICE and asserts the two agree, which is the real claim, and once more
+ * through `run` for the LAZY iterator: `toArray` prefers `drain` (item 1412), so the two fills need
+ * separate coverage — item 1889 lost a mutant to exactly that.
+ */
+describe('optionalHopValues — the single-hop CSR arm, on the repeat call', () => {
+  it('agrees with the bucket walk, including the empty branch', () => {
+    const g = fixture();
+    const make = () => traversal(V(), optional(traversal(out('E'))), values('n'));
+    const first = toArray(make(), g);
+
+    expect(toArray(make(), g)).toStrictEqual(first);
+    expect(toArray(make(), g)).toStrictEqual([2, 3, 2, 3, 4, 5]);
+    // The LAZY iterator, which `drain` would otherwise hide.
+    expect([...run(make(), g)]).toStrictEqual([2, 3, 2, 3, 4, 5]);
+  });
+
+  it('agrees on `id()`, where the empty branch emits the vertex itself', () => {
+    const g = fixture();
+    const make = () => traversal(V(), optional(traversal(out('E'))), id());
+    const first = toArray(make(), g);
+
+    expect(toArray(make(), g)).toStrictEqual(first);
+    expect(toArray(make(), g)).toStrictEqual(['b', 'c', 'b', 'c', 'd', 'e', 'g', 'g']);
+    expect([...run(make(), g)]).toStrictEqual(['b', 'c', 'b', 'c', 'd', 'e', 'g', 'g']);
+  });
+
+  it('agrees on `in`, where the bucket direction is observable', () => {
+    const g = fixture();
+    const make = () => traversal(V(), optional(traversal(in_('E'))), values('n'));
+    const first = toArray(make(), g);
+
+    expect(toArray(make(), g)).toStrictEqual(first);
+    expect(toArray(make(), g)).toStrictEqual([1, 1, 1, 3, 4, 5, 8, 8]);
+  });
+
+  /**
+   * ⚠️ `both` AND A MULTI-TYPE HOP MUST KEEP THE BUCKET WALK — the CSR appends one named bucket at a
+   * time, so a two-type edge would be appended twice. `e5` carries only `E` here, so the
+   * discriminating case is the `both` one: its answer differs from the directed walk's.
+   */
+  it('keeps `both` and multi-type on the bucket walk, on every call', () => {
+    const g = fixture();
+    const both2 = () => traversal(V(), optional(traversal(both('E'))), values('n'));
+    const multi = () => traversal(V(), optional(traversal(out('E', 'F'))), values('n'));
+
+    expect(toArray(both2(), g)).toStrictEqual(toArray(both2(), g));
+    expect(toArray(both2(), g)).toStrictEqual([2, 3, 1, 3, 1, 3, 4, 5, 8]);
+    expect(toArray(multi(), g)).toStrictEqual(toArray(multi(), g));
+  });
+});
+
 describe('optionalHopValues — the multi-step chain', () => {
   it("emits each PATH's far value, and the vertex itself when the chain dies", () => {
     const g = fixture();

@@ -2,7 +2,8 @@ import type { Edge, Graph, Vertex } from '@lenke/core';
 
 import type { Plan, Step } from '../ast.js';
 import { type ChainCsr, chainCsrFor } from './count-shortcut.js';
-import type { HopValues } from './hop-values.js';
+import { seenBefore } from './hop-values-csr.js';
+import type { HopValues, HopWalk } from './hop-values.js';
 import { adjacentEdges, otherEndpoint, soleTypeBucket } from './movement.js';
 import { optionalSingleHop } from './optional-hop.js';
 
@@ -91,7 +92,7 @@ export const optionalHopValues = (plan: Plan, graph: Graph): HopValues | undefin
     rest: steps.slice(proj === undefined ? 2 : 3),
     values:
       chain === undefined
-        ? walk(graph, { hop: hop as Hop, ...picked })
+        ? oneHopValues(graph, { hop: hop as Hop, ...picked })
         : chainValues(graph, { hops: chain, ...picked }),
   };
 };
@@ -439,6 +440,117 @@ type WalkSpec = {
  * `both`, a multi-type hop and an untyped one, and those keep `adjacentEdges` exactly as the step
  * calls it. Three duplicated lines against a generator chain that is most of the shape.
  */
+/**
+ * The single-hop walk over the CSR where the hop is a directed single type, and the bucket walk
+ * otherwise (item 1891).
+ *
+ * ⚠️⚠️ **AFTER ITEM 1889 THIS SHAPE WAS 4.1x ITS OWN UNWRAPPED TWIN, on the same rows and the same
+ * walk.** That item gave `V().out(T).values(k)` the CSR and left `optional(out(T))` on the per-vertex
+ * bucket, which the scale sweep then made obvious — isolated, one shape per process, 200,000
+ * vertices / 1,000,000 edges, median of 9:
+ *
+ * ```text
+ *   V().optional(out(E)).values(n)   174.13 ms   800,000 rows   218 ns a row
+ *   V().out(E).values(n)              42.14      800,000         53   ⬅ item 1889's CSR arm
+ * ```
+ *
+ * The two differ only in the empty branch, which cannot cost 165 ns a row. What differs is the
+ * adjacency read: `soleTypeBucket` is a `Map.get` plus a `Set` iteration per vertex, where the CSR
+ * is a run of a flat `Int32Array`.
+ *
+ * ⚠️ THE POLICY IS ITEM 1889'S, REUSED RATHER THAN RE-KEYED — `seenBefore(graph, forward, type)`,
+ * so the build is deferred to the SECOND ask on any topology version (a one-shot query and a
+ * write-heavy workload never pay it). Sharing the key with `hopValuesCsr` is deliberate and
+ * desirable: both arms want the SAME CSR, so a warm `V().out(E)` leaves `optional(out(E))` warm
+ * too.
+ *
+ * ⚠️ `both`, A MULTI-TYPE HOP AND AN UNTYPED HOP DECLINE for the CSR's own correctness reason —
+ * `buildChainCsr` appends one named bucket at a time, so an edge carrying two of the named types
+ * would be appended twice where `iterLabeled` dedupes it — and keep the bucket walk below.
+ */
+const oneHopValues = (graph: Graph, spec: WalkSpec): HopWalk => {
+  const { kind, labels } = spec.hop;
+
+  if (kind === 'both' || labels.length !== 1 || !seenBefore(graph, kind === 'out', labels[0])) {
+    return walk(graph, spec);
+  }
+
+  return csrOneHop(graph, { forward: kind === 'out', type: labels[0], ...spec });
+};
+
+/**
+ * ⚠️ THE EAGER `drain` IS HERE FOR ITEM 1889'S REASON, which cost that item most of its win before
+ * it was noticed: `toArray` prefers `drain` when the walk offers one (item 1412), so an arm measured
+ * against one that has it is measured with its generator hand tied. The two fills are the same loop
+ * written twice — item 169's rule, and Gremlin results are compared ORDERED, so a reordering between
+ * them is a cross-engine failure.
+ *
+ * ⚠️ AND `any` NEEDS NO FLAG AT ONE HOP: the run length IS the answer, because every edge produces a
+ * row. The multi-hop chain arm cannot do this, which is why it keeps one.
+ */
+const csrOneHop = (
+  graph: Graph,
+  spec: { forward: boolean; type: string; pick: (e: Element) => unknown; drops: boolean },
+): HopWalk => ({
+  *[Symbol.iterator]() {
+    const { forward, type, pick, drops } = spec;
+    const { vtx, memo } = chainCsrFor(graph, forward, [type]);
+
+    for (let slot = 0; slot < vtx.length; slot += 1) {
+      const from = memo.off[slot];
+      const to = from + memo.len[slot];
+
+      if (from === to) {
+        const own = pick(vtx[slot]);
+
+        if (!drops || own !== undefined) {
+          yield own;
+        }
+
+        continue;
+      }
+
+      for (let i = from; i < to; i += 1) {
+        const value = pick(vtx[memo.flat[i]]);
+
+        if (!drops || value !== undefined) {
+          yield value;
+        }
+      }
+    }
+  },
+  drain() {
+    const { forward, type, pick, drops } = spec;
+    const { vtx, memo } = chainCsrFor(graph, forward, [type]);
+    const out: unknown[] = [];
+
+    for (let slot = 0; slot < vtx.length; slot += 1) {
+      const from = memo.off[slot];
+      const to = from + memo.len[slot];
+
+      if (from === to) {
+        const own = pick(vtx[slot]);
+
+        if (!drops || own !== undefined) {
+          out.push(own);
+        }
+
+        continue;
+      }
+
+      for (let i = from; i < to; i += 1) {
+        const value = pick(vtx[memo.flat[i]]);
+
+        if (!drops || value !== undefined) {
+          out.push(value);
+        }
+      }
+    }
+
+    return out;
+  },
+});
+
 const walk = (graph: Graph, spec: WalkSpec): Iterable<unknown> => ({
   *[Symbol.iterator]() {
     const { hop, pick, drops } = spec;

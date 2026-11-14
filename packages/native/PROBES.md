@@ -59,6 +59,14 @@ it. 67-86x warm with cold flat, via the same second-ask policy. Its instruments 
 `count-csr-ab-1890.mjs` (warm AND cold) and `count-csr-mutants-1890.mjs` (11/11, six of them
 aimed at the gate and the policy because both routes return the same number).
 
+**ITEM 1891 FOUND THE SIBLING 1889 LEFT BEHIND**: `optional(out(T))` was 4.1x its own unwrapped
+twin on the same rows, 3.93x taken, and the Gremlin screen's row went 256 → 68.70 ms at 200,000.
+⚠️⚠️ **ITS MUTATION RUN IS THE LESSON FOR EVERY SECOND-ASK ARM: all five mutants aimed at the new
+walk SURVIVED, because `seenBefore` declines the first ask and every single-`toArray` test therefore
+measures the OLD route.** When an arm is gated on a second ask, its tests must ask twice — and the
+mutation run is what proves they do. Three arms in this package are now gated that way
+(`hopValuesCsr`, `oneHopValues`, `twoHopCsrProduct`).
+
 So: **re-run the screens at 10x before concluding a surface is done.** The instruments:
 
 - **`hop-csr-ab-1889.mjs`** — the warm AND cold A/B. ⚠️ Its cold column is the point: before the

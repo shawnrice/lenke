@@ -89118,3 +89118,66 @@ INVARIANTS. All seven byte-identity fuzzers green. `bun run spelling` at `SPELL_
 SPELL_REPS=9`: 0 answer disagreements, 0 groups over 2x clear of the null control.
 
 GATES. bun run check 0 and bun run test -- --skip-nx-cache across 21 projects, each read unpiped.
+
+## Item 1891 — item 1889 left its own sibling behind: `optional(out(T))` was **4.1x its unwrapped twin on the same rows**, because one got the CSR and the other did not. **3.93x on `values`, 5.57x on `id()`, cold flat** — and FIVE mutants aimed at the new arm survived until the tests learned to call twice
+
+Item 1889 gave `V().out(T).values(k)` the CSR walk. Item 1890 did the GQL count. The scale sweep then
+showed what that left behind, isolated at 200,000 vertices / 1,000,000 edges, one shape per process,
+median of 9:
+
+      V().optional(out(E)).values(n)   174.13 ms   800,000 rows   218 ns a row
+      V().out(E).values(n)              42.14      800,000         53   ⬅ item 1889's arm
+
+Same rows, same walk, and the only semantic difference is an empty branch that cannot cost 165 ns a
+row. What differed is the adjacency read: `soleTypeBucket` is a `Map.get` plus a `Set` iteration per
+vertex where the CSR is a run of a flat `Int32Array`.
+
+✅ **THE ARM, with item 1889's policy REUSED rather than re-keyed.** `oneHopValues` sends a directed
+single-type hop to `csrOneHop` from the SECOND ask on `seenBefore(graph, forward, type)` — the same
+function, so the key is shared with `hopValuesCsr`, which is deliberate: both want the SAME CSR, so
+a warm `V().out(E)` leaves `optional(out(E))` warm too. `both`, multi-type and untyped keep the
+bucket walk for the CSR's own correctness reason (one named bucket at a time, so a two-type edge
+would be appended twice).
+
+      kill-switch A/B, 3 order-alternated rounds, one shape per process, 200,000 / 1,000,000:
+        optional     WARM  168.7 169.7 173.1  ->  46.3 43.2 42.0    3.93x
+        optional     COLD  161.1 162.6 162.4  -> 160.8 162.2 160.7   1.01x
+        optional_id  WARM   93.8  94.6  92.5  ->  16.8 13.1 19.4    5.57x
+        optional_id  COLD  107.5 110.2 109.8  -> 108.2 111.8 109.2   1.01x
+        hop   [CONTROL, item 1889's arm]                             1.00x
+        opt2  [CONTROL, the chain arm]                                0.97x
+
+`optional` now costs **52 ns a row against its unwrapped twin's 53** — at parity, which is the right
+answer for a wrapper whose only extra work is an empty branch. On the Gremlin workload screen at
+200,000 the row goes **256 → 68.70 ms**.
+
+⚠️⚠️ **AND THE MUTATION RUN IS THE PART WORTH READING: ALL FIVE MUTANTS AIMED AT THE NEW ARM
+SURVIVED.** Not one of them was caught, which is the signature of an arm no test reaches — and the
+cause is the policy itself. `seenBefore` declines the FIRST ask on any topology version, so every
+assertion in that file that calls `toArray` ONCE measures the bucket walk and says nothing about the
+CSR. Item 1889 had learned this and added a `twice` helper; the file I extended had not.
+
+With a block that runs each shape TWICE (and once more through `run`, because `toArray` prefers
+`drain` and the two fills need separate coverage — item 1889 lost a mutant to exactly that), all
+five are caught:
+
+      ✅ the empty branch is gone                     2 failing
+      ✅ the far end is the SLOT, not the flat target  2
+      ✅ the run bound is off by one                   2
+      ✅ the drain disagrees with the iterator         3
+      ✅ `both` and multi-type are admitted            1
+
+**A policy that defers a route to the second call makes every single-call test blind to it.** That is
+now true of three arms in this package and is worth stating as a rule rather than rediscovering: when
+an arm is gated on a second ask, its tests must ask twice, and the harness that proves they do is the
+mutation run.
+
+🔭 **THE SCREEN'S NEW TOP SHAPE AT SCALE is `edge: outE.has(w).inV` at 184.55 ms** (item 1883's
+rung). It cannot take this lever as it stands: the CSR holds neighbour SLOTS, not edges, and an edge
+PREDICATE needs the edge object — so that shape wants an edge-indexed CSR, which is a different
+structure with its own build cost. Recorded, not started.
+
+INVARIANTS. All seven byte-identity fuzzers green. `optional-oracle-1884.mjs`: 75 pairs, ORDERED,
+every one identical. `bun run spelling:gremlin`: 0 answer disagreements, 0 groups over 2x.
+
+GATES. bun run check 0 and bun run test -- --skip-nx-cache across 21 projects, each read unpiped.

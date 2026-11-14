@@ -151,6 +151,44 @@ const MUTANTS = [
         if (true) {`,
     1,
   ],
+  [
+    'ONE-HOP CSR: the empty branch is gone (a lone vertex emits nothing)',
+    `      if (from === to) {
+        const own = pick(vtx[slot]);`,
+    `      if (false) {
+        const own = pick(vtx[slot]);`,
+    2,
+    0,
+  ],
+  [
+    'ONE-HOP CSR: the far end is the SLOT, not the flat target',
+    'const value = pick(vtx[memo.flat[i]]);',
+    'const value = pick(vtx[slot]);',
+    2,
+    0,
+  ],
+  [
+    'ONE-HOP CSR: the run bound is off by one',
+    'const to = from + memo.len[slot];',
+    'const to = from + memo.len[slot] + 1;',
+    2,
+    0,
+  ],
+  [
+    'ONE-HOP CSR: the drain disagrees with the iterator (no empty branch)',
+    `      if (from === to) {
+        const own = pick(vtx[slot]);`,
+    `      if (false) {
+        const own = pick(vtx[slot]);`,
+    2,
+    1,
+  ],
+  [
+    'ONE-HOP CSR: `both` and multi-type are admitted',
+    "if (kind === 'both' || labels.length !== 1 || !seenBefore(graph, kind === 'out', labels[0])) {",
+    "if (!seenBefore(graph, kind === 'out', labels[0])) {",
+    1,
+  ],
 ];
 
 /**
