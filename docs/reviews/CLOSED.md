@@ -89533,7 +89533,7 @@ trade [[executor-edits-perturb]] prices at up to 16% on unrelated rows.
 
 GATES. bun run check 0; the only source edit is `propOf`'s corrected note.
 
-## Item 1898 — nine families neither screen covered, and **all five of the biggest shapes on the Gremlin surface at scale are among them**: 432 / 310 / 272 / 203 / 160 ms, against a plain hop's 43
+## Item 1898 — nine families neither screen covered, and **all five of the biggest shapes on the Gremlin surface at scale are among them**: 432 / 310 / 272 / 203 / 160 ms, against a plain hop's 43 — ⚠️ ~~the 310 ms `dedupe().by(k)` nomination~~ **TAKEN at item 1899 (3.95x in-screen, 78.5 ms; it is now the 10th shape, not the 2nd)**; the other four stand
 
 Items 1889-1897 took both surfaces' hop, projection, count, optional and grouped shapes to measured
 ceilings. So this tick asked what the screens DO NOT ASK, which is a different question from "what is
@@ -89584,3 +89584,67 @@ NO ENGINE CODE CHANGED. Nine screen rows, and the finding that the surface's fiv
 were all outside the corpus until this tick.
 
 GATES. bun run check 0.
+
+## Item 1899 — the DISTINCT far values of a hop, item 1898's own nomination: **4.41x** on the `by` spelling and **1.80x** on the other, found by PROFILING THE FAST SIDE — and the first cut shipped the two spellings **4.2x apart** with every test green
+
+Item 1898 screened nine families nobody had measured and nominated the two that are not path-gated:
+`dedupe().by(k)` at 264 ms isolated (310 in-screen) for EIGHT rows, and `values(k).dedupe()` at 232.
+GQL answers the same question — `MATCH (a:P)-[:E]->(b:P) RETURN DISTINCT b.n AS n` — in 21 ms.
+
+✅ **THE MECHANISM CAME FROM [[element-dedup-identity-vs-key]]'S TRANSFERABLE LESSON WITH THE
+SURFACES SWAPPED.** That memo closed five failed mechanism guesses with "when one surface is much
+faster at the same question and the mechanism guesses keep failing, PROFILE THE FAST SIDE. Its frames
+name the shortcut" — and its "do NOT re-propose identity keying" was respected. GQL is the fast side
+here, and its rung dedupes INSIDE the walk: eight rows are ever built, where Gremlin's pipeline
+builds 800,000 traversers, evaluates the `by` per traverser and keeps a `Set` beside them.
+
+      A/B on one build, kill switch in the gate, 200,000 vertices / 1,000,000 edges,
+      ONE SHAPE PER PROCESS, median of 7 less 2 warm-up, min of 3 alternated rounds:
+
+        V().out(E).dedupe().by(n).values(n)     268.48  ->   60.89 ms    ⬅ 4.41x
+        V().out(E).values(n).dedupe()           128.42  ->   71.33       ⬅ 1.80x
+        GQL ... RETURN DISTINCT b.n AS n                      22.48       (the fast side)
+
+      in the workload screen at the same size: dedupe: by key  310.15 -> 78.53  (3.95x),
+      which moves it from the 2nd-largest shape on the whole Gremlin surface to the 10th.
+
+⚠️⚠️ **AND THE FIRST CUT SHIPPED THE TWO SPELLINGS 4.2x APART WITH THE WHOLE SUITE GREEN, which is
+this repo's equivalent-spelling rule failing in the one way no answer test can see.** `byKey` tested
+`typeof by === 'string'`, because `.by('n')` is how a caller writes it — but `makeByable`'s modulator
+normalizer (`steps/framework.ts`) turns that string into `{kind: 'key', key: 'n', direction}` before
+it reaches the plan. So the gate's `by` arm matched NOTHING: `values(k).dedupe()` dropped to 65 ms and
+`dedupe().by(k).values(k)` stayed at 257 on the same build, both answering correctly.
+
+      THREE INSTRUMENTS NOW CARRY THE CLAIM, because the bug slipped past the first two:
+        - `gremlin-spelling-probe.ts` gets the group (1.00x out, 1.16x in). ⚠️ Its FIRST cut hopped
+          `KNOWS`, which that fixture's edges are not, so both members answered `0:[]` and the group
+          could never have flagged anything — the probe's ANSWER line is what showed it.
+        - `gremlin-route-screen.mjs` gets a `ded:` family: both spellings SHORTCUT, and the three
+          near misses (a differing `by` key, a labelled dedupe, a multi-key projection) stay generic.
+        - `dedupe-twin-1899.mjs` measures both spellings in one instrument, which is the ONLY thing
+          that caught it: one moved and one did not.
+
+⚠️ **A UNIQUE-VALUE FIXTURE IS REQUIRED BESIDE THE DUPLICATE-BEARING ONE, and a mutant proved it.**
+A CSR run-bound off-by-one reads the NEXT vertex's first target — on a fixture with duplicates that is
+a value the set already holds, so the answer is byte-identical and the mutant SURVIVES. The `chain()`
+fixture (p1->p2->p3->p4, values 11/22/33/44) makes every over-read introduce a value out of turn.
+**A deduping rung hides exactly the class of defect a dedupe absorbs; neither fixture alone has teeth.**
+
+✅ **AND A SURVIVOR IS A QUESTION ABOUT THE CODE AS OFTEN AS ABOUT THE SUITE.** Two mutants that
+disabled the `adjacentEdges` fallback arm survived everything — because `soleTypeBucket` returns
+`undefined` only for `both` or a multi-label hop, both of which the gate refuses, so the arm was DEAD
+by construction. It is deleted here rather than tested; an untestable branch and a dead branch look
+identical from the test side, and the mutation run is what distinguishes them.
+
+      MUTATION: 21 mutants, 21 caught, 0 survivors (`dedupe-mutants-1899.mjs`), after the run
+      nominated four real gaps — the route (taking the rung is ANSWER-EQUIVALENT, which is
+      [[perf-gate-needs-its-own-test]] exactly), the `by`-branch arity checks, the tail
+      (`rest: []` is invisible without a step AFTER the projection), and the over-read above.
+
+NOTE ON VARIANCE: the POST arm spreads 61-95 ms across PROCESSES while the PRE arm holds 0.3-2%, so
+every POST figure above is a min of three alternated rounds and no per-spelling difference under
+~1.2x is claimed. A single pair read 58.8 against 97.0 on one unchanged build.
+
+GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers; three
+runs of `bun run spelling:gremlin` (0 disagreements, 0 groups over 2x — one run reported 1, which the
+next two refuted as that run's own variance).

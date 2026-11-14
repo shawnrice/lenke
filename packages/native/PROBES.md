@@ -1766,3 +1766,35 @@ paid silently since item 1504 introduced the walk.
 
 `countShortcut` (12.9%), `newContext` (12.1%) and GC (12.9%) are now the top frames, and all three
 are execution rather than analysis — the construction-time design does not reach them.
+
+## `dedupe-twin-1899.mjs` — the distinct far values of a hop, asked three ways
+
+`SHAPE=gql|gremlin|gremvals bun dedupe-twin-1899.mjs`, with `N` and `REPS`. One shape per process
+(item 1871 retracted a flag measured in a shared one), 200,000 vertices / 1,000,000 edges, eight
+distinct values so the answer is 8 rows and the whole cost is walk. Prints the per-rep series beside
+the median — the POST arm here spreads 61-95 ms across processes while the PRE arm holds 0.3-2%, so
+a single pair cannot settle anything under ~1.2x.
+
+⚠️⚠️ **ITS REASON FOR EXISTING IS THAT IT MEASURES BOTH GREMLIN SPELLINGS, AND THAT IS THE ONLY
+THING THAT CAUGHT ITEM 1899'S BUG.** `values(k).dedupe()` and `dedupe().by(k).values(k)` are one
+question, and the fused rung's gate matched only the first — because a `By` in this AST is
+`{kind: 'key', key}`, never the bare string the caller writes. One spelling dropped to 65 ms and the
+other stayed at 257 on the same build, both answering correctly, with the whole suite green. ⚠️ A
+probe that measured either spelling ALONE would have reported a clean win.
+
+The GQL arm is the control and the target at once: `MATCH (a:P)-[:E]->(b:P) RETURN DISTINCT b.n AS n`
+at ~21 ms is the fast side whose shortcut the Gremlin rung copies — dedupe INSIDE the walk, so eight
+rows are ever built.
+
+## `dedupe-mutants-1899.mjs` — does `hop-values-dedupe.test.ts` have teeth?
+
+21 mutants over the gate and both walks (the lazy `[Symbol.iterator]` and the eager `drain` are the
+same loop written twice, so `which`-occurrence selects one). The gate gets more mutants than the walk
+because that is where the item's real bug was, and a gate that quietly admits nothing changes no
+answer at all.
+
+⚠️ **TWO MUTANTS WERE DELETED RATHER THAN COVERED, which is the other thing a survivor can mean.**
+They disabled the `adjacentEdges` fallback in `farValues`, and no test could reach it: `soleTypeBucket`
+returns `undefined` only for `both` or a multi-label hop, both refused by the gate. The arm was dead
+by construction and is gone. An untestable branch and a dead branch look identical from the test
+side; the mutation run is what tells them apart.

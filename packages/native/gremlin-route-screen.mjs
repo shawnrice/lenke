@@ -119,6 +119,20 @@ const SHAPES = {
   'edgef: inE has outV values': "traversal(V(), inE('E'), has('w', gt(3)), outV(), values('k'))",
   'edgef: bothE has otherV count': "traversal(V(), bothE('E'), has('w', gt(3)), otherV(), count())",
   'edgef: outE inV values': "traversal(V(), outE('E'), inV(), values('k'))",
+  // ⚠️ THE DEDUPED-VALUES FAMILY, added at item 1899, and the rows exist because that item's bug was
+  // INVISIBLE to a screen keyed on answers: `byKey` tested `typeof by === 'string'` where the AST
+  // holds `{kind: 'key'}`, so the `by` spelling silently kept the generic pipeline at 4.4x the fused
+  // one while every test passed. ⚠️ BOTH SPELLINGS GET A ROW — they are one question and must route
+  // alike — and the near misses are here beside them: a differing `by` key, a labelled dedupe and a
+  // multi-key projection are each a DIFFERENT question and must stay generic.
+  'ded: values then dedupe': "traversal(V(), out('E'), values('k'), dedupe())",
+  'ded: dedupe by then values': "traversal(V(), out('E'), dedupe().by('k'), values('k'))",
+  'ded: in values then dedupe': "traversal(V(), in_('E'), values('k'), dedupe())",
+  'ded: deduped then limit': "traversal(V(), out('E'), values('k'), dedupe(), limit(3))",
+  'ded: by key differs': "traversal(V(), out('E'), dedupe().by('k'), values('w'))",
+  'ded: labelled dedupe': "traversal(V(), out('E'), dedupe('x'), values('k'))",
+  'ded: multi key values': "traversal(V(), out('E'), values('k', 'w'), dedupe())",
+
   // ⚠️ THE OPTIONAL FAMILY, added at item 1884 — the screen had no `optional` row either, and the
   // left-join idiom was the workload screen's largest shape once item 1883 landed. `optional-hop.ts`
   // fuses the STEP (items 1480/1483/1628); these rows ask whether the PLAN is fused.
@@ -130,7 +144,7 @@ const SHAPES = {
 };
 
 const IMPORTS =
-  "import { E, V, both, bothE, count, dedupe, fold, groupCount, gt, has, hasId, hasLabel, id, inE, inV, limit, min, optional, order, otherV, out, outE, outV, sum, toArray, traversal, values } from '@lenke/gremlin';";
+  "import { E, V, both, bothE, count, dedupe, fold, groupCount, gt, has, hasId, hasLabel, id, inE, inV, in_, limit, min, optional, order, otherV, out, outE, outV, sum, toArray, traversal, values } from '@lenke/gremlin';";
 
 const build = () => execFileSync('bun', ['run', 'build'], { cwd: ROOT, stdio: 'ignore' });
 

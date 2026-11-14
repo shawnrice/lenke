@@ -526,6 +526,31 @@ const GROUPS: readonly Group[] = [
       traversal(V(), has('age', gte(45)), count()),
     ],
   ],
+  // ⚠️⚠️ THE DEDUPED FAR VALUES OF A HOP, BOTH SPELLINGS — AND THIS GROUP IS WHY THE PROBE EXISTS,
+  // because item 1899 shipped the two spellings 4.2x apart for one afternoon. `values(k).dedupe()`
+  // emits the distinct values of `k`; `dedupe().by(k).values(k)` keeps the first ELEMENT per `k` and
+  // reads `k` off it — the same values in the same order, one question. The fused rung took the
+  // first and declined the second, because its gate tested `typeof by === 'string'` where the AST
+  // holds `{kind: 'key'}`. ⚠️ No answer test could see it (both spellings answered correctly) and
+  // the route screen had no row for either; a group here is the instrument that would have.
+  //
+  // ⚠️ AND THE FIRST CUT OF THIS GROUP WAS VACUOUS: it hopped `KNOWS`, which this fixture's edges
+  // are not (`T` is), so both members answered `0:[]` and the group could never have flagged
+  // anything. The probe's answer line is what showed it — read it, not just the ratio.
+  [
+    'deduped hop values: values(k).dedupe() vs dedupe().by(k).values(k)',
+    [
+      traversal(V(), out('T'), values('k'), dedupe()),
+      traversal(V(), out('T'), dedupe().by('k'), values('k')),
+    ],
+  ],
+  [
+    'deduped hop values, incoming: in(T).values(k).dedupe() vs the `by` spelling',
+    [
+      traversal(V(), in_('T'), values('k'), dedupe()),
+      traversal(V(), in_('T'), dedupe().by('k'), values('k')),
+    ],
+  ],
   // ⚠️ THREE MORE GROUPS WERE IN THE FIRST CUT OF THIS SECTION AND THE ANSWER CHECK REJECTED ALL
   // THREE, correctly: `max` vs `min` (89 against 0), `sum` vs `mean` (8899300 against 44.4965) and
   // `fold` vs `count` (a list against 200000). They are not two spellings of ONE question — there

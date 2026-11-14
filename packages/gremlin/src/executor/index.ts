@@ -36,6 +36,7 @@ import { applyStep } from './dispatch.js';
 import { edgeFilteredHopValues } from './edge-filtered-hop-values.js';
 import { hopChainValuesShortcut } from './hop-chain-values.js';
 import { hopValuesCsr } from './hop-values-csr.js';
+import { hopValuesDedupe } from './hop-values-dedupe.js';
 import type { HopValues } from './hop-values.js';
 import { hopValuesShortcut } from './hop-values.js';
 import { seedFromIndex, tailIsOrderFree } from './index-seed.js';
@@ -2440,7 +2441,12 @@ const fusedProjectedValues = (
       // doing four times the rows. Its gate is as narrow as that claim (`V()`, ONE `out`/`in` with
       // ONE label, a single-key `values`/`id`/nothing), so everything it declines lands on exactly
       // the rung it lands on today.
-      (hopValuesCsr(effective, graph) ??
+      // ⚠️ THE DEDUPE WALK IS FIRST (item 1899), and it is narrow by construction: FOUR steps, with
+      // a `values`+`dedupe` pair in positions 2-3 in either order. Every rung below it requires the
+      // projection to be the LAST step, so none of them can claim this shape — the ordering is for
+      // reading, and item 1535's rule keeps it true if a gate is ever widened.
+      (hopValuesDedupe(effective, graph) ??
+      hopValuesCsr(effective, graph) ??
       hopValuesShortcut(effective, graph) ??
       startFilteredHopValues(effective, graph) ??
       // The EDGE-PREDICATE rung (items 1882/1883): `outE(T).has(k, p).inV()`.
