@@ -219,6 +219,34 @@ absence** — `{k: null}` is the one place in a pattern where that distinction i
 
 ## 5. Open — unblocked and priced
 
+- ~~**A residual `min`/`max` over the fused values walk went through the traverser pipeline**~~ -
+  **CLOSED by item 1857** at **1.77x** (`min`) and **2.47x** (`max`). Gremlin side. The fused walk
+  already produced the values; the trailing terminal then wrapped every one of them in a traverser,
+  so **the reduce cost more than the walk it reduces** — 21.93 and 28.74 ms against the same walk
+  with no aggregate at **9.48**. Both now land at or below that walk's own cost (12.36, 11.62),
+  which is `gremlin-values-is-the-floor`'s claim holding: the reduce is free, the generator chain
+  was the cost. Same shape item 1630 found for a residual `order()`.
+  ⚠️ **`sum`/`mean` ARE DELIBERATELY NOT TAKEN, and that is tested rather than assumed.** An f64
+  addition is order-sensitive in its last ulp, the fused walk's visit order is not the pipeline's
+  by construction, and byte-identity with the Rust engine is a hard invariant. Items 1830 and 1853
+  declined the same pair on the GQL side; this is the same split, so the engine is consistent about
+  it across both surfaces. They measured 21.57 and 27.35 ms, unchanged.
+  **The oracle is a plain JavaScript reduce over the walk's own output**, not the engine's other
+  arm: the new fold mirrors `fusedValuesAggregate`'s non-numeric branch, and two near-twins that
+  must stay identical are item 1832's drift hazard, so neither checks the other. The cross-arm
+  agreement is a SEPARATE test, and it is what covers the mixed-type fixture, where replicating
+  `compareTotal`'s cross-type order in the test would be re-implementing the thing under test.
+  6 mutants, **5 caught**. P1 (the fold never selected) survives and must: declining sends the
+  query to the pipeline, which computes the same value — `perf-gate-needs-its-own-test`'s class
+  again, and the reason the GATE has its own direct unit tests.
+  ⚠️ **TWO OF MY OWN ORACLES WERE WRONG FIRST, both found by running them.** The JS oracle compared
+  as STRINGS, so it reported `-1` as the minimum of `[-5, 0, 3, -1, 0]` — the engine was right. And
+  `got[0] ?? null` masked "answered NOTHING" against "answered null", so a mutant returning `[]`
+  for an all-null input survived; these terminals always emit exactly one value, so the ARITY is as
+  much the contract as the value and is now asserted.
+  `run` needed a split to take a second residual arm: `fusedProjectedResidual` holds both, in
+  order, the same move items 1832/1834 made when a branch pushed a function over the gate.
+
 - ~~**The two `groupCount` BY-SPELLINGS cost up to 19.2x apart**~~ - **CLOSED by item 1856**, at
   **2.25x** (one hop), **19.86x** (two) and **15.00x** (three). CLAUDE.md's opening defect class:
   the planner recognised one spelling and scanned for another that means exactly the same thing.

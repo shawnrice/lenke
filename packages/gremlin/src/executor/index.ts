@@ -22,6 +22,8 @@ import {
 import { tagsObservedFrom } from '../ast.js';
 import type { Plan, Step } from '../ast.js';
 import {
+  foldProjectedMinMax,
+  fusableProjectedAggregate,
   fusableProjectedOrder,
   fusableValuesAggregate,
   fusableValuesTopK,
@@ -32,6 +34,7 @@ import {
 import { countShortcut } from './count-shortcut.js';
 import { applyStep } from './dispatch.js';
 import { hopChainValuesShortcut } from './hop-chain-values.js';
+import type { HopValues } from './hop-values.js';
 import { hopValuesShortcut } from './hop-values.js';
 import { seedFromIndex, tailIsOrderFree } from './index-seed.js';
 import { matchStep } from './match.js';
@@ -2310,6 +2313,54 @@ const fusedHopChainGroupCount = (
   return walked?.rest.length === 0 ? [tallyProjectedGroupCount(walked.values)] : undefined;
 };
 
+/**
+ * A residual the FUSED VALUES WALK can absorb, instead of wrapping each value in a traverser.
+ *
+ * ⚠️ EXTRACTED BECAUSE LINT SAID SO, exactly as `asGroupCountByKey` and `fusedHopChainGroupCount`
+ * were at item 1834: the second residual arm took `run` to a cyclomatic complexity of **36 against
+ * a limit of 35**. Raising the limit would hide the accumulation one branch at a time.
+ *
+ * ORDER IS LOAD-BEARING. The AGGREGATE is tried before the SORT, and they are disjoint — one takes
+ * a `min`/`max` terminal and the other an `order` — so the order is for reading rather than for
+ * correctness. Both must stay ahead of the generic residual route below, which is what they
+ * replace: placed after it, neither would ever be reached.
+ */
+const fusedProjectedResidual = (
+  projected: HopValues,
+  effective: Plan,
+): Iterable<unknown> | undefined => {
+  /**
+   * ONE ORDER-INVARIANT AGGREGATE, FOLDED IN PLACE — item 1857. Measured at 50,000 vertices x
+   * fanout 4, against the same walk with no aggregate at **9.48 ms**:
+   *
+   *     V().out(E).values(k)            9.48 ms
+   *     V().out(E).values(k).min()     21.93 ms      ->  12.36   1.77x
+   *     V().out(E).values(k).max()     28.74 ms      ->  11.62   2.47x
+   *
+   * — the reduce was costing more than the walk it reduces, which is the same shape item 1630
+   * found for a residual `order()` below.
+   *
+   * ⚠️ `sum`/`mean` ARE NOT HERE and that is a correctness decision, not an omission: an f64
+   * addition is order-sensitive in its last ulp, the fused walk's visit order is not the
+   * pipeline's by construction, and byte-identity with the Rust engine is a hard invariant. Items
+   * 1830 and 1853 declined the same pair on the GQL side for the same reason.
+   */
+  const folded = fusableProjectedAggregate(projected.rest);
+
+  if (folded !== undefined) {
+    return foldProjectedMinMax(projected.values, folded);
+  }
+
+  // A RESIDUAL THAT IS ONLY A GLOBAL `order()` IS SORTED IN PLACE (item 1630), instead of wrapping
+  // every value in a traverser for `orderStep` to spread back into an array. `V().out(T).values(k)`
+  // rides the fused walk at 96.81 ms over 1M edges and `.order()` took it to **471.56 against a
+  // hand floor of 146.27 — 3.22x**; the capped spelling returned TEN ROWS in 272.00.
+  const consumed = effective.steps.length - projected.rest.length;
+  const sortable = fusableProjectedOrder(projected.rest, effective.steps[consumed - 1]);
+
+  return sortable === undefined ? undefined : fusedProjectedOrder(projected.values, sortable);
+};
+
 export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
   // Before anything runs: static faults the engine raises at parse time — a plan that
   // cannot succeed on any graph, and an aggregate/sort/vertex-move on the wrong frontier.
@@ -2482,13 +2533,11 @@ export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
   //
   // ⚠️ BEFORE the `seedFromIndex` / residual path below, and the ordering matters: the generic
   // residual route is what this replaces, so a later placement would never be reached.
-  if (projected !== undefined) {
-    const consumed = effective.steps.length - projected.rest.length;
-    const sortable = fusableProjectedOrder(projected.rest, effective.steps[consumed - 1]);
+  const residual =
+    projected === undefined ? undefined : fusedProjectedResidual(projected, effective);
 
-    if (sortable !== undefined) {
-      return fusedProjectedOrder(projected.values, sortable);
-    }
+  if (residual !== undefined) {
+    return residual;
   }
 
   // If the plan opens `V()`/`E()` + a seedable `has` on an indexed key, seed

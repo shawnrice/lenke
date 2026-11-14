@@ -167,6 +167,78 @@ export const fusableValuesAggregate = (
   return { key: step.keys[0], kind };
 };
 
+/**
+ * A residual that is ONE ORDER-INVARIANT aggregate, for the already-projected values a fused hop
+ * walk produced — item 1857.
+ *
+ * ⚠️ WHY ONLY `min`/`max`, when `fusableValuesAggregate` above also takes `sum` and `mean`. Those
+ * two are ORDER-SENSITIVE in the last ulp of an f64 addition, and byte-identity with the Rust
+ * engine is a hard invariant here — a different summation order is a different answer. The fused
+ * walk's visit order is not the traverser pipeline's by construction, and item 1834's
+ * `gremlin-walk-order-probe.mjs` reports agreement as EVIDENCE rather than proof. `min`/`max` over
+ * a total order do not care, so they can be taken without that question: items 1830 and 1853 made
+ * the same split on the GQL side.
+ *
+ * ⚠️ IT IS A DIFFERENT ENTRY POINT, NOT A WIDENING, because the inputs differ: that one sees a
+ * `values` step still in the plan and reads the property off each element; here the fused walk has
+ * already extracted the values, so the fold takes them raw.
+ */
+export const fusableProjectedAggregate = (rest: readonly Step[]): 'min' | 'max' | undefined => {
+  if (rest.length !== 1) {
+    return undefined;
+  }
+
+  const [step] = rest;
+  const { kind } = step;
+
+  if (kind !== 'min' && kind !== 'max') {
+    return undefined;
+  }
+
+  // These carry a SCOPE in this surface; a non-global one is a different question, exactly as
+  // `fusableValuesAggregate` records.
+  if ('scope' in step && step.scope !== undefined && step.scope !== 'global') {
+    return undefined;
+  }
+
+  return kind;
+};
+
+/**
+ * Fold already-projected values to one `min`/`max`.
+ *
+ * ⚠️ THE SEMANTICS ARE `fusedValuesAggregate`'S NON-NUMERIC ARM, deliberately mirrored: a `null`
+ * is skipped, the comparison is `compareTotal` (not `<`, so mixed types have a total order), and
+ * an input with no non-null value answers `null` rather than nothing. The two are verified against
+ * each other by test rather than by inspection — a near-twin that must stay identical is item
+ * 1832's drift hazard, and here the tie-break is that BOTH are also checked against a plain
+ * JavaScript reduce, which is outside the engine and cannot share a mistake with either.
+ */
+export const foldProjectedMinMax = (values: Iterable<unknown>, kind: 'min' | 'max'): unknown[] => {
+  let best: unknown;
+  let seen = false;
+
+  for (const v of values) {
+    if (v == null) {
+      continue;
+    }
+
+    if (!seen) {
+      best = v;
+      seen = true;
+      continue;
+    }
+
+    const c = compareTotal(v, best);
+
+    if (kind === 'min' ? c < 0 : c > 0) {
+      best = v;
+    }
+  }
+
+  return [seen ? best : null];
+};
+
 /** What `normalizeBys` supplies for a bare `order()`; shared so the fusion allocates none. */
 const IDENTITY_BY: By = { kind: 'identity' };
 
