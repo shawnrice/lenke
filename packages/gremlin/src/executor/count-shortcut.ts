@@ -260,12 +260,114 @@ export const countShortcut = (plan: Plan, graph: Graph): number | undefined => {
     return filteredDistinct;
   }
 
+  // The SAME question past one hop (item 1855), by set expansion. Below the one-hop rung, which
+  // answers its own width from an index key count and is strictly cheaper there.
+  const dedupedChain = dedupedHopChainCount(mid, graph);
+
+  if (dedupedChain !== undefined) {
+    return dedupedChain;
+  }
+
   // `distinctHopCount` is the [hop, dedupe] pair and takes exactly two.
   if (mid.length !== 2) {
     return undefined;
   }
 
   return distinctHopCount(mid[0], mid[1], graph);
+};
+
+/**
+ * `V().out(T).out(T)…dedupe().count()` — the number of DISTINCT endpoints of a K-hop chain, by
+ * expanding a SET per level instead of enumerating paths (item 1855).
+ *
+ * ⚠️ THE CLIFF THIS CLOSES IS 398x AND IT SITS BETWEEN TWO WIDTHS. `distinctHopCount` answers ONE
+ * hop from an index key count; two hops reached nothing and fell to the traverser pipeline:
+ *
+ *     V().out(E).dedupe().count()                0.64 ms
+ *     V().out(E).out(E).dedupe().count()       254.62 ms      398x, for 4x the paths
+ *     V().out(E).out(E).out(E).dedupe().count() 915.25 ms
+ *
+ * and on that fixture all three answer the SAME 50,000, because every vertex is reachable — so the
+ * extra work bought no extra answer at all.
+ *
+ * ⚠️ WHY A SET EXPANSION IS EXACT. `dedupe()` sits at the END, so the multiplicities of the
+ * intermediate frontiers cannot reach the answer: a vertex `w` is an endpoint of some K-path iff
+ * it is reachable in one hop from the set of (K-1)-path endpoints. Expanding level by level
+ * therefore computes the same SET the traverser would emit and then dedupe, in O(V + E) a level
+ * rather than O(paths).
+ *
+ * ⚠️ AND THE MULTI-TYPE EDGE HAZARD DOES NOT APPLY, which is worth stating because it constrains
+ * the sibling rungs (items 1846/1847) and the edge counts above. Those SUM per-label buckets, so
+ * an edge carrying two named types is counted twice; this ADDS TO A SET, and adding a vertex twice
+ * is adding it once. No `multiTypeEdgeCount` guard is needed or wanted.
+ */
+const dedupedHopChainCount = (mid: readonly Step[], graph: Graph): number | undefined => {
+  if (mid.length < 3) {
+    return undefined; // two hops plus the `dedupe`; one hop is the rung above
+  }
+
+  const last = mid[mid.length - 1];
+
+  // Only the BARE `dedupe()` — the same refusal `distinctHopCount` makes, for its reason: a
+  // path-label scope or a by-modulator dedupes on something other than the element.
+  if (last.kind !== 'dedupe' || (last.labels?.length ?? 0) > 0 || (last.bys?.length ?? 0) > 0) {
+    return undefined;
+  }
+
+  const hops: Extract<Step, { kind: 'out' | 'in' }>[] = [];
+
+  for (const step of mid.slice(0, -1)) {
+    // `both` reaches a vertex from either side; the per-level expansion below reads ONE box.
+    if (step.kind !== 'out' && step.kind !== 'in') {
+      return undefined;
+    }
+
+    hops.push(step);
+  }
+
+  let frontier: Iterable<Vertex> = graph.verticesById.values();
+
+  for (const hop of hops) {
+    const next = new Set<Vertex>();
+    const forward = hop.kind === 'out';
+    const { labels } = hop;
+
+    for (const v of frontier) {
+      const box = forward ? v.adjFrom : v.adjTo;
+
+      if (box === undefined) {
+        continue;
+      }
+
+      if (labels.length === 0) {
+        for (const set of box.values()) {
+          for (const e of set) {
+            next.add(forward ? e.to : e.from);
+          }
+        }
+
+        continue;
+      }
+
+      for (const label of labels) {
+        const set = box.get(label);
+
+        if (set !== undefined) {
+          for (const e of set) {
+            next.add(forward ? e.to : e.from);
+          }
+        }
+      }
+    }
+
+    frontier = next;
+
+    if (next.size === 0) {
+      return 0;
+    }
+  }
+
+  return (frontier as Set<Vertex>).size;
 };
 
 /**

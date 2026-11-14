@@ -230,9 +230,16 @@ describe('the rung declines what it must', () => {
   });
 
   test('a step after the hops that is not a vertex filter', () => {
-    // `dedupe` is a vertex-level step and NOT a filter, so the trailing run cannot admit it and the
-    // shape keeps the pipeline — which still answers, just not in closed form.
-    expect(answered(traversal(V(), out('E'), out('E'), dedupe(), count()))).toBeUndefined();
+    /**
+     * ⚠️ THIS ROW FLIPPED AT ITEM 1855, and only its OWNER changed — THIS rung still declines
+     * `dedupe`, exactly as the comment said. What changed is that a different rung now claims the
+     * shape: `dedupedHopChainCount` answers a K-hop `dedupe().count()` by expanding a SET per
+     * level, which closed a **398x** cliff (0.64 ms at one hop against 254.62 at two).
+     *
+     * The expected 3 is hand-checked against this fixture rather than copied from the engine:
+     * E-edges give S1 = {a,b,c,e} and S2 = {b,c,e}.
+     */
+    expect(answered(traversal(V(), out('E'), out('E'), dedupe(), count()))).toBe(3);
   });
 
   test('⚠️ a MULTI-TYPE graph with an untyped hop', () => {

@@ -219,6 +219,38 @@ absence** — `{k: null}` is the one place in a pattern where that distinction i
 
 ## 5. Open — unblocked and priced
 
+- ~~**A DEDUPED count past one hop fell to the traverser pipeline**~~ - **CLOSED by item 1855**, at
+  **5.55x** (2 hops), **12.53x** (3) and **36.24x** (4) — the win GROWS with depth, which is what a
+  set expansion predicts against path enumeration. Gremlin side.
+  `distinctHopCount` answered ONE hop from an index key count; two hops reached nothing:
+  `V().out(E).dedupe().count()` 0.64 ms against `V().out(E).out(E).dedupe().count()` **254.62** —
+  **398x for four times the paths**, and on that fixture both answer the SAME 50,000 because every
+  vertex is reachable, so the extra work bought no extra answer at all.
+  **The method: expand a SET per level.** `dedupe()` sits at the END, so intermediate
+  multiplicities cannot reach the answer — a vertex is an endpoint of a K-path iff it is one hop
+  from the set of (K-1)-path endpoints. O(V+E) a level instead of O(paths).
+  ⚠️ **The multi-type edge hazard does NOT apply here**, which is worth recording because it
+  constrains the sibling rungs (items 1846/1847) and every edge count in the same file: those SUM
+  per-label buckets, so an edge carrying two named types counts twice; this ADDS TO A SET, and
+  adding a vertex twice is adding it once.
+  **Found by `gremlin-route-screen.mjs`**, the Gremlin twin of item 1854's screen. Gremlin has no
+  `CLinear` to read, so the route signal is `applyStep` — the generic pipeline's single entry —
+  patched to record the step kinds it sees. 0 calls means a whole-plan shortcut answered. The
+  screen reports SIBLING DISAGREEMENTS (a fused shape beside a generic one at another width), which
+  is what surfaced this.
+  6 mutants, **5 caught**. D2 (claiming one hop too, stealing the cheaper closed form) survives and
+  must: both rungs return the same number, so no ANSWER can separate them — `perf-gate-needs-its-
+own-test`'s class.
+  ⚠️ **TWO TEST DEFECTS THE MUTANTS FOUND, both of the same kind.** The file's "the IN direction
+  agrees too" test called `out()` in BOTH arms and tested nothing; and once fixed, the untyped-`in`
+  case ran on ONE fixture where the wrong answer coincides with the right one (`mixed types` gives
+  3 either way; the star gives 0 against 1). The walk branches on direction AND on typed-vs-
+  untyped, so the file now runs all four variants across all seven fixtures and four depths. **One
+  fixture cannot test a branch.**
+  `trailing-filtered-hop-count.test.ts` had a row asserting this shape keeps the pipeline; only its
+  OWNER changed, and the flipped expectation is hand-checked against that fixture (S1 = {a,b,c,e},
+  S2 = {b,c,e}) rather than copied from the engine.
+
 - ~~**A MULTI-COLUMN `DISTINCT` over a plain node scan had no rung at all**~~ - **CLOSED by item
   1853**, at **4.3x** (110.9 -> 25.7 ms at 200,000 vertices). Every hop and chain width already
   claimed one (`hopDistinctProjection`, `hop2Projection`, `chainProjection`); depth ZERO claimed
