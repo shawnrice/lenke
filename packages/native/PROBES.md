@@ -1837,3 +1837,43 @@ equivalent by construction, gated by `neq-prof-1900.mjs` instead), `recallTag`'s
 binds one label twice), and the `isTemporal` guard, which is probably dead and is kept anyway because
 only an argument says so, not the branch's own conditions. Item 1899 deleted a dead arm one item
 earlier because its gate proved it; the pair is the rule.
+
+## `gql-coverage-screen-1901.mjs` — what the GQL screen does NOT ask
+
+`bun gql-coverage-screen-1901.mjs`, with `NODES` / `FANOUT` / `REPS`, or `SHAPE='<label>'` for one
+shape in this process. One CHILD PROCESS per shape (item 1871 retracted a flag measured in a shared
+one; item 737 refuted a 1.66x that only existed in-sweep).
+
+⚠️⚠️ **THIS IS ITEM 1898'S SWEEP ON THE OTHER SURFACE, and it found the same thing.** Items 1879/1880
+split the existing seventeen families until "the addressable time is exhausted" — true only of the
+shapes a screen HAS. At 200,000 vertices the biggest GQL shapes are all outside the corpus:
+`any shortest` 2336 ms, the path accessors 741/738, `ORDER BY <expression>` 180, `CALL … YIELD` 173.
+
+⚠️ **THE `CONTROL` ROWS ARE THE COMPARISON, not the fastest row.** Three shapes from the existing
+corpus are carried deliberately — the one-hop projection (26.2 ms for 800,000 rows, item 1895's
+target), the deduped hop (24.7, item 1899's GQL fast side) and the `{2,3}` var-length bound (21,977,
+which items 1879/1880 established as a documented CORRECTNESS refusal). A new shape above the first
+two is a nomination; one merely above the third is not. Later rows added the ORDER BY floors, and one
+of them dissolved a nomination: `top-k grouped` at 142 ms for 3 rows reads like a missing top-k until
+the same grouped count without the `ORDER BY … LIMIT` measures 139.1.
+
+## `gql-coverage-probe-1901.mjs` — can the screen even ask this shape?
+
+The step BEFORE a screen row, and not a timing instrument. A candidate is worthless two ways: it may
+not PARSE, and it may parse and match NOTHING, which `workload-perf-screen.mjs` warns is a broken row
+rather than a fast family. ⚠️ ISO-GQL is NOT Cypher, so every candidate's syntax comes from the engine
+here rather than from memory — all 23 of item 1901's did pass, which is the only reason the screen
+above has no `⚠️ ZERO ROWS` line in it.
+
+## ⚠️ `rung-precedence-census.mjs` IS DARK AS OF ITEM 1901 — it refuses to report
+
+Its load-bearing assertion fails: `compileLinear` returns **32** rung fields, the `fastPath` ladder in
+`clauses.ts` consumes **22**, and the probe's transcribed `CHAIN` holds the **20** that existed at item 1775. The refusal is the probe working — it will not census the wrong order — but the instrument is
+unusable until someone finds where the other ten compiled fields are consumed, which is a re-derivation
+and not a patch. ⚠️ Nobody ran it between items ~1885 and 1901, so a "start here" instrument went dark
+for fifteen items.
+
+**Meanwhile, to ask the route question directly**, call `compileLinear(parse(text).parts[0])` and list
+the non-null fields: no willing rung at all means the general path regardless of precedence, which is
+how item 1901 established that `ORDER BY n.k + 1` reaches nothing while `ORDER BY n.k + 1 LIMIT 3`
+reaches `nodeProjection`.

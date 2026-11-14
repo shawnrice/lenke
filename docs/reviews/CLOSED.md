@@ -13176,7 +13176,7 @@ otherwise, and this one looks obviously correct.
 `index_cost_by_list_length`, the harness. The corpus had no list-indexing bench and the
 question was unasked; it now has one that is demonstrably alive, with the control built in.
 
-## 642 — `ORDER BY <a projected item's own expression>` reaches the ordered-column path: 1.94x → 1.00x, and mutation found a wrong-answer gap 12 tests had missed
+## 642 — `ORDER BY <a projected item's own expression>` reaches the ordered-column path: 1.94x → 1.00x, and mutation found a wrong-answer gap 12 tests had missed — 🧹 ~~and the computed key's ~2x is item 610's rule working~~ **ITS NUMBER IS STALE: item 1901 measures that same deliberate decision at 8.9x (node) and 4.5x (hop), and found the WINDOWED form of the identical key already takes the rung — so the fault argument does not bind unwindowed**
 
 **FIXED (TS).** The gated probe's remaining flag after item 638, and the audit is what made it
 worth doing rather than `CLOSED.md`.
@@ -89722,3 +89722,77 @@ GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all sev
 runs of `bun run spelling:gremlin` (0 disagreements; one run flagged a group and the next two
 refuted it, the same bimodality item 1899 saw). MUTATION: 7 mutants, 4 caught, 3 expected survivors
 each with its reason stated at the entry.
+
+## Item 1901 — item 1898's coverage sweep applied to GQL, and it found the same thing: **the surface's biggest shapes are outside the corpus**. `ORDER BY <an expression>` costs **8.9x** the bound-name spelling for the same rows in the same order — and the WINDOWED form of that very key takes the rung, so the capability is already there
+
+Items 1879/1880 split the existing seventeen families until "the addressable time is exhausted" —
+a conclusion that is only ever true of the shapes a screen HAS. Item 1898 falsified exactly that on
+the Gremlin side by asking what its screen did not ask. ⚠️ **The GQL side had never had that sweep**:
+item 1890 applied the SIZE lesson to the GQL grid, nobody applied the COVERAGE one.
+
+      23 shapes the 17-family corpus never asks, each VERIFIED to parse and match rows first
+      (`gql-coverage-probe-1901.mjs`), then timed one CHILD PROCESS PER SHAPE at 200,000
+      vertices / 1,000,000 edges, median of 7 less 2 warm-up:
+
+        21977.17 ms        8   CONTROL varlen {2,3}   ⬅ items 1879/1880's documented refusal
+         2335.62    2099864   any shortest
+          741.10     500000   path accessor edges(p)[0]
+          738.46     500000   path value + edges()
+          180.39     200000   order by EXPRESSION
+          179.03     200000   order by expr, two terms
+          172.92     200000   CALL procedure YIELD
+          141.98          3   top-k grouped
+           88.17     200000   chained LET
+           88.05     200000   map literal built
+        ------------------------------------------------
+           26.22     800000   CONTROL one-hop projection   ⬅ item 1895's target, 33 ns a row
+           24.71          8   CONTROL deduped hop          ⬅ item 1899's GQL fast side
+
+❌ **AND ONE NOMINATION DISSOLVED ON ITS OWN FLOOR, which is what the floor is for.** `top-k grouped`
+at 142 ms for THREE rows looks like a missing top-k; the same grouped count WITHOUT the
+`ORDER BY … LIMIT` measures **139.13**. The top-k is free and the cost is the grouped count, which is
+a different and already-known shape. Item 1878's lesson, paid forward.
+
+✅ **THE FINDING IS THE SORT KEY, AND IT IS AN EQUIVALENT-SPELLING GAP — this repo's named bug
+class.** `ORDER BY n.n + 1` and `ORDER BY x` (where `x` is `n.n`) produce the SAME 200,000 rows in
+the SAME ORDER, because adding 1 is monotone:
+
+        MATCH (n:T) RETURN n.n AS x ORDER BY x               19.55 ms    nodeProjection
+        MATCH (n:T) RETURN n.n AS x                           9.67       nodeProjection
+        MATCH (n:T) RETURN n.n AS x ORDER BY n.n + 1        173.38       ⬅ GENERAL PATH, 8.9x
+        MATCH (n:T) RETURN n.n AS x ORDER BY n.n + 1 LIMIT 3 16.50       ⬅ nodeProjection (!)
+
+        and on the HOP shape, the most common in the language, at 800,000 rows:
+        MATCH (a:T)-[:E]->(b:T) RETURN b.n AS x ORDER BY x          265.36   hopProjection
+        MATCH (a:T)-[:E]->(b:T) RETURN b.n AS x ORDER BY b.n + 1   1197.09   ⬅ GENERAL PATH, 4.5x
+
+⚠️⚠️ **THE DECISIVE FACT IS THE INVERSION: ADDING A WINDOW MAKES THE EXPRESSION KEY ACCEPTABLE.**
+Asked directly, `compileLinear` reports no willing rung for `ORDER BY n.k + 1` and `nodeProjection`
+for `ORDER BY n.k + 1 LIMIT 3`. So **the engine already evaluates an arbitrary expression sort key**,
+and it is the UNWINDOWED form that refuses — backwards from `ordered-rows.ts`'s documented hazard,
+which is precisely about faulting on rows a window DISCARDS (item 604/610, measured on both engines).
+Without a window every row is projected and every key evaluated either way, so the fault argument
+does not bind there at all. **That is the next item: admit the key `sortsOnOutputNames` refuses when
+there is no window.**
+
+🧹 **AND ITEM 642'S NUMBER IS STALE ON A LIVE DECISION.** That item fixed `ORDER BY <the projected
+prop>` and deliberately left a COMPUTED key on the general path, recording its cost as "~2x … item
+610's rule working, not a second bug". Measured today the same choice costs **8.9x**, because the arm
+it was compared against has since been sped up repeatedly (item 1895 among them). Its heading is
+corrected in this commit. ⚠️ This is the fifth instance of `CLOSED.md`'s own warning — a live target
+whose NUMBER went stale misleads as effectively as a closed one advertised open.
+
+🛑 **SEPARATE FINDING: `rung-precedence-census.mjs` HAS BEEN DARK FOR ~15 ITEMS.** Its load-bearing
+assertion fails — `compileLinear` now returns **32** rung fields, the `fastPath` ladder consumes
+**22**, and the probe's transcribed `CHAIN` holds the **20** that existed at item 1775. It refuses to
+report rather than censusing the wrong order, which is the probe working; what is worth noticing is
+that nobody ran a "start here" instrument between items ~1885 and 1901. ⚠️ The drift is NOT a stale
+transcription to patch: ten compiled fields are consumed somewhere other than the single ladder, and
+restoring the oracle means finding where. Flagged loudly in the file, with the four sort rows added
+to it as correct questions it currently refuses to answer.
+
+NO ENGINE CODE CHANGED. Two instruments (`gql-coverage-probe-1901.mjs`, which asks only whether a
+candidate parses and matches rows, and `gql-coverage-screen-1901.mjs`), four census rows, and the
+corrections above.
+
+GATES. bun run check 0.

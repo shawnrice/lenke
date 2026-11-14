@@ -96,6 +96,18 @@ const NON_RUNG = new Set(['clauses', 'writes']);
  * and a shape that fails to parse is reported rather than skipped, because a silently dropped row
  * would understate the census exactly where the grammar is least familiar.
  */
+/*
+ * ⚠️⚠️ **THIS CENSUS IS CURRENTLY DARK, AND IT SAYS SO LOUDLY RATHER THAN REPORTING (item 1901).**
+ * Its load-bearing assertion fails: `compileLinear` now returns 32 rung fields while the `fastPath`
+ * ladder in `clauses.ts` consumes 22, and `CHAIN` below transcribes the 20 that existed at item
+ * 1775. So the drift is not a stale transcription to patch — ten compiled fields are consumed
+ * somewhere other than the single ladder, and re-establishing the precedence oracle means finding
+ * where. Until then every row below is a correct QUESTION whose answer this file refuses to print.
+ *
+ * ⚠️ The refusal is the probe working. What is worth noticing is that nobody ran it between items
+ * ~1885 and 1901, so a "start here" instrument went dark for fifteen items — which is the same
+ * failure mode `CLOSED.md`'s lagging-index rule exists to prevent, one directory over.
+ */
 const SHAPES = [
   // --- node only -------------------------------------------------------------
   ['node.count', 'MATCH (n:P) RETURN count(*) AS c'],
@@ -109,6 +121,15 @@ const SHAPES = [
   ['node.minmax', 'MATCH (n:P) RETURN min(n.k) AS a, max(n.k) AS b'],
   ['node.avg', 'MATCH (n:P) RETURN avg(n.k) AS s'],
   ['node.distinctrows', 'MATCH (n:P) RETURN DISTINCT n.k'],
+  // ⚠️ THE FOUR SORT SPELLINGS, added at item 1901 because the GQL coverage screen measured the
+  // third at 8.9x the first over the same 200,000 rows IN THE SAME ORDER (adding 1 is monotone).
+  // Item 642 fixed `ORDER BY <the projected prop>` and deliberately left a COMPUTED key on the
+  // general path, measuring that choice at ~2x; these rows are what says whether that is still the
+  // route, and the screen is what says the price is no longer ~2x.
+  ['node.order.alias', 'MATCH (n:P) RETURN n.k AS x ORDER BY x'],
+  ['node.order.prop', 'MATCH (n:P) RETURN n.k AS x ORDER BY n.k'],
+  ['node.order.expr', 'MATCH (n:P) RETURN n.k AS x ORDER BY n.k + 1'],
+  ['node.order.expr.window', 'MATCH (n:P) RETURN n.k AS x ORDER BY n.k + 1 LIMIT 3'],
   ['node.where.count', 'MATCH (n:P) WHERE n.k > 5 RETURN count(*) AS c'],
   ['node.where.proj', 'MATCH (n:P) WHERE n.k > 5 RETURN n.k'],
   ['node.inline.count', 'MATCH (n:P {k: 5}) RETURN count(*) AS c'],
