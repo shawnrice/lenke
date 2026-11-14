@@ -43,6 +43,19 @@
  */
 import { Graph } from '@lenke/core';
 import { query } from '@lenke/gql';
+import {
+  V,
+  count,
+  dedupe,
+  gt,
+  has,
+  hasLabel,
+  order,
+  out,
+  toArray,
+  traversal,
+  values,
+} from '@lenke/gremlin';
 
 const NODES = Number(process.env.NODES ?? 20_000);
 const REPS = Number(process.env.REPS ?? 9);
@@ -60,6 +73,28 @@ const DEPTH_FLAG = Number(process.env.DEPTH_FLAG ?? 1.5);
  * magnitude before it means anything. Cells below this are compared but never flagged.
  */
 const FLOOR_MS = Number(process.env.FLOOR_MS ?? 3);
+/**
+ * ⚠️ THE THIRD FLAG, AND IT EXISTS BECAUSE THE FIRST TWO HAD A BLIND SPOT EXACTLY WHERE THE BIGGEST
+ * GAP WAS (item 1826). `ORDER BY`'s marginal cost over its own `rows` cell goes **1.3 → 46.5 → 53.2
+ * → 75.3 → 88.6 ms** across depths 1-5 in GQL, while Gremlin's `order()` is **1.2 → 1.1 → 1.6 → 1.7
+ * → 1.6** — flat. A 36x jump between depth 1 and depth 2, and NEITHER existing flag could see it:
+ *
+ *   - `DEPTH_FLAG` only fires when a SHALLOWER cell costs MORE than a deeper one, and this rises
+ *     monotonically, which looks like honest extra work.
+ *   - `PAIR_FLAG` excludes `orderby` BY DESIGN, because a global sort really is extra work and its
+ *     raw ratio would be noise.
+ *
+ * Both exclusions are individually right and together they hid a 36x. The quantity that is not
+ * noise is the MARGINAL cost — cell minus its own `rows` cell at the same depth — compared across
+ * DEPTH within one modifier: sorting N rows costs the same whatever walk produced them, so a
+ * marginal that explodes with depth means the modifier lost its route at some width.
+ */
+const JUMP_FLAG = Number(process.env.JUMP_FLAG ?? 5);
+const ENGINE = process.env.ENGINE ?? 'gql';
+
+if (ENGINE !== 'gql' && ENGINE !== 'gremlin') {
+  throw new Error(`ENGINE must be gql|gremlin, got ${ENGINE}`);
+}
 
 const build = () => {
   const g = new Graph();
@@ -113,6 +148,25 @@ const MODIFIERS = {
   orderby: ({ text, far }) => `${text} RETURN ${far}.k AS k ORDER BY k`,
 };
 
+/**
+ * The GREMLIN grid — item 1826. Deliberately the SAME QUESTIONS as the GQL `MODIFIERS` above, so a
+ * difference between the two tables is a difference between the engines and not between two sets of
+ * queries. ⚠️ `values(k)` is the row-producing tail rather than a bare far-end step, because a
+ * traversal ending in an ELEMENT returns vertices and a GQL projection returns a scalar: comparing
+ * those would compare egress shapes, not routes.
+ */
+const GREMLIN_MODIFIERS = {
+  rows: (d) => traversal(V(), hasLabel('P'), ...hops(d), values('k')),
+  distinct: (d) => traversal(V(), hasLabel('P'), ...hops(d), values('k'), dedupe()),
+  count: (d) => traversal(V(), hasLabel('P'), ...hops(d), count()),
+  countdist: (d) => traversal(V(), hasLabel('P'), ...hops(d), values('k'), dedupe(), count()),
+  where: (d) => traversal(V(), hasLabel('P'), ...hops(d), has('k', gt(44)), values('k')),
+  orderby: (d) => traversal(V(), hasLabel('P'), ...hops(d), values('k'), order()),
+};
+
+/** `d` repetitions of `out('E')`, so the depth axis is the same quantity on both surfaces. */
+const hops = (d) => Array.from({ length: d }, () => out('E'));
+
 const median = (xs) => {
   const s = [...xs].sort((a, b) => a - b);
   const m = s.length >> 1;
@@ -122,13 +176,22 @@ const median = (xs) => {
 
 const g = build();
 
-console.log(`# rung-gap-screen NODES=${NODES} FANOUT=1 reps=${REPS} drop=${WARMUP}`);
+console.log(
+  `# rung-gap-screen ENGINE=${ENGINE} NODES=${NODES} FANOUT=1 reps=${REPS} drop=${WARMUP}`,
+);
 console.log(`# vertices=${g.vertexCount} edges=${g.edgeCount}`);
 console.log(
   '# FANOUT=1 so every depth returns the same row count — a depth difference is ROUTE.\n',
 );
 
-const cell = (q) => {
+/**
+ * ⚠️ ONE TIMED CELL, TWO ENGINES, AND THE PLAN IS BUILT ONCE OUTSIDE THE LOOP on the Gremlin side.
+ * `runtime-profile-gremlin-probe.mjs`'s header records why: every `SHAPES` entry there is built at
+ * module level and the plan object reused across reps, because building the traversal per rep would
+ * time the BUILDER. The GQL side has the parse+plan caches doing the same job, so the two arms are
+ * comparable — but only because this is explicit rather than incidental.
+ */
+const cell = (built) => {
   const series = [];
   let rows = 0;
 
@@ -136,7 +199,7 @@ const cell = (q) => {
     const t0 = performance.now();
 
     try {
-      rows = query(g, q).length;
+      rows = ENGINE === 'gql' ? query(g, built).length : toArray(built, g).length;
     } catch {
       return { ms: Number.NaN, rows: -1 };
     }
@@ -147,7 +210,11 @@ const cell = (q) => {
   return { ms: median(series.slice(WARMUP)), rows };
 };
 
-const names = Object.keys(MODIFIERS);
+/** The query or traversal for one cell, built ONCE — see `cell`. */
+const buildCell = (name, depth) =>
+  ENGINE === 'gql' ? MODIFIERS[name](chain(depth)) : GREMLIN_MODIFIERS[name](depth);
+
+const names = Object.keys(ENGINE === 'gql' ? MODIFIERS : GREMLIN_MODIFIERS);
 const grid = new Map();
 
 console.log(
@@ -158,8 +225,7 @@ for (const name of names) {
   const row = [];
 
   for (const depth of DEPTHS) {
-    const q = MODIFIERS[name](chain(depth));
-    const got = cell(q);
+    const got = cell(buildCell(name, depth));
 
     row.push(got);
   }
@@ -223,6 +289,37 @@ for (const [name, row] of grid) {
       flags.push(
         `${name} depth${DEPTHS[i]}: ${c.ms.toFixed(1)} ms is ${(c.ms / b.ms).toFixed(1)}x its own ` +
           `rows cell (${b.ms.toFixed(1)}) — a modifier that multiplies the cost disqualified the rung`,
+      );
+    }
+  });
+}
+
+/**
+ * MARGINAL-COST JUMP ACROSS DEPTH. See `JUMP_FLAG`: the marginal is the only quantity here that
+ * should be flat in depth, so a jump in it localizes a lost route even where the raw cell rises
+ * monotonically and the raw ratio is expected to be large.
+ */
+for (const [name, row] of grid) {
+  if (name === 'rows') {
+    continue;
+  }
+
+  const marginal = row.map((c, i) =>
+    Number.isNaN(c.ms) || Number.isNaN(base[i].ms) ? Number.NaN : c.ms - base[i].ms,
+  );
+  const [first] = marginal;
+
+  if (Number.isNaN(first) || first <= 0) {
+    continue;
+  }
+
+  marginal.forEach((m, i) => {
+    if (i > 0 && !Number.isNaN(m) && m >= FLOOR_MS && m > JUMP_FLAG * first) {
+      flags.push(
+        `${name} depth${DEPTHS[i]}: its MARGINAL cost over rows is ${m.toFixed(1)} ms against ` +
+          `${first.toFixed(1)} at depth${DEPTHS[0]} — ${(m / first).toFixed(1)}x. Sorting/deduping N ` +
+          'rows costs the same whatever walk produced them, so a marginal that grows with depth ' +
+          'means this modifier LOST ITS ROUTE at some width',
       );
     }
   });

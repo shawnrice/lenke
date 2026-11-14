@@ -85208,3 +85208,78 @@ seeds at 60,000 workload queries — **120,000 queries, 0 divergences**. `routes
 
 GATES. bun run check 0 read unpiped. gql 4,597 pass / 0 fail. gremlin 2,134 pass / 0 fail.
 native 1,165 pass / 0 fail. bun run fuzz 57 pass / 0 fail.
+
+### Item 1826 — ⚠️ **THE GRID NOW SCREENS GREMLIN TOO, AND ITS FIRST ACT WAS TO EXPOSE A BLIND SPOT IN ITS OWN FLAGS**: GQL's `ORDER BY` marginal cost is **42-55x Gremlin's** past one hop, a 33-69x jump that both existing flags were structurally unable to see. Gremlin itself flags NOTHING. No engine change; the target is priced and open
+
+⚠️ **THE GREMLIN ARM EXISTS BECAUSE ITEM 1823 ADVERTISED IT AND DID NOT BUILD IT.** That file's usage
+block has said `ENGINE=gremlin bun rung-gap-screen.mjs` since it was written, as an intention. **A
+usage line for a knob that does nothing is worse than no knob: it reads as coverage.** Eight items
+in a row (1818-1825) worked the GQL side while a one-line usage claim stood in for the other half of
+the mandate.
+
+The two arms ask the SAME questions of different machinery, which is the point: GQL lowers to
+`runLinear`'s chain of 24 detectors, where a gap is a width no rung claims; Gremlin composes a step
+CHAIN and fuses pairs of steps, so a gap there is a fusion that stops applying at some depth — the
+same observable signature from a different mechanism, and neither surface's instruments look at the
+other.
+
+✅ **GREMLIN FLAGS NOTHING, WHICH IS A FINDING AND NOT AN OMISSION** (the same conclusion item 1817
+reached about the Gremlin fuzzer, by the same route — measuring rather than assuming):
+
+```text
+  ENGINE=gremlin   depth1  depth2  depth3  depth4  depth5
+  rows                1.5     0.8     1.0     1.0     1.1
+  distinct            2.2     1.3     1.2     1.2     1.4
+  count               0.0     0.9     1.0     1.2     1.5
+  countdist           1.5     0.8     0.9     1.2     1.4
+  where               0.4     1.1     1.7     1.9     2.1
+  orderby             2.4     1.8     2.4     2.6     2.7
+```
+
+Flat in depth on every row. Whatever Gremlin's step fusion does, it does not fall off a cliff at a
+particular width.
+
+⚠️⚠️ **AND THE CROSS-ENGINE READING FOUND WHAT NEITHER SINGLE-ENGINE FLAG COULD.** The quantity that
+matters is the MARGINAL cost of a modifier over its OWN engine's `rows` cell at the same depth —
+which removes the egress difference (a GQL projection builds row OBJECTS, a Gremlin `values()`
+yields scalars, so the raw cells are not comparable and the marginals are):
+
+```text
+  ORDER BY marginal, ms      depth1  depth2  depth3  depth4  depth5
+  gql                           1.3    46.5    53.2    75.3    88.6
+  gremlin                       1.2     1.1     1.6     1.7     1.6
+  gql / gremlin                 1.1x   42.3x   33.2x   44.3x   55.4x
+```
+
+**1.1x at one hop and 42x at two.** GQL has a sorted rung at one hop (`hop-projection.ts`'s
+`outputColumnSorts`, item 607) and none beyond it — the same family as items 1821/1822/1824/1825,
+one modifier over, and the largest instance of it yet.
+
+⚠️ **NEITHER EXISTING FLAG COULD SEE IT, AND BOTH EXCLUSIONS WERE INDIVIDUALLY CORRECT:**
+
+- `DEPTH_FLAG` only fires when a SHALLOWER cell costs MORE than a deeper one. `orderby` rises
+  monotonically (3.4 → 50.9 → 59.2 → 79.7 → 95.8), which looks like honest extra work for more
+  hops.
+- `PAIR_FLAG` **excludes `orderby` by design** — item 1823's own comment says "a global sort is real
+  extra work, not a route it should have taken, so a large ratio there is expected and would be
+  noise." True of the raw ratio, and it is exactly why the row was never examined.
+
+Two defensible exclusions that together hid a 36x. ✅ **The fix is a third flag on the MARGINAL,
+compared across depth within one modifier**: sorting N rows costs the same whatever walk produced
+them, so a marginal that grows with depth means the modifier lost its route. It now fires on
+`orderby` at depths 2-5 (33.4x, 40.3x, 57.4x, 69.3x) and stays silent on Gremlin, where the marginal
+is flat.
+
+**That is the transferable part of this item**: a screen's exclusions are where its blind spots live,
+and the way to find them is to run the same grid against a second engine whose numbers you can
+compare marginal-for-marginal. One engine alone cannot tell "expensive because the work is real"
+from "expensive because the route was lost".
+
+NOT BUILT HERE. Admitting `ORDER BY` into the two-hop and chain rungs is not item 1821's wrapper:
+the sort interacts with the pager (`SKIP`/`LIMIT` with a sort is a top-k question, not a sort-then-
+slice one — `sortOf` records ~280x for the materializing route under a `LIMIT`), and
+`outputColumnSorts` already encodes which sorts are admissible. Priced and left open with the floor
+it has to beat: **`orderby` depth2-5 at 50.9/59.2/79.7/95.8 ms should land near their `rows` cells
+plus a ~1.3 ms sort, i.e. ~6-8 ms.**
+
+GATES. bun run check 0 read unpiped. No engine code changed.
