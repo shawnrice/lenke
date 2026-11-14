@@ -110,6 +110,15 @@ const SHAPES = {
    * makes it the right profile for the five `expand` call sites item 1621 left open.
    */
   hop3rows: 'MATCH (a:P)-[:E]->(b:P)-[:E]->(c:P)-[:E]->(d:P) RETURN d.k AS k',
+  // ⚠️ THE SAME CHAIN UNDER `RETURN DISTINCT`, which had NO row on this screen until item 1820 and
+  // was therefore 5.8x slower than the line above for 1,800 items — `DISTINCT` rides in
+  // `plainRowProjection`, so it disqualified the chain rung and the query fell to the general
+  // matcher, costing MORE than emitting every row it dedupes. This row is the regression guard on
+  // that admission: if it ever returns to within a few percent of the general matcher, the rung is
+  // declining again. ⚠️ Its PAIR is `hop3rows` directly above — the dedupe can only ever be that
+  // row plus a hash, so the two must stay close, and a gap is the signal rather than either number
+  // alone.
+  hop3distinct: 'MATCH (a:P)-[:E]->(b:P)-[:E]->(c:P)-[:E]->(d:P) RETURN DISTINCT d.k AS k',
   /**
    * ⚠️ THE DECLINED TWIN OF `hop3rows`, added at item 1802 and the row that decides the question.
    * `directedBucket` refuses `both` (two buckets, and a dedupe across them), so this shape stays on
@@ -357,6 +366,9 @@ const EXPECTED = {
   hop2rows: { rowsPerRun: 20_000 },
   hop2rowswhere: { rowsPerRun: 207, answer: 5 },
   hop3rows: { rowsPerRun: 20_000 },
+  // 97 distinct `k` values (`i % 97`), whatever the chain's row count — so this answer is a real
+  // guard on the dedupe and not just on the walk.
+  hop3distinct: { rowsPerRun: 97 },
   hop3rowsboth: { rowsPerRun: 160_000 },
   // The paging and set-operation shapes, same gap.
   topkwide: { rowsPerRun: 10 },

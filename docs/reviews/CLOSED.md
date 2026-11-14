@@ -84658,7 +84658,7 @@ already had 1,800 items of attention.
 GATES. bun run check 0 read unpiped. core 458 pass / 0 fail. gql 4,563 pass / 0 fail.
 native 1,165 pass / 0 fail. bun run fuzz 57 pass / 0 fail.
 
-### Item 1820 — ⚠️ **OPEN, PRICED, AND THE MECHANISM IS PROVEN**: `RETURN DISTINCT` over a three-hop chain costs **5.8x MORE than emitting every one of the 625,000 rows it dedupes**, because `DISTINCT` makes the chain rung DECLINE. Plus a new screen that found it — the realistic-workload corpus had never been timed
+### Item 1820 — ~~⚠️ **OPEN, PRICED, AND THE MECHANISM IS PROVEN**~~ **CLOSED BY ITEM 1821 AT 12.0x**: `RETURN DISTINCT` over a three-hop chain costs **5.8x MORE than emitting every one of the 625,000 rows it dedupes**, because `DISTINCT` makes the chain rung DECLINE. Plus a new screen that found it — the realistic-workload corpus had never been timed
 
 WHY A NEW INSTRUMENT AND NOT ANOTHER PROFILE. Items 1818 and 1819 screened 22 shapes for unpriced
 hot frames and came back CLEAN on all of them — two refutations and one 1.36x for the whole pass.
@@ -84756,3 +84756,99 @@ to beat: **418.6 ms against a 72.2 ms raw-row floor, so a correct admission shou
 
 GATES. bun run check 0 read unpiped. No engine code changed; the rung was restored from its
 pristine copy and the dist rebuilt with 0 markers in src and dist.
+
+### Item 1821 — ✅ **THE CHAIN RUNG NOW ADMITS `RETURN DISTINCT`: 12.0x** (2586.6 → 215.4 ms), which takes item 1820's priced target. Ten controls flat, 180,000 cross-engine workload queries clean, and the deduped shape now sits **within 1.3% of the same chain undeduped** — which is what a dedupe should cost
+
+THE TARGET, priced at item 1820 and confirmed from the other end here: `DISTINCT` is part of
+`plainRowProjection`, so it disqualified `detectChainProjection` outright and a three-hop
+`RETURN DISTINCT d.k` fell to the general matcher. Item 1820 proved that by deletion at the
+admission point (not at the detector's entry — a detector being CALLED is not it ADMITTING, which
+is what the first cut of that test got wrong).
+
+⚠️ **AND THERE WAS ALREADY A `DISTINCT` RUNG, WHICH IS WHY THIS IS A HOLE AND NOT A MISSING
+FEATURE.** `hop-projection.ts`'s `distinctShape` serves `RETURN DISTINCT` and refuses
+`segments.length > 1`. So ONE hop had a rung, and two or more had none — item 1814's situation
+exactly one clause over, and it is why the one-hop pair measured 1.4x while the three-hop pair
+measured 5.8x.
+
+THE CHANGE, which is a gate split and a wrapper:
+
+- `plainRowProjection` is now defined as `!proj.distinct && plainRowProjectionIgnoringDistinct(proj)`,
+  so it is **unchanged by construction** — ⚠️ the thing to avoid was relaxing a predicate several
+  rungs share, which would have silently widened every other rung's admission at the same time.
+- The chain rung gates on the `IgnoringDistinct` half and wraps its rows in `distinctRows` when the
+  projection is distinct.
+
+⚠️ **`DISTINCT` IS SAFE TO SEPARATE AND THE PAGERS ARE NOT, AND THAT ASYMMETRY IS THE WHOLE
+ARGUMENT.** Dedupe keeps one row per key whatever order the rows arrive in, so it COMMUTES with
+the walk — the result is the same SET, and row order within it was never specified
+(`order-is-unspecified`). `SKIP`/`LIMIT` with no `ORDER BY` let row order decide WHICH rows
+survive, so a rung whose walk order differs from the general path's would return different ROWS.
+Those stay refused, and the test asserts each combination (`DISTINCT … LIMIT`, `… SKIP`,
+`… ORDER BY`) still declines.
+
+⚠️ **IT CALLS `distinctRows` AND DOES NOT KEY ROWS ITSELF.** There is ONE definition of distinct in
+this engine (`valueKey`, via `rowKeyOf` plus the one-column fast path), shared with
+`UNION`/`EXCEPT`/`INTERSECT` and matched byte-for-byte by Rust. A second keying here would be a
+cross-engine divergence waiting on exactly the hard values — `-0` vs `0`, `NaN`, an element keyed by
+id rather than object identity, a string column colliding with an element's key. **Items 1561 and
+1562 each shipped a silent answer change in that area**; re-deriving it would have been the third.
+
+MEASURED on the probe's own fixture (`hop3distinct`, a row this screen did not have until 1820),
+min of 3, ⚠️ arms asserted by a marker count in the built DIST:
+
+```text
+  hop3distinct   2586.6 -> 215.4 ms   12.0x     answer IDENTICAL in both arms (5,820 rows)
+  hop3rows        206.6 -> 218.1 ms    0.98x    the PAIR control — the same walk, undeduped
+```
+
+✅ **THE PAIR IS THE RESULT, NOT THE RATIO.** A dedupe can only ever be the walk plus a hash, so
+the deduped shape and the raw shape must sit together: **215.4 against 218.1, within 1.3%.** Before
+this, the same two rows were 12x apart. A future regression shows up as that gap reopening, which
+is a stronger signal than either number alone — and it is why `hop3distinct` was added NEXT TO
+`hop3rows` rather than anywhere else in the file.
+
+TEN CONTROLS FLAT, three alternated rounds, all series overlapping:
+
+```text
+  hop3rows 0.98x   hop2rows 1.06x   hoprows 1.08x   distinct 1.03x   distinctstr 0.97x
+  grouped 1.02x    sortedpage 1.04x  point 1.02x    join 0.98x       count3 0.97x
+```
+
+`executor-edits-perturb` records a new variant costing unrelated shapes up to 16%; the worst here is
+8% with overlapping series, and the non-distinct path returns the rung's function unwrapped, so
+there is no new indirection on it.
+
+CORRECTNESS. gql 4,571 / core 458 / gremlin 2,134 / native 1,165 pass, 0 fail; `bun run fuzz` 57/0.
+⚠️ **Plus a deep cross-engine sweep, because this changes a route byte-identity depends on**: three
+seeds at 60,000 workload queries each — **180,000 queries, 0 divergences** — with the `distinct`
+family drawing ~3,550 per seed and ~3,270 of those returning rows, so the new route had real
+coverage rather than nominal coverage.
+
+⚠️ **ONE EXISTING TEST ASSERTED THE OLD REFUSAL AND WAS SPLIT RATHER THAN FLIPPED.**
+`declines paging, DISTINCT, ORDER BY and an aggregate` became two tests, because the two groups are
+refused for different reasons and only one was ever about capability — flipping a boolean inside the
+old test would have buried that distinction in a diff.
+
+MUTATION, 3 of 3 caught (`chain-distinct-answers.test.ts`, 7 tests, written because a route test
+plus a timing number is not coverage for a change whose risk is in the VALUES):
+
+```text
+  skip the dedupe entirely                     CAUGHT (7 fail)
+  dedupe ALWAYS, even without DISTINCT         CAUGHT (13 fail)
+  admit pagers too (drop the gate)             CAUGHT (2 fail)
+```
+
+⚠️ **STILL OPEN, with its number**: **two-hop `DISTINCT` has no rung at all** and is now the
+slowest of the three widths — 84.3 ms against the three-hop's 70.3 on the same fixture, an
+inversion where a SHORTER chain costs more. `distinctShape` refuses it (`segments.length > 1`) and
+`detectChainProjection` requires three segments, so it falls between them. Either lowering this
+rung to two or widening `distinctShape` would take it.
+
+⚠️ **ALSO OPEN**: this materializes the undeduped rows before deduping — 625,000 rows built to
+return 8. Deduping INSIDE the sweep would avoid that (`eager-tail-cache`'s shape), but it has to
+reach both the sweep and the walk and both of their row-building points, so it is left to its own
+item with this one's 215.4 ms as the floor.
+
+GATES. bun run check 0 read unpiped. gql 4,571 pass / 0 fail. core 458 pass / 0 fail.
+gremlin 2,134 pass / 0 fail. native 1,165 pass / 0 fail. bun run fuzz 57 pass / 0 fail.

@@ -309,14 +309,32 @@ export const mapToArray = <T, R>(it: Iterable<T>, f: (x: T) => R): R[] => {
  * Exported because item 528's `FOR` projection asks exactly the same question, and two copies of
  * this list is how one of them falls behind the other.
  */
-export const plainRowProjection = (proj: Projection): boolean =>
+/**
+ * Everything `plainRowProjection` demands EXCEPT `DISTINCT` — item 1820.
+ *
+ * ⚠️ SPLIT OUT RATHER THAN RELAXING `plainRowProjection`, which several rungs share: a rung that
+ * can dedupe its own output can admit `DISTINCT`, and one that cannot must keep refusing it, so
+ * the two questions are not the same predicate. `plainRowProjection` below is defined in terms of
+ * this one and is therefore unchanged by construction — the thing to avoid here was a relaxation
+ * that silently widened every OTHER rung's admission at the same time.
+ *
+ * ⚠️ `DISTINCT` IS SAFE TO SEPARATE AND THE PAGERS ARE NOT, which is why only `distinct` moves out.
+ * `SKIP`/`LIMIT` with no `ORDER BY` let row order decide WHICH rows survive, so a rung whose walk
+ * order differs from the general path's would return different ROWS (`order-is-unspecified` makes
+ * that unobservable only when every row survives). Dedupe keeps one row per key whatever the order,
+ * so it commutes with the walk — the result is the same SET either way, and row order within it was
+ * never specified.
+ */
+export const plainRowProjectionIgnoringDistinct = (proj: Projection): boolean =>
   !proj.star &&
-  !proj.distinct &&
   proj.groupBy === undefined &&
   proj.having === undefined &&
   (proj.orderBy?.length ?? 0) === 0 &&
   proj.skip === undefined &&
   proj.limit === undefined;
+
+export const plainRowProjection = (proj: Projection): boolean =>
+  !proj.distinct && plainRowProjectionIgnoringDistinct(proj);
 
 /**
  * ⚠️ MOVED DOWN FROM `clauses.ts` (item 1666), to close the LAST import cycle in the package.

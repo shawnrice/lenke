@@ -121,15 +121,43 @@ describe('the rung fires for its own shape and not for its neighbours', () => {
     expect(takesRung('MATCH (a:L)-[:R]->(b)-[:R]->(c)-[:R]-(d) RETURN d.k AS k')).toBe(false);
   });
 
-  it('declines paging, DISTINCT, ORDER BY and an aggregate', () => {
+  it('declines paging, ORDER BY and an aggregate', () => {
     const chain = 'MATCH (a:L)-[:R]->(b)-[:R]->(c)-[:R]->(d)';
 
     expect(takesRung(`${chain} RETURN d.k AS k LIMIT 2`)).toBe(false);
     expect(takesRung(`${chain} RETURN d.k AS k SKIP 1`)).toBe(false);
-    expect(takesRung(`${chain} RETURN DISTINCT d.k AS k`)).toBe(false);
     expect(takesRung(`${chain} RETURN d.k AS k ORDER BY k`)).toBe(false);
     expect(takesRung(`${chain} RETURN count(*) AS c`)).toBe(false);
     expect(takesRung(`${chain} RETURN max(d.k) AS m`)).toBe(false);
+  });
+
+  /**
+   * ⚠️ `DISTINCT` MOVED FROM THE LINE ABOVE TO HERE AT ITEM 1820, and the reason it is a separate
+   * test rather than a flipped boolean is that the two groups are declined for DIFFERENT reasons
+   * and only one of them was ever about capability:
+   *
+   *   - `SKIP`/`LIMIT` stay refused because with no `ORDER BY` row order decides WHICH rows
+   *     survive, so a rung whose walk order differs from the general path's would return different
+   *     ROWS. That is permanent.
+   *   - `DISTINCT` was refused only because it rides in `plainRowProjection`. Dedupe keeps one row
+   *     per key whatever order the rows arrive in, so it COMMUTES with the walk and the answer is
+   *     the same set either way.
+   *
+   * The cost of the old refusal: a three-hop `RETURN DISTINCT` fell to the general matcher and ran
+   * **5.8x SLOWER than emitting every one of the 625,000 rows it dedupes** (418.6 ms against the
+   * rung's 72.2 ms undeduped, to return 8 rows). Now 70.3 ms.
+   */
+  it('ADMITS DISTINCT, at every width, and still refuses it alongside a pager', () => {
+    const chain = 'MATCH (a:L)-[:R]->(b)-[:R]->(c)-[:R]->(d)';
+
+    expect(takesRung(`${chain} RETURN DISTINCT d.k AS k`)).toBe(true);
+    expect(takesRung(`${chain} RETURN DISTINCT d.k AS k, d.s AS s`)).toBe(true);
+
+    // ⚠️ The combinations, because admitting `DISTINCT` must not drag a pager or a sort in with
+    // it — each of these is still a `plainRowProjectionIgnoringDistinct` refusal.
+    expect(takesRung(`${chain} RETURN DISTINCT d.k AS k LIMIT 2`)).toBe(false);
+    expect(takesRung(`${chain} RETURN DISTINCT d.k AS k SKIP 1`)).toBe(false);
+    expect(takesRung(`${chain} RETURN DISTINCT d.k AS k ORDER BY k`)).toBe(false);
   });
 
   it('declines a relationship variable and a quantifier', () => {

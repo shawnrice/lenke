@@ -2,12 +2,13 @@ import type { Graph, Vertex } from '@lenke/core';
 
 import type { Clause, Expr, LabelExpr, NodePattern, RelPattern } from '../ast.js';
 import { matchesLabel } from '../graph-queries.js';
+import { distinctRows } from './clauses.js';
 import type { CClause, CompiledExpr, CProjection, Params, Row } from './core.js';
 import { freePredicateVars } from './expr-analysis.js';
 import type { AlwaysRowsFn } from './hop-projection.js';
 import { plainNode, plainRel } from './hop-sides.js';
 import { effectiveLabel } from './labels.js';
-import { plainRowProjection, projectRow } from './rows.js';
+import { plainRowProjectionIgnoringDistinct, projectRow } from './rows.js';
 import { asTruth } from './scalars.js';
 import { rowLocal } from './shortcuts.js';
 
@@ -144,7 +145,7 @@ export const detectChainProjection = (
   const { projection } = cret;
 
   if (
-    !plainRowProjection(ret.projection) ||
+    !plainRowProjectionIgnoringDistinct(ret.projection) ||
     projection.aggregating ||
     projection.items.length === 0
   ) {
@@ -156,9 +157,39 @@ export const detectChainProjection = (
   // overlapping) where it is already good, so it is taken whenever it is applicable rather than
   // behind a topology predictor — the engine has no cheap way to know a graph's locality, and
   // `hasFastPath`-style gating was DECLINED at item 1511.
-  return farEndOnly(ret.projection.items, where, nodes[nodes.length - 1].variable)
+  const rows = farEndOnly(ret.projection.items, where, nodes[nodes.length - 1].variable)
     ? sweep(nodes, hops, projection, gate)
     : walk(nodes, hops, projection, gate);
+
+  /**
+   * ⚠️ `RETURN DISTINCT` IS ADMITTED AND DEDUPED HERE — item 1820, and the cost of NOT doing this
+   * was the whole point: `DISTINCT` used to disqualify this rung outright (it is part of
+   * `plainRowProjection`), so a three-hop `RETURN DISTINCT d.n` fell to the general matcher and
+   * cost **5.8x MORE than emitting every one of the 625,000 rows it dedupes** — 418.6 ms against
+   * this rung's 72.2 ms for the same walk undeduped, to return 8 rows. One hop was unaffected
+   * because `hop-projection.ts`'s `distinctShape` already serves it, and that detector refuses
+   * `segments.length > 1`, which is exactly the hole.
+   *
+   * ⚠️ IT CALLS `distinctRows` AND DOES NOT KEY ROWS ITSELF. There is ONE definition of what
+   * counts as distinct in this engine (`valueKey`, via `rowKeyOf` and the one-column fast path),
+   * it is shared with `UNION`/`EXCEPT`/`INTERSECT`, and it is matched byte-for-byte by the Rust
+   * engine. A second keying here would be a cross-engine divergence waiting to happen on exactly
+   * the values that are hard — `-0` against `0`, `NaN`, an element keyed by id rather than by
+   * object identity, and a string column colliding with an element's key. Items 1561 and 1562 each
+   * found a silent answer change in that area; re-deriving it would be the third.
+   *
+   * ⚠️ AND DEDUPE COMMUTES WITH THE WALK, which is what makes this sound rather than merely
+   * faster. The rung's walk order is its own, and `order-is-unspecified` means row order is not
+   * part of the answer — so keeping one row per key yields the same SET whichever order they
+   * arrive in. That argument does NOT extend to `SKIP`/`LIMIT`, which is why those stay refused:
+   * there, order decides WHICH rows survive. See `plainRowProjectionIgnoringDistinct`.
+   *
+   * ⚠️ THIS MATERIALIZES THE UNDEDUPED ROWS FIRST, which is a known remaining lever and not an
+   * oversight: 625,000 rows are built to return 8. Deduping INSIDE the sweep would avoid that
+   * (`eager-tail-cache`'s shape), but it has to reach both the sweep and the walk and both of
+   * their row-building points, so it is left to its own item with this one's number as the floor.
+   */
+  return ret.projection.distinct ? (graph, params) => distinctRows(rows(graph, params)) : rows;
 };
 
 /**
