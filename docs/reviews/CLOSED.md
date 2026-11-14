@@ -84839,8 +84839,9 @@ plus a timing number is not coverage for a change whose risk is in the VALUES):
   admit pagers too (drop the gate)             CAUGHT (2 fail)
 ```
 
-⚠️ **STILL OPEN, with its number**: **two-hop `DISTINCT` has no rung at all** and is now the
-slowest of the three widths — 84.3 ms against the three-hop's 70.3 on the same fixture, an
+~~⚠️ **STILL OPEN, with its number**: **two-hop `DISTINCT` has no rung at all** and is now the
+slowest of the three widths~~ — **CLOSED BY ITEM 1822 AT 12.80x**, the same split applied to
+`hop2-projection.ts`. It was — 84.3 ms against the three-hop's 70.3 on the same fixture, an
 inversion where a SHORTER chain costs more. `distinctShape` refuses it (`segments.length > 1`) and
 `detectChainProjection` requires three segments, so it falls between them. Either lowering this
 rung to two or widening `distinctShape` would take it.
@@ -84852,3 +84853,90 @@ item with this one's 215.4 ms as the floor.
 
 GATES. bun run check 0 read unpiped. gql 4,571 pass / 0 fail. core 458 pass / 0 fail.
 gremlin 2,134 pass / 0 fail. native 1,165 pass / 0 fail. bun run fuzz 57 pass / 0 fail.
+
+### Item 1822 — ✅ **THE TWO-HOP RUNG ADMITS `RETURN DISTINCT` TOO: 12.80x** (2141.9 → 167.3 ms), closing the inversion item 1821 left where a SHORTER chain cost 10x more than a longer one. Ten controls flat, 120,000 more cross-engine queries clean
+
+THE INVERSION, which is the shape of the finding and the reason this is its own item. After item
+1821 the three widths read:
+
+```text
+  one hop     served by `distinctShape`                  fast
+  TWO hops    served by NOTHING                          2141.9 ms   <- the slowest of the three
+  three hops  served by `detectChainProjection`           210.8 ms
+```
+
+`distinctShape` refuses `segments.length > 1` and `detectChainProjection` requires three segments,
+so two hops fell BETWEEN the two rungs and went to the general matcher. ⚠️ **A gap between two
+rungs is not visible from either rung's own tests** — each one correctly serves its own width — and
+it is not visible from a profile either, because the general matcher is not a hot frame, it is the
+absence of a rung. What made it visible was item 1821 measuring all three widths on one fixture and
+noticing the order was wrong.
+
+THE CHANGE IS ITEM 1821'S, APPLIED TO `hop2-projection.ts`: gate on
+`plainRowProjectionIgnoringDistinct` instead of `plainRowProjection`, and wrap the walk's rows in
+`distinctRows` when the projection is distinct. The shared predicate was already split at 1821, so
+this item adds no new concept — ⚠️ which is exactly why it still gets its own answer tests and its
+own mutation pass: it is a different module, a different walk and a different row-building point,
+and the only things shared are the predicate and the keying.
+
+MEASURED, min of 3 alternated rounds, ⚠️ arms asserted by an exact marker count in the built DIST
+(4 in PRE, 6 in POST — the count had to be computed per arm because item 1821's occurrences were
+already in the tree, so "non-zero" would have passed both arms):
+
+```text
+  hop2distinct   2141.9 -> 167.3 ms   12.80x    PRE [2215.4 2159.4 2141.9]  POST [167.3 167.3 181.0]
+  hop2rows        155.2 -> 154.3 ms    1.01x    the PAIR control — the same walk, undeduped
+```
+
+✅ **AND THE PAIR IS AGAIN THE RESULT**: 167.3 against 154.3, 8% apart, where they were 13.8x apart
+before. Both `DISTINCT` rows now sit beside their own undeduped twin, and both widths are in the
+right order (two hops 167.3 below three hops 210.8).
+
+TEN CONTROLS FLAT, all series overlapping:
+
+```text
+  hop2rows 1.01x   hop3distinct 1.01x   hop3rows 0.97x   hoprows 0.97x   distinct 1.02x
+  grouped 0.98x    sortedpage 1.06x     point 1.00x      join 0.99x      count2 1.00x
+```
+
+⚠️ `hop3distinct` at 1.01x is the control that matters most here: item 1821's admission must not
+have moved, and it did not.
+
+⚠️ **THE FIXTURE BUG THIS ITEM FOUND IN ITS OWN TEST FILE, which is the part worth keeping.**
+`chain-distinct-answers.test.ts`'s fixture put the real values on **level 3 alone** and placeholders
+on the inner levels. That was invisible while only the three-hop rung was tested — it reads the far
+end, which was level 3 — and it silently broke every two-hop test added here, because a two-hop
+chain ends at level 2 and read the placeholder instead. **A fixture whose values live at ONE depth
+can only be read at one depth**, and it also made the cross-width check vacuous, which is the test
+most worth having. Every level now carries the same values.
+
+⚠️ **AND THE CROSS-WIDTH ASSERTION IS THE ONE NEITHER RUNG'S TESTS CAN MAKE.** Both widths read the
+same far-end property over the same fixture, so their deduped answers must be the same SET. That is
+what catches one rung's dedupe drifting from the other's — a failure mode that a per-rung test, a
+route test and a timing number all miss by construction.
+
+MUTATION, 3 of 3 caught on the new admission:
+
+```text
+  skip the dedupe                CAUGHT (5 fail)
+  dedupe ALWAYS                  CAUGHT (9 fail)
+  admit pagers too               CAUGHT (11 fail)
+```
+
+⚠️ **ONE EXISTING TEST ASSERTED THE OLD REFUSAL AND WAS SPLIT, NOT FLIPPED** — the same treatment
+item 1821 gave the chain rung's copy, for the same reason: `SKIP`/`LIMIT` stay refused permanently
+because row order decides which rows survive there, while `DISTINCT` was only ever refused because
+it rode in `plainRowProjection`. Burying that distinction in a flipped boolean would lose it.
+
+CORRECTNESS. gql 4,577 / gremlin 2,134 / native 1,165 pass, 0 fail; `bun run fuzz` 57/0. Plus two
+more seeds at 60,000 workload queries each — **120,000 queries, 0 divergences** — with the
+`distinct` family drawing ~3,500 a seed, so the new route had real coverage. ⚠️ `hop2distinct` and
+`hop3distinct` returned the IDENTICAL answer in both arms of the A/B (5,820 rows each), which is the
+check a ratio cannot provide.
+
+STILL OPEN, unchanged by this item: both rungs materialize the undeduped rows before deduping
+(625,000 rows built to return 8 at three hops). Deduping inside the walk would avoid it, and it now
+has to reach THREE row-building points rather than two, with 167.3 / 210.8 ms as the floors.
+
+GATES. bun run check 0 read unpiped. gql 4,577 pass / 0 fail. gremlin 2,134 pass / 0 fail.
+native 1,165 pass / 0 fail. bun run fuzz 57 pass / 0 fail.

@@ -2,12 +2,13 @@ import type { Graph, Vertex } from '@lenke/core';
 
 import type { Clause, NodePattern, RelPattern } from '../ast.js';
 import { matchesLabel } from '../graph-queries.js';
+import { distinctRows } from './clauses.js';
 import type { CClause, CompiledExpr, CProjection, Params, Row } from './core.js';
 import { freePredicateVars } from './expr-analysis.js';
 import type { AlwaysRowsFn } from './hop-projection.js';
 import { plainNode, plainRel } from './hop-sides.js';
 import { effectiveLabel } from './labels.js';
-import { plainRowProjection } from './rows.js';
+import { plainRowProjectionIgnoringDistinct } from './rows.js';
 import { projectRow } from './rows.js';
 import { asTruth } from './scalars.js';
 import { rowLocal } from './shortcuts.js';
@@ -64,7 +65,8 @@ import { rowLocal } from './shortcuts.js';
  *   - `both` on either segment declines: its contract visits a self-loop from both ends.
  *   - a quantifier, inline node or rel properties, an inline `WHERE`, a path variable, a path mode
  *     or selector, and a named relationship MENTIONED anywhere all decline.
- *   - anything but a PLAIN row projection declines (`plainRowProjection`): no `DISTINCT`, no
+ *   - anything but a plain row projection declines (`plainRowProjectionIgnoringDistinct`). ⚠️ SINCE
+ *     ITEM 1822 `DISTINCT` IS THE EXCEPTION AND IS ADMITTED — see the dedupe at the return. No
  *     `GROUP BY`, no `HAVING`, no `ORDER BY`, no `SKIP`/`LIMIT`, no `*`, no aggregate.
  *
  * ROW ORDER IS UNSPECIFIED without an `ORDER BY` (item 198), so a start-driven nested walk is free
@@ -254,21 +256,38 @@ export const detectHop2Projection = (
     return null;
   }
 
-  // ⚠️ `plainRowProjection` takes the AST projection and `aggregating` is on the COMPILED one, so
-  // both are asked — of the right object each. They are not the same test: the AST form rejects
-  // `DISTINCT`/`GROUP BY`/`HAVING`/`ORDER BY`/`SKIP`/`LIMIT`/`*`, and `aggregating` is what rejects
-  // `RETURN count(c.k)`, which is none of those.
+  // ⚠️ `plainRowProjectionIgnoringDistinct` takes the AST projection and `aggregating` is on the
+  // COMPILED one, so both are asked — of the right object each. They are not the same test: the
+  // AST form rejects `GROUP BY`/`HAVING`/`ORDER BY`/`SKIP`/`LIMIT`/`*`, and `aggregating` is what
+  // rejects `RETURN count(c.k)`, which is none of those.
   const { projection } = cret;
 
   if (
-    !plainRowProjection(ret.projection) ||
+    !plainRowProjectionIgnoringDistinct(ret.projection) ||
     projection.aggregating ||
     projection.items.length === 0
   ) {
     return null;
   }
 
-  return walk(nodes, hops as readonly Hop[], projection, gate);
+  const rows = walk(nodes, hops as readonly Hop[], projection, gate);
+
+  /**
+   * ⚠️ `RETURN DISTINCT` IS ADMITTED AND DEDUPED HERE — item 1822, closing the hole item 1821 left
+   * and measured: TWO hops was the SLOWEST of the three widths, a shorter chain costing more than a
+   * longer one. `hop-projection.ts`'s `distinctShape` refuses `segments.length > 1` and
+   * `chain-projection.ts` requires three segments, so two fell between the two rungs and went to
+   * the general matcher — `hop2distinct` 2171.3 ms against this walk's own `hop2rows` at 157.3,
+   * a 13.8x gap for a dedupe that can only cost the walk plus a hash.
+   *
+   * ⚠️ THE ARGUMENT IS ITEM 1821'S AND IS NOT RE-DERIVED: dedupe keeps one row per key whatever
+   * order the rows arrive in, so it COMMUTES with the walk and the answer is the same SET
+   * (`order-is-unspecified`). `SKIP`/`LIMIT` do NOT commute — there, row order decides WHICH rows
+   * survive — so they stay refused by the gate above. And it calls `distinctRows` rather than
+   * keying rows itself, because there is ONE definition of distinct in this engine and items 1561
+   * and 1562 each shipped a silent answer change in that area.
+   */
+  return ret.projection.distinct ? (graph, params) => distinctRows(rows(graph, params)) : rows;
 };
 
 type Hop = { readonly type: string; readonly forward: boolean };

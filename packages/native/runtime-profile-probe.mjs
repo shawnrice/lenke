@@ -119,6 +119,11 @@ const SHAPES = {
   // row plus a hash, so the two must stay close, and a gap is the signal rather than either number
   // alone.
   hop3distinct: 'MATCH (a:P)-[:E]->(b:P)-[:E]->(c:P)-[:E]->(d:P) RETURN DISTINCT d.k AS k',
+  // ⚠️ AND THE TWO-HOP TWIN, which item 1821 left as the SLOWEST of the three widths — a shorter
+  // chain costing more than a longer one, because `distinctShape` refuses `segments.length > 1`
+  // and `detectChainProjection` requires three segments, so two fell between the two rungs. Its
+  // pair control is `hop2rows`, for the same reason `hop3distinct`'s is `hop3rows`.
+  hop2distinct: 'MATCH (a:P)-[:E]->(b:P)-[:E]->(c:P) RETURN DISTINCT c.k AS k',
   /**
    * ⚠️ THE DECLINED TWIN OF `hop3rows`, added at item 1802 and the row that decides the question.
    * `directedBucket` refuses `both` (two buckets, and a dedupe across them), so this shape stays on
@@ -369,6 +374,7 @@ const EXPECTED = {
   // 97 distinct `k` values (`i % 97`), whatever the chain's row count — so this answer is a real
   // guard on the dedupe and not just on the walk.
   hop3distinct: { rowsPerRun: 97 },
+  hop2distinct: { rowsPerRun: 97 },
   hop3rowsboth: { rowsPerRun: 160_000 },
   // The paging and set-operation shapes, same gap.
   topkwide: { rowsPerRun: 10 },

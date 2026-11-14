@@ -30,11 +30,20 @@ const chainGraph = (farValues: readonly unknown[]): Graph => {
 
   // Four levels of `n` vertices each, so every level-0 vertex reaches every level-3 vertex and the
   // undeduped row count is n^4 — which is what makes the dedupe observable rather than incidental.
+  //
+  // ⚠️ EVERY LEVEL CARRIES THE SAME VALUES, and the first cut of this fixture put them on level 3
+  // ALONE. That was invisible while only the three-hop rung was tested — it reads the far end, which
+  // was level 3 — and it silently broke every two-hop test added at item 1822, because a two-hop
+  // chain ends at level 2 and read the placeholder there instead. It also made the cross-width
+  // check vacuous, which is the test most worth having. A fixture whose values live at ONE depth
+  // can only be read at one depth.
   for (let level = 0; level < 4; level += 1) {
     for (let i = 0; i < n; i += 1) {
-      const properties = level === 3 ? { k: farValues[i], s: `s${i % 2}` } : { k: -1, s: 'x' };
-
-      g.addVertex({ id: `L${level}_${i}`, labels: level === 0 ? ['L'] : ['M'], properties });
+      g.addVertex({
+        id: `L${level}_${i}`,
+        labels: level === 0 ? ['L'] : ['M'],
+        properties: { k: farValues[i], s: `s${i % 2}` },
+      });
     }
   }
 
@@ -158,5 +167,76 @@ describe('the chain rung dedupes the way the rest of the engine does', () => {
     const rows = query(g, `${CHAIN} RETURN DISTINCT d AS d`);
 
     expect(rows.length).toBe(3);
+  });
+});
+
+/**
+ * ⚠️ THE TWO-HOP RUNG GOT THE SAME ADMISSION AT ITEM 1822, and it needs its OWN answer tests rather
+ * than inheriting these: it is a different module (`hop2-projection.ts`), a different walk, and a
+ * different row-building point. The shared argument is in `rows.ts`; the shared keying is
+ * `distinctRows`; nothing else is shared, so nothing else may be assumed.
+ *
+ * The cases are deliberately the SAME ones, because the way to find out that two rungs disagree is
+ * to ask them the same question — and the one that matters most is the cross-route check at the
+ * end, which compares each rung's deduped answer against the general matcher's for the same query.
+ */
+describe('the two-hop rung dedupes identically', () => {
+  const HOP2 = 'MATCH (a:L)-[:R]->(b:M)-[:R]->(c:M)';
+
+  test('collapses duplicates, keeps a second differing column apart', () => {
+    const g = chainGraph([1, 2, 2, 3, 3, 3]);
+
+    // 6^3 = 216 undeduped rows at two hops, three distinct values.
+    expect(query(g, `${HOP2} RETURN c.k AS k`).length).toBe(216);
+    expect(setOf(query(g, `${HOP2} RETURN DISTINCT c.k AS k`))).toEqual(
+      setOf([{ k: 1 }, { k: 2 }, { k: 3 }]),
+    );
+  });
+
+  test('0 and -0 are one row, NaN is one row, null is a row', () => {
+    expect(query(chainGraph([0, -0]), `${HOP2} RETURN DISTINCT c.k AS k`)).toEqual([{ k: 0 }]);
+    expect(
+      query(chainGraph([Number.NaN, Number.NaN]), `${HOP2} RETURN DISTINCT c.k AS k`).length,
+    ).toBe(1);
+    expect(setOf(query(chainGraph([null, null, 1]), `${HOP2} RETURN DISTINCT c.k AS k`))).toEqual(
+      setOf([{ k: null }, { k: 1 }]),
+    );
+  });
+
+  test('a second column that differs keeps the rows apart', () => {
+    const g = chainGraph([1, 1, 2, 2]);
+
+    expect(setOf(query(g, `${HOP2} RETURN DISTINCT c.k AS k, c.s AS s`))).toEqual(
+      setOf([
+        { k: 1, s: 's0' },
+        { k: 1, s: 's1' },
+        { k: 2, s: 's0' },
+        { k: 2, s: 's1' },
+      ]),
+    );
+  });
+
+  /** ⚠️ The cross-route check: `ORDER BY` declines the rung, so this is rung against general path. */
+  test('agrees with the route that declines the rung, on the same query', () => {
+    const g = chainGraph([3, 1, 2, 2, null, 1]);
+
+    expect(setOf(query(g, `${HOP2} RETURN DISTINCT c.k AS k`))).toEqual(
+      setOf(query(g, `${HOP2} RETURN DISTINCT c.k AS k ORDER BY k`)),
+    );
+  });
+
+  /**
+   * ⚠️ AND THE TWO RUNGS AGAINST EACH OTHER, which neither rung's own tests can ask. Both widths
+   * read the same far-end property over the same levels of the same fixture, so their deduped
+   * answers must be the same SET — the level-3 values are reachable at both depths here. This is
+   * the assertion that catches one rung's dedupe drifting from the other's.
+   */
+  test('the two widths agree with each other on the same fixture', () => {
+    const g = chainGraph([5, 5, 6, 7, 7]);
+    const CHAIN3 = 'MATCH (a:L)-[:R]->(b:M)-[:R]->(c:M)-[:R]->(d:M)';
+
+    expect(setOf(query(g, `${HOP2} RETURN DISTINCT c.k AS k`))).toEqual(
+      setOf(query(g, `${CHAIN3} RETURN DISTINCT d.k AS k`)),
+    );
   });
 });

@@ -364,13 +364,35 @@ describe('the rung declines what it must — and the answer stays right', () => 
     declines('MATCH p = (a:L)-[:R]->(b)-[:R]->(c) RETURN p AS p');
   });
 
-  test('anything but a PLAIN row projection', () => {
-    declines('MATCH (a:L)-[:R]->(b)-[:R]->(c) RETURN DISTINCT c.k AS k');
+  test('anything but a plain row projection — except DISTINCT, see below', () => {
     declines('MATCH (a:L)-[:R]->(b)-[:R]->(c) RETURN c.k AS k ORDER BY k');
     declines('MATCH (a:L)-[:R]->(b)-[:R]->(c) RETURN c.k AS k LIMIT 2');
     declines('MATCH (a:L)-[:R]->(b)-[:R]->(c) RETURN count(*) AS n');
     declines('MATCH (a:L)-[:R]->(b)-[:R]->(c) RETURN max(c.k) AS m');
     declines('MATCH (a:L)-[:R]->(b)-[:R]->(c) RETURN *');
+  });
+
+  /**
+   * ⚠️ `DISTINCT` MOVED OUT OF THE LIST ABOVE AT ITEM 1822, and it is a separate test because the
+   * two groups were refused for different reasons and only one was about capability. `SKIP`/`LIMIT`
+   * stay refused permanently: with no `ORDER BY` row order decides WHICH rows survive, so a rung
+   * whose walk order differs from the general path's would return different ROWS. Dedupe keeps one
+   * row per key whatever the order, so it COMMUTES with the walk and the answer is the same set.
+   *
+   * The cost of the old refusal, measured: `distinctShape` refuses `segments.length > 1` and the
+   * chain rung requires three segments, so TWO hops fell between them and ran on the general
+   * matcher — **2171.3 ms against this rung's own `hop2rows` at 157.3**, which made two hops the
+   * SLOWEST of the three widths. A shorter chain costing more than a longer one. Now 169.4 ms.
+   */
+  test('ADMITS DISTINCT, and still refuses it alongside a sort or a pager', () => {
+    const hop2 = 'MATCH (a:L)-[:R]->(b)-[:R]->(c)';
+
+    expect(routes(`${hop2} RETURN DISTINCT c.k AS k`)).toContain('hop2Projection');
+    expect(routes(`${hop2} RETURN DISTINCT c.k AS k, c.s AS s`)).toContain('hop2Projection');
+
+    declines(`${hop2} RETURN DISTINCT c.k AS k ORDER BY k`);
+    declines(`${hop2} RETURN DISTINCT c.k AS k LIMIT 2`);
+    declines(`${hop2} RETURN DISTINCT c.k AS k SKIP 1`);
   });
 
   test('an OPTIONAL MATCH', () => {
