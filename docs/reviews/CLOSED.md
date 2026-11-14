@@ -85560,3 +85560,78 @@ integer fixture.
 
 GATES. bun run check 0 read unpiped. gql 4,624 pass / 0 fail. gremlin 2,134 pass / 0 fail.
 native 1,165 pass / 0 fail. bun run fuzz 57 pass / 0 fail.
+
+### Item 1831 — ⚠️ **THE WALK-ORDER QUESTION IS ANSWERED (25 cases, identical sequences), AND ANSWERING IT EXPOSED THAT ITEM 1830's OWN RUNGS HAD NO CROSS-ENGINE COVERAGE AT ALL** — every multi-hop aggregate the differential fuzzer generates is a `count(*)`, `collect` was never generated, and `sum` was only ever fuzzed over integers, where summation order cannot matter. Generator widened; no engine change
+
+THE BLOCKER, carried forward from items 1829 and 1830: `sum`/`avg` are order-sensitive in the last
+ulp and `collect`'s order IS its answer, so neither may ride a rung whose row order differs from the
+general matcher's. Items 419 and 551 settled that question **for the one-hop rung only**.
+
+`chain-walk-order-probe.mjs` asks it of the deeper widths. ⚠️ **Its oracle is a spelling VERIFIED to
+decline rather than assumed to** — item 1827's lesson applied: `compileLinear` was asked directly,
+and `RETURN d.k AS k LIMIT 100000000` fires NO rung while the bare spelling fires `chainProjection`,
+so a limit above the row count returns every row in the general path's order.
+
+⚠️ **AND BOTH INTERNAL BRANCHES WERE PROVED LIVE BY DELETION, WITHOUT WHICH IT WOULD HAVE TESTED THE
+WALK TWICE.** `farEndOnly` picks a blocked SWEEP or a recursive WALK — two different traversal orders
+inside one rung. A `throw` in `sweepBlock` showed which cases reach which:
+
+```text
+  hop3 far-end only   SWEEP branch REACHED
+  hop3 far WHERE      SWEEP branch REACHED
+  hop3 reads START    WALK branch (no sweep)
+```
+
+**RESULT: 25 cases — 5 fixture shapes (fanout 1/3/5, sequential and scattered strides, a split label
+set) x 5 query shapes (both widths, both branches, with and without a carried `WHERE`) — and the two
+routes emitted an IDENTICAL ROW SEQUENCE every time**, from 1,139 rows up to 250,000.
+
+⚠️ **THAT IS EVIDENCE, NOT PROOF, AND THE PROBE SAYS SO IN ITS OWN OUTPUT.** One fixture agreeing
+says the orders agree there; a mismatch would have settled it immediately, and none appeared. So
+`sum`/`avg`/`collect` are **still not admitted** — what changed is that the remaining risk is now
+NAMED (summation order on inexact addends) rather than unknown.
+
+⚠️⚠️ **AND LOOKING FOR A GUARD FOUND THAT ITEM 1830's RUNGS HAVE NONE.** Before admitting anything
+further, the question was: would `bun run fuzz` catch it? Three concrete gaps, all measured by
+reading the generator rather than assuming:
+
+```text
+  every MULTI-HOP aggregate the workload generates is a `count(*)`   -> item 1830's min/max
+                                                                        rungs were reachable by
+                                                                        ZERO generated query
+  `collect` is not generated at all                                  -> order-as-answer: no coverage
+  `sum`/`avg` are generated only over INTEGER properties             -> an integer sum in f64 is
+                                                                        EXACT whatever the order, so
+                                                                        the last-ulp sensitivity is
+                                                                        unobservable by construction
+```
+
+**The first is item 1816's finding repeating one modifier over** — that item found every `chain3`
+shape the fuzzer generated was a `count(*)` the row rung declined, and the aggregate family had the
+same hole for the aggregate rungs. A rung with no cross-engine coverage is a rung whose
+byte-identity is assumed.
+
+THE FIX, in the generator rather than the engine: the `aggregate` family now also draws multi-hop
+`min`/`max`/`sum`/`avg`/`count(x)` at two and three hops, `count(DISTINCT)` at two hops, `collect`
+at three widths, and — the load-bearing one — **`sum(b.n * 0.1)` and `avg(c.n * 0.1)`, whose addends
+are INEXACT**, so two engines summing in a different order would now disagree and the fuzzer would
+say so. ⚠️ Done with an expression rather than by adding a float property to the shared NDJSON
+fixture: the arithmetic makes the values inexact without touching a fixture whose every line is
+load-bearing for some other family.
+
+VERIFIED: `workload-family-probe.mjs` reports the family at **34 distinct texts** (up from 16), all
+388 draws parsing, matching and agreeing on both engines, nothing vacuous or broken. Then five seeds
+at 80,000 workload queries — **400,000 queries, 0 divergences** — which is the FIRST cross-engine
+coverage item 1830's `min`/`max` rungs have ever had, and the first time `collect` and an inexact
+`sum` have been compared across the two engines at all.
+
+⚠️ **AND THE GENERATOR'S OWN TEST CAUGHT THE WIDENING, WHICH IS ITEM 1817'S DESIGN WORKING.**
+Adding `collect` made `workload-queries.test.ts` FAIL: its "a query claiming to be ORDERED carries an
+ORDER BY" check keeps a NAMED ALLOWLIST of scalar aggregates that are trivially ordered without a
+sort, and `collect` was not on it. It belongs there and is the interesting member — it returns
+exactly ONE row, so it is trivially ordered AS A ROW SEQUENCE, while the LIST inside that row has an
+order which IS the answer. **The allowlist fails CLOSED**: a denylist would have silently widened
+what counts as "ordered" rather than stopping the run.
+
+GATES. bun run check 0 read unpiped. gql 4,624 pass / 0 fail. native 1,165 pass / 0 fail.
+bun run fuzz 57 pass / 0 fail. No engine code changed.

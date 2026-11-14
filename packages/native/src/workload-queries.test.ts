@@ -87,7 +87,17 @@ describe('item 1817 — the workload generator', () => {
 
       // A scalar aggregate returns exactly one row, so it is trivially ordered without a sort —
       // that is the one admitted exception, and it is named rather than left as a loophole.
-      const scalarAggregate = /RETURN (count|sum|avg|min|max)\(/.test(w.text);
+      //
+      // ⚠️ `collect` JOINED THE LIST AT ITEM 1831, and it is the interesting member: it also returns
+      // exactly one row, so it is trivially ordered AS A ROW SEQUENCE — while the LIST inside that
+      // row has an order which IS the answer. Comparing it in order is therefore both correct and
+      // the whole point of generating it (items 1829/1830 refused to assume that order matches
+      // across engines; this is what checks it).
+      //
+      // ⚠️ AND THIS EXCEPTION LIST FAILS CLOSED, which is why item 1817 wrote it as an allowlist:
+      // adding `collect` to the generator without adding it here made this test FAIL rather than
+      // silently widening what counts as "ordered". A denylist would have let it through.
+      const scalarAggregate = /RETURN (count|sum|avg|min|max|collect)\(/.test(w.text);
 
       if (w.ordered && !scalarAggregate) {
         expect({ text: w.text, hasOrderBy }).toEqual({ text: w.text, hasOrderBy: true });

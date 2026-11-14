@@ -302,13 +302,43 @@ const edgeFilter = (r: () => number): Workload => {
 const aggregate = (r: () => number): Workload => {
   const fn = pick(r, ['count', 'sum', 'avg', 'min', 'max']);
   const arg = fn === 'count' ? '*' : 'n.n';
+  const far = fn === 'count' ? 'count(*)' : `${fn}(b.n)`;
   const text = pick(r, [
     `MATCH (n:T) WHERE n.n >= $p0 RETURN ${fn}(${arg}) AS x`,
     `MATCH (n:T) WHERE n.x < $p1 RETURN ${fn}(${arg}) AS x`,
-    `MATCH (a:T)-[:E]->(b:T) WHERE b.n >= $p0 RETURN ${fn === 'count' ? 'count(*)' : `${fn}(b.n)`} AS x`,
+    `MATCH (a:T)-[:E]->(b:T) WHERE b.n >= $p0 RETURN ${far} AS x`,
     `MATCH (a:T)-[:E]->(b:T)-[:E]->(c:T) RETURN count(*) AS x`,
     `MATCH (a:T)-[:E]->(b:T)-[:E]->(c:T)-[:E]->(d:T) RETURN count(*) AS x`,
     'MATCH (n:T) RETURN count(DISTINCT n.x) AS x',
+    /**
+     * ⚠️ MULTI-HOP FOLDS, ADDED AT ITEM 1831 BECAUSE THEY HAD NO COVERAGE AT ALL. Every multi-hop
+     * shape above is a `count(*)` — which is item 1816's finding repeating one modifier over: item
+     * 1830 gave `min`/`max`/`count(x)` a rung at two and three hops, and the differential fuzzer
+     * generated NOT ONE query that could reach it. A rung with no cross-engine coverage is a rung
+     * whose byte-identity is assumed.
+     */
+    `MATCH (a:T)-[:E]->(b:T)-[:E]->(c:T) RETURN ${fn === 'count' ? 'count(c.n)' : `${fn}(c.n)`} AS x`,
+    `MATCH (a:T)-[:E]->(b:T)-[:E]->(c:T)-[:E]->(d:T) RETURN ${
+      fn === 'count' ? 'count(d.n)' : `${fn}(d.n)`
+    } AS x`,
+    'MATCH (a:T)-[:E]->(b:T)-[:E]->(c:T) RETURN count(DISTINCT c.n) AS x',
+    /**
+     * ⚠️ A FLOAT-VALUED `sum`/`avg`, WHICH IS THE ONLY WAY SUMMATION ORDER BECOMES OBSERVABLE. The
+     * fixture carries no float literals, and an integer sum in f64 is EXACT whatever the order — so
+     * `sum(b.n)` can never expose the last-ulp sensitivity that `foldFor`'s comment warns about and
+     * that items 1829/1830 refused `sum` over. Multiplying by 0.1 makes the addends inexact, so two
+     * engines summing in different orders would now DISAGREE and the fuzzer would say so.
+     */
+    `MATCH (a:T)-[:E]->(b:T) RETURN sum(b.n * 0.1) AS x`,
+    `MATCH (a:T)-[:E]->(b:T)-[:E]->(c:T) RETURN avg(c.n * 0.1) AS x`,
+    /**
+     * ⚠️ `collect`, WHICH WAS NOT GENERATED AT ALL. Its ORDER IS ITS ANSWER, so it is the one
+     * aggregate whose cross-engine comparison tests row order directly rather than a reduction over
+     * it — exactly the property items 1829/1830 refused to assume.
+     */
+    'MATCH (n:T) WHERE n.n >= $p0 RETURN collect(n.n) AS x',
+    'MATCH (a:T)-[:E]->(b:T) RETURN collect(b.n) AS x',
+    'MATCH (a:T)-[:E]->(b:T)-[:E]->(c:T) RETURN collect(c.n) AS x',
   ]);
 
   return {
