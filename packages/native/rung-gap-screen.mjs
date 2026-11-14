@@ -332,7 +332,19 @@ for (const [name, row] of grid) {
   );
   const [first] = marginal;
 
-  if (Number.isNaN(first) || first <= 0) {
+  /**
+   * ⚠️ THE DENOMINATOR NEEDS ITS OWN FLOOR, AND A SIZE SWEEP IS WHAT SHOWED IT (item 1835). This
+   * flag divides by the depth-1 marginal, and that number is often ~0 — a modifier that costs
+   * nothing at one hop. At 200,000 vertices `where`'s depth-1 marginal is 0.7 ms and its depth-2
+   * marginal is 26.3, which the flag reported as **40.1x**; the honest reading is "+26 ms on a
+   * 133 ms row cell", i.e. ~1.2x. Dividing by a near-zero makes any positive marginal look
+   * enormous.
+   *
+   * This is item 1823's sub-millisecond-ratio defect one level deeper: that run put a floor on the
+   * CELL, and the same argument applies to whatever a ratio is divided BY. A ratio needs an
+   * absolute magnitude on BOTH sides.
+   */
+  if (Number.isNaN(first) || first < FLOOR_MS) {
     continue;
   }
 

@@ -85844,3 +85844,59 @@ the Gremlin fuzzer on two further seeds, 45 pass / 0 fail each.
 
 GATES. bun run check 0 read unpiped. gremlin 2,138 pass / 0 fail. native 1,165 pass / 0 fail.
 gql 4,639 pass / 0 fail. core 458 pass / 0 fail. bun run fuzz 57 pass / 0 fail.
+
+### Item 1835 — ✅ **EVERY RUNG THIS SESSION BUILT HOLDS AT 10x AND 50x THE SIZE** — validated at 200,000 and 1,000,000 vertices, which no number in items 1818-1834 had done. ⚠️ **And the size sweep exposed a defect in my own flag: it divides by a near-zero denominator**, which had been reporting a ~1.2x effect as 40.1x
+
+⚠️ **WHY THIS WAS THE GAP.** CLAUDE.md's FIRST rule for trusting a number is "sweep the size —
+cache-resident and not are different questions; the transition is between 200k and 1M elements".
+**Every measurement in items 1818-1834 came from a 20,000-vertex graph, entirely inside cache.**
+Eight rungs were built and A/B'd there. A rung that MATERIALIZES rows — and several of these do,
+deliberately — could be flat at 20k and catastrophic at 1M, and nothing would have said so.
+
+✅ **THEY HOLD.** Each modifier against its OWN `rows` cell at the same depth, which is the ratio a
+materializing route would blow up:
+
+```text
+  depth 3           20,000      200,000      1,000,000
+  rows                 5.7        124.0          665.4     (the denominator)
+  distinct             4.8        133.1          689.0      1.04x at 1M
+  maxagg               4.9        130.1          705.7      1.06x
+  grouped              5.5        136.6          764.6      1.15x
+  orderby              4.9        141.3          782.0      1.17x
+  countdist            6.5        170.6          994.7      1.49x
+```
+
+At 1M every one of them costs roughly what producing the rows costs, which is the shape a fused or
+wrapped route should have. ⚠️ The un-fused family behaves exactly as its own items said it would —
+`topk`, `skiponly`, `sum`, `collect` sit at **3.3-4.0x** at every size, which is items 1827 and 1829
+deliberately leaving the windows and the order-sensitive folds on the general path.
+
+⚠️⚠️ **AND THE SWEEP FOUND A DEFECT IN THE FLAG I ADDED AT ITEM 1826.** At 200,000 it reported:
+
+```text
+  where depth2: its MARGINAL cost over rows is 26.3 ms against 0.7 at depth1 — 40.1x
+```
+
+**40.1x is an artifact of the denominator.** The marginal-jump flag divides by the depth-1 marginal,
+and that number is frequently ~0 — a modifier that costs nothing at one hop. The honest reading of
+that cell is "+26 ms on a 133 ms row cell", about **1.2x**. Dividing by a near-zero makes any
+positive marginal look enormous, and four `where` rows plus two `orderby` rows were flagged on that
+basis alone.
+
+This is **item 1823's sub-millisecond-ratio defect one level deeper**: that run put a floor on the
+CELL, and the same argument applies to whatever a ratio is divided BY. The denominator now carries
+the same `FLOOR_MS`, and every `where` flag disappears — correctly, because there was never anything
+there.
+
+⚠️ **ONE GENUINELY NEW, SIZE-DEPENDENT NOMINATION SURVIVES IT.** `orderby`'s marginal at 200,000 is
+**18.1 / 22.1 / 25.9 ms at depths 3-5 against 3.5 at depth 1** — 5.2x to 7.4x, and INVISIBLE at
+20,000 where the whole marginal is under a millisecond. At `FANOUT=1` every depth sorts the same
+200,000 rows, so the sort itself cannot be the difference: the one-hop route sorts on the way out
+through `outputColumnSorts`, while the deeper widths materialize and then sort through item 1827's
+`sortedRows` wrapper. ⚠️ In absolute terms it is 8-15% of a 124-240 ms query, so it is a modest
+target rather than a cliff — recorded with that proportion stated, because a 7.4x headline on an
+8% effect is exactly the kind of number this item just finished correcting.
+
+NO ENGINE CODE CHANGED. The sweep is the deliverable, plus the flag fix.
+
+GATES. bun run check 0 read unpiped.
