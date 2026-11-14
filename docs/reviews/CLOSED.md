@@ -86692,7 +86692,12 @@ nothing.
    per-row gap on the same kind of row production** is a separate question from the product, and it
    has not been asked.
 
-2. **An UNDEDUPED multi-hop count costs more than the DEDUPED one, which is the harder question.**
+2. ~~**An UNDEDUPED multi-hop count costs more than the DEDUPED one, which is the harder question.**~~
+   ❌ **CLOSED AT ITEM 1860 — DECLINED, and by an existing criterion I should have applied before
+   measuring.** The dense ceiling is real (4.05x) but the CSR rebuild is 210.93 ms against a 53.58 ms
+   walk, which FAILS item 1695's rule: safe iff the walk costs more than the rebuild. The paragraph
+   below stands as the pricing; the "already built, just not wired at two hops" framing was the part
+   that was wrong.
    On the Gremlin bench at 200,000 vertices / 1,000,000 edges:
 
         V().out().dedupe().count()            7.7 ms   (fused, item 1855)
@@ -86722,3 +86727,66 @@ NO ENGINE CODE CHANGED. One new instrument; the findings above are the deliverab
 
 GATES. Not applicable — no source change. The screen and the Gremlin bench both ran under the cgroup
 cap and are quoted above.
+
+## Item 1860 — the dense two-hop count is a REAL 4.05x and is DECLINED, because item 1695's criterion says so; and the chain arm's own write exposure is 7.95x, which that item did not measure
+
+Item 1859 nominated `V().hasLabel(L).out(T).out(T).count()` — 51.6 ms on the Gremlin bench against
+native's 2.87 — and framed it as nearly free, since `denseChainCount`/`slotChainCount` already exist
+and are wired for three hops and up while the two-hop arm never tries them. That framing was wrong,
+and the reason is instructive.
+
+✅ **THE CEILING IS GENUINE.** `two-hop-dense-ceiling-1860.mjs` hand-rolls the dense two-hop in plain
+JavaScript over the bench's own fixture (200,000 vertices / 1,000,000 edges), so the ceiling is
+priced without touching the engine:
+
+      engine  (first)    51.32 ms   answer 5000000
+      dense   (warm)     12.68 ms   answer 5000000     4.05x
+      dense   (rep 1)   254.28 ms   — includes the CSR build
+      engine  (control)  49.21 ms   answer 5000000
+
+❌ **AND THE BUILD IS 20x THE QUERY IT ENABLES, which is what decides it.** Measured through the
+engine's own `buildChainCsr` rather than my hand-rolled one, using the THREE-hop row that already
+takes `slotChainCount`, cold-then-warm in a fresh process (`csr-amortization-1860.mjs`):
+
+      3-hop COLD (builds the CSR)   233.51 ms
+      3-hop WARM (min of 4)          22.58 ms
+      => the engine's build costs   210.93 ms
+      2-hop today (min of 3)         53.58 ms   (no CSR)
+      => payback after                  5.2 two-hop queries of ONE shape
+
+⚠️⚠️ **ITEM 1695 ALREADY SETTLED THIS AND I FOUND IT ONLY AFTER MEASURING.** That item measured the
+CSR cache's invalidation across six shipped arms and produced a criterion in one line: **safe iff the
+walk costs more than the rebuild.** Here the walk is 53.58 ms and the rebuild is 210.93 — the walk is
+**4x CHEAPER than the rebuild**, so the shape fails the criterion outright. `chainCsrFor` is keyed on
+`graph.topologyVersion` and the generation is dropped WHOLE on any topology write, so an interleaved
+serving workload pays the build per read and never reaches the 5.2-query payback.
+
+**THE METHOD FAILURE IS THE ORDER, NOT THE MEASUREMENT.** CLAUDE.md's rule is to read `CLOSED.md`
+BEFORE pricing a target; I grepped it for `chainCsrFor` only once the numbers were in. Both numbers
+were needed to APPLY item 1695's criterion, so neither probe was wasted — but the item would have
+been framed as "apply 1695's rule to the two-hop shape" from the first minute, and item 1859 would
+not have advertised a free 4x in its heading. Its heading is struck above.
+
+🔭 **AND A FINDING ITEM 1695 DID NOT COVER: the chain arm's write exposure is 7.95x, not 1.19x.**
+Item 1695 validated item 1692's arm at **1.19x** under one write per read — still a net win, because
+that arm's walk (192.37 ms) costs far more than its rebuild. The CHAIN arm (item 1110,
+`slotChainCount`) has the opposite ratio, and the same instrument shows it:
+
+      3-hop WARM                      22.58 ms
+      3-hop INTERLEAVED with a write 179.49 ms   mean of 3     7.95x its warm cost
+
+So the arm that ships today is itself likely net-NEGATIVE under write-per-read, by exactly the
+criterion item 1695 wrote: a 3-hop walk should cost on the order of the 53.58 ms two-hop walk, which
+is well under 179.49. **Confirming it needs the walk-only number, which needs a kill switch in the
+engine — not an inference.** That is the next target, and it is a CORRECTNESS-of-policy question
+about shipped code rather than a new optimization.
+
+⚠️ **ONE NOTE ON THE FIXTURE, because the answer here cannot validate it.** The two-hop count is
+5,000,000 = F^2 * N, which is what a FUNCTIONAL graph would also return — the figure is invariant to
+how the fan-out is distributed, exactly CLAUDE.md's "an answer that is INVARIANT to the property you
+varied cannot validate the fixture". The branch assertion is what validates it, and it is a separate
+line counting v0's distinct targets.
+
+NO ENGINE CODE CHANGED. Two instruments; the decline and the 7.95x are the deliverable.
+
+GATES. bun run check 0 read unpiped.
