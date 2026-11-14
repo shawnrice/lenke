@@ -87177,3 +87177,77 @@ NO ENGINE CODE CHANGED. Two instruments, one source-level warning, and one inval
 reported rather than quietly discarded.
 
 GATES. bun run check 0 read unpiped.
+
+## Item 1866 — a PARAMETERIZED page falls off every projection rung where the LITERAL spelling takes it, 10.5x; and the documented reason for refusing it looks OVERSTATED
+
+Item 1865 put sorting at 28% of a mixed workload. **Pricing it against the five prior sort items
+first is what turned the target into a different one**: items 582 (comparator iterator protocol,
+2.0-2.8x), 588 (partial selection + all-equal short-circuit), 843 (single-`by` specialization —
+and it records the multi-key hoist measuring **1.00-1.02x and being REVERTED**), 890 (refuted at
+1.04x) and 1711 (the reduced comparator, 1.45x on strings; its numeric twin **dropped** at item
+1808 after six measurements straddling 1.0). The workload is 63% single-key and its keys are
+NUMERIC, so both comparator arms are already refuted. The comparator vein is mined out.
+
+✅ **SO THE SORT COST WAS ATTRIBUTED PER FAMILY INSTEAD, and two rows do not add up.** `ORDER BY`
+deleted, same queries, min of 6:
+
+      family          n   withORDER  without     sort         rows
+      chain-rows     23      304.8    116.0    188.7      1445076     a genuine sort
+      optional       20       59.9     24.2     35.7        68609
+      var-length     10      139.5    105.4     34.1           78     ⬅ 78 ROWS
+      projection     25       31.6      3.0     28.6        31513     ⬅ 10.5x
+      grouped        21       32.1     34.6     -2.4          139     (the noise floor, ~2 ms)
+
+**Sorting 78 rows cannot cost 34 ms, and 31,513 rows cannot cost 10.5x the query that produced
+them.** Those two are not sorting — `ORDER BY` is DECLINING A RUNG. `chain-rows` at 188.7 ms over
+1.4M rows is the only row here that is really a sort.
+
+🔬 **THE CAUSE IS THE PARAMETER, NOT THE `ORDER BY`, AND NOT THE `OFFSET`.** Routes read off
+`compileLinear` directly:
+
+      <node> ORDER BY x                        nodeProjection
+      <node> ORDER BY x LIMIT 3                nodeProjection
+      <node> ORDER BY x LIMIT $p0              (none)        ⬅
+      <node> ORDER BY x OFFSET 3               nodeProjection
+      <node> ORDER BY x OFFSET $p0             (none)        ⬅
+      <node> ORDER BY x OFFSET 3 LIMIT 3       nodeProjection
+      <node> ORDER BY x OFFSET $p0 LIMIT $p1   (none)        ⬅
+      <hop>  ORDER BY x LIMIT 3                hopProjection
+      <hop>  ORDER BY x LIMIT $p0              (none)        ⬅
+
+**A literal page takes the rung; a parameterized page takes none.** That is this repo's opening
+defect class on the PARAMETER axis — and it is the spelling that matters most, because no
+application paginates with a literal. `OFFSET $skip LIMIT $n` is what every paginated endpoint
+sends, and it is the one form that falls off.
+
+⚠️⚠️ **THE REFUSAL IS DOCUMENTED, AND ITS STATED REASON LOOKS OVERSTATED — which is a claim about a
+blocker, so it is written as one rather than acted on.** `outputColumnSorts` declines on
+`numericWindow` saying _"resolving it would make the route depend on a binding the plan is cached
+across"_, and item 1778's note sharpens it: a skip-only page _"has no such dependence — every
+non-negative skip takes the same route"_ and so IS resolved per call (which is exactly why bare
+`OFFSET $p0` fires), while _"a `LIMIT $n` decides between a heap and a sort-and-slice, so the ROUTE
+depends on the value"_.
+
+**But `sortRowsByColumns` already makes that heap-vs-sort choice AT RUN TIME**, against the actual
+row count: `if (limit !== undefined && (skip + limit) * 16 <= rows.length)`. The decision is per
+call with the real `rows.length`, so there is no compile-time route dependence to protect — the
+`SortPlan` simply holds `number` where it could hold a `CountValue` resolved at the same place
+item 1778 resolves its skip.
+
+🔭 **WHAT THE NEXT ITEM MUST SETTLE BEFORE BUILDING, because this is not yet a green light:**
+
+1. **Whether the top-k rungs are different.** `deferredRoute`/`deferredSortedNodeWalk` gate on
+   `typeof limit !== 'number'` to size a heap. If that size is baked in at closure construction
+   the refusal is genuine there, and only `outputColumnSorts` moves. These are two gates with one
+   stated reason between them, and they may not share a verdict.
+2. **That the plan cache really is shared across params** in the way the note assumes, and that a
+   per-call resolution cannot leak one page's bound into another's. Items 228/229 own those
+   caches.
+3. **A null control.** The measured 10.5x is the `projection` family's; a build has to show the
+   literal spelling UNCHANGED, because this touches a gate every projection rung reads.
+
+NO ENGINE CODE CHANGED. The finding, the exact gate, and the blocker analysis are this item's
+deliverable; `check-the-blocker-still-holds` is the rule being followed — a "not built because X"
+note is a claim about X, and three were overstated in one earlier session.
+
+GATES. bun run check 0 read unpiped.
