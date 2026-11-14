@@ -84580,3 +84580,80 @@ what remains is the body's single run plus `new Map(outer)` per outer row, which
 
 GATES. bun run check 0 read unpiped. gql 4,563 pass / 0 fail. native 1,165 pass / 0 fail.
 bun run fuzz 57 pass / 0 fail.
+
+### Item 1819 — ❌ **NO CODE CHANGE, AND THAT IS THE RESULT TWICE OVER**: `addEdge` really does make 4 `getVertexById` calls an edge where 2 would do, halving it is measurably WORTH NOTHING (0.999x), and the profile frame that nominated the whole thing was MIS-ATTRIBUTED by 10x
+
+PROFILE-FIRST ACROSS 22 SHAPES, AND THE UNPRICED-FRAME SCREEN IS CLEAN ON ALL OF THEM. Nine more
+Gremlin shapes (`hoporder`, `hopdedupe`, `unioned`, `projected`, `valuemapped`, `selected`,
+`groupreduce`, `repeated`, `hop2trailinghas`) and the six WRITE shapes, on top of item 1818's
+thirteen. Nothing over 2% without mentions anywhere. Two totals stood out and both are honest work:
+
+- `hoporder` at 2015 ms engine is the largest, and it is a 100,000-element sort per rep. `sorted`
+  is 47.5% self at **~4.7 ns a comparison** — essentially a monomorphic numeric compare. Not a
+  target; recorded so the biggest number on the screen stops nominating itself.
+- `addEdgeOnly` at **2.06 µs an edge**, where `indexEdgeLabel` is 29.8% self. That function already
+  carries THREE rejected levers with numbers (items 140, 312, 323) and item 312 priced it at 810 ns
+  across seven hash operations, so the share is explained and closed.
+
+⚠️ **THE O(1)-BY-ID GUARANTEE IS INTACT AND IS NOW MEASURED FROM BOTH SIDES.** `getEdgeById` and
+`getVertexById` are each one line (`this.<map>.get(id) ?? null`), and over a warm 100,000-edge graph
+with pre-built id arrays the edge lookup reads **29.2-30.2 ns**. `pointLookups` reads 9.02 ms for
+2,000,000 lookups (4.5 ns) on the hot-set shape. Nothing here moved either.
+
+⚠️⚠️ **THE FRAME THAT STARTED THIS WAS MIS-ATTRIBUTED BY ~10x, AND ONLY A CALL COUNT COULD SAY SO.**
+`addEdgeOnly` profiles `getEdgeById` at **16.8% self, 187.4 ms over 600,000 edges** — 312 ns a call
+if it is called once an edge. It IS called once an edge (counted: 1.000). And it costs **30 ns**.
+A one-line `Map.get` cannot be both, so the other ~280 ns is inlined callee work V8 hung on this
+frame. That is `frame-attribution-trap`'s fifth instance, and the instrument that settles it is a
+COUNT, not an ablation: `addedge-callcount-probe.mjs` wraps the class-field arrows on one instance
+and tallies.
+
+**WHAT THE COUNT FOUND INSTEAD IS REAL.** `addEdge` makes **4.000 `getVertexById` calls per edge**,
+and the probe tallies the callers rather than guessing:
+
+```text
+  20000   at Graph.addEdge            <- the membership check, LOAD-BEARING
+  10000   at get from <- insertEdge   <- `edge.from === edge.to`, the self-loop test
+  10000   at get to   <- insertEdge   <- same line
+```
+
+Two of the four exist only to learn whether two strings are equal. `edge.from`/`edge.to` resolve
+through `getVertexById`; `fromId`/`toId` return the stored id and allocate nothing — they exist for
+exactly this, and audit **item 140 made this same fix for the adjacency index and did not reach this
+site**. Spelled `edge.fromId === edge.toId` the count goes 4.000 → **2.000**, verified by count and
+not inferred.
+
+❌ **AND IT BOUGHT NOTHING.** Isolated A/B on `addEdgeOnly`, ⚠️ arms asserted by a marker count in
+the built DIST, three alternated rounds:
+
+```text
+  PRE   202.58 / 204.44 / 198.77 ms a rep
+  POST  201.05 / 200.35 / 199.05
+```
+
+**0.999x at the minimum, fully overlapping.** Two warm `Map.get`s are ~60 ns against a ~2,060 ns
+edge — ~3%, inside this probe's own band. The call count fell by half and the clock did not move,
+which is `indexEdgeLabel`'s 810 ns across seven hash operations being the actual cost all along.
+
+⚠️ **THE CORRECTNESS ARGUMENT FOR IT ALSO DOES NOT HOLD, AND THAT IS WHY THE CHANGE WAS REVERTED
+RATHER THAN KEPT AS A TIDY-UP.** It looks like the id spelling additionally fixes a latent bug: where
+an endpoint id is absent, the resolved form compares `null === null` and counts a self-loop that does
+not exist. The comment claiming that was written BEFORE it was checked, and it is wrong — no
+reachable path produces it. `addEdge` asserts both endpoints resolve; the `Edge.isEdge` arm asserts
+through the same getters; `removeVertex` cascades to incident edges so an edge cannot outlive its
+endpoint, which `Edge.ts`'s own comment already states. Both spellings are equivalent today, so the
+change was a 30-line comment buying a measured 0.999x. **Reverted**, and the lever is recorded at the
+site instead, in `indexEdgeLabel`'s own format — which is the only thing that stops the next pass
+re-deriving it from the same 4.000.
+
+⚠️ **ONE THING A FUTURE ATTEMPT MUST NOT MISS**, found only because the arm assertion printed a
+marker count of 2 where 1 was expected: there are **TWO** of these tests, and `removeEdge`'s copy
+decrements the same running tally. Changing one alone leaves `selfLoopCount` permanently wrong with
+nothing throwing. Both sites now say so.
+
+NET: two probes added, three candidate levers refuted with numbers, one profile reading corrected,
+and no engine code changed. The honest summary of a profile-first pass over a surface that has
+already had 1,800 items of attention.
+
+GATES. bun run check 0 read unpiped. core 458 pass / 0 fail. gql 4,563 pass / 0 fail.
+native 1,165 pass / 0 fail. bun run fuzz 57 pass / 0 fail.

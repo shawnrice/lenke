@@ -2129,6 +2129,40 @@ export class Graph {
       this.multiTypeEdgeCount += 1;
     }
 
+    /*
+     * REJECTED lever, with its numbers (item 1819): spelling this test `edge.fromId === edge.toId`.
+     *
+     * `edge.from` / `edge.to` resolve through `getVertexById`, so this line round-trips two ids the
+     * edge already holds into two `Map` lookups and back. That is audit item 140's exact finding
+     * ("four `getVertexById` calls per edge, 4,000,000 to ingest a million") at a site item 140 did
+     * not reach, and it is REAL: `addedge-callcount-probe.mjs` counts **4 `getVertexById` calls per
+     * `addEdge`** — two from `addEdge`'s membership check, which are load-bearing, and two from
+     * right here, purely to learn whether two strings are equal. The id spelling takes it to 2.000,
+     * verified by count rather than inferred.
+     *
+     * It bought NOTHING. Isolated A/B on `runtime-profile-write-probe.mjs addEdgeOnly`, arms
+     * asserted by a marker count in the built dist, three alternated rounds:
+     *
+     *     PRE  202.58 / 204.44 / 198.77 ms a rep      POST  201.05 / 200.35 / 199.05
+     *
+     * 0.999x at the minimum, fully overlapping. Two warm `Map.get`s are ~60 ns against a ~2,060 ns
+     * edge, which is inside this probe's own band — so the call count fell by half and the clock
+     * did not move. `indexEdgeLabel` below is why: item 312 priced it at 810 ns across seven hash
+     * operations and it is 29.8% of this path, so the endpoint lookups were never the cost.
+     *
+     * ⚠️ AND THE CORRECTNESS ARGUMENT FOR IT DOES NOT HOLD EITHER, which is the part worth
+     * recording. It looks like the id form also fixes a latent bug: where an endpoint id is absent
+     * the resolved form compares `null === null` and counts a self-loop that does not exist. No
+     * reachable path produces that — `addEdge` asserts both endpoints resolve, the `Edge.isEdge`
+     * arm asserts through the same getters, and `removeVertex` cascades to incident edges so an
+     * edge cannot outlive its endpoint (Edge.ts's own comment states this). Both spellings are
+     * therefore equivalent today, and the id form would have been a 30-line comment buying a
+     * measured 0.999x.
+     *
+     * ⚠️ If it is ever changed, BOTH SITES MOVE TOGETHER — `removeEdge`'s copy below decrements the
+     * same running tally, and changing one alone would leave `selfLoopCount` permanently wrong with
+     * nothing throwing.
+     */
     if (edge.from === edge.to) {
       this.selfLoopCount += 1;
 
