@@ -13,47 +13,81 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { copyFileSync, readFileSync, writeFileSync } from 'node:fs';
 
 const ROOT = '/home/shawn/projects/pl-graph';
-const SRC = `${ROOT}/packages/gql/src/executor/hop2-projection.ts`;
-const PRISTINE = `${ROOT}/crates/lenke-engine/target/pristine-1846-mut.ts`;
+// Three files now (item 1847): the shared helpers plus both rungs.
+const FILES = { hop2: 'hop2-projection', chain: 'chain-projection', shared: 'hop-sides' };
+const srcOf = (k) => `${ROOT}/packages/gql/src/executor/${FILES[k]}.ts`;
+const pristineOf = (k) => `${ROOT}/crates/lenke-engine/target/pristine-1847-mut-${FILES[k]}.ts`;
 
 const MUTANTS = {
-  'M1 de-duplication never runs (a both-labelled edge counts twice)': [
-    ['const dedupe = graph.multiTypeEdgeCount > 0;', 'const dedupe = false;'],
+  'M1 hop2 de-duplication never runs (a both-labelled edge counts twice)': [
+    ['hop2', 'const dedupe = graph.multiTypeEdgeCount > 0;', 'const dedupe = false;'],
   ],
-  'M2 de-duplication ALWAYS runs (correct, but the fast arm is never taken)': [
-    ['const dedupe = graph.multiTypeEdgeCount > 0;', 'const dedupe = true;'],
+  'M2 hop2 de-duplication ALWAYS runs (answer-equivalent: a PERF choice only)': [
+    ['hop2', 'const dedupe = graph.multiTypeEdgeCount > 0;', 'const dedupe = true;'],
   ],
-  'M3 every edge is treated as claimed (rows dropped)': [
-    ['  for (let i = 0; i < at; i += 1) {', '  for (let i = 0; i <= at; i += 1) {'],
+  'M3 the shared claim test treats every edge as claimed (rows dropped)': [
+    ['shared', '  for (let i = 0; i < at; i += 1) {', '  for (let i = 0; i <= at; i += 1) {'],
   ],
   'M4 the alternation is not de-duplicated in the SPELLING ([:E|E])': [
-    [
-      'const seen = new Set(types);\n\n  return { types: [...seen]',
-      'const seen = types;\n\n  return { types: [...seen]',
-    ],
+    ['shared', 'return { types: [...new Set(types)]', 'return { types: [...types]'],
   ],
-  'M5 walkUnion is never selected (the null-result control)': [
+  'M5 hop2 walkUnion is never selected (null-result control)': [
     [
+      'hop2',
       '    u0 !== null && u1 !== null\n      ? walkUnion(nodes, [u0, u1], projection, gate, distinct)',
       '    false && u0 !== null && u1 !== null\n      ? walkUnion(nodes, [u0, u1], projection, gate, distinct)',
     ],
   ],
+  'C1 chain descent de-duplication never runs': [
+    [
+      'chain',
+      'multiLabel: graph.multiTypeEdgeCount > 0,\n    };\n    const [startLabel] = labels;\n\n    for (const a of graph.vertices) {\n      if (!matchesLabel(a, startLabel)) {\n        continue;\n      }\n\n      if (startVar !== undefined) {',
+      'multiLabel: false,\n    };\n    const [startLabel] = labels;\n\n    for (const a of graph.vertices) {\n      if (!matchesLabel(a, startLabel)) {\n        continue;\n      }\n\n      if (startVar !== undefined) {',
+    ],
+  ],
+  'C2 chain SWEEP de-duplication never runs': [
+    [
+      'chain',
+      '      multiLabel: graph.multiTypeEdgeCount > 0,\n      nxtLen: 0,',
+      '      multiLabel: false,\n      nxtLen: 0,',
+    ],
+  ],
+  'C3 the sweep frontier counter never advances': [
+    ['chain', '      s.nxtLen += 1;', '      s.nxtLen += 0;'],
+  ],
+  'C4 the chain union walks are never selected (null-result control)': [
+    [
+      'chain',
+      '    unionHops.length > 0\n      ? (farOnly ? sweepUnion : walkUnion)',
+      '    false && unionHops.length > 0\n      ? (farOnly ? sweepUnion : walkUnion)',
+    ],
+  ],
+  'C5 the chain always takes the DESCENT, never the sweep (answer-equivalent route choice)': [
+    ['chain', '(farOnly ? sweepUnion : walkUnion)', '(false ? sweepUnion : walkUnion)'],
+  ],
 };
 
-const restore = () => copyFileSync(PRISTINE, SRC);
+const restore = () => {
+  for (const k of Object.keys(FILES)) {
+    copyFileSync(pristineOf(k), srcOf(k));
+  }
+};
 
 const apply = (edits) => {
   let applied = 0;
 
-  for (const [find, replace] of edits) {
-    const s = readFileSync(SRC, 'utf8');
+  for (const [where, find, replace] of edits) {
+    const path = srcOf(where);
+    const s = readFileSync(path, 'utf8');
 
     if (s.split(find).length - 1 !== 1) {
-      console.log(`     ⚠️ anchor matched ${s.split(find).length - 1} times — NOT applied`);
+      console.log(
+        `     ⚠️ anchor matched ${s.split(find).length - 1} times in ${where} — NOT applied`,
+      );
       continue;
     }
 
-    writeFileSync(SRC, s.replace(find, replace));
+    writeFileSync(path, s.replace(find, replace));
     applied += 1;
   }
 
@@ -80,7 +114,9 @@ const runTests = () => {
   return { code: r.status ?? -1, text: `${r.stdout ?? ''}${r.stderr ?? ''}` };
 };
 
-copyFileSync(SRC, PRISTINE);
+for (const k of Object.keys(FILES)) {
+  copyFileSync(srcOf(k), pristineOf(k));
+}
 
 console.log('# type-union-mutants — M5 is the control: if it SURVIVES the tests prove nothing\n');
 

@@ -76,6 +76,111 @@ const singleLabelled = (): Graph =>
     ],
   );
 
+/**
+ * THE CHAIN WIDTHS — item 1847, the three-segment-and-up twin of the two-segment rung above.
+ *
+ * ⚠️ BOTH CHAIN WALKS MUST BE REACHED, and the projection decides which. `farEndOnly` routes a
+ * projection reading ONLY the far variable to the blocked level-synchronous `sweepUnion`, and
+ * anything reading an interior variable to the depth-first `walkUnion`. They are different code
+ * with the same double-count hazard, so every case below is asked in both shapes: `RETURN d.n`
+ * (sweep) and `RETURN b.n, d.n` (descent).
+ */
+describe('a type-alternation chain of three or more segments', () => {
+  const chain = (segments: number, tail: string): string => {
+    const names = ['a', 'b', 'c', 'd', 'f', 'g'];
+    let text = 'MATCH (a:T)';
+
+    for (let i = 1; i <= segments; i += 1) {
+      text += `-[:E|F]->(${names[i]}:T)`;
+    }
+
+    return `${text} ${tail}`;
+  };
+
+  /** The oracle splits the LAST segment into its own clause, which no chain rung can claim. */
+  const split = (segments: number, tail: string): string => {
+    const names = ['a', 'b', 'c', 'd', 'f', 'g'];
+    let text = 'MATCH (a:T)';
+
+    for (let i = 1; i < segments; i += 1) {
+      text += `-[:E|F]->(${names[i]}:T)`;
+    }
+
+    return `${text} MATCH (${names[segments - 1]})-[:E|F]->(${names[segments]}:T) ${tail}`;
+  };
+
+  test('agrees with the split-clause route at 3, 4 and 5 segments, both walks', () => {
+    for (const g of [multiLabelled(), singleLabelled()]) {
+      for (const segments of [3, 4, 5]) {
+        const far = ['', 'b', 'c', 'd', 'f', 'g'][segments];
+
+        for (const tail of [
+          `RETURN ${far}.n AS x`, // far-end only -> sweepUnion
+          `RETURN b.n AS p, ${far}.n AS q`, // reads an interior -> walkUnion
+          `RETURN DISTINCT ${far}.n AS x`, // the fused one-column DISTINCT over a union
+        ]) {
+          const got = rows(g, chain(segments, tail));
+
+          expect(got).toEqual(rows(g, split(segments, tail)));
+        }
+      }
+    }
+  });
+
+  /** The explicit double-count case at chain width, in both walks. */
+  test('an edge carrying both types is yielded ONCE at chain width', () => {
+    const g = build(
+      ['a', 'b', 'c', 'd'],
+      [
+        ['e1', 'a', 'b', ['E', 'F']],
+        ['e2', 'b', 'c', ['E', 'F']],
+        ['e3', 'c', 'd', ['E', 'F']],
+      ],
+    );
+
+    expect(g.multiTypeEdgeCount).toBe(3);
+    // Every edge is an `E`, so the single-type spelling selects the same edges and must agree.
+
+    for (const tail of ['RETURN d.n AS x', 'RETURN b.n AS p, d.n AS q']) {
+      expect(rows(g, `MATCH (a:T)-[:E|F]->(b:T)-[:E|F]->(c:T)-[:E|F]->(d:T) ${tail}`)).toEqual(
+        rows(g, `MATCH (a:T)-[:E]->(b:T)-[:E]->(c:T)-[:E]->(d:T) ${tail}`),
+      );
+    }
+  });
+
+  /**
+   * ⚠️ MORE STARTS THAN ONE SWEEP BLOCK, so the block boundary and the `cur`/`nxt` swap are
+   * actually crossed. `SWEEP_BLOCK` is 4096 and `nxtLen` is state on the sweep object; a walk that
+   * mismanaged it would be correct on a small fixture and wrong on a large one.
+   */
+  test('a fixture larger than one sweep block', () => {
+    const n = 5000;
+    const g = new Graph();
+
+    for (let i = 0; i < n; i += 1) {
+      g.addVertex({ id: `v${i}`, labels: ['T'], properties: { n: i % 4 } });
+    }
+
+    for (let i = 0; i < n; i += 1) {
+      const from = g.getVertexById(`v${i}`);
+      const to = g.getVertexById(`v${(i * 7 + 1) % n}`);
+
+      if (from === null || to === null) {
+        throw new Error('fixture is broken');
+      }
+
+      g.addEdge({ id: `b${i}`, from, to, labels: [i % 3 === 0 ? 'E' : 'F'] });
+    }
+
+    const union = query(g, 'MATCH (a:T)-[:E|F]->(b:T)-[:E|F]->(c:T)-[:E|F]->(d:T) RETURN d.n AS x');
+    // No multi-label edge here, so `[:E|F]` is exactly "every edge" and the untyped chain agrees.
+    const untyped = query(g, 'MATCH (a:T)-[]->(b:T)-[]->(c:T)-[]->(d:T) RETURN d.n AS x');
+
+    expect(union.length).toBe(n);
+    expect(union.length).toBe(untyped.length);
+  });
+});
+
 describe('a type-alternation hop', () => {
   /**
    * ⚠️ THE ORACLE IS THE TWO-CLAUSE SPELLING. `MATCH (a)-[:E|F]->(b) MATCH (b)-[:E|F]->(c)` asks

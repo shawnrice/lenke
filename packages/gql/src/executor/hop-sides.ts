@@ -293,3 +293,87 @@ export const threeHopSide = (graph: Graph, id: string, w: ThreeHopSide): number 
 
   return n;
 };
+
+/**
+ * A hop whose edge types are an ALTERNATION (`-[:E|F]->`). `types` always holds at least one
+ * member and never a duplicate — item 1846 for the two-segment rung, item 1847 for the chain.
+ *
+ * ⚠️ IT LIVES HERE RATHER THAN IN EITHER RUNG because both need it and item 1832's lesson is that
+ * a duplicated implementation needs duplicated tests and duplicated mutants: the two-hop and chain
+ * rungs each carry their own `Hop` type and their own `hopOf`, and a second copy of the
+ * de-duplication rule below is exactly the kind of near-twin that drifts.
+ */
+export type UnionHop = { readonly types: readonly string[]; readonly forward: boolean };
+
+/**
+ * Flatten an ISO label expression over edge types into the plain alternation it names.
+ *
+ * `-[:E|F]->` parses to `{ kind: 'or', left: {label E}, right: {label F} }`, which a hop modelled
+ * as one `type: string` refuses — so the whole rung declined and a chain of alternations fell to
+ * the general matcher at 5-7x a row.
+ *
+ * Only a tree of bare `label` nodes joined by `or` flattens. `and`, `not` and `wildcard` are NOT
+ * alternations over buckets: `[:!E]` and `%` name a complement, which is every bucket but one, and
+ * `[:E&F]` names edges carrying BOTH. Those keep the decline.
+ */
+const typeUnionInto = (expr: LabelExpr, into: string[]): boolean => {
+  if (expr.kind === 'label') {
+    into.push(expr.name);
+
+    return true;
+  }
+
+  if (expr.kind === 'or') {
+    return typeUnionInto(expr.left, into) && typeUnionInto(expr.right, into);
+  }
+
+  return false;
+};
+
+/** The alternation a rel pattern names, or `null` when it is not a plain directed alternation. */
+export const unionHopOf = (rel: RelPattern): UnionHop | null => {
+  if (!plainRel(rel) || rel.variable !== undefined) {
+    return null;
+  }
+
+  if (rel.direction !== 'out' && rel.direction !== 'in') {
+    return null;
+  }
+
+  if (rel.label === undefined) {
+    return null; // an untyped hop is EVERY bucket, which is a different question
+  }
+
+  const types: string[] = [];
+
+  if (!typeUnionInto(rel.label, types) || types.length === 0) {
+    return null;
+  }
+
+  // ⚠️ DUPLICATE TYPES IN THE SPELLING (`[:E|E]`) would visit every `E` edge twice. The alternation
+  // is a SET of types, so dedupe it here rather than relying on nobody writing it.
+  return { types: [...new Set(types)], forward: rel.direction === 'out' };
+};
+
+/**
+ * Has an EARLIER type in this hop's alternation already claimed this edge?
+ *
+ * ⚠️ THIS IS THE DOUBLE-COUNT GUARD, and it is the whole correctness risk of a union walk.
+ * Iterating the `E` bucket and then the `F` bucket visits an edge carrying BOTH labels twice, where
+ * `[:E|F]` must yield it once. "The first of this hop's types that the edge carries wins" yields
+ * each matching edge exactly once whatever its label set.
+ *
+ * Only ever asked when `graph.multiTypeEdgeCount > 0` — a graph with no multi-label edge cannot
+ * double-count, so the walks read that counter once per execution and skip this entirely. A
+ * COMPILE-time detector cannot read it, which is why the decision is per execution rather than per
+ * plan. `at === 0` answers false without touching the edge.
+ */
+export const claimedByEarlierType = (edge: Edge, types: readonly string[], at: number): boolean => {
+  for (let i = 0; i < at; i += 1) {
+    if (edge.hasLabel(types[i])) {
+      return true;
+    }
+  }
+
+  return false;
+};

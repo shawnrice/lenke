@@ -1,4 +1,4 @@
-import type { Edge, Graph, Vertex } from '@lenke/core';
+import type { Graph, Vertex } from '@lenke/core';
 
 import type { Clause, LabelExpr, NodePattern, RelPattern } from '../ast.js';
 import { matchesLabel } from '../graph-queries.js';
@@ -7,7 +7,8 @@ import { addOneColumnKey, distinctRows, newOneColumnKeys } from './clauses.js';
 import type { CClause, CompiledExpr, CProjection, EvalEnv, Params, Row } from './core.js';
 import { freePredicateVars } from './expr-analysis.js';
 import type { AlwaysRowsFn, RowsFn } from './hop-projection.js';
-import { plainNode, plainRel } from './hop-sides.js';
+import type { UnionHop } from './hop-sides.js';
+import { claimedByEarlierType, plainNode, plainRel, unionHopOf } from './hop-sides.js';
 import { effectiveLabel } from './labels.js';
 import { outputColumnSorts, sortedRows } from './ordered-rows.js';
 import { plainRowProjectionIgnoringDistinct, valueKey } from './rows.js';
@@ -369,63 +370,6 @@ const hopOf = (rel: RelPattern): Hop | null => {
     : null;
 };
 
-/**
- * Flatten an ISO label expression over edge types into the plain alternation it names, or
- * `undefined` for anything else — item 1846.
- *
- * `-[:E|F]->` parses to `{ kind: 'or', left: {label E}, right: {label F} }`, which `hopOf` above
- * refuses because it models a hop as ONE `type: string`. So the whole rung declined and a chain of
- * alternations fell to the general matcher: measured **684 ns a row against the single-type
- * spelling's 102** at two segments, and 657 against 127 at three. Same walk, same kind of answer,
- * 5.2-6.7x a row.
- *
- * Only a tree of bare `label` nodes joined by `or` flattens. `and`, `not` and `wildcard` are NOT
- * alternations over buckets — `!IGNORED` and `%` name a complement, which is every bucket but one,
- * and `A&B` names edges carrying both — so they keep the decline.
- */
-const typeUnionOf = (expr: LabelExpr, into: string[]): boolean => {
-  if (expr.kind === 'label') {
-    into.push(expr.name);
-
-    return true;
-  }
-
-  if (expr.kind === 'or') {
-    return typeUnionOf(expr.left, into) && typeUnionOf(expr.right, into);
-  }
-
-  return false;
-};
-
-/** A hop whose edge types are an alternation. `types` always has at least one member. */
-type UnionHop = { readonly types: readonly string[]; readonly forward: boolean };
-
-const unionHopOf = (rel: RelPattern): UnionHop | null => {
-  if (!plainRel(rel) || rel.variable !== undefined) {
-    return null;
-  }
-
-  if (rel.direction !== 'out' && rel.direction !== 'in') {
-    return null;
-  }
-
-  if (rel.label === undefined) {
-    return null; // an untyped hop is every bucket, which is a different question
-  }
-
-  const types: string[] = [];
-
-  if (!typeUnionOf(rel.label, types) || types.length === 0) {
-    return null;
-  }
-
-  // ⚠️ DUPLICATE TYPES IN THE SPELLING (`[:E|E]`) would visit every `E` edge twice. The alternation
-  // is a SET of types, so dedupe it here rather than relying on nobody writing it.
-  const seen = new Set(types);
-
-  return { types: [...seen], forward: rel.direction === 'out' };
-};
-
 /** Everything the second hop of a union walk reads, built once per execution. */
 type FarUnionHop = {
   readonly hop: UnionHop;
@@ -587,20 +531,6 @@ const walkUnion = (
 
     return out;
   };
-};
-
-/**
- * Has an EARLIER type in this hop's alternation already claimed this edge? Only ever asked when the
- * graph holds a multi-label edge; `at === 0` answers false without touching the edge.
- */
-const claimedByEarlierType = (edge: Edge, types: readonly string[], at: number): boolean => {
-  for (let i = 0; i < at; i += 1) {
-    if (edge.hasLabel(types[i])) {
-      return true;
-    }
-  }
-
-  return false;
 };
 
 /**

@@ -195,6 +195,34 @@ absence** — `{k: null}` is the one place in a pattern where that distinction i
 
 ## 5. Open — unblocked and priced
 
+- ~~**A TYPE ALTERNATION declined the THREE-segment-and-up chain rungs**~~ - **CLOSED by item 1847**
+  (2026-11-14), at **9.16x** (the blocked sweep) and **7.46x** (the depth-first descent), and
+  **20.77x** with a `RETURN DISTINCT` on top (item 1843's fusion). Item 1846's twin, one file over:
+  `chain-projection.ts` carries its own `hopOf` with the same single-type model, so `-[:E|F]->` cost
+  **961-969 ns a row against the single-type chain's 85-88**.
+  **BOTH chain walks needed a twin**, and which one runs is decided by the projection: `farEndOnly`
+  routes a far-end-only projection to the level-synchronous `sweepBlockUnion` and anything reading
+  an interior variable to `descendUnion`. They are different code with the same hazard, so every
+  answer test asks both shapes.
+  **The alternation helpers now live in `hop-sides.ts`**, shared by both rungs rather than copied:
+  item 1832's lesson is that a duplicated implementation needs duplicated tests AND duplicated
+  mutants, and the de-duplication rule is exactly the kind of near-twin that drifts.
+  WARNING - **THE CONTROLS TOOK THREE RUNS TO READ, and the first two were noise.** Run 1 reported
+  `CONTROL single 3seg far` at **0.83x** - a 1.2x regression on the most central chain shape there
+  is, which would have been reason enough to revert. Run 2 put that cell at 1.00x and moved a
+  DIFFERENT control instead (`single 2seg`, 0.63x). A control whose identity changes between runs is
+  noise, and both cells were 1-2 ms - below the floor where a ratio means anything. Flooring them
+  with a 4x fixture (controls 3.4-12.5 ms) settled it: **0.99x, 1.03x, 1.12x, and item 1846's
+  two-segment union held at 1.06x.** CLAUDE.md's "floor the cell" earning itself; averaging the
+  first two runs would have reported a regression that does not exist.
+  10 mutants, **8 caught** - including the sweep's frontier counter (`nxtLen += 0`, 2 failing) and a
+  null-result control per rung. The 2 survivors are both answer-equivalent and are recorded as such
+  rather than as holes: `dedupe = true` unconditionally (a perf choice), and forcing the chain to
+  always take the DESCENT instead of the sweep (a route choice - both walks are correct). That is
+  `perf-gate-needs-its-own-test`'s class.
+  `chain-projection.test.ts`'s "a TYPE UNION declines" row was flipped deliberately and says so in
+  place, with the number.
+
 - ~~**A TYPE ALTERNATION declined the two-segment projection rung**~~ — **CLOSED by item 1846**
   (2026-11-14), at **9.59x**. `hopOf` models a hop as one `type: string`, so `-[:E|F]->` refused
   `detectHop2Projection` and a chain of alternations fell to the general matcher: **644 ns a row
@@ -224,10 +252,8 @@ absence** — `{k: null}` is the one place in a pattern where that distinction i
   `perf-gate-needs-its-own-test` says has no answer signature. `hop2-projection.test.ts`'s
   "declines a multi-type rel" row was FLIPPED deliberately and says so in place, per the route
   file's own rule.
-  **Still open, and now priced on the same instrument: the THREE-segment rung.**
-  `chain-projection.ts` has its own `hopOf` with the same single-type model, so `CONTROL union 3seg`
-  measured flat at **616-653 ns a row** against the single-type 3-segment row's 92-94. Same lever,
-  one file over.
+  ~~**Still open: the THREE-segment rung**~~ - **CLOSED by item 1847 the next tick**, at 9.16x
+  (sweep) and 7.46x (descent). It was priced here at 616-653 ns a row; see 1847's entry.
 
 - ~~**A comma pattern that CONTINUES the previous one went to the product path**~~ — **CLOSED by
   item 1844** (2026-11-14), at **9.83x** and converging on the spelling it is equivalent to.

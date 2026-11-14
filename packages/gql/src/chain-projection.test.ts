@@ -192,9 +192,19 @@ describe('the rung fires for its own shape and not for its neighbours', () => {
     expect(takesRung('MATCH (a:L)-[:R]->(b {k: 1})-[:R]->(c)-[:R]->(d) RETURN d.k AS k')).toBe(
       false,
     );
-    // `hopOf` requires a single `label` node on the rel, so a TYPE UNION declines — one edge type
-    // per leg is what the adjacency bucket read assumes.
-    expect(takesRung('MATCH (a:L)-[:R|S]->(b)-[:R]->(c)-[:R]->(d) RETURN d.k AS k')).toBe(false);
+    /**
+     * ⚠️ THIS EXPECTATION FLIPPED AT ITEM 1847, and the rule is to say why in place rather than
+     * quietly edit it. A TYPE UNION used to decline — "one edge type per leg is what the adjacency
+     * bucket read assumes" — and that cost **616-653 ns a row against the single-type chain's
+     * 92-94**. `walkUnion`/`sweepUnion` read the buckets of each named type instead, with
+     * `claimedByEarlierType` keeping an edge that carries two of them from being yielded twice.
+     */
+    expect(takesRung('MATCH (a:L)-[:R|S]->(b)-[:R]->(c)-[:R]->(d) RETURN d.k AS k')).toBe(true);
+    // Still declined, because these are not alternations over buckets: a complement, a
+    // conjunction, and an UNTYPED leg (which is every bucket, a different question).
+    expect(takesRung('MATCH (a:L)-[:!R]->(b)-[:R]->(c)-[:R]->(d) RETURN d.k AS k')).toBe(false);
+    expect(takesRung('MATCH (a:L)-[:R&S]->(b)-[:R]->(c)-[:R]->(d) RETURN d.k AS k')).toBe(false);
+    expect(takesRung('MATCH (a:L)-[]->(b)-[:R]->(c)-[:R]->(d) RETURN d.k AS k')).toBe(false);
   });
 
   /**

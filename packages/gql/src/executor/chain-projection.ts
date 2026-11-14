@@ -1,4 +1,4 @@
-import type { Graph, Vertex } from '@lenke/core';
+import type { Edge, Graph, Vertex } from '@lenke/core';
 
 import type { Clause, Expr, LabelExpr, NodePattern, RelPattern } from '../ast.js';
 import { matchesLabel } from '../graph-queries.js';
@@ -7,7 +7,8 @@ import { addOneColumnKey, distinctRows, newOneColumnKeys } from './clauses.js';
 import type { CClause, CompiledExpr, CProjection, EvalEnv, Params, Row } from './core.js';
 import { freePredicateVars } from './expr-analysis.js';
 import type { AlwaysRowsFn, RowsFn } from './hop-projection.js';
-import { plainNode, plainRel } from './hop-sides.js';
+import type { UnionHop } from './hop-sides.js';
+import { claimedByEarlierType, plainNode, plainRel, unionHopOf } from './hop-sides.js';
 import { effectiveLabel } from './labels.js';
 import { outputColumnSorts, sortedRows } from './ordered-rows.js';
 import { plainRowProjectionIgnoringDistinct, projectRow, valueKey } from './rows.js';
@@ -97,16 +98,38 @@ export const detectChainProjection = (
     return null;
   }
 
+  /**
+   * ⚠️ THE UNION FORM IS TRIED ONLY WHEN THE SINGLE-TYPE FORM DECLINES (item 1847), so a `[:E]`
+   * chain reaches the untouched `descend`/`sweepBlock` exactly as before and no single-type route
+   * changes. All segments must agree on a form: a chain mixing `[:E]` and `[:E|F]` takes the union
+   * walk for BOTH, since `unionHopOf` accepts a single label as a one-member alternation.
+   */
   const hops: Hop[] = [];
+  let anySingleDeclined = false;
 
   for (const seg of pattern.segments) {
     const h = hopOf(seg.rel);
 
     if (h === null) {
-      return null;
+      anySingleDeclined = true;
+      break;
     }
 
     hops.push(h);
+  }
+
+  const unionHops: UnionHop[] = [];
+
+  if (anySingleDeclined) {
+    for (const seg of pattern.segments) {
+      const u = unionHopOf(seg.rel);
+
+      if (u === null) {
+        return null;
+      }
+
+      unionHops.push(u);
+    }
   }
 
   // Every node variable in the chain; every projected item and every carried `WHERE` conjunct must
@@ -170,9 +193,11 @@ export const detectChainProjection = (
       ? { name: projection.items[0].name, fn: projection.items[0].fn }
       : undefined;
 
-  const rows = farEndOnly(ret.projection.items, where, nodes[nodes.length - 1].variable)
-    ? sweep(nodes, hops, projection, gate, distinct)
-    : walk(nodes, hops, projection, gate, distinct);
+  const farOnly = farEndOnly(ret.projection.items, where, nodes[nodes.length - 1].variable);
+  const rows =
+    unionHops.length > 0
+      ? (farOnly ? sweepUnion : walkUnion)(nodes, unionHops, projection, gate, distinct)
+      : (farOnly ? sweep : walk)(nodes, hops, projection, gate, distinct);
 
   /**
    * ⚠️ `RETURN DISTINCT` IS ADMITTED AND DEDUPED HERE — item 1820, and the cost of NOT doing this
@@ -518,6 +543,181 @@ const sweepBlock = (s: Sweep, len: number): void => {
  * reads on the same guarantees. It returns here as the gate rather than the shape rule: 1813's
  * insight was about which walks can skip the path, not about which queries the rung should admit.
  */
+/**
+ * THE TYPE-UNION TWINS OF `descend`/`sweepBlock` — item 1847, the three-segment-and-up half of
+ * item 1846.
+ *
+ * `hopOf` models a hop as ONE `type: string`, so `-[:E|F]->` declined this rung and a chain of
+ * alternations fell to the general matcher: measured **616-653 ns a row against the single-type
+ * chain's 92-94** on the same fixture, for the same walk and the same kind of answer.
+ *
+ * ⚠️ SEPARATE FUNCTIONS, NOT A TYPES LOOP INSIDE THE EXISTING ONES, and this is the one design
+ * decision worth defending. Folding the alternation in would add a loop level that EVERY
+ * single-type chain pays, and `executor-edits-perturb` records a new walk variant costing unrelated
+ * rows up to 16% five separate times (items 1413/1415/1440/1442/1462) — item 1466 declined a 3.3x
+ * rather than pay it. Item 1846 took the same route on the two-segment rung and measured its
+ * single-type controls at 1.04x and 0.98x, i.e. flat. So `descend` and `sweepBlock` are
+ * byte-identical to what they were and these are reached only when a hop names more than one type.
+ *
+ * ⚠️ THE DOUBLE-COUNT GUARD IS `claimedByEarlierType`, SHARED WITH THE TWO-SEGMENT RUNG, and the
+ * `multiLabel` flag is read ONCE per execution from `graph.multiTypeEdgeCount`. See that function's
+ * own header for why the decision cannot be made at compile time.
+ */
+type DescentUnion = Omit<Descent, 'hops'> & {
+  readonly hops: readonly UnionHop[];
+  readonly multiLabel: boolean;
+};
+
+const descendUnion = (level: number, v: Vertex, d: DescentUnion): void => {
+  const hop = d.hops[level];
+  const box = hop.forward ? v.adjFrom : v.adjTo;
+
+  if (box === undefined) {
+    return;
+  }
+
+  const landed = level + 1;
+  const label = d.labels[landed];
+  const variable = d.vars[landed];
+  const emitting = landed === d.last;
+
+  for (let t = 0; t < hop.types.length; t += 1) {
+    const bucket = box.get(hop.types[t]);
+
+    if (bucket === undefined) {
+      continue;
+    }
+
+    for (const e of bucket) {
+      if (d.multiLabel && claimedByEarlierType(e, hop.types, t)) {
+        continue;
+      }
+
+      const w: Vertex = hop.forward ? e.to : e.from;
+
+      if (!matchesLabel(w, label)) {
+        continue;
+      }
+
+      if (variable !== undefined) {
+        d.binding.set(variable, w);
+      }
+
+      if (!emitting) {
+        descendUnion(landed, w, d);
+        continue;
+      }
+
+      /** `asTruth(...) !== true` for `descend`'s reason: UNKNOWN drops like FALSE. */
+      if (
+        d.gate !== undefined &&
+        asTruth(d.gate({ binding: d.binding, params: d.params, graph: d.graph })) !== true
+      ) {
+        continue;
+      }
+
+      emitRow(d);
+    }
+  }
+};
+
+type SweepUnion = Omit<Sweep, 'hops'> & {
+  hops: readonly UnionHop[];
+  multiLabel: boolean;
+  nxtLen: number;
+};
+
+/**
+ * One bucket of one union hop, for one frontier vertex.
+ *
+ * ⚠️ EXTRACTED BECAUSE OF THE DEPTH GATE, not for reuse: `sweepBlock`'s loop already nests four
+ * deep, and a types loop plus the `!emitting` branch reaches six against a limit of five. It keeps
+ * `nxtLen` on the state so the caller's swap still works.
+ */
+const sweepUnionBucket = (
+  s: SweepUnion,
+  bucket: Iterable<Edge>,
+  hop: UnionHop,
+  at: number,
+  label: LabelExpr | undefined,
+  emitting: boolean,
+): void => {
+  for (const e of bucket) {
+    if (s.multiLabel && claimedByEarlierType(e, hop.types, at)) {
+      continue;
+    }
+
+    const w: Vertex = hop.forward ? e.to : e.from;
+
+    if (!matchesLabel(w, label)) {
+      continue;
+    }
+
+    if (!emitting) {
+      if (s.nxtLen === s.nxt.length) {
+        s.nxt.push(w);
+      } else {
+        s.nxt[s.nxtLen] = w;
+      }
+
+      s.nxtLen += 1;
+      continue;
+    }
+
+    if (s.farVar !== undefined) {
+      s.binding.set(s.farVar, w);
+    }
+
+    if (
+      s.gate !== undefined &&
+      asTruth(s.gate({ binding: s.binding, params: s.params, graph: s.graph })) !== true
+    ) {
+      continue;
+    }
+
+    emitRow(s);
+  }
+};
+
+const sweepBlockUnion = (s: SweepUnion, len: number): void => {
+  let curLen = len;
+
+  for (let level = 0; level < s.last; level += 1) {
+    const hop = s.hops[level];
+    const landed = level + 1;
+    const label = s.labels[landed];
+    const emitting = landed === s.last;
+
+    s.nxtLen = 0;
+
+    for (let i = 0; i < curLen; i += 1) {
+      const box = hop.forward ? s.cur[i].adjFrom : s.cur[i].adjTo;
+
+      if (box === undefined) {
+        continue;
+      }
+
+      for (let t = 0; t < hop.types.length; t += 1) {
+        const bucket = box.get(hop.types[t]);
+
+        if (bucket !== undefined) {
+          sweepUnionBucket(s, bucket, hop, t, label, emitting);
+        }
+      }
+    }
+
+    if (emitting) {
+      return;
+    }
+
+    const swap = s.cur;
+
+    s.cur = s.nxt;
+    s.nxt = swap;
+    curLen = s.nxtLen;
+  }
+};
+
 const sweep = (
   nodes: readonly NodePattern[],
   hops: readonly Hop[],
@@ -571,6 +771,117 @@ const sweep = (
 
     if (len > 0) {
       sweepBlock(s, len);
+    }
+
+    return out;
+  };
+};
+
+/** `sweep`'s union twin — the blocked level-synchronous walk over alternation hops. */
+const sweepUnion = (
+  nodes: readonly NodePattern[],
+  hops: readonly UnionHop[],
+  projection: CProjection,
+  gate: CompiledExpr | undefined,
+  distinct: DistinctSpec | undefined,
+): AlwaysRowsFn => {
+  const rawLabels = nodes.map((n) => n.label);
+  const last = nodes.length - 1;
+  const farVar = nodes[last].variable;
+
+  return (graph: Graph, params: Params): Row[] => {
+    const labels = rawLabels.map((l) => effectiveLabel(graph, l));
+    const out: Row[] = [];
+    const s: SweepUnion = {
+      graph,
+      params,
+      hops,
+      labels,
+      last,
+      farVar,
+      binding: new Map<string, unknown>(),
+      projection,
+      gate,
+      out,
+      dedup: distinct && { ...distinct, keys: newOneColumnKeys() },
+      cur: [],
+      nxt: [],
+      // Read ONCE per execution; a write cannot reach this walk mid-execution.
+      multiLabel: graph.multiTypeEdgeCount > 0,
+      nxtLen: 0,
+    };
+    const [startLabel] = labels;
+    let len = 0;
+
+    for (const a of graph.vertices) {
+      if (!matchesLabel(a, startLabel)) {
+        continue;
+      }
+
+      if (len === s.cur.length) {
+        s.cur.push(a);
+      } else {
+        s.cur[len] = a;
+      }
+
+      len += 1;
+
+      if (len === SWEEP_BLOCK) {
+        sweepBlockUnion(s, len);
+        len = 0;
+      }
+    }
+
+    if (len > 0) {
+      sweepBlockUnion(s, len);
+    }
+
+    return out;
+  };
+};
+
+/** `walk`'s union twin — the depth-first descent over alternation hops. */
+const walkUnion = (
+  nodes: readonly NodePattern[],
+  hops: readonly UnionHop[],
+  projection: CProjection,
+  gate: CompiledExpr | undefined,
+  distinct: DistinctSpec | undefined,
+): AlwaysRowsFn => {
+  const vars = nodes.map((n) => n.variable);
+  const rawLabels = nodes.map((n) => n.label);
+  const last = nodes.length - 1;
+  const [startVar] = vars;
+
+  return (graph: Graph, params: Params): Row[] => {
+    const labels = rawLabels.map((l) => effectiveLabel(graph, l));
+    const out: Row[] = [];
+    const d: DescentUnion = {
+      graph,
+      params,
+      hops,
+      labels,
+      vars,
+      last,
+      binding: new Map<string, unknown>(),
+      projection,
+      gate,
+      out,
+      dedup: distinct && { ...distinct, keys: newOneColumnKeys() },
+      multiLabel: graph.multiTypeEdgeCount > 0,
+    };
+    const [startLabel] = labels;
+
+    for (const a of graph.vertices) {
+      if (!matchesLabel(a, startLabel)) {
+        continue;
+      }
+
+      if (startVar !== undefined) {
+        d.binding.set(startVar, a);
+      }
+
+      descendUnion(0, a, d);
     }
 
     return out;

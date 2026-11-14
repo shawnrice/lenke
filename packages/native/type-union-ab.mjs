@@ -19,10 +19,18 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { copyFileSync, writeFileSync } from 'node:fs';
 
 const ROOT = '/home/shawn/projects/pl-graph';
-const SRC = `${ROOT}/packages/gql/src/executor/hop2-projection.ts`;
-const POST = `${ROOT}/crates/lenke-engine/target/pristine-1846-post.ts`;
-const PRE = `${ROOT}/crates/lenke-engine/target/pristine-1846-pre.ts`;
-const MARKER = 'walkUnion';
+// ⚠️ THREE FILES, because the lever landed across them: `hop-sides` holds the shared alternation
+// helpers (item 1847 moved them there so there is ONE definition), `hop2-projection` the
+// two-segment rung and `chain-projection` the three-and-up rungs. A PRE arm reverting only one
+// would measure a half-reverted engine.
+const TARGETS = ['hop-sides', 'hop2-projection', 'chain-projection'];
+const srcOf = (n) => `${ROOT}/packages/gql/src/executor/${n}.ts`;
+const postOf = (n) => `${ROOT}/crates/lenke-engine/target/pristine-1847-post-${n}.ts`;
+const preOf = (n) => `${ROOT}/crates/lenke-engine/target/pristine-1847-pre-${n}.ts`;
+// ⚠️ THE MARKER MUST BE UNIQUE TO *THIS* ITEM. `claimedByEarlierType` was the first choice and the
+// arm assertion rejected it immediately: HEAD already carries it from item 1846's two-segment
+// rung, so it cannot separate the arms. `sweepBlockUnion` exists only in the chain half.
+const MARKER = 'sweepBlockUnion';
 
 const ROUNDS = Number(process.env.ROUNDS ?? 3);
 const REPS = Number(process.env.REPS ?? 9);
@@ -30,12 +38,17 @@ const NODES = Number(process.env.NODES ?? 3000);
 const FANOUT = Number(process.env.FANOUT ?? 4);
 
 const SHAPES = {
-  'union 2seg': 'MATCH (a:T)-[:E|F]->(b:T)-[:E|F]->(c:T) RETURN c.n AS x',
-  'union 2seg DISTINCT': 'MATCH (a:T)-[:E|F]->(b:T)-[:E|F]->(c:T) RETURN DISTINCT c.n AS x',
+  // Already shipped at item 1846, so it is a CONTROL here: this item must not change it.
+  'CONTROL union 2seg': 'MATCH (a:T)-[:E|F]->(b:T)-[:E|F]->(c:T) RETURN c.n AS x',
+  'union 3seg far (sweep)': 'MATCH (a:T)-[:E|F]->(b:T)-[:E|F]->(c:T)-[:E|F]->(d:T) RETURN d.n AS x',
+  'union 3seg interior (walk)':
+    'MATCH (a:T)-[:E|F]->(b:T)-[:E|F]->(c:T)-[:E|F]->(d:T) RETURN b.n AS p, d.n AS q',
+  'union 3seg DISTINCT':
+    'MATCH (a:T)-[:E|F]->(b:T)-[:E|F]->(c:T)-[:E|F]->(d:T) RETURN DISTINCT d.n AS x',
   'CONTROL single 2seg': 'MATCH (a:T)-[:E]->(b:T)-[:E]->(c:T) RETURN c.n AS x',
-  'CONTROL single 1seg': 'MATCH (a:T)-[:E]->(b:T) RETURN b.n AS x',
-  'CONTROL single 3seg': 'MATCH (a:T)-[:E]->(b:T)-[:E]->(c:T)-[:E]->(d:T) RETURN d.n AS x',
-  'CONTROL union 3seg': 'MATCH (a:T)-[:E|F]->(b:T)-[:E|F]->(c:T)-[:E|F]->(d:T) RETURN d.n AS x',
+  'CONTROL single 3seg far': 'MATCH (a:T)-[:E]->(b:T)-[:E]->(c:T)-[:E]->(d:T) RETURN d.n AS x',
+  'CONTROL single 3seg int':
+    'MATCH (a:T)-[:E]->(b:T)-[:E]->(c:T)-[:E]->(d:T) RETURN b.n AS p, d.n AS q',
 };
 
 const build = () => execFileSync('bun', ['run', 'build'], { cwd: ROOT, stdio: 'ignore' });
@@ -86,7 +99,10 @@ process.stdout.write(JSON.stringify({ ms: kept[Math.floor(kept.length / 2)], row
 };
 
 const arm = (which) => {
-  copyFileSync(which === 'PRE' ? PRE : POST, SRC);
+  for (const n of TARGETS) {
+    copyFileSync(which === 'PRE' ? preOf(n) : postOf(n), srcOf(n));
+  }
+
   build();
 
   const n = markerLines();
@@ -104,15 +120,17 @@ const arm = (which) => {
   return out;
 };
 
-copyFileSync(SRC, POST);
-writeFileSync(
-  PRE,
-  execFileSync('git', ['show', 'HEAD:packages/gql/src/executor/hop2-projection.ts'], {
-    cwd: ROOT,
-    encoding: 'utf8',
-    maxBuffer: 32 * 1024 * 1024,
-  }),
-);
+for (const n of TARGETS) {
+  copyFileSync(srcOf(n), postOf(n));
+  writeFileSync(
+    preOf(n),
+    execFileSync('git', ['show', `HEAD:packages/gql/src/executor/${n}.ts`], {
+      cwd: ROOT,
+      encoding: 'utf8',
+      maxBuffer: 32 * 1024 * 1024,
+    }),
+  );
+}
 
 const rounds = [];
 
@@ -129,7 +147,10 @@ try {
     console.log(`# round ${r} done (${order.join(' then ')})`);
   }
 } finally {
-  copyFileSync(POST, SRC);
+  for (const n of TARGETS) {
+    copyFileSync(postOf(n), srcOf(n));
+  }
+
   build();
 }
 
