@@ -86655,3 +86655,70 @@ because the natural assumption — "both engines must have a per-query compile c
 NO ENGINE CODE CHANGED, and no target found. Recorded so the next pass does not re-ask it.
 
 GATES. bun run check 0 read unpiped.
+
+## Item 1859 — the fused chain walk is at its LAYOUT ceiling, and the route vein is confirmed thin
+
+⚠️ **THE FIRST PROFILE _INSIDE_ A RUNG RATHER THAN A SCREEN FOR A MISSING ONE.** Items 1846-1858 all
+asked "which shape reaches no rung", answered by a route screen because a missing rung has no hot
+frame. Both surfaces are now mined to ~1.3-2.6x on that axis, so this asked the other question:
+given that the rung fires, where does its time go? `chain-walk-prof-1859.mjs` profiles the workload
+screen's largest real family (`chain-rows`, 569 ms, 138 ns/row over 4.1M rows).
+
+❌ **NOTHING TO TAKE, AND THE SHAPE OF THE PROFILE IS WHY.** At NODES=20000 FANOUT=4 REPS=40,
+109.8 ns/row over 12.8M rows:
+
+      1278.7 ms  80.1%  (anon) @index.mjs:21067     — the walk loop itself, fully inlined
+        97.7     6.1%  projectRow
+        43.8     2.7%  indexEdgeLabel              ) fixture
+        17.9     1.1%  getVertexById               ) build,
+        17.0     1.1%  addVertex                   ) not query
+
+**One frame at 80.1% is a loop with nothing separable in it** — the adjacency iteration and label
+checks are the work, and they are the data layout, not an addressable call. `projectRow` at **6.1%**
+is the only decomposable component, and 6% is BELOW this repo's own ~10% noise floor, which means
+taking it would need its own isolated harness to even see. Recorded as a ceiling rather than as a
+target so the next pass does not re-profile the same walk.
+
+✅ **CUMULATIVE, ON THE TWO BROAD INSTRUMENTS.** The GQL workload screen at NODES=1500 FANOUT=4
+QUERIES=60 is flat against the reading at item 1852 (`chain-rows` 569.4 vs 565.6, `distinct` 84.6 vs
+84.2, `optional` 133.5 vs 136.8, `var-length` 526.8 vs 525.4) — as it must be, since items 1853-1858
+were all Gremlin-side. That flatness is the point: it says those six items cost the GQL surface
+nothing.
+
+🔭 **TWO NOMINATIONS FOR THE NEXT PASS, both found by these two instruments rather than by a profile.**
+
+1. **`multi-pattern` is 18.7 s of a 20.7 s screen — 97% of it — at 1376 ns/row against
+   `chain-rows`' 138.** The row COUNT is the genuine product and is not reducible, but a **10x
+   per-row gap on the same kind of row production** is a separate question from the product, and it
+   has not been asked.
+
+2. **An UNDEDUPED multi-hop count costs more than the DEDUPED one, which is the harder question.**
+   On the Gremlin bench at 200,000 vertices / 1,000,000 edges:
+
+        V().out().dedupe().count()            7.7 ms   (fused, item 1855)
+        V().out().out().count()              51.6 ms   18.0x native
+        V().repeat(out).times(2).count()     51.8 ms   the same question (item 574)
+
+   It is NOT a missing rung — `hopChainCount` answers the shape. Every one of those bench rows
+   carries `hasLabel('Person')`, so `unfiltered` is false, the O(V) degree inner product (item 590)
+   is skipped, and the arm that runs reads `degreeOfTypes` — a `Map.get` plus `.size` — **once per
+   edge**: ~1M edge visits at ~51 ns each.
+
+   ⚠️ **THE LEVER IS ALREADY BUILT AND ALREADY REFUTED FOR A DIFFERENT CASE — read which.**
+   `denseChainCount` converts exactly that per-edge `Map.get` into a `Float64Array` increment plus
+   one dense pass, and it is wired for THREE hops and up behind a wideness cut. The two-hop arm never
+   tries it. `hopChainCount`'s own note records the map version losing (33.56/33.00/31.70 ms against
+   26.83/24.26/25.89) — but that was the **`Map<Vertex, number>` version at 120,000 edges**, not the
+   dense version at 1M, so it does not price this.
+
+   ⚠️ **AND DO NOT "GENERALIZE" IT BY CHECKING WHETHER THE LABEL COVERS EVERY VERTEX.** Making
+   `unfiltered` true when `verticesByLabel.get(L).size === vertexCount` would light the inner product
+   on these rows and measure enormous — because in this fixture every vertex IS a `Person`, so the
+   filter is vacuous. That wins on the BENCH and on nothing else, and it would add another elision
+   reading `verticesByLabel`, which is the index the public `v.labels =` setter does not maintain
+   (an open owner decision, not a free move).
+
+NO ENGINE CODE CHANGED. One new instrument; the findings above are the deliverable.
+
+GATES. Not applicable — no source change. The screen and the Gremlin bench both ran under the cgroup
+cap and are quoted above.
