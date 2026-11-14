@@ -195,6 +195,40 @@ absence** — `{k: null}` is the one place in a pattern where that distinction i
 
 ## 5. Open — unblocked and priced
 
+- ~~**A TYPE ALTERNATION declined the two-segment projection rung**~~ — **CLOSED by item 1846**
+  (2026-11-14), at **9.59x**. `hopOf` models a hop as one `type: string`, so `-[:E|F]->` refused
+  `detectHop2Projection` and a chain of alternations fell to the general matcher: **644 ns a row
+  against the single-type spelling's 93**, same walk, same kind of answer. `walkUnion` takes it, and
+  it COMPOUNDS with item 1843's fused `DISTINCT` — **18.80x** for `RETURN DISTINCT` over a union.
+  **The single-type controls are FLAT** (2 segments 1.04x, 3 segments 0.98x), which was the point of
+  the design: `walkUnion` is a SEPARATE function and `walk` is byte-identical to what it was, so the
+  common path cannot regress. `executor-edits-perturb` records a new walk variant costing unrelated
+  rows up to 16% five times over, and item 1466 declined a 3.3x rather than pay it — folding the
+  alternation into `walk` would have put a second loop level inside the hop loop that every
+  single-type chain pays.
+  ⚠️ The `CONTROL single 1seg` cell reads 1.68x "faster" and is **NOT a finding**: its absolute is
+  0.3-0.4 ms, below the floor where a ratio means anything (CLAUDE.md's "floor the cell").
+  **THE DOUBLE-COUNT IS THE WHOLE RISK, and the guard is a RUN-TIME one.** Iterating the `E` bucket
+  then the `F` bucket visits an edge carrying BOTH labels twice, where `[:E|F]` must yield it once.
+  A compile-time detector cannot read `graph.multiTypeEdgeCount`, so the walk reads it per execution
+  and takes a deduping arm ("the first of this hop's types the edge carries wins") only when the
+  graph actually holds a multi-label edge. Gremlin's `hopChainShape` meets the same hazard and simply
+  DECLINES; this keeps the rung and pays for correctness only where it is owed. Item 573 and item
+  1845 both record the same rule: a per-label bucket sum is a degree only when the wanted set is one
+  bucket. `[:E|E]` is deduped in the SPELLING too.
+  **Refused, because they are not alternations over buckets:** `and` (`[:E&F]` names edges carrying
+  both), `not` (`[:!E]`) and `wildcard`, plus an UNTYPED `-[]->`, which is every bucket and a
+  different question.
+  5 mutants, **4 caught**. The 5th (`dedupe = true` unconditionally) SURVIVES and should: it is
+  answer-equivalent and purely a perf choice, which is exactly the class
+  `perf-gate-needs-its-own-test` says has no answer signature. `hop2-projection.test.ts`'s
+  "declines a multi-type rel" row was FLIPPED deliberately and says so in place, per the route
+  file's own rule.
+  **Still open, and now priced on the same instrument: the THREE-segment rung.**
+  `chain-projection.ts` has its own `hopOf` with the same single-type model, so `CONTROL union 3seg`
+  measured flat at **616-653 ns a row** against the single-type 3-segment row's 92-94. Same lever,
+  one file over.
+
 - ~~**A comma pattern that CONTINUES the previous one went to the product path**~~ — **CLOSED by
   item 1844** (2026-11-14), at **9.83x** and converging on the spelling it is equivalent to.
   `MATCH (a)-[:E]->(b), (b)-[:E]->(c)` is the same walk as `(a)-[:E]->(b)-[:E]->(c)` — a comma, not

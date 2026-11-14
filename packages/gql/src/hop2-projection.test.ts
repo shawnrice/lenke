@@ -300,10 +300,24 @@ describe('the rung declines what it must — and the answer stays right', () => 
     declines('MATCH (a:L)-[:R]->(b)-[:R]-(c) RETURN c.k AS k');
   });
 
-  test('a quantifier, an untyped rel, and a multi-type rel', () => {
+  test('a quantifier and an untyped rel', () => {
     declines('MATCH (a:L)-[:R]->{1,2}(b)-[:R]->(c) RETURN c.k AS k');
+    // An UNTYPED rel is every bucket, which is a different question from an alternation over a
+    // named few — it stays declined. See `unionHopOf`.
     declines('MATCH (a:L)-[]->(b)-[:R]->(c) RETURN c.k AS k');
-    declines('MATCH (a:L)-[:R|S]->(b)-[:R]->(c) RETURN c.k AS k');
+  });
+
+  /**
+   * ⚠️ THIS ROW DELIBERATELY FLIPPED AT ITEM 1846, and the route file's rule is to say why rather
+   * than quietly edit the expectation: a TYPE ALTERNATION used to decline this rung, and `[:R|S]`
+   * then cost **684 ns a row against the single-type spelling's 102**. `walkUnion` takes it now.
+   * `and`, `not` and `wildcard` label expressions still decline — they are not alternations over
+   * buckets.
+   */
+  test('a type ALTERNATION is now ADMITTED, and its non-alternation siblings are not', () => {
+    expect(routes('MATCH (a:L)-[:R|S]->(b)-[:R]->(c) RETURN c.k AS k')).toContain('hop2Projection');
+    declines('MATCH (a:L)-[:!R]->(b)-[:R]->(c) RETURN c.k AS k');
+    declines('MATCH (a:L)-[:R&S]->(b)-[:R]->(c) RETURN c.k AS k');
   });
 
   test('a NAMED relationship, even an unread one', () => {

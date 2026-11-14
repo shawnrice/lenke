@@ -1,6 +1,6 @@
-import type { Graph, Vertex } from '@lenke/core';
+import type { Edge, Graph, Vertex } from '@lenke/core';
 
-import type { Clause, NodePattern, RelPattern } from '../ast.js';
+import type { Clause, LabelExpr, NodePattern, RelPattern } from '../ast.js';
 import { matchesLabel } from '../graph-queries.js';
 import type { OneColumnKeys } from './clauses.js';
 import { addOneColumnKey, distinctRows, newOneColumnKeys } from './clauses.js';
@@ -136,11 +136,14 @@ export const detectHop2Projection = (
     return null;
   }
 
-  const hops = [hopOf(s0.rel), hopOf(s1.rel)];
+  const segHops = hopsOfSegments(s0.rel, s1.rel);
 
-  if (hops[0] === null || hops[1] === null) {
+  if (segHops === null) {
     return null;
   }
+
+  const { hops, union: unionPair } = segHops;
+  const [u0, u1] = unionPair;
 
   /**
    * THE THREE NODE VARIABLES, and every projected item must read only these.
@@ -283,7 +286,10 @@ export const detectHop2Projection = (
       ? { name: projection.items[0].name, fn: projection.items[0].fn }
       : undefined;
 
-  const rows = walk(nodes, hops as readonly Hop[], projection, gate, distinct);
+  const rows =
+    u0 !== null && u1 !== null
+      ? walkUnion(nodes, [u0, u1], projection, gate, distinct)
+      : walk(nodes, hops as readonly Hop[], projection, gate, distinct);
 
   /**
    * ⚠️ `RETURN DISTINCT` IS ADMITTED AND DEDUPED HERE — item 1822, closing the hole item 1821 left
@@ -325,6 +331,30 @@ type DistinctSpec = { readonly name: string; readonly fn: (env: EvalEnv) => unkn
  * turning out to be load-bearing for a reason its comment got wrong). This module has no need of
  * the relaxation, so it does not take on the risk.
  */
+/**
+ * Both segments' hops, as the single-type pair the untouched `walk` wants or the alternation pair
+ * `walkUnion` wants — `null` when neither form fits.
+ *
+ * ⚠️ THE UNION FORM IS TRIED ONLY WHEN THE SINGLE-TYPE FORM DECLINES, so a `[:E]` chain reaches
+ * `walk` exactly as before and nothing about its route changes (item 1846). Extracted from
+ * `detectHop2Projection` only to keep that function under the complexity gate, which these extra
+ * branches took to 39 against a limit of 35.
+ */
+const hopsOfSegments = (
+  r0: RelPattern,
+  r1: RelPattern,
+): { hops: readonly (Hop | null)[]; union: readonly (UnionHop | null)[] } | null => {
+  const hops = [hopOf(r0), hopOf(r1)];
+
+  if (hops[0] !== null && hops[1] !== null) {
+    return { hops, union: [null, null] };
+  }
+
+  const union = [unionHopOf(r0), unionHopOf(r1)];
+
+  return union[0] === null || union[1] === null ? null : { hops, union };
+};
+
 const hopOf = (rel: RelPattern): Hop | null => {
   if (!plainRel(rel) || rel.variable !== undefined) {
     return null;
@@ -337,6 +367,240 @@ const hopOf = (rel: RelPattern): Hop | null => {
   return rel.label?.kind === 'label'
     ? { type: rel.label.name, forward: rel.direction === 'out' }
     : null;
+};
+
+/**
+ * Flatten an ISO label expression over edge types into the plain alternation it names, or
+ * `undefined` for anything else — item 1846.
+ *
+ * `-[:E|F]->` parses to `{ kind: 'or', left: {label E}, right: {label F} }`, which `hopOf` above
+ * refuses because it models a hop as ONE `type: string`. So the whole rung declined and a chain of
+ * alternations fell to the general matcher: measured **684 ns a row against the single-type
+ * spelling's 102** at two segments, and 657 against 127 at three. Same walk, same kind of answer,
+ * 5.2-6.7x a row.
+ *
+ * Only a tree of bare `label` nodes joined by `or` flattens. `and`, `not` and `wildcard` are NOT
+ * alternations over buckets — `!IGNORED` and `%` name a complement, which is every bucket but one,
+ * and `A&B` names edges carrying both — so they keep the decline.
+ */
+const typeUnionOf = (expr: LabelExpr, into: string[]): boolean => {
+  if (expr.kind === 'label') {
+    into.push(expr.name);
+
+    return true;
+  }
+
+  if (expr.kind === 'or') {
+    return typeUnionOf(expr.left, into) && typeUnionOf(expr.right, into);
+  }
+
+  return false;
+};
+
+/** A hop whose edge types are an alternation. `types` always has at least one member. */
+type UnionHop = { readonly types: readonly string[]; readonly forward: boolean };
+
+const unionHopOf = (rel: RelPattern): UnionHop | null => {
+  if (!plainRel(rel) || rel.variable !== undefined) {
+    return null;
+  }
+
+  if (rel.direction !== 'out' && rel.direction !== 'in') {
+    return null;
+  }
+
+  if (rel.label === undefined) {
+    return null; // an untyped hop is every bucket, which is a different question
+  }
+
+  const types: string[] = [];
+
+  if (!typeUnionOf(rel.label, types) || types.length === 0) {
+    return null;
+  }
+
+  // ⚠️ DUPLICATE TYPES IN THE SPELLING (`[:E|E]`) would visit every `E` edge twice. The alternation
+  // is a SET of types, so dedupe it here rather than relying on nobody writing it.
+  const seen = new Set(types);
+
+  return { types: [...seen], forward: rel.direction === 'out' };
+};
+
+/** Everything the second hop of a union walk reads, built once per execution. */
+type FarUnionHop = {
+  readonly hop: UnionHop;
+  readonly label: LabelExpr | undefined;
+  readonly variable: string | undefined;
+  readonly binding: Map<string, unknown>;
+  readonly dedupe: boolean;
+  readonly emit: () => void;
+};
+
+/** The second hop of `walkUnion`, over each type in its alternation. */
+const secondUnionHop = (b: Vertex, f: FarUnionHop): void => {
+  const { hop } = f;
+  const box = hop.forward ? b.adjFrom : b.adjTo;
+
+  if (box === undefined) {
+    return;
+  }
+
+  for (let j = 0; j < hop.types.length; j += 1) {
+    const bucket = box.get(hop.types[j]);
+
+    if (bucket === undefined) {
+      continue;
+    }
+
+    for (const e of bucket) {
+      if (f.dedupe && claimedByEarlierType(e, hop.types, j)) {
+        continue;
+      }
+
+      const c: Vertex = hop.forward ? e.to : e.from;
+
+      if (!matchesLabel(c, f.label)) {
+        continue;
+      }
+
+      if (f.variable !== undefined) {
+        f.binding.set(f.variable, c);
+      }
+
+      f.emit();
+    }
+  }
+};
+
+/**
+ * THE TYPE-UNION TWIN OF `walk` — item 1846.
+ *
+ * ⚠️ IT IS A SEPARATE FUNCTION ON PURPOSE, and `executor-edits-perturb` is the reason: a new walk
+ * variant has cost UNRELATED rows up to 16% five separate times (items 1413/1415/1440/1442/1462),
+ * and item 1466 declined a 3.3x rather than pay it. Folding the alternation into `walk` would put a
+ * second loop level inside the hop loop that EVERY single-type chain pays. So `walk` below is
+ * byte-identical to what it was, and this one is reached only when a hop actually names more than
+ * one type. The single-type path cannot regress because it is not touched.
+ *
+ * ⚠️ THE DOUBLE-COUNT HAZARD, AND WHY `multiTypeEdgeCount` DECIDES IT AT RUN TIME. Iterating the
+ * buckets of `E` and `F` visits an edge carrying BOTH labels twice, where `[:E|F]` must yield it
+ * once. The graph knows how many such edges exist (`multiTypeEdgeCount`, maintained in
+ * `@lenke/core` for exactly this class of planner decision), but a COMPILE-time detector cannot
+ * read it — so the check happens per execution, here, and the walk takes a deduping arm only when
+ * the graph actually contains a multi-label edge. Gremlin's `hopChainShape` reaches the same
+ * conclusion and simply declines; this keeps the rung by paying for correctness only where it is
+ * owed. Item 573 and item 1845's note both record the same hazard: a per-label bucket sum is a
+ * degree only when the wanted set is one bucket.
+ *
+ * The deduping rule is "the FIRST of this hop's types that the edge carries wins", which yields
+ * each matching edge exactly once whatever its label set, and costs an O(types) scan per edge on
+ * the rare arm only.
+ */
+const walkUnion = (
+  nodes: readonly NodePattern[],
+  hops: readonly UnionHop[],
+  projection: CProjection,
+  gate: CompiledExpr | undefined,
+  distinct: DistinctSpec | undefined,
+): AlwaysRowsFn => {
+  const [n0, n1, n2] = nodes;
+  const [h0, h1] = hops;
+  const v0 = n0.variable;
+  const v1 = n1.variable;
+  const v2 = n2.variable;
+
+  return (graph: Graph, params: Params): Row[] => {
+    const l0 = effectiveLabel(graph, n0.label);
+    const l1 = effectiveLabel(graph, n1.label);
+    const l2 = effectiveLabel(graph, n2.label);
+    const binding = new Map<string, unknown>();
+    const out: Row[] = [];
+    const keys: OneColumnKeys | undefined = distinct && newOneColumnKeys();
+    // Read ONCE per execution: a mid-execution write cannot reach this walk, and the alternative
+    // is a field read per edge.
+    const dedupe = graph.multiTypeEdgeCount > 0;
+
+    const emit = (): void => {
+      if (gate !== undefined && asTruth(gate({ binding, params, graph })) !== true) {
+        return;
+      }
+
+      if (distinct !== undefined && keys !== undefined) {
+        const value = distinct.fn({ binding, params, graph });
+
+        if (addOneColumnKey(keys, value)) {
+          out.push({ [distinct.name]: value });
+        }
+
+        return;
+      }
+
+      out.push(projectRow(projection, binding, params, graph));
+    };
+    // ⚠️ THE SECOND HOP IS A MODULE-SCOPE FUNCTION taking this state, for two recorded reasons: the
+    // lint gate caps block nesting at five and five nested loops reach six, and
+    // `ts-closure-size-is-load-bearing` is the cost this engine has measured four times — a walk
+    // written INLINE in a returned closure gave UNRELATED queries a new slow mode at 4x.
+    const far: FarUnionHop = { hop: h1, label: l2, variable: v2, binding, dedupe, emit };
+
+    for (const a of graph.vertices) {
+      if (!matchesLabel(a, l0)) {
+        continue;
+      }
+
+      const box0 = h0.forward ? a.adjFrom : a.adjTo;
+
+      if (box0 === undefined) {
+        continue;
+      }
+
+      if (v0 !== undefined) {
+        binding.set(v0, a);
+      }
+
+      for (let i = 0; i < h0.types.length; i += 1) {
+        const bucket0 = box0.get(h0.types[i]);
+
+        if (bucket0 === undefined) {
+          continue;
+        }
+
+        for (const e0 of bucket0) {
+          if (dedupe && claimedByEarlierType(e0, h0.types, i)) {
+            continue;
+          }
+
+          const b: Vertex = h0.forward ? e0.to : e0.from;
+
+          if (!matchesLabel(b, l1)) {
+            continue;
+          }
+
+          if (v1 !== undefined) {
+            binding.set(v1, b);
+          }
+
+          secondUnionHop(b, far);
+        }
+      }
+    }
+
+    return out;
+  };
+};
+
+/**
+ * Has an EARLIER type in this hop's alternation already claimed this edge? Only ever asked when the
+ * graph holds a multi-label edge; `at === 0` answers false without touching the edge.
+ */
+const claimedByEarlierType = (edge: Edge, types: readonly string[], at: number): boolean => {
+  for (let i = 0; i < at; i += 1) {
+    if (edge.hasLabel(types[i])) {
+      return true;
+    }
+  }
+
+  return false;
 };
 
 /**
