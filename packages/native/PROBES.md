@@ -10,6 +10,30 @@ reading three file headers feels like overhead. It is the other way round."_ The
 here, and more so — the Rust side is indexed by question in `crates/lenke-engine/examples/README.md`
 and this side was not indexed at all.
 
+## ⚠️ FRAMES THAT ARE CLOSED — read this BEFORE nominating anything from a profile
+
+Every profile taken in this package surfaces the same handful of frames, because a write is not
+idempotent so the fixture is rebuilt per rep and the build is often most of the process. **All of
+them are closed targets.** The list exists because item 1623 predicted the failure it prevents —
+_"a seventh arrival at `indexEdgeLabel` by someone reading a fresh 27.2%"_ — and item 1876 confirmed
+the prediction was about to come true.
+
+| frame                                                        | why it is NOT a nomination                                                                                                                                                                                                                                          |
+| ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `indexEdgeLabel`                                             | priced at **810 ns / 7 hash ops** (item 312), SPLIT across its three indexes (357/358), its only lever BUILT AND DISQUALIFIED (the dense ordinal, 1369-1372/1397), a variant DECLINED at 2.3% (1730) and another REVERTED at 0.999x (1819). **Six prior arrivals.** |
+| `getEdgeById` / `getVertexById`                              | in write profiles these are largely **self-time misattribution**, already ablated to an upper bound (items 700, 1397, 1624). In read profiles they are usually the HARNESS resolving endpoints.                                                                     |
+| `commitElementLabels`, `set labels`                          | label handling, ~36% of an edge write together with `indexEdgeLabel` and **priced three times** (item 1768).                                                                                                                                                        |
+| `#commitNormalized`, `insertEdge`, `pushTokens`, `addVertex` | the rest of the construction path, "CLOSED as a constant factor" — `JSON.parse` + alloc + freeze, not a missing route (item 312; `addVertex` withdrawn at 7.4%).                                                                                                    |
+| `(garbage collector)` in a write profile                     | priced with the rest of the decode at ~13% (item 1731).                                                                                                                                                                                                             |
+
+**So a profile whose top frames are these has measured the FIXTURE, not the thing you asked about.**
+The fix is not to nominate them — it is to make the query dominate (`hop3-values-prof-1875.mjs`
+prints the query's share of the process for exactly this reason) or to window the profile
+(`windowed-profile.mjs`).
+
+**And the NDJSON decode's four terms are all priced** (item 1731): parse 25.6% (a V8 builtin),
+`indexEdgeLabel` ~19%, id resolution ~14%, GC ~13%. There is no unpriced remainder to find.
+
 ## Invariant probes — a property that must hold, not a number to beat
 
 Each of these was built because a violation was FOUND. A violation is a planner choosing a route

@@ -87900,3 +87900,52 @@ NO ENGINE CODE CHANGED (the four-line edit was applied, measured, reverted). Two
 
 GATES. bun run check 0 read unpiped; gremlin 2184 tests green with the arm in place and the engine
 restored byte-identically afterwards (`git diff` empty, dist marker gone).
+
+## Item 1876 — the write path was the next target and it is CLOSED in every direction; item 1623 predicted this exact arrival, and the only new work is making the prediction unnecessary
+
+Items 1859 and 1875 both ended at a layout floor, and both profiles carried the same residue —
+`indexEdgeLabel`, `getVertexById`, `commitElementLabels`, `#commitNormalized`, `addVertex`. The write
+path had never been profiled in this stretch and those frames are real user cost (a 20,000-vertex /
+100,000-edge fixture costs 232-359 ms to build), so it was the obvious next target.
+
+❌ **IT IS CLOSED, AND THE FILE SAID SO BEFORE I MEASURED ANYTHING.**
+
+      indexEdgeLabel        810 ns / 7 hash operations, priced at item 312
+                            SPLIT across its three indexes at 357/358 (the 1M-element Set is free;
+                            the two adjacency maps are all of it, and SUPERADDITIVE)
+                            its only lever — the dense integer ordinal — BUILT AND DISQUALIFIED
+                            (items 1369-1372, deletes 6.18x/11.34x under churn; 1397 user-confirmed)
+                            a variant DECLINED at a measured 2.3% (item 1730)
+                            another BUILT AND REVERTED at 0.999x (item 1819)
+      getEdgeById           largely SELF-TIME MISATTRIBUTION, ablated to an upper bound (700/1397/1624)
+      label handling        ~36% of an edge write with its neighbours, PRICED THREE TIMES (item 1768)
+      the construction path "CLOSED as a constant factor" — JSON.parse + alloc + freeze, not a
+                            missing route; `addVertex` withdrawn at 7.4% (item 312)
+      NDJSON decode         all four terms priced (item 1731): parse 25.6%, indexEdgeLabel ~19%,
+                            id resolution ~14%, GC ~13%. No unpriced remainder.
+
+⚠️⚠️ **AND ITEM 1623 PREDICTED THIS ARRIVAL IN TERMS.** Its entry says the cheapest version of the
+sweep is to write down which frames are closed, because _"the alternative is a **seventh arrival** at
+`indexEdgeLabel` by someone reading a fresh 27.2%."_ I had just published two profiles showing that
+frame and was reading it as unexplored. **Reading `CLOSED.md` before measuring is the only thing that
+stopped the seventh arrival** — which is the discipline item 1866 also learned the hard way, one
+target later.
+
+✅ **SO THE WORK IS TO MAKE THE PREDICTION UNNECESSARY.** `PROBES.md` — the file CLAUDE.md says to
+read before building an instrument — now opens with **FRAMES THAT ARE CLOSED**, a one-screen table of
+these frames with the item numbers and the arrival count, and the sentence that matters: _a profile
+whose top frames are these has measured the FIXTURE, not the thing you asked about._
+
+That is a different note from the ones already there. PROBES.md warned about WINDOWING — how to keep
+fixture frames out of a profile — in three places. It did not say that those frames are closed
+TARGETS, which is why dismissing them still required having read six items.
+
+⚠️ **THE COST OF NOT HAVING IT IS MEASURED, not hypothetical.** Six arrivals before item 1623, and
+this would have been the seventh. Item 1301's sweep found the same class in `CLOSED.md` itself: 265
+`OPEN` lines, 40 corrected, 35 of them advertising work already done.
+
+NO ENGINE CODE CHANGED, and no measurement was taken — taking one would have been the mistake. The
+deliverable is the table.
+
+GATES. bun run check 0 read unpiped. No source touched, so the suites are unaffected; they were
+verified green across all 21 projects at item 1875 with `--skip-nx-cache`.
