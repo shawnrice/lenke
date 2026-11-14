@@ -241,6 +241,14 @@ const SHAPES = {
   // It is kept because an empty-scope body is LOOP-INVARIANT, which item 1566 then exploited:
   // 1358.0 -> 4.7 ms at N=1000, 289x. So this row is now the regression guard on that hoist, and
   // `callscoped` beside it is the genuinely correlated shape that had no coverage at all.
+  //
+  // ⚠️ AND SINCE ITEM 1818 IT IS ALSO THE GUARD ON THE PER-OUTER-ROW PLUMBING, which is a separate
+  // quantity from the hoist and the reason this row stayed the screen's outlier long after 1566:
+  // with the body running once, what was left was 633 ms engine against 80-180 for every other GQL
+  // shape, all of it the row-to-binding projection. 1818 took that to 466.7 (1.36x). ⚠️ A TOTAL
+  // CANNOT SEPARATE THE TWO — "body ran once, plumbing is expensive" and "body ran per row behind a
+  // fast rung" produce the same number here — so a regression in this row is ambiguous until
+  // `packages/native/uncorrelated-call-reuse-probe.mjs` says which side moved.
   callinline: 'MATCH (n:P) CALL { MATCH (n)-[:E]->(x) RETURN count(*) AS c } RETURN count(*) AS t',
   callscoped:
     'MATCH (n:P) CALL (n) { MATCH (n)-[:E]->(x) RETURN count(*) AS c } RETURN count(*) AS t',

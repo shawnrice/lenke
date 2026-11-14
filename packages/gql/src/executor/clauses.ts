@@ -1258,22 +1258,51 @@ export const runCallInline = (
     bodyIsReadOnly(clause.body) &&
     clause.bodyMore.every((m) => bodyIsReadOnly(m.part));
   let hoisted: Row[] | undefined;
+  /**
+   * ⚠️ THE HOISTED ROWS' ENTRIES, MATERIALIZED ONCE — item 1818. The hoist above stops the BODY
+   * running per outer row; it does not stop the row-to-binding projection below rebuilding
+   * `Object.entries(row)` for each outer row, over row objects that by invariance are the SAME
+   * objects every time. Measured on `MATCH (n:P) CALL { MATCH (a:P)-[:E]->(x:P) RETURN count(*) }`
+   * at 20,000 outer rows, where the body is already one cached row: the whole shape cost 12.01 ms
+   * against a 0.81 ms single-outer-row floor, i.e. ~550 ns an outer row of pure plumbing on a
+   * route whose remaining work is one map copy and one `set`.
+   *
+   * ⚠️ The per-row term was confirmed BODY-INDEPENDENT before this was written, which is what
+   * identifies it as plumbing rather than body cost: holding the outer count at 20,000 and making
+   * the body cheaper (`MATCH (a:P) RETURN count(*)`) moved it only 12.01 -> 10.71 ms, while holding
+   * the body fixed and cutting the outer rows to 207 gave 0.99 ms. See
+   * `packages/native/uncorrelated-call-reuse-probe.mjs`, which exists because a TOTAL cannot tell
+   * "body ran once, plumbing is expensive" from "body ran per row behind a fast rung", and neither
+   * can the profile — a body run once still shows `matchPattern` and `seedVertices` frames, just
+   * with a small share of a large total.
+   */
+  let hoistedPairs: readonly (readonly [string, unknown])[][] | undefined;
 
   return flatMap((outer: Binding) => {
-    // Import only the scoped variables into the subquery's initial binding.
-    const seed = new Map<string, unknown>();
-
-    for (const v of clause.scope) {
-      if (outer.has(v)) {
-        seed.set(v, outer.get(v));
-      }
-    }
-
     let nested: Row[];
 
     if (invariant && hoisted !== undefined) {
       nested = hoisted;
     } else {
+      /**
+       * ⚠️ THE SEED MAP IS NOW ALLOCATED ONLY WHEN A SCOPED NAME IS ACTUALLY PRESENT (item 1818).
+       * It used to be a `new Map()` per outer row unconditionally, including on the hoisted path
+       * where `clause.scope.length === 0` guarantees nothing is ever put in it — an allocation per
+       * outer row to hand `undefined` to `runLinearClauses` anyway.
+       *
+       * `seed === undefined` is EXACTLY the old `seed.size === 0`, so `start` is unchanged: the
+       * map is created on the first `set` and only there. That equivalence is the whole reason
+       * this is safe, and it also reaches the scoped path whose names are all absent from the
+       * outer row — the case item 1661's gate was already written for.
+       */
+      let seed: Map<string, unknown> | undefined;
+
+      for (const v of clause.scope) {
+        if (outer.has(v)) {
+          (seed ??= new Map<string, unknown>()).set(v, outer.get(v));
+        }
+      }
+
       /**
        * ⚠️ AN EMPTY SEED IS PASSED AS `undefined`, NOT AS AN EMPTY MAP, AND THAT IS THE WHOLE
        * OPTIMIZATION (item 1661). `runLinearClauses` starts from `[initial ?? new Map()]`, so an
@@ -1283,8 +1312,10 @@ export const runCallInline = (
        * including bodies with no scope, where there is no imported binding for a rung to be wrong
        * about.
        *
-       * The gate is `seed.size`, not `clause.scope.length`: a scope whose names are all absent
-       * from the outer row imports nothing, and that row's body deserves the rungs too.
+       * The gate is whether a scoped name was actually PRESENT, not `clause.scope.length`: a scope
+       * whose names are all absent from the outer row imports nothing, and that row's body
+       * deserves the rungs too. Item 1818 turned that gate from `seed.size === 0` into "the map was
+       * never created", which is the same condition with the allocation removed.
        *
        * Measured at item 1661: an unscoped `CALL { MATCH … RETURN count(*) }` over 20,000 outer
        * rows went **34.9 -> 9.6 ms, 3.6x**, because the body's one hoisted run now takes the
@@ -1296,7 +1327,7 @@ export const runCallInline = (
        * run to seed, so computing it there would add work to every outer row after the first and
        * buy nothing — on exactly the shape this change helps least.
        */
-      const start = seed.size === 0 ? undefined : seed;
+      const start = seed;
 
       nested = runLinearClauses(clause.body, graph, params, start && new Map(start));
 
@@ -1312,6 +1343,7 @@ export const runCallInline = (
 
       if (invariant) {
         hoisted = nested;
+        hoistedPairs = nested.map((row) => Object.entries(row));
       }
     }
 
@@ -1323,6 +1355,33 @@ export const runCallInline = (
       }
 
       return [b];
+    }
+
+    /**
+     * ⚠️ A SEPARATE TAIL FOR THE HOISTED PATH, rather than one tail that computes its pairs either
+     * way (item 1818). Folding the two would put an extra array allocation per outer row on the
+     * CORRELATED path, which is the path that does not benefit — and `executor-edits-perturb`
+     * records that a new variant costs unrelated shapes up to 16%, so the general tail below is
+     * left byte-identical and the new code is reachable only when `hoistedPairs` is set.
+     *
+     * `hoistedPairs` is non-undefined exactly when `nested === hoisted`, so this emits the same
+     * bindings the general tail would: same rows, same insertion order per row (`Object.entries`
+     * order, captured once from the same objects), same `new Map(outer)` base.
+     */
+    if (hoistedPairs !== undefined && nested === hoisted) {
+      const out: Binding[] = [];
+
+      for (const pairs of hoistedPairs) {
+        const b = new Map(outer);
+
+        for (const [k, val] of pairs) {
+          b.set(k, val);
+        }
+
+        out.push(b);
+      }
+
+      return out;
     }
 
     return nested.map((row) => {

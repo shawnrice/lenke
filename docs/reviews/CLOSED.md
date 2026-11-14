@@ -6529,9 +6529,14 @@ answers_, since both spellings agree by construction. The surviving mutant is th
 row_width` guard, redundant today (the exact-endpoint match already refuses outer slots) and kept
 as the defense against a future caller mis-counting `row_width`.
 
-STILL OPEN, and separately: the whole correlated-subquery route in the TS engine, ~3 µs an outer
-row (34x native on this shape). And a `spelling_probe` group for this pair, which needs a second
-label in that fixture.
+~~STILL OPEN, and separately: the whole correlated-subquery route in the TS engine, ~3 µs an outer
+row (34x native on this shape).~~ ⚠️ **THAT NUMBER IS STALE FOR THE INLINE `CALL` FORM — see item
+1818**, which measured the CORRELATED ISO spelling (`CALL (n) { … }`) at **0.56x its
+equivalent-MATCH floor**, i.e. already fast. What is actually slow is the UNSCOPED form, and for a
+different reason: its body is loop-invariant and already hoisted, so the cost is the per-outer-row
+plumbing, which 1818 priced at ~550 ns a row and took 1.36x of. A reader scanning for "the TS
+correlated route is 34x native" would be chasing a target that is not there. And a `spelling_probe`
+group for this pair, which needs a second label in that fixture, is still open.
 
 ## 522 — the same label bug in a `CALL` arm: CLOSED at 25x
 
@@ -84453,4 +84458,125 @@ is from the ADVERSARIAL arm and PRE-EXISTING: it reproduces with `FUZZ_WORKLOAD_
 is recorded here as an open `evaluation-order` divergence rather than claimed as this item's find.
 
 GATES. bun run check 0 read unpiped. gql 4,555 pass / 0 fail. native 1,165 pass / 0 fail.
+bun run fuzz 57 pass / 0 fail.
+
+### Item 1818 — ✅ **AN UNCORRELATED INLINE `CALL` PAID ~550 ns AN OUTER ROW OF PURE PLUMBING over a body that was already down to one cached row** — 1.36x on `callinline`, eight controls flat, and it corrects item 521's note that the TS correlated route is 34x native
+
+PROFILE-FIRST, AND THE NOMINATION CAME FROM A TOTAL RATHER THAN A FRAME. Five Gremlin shapes and
+eight GQL shapes were profiled; `runtime-profile-analyze.mjs`'s unpriced-frame screen came back
+CLEAN on all thirteen (no frame over 2% without mentions). What stood out instead was that
+`callinline` read **633 ms engine where every other GQL shape read 80-180**.
+
+⚠️ **TWO CANDIDATES THE SCREEN OFFERED AND BOTH WERE REFUTED BEFORE THEY COST ANYTHING**, which is
+the part of a profile-first pass that does not show up in a diff:
+
+- `degreeOfTypes` profiled at **83-88% self in two Gremlin shapes** (`localvalues`, `matchedsel`),
+  which looks like the find of the session. It is item 1546's already-refuted target, and the 24x
+  that appeared between `values('k').count()` and the same hop's bare `count()` is
+  shortcut-vs-walk — documented in the probe's own comment — with both spellings at ~13.7 ns an
+  edge, i.e. near the walk floor. ⚠️ `out()` and `outE().inV()` were measured TOGETHER here on the
+  suspicion of an equivalent-spelling gap, and there is none: 162.4/165.4/162.3 against
+  172.5/176.1/167.5. Not a defect, and worth recording so the 88% does not nominate itself again.
+- Gremlin row walks are **~14 ns/row and flat in depth** (`hop2valuesrows` 15, `hop3valuesrows` 14),
+  which is item 1815's result holding from the other side.
+
+⚠️ **THE MECHANISM COULD NOT BE READ OFF THE PROFILE, AND THE PROFILE IS WHAT MISLED FIRST.**
+`callinline`'s frames are `matchPattern` 9.2%, `hoistedMatch` 5.1%, `buildGroups` 5.5%,
+`seedVertices` 2.2%, `walkSegments` 4.2% — per-row matching, apparently, under a `runCallInline`
+closure at 32.6%. **A body run ONCE shows exactly those frames too**, just as a small share of a
+large total. A share is not a count, and the total is consistent with two opposite mechanisms:
+
+```text
+  (a) body runs ONCE, the per-row cost is plumbing
+  (b) body runs PER OUTER ROW, 550 ns is a whole re-scan behind a fast rung
+```
+
+`uncorrelated-call-reuse-probe.mjs` settles it by scaling the two sides INDEPENDENTLY, which is the
+only thing that can:
+
+```text
+  outer=20000 body=hop     12.01 ms      <- the shape
+  outer=207   body=hop      0.99 ms      <- FLAT in the outer count => body runs once
+  outer=1     body=hop      0.82 ms      <- the body's own cost
+  outer=20000 body=node    10.71 ms      <- per-row term is BODY-INDEPENDENT => plumbing
+  outer=20000 no call       0.00 ms
+```
+
+So the body was already hoisted (item 1566) and already taking the count rung (item 1661), and what
+remained was `(12.01 - 0.82) / 20000` = **~560 ns an outer row** to turn one cached row into a
+binding — on a route whose honest remaining work is one map copy and one `set`.
+
+THE CHANGE, which is two allocations per outer row and nothing else:
+
+- **The seed `Map` was allocated unconditionally**, including on the hoisted path where
+  `clause.scope.length === 0` guarantees nothing is ever put in it — a `new Map()` per outer row to
+  hand `undefined` to `runLinearClauses` anyway. It is now created on the first `set`, so
+  `seed === undefined` is EXACTLY the old `seed.size === 0` and `start` is unchanged. That also
+  reaches the scoped path whose names are all absent from the outer row, which is the case item
+  1661's gate was already written for.
+- **`Object.entries(row)` was rebuilt per outer row** over row objects that, by the invariance the
+  hoist rests on, are the SAME objects every time. Captured once into `hoistedPairs`.
+
+⚠️ **A SEPARATE TAIL, NOT ONE TAIL THAT COMPUTES ITS PAIRS EITHER WAY.** Folding them would put an
+extra array allocation per outer row on the CORRELATED path, which is the path that does not
+benefit, and `executor-edits-perturb` records a new variant costing unrelated shapes up to 16%. The
+general tail is left byte-identical and the new code is reachable only when `hoistedPairs` is set.
+
+MEASURED, PRE against POST, min of 3 rounds at 60 reps, ⚠️ **each arm asserted to BE the code it
+claims before measuring** — a count of `hoistedPairs` in the built DIST (`fuzzers-read-built-dists`;
+0 expected in PRE, non-zero in POST):
+
+```text
+  callinline   633.40 -> 466.70   1.36x    PRE [638.3 648.7 633.4]  POST [474.4 466.7 493.3]
+  callscoped   496.50 -> 461.20   1.08x    PRE [498.3 496.5 502.1]  POST [475.1 461.2 481.9]
+
+  hoprows       84.50 ->  88.50   0.95x      grouped      30.90 ->  31.90   0.97x
+  hop2rows     172.00 -> 161.60   1.06x      sortedpage   73.90 ->  74.00   1.00x
+  point         41.70 ->  39.50   1.06x      join         52.30 ->  52.60   0.99x
+  optional      36.00 ->  35.60   1.01x      distinct     28.80 ->  29.70   0.97x
+```
+
+Eight controls between 0.95x and 1.06x with overlapping series — the worst is 5% against the
+probe's own 27-31% intra-arm spread, so flat. `callscoped` gaining 1.08x on disjoint series is the
+seed allocation alone, since a scoped body cannot take the new tail.
+
+⚠️ **THE ARM ASSERTION EARNED ITSELF ON ITS FIRST RUN, AND THE BUG IT CAUGHT WAS MINE.** It refused
+to measure: `PRE dist has 6 hoistedPairs, expected 0`. The "pristine" copy had been saved AFTER the
+edit, so both arms were POST and the A/B would have reported a null as cleanly as a result. CLAUDE.md
+puts this rule under "assert each A/B arm IS the code it claims"; the real PRE came from
+`git show HEAD:…`. **An A/B with no arm assertion cannot distinguish a null from a mistake.**
+
+⚠️ **THE ROUTE NEEDED ITS OWN TEST AND THEN THE TEST NEEDED MUTATING** — `perf-gate-needs-its-own-test`.
+Both tails are built to emit the same bindings, so every existing test agrees whichever runs, and
+`bun run fuzz` compares on the ANSWER. `call-inline-hoisted-tail.test.ts` is 8 tests over shapes
+where the two tails COULD disagree (multi-column body, multi-row body, shadowing, OPTIONAL
+null-padding, a UNION body folded by `bodyMore`, a null body value, and both the scoped and unscoped
+answers pinned as values). Five mutants, **four caught**:
+
+```text
+  emit only the first hoisted row            CAUGHT (2 fail)
+  seed from body, overlay the outer row      CAUGHT (1 fail)  <- only after the test was fixed
+  drop nullish pairs when capturing          CAUGHT (1 fail)
+  capture row 0's pairs for every row        CAUGHT (2 fail)
+  drop the `nested === hoisted` guard        SURVIVES (deliberate, see below)
+```
+
+⚠️ **AND THE SHADOWING TEST WAS WRONG ON ITS FIRST CUT, WHICH ONLY THE MUTANT REVEALED.** It used a
+body column `nk` against an outer `n` — where there is no collision at all, because the outer
+binding holds the VARIABLE `n` and `nk` exists only after the final projection. The
+inverted-overlay mutant passed it. The collision has to be with the variable (`RETURN a.k AS n`,
+which rebinds an outer vertex to the number 3), and that is now what the test asserts. Eight tests
+passing on the first run is also what a test that checks nothing does.
+
+⚠️ **THE SURVIVING MUTANT IS KEPT AS A GUARD, NOT LOGGED AS A GAP** (item 522's precedent).
+`nested === hoisted` is redundant today — the two are set together and never apart — and it is the
+defense against a future edit that caches pairs on one path and rows on another, where reusing
+stale pairs is a silent WRONG ANSWER rather than a crash.
+
+WHAT IS LEFT, AND WHY IT IS NOT REACHABLE HERE. The closure fell from 32.6% to 17.9% of the shape;
+what remains is the body's single run plus `new Map(outer)` per outer row, which is inherent to
+`Binding = ReadonlyMap`. That is item 1806's `MutableBinding`, still blocked at
+`packages/gql/src/executor/core.ts:53`.
+
+GATES. bun run check 0 read unpiped. gql 4,563 pass / 0 fail. native 1,165 pass / 0 fail.
 bun run fuzz 57 pass / 0 fail.
