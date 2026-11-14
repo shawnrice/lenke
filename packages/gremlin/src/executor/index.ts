@@ -33,6 +33,7 @@ import {
 } from './aggregation.js';
 import { countShortcut } from './count-shortcut.js';
 import { applyStep } from './dispatch.js';
+import { edgeFilteredHopValues } from './edge-filtered-hop-values.js';
 import { hopChainValuesShortcut } from './hop-chain-values.js';
 import type { HopValues } from './hop-values.js';
 import { hopValuesShortcut } from './hop-values.js';
@@ -2558,6 +2559,12 @@ export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
     ? undefined
     : (hopValuesShortcut(effective, graph) ??
       startFilteredHopValues(effective, graph) ??
+      // The EDGE-PREDICATE rung (item 1882/1883). LAST, for item 1535's stated reason: `??` in
+      // this order means no plan an earlier rung already admits can change route. It cannot
+      // overlap any of them anyway — it requires `outE`/`inE` in position 1 followed by a `has`,
+      // and the three above take a vertex-moving hop — but the ordering rule is what keeps that
+      // true if either gate is ever widened.
+      edgeFilteredHopValues(effective, graph) ??
       hopChainValuesShortcut(effective, graph));
 
   // NOTHING LEFT OVER is the shape this shortcut has always served: the values ARE the answer, so

@@ -40,6 +40,16 @@ the fused sibling's 31 — 7.2x**. The two instruments are below; the rung is no
 - **`edge-filter-floor-1882.mjs`** — its price. `SHAPE=filtered|unfiltered|hop`, ONE PER PROCESS,
   and it reports **ns per EDGE VISIT** as well as per row, because the filtered shape emits 46% of
   the rows and a per-row ratio flatters it (item 1858 declined a target for exactly that).
+- **`edge-filtered-oracle-1883.mjs`** — the rung's contract against the route it DISPLACES. Two arms
+  of one build (PRE = the dist call site replaced by `void 0`, POST = shipped), 23 traversals over 3
+  fixtures, ORDERED comparison, with both arms asserted (the killed arm must claim nothing, the
+  shipped arm everything). Use it, not only the unit test, when widening the rung's gate.
+- **`edge-filtered-mutants-1883.mjs`** — whether `edge-filtered-hop-values.test.ts` still has teeth.
+  Seven mutants, each anchor-asserted for its occurrence count, verdicts read from stdout+stderr
+  concatenated before the exit code.
+
+**Item 1883 built the rung: 18.04 → 6.14 ms, 2.94x, 225 → 77 ns an edge visit** against the
+unfiltered floor's 36. The screen's top shape is now `optional: hop` at 10.11 ms.
 
 ## Start here: `family-split-1880.ts` — which SHAPE owns a family's milliseconds
 

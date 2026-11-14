@@ -88291,7 +88291,7 @@ byte-identically (`git diff` empty on `dispatch.ts`).
 
 GATES. bun run check 0 read unpiped; no source touched.
 
-## Item 1882 — a profile refuted my OWN route claim from the previous item: the edge-property filter is not fused, it is a whole FAMILY of seven ordinary spellings falling off every rung, and it costs 7.2x per edge visit
+## Item 1882 — a profile refuted my OWN route claim from the previous item: the edge-property filter is not fused, it is a whole FAMILY of seven ordinary spellings falling off every rung, and it costs 7.2x per edge visit (⚠️ ~~the rung to add~~ — BUILT at item 1883: 2.94x, three of the seven spellings fused; the count/edge-value terminals and `bothE` remain)
 
 Item 1881 nominated `V().outE('E').has('w', gt(3)).inV().values('n')` — 21.56 ms, the largest
 absolute on the new Gremlin workload screen — and recorded it as **already fused**, on an
@@ -88366,3 +88366,85 @@ The screen would have been right, and it is now permanently wider for it. A one-
 what you expect is the easiest kind of measurement to not re-check.
 
 GATES. bun run check 0 read unpiped; no engine source touched.
+
+## Item 1883 — the edge-predicate hop rung: 2.94x on the shape item 1881 nominated, 7.2x → 2.1x of its own floor, and three of the census's seven generic spellings are now fused
+
+Item 1882 priced the gap and named the rung. This builds it.
+`packages/gremlin/src/executor/edge-filtered-hop-values.ts` admits
+`V().outE(T).has(k, pred)+.inV().(values(j) | id() | nothing)` and its `inE`/`outV` mirror, walks
+`graph.vertices` reading the per-vertex `adjFrom`/`adjTo` bucket for the one named type, tests the
+edge, and picks the far end.
+
+📏 **THE MEASUREMENT, one shape per process, both orders, 20,000 vertices / 100,000 edges, median of
+9 — `edge-filter-floor-1882.mjs`, the instrument that priced it before it existed:**
+
+      V().outE(E).has(w, gt 3).inV().values(n)    18.04 ms  ->   6.14 ms    2.94x
+                                                   225 ns/edge-visit -> 77
+      V().outE(E).inV().values(n)   [the floor]     2.44          2.85       31 -> 36 ns
+      V().out(E).values(n)          [control]       2.56          2.85 *
+
+      * the control read 2.56 and 3.12 across this item's two pre-change rounds, so 2.85 is inside
+        its own spread — the `??` added to `run` is the only central edit and nothing shows.
+
+And on the workload screen (`NODES=20000 FANOUT=5`), the row that nominated the whole chain:
+**21.56 ms → 6.85**, 3.15x, and it is no longer the screen's largest. `optional: hop` at 10.11 ms is
+now the top shape and the next nomination.
+
+✅ **THREE OF THE CENSUS'S SEVEN GENERIC SPELLINGS ARE FUSED, and the route screen says which:**
+
+      SHORTCUT  edgef: outE has inV values      (was 4 applyStep calls)
+      SHORTCUT  edgef: outE eq inV values       (was 4)   ⬅ a literal `=` routes with `gt`
+      SHORTCUT  edgef: inE has outV values      (was 4)
+      generic   edgef: outE has inV count       — the COUNT twin, next item
+      generic   edgef: outE has count
+      generic   edgef: outE has values          — the EDGE's own property, not the far vertex's
+      generic   edgef: bothE has otherV count   — declined on purpose, see below
+
+`bothE`/`otherV` is declined rather than forgotten: its two buckets make "the other end" depend on
+which bucket the edge came from, a self-loop appears in both, and it is one row of the census rather
+than four. Item 1527's rule against forking a walk per spelling applies — a declined shape simply
+stays where it already is.
+
+🔬 **A NEW MODULE, NOT A GUARD RELAXED IN `hop-values.ts`.** Items 1441/1466 measured an edit to that
+file at up to 16% on UNRELATED rows, arbitrarily signed, and item 1466 declined a 3.3x win on that
+basis; item 1482 set the precedent of taking a sibling into its own module. Both existing values
+walks are byte-identical and this one is consulted only where they already declined.
+
+🦷 **THE TEST HAS TEETH, AND THAT IS MEASURED (`edge-filtered-mutants-1883.mjs`).** 16 tests with a
+HAND-COMPUTED oracle — a route test that asserts the fused walk agrees with itself proves nothing.
+Seven mutants, every anchor asserted for its occurrence count (items 1870/1873 each had a mutant
+that never applied), every verdict read from stdout+stderr concatenated before the exit code (items
+767/772-773 got that wrong in both directions):
+
+      ✅ far end swapped              9 failing      ✅ AND becomes OR            1 failing
+      ✅ edge predicate deleted       9              ✅ missing-key drop off      3
+      ✅ no-predicate shape admitted  1              ✅ bucket direction ignored  1
+      ✅ direction pairing swapped    2
+
+🔭 **AND THE CONTRACT IS CHECKED AGAINST THE ROUTE IT DISPLACES, not only against hand arithmetic
+(`edge-filtered-oracle-1883.mjs`).** Both arms of the same build: PRE is the rung's dist call site
+replaced by `void 0` (a kill switch, so every query runs the pipeline it ran before this item), POST
+is shipped. 23 traversals — six predicate kinds, three projections, one/two/three `has` steps, both
+directions, a missing key, an absent far key — over three fixtures (two edge types, holes in `w`, a
+self-loop, a property-less edge, far vertices lacking the projected key). **69 pairs, ORDERED
+comparison, every one identical**; the rung claimed 51 and the five controls none, both asserted
+rather than assumed.
+
+⚠️ **ONE ARM ASSERTION EARNED ITSELF IMMEDIATELY.** The first PRE arm was written
+`(void 0) ?? <counter>(rung(...))` so the killed arm could also count its expected-zero claims — and
+`??` falls straight through `void 0`, so the "killed" build called the rung 51 times. The assertion
+`pre.claims !== 0` caught it. That is CLAUDE.md's "assert each A/B arm IS the code it claims" with
+the failure it predicts.
+
+⚠️ **AND A KNOWN, DELIBERATE ASYMMETRY, recorded because the spelling rule is the repo's own.** The
+rung matches a bare `has` run. `outE(T).filter(has(...)).inV()` and the `where`-wrapped spelling mean
+the same thing and are NOT admitted, so they stay generic — an equivalent-spelling gap of exactly
+the kind `CLAUDE.md`'s "equivalent spellings must cost the same" section is about. It is not in the
+Gremlin spelling probe yet because adding a group I am not fixing leaves a permanent flag; it is the
+count twin's item to take, with the sub-traversal unwrapping that both need.
+
+INVARIANTS. All seven byte-identity fuzzers green (`bun run fuzz`). `bun run spelling:gremlin`: 0
+answer disagreements, one flag (`label + property`, 2.22x) which is pre-existing and unrelated.
+`bun run bench:gremlin`: every row `same`.
+
+GATES. bun run check 0 and bun run test -- --skip-nx-cache across 21 projects, each read unpiped.
