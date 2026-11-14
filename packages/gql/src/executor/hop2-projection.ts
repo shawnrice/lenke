@@ -2,8 +2,9 @@ import type { Graph, Vertex } from '@lenke/core';
 
 import type { Clause, NodePattern, RelPattern } from '../ast.js';
 import { matchesLabel } from '../graph-queries.js';
-import { distinctRows } from './clauses.js';
-import type { CClause, CompiledExpr, CProjection, Params, Row } from './core.js';
+import type { OneColumnKeys } from './clauses.js';
+import { addOneColumnKey, distinctRows, newOneColumnKeys } from './clauses.js';
+import type { CClause, CompiledExpr, CProjection, EvalEnv, Params, Row } from './core.js';
 import { freePredicateVars } from './expr-analysis.js';
 import type { AlwaysRowsFn, RowsFn } from './hop-projection.js';
 import { plainNode, plainRel } from './hop-sides.js';
@@ -271,7 +272,18 @@ export const detectHop2Projection = (
     return null;
   }
 
-  const rows = walk(nodes, hops as readonly Hop[], projection, gate);
+  /**
+   * ⚠️ FUSED ONLY FOR ONE COLUMN. A wider projection's key is a `\x01`-joined string over every
+   * column, so deciding it early buys nothing and the materialize-then-`distinctRows` tail stays.
+   * `!projection.star` is required because a star projection ignores `items` and copies the
+   * binding, so its width is the BINDING's rather than one.
+   */
+  const distinct: DistinctSpec | undefined =
+    ret.projection.distinct && !projection.star && projection.items.length === 1
+      ? { name: projection.items[0].name, fn: projection.items[0].fn }
+      : undefined;
+
+  const rows = walk(nodes, hops as readonly Hop[], projection, gate, distinct);
 
   /**
    * ⚠️ `RETURN DISTINCT` IS ADMITTED AND DEDUPED HERE — item 1822, closing the hole item 1821 left
@@ -287,11 +299,21 @@ export const detectHop2Projection = (
    * survive — so they stay refused by the gate above. And it calls `distinctRows` rather than
    * keying rows itself, because there is ONE definition of distinct in this engine and items 1561
    * and 1562 each shipped a silent answer change in that area.
+   *
+   * ⚠️ ITEM 1843 FUSED THE ONE-COLUMN CASE INTO THE WALK, so for it `distinctRows` is no longer
+   * reached at all — 2.27x here. The call below now serves only the wider projection.
    */
-  return ret.projection.distinct ? (graph, params) => distinctRows(rows(graph, params)) : rows;
+  // Already deduped INSIDE the walk when `distinct` was built; `distinctRows` would be a second
+  // pass over rows that are already unique. The wider projection still needs it.
+  return ret.projection.distinct && distinct === undefined
+    ? (graph, params) => distinctRows(rows(graph, params))
+    : rows;
 };
 
 type Hop = { readonly type: string; readonly forward: boolean };
+
+/** The one-column projection a fused DISTINCT needs; see the walk's row-building point. */
+type DistinctSpec = { readonly name: string; readonly fn: (env: EvalEnv) => unknown };
 
 /**
  * One named edge type in one direction, with nothing else on the relationship.
@@ -331,6 +353,7 @@ const walk = (
   hops: readonly Hop[],
   projection: CProjection,
   gate: CompiledExpr | undefined,
+  distinct: DistinctSpec | undefined,
 ): AlwaysRowsFn => {
   const [n0, n1, n2] = nodes;
   const [h0, h1] = hops;
@@ -344,6 +367,9 @@ const walk = (
     const l2 = effectiveLabel(graph, n2.label);
     const binding = new Map<string, unknown>();
     const out: Row[] = [];
+    // ⚠️ PER RUN, not per plan: sharing a key set across two executions of one compiled plan
+    // would silently drop every row the FIRST run emitted.
+    const keys: OneColumnKeys | undefined = distinct && newOneColumnKeys();
 
     for (const a of graph.vertices) {
       if (!matchesLabel(a, l0)) {
@@ -400,6 +426,26 @@ const walk = (
            * one line later for the same reason.
            */
           if (gate !== undefined && asTruth(gate({ binding, params, graph })) !== true) {
+            continue;
+          }
+
+          /**
+           * ⚠️ THE FUSED ONE-COLUMN `DISTINCT` (item 1843), taking the lever item 1822 left behind:
+           * it built every undeduped row and called `distinctRows` afterwards. For a single-item
+           * projection the ROW key IS the value key — `distinctRows`' own one-column fast path keys
+           * a row by `oneColumnValue(r)`, which is exactly the value in hand here — so a duplicate
+           * never becomes a row object. `addOneColumnKey` is IMPORTED rather than re-implemented:
+           * its two key spaces are items 1561/1562's, and a second keyer here would be the third
+           * silent answer change in that area.
+           */
+          if (distinct !== undefined && keys !== undefined) {
+            const v = distinct.fn({ binding, params, graph });
+
+            // Byte-identical to `projectRow` for a one-item, non-star projection.
+            if (addOneColumnKey(keys, v)) {
+              out.push({ [distinct.name]: v });
+            }
+
             continue;
           }
 

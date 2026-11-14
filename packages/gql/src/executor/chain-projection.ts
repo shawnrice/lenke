@@ -2,8 +2,9 @@ import type { Graph, Vertex } from '@lenke/core';
 
 import type { Clause, Expr, LabelExpr, NodePattern, RelPattern } from '../ast.js';
 import { matchesLabel } from '../graph-queries.js';
-import { distinctRows } from './clauses.js';
-import type { CClause, CompiledExpr, CProjection, Params, Row } from './core.js';
+import type { OneColumnKeys } from './clauses.js';
+import { addOneColumnKey, distinctRows, newOneColumnKeys } from './clauses.js';
+import type { CClause, CompiledExpr, CProjection, EvalEnv, Params, Row } from './core.js';
 import { freePredicateVars } from './expr-analysis.js';
 import type { AlwaysRowsFn, RowsFn } from './hop-projection.js';
 import { plainNode, plainRel } from './hop-sides.js';
@@ -158,9 +159,20 @@ export const detectChainProjection = (
   // overlapping) where it is already good, so it is taken whenever it is applicable rather than
   // behind a topology predictor — the engine has no cheap way to know a graph's locality, and
   // `hasFastPath`-style gating was DECLINED at item 1511.
+  /**
+   * ⚠️ FUSED ONLY FOR ONE COLUMN — the wider shape keeps the materialize-then-dedupe path below.
+   * `projection.items.length === 1` is also what makes the emitted object byte-identical to
+   * `projectRow`'s, and `!projection.star` is required because a `star` projection ignores `items`
+   * entirely (it copies the binding), so its width is the BINDING's, not one.
+   */
+  const distinct: DistinctSpec | undefined =
+    ret.projection.distinct && !projection.star && projection.items.length === 1
+      ? { name: projection.items[0].name, fn: projection.items[0].fn }
+      : undefined;
+
   const rows = farEndOnly(ret.projection.items, where, nodes[nodes.length - 1].variable)
-    ? sweep(nodes, hops, projection, gate)
-    : walk(nodes, hops, projection, gate);
+    ? sweep(nodes, hops, projection, gate, distinct)
+    : walk(nodes, hops, projection, gate, distinct);
 
   /**
    * ⚠️ `RETURN DISTINCT` IS ADMITTED AND DEDUPED HERE — item 1820, and the cost of NOT doing this
@@ -185,12 +197,18 @@ export const detectChainProjection = (
    * arrive in. That argument does NOT extend to `SKIP`/`LIMIT`, which is why those stay refused:
    * there, order decides WHICH rows survive. See `plainRowProjectionIgnoringDistinct`.
    *
-   * ⚠️ THIS MATERIALIZES THE UNDEDUPED ROWS FIRST, which is a known remaining lever and not an
-   * oversight: 625,000 rows are built to return 8. Deduping INSIDE the sweep would avoid that
-   * (`eager-tail-cache`'s shape), but it has to reach both the sweep and the walk and both of
-   * their row-building points, so it is left to its own item with this one's number as the floor.
+   * ⚠️ ~~THIS MATERIALIZES THE UNDEDUPED ROWS FIRST~~ — TAKEN AT ITEM 1843, for a ONE-COLUMN
+   * projection. The dedupe now happens inside both walks (see `emitRow`), so a duplicate never
+   * becomes a row object: measured 2.69x here and 2.27x on the two-segment rung, with the
+   * undeduped and two-column controls flat. A WIDER projection still materializes and calls
+   * `distinctRows` below, because there the key is a `\x01`-joined string over every column and
+   * deciding it early buys nothing — that half remains open.
    */
-  return ret.projection.distinct ? (graph, params) => distinctRows(rows(graph, params)) : rows;
+  // Already deduped INSIDE the walk when `distinct` was built; `distinctRows` would then be a
+  // second pass over rows that are already unique. The wider projection still needs it.
+  return ret.projection.distinct && distinct === undefined
+    ? (graph, params) => distinctRows(rows(graph, params))
+    : rows;
 };
 
 /**
@@ -258,6 +276,61 @@ const hopOf = (rel: RelPattern): Hop | null => {
  * gave UNRELATED queries a new slow mode at 4x, so the descent is at module scope and takes its
  * state as an argument.
  */
+/**
+ * THE FUSED `DISTINCT` SINK — item 1843, taking the lever item 1820 left with its number as the
+ * floor ("this materializes the undeduped rows first… 625,000 rows are built to return 8").
+ *
+ * ⚠️ ONE COLUMN ONLY, and that is what makes it sound rather than merely faster. For a
+ * single-item projection the ROW key IS the value key: `distinctRows`' own one-column fast path
+ * keys a row by `oneColumnValue(r)`, which for a one-item `projectRow` is exactly the value this
+ * sink already has in hand before it builds anything. Item 1832 made the same argument in this
+ * file for the grouped tally, and items 1561/1562 are why neither re-implements the keying:
+ * `addOneColumnKey` is imported, two key spaces and all.
+ *
+ * A wider projection keeps the materialize-then-`distinctRows` path, because there the key is a
+ * `\x01`-joined string over every column and deciding it early buys nothing.
+ */
+type DistinctSpec = { readonly name: string; readonly fn: (env: EvalEnv) => unknown };
+
+type DistinctSink = DistinctSpec & { readonly keys: OneColumnKeys };
+
+/**
+ * The fields both walks' row-building points need. Declared once so `emitRow` is monomorphic over
+ * the two states rather than seeing `Descent` and `Sweep` as separate shapes.
+ */
+type RowSink = {
+  readonly graph: Graph;
+  readonly params: Params;
+  readonly binding: Map<string, unknown>;
+  readonly projection: CProjection;
+  readonly out: Row[];
+  readonly dedup: DistinctSink | undefined;
+};
+
+/**
+ * ⚠️ AT MODULE SCOPE, NOT INLINE IN THE WALK. `ts-closure-size-is-load-bearing` (item 1570): a
+ * walk written inline in a returned closure gave UNRELATED queries a new slow mode at 4x. This is
+ * also the single row-building point for BOTH walks, so the deduped and undeduped forms cannot
+ * drift apart — the defect item 1832 hit when two copies of a rung needed two copies of a test.
+ */
+const emitRow = (s: RowSink): void => {
+  const { dedup } = s;
+
+  if (dedup === undefined) {
+    s.out.push(projectRow(s.projection, s.binding, s.params, s.graph));
+
+    return;
+  }
+
+  const v = dedup.fn({ binding: s.binding, params: s.params, graph: s.graph });
+
+  // Byte-identical to `projectRow` for a one-item, non-star projection: it builds `{}` and assigns
+  // `row[item.name] = item.fn(env)`, which is this object literal.
+  if (addOneColumnKey(dedup.keys, v)) {
+    s.out.push({ [dedup.name]: v });
+  }
+};
+
 type Descent = {
   readonly graph: Graph;
   readonly params: Params;
@@ -269,6 +342,7 @@ type Descent = {
   readonly projection: CProjection;
   readonly gate: CompiledExpr | undefined;
   readonly out: Row[];
+  readonly dedup: DistinctSink | undefined;
 };
 
 /**
@@ -319,7 +393,7 @@ const descend = (level: number, v: Vertex, d: Descent): void => {
       continue;
     }
 
-    d.out.push(projectRow(d.projection, d.binding, d.params, d.graph));
+    emitRow(d);
   }
 };
 
@@ -339,6 +413,7 @@ type Sweep = {
   projection: CProjection;
   gate: CompiledExpr | undefined;
   out: Row[];
+  dedup: DistinctSink | undefined;
   cur: Vertex[];
   nxt: Vertex[];
 };
@@ -413,7 +488,7 @@ const sweepBlock = (s: Sweep, len: number): void => {
           continue;
         }
 
-        s.out.push(projectRow(s.projection, s.binding, s.params, s.graph));
+        emitRow(s);
       }
     }
 
@@ -448,6 +523,7 @@ const sweep = (
   hops: readonly Hop[],
   projection: CProjection,
   gate: CompiledExpr | undefined,
+  distinct: DistinctSpec | undefined,
 ): AlwaysRowsFn => {
   const rawLabels = nodes.map((n) => n.label);
   const last = nodes.length - 1;
@@ -467,6 +543,7 @@ const sweep = (
       projection,
       gate,
       out,
+      dedup: distinct && { ...distinct, keys: newOneColumnKeys() },
       cur: [],
       nxt: [],
     };
@@ -549,6 +626,7 @@ const walk = (
   hops: readonly Hop[],
   projection: CProjection,
   gate: CompiledExpr | undefined,
+  distinct: DistinctSpec | undefined,
 ): AlwaysRowsFn => {
   const vars = nodes.map((n) => n.variable);
   const rawLabels = nodes.map((n) => n.label);
@@ -569,6 +647,9 @@ const walk = (
       projection,
       gate,
       out,
+      // ⚠️ A FRESH KEY SET PER RUN, not per plan: the keys are run state, and sharing them across
+      // two executions of one compiled plan would silently drop every row the FIRST run emitted.
+      dedup: distinct && { ...distinct, keys: newOneColumnKeys() },
     };
     const [startLabel] = labels;
 

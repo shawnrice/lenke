@@ -2082,9 +2082,16 @@ export const rowKeyOf = (row: Row): string => Object.values(row).map(valueKey).j
  * key: the row `['@v1']` and the row `[<vertex v1>]` are different rows that would both key as
  * `'@v1'`. Separate sets cannot collide.
  */
-type OneColumnKeys = { readonly prims: Set<unknown>; readonly refs: Set<string> };
+export type OneColumnKeys = { readonly prims: Set<unknown>; readonly refs: Set<string> };
 
-const newOneColumnKeys = (): OneColumnKeys => ({ prims: new Set(), refs: new Set() });
+/**
+ * ⚠️ EXPORTED FOR THE FUSED DISTINCT WALKS (item 1843), and the export is the point rather than a
+ * convenience. `chain-projection.ts` dedupes INSIDE its walk instead of materializing every row and
+ * calling `distinctRows` afterwards — and the one thing it must not do is key rows itself. The two
+ * key spaces below are not an implementation detail: items 1561 and 1562 each found a silent answer
+ * change in exactly this area, and a second keyer in another file would be the third.
+ */
+export const newOneColumnKeys = (): OneColumnKeys => ({ prims: new Set(), refs: new Set() });
 
 /**
  * The single column's value, read PER ROW and positionally.
@@ -2103,7 +2110,7 @@ const oneColumnValue = (row: Row): unknown => {
 };
 
 /** Add `v` to the key set; `true` when it was NOT already present. */
-const addOneColumnKey = (keys: OneColumnKeys, v: unknown): boolean => {
+export const addOneColumnKey = (keys: OneColumnKeys, v: unknown): boolean => {
   if (v !== null && typeof v === 'object') {
     const k = valueKey(v);
 

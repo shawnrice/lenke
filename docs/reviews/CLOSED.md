@@ -162,6 +162,28 @@ absence** — `{k: null}` is the one place in a pattern where that distinction i
 
 ## 5. Open — unblocked and priced
 
+- ~~**Both `DISTINCT` rungs materialize the undeduped rows before deduping**~~ — **CLOSED by item
+  1843** (2026-11-14), at **2.27x** (two segments) and **2.69x** (three). Items 1821/1822 admitted
+  `RETURN DISTINCT` to the hop-2 and chain rungs by building every row and calling `distinctRows`
+  afterwards — 625,000 rows materialized to return 8 — and each left the fusion as a named
+  remaining lever "with this one's number as the floor". The dedupe now runs INSIDE both walks for
+  a **one-column** projection, where the row key IS the value key, so a duplicate never becomes a
+  row object. `addOneColumnKey` is imported from `clauses.ts` rather than re-implemented (items
+  1561/1562 each shipped a silent answer change in that keying); the ordered spelling gains the
+  same 2.32x for free, since it sorts what the walk already deduped.
+  **The wider projection is NOT closed** and keeps the materialize-then-`distinctRows` tail: its
+  key is a `\x01`-joined string over every column, so deciding it early buys nothing. Measured flat
+  (0.99x) as a control.
+  ⚠️ **Two controls moved 1.22-1.23x FASTER and that is unexplained** — the undeduped walks at both
+  widths, which share only the new branch. Each cell ran in its OWN process, so item 762's
+  redistribution trap cannot be the cause; the fixture's noise band is wide (CLAUDE.md's "some rows
+  range 2x for the same binary"). The DISTINCT wins are ~2x the control movement, so the lever is
+  real, but the attribution is not surgical and is recorded as such rather than claimed.
+  4 mutants, **all 4 caught** — and the key-space one only after the first version of its test was
+  found to catch NOTHING: asserting that an element column has unique ids and that a string column
+  contains `'@v1'` never puts both in ONE column, which is the only place the two key spaces can
+  collide. The working test uses a `CASE` that yields the VERTEX `v1` or the STRING `'@v1'` per row.
+
 - ~~**A multi-value seed only fired for a WHOLE predicate**~~ — **CLOSED by item 264**
   (2026-10-09), at **56-93x**. `WHERE k IN [..] AND other > 5` with only `k` indexed cost **69x**
   the same `IN` alone, because `seed_from_conjuncts` picks one conjunct and `Seed` had no
