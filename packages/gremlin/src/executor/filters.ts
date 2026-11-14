@@ -1,3 +1,4 @@
+import { isTemporal } from '@lenke/core';
 import type { Graph } from '@lenke/core';
 import { ErrorCode, LenkeError } from '@lenke/errors';
 
@@ -100,6 +101,37 @@ export const whereCurrentStep = function* (
   }
 
   const endKey = valueBearing.value as string;
+  /*
+   * The OP IS FIXED FOR THE WHOLE STREAM, so the comparator is chosen once (item 1900). Before
+   * this, every row rebuilt `{ ...pred, value: end.value }` and re-entered `matches`' switch — on
+   * the Gremlin surface's largest shape, `V().as_(a).out(E).where(neq(a))` at 800,000 rows, that
+   * was 22.8% of the profile's self time.
+   *
+   *     200,000 vertices / 1,000,000 edges, one shape per process, min of 3 alternated rounds:
+   *       the per-row clone + dispatch   234.47 ms
+   *       one clone, mutated per row     224.85      ⬅ the allocation alone, 1.04x
+   *       the comparator chosen once     215.37      ⬅ 1.09x, control flat at 41-42
+   *
+   * ⚠️ SOUND ONLY FOR eq/neq, AND ONLY OFF THE TEMPORAL PATH. `matches`' eq/neq arm is `valueEq`,
+   * which is `v === b` for every non-temporal operand — the same derivation `specializePredicate`
+   * carries for the fixed-operand twin. The ORDERING ops are deliberately not specialized: their
+   * `predCmp` filters a cross-type pair to false via NaN, which does not reduce to an operator, and
+   * a mutant routing `gt` through this branch keeps every row that is merely DIFFERENT.
+   *
+   * ⚠️ THE `isTemporal` GUARD IS INSURANCE WHOSE BRANCH MAY BE UNREACHABLE, and that is a declared
+   * expected survivor in `where-mutants-1900.mjs` rather than a silence. The tag and the current
+   * value share one traverser lineage and no step between them mints a new temporal of equal value,
+   * so an equal-but-not-identical pair probably cannot meet here — but that is an argument over
+   * every value-rebinding step, not a proof from this branch's own conditions, and the downside of
+   * being wrong is a silent wrong answer rather than one typeof per row.
+   *
+   * ⚠️ `whereCompareStep` BELOW STILL CLONES PER ROW, left alone deliberately: it is the arm that
+   * must not move in the A/B above, and `neq-prof-1900.mjs`'s `wherecmp` prices it at 329 ms — the
+   * larger shape, and the follow-up.
+   */
+  const eqish = pred.op === 'eq' || pred.op === 'neq';
+  const want = pred.op === 'eq';
+  const resolved = { ...pred } as Predicate & { value: unknown };
 
   for (const t of stream) {
     const end = recallTag(t.tags, endKey, 'last');
@@ -108,7 +140,15 @@ export const whereCurrentStep = function* (
       continue; // the referenced label isn't bound → drop, as whereCompareStep does
     }
 
-    const resolved = { ...pred, value: end.value } as Predicate;
+    if (eqish && !isTemporal(end.value)) {
+      if ((t.value === end.value) === want) {
+        yield t;
+      }
+
+      continue;
+    }
+
+    resolved.value = end.value;
 
     if (matches(resolved, t.value)) {
       yield t;

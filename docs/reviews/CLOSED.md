@@ -89533,7 +89533,7 @@ trade [[executor-edits-perturb]] prices at up to 16% on unrelated rows.
 
 GATES. bun run check 0; the only source edit is `propOf`'s corrected note.
 
-## Item 1898 — nine families neither screen covered, and **all five of the biggest shapes on the Gremlin surface at scale are among them**: 432 / 310 / 272 / 203 / 160 ms, against a plain hop's 43 — ⚠️ ~~the 310 ms `dedupe().by(k)` nomination~~ **TAKEN at item 1899 (3.95x in-screen, 78.5 ms; it is now the 10th shape, not the 2nd)**; the other four stand
+## Item 1898 — nine families neither screen covered, and **all five of the biggest shapes on the Gremlin surface at scale are among them**: 432 / 310 / 272 / 203 / 160 ms, against a plain hop's 43 — ⚠️ ~~the 310 ms `dedupe().by(k)` nomination~~ **TAKEN at item 1899 (3.95x in-screen, 78.5 ms; it is now the 10th shape, not the 2nd)**; ~~and the 432 ms top shape's "path-gated by construction" reading~~ **CORRECTED at item 1900, which profiled it instead: 1.09x taken, and the remaining 5x is the generator chain, not the bookkeeping**
 
 Items 1889-1897 took both surfaces' hop, projection, count, optional and grouped shapes to measured
 ceilings. So this tick asked what the screens DO NOT ASK, which is a different question from "what is
@@ -89648,3 +89648,77 @@ every POST figure above is a min of three alternated rounds and no per-spelling 
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers; three
 runs of `bun run spelling:gremlin` (0 disagreements, 0 groups over 2x — one run reported 1, which the
 next two refuted as that run's own variance).
+
+## Item 1900 — the Gremlin surface's LARGEST shape, profiled rather than inherited: item 1898 called `where(neq)` path-gated by construction, and the profile named **two per-row allocations instead**. 1.09x taken; the remaining **5x is the generator chain**, priced here with a control the screen never had
+
+`V().as_('a').out('E').where(neq('a'))` is the biggest shape on the Gremlin surface at 200,000
+vertices / 1,000,000 edges. Item 1898 nominated it and then explained it away: `as_`/`select`/`path`
+make `planReadsPath` true, every fused walk is gated on `!tracksPath`, so "their cost is a question
+about that bookkeeping rather than a missing rung". ⚠️ **That is a claim about a BLOCKER, which
+[[check-the-blocker-still-holds]] says to re-check rather than inherit** — and it turned out to be
+half right in a way that mattered: no fused rung applies, but the cost was not the bookkeeping.
+
+      THE CONTROL THE SCREEN NEVER HAD — the identical walk with NO tag:
+
+        V().as_(a).out(E).where(neq(a))     234.47 ms   799,998 rows
+        V().as_(a).out(E).select(a)         155.87      800,000
+        V().out(E).values(n)                 42.50      800,000   ⬅ 5.5x below the top shape
+
+      PROFILE (REPS=40 so the query dominates the fixture build — at REPS=3 the top five frames
+      were all `addEdge`/`indexEdgeLabel`, i.e. the fixture):
+
+        26.5%  generatorResume              the generic pipeline's per-step generator chain
+        22.8%  whereCurrentStep             ⬅ TAKEN
+        13.2%  iterLabeled                  the per-vertex adjacency generator
+         6.6%  asStep                       `new Map(t.tags)` + `[...existing, v]` + `{...t}`
+         2.8%  cloneObject
+
+✅ **TAKEN: the predicate is resolved ONCE, not per row.** `whereCurrentStep` rebuilt
+`{ ...pred, value: end.value }` for all 800,000 rows and re-entered `matches`' switch, when the op
+is fixed for the whole stream. The two halves were measured separately, which is what makes the
+mechanism claim rather than the number the result:
+
+        the per-row clone + dispatch   234.47 ms
+        one clone, mutated per row     224.85      ⬅ the allocation alone, 1.04x
+        the comparator chosen once     215.37      ⬅ 1.09x total, control flat at 41-42
+        in the workload screen         434.91 -> 412.53 (1.05x, in-sweep inflation as usual)
+
+⚠️ **SOUND ONLY FOR eq/neq AND ONLY OFF THE TEMPORAL PATH**, which is `specializePredicate`'s own
+derivation reused: `matches`' eq/neq arm IS `valueEq`, which is `v === b` for every non-temporal
+operand. The ordering ops keep `predCmp`, whose cross-type NaN rule does not reduce to an operator —
+and the mutation run proved that matters: a mutant routing `gt` through the equality branch keeps
+every row that is merely DIFFERENT, and **the scalar ordering test was VACUOUS against it** (each
+traverser's `n` is its own tagged `n`, so "not greater" and "not equal" agree). A far VERTEX ordered
+against a tagged VERTEX is the discriminating shape.
+
+⚠️ **AND ONE SURVIVOR IS DECLARED RATHER THAN SILENCED: the `isTemporal` guard may be dead, and I
+cannot prove it.** The argument that it is: the tag and the current value share one traverser
+lineage, `as_` copies the value as-is, `values(k)` returns the STORED object, and no step between
+mints a new temporal of equal value. ⚠️ But that is an argument over every value-rebinding step, not
+a proof from the branch's own conditions — which is exactly what let item 1899 delete its dead
+adjacency arm one item earlier. Being wrong costs a silent WRONG ANSWER; being right costs one
+typeof per row. It stays, and `where-mutants-1900.mjs` names it an expected survivor with that
+reason. **The two items together are the rule: delete a dead branch when the gate proves it, keep it
+when only an argument does.**
+
+🔭 **WHAT REMAINS IS 5x AND IT IS THE GENERATOR CHAIN, now priced.** At 215 ms against the untagged
+control's 42.5, `whereCurrentStep` was never the shape's cost — `generatorResume` + `iterLabeled` are
+~40% of the profile, and this plan chains four generators resumed once per row. ⚠️ No existing rung
+can serve it: the fused walks emit bare values and build no traverser, so `!tracksPath` excludes
+every tagged plan, which is item 1898's observation standing. 🔭 **The opening it does NOT exclude:
+`V().as_(a).out(E).where(neq(a))` is semantically tag-free** — "keep each far vertex that is not its
+own near vertex", a `simplePath` of length one — so a rung could answer it if the emitted traverser's
+tag were reconstructed from the near vertex it already holds. That is the nomination, with the 5x
+beside it. ⚠️ [[executor-edits-perturb]] prices a new walk variant at up to 16% on unrelated rows and
+item 1466 declined 3.3x on `simplePath` for exactly that, so it is a pricing, not a plan.
+
+🔭 **`whereCompareStep` CARRIES THE SAME PER-ROW CLONE AND IS LEFT ALONE DELIBERATELY** — it is the
+arm that must not move in the A/B above. `neq-prof-1900.mjs`'s `wherecmp` arm
+(`as_(a).out(E).as_(b).where('b', neq('a'))`) prices it at **329 ms**, the larger shape. ⚠️ That is a
+standalone pricing and NOT a before/after control: the arm was added after the change, so there is no
+PRE reading for it.
+
+GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers; three
+runs of `bun run spelling:gremlin` (0 disagreements; one run flagged a group and the next two
+refuted it, the same bimodality item 1899 saw). MUTATION: 7 mutants, 4 caught, 3 expected survivors
+each with its reason stated at the entry.

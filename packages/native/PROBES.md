@@ -1798,3 +1798,42 @@ They disabled the `adjacentEdges` fallback in `farValues`, and no test could rea
 returns `undefined` only for `both` or a multi-label hop, both refused by the gate. The arm was dead
 by construction and is gone. An untestable branch and a dead branch look identical from the test
 side; the mutation run is what tells them apart.
+
+## `neq-prof-1900.mjs` — the tagged shapes, and the control the workload screen never had
+
+`SHAPE=neq|selectone|wherecmp|hop bun neq-prof-1900.mjs`, with `N` and `REPS`. One shape per
+process, 200,000 vertices / 1,000,000 edges.
+
+⚠️⚠️ **THE `hop` ARM IS THE WHOLE POINT.** The workload screen reports `where: neq filter` at the top
+of the Gremlin surface and gives nothing to compare it against, so item 1898 read its cost as path
+bookkeeping. The identical walk WITHOUT a tag measures 42.5 ms against the tagged shape's 234 — so
+the tag costs 5.5x, and that is the number any claim about `tracksPath` has to be judged against.
+`selectone` (156 ms) splits it further: reading the tag back is most of it; comparing against it adds
+the rest.
+
+⚠️ **PROFILE IT AT A HIGH `REPS` OR THE PROFILE IS THE FIXTURE.** At `REPS=3` the top five frames are
+`indexEdgeLabel`, `getVertexById`, `insertEdge`, `#commitNormalized` and `addVertex` — building a
+1,000,000-edge graph, not running the query. At `REPS=40` the query dominates and the frames are
+`generatorResume` 26.5%, `whereCurrentStep` 22.8%, `iterLabeled` 13.2%, `asStep` 6.6%.
+
+`wherecmp` (`as_(a).out(E).as_(b).where('b', neq('a'))`, 329 ms) exercises `whereCompareStep`, a
+different function carrying the same per-row predicate clone item 1900 removed from its sibling. ⚠️ It
+was added AFTER that change, so it is a standalone pricing of the follow-up and NOT a before/after
+control — `hop` is the control.
+
+## `where-mutants-1900.mjs` — does `where-current-specialized.test.ts` have teeth?
+
+7 mutants over `whereCurrentStep`'s specialization, with `cf.test.ts` in the test set beside the new
+file — that is where `where(neq(label))` was already covered, and running the new file alone would
+credit this change with coverage that predates it.
+
+⚠️ **IT CAUGHT A VACUOUS TEST OF MINE, which is the kind of find that justifies the run.** The
+ordering-op test asserted `where(gt('x'))` over a scalar tag returns `[]` — but each traverser's `n`
+IS its own tagged `n`, so "not greater" and "not equal" agree and a mutant routing `gt` through the
+equality branch answers `[]` either way. A far VERTEX ordered against a tagged VERTEX discriminates.
+
+⚠️ **THREE EXPECTED SURVIVORS, EACH WITH ITS REASON AT THE ENTRY** — a pure route change (answer-
+equivalent by construction, gated by `neq-prof-1900.mjs` instead), `recallTag`'s pop (no shape here
+binds one label twice), and the `isTemporal` guard, which is probably dead and is kept anyway because
+only an argument says so, not the branch's own conditions. Item 1899 deleted a dead arm one item
+earlier because its gate proved it; the pair is the rule.
