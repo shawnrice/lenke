@@ -89042,3 +89042,79 @@ INVARIANTS. All seven byte-identity fuzzers green. `bun run spelling:gremlin`: 0
 disagreements, 0 groups over 2x clear of the null control.
 
 GATES. bun run check 0 and bun run test -- --skip-nx-cache across 21 projects, each read unpiped.
+
+## Item 1890 — the GQL twin of item 1889, found by the same scale sweep: a TWO-hop count cost **3.6x a THREE-hop count**, because item 1685 gave the three-segment degree product the CSR and the two-segment one never got it. **67-86x warm, cold flat**
+
+Item 1889's lesson applied to the other surface: the GQL grid was clean of everything but its
+documented refusals at 20,000 vertices, so it was run at **200,000**. It flagged
+`count: depth2 (42.0 ms) costs 7.3x depth3 (5.7)` — a SHORTER chain costing more, the signature that
+grid was built for (item 1822) — where at 20,000 the same cells read 1.1 and 0.5 ms and look like
+timer noise.
+
+      FLOORED isolated, one shape per process, 200,000 vertices / 200,000 edges, median of 9:
+        MATCH (a)-[:E]->(b) RETURN count(*)                  0.00 ms   a stored counter
+        … -[:E]->(c)   TWO segments                         23.97      ⬅ the degree product
+        … -[:E]->(d)   THREE segments                        6.72      ⬅ the SAME product, on a CSR
+        … four segments                                      19.63
+
+🔬 **AND THE ROUTE READ SAID IT WAS NOT A BETWEEN-RUNGS GAP**: `compileLinear` reports
+`countShortcut` at every depth, so the difference is INSIDE one rung's arms. `buildThreeHopCount`
+got the CSR at item 1685 — its note records "`off[s + 1] - off[s]` on a `topologyVersion`-keyed CSR
+instead of a string-keyed `edgesFromByLabel.get(id)` … measured at 242.94x / 297.93x / 278.24x" —
+and `buildTwoHopCount` still reads `sideOfVertex(b, …)` twice per middle, which item 1334 had taken
+from an id-keyed `Map.get` to the vertex's own memoized box. That was the step before this one.
+
+✅ **THE FIX IS THE SAME PRODUCT OVER THE SAME CSR**: `count = Σ_slot (indeg) × (outdeg)` with both
+degrees read as `off[s + 1] - off[s]`. No `Map.get` and no `Set` in the loop.
+
+      kill-switch A/B, 3 order-alternated rounds, one shape per process, 200,000 vertices:
+        depth 2  WARM  24.0 23.3 23.1  ->  0.4 0.2 0.3    67x and 86x across two runs
+        depth 2  COLD  86.0 83.0 89.0  ->  89.0 81.0 82.0   1.05x
+        depth 3  [CONTROL]                                  0.96-1.06x
+        depth 4  [CONTROL]                                  0.99-1.00x
+
+In-grid at 200,000 the `count` row is now **0.0 / 0.5 / 5.9 / 21.7 / 22.7** across depths 1-5 and
+the inversion flag is gone.
+
+⚠️ **THE COLD COLUMN NEEDED THE SAME POLICY ITEM 1889 BUILT, and the first measurement said so:
+warm 23.97 → 0.20 but COLD 91 → 181 ms**, because the CSR's build is paid by the first query after
+any topology write. Break-even without a policy is ~4 calls. `csrAskedBefore` — the GQL port of
+item 1889's `seenBefore`, keyed on (graph, `topologyVersion`, both legs' direction and types) —
+defers the build to the SECOND ask, so a one-shot count pays nothing, a write/count/write/count
+workload never builds at all, and a repeated count pays once. After it, cold is **1.05x** (the first
+run read 0.87x and did not reproduce; the cold reps spread ~±10%).
+
+⚠️ **AND THE ARM MOVED FILES FOR A LINT CAP, which is worth recording because it is not a design
+choice.** `shortcuts.ts` is at oxlint's `max-lines: 3000` (comments and blanks skipped) and the call
+site took it to 3003. The functions live in `csr-cache.ts` — which owns `csrFor` and is already the
+leaf module for this cache — and the call site is one `twoHopCsrProduct(graph, {…})`. The gate stays
+a separately exported pure function.
+
+🦷 **MUTATION: 11 CAUGHT, 0 SURVIVORS — and SIX of the mutants target the gate and the policy rather
+than the arithmetic**, which is where the evidence was missing. Three needed a test the behavioural
+ones could not provide, because **both routes return the same number**:
+
+- **`the second-ask policy claims the FIRST ask too` survived** every answer test (taking the CSR
+  immediately is answer-equivalent). Caught by testing `twoHopCsrProduct` DIRECTLY: `null` on the
+  first ask, a number on the second — item 1889's shape of test, which `csrAskedBefore`'s own unit
+  tests cannot supply because they test the function and not its use.
+- **`the policy key ignores the SECOND leg` survived** that too. Caught by asking two shapes that
+  share a direction and differ in the second leg's type: a coarser key lets one shape's first ask
+  pay for another's build, so the second shape answers on its own first ask.
+- `the policy never resets on a topology write` needed `want: 2, occurrence: 1` — `csrFor`'s own
+  cache uses the same generation pattern, and the anchor assertion said so rather than
+  half-applying the patch.
+
+⚠️ **THREE OF MY HAND ORACLES WERE WRONG AND WERE RE-DERIVED** (the engine then matched the
+correction exactly): `(x)<-[:E]-(y)-[:E]->(z)` is the sum of SQUARED out-degrees (9, not 5),
+`(x)-[:E]-(y)-[:E]->(z)` is undirected degree times out-degree (12, not 8), and the middle
+constraint `y.k = 2` selects one vertex because `k` is the id's LENGTH, not its index.
+
+🔭 **THE NEXT CANDIDATE IS NOW VISIBLE IN THE SAME ROW**: at 200,000 the THREE-segment count is
+5.9 ms and the FOUR-segment one 21.7, both already on the CSR — so that pair is a layout question
+about the sweep rather than a missing structure.
+
+INVARIANTS. All seven byte-identity fuzzers green. `bun run spelling` at `SPELL_N=200000
+SPELL_REPS=9`: 0 answer disagreements, 0 groups over 2x clear of the null control.
+
+GATES. bun run check 0 and bun run test -- --skip-nx-cache across 21 projects, each read unpiped.

@@ -51,6 +51,14 @@ something six items had missed: the ONE-hop values walk cost **102 ns a row** wh
 cost **16** while emitting four times the rows. At 20,000 the same pair reads 54 and 17 — a third of
 the gap, which reads as a constant factor rather than a structural one.
 
+**ITEM 1890 DID THE SAME ON THE GQL SIDE AND FOUND THE TWIN**: at `NODES=200000` the grid flagged
+`count: depth2 (42.0 ms) costs 7.3x depth3 (5.7)` — a two-hop count slower than a three-hop one,
+because item 1685 gave the three-segment degree product the CSR and the two-segment one never got
+it. 67-86x warm with cold flat, via the same second-ask policy. Its instruments are
+`count-depth-floor-1890.mjs`, `count-route-1890.mjs` (which rung answers a count at each depth),
+`count-csr-ab-1890.mjs` (warm AND cold) and `count-csr-mutants-1890.mjs` (11/11, six of them
+aimed at the gate and the policy because both routes return the same number).
+
 So: **re-run the screens at 10x before concluding a surface is done.** The instruments:
 
 - **`hop-csr-ab-1889.mjs`** — the warm AND cold A/B. ⚠️ Its cold column is the point: before the

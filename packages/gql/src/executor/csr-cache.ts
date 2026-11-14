@@ -8,6 +8,7 @@
  */
 import type { Edge, Graph, Vertex } from '@lenke/core';
 
+import type { LabelExpr } from '../ast.js';
 import { edgesOfTypes } from './adjacency.js';
 
 /** The flattened adjacency the level recurrence reads. Built once, then READ ONLY — every write to
@@ -131,4 +132,168 @@ export const csrFor = (graph: Graph, inward: boolean, types: string[] | undefine
   entry.byShape.set(key, built);
 
   return built;
+};
+
+/**
+ * Does the UNFILTERED two-hop count — the degree product — belong on the CSR? (item 1890)
+ *
+ * ⚠️⚠️ **THE SCALE SWEEP FOUND THIS, and the shape of the finding is the same as item 1889's one
+ * surface over.** `rung-gap-screen.mjs` at `NODES=200000` flags `count: depth2 (42.0 ms) costs 7.3x
+ * depth3 (5.7)` — a SHORTER chain costing more, which is the signature that grid exists for. Floored
+ * isolated, one shape per process, 200,000 vertices / 200,000 edges, median of 9:
+ *
+ * ```text
+ *   MATCH (a)-[:E]->(b) RETURN count(*)                      0.00 ms   a stored counter
+ *   MATCH (a)-[:E]->(b)-[:E]->(c) RETURN count(*)           23.97      ⬅ the degree product
+ *   … -[:E]->(d) (three segments)                            6.72      ⬅ the SAME product, on a CSR
+ *   … four segments                                         19.63
+ * ```
+ *
+ * **The three-segment product got the CSR at item 1685 and the two-segment one never did.** That
+ * item's own note says what it replaced and what it was worth: "`off[s + 1] - off[s]` on a
+ * `topologyVersion`-keyed CSR instead of a string-keyed `edgesFromByLabel.get(id)`, which item 1684
+ * counted at |V| + |E| lookups for this shape and measured at 242.94x / 297.93x / 278.24x". The
+ * two-segment loop still reads `sideOfVertex(b, …)` TWICE per middle — item 1334 already took those
+ * from an id-keyed `Map.get` to the vertex's own memoized box, which is the step before this one.
+ *
+ * ⚠️ THE GATE IS THE DEGREE PRODUCT'S OWN CONDITIONS, minus what a CSR degree cannot express:
+ *
+ *   - `firstBoth`/`secondBoth` — an UNDIRECTED side is two boxes plus a self-loop correction
+ *     (`undirectedSide`, `loopsOfTypes`), not one run length. Refused, as `twoHopFilteredCsrApplies`
+ *     refuses it.
+ *   - `aEff`/`cEff` — a non-vacuous END label makes the side an endpoint-filtered scan rather than a
+ *     bucket size (`effectiveLabel`'s own point), so the degree is not a run length either.
+ *   - `midEff` and `gated` — a MIDDLE label or constraint is per-element and would be a per-slot
+ *     mask over all of `order` where the current loop iterates only the label bucket. That is a
+ *     different trade (item 1688's `seeded` lesson) and is left on the existing loop.
+ */
+export const twoHopUnfilteredCsrApplies = (s: {
+  firstBoth: boolean;
+  secondBoth: boolean;
+  aEff: LabelExpr | undefined;
+  cEff: LabelExpr | undefined;
+  midEff: LabelExpr | undefined;
+  gated: boolean;
+}): boolean =>
+  !s.firstBoth &&
+  !s.secondBoth &&
+  s.aEff === undefined &&
+  s.cEff === undefined &&
+  s.midEff === undefined &&
+  !s.gated;
+
+/**
+ * `count = sum over b of indeg(b) * outdeg(b)`, both degrees read as CSR run lengths.
+ *
+ * ⚠️ NO MAP LOOKUP AND NO SET ITERATION IN THE LOOP, which is the whole change: two `Int32Array`
+ * subtractions per slot where the existing loop takes two memoized-box `Map.get`s plus a `.size`.
+ * The arithmetic is the caller's, unchanged.
+ *
+ * ⚠️ `csrFor`'s `inward` IS THE NEGATION of a side's `out`-ness, the same conversion
+ * `twoHopFilteredCsrCount` documents: `out` reads `edgesFromByLabel`.
+ */
+export const twoHopUnfilteredCsrCount = (
+  graph: Graph,
+  spec: {
+    toAOut: boolean;
+    t1: string[] | undefined;
+    fromCOut: boolean;
+    t2: string[] | undefined;
+  },
+): number => {
+  const legA = csrFor(graph, !spec.toAOut, spec.t1);
+  const legC = csrFor(graph, !spec.fromCOut, spec.t2);
+  const n = legA.order.length;
+  let count = 0;
+
+  for (let s = 0; s < n; s += 1) {
+    const ways = legA.off[s + 1] - legA.off[s];
+
+    if (ways === 0) {
+      continue;
+    }
+
+    count += ways * (legC.off[s + 1] - legC.off[s]);
+  }
+
+  return count;
+};
+
+/**
+ * The gate and the count as ONE entry — `null` declines, a number is the answer.
+ *
+ * ⚠️ IT EXISTS FOR THE `max-lines` CAP, not for taste: `shortcuts.ts` is at 3,000 non-comment lines
+ * and the gate's argument object written at the call site took it to 3,001. The gate itself stays a
+ * separately exported pure function with its own tests (`twoHopUnfilteredCsrApplies`), which is
+ * what `perf-gate-needs-its-own-test` asks for — this only moves the plumbing.
+ */
+/**
+ * Has this (graph, topology version, leg shape) been asked for BEFORE? The first ask returns
+ * `false` and records it; every later ask returns `true`.
+ *
+ * ⚠️⚠️ **THE CSR'S BUILD IS PAID BY THE FIRST QUERY AFTER ANY TOPOLOGY WRITE, and for this shape the
+ * build DWARFS the walk.** Measured isolated at 200,000 vertices / 200,000 edges, one shape per
+ * process: the two-hop count's warm cost went **23.97 ms → 0.20** (two `Int32Array` subtractions a
+ * slot instead of two memoized-box `Map.get`s plus a `.size`), while its COLD first rep went
+ * **91 ms → 181**. Break-even without a policy is ~4 calls.
+ *
+ * Deferring the build to the SECOND ask removes the loss and keeps the win, which is item 1889's
+ * policy on the Gremlin side, ported verbatim because the trade is identical:
+ *
+ *   - a ONE-SHOT count never builds and pays nothing;
+ *   - a WRITE-HEAVY workload (write, count, write, count) never reaches a second ask on any one
+ *     topology version, so it never builds either;
+ *   - a repeated count pays the build once and is ~120x from then on.
+ *
+ * ⚠️ IT IS A ROUTE CHOICE, so it is answer-equivalent and every mutant of it survives the
+ * behavioural tests — [[perf-gate-needs-its-own-test]]. Hence a pure exported function with its own
+ * unit tests, including that it RESETS on a topology write.
+ *
+ * ⚠️ AND IT IS KEYED PER LEG SHAPE, not per graph: two different two-hop counts over different edge
+ * types are different CSRs and each amortizes on its own.
+ */
+const asked = new WeakMap<Graph, { tv: number; shapes: Set<string> }>();
+
+export const csrAskedBefore = (graph: Graph, key: string): boolean => {
+  const tv = graph.topologyVersion;
+  let entry = asked.get(graph);
+
+  if (entry === undefined || entry.tv !== tv) {
+    entry = { tv, shapes: new Set() };
+    asked.set(graph, entry);
+  }
+
+  if (entry.shapes.has(key)) {
+    return true;
+  }
+
+  entry.shapes.add(key);
+
+  return false;
+};
+
+export const twoHopCsrProduct = (
+  graph: Graph,
+  spec: {
+    firstBoth: boolean;
+    secondBoth: boolean;
+    aEff: LabelExpr | undefined;
+    cEff: LabelExpr | undefined;
+    midEff: LabelExpr | undefined;
+    gated: boolean;
+    toAOut: boolean;
+    t1: string[] | undefined;
+    fromCOut: boolean;
+    t2: string[] | undefined;
+  },
+): number | null => {
+  if (!twoHopUnfilteredCsrApplies(spec)) {
+    return null;
+  }
+
+  // ⚠️ THE SECOND-ASK POLICY — see `csrAskedBefore`. The key is both legs' direction and types, so
+  // each distinct two-hop count amortizes on its own.
+  const key = `${spec.toAOut ? '<' : '>'}${(spec.t1 ?? []).join('\u0000')}|${spec.fromCOut ? '>' : '<'}${(spec.t2 ?? []).join('\u0000')}`;
+
+  return csrAskedBefore(graph, key) ? twoHopUnfilteredCsrCount(graph, spec) : null;
 };

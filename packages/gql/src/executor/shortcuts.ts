@@ -67,6 +67,7 @@ import type {
   Row,
 } from './core.js';
 import { compileExpr, compilePredicate, specializeNarrowPred, percentileFraction } from './core.js';
+import { twoHopCsrProduct } from './csr-cache.js';
 import { freePredicateVars } from './expr-analysis.js';
 import { filteredChainCsrApplies, filteredChainCsrCount } from './filtered-chain-csr.js';
 import { plainNode, plainRel, side as hopSide, sideOfVertex } from './hop-sides.js';
@@ -3440,6 +3441,35 @@ const buildTwoHopCount = <T>(
     // Once per execution, not per vertex: does this graph hold a loop of a wanted type at all?
     const aLoops = aBoth && loopsOfTypes(graph, t1);
     const cLoops = cBoth && loopsOfTypes(graph, t2);
+
+    /**
+     * ⚠️ THE CSR DEGREE PRODUCT (item 1890), consulted once per execution and before the middles are
+     * iterated. The loop below reads TWO memoized-box `Map.get`s plus a `.size` per middle; this arm
+     * reads two `Int32Array` subtractions per slot. Item 1685 made exactly this change for the
+     * THREE-segment product and the two-segment one never got it, which is why a two-hop count
+     * measured **23.97 ms against the three-hop's 6.72** at 200,000 vertices.
+     *
+     * `twoHopUnfilteredCsrApplies` carries the conditions and is a pure function with its own test,
+     * for `perf-gate-needs-its-own-test`'s reason: the two routes return the same number, so no
+     * answer test can tell a wrongly-widened gate from a right one.
+     */
+    const viaCsr = twoHopCsrProduct(graph, {
+      firstBoth: aBoth,
+      secondBoth: cBoth,
+      aEff,
+      cEff,
+      midEff: effectiveLabel(graph, midLabel),
+      gated: gate !== undefined,
+      toAOut,
+      t1,
+      fromCOut,
+      t2,
+    });
+
+    if (viaCsr !== null) {
+      return rowOf(viaCsr);
+    }
+
     // One binding map reused across middles, the idiom `buildNodeCount` already uses:
     // `inlineHolds` overwrites the node's own variable per element.
     const binding = new Map<string, unknown>();
