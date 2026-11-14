@@ -2033,9 +2033,48 @@ const relVariableHidden = (
  *     constrained anchor — the same list item 510's count rung refuses, for the same reasons.
  */
 /** The anchor-and-optional-hop shape `detectOptionalHopProjection` walks, or `null`. */
+/**
+ * Does the RETURN clause read this name? — item 1850.
+ *
+ * ⚠️ THE RETURN IS THE ONLY POSSIBLE READER HERE, and that is a property of `optionalHopShape`'s
+ * other refusals rather than an assumption: both clauses' `WHERE`s are refused outright
+ * (`m.where !== undefined`, `om.where !== undefined`), and `plainRowProjection` refuses a `star`
+ * projection, which would bind every name in scope. So nothing but these expressions can mention
+ * the edge variable.
+ *
+ * ⚠️ A SUBQUERY ANYWHERE REFUSES, because `freePredicateVars` does not see inside one — the same
+ * guard `nameIsUnread` makes in `rewrites.ts`, restated here rather than imported because that
+ * module imports THIS one and the cycle is the larger cost.
+ *
+ * ⚠️ THE SORT KEYS ARE SEARCHED AND THAT IS UNREACHABLE TODAY — a mutant removing them SURVIVES
+ * (item 1850), and the reason is worth stating so the line is not later read as load-bearing or
+ * deleted as dead. Two gates get there first: the unordered rung refuses any `orderBy` at all
+ * (`plainRowProjection`), and the ordered one (item 1849) refuses a sort key that does not name an
+ * OUTPUT COLUMN — so `ORDER BY e.w` is already declined by `outputColumnSorts`, and a key that
+ * DOES name an output column is reachable through `projection.items`, which is searched above.
+ * The line stays because it costs nothing and the day either gate relaxes it becomes the guard
+ * that matters; `groupBy`/`having` are included for the same reason.
+ */
+const returnReadsName = (ret: Extract<Clause, { kind: 'return' }>, name: string): boolean => {
+  const { projection } = ret;
+  const exprs: Expr[] = [
+    ...projection.items.map((it) => it.expr),
+    ...(projection.orderBy ?? []).map((o) => o.expr),
+    ...(projection.groupBy ?? []),
+    ...(projection.having === undefined ? [] : [projection.having]),
+  ];
+
+  if (exprs.some(hasSubquery)) {
+    return true;
+  }
+
+  return exprs.some((e) => freePredicateVars(e).has(name));
+};
+
 const optionalHopShape = (
   m: Clause,
   om: Clause,
+  ret: Extract<Clause, { kind: 'return' }>,
 ): {
   startVar: string;
   startLabel: LabelExpr | undefined;
@@ -2083,7 +2122,16 @@ const optionalHopShape = (
 
   if (
     hop.start.variable !== startVar ||
-    rel.variable !== undefined ||
+    /**
+     * ⚠️ AN UNREAD EDGE VARIABLE IS ADMITTED SINCE ITEM 1850, where it used to refuse outright.
+     * Naming an edge nothing reads cost **9.4x for IDENTICAL rows** — 57.6 ms against 6.1, 80,000
+     * rows either way — because the binding alone dropped this rung. `dropUnreadEdgeVar` does not
+     * reach it: that pass requires a QUANTIFIED segment and only scans the FIRST clause, and this
+     * binding is unquantified on the second. Widening the pass instead was tried and REVERTED — it
+     * broke the "name a rel variable to force the general matcher" device that six other test
+     * files use as their oracle, which would have silently made those comparisons vacuous.
+     */
+    (rel.variable !== undefined && returnReadsName(ret, rel.variable)) ||
     rel.direction === 'both' ||
     rel.properties !== undefined ||
     rel.where !== undefined ||
@@ -2161,7 +2209,7 @@ export const detectOptionalHopProjection = (
     return null;
   }
 
-  const shape = optionalHopShape(m, om);
+  const shape = optionalHopShape(m, om, ret);
 
   if (shape === null || !plainRowProjection(ret.projection)) {
     return null;

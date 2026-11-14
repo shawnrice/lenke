@@ -195,6 +195,30 @@ absence** — `{k: null}` is the one place in a pattern where that distinction i
 
 ## 5. Open — unblocked and priced
 
+- ~~**An UNREAD edge variable dropped the OPTIONAL-hop rung**~~ - **CLOSED by item 1850**
+  (2026-11-14), at **10.51x** - and **11.94x** composed with item 1849's ordered rung, 7.80x over a
+  type union. `optionalHopShape` refused `rel.variable !== undefined` outright, so naming an edge
+  nothing reads cost **57.6 ms against 6.1 for IDENTICAL rows** (80,000 either way). The gate now
+  asks whether the RETURN actually reads the name.
+  **The READ spelling still declines, by design** - the walk never binds the edge, so a rung that
+  took it would read a name that is not there. Measured flat as a control (0.94x), as is a read
+  that appears ONLY in `ORDER BY`.
+  ⚠️ **THE OBVIOUS FIX WAS BUILT AND REVERTED.** Widening `dropUnreadEdgeVar` (drop the quantifier
+  requirement, scan every clause rather than only the first) works and is more general - and it
+  broke **17 tests across six files**, because "name a rel variable to force the general matcher"
+  is the ORACLE device those files use. The dangerous half is not the 17 failures: it is that the
+  comparisons which still passed would have become the rung against ITSELF. A local gate on one
+  rung's admission changes one route and nothing else's.
+  ⚠️ **ITEM 1568'S "HARMLESS ON A SINGLE HOP" IS NOW CORRECTED IN PLACE** - its 0.2-vs-0.2 ms
+  measurement was a PLAIN hop, and the same binding on an OPTIONAL hop is 9.4x. The heading said
+  the cost "appears only where a binding disqualifies the var-length rungs"; it disqualifies this
+  one too.
+  5 mutants, **4 caught** including the null-result control. The survivor is the sort-key search in
+  the unread test, which is UNREACHABLE today and documented in place rather than deleted: the
+  unordered rung refuses any `orderBy`, and the ordered one refuses a sort key that does not name an
+  output column - so `ORDER BY e.w` is declined before the search runs, and a key that does name a
+  column is reachable through `projection.items`, which IS searched.
+
 - ~~**An `ORDER BY` dropped the OPTIONAL-hop rung**~~ - **CLOSED by item 1849** (2026-11-14), at
   **11.24x** (two sort keys), **13.83x** (one) and **9.37x** (over a type union).
   `detectOptionalHopProjection` gates on `plainRowProjection`, which refuses an `orderBy`, so
@@ -203,10 +227,9 @@ absence** — `{k: null}` is the one place in a pattern where that distinction i
   detector's WHOLE gate, and sorts the rows - item 1827's trick at its third call site.
   **Four controls flat:** the plain optional 1.05x, a plain hop with ORDER BY 0.98x, and the two
   SIBLING CLIFFS below at 1.01x each, which is why they are in the table.
-  **TWO MORE CLIFFS ON THIS RUNG ARE MEASURED AND STILL OPEN**, found by the same sweep and left
-  deliberately: an edge VARIABLE (`-[e:E]->` reading `e.w`) costs **1045 ns a row** and an OUTER
-  clause `WHERE` **1028**, both ~9.4x against the 111 baseline, and neither is a sort problem. Each
-  makes the rung decline outright (`routes()` returns `[]`).
+  ~~**TWO MORE CLIFFS ON THIS RUNG ARE MEASURED AND STILL OPEN**~~ - the EDGE-VARIABLE half is
+  **CLOSED by item 1850 at 10.51x** (for an UNREAD variable; a read one still declines by design).
+  The OUTER clause `WHERE` remains open at **1028 ns a row** against the 111 baseline.
   **`withoutSortOrWindow` is now shared** from `ordered-rows.ts` beside `outputColumnSorts` and
   `sortedRows`, instead of being copied in `chain-projection` and `hop2-projection` - item 1832's
   near-twin hazard, two identical helpers that must stay identical with nothing to make a drift
