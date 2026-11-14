@@ -1877,3 +1877,41 @@ for fifteen items.
 the non-null fields: no willing rung at all means the general path regardless of precedence, which is
 how item 1901 established that `ORDER BY n.k + 1` reaches nothing while `ORDER BY n.k + 1 LIMIT 3`
 reaches `nodeProjection`.
+
+## `sort-gate-mutants-1902.mjs` — does the unwindowed expression-sort gate have teeth?
+
+9 mutants over one gate in `deferredRoute`, with `page-fold-fault.test.ts` and two ordered-projection
+suites in the test set beside the new file — that is where the refusal this change does NOT touch is
+guarded, and running the new file alone would credit the change with coverage that predates it.
+
+⚠️ **THE MUTANT THAT MATTERS admits a `SKIP` WITH NO `LIMIT`**, because that is the case item 1062
+refuses for a stated correctness reason: with no cap the general path projects every row and drops
+the skipped ones afterwards, so a faulting item raises, while ranking-then-projecting emits fewer
+rows than it projects and would silently not raise.
+
+⚠️⚠️ **AND THE HARNESS CONTRADICTED THE AUTHOR IN THE DIRECTION NOBODY CHECKS.** "The arm is never
+taken unwindowed" was declared an expected survivor on `perf-gate-needs-its-own-test` grounds
+(reverting the change is answer-equivalent) and is actually CAUGHT, by the ROUTE assertions in
+`unwindowed-expr-sort.test.ts`. The harness reported "was expected to SURVIVE and did not — update
+the entry", which is worth knowing a survivor list can do.
+
+## ⚠️ WHAT `bun run fuzz` AND `bun run spelling` BOTH MISSED, AND WHY (item 1902)
+
+Both instruments had the same blind spot, created the same way: item 1062 fixed the WINDOWED
+alias-vs-expression sort and everything written afterwards asked the question with a `LIMIT`.
+
+- the workload corpus's `withOrder` always ordered by the projection's **alias**, so no generated
+  query ever spelled a sort key as an expression. `withOrder` now draws a monotone expression
+  spelling where one exists, and the draw was **counted** (78 of ~2,350 `projection` draws) rather
+  than assumed.
+- every alias-vs-expression group in `spelling-probe.ts` carried `LIMIT 10`. Two unwindowed groups
+  added. ⚠️ **They still flag at 3.1x / 2.7x isolated** (`SPELL_N=200000 SPELL_REPS=9`), which is the
+  priced residual — per-row compiled-key evaluation plus a `KeyRow` allocation against the plain
+  arm's direct column read — and NOT a new regression.
+- `packages/native/src/unwindowed-expr-sort-parity.test.ts` is the direct cross-engine cover: 15
+  shapes, TS against native, compared as ORDER rather than as a multiset, over a fixture with
+  DUPLICATE keys because a distinct-key fixture cannot see a tiebreak change.
+
+🔭 The HOP twin is still open: `deferredRoute` is node-scan only, so a hop's expression sort key
+measures **1190.77 ms against 276.89 — 4.3x over 800,000 rows**. Item 1063 built the hop version of
+item 1062's arm for windowed sorts, so the opening is in the same place.

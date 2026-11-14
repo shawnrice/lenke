@@ -427,6 +427,26 @@ const GROUPS: [string, readonly string[]][] = [
       'MATCH (n:P) RETURN n.k + 1 AS c ORDER BY n.k + 1 LIMIT 10',
     ],
   ],
+  [
+    // ⚠️⚠️ THE UNWINDOWED TWIN OF THE GROUP ABOVE, AND ITS ABSENCE IS WHY THE GAP SURVIVED TO ITEM
+    // 1901. Every alias-vs-expression group in this file carried a `LIMIT 10`, because item 1062
+    // built the deferred compiled-key arm for WINDOWED sorts — so the probe only ever asked the
+    // question on the side that had been fixed. Without a window the expression key reached no
+    // rung at all: 173.38 ms against the bound name's 19.55 over 200,000 rows, **8.9x**, same rows
+    // in the same order. Item 1902 admitted the no-window case to the same arm (3.75x of it).
+    'ORDER BY alias vs its expression, NO WINDOW (items 1901/1902)',
+    [
+      'MATCH (n:P) RETURN n.k + 1 AS c ORDER BY c',
+      'MATCH (n:P) RETURN n.k + 1 AS c ORDER BY n.k + 1',
+    ],
+  ],
+  [
+    // The MONOTONE pair, which is the spelling an application actually writes: the projection is a
+    // plain property and the sort key is an expression over it. Adding 1 cannot reorder anything,
+    // so the two are one question — and this is the pair item 1901 measured at 8.9x.
+    'ORDER BY a bare property vs a monotone expression of it, NO WINDOW (item 1902)',
+    ['MATCH (n:P) RETURN n.k AS x ORDER BY x', 'MATCH (n:P) RETURN n.k AS x ORDER BY n.k + 1'],
+  ],
   // Item 1063's HOP twin of the group above. The hop rung refused a windowed sort whose
   // projection could fault, so these two cost 48-50 ms apiece against 11 for the plain spelling;
   // deferring the projection brought both to ~12.5. They are in here because item 1062's first

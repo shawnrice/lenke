@@ -89723,7 +89723,7 @@ runs of `bun run spelling:gremlin` (0 disagreements; one run flagged a group and
 refuted it, the same bimodality item 1899 saw). MUTATION: 7 mutants, 4 caught, 3 expected survivors
 each with its reason stated at the entry.
 
-## Item 1901 — item 1898's coverage sweep applied to GQL, and it found the same thing: **the surface's biggest shapes are outside the corpus**. `ORDER BY <an expression>` costs **8.9x** the bound-name spelling for the same rows in the same order — and the WINDOWED form of that very key takes the rung, so the capability is already there
+## Item 1901 — item 1898's coverage sweep applied to GQL, and it found the same thing: **the surface's biggest shapes are outside the corpus**. `ORDER BY <an expression>` costs **8.9x** the bound-name spelling for the same rows in the same order — and the WINDOWED form of that very key takes the rung, so the capability is already there — ✅ **TAKEN at item 1902 (3.75x; ~2.8x residual, and the HOP half is still open at 4.3x / 1190 ms)**
 
 Items 1879/1880 split the existing seventeen families until "the addressable time is exhausted" —
 a conclusion that is only ever true of the shapes a screen HAS. Item 1898 falsified exactly that on
@@ -89796,3 +89796,89 @@ candidate parses and matches rows, and `gql-coverage-screen-1901.mjs`), four cen
 corrections above.
 
 GATES. bun run check 0.
+
+## Item 1902 — item 1901's nomination TAKEN: an unwindowed `ORDER BY <an expression>` reaches the deferred compiled-key arm, **3.75x**. The whole change is ONE GATE, because item 1062 had already built the machinery and bolted it to windows only — and the probe that should have caught that only ever asked the question with a `LIMIT`
+
+Item 1901 measured `ORDER BY n.n + 1` at **173.38 ms** against the bound name's **19.55** over the
+same 200,000 rows in the same order, and found the decisive fact: adding a `LIMIT 3` made the same
+key cost **16.50**, because `deferredRoute` served it. So the engine already evaluated arbitrary
+expression sort keys and refused only the unwindowed half.
+
+✅ **ONE GATE, AND NOTHING ELSE.** `deferredSortedNodeWalk` already hands its `plan` to the one
+sorter, which already accepts `limit: undefined` — it is what `outputColumnSorts` passes on the plain
+arm. So the change is `deferredRoute` admitting `skip === undefined && limit === undefined`, plus
+carrying `limit: undefined` instead of a narrowed number. No new walk, no new comparator.
+
+      A/B on one build, 200,000 vertices / 1,000,000 edges, ONE SHAPE PER PROCESS,
+      median of 7 less 2 warm-up, min of 3 alternated rounds:
+
+        RETURN n.n AS x ORDER BY n.n + 1        173.38  ->   46.26 ms    ⬅ 3.75x
+        ORDER BY n.x * 2, n.n (two keys)        179.03  ->   64.32       ⬅ 2.78x
+        CONTROL  ORDER BY x (the plain arm)      19.55  ->   18.51       ⬅ flat
+        CONTROL  hop ORDER BY b.n + 1          1197.09  -> 1190.77       ⬅ flat, see below
+
+⚠️⚠️ **WHY ADMITTING NO WINDOW IS NOT THE CASE THE RULES REFUSE, which is the whole correctness
+argument.** `deferredRoute`'s `limit === undefined` rule is about a `SKIP` with no `LIMIT`: there the
+general path sorts and projects EVERY row and drops the skipped ones afterwards, so a faulting item
+raises — while ranking-then-projecting emits fewer rows than it projects and would silently not
+raise. `page-fold-fault.test.ts` caught item 1062's first cut admitting exactly that. With NO window
+nothing is discarded, so both paths evaluate every key and every item and raise on the same inputs.
+✅ **AND THE ORDER MATCHES TOO**, which is the half worth checking rather than assuming: the general
+path sorts the INPUT BINDINGS first (item 145), so keys-before-items is its order and this arm's.
+
+      ROUTES, read off `compileLinear` — the two refusals are asserted as refusals:
+        ORDER BY n.k + 1              nodeProjection   ⬅ new
+        ORDER BY n.k + 1 LIMIT 3      nodeProjection       (unchanged)
+        ORDER BY n.k                  nodeProjection       (item 642's plain arm, untouched)
+        ORDER BY n.k + 1 OFFSET 1     GENERAL PATH     ⬅ still refused, for the reason above
+        ORDER BY n.k + 1 LIMIT 0      GENERAL PATH     ⬅ still refused
+
+⚠️ **THE ORACLE IS `OFFSET 0` AND IT NEEDS NO KILL SWITCH.** Because a `SKIP` with no `LIMIT` still
+declines, `… ORDER BY <expr> OFFSET 0` runs the GENERAL PATH and drops nothing — so every answer is
+asserted against the same query written both ways, comparing the new route to the old one directly
+rather than to a hand-written array that could encode my own mistake. The monotone pair
+(`ORDER BY n.k + 1` against `ORDER BY n.k`) adds a THIRD route to the comparison.
+
+🛑 **`bun run fuzz` WAS BLIND TO THE SHAPE, so a green sweep would have said nothing.** The workload
+corpus's `withOrder` always orders by the projection's ALIAS, and `workload-queries.ts`'s own header
+names the hazard: _"a generator that only ever spells a query one way guards only the route that
+spelling takes, and the fuzzer cannot tell you which route that is."_ Two fixes, not one:
+
+- `packages/native/src/unwindowed-expr-sort-parity.test.ts` — 15 shapes, TS against native, compared
+  as ORDER (not a multiset: `ORDER BY` makes order part of the answer and TIE order is observable
+  between the engines, item 605), over a fixture with DUPLICATE keys because a distinct-key fixture
+  cannot see a tiebreak change at all. All 15 byte-identical.
+- `withOrder` now draws an EXPRESSION spelling where a monotone one exists, used by the `projection`
+  family's plain `RETURN n.n AS x` body. ⚠️ Verified it is actually DRAWN — 78 of ~2,350 projection
+  draws — because a coverage claim nobody counted is the same mistake one level up.
+
+🔭 **AND THE SPELLING PROBE'S OWN BLIND SPOT IS THE REASON THIS SURVIVED.** Every
+alias-vs-expression group in `spelling-probe.ts` carried a `LIMIT 10`, because item 1062 fixed the
+windowed side and the groups were written against it — so the probe only ever asked the question on
+the side that worked. Two unwindowed groups added. ⚠️ **They still FLAG, and that is correct**:
+isolated at `SPELL_N=200000 SPELL_REPS=9` they read **3.1x** (17.03 against 52.39) and **2.7x** (14.96
+against 39.83). The residual is the per-row compiled-key evaluation plus the `KeyRow` allocation
+against the plain arm's direct column read — a known, priced gap, not a new regression.
+
+🔭 **THE HOP SHAPE IS UNTOUCHED AND IT IS THE LARGER ABSOLUTE**: `deferredRoute` is node-scan only,
+so `MATCH (a:T)-[:E]->(b:T) RETURN b.n AS x ORDER BY b.n + 1` still measures **1190.77 ms against
+276.89 for the alias spelling — 4.3x over 800,000 rows**, the most common shape in the language.
+Item 1063 built the hop twin of item 1062's arm for WINDOWED sorts, so the same opening is there in
+the same place. That is the next item, and it is priced here rather than attempted.
+
+      MUTATION: 9 mutants, 8 caught, 1 expected survivor (`sort-gate-mutants-1902.mjs`), with
+      `page-fold-fault.test.ts` and two ordered-projection suites in the test set beside the new
+      file — running the new file alone would credit this change with coverage that predates it.
+
+✅ **AND THE HARNESS CONTRADICTED ME IN THE DIRECTION NOBODY CHECKS.** I declared "the arm is never
+taken unwindowed" an expected survivor on [[perf-gate-needs-its-own-test]] grounds, since reverting
+the change is answer-equivalent. It is CAUGHT — by the ROUTE assertions I had added to the new test
+file — and the harness said so ("was expected to SURVIVE and did not — update the entry"). The one
+real survivor is PRE-EXISTING and redundant for every shape this arm can see: `deferredSortKeys`'s
+`nameRead !== nodeVar` test, where `detectNodeProjection` admits a single node pattern so the only
+free variable a key can read IS `nodeVar`. Item 475's rule — a surviving mutant on a guard means
+"redundant" as readily as "untested" — and it is kept as the thing that fails loudly if the detector
+is ever widened.
+
+GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers;
+`bun run spelling` at SPELL_N=200000 SPELL_REPS=9 plus each new group isolated.

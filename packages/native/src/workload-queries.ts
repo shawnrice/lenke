@@ -139,10 +139,29 @@ const withOrder = (
   body: string,
   keys: string,
   page = '',
-): { text: string; ordered: boolean } =>
-  r() < 0.5
-    ? { text: `${body} ORDER BY ${keys}${page}`, ordered: true }
-    : { text: body, ordered: false };
+  /**
+   * ⚠️ AN EXPRESSION SPELLING OF THE SAME ORDERING, where one exists (item 1902). `keys` is a list
+   * of output ALIASES, so every ordered query this corpus generated spelled the key as a bound
+   * name — and the engine routes the two spellings DIFFERENTLY: `outputColumnSorts` serves a name
+   * (and, since item 642, a `prop`), while an expression key reaches the deferred compiled-key arm
+   * that item 1902 opened to unwindowed sorts. This file's own header is the reason to draw both:
+   * "a generator that only ever spells a query one way guards only the route that spelling takes,
+   * and the fuzzer cannot tell you which route that is."
+   *
+   * ⚠️ THE EXPRESSION MUST ORDER IDENTICALLY, or `ordered: true` would be a lie and the harness
+   * would compare two different correct answers. Callers pass a MONOTONE rewrite of the same key
+   * over a key they know is numeric — `n.n + 0` for `n.n` — so the two spellings are one question.
+   */
+  exprKeys?: string,
+): { text: string; ordered: boolean } => {
+  if (r() >= 0.5) {
+    return { text: body, ordered: false };
+  }
+
+  const spelled = exprKeys !== undefined && r() < 0.5 ? exprKeys : keys;
+
+  return { text: `${body} ORDER BY ${spelled}${page}`, ordered: true };
+};
 
 /**
  * A point lookup by property — the single most common query any application issues.
@@ -484,7 +503,17 @@ const projection = (r: () => number): Workload => {
 
   return {
     family: 'projection',
-    ...withOrder(r, body, body.includes(' AS y') ? 'x, y' : 'x', page),
+    // ⚠️ ONLY THE SINGLE-KEY, `n.n AS x` BODIES GET AN EXPRESSION SPELLING. `a.n AS x, e.w AS y` is
+    // two keys over two variables, and `LET v = n.n + $p1 RETURN v AS x` orders by a LET binding
+    // whose expression is not `n.n` — spelling either as `n.n + 0` would order DIFFERENTLY and make
+    // `ordered: true` false. The one body that qualifies is the plain `RETURN n.n AS x`.
+    ...withOrder(
+      r,
+      body,
+      body.includes(' AS y') ? 'x, y' : 'x',
+      page,
+      body === 'MATCH (n:T) RETURN n.n AS x' ? 'n.n + 0' : undefined,
+    ),
     params: { p0: 1 + Math.floor(r() * 3), p1: pick(r, N_VALUES) },
   };
 };

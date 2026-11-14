@@ -914,12 +914,41 @@ export const deferredRoute = (spec: {
   const { skip, limit } = proj;
   const keys = proj.orderBy;
 
+  if (keys === undefined || keys.length === 0) {
+    return null;
+  }
+
+  /*
+   * ⚠️⚠️ **NO WINDOW AT ALL IS ADMITTED (item 1902), AND IT IS NOT THE CASE THE RULES ABOVE
+   * REFUSE.** The `limit === undefined` rule is about a `SKIP` with no `LIMIT`: there the general
+   * path sorts and projects EVERY row and then drops the skipped ones, so a faulting item raises
+   * on both engines even though the window discards its row — while ranking-then-projecting would
+   * emit fewer rows than it projects and silently not raise. `page-fold-fault.test.ts` caught the
+   * first cut of this arm admitting exactly that.
+   *
+   * With NO window, nothing is discarded: this arm projects every ranked row, so both paths
+   * evaluate every key and every item and raise on the same inputs. ⚠️ And the ORDER matches too,
+   * which is the part worth checking rather than assuming — the general path sorts the INPUT
+   * BINDINGS first (item 145, as `outputColumnSorts` records), so keys-before-items is its order,
+   * and it is this arm's order as well.
+   *
+   * WHY IT MATTERS: without this, `ORDER BY <an expression>` reached NO rung while
+   * `ORDER BY <that expression> LIMIT 3` reached this one — the asymmetry
+   * `deferredSortKeys`'s own header describes, left in place for the unwindowed half. Item 1901
+   * measured it at 200,000 vertices / 1,000,000 edges, one shape per process, median of 7:
+   *
+   *     RETURN n.n AS x ORDER BY x                 19.55 ms   the plain arm
+   *     RETURN n.n AS x ORDER BY n.n + 1          173.38      ⬅ the general path, 8.9x
+   *     RETURN n.n AS x ORDER BY n.n + 1 LIMIT 3   16.50      ⬅ this arm, already
+   *
+   * ⚠️ The two spellings sort IDENTICALLY here because adding 1 is monotone, so this is an
+   * equivalent-spelling gap and `bun run spelling` is where it belongs as a standing check.
+   */
+  const noWindow = skip === undefined && limit === undefined;
+
   if (
-    keys === undefined ||
-    keys.length === 0 ||
-    typeof limit !== 'number' ||
-    limit === 0 ||
-    (skip !== undefined && typeof skip !== 'number')
+    !noWindow &&
+    (typeof limit !== 'number' || limit === 0 || (skip !== undefined && typeof skip !== 'number'))
   ) {
     return null;
   }
@@ -948,7 +977,9 @@ export const deferredRoute = (spec: {
         nullsFirst: k.nullsFirst,
       })),
       skip: typeof skip === 'number' ? skip : 0,
-      limit,
+      // `undefined` for the no-window case, which is what `sortRowsByColumns` already takes for an
+      // unwindowed sort — the same value `outputColumnSorts` hands it on the plain arm.
+      limit: typeof limit === 'number' ? limit : undefined,
     },
   });
 };
