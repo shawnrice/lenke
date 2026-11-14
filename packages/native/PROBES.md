@@ -75,6 +75,16 @@ generator hand tied. `edge-csr-ceiling-1893.mjs` is the shape of probe that find
 arm (the same walk by hand over the same structure) separates DELEGATION from LAYOUT, and it said
 2.08x of the gap was delegation before any structure was blamed.
 
+**ITEM 1895 RAN THE SAME `handSet` METHOD ON THE GQL SIDE AND GOT THE OPPOSITE ANSWER**, which is
+why both probes are worth keeping: the Gremlin edge rung was 2.08x its hand walk (all delegation),
+while the GQL hop projection is **1.09x** its hand walk — nothing left to remove — and its whole gap
+was the per-vertex `Map` work. `gql-hop-ceiling-1895.mjs` has five arms, from the engine down to
+bare values, so a reading lands between two bounds instead of beside one. The lever it found is
+2.96x warm / 1.01x cold, and 3.8-4.7x on four depth-1 cells of the 200,000-vertex grid.
+⚠️ **Its first cut measured a FLAT NULL** because the gate read a label's vacuity from the AST — the
+factory is compiled once and captures the pattern's label, so that declines every labelled pattern.
+A 2.9x lever reading 1.00x means the arm never fired.
+
 **ITEM 1894 THEN COUNTED THEM ALL** (one `grep` over the walk modules): the only missing fill that
 mattered was the optional CHAIN's CSR walk — **1.57x warm, 1.32x cold** on the surface's largest
 absolute (`chain-drain-ab-1894.mjs`, which kills the drain by RENAMING it in the dist). The four

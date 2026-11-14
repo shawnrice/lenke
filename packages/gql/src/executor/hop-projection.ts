@@ -26,6 +26,7 @@ import {
   percentileFraction,
   sortsOnOutputOnly,
 } from './core.js';
+import { csrHopRoute } from './csr-cache.js';
 import {
   flattenConjuncts,
   freePredicateVars,
@@ -3518,6 +3519,71 @@ const farDrivenHopWalk = (w: {
   return (graph, params) => {
     const rows: Row[] = [];
     const binding = new Map<string, unknown>();
+
+    /**
+     * ⚠️ THE CSR ARM (item 1895), and the hand floors say why it is the whole gap.
+     * `gql-hop-ceiling-1895.mjs`, 200,000 vertices / 1,000,000 edges, one arm per process, median
+     * of 9:
+     *
+     * ```text
+     *   the engine's rung                         75.13 ms   1,000,000 rows   75 ns a row
+     *   the same far-driven walk BY HAND          68.83                       69   <- 1.09x: there
+     *                                                                              is no delegation
+     *                                                                              left to remove
+     *   the same over a FLAT (far, degree) index  21.16                       21   <- 3.25x
+     *   the same building each row as a LITERAL   14.89                       15   needs codegen,
+     *                                                                              which is FIRM
+     *                                                                              policy here
+     *   bare values, no row objects                7.63                        8   Gremlin's shape
+     * ```
+     *
+     * Unlike item 1893's Gremlin twin — 2.08x its own hand walk, i.e. all delegation — this rung is
+     * already AT its hand floor, and the gap is the per-vertex `Map` work: iterating `verticesById`
+     * and reading `adjTo.get(type)` for each. `csrFor`'s `order` is those far vertices as an ARRAY
+     * and `off[s + 1] - off[s]` is the degree, with no `Map` in the loop.
+     *
+     * ⚠️ A FAR LABEL DECLINES — item 1688's lesson: `candidateVertexSource` iterates the label
+     * BUCKET, so a selective label makes the existing walk sub-linear where this arm is O(V). An
+     * answer that is right while the work is wrong is what that item learned from a test.
+     *
+     * ⚠️ AND THE BUILD IS DEFERRED TO THE SECOND ASK (`csrAskedBefore`, item 1890's policy), because
+     * the CSR is keyed on `topologyVersion`: a one-shot query and a write-heavy workload never pay
+     * for it. Item 1889 measured that trade at 0.61x COLD without the policy and 1.01x with it.
+     */
+    /**
+     * ⚠️ VACUITY IS DECIDED PER EXECUTION, NOT FROM THE AST — and the first cut got this wrong and
+     * measured a flat null because of it. The factory is built at COMPILE time and captures the
+     * pattern's label, so `farLabel` is `:P` for `MATCH (a:P)-[:E]->(b:P)` even when every vertex
+     * carries `P`; whether a label EXCLUDES anything is a property of the graph (`vacuousLabel`,
+     * items 1551/1552) and can only be read here. A gate on the AST label declines every labelled
+     * pattern, which is nearly all of them.
+     */
+    const viaCsr = csrHopRoute(graph, out, typeName, farLabel);
+
+    if (viaCsr !== undefined) {
+      const { order, off } = viaCsr;
+
+      for (let slot = 0; slot < order.length; slot += 1) {
+        let n = off[slot + 1] - off[slot];
+
+        if (n === 0) {
+          continue;
+        }
+
+        binding.set(farVar, order[slot]);
+
+        const template = projectRow(proj, binding, params, graph);
+
+        rows.push(template);
+
+        for (n -= 1; n > 0; n -= 1) {
+          rows.push({ ...template });
+        }
+      }
+
+      return rows;
+    }
+
     // The OPPOSITE index from the start-driven walk: for an `out` hop the far end is the edge's
     // TARGET, so the far endpoints are the keys of the reverse index.
 

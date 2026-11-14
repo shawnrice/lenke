@@ -89357,3 +89357,71 @@ INVARIANTS. All seven byte-identity fuzzers green. `optional-oracle-1884.mjs`: 7
 every one identical.
 
 GATES. bun run check 0 and bun run test -- --skip-nx-cache across 21 projects, each read unpiped.
+
+## Item 1895 — the GQL one-hop projection, the most common shape in the language: **2.96x warm, cold flat** — and the hand arms said the engine was already AT its delegation floor, so the whole gap was the per-vertex `Map` work
+
+Item 1893's `handSet` method, applied to the other engine. A profile of this shape puts the cost
+across several frames (`{...template}`, `projectRow`, the getters); a hand arm over the SAME
+structure separates DELEGATION from LAYOUT in one reading. `gql-hop-ceiling-1895.mjs`, 200,000
+vertices / 1,000,000 edges, one arm per process, median of 9:
+
+      the engine's rung                         75.13 ms   1,000,000 rows   75 ns a row
+      the same far-driven walk BY HAND          68.83                       69   ⬅ 1.09x
+      the same over a FLAT (far, degree) index  21.16                       21   ⬅ 3.25x
+      the same building each row as a LITERAL   14.89                       15
+      bare values, no row objects                7.63                        8   (Gremlin's shape)
+
+⚠️ **THE FIRST ROW IS THE OPPOSITE OF ITEM 1893'S FINDING, which is why both files exist.** The
+Gremlin edge rung was 2.08x its own hand walk — all delegation, fixed by an eager fill. This rung is
+**1.09x** its hand walk: there is nothing left to remove, and the entire gap is the per-vertex `Map`
+work — iterating `verticesById` and reading `adjTo.get(type)` for each. `csrFor`'s `order` is those
+far vertices as an ARRAY and `off[s + 1] - off[s]` is the degree.
+
+      kill-switch A/B (PRE makes `csrHopRoute` return undefined in the dist), 3 order-alternated
+      rounds, one shape per process:
+        engine   WARM  75.1 75.7 75.8  ->  26.9 21.5 25.6    2.96x
+        engine   COLD  83.0 83.0 83.0  ->  82.0 83.0 82.0    1.01x
+        handFar  [CONTROL — the kill cannot reach it]         1.00x warm, 1.00x cold
+        handArr  [CONTROL]                                    0.98x warm
+
+**And it is wide, because this walk is under half the grid.** The 200,000-vertex `rung-gap-screen`
+depth-1 column: `rows` **40.6 → 10.7**, `twocol` **42.6 → 9.1**, `maxagg` 43.0 → 12.1, `distinct2`
+53.5 → 20.7. At fanout 1 the shape itself reads **39.23 → 8.22 ms, 4.8x**.
+
+⚠️⚠️ **THE FIRST CUT SHIPPED A BUG AND MEASURED A FLAT NULL — the gate read the label's vacuity from
+the AST.** The factory is built at COMPILE time and captures the pattern's label, so `farLabel` is
+`:P` for `MATCH (a:P)-[:E]->(b:P)` even when every vertex carries `P`. A gate on the AST label
+therefore declines every labelled pattern, which is nearly all of them. Vacuity is a property of the
+GRAPH (`vacuousLabel`, items 1551/1552) and can only be read per execution. The null was the tell: a
+2.9x lever reading 1.00x means the arm never fired.
+
+✅ **AND THAT BUG IS NOW A MUTANT, because it had to be.** Both of the route's conditions are
+answer-equivalent — a selective far label admitted, and vacuity read from the AST — so two mutants
+survived every behavioural test until the decision was extracted as `csrHopRoute`, a pure exported
+function with its own tests ([[perf-gate-needs-its-own-test]], the remedy items 1776/1890 applied).
+Its conditions:
+
+- **A FAR LABEL THAT EXCLUDES ANYTHING DECLINES** — `candidateVertexSource` iterates the label
+  BUCKET, so a selective label makes the existing walk sub-linear where this arm is O(V). Item
+  1688's lesson, learned there from a test rather than from reasoning.
+- **THE BUILD IS DEFERRED TO THE SECOND ASK** (`csrAskedBefore`, item 1890's policy), which is why
+  the COLD column above is 1.01x rather than item 1889's un-policied 0.61x.
+
+🦷 **MUTATION: 7 CAUGHT, 0 SURVIVORS**, three of them route-only and invisible to answers (the
+selective label, the AST vacuity, and the arm claiming its own first ask). The four behavioural ones
+cover the direction, the degree, the clone loop's arithmetic and the bound far vertex.
+
+⚠️ **ROWS ARE COMPARED AS MULTISETS** in the tests, which is this engine's contract for an unordered
+result ([[order-is-unspecified]], and the differential fuzzer compares GQL rows the same way). The
+CSR walks slots in `verticesById` order — the order the existing walk uses anyway — but nothing
+here depends on that.
+
+🔭 **WHAT IS LEFT, PRICED**: 25.96 against `handArr`'s 19.76 is the `binding.set` + `projectRow`
+per far vertex, which is the general projection and not a loop to tighten; `handLit`'s 14.89 needs a
+row built as a STATIC-key literal, which needs codegen — and `no-runtime-codegen` is FIRM policy
+here, so that row is a ceiling rather than a target.
+
+INVARIANTS. All seven byte-identity fuzzers green. `bun run spelling` at `SPELL_N=200000
+SPELL_REPS=9`: 0 answer disagreements, 0 groups over 2x clear of the null control.
+
+GATES. bun run check 0 and bun run test -- --skip-nx-cache across 21 projects, each read unpiped.

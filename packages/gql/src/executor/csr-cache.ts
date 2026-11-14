@@ -10,6 +10,7 @@ import type { Edge, Graph, Vertex } from '@lenke/core';
 
 import type { LabelExpr } from '../ast.js';
 import { edgesOfTypes } from './adjacency.js';
+import { vacuousLabel } from './labels.js';
 
 /** The flattened adjacency the level recurrence reads. Built once, then READ ONLY — every write to
  *  `off`, `nbr`, `order` and `idx` lives in {@link buildCsr}, which is what makes it cacheable. */
@@ -227,6 +228,41 @@ export const twoHopUnfilteredCsrCount = (
  * separately exported pure function with its own tests (`twoHopUnfilteredCsrApplies`), which is
  * what `perf-gate-needs-its-own-test` asks for — this only moves the plumbing.
  */
+/**
+ * The far-driven hop projection's CSR, or `undefined` to keep the existing walk (item 1895).
+ *
+ * ⚠️⚠️ **A PURE FUNCTION BECAUSE BOTH ITS CONDITIONS ARE ANSWER-EQUIVALENT, and one of them was a
+ * real bug.** Written inline in `hop-projection.ts`, two mutants survived every behavioural test:
+ * reading the label's vacuity from the AST instead of the graph (which DECLINES every labelled
+ * pattern — the exact bug the first cut of that arm shipped, measured as a flat null), and letting
+ * the arm claim its own FIRST ask (which pays the CSR build on a one-shot query). Both return the
+ * right rows by the wrong route, so only a direct test of the decision can see them —
+ * [[perf-gate-needs-its-own-test]], the same remedy items 1776 and 1890 applied.
+ *
+ *   - **A FAR LABEL THAT EXCLUDES ANYTHING DECLINES.** `candidateVertexSource` iterates the label
+ *     BUCKET, so a selective label makes the existing walk sub-linear where this arm is O(V) — item
+ *     1688's lesson, which it learned from a test rather than from reasoning. VACUITY IS A PROPERTY
+ *     OF THE GRAPH (`vacuousLabel`, items 1551/1552) and can only be read per execution: the
+ *     factory captures the AST label at compile time.
+ *   - **THE BUILD IS DEFERRED TO THE SECOND ASK** (`csrAskedBefore`), because the CSR is keyed on
+ *     `topologyVersion`: a one-shot query and a write-heavy workload never pay for it. Item 1889
+ *     measured that trade at 0.61x COLD without the policy and 1.01x with it.
+ */
+export const csrHopRoute = (
+  graph: Graph,
+  out: boolean,
+  typeName: string,
+  farLabel: LabelExpr | undefined,
+): CsrTables | undefined => {
+  if (farLabel !== undefined && !vacuousLabel(graph, farLabel)) {
+    return undefined;
+  }
+
+  return csrAskedBefore(graph, `hop:${out ? '<' : '>'}${typeName}`)
+    ? csrFor(graph, out, [typeName])
+    : undefined;
+};
+
 /**
  * Has this (graph, topology version, leg shape) been asked for BEFORE? The first ask returns
  * `false` and records it; every later ask returns `true`.
