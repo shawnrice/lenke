@@ -88230,3 +88230,60 @@ NO ENGINE CODE CHANGED. One instrument, and it is the one that makes "is the scr
 a single command instead of a tick.
 
 GATES. bun run check 0 read unpiped; no source touched.
+
+## Item 1881 — built the GREMLIN workload screen, the instrument that surface never had; its first run nominates a fused shape at 9.3x the per-row cost of its unfiltered sibling
+
+Item 1880 established that the GQL screen's addressable time is accounted for shape by shape. So this
+tick looked OUTSIDE it, and the gap was glaring: **Gremlin is half the product and had no workload
+screen.** `bench-gremlin.ts` compares 31 shapes against NATIVE, `gremlin-route-screen.mjs` asks only
+which ROUTE answers a shape, `gremlin-spelling-probe.ts` compares spellings of one question. None of
+them asks what an application's traversal costs. Item 1868 recorded the gap and deferred it as too
+large.
+
+✅ **IT IS BUILT WITH THIS STRETCH'S THREE LESSONS DESIGNED IN rather than bolted on:**
+
+- **PER-SHAPE, never per-family** (item 1880). The GQL screen reports one number a family, and
+  splitting those numbers showed `var-length`'s 543 ms was ~70% ONE bound. This screen computes no
+  family totals at all; every row is a shape.
+- **Sorted by ABSOLUTE ms** (item 1878), which cost an item to a 4.7x that was 2 microseconds.
+- **The fixture asserts its own topology** — the repeat index is in the edge expression and v1's
+  distinct out-targets are counted at startup, because CLAUDE.md records six generators here that
+  read perfectly while being FUNCTIONAL.
+
+It also reads `rows` beside `ms` and flags a zero-row row as measuring a MISS, which is the GQL
+screen's own warning and the reason its `point-lookup` row has been 60% empty for items.
+
+⚠️ **ITS DEFAULT SIZE IS TOO SMALL, FOUND BY RUNNING IT.** At the GQL screen's 1500/4 every row is
+sub-millisecond, because this screen times ONE traversal per shape where the GQL screen accumulates
+60 queries a family. The default is KEPT (it makes the two screens' numbers about the same graph) and
+the header now says to run it at `NODES=20000 FANOUT=5`.
+
+🔭 **AND THE FIRST MEASURABLE RUN NOMINATES ONE SHAPE.** 20,000 vertices / 100,000 edges, median of 7:
+
+      21.56 ms   45,713 rows   edge: outE.has(w).inV     ⬅ 472 ns a row
+      10.80       80,000       optional: hop
+       4.74      320,000       hop2: values
+       4.09       80,000       hop1: values              ⬅  51 ns a row
+      ... 29 further shapes, all under 4 ms
+
+**9.3x the per-row cost of a plain hop projection**, on an entirely ordinary traversal: follow `E`
+edges whose weight exceeds 3, give me the targets' property. No row is empty and none raises.
+
+🔬 **AND IT IS NOT A MISSING RUNG — route-checked before pricing.** Instrumenting `applyStep` (the
+generic pipeline's single entry) shows `outE.has(w).inV.values`, `outE.inV.values`, `out.values` and
+`out.has(n).values` ALL answered with **0 applyStep calls** — every one is fused. So the 9.3x is
+inside fused code.
+
+The arithmetic that makes it a candidate: the predicate is evaluated on ~100,000 edges and emits
+45,713, i.e. **~216 ns an edge visit**, against the vertex-side `range: has(gt)` doing the same kind
+of work — one property read and one comparison — at **93 ns an element**. ~2.3x for the same shape of
+work on the other element type.
+
+**FLOORED**: 21.56 ms is the largest absolute on the screen and a page-load-scale cost for a filtered
+edge traversal over 100,000 edges. Profiling it is the next item; this one's deliverable is the
+instrument.
+
+NO ENGINE CODE CHANGED. The `applyStep` instrumentation was a measurement patch, restored
+byte-identically (`git diff` empty on `dispatch.ts`).
+
+GATES. bun run check 0 read unpiped; no source touched.

@@ -1,0 +1,208 @@
+/**
+ * WHICH REALISTIC GREMLIN TRAVERSAL IS EXPENSIVE? — the screen this surface never had (item 1881)
+ *
+ * ⚠️ GREMLIN IS HALF THE PRODUCT AND HAD NO WORKLOAD SCREEN. `workload-perf-screen.mjs` draws 17
+ * realistic GQL families and has found real things — a `RETURN DISTINCT` costing 5.8x the rows it
+ * dedupes (item 1820), and the chain that led to the parameterized-page rung (items 1865-1867).
+ * Gremlin's instruments answer narrower questions: `bench-gremlin.ts` compares 31 shapes against
+ * NATIVE, `gremlin-route-screen.mjs` asks only WHICH ROUTE answers a shape, and
+ * `gremlin-spelling-probe.ts` compares spellings of one question. **None of them asks what an
+ * application's traversal costs.** Item 1868 recorded the gap and deferred it as too large.
+ *
+ * ⚠️ IT IS PER-SHAPE, NOT PER-FAMILY, AND THAT IS ITEM 1880'S LESSON BUILT IN. The GQL screen reports
+ * one number per family, and splitting those numbers showed `var-length`'s 543 ms was ~70% ONE bound
+ * (`{2,3}` at 45.1 ms against its `{1,3}` twin's 0.8, same eight rows). A family total is a blended
+ * average hiding its worst shape, so this screen never computes one: every row is a shape, and the
+ * output is sorted by ABSOLUTE milliseconds — item 1878's lesson, which cost an item to a 4.7x that
+ * turned out to be 2 microseconds.
+ *
+ * ⚠️ THE FIXTURE CHECKS ITS OWN TOPOLOGY. CLAUDE.md records six generators in this repo that looked
+ * perfect while being FUNCTIONAL — `to = (a*k + b) % N` is invariant under `k -> k + N`, so one
+ * vertex's FANOUT edges all landed on ONE target, every degree statistic read correctly, and every
+ * k-hop count was `F^k · N` by construction. The repeat index is in the expression below and the
+ * distinct-endpoint count is asserted at startup, because an answer that is INVARIANT to the
+ * property you varied cannot validate the fixture.
+ *
+ * ⚠️ AND `empty%` IS READ FIRST. A shape whose traversal stops matching at this size is the
+ * "fastest" row on the screen and means nothing — the GQL screen says so in terms and its
+ * `point-lookup` row has sat at 60% empty for items.
+ *
+ *     bun gremlin-workload-screen.mjs
+ *     NODES=5000 bun gremlin-workload-screen.mjs
+ *     ONLY=chain bun gremlin-workload-screen.mjs
+ */
+import { Graph } from '@lenke/core';
+import {
+  V,
+  both,
+  count,
+  dedupe,
+  groupCount,
+  gt,
+  has,
+  hasLabel,
+  id,
+  in_,
+  limit,
+  max,
+  mean,
+  min,
+  optional,
+  order,
+  out,
+  outE,
+  inV,
+  repeat,
+  toArray,
+  traversal,
+  union,
+  valueMap,
+  values,
+  within,
+} from '@lenke/gremlin';
+
+const NODES = Number(process.env.NODES ?? 1500);
+const FANOUT = Number(process.env.FANOUT ?? 4);
+const REPS = Number(process.env.REPS ?? 7);
+const ONLY = process.env.ONLY ?? '';
+
+// The GQL screen's value domain, so a literal selects a comparable fraction and the two screens'
+// numbers are about the same graph rather than two different ones.
+const N_POOL = [3, 5, 7, 11, 13, 17, 1, 99];
+const W_POOL = [1, 2, 3, 4, 5, 7, 9];
+
+const g = new Graph();
+
+for (let i = 0; i < NODES; i += 1) {
+  g.addVertex({
+    id: String(i + 1),
+    labels: i % 6 === 2 ? ['T', 'U'] : ['T'],
+    properties: { n: N_POOL[i % N_POOL.length], k: i % 50, s: `s${i % 7}` },
+  });
+}
+
+for (let e = 0; e < NODES * FANOUT; e += 1) {
+  const i = e % NODES;
+  const hop = Math.floor(e / NODES);
+
+  g.addEdge({
+    id: `e${e}`,
+    from: g.getVertexById(String(i + 1)),
+    to: g.getVertexById(String(((i * 7 + 3 + hop * 2_654_435_761) % NODES) + 1)),
+    labels: hop % 4 === 3 ? ['F'] : ['E'],
+    properties: { w: W_POOL[e % W_POOL.length] },
+  });
+}
+
+// THE TOPOLOGY ASSERTION. One vertex's out-targets must be DISTINCT, or the graph is functional and
+// every multi-hop row below is `F^k · N` whatever the walk does.
+{
+  const seen = new Set();
+
+  for (let hop = 0; hop < FANOUT; hop += 1) {
+    seen.add((3 + hop * 2_654_435_761) % NODES);
+  }
+
+  if (FANOUT > 1 && seen.size < 2) {
+    throw new Error(`fixture is FUNCTIONAL: v1 reaches ${String(seen.size)} distinct targets`);
+  }
+}
+
+/**
+ * The shapes an application writes. Each is one row; there are no family totals, by design.
+ *
+ * ⚠️ THE NAMES CARRY THE QUESTION, not the step list, so a reader scanning the output sees what was
+ * asked rather than having to parse a traversal.
+ */
+const SHAPES = {
+  'point: V(id)': () => traversal(V('700'), values('n')),
+  'point: has(k,v)': () => traversal(V(), has('k', 7), values('n')),
+  'point: has + limit 1': () => traversal(V(), has('k', 7), limit(1), values('n')),
+  'scan: count': () => traversal(V(), count()),
+  'scan: hasLabel count': () => traversal(V(), hasLabel('U'), count()),
+  'scan: values': () => traversal(V(), values('n')),
+  'scan: id': () => traversal(V(), id()),
+  'scan: valueMap': () => traversal(V(), valueMap()),
+  'range: has(gt)': () => traversal(V(), has('n', gt(5)), values('n')),
+  'range: has(gt) count': () => traversal(V(), has('n', gt(5)), count()),
+  'in-list: within': () => traversal(V(), has('n', within(3, 5, 7)), values('n')),
+  'neighbors: V(id).out': () => traversal(V('700'), out('E'), values('n')),
+  'neighbors: V(id).both': () => traversal(V('700'), both('E'), values('n')),
+  'hop1: values': () => traversal(V(), out('E'), values('n')),
+  'hop1: count': () => traversal(V(), out('E'), count()),
+  'hop1: dedupe count': () => traversal(V(), out('E'), dedupe(), count()),
+  'hop2: values': () => traversal(V(), out('E'), out('E'), values('n')),
+  'hop2: count': () => traversal(V(), out('E'), out('E'), count()),
+  'hop3: count': () => traversal(V(), out('E'), out('E'), out('E'), count()),
+  'edge: outE.has(w).inV': () => traversal(V(), outE('E'), has('w', gt(3)), inV(), values('n')),
+  'edge: outE count': () => traversal(V(), outE('E'), count()),
+  'agg: values min': () => traversal(V(), values('n'), min()),
+  'agg: values max': () => traversal(V(), values('n'), max()),
+  'agg: values mean': () => traversal(V(), values('n'), mean()),
+  'agg: hop values min': () => traversal(V(), out('E'), values('n'), min()),
+  'group: groupCount by': () => traversal(V(), groupCount().by('n')),
+  'group: hop groupCount': () => traversal(V(), out('E'), groupCount().by('n')),
+  'order: values order': () => traversal(V(), values('n'), order()),
+  'order: values order limit': () => traversal(V(), values('n'), order(), limit(10)),
+  'optional: hop': () => traversal(V(), optional(out('E')), values('n')),
+  'union: out + in': () => traversal(V(), union(out('E'), in_('E')), count()),
+  'repeat: times 2': () => traversal(V(), repeat(traversal(out('E'))).times(2), count()),
+  'repeat: times 3': () => traversal(V(), repeat(traversal(out('E'))).times(3), count()),
+};
+
+const names = Object.keys(SHAPES).filter((k) => ONLY === '' || k.includes(ONLY));
+const rows = [];
+
+for (const name of names) {
+  const plan = SHAPES[name]();
+  const series = [];
+  let n = 0;
+  let err = '';
+
+  for (let r = 0; r < REPS + 2; r += 1) {
+    const t0 = performance.now();
+
+    try {
+      const got = toArray(plan, g);
+
+      n = Array.isArray(got) ? got.length : 1;
+    } catch (e) {
+      err = String(e).slice(0, 28);
+      n = -1;
+    }
+
+    const ms = performance.now() - t0;
+
+    if (r >= 2) {
+      series.push(ms);
+    }
+  }
+
+  series.sort((a, b) => a - b);
+  rows.push([series[series.length >> 1], n, name, err]);
+}
+
+rows.sort((a, b) => b[0] - a[0]);
+
+console.log(
+  `# gremlin-workload-screen NODES=${String(NODES)} FANOUT=${String(FANOUT)} reps=${String(REPS)}`,
+);
+console.log(`# vertices=${String(g.vertexCount)} edges=${String(g.edgeCount)}`);
+console.log(
+  '# ⚠️ SORTED BY ABSOLUTE ms. Read `rows` beside it: a shape returning 0 measures a miss.\n',
+);
+console.log('      ms      rows   shape');
+console.log('-------------------------------------------------------');
+
+/** `0` rows is a MISS and `-1` is a raise; both make the millisecond figure meaningless. */
+const flagFor = (n, err) => {
+  if (n === 0) {
+    return '  ⚠️ EMPTY — this row measures a miss';
+  }
+
+  return n === -1 ? `  ⚠️ RAISED ${err}` : '';
+};
+
+for (const [ms, n, name, err] of rows) {
+  console.log(`${ms.toFixed(2).padStart(8)} ${String(n).padStart(9)}   ${name}${flagFor(n, err)}`);
+}

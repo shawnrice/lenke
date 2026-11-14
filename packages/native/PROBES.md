@@ -10,6 +10,26 @@ reading three file headers feels like overhead. It is the other way round."_ The
 here, and more so — the Rust side is indexed by question in `crates/lenke-engine/examples/README.md`
 and this side was not indexed at all.
 
+## Start here (Gremlin): `gremlin-workload-screen.mjs` — what does an application's traversal cost?
+
+Built at item 1881 because **Gremlin had no workload screen at all.** `bench-gremlin.ts` compares 31
+shapes against NATIVE, `gremlin-route-screen.mjs` asks only which ROUTE answers a shape, and the
+spelling probe compares spellings of one question — none of them asks what a traversal costs. Item
+1868 recorded the gap and deferred it.
+
+It is PER-SHAPE by construction (item 1880's lesson: a family total hides its worst shape) and sorted
+by ABSOLUTE ms (item 1878's: a 4.7x that was 2 microseconds).
+
+⚠️ **ITS DEFAULT 1500 NODES IS TOO SMALL AND THAT IS DELIBERATE-ADJACENT, NOT A BUG TO IGNORE.** At
+1500/4 every row is sub-millisecond, because this screen times ONE traversal per shape where the GQL
+screen accumulates 60 queries a family. **Run it at `NODES=20000 FANOUT=5`** to get measurable rows;
+the small default is kept because it is the GQL screen's size and makes the two comparable.
+
+First run (20000/5): `edge: outE.has(w).inV` is the top shape at **21.56 ms / 45,713 rows = 472 ns a
+row**, against `hop1: values` at 51 ns a row — **9.3x the per-row cost**, and the shape is fused
+already (route-checked). ~216 ns per edge visit against the vertex-side `has(gt)` doing the same kind
+of work at 93 ns an element. Open at item 1881.
+
 ## Start here: `family-split-1880.ts` — which SHAPE owns a family's milliseconds
 
 `workload-perf-screen.mjs` reports one number per family, and a family is a generator. Item 1879
