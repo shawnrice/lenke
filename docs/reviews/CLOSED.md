@@ -86003,3 +86003,52 @@ NO ENGINE CODE CHANGED. The `orderby` nomination is CLOSED as refuted; items 183
 headings are corrected in the same commit.
 
 GATES. bun run check 0 read unpiped.
+
+### Item 1838 — ✅ **THE PROFILER'S ROW GUARD NOW SCALES WITH `NODES`, which unlocks the regime PROBES.md records as the screen's blind spot** — and the screen there is CLEAN too. Plus the first per-row numbers across the cache boundary for the hop rungs. No engine change
+
+⚠️ **THE BLIND SPOT WAS STRUCTURAL, NOT AN OVERSIGHT.** `runtime-profile-probe.mjs` guards every
+shape with a pinned `rowsPerRun`, and for the shapes whose row count IS the vertex count that
+constant was calibrated for the default `NODES=20000`. So:
+
+```text
+  NODES=200000 … hop3rows
+  Error: returned 4000000 rows across 20 runs, expected 400000 — this arm is NOT answer-equivalent
+```
+
+The guard was right and the invocation impossible: those shapes could not be profiled at ANY size
+but 20,000 — which is exactly the cache-resident regime PROBES.md flags ("items 1358-1361 screened
+every surface at 20,000, entirely inside cache… which is what item 1362 is for"). ⚠️ And every
+profile in items 1818-1837 ran there.
+
+✅ **A FUNCTION, NOT A LOOSER GUARD.** `rowsPerRun` may now be `(n) => n`, which
+`chain-depth-locality-probe.mjs` already does — and ⚠️ its own note is why the check must stay
+EXACT rather than becoming "roughly N": the guard is valid only because every stride here is
+FUNCTIONAL, so one vertex contributes exactly one row per level. Relaxing it to a tolerance would
+let a degenerate fixture through, which is the failure CLAUDE.md devotes a whole section to. The
+20,000 readings are unchanged, checked after the edit.
+
+✅ **THE 200,000 SCREEN IS CLEAN.** Six shapes (`hoprows`, `hop2rows`, `hop3rows`, `distinctstr`,
+`grouped`, `topkwide`) profiled at 200,000: **no unpriced frame over 2% on any of them**, same as
+every 20,000 screen this session. The hot frames are priced in both regimes.
+
+AND THE NUMBERS THE FIX MADE MEASURABLE — the first per-row cost for these rungs across the
+transition CLAUDE.md names:
+
+```text
+                 20,000        200,000      per-row ratio
+  hoprows     134.8 ns/row   187.8 ns/row      1.39x
+  hop2rows    201.5          460.6             2.29x
+  hop3rows    257.0          640.2             2.49x
+```
+
+⚠️ **THAT IS LOCALITY, NOT A ROUTE, AND THE DISTINCTION IS ALREADY SETTLED.** Per-row cost rising
+with N at a fixed route is the cache transition; item 1815 established that this rung's marginal
+cost per hop is FLAT in depth once locality is held fixed, and that the profile probe's own
+compounding `(7i+3)` stride is what made it look otherwise. What is new here is the magnitude: the
+deeper the chain, the more the regime costs it — **1.39x at one hop against 2.49x at three** —
+because each extra level is another scattered read per row. Recorded as a property of the fixture
+and the cache, not as a target.
+
+NO ENGINE CODE CHANGED.
+
+GATES. bun run check 0 read unpiped. The `NODES=20000` readings are unchanged after the guard edit.

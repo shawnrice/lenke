@@ -355,7 +355,7 @@ const EXPECTED = {
   wideproj: { rowsPerRun: 2070 },
   wide2: { rowsPerRun: 2070 },
   narrow1: { rowsPerRun: 2070 },
-  hoprows: { rowsPerRun: 20_000 },
+  hoprows: { rowsPerRun: (n) => n },
   /**
    * ⚠️ ADDED AT ITEM 1805 BECAUSE ITS ABSENCE COST A MEASUREMENT — item 1749's lesson, a second
    * time. These are the hop-ROW shapes, and the five largest rows in the probe had NO guard at
@@ -368,9 +368,9 @@ const EXPECTED = {
    * would assert something `order-is-unspecified` leaves the engine free to change. `hop2rowswhere`
    * carries a value because its `WHERE c.k = 5` makes it determinate.
    */
-  hop2rows: { rowsPerRun: 20_000 },
+  hop2rows: { rowsPerRun: (n) => n },
   hop2rowswhere: { rowsPerRun: 207, answer: 5 },
-  hop3rows: { rowsPerRun: 20_000 },
+  hop3rows: { rowsPerRun: (n) => n },
   // 97 distinct `k` values (`i % 97`), whatever the chain's row count — so this answer is a real
   // guard on the dedupe and not just on the walk.
   hop3distinct: { rowsPerRun: 97 },
@@ -391,9 +391,26 @@ const EXPECTED = {
 const want = EXPECTED[SHAPE];
 
 if (want !== undefined) {
-  if (sink !== want.rowsPerRun * N) {
+  /**
+   * ⚠️ `rowsPerRun` MAY BE A FUNCTION OF `NODES` — item 1838. It was a constant calibrated for the
+   * default `NODES=20000`, which is right for the shapes whose row count is fixed by the data (97
+   * distinct `k`, 1000 distinct `s`) and WRONG for every shape whose row count is the vertex count:
+   * `NODES=200000 … hop3rows` threw "returned 4000000 rows, expected 400000". The guard was correct
+   * and the invocation impossible — so those shapes could not be profiled at any size but 20,000,
+   * which is precisely the cache-resident regime PROBES.md records as the screen's blind spot
+   * (items 1358-1361 ran there; item 1362 exists because of it).
+   *
+   * A function is the fix rather than a looser guard: `chain-depth-locality-probe.mjs` already does
+   * this (`rows === N * reps`), and ⚠️ its own note is why it must stay EXACT — the guard is valid
+   * only because every stride in it is FUNCTIONAL, so one vertex contributes exactly one row per
+   * level. Relaxing the check to "roughly N" would have let a degenerate fixture through, which is
+   * the failure CLAUDE.md spends a whole section on.
+   */
+  const perRun = typeof want.rowsPerRun === 'function' ? want.rowsPerRun(NODES) : want.rowsPerRun;
+
+  if (sink !== perRun * N) {
     throw new Error(
-      `${SHAPE} returned ${sink} rows across ${N} runs, expected ${want.rowsPerRun * N} — this arm is NOT answer-equivalent, so its timing is meaningless`,
+      `${SHAPE} returned ${sink} rows across ${N} runs, expected ${perRun * N} — this arm is NOT answer-equivalent, so its timing is meaningless`,
     );
   }
 
