@@ -9,7 +9,7 @@ import type { AlwaysRowsFn, RowsFn } from './hop-projection.js';
 import { plainNode, plainRel } from './hop-sides.js';
 import { effectiveLabel } from './labels.js';
 import { outputColumnSorts, sortedRows } from './ordered-rows.js';
-import { plainRowProjectionIgnoringDistinct, projectRow } from './rows.js';
+import { plainRowProjectionIgnoringDistinct, projectRow, valueKey } from './rows.js';
 import { asTruth } from './scalars.js';
 import { rowLocal } from './shortcuts.js';
 
@@ -820,4 +820,114 @@ export const detectChainOrderedProjection = (
   );
 
   return sortedRows(rows, plan);
+};
+
+/**
+ * `MATCH <chain> RETURN <expr over the far end> AS k, count(*) AS c` — the GROUPED count, item 1832.
+ *
+ * ⚠️ THE FOURTH WIDTH GAP IN THIS FAMILY, and the only one `rung-gap-screen.mjs` flags in BOTH
+ * engines. `detectGroupedHopCount` requires `segments.length === 1`, so a grouped count past one hop
+ * fell to the general matcher: **30.0/38.3/50.9/61.1 ms at depths 2-5 against a ~6 ms `rows` cell**
+ * (item 1829). Gremlin's `groupCount` degrades too, 14-22x, which is its own item.
+ *
+ * ⚠️ IT DOES NOT RE-DERIVE GROUPING SEMANTICS, which is the whole risk in a grouped shape.
+ * `buildGroups`' own comment settles the single-key case: "ONE grouping key is the overwhelmingly
+ * common shape, and for it the row key IS the value key — `valueKey` is already type-prefixed and
+ * injective". So a tally keyed by `valueKey` groups exactly as the general path does, including the
+ * cases that are easy to get wrong (a null key, `0` against `-0`, NaN keying equal to itself, an
+ * element keyed by id). A second keying here would be the third silent answer change in this area
+ * (items 1561, 1562).
+ *
+ * ⚠️ AND THE GROUP ORDER IS INSERTION ORDER OF FIRST OCCURRENCE, which matches the general path only
+ * because item 1831 measured that these rungs emit rows in the general path's order — 25 cases, both
+ * internal branches proved live by deletion, identical sequences. Without that measurement this
+ * would be an assumption; with it, it is a known property with named residual risk. Group ORDER is
+ * unspecified anyway (`order-is-unspecified`), so the fuzzers compare the set — but matching order
+ * is what keeps the two engines byte-identical rather than merely both correct.
+ *
+ * ⚠️ `count(*)` ONLY, via `countedGroups`. That flag means every aggregate in the projection is
+ * `count(*)`, so a group needs a COUNT and a representative rather than its bindings — which is
+ * exactly what a tally produces. A grouped `sum`/`collect` is a different question and declines
+ * here for item 1829's reason: those folds are order-sensitive and `foldFor` does not even make
+ * them foldable.
+ */
+export const detectChainGroupedCount = (
+  clauses: readonly Clause[],
+  compiled: readonly CClause[],
+): AlwaysRowsFn | null => {
+  if (clauses.length !== 2) {
+    return null;
+  }
+
+  const [, ret] = clauses;
+  const [, cret] = compiled;
+
+  if (ret.kind !== 'return' || cret.kind !== 'return') {
+    return null;
+  }
+
+  const proj = cret.projection;
+
+  if (
+    !proj.aggregating ||
+    !proj.countedGroups ||
+    proj.groupKeys.length !== 1 ||
+    proj.items.length !== 2 ||
+    !plainRowProjectionIgnoringDistinct(ret.projection) ||
+    ret.projection.distinct
+  ) {
+    return null;
+  }
+
+  const keyItem = proj.items.find((i) => !i.isAgg);
+  const aggItem = proj.items.find((i) => i.isAgg);
+
+  if (keyItem === undefined || aggItem === undefined) {
+    return null;
+  }
+
+  const synthetic: CProjection = {
+    ...proj,
+    aggregating: false,
+    countedGroups: false,
+    distinct: false,
+    items: [keyItem],
+    groupKeys: [],
+    foldedAggs: undefined,
+  };
+  const rows = detectChainProjection(
+    clauses,
+    compiled.map((c, i) => (i === 1 && c.kind === 'return' ? { ...c, projection: synthetic } : c)),
+  );
+
+  if (rows === null) {
+    return null;
+  }
+
+  return (graph, params) => {
+    // Insertion-ordered: a `Map` preserves first-insertion order, which is the general path's group
+    // order given the row order item 1831 measured. The bucket holds the KEY VALUE as well as the
+    // count, because `valueKey` is not reversible — `countedGroups` calls that the representative.
+    const groups = new Map<string, { key: unknown; n: number }>();
+
+    for (const row of rows(graph, params)) {
+      const key = (row as Record<string, unknown>)[keyItem.name];
+      const k = valueKey(key);
+      const seen = groups.get(k);
+
+      if (seen === undefined) {
+        groups.set(k, { key, n: 1 });
+      } else {
+        seen.n += 1;
+      }
+    }
+
+    const out: Row[] = [];
+
+    for (const { key, n } of groups.values()) {
+      out.push({ [keyItem.name]: key, [aggItem.name]: n });
+    }
+
+    return out;
+  };
 };

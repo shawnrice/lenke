@@ -36,6 +36,7 @@ import type {
 import { isSyntheticParam } from '../auto-param.js';
 import {
   detectChainFoldedAggregate,
+  detectChainGroupedCount,
   detectChainOrderedProjection,
   detectChainProjection,
 } from './chain-projection.js';
@@ -91,6 +92,7 @@ import {
 } from './hop-projection.js';
 import {
   detectHop2FoldedAggregate,
+  detectHop2GroupedCount,
   detectHop2OrderedProjection,
   detectHop2Projection,
 } from './hop2-projection.js';
@@ -2141,6 +2143,8 @@ export const compileLinear = (linear: LinearQuery): CLinear => {
     chainFoldedAggregate: detectChainFoldedAggregate(fast, clauses),
     hop2FoldedAggregate: detectHop2FoldedAggregate(fast, clauses),
     hopDistinctProjection: detectHopDistinctProjection(fast, clauses),
+    hop2GroupedCount: detectHop2GroupedCount(fast, clauses),
+    chainGroupedCount: detectChainGroupedCount(fast, clauses),
     hop2OrderedProjection: detectHop2OrderedProjection(fast, clauses),
     chainOrderedProjection: detectChainOrderedProjection(fast, clauses),
     hopAggregate,

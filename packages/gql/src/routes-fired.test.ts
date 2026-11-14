@@ -177,6 +177,54 @@ describe('every fast-path detector fires for its own shape', () => {
       [],
     ],
     /**
+     * ⚠️ ITEM 1832's GROUPED COUNT, admissions and refusals. The refusals are where the risk is:
+     * TWO group keys would need a composite key (`buildGroups` keeps the stringify for that case
+     * precisely because a plain join is not injective across a string cell), and a non-`count(*)`
+     * aggregate is item 1829's order-sensitivity question again. Both decline, and nothing in the
+     * ANSWERS would reveal it if they stopped declining.
+     */
+    [
+      'three-hop grouped count',
+      'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L)-[:R]->(d:L) RETURN d.k AS k, count(*) AS c',
+      ['chainGroupedCount'],
+    ],
+    [
+      'two-hop grouped count',
+      'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L) RETURN c.k AS k, count(*) AS c',
+      ['hop2GroupedCount'],
+    ],
+    /**
+     * ⚠️ EVERY REFUSAL IS ASSERTED AT BOTH WIDTHS, and a mutation run is why. The two rungs live in
+     * DIFFERENT FILES (`hop2-projection.ts` and `chain-projection.ts`), so a refusal pinned only at
+     * two hops leaves the three-hop copy unguarded — and a mutant in the chain file sailed through
+     * until these were doubled. A duplicated rule needs a duplicated test.
+     */
+    [
+      'TWO group keys stay off (hop2)',
+      'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L) RETURN c.k AS k, c.s AS s, count(*) AS c',
+      [],
+    ],
+    [
+      'TWO group keys stay off (chain)',
+      'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L)-[:R]->(d:L) RETURN d.k AS k, d.s AS s, count(*) AS c',
+      [],
+    ],
+    [
+      'a grouped SUM stays off (hop2)',
+      'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L) RETURN c.k AS k, sum(c.n) AS s',
+      [],
+    ],
+    [
+      'a grouped SUM stays off (chain)',
+      'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L)-[:R]->(d:L) RETURN d.k AS k, sum(d.n) AS s',
+      [],
+    ],
+    [
+      'an explicit GROUP BY stays off',
+      'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L) RETURN c.k AS k, count(*) AS c GROUP BY k',
+      [],
+    ],
+    /**
      * ⚠️ MULTI-COLUMN `DISTINCT` at ONE hop — item 1825, and the pair below is what keeps the two
      * one-hop DISTINCT rungs DISJOINT. `hopDistinctProjection` requires two or more columns;
      * `distinctProjection` serves exactly one. An `toEqual` on the whole fired-detector list is
@@ -408,7 +456,7 @@ describe('every fast-path detector fires for its own shape', () => {
 
   // Every one of the twenty-one is covered by the table above. Asserted rather than claimed, so a
   // detector added later without a route case fails HERE instead of going unguarded.
-  it('covers all twenty-six detectors', () => {
+  it('covers all twenty-eight detectors', () => {
     const covered = new Set(CASES.flatMap(([, , want]) => want));
     const all = new Set(
       Object.keys(
@@ -420,7 +468,7 @@ describe('every fast-path detector fires for its own shape', () => {
     );
 
     expect([...all].filter((k) => !covered.has(k)).sort()).toEqual([]);
-    expect(all.size).toBe(26);
+    expect(all.size).toBe(28);
   });
 });
 

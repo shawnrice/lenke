@@ -85450,7 +85450,7 @@ single haul the grid has produced: **24 flags**, covering a whole family rather 
   sum                2.8    25.6    35.4    54.6    58.4       1.7  1.0  0.9  1.1  1.3
   maxagg             1.9    23.3    31.3    46.7    55.1       1.7  0.9  0.9  1.1  1.3
   collect            3.0    27.5    35.7    46.0    60.6       1.5  0.9  1.0  1.2  1.4
-  grouped            1.4    30.0    38.3    50.9    61.1       4.8 13.4 16.5 22.8 27.9
+  grouped            1.4    30.0    38.3    50.9    61.1       4.8 13.4 16.5 22.8 27.9   <- GQL half CLOSED by 1832 at 6.7-7.9x
 ```
 
 ⚠️ **THE CLIFF IS BETWEEN DEPTH 1 AND DEPTH 2 IN EVERY ROW**, which is the signature this grid was
@@ -85635,3 +85635,82 @@ what counts as "ordered" rather than stopping the run.
 
 GATES. bun run check 0 read unpiped. gql 4,624 pass / 0 fail. native 1,165 pass / 0 fail.
 bun run fuzz 57 pass / 0 fail. No engine code changed.
+
+### Item 1832 — ✅ **THE GROUPED `count(*)` OVER A CHAIN: 6.7x / 7.0x / 7.0x / 7.9x** at depths 2-5, closing the GQL half of the only flag `rung-gap-screen.mjs` raised in BOTH engines. ⚠️ **AND THREE MUTANTS SURVIVED FOR THREE DIFFERENT REASONS, TWO OF WHICH WERE FLAWS IN MY OWN MUTATION SETUP**
+
+THE TARGET — the fourth width gap in this family, and `detectGroupedHopCount` refuses
+`segments.length !== 1` exactly as its three predecessors did:
+
+```text
+  grouped   depth1  depth2  depth3  depth4  depth5
+  before       1.4    30.0    38.3    50.9    61.1
+  after        1.4     4.5     5.5     7.3     7.7     6.7x 7.0x 7.0x 7.9x
+  rows         1.7     7.7     5.7     4.7     5.4     the twin it must sit beside
+```
+
+⚠️ **IT DOES NOT RE-DERIVE GROUPING SEMANTICS.** `buildGroups`' own comment settles the single-key
+case — "ONE grouping key is the overwhelmingly common shape, and for it the row key IS the value
+key" — so the rung tallies by `valueKey`, which groups exactly as the general path does on the cases
+that are easy to get wrong. A second keying here would be the third silent answer change in this
+area (items 1561, 1562).
+
+⚠️ **AND THE GROUP ORDER MATCHES ONLY BECAUSE ITEM 1831 MEASURED IT.** A tally emits groups in
+first-occurrence order, which equals the general path's only if the rung emits ROWS in the general
+path's order — 25 cases, both internal branches proved live by deletion. Without that measurement
+this item would have been resting on an assumption; `order-is-unspecified` means no caller may rely
+on group order, but matching it is what keeps the two ENGINES byte-identical.
+
+⚠️⚠️ **THE MUTATION RUN IS THE PART WORTH READING. Three survivors, three different causes, and only
+ONE of them was a real property of the code:**
+
+```text
+  count rows instead of groups        CAUGHT (2 fail)
+  key by String() not valueKey        survived -> MY TESTS were at the wrong WIDTH
+  drop the countedGroups gate         survived -> MY MUTANT was in the wrong FILE
+  drop the groupKeys-length gate      survives  -> genuinely redundant with the items-length gate
+  drop the items-length gate          survives  -> genuinely redundant with the groupKeys gate
+  drop BOTH of those                  CAUGHT (2 fail, both widths)
+```
+
+⚠️ **THE TWO WIDTHS ARE TWO FILES, AND I TESTED ONE.** `hop2-projection.ts` and
+`chain-projection.ts` hold separate implementations of the same rule. My answer tests used the
+TWO-hop chain while my mutant edited the CHAIN file, so the mutant and the test never met — the
+`String(key)` keying mutant "survived" a test that could not reach it, and the `countedGroups`
+mutant "survived" because the refusal was pinned at two hops only. **A duplicated implementation
+needs a duplicated test, and a mutation run that edits one copy proves nothing about the other.**
+Both the keying answers and every refusal are now asserted at BOTH widths, and the mutants are
+applied to BOTH files; with that, the two real mutants are caught.
+
+⚠️ **AND THE TYPE-COLLISION CASE EXISTED ONLY BECAUSE A MUTANT ASKED FOR IT.** Keying by
+`String(key)` passes `0`/`-0`, `NaN`, `null` and even an element key — every case the file had — and
+silently merges `1` with `'1'`. `valueKey` is type-prefixed for precisely that, and nothing was
+asking it to be.
+
+✅ **THE SURVIVING PAIR IS CHARACTERIZED RATHER THAN LEFT UNEXPLAINED**: `groupKeys.length !== 1` and
+`items.length !== 2` are MUTUALLY REDUNDANT — either alone refuses a two-key grouping, and dropping
+both is caught at both widths. That is the same status `hop2-projection.ts` records for its own
+`pathVar` guard ("mutually redundant with the free-variable test"), established by running it rather
+than asserted.
+
+⚠️ **LINT CAUGHT THE CHAIN OUTGROWING ITS BUDGET, AND THAT WAS THE RIGHT SIGNAL.** These branches
+took `runLinear` to a cyclomatic complexity of **37 against a limit of 35**. Raising the limit would
+have hidden the accumulation; the four reducing rungs are extracted into `deepWidthReductions`
+instead, called at exactly the point and in exactly the order they occupied. Twelve controls confirm
+it cost nothing.
+
+TWELVE CONTROLS FLAT, five alternated rounds, arms asserted by a marker count in the built DIST:
+`hop3rows` 1.05x/1.00x, `hop2rows` 1.03x/1.01x, `hoprows` 0.94x/0.96x, `grouped` 0.99x/0.99x,
+`groupedhop` 1.04x/1.04x, `distinct` 0.98x/0.97x, `point` 1.00x/0.96x, `join` 1.00x/1.01x, `count2`
+0.97x/1.03x, `count3` 0.99x/1.13x, `topkhop` 1.05x/1.00x, `sortedpage` 1.01x/1.01x (min / median).
+⚠️ `groupedhop` is the control that matters: the ONE-hop grouped rung must not be starved, and it is
+not.
+
+CORRECTNESS. gql 4,639 / gremlin 2,134 / native 1,165 / core 458 pass, 0 fail; `bun run fuzz` 57/0.
+Plus two seeds at 60,000 workload queries — 120,000 queries, 0 divergences. `routes-fired.test.ts`
+goes 26 -> 28 detectors and pins every refusal at both widths.
+
+STILL OPEN: **Gremlin's `groupCount` degrades 14-22x** at depths 2-5 (item 1829's table) and is
+untouched here — the shared half of this flag, and its own item.
+
+GATES. bun run check 0 read unpiped. gql 4,639 pass / 0 fail. gremlin 2,134 pass / 0 fail.
+native 1,165 pass / 0 fail. core 458 pass / 0 fail. bun run fuzz 57 pass / 0 fail.

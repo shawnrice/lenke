@@ -5540,6 +5540,9 @@ export type CLinear = {
    * `AlwaysRowsFn`: it delegates to `detectHopProjection`, whose `null` is a RUNTIME decline.
    */
   hopDistinctProjection: RowsFn | null;
+  /** The grouped `count(*)` at two and three-plus segments — item 1832. */
+  hop2GroupedCount: AlwaysRowsFn | null;
+  chainGroupedCount: AlwaysRowsFn | null;
   /**
    * The two-hop and chain rungs under `ORDER BY <output columns>` — item 1827. `RowsFn`, because
    * `sortedRows` passes a run-time decline THROUGH rather than answering `[]`.

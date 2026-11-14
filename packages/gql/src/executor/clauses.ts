@@ -1658,22 +1658,10 @@ const fastPath = (linear: CLinear, graph: Graph, params: Params): Row[] | undefi
     return linear.chainProjection(graph, params);
   }
 
-  /**
-   * The same chain under `count(DISTINCT <expr over the far end>)` — item 1824.
-   *
-   * ⚠️ BELOW `chainProjection`, AND THE TWO CANNOT COMPETE: that rung refuses an aggregating
-   * projection and this one requires one, so the shapes are disjoint by construction and either
-   * order answers the same queries. Below, rather than above, for the reason item 418 measured — a
-   * branch ahead of a hot dispatch cost the shape it does not claim 1.12x — so the plain chain
-   * projection pays one null check and nothing more.
-   */
-  if (linear.chainFoldedAggregate) {
-    return linear.chainFoldedAggregate(graph, params);
-  }
+  const reduced = deepWidthReductions(linear, graph, params);
 
-  /** The two-hop twin, disjoint from every rung above for the same reason — item 1824. */
-  if (linear.hop2FoldedAggregate) {
-    return linear.hop2FoldedAggregate(graph, params);
+  if (reduced !== undefined) {
+    return reduced;
   }
 
   /**
@@ -1798,6 +1786,44 @@ const fastPath = (linear: CLinear, graph: Graph, params: Params): Row[] | undefi
   // and cheaper for its own `count(*)` shape. See `detectGroupedHopAggregate`.
   if (linear.groupedHopAggregate) {
     return linear.groupedHopAggregate(graph, params);
+  }
+
+  return undefined;
+};
+
+/**
+ * The four REDUCING rungs at two and three-plus segments — items 1824, 1830 and 1832.
+ *
+ * ⚠️ EXTRACTED BECAUSE LINT SAID SO, AND THAT WAS THE RIGHT SIGNAL. Adding these took `runLinear`
+ * to a cyclomatic complexity of 37 against a limit of 35 — the rung chain outgrowing its budget
+ * one branch at a time, which is exactly the accumulation `executor-edits-perturb` warns about from
+ * the other direction. Raising the limit would have hidden it; this keeps the chain readable and
+ * leaves the budget meaningful for whoever adds the next rung.
+ *
+ * ⚠️ ORDER IS PRESERVED EXACTLY, and it has to be: these are called at the point the four branches
+ * occupied, in the order they occupied it. They are mutually disjoint by construction (a folded
+ * aggregate needs `foldedAggs`; a grouped count needs `countedGroups` with one key), so no ordering
+ * between THEM can starve anything — but their position relative to the plain projection rungs
+ * above is `rung-precedence-decides-speed` territory and is unchanged.
+ *
+ * `undefined` means "none of these claimed it", which is distinct from a rung answering with no
+ * rows: every one of them is an `AlwaysRowsFn` and returns a `Row[]`.
+ */
+const deepWidthReductions = (linear: CLinear, graph: Graph, params: Params): Row[] | undefined => {
+  if (linear.chainFoldedAggregate) {
+    return linear.chainFoldedAggregate(graph, params);
+  }
+
+  if (linear.hop2FoldedAggregate) {
+    return linear.hop2FoldedAggregate(graph, params);
+  }
+
+  if (linear.chainGroupedCount) {
+    return linear.chainGroupedCount(graph, params);
+  }
+
+  if (linear.hop2GroupedCount) {
+    return linear.hop2GroupedCount(graph, params);
   }
 
   return undefined;
