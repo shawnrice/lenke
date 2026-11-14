@@ -88,9 +88,9 @@ describe('edgeFilteredHopValues — the answer', () => {
     // `E` edges with `w > 3`: e2 (a->c), e3 (a->f), e5 (b->d), e7 (c->d), e8 (d->d).
     // Far vertices in global vertex order (a, b, c, d, e, f) then bucket order:
     //   a: c(3), f(no n -> DROPPED)   b: d(4)   c: d(4)   d: d(4)
-    expect(toArray(traversal(V(), outE('E'), has('w', gt(3)), inV(), values('n')), g)).toEqual([
-      3, 4, 4, 4,
-    ]);
+    expect(
+      toArray(traversal(V(), outE('E'), has('w', gt(3)), inV(), values('n')), g),
+    ).toStrictEqual([3, 4, 4, 4]);
   });
 
   it('drops an edge whose property is ABSENT, as the general predicate does', () => {
@@ -99,9 +99,9 @@ describe('edgeFilteredHopValues — the answer', () => {
     // e4 (b->c) has no `w`. With `gt(0)` every present `w` passes, so only e4's target is missing.
     // `E` edges in order: a->b(1), a->c(5), a->f(7, dropped — no n), b->c(ABSENT), b->d(9),
     // c->d(6), d->d(8).
-    expect(toArray(traversal(V(), outE('E'), has('w', gt(0)), inV(), values('n')), g)).toEqual([
-      2, 3, 4, 4, 4,
-    ]);
+    expect(
+      toArray(traversal(V(), outE('E'), has('w', gt(0)), inV(), values('n')), g),
+    ).toStrictEqual([2, 3, 4, 4, 4]);
   });
 
   it('agrees with the generic pipeline, which answers the SAME shape via `bothE`/`otherV`', () => {
@@ -122,7 +122,7 @@ describe('edgeFilteredHopValues — the answer', () => {
   it('serves `id()` without dropping a far vertex that lacks the projected key', () => {
     const g = fixture();
 
-    expect(toArray(traversal(V(), outE('E'), has('w', gt(3)), inV(), id()), g)).toEqual([
+    expect(toArray(traversal(V(), outE('E'), has('w', gt(3)), inV(), id()), g)).toStrictEqual([
       'c',
       'f',
       'd',
@@ -135,7 +135,7 @@ describe('edgeFilteredHopValues — the answer', () => {
     const g = fixture();
     const got = toArray(traversal(V(), outE('E'), has('w', gt(3)), inV()), g);
 
-    expect(got.map((v) => (v as { id: string }).id)).toEqual(['c', 'f', 'd', 'd', 'd']);
+    expect(got.map((v) => (v as { id: string }).id)).toStrictEqual(['c', 'f', 'd', 'd', 'd']);
   });
 
   it('serves `inE`/`outV`, reading the other end of the edge', () => {
@@ -144,9 +144,9 @@ describe('edgeFilteredHopValues — the answer', () => {
     // In-edges with `w > 3`, per far vertex in global order:
     //   b: (nothing — e1 w=1)   c: a(1) via e2   d: b(2) via e5, c(3) via e7, d(4) via e8
     //   f: a(1) via e3
-    expect(toArray(traversal(V(), inE('E'), has('w', gt(3)), outV(), values('n')), g)).toEqual([
-      1, 2, 3, 4, 1,
-    ]);
+    expect(
+      toArray(traversal(V(), inE('E'), has('w', gt(3)), outV(), values('n')), g),
+    ).toStrictEqual([1, 2, 3, 4, 1]);
   });
 
   it('ANDs several `has` steps', () => {
@@ -154,13 +154,15 @@ describe('edgeFilteredHopValues — the answer', () => {
 
     expect(
       toArray(traversal(V(), outE('E'), has('w', gt(3)), has('w', gt(6)), inV(), values('n')), g),
-    ).toEqual([4, 4]);
+    ).toStrictEqual([4, 4]);
   });
 
   it('takes an EQUALITY predicate, not only a comparison', () => {
     const g = fixture();
 
-    expect(toArray(traversal(V(), outE('E'), has('w', 9), inV(), values('n')), g)).toEqual([4]);
+    expect(toArray(traversal(V(), outE('E'), has('w', 9), inV(), values('n')), g)).toStrictEqual([
+      4,
+    ]);
   });
 
   it('keeps the edge TYPE filter — an `F` edge with a passing `w` is not visited', () => {
@@ -168,10 +170,12 @@ describe('edgeFilteredHopValues — the answer', () => {
 
     // e6 (b->e, `F`, w=9) would contribute 5 if the type leaked; e7 carries both types and is in
     // the `E` bucket legitimately.
-    expect(toArray(traversal(V(), outE('E'), has('w', gt(8)), inV(), values('n')), g)).toEqual([4]);
-    expect(toArray(traversal(V(), outE('F'), has('w', gt(5)), inV(), values('n')), g)).toEqual([
-      5, 4,
-    ]);
+    expect(
+      toArray(traversal(V(), outE('E'), has('w', gt(8)), inV(), values('n')), g),
+    ).toStrictEqual([4]);
+    expect(
+      toArray(traversal(V(), outE('F'), has('w', gt(5)), inV(), values('n')), g),
+    ).toStrictEqual([5, 4]);
   });
 
   it('carries a residual step over the fused values', () => {
@@ -179,10 +183,10 @@ describe('edgeFilteredHopValues — the answer', () => {
 
     expect(
       toArray(traversal(V(), outE('E'), has('w', gt(3)), inV(), values('n'), count()), g),
-    ).toEqual([4]);
+    ).toStrictEqual([4]);
     expect(
       toArray(traversal(V(), outE('E'), has('w', gt(3)), inV(), values('n'), order()), g),
-    ).toEqual([3, 4, 4, 4]);
+    ).toStrictEqual([3, 4, 4, 4]);
   });
 });
 

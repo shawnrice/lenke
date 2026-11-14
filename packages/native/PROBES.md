@@ -51,6 +51,25 @@ the fused sibling's 31 — 7.2x**. The two instruments are below; the rung is no
 **Item 1883 built the rung: 18.04 → 6.14 ms, 2.94x, 225 → 77 ns an edge visit** against the
 unfiltered floor's 36. The screen's top shape is now `optional: hop` at 10.11 ms.
 
+### The `optional` rung's instruments (item 1884), and the estimator trap they are shaped by
+
+⚠️⚠️ **READ THIS BEFORE MEASURING ANY TRAVERSER-PIPELINE SHAPE WITH A SHORT REP WINDOW.** The
+`optional` arm does NOT plateau for ~12 reps where its fused twin is flat from rep 4, so a 9-rep
+median read **116 ns a row** where a 150-rep profile of the same shape read **70.3** — and the
+first A/B on it reported a NULL that did not exist. Print the series.
+
+- **`optional-hop-floor-1884.mjs`** — `SHAPE=optional|hop|optional_id|sparse_optional|sparse_hop`,
+  one per process. **`SERIES=1` prints the per-rep series**, which is what found the trap above.
+- **`optional-ab-1884.mjs`** — the two-build A/B: PRE kills the rung in the dist, POST is shipped,
+  30 reps less 2, MEDIAN of rounds (not min — the min invented 0.85x of control movement once),
+  three order-alternated rounds, with `hop` as a control the rung cannot reach. **1.37-1.38x on
+  `optional`, 1.36-1.51x on its `id()` twin, control flat**, over three independent runs.
+- **`optional-oracle-1884.mjs`** — the route differential, 51 pairs ORDERED, `undefined` kept
+  distinct from `null`.
+- **`optional-mutants-1884.mjs`** — 7/7 caught, after two survivors taught the file that `toEqual`
+  ignores `undefined` entries and that `in()` is the only spelling where the bucket's direction flag
+  is observable.
+
 ## Start here: `family-split-1880.ts` — which SHAPE owns a family's milliseconds
 
 `workload-perf-screen.mjs` reports one number per family, and a family is a generator. Item 1879

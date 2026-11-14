@@ -48,6 +48,7 @@ import {
   seededNodeCountShortcut,
   seededNodeValuesShortcut,
 } from './node-values.js';
+import { optionalHopValues } from './optional-hop-values.js';
 import { groupCountShortcut, tallyProjectedGroupCount } from './projection.js';
 import type { RunContext } from './runtime.js';
 import {
@@ -2395,6 +2396,38 @@ const scanValuesShortcut = (
       // which plans they answer. It reads last only because it is the narrowest.
       nodeValuesDedupeShortcut(effective, graph));
 
+/**
+ * The fused VALUES walks, consulted in `??` order.
+ *
+ * ⚠️ EXTRACTED FOR THE COMPLEXITY GATE, as `scanValuesShortcut` and `fusedProjectedResidual` were
+ * before it: adding the fifth rung took `run` to **36 against a limit of 35**, even written as a
+ * `??` chain. Nothing else changed — the order, the guard and the comments are the ones that were
+ * inline.
+ *
+ * ⚠️ THE ORDER IS LOAD-BEARING (item 1535): `??` in this order means no plan an earlier rung already
+ * admits can change route. The five are in fact disjoint by their position-1 step — a vertex hop, a
+ * filter run, an `outE`/`inE`, an `optional`, a second hop — but the ordering rule is what keeps
+ * that true if any gate is ever widened.
+ *
+ * ⚠️ ONE `tracksPath` GUARD COVERS ALL FIVE, for `hopValuesShortcut`'s stated reason: each emits
+ * bare values and builds no traverser, so it has no path to carry and a plan that reads one must
+ * not ride any of them.
+ */
+const fusedProjectedValues = (
+  effective: Plan,
+  graph: Graph,
+  tracksPath: boolean,
+): HopValues | undefined =>
+  tracksPath
+    ? undefined
+    : (hopValuesShortcut(effective, graph) ??
+      startFilteredHopValues(effective, graph) ??
+      // The EDGE-PREDICATE rung (items 1882/1883): `outE(T).has(k, p).inV()`.
+      edgeFilteredHopValues(effective, graph) ??
+      // The OPTIONAL rung (item 1884): `optional(<one hop>)`, the left-join idiom.
+      optionalHopValues(effective, graph) ??
+      hopChainValuesShortcut(effective, graph));
+
 export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
   // Before anything runs: static faults the engine raises at parse time — a plan that
   // cannot succeed on any graph, and an aggregate/sort/vertex-move on the wrong frontier.
@@ -2555,17 +2588,7 @@ export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
     return tallied;
   }
 
-  const projected = ctx.tracksPath
-    ? undefined
-    : (hopValuesShortcut(effective, graph) ??
-      startFilteredHopValues(effective, graph) ??
-      // The EDGE-PREDICATE rung (item 1882/1883). LAST, for item 1535's stated reason: `??` in
-      // this order means no plan an earlier rung already admits can change route. It cannot
-      // overlap any of them anyway — it requires `outE`/`inE` in position 1 followed by a `has`,
-      // and the three above take a vertex-moving hop — but the ordering rule is what keeps that
-      // true if either gate is ever widened.
-      edgeFilteredHopValues(effective, graph) ??
-      hopChainValuesShortcut(effective, graph));
+  const projected = fusedProjectedValues(effective, graph, ctx.tracksPath);
 
   // NOTHING LEFT OVER is the shape this shortcut has always served: the values ARE the answer, so
   // they are returned without ever building a traverser. Unchanged, and it stays the fast path.

@@ -88448,3 +88448,112 @@ answer disagreements, one flag (`label + property`, 2.22x) which is pre-existing
 `bun run bench:gremlin`: every row `same`.
 
 GATES. bun run check 0 and bun run test -- --skip-nx-cache across 21 projects, each read unpiped.
+
+## Item 1884 — the `optional(<hop>)` values rung: 1.37x on the screen's new top shape, 1.51x on its `id()` twin — and the first reading said NULL, which was a 9-rep warm-up artifact
+
+Item 1883 took the Gremlin workload screen's top shape, which promoted `optional: hop` — the
+left-join idiom — to the top at **10.11 ms for 80,000 rows** against `hop1: values`' 3.49 for the
+SAME 80,000 rows.
+
+✅ **AND IT WAS A PLAN-LEVEL GAP, NOT THE ONE ITEM 1480 ALREADY CLOSED.** `optional-hop.ts` (items
+1480/1483/1628) replaced `optionalStep`'s per-traverser sub-plan — a one-element input array, a
+103-arm dispatch, a generator per step, and a full materialization just to test non-emptiness — and
+took the adjacency bucket directly for a directed single type. What remained is that the whole plan
+still ran in the TRAVERSER pipeline. The profile (150 reps, query 80% of the process):
+
+      optionalHopStep 25.1%   projectValues 12.8%   toArray 11.3%   unwrap 7.6%
+      isVertexShaped   6.5%   get properties 4.5%   soleTypeBucket 3.5%   extend 1.4%
+
+— the traverser machinery and the generator boundaries, not the walk. `optional-hop-values.ts`
+answers `V().optional(<one hop>).(values(k) | id() | nothing)` as a bare-value walk, reusing
+`optionalSingleHop`'s gate and the step's own `soleTypeBucket`/`adjacentEdges`/`otherEndpoint` so the
+two cannot drift about shape or order.
+
+⚠️⚠️ **THE FIRST MEASUREMENT SAID THE RUNG WAS WORTHLESS, AND THE INSTRUMENT WAS WRONG.** At 9 reps:
+`optional` 10.24/8.99 ms before against 9.30 after — a null — while `optional(…).id()` went 7.2 →
+4.70. Then a 150-rep profile of the SAME shape read **70.3 ns a row** where the 9-rep floor read
+**116**, and printing the per-rep series explained it:
+
+      optional  9.4 8.5 8.5 7.8 9.7 7.3 7.2 7.1 7.3 8.2 13.2 10.1 6.9 6.3 6.2 6.0 5.8 5.7 5.7 5.5 …
+      hop       4.8 4.4 4.3 3.0 2.6 2.3 2.4 2.4 2.2 2.1  2.0  2.0 2.0 2.1 2.0 2.0 2.0 2.0 2.3 2.2 …
+
+**This arm does not plateau for ~12 reps where its fused twin is flat from rep 4.** A 9-rep window
+was measuring warm-up as the steady state in BOTH arms. CLAUDE.md says this in terms for the TS
+per-row path — "min-of-N is the wrong estimator, and it can hide the win; print the per-rep series
+before trusting any summary of it" — and I had reached for a 9-rep median anyway because it had
+worked for item 1883's shape. The floor file now prints its series on `SERIES=1`.
+
+📏 **WITH THE RIGHT INSTRUMENT (`optional-ab-1884.mjs`): two builds, one shape per process, 30 reps
+less 2, median, three ORDER-ALTERNATED rounds, and a control the rung cannot reach.** PRE is the
+rung's dist call site replaced by `void 0` (so the shape runs the pipeline it ran before this item,
+fused STEP included), POST is shipped; both arms asserted by marker before any measurement. Three
+independent runs:
+
+      shape         PRE (ms)           POST (ms)          verdict
+      optional      8.98 8.21 8.57     5.93 6.19 6.20     1.38x
+      optional      8.92 8.37 8.67     6.07 6.36 6.27     1.38x
+      optional      9.63 8.36 8.30     6.30 6.45 5.54     1.37x
+      optional_id   7.31 6.40 6.18     4.54 4.57 4.62     1.36-1.51x
+      hop [CONTROL] 2.02 2.13 2.09     2.06 2.04 2.03     1.00x
+
+Every POST reading is below every PRE reading on both targets, and the control is flat. On the
+workload screen the row goes **10.11 → 8.06 ms** (its 7-rep estimator under-warms this shape, which
+is consistent with the above rather than in tension with it).
+
+⚠️ **ONE MORE ESTIMATOR LESSON INSIDE THE A/B ITSELF.** Its first version reported min-of-rounds, and
+on one run that made the CONTROL read **0.85x** off a single low PRE reading (1.92 against 2.33 and
+2.34) whose medians were 2.33 and 2.29 — flat. Item 762's rule is that a control moving more than
+the target condemns the instrument, so an estimator that can invent control movement is an estimator
+that can condemn a real win. The headline is now the median of rounds.
+
+🦷 **AND TWO MUTANTS SURVIVED THE FIRST TEST FILE — one of which is a general oracle hole worth
+knowing.**
+
+1. **`toEqual` IS BLIND TO `undefined` ENTRIES.** A mutant removing the drop on the self-emit
+   branch — so a vertex with no edges AND no `n` yields `undefined` — survived, because
+   `[2, 3, 2, 3, 4, 5, undefined]` compares EQUAL to `[2, 3, 2, 3, 4, 5]` under `toEqual`. These
+   walks exist to get "dropped row" versus "stored null" right, so an assertion blind to
+   `undefined` is blind to the distinction. **Every sequence assertion in both this file and item
+   1883's is now `toStrictEqual`** — and the edge rung's missing-key mutant went from failing 3
+   tests to 4 as a result.
+2. **`in('E')` WAS NOT TESTED, so hard-coding `forward = true` broke nothing.** `soleTypeBucket`
+   returns a direction flag; `out` is forward and `both` takes the other arm, so the flag is only
+   observable through `in`. A test was added with a hand-computed oracle.
+
+After both fixes: **7/7 mutants caught** (far end swapped, empty branch deleted, `any` set from the
+VALUE rather than the edge, self-emit drop removed, missing-key drop disabled, general adjacency arm
+skipped, bucket arm ignores direction).
+
+⚠️ **THE SUBTLE SEMANTIC, mirrored exactly and pinned by a fixture built for it:** `optionalHopStep`
+sets its `any` flag per EDGE, BEFORE the projection. So a vertex that HAS edges whose far ends all
+lack the projected key emits **nothing** — not itself. Deciding emptiness from "did any VALUE
+survive" is a different and wrong answer that passes every other test in the file; the fixture's `h`
+(one `E` edge, to a vertex with no `n`) is the discriminator, and the mutant for it is caught.
+
+🔭 **AND THE CONTRACT IS CHECKED AGAINST THE ROUTE IT DISPLACES (`optional-oracle-1884.mjs`).** Same
+two-build device as item 1883: 17 traversals — three projections, `out`/`in`/`both`, untyped,
+multi-type, an absent key, a string key, a residual `count`/`order` — over three fixtures (isolated
+vertices, other-type-only vertices, a self-loop, far ends lacking the key). **51 pairs, ORDERED
+comparison, every one identical**; 36 claimed, the four controls none, both arms asserted.
+`undefined` is mapped to a marker before serializing, because `JSON.stringify` would collapse it the
+same way `toEqual` does.
+
+🔬 **THE ROUTE SCREEN NOW HAS AN `opt:` FAMILY, permanently.** It had no `optional` row at all, which
+is why this gap was invisible to it:
+
+      SHORTCUT  opt: optional values / id / bare
+      generic   opt: optional count          2 applyStep calls
+      generic   opt: optional two hops    4002 applyStep calls   ⬅ the sub-plan dispatch, per row
+
+That last row is the next candidate on this surface: `optionalSingleHop` refuses a multi-step
+sub-plan, so `optional(out, out)` still pays item 1480's per-traverser dispatch — 4,002 calls for
+2,000 vertices.
+
+⚠️ **ALSO EXTRACTED**: the five-rung `??` chain in `run` is now `fusedProjectedValues`, because the
+fifth rung took `run`'s complexity to 36 against a limit of 35 — the same extraction
+`scanValuesShortcut` and `fusedProjectedResidual` had. Order, guard and comments unchanged.
+
+INVARIANTS. All seven byte-identity fuzzers green. `bun run spelling:gremlin`: 0 answer
+disagreements and 0 groups over 2x. `bun run bench:gremlin`: every row `same`.
+
+GATES. bun run check 0 and bun run test -- --skip-nx-cache across 21 projects, each read unpiped.

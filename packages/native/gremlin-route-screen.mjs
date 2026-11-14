@@ -119,10 +119,18 @@ const SHAPES = {
   'edgef: inE has outV values': "traversal(V(), inE('E'), has('w', gt(3)), outV(), values('k'))",
   'edgef: bothE has otherV count': "traversal(V(), bothE('E'), has('w', gt(3)), otherV(), count())",
   'edgef: outE inV values': "traversal(V(), outE('E'), inV(), values('k'))",
+  // ⚠️ THE OPTIONAL FAMILY, added at item 1884 — the screen had no `optional` row either, and the
+  // left-join idiom was the workload screen's largest shape once item 1883 landed. `optional-hop.ts`
+  // fuses the STEP (items 1480/1483/1628); these rows ask whether the PLAN is fused.
+  'opt: optional values': "traversal(V(), optional(traversal(out('E'))), values('k'))",
+  'opt: optional id': "traversal(V(), optional(traversal(out('E'))), id())",
+  'opt: optional bare': "traversal(V(), optional(traversal(out('E'))))",
+  'opt: optional count': "traversal(V(), optional(traversal(out('E'))), count())",
+  'opt: optional two hops': "traversal(V(), optional(traversal(out('E'), out('E'))), values('k'))",
 };
 
 const IMPORTS =
-  "import { E, V, both, bothE, count, dedupe, fold, groupCount, gt, has, hasId, hasLabel, id, inE, inV, limit, min, order, otherV, out, outE, outV, sum, toArray, traversal, values } from '@lenke/gremlin';";
+  "import { E, V, both, bothE, count, dedupe, fold, groupCount, gt, has, hasId, hasLabel, id, inE, inV, limit, min, optional, order, otherV, out, outE, outV, sum, toArray, traversal, values } from '@lenke/gremlin';";
 
 const build = () => execFileSync('bun', ['run', 'build'], { cwd: ROOT, stdio: 'ignore' });
 
