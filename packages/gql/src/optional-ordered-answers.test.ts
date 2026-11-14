@@ -72,9 +72,23 @@ const seq = (g: Graph, text: string): string[] =>
       .join('/'),
   );
 
-/** The same question with a no-op outer `WHERE`, which declines the rung. */
+/**
+ * The same question down the general path.
+ *
+ * ⚠️ THE DEVICE CHANGED AT ITEM 1851, and this comment is the reason it is a comment. It used to
+ * be a no-op OUTER `WHERE true`, which declined the rung — until item 1851 taught the rung to
+ * carry an anchor predicate, at which point `WHERE true` started TAKING it and every comparison
+ * here would have become the rung against itself. The assertion in "the rung actually fires for
+ * each of those" is what caught that; without it the file would have gone on passing while
+ * testing nothing.
+ *
+ * The replacement is a `WHERE true` on the OPTIONAL clause instead. That one is refused for a
+ * reason that is not going to be relaxed: a `WHERE` on the OPTIONAL MATCH filters the HOP, so it
+ * changes what "matched" means and therefore which anchors get a NULL row — it is a different
+ * question from narrowing the starts, not a harder version of the same one.
+ */
 const viaGeneral = (text: string): string =>
-  text.replace('MATCH (a:T) OPTIONAL', 'MATCH (a:T) WHERE true OPTIONAL');
+  text.replace('(b:T) RETURN', '(b:T) WHERE true RETURN');
 
 describe('an ORDER BY over an optional hop', () => {
   const CASES = [

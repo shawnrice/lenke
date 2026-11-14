@@ -4,6 +4,7 @@ import type { Clause, CountValue, Expr, LabelExpr, Projection, RelPattern } from
 import { candidateCount, candidateVertexSource, expand, matchesLabel } from '../graph-queries.js';
 import type { Adjacency } from '../graph-queries.js';
 import { edgesOfTypes, relTypeNames } from './adjacency.js';
+import { matchNodeLabelled } from './bindings.js';
 import { distinctRows } from './clauses.js';
 import type {
   AggFold,
@@ -2086,10 +2087,16 @@ const optionalHopShape = (
   if (
     m.kind !== 'match' ||
     m.optional ||
-    m.where !== undefined ||
     m.patterns.length !== 1 ||
     om.kind !== 'match' ||
     !om.optional ||
+    /**
+     * ⚠️ THE *OPTIONAL* CLAUSE'S OWN `WHERE` STAYS REFUSED, and it is not the same question as the
+     * anchor's. A `WHERE` on the OPTIONAL MATCH filters the HOP, and a hop filtered to nothing must
+     * still leave its anchor with a NULL row — so it changes what `matched` means, not merely which
+     * starts are considered. The ANCHOR's `WHERE` (item 1851) only narrows the starts, which is
+     * exactly what the loop below already does one vertex at a time.
+     */
     om.where !== undefined ||
     om.patterns.length !== 1
   ) {
@@ -2102,9 +2109,9 @@ const optionalHopShape = (
   if (
     anchor.segments.length !== 0 ||
     anchor.pathVar !== undefined ||
-    startVar === undefined ||
-    (anchor.start.properties !== undefined && anchor.start.properties.length > 0) ||
-    anchor.start.where !== undefined
+    startVar === undefined
+    // ⚠️ INLINE PROPERTIES AND A NODE `WHERE` ON THE ANCHOR ARE NO LONGER REFUSED (item 1851):
+    // both compile into the node's `pred`, which the walk now tests. See the detector.
   ) {
     return null;
   }
@@ -2203,9 +2210,48 @@ export const detectOptionalHopProjection = (
   }
 
   const [m, om, ret] = clauses;
-  const [, , cret] = compiled;
+  const [cm, , cret] = compiled;
 
   if (cret?.kind !== 'return' || cret.projection.aggregating || ret.kind !== 'return') {
+    return null;
+  }
+
+  /**
+   * THE ANCHOR PREDICATE — item 1851.
+   *
+   * `MATCH (a:T) WHERE <pred> OPTIONAL MATCH …` used to decline this rung outright, costing
+   * **8.3x for IDENTICAL rows**: 47.4 ms against 5.7, 80,000 rows either way, measured with
+   * `WHERE true` so the two spellings ask exactly the same question.
+   *
+   * ⚠️ IT IS READ OFF THE COMPILED *NODE*, NOT THE CLAUSE, and the first attempt at this got it
+   * wrong: `item 285`'s `pushWhereIntoNode` moves a conjunct reading exactly one of the clause's
+   * own pattern variables INTO that node, so the compiled clause's `where` is `undefined` while the
+   * AST's is not. Gating on `cm.where` therefore refused every shape it was meant to admit — and
+   * the whole suite stayed green, because declining is answer-equivalent. The route probe is what
+   * showed it.
+   *
+   * Reading the node also closes the INLINE spelling (`MATCH (a:T {n: 2}) OPTIONAL MATCH …`) with
+   * the same code, since `pred` is where both end up.
+   *
+   * ⚠️ IT IS SOUND BECAUSE OF *WHERE* IT RUNS. At this point the general path has bound the anchor
+   * variable and nothing else — the far variable is bound by the OPTIONAL clause that follows — so
+   * testing the anchor against a binding holding only the anchor is the same evaluation the
+   * general path makes, in the same place. No restriction on the predicate's CONTENT is needed.
+   */
+  /**
+   * ⚠️ NO `start.properties` TEST, AND THAT IS MEASURED RATHER THAN ASSUMED. `liftStartProps` runs
+   * BEFORE the detectors, so `MATCH (a:T {k: 1})` arrives here with `m.where` set and
+   * `start.properties` already gone — a props check is unreachable, and a mutant deleting one
+   * SURVIVED (item 1851). A node-level `WHERE` (`MATCH (a:T WHERE a.k = 1)`) is NOT lifted and
+   * does still arrive on the node, so that test is live and has its own case.
+   */
+  const anchorPattern = m.kind === 'match' ? m.patterns[0] : undefined;
+  const anchorFiltered =
+    m.kind === 'match' && (m.where !== undefined || anchorPattern?.start.where !== undefined);
+  const cAnchor = cm?.kind === 'match' ? cm.patterns[0]?.start : undefined;
+
+  // A filtered anchor with no compiled node to test it with would silently DROP the filter.
+  if (anchorFiltered && cAnchor === undefined) {
     return null;
   }
 
@@ -2233,6 +2279,27 @@ export const detectOptionalHopProjection = (
 
     for (const v of candidateVertexSource(graph, startLabel)) {
       binding.set(startVar, v);
+
+      /**
+       * ⚠️ A REJECTED ANCHOR EMITS NOTHING AT ALL, not a NULL-filled row. The `OPTIONAL` applies to
+       * the HOP, not to the anchor: a start the predicate rejects is not a match in the first
+       * place, so it gets no row of any kind.
+       *
+       * ⚠️ THE LABEL IS PASSED AS `undefined` because `candidateVertexSource` has already filtered
+       * by it — `matchNodeLabelled` exists for exactly this, and re-testing would pay for the label
+       * twice on every anchor.
+       *
+       * ⚠️ AND THE WHOLE CHECK IS BEHIND `anchorFiltered`, settled at COMPILE time, so a query with
+       * no anchor predicate runs the loop it ran before: `executor-edits-perturb` records a new
+       * branch in a hot walk costing unrelated rows up to 16%.
+       */
+      if (
+        anchorFiltered &&
+        cAnchor !== undefined &&
+        matchNodeLabelled(binding, cAnchor, v, params, graph, undefined) === null
+      ) {
+        continue;
+      }
 
       let matched = false;
 

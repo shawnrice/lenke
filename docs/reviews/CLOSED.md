@@ -195,6 +195,36 @@ absence** — `{k: null}` is the one place in a pattern where that distinction i
 
 ## 5. Open — unblocked and priced
 
+- ~~**An ANCHOR predicate dropped the OPTIONAL-hop rung**~~ - **CLOSED by item 1851**, the third
+  and last of the modifier cliffs items 1849/1850 found on this rung. `MATCH (a:T) WHERE <pred>
+OPTIONAL MATCH …` declined outright, costing **8.3x for IDENTICAL rows** (47.4 ms against 5.7,
+  measured with `WHERE true` so both spellings ask the same question).
+  **The win is SIZE-DEPENDENT and both ends are reported**: at 20,000 vertices 5.75x (filtering),
+  6.28x (`WHERE true`), 6.32x (inline), 8.29x (with ORDER BY); at 80,000 the same cells read 3.29x,
+  3.63x, 1.93x and 5.17x. Quoting only the larger number would be the stale-figure failure this
+  file exists to prevent.
+  **Controls:** the OPTIONAL clause's own `WHERE` 1.02x (refused by design - it filters the HOP, so
+  it changes which anchors get a NULL row), a plain hop with a `WHERE` 0.98x. The unfiltered
+  optional read 0.90x at 20k and **1.11x at 80k** - the direction FLIPPED with size, which is the
+  signature of noise rather than a regression (item 1847's lesson, applied without having to
+  relearn it).
+  ⚠️ **THE FIRST IMPLEMENTATION GATED ON `cm.where` AND SILENTLY DID NOTHING.** `pushWhereIntoNode`
+  (item 285) moves a conjunct reading one pattern variable INTO that node, so the compiled clause's
+  `where` is `undefined` while the AST's is not - the gate refused every shape it was written to
+  admit, and **the whole suite stayed green**, because declining is answer-equivalent. Only the
+  route probe showed it. Reading the compiled NODE instead is both correct and more general.
+  ⚠️ **AND IT BROKE ITEM 1849'S ORACLE, WHICH IS THE HAZARD ITEM 1850 REFUSED TO ACCEPT.** That
+  file used an outer `WHERE true` as its declining spelling; this item taught the rung to take it,
+  so the comparisons would have become the rung against itself. Its own route assertion caught it.
+  The device is now a `WHERE true` on the OPTIONAL clause, refused for a reason that will not be
+  relaxed.
+  5 mutants, **4 caught**. A3 survives correctly (re-testing the label is redundant work, not a
+  wrong answer). A4 initially survived too and that was a REAL find: `liftStartProps` runs before
+  the detectors, so `MATCH (a:T {k: 1})` arrives as a clause `WHERE` and the `start.properties`
+  test was unreachable. It is DELETED rather than kept-and-documented, because it was provably
+  dead; a node-level `WHERE` is NOT lifted, so that half of the gate is live and now has its own
+  case and its own caught mutant.
+
 - ~~**An UNREAD edge variable dropped the OPTIONAL-hop rung**~~ - **CLOSED by item 1850**
   (2026-11-14), at **10.51x** - and **11.94x** composed with item 1849's ordered rung, 7.80x over a
   type union. `optionalHopShape` refused `rel.variable !== undefined` outright, so naming an edge
@@ -229,7 +259,8 @@ absence** — `{k: null}` is the one place in a pattern where that distinction i
   SIBLING CLIFFS below at 1.01x each, which is why they are in the table.
   ~~**TWO MORE CLIFFS ON THIS RUNG ARE MEASURED AND STILL OPEN**~~ - the EDGE-VARIABLE half is
   **CLOSED by item 1850 at 10.51x** (for an UNREAD variable; a read one still declines by design).
-  The OUTER clause `WHERE` remains open at **1028 ns a row** against the 111 baseline.
+  ~~The OUTER clause `WHERE` remains open~~ - **CLOSED by item 1851** at 3.29-6.28x (size
+  dependent); that was the last of the three.
   **`withoutSortOrWindow` is now shared** from `ordered-rows.ts` beside `outputColumnSorts` and
   `sortedRows`, instead of being copied in `chain-projection` and `hop2-projection` - item 1832's
   near-twin hazard, two identical helpers that must stay identical with nothing to make a drift
