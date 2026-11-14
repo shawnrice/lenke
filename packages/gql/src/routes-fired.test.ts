@@ -264,21 +264,32 @@ describe('every fast-path detector fires for its own shape', () => {
       ['hopProjection'],
     ],
     /**
-     * ⚠️ A WINDOWED SORT MUST NOT REACH THE DEEPER ORDERED RUNGS, and this is the ONLY guard that
-     * can catch it: admitting one is answer-equivalent (the sort decides the order, so
-     * sort-then-slice is correct), and the mutant that drops the check passes every value test.
-     * What it loses is `boundedTopRows`' heap — ~280x per `sortOf` — so the defect is a route, and
-     * a route needs a route assertion. `perf-gate-needs-its-own-test` names this exact case.
+     * ⚠️ ~~A WINDOWED SORT MUST NOT REACH THE DEEPER ORDERED RUNGS~~ — **REVERSED AT ITEM 1852,
+     * and the premise was wrong rather than merely outdated.** This row used to assert `[]` and
+     * said admitting a window "loses `boundedTopRows`' heap — ~280x per `sortOf`".
+     *
+     * It loses nothing: the ordered rungs sort through `sortedRows` → `sortRowsByColumns`, which
+     * IS where that heap lives. Refusing the window only at depth 2 and up sent the query to the
+     * general matcher, and the measurement is one-sided in both regimes —
+     *
+     *     chain3 ORDER BY x LIMIT 10        101.43 ms -> 33.84   3.00x   (inside the heap)
+     *     chain3 ORDER BY x LIMIT 100000    211.26 ms -> 37.32   5.66x   (past its crossover)
+     *     chain3 ORDER BY x SKIP 5          387.91 ms -> 38.92   9.97x
+     *
+     * — including the large-limit cell the old note specifically feared. `detectNodeProjection`
+     * and `detectHopProjection` had shipped this at depth 0 and 1 since items 1062 and 701, so the
+     * refusal was also an inconsistency. The rows stay as ROUTE assertions, with the expectation
+     * flipped: admitting a window is still answer-equivalent, so only a route test can hold it.
      */
     [
-      'a two-hop sorted LIMIT stays off the ordered rung',
+      'a two-hop sorted LIMIT now takes the ordered rung',
       'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L) RETURN c.k AS k ORDER BY k LIMIT 3',
-      [],
+      ['hop2OrderedProjection'],
     ],
     [
-      'a three-hop sorted SKIP stays off the ordered rung',
+      'a three-hop sorted SKIP now takes the ordered rung',
       'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L)-[:R]->(d:L) RETURN d.k AS k ORDER BY k SKIP 2',
-      [],
+      ['chainOrderedProjection'],
     ],
     ['distinct projection', 'MATCH (n:L) RETURN DISTINCT n.k AS k', ['distinctProjection']],
 

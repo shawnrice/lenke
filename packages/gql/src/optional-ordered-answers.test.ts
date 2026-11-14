@@ -138,12 +138,14 @@ describe('an ORDER BY over an optional hop', () => {
 
 describe('the ordered optional rung declines what it must', () => {
   /**
-   * ⚠️ A WINDOW IS REFUSED, and this is a correctness condition rather than a missing feature:
-   * with a `SKIP`/`LIMIT` the order decides WHICH rows survive, so a rung that sorted AFTER
-   * slicing — or sliced rows it had produced in its own order — would return different rows, not
-   * merely a different order.
+   * ⚠️ ~~A WINDOW IS REFUSED~~ — **ADMITTED SINCE ITEM 1852.** My note here called refusing it a
+   * correctness condition because "the order decides WHICH rows survive". The order does decide
+   * that, and it is exactly why sort-then-slice is correct: the sort is by OUTPUT COLUMNS and the
+   * window applies to the sorted result. `outputColumnSorts` holds the real conditions (no
+   * faulting projected item, no parameterised window) and `sortRowsByColumns` applies the window
+   * itself, bounded heap included. The answers are still compared against the declining route.
    */
-  test('a SKIP or LIMIT does not take the rung, and still answers', () => {
+  test('a SKIP or LIMIT takes the rung and answers what the general route answers', () => {
     const g = build();
 
     for (const tail of [
@@ -153,9 +155,19 @@ describe('the ordered optional rung declines what it must', () => {
     ]) {
       const text = `MATCH (a:T) OPTIONAL MATCH (a)-[:E]->(b:T) RETURN a.k AS x, b.k AS y ${tail}`;
 
-      expect(routes(text)).not.toContain('optionalOrderedProjection');
+      expect(routes(text)).toContain('optionalOrderedProjection');
       expect(seq(g, text)).toEqual(seq(g, viaGeneral(text)));
     }
+  });
+
+  /** A PARAMETERISED window still declines — its value is not known when the route is chosen. */
+  test('a parameterised window still declines, and still answers', () => {
+    const g = build();
+    const text =
+      'MATCH (a:T) OPTIONAL MATCH (a)-[:E]->(b:T) RETURN a.k AS x, b.k AS y ORDER BY x, y LIMIT $n';
+
+    expect(routes(text)).not.toContain('optionalOrderedProjection');
+    expect(query(g, text, { n: 3 }).length).toBe(3);
   });
 
   /** A sort key that is not an output column cannot be answered by sorting the rung's rows. */

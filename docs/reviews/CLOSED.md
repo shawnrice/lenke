@@ -195,6 +195,32 @@ absence** — `{k: null}` is the one place in a pattern where that distinction i
 
 ## 5. Open — unblocked and priced
 
+- ~~**A WINDOWED sort declined every ordered rung past one hop**~~ - **CLOSED by item 1852**, at
+  **3.00x** (LIMIT 10), **5.66x** (LIMIT 100000), **9.97x** (SKIP 5) and 5.58x on the OPTIONAL
+  rung. `ORDER BY … LIMIT n` cost **10.1x the same query with no window** and 8x the FULL SORT it
+  is a prefix of - the giveaway that no amount of work justified it.
+  ⚠️ **AND THE RECORDED REASON FOR THE REFUSAL WAS WRONG, NOT MERELY STALE.** `routes-fired`
+  carried a route assertion saying a windowed sort "must not reach the deeper ordered rungs"
+  because admitting it "loses `boundedTopRows`' heap - ~280x per `sortOf`". It loses nothing: the
+  ordered rungs sort through `sortedRows` -> `sortRowsByColumns`, which is exactly where that heap
+  lives. The measurement is one-sided in BOTH regimes, including the large-limit cell past the
+  heap's crossover that the old note specifically feared (5.66x). That assertion is flipped with
+  the numbers in place.
+  **It was also an inconsistency:** `detectNodeProjection` and `detectHopProjection` have shipped
+  the windowed form at depth 0 and 1 since items 1062 and 701, so this was a policy applied at two
+  depths and refused at the rest. `outputColumnSorts` still holds the real conditions - a window
+  rides a sort only when no projected item can FAULT (item 610), and a PARAMETERISED window
+  declines because the value lives in `params` while the route is cached across bindings.
+  **Ties are the risk and the fixture is built for them:** `k` takes three values over sixty
+  vertices, so `ORDER BY k LIMIT 5` must choose among many rows that compare equal - which is the
+  one thing sort-then-slice could get wrong. 8 window shapes x 2 chain widths agree with the
+  declining route, and the fixture asserts its own premise (the first five rows all share an `x`).
+  `LIMIT 0` still declines, which is pre-existing and recorded rather than changed.
+  4 mutants, **4 caught**, including a null-result control per rung.
+  ⚠️ The A/B's arm assertion is a ROUTE probe, not a dist grep: this change REMOVES a refusal, so
+  there is no new identifier to look for, and the comment used as a marker was stripped by the
+  bundler - item 1845's trap, second occurrence this session.
+
 - ~~**An ANCHOR predicate dropped the OPTIONAL-hop rung**~~ - **CLOSED by item 1851**, the third
   and last of the modifier cliffs items 1849/1850 found on this rung. `MATCH (a:T) WHERE <pred>
 OPTIONAL MATCH …` declined outright, costing **8.3x for IDENTICAL rows** (47.4 ms against 5.7,

@@ -818,11 +818,24 @@ export const detectHop2OrderedProjection = (
 
   // A window declines — see the header. Checked BEFORE `outputColumnSorts`, so none of its
   // window rules are relied on here.
-  if (
-    (projection.orderBy?.length ?? 0) === 0 ||
-    projection.skip !== undefined ||
-    projection.limit !== undefined
-  ) {
+  /**
+   * ⚠️ A WINDOW IS NO LONGER REFUSED HERE (item 1852) — `outputColumnSorts` decides it instead.
+   *
+   * The refusal was mine at items 1827/1849 and the reasoning was "with a `SKIP`/`LIMIT` the order
+   * decides WHICH rows survive". That is true and it is NOT a reason to refuse here: the sort is by
+   * OUTPUT COLUMNS and the window is applied to the sorted result, and `detectNodeProjection` and
+   * `detectHopProjection` have shipped exactly this behaviour at depth 0 and 1 since items 1062 and
+   * 701. Refusing it only at depth 2 and up made a `LIMIT` cost **10.1x the same query without
+   * one** — and 8x the FULL SORT it is a prefix of, which is the giveaway that nothing about the
+   * work justified it.
+   *
+   * `outputColumnSorts` carries the real conditions, unchanged: a window rides a sort only when no
+   * projected item can FAULT (item 610 — the general path projects only the survivors, so an item
+   * that raises on a discarded row never raises there), and a PARAMETERISED window declines because
+   * the value lives in `params` while this decision is cached across bindings. `sortRowsByColumns`
+   * then applies `skip`/`limit` itself, including item 701's bounded top-k heap.
+   */
+  if ((projection.orderBy?.length ?? 0) === 0) {
     return null;
   }
 
