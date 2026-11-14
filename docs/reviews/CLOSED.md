@@ -85709,8 +85709,8 @@ CORRECTNESS. gql 4,639 / gremlin 2,134 / native 1,165 / core 458 pass, 0 fail; `
 Plus two seeds at 60,000 workload queries — 120,000 queries, 0 divergences. `routes-fired.test.ts`
 goes 26 -> 28 detectors and pins every refusal at both widths.
 
-STILL OPEN: **Gremlin's `groupCount` degrades 14-22x** at depths 2-5 (item 1829's table) and is
-untouched here — the shared half of this flag, and its own item.
+~~STILL OPEN: **Gremlin's `groupCount` degrades 14-22x** at depths 2-5 (item 1829's table) and is
+untouched here~~ **— CLOSED BY ITEM 1834 at 1.8x-23.6x; the Gremlin grid now has NO FLAGS.** It was — the shared half of this flag, and its own item.
 
 GATES. bun run check 0 read unpiped. gql 4,639 pass / 0 fail. gremlin 2,134 pass / 0 fail.
 native 1,165 pass / 0 fail. core 458 pass / 0 fail. bun run fuzz 57 pass / 0 fail.
@@ -85778,3 +85778,69 @@ NEW PROBE ROWS: `groupcounthop`, `groupcounthop2`, `groupcounthop3` and `groupco
 this** — the cliff is between depth 1 and depth 2.
 
 GATES. bun run check 0 read unpiped. No engine code changed.
+
+### Item 1834 — ✅ **GREMLIN'S `groupCount` FUSED ONTO THE VALUES WALK: 1.8x / 16.8x / 23.6x / 22.8x / 21.5x** across depths 1-5, and **the Gremlin grid now reports NO FLAGS AT ALL**. ⚠️ The order blocker was measured first, fixing the deep widths created a depth-1 inversion, and a control caught a 0.83x regression the fix then removed
+
+THE BLOCKER FIRST, because item 1833 named it and building without it would have been a wrong
+answer. `groupCount` returns a **Map** whose iteration order is first-occurrence order of the keys —
+observable, and byte-identity with Rust is a hard invariant — so the fused walk may only replace the
+generic one if they visit elements in the same ORDER.
+
+`gremlin-walk-order-probe.mjs` answers it. ⚠️ **Its oracle is the SAME QUERY with the shortcut forced
+to decline**, because every surface spelling that avoids the fused walk also changes what is
+returned (`path()` tracks paths, `valueMap` yields maps) — comparing against one of those would
+compare two different questions. Arms asserted in BOTH directions by a marker in the built dist:
+
+```text
+  4 fixture shapes (fanout 1/3/5, sequential and scattered) x 3 traversals
+  12 cases, 400 to 50,000 values each — IDENTICAL value SEQUENCES every time
+```
+
+THE FUSION. `<hop chain>.groupCount().by(k)` rewrites to `<hop chain>.values(k)`, rides whichever
+values walk admits it, and tallies — ⚠️ through `tallyGroupCount` and `groupCountResult`, the
+helpers `groupCountStep` and `groupCountShortcut` already share, because `tallyGroupCount`'s own
+comment says which of `NO_VALUE`, `groupKey` and "the original key survives into the output" applies
+is exactly what two copies would drift on.
+
+```text
+  ENGINE=gremlin   depth1  depth2  depth3  depth4  depth5
+  grouped before      4.8    13.4    16.5    22.8    27.9
+  grouped after       1.4     0.8     0.7     1.0     1.3     3.4x 16.8x 23.6x 22.8x 21.5x
+  probe rows       2377.7 -> 1291.4 | 13712.5 -> 1920.4 | 67855.2 -> 9294.7
+```
+
+⚠️ **FIXING THE DEEP WIDTHS CREATED A DEPTH-1 INVERSION, AND THE GRID SAID SO ON THE NEXT RUN** —
+the third time this session. `hopChainValuesShortcut` needs two or more hops, so one hop still took
+the generic path and read **6.3 ms against the now-fixed 0.8 at depth 2, 7.7x**. Closed in the same
+commit by trying all three values walks in item 1535's `??` order rather than only the chain one.
+
+⚠️⚠️ **AND A CONTROL CAUGHT A REGRESSION THE WIN WOULD OTHERWISE HAVE PAID FOR.** The node-level
+`grouped` row moved **0.83x at the median** (PRE [23.0 … 31.4], POST [28.2 … 35.6]) — within the
+toll `executor-edits-perturb` documents, and easy to accept as such. It was not inherent:
+`V().groupCount().by(k)` is TWO steps, served far above by `groupCountShortcut`, and it was still
+reaching the fusion and paying three shortcut probes that can never admit it. A three-step floor
+returns it to **0.98x** (median 28.8 against 28.1). ⚠️ The floor had existed as `steps.length < 4`
+and I REMOVED it while adding one-hop support — so the regression was introduced by the fix to the
+inversion, two edits earlier in the same item.
+
+TEN CONTROLS, five alternated rounds, arms asserted by a marker count in the built DIST: `hopbare`
+1.04x, `hopcount3` 1.05x, `hopvaluesrows` 0.97x, `hop2valuesrows` 1.00x, `grouped` 0.98x (after the
+floor), `hopdedupe` 0.88x, `unioned` 0.90x, `point` 1.65x, `localvalues` 1.05x, `selected` 1.00x.
+⚠️ `hopdedupe` and `unioned` are 4-25 ms shapes whose series overlap heavily; `point` at 1.65x on a
+7 ms shape is the same noise in the other direction.
+
+MUTATION, 1 of 3 caught and TWO DELIBERATE SURVIVORS, both measured rather than argued: skipping the
+tally is CAUGHT; admitting a multi-key `by`, and taking `bys[0]` regardless of count, both SURVIVE —
+because **this engine ignores a second `by`**. `groupCount().by('k').by('s')` returns exactly what
+`.by('k')` returns, so the fused and generic routes agree either way and no answer can separate
+them. The guard stays as the cheap half of a pair whose expensive half is a wrong answer.
+
+⚠️ **LINT CAUGHT `run`'s LOOP AT COMPLEXITY 40 AGAINST A LIMIT OF 35** — the same signal item 1832
+got on the GQL side. Two blocks extracted (`fusedHopChainGroupCount`, `seededNodeCount`), positions
+and branch structure unchanged, rather than raising the limit.
+
+CORRECTNESS. gremlin 2,138 / native 1,165 / gql 4,639 / core 458 pass, 0 fail; `bun run fuzz` 57/0;
+the Gremlin fuzzer on two further seeds, 45 pass / 0 fail each.
+
+GATES. bun run check 0 read unpiped. gremlin 2,138 pass / 0 fail. native 1,165 pass / 0 fail.
+gql 4,639 pass / 0 fail. core 458 pass / 0 fail. bun run fuzz 57 pass / 0 fail.

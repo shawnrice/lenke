@@ -41,7 +41,8 @@ import {
   seededNodeCountShortcut,
   seededNodeValuesShortcut,
 } from './node-values.js';
-import { groupCountShortcut } from './projection.js';
+import { groupCountShortcut, tallyProjectedGroupCount } from './projection.js';
+import type { RunContext } from './runtime.js';
 import { newContext, planReadsPath, startTraverser, type Traverser, unwrap } from './runtime.js';
 import { applySource } from './sources.js';
 import { startFilteredHopValues } from './start-filtered-hop-values.js';
@@ -2169,6 +2170,104 @@ const assertPlanIsSatisfiable = (plan: Plan): void => {
  * steps yield zero or more. This matches Gremlin's "every step is a stream"
  * model and keeps `pipe(count(), is(gt(5)))` composable.
  */
+/**
+ * `[… , groupCount({ by: k })]` rewritten as `[… , values(k)]`, or `undefined` — item 1834.
+ *
+ * ⚠️ ONE PROPERTY KEY ONLY. `groupCount` carries either a legacy `by` string or a `bys` modulator
+ * list; only the single-key PROPERTY form is a plain `values(k)` projection. A modulator that is
+ * not a bare property (or more than one of them) groups by something this swap would not reproduce,
+ * so it declines rather than guessing.
+ */
+const asGroupCountByKey = (plan: Plan): { plan: Plan } | undefined => {
+  const last = plan.steps[plan.steps.length - 1];
+
+  if (last?.kind !== 'groupCount') {
+    return undefined;
+  }
+
+  const bys = last.bys ?? [];
+  const key = last.by ?? (bys.length === 1 && typeof bys[0] === 'string' ? bys[0] : undefined);
+
+  if (key === undefined || (last.by !== undefined && bys.length > 0)) {
+    return undefined;
+  }
+
+  return {
+    plan: {
+      ...plan,
+      steps: [...plan.steps.slice(0, -1), { kind: 'values', keys: [key] }],
+    },
+  };
+};
+
+/**
+ * `<hop chain>.groupCount().by(k)` answered by the FUSED values walk plus a tally — item 1834.
+ *
+ * ⚠️ EXTRACTED BECAUSE LINT SAID SO, exactly as `deepWidthReductions` was on the GQL side at item
+ * 1832: this branch took `run`'s loop to a cyclomatic complexity of **40 against a limit of 35**.
+ * Raising the limit would hide the accumulation one branch at a time; this keeps the budget
+ * meaningful for whoever adds the next fusion.
+ *
+ * `undefined` means "not this shape, carry on" — distinct from a traversal that legitimately
+ * answers with an empty Map, which comes back as a one-element array holding it.
+ */
+/**
+ * `V(id, …)` answered as a closed-form count — extracted at item 1834 only to keep `run`'s loop
+ * inside its complexity budget, with its branch structure and its position unchanged. The comment
+ * that stood above it in the loop still applies and lives at `seededNodeCountShortcut`.
+ */
+const seededNodeCount = (plan: Plan, graph: Graph, ctx: RunContext): unknown[] | undefined => {
+  const n = ctx.tracksPath ? undefined : seededNodeCountShortcut(plan, graph);
+
+  return n === undefined ? undefined : [n];
+};
+
+const fusedHopChainGroupCount = (
+  plan: Plan,
+  graph: Graph,
+  ctx: RunContext,
+): unknown[] | undefined => {
+  /**
+   * ⚠️ `tracksPath` disqualifies every fused walk here for `hopValuesShortcut`'s stated reason: the
+   * walk emits bare values and builds no traverser, so it has no path to carry.
+   *
+   * ⚠️ AND THREE STEPS IS A MEASURED FLOOR, NOT A TIDY GUARD. `V().groupCount().by(k)` is TWO steps
+   * and is served by `groupCountShortcut` well above this; without this line it still reached here
+   * and paid three shortcut probes that can never admit it, which showed up as the node-level
+   * `grouped` row moving **0.83x at the median** in the control A/B. Dropping out early returns it.
+   */
+  if (ctx.tracksPath || plan.steps.length < 3) {
+    return undefined;
+  }
+
+  const byKey = asGroupCountByKey(plan);
+
+  if (byKey === undefined) {
+    return undefined;
+  }
+
+  /**
+   * ⚠️ ALL THREE VALUES WALKS, IN THE SAME `??` ORDER THE `projected` PATH USES — and the one-hop
+   * two of them are here because fixing the deeper widths alone CREATED an inversion. With only
+   * `hopChainValuesShortcut` (which requires two or more hops) the grid read:
+   *
+   * ```text
+   *   grouped   depth1  depth2  depth3  depth4  depth5
+   *               6.3     0.8     0.9     1.2     1.3     <- a SHORTER chain costing 7.7x
+   * ```
+   *
+   * That is item 1824's lesson repeating a third time: a fix applied at one width turns the unfixed
+   * neighbour into the anomaly. The order is item 1535's — no plan an earlier rung already admits
+   * can change route — so it is copied rather than re-chosen.
+   */
+  const walked =
+    hopValuesShortcut(byKey.plan, graph) ??
+    startFilteredHopValues(byKey.plan, graph) ??
+    hopChainValuesShortcut(byKey.plan, graph);
+
+  return walked?.rest.length === 0 ? [tallyProjectedGroupCount(walked.values)] : undefined;
+};
+
 export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
   // Before anything runs: static faults the engine raises at parse time — a plan that
   // cannot succeed on any graph, and an aggregate/sort/vertex-move on the wrong frontier.
@@ -2279,10 +2378,10 @@ export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
   // `filterChainCount` refuses a `has` the moment a seek looks better — and the seeding path then
   // runs the pipeline, so it was answered in closed form by neither. With no label it is the
   // bucket's `size`, O(1).
-  const seededCount = ctx.tracksPath ? undefined : seededNodeCountShortcut(effective, graph);
+  const seededCountRows = seededNodeCount(effective, graph, ctx);
 
-  if (seededCount !== undefined) {
-    return [seededCount];
+  if (seededCountRows !== undefined) {
+    return seededCountRows;
   }
 
   // `V().out(T).values(k)` likewise answers the whole plan — one walk instead of the traverser
@@ -2295,6 +2394,33 @@ export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
   // route. It cannot overlap `hopValuesShortcut` anyway — that one takes `[V, hop, proj]` and this
   // one requires a second hop in position 2 — but the ordering rule is what keeps that true if
   // either gate is ever widened.
+  /**
+   * `<hop chain>.groupCount().by(k)` RIDES THE FUSED VALUES WALK AND TALLIES — item 1834.
+   *
+   * ⚠️ MEASURED FIRST, AND THE PROFILE REDIRECTED THE FIX (item 1833): `groupCount` after two hops
+   * cost **13712 ms against its own `values(k)` floor at 928 — 14.8x** — and the tally was **1.6%**
+   * of that profile. The cost was the GENERIC TRAVERSER WALK (`iterLabeled` 24.6%, `otherEndpoint`
+   * 20.4%, `traverseToVertex` 11.7%), taken because `hopChainValuesShortcut` requires a trailing
+   * `values` step and a `groupCount` is a different terminal. So the fix is not a faster tally; it
+   * is letting the tally ride the walk that already exists.
+   *
+   * ⚠️ A SYNTHETIC PLAN, so the shortcut's gate is reused rather than restated — the same device
+   * items 1824/1830/1832 used on the GQL side. The trailing `groupCount` is swapped for the
+   * `values(key)` it groups by; everything the shortcut checks about the hops is unchanged.
+   *
+   * ⚠️ AND THE ORDER QUESTION WAS SETTLED BEFORE THIS WAS WRITTEN, because `groupCount` returns a
+   * **Map** whose iteration order is first-occurrence order of the keys — observable, and
+   * byte-identity with Rust is a hard invariant. `gremlin-walk-order-probe.mjs` compared the fused
+   * walk against the generic one on the IDENTICAL query (the shortcut forced to decline, arms
+   * asserted by a marker in the built dist): **12 cases, 4 fixture shapes, identical value
+   * sequences every time**. Evidence rather than proof, and named as such.
+   */
+  const tallied = fusedHopChainGroupCount(effective, graph, ctx);
+
+  if (tallied !== undefined) {
+    return tallied;
+  }
+
   const projected = ctx.tracksPath
     ? undefined
     : (hopValuesShortcut(effective, graph) ??
