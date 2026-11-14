@@ -462,7 +462,13 @@ OPTIONAL MATCH …` declined outright, costing **8.3x for IDENTICAL rows** (47.4
   The ladder now collapses the two OPTIONAL rungs into one `??` branch - same precedence, and it
   keeps `fastPath` under the complexity gate that a twenty-ninth rung otherwise breaks.
 
-- ~~**The reachability rung refused a BOUNDED quantifier**~~ - **CLOSED by item 1848**
+- ~~**The reachability rung refused a BOUNDED quantifier**~~ - **CLOSED by item 1848**, ⚠️ **AND IT
+  RETURNED WRONG ROWS FOR A MULTI-ELEMENT REPETITION UNIT UNTIL ITEM 1873.** Widening the rung to
+  bounded quantifiers brought `((x)-[:A]->(m)-[:B]->(y)){1,2}(t)` into it, and the walk reads only
+  the unit's FIRST hop — a one-hop BFS over `:A` where each repetition is `:A` then `:B`. The 36.56x
+  stands for the shapes the rung keeps; the multi-element unit is now refused. **Half the bug
+  predates this item**: the UNBOUNDED spelling was already wrong at `main` (`…)+(t) RETURN DISTINCT
+t.n` gave `[2,3]` against native's `[4,1]`).
   (2026-11-14), at **36.56x**. `detectReachableShortcut` required `q.max === null`, so an unbounded
   `->+` got a BFS over the reached set while `-[:E]->{1,3}` was sent to path ENUMERATION:
   **165.5 ms to return 8 rows**, against 108.0 ms for emitting all 251,910 undeduped rows of the
@@ -87683,3 +87689,84 @@ deliverable.
 
 GATES. bun run check 0 read unpiped; the engine tree verified clean after the measurement patch
 (`git diff --stat` empty on `rewrites.ts`).
+
+## Item 1873 — a WRONG ANSWER in `reachShortcut`, found because a suite I was not running was red; half of it predates the change that exposed it, and a NEW cross-engine divergence turned up on the way
+
+This item set out to take a 1.74x. It found three other things first, and the perf work is deferred.
+
+### ❌ THE WRONG ANSWER
+
+`((x)-[:KNOWS]->(m)-[:LIKES]->(y)){1,2}(t)` parses as a **single segment** whose hops beyond the
+first live in `unitRest`, so `detectReachableShortcut`'s `segments.length !== 1` check passed it
+through — and everything below reads only `rel`/`node`, the unit's FIRST hop. It ran a one-hop BFS
+over `:KNOWS` where each repetition is really `:KNOWS` THEN `:LIKES`:
+
+      MATCH ((x)-[:KNOWS]->(m)-[:LIKES]->(y)){1,2}(t) RETURN DISTINCT t.n
+        TS      1 row   [{"n":4}]
+        native  3 rows  [{"n":1},{"n":2},{"n":4}]
+
+Fixed by refusing a non-empty `unitRest` (and `innerQ`, a nested repetition). **The single-element
+group stays admitted** — `((x)-[:KNOWS]->(m)){1,2}(t)` has an empty `unitRest` and IS one hop per
+repetition, which is what the walk implements — so item 1848's 36.56x is not given back. The
+refusal's teeth are verified: a mutant removing it fails 2 of 3 new tests AND 2 in the cross-engine
+matrix.
+
+⚠️ **AND HALF OF IT PREDATES ITEM 1848.** That item widened `reachQuantifierIsExact` from
+unbounded-only to bounded, which brought `{1,2}` into the rung and into the matrix test's reach. But
+the UNBOUNDED spelling was ALREADY wrong — measured in a `main` worktree, `…(y))+(t) RETURN DISTINCT
+t.n` gives `[2,3]` against native's `[4,1]`, **different sets, not merely a different order**. (The
+`*` spelling differs only in ORDER there, which GQL leaves unspecified and is not a divergence.) So
+the fix repairs a pre-existing wrong answer as well as the instance item 1848 created.
+
+### ⚠️⚠️ THE PROCESS GAP, which is the part worth keeping
+
+**`packages/native`'s own suite was not in my per-tick gate loop.** Every tick I ran `bun run check`,
+the `gql` and `gremlin` suites and the seven fuzzers — all green — while
+`pattern-family-matrix.test.ts` sat at **2 fail** in a package I only invoked for `bun run fuzz`.
+The fuzzers did not catch it either: they compare GQL as multisets and their generated forms did not
+reach a multi-element unit with a DISTINCT endpoint.
+
+Attribution was settled rather than argued: a temporary `git worktree` at `main`, built, running
+that one file — **10 pass there against 8 pass / 2 fail here**. That is the only way to answer "did
+I cause this", and it took two minutes.
+
+**The gate for the rest of this loop is `bun run check` + ALL FOUR package suites + the fuzzers.**
+Not gql+gremlin.
+
+### 🔍 AND A NEW CROSS-ENGINE DIVERGENCE, pinned
+
+Found while settling an unrelated key-space question: **native drops an element returned from a
+`CASE` branch** and emits an internal integer.
+
+      MATCH (n:L) RETURN CASE WHEN n.n = 1 THEN n ELSE n.s END AS k
+        TS      [{"k":{"id":"v1",...}}, {"k":"@v1"}]
+        native  [{"k":0},               {"k":"@v1"}]
+
+TS is right — a vertex is not `0`, and ISO's conditional yields the chosen branch's value. A plain
+`RETURN n` agrees and the `ELSE` branch agrees, which localises it. Pinned with `test.failing`
+because `divergence-registry.ts` deliberately has no `value` axis; the pin is verified to fail on
+the VALUE mismatch rather than an error (its first version "passed" because `nativeReady` is a
+boolean, not a function — a false pin, caught by flipping it to a plain `test`).
+
+⚠️ **The COUNT agrees at 6**, which is why this was nearly missed: native's integers are distinct
+from each other and from the strings, so the CARDINALITY survives while the VALUES do not. A probe
+that only counted would have reported agreement — and mine nearly did, because its first fixture
+did not create the collision it was built for.
+
+### ✅ THE QUESTION THE ITEM STARTED FROM, ANSWERED
+
+`count(DISTINCT x)` over a chain is the thinnest-margin rung of all 50 (item 1872's 0.34x), and
+`RETURN DISTINCT x` over the same chain is **1.73x FASTER at materializing the set than the count
+rung is at counting it** (3.42 against 5.91 ms at 20,000 vertices; the walk alone is 1.29). The
+cause is visible in the code: `detectHop2FoldedAggregate` already delegates to
+`detectHop2Projection` but with `distinct: false`, so it materializes 20,000 rows and dedups inside
+the fold, where the fused one-column DISTINCT would dedup during the walk and emit 97.
+
+**The blocker was whether the two key spaces agree** — `distinctCountFold` keys through ONE
+`Set<string>` of `valueKey(v)`, while `addOneColumnKey` keeps TWO spaces because the string `'@v1'`
+and the vertex `v1` both render as `@v1` (items 1561/1562). **They agree: both engines answer 6 on a
+fixture carrying exactly that collision, so `valueKey` is type-tagged and the single space is not a
+collapse.** The one-line optimization is unblocked and is the next item.
+
+GATES. bun run check 0 read unpiped; gql 4733, native 1169 (was 1167/2), gremlin 2184 tests green;
+all seven byte-identity fuzzers green.

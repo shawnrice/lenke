@@ -22,6 +22,7 @@ import type {
   PathPattern,
   Projection,
   Quantifier,
+  Segment,
 } from '../ast.js';
 import { matchesLabel } from '../graph-queries.js';
 import { outNeighbors, relTypeNames } from './adjacency.js';
@@ -419,6 +420,33 @@ export const needsGeneralMatcher = (p: PathPattern): boolean =>
   (p.selector ?? 'walk') !== 'walk' ||
   !['trail', 'walk', 'simple'].includes(p.mode ?? 'trail') ||
   p.segments.some((s) => s.rel.quantifier !== undefined && relHasPredicate(s.rel));
+/**
+ * ⚠️⚠️ A MULTI-ELEMENT REPETITION UNIT IS ONE SEGMENT, AND REFUSING IT IS A CORRECTNESS
+ * CONDITION — item 1873 found this returning WRONG ROWS.
+ *
+ * `((x)-[:KNOWS]->(m)-[:LIKES]->(y)){1,2}(t)` parses as a SINGLE segment whose hops beyond the
+ * first live in `unitRest` (see `Segment`), so the `segments.length !== 1` check above passes it
+ * through — and everything below reads only `rel`/`node`, i.e. the unit's FIRST hop. The walk
+ * then does a one-hop BFS over `:KNOWS` where each repetition is really `:KNOWS` THEN `:LIKES`:
+ *
+ *     MATCH ((x)-[:KNOWS]->(m)-[:LIKES]->(y)){1,2}(t) RETURN DISTINCT t.n
+ *       TS      1 row   [{"n":4}]
+ *       native  3 rows  [{"n":1},{"n":2},{"n":4}]
+ *
+ * `innerQ` is refused with it: a quantifier on the unit's first inner hop is a NESTED repetition,
+ * which this walk has no notion of either.
+ *
+ * ⚠️ AND THE SINGLE-ELEMENT GROUP IS STILL ADMITTED — `((x)-[:KNOWS]->(m)){1,2}(t)` has an empty
+ * `unitRest` and IS one hop per repetition, which is exactly what the walk implements. It passes
+ * the matrix test both before and after, so the refusal is scoped to the units that differ.
+ */
+/**
+ * EXTRACTED rather than inlined because `detectReachableShortcut` sits on the complexity gate — it
+ * objected at 38 against 35 with this written in place, the same wall items 1834 and 1857 hit.
+ */
+const isSingleHopUnit = (seg: Segment | undefined): boolean =>
+  seg !== undefined && (seg.unitRest?.length ?? 0) === 0 && seg.innerQ === undefined;
+
 export const detectReachableShortcut = (
   clauses: readonly Clause[],
   compiled: readonly CClause[],
@@ -443,6 +471,10 @@ export const detectReachableShortcut = (
   }
 
   if (m.patterns[0].segments.length !== 1) {
+    return null;
+  }
+
+  if (!isSingleHopUnit(m.patterns[0].segments[0])) {
     return null;
   }
 
