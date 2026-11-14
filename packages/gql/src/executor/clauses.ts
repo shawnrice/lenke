@@ -1724,11 +1724,22 @@ const fastPath = (linear: CLinear, graph: Graph, params: Params): Row[] | undefi
     }
   }
 
-  // `RETURN DISTINCT <one expr>`: dedupe by the projected VALUE while walking, so a
-  // duplicate costs neither a row object nor a row key. See `detectDistinctProjection`.
-  if (linear.distinctProjection) {
-    // No decline branch: this detector's closure always answers (`AlwaysRowsFn`).
-    return linear.distinctProjection(graph, params);
+  /**
+   * The node-scan `DISTINCT` pair, one-column first.
+   *
+   * `distinctProjection` dedupes by the projected VALUE while walking, so a duplicate costs
+   * neither a row object nor a row key (`detectDistinctProjection`). `nodeDistinctProjection`
+   * (item 1853) is its MULTI-column sibling, which builds rows and dedupes them with the shared
+   * `distinctRows`. The two are DISJOINT by column count, so `??` only decides which is present —
+   * it cannot change which shapes are answered. Collapsing them into one branch is what keeps this
+   * function under the complexity gate that a thirtieth rung otherwise breaks.
+   *
+   * No decline branch: both closures always answer (`AlwaysRowsFn`).
+   */
+  const nodeDistinct = linear.distinctProjection ?? linear.nodeDistinctProjection;
+
+  if (nodeDistinct) {
+    return nodeDistinct(graph, params);
   }
 
   /**
@@ -1760,38 +1771,15 @@ const fastPath = (linear: CLinear, graph: Graph, params: Params): Row[] | undefi
   // `MATCH (n:L) WHERE <row-local pred> RETURN <row-local items>`: the plainest scan there is,
   // and the last shape in this ladder to get a path. One reused binding for the whole scan,
   // and a row object only for survivors. See `detectNodeProjection`.
+
   if (linear.nodeProjection) {
     return linear.nodeProjection(graph, params);
   }
 
-  // The same scan under ONE foldable aggregate — `RETURN max(n.k)` — folded as the rows are
-  // produced. It sits AFTER the projection it delegates to, for the reason item 418 measured on
-  // the hop twin: a branch placed ahead of a hot dispatch cost the plain projection 1.12x, and
-  // the two shapes are disjoint anyway (a projection declines an aggregating one). See
-  // `detectNodeAggregate`.
-  if (linear.nodeAggregate) {
-    return linear.nodeAggregate(graph, params);
-  }
+  const scanAgg = scanAggregates(linear, graph, params);
 
-  // The same scan under TWO OR MORE aggregates — `RETURN sum(n.k), count(*)`. Disjoint from the
-  // rung above by ARITY (that one takes exactly one item, this one at least two), and placed
-  // after it for the reason items 418 and 469 both measured: a branch ahead of a hot dispatch
-  // costs the shape it does not claim. See `detectMultiNodeAggregate`.
-  if (linear.multiNodeAggregate) {
-    return linear.multiNodeAggregate(graph, params);
-  }
-
-  // A GROUPED scan aggregate the `count(*)` tally cannot take — `RETURN n.k, max(n.j)`. Below
-  // the tally (`groupCountShortcut`), which is more specific and cheaper for its own shape.
-  // See `detectGroupedNodeAggregate`.
-  if (linear.groupedNodeAggregate) {
-    return linear.groupedNodeAggregate(graph, params);
-  }
-
-  // The same over a HOP, below the hop tally for the same reason: that one is more specific
-  // and cheaper for its own `count(*)` shape. See `detectGroupedHopAggregate`.
-  if (linear.groupedHopAggregate) {
-    return linear.groupedHopAggregate(graph, params);
+  if (scanAgg !== undefined) {
+    return scanAgg;
   }
 
   return undefined;
@@ -1815,6 +1803,48 @@ const fastPath = (linear: CLinear, graph: Graph, params: Params): Row[] | undefi
  * `undefined` means "none of these claimed it", which is distinct from a rung answering with no
  * rows: every one of them is an `AlwaysRowsFn` and returns a `Row[]`.
  */
+/**
+ * THE SCAN-AND-HOP AGGREGATE GROUP, extracted from `fastPath` — item 1853.
+ *
+ * ⚠️ EXTRACTED FOR THE COMPLEXITY GATE, exactly as `deepWidthReductions` was at item 1832 and as
+ * `fastPath` itself was at item 204: adding a THIRTIETH rung took `fastPath` to 36 against a limit
+ * of 35. The four below are a natural group — all of them aggregate over a scan or a hop — and
+ * their ORDER IS PRESERVED EXACTLY, which is the only thing that matters: each comment records a
+ * measured reason for sitting where it does (items 418, 469), and reordering them would be a
+ * silent cost change rather than a compile error.
+ *
+ * `undefined` means "none of these claimed it", distinct from a rung answering with no rows.
+ */
+const scanAggregates = (linear: CLinear, graph: Graph, params: Params): Row[] | undefined => {
+  // The scan under ONE foldable aggregate — `RETURN max(n.k)` — folded as the rows are produced.
+  // It sits AFTER the projection it delegates to, for the reason item 418 measured on the hop
+  // twin: a branch placed ahead of a hot dispatch cost the plain projection 1.12x, and the two
+  // shapes are disjoint anyway (a projection declines an aggregating one).
+  if (linear.nodeAggregate) {
+    return linear.nodeAggregate(graph, params);
+  }
+
+  // The same scan under TWO OR MORE aggregates — `RETURN sum(n.k), count(*)`. Disjoint from the
+  // rung above by ARITY, and placed after it for the reason items 418 and 469 both measured: a
+  // branch ahead of a hot dispatch costs the shape it does not claim.
+  if (linear.multiNodeAggregate) {
+    return linear.multiNodeAggregate(graph, params);
+  }
+
+  // A GROUPED scan aggregate the `count(*)` tally cannot take — `RETURN n.k, max(n.j)`. Below the
+  // tally (`groupCountShortcut`), which is more specific and cheaper for its own shape.
+  if (linear.groupedNodeAggregate) {
+    return linear.groupedNodeAggregate(graph, params);
+  }
+
+  // The same over a HOP, below the hop tally for the same reason.
+  if (linear.groupedHopAggregate) {
+    return linear.groupedHopAggregate(graph, params);
+  }
+
+  return undefined;
+};
+
 const deepWidthReductions = (linear: CLinear, graph: Graph, params: Params): Row[] | undefined => {
   if (linear.chainFoldedAggregate) {
     return linear.chainFoldedAggregate(graph, params);

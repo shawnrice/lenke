@@ -102,6 +102,7 @@ import {
   detectGroupedNodeCount,
   detectMultiNodeAggregate,
   detectNodeAggregate,
+  detectNodeDistinctProjection,
   detectNodeProjection,
 } from './node-scan.js';
 import { detectOptionalHopCount } from './optional-hop.js';
@@ -2278,6 +2279,7 @@ export const compileLinear = (linear: LinearQuery): CLinear => {
     hopAggregate,
     multiHopAggregate: detectMultiHopAggregate(fast, clauses),
     distinctProjection: detectDistinctProjection(fast, clauses),
+    nodeDistinctProjection: detectNodeDistinctProjection(fast, clauses),
     distinctCount,
     nodeProjection: detectNodeProjection(fast, clauses),
     nodeAggregate: detectNodeAggregate(fast, clauses),

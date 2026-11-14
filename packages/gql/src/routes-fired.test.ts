@@ -425,6 +425,13 @@ describe('every fast-path detector fires for its own shape', () => {
       ['optionalHopCount'],
     ],
     [
+      // Item 1853: the multi-column DISTINCT over a node scan, which had no rung at all while
+      // every hop and chain width had one — 27.7x the one-column spelling.
+      'node scan, multi-column DISTINCT',
+      'MATCH (n:L) RETURN DISTINCT n.k AS k, n.j AS j',
+      ['nodeDistinctProjection'],
+    ],
+    [
       'optional hop projection',
       'MATCH (a:L) OPTIONAL MATCH (a)-[:R]->(b) RETURN b.k AS k',
       ['optionalHopProjection'],
@@ -474,7 +481,7 @@ describe('every fast-path detector fires for its own shape', () => {
 
   // Every one of the twenty-one is covered by the table above. Asserted rather than claimed, so a
   // detector added later without a route case fails HERE instead of going unguarded.
-  it('covers all twenty-nine detectors', () => {
+  it('covers all thirty detectors', () => {
     const covered = new Set(CASES.flatMap(([, , want]) => want));
     const all = new Set(
       Object.keys(
@@ -486,7 +493,7 @@ describe('every fast-path detector fires for its own shape', () => {
     );
 
     expect([...all].filter((k) => !covered.has(k)).sort()).toEqual([]);
-    expect(all.size).toBe(29);
+    expect(all.size).toBe(30);
   });
 });
 

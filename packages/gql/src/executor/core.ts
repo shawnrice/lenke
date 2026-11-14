@@ -5509,6 +5509,8 @@ export type CLinear = {
   /** The `FOR` PROJECTION off the label bucket (item 528); else null. */
   forProjection: ((graph: Graph, params: Params) => Row[]) | null;
   optionalHopCount: ((graph: Graph, params: Params) => Row[]) | null;
+  /** `MATCH (n:L) RETURN DISTINCT <2+ items>` — item 1853. */
+  nodeDistinctProjection: AlwaysRowsFn | null;
   optionalHopProjection: RowsFn | null;
   /** The same shape with an `ORDER BY` over output columns — item 1849. */
   optionalOrderedProjection: RowsFn | null;

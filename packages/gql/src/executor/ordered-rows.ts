@@ -664,3 +664,14 @@ export const withoutSortOrWindow = <T extends Clause | CClause>(c: T): T =>
         projection: { ...c.projection, orderBy: undefined, skip: undefined, limit: undefined },
       }
     : c;
+
+/**
+ * A `RETURN` clause with its `DISTINCT` removed — item 1853.
+ *
+ * The sibling of {@link withoutSortOrWindow}, and used the same way: hand a base detector the
+ * clause it would accept, then post-process what it produced. Here the post-processing is
+ * `distinctRows`, so the dedupe keeps using the ONE definition of distinct in this engine rather
+ * than growing a second one (items 1561/1562 each shipped a silent answer change in that area).
+ */
+export const withoutDistinct = <T extends Clause | CClause>(c: T): T =>
+  c.kind === 'return' ? { ...c, projection: { ...c.projection, distinct: false } } : c;

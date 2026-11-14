@@ -25,6 +25,7 @@ import type { Graph, Vertex } from '@lenke/core';
 
 import type { Clause, Expr, LabelExpr, NodePattern, Projection, SortItem } from '../ast.js';
 import { matchesLabel } from '../graph-queries.js';
+import { distinctRows } from './clauses.js';
 import {
   aggregateOverValues,
   compileExpr,
@@ -46,6 +47,7 @@ import {
   pageSlice,
   sortRowsByColumns,
   unsortedPageRoute,
+  withoutDistinct,
 } from './ordered-rows.js';
 import type { SortPlan } from './ordered-rows.js';
 import { foldFor } from './projection.js';
@@ -2389,4 +2391,72 @@ export const detectGroupedNodeAggregate = (
     // rather than being re-derived here.
     return applySort(rows);
   };
+};
+
+/**
+ * `MATCH (n:L) RETURN DISTINCT <two or more items>` — item 1853.
+ *
+ * ⚠️ THE WIDEST GAP LEFT IN THE DISTINCT FAMILY, and it was hiding at depth ZERO. Every hop and
+ * chain width already claims a multi-column `DISTINCT` (`hopDistinctProjection`, `hop2Projection`,
+ * `chainProjection`); the plain node scan claimed only the ONE-column case, through
+ * `detectDistinctProjection`'s tuned `valueSet`. So:
+ *
+ *     MATCH (n:T) RETURN DISTINCT n.n AS x            4.0 ms    (distinctProjection)
+ *     MATCH (n:T) RETURN DISTINCT n.n AS x, n.k AS y  110.9 ms  (NOTHING — the general matcher)
+ *     MATCH (n:T) RETURN n.n AS x, n.k AS y             9.2 ms  (nodeProjection, 200,000 rows)
+ *
+ * **27.7x the one-column spelling, and 12x the cost of emitting every row it dedupes** — the same
+ * signature item 1843 found on the chain rungs, one width down.
+ *
+ * ⚠️ IT REUSES `detectNodeProjection`'S WHOLE GATE by handing it the clause with `DISTINCT`
+ * stripped, which is item 1827's trick. That gate's own comment records `proj.distinct` as
+ * refused because "nothing here dedupes" — true, and the fix is to dedupe AFTER it rather than to
+ * restate its twenty-odd conditions here and let the two drift.
+ *
+ * ⚠️ AND THE DEDUPE IS `distinctRows`, NOT A SECOND KEYER. For two or more columns the key is a
+ * `\x01`-joined string over every column, and that definition is shared with `UNION`/`EXCEPT` and
+ * matched byte-for-byte by the Rust engine. Items 1561 and 1562 each shipped a silent answer
+ * change in exactly this area.
+ *
+ * ⚠️ ONE-COLUMN IS REFUSED so this cannot steal `detectDistinctProjection`'s shape: that rung keys
+ * values directly in a `valueSet` (40 ns of a ~50 ns-a-vertex walk, audit items 192/193), which is
+ * strictly better than building a row and a joined string per vertex.
+ */
+export const detectNodeDistinctProjection = (
+  clauses: readonly Clause[],
+  compiled: readonly CClause[],
+): ((graph: Graph, params: Params) => Row[]) | null => {
+  if (clauses.length !== 2) {
+    return null;
+  }
+
+  const [, ret] = clauses;
+
+  if (ret.kind !== 'return') {
+    return null;
+  }
+
+  const proj = ret.projection;
+
+  // A sort or a window is left to the general path for now: `distinctRows` runs AFTER the rows
+  // exist, so a window would have to be applied after the dedupe and `detectNodeProjection` would
+  // have applied it before. Getting that order wrong returns different ROWS, not a different
+  // order, so the combination is refused rather than guessed at.
+  if (
+    !proj.distinct ||
+    proj.star ||
+    proj.items.length < 2 ||
+    (proj.orderBy?.length ?? 0) > 0 ||
+    proj.skip !== undefined ||
+    proj.limit !== undefined
+  ) {
+    return null;
+  }
+
+  const inner = detectNodeProjection(
+    clauses.map((c, i) => (i === 1 ? withoutDistinct(c) : c)),
+    compiled.map((c, i) => (i === 1 ? withoutDistinct(c) : c)),
+  );
+
+  return inner === null ? null : (graph, params) => distinctRows(inner(graph, params));
 };

@@ -195,6 +195,29 @@ absence** — `{k: null}` is the one place in a pattern where that distinction i
 
 ## 5. Open — unblocked and priced
 
+- ~~**A MULTI-COLUMN `DISTINCT` over a plain node scan had no rung at all**~~ - **CLOSED by item
+  1853**, at **4.3x** (110.9 -> 25.7 ms at 200,000 vertices). Every hop and chain width already
+  claimed one (`hopDistinctProjection`, `hop2Projection`, `chainProjection`); depth ZERO claimed
+  only the ONE-column case, through `detectDistinctProjection`'s tuned `valueSet`. So
+  `RETURN DISTINCT n.n, n.k` cost **27.7x the one-column spelling** and **12x the cost of emitting
+  every row it dedupes** (9.2 ms for all 200,000 undeduped) - item 1843's signature, one width down
+  and hiding at the shallowest depth of all.
+  **It reuses `detectNodeProjection`'s whole gate** by handing it the clause with `DISTINCT`
+  stripped (item 1827's trick, now via a shared `withoutDistinct`), and dedupes with `distinctRows`
+  rather than a second keyer - items 1561/1562 each shipped a silent answer change in that area.
+  One column stays with its own rung, which keys values directly and is strictly better.
+  **A sort or window is refused**, and not out of caution: `distinctRows` runs AFTER the rows exist
+  while `detectNodeProjection` would apply a window BEFORE, and getting that order wrong returns
+  different ROWS. Left open and recorded.
+  6 mutants, **6 caught**, including a null-result control and one that steals the one-column case
+  from its tuned rung.
+  ⚠️ **The fixture is built from the values that make KEYING hard**, since the walk is unchanged
+  and only the key is new: a stored null, `-0` against `0`, `NaN`, the STRING `'1'` against the
+  NUMBER `1`, and a SWAPPED pair (`[1,2]` vs `[2,1]`) that a key ignoring column ORDER would merge.
+  **`fastPath` needed a split to take a thirtieth rung** - `scanAggregates` now holds the four
+  scan/hop aggregate entries, in their existing order, each keeping the measured reason (items
+  418/469) it sits where it does. Same move as `deepWidthReductions` at item 1832.
+
 - ~~**A WINDOWED sort declined every ordered rung past one hop**~~ - **CLOSED by item 1852**, at
   **3.00x** (LIMIT 10), **5.66x** (LIMIT 100000), **9.97x** (SKIP 5) and 5.58x on the OPTIONAL
   rung. `ORDER BY … LIMIT n` cost **10.1x the same query with no window** and 8x the FULL SORT it
