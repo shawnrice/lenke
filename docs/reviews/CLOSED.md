@@ -23,6 +23,30 @@ here in the same commit.
 
 ## 1. Refuted perf levers — DO NOT RE-MEASURE
 
+**Item 1854 — the SHALLOW surface is clean, and the bare `LIMIT` is not a gap.** Item 1853 found a
+27.7x rung gap at depth ZERO that five consecutive deep-rung hunts could not see, so
+`shallow-route-screen.mjs` now screens 125 shallow shapes (5 bases x 25 modifiers) by ROUTE rather
+than by time — a rung gap IS the absence of a rung, which has no hot frame to profile and no
+anomalous cell to notice.
+
+15 shapes reach no rung. Ten are recorded refusals (an order-SENSITIVE fold over a chain; a window
+over a `DISTINCT`). The other five were the SAME shape across every base — a bare `LIMIT` with no
+`ORDER BY` — and **all five are BENIGN, measured**: the general path STREAMS and stops at the
+limit, so declining costs nothing.
+
+```text
+  MATCH (n:T) RETURN n.n AS x LIMIT 10              0.22 ms   (whole scan: 6.41)
+  MATCH (a:T)-[:E]->(b:T) RETURN b.n AS x LIMIT 10  0.36 ms   (whole hop:  43.76)
+```
+
+A rung here could only match stopping early. ⚠️ This is the screen's own caveat earning itself on
+its first run — **a route difference is not always a cost difference** (item 1850's lesson, and
+item 1851's start-node `WHERE`, which also differed in route and not in cost). The row is in the
+screen's `KNOWN` table with its numbers so the next run does not re-derive it.
+⚠️ The screen's first version had TWO IDENTICAL BASES (`node scan` and `node scan, labelled`, both
+`MATCH (n:T)`), so a fifth of its cells were duplicates and its coverage was overstated. The second
+is now an UNLABELLED scan, which is a genuinely different seed.
+
 **Item 1845 — the Gremlin TWO-HOP count is NOT anomalously slow, and three hypotheses died proving
 it.** `bench:gremlin` shows `V().out().out().count()` at **51.5 ms** against the THREE-hop row's
 **22.9** — 5x fewer paths, 2.25x the time, reproduced one-row-per-process. That reads exactly like a
