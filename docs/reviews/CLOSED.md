@@ -89481,3 +89481,54 @@ NO ENGINE CODE CHANGED. One probe, and a null recorded with its number.
 
 GATES. bun run check 0; no source touched (the reverted file is byte-identical — `git status` clean
 apart from the new probe).
+
+## Item 1897 — item 1896's unexplained 23 ms traced to `propOf`, which led to a STANDING OPEN QUESTION in the source being answered with a number: the row-scope bag hoist is **FLAT**, and the wide projection's real 2.8x is the ROW OBJECT'S SHAPE — codegen-blocked, so a ceiling rather than a target
+
+Item 1896 left 23 ms of the two-hop projection unaccounted for and refused to guess. Profiling the
+engine arm AGAINST the engine-ish hand arm — the same five-arm instrument, one profile each — put
+the difference in two places: **`propOf` at 10.6% of the engine's samples with nothing matching it on
+the hand side**, plus twice the GC. `propOf` is one closure call, a `properties` getter and an index,
+per COLUMN per row.
+
+✅ **AND `propOf`'S OWN NOTE NAMED THE NEXT MEASUREMENT, which is why this tick is a measurement
+rather than a patch.** Item 1740 rejected a one-entry MEMO of the last bound object's bag (flat on
+target, and two unreachable controls got 3-10% WORSE), then wrote:
+
+> ⚠️ WHAT THIS DOES **NOT** SETTLE. The arm is a CONFOUNDED ceiling, not a clean one: a safe version
+> would hoist the bag into the projection's own row scope as a LOCAL … That remains unmeasured.
+
+It also named the instrument's trap ("whoever measures it must not use `wideproj` at 300 runs"),
+which this probe respects: the inner query runs `RUNS` times a rep and the first rep is dropped.
+
+      five columns off one element, 20,000 rows, 300 runs a rep, median of 5 less warm-up:
+
+        the engine's projection                        169.2 / 171.8 / 181.9 ms
+        computed-key stores, NO per-item closure       151.6 / 152.1       ⬅ 1.12x
+        a template spread per row, then filled         185.2               ⬅ WORSE than both
+        five `properties` getter calls, LITERAL row     58.0               ⬅ 2.8x
+        the same with the bag hoisted to a LOCAL        60.4               ⬅ FLAT, if anything worse
+
+❌ **SO THE HOIST IS SETTLED AND IT IS NOTHING.** The `properties` getter is a memoized private-field
+read (`#box ??= …`), so five calls cost what one does. `propOf`'s note is corrected in place.
+
+✅ **AND THE SAME PROBE FOUND WHERE THE COST ACTUALLY IS, which is the useful half.** The engine is
+only **1.12x** above an arm that does its own computed-key stores with no per-item closure — so the
+call machinery is 12% — and the remaining **2.8x is the ROW OBJECT'S SHAPE**: a literal
+`{a, b, c, d, e}` gets one hidden class, where computed-key stores transition per key per row.
+
+❌ **THAT 2.8x IS A CEILING, NOT A TARGET, and the reason is policy rather than difficulty.** Reaching
+a literal's shape needs a generated constructor, and [[no-runtime-codegen]] is FIRM here: it forces
+`unsafe-eval` into every embedder's CSP. The template-plus-fill dodge — spread a per-query
+`{a: null, …}` so the stores hit an existing shape — was measured at **185.2 ms, worse than both
+arms**, which also explains why `hop-projection.ts`'s template trick helps there (it CLONES a filled
+row, it does not fill a cloned one) and would not help here.
+
+⚠️ **ONE MEASUREMENT NOTE: the engine arm spreads 14% across processes** (159.8 to 181.9), which is
+enough to invent or erase a 1.12x on its own. The ratio above is from alternated rounds —
+engine 171.8 / handSpec 152.1, then engine 169.2 / handSpec 151.6 — where handSpec's own spread is
+0.3%. A single pair would have been a coin toss.
+
+NO ENGINE CODE CHANGED: 1.12x in `projectRow`, which every rung in the package calls, is not the
+trade [[executor-edits-perturb]] prices at up to 16% on unrelated rows.
+
+GATES. bun run check 0; the only source edit is `propOf`'s corrected note.

@@ -264,9 +264,24 @@ export const cmpKey = (a: string, b: string): number => {
 // 325/327/340. The memo's own identity test plus its module-scope variable traffic costs about what
 // it saves, which is what a control moving 3-10% the wrong way means.
 //
-// ⚠️ WHAT THIS DOES **NOT** SETTLE. The arm is a CONFOUNDED ceiling, not a clean one: a safe version
-// would hoist the bag into the projection's own row scope as a LOCAL, where no write can intervene
-// and there is no module-variable traffic to pay. That remains unmeasured. ⚠️ And whoever measures
+// ⚠️ ~~WHAT THIS DOES **NOT** SETTLE~~ — **MEASURED AT ITEM 1897, AND THE HOIST IS FLAT.** This note
+// said "a safe version would hoist the bag into the projection's own row scope as a LOCAL, where no
+// write can intervene and there is no module-variable traffic to pay. That remains unmeasured."
+// `wideproj-bag-ceiling-1897.mjs` measures exactly that, five columns off one element, 20,000 rows,
+// 300 runs a rep, median of 5 less the warm-up rep this note warned about:
+//
+//     five `properties` getter calls per row   58.0 ms
+//     the bag hoisted to a row-scope LOCAL     60.4      <- FLAT, and if anything worse
+//
+// So the getter is not the cost: it is a memoized private-field read (`#box ??= …`), and five calls
+// cost what one does. ⚠️ AND THE SAME PROBE FOUND WHERE THE COST ACTUALLY IS — the engine reads
+// **169-172 ms** against that 58, and an arm doing the engine's own computed-key stores with NO
+// per-item closure reads **151.6-152.1**. So ~1.12x is the per-item call machinery and the other
+// **2.8x is the ROW OBJECT'S SHAPE**: a literal `{a, b, c, d, e}` gets one hidden class where
+// computed-key stores transition per key per row. Reaching it needs a generated constructor, and
+// [[no-runtime-codegen]] is FIRM policy here — so that 2.8x is a CEILING, not a target. A
+// template-plus-fill arm (spread a per-query `{a: null, …}` then store) was also measured: **185.2
+// ms, WORSE than both.** ⚠️ And whoever measures
 // it must not use `wideproj` at 300 runs: it spreads 18% there (144.9-171.9) and cannot resolve a 5%
 // effect. At 1500 runs it reads 652.8/615.3/617.5/622.7 -- 1.3% once the warm-up run is dropped.
 export const propOf = (bound: unknown, key: string): unknown =>

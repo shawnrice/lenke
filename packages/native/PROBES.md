@@ -75,6 +75,13 @@ generator hand tied. `edge-csr-ceiling-1893.mjs` is the shape of probe that find
 arm (the same walk by hand over the same structure) separates DELEGATION from LAYOUT, and it said
 2.08x of the gap was delegation before any structure was blamed.
 
+**ITEM 1897 FOLLOWED THAT TO ITS END AND CLOSED A STANDING OPEN QUESTION**:
+`wideproj-bag-ceiling-1897.mjs` measures the row-scope bag hoist `propOf`'s own note had left
+unmeasured since item 1740 — **flat** (58.0 against 60.4) — and in the same reading shows the wide
+projection's real gap is **2.8x of ROW OBJECT SHAPE**, which needs codegen and is therefore a
+ceiling. ⚠️ Its engine arm spreads **14% across processes**, so its ratios come from alternated
+rounds; a single pair cannot resolve the 1.12x it reports.
+
 **ITEM 1896 ADDED THE ARM THAT MAKES THIS METHOD ANSWER "WHICH PART"**: a hand walk PLUS the
 engine's own per-row work (label tests, bindings). On the two-hop projection it priced those at
 **5 ms of a 28 ms delegation gap**, which redirected the item from "remove the per-row overhead" to
