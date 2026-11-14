@@ -42,6 +42,27 @@ how an incomplete kill switch hides.** `CARD=` sweeps the cardinality axis that 
 map against a string key. After it, every remaining flag on the grid is `sum`/`collect` — the
 documented byte-identity refusal — or noise-sized.
 
+## ⚠️ SWEEP THE SIZE BEFORE BELIEVING A CLEAN SCREEN (item 1889)
+
+Every screen in this directory runs at **20,000 vertices** by default, and at item 1889 both of them
+were clean — the Gremlin workload screen had no shape above 7.2 ms and the GQL grid only its
+documented refusals. Running the Gremlin screen at `NODES=200000 FANOUT=5` immediately showed
+something six items had missed: the ONE-hop values walk cost **102 ns a row** where the TWO-hop walk
+cost **16** while emitting four times the rows. At 20,000 the same pair reads 54 and 17 — a third of
+the gap, which reads as a constant factor rather than a structural one.
+
+So: **re-run the screens at 10x before concluding a surface is done.** The instruments:
+
+- **`hop-csr-ab-1889.mjs`** — the warm AND cold A/B. ⚠️ Its cold column is the point: before the
+  second-call policy the arm was **2.10x warm and 0.61x COLD** (the CSR build on the first query
+  after any topology write). A warm-only A/B would have shipped a 1.64x regression as a 2.10x win.
+- **`hop-csr-oracle-1889.mjs`** — the route differential, running each query THREE times because the
+  rung declines its own first call: bucket walk, then the CSR's eager `drain`, then its lazy
+  iterator.
+- **`hop-csr-mutants-1889.mjs`** — 11/11. ⚠️ Read the off-by-one entries: the walk is written twice
+  (iterator and `drain`), `toArray` prefers `drain`, and `toSet` CANNOT catch the iterator's
+  off-by-one because a Set swallows the duplicate reads. Spreading `run` can.
+
 ## Start here (Gremlin): `gremlin-workload-screen.mjs` — what does an application's traversal cost?
 
 Built at item 1881 because **Gremlin had no workload screen at all.** `bench-gremlin.ts` compares 31

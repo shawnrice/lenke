@@ -88940,3 +88940,105 @@ INVARIANTS. All seven byte-identity fuzzers green. `bun run spelling:gremlin`: 0
 disagreements, 0 groups over 2x clear of the null control. `bun run bench:gremlin`: every row `same`.
 
 GATES. bun run check 0 and bun run test -- --skip-nx-cache across 21 projects, each read unpiped.
+
+## Item 1889 — ⚠️ **THE SCALE SWEEP FOUND WHAT SIX ITEMS AT 20,000 VERTICES COULD NOT: the TWO-hop walk is 6.4x cheaper PER ROW than the ONE-hop walk.** The one-hop CSR walk takes it — **1.95x at 1M edges, 2.60x at 100k, and `V().out()` on the bench goes 118.9 → 7.1 ms**. The build's first-query loss (0.61x) is removed by a second-call policy
+
+Items 1883-1888 left both screens clean — the Gremlin workload screen had no shape above 7.2 ms and
+the GQL grid only its documented refusals. So this tick did what CLAUDE.md says to do before
+trusting any of that: **swept the size.** "Cache-resident and not are different questions; the
+transition is between 200k and 1M elements."
+
+      ISOLATED, one shape per process, 200,000 vertices / 1,000,000 edges, median of 9:
+        V().out(E).values(n)              81.31 ms     800,000 rows   102 ns a row
+        V().out(E).out(E).values(n)       51.45      3,200,000         16   ⬅ FOUR times the rows,
+                                                                              a SIXTH of the cost
+        V().optional(out(E)).values(n)   174.13        800,000        218
+
+      the same two at 20,000 vertices:  54 and 17 ns a row — a THIRD of the gap
+
+**A two-hop walk cheaper per row than a one-hop walk is not a plausible steady state**, and the
+cause is structural: `hopValuesShortcut` reads `v.adjFrom.get(T)` per vertex — a `Map` lookup and a
+`Set` iteration, both pointer-chasing — while `hopChainValuesShortcut` has walked `chainCsrFor`'s
+flat `Int32Array` of neighbour SLOTS since item 1680. At 200,000 vertices that stops being a
+constant factor. Six items on this surface never saw it because every screen here runs at 20,000.
+
+✅ **AND THE LEVER WAS ALREADY PRICED — `hop-values.ts` carries items 1693/1694's note verbatim**:
+`handCsr` 23.21 ms against the engine's 139.18 (**6.00x**) on a scattered layout, and
+`handCsrPlusBuild` 167.00 (**0.83x — a LOSS**) for the first query. It sat open for ~200 items
+because of that second number.
+
+⚠️ **MEASURING WITHOUT `drain` NEARLY SANK IT.** The first cut read **67.59 against 81.31 — 1.20x**,
+which is exactly the "no delegation left to remove" figure that file records, and it looked like the
+data structure was worth almost nothing. `toArray` is `drain()` when the walk offers one (item 1412)
+and every arm of `hopValuesShortcut` offers one — so the arm I was replacing had its generator hand
+tied and mine did not. With an eager `drain`: **43.63 ms, 1.86x**.
+
+📏 **THE KILL-SWITCH A/B, WARM AND COLD, AT BOTH SIZES** (`hop-csr-ab-1889.mjs`, three
+order-alternated rounds, one shape per process, with `hop2` and `optional` as controls the arm
+cannot reach):
+
+      N=200,000 / 1,000,000 edges        BEFORE the policy          AFTER the policy
+        hop   WARM   89.0 93.6 83.9  ->  42.3 48.9 42.1   2.10x     84.0 -> 43.1   1.95x
+        hop   COLD  106.7 109.2 110.1 -> 181.2 180.0 165.5 0.61x    110.9 -> 111.4  1.01x
+        hop2  [control]                                   1.09x                    1.01x
+        optional [control]                                1.06x                    0.99x
+
+      N=20,000 / 100,000 edges (after):  hop WARM 2.2 -> 0.8  2.60x, COLD 1.07x, controls flat
+
+⚠️⚠️ **THE 0.61x COLD COLUMN IS THE ITEM.** A warm-only A/B would have shipped a **1.64x regression
+on the first query after every topology write** and called it a 2.10x win. `hop-values.ts` predicted
+exactly that and I only saw it because the floor probe had learned (item 1888) to report the cold
+reps it drops.
+
+✅ **THE FIX IS A SECOND-CALL POLICY, and it is the whole reason this is shippable.** `seenBefore`
+keys on (graph, `topologyVersion`, hop shape): the FIRST ask declines and records, every later ask
+takes the CSR. So
+
+- a ONE-SHOT query never builds and pays nothing;
+- a WRITE-HEAVY workload (write, read, write, read) never reaches a second ask on any one topology
+  version, so it never builds either — the case item 1694 was most worried about;
+- a repeated read pays the build once and wins from then on.
+
+It is a route CHOICE, hence answer-equivalent, hence a pure exported function with its own unit
+tests ([[perf-gate-needs-its-own-test]], the remedy item 1776 applied to `unsortedPageRoute`) —
+including the load-bearing one: **it RESETS on a topology write**, with a mutant to prove it.
+
+⚠️ **AND IT IS CONSULTED FIRST, the only deliberate precedence change in this chain.** Item 1535's
+rule puts every new rung BELOW so no plan an earlier one admits can change route; this one goes
+ABOVE because it is faster on what it claims, so the gate is as narrow as the claim: `V()` with no
+ids, ONE `out`/`in` with ONE label, and a single-key `values`/`id()`/nothing. `both`, multi-type and
+untyped decline for a CORRECTNESS reason (the CSR appends one named bucket at a time, so a
+two-type edge would be appended twice where `iterLabeled` dedupes it), and everything else lands on
+exactly the rung it lands on today.
+
+📊 **ON THE GREMLIN BENCH (200,000 vertices / 1,000,000 edges), every row still `same`:**
+
+      V().out() [bare]              118.9 -> 7.1 ms    16.7x   (ts/nat now 0.0 — 46x FASTER
+                                                                 than native on that row)
+      V().out().id()                217.5 -> 48.3      4.50x
+      V().out().values(age)         173.4 -> 68.6      2.53x
+      V().out().values(age).order() 379.0 -> 178.0     2.13x
+      V().out().out().values(age)    85.0 -> 88.3      (untouched; chain rungs unchanged)
+
+🦷 **MUTATION: 11 CAUGHT, 0 SURVIVORS — and the last one took three attempts to catch, which is the
+other finding.** The walk is written TWICE (a lazy `[Symbol.iterator]` and the eager `drain`), and an
+off-by-one on the run bound was caught in the drain and SURVIVED in the iterator, because every test
+went through `toArray`, which prefers `drain`.
+
+- `toSet` was the obvious fix and **does not work**: the off-by-one's extra reads land on
+  already-seen values and a `Set` swallows them. The mutant survived it.
+- What works is spreading `run` itself — the iterator, in order, with duplicates intact.
+- ⚠️ And the extra reads do not throw, because `memo.flat` is over-allocated with a `used` count:
+  an out-of-range read returns a ZERO, which indexes slot 0 and yields a REAL value. A buffer that
+  answers past its end is exactly the shape that makes an off-by-one quiet.
+
+🔭 **THE ROUTE CONTRACT: `hop-csr-oracle-1889.mjs`, 16 traversals over 3 fixtures, 48 pairs ORDERED,
+every one identical.** Each query runs THREE times, which this rung needs and the others did not:
+call 1 is the bucket walk, call 2 the CSR's eager drain, call 3 the CSR's lazy iterator — and the
+battery reports an internal disagreement between the three as a result rather than letting an
+arms-only comparison hide it.
+
+INVARIANTS. All seven byte-identity fuzzers green. `bun run spelling:gremlin`: 0 answer
+disagreements, 0 groups over 2x clear of the null control.
+
+GATES. bun run check 0 and bun run test -- --skip-nx-cache across 21 projects, each read unpiped.

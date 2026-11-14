@@ -123,6 +123,12 @@ export const hopValuesShortcut = (plan: Plan, graph: Graph): HopValues | undefin
   // key — both are different shapes, not this one.
   const valueKey = proj?.kind === 'values' && proj.keys.length === 1 ? proj.keys[0] : undefined;
   /**
+   * ⚠️ ~~PRICED AND OPEN (items 1693/1694)~~ — **BUILT AT ITEM 1889 as `hop-values-csr.ts`, which is
+   * consulted BEFORE this rung: 1.95x warm at 1,000,000 edges and 2.60x at 100,000, with the first-
+   * query loss this note predicted (0.61x) removed by a SECOND-CALL policy — the CSR is built only
+   * from the second ask on a given topology version, so a one-shot or write-heavy workload never
+   * pays the build.** The analysis below is what made that possible and is kept in full.
+   *
    * ⚠️ PRICED AND OPEN (items 1693/1694): a `topologyVersion`-keyed CSR drain for THIS walk, the way
    * item 1692 built one for the far-FILTERED hop at 38.08x.
    *

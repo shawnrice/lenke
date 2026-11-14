@@ -35,6 +35,7 @@ import { countShortcut } from './count-shortcut.js';
 import { applyStep } from './dispatch.js';
 import { edgeFilteredHopValues } from './edge-filtered-hop-values.js';
 import { hopChainValuesShortcut } from './hop-chain-values.js';
+import { hopValuesCsr } from './hop-values-csr.js';
 import type { HopValues } from './hop-values.js';
 import { hopValuesShortcut } from './hop-values.js';
 import { seedFromIndex, tailIsOrderFree } from './index-seed.js';
@@ -2420,7 +2421,16 @@ const fusedProjectedValues = (
 ): HopValues | undefined =>
   tracksPath
     ? undefined
-    : (hopValuesShortcut(effective, graph) ??
+    : // ⚠️ THE CSR WALK IS FIRST, AND IT IS THE ONLY DELIBERATE PRECEDENCE CHANGE IN THIS CHAIN
+      // (item 1889). Every other rung was added BELOW on item 1535's rule — `??` in this order
+      // means no plan an earlier rung already admits can change route. This one is added ABOVE
+      // because it is FASTER on the narrow shape it claims: at 200,000 vertices / 1,000,000 edges
+      // the two-hop rung's CSR walk costs 16 ns a row against the one-hop bucket walk's 102, while
+      // doing four times the rows. Its gate is as narrow as that claim (`V()`, ONE `out`/`in` with
+      // ONE label, a single-key `values`/`id`/nothing), so everything it declines lands on exactly
+      // the rung it lands on today.
+      (hopValuesCsr(effective, graph) ??
+      hopValuesShortcut(effective, graph) ??
       startFilteredHopValues(effective, graph) ??
       // The EDGE-PREDICATE rung (items 1882/1883): `outE(T).has(k, p).inV()`.
       edgeFilteredHopValues(effective, graph) ??
