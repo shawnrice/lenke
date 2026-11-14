@@ -145,6 +145,16 @@ export type ReachSpec = {
   out: boolean;
   types: string[] | undefined;
   minZero: boolean;
+  /**
+   * The quantifier's upper bound, or `undefined` for an unbounded `->*` / `->+` — item 1848.
+   *
+   * ⚠️ A BOUND MAKES THE WALK LEVEL-ORDERED, not merely shorter. The unbounded arm is a DFS
+   * closure: every vertex expands once and the order it is reached in does not matter, because
+   * "reachable at all" has no depth. A BOUNDED quantifier needs "reachable within `max` hops", so
+   * the search must expand by LEVEL and stop — a DFS that happened to reach a vertex down a long
+   * branch first would mark it seen at the wrong depth and could exclude it.
+   */
+  maxDepth?: number;
   isCount: boolean;
   /** For `count(DISTINCT <expr>)` with a non-bare arg (e.g. `b.k`): the compiled
    *  arg to evaluate + dedup per reached vertex. Undefined = bare `count(DISTINCT
@@ -189,9 +199,44 @@ export const runReach = (spec: ReachSpec, graph: Graph, params: Params): Row[] =
     }
   }
 
-  while (stack.length > 0) {
-    for (const w of nbrs(stack.pop()!)) {
-      push(w);
+  if (spec.maxDepth === undefined) {
+    while (stack.length > 0) {
+      for (const w of nbrs(stack.pop()!)) {
+        push(w);
+      }
+    }
+  } else {
+    /**
+     * THE BOUNDED ARM — item 1848.
+     *
+     * ⚠️ WHY A SHORTEST-DISTANCE BFS ANSWERS A BOUNDED QUANTIFIER. The question is "is there a
+     * path of length in [min, max]", and the gate admits only `min <= 1`. A vertex whose SHORTEST
+     * distance from any seed is `d` is reachable by a walk of length `d`, so it is in the answer
+     * exactly when `1 <= d <= max`; one with `d > max` cannot be reached in `max` hops by any
+     * walk. So marking each vertex at its shortest depth and stopping after `max` levels is exact
+     * — and it is why `min <= 1` is load-bearing rather than conservative: at `min = 2` a vertex
+     * with `d = 1` might still be reachable at length 2 or 3, which a shortest-distance search
+     * cannot see.
+     *
+     * The frontier is rebuilt per level rather than reusing `stack`, because the DFS stack above
+     * mixes depths by construction.
+     */
+    let frontier = stack.splice(0, stack.length);
+
+    for (let depth = 1; depth < spec.maxDepth && frontier.length > 0; depth += 1) {
+      const next: Vertex[] = [];
+
+      for (const v of frontier) {
+        for (const w of nbrs(v)) {
+          if (!seen.has(w.id)) {
+            seen.add(w.id);
+            reached.push(w);
+            next.push(w);
+          }
+        }
+      }
+
+      frontier = next;
     }
   }
 
@@ -317,8 +362,26 @@ export const reachCount = (proj: Projection, bVar: string): { countArg?: Compile
  * Its own function because the extra condition pushed `detectReachableShortcut` past the 35
  * complexity cap; that cap has pushed back four times in this run and been right every time.
  */
+/**
+ * May this rung answer the quantifier at all?
+ *
+ * `min <= 1` is the load-bearing half and always has been: a reachability search can stop at the
+ * FIRST witness, which is sound only when any length in range is an answer. At `min = 2` a vertex
+ * found at depth 1 might still be reachable at length 2, and a shortest-distance search cannot see
+ * that — a wrong ANSWER, not a slow one.
+ *
+ * ⚠️ A BOUNDED `max` IS ADMITTED SINCE ITEM 1848, where it used to require `max === null`. A
+ * bounded quantifier was therefore sent to path ENUMERATION: `-[:E]->{1,3}` with a
+ * `RETURN DISTINCT` measured **165.5 ms to return 8 rows**, against 108.0 ms for emitting all
+ * 251,910 undeduped rows of the same walk — i.e. the dedupe cost more than the rows it removed.
+ * `runReach`'s bounded arm answers it with a depth-capped BFS instead; see its own note for why
+ * shortest-distance is exact here.
+ *
+ * `max === 0` stays refused: it admits only the zero-length path, which is a different question
+ * and one `dropVacuousQuantifier` already reshapes.
+ */
 export const reachQuantifierIsExact = (q: Quantifier | undefined): boolean =>
-  q?.max === null && (q.min ?? 0) <= 1;
+  q !== undefined && (q.min ?? 0) <= 1 && (q.max === null || q.max >= 1);
 /**
  * ⚠️ `WALK` IS ADMITTED ALONGSIDE THE DEFAULT (item 1255), and `SIMPLE`/`ACYCLIC` are not.
  *
@@ -424,6 +487,7 @@ export const detectReachableShortcut = (
     out: rel.direction === 'out',
     types: types ?? undefined,
     minZero: q.min === 0,
+    maxDepth: q.max ?? undefined,
     isCount: count !== null,
     countArg: count?.countArg,
     ...specWindow(projection, ordered),

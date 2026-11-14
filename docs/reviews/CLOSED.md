@@ -195,6 +195,35 @@ absence** — `{k: null}` is the one place in a pattern where that distinction i
 
 ## 5. Open — unblocked and priced
 
+- ~~**The reachability rung refused a BOUNDED quantifier**~~ - **CLOSED by item 1848**
+  (2026-11-14), at **36.56x**. `detectReachableShortcut` required `q.max === null`, so an unbounded
+  `->+` got a BFS over the reached set while `-[:E]->{1,3}` was sent to path ENUMERATION:
+  **165.5 ms to return 8 rows**, against 108.0 ms for emitting all 251,910 undeduped rows of the
+  same walk - the dedupe cost more than the rows it removed. `runReach` gained a depth-capped BFS
+  arm. `{1,3}` 36.56x, `TRAIL {1,3}` 36.71x, `count(DISTINCT b)` 32.99x, `{1,2}` 10.35x, with
+  identical answer digests across arms.
+  **Controls flat and each a different kind:** `ACYCLIC {1,3}` 1.00x (refused on purpose), the
+  unbounded `{1,}` that already took the rung 1.04x, a plain 2-hop chain 0.96x.
+  **WHY SHORTEST-DISTANCE IS EXACT, and why `min <= 1` is load-bearing:** a vertex whose shortest
+  distance from a seed is `d` is reachable by a walk of length `d`, so it is in the answer exactly
+  when `1 <= d <= max`; one with `d > max` cannot be reached in `max` hops at all. That collapses at
+  `min = 2`, where a vertex found at `d = 1` may ALSO be reachable at length 2 and a
+  shortest-distance search cannot see it - so `min > 1` stays refused, with its ANSWER tested rather
+  than only its refusal. `ACYCLIC` stays refused for `reachability.ts`'s existing reason (one node,
+  one self-loop: ACYCLIC answers 0 where a BFS answers 1).
+  **The oracle was the GENERAL MATCHER, reached by forcing the rung to decline** - 360 comparisons
+  over five modes, nine quantifiers and four fixtures chosen for the hazard (self-loop, 2-cycle,
+  3-cycle, a diamond with two path lengths to one vertex, a chain past every bound). **356 agree.**
+  The 4 that do not are all unbounded `WALK {1,}`, where the ORACLE throws the trail budget and the
+  rung answers correctly - item 1252's known, pre-existing case, surfaced by the probe rather than
+  hidden by it.
+  ⚠️ **7 mutants, and the FIRST RUN CAUGHT ONLY 2 - because the test file never reached the rung.**
+  It seeded with a clause `WHERE s.n = 'a'`, which `detectReachableShortcut` refuses outright, so
+  every case ran the general matcher and four depth-correctness mutants survived: the cap off by one
+  in EACH direction, the bound ignored entirely, and the frontier never advanced. An inline
+  `(s:T {n: 'a'})` seeds the same vertices and does reach the rung; with that, **7 of 7 caught**.
+  The file now asserts the route inside the boundary test, because nothing else makes that visible.
+
 - ~~**A TYPE ALTERNATION declined the THREE-segment-and-up chain rungs**~~ - **CLOSED by item 1847**
   (2026-11-14), at **9.16x** (the blocked sweep) and **7.46x** (the depth-first descent), and
   **20.77x** with a `RETURN DISTINCT` on top (item 1843's fusion). Item 1846's twin, one file over:
