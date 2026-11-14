@@ -85362,3 +85362,76 @@ goes 24 -> 26 detectors.
 
 GATES. bun run check 0 read unpiped. gql 4,611 pass / 0 fail. gremlin 2,134 pass / 0 fail.
 native 1,165 pass / 0 fail. core 458 pass / 0 fail. bun run fuzz 57 pass / 0 fail.
+
+### Item 1828 — ✅ **THE TEN-COMMIT STACK VERIFIED CUMULATIVELY**: thirteen untouched shapes FLAT against `main`, the O(1)-by-id guarantee re-proved on the instrument built for it, and 500,000 workload queries plus the 500k-seed optimizer sweep clean. ⚠️ **AND THE FIRST RUN OF THE A/B MEASURED NOTHING WHILE LOOKING LIKE IT HAD**
+
+WHY A VERIFICATION ITEM. Items 1818-1827 are ten commits, **six of which changed engine code**, and
+each was A/B'd against **its own increment only**. Nothing had measured `main` → HEAD. That matters
+specifically here because the rung chain grew **six new branches** and `executor-edits-perturb`
+records a new variant costing unrelated shapes up to 16% — a per-item A/B cannot see a cost that
+accumulates one branch at a time.
+
+CUMULATIVE A/B, `main` (`c8201aca`) against HEAD, 14 shapes shared by both arms, five alternated
+rounds, ⚠️ arms asserted by a marker count in the built DIST:
+
+```text
+  hoprows 1.00x/0.97x   hop2rows 1.09x/1.02x   hop3rows 1.00x/1.01x   hopfilter 0.94x/0.96x
+  point 1.02x/0.97x     sortedpage 1.00x/0.99x grouped 0.98x/0.98x    distinct 0.97x/0.96x
+  join 1.01x/0.99x      optional 1.02x/0.98x   count2 1.06x/1.04x     count3 0.99x/0.99x
+  topkhop 1.01x/0.96x                                                        (min / median)
+
+  callinline 612.8 -> 452.8 ms   1.35x, DISJOINT      <- item 1818's gain, cumulatively
+```
+
+**Thirteen of fourteen flat with overlapping series**, worst 0.94x min / 0.96x median on `hopfilter`.
+Six new rung branches cost the shapes they do not claim nothing measurable.
+
+✅ **THE O(1)-BY-ID GUARANTEE RE-PROVED, on `id-lookup-hotset-probe.mjs` rather than by re-deriving
+it.** A first pass with a general probe looked alarming — `getEdgeById` 35.2 ns at N=20,000 against
+69.1 at N=200,000 — but that is 1.96x for **10x the data**, which is sub-linear and therefore not
+complexity. The dedicated instrument separates the two axes exactly as item 1395 framed it:
+
+```text
+  hot set 1,000      N=200,000  5.34 ns      N=1,000,000  5.73 ns     <- FLAT in N: the O(1) proof
+  hot set 100,000    N=200,000 13.09 ns      N=1,000,000 21.98 ns     <- rises with the HOT SET: cache
+```
+
+Flat in N at a fixed working set across 5x the data. The rise is the cache, and the instrument that
+says so already existed.
+
+CORRECTNESS, cumulative rather than per-item:
+
+```text
+  5 seeds x 100,000 workload queries   500,000 queries, 0 divergences
+  bun run fuzz (all seven) x 3         57 pass / 0 fail each, random seeds
+  LENKE_OPT_FUZZ_SEEDS=500000          11 tests, 10 passed, 1 ignored, 99.16s
+  gql 4,611 / core 458 / gremlin 2,134 / native 1,165 pass, 0 fail
+```
+
+⚠️⚠️ **THE A/B's FIRST RUN COLLECTED NOTHING AND THE LOG LOOKED POPULATED.** `SHAPES="a b c"` then
+`for s in $SHAPES` — **zsh does not word-split a plain scalar**, so the loop ran ONCE with `s` set
+to the entire string. Every probe call got one absurd shape name and printed nothing; the arm
+assertions passed, all ten round-arms reported "done", and the log held ten lines of the shape list
+with an empty time column. The summariser then reported every shape as MISSING, which is the only
+reason it was caught.
+
+**The defences that worked and the one that did not**: the arm assertion checked the ARMS, which
+were fine — it cannot see that no measurement happened. What caught it was reading the summary
+instead of the loop's own "done" lines. The fix is both an array (`SHAPES=(a b c)`) and an explicit
+`if [ -z "$ms" ]; then … break` guard, so a missing datum stops the run instead of being appended as
+blank. ⚠️ This is the third silent-empty-harness in this session — item 1820's screen printed nothing
+under `timeout` and then died to the OOM killer with its output buffered — and all three shared one
+shape: **a harness that completes and reports success while having measured nothing.**
+
+⚠️ **AND ONE SELF-CORRECTION WORTH RECORDING.** I first read the optimizer fuzzer as running ZERO
+tests and was about to file CLAUDE.md's own prescribed command (`cargo test … rewrite_fuzz`) as
+defective. It is not: `cargo` prints one `test result:` line **per test binary**, and my `tail -3`
+showed only the two empty ones while the lib target's `running 11 tests … 10 passed` scrolled off.
+That is CLAUDE.md's own "a verdict needs evidence of EXECUTION" rule — stated there for stdout vs
+stderr — applying equally to **which of several result lines you happened to look at**.
+
+NET: no code change, no regression found, and three instruments re-verified on the stack they are
+meant to guard.
+
+GATES. bun run check 0 read unpiped. gql 4,611 pass / 0 fail. core 458 pass / 0 fail.
+gremlin 2,134 pass / 0 fail. native 1,165 pass / 0 fail. bun run fuzz 57 pass / 0 fail (x3).
