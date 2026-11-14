@@ -87755,6 +87755,12 @@ did not create the collision it was built for.
 
 ### ✅ THE QUESTION THE ITEM STARTED FROM, ANSWERED
 
+⚠️⚠️ **THE 1.73x BELOW IS RETRACTED (item 1874). It was a within-process cross-row ratio** — the two
+shapes' numbers move with their POSITION in the run, and re-ordering them gives `RETURN DISTINCT` at
+5.63 against `count(DISTINCT)`'s 8.70. The one-line change it motivated was built, measured one shape
+per process, and REVERTED: 1.16x on the target with a control the change cannot reach moving 0.83x.
+The KEY-SPACE finding in this section stands; the perf claim does not.
+
 `count(DISTINCT x)` over a chain is the thinnest-margin rung of all 50 (item 1872's 0.34x), and
 `RETURN DISTINCT x` over the same chain is **1.73x FASTER at materializing the set than the count
 rung is at counting it** (3.42 against 5.91 ms at 20,000 vertices; the walk alone is 1.29). The
@@ -87770,3 +87776,71 @@ collapse.** The one-line optimization is unblocked and is the next item.
 
 GATES. bun run check 0 read unpiped; gql 4733, native 1169 (was 1167/2), gremlin 2184 tests green;
 all seven byte-identity fuzzers green.
+
+## Item 1874 — REFUTED and REVERTED: item 1873's 1.73x nomination was a within-process cross-row ratio, which my own census header forbids; and the repo-wide `bun run test` is the gate, not four package suites
+
+Two corrections and a reverted change. Nothing shipped.
+
+### ✅ FIRST, THE GATE — and last item's lesson was itself too narrow
+
+Item 1873 found a wrong answer because `packages/native`'s suite was outside my per-tick gate, and
+I wrote that the gate should be "all four package suites". **There are nineteen packages and the
+repo already has a root `bun run test` that runs 21 projects.** Had I run it once per tick, item
+1873's wrong answer would have surfaced immediately.
+
+⚠️ **AND IT MUST BE `--skip-nx-cache`.** The first run reported 21 projects green with **22 of 39
+tasks served from CACHE** — a cached pass is a pass against code that may no longer exist. Skipped,
+it is 17.9 s and genuinely green. **`bun run test -- --skip-nx-cache` is the gate.** Verified green
+across the whole branch before this item's work and again after its revert.
+
+### ❌ THE NOMINATION WAS AN ARTIFACT, AND I MADE EXACTLY THE MISTAKE I HAD JUST DOCUMENTED
+
+Item 1873 read, from one process timing six shapes in sequence:
+
+      count(DISTINCT c.k)   5.91 ms        RETURN DISTINCT c.k   3.42 ms
+
+and concluded the count rung was **1.73x slower than materializing the set it counts**. Re-running
+the same two shapes in a DIFFERENT order gives `RETURN DISTINCT c.k` at **5.63** and
+`count(DISTINCT c.k)` at **8.70**. The gap moves with POSITION.
+
+**Item 1871's census header says this in terms** — such a run "cannot support comparing one shape
+against another within a run" — and item 1870 had measured a control moving 5.07 to 8.74 purely by
+running last. I wrote both and then compared two rows inside one process anyway. The 1.73x never
+existed.
+
+### ❌ AND THE CHANGE BUILT ON IT MEASURES FLAT, WITH CONTROLS MOVING AS MUCH AS THE TARGETS
+
+`detectHop2FoldedAggregate` and its chain twin hand `detectHop2Projection` a synthetic projection
+with `distinct: false`, so `count(DISTINCT x)` materializes every row and dedups inside the fold.
+Setting `distinct: agg.expr.distinct === true` lets the rung's fused one-column dedup run during the
+walk instead. The rung still fires (route asserted). One shape per process, median of 15 after 3
+warm-ups, two builds:
+
+      shape                        PRE      POST     ratio
+      target  hop2 count(DISTINCT) 4.61     3.98     1.16x
+      chain   hop3 count(DISTINCT) 4.60     5.31     0.87x   ⬅ SLOWER
+      plain   count(c.k)  CONTROL  2.69     3.23     0.83x   ⬅ a control the change cannot reach
+      rows    RETURN DISTINCT      2.58     2.41     1.07x
+
+**A control that cannot be reached by the change moved 0.83x, and the three-hop twin got worse.**
+That is the signature of noise, and this repo's floor is ~10%. REVERTED — an unmeasured edit to the
+projection rungs is what `executor-edits-perturb` exists to keep out.
+
+### 🔬 AND THE MECHANISM, SO THE IDEA IS NOT RE-ATTEMPTED
+
+The fused dedup is NOT cheaper than the fold's. In one process, `RETURN DISTINCT c.k` reads 5.63
+against `RETURN c.k`'s 3.50 — the fused dedup of 20,000 values down to 97 costs ~2.1 ms, which is
+about what the fold's `Set<string>` of `valueKey` costs. Moving the dedup earlier moves the work, it
+does not remove it: both routes key every one of the 20,000 values, because that is what DISTINCT
+means. **The only way this gets cheaper is keying fewer values, which the shape does not allow.**
+
+✅ **ONE THING FROM ITEM 1873 STANDS**: the two key spaces DO agree (`valueKey` is type-tagged; both
+engines answer 6 on a fixture carrying the `'@v1'`/vertex-`v1` collision). That was worth
+establishing — it is why the change above was safe to try at all — and it is recorded there.
+
+NO ENGINE CODE CHANGED (the one-line edit was applied, measured, and reverted). One new instrument:
+`distinct-fold-ab-1874.mjs`, one shape per process, which is the only form that could have settled
+this.
+
+GATES. bun run check 0 read unpiped; `bun run test -- --skip-nx-cache` green across all 21 projects
+before and after.
