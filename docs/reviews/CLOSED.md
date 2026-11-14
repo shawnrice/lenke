@@ -88099,3 +88099,74 @@ ratios, three of them flag on a ratio THRESHOLD, and none of them knows what abs
 floor is the reader's job and I skipped it through an entire item of careful work.
 
 GATES. bun run check 0 read unpiped; no source touched.
+
+## Item 1879 — floor-first found the screen's largest addressable concentration: ONE bound, `{2,3}`, is 56x its `{1,3}` twin and ~70% of the `var-length` family; the refusal behind it is a documented CORRECTNESS condition, and the fix is an algorithm
+
+Item 1878's lesson applied from the first minute: start from the workload screen's ABSOLUTES, not a
+ratio. After `multi-pattern` (closed at 1864 as a genuine product), `chain-rows` 583 ms and
+`var-length` 543 ms are 54% of the addressable screen, and `chain-rows` is at its layout ceiling
+(1859). So `var-length`'s 543 ms was the biggest unexamined number in the corpus.
+
+✅ **AND THE FAMILY IS ONE SHAPE.** It draws seven bodies crossed with four bounds; split at the
+screen's own size, one shape per process, median of 9:
+
+      shape                 ms      rows
+      rows        {1,1}      0.1        8        count       {1,1}   0.0
+      rows        {1,2}      0.8        8        count       {1,2}   0.2
+      rows        {1,3}      0.8        8        count       {1,3}   0.1
+      rows        {2,3}     45.1        8   ⬅    count       {2,3}   0.1
+      rows TRAIL  {2,3}     42.6        8   ⬅    rows ACYCL  {1,3}   7.9
+      every other row shape 0.1-0.8
+
+**`{2,3}` returns the same 8 rows as `{1,3}` and costs 56x more.** The family averages 9.05 ms over
+60 queries, and only a handful of ~45 ms queries can explain that: the generator draws rows 70% of
+the time, one bound in four, and three of its four row bodies are non-acyclic — so ~8 of the 60 land
+on `{2,3}` rows at ~45 ms, ~360 ms, with the acyclic `{2,3}` arms adding ~17 ms. **~70% of the
+family's 543 ms is this one bound**, and the family is ~26% of the addressable screen.
+
+🔬 **THE MECHANISM IS THE MINIMUM BOUND, EXACTLY.** Routes read off `compileLinear`:
+
+      {0,3} {1,2} {1,3}  ->  reachShortcut
+      {2,2} {2,3} {3,5}  ->  (none)
+
+`reachQuantifierIsExact` is `(q.min ?? 0) <= 1 && (q.max === null || q.max >= 1)`. Everything with
+`min >= 2` falls off every rung and goes to path ENUMERATION.
+
+❌ **AND THE REFUSAL IS CORRECT, WHICH IS WHY THIS ITEM BUILDS NOTHING.** Its own note is explicit
+and item 1252 measured the wrong answer that justifies it:
+
+> `min <= 1` is the load-bearing half … a reachability search can stop at the FIRST witness, which
+> is sound only when any length in range is an answer. At `min = 2` a vertex found at depth 1 might
+> still be reachable at length 2, and a shortest-distance search cannot see that — a wrong ANSWER,
+> not a slow one.
+
+Item 1848's bounded arm does not change this: for `min <= 1` a shortest path is ≤ max AND is a trail
+(a shortest path reuses no edge), so shortest-distance BFS is exact under the default TRAIL mode. At
+`min >= 2` that argument fails in both halves — the shortest distance may be 1, and establishing a
+length-in-[2,3] **TRAIL** is not a level-BFS question, because levels permit edge reuse and TRAIL
+forbids it. **The ~360 ms is the price of a correct answer, not a missing rung.**
+
+🔭 **ONE CHEAP, CORRECT WIN EXISTS AND IS NOT TAKEN, because it reaches nothing in the corpus.**
+Under `WALK` mode there is no edge-reuse constraint, so the union of level frontiers for k in
+[min, max] — no global visited set — IS exact for `min >= 2`, at the same O(max · E) the admitted arm
+already pays. `MATCH WALK (a)-[:E]->{2,3}(b)` is nevertheless refused today:
+
+      mode='WALK' {1,3}  ->  reachShortcut          mode='WALK' {2,3}  ->  (none)
+
+**FLOORED BEFORE PRICING, which is the discipline item 1878 cost me**: the screen draws default mode,
+the differential fuzzer draws no explicit `WALK` with `min >= 2`, and nothing else in the corpus
+writes one. So it is a 56x on a shape nothing here asks — recorded as a latent gap with its
+correctness argument ready, not built. If a real workload turns out to write it, the argument above
+is the whole design.
+
+**WHAT WOULD TAKE THE ~360 ms** is bounded-TRAIL reachability for `min >= 2`: for each vertex, does a
+trail of length in [min, max] reach it. That is an algorithm with its own correctness burden, not a
+rung gate — and the native engine declines the identical case (`set_reachability_is_exact`,
+`Trail => max <= 1`), so building it in TS alone would open a cross-engine divergence that the
+current refusal CLOSES. It is the largest single number on the screen with a real answer behind it,
+and it is correctly sized here rather than attempted.
+
+NO ENGINE CODE CHANGED. One instrument (`varlength-split-1879.mjs`), which splits a family the screen
+reports as a single row.
+
+GATES. bun run check 0 read unpiped; no source touched.

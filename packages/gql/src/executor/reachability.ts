@@ -387,6 +387,29 @@ export const reachCount = (proj: Projection, bVar: string): { countArg?: Compile
  *
  * `max === 0` stays refused: it admits only the zero-length path, which is a different question
  * and one `dropVacuousQuantifier` already reshapes.
+ *
+ * ⚠️⚠️ WHAT `min >= 2` COSTS, MEASURED AT ITEM 1879 — so the next reader sees the price beside the
+ * rule rather than discovering it from a profile. At 1,500 vertices / 6,000 edges, returning the
+ * SAME 8 rows:
+ *
+ * ```text
+ *   MATCH (a:T)-[:E]->{1,3}(b:T) RETURN DISTINCT b.n    0.8 ms   this rung
+ *   MATCH (a:T)-[:E]->{2,3}(b:T) RETURN DISTINCT b.n   45.1      path ENUMERATION — 56x
+ * ```
+ *
+ * That one bound is ~70% of the workload screen's whole `var-length` family (543 ms) and ~21% of its
+ * addressable time. **It is still the right refusal**: a length-in-[2,3] TRAIL is not a level-BFS
+ * question, because levels permit edge reuse and TRAIL forbids it, and item 1252 measured the wrong
+ * answer that admitting it produces. Taking the 45 ms needs bounded-TRAIL reachability, an algorithm
+ * — and native declines the identical case (`set_reachability_is_exact`, `Trail => max <= 1`), so a
+ * TS-only fix would open a cross-engine divergence this refusal currently closes.
+ *
+ * ⚠️ UNDER `WALK` THE SAME BOUND *IS* ANSWERABLE CHEAPLY and is nevertheless refused: with no
+ * edge-reuse constraint, the union of level frontiers for k in [min, max] (no global visited set) is
+ * exact at the same O(max · E) this rung already pays. Item 1879 left it unbuilt because nothing in
+ * this corpus writes an explicit `MATCH WALK … {2,3}` — the screen draws default mode and the fuzzer
+ * draws none — so it is a 56x on a shape nobody asks. The correctness argument is above if that
+ * changes.
  */
 export const reachQuantifierIsExact = (q: Quantifier | undefined): boolean =>
   q !== undefined && (q.min ?? 0) <= 1 && (q.max === null || q.max >= 1);
