@@ -38,6 +38,7 @@ import {
   detectChainFoldedAggregate,
   detectChainGroupedCount,
   detectChainOrderedProjection,
+  detectChainPagedProjection,
   detectChainProjection,
 } from './chain-projection.js';
 import { WRITE_CLAUSES, procedureSpec } from './clauses.js';
@@ -95,6 +96,7 @@ import {
   detectHop2FoldedAggregate,
   detectHop2GroupedCount,
   detectHop2OrderedProjection,
+  detectHop2PagedProjection,
   detectHop2Projection,
 } from './hop2-projection.js';
 import {
@@ -2366,6 +2368,8 @@ export const compileLinear = (linear: LinearQuery): CLinear => {
     chainGroupedCount: detectChainGroupedCount(fast, clauses),
     hop2OrderedProjection: detectHop2OrderedProjection(fast, clauses),
     chainOrderedProjection: detectChainOrderedProjection(fast, clauses),
+    hop2PagedProjection: detectHop2PagedProjection(fast, clauses),
+    chainPagedProjection: detectChainPagedProjection(fast, clauses),
     hopAggregate,
     multiHopAggregate: detectMultiHopAggregate(fast, clauses),
     distinctProjection: detectDistinctProjection(fast, clauses),

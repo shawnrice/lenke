@@ -105,6 +105,52 @@ const CASES: ReadonlyArray<readonly [string, string, string]> = [
     'MATCH (a:T)-[:E]->(b) RETURN a.k AS k',
     `MATCH (a:T)-[:E]->(b) RETURN a.k AS k OFFSET ${Math.floor(NODES / 3)}`,
   ],
+  /**
+   * ⚠️ DEPTHS 2-5, ADDED AT ITEM 1885, AND THE CONTROL IS THE LOAD-BEARING HALF HERE. Those depths
+   * are served UNPAGED by `hop2Projection` and `chainProjection`, both of which decline outright
+   * once any window is present (read off `compileLinear` — `skip-chain-route-1885.mjs`), so the
+   * paged spelling costs 26.9-59.5 ms against a ~6 ms `rows` twin on `rung-gap-screen.mjs`.
+   *
+   * The control therefore asks the question a fix depends on: an IDENTICAL unpaged verdict at depth
+   * k means the RUNG's row order already equals native's at depth k — because the unpaged query IS
+   * the rung. Slicing the rung's rows is then answer-equivalent to slicing native's, which is a
+   * CONSTRUCTIVE argument rather than an observation over cases.
+   */
+  [
+    'chain d2 FAR',
+    'MATCH (a:T)-[:E]->(b)-[:E]->(c) RETURN c.k AS k',
+    `MATCH (a:T)-[:E]->(b)-[:E]->(c) RETURN c.k AS k OFFSET ${Math.floor(NODES / 3)}`,
+  ],
+  [
+    'chain d2 START',
+    'MATCH (a:T)-[:E]->(b)-[:E]->(c) RETURN a.k AS k',
+    `MATCH (a:T)-[:E]->(b)-[:E]->(c) RETURN a.k AS k OFFSET ${Math.floor(NODES / 3)}`,
+  ],
+  [
+    'chain d3 FAR',
+    'MATCH (a:T)-[:E]->(b)-[:E]->(c)-[:E]->(d) RETURN d.k AS k',
+    `MATCH (a:T)-[:E]->(b)-[:E]->(c)-[:E]->(d) RETURN d.k AS k OFFSET ${Math.floor(NODES / 3)}`,
+  ],
+  [
+    'chain d3 2col',
+    'MATCH (a:T)-[:E]->(b)-[:E]->(c)-[:E]->(d) RETURN a.k AS k, d.n AS t',
+    `MATCH (a:T)-[:E]->(b)-[:E]->(c)-[:E]->(d) RETURN a.k AS k, d.n AS t OFFSET 5`,
+  ],
+  [
+    'chain d4 FAR',
+    'MATCH (a:T)-[:E]->(b)-[:E]->(c)-[:E]->(d)-[:E]->(f) RETURN f.k AS k',
+    `MATCH (a:T)-[:E]->(b)-[:E]->(c)-[:E]->(d)-[:E]->(f) RETURN f.k AS k OFFSET 7`,
+  ],
+  [
+    'chain d5 FAR',
+    'MATCH (a:T)-[:E]->(b)-[:E]->(c)-[:E]->(d)-[:E]->(f)-[:E]->(h) RETURN h.k AS k',
+    `MATCH (a:T)-[:E]->(b)-[:E]->(c)-[:E]->(d)-[:E]->(f)-[:E]->(h) RETURN h.k AS k OFFSET 7`,
+  ],
+  [
+    'chain d3 interior',
+    'MATCH (a:T)-[:E]->(b)-[:E]->(c)-[:E]->(d) RETURN b.k AS k',
+    'MATCH (a:T)-[:E]->(b)-[:E]->(c)-[:E]->(d) RETURN b.k AS k OFFSET 7',
+  ],
 ];
 
 const rowsOf = (engine: 'ts' | 'native', q: string): string =>
@@ -143,9 +189,57 @@ for (const [name, control, paged] of CASES) {
   );
 }
 
+/**
+ * ⚠️ THE SECOND SECTION, ADDED AT ITEM 1885: IS EACH ENGINE'S PAGED ANSWER ITS OWN UNPAGED ANSWER
+ * SLICED? That is the OTHER half of the licence to slice a rung's rows, and it is not implied by
+ * the first section. Section one says the two engines agree about the paged answer; this one says
+ * the paged answer is positionally the unpaged walk minus its first k rows, in each engine
+ * separately — which is what makes "let the rung fire and slice" the same computation rather than a
+ * coincidence on this fixture.
+ */
+const offsetOf = (paged: string): number => Number(/OFFSET (\d+)/.exec(paged)?.[1] ?? '0');
+
+/**
+ * ⚠️ ONE DOCUMENTED EXCEPTION, AND IT IS A FEATURE. `hop proj FAR` paged is deliberately NOT its own
+ * unpaged answer sliced in TS: item 1777 forces the START-DRIVEN walk whenever the page is
+ * non-zero, because that walk's order is the general path's, where the UNPAGED shape may take the
+ * far-driven walk whose order is intentionally different. `offset-order-equiv.mjs`'s SELF section
+ * records the same thing. So this name is exempt WITH its reason, rather than the check being
+ * loosened for everyone.
+ */
+const SLICE_EXEMPT = new Set(['hop proj FAR']);
+
+console.log("\n# is each engine's PAGED answer its own UNPAGED answer, sliced?");
+
+let sliceBroke = 0;
+
+for (const [name, control, paged] of CASES) {
+  const off = offsetOf(paged);
+  const slice = (j: string): string => JSON.stringify((JSON.parse(j) as unknown[]).slice(off));
+  const tsOk = slice(rowsOf('ts', control)) === rowsOf('ts', paged);
+  const natOk = slice(rowsOf('native', control)) === rowsOf('native', paged);
+
+  const exempt = SLICE_EXEMPT.has(name);
+
+  if ((!tsOk || !natOk) && !exempt) {
+    sliceBroke += 1;
+  }
+
+  const note = exempt ? '   (EXEMPT — item 1777 forces the start-driven walk when paged)' : '';
+
+  console.log(
+    `${name.padEnd(18)} OFFSET ${String(off).padStart(3)}   ts ${tsOk ? 'sliced' : '⚠️ NOT sliced'}   native ${natOk ? 'sliced' : '⚠️ NOT sliced'}${note}`,
+  );
+}
+
 console.log(
   broke === 0
     ? '\nno page breaks an agreeing unpaged shape.'
     : `\n${broke} page(s) break an agreeing unpaged shape — a cross-engine divergence.`,
 );
-process.exit(broke === 0 ? 0 : 1);
+console.log(
+  sliceBroke === 0
+    ? 'every paged answer IS its own unpaged answer sliced, in both engines.'
+    : `${sliceBroke} case(s) where a paged answer is NOT its own unpaged answer sliced.`,
+);
+process.exit(broke === 0 && sliceBroke === 0 ? 0 : 1);

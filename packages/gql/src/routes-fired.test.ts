@@ -291,6 +291,38 @@ describe('every fast-path detector fires for its own shape', () => {
       'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L)-[:R]->(d:L) RETURN d.k AS k ORDER BY k SKIP 2',
       ['chainOrderedProjection'],
     ],
+    /**
+     * ⚠️ THE SKIP-ONLY, UNORDERED PAGE AT DEPTH 2 AND 3+ — item 1885, and these rows are the ONLY
+     * thing that holds it: admitting the page is answer-equivalent (`skip-only-page-parity.ts`
+     * establishes that cross-engine), so no value test can tell the routes apart. Before it, every
+     * window sent these widths to the general matcher at **26.9/36.2/49.6/59.5 ms against a ~6 ms
+     * unpaged twin**; after, `rung-gap-screen.mjs` reads 5.5/3.0/3.6/4.4.
+     *
+     * ⚠️ AND THE `LIMIT` ROWS BELOW ASSERT A DELIBERATE DECLINE, which is the half a reader will
+     * want to change first. The general path is LAZY — `LIMIT 5` can stop after five rows — so
+     * handing a bare limit to a rung that materializes every row and slices would be a regression
+     * dressed as a win. `skipOnlyPage` refuses a `limit` for that reason and these rows pin it.
+     */
+    [
+      'a two-hop SKIP with no ORDER BY takes the paged rung',
+      'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L) RETURN c.k AS k SKIP 2',
+      ['hop2PagedProjection'],
+    ],
+    [
+      'a three-hop OFFSET with no ORDER BY takes the paged rung',
+      'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L)-[:R]->(d:L) RETURN d.k AS k OFFSET 2',
+      ['chainPagedProjection'],
+    ],
+    [
+      'a two-hop bare LIMIT is DECLINED on purpose — the general path is lazy',
+      'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L) RETURN c.k AS k LIMIT 2',
+      [],
+    ],
+    [
+      'a three-hop SKIP plus LIMIT is DECLINED on purpose — likewise',
+      'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L)-[:R]->(d:L) RETURN d.k AS k SKIP 2 LIMIT 2',
+      [],
+    ],
     ['distinct projection', 'MATCH (n:L) RETURN DISTINCT n.k AS k', ['distinctProjection']],
 
     // --- aggregates ---------------------------------------------------------------------
@@ -481,7 +513,7 @@ describe('every fast-path detector fires for its own shape', () => {
 
   // Every one of the twenty-one is covered by the table above. Asserted rather than claimed, so a
   // detector added later without a route case fails HERE instead of going unguarded.
-  it('covers all thirty detectors', () => {
+  it('covers all thirty-two detectors', () => {
     const covered = new Set(CASES.flatMap(([, , want]) => want));
     const all = new Set(
       Object.keys(
@@ -493,7 +525,7 @@ describe('every fast-path detector fires for its own shape', () => {
     );
 
     expect([...all].filter((k) => !covered.has(k)).sort()).toEqual([]);
-    expect(all.size).toBe(30);
+    expect(all.size).toBe(32);
   });
 });
 

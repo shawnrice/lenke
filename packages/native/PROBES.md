@@ -10,6 +10,29 @@ reading three file headers feels like overhead. It is the other way round."_ The
 here, and more so — the Rust side is indexed by question in `crates/lenke-engine/examples/README.md`
 and this side was not indexed at all.
 
+## Start here (GQL routes): `rung-gap-screen.mjs`, and what its flags mean NOW
+
+It is the grid that finds a BETWEEN-RUNGS gap, which no profile can: the absence of a rung has no
+hot frame. As of item 1885 its GQL half reads 11 flags, and they are NOT 11 open targets:
+
+- `sum` and `collect` at depths 2-5 (24-60 ms) are the **byte-identity refusal** item 1829 states —
+  f64 addition is order-sensitive in the last ulp and `collect`'s order IS its answer.
+- `distinct2 depth1` (two-column DISTINCT) is unexamined.
+- the `topk` / `skiponly` depth2-vs-depth3 non-monotonic flags are small and shared with the `rows`
+  row's own shape.
+
+**`skiponly` was the big one and item 1885 took it**: 26.9/36.2/49.6/59.5 → 5.5/3.0/3.6/4.4 ms at
+depths 2-5. Its instruments:
+
+- **`skip-chain-route-1885.mjs`** — reads `compileLinear` for `rows` / `SKIP` / `OFFSET` / `LIMIT` /
+  `SKIP+LIMIT` / `OFFSET $s` at depths 1-5. The route question, answered without timing anything.
+- **`skip-only-page-parity.ts`** — the CROSS-ENGINE oracle, and the thing that licences slicing a
+  rung's rows at all: an IDENTICAL _unpaged_ verdict at depth k means the rung's order already equals
+  native's, since the unpaged query IS the rung. Its second section checks that each engine's paged
+  answer is its own unpaged answer sliced. Extend it before widening any page rung.
+- **`chain-paged-mutants-1885.mjs`** — 5 caught, 1 EXPECTED survivor (removing the consumer's call
+  site is answer-equivalent; exporting the composition pins the helper but not the call site).
+
 ## Start here (Gremlin): `gremlin-workload-screen.mjs` — what does an application's traversal cost?
 
 Built at item 1881 because **Gremlin had no workload screen at all.** `bench-gremlin.ts` compares 31

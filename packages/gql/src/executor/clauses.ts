@@ -1697,6 +1697,12 @@ const fastPath = (linear: CLinear, graph: Graph, params: Params): Row[] | undefi
     }
   }
 
+  const paged = pagedWidthProjections(linear, graph, params);
+
+  if (paged !== undefined) {
+    return paged;
+  }
+
   // The same walk under ONE foldable aggregate — `RETURN max(b.k)` — folded as the rows are
   // produced. It delegates to `detectHopProjection`'s walk, so it sits AFTER that branch: the
   // two shapes are disjoint (a projection declines an aggregating one), and placing it FIRST
@@ -1840,6 +1846,57 @@ const scanAggregates = (linear: CLinear, graph: Graph, params: Params): Row[] | 
   // The same over a HOP, below the hop tally for the same reason.
   if (linear.groupedHopAggregate) {
     return linear.groupedHopAggregate(graph, params);
+  }
+
+  return undefined;
+};
+
+/**
+ * The two deep projection rungs under a SKIP-ONLY, UNORDERED page — item 1885.
+ *
+ * ⚠️ EXTRACTED FOR THE COMPLEXITY GATE, as `deepWidthReductions` below it was: written inline,
+ * these two branches took `fastPath` to **37 against a limit of 35**. Nothing else changed — the
+ * order and the decline contract are the ones that were inline.
+ *
+ * ⚠️ DISJOINT FROM EVERY PROJECTION RUNG, not merely ordered after them: the base rungs gate on
+ * `plainRowProjectionIgnoringDistinct`, which refuses a `skip`, and the ORDERED pair REQUIRES an
+ * `orderBy` where `skipOnlyPage` refuses one. So no ordering here can starve anything — the lesson
+ * item 1825 learned by writing an untestable precedence dependency and having a mutant walk
+ * through it.
+ *
+ * ⚠️ `null` IS A DECLINE passed through from `pagedRows`, the same contract `sortedRows` has: the
+ * walk it wraps can hand the query back per call, and answering that with `[]` would be rows
+ * missing rather than a slower route. `undefined` here means "no paged rung claimed this".
+ *
+ * ⚠️⚠️ EXPORTED FOR ONE TEST, AND THE REASON IS A SURVIVING MUTANT. `fastPath`'s own note above
+ * records that the branch CONSUMING a rung is pinned by nothing — "removing the branch that
+ * consumes it is answer-equivalent and the whole suite passes" — which is true of all the rungs and
+ * was true of this pair: a mutant replacing this call with `undefined` passed 92 tests. The route
+ * assertions in `routes-fired.test.ts` pin that the DETECTOR fires, never that anything reads it.
+ * [[rewrite-composition-is-not-free]]'s rule is to export the composition or the unwired mutant
+ * survives, so `paged-width-consumer.test.ts` calls this directly with a synthetic `CLinear`. The
+ * other rungs are left as the note above describes them; this is not a claim that the asymmetry is
+ * ideal, only that the hole here is cheap to close and was open.
+ */
+export const pagedWidthProjections = (
+  linear: CLinear,
+  graph: Graph,
+  params: Params,
+): Row[] | undefined => {
+  if (linear.chainPagedProjection) {
+    const rows = linear.chainPagedProjection(graph, params);
+
+    if (rows !== null) {
+      return rows;
+    }
+  }
+
+  if (linear.hop2PagedProjection) {
+    const rows = linear.hop2PagedProjection(graph, params);
+
+    if (rows !== null) {
+      return rows;
+    }
   }
 
   return undefined;

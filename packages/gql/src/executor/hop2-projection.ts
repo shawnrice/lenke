@@ -10,7 +10,13 @@ import type { AlwaysRowsFn, RowsFn } from './hop-projection.js';
 import type { UnionHop } from './hop-sides.js';
 import { claimedByEarlierType, plainNode, plainRel, unionHopOf } from './hop-sides.js';
 import { effectiveLabel } from './labels.js';
-import { outputColumnSorts, sortedRows, withoutSortOrWindow } from './ordered-rows.js';
+import {
+  outputColumnSorts,
+  pagedRows,
+  sortedRows,
+  unsortedPageRoute,
+  withoutSortOrWindow,
+} from './ordered-rows.js';
 import { plainRowProjectionIgnoringDistinct, valueKey } from './rows.js';
 import { projectRow } from './rows.js';
 import { asTruth } from './scalars.js';
@@ -854,6 +860,72 @@ export const detectHop2OrderedProjection = (
   );
 
   return sortedRows(rows, plan);
+};
+
+/**
+ * `MATCH <a-[:E]->b-[:E]->c> RETURN <expr> AS k SKIP n` — the SKIP-ONLY page at this width (item 1885).
+ *
+ * ⚠️ THE LARGEST OPEN ABSOLUTE ON `rung-gap-screen.mjs` once items 1830 and 1832 took `maxagg`,
+ * `topk` and `grouped`: `skiponly` reads **26.9 / 36.2 / 49.6 / 59.5 ms at depths 2-5 against a
+ * ~6 ms `rows` twin**, 4.6x-9.3x. A bare `SKIP` can only ever be the walk MINUS some rows, so a
+ * window that multiplies the cost is a window that disqualified the rung — and `compileLinear` says
+ * so outright (`skip-chain-route-1885.mjs`): at depth 1 `hopProjection` carries the page, at depth 2
+ * and up EVERY rung drops out and the query goes to the general matcher.
+ *
+ * ⚠️ DEPTHS 0 AND 1 WERE DONE AT ITEMS 1776/1777/1778, and this is deliberately the same shape of
+ * fix: `skipOnlyPage` is the gate, `pagedRows` is the existing wrapper, `withoutSortOrWindow` hands
+ * the base detector the clause it expects. Nothing about the walk changes.
+ *
+ * ⚠️ AND THE LICENCE TO SLICE IS ESTABLISHED, NOT ASSUMED, which is the part item 1777 had to earn
+ * the hard way. A skip INHERITS the walk's visit order, so slicing a walk whose order differs from
+ * the general path's returns different ROWS. `skip-only-page-parity.ts` now reads the UNPAGED chain
+ * projections at depths 2-5 as positionally IDENTICAL between the TS rung and NATIVE, and each
+ * engine's paged answer as its own unpaged answer sliced. The unpaged query IS this rung — so the
+ * rung's order already equals native's, and slicing it is answer-equivalent BY CONSTRUCTION rather
+ * than by agreement over sampled cases.
+ *
+ * ⚠️ A `LIMIT` IS NOT ADMITTED. See `skipOnlyPage`: the general path is lazy and `LIMIT 5` can stop
+ * after five rows, so giving that shape to a materializing rung would be a regression dressed as a
+ * win.
+ */
+export const detectHop2PagedProjection = (
+  clauses: readonly Clause[],
+  compiled: readonly CClause[],
+): RowsFn | null => {
+  if (clauses.length !== 2) {
+    return null;
+  }
+
+  const [, ret] = clauses;
+
+  if (ret.kind !== 'return') {
+    return null;
+  }
+
+  /**
+   * ⚠️ `unsortedPageRoute` IS THE RULE, REUSED RATHER THAN RESTATED. Item 1776 extracted it as a
+   * pure function precisely because a route choice is answer-equivalent and every mutant of it
+   * survives the behavioural tests, and `skip-only-page.test.ts` tests it directly. My first cut
+   * here wrote a second near-identical gate in `ordered-rows.ts` — the "two copies of one shape
+   * rule" hazard `detectDistinctCount`'s note records, and the one that put the far endpoint on a
+   * per-edge tally once before.
+   *
+   * `0` is its "no unsorted window here" answer (no window at all, or an `ORDER BY` that
+   * `outputColumnSorts` owns) and must DECLINE here: the base rung already serves those shapes, and
+   * claiming them would reorder the chain for queries this adds nothing to.
+   */
+  const skip = unsortedPageRoute(ret.projection);
+
+  if (skip === null || skip === 0) {
+    return null;
+  }
+
+  const rows = detectHop2Projection(
+    clauses.map((c, i) => (i === 1 ? withoutSortOrWindow(c) : c)),
+    compiled.map((c, i) => (i === 1 ? withoutSortOrWindow(c) : c)),
+  );
+
+  return pagedRows(rows, skip);
 };
 
 /**

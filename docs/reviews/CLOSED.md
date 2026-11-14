@@ -85899,7 +85899,7 @@ meant to guard.
 GATES. bun run check 0 read unpiped. gql 4,611 pass / 0 fail. core 458 pass / 0 fail.
 gremlin 2,134 pass / 0 fail. native 1,165 pass / 0 fail. bun run fuzz 57 pass / 0 fail (x3).
 
-### Item 1829 — ⚠️ **SIX MORE MODIFIERS, AND THE WHOLE AGGREGATE FAMILY LOSES ITS ROUTE PAST ONE HOP IN GQL**: `sum`, `max`, `collect`, `grouped`, `topk` and a skip-only page all jump **~15-25x between depth 1 and depth 2**, where Gremlin is FLAT on every one of them but `grouped`. Priced and open, with the order-sensitivity analysis a fix must respect
+### Item 1829 — ⚠️ **SIX MORE MODIFIERS, AND THE WHOLE AGGREGATE FAMILY LOSES ITS ROUTE PAST ONE HOP IN GQL**: `sum`, `max`, `collect`, `grouped`, `topk` and a skip-only page all jump **~15-25x between depth 1 and depth 2**, where Gremlin is FLAT on every one of them but `grouped`. Priced and open, with the order-sensitivity analysis a fix must respect — ⚠️ **FOUR OF THE SIX ARE NOW CLOSED: `max` by 1830, `grouped` by 1832, `topk` by 1852, and ~~`skiponly` is HERE TO WATCH, NOT TO FIX~~ TAKEN BY ITEM 1885 at 4.9x-13.8x (its licence is cross-engine order parity, not a timing argument). Only `sum` and `collect` remain, on the byte-identity refusal this entry states**
 
 EVERY WIDENING OF THIS AXIS HAS FOUND SOMETHING, so the axis was widened again — six modifiers added
 to BOTH arms (`topk`, `skiponly`, `sum`, `maxagg`, `grouped`, `collect`). The result is the largest
@@ -85948,11 +85948,14 @@ would make `sum` disagree in the last ulp and `collect` disagree outright. ⚠�
 settled for the deeper widths. **A fix takes `min`/`max` first; `sum`, `avg` and `collect` need the
 chain rungs' walk order proved equal to the general path's BEFORE they are admitted, not after.**
 
-⚠️ `topk` AND `skiponly` ARE HERE TO WATCH, NOT TO FIX — item 1827 left both windows on the general
-path deliberately (a sorted `LIMIT` is a bounded-top-k question, and `boundedTopRows` answers it
-from a heap). Their flags confirm the cost of that decision rather than contradicting it, and the
-marginal-jump flag does NOT fire on `topk`, which is the honest reading: its cost tracks its own
-depth-1 marginal.
+~~⚠️ `topk` AND `skiponly` ARE HERE TO WATCH, NOT TO FIX~~ — **BOTH TAKEN SINCE: `topk` at item 1852
+and `skiponly` at item 1885.** What this paragraph said was that item 1827 left both windows on the
+general path deliberately, "a sorted `LIMIT` is a bounded-top-k question, and `boundedTopRows`
+answers it from a heap". That argument is about a window UNDER A SORT and it does not reach a
+skip-only page: there is no heap to lose when there is no `ORDER BY`, and a bare `SKIP` returns
+`N - k` rows either way so the general path has no laziness to collect. Item 1885 took depths 2-5 at
+**4.9x / 12.1x / 13.8x / 13.5x**; `unsortedPageRoute`, extracted at item 1776, is the rule that
+separates the two cases and it refuses a `LIMIT` for exactly the reason quoted above.
 
 NO ENGINE CODE CHANGED. ~~Priced and left open with the floors a fix has to beat:~~ **`maxagg` CLOSED BY ITEM 1830 AT 5.8x-10.4x** — depths
 2-5 at 23.3/31.3/46.7/55.1 ms, and the same for
@@ -88555,5 +88558,106 @@ fifth rung took `run`'s complexity to 36 against a limit of 35 — the same extr
 
 INVARIANTS. All seven byte-identity fuzzers green. `bun run spelling:gremlin`: 0 answer
 disagreements and 0 groups over 2x. `bun run bench:gremlin`: every row `same`.
+
+GATES. bun run check 0 and bun run test -- --skip-nx-cache across 21 projects, each read unpiped.
+
+## Item 1885 — the SKIP-ONLY page at depth 2 and depth 3+: **4.9x / 12.1x / 13.8x / 13.5x**, and the licence to slice is a CROSS-ENGINE parity fact rather than a timing argument
+
+Four items of Gremlin work, so this one went back to the GQL grid. `rung-gap-screen.mjs` flagged
+`skiponly` at every depth from 2 to 5 — **26.9 / 36.2 / 49.6 / 59.5 ms against its own `rows` twin's
+5.8 / 6.3 / 7.3 / 6.4** — the largest open absolute there now that items 1830, 1832 and 1852 took
+`maxagg`, `grouped` and `topk`. A bare `SKIP` can only ever be the walk MINUS some rows, so a window
+that multiplies the cost is a window that disqualified the rung.
+
+🔬 **THE ROUTE READ FIRST, NOT A PROFILE, because a missing rung has no hot frame.**
+`skip-chain-route-1885.mjs` asks `compileLinear` which rungs are willing for each spelling:
+
+      depth 1   rows / SKIP 5 / OFFSET 5 / OFFSET $s   ->  hopProjection   (items 1776/1777/1778)
+      depth 2   rows                                   ->  hop2Projection
+                SKIP 5 / OFFSET 5 / OFFSET $s          ->  (none)
+      depth 3+  rows                                   ->  chainProjection
+                SKIP 5 / OFFSET 5 / OFFSET $s          ->  (none)
+
+So one spelling of one query carried the page at depth 1 and **every** rung dropped out at depth 2
+and beyond: `plainRowProjectionIgnoringDistinct`, which every projection rung gates on, refuses a
+`skip`, and the ORDERED pair (items 1827/1852) requires an `orderBy` this shape does not have.
+
+✅ **AND THE LICENCE TO SLICE IS ESTABLISHED BY CONSTRUCTION, which is the part this item is really
+about.** A skip is NOT order-invariant the way a projection is — slicing the first k rows of two
+different visit orders yields different MULTISETS — so [[order-is-unspecified]] does not cover it,
+and item 1777 had to earn the same licence at depth 1 by forcing the start-driven walk.
+`skip-only-page-parity.ts` (extended here with seven chain cases, and now carrying a second section)
+answers it directly:
+
+      chain d2 FAR / d2 START / d3 FAR / d3 2col / d4 FAR / d5 FAR / d3 interior
+        unpaged   IDENTICAL   (positionally, TS rung vs NATIVE, every one)
+        paged     IDENTICAL
+        and each engine's PAGED answer IS its own UNPAGED answer sliced
+
+**The unpaged query IS the rung** — `hop2Projection` and `chainProjection` serve it — so an
+IDENTICAL unpaged verdict says the rung's row order already equals native's at that depth. Slicing
+the rung's rows is then the same computation as slicing native's, rather than an agreement observed
+over sampled cases. Item 1829's note said this question "has NOT been settled for the deeper widths";
+it is now settled for a page, by measurement against the other engine.
+
+⚠️ ONE EXEMPTION IS RECORDED IN THE PROBE WITH ITS REASON: `hop proj FAR` is deliberately NOT its own
+unpaged answer sliced in TS, because item 1777 forces the START-DRIVEN walk when paged while the
+unpaged shape may take the far-driven one. Named and exempted rather than the check being loosened.
+
+📏 **MEASURED ON THE GRID THAT FLAGGED IT** (20,000 vertices, FANOUT=1 so every depth returns the
+same rows, median of 9 less 3 warm-up):
+
+      skiponly    depth2   depth3   depth4   depth5
+      before       26.9     36.2     49.6     59.5
+      after         5.5      3.0      3.6      4.4      ⬅ 4.9x / 12.1x / 13.8x / 13.5x
+      `rows` twin   5.7      5.1      4.6      5.6      ⬅ and now AT or BELOW it, which is where a
+                                                           page returning 5 fewer rows belongs
+
+The grid's flag count went **14 → 11**, and the four `skiponly` pair-gap flags are gone. The
+`projection` family on the workload screen reads 98.2 ms with nothing anomalous.
+
+🔬 **A `LIMIT` IS REFUSED, AND THAT IS THE POINT OF "SKIP-ONLY".** The general path is LAZY —
+`LIMIT 5` can stop after five rows — so handing that shape to a rung that materializes every row and
+slices would be a large regression dressed as a win (item 1775 measured 360x in the general path's
+favour for the node shape). `routes-fired.test.ts` now pins the decline for a bare `LIMIT` and for
+`SKIP n LIMIT m` at both widths, because a decline is otherwise invisible.
+
+✅ **AND THE RULE IS REUSED, NOT RESTATED.** My first cut wrote a second near-identical gate in
+`ordered-rows.ts`; `unsortedPageRoute` has existed since item 1776, is tested directly as a pure
+function in `skip-only-page.test.ts`, and carries the parameterized-page decision item 1778 made.
+Both new detectors call it. Two copies of one shape rule is the hazard `detectDistinctCount`'s note
+records, and it put the far endpoint on a per-edge tally once before.
+
+🦷 **MUTATION: 5 CAUGHT, 1 EXPECTED SURVIVOR, and the survivor is worth more than the five.**
+
+      ✅ chain: the slice is dropped                                  5 failing
+      ✅ hop2: the slice is dropped                                   2
+      ✅ chain: claims UNWINDOWED shapes too (a pure ROUTE change)     4
+      ✅ hop2: the window is not stripped before the base rung         1
+      ✅ clauses: the helper returns a per-call `null` as the answer    2
+      ➖ EXPECTED: clauses — the CALL SITE is removed                   0
+
+The third is the one a route test exists for: it is answer-equivalent and only
+`routes-fired.test.ts` sees it. The last one is the documented class — `clauses.ts`'s own note says
+"removing the branch that CONSUMES it is answer-equivalent and the whole suite passes", of all the
+rungs rather than of this pair.
+
+⚠️ **AND EXPORTING THE COMPOSITION DID NOT CLOSE IT, which contradicts what I expected from
+[[rewrite-composition-is-not-free]] and is the honest finding here.** That rule says to export the
+composition or the unwired mutant survives, so `pagedWidthProjections` is exported and
+`paged-width-consumer.test.ts` (7 tests) pins its precedence, its per-call `null` fall-through, and
+an empty row list as a real answer — and the mutant that removes the CALL SITE still survived 99
+passing tests, because no direct test of a helper can see whether anything calls it. Closing it needs
+an observable difference between the two routes and there is none by construction; the remaining
+instrument is the timing grid, which is rightly not a test. The mutant runner now carries the
+survivor as EXPECTED with that reason, and fails if it ever starts being caught.
+
+⚠️ ALSO EXTRACTED: `pagedWidthProjections`, because the two branches written inline took `fastPath`
+to **37 against a limit of 35** — the same extraction `deepWidthReductions` beside it had.
+
+INVARIANTS. All seven byte-identity fuzzers green. `routes-fired.test.ts`'s coverage assertion
+updated 30 → 32 detectors (it is the guard that catches a detector added without a route case, and it
+caught this one). `bun run spelling`: 0 answer disagreements; its three >2x groups are pre-existing
+and ungated in that run (no null control), none of them a page.
 
 GATES. bun run check 0 and bun run test -- --skip-nx-cache across 21 projects, each read unpiped.

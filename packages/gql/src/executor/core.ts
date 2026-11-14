@@ -5553,6 +5553,13 @@ export type CLinear = {
    */
   hop2OrderedProjection: RowsFn | null;
   chainOrderedProjection: RowsFn | null;
+  /**
+   * The SKIP-ONLY page at depth 2 and at depth 3+ (item 1885). Disjoint from the two above by
+   * construction — those REQUIRE an `orderBy` and `skipOnlyPage` refuses one — and from the base
+   * projection rungs, which `plainRowProjectionIgnoringDistinct` refuses a `skip` for.
+   */
+  hop2PagedProjection: RowsFn | null;
+  chainPagedProjection: RowsFn | null;
   /** The same walk under ONE foldable aggregate — `RETURN max(x.k)`; else null. */
   hopAggregate: RowsFn | null;
   /** The same walk under TWO OR MORE foldable aggregates — `RETURN count(*), max(x.k)`. */
