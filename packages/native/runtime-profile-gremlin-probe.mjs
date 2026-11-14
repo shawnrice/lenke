@@ -136,6 +136,22 @@ const SHAPES = {
   hoporder: traversal(V(), out('E'), values('k'), order()),
   // Grouping, the twin of GQL's `grouped`, which item 1358 found is 66% of its shape.
   grouped: traversal(V(), groupCount({ by: 'k' })),
+  // ⚠️ THE HOP VARIANTS — item 1833. `rung-gap-screen.mjs` reports `groupCount` as the ONLY modifier
+  // that degrades with depth on the Gremlin side (14.3-21.9x its own `rows` cell at depths 2-5),
+  // and it is the only flag the grid raises in BOTH engines. The node-level row above cannot show
+  // it: the cliff is between depth 1 and depth 2.
+  groupcounthop: traversal(V(), hasLabel('P'), out('E'), groupCount({ by: 'k' })),
+  groupcounthop2: traversal(V(), hasLabel('P'), out('E'), out('E'), groupCount({ by: 'k' })),
+  groupcounthop3: traversal(
+    V(),
+    hasLabel('P'),
+    out('E'),
+    out('E'),
+    out('E'),
+    groupCount({ by: 'k' }),
+  ),
+  // Its pair control: the same walk with the grouping replaced by the values it would group.
+  groupcountfloor: traversal(V(), hasLabel('P'), out('E'), out('E'), values('k')),
   // A filter chain (item 537's shape), where the label is VACUOUS so it excludes nothing.
   filterchain: traversal(V(), hasLabel('P'), has('k', gt(44)), count()),
   // De-duplication over a hop, which materializes a set per traversal.

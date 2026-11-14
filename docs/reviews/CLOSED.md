@@ -85714,3 +85714,67 @@ untouched here — the shared half of this flag, and its own item.
 
 GATES. bun run check 0 read unpiped. gql 4,639 pass / 0 fail. gremlin 2,134 pass / 0 fail.
 native 1,165 pass / 0 fail. core 458 pass / 0 fail. bun run fuzz 57 pass / 0 fail.
+
+### Item 1833 — ⚠️ **GREMLIN'S `groupCount` COSTS 14.8x ITS OWN PAIR FLOOR, AND THE TALLY IS 1.6% OF IT** — the cost is the generic traverser walk, because `values(k)` after a hop chain rides a fused walk and `groupCount` cannot. Equivalence established, ONE blocker left and named. No engine change
+
+THE TARGET — the only flag `rung-gap-screen.mjs` raises in BOTH engines, and item 1832 closed the
+GQL half. Measured on the Gremlin probe's own FANOUT=5 fixture (new rows added here):
+
+```text
+  groupcounthop    (1 hop)    2377.7 ms
+  groupcounthop2   (2 hops)  13712.5 ms      14.8x its pair floor
+  groupcounthop3   (3 hops)  67855.2 ms
+  groupcountfloor  (2 hops, values(k) instead of the grouping)   928.8 ms / 60M rows = 15 ns/row
+```
+
+So `groupCount` costs **~213 ns a row MORE than producing the values it groups**.
+
+⚠️ **AND THE PROFILE SAYS THE TALLY IS NOT THE COST**, which is the finding that redirects the fix:
+
+```text
+  iterLabeled        24.6%      otherEndpoint     20.4%     traverseToVertex  11.7%
+  iterByLabel         8.4%      get to             6.8%     isVertexShaped     4.7%
+  groupCountStep      3.2%      tallyGroupCount    1.6%   <- the grouping itself
+```
+
+Nineteen-twentieths of it is the GENERIC TRAVERSER WALK. `values(k)` after a hop chain is served by
+`hopChainValuesShortcut` at 15 ns/row (item 1614/1617); `groupCount` is a different terminal, the
+shortcut requires a trailing `values` step and finds none, so the whole plan falls to the
+per-traverser pipeline. That is item 1826's framing confirmed: **on the Gremlin side a gap is a
+fusion that stops applying, not a rung that declines.**
+
+✅ **THE EQUIVALENCE IS ESTABLISHED, including the case that would have been a wrong answer.**
+Tallying the fused `values(k)` output reproduces `groupCount().by('k')` exactly:
+
+```text
+  three reached vertices: k=1, k=null (STORED null), k absent
+  values('k')            ->  [1, null, 1]
+  groupCount by 'k'      ->  Map { 1 => 2, null => 1 }
+```
+
+A stored null contributes a `null` key (`null-first-class-policy`) and an ABSENT key contributes
+nothing — `values` and `groupCount` agree on both, so a tally over the fused values is the same
+answer. ⚠️ **Checked by running it, and the first attempt reported `[{}]`** — which was
+`JSON.stringify` of a `Map`, not an empty result. I nearly recorded the engine as broken on the
+strength of my own rendering bug.
+
+⚠️ **THE ONE BLOCKER, NAMED RATHER THAN ASSUMED AWAY: the Map's insertion order is observable.**
+`groupCount` returns a Map, and its iteration order is first-occurrence order of the keys — which
+differs between the two walks:
+
+```text
+  1 hop   Map { 1 => 2, null => 1 }
+  2 hops  Map { null => 1, 1 => 2 }      same tallies, different ORDER
+```
+
+Byte-identity with the Rust engine is a hard invariant, so swapping the generic walk for the fused
+one is only sound if the two visit far-end elements in the same ORDER. That is the Gremlin-side
+analogue of item 1831's question and it has **not** been measured. A fix takes that measurement
+first — the same sequence items 1829-1832 followed, where measuring the order was what made the
+grouped count safe to build.
+
+NEW PROBE ROWS: `groupcounthop`, `groupcounthop2`, `groupcounthop3` and `groupcountfloor` on
+`runtime-profile-gremlin-probe.mjs`. The pre-existing `grouped` row is node-level and **cannot show
+this** — the cliff is between depth 1 and depth 2.
+
+GATES. bun run check 0 read unpiped. No engine code changed.
