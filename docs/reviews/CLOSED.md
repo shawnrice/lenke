@@ -86851,7 +86851,13 @@ rebuilt and re-checked for the marker, and the probe re-run against the restored
 
 GATES. bun run check 0 read unpiped; gremlin 2166 tests green against the restored dist.
 
-## Item 1862 — the FORKED multi-pattern has no rung: 6.5x on rows and 125x on `count(*)`, and it JOINS rather than products, so my quadratic hypothesis was wrong for the third tick running
+## Item 1862 — the FORKED multi-pattern has no rung: ~~125x on `count(*)`~~ **TAKEN at item 1863, 25.7-37.9x** / 6.8x on rows **STILL OPEN**, and it JOINS rather than products, so my quadratic hypothesis was wrong for the third tick running
+
+⚠️ **THE `count(*)` HALF IS CLOSED (item 1863) AND THE BUILD BELOW IS NOT WHAT IT NEEDED.** This item
+scoped a new fused fork rung; the actual fix was six lines in `keyedCountOf`, which already computed
+the shared-variable count as a sum of products and was refusing the orientation where the shared
+vertex is the patterns' START. **The ROW half (`forkRows`) is untouched and is still the open
+target**, along with the screen's own body, which carries a clause `WHERE` that rung refuses.
 
 Item 1859 nominated the workload screen's `multi-pattern` family — 97% of the screen, 1376 ns/row
 against `chain-rows`' 138. **Reading the four bodies it draws from is what made the item tractable**,
@@ -86922,3 +86928,83 @@ NOT YET BUILT. Two instruments (`fork-join-scaling-1862.mjs`, `fork-prof-1862.mj
 the two numbers and the mechanism are this item's deliverable, and the rung is the next one.
 
 GATES. bun run check 0 read unpiped.
+
+## Item 1863 — SHIPPED: the shared-variable count answered one orientation in closed form and sent its MIRROR to the general matcher, 25.7-37.9x; and three of my own mutants survived against a fixture where wrong formulas coincided with right ones
+
+Item 1862 scoped this as "build a fused fork rung". **Reading `count-shortcut.ts` first is what made it
+a six-line change instead**: `keyedCountOf` already computes the shared-variable count as a sum of
+products, and it was refusing exactly half of the shapes it could answer.
+
+      MATCH (a)-[:E]->(q), (b)-[:E]->(q)    q is the END of both      SUM indeg^2    0.2 ms
+      MATCH (a)-[:E]->(b), (a)-[:E]->(c)    a is the START of both    SUM outdeg^2  23.1 ms
+
+One gate did it: `if (node.variable !== key || pattern.start.variable === key) return null` — the
+shared vertex had to be the pattern's ENDPOINT. The sum of products is the same identity either way
+and `KeyedSide.out` already carried the direction per side, so the fix is to let the key sit at
+either end and mirror the per-side extraction.
+
+✅ **MEASURED, ONE ARM PER BUILD, with the PRE arm applied as a precise revert of that one gate and
+its marker asserted in the DIST before each run:**
+
+      FANOUT 4, N=3200    PRE 23.1 ms  ->  POST 0.9 ms    25.7x
+      FANOUT 4, N=1600         11.0           0.5         22.0x
+      FANOUT 4, N=400           6.7           0.2         33.5x
+      FANOUT 8, N=1600         30.3           0.8         37.9x
+      FANOUT 8, N=800          17.5           0.4         43.8x
+
+✅ **AND THE WIN GROWS WITH DEGREE, which is the identity rather than a measurement artefact**: the
+old route enumerates the pairs (`N * F^2`) and the new one sums over vertices (`N`), so doubling the
+fan-out doubles the gap. That is why the table sweeps F as well as N.
+
+**THREE SPELLINGS, NOT ONE.** A MIXED pair — `(a)-[:E]->(b), (c)-[:E]->(a)`, out-degree x in-degree
+— was declining too, and falls out of the same change at no extra cost. So the widening takes
+start-start, start-end and end-start.
+
+**CONTROLS FLAT.** `chain` 0.5 -> 0.3 (noise), `chainRows` 3.8 -> 3.8, `product` 0.0 throughout, and
+`forkRows` 27.2 -> 27.2 — correctly UNTOUCHED, which is the scope item 1862 stated: this is the
+COUNT shape only.
+
+⚠️⚠️ **THREE OF SIX MUTANTS SURVIVED THE FIRST PASS, AND ALL THREE WERE FIXTURE DEFECTS OF ONE KIND:
+the wrong answer coincided with the right one.** This is item 1855's lesson arriving again, and the
+first fixture looked thorough — uneven degrees, a parallel edge, two edge types.
+
+      orientation-ignored (the PRE behaviour)    CAUGHT
+      self-loop pattern ADMITTED                 SURVIVED  -> see below, UNREACHABLE
+      far label read off the KEY node            CAUGHT
+      key label read off the FAR node            SURVIVED  -> now CAUGHT
+      key/far swapped for the INLINE predicates  SURVIVED  -> now CAUGHT
+      CONTROL - rung never selected              CAUGHT
+
+- **Nothing was labelled `:U`**, so the far-side-label case answered 0 whether the label was read
+  off the far node or the key. `t0`/`t1` now carry `:U` as a second label, the answer is 16, and
+  reading it off the key answers 0.
+- **`s0`'s only in-edge was its self-loop**, so in-degree and self-loop count were equal and the
+  self-loop case answered 4 either way. `t0 -E-> s0` makes in-degree 2 against 1 self-loop.
+- **No test wrote an inline constraint at all**, so swapping the key's and the far's predicates was
+  invisible. Both ends now have a case, and they read differently: the key's predicate gates which
+  CANDIDATES are summed, the far's filters which EDGES each side counts.
+
+⚠️ **THE SURVIVOR THAT STAYS IS DEAD CODE'S COUSIN, AND IT IS RECORDED RATHER THAN LEFT BARE.** The
+refusal tests two cases. "NEITHER end is the key" is LIVE — `key` comes from `patternVarsOf`, which
+also yields `hopFrom`/`hopTo` variables, and the old gate refused that through `node.variable !== key`.
+"BOTH ends are the key" (`(a)-[:E]->(a)`) is UNREACHABLE: `compileLinear` zeroes the whole fast-path
+list when `repeatsNodeVariable` holds, and that gate is per-pattern. **Verified rather than assumed —
+a mutant deleting the refusal leaves the route assertion reading `false` still.** It stays as the
+local statement of the rule, because `repeatsNodeVariable`'s own note records that EVERY hop rung
+answered a self-loop pattern wrong by binding the far node over the start, and this should not depend
+silently on a whole-query gate staying upstream of it. Item 1016's rule: a documented survivor beats
+an unexplained one.
+
+⚠️ **THE ROUTE IS ASSERTED, NOT INFERRED FROM THE ANSWER.** Every case returns the same number down
+the general matcher, so an answer-only test would pass with this item reverted. `takesTheRung` reads
+`countShortcut` off `compileLinear` directly — true for the four new spellings, false for the
+self-loop one.
+
+**STILL OPEN, and item 1862's statement of it stands:** the ROW shape (`forkRows`, 6.8x against its
+chain twin) is untouched, and so is the screen's own `multi-pattern` body, which carries
+`WHERE b.n <> c.n` — a clause `WHERE` that `keyedCountOf` refuses outright because it can correlate
+the two sides. **This win does not move the workload screen's `multi-pattern` row.**
+
+GATES. bun run check 0 read unpiped; gql 4710 tests green; all seven byte-identity fuzzers green
+(the differential fuzzer draws `multi-pattern=1133/1018`, so the new route is exercised against the
+Rust engine rather than only against itself).

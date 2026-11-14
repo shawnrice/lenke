@@ -5541,6 +5541,8 @@ export const keyedCountOf = <T>(
   const sides: KeyedSide[] = [];
   // Both patterns constrain the shared vertex, and BOTH constraints have to hold.
   const keyPreds: InlinePred[] = [];
+  /** Every label either pattern wrote for the SHARED vertex — all of them must hold. */
+  const keyLabels: LabelExpr[] = [];
   let keyLabel: LabelExpr | undefined;
 
   for (const pattern of patterns) {
@@ -5569,13 +5571,52 @@ export const keyedCountOf = <T>(
       return null;
     }
 
-    // The ENDPOINT must be the shared variable, and the far end must not be.
-    if (node.variable !== key || pattern.start.variable === key) {
-      return null;
+    /**
+     * ⚠️ THE SHARED VARIABLE MAY BE EITHER END, AND UNTIL ITEM 1863 ONLY THE ENDPOINT COUNTED.
+     * This read `node.variable !== key || pattern.start.variable === key` — the shared vertex had
+     * to be the END of both patterns — which answered the IN-star in closed form and sent the
+     * OUT-star, the same question mirrored, to the general matcher:
+     *
+     *     MATCH (a)-[:E]->(q), (b)-[:E]->(q)   q is the END of both     0.2 ms   (this rung)
+     *     MATCH (a)-[:E]->(b), (a)-[:E]->(c)   a is the START of both  25.0 ms   (NOTHING)
+     *
+     * **125x apart at 3,200 vertices, and the gap GROWS with degree**, because one side is
+     * `SUM d^2` over vertices and the other enumerates the pairs. That is this repo's opening
+     * defect class — the right answer at 100-300x the cost, invisible to every correctness test.
+     *
+     * The sum of products is the same identity either way; only which end the shared vertex sits
+     * at changes, and `KeyedSide.out` already carries that per side. So a MIXED pair
+     * (`(a)-[:E]->(b), (c)-[:E]->(a)`, out-degree x in-degree) falls out at no extra cost — it was
+     * declining too, and it is a third spelling of the one question.
+     *
+     * ⚠️ THE TEST REFUSES TWO CASES AND ONLY ONE OF THEM IS REACHABLE — recorded because its
+     * mutant SURVIVES, and item 1016's rule is that an unexplained survivor is worse than a
+     * documented one.
+     *
+     *   NEITHER end is the key — LIVE. `key` comes from `patternVarsOf`, which also yields
+     *   `hopFrom`/`hopTo` variables, so the shared name can be one of those; the pre-item-1863
+     *   code refused that through `node.variable !== key` and this refuses it through the
+     *   equality. Removing it walks with `keyNode` set to the wrong end.
+     *
+     *   BOTH ends are the key (`(a)-[:E]->(a)`) — UNREACHABLE, and belt-and-braces only.
+     *   `compileLinear` zeroes the whole fast-path list when `repeatsNodeVariable` holds, and that
+     *   gate is per-pattern, so a self-loop pattern never reaches any rung. Verified rather than
+     *   assumed: a mutant deleting this refusal leaves the route assertion reading `false` still.
+     *   It stays as the local statement of the rule — `repeatsNodeVariable`'s own note records that
+     *   EVERY hop rung answered this shape wrong by binding the far node over the start — so this
+     *   does not silently depend on a whole-query gate staying upstream of it.
+     */
+    const keyIsEnd = node.variable === key;
+    const keyIsStart = pattern.start.variable === key;
+
+    if (keyIsEnd === keyIsStart) {
+      return null; // neither end is the key, or BOTH are (a self-loop pattern)
     }
 
-    const inFar = inlineOf(pattern.start);
-    const inKey = inlineOf(node);
+    const keyNode = keyIsEnd ? node : pattern.start;
+    const farNode = keyIsEnd ? pattern.start : node;
+    const inFar = inlineOf(farNode);
+    const inKey = inlineOf(keyNode);
 
     if (inFar === null || inKey === null) {
       return null;
@@ -5587,24 +5628,26 @@ export const keyedCountOf = <T>(
 
     // Either pattern may name the shared vertex's label; a second, DIFFERENT one would have to
     // be intersected, so take the first and let `matchesLabel` apply it on top of the bucket.
-    if (node.label !== undefined) {
-      keyLabel ??= node.label;
+    if (keyNode.label !== undefined) {
+      keyLabel ??= keyNode.label;
+    }
+
+    if (keyNode.label !== undefined) {
+      keyLabels.push(keyNode.label);
     }
 
     sides.push({
       types: types ?? undefined,
-      // `(x)-[:T]->(q)` is written out from `x`, so from `q` it is an IN edge.
-      out: rel.direction !== 'out',
-      label: pattern.start.label,
+      // `(x)-[:T]->(q)` is written out from `x`, so from `q` it is an IN edge — and the mirror
+      // when `q` is the one it is written out FROM.
+      out: keyIsEnd ? rel.direction !== 'out' : rel.direction === 'out',
+      label: farNode.label,
       inFar,
     });
   }
 
   const [s0, s1] = sides;
   const keyName = keyLabel?.kind === 'label' ? keyLabel.name : undefined;
-  const keyLabels = patterns
-    .map((p) => p.segments[0].node.label)
-    .filter((l): l is LabelExpr => l !== undefined);
 
   return (graph, params) => {
     const binding = new Map<string, unknown>();
