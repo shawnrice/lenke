@@ -2217,12 +2217,150 @@ const hasOneColumnKey = (keys: OneColumnKeys, v: unknown): boolean =>
   v !== null && typeof v === 'object' ? keys.refs.has(valueKey(v)) : keys.prims.has(v);
 
 /**
+ * TWO-COLUMN KEYING (item 1886), and it is **built out of the one-column keyer rather than beside
+ * it** — the second column goes through `addOneColumnKey` unchanged.
+ *
+ * ⚠️ THAT REUSE IS THE SAFETY ARGUMENT, not a tidiness one. Items 1561 and 1562 each found a silent
+ * ANSWER change in exactly this area, and `newOneColumnKeys`' own note says "a second keyer in
+ * another file would be the third". The two key spaces that note describes — primitives by
+ * SameValueZero, non-primitives by `valueKey` so an element keys by `@id` rather than object
+ * identity — are reproduced here PER POSITION, because a string in column 1 and an element in
+ * column 1 must not collide any more than they may in a one-column set: the row `['@v1', x]` and the
+ * row `[<vertex v1>, x]` are different rows.
+ *
+ * ⚠️ WHY NOT ONE `Map` KEYED BY A JOINED STRING — that is exactly what this replaces. `rowKeyOf` is
+ * `Object.values(row).map(valueKey).join('\x01')`: two array allocations, two `valueKey` calls, a
+ * string build and a string hash **per row**. Measured on the shape item 1825 left open
+ * (`distinct2-key-1886.mjs`, 20,000 one-hop rows, 679 distinct pairs, one shape per process, both
+ * orders, median of 20 less 3 warm-up):
+ *
+ * ```text
+ *   rows       (1 col, no dedupe)   1.62 / 1.86 ms
+ *   twocol     (2 cols, no dedupe)  2.06 / 1.46
+ *   distinct2  (2 cols, deduped)    5.76 / 5.18      <- the key is ~3.3-3.7 ms of it
+ *   distinct1  (1 col, deduped)     0.55 / 0.51      <- the fused walk, for scale
+ * ```
+ *
+ * A nested `Map` pays one map lookup for the first column and the one-column keyer for the second,
+ * allocating one key-pair per DISTINCT first-column value rather than one string per ROW.
+ */
+export type TwoColumnKeys = {
+  readonly prims: Map<unknown, OneColumnKeys>;
+  readonly refs: Map<string, OneColumnKeys>;
+};
+
+export const newTwoColumnKeys = (): TwoColumnKeys => ({ prims: new Map(), refs: new Map() });
+
+/** The second-column key set for this first-column value, created on first sight. */
+const secondColumnKeys = (keys: TwoColumnKeys, a: unknown): OneColumnKeys => {
+  if (a !== null && typeof a === 'object') {
+    const k = valueKey(a);
+    const found = keys.refs.get(k);
+
+    if (found !== undefined) {
+      return found;
+    }
+
+    const made = newOneColumnKeys();
+
+    keys.refs.set(k, made);
+
+    return made;
+  }
+
+  const found = keys.prims.get(a);
+
+  if (found !== undefined) {
+    return found;
+  }
+
+  const made = newOneColumnKeys();
+
+  keys.prims.set(a, made);
+
+  return made;
+};
+
+/** Add the pair; `true` when it was NOT already present. */
+export const addTwoColumnKey = (keys: TwoColumnKeys, a: unknown, b: unknown): boolean =>
+  addOneColumnKey(secondColumnKeys(keys, a), b);
+
+/**
+ * Is the pair present? ⚠️ IT MUST NOT INSERT, which is why it cannot be written in terms of
+ * `secondColumnKeys`: that creates the bucket on first sight, and `oneColumnSetOp`'s twin PROBES
+ * the right-hand set once per left row. An inserting probe would grow the right set while reading
+ * it — harmless for the answer here, but one map allocation per distinct left value for nothing.
+ */
+const hasTwoColumnKey = (keys: TwoColumnKeys, a: unknown, b: unknown): boolean => {
+  const bucket =
+    a !== null && typeof a === 'object' ? keys.refs.get(valueKey(a)) : keys.prims.get(a);
+
+  return bucket !== undefined && hasOneColumnKey(bucket, b);
+};
+
+/**
+ * The first TWO columns' values, read PER ROW and positionally — `oneColumnValue`'s reasoning
+ * exactly, including why a name taken once from `rows[0]` will not do (ISO set operations compare
+ * positionally and the two sides may alias differently).
+ *
+ * ⚠️ TWO SEPARATE READERS RATHER THAN ONE FUNCTION RETURNING BOTH, because anything returning both
+ * would allocate a pair per row — and the per-row allocation is precisely what this replaces. Each
+ * walks `for…in`, which takes own enumerable keys in order with no allocation; a `Row` is a plain
+ * object literal, whose prototype carries no enumerable keys.
+ */
+const firstColumnValue = (row: Row): unknown => {
+  for (const name in row) {
+    return (row as unknown as Record<string, unknown>)[name];
+  }
+
+  return undefined;
+};
+
+const secondColumnValue = (row: Row): unknown => {
+  let first = true;
+
+  for (const name in row) {
+    if (first) {
+      first = false;
+      continue;
+    }
+
+    return (row as unknown as Record<string, unknown>)[name];
+  }
+
+  return undefined;
+};
+
+/** Is this row set exactly `n` columns wide? Empty answers `false`, declining the fast path. */
+const isWidth = (rows: readonly Row[], n: number): boolean =>
+  rows.length > 0 && Object.keys(rows[0]).length === n;
+
+/**
  * Is this row set one column wide? Empty answers `false`, which simply declines the fast path.
  */
-const isOneColumn = (rows: readonly Row[]): boolean =>
-  rows.length > 0 && Object.keys(rows[0]).length === 1;
+const isOneColumn = (rows: readonly Row[]): boolean => isWidth(rows, 1);
 
 export const distinctRows = (rows: readonly Row[]): Row[] => {
+  /**
+   * ⚠️ THE TWO-COLUMN ARM (item 1886). Width is taken from `rows[0]`, which is the same assumption
+   * the one-column arm below makes and the same one item 1561 got wrong for `union`'s MIXED-width
+   * concatenation — `distinctUnion` is the caller that can hand this mixed widths and it does not
+   * come through here. Everything else is one width by construction (a projection) or by ISO
+   * (set-operation arity is equal).
+   */
+  if (isWidth(rows, 2)) {
+    const keys = newTwoColumnKeys();
+    const out: Row[] = [];
+
+    for (const r of rows) {
+      if (addTwoColumnKey(keys, firstColumnValue(r), secondColumnValue(r))) {
+        out.push(r);
+      }
+    }
+
+    return out;
+  }
+
   if (isOneColumn(rows)) {
     const keys = newOneColumnKeys();
     const out: Row[] = [];
@@ -2270,6 +2408,26 @@ export const distinctRows = (rows: readonly Row[]): Row[] => {
 const distinctUnion = (left: readonly Row[], right: readonly Row[]): Row[] => {
   const out: Row[] = [];
 
+  /**
+   * ⚠️ THE TWO-COLUMN ARM (item 1886), and BOTH SIDES are checked for exactly the reason the
+   * one-column arm below checks both: this is the one caller that can be handed MIXED widths
+   * (`union` concatenates sides whose unequal degree this engine accepts, item 1563), and item 1561
+   * shipped a silent answer change by keying a two-column right side on its first column alone.
+   */
+  if (isWidth(left, 2) && isWidth(right, 2)) {
+    const keys = newTwoColumnKeys();
+
+    for (const part of [left, right]) {
+      for (const r of part) {
+        if (addTwoColumnKey(keys, firstColumnValue(r), secondColumnValue(r))) {
+          out.push(r);
+        }
+      }
+    }
+
+    return out;
+  }
+
   if (isOneColumn(left) && isOneColumn(right)) {
     const keys = newOneColumnKeys();
 
@@ -2311,6 +2469,47 @@ const distinctUnion = (left: readonly Row[], right: readonly Row[]): Row[] => {
  * one-column right — but an EMPTY left declines rather than assuming, and checking both means a
  * mismatch that slipped past validation falls to the general path instead of mis-keying.
  */
+/**
+ * The TWO-COLUMN twin of `oneColumnSetOp` (item 1886) — one pass to build the right key set, one
+ * over the left that both probes and de-duplicates, so a row's pair is keyed ONCE rather than the
+ * three times the string path needs (right set, left probe, trailing `distinctRows`).
+ *
+ * ⚠️ BOTH SIDES ARE CHECKED, as in the one-column twin: set-operation arity is equal, so a
+ * two-column left implies a two-column right — but an EMPTY right declines rather than assuming,
+ * and checking both means a mismatch that slipped past validation falls to the string path instead
+ * of mis-keying.
+ */
+const twoColumnSetOp = (
+  left: readonly Row[],
+  right: readonly Row[],
+  keep: boolean,
+): Row[] | undefined => {
+  if (!isWidth(left, 2) || (right.length > 0 && !isWidth(right, 2))) {
+    return undefined;
+  }
+
+  const rightKeys = newTwoColumnKeys();
+
+  for (const r of right) {
+    addTwoColumnKey(rightKeys, firstColumnValue(r), secondColumnValue(r));
+  }
+
+  const seen = newTwoColumnKeys();
+  const out: Row[] = [];
+
+  for (const r of left) {
+    const a = firstColumnValue(r);
+    const b = secondColumnValue(r);
+
+    // `keep` is INTERSECT; `!keep` is EXCEPT. Dedup folded into the same pass.
+    if (hasTwoColumnKey(rightKeys, a, b) === keep && addTwoColumnKey(seen, a, b)) {
+      out.push(r);
+    }
+  }
+
+  return out;
+};
+
 const oneColumnSetOp = (
   left: readonly Row[],
   right: readonly Row[],
@@ -2381,9 +2580,20 @@ export const combineRows = (op: SetOp, left: readonly Row[], right: readonly Row
       // `UNION` at 4.01x and `EXCEPT` at only 1.25x: the gain was confined to the trailing
       // `distinctRows` while the right-side set and the per-left-row probe still built strings.
       // Item 1562 keys both the same way.
-      return oneColumnSetOp(left, right, false) ?? distinctRows(left.filter(notInKeysOf(right)));
+      return (
+        twoColumnSetOp(left, right, false) ??
+        oneColumnSetOp(left, right, false) ??
+        distinctRows(left.filter(notInKeysOf(right)))
+      );
     }
     case 'intersect':
-      return oneColumnSetOp(left, right, true) ?? distinctRows(left.filter(inKeysOf(right)));
+      return (
+        // ⚠️ THE TWO-COLUMN TWIN FIRST, and the order cannot matter: the two gate on DISJOINT widths
+        // (`isWidth(…, 2)` against `isOneColumn`), so each declines what the other claims. Written
+        // in width order for reading.
+        twoColumnSetOp(left, right, true) ??
+        oneColumnSetOp(left, right, true) ??
+        distinctRows(left.filter(inKeysOf(right)))
+      );
   }
 };

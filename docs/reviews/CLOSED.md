@@ -85598,8 +85598,10 @@ decision as it was.
 
 **Item 1823's six flags are down to one**, and the one left is this same cell at 3.7x its `rows`
 twin — which is the multi-column keying itself (`rowKeyOf` costs two array allocations, a string
-build and a hash per row, where the one-column path has a value-keyed fast route). A two-column
-fast key is its own item, with 7.5 ms as the floor.
+build and a hash per row, where the one-column path has a value-keyed fast route). ~~A two-column
+fast key is its own item, with 7.5 ms as the floor.~~ **TAKEN BY ITEM 1886: a nested key space,
+2.31x on `DISTINCT` at low cardinality and 1.35x when every row is distinct, plus 2.28-3.26x on
+`UNION`/`EXCEPT`/`INTERSECT`, which share the keyer.**
 
 ⚠️⚠️ **MUTATION KILLED MY FIRST DESIGN, AND THAT IS THE MAIN RESULT HERE.** The first cut accepted
 the SINGLE-column shape too — the rung it delegates to does not care how many items there are — and
@@ -88659,5 +88661,103 @@ INVARIANTS. All seven byte-identity fuzzers green. `routes-fired.test.ts`'s cove
 updated 30 → 32 detectors (it is the guard that catches a detector added without a route case, and it
 caught this one). `bun run spelling`: 0 answer disagreements; its three >2x groups are pre-existing
 and ungated in that run (no null control), none of them a page.
+
+GATES. bun run check 0 and bun run test -- --skip-nx-cache across 21 projects, each read unpiped.
+
+## Item 1886 — the TWO-COLUMN key space, the item 1825 named: **2.31x / 1.35x** on `DISTINCT` by cardinality, **2.28-2.54x** on `UNION`, **2.36-2.38x** on `EXCEPT`, **2.63-3.26x** on `INTERSECT`. And an incomplete kill switch made three of those rows read 1.00x
+
+Item 1825 took multi-column `DISTINCT` at one hop from 32.5 to 7.5 ms and named what was left:
+_"the multi-column keying itself (`rowKeyOf` costs two array allocations, a string build and a hash
+per row, where the one-column path has a value-keyed fast route). **A two-column fast key is its own
+item, with 7.5 ms as the floor.**"_ `rung-gap-screen.mjs` still flagged the cell at **7.3 ms against
+its own `rows` twin's 1.7** — the only flag on that grid that was neither a documented byte-identity
+refusal nor noise-sized.
+
+📏 **THE FLOOR FIRST, and the arms are chosen so the KEYING is the only difference between
+neighbours** (`distinct2-key-1886.mjs`, 20,000 one-hop rows, one shape per process, both orders):
+
+      rows      (1 col, no dedupe)   1.62 / 1.86 ms
+      twocol    (2 cols, no dedupe)  2.06 / 1.46        ⬅ a second column costs ~nothing
+      distinct2 (2 cols, deduped)    5.76 / 5.18        ⬅ so ~3.3-3.7 ms IS the key
+      distinct1 (1 col, deduped)     0.55 / 0.51        ⬅ the fused walk, for scale
+
+Without the `twocol` arm a `distinct2`/`rows` ratio would have conflated "a second column costs
+something" with "keying two columns costs something". They are not the same claim.
+
+✅ **THE FIX IS A NESTED KEY SPACE BUILT OUT OF THE ONE-COLUMN KEYER**, not beside it: the first
+column selects a bucket (two maps — primitives by SameValueZero, non-primitives by `valueKey`, so an
+element buckets by `@id` rather than object identity) and the second column goes through
+`addOneColumnKey` **unchanged**. That reuse is the safety argument, not a tidiness one: items 1561
+and 1562 each shipped a silent ANSWER change in this area and `newOneColumnKeys`' own note says a
+second keyer "would be the third". Allocation goes from one string per ROW to one key-pair per
+distinct first-column value.
+
+**THREE CALLERS, not one** — `distinctRows`, `distinctUnion` and a new `twoColumnSetOp` twin of
+`oneColumnSetOp` (whose one-column versions item 1561 measured at 4.01x and 1.25x).
+
+📊 **MEASURED WITH A KILL-SWITCH A/B ACROSS THE CARDINALITY AXIS, which is the axis that decides
+it** — the nested map allocates per distinct FIRST-COLUMN value where `rowKeyOf` allocates per row,
+so the two trade places as cardinality rises and one fixture cannot see it. Three order-alternated
+rounds, median of rounds, one shape per process:
+
+      shape        CARD=97 (679 pairs)          CARD=20000 (every row distinct)
+      distinct2    4.89 -> 2.12      2.31x      6.37 -> 4.72      1.35x
+      union2       5.61 -> 2.46      2.28x      6.19 -> 2.44      2.54x
+      except2      3.11 -> 1.32      2.36x      5.47 -> 2.30      2.38x
+      intersect2   4.95 -> 1.52      3.26x      4.41 -> 1.68      2.63x
+      twocol       [control]         1.35x*     [control]         1.13x*
+      distinct1    [control]         1.00x      [control]         0.98x
+
+**A win at both ends of the axis**, smallest where the nested map is at its worst (every row a new
+bucket). *`twocol` is the noisy control — its PRE readings spread 1.31-1.97 and POST carries a 2.88
+outlier at the high cardinality; `distinct1`, the clean control, is flat at 1.00x/0.98x. The change
+cannot reach either.
+
+⚠️⚠️ **AND THE FIRST A/B SAID THE UNION AND SET-OP ARMS WERE WORTHLESS, BECAUSE THE KILL SWITCH ONLY
+COVERED ONE OF THE THREE.** It read `union2` 1.00x, `except2` 0.96x and `intersect2` **0.84x** — "no
+gain, possibly a regression" — and all three were measuring POST against POST, because the PRE arm
+disabled `distinctRows`' arm alone. **A control-shaped result is exactly how an incomplete kill
+switch hides**: it looks like the honest null you were braced for. CLAUDE.md's rule is "assert each
+A/B arm IS the code it claims, before building it"; the correction is that the assertion has to cover
+every site the change touches, not the one the item is named after. The file now kills all three and
+asserts each anchor appears exactly once.
+
+🦷 **MUTATION: 5 CAUGHT, 1 EXPECTED SURVIVOR — and TWO of my tests were vacuous until the mutants
+said so.**
+
+      ✅ ONE map at the first position — an element bucket keyed by its `@id` STRING   1 failing
+      ✅ the SECOND column is ignored — the pair keys on the first alone               9
+      ✅ the second column is read as the FIRST                                        7
+      ✅ the set-op PROBE stops at the bucket — it never reads column 2                1
+      ✅ the width test is off by one — THREE columns key on two                       1
+      ➖ EXPECTED: union admits a mixed-width right side                               0
+
+- **The three-column test was vacuous.** `RETURN DISTINCT n.k, n.s, n.n` survived a mutant that
+  keys three columns on their first two, because those rows already differ in column 1. The rows
+  have to AGREE on the first two and differ only in the third: `n.z, n.z, n.k` → `(0,0,1)`,
+  `(0,0,2)`.
+- **The set-op tests were vacuous for the probe.** Both sides held identical pairs, so a probe
+  that stopped at the first column's bucket called them equal. The new case has two left pairs
+  sharing their first column.
+- **AND MY FIRST COLLISION MUTANT WAS THE WRONG MUTANT, which is worth recording because it looked
+  right.** Replacing the object branch with `if (false)` sends an element to the primitives map,
+  which keys it by OBJECT IDENTITY rather than `@id` — no collision with a string, just a
+  different equivalence class, and nothing available discriminates it because this engine hands
+  out one shared instance per id. The mutant that tests the two maps is the one that puts the
+  element's `@id` STRING into the map raw values live in.
+- The expected survivor is kept under item 475's rule (a survivor means "redundant" as readily as
+  "untested"): a one-column right side keys as `(v, undefined)` pairs which collapse exactly as
+  their `rowKeyOf` strings do, so the right-side width check is redundant FOR THE ANSWER. It stays
+  because the one-column arm beside it makes the same defensive check and because `union` is the
+  one caller that can be handed mixed widths — where item 1561 shipped a silent answer change.
+
+✅ **THE GRID IS NOW CLEAN OF EVERYTHING BUT THE DOCUMENTED REFUSAL.** `distinct2` across depths 1-5
+went **7.3 / 8.1 / 8.8 / 10.6 / 11.9 → 3.7 / 5.4 / 5.7 / 6.4 / 6.9** (the deeper widths use the same
+keyer), flags **11 → 10**, and all ten remaining are `sum`/`collect` — the f64-order and
+collect-order refusals item 1829 states — plus two small depth2-vs-depth3 non-monotonic ones.
+
+INVARIANTS. All seven byte-identity fuzzers green. `bun run spelling` at `SPELL_N=200000
+SPELL_REPS=9`: **0 answer disagreements and 0 groups over 2x clear of the null control** — the
+cleanest that probe has read in this stretch.
 
 GATES. bun run check 0 and bun run test -- --skip-nx-cache across 21 projects, each read unpiped.

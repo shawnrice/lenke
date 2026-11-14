@@ -33,6 +33,15 @@ depths 2-5. Its instruments:
 - **`chain-paged-mutants-1885.mjs`** — 5 caught, 1 EXPECTED survivor (removing the consumer's call
   site is answer-equivalent; exporting the composition pins the helper but not the call site).
 
+**`distinct2` was the grid's other big flag and item 1886 took it** (a two-column key space):
+`distinct2-key-1886.mjs` is the floor (it carries a `twocol` arm so "a second column costs
+something" cannot be confused with "keying two columns costs something"),
+`distinct2-ab-1886.mjs` the kill-switch A/B — ⚠️ **it kills THREE sites, and its first version killed
+one, which made the `UNION` and set-op rows read 1.00x / 0.96x / 0.84x: a control-shaped result is
+how an incomplete kill switch hides.** `CARD=` sweeps the cardinality axis that decides the nested
+map against a string key. After it, every remaining flag on the grid is `sum`/`collect` — the
+documented byte-identity refusal — or noise-sized.
+
 ## Start here (Gremlin): `gremlin-workload-screen.mjs` — what does an application's traversal cost?
 
 Built at item 1881 because **Gremlin had no workload screen at all.** `bench-gremlin.ts` compares 31
