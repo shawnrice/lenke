@@ -8,6 +8,7 @@ import { freePredicateVars } from './expr-analysis.js';
 import type { AlwaysRowsFn } from './hop-projection.js';
 import { plainNode, plainRel } from './hop-sides.js';
 import { effectiveLabel } from './labels.js';
+import { distinctCountFold } from './projection.js';
 import { plainRowProjectionIgnoringDistinct, projectRow } from './rows.js';
 import { asTruth } from './scalars.js';
 import { rowLocal } from './shortcuts.js';
@@ -584,5 +585,107 @@ const walk = (
     }
 
     return out;
+  };
+};
+
+/**
+ * `MATCH <chain of 3+ segments> RETURN count(DISTINCT <expr over the far end>)` — item 1824.
+ *
+ * ⚠️ WHY THIS EXISTS, with the number. `rung-gap-screen.mjs` flagged `count(DISTINCT far.k)` at
+ * **4.8x, 6.8x, 10.1x and 10.3x its own undeduped `rows` cell** at depths 2-5, RISING with depth
+ * (28.2 -> 56.7 ms) while the `rows` cell stayed flat at ~5 ms. `distinctShape(…, 'count')` serves
+ * ONE hop (0.5 ms); every deeper width fell to the general matcher, because this rung and
+ * `hop2-projection.ts` both refuse an aggregating projection outright.
+ *
+ * ⚠️ AND `detectMultiHopAggregate` DOES NOT SERVE THEM, which was established by deletion rather
+ * than read off its gate: a `throw` at its ADMISSION point (not its entry — item 1820's lesson)
+ * left `count(DISTINCT x.k)` at depths 1, 2 and 3 all answering normally, along with `count(*)` and
+ * `sum` at depth 2. So there was no rung to widen, only a hole to fill.
+ *
+ * ⚠️ IT REUSES `detectChainProjection`'S ENTIRE GATE BY HANDING IT A SYNTHETIC PROJECTION rather
+ * than restating the shape rule. Two copies of one shape rule is how the far endpoint ended up on a
+ * per-edge tally once before (`detectDistinctCount`'s own note), and this rung's admission tests —
+ * three-plus segments, plain nodes, directed single-type hops, the `WHERE`/gate agreement check,
+ * the `farEndOnly` sweep-vs-walk decision — are subtle enough that a second copy would drift. The
+ * synthetic projection replaces only the COMPILED side's `items`, so the walk builds one column of
+ * the aggregate's ARGUMENT; the AST side is untouched, which is what keeps `farEndOnly` reading the
+ * real item's free variables.
+ *
+ * ⚠️ THE NULL RULE IS NOT RE-DERIVED EITHER, AND IT IS THE TRAP HERE. `count(DISTINCT x)` EXCLUDES
+ * nulls while `RETURN DISTINCT x` keeps null as a row — over `1, null, absent, 2, 1` the count is 2
+ * and the rows are three. So the obvious implementation, `distinctRows(rows).length`, is a SILENT
+ * WRONG ANSWER on any fixture carrying a null or an absent property. This folds through
+ * `distinctCountFold` itself — the same object the general path uses, keying by `valueKey` — so the
+ * two cannot disagree about what counts as distinct, or about nulls.
+ */
+export const detectChainDistinctCount = (
+  clauses: readonly Clause[],
+  compiled: readonly CClause[],
+): AlwaysRowsFn | null => {
+  if (clauses.length !== 2) {
+    return null;
+  }
+
+  const [, ret] = clauses;
+  const [, cret] = compiled;
+
+  if (ret.kind !== 'return' || cret.kind !== 'return') {
+    return null;
+  }
+
+  const proj = cret.projection;
+  const agg = proj.foldedAggs?.length === 1 ? proj.foldedAggs[0] : undefined;
+
+  if (
+    !proj.aggregating ||
+    proj.items.length !== 1 ||
+    agg === undefined ||
+    agg.fold !== distinctCountFold ||
+    ret.projection.items.length !== 1 ||
+    /**
+     * ⚠️ THE ITEM MUST *BE* THE AGGREGATE, NOT AN EXPRESSION WRAPPING IT. `count(DISTINCT x) + 1`
+     * folds the same aggregate, but the row's value is the arithmetic — answering the fold's result
+     * directly would silently drop the `+ 1`. `foldedAggs[].expr` is documented as "the aggregate's
+     * own AST node", so identity against the projected item's expression is the exact test.
+     */
+    ret.projection.items[0].expr !== agg.expr
+  ) {
+    return null;
+  }
+
+  const outName = proj.items[0].name;
+  const column = '__chainDistinctCountArg';
+  const synthetic: CProjection = {
+    ...proj,
+    aggregating: false,
+    distinct: false,
+    items: [{ name: column, fn: agg.argFn, isAgg: false }],
+    foldedAggs: undefined,
+    groupKeys: [],
+  };
+  const rows = detectChainProjection(
+    clauses,
+    compiled.map((c, i) => (i === 1 && c.kind === 'return' ? { ...c, projection: synthetic } : c)),
+  );
+
+  if (rows === null) {
+    return null;
+  }
+
+  return (graph, params) => {
+    let acc = distinctCountFold.init();
+
+    for (const row of rows(graph, params)) {
+      const v = (row as Record<string, unknown>)[column];
+
+      // Nullish never reaches `step` on the general path either (`stepFolded`'s `isNullish`), and
+      // it must not: a null in the set would make a later non-null the SECOND distinct value where
+      // it is the first.
+      if (v !== null && v !== undefined) {
+        acc = distinctCountFold.step(acc, v);
+      }
+    }
+
+    return [{ [outName]: distinctCountFold.finish(acc) }];
   };
 };

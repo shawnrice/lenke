@@ -8,6 +8,7 @@ import { freePredicateVars } from './expr-analysis.js';
 import type { AlwaysRowsFn } from './hop-projection.js';
 import { plainNode, plainRel } from './hop-sides.js';
 import { effectiveLabel } from './labels.js';
+import { distinctCountFold } from './projection.js';
 import { plainRowProjectionIgnoringDistinct } from './rows.js';
 import { projectRow } from './rows.js';
 import { asTruth } from './scalars.js';
@@ -408,5 +409,83 @@ const walk = (
     }
 
     return out;
+  };
+};
+
+/**
+ * `MATCH (a)-[:T]->(b)-[:U]->(c) RETURN count(DISTINCT <expr over the far end>)` — item 1824.
+ *
+ * ⚠️ THIS EXISTS BECAUSE FIXING THE CHAIN WIDTHS CREATED A FRESH INVERSION, and the grid said so
+ * immediately. `detectChainDistinctCount` took depths 3-5 from 35.6/46.8/56.7 ms to 7.7/7.8/8.3,
+ * which left TWO hops at 29.5 — **3.8x the now-fixed depth 3** and 4.9x its own `rows` twin. That is
+ * item 1822's situation repeating one modifier over: a fix applied at one width turns the unfixed
+ * neighbour into the anomaly. Leaving it would have shipped an inversion introduced by the item
+ * that was meant to remove one.
+ *
+ * Everything else about it is `detectChainDistinctCount`'s — the synthetic-projection trick, the
+ * identity test that the item IS the aggregate, and above all the NULL RULE (`count(DISTINCT x)`
+ * excludes nulls where `RETURN DISTINCT x` keeps them, so `distinctRows(rows).length` would be a
+ * silent wrong answer). Read that function's header; it is not repeated here.
+ */
+export const detectHop2DistinctCount = (
+  clauses: readonly Clause[],
+  compiled: readonly CClause[],
+): AlwaysRowsFn | null => {
+  if (clauses.length !== 2) {
+    return null;
+  }
+
+  const [, ret] = clauses;
+  const [, cret] = compiled;
+
+  if (ret.kind !== 'return' || cret.kind !== 'return') {
+    return null;
+  }
+
+  const proj = cret.projection;
+  const agg = proj.foldedAggs?.length === 1 ? proj.foldedAggs[0] : undefined;
+
+  if (
+    !proj.aggregating ||
+    proj.items.length !== 1 ||
+    agg === undefined ||
+    agg.fold !== distinctCountFold ||
+    ret.projection.items.length !== 1 ||
+    ret.projection.items[0].expr !== agg.expr
+  ) {
+    return null;
+  }
+
+  const outName = proj.items[0].name;
+  const column = '__hop2DistinctCountArg';
+  const synthetic: CProjection = {
+    ...proj,
+    aggregating: false,
+    distinct: false,
+    items: [{ name: column, fn: agg.argFn, isAgg: false }],
+    foldedAggs: undefined,
+    groupKeys: [],
+  };
+  const rows = detectHop2Projection(
+    clauses,
+    compiled.map((c, i) => (i === 1 && c.kind === 'return' ? { ...c, projection: synthetic } : c)),
+  );
+
+  if (rows === null) {
+    return null;
+  }
+
+  return (graph, params) => {
+    let acc = distinctCountFold.init();
+
+    for (const row of rows(graph, params)) {
+      const v = (row as Record<string, unknown>)[column];
+
+      if (v !== null && v !== undefined) {
+        acc = distinctCountFold.step(acc, v);
+      }
+    }
+
+    return [{ [outName]: distinctCountFold.finish(acc) }];
   };
 };

@@ -5527,6 +5527,14 @@ export type CLinear = {
   hop2Projection: AlwaysRowsFn | null;
   /** THREE OR MORE segments projecting rows (item 1814) — `detectChainProjection`. */
   chainProjection: AlwaysRowsFn | null;
+  /**
+   * The same chain under `count(DISTINCT <expr over the far end>)` — item 1824. Disjoint from
+   * `chainProjection` by construction: that rung refuses an aggregating projection and this one
+   * requires one.
+   */
+  chainDistinctCount: AlwaysRowsFn | null;
+  /** The two-hop twin of `chainDistinctCount` — item 1824. */
+  hop2DistinctCount: AlwaysRowsFn | null;
   /** The same walk under ONE foldable aggregate — `RETURN max(x.k)`; else null. */
   hopAggregate: RowsFn | null;
   /** The same walk under TWO OR MORE foldable aggregates — `RETURN count(*), max(x.k)`. */

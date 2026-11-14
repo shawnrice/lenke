@@ -84996,7 +84996,7 @@ only width without it. **The fix is not the same one-liner**: `detectHopProjecti
 arms, and that module records a ~280x cost for materializing where the general path is lazy. So it
 needs its own item rather than a wrapper.
 
-⚠️ **FLAG 2**: `count(DISTINCT far.k)` is **4.8x, 6.8x, 10.1x and 10.3x** its own `rows` cell at
+~~⚠️ **FLAG 2**~~ **— CLOSED BY ITEM 1824 at 6.6x/5.1x/6.3x/7.5x**: `count(DISTINCT far.k)` was **4.8x, 6.8x, 10.1x and 10.3x** its own `rows` cell at
 depths 2-5, and it RISES with depth (28.2 → 56.7 ms) while the `rows` cell stays flat. Same shape as
 flag 1 one axis over: `distinctShape(clauses, compiled, 'count')` serves ONE hop (0.5 ms) and the
 two-hop and chain rungs refuse any aggregate outright (`projection.aggregating`), so every deeper
@@ -85022,3 +85022,92 @@ NO ENGINE CODE CHANGED. Both flags are priced and left open with the numbers a f
 28.2/35.6/46.8/56.7 → should land near their ~5 ms twins.**
 
 GATES. bun run check 0 read unpiped.
+
+### Item 1824 — ✅ **`count(DISTINCT …)` OVER A CHAIN NOW HAS A RUNG AT EVERY WIDTH: 6.6x / 5.1x / 6.3x / 7.5x** at depths 2-5, taking item 1823's second flag. The whole `countdist` row is now monotonic and beside its `rows` twin, and ⚠️ the fix at one width CREATED a fresh inversion at the next, which the grid reported immediately
+
+THE TARGET, flagged mechanically by `rung-gap-screen.mjs` at item 1823: `count(DISTINCT far.k)` cost
+**4.8x, 6.8x, 10.1x and 10.3x** its own undeduped `rows` cell at depths 2-5, and RISING with depth
+(28.2 → 56.7 ms) while the `rows` cell stayed flat at ~5 ms. `distinctShape(…, 'count')` serves ONE
+hop at 0.5 ms; every deeper width fell to the general matcher.
+
+⚠️ **AND `detectMultiHopAggregate` DOES NOT SERVE THEM — CHECKED BY DELETION, NOT READ OFF ITS
+GATE.** This is the step that decided the whole design: a detector with that name plainly looks like
+the thing to widen. A `throw` at its ADMISSION point (not its entry — item 1820's lesson, and the
+entry throw was tried first and proved nothing) left `count(DISTINCT x.k)` at depths 1, 2 AND 3 all
+answering normally, along with `count(*)` and `sum` at depth 2. **There was no rung to widen, only a
+hole to fill.**
+
+THE IMPLEMENTATION, and its one idea: ⚠️ **the new detectors REUSE the existing rungs' entire gate by
+handing them a SYNTHETIC PROJECTION.** `count(DISTINCT x)`'s compiled form already carries
+`foldedAggs[0].argFn` — the compiled ARGUMENT — so the rung can be asked for one column of that
+argument and the fold applied to the result. Only the COMPILED side's `items` are replaced; the AST
+side is untouched, which is what keeps `farEndOnly`'s sweep-vs-walk decision reading the real item's
+free variables. Nothing re-derives three-plus segments, plain nodes, directed single-type hops or
+the `WHERE`/gate agreement check — **two copies of one shape rule is how the far endpoint ended up
+on a per-edge tally once before** (`detectDistinctCount`'s own note).
+
+⚠️⚠️ **THE TRAP, AND IT WOULD HAVE BEEN A SILENT WRONG ANSWER IN AN AGGREGATE.**
+**`count(DISTINCT x)` EXCLUDES nulls while `RETURN DISTINCT x` KEEPS null as a row.** Over
+`1, null, absent, 2, 1` the count is **2** and the rows are **three**. So the obvious implementation
+— take the rung's rows and `distinctRows(...).length`, which is exactly what items 1821 and 1822 had
+just built — is wrong on any fixture carrying a null or an absent property, and every test that does
+not involve a null passes anyway. Found by reading `detectDistinctCount`'s own header before writing
+code rather than after. The rungs fold through **`distinctCountFold` itself**, the same object the
+general path uses, so the two cannot disagree about nulls or about what counts as distinct.
+
+⚠️ **FIXING THE CHAIN WIDTHS CREATED A FRESH INVERSION AT TWO HOPS, AND THE GRID SAID SO ON THE NEXT
+RUN.** With only `detectChainDistinctCount` in place, depths 3-5 went 35.6/46.8/56.7 → 7.7/7.8/8.3
+and left depth 2 at 29.5 — **3.8x the now-fixed depth 3**, a brand-new flag introduced by the item
+meant to remove one. That is item 1822's situation repeating one modifier over: a fix at one width
+turns the unfixed neighbour into the anomaly. `detectHop2DistinctCount` closes it in the same
+commit. **This is the screen earning itself twice in one item** — once to find the target, once to
+catch what fixing it broke.
+
+THE RESULT, `rung-gap-screen.mjs` before and after:
+
+```text
+                depth1  depth2  depth3  depth4  depth5
+  countdist        0.5    28.2    35.6    46.8    56.7     before
+  countdist        0.5     4.3     7.0     7.4     7.6     after    6.6x 5.1x 6.3x 7.5x
+  rows             2.3     6.0     6.1     4.7     5.4     the twin it must sit beside
+```
+
+The row is now monotonic in depth and beside `rows` at every width, which is the pair signal item
+1821 established as the real result. **Item 1823's six flags are down to two**, and the two left are
+the one-hop multi-column `DISTINCT` finding, which needs its own item (that rung gates on
+`projectionIsStreamable` and routes through `hopOrderPlan`'s streaming arms, where its own comments
+record ~280x for materializing against a lazy path).
+
+ELEVEN CONTROLS, ⚠️ arms asserted by a marker count in the built DIST, and **the three-round reading
+produced a FALSE DISJOINT that five rounds dissolved**:
+
+```text
+  point      3 rounds   PRE [41.7 39.3 40.8]  POST [44.3 42.8 45.9]   "disjoint", 0.92x
+  point      5 rounds   PRE [38.9 … 43.9]     POST [40.0 … 49.9]      overlapping, 0.97x
+  hop3rows   3 rounds   0.94x                 5 rounds  1.03x FASTER
+```
+
+Both readings came off the same instrument; only the sample count differed. Recorded because the
+three-round number is the one that would have been reported, and it said this item cost an unrelated
+shape 8%. Every other control 0.98-1.05x: `hop2rows` 1.00x, `hop3distinct` 1.04x, `hop2distinct`
+0.98x, `grouped` 1.02x, `join` 1.05x, `count2` 1.00x, `count3` 1.02x, `distinct` 1.00x.
+
+MUTATION, 4 of 4 caught (`chain-distinct-count-answers.test.ts`, 10 tests, half of them NULL cases
+because the route is answer-equivalent on clean data and clean data proves nothing):
+
+```text
+  chain: count nulls too (drop the nullish guard)        CAUGHT (5 fail)
+  chain: drop the item-IS-the-aggregate identity test    CAUGHT (1 fail)
+  chain: count ROWS instead of distinct values           CAUGHT (8 fail)
+  hop2:  count nulls too                                 CAUGHT (4 fail)
+```
+
+⚠️ The identity test is what stops `count(DISTINCT k) + 1` taking the rung and silently dropping the
+`+ 1` — the item must BE the aggregate, not an expression wrapping it.
+
+CORRECTNESS. gql 4,589 / gremlin 2,134 / native 1,165 / core 458 pass, 0 fail; `bun run fuzz` 57/0.
+Plus three seeds at 60,000 workload queries — **180,000 queries, 0 divergences**. `routes-fired.test.ts`
+goes 21 → 23 detectors, which is the only compile-time guard on either route.
+
+GATES. bun run check 0 read unpiped. gql 4,589 pass / 0 fail. gremlin 2,134 pass / 0 fail.
+native 1,165 pass / 0 fail. core 458 pass / 0 fail. bun run fuzz 57 pass / 0 fail.

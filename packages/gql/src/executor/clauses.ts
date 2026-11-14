@@ -1658,6 +1658,24 @@ const fastPath = (linear: CLinear, graph: Graph, params: Params): Row[] | undefi
     return linear.chainProjection(graph, params);
   }
 
+  /**
+   * The same chain under `count(DISTINCT <expr over the far end>)` — item 1824.
+   *
+   * ⚠️ BELOW `chainProjection`, AND THE TWO CANNOT COMPETE: that rung refuses an aggregating
+   * projection and this one requires one, so the shapes are disjoint by construction and either
+   * order answers the same queries. Below, rather than above, for the reason item 418 measured — a
+   * branch ahead of a hot dispatch cost the shape it does not claim 1.12x — so the plain chain
+   * projection pays one null check and nothing more.
+   */
+  if (linear.chainDistinctCount) {
+    return linear.chainDistinctCount(graph, params);
+  }
+
+  /** The two-hop twin, disjoint from every rung above for the same reason — item 1824. */
+  if (linear.hop2DistinctCount) {
+    return linear.hop2DistinctCount(graph, params);
+  }
+
   // The same walk under ONE foldable aggregate — `RETURN max(b.k)` — folded as the rows are
   // produced. It delegates to `detectHopProjection`'s walk, so it sits AFTER that branch: the
   // two shapes are disjoint (a projection declines an aggregating one), and placing it FIRST

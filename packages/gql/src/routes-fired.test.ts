@@ -118,6 +118,22 @@ describe('every fast-path detector fires for its own shape', () => {
       'MATCH (a:L)-[:R]->(b)-[:R]->(c)-[:R]->(d)-[:R]->(e) RETURN e.k AS k',
       ['chainProjection'],
     ],
+    /**
+     * ⚠️ `count(DISTINCT …)` OVER A CHAIN — item 1824. These two rungs are the reason this file's
+     * count went 21 -> 23, and they are the ONLY compile-time guard on the route: removing the
+     * branch that consumes either one is answer-equivalent, so nothing else in the suite notices
+     * (this file's own header records that for all of them).
+     */
+    [
+      'three-hop count(DISTINCT)',
+      'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L)-[:R]->(d:L) RETURN count(DISTINCT d.k) AS c',
+      ['chainDistinctCount'],
+    ],
+    [
+      'two-hop count(DISTINCT)',
+      'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L) RETURN count(DISTINCT c.k) AS c',
+      ['hop2DistinctCount'],
+    ],
     ['distinct projection', 'MATCH (n:L) RETURN DISTINCT n.k AS k', ['distinctProjection']],
 
     // --- aggregates ---------------------------------------------------------------------
@@ -294,7 +310,7 @@ describe('every fast-path detector fires for its own shape', () => {
 
   // Every one of the twenty-one is covered by the table above. Asserted rather than claimed, so a
   // detector added later without a route case fails HERE instead of going unguarded.
-  it('covers all twenty-one detectors', () => {
+  it('covers all twenty-three detectors', () => {
     const covered = new Set(CASES.flatMap(([, , want]) => want));
     const all = new Set(
       Object.keys(
@@ -306,7 +322,7 @@ describe('every fast-path detector fires for its own shape', () => {
     );
 
     expect([...all].filter((k) => !covered.has(k)).sort()).toEqual([]);
-    expect(all.size).toBe(21);
+    expect(all.size).toBe(23);
   });
 });
 
