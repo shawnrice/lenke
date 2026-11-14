@@ -87844,3 +87844,59 @@ this.
 
 GATES. bun run check 0 read unpiped; `bun run test -- --skip-nx-cache` green across all 21 projects
 before and after.
+
+## Item 1875 — the fused three-hop values walk is at its FLOOR (14.7 ns/row, 79% in its own loop), and its one separable-looking frame is REFUTED by a deletion test; plus a profile I had to re-size twice
+
+The largest absolute TS cost on the Gremlin bench is `V().out(E)x3.values(age)` (~490 ms), and item
+1871's census says it is already fused. So this is the Gremlin twin of item 1859's question: given
+that the rung fires, where does its time go?
+
+⚠️⚠️ **THE FIRST TWO PROFILES WERE MOSTLY NOT THE QUERY, and the file now says so at the top.**
+
+      run 1   N=60000 FANOUT=1 REPS=12    query 93 ms of a 392 ms process    **76% FIXTURE BUILD**
+      run 2   N=20000 FANOUT=5 REPS=6     query 242 ms of 602               40% query
+      run 3   N=20000 FANOUT=5 REPS=50    query 1841 ms of 2182             **84% query**
+
+Run 1 handed back `getVertexById` 11.6%, `indexEdgeLabel` 8.9%, `commitElementLabels` 4.9%,
+`addVertex` 3.0% and most of a 15.4% GC — the fixture, not the walk. **Item 1859's profile recorded
+exactly this trap and I reproduced it.** FANOUT=1 was wrong for a second reason: with one out-edge
+per vertex a "three-hop" walk is a CHAIN that never branches, so the stacked walk's branching arm
+was never exercised. The driver now prints the query's own share of the process, so a reader can see
+whether the number is worth anything.
+
+✅ **THE CLEAN PROFILE, and it is a floor.** At 84% query, 14.7 ns a row over 125,000,000 rows:
+
+      43.4%  walk                    )
+      18.3%  (anon) @6985            )  the walk and its two inner closures
+      11.4%  valueAt                 )
+       4.3%  passes                  )  ~79% in one loop
+       1.4%  stackedWalk             )
+       6.2%  (garbage collector)
+       3.1%  indexEdgeLabel          ⬅ fixture residue
+
+**14.7 ns a row for a three-hop walk emitting a property per path is at the floor**, and the bench's
+~490 ms is simply 30M rows at that rate. The shape is not slow; it is large.
+
+❌ **AND THE ONE FRAME THAT LOOKED SEPARABLE IS REFUTED.** `valueAt` at 11.4% is
+`(slot) => vals[slot]` — item 1799 already made it an eager array read for 1.13-1.20x, so the only
+thing left was the CALL, 125,000,000 of them. Inlining it to `vals[far]` at all four call sites
+(identical semantics), one shape per process, median of 15 after 3 warm-ups:
+
+      DEPTH=3  TARGET    36.0 -> 34.5 ms median,  min 28.5 -> 28.5
+      DEPTH=2  CONTROL    5.3 ->  5.8 ms median,  min  4.5 ->  4.2
+
+**The target's MIN is identical and the control moved 9% the other way.** V8 was already inlining
+it. REVERTED. `frame-attribution-trap` says a field-read or getter frame is attribution until a
+deletion test with a control says otherwise — this is that, with the numbers, so the frame is not
+re-nominated from a future profile.
+
+⚠️ **THE CONTROL CHOICE IS THE REUSABLE PART.** `valueAt` lives inside `stackedWalk`, which this file
+uses from depth THREE up; depth 2 "keeps the literal nesting". So DEPTH is the control axis — same
+fixture, same engine, same harness, a loop the change cannot reach. A different QUERY would have
+shared none of that.
+
+NO ENGINE CODE CHANGED (the four-line edit was applied, measured, reverted). Two instruments:
+`hop3-values-prof-1875.mjs` (which carries its own sizing warning) and `hop-depth-ab-1875.mjs`.
+
+GATES. bun run check 0 read unpiped; gremlin 2184 tests green with the arm in place and the engine
+restored byte-identically afterwards (`git diff` empty, dist marker gone).
