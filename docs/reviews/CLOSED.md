@@ -86101,3 +86101,64 @@ NO ENGINE CODE CHANGED. The axis is open and now documented; answering the struc
 isolated per-process harness, which is a tick of its own rather than a line in this one.
 
 GATES. bun run check 0 read unpiped.
+
+### Item 1840 — ⚠️ **A CYCLING WORKLOAD OF MORE THAN 64 DISTINCT QUERY TEXTS PAYS 2.4-2.5x PER QUERY, and raising the cache cap removes it entirely** — measured on a per-process harness, with the memory it would cost priced. ⚠️ **OWNER DECISION: not taken.** And my first hypothesis about the cause was REFUTED by testing it
+
+THE QUESTION item 1839 left, and the harness it needed. ⚠️ **One configuration per process**,
+because that item's in-process attempt gave a **12x spread on the SAME configuration** as the JIT
+tiered up, and its subtraction attempt sat inside a ±180 ms noise band. This measures one number —
+microseconds per query at a given text diversity — and compares across PROCESSES.
+
+```text
+  texts     us/query     cache size / seen / cap
+     16        5.75        64 /   0 / 64
+     32        6.28        64 /   0 / 64
+     64        5.88        64 /   0 / 64      <- everything fits
+     96       25.64        64 /  64 / 64
+    128       20.60        64 /  64 / 64
+    256       12.77        64 /  64 / 64
+    512       12.32        64 /  64 / 64
+```
+
+⚠️ **THE 96 AND 128 ROWS ARE NOISY AND ARE NOT THE FINDING** (p75 of 31.8 and 26.0 against p25 of
+17.5 and 15.0). The stable reading is the two ends: **~5.9 us while the texts fit, ~12.5 us once
+they do not**, with 256 and 512 agreeing to 0.5 us on tight spreads.
+
+⚠️⚠️ **MY FIRST EXPLANATION WAS WRONG, AND TESTING IT IS WHAT SHOWED THAT.** The admission filter
+retains a text's statement on its SECOND sighting, and `seenOnce` is itself capped at 64 with FIFO
+eviction — so a cycling workload of 500 texts seemed unable ever to reach a second sighting within
+the window. Raising that cap **64x** changed nothing:
+
+```text
+  seenOnce cap x64    256 texts  15.23 us    512 texts  15.27 us    (baseline 12.77 / 12.32)
+```
+
+`seen` did fill (384 at 512 texts), so texts WERE being admitted — and the parse cache `size` stayed
+pinned at 64, its own cap, so admitted texts immediately evicted each other. **The bottleneck is the
+cache capacity, not the admission filter**, and the filter change alone cannot help by construction.
+
+✅ **WHAT THE CAP IS WORTH, PRICED RATHER THAN SPECULATED** — `PARSE_CACHE_CAP` 64 → 1024:
+
+```text
+  texts     cap 64      cap 1024     gain
+    256     12.77 us      5.08 us     2.5x
+    512     12.32 us      5.03 us     2.4x
+     64      5.88 us      5.73 us     flat (the control — it already fit)
+```
+
+⚠️ **AND IT IS AN OWNER DECISION, NOT A FIX, WHICH IS WHY IT IS RECORDED RATHER THAN TAKEN.** The
+cap is not an oversight: `parseCacheStats`' own comment says "BOUNDEDNESS is the property this cache
+was chosen for", and records that mutation made the point — removing the eviction changes no ANSWER,
+so every answer-comparing test passes while the cache grows without limit, "a memory leak no
+correctness suite can see". The source prices an entry at ~2KB, so the 576 entries this bench
+reached at cap 1024 are roughly **1.2 MB**, and the cap itself would bound it near 2 MB.
+
+So the trade is **~2.4x on a cycling workload wider than the cap, for up to ~2 MB of retained
+statements** — and whether an embedded graph engine should spend that is the owner's call, not a
+number I should act on unilaterally. ⚠️ The admission filter's own comment records the other side of
+it: admitting on FIRST sighting made an all-miss workload **16% slower**, so the current design is
+tuned for one-off texts and this bench is the case it does not serve.
+
+NO ENGINE CODE CHANGED. Both experimental edits were reverted and the restore verified.
+
+GATES. bun run check 0 read unpiped.
