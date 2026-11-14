@@ -5535,6 +5535,11 @@ export type CLinear = {
   chainDistinctCount: AlwaysRowsFn | null;
   /** The two-hop twin of `chainDistinctCount` — item 1824. */
   hop2DistinctCount: AlwaysRowsFn | null;
+  /**
+   * One hop under `RETURN DISTINCT <several columns>` — item 1825. A `RowsFn`, not an
+   * `AlwaysRowsFn`: it delegates to `detectHopProjection`, whose `null` is a RUNTIME decline.
+   */
+  hopDistinctProjection: RowsFn | null;
   /** The same walk under ONE foldable aggregate — `RETURN max(x.k)`; else null. */
   hopAggregate: RowsFn | null;
   /** The same walk under TWO OR MORE foldable aggregates — `RETURN count(*), max(x.k)`. */

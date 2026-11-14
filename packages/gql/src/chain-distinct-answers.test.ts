@@ -240,3 +240,116 @@ describe('the two-hop rung dedupes identically', () => {
     );
   });
 });
+
+/**
+ * ⚠️ THE ONE-HOP MULTI-COLUMN RUNG — item 1825, and it needs its own answers for the third time in
+ * this file's history: a different module again (`hop-projection.ts`), a different walk, and — the
+ * part that makes it unlike the other two — a rung that can DECLINE AT RUNTIME. Its inner rung
+ * returns `null` when it finds at execution time that an index seek on the end it does not drive
+ * beats it, and swallowing that with `?? []` would be an empty result where the query has rows.
+ */
+describe('the one-hop multi-column DISTINCT rung', () => {
+  const HOP1 = 'MATCH (a:L)-[:R]->(b:M)';
+
+  test('dedupes a two-column projection', () => {
+    const g = chainGraph([1, 1, 2, 2]);
+
+    expect(query(g, `${HOP1} RETURN b.k AS k`).length).toBe(16);
+    expect(setOf(query(g, `${HOP1} RETURN DISTINCT b.k AS k, b.s AS s`))).toEqual(
+      setOf([
+        { k: 1, s: 's0' },
+        { k: 1, s: 's1' },
+        { k: 2, s: 's0' },
+        { k: 2, s: 's1' },
+      ]),
+    );
+  });
+
+  test('0 and -0 are one row; null is a row', () => {
+    expect(query(chainGraph([0, -0]), `${HOP1} RETURN DISTINCT b.k AS k, b.s AS s`).length).toBe(2);
+    expect(
+      setOf(query(chainGraph([null, null, 1]), `${HOP1} RETURN DISTINCT b.k AS k, b.s AS s`)),
+    ).toEqual(
+      setOf([
+        { k: null, s: 's0' },
+        { k: null, s: 's1' },
+        { k: 1, s: 's0' },
+      ]),
+    );
+  });
+
+  /** The cross-route oracle: `ORDER BY` declines this rung, so rung against general path. */
+  test('agrees with the route that declines the rung', () => {
+    const g = chainGraph([3, 1, 2, 2, null, 1]);
+
+    expect(setOf(query(g, `${HOP1} RETURN DISTINCT b.k AS k, b.s AS s`))).toEqual(
+      setOf(query(g, `${HOP1} RETURN DISTINCT b.k AS k, b.s AS s ORDER BY k`)),
+    );
+  });
+
+  /**
+   * ⚠️ AN `ORDER BY` MUST COME BACK SORTED, AND THIS ASSERTION EXISTS BECAUSE A MUTANT SURVIVED
+   * WITHOUT IT. Dropping the no-window narrowing lets `DISTINCT … ORDER BY` take this rung, which
+   * does not sort — so the rows come back in walk order. Every other test here compares SETS
+   * (`order-is-unspecified` is owner policy for unordered rows), so all of them passed with the
+   * sort silently dropped. An ordered query is the one case where row order IS the answer, and it
+   * needs an order-SENSITIVE oracle.
+   */
+  test('an ORDER BY comes back sorted, not in walk order', () => {
+    const g = chainGraph([3, 1, 2, 2, 1]);
+    const rows = query(g, `${HOP1} RETURN DISTINCT b.k AS k ORDER BY k`);
+
+    expect(rows.map((r) => r.k)).toEqual([1, 2, 3]);
+
+    const two = query(g, `${HOP1} RETURN DISTINCT b.k AS k, b.s AS s ORDER BY k, s`);
+
+    /**
+     * ⚠️ FIVE PAIRS, NOT FOUR — I hand-wrote four and the test caught me. `chainGraph`'s `s` is
+     * `s${i % 2}`, so `[3, 1, 2, 2, 1]` gives `(3,s0) (1,s1) (2,s0) (2,s1) (1,s0)`: the two `2`s
+     * sit at indices 2 and 3 and therefore carry DIFFERENT `s`, so they do not collapse. An
+     * order-sensitive oracle has to be written out, which means it can be written out wrong — so
+     * the failure is the point of having it.
+     */
+    expect(two.map((r) => [r.k, r.s])).toEqual([
+      [1, 's0'],
+      [1, 's1'],
+      [2, 's0'],
+      [2, 's1'],
+      [3, 's0'],
+    ]);
+  });
+
+  /**
+   * ⚠️⚠️ A PAGE MUST NOT REACH THIS RUNG, AND THE ROW COUNT IS THE ONLY SOUND ORACLE FOR IT.
+   * Dedupe-then-skip and skip-then-dedupe are different answers: the inner rung pages its own RAW
+   * rows, so letting `SKIP` through would skip duplicates and then dedupe, leaving MORE rows than
+   * the query asks for. Here 16 raw rows reduce to 4 distinct pairs, so `SKIP 2` must be 2 rows —
+   * the mutant that drops the no-window narrowing leaves 4.
+   *
+   * ⚠️ AND IT ASSERTS THE COUNT, NOT THE ROWS, deliberately: `SKIP` with no `ORDER BY` has an
+   * unspecified answer as to WHICH rows survive (`order-is-unspecified`), so pinning the values
+   * would pin something the engine does not promise. The COUNT is determined either way, which is
+   * what makes it the right assertion rather than the weaker one.
+   *
+   * ⚠️ `ORDER BY` is NOT the hazard here, which I had backwards first: the inner rung sorts on the
+   * way out and `distinctRows` keeps first occurrences in order, so sorted-then-deduped is still
+   * sorted. The order-sensitive test above is still worth having, but it is the PAGE that this
+   * narrowing exists for.
+   */
+  test('a SKIP cannot reach this rung — the count proves the dedupe came first', () => {
+    const g = chainGraph([1, 1, 2, 2]);
+
+    expect(query(g, `${HOP1} RETURN DISTINCT b.k AS k, b.s AS s`).length).toBe(4);
+    expect(query(g, `${HOP1} RETURN DISTINCT b.k AS k, b.s AS s SKIP 2`).length).toBe(2);
+    expect(query(g, `${HOP1} RETURN DISTINCT b.k AS k, b.s AS s SKIP 1`).length).toBe(3);
+  });
+
+  /** ⚠️ SINGLE column must answer identically — it goes to the OTHER rung (see routes-fired). */
+  test('the single-column spelling still answers correctly', () => {
+    const g = chainGraph([1, 1, 2, 3, 3]);
+
+    expect(setOf(query(g, `${HOP1} RETURN DISTINCT b.k AS k`))).toEqual(
+      setOf([{ k: 1 }, { k: 2 }, { k: 3 }]),
+    );
+  });
+});

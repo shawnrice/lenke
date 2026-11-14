@@ -78,6 +78,7 @@ import { detectForCount, detectForProjection } from './for-unwind.js';
 import { detectGroupedHopAggregate, detectGroupedHopCount } from './grouped-hop.js';
 import {
   detectDistinctCount,
+  detectHopDistinctProjection,
   detectDistinctProjection,
   detectHopAggregate,
   detectHopProjection,
@@ -2131,6 +2132,7 @@ export const compileLinear = (linear: LinearQuery): CLinear => {
     chainProjection: detectChainProjection(fast, clauses),
     chainDistinctCount: detectChainDistinctCount(fast, clauses),
     hop2DistinctCount: detectHop2DistinctCount(fast, clauses),
+    hopDistinctProjection: detectHopDistinctProjection(fast, clauses),
     hopAggregate,
     multiHopAggregate: detectMultiHopAggregate(fast, clauses),
     distinctProjection: detectDistinctProjection(fast, clauses),

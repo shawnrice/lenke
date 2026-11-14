@@ -4,6 +4,7 @@ import type { Clause, CountValue, Expr, LabelExpr, Projection, RelPattern } from
 import { candidateCount, candidateVertexSource, expand, matchesLabel } from '../graph-queries.js';
 import type { Adjacency } from '../graph-queries.js';
 import { edgesOfTypes, relTypeNames } from './adjacency.js';
+import { distinctRows } from './clauses.js';
 import type {
   AggFold,
   CClause,
@@ -45,7 +46,7 @@ import {
 import { predicateCannotRaise, satisfies } from './predicates.js';
 import { foldFor } from './projection.js';
 import { projectRow } from './rows.js';
-import { plainRowProjection } from './rows.js';
+import { plainRowProjection, plainRowProjectionIgnoringDistinct } from './rows.js';
 import { asTruth } from './scalars.js';
 import {
   edgeSeek,
@@ -6097,5 +6098,92 @@ export const detectMultiHopAggregate = (
     const rows = primed(graph, params);
 
     return rows ?? walkRows(graph, params);
+  };
+};
+
+/**
+ * `MATCH (a)-[:T]->(b) RETURN DISTINCT <several columns>` — item 1825.
+ *
+ * ⚠️ WHY A SECOND ONE-HOP DISTINCT RUNG WHEN `distinctShape` EXISTS. `distinctShape` is built around
+ * a single `source` reading exactly one end, so it serves ONE COLUMN and declines the rest. Items
+ * 1821/1822/1824 then gave the two-hop and chain widths multi-column `DISTINCT`, which left ONE hop
+ * as the only width without it — and `rung-gap-screen.mjs` reported that as an INVERSION: two-column
+ * `DISTINCT` cost **32.8 ms at one hop against 9.8 at two**, 3.4x the deeper cell and **14.3x its own
+ * undeduped `rows` twin (2.3 ms)**. A shorter query costing more than a longer one.
+ *
+ * ⚠️ IT DOES NOT TOUCH `detectHopProjection`'S GATE, AND THAT IS DELIBERATE. `projectionIsStreamable`
+ * refuses `distinct`, and relaxing it would put `DISTINCT` into the streaming/order-plan arms that
+ * module is built around — where its own comments record **~280x** for a materializing route against
+ * a lazy one under a `LIMIT`. So this asks the existing rung for the SAME rows with a synthetic
+ * non-distinct projection and dedupes the result, which is item 1824's trick and leaves every
+ * streaming decision exactly as it was.
+ *
+ * ⚠️ NARROWED TO NO SORT AND NO WINDOW, which is what makes the dedupe sound. Dedupe keeps one row
+ * per key whatever order the rows arrive in, so it COMMUTES with the walk and the answer is the same
+ * SET (`order-is-unspecified`). A `SKIP`/`LIMIT` does NOT commute — row order decides WHICH rows
+ * survive — and `projectionIsStreamable` admits a skip-only page, so without this narrowing the
+ * rung would have inherited one.
+ *
+ * ⚠️ TWO COLUMNS OR MORE, WHICH MAKES IT DISJOINT FROM `distinctProjection` RATHER THAN MERELY
+ * ORDERED AFTER IT. The first cut accepted the single-column shape as well — the rung it delegates
+ * to does not care how many items there are — and relied on sitting BELOW `distinctProjection` in
+ * `runLinear`'s chain, because `distinctShape`'s walk dedupes WHILE walking (breaking out of a
+ * vertex's bucket at the first qualifying edge when the dedup is keyed on the start) and this cannot.
+ * ⚠️ That ordering is exactly the dependency `rung-precedence-decides-speed` records as a repeated
+ * bug source, AND IT IS NOT TESTABLE: `routes-fired.test.ts`'s helper reports which detectors FIRED,
+ * not which branch won, and both routes return the same answer, so a reordering would starve the
+ * specialized rung with the whole suite green. Requiring `items.length > 1` removes the dependency
+ * instead of documenting it — the two detectors cannot both accept a shape, so chain order is free.
+ *
+ * The cost of the narrowing is bounded and known: a ONE-column one-hop `DISTINCT` that
+ * `distinctShape` declines stays on the general matcher, exactly as it does today. That is a win
+ * not taken, not a regression.
+ *
+ * ⚠️ THE RUNTIME DECLINE IS PRESERVED. `detectHopProjection` returns a `RowsFn`, whose `null` means
+ * "at execution time the general loop has a better plan (an index seek on the end it does not
+ * drive)". Swallowing that with `?? []` would be a WRONG ANSWER — an empty result where the query
+ * has rows — so the null is passed straight through and this is a `RowsFn`, not an `AlwaysRowsFn`.
+ */
+export const detectHopDistinctProjection = (
+  clauses: readonly Clause[],
+  compiled: readonly CClause[],
+): RowsFn | null => {
+  if (clauses.length !== 2) {
+    return null;
+  }
+
+  const [, ret] = clauses;
+  const [, cret] = compiled;
+
+  if (ret.kind !== 'return' || cret.kind !== 'return') {
+    return null;
+  }
+
+  if (
+    !ret.projection.distinct ||
+    !plainRowProjectionIgnoringDistinct(ret.projection) ||
+    // See the header: TWO columns or more, so this cannot accept a shape `distinctProjection` does.
+    ret.projection.items.length < 2
+  ) {
+    return null;
+  }
+
+  const inner = detectHopProjection(
+    clauses,
+    compiled.map((c, i) =>
+      i === 1 && c.kind === 'return'
+        ? { ...c, projection: { ...c.projection, distinct: false } }
+        : c,
+    ),
+  );
+
+  if (inner === null) {
+    return null;
+  }
+
+  return (graph, params) => {
+    const rows = inner(graph, params);
+
+    return rows === null ? null : distinctRows(rows);
   };
 };

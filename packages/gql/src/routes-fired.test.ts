@@ -134,6 +134,24 @@ describe('every fast-path detector fires for its own shape', () => {
       'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L) RETURN count(DISTINCT c.k) AS c',
       ['hop2DistinctCount'],
     ],
+    /**
+     * ⚠️ MULTI-COLUMN `DISTINCT` at ONE hop — item 1825, and the pair below is what keeps the two
+     * one-hop DISTINCT rungs DISJOINT. `hopDistinctProjection` requires two or more columns;
+     * `distinctProjection` serves exactly one. An `toEqual` on the whole fired-detector list is
+     * what makes that a real assertion: if either rung widened to overlap the other, the one-column
+     * case would report BOTH names and fail here — whereas a runtime precedence bug between them
+     * would be invisible, since both routes return the same answer.
+     */
+    [
+      'one-hop multi-column DISTINCT',
+      'MATCH (a:L)-[:R]->(b:L) RETURN DISTINCT b.k AS k, b.s AS s',
+      ['hopDistinctProjection'],
+    ],
+    [
+      'one-hop SINGLE-column DISTINCT stays with the while-walking rung',
+      'MATCH (a:L)-[:R]->(b:L) RETURN DISTINCT b.k AS k',
+      ['distinctProjection'],
+    ],
     ['distinct projection', 'MATCH (n:L) RETURN DISTINCT n.k AS k', ['distinctProjection']],
 
     // --- aggregates ---------------------------------------------------------------------
@@ -310,7 +328,7 @@ describe('every fast-path detector fires for its own shape', () => {
 
   // Every one of the twenty-one is covered by the table above. Asserted rather than claimed, so a
   // detector added later without a route case fails HERE instead of going unguarded.
-  it('covers all twenty-three detectors', () => {
+  it('covers all twenty-four detectors', () => {
     const covered = new Set(CASES.flatMap(([, , want]) => want));
     const all = new Set(
       Object.keys(
@@ -322,7 +340,7 @@ describe('every fast-path detector fires for its own shape', () => {
     );
 
     expect([...all].filter((k) => !covered.has(k)).sort()).toEqual([]);
-    expect(all.size).toBe(23);
+    expect(all.size).toBe(24);
   });
 });
 

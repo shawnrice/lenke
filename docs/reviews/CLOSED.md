@@ -84986,7 +84986,7 @@ THE FIRST RUN (20,000 vertices, 20,000 edges, median of 9 less 3 warm-up):
 depth from 2 to 5 — which is the regression evidence those items wanted and could not express as a
 single number.
 
-⚠️ **FLAG 1, AND IT IS AN INVERSION AT DEPTH 1**: `distinct2` (two-column `DISTINCT`) reads **32.5 ms
+~~⚠️ **FLAG 1, AND IT IS AN INVERSION AT DEPTH 1**~~ **— CLOSED BY ITEM 1825 AT 4.4x**: `distinct2` (two-column `DISTINCT`) read **32.5 ms
 at ONE hop against 9.8 at two** — 3.3x the deeper cell, and **22.7x its own `rows` twin (1.4 ms)**.
 The cause is structural and is the mirror of item 1822: `distinctShape` serves one-hop `DISTINCT`
 but is built around a single `source` reading exactly one end, so MULTI-COLUMN declines; items 1821
@@ -85111,3 +85111,100 @@ goes 21 → 23 detectors, which is the only compile-time guard on either route.
 
 GATES. bun run check 0 read unpiped. gql 4,589 pass / 0 fail. gremlin 2,134 pass / 0 fail.
 native 1,165 pass / 0 fail. core 458 pass / 0 fail. bun run fuzz 57 pass / 0 fail.
+
+### Item 1825 — ✅ **MULTI-COLUMN `DISTINCT` AT ONE HOP: 4.4x** (32.8 → 7.5 ms), closing item 1823's last flag and the depth-1 inversion. ⚠️ **AND MUTATION KILLED MY FIRST DESIGN AND TWO OF MY TESTS' CLAIMS** — the precedence dependency was removed rather than documented, and the hazard I guarded against was the wrong one
+
+THE TARGET, the last of item 1823's six flags: two-column `DISTINCT` cost **32.8 ms at ONE hop
+against 9.8 at two** — 3.4x the deeper cell and **14.3x its own undeduped `rows` twin**. The cause
+was structural and the mirror of item 1822: `distinctShape` is built around a single `source`
+reading exactly one end, so it serves ONE COLUMN; items 1821/1822/1824 then gave the two-hop and
+chain widths multi-column `DISTINCT`, leaving ONE hop as the only width without it.
+
+⚠️ **IT DOES NOT TOUCH `detectHopProjection`'S GATE.** `projectionIsStreamable` refuses `distinct`,
+and relaxing it would put `DISTINCT` inside the streaming/order-plan arms that module is built
+around — where its own comments record **~280x** for a materializing route against a lazy one under
+a `LIMIT`. So the new detector asks the existing rung for the SAME rows with a synthetic
+non-distinct projection and dedupes the result (item 1824's trick), leaving every streaming
+decision as it was.
+
+```text
+  distinct2   depth1  depth2  depth3  depth4  depth5
+  before        32.5     9.8    10.5     9.3    10.0
+  after          7.5     8.2    10.7    11.4    14.0     4.4x, and MONOTONIC in depth again
+```
+
+**Item 1823's six flags are down to one**, and the one left is this same cell at 3.7x its `rows`
+twin — which is the multi-column keying itself (`rowKeyOf` costs two array allocations, a string
+build and a hash per row, where the one-column path has a value-keyed fast route). A two-column
+fast key is its own item, with 7.5 ms as the floor.
+
+⚠️⚠️ **MUTATION KILLED MY FIRST DESIGN, AND THAT IS THE MAIN RESULT HERE.** The first cut accepted
+the SINGLE-column shape too — the rung it delegates to does not care how many items there are — and
+relied on sitting BELOW `distinctProjection` in `runLinear`'s chain, since that rung dedupes WHILE
+walking and this one cannot. I wrote in two comments that the ordering was "pinned in
+`routes-fired.test.ts`". **It is not, and cannot be**: that helper reports which detectors FIRED,
+not which branch won, and both routes return the same answer — so a reordering would starve the
+specialized rung with the whole suite green. That is `rung-precedence-decides-speed`'s exact failure
+mode, and I had written a false claim into the code rather than noticing it.
+
+The fix is not a better comment. **Requiring `items.length > 1` makes the two detectors DISJOINT**,
+so chain order is free and the property is asserted at compile time: `routes-fired.test.ts` now
+pins the one-column shape to `distinctProjection` ALONE and the two-column shape to
+`hopDistinctProjection` ALONE, with `toEqual` on the whole fired list — if either rung widened to
+overlap, that fails. The cost of the narrowing is bounded and stated: a one-column one-hop
+`DISTINCT` that `distinctShape` declines stays on the general matcher exactly as today — a win not
+taken, not a regression.
+
+⚠️ **AND I GUARDED THE WRONG HAZARD.** I narrowed to "no sort and no window" believing `ORDER BY`
+was the danger, and wrote an order-sensitive test for it. The mutant that drops the narrowing
+SURVIVED that test — because the inner rung sorts on the way out and `distinctRows` keeps first
+occurrences in order, so **sorted-then-deduped is still sorted**. The real hazard is the PAGE:
+the inner rung pages its own RAW rows, so skip-then-dedupe ≠ dedupe-then-skip. 16 raw rows reduce
+to 4 distinct pairs, so `SKIP 2` must be 2 rows and the mutant leaves 4.
+
+⚠️ **The page oracle asserts the COUNT, not the rows, and that is deliberate**: `SKIP` with no
+`ORDER BY` has an unspecified answer as to WHICH rows survive (`order-is-unspecified`), so pinning
+values would pin something the engine does not promise. The count is determined either way.
+
+MUTATION, 3 of 4 caught (`chain-distinct-answers.test.ts`, 18 tests):
+
+```text
+  skip the dedupe entirely                     CAUGHT (3 fail)
+  drop the 2+ column gate (overlap the twin)   CAUGHT (1 fail)
+  drop the no-window narrowing                CAUGHT (2 fail) — only after the PAGE oracle
+  swallow the runtime decline as `?? []`       SURVIVES — see below
+```
+
+⚠️ **THE SURVIVOR IS RECORDED WITH ITS EVIDENCE RATHER THAN EXPLAINED AWAY.** `detectHopProjection`
+returns a `RowsFn` whose `null` means "at execution time an index seek on the end I do not drive
+beats me", and swallowing it with `?? []` would be an empty result where the query has rows. I could
+not construct a shape that triggers it through this detector's gate: with the mutant applied, an
+indexed equality seek (`WHERE a.n = 7`) and an indexed range seek (`WHERE a.n > 1990`) both returned
+the IDENTICAL answers with and without the index. So the pass-through is defensive on this evidence,
+and it is kept because the failure it prevents is a wrong answer and it costs one comparison. **Not
+claimed as covered.**
+
+⚠️ **ONE MORE THING THE TESTS CAUGHT**: my hand-written order-sensitive expectation had FOUR rows
+where the fixture yields FIVE — `s` is `s${i % 2}`, so the two `2`s sit at adjacent indices and
+carry different `s`, and do not collapse. An order-sensitive oracle has to be written out, which
+means it can be written out wrong; the failure is the point of having it.
+
+SEVEN CONTROLS FLAT, five alternated rounds (three rounds produced a false disjoint at item 1824, so
+five is now the default), ⚠️ arms asserted by a marker count in the built DIST — **and the expected
+count was itself wrong on the first attempt** (I guessed 4; the dist has 3), which the assertion
+caught before it measured anything:
+
+```text
+  hoprows 0.95x/0.97x   distinct 1.00x/0.98x   hop2distinct 0.98x/1.00x   hop3rows 0.98x/1.00x
+  point 1.01x/0.97x     grouped 0.98x/0.98x    join 1.01x/0.97x                   (min / median)
+```
+
+`distinct` at 1.00x is the control that matters: the single-column rung is not starved, which the
+disjointness now guarantees structurally rather than by position.
+
+CORRECTNESS. gql 4,597 / gremlin 2,134 / native 1,165 pass, 0 fail; `bun run fuzz` 57/0. Plus two
+seeds at 60,000 workload queries — **120,000 queries, 0 divergences**. `routes-fired.test.ts` goes
+23 → 24 detectors.
+
+GATES. bun run check 0 read unpiped. gql 4,597 pass / 0 fail. gremlin 2,134 pass / 0 fail.
+native 1,165 pass / 0 fail. bun run fuzz 57 pass / 0 fail.

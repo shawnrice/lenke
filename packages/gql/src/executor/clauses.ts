@@ -1710,6 +1710,27 @@ const fastPath = (linear: CLinear, graph: Graph, params: Params): Row[] | undefi
     return linear.distinctProjection(graph, params);
   }
 
+  /**
+   * One hop under `RETURN DISTINCT <SEVERAL columns>` — item 1825.
+   *
+   * ⚠️ ITS POSITION IS FOR READING, NOT FOR CORRECTNESS OR COST. `detectHopDistinctProjection`
+   * requires TWO OR MORE columns and `distinctProjection` serves exactly one, so the two cannot
+   * both accept a shape and either order answers the same queries. That disjointness is deliberate:
+   * the first cut accepted one column as well and depended on sitting here, which is the
+   * `rung-precedence-decides-speed` dependency — and an UNTESTABLE one, since
+   * `routes-fired.test.ts` reports which detectors fired rather than which branch won, and both
+   * routes return the same answer.
+   */
+  if (linear.hopDistinctProjection) {
+    // `null` is a DECLINE, not an empty result — the delegated rung can find at execution time that
+    // an index seek on the end it does not drive beats it. See `detectHopProjection`.
+    const rows = linear.hopDistinctProjection(graph, params);
+
+    if (rows !== null) {
+      return rows;
+    }
+  }
+
   // `RETURN count(DISTINCT <one expr>)`: the SIZE of that same dedup, counted while walking.
   if (linear.distinctCount) {
     return linear.distinctCount(graph, params);
