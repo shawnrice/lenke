@@ -87568,3 +87568,61 @@ arms differ by build. The 8x-678x rows are unambiguous; 1-in-1 and 1-in-2 move a
 runs.
 
 GATES. bun run check 0 read unpiped; gremlin 2184 tests green; all seven byte-identity fuzzers green.
+
+## Item 1871 — the "does every rung still earn its place" CENSUS, built because item 1870's 678x regression was invisible to everything; 23 of 24 clear, and its ONE flag was a false positive my own header had argued was impossible
+
+Item 1870 found a shipped rung up to **678x slower than the route it displaced**, because the
+pipeline got faster after the rung's A/B was taken. Nothing caught it for ~390 items: the rung kept
+answering correctly and the whole gremlin suite passes either way. **No instrument asked whether a
+rung still beats its own alternative** — the route screen says WHICH route answers a shape, the
+bench says how fast a shape is, and neither compares a rung against the pipeline.
+`rung-earns-its-place-1871.mjs` does, for all eight shortcut entry points at once, by wrapping every
+call site in `run` with a `NO_SHORTCUTS` guard and measuring both arms.
+
+✅ **23 OF 24 SHAPES CLEAR, MOST BY MARGINS NOTHING COULD MANUFACTURE.** At 60,000 vertices, median
+of 7 (rung / pipeline / ratio):
+
+      hop1: both count     0.001 /  48.705 / 0.00x      hop3: count    3.741 / 83.497 / 0.04x
+      hop1: count          0.001 /  15.606 / 0.00x      hop2: count    4.721 / 54.228 / 0.09x
+      edge: E count        0.001 /   0.718 / 0.00x      hop1: dedupe   1.261 / 19.798 / 0.06x
+      scan: count          0.001 /   1.023 / 0.00x      hop2: dedupe  20.985 / 65.367 / 0.32x
+      scan: values         1.525 /   3.791 / 0.40x      agg: groupCount 0.774 / 2.061 / 0.38x
+      scan: values dedupe  1.285 /   2.860 / 0.45x      (item 1869's new rung)
+      ... hop1: values 0.94x, hop2: values 1.04x — both inside the noise band
+
+The closed-form counts are the extreme: `V().both(E).count()` is a counter read against a 48.7 ms
+walk. **This is the first evidence that the rung corpus as a whole is still sound**, which is a
+different claim from any individual item's A/B and one nothing had made.
+
+⚠️⚠️ **ITS ONE FLAG WAS A FALSE POSITIVE, AND MY OWN HEADER HAD ARGUED THAT COULD NOT HAPPEN.** The
+census put `hop1: id` at **1.54x** in the pipeline's favour. An isolated one-shape-per-process A/B
+refuted it outright:
+
+      V().out(E).id()        rung 14.85 ms    pipeline 72.58 ms    the rung is 4.89x FASTER
+      V().out(E).values(k)   rung 21.71       pipeline 21.40       flat — the sibling arm, as control
+
+**The header claimed cross-row cache pollution was "SYMMETRIC: every shape occupies the same
+position in both arms".** It is not, and the reason is specific: the arms differ by more than the
+build. In arm A the rows before a given shape exercise assorted RUNGS; in arm B they all exercise the
+PIPELINE — so by the time a shape runs, arm B's pipeline is thoroughly warm and arm A's rung may not
+be. **The pollution favours arm B, which is the arm a flag accuses.** Item 1870 had just taught me
+that row order moves a number 1.7x in one process and I still wrote the symmetry claim down.
+
+**So the instrument is a SCREEN with a documented false-positive mode, and its header now says so:**
+a flag is a candidate to isolate, a ratio near 1.0 means nothing, and what it is good for is the
+large margin — 678x is a class no cache effect can manufacture, which is exactly the class it exists
+to catch.
+
+⚠️ **AND THE TEETH CHECK IT SHOULD HAVE HAD WAS NOT RUN, which is stated rather than skipped
+quietly.** Proving the census catches an item-1870-class regression means reverting that refusal and
+re-running — but reverting it alone leaves the walk unable to filter labels (item 1870 coupled them
+deliberately), so the rung would emit 200,000 rows against the pipeline's 66,667 and the comparison
+would be unfair in the census's favour. A real teeth check needs the whole pre-1870 state restored.
+The labelled row is in the shape list for whoever does it; the argument that 678x survives any
+pollution is reasoning, not a measurement.
+
+NO ENGINE CODE CHANGED. Two instruments, one corrected header, and the first whole-corpus evidence
+that the rungs are sound.
+
+GATES. bun run check 0 read unpiped; the engine tree verified clean after every measurement patch
+(`git diff --stat` empty on all three files touched).
