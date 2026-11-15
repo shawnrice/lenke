@@ -96810,6 +96810,9 @@ At `NODES=20000`, every new row producing rows (no misses, no flags):
    the `coalesce`/`optional` pair now agrees (0.91 against 1.14), where before the fix `coalesce`
    was 4.99x.
 2. 🔭 **A NEW ROW PAIR: `coalesce: two hops` at 8.02 against `coalesce: hop + identity`'s 0.91.**
+   ⚠️ **PRICED AT ITEM 1995 AND THE 8.8x IS REALLY 4.67x** — isolated, against a twin verified to
+   return the identical answer positionally. The full-run ratio overstated it, which is item 1988's
+   caveat doing its job one item later.
    Same step, same row count, 8.8x apart — and the difference is that the identity-arm form is
    normalized into `optional` while the two-hop form reaches no rung. ⚠️ **This is item 1993's
    per-row toll on a shape NO normalization can reach**, because there is no equivalent spelling to
@@ -96826,3 +96829,71 @@ NO ENGINE BEHAVIOUR CHANGED — five screen rows, three imports, and this entry.
 
 GATES. `bun run fmt` 0; `bun run check` 0. The screen re-run after the edit: 49 rows, no flags, no
 zero-row misses in the new family.
+
+## Item 1995 — 🔭 **`coalesce(hop, hop)` PRICED AT 4.67x A TWIN THAT RETURNS THE IDENTICAL ANSWER — 209.55 ms against 44.87, isolated, 600,000 rows each.** The twin equality is verified POSITIONALLY, and ⚠️ it is FIXTURE-DEPENDENT, which is the constraint on any cure
+
+Item 1994 put the reconverging family on the standing screen and its `coalesce: two hops` row came
+out 8.8x its identity-arm neighbour in a full 49-shape run. That run's absolutes are not comparable
+across rows (item 1988), so this prices it with `ONLY=` readings.
+
+```text
+    NODES=200000, ONE ROW PER PROCESS, three reps each, 600,000 rows every row
+      coalesce: two hops          211.28  208.98  209.55     median 209.55   ⬅ 4.67x
+      coalesce: hop + identity     45.38   47.16   46.66     median  46.66      1.04x
+      hop1: values  (the twin)     44.87   43.59   47.37     median  44.87      —
+```
+
+So the full-run 8.8x is really **4.67x** — the kind of correction item 1988 exists to force — and
+`coalesce: hop + identity` is confirmed free at 1.04x, which is item 1990's normalization holding on
+an isolated reading as well as in the screen.
+
+### ✅ THE TWIN IS A TWIN, VERIFIED POSITIONALLY
+
+On this fixture every vertex has out-degree 4, so `coalesce(out(E), in_(E))`'s arm 0 always produces
+and arm 1 never runs — the shape returns exactly what a bare `out` hop returns. Checked rather than
+reasoned:
+
+```text
+    coalesce(out(E), in_(E)).values(n)   80,000 rows
+    out(E).values(n)                     80,000 rows
+    identical POSITIONALLY: true
+```
+
+🔑 **So this is 4.67x between two spellings with the SAME ANSWER IN THE SAME ORDER**, which is this
+repo's named defect class — and unlike item 1991's `choose` shape, **this one is a row on the
+standing screen** rather than a shape I invented for a probe. Item 1994 declined to build against an
+invented shape for exactly this reason; this is the row that replaces it.
+
+⚠️⚠️ **AND THE TWIN EQUALITY IS FIXTURE-DEPENDENT, WHICH IS THE CONSTRAINT ON THE CURE.** It holds
+only because no vertex is a sink. On a graph with sinks, arm 1 runs for those vertices and the two
+answers diverge — so a fused route **cannot** simply become the bare hop. It must walk arm 0's bucket
+and fall back to arm 1 per vertex when that bucket is empty. That is precisely the hazard item 1990's
+test guards with a no-edge vertex, and a fixture without one would let a wrong route pass.
+
+### THE COST IS ITEM 1993's PER-ROW TOLL, SAME MAGNITUDE
+
+```text
+    coalesce: two hops   209.55 ms / 600,000 rows = 349 ns a row
+    hop1: values          44.87 / 600,000         =  75 ns a row
+    => ~274 ns a row of toll
+```
+
+Item 1993 measured ~300 ns a row for `choose` with a trivial test AND an inlined arm, and concluded
+the toll is the per-traverser sub-plan contract inside the step rather than anything the step does
+with its arms. **This is the same number on a different step**, which is the first independent
+confirmation of that diagnosis.
+
+### 🔭 THE CURE, AND WHY IT IS BUILDABLE HERE WHERE IT WAS NOT FOR `choose`
+
+`optional-hop-values.ts` answers `V().optional(hop).values(k)` wholesale — walk the bucket, and when
+it is empty emit the input. A `coalesce(hop, hop)` rung is the same structure with the fallback
+changed from "the input" to "the second hop's bucket". ⚠️ Item 1629 already reads arm 0's bucket
+directly inside `coalesceStep`, so the walk exists; what does not exist is a route that answers the
+whole plan and keeps `coalesceStep` out of the stream.
+
+Not built this tick: the row was only just priced, and item 1993's lesson is that the measurement
+decides the design rather than the reverse.
+
+NO ENGINE BEHAVIOUR CHANGED — this entry.
+
+GATES. `bun run fmt` 0; `bun run check` 0.
