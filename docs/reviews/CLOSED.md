@@ -97221,3 +97221,78 @@ byte-identity contract), and DECLINED fusion at 1.55x. Reading the closed-frames
 the ranking cost one grep and saved an item — "it is now the largest row" is not evidence it is open.
 
 GATES. `bun run fmt` 0; `bun run check` 0; `bun run test -- --skip-nx-cache` 21/21; `bun run fuzz` 7/7.
+
+## Item 2000 — 🔭 **`MATCH ACYCLIC` COSTS 520x ITS `plain` TWIN AND 348x ITS `TRAIL` SIBLING, AND IT IS LINEAR — 821.13 ms against 1.58 and 2.36 at 40,000 vertices, same pattern, same bound, same answer shape.** ⚠️⚠️ **And BOTH shapes I nominated before building the grid were COMPARATOR ERRORS — each differed from its comparator in two axes at once, and the full grid refuted both**
+
+The GQL side's turn (the standing prompt asks for both surfaces and this session had only screened
+Gremlin). `workload-perf-screen.mjs` is the one list in the repo of "queries a user would actually
+write" that was not assembled while hunting a lever, so it is the one screen that cannot be circular.
+
+⚠️ **TWO OF ITS THREE LOUDEST SIGNALS ARE ALREADY CLOSED, AND CHECKING COST TWO GREPS.**
+`multi-pattern` is NOT MEASURABLE AT THIS SIZE — killed by SIGTERM past a 120 s child timeout where
+the next-worst family is 2.3 s — and item 1864 closed it: four of its sixty queries are a GENUINE
+cross product emitting 13.6M rows, so its row count IS its answer and it is "not addressable at the
+family level". `pathdep: tree` is the largest row on the Gremlin screen (2.28 ms, 1.8x the next) and
+items 1922/1925 declined fusing it at 1.55x. **Neither belongs on a nomination list, and the ranking
+cannot tell you that.**
+
+## ⚠️⚠️ THE PART WORTH KEEPING: I NOMINATED TWO SHAPES AND THE GRID REFUTED BOTH
+
+`varlen-body-split-2000.mjs` first carried the screen's seven `var-length` bodies verbatim, which is
+where the nominations came from. Both were artifacts of the bodies not being a grid:
+
+- **"`count(*) ACYCLIC seeded` is 9.8x `count(*) unseeded`, so a seed makes it slower"** — the two
+  rows differ in BOTH the seed and the path mode. Against its OWN unseeded arm, the seeded ACYCLIC
+  count is **54x FASTER** (15.28 against 821.13). The seed works perfectly; the entire 9.8x was the
+  ACYCLIC axis leaking through a comparator that also changed it.
+- **"the seeded DISTINCT is linear in |V| on a 1%-of-|V| seed"** — it is linear, but so is every arm
+  here, and the `WHERE-all` control lands ON the unseeded arm (63.44 against 64.07), which says the
+  predicate's PRESENCE costs nothing. The seed is being exploited (4.3x); whether it could be a flat
+  seek is a real but much smaller question than the one I thought I had.
+
+🔑 **THE FIX WAS A GRID, AND THE SEED AXIS NEEDED THREE VALUES RATHER THAN TWO.** Projection
+(`DISTINCT b.n` / `count(*)`) x path mode (`plain` / `TRAIL` / `ACYCLIC`) x seed (none /
+`WHERE a.n >= 0` / `WHERE a.n = $p0`) — eighteen arms, every axis readable alone. The middle seed
+value is item 570's rule: **`WHERE <matches everything>` is THE control for "why is the filtered
+version slower"**, because without it a slow seeded arm cannot distinguish "the predicate's presence
+changed the rung" from "the selectivity is not being exploited" — and those have opposite cures.
+
+```text
+bound {1,2}, fanout 5, median of 5, distinct out-degrees per source [5]
+body                            5k        20k        40k    rows   shape
+DISTINCT plain   unseeded      4.58      28.54      64.07      97   linear+
+DISTINCT plain   WHERE-all     3.27      26.02      63.44      97   linear+   ⬅ = unseeded
+DISTINCT plain   seeded-1%     0.86       5.13      15.05      97   linear+
+DISTINCT TRAIL   unseeded      3.18      27.61      65.35      97   linear+
+DISTINCT ACYCLIC unseeded    126.07     626.69    1426.95      97   linear+   ⬅ 22x its plain twin
+DISTINCT ACYCLIC seeded-1%     1.87       8.63      21.87      97   linear+
+count(*) plain   unseeded      0.44       0.87       1.58       1   sub-linear
+count(*) TRAIL   unseeded      0.60       1.20       2.36       1   sub-linear
+count(*) ACYCLIC unseeded     61.95     316.16     821.13       1   linear+   ⬅ 520x plain, 348x TRAIL
+count(*) ACYCLIC seeded-1%     1.23       6.09      15.28       1   linear+
+```
+
+**WHY THIS IS A TARGET AND NOT THE KNOWN REFUSAL.** ACYCLIC is deliberately refused by
+`reachability.ts` and the var-length count rungs, and that refusal is MEASURED rather than cautious:
+on one node with one self-loop, `MATCH ACYCLIC (x)-[:R]->+(y)` is **0** where TRAIL and WALK answer 1,
+so ACYCLIC genuinely diverges from set reachability and cannot borrow a BFS rung. That is correct and
+is not what this entry questions. What it questions is the rest, which item 1255's entry left "priced
+rather than attempted" **and without a number**:
+
+- **348x against TRAIL is the argument that the gap is not inherent.** TRAIL also restricts paths —
+  no repeated EDGE — and also cannot use a set-reachability rung, yet it costs 2.36 ms where ACYCLIC
+  costs 821.13. Both need per-path state.
+- **At bound `{1,2}` acyclicity is three pairwise comparisons per path.** A depth-2 path `a->b->c`
+  is acyclic iff `a≠b`, `b≠c`, `a≠c`. That is the same order of work as TRAIL's edge check, so a
+  two-order-of-magnitude gap is a mechanism, not a semantics tax.
+- **It is LINEAR+ at every size**, so the gap grows; the 520x at 40,000 vertices is a floor.
+
+⚠️ NOT YET PROFILED, so the mechanism is unknown and no cure is priced. The next step is a CPU
+profile of `count(*) ACYCLIC unseeded` specifically — the hypothesis to test first is a per-path
+allocation (a `Set` or array of visited vertices built per path rather than carried and unwound), but
+that is a guess and this repo's record on mechanism guesses in this area is poor (items 1993-1997 went
+four for four wrong before a route counter settled it). ⚠️ `pull-alignment-is-load-bearing` and
+`executor-edits-perturb` both price edits in the general matcher in UNRELATED regressions, so the cure
+wants to be a rung rather than a change to the shared path.
+
+GATES. `bun run fmt` 0; `bun run check` 0. (Instrument only — no engine code changed.)
