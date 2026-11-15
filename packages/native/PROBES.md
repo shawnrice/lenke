@@ -1995,3 +1995,21 @@ harness reads afterwards.
 ⚠️ One reading note for any battery spanning two packages: the `N failing` count printed beside a
 verdict is the FIRST result line in the concatenated output, so a mutant caught only by the second
 suite prints `0 failing` beside its ✅. The verdict comes from the exit code, which is the contract.
+
+## `anyshortest-prof-1908.mjs` — the shortest-path shapes, and the floor they are read against
+
+`SHAPE=anyshortest|allshortest|reach|hop bun anyshortest-prof-1908.mjs`, with `N` and `REPS`.
+⚠️ Its `reach` arm answers a DIFFERENT question (distinct reachable values, not one row per pair), so
+it is a FLOOR rather than a control — the row counts differ by three orders of magnitude and that is
+the point. `hop` is the per-row figure every other shape is read against (25 ns a row).
+
+⚠️⚠️ **AND IT IS THE INSTRUMENT THAT CAUGHT A 24.3% FRAME BEING WORTH 2.7%.** The profile named
+`withBinding` — which clones the binding `Map` per matched node — at 24.3% on one run and 1.1% on the
+next, with `matchNodeLabelled` taking its place (adjacent dist lines, an inlining boundary;
+[[frame-attribution-trap]]). A direct micro settled it: 2.1M × (`new Map(src)` + one `set`) is
+**64.2 ms**, i.e. ~2.7% of the shape, against mutate-only's 7.6.
+
+⚠️ **AN ABLATION COULD NOT PRICE IT**, which is worth knowing before reaching for one: mutating the
+binding in place is unsound (the matcher backtracks) and returned **1 row instead of 2,099,864**, so
+the timing meant nothing. When an ablation changes the answer, the only thing its run establishes is
+whatever the CONTROLS did.

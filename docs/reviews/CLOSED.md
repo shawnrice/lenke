@@ -90242,3 +90242,74 @@ Item 475's rule, in the direction that deletes code.
 
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers;
 `bun run spelling` with the new count group converging; item 1904's sort matrix untouched.
+
+## Item 1908 — `ANY SHORTEST` is the GQL surface's largest addressable shape, and **1.25x** of it was an endpoint label test two earlier items had already built the elision for. Plus: the profile's **24.3% frame priced at 2.7% by a micro**
+
+With items 1902-1907 having cleared the sort rows and the seeded var-length shapes, the coverage
+screen's top addressable row is `ANY SHORTEST` — 2318 ms for 2,099,864 rows at 200,000 vertices.
+
+      SHAPE=... bun anyshortest-prof-1908.mjs, median of 7 less warm-up:
+
+        ANY SHORTEST {1,3}, seeded      2056.69 ms   2,099,864 rows   1010 ns/row
+        ALL SHORTEST {1,3}, seeded      2499.92      2,099,864        1191
+        the same walk, NO selector       315.62              8        (reachShortcut)
+        a plain one-hop projection        20.32        800,000          25 ns/row
+
+So 40x a plain hop PER ROW, which is what made it worth profiling rather than accepting as "a
+shortest-path search costs more".
+
+## 🛑 The profile's top frame was 24.3%, and a micro priced the thing it named at 2.7%
+
+      run 1:  withBinding 24.3%  |  generatorResume 22.8%  |  expand 19.4%  |  shortestWalk 13.2%
+      run 2:  matchNodeLabelled 22.8%  |  generatorResume 22.5%  |  expand 19.1%  |  ... withBinding 1.1%
+
+⚠️⚠️ **THE SAME WORK, ATTRIBUTED TO TWO DIFFERENT ADJACENT FUNCTIONS ON TWO RUNS** (dist lines 2694
+and 2740) — an inlining boundary, and [[frame-attribution-trap]]'s exact shape. `withBinding` clones
+the binding `Map` per matched node, so "24.3% in a Map clone" is a complete, plausible story.
+
+❌ **AND IT IS WRONG, by a direct micro:** 2,099,864 × (`new Map(src)` + one `set`) measures
+**64.2 ms**, against mutate-only at 7.6 — so the clone is **~2.7% of the shape's 2056 ms**, not 23%.
+Item 631 had already moved the element-direct conjuncts ahead of that allocation, which is why there
+is so little left in it. ⚠️ An ablation could not price it either: mutating in place is UNSOUND (the
+matcher backtracks) and returned **1 row instead of 2,099,864**, so its timing was meaningless — the
+controls staying flat was the only thing that reading established.
+
+✅ **WHAT THE PROFILE ACTUALLY POINTED AT was the rest of `matchNodeLabelled`, and there the fix was
+already written.** `shortestWalk` and `allShortestWalk` both called `matchNode` — the convenience
+form that ALWAYS tests the endpoint label — where `matchNodeLabelled` exists precisely so a caller
+that has resolved the effective label can skip the test (items 1609/1623). Over a shape emitting one
+row per reachable PAIR that test ran 2,099,864 times.
+
+        min of 3 alternated rounds, controls in the same runs:
+
+          ANY SHORTEST    2056.69  ->  1644.79 ms    ⬅ 1.25x
+          ALL SHORTEST    2499.92  ->  2071.05       ⬅ ~1.21x (one PRE reading, so approximate)
+          CONTROL hop        20.32  ->    19.98       flat
+
+⚠️ 411 ms over 2.1M calls is ~196 ns a call, which is far more than a `labels.has` — so the saving is
+the elision AND the cheaper path it opens inside `matchNodeLabelled`, not the label test alone. The
+number is the measurement; the split between those two is not claimed.
+
+⚠️ **PER CALL, NOT PER COMPILE**, which is item 1551's rule: universality is a property of the GRAPH,
+so a cached plan cannot carry the elision. And hoisting matters as much as eliding — item 1609
+measured `effectiveLabel` called per ELEMENT at **1.32x WORSE** on a graph where it can never elide.
+
+      CORRECTNESS: `shortest-label-elision-parity.test.ts` runs 12 shapes against native over TWO
+      graphs of IDENTICAL topology — one where the endpoint label is universal (so it elides) and
+      one where it is selective (so it must not) — because a universal-label fixture proves the
+      fast case and says nothing about the filtering one. Plus `ALL SHORTEST` beside `ANY`, a path
+      variable, `min = 0`, an endpoint predicate, and the unbounded forms.
+
+      TEETH, BOTH DIRECTIONS: "always elide" fails **11 of 25**; "never elide" SURVIVES, correctly —
+      it is answer-equivalent and slower, so `anyshortest-prof-1908.mjs` is its gate rather than any
+      test ([[perf-gate-needs-its-own-test]]). A third assertion checks the two graphs answer
+      DIFFERENTLY, or every row above would pass with the label ignored entirely.
+
+🔭 **WHAT REMAINS IS SPREAD, WITH NO LEVER ≥ 5%.** After the elision the profile is still four
+comparable pieces — the matcher, `generatorResume`, `expand` and the walk itself — which is item
+736's finding on the var-length walk ("three comparable thirds, which is why no small change here
+has moved it"). The per-row cost is the general path's (~300 ns, item 1900) plus the per-pair
+shortest-path bookkeeping. A fused rung is not available: the selector's semantics are the general
+matcher's, which `needsGeneralMatcher` states.
+
+GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers.

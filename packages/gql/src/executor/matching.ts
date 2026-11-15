@@ -692,6 +692,18 @@ export const shortestWalk = function* (
 ): Iterable<Binding> {
   const [{ rel, node: endNode }] = pattern.segments;
   const { min, max } = rel.quantifier!;
+  /*
+   * ⚠️ THE ENDPOINT LABEL WITH A VACUOUS ONE DROPPED, resolved ONCE PER CALL (item 1908). Both
+   * shortest-path walks called `matchNode`, the convenience form that ALWAYS tests the label, where
+   * `matchNodeLabelled` exists precisely so a caller that has already resolved the effective label
+   * can skip it (items 1609/1623). Over a shape emitting one row per reachable PAIR that test runs
+   * once per reached vertex per seed — 2,099,864 times on the 200,000-vertex fixture.
+   *
+   * ⚠️ PER CALL, NOT PER COMPILE: universality is a property of the GRAPH (item 1551), so a cached
+   * plan cannot carry it. And hoisting matters as much as eliding — item 1609 measured
+   * `effectiveLabel` called per ELEMENT at 1.32x WORSE on a graph where it can never elide.
+   */
+  const endLabelEff = effectiveLabel(graph, endNode.label);
 
   // BFS: shortest hop distance + predecessor (vertex, edge) for each vertex.
   const dist = new Map<string, number>([[seed.id, 0]]);
@@ -760,7 +772,7 @@ export const shortestWalk = function* (
       continue;
     }
 
-    const matched = matchNode(binding, endNode, end, params, graph);
+    const matched = matchNodeLabelled(binding, endNode, end, params, graph, endLabelEff);
 
     if (!matched) {
       continue;
@@ -810,6 +822,18 @@ export const allShortestWalk = function* (
 ): Iterable<Binding> {
   const [{ rel, node: endNode }] = pattern.segments;
   const { min, max } = rel.quantifier!;
+  /*
+   * ⚠️ THE ENDPOINT LABEL WITH A VACUOUS ONE DROPPED, resolved ONCE PER CALL (item 1908). Both
+   * shortest-path walks called `matchNode`, the convenience form that ALWAYS tests the label, where
+   * `matchNodeLabelled` exists precisely so a caller that has already resolved the effective label
+   * can skip it (items 1609/1623). Over a shape emitting one row per reachable PAIR that test runs
+   * once per reached vertex per seed — 2,099,864 times on the 200,000-vertex fixture.
+   *
+   * ⚠️ PER CALL, NOT PER COMPILE: universality is a property of the GRAPH (item 1551), so a cached
+   * plan cannot carry it. And hoisting matters as much as eliding — item 1609 measured
+   * `effectiveLabel` called per ELEMENT at 1.32x WORSE on a graph where it can never elide.
+   */
+  const endLabelEff = effectiveLabel(graph, endNode.label);
 
   const dist = new Map<string, number>([[seed.id, 0]]);
   const preds = new Map<string, { prev: Vertex; edge: Edge }[]>();
@@ -887,7 +911,7 @@ export const allShortestWalk = function* (
       continue;
     }
 
-    const matched = matchNode(binding, endNode, end, params, graph);
+    const matched = matchNodeLabelled(binding, endNode, end, params, graph, endLabelEff);
 
     if (!matched) {
       continue;
