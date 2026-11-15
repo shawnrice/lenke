@@ -424,10 +424,15 @@ const buildNodeCount = <T>(
      * ⚠️ ITEM 1608 — REJECTED, WITH ITS NUMBERS, and the reason is CONSISTENCY rather than trust.
      *
      * `effectiveLabel`/`vacuousLabel` (items 1551/1552) drop a label carried by EVERY vertex, and
-     * they are used at TEN sites in this file — every one a hop builder. `buildNodeCount` is not
-     * among them, so a single-label graph pays a per-candidate label test that is a tautology. That
-     * looked like free money, and after item 1607 removed the predicate it is the biggest remaining
-     * frame: `evalLabelExpr` 66.3% + `get labels` 4.6% + `matchesLabel` 1.7% = **72.6%**.
+     * they are used at TEN sites in this file — every one a hop builder. ~~`buildNodeCount` is not
+     * among them, so a single-label graph pays a per-candidate label test that is a tautology.~~
+     * ⚠️ **STALE SINCE ITEM 1609, corrected at item 1974: this function DOES elide now** — the
+     * `effectiveLabel(graph, label)` hoist a few lines below is item 1609's, added by the item
+     * immediately after this one. Measured at item 1974 with a counter on `evalLabelExpr`: a
+     * single-label graph runs **ZERO** label tests for this query and a mixed one runs **200** (one
+     * per seeded candidate). So the tautological test this paragraph is about is already gone.
+     * That looked like free money, and after item 1607 removed the predicate it is the biggest
+     * remaining frame: `evalLabelExpr` 66.3% + `get labels` 4.6% + `matchesLabel` 1.7% = **72.6%**.
      *
      * Built and measured — an asserted A/B over 1000 seeded candidates:
      *

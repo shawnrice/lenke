@@ -95035,9 +95035,12 @@ carries Teams and Resources. Appending **one isolated, edgeless `Team` vertex**:
 🔑 **WHAT IS NEW HERE.** The vacuity cliff was documented for HOP projections (items 1934-1942 built
 three middle-ground arms for it). This is the same cliff on an **indexed keyed read with a secondary
 filter** — a different family, where it was not known to apply, and where it decides whether TS beats
-native or loses to it by ~2x. That is the next target, and it has a shape: items 1940/1941/1951 each
+native or loses to it by ~2x. ~~That is the next target, and it has a shape: items 1940/1941/1951 each
 replaced a vacuity gate with a COVERAGE gate on the same question, and the measurement mode already
-exists (`MIXED=1`).
+exists (`MIXED=1`).~~ ❌ **WITHDRAWN AT ITEM 1974: there is no second arm to route to. The cliff is
+200 per-candidate label tests the LABEL-BLIND INDEX requires, both cures for the test are refuted
+(item 1599), and the vacuous arm already elides (item 1609) — so a coverage gate would widen the gap,
+not close it.**
 
 ⚠️ **AND THE METHODOLOGICAL NOTE I OWE:** I built a users-only fixture to "control" the comparison
 and thereby removed the one property that mattered, then spent three hypotheses on the difference.
@@ -95047,3 +95050,57 @@ for a labelled query** — `MIXED=1` is now in this probe for that reason.
 NO ENGINE BEHAVIOUR CHANGED — three instruments and this entry.
 
 GATES. `bun run check` 0.
+
+## Item 1974 — ❌ **ITEM 1973's TARGET WITHDRAWN: the cliff is irreducible with known mechanisms** — 200 per-candidate label tests that a LABEL-BLIND index requires, whose two cures item 1599 already refuted. ⚠️ Plus item 1608's prose was stale, corrected by the item immediately after it (the third such instance this session)
+
+Item 1973 found one off-label vertex costing TS 2.4-2.6x on an indexed keyed count and called it the
+next target "with a known shape". This looked for the gate and found the mechanism instead.
+
+**THE ROUTE DOES NOT CHANGE.** `countShortcut` compiles for both fixtures; the difference is per-CALL.
+So rather than read 34 vacuity gates, a counter on `evalLabelExpr`:
+
+```text
+  vacuous (users only)        labelTests = 0      answer [{c:200}]
+  MIXED (+1 Team vertex)      labelTests = 200    answer [{c:200}]
+```
+
+**One test per seeded candidate**, and the arithmetic closes: 243.6k → 94.4k ops/s is 4.1 → 10.6 µs a
+query, a 6.5 µs delta over 200 tests = **~32 ns each**.
+
+🔑 **AND THE LOOP'S OWN COMMENT STATES WHY IT CANNOT GO:** _"A seek returns vertices by VALUE, not by
+label, so the label has to be applied here."_ The index is label-blind, so a non-vacuous label must
+be tested on every candidate the seek returns. There is no alternative arm — which is exactly what
+item 1973's proposed coverage gate would have needed. Items 1940/1941/1951 each had two arms to
+choose between; here the choice is "test the label" or "answer wrongly".
+
+🔒 **BOTH CURES FOR THE TEST ITSELF ARE ALREADY REFUTED, on this very shape.** Item 1599 attacked
+`evalLabelExpr` after profiling it at **46.1% self time in a 400-hit seeded count** — the same query
+family — and both levers failed: compiling the test to a per-query closure measured FLAT (V8 was
+already inlining it), and testing by bucket identity (`verticesByLabel.get(name).has(v)`) is SLOWER
+than hoisting the getter (3.95 ns against 3.25). What remains is ~2.2 ns of a 5.5 ns test.
+
+🔒 **AND ITEM 1608's ELISION CANNOT HELP, BY CONSTRUCTION.** It is worth 5.6x — on the VACUOUS arm,
+which already elides. Applying it more widely would make the fast case faster and leave the realistic
+case where it is, _widening_ item 1973's gap. Its own entry says the elision needs all seven sites
+for consistency and wants that measured per site as its own item; that remains true and remains about
+the vacuous arm.
+
+⚠️ **ITEM 1608's PROSE IS STALE, AND IT MISLEADS IN THE EXPENSIVE DIRECTION.** It says
+_"`buildNodeCount` is not among them, so a single-label graph pays a per-candidate label test that is
+a tautology"_ — while **item 1609, the item immediately after it, added that very elision** (the
+`effectiveLabel(graph, label)` hoist a few lines below the paragraph). The counter above proves it:
+zero tests on a single-label graph. A reader costing out "the tautological test" would be pricing work
+the engine stopped doing one item later. Corrected in place. ⚠️ **Third instance this session** of a
+claim closed by the very next item (1862/1863 → 1864, 1868 → 1869, 1608 → 1609), which is CLAUDE.md's
+measured pattern.
+
+**THE ONE UNTRIED MECHANISM, named so it is not mistaken for unexplored ground:** a LABEL-AWARE index
+— keyed on `(label, value)` rather than `value` — would return only `User` candidates and remove the
+test entirely. That is a new index structure, changes `createIndex`'s semantics and storage, and
+costs on every labelled write. Not priced here; recorded as the only mechanism the refutations above
+do not cover.
+
+NO ENGINE BEHAVIOUR CHANGED — one stale source comment corrected, one heading corrected, and this
+entry. The `evalLabelExpr` counter was reverted (`git diff` on `graph-queries.ts` empty).
+
+GATES. `bun run check` 0; the gql suite green.
