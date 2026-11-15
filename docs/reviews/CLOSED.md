@@ -93542,7 +93542,7 @@ this one.
 
 GATES. bun run test --skip-nx-cache across 21 projects (after the revert).
 
-## Item 1949 — **`FILTER` after a hop, priced ISOLATED at 5.02x** (368.7 ms against a 73.4 ceiling) — the largest confirmed realistic-graph gap left. ⚠️ ~~But a pre-existing test's own comment warns that an order-pinning case exists for EXACTLY the shape an edge pass would claim, and chasing it found something I do not understand about item 1940's REACH~~ ✅ **RESOLVED at item 1950, benignly: the edge-driven arm DOES claim that shape — the pinned order survives only because the fixture inserts its edges grouped by source. The reach is what I built, the test comment was wrong, and this 5.02x target is UNBLOCKED**
+## Item 1949 — **`FILTER` after a hop, priced ISOLATED at 5.02x** (368.7 ms against a 73.4 ceiling) — the largest confirmed realistic-graph gap left. ⚠️ ~~But a pre-existing test's own comment warns that an order-pinning case exists for EXACTLY the shape an edge pass would claim, and chasing it found something I do not understand about item 1940's REACH~~ ✅ **RESOLVED at item 1950, benignly: the edge-driven arm DOES claim that shape — the pinned order survives only because the fixture inserts its edges grouped by source. The reach is what I built, the test comment was wrong, and this 5.02x target is UNBLOCKED** ✅ **PARTLY TAKEN at item 1951 (1.39x isolated, two flat controls) — and ⚠️ THIS ENTRY'S 73.4 ms CEILING WAS THE WRONG ARM: a hand edge pass under-rewards the route that evaluates the predicate fewer times, so it mis-ranks the candidates. The residual is `projectRow` per row, which [[no-runtime-codegen]] bounds**
 
 Item 1943's `MIXED=1` diff put `MATCH (a:T)-[:E]->(b:T) FILTER b.n > $p0 RETURN b.n AS x` at
 61.44 -> 297.04 (4.83x). Item 1947 bounded that sweep's inflation at 1.2x-1.3x, so the nomination
@@ -93653,3 +93653,84 @@ NO ENGINE BEHAVIOUR CHANGED — the engine file is byte-identical to item 1949's
 two test files and this entry.
 
 GATES. `bun run check` 0; `bun run test -- --skip-nx-cache` 21 projects.
+
+## Item 1951 — ✅ **SHIPPED: the predicated hop's middle ground, 1.39x isolated** (369.6 → 266.3 ms) with two flat controls — item 1940's lever one route over. ⚠️ **And item 1949's hand ceiling MIS-RANKED the arms**: a hand `>` makes every arm look equal in predicate cost, so the arm that calls the engine's `satisfies` five times less looked _worse_
+
+PROFILE FIRST, and it redirected the build. Item 1949 nominated this shape and I was about to build
+an edge pass. The two arms' profiles run DIFFERENT closures (`:20283` against `:19887`), and the
+homogeneous one is `farDrivenPredicatedHopWalk` — predicate once per FAR VERTEX, then a template
+copied `bucket.size` times. One isolated off-label vertex makes `T` non-vacuous,
+`predicatedHopRoute`'s gate drops to `filteredHopWalk`'s general per-edge closure, and the predicate
+goes from 200,000 evaluations to 1,000,000. `evalLabelExpr` + `get labels` are only ~430 ms of a
+~2,060 ms gap, so **the label test is not the cost** — the heading alone would have built the wrong
+thing.
+
+🔑 **THE CEILING LESSON, which is the durable half of this item.** Three hand arms, 200,000 vertices
+/ 1,000,000 edges, `|E|` and the vertex set held fixed while start coverage is swept, median of 9:
+
+```text
+  coverage   engine   A start-driven   B edge pass   C far-driven
+     1.000    370.8            151.0          59.6         105.6
+     0.900    332.9            155.2          99.5         100.5
+     0.500    131.5             80.3          73.8          56.4
+     0.100     18.9             14.1          38.4          11.1
+```
+
+B wins by hand at full coverage — and would still LOSE in the engine. A hand arm's predicate is one
+`>`; the engine's is `satisfies` over a compiled family, and the engine sits **2.46x off its own
+algorithm** (370.8 against arm A's 151.0) precisely because it pays that per EDGE. C pays it per far
+vertex, so C's real advantage is ~5x larger than the hand table can show. **A hand ceiling ranks
+routes correctly only when they call the expensive machinery the same number of times** — otherwise
+it silently prices away the hoist that matters. Item 1949's single ceiling is withdrawn as a
+_ranking_; it stands as a floor.
+
+WHAT SHIPPED. `farDrivenStartTestedPredicatedHopWalk`: far-driven, predicate hoisted above the edge
+loop, START label tested per edge, no template fold (once a start label can reject an edge the row
+count is not `bucket.size`). It keeps both hoists that matter — the predicate at once per far
+vertex, and a failing far vertex skipping its WHOLE bucket, a short-circuit over edges no edge pass
+can have. `predicatedHopRoute` gains the coverage-gated third branch, reusing
+`EDGE_DRIVEN_MIN_COVERAGE` deliberately: same question, same two access patterns.
+
+**SOUNDNESS IS THE CALLER'S EXISTING GATE, checked before building rather than after.**
+`farDrivenPredicatedApplies` already requires `!needsStart`, `gate === undefined`,
+`closedFar === undefined`, one edge type and BOTH raise-freedom keys — so the predicate reads only
+the far end and cannot fault, which is exactly what makes hoisting unobservable. I verified
+`carriedWhere` first: it DOES admit a predicate reading both endpoints, so hoisting without that
+gate would be a wrong answer. `farDrivenFilteredHopWalk` keeps its per-edge check for that reason
+and is untouched.
+
+ISOLATED A/B, one shape per process, arms alternated, each arm asserted to BE its code by symbol
+count before being built:
+
+```text
+  target    PRE  382.3  377.4  369.6   POST  268.6  268.5  266.3   1.39x
+  control, the same hop UNFILTERED        132.1 -> 134.9   (+2.1%)
+  control, SELECTIVE start (gate declines) 24.4 -> 24.8    (+1.6%)
+```
+
+Row counts identical in every arm. The in-sweep number was 1.40-1.44x, so for once the sweep and
+the isolated instrument agree.
+
+**MUTATION: 7 KILLED, 4 EXPECTED SURVIVORS, AND IT CAUGHT A TEST OF MINE THAT TESTED NOTHING.** The
+17 tests passed on their first run, which is when they deserve least trust. Killed: the start-label
+test removed (3 failing), reading the wrong endpoint (6), the predicate inverted (14), dropped (11),
+the forward adjacency (8), the far-label test removed (1), `ORDER BY` no longer forcing
+start-driven (1).
+
+⚠️ The far-label mutant SURVIVED at first. Every case used a SIMPLE far label, for which
+`candidateVertexSource` already iterates that label's bucket and the test is redundant; a COMPOUND
+far label makes `seedLabel` return null, the source becomes every vertex, and the test is the only
+thing applying the label. I added that case — **and it still survived**, because my bespoke fixture
+had 2 `T` of 6 vertices, coverage 0.333, BELOW the gate: the test exercised the general closure and
+asserted nothing about the new walk. Ten `T` of thirteen fixed it and the mutant dies. A fixture
+below a gate's threshold is a test that passes for the wrong reason, and only mutation said so.
+
+⚠️ I also expected a kill from inverting the coverage gate and was WRONG — both arms emit the same
+multiset, so it is a pure route choice, the same class as the boolean-gate mutant
+([[perf-gate-needs-its-own-test]]). Recorded with the corrected expectation rather than deleted.
+The last survivor — an unreachable `coverage === undefined` — is proved unreachable by MEASUREMENT:
+an instrumented build reports `NOT THIS ROUTE` for a compound start label, since
+`declinesDisjunction` has already claimed it. Item 1950's method, reused the same day.
+
+GATES. `bun run check` 0; `bun run test -- --skip-nx-cache` 21 projects; `bun run fuzz` 57/0 across
+all seven byte-identity fuzzers.

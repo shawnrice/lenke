@@ -3201,16 +3201,44 @@ const predicatedHopRoute = (w: {
     return filtered;
   }
 
+  // BOTH BUILT LAZILY, ON FIRST USE — item 1388's measured rule for this file: a closure every
+  // compile allocates and the declining path never calls read -3.7% on the gate-declines control.
   let farDrivenWalk: ((graph: Graph, params: Params) => Row[]) | undefined;
+  let startTestedWalk: ((graph: Graph, params: Params) => Row[]) | undefined;
 
   return (graph, params) => {
-    if (startDrivenForOrder || !(startLabel === undefined || vacuousLabel(graph, startLabel))) {
+    if (startDrivenForOrder) {
       return filtered(graph, params);
     }
 
-    farDrivenWalk ??= farDrivenPredicatedHopWalk({ ...w, farPred });
+    if (startLabel === undefined || vacuousLabel(graph, startLabel)) {
+      farDrivenWalk ??= farDrivenPredicatedHopWalk({ ...w, farPred });
 
-    return farDrivenWalk(graph, params);
+      return farDrivenWalk(graph, params);
+    }
+
+    /*
+     * 🔑 THE MIDDLE GROUND (item 1951), and it is item 1940's lever one route over. The start label
+     * excludes somebody, so the template-and-copy walk above is out — but falling to `filtered`
+     * means the predicate goes from once per FAR VERTEX to once per EDGE, which item 1951 measured
+     * as the bulk of a 5.02x. This arm keeps the predicate hoist and the whole-bucket short-circuit
+     * and pays a per-edge start-label test instead of the fold.
+     *
+     * Coverage decides, for the same reason item 1938 measured a 25x regression from a boolean
+     * gate: this arm walks the FAR source and every surviving bucket, while `filtered` iterates the
+     * START label's bucket and is sub-linear when that label is selective. The threshold is item
+     * 1939's swept crossover band plus headroom, shared with the unfiltered arm — deliberately the
+     * SAME constant, because it is the same question about the same two access patterns.
+     */
+    const coverage = labelCoverage(graph, startLabel);
+
+    if (coverage === undefined || coverage < EDGE_DRIVEN_MIN_COVERAGE) {
+      return filtered(graph, params);
+    }
+
+    startTestedWalk ??= farDrivenStartTestedPredicatedHopWalk({ ...w, farPred, startLabel });
+
+    return startTestedWalk(graph, params);
   };
 };
 
@@ -3564,6 +3592,111 @@ const farDrivenPredicatedHopWalk = (w: {
 
       for (let n = bucket.size - 1; n > 0; n -= 1) {
         rows.push({ ...template });
+      }
+    }
+
+    return rows;
+  };
+};
+
+/**
+ * {@link farDrivenPredicatedHopWalk} with a START LABEL THAT CAN REJECT AN EDGE (item 1951) — the
+ * middle ground that was missing from the PREDICATED route, exactly as item 1940 was the one
+ * missing from the unfiltered route.
+ *
+ * ⚠️⚠️ WHY THIS CLIFF IS WORTH A FOURTH WALK. `predicatedHopRoute`'s gate required a vacuous start
+ * label, so ONE isolated off-label vertex dropped `MATCH (a:T)-[:E]->(b:T) FILTER b.n > $p0` from
+ * the walk above all the way to `filteredHopWalk`'s general per-edge closure — and the collapse is
+ * not mainly about label tests. It is about HOW MANY TIMES THE PREDICATE RUNS: 200,000 evaluations
+ * become 1,000,000. Item 1949 priced the shape at 368.7 ms and item 1951 profiled it, finding
+ * `evalLabelExpr` + `get labels` worth only ~430 ms of a ~2,060 ms gap.
+ *
+ * 🔑 THE HAND CEILING MIS-RANKS THE ARMS HERE, which is why this is not an edge pass. Three hand
+ * arms over 200,000 vertices / 1,000,000 edges, `|E|` and the vertex set held fixed while start
+ * coverage is swept (median of 9):
+ *
+ * ```text
+ *   coverage   engine   A start-driven   B edge pass   C far-driven (this)
+ *      1.000    370.8            151.0          59.6                105.6
+ *      0.900    332.9            155.2          99.5                100.5
+ *      0.500    131.5             80.3          73.8                 56.4
+ *      0.100     18.9             14.1          38.4                 11.1
+ * ```
+ *
+ * B wins by hand at full coverage — and would still lose in the engine. A hand arm's predicate is
+ * one `>`, so the arms look nearly equal in predicate cost; in the engine it is `satisfies` over a
+ * compiled family, and the engine sits 2.46x off its OWN algorithm (370.8 against arm A's 151.0)
+ * precisely because it pays that per EDGE. C pays it per FAR VERTEX, so C's real advantage is ~5x
+ * larger than the hand table can show. **A ceiling built from hand arms ranks routes correctly only
+ * when they call the expensive machinery the same number of times.**
+ *
+ * What this gives up against the walk above is the template-and-copy fold: once a start label can
+ * reject an edge, the row count is no longer `bucket.size`. What it keeps is both hoists that
+ * matter — the predicate at once per far vertex, and a failing far vertex skipping its WHOLE
+ * bucket, which is a short-circuit over edges that no edge pass can have.
+ *
+ * ⚠️ THE PREDICATE IS HOISTED ABOVE THE EDGE LOOP, which {@link farDrivenFilteredHopWalk}
+ * deliberately does NOT do, and the difference is the caller's gate rather than a change of mind.
+ * That walk is reachable with a start-reading predicate, so hoisting there would change the
+ * evaluated (start, far) pairs. `farDrivenPredicatedApplies` — which this arm shares verbatim —
+ * requires `!needsStart`, `gate === undefined`, `closedFar === undefined` and BOTH raise-freedom
+ * keys, so here the predicate reads only the far end and cannot fault. A far vertex whose every
+ * edge fails the START label is therefore evaluated by this walk and not by the start-driven one,
+ * and that difference is unobservable: no rows, no faults. It is the same argument the walk above
+ * makes about ORDER, applied to the evaluated SET.
+ *
+ * ⚠️ `startVar` IS NEVER BOUND, deliberately. `!needsStart` means neither the projection nor the
+ * predicate reads it, so the general closure's per-edge `binding.set(startVar, v)` is pure cost
+ * here. A later relaxation of `applies` would have to revisit this line, which is why it is called
+ * out rather than simply absent.
+ *
+ * Row order is edge-insertion order within a far vertex, far-vertex order outermost — different
+ * from every other arm, and unspecified for an unordered result (item 198). An `ORDER BY` sets
+ * `startDrivenForOrder` and never reaches here; item 1950 characterizes what an order-pinning test
+ * over such a fixture is actually detecting.
+ */
+const farDrivenStartTestedPredicatedHopWalk = (w: {
+  typeName: string;
+  out: boolean;
+  farVar: string;
+  farLabel: LabelExpr | undefined;
+  startLabel: LabelExpr;
+  proj: CProjection;
+  farPred: CPredicate;
+}): ((graph: Graph, params: Params) => Row[]) => {
+  const { typeName, out, farVar, farLabel, startLabel, proj, farPred } = w;
+
+  return (graph, params) => {
+    const rows: Row[] = [];
+    const binding = new Map<string, unknown>();
+
+    for (const far of candidateVertexSource(graph, farLabel)) {
+      const bucket = (out ? far.adjTo : far.adjFrom)?.get(typeName);
+
+      if (bucket === undefined || bucket.size === 0) {
+        continue;
+      }
+
+      if (farLabel !== undefined && !matchesLabel(far, farLabel)) {
+        continue;
+      }
+
+      binding.set(farVar, far);
+
+      // ONCE PER FAR VERTEX, and before the edge loop — the whole item. Sound because the caller's
+      // gate makes the predicate far-only and raise-free; see this walk's header.
+      if (!satisfies(far, farPred, binding, params, graph)) {
+        continue;
+      }
+
+      // NO FOLD: the start label can reject an edge, so the row count is not the bucket size. One
+      // `projectRow` per surviving edge, which is what the start-driven walk did for every row.
+      for (const edge of bucket) {
+        if (!matchesLabel(out ? edge.from : edge.to, startLabel)) {
+          continue;
+        }
+
+        rows.push(projectRow(proj, binding, params, graph));
       }
     }
 
