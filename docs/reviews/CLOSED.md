@@ -92892,7 +92892,7 @@ NO ENGINE BEHAVIOUR CHANGED — this entry and two corrected ones.
 
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects.
 
-## Item 1938 — ⚠️⚠️ **A GATE ON "NON-VACUOUS" WOULD BE A 25x REGRESSION on selective labels**, and item 1936's 7.23x sits in a narrow band. Measured across the selectivity range the edge-driven arm is worth **1.4x-4x above ~30% coverage and loses below ~20%** — so this needs a COST gate, not a boolean, and the threshold needs sweeps this item did not do
+## Item 1938 — ⚠️⚠️ **A GATE ON "NON-VACUOUS" WOULD BE A 25x REGRESSION on selective labels**, and item 1936's 7.23x sits in a narrow band. Measured across the selectivity range the edge-driven arm is worth **1.4x-4x above ~30% coverage and loses below ~20%** — so this needs a COST gate, not a boolean, and the threshold needs sweeps this item did not do ✅ **The two sweeps it asked for are DONE at item 1939: the crossover is stable at 0.18-0.35 across 4x size and 5x fanout, so a constant threshold of ~0.4 is defensible, with 2.6x-5.1x above it**
 
 Item 1937 framed the target correctly (a new edge-iterating walk, 7.23x) and left the build next.
 ❌ **Measuring the gate's INPUT first changed the proposition, and would have caught a bad
@@ -92950,6 +92950,71 @@ plus a cost threshold needing two more sweeps, in a file where a new walk varian
 16% on unrelated shapes. ⚠️ And the naive version of this change — gate on `!vacuousLabel` — is a
 **25x regression** on any selective label, which is the trap this item exists to have found before
 the code did.
+
+NO ENGINE BEHAVIOUR CHANGED — one instrument and this entry.
+
+GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects.
+
+## Item 1939 — ✅ **THE CROSSOVER IS A STABLE CONSTANT: 0.18-0.35 across a 4x size range and a 5x fanout range**, so the gate can be a constant (~0.4, conservative) rather than a function of the edge:node ratio — with **2.6x-5.1x** above it. ⚠️ Two instrument faults found on the way, both named in notes already written
+
+Item 1938 found the crossover at ~0.2 from ONE fixture at ONE size and ONE fanout and refused to
+build a threshold on it. This runs both sweeps CLAUDE.md requires.
+
+      `crossover-sweep-1939.mjs`, median of 3, every vertex an edge source so `|E|` is constant
+      as coverage varies. "crossover" = the LOWEST coverage at which edge-driven still wins:
+
+        nodes  fanout   E:V   crossover   ratio there   ratio at 0.6
+        50000       1     1        0.25         1.72x          3.39x
+        50000       2     2        0.35         4.78x          4.32x
+        50000       5     5        0.18         1.72x          5.05x
+       200000       1     1        0.18         1.13x          2.60x
+       200000       2     2        0.18         1.36x          3.99x
+       200000       5     5        0.18         1.23x          3.05x
+
+🔑 **I EXPECTED IT TO MOVE AND IT DOES NOT, which is the useful result.** The crossover is a ratio
+between an O(|E|) arm and an O(tCount x degree) one, so changing the edge:node ratio moves the two
+sides by different amounts — the crossing point had every reason to track fanout. Across 1:1 to 5:1
+and 50k to 200k it stays in **0.18-0.35**. (The single 0.35 cell reports a ratio THERE of 4.78x,
+above its own 0.6 reading of 4.32x, which is noise at REPS=3 — the crossover estimate has about one
+step of resolution, so read the band and not the cell.)
+
+**So a constant gate is defensible.** A threshold of ~0.4 sits above every observed crossover in
+every cell and so can only decline a win, never cause a regression; the win above it is 2.6x-5.1x.
+That is the number item 1938 said a build needs and could not supply.
+
+## ⚠️ Fault 1: the exit code lied, and the TRAILING NOTE is what caught it
+
+The first run printed five of six cells and I nearly took it as the answer. It was not: the program
+died mid-sweep, and `timeout … | tail` reports **TAIL's** status, so the run read as `exit 0`.
+CLAUDE.md warns about exactly this for `clippy | grep` ("piping into `grep -c` and chaining with
+`&&` takes the exit status from `grep`") — the same trap through a different command. 🔑 The signal
+was structural, not numeric: **the probe's own trailing note was missing**, which is an argument for
+ending a long-running instrument with a line that only prints on completion.
+
+## ⚠️ Fault 2: and the cause was the sweep's SHAPE, which a memory already names
+
+[[graph-pinned-until-microtask-drain]]: "a discarded Graph is retained IN FULL by its pending
+`drainMutations` microtask; synchronous build/compute/discard loops OOM. Bounded, not a leak." This
+sweep builds **42 graphs in one process** in exactly that shape. Yielding to the microtask queue
+between cells (`await new Promise((r) => setTimeout(r, 0))`) fixes it, and the whole sweep then
+completes with its note and a true `EXIT=0`. The missing cell had run fine alone, which is what
+pointed at accumulation rather than that cell being too large.
+
+## 🔭 The build is now fully specified
+
+- **Where:** `hop-projection.ts`, the branch at `farPred === undefined && gate === undefined &&
+!needsStart` with `types.length === 1` — so nothing reads the start vertex and the walk binds only
+  `farVar`.
+- **What:** a third walk iterating `graph.edgesByLabel.get(typeName)`, testing both endpoint labels
+  with `matchesLabel`, binding `farVar`, calling `projectRow`.
+- **Gate:** route to it when the far-driven arm declines ONLY for label non-vacuity (not for
+  `startDrivenForOrder`) AND the start label's coverage exceeds ~0.4.
+- **Guards:** tests comparing answers as MULTISETS (this arm emits in edge-bucket order where the
+  others emit in vertex order, and row order is unspecified — [[order-is-unspecified]]), a mutation
+  battery including a mutant that drops the coverage test (which the 0.01-coverage cell catches as a
+  25x regression), and the byte-identity fuzzers.
+- **Expected:** 2.6x-5.1x on the most common shape in the language for graphs above the threshold;
+  no change below it.
 
 NO ENGINE BEHAVIOUR CHANGED — one instrument and this entry.
 
