@@ -29,6 +29,7 @@ import { outNeighbors, relTypeNames } from './adjacency.js';
 import { matchNode, relHasPredicate } from './bindings.js';
 import { compileExpr } from './core.js';
 import type { CClause, CNode, CReturnItem, CompiledExpr, EvalEnv, Params, Row } from './core.js';
+import { csrFor } from './csr-cache.js';
 import { freePredicateVars, hasSubquery } from './expr-analysis.js';
 import { seedVertices } from './matching.js';
 import { sortRowsByColumns } from './ordered-rows.js';
@@ -183,6 +184,14 @@ export type ReachSpec = {
    * branch first would mark it seen at the wrong depth and could exclude it.
    */
   maxDepth?: number;
+  /**
+   * Produce the reached set by an ACYCLIC DFS instead of the BFS (item 2004).
+   *
+   * ⚠️ Set only for a BOUNDED `MATCH ACYCLIC` — see `admissibleMode`. The BFS arm is untouched and
+   * its documented refusal of this mode still stands; this selects a different producer for the
+   * same `reached` list, which everything downstream reads identically.
+   */
+  acyclic?: boolean;
   isCount: boolean;
   /** For `count(DISTINCT <expr>)` with a non-bare arg (e.g. `b.k`): the compiled
    *  arg to evaluate + dedup per reached vertex. Undefined = bare `count(DISTINCT
@@ -245,13 +254,130 @@ export const runReach = (spec: ReachSpec, graph: Graph, params: Params): Row[] =
     }
   };
 
-  for (const s of seeds) {
-    for (const w of nbrs(s)) {
-      push(w);
+  /*
+   * ⚠️⚠️ **THE ACYCLIC ARM, AND IT REPLACES ONLY HOW `reached` IS PRODUCED** (item 2004). Everything
+   * below — the `bLabel` filter, the count arm, the projection, DISTINCT, ordering and windowing —
+   * reads `reached` and is mode-agnostic, so this is the whole change.
+   *
+   * 🔑 WHY A DFS AND NOT A CORRECTED BFS: item 2003 refuted the cheap cure by MEASUREMENT. A BFS
+   * computes WALK reachability; ACYCLIC diverges from it, and the divergence is NOT confined to the
+   * self-loop case once the sources are restricted — seeded at `b` over `b->x, x->b`, SIMPLE reaches
+   * `b` by the closed path `b->x->b` while ACYCLIC cannot, and `b`'s in-neighbour is `x`, not
+   * itself. Unseeded that probe found 20 divergences, ALL of them the closed case, which made a
+   * correction look sound; seeded it found 26 with only 15 closed. A DFS carrying the visited set has
+   * no correction to be wrong about — acyclicity is its loop condition, which is item 2002's lesson.
+   *
+   * ⚠️ `visited` IS THE PATH, NOT THE ANSWER, and the two must not be confused. `seen`/`reached`
+   * accumulate the ANSWER across all sources and are never unwound; `visited` is the current path's
+   * vertex set and is pushed and popped per step. Sharing one set would prune a vertex from every
+   * later path merely because an earlier path reached it — answering a spanning tree rather than the
+   * reachable set.
+   */
+  if (spec.acyclic) {
+    /*
+     * ⚠️⚠️ **OVER THE CSR, NOT OVER `Vertex` OBJECTS, AND THAT IS WORTH 3.3x.** The first version of
+     * this arm walked `nbrs(v)` — `outNeighbors`, which ALLOCATES a `Vertex[]` per step — and keyed
+     * three `Set<string>` lookups on `v.id` per edge. Correct, and **240.70 ms** at 40,000 vertices
+     * against the 1405.80 it replaced. But item 2002's count DFS does the IDENTICAL traversal in
+     * 42 ms, and the only difference is representation: `Int32Array` neighbour slots and integer
+     * sets. Rewritten on `csrFor` (already cached, and shared with every other rung that asks for
+     * the same direction and type set) the same arm reads **50.27 ms** — 3.3x better than the first
+     * version at 40,000 vertices, and 28.0x the 1405.80 it replaced.
+     *
+     * ⚠️⚠️ **IT NOW BEATS THE BFS ARM ON THE SAME SHAPE, which is a finding rather than a victory:
+     * `DISTINCT TRAIL` reads 64.44 ms and `DISTINCT` plain 66.61 in the same run.** A DFS that
+     * ENUMERATES acyclic paths is outrunning a BFS that visits each vertex once — so the BFS is
+     * paying for its representation, not its algorithm: `Set<string>` keyed on `v.id` plus an
+     * `outNeighbors` array allocation per step. That is a separate, larger target (every mode shares
+     * that arm) and item 2004 deliberately does NOT take it.
+     *
+     * 🔑 THE LESSON IS THE ONE `gremlin-values-is-the-floor` RECORDS: when a fused route lands well
+     * above a sibling doing the same work, suspect the DATA REPRESENTATION before the algorithm. The
+     * algorithm was right the first time.
+     */
+    const { order, idx, off, nbr } = csrFor(graph, !out, types);
+    // `visited` is the CURRENT PATH; `onPath` is its slot-keyed form. A Uint8Array rather than a
+    // Set: slots are dense small integers, so this is one byte a vertex and no hashing.
+    const onPath = new Uint8Array(order.length);
+    const inAnswer = new Uint8Array(order.length);
+    const walkSlot = (v: number, len: number): void => {
+      if (len === maxLen) {
+        return;
+      }
+
+      const end = off[v + 1];
+
+      for (let k = off[v]; k < end; k += 1) {
+        const w = nbr[k];
+
+        if (onPath[w] === 1) {
+          continue;
+        }
+
+        // Reached by an acyclic path of length `len + 1` >= 1, so it is in the answer. The gate
+        // admits only `min <= 1`; `minZero` adds the zero-length case separately below.
+        if (inAnswer[w] === 0) {
+          inAnswer[w] = 1;
+          seen.add(order[w].id);
+          reached.push(order[w]);
+        }
+
+        onPath[w] = 1;
+        walkSlot(w, len + 1);
+        onPath[w] = 0;
+      }
+    };
+    const maxLen = spec.maxDepth ?? 0;
+
+    for (const sv of seeds) {
+      /*
+       * ⚠️ `idx.get` CANNOT MISS, so there is no guard here — and that is ESTABLISHED rather than
+       * assumed (item 2004). `csrFor` builds `order` from `[...graph.verticesById.values()]`, so
+       * EVERY vertex has a slot, isolated or carrying only another edge type; and it keys its cache
+       * on `topologyVersion`, which `topology-version.test.ts` states advances SYNCHRONOUSLY and
+       * exists precisely so a consumer can cache an adjacency structure — so there is no staleness
+       * window either. A guard stood here with BOTH of those as its stated justification, in turn,
+       * and both were false. If a seed list ever named a vertex absent from `verticesById`, that
+       * would be an index-maintenance bug to fix at the index, not to mask inside a walk.
+       */
+      const slot = idx.get(sv)!;
+
+      /*
+       * ⚠️⚠️ **`onPath[slot] = 0` AFTER THE WALK, NOT `onPath.fill(0)` BEFORE IT — and a SURVIVING
+       * MUTANT is what found this** (item 2004). `walkSlot` unwinds every mark it sets, so when a
+       * seed's walk returns the only residue is that seed's OWN slot. The mutant deleting the reset
+       * entirely was answer-equivalent and survived every fixture, which is the proof: routing a
+       * later seed through an earlier one can never reach anything the earlier seed missed, because
+       * the depth cost is `1 + depth-from-that-seed`, strictly worse than that seed's own walk.
+       *
+       * Answer-equivalent, but NOT cost-equivalent. `fill(0)` is O(|V|) per seed, and an UNSEEDED
+       * query has |V| seeds — at 40,000 vertices that is 40,000 memsets of a 40 KB array, O(|V|^2)
+       * in total. Unwinding the one slot is O(1) per seed and measurably cheaper.
+       *
+       * 🔑 **A SURVIVING MUTANT IS NOT ALWAYS A MISSING TEST OR DEAD CODE — it can be a PERFORMANCE
+       * finding.** Item 1999 found two survivors that were dead code; this one is a third kind: the
+       * work was real, and the fact that removing it changed no answer is exactly what licensed
+       * replacing it with something cheaper.
+       */
+      onPath[slot] = 1;
+      walkSlot(slot, 0);
+      onPath[slot] = 0;
+    }
+
+    // ⚠️ `stack` IS LEFT EMPTY ON PURPOSE so neither arm below runs: `push` filled `reached` and
+    // `seen` directly. The BFS arms are reached only when `spec.acyclic` is false.
+    stack.length = 0;
+  } else {
+    for (const s of seeds) {
+      for (const w of nbrs(s)) {
+        push(w);
+      }
     }
   }
 
-  if (spec.maxDepth === undefined) {
+  if (spec.acyclic) {
+    // The acyclic arm above is complete; skip both BFS arms.
+  } else if (spec.maxDepth === undefined) {
     while (stack.length > 0) {
       for (const w of nbrs(stack.pop()!)) {
         push(w);
@@ -485,8 +611,52 @@ export const reachQuantifierIsExact = (q: Quantifier | undefined): boolean =>
  */
 export const needsGeneralMatcher = (p: PathPattern): boolean =>
   (p.selector ?? 'walk') !== 'walk' ||
-  !['trail', 'walk', 'simple'].includes(p.mode ?? 'trail') ||
+  !admissibleMode(p) ||
   p.segments.some((s) => s.rel.quantifier !== undefined && relHasPredicate(s.rel));
+
+/**
+ * ⚠️⚠️ **`acyclic` IS ADMITTED ONLY WHEN THE QUANTIFIER IS BOUNDED, and it does NOT use the BFS**
+ * (item 2004). The refusal documented above stands for the BFS — ACYCLIC genuinely is not set
+ * reachability — and item 2003 REFUTED the cheap alternative by measurement: a BFS plus a
+ * closed-case correction is UNSOUND, because with the sources restricted a 2-cycle diverges too
+ * (over `b->x, x->b` seeded at `b`, SIMPLE reaches `b` by the closed path `b->x->b` while ACYCLIC
+ * does not, and `b`'s in-neighbour is `x`, not itself). So `runReach` grows a separate DFS arm that
+ * produces the reached set directly, and only the SET production differs — the label filter,
+ * projection, DISTINCT, `count(DISTINCT b)`, ordering and windowing below it are mode-agnostic.
+ *
+ * 🔑 **BOUNDED IS WHAT MAKES IT SAFE WITHOUT A DECLINE, and that is the same argument item 2002's
+ * budget got wrong.** This rung CANNOT decline at runtime — `clauses.ts` returns
+ * `linear.reachShortcut(graph, params)` directly — so an arm that could blow up would be a hang
+ * with no way out. For a BOUNDED quantifier there is no such risk: the general matcher, which is
+ * what runs this shape today, enumerates the SAME acyclic path set and allocates a binding per path
+ * on top (item 2003's profile: `generatorResume` 20.3%, `withBinding` 5.5%, `projectBinding` 4.8%,
+ * `rowKey` 7.9%). The DFS visits that same set with none of it, so it is never the worse choice and
+ * needs no ceiling. An UNBOUNDED `->+`/`->*` has no such bound — the longest acyclic path is |V| —
+ * so it stays refused and keeps the general matcher, exactly where it is today.
+ */
+const admissibleMode = (p: PathPattern): boolean => {
+  const mode = p.mode ?? 'trail';
+
+  if (mode === 'trail' || mode === 'walk' || mode === 'simple') {
+    return true;
+  }
+
+  // ⚠️ `max` IS `null` FOR THE UNBOUNDED SPELLING and `undefined` when there is no quantifier at
+  // all, so `!= null` is the one test that excludes both — the only place in this file where the
+  // loose comparison is the clearer spelling rather than the sloppier one.
+  return isAcyclicMode(p) && p.segments.length === 1 && p.segments[0].rel.quantifier?.max != null;
+};
+
+/**
+ * Is this pattern's mode `acyclic`?
+ *
+ * ⚠️ A ONE-LINE HELPER BECAUSE A LINT GATE SAID SO, and the gate was right. Written inline in both
+ * places — `admissibleMode` and the `ReachSpec` construction — the `?? 'trail'` plus the comparison
+ * pushed `detectReachableShortcut` to a complexity of 36 against a cap of 35. Reading the mode in
+ * one named place is better anyway: the default spelling (`undefined` meaning `trail`) is a fact
+ * about the AST that should be stated once.
+ */
+export const isAcyclicMode = (p: PathPattern): boolean => (p.mode ?? 'trail') === 'acyclic';
 /**
  * ⚠️⚠️ A MULTI-ELEMENT REPETITION UNIT IS ONE SEGMENT, AND REFUSING IT IS A CORRECTNESS
  * CONDITION — item 1873 found this returning WRONG ROWS.
@@ -655,6 +825,7 @@ export const detectReachableShortcut = (
     minZero: q.min === 0,
     startGate,
     maxDepth: q.max ?? undefined,
+    acyclic: isAcyclicMode(m.patterns[0]),
     isCount: count !== null,
     countArg: count?.countArg,
     ...specWindow(projection, ordered),

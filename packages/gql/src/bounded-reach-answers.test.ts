@@ -200,17 +200,53 @@ describe('the bounded rung refuses what it must', () => {
    * ⚠️ ACYCLIC DIVERGES FROM SET REACHABILITY and must keep the enumeration path — the one-node
    * self-loop case `reachability.ts` records: ACYCLIC answers 0 where a BFS answers 1.
    */
-  test('ACYCLIC is refused, and answers 0 on a lone self-loop', () => {
+  /*
+   * ⚠️⚠️ **THIS TEST USED TO ASSERT THAT BOUNDED `ACYCLIC` DOES NOT TAKE THE RUNG, AND ITEM 2004
+   * DELIBERATELY REVERSED THAT — while the ANSWER half is unchanged and is the reason the reversal is
+   * safe.** The rung grew a separate DFS arm for a BOUNDED acyclic quantifier (`runReach`'s
+   * `spec.acyclic`); the BFS arm and its refusal are untouched, because ACYCLIC genuinely is not set
+   * reachability. Item 2003 refuted the cheap alternative by measurement: a BFS plus a closed-case
+   * correction is UNSOUND once the sources are restricted.
+   *
+   * 🔑 THE ANSWER ASSERTIONS BELOW ARE THE POINT, and they are IDENTICAL to what this test asserted
+   * before. A lone self-loop is the fixture the whole refusal was built on — `CLOSED.md` records it
+   * as the measured reason — so if the new arm answered like a BFS it would say `a` here.
+   */
+  test('bounded ACYCLIC now TAKES the rung, and still answers 0 on a lone self-loop', () => {
     const g = build([['1', 'a', 'a']]);
 
-    expect(routes('MATCH ACYCLIC (a:T)-[:E]->{1,3}(b:T) RETURN DISTINCT b.n AS x')).not.toContain(
+    expect(routes('MATCH ACYCLIC (a:T)-[:E]->{1,3}(b:T) RETURN DISTINCT b.n AS x')).toContain(
       'reachShortcut',
     );
+    // ⚠️ UNCHANGED FROM BEFORE ITEM 2004: the only acyclic path from `a` would repeat `a`.
     expect(reached(g, 'MATCH ACYCLIC (a:T)-[:E]->{1,3}(b:T) RETURN DISTINCT b.n AS x')).toEqual([]);
     // A BFS over the reached set would say `a`; TRAIL does, and that is the divergence.
     expect(reached(g, 'MATCH TRAIL (a:T)-[:E]->{1,3}(b:T) RETURN DISTINCT b.n AS x')).toEqual([
       'a',
     ]);
+  });
+
+  test('UNBOUNDED ACYCLIC is still refused — the DFS has no depth bound there', () => {
+    /*
+     * ⚠️ THE BOUND IS WHAT MAKES THE ARM SAFE WITHOUT A DECLINE. This rung cannot decline at
+     * runtime (`clauses.ts` returns its result directly), and for a bounded quantifier the DFS is
+     * safe because the general matcher — what runs the shape today — enumerates the SAME acyclic
+     * path set with a binding per path on top. An unbounded `->+` has no such bound: the longest
+     * acyclic path is |V|, so it stays on the general matcher.
+     */
+    for (const q of ['+', '*', '{1,}']) {
+      expect(routes(`MATCH ACYCLIC (a:T)-[:E]->${q}(b:T) RETURN DISTINCT b.n AS x`)).not.toContain(
+        'reachShortcut',
+      );
+    }
+
+    // And the answer is still right on the fixture the refusal was built on.
+    expect(
+      reached(
+        build([['1', 'a', 'a']]),
+        'MATCH ACYCLIC (a:T)-[:E]->+(b:T) RETURN DISTINCT b.n AS x',
+      ),
+    ).toEqual([]);
   });
 
   test('a bounded quantifier DOES take the rung, where an unbounded one already did', () => {

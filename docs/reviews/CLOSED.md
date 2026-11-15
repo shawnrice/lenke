@@ -97505,7 +97505,7 @@ GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-
 its count bodies, so the new route is exercised against the Rust engine rather than only against
 itself); gql 4,980 + 4 new; parity 63/63.
 
-## Item 2003 — 🔭 **`DISTINCT ACYCLIC` IS 22x ITS `TRAIL` TWIN (629.47 ms against 28.61) FOR THE SAME 97 VALUES, and it is the same route defect item 2002 fixed one projection over.** ⚠️⚠️ **And the CHEAP cure is REFUTED by measurement — a BFS plus a closed-case correction is UNSOUND, which only showed up once the SEED axis was varied. I nearly built it**
+## Item 2003 — ✅ **[TAKEN BY ITEM 2004: the DFS cure it chose shipped at 39.1x (1405.80 -> 35.99 ms), and the BFS-plus-correction this item refuted was indeed never built.]** **`DISTINCT ACYCLIC` IS 22x ITS `TRAIL` TWIN (629.47 ms against 28.61) FOR THE SAME 97 VALUES, and it is the same route defect item 2002 fixed one projection over.** ⚠️⚠️ **And the CHEAP cure is REFUTED by measurement — a BFS plus a closed-case correction is UNSOUND, which only showed up once the SEED axis was varied. I nearly built it**
 
 Item 2002 routed `count(*) ACYCLIC` to a DFS (19.5x) and said explicitly that `DISTINCT ACYCLIC` was
 untouched. This prices and diagnoses that half, and settles which cure it gets. **Nothing is built
@@ -97583,3 +97583,182 @@ was a cheap recurrence, and it declined the one case the route existed for while
 every correctness test.
 
 GATES. `bun run fmt` 0; `bun run check` 0. (Probes only — no engine code changed.)
+
+## Item 2004 — ✅ **`DISTINCT ACYCLIC` ROUTED TO A DFS REACHED-SET ARM: 1405.80 → 35.99 ms, 39.1x, and it now runs 1.72x FASTER than its `TRAIL` twin (61.75) and 1.66x faster than `plain` (59.80).** ⚠️ **A 3.3x of that was DATA REPRESENTATION, not algorithm — my first arm was correct at 240.70 ms.** ⚠️⚠️ **And it needs NO work budget, for the reason item 2002's budget got wrong**
+
+Takes item 2003's nomination. `needsGeneralMatcher` refused `acyclic`, so `DISTINCT ACYCLIC` ran the
+general matcher — enumeration, a binding per path, `projectBinding`, then `rowKey` to dedupe — where
+TRAIL took `reachability.ts`'s BFS. `runReach` grows a second producer for `reached`; the BFS arm and
+its documented refusal are untouched, because ACYCLIC genuinely is not set reachability.
+
+```text
+bound {1,2}, fanout 5, median of 5          5k        20k        40k    vs PRE
+DISTINCT ACYCLIC unseeded   PRE          126.07     626.69    1405.80
+                            POST           2.93      14.81      35.99    39.1x
+DISTINCT ACYCLIC WHERE-all  POST           2.71      14.69      34.88    43.0x
+DISTINCT ACYCLIC seeded-1%  POST           0.64       3.32       9.11     2.4x
+DISTINCT TRAIL   unseeded   control        3.14      27.41      61.75    flat
+DISTINCT plain   unseeded   control        4.79      28.26      59.80    flat
+count(*) ACYCLIC unseeded   control        4.67      21.37      43.02    flat (item 2002's route)
+```
+
+🔑 **NO BUDGET AND NO DECLINE, AND THAT IS A DERIVATION RATHER THAN AN OMISSION.** This rung CANNOT
+decline at runtime — `clauses.ts` returns `linear.reachShortcut(graph, params)` directly — so an arm
+that could blow up would be a hang with no exit. Item 2002 solved the same problem with a ceiling and
+got the ceiling WRONG, because it sized it against a cheaper arm that did not exist for that mode. The
+right question is what the ALTERNATIVE does: for a BOUNDED quantifier the general matcher prunes by
+the same visited-vertex rule while descending (`matchTrailEnds`' `marks`, which adds the source before
+it recurses — verified, not assumed), so it walks **exactly the same acyclic path set** and allocates
+a binding and an object-keyed `Set<Edge | Vertex>` on top. The DFS visits that set with none of it, so
+it is never the worse choice and nothing needs bounding. ⚠️ An UNBOUNDED `->+`/`->*` has no such bound
+— the longest acyclic path is |V| — so it stays refused and keeps the general matcher, where it is
+today.
+
+## ⚠️ 3.3x OF THIS WAS REPRESENTATION, AND THE ALGORITHM WAS RIGHT THE FIRST TIME
+
+The first arm walked `nbrs(v)` — `outNeighbors`, which ALLOCATES a `Vertex[]` per expanded vertex —
+and keyed three `Set<string>` lookups on `v.id` per edge. Correct, and **240.70 ms**: a 5.8x win,
+which is the sort of number that ends an investigation. But item 2002's count DFS does the IDENTICAL
+traversal in 42 ms, and the only difference was representation. Rewritten on `csrFor` (already cached,
+and shared with every rung asking for the same direction and type set) with `Uint8Array` markers on
+dense integer slots, the same algorithm reads **50.27 ms**, and a third step below took it to **35.99**.
+
+**WHEN A FUSED ROUTE LANDS WELL ABOVE A SIBLING DOING THE SAME WORK, SUSPECT THE REPRESENTATION BEFORE
+THE ALGORITHM** — [[gremlin-values-is-the-floor]]'s lesson on the other surface.
+
+⚠️⚠️ **AND THAT MAKES THE BFS ARM A NOMINATION RATHER THAN THIS ITEM'S VICTORY.** A DFS that
+ENUMERATES acyclic paths now outruns a BFS that visits each vertex once. The BFS is paying for its
+representation, not its algorithm, and the profile prices it exactly (`DISTINCT TRAIL`, 20,000
+vertices, 23.88 ms/rep): **`runReach` self 39.9% = 9.535 ms/rep and `push` 29.5% = 7.050**, i.e.
+**69.4% of the row is set production**, where `push` is `seen.has(w.id)` / `seen.add(w.id)` /
+`reached.push(w)` on STRING keys. `outNeighbors` is only 0.610 ms/rep despite the per-vertex
+allocation, and the label `filter` is 1.854. That arm is shared by the default mode, WALK, TRAIL and
+SIMPLE — the broadest target this stretch has found, and deliberately NOT taken here.
+
+## ⚠️ A PRE-EXISTING ROUTE TEST FIRED, CORRECTLY, AND ITS ANSWER HALF IS WHY THE REVERSAL IS SAFE
+
+`bounded-reach-answers.test.ts` asserted that bounded ACYCLIC must NOT take this rung. Item 2004
+reverses that assertion deliberately — and keeps its ANSWER assertions untouched: a lone self-loop
+still yields `[]`, where a BFS says `a` and TRAIL does. A new test pins that UNBOUNDED acyclic is
+still refused at `+`, `*` and `{1,}`.
+
+CROSS-ENGINE. `acyclic-selfloop-parity.test.ts` grew to **74 cases**, adding `DISTINCT ACYCLIC` at
+five bounds **both seeded and unseeded** — the seed axis is there because item 2003's whole finding was
+that the unseeded case hides divergences. ⚠️ Compared as sorted MULTISETS, not sequences: `DISTINCT`
+carries no `ORDER BY`, GQL row order is unspecified, the differential fuzzer compares these
+structurally for that reason, and the new arm is depth-first beside a breadth-first BFS so it
+legitimately emits in a different order. Pinning sequence order would pin an accident. Plus a case
+asserting the lone self-loop yields nothing where TRAIL yields one row, so the fixture is
+discriminating.
+
+⚠️ ANSWERS VERIFIED UNCHANGED by item 2003's own divergence oracle, which compares ACYCLIC against
+SIMPLE across twelve hazard fixtures at six bounds: **identical counts at every seed** (20/26/22/12 at
+none/0/1/2) before and after. Since the BFS side is untouched, identical divergences means identical
+ACYCLIC answers.
+
+## ⚠️⚠️ TWO WRONG JUSTIFICATIONS FOR FOUR LINES, AND THE GUARD IS NOW DELETED AS GENUINELY DEAD
+
+Item 2002 shipped a `if (slot === undefined) continue` guard with a note claiming the condition is
+"REACHABLE today — an isolated vertex, or one with only edges of another type". **That is false:**
+`csrFor` builds `order` from `[...graph.verticesById.values()]`, so EVERY vertex has a slot, isolated
+or not. I then reached for a second justification — cache staleness, since my own notes record version
+counters advancing only on the microtask drain — and **that is false too:** `topologyVersion`, which
+is what `csrFor` keys on, has a dedicated test file stating it advances SYNCHRONOUSLY and exists
+precisely so a consumer can cache an adjacency structure (item 1571 designed it for that).
+
+Both properties together make `idx.get(v)` never `undefined` for a graph vertex. The guard is dead,
+established rather than asserted, so it is DELETED in both places. ⚠️ If a seeked source list could
+ever yield a vertex absent from `verticesById`, that is an index-maintenance bug to fix at the index,
+not to mask inside a walk.
+
+## ⚠️ AND THE MUTATION HARNESS WAS 25x TOO SLOW AND BLIND, WHICH COST FIVE LOOP TICKS
+
+`run_test` called `bun run build` at the repo ROOT — all 21 packages, ~2.5 minutes — when the parity
+test reads only `@lenke/gql`'s dist. At 14 mutants that is ~38 minutes; the round was killed after 6.
+`nx build @lenke/gql` takes **6 seconds**. ⚠️ And the invocation piped the script through `tail`, which
+buffers until exit, so a 16-minute round showed an EMPTY progress file and "working" was
+indistinguishable from "wedged". ⚠️ Killing it left a mutant (`depth-unbounded`) in the tree — exactly
+what CLAUDE.md's "restore before applying the next mutant" is about — recovered from the pristine copy
+under `target/` and verified byte-identical before relaunching.
+
+## ⚠️⚠️ A THIRD STEP, 1.39x, FOUND BY A **SURVIVING MUTANT** — a category neither 1998 nor 1999 had
+
+`path-not-reset` (deleting `onPath.fill(0)`) survived every fixture I built for it, including the
+non-saturated one. Rather than add a sixth assertion I asked whether it COULD be killed, and it
+cannot: `walkSlot` unwinds every mark it sets, so when a seed's walk returns the only residue is that
+seed's OWN slot — and routing a later seed THROUGH an earlier seed can never reach anything that seed
+missed, because the depth cost is `1 + depth-from-that-seed`, strictly worse than its own walk. The
+mutant is answer-equivalent by construction.
+
+**Answer-equivalent, and NOT cost-equivalent — which is what the survival licensed.** `fill(0)` is
+O(|V|) per seed, and an UNSEEDED query has |V| seeds: at 40,000 vertices that is 40,000 memsets of a
+40 KB array, O(|V|^2) in total. Replaced by unwinding the single seed slot after the walk:
+**50.27 → 35.99 ms, another 1.39x.**
+
+🔑 **SO A SURVIVING MUTANT HAS AT LEAST THREE MEANINGS, and only one of them is "add a test".** Item
+1999 found two survivors that were DEAD CODE (one of them a guard strictly narrower than the line
+after it). Item 2004 found one that was a PERFORMANCE FINDING: the work was real, and the proof that
+removing it changed no answer is exactly what made it safe to do more cheaply. The replacement line
+is itself a declared expected survivor now, with that proof recorded in the mutant list rather than a
+shrug.
+
+## ⚠️ AND SIX SURVIVORS TRACED TO ONE FIXTURE PROPERTY: SATURATION
+
+The first full round caught 8 of 14. Three survivors — `no-backtrack`, `path-not-reset` and
+`direction-ignored` — shared a single cause: **with every vertex a seed, the reached set is
+`{v : v has an in-edge}` whatever the DFS does deeper**, because each vertex is found at depth 1 from
+its own in-neighbour. `direction-ignored` is the same fact one axis over: forward-reachable-from-
+anything is `{v : has an in-edge}` and backward-reachable is `{v : has an out-edge}`, and on a ring
+where every vertex has both those are the SAME SET. The seeded arm did not help either — `x.n = 3`
+gives ~9 seeds spread around a vertex-transitive ring, which still reaches everything.
+
+⚠️ **THIS IS THE THIRD TIME IN FIVE ITEMS that an answer invariant to the varied property validated
+nothing** (item 2002's reverse-isomorphism, item 2003's seed axis, this). The through-line: **broad
+seeds plus a symmetric graph saturate the reached set, and saturation hides every pruning and
+direction defect at once.**
+
+One fixture fixes them, built from the three properties saturation lacks — a NARROW seed (one vertex
+carries `k = 1`), a vertex reachable at TWO DEPTHS with children beyond it (`s->p->q->r` plus `s->r`,
+then `r->t->u`: correct backtracking enters `r` at depth 1 and finds `t`/`u`, a stuck mark does not),
+and ASYMMETRIC direction plus a second edge type (`s` has no in-edges, so the inward answer is EMPTY
+where the outward is not; `f` is reachable only through an `F` edge). ⚠️ Plus a MIRRORED pair of
+shared-intermediate components, because the across-seed case depends on seed ORDER and one component
+would pass by ordering luck half the time.
+
+⚠️ **AND `count(DISTINCT b)` HAD NO COVERAGE AT ALL, which a survivor exposed.** `answer-dupes`
+survived because `RETURN DISTINCT` dedupes downstream — but when the projection is a bare
+`count(DISTINCT b)`, `runReach` answers `kept.length`, the reached LIST's length. A walk pushing a
+vertex once per path (and this fixture reaches `r`, `m` and `mm` by two routes each) would have
+inflated that count while every DISTINCT assertion stayed green. Now asserted at 15, against native.
+
+FINAL ROUND: 14 mutants, **12 CAUGHT, 1 declared expected survivor** (above), 1 ANCHOR-DID-NOT-APPLY
+because the line it mutated was deleted as dead. ⚠️ **Eight of the twelve are PARITY-ONLY** (`gql=0`):
+the cross-engine test sees what 4,985 GQL tests cannot.
+
+## ⚠️ THE HARNESS NEEDED THREE FIXES BEFORE IT COULD DO ITS JOB, and that cost ~10 loop ticks
+
+- **A 25x-too-slow build.** `run_test` called `bun run build` at the ROOT — all 21 packages, ~2.5
+  minutes — when the parity test reads only `@lenke/gql`'s dist. 14 mutants came to ~38 minutes.
+  `nx build @lenke/gql` takes **6 seconds**.
+- **NO PER-MUTANT TIMEOUT.** CLAUDE.md requires a timeout AND a memory cap because they catch
+  DIFFERENT failures — "an infinite loop that does NOT allocate never trips `MemoryMax` at all". The
+  cgroup cap was there from the start; the timeout was not, and `depth-unbounded` is exactly that
+  shape: strip the depth cap and the DFS enumerates every acyclic path in the fixture. One mutant
+  swallowed the whole budget. With `timeout 120` it reports **CAUGHT (parity=124)** — the exit code
+  IS the catch.
+- **PIPED THROUGH `tail`,** which buffers until exit, so a 16-minute round showed an EMPTY progress
+  file and "working" was indistinguishable from "wedged". Checking that is what found the other two.
+
+⚠️ Killing the round twice left a mutant in the tree both times (`depth-unbounded` once), recovered
+from the pristine copy under `target/` and verified byte-identical before relaunching — which is what
+CLAUDE.md's "restore before applying the next mutant, never only after the loop" is about.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21
+(⚠️ one run exited 1 and NX flagged `@lenke/native:test` FLAKY — [[sync-test-flake-is-timing]] records
+that this project flakes under `run-many` only; isolated it is **1388 pass / 0 fail**, so the exit was
+the known flake and not this change); `bun run fuzz` 7/7; gql 4,985; parity 79/79.
+
+⚠️ A LINT GATE SHAPED THE CODE TWICE, correctly both times: `detectVarLengthCount` hit complexity 38
+against a cap of 35 at item 2002 (the acyclic closure moved to its own module), and
+`detectReachableShortcut` hit 36 here (the mode read became a one-line `isAcyclicMode` helper used by
+both sites). Reading the AST's default-mode spelling in one named place is better anyway.

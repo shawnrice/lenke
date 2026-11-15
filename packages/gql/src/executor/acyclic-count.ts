@@ -152,27 +152,16 @@ export const acyclicPerSourceCount = (graph: Graph, spec: AcyclicCountSpec): num
   };
 
   for (const s of src) {
-    const slot = idx.get(s);
-
     /*
-     * A source outside the CSR cannot start a path through it. `idx` is keyed by the vertices the
-     * tables were built over, so a source list may name one that carries no edge of these types —
-     * an isolated vertex, or one with only edges of another type. The parity fixture has both.
-     *
-     * ⚠️ **A MUTANT REMOVING THIS GUARD SURVIVES, and the mechanism is verified rather than
-     * assumed** (item 2002). Without it `slot` is `undefined`, so `off[undefined + 1]` is `off[NaN]`
-     * which is `undefined`, the `for` bound `k < undefined` never holds, and at `len === 0` the
-     * `len >= 1` test short-circuits before `passes(order[undefined])` can be reached. So the answer
-     * is unchanged and no test can distinguish the two — confirmed by running the mutant, not by
-     * reading it.
-     *
-     * It is KEPT, and not as speculation about future changes: the condition is REACHABLE today and
-     * the guard is what makes "skip this source" the stated behaviour rather than an accident of
-     * NaN index semantics that any edit to the loop bound would quietly remove.
+     * ⚠️ `idx.get` CANNOT MISS, and a guard here was DELETED at item 2004 after two false
+     * justifications. `csrFor` builds `order` from `[...graph.verticesById.values()]`, so every
+     * vertex has a slot — an isolated one and one carrying only another edge type included, which is
+     * what the guard's note claimed made it reachable. Its second justification, a staleness window,
+     * is false too: `topologyVersion` advances SYNCHRONOUSLY and exists so an adjacency structure
+     * CAN be cached (`topology-version.test.ts`, item 1571). A seed absent from `verticesById` would
+     * be an index-maintenance bug, to fix at the index rather than mask in a walk.
      */
-    if (slot === undefined) {
-      continue;
-    }
+    const slot = idx.get(s)!;
 
     seen.clear();
     seen.add(slot);
