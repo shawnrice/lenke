@@ -92299,7 +92299,7 @@ its first rows with the right one.
 
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers.
 
-## Item 1930 — **PRICED, NOT BUILT: the GQL sort residual is the COMPILED-KEY ROUTE, not the expression** — 238 ns a row against the arithmetic's 31 — and the remaining lever needs a post-projection sort arm for 1.69x-1.9x. ⚠️ Also corrects the screen's own pairing: `HOP start-only proj, far key` has no valid control on it
+## Item 1930 — **PRICED, NOT BUILT: the GQL sort residual is the COMPILED-KEY ROUTE, not the expression** — 238 ns a row against the arithmetic's 31 — and the remaining lever needs a post-projection sort arm for 1.69x-1.9x. ⚠️ **ITS STATED BLOCKER IS MIS-SCOPED — see item 1960: the windowed-sort fault rule is GATED ON `windowed` in the code, so it does not reach the non-windowed shape the screen nominates, and changing the sort key's SOURCE does not change which rows get projected at all.** ⚠️ Also corrects the screen's own pairing: `HOP start-only proj, far key` has no valid control on it
 
 Item 1929 closed the equivalent-spelling half of this family (`ORDER BY x + 1` reaching no rung,
 3.2-3.4x). What remained was the within-rung residual item 1902 described and mis-attributed. This
@@ -94203,5 +94203,75 @@ already says to verify a heading against the SOURCE before trusting its number; 
 instance in this session (items 1923, 1949/1951, and now 1862/1863).
 
 NO ENGINE BEHAVIOUR CHANGED — two heading corrections and this entry.
+
+GATES. `bun run check` 0.
+
+## Item 1960 — the GQL screen's realistic-mode nomination, and ⚠️ **item 1930's "not built because the fault rule" turns out to be MIS-SCOPED**: that rule is gated on `windowed`, and changing a sort key's SOURCE does not change which rows get projected
+
+Back to GQL after five Gremlin items. `MIXED=1` on the coverage screen at 200,000 vertices /
+1,000,000 edges. 🔑 **This screen runs ONE CHILD PROCESS PER SHAPE**, so unlike the Gremlin workload
+screen it cannot produce item 1958's interference artifact — its rows are comparable as measured.
+
+```text
+  21494.55 ms        8 rows   CONTROL varlen {2,3}      ⬅ documented refusal, items 1879/1880
+   2199.65     2,099,864      any shortest              ⬅ item 1908: no lever >= 5%
+    748.95       500,000      path accessor edges(p)[0] ⬅ item 1916: 71% is the var-length match
+    746.18       500,000      path value + edges()      ⬅ same
+    581.43       799,997      HOP expr key, OFFSET no LIMIT
+    576.55       800,000      HOP start-only proj, far key
+    568.41       800,000      HOP order by EXPRESSION   ⬅ the nomination
+    353.17       800,000      HOP order by alias        ⬅ its twin, 1.61x cheaper
+```
+
+**CLOSED.md stopped me twice before I measured anything**: the 21.5-second top row is items
+1879/1880's documented refusal (a length-in-[2,3] TRAIL is not a level-BFS question, and item 1252
+measured the wrong answer admitting it gives), and the 2.2-second second row is item 1908's. The two
+path rows are 71% var-length match by item 1916's correction, not path value. That is four of the
+top five priced and closed before a single new measurement — the list working as intended.
+
+**THE NOMINATION IS THE `ORDER BY` EXPRESSION/ALIAS PAIR, and it is item 1930's priced lever.**
+`RETURN b.n AS x ORDER BY b.n + 1` at 568.41 against `… ORDER BY x` at 353.17. Item 1930 split that
+residual correctly — the arithmetic is 31 ns a row, the **compiled-key route is 238** and is paid by
+a bare property key with no arithmetic in it — and priced the fix at 1.69x on the hop. Then declined
+it:
+
+> _"it lands squarely on the windowed-sort FAULT RULE that items 610/1062/1903 all turn on —
+> projecting before ranking raises on rows the query may never emit"_
+
+⚠️⚠️ **THAT IS NOT WHAT THE CODE SAYS, and [[check-the-blocker-still-holds]] is why I read it.**
+`outputColumnSorts` gates the fault rule on the window:
+
+```ts
+if (windowed && (limit === 0 || !ret.projection.items.every((it) => cannotFault(it.expr)))) {
+  return null;
+}
+```
+
+So **with no window the arm already projects every row and then sorts** — there are no un-emitted
+rows for a projection to raise on, and the shape the screen nominates (`ORDER BY b.n + 1`, no `SKIP`,
+no `LIMIT`) is exactly that case. The module's own HEADER still states the older, stricter rule
+("There must be NO WINDOW"), which item 610 relaxed in the code; reading the header alone reproduces
+item 1930's conclusion, which is probably how it was reached.
+
+🔑 **AND THE STRONGER POINT: the fault rule is ORTHOGONAL to this lever.** It governs _which rows get
+projected_. Changing the sort key's SOURCE — from a compiled key over the binding to an expression
+over the already-projected row — does not change that set: every row is projected in the
+non-windowed case either way, and in the windowed case the existing `cannotFault` gate already
+decides it. The key itself is evaluated for every row on BOTH routes, since you cannot sort without
+it, so the key's own faults are identical. ⚠️ Item 1930's restriction of the substitution to `prop`
+keys was justified on exactly this basis ("a property read CANNOT FAULT … so substituting it cannot
+disturb the windowed-sort fault rule"), which is sound for the WINDOWED case and is the reason the
+restriction got applied to both.
+
+**THE PLAN, so the next tick builds rather than re-derives.** Extend the key form `sortsOnOutputNames`
+admits: today a `var` naming a column, plus item 642's `prop` exactly equal to a projected item's
+expression. Admit an expression whose `prop`/`var` leaves are each exactly a projected item's
+expression, rewriting each leaf to its column reference, then sort by that expression over the
+output rows. Value-identical by item 1929's argument in reverse. Gated as today — unchanged for the
+windowed case. ⚠️ It is still a NEW ARM (evaluating an expression over a `Row` rather than a
+binding), so item 1930's cost estimate stands even though its blocker does not; what changes is that
+the reason for declining was wrong.
+
+NO ENGINE BEHAVIOUR CHANGED — one heading correction and this entry.
 
 GATES. `bun run check` 0.
