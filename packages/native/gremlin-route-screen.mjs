@@ -39,9 +39,15 @@
  *                          overstates it badly.
  *     scan: id             DECLINED at item 1858, ~1.6x.
  *
- * The one still open is `scan: dedupe values`, priced at item 1868: **11.96 ms** producing 997
+ * ~~The one still open is `scan: dedupe values`, priced at item 1868: **11.96 ms** producing 997
  * rows from 200,000 values, against the fused floor's 5.81 ms for emitting all 200,000. A fused
- * walk accumulating into a `Set` emits 200x fewer rows, so ~2.4x looks available.
+ * walk accumulating into a `Set` emits 200x fewer rows, so ~2.4x looks available.~~
+ * ✅ **TAKEN AT ITEM 1869 — 2.20x, and this screen's own output has reported it `fused` ever since.
+ * Struck at item 1970.** ⚠️ It was closed by the item IMMEDIATELY after the one that priced it,
+ * which is CLAUDE.md's measured pattern (22 of 40 stale lines in one sweep were closed by the very
+ * next item) — and a header that says "read this before pricing one again" pointing at a closed
+ * target is the exact cost that rule exists to prevent. **So: all six `scan:` disagreements are now
+ * settled, and none of them is open.**
  *
  * ⚠️ AND THE PARAMETER-AXIS GAP ITEM 1867 FIXED ON THE GQL SIDE HAS NO TWIN HERE. A Gremlin
  * traversal is an OBJECT with literal numbers — there is no `Params` type anywhere in

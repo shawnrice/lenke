@@ -94809,3 +94809,57 @@ behaviour that the only known cure makes worse elsewhere. ⚠️ Treat a `getVer
 NO ENGINE BEHAVIOUR CHANGED — one probe and this entry.
 
 GATES. `bun run check` 0.
+
+## Item 1970 — **the Gremlin route disagreements, priced: four are NOT cost gaps and ONE is — `dedupe().by(k).values(w)` costs 2.07x `.values(k)` for the identical 97 rows** (524 against 253 ns a visit, ~271 ms absolute). ⚠️ Plus a stale "still open" line in the route screen's own header, closed by the item immediately after it
+
+`gremlin-route-screen.mjs` lists 23 generic routes and then says the useful thing itself: _"A generic
+route is NOT a defect on its own… The candidates are the DISAGREEMENTS, and each still needs pricing
+against its own sibling (item 1854: a route difference is not always a cost one)."_ So this prices
+them.
+
+⚠️ **FIRST, FIVE OF THEM ARE ALREADY ANSWERED IN THAT HEADER** — `scan: order values` NOT a gap
+(items 1574/1576), `fold` FLAT (1585), `limit values` TINY (1660), `has values` and `id` DECLINED
+(1858). Measuring those would have been re-deriving five closed results, and the header is why I did
+not.
+
+⚠️⚠️ **AND ITS SIXTH LINE WAS STALE.** The header states _"The one still open is `scan: dedupe
+values`, priced at item 1868… ~2.4x looks available"_ — while the screen's own OUTPUT has reported
+that row `fused` ever since **item 1869 took it at 2.20x**, the item immediately after the one that
+priced it. CLAUDE.md measures that pattern (22 of 40 stale lines in one sweep closed by the very next
+item), and a header whose instruction is _"read this before pricing one again"_ pointing at a closed
+target is the precise cost the rule exists to prevent. Struck, with the closing number.
+
+**THEN THE UNPRICED ONES — and my first cut paired shapes that ask different questions, which the
+CONTROL caught.** `both('E')` against `out('E')`, both fused, read **5.00x**: `both` visits 2,000,000
+elements and `out` 1,000,000, so the shared denominator was wrong. Three of the five `ded:` rows have
+the same defect by construction (`values('k','w')` emits two values per element; `dedupe()` over
+elements yields 200,000 rows where over values it yields 12) — a ratio between those is a ratio
+between two questions. Rebuilt with the screen's own definitions and a control that is actually a
+control (two fused arms, same visits, differing only in which property they read):
+
+```text
+  pair                                            generic   fused   ratio   rows
+  ded: dedupe.by(k).values(w) vs .values(k)           524     253    2.07x   97/97
+  opt: optional count vs optional values               54      97    0.56x    1/1M
+  CONTROL out.values(k) vs out.values(w)               97      93    1.05x   1M/1M   ⬅ sound
+```
+
+✅ **`opt: optional count` IS NOT A COST GAP** (0.56x — the generic arm is _faster_, since a count
+emits one row instead of projecting a million), and neither are the lazy `limit` rows, which
+short-circuit to ~0 ms. Four disagreements, no cost.
+
+🔑 **THE ONE REAL FIND, and it is a big one.** `V().out('E').dedupe().by('k').values('w')` against
+`…values('k')`: same hop, same `dedupe().by('k')`, **the identical 97 rows**, and the only difference
+is whether the projected key IS the dedupe key. The fused rung takes the first spelling and declines
+the second — **2.07x, and 524 ns a visit over 1,000,000 visits is ~524 ms against 253**, which is
+larger in absolute terms than anything on the Gremlin workload screen except `tree()`. That is the
+next build: let the fused dedupe rung project a key other than the one it deduped on.
+
+⚠️ The screen's remaining `ded:` rows (`labelled dedupe`, `multi key values`, `deduped then limit`)
+are NOT dismissed — they are UNPRICED, because no comparable sibling exists for them in the screen
+and inventing one is what produced the 5.00x above. Pricing them needs a fixture built for each, not
+a ratio against a shape that answers something else.
+
+NO ENGINE BEHAVIOUR CHANGED — one instrument, one header correction, and this entry.
+
+GATES. `bun run check` 0.
