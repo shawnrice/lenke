@@ -86751,7 +86751,7 @@ NO ENGINE CODE CHANGED. One new instrument; the findings above are the deliverab
 GATES. Not applicable — no source change. The screen and the Gremlin bench both ran under the cgroup
 cap and are quoted above.
 
-## Item 1860 — the dense two-hop count is a REAL 4.05x and is DECLINED, because item 1695's criterion says so; and the chain arm's own write exposure is 7.95x, which that item did not measure
+## Item 1860 — the dense two-hop count is a REAL 4.05x and is DECLINED, because item 1695's criterion says so; and the chain arm's own write exposure is 7.95x, which that item did not measure ⚠️ **THE DECLINE NO LONGER HOLDS: item 1982 re-opened it — the criterion guards against a WASTED build, and item 1889's second-ask policy removes the waste. The target is arm A2405 (the unfiltered degree inner product), NOT the walk this item measured.**
 
 ⚠️ **TWO CORRECTIONS FROM ITEM 1861, both to numbers below rather than to the decline.** (1) The
 rebuild is **~160 ms, not the 221 ms quoted here**: `cold - warm` also contains the JIT tiering up,
@@ -95767,3 +95767,104 @@ NO ENGINE BEHAVIOUR CHANGED — instrument only; the single modified file is
 is unchanged.
 
 GATES. `bun run fmt` 0; `bun run check` 0.
+
+## Item 1982 — 🔭 **ITEM 1860's DECLINE OF THE 3.97x TWO-HOP COUNT NO LONGER HOLDS — its blocker was item 1695's "the build can be wasted", and item 1889's second-ask policy (29 items later) removes exactly that.** ⚠️ **But I patched the WRONG ARM: there are THREE two-hop arms and the bench's row takes none of the one I changed. A route counter caught it; reading the code had not**
+
+`bench:gremlin` makes a two-hop count cost **2.3x a THREE-hop count** — `V().out().out().count()`
+51.6 ms against `V().out().out().out().count()` 22.3 — which is an ordering that cannot be right and
+the largest such gap in either suite.
+
+### ✅ THE BLOCKER, RE-CHECKED AS A CLAIM RATHER THAN READ AS A VERDICT
+
+Items 1859-1861 priced this and declined it, thoroughly. Item 1861's table is the decline:
+
+```text
+    shape        walk      rebuild    item 1695's verdict
+    two-hop      52 ms     160 ms     FAILS   — declined at item 1860
+    three-hop   437 ms     160 ms     PASSES  — ships, correctly
+```
+
+The criterion is "safe iff the walk costs more than the rebuild", and it exists **because a build can
+be WASTED** — paid on a query that never returns, or paid again after every write (`chainCsrFor` is
+keyed on `topologyVersion` and the generation is dropped whole).
+
+🔑 **ITEM 1889's SECOND-ASK POLICY REMOVES THE WASTE, AND IT DID NOT EXIST WHEN THIS WAS DECLINED.**
+`seenBefore(graph, forward, type)` is keyed on the same version, and its own header states the three
+consequences: a ONE-SHOT query never builds; a WRITE-EVERY-READ workload never reaches a second ask
+on any one version, so it never builds either; a repeated read pays once and wins. So the
+criterion's PURPOSE is served even though its literal inequality still reads FAILS —
+[[check-the-blocker-still-holds]], and the second time this session a "not built because X" note
+turned out to be a claim about an X that had changed.
+
+✅ **The ceiling is still live, re-measured on today's code** with item 1860's own probe:
+
+```text
+    engine  (first)    51.79 ms   answer 5000000
+    dense   (warm)     13.03 ms   answer 5000000      3.97x
+    engine  (control)  52.01 ms
+```
+
+✅ **And the cache is SHARED, which strengthens the amortization**: `slotChainCount` reads
+`chainCsrFor(graph, forward, labels)` — the same entry `seenBefore`'s six existing single-hop callers
+warm — so on a graph where `V().out(T)` has already been asked, this route has no build to pay at
+all.
+
+### 🛑 AND THE MISTAKE, WHICH IS THE PART WORTH KEEPING
+
+**I patched the wrong arm.** There are THREE two-hop arms in `count-shortcut.ts`, and I read the code
+and picked the one at line 2454 — the filtered no-map double loop, whose comment explicitly describes
+the shape. A route counter on all three says the bench's row takes **neither it nor the other
+candidate**:
+
+```text
+    V().hasLabel('P').out('E').out('E').count()    A1812=0   A2405=1   A2454=0
+```
+
+⚠️ **An UNFILTERED two-hop count is not a walk at all — it is a DEGREE INNER PRODUCT** (`sum over w
+of arrivals(w) * departures(w)`, item 590), O(V) with two O(1) degree reads and no frontier. So the
+51.6 ms is **258 ns per vertex for two `Map.get` + `.size` pairs**, and the arm I instrumented, wrote
+a test for, and would have shipped against is the one a FILTERED source takes. The patch is reverted;
+the target is arm A2405.
+
+**This is item 1690's lesson repeating** — "a ROUTE COUNTER CORRECTED THREE THINGS READING THE CODE
+HAD GOT WRONG, including which builder answers the end-filtered row" — and it cost a build and a
+test before one `globalThis` counter settled it in a single run. ⚠️ **Count the route before
+patching it, not after**, especially where a shape has several arms whose comments each describe it
+plausibly.
+
+### ❌ TWO LEVERS ON THAT 258 ns ARE ALREADY CLOSED, which is why the dense route is the only one left
+
+- **A single-type fast path in `degreeOfTypes` is REFUTED (item 1546)**, and the note is on the
+  function: it is 25.8% of `hopcount3`'s profile, `out(T)` names exactly one type, and the obvious
+  `types.length === 1` short-circuit measured **NULL** (217.90 against ~217.6 ms at 200,000
+  vertices). "The 25.8% is the `Map.get` plus `.size` themselves, not the loop setup around them."
+- **A per-vertex per-type degree CACHE is index-shaped**, and that family is
+  [[no-dense-vertex-ordinal]] — BUILT AND DISQUALIFIED (deletes 6.18x/11.34x under churn).
+
+### ⚠️ AND THE PROFILE WAS UNREADABLE, for a reason worth recording
+
+`runtime-profile-gremlin-probe.mjs hopcount2` reports `degreeOfTypes` 18.7% and `indexEdgeLabel`
+16.6% — but `indexEdgeLabel`, `addVertex`, `insertEdge`, `commitElementLabels` and `getVertexById`
+are all FIXTURE BUILD, and together they outweigh the query. Its own fixture puts the shape at
+**2.3 ms a rep against the bench's 51.6**, so the build dominates whatever the window says it
+excluded. A profile of this shape needs the bench's 200k/1M fixture and the windowed profiler;
+`degreeOfTypes` being top anyway is the only thing the run established.
+
+### WHAT SHIPS
+
+Only a test, and it ships because the hole it fills is structural:
+`packages/gremlin/src/executor/two-hop-dense-count.test.ts` checks the two-hop count against a hand
+walk over the adjacency, in three hop directions and across a topology write, on a **2,000-vertex**
+fixture. ⚠️ `denseChainCount` admits only when `seeds.length > max(vertexCount >> 4, 1024)`, so
+**every other fixture in the package is below the threshold BY ARITHMETIC** and no existing test can
+reach that arm — item 1978's hole, one package over. The test asserts its own admissibility so a
+later change to the threshold fails loudly.
+
+🔭 **OPEN, with the target located**: the dense slot route on arm A2405 behind `seenBefore`, worth
+3.97x on a 51.6 ms row. Not built this tick because the arm was identified only after the first
+attempt was reverted.
+
+NO ENGINE BEHAVIOUR CHANGED — the patch was reverted and `count-shortcut.ts` is byte-identical to
+HEAD (verified: no `seenBefore`, no counters).
+
+GATES. `bun run fmt` 0; `bun run check` 0; the Gremlin suite 2,414 pass / 0 fail.
