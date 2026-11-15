@@ -83,22 +83,39 @@ const time = (g, q) => {
 
 const LABELLED = 'MATCH (a:T)-[:E]->(b:T) RETURN b.n AS x';
 const UNLABELLED = 'MATCH (a)-[:E]->(b:T) RETURN b.n AS x';
+/*
+ * 🔑 THE CEILING FOR THE FIX, AND IT IS WRITABLE TODAY. `IS LABELED` is a per-row label test, so
+ * this is exactly "far-driven walk + the start label applied per element" — the shape a rewrite
+ * would produce. If it lands near UNLABELLED rather than near LABELLED, then the optimization is a
+ * PLAN REWRITE (`MATCH (a:T)-…` -> `MATCH (a)-… WHERE a IS LABELED T` when T is non-vacuous) and
+ * NOT an edit to the central hop walk — which matters, because [[executor-edits-perturb]] measures
+ * a new walk variant costing unrelated rows up to 16%.
+ */
+const PERROW = 'MATCH (a)-[:E]->(b:T) WHERE a IS LABELED T RETURN b.n AS x';
 
 console.log(`${NODES} vertices, median of ${REPS}. offLabel = vertices carrying U instead of T.\n`);
-console.log('offLabel   T vacuous?   a:T (ms)   a (ms)   ratio   rows agree');
-console.log('-'.repeat(66));
+console.log('offLabel   T vacuous?   a:T (ms)   a (ms)   a+ISLABELED   ratio   rows agree');
+console.log('-'.repeat(78));
 
 for (const offLabel of [0, 1, 10, Math.floor(NODES * 0.1)]) {
   const g = build(offLabel);
   const vacuous = offLabel === 0;
   const [lab, rowsA] = time(g, LABELLED);
   const [unl, rowsB] = time(g, UNLABELLED);
+  const [per, rowsC] = time(g, PERROW);
 
-  console.log(
-    `${String(offLabel).padStart(8)} ${String(vacuous).padStart(12)} ` +
-      `${lab.toFixed(2).padStart(10)} ${unl.toFixed(2).padStart(8)} ` +
-      `${(lab / unl).toFixed(2).padStart(7)}x ${String(rowsA === rowsB).padStart(12)}`,
-  );
+  const agree = String(rowsA === rowsB && rowsA === rowsC).padStart(12);
+  const cells = [
+    String(offLabel).padStart(8),
+    String(vacuous).padStart(12),
+    lab.toFixed(2).padStart(10),
+    unl.toFixed(2).padStart(8),
+    per.toFixed(2).padStart(13),
+    `${(lab / per).toFixed(2).padStart(7)}x`,
+    agree,
+  ];
+
+  console.log(cells.join(' '));
 }
 
 console.log(

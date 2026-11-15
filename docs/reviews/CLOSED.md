@@ -92599,7 +92599,7 @@ NO ENGINE BEHAVIOUR CHANGED — three instruments and this entry.
 
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects.
 
-## Item 1934 — ⚠️⚠️ **ONE VERTEX OF A SECOND LABEL COSTS A HOP READ 6.2x**, and it is a CLIFF at one vertex, not a gradient. The far-driven walk requires a LABEL-HOMOGENEOUS graph — and **every read screen in this repo is one**, so every GQL hop number on them is measured on an arm a realistic graph cannot reach
+## Item 1934 — ⚠️⚠️ **ONE VERTEX OF A SECOND LABEL COSTS A HOP READ 6.2x**, and it is a CLIFF at one vertex, not a gradient. The far-driven walk requires a LABEL-HOMOGENEOUS graph — and **every read screen in this repo is one**, so every GQL hop number on them is measured on an arm a realistic graph cannot reach. ⚠️ ~~the lever is a plan rewrite worth ~2x~~ **CORRECTED at item 1935: the rewrite route is REFUTED (`IS LABELED` measures 0.94x, worse) and the scope is 43 gates across 7 files — with the worst case **1157x**, not 6.2x: one isolated off-label vertex turns an O(1) hop `count(*)` into a full enumeration**
 
 Item 1932's write screen nominated a "1.84x GQL-only read demotion after a vertex insert". ❌ **That
 framing is wrong and this item replaces it.** The demotion is not caused by the write at all.
@@ -92673,5 +92673,91 @@ test rather than another elision that TRUSTS `verticesByLabel` — so it does no
 answered first.
 
 NO ENGINE BEHAVIOUR CHANGED — two instruments and this entry.
+
+GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects.
+
+## Item 1935 — ⚠️⚠️ **THE LABEL-VACUITY CLIFF IS ARCHITECTURAL, NOT ONE GATE: 43 call sites across 7 files**, and it is worst on the CLOSED-FORM shortcuts — **one isolated off-label vertex turns an O(1) hop `count(*)` into a full enumeration, 1157x**. Also: the cheap fix (a rewrite to `IS LABELED`) is REFUTED, and two fixture bugs of mine were caught by an answer guard
+
+Item 1934 measured the cliff on one shape (hop projection, 6.2x) and estimated the lever at ~2x via
+a plan rewrite. ❌ **Both the scope and the fix were wrong, and this item corrects them.**
+
+## ❌ The cheap fix is refuted at its own ceiling
+
+`IS LABELED` is a per-row label test, so `MATCH (a)-[:E]->(b:T) WHERE a IS LABELED T` is exactly
+"far-driven walk + the start label applied per element" — the shape a rewrite would produce, and
+writable today. On the non-vacuous graph:
+
+        a:T                     22.13 ms
+        a (no start label)       8.68
+        a + IS LABELED           23.58     ⬅ WORSE than `a:T`, 0.94x
+
+A `WHERE` on the start variable disqualifies the same far-driven arm, so the rewrite route is closed.
+The fix has to live INSIDE the walk — which is the central-walk edit [[executor-edits-perturb]]
+prices at up to 16% on unrelated rows.
+
+## 🔑 But the blocker comment is still false, and that is the useful part
+
+The far-driven loop ALREADY applies a per-element label test — to the FAR vertex:
+
+        const far: Vertex = out ? edge.to : edge.from;
+        if (fl !== undefined && !matchesLabel(far, fl)) continue;
+
+Its comment says "the far-driven walk cannot apply a START label - it iterates the far end". ⚠️ That
+is not true: iterating EDGES yields both endpoints, and the start is `out ? edge.from : edge.to`,
+already in hand. Same shape of wrong blocker claim as items 1927 and 1929
+([[check-the-blocker-still-holds]]).
+
+## ⚠️⚠️ The scope is 43 gates, and the cliff is worst where the closed forms are
+
+`vacuousLabel(` has **43 call sites across 7 files** — `hop-projection` 18, `shortcuts` 10,
+`grouped-hop` 4, `var-length-count` 3, plus `csr-cache`, `hop-endpoint-extremum`, `labels`. Grep
+counts are not a measurement, so `vacuityscope-probe-1935.mjs` runs one shape per gate FAMILY over
+two graphs identical but for ONE EXTRA ISOLATED vertex labelled `U`:
+
+        shape               vacuous    1 off-label      ratio   answers agree
+        count shortcut         0.00           1.94    1157x          true
+        two hop                0.12          27.40     238x          true
+        hop projection         3.14          28.00    8.92x          true
+        grouped count         10.36          25.29    2.44x          true
+        hop min               12.76          24.69    1.93x          true
+        varlen count           2.55           3.18    1.25x          true
+        node scan              1.28           1.48    1.16x          true
+        node count             0.00           0.00    (both ~0)      true
+
+🔑 **ONE ISOLATED VERTEX — in no edge, matching no pattern — turns an O(1) bucket-arithmetic hop
+count into a full enumeration (1157x) and a two-hop closed form into 238x.** The hop walk's 8.92x
+that item 1934 found is the MIDDLE of this range, not the top. So the closed-form count family
+(items 204-209 and the `shortcuts.ts` cluster) is the part most exposed, and every read screen in the
+repo is label-homogeneous, so none of it has ever been measured off the fast arm.
+
+## ⚠️ Two fixture bugs of mine, both caught by the `answers agree` column
+
+Worth recording because each would have shipped a wrong ratio, and neither was visible in the timing:
+
+1. **The off-label vertex was RELABELLED, not added.** That changed the `T` count AND the edge set,
+   so the two graphs answered different questions — `agree` came back false on seven of eight rows
+   while the ratios read 1221x and 248x. Fixed by making it an EXTRA isolated vertex, so every
+   `T`-anchored answer is identical by construction and only `graph.vertexCount` differs, which is
+   exactly what `vacuousLabel` compares.
+2. **The answer comparison was ORDER-SENSITIVE** (`rows[0]`), and the two arms take different walks
+   that emit in different orders — so the hop projection reported `agree: false` for that reason
+   alone ([[order-is-unspecified]]). Now compared as a MULTISET: row count plus a positional
+   checksum over the rendered rows.
+
+## 🔭 The decision this leaves, stated rather than guessed
+
+The win is large and the blast radius is large, and they are not separable by me:
+
+- **Value:** up to 1157x on closed-form counts, 8.92x on the most common hop shape, for every graph
+  that is not label-homogeneous — i.e. essentially every real graph. A `Person`/`Company` schema
+  never gets any of these fast arms today.
+- **Cost:** 43 gates across 7 files, each needing the start label carried into its walk as a
+  per-element test; the central-walk variants carry a measured 16% risk to unrelated shapes; and a
+  PARTIAL fix creates a new spelling asymmetry, which is this repo's named bug class.
+- **It does NOT need [[label-index-vs-setter]]'s open decision answered first**, because it moves in
+  the safe direction — adding a per-element `labels.has` test rather than another elision that
+  TRUSTS `verticesByLabel`.
+
+NO ENGINE BEHAVIOUR CHANGED — one instrument, one extended probe arm, and this entry.
 
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects.
