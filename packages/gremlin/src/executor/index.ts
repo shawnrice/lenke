@@ -36,6 +36,7 @@ import {
   fusedValuesAggregate,
   fusedValuesTopK,
 } from './aggregation.js';
+import { coalesceHopValues } from './coalesce-hop-values.js';
 import { countShortcut } from './count-shortcut.js';
 import { cyclicPathShortcut } from './cyclic-path-shortcut.js';
 import { applyStep } from './dispatch.js';
@@ -2719,6 +2720,13 @@ const fusedProjectedValues = (
       edgeFilteredHopValues(effective, graph) ??
       // The OPTIONAL rung (item 1884): `optional(<one hop>)`, the left-join idiom.
       optionalHopValues(effective, graph) ??
+      // The COALESCE rung (item 1998): `coalesce(<one hop>, <one hop>)` — the form item 1990's
+      // normalization cannot reach, because it has no `identity()` arm to rewrite into `optional`.
+      // ⚠️ ADDED AT THE END on item 1535's rule, so no plan an earlier rung already admits can
+      // change route. Its gate is narrow by construction (`V()`, a two-arm `coalesce` of single
+      // vertex steps, a single-key `values`/`id`/nothing), so everything it declines lands on
+      // exactly the route it lands on today.
+      coalesceHopValues(effective, graph) ??
       hopChainValuesShortcut(effective, graph));
 
 export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {

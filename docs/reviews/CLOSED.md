@@ -96830,7 +96830,7 @@ NO ENGINE BEHAVIOUR CHANGED — five screen rows, three imports, and this entry.
 GATES. `bun run fmt` 0; `bun run check` 0. The screen re-run after the edit: 49 rows, no flags, no
 zero-row misses in the new family.
 
-## Item 1995 — 🔭 ⚠️ **[ITEM 1996 SPLITS THIS 4.67x IN TWO: ~1.9x is not being CSR-FUSED (which every generic-path hop pays, `both` included) and ~2.1x is coalesce-specific. The twin was a FUSED route, so quoting 4.67x as a `coalesce` defect overstates the step's share by about half.]** `coalesce(hop, hop)` PRICED AT 4.67x A TWIN THAT RETURNS THE IDENTICAL ANSWER — 209.55 ms against 44.87, isolated, 600,000 rows each.** The twin equality is verified POSITIONALLY, and ⚠️ it is FIXTURE-DEPENDENT, which is the constraint on any cure
+## Item 1995 — ✅ ⚠️ **[CLOSED BY ITEM 1998, which built the fused route: the row went 209.55 -> ~45.9 ms, 4.57x, landing ON the bare-hop control. Nothing here is open; it is kept for the pricing method.]** ⚠️ **[ITEM 1996 SPLITS THIS 4.67x IN TWO: ~1.9x is not being CSR-FUSED (which every generic-path hop pays, `both` included) and ~2.1x is coalesce-specific. The twin was a FUSED route, so quoting 4.67x as a `coalesce` defect overstates the step's share by about half.]** `coalesce(hop, hop)` PRICED AT 4.67x A TWIN THAT RETURNS THE IDENTICAL ANSWER — 209.55 ms against 44.87, isolated, 600,000 rows each.** The twin equality is verified POSITIONALLY, and ⚠️ it is FIXTURE-DEPENDENT, which is the constraint on any cure
 
 Item 1994 put the reconverging family on the standing screen and its `coalesce: two hops` row came
 out 8.8x its identity-arm neighbour in a full 49-shape run. That run's absolutes are not comparable
@@ -97031,3 +97031,91 @@ NO ENGINE BEHAVIOUR CHANGED — `dispatch.ts` was instrumented, read, and restor
 ship.
 
 GATES. `bun run fmt` 0; `bun run check` 0.
+
+## Item 1998 — ✅ **`coalesce(hop, hop).values(k)` FUSED: 209.55 → ~45.9 ms, 4.57x, LANDING ON THE BARE-HOP CONTROL.** ⚠️ The eager `drain` was 1.55x of that 4.57x and was nearly shipped missing — the same omission `csrOneHop`'s own note records as having cost item 1889 most of ITS win
+
+Closes item 1995's pricing and is the cure items 1993-1997 kept failing to locate. Item 1997 established
+the diagnosis in one line — of the four neighbouring shapes, `coalesce(hop, hop)` is the ONLY one that
+runs the general stream (2 `applyStep` calls against 0 for `out(E)`, `out(E,F)` and `both(E)`) — so
+there was never a residual to find, only a missing rung.
+
+`packages/gremlin/src/executor/coalesce-hop-values.ts`, added at the END of `fusedProjectedValues`'
+`??` chain (item 1535's rule), gated on `V()` bare + exactly two arms + both arms one vertex step +
+a one-key `values`/`id`/no projection.
+
+**THE PROGRESSION, AND WHY THE FIRST TWO STEPS WERE NOT ENOUGH.** `gremlin-workload-screen.mjs`,
+`NODES=200000`, 3 reps, the row's own absolutes:
+
+```text
+                                          ms      vs PRE   what changed
+    PRE (general stream)                209.55      1.00x
+    + fused bucket walk                 174.20      1.20x   item 1629's in-step fast arm is ALREADY
+                                                            a bucket walk, so fusing one only removes
+                                                            the step plumbing — the walk is unchanged
+    + CSR arm 0 (behind `seenBefore`)    72.70      2.88x   item 1889 prices a CSR row at 16 ns
+                                                            against a bucket walk's 102
+    + the eager `drain`                   45.86     4.57x   ⬅ and this is the bare hop's own number
+```
+
+**1.20x is the number to remember from this.** A fused route over the SAME data structure the general
+step already used buys only the plumbing. The win is the flat-array read, and the rung exists to make
+that reachable — so "give shape X a fused route" is not itself a lever; "give shape X the CSR" is.
+
+🔑 **ARM 1 NEEDS NO CSR AND THE CSR ITSELF SAYS WHEN TO RUN IT.** `coalesce` reaches arm 1 only for a
+vertex arm 0 missed, and an empty arm-0 bucket is exactly `memo.len[slot] === 0` — the same test
+`csrOneHop` uses to decide it should emit its input. So the hot path is pure flat-array reads and the
+cold path keeps the per-vertex bucket logic, costing nothing on a graph where arm 0 matches everywhere
+and staying correct on one where it does not.
+
+⚠️⚠️ **THE EAGER `drain` IS NOT OPTIONAL, AND OMITTING IT COST THIS ITEM MOST OF ITS WIN BEFORE IT WAS
+NOTICED.** `toArray` PREFERS a walk's `drain` when it offers one (item 1412), so a walk without one is
+measured against controls that have it with its generator hand tied. This route read **72.70 ms**
+generator-only against the bare hop's 47.05 — and the remaining 1.55x was the missing drain, not
+anything about `coalesce`. `csrOneHop`'s header already said this about item 1889 and I read it only
+after measuring. **Any new fused walk: write the `drain` in the same edit as the iterator.**
+
+CONTROLS, same run, unchanged: `hop1: values` 45.74, `coalesce: hop + identity` 45.41 (item 1990's
+normalization, which routes elsewhere and must not be perturbed). The row now sits within 0.3% of the
+bare hop, which is the ceiling for it — `coalesce` does strictly more work than a hop only on the rows
+arm 0 misses, and this fixture's extra row count is 1.
+
+ANSWER-EQUIVALENCE. `battery-1998.mjs`: 10 shapes (`both`, parallel edges, self-loops, a sink, a
+vertex missing the projected key, multi-label, untyped, 3 arms, an arm-0 identity), each asked THREE
+times so the bucket arm and the CSR arm are both exercised — 0 UNSTABLE, output IDENTICAL to the
+general path, captured with the rung disabled for the oracle run. Gremlin suite 2435 pass / 0 fail.
+
+MUTATION ROUND. `coalesce-rung-mutants-1998.sh`, 10 mutants, **10 CAUGHT** by
+`coalesce-hop-values.test.ts` — and nothing else in the repo can see any of them, because a route
+choice is answer-equivalent ([[perf-gate-needs-its-own-test]]). Three notes worth more than the table:
+
+- **`csr-on-first-ask` SURVIVED the first round** and was the only survivor. Replacing `seenBefore(...)`
+  with `true` is a second-ask POLICY mutant: answer-identical, so no answer test can reach it. It did
+  not need timing either — only the CSR arm carries a `drain`, so WHICH walk was handed back is
+  readable straight off the returned object (`'drain' in got.values`). With that assertion the round
+  is 10/10. **A performance-policy mutant is often structurally observable; look for the shape
+  difference before accepting it as an untestable survivor.**
+- ⚠️ **AN INTERRUPTED MUTATION LOOP POISONS THE BASELINE, not just the tree.** The first run aborted on
+  a zsh error (`status` is read-only) with mutant 1 applied; the next run copied THAT to "pristine", so
+  every later round restored a mutated file and mutant 1 reported ANCHOR-DID-NOT-APPLY because its own
+  anchor was already gone. The route file is UNTRACKED, so `git` could not restore it. CLAUDE.md's
+  "restore before applying the next mutant" is necessary and not sufficient — the script now runs the
+  test once against the candidate pristine and refuses to mutate unless it is green.
+- ⚠️ **TWO SILENT ANCHOR FAILURES, both from the harness and not the code.** A `|` field separator
+  chops a sed expression containing `||` (the `!drops ||` guard), and a sed-escaped anchor (`\[1\]`)
+  matches nothing under `grep -F`. Four of ten mutants never applied on the first run. The
+  arm-identity check reported every one as ANCHOR-DID-NOT-APPLY rather than counting it a survivor,
+  which is the entire reason that check exists.
+
+⚠️ **AND THE TEST FIXTURE FAILED FIRST, CORRECTLY.** The sink assertion was written as "the answer
+equals the bare hop", which held on item 1995's fixture and does NOT hold here: this graph has TWO
+kinds of sink and they differ. `e`'s only edge is an `F`, so arm 1 misses it too and it emits nothing;
+`f`'s only `E` edge is INBOUND, so arm 1 finds it and emits a row the bare hop never does. A fixture
+with only the first kind cannot distinguish this route from a plain hop — item 1995's own finding,
+arriving as a red test.
+
+OPEN, unchanged by this: `choose` at 2.89x a hand ceiling (cost located per-row, four cures refuted,
+needs its own fused route — this item is the worked template for one); `branch` at ~197 ns/row,
+unpriced; `coalesce` nested inside `union`/`local`, which still keeps the general loop because the
+fused walks are source-anchored.
+
+GATES. `bun run fmt` 0; `bun run check` 0; `bun run test -- --skip-nx-cache` 21/21; `bun run fuzz` 7/7.
