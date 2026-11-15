@@ -2078,3 +2078,32 @@ screen after the win looked finished exposed it.
 
 ⚠️ And the same reading gives the follow-up honestly: `select: as + select two` (273.93 ms) is
 `select('a', 'b')` — a MAP of two tags, a different question from repeating one.
+
+## ⚠️ A `drain()` THAT DELEGATES TO A GENERATOR PAYS THE GENERATOR FRAME (item 1913)
+
+Every fused Gremlin walk is written twice on purpose — a lazy `[Symbol.iterator]` and an eager
+`drain` — and `hop-values-csr.ts` writes the LOOP out in both. Writing `drain() { for (const v of
+each(...)) out.push(v) }` instead is correct and costs **1.6-2.0x**: `where(neq(a)).values(n)` read
+76.50 ms against the plain hop's 42.50 until the loop was written out, then 38.96 (below the hop,
+which is what it should be — same properties, minus the self-loops).
+
+⚠️ **THE PROFILE NAMES THE FRAME, NOT THE RESUMES**: 44.7% in the generator body, 7.7% in `drain`,
+`generatorResume` only 3.8%. A `function*` frame is optimized less well than a plain loop, so
+delegating moves the whole body into one.
+
+⚠️ **ONE GREP FINDS THEM**: a `drain` whose body contains `for (const x of <helper>(`. It found the
+second instance (item 1899's dedupe walk) immediately, written the same way by the same hand on the
+same day.
+
+## ⚠️ PER-ARM MUTANT LABELS GO BY FILE ORDER, NOT BY INTUITION (item 1913)
+
+`dedupe-mutants-1899.mjs` labelled occurrence 0 "LAZY iterator" and occurrence 1 "EAGER drain" — and
+they were **swapped**, because `walk` (which holds the drain) is defined before `farValues` (the
+iterator). The mislabelling hid a real gap: the survivor was the ITERATOR's run-bound off-by-one, and
+it survived because the lazy-iterator TEST used the duplicate-bearing fixture whose values absorb a
+CSR over-read. Item 1899's unique-value `chain()` fixture had only ever reached the DRAIN, because
+that is the path `toArray` takes.
+
+**So: name per-arm mutants by where the anchor actually occurs, and make sure a discriminating
+fixture reaches EACH copy.** The over-read is real — `flat` is over-allocated and zero-filled, so
+reading past a run lands on slot 0, a real vertex with a real value.

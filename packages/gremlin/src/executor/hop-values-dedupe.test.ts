@@ -181,6 +181,26 @@ describe('hopValuesDedupe — the answer, on the repeat call that takes it', () 
    * the DRAIN that survived in the ITERATOR, because every other test here goes through `toArray`.
    * Spreading `run` is the only thing that reaches the other copy.
    */
+  /**
+   * ⚠️⚠️ ON THE **CHAIN** FIXTURE, AND A MUTANT IS WHY (item 1913). The lazy-iterator test below
+   * used `fixture()`, whose duplicate values ABSORB a CSR over-read — exactly the masking item 1899
+   * built `chain()` to defeat, applied to the DRAIN path (which `toArray` takes) and never to the
+   * iterator. So the iterator's own run-bound off-by-one survived a 21-test suite. The two paths are
+   * the same loop written twice; a fixture that discriminates has to reach BOTH.
+   */
+  it('the LAZY iterator sees an over-read too, on the unique-value chain', () => {
+    const g = chain();
+
+    toArray(traversal(V(), out('E'), values('n'), dedupe()), g);
+
+    expect([...run(traversal(V(), out('E'), values('n'), dedupe()), g)]).toStrictEqual([
+      22, 33, 44,
+    ]);
+    expect([...run(traversal(V(), out('E'), dedupe().by('n'), values('n')), g)]).toStrictEqual([
+      22, 33, 44,
+    ]);
+  });
+
   it('the LAZY iterator agrees with the eager drain', () => {
     const g = fixture();
     const make = () => traversal(V(), out('E'), values('n'), dedupe());

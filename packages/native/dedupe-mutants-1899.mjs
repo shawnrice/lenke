@@ -108,23 +108,41 @@ const MUTANTS = [
     1,
   ],
   [
-    'the CSR run bound is off by one',
+    'the CSR run bound is off by one — EAGER drain (occurrence 0)',
     'ded',
     'const to = memo.off[slot] + memo.len[slot];',
     'const to = memo.off[slot] + memo.len[slot] + 1;',
+    2,
+    0,
+  ],
+  [
+    'the CSR run bound is off by one — LAZY iterator (occurrence 1)',
+    'ded',
+    'const to = memo.off[slot] + memo.len[slot];',
+    'const to = memo.off[slot] + memo.len[slot] + 1;',
+    2,
     1,
   ],
   [
-    'the far vertex is the SLOT, not the flat buffer target',
+    'the far vertex is the SLOT, not the flat target — EAGER drain (occurrence 0)',
     'ded',
     'const value = vtx[memo.flat[i]].properties[key];',
     'const value = vtx[slot].properties[key];',
+    2,
+    0,
+  ],
+  [
+    'the far vertex is the SLOT, not the flat target — LAZY iterator (occurrence 1)',
+    'ded',
+    'const value = vtx[memo.flat[i]].properties[key];',
+    'const value = vtx[slot].properties[key];',
+    2,
     1,
   ],
   // ⚠️ EACH MISSING-KEY ANCHOR CARRIES ITS OWN PRECEDING LINE, because the three arms' guard blocks
   // are byte-identical and a bare guard matched 3 times.
   [
-    'a MISSING key is deduped as a value — CSR arm',
+    'a MISSING key is deduped as a value — CSR arm, LAZY iterator',
     'ded',
     `const value = vtx[memo.flat[i]].properties[key];
 
@@ -134,6 +152,20 @@ const MUTANTS = [
     `const value = vtx[memo.flat[i]].properties[key];
 
         yield value;`,
+    1,
+  ],
+  [
+    'a MISSING key is deduped as a value — CSR arm, EAGER drain (item 1913)',
+    'ded',
+    'if (value !== undefined && keep(value)) {\n            out.push(value);\n          }',
+    'if (keep(value)) {\n            out.push(value);\n          }',
+    1,
+  ],
+  [
+    'the DRAIN drops the dedupe filter (item 1913)',
+    'ded',
+    'if (value !== undefined && keep(value)) {\n            out.push(value);\n          }',
+    'if (value !== undefined) {\n            out.push(value);\n          }',
     1,
   ],
   [
@@ -148,10 +180,19 @@ const MUTANTS = [
     1,
   ],
   [
-    'the bucket arm reads the NEAR end',
+    'the bucket arm reads the NEAR end — EAGER drain (occurrence 0)',
     'ded',
     'const value = (fwd ? e.to : e.from).properties[key];',
     'const value = (fwd ? e.from : e.to).properties[key];',
+    2,
+    0,
+  ],
+  [
+    'the bucket arm reads the NEAR end — LAZY iterator (occurrence 1)',
+    'ded',
+    'const value = (fwd ? e.to : e.from).properties[key];',
+    'const value = (fwd ? e.from : e.to).properties[key];',
+    2,
     1,
   ],
   [
@@ -164,19 +205,17 @@ const MUTANTS = [
     1,
   ],
   [
-    'the dedupe is dropped — EAGER drain',
+    'the dedupe set is rebuilt per vertex rather than per walk — DRAIN (item 1913)',
     'ded',
-    `      if (keep(far)) {
-        out.push(far);
-      }`,
-    `      out.push(far);`,
+    'if (value !== undefined && keep(value)) {\n            out.push(value);\n          }',
+    'if (value !== undefined && valueDedupeFilter()(value)) {\n            out.push(value);\n          }',
     1,
   ],
   [
-    'the dedupe set is rebuilt per vertex rather than per walk',
+    'the dedupe set is rebuilt per element — LAZY iterator',
     'ded',
-    'for (const far of farValues(graph, spec)) {\n      if (keep(far)) {\n        out.push(far);',
-    'for (const far of farValues(graph, spec)) {\n      if (valueDedupeFilter()(far)) {\n        out.push(far);',
+    '      if (keep(far)) {\n        yield far;\n      }',
+    '      if (valueDedupeFilter()(far)) {\n        yield far;\n      }',
     1,
   ],
 ];

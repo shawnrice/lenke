@@ -169,15 +169,84 @@ type WalkSpec = {
  */
 const walk = (graph: Graph, spec: WalkSpec): HopWalk => ({
   *[Symbol.iterator]() {
-    for (const v of each(graph, spec)) {
-      yield v;
-    }
+    yield* each(graph, spec);
   },
+  /*
+   * ⚠️⚠️ **THE DRAIN'S LOOP IS WRITTEN OUT, NOT DELEGATED TO `each`, AND THAT IS WORTH 1.8x**
+   * (item 1913). The first cut had `for (const v of each(...)) out.push(v)` — correct, and it paid
+   * a generator frame per element: `where(neq(a)).values(n)` measured **76.50 ms against the plain
+   * hop's 42.50** on nearly identical row counts, for what is otherwise one pointer compare more.
+   * The profile put 44.7% in `each` and 7.7% in `drain` with `generatorResume` only 3.8%, so the
+   * cost is the generator BODY rather than the resumes — a `function*` frame is optimized less
+   * well than a plain loop, and `hop-values-csr.ts` writes both arms out for exactly this reason.
+   *
+   * ⚠️ SO THIS IS THE SAME LOOP TWICE, which is item 169's named hazard — an off-by-one can live in
+   * one copy and not the other. `tagged-hop-values.test.ts` spreads `run` to reach the iterator, and
+   * `fold-mutants-1909.mjs` carries a per-arm mutant for each.
+   */
   drain() {
+    const { forward, type, kind, labels, near, valueKey } = spec;
+    const csr = seenBefore(graph, forward, type) ? chainCsrFor(graph, forward, [type]) : undefined;
     const out: unknown[] = [];
 
-    for (const v of each(graph, spec)) {
-      out.push(v);
+    if (csr !== undefined) {
+      const { vtx, memo } = csr;
+
+      for (let slot = 0; slot < vtx.length; slot += 1) {
+        const from = vtx[slot];
+        const to = memo.off[slot] + memo.len[slot];
+
+        for (let i = memo.off[slot]; i < to; i += 1) {
+          const far = vtx[memo.flat[i]];
+
+          if (!near && far === from) {
+            continue;
+          }
+
+          const held = near ? from : far;
+
+          if (valueKey === undefined) {
+            out.push(held);
+            continue;
+          }
+
+          const value = held.properties[valueKey];
+
+          if (value !== undefined) {
+            out.push(value);
+          }
+        }
+      }
+
+      return out;
+    }
+
+    for (const v of graph.vertices) {
+      const direct = soleTypeBucket(v, kind, labels) as {
+        readonly set: ReadonlySet<{ from: Vertex; to: Vertex }>;
+        readonly forward: boolean;
+      };
+
+      for (const e of direct.set) {
+        const far = direct.forward ? e.to : e.from;
+
+        if (!near && far === v) {
+          continue;
+        }
+
+        const held = near ? v : far;
+
+        if (valueKey === undefined) {
+          out.push(held);
+          continue;
+        }
+
+        const value = held.properties[valueKey];
+
+        if (value !== undefined) {
+          out.push(value);
+        }
+      }
     }
 
     return out;

@@ -90573,11 +90573,75 @@ finished. Admitting a trailing single-key `values` folded into the pick is what 
       SIXTH is silently dropped — 800,000 rows where the query asked for two. That test exists now.
 
 🔭 **WHAT REMAINS**: `select('a','b')` at 273.93 is now the screen's top row and is a different
-question — it projects a MAP of two tags, not a repeat of one. And `where(neq).values(n)` at 76.50
-is still **1.8x the hop control's 42.50** on nearly identical row counts, which this item does not
-explain; the filter is a pointer compare and should be free. Recorded as a residual rather than
-guessed at.
+question — it projects a MAP of two tags, not a repeat of one. ~~And `where(neq).values(n)` at 76.50 is still **1.8x the hop control's 42.50**~~ ✅ **EXPLAINED AND CLOSED at item 1913: a `drain()` that delegated to a `function*` paid the generator frame. 1.96x on this row, and the same pattern was in item 1899's walk too.**
 
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers;
 `bun run spelling:gremlin` (0 disagreements, 0 groups over 2x); the Gremlin suite (2,314 tests) and
 the workload screen at 200,000 vertices.
+
+## Item 1913 — chasing my OWN unexplained 1.8x found a pattern I had introduced twice: **a `drain()` that delegates to a generator pays the generator FRAME**. 1.6-2.0x on four shapes, ~1.4x on two more — and a mislabelled mutant that was hiding a real gap
+
+Item 1912 shipped 4.25x on `where(neq(a)).values(n)` and left it at **76.50 ms against the plain
+hop's 42.50** on nearly identical row counts, for what is otherwise one pointer compare more. That
+residual was recorded rather than guessed at, and it is the whole of this item.
+
+🔑 **THE CAUSE: `drain()` ITERATED A `function*` HELPER.** Both arms of `tagged-hop-values.ts`
+delegated to one generator — correct, and paying a generator frame per element. The profile put
+**44.7% in the generator body and 7.7% in `drain`, with `generatorResume` only 3.8%**: the cost is
+the `function*` FRAME being optimized less well than a plain loop, not the resumes. `hop-values-csr.ts`
+writes both arms out, and items 1889/1893 did that deliberately — I had read those files and still
+delegated.
+
+      200,000 vertices / 1,000,000 edges, one shape per process, median of 7, min of 3 rounds:
+
+                                        1912 PRE    1912      1913       vs 1912
+        as_(a).out(E).select(a)           160.47     9.13     4.89       1.87x
+        as_(a).out(E).where(neq(a))       217.06    19.89    11.34       1.75x
+        …select(a).values(n)              186.50    13.48     8.35       1.61x
+        …where(neq(a)).values(n)          325.22    76.50    38.96       1.96x   ⬅ the residual
+        CONTROL V().out(E).values(n)       43.00    42.50    41.18       flat
+
+**So the residual is explained and closed**: `neqv` is now BELOW the hop control, which is what it
+should always have been — it reads the same properties minus the self-loops. Cumulatively the four
+shapes are **32.8x / 19.1x / 22.3x / 8.3x** from where item 1912 found them.
+
+✅ **AND THE PATTERN WAS SOMEWHERE ELSE TOO, which is why this is an item rather than a fix.** One
+grep for "a `drain` that iterates a generator-valued helper" found `hop-values-dedupe.ts` — item
+1899's, written the same way by the same hand. Rewritten:
+
+      the dedupe shapes, 4 PRE runs against 8 POST (this instrument is BIMODAL — item 1899
+      measured a 1.5x process spread, and the POST arm shows it):
+
+        V().out(E).dedupe().by(n).values(n)    58.3-61.4  ->  34.1-50.3
+        V().out(E).values(n).dedupe()          58.3       ->  34.7-50.5
+        CONTROL the GQL twin                   20.8-21.2  ->  20.8-21.2   flat
+
+~1.4x by median, 1.7x at best. ⚠️ The spread is stated rather than averaged away: PRE is tight and
+POST is wide, so a single pair would have supported anything between 1.2x and 1.8x.
+
+## 🛑 And the mutation run had been lying about which arm it tested
+
+The dedupe battery's per-arm entries read "LAZY iterator" and "EAGER drain" — **and they were
+swapped**, because `walk` (which holds the drain) is defined BEFORE `farValues` (the iterator), so
+occurrence 0 is the DRAIN. ⚠️ **The mislabelling hid a real gap**: the mutant that survived was the
+ITERATOR's run-bound off-by-one, and it survived because the lazy-iterator TEST used the
+duplicate-bearing fixture, whose repeated values ABSORB a CSR over-read.
+
+      That is item 1899's own lesson — "a deduping rung needs a UNIQUE-VALUE fixture beside its
+      duplicate-bearing one" — applied to the DRAIN path (which `toArray` takes) and never to the
+      iterator. One `chain()`-fixture assertion on the lazy path closes it.
+
+⚠️ **THE OVER-READ IS NOT HARMLESS, AND THE MEMO SAYS WHY.** `off = [0,1,2,3]`, `len = [1,1,1,0]`,
+`flat = [1,2,3,0,…]` over-allocated to 1024: reading one past a run lands in the NEXT slot's run,
+and past the last one lands in the ZERO fill — slot 0, a real vertex, a real value. On a chain of
+distinct values that shows up as an extra row; on a fixture with duplicates the dedupe eats it.
+
+      MUTATION: 20 mutants, 20 caught, 0 survivors — after the labels were corrected and the
+      missing fixture added. Every duplicated loop now has an entry for BOTH copies, by file order.
+
+⚠️ **THE COST OF WRITING THE LOOP TWICE IS ACCEPTED, NOT IGNORED**: item 169 names it, and the
+mitigation is exactly what this item needed — a test that reaches each copy on a fixture that can
+discriminate, plus a per-arm mutant for each.
+
+GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers;
+`bun run spelling:gremlin` (0 disagreements, 0 groups over 2x); both mutation batteries.
