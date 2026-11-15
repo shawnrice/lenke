@@ -93850,3 +93850,76 @@ NO ENGINE BEHAVIOUR CHANGED — one test file, one instrument, and this entry. `
 host.ts:211` has a `{ ...row }` of its own in an unrelated context; not swept, noted here.
 
 GATES. `bun run check` 0; `bun run test -- --skip-nx-cache` 21 projects, clean on the first run.
+
+## Item 1954 — ❌ **`tree()` DECLINED, with four numbers and two refuted levers** — the Gremlin screen's largest absolute cost (722 ms, 3.4x the next shape) has **no cheap lever left**. ⚠️ **And my first ablation LIED by 6.6x, because ablating the key SHRANK THE TREE** — the arm doing strictly less work measured 260 ms slower
+
+PROFILE FIRST, on the Gremlin side this time (the previous four items were all GQL).
+`gremlin-workload-screen.mjs` at `NODES=200000 FANOUT=5`:
+
+```text
+  680.08 ms      1 row   pathdep: tree          ← 3.4x the next shape
+  200.91         2       pathdep: cyclicPath
+  114.67    800000       pathdep: path().by(k)  ← the same 800,000 paths, 6x cheaper
+```
+
+Isolated, `V().out('E').tree()` reproduces at 722 ms. The profile nominates `memoizedTreeKey` at
+**199 ms/round of SELF time** against `stringify`'s 46 — i.e. the guard, not the key, since item
+1922 had already memoized the key.
+
+**LEVER 1, REFUTED: consult the memo BEFORE the type test.** `memoizedTreeKey` tested
+`!(isVertex(node) || isEdge(node))` first, so all 1,200,000 calls paid up to four `in` operations
+against a class instance — including the ~1,000,000 about to hit a memo of 200,000 entries. A memo
+hit PROVES the node is an element (only elements are inserted), so the test is redundant on a hit.
+Built, wired, suite green, measured **FLAT**: PRE 711.9/720.9/715.4 against POST 726.8/710.9/719.6.
+Reverted. ⚠️ **This is the THIRD time this exact class has measured flat here** — item 1599's
+per-query label-test closure and item 1925's `forEach`-to-indexed-loop are the others. V8 inlines
+these guards and charges the caller's frame for the inlined work, so **a cheap per-element guard
+showing high SELF time in a profile is attribution, not cost** ([[frame-attribution-trap]], now at
+five instances).
+
+⚠️⚠️ **LEVER 2 AND THE METHODOLOGICAL FINDING: AN ABLATION THAT CHANGES THE ANSWER CAN CHANGE HOW
+MUCH DOWNSTREAM WORK THERE IS.** Replacing `treeKey` with a constant took 722.4 → 166.8 ms, which
+reads as _"the key is 77% of the shape"_. It is not. A constant key collapses 200,000 distinct
+top-level entries into ONE, so that arm deleted the TREE along with the key. Two further arms made
+it undeniable:
+
+```text
+  shipped (memo on)                              722.4 ms   200,000 distinct keys
+  key -> a constant                              166.8      1 distinct key      ← deleted the tree
+  key -> `toJSON()` then Object.keys().length     377.9      ~1 distinct key     ← ditto
+  key -> `D1954${id}`  (CHEAPER, same cardinality) 638.6     200,000 distinct    ← the valid arm
+  memo removed entirely                         1451.1      200,000 distinct
+```
+
+The `toJSON()` arm does strictly MORE work than the `${id}` arm and ran **260 ms faster**, purely
+because its tree was smaller. Holding key cardinality fixed, serialization is **722.4 − 638.6 ≈ 84
+ms, 11.6% of the shape — not 77%.** The rule this earns: _an ablation must preserve every property
+the downstream work scales with_, and for a keyed structure that includes the key's CARDINALITY. It
+is the same failure as a fixture whose statistics the answer is invariant to (item 702), one level
+further in.
+
+**What the valid arms do establish, all useful:**
+
+- **item 1922's memo is still worth 2.01x** (722.4 against 1451.1 with it removed) — verified, not
+  assumed, four hundred items later.
+- **the construction, not the key, is the mass.** `treeshape-1954.mjs` prices a hand build of the
+  same shape (200,000 top-level keys, five children each, real `JSON.stringify` keys) at **200-228
+  ms**. So the engine's 722 is ~215 construction + ~84 serialization + ~420 traversal/path/memo,
+  and the whole addressable surface sits behind a hand ceiling only 3.2x away.
+- **LEVER 3, REFUTED: build the levels with `Map`, materialize once.** `treeStep`'s comment rejects
+  a nested `Map` because it would `JSON.stringify` to `{}` — which rules out shipping Maps as the
+  tree, not building with them. Measured on identical trees (shape asserted equal):
+  **object 200.5 ms, map-then-materialize 281.8 ms — 0.71x, the object arm WINS.** Dictionary-mode
+  property insert beats `Map.set` plus a materialization pass. (A first run, before a lint fix
+  hoisted `toPlain` out of the map arm's closure, read 228.3 against 268.3 — 0.85x, the same verdict
+  by a smaller margin. Both are recorded because the numbers quoted elsewhere in this entry come
+  from that first run, and the committed probe is the second.)
+
+So `tree()` is declined: the memo already took the 2x, serialization is 12%, the construction is
+within 3.2x of a hand ceiling that the obvious alternative structure loses to, and the one guard
+worth removing measures flat. **Do not re-price it without a new mechanism.**
+
+NO ENGINE BEHAVIOUR CHANGED — two instruments and this entry; `projection.ts` is byte-identical to
+`HEAD` (`git diff` empty over `packages/gremlin`).
+
+GATES. `bun run check` 0; `bun run test -- --skip-nx-cache` 21 projects.
