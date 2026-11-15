@@ -569,7 +569,7 @@ const compileClause = (rawClause: Clause): CClause => {
  * would remove the thing it names (and that spelling is already fast — 4.0ms against the
  * equivalent 5.0). `RETURN *` declines because the `LET` variable is one of the columns.
  */
-const inlineTrailingLet = (clauses: readonly Clause[]): readonly Clause[] => {
+const inlineTrailingLetOnce = (clauses: readonly Clause[]): readonly Clause[] => {
   if (clauses.length < 3) {
     return clauses;
   }
@@ -741,6 +741,65 @@ const inlineTrailingLet = (clauses: readonly Clause[]): readonly Clause[] => {
       },
     },
   ];
+};
+
+/**
+ * Fold trailing `LET` binders into the `RETURN` until none is left to fold (item 1928).
+ *
+ * ⚠️ A CHAIN NEEDS MORE THAN ONE PASS, and until item 1927 a second pass would have been WASTED.
+ * `letfixpoint-probe-1927.ts` measured exactly that: the hand-folded intermediate
+ * `LET a = n.n + 1 RETURN (a * 2) AS x` still kept its `LET`, because the substitution was one
+ * level only. With that lifted, the intermediate folds, so iterating finally reaches the shape:
+ *
+ * ```text
+ *   chain2  LET a = n.n + 1 LET b = a * 2 RETURN b AS x        58.38 ms -> the folded 9.66, 6.0x
+ *   chain3  + LET c = b + 3                                    75.21    -> the same
+ * ```
+ *
+ * 🔑 TERMINATION IS STRUCTURAL, NOT A HOPE. `inlineTrailingLetOnce` either returns its input
+ * UNCHANGED or returns `clauses.slice(0, -2)` plus one clause — exactly one clause shorter. So the
+ * loop can run at most `clauses.length` times, and the `length` comparison below is what detects
+ * the fixed point. The explicit bound is belt-and-braces against a future edit that makes the pass
+ * rewrite in place: an off-by-one on a loop bound is where this repo has turned a wrong answer into
+ * a NON-TERMINATION that filled 192 GB of swap (CLAUDE.md records the reboot).
+ *
+ * ⚠️ AND EXPRESSION BLOWUP IS PREVENTED BY A GUARD THAT WAS ALREADY THERE, which is the only reason
+ * iterating is safe at all. The hazard shape is `LET a = … LET b = a + a`: folding `b` leaves a
+ * projection reading `a` TWICE, and item 1926's once-read guard then refuses to fold `a` — so each
+ * round duplicates nothing and the expression grows linearly in the bindings, never 2^k. Measured
+ * in the probe: `doubling` stands at round 1 and stays standing.
+ */
+const inlineTrailingLet = (clauses: readonly Clause[]): readonly Clause[] => {
+  let cur = clauses;
+  // The BUDGET, not an index: one fold per clause is already more rounds than reachable.
+  let rounds = clauses.length;
+
+  while (rounds > 0) {
+    rounds -= 1;
+
+    const next = inlineTrailingLetOnce(cur);
+
+    if (next.length === cur.length) {
+      return cur;
+    }
+
+    cur = next;
+  }
+
+  /*
+   * ⚠️ UNREACHABLE UNDER THE PASS'S CURRENT CONTRACT, and a surviving mutant proved it: replacing
+   * this with `return clauses` failed NOTHING. Each successful fold shortens by exactly one and the
+   * shortest result is `[match, return]`, so at most `clauses.length - 2` folds can happen — and
+   * iteration `length - 1` then detects the fixpoint and returns above. The loop cannot run out.
+   *
+   * 🔑 It stays because the BOUND stays, and the bound is deliberate belt-and-braces: if a future
+   * edit ever makes the pass rewrite WITHOUT shortening, this is what keeps the loop finite rather
+   * than hanging. Returning `cur` rather than `clauses` is then the better of two correct answers,
+   * since every fold already applied is answer-preserving. The mutant is recorded as an expected
+   * survivor in `letinline-mutants-1926.mjs` with this reason, rather than left to look like a
+   * coverage gap.
+   */
+  return cur;
 };
 /**
  * Hoisted to module scope rather than nested in `inlineAggregateCall`: it captures nothing from

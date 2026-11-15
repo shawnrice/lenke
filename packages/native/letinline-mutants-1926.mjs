@@ -188,10 +188,59 @@ const MUTANTS = [
     '      true\n        ? it',
     1,
   ],
+  // ———— item 1928: the FIXPOINT loop ————
+  [
+    '⚠️ THE LOOP IS GONE (the pre-1928 single pass), so a chain keeps a standing LET',
+    'rw',
+    '      inlineTrailingLet(\n',
+    '      inlineTrailingLetOnce(\n',
+    1,
+  ],
+  [
+    '⚠️ the bound is ONE, so only the first fold happens',
+    'rw',
+    '  let rounds = clauses.length;',
+    '  let rounds = 1;',
+    1,
+  ],
+  [
+    '⚠️ the cursor never advances, so every round re-folds the SAME input',
+    'rw',
+    '    cur = next;\n  }',
+    '  }',
+    1,
+  ],
+  [
+    'the fixpoint test is INVERTED, so the loop exits on the first SUCCESSFUL fold',
+    'rw',
+    '    if (next.length === cur.length) {\n      return cur;\n    }',
+    '    if (next.length !== cur.length) {\n      return cur;\n    }',
+    1,
+  ],
+  [
+    '⚠️ the loop returns the UNFOLDED input whatever it did',
+    'rw',
+    '  return cur;\n};',
+    '  return clauses;\n};',
+    1,
+  ],
 ];
 
 /** Names that MUST survive, each with its reason. */
-const EXPECTED_SURVIVORS = new Set([]);
+const EXPECTED_SURVIVORS = new Set([
+  /*
+   * ⚠️ EQUIVALENT MUTANT, not a coverage gap (item 1928). The statement after the fixpoint loop is
+   * UNREACHABLE under the pass's contract: each successful fold shortens the clause list by exactly
+   * one and the shortest result is `[match, return]`, so at most `length - 2` folds happen and
+   * iteration `length - 1` detects the fixpoint and returns from inside the loop. The loop cannot
+   * run out, so `return cur` and `return clauses` differ only in a state no input reaches — and both
+   * are CORRECT even there, since every fold already applied is answer-preserving.
+   *
+   * 🔑 It is tested-for anyway because the BOUND is deliberate belt-and-braces against a future edit
+   * that rewrites without shortening, and an entry here is how that intent survives the next reader.
+   */
+  '⚠️ the loop returns the UNFOLDED input whatever it did',
+]);
 
 const verdictLabel = (caught, expected) => {
   if (caught !== false) {

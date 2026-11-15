@@ -157,12 +157,19 @@ describe('what the widening does NOT change', () => {
     expect(rows(text)).toEqual([{ x: 4 }, { x: 6 }, { x: 8 }, { x: null }]);
   });
 
-  test('a CHAIN of LETs folds only the LAST one, leaving one standing', () => {
-    // `inlineTrailingLet` runs ONCE, not to a fixpoint. The incidental gain is that the last
-    // binder now folds at all: 74.15 -> 63.38 ms at 200,000 rows.
+  test('a CHAIN of LETs folds ENTIRELY — superseded at item 1928', () => {
+    /*
+     * ⚠️ THIS ASSERTION WAS INVERTED AT ITEM 1928, and the inversion is the point. At item 1926
+     * `inlineTrailingLet` ran ONCE, so this read `['match', 'let', 'return']` — the last binder
+     * folded and one stood (74.15 -> 63.38 ms). Item 1927 then made the INTERMEDIATE foldable and
+     * item 1928 iterated to a fixpoint, so the whole chain goes: ~11.0 ms, 5.3x.
+     *
+     * Kept here rather than deleted, because a reader who finds item 1926's entry needs to see
+     * which of its claims a later item took.
+     */
     const text = 'MATCH (n:T) LET a = n.n + 1 LET b = a * 2 RETURN b AS x ORDER BY x';
 
-    expect(clauseKinds(text)).toEqual(['match', 'let', 'return']);
+    expect(clauseKinds(text)).toEqual(['match', 'return']);
     expect(rows(text)).toEqual([{ x: 4 }, { x: 6 }, { x: 8 }, { x: null }]);
   });
 });
@@ -318,5 +325,80 @@ describe('the once-read guard still holds at depth', () => {
 
     expect(clauseKinds(viaLet)).toEqual(['match', 'return']);
     expect(rows(viaLet)).toEqual(rows(hand));
+  });
+});
+
+// ————————————————————————————————————————————————————————————————————————————————————————————————
+// Item 1928 — `inlineTrailingLet` now runs to a FIXPOINT, which was worthless until item 1927 and
+// is safe only because of item 1926's once-read guard.
+//
+// ```text
+//   chain2  LET a = n.n + 1 LET b = a * 2 RETURN b AS x   58.38 ms -> ~11.0   5.3x (ceiling 11.18)
+//   chain3  + LET c = b + 3                              75.21    -> ~14.9   5.0x
+//   CONTROL plain                                                     ~4.3-7.4  flat
+// ```
+//
+// 🔑 TERMINATION IS STRUCTURAL: one application either returns its input unchanged or returns it
+// exactly ONE clause shorter, so the loop runs at most `clauses.length` times.
+describe('a CHAIN of trailing LETs folds to the end', () => {
+  test('two bindings fold completely', () => {
+    const viaLet = 'MATCH (n:T) LET a = n.n + 1 LET b = a * 2 RETURN b AS x ORDER BY x';
+    const hand = 'MATCH (n:T) RETURN ((n.n + 1) * 2) AS x ORDER BY x';
+
+    expect(clauseKinds(viaLet)).toEqual(['match', 'return']);
+    expect(rows(viaLet)).toEqual(rows(hand));
+  });
+
+  test('three bindings fold completely', () => {
+    const viaLet =
+      'MATCH (n:T) LET a = n.n + 1 LET b = a * 2 LET c = b + 3 RETURN c AS x ORDER BY x';
+    const hand = 'MATCH (n:T) RETURN (((n.n + 1) * 2) + 3) AS x ORDER BY x';
+
+    expect(clauseKinds(viaLet)).toEqual(['match', 'return']);
+    expect(rows(viaLet)).toEqual(rows(hand));
+  });
+
+  test('five bindings fold completely — the loop is not capped below the clause count', () => {
+    const viaLet =
+      'MATCH (n:T) LET a = n.n + 1 LET b = a * 2 LET c = b + 3 LET d = c * 4 LET e = d + 5 ' +
+      'RETURN e AS x ORDER BY x';
+    const hand = 'MATCH (n:T) RETURN (((((n.n + 1) * 2) + 3) * 4) + 5) AS x ORDER BY x';
+
+    expect(clauseKinds(viaLet)).toEqual(['match', 'return']);
+    expect(rows(viaLet)).toEqual(rows(hand));
+  });
+
+  test('a CHEAP binding in the middle of the chain does not stop it', () => {
+    const viaLet = 'MATCH (n:T) LET a = n.n + 1 LET b = a LET c = b * 2 RETURN c AS x ORDER BY x';
+    const hand = 'MATCH (n:T) RETURN ((n.n + 1) * 2) AS x ORDER BY x';
+
+    expect(clauseKinds(viaLet)).toEqual(['match', 'return']);
+    expect(rows(viaLet)).toEqual(rows(hand));
+  });
+});
+
+describe('the once-read guard stops the EXPRESSION BLOWUP a fixpoint would otherwise cause', () => {
+  /*
+   * ⚠️⚠️ THIS IS WHY ITERATING IS SAFE AT ALL. The hazard shape is `LET b = a + a`: folding `b`
+   * leaves a projection reading `a` TWICE, so a fixpoint without the guard would double the
+   * expression every round — 2^k in the number of bindings. The guard refuses, so each round
+   * duplicates nothing and the expression grows LINEARLY in the bindings.
+   */
+  test('a doubling chain folds exactly ONE binder and then stops', () => {
+    // `RETURN d` is a bare name read once, so `d` folds; the result reads `c` twice, and the guard
+    // refuses from there. Four binders become three — not zero, and not an exponential expression.
+    const text =
+      'MATCH (n:T) LET a = n.n + 1 LET b = a + a LET c = b + b LET d = c + c ' +
+      'RETURN d AS x ORDER BY x';
+
+    expect(clauseKinds(text)).toEqual(['match', 'let', 'let', 'let', 'return']);
+    expect(rows(text)).toEqual([{ x: 16 }, { x: 24 }, { x: 32 }, { x: null }]);
+  });
+
+  test('a chain whose LAST link is read twice stops at the tail, not at the start', () => {
+    const text = 'MATCH (n:T) LET a = n.n + 1 LET b = a * 2 RETURN b + b AS x ORDER BY x';
+
+    expect(clauseKinds(text)).toEqual(['match', 'let', 'let', 'return']);
+    expect(rows(text)).toEqual(rows('MATCH (n:T) RETURN ((n.n + 1) * 2) * 2 AS x ORDER BY x'));
   });
 });

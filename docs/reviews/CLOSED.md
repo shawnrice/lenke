@@ -92022,7 +92022,7 @@ coverage screen as the regression pass — controls flat against item 1901's tab
 26.22 -> 26.89, deduped hop 24.71 -> 27.14, `CALL procedure YIELD` 172.92 -> 171.18) and
 `chained LET` 88.17 -> 75.80.
 
-## Item 1927 — **5.7-11.2x on FOUR shapes, each landing on its hand-written twin**: a `LET`-bound name now folds at any DEPTH. ⚠️ The one-level restriction was declined for needing an exhaustive walk over a 40-arm union — but the walk only has to be **FAIL-SAFE**, and the post-check it already did is what makes it so
+## Item 1927 — **5.7-11.2x on FOUR shapes, each landing on its hand-written twin**: a `LET`-bound name now folds at any DEPTH. ⚠️ The one-level restriction was declined for needing an exhaustive walk over a 40-arm union — but the walk only has to be **FAIL-SAFE**, and the post-check it already did is what makes it so. ✅ **And the fixpoint it reopened was TAKEN at item 1928 (5.3x / 5.0x)**
 
 Item 1926 widened `boundExprs` to admit any expression (single `LET`: 54.99 -> 8.33 ms). The obvious
 follow-up was a FIXPOINT, since `inlineTrailingLet` runs once and a chain leaves one binder standing.
@@ -92110,14 +92110,84 @@ the coverage an earlier item built.
 
 ## 🔭 What this REOPENS, now priced
 
-**The fixpoint is worth building after all**, because `chain2`'s intermediate NOW folds (the
-`r1=match,return` above was measured post-change). `chain2` reads **58.38 against the fully folded
-9.66 — about 6.0x** — and the probe confirms the blowup shape `LET b = a + a` still stands at round
+✅ **TAKEN AT ITEM 1928 (5.3x / 5.0x).** The fixpoint is worth building after all, because
+`chain2`'s intermediate NOW folds (the `r1=match,return` above was measured post-change). `chain2`
+read **58.38 against the fully folded 9.66 — about 6.0x**, and landed at ~11.0 — and the probe confirms the blowup shape `LET b = a + a` still stands at round
 1, so item 1926's once-read guard is what would make a fixpoint safe. Not built here; termination
 needs its own argument and its own mutants.
 
 TESTS: 24 added to item 1926's file rather than a new one — 14 spellings each asserted to compile to
 `[match, return]` AND to answer what its hand-written twin answers, the five binding-arm declines,
 and three once-read cases that now decline on the GUARD where they used to decline on SHAPE.
+
+GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers.
+
+## Item 1928 — **5.3x and 5.0x: `inlineTrailingLet` runs to a FIXPOINT**, so a chain of trailing `LET`s folds entirely instead of leaving one standing. Termination is structural, the blowup is stopped by a guard that was already there — and ⚠️ the ONE surviving mutant found the loop's last statement is UNREACHABLE
+
+Item 1927 refuted the fixpoint as a target and then reinstated it: a second pass used to be WASTED,
+because the hand-folded intermediate `LET a = n.n + 1 RETURN (a * 2) AS x` still kept its `LET`
+(`subst` was one level only). With that lifted, the intermediate folds, so iterating finally reaches
+the shape.
+
+      200,000 vertices, ONE SHAPE PER PROCESS, three ORDER-ALTERNATED rounds of 11:
+
+        chain2  LET a = n.n+1 LET b = a*2 RETURN b AS x  58.38 -> 12.20 / 11.22 / 10.66   5.3x
+        chain3  + LET c = b + 3                          75.21 -> 15.79 / 14.96 / 14.42   5.0x
+        folded  RETURN ((n.n + 1) * 2) AS x  THE CEILING          19.79 / 18.01 / 11.79
+        CONTROL plain                                              4.78 /  7.39 /  4.32   flat
+
+**chain2 LANDS ON THE CEILING** (the folded arm's own spread covers it), and chain3 sits one
+operation above chain2, which is what it is — three operations against two. ⚠️ A single round had read
+chain2 at 12.83 with `single` at 14.61 against its own 8.28 from an hour earlier, which is why these
+are three alternating rounds: the instrument's spread is wider than the residual.
+
+## 🔑 Termination is structural, not a hope
+
+`inlineTrailingLetOnce` either returns its input UNCHANGED or returns `clauses.slice(0, -2)` plus one
+clause — exactly one shorter. So the loop runs at most `clauses.length` times and the length
+comparison detects the fixed point. The explicit budget is belt-and-braces against a future edit
+that rewrites WITHOUT shortening: an off-by-one on a loop bound is where this repo has turned a
+wrong answer into a non-termination that filled 192 GB of swap and needed a hard reboot
+([[dogfood-sim-resource-limits]]).
+
+## 🔑 And the expression blowup is prevented by a guard that was ALREADY THERE
+
+Which is the only reason iterating is safe. The hazard shape is `LET b = a + a`: folding `b` leaves a
+projection reading `a` TWICE, so an unguarded fixpoint would double the expression every round —
+**2^k in the bindings**. Item 1926's once-read guard refuses, so each round duplicates nothing and
+the expression grows LINEARLY. Pinned by a test: a four-binder doubling chain folds **exactly ONE**
+binder (`RETURN d` is a bare name read once, so `d` folds; the result reads `c` twice and the guard
+stops there) and halts at `[match, let, let, let, return]`.
+
+## ⚠️ One of item 1926's tests failed, CORRECTLY
+
+It asserted "a CHAIN of LETs folds only the LAST one, leaving one standing" — the exact behaviour
+this item changes. The assertion is **INVERTED rather than deleted**, with a note recording which of
+item 1926's claims a later item took, because a reader who finds that entry needs to see it.
+
+## ⚠️ And one mutant survived, which found the loop's last statement is UNREACHABLE
+
+Replacing `return cur` after the loop with `return clauses` failed **nothing**. Each fold shortens by
+one and the shortest result is `[match, return]`, so at most `length - 2` folds can happen and
+iteration `length - 1` detects the fixpoint and returns from INSIDE the loop; the loop cannot run
+out. Both returns are correct even in that unreachable state, since every fold already applied is
+answer-preserving. Recorded as an **EXPECTED SURVIVOR** with that reason in the battery and above the
+line, rather than deleting the budget (which is the protection) or writing a test for a state no
+input reaches.
+
+🔭 **That is the second item running where the mutation battery found dead-but-harmless logic I had
+just written** — the `guardedNames.length > 0 ?` ternary at 1927, this trailing return here. Both
+were guards added for prudence that could not change an outcome. Worth noting as a pattern rather
+than twice as a coincidence: a battery earns its keep on the code under test AND on the scaffolding
+written around it.
+
+**MUTATION: 24 mutants, 23 caught, 1 expected survivor.** The five new ones attack the loop itself —
+removed entirely (the pre-1928 single pass), budget of one, the cursor never advancing, the fixpoint
+test inverted, and the unreachable return. ⚠️ Two anchors drifted on the first run because the comment
+added sits between `cur = next` and `return cur`; re-anchored onto fragments each verified unique by
+count before use.
+
+TESTS: 6 added — two, three and five-binding chains each folding to `[match, return]` and answering
+their hand-written twins, a CHEAP binding mid-chain not stopping it, and the two blowup refusals.
 
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers.
