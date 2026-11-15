@@ -2589,7 +2589,7 @@ export const compileLinear = (linear: LinearQuery): CLinear => {
 
   return {
     clauses,
-    varLengthCount: detectVarLengthCount(fast),
+    varLengthCount: detectVarLengthCount(fast, clauses),
     countShortcut: detectCountShortcut(fast, clauses),
     optionalHopCount: detectOptionalHopCount(fast),
     forCount: detectForCount(fast, clauses),

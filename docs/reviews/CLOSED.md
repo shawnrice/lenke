@@ -95201,7 +95201,7 @@ NO ENGINE BEHAVIOUR CHANGED — this entry.
 
 GATES. `bun run check` 0.
 
-## Item 1977 — 🔭 **ITEM 1907's 135.8x WIN LEFT THE RUNG PAYING |V| FOR A ONE-SOURCE QUERY: a seeded var-length count is O(|V|) where the SAME count written as a `COUNT { }` subquery is O(degree^depth), 82x at 20k vertices and 141x at 40k, same answer.** ⚠️ **ITEM 1978 BUILT IT AND GOT 1.39-1.60x, NOT 83x — the attribution below is WRONG: the level recurrence is ~30% of this cost and the rest is the per-vertex SEED FILTER two lines above it, so the 83x lives in seeding `src` from the index.** ⚠️ The row that nominated this is NOT itself a defect — it reads 0.60x or 0.93x depending only on the estimator
+## Item 1977 — 🔭 **ITEM 1907's 135.8x WIN LEFT THE RUNG PAYING |V| FOR A ONE-SOURCE QUERY: a seeded var-length count is O(|V|) where the SAME count written as a `COUNT { }` subquery is O(degree^depth), 82x at 20k vertices and 141x at 40k, same answer.** ⚠️ **ITEM 1978 BUILT IT AND GOT 1.39-1.60x, NOT 83x — the attribution below is WRONG: the level recurrence is ~30% of this cost and the rest is the per-vertex SEED FILTER two lines above it, so the 83x lives in seeding `src` from the index.** ✅ **ITEM 1979 DID THAT AND IT IS 160x at 20k / ~1700x at 160k — the 83x was an UNDER-estimate, and it was measured on the wrong half.** ⚠️ The row that nominated this is NOT itself a defect — it reads 0.60x or 0.93x depending only on the estimator
 
 Reached by pivot, not by list. Item 1976 found the GQL read corpus attributed at every one of its
 seven largest rows, so this tick went to `bench:usage`, whose 7 write / 3 interleaved / 2 analytic
@@ -95336,7 +95336,7 @@ NO ENGINE BEHAVIOUR CHANGED — a new probe and this entry.
 
 GATES. `bun run check` 0.
 
-## Item 1978 — ✅ **SHIPPED the per-source route for a seeded var-length COUNT: 1.39-1.60x across 5k/20k/40k vertices and both seed spellings, both controls flat.** ⚠️ **It is NOT item 1977's 83x, and that item's attribution was wrong: the level recurrence is about a THIRD of the cost — the rest is a seed filter over every vertex of the start label, so a selective seed on an INDEXED key never consults the index**
+## Item 1978 — ✅ **SHIPPED the per-source route for a seeded var-length COUNT: 1.39-1.60x across 5k/20k/40k vertices and both seed spellings, both controls flat.** ⚠️ **It is NOT item 1977's 83x, and that item's attribution was wrong: the level recurrence is about a THIRD of the cost — the rest is a seed filter over every vertex of the start label, so a selective seed on an INDEXED key never consults the index** ✅ **TAKEN AT ITEM 1979: seeking it is 160x at 20k and ~1700x at 160k, and the shape is now FLAT in |V|.**
 
 Item 1977 priced this at 83x and named the mechanism as the level recurrence's two `Float64Array(|V|)`
 vectors and its `max · (|V| + |E|)` loop. Building it says the mechanism was right and the share was
@@ -95457,3 +95457,128 @@ anchor-match asserted, restore-before-apply, verdict read from stdout+stderr the
 
 GATES. `bun run fmt` 0; `bun run check` 0; `bun run test -- --skip-nx-cache` 0, 21 projects;
 `bun run fuzz` 0, 57 pass / 0 fail; the native parity suites 55 pass / 1,305 assertions.
+
+## Item 1979 — ✅ **SHIPPED THE INDEX SEEK ITEM 1977's 83x ACTUALLY LIVED IN: a seeded var-length COUNT goes from O(|V|) to FLAT — 160x at 20,000 vertices, ~1700x at 160,000, both spellings, and it is now ~2.1 us at every size.** ⚠️ **The first version was NOT shippable: it regressed every UNINDEXED seed 1.37-1.72x, and only a control caught that**
+
+Item 1978 took the level recurrence off a seeded count and measured 1.39-1.60x, then said where the
+rest was: `[...verticesByLabel.get(startName)]` copied the start label's whole extent and
+`unfiltered.filter(seedPasses)` evaluated the seed on every vertex of it, so a selective equality on
+an INDEXED key never consulted the index. This is that.
+
+### 🔑 THE NOMINATION: TWO SIBLING RUNGS, ONE SEEKS AND ONE SCANS
+
+Found by an ordering that cannot be right rather than by a profile frame. The IDENTICAL quantified
+pattern with the IDENTICAL clause seed, differing only in the projection — which routes it to a
+different rung:
+
+```text
+    projection                 rung            5k      20k      40k     160k   (us/op)
+    RETURN DISTINCT x.name     reachShortcut   2.87     2.93     2.91     4.31   FLAT in |V|
+    RETURN count(*)            varLengthCount 85.41   347.50   733.87  3866.45   LINEAR
+    ratio                                      29.8x   118.6x   252.2x   897.0x
+```
+
+⚠️ **AND THE COUNT DOES STRICTLY LESS WORK THAN THE PROJECTION IT LOSES TO** — `reachShortcut`
+materializes and dedupes the reached set; `varLengthCount` only counts. So this is not a close call
+about two different jobs. `reachability.ts:231` has seeded through `seedVertices` since item 1906
+built it; its sibling never did.
+
+### WHAT MADE IT A SMALL CHANGE
+
+🔑 **`compileLinear` ALREADY ATTACHES A CLAUSE `WHERE` TO THE COMPILED START NODE** as
+`pred`/`seedHints`, so the seek needs no predicate lift and **both spellings move together for
+free** — item 583's requirement, and the thing that would otherwise have built the clause-vs-inline
+cliff this repo names first. Measured directly on a 20,000-vertex graph before building anything:
+
+```text
+    MATCH (a:User)-[…]->{1,3}(b) WHERE a.name = $n …   seedVertices yields 1 of 20,000
+    MATCH (a:User {name: $n})-[…]->{1,3}(b) …          seedVertices yields 1 of 20,000
+```
+
+The detector gains the COMPILED clauses (as `detectReachableShortcut` already took them, for the
+same reason) and passes that node through. Both source-resolution sites seek — `walkLevelCount`'s
+and the `max <= 1` arm's — because seeking only one would make a `{1,1}` count cost |V| where
+`{1,2}` costs a seek, which is a cliff between adjacent bounds rather than between spellings.
+
+### ⚠️⚠️ THE FIRST VERSION WAS A REGRESSION, AND THE CONTROL IS THE ONLY REASON I KNOW
+
+Routing sources through `seedVertices` directly made every UNINDEXED seed worse, because that
+function always returns a usable list — falling back to a label-scan GENERATOR — where the rung
+already had a faster way to build the same list by spreading a `Set`:
+
+```text
+    seed selectivity (UNINDEXED key)    PRE      first POST
+    1% of the graph                   384.46     659.87     1.72x WORSE
+    10%                               570.27     870.40     1.53x WORSE
+    100%                             1032.30    1409.34     1.37x WORSE
+    broad seed on an INDEXED key     1376.14    1744.85     1.27x WORSE
+```
+
+**Unindexed is the common case, so the indexed win could not pay for it.** The fix is `seekedSeeds`,
+a sibling of `seedVertices` that answers the narrower question — "is there a selective index
+candidate here?" — and returns `undefined` when there is not, leaving the caller's own fallback
+alone. Same candidate choice and same `seekIsWorthIt` gate, so the two cannot disagree about when a
+seek is worth it.
+
+### THE NUMBERS, ISOLATED PER ROW
+
+⚠️ **PER ROW BECAUSE THE SWEEP COULD NOT RESOLVE IT.** Control E — a 2-hop fixed chain this change
+cannot reach — moved **1.21-1.32x** between arms in the multi-row sweep, which is CLAUDE.md's
+"a control moving as far as the target" signature. `countsubq-1977.mjs` gained a `SHAPE=` filter and
+everything below is one row per process, `GRAPH=20000 OPS=120 ROUNDS=12`, PRE from `git show HEAD:`
+after an arm-identity check:
+
+```text
+    shape                                     PRE        POST      ratio
+    B  seeded count, clause WHERE           352.29       2.20      160.1x  ⬅
+    G  seeded count, inline {k: $p}         309.73       2.13      145.4x  ⬅
+    H  UNSEEDED count          [CONTROL]    666.95     666.95      1.00x
+    L  unindexed seed, 1% of graph          384.46     378.32      1.02x
+    L  unindexed seed, 10%                  570.27     552.25      1.03x
+    L  unindexed seed, 100%                1032.30    1050.22      0.98x
+    I  BROAD seed on an INDEXED key        1376.14    1449.03      0.95x  ⬅ the cost
+```
+
+**And it is FLAT in |V| now**: B reads 2.20 at 20,000 and **2.06 at 160,000**, against PRE's 352.29
+and 3898.74 — so the ratio is ~1700-1890x at 160k and grows with the graph. G likewise (2.12 at
+160k).
+
+⚠️ **THE ONE REAL COST, stated rather than buried: a BROAD seed over an INDEXED key pays 5.3%**
+(1376 -> 1449). That shape prices a range candidate, seeks it, and then filters — `seekIsWorthIt`
+accepts it, which I had expected it to refuse. Documented in the gate test as an AGREEMENT
+assertion rather than a threshold, because the threshold is `seekIsWorthIt`'s to own and duplicating
+it here is how one shape rule became two before.
+
+### WHAT THE MUTATION ROUND COST
+
+**18 mutants, 17 caught.** Two had to be earned and the third is recorded as cost-only:
+
+🛑 **`seek-picks-worst-candidate` SURVIVED because the fixture had ONE INDEX.** Inverting
+`candidate.count < best.count` to `>` — picking the BROADEST seek — passed everything, since with a
+single candidate min and max are the same vertex. Choosing among candidates is unobservable without
+two candidates of DIFFERENT selectivity, so the fixture gained a second index (`bucket`, 2 values,
+against unique `name`). ⚠️ And adding it broke the "no index serves this" test, whose key WAS
+`bucket` — the unindexed arm now uses a third property that is never indexed, which is the kind of
+coupling a fixture change exposes immediately or not for a long time.
+
+🛑 **That mutant's anchor matched TWICE**, because `seekedSeeds` duplicates `seedVertices`'s
+candidate-choosing line on purpose — so the harness now scopes `seek-*` mutants to `seekedSeeds`'s
+body, bounded at BOTH ends (it is defined ABOVE its twin, so a forward-only slice still contained
+it). The harness was changed, not the engine: editing production code to make a mutation anchor
+unique would be the tail wagging the dog.
+
+⚠️ **`seeds-passed-without-predicate` SURVIVES and is kept anyway, labelled.** The closure is also
+reached by a query with an ENDPOINT predicate and no start one; without a start predicate
+`seekedSeeds` finds no candidate and returns `undefined`, so the rung answers the same number by the
+same path. The guard saves one `indexCandidates` enumeration per query and changes nothing
+observable — a COST guard, which mutation cannot distinguish from a no-op. Recorded as NOT claimed
+to be tested.
+
+INSTRUMENTS. `countsubq-1977.mjs` gains `SHAPE=` (one row per process), `SEL=` (seed selectivity as
+a knob) and shapes J/K (the two-rung comparator) / L (the crossover);
+`varlen-per-source-mutants-1978.sh` gains the five seek mutants, a second pristine file and scoped
+replacement.
+
+GATES. `bun run fmt` 0; `bun run check` 0; `bun run test -- --skip-nx-cache` 0 across 21 projects;
+`bun run fuzz` 0; the native parity suites 72 pass / 1,491 assertions; the gql suites 82 pass /
+3,410 assertions.

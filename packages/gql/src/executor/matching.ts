@@ -459,6 +459,44 @@ export const seekIsWorthIt = (
   return count <= bucket * SEEK_MAX_FRACTION;
 };
 
+/**
+ * The seeded source list for `node`, or `undefined` when NO index serves it (item 1979).
+ *
+ * 🔑 **THE `undefined` IS THE POINT, and it exists because {@link seedVertices} cannot say "I did
+ * not seek".** That function always yields a usable source list, falling back to the label scan —
+ * which is correct for a caller that was going to walk a generator anyway, and a REGRESSION for one
+ * that already had a faster way to produce the same list. The var-length COUNT rung is the second
+ * kind: it spread `verticesByLabel.get(name)` (a `Set`) directly, and routing that through this
+ * module's generator cost it **1.37-1.72x on every UNINDEXED seed** — measured at 384 -> 660 us for a
+ * 1%-selective seed on a 20,000-vertex graph, worse the narrower the seed. Unindexed is the common
+ * case, so the win on the indexed case cannot pay for it.
+ *
+ * So this answers the narrower question — "is there a selective index candidate here?" — and leaves
+ * the caller's own fallback alone. Same candidate choice and same `seekIsWorthIt` gate as
+ * `seedVertices`, so the two cannot disagree about when a seek is worth it.
+ */
+export const seekedSeeds = (
+  graph: Graph,
+  node: CNode,
+  binding: Binding,
+  params: Params,
+): Vertex[] | undefined => {
+  const env: EvalEnv = { binding, params, graph };
+  let best: SeedCandidate | undefined;
+
+  for (const candidate of indexCandidates(graph, node, env)) {
+    if (!best || candidate.count < best.count) {
+      best = candidate;
+    }
+  }
+
+  if (best === undefined || !seekIsWorthIt(graph, node.label, best.count)) {
+    return undefined;
+  }
+
+  return [...best.build()];
+};
+
 export const seedVertices = function* (
   graph: Graph,
   node: CNode,

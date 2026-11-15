@@ -23,10 +23,11 @@ import type { Edge, Graph, Vertex } from '@lenke/core';
 
 import type { Clause, PathPattern } from '../ast.js';
 import { edgesOfTypes, relTypeNames } from './adjacency.js';
-import type { Params, Row } from './core.js';
+import type { CClause, Params, Row } from './core.js';
 import { csrFor } from './csr-cache.js';
 import { inlineHolds } from './inline-gate.js';
 import { vacuousLabel } from './labels.js';
+import { seekedSeeds } from './matching.js';
 import { alwaysTrue, chainGatesOf, countStarColumn, gateWith } from './shortcuts.js';
 
 /**
@@ -113,6 +114,29 @@ export type DegreeCountSpec = {
    * nothing the tables hold.
    */
   seedPasses?: (v: Vertex) => boolean;
+  /**
+   * The SOURCE LIST, seeked through the index when one serves the start predicate (item 1979) —
+   * `undefined` when there is no start predicate, where the sources are the start label's extent
+   * and there is nothing to seek.
+   *
+   * ⚠️ `undefined` ALSO MEANS "NO INDEX SERVED IT", in which case the caller keeps the label-extent
+   * path it always had. Routing the unindexed case through the seeker's generator instead cost
+   * 1.37-1.72x — see `seekedSeeds`, which exists for exactly this distinction.
+   *
+   * ⚠️⚠️ **A SUPERSET, NOT THE ANSWER, which is why `seedPasses` still runs over it.**
+   * `seedVertices` narrows by label and by whatever index serves the node, and its own contract is
+   * that "the seed only has to be a SUPERSET (`matchNode` and the residual `WHERE` re-validate)" —
+   * it also declines a seek that is not selective enough (`seekIsWorthIt`, break-even ~18%) and
+   * falls back to the label scan, which is exactly what this rung did for every query before this.
+   * So a broad seed resolves as it always did and a narrow one stops reading every vertex.
+   *
+   * 🔑 **BOTH SPELLINGS MOVE TOGETHER FOR FREE**, which is item 583's requirement and the reason
+   * this is a two-line change rather than a predicate lift: `compileLinear` already attaches a
+   * clause `WHERE` to the compiled start node as `pred`/`seedHints`, so passing that node to
+   * `seedVertices` seeks the clause form and the inline form alike. Measured on a 20,000-vertex
+   * graph: both yield 1 candidate.
+   */
+  seeds?: () => readonly Vertex[] | undefined;
   passes: (v: Vertex) => boolean;
   /** True when `passes` cannot reject, so the degree is a set SIZE rather than a walk. */
   passesIsVacuous: boolean;
@@ -642,8 +666,19 @@ export const walkLevelCount = (graph: Graph, spec: DegreeCountSpec): number => {
   // The flattened adjacency, from the cross-query cache — see {@link csrFor}. The tables are READ
   // ONLY from here down, which is the property that lets them be shared.
   const { order, idx, off, nbr } = csrFor(graph, inward, types);
+  /*
+   * ⚠️⚠️ SEEKED WHEN AN INDEX SERVES THE START PREDICATE (item 1979). This used to be the start
+   * label's WHOLE EXTENT, copied, and then `seedPasses` ran on every vertex of it — so a selective
+   * equality on an indexed key never consulted the index and the rung was O(|V|) for a one-source
+   * query. Item 1906's sibling rung has seeded through `seedVertices` since it was built, and the
+   * cost of the difference, measured on the identical pattern with the identical clause seed and
+   * only the projection changed: `RETURN DISTINCT x.name` 2.9 us flat in |V| against
+   * `RETURN count(*)` 85 / 348 / 734 / 3866 us at 5k / 20k / 40k / 160k vertices — **897x at 160k,
+   * and the count does strictly LESS work than the projection it loses to.**
+   */
+  const seeked = spec.seeds?.();
   const unfiltered =
-    startName === undefined ? order : [...(graph.verticesByLabel.get(startName) ?? [])];
+    seeked ?? (startName === undefined ? order : [...(graph.verticesByLabel.get(startName) ?? [])]);
   // ⚠️ FILTERED ONCE, HERE, so every later reader — the depth-3 correction's `for (const s of src)`
   // and `srcIdx`, which `trailCorrectionAt` and `trailsAt4From` index by — sees the same set.
   const src = seedPasses === undefined ? unfiltered : unfiltered.filter((v) => seedPasses(v));
@@ -917,15 +952,22 @@ export const varLengthDegreeCount = (graph: Graph, spec: DegreeCountSpec): numbe
 
     return n;
   };
+  /*
+   * ⚠️ SEEKED TOO (item 1979), and it has to be: this is the `max <= 1` arm and `walkLevelCount` is
+   * the `max >= 2` one. Seeking only one of them would make a `{1,1}` count cost |V| where `{1,2}`
+   * costs a seek — a cliff between adjacent bounds, which is the same mistake as a cliff between
+   * two spellings.
+   */
   const sources =
-    startName === undefined
+    spec.seeds?.() ??
+    (startName === undefined
       ? graph.verticesById.values()
-      : (graph.verticesByLabel.get(startName) ?? []);
+      : (graph.verticesByLabel.get(startName) ?? []));
   let total = 0;
 
   for (const s of sources) {
     // ⚠️ THE SEED GATE, before any term — a source that fails it contributes no path of any length.
-    // ⚠️ THE SEED GATE, before any term — a source that fails it contributes no path of any length.
+    // Still required with a seeked `sources`: the seek is a SUPERSET (see `DegreeCountSpec.seeds`).
     if (seedPasses !== undefined && !seedPasses(s)) {
       continue;
     }
@@ -1106,6 +1148,13 @@ export const mirrorAdmissible = (inward: boolean, max: number | null): boolean =
   !inward || (max !== null && max >= 2);
 export const detectVarLengthCount = (
   clauses: readonly Clause[],
+  /*
+   * ⚠️ THE COMPILED CLAUSES, for ONE purpose: the compiled start node carries a clause `WHERE` as
+   * `pred`/`seedHints`, which is what lets `seedVertices` seek either spelling (item 1979). The raw
+   * `clauses` above decide the SHAPE, exactly as before; this decides only where the sources come
+   * from. `detectReachableShortcut` takes the same pair for the same reason.
+   */
+  compiled: readonly CClause[],
   // `Row[] | undefined`, uniquely among the detectors: a depth-4 trail's endpoint label may be
   // VACUOUS, which only the graph can say, so this rung is admitted at compile time and declines at
   // run time (item 1399). `undefined` means "the general clause loop must run", which is the
@@ -1116,6 +1165,7 @@ export const detectVarLengthCount = (
   }
 
   const [m, ret] = clauses;
+  const [cm] = compiled;
 
   if (m?.kind !== 'match' || m.optional || m.patterns.length !== 1 || ret?.kind !== 'return') {
     return null;
@@ -1319,6 +1369,31 @@ export const detectVarLengthCount = (
           startName: startLabel?.name,
           passes,
           seedPasses,
+          /*
+           * ⚠️ THE NODE IS `pattern.start` AS COMPILED, which is what makes both spellings seek
+           * (item 1979). `compileLinear` attaches a clause `WHERE` reading the start to that node
+           * as `pred`/`seedHints`, so `seedVertices` finds the same candidate for
+           * `WHERE a.n = $p`, `(a {n: $p})` and `(a WHERE a.n = $p)` alike — no predicate lift
+           * here, and no risk of carrying one spelling and not another.
+           *
+           * ⚠️ Only when there IS a start predicate — this closure is also reached by a query with
+           * an ENDPOINT predicate and no start one, and such a node has nothing to seek.
+           *
+           * ⚠️ A MUTANT REMOVING THIS GUARD SURVIVES, and that is recorded rather than papered
+           * over. Without a start predicate `seekedSeeds` finds no candidate and returns
+           * `undefined`, so the rung takes the same path and answers the same number — the guard
+           * saves one `indexCandidates` enumeration per query and changes nothing observable. It is
+           * a COST guard, not a correctness one, and the mutation round cannot distinguish it from
+           * a no-op. Kept because the shape it protects (endpoint predicate, no seed) is common and
+           * the call buys it nothing; NOT claimed as tested.
+           */
+          seeds:
+            startPred === undefined
+              ? undefined
+              : (): readonly Vertex[] | undefined =>
+                  cm?.kind === 'match' && cm.patterns.length === 1
+                    ? seekedSeeds(graph, cm.patterns[0].start, new Map(), params)
+                    : undefined,
           // A carried predicate is never vacuous — it is the whole reason this arm exists.
           passesIsVacuous: false,
         }),

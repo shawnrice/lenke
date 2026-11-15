@@ -19,7 +19,10 @@ set -u
 # under `crates/lenke-engine/target/` (gitignored, and it survives the reboot a runaway mutant can
 # force).
 SRC=packages/gql/src/executor/var-length-count.ts
-PRISTINE=crates/lenke-engine/target/post-varlen-1978.ts
+PRISTINE=crates/lenke-engine/target/post-varlen-1979.ts
+# ⚠️ item 1979 put the seek in a SECOND file, so both are restored per mutant.
+SRC2=packages/gql/src/executor/matching.ts
+PRISTINE2=crates/lenke-engine/target/post-matching-1979.ts
 STAMP=$(date +%s)
 LOG=/tmp/claude-1000/-home-shawn-projects-pl-graph/d06c85fd-9834-4f74-aceb-aa3f731dd30d/scratchpad/mutants-1978-$STAMP.log
 touch "$LOG"
@@ -40,6 +43,12 @@ MUTANTS=(
   "walk-drops-min-gate|      if (len >= min) {|      if (true) {"
   "walk-min0-dropped|    if (min === 0 && passes(s)) {\n      total += 1;\n    }\n\n    let frontier|    let frontier"
   "walk-overwrites-multiplicity|next.set(w, (next.get(w) ?? 0) + c);|next.set(w, c);"
+  # ---- item 1979, the index seek ----
+  "seek-always-declines|  return [...best.build()];|  return undefined;"
+  "seek-scans-when-unindexed|  if (best === undefined || !seekIsWorthIt(graph, node.label, best.count)) {\n    return undefined;\n  }|  if (best === undefined) {\n    return [...candidateVertices(graph, node.label)];\n  }"
+  "seek-drops-worth-gate|best === undefined || !seekIsWorthIt(graph, node.label, best.count)|best === undefined"
+  "seek-picks-worst-candidate|candidate.count < best.count|candidate.count > best.count"
+  "seeds-passed-without-predicate|            startPred === undefined\n              ? undefined\n              : (): readonly Vertex[]|            false\n              ? undefined\n              : (): readonly Vertex[]"
 )
 
 print "item 1978 mutation round, $STAMP" | tee -a "$LOG"
@@ -53,16 +62,40 @@ for entry in "${MUTANTS[@]}"; do
   # RESTORE BEFORE APPLYING, never only after the loop — an interrupted run must not leave a
   # mutant in the tree.
   cp "$PRISTINE" "$SRC"
+  cp "$PRISTINE2" "$SRC2"
 
-  applied=$(FROM="$from" TO="$to" SRC="$SRC" python3 -c '
+  # The 1979 seek mutants live in `matching.ts`; everything else in `var-length-count.ts`.
+  target="$SRC"
+  case "$name" in
+    seek-*) target="$SRC2" ;;
+  esac
+
+  # ⚠️ `seek-*` MUTANTS ARE SCOPED TO `seekedSeeds`'s BODY. Its candidate-choosing loop is textually
+  # identical to `seedVertices`'s — deliberately, so the two cannot disagree about which candidate
+  # wins — so a whole-file anchor matches twice and the run reports ANCHOR-BAD rather than a verdict.
+  # Scoping makes the short anchor unambiguous without editing the engine to suit the harness.
+  scope=""
+  scope_end=""
+  case "$name" in
+    seek-*) scope="export const seekedSeeds" ; scope_end="export const seedVertices" ;;
+  esac
+
+  applied=$(FROM="$from" TO="$to" SRC="$target" SCOPE="$scope" SCOPE_END="$scope_end" python3 -c '
 import io, os
 p = os.environ["SRC"]
 s = io.open(p, encoding="utf-8").read()
 f = os.environ["FROM"].encode().decode("unicode_escape")
 t = os.environ["TO"].encode().decode("unicode_escape")
-n = s.count(f)
+scope = os.environ.get("SCOPE", "")
+end = os.environ.get("SCOPE_END", "")
+at = s.index(scope) if scope else 0
+# ⚠️ BOUNDED AT BOTH ENDS: `seekedSeeds` is defined ABOVE `seedVertices`, so a forward-only slice
+# still contains the twin whose identical line is what made the anchor ambiguous.
+to = s.index(end, at) if end else len(s)
+head, body, tail = s[:at], s[at:to], s[to:]
+n = body.count(f)
 if n == 1:
-    io.open(p, "w", encoding="utf-8").write(s.replace(f, t, 1))
+    io.open(p, "w", encoding="utf-8").write(head + body.replace(f, t, 1) + tail)
 print(n)
 ')
 
@@ -99,4 +132,5 @@ print(n)
 done
 
 cp "$PRISTINE" "$SRC"
+cp "$PRISTINE2" "$SRC2"
 print "restored; log at $LOG" | tee -a "$LOG"

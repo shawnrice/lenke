@@ -37,6 +37,8 @@ import { nativeBackend, nativeReady } from './src/conformance-harness.js';
 import { graphFromNdjson } from './src/graph.js';
 
 const GRAPH = Number(process.env.GRAPH ?? 20000);
+/** Percent of the graph shape L's seed admits — `score` spans 100 values. */
+const SEL = Number(process.env.SEL ?? 10);
 const ROUNDS = Number(process.env.ROUNDS ?? 15);
 const OPS = Number(process.env.OPS ?? 400);
 
@@ -122,6 +124,49 @@ const SHAPES = [
     'H UNSEEDED count  [CONTROL, must not move]',
     'MATCH (u:User)-[:FOLLOWS]->{1,3}(x:User) RETURN count(*) AS spread',
   ],
+  /*
+   * ⚠️⚠️ J AND K ARE THE SEEK COMPARATOR (item 1979), and they are the cheapest possible proof that
+   * the missing index seek is real rather than inferred.
+   *
+   * Both run the IDENTICAL quantified pattern with the IDENTICAL clause seed. They differ only in
+   * the projection, and that routes them to two DIFFERENT rungs:
+   *
+   *   J  `RETURN DISTINCT b.name`  -> the REACHABILITY rung (item 1906), which seeds through
+   *                                   `seedVertices` — the index-aware seeder — at
+   *                                   `reachability.ts:231`.
+   *   K  `RETURN count(*)`         -> the var-length COUNT rung, which resolves its sources as
+   *                                   `[...verticesByLabel.get(startName)].filter(seedPasses)`.
+   *
+   * So the pair measures ONE difference: seeking the seed against scanning the label's extent for
+   * it. If J is flat in |V| and K is linear, the seek is available on this very shape today, one
+   * rung over, and the count rung simply does not call it. ⚠️ J does strictly MORE work than K
+   * (it materializes and dedupes the reached set where K only counts), so J being FASTER is not a
+   * close call — it is the whole finding.
+   */
+  [
+    'J DISTINCT b.name  [REACHABILITY rung, SEEKS]',
+    'MATCH (u:User)-[:FOLLOWS]->{1,3}(x:User) WHERE u.name = $n RETURN DISTINCT x.name AS v',
+  ],
+  [
+    'K count(*), same pattern  [COUNT rung, SCANS]',
+    'MATCH (u:User)-[:FOLLOWS]->{1,3}(x:User) WHERE u.name = $n RETURN count(*) AS spread',
+  ],
+  /*
+   * ⚠️⚠️ L IS THE CROSSOVER ROW (item 1979). Shape I is `name >= ''`, which matches EVERY vertex —
+   * pathological, and it regressed 1.27x when the rung started seeking, because `seedVertices` must
+   * price a range candidate and then decline it (`seekIsWorthIt`, break-even ~18%) before falling
+   * back to the label scan the rung used to take directly.
+   *
+   * "Is that 1.27x real on a shape anyone writes?" is a selectivity question, so `SEL` makes
+   * selectivity the knob: `score` spans 100 values, so `score < $sel` selects SEL% of the graph.
+   * SEL=1 is a narrow seed, SEL=100 is shape I by another spelling. The crossover is where the
+   * seek's own gate starts refusing, and it has to be MEASURED rather than reasoned about — item
+   * 1939 swept the one gate this repo has of the same kind.
+   */
+  [
+    'L seed at SEL% of the graph  [crossover]',
+    'MATCH (u:User)-[:FOLLOWS]->{1,3}(x:User) WHERE u.score < $sel RETURN count(*) AS spread',
+  ],
   [
     'I BROAD seed, every vertex passes  [splitter]',
     'MATCH (u:User)-[:FOLLOWS]->{1,3}(x:User) WHERE u.name >= $lo RETURN count(*) AS spread',
@@ -183,18 +228,42 @@ console.log(
   'shape                                            answer    ts warm   native warm   ts/nat      us/op',
 );
 
+/*
+ * ⚠️ `SHAPE=` SELECTS ONE ROW, and it is not a convenience. CLAUDE.md: "a per-row question needs a
+ * per-row instrument" — running the whole sweep per arm lets rows interfere, and item 1979 saw
+ * exactly that: control E, a 2-hop fixed chain this change cannot reach, moved 1.21-1.32x between
+ * arms while the row under test moved 1.27x the other way. A control moving as far as the subject
+ * means the sweep cannot resolve the subject.
+ */
+const { SHAPE } = process.env;
+
 for (const [name, q] of SHAPES) {
+  if (SHAPE !== undefined && !name.startsWith(SHAPE)) {
+    continue;
+  }
+
   // ⚠️ THE ANSWER IS PRINTED because a route gap only matters between shapes that AGREE. On a
   // permutation graph A-D must all read 3 and E-F must read 1.
-  const answer = JSON.stringify(
-    tsQuery(tsGraph, q, { n: 'user7', lo: '' })?.[0]?.spread ??
-      tsQuery(tsGraph, q, { n: 'user7', lo: '' })?.[0]?.c,
-  );
-  const ts = measure((i) => void tsQuery(tsGraph, q, { n: `user${String(i)}`, lo: '' }));
+  const probe = tsQuery(tsGraph, q, { n: 'user7', lo: '', sel: SEL });
+  /*
+   * ⚠️ `?? null` IS LOAD-BEARING: `JSON.stringify(undefined)` returns `undefined`, not a string, so
+   * a shape projecting under a different alias crashed the printer instead of reporting itself.
+   * And `rows` is shown for a projection, where the first row's value says nothing about the shape.
+   */
+  const scalar = probe?.[0]?.spread ?? probe?.[0]?.c;
+  /*
+   * ⚠️ `JSON.stringify` AND NOT `String`: a row value is `unknown`, so `String` stringifies an
+   * object as `[object Object]` and the lint is right to refuse it. A shape projecting no scalar
+   * (shape J's `DISTINCT x.name`) reports its ROW COUNT instead, because the first row's value says
+   * nothing about whether the shape agreed with its siblings.
+   */
+  const rows = probe === undefined ? 'null' : `${String(probe.length)}r`;
+  const answer = scalar === undefined ? rows : JSON.stringify(scalar);
+  const ts = measure((i) => void tsQuery(tsGraph, q, { n: `user${String(i)}`, lo: '', sel: SEL }));
   let nat;
 
   if (nativeGraph !== undefined) {
-    nat = measure((i) => void nativeGraph.query(q, { n: `user${String(i)}`, lo: '' }));
+    nat = measure((i) => void nativeGraph.query(q, { n: `user${String(i)}`, lo: '', sel: SEL }));
   }
 
   console.log(
