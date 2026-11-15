@@ -166,3 +166,157 @@ describe('what the widening does NOT change', () => {
     expect(rows(text)).toEqual([{ x: 4 }, { x: 6 }, { x: 8 }, { x: null }]);
   });
 });
+
+// ————————————————————————————————————————————————————————————————————————————————————————————————
+// Item 1927 — `subst` was ONE LEVEL ONLY: a bound name nested inside an operator was refused, and
+// the stated reason was that a deeper walk "would drop the binder with the name still unbound" if
+// it missed an arm of the 40-arm `Expr` union.
+//
+// 🔑 THAT PREMISE WAS AVOIDABLE. `substituteVarsDeep` is a WHITELIST and the `freePredicateVars`
+// post-check (which this rewrite ALREADY did, one level up) turns a missed arm into a DECLINE. So
+// the walk does not have to be exhaustive to be safe, only fail-safe. `letdeep-breadth-1927.ts`
+// found 11 of 13 natural spellings stranded; measured at 200,000 vertices, one shape per process:
+//
+// ```text
+//   LET c = n.n RETURN sum(c + 1)              77.91 ms ->  6.96   (hand twin  7.03)  11.2x
+//   LET a = n.n RETURN n.k AS x ORDER BY a * 2 257.91   -> 33.88   (hand twin 39.29)   7.6x
+//   LET a = n.n RETURN a * 2                    58.74   ->  9.27   (hand twin 12.77)   6.3x
+//   LET a = n.n RETURN a > 5                    57.43   -> 10.07   (hand twin 10.86)   5.7x
+//   CONTROL single (folded at 1926)              8.33   ->  8.28   flat
+//   CONTROL plain                                6.64   ->  5.92   flat
+// ```
+describe('a bound name folds at any DEPTH inside a scalar expression', () => {
+  /** Each pair must agree on rows AND compile to the same clauses as its hand-written twin. */
+  const pairs: readonly (readonly [string, string, string])[] = [
+    ['arith wrap', 'LET a = n.n RETURN a * 2 AS x', 'RETURN n.n * 2 AS x'],
+    ['arith wrap, computed bind', 'LET a = n.n + 1 RETURN a * 2 AS x', 'RETURN (n.n + 1) * 2 AS x'],
+    ['comparison', 'LET a = n.n RETURN a > 2 AS x', 'RETURN n.n > 2 AS x'],
+    ['nested function arg', 'LET a = n.n RETURN abs(a + 1) AS x', 'RETURN abs(n.n + 1) AS x'],
+    // ⚠️ THE OLD COMMENT'S OWN EXAMPLE of what it refused, and the family's biggest gap at 11.2x.
+    ['aggregate over an expr', 'LET c = n.n RETURN sum(c + 1) AS x', 'RETURN sum(n.n + 1) AS x'],
+    [
+      'searched CASE',
+      'LET a = n.n RETURN CASE WHEN a > 2 THEN 1 ELSE 0 END AS x',
+      'RETURN CASE WHEN n.n > 2 THEN 1 ELSE 0 END AS x',
+    ],
+    [
+      'simple CASE subject',
+      'LET a = n.n RETURN CASE a WHEN 1 THEN 9 ELSE 0 END AS x',
+      'RETURN CASE n.n WHEN 1 THEN 9 ELSE 0 END AS x',
+    ],
+    ['IN list', 'LET a = n.n RETURN a IN [1, 2] AS x', 'RETURN n.n IN [1, 2] AS x'],
+    ['list element', 'LET a = n.n RETURN [a, 1] AS x', 'RETURN [n.n, 1] AS x'],
+    ['map field', 'LET a = n.n RETURN {v: a} AS x', 'RETURN {v: n.n} AS x'],
+    ['IS NULL', 'LET a = n.n RETURN a IS NULL AS x', 'RETURN n.n IS NULL AS x'],
+    ['index base', 'LET a = n.n RETURN [10, 20, 30][a] AS x', 'RETURN [10, 20, 30][n.n] AS x'],
+    ['string concat', "LET s = n.k RETURN s || '!' AS x", "RETURN n.k || '!' AS x"],
+    ['nested string fns', 'LET s = n.k RETURN upper(trim(s)) AS x', 'RETURN upper(trim(n.k)) AS x'],
+  ];
+
+  for (const [label, letTail, handTail] of pairs) {
+    test(`${label} folds and matches its hand-written twin`, () => {
+      const viaLet = `MATCH (n:T) ${letTail} ORDER BY x`;
+      const hand = `MATCH (n:T) ${handTail} ORDER BY x`;
+
+      expect(clauseKinds(viaLet)).toEqual(['match', 'return']);
+      expect(clauseKinds(hand)).toEqual(['match', 'return']);
+      expect(rows(viaLet)).toEqual(rows(hand));
+    });
+  }
+
+  test('ORDER BY wraps the name — 257.91 -> 33.88 ms, the family second-biggest gap', () => {
+    const viaLet = 'MATCH (n:T) LET a = n.n RETURN n.k AS x ORDER BY a * 2, x';
+    const hand = 'MATCH (n:T) RETURN n.k AS x ORDER BY n.n * 2, x';
+
+    expect(clauseKinds(viaLet)).toEqual(['match', 'return']);
+    expect(rows(viaLet)).toEqual(rows(hand));
+  });
+
+  test('a HOP shape folds too', () => {
+    const viaLet = 'MATCH (a:T)-[:E]->(b:T) LET v = b.n RETURN v * 2 AS x ORDER BY x';
+    const hand = 'MATCH (a:T)-[:E]->(b:T) RETURN b.n * 2 AS x ORDER BY x';
+
+    expect(clauseKinds(viaLet)).toEqual(['match', 'return']);
+    expect(rows(viaLet)).toEqual(rows(hand));
+  });
+});
+
+describe('the four omitted arms BIND names, so the rewrite declines rather than capturing', () => {
+  /*
+   * ⚠️⚠️ THIS IS THE SAFETY ARGUMENT FOR SUBSTITUTING AT DEPTH, and it is what makes the whitelist
+   * sound. `exists` / `countSubquery` / `valueSubquery` carry `PathPattern`s whose variables share
+   * a namespace with the bound name, and `letIn` introduces scoped locals that shadow it — so a
+   * blind substitution inside any of them could CAPTURE. `substituteVarsDeep` leaves all four
+   * alone, and the `freePredicateVars` post-check then declines the whole rewrite.
+   *
+   * Each case asserts the `LET` STANDS and the answer is the one the standing `LET` gives.
+   */
+  test('a name used free inside EXISTS: the LET stands', () => {
+    const text =
+      'MATCH (n:T) LET a = n.n + 1 RETURN exists { MATCH (n)-[:E]->(x:T) WHERE x.n = a } AS y ORDER BY y';
+
+    expect(clauseKinds(text)).toEqual(['match', 'let', 'return']);
+    expect(rows(text).length).toBe(4);
+  });
+
+  test('a name used free inside COUNT { }: the LET stands', () => {
+    const text =
+      'MATCH (n:T) LET a = n.n + 1 RETURN COUNT { MATCH (n)-[:E]->(x:T) WHERE x.n = a } AS y ORDER BY y';
+
+    expect(clauseKinds(text)).toEqual(['match', 'let', 'return']);
+    expect(rows(text).length).toBe(4);
+  });
+
+  test('a name used free inside LET … IN … END: the LET stands', () => {
+    const text = 'MATCH (n:T) LET a = n.n + 1 RETURN (LET q = 5 IN a + q END) AS x ORDER BY x';
+
+    expect(clauseKinds(text)).toEqual(['match', 'let', 'return']);
+    expect(rows(text)).toEqual(rows('MATCH (n:T) RETURN (n.n + 1) + 5 AS x ORDER BY x'));
+  });
+
+  test('a name SHADOWED inside LET … IN … END: the LET stands and the inner binding wins', () => {
+    // Nothing needed substituting (the inner `a` is a different binding), and the outer `a` is read
+    // ZERO times — which the once-read guard declines for a non-cheap binding.
+    const text = 'MATCH (n:T) LET a = n.n + 1 RETURN (LET a = 5 IN a + 1 END) AS x ORDER BY x';
+
+    expect(clauseKinds(text)).toEqual(['match', 'let', 'return']);
+    expect(rows(text)).toEqual([{ x: 6 }, { x: 6 }, { x: 6 }, { x: 6 }]);
+  });
+
+  test('a name in PROPERTY position (a.k) is a different transformation, so it declines', () => {
+    // Substituting here would have to build `{kind:'field', base, key}`, not swap a node.
+    // `prop` contributes its `variable` to `freePredicateVars`, so the post-check catches it.
+    const text = 'MATCH (n:T) LET a = n RETURN a.k AS x ORDER BY x';
+
+    expect(clauseKinds(text)).toEqual(['match', 'let', 'return']);
+    expect(rows(text)).toEqual([{ x: 'ka' }, { x: 'kb' }, { x: 'kc' }, { x: 'kd' }]);
+  });
+});
+
+describe('the once-read guard still holds at depth', () => {
+  test('read twice at DEPTH: the LET stands', () => {
+    // Before item 1927 this declined on SHAPE (one-level `subst` refused the arith). Now the
+    // substitution would reach both occurrences, so only the guard stops it — the count comes from
+    // `substituteVarsDeep` itself, which reports 2.
+    const text = 'MATCH (n:T) LET a = n.n + 1 RETURN (a * 2) + (a * 3) AS x ORDER BY x';
+
+    expect(clauseKinds(text)).toEqual(['match', 'let', 'return']);
+    expect(rows(text)).toEqual(
+      rows('MATCH (n:T) RETURN ((n.n + 1) * 2) + ((n.n + 1) * 3) AS x ORDER BY x'),
+    );
+  });
+
+  test('read once in a nested position and once in ORDER BY: the LET stands', () => {
+    const text = 'MATCH (n:T) LET a = n.n + 1 RETURN a * 2 AS x ORDER BY a + 1';
+
+    expect(clauseKinds(text)).toEqual(['match', 'let', 'return']);
+  });
+
+  test('a CHEAP binding folds at depth however many times it is read', () => {
+    const viaLet = 'MATCH (n:T) LET a = n.n RETURN (a * 2) + (a * 3) AS x ORDER BY x';
+    const hand = 'MATCH (n:T) RETURN (n.n * 2) + (n.n * 3) AS x ORDER BY x';
+
+    expect(clauseKinds(viaLet)).toEqual(['match', 'return']);
+    expect(rows(viaLet)).toEqual(rows(hand));
+  });
+});

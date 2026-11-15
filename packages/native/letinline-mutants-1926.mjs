@@ -25,6 +25,7 @@ const ROOT = '/home/shawn/projects/pl-graph';
 const SRCS = {
   core: `${ROOT}/packages/gql/src/executor/core.ts`,
   rw: `${ROOT}/packages/gql/src/executor/rewrites.ts`,
+  ea: `${ROOT}/packages/gql/src/executor/expr-analysis.ts`,
 };
 const PRISTINE = `${ROOT}/crates/lenke-engine/target/pristine-1926m`;
 const CWD = `${ROOT}/packages/gql`;
@@ -41,6 +42,17 @@ const TESTS = [
   'src/column-order.test.ts',
 ];
 
+/*
+ * ⚠️ SIX OF ITEM 1926'S ENTRIES WERE REMOVED AT ITEM 1927, DELIBERATELY, because the MECHANISM
+ * they attacked no longer exists — not because they stopped failing. The one-level `subst` and its
+ * separate `reads` counter are gone: the count now comes from `substituteVarsDeep` itself, so there
+ * is no name-vs-occurrence distinction to get wrong, no function-argument arm counting separately,
+ * and no `guarded` helper to mis-scope. Their coverage is carried by the `count`/arm mutants below.
+ *
+ * 🔑 The two `total !== 1` threshold entries were replaced by their `at depth` twins, which attack
+ * the same line in its new form. A dead mutant silently loses the coverage an earlier item built,
+ * so each removal is accounted for here rather than left to a reader to notice.
+ */
 /** `[name, which, from, to, expectedOccurrences]` */
 const MUTANTS = [
   // ———— the admission gate in `boundExprs` ————
@@ -60,82 +72,120 @@ const MUTANTS = [
   ],
   // ———— the once-read guard, which is what makes the widening sound ————
   [
-    '⚠️ THE GUARD NEVER APPLIES (guardedBound is always empty)',
+    '⚠️ THE GUARD NEVER APPLIES (guardedNames is always empty)',
     'rw',
-    '  const guardedBound = [...bound].filter(([, e]) => !cheapPureExpr(e)).map(([n]) => n);',
-    '  const guardedBound = [];',
+    '  const guardedNames = [...bound].filter(([, e]) => !cheapPureExpr(e)).map(([n]) => n);',
+    '  const guardedNames = [];',
     1,
   ],
   [
     '⚠️ EVERY binding is guarded, so a CHEAP one can no longer fold read-zero or read-twice',
     'rw',
-    '  const guardedBound = [...bound].filter(([, e]) => !cheapPureExpr(e)).map(([n]) => n);',
-    '  const guardedBound = [...bound].map(([n]) => n);',
+    '  const guardedNames = [...bound].filter(([, e]) => !cheapPureExpr(e)).map(([n]) => n);',
+    '  const guardedNames = [...bound].map(([n]) => n);',
     1,
   ],
   [
     'the filter polarity is inverted, so only CHEAP bindings are guarded',
     'rw',
-    '  const guardedBound = [...bound].filter(([, e]) => !cheapPureExpr(e)).map(([n]) => n);',
-    '  const guardedBound = [...bound].filter(([, e]) => cheapPureExpr(e)).map(([n]) => n);',
+    '  const guardedNames = [...bound].filter(([, e]) => !cheapPureExpr(e)).map(([n]) => n);',
+    '  const guardedNames = [...bound].filter(([, e]) => cheapPureExpr(e)).map(([n]) => n);',
     1,
   ],
   // ———— the OCCURRENCE counter (the hole item 1926 closed) ————
-  [
-    '⚠️ THE PRE-1926 COUNTER: guarded NAMES, not OCCURRENCES — power(a, a) scores 1 and DOUBLES',
-    'rw',
-    "    const reads = (e: Expr): number => {\n      if (guarded(e)) {\n        return 1;\n      }\n\n      return e.kind === 'func' ? e.args.filter(guarded).length : 0;\n    };",
-    '    const reads = (e: Expr): number => {\n      const free = freePredicateVars(e);\n\n      return guardedBound.filter((name) => free.has(name)).length;\n    };',
-    1,
-  ],
-  [
-    "⚠️ a function's arguments are counted as ONE however many are the bound name",
-    'rw',
-    "      return e.kind === 'func' ? e.args.filter(guarded).length : 0;",
-    "      return e.kind === 'func' && e.args.some(guarded) ? 1 : 0;",
-    1,
-  ],
-  [
-    'the function-argument arm counts NOTHING, so a folded call is never admitted',
-    'rw',
-    "      return e.kind === 'func' ? e.args.filter(guarded).length : 0;",
-    '      return 0;',
-    1,
-  ],
-  [
-    '⚠️ `guarded` ignores WHICH name, so a cheap binding read twice counts as guarded reads',
-    'rw',
-    "    const guarded = (e: Expr): boolean => e.kind === 'var' && guardedBound.includes(e.name);",
-    "    const guarded = (e: Expr): boolean => e.kind === 'var';",
-    1,
-  ],
   // ———— the threshold and its two sides ————
+
+  // ———— item 1927: the DEEP substitution, and the post-check that makes it safe ————
   [
-    '⚠️ READ ZERO TIMES is admitted, so the binding evaluation (and its faults) disappear',
+    '⚠️⚠️ THE POST-CHECK IS GONE, so a name left inside EXISTS/COUNT/letIn folds anyway',
     'rw',
-    '    if (total !== 1) {\n      return clauses;\n    }',
-    '    if (total > 1) {\n      return clauses;\n    }',
+    '    const free = freePredicateVars(out);\n\n    if ([...bound.keys()].some((n) => free.has(n))) {\n      return null;\n    }\n',
+    '',
     1,
   ],
   [
-    '⚠️ READ TWICE is admitted, so the work doubles',
+    '⚠️ the post-check tests the WRONG set, so any surviving mention passes',
     'rw',
-    '    if (total !== 1) {\n      return clauses;\n    }',
-    '    if (total < 1) {\n      return clauses;\n    }',
+    '    if ([...bound.keys()].some((n) => free.has(n))) {',
+    '    if (free.size > 1000) {',
     1,
   ],
   [
-    '⚠️ ORDER BY reads are not counted, so projection-plus-ORDER-BY folds twice',
-    'rw',
-    '      proj.items.reduce((acc, it) => acc + reads(it.expr), 0) +\n      (proj.orderBy ?? []).reduce((acc, o) => acc + reads(o.expr), 0);',
-    '      proj.items.reduce((acc, it) => acc + reads(it.expr), 0);',
+    '⚠️ EXISTS is DESCENDED INTO, so a substitution can CAPTURE a pattern variable',
+    'ea',
+    "      case 'in':\n        return { ...e, expr: go(e.expr), list: go(e.list) };",
+    "      case 'exists':\n        return { ...e, where: e.where === undefined ? undefined : go(e.where) };\n      case 'in':\n        return { ...e, expr: go(e.expr), list: go(e.list) };",
     1,
   ],
   [
-    'projection reads are not counted, so only ORDER BY decides',
+    '⚠️ letIn is DESCENDED INTO, so a SHADOWED name is substituted',
+    'ea',
+    "      case 'in':\n        return { ...e, expr: go(e.expr), list: go(e.list) };",
+    "      case 'letIn':\n        return { ...e, body: go(e.body) };\n      case 'in':\n        return { ...e, expr: go(e.expr), list: go(e.list) };",
+    1,
+  ],
+  [
+    'the replacement COUNT is never incremented, so every guarded fold declines',
+    'ea',
+    '        count += 1;',
+    '        count += 0;',
+    1,
+  ],
+  [
+    'the var arm does not substitute at all',
+    'ea',
+    '        count += 1;\n\n        return sub;',
+    '        count += 1;\n\n        return e;',
+    1,
+  ],
+  [
+    'the arith arm is dropped, so a name inside arithmetic is stranded again',
+    'ea',
+    "      case 'arith':\n        return {\n          ...e,\n          head: go(e.head),\n          tail: e.tail.map(([op, operand]) => [op, go(operand)] as const),\n        };",
+    '',
+    1,
+  ],
+  ['the CASE arm is dropped', 'ea', "      case 'case':\n        return goCase(e);", '', 1],
+  [
+    "the func arm is dropped, so item 565's own shape regresses",
+    'ea',
+    "      case 'func':\n        return { ...e, args: all(e.args) };",
+    '',
+    1,
+  ],
+  [
+    '⚠️ READ ZERO TIMES is admitted at depth',
     'rw',
-    '      proj.items.reduce((acc, it) => acc + reads(it.expr), 0) +\n      (proj.orderBy ?? []).reduce((acc, o) => acc + reads(o.expr), 0);',
-    '      (proj.orderBy ?? []).reduce((acc, o) => acc + reads(o.expr), 0);',
+    '  if (guardedNames.length > 0 && guardedReads !== 1) {',
+    '  if (guardedNames.length > 0 && guardedReads > 1) {',
+    1,
+  ],
+  [
+    '⚠️ READ TWICE is admitted at depth, so the work doubles',
+    'rw',
+    '  if (guardedNames.length > 0 && guardedReads !== 1) {',
+    '  if (guardedNames.length > 0 && guardedReads < 1) {',
+    1,
+  ],
+  [
+    'the guard never applies, whatever the binding',
+    'rw',
+    '  if (guardedNames.length > 0 && guardedReads !== 1) {',
+    '  if (false) {',
+    1,
+  ],
+  [
+    '⚠️ ORDER BY is not substituted, so its reads go uncounted AND unfolded',
+    'rw',
+    '    const e = substituted(o.expr);',
+    '    const e = { expr: o.expr, count: 0 };',
+    1,
+  ],
+  [
+    'the alias is never pinned, so an un-aliased RETURN a renames its column',
+    'rw',
+    '      e.count === 0\n        ? it',
+    '      true\n        ? it',
     1,
   ],
 ];

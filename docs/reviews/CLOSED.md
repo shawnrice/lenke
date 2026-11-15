@@ -91894,7 +91894,7 @@ instrument.
 
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects.
 
-## Item 1926 — **6.6x: a trailing `LET` of ARITHMETIC now folds**, so `LET a = n.n + 1 RETURN a AS x` goes 54.99 ms to 8.33 and lands on its hand-folded ceiling. ⚠️ And the once-read guard that makes the widening sound had a hole: it counted NAMES where it meant OCCURRENCES, so `power(a, a)` passed it and doubled the work
+## Item 1926 — **6.6x: a trailing `LET` of ARITHMETIC now folds**, so `LET a = n.n + 1 RETURN a AS x` goes 54.99 ms to 8.33 and lands on its hand-folded ceiling. ⚠️ And the once-read guard that makes the widening sound had a hole: it counted NAMES where it meant OCCURRENCES, so `power(a, a)` passed it and doubled the work. ⚠️ ~~A fixpoint is the obvious next move~~ **CORRECTED at item 1927: a fixpoint would have done NOTHING. The hand-folded intermediate `LET a = n.n + 1 RETURN (a * 2) AS x` still kept its `LET`, because `subst` was ONE LEVEL ONLY — that was the real blocker, and 1927 took it for 5.7-11.2x. The fixpoint is worth building only NOW, and 1927 prices it at 6.0x**
 
 Item 1901's GQL coverage sweep measured `chained LET` at **88.17 ms for 200,000 rows** and left it
 open. The hypothesis was the CHAIN — `inlineTrailingLet` folds one level, so two bindings leave one
@@ -92005,12 +92005,119 @@ to it, or the composition takes the blame for the primitive.**
 
 ## 🔭 What is left, and it is now priced
 
-`inlineTrailingLet` runs ONCE, not to a fixpoint, so `chain2` at 63.38 still carries a standing `LET`
-against the 12.45 its fully folded spelling reaches. **A fixpoint is the obvious next move AND the
-once-read guard is what would make it safe** — the blowup shape `LET b = a + a` folds to a projection
+~~`inlineTrailingLet` runs ONCE, not to a fixpoint, so `chain2` at 63.38 still carries a standing
+`LET` against the 12.45 its fully folded spelling reaches. **A fixpoint is the obvious next move AND
+the once-read guard is what would make it safe**~~
+
+⚠️ **REFUTED AT ITEM 1927 BEFORE ANY CODE WAS WRITTEN, then reinstated for a different reason.** A
+fixpoint would have done nothing: the hand-folded intermediate `LET a = n.n + 1 RETURN (a * 2) AS x`
+STILL kept its `LET`, because `subst` substituted one level only. That restriction was the real
+blocker; item 1927 removed it (5.7-11.2x across four shapes) and the intermediate folds now, so a
+fixpoint is worth building only from here — priced at that item at 6.0x. The once-read guard is
+still what would make it safe — the blowup shape `LET b = a + a` folds to a projection
 reading `a` twice, which the guard then refuses. Not built here; this item is the admission gate.
 
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers; the GQL
 coverage screen as the regression pass — controls flat against item 1901's table (one-hop projection
 26.22 -> 26.89, deduped hop 24.71 -> 27.14, `CALL procedure YIELD` 172.92 -> 171.18) and
 `chained LET` 88.17 -> 75.80.
+
+## Item 1927 — **5.7-11.2x on FOUR shapes, each landing on its hand-written twin**: a `LET`-bound name now folds at any DEPTH. ⚠️ The one-level restriction was declined for needing an exhaustive walk over a 40-arm union — but the walk only has to be **FAIL-SAFE**, and the post-check it already did is what makes it so
+
+Item 1926 widened `boundExprs` to admit any expression (single `LET`: 54.99 -> 8.33 ms). The obvious
+follow-up was a FIXPOINT, since `inlineTrailingLet` runs once and a chain leaves one binder standing.
+
+## ❌ A probe refuted the fixpoint before any code was written
+
+      `letfixpoint-probe-1927.ts`, asking whether the HAND-FOLDED INTERMEDIATE folds again:
+
+        chain2   r0=match,let,return   r1=match,let,return   r2=match,return
+
+`r1` is `LET a = n.n + 1 RETURN (a * 2) AS x` — and it **KEEPS its `LET`**. A second application
+would have done nothing: the chain's standing `LET` was never about the fixpoint. It was `subst`'s
+ONE-LEVEL restriction — `(a * 2)` is neither a bare name nor a function call, so `subst` returned
+null. `r2` only reached `[match, return]` because I substituted into the arithmetic BY HAND.
+
+(⚠️ My first model of that probe was wrong too, and it said so in one run: `compileLinear` returns
+COMPILED clauses, so `compileLinear(compileLinear(x))` is not a fixpoint — it threw inside
+`freePredicateVars` on a node with no `kind`.)
+
+## 🔑 The restriction was a claim about a blocker, so it got checked
+
+[[check-the-blocker-still-holds]]. The comment: _"ONE LEVEL ONLY, and deliberately … rather than
+needing an exhaustive walk over a 40-arm `Expr` union where a missed arm would drop the binder with
+the name still unbound."_
+
+🔑 **THE WALK DOES NOT HAVE TO BE EXHAUSTIVE TO BE SAFE — ONLY FAIL-SAFE.** `substituteVarsDeep` is
+a WHITELIST of scalar arms, and an arm it does not descend leaves the name IN PLACE, so the
+`freePredicateVars` post-check — **which this rewrite ALREADY performed, one level up** — declines
+the whole rewrite. A missed arm costs an optimization, never an answer. Adding an arm widens what
+folds; forgetting one cannot break anything.
+
+**FOUR ARMS ARE OMITTED ON PURPOSE because they BIND names** and a blind substitution inside them
+would CAPTURE: `exists`, `countSubquery` and `valueSubquery` carry `PathPattern`s sharing a namespace
+with the bound name, and `letIn` introduces shadowing locals. Leaving them alone is correct in BOTH
+directions — a name used free inside one survives and declines, a name SHADOWED inside one was never
+free there so nothing needed substituting. `prop` (`a.k`) is a leaf too, since substituting there
+builds a `field` node rather than swapping one; it contributes its `variable` to
+`freePredicateVars`, so it declines as well. All five are tested.
+
+## ✅ How broad the restriction was, which is what decided this was worth its safety argument
+
+`letdeep-breadth-1927.ts` found **11 of 13 natural spellings off every rung**. Measured at 200,000
+vertices, ONE SHAPE PER PROCESS, median of 9:
+
+        shape                                        PRE      POST    hand twin   ratio
+        LET c = n.n RETURN sum(c + 1)                77.91 ->  6.96      7.03     11.2x
+        LET a = n.n RETURN n.k AS x ORDER BY a * 2  257.91 -> 33.88     39.29      7.6x
+        LET a = n.n RETURN a > 5                     57.43 -> 10.07     10.86      5.7x
+        LET a = n.n RETURN a * 2                     58.74 ->  9.27     12.77      6.3x
+        ----------------------------------------------------------------------------
+        CONTROL single (folded at 1926)               8.33 ->  8.28                flat
+        CONTROL plain                             6.64-7.36 ->  5.92                flat
+
+⚠️ **EVERY ONE LANDS ON ITS HAND-WRITTEN TWIN**, which is the right floor — these are not residuals.
+The first row is the old comment's OWN example of what it refused (`sum(c + 1)`), and it is the
+family's biggest gap.
+
+## 🔑 The count now comes from the substitution itself
+
+Item 1926's once-read guard needed an occurrence count and had to compute one separately — and the
+bug that item fixed was exactly a count drifting from what it counted. `substituteVarsDeep` reports
+how many nodes it replaced, at every depth, so there is no second walk to keep in step. The guard
+therefore runs AFTER substituting and discards the work when it fails: one wasted map over a
+projection, for a count that cannot drift.
+
+## ⚠️ One mutant survived, and it found DEAD LOGIC IN MY OWN CHANGE
+
+I had written `guardedReads += guardedNames.length > 0 ? count : 0`, and removing the ternary changed
+nothing: `guardedNames` is non-empty only for the single-item `LET` arm, which puts exactly ONE entry
+in `bound`, so `count` can only be counting that guarded name — and when it IS empty the guard is
+skipped anyway. **The ternary could not change an outcome.** Deleted, with the reason recorded above
+the line, rather than writing a test for a distinction that does not exist.
+
+**MUTATION: 19 mutants, 19 caught, 0 survivors.** The two that matter most are the safety argument's
+own negations — removing the post-check, and DESCENDING INTO `exists` so a substitution can capture a
+pattern variable — plus one per whitelisted arm, both threshold polarities, and the `ORDER BY` path.
+
+⚠️ **NINE OF ITEM 1926'S ANCHORS DRIFTED**, reported together in one run (item 1914's harness fix
+earning itself a second time this session). Three were re-anchored onto the renamed `guardedNames`;
+**SIX WERE REMOVED DELIBERATELY** because the mechanism they attacked is gone — the one-level `subst`
+and its separate `reads` counter no longer exist, so there is no name-vs-occurrence distinction to
+get wrong, no function-argument arm counting separately, and no `guarded` helper to mis-scope. Each
+removal is accounted for in a note at the top of the battery, because a dead mutant silently loses
+the coverage an earlier item built.
+
+## 🔭 What this REOPENS, now priced
+
+**The fixpoint is worth building after all**, because `chain2`'s intermediate NOW folds (the
+`r1=match,return` above was measured post-change). `chain2` reads **58.38 against the fully folded
+9.66 — about 6.0x** — and the probe confirms the blowup shape `LET b = a + a` still stands at round
+1, so item 1926's once-read guard is what would make a fixpoint safe. Not built here; termination
+needs its own argument and its own mutants.
+
+TESTS: 24 added to item 1926's file rather than a new one — 14 spellings each asserted to compile to
+`[match, return]` AND to answer what its hand-written twin answers, the five binding-arm declines,
+and three once-read cases that now decline on the GUARD where they used to decline on SHAPE.
+
+GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers.

@@ -46,6 +46,21 @@ const SHAPES = {
   single: 'MATCH (n:T) LET a = n.n + 1 RETURN a AS x',
   // The floor: no arithmetic at all, so the gap to `folded` is what the two operations cost.
   plain: 'MATCH (n:T) RETURN n.n AS x',
+
+  /*
+   * ⚠️ ITEM 1927'S FAMILY. `letdeep-breadth-1927.ts` found 11 of 13 natural spellings stranded by
+   * `subst`'s ONE-LEVEL restriction: a bound name nested inside an operator is refused, so these
+   * keep a standing `LET` where their hand-written twins compile to `[match, return]`. Each pairs
+   * with its `*Hand` twin, which is the ceiling.
+   */
+  wrap: 'MATCH (n:T) LET a = n.n RETURN a * 2 AS x',
+  wrapHand: 'MATCH (n:T) RETURN n.n * 2 AS x',
+  cmp: 'MATCH (n:T) LET a = n.n RETURN a > 5 AS x',
+  cmpHand: 'MATCH (n:T) RETURN n.n > 5 AS x',
+  agg: 'MATCH (n:T) LET c = n.n RETURN sum(c + 1) AS x',
+  aggHand: 'MATCH (n:T) RETURN sum(n.n + 1) AS x',
+  obywrap: 'MATCH (n:T) LET a = n.n RETURN n.k AS x ORDER BY a * 2',
+  obyHand: 'MATCH (n:T) RETURN n.k AS x ORDER BY n.n * 2',
 };
 
 const text = SHAPES[SHAPE];

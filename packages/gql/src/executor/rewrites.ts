@@ -77,6 +77,7 @@ import {
   conjoin,
   flattenConjuncts,
   freePredicateVars,
+  substituteVarsDeep,
   hasSubquery,
 } from './expr-analysis.js';
 import { detectForCount, detectForProjection } from './for-unwind.js';
@@ -605,85 +606,82 @@ const inlineTrailingLet = (clauses: readonly Clause[]): readonly Clause[] => {
    * complement of `cheapPureExpr`. A property, variable, literal or parameter still folds however
    * many times it is read, or none.
    */
-  const guardedBound = [...bound].filter(([, e]) => !cheapPureExpr(e)).map(([n]) => n);
+  const guardedNames = [...bound].filter(([, e]) => !cheapPureExpr(e)).map(([n]) => n);
+  /*
+   * ⚠️ OCCURRENCES, NOT NAMES, AND COUNTED BY THE SUBSTITUTION ITSELF (items 1926/1927). The
+   * first version of this guard counted how many guarded NAMES appear via `freePredicateVars`, a
+   * `Set`, which cannot carry multiplicity — so `RETURN pow(a, a)` scored 1, passed, and the
+   * substitution then replaced BOTH, doubling the very work the guard exists to hold constant.
+   *
+   * 🔑 Item 1927 made the count exact for free: `substituteVarsDeep` reports how many nodes it
+   * replaced, which IS the occurrence count, at every depth, with no second walk to keep in step
+   * with the first. So the guard now runs AFTER substituting rather than before — the work is
+   * discarded when it fails, which costs one wasted map over a projection and buys a count that
+   * cannot drift from the thing it is counting.
+   */
+  let guardedReads = 0;
+  const substituted = (e: Expr): { readonly expr: Expr; readonly count: number } | null => {
+    const { expr: out, count } = substituteVarsDeep(e, bound);
 
-  if (guardedBound.length > 0) {
-    /*
-     * ⚠️ OCCURRENCES, NOT NAMES. This used to be
-     * `guardedBound.filter((n) => freePredicateVars(e).has(n)).length`, which counts how many
-     * guarded NAMES appear rather than how many TIMES — so `RETURN pow(a, a)` scored 1, passed the
-     * guard, and `subst`'s function-argument arm then substituted BOTH, doubling the very work the
-     * guard exists to hold constant. A `Set` cannot carry multiplicity, so the count is taken at
-     * the only two sites `subst` ever substitutes: the whole expression as a bare name, and a
-     * function's bare-name ARGUMENTS. Any other mention makes `subst` return null and the rewrite
-     * declines, so no third site needs counting.
-     */
-    const guarded = (e: Expr): boolean => e.kind === 'var' && guardedBound.includes(e.name);
-    const reads = (e: Expr): number => {
-      if (guarded(e)) {
-        return 1;
-      }
+    // ⚠️ THE POST-CHECK IS THE WHOLE SAFETY ARGUMENT for substituting at depth. `substituteVarsDeep`
+    // is a WHITELIST — it descends scalar operators and leaves `exists`/`countSubquery`/
+    // `valueSubquery`/`letIn` alone, because those bind names of their own and a blind
+    // substitution inside them would CAPTURE. An arm it does not descend leaves the name in
+    // place, and this check then declines the whole rewrite. A missed arm costs an optimization,
+    // never an answer.
+    const free = freePredicateVars(out);
 
-      return e.kind === 'func' ? e.args.filter(guarded).length : 0;
-    };
-    const total =
-      proj.items.reduce((acc, it) => acc + reads(it.expr), 0) +
-      (proj.orderBy ?? []).reduce((acc, o) => acc + reads(o.expr), 0);
-
-    if (total !== 1) {
-      return clauses;
-    }
-  }
-
-  // Exactly a bound name → its expression; a FUNCTION ARGUMENT that is one → substitute it there;
-  // mentions one anywhere else → refuse; otherwise unchanged.
-  //
-  // The function-argument case is item 565, and it is where the common shape lives. `subst` used
-  // to be all-or-nothing, so `LET c = COUNT { … } RETURN sum(c)` — a name read inside an
-  // aggregate — never inlined and kept the per-row clause. Measured at 200,000 vertices /
-  // 300,000 edges, one case per process:
-  //
-  // ```text
-  //   LET c = COUNT { MATCH (n)-[:KNOWS]->(x) } RETURN sum(c)   114.06 / 170.48 / 173.33 ms
-  //   RETURN sum(COUNT { MATCH (n)-[:KNOWS]->(x) })              50.14 /  52.78 /  52.18
-  // ```
-  //
-  // ONE LEVEL ONLY, and deliberately: the arguments are replaced where they are BARE NAMES, and
-  // the result is then re-checked for any surviving mention. A deeper reference (`sum(c + 1)`)
-  // leaves one and refuses, rather than needing an exhaustive walk over a 40-arm `Expr` union
-  // where a missed arm would drop the binder with the name still unbound.
-  const subst = (e: Expr): Expr | null => {
-    if (e.kind === 'var') {
-      const sub = bound.get(e.name);
-
-      if (sub !== undefined) {
-        return sub;
-      }
-    }
-
-    const mentions = (x: Expr): boolean => {
-      const free = freePredicateVars(x);
-
-      return [...bound.keys()].some((n) => free.has(n));
-    };
-
-    if (!mentions(e)) {
-      return e;
-    }
-
-    if (e.kind !== 'func') {
+    if ([...bound.keys()].some((n) => free.has(n))) {
       return null;
     }
 
-    const args = e.args.map((a) => (a.kind === 'var' ? (bound.get(a.name) ?? a) : a));
-    const swapped: Expr = { ...e, args };
+    /*
+     * ⚠️ NO `guardedNames.length > 0 ?` TERNARY HERE, and a surviving mutant is why (item 1927).
+     * Guarding the accumulation looked prudent and was PROVABLY DEAD: `guardedNames` is non-empty
+     * only when the binder is the single-item `LET` arm of `boundExprs`, which puts exactly ONE
+     * entry in `bound` — so `count` can only be counting that one guarded name. The `with` arm
+     * returns several names but admits only `cheapPureExpr`, so it never produces a guarded one.
+     * And when `guardedNames` IS empty the guard below is skipped anyway. The mutant that removed
+     * the ternary survived the whole battery because it could not change an outcome.
+     */
+    guardedReads += count;
 
-    return args.some((a, i) => a !== e.args[i]) && !args.some(mentions) ? swapped : null;
+    return { expr: out, count };
   };
+
+  /*
+   * ⚠️ THIS USED TO BE ONE LEVEL ONLY, and the reason was stated outright: the arguments are
+   * replaced where they are BARE NAMES "rather than needing an exhaustive walk over a 40-arm
+   * `Expr` union where a missed arm would drop the binder with the name still unbound".
+   *
+   * 🔑 ITEM 1927 CHECKED THAT PREMISE INSTEAD OF BELIEVING IT, and the walk does not have to be
+   * exhaustive to be safe — only fail-safe. See `substituteVarsDeep`: an arm it misses leaves the
+   * name surviving, and the `freePredicateVars` post-check above (which this code ALREADY did,
+   * one level up) turns that into a decline.
+   *
+   * What the one-level form stranded, measured at 200,000 vertices one shape per process
+   * (`letdeep-breadth-1927.ts` found 11 of 13 natural spellings off every rung):
+   *
+   * ```text
+   *   LET c = n.n RETURN sum(c + 1)            77.91 ms  vs  6.91 hand-written   11.3x
+   *   LET a = n.n RETURN n.k AS x ORDER BY a*2 257.91     vs 32.25               8.0x
+   *   LET a = n.n RETURN a > 5                 57.43     vs  8.77               6.5x
+   *   LET a = n.n RETURN a * 2                 58.74     vs 16.61               3.5x
+   * ```
+   *
+   * The first of those is the old comment's own example of what it refused (`sum(c + 1)`).
+   *
+   * The ORIGINAL function-argument case is item 565, which this subsumes:
+   *
+   * ```text
+   *   LET c = COUNT { MATCH (n)-[:KNOWS]->(x) } RETURN sum(c)   114.06 / 170.48 / 173.33 ms
+   *   RETURN sum(COUNT { MATCH (n)-[:KNOWS]->(x) })              50.14 /  52.78 /  52.18
+   * ```
+   */
   const items: ReturnItem[] = [];
 
   for (const it of proj.items) {
-    const e = subst(it.expr);
+    const e = substituted(it.expr);
 
     if (e === null) {
       return clauses;
@@ -693,12 +691,17 @@ const inlineTrailingLet = (clauses: readonly Clause[]): readonly Clause[] => {
     // expression — so substituting without pinning the alias renamed the column from `a` to
     // `n.k`. Caught by `DISTINCT over a LET-bound name`, which exists for exactly that
     // distinction; the rewrite now carries the name it removed.
+    //
+    // ⚠️ THE COUNT IS WHAT SAYS "UNCHANGED", NOT REFERENCE IDENTITY (item 1927).
+    // `substituteVarsDeep` rebuilds every composite node it descends, so `e.expr === it.expr` is
+    // false even when it replaced nothing — which would pin an alias onto items the rewrite never
+    // touched.
     items.push(
-      e === it.expr
+      e.count === 0
         ? it
         : {
             ...it,
-            expr: e,
+            expr: e.expr,
             alias: it.alias ?? (it.expr.kind === 'var' ? it.expr.name : undefined),
           },
     );
@@ -707,13 +710,24 @@ const inlineTrailingLet = (clauses: readonly Clause[]): readonly Clause[] => {
   const sorts: SortItem[] = [];
 
   for (const o of proj.orderBy ?? []) {
-    const e = subst(o.expr);
+    const e = substituted(o.expr);
 
     if (e === null) {
       return clauses;
     }
 
-    sorts.push({ ...o, expr: e });
+    sorts.push(e.count === 0 ? o : { ...o, expr: e.expr });
+  }
+
+  /*
+   * ⚠️ THE ONCE-READ GUARD, APPLIED HERE because the count comes from the substitution. Read
+   * TWICE and inlined twice, a non-cheap binding's work doubles; read ZERO times, its evaluation
+   * disappears and with it any fault it raises. One reference is the only case where substituting
+   * changes nothing observable — and a CHEAP binding (`prop | var | lit | param`) is exempt,
+   * because duplicating or dropping one of those costs and raises nothing.
+   */
+  if (guardedNames.length > 0 && guardedReads !== 1) {
+    return clauses;
   }
 
   return [

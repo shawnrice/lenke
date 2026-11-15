@@ -188,6 +188,115 @@ export const patternBoundVars = (p: PathPattern, into: Set<string>): void => {
   }
 };
 /**
+ * Replace every occurrence of a bound NAME with its expression, anywhere inside a scalar
+ * expression tree, returning the rewritten expression and HOW MANY replacements were made
+ * (item 1927).
+ *
+ * ⚠️⚠️ THIS IS DELIBERATELY A WHITELIST AND NOT AN EXHAUSTIVE WALK, and the safety argument is
+ * that the omission is FAIL-SAFE. `inlineTrailingLet` used to substitute one level only, with its
+ * reason stated outright: a deeper walk over this union means "a missed arm would drop the binder
+ * with the name still unbound" — a wrong answer. ⚠️ That premise is avoidable. An arm this function
+ * does NOT descend into leaves the name in place, so the caller's existing
+ * {@link freePredicateVars} re-check sees it surviving and DECLINES the rewrite. A missed arm costs
+ * an optimization, never an answer. Adding an arm here therefore widens what folds; forgetting one
+ * cannot break anything.
+ *
+ * 🔑 FOUR ARMS ARE OMITTED ON PURPOSE, because they bind names of their own and a blind
+ * substitution inside them would CAPTURE: `exists`, `countSubquery` and `valueSubquery` carry
+ * `PathPattern`s whose variables share a namespace with the bound name, and `letIn` introduces
+ * scoped locals that shadow it. Leaving them untouched is correct in both directions — a name used
+ * free inside one survives and declines, and a name SHADOWED inside one is not free there, so
+ * nothing needed substituting.
+ *
+ * `prop` (`a.k`) and `property_exists` are leaves here too, since substituting a name in that
+ * position is a different transformation (`{kind:'field', base, key}`), not a node swap. Both
+ * contribute their `variable` to `freePredicateVars`, so those also decline rather than mis-fold.
+ */
+export const substituteVarsDeep = (
+  expr: Expr,
+  bound: ReadonlyMap<string, Expr>,
+): { readonly expr: Expr; readonly count: number } => {
+  let count = 0;
+
+  const all = (xs: readonly Expr[]): readonly Expr[] => xs.map(go);
+
+  const goCase = (e: Extract<Expr, { kind: 'case' }>): Expr => ({
+    ...e,
+    subject: e.subject === undefined ? undefined : go(e.subject),
+    // eslint-disable-next-line unicorn/no-thenable -- `then` is the ISO CASE arm's AST field name
+    whens: e.whens.map((w) => ({ when: go(w.when), then: go(w.then) })),
+    elseExpr: e.elseExpr === undefined ? undefined : go(e.elseExpr),
+  });
+
+  const go = (e: Expr): Expr => {
+    switch (e.kind) {
+      case 'var': {
+        const sub = bound.get(e.name);
+
+        if (sub === undefined) {
+          return e;
+        }
+
+        count += 1;
+
+        return sub;
+      }
+      case 'list':
+        return { ...e, items: all(e.items) };
+      case 'concat':
+        return { ...e, items: all(e.items) };
+      case 'and':
+        return { ...e, items: all(e.items) };
+      case 'or':
+        return { ...e, items: all(e.items) };
+      case 'xor':
+        return { ...e, items: all(e.items) };
+      case 'func':
+        return { ...e, args: all(e.args) };
+      case 'graphPred':
+        return { ...e, args: [...all(e.args)] };
+      case 'record':
+        return { ...e, fields: e.fields.map((f) => ({ key: f.key, value: go(f.value) })) };
+      case 'index':
+        return { ...e, base: go(e.base), index: go(e.index) };
+      case 'field':
+        return { ...e, base: go(e.base) };
+      case 'compare':
+        return { ...e, left: go(e.left), right: go(e.right) };
+      case 'arith':
+        return {
+          ...e,
+          head: go(e.head),
+          tail: e.tail.map(([op, operand]) => [op, go(operand)] as const),
+        };
+      case 'neg':
+        return { ...e, expr: go(e.expr) };
+      case 'not':
+        return { ...e, expr: go(e.expr) };
+      case 'isNull':
+        return { ...e, expr: go(e.expr) };
+      case 'isTruth':
+        return { ...e, expr: go(e.expr) };
+      case 'isLabeled':
+        return { ...e, expr: go(e.expr) };
+      case 'isTyped':
+        return { ...e, expr: go(e.expr) };
+      case 'in':
+        return { ...e, expr: go(e.expr), list: go(e.list) };
+      case 'case':
+        return goCase(e);
+      default:
+        // `param` / `prop` / `property_exists` / `lit` are leaves; `exists` /
+        // `countSubquery` / `valueSubquery` / `letIn` bind names and are left ALONE on purpose.
+        return e;
+    }
+  };
+  const out = go(expr);
+
+  return { expr: out, count };
+};
+
+/**
  * Collect every FREE variable a predicate references — a `var`/`prop` name that
  * is NOT bound by an enclosing `EXISTS`/`COUNT` sub-pattern. A VALIDATOR
  * predicate has exactly one legitimate free variable, the declared `varName`
