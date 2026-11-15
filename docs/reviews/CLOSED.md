@@ -90994,3 +90994,84 @@ made at the depth being optimized.
 
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers. No
 engine code changed — three comments and four new instruments.
+
+## Item 1917 — a profile-first tick that ran into a **DEMONSTRATED WRONG ANSWER and a TRANSACTION VIOLATION**, both behind one public setter. Item 735's open ablation also split: the var-length walk's per-end label match is **~11%** of the row, and the two "both removed" rungs of the ladder are not a valid ablation
+
+Item 1916 left the GQL side's open top as the **548.74 ms var-length floor**, with item 735's
+question unanswered: ~80% of depth-5 enumeration is downstream of the walk's yield, and which of
+`walkSegments` / the per-end `matchNode` / the sink dominates had never been split — because that
+item's ablation removed all three at once by counting in place of yielding.
+
+✅ **THE SPLIT, RUN WITH LEGAL QUERIES INSTEAD OF A PATCHED BUILD.** Each rung is a query the engine
+must answer correctly, so there is no arm that can secretly be the wrong build — the failure mode
+CLAUDE.md's "assert each A/B arm IS the code it claims" is about cannot arise when the arms are
+different QUERIES. All four return the SAME 400,000 rows, printed, because `(b)` without `:T` is the
+same question only on a fixture where every vertex carries `T`:
+
+      MATCH (a:T)-[:E]->{2,2}(b:T) WHERE a.n = $p0, 200,000 vertices, 3 rounds of median-of-7:
+
+        two        RETURN b.n, end labelled     437.07 - 462.17 ms
+        twonolab   RETURN b.n, end UNlabelled   392.91 - 402.33      ⬅ ~11%, consistent 3/3
+        constlab   RETURN 1,  end labelled      420.17 - 450.87      overlaps `two`
+        bare       RETURN 1,  end UNlabelled    311.02
+
+⚠️⚠️ **AND THE LADDER'S CROSS TERMS ARE NOT A VALID ABLATION, which is the methodological half.**
+Dropping the property read costs 2.7% with a label and 21% without — incoherent for the same
+removal, and the tell that `RETURN 1` with no variable reference changes the ROUTE rather than just
+doing less work. So the tempting "both removed = 31%" figure is discarded; `constlab`'s own spread
+(420-451) overlaps `two`'s (437-462), so **the per-row property read is not measurably
+distinguishable at this noise level** and only the `two` vs `twonolab` pair is clean.
+
+🔭 **THAT PAIR IS THE FINDING: the per-end label match is ~11% of a var-length row** on a VACUOUS
+label, and `effectiveLabel` already exists to drop exactly that test — `chain-projection.ts` and
+`hop2-projection.ts` both call it; the general var-length walk does not.
+
+## 🛑 It is not taken, and the reason was already on file — which this tick failed to read first
+
+[[label-index-vs-setter]] records the elision tradeoff, that it was **put to the owner at item 1553**
+and is still unanswered, and an explicit caution not to add another `verticesByLabel`-reading elision
+without raising it. ⚠️ **This item re-derived the index half from a profile without checking that file
+first** — the second time that exact note has been bypassed (it says so of items 1549-1552). The
+~11% is priced and left; the decision is not re-asked, because it is already pending.
+
+## ⚠️ What WAS new: the setter bypasses THREE things, not one
+
+Checking the blocker still held rather than trusting the note — the discipline that found three
+overstated blockers in an earlier session — turned up two divergences the file did not have. Reading
+`Graph.ts`: `addLabelToVertex`/`removeLabelFromVertex` each call `indexVertexLabel`/
+`deIndexVertexLabel`, `emit(...)`, the constraint checks AND `recordUndo(...)` before
+`commitElementLabels`. The setter calls `commitElementLabels` alone.
+
+      `labelsetter-extent-1917.mjs`, the same T->U relabel both ways:
+
+        verticesByLabel T after T->U   setter 2 (STALE)  methods 1            the known one
+        events emitted                 setter []         methods [rm, add]    ⬅ NEW
+        required-key check             both ACCEPTED     both ACCEPTED        no divergence
+        labels after a ROLLED BACK tx  setter ["U"]      methods ["T"]        ⬅ NEW
+
+🛑 **THE WRONG ANSWER IS REPRODUCIBLE END TO END, not theoretical.**
+`labelelision-wrongans-1917.mjs`: over a 6-chain where every vertex is `T`,
+`MATCH (a:T)-[:E]->(b:T)-[:E]->(c:T)` answers **4 rows where `hasLabel` ground truth is 1**, after
+`v3.labels = ['U']`. The supported mutator on the same graph answers 1. ⚠️ And `v3.hasLabel('T')` is
+already `false` — **the vertex is entirely correct and only the index is not**, which is what makes
+this easy to miss: the setter looks like it worked, because on the element it did.
+
+🛑 **THE ROLLBACK DIVERGENCE IS A DIFFERENT CLASS AND NEEDS NO OWNER DECISION.** A label written
+inside a transaction that then THROWS is still there afterwards, because the setter records no undo
+entry — the undo log is built from closures over the public mutators and the setter is not one of
+them. That is wrong whichever way the index tradeoff is decided: it is not a fast-versus-correct
+choice, just a missing `recordUndo`. ⚠️ Not fixed here only because it sits on the same setter as the
+two halves that DO carry the tradeoff, and splitting one mutator's semantics three ways in a perf
+tick is how a quiet behaviour change ships.
+
+✅ **ALL THREE ARE PINNED**, in `packages/core/src/core/label-setter-bypass.test.ts`, as
+`test.failing` plus two passing controls (the supported mutators, and the setter's correctness ON THE
+ELEMENT — so a reader sees immediately that the element is fine and the graph is not).
+
+⚠️ **AND THE PINS' TEETH WERE VERIFIED, because a `test.failing` that can never pass is as useless as
+a test that checks nothing.** Asserting today's actual behaviour instead makes bun report
+`this test is marked as failing but it passed` with **exit 1** — so the suite fails the day any of
+the three is fixed, which is the whole point of pinning rather than commenting.
+
+GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects. No engine behaviour changed
+— one test file, four instruments, and two comments.

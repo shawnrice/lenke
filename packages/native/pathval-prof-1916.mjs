@@ -89,6 +89,32 @@ const EXTRA = {
   twohop: 'MATCH (a:T)-[:E]->(m:T)-[:E]->(b:T) WHERE a.n = $p0 RETURN b.n AS x',
   // And the unquantified ONE hop, seeded the same way: the per-row floor with a seed.
   onehop: 'MATCH (a:T)-[:E]->(b:T) WHERE a.n = $p0 RETURN b.n AS x',
+
+  /**
+   * ⚠️ ITEM 735'S OPEN ABLATION, RUN WITH LEGAL QUERIES INSTEAD OF A PATCH (item 1917). That item
+   * found ~80% of depth-5 enumeration is DOWNSTREAM of the walk's yield — the `yield*` chain, the
+   * per-end `matchNode`, and the sink — and left "which of the three dominates" open, because its
+   * ablation removed all three at once by counting in place of yielding.
+   *
+   * These remove ONE consumer at a time, and each is a query the engine must answer correctly, so
+   * there is no patched build to mislabel ([[executor-edits-perturb]], and CLAUDE.md's rule that an
+   * A/B arm must be asserted to BE the code it claims — an arm that is a different QUERY cannot be
+   * the wrong build):
+   *
+   *   two        RETURN b.n, end labelled    — the baseline, 513.78 ms
+   *   constlab   RETURN 1,  end labelled     — drops the per-row property read and key
+   *   twonolab   RETURN b.n, end UNlabelled  — drops the per-end label match
+   *   bare       RETURN 1,  end UNlabelled   — drops both
+   *
+   * ⚠️ `(b)` WITHOUT `:T` IS THE SAME QUESTION ON THIS FIXTURE AND ONLY ON IT: every vertex carries
+   * `T`, so the label is vacuous and the row sets are identical. The probe prints the row count for
+   * exactly that reason — if the counts ever differ, the ladder is comparing two questions.
+   */
+  constlab: 'MATCH (a:T)-[:E]->{2,2}(b:T) WHERE a.n = $p0 RETURN 1 AS x',
+  twonolab: 'MATCH (a:T)-[:E]->{2,2}(b) WHERE a.n = $p0 RETURN b.n AS x',
+  bare: 'MATCH (a:T)-[:E]->{2,2}(b) WHERE a.n = $p0 RETURN 1 AS x',
+  // The same ladder's top rung for the ONE-hop shape, as the non-var-length control.
+  onenolab: 'MATCH (a:T)-[:E]->(b) WHERE a.n = $p0 RETURN 1 AS x',
 };
 
 // `bound` is the same TEXT as `scalar` but without the `p =` binding removed, so build it apart:

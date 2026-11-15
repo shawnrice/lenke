@@ -2300,3 +2300,60 @@ frame has to suspend and resume mid-bucket, which is exactly what `for…of` can
 real shape; and **the area had already warned** — the comment above `flatAdj` records a previous
 change there at ~1.04x against a bimodal before-arm, withdrawn. Reading the warning first cost one
 micro.
+
+## ⚠️ A LADDER'S CROSS TERMS CAN BE INVALID WHILE ITS PAIRS ARE FINE (item 1917)
+
+Item 735 left open which of three downstream consumers dominates a var-length walk, having ablated
+all three at once. Item 1917 split them with LEGAL QUERIES rather than a patched build — each rung is
+a query the engine must answer correctly, so no arm can secretly be the wrong build:
+
+```
+MATCH (a:T)-[:E]->{2,2}(b:T) WHERE a.n = $p0, 200,000 vertices, 3 rounds of median-of-7:
+
+  two        RETURN b.n, end labelled     437.07 - 462.17 ms
+  twonolab   RETURN b.n, end UNlabelled   392.91 - 402.33      <- ~11%, consistent 3/3
+  constlab   RETURN 1,  end labelled      420.17 - 450.87      overlaps `two`
+  bare       RETURN 1,  end UNlabelled    311.02
+```
+
+⚠️⚠️ **DROPPING THE PROPERTY READ COSTS 2.7% WITH A LABEL AND 21% WITHOUT.** That is incoherent for
+the same removal, and it is the tell that `RETURN 1` with no variable reference changes the ROUTE
+rather than merely doing less work. So the tempting "both removed = 31%" is discarded, `constlab`'s
+spread overlaps `two`'s (so the property read is not measurably distinguishable at this noise), and
+only `two` vs `twonolab` is a clean pair.
+
+**The reusable rule: in an N-way ablation, check that each single removal costs the same in every
+context before trusting any combination of them.** A removal whose price depends on which other
+removals are present is not an ablation — something is switching routes.
+
+Row counts are printed for every rung, because `(b)` without `:T` is the same question ONLY on a
+fixture where every vertex carries `T`. All four returned 400,000.
+
+## 🛑 `v.labels = [...]` IS A WRONG ANSWER AND A TRANSACTION VIOLATION (item 1917)
+
+Three instruments, kept because the finding is behavioural rather than numeric:
+
+- **`labelsetter-check-1917.mjs`** — does the setter maintain `verticesByLabel`? No: after
+  `a.labels = ['U']`, `T` still reads as VACUOUS (`size === vertexCount`), while
+  `removeLabelFromVertex` maintains it correctly.
+- **`labelelision-wrongans-1917.mjs`** — the end-to-end consequence.
+  `MATCH (a:T)-[:E]->(b:T)-[:E]->(c:T)` over a 6-chain answers **4 rows where `hasLabel` truth is
+  1**, because `effectiveLabel` drops a label test the stale index calls vacuous. ⚠️ `v3.hasLabel(T)`
+  is already false at that point — **the vertex is correct and only the index is not**, which is why
+  this is easy to miss.
+- **`labelsetter-extent-1917.mjs`** — how much the setter bypasses. The supported mutators call
+  `indexVertexLabel`, `emit(...)`, the constraint checks and `recordUndo(...)` before
+  `commitElementLabels`; the setter calls `commitElementLabels` alone. Three of the four diverge:
+  the index, the EVENTS, and — worst — **a label written inside an ABORTED transaction survives**,
+  because no undo entry is recorded.
+
+All three are pinned as `test.failing` in `packages/core/src/core/label-setter-bypass.test.ts`.
+
+⚠️ **VERIFY A `test.failing`'s TEETH, because one that can never pass checks nothing.** Asserting
+today's actual behaviour instead makes bun print `this test is marked as failing but it passed` and
+exit **1** — so the pin fails the day the gap closes, which is the reason to pin rather than comment.
+
+⚠️ **AND READ [[label-index-vs-setter]] BEFORE INVESTIGATING `verticesByLabel` AGAIN.** The index
+half was already priced and put to the owner at item 1553 and is still pending; this item
+re-derived it from a profile without checking, the second time that same note has been bypassed.
+Only the events and rollback halves were new.
