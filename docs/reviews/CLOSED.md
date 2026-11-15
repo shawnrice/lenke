@@ -93323,3 +93323,60 @@ dedup gate items 1940/1941 never touched, 187.15 ms for EIGHT rows) and **`FILTE
 NO ENGINE BEHAVIOUR CHANGED — one instrument and this entry.
 
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects.
+
+## Item 1945 — **THE DEDUPED HOP, PRICED: 234.4 ms against a 73.2 ceiling, ~3.2x**, and the mechanism is one items 1940/1941 could not cover — a `DISTINCT` needs EXISTENCE, not a count, so it can SHORT-CIRCUIT per far vertex. ⚠️ Plus my first ceiling was the wrong ALGORITHM, and the engine beat it
+
+Item 1943's `MIXED=1` diff put `MATCH (a:T)-[:E]->(b:T) RETURN DISTINCT b.n AS x` at **24.89 ms to
+187.15, 7.52x** — the largest ratio on the screen. 187 ms for EIGHT ROWS.
+
+      `dedupehop-probe-1945.mjs`, 200,000 vertices / 1,000,000 edges, median of 7:
+
+        route: distinctProjection   (ONE rung, both modes — vacuity is read per EXECUTION)
+
+        mode            engine   HAND-edge   HAND-far-first   distinct
+        homogeneous       31.8        59.8             67.5          8
+        MIXED            234.4        98.5             73.2          8
+
+## ⚠️ My first ceiling was the wrong algorithm, and the engine beating it is how I noticed
+
+`HAND-edge` walks all 1,000,000 edges testing both labels — the shape items 1940/1942 used. The
+**homogeneous engine does the job in 31.8 ms where that loop needs 59.8**, which cannot happen if the
+hand loop is the ceiling. 🔑 For `DISTINCT b.n` you only need the distinct FAR VERTICES, and there
+are 200,000 of them, not a million edges. The vacuous arm visits each far vertex, asks "does it have
+an `E` in-edge?", and adds the property — no start-label question to answer, so no edge is ever
+examined beyond a `size` check.
+
+**A ceiling has to be the best algorithm for the shape, not the best algorithm for the last shape.**
+
+## ✅ So the reachable shape off that arm is a SHORT-CIRCUITING far pass
+
+With a non-vacuous start label the arm must establish, per far vertex, that SOME in-edge has a
+qualifying source. A count would need every edge — but a `DISTINCT` needs only EXISTENCE, so it can
+`break` on the first match. With a broad start label the first in-edge almost always qualifies,
+making it ~200,000 checks instead of a million: **73.2 ms, i.e. 3.2x available.**
+
+🔑 **THAT IS WHY ITEMS 1940/1941 DID NOT COVER THIS.** Both apply a label test per element — 1940 to
+every edge, 1941 to every CSR slot. Neither can short-circuit, because a projection must emit a row
+per edge and a count must count them all. Only a DISTINCT may stop early, so it needs its own arm
+rather than a reuse of theirs.
+
+## 🔭 Fully specified, not built here
+
+- **Where:** the `distinctProjection` rung (confirmed by route, not guessed).
+- **What:** iterate far vertices; per vertex scan in-edges until one has a qualifying start label,
+  then `break`; add the projected value to the dedupe set.
+- **Gate:** the same coverage question as items 1940/1941 — a SELECTIVE start label makes the
+  short-circuit useless (most far vertices have no qualifying in-edge, so every in-edge is scanned
+  and nothing is saved), so `EDGE_DRIVEN_MIN_COVERAGE` applies and its band needs checking for THIS
+  arm rather than assumed from theirs.
+- **Expected:** 234.4 -> ~75-85 on a realistic graph; no change when the label is vacuous.
+
+⚠️ One instrument fix worth keeping: the probe's first `routeOf` used a hand-kept list of nine rung
+names and reported **`NONE`**, which reads identically to "took the general path". The real answer is
+`distinctProjection`, which the list simply lacked. `routes-fired.test.ts`'s helper filters on
+`typeof === 'function'` for exactly this reason, and the probe now does too — a name list goes stale
+as `CLinear` grows, and a stale list reports an absence.
+
+NO ENGINE BEHAVIOUR CHANGED — one instrument and this entry.
+
+GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects.
