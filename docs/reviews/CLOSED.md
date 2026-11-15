@@ -93324,7 +93324,7 @@ NO ENGINE BEHAVIOUR CHANGED — one instrument and this entry.
 
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects.
 
-## Item 1945 — **THE DEDUPED HOP, PRICED: 234.4 ms against a 73.2 ceiling, ~3.2x**, and the mechanism is one items 1940/1941 could not cover — a `DISTINCT` needs EXISTENCE, not a count, so it can SHORT-CIRCUIT per far vertex. ⚠️ Plus my first ceiling was the wrong ALGORITHM, and the engine beat it
+## Item 1945 — **THE DEDUPED HOP, PRICED: 234.4 ms against a 73.2 ceiling, ~3.2x**, and the mechanism is one items 1940/1941 could not cover — a `DISTINCT` needs EXISTENCE, not a count, so it can SHORT-CIRCUIT per far vertex. ⚠️ Plus my first ceiling was the wrong ALGORITHM, and the engine beat it ❌ ~~the ceiling is a short-circuiting far pass~~ **REFUTED at item 1946: that pass is 1.37x-4.55x WORSE than a plain edge pass at every coverage, and the engine already beats it. The 73.2 ceiling is WITHDRAWN; the real target is 2.4x through item 1940's existing arm**
 
 Item 1943's `MIXED=1` diff put `MATCH (a:T)-[:E]->(b:T) RETURN DISTINCT b.n AS x` at **24.89 ms to
 187.15, 7.52x** — the largest ratio on the screen. 187 ms for EIGHT ROWS.
@@ -93376,6 +93376,65 @@ names and reported **`NONE`**, which reads identically to "took the general path
 `distinctProjection`, which the list simply lacked. `routes-fired.test.ts`'s helper filters on
 `typeof === 'function'` for exactly this reason, and the probe now does too — a name list goes stale
 as `CLinear` grows, and a stale list reports an absence.
+
+NO ENGINE BEHAVIOUR CHANGED — one instrument and this entry.
+
+GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects.
+
+## Item 1946 — ❌ **REFUTED: item 1945's short-circuiting far pass is NEVER better than a plain edge pass** (1.37x-4.55x worse, monotone across coverage), and the two probes DISAGREE on the same question — so 1945's "73.2 ms ceiling" is withdrawn. ✅ The deduped hop's real target is 2.4x through the arm item 1940 ALREADY BUILT
+
+Item 1945 priced the deduped hop at 234.4 ms against a 73.2 "ceiling" and named a mechanism: a
+`DISTINCT` needs EXISTENCE, not a count, so a far-vertex pass can `break` on the first qualifying
+in-edge. It also flagged the prerequisite — that a SELECTIVE start label makes the short-circuit
+useless — and said the coverage band needed checking for THIS arm rather than assuming item 1940's.
+
+**Checking it refuted the mechanism entirely.**
+
+      `dedupe-coverage-1946.mjs`, 100,000 vertices / 500,000 edges, median of 9, `|E|` constant,
+      START-label coverage varying, FAR label on every vertex. All arms answer the same 8 values:
+
+        S frac   engine   HAND-edge   HAND-far-first   eng/far   far/edge
+          1.00     15.5        22.1             30.3     0.51x      1.37x
+          0.60     57.0        27.7             39.3     1.45x      1.42x
+          0.40     38.7        21.0             41.8     0.93x      1.99x
+          0.25     22.3        15.3             47.1     0.47x      3.08x
+          0.12      8.8        14.2             50.7     0.17x      3.57x
+          0.05      1.6        12.0             54.5     0.03x      4.55x
+
+❌ **`far/edge` IS ABOVE 1 AT EVERY COVERAGE** — 1.37x to 4.55x, and monotone. The short-circuiting
+far pass is never the better algorithm. And `eng/far` is BELOW 1 at five of six coverages: the engine
+already beats that arm, so building it would have been a regression at most coverages.
+
+## ⚠️ And the two probes disagree on the same question, so one of them is unreliable
+
+Item 1945 measured, at coverage ~1.0: HAND-edge **98.5** against HAND-far-first **73.2**, i.e.
+far-first BETTER (0.74x). This probe at coverage 1.00 measures 22.1 against 30.3 — far-first WORSE
+(1.37x). Same degree (5), same question.
+
+🔑 **The newer measurement is the one to trust, and saying why matters more than the result**: 9 reps
+against 7, SIX coverages against one point, `|E|` held constant, and monotone in the column that
+decides (`far/edge` rises smoothly 1.37 -> 4.55 as the short-circuit's hit rate falls, which is the
+mechanism behaving as predicted). Item 1945's was two modes at one size with no sweep — the same
+thinness that made its 7-rep ancestors wrong at items 1941 and 1943. **Its 73.2 ceiling is
+withdrawn.**
+
+⚠️ The engine's own column is NON-MONOTONE here (15.5, 57.0, 38.7, 22.3, 8.8, 1.6 — the 0.60 cell is
+higher than both neighbours), so no engine ratio from this probe should be quoted as a target without
+its own isolated A/B. The `far/edge` comparison is between two HAND arms on one graph and does not
+depend on that.
+
+## ✅ The corrected target, and it needs no new mechanism
+
+The reachable arm for a deduped hop off the vacuous path is a **plain edge pass** — which is exactly
+what item 1940 built for the plain hop projection, gated on `EDGE_DRIVEN_MIN_COVERAGE`. `DISTINCT`
+takes the `distinctProjection` rung (item 1945 confirmed by route) and so never reaches it.
+
+        item 1945's measured engine, MIXED       234.4 ms
+        a plain edge pass at that size             98.5
+        => ~2.4x, by routing distinctProjection through the arm that already exists
+
+That is smaller than the 3.2x 1945 claimed and does not need a short-circuit, a new walk, or a new
+coverage band — the same gate and the same arm, applied to one more rung.
 
 NO ENGINE BEHAVIOUR CHANGED — one instrument and this entry.
 
