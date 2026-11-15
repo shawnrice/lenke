@@ -98330,3 +98330,78 @@ argument is the only one here that carries weight.
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
 `bun run fuzz` 22 of 23 full sweeps clean with the one unattributed failure above; gql 4,986; both
 ceiling probes' answer checks YES.
+
+## Item 2012 — 🔭 **A 2.96x SPELLING CLIFF ON THE GROUPED CHAIN COUNT: `LET g = a.n … GROUP BY g` reads 72.08 ms where the aliased `RETURN a.n AS g, count(*)` reads 24.38 — same 97 groups, same counts.** ⚠️ **And the FAST spelling is itself 21x its own ceiling (1.15 ms).** 🧰 Plus `fuzz-sweep.sh`, because I destroyed the failure evidence twice
+
+## 🧰 FIRST, THE HARNESS — I LOST THE EVIDENCE TWICE AND THAT IS A METHOD BUG
+
+Item 2005 piped a 16-minute mutation round through `tail`, which buffers until exit, so the progress
+file stayed empty and "working" was indistinguishable from "wedged". Item 2011 then piped each fuzz
+run through `grep -oE "pass|fail"` — so when one sweep in four FAILED, all that survived was the word
+"fail". Which fuzzer, which seed, which query: gone, and it never reproduced in 49 later runs, so that
+failure is **permanently unattributable**.
+
+`fuzz-sweep.sh` keeps the full output of any failing run, prints the `src/` file, the `(fail)` line
+and any `FUZZ_SEED`/`[seed …]` immediately, and deletes its own directory on a clean sweep. 🔑 **A loop
+that exists to catch a rare failure must keep the failing run's OUTPUT, not its tally** — the tally is
+what you already expect; the output is the only thing worth having when the expectation breaks. ⚠️ And
+the seed is the prize: a captured seed is what turned item 2005's `{0,k}` ghost into a fixed bug.
+
+⚠️ Its own first version had `${fails:+ — see $OUT}`, which tests EMPTINESS — and `"0"` is non-empty,
+so a clean sweep still pointed at an empty directory. A numeric test is the one that means what it
+looks like.
+
+## THE SPELLING CLIFF
+
+Item 2011 left the 2-hop grouped chain count open at 55.14 ms with a verified 1.15 ms ceiling. Varying
+only the SPELLING (`groupspelling-2012.mjs`, answers normalized and compared):
+
+```text
+    spelling               ms   groups    agree
+    hop   aliased        0.42       97    yes  (item 2011 fixed both hop forms)
+    hop   LET+GROUP BY   0.22       97    yes
+    chain aliased       24.38       97    yes
+    chain LET+GROUP BY  72.08       97    yes   ⬅ 2.96x for the same answer
+```
+
+**THE CAUSE IS A CLAUSE COUNT.** `LET g = a.n … GROUP BY g` parses as THREE clauses
+(`match | let | return`); the aliased form is two; and `detectChainGroupedCount` opens with
+`if (clauses.length !== 2) return null`. ⚠️ **The LET form is not an exotic spelling — `GROUP BY` takes
+a BOUND NAME, so it is the only way to write the grouping explicitly**, which is why item 1817's
+realistic corpus uses it and why the `grouped` family pays for it.
+
+🔑 **AND THE SHARED READER FOR THIS ALREADY EXISTS AND IS EXPORTED.** `groupedClauses` in
+`shortcuts.ts` admits `clauses.length === 2 || === 3` and returns `{match, let, ret}`;
+`grouped-hop.ts` and `node-scan.ts` both use it, and `grouped-hop.ts` resolves the key through
+`shape.let.expr`. So the chain rung is the one place with a hand-rolled clause check — the same
+"second reader" hazard `chain-projection.ts`'s own notes warn about twice.
+
+⚠️ **THE FIX IS NOT A ONE-LINER, which is why this item stops here rather than half-building it.**
+`detectChainGroupedCount` delegates to `detectChainProjection(clauses, compiled)`, which also wants
+two clauses — so admitting the LET form means synthesizing a 2-clause pair with the LET's expression
+inlined on BOTH the AST and compiled sides, and the compiled key item for the LET form references the
+LET's binding rather than the start variable. That needs reading how a `LET` compiles into a
+projection; guessing it is how a grouped count starts keying on the wrong thing.
+
+## ⚠️ AND THE FAST SPELLING IS STILL 21x ITS CEILING
+
+`chain aliased` at 24.38 ms against item 2011's verified 1.15 ms hand ceiling. `detectChainGroupedCount`
+rides `detectChainProjection`'s PATH WALK and tallies one row per path — the same structure item 2010
+replaced for the folds. The cure is the same shape too, and item 2010's module is where it goes: a
+grouped count keyed on the START is the backward recurrence `f_i(v) = [v matches L_i] · Σ_{v→x} f_{i+1}(x)`,
+whose `f_0(v)` is the number of chain matches beginning at `v` — bucketed by `key(v)`, no row
+materialized.
+
+⚠️ I STARTED THAT RECURRENCE THIS ITEM AND REVERTED IT, because it referenced two helpers I had not
+written (`chainShape`, `keyReadsOnly`) and because the spelling measurement — taken before finishing
+it — showed the LET form was the bigger half of the realistic cost and a DIFFERENT fix. Measuring
+before building changed what to build, for the second time in three items (item 2008's trail DFS was
+the same).
+
+⚠️ GROUP ORDER IS THE CONSTRAINT ON ANY CURE HERE: first-seen group order is a contract
+(`grouped-hop.ts`: "the pinned contract both engines keep") and the differential fuzzer compares
+grouped results as MULTISETS, so it cannot see a reordering. A recurrence must therefore visit starts
+in `graph.verticesById` order, which is what `csrFor`'s `order` already is.
+
+GATES. `bun run fmt` 0; `bun run check` 0. (A harness and a probe — no engine code changed; the
+reverted recurrence is not in the tree.)
