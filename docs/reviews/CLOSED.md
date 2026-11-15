@@ -96433,3 +96433,60 @@ did not have in front of it.
 NO ENGINE BEHAVIOUR CHANGED — a printed caveat in one screen and this entry.
 
 GATES. `bun run fmt` 0; `bun run check` 0. The screen re-run after the edit and its output verified.
+
+## Item 1989 — ❌ **THE LARGEST LIVE GREMLIN ROW IS ON ITS FLOOR, re-verified on TODAY's numbers rather than inherited: `path().by(k)` is 86.33 ms where two property reads a row cost 93.26.** 🛑 And the apparent 10.2x against bare `path()` is item 1951's mis-ranking rule again — the bare form does NO property reads, so it was never a ceiling
+
+Item 1988 established that the full screen's absolutes cannot be compared across rows, so this tick
+priced the largest live candidate with `ONLY=` readings. `tree()` is closed (items 1954/1987), which
+leaves `pathdep: path().by(k)`.
+
+### THREE READINGS OF ONE ROW, TWO OF THEM MISLEADING
+
+```text
+    comparison                                        reads as   what it actually is
+    full 44-shape run: 90.16 against path()'s 4.80      18.8x     cross-row interference (item 1988)
+    ISOLATED: 86.33 against path()'s 8.48               10.2x     a real gap, and the WRONG ceiling
+    against its own floor: 86.33 against 93.26          0.93x     ⬅ the row BEATS its floor
+```
+
+🛑 **BARE `path()` IS NOT A CEILING FOR `path().by(k)`, and that is item 1951's rule in a new
+instance**: a hand ceiling ranks routes correctly only when they call the expensive machinery the
+same number of times. Item 1920 fused the bare `path()` to 8.40 ms and its own entry says why that
+is not comparable — it is "the same walk, **no reads at all**". The `by(k)` form reads a property bag
+per path ELEMENT, twice a row.
+
+✅ **THE FLOOR, MEASURED THIS TICK AND NOT TAKEN ON TRUST.** `hop1: values` is the same walk with
+exactly ONE property-bag read a row:
+
+```text
+    hop1: values           ONLY=, 3 reps   46.63  45.93  47.25   median 46.63   600,000 rows
+    => two reads a row                     ~93.26 expected
+    pathdep: path().by(k)  ONLY=, 3 reps   86.29  89.36  86.33   median 86.33   600,000 rows
+```
+
+**86.33 against a 93.26 expectation — the row is 1.08x BELOW its own floor.** Item 1924 reached the
+same verdict when it took this row 304.87 → 80.55 (3.78x) and wrote "80.55 IS THE FLOOR, NOT A
+RESIDUAL"; this re-derives it from current measurements, which matters because the inherited numbers
+(80.55, and `values` at 44.99) are ~70 items old and the whole point of re-checking a floor is not to
+trust the figure that closed it.
+
+### WHY THIS TICK IS A NEGATIVE AND THAT IS THE RIGHT OUTCOME
+
+The Gremlin surface's four largest rows are now each closed with a reason rather than a shrug:
+
+```text
+    tree()              605   declined, three levers refuted, 3.2x from a hand ceiling (1954/1987)
+    path().by(k)         86   ON ITS FLOOR — taken at 1924, re-verified here
+    edge: outE.has.inV   76   fused at 1882, residual priced at 1955, the faster arm order-blocked
+    where: neq filter    44   equals the shape simplePath rewrites into (1988), both on one rung
+```
+
+⚠️ **AND `cyclicPath` MOVING CHANGED THE RANKING WITHOUT CHANGING THE WORK LEFT** — it went from
+second-largest to fifth at item 1986, which promoted `path().by(k)` into the top slot and made it
+look like a fresh nomination. It is not; it is a closed row that rose by subtraction. Recorded
+because the next re-rank will have the same shape: **a row becoming "the largest" is not evidence it
+is open.**
+
+NO ENGINE BEHAVIOUR CHANGED — this entry.
+
+GATES. `bun run fmt` 0; `bun run check` 0.
