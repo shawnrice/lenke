@@ -92504,3 +92504,97 @@ single-edge insert costs 1.59x, less than a vertex insert, so it is not adjacenc
 NO ENGINE BEHAVIOUR CHANGED — two instruments and this entry.
 
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects.
+
+## Item 1933 — **GQL `SET` is 5.38x Gremlin `property` on the WRITE ALONE** (639 ns a row against 119, over a 69 ns host floor), and ⚠️ **TWO hypotheses for it are refuted by controls**: the constraint machinery that owns 22.6% of the profile costs 8 ns a row, and the cost is FLAT in row width. ✅ Plus the 128→256 cliff confirmed as V8, not the engine
+
+Item 1932's write screen flagged `gql: set one prop, all rows` at 13.53 ms against
+`gremlin: property all` at 3.96 — the same mutation on the same graph, both verified to change
+20,000 vertices.
+
+## ✅ First, the ratio measured as a DIFFERENCE rather than a whole-query ratio
+
+`MATCH (n:T)` filters by label where `V()` does not, so charging the write for each side's scan
+would be wrong in both directions. `setgap-prof-1933.mjs` prices the scans separately:
+
+        gql    set 13.61 - scan 0.83 = 12.78 ms   639 ns a row
+        gremlin set  3.20 - scan 0.82 =  2.37      119 ns a row
+        ---------------------------------------------------------
+        ratio on the WRITE ALONE                  5.38x  (whole-query was 4.26x)
+        host-side floor, no query engine           69 ns a row
+
+The write-alone ratio is LARGER than the whole-query one, because the GQL scan is the cheaper of
+the two. Gremlin sits at 1.7x the host floor; GQL at 9.3x.
+
+## ❌ Refuted #1: the constraint machinery, which owns 22.6% of the profile
+
+A clean profile — build excluded, which needed its own trick, below — puts **`deferConstraint` at
+12.90% and `runDeferredChecks` at 9.71%** on a fixture with NO CONSTRAINTS. The code reads like a
+confirmation: `runDeferredChecks` walks every touched vertex calling FIVE check functions
+(`missingRequired`, `typeViolation`, `uniqueConflict`, `cardinalityViolationOf`,
+`validatorViolationOf`) with no early-out when none are declared, and `deferConstraint` adds every
+vertex to `txTouched`. [[write-cost-deferred-checks]] records the NATIVE engine having exactly this
+and being fixed by "dedup + no-constraint skip", so the TS side looked like it was missing the skip.
+
+⚠️ **THE CONTROL SAYS NO.** Those paths fire only when `txDepth > 0`, and every GQL write statement
+auto-commits — so the same 20,000 host-side property writes INSIDE an explicit transaction pay the
+machinery and OUTSIDE one do not:
+
+        hostSetInTx   77 ns a row
+        hostSet       69 ns a row      ⬅ 8 ns, not the ~140 that 22.6% implies
+
+[[frame-attribution-trap]] again, and caught by a control rather than by reading the profile harder.
+
+## ❌ Refuted #2: O(row width), the documented mechanism
+
+[[ts-set-is-o-width]] records TS `SET` making three O(K) passes a write where K is the row width.
+`setwidth-sweep-1933.mjs` sweeps it with the Gremlin and host paths as controls at EVERY width:
+
+        width    gql SET    gremlin    host    gql/grem
+            1        598        163      81      3.66x
+            2        465        132      54      3.53x
+            4        608        149      80      4.07x
+            8        717        268     143      2.68x
+           16        515        178     184      2.89x
+           32        637        300     416      2.12x
+
+**GQL `SET` is FLAT in width** (the spread is instrument noise — the same arm reads 465-731 across
+runs, so nothing under ~1.3x is readable here). The **HOST** path is the one that is O(K), rising
+5x, because `{...v.properties, n: 1}` clones the whole bag. So the gap is a FIXED per-row cost, not
+a width-proportional one.
+
+## ✅ Confirmed: the 128→256 cliff is V8, and the host path is WORST
+
+The memory names 128→256 specifically, so the sweep was extended rather than declaring it refuted
+at 32:
+
+        width     gql SET   gremlin    host
+          128         940       492    1147
+          256        9074      8276   22393     ⬅ ~10x on ALL THREE paths
+
+A ~10x jump on every path including the pure host one, which is **hit hardest**. That is V8's
+dictionary-mode transition, exactly as [[ts-set-is-o-width]] says ("128→256 is a dictionary-mode
+cliff, NOT O(K²)"), and it is a property of the object representation rather than anything the query
+engine does. At 256 the GQL/Gremlin ratio collapses to **1.10x** because both are swamped by it.
+
+## ⚠️ One instrument note worth keeping: a CPU profile cannot exclude the fixture build
+
+A write is not idempotent, so the screen and probe rebuild per rep (correct) with the build outside
+the TIMER — but a profile has no such exclusion, and the first one came back ~25% fixture
+construction (`addVertex` 7.68%, `commitElementLabels` 6.04%, `indexVertexLabel` 5.69%, `build`
+5.15%). 🔑 **What made a clean profile possible was a measurement:** `SET n.n = n.n` changes nothing
+and costs the same as a real change, so the per-row cost is VALUE-INDEPENDENT and repeating one SET
+on one graph exercises the same machinery with no rebuild in the profile
+(`setprof-clean-1933.mjs`).
+
+## 🔭 Still open, correctly sized
+
+**~3.7x at width 1, 5.38x on the write alone, flat in width, and NOT the constraint path.** What the
+clean profile leaves after the two refutations is diffuse per-row GQL write machinery —
+`generatorResume` 10.97%, `withBinding` 7.63%, `setProperty` 5.65%, plus `cloneObject`, `pushTokens`
+and `freeze` — none individually large. A fix needs the per-row write path restructured rather than
+one frame removed, which is a bigger change than this session's remaining items; the instruments to
+A/B it are committed.
+
+NO ENGINE BEHAVIOUR CHANGED — three instruments and this entry.
+
+GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects.
