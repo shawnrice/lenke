@@ -1,7 +1,8 @@
-import type { Element, Graph, Vertex } from '@lenke/core';
+import type { Element, Graph } from '@lenke/core';
 
 import type { Plan, Step } from '../ast.js';
 import { chainCsrFor } from './count-shortcut.js';
+import { type Hop, csrEligible, hopArm } from './hop-arm.js';
 import type { HopValues, HopWalk } from './hop-values.js';
 import { adjacentEdges, otherEndpoint, soleTypeBucket } from './movement.js';
 import { optionalSingleHop } from './optional-hop.js';
@@ -40,8 +41,6 @@ import { seenBefore } from './second-ask.js';
  * key has still MATCHED arm 0, so it emits nothing rather than falling through to arm 1. Setting
  * `any` after the `drops` check would silently change the answer on a graph with missing properties.
  */
-type Hop = { kind: 'out' | 'in' | 'both'; labels: readonly string[] };
-
 type CoalesceSpec = {
   readonly first: Hop;
   readonly second: Hop;
@@ -175,7 +174,7 @@ const csrArm0 = (
 
       if (from === to) {
         // ARM 0 MISSED THIS VERTEX — the one place `coalesce` differs from a plain hop.
-        yield* fallbackArm(graph, vtx[slot], second, pick, drops);
+        yield* hopArm(graph, vtx[slot], second, pick, drops);
 
         continue;
       }
@@ -211,7 +210,7 @@ const csrArm0 = (
       const to = from + memo.len[slot];
 
       if (from === to) {
-        for (const own of fallbackArm(graph, vtx[slot], second, pick, drops)) {
+        for (const own of hopArm(graph, vtx[slot], second, pick, drops)) {
           out.push(own);
         }
 
@@ -230,42 +229,6 @@ const csrArm0 = (
     return out;
   },
 });
-
-/** Arm 1 for ONE vertex — the cold path, shared by both walks so the semantics cannot drift. */
-const fallbackArm = function* (
-  graph: Graph,
-  v: Vertex,
-  hop: Hop,
-  pick: (e: Element) => unknown,
-  drops: boolean,
-): Iterable<unknown> {
-  // ⚠️ THE BRANCH IS HOISTED OUT OF THE LOOP, not decided per edge — `direct` is loop-invariant, and
-  // the two arms then read exactly like `coalesceWalk`'s, which is what keeps the semantics from
-  // drifting between the two walks.
-  const direct = soleTypeBucket(v, hop.kind, hop.labels);
-
-  if (direct === undefined) {
-    for (const e of adjacentEdges(hop.kind, graph, v, hop.labels)) {
-      const own = pick(otherEndpoint(hop.kind, e, v));
-
-      if (!drops || own !== undefined) {
-        yield own;
-      }
-    }
-
-    return;
-  }
-
-  const { set, forward } = direct;
-
-  for (const e of set) {
-    const own = pick(forward ? e.to : e.from);
-
-    if (!drops || own !== undefined) {
-      yield own;
-    }
-  }
-};
 
 export const coalesceHopValues = (plan: Plan, graph: Graph): HopValues | undefined => {
   const { steps } = plan;
@@ -308,9 +271,7 @@ export const coalesceHopValues = (plan: Plan, graph: Graph): HopValues | undefin
   // THE CSR IS TRIED FIRST and declines exactly where `csrOneHop` declines: `both`, a multi-type
   // hop, an untyped one, or a first ask on this topology version.
   const csr =
-    first.kind !== 'both' &&
-    first.labels.length === 1 &&
-    seenBefore(graph, first.kind === 'out', first.labels[0])
+    csrEligible(first) && seenBefore(graph, first.kind === 'out', first.labels[0])
       ? csrArm0(graph, { ...spec, forward: first.kind === 'out', type: first.labels[0] })
       : undefined;
 

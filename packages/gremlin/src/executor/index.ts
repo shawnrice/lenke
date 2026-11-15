@@ -36,6 +36,7 @@ import {
   fusedValuesAggregate,
   fusedValuesTopK,
 } from './aggregation.js';
+import { chooseHopValues } from './choose-hop-values.js';
 import { coalesceHopValues } from './coalesce-hop-values.js';
 import { countShortcut } from './count-shortcut.js';
 import { cyclicPathShortcut } from './cyclic-path-shortcut.js';
@@ -2727,6 +2728,11 @@ const fusedProjectedValues = (
       // vertex steps, a single-key `values`/`id`/nothing), so everything it declines lands on
       // exactly the route it lands on today.
       coalesceHopValues(effective, graph) ??
+      // The CHOOSE rung (item 1999): `choose(<vertex filter>, <one hop>, <one hop>)`, and the
+      // absent-else pass-through form. ⚠️ ALSO AT THE END on item 1535's rule — and note it must sit
+      // AFTER the coalesce rung rather than beside it, because the two gates are disjoint by step
+      // kind and the chain's order is then a fact about precedence rather than about these two.
+      chooseHopValues(effective, graph) ??
       hopChainValuesShortcut(effective, graph));
 
 export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {

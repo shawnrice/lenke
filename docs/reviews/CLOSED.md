@@ -96579,7 +96579,7 @@ actually runs.
 GATES. `bun run fmt` 0; `bun run check` 0; `bun run test -- --skip-nx-cache` 0 across 21 projects;
 `bun run fuzz` 0, 57 pass / 0 fail; the Gremlin suite 2,425 pass / 0 fail.
 
-## Item 1991 — 🔭 **`choose` PRICED AT 2.89x A MEASURED HAND CEILING on a realistic conditional — 324.36 ms against 112.33 for the same 800,000 rows in the same order.** ⚠️ **And `choose(test, X)` WITH NO ELSE IS NOT A FILTER — the traverser is PASSED THROUGH, which the AST comment reads the other way and which killed my first twin attempt**
+## Item 1991 — ✅ **[CLOSED BY ITEM 1999, which built the fused route: 331.61 -> 49.72 ms, 6.67x, landing ON the bare-hop floor and 2.11x PAST this hand ceiling — because the hand arm is a BUCKET walk and so was never the floor. Nothing here is open.]** **`choose` PRICED AT 2.89x A MEASURED HAND CEILING on a realistic conditional — 324.36 ms against 112.33 for the same 800,000 rows in the same order.** ⚠️ **And `choose(test, X)` WITH NO ELSE IS NOT A FILTER — the traverser is PASSED THROUGH, which the AST comment reads the other way and which killed my first twin attempt**
 
 Item 1990 closed `coalesce` by normalizing it into `optional`. Its own entry noted that `choose` and
 `branch` — the other two reconverging kinds the workload screen never carries — have no
@@ -96649,7 +96649,7 @@ NO ENGINE BEHAVIOUR CHANGED — probe arms and this entry.
 
 GATES. `bun run fmt` 0; `bun run check` 0.
 
-## Item 1992 — 🛑 **THE FIX I WAS ABOUT TO BUILD TARGETED THE MINOR TERM: `choose`'s cost is the ARM invocation at ~1501 ns a vertex, where the TEST is 136.** ⚠️⚠️ **ITS ATTRIBUTION IS WRONG AND ITEM 1993 REFUTES IT BY BUILDING THE PRESCRIBED FIX (1.07x, reverted): the cost is PER ROW in the step's yield path, not per-vertex arm setup. The "1501 ns a vertex" is the same quantity over the wrong denominator.** Decomposed before building, which is the only reason the wrong change was not made
+## Item 1992 — 🛑 **[ITEM 1999 SETTLES THE DECOMPOSITION: `chooseSameArm` — both arms the same hop, so routing cannot matter — measured 321.93 against `chooseTwoArm`'s 331.61. The machinery was the whole cost and the arm never was, so this item's question had no answer in either term.]** **THE FIX I WAS ABOUT TO BUILD TARGETED THE MINOR TERM: `choose`'s cost is the ARM invocation at ~1501 ns a vertex, where the TEST is 136.** ⚠️⚠️ **ITS ATTRIBUTION IS WRONG AND ITEM 1993 REFUTES IT BY BUILDING THE PRESCRIBED FIX (1.07x, reverted): the cost is PER ROW in the step's yield path, not per-vertex arm setup. The "1501 ns a vertex" is the same quantity over the wrong denominator.** Decomposed before building, which is the only reason the wrong change was not made
 
 Item 1991 priced `choose` at 2.89x a hand ceiling and left the build to this tick. Reading
 `chooseStep` showed two `applyPlanToStream` calls per traverser — one for the test, one for the
@@ -97117,5 +97117,107 @@ OPEN, unchanged by this: `choose` at 2.89x a hand ceiling (cost located per-row,
 needs its own fused route — this item is the worked template for one); `branch` at ~197 ns/row,
 unpriced; `coalesce` nested inside `union`/`local`, which still keeps the general loop because the
 fused walks are source-anchored.
+
+GATES. `bun run fmt` 0; `bun run check` 0; `bun run test -- --skip-nx-cache` 21/21; `bun run fuzz` 7/7.
+
+## Item 1999 — ✅ **`choose(<vertex filter>, hop, hop)` FUSED: 331.61 → 49.72 ms, 6.67x, LANDING ON THE BARE-HOP FLOOR (50.38) and 2.11x PAST THE HAND CEILING.** ⚠️⚠️ **The hand ceiling was never the floor — it is a BUCKET walk — and reading it as one would have stopped this item at 2.96x.** ⚠️ The mutation round found TWO pieces of DEAD CODE in my own gate, one of them strictly NARROWER than the line after it
+
+Closes item 1991's pricing and settles item 1992's decomposition. Same template as item 1998, one
+step further: two hop arms, with the arm chosen by an inline-evaluated vertex predicate instead of by
+arm-0 emptiness. `packages/gremlin/src/executor/choose-hop-values.ts`, at the END of
+`fusedProjectedValues`' `??` chain (item 1535's rule).
+
+**THE DIAGNOSIS WAS ALREADY ON THE SCREEN AND I HAD NOT READ IT AS ONE.** `chooseSameArm` — both arms
+the SAME hop, so routing cannot possibly matter — measured **321.93 ms** against `chooseTwoArm`'s
+**331.61**, isolated, 800,000 rows each. Those are the same number. So there was never an arm to
+optimize: the cost is `chooseStep`'s two `applyPlanToStream` calls per traverser, one for the test and
+one for the arm, and the only cure is to not make them. Item 1992 spent an item deciding whether the
+test or the arm dominated; the answer is neither.
+
+```text
+    arm                       PRE        POST    note
+    chooseTwoArm           331.61       49.72    6.67x  ⬅ the target
+    chooseSameArm          321.93       58.96    5.46x  routing cannot matter, same cost: see above
+    handChoose             111.97      105.13    the HAND arm — now 2.11x SLOWER than the route
+    hop (bare, the floor)   47.66       50.38    the route lands 1.3% UNDER it
+    chooseIdTest                —      313.74    ⬅ THE DECLINE CONTROL: an `identity()` test is not
+                                                 a vertex filter, the rung refuses it, and it did
+                                                 not regress
+```
+
+⚠️⚠️ **THE "2.96x HEADROOM" ITEM 1991 ADVERTISED WAS AN UNDERSTATEMENT BY MORE THAN HALF, AND THE
+REASON GENERALIZES.** `handChoose` reads the adjacency through `v.adjFrom.get('E')` — a BUCKET walk —
+so it is a hand-written _reference_, not a floor. Item 1998 had just measured that exact difference on
+this family: a fused bucket walk read 174.20 ms where the CSR read 72.70. **A hand ceiling is only a
+floor if it uses the same data structure the cure will use.** Written in plain JS over the adjacency
+it prices the step plumbing and silently concedes the layout win. Both arms therefore get a CSR here,
+and the row landed on the ~50 ms hops rather than the hand arm's 105.
+
+🔑 **BOTH ARMS, NOT JUST THE "THEN" ARM, AND THE FIXTURE DECIDES THAT.** The screen's row tests
+`has('n', 0)` over `n = i % 97`, so **96 of every 97 vertices take the ELSE arm.** A route that fused
+only the then arm would have fused 1% of the work and measured as a null — the same fixture-reading
+error item 1993 made when it priced an inward-hop shape against an outward-hop control. One slot
+indexes both CSRs, which is a usable property only because `buildChainCsr` builds `vtx` from
+`graph.verticesById.values()` for EVERY direction and label set: two CSRs from one topology version
+are co-indexed.
+
+⚠️ **`refuseSeekable: false` IS NOT A RELAXATION — IT IS THE OPPOSITE OF WHAT A SEEK ROUTE WANTS.**
+`collectVertexFilters` defaults to refusing a filter an index could seek, which is right for a FILTER
+route (hand that case to the seek). A `choose` test cannot be seeked at all: a seek narrows the source
+to the survivors, and `choose` must visit the NON-survivors too — they are exactly who takes the else
+arm. The default would have declined the route precisely on the graphs that have an index, and the
+mutant restoring it is caught by a test that builds one.
+
+## ⚠️⚠️ THE MUTATION ROUND FOUND TWO PIECES OF DEAD CODE IN MY OWN GATE — by SURVIVING
+
+13 mutants, **13 caught** — but only after three of them survived and the investigation went the other
+way. Two of the three were not missing tests; they were lines that did nothing:
+
+- **`every(isVertexFilterStep)` was STRICTLY NARROWER THAN THE LINE AFTER IT.** `isVertexFilterStep`
+  admits `hasLabel` and `has`. `collectVertexFilters`, called on the very next line, admits those AND
+  a single-key `hasKey`, which it compiles to a `present` predicate — and returns `undefined` for
+  anything else, which the route already handles. So the guard declined `choose(hasKey(k), …)` for no
+  reason while reading like a safety check. Deleted; the route now takes that shape and a test pins it.
+- **The `testSteps.length === 0` decline was also needless.** `chooseStep` runs the test as "does this
+  plan produce anything", and an empty plan yields the traverser — so an empty test is TRUE for every
+  vertex, which is exactly what `survives` over zero gates answers. Deleted, with a test.
+
+**A SURVIVING MUTANT IS NOT ALWAYS A MISSING TEST. Check whether the line does anything first.** The
+reflex is to add an assertion until it dies; here that would have pinned a needless decline as
+intended behaviour and left the `hasKey` spelling slower forever. Two of three survivors were dead
+code, and the third was real.
+
+- The third, `one-arm-is-enough`, WAS a genuine gap — a performance policy (don't take the CSR walk
+  until every eligible arm is warm), answer-identical and so invisible to every answer test. Item
+  1998's trick applies unchanged: only the CSR walk carries a `drain`, so the policy is readable off
+  the returned object without timing anything.
+- ⚠️ AND ONE MUTANT SURVIVED BECAUSE MY DECLINE TEST DECLINED FOR THE WRONG REASON.
+  `collect-failure-ignored` passed because the shape I used to test "declines a hop test" —
+  `choose(out(E), values(n), constant(none))` — ALSO has a non-hop `then` arm, so it declines at the
+  ARM check and never reaches the filter admission. **A decline test must be declined by the clause
+  you think it is testing**, which means every other clause in the gate has to be satisfied.
+  `choose(out(E), out(E), in_(E))` is that shape.
+
+ANSWER-EQUIVALENCE. `battery-1999.mjs`: 14 shapes (both arms live, the absent-else pass-through, a
+`hasLabel` test, a two-gate test, `id`/no projection, a `both` arm and a multi-type arm so one arm is
+CSR and the other buckets, an untyped arm, a vertex with the test key MISSING, parallel edges, a
+self-loop, and three shapes the rung must decline), each asked THREE times so both walks run.
+**0 UNSTABLE, and the whole output is BYTE-IDENTICAL to the general path** with the rung disabled.
+Digest unchanged at 800,000 rows. Gremlin suite 2447 pass.
+
+⚠️ `hop-arm.ts` IS NEW AND ITEM 1998'S COLD ARM MOVED INTO IT, so [[executor-edits-perturb]] applies:
+measured after, `coalesce: two hops` 49.93 against `hop1: values` 48.78 and `optional: hop` 49.63 —
+the whole column had drifted ~7% from item 1998's run, and the three rows stay within 2.4% of each
+other, which is the invariant item 1998 established. Neutral.
+
+OPEN after this: `branch: two options` at ~197 ns/row, unpriced — and now the largest open row in the
+reconverging family, since `choose` and `coalesce` are both on the floor. `chooseIdTest` at 313.74 is
+a decomposition arm, not an application shape, and is deliberately left declined. `coalesce`/`choose`
+nested inside `union`/`local` still keep the general loop (the fused walks are source-anchored).
+
+⚠️ AND `pathdep: tree` IS NOT OPEN, though it is the largest row on the whole screen at 2.28 ms (1.8x
+the next). It is CLOSED: items 1922/1925 priced it, found 73% is `treeKey`'s `JSON.stringify` (the
+byte-identity contract), and DECLINED fusion at 1.55x. Reading the closed-frames table before reading
+the ranking cost one grep and saved an item — "it is now the largest row" is not evidence it is open.
 
 GATES. `bun run fmt` 0; `bun run check` 0; `bun run test -- --skip-nx-cache` 21/21; `bun run fuzz` 7/7.
