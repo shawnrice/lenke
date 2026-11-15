@@ -92423,7 +92423,7 @@ NO ENGINE BEHAVIOUR CHANGED — one probe, and this entry.
 
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects.
 
-## Item 1932 — **NO SCREEN IN THIS REPO CARRIED A SINGLE WRITE**, so writes have never been screened on either surface. Built the one that does, and it nominates two gaps: a **1.84x GQL-only read demotion** after any vertex insert, and GQL `SET` at **3.42x** Gremlin's `property` for the identical mutation
+## Item 1932 — **NO SCREEN IN THIS REPO CARRIED A SINGLE WRITE**, so writes have never been screened on either surface. Built the one that does, and it nominates two gaps: a **1.84x GQL-only read demotion** after any vertex insert, and GQL `SET` at **3.42x** Gremlin's `property` for the identical mutation. ⚠️ ~~a 1.84x GQL-only read demotion after any vertex insert~~ **CORRECTED at item 1934: the write is not the cause. The far-driven hop walk requires a LABEL-HOMOGENEOUS graph, and `INSERT (:W …)` merely introduced a second label — ONE off-label vertex in 50,000 costs the read 6.2x, permanently, write or no write**
 
 Items 1930/1931 took both READ surfaces to their floors. A grep for `INSERT|SET|REMOVE|DELETE`
 across `gql-coverage-screen-1901.mjs`, `workload-perf-screen.mjs` and `gremlin-workload-screen.mjs`
@@ -92596,5 +92596,82 @@ one frame removed, which is a bigger change than this session's remaining items;
 A/B it are committed.
 
 NO ENGINE BEHAVIOUR CHANGED — three instruments and this entry.
+
+GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects.
+
+## Item 1934 — ⚠️⚠️ **ONE VERTEX OF A SECOND LABEL COSTS A HOP READ 6.2x**, and it is a CLIFF at one vertex, not a gradient. The far-driven walk requires a LABEL-HOMOGENEOUS graph — and **every read screen in this repo is one**, so every GQL hop number on them is measured on an arm a realistic graph cannot reach
+
+Item 1932's write screen nominated a "1.84x GQL-only read demotion after a vertex insert". ❌ **That
+framing is wrong and this item replaces it.** The demotion is not caused by the write at all.
+
+## The frame diff that located it
+
+The read query is IDENTICAL in both arms, so a frame appearing in only one is the mechanism
+(`readdemote-prof-1934.mjs`, one graph, 40 rounds, build outside the profile):
+
+        cold                              afterWrite
+        12.57%  (anon):19872              46.33%  startDriven:19455   ⬅ absent from `cold` entirely
+        10.11%  indexEdgeLabel             5.59%  indexEdgeLabel
+         7.48%  getVertexById              4.50%  (anon):0
+
+The write does not make the read slower — it makes it take a DIFFERENT WALK.
+
+## 🔑 The gate, and why a write has nothing to do with it
+
+`hop-projection.ts:3066` takes the far-driven walk only when
+`startLabel === undefined || vacuousLabel(graph, startLabel)`, and `vacuousLabel` is
+`verticesByLabel.get(name)?.size === graph.vertexCount`. So **one vertex of any other label
+disqualifies it for the whole graph, permanently.** Item 167 states the reason: "a start label it
+cannot apply by iteration is only ignorable when no vertex fails it".
+
+⚠️ **THE DECISIVE ARM: `preMixed` does ONE write at round 0 and then 29 write-free reads — and is as
+slow as writing every round** (5.89 ms a round against `afterWrite`'s 4.90, where `cold` is 2.04).
+The cost is the graph having two labels, not the write. `INSERT (:W …)` in item 1932's screen merely
+happened to introduce the second label.
+
+## ✅ Priced with existing syntax, no code change needed
+
+On a graph where `T` is NOT universal, the UNLABELLED start spelling has no label to disqualify it,
+so it still gets the far-driven walk. Off-label vertices are given NO outgoing E-edges, so both
+spellings answer the SAME rows — asserted per arm, not assumed:
+
+        offLabel   T vacuous?   a:T (ms)   a (ms)   ratio   rows agree
+               0         true       3.31     1.62    2.04x        true
+               1        false      20.63     8.97    2.30x        true
+              10        false      20.86     9.41    2.22x        true
+            5000        false      20.57     8.71    2.36x        true
+
+**3.31 -> 20.63 ms: 6.2x, from ONE off-label vertex in 50,000.** And 1 costs the same as 5,000, so
+it is a CLIFF. Both spellings slow down, because the same vertex also ends the FAR label's elision —
+so the 6.2x is the far-driven walk and the label elision lost together, and the residual 2.30x
+between the spellings is the start-driven penalty alone.
+
+## ⚠️⚠️ And this reframes the repo's read-side measurement baseline
+
+`gql-coverage-screen-1901.mjs` builds `labels: i % 6 === 2 ? ['T', 'U'] : ['T']` — **every vertex
+carries `T`**, so `T` is vacuous and every hop row on that screen takes the far-driven arm. A real
+graph with `Person` and `Company` never does. So `CONTROL one-hop projection` at 26.89 ms — "the
+most common shape in the language", the control items 1895 and 1930 priced against — is measured on
+an arm a realistic graph cannot reach, and the same query on a two-label graph costs ~6x that.
+
+This is CLAUDE.md's "check the fixture's own statistics, not just its output" one level up: the
+fixture is not degenerate in its DEGREE distribution (items 1516/1518's trap) but in its LABEL
+distribution, and nothing had looked.
+
+## 🔭 The lever, and why it is not built in this item
+
+The comment says the start label "cannot be applied by iteration" in the far-driven walk — true, but
+it CAN be applied as a per-element test on the reached start vertex (`labels.has('T')`, O(1) a row).
+So the far-driven arm could be available to EVERY graph with a per-row label test where the label is
+not vacuous, instead of being disqualified outright. That is **6.2x on the most common shape in the
+language, for every graph that is not label-homogeneous** — i.e. essentially all real graphs.
+
+⚠️ Two things a future attempt must weigh. It is a change to the central hop walk, where
+[[executor-edits-perturb]] measures a new variant costing unrelated rows up to 16%. And it moves in
+the SAFE direction on [[label-index-vs-setter]]'s open question — adding a per-element `labels.has`
+test rather than another elision that TRUSTS `verticesByLabel` — so it does not need that decision
+answered first.
+
+NO ENGINE BEHAVIOUR CHANGED — two instruments and this entry.
 
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects.
