@@ -94859,7 +94859,9 @@ ITEM 1971 — 524 → 258 ns a visit, and the 2.07x gap closes to 1.10x, inside 
 ⚠️ The screen's remaining `ded:` rows (`labelled dedupe`, `multi key values`, `deduped then limit`)
 are NOT dismissed — they are UNPRICED, because no comparable sibling exists for them in the screen
 and inventing one is what produced the 5.00x above. Pricing them needs a fixture built for each, not
-a ratio against a shape that answers something else.
+a ratio against a shape that answers something else. ✅ **ALL THREE PRICED AT ITEM 1972: two answer
+themselves (lazy / degenerate) and `multi key values` is DECLINED at 1.3-1.8x for a structural
+reason.**
 
 NO ENGINE BEHAVIOUR CHANGED — one instrument, one header correction, and this entry.
 
@@ -94926,3 +94928,59 @@ change itself did not.**
   than a note.
 
 GATES. `bun run check` 0; `bun run test -- --skip-nx-cache` 21 projects; `bun run fuzz` 57/0.
+
+## Item 1972 — ❌ **the last `ded:` row DECLINED at 1.3-1.8x for a structural reason**, and 🔑 **the finding that matters more: the engine's FUSED dedupe now BEATS a hand walk (203.4 against 260.6 ms), so a hand walk is no longer a valid ceiling for this family**
+
+Item 1970 left three `ded:` rows unpriced rather than dismissed. Two answer themselves on inspection:
+
+- **`deduped then limit`** — `values(k).dedupe().limit(3)`, measured at ~0 ms at item 1970. The
+  pipeline is LAZY and the limit short-circuits. Nothing to take.
+- **`labelled dedupe`** — `dedupe('x')` with no step tagged `x` collapses the whole stream to its
+  FIRST element (the rung's own test asserts one row). A query whose answer is "the first element" is
+  degenerate; optimizing it would be a benchmark special rather than a workload.
+
+**THE ONE REALISTIC SHAPE, priced against a hand ceiling rather than a sibling** — the fused rung
+takes ONE key and declines two, so there is no sibling that asks the same question.
+⚠️ The denominator is VALUES PRODUCED, not elements visited: `values(k, w)` emits two per element, so
+a per-element figure would flatter the single-key arm by 2x for free — item 1858's mistake and item
+1970's own control artefact. `k` and `w` have DISJOINT value spaces (97 and 31), so the answer is
+their union at 128 rows and a walk that dropped a key could not pass.
+
+```text
+  multikey-1972.mjs, 200,000 vertices / 1,000,000 edges, median of 9:
+
+    arm                           ms    ns/value   rows
+    engine multi-key (generic)   532.0      266     128
+    engine single-key (FUSED)    203.4      203      97
+    HAND multi-key                356.5      178     128
+    HAND single-key               260.6      261      97
+```
+
+🔑 **THE ENGINE'S FUSED ARM BEATS THE HAND WALK — 203.4 against 260.6 — AND THAT INVALIDATES THE
+INSTRUMENT I BROUGHT.** The fused dedupe rides item 1889's CSR on the warm ask, while a hand walk
+reads `v.adjFrom.get('E')` per vertex and has no flat array to run. So the hand arm is a FLOOR for
+the generic route and _not_ a ceiling for the fused one. ⚠️ **Any future pricing in this family needs
+a CSR-aware hand arm, or it will under-price the engine and over-price the lever** — and the clue was
+in the table rather than in anything I reasoned, which is why the single-key hand row is carried even
+though the item is about the multi-key one.
+
+**WHY THE MULTI-KEY ARM IS DECLINED.** Scaling the fused single-key arm's per-value cost gives a
+fused multi-key estimate of ~300-410 ms against the generic 532 — **1.3x to 1.8x** — and the shape
+("the distinct values across two properties") is real but uncommon. Against that:
+
+- The walk would need an inner loop over the keys, and a one-element loop on the single-key path is
+  exactly what `edge-filtered-hop-values.ts` records as worth its own closure ("the single-`has` ARM
+  IS A SEPARATE CLOSURE, not a one-element loop"). So the single-key arm must stay byte-identical,
+  which means a SECOND walk.
+- This file already keeps **three copies** of its loop (lazy iterator, drain CSR, drain bucket) and
+  flags that as item 169's named hazard. A multi-key variant makes six. Item 1971 spent most of its
+  effort re-anchoring eight mutants across the three that exist, and found a mutant surviving because
+  one copy was untested.
+
+1.3-1.8x on an uncommon shape, paid for by doubling the loop copies in the file where that hazard is
+already documented, is not a trade — the same call item 1964 made at 1.0-1.29x and item 1466 at 3.3x.
+Declined, with the numbers.
+
+NO ENGINE BEHAVIOUR CHANGED — one instrument, one heading correction, and this entry.
+
+GATES. `bun run check` 0.
