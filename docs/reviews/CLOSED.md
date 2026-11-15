@@ -97875,3 +97875,73 @@ terms in this row, both untouched here.
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21 with no
 flake; `bun run fuzz` 57/57 three times plus 10 isolated `differential` runs; gql 4,985; parity 79/79
 and 26/26.
+
+## Item 2006 — ✅ **THE REACH PROJECTION: `DISTINCT plain` 65.29 → 13.77 ms (4.74x cumulative), `TRAIL` → 16.89 (3.66x), `ACYCLIC` → 20.98 (67.0x from item 2003's 1405.80).** 🔑 **And the target only existed because item 2005 removed the term that had been hiding it — the profile had to be RE-TAKEN, not re-read**
+
+Item 2005 ended by naming the label filter and the projection cluster as "the next terms in this
+row", from the PRE-2005 profile. ⚠️ That profile was stale the moment it shipped: taking 69.4% of a
+row away does not leave the remaining 30.6% in the same proportions, and a nomination carried over
+from a superseded profile is a guess. Re-taken at 20,000 vertices — **5.746 ms/rep, down from
+23.88** — the composition is completely different:
+
+```text
+    frame                     self %   ms/rep
+    runReach [self]            24.3%    1.393
+    Map                        14.6%    0.838   ⬇ the projection
+    withBinding [gql]          13.6%    0.781   ⬇
+    push [gql]                 10.0%    0.576
+    filter                      7.5%    0.432
+    (anon) [gql]                6.3%    0.360   ⬇
+    valueKey [gql]              5.2%    0.298   ⬇
+    get properties [core]       4.8%    0.274   ⬇
+    propOf [gql]                3.1%    0.180   ⬇
+```
+
+**The projection is 47.5% of the row now** — it was a third of that before, below the set production
+that dwarfed it. FIVE ALLOCATIONS PER KEPT VERTEX were doing it: a fresh binding `Map`, the
+`items.map` cells array, the `cells.map` key array, its `join`, and `Object.fromEntries` over yet
+another `map`.
+
+Three changes, none of them clever:
+
+- **ONE BINDING, REUSED** across vertices, in both the rows path and the `count(DISTINCT <expr>)`
+  path. `it.fn` reads it synchronously, and this is the idiom `runReach` ALREADY uses for its own
+  `seedGate` — whose note calls it "every walk in this engine's habit" — and that
+  `var-length-count.ts` uses for its endpoint tests. The fresh `Map` per vertex was 14.6% on its own.
+- **A SINGLE-COLUMN ROW PATH.** ⚠️ Skipping the `\x01` join there is sound rather than a shortcut: the
+  separator exists because two string COLUMNS collide (`'as' + 'b'` === `'a' + 'sb'`) and a genuinely
+  distinct row would be dropped — with one column there is nothing to concatenate, so
+  `valueKey(cell)` IS the key. `RETURN DISTINCT b.n` is the spelling the screen and the fuzzer both
+  draw most.
+- **A plain loop instead of `Object.fromEntries(items.map(...))`** in the multi-column path, which
+  allocated an array of two-element arrays per kept row on top of the row itself.
+
+```text
+40,000 vertices, bound {1,2}            PRE     after 2005   after 2006   cumulative
+DISTINCT plain   WHERE-all            65.29         25.60        13.77     4.74x
+DISTINCT plain   unseeded             59.80         24.90        15.80     3.78x
+DISTINCT TRAIL   unseeded             61.75         19.17        16.89     3.66x
+DISTINCT TRAIL   WHERE-all            59.30         20.71        16.85     3.52x
+DISTINCT ACYCLIC unseeded           1405.80         28.39        20.98    67.0x
+DISTINCT plain   seeded-1%             15.01          8.89         5.97     2.51x
+DISTINCT TRAIL   seeded-1%             13.78          9.49         5.66     2.43x
+```
+
+⚠️ THE PER-ROW RATIOS BOUNCE — TRAIL unseeded reads 1.13x for this item where plain reads 1.58x, on
+single readings of rows that have moved 3.5x overall. The aggregate is the claim; the individual
+step-ratios are inside this harness's noise and are not.
+
+🔑 **THE TRANSFERABLE PART: AFTER A LARGE WIN, RE-PROFILE BEFORE NOMINATING.** Item 2005's own
+closing line named these terms from its PRE profile, and it was right about WHICH frames remained and
+wrong about their weight — `filter` looked like a peer of the projection at 1.854 against 3.68, and is
+now 0.432 against 2.73, a sixth of it. The nomination survived only because re-taking the profile
+cost one command. [[frame-attribution-trap]]'s neighbour: a frame's SHARE is a property of the row as
+it is now, not of the row as it was.
+
+OPEN after this: `runReach` self at 24.3% (1.393 ms/rep) is the largest single frame, and the label
+`filter` at 0.432 — for a VACUOUS endpoint label that filter is a test that cannot fail, which is the
+`vacuousLabel` idiom this engine applies in 43 other places and not here.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
+`bun run fuzz` 57/57 FOUR times (the previous item's run caught a real wrong answer, so this is not
+ceremony); gql 4,985; parity 105/105 across both acyclic files.

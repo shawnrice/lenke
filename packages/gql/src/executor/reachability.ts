@@ -561,10 +561,17 @@ export const runReach = (spec: ReachSpec, graph: Graph, params: Params): Row[] =
     // `count(DISTINCT <expr>)` (e.g. `b.k`): evaluate per reached vertex, skip
     // nulls, dedup values — mirrors the native `varlen_distinct_endpoint_count`.
     const seenVals = new Set<string>();
+    // ⚠️ ONE BINDING, REUSED — `runReach`'s own `seedGate` note calls this "every walk in this
+    // engine's habit", and `var-length-count.ts` carries the same idiom. A fresh `Map` per reached
+    // vertex was 14.6% of this row's profile (item 2006).
+    const countBinding = new Map<string, unknown>();
+    const countEnv: EvalEnv = { binding: countBinding, params, graph };
     let n = 0;
 
     for (const v of kept) {
-      const cell = spec.countArg({ binding: new Map([[bVar, v]]), params, graph });
+      countBinding.set(bVar, v);
+
+      const cell = spec.countArg(countEnv);
 
       if (isNullish(cell)) {
         continue;
@@ -581,20 +588,68 @@ export const runReach = (spec: ReachSpec, graph: Graph, params: Params): Row[] =
     return [{ [items[0].name]: n }];
   }
 
-  // DISTINCT rows: project the endpoint per reached vertex, dedup the tuples.
+  /*
+   * DISTINCT rows: project the endpoint per reached vertex, dedup the tuples.
+   *
+   * ⚠️⚠️ **THE PROJECTION IS NOW THE DOMINANT TERM IN THIS ROW, which it was not before item 2005**
+   * took 69.4% of it away. Re-profiled at 20,000 vertices (5.746 ms/rep, down from 23.88): `Map`
+   * 14.6% + `withBinding` 13.6% + `valueKey` 5.2% + `get properties` 4.8% + `propOf` 3.1% +
+   * anonymous 6.3% = **47.5% of the row**. Five allocations per kept vertex were doing it — a fresh
+   * binding `Map`, the `items.map` cells array, the `cells.map` key array, its `join`, and
+   * `Object.fromEntries` over another `map`.
+   *
+   * ⚠️ ONE BINDING, REUSED across vertices. `it.fn` reads it synchronously, which is why this is
+   * sound — and it is the idiom this very function already uses for `seedGate` ("every walk in this
+   * engine's habit") and that `var-length-count.ts` uses for its endpoint tests.
+   */
   const seenRows = new Set<string>();
   const rows: Row[] = [];
+  const binding = new Map<string, unknown>();
+  const env: EvalEnv = { binding, params, graph };
 
-  for (const v of kept) {
-    const env: EvalEnv = { binding: new Map([[bVar, v]]), params, graph };
-    const cells = items.map((it) => it.fn(env));
-    // Separator-joined (like `rowKeyOf`): without it, two string columns collide
-    // (`'as'+'b'` == `'a'+'sb'`) and a genuinely-distinct row is dropped.
-    const key = cells.map(valueKey).join('\x01');
+  if (items.length === 1) {
+    /*
+     * ⚠️ THE SINGLE-COLUMN CASE SKIPS THE SEPARATOR, and that is sound rather than a shortcut: the
+     * `\x01` join exists because two string COLUMNS collide (`'as' + 'b'` === `'a' + 'sb'`) and a
+     * genuinely distinct row would be dropped. With one column there is nothing to concatenate, so
+     * `valueKey(cell)` IS the key. `RETURN DISTINCT b.n` is the overwhelmingly common spelling of
+     * this shape, and it is the one the workload screen and the fuzzer both draw most.
+     */
+    const [only] = items;
 
-    if (!seenRows.has(key)) {
-      seenRows.add(key);
-      rows.push(Object.fromEntries(items.map((it, i) => [it.name, cells[i]])));
+    for (const v of kept) {
+      binding.set(bVar, v);
+
+      const cell = only.fn(env);
+      const key = valueKey(cell);
+
+      if (!seenRows.has(key)) {
+        seenRows.add(key);
+        rows.push({ [only.name]: cell });
+      }
+    }
+  } else {
+    for (const v of kept) {
+      binding.set(bVar, v);
+
+      const cells = items.map((it) => it.fn(env));
+      // Separator-joined (like `rowKeyOf`): without it, two string columns collide
+      // (`'as'+'b'` == `'a'+'sb'`) and a genuinely-distinct row is dropped.
+      const key = cells.map(valueKey).join('\x01');
+
+      if (!seenRows.has(key)) {
+        seenRows.add(key);
+
+        const row: Row = {};
+
+        // ⚠️ A PLAIN LOOP RATHER THAN `Object.fromEntries(items.map(...))`, which allocated an array
+        // of two-element arrays per kept row on top of the row itself.
+        for (let i = 0; i < items.length; i += 1) {
+          row[items[i].name] = cells[i];
+        }
+
+        rows.push(row);
+      }
     }
   }
 
