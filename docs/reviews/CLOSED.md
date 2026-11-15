@@ -93784,8 +93784,8 @@ test covered.** Replacing `{ ...template }` with `template` so every row from on
 one object survived the entire repo. Nothing inside the engine mutates a projected row and the
 aliased rows carry identical values, so no differential test can see it — but the rows go to the
 CALLER, and aliasing is observable the moment they write to one. `rows from one far vertex are
-INDEPENDENT objects, not aliases` now pins it, and the mutant dies. ⚠️ **The walk's three sibling
-folds share that contract and have no such test**; not fixed here, flagged as the next cheap thing.
+INDEPENDENT objects, not aliases` now pins it, and the mutant dies. ⚠️ ~~**The walk's three sibling
+folds share that contract and have no such test**; not fixed here, flagged as the next cheap thing.~~ ✅ **DONE at item 1953 — and there were SEVEN fold sites, not four: three were already covered, four were not, and a mechanical sweep is what sorted them.**
 
 Also re-anchored six 1951 mutants whose text this item changed (all six kill again), and corrected
 item 1951's heading in this commit, per CLAUDE.md's rule about an entry that advertises its own
@@ -93802,3 +93802,51 @@ GATES. `bun run check` 0; `bun run fuzz` 57/0 across all seven byte-identity fuz
 -- --skip-nx-cache` 21 projects — ⚠️ one run exited 1 on `@lenke/native:test`, which nx itself
 flagged as flaky; isolated it is 1280 pass / 0 fail and the re-run was green, which is
 [[sync-test-flake-is-timing]]'s known run-many flake.
+
+## Item 1953 — ✅ **ALL SEVEN hop folds now pin row independence; four were untested.** ⚠️ **And the sweep's first run reported 8 of 11 untested, of which TWO were `{ ...template }` appearing in a PROSE COMMENT** — a false alarm that would have sent me writing tests for documentation
+
+Item 1952 found that aliasing a folded row survives the whole repo and flagged "the three sibling
+folds". Counting by hand was wrong twice over, and a mechanical sweep is what corrected it:
+`clone-sweep-1953.mjs` aliases the n-th `{ ...template }` in turn and runs the gql suite.
+
+```text
+  3594  farDrivenPredicatedHopWalk              ❌ untested   a raise-free far predicate
+  3723  farDrivenStartTestedPredicatedHopWalk   ✅ item 1952
+  3887  farDrivenHopWalk, MULTI-TYPE arm        ❌ untested   `-[:E|F]->`
+  3967  farDrivenHopWalk, counting CSR arm      ❌ untested   only on the SECOND ask
+  4021  farDrivenHopWalk, single-type           ✅ item 1407's own test
+  4328  filteredHopWalk                         ✅ covered
+  4424  filteredHopWalk, start-only fold        ❌ untested   start-only WHERE + projection
+```
+
+🔑 **THE SWEEP IS THE POINT, AND IT EARNED ITSELF TWICE IN ONE ITEM.**
+
+1. **It corrected my count.** Item 1952 said "three sibling folds"; there are six besides its own,
+   three of which were already covered — `hop-far-driven.test.ts` has carried a test named _"each
+   row is a DISTINCT object, not one shared reference"_ since item 1407, written for one fold and
+   never extended as five more were added. So the contract was already explicit in the repo; what
+   was missing was reach.
+2. ⚠️ **Its FIRST run was wrong, and in the expensive direction** — 11 sites, 8 survivors. Two of
+   those "untested contracts" were the string `{ ...template }` inside the comments that _explain_
+   the fold. Mutating prose of course survives. I would have gone looking for query shapes to cover
+   documentation. The sweep now skips any line whose first non-space character is `*`, `//` or
+   `/*`, and 11 sites become 7.
+
+**WHICH SHAPE REACHES WHICH FOLD IS NOT GUESSABLE, so it is verified rather than reasoned.** Each
+of the four new tests names its site, and the sweep is the arbiter: after the tests, **7 of 7 sites
+kill**. Two of the shapes are non-obvious and would have silently landed on a neighbouring arm —
+the CSR fold needs **the same query run twice**, because `csrHopRoute` declines its own first ask
+rather than pay the build for a one-shot query; and the start-only fold needs a start-only `WHERE`
+_and_ a start-only projection _and_ an unlabelled far end (`fold = projStartOnly && farPred ===
+undefined && fl === undefined`). A shape that drifted off either would have passed while leaving
+its site uncovered — which is exactly the failure item 1952 recorded against a fixture below a
+gate's threshold.
+
+Each test asserts the fixture's own fan-in group (`expect(group.length).toBeGreaterThan(1)`) before
+asserting anything about the engine, so a fixture that stopped producing a folded group fails loudly
+instead of passing vacuously.
+
+NO ENGINE BEHAVIOUR CHANGED — one test file, one instrument, and this entry. `packages/sync/src/
+host.ts:211` has a `{ ...row }` of its own in an unrelated context; not swept, noted here.
+
+GATES. `bun run check` 0; `bun run test -- --skip-nx-cache` 21 projects, clean on the first run.
