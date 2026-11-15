@@ -19,8 +19,16 @@
  * ([[order-is-unspecified]] does not cover it), so a route that reorders is WRONG rather than merely
  * different — and a checksum cannot see that (item 1955).
  *
- * HOW TO GET THE ORACLE: put `undefined ??` in front of `chooseTestValues(effective, graph)` in
- * `fusedProjectedValues`' chain, rebuild, run, keep the output; then re-enable, rebuild, run, diff.
+ * HOW TO GET THE ORACLE: make the rung DECLINE — replace `chooseTestValues(effective, graph)` in
+ * `fusedProjectedValues`' chain with `(false ? chooseTestValues(effective, graph) : undefined)`,
+ * rebuild (`npx nx build @lenke/gremlin`), run, keep the output; then restore, rebuild, run, diff.
+ *
+ * ⚠️⚠️ **THIS LINE USED TO SAY "put `undefined ??` in front", WHICH DISABLES NOTHING** — `undefined
+ * ?? f()` evaluates `f()`, so following it compares the fused route against ITSELF and reports a
+ * clean oracle for any wrong answer whatsoever. It is CLAUDE.md's "assert each A/B arm IS the code
+ * it claims" in the one place that rule is hardest to see, because both arms build and both run.
+ * Item 2015 found it, and re-ran this battery against a real decline: identical, so item 2014's
+ * verdict stands — the recipe was wrong, not the route.
  *
  *     cd packages/native && bun battery-2014.mjs
  */

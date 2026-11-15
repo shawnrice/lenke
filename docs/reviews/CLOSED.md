@@ -97210,7 +97210,8 @@ measured after, `coalesce: two hops` 49.93 against `hop1: values` 48.78 and `opt
 the whole column had drifted ~7% from item 1998's run, and the three rows stay within 2.4% of each
 other, which is the invariant item 1998 established. Neutral.
 
-OPEN after this: `branch: two options` at ~197 ns/row, unpriced — and now the largest open row in the
+~~OPEN after this: `branch: two options` at ~197 ns/row, unpriced~~ — **CLOSED at item 2015, 4.5x**,
+and it was the largest open row in the
 reconverging family, since `choose` and `coalesce` are both on the floor. `chooseIdTest` at 313.74 is
 a decomposition arm, not an application shape, and is deliberately left declined. `coalesce`/`choose`
 nested inside `union`/`local` still keep the general loop (the fused walks are source-anchored).
@@ -98550,9 +98551,107 @@ reason that check exists.
 which makes it **thenable** — it would be awaited rather than passed if it ever reached an `await`.
 `unicorn/no-thenable`. Renamed to `whenTrue`.
 
-STILL OPEN on this surface: `branch: two options` at 227 ns/row, unpriced against a ceiling (item
-1999 also left it so); `pathdep: tree` is CLOSED and must not be re-nominated from the ranking.
+~~STILL OPEN on this surface: `branch: two options` at 227 ns/row, unpriced against a ceiling (item
+1999 also left it so)~~ — **PRICED AND CLOSED at item 2015: 7.2x off its hand ceiling, fused to
+4.5x of the general loop.** `pathdep: tree` is CLOSED and must not be re-nominated from the ranking.
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
 `bun run fuzz` 6/6 sweeps clean via `fuzz-sweep.sh`; gremlin 2,464 + 12 new; battery 0 UNSTABLE and
 byte-identical to the general path.
+
+## Item 2015 — ✅ **`branch(values(k)).option(m, <arm>)….none(<arm>)` FUSED: 43.72 → 9.66 ms, 4.5x, 207 → 46 ns/row.** 🔑 **The dominant arm touches no adjacency, so the CSR that item 1999's twin needed would have been a full build to fuse 2/97 of the work.** ⚠️ And the oracle recipe item 2014 recorded DISABLES NOTHING — `undefined ?? f()` evaluates `f()`
+
+The last unpriced row on the Gremlin reconverging surface, left so by items 1999 and 2014 both.
+Priced first, against a hand ceiling built over the same structure the cure would use (the lesson
+re-learned at items 1999, 2008 and 2013), isolated at 200,000 vertices / 800,000 edges, one shape
+per process (item 762):
+
+```text
+    branch(values(n)).option(0, out(E)).option(1, in_(E)).none(identity()).values(n)
+      the general loop         43.72 ms   207 ns/row
+      THIS RUNG                 9.66 ms    46 ns/row    4.5x
+    hand ceiling                6.12 ms    29 ns/row    1.6x remaining
+```
+
+Same 212,373 rows, same digest, positionally, across every arm.
+
+🔑 **THE FIXTURE'S ARM MIX IS THE WHOLE DESIGN DECISION, AND IT POINTS THE OPPOSITE WAY FROM ITEM
+1999's.** That rung gives BOTH arms a CSR because its test (`has('n', 0)` over `n = i % 97`) sends
+96 of 97 vertices into a hop. This shape's test is the value itself and only `option(0)`/`option(1)`
+are routed, so **95 of every 97 vertices fall to `none(identity())`** — which emits the vertex and
+reads no edge at all. A CSR here would pay a full build to fuse 2/97 of the work, which is item
+1999's own "fusing the minority arm measures as a null" with the arms reversed. It is also why the
+BUCKET-walk hand ceiling is still the honest floor (item 1951's rule): there are almost no buckets
+to walk. And why the bare `hop` row is NOT this row's floor — a hop walks every vertex's adjacency
+where this shape walks 2/97 of them, so the hop is the SLOWER computation and comparing against it
+would have hidden the entire 7.2x.
+
+⚠️⚠️ **THE ORACLE RECIPE RECORDED AT ITEM 2014 DISABLES NOTHING.** `battery-2014.mjs`'s header said
+"put `undefined ??` in front of `chooseTestValues(effective, graph)`" — and `undefined ?? f()`
+EVALUATES `f()`. So following it compares the fused route against ITSELF and reports a clean oracle
+for any wrong answer whatsoever. It is CLAUDE.md's "assert each A/B arm IS the code it claims" in
+the one place that rule is hardest to see, because both arms build and both run. Corrected in both
+battery headers to `(false ? f() : undefined)`, and item 2014's battery was RE-RUN against a real
+decline: identical, so that item's verdict stands — the recipe was wrong, not the route.
+
+⚠️⚠️ **`toEqual` IS STRUCTURALLY BLIND TO THIS FAMILY'S ONE SEMANTIC, AND A SURVIVING MUTANT PROVED
+IT.** `expect([11, 12, undefined]).toEqual([11, 12])` PASSES in bun — a trailing `undefined` is
+treated as equal to its absence. `values(k)` DROPPING a row is exactly the difference between this
+route and a wrong one, so every `toEqual` row assertion is blind to a route that emits `undefined`
+instead — and blind precisely when the dropped row is LAST. Item 2014's twin assertion escaped only
+because its `undefined` would have landed mid-array and shifted every later position. The
+drop-sensitive assertions here are `toStrictEqual`, which is what caught the mutant.
+
+⚠️ **THE `in props` PRESENCE CHECK WAS DEAD CODE, and a surviving mutant is how that was settled**
+(item 1999's lesson, third instance). `values(k)` over a vertex LACKING `k` produces nothing, so
+`branchStep`'s `sawResult` stays false and the traverser goes to `default` — which makes a
+`testKey in props` guard look load-bearing. It is redundant: a missing key reads as `undefined`, and
+the gate's `keyable` refuses `undefined` as an option key, so `byValue` can never hold it and the
+`?? fallback` is the same answer by the same route. Deleted; the coupling is now PINNED by a route
+test asserting `option(undefined)` declines, because widening `keyable` to admit it would silently
+start answering the fallback where the engine answers that option. (The deletion measured 10.58 →
+10.46 ms, i.e. nothing — it is a correctness-surface win, not a perf one.)
+
+⚠️ **AND THE FIXTURE COULD NOT SEE THE IDENTITY ARM'S OWN DROP GUARD.** Every vertex reaching
+`none(identity())` happened to carry the projected key, so removing that arm's
+`!drops || own !== undefined` changed no answer — while the HOP arm's drop WAS covered, because `a`
+hops to a vertex lacking it. Two different lines, one of them untested. Vertex `j` (matches no
+option, has no `p`) exists for that one mutant.
+
+⚠️ **EVERY WALK MUTANT HITS THE GENERATOR ONLY, because `toArray` reaches the `drain`.** The eager
+fill is a second copy of the loop (item 169's rule) and `toArray` prefers it when `rest` is empty
+(item 1412), so the `[Symbol.iterator]` body — what a lazy consumer and any trailing step actually
+run — is UNEXERCISED by an assertion written through `toArray`. A generator-vs-drain agreement test
+over seven shapes closes that, plus two drain-side mutants and an assertion that `drain` is in fact
+present (otherwise the agreement check compares the generator with itself). The drain itself was
+worth 13.79 → 10.58 ms, a THIRD of the residual over the ceiling.
+
+CONTROLS (`rung-control-ab-2015.sh`, PRE/POST order-alternated, each arm its own process):
+`hop`, `hopIn`, `optional`, `coalesce`, `chooseConst`, `chooseTwoArm` — **none moved beyond the
+noise floor**, which this row's own POST spread puts at 9.35-13.73. `chooseTwoArm` read 1.03x on
+minima with two of three POST rounds ~12% high, recorded as unresolved-within-noise rather than
+flat. That check is not optional for a new rung: [[executor-edits-perturb]], where a new walk
+variant cost UNRELATED rows up to 16% and item 1466 declined a 3.3x on exactly that ground.
+
+GATE REFUSALS, each because admitting it would be a WRONG ANSWER rather than a slow one:
+
+- a `null`, `NaN`, list, map, element or `undefined` option key — `branchStep` matches through
+  `tupleKey`, which renders `NaN` as `"null"` (colliding the two) and compares a list structurally;
+  a raw `Map` does neither. The general loop keeps those, where `tupleKey` still does the structural
+  thing.
+- a REFUSED `none()` arm, which must decline the whole shape rather than read as an ABSENT one: an
+  absent `none()` DROPS an unmatched traverser, so `?? undefined` there would delete every row the
+  engine routes to it. Mirror of item 2014's else-arm mutant.
+- **`branch` with no `none()` DROPS an unmatched row, which is the OPPOSITE of `choose`'s
+  absent-else pass-through.** Two steps, two rules; conflating them is a wrong answer each way.
+
+STILL OPEN on this surface: nothing in the reconverging family — `coalesce` (1998), `choose` both
+ways (1999, 2014) and `branch` (here) are all fused, and `pathdep: tree` is CLOSED and must not be
+re-nominated from the ranking. `coalesce`/`choose`/`branch` nested inside `union`/`local` still keep
+the general loop, because the fused walks are source-anchored (item 1480).
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
+`bun run fuzz` all seven green plus 6/6 sweeps clean via `fuzz-sweep.sh`; gremlin fuzzer 45/45;
+15 new route/answer tests; **18/18 mutants caught**, re-verified after `fmt` reflowed the gate;
+`battery-2015.mjs` 23 shapes x 3 asks, 0 UNSTABLE and byte-identical to the general path with the
+rung made to actually decline.

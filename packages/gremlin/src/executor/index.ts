@@ -36,6 +36,7 @@ import {
   fusedValuesAggregate,
   fusedValuesTopK,
 } from './aggregation.js';
+import { branchValueHop } from './branch-value-hop.js';
 import { chooseHopValues } from './choose-hop-values.js';
 import { chooseTestValues } from './choose-test-values.js';
 import { coalesceHopValues } from './coalesce-hop-values.js';
@@ -2739,6 +2740,11 @@ const fusedProjectedValues = (
       // hop test. ⚠️ BELOW it, so the two cannot contend: their gates are disjoint (a hop test vs a
       // filter test), and the order is then a fact about precedence rather than about these two.
       chooseTestValues(effective, graph) ??
+      // The BRANCH rung (item 2015): `branch(values(k)).option(m, <arm>)….none(<arm>)` — the THIRD
+      // and last reconverging-branch shape, a VALUE test with HOP-or-identity arms. ⚠️ BELOW the
+      // other two on item 1535's rule; its gate is disjoint from both by step kind (`branch`), so
+      // the order is a fact about precedence rather than about these three.
+      branchValueHop(effective, graph) ??
       hopChainValuesShortcut(effective, graph));
 
 export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {

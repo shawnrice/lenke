@@ -143,6 +143,18 @@ const ARMS = {
       branch(values('n')).option(0, out('E')).option(1, in_('E')).none(identity()),
       values('n'),
     ),
+  /*
+   * ⚠️ THE CEILING FOR `branchTwo` (item 2015), and its SHAPE IS DOMINATED BY THE `none()` ARM.
+   * `n = i % 97`, so of every 97 vertices exactly one takes `out(E)`, one takes `in_(E)` and the
+   * remaining **95 fall through to `none(identity())`** — which then feeds `values('n')`, i.e. the
+   * vertex's own `n`, the very property the test just read. So the honest ceiling reads one property
+   * per vertex, dispatches on it, and for 95/97 of them emits that same value straight back; only
+   * the two routed vertices in each 97 touch an adjacency at all.
+   *
+   * That is why the bare hop is not this row's floor (item 1951's rule): a hop walks EVERY vertex's
+   * adjacency, while this shape walks 2/97 of them.
+   */
+  handBranch: 'HANDBRANCH',
 };
 
 const med = (xs) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];
@@ -182,6 +194,50 @@ const handChooseConstRows = () => {
   return rows;
 };
 
+/**
+ * The hand ceiling for `branchTwo`: one property read a vertex, a dispatch on its value, and an
+ * adjacency walk only for the two values in 97 that name one.
+ *
+ * ⚠️ THE `none()` ARM IS `identity()` FOLLOWED BY `values('n')`, so it re-emits the property the
+ * test already read. A ceiling that re-read it would still be honest; keeping the read is what makes
+ * the engine's 95/97 case comparable.
+ */
+const handBranchRows = () => {
+  const rows = [];
+
+  for (const v of g.vertices) {
+    const { n } = v.properties;
+
+    if (n === 0) {
+      const box = v.adjFrom?.get('E');
+
+      if (box !== undefined) {
+        for (const e of box) {
+          rows.push(e.to.properties.n);
+        }
+      }
+
+      continue;
+    }
+
+    if (n === 1) {
+      const box = v.adjTo?.get('E');
+
+      if (box !== undefined) {
+        for (const e of box) {
+          rows.push(e.from.properties.n);
+        }
+      }
+
+      continue;
+    }
+
+    rows.push(n);
+  }
+
+  return rows;
+};
+
 const run = (name) => {
   const build = ARMS[name];
   const ts = [];
@@ -192,7 +248,11 @@ const run = (name) => {
     const t0 = performance.now();
     // ⚠️ A LOOKUP, NOT NESTED TERNARIES — the hand arms are named by a sentinel string, and a third
     // one would have nested again.
-    const HANDS = { HAND: handChooseRows, HANDCONST: handChooseConstRows };
+    const HANDS = {
+      HAND: handChooseRows,
+      HANDCONST: handChooseConstRows,
+      HANDBRANCH: handBranchRows,
+    };
     const hand = typeof build === 'string' ? HANDS[build] : undefined;
     const got = hand === undefined ? toArray(build(), g) : hand();
 
