@@ -77449,7 +77449,7 @@ input.
 entry and the rejection note on `sort-column-specialize.ts` — so the suites and fuzzers are item
 1713's.
 
-### Item 1718 — **THE LARGEST GQL ROW IS FULLY DECOMPOSED AND HAS NO ANOMALY IN IT: walk 282.8 + scan 32.0 + sort 479.6 = 812.7 ms, and the 479.6 is the GENUINE n log n cost.** ⚠️ **I chased a 15x phantom for five measurements because I compared against a route whose output is ALREADY SORTED — TimSort is adaptive and my "same rows" control was 100% ascending in 6 runs.** ⚠️ **And it withdraws item 1717's 1.37x: on the engine's real key distribution the composite is 5.5x WORSE, not better**
+### Item 1718 — **THE LARGEST GQL ROW IS FULLY DECOMPOSED AND HAS NO ANOMALY IN IT: walk 282.8 + scan 32.0 + sort 479.6 = 812.7 ms — ⚠️ that TOTAL now reads 744.3 (item 1976); the decomposition and the no-anomaly verdict both stand, and the 479.6 is the GENUINE n log n cost.** ⚠️ **I chased a 15x phantom for five measurements because I compared against a route whose output is ALREADY SORTED — TimSort is adaptive and my "same rows" control was 100% ascending in 6 runs.** ⚠️ **And it withdraws item 1717's 1.37x: on the engine's real key distribution the composite is 5.5x WORSE, not better**
 
 With item 1716's fixture fix, `traverse 1-hop project + order by` is the largest live query row.
 Timed at the `sortedRows` call site, one shape per process:
@@ -95144,6 +95144,58 @@ corrected 1965, this corrects an inference from 1973).
 controls, and NONE measured against the broad corpus. `bun run bench` is the regression instrument
 for that and had not been run once. It is running as this entry is written; its result is recorded in
 the next item rather than guessed at here.
+
+NO ENGINE BEHAVIOUR CHANGED — this entry.
+
+GATES. `bun run check` 0.
+
+## Item 1976 — ✅ **THE OWED REGRESSION SWEEP CAME BACK CLEAN: every row with a comparable post-item-1716 figure is FLAT OR BETTER after this session's six engine changes**, and the largest row (744.3 ms) needs no entry because item 1718 already decomposed it to a genuine `n log n` sort. ⚠️ Two of the four comparisons I reached for were against PRE-1716 fixtures and are not comparisons at all
+
+Item 1975 committed to recording this rather than guessing it: `bun run bench` with `BENCH_ENGINES=ts`,
+after items 1926-1929 (GQL `LET`/sort), 1951-1952 (the predicated hop arm), 1956-1957 (the
+edge-predicate family), 1962 (the permuted sort) and 1971 (the two-key dedupe). It exited 0, 34 rows.
+
+**The rows that have a recorded figure from the SAME instrument after item 1716's fixture fix:**
+
+```text
+    row                                        recorded      now     read
+    traverse 1-hop project + order by        794.5/792.0    744.3    flat-to-better
+    traverse 1-hop project + start filter    107.5/98.7      92.9    better
+    traverse 1-hop project                   100.4/101.9     19.7    5.1x better
+    query: 2-hop subquery item                     231.2    152.4    better
+    project var-length 1-3 hops [ENUMERATES]       282.4    272.2    flat
+    traverse 1-hop + start filter              33.2 best     33.0    flat, new best
+```
+
+The first three are item 1718's own PRE/POST table, so they are the one set measured against this
+instrument on this fixture. `traverse 1-hop project` at 19.7 against ~101 is the session's cumulative
+work on exactly that family landing in the corpus — items 1951/1952 alone measured 1.78x cumulative
+on their own shape, and that family has been the target of a long run of items since 1711.
+
+⚠️ **AND THE COMPARISON I COULD NOT MAKE.** `traverse 1-hop + filter` reads 46.2 and the figures this
+file holds for it are **32.0-32.4** (item 1100's in-sweep note) and **41.0** (item ~1000's ratio
+table) — both PRE item 1716, which CHANGED THE FIXTURE for this family. So those are not a baseline
+and 46.2 is not a regression against them; it is an unanchored number. The honest statement is that
+this row has no post-1716 recorded figure, and the next sweep's reading of it is the first one that
+can be compared to anything. Same for `count 2-hop + mid filter` (35.5 now, 27.1-33.1 recorded
+pre-fix). ⚠️ I nearly reported both as regressions.
+
+🔑 **AND THE LARGEST ROW IS NOT A TARGET, WHICH THE RECORD ALREADY SAID.** `traverse 1-hop project +
+order by` is still the corpus's largest live row at 744.3 ms, and the reflex is to profile it. Item
+1718 already did, at the `sortedRows` call site: **walk 282.8 + scan 32.0 + sort 479.6 = 812.7 ms — ⚠️ that TOTAL now reads 744.3 (item 1976); the decomposition and the no-anomaly verdict both stand**,
+with its heading stating the row "HAS NO ANOMALY IN IT" and "the 479.6 is the GENUINE n log n cost".
+Its warning is the one worth re-reading before anyone takes another run at it: _"I chased a 15x
+phantom for five measurements because I compared against a route whose output is ALREADY SORTED —
+TimSort is adaptive and my 'same rows' control was 100% ascending in 6 runs."_ So a control for this
+row must have a SHUFFLED key, and 744.3 against 812.7 says the decomposition's own total has come
+down since.
+
+**WHAT THIS SWEEP CAN AND CANNOT SAY.** It is one post-change run with no same-build PRE arm — nobody
+re-ran the corpus on `main` — so it establishes the ABSENCE OF A GROSS REGRESSION, not a per-row
+delta. Where it is stronger than its recorded comparisons is direction: this is a FULL sweep, and
+CLAUDE.md's residual in-sweep inflation (`count var-length 1-2 hops` 250.7 in-sweep against ~177
+isolated, 1.4x) means a full-sweep figure reads HIGH. 744.3 in-sweep against 792.0 from a
+`BENCH_ONLY` selection is therefore a floor on the improvement, not a ceiling.
 
 NO ENGINE BEHAVIOUR CHANGED — this entry.
 
