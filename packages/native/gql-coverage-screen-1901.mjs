@@ -82,6 +82,27 @@ const SHAPES = [
   ['order by alias + LIMIT', 'MATCH (n:T) RETURN n.n AS x ORDER BY x LIMIT 3', {}],
   ['HOP order by alias', 'MATCH (a:T)-[:E]->(b:T) RETURN b.n AS x ORDER BY x', {}],
   ['HOP order by EXPRESSION', 'MATCH (a:T)-[:E]->(b:T) RETURN b.n AS x ORDER BY b.n + 1', {}],
+  // ⚠️ ITEM 1063'S WINDOWED SUBJECTS, carried as the CONTROL SET for item 1903's flag fix. That fix
+  // turns OFF the start-only walk's template-clone whenever the deferred arm is active, so these
+  // rows are where a regression from it would land — in particular the start-only projection, whose
+  // clone it is.
+  [
+    'CONTROL hop windowed expr key',
+    'MATCH (a:T)-[:E]->(b:T) RETURN b.n + 1 AS c ORDER BY b.n + 1 LIMIT 10',
+    {},
+  ],
+  [
+    'CONTROL hop windowed, START-only proj',
+    'MATCH (a:T)-[:E]->(b:T) RETURN a.n AS c ORDER BY b.n + 1 LIMIT 10',
+    {},
+  ],
+  [
+    'CONTROL hop windowed alias key',
+    'MATCH (a:T)-[:E]->(b:T) RETURN b.n + 1 AS c ORDER BY c LIMIT 10',
+    {},
+  ],
+  // The unwindowed start-only shape, which is what the wrong answer was found on.
+  ['HOP start-only proj, far key', 'MATCH (a:T)-[:E]->(b:T) RETURN a.n AS c ORDER BY b.n + 1', {}],
   ['order by expr, two terms', 'MATCH (n:T) RETURN n.n AS x ORDER BY n.x * 2, n.n', {}],
   [
     'top-k grouped',

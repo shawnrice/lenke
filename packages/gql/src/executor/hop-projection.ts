@@ -994,12 +994,28 @@ const deferredHopOrder = (s: {
   const { proj, farVar, startVar, relVar, readsStart, readsRel } = s;
   const { skip, limit } = proj;
 
+  /*
+   * ⚠️ NO WINDOW AT ALL IS ADMITTED (item 1903), the hop twin of item 1902's gate. The
+   * `limit === undefined` rule is about a `SKIP` with no `LIMIT`, where the general path projects
+   * every row and drops the skipped ones afterwards so a faulting item raises, while a deferred arm
+   * would answer rows. With NO window nothing is discarded, so both paths evaluate every key and
+   * every item and raise on the same inputs.
+   *
+   * ⚠️ AND THIS ARM PAYS MORE FOR IT THAN THE NODE ONE DOES, which is why it was measured before
+   * shipping: the walk builds a REDUCED row (keys plus carriers) and the wrapper RE-PROJECTS the
+   * survivors, so with no window every row is built TWICE rather than once. For a `LIMIT 10` out of
+   * 800,000 rows that double build IS the win; unwindowed it is a cost the rung carries while
+   * beating the general matcher. Measured 1190.77 -> 451.50 ms, 2.64x, over 800,000 rows.
+   */
+  const noWindow = skip === undefined && limit === undefined;
+
+  if (proj.orderBy.length === 0 || proj.orderNeedsOutput) {
+    return null;
+  }
+
   if (
-    proj.orderBy.length === 0 ||
-    proj.orderNeedsOutput ||
-    typeof limit !== 'number' ||
-    limit === 0 ||
-    (skip !== undefined && typeof skip !== 'number')
+    !noWindow &&
+    (typeof limit !== 'number' || limit === 0 || (skip !== undefined && typeof skip !== 'number'))
   ) {
     return null;
   }
@@ -1077,6 +1093,44 @@ const deferredHopOrder = (s: {
           },
   };
 };
+
+/**
+ * Which endpoints must the WALK bind? A pure function because the answer is a route decision whose
+ * mistakes are ANSWER-visible rather than slow, and item 1903 is what that cost.
+ *
+ * ⚠️⚠️ **THE FLAGS DESCRIBE THE PROJECTION THE WALK BUILDS, NOT THE QUERY'S OWN ITEMS.** With the
+ * deferred arm active the walk is handed `walkProj` — the sort KEYS plus one carrier per endpoint —
+ * and deriving these three from the real items' analysis was a TS-only WRONG ANSWER on four of five
+ * end/key combinations: `projStartOnly` ("every row a start vertex produces is identical, so
+ * project once and copy") held of `RETURN n.k AS c` and not of a reduced row carrying `m.k`, so the
+ * walk never bound the far variable, every key evaluated to NULL, and the rows came back in the
+ * walk's arrival order. `hop-deferred-key-parity.test.ts` is the regression cover.
+ *
+ * ⚠️ CONSERVATIVE RATHER THAN RE-ANALYSED, deliberately. `itemsAreStartOnly` reads an analysis that
+ * exists only for the real AST items, and the reduced copy's items are synthetic closures with no
+ * AST to analyse — so the walk is told to bind EVERY endpoint a key could name. The cost is a few
+ * binding writes on a path that is already deferring its projection; the alternative is a flag that
+ * describes rows the walk is not building.
+ *
+ * ⚠️ AND EACH STAYS GATED ON THE VARIABLE EXISTING: a key cannot read an endpoint the pattern does
+ * not name, and `filteredHopWalk` refuses `needsStart` with no `startVar` outright.
+ */
+export const walkReadFlags = (s: {
+  readonly deferredWalk: boolean;
+  readonly readsStart: boolean;
+  readonly readsRel: boolean;
+  readonly startOnly: boolean;
+  readonly hasStartVar: boolean;
+  readonly hasRelVar: boolean;
+}): { itemsReadStart: boolean; projStartOnly: boolean; itemsReadRel: boolean } =>
+  s.deferredWalk
+    ? {
+        itemsReadStart: s.hasStartVar,
+        // The reduced copy ALWAYS carries the far end, so it is never start-only.
+        projStartOnly: false,
+        itemsReadRel: s.hasRelVar,
+      }
+    : { itemsReadStart: s.readsStart, projStartOnly: s.startOnly, itemsReadRel: s.readsRel };
 
 const projectionIsStreamable = (proj: CProjection): boolean =>
   !proj.star &&
@@ -2599,9 +2653,41 @@ export const detectHopProjection = (
   // The projection the WALK builds rows from: the real one, or the deferred arm's reduced copy.
   const walkProj = order.walkProj ?? proj;
 
-  const itemsReadStart = projected.readsStart;
-  const projStartOnly = itemsAreStartOnly(projected);
-  const itemsReadRel = projected.readsRel;
+  /*
+   * ⚠️⚠️ **THESE THREE FLAGS DESCRIBE THE PROJECTION THE WALK BUILDS, WHICH IS `walkProj` — AND
+   * DERIVING THEM FROM `projected` WAS A WRONG ANSWER (item 1903).** `projected` analyses the
+   * REAL items; the deferred arm hands the walk a REDUCED copy whose items are the SORT KEYS plus
+   * one carrier per endpoint. Those read whatever the keys read, which `projected` has never seen.
+   *
+   * What it cost, on the shipped engine, with a start-only projection and a key reading the other
+   * end — `MATCH (n:Q)-[:R]->(m:Q) RETURN n.k AS c ORDER BY m.k LIMIT 3`:
+   *
+   *     TS      [{c:1},{c:2},{c:3}]      ⬅ WRONG
+   *     native  [{c:3},{c:2},{c:1}]          and TS's own general path (`OFFSET 0`) agrees
+   *
+   * `projStartOnly` says "every row a start vertex produces is IDENTICAL, so project once and
+   * copy" — true of `n.k AS c`, false of a reduced row carrying `m.k`. So the walk never bound the
+   * far variable, every key evaluated to NULL, the sort became a no-op and the rows came back in
+   * arrival order. Four of five end/key combinations diverged from native, `ORDER BY e.w LIMIT 3`
+   * among them, which is an ordinary "top 3 by edge weight" query.
+   *
+   * ⚠️ CONSERVATIVE RATHER THAN RE-ANALYSED, deliberately: `itemsAreStartOnly` reads a `projected`
+   * analysis that only exists for the real AST items, and the reduced copy's items are synthetic
+   * closures with no AST to analyse. So when the deferred arm is active the walk is told to bind
+   * EVERY endpoint a key could name. The cost is a few binding writes on a path that is already
+   * deferring its projection; the alternative is a flag that describes the wrong rows.
+   *
+   * ⚠️ AND EACH IS STILL GATED ON THE VARIABLE EXISTING. A key cannot read an endpoint the pattern
+   * does not name, and `filteredHopWalk` refuses `needsStart` with no `startVar` outright.
+   */
+  const { itemsReadStart, projStartOnly, itemsReadRel } = walkReadFlags({
+    deferredWalk: order.walkProj !== undefined,
+    readsStart: projected.readsStart,
+    readsRel: projected.readsRel,
+    startOnly: itemsAreStartOnly(projected),
+    hasStartVar: startVarName !== undefined,
+    hasRelVar: rel.variable !== undefined,
+  });
 
   // A clause `WHERE` is CARRIED rather than refused, as long as it reads nothing but the
   // pattern's two endpoints — which are exactly what the walk binds. Refusing it sent the

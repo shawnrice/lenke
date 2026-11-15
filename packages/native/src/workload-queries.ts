@@ -253,7 +253,23 @@ const neighbors = (r: () => number): Workload => {
     `MATCH (a${near})-[:${t}]->(b${far}) WHERE b.n > $p0 RETURN b.n AS x`,
   ]);
 
-  return { family: 'neighbors', ...withOrder(r, body, 'x'), params: { p0: pick(r, N_VALUES) } };
+  /*
+   * ⚠️⚠️ A SORT KEY THAT READS THE OTHER END, drawn a quarter of the time (item 1903). Every body
+   * here projects `b.n AS x` — the FAR end — so ordering by `x` only ever gave the walk a key it
+   * was already building. A key naming `a` is a different ROUTE: the deferred arm hands the walk a
+   * reduced projection carrying that endpoint, and deriving its binding flags from the real items
+   * was a TS-only WRONG ANSWER on four of five end/key combinations (`a.n` ascending came back in
+   * the walk's arrival order instead). ⚠️ The corpus could not see it because no generated query
+   * had ever put a bare variable read in a sort key — the same blind spot item 1902 closed for the
+   * NODE shape, here for the hop.
+   *
+   * ⚠️ `a.n, x` RATHER THAN `a.n` ALONE: ties under `a.n` would leave row order to the walk's
+   * arrival order, which is a genuine non-question between two correct engines
+   * ([[order-is-unspecified]]), so the projected column breaks them and keeps `ordered: true` true.
+   */
+  const ordered = withOrder(r, body, r() < 0.25 ? 'a.n, x' : 'x');
+
+  return { family: 'neighbors', ...ordered, params: { p0: pick(r, N_VALUES) } };
 };
 
 /**

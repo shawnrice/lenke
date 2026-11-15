@@ -1915,3 +1915,25 @@ alias-vs-expression sort and everything written afterwards asked the question wi
 🔭 The HOP twin is still open: `deferredRoute` is node-scan only, so a hop's expression sort key
 measures **1190.77 ms against 276.89 — 4.3x over 800,000 rows**. Item 1063 built the hop version of
 item 1062's arm for windowed sorts, so the opening is in the same place.
+
+## ⚠️ `hop-deferred-key-parity.test.ts` — the wrong answer a tie-heavy fixture hid (item 1903)
+
+Not a probe but the regression cover for one, and it belongs here because of HOW it was nearly
+missed. The deferred hop order arm ranked on NULL keys whenever a sort key read an end the
+projection does not — so the rows came back in the walk's ARRIVAL order. Four of five end/key
+combinations diverged from native, `ORDER BY e.w LIMIT 3` among them.
+
+⚠️⚠️ **ON THE PERF SCREEN'S OWN FIXTURE THE WRONG ANSWER MEASURED 7.6x FASTER AND LOOKED LIKE A
+WIN.** Eight distinct `n` over 200,000 vertices means arrival order and the correct order share
+their first ten rows, so the screen could not tell them apart — `RETURN a.n AS c ORDER BY b.n + 1
+LIMIT 10` read **39.06 ms broken against 293.75 correct**. It took `reversingChain` — `n` distinct,
+every edge pointing at the vertex that reverses it — to make the two orders exact opposites.
+
+**So: a sort-order claim needs a fixture whose arrival order is NOT a plausible answer.** The same
+rule as item 1899's unique-value fixture for a deduping rung, one axis over: ties do not just weaken
+a fixture, they can make a wrong answer look fast.
+
+⚠️ And the reason nothing caught it for 840 items is the corpus blind spot item 1902 names: no
+generated query had ever put a bare variable read in a sort key. The `neighbors` family now draws
+`ORDER BY a.n, x` a quarter of the time (counted, 277 of ~2,350), and the spelling probe has the
+unwindowed hop group.

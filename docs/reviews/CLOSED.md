@@ -31871,7 +31871,7 @@ run was clean; 27 runs of 120,000 were not. Whether to widen the registry entry 
 left open — extending the static check to inline pattern predicates has been tried twice and was
 worse both times.
 
-## 1063 — ✅ SHIPPED: the HOP rung's deferred order. 2.7-8.9x across all five walk variants, no walk changed
+## 1063 — ✅ SHIPPED: the HOP rung's deferred order. 2.7-8.9x across all five walk variants, no walk changed — 🛑 **AND IT SHIPPED A WRONG ANSWER, found at item 1903: the walk's three binding flags described the REAL projection while the walk built `walkProj`, so a sort key reading an end the projection does not ranked on NULL keys. Four of five end/key combinations diverged from native; fixed by `walkReadFlags`, at 7.6x on the one shape that was wrong**
 
 Item 1062's twin, on the rung it recorded as untouched. `hopOrderPlan` refused a window whenever any
 projected item could fault; `deferredHopOrder` ranks on the keys and projects only the emitted rows.
@@ -89723,7 +89723,7 @@ runs of `bun run spelling:gremlin` (0 disagreements; one run flagged a group and
 refuted it, the same bimodality item 1899 saw). MUTATION: 7 mutants, 4 caught, 3 expected survivors
 each with its reason stated at the entry.
 
-## Item 1901 — item 1898's coverage sweep applied to GQL, and it found the same thing: **the surface's biggest shapes are outside the corpus**. `ORDER BY <an expression>` costs **8.9x** the bound-name spelling for the same rows in the same order — and the WINDOWED form of that very key takes the rung, so the capability is already there — ✅ **TAKEN at item 1902 (3.75x; ~2.8x residual, and the HOP half is still open at 4.3x / 1190 ms)**
+## Item 1901 — item 1898's coverage sweep applied to GQL, and it found the same thing: **the surface's biggest shapes are outside the corpus**. `ORDER BY <an expression>` costs **8.9x** the bound-name spelling for the same rows in the same order — and the WINDOWED form of that very key takes the rung, so the capability is already there — ✅ **TAKEN at item 1902 (3.75x; ~2.8x residual)**, and ~~the HOP half is still open at 4.3x / 1190 ms~~ **TAKEN at item 1903 (2.64x) — which uncovered a TS-ONLY WRONG ANSWER in that arm, four of five end/key combinations**
 
 Items 1879/1880 split the existing seventeen families until "the addressable time is exhausted" —
 a conclusion that is only ever true of the shapes a screen HAS. Item 1898 falsified exactly that on
@@ -89882,3 +89882,78 @@ is ever widened.
 
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers;
 `bun run spelling` at SPELL_N=200000 SPELL_REPS=9 plus each new group isolated.
+
+## Item 1903 — the hop twin of item 1902 (**2.64x**), and taking it uncovered a **TS-ONLY WRONG ANSWER in shipped code**: a hop sort key reading an end the projection does not was ranked on NULL keys and came back in arrival order. Four of five end/key combinations diverged from native
+
+The perf half is item 1902's gate, one file over: `deferredHopOrder` refused everything unwindowed
+for a reason that is about `SKIP`-with-no-`LIMIT`, and with NO window nothing is discarded so both
+paths evaluate every key and item and raise on the same inputs.
+
+      200,000 vertices / 1,000,000 edges, one shape per process, median of 7 less warm-up:
+
+        hop RETURN b.n AS x ORDER BY b.n + 1    1190.77  ->  445.78 ms    ⬅ 2.64x
+        CONTROL hop ORDER BY x (the alias)       273.01  ->  265.54        flat
+        CONTROL one-hop projection                26.40  ->   28.53        flat
+        spelling probe, unwindowed hop pair: 206.55 against 300.31 = 1.45x, inside tolerance
+
+⚠️ **THIS ARM PAYS MORE FOR NO-WINDOW THAN THE NODE ONE DOES, and the note says so in the source**:
+the walk builds a REDUCED row (keys plus carriers) and the wrapper RE-PROJECTS the survivors, so
+unwindowed every row is built TWICE. For a `LIMIT 10` out of 800,000 that double build IS the win;
+here it is a cost the rung carries while still beating the general matcher by 2.64x.
+
+## 🛑 AND THEN ITEM 642'S TEST FAILED, which is the real content of this item
+
+`MATCH (n:Q)-[:R]->(m:Q) RETURN n.k AS c ORDER BY m.k LIMIT 3` — top 3, returning the near end,
+ranked by the far end:
+
+      TS      [{c:1},{c:2},{c:3}]      ⬅ WRONG, the walk's ARRIVAL order
+      native  [{c:3},{c:2},{c:1}]          and TS's own general path agrees with native
+
+✅ **PROVEN PRE-EXISTING**, with my change fully reverted (`grep -c noWindow` = 0) — so it is a bug
+in shipped code that this item's gate merely routed a second spelling into. Four of five end/key
+combinations diverged, `ORDER BY e.w LIMIT 3` ("top 3 by edge weight") among them; only "projection
+reads the far end, key reads the start" was right, and that by luck of which variable the walk
+happened to bind.
+
+🔑 **THE CAUSE: three walk-eligibility flags describing the WRONG PROJECTION.**
+`detectHopProjection` hands the walk `walkProj` — the deferred arm's reduced copy — while
+`projStartOnly`, `itemsReadStart` and `itemsReadRel` were all derived from `projected`, the analysis
+of the REAL items. `projStartOnly` means _"every row a start vertex produces is IDENTICAL, so project
+once and copy"_: true of `n.k AS c`, false of a reduced row carrying `m.k`. So the start-only walk
+never bound the far variable, **every key evaluated to NULL**, the sort became a no-op, and the rows
+came out in arrival order. The line above it already said `walkProj` was "the projection the WALK
+builds rows from"; the three flags below it did not follow.
+
+      THE FIX is `walkReadFlags`, a pure exported function with its own unit tests: when the
+      deferred arm is active the walk is told to bind EVERY endpoint a key could name, still
+      gated on the variable existing. CONSERVATIVE rather than re-analysed on purpose —
+      `itemsAreStartOnly` reads an analysis that exists only for the real AST items, and the
+      reduced copy's items are synthetic closures with no AST to analyse.
+
+⚠️⚠️ **THE CORRECTNESS COST IS 7.6x AND IT IS NOT A REGRESSION — the fast number was the wrong
+answer.** `RETURN a.n AS c ORDER BY b.n + 1 LIMIT 10` measured **39.06 ms before and 293.75 after**,
+because the template-clone it was using is exactly what cannot serve a key reading the far end. The
+other windowed controls are flat (expr key 295.17 → 303.14, alias key 289.23 → 284.02), so the cost
+falls only on the shape that was broken.
+
+⚠️ **AND A TIE-HEAVY FIXTURE HID IT TWICE.** On the perf screen's graph (eight distinct `n` over
+200,000 vertices) the broken arm's arrival order and the correct order produce the SAME first ten
+rows — so the wrong answer measured 7.6x FASTER and read as a clean win. It took a fixture whose
+`n` is distinct and whose every edge points at the vertex that reverses it (`reversingChain`) to
+make the two orders opposites: TS answered `[0,1,2,3,4]`, native `[59,58,57,56,55]`.
+
+🛑 **WHY NOTHING CAUGHT IT: the same blind spot item 1902 found one item earlier.** The workload
+corpus's `withOrder` orders only by the projection's ALIAS, so no generated query had ever put a
+bare variable read in a sort key. Item 1902 closed that for the NODE shape; this closes the hop:
+
+- `hop-deferred-key-parity.test.ts` — 11 shapes against native (all five end/key combinations, an
+  anonymous start, DESC, two keys, and the unwindowed spellings), plus the reversing chain with its
+  answer spelled out. ⚠️ **Verified to have teeth**: reverting ONE line of the fix fails 5 of 11.
+- the `neighbors` family now draws `ORDER BY a.n, x` a quarter of the time — a key reading the end
+  its bodies never project. ⚠️ Counted (277 of ~2,350 draws), not assumed, and `a.n, x` rather than
+  `a.n` alone because ties under `a.n` would leave row order to the walk, which is a genuine
+  non-question between two correct engines ([[order-is-unspecified]]).
+- `spelling-probe.ts` gains the unwindowed hop group, the counterpart of items 1901/1902's node pair.
+
+GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers THREE
+times on random seeds (the corpus changed); `bun run spelling` on the new group.

@@ -452,6 +452,17 @@ const GROUPS: [string, readonly string[]][] = [
   // deferring the projection brought both to ~12.5. They are in here because item 1062's first
   // cut made the single-node pair diverge 3.8x and THIS probe is what caught it.
   [
+    // ⚠️ THE UNWINDOWED HOP TWIN (item 1903), the exact counterpart of the node pair items
+    // 1901/1902 added — and its absence is why the hop half went unmeasured for one more item.
+    // Every hop group below carried a `LIMIT 10` for the same reason the node ones did: item 1063
+    // fixed the windowed side and the groups were written against it.
+    'hop ORDER BY alias vs its expression, NO WINDOW (item 1903)',
+    [
+      'MATCH (a:P)-[:E]->(b) RETURN b.k + 1 AS c ORDER BY c',
+      'MATCH (a:P)-[:E]->(b) RETURN b.k + 1 AS c ORDER BY b.k + 1',
+    ],
+  ],
+  [
     'hop ORDER BY alias vs its expression, windowed (item 1063)',
     [
       'MATCH (a:P)-[:E]->(b) RETURN b.k + 1 AS c ORDER BY c LIMIT 10',
