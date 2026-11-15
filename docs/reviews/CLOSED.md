@@ -94764,3 +94764,48 @@ take because it is the last one standing.
 NO ENGINE BEHAVIOUR CHANGED — one probe, one heading correction, and this entry.
 
 GATES. `bun run check` 0.
+
+## Item 1969 — ✅ **THE BY-ID ACCESS REQUIREMENT, VERIFIED: O(1), and the accessor costs NOTHING over the `Map.get` it wraps.** ⚠️ And this closes a false nomination this session kept generating — `getVertexById` profiling at 500-570 ms is the 1M-element CACHE TRANSITION, not a slow accessor
+
+The standing instruction for this work includes keeping good O(1) access to a vertex or edge by id,
+and nothing had checked it this session — while `getVertexById` appeared at **8-16% of every fixture
+build** in the probes of items 1954-1966, at ~500 ms per profile. That is the shape of a target, so
+it needed an answer either way.
+
+**THE IMPLEMENTATION IS THE WHOLE STORY FOR COMPLEXITY:** `getVertexById` is
+`this.verticesById.get(id) ?? null` and `getEdgeById` its exact twin — one `Map.get`, no scan. So the
+only open questions were the CONSTANT and whether the wrapper costs anything. `byidcost-1969.mjs`,
+median of 9, keys shuffled and pre-built so the loop measures lookups rather than string
+construction:
+
+```text
+  n            mapGet    byId   edgeById   missing     hits (guard)
+  10,000         24.0    25.1     26.9      10.6       10000/10000/10000/0
+  100,000        28.5    27.8     29.2      10.7       100000/100000/100000/0
+  1,000,000     127.4   143.8    157.3      61.8       1000000/1000000/1000000/0
+```
+
+✅ **The wrapper is free.** 25.1 against the raw map's 24.0 at 10k, and at 100k it reads nominally
+FASTER (27.8 against 28.5) — i.e. inside the noise, which is the answer: V8 inlines a per-instance
+arrow around a `Map.get` to nothing. There is no accessor overhead to remove, and the `?? null` arm
+is not even taken on a hit (the `missing` column, at 10.6 ns, is the arm that is).
+
+⚠️ **AND THE 5x FROM 100k TO 1M IS THE MEMORY HIERARCHY, NOT COMPLEXITY.** 28 ns to 144 ns, on a
+structure that performs one hash lookup either way. CLAUDE.md's own sweep rule puts the
+cache-resident transition "between 200k and 1M elements", and this is it, measured on the accessor
+itself. **Item 194's "~190 ns at bench size" is this number, not a slow `Map.get`** — and reading it
+as accessor cost is how `getVertexById` keeps looking like a target in 1M-edge profiles.
+
+🔒 **THE CURE IS ALREADY DISQUALIFIED, which is why this is a verification and not a lever.** The way
+to beat a string-keyed hash at 1M is a dense integer ordinal, and [[no-dense-vertex-ordinal]] records
+it as **BUILT AND DISQUALIFIED** — deletes measured 6.18x/11.34x worse under churn (items
+1369-1372/1397) — with the note that **SEVEN items have arrived at that idea**. This is the eighth
+arrival, stopped by the record rather than by rebuilding it.
+
+So: the requirement holds, the accessor is already minimal, the remaining constant is cache
+behaviour that the only known cure makes worse elsewhere. ⚠️ Treat a `getVertexById` frame in a
+1M-element profile as the fixture's working set, not as a nomination.
+
+NO ENGINE BEHAVIOUR CHANGED — one probe and this entry.
+
+GATES. `bun run check` 0.
