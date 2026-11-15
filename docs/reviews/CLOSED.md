@@ -93223,7 +93223,7 @@ NO ENGINE BEHAVIOUR CHANGED — one instrument and this entry.
 
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects.
 
-## Item 1943 — ✅ **`MIXED=1` on the GQL screen: the realistic-graph mode the repo never had.** The per-shape diff names THREE shapes and clears 45 — ⚠️ `deduped hop` **7.52x**, `one-hop projection` **5.85x**, `FILTER after a hop` **4.83x**, everything else ≤1.64x. And the one-hop number says items 1940/1941's new arm is SIZE-SENSITIVE
+## Item 1943 — ✅ **`MIXED=1` on the GQL screen: the realistic-graph mode the repo never had.** The per-shape diff names THREE shapes and clears 45 — ⚠️ `deduped hop` **7.52x**, `one-hop projection` **5.85x**, `FILTER after a hop` **4.83x**, everything else ≤1.64x. And the one-hop number says items 1940/1941's new arm is SIZE-SENSITIVE ✅ **Its size-sensitivity nomination is RESOLVED at item 1944: the arm wins 2.5x-3.8x at every size: no regression, and the sensitivity is the WORKLOAD's, not the arm's**
 
 Items 1934-1942 established that `vacuousLabel` gates the GQL fast-path layer and that **every read
 screen is label-homogeneous**, so every row measures an arm a real schema cannot reach. This makes
@@ -93281,5 +93281,45 @@ from a CSR slot scan, and I did not sweep it.
 3. **`FILTER after a hop` 4.83x** — the filtered walk's own vacuity gate, also untouched.
 
 NO ENGINE BEHAVIOUR CHANGED — one screen knob and this entry.
+
+GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects.
+
+## Item 1944 — ✅ **NO REGRESSION: item 1940's edge-driven arm wins at EVERY size, 2.5x-3.8x**, swept across 10x the edge count. The arm IS size-sensitive in absolute terms — but so is the walk it replaced, and so is the hand ceiling, so nothing about the gate needs changing
+
+Item 1943 found the arm at **164 ns a row** on 1M edges where item 1942 measured it at **56** on
+100k, and flagged that items 1939/1940 swept the coverage THRESHOLD across sizes but never the ARM:
+every measurement of it was at 50,000 vertices. ⚠️ **That is a risk I introduced, which is why it
+came before the bigger `deduped hop` number.**
+
+The A/B is the gate itself — `EDGE_DRIVEN_MIN_COVERAGE` above 1 makes the arm unreachable and
+restores the start-driven walk, which is the shape of one of item 1940's own mutants:
+
+      `edgearm-size-1944.mjs`, median of 7, one isolated off-label vertex so coverage is just under
+      1 and every answer is unchanged. Engine ns a row, with the hand edge loop as the ceiling:
+
+        edges        ARM=on          ARM=off (start-driven)   ratio    HAND ceiling
+         100,000      9.0 ms /  90      26.7 ms / 267         2.97x     2.8 /  28
+         500,000     42.7    /  85     161.5    / 323         3.78x    29.2 /  58
+       1,000,000    156.9    / 157     388.8    / 389         2.48x    89.4 /  89
+
+✅ **THE ARM IS THE BEST AVAILABLE CHOICE AT EVERY SIZE.** No regression, and the gate needs no size
+term.
+
+🔑 **AND THE SIZE SENSITIVITY IS NOT THE ARM'S — IT IS THE WORKLOAD'S.** The hand loop rises 28 -> 58
+-> 89 ns a row over the same sweep, and the start-driven alternative rises 267 -> 323 -> 389. Every
+arm that touches 1M edges' endpoints pays the same memory-access tax; the engine's ratio to its hand
+ceiling stays ~1.76x throughout, which is item 1942's number unchanged. So item 1943's framing — "my
+arm is size-sensitive" — was true of the measurement and wrong about the cause: **the workload is,
+and the arm tracks it.**
+
+⚠️ The threshold was restored from a pristine copy under `target/` and `git diff` on `labels.ts`
+verified empty before committing, which is the rule a hand-applied mutant exists to be checked
+against.
+
+🔭 So item 1943's nomination list loses its second entry and keeps two: **`deduped hop` 7.52x** (a
+dedup gate items 1940/1941 never touched, 187.15 ms for EIGHT rows) and **`FILTER after a hop`
+4.83x** (the filtered walk's own vacuity gate).
+
+NO ENGINE BEHAVIOUR CHANGED — one instrument and this entry.
 
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects.
