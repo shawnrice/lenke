@@ -569,6 +569,146 @@ const compileClause = (rawClause: Clause): CClause => {
  * would remove the thing it names (and that spelling is already fast — 4.0ms against the
  * equivalent 5.0). `RETURN *` declines because the `LET` variable is one of the columns.
  */
+/**
+ * Rewrite an output ALIAS appearing inside an `ORDER BY` key expression into the expression the
+ * alias names, so the two spellings of one sort key reach the same rung (item 1929).
+ *
+ * ⚠️⚠️ THIS IS AN ABSENCE OF A RUNG, NOT A SLOW ONE, and that is why no profile nominated it — the
+ * general matcher is not a hot frame. Measured at 200,000 vertices, one shape per process, with the
+ * route read off `compileLinear` rather than inferred:
+ *
+ * ```text
+ *   MATCH (n:T) RETURN n.n AS x ORDER BY x          48.16 ms   nodeProjection
+ *   MATCH (n:T) RETURN n.n AS x ORDER BY n.n        49.72      nodeProjection
+ *   MATCH (n:T) RETURN n.n AS x ORDER BY n.n + 1    96.58      nodeProjection (deferredRoute)
+ *   MATCH (n:T) RETURN n.n AS x ORDER BY x + 1     320.49      ⬅ NO RUNG AT ALL, 3.32x
+ *
+ *   MATCH (a:T)-[:E]->(b:T) RETURN b.n AS x ORDER BY b.n + 1   122.69   hopProjection
+ *   MATCH (a:T)-[:E]->(b:T) RETURN b.n AS x ORDER BY x + 1     392.88   ⬅ NO RUNG, 3.20x
+ * ```
+ *
+ * The two spellings are the SAME QUESTION — `x` IS `n.n`, by the projection's own definition — and
+ * the alias one is the more natural to write. `deferredSortKeys` and the hop arm both substitute an
+ * alias only when the key is EXACTLY a bare name, so a name nested one level inside an operator
+ * survives into their row-locality test (`nameRead !== nodeVar`) and the whole query falls to the
+ * general path. ⚠️ Normalizing HERE rather than in either arm is deliberate: there are two such
+ * arms today, both would need the same edit, and every rung added later would need it again.
+ *
+ * 🔑 ONLY `cheapPureExpr` ALIASES ARE SUBSTITUTED, which is what makes this free rather than merely
+ * equivalent. Substituting duplicates the aliased expression's EVALUATION — once for the column and
+ * once for the key — so a property, variable, literal or parameter is safe (same value, and a
+ * property read cannot fault: an absent key is null), while a computed or faulting alias is not.
+ * This is the same predicate items 1926-1928 use for the same reason, from the other direction.
+ *
+ * ⚠️ AND A COLLIDING OUTPUT NAME DECLINES THE WHOLE PASS. In the `ORDER BY` scope the output columns
+ * are OVERLAID on the binding, so if a projection also aliases something to `n`, then substituting
+ * `x` -> `n.n` would make `n` resolve to that COLUMN instead of the element and read a property of
+ * the wrong value. `deferredSortKeys` declines for exactly this (`outNames.has(nameRead)`) and
+ * native does the same; this pass refuses to rewrite rather than reproduce the overlay rule.
+ */
+export const normalizeAliasSortKeys = (clauses: readonly Clause[]): readonly Clause[] => {
+  const last = clauses[clauses.length - 1];
+
+  if (last?.kind !== 'return') {
+    return clauses;
+  }
+
+  const { projection: proj } = last;
+  const sorts = proj.orderBy;
+
+  /*
+   * `proj.star` is REDUNDANT TODAY and kept deliberately — mutation says so (item 1929): removing
+   * it changes no answer, because a star projection has no `items` to build `bound` from and the
+   * empty-map check below returns first. It stays as the statement of intent, since a star's
+   * columns are not enumerable here and a future edit that gave `bound` another source would need
+   * this. Item 475's rule: a surviving mutant on a guard means "redundant" as readily as
+   * "untested", and the two have opposite fixes — this one is redundant, and says so.
+   */
+  if (proj.star || sorts === undefined || sorts.length === 0) {
+    return clauses;
+  }
+
+  const outNames = new Set(proj.items.map((it) => it.alias ?? columnName(it.expr)));
+  const bound = new Map<string, Expr>();
+
+  for (const it of proj.items) {
+    /*
+     * ⚠️ EXPLICIT ALIASES ONLY, not `it.alias ?? columnName(it.expr)`. An un-aliased item's column
+     * is named after its expression (`n.n`), and no sort key can REFERENCE that name as a variable
+     * — `ORDER BY n.n` parses as a `prop`, not as a `var` called "n.n" — so the fallback could
+     * never match a substitution site. Mutation confirmed it: keying the map on `it.alias` alone
+     * changed no answer. Dropped rather than kept as an unreachable branch.
+     *
+     * 🔑 `outNames` above DOES keep the fallback, because the overlay check needs every column
+     * name that could shadow a binding, aliased or not.
+     */
+    if (it.alias !== undefined && cheapPureExpr(it.expr)) {
+      bound.set(it.alias, it.expr);
+    }
+  }
+
+  if (bound.size === 0) {
+    return clauses;
+  }
+
+  /*
+   * ⚠️ THE OVERLAY CHECK, over the whole substitution set rather than per key: if any expression
+   * this pass could introduce reads a name that is also an output column, the rewrite is refused
+   * outright. Conservative on purpose — the alternative is reproducing the sort scope's shadowing
+   * rules in a rewrite that cannot see the binding.
+   *
+   * 🔑 IT ALSO SUBSUMES A GUARD I WROTE SEPARATELY AND THEN REMOVED (item 1929). That guard
+   * excluded an alias whose expression reads its OWN name (`RETURN n AS n`), and its mutant
+   * survived the battery. The proof it is subsumed: an alias name is ALWAYS in `outNames`, so if
+   * the name is among the expression's free variables then that free variable is in `outNames`,
+   * and this check declines. One condition, not two.
+   */
+  for (const [, e] of bound) {
+    for (const nameRead of freePredicateVars(e)) {
+      if (outNames.has(nameRead)) {
+        return clauses;
+      }
+    }
+  }
+
+  let changed = false;
+  const rewritten = sorts.map((k) => {
+    /*
+     * A key that is EXACTLY a bare name is left alone: `outputColumnSorts` WANTS it as a column
+     * reference, and rewriting it would look like taking the query off the faster arm.
+     *
+     * ⚠️ REMOVING IT CHANGES NO ANSWER AND NO ROUTE, because `ordered-rows.ts` normalizes in the
+     * OPPOSITE direction — its `aliasOf` maps a projected `prop` key back to its alias — so
+     * `ORDER BY x` rewritten to `ORDER BY n.n` round-trips straight back to `x`. Measured:
+     * `ORDER BY n.n` reads 49.72 ms against `ORDER BY x`'s 49.87, i.e. the same arm.
+     *
+     * 🔑 IT IS STILL COVERED, and that distinction is the point. The mutant that removes it SURVIVED
+     * the battery's first run and is caught now, because the test observes the output PLAN (each
+     * key's free variables) rather than the rows or the route — where the substitution is visible
+     * even though nothing downstream behaves differently. So this is a real short-circuit (it skips
+     * a walk and a round-trip per bare key), pinned by a test, not a guard believed on faith.
+     */
+    if (k.expr.kind === 'var') {
+      return k;
+    }
+
+    const { expr, count } = substituteVarsDeep(k.expr, bound);
+
+    if (count === 0) {
+      return k;
+    }
+
+    changed = true;
+
+    return { ...k, expr };
+  });
+
+  if (!changed) {
+    return clauses;
+  }
+
+  return [...clauses.slice(0, -1), { ...last, projection: { ...proj, orderBy: rewritten } }];
+};
 const inlineTrailingLetOnce = (clauses: readonly Clause[]): readonly Clause[] => {
   if (clauses.length < 3) {
     return clauses;
@@ -2347,35 +2487,41 @@ export const compileLinear = (linear: LinearQuery): CLinear => {
       // The twin is the diagnostic worth keeping: `MATCH (n:P) MATCH (n)-[:E]->(x) LET c = x.k
       // RETURN sum(c)` is 4 clauses and still compiles to `[match, return]`, so `inlineTrailingLet`
       // never needed the fused shape — only to run LAST of the three.
-      inlineTrailingLet(
-        inlineCorrelatedCall(
-          inlineAggregateCall(
-            inlineTrailingFilter(
-              unoptionalizeForAggregate(
-                // `foldPageIntoReturn` runs INSIDE `dropVacuousPage` so the vacuous case is
-                // removed first and only a page that actually does something is folded — the
-                // two would otherwise race to claim the same clause (item 969).
-                foldPageIntoReturn(
-                  // `foldLabelTestsIntoPatterns` runs FIRST of the three (item 1303): it can empty
-                  // a clause's `WHERE` entirely, and the rungs it is aiming at are selected on
-                  // `pred.fn === alwaysTrue`, so a later pass must see the clause already folded.
-                  dropUnreadGroupBinds(
-                    // `dropUnreadPathVar` runs INSIDE `dropUnreadGroupBinds` because that one
-                    // REFUSES outright on a pattern carrying a `pathVar` — so stripping an unread
-                    // one first is what lets the two compose instead of the first blocking the
-                    // second. Both require exactly `[match, return]`, so neither can see a shape
-                    // the other created.
-                    dropUnreadPathVar(
-                      // `dropUnreadEdgeVar` runs INSIDE `dropUnreadPathVar` for the same
-                      // composition reason: the path-variable pass refuses on nothing the edge pass
-                      // creates, but a pattern can carry BOTH an unread `p` and an unread `r`, and
-                      // only this order drops both in one compile. Each is independently narrow
-                      // (`[match, return]`, one pattern), so neither can see a shape it did not
-                      // expect.
-                      dropUnreadEdgeVar(
-                        dropVacuousPage(
-                          dropVacuousQuantifier(
-                            foldLabelTestsIntoPatterns(spliceChainedPatterns(linear.clauses)),
+      // ⚠️ `normalizeAliasSortKeys` runs OUTSIDE `inlineTrailingLet` so it sees the FOLDED
+      // projection: folding a trailing `LET` can itself produce the aliased `ORDER BY` shape this
+      // normalizes, and running it first would leave that shape unnormalized. Same composition
+      // argument as item 1662's, one pass further out.
+      normalizeAliasSortKeys(
+        inlineTrailingLet(
+          inlineCorrelatedCall(
+            inlineAggregateCall(
+              inlineTrailingFilter(
+                unoptionalizeForAggregate(
+                  // `foldPageIntoReturn` runs INSIDE `dropVacuousPage` so the vacuous case is
+                  // removed first and only a page that actually does something is folded — the
+                  // two would otherwise race to claim the same clause (item 969).
+                  foldPageIntoReturn(
+                    // `foldLabelTestsIntoPatterns` runs FIRST of the three (item 1303): it can empty
+                    // a clause's `WHERE` entirely, and the rungs it is aiming at are selected on
+                    // `pred.fn === alwaysTrue`, so a later pass must see the clause already folded.
+                    dropUnreadGroupBinds(
+                      // `dropUnreadPathVar` runs INSIDE `dropUnreadGroupBinds` because that one
+                      // REFUSES outright on a pattern carrying a `pathVar` — so stripping an unread
+                      // one first is what lets the two compose instead of the first blocking the
+                      // second. Both require exactly `[match, return]`, so neither can see a shape
+                      // the other created.
+                      dropUnreadPathVar(
+                        // `dropUnreadEdgeVar` runs INSIDE `dropUnreadPathVar` for the same
+                        // composition reason: the path-variable pass refuses on nothing the edge pass
+                        // creates, but a pattern can carry BOTH an unread `p` and an unread `r`, and
+                        // only this order drops both in one compile. Each is independently narrow
+                        // (`[match, return]`, one pattern), so neither can see a shape it did not
+                        // expect.
+                        dropUnreadEdgeVar(
+                          dropVacuousPage(
+                            dropVacuousQuantifier(
+                              foldLabelTestsIntoPatterns(spliceChainedPatterns(linear.clauses)),
+                            ),
                           ),
                         ),
                       ),

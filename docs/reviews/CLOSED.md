@@ -89802,7 +89802,7 @@ corrections above.
 
 GATES. bun run check 0.
 
-## Item 1902 — item 1901's nomination TAKEN: an unwindowed `ORDER BY <an expression>` reaches the deferred compiled-key arm, **3.75x**. The whole change is ONE GATE, because item 1062 had already built the machinery and bolted it to windows only — and the probe that should have caught that only ever asked the question with a `LIMIT`
+## Item 1902 — item 1901's nomination TAKEN: an unwindowed `ORDER BY <an expression>` reaches the deferred compiled-key arm, **3.75x**. The whole change is ONE GATE, because item 1062 had already built the machinery and bolted it to windows only — and the probe that should have caught that only ever asked the question with a `LIMIT`. ⚠️ ~~The residual is per-row compiled-key evaluation plus the `KeyRow` allocation~~ **CORRECTED at item 1929: that is not the discriminator. `ORDER BY n.n` IS an expression and costs the alias rung exactly (49.72 vs 49.87), while the bare property `ORDER BY n.k` costs the full 2x — what matters is whether the key is a value the row ALREADY HAS. 1929 also found the ALIAS spelling `ORDER BY x + 1` reaching NO rung at all, 3.2-3.4x, and took it**
 
 Item 1901 measured `ORDER BY n.n + 1` at **173.38 ms** against the bound name's **19.55** over the
 same 200,000 rows in the same order, and found the decisive fact: adding a `LIMIT 3` made the same
@@ -92189,5 +92189,107 @@ count before use.
 
 TESTS: 6 added — two, three and five-binding chains each folding to `[match, return]` and answering
 their hand-written twins, a CHEAP binding mid-chain not stopping it, and the two blowup refusals.
+
+GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers.
+
+## Item 1929 — **3.40x node and 3.23x hop: an ALIAS inside an `ORDER BY` key expression now resolves**, so `ORDER BY x + 1` stops reaching NO rung at all and converges on `ORDER BY n.n + 1`. ⚠️ Two things refuted on the way — item 1902's attribution, and my own first lever at 3.3x in the WRONG direction
+
+The GQL screen's largest remaining FAMILY was one equivalent-spelling shape in four rows: an
+EXPRESSION sort/page key against the ALIAS spelling of the same key.
+
+## ❌ Item 1902's attribution is wrong
+
+It priced the residual as "per-row compiled-key evaluation plus a `KeyRow` allocation against the
+plain arm's direct column read". Splitting the residual by arms differing in ONE claimed half
+(`exprsort-prof-1929.mjs`, 200,000 vertices, one shape per process):
+
+        none       no ORDER BY               5.58 ms   the projection floor
+        alias      ORDER BY x               49.87      the rung
+        exprId     ORDER BY n.n             49.72     ⬅ an EXPRESSION, and IDENTICAL to the alias
+        expr1      ORDER BY n.n + 1         94.15      1.89x
+        exprOther  ORDER BY n.k            102.01     ⬅ a plain PROPERTY, and also 2x
+
+🔑 So it is not "expression vs alias". `ORDER BY n.n` is an expression and pays nothing; `n.k` is a
+bare property and pays the full 2x. **The discriminator is whether the key is a value the row
+ALREADY HAS.**
+
+## ❌ And my own first lever was refuted by its own ceiling arm
+
+Since the row already holds `x = n.n`, rewriting the key to read the COLUMN looked free and safe —
+answer-identical by construction, needing no monotonicity assumption (which `n.n + 1` could not
+support anyway: on a string column `+` may fault, and eliding the computation would elide the
+fault). `ORDER BY x + 1` measures **320.49 ms: 3.3x WORSE** than the 96.58 it would have replaced.
+Cost: one probe row, no code.
+
+## ✅ That refutation IS the finding
+
+`ORDER BY x + 1` and `ORDER BY n.n + 1` are the SAME question — `x` IS `n.n`, by the projection's own
+definition — **3.2-3.4x apart**, and the unrouted one is the more natural spelling. The route probe
+says why, read off `compileLinear` rather than inferred: it reaches **NO RUNG AT ALL**, node and hop
+both.
+
+⚠️ **AN ABSENCE OF A RUNG IS WHY NO PROFILE NOMINATED THIS** — the general matcher is not a hot
+frame, as `rung-gap-screen.mjs`'s own note says ("it is the ABSENCE of a rung, and absence has no
+frame"). The profile taken was still worth it: `propOf` at 23.01% in the `expr1` arm and ABSENT from
+both control arms' top frames — a deletion test with a control, not a frame read off one profile
+([[frame-attribution-trap]]).
+
+THE CAUSE: `deferredSortKeys` and the hop arm both substitute an alias only where the key is EXACTLY
+a bare name, so a name nested one level inside an operator survives into their row-locality test
+(`nameRead !== nodeVar`) and the query falls to the general path. **Same one-level-vs-deep
+distinction as item 1927**, in a different place — and `substituteVarsDeep`, which that item added,
+does the work here.
+
+Normalized in ONE pass before rung selection rather than in either arm: there are two such arms
+today, both would need the same edit, and every rung added later would need it again.
+`normalizeAliasSortKeys` runs OUTSIDE `inlineTrailingLet`, because folding a trailing `LET` can
+itself produce the aliased `ORDER BY` shape.
+
+        ORDER BY x + 1        (node)   320.49 ->  94.32   3.40x   twin 95.63   CONVERGED
+        ORDER BY x + 1        (hop)    392.88 -> 121.72   3.23x   twin 123.71  CONVERGED
+        ORDER BY x + 1, x              322.52 ->  85.85   3.76x
+        CONTROL ORDER BY x              48.16 ->  49.81   flat
+        CONTROL HOP ORDER BY x          72.75 ->  72.53   flat
+        CONTROL ORDER BY n.n + 1        96.58 ->  95.63   flat
+
+Both land ON their twins, which is the invariant rather than just a speedup.
+
+SOUNDNESS: only `cheapPureExpr` aliases are substituted, because substituting DUPLICATES the aliased
+expression's evaluation — once for the column, once for the key. A property read is free and cannot
+fault; a subquery is neither, and substituting one into a sort key was a live cross-engine divergence
+at item 213. And a COLLIDING output name declines the whole pass: in the sort scope the output
+columns are OVERLAID on the binding, so with `n.k AS n` a substituted `n.n` would read a property of
+the COLUMN.
+
+## ⚠️⚠️ The battery's first run had FIVE survivors, and splitting them was worth more than the speedup
+
+Item 475's rule — a surviving mutant on a guard means "redundant" as readily as "untested", and the
+two have opposite fixes:
+
+- **ONE WAS MY TEST BEING VACUOUS.** I had written `expect(rows(text)).toEqual(rows(text))`. The
+  guard's effect is on the PLAN, not the rows, so the pass is now EXPORTED and the test asserts each
+  sort key's FREE VARIABLES — an alias name surviving means not substituted.
+- **THREE WERE GENUINELY REDUNDANT** and are GONE rather than papered over: a self-reading-alias
+  guard provably subsumed by the overlay check (an alias name is ALWAYS an output name, so
+  `name ∈ freeVars(expr)` implies `freeVars(expr) ∩ outNames ≠ ∅`), and an unreachable `columnName`
+  fallback in the alias map — no sort key can reference an un-aliased column's name as a variable,
+  since `ORDER BY n.n` parses as a `prop`.
+- **ONE IS KEPT AND DOCUMENTED AS REDUNDANT**: `proj.star`, since a star has no `items` to build
+  from and the empty-map check returns first. Recorded as an expected survivor with that reason.
+
+Now **9 mutants, 8 caught, 1 expected**. ⚠️ And a comment I had written an hour earlier, claiming the
+bare-alias short-circuit's mutant survives, was CORRECTED: it is caught now that the test observes
+the plan, and a stale claim about mutation coverage is exactly what this repo warns about.
+
+⚠️ **MY HAND ORACLE WAS WRONG TWICE MORE** (seven times this session), both with the engine right.
+One keyed on a column name that DIFFERS between the two spellings it compared (`n.n` against `x`), so
+it read `undefined` against a real value — and would have passed VACUOUSLY had both sides been
+un-aliased. Fixed by comparing the column by POSITION.
+
+TESTS: 13 — six alias spellings (arithmetic, DESC, a function, two terms, CASE, un-aliased) each
+asserted to take the SAME ROUTE and answer the same rows as the property spelling it must equal, the
+hop shape, the NULL-key placement, and five refusals. The fixture has DISTINCT keys anti-correlated
+with insertion order, because item 1903 established that a tie-heavy fixture lets a wrong order share
+its first rows with the right one.
 
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers.
