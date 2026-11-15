@@ -82,6 +82,18 @@ const SHAPES = [
   ['order by alias + LIMIT', 'MATCH (n:T) RETURN n.n AS x ORDER BY x LIMIT 3', {}],
   ['HOP order by alias', 'MATCH (a:T)-[:E]->(b:T) RETURN b.n AS x ORDER BY x', {}],
   ['HOP order by EXPRESSION', 'MATCH (a:T)-[:E]->(b:T) RETURN b.n AS x ORDER BY b.n + 1', {}],
+  // ⚠️ THE ONE SORT REFUSAL ITEM 1904'S MATRIX LEAVES STANDING (43 of its 320 shapes): a `SKIP`
+  // with no `LIMIT`. Priced here so the next item has a number rather than a hunch.
+  [
+    'HOP expr key, OFFSET no LIMIT',
+    'MATCH (a:T)-[:E]->(b:T) RETURN b.n AS x ORDER BY b.n + 1 OFFSET 3',
+    {},
+  ],
+  [
+    'HOP alias key, OFFSET no LIMIT',
+    'MATCH (a:T)-[:E]->(b:T) RETURN b.n AS x ORDER BY x OFFSET 3',
+    {},
+  ],
   // ⚠️ ITEM 1063'S WINDOWED SUBJECTS, carried as the CONTROL SET for item 1903's flag fix. That fix
   // turns OFF the start-only walk's template-clone whenever the deferred arm is active, so these
   // rows are where a regression from it would land — in particular the start-only projection, whose

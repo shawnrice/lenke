@@ -1937,3 +1937,26 @@ a fixture, they can make a wrong answer look fast.
 generated query had ever put a bare variable read in a sort key. The `neighbors` family now draws
 `ORDER BY a.n, x` a quarter of the time (counted, 277 of ~2,350), and the spelling probe has the
 unwindowed hop group.
+
+## `sort-matrix-1904.ts` + `src/sort-matrix.test.ts` — every sort shape against native, in order
+
+320 shapes (3x8x5 node, 4x10x5 hop) over one fixture built so that every order differs from every
+other. `bun sort-matrix-1904.ts` for the matrix, `ROUTES=1` for the rung census; the TEST is the
+guard that actually runs on every `bun run test`. ⚠️ The fixture and shape list live in
+`src/sort-matrix.ts`, shared by both — item 606's reason.
+
+⚠️⚠️ **IT VARIES THE AXES EVERY OTHER STORE HOLDS FIXED**: which end the projection reads, which end
+the KEY reads, how the key is spelled, and which window is on it. That is the combination item 1903's
+wrong answer lived in, and all three existing stores were blind to it the same way (corpus orders by
+alias; spelling groups all carried a `LIMIT`; the perf screen's ties made the wrong answer measure
+7.6x faster).
+
+⚠️ **TEETH, VERIFIED**: the pre-item-1903 derivation makes 30 shapes diverge. ⚠️ Reverting only ONE
+of the three flags does not — the fix is OVER-DETERMINED, so a later edit could drop two of three
+and still look clean here.
+
+✅ **ROUTE CENSUS** — 131 `hopProjection`, 82 `nodeProjection`, 107 general path, and all 107 are one
+of the two documented refusals (64 `LIMIT 0`, a speed guard; 43 `OFFSET` with no `LIMIT`, the
+correctness one). No unwindowed shape falls through any more. 🔭 The skip-only refusal is priced at
+2.9x (1290.48 ms against 448.77 without the offset, 800,000 rows), and the design to take it is item
+1903's: project EVERY row and slice after, which is fault-equal to the general path.

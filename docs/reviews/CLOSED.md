@@ -89957,3 +89957,66 @@ bare variable read in a sort key. Item 1902 closed that for the NODE shape; this
 
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers THREE
 times on random seeds (the corpus changed); `bun run spelling` on the new group.
+
+## Item 1904 — the instrument item 1903's wrong answer should have been found by: **320 sort shapes against native, in order, with verified teeth (30 shapes catch the pre-1903 derivation)** — and its route census says every sort shape that CAN take a rung now does
+
+Item 1903 found a shipped TS-only wrong answer BY ACCIDENT: a perf gate routed a second spelling
+into a broken arm, and one pre-existing test happened to cover one case. ⚠️ **Nothing was asking
+systematically, and all three stores that should have been are blind in the same way** — the
+workload corpus ordered only by the projection's ALIAS, every ordered group in the spelling probe
+carried a `LIMIT`, and the perf screen's fixture had so many ties that the wrong answer produced the
+SAME first ten rows and measured **7.6x faster**.
+
+      THE MATRIX varies exactly the axes those stores hold fixed: which end the PROJECTION reads,
+      which end the KEY reads, how the key is SPELLED (alias / bare prop / expression), and which
+      WINDOW is on it. 3x8x5 node shapes plus 4x10x5 hop shapes = 320.
+
+      THE FIXTURE makes every order differ from every other, which is what item 1903 paid to learn:
+        - `n` DISTINCT, so arrival order is never a plausible answer
+        - each edge points at the vertex that REVERSES it, so near and far order oppositely
+        - the rel's `w` ascends with neither, so a rel key is a third order
+        - `t` is a four-way TIE group (tie order is observable between engines, item 605)
+        - `nu` null on a third, `sp` ABSENT on two thirds
+
+✅ **AND IT HAS TEETH, VERIFIED RATHER THAN ASSUMED.** Restoring the pre-item-1903 derivation — all
+three walk binding flags from the real projection's analysis — makes **30 of the 320 shapes
+diverge**. ⚠️ **Reverting only ONE of the three does NOT, which is a finding about the fix: it is
+OVER-DETERMINED.** Any one of the forced flags prevents the wrong answer, so a later edit could
+remove two of the three and still look correct here. That is recorded at the test rather than left
+for someone to rediscover.
+
+⚠️ **IT IS A TEST, NOT ONLY A PROBE, AND THAT IS THIS SESSION'S OWN LESSON.** Item 1901 found
+`rung-precedence-census.mjs` had been DARK for ~15 items because nobody ran it. So the fixture and
+shape list live in one module (`src/sort-matrix.ts`) shared by `src/sort-matrix.test.ts` — which runs
+on every `bun run test` — and `sort-matrix-1904.ts`, which adds the route census a test has no
+business asserting. One copy, for item 606's reason: "two copies of this list is how one of them
+falls behind the other".
+
+✅ **THE ROUTE CENSUS IS THE USEFUL BY-PRODUCT, and it closes this line of work.** Of the 320 shapes:
+
+      131  hopProjection
+       82  nodeProjection
+      107  GENERAL PATH   ⬅ and ALL 107 are one of the two documented refusals:
+             64  `LIMIT 0`                 — a deliberate SPEED guard, answer-equivalent
+             43  `OFFSET` with no `LIMIT`  — the stated CORRECTNESS refusal
+
+**Zero unwindowed shapes fall to the general path.** Items 1902 and 1903 closed that completely, and
+this is the measurement that says so rather than an inference from two A/Bs.
+
+🔭 **THE ONE REFUSAL LEFT, PRICED.** `OFFSET` with no `LIMIT`, 43 of the 320 shapes:
+
+        hop expr key, no window              448.77 ms   800,000 rows
+        hop expr key, OFFSET 3              1290.48      799,997     ⬅ 2.9x for the offset
+        hop ALIAS key, OFFSET 3              278.88      799,997     ⬅ unaffected
+
+So the alias spelling handles a skip-only page fine (items 1776/1885) and only the EXPRESSION key
+falls through. 🔭 The design is the same shape as item 1903's: the refusal holds because
+ranking-then-projecting emits fewer rows than it projects, so a faulting item would not raise — but
+an arm that projects EVERY row and slices AFTER is fault-equal to the general path, which is exactly
+what the no-window case now does. `plan.skip = 0`, slice after the re-projection. Priced, not built.
+
+NO ENGINE CODE CHANGED. One shared module, one test, one probe, two priced screen rows.
+
+GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects (one run exited 1 with Nx
+reporting `@lenke/errors` FLAKY — green on a re-run and green isolated, which is
+[[sync-test-flake-is-timing]]'s shape); all seven fuzzers.
