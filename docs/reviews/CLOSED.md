@@ -94371,7 +94371,11 @@ query never returns, items 610/1062), and that is the whole difference:
 
 **POST now BEATS the column arm** (37.7 against ~50): sorting an index array of integers is cheaper
 than sorting row objects. So the fastest sort route in the engine is now the one that used to be the
-slowest, and the column arm is a candidate for the same treatment — a separate item.
+slowest, ~~and the column arm is a candidate for the same treatment — a separate item.~~ ❌ **THE
+COLUMN ARM IS NOT: item 1963 priced the shape outside the engine at 0.82x/0.88x — it LOSES there,
+because that arm's key is already on the row so extract-and-permute is two passes for nothing. The
+win here is deleting the WRAPPER, not the permutation.** ⚠️ And item 1963 also found that this item
+left the HOP spelling of the same question untouched, which this module calls a defect class.
 
 ⚠️⚠️ **THE ORACLE FINDING, which is the part worth reading.** `unwindowed-expr-sort.test.ts` checks
 every answer with `bothRoutes`, which appends `OFFSET 0` and asserts the two agree. Its header says
@@ -94405,3 +94409,59 @@ arrival order (item 605: tie order is observable between the engines).
 
 GATES. `bun run check` 0; `bun run test -- --skip-nx-cache` 21 projects; `bun run fuzz` 57/0 across
 all seven byte-identity fuzzers.
+
+## Item 1963 — ❌ **the permutation shape REFUTED for the column arm (0.82x) in two minutes and with no engine edit** — and ⚠️⚠️ **item 1962 left the HOP spelling of its own question behind, which `node-scan.ts` itself calls "this repo's named defect class"**
+
+Item 1962 ended with the permuted arm beating the column arm (37.7 ms against ~50), which made the
+column arm look like the next target. `sortRowsByColumns` is central though — the plain node arm,
+the hop arms and the keyed arm all call it — and CLAUDE.md records edits to such files costing
+unrelated rows up to 16%, with item 1466 declining a 3.3x win on exactly that basis. So the shape
+was priced OUTSIDE the engine first.
+
+```text
+  sortshape-1963.mjs, 200,000 rows, median of 9, identical output asserted as an ORDERED tag
+  sequence (so a stability difference could not hide):
+
+                        12 distinct keys    200,000 distinct keys
+    rows.sort(…)            11.1 ms              23.8 ms
+    extract+permute         13.5                 27.1
+                            0.82x                0.88x        ⬅ the permutation LOSES
+```
+
+🔑 **AND THE REASON IS WORTH KEEPING, because it corrects what item 1962 looked like it proved.** The
+column arm's key is ALREADY a property of the row, so extracting it and permuting is two extra
+passes buying nothing; the comparator's object-property load is cheaper than that. Item 1962's win
+was never the permutation — it was **deleting the symbol-keyed wrapper object**, which the column arm
+does not have. A lever that looks like "the same trick, one arm over" was two minutes of probe and
+zero risk to refute.
+
+⚠️⚠️ **THE DIVERGENCE I CREATED, found by re-measuring the screen rather than assuming.** Item 1962's
+numbers are all NODE shapes (`MATCH (n:T) …`). Re-running the GQL screen's sort rows:
+
+```text
+  order by expr, two terms      46.71 ms   200,000 rows   ⬅ a NODE shape, now fast
+  HOP order by EXPRESSION      580.60      800,000        ⬅ was 568.41 before item 1962
+  HOP order by alias           357.66      800,000        ⬅ its twin: 1.62x, unchanged
+  HOP expr key, OFFSET no LIMIT 568.31     799,997
+```
+
+**The hop spelling did not move at all**, because it has its own arm (`deferredHopOrder` in
+`hop-projection.ts`) which item 1962 never touched. `node-scan.ts`'s own comment is explicit about
+why that matters: _"`deferredHopOrder` — kept in step deliberately, because a route policy differing
+between the node and hop spellings of one question is this repo's named defect class."_ So item 1962
+opened precisely the gap this module is maintained to keep closed, and the big number lives on the
+side that did not move.
+
+**ITS MECHANISM IS DIFFERENT, so the fix is not a copy.** `deferredHopOrder` does not build symbol
+keyed wrappers: its walk emits rows carrying KEY columns plus CARRIER columns, `sortRowsByColumns`
+sorts those (the better shape, per the probe above), and then it **RE-PROJECTS every row** — rebuild
+the binding from the carrier columns, call `projectRow`. That is a second row allocation and a
+`width`-entry binding rebuild per row, where the alias spelling projects once. The non-windowed case
+may project during the walk (item 1960's reasoning, unchanged), which is what should close the 1.62x
+— but the keys would then have to travel beside the rows rather than inside them, and the walk
+machinery writes rows through `walkProj`. That is the next build, and it is owed rather than
+optional.
+
+NO ENGINE BEHAVIOUR CHANGED — one instrument, two heading corrections, and this entry.
+
+GATES. `bun run check` 0.
