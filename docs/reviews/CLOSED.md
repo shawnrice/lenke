@@ -93542,7 +93542,7 @@ this one.
 
 GATES. bun run test --skip-nx-cache across 21 projects (after the revert).
 
-## Item 1949 — **`FILTER` after a hop, priced ISOLATED at 5.02x** (368.7 ms against a 73.4 ceiling) — the largest confirmed realistic-graph gap left. ⚠️ But a pre-existing test's own comment warns that an order-pinning case exists for EXACTLY the shape an edge pass would claim, and chasing it found something I do not understand about item 1940's REACH
+## Item 1949 — **`FILTER` after a hop, priced ISOLATED at 5.02x** (368.7 ms against a 73.4 ceiling) — the largest confirmed realistic-graph gap left. ⚠️ ~~But a pre-existing test's own comment warns that an order-pinning case exists for EXACTLY the shape an edge pass would claim, and chasing it found something I do not understand about item 1940's REACH~~ ✅ **RESOLVED at item 1950, benignly: the edge-driven arm DOES claim that shape — the pinned order survives only because the fixture inserts its edges grouped by source. The reach is what I built, the test comment was wrong, and this 5.02x target is UNBLOCKED**
 
 Item 1943's `MIXED=1` diff put `MATCH (a:T)-[:E]->(b:T) FILTER b.n > $p0 RETURN b.n AS x` at
 61.44 -> 297.04 (4.83x). Item 1947 bounded that sweep's inflation at 1.2x-1.3x, so the nomination
@@ -93593,3 +93593,63 @@ knowing.
 NO ENGINE BEHAVIOUR CHANGED — one instrument and this entry.
 
 GATES. bun run check 0; the suite is green (nothing was modified).
+
+## Item 1950 — ✅ **RESOLVED, and item 1949's worry was unfounded: item 1940's edge-driven arm DOES claim the order-pinned shape.** The assertion survives because that fixture inserts its edges GROUPED BY SOURCE, which is byte-for-byte the start-driven nesting. ⚠️ The shipped test's own comment asserted the opposite and is now corrected — it was the thing that misled me
+
+Item 1949 ended on a question about code I had already shipped, and the rule it set itself was to
+answer it before extending the mechanism. Answered, by instrumenting rather than reasoning: three
+`globalThis.__ARM` writes on the single-type gate's branches, the five shapes run through it, the
+engine restored from a pristine copy afterwards (tree byte-identical, `git diff` empty).
+
+    shape                                              arm taken        rows
+    MATCH (a:P)-[:T]->(x) RETURN x.name AS n           edgeDriven       b c b b d f   ← the pinned one
+    MATCH (a)-[:T]->(x)   RETURN x.name AS n           farDriven        b b b c d f
+    MATCH (a:P)-[:T]->(x) RETURN x                     edgeDriven
+    MATCH (a:P)-[:T]->(x) RETURN x.name, x.age         edgeDriven
+    MATCH (a:P)-[:T]->(x) RETURN a.name, x.name        NOT THIS RUNG  (needsStart)
+
+So the arm's reach is exactly what item 1940 claimed, and its **4.6x applies to every shape I
+thought it did**. What was wrong was my reading of a comment, not the gate.
+
+**WHY THE ORDER AGREES ANYWAY, PROVEN RATHER THAN ASSERTED.** The arm iterates
+`edgesByLabel.get('T')` in INSERTION order. `hop-projection.test.ts`'s fixture inserts
+`v0,v0,v0,v1,v1,v2` — grouped by source, which is precisely what the start-driven walk's nesting
+produces. Hold the vertex set and the six-edge set fixed and vary ONLY insertion order:
+
+    grouped insertion       engine (edge pass)   b c b b d f     == start-driven by hand
+    interleaved insertion   engine (edge pass)   f b b c d b     != start-driven by hand
+                            same multiset?       true
+
+A coincidence of the fixture, not a property of the arm.
+
+**TWO CORRECTIONS TO SHIPPED FILES, which is the durable part.**
+
+- `hop-projection.test.ts`'s comment said `P` is non-vacuous "so a start label has to be applied by
+  iteration and the START-driven walk takes it". That was true when item 167 wrote it and item 1940
+  falsified it without anyone noticing, because the assertion still passed. The comment now says
+  which arm takes it, that the array is a CHANGE DETECTOR over that fixture rather than a contract,
+  and what to do if an arm change moves it.
+- `edge-driven-hop-walk.test.ts` gains a four-test block that makes the finding executable: the
+  coverage measurement that settles which arm is in play (5/6, over the threshold), the grouped
+  order, the interleaved order, and the multiset identity. **Teeth verified** — forcing
+  `EDGE_DRIVEN_MIN_COVERAGE = 2` so the arm declines fails 4 tests including the interleaved-order
+  one; restored and confirmed `git diff` empty.
+
+🔑 **THE METHOD LESSON, which is the general one.** Item 1949 reached its conclusion by reading a
+gate and a comment and finding them inconsistent, and then recorded "I do not understand this"
+rather than guessing. Three `globalThis` writes and one run settled it in minutes. A route question
+has a direct instrument — **make the route PRINT which arm it took** — and
+[[frame-attribution-trap]]'s rule generalizes: a comment about which branch runs is attribution
+until something observes the branch.
+
+**AND IT UNBLOCKS ITEM 1949's 5.02x.** The hazard that stopped me was order, and the position is now
+clear: `filteredHopWalk` carries no `groupBy`, no `onStart` and no first-seen references; row order
+without `ORDER BY` is unspecified (item 198); an `ORDER BY` forces `startDrivenForOrder` and never
+reaches an edge pass; and the ONE pinned order — the grouped count's first-seen groups, which
+declined item 1948 — is a different rung. Any order-pinning test over a FILTER fixture is the same
+change detector this item just characterized. That is the next build.
+
+NO ENGINE BEHAVIOUR CHANGED — the engine file is byte-identical to item 1949's commit; the diff is
+two test files and this entry.
+
+GATES. `bun run check` 0; `bun run test -- --skip-nx-cache` 21 projects.

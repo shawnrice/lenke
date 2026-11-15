@@ -208,4 +208,98 @@ describe('the walk answers what the other arms answer, as a multiset', () => {
   test('a label no vertex carries answers nothing', () => {
     expect(query(build(1), 'MATCH (a:Nope)-[:E]->(b:T) RETURN b.n AS x', {}).length).toBe(0);
   });
+
+  /*
+   * Item 1950. THE ARM'S ORDER TRACKS EDGE-INSERTION ORDER, AND A FIXTURE CAN HIDE THAT.
+   *
+   * `hop-projection.test.ts` pins an exact row order for `MATCH (a:P)-[:T]->(x)` and used to
+   * explain it by saying the START-driven walk takes that shape. It does not — `P` covers 5 of 6
+   * vertices there, so THIS arm claims it, and the assertion survives only because that fixture
+   * inserts its edges grouped by source, which happens to equal the start-driven nesting.
+   *
+   * The two fixtures below hold the EDGE SET and the vertex set fixed and vary only INSERTION
+   * ORDER. Grouped, the arm agrees with the start-driven order; interleaved, it does not — and
+   * the multiset is identical either way. That is the contract: the answer is a multiset, and
+   * any test that pins this arm's order is a change detector over its fixture.
+   */
+  describe('row order follows edge-insertion order (item 1950)', () => {
+    const SPEC: [string, string[], Record<string, unknown>][] = [
+      ['v0', ['P'], { name: 'a' }],
+      ['v1', ['P', 'Q'], { name: 'b' }],
+      ['v2', ['P'], { name: 'c' }],
+      ['v3', ['P', 'Q'], { name: 'd' }],
+      ['v4', ['P'], { name: 'e' }],
+      // NOT a `P`, which is what keeps the start label non-vacuous and this arm in play.
+      ['v5', ['R'], { name: 'f' }],
+    ];
+    // The same six `T` edges in both orders; `v0->v1` twice is a parallel pair.
+    const GROUPED: [string, string][] = [
+      ['v0', 'v1'],
+      ['v0', 'v2'],
+      ['v0', 'v1'],
+      ['v1', 'v1'],
+      ['v1', 'v3'],
+      ['v2', 'v5'],
+    ];
+    const INTERLEAVED: [string, string][] = [
+      ['v2', 'v5'],
+      ['v0', 'v1'],
+      ['v1', 'v1'],
+      ['v0', 'v2'],
+      ['v1', 'v3'],
+      ['v0', 'v1'],
+    ];
+
+    const buildOrdered = (edges: readonly [string, string][]): Graph => {
+      const g = new Graph();
+      const vs = new Map<string, ReturnType<Graph['addVertex']>>();
+
+      for (const [id, labels, properties] of SPEC) {
+        vs.set(id, g.addVertex({ id, labels, properties }));
+      }
+
+      for (const [from, to] of edges) {
+        const f = vs.get(from);
+        const t = vs.get(to);
+
+        if (f === undefined || t === undefined) {
+          throw new Error('fixture lost a vertex');
+        }
+
+        g.addEdge({ from: f, to: t, labels: ['T'] });
+      }
+
+      return g;
+    };
+
+    const HOP = 'MATCH (a:P)-[:T]->(x) RETURN x.name AS n';
+    const names = (g: Graph): string[] => (query(g, HOP, {}) as { n: string }[]).map((r) => r.n);
+
+    test('the arm is in play for this shape at all', () => {
+      const coverage = labelCoverage(buildOrdered(GROUPED), { kind: 'label', name: 'P' });
+
+      // 5 of 6 — non-vacuous, so the counting walk is out, and over the threshold, so the
+      // start-driven walk is too. This is the measurement that corrected item 1949's worry.
+      expect(coverage).toBeCloseTo(5 / 6, 10);
+      expect(coverage).toBeGreaterThan(EDGE_DRIVEN_MIN_COVERAGE);
+    });
+
+    test('grouped insertion AGREES with the start-driven order, by coincidence', () => {
+      expect(names(buildOrdered(GROUPED))).toEqual(['b', 'c', 'b', 'b', 'd', 'f']);
+    });
+
+    test('interleaved insertion gives a DIFFERENT order from the same edge set', () => {
+      const grouped = names(buildOrdered(GROUPED));
+      const interleaved = names(buildOrdered(INTERLEAVED));
+
+      expect(interleaved).toEqual(['f', 'b', 'b', 'c', 'd', 'b']);
+      expect(interleaved).not.toEqual(grouped);
+    });
+
+    test('and the MULTISET is identical either way, which is the contract', () => {
+      expect([...names(buildOrdered(INTERLEAVED))].sort()).toEqual(
+        [...names(buildOrdered(GROUPED))].sort(),
+      );
+    });
+  });
 });

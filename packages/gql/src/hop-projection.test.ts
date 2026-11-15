@@ -89,10 +89,19 @@ describe('fused hop projection', () => {
     const [fast, slow] = bothWays(g, 'MATCH (a:P)-[:T]->(x) RETURN x.name AS n');
 
     // v0→v1, v0→v2, v0→v1 (parallel), then v1→v1 (self-loop), v1→v3, then v2→v5.
-    // This one still pins the exact ORDER after item 167, and the reason is specific: `P` is
-    // NOT vacuous in this fixture (v5 is not a `P`), so a start label has to be applied by
-    // iteration and the START-driven walk takes it. Do not read this as a general guarantee
-    // that row order is stable — an unconstrained start drives the far side instead.
+    // This one still pins the exact ORDER after item 167. ⚠️ ITS ORIGINAL REASON IS NOW WRONG,
+    // and item 1950 measured it: the comment used to say that because `P` is NOT vacuous here
+    // (v5 is not a `P`) the START-driven walk takes this shape. It does not. `P` covers 5 of 6
+    // vertices — coverage 0.833, over `EDGE_DRIVEN_MIN_COVERAGE` — so item 1940's EDGE-driven
+    // pass claims it, and this assertion survives only because the fixture inserts its edges
+    // GROUPED BY SOURCE (v0,v0,v0,v1,v1,v2), which is byte-for-byte the start-driven nesting.
+    //
+    // That is a coincidence of the fixture, not a property of the arm. The same seven edges
+    // inserted interleaved give the edge pass `f b b c d b` against the start-driven `b c b b
+    // d f` — same multiset, different order — which `edge-driven-hop-walk.test.ts` now pins.
+    // So: this array is a CHANGE DETECTOR for the edge pass over this fixture, NOT a contract.
+    // Row order without `ORDER BY` is unspecified (item 198); if an arm change moves it, fix
+    // the literal. The one order that IS pinned is the grouped count's first-seen groups.
     expect(fast).toEqual([{ n: 'b' }, { n: 'c' }, { n: 'b' }, { n: 'b' }, { n: 'd' }, { n: 'f' }]);
     expect(fast).toEqual(slow);
   });
