@@ -2013,3 +2013,28 @@ next, with `matchNodeLabelled` taking its place (adjacent dist lines, an inlinin
 binding in place is unsound (the matcher backtracks) and returned **1 row instead of 2,099,864**, so
 the timing meant nothing. When an ablation changes the answer, the only thing its run establishes is
 whatever the CONTROLS did.
+
+## `sideeffect-prof-1909.mjs` — the list-shaped Gremlin shapes, and the two floors they need
+
+`SHAPE=aggcap|store|fold|valsfold|values|bare bun sideeffect-prof-1909.mjs`. ⚠️ It carries TWO
+floors because one is not enough: `values` (800,000 bare values, 41 ms) is the WALK floor and `bare`
+(`V().out(E)` with no projection, **4.48 ms** via the drain) is what the elements actually cost. The
+gap between them is the whole diagnosis.
+
+⚠️⚠️ **ITS USEFUL READING WAS A SPELLING THAT IS SLOWER WITH FEWER GENERIC STEPS.** The route screen
+says `V().out(E).fold()` runs TWO generic steps (the hop falls to the pipeline) and
+`values(k).fold()` runs ONE — yet the second measured 137.77 against the first's 99.47. Both are
+~95 ms above their own floor, which is what identified the cost as ITERATING a drainable walk rather
+than accumulating a list (an array push is ~2 ns; 118 ns/element is sixty times that).
+
+⚠️ **PROFILE IT AT `N=50000 REPS=200`**, not at the screen's size: at `N=200000 REPS=25` a third of
+the samples are still `indexEdgeLabel`/`getVertexById`/`commitNormalized` — the fixture. At the
+smaller size the query is ~85% and the answer is unambiguous (40.4% `generatorResume` + 32.6% the
+adjacency generator).
+
+## ⚠️ THE WORKLOAD SCREEN'S ABSOLUTES DRIFT AS IT GROWS (item 1909)
+
+`hop1: values` read **43.04 ms at item 1898 and 67.62 at item 1909** — while the isolated
+measurement is **41.9-43.1**, unchanged. The screen has gained rows since (nine families at 1898,
+more after), so its in-process dispatch pollution is worse. **It is a FINDER; a regression read off
+it is not a regression** (items 737/1871), and this is that warning with a fresh number.

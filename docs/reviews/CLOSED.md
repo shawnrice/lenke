@@ -89533,7 +89533,7 @@ trade [[executor-edits-perturb]] prices at up to 16% on unrelated rows.
 
 GATES. bun run check 0; the only source edit is `propOf`'s corrected note.
 
-## Item 1898 — nine families neither screen covered, and **all five of the biggest shapes on the Gremlin surface at scale are among them**: 432 / 310 / 272 / 203 / 160 ms, against a plain hop's 43 — ⚠️ ~~the 310 ms `dedupe().by(k)` nomination~~ **TAKEN at item 1899 (3.95x in-screen, 78.5 ms; it is now the 10th shape, not the 2nd)**; ~~and the 432 ms top shape's "path-gated by construction" reading~~ **CORRECTED at item 1900, which profiled it instead: 1.09x taken, and the remaining 5x is the generator chain, not the bookkeeping**
+## Item 1898 — nine families neither screen covered, and **all five of the biggest shapes on the Gremlin surface at scale are among them**: 432 / 310 / 272 / 203 / 160 ms, against a plain hop's 43 — ⚠️ ~~the 310 ms `dedupe().by(k)` nomination~~ **TAKEN at item 1899 (3.95x in-screen, 78.5 ms; it is now the 10th shape, not the 2nd)**; ~~and the 432 ms top shape's "path-gated by construction" reading~~ **CORRECTED at item 1900, which profiled it instead: 1.09x taken, and the remaining 5x is the generator chain, not the bookkeeping** — 🧹 and the `sideeffect: aggregate + cap` row **SPLIT at item 1909: the side effect is only 1.09x `fold`, and the cost is ITERATING a walk that can be drained — 3.14x taken on `values(k).fold()`**
 
 Items 1889-1897 took both surfaces' hop, projection, count, optional and grouped shapes to measured
 ceilings. So this tick asked what the screens DO NOT ASK, which is a different question from "what is
@@ -90313,3 +90313,85 @@ shortest-path bookkeeping. A fused rung is not available: the selector's semanti
 matcher's, which `needsGeneralMatcher` states.
 
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers.
+
+## Item 1909 — **3.14x**: a residual `fold()` over a fused projection becomes one DRAINED list. The side-effect shape that nominated it turned out to be 1.09x `fold`, and the 118 ns/element was never the accumulation — it was ITERATING a walk that can be drained
+
+Item 1898 put `aggregate('x').cap('x')` at the top of the Gremlin workload screen among the shapes
+that are NOT path-gated (123 ms for ONE row of 800,000 elements). Splitting it isolated, one shape
+per process, said the side effect was not the cost:
+
+      200,000 vertices / 1,000,000 edges, median of 7 less warm-up:
+
+        V().out(E).aggregate(x).cap(x)   107.61 ms   135 ns/elem
+        V().out(E).store(x).cap(x)       101.83      127          ⬅ 1.03x of fold
+        V().out(E).fold()                 98.70      123          ⬅ the LIST floor
+        V().out(E).values(k)              41.19       51
+        V().out(E)                         4.48        6          ⬅ the WALK floor
+
+✅ **SO `aggregate`+`cap` IS 1.09x `fold`** — the side-effect machinery is ~9% and collecting
+800,000 elements into one list is the other 91%.
+
+🔑 **AND THE DIAGNOSIS CAME FROM A SPELLING THAT WAS SLOWER WITH FEWER GENERIC STEPS.** The route
+screen said `V().out(E).fold()` runs TWO generic steps (`fold` AND `out` — the hop itself falls to
+the pipeline) while `values(k).fold()` runs ONE. The second is nevertheless the slower of the two:
+
+        V().out(E).fold()                 99.47 ms   (hop generic)
+        V().out(E).values(k).fold()      137.77      (hop FUSED, one generic step)
+
+⚠️ **BOTH ARE ~95 ms ABOVE THEIR OWN FLOOR (4.48 and 42.99), which is what identifies the cost.** It
+is not accumulating a list — an array push is ~2 ns, and 118 ns/element is sixty times that. It is
+ITERATING a walk that `toArray` would have DRAINED (item 1412): at `N=50,000`/`REPS=200`, where the
+query dominates the fixture, the profile is **40.4% `generatorResume` + 32.6% the adjacency
+generator** and nothing measurable in the push.
+
+      TAKEN: a residual global `fold()` over a fused projection is served by draining the walk and
+      yielding ONE row holding that array, which is the same place items 1857 (`min`/`max`) and
+      1630 (a global `order()`) put their residuals.
+
+        V().out(E).values(k).fold()   137.77  ->  41.40 ms    ⬅ 3.14x
+        V().out(E).values(k)           41.19  ->  42.46        the fold is now FREE
+        route screen `list: hop values fold`:  generic (1 call)  ->  SHORTCUT (0)
+
+⚠️⚠️ **A FOLD'S ELEMENT ORDER IS ITS ANSWER, which is the one correctness question the neighbours
+do not have.** `min`/`max` are order-INVARIANT and a residual `order()` DESTROYS the input order —
+neither cares what the walk's visit order is. ✅ Fusing a fold is sound because the fused order IS
+the contract: `toArray` already returns these walks' drained output directly and the differential
+fuzzer compares Gremlin results IN ORDER against the Rust engine, so a walk whose order differed
+from the pipeline's would already be failing on the bare projection.
+
+## What was NOT taken, with the numbers and the reasons
+
+❌ **THE ELEMENT FOLD (`V().out(E).fold()`, 100.07 ms) IS UNCHANGED**, and the refusal is the
+source's own: `hopValuesShortcut` declines any unrecognised third step because _"treating an
+unrecognised step as a residual over a bare hop would quietly re-route a large family of plans that
+nothing here has measured"_. Admitting `fold` SPECIFICALLY is narrower than that — it is the obvious
+next item, worth ~95 ms, and it needs the bare-hop gate rather than the residual dispatch.
+
+❌ **`aggregate`/`store` + `cap` ARE DELIBERATELY NOT HERE** even though they measure 1.09x and 1.03x
+of `fold` and would ride the same win. A side effect that also PASSES THE STREAM THROUGH is a
+different emit contract from a barrier that replaces it, and `aggregate` and `store` differ from each
+other on eagerness in TinkerPop. One question at a time.
+
+## Two instrument findings
+
+🛑 **THE SCREEN'S FLOOR ROW HAS INFLATED 43 -> 68 ms WHILE THE ISOLATED NUMBER DID NOT MOVE.**
+`hop1: values` read 43.04 at item 1898 and 67.62 now; measured alone it is **41.9-43.1**, unchanged.
+The screen has gained rows since (nine families at 1898, more after), so its in-process dispatch
+pollution is worse — ⚠️ **the workload screen is a FINDER and its absolutes drift as it grows**,
+which is items 737/1871's warning with a fresh number. Reading a regression off it would have cost
+an item.
+
+✅ **AND THIS BATTERY IS WRITTEN DIRECTLY RATHER THAN TEMPLATED, which is item 1907's lesson
+applied the same day.** Three times in one session a slice-based `replace` left a config field
+pointing at the previous item's subject. Every field in `fold-mutants-1909.mjs` is literal.
+
+      MUTATION: 6 mutants, 5 caught, 1 expected survivor (taking the fusion is answer-equivalent;
+      its gates are the route screen's row and `sideeffect-prof-1909.mjs`). ⚠️ TWO CORRECTIONS from
+      the run: a guard against a SCOPED fold was deleted as dead — `{ kind: 'fold' }` has no scope
+      field in this AST, so it survived mutation, item 1899's situation exactly — and "the drain is
+      never used" was declared an expected survivor and is CAUGHT, because the suite asserts
+      `foldProjectedList` calls `drain` on a walk that offers one. A unit test on the helper turns
+      an unobservable route into a checked one; that is the difference between the two entries.
+
+GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers;
+`bun run spelling:gremlin` (0 disagreements, 0 groups over 2x).

@@ -22,8 +22,10 @@ import {
 import { tagsObservedFrom } from '../ast.js';
 import type { Plan, Step } from '../ast.js';
 import {
+  foldProjectedList,
   foldProjectedMinMax,
   fusableProjectedAggregate,
+  fusableProjectedFold,
   fusableProjectedOrder,
   fusableValuesAggregate,
   fusableValuesTopK,
@@ -2367,6 +2369,31 @@ const fusedProjectedResidual = (
 
   if (folded !== undefined) {
     return foldProjectedMinMax(projected.values, folded);
+  }
+
+  /**
+   * A RESIDUAL THAT IS ONLY A GLOBAL `fold()` BECOMES ONE DRAINED LIST (item 1909), instead of
+   * wrapping all 800,000 elements in traversers for `foldStep` to push one at a time.
+   *
+   *     200,000 vertices / 1,000,000 edges, one shape per process, median of 7:
+   *       V().out(E)                      4.48 ms    (the walk's drain, item 1889/1893)
+   *       V().out(E).fold()              99.47       ⬅ the same walk, ITERATED
+   *       V().out(E).values(k)           42.99
+   *       V().out(E).values(k).fold()   137.77       ⬅ +95 ms, the same delta
+   *
+   * ⚠️ BOTH DELTAS ARE ~95 ms OVER 800,000 ELEMENTS, which is what identifies the cost: it is not
+   * accumulating a list (an array push is ~2 ns) but ITERATING a walk that can be DRAINED —
+   * item 1412's rule, and the profile agrees (73% in `generatorResume` plus the adjacency
+   * generator, nothing in the push).
+   *
+   * ⚠️ AND `aggregate('x').cap('x')` / `store('x').cap('x')` ARE DELIBERATELY NOT HERE. They
+   * measure 1.09x and 1.03x of `fold` so they would ride the same win, but a side effect that
+   * also PASSES THE STREAM THROUGH is a different emit contract from a barrier that replaces it,
+   * and `aggregate` and `store` differ from each other on eagerness in TinkerPop. One question at
+   * a time; the numbers are recorded at item 1909 for whoever takes it.
+   */
+  if (fusableProjectedFold(projected.rest)) {
+    return foldProjectedList(projected.values);
   }
 
   // A RESIDUAL THAT IS ONLY A GLOBAL `order()` IS SORTED IN PLACE (item 1630), instead of wrapping

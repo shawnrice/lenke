@@ -3,6 +3,7 @@ import { ErrorCode, LenkeError } from '@lenke/errors';
 
 import type { By, Step } from '../ast.js';
 import { compareTotal } from '../predicates.js';
+import type { HopWalk } from './hop-values.js';
 import {
   evalBy,
   extend,
@@ -238,6 +239,52 @@ export const foldProjectedMinMax = (values: Iterable<unknown>, kind: 'min' | 'ma
 
   return [seen ? best : null];
 };
+
+/**
+ * Is the residual exactly a global `fold()`? (item 1909.)
+ *
+ * ⚠️⚠️ **A FOLD'S ELEMENT ORDER IS ITS ANSWER, which is why this needs an argument the `min`/`max`
+ * arm does not.** Item 1857 folded those in place because they are ORDER-INVARIANT, and item 1630
+ * sorted a residual `order()` in place because sorting DESTROYS the input order — neither cares what
+ * the walk's visit order is. A `fold` preserves it, so fusing one is sound only if the fused walk's
+ * order IS the pipeline's.
+ *
+ * ✅ IT IS, AND NOT BY ASSUMPTION: `toArray` already returns these walks' drained output directly,
+ * and the differential fuzzer compares Gremlin results IN ORDER against the Rust engine. So any
+ * walk whose order differed from the pipeline's would already be failing on the bare projection —
+ * the order is the contract, not an accident of the fusion.
+ *
+ * ⚠️ `toList` IS NOT ADMITTED. It is a separate step kind in this AST and a terminal rather than a
+ * barrier; widening to it would be a second question with its own emit semantics.
+ */
+export const fusableProjectedFold = (rest: readonly Step[]): boolean => {
+  if (rest.length !== 1) {
+    return false;
+  }
+
+  const [step] = rest;
+
+  // ⚠️ NO SCOPE CHECK, AND A MUTANT IS WHY. `fusableProjectedAggregate` guards `min`/`max` against
+  // a non-global scope because those steps carry one in this surface — `fold` does NOT: its AST
+  // node is `{ kind: 'fold' }` with no scope field at all. A guard against it SURVIVED mutation,
+  // which is what dead code looks like (item 1899 deleted one in the same position for the same
+  // reason). If `fold` ever gains a scope, this is where it has to be refused.
+  return step.kind === 'fold';
+};
+
+/**
+ * The already-projected values as ONE list-shaped row.
+ *
+ * ⚠️⚠️ **THE DRAIN IS THE WHOLE POINT, not a micro-optimization.** The generic `foldStep` wraps every
+ * element in a traverser and pulls them through the generator chain: at 200,000 vertices /
+ * 1,000,000 edges `V().out(E)` materializes in **4.48 ms** via the walk's drain and **99.47** when a
+ * `fold()` follows it, and `V().out(E).values(k)` goes **42.99 -> 137.77** the same way. Both deltas
+ * are ~95 ms over 800,000 elements — the cost of ITERATING a walk that can be DRAINED (item 1412),
+ * not of accumulating a list.
+ */
+export const foldProjectedList = (values: HopWalk): unknown[] => [
+  values.drain === undefined ? [...values] : values.drain(),
+];
 
 /** What `normalizeBys` supplies for a bare `order()`; shared so the fusion allocates none. */
 const IDENTITY_BY: By = { kind: 'identity' };

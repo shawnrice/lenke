@@ -119,6 +119,19 @@ const SHAPES = {
   'edgef: inE has outV values': "traversal(V(), inE('E'), has('w', gt(3)), outV(), values('k'))",
   'edgef: bothE has otherV count': "traversal(V(), bothE('E'), has('w', gt(3)), otherV(), count())",
   'edgef: outE inV values': "traversal(V(), outE('E'), inV(), values('k'))",
+  // ⚠️ THE LIST-SHAPED AND SIDE-EFFECT FAMILY, added at item 1909. Item 1898 added
+  // `aggregate`+`cap` to the WORKLOAD screen and it came out the largest shape that is NOT
+  // path-gated (123 ms for ONE row of 800,000 elements) — but nothing asked which ROUTE it takes,
+  // and the isolated split says the side effect is only 1.09x `fold`: the cost is collecting
+  // 800,000 elements into one list, where the same hop with NO projection is 4.48 ms.
+  // ⚠️ `scan: fold` above is FLAT (item 1585, `values(k).fold()`); these fold ELEMENTS after a HOP,
+  // which is a different shape and was never screened.
+  'list: hop fold': "traversal(V(), out('E'), fold())",
+  'list: hop values fold': "traversal(V(), out('E'), values('k'), fold())",
+  'list: hop aggregate cap': "traversal(V(), out('E'), aggregate('x'), cap('x'))",
+  'list: hop store cap': "traversal(V(), out('E'), store('x'), cap('x'))",
+  'list: hop count': "traversal(V(), out('E'), count())",
+
   // ⚠️ THE DEDUPED-VALUES FAMILY, added at item 1899, and the rows exist because that item's bug was
   // INVISIBLE to a screen keyed on answers: `byKey` tested `typeof by === 'string'` where the AST
   // holds `{kind: 'key'}`, so the `by` spelling silently kept the generic pipeline at 4.4x the fused
@@ -144,7 +157,7 @@ const SHAPES = {
 };
 
 const IMPORTS =
-  "import { E, V, both, bothE, count, dedupe, fold, groupCount, gt, has, hasId, hasLabel, id, inE, inV, in_, limit, min, optional, order, otherV, out, outE, outV, sum, toArray, traversal, values } from '@lenke/gremlin';";
+  "import { E, V, aggregate, both, bothE, cap, count, dedupe, fold, groupCount, gt, has, hasId, hasLabel, id, inE, inV, in_, limit, min, optional, order, otherV, out, outE, outV, store, sum, toArray, traversal, values } from '@lenke/gremlin';";
 
 const build = () => execFileSync('bun', ['run', 'build'], { cwd: ROOT, stdio: 'ignore' });
 
