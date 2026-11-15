@@ -97296,3 +97296,100 @@ four for four wrong before a route counter settled it). ⚠️ `pull-alignment-i
 wants to be a rung rather than a change to the shared path.
 
 GATES. `bun run fmt` 0; `bun run check` 0. (Instrument only — no engine code changed.)
+
+## Item 2001 — 🔭 **THE 520x IS A ROUTE, NOT A COST: `MATCH ACYCLIC` is DECLINED by `degreeCountShape` and falls to the general matcher, which enumerates all 600,000 paths as binding `Map`s to count them.** ⚠️⚠️ **And I wrote TWO wrong correction formulas and ONE false cross-engine claim getting here — all three because I validated against my own model instead of the engine**
+
+Item 2000 priced it; this profiles it. ⚠️ **WINDOWED** (`profileWindow`, profiler started AFTER the
+40k/200k fixture is built), because `PROBES.md`'s closed-frames table exists for exactly this
+fixture size. ⚠️ **AND BOTH SIBLINGS ARE PROFILED, not just the slow one** — a frame that is 40% of
+both is not the gap however large it looks, which is the mistake items 1993-1997 made four times
+before a counter compared the two SIDES.
+
+```text
+frame                                      ACYCLIC    TRAIL   verdict
+walkLevelCount [gql]                           0.0%    32.3%   ⬅ the counting rung
+buildTrailMasks [gql]                          0.0%    38.2%   ⬅ its TRAIL correction
+typedArrayViewLength / ...FromFast              0.0%    19.1%
+generatorResume                               36.3%     0.0%   ACYCLIC-ONLY
+(anonymous) [gql]                             26.7%     0.0%   ACYCLIC-ONLY
+Array.from / arrayFromFastWithoutMapFn         16.6%     0.0%   ACYCLIC-ONLY
+Map                                            6.1%     0.0%   ACYCLIC-ONLY
+matchNodeLabelled / flatAdj / withBinding      9.5%     0.0%   ACYCLIC-ONLY
+```
+
+TRAIL takes the level-wise counting rung over typed arrays. ACYCLIC takes **none of it**: ~86% of its
+window is the general matcher building bindings. The decline is one clause —
+`degreeCountShape` (`var-length-count.ts:1040`) admits `mode` of `undefined`/`'trail'`/`'walk'` and
+refuses everything else, so `acyclic` and `simple` fall through.
+
+🔑 **AND THE ANSWERS ARE ALL BUT IDENTICAL, which is the argument that this is a route defect.** At
+20,000 vertices, bound `{1,2}`: plain **599,996**, TRAIL **599,996**, ACYCLIC **599,932**. ACYCLIC
+excludes **64 paths in 600,000 — 0.01%** — and pays 234x to do it (350.94 ms against 1.50).
+
+## ⚠️⚠️ TWO WRONG FORMULAS AND A FALSE CLAIM, AND ALL THREE HAVE THE SAME CAUSE
+
+The cure under consideration is to give the rung an ACYCLIC correction the way it already has one for
+TRAIL (count all walks level-wise, subtract the violators). So `acyclic-correction-2001.mjs` derived
+the inclusion-exclusion for `max <= 2` and checked it. **It is still not proven, and the three
+failures are the item:**
+
+1. **The first formula was exact on three of five fixtures and wrong on two** — off by −2 and −12,
+   both of them the fixtures with DENSE self-loops. The error term is exactly `S = sum(L_a^2)` over
+   self-loop multiplicities: 2 where there are two self-loops, 318 where there is a loop at every
+   vertex. **So it was INVISIBLE on the kind of graph the workload screen generates**, and a formula
+   validated only there would have shipped an optimizer wrong answer. The fix was adding a
+   BRUTE-FORCE term-by-term oracle, which showed all three individual terms correct and only the
+   union wrong — `returns2` deliberately omits the `b === a` case, so the expression carried `|C| - S`
+   and the union came out `A+B+C-3S` instead of `A+B+C-2S`.
+2. **With the union then matching brute force on all six fixtures, the engine still disagreed — by
+   exactly `selfLoops` every time** (29, 306, 208, 2, 7, 1004). The two errors had been CANCELLING on
+   sparse fixtures, which is the only reason the first run looked exact.
+3. **The engine was right and my MODEL of the baseline was wrong, and only reading ROWS showed it.**
+   A `count(*)` cannot distinguish "paths" from "endpoint pairs" from "deduplicated bindings", and
+   those take different corrections. `acyclic-semantics-2001.mjs` prints the bindings instead: on
+   `a->a` + `a->b`, WALK `{1,2}` gives `1->1, 1->2, 1->2` — **the depth-2 rows are `a->a->b` ONLY.
+   `a->a->a`, the same edge twice, is absent even in WALK mode.** The engine's quantified walk is
+   already edge-disjoint within a repetition, so the base the rung counts is NOT all edge sequences,
+   and `S` is precisely the set it already excludes. My brute force and my closed form were both
+   mine, both agreed, and both modelled something the engine does not do.
+
+**THE LESSON, which is the transferable part: an oracle built by the same person from the same
+assumption as the thing it checks is not an oracle.** The brute force agreed with the closed form and
+both were wrong together. What broke the deadlock was changing the PROJECTION — `count(*)` to the
+bindings — which is [[vary-only-the-projection]] pointed inward: not "which rung serves this" but
+"what was that number ever counting".
+
+## ⚠️ AND A CROSS-ENGINE CLAIM I HAD NOT CHECKED
+
+`acyclic-selfloop-2001.mjs` shipped a header saying `LENKE_ENGINE=1` routes its queries through the
+Rust engine over `bun:ffi`. **It does not.** `LENKE_ENGINE` is read ONLY by `package.json`'s
+`test:engine` script; `query` from `@lenke/gql` never consults it. So the "Rust" run was TypeScript a
+second time, and its identical output proved nothing about the byte-identity invariant — a null
+dressed as a confirmation. A `.mjs` probe cannot reach the Rust side at all: that needs
+`conformance-harness.ts`'s `nativeBackend()`, which is TypeScript.
+
+Corrected, and replaced with a real one: **`src/acyclic-selfloop-parity.test.ts`, 48/48** — four
+fixtures (a lone self-loop, a self-loop beside a real edge, parallel edges, a 2-cycle) x WALK/TRAIL/
+ACYCLIC x four bounds, TS against native, compared as ORDERED arrays. ⚠️ It pins WALK too, not just
+ACYCLIC, because the edge-disjoint baseline in point 3 is what any correction subtracts from; if that
+ever changes, this test says so. ⚠️ And two harness errors inside it are worth the line: the NDJSON
+records are `{"type":"node"|"edge"}` and not `{"kind":"vertex"}`, and `RustGraph.query` returns row
+OBJECTS rather than the `{columns, rows}` document `resultsEqualInOrder` canonicalizes — routing
+through that helper parsed an empty string and failed all 48 cases **on the harness while looking
+like a 48-way engine divergence.**
+
+ALSO SETTLED IN PASSING: the engine is CORRECT on the shape `CLOSED.md` calls settled. On one vertex
+with one self-loop, ACYCLIC is **0 at every bound** (`{1,1}`, `{1,2}`, `{1,3}`, `{2,2}`, `+`) where
+WALK and TRAIL answer 1. There is no inconsistency between bounds, which is what the off-by-selfLoops
+first suggested.
+
+STILL OPEN, and deliberately NOT built: the ACYCLIC correction. The route defect is established, the
+0.01% answer difference says the work is nearly all wasted, and the arithmetic looks tractable at
+`max <= 2` — but it has been wrong twice and the correct baseline was only just established, so it
+needs re-deriving against the edge-disjoint base and re-checking against the parity test before any
+rung is written. ⚠️ `pull-alignment-is-load-bearing` and `executor-edits-perturb` both price edits in
+the general matcher in UNRELATED regressions, so the cure wants to be a rung, not a change to the
+shared path.
+
+GATES. `bun run fmt` 0; `bun run check` 0; `acyclic-selfloop-parity` 48/48. (Instruments and one test
+— no engine code changed.)
