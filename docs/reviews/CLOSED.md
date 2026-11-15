@@ -96161,7 +96161,7 @@ NO ENGINE BEHAVIOUR CHANGED — the only edits are the stderr banner in three pr
 GATES. `bun run fmt` 0; `bun run check` 0. All three probes re-run after the edit and still emit
 their JSON result.
 
-## Item 1986 — ✅ **SHIPPED: a one-hop `cyclicPath()` IS the SELF-LOOP EDGES, so it needs no path tracking at all — 169.39 → 43.99 ms on the screen, 3.85x, five sibling controls flat, and the engine now sits ON its hand-rolled ceiling (1.0x)**. ⚠️ Found through a STALE CLAIM in `PROBES.md` — the file CLAUDE.md says to read first — which item 1923 had already corrected and which misled my target choice for a step
+## Item 1986 — ✅ **SHIPPED: a one-hop `cyclicPath()` IS the SELF-LOOP EDGES, so it needs no path tracking at all — 169.39 → 43.99 ms on the screen, 3.85x, five sibling controls flat, and the engine now sits ON its hand-rolled ceiling (1.0x)**. ⚠️ **ITS "owner decision" ON THE 4.6x EDGE-SET ARM IS WRONG — item 1987 corrects it to CORRECTNESS-BLOCKED by the fuzzer's strictly-ordered compare.** ⚠️ Found through a STALE CLAIM in `PROBES.md` — the file CLAUDE.md says to read first — which item 1923 had already corrected and which misled my target choice for a step
 
 Both corpora were swept clean (items 1983/1984) and all three profile probes report closed ground
 (item 1985), so this tick used `PROBES.md`'s own section **"ASK WHAT THE SCREEN DOES NOT ASK"**.
@@ -96238,11 +96238,20 @@ the probe's value is the CEILING check, not the ratio.
 ### ❌ MEASURED AND NOT TAKEN: the edge-set arm, 4.6x faster again
 
 Iterating the type's edges directly is O(|E_T|) with no per-vertex walk — **6.93 ms against the
-shipped route's 32.18**. It is not built, and the reason is not a capability one: its order is
-edge-insertion order rather than vertex order, so it changes which row comes first. Row order for an
-unordered traversal is unspecified in this engine ([[order-is-unspecified]]), so this may well be
-free — but **"may well be" is not the standard for changing observable output**, and it is an owner
-decision rather than a refactoring. Priced here at 4.6x further, left unbuilt.
+shipped route's 32.18**. Its order is edge-insertion order rather than vertex order, so it changes
+which row comes first.
+
+~~Row order for an unordered traversal is unspecified in this engine, so this may well be free — an
+owner decision rather than a refactoring.~~ 🛑 **CORRECTED AT ITEM 1987: IT IS CORRECTNESS-BLOCKED,
+NOT AN OWNER DECISION.** The Gremlin differential fuzzer decides `unordered` as
+`multiType || RECONVERGING_BRANCH(coalesce|choose|optional)`, plus a path-stream `order()`. A
+single-type `out('E')` with no `order()` satisfies none of them, so this shape is compared
+**STRICTLY ORDERED** against native and its TS stream order is a cross-engine contract under
+byte-identity. ⚠️ Item 1955 had already found this one shape over, for `V().outE('E')`, where the
+same edge-bucket drive was 2.28x beyond a start-driven ceiling and "a checksum cannot see an order
+change". [[order-is-unspecified]] is about rows nobody contracted; it does not license reordering a
+shape the fuzzer pins — and leaving it labelled "owner decision" invited someone to take a 4.6x that
+breaks the hard invariant.
 
 ### WHAT THE GATE AND THE ROUTE CHECK COST
 
@@ -96268,3 +96277,88 @@ knobs.
 
 GATES. `bun run fmt` 0; `bun run check` 0; `bun run test -- --skip-nx-cache` 0 across 21 projects;
 `bun run fuzz` 0, 57 pass / 0 fail; the Gremlin suite 2,425 pass / 0 fail.
+
+## Item 1987 — 🛑 **CORRECTING MY OWN ITEM 1986 ONE TICK LATER: the 4.6x edge-set arm I labelled "an owner decision on row order" is CORRECTNESS-BLOCKED by the byte-identity invariant, and leaving that label on it invited someone to take it.** ⚠️ Item 1955 had already measured the identical blocker one shape over. ❌ And `tree()` stays declined — read for a new mechanism, found none
+
+Item 1986 shipped the one-hop `cyclicPath` route at 3.85x and recorded a faster arm it did not
+build:
+
+> its order is edge-insertion order rather than vertex order… Row order for an unordered traversal
+> is unspecified in this engine, so this may well be free — but "may well be" is not the standard
+> for changing observable output, and it is **an owner decision** rather than a refactoring.
+
+**The caution was right and the category was wrong.** It is not a preference to be asked about; it
+is forbidden by the hard invariant.
+
+### THE FUZZER DECIDES `unordered` AND THIS SHAPE IS NOT IN IT
+
+`gremlin-fuzz.test.ts`, read rather than assumed:
+
+```ts
+const multiType = MULTI_TYPE_STEP.test(text);
+const orderUnspecified = multiType || RECONVERGING_BRANCH.test(text);
+const unordered = (orderUnspecified && !hasTopLevelOrder(text)) || orderOverPaths(text);
+```
+
+with `RECONVERGING_BRANCH = /\b(?:coalesce|choose|optional)\(/` and `orderOverPaths` requiring an
+`order(` after a `path()`/`tree()`. For `V().out('E').cyclicPath()`:
+
+```text
+    multiType            FALSE   — `out('E')` names exactly one type
+    RECONVERGING_BRANCH  FALSE   — no coalesce / choose / optional
+    orderOverPaths       FALSE   — no `order()` at all
+    => unordered         FALSE   — compared STRICTLY ORDERED against native
+```
+
+So the TS stream order for this shape is a **cross-engine contract**, and the generator does build
+`cyclicPath` plans (item 1923 records it "costing 28 of every 400 plans").
+
+⚠️⚠️ **AND ITEM 1955 HAD ALREADY MEASURED THE SAME BLOCKER ONE SHAPE OVER.** For
+`V().outE('E').has('w', gt(3)).inV().values('n')` it priced an edge-bucket drive at **2.28x beyond**
+a start-driven ceiling, then refused it in the same terms: "a single-type `outE('E')` is not in its
+unordered set, which needs two or more labels or a bare `both`/`bothE` — so the TS stream order here
+is a cross-engine contract under the byte-identity invariant. **A checksum cannot see an order
+change**, and mine agreed on all three arms. A POSITIONAL compare settled it in one line."
+
+🔑 **I had the measurement, the refusal and the mechanism in the record one item away, and still
+wrote "owner decision".** The reason is worth naming: [[order-is-unspecified]] is a real policy and
+I reached for it correctly in general and wrongly in particular. **It is about rows nobody
+contracted. It does not license reordering a shape the fuzzer pins** — and the two cases are
+indistinguishable without reading the fuzzer's own predicate, which takes one grep.
+
+### ⚠️ WHY A MIS-LABEL IS WORSE THAN A WRONG NUMBER HERE
+
+"Owner decision, 4.6x available" is an invitation. The next reader — plausibly me — would have found
+a priced, unbuilt 4.6x with no technical blocker recorded against it, built it, and watched the
+Gremlin differential fuzzer fail intermittently on a shape whose checksum agrees. ⚠️ Item 1955's
+sentence is the one that makes this concrete: **a checksum cannot see an order change**, so the
+first instrument anyone reaches for would have said the arm was correct.
+
+Both the entry and `cyclic-path-shortcut.ts`'s note now say CORRECTNESS-BLOCKED with the predicate
+quoted, so the next reader sees the blocker rather than the price.
+
+### ❌ `tree()` — READ FOR A NEW MECHANISM, FOUND NONE
+
+`tree()` is now the Gremlin screen's largest row by a wide margin (605.60 ms against the next
+shape's 77.16 after item 1986). Item 1954 declined it and ends with **"Do not re-price it without a
+new mechanism"**, so its whole body was read for one, under item 1986's own lesson that a careful
+refusal often names the mechanism that beats it. **This one does not.** What it has instead:
+
+```text
+    three levers REFUTED   memo-before-type-test (flat), constant key (ablation lied by 6.6x
+                           because it SHRANK the tree), Map-then-materialize (0.71x — object wins)
+    the decomposition      ~215 construction + ~84 serialization + ~420 traversal/path/memo
+    the hand ceiling        200-228 ms for the same shape — only 3.2x away
+    item 1922's memo        still worth 2.01x, re-verified there
+```
+
+A 3.2x gap to a hand ceiling with the three obvious levers refuted and the largest component
+(traversal/path/memo) being the path bookkeeping `tree()` genuinely needs is not a target — it is
+the shape's cost. Recorded as read-and-declined rather than silently skipped, because the row's
+size makes it the obvious next nomination and the next reader deserves to know it was looked at
+again after `cyclicPath` moved.
+
+NO ENGINE BEHAVIOUR CHANGED — two prose corrections (item 1986's entry, `cyclic-path-shortcut.ts`'s
+note) and this entry.
+
+GATES. `bun run fmt` 0; `bun run check` 0.

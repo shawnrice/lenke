@@ -26,12 +26,19 @@ import type { Plan } from '../ast.js';
  *     the type's edge set, O(|E_T|)      6.68      6 rows, DIFFERENT order 43.9x
  * ```
  *
- * ⚠️ **THE EDGE-SET ARM IS 4.5x FASTER AGAIN AND IS NOT TAKEN HERE.** Iterating the type's edges
+ * 🛑 **THE EDGE-SET ARM IS 4.6x FASTER AGAIN AND IS CORRECTNESS-BLOCKED — not an owner decision,
+ * which is how item 1986 first recorded it and item 1987 corrected.** Iterating the type's edges
  * directly skips the per-vertex walk, but its order is edge-insertion order rather than vertex
- * order, so it changes which row comes first. Row order for an unordered traversal is unspecified
- * in this engine ([[order-is-unspecified]]) — so that may well be free — but "may well be" is not
- * the standard for changing observable output, and it is an owner decision rather than a
- * refactoring. Priced in the entry, left unbuilt.
+ * order. That is NOT free here: the Gremlin differential fuzzer decides `unordered` as
+ * `multiType || RECONVERGING_BRANCH` (plus a path-stream `order()`), and a SINGLE-TYPE `out('E')`
+ * with no `coalesce`/`choose`/`optional` and no `order()` satisfies none of them — so this shape is
+ * compared **STRICTLY ORDERED** against native and its TS stream order is a cross-engine contract
+ * under byte-identity.
+ *
+ * ⚠️ Item 1955 found exactly this one shape over, for `V().outE('E')`, where the same edge-bucket
+ * drive was 2.28x beyond a start-driven ceiling: "a single-type `outE('E')` is not in its unordered
+ * set … **a checksum cannot see an order change**". [[order-is-unspecified]] is about rows nobody
+ * contracted; it does not license reordering a shape the fuzzer pins. Priced, and refused.
  *
  * ⚠️ ONE ROW PER *EDGE*, NOT PER VERTEX. Two PARALLEL self-loops at one vertex are two distinct
  * edges and the engine returns two rows — verified against the engine on a three-vertex fixture
