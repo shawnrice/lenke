@@ -99,6 +99,44 @@ const MAX_SHAPES = 8;
 
 const csrCache = new WeakMap<Graph, { tv: number; byShape: Map<string, CsrTables> }>();
 
+/**
+ * The cache key for one (direction, type set) shape.
+ *
+ * ⚠️ ONE SPELLING, used by `csrFor` AND `csrIsBuilt`. Two copies of a cache key is how a peek starts
+ * answering about a different entry than the builder populates — a silent "always cold", which would
+ * make the gate above a no-op that still looked like a gate.
+ */
+const shapeKey = (inward: boolean, types: string[] | undefined): string =>
+  `${inward ? '<' : '>'}${types === undefined ? '*' : types.join('\u0000')}`;
+
+/**
+ * Is this shape's CSR ALREADY built for the graph's current topology? A pure peek — it populates
+ * nothing (item 2005).
+ *
+ * ⚠️⚠️ **IT EXISTS SO A CALLER CAN DECLINE THE BUILD RATHER THAN THE STRUCTURE, which is a different
+ * question from `csrFor` and could not be asked before.** `runReach`'s walk over these tables is
+ * 1.45-1.64x faster than the `Set<string>` BFS it replaced even COLD, because an O(|V| + |E|) build
+ * beats hashing a string per reached vertex. But a NARROW SEED does little work, so the build is
+ * pure overhead there: a seeded `{1,2}` measured **7.35 ms cold before and 11.89 after, a 1.62x
+ * REGRESSION**, while its warm figure improved 1.72x.
+ *
+ * 🔑 So the choice is not "CSR or not" but "pay a build or not", and those come apart exactly when
+ * the cache already holds the answer. With this peek a cold narrow-seed query keeps the per-vertex
+ * walk and a warm one gets the tables for free — rather than trading one case for the other.
+ * [[closed-perf-targets]]'s item 1889 made the same distinction with its second-ask policy, and item
+ * 1979's lesson is the reason it is checked at all: **benchmark the UNHELPED case, which is usually
+ * the common one.**
+ */
+export const csrIsBuilt = (graph: Graph, inward: boolean, types: string[] | undefined): boolean => {
+  const entry = csrCache.get(graph);
+
+  if (entry === undefined || entry.tv !== graph.topologyVersion) {
+    return false;
+  }
+
+  return entry.byShape.has(shapeKey(inward, types));
+};
+
 export const csrFor = (graph: Graph, inward: boolean, types: string[] | undefined): CsrTables => {
   const tv = graph.topologyVersion;
   let entry = csrCache.get(graph);
@@ -110,7 +148,7 @@ export const csrFor = (graph: Graph, inward: boolean, types: string[] | undefine
     csrCache.set(graph, entry);
   }
 
-  const key = `${inward ? '<' : '>'}${types === undefined ? '*' : types.join('\u0000')}`;
+  const key = shapeKey(inward, types);
   const hit = entry.byShape.get(key);
 
   if (hit !== undefined) {

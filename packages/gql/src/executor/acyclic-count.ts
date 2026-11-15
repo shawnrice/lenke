@@ -151,6 +151,31 @@ export const acyclicPerSourceCount = (graph: Graph, spec: AcyclicCountSpec): num
     }
   };
 
+  /*
+   * ⚠️⚠️ **`min === 0` ADMITS THE ZERO-LENGTH PATH — one row per source — AND OMITTING IT WAS A
+   * WRONG ANSWER SHIPPED AT ITEM 2002.** The differential fuzzer caught it at item 2005 as
+   * `MATCH ACYCLIC (a:T)<-[:F]-{0,2}(b) RETURN count(*)`, a VALUE divergence, which
+   * `divergence-registry.ts` says no entry may excuse. On a 3-chain, `{0,1}` reads 5 for WALK and
+   * TRAIL and **2** for ACYCLIC — short by exactly the source count.
+   *
+   * ⚠️ AND IT WAS GREEN AT ITEM 2002, because the draw needs `mode = acyclic` AND `min = 0`
+   * together and the fuzzer picks both at random. A passing generative run is evidence about the
+   * SHAPES IT DREW, which is why the `{0,k}` case now has a named cross-engine test
+   * (`acyclic-minzero-parity.test.ts`) rather than relying on being redrawn.
+   *
+   * ⚠️ `passes` APPLIES TO IT. The zero-length path's endpoint IS its start, so the endpoint
+   * predicate and label have to hold for the source itself — and `src` has already had the SEED
+   * test applied, so both ends are tested exactly once. `{0,0}` never arrives here: the detector
+   * refuses `max < 1`.
+   */
+  if (min === 0) {
+    for (const v of src) {
+      if (passes(v)) {
+        total += 1;
+      }
+    }
+  }
+
   for (const s of src) {
     /*
      * ⚠️ `idx.get` CANNOT MISS, and a guard here was DELETED at item 2004 after two false

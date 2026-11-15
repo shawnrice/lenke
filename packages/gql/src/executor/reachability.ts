@@ -29,7 +29,8 @@ import { outNeighbors, relTypeNames } from './adjacency.js';
 import { matchNode, relHasPredicate } from './bindings.js';
 import { compileExpr } from './core.js';
 import type { CClause, CNode, CReturnItem, CompiledExpr, EvalEnv, Params, Row } from './core.js';
-import { csrFor } from './csr-cache.js';
+import type { CsrTables } from './csr-cache.js';
+import { csrFor, csrIsBuilt } from './csr-cache.js';
 import { freePredicateVars, hasSubquery } from './expr-analysis.js';
 import { seedVertices } from './matching.js';
 import { sortRowsByColumns } from './ordered-rows.js';
@@ -201,6 +202,250 @@ export type ReachSpec = {
   limit?: CountValue;
 };
 /** BFS the reachable set, then project the endpoint + DISTINCT (or count it). */
+/**
+ * A seed set this fraction of |V| or more counts as WIDE, and is worth a CSR build on a cold graph.
+ *
+ * ⚠️ DELIBERATELY GENEROUS (item 2005). Admitting the CSR wrongly costs a build the query partly
+ * repays; declining it wrongly forfeits a measured 2.4-2.8x. The regression it exists to prevent was
+ * a seed of ~1% of |V|, so the threshold has two orders of magnitude of room.
+ */
+const SEED_SHARE = 32;
+
+/**
+ * The reached set, as `Vertex[]`, for the ACYCLIC mode (item 2004).
+ *
+ * ⚠️ TWO MARKERS, AND CONFLATING THEM IS A WRONG ANSWER. `answer` accumulates the result across all
+ * seeds and is never unwound; `onPath` is the CURRENT path's vertex set and is pushed and popped per
+ * step. One set for both would prune a vertex from every later path merely because an earlier path
+ * reached it — answering a spanning tree rather than the reachable set. A mutant that substitutes one
+ * for the other is in `acyclic-reach-mutants-2004.sh` and is CAUGHT.
+ *
+ * ⚠️ `onPath[slot] = 0` AFTER the walk rather than `onPath.fill(0)` BEFORE it: the walk unwinds every
+ * other mark itself, so only the seed's own slot can persist. The `fill` was O(|V|) per seed, i.e.
+ * O(|V|^2) on an unseeded query, and removing it was worth 1.39x — found because the mutant deleting
+ * it SURVIVED, which proved it answer-equivalent (item 2004).
+ */
+const acyclicReached = (
+  csr: CsrTables,
+  seeds: readonly Vertex[],
+  maxLen: number,
+  minZero: boolean,
+): Vertex[] => {
+  const { order, idx, off, nbr } = csr;
+  const answer = new Uint8Array(order.length);
+  const onPath = new Uint8Array(order.length);
+  const reached: Vertex[] = [];
+  const walk = (v: number, len: number): void => {
+    if (len === maxLen) {
+      return;
+    }
+
+    const end = off[v + 1];
+
+    for (let k = off[v]; k < end; k += 1) {
+      const w = nbr[k];
+
+      if (onPath[w] === 1) {
+        continue;
+      }
+
+      if (answer[w] === 0) {
+        answer[w] = 1;
+        reached.push(order[w]);
+      }
+
+      onPath[w] = 1;
+      walk(w, len + 1);
+      onPath[w] = 0;
+    }
+  };
+
+  for (const sv of seeds) {
+    const slot = idx.get(sv)!;
+
+    onPath[slot] = 1;
+    walk(slot, 0);
+    onPath[slot] = 0;
+  }
+
+  return minZero ? withZeroLength(reached, seeds, answer, idx) : reached;
+};
+
+/**
+ * The reached set over the CSR — the shared BFS for the default mode, `WALK`, `TRAIL` and `SIMPLE`
+ * (item 2005).
+ *
+ * ⚠️⚠️ **IT WALKS SLOTS WITH A `Uint8Array` MARKER, and the arm it replaced keyed a `Set<string>` on
+ * `v.id` and called `outNeighbors` — which ALLOCATES a `Vertex[]` — per expanded vertex.** A windowed
+ * profile of `DISTINCT TRAIL` at 20,000 vertices (23.88 ms/rep) priced that: `runReach` self 39.9%
+ * (9.535 ms/rep) plus `push` 29.5% (7.050), i.e. **69.4% of the row was set production**, while
+ * `outNeighbors` was only 0.610 — so the cost was the STRING HASHING, not the allocation.
+ *
+ * 🔑 THE TELL WAS A SIBLING, NOT A FRAME RANKING. Item 2004's acyclic DFS, which ENUMERATES acyclic
+ * paths, outran this BFS that visits each vertex once (35.99 ms against 61.75 on the same shape). A
+ * worse algorithm beating a better one is a representation fact.
+ */
+const csrReached = (
+  csr: CsrTables,
+  seeds: readonly Vertex[],
+  maxDepth: number | undefined,
+  minZero: boolean,
+): Vertex[] => {
+  const { order, idx, off, nbr } = csr;
+  const mark = new Uint8Array(order.length);
+  const reached: Vertex[] = [];
+  const stack: number[] = [];
+  const push = (w: number): void => {
+    if (mark[w] === 0) {
+      mark[w] = 1;
+      reached.push(order[w]);
+      stack.push(w);
+    }
+  };
+
+  for (const sv of seeds) {
+    const slot = idx.get(sv)!;
+    const end = off[slot + 1];
+
+    for (let k = off[slot]; k < end; k += 1) {
+      push(nbr[k]);
+    }
+  }
+
+  if (maxDepth === undefined) {
+    while (stack.length > 0) {
+      const v = stack.pop()!;
+      const end = off[v + 1];
+
+      for (let k = off[v]; k < end; k += 1) {
+        push(nbr[k]);
+      }
+    }
+  } else {
+    let frontier = stack.splice(0, stack.length);
+
+    for (let depth = 1; depth < maxDepth && frontier.length > 0; depth += 1) {
+      const next: number[] = [];
+
+      for (const v of frontier) {
+        const end = off[v + 1];
+
+        for (let k = off[v]; k < end; k += 1) {
+          const w = nbr[k];
+
+          if (mark[w] === 0) {
+            mark[w] = 1;
+            reached.push(order[w]);
+            next.push(w);
+          }
+        }
+      }
+
+      frontier = next;
+    }
+  }
+
+  return minZero ? withZeroLength(reached, seeds, mark, idx) : reached;
+};
+
+/**
+ * The reached set over the per-vertex adjacency — the arm a NARROW SEED on a COLD topology keeps.
+ *
+ * ⚠️⚠️ **THIS IS THE CODE THAT RAN BEFORE ITEM 2005, KEPT VERBATIM, and the measurement is why.** The
+ * CSR walk is faster even cold for a wide seed, because an O(|V| + |E|) build beats hashing a string
+ * per reached vertex — but a narrow seed does so little work that the build is pure overhead: a
+ * seeded `{1,2}` measured **7.35 ms before and 11.89 after**, a 1.62x REGRESSION, while its warm
+ * figure improved. `csrIsBuilt` separates "use the tables" from "pay to make them", so this arm runs
+ * only when neither holds — and then it runs exactly what it used to, inheriting none of the other
+ * arm's machinery ([[ts-closure-size-is-load-bearing]], and item 583's split for the same reason).
+ *
+ * ⚠️ [[vary-only-the-projection]]'s closing lesson in a new shape: **benchmark the UNHELPED case,
+ * which is usually the common one.** Item 1979 regressed every unindexed seed 1.37-1.72x by reusing a
+ * helper that could not decline, and only a control caught it.
+ */
+const adjReached = (
+  graph: Graph,
+  seeds: readonly Vertex[],
+  out: boolean,
+  types: string[] | undefined,
+  maxDepth: number | undefined,
+  minZero: boolean,
+): Vertex[] => {
+  const nbrs = (v: Vertex): Vertex[] => outNeighbors(graph, v, out, types);
+  const seen = new Set<string>();
+  const reached: Vertex[] = [];
+  const stack: Vertex[] = [];
+  const push = (w: Vertex): void => {
+    if (!seen.has(w.id)) {
+      seen.add(w.id);
+      reached.push(w);
+      stack.push(w);
+    }
+  };
+
+  for (const s of seeds) {
+    for (const w of nbrs(s)) {
+      push(w);
+    }
+  }
+
+  if (maxDepth === undefined) {
+    while (stack.length > 0) {
+      for (const w of nbrs(stack.pop()!)) {
+        push(w);
+      }
+    }
+  } else {
+    let frontier = stack.splice(0, stack.length);
+
+    for (let depth = 1; depth < maxDepth && frontier.length > 0; depth += 1) {
+      const next: Vertex[] = [];
+
+      for (const v of frontier) {
+        for (const w of nbrs(v)) {
+          if (!seen.has(w.id)) {
+            seen.add(w.id);
+            reached.push(w);
+            next.push(w);
+          }
+        }
+      }
+
+      frontier = next;
+    }
+  }
+
+  if (minZero) {
+    for (const s of seeds) {
+      if (!seen.has(s.id)) {
+        seen.add(s.id);
+        reached.push(s);
+      }
+    }
+  }
+
+  return reached;
+};
+
+/** `->*` also admits the zero-length path — the seeds themselves, if not already reached. */
+const withZeroLength = (
+  reached: Vertex[],
+  seeds: readonly Vertex[],
+  mark: Uint8Array,
+  idx: ReadonlyMap<Vertex, number>,
+): Vertex[] => {
+  for (const sv of seeds) {
+    const slot = idx.get(sv)!;
+
+    if (mark[slot] === 0) {
+      mark[slot] = 1;
+      reached.push(sv);
+    }
+  }
+
+  return reached;
+};
+
 export const runReach = (spec: ReachSpec, graph: Graph, params: Params): Row[] => {
   const { cstart, items, bVar, bLabel, out, types, minZero, isCount } = spec;
   // A `$param` bound resolves here (validated up-front); a literal passes through.
@@ -240,193 +485,70 @@ export const runReach = (spec: ReachSpec, graph: Graph, params: Params): Row[] =
   const seeds = [...seedVertices(graph, cstart, new Map(), params)].filter(
     (v) => matchNode(new Map(), cstart, v, params, graph) !== null && seedGate(v),
   );
-  const nbrs = (v: Vertex): Vertex[] => outNeighbors(graph, v, out, types);
-
-  // Forward reachability (≥1 hop) as a DFS closure — each vertex expands once.
-  const seen = new Set<string>();
-  const reached: Vertex[] = [];
-  const stack: Vertex[] = [];
-  const push = (w: Vertex): void => {
-    if (!seen.has(w.id)) {
-      seen.add(w.id);
-      reached.push(w);
-      stack.push(w);
-    }
-  };
-
   /*
-   * ⚠️⚠️ **THE ACYCLIC ARM, AND IT REPLACES ONLY HOW `reached` IS PRODUCED** (item 2004). Everything
-   * below — the `bLabel` filter, the count arm, the projection, DISTINCT, ordering and windowing —
-   * reads `reached` and is mode-agnostic, so this is the whole change.
+   * ⚠️⚠️ **THE WHOLE WALK IS OVER CSR SLOTS WITH A `Uint8Array` MARKER, and item 2005 is the
+   * measurement that motivated it.** This arm used to key a `Set<string>` on `v.id` and call
+   * `outNeighbors` — which ALLOCATES a `Vertex[]` — once per expanded vertex. A windowed profile of
+   * `DISTINCT TRAIL` at 20,000 vertices (23.88 ms/rep) priced that exactly:
    *
-   * 🔑 WHY A DFS AND NOT A CORRECTED BFS: item 2003 refuted the cheap cure by MEASUREMENT. A BFS
-   * computes WALK reachability; ACYCLIC diverges from it, and the divergence is NOT confined to the
-   * self-loop case once the sources are restricted — seeded at `b` over `b->x, x->b`, SIMPLE reaches
-   * `b` by the closed path `b->x->b` while ACYCLIC cannot, and `b`'s in-neighbour is `x`, not
-   * itself. Unseeded that probe found 20 divergences, ALL of them the closed case, which made a
-   * correction look sound; seeded it found 26 with only 15 closed. A DFS carrying the visited set has
-   * no correction to be wrong about — acyclicity is its loop condition, which is item 2002's lesson.
+   * ```text
+   *     runReach [self]        39.9%   9.535 ms/rep
+   *     push [self]            29.5%   7.050   <- seen.has(id) / seen.add(id) / reached.push
+   *     filter                  7.8%   1.854   <- the bLabel filter
+   *     properties/Map/withBinding 15.4%  3.68 <- the projection
+   *     outNeighbors            2.6%   0.610
+   * ```
    *
-   * ⚠️ `visited` IS THE PATH, NOT THE ANSWER, and the two must not be confused. `seen`/`reached`
-   * accumulate the ANSWER across all sources and are never unwound; `visited` is the current path's
-   * vertex set and is pushed and popped per step. Sharing one set would prune a vertex from every
-   * later path merely because an earlier path reached it — answering a spanning tree rather than the
-   * reachable set.
+   * **69.4% of the row was set production**, and `outNeighbors` was only 0.610 despite the
+   * per-vertex allocation — so the cost was the STRING HASHING, not the array.
+   *
+   * 🔑 THE TELL WAS A SIBLING, NOT A FRAME RANKING. Item 2004's acyclic DFS, which ENUMERATES acyclic
+   * paths, outran this BFS that visits each vertex once — 35.99 ms against 61.75 on the same shape.
+   * A worse algorithm beating a better one is a representation fact, and it is the same lesson item
+   * 2004 learned on its own first arm one item earlier.
+   *
+   * ⚠️ `csrFor` IS CACHED per (direction, type set) and per `topologyVersion`, which
+   * `topology-version.test.ts` states advances SYNCHRONOUSLY so that caching an adjacency structure
+   * IS sound. A first ask on a fresh topology pays the build; see the cold measurement in item 2005's
+   * entry, which is the thing a many-reps screen would have flattered.
    */
-  if (spec.acyclic) {
-    /*
-     * ⚠️⚠️ **OVER THE CSR, NOT OVER `Vertex` OBJECTS, AND THAT IS WORTH 3.3x.** The first version of
-     * this arm walked `nbrs(v)` — `outNeighbors`, which ALLOCATES a `Vertex[]` per step — and keyed
-     * three `Set<string>` lookups on `v.id` per edge. Correct, and **240.70 ms** at 40,000 vertices
-     * against the 1405.80 it replaced. But item 2002's count DFS does the IDENTICAL traversal in
-     * 42 ms, and the only difference is representation: `Int32Array` neighbour slots and integer
-     * sets. Rewritten on `csrFor` (already cached, and shared with every other rung that asks for
-     * the same direction and type set) the same arm reads **50.27 ms** — 3.3x better than the first
-     * version at 40,000 vertices, and 28.0x the 1405.80 it replaced.
-     *
-     * ⚠️⚠️ **IT NOW BEATS THE BFS ARM ON THE SAME SHAPE, which is a finding rather than a victory:
-     * `DISTINCT TRAIL` reads 64.44 ms and `DISTINCT` plain 66.61 in the same run.** A DFS that
-     * ENUMERATES acyclic paths is outrunning a BFS that visits each vertex once — so the BFS is
-     * paying for its representation, not its algorithm: `Set<string>` keyed on `v.id` plus an
-     * `outNeighbors` array allocation per step. That is a separate, larger target (every mode shares
-     * that arm) and item 2004 deliberately does NOT take it.
-     *
-     * 🔑 THE LESSON IS THE ONE `gremlin-values-is-the-floor` RECORDS: when a fused route lands well
-     * above a sibling doing the same work, suspect the DATA REPRESENTATION before the algorithm. The
-     * algorithm was right the first time.
-     */
-    const { order, idx, off, nbr } = csrFor(graph, !out, types);
-    // `visited` is the CURRENT PATH; `onPath` is its slot-keyed form. A Uint8Array rather than a
-    // Set: slots are dense small integers, so this is one byte a vertex and no hashing.
-    const onPath = new Uint8Array(order.length);
-    const inAnswer = new Uint8Array(order.length);
-    const walkSlot = (v: number, len: number): void => {
-      if (len === maxLen) {
-        return;
-      }
-
-      const end = off[v + 1];
-
-      for (let k = off[v]; k < end; k += 1) {
-        const w = nbr[k];
-
-        if (onPath[w] === 1) {
-          continue;
-        }
-
-        // Reached by an acyclic path of length `len + 1` >= 1, so it is in the answer. The gate
-        // admits only `min <= 1`; `minZero` adds the zero-length case separately below.
-        if (inAnswer[w] === 0) {
-          inAnswer[w] = 1;
-          seen.add(order[w].id);
-          reached.push(order[w]);
-        }
-
-        onPath[w] = 1;
-        walkSlot(w, len + 1);
-        onPath[w] = 0;
-      }
-    };
-    const maxLen = spec.maxDepth ?? 0;
-
-    for (const sv of seeds) {
-      /*
-       * ⚠️ `idx.get` CANNOT MISS, so there is no guard here — and that is ESTABLISHED rather than
-       * assumed (item 2004). `csrFor` builds `order` from `[...graph.verticesById.values()]`, so
-       * EVERY vertex has a slot, isolated or carrying only another edge type; and it keys its cache
-       * on `topologyVersion`, which `topology-version.test.ts` states advances SYNCHRONOUSLY and
-       * exists precisely so a consumer can cache an adjacency structure — so there is no staleness
-       * window either. A guard stood here with BOTH of those as its stated justification, in turn,
-       * and both were false. If a seed list ever named a vertex absent from `verticesById`, that
-       * would be an index-maintenance bug to fix at the index, not to mask inside a walk.
-       */
-      const slot = idx.get(sv)!;
-
-      /*
-       * ⚠️⚠️ **`onPath[slot] = 0` AFTER THE WALK, NOT `onPath.fill(0)` BEFORE IT — and a SURVIVING
-       * MUTANT is what found this** (item 2004). `walkSlot` unwinds every mark it sets, so when a
-       * seed's walk returns the only residue is that seed's OWN slot. The mutant deleting the reset
-       * entirely was answer-equivalent and survived every fixture, which is the proof: routing a
-       * later seed through an earlier one can never reach anything the earlier seed missed, because
-       * the depth cost is `1 + depth-from-that-seed`, strictly worse than that seed's own walk.
-       *
-       * Answer-equivalent, but NOT cost-equivalent. `fill(0)` is O(|V|) per seed, and an UNSEEDED
-       * query has |V| seeds — at 40,000 vertices that is 40,000 memsets of a 40 KB array, O(|V|^2)
-       * in total. Unwinding the one slot is O(1) per seed and measurably cheaper.
-       *
-       * 🔑 **A SURVIVING MUTANT IS NOT ALWAYS A MISSING TEST OR DEAD CODE — it can be a PERFORMANCE
-       * finding.** Item 1999 found two survivors that were dead code; this one is a third kind: the
-       * work was real, and the fact that removing it changed no answer is exactly what licensed
-       * replacing it with something cheaper.
-       */
-      onPath[slot] = 1;
-      walkSlot(slot, 0);
-      onPath[slot] = 0;
+  /*
+   * ⚠️⚠️ **THE GATE: TAKE THE CSR UNLESS THAT WOULD PAY FOR A BUILD A NARROW SEED CANNOT REPAY.**
+   * Measured PRE/POST, cold and warm, 20,000 vertices, fresh graph per rep, median of 7 x 3 rounds:
+   *
+   * ```text
+   *     shape              PRE cold   POST cold         PRE warm   POST warm
+   *     plain {1,2}           31.16        22.4  1.39x     29.40        10.7  2.75x
+   *     TRAIL {1,3}           31.97        22.6  1.42x     29.01        11.3  2.57x
+   *     plain unbounded       30.84        21.5  1.44x     28.48        11.7  2.43x
+   *     seeded {1,2}           7.35         5.4  1.36x      5.46         4.1  1.33x
+   * ```
+   *
+   * ⚠️ UNGATED, that last row read **11.89 cold — a 1.62x REGRESSION.** The CSR walk is faster even
+   * cold for a wide seed (an O(|V| + |E|) build beats hashing a string per reached vertex), but a
+   * narrow seed does so little work that the build is pure overhead. `csrIsBuilt` separates "use the
+   * tables" from "pay to make them", so a cold narrow-seed query keeps `adjReached` while a warm one
+   * still gets the tables for free — rather than trading one case for the other.
+   *
+   * ⚠️ THE ACYCLIC ARM TAKES THEM UNCONDITIONALLY: it has no per-vertex form, and its only
+   * alternative is the general matcher, which item 2003 measured at 1405.80 ms against this arm's
+   * 28.39. A build is repaid many times over there, so the gate does not apply to it.
+   */
+  const wide = seeds.length * SEED_SHARE >= graph.verticesById.size;
+  const csr =
+    spec.acyclic || wide || csrIsBuilt(graph, !out, types) ? csrFor(graph, !out, types) : undefined;
+  const produce = (): Vertex[] => {
+    if (csr === undefined) {
+      return adjReached(graph, seeds, out, types, spec.maxDepth, minZero);
     }
 
-    // ⚠️ `stack` IS LEFT EMPTY ON PURPOSE so neither arm below runs: `push` filled `reached` and
-    // `seen` directly. The BFS arms are reached only when `spec.acyclic` is false.
-    stack.length = 0;
-  } else {
-    for (const s of seeds) {
-      for (const w of nbrs(s)) {
-        push(w);
-      }
-    }
-  }
-
-  if (spec.acyclic) {
-    // The acyclic arm above is complete; skip both BFS arms.
-  } else if (spec.maxDepth === undefined) {
-    while (stack.length > 0) {
-      for (const w of nbrs(stack.pop()!)) {
-        push(w);
-      }
-    }
-  } else {
-    /**
-     * THE BOUNDED ARM — item 1848.
-     *
-     * ⚠️ WHY A SHORTEST-DISTANCE BFS ANSWERS A BOUNDED QUANTIFIER. The question is "is there a
-     * path of length in [min, max]", and the gate admits only `min <= 1`. A vertex whose SHORTEST
-     * distance from any seed is `d` is reachable by a walk of length `d`, so it is in the answer
-     * exactly when `1 <= d <= max`; one with `d > max` cannot be reached in `max` hops by any
-     * walk. So marking each vertex at its shortest depth and stopping after `max` levels is exact
-     * — and it is why `min <= 1` is load-bearing rather than conservative: at `min = 2` a vertex
-     * with `d = 1` might still be reachable at length 2 or 3, which a shortest-distance search
-     * cannot see.
-     *
-     * The frontier is rebuilt per level rather than reusing `stack`, because the DFS stack above
-     * mixes depths by construction.
-     */
-    let frontier = stack.splice(0, stack.length);
-
-    for (let depth = 1; depth < spec.maxDepth && frontier.length > 0; depth += 1) {
-      const next: Vertex[] = [];
-
-      for (const v of frontier) {
-        for (const w of nbrs(v)) {
-          if (!seen.has(w.id)) {
-            seen.add(w.id);
-            reached.push(w);
-            next.push(w);
-          }
-        }
-      }
-
-      frontier = next;
-    }
-  }
-
-  // `->*` also admits the zero-length path — the seeds themselves.
-  if (minZero) {
-    for (const s of seeds) {
-      if (!seen.has(s.id)) {
-        seen.add(s.id);
-        reached.push(s);
-      }
-    }
-  }
+    // `maxDepth ?? 0` is unreachable for the acyclic arm: `admissibleMode` admits it only with a
+    // BOUNDED quantifier, so `maxDepth` is always a number there.
+    return spec.acyclic
+      ? acyclicReached(csr, seeds, spec.maxDepth ?? 0, minZero)
+      : csrReached(csr, seeds, spec.maxDepth, minZero);
+  };
+  const reached = produce();
 
   const kept = reached.filter((v) => matchesLabel(v, bLabel));
 

@@ -97394,7 +97394,7 @@ shared path.
 GATES. `bun run fmt` 0; `bun run check` 0; `acyclic-selfloop-parity` 48/48. (Instruments and one test
 — no engine code changed.)
 
-## Item 2002 — ✅ **`MATCH ACYCLIC … RETURN count(*)` ROUTED TO A PER-SOURCE DFS: 821.13 → 42.09 ms, 19.5x unseeded and 10.9x seeded, controls flat.** 🔑 **And it needed NO inclusion-exclusion — which is why it worked, after item 2001 derived the closed form wrong twice.** ⚠️⚠️ **My own budget cost the route its entire purpose and NO correctness test could see it; and my mutation harness read the wrong exit status, voiding the first round**
+## Item 2002 — ✅ ⚠️ **[IT SHIPPED A WRONG ANSWER, found by the fuzzer at item 2005: `{0,k}` omits the ZERO-LENGTH path, so `MATCH ACYCLIC (a)-[:E]->{0,1}(b) RETURN count(*)` read 2 where WALK and TRAIL read 5 — short by the source count. Fixed at 2005 with a named cross-engine test; `bun run fuzz` was green HERE because the draw needs mode=acyclic AND min=0 together.]** **`MATCH ACYCLIC … RETURN count(*)` ROUTED TO A PER-SOURCE DFS: 821.13 → 42.09 ms, 19.5x unseeded and 10.9x seeded, controls flat.** 🔑 **And it needed NO inclusion-exclusion — which is why it worked, after item 2001 derived the closed form wrong twice.** ⚠️⚠️ **My own budget cost the route its entire purpose and NO correctness test could see it; and my mutation harness read the wrong exit status, voiding the first round**
 
 Takes item 2001's route defect. ACYCLIC was declined by `degreeCountShape` and fell to the general
 matcher, which enumerates every path as a binding `Map` to count it (~86% of the window) while
@@ -97762,3 +97762,116 @@ the known flake and not this change); `bun run fuzz` 7/7; gql 4,985; parity 79/7
 against a cap of 35 at item 2002 (the acyclic closure moved to its own module), and
 `detectReachableShortcut` hit 36 here (the mode read became a one-line `isAcyclicMode` helper used by
 both sites). Reading the AST's default-mode spelling in one named place is better anyway.
+
+## Item 2005 — ✅ **THE SHARED REACH BFS MOVED TO CSR SLOTS: `DISTINCT` is 2.4-3.2x WARM and 1.4x COLD across the default mode, WALK, TRAIL and SIMPLE.** ⚠️⚠️ **And the fuzzer caught a WRONG ANSWER I SHIPPED AT ITEM 2002 — `MATCH ACYCLIC … {0,k}` omitted the zero-length path — which `bun run fuzz` passed at the time because the draw is rare**
+
+Item 2004 ended by nominating this arm rather than claiming a victory: its acyclic DFS, which
+ENUMERATES acyclic paths, had come out FASTER than the BFS that visits each vertex once. A worse
+algorithm beating a better one is a representation fact, and the profile priced it — `DISTINCT TRAIL`
+at 20,000 vertices, 23.88 ms/rep:
+
+```text
+    runReach [self]              39.9%   9.535 ms/rep
+    push [self]                  29.5%   7.050      <- seen.has(id) / seen.add(id) / reached.push
+    filter                        7.8%   1.854      <- the bLabel filter
+    properties / Map / withBinding 15.4%  3.68       <- the projection
+    outNeighbors                  2.6%   0.610
+```
+
+**69.4% of the row was set production**, and `outNeighbors` only 0.610 despite allocating a `Vertex[]`
+per expanded vertex — so the cost was STRING HASHING, not allocation. All three arms (seed expansion,
+unbounded, bounded) now walk `csrFor`'s `Int32Array` neighbours with a `Uint8Array` marker.
+
+```text
+40,000 vertices, fanout 5, bound {1,2}      PRE      POST
+DISTINCT TRAIL   unseeded                 61.75     19.17    3.22x
+DISTINCT plain   unseeded                 59.80     24.90    2.40x
+DISTINCT plain   WHERE-all                65.29     25.60    2.55x
+DISTINCT ACYCLIC unseeded                 35.99     28.39    1.27x  (item 2004's arm, shared marker)
+```
+
+## ⚠️⚠️ THE COLD CASE REGRESSED 1.62x AND ONLY A FRESH-GRAPH PROBE COULD SEE IT
+
+The old arm needed NO CSR, so the new one makes a FIRST ask pay a build — and
+`varlen-body-split-2000.mjs` runs five reps against one graph, so four of five measurements find it
+cached. **A many-reps harness flatters exactly this change.** `reach-cold-2005.mjs` builds a fresh
+graph per rep and times the first query, PRE against POST with each arm asserted by its own symbol:
+
+```text
+    shape              PRE cold   POST cold          PRE warm   POST warm
+    plain {1,2}           31.16       19.00  1.64x      29.40        8.36
+    TRAIL {1,3}           31.97       22.12  1.45x      29.01       10.90
+    plain unbounded       30.84       18.88  1.63x      28.48        9.25
+    seeded {1,2}           7.35       11.89  0.62x ⬅     5.46        3.17
+```
+
+Cold is FASTER unseeded — an O(|V| + |E|) build beats hashing a string per reached vertex — but a
+NARROW SEED does so little work that the build is pure overhead. That is item 1889's second-ask
+question and item 1979's "benchmark the UNHELPED case, which is usually the common one".
+
+🔑 **THE FIX KEEPS BOTH CASES INSTEAD OF TRADING THEM, because the real choice is not "CSR or not"
+but "pay a build or not" — and those come apart exactly when the cache already holds the answer.** A
+new `csrIsBuilt` peek (pure; populates nothing) lets a cold narrow-seed query keep the per-vertex walk
+while a warm one gets the tables for free. ⚠️ `csrFor` and `csrIsBuilt` share ONE `shapeKey` spelling,
+because two copies of a cache key is how a peek starts answering about a different entry than the
+builder fills — a silent "always cold" that still looks like a gate. Final, three rounds of 7:
+
+```text
+    shape              PRE cold   POST cold          PRE warm   POST warm
+    plain {1,2}           31.16        22.4  1.39x      29.40        10.7  2.75x
+    TRAIL {1,3}           31.97        22.6  1.42x      29.01        11.3  2.57x
+    plain unbounded       30.84        21.5  1.44x      28.48        11.7  2.43x
+    seeded {1,2}           7.35         5.4  1.36x       5.46         4.1  1.33x
+```
+
+**All four shapes improved in BOTH cold and warm.** `SEED_SHARE = 32` is deliberately generous:
+admitting the CSR wrongly costs a build the query partly repays, declining it wrongly forfeits
+2.4-2.8x, and the regression it guards was a seed of ~1% of |V| — two orders of magnitude of room.
+⚠️ The acyclic arm is exempt and always takes the tables: it has no per-vertex form, and its
+alternative is the general matcher at 1405.80 ms against 28.39.
+
+## ⚠️⚠️ AND THE FUZZER CAUGHT A WRONG ANSWER FROM ITEM 2002
+
+While verifying this, `bun run fuzz differential` failed ~1 in 6 — and my memory's rule is to **rule
+out a suspect STRUCTURALLY, not by counting failures**, so: of the seven fuzzers only `differential`
+draws GQL queries and can reach `reachability.ts` at all. That made it mine to diagnose rather than
+dismiss. Captured:
+
+```text
+    [seed 467750944249409] MATCH ACYCLIC (a:T)<-[:F]-{0,2}(b) RETURN count(*) AS x
+        (value: the engines disagree about the ANSWER, which no registry entry may excuse)
+```
+
+**`{0,2}` — `min = 0`, which admits the ZERO-LENGTH path: one row per source, endpoint == start.**
+Item 2002's acyclic count route only ever counted `len >= 1`. On a 3-chain, `{0,1}` reads 5 for WALK
+and TRAIL and **2** for ACYCLIC — short by exactly the source count. `divergence-registry.ts` has no
+`value` axis by design, so there was nowhere to file it; it is a bug, now fixed, with `passes` applied
+to the source because the zero-length path's endpoint IS its start.
+
+⚠️⚠️ **`bun run fuzz` WAS GREEN AT ITEM 2002, AND THAT IS THE LESSON.** The draw needs `mode = acyclic`
+AND `min = 0` together, both random, so it took three items to surface — and then only once in six
+runs. **A passing generative run is evidence about the shapes it DREW, not about the shapes that
+exist.** `acyclic-minzero-parity.test.ts` (26 cases, TS against native) now runs it every time, across
+`{0,1}`/`{0,2}`/`{0,3}` plus `{1,2}` as the always-correct control and `{0,0}` which the detector
+refuses outright, with the fuzzer's own inward-`F` shape, a seed, and an ENDPOINT predicate — the last
+because a fix that appended sources unconditionally would over-count there and nowhere else. ⚠️ It
+also asserts the SIGNATURE directly (ACYCLIC at `{0,k}` exceeds `{1,k}` by the source count, and
+equals WALK on a fixture where no two-hop path repeats a vertex), because parity alone would pass if
+both engines were wrong the same way.
+
+After the fix: **10/10 differential runs clean** (against 1-in-6 failing), and three full
+`bun run fuzz` sweeps at 57/57.
+
+⚠️ THE LINT GATE SHAPED THIS CORRECTLY FOR THE THIRD TIME THIS STRETCH. The dual-producer structure
+inline took `runReach` to 108 statements (cap 80), complexity 48 (cap 35) and nesting 6 (cap 5), so the
+three producers moved to module scope as `acyclicReached` / `csrReached` / `adjReached` with a shared
+`withZeroLength`. ⚠️ `adjReached` is the pre-item-2005 code VERBATIM, so a declined query runs exactly
+what it used to and inherits none of the other arm's machinery (item 583's split,
+[[ts-closure-size-is-load-bearing]]).
+
+OPEN, unchanged: the label `filter` (1.854 ms/rep) and the projection cluster (3.68) are the next
+terms in this row, both untouched here.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21 with no
+flake; `bun run fuzz` 57/57 three times plus 10 isolated `differential` runs; gql 4,985; parity 79/79
+and 26/26.
