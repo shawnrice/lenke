@@ -54,6 +54,31 @@ const SHAPES = {
   // 1961's `numOther`.
   other: 'MATCH (a:T)-[:E]->(b:T) RETURN b.n AS x ORDER BY b.m',
   none: 'MATCH (a:T)-[:E]->(b:T) RETURN b.n AS x',
+  /*
+   * Item 1965: the WINDOWED pair. The GQL screen reads `CONTROL hop windowed alias key` at 411.72
+   * ms for TEN rows — dearer than the unwindowed `HOP order by alias`'s 353.17 for 800,000. A
+   * `LIMIT 10` cannot cost more than no limit unless it buys nothing, so these ask whether a
+   * bounded heap fires on the hop at all. Item 701 took exactly this lever for the node arm
+   * ("`sortRowsByColumns` full-sorted every row and sliced, so `ORDER BY a LIMIT 5` over 200,000
+   * rows paid an O(n log n) sort to emit five").
+   *
+   * ⚠️ THE PAIR MUST SHARE ITS PROJECTION. The screen's windowed rows project `b.n + 1 AS c`
+   * (computed) while its unwindowed rows project `b.n AS x` (bare), so the screen's own comparison
+   * is confounded — it says so at `HOP start-only proj, far key`. These four hold the projection
+   * fixed and vary ONLY the window.
+   */
+  winAlias: 'MATCH (a:T)-[:E]->(b:T) RETURN b.n + 1 AS c ORDER BY c LIMIT 10',
+  openAlias: 'MATCH (a:T)-[:E]->(b:T) RETURN b.n + 1 AS c ORDER BY c',
+  winExpr: 'MATCH (a:T)-[:E]->(b:T) RETURN b.n + 1 AS c ORDER BY b.n + 1 LIMIT 10',
+  openExpr: 'MATCH (a:T)-[:E]->(b:T) RETURN b.n + 1 AS c ORDER BY b.n + 1',
+  /*
+   * 🔑 THE CONTROL THE WINDOWED PAIR NEEDS, and without it the pair says nothing. `none` above
+   * projects a BARE property; these shapes project a COMPUTED one, so the walk+projection cost is
+   * not the same. `sortRowsByColumns`' heap IS wired for `LIMIT 10` over 1,000,000 rows
+   * ((0 + 10) * 16 <= 1e6), so if the windowed arm still costs what the unwindowed one does, the
+   * sort was never the mass — and this row is what says so.
+   */
+  noneExpr: 'MATCH (a:T)-[:E]->(b:T) RETURN b.n + 1 AS c',
 };
 const text = SHAPES[SHAPE] ?? SHAPES.expr;
 const med = (xs) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];
@@ -72,8 +97,11 @@ for (let r = 0; r < REPS; r += 1) {
 
     // An answer guard, so an arm that visits the right rows in the wrong order still compares and
     // a WRONG answer does not.
+    // ⚠️ THE FIRST COLUMN, not `row.x`: the windowed shapes name theirs `c`, and reading `x` made
+    // the checksum `NaN` — a guard that silently stopped guarding. Item 1961's lesson about arms
+    // one level down.
     for (const row of got) {
-      sum += Number(row.x);
+      sum += Number(Object.values(row)[0]);
     }
   }
 }

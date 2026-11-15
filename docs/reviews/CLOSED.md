@@ -94523,3 +94523,62 @@ GATES. `bun run check` 0; `bun run test -- --skip-nx-cache` 21 projects — ⚠�
 flagging **`@lenke/sync` and `@lenke/native` as flaky tasks**; isolated they are 176/0 and 1280/0 and
 the re-run was green, which is [[sync-test-flake-is-timing]]'s known run-many flake (item 1952 hit
 the same thing on `@lenke/native` alone).
+
+## Item 1965 — 🔑 **THE HOP SORT FAMILY'S MASS IS NOT THE SORT: a sorted hop loses the FUSED DIRECT-READ projection, and the same `b.n` costs 29 ns a row without a sort and 173 WITH one.** ⚠️ Which reframes items 1963/1964 — both were pricing the wrong term — and the top-k heap turns out to be firing and cheap all along
+
+The GQL screen has `CONTROL hop windowed alias key` at **411.72 ms for TEN rows**, dearer than the
+unwindowed `HOP order by alias`'s 357.66 for 800,000. A `LIMIT 10` cannot cost more than no limit
+unless it buys nothing, so this started as "does a top-k heap fire on the hop at all" — item 701's
+lever for the node arm.
+
+⚠️ **THE SCREEN'S OWN PAIR IS CONFOUNDED** (it says so at `HOP start-only proj, far key`): its
+windowed rows project `b.n + 1 AS c` and its unwindowed rows project `b.n AS x`. Holding the
+projection fixed and varying ONLY the window, 200,000 vertices / 1,000,000 edges, median of 9:
+
+```text
+  RETURN b.n + 1 AS c                         28.8 ms    29 ns/row    1,000,000 rows  ⬅ no sort
+  RETURN b.n + 1 AS c ORDER BY c LIMIT 10    296.5                            10 rows
+  RETURN b.n + 1 AS c ORDER BY c             312.1      312              1,000,000
+  RETURN b.n + 1 AS c ORDER BY b.n + 1 LIMIT 10  298.6                       10
+  RETURN b.n + 1 AS c ORDER BY b.n + 1       472.8      473              1,000,000
+```
+
+So the alias-keyed `LIMIT 10` buys **~5%** (296.5 against 312.1): ten rows cost what a million do.
+The expression-keyed one DOES profit (298.6 against 472.8, 1.58x), because its route ranks keys and
+projects only survivors.
+
+✅ **AND THE HEAP IS NOT THE PROBLEM — it fires and it is cheap.** `sortRowsByColumns` takes it at
+`(skip + limit) * 16 <= rows.length`, which is `160 <= 1,000,000`. The profile confirms it:
+`compareValues` is **146 ms of ~2,670 ms** of query time. The sort is not the mass, which is why the
+window cannot help much.
+
+🔑 **WHAT THE MASS IS.** `(anon) @8966` — the compiled `prop` closure,
+`propOf(env.binding.get(variable), key)` — is **1,556.7 ms, 58% of query time, 173 ns a row**. The
+SAME projection with no `ORDER BY` costs **29 ns a row**. A sorted hop goes through the generic
+compiled closure (a `Map.get`, then `propOf`, then the `properties` getter) where the unsorted one
+uses the FUSED DIRECT READ item 1636 built (`far.properties[key]`). **Six times the cost for the same
+property, and ~144 ns a row of the ~257 ns a sort adds.**
+
+⚠️⚠️ **SO ITEMS 1963 AND 1964 WERE BOTH PRICING THE WRONG TERM.** Item 1964 ablated
+`deferredHopOrder`'s post-sort re-projection at 103 ns/row and declined the restructure; item 1963
+chased the permutation shape. Neither looked at the projection becoming 6x dearer the moment a sort
+is present — which is larger than either, applies to the ALIAS spelling as well (the fast one), and
+is the same term in every one of the screen's 283-473 ms hop sort rows. The decline at 1964 stands
+on its own numbers; what is corrected is the claim that the re-projection was where the hop's cost
+lived.
+
+**THE NEXT BUILD, stated so it is not re-derived:** carry the fused direct read into the sorted hop
+arms. `filteredHopWalk` already has `farProp` for exactly this (item 1636) and `walkProj` hands the
+deferred arm a REDUCED projection, so the question is whether that reduction can keep the direct
+read rather than falling back to the compiled closure. Worth **up to ~1.5x on the largest realistic
+GQL rows on the screen**, which is well clear of the ~1.3x bar that declined item 1964.
+
+⚠️ **TWO INSTRUMENT FLAWS FIXED ON THE WAY, both mine.** `hopsort-1964.mjs`'s answer guard summed
+`row.x` while these shapes name their column `c`, so the checksum was `NaN` — a guard that had
+silently stopped guarding; it now reads the first column whatever it is called. And the windowed pair
+had no no-sort control for a COMPUTED projection, without which none of the above could be
+attributed (item 1961's lesson, third application).
+
+NO ENGINE BEHAVIOUR CHANGED — one instrument extended and this entry.
+
+GATES. `bun run check` 0.
