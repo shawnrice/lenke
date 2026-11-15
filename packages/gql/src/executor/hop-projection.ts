@@ -3689,14 +3689,38 @@ const farDrivenStartTestedPredicatedHopWalk = (w: {
         continue;
       }
 
-      // NO FOLD: the start label can reject an edge, so the row count is not the bucket size. One
-      // `projectRow` per surviving edge, which is what the start-driven walk did for every row.
+      /*
+       * 🔑 THE ROW IS BUILT ONCE PER FAR VERTEX AND CLONED (item 1952), which is the fold's HOIST
+       * kept after its COUNT was given up. Item 1951 shipped this walk with a `projectRow` per
+       * surviving edge, reasoning that a start label which can reject an edge makes the row count
+       * something other than `bucket.size`. True — and it only rules out taking the count from the
+       * bucket, not building the row once: `!needsStart` means no projection item reads the start,
+       * so every row this far vertex produces is IDENTICAL whichever edges survive. The count comes
+       * from ITERATION; the template comes from the hoist. Those are separable, and item 1951
+       * conflated them.
+       *
+       * A profile of item 1951's own arm is what said so: `projectRow` at 733 ms of ~1,890 ms of
+       * query time, against `satisfies` at 12.6 ms once the predicate was hoisted. 500,000
+       * `projectRow` calls become 200,000 plus 500,000 spreads — item 1407's clone, which it
+       * measured at 16-28% on the unfiltered twin.
+       *
+       * ⚠️ EACH ROW MUST BE ITS OWN OBJECT, hence the spread rather than pushing `template` twice.
+       * The first push can hand over `template` itself because nothing reads it afterwards.
+       */
+      let template: Row | undefined;
+
       for (const edge of bucket) {
         if (!matchesLabel(out ? edge.from : edge.to, startLabel)) {
           continue;
         }
 
-        rows.push(projectRow(proj, binding, params, graph));
+        if (template === undefined) {
+          template = projectRow(proj, binding, params, graph);
+          rows.push(template);
+          continue;
+        }
+
+        rows.push({ ...template });
       }
     }
 

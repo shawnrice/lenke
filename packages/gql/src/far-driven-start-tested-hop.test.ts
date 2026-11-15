@@ -343,6 +343,50 @@ describe('farDrivenStartTestedPredicatedHopWalk — the declines that keep the h
     ).toBe(0);
   });
 
+  /*
+   * ⚠️ THE CLONE IS LOAD-BEARING AND ONLY THIS TEST SAYS SO. Item 1952 builds one row per far
+   * vertex and spreads it for the rest of the bucket; replacing `{ ...template }` with `template`
+   * survived every other test in the repo, because nothing INSIDE the engine mutates a projected
+   * row and two aliased rows carry identical values. The rows are handed to the CALLER, though, so
+   * aliasing is observable the moment they touch one — and it would be a wrong answer they could
+   * not explain. Mutation found this gap; the walk's three sibling folds share the same contract.
+   */
+  test('rows from one far vertex are INDEPENDENT objects, not aliases', () => {
+    const g = build({ off: 1 });
+    // A far vertex with several surviving in-edges, so at least two rows come from one template.
+    const rows = query(g, 'MATCH (a:T)-[:E]->(b:T) FILTER b.n > -1 RETURN b.id2 AS i', {}) as {
+      i: number;
+    }[];
+
+    expect(rows.length).toBeGreaterThan(1);
+
+    // Group by value to find two rows that a template hoist would have shared.
+    const byValue = new Map<number, { i: number }[]>();
+
+    for (const row of rows) {
+      const got = byValue.get(row.i);
+
+      if (got === undefined) {
+        byValue.set(row.i, [row]);
+      } else {
+        got.push(row);
+      }
+    }
+
+    const shared = [...byValue.values()].find((group) => group.length > 1);
+
+    if (shared === undefined) {
+      throw new Error('fixture no longer gives any far vertex two surviving edges');
+    }
+
+    expect(shared[0]).not.toBe(shared[1]);
+
+    // And writing through one must not reach the other.
+    shared[0].i = -999;
+
+    expect(shared[1].i).not.toBe(-999);
+  });
+
   test('an empty graph answers nothing rather than throwing', () => {
     expect(query(new Graph(), Q, { p0: 1 }).length).toBe(0);
   });

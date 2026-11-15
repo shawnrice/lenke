@@ -31,8 +31,8 @@ const MUTANTS = [
           continue;
         }
 
-        rows.push(projectRow(proj, binding, params, graph));`,
-    to: `        rows.push(projectRow(proj, binding, params, graph));`,
+        if (template === undefined) {`,
+    to: `        if (template === undefined) {`,
   },
   {
     name: '⚠⚠ THE START TEST READS THE WRONG ENDPOINT (far instead of start)',
@@ -47,12 +47,14 @@ const MUTANTS = [
         continue;
       }
 
-      // NO FOLD`,
+      /*
+       * 🔑 THE ROW IS BUILT ONCE PER FAR VERTEX AND CLONED`,
     to: `      if (satisfies(far, farPred, binding, params, graph)) {
         continue;
       }
 
-      // NO FOLD`,
+      /*
+       * 🔑 THE ROW IS BUILT ONCE PER FAR VERTEX AND CLONED`,
   },
   {
     name: '⚠⚠ THE HOISTED PREDICATE IS DROPPED ENTIRELY',
@@ -61,8 +63,10 @@ const MUTANTS = [
         continue;
       }
 
-      // NO FOLD`,
-    to: `      // NO FOLD`,
+      /*
+       * 🔑 THE ROW IS BUILT`,
+    to: `      /*
+       * 🔑 THE ROW IS BUILT`,
   },
   {
     name: '⚠⚠ THE WALK READS THE FORWARD ADJACENCY, so it is no longer far-driven',
@@ -174,6 +178,70 @@ const MUTANTS = [
     to: '',
   },
   {
+    name: '⚠⚠ THE CLONE IS GONE, so every row from one far vertex ALIASES one object',
+    expect: 'kill',
+    from: `      let template: Row | undefined;
+
+      for (const edge of bucket) {
+        if (!matchesLabel(out ? edge.from : edge.to, startLabel)) {
+          continue;
+        }
+
+        if (template === undefined) {
+          template = projectRow(proj, binding, params, graph);
+          rows.push(template);
+          continue;
+        }
+
+        rows.push({ ...template });
+      }`,
+    to: `      let template: Row | undefined;
+
+      for (const edge of bucket) {
+        if (!matchesLabel(out ? edge.from : edge.to, startLabel)) {
+          continue;
+        }
+
+        if (template === undefined) {
+          template = projectRow(proj, binding, params, graph);
+          rows.push(template);
+          continue;
+        }
+
+        rows.push({ ...template });
+      }`.replace('rows.push({ ...template });', 'rows.push(template);'),
+  },
+  {
+    name: '⚠⚠ THE TEMPLATE IS REBUILT PER EDGE (the hoist undone)',
+    expect: 'survive',
+    why:
+      'Answer-equivalent by construction: `!needsStart` means every row a far vertex produces is ' +
+      'identical, so rebuilding it per edge yields the same values. This mutant is the PRE arm of ' +
+      'item 1952s A/B, which is where it is measured (1.28x) rather than tested.',
+    from: `      let template: Row | undefined;
+
+      for (const edge of bucket) {
+        if (!matchesLabel(out ? edge.from : edge.to, startLabel)) {
+          continue;
+        }
+
+        if (template === undefined) {
+          template = projectRow(proj, binding, params, graph);
+          rows.push(template);
+          continue;
+        }
+
+        rows.push({ ...template });
+      }`,
+    to: `      for (const edge of bucket) {
+        if (!matchesLabel(out ? edge.from : edge.to, startLabel)) {
+          continue;
+        }
+
+        rows.push(projectRow(proj, binding, params, graph));
+      }`,
+  },
+  {
     name: 'the empty-bucket guard MOVES below the predicate (same set, later skip)',
     expect: 'survive',
     why:
@@ -182,16 +250,28 @@ const MUTANTS = [
       'early skip, not a correctness condition. Its twin `farDrivenPredicatedHopWalk` DOES need ' +
       'it, because the spread form pushes the template FIRST and would emit one spurious row — ' +
       'so the same line is load-bearing there and redundant here.',
-    from: `      if (!satisfies(far, farPred, binding, params, graph)) {
+    from: `      if (bucket === undefined || bucket.size === 0) {
         continue;
       }
 
-      // NO FOLD`,
-    to: `      if (bucket.size === 0 || !satisfies(far, farPred, binding, params, graph)) {
+      if (farLabel !== undefined && !matchesLabel(far, farLabel)) {
         continue;
       }
 
-      // NO FOLD`,
+      binding.set(farVar, far);
+
+      // ONCE PER FAR VERTEX, and before the edge loop`,
+    to: `      if (bucket === undefined) {
+        continue;
+      }
+
+      if (farLabel !== undefined && !matchesLabel(far, farLabel)) {
+        continue;
+      }
+
+      binding.set(farVar, far);
+
+      // ONCE PER FAR VERTEX, and before the edge loop`,
   },
 ];
 

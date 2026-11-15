@@ -93654,7 +93654,7 @@ two test files and this entry.
 
 GATES. `bun run check` 0; `bun run test -- --skip-nx-cache` 21 projects.
 
-## Item 1951 — ✅ **SHIPPED: the predicated hop's middle ground, 1.39x isolated** (369.6 → 266.3 ms) with two flat controls — item 1940's lever one route over. ⚠️ **And item 1949's hand ceiling MIS-RANKED the arms**: a hand `>` makes every arm look equal in predicate cost, so the arm that calls the engine's `satisfies` five times less looked _worse_
+## Item 1951 — ✅ **SHIPPED: the predicated hop's middle ground, 1.39x isolated** (369.6 → 266.3 ms) with two flat controls — item 1940's lever one route over. ✅ **EXTENDED at item 1952 to 1.78x cumulative (369.6 → 207.2) — and ⚠️ THIS ENTRY'S "no template fold" WAS TOO STRONG: losing the COUNT does not cost the HOIST, and conflating them left 1.28x on the floor.** ⚠️ **And item 1949's hand ceiling MIS-RANKED the arms**: a hand `>` makes every arm look equal in predicate cost, so the arm that calls the engine's `satisfies` five times less looked _worse_
 
 PROFILE FIRST, and it redirected the build. Item 1949 nominated this shape and I was about to build
 an edge pass. The two arms' profiles run DIFFERENT closures (`:20283` against `:19887`), and the
@@ -93734,3 +93734,71 @@ an instrumented build reports `NOT THIS ROUTE` for a compound start label, since
 
 GATES. `bun run check` 0; `bun run test -- --skip-nx-cache` 21 projects; `bun run fuzz` 57/0 across
 all seven byte-identity fuzzers.
+
+## Item 1952 — ✅ **1.28x more on the same walk (265.8 → 207.2 ms), 1.78x cumulative** — ⚠️ **because item 1951's own reasoning was too strong: giving up the fold's COUNT does not cost you its HOIST.** The two are separable and I had treated them as one thing
+
+PROFILE OF MY OWN ARM, which is what found it. Item 1951's walk, 7 rounds of the target shape with
+the fixture build marked out:
+
+```text
+  (anon) @19972   789.7 ms   the walk itself
+  projectRow      733.1 ms   39% of ~1,890 ms of query time
+  label machinery 426.0 ms   evalLabelExpr 158 + labels 162 + get labels 106
+  satisfies        12.6 ms   ← the item-1951 hoist, now negligible
+```
+
+`satisfies` at 12.6 ms is item 1951 working. `projectRow` at 733 ms is item 1951's own words coming
+back: it shipped with a `projectRow` per surviving edge, on the reasoning that _"once a start label
+can reject an edge, the row count is no longer `bucket.size`"_. That is true and it only rules out
+taking the COUNT from the bucket. It says nothing about building the ROW once — `!needsStart` means
+no projection item reads the start, so every row a far vertex produces is identical whichever edges
+survive. **The count comes from iteration; the template comes from the hoist.** One item had
+conflated them, and the fix is six lines.
+
+500,000 `projectRow` calls become 200,000 plus 500,000 spreads (item 1407's clone, 16-28% on the
+unfiltered twin). Isolated A/B, PRE = item 1951's shipped arm, arms alternated, each asserted by
+symbol count before being built:
+
+```text
+  target    PRE  265.8  266.2  266.2   POST  208.0  208.1  207.2   1.28x
+  cumulative over items 1951+1952:     369.6 -> 207.2             1.78x
+```
+
+Three readings within 0.2% on each side, row counts identical.
+
+⚠️ **THE CONTROLS ARE WITHIN NOISE, AND THE NOISE IS BIG ENOUGH TO SAY SO EXPLICITLY.** The
+unfiltered control read PRE 149.4/156.4/165.0 against POST 138.5/134.6/134.0 — nominally 10% in the
+change's favour, which is the shape CLAUDE.md warns about. But that row spans 132-165 across runs
+(the item-1951 A/B saw PRE 132.1 and POST 156.8, the other way round), so its noise floor is ~25%
+and it can only rule out a LARGE perturbation, not a small one. `selstart` read 23.2 → 24.3, also
+noise. Recorded as "no detectable perturbation, with a weak instrument" rather than "flat controls".
+
+🔑 **AND THE ARM GUARD EARNED ITSELF, FIRST TIME ASKED.** The A/B harness asserts each arm IS its
+code by symbol count before building. Re-pointed at a new symbol, it refused on the first POST build
+(`has 1 occurrences, expected 2` — I had left item 1951's counts in place) instead of silently
+measuring the PRE code twice and reporting a null. That is exactly the failure CLAUDE.md records,
+caught by the one line that catches it.
+
+**MUTATION: 8 KILLED, 5 DOCUMENTED SURVIVORS, 0 UNEXPECTED — and it found a LOAD-BEARING line no
+test covered.** Replacing `{ ...template }` with `template` so every row from one far vertex ALIASES
+one object survived the entire repo. Nothing inside the engine mutates a projected row and the
+aliased rows carry identical values, so no differential test can see it — but the rows go to the
+CALLER, and aliasing is observable the moment they write to one. `rows from one far vertex are
+INDEPENDENT objects, not aliases` now pins it, and the mutant dies. ⚠️ **The walk's three sibling
+folds share that contract and have no such test**; not fixed here, flagged as the next cheap thing.
+
+Also re-anchored six 1951 mutants whose text this item changed (all six kill again), and corrected
+item 1951's heading in this commit, per CLAUDE.md's rule about an entry that advertises its own
+superseded reasoning.
+
+WHAT IS LEFT, PRICED. The walk is now 207.2 ms against hand arm C's 105.4 — **1.97x**, and the
+profile says where: `projectRow` on the remaining 200,000 calls plus the per-edge START label test.
+⚠️ **THE LABEL TEST IS CLOSED, DO NOT RE-PRICE IT.** Item 1599 ablated that exact frame and refuted
+both levers — compiling the test to a per-query closure measured FLAT (the dispatch was already
+inlined), and testing by bucket identity is SLOWER than hoisting the getter. I started toward it
+this item and `CLOSED.md` is what stopped me.
+
+GATES. `bun run check` 0; `bun run fuzz` 57/0 across all seven byte-identity fuzzers; `bun run test
+-- --skip-nx-cache` 21 projects — ⚠️ one run exited 1 on `@lenke/native:test`, which nx itself
+flagged as flaky; isolated it is 1280 pass / 0 fail and the re-run was green, which is
+[[sync-test-flake-is-timing]]'s known run-many flake.
