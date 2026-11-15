@@ -105,6 +105,12 @@ import {
   sideEffectStep,
   unfoldStream,
 } from './stream.js';
+import {
+  allHopExistence,
+  hopExistenceCombinedStep,
+  hopExistenceStep,
+  singleHopExistence,
+} from './sub-plan-existence.js';
 
 export const applyPlanToStream = (
   plan: Plan,
@@ -341,25 +347,46 @@ export const applyStep = (
       // Three AST shapes share kind 'where'; TS narrows on which fields are set:
       // a sub-plan, a two-key compare (`startKey`), or a current-vs-label predicate.
       if ('plan' in step) {
-        return whereSubPlanStep(stream, step.plan, graph, ctx);
+        // `where(<one adjacency step>)` is a `Map` lookup, not a sub-pipeline — see
+        // `sub-plan-existence.ts`. Every other sub-plan shape falls through untouched.
+        const exists = singleHopExistence(step.plan);
+
+        return exists === undefined
+          ? whereSubPlanStep(stream, step.plan, graph, ctx)
+          : hopExistenceStep(stream, exists, true);
       }
 
       return 'startKey' in step
         ? whereCompareStep(stream, step, graph, ctx)
         : whereCurrentStep(stream, step);
 
-    case 'and':
-      return filterTraverser(stream, (t) =>
-        step.plans.every((p) => hasAny(applyPlanToStream(p, [t], graph, ctx))),
-      );
+    case 'and': {
+      const hops = allHopExistence(step.plans);
 
-    case 'or':
-      return filterTraverser(stream, (t) =>
-        step.plans.some((p) => hasAny(applyPlanToStream(p, [t], graph, ctx))),
-      );
+      return hops === undefined
+        ? filterTraverser(stream, (t) =>
+            step.plans.every((p) => hasAny(applyPlanToStream(p, [t], graph, ctx))),
+          )
+        : hopExistenceCombinedStep(stream, hops, true);
+    }
 
-    case 'not':
-      return filterTraverser(stream, (t) => !hasAny(applyPlanToStream(step.plan, [t], graph, ctx)));
+    case 'or': {
+      const hops = allHopExistence(step.plans);
+
+      return hops === undefined
+        ? filterTraverser(stream, (t) =>
+            step.plans.some((p) => hasAny(applyPlanToStream(p, [t], graph, ctx))),
+          )
+        : hopExistenceCombinedStep(stream, hops, false);
+    }
+
+    case 'not': {
+      const exists = singleHopExistence(step.plan);
+
+      return exists === undefined
+        ? filterTraverser(stream, (t) => !hasAny(applyPlanToStream(step.plan, [t], graph, ctx)))
+        : hopExistenceStep(stream, exists, false);
+    }
 
     case 'union':
       return unionStep(stream, step.plans, graph, ctx);
@@ -382,8 +409,14 @@ export const applyStep = (
     case 'choose':
       return chooseStep(stream, step.test, step.thenPlan, step.elsePlan, graph, ctx);
 
-    case 'filter':
-      return whereSubPlanStep(stream, step.plan, graph, ctx);
+    case 'filter': {
+      // The same step as the sub-plan `where`, so the same fusion.
+      const exists = singleHopExistence(step.plan);
+
+      return exists === undefined
+        ? whereSubPlanStep(stream, step.plan, graph, ctx)
+        : hopExistenceStep(stream, exists, true);
+    }
 
     case 'hasNot':
       return filterStream(stream, (v) => {

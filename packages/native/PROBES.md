@@ -2132,3 +2132,105 @@ together and still exits non-zero. ⚠️ Third harness-integrity fix in four it
 templated config pointing at the previous subject, item 1913's swapped per-arm labels, this): **a
 measuring instrument's own configuration is the first thing to verify, and it fails silently by
 default.**
+
+## `wheresub-prof-1915.mjs` — the sub-plan filters, against the floor that answers the same rows
+
+`V().where(out(T)).values(k)` was the Gremlin workload screen's largest shape with neither a path
+requirement nor a priced refusal: **90.01 ms for 200,000 rows that `V().values(k)` answers in 4.17**.
+Seven arms, one shape per process: the target, the `scan` floor (the SAME 200,000 rows, no filter),
+`filter`/`not`/`and`/`or` (the sibling spellings), the `count()` twin — which returns ONE row and so
+prices the filter with nothing downstream — and the plain hop as a control the change cannot reach.
+
+```
+SHAPE=where|scan|filter|not|and|or|wherecnt|andcnt|orcnt|hop bun --cpu-prof wheresub-prof-1915.mjs
+```
+
+⚠️ **THE `count()` TWIN IS THE ARM TO READ FIRST.** It isolates the filter from the projection, and
+it is what turned "90 ms for a filtered scan" into "**404 ns per vertex to answer a yes/no**" against
+a plain hop's 52 ns to visit an edge AND read a property off it.
+
+⚠️ **PROFILE AT `REPS=100`, NOT THE DEFAULT.** At REPS=25 the fixture build is still ~60% of the
+profile (`indexEdgeLabel`, `getVertexById`, `#commitNormalized`) and the query's own frames are
+buried — item 1900's lesson, hit again here. At REPS=100 the picture is unambiguous:
+`generatorResume` 42.2%, `iterLabeled` 18.7%.
+
+## ⚠️ AN EXISTENCE TEST CAN ADMIT WHAT A HOP RUNG MUST REFUSE (item 1915)
+
+`soleTypeBucket` refuses `both`, a multi-type hop and an untyped one, and those refusals are
+load-bearing **for an answer**: it must not double-count a `T|S` edge, must drop a self-loop's
+duplicate under `both`, and must read the correct END off the edge. **None of the three is observable
+in a yes/no**, so `sub-plan-existence.ts` admits all of them plus the edge-emitting spellings
+(`outE`/`inE`/`bothE` walk the identical adjacency and differ only in what they yield).
+
+So before reusing a hop helper for a filter, ask which of its refusals are about the ANSWER and which
+are about the SHAPE. The equivalence the broader gate rests on: `traverseToVertex` and
+`traverseToEdge` yield for EVERY adjacent edge unconditionally, so "the sub-plan emits something" and
+"a bucket is non-empty" are the same question — and any step that can DROP a traverser (a `has`)
+breaks it.
+
+## ⚠️ `emptybucket-probe-1915.mjs` — ASK THE STRUCTURE, DON'T CITE A TEST THAT USES `?? 0`
+
+`sub-plan-existence.ts` tests `set.size > 0` rather than `set !== undefined`, and the comment
+justifying that originally cited `topology-version.test.ts`'s `a.adjFrom?.get('F')?.size ?? 0`.
+**That `?? 0` is equally consistent with an ABSENT bucket, so the citation proved nothing.** This
+probe asks the graph directly, by every route that can drop a vertex's last edge of a label:
+
+```
+bun emptybucket-probe-1915.mjs
+```
+
+The answer is that core **DELETES** a bucket as it empties — `removeEdge`, `removeLabelFromEdge`, the
+last of several same-label edges, and removing the far vertex, all four. So a present-but-empty
+bucket does not arise, `!== undefined` would be answer-equivalent, and **TWO mutants in
+`wheresub-mutants-1915.mjs` are uncatchable by construction** (the `size > 0` guard and the untyped
+loop, which the invariant makes redundant in the same way). Both are declared with that reason, and
+the invariant is now pinned in `adjacency-box.test.ts` rather than assumed by the consumer.
+
+⚠️ The general form: **a `?? 0` or a `?.` in an assertion means the test passes under both of the
+states you are trying to distinguish.** If a decision rests on which one holds, write the probe.
+
+## ⚠️ PROVE THE CAP BINDS, NOT JUST THAT THE PROCESS DIED (item 1915)
+
+`wheresub-mutants-1915.mjs --prove` runs the net before the mutants. Three things it got wrong first,
+each worth avoiding:
+
+- **The bomb was too slow to be run.** `1 << 24` chunks reached 4.8 GB in 265 seconds. A proof nobody
+  runs is not a proof. 256 MiB chunks, each TOUCHED so the pages are really resident, cross a 16 GiB
+  cap in seconds.
+- **Its verdict lines were piped into `tail` and never appeared** — leaving `exit 0` standing in for
+  the evidence it was supposed to summarize. The same mistake as reading a test runner's exit code
+  without its result line, one layer up.
+- ⚠️ **THE BOMB DIES EXIT 1, NOT 137.** Bun's allocator hits the failed mapping inside the cgroup and
+  throws, rather than the kernel delivering SIGKILL. Non-zero either way, so a battery's verdict is
+  unaffected — but **a non-zero exit alone does not show the CAP did it**, since a JS runtime has its
+  own heap ceiling. The proof is that the death point SCALES with the cap:
+
+```
+2G cap    killed BY SIGNAL after   7,310 ms
+16G cap   bun exit 1 after        49,145 ms     ⬅ 6.7x longer for 8x the cap
+bare spin loop                    exit 124      the timeout, which MemoryMax never trips
+```
+
+⚠️ An UNCAPPED arm would compare more cleanly and is deliberately NOT run: CLAUDE.md records a
+runaway filling a 192 GB swapfile and forcing a hard reboot, and this box has taken that four times.
+
+## ⚠️ A NEW EXECUTOR MODULE IS A LEAF OR IT IS A CYCLE (item 1915)
+
+`sub-plan-existence.ts` declares its own one-line `isVertex` instead of importing it, because
+`runtime.ts` imports `applyPlanToStream` from `dispatch.ts` and `dispatch.ts` imports the new module
+— so a VALUE import from `runtime` is a cycle and `import/no-cycle` is an error. A `type` import is
+erased and is fine. The predicate is the identical `isVertexShaped` call `runtime.ts` itself exports,
+not a second derivation of it. Third module in this package forced into that shape, after
+`far-mask-drain.ts`'s locally-declared `Gate` and `csr-cache.ts` on the GQL side.
+
+## ⚠️ AN INDEXED LOOP IS NOT THE FIX, TWICE (item 1915)
+
+`and(out(E))` shipped at 36.61 ms against the identical `where(out(E))`'s 20.85 — 1.75x between two
+spellings of one question. The guess was that `for…of` over the hops array allocated an iterator per
+vertex; an indexed loop moved it 36.70 to 36.35, i.e. nothing. The same substitution in
+`anyNonEmpty`'s loop over `labels` also measured neutral on all three arms.
+
+**What fixed it was routing arity 1 to the straight-line step** (`and(p)` and `or(p)` over one plan
+both mean exactly `p`), which took it to 20.85. So the cost is a LOOPING GENERATOR BODY with a
+mutable accumulator against a straight-line `const hit = …`, not the iterator. Both rejected
+substitutions are recorded in place with their numbers.

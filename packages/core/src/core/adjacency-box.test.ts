@@ -149,6 +149,52 @@ describe('the adjacency box', () => {
     expect(g1.edgesFromByLabel.get('a')?.get('E')?.size).toBe(1);
   });
 
+  /**
+   * ⚠️ AN EMPTIED BUCKET IS DELETED, NOT LEFT EMPTY — pinned here because a CONSUMER now leans on
+   * it. Gremlin's `sub-plan-existence.ts` answers `where(out(T))` by asking whether a bucket is
+   * non-empty, and it reads `size > 0` precisely so that it does NOT depend on this. But the cheaper
+   * presence test would, and the only thing standing between "an empty bucket cannot arise" and a
+   * wrong answer over there is this invariant, which nothing asserted. Item 1915's probe found all
+   * four removal routes already honour it; this test is what keeps that true.
+   *
+   * The routes are enumerated rather than sampled because they are separate code paths in the
+   * mutator: they do not share one "drop the edge from its bucket" helper.
+   */
+  test('an emptied bucket is deleted, not left present and empty', () => {
+    const g = new Graph();
+    const a = g.addVertex({ id: 'a', labels: ['N'], properties: {} });
+    const b = g.addVertex({ id: 'b', labels: ['N'], properties: {} });
+
+    // 1. removeEdge of the only edge of that label.
+    const e1 = g.addEdge({ id: 'e1', from: a, to: b, labels: ['E'], properties: {} });
+    expect(a.adjFrom?.get('E')?.size).toBe(1);
+    g.removeEdge(e1);
+    expect(a.adjFrom?.get('E')).toBeUndefined();
+
+    // 2. removeLabelFromEdge, taking the edge out of one of its two buckets.
+    const e2 = g.addEdge({ id: 'e2', from: a, to: b, labels: ['E', 'F'], properties: {} });
+    expect(a.adjFrom?.get('F')?.size).toBe(1);
+    g.removeLabelFromEdge('F', e2);
+    expect(a.adjFrom?.get('F')).toBeUndefined();
+    // ...and the bucket it still belongs to is untouched.
+    expect(a.adjFrom?.get('E')?.size).toBe(1);
+
+    // 3. the LAST of several same-label edges: the bucket survives the first removal.
+    const e3 = g.addEdge({ id: 'e3', from: a, to: b, labels: ['E'], properties: {} });
+    g.removeEdge(e2);
+    expect(a.adjFrom?.get('E')?.size).toBe(1);
+    g.removeEdge(e3);
+    expect(a.adjFrom?.get('E')).toBeUndefined();
+
+    // 4. removing the far VERTEX, which takes the edge with it.
+    const c = g.addVertex({ id: 'c', labels: ['N'], properties: {} });
+
+    g.addEdge({ id: 'e4', from: a, to: c, labels: ['E'], properties: {} });
+    expect(a.adjFrom?.get('E')?.size).toBe(1);
+    g.removeVertex(c);
+    expect(a.adjFrom?.get('E')).toBeUndefined();
+  });
+
   test('findEdge reads the box', () => {
     const g = new Graph();
     const a = g.addVertex({ id: 'a', labels: ['N'], properties: {} });

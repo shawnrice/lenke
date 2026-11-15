@@ -69,6 +69,7 @@ import {
   union,
   V,
   values,
+  where,
   within,
 } from '@lenke/gremlin';
 import type { Plan } from '@lenke/gremlin';
@@ -549,6 +550,52 @@ const GROUPS: readonly Group[] = [
     [
       traversal(V(), in_('T'), values('k'), dedupe()),
       traversal(V(), in_('T'), dedupe().by('k'), values('k')),
+    ],
+  ],
+  // ---- SUB-PLAN EXISTENCE: five spellings of "does this vertex have an out-T" (item 1915) ----
+  //
+  // ⚠️ THESE ARE ONE QUESTION IN FIVE SURFACE FORMS, which is exactly what CLAUDE.md's
+  // equivalent-spellings section is about. `where(p)` and `filter(p)` are the SAME executor step
+  // under two names; `and(p)` and `or(p)` over a single plan both mean exactly `p`; and `outE(T)`
+  // walks the identical adjacency as `out(T)`, differing only in what it yields — which a filter
+  // cannot see. Before item 1915 all five ran a sub-pipeline per vertex and cost the same (~87 ms);
+  // the risk a group here guards is that the fusion reaches some and not others.
+  //
+  // ⚠️ AND THE RISK WAS REAL WITHIN THIS ITEM: `and(out(T))` first shipped at 36.6 ms against
+  // `where(out(T))`'s 20.9 — a 1.75x gap between two spellings of one question — because arity 1
+  // went through the combining loop instead of the single-hop step. Nothing about the ANSWER
+  // differed. This group is the instrument that would have caught it.
+  [
+    'hop existence: where vs filter vs and vs or vs the outE spelling',
+    [
+      traversal(V(), where(traversal(out('T'))), values('k')),
+      traversal(V(), filter(traversal(out('T'))), values('k')),
+      traversal(V(), and(traversal(out('T'))), values('k')),
+      traversal(V(), or(traversal(out('T'))), values('k')),
+      traversal(V(), where(traversal(outE('T'))), values('k')),
+    ],
+  ],
+  [
+    'hop existence, incoming: where(in(T)) vs where(inE(T)) vs filter',
+    [
+      traversal(V(), where(traversal(in_('T'))), values('k')),
+      traversal(V(), where(traversal(inE('T'))), values('k')),
+      traversal(V(), filter(traversal(in_('T'))), values('k')),
+    ],
+  ],
+  [
+    'hop existence, undirected: where(both(T)) vs where(bothE(T))',
+    [
+      traversal(V(), where(traversal(both('T'))), values('k')),
+      traversal(V(), where(traversal(bothE('T'))), values('k')),
+    ],
+  ],
+  // The negation, whose only other spelling is the edge-emitting one.
+  [
+    'hop non-existence: not(out(U)) vs not(outE(U))',
+    [
+      traversal(V(), not(traversal(out('U'))), values('k')),
+      traversal(V(), not(traversal(outE('U'))), values('k')),
     ],
   ],
   // ⚠️ THREE MORE GROUPS WERE IN THE FIRST CUT OF THIS SECTION AND THE ANSWER CHECK REJECTED ALL

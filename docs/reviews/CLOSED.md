@@ -90698,9 +90698,203 @@ silently by default.**
 
 🔭 **WHAT IS LEFT ON THE SCREEN** is `path: hop path` at 149.25, which genuinely needs the path —
 `V().out(E).path()` returns path objects, so there is no tag-free rewrite — and
-`edge: outE.has(w).inV` at 105.18, `agg: hop values min` at 103.00, `where: sub-traversal` at 95.44.
-The tagged cluster that was the top four at item 1911 is gone.
+`edge: outE.has(w).inV` at 105.18, `agg: hop values min` at 103.00, ~~`where: sub-traversal` at
+95.44~~ **TAKEN at item 1915: 4.14x, to 20.87 ms, with its `count` twin at 6.11x and three sibling
+spellings (`filter`, `not`, `and`) at 3.91-6.57x.** The tagged cluster that was the top four at item
+1911 is gone. ⚠️ The other two were already priced and declined when this line was written, which it
+does not say: item 1893 for the edge rung (2.08x a hand walk, the edge-indexed CSR a further 1.79x
+and not built) and item 1892 for the fold ("not a route gap").
 
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers;
 `bun run spelling:gremlin` (0 disagreements, 0 groups over 2x); the Gremlin suite (2,320 tests) and
 the workload screen at 200,000 vertices.
+
+## Item 1915 — **4.14x / 6.11x / 6.57x / 3.91x / 4.55x**: `where(out(T))` and its four sibling spellings ran a sub-pipeline PER VERTEX to answer a yes/no. The screen's largest non-path shape, and the gate can be BROADER than the hop rung's because dedupe and endpoint are unobservable in an existence test
+
+Items 1909-1914 cleared the list-shaped and tagged Gremlin shapes. What was left at the top of the
+workload screen at 200,000 vertices / 1,000,000 edges was `path: hop path` (149, which genuinely
+returns path objects), `edge: outE.has(w).inV` (70) and `agg: hop values min` (63) — **both already
+priced and declined** (item 1893: the edge rung is 2.08x a hand walk over the identical `Set`s, the
+`drain` half taken, the edge-indexed CSR priced at a further 1.79x and NOT built; item 1892: the min
+fold is "~17 ms for an order-invariant fold … not a route gap") — and `where: sub-traversal` at
+**90.01 ms for 200,000 rows that `V().values(n)` answers in 4.17**, with no entry anywhere.
+
+🔑 **THE MECHANISM WAS READABLE BEFORE ANY PROFILE.** `whereSubPlanStep` calls
+`applyPlanToStream(plan, [t], graph, ctx)` ONCE PER TRAVERSER — a one-element array, a walk of the
+sub-plan's steps through a 103-arm dispatch, and a generator per step, 200,000 times, to answer "do
+you have an out-edge". `case 'optional'` in the same file already fuses exactly this shape
+(`optionalSingleHop`, item 1480) for exactly this reason. The profile at REPS=100 confirmed it:
+**42.2% `generatorResume`, 18.7% `iterLabeled`** — the delegation chain `outEdgesOf` ->
+`iterByLabel` -> `iterLabeled`, one generator frame per level, per vertex.
+
+      INTERLEAVED PRE/POST, 3 rounds, 200,000 vertices / 1,000,000 edges, one shape per process,
+      median of 7, min across rounds:
+
+        where(out(E)).values(n)      86.33  ->  20.87 ms   ⬅ 4.14x
+        where(out(E)).count()        72.65  ->  11.88      ⬅ 6.11x   the filter ALONE, one row
+        not(out(E))                  73.89  ->  11.25      ⬅ 6.57x
+        filter(out(E))               88.13  ->  22.52      ⬅ 3.91x
+        and(out(E))                  94.80  ->  20.85      ⬅ 4.55x
+        CONTROL plain hop            40.98  ->  41.58       flat
+        CONTROL bare scan             5.02  ->   5.02       flat
+
+⚠️ **AND THE A/B IS INTERLEAVED BECAUSE THE FIRST SINGLE-RUN PAIR SAID THE CONTROLS REGRESSED** — the
+plain hop 41.49 -> 45.21 and the bare scan 4.17 -> 4.95, 9% and 19% the wrong way, on a change to
+the central 103-arm dispatcher where [[executor-edits-perturb]] makes up to 16% entirely plausible.
+Three alternating rounds with a per-arm `grep` assertion put both controls flat. CLAUDE.md's
+"several conclusions here were single-run against single-run and did not survive repetition",
+collected rather than cited.
+
+🔑 **WHY THE GATE IS BROADER THAN `soleTypeBucket`'S, which is the whole reason this is a new helper
+and not a call to that one.** `soleTypeBucket` refuses `both`, a multi-type hop and an untyped one,
+and those refusals are load-bearing FOR AN ANSWER: it must not double-count a `T|S` edge, must drop
+a self-loop's duplicate under `both`, and must read the correct END off the edge. **None of the
+three is observable in a yes/no.** So existence admits `both`, multi-type, untyped, AND the
+edge-emitting spellings (`outE`/`inE`/`bothE` walk the identical adjacency and differ only in what
+they yield), while `soleTypeBucket` goes on refusing them.
+
+The equivalence it rests on, stated so that widening the gate stays a correctness question:
+`traverseToVertex` and `traverseToEdge` yield for EVERY adjacent edge **unconditionally** — a bare
+adjacency step has no per-edge filter — so "the sub-plan emits something" and "a bucket is
+non-empty" are the same question. Any step that can DROP a traverser breaks it, which is why `has`
+is refused.
+
+## ⚠️ A CLAIM IN THE FIRST DRAFT WAS UNSUPPORTED, AND THE PROBE THAT CHECKED IT FOUND THE OPPOSITE
+
+The module said the test must be `size > 0` rather than presence because "an emptied bucket
+persists", citing `topology-version.test.ts`'s `a.adjFrom?.get('F')?.size ?? 0`. **That `?? 0` is
+equally consistent with an ABSENT bucket, so the citation proved nothing.**
+`emptybucket-probe-1915.mjs` asked the structure directly and found core **DELETES** a bucket as it
+empties — by all four routes that can drop a vertex's last edge of a label (`removeEdge`,
+`removeLabelFromEdge`, the last of several same-label edges, removing the far vertex). So a
+present-but-empty bucket does not arise and `!== undefined` would be answer-equivalent.
+
+✅ **IT STAYS `size > 0` FOR THE OTHER REASON**: not because it is cheaper (one `Set.size` load
+either way) but because the alternative silently depends on a CORE invariant this module does not
+own. That invariant is now pinned where it lives — `adjacency-box.test.ts`'s "an emptied bucket is
+deleted, not left present and empty", enumerating all four routes because they are separate paths in
+the mutator. ⚠️ The consequence is DECLARED rather than papered over: the mutant swapping the two
+SURVIVES every test in this repo, and it is in `EXPECTED_SURVIVORS` with this as its reason.
+
+## 🛑 Two spellings of one question shipped 1.75x apart inside this item
+
+The first cut routed `and`/`or` through a combining loop at every arity, and `and(out(E))` measured
+**36.61 ms against the identical `where(out(E))`'s 20.85** — for a loop of length ONE. The answer was
+never in question; only the cost was.
+
+      ❌ FIRST GUESS, WRONG: `for…of` over the hops array allocates an iterator per vertex. An
+         indexed loop moved it 36.70 -> 36.35, i.e. not at all.
+      ✅ THE DECISIVE EXPERIMENT was also the fix: route arity 1 to the single-hop step — `and(p)`
+         and `or(p)` over one plan both mean exactly `p` — which took it to 20.85, level with
+         `where`. So the cost is the LOOPING GENERATOR BODY with a mutable `hit`, against a
+         straight-line `const hit = …; if (hit === want)`. ~75 ns a vertex for that shape alone.
+
+⚠️ **AND THAT IS WHY THE SPELLING PROBE GAINED A GROUP.** Five surface forms of "does this vertex
+have an out-T" — `where(p)`, `filter(p)` (the same executor step under two names), `and(p)`, `or(p)`
+(both meaning exactly `p` at arity 1) and `where(outE(T))` — now sit in
+`gremlin-spelling-probe.ts`, plus incoming, undirected and negated groups. Before this item all five
+cost the same ~87 ms; the risk a group guards is a fusion reaching some and not others, which is
+precisely what happened here for one afternoon. ⚠️ `and`'s 1.75x was invisible to every answer test
+and to the route screen, and visible to this instrument.
+
+      In-screen the row went 90.01 -> 22.33 ms, with `hop1: values` flat at 45.06 and
+      `scan: values` at 5.93.
+
+      bun run spelling:gremlin, the four new groups: 0 answer disagreements, 0 groups over 2x.
+        hop existence: where / filter / and / or / outE   54.1-61.2 ms, spread 1.13x
+        incoming: where(in) / where(inE) / filter          65.9-67.8, spread 1.03x
+        undirected: where(both) / where(bothE)             59.9-60.1, spread 1.00x
+        non-existence: not(out(U)) / not(outE(U))          48.7-48.9, spread 1.00x
+
+## Mutation
+
+**25 mutants over the recognizer, the predicate, both step bodies and the dispatch wiring: 20
+caught, 5 declared.** The harness was proved first — a 2G cap kills the allocator bomb BY SIGNAL
+after 7,310 ms where a 16G cap lets bun exit 1 after 49,145 ms (6.7x longer for 8x the cap, which is
+what shows the cap and not the runtime's own ceiling is doing it), and a bare spin loop exits 124 on
+the timeout `MemoryMax` never trips.
+
+⚠️ **A SECOND SURVIVOR WAS FOUND RATHER THAN PREDICTED, and it generalized the point above.** "An
+untyped hop reads only the FIRST bucket" survived, because with no empty buckets "SOME bucket is
+non-empty", "the FIRST bucket is non-empty" and `byLabel.size > 0` are ONE predicate. So the untyped
+loop is redundant today by exactly the invariant that makes `size > 0` redundant today. Both keep
+their defensive form, both are declared, and the invariant is pinned one layer down instead of
+assumed — the pair of choices, stated together, rather than a silent dependency.
+
+⚠️ **ONLY TWO GATE MUTANTS ARE ROUTE-ONLY, and that is a direct consequence of exporting the
+decision.** `singleHopExistence`, `allHopExistence` and `hasAdjacency` are exported and unit-tested
+directly, so a mutant that mis-recognizes a shape or mis-answers a bucket fails **even with every
+route disabled** — which is exactly what [[perf-gate-needs-its-own-test]] prescribes ("extract the
+arithmetic as a pure fn and unit-test it"). Without that, all 21 would have been route-only.
+
+Gaps the mutants found and closed:
+
+      ❌ THE `isVertex` GUARD WAS UNCHECKED. Removing it changes nothing for a string or an edge
+         (`.adjFrom` is merely undefined) — so every case in the file still passed. It matters for
+         `null`, which [[null-first-class-policy]] makes a STORED, PRESENT value: `values(k)` over a
+         null property puts `null` in the stream and `null.adjFrom` THROWS. One test on a
+         null-valued vertex is the only thing that reaches it.
+      ❌ ARITY TWO IS A DIFFERENT FUNCTION after the split above, so the arity-1 tests cover none of
+         the combining loop. The arity-2 `and`/`or` cases are the only ones that enter it.
+      ❌ A NON-EXISTENT PATH IN THE BATTERY'S OWN TEST LIST: the first draft named
+         `src/executor/match.test.ts`, which does not exist (it is `match-bucket-hop.test.ts`).
+         Caught by listing the directory instead of recalling it — the silent-config failure item
+         1907 is about, now a fourth instance.
+
+⚠️⚠️ **AND THE PROOF-OF-NET ARM HAD TO BE FIXED TWICE, which is the item's third harness finding.**
+CLAUDE.md requires proving the timeout and the memory cap kill before trusting them with a mutant:
+
+      ❌ THE BOMB WAS TOO SLOW TO BE RUN: `1 << 24` chunks reached 4.8 GB in 265 seconds. A proof
+         nobody runs is not a proof. 256 MiB chunks, each TOUCHED so the pages are really resident,
+         cross the cap in seconds.
+      ❌ ITS VERDICT LINES WERE PIPED INTO `tail` AND NEVER APPEARED — only `exit 0` did, an exit
+         code standing in for the evidence it is supposed to summarize. The same mistake, one layer
+         up, as reading a test runner's exit code without its result line.
+      ⚠️ AND THE BOMB DIES **EXIT 1, NOT 137**: bun's allocator hits the failed mapping inside the
+         cgroup and throws instead of the kernel delivering SIGKILL. Non-zero either way, so the
+         battery's verdict is unaffected — but a non-zero exit ALONE does not show the CAP did it,
+         since a JS runtime has its own heap ceiling. So the proof is that the death point SCALES:
+
+             2G cap   killed BY SIGNAL after  7,310 ms
+             16G cap  bun exit 1 after       49,145 ms     ⬅ 6.7x longer for 8x the cap
+             bare spin loop                  exit 124      the timeout, which MemoryMax never trips
+
+         An UNCAPPED arm would compare more cleanly and is deliberately not run: CLAUDE.md records a
+         runaway filling a 192 GB swapfile and forcing a hard reboot, and this box has taken that
+         four times.
+
+## ⚠️ Two rejected changes, with their numbers, next to the code
+
+Both are `for…of` -> indexed-loop substitutions, and **both measured neutral**, which matters
+because the first was made on a confident wrong diagnosis of `and`'s 1.75x (above) and the second
+generalized that wrong diagnosis to a second site:
+
+      combinedWalk's loop over `hops`        36.70 -> 36.35 ms     neutral
+      anyNonEmpty's loop over `labels`       where 20.84-21.29 against 20.85-21.80, count
+                                             11.78-12.16 against 11.88, not 10.52-11.14
+                                             against 11.25 — all inside the noise
+
+Both are back to `for…of` (the linter prefers it and there was no win to defend) with the numbers
+recorded in place. V8 does not allocate per call for a `for…of` over a short readonly array in
+either position.
+
+🔑 **AND THE MODULE HAD TO BECOME A LEAF**, which is worth recording because it is the third module
+in this package forced into that shape: importing `isVertex` as a VALUE from `runtime.ts` is a cycle
+(`runtime.ts` imports `applyPlanToStream` from `dispatch.ts`, and `dispatch.ts` imports this), so
+`import/no-cycle` is an error. `Traverser` stays an `import type`, which is erased; the predicate is
+the identical one-line `isVertexShaped` call `runtime.ts` itself exports, not a second derivation.
+Same shape as `far-mask-drain.ts`'s locally-declared `Gate` and `csr-cache.ts` on the GQL side.
+
+🔭 **THE RESIDUAL, recorded rather than guessed at**: `where(out(E)).values(n)` at 20.87 is still
+4.2x the 4.95 that `V().values(n)` costs for the SAME 200,000 rows — about 80 ns a vertex for the
+adjacency test itself, which the profile puts largely in the `adjFrom` getter (4.7%) plus the
+`Map.get`. Whether a single-label fast path (the `soleTypeBucket` shape, one `get` and no loop)
+reaches it is the open question; it is not measured here.
+
+Items 1892 and 1893's headings are left as they stand — both priced shapes this item does not touch
+— and item 1898's "the two that are not [path-gated]" line is corrected, since `where(sub)` was the
+third and is now taken.
+
+GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers;
+`bun run spelling:gremlin` (0 disagreements, 0 groups over 2x); the Gremlin suite and the workload
+screen at 200,000 vertices.
