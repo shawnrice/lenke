@@ -85,6 +85,14 @@ const ARMS = {
   // The bare hop — the FLOOR, and not a valid ceiling for the other two: it emits nothing for the
   // vertex they emit a fallback row for, so it does strictly less work (item 1951's rule).
   hop: () => traversal(V(), out('E'), values('n')),
+  /*
+   * ⚠️⚠️ THE INWARD HOP IS A SEPARATE CONTROL, and item 1993 is why. `chooseTwoArm`'s test is
+   * `has('n', 0)` over `n = i % 97`, so **96 of every 97 vertices take the `in_(E)` arm** — while the
+   * `hop` control above is `out(E)`. Comparing them attributes the inward hop's cost to `choose`.
+   * CLAUDE.md's "match the fixture to the claim", one level in: match the CONTROL to the arm the
+   * shape actually takes.
+   */
+  hopIn: () => traversal(V(), in_('E'), values('n')),
   optional: () => traversal(V(), optional(out('E')), values('n')),
   coalesce: () => traversal(V(), coalesce(out('E'), identity()), values('n')),
   /*
@@ -114,6 +122,14 @@ const ARMS = {
    */
   chooseTrivialArms: () => traversal(V(), choose(has('n', 0), identity(), identity()), values('n')),
   chooseHopTest: () => traversal(V(), choose(out('E'), identity(), identity()), values('n')),
+  /*
+   * ⚠️ BOTH ARMS THE SAME, so routing cannot matter and this isolates (test + choose machinery)
+   * against the bare `out` hop. If the machinery is cheap this lands near the hop; if it lands near
+   * `chooseTwoArm` the machinery IS the cost and the arm was never the term to optimize.
+   */
+  chooseSameArm: () => traversal(V(), choose(has('n', 0), out('E'), out('E')), values('n')),
+  /* Test = identity (always yields, so always arm 0) — a trivially cheap test with a real arm. */
+  chooseIdTest: () => traversal(V(), choose(identity(), out('E'), in_('E')), values('n')),
   handChoose: 'HAND',
   branchTwo: () =>
     traversal(

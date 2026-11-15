@@ -96649,7 +96649,7 @@ NO ENGINE BEHAVIOUR CHANGED — probe arms and this entry.
 
 GATES. `bun run fmt` 0; `bun run check` 0.
 
-## Item 1992 — 🛑 **THE FIX I WAS ABOUT TO BUILD TARGETED THE MINOR TERM: `choose`'s cost is the ARM invocation at ~1501 ns a vertex, where the TEST is 136.** Decomposed before building, which is the only reason the wrong change was not made
+## Item 1992 — 🛑 **THE FIX I WAS ABOUT TO BUILD TARGETED THE MINOR TERM: `choose`'s cost is the ARM invocation at ~1501 ns a vertex, where the TEST is 136.** ⚠️⚠️ **ITS ATTRIBUTION IS WRONG AND ITEM 1993 REFUTES IT BY BUILDING THE PRESCRIBED FIX (1.07x, reverted): the cost is PER ROW in the step's yield path, not per-vertex arm setup. The "1501 ns a vertex" is the same quantity over the wrong denominator.** Decomposed before building, which is the only reason the wrong change was not made
 
 Item 1991 priced `choose` at 2.89x a hand ceiling and left the build to this tick. Reading
 `chooseStep` showed two `applyPlanToStream` calls per traverser — one for the test, one for the
@@ -96698,3 +96698,68 @@ measurement actually covers.
 NO ENGINE BEHAVIOUR CHANGED — two diagnostic probe arms and this entry. `chooseStep` is untouched.
 
 GATES. `bun run fmt` 0; `bun run check` 0.
+
+## Item 1993 — 🛑 **I BUILT THE FIX ITEM 1992 PRESCRIBED AND IT GAINED 1.07x — NOTHING. Both my hypotheses are refuted by measurement, and the cost is PER ROW (~300 ns in the step's yield path), not per-traverser setup.** Change reverted; the diagnosis is now correct and the cure is the established one
+
+Item 1992 decomposed `choose` and located the cost in the ARM invocation (~1501 ns a vertex against
+the test's 136), prescribing an inline single-step arm. I built it: `singleVertexStep` hoisted once
+per run, and the arm applied with `traverseToVertex`'s body verbatim — same `adjacentEdges`,
+`otherEndpoint` and `extend`, so no per-traverser array, `applyPlanToStream` call, step dispatch or
+generator chain.
+
+```text
+    chooseTwoArm   327.40 -> 307.28 ms     1.07x — inside the run drift; the controls moved too
+```
+
+**Reverted.** A change that buys noise is a net negative: [[executor-edits-perturb]] prices a new
+variant at up to 16% on unrelated shapes, and the user's standing position is that keeping code on
+the speculation that it might matter later is the wrong trade. `iteration.ts` is byte-identical to
+HEAD, verified.
+
+### 🛑 AND ITEM 1992's DECOMPOSITION WAS MISATTRIBUTED — TWICE OVER
+
+**First suspicion: the control was the wrong direction.** `chooseTwoArm`'s test is `has('n', 0)` over
+`n = i % 97`, so **96 of 97 vertices take the `in_(E)` arm**, while the `hop` control was `out(E)`.
+That is CLAUDE.md's "match the fixture to the claim" one level in — match the CONTROL to the arm the
+shape actually takes. Measured: ❌ refuted, `in_` is if anything CHEAPER (45.51 against 46.17 ms).
+
+**Then the decisive arms, which refute the arm hypothesis outright:**
+
+```text
+    bare out hop                                        46.17 ms   800,000 rows    58 ns/row
+    choose(identity(), out(E), in_(E))                 285.41      800,000        357   ⬅ trivial
+                                                                                          test AND
+                                                                                          inlined arm
+    choose(has(n,0), out(E), out(E))                   302.14      800,000        378   ⬅ routing
+                                                                                          cannot matter
+    HAND CEILING (test + arm + property read)          115.57      800,000        144
+```
+
+🔑 **WITH A TRIVIAL TEST AND AN INLINED ARM, `choose` IS STILL 6.2x THE BARE HOP.** So neither the
+test nor the arm plumbing is the cost — and the gap is **per ROW (≈300 ns), not per vertex**: 4 rows a
+vertex each paying ~300 ns to pass through `chooseStep`'s yield. Item 1992's "1501 ns a vertex" was
+the same quantity read per the wrong denominator, which is why the fix it prescribed could not work.
+
+⚠️ **THE DENOMINATOR IS THE WHOLE ERROR.** Item 1992 divided by VERTICES because the test runs per
+vertex, and that framing made the arm look like a per-vertex setup cost. Dividing by ROWS shows a
+flat per-row toll, which points at the yield path instead. **A per-row and a per-vertex cost are
+different defects with different cures, and on a fixture with fixed fan-out they are indistinguishable
+until you print both.** The probe now prints `ns/row` beside `ms` for exactly this reason.
+
+### ✅ THE CURE IS THE ONE THE ENGINE ALREADY USES
+
+A per-row toll inside a sub-plan step cannot be optimized away from inside the step — which is why
+`optional` is fast: not because `optionalStep` is fast, but because `optional-hop-values.ts` answers
+`V().optional(hop).values(k)` WHOLESALE and `optionalStep` never runs. Item 1990's normalization
+exploited exactly that. So `choose` needs a fused route that bypasses `chooseStep` for the common
+shape, not an improvement to `chooseStep`.
+
+🔭 **STILL OPEN at 2.59x the hand ceiling** (309.51 against 115.57 this run), now with: the cost
+located per row rather than per vertex, two cures refuted by measurement, and the pattern to follow
+named.
+
+NO ENGINE BEHAVIOUR CHANGED — the inline arm was built, measured, and reverted; `git diff` over
+`packages/gremlin` against HEAD is empty. Probe arms (`hopIn`, `chooseSameArm`, `chooseIdTest`) and
+this entry are what ship.
+
+GATES. `bun run fmt` 0; `bun run check` 0; the Gremlin suite 2,435 pass / 0 fail after the revert.
