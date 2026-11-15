@@ -93223,7 +93223,7 @@ NO ENGINE BEHAVIOUR CHANGED — one instrument and this entry.
 
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects.
 
-## Item 1943 — ✅ **`MIXED=1` on the GQL screen: the realistic-graph mode the repo never had.** The per-shape diff names THREE shapes and clears 45 — ⚠️ `deduped hop` **7.52x**, `one-hop projection` **5.85x**, `FILTER after a hop` **4.83x**, everything else ≤1.64x. And the one-hop number says items 1940/1941's new arm is SIZE-SENSITIVE ✅ **Its size-sensitivity nomination is RESOLVED at item 1944: the arm wins 2.5x-3.8x at every size: no regression, and the sensitivity is the WORKLOAD's, not the arm's**
+## Item 1943 — ✅ **`MIXED=1` on the GQL screen: the realistic-graph mode the repo never had.** The per-shape diff names THREE shapes and clears 45 — ⚠️ `deduped hop` **7.52x**, `one-hop projection` **5.85x**, `FILTER after a hop` **4.83x**, everything else ≤1.64x. And the one-hop number says items 1940/1941's new arm is SIZE-SENSITIVE ✅ **Its size-sensitivity nomination is RESOLVED at item 1944: the arm wins 2.5x-3.8x at every size: no regression, and the sensitivity is the WORKLOAD's, not the arm's** ⚠️ **Item 1947 bounds its TAIL: the full sweep over-reports by 1.2x-1.3x, so its 1.0x-1.64x rows are not individual findings; the three 4.83x-7.52x nominations survive**
 
 Items 1934-1942 established that `vacuousLabel` gates the GQL fast-path layer and that **every read
 screen is label-homogeneous**, so every row measures an arm a real schema cannot reach. This makes
@@ -93439,3 +93439,54 @@ coverage band — the same gate and the same arm, applied to one more rung.
 NO ENGINE BEHAVIOUR CHANGED — one instrument and this entry.
 
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects.
+
+## Item 1947 — ✅ **THE SUSPECTED PERTURBATION FROM MY OWN ARMS IS REFUTED, two of three rows outright.** The full-sweep diff over-reported by 1.2x-1.3x — `varlen {1,3}` is FASTER post-change, `CALL inline scoped` is flat, and `label disjunction`'s POST arm DRIFTS upward across rounds while PRE stays stable. ⚠️ Which also bounds how much of item 1943's diff to trust
+
+Before adding a FOURTH arm to `hop-projection.ts` (item 1946's corrected ~2x-3x target), I ran a
+check I had only been doing per-item: **the CUMULATIVE cost of items 1940/1941's arms on unrelated
+shapes.** [[executor-edits-perturb]] measures a new walk variant costing unrelated rows up to 16%
+through code size and inline caches — i.e. from the code EXISTING, not running — and item 1466
+declined a 3.3x for exactly that.
+
+On the HOMOGENEOUS fixture, where neither new arm can fire, the full-sweep diff (pre-1940 against
+post-1941) showed **five shapes 1.16x-1.25x slower**. That is the right signal to chase and the
+wrong instrument to conclude from.
+
+## The isolated A/B, against a worktree at the pre-1940 commit
+
+Two details make it a build comparison rather than another cross-run one: **the instrument was
+COPIED into the old worktree** (so both run the byte-identical screen, not one with item 1943's
+`MIXED` knob and one without), and **the arms ALTERNATE PRE/POST within each round**, so machine
+drift over the run cannot masquerade as a build difference.
+
+        shape                      PRE (3 rounds)            POST (3 rounds)         isolated   sweep
+        label disjunction          56.66 / 55.55 / 54.84     54.09 / 62.04 / 66.97     ~1.10x   1.25x
+        CONTROL varlen {1,3} rows 466.57 / 397.86 / 418.91  397.76 / 407.60 / 406.04    0.94x   1.21x
+        CALL inline scoped         42.36 /  43.38 /  42.91    43.52 /  41.83 /  42.10    0.99x   1.19x
+
+❌ **`varlen {1,3}` is FASTER after the change and `CALL inline scoped` is FLAT.** Both "regressions"
+are gone. 🔑 And `label disjunction`'s POST arm rises MONOTONICALLY across rounds (54.09, 62.04,
+66.97) while its PRE arm is stable (56.66, 55.55, 54.84) — a drifting arm is drift, not a build
+difference, and 1.10x is inside the floor this repo documents ("anything under ~10% needs its own
+isolated harness").
+
+So items 1940/1941 cost unrelated shapes nothing measurable, and the fourth arm is not disqualified
+on those grounds.
+
+## ⚠️ But this is item 737's phantom again, and it bounds item 1943
+
+The full sweep over-reported by **1.2x-1.3x on three separate rows**. That is the same in-sweep
+inflation that invented a 1.66x at item 737 — rows interfere, and a 48-shape sweep taken an hour
+apart on a busy machine is not a per-row instrument.
+
+🔑 **What that does and does not touch in item 1943's `MIXED` diff.** Its three nominations are
+**4.83x-7.52x**, far above a 1.3x inflation, so they survive — but its long tail of 1.0x-1.64x rows
+must NOT be read as real differences, and the two conclusions drawn from the tail need the same
+caveat: "45 of 48 shapes move less than 1.65x" is sound as a bound, while any individual row's 1.3x
+is not a finding. The flat rows (the `LET` family, string functions, sort keys) are safe in the other
+direction: inflation would make them look WORSE, and they did not.
+
+NO ENGINE BEHAVIOUR CHANGED — this entry, and a worktree created and removed.
+
+GATES. bun run check 0 (nothing to build); the tree is clean and `git worktree list` shows only the
+main checkout.
