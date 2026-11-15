@@ -97945,3 +97945,85 @@ OPEN after this: `runReach` self at 24.3% (1.393 ms/rep) is the largest single f
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
 `bun run fuzz` 57/57 FOUR times (the previous item's run caught a real wrong answer, so this is not
 ceremony); gql 4,985; parity 105/105 across both acyclic files.
+
+## Item 2007 — 🔭 **`{2,3}` DISTINCT COSTS 674x ITS `{1,3}` TWIN — 640.28 ms against 0.95 at 5,000 vertices — and that one bound is where the realistic `var-length` family's whole cost lives.** ⚠️⚠️ **WHICH MEANS ITEMS 2003-2006 MOVED THE FAMILY BY NOTHING: 39.44 → 40.58 ms/query across four items and 3.7-67x on my own probe's rows. I never checked the family number between them.** ⚠️ The obvious cure is REFUTED by measurement
+
+## ⚠️⚠️ FIRST, THE CORRECTION TO MY OWN TARGET SELECTION
+
+Items 2003-2006 took `DISTINCT ACYCLIC` from 1405.80 to 20.98 ms (67x) and the plain/TRAIL rows
+3.5-4.7x. All of it measured on `varlen-body-split-2000.mjs`, which **I built at item 2000**. The
+realistic corpus's `var-length` family — item 1817's seventeen families, the one list in the repo of
+"queries a user would actually write" that was not assembled while hunting a lever — reads
+**40.58 ms/query against 39.44 before the four items.** Unmoved, within noise.
+
+⚠️ **AND THE `distinct` FAMILY IS LIKEWISE UNMOVED (8.54 against 8.51 ms/query), because it draws no
+quantified paths at all** — it never touches the reach rung. Two families named for the thing I was
+optimizing, neither of them exercising it where it mattered.
+
+**THE FAILURE IS NOT THE PROBE. It is that I re-profiled between items (item 2006 insisted on that,
+correctly) but never re-ran the FAMILY between items.** A profile tells you which frame in a row is
+hot; it cannot tell you whether that row carries the family's cost. Four items is three too many to
+go without asking.
+
+## THE MEASUREMENT THAT FOUND IT
+
+`BOUNDS='{1,1};{1,2};{1,3};{2,3}'` over the same probe — the family draws exactly these four:
+
+```text
+DISTINCT plain unseeded        5k        20k        40k
+    {1,1}                    0.45       0.60       3.14
+    {1,2}                    1.19       5.98      15.58
+    {1,3}                    0.95       5.44      16.27
+    {2,3}                  640.28    3494.33    7316.79   ⬅ 674x / 642x / 450x
+DISTINCT TRAIL unseeded
+    {1,3}                    1.13       5.28      11.98
+    {2,3}                  661.40    3590.49    7541.23   ⬅ 585x
+count(*) plain unseeded
+    {2,3}                    0.29       1.33       2.60   ⬅ the COUNT rung serves min>=2 fine
+```
+
+One of four bounds, at ~600x the others, is the entire 40 ms/query. ⚠️ And the count row is the
+control that localizes it: `varLengthDegreeCount`'s level recurrence sums levels `min..max` happily,
+so this is the ROWS side alone.
+
+**THE CAUSE IS A RECORDED CORRECTNESS CONDITION, not an oversight.** `reachQuantifierIsExact`
+requires `(q.min ?? 0) <= 1`, and `CLOSED.md` states why: a shortest-distance BFS is exact because "a
+vertex whose shortest distance from a seed is `d` is reachable by a walk of length `d` … that
+collapses at `min = 2`, where a vertex found at `d = 1` may ALSO be reachable at length 2 and a
+shortest-distance search cannot see it". Correct for that algorithm. So `{2,3}` falls to path
+enumeration.
+
+## ⚠️ THE OBVIOUS CURE IS REFUTED — A PER-LEVEL BFS IS A **WALK** NOTION
+
+The fix that suggests itself: the answer for `{min,max}` is the union over `d` in `[min,max]` of
+"reachable in EXACTLY `d` steps", and each level's set is one O(|V| + |E|) pass — so `{2,3}` is
+3 passes, not an enumeration. **But "exactly `d` steps" is walk reachability, and this rung also
+serves TRAIL, SIMPLE and the default (which IS trail).** `minbound-2007.mjs` asks the engine over nine
+hazard fixtures x three bounds: **10 divergences.**
+
+```text
+    fixture             bound    WALK        TRAIL     SIMPLE    default
+    self-loop           {2,2}    [0]         []        []        []
+    self-loop + chain   {3,3}    [0,1,2]     [2]       []        [2]
+    2-cycle             {3,3}    [0,1]       []        []        []
+    two self-loops      {2,2}    [0]         [0]       []        [0]     ⬅ TRAIL and SIMPLE differ too
+```
+
+A walk of length 2 on one self-loop is `a->a->a`, reusing the edge — a walk, not a trail. The CYCLE
+fixtures agree (`3-cycle`, `chain`, `diamond`, `lollipop`); it is precisely EDGE REUSE that separates
+the modes, and it bites at `min >= 2` where `min <= 1` is safe. So a per-level WALK BFS would be exact
+for `MATCH WALK` only — and item 1255's own note calls that "a 56x on a shape nobody asks", since this
+corpus writes default/TRAIL/ACYCLIC and never an explicit `WALK`.
+
+**WHAT THE CURE ACTUALLY NEEDS** is reachable-in-exactly-`d`-by-a-TRAIL, which is not a set recurrence:
+trail-ness depends on the edge multiset used to arrive, so two paths reaching the same vertex at the
+same depth are not interchangeable. That is the same shape of problem as the depth-3/4 trail
+CORRECTION `buildTrailMasks` solves for the count rung — which is itself bounded at four hops because
+"at three there are several interacting ways and no single term". So the honest scoping is: this is
+the trail-correction problem on the rows side, not a missing BFS.
+
+⚠️ NOT ATTEMPTED HERE, and deliberately: items 2001 and 2003 each derived a path-mode fact wrong
+before measuring, and item 2003's cheap cure died on a fixture it had not been shown. A 674x target
+with a refuted naive cure and a known-hard real one is worth stating precisely and leaving open.
+
+GATES. `bun run fmt` 0; `bun run check` 0. (Probes only — no engine code changed.)
