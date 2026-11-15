@@ -421,4 +421,26 @@ if (want !== undefined) {
   }
 }
 
+/*
+ * ⚠️⚠️ THE CLOSED-FRAMES REMINDER IS PRINTED, NOT JUST FILED (item 1985).
+ *
+ * `PROBES.md` opens with a table of frames that are closed targets, and its own sentence is "read
+ * this BEFORE nominating anything from a profile". CLAUDE.md's rule, though, is to read `PROBES.md`
+ * before BUILDING an instrument — so running an existing probe never triggers it, and item 1985
+ * took a profile, read `indexEdgeLabel` at 30.1% and `getEdgeById` at 16.0%, and was stopped only
+ * by happening to grep `CLOSED.md` afterwards. That would have been the SEVENTH arrival at
+ * `indexEdgeLabel`, which item 1623 predicted in terms and item 1876 nearly fulfilled.
+ *
+ * So the warning is emitted where it is needed: in the output of the probe that produces the
+ * profile, before anyone reads the frames.
+ */
+const CLOSED_FRAMES_NOTE =
+  '# ⚠️ Before nominating a frame from this profile, read the CLOSED-FRAMES table at the top of ' +
+  'PROBES.md.\n#    indexEdgeLabel, getEdgeById/getVertexById, commitElementLabels, set labels, ' +
+  '#commitNormalized,\n#    insertEdge, pushTokens, addVertex and (garbage collector) are ALL ' +
+  'closed targets — indexEdgeLabel has\n#    SIX prior arrivals. A profile whose top frames are ' +
+  'these has measured the FIXTURE, not your question.';
+
+console.error(CLOSED_FRAMES_NOTE);
+
 console.log(JSON.stringify({ shape: SHAPE, n: N, ms: Number(ms.toFixed(1)), sink, answer: first }));

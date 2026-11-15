@@ -96078,3 +96078,83 @@ NO ENGINE BEHAVIOUR CHANGED — this entry plus the correction to item 1980's op
 the three GQL executor files against HEAD is empty (both A/B arms were restored).
 
 GATES. `bun run fmt` 0; `bun run check` 0.
+
+## Item 1985 — 🛑 **I BECAME THE SEVENTH ARRIVAL AT `indexEdgeLabel` AND WAS STOPPED ONLY BY LUCK: every frame above 2% in the write-path profile is in `PROBES.md`'s CLOSED-FRAMES table, which I read FOURTH instead of first.** ✅ The write path is screened and has no unpriced frame; the fix shipped is that all three profile probes now PRINT the warning. ✅ And `pointLookups` confirms the standing O(1)-by-id constraint at **1.85 ns a lookup**
+
+Both corpora were swept clean (items 1983, 1984), so this tick went to a surface neither bench
+measures: the WRITE path, via `runtime-profile-write-probe.mjs`, which this session had never run.
+
+### THE TIMING SCREEN, which is worth having on its own
+
+Six shapes, one process each, N=20,000:
+
+```text
+    shape            ms/rep    per element      note
+    addEdgeOnly      200.01    3.33 us an EDGE  ⬅ the dominant write cost, 2.8x a vertex
+    addVertexProps    29.02    1.45 us
+    addVertexBare     23.49    1.17 us
+    removeVertices     8.17    0.41 us
+    setProps           3.99    0.20 us
+    pointLookups       3.70    1.85 NS a lookup ⬅ 2,000,000 lookups a rep
+```
+
+✅ **`pointLookups` at 1.85 ns answers the loop's standing constraint directly** — "keep good O(1)
+access to get a vertex or edge by id". That is a `Map.get` and nothing more, measured over two
+million lookups, and it is the first time this session has checked the invariant rather than assumed
+it.
+
+### 🛑 AND THEN THE PROFILE, WHICH IS WHERE THIS ITEM EARNS ITS NUMBER
+
+`addEdgeOnly` is the clear nomination from the screen, so I profiled it. Its frames:
+
+```text
+    30.1%  indexEdgeLabel        16.0%  getEdgeById        12.7%  #commitNormalized
+    11.6%  (garbage collector)    8.8%  commitElementLabels  4.5%  insertEdge
+     3.9%  getVertexById          2.3%  pushTokens           2.0%  set labels
+```
+
+⚠️⚠️ **EVERY ONE OF THEM IS IN `PROBES.md`'s CLOSED-FRAMES TABLE**, row for row:
+`indexEdgeLabel` priced at 810 ns / 7 hash ops with its only lever BUILT AND DISQUALIFIED and two
+later variants declined/reverted — **six prior arrivals**; `getEdgeById` "largely self-time
+misattribution, already ablated to an upper bound"; `commitElementLabels` + `set labels` label
+handling, "priced three times"; `#commitNormalized` / `insertEdge` / `pushTokens` the construction
+path, "CLOSED as a constant factor"; GC "priced with the rest of the decode at ~13%".
+
+**There is no unpriced frame in the TS write path.** That is the finding, and it is a negative one.
+
+🛑 **ITEM 1623 PREDICTED THIS EXACT ARRIVAL IN TERMS** — "a **seventh** arrival at `indexEdgeLabel`
+by someone reading a fresh 27.2%" — item 1876 nearly fulfilled it, and I read a fresh **30.1%** and
+was about to nominate it. What stopped me was grepping `CLOSED.md` for the frame name, which is
+luck in the sense that it was a habit rather than a rule firing.
+
+### ✅ THE GAP IN THE GUIDANCE, AND THE FIX
+
+CLAUDE.md says to read `PROBES.md` **before BUILDING an instrument**. I built nothing — I RAN an
+existing probe — so the rule never triggered. `PROBES.md`'s own table says "read this BEFORE
+nominating anything from a profile", which is the right trigger, but it lives in a file that a
+person running a known probe has no reason to open.
+
+**So the warning now arrives where it is needed**: all three profile probes
+(`runtime-profile-write-probe.mjs`, `-gremlin-probe.mjs`, `runtime-profile-probe.mjs`) print the
+closed-frames list to **stderr** before their JSON result — stderr so the stdout result stays
+parseable. Anyone who takes one of these profiles now sees the list before they read the frames.
+
+⚠️ That is a cheaper fix than it looks, and the reason to prefer it over another paragraph in
+`PROBES.md` is that this failure has now been predicted once (1623), nearly realised once (1876) and
+realised once (here) **despite the file already saying the right thing in the right words**. A
+warning filed where the reader is not is a warning that does not fire.
+
+### ❌ NOT NOMINATED, with the reason stated for each
+
+- **`addEdgeOnly` at 3.33 us an edge** — the dominant write cost and genuinely large, but every
+  component is in the table above. `ts-ingest-is-constant-factor` records the whole family as
+  CLOSED: a constant factor (`JSON.parse` + alloc + freeze), not a missing route.
+- **`getEdgeById` at 16% during pure INSERTS** — the one frame that looked anomalous to me (why
+  would adding an edge look one up?). Items 700/1397/1624 already ablated it to an upper bound and
+  found it largely self-time misattribution. Recorded because the surprise was genuine and the
+  answer was already written down.
+
+NO ENGINE BEHAVIOUR CHANGED — the only edits are the stderr banner in three probes and this entry.
+
+GATES. `bun run fmt` 0; `bun run check` 0. All three probes re-run after the edit and still emit
+their JSON result.

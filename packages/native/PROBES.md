@@ -244,6 +244,14 @@ the prediction was about to come true.
 | `#commitNormalized`, `insertEdge`, `pushTokens`, `addVertex` | the rest of the construction path, "CLOSED as a constant factor" — `JSON.parse` + alloc + freeze, not a missing route (item 312; `addVertex` withdrawn at 7.4%).                                                                                                    |
 | `(garbage collector)` in a write profile                     | priced with the rest of the decode at ~13% (item 1731).                                                                                                                                                                                                             |
 
+✅ **AND THE THREE PROFILE PROBES NOW PRINT THIS LIST THEMSELVES** (item 1985), to stderr, before
+their JSON result. The reason is that this table already said the right thing in the right words and
+the failure happened anyway: CLAUDE.md's rule is to read `PROBES.md` before BUILDING an instrument,
+so RUNNING an existing probe never triggers it — item 1985 took a write profile, read
+`indexEdgeLabel` at a fresh **30.1%**, and was stopped only by a habit of grepping `CLOSED.md` for
+the frame name. That would have been the seventh arrival. **A warning filed where the reader is not
+is a warning that does not fire.**
+
 **So a profile whose top frames are these has measured the FIXTURE, not the thing you asked about.**
 The fix is not to nominate them — it is to make the query dominate (`hop3-values-prof-1875.mjs`
 prints the query's share of the process for exactly this reason) or to window the profile
