@@ -98101,3 +98101,82 @@ GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-
 `bun run fuzz` 57/57 EIGHT times across the item (five before the lint refactor, three after — this is
 a new route for a shape the rung previously refused, and item 2005's sweep caught a real wrong answer,
 so repetition here is evidence rather than ceremony); gql 4,986; parity 105/105.
+
+## Item 2009 — 🔭 **ORDER-INDEPENDENT FOLDS PAST TWO HOPS HAVE NO RUNG: `min`/`max`/`count(x)` over a 3-hop chain cost 234-315x a level-wise recurrence, and over a 4-hop chain 1069-1515x — answers verified IDENTICAL.** ⚠️ **And `count(*)` is the WRONG ceiling, which I almost quoted at 107x; the honest ratio is larger, not smaller** ⚠️ `sum` is excluded by the byte-identity refusal, not by difficulty
+
+Item 2008's lesson applied first: **re-screen the families before drilling.** All fifteen measurable
+families, individually (the whole-screen run keeps hitting the 600 s wall):
+
+```text
+    grouped 10.52   aggregate 9.76   optional 9.25   edge-filter 8.93   distinct 8.06
+    existence 4.12  neighbors 3.33   projection 1.56  var-length 1.48 ⬅ was 40.58
+    temporal-range 1.24   point-lookup 0.59 (56% empty)   range-scan 0.42
+    in-list 0.39   union 0.37   string-lookup 0.26          [ms/query]
+```
+
+`var-length` has gone from the top of the list to mid-pack. The new leaders cluster at 8-10 ms/query
+with no outlier, so the family average cannot say where to look — split `aggregate` by body:
+
+```text
+    d1 scan count          0.16     d2 hop count(b.n)      1.31
+    d1 scan sum            7.20     d2 hop min(b.n)        0.66    ⬅ the 1-hop rung works
+    d2 hop count           1.67     d2 hop max(b.n)        0.48
+    2-hop chain count(*)   0.09     2-hop min(c.n)         9.63
+    3-hop chain count(*)   0.18     2-hop count(c.n)      17.16
+    2-hop sum(c.n)        64.30     3-hop count(d.n)      49.44
+    3-hop sum(d.n)       253.60 ⬅   3-hop min(d.n)        47.83
+```
+
+**TWO SEPARATE FINDINGS, and only one of them is a target.**
+
+1. ⚠️ **THE `sum` BODIES DOMINATE THE FAMILY AND ARE NOT ADDRESSABLE.** Item 1829 records `sum` and
+   `collect` as the remainder of that family "on the byte-identity refusal this entry states", and
+   `foldFor`'s own comment gives the reason: f64 addition is order-sensitive in the last ulp, so a
+   multiplicity-weighted or re-ordered sum would be a DIFFERENT arithmetic from the general path's.
+   The family's 9.76 ms/query is mostly this. **A family nomination can be dominated by a documented
+   refusal, and then the family number is not a target at all** — which is the second way (after item
+   2007's) that a family average misleads.
+2. ✅ **BUT `min`, `max` and `count(x)` ARE ORDER-INDEPENDENT, AND PAST TWO HOPS THEY HAVE NO RUNG.**
+   Item 1246's `hop-endpoint-extremum.ts` serves ONE hop; item 1830 extended `min`/`max`/`count(x)`,
+   and the measurement shows that reaching depth 2 (0.48-1.31 ms) and stopping there.
+
+## ⚠️ `count(*)` IS THE WRONG CEILING — I ALMOST QUOTED 107x, AND THE REAL NUMBER IS BIGGER
+
+At depth 2, `count(*)` reads 0.09 ms against `min(c.n)`'s 9.63 — a tempting 107x. **But `count(*)` is
+answered by a closed-form DEGREE PRODUCT that visits no endpoint at all**, while `min` must see them.
+Item 1951's rule: a cheaper sibling is only a ceiling if it does the same work. Quoting it would have
+been item 1999's hand-ceiling mistake in reverse — there a ceiling was too SLOW and understated the
+target; here it is too FAST and overstates it.
+
+🔑 **THE HONEST CEILING IS A LEVEL-WISE MULTIPLICITY RECURRENCE, which is what `varLengthDegreeCount`
+already runs for `count(*)`.** `u_k(v)` is the number of length-k walks ending at `v`, so:
+
+- `min`/`max` are SET functions — they read only which entries are NON-ZERO, so multiplicity is
+  irrelevant and one pass over the final level answers them;
+- `count(x)` is NOT a set function (it counts one per PATH with a non-null `x`) but needs exactly the
+  multiplicity the recurrence already computes: `sum over v with non-null x of u_k(v)`.
+
+Both are O(k·(|V| + |E|)) rather than O(paths). `foldceiling-2009.mjs`, rebuilding the CSR and the
+whole recurrence EVERY rep so nothing is warm-cached, answers verified against the engine:
+
+```text
+    depth   fold           engine ms   ceiling ms     ratio   engine      ceiling    agree
+    3 hops  min(d.n)           53.04         0.23     233.6x        0            0    YES
+    3 hops  max(d.n)           46.83         0.17     279.2x       96           96    YES
+    3 hops  count(d.n)         45.87         0.15     315.2x   625000       625000    YES
+    4 hops  min(e.n)          288.72         0.27    1069.4x        0            0    YES
+    4 hops  max(e.n)          265.06         0.21    1247.0x       96           96    YES
+    4 hops  count(e.n)        251.76         0.17    1515.0x  3125000      3125000    YES
+```
+
+⚠️ AND THE PROBE'S OWN VERDICT COLUMN WAS BRIEFLY WRONG, caught by `prefer-template`: an inline
+`… + ev === hand.out ? 'YES' : 'NO'` parses as `(string) === hand.out`, so it would have printed NO on
+every row. The verified YES values above are from the hoisted form. A probe that reports its own
+agreement needs that field computed on its own line.
+
+WHERE THE CURE GOES: `chain-projection.ts` owns three-or-more-segment patterns and already has the
+`foldFor` plumbing; the recurrence exists in `var-length-count.ts`. ⚠️ `sum`/`avg`/`collect` must stay
+refused there for the reason above — admitting them with a multiplicity weight would change the
+arithmetic, which is precisely what byte-identity forbids.
+
+GATES. `bun run fmt` 0; `bun run check` 0. (Probes only — no engine code changed.)
