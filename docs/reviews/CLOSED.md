@@ -90572,8 +90572,7 @@ finished. Admitting a trailing single-key `values` folded into the pick is what 
       step is not a `values`) and nothing reached the case where the fifth step IS a `values` and a
       SIXTH is silently dropped — 800,000 rows where the query asked for two. That test exists now.
 
-🔭 **WHAT REMAINS**: `select('a','b')` at 273.93 is now the screen's top row and is a different
-question — it projects a MAP of two tags, not a repeat of one. ~~And `where(neq).values(n)` at 76.50 is still **1.8x the hop control's 42.50**~~ ✅ **EXPLAINED AND CLOSED at item 1913: a `drain()` that delegated to a `function*` paid the generator frame. 1.96x on this row, and the same pattern was in item 1899's walk too.**
+🔭 ~~**WHAT REMAINS**: `select('a','b')` at 273.93 is now the screen's top row~~ ✅ **TAKEN at item 1914 (17.9x, to 14.60 ms)** — it projects a MAP of two tags, not a repeat of one, and is equally tag-free. ~~And `where(neq).values(n)` at 76.50 is still **1.8x the hop control's 42.50**~~ ✅ **EXPLAINED AND CLOSED at item 1913: a `drain()` that delegated to a `function*` paid the generator frame. 1.96x on this row, and the same pattern was in item 1899's walk too.**
 
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers;
 `bun run spelling:gremlin` (0 disagreements, 0 groups over 2x); the Gremlin suite (2,314 tests) and
@@ -90645,3 +90644,63 @@ discriminate, plus a per-arm mutant for each.
 
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers;
 `bun run spelling:gremlin` (0 disagreements, 0 groups over 2x); both mutation batteries.
+
+## Item 1914 — **17.9x** on the two-tag pair, the screen's largest row: `as_(a).out(T).as_(b).select(a,b)` goes 261.63 ms to **14.60**. And the mutation run found THREE paths no test had ever entered
+
+Item 1912 took the single-tag shapes and recorded this one as the follow-up: "`select('a','b')` at
+273.93 is now the screen's top row and is a different question — it projects a MAP of two tags, not
+a repeat of one." It is a different question, and it is equally tag-free: for each near/far pair the
+answer is `{a: near, b: far}`, which the walk can build directly.
+
+      200,000 vertices / 1,000,000 edges, one shape per process, median of 7, min of 3 rounds:
+
+        as_(a).out(E).as_(b).select(a, b)   261.63  ->  14.60 ms   ⬅ 17.9x
+        CONTROL V().out(E).values(n)         41.86  ->  41.59       flat
+        workload screen: `select: as + select two` 264.93 -> out of the top rows entirely
+
+⚠️ **THE KEY ORDER IS PART OF THE ANSWER, not a detail.** `select('y','x')` answers `{y: …, x: …}`,
+and [[column-order-is-observable]] makes that a contract — row ORDER is unspecified in places,
+column order never is. So the walk is told which key comes first and which end each names, and both
+orders are asserted against the generic path and spelled out.
+
+⚠️ **THE ROW IS BUILT WITH COMPUTED KEYS, which is a known ceiling rather than an oversight.** Item
+1897 measured a literal row's single hidden class against computed-key stores at **2.8x** and found
+it codegen-blocked ([[no-runtime-codegen]] forces `unsafe-eval` into every embedder's CSP). The win
+here is the generator chain and the tag maps; the row shape is what it is.
+
+## 🛑 Three paths no test had entered, all found by mutants
+
+**20 mutants, 20 caught — after three gaps closed.** Each is the same shape: a walk written twice
+(lazy iterator, eager drain) times two arms (CSR, bucket) is FOUR paths, and the obvious tests reach
+two of them.
+
+      ❌ THE ITERATOR'S BUCKET ARM, reached by nothing. Every `run` test was preceded by a
+         `toArray` — which takes the DRAIN and warms item 1889's second-ask policy — so by the time
+         the spread happened the walk was on the CSR. Three mutants survived there: the iterator's
+         self-loop drop and both of its missing-key drops. The fix is a FRESH graph per spread,
+         since `seenBefore` records per (graph, topology, shape).
+
+      ❌ THE ITERATOR'S CSR ARM WITH A MISSING KEY, a third combination: warm first, then spread.
+         `twice()` covers the drain's CSR arm and the cold test covers the iterator's bucket arm;
+         neither reaches this one.
+
+      ❌ AND ONE ANCHOR HAD DRIFTED SILENTLY — item 1913's duplication made
+         `const far = vtx[memo.flat[i]]` appear twice, so a mutant that had been testing the walk
+         was now ambiguous and did not run at all.
+
+✅ **SO THE BATTERY NOW REPORTS EVERY ANCHOR DRIFT AT ONCE instead of throwing on the first.** A
+harness that dies on anchor #1 hides #2..n, and a refactor that moves five of them costs five runs
+to discover — which this session spent. The run still fails and the exit code is still non-zero; it
+just says everything it found. ⚠️ That is the third harness-integrity fix in four items (item 1907's
+templated config, item 1913's swapped per-arm labels, this), and the pattern across all three is the
+same: **a measuring instrument's own configuration is the first thing to verify, and it fails
+silently by default.**
+
+🔭 **WHAT IS LEFT ON THE SCREEN** is `path: hop path` at 149.25, which genuinely needs the path —
+`V().out(E).path()` returns path objects, so there is no tag-free rewrite — and
+`edge: outE.has(w).inV` at 105.18, `agg: hop values min` at 103.00, `where: sub-traversal` at 95.44.
+The tagged cluster that was the top four at item 1911 is gone.
+
+GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers;
+`bun run spelling:gremlin` (0 disagreements, 0 groups over 2x); the Gremlin suite (2,320 tests) and
+the workload screen at 200,000 vertices.

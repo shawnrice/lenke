@@ -42,6 +42,9 @@ const PLANS = {
   // per-row predicate clone. Item 1900 changed only `whereCurrentStep`, so this is the arm that
   // must NOT move, and its own cost prices the follow-up.
   wherecmp: traversal(V(), as_('a'), out('E'), as_('b'), where('b', neq('a'))),
+  // ⚠️ THE TWO-TAG PAIR, the screen's largest row once item 1912 took the single-tag shapes: it
+  // projects a two-key OBJECT per row rather than repeating one end (item 1914).
+  seltwo: traversal(V(), as_('a'), out('E'), as_('b'), select('a', 'b')),
   // ⚠️ THE WORKLOAD SCREEN'S OWN SPELLINGS, which carry a trailing `values('n')` — a FIFTH step.
   // Item 1912's first cut served only the four-step shapes and left these two untouched at 406 and
   // 196 ms on the screen, which is how it found that the win had not reached the shape anyone had

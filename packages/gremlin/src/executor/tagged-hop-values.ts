@@ -75,6 +75,31 @@ export const taggedHopValues = (plan: Plan, graph: Graph): HopValues | undefined
     return undefined;
   }
 
+  /*
+   * ⚠️ THE PAIR SHAPE HAS A DIFFERENT LAYOUT, so it is resolved before the single-tag modes:
+   * `[V, as_(a), hop, as_(b), select(a, b)]` tags BOTH ends and projects a two-key object. It was
+   * the workload screen's largest row at **264.93 ms** once item 1912 took the single-tag shapes,
+   * and item 1912 recorded it as "a different question — it projects a MAP of two tags, not a
+   * repeat of one". It is a different question and it is equally tag-free: for each near/far pair
+   * the object is `{a: near, b: far}`, which the walk can build directly.
+   */
+  const pair = pairMode(tail, proj, tag.label);
+
+  if (pair !== undefined) {
+    return {
+      rest: [],
+      values: walk(graph, {
+        forward: hop.kind === 'out',
+        type: hop.labels[0],
+        kind: hop.kind,
+        labels: hop.labels,
+        near: false,
+        valueKey: undefined,
+        pair,
+      }),
+    };
+  }
+
   const mode = tailMode(tail, tag.label);
 
   if (mode === undefined) {
@@ -98,6 +123,7 @@ export const taggedHopValues = (plan: Plan, graph: Graph): HopValues | undefined
       labels: hop.labels,
       near: mode === 'near',
       valueKey,
+      pair: undefined,
     }),
   };
 };
@@ -132,6 +158,48 @@ const tailMode = (tail: Step, label: string): 'near' | 'far' | undefined => {
 };
 
 /**
+ * `[as_(b), select(a, b)]` as the two output keys in the SELECT's order, or `undefined`.
+ *
+ * ⚠️⚠️ **THE KEY ORDER IS THE SELECT'S, NOT A FIXED ONE.** `select('y','x')` answers
+ * `{y: …, x: …}`, and [[column-order-is-observable]] makes that part of the answer rather than a
+ * detail — row ORDER is unspecified in places, column order never is. So the walk is told which of
+ * the two keys comes first and which end each names.
+ *
+ * ⚠️ BOTH LABELS MUST BE THE TWO TAGS, EACH ONCE. `select('a','a')` projects the same end twice —
+ * a different answer this rung does not compute — and a third label names a tag nothing binds.
+ *
+ * ⚠️ AND NO `by` OR `pop: 'all'`, for `tailMode`'s reasons: a `by` modulates each projection and
+ * `'all'` yields lists. Both tags are bound exactly once here, so `'first'` and `'last'` agree.
+ */
+const pairMode = (
+  tail: Step,
+  proj: Step | undefined,
+  startLabel: string,
+): { readonly keys: readonly [string, string]; readonly firstIsNear: boolean } | undefined => {
+  if (tail.kind !== 'as' || proj?.kind !== 'select') {
+    return undefined;
+  }
+
+  const farLabel = tail.label;
+
+  if (farLabel === startLabel || proj.labels.length !== 2) {
+    return undefined;
+  }
+
+  if ((proj.bys?.length ?? 0) > 0 || proj.pop === 'all') {
+    return undefined;
+  }
+
+  const [k0, k1] = proj.labels;
+
+  if (k0 === startLabel && k1 === farLabel) {
+    return { keys: [k0, k1], firstIsNear: true };
+  }
+
+  return k0 === farLabel && k1 === startLabel ? { keys: [k0, k1], firstIsNear: false } : undefined;
+};
+
+/**
  * The ONE property key a trailing `values` names, or `undefined` for anything else.
  *
  * ⚠️ A `values` STEP IS THE ONLY FIFTH STEP ADMITTED. Any other — a `limit`, an `order`, a `path` —
@@ -156,6 +224,34 @@ type WalkSpec = {
    * TinkerPop console check behind that distinction.
    */
   readonly valueKey: string | undefined;
+  /**
+   * The two-key object shape, for the `select(a, b)` pair — `undefined` for the single-tag modes.
+   *
+   * ⚠️ THE KEYS ARE STORED COMPUTED, not as a literal, so the row gets a transitioning hidden class
+   * rather than one shape. Item 1897 measured that gap at **2.8x** for a five-column row and found
+   * it CODEGEN-BLOCKED: reaching a literal's shape needs a generated constructor, and
+   * [[no-runtime-codegen]] is firm because it forces `unsafe-eval` into every embedder's CSP. The
+   * win here is the generator chain and the tag maps, not the row shape.
+   */
+  readonly pair:
+    | { readonly keys: readonly [string, string]; readonly firstIsNear: boolean }
+    | undefined;
+};
+
+/**
+ * The two-key row for the `select(a, b)` pair, in the SELECT's key order.
+ *
+ * ⚠️ AT MODULE SCOPE, so neither walk closure grows ([[ts-closure-size-is-load-bearing]]), and the
+ * self-loop is INCLUDED — `select` emits every edge's pair, unlike `where(neq)` which drops it.
+ */
+const pairRow = (
+  pair: { readonly keys: readonly [string, string]; readonly firstIsNear: boolean },
+  from: Vertex,
+  far: Vertex,
+): Record<string, unknown> => {
+  const [k0, k1] = pair.keys;
+
+  return pair.firstIsNear ? { [k0]: from, [k1]: far } : { [k0]: far, [k1]: from };
 };
 
 /**
@@ -185,7 +281,7 @@ const walk = (graph: Graph, spec: WalkSpec): HopWalk => ({
    * `fold-mutants-1909.mjs` carries a per-arm mutant for each.
    */
   drain() {
-    const { forward, type, kind, labels, near, valueKey } = spec;
+    const { forward, type, kind, labels, near, valueKey, pair } = spec;
     const csr = seenBefore(graph, forward, type) ? chainCsrFor(graph, forward, [type]) : undefined;
     const out: unknown[] = [];
 
@@ -198,6 +294,11 @@ const walk = (graph: Graph, spec: WalkSpec): HopWalk => ({
 
         for (let i = memo.off[slot]; i < to; i += 1) {
           const far = vtx[memo.flat[i]];
+
+          if (pair !== undefined) {
+            out.push(pairRow(pair, from, far));
+            continue;
+          }
 
           if (!near && far === from) {
             continue;
@@ -229,6 +330,11 @@ const walk = (graph: Graph, spec: WalkSpec): HopWalk => ({
 
       for (const e of direct.set) {
         const far = direct.forward ? e.to : e.from;
+
+        if (pair !== undefined) {
+          out.push(pairRow(pair, v, far));
+          continue;
+        }
 
         if (!near && far === v) {
           continue;
@@ -263,7 +369,7 @@ const walk = (graph: Graph, spec: WalkSpec): HopWalk => ({
  * one edge in a graph, which no aggregate would show.
  */
 const each = function* (graph: Graph, spec: WalkSpec): Iterable<unknown> {
-  const { forward, type, kind, labels, near, valueKey } = spec;
+  const { forward, type, kind, labels, near, valueKey, pair } = spec;
   const csr = seenBefore(graph, forward, type) ? chainCsrFor(graph, forward, [type]) : undefined;
 
   if (csr !== undefined) {
@@ -275,11 +381,17 @@ const each = function* (graph: Graph, spec: WalkSpec): Iterable<unknown> {
 
       for (let i = memo.off[slot]; i < to; i += 1) {
         const far = vtx[memo.flat[i]];
-        const held = near ? from : far;
+
+        if (pair !== undefined) {
+          yield pairRow(pair, from, far);
+          continue;
+        }
 
         if (!near && far === from) {
           continue;
         }
+
+        const held = near ? from : far;
 
         if (valueKey === undefined) {
           yield held;
@@ -307,11 +419,17 @@ const each = function* (graph: Graph, spec: WalkSpec): Iterable<unknown> {
 
     for (const e of direct.set) {
       const far = direct.forward ? e.to : e.from;
-      const held = near ? v : far;
+
+      if (pair !== undefined) {
+        yield pairRow(pair, v, far);
+        continue;
+      }
 
       if (!near && far === v) {
         continue;
       }
+
+      const held = near ? v : far;
 
       if (valueKey === undefined) {
         yield held;

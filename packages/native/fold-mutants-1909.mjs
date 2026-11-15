@@ -180,10 +180,19 @@ const MUTANTS = [
     1,
   ],
   [
-    'the CSR arm reads the SLOT as the far vertex',
+    'the CSR arm reads the SLOT as the far vertex — EAGER drain (occurrence 0)',
     'tag',
-    '        const far = vtx[memo.flat[i]];',
-    '        const far = vtx[slot];',
+    'const far = vtx[memo.flat[i]];',
+    'const far = vtx[slot];',
+    2,
+    0,
+  ],
+  [
+    'the CSR arm reads the SLOT as the far vertex — LAZY iterator (occurrence 1)',
+    'tag',
+    'const far = vtx[memo.flat[i]];',
+    'const far = vtx[slot];',
+    2,
     1,
   ],
   [
@@ -230,6 +239,62 @@ const MUTANTS = [
     1,
   ],
   [
+    'the two-tag pair is not fused (the pre-1914 route)',
+    'tag',
+    '  if (pair !== undefined) {\n    return {',
+    '  if (pair !== undefined && false) {\n    return {',
+    1,
+  ],
+  [
+    'the pair row IGNORES the select\u2019s key order',
+    'tag',
+    'return pair.firstIsNear ? { [k0]: from, [k1]: far } : { [k0]: far, [k1]: from };',
+    'return { [k0]: from, [k1]: far };',
+    1,
+  ],
+  [
+    'the pair row swaps near and far',
+    'tag',
+    'return pair.firstIsNear ? { [k0]: from, [k1]: far } : { [k0]: far, [k1]: from };',
+    'return pair.firstIsNear ? { [k0]: far, [k1]: from } : { [k0]: from, [k1]: far };',
+    1,
+  ],
+  [
+    'the pair admits the SAME tag twice',
+    'tag',
+    '  if (farLabel === startLabel || proj.labels.length !== 2) {',
+    '  if (proj.labels.length !== 2) {',
+    1,
+  ],
+  [
+    'the pair admits a third label by reading only the first two',
+    'tag',
+    'if (farLabel === startLabel || proj.labels.length !== 2) {',
+    'if (farLabel === startLabel || proj.labels.length < 2) {',
+    1,
+  ],
+  [
+    'the pair admits a `by` modulator',
+    'tag',
+    "  if ((proj.bys?.length ?? 0) > 0 || proj.pop === 'all') {",
+    '  if (false) {',
+    1,
+  ],
+  [
+    'the pair drops the self-loop (which select keeps) — CSR arm',
+    'tag',
+    '        if (pair !== undefined) {\n          yield pairRow(pair, from, far);\n          continue;\n        }',
+    '        if (pair !== undefined) {\n          if (far !== from) {\n            yield pairRow(pair, from, far);\n          }\n          continue;\n        }',
+    1,
+  ],
+  [
+    'the pair drops the self-loop — DRAIN, CSR arm',
+    'tag',
+    '          if (pair !== undefined) {\n            out.push(pairRow(pair, from, far));\n            continue;\n          }',
+    '          if (pair !== undefined) {\n            if (far !== from) {\n              out.push(pairRow(pair, from, far));\n            }\n            continue;\n          }',
+    1,
+  ],
+  [
     'the ITERATOR arm is dropped, so a walk without a drain answers empty',
     'agg',
     'values.drain === undefined ? [...values] : values.drain(),',
@@ -270,6 +335,12 @@ const EXPECTED_SURVIVORS = new Set([
    * screen's own rows (406.18 -> 94.66 for `where: neq filter`).
    */
   'the FIFTH step is not admitted (the screen\u2019s own spelling)',
+  /*
+   * ⚠️ ITEM 1914'S PAIR FUSION IS ROUTE-ONLY TOO: without it the shape falls to the generic
+   * pipeline and answers identically, 17.9x slower. Its gate is `neq-prof-1900.mjs`'s `seltwo` arm
+   * (261.63 -> 14.60 ms) and the workload screen's `select: as + select two` row.
+   */
+  'the two-tag pair is not fused (the pre-1914 route)',
 ]);
 
 /*
@@ -309,6 +380,8 @@ const restoreAll = () => {
 };
 
 const survivors = [];
+/** Anchors whose occurrence count has drifted — reported together, see the loop below. */
+const anchorProblems = [];
 
 try {
   const base = run();
@@ -326,10 +399,15 @@ try {
     const pristine = readFileSync(`${PRISTINE}-${which}.ts`, 'utf8');
     const seen = pristine.split(from).length - 1;
 
+    /*
+     * ⚠️⚠️ **EVERY ANCHOR MISMATCH IS COLLECTED, NOT THROWN ON THE FIRST.** A battery that dies on
+     * anchor #1 hides anchors #2..n, so a refactor that moved five of them costs five runs to
+     * discover — and this session spent several doing exactly that. The run still FAILS (the count
+     * is reported and the exit code is non-zero); it just reports everything it found first.
+     */
     if (seen !== want) {
-      throw new Error(
-        `ANCHOR for "${name}" matched ${String(seen)} times, expected ${String(want)}`,
-      );
+      anchorProblems.push(`"${name}" [${which}] matched ${String(seen)}, expected ${String(want)}`);
+      continue;
     }
 
     writeFileSync(SRCS[which], pristine.replace(from, to));
@@ -363,6 +441,13 @@ try {
 } finally {
   restoreAll();
   console.log('\n# restored');
+}
+
+if (anchorProblems.length > 0) {
+  console.log(
+    `\n⚠️ ${String(anchorProblems.length)} ANCHOR(S) DRIFTED — these mutants did not run:\n  ${anchorProblems.join('\n  ')}`,
+  );
+  process.exitCode = 1;
 }
 
 if (survivors.length > 0) {

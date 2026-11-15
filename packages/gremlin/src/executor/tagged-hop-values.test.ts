@@ -254,6 +254,175 @@ describe('taggedHopValues — a trailing values(k)', () => {
   });
 });
 
+/**
+ * The TWO-TAG pair: `[V, as_(a), hop, as_(b), select(a, b)]` (item 1914).
+ *
+ * ⚠️⚠️ THE KEY ORDER IS PART OF THE ANSWER. `select('y','x')` answers `{y: …, x: …}`, and
+ * [[column-order-is-observable]] makes that a contract — row ORDER is unspecified in places, column
+ * order never is. Both orders are asserted, against the generic path and spelled out.
+ */
+describe('taggedHopValues — the two-tag pair', () => {
+  /** `k:id` per key, in key order, so a reordering is visible rather than averaged away. */
+  const shape = (rows: unknown[]): string[] =>
+    rows.map((r) => {
+      const o = r as Record<string, { id: string }>;
+
+      return Object.keys(o)
+        .map((k) => `${k}:${o[k].id}`)
+        .join(',');
+    });
+
+  it('projects {a: near, b: far} per edge, self-loop INCLUDED', () => {
+    const g = fixture();
+    const got = shape(
+      twice(() => traversal(V(), as_('x'), out('E'), as_('y'), select('x', 'y')), g),
+    );
+
+    expect(got).toStrictEqual(['x:a,y:b', 'x:a,y:c', 'x:b,y:b', 'x:c,y:d', 'x:d,y:b']);
+    expect(got).toStrictEqual(
+      shape(
+        toArray(traversal(V(), as_('x'), out('E'), as_('y'), select('x', 'y'), limit(1000)), g),
+      ),
+    );
+  });
+
+  it('the REVERSED select keeps the select\u2019s key order', () => {
+    const g = fixture();
+    const got = shape(
+      twice(() => traversal(V(), as_('x'), out('E'), as_('y'), select('y', 'x')), g),
+    );
+
+    expect(got).toStrictEqual(['y:b,x:a', 'y:c,x:a', 'y:b,x:b', 'y:d,x:c', 'y:b,x:d']);
+    expect(got).toStrictEqual(
+      shape(
+        toArray(traversal(V(), as_('x'), out('E'), as_('y'), select('y', 'x'), limit(1000)), g),
+      ),
+    );
+  });
+
+  it('serves `in`', () => {
+    const g = fixture();
+
+    expect(
+      shape(twice(() => traversal(V(), as_('x'), in_('E'), as_('y'), select('x', 'y')), g)),
+    ).toStrictEqual(
+      shape(
+        toArray(traversal(V(), as_('x'), in_('E'), as_('y'), select('x', 'y'), limit(1000)), g),
+      ),
+    );
+  });
+
+  it('the LAZY iterator agrees', () => {
+    const g = fixture();
+    const make = () => traversal(V(), as_('x'), out('E'), as_('y'), select('x', 'y'));
+
+    toArray(make(), g);
+
+    expect(shape([...run(make(), g)])).toStrictEqual([
+      'x:a,y:b',
+      'x:a,y:c',
+      'x:b,y:b',
+      'x:c,y:d',
+      'x:d,y:b',
+    ]);
+  });
+
+  it('declines the same tag twice, a third label, a `by`, and a sixth step', () => {
+    const g = fixture();
+
+    for (const plan of [
+      traversal(V(), as_('x'), out('E'), as_('y'), select('x', 'x')),
+      traversal(V(), as_('x'), out('E'), as_('y'), select('x', 'y', 'x')),
+      traversal(V(), as_('x'), out('E'), as_('y'), select('x', 'y').by('k')),
+      traversal(V(), as_('x'), out('E'), as_('y'), select('x', 'z')),
+    ]) {
+      expect(taggedHopValues(plan, g)).toBeUndefined();
+    }
+  });
+
+  /** ⚠️ The two tags must DIFFER: `as_('x') … as_('x')` rebinds one label, a different question. */
+  it('declines when both tags share a label', () => {
+    expect(
+      taggedHopValues(traversal(V(), as_('x'), out('E'), as_('x'), select('x', 'x')), fixture()),
+    ).toBeUndefined();
+  });
+});
+
+/**
+ * The LAZY iterator on a FRESH graph — the BUCKET arm (item 1914).
+ *
+ * ⚠️⚠️ **EVERY OTHER `run` TEST IS PRECEDED BY A `toArray`, WHICH WARMS THE CSR**, so the iterator's
+ * bucket arm was never reached by anything: `toArray` takes the drain, and by the time `run` is
+ * spread the second-ask policy has switched the walk to the CSR. Three mutants survived on that —
+ * the iterator's self-loop drop and both of its missing-key drops — and all three live in the arm
+ * no test entered. A fresh graph per assertion is the whole fix.
+ */
+describe('taggedHopValues — the lazy iterator on a COLD graph (bucket arm)', () => {
+  const ids = (rows: unknown[]): unknown[] => rows.map((v) => (v as { id: string }).id);
+
+  it('select, where(neq) and the pair, each on a graph asked ONCE', () => {
+    // ⚠️ A FRESH fixture per spread: `seenBefore` records per (graph, topology, shape), so reusing
+    // one graph would warm the CSR for the next assertion and defeat the point.
+    expect(ids([...run(traversal(V(), as_('x'), out('E'), select('x')), fixture())])).toStrictEqual(
+      ['a', 'a', 'b', 'c', 'd'],
+    );
+    expect(
+      ids([...run(traversal(V(), as_('x'), out('E'), where(neq('x'))), fixture())]),
+    ).toStrictEqual(['b', 'c', 'd', 'b']);
+    expect([
+      ...run(traversal(V(), as_('x'), out('E'), select('x'), values('k')), fixture()),
+    ]).toStrictEqual([1, 1, 2, 3, 4]);
+    expect([
+      ...run(traversal(V(), as_('x'), out('E'), where(neq('x')), values('k')), fixture()),
+    ]).toStrictEqual([2, 3, 4, 2]);
+  });
+
+  /**
+   * ⚠️ AND ON THE WARM PATH THROUGH THE ITERATOR, which is a third combination: `toArray` first (so
+   * the CSR is built), then spread `run`. A mutant removing the iterator's CSR-arm missing-key drop
+   * survived everything else — the cold test above reaches the BUCKET arm and `twice()` reaches the
+   * DRAIN, so the iterator's CSR arm needs its own assertion. Three paths, three tests.
+   */
+  it('a MISSING key is dropped by the ITERATOR on the warm CSR arm', () => {
+    const g = fixture();
+
+    g.addVertex({ id: 'nokey2', labels: ['T'], properties: {} });
+    g.addEdge({
+      id: 'e10',
+      from: g.getVertexById('nokey2') as never,
+      to: g.getVertexById('a') as never,
+      labels: ['E'],
+    });
+
+    // Warm the second-ask policy so the spread below takes the CSR, not the bucket.
+    toArray(traversal(V(), as_('x'), out('E'), select('x'), values('k')), g);
+
+    expect([...run(traversal(V(), as_('x'), out('E'), select('x'), values('k')), g)]).toStrictEqual(
+      [1, 1, 2, 3, 4],
+    );
+    expect([
+      ...run(traversal(V(), as_('x'), out('E'), where(neq('x')), values('k')), g),
+    ]).toStrictEqual([2, 3, 4, 2, 1]);
+  });
+
+  it('a MISSING key is dropped on the cold path too', () => {
+    const g = fixture();
+
+    g.addVertex({ id: 'nokey', labels: ['T'], properties: {} });
+    g.addEdge({
+      id: 'e9',
+      from: g.getVertexById('nokey') as never,
+      to: g.getVertexById('a') as never,
+      labels: ['E'],
+    });
+
+    // `nokey` contributes no row; nothing else changes.
+    expect([...run(traversal(V(), as_('x'), out('E'), select('x'), values('k')), g)]).toStrictEqual(
+      [1, 1, 2, 3, 4],
+    );
+  });
+});
+
 describe('taggedHopValues — what it declines', () => {
   const g = fixture();
 

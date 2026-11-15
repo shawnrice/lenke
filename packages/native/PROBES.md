@@ -2107,3 +2107,28 @@ that is the path `toArray` takes.
 **So: name per-arm mutants by where the anchor actually occurs, and make sure a discriminating
 fixture reaches EACH copy.** The over-read is real — `flat` is over-allocated and zero-filled, so
 reading past a run lands on slot 0, a real vertex with a real value.
+
+## ⚠️ A WALK WRITTEN TWICE OVER TWO ARMS IS FOUR PATHS, AND THE OBVIOUS TESTS REACH TWO (item 1914)
+
+Every fused Gremlin walk has a lazy `[Symbol.iterator]` and an eager `drain`, each with a CSR arm and
+a bucket arm. **Three mutants survived in paths no test had entered:**
+
+- **the ITERATOR'S BUCKET ARM.** Every `run` test was preceded by a `toArray`, which takes the DRAIN
+  and warms item 1889's second-ask policy — so by the time the spread happened the walk was on the
+  CSR. A FRESH graph per spread is the fix, since `seenBefore` records per (graph, topology, shape).
+- **the ITERATOR'S CSR ARM with a missing key** — warm first, then spread. `twice()` covers the
+  drain's CSR arm and a cold spread covers the iterator's bucket arm; neither reaches this one.
+- **an anchor that had drifted silently**, because item 1913's duplication made one line appear
+  twice and the mutant stopped running at all.
+
+**So a mutant list for one of these walks needs: drain×CSR, drain×bucket, iterator×CSR,
+iterator×bucket — and a test that actually enters each.**
+
+## ⚠️ A BATTERY MUST REPORT EVERY ANCHOR DRIFT AT ONCE (item 1914)
+
+`fold-mutants-1909.mjs` used to throw on the first mismatched anchor, which hides the rest — a
+refactor that moves five of them then costs five runs to find. It now collects them all, prints them
+together and still exits non-zero. ⚠️ Third harness-integrity fix in four items (item 1907's
+templated config pointing at the previous subject, item 1913's swapped per-arm labels, this): **a
+measuring instrument's own configuration is the first thing to verify, and it fails silently by
+default.**
