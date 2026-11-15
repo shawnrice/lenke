@@ -49,7 +49,21 @@ for (let i = 0; i < N; i += 1) {
   g.addVertex({
     id: String(i + 1),
     labels: ['T'],
-    properties: { n: (i * 2_654_435_761) % N, k: `s${String((i * 7919) % N)}` },
+    /*
+     * ⚠️ `m` ADDED AT ITEM 1961, and the reason is an instrument flaw this probe had. Its
+     * `exprOther` arm (`ORDER BY n.k`) was being read as the cost of the UNPROJECTED-key route —
+     * but `n` is NUMERIC and `k` is a STRING, so that arm changes the key's TYPE as well as its
+     * projectedness, and `sortColumnKind` classifies a string column as `string` (reduced
+     * comparator) and a numeric one as `generic`. Two routes AND two comparators AND an extra
+     * `propOf` pass, in one 2.08x. `m` is a second NUMERIC property, so `ORDER BY n.m` varies ONLY
+     * projectedness — which is what item 1930's hop arms (`hopProp` vs `hopFarBare`, both `b.n`)
+     * already did correctly on the other shape.
+     */
+    properties: {
+      n: (i * 2_654_435_761) % N,
+      m: (i * 2_246_822_519) % N,
+      k: `s${String((i * 7919) % N)}`,
+    },
   });
 }
 
@@ -69,6 +83,19 @@ const SHAPES = {
   expr1: 'MATCH (n:T) RETURN n.n AS x ORDER BY n.n + 1',
   expr2: 'MATCH (n:T) RETURN n.n AS x ORDER BY n.n + 1, n.k',
   exprOther: 'MATCH (n:T) RETURN n.n AS x ORDER BY n.k',
+  /** Item 1961: projectedness ONLY — a second NUMERIC property, so the comparator kind is fixed. */
+  numOther: 'MATCH (n:T) RETURN n.n AS x ORDER BY n.m',
+  /** Its control: the SAME key, projected, so `aliasOf` rewrites it to a column. */
+  numProj: 'MATCH (n:T) RETURN n.m AS x ORDER BY n.m',
+  /*
+   * 🔑 THE CONTROL THAT ISOLATES THE ROUTE, and `numProj` is NOT it. `numOther` reads TWO
+   * properties per row (`n.n` to project, `n.m` for the key) where `numProj` reads one, so their
+   * gap is the route PLUS an extra `propOf` — and `propOf` is 30% of `numOther`'s profile, so that
+   * is not a rounding error. This arm reads the same two properties and projects BOTH, so `aliasOf`
+   * rewrites the key to column `y` and the column arm runs. `numOther` minus THIS is the route
+   * alone; `numProj` minus this is the second property read.
+   */
+  numTwoProj: 'MATCH (n:T) RETURN n.n AS x, n.m AS y ORDER BY n.m',
   // The floor: the same projection with no ordering at all.
   none: 'MATCH (n:T) RETURN n.n AS x',
   /*

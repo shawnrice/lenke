@@ -92299,7 +92299,7 @@ its first rows with the right one.
 
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers.
 
-## Item 1930 — **PRICED, NOT BUILT: the GQL sort residual is the COMPILED-KEY ROUTE, not the expression** — 238 ns a row against the arithmetic's 31 — and the remaining lever needs a post-projection sort arm for 1.69x-1.9x. ⚠️ **ITS STATED BLOCKER IS MIS-SCOPED — see item 1960: the windowed-sort fault rule is GATED ON `windowed` in the code, so it does not reach the non-windowed shape the screen nominates, and changing the sort key's SOURCE does not change which rows get projected at all.** ⚠️ Also corrects the screen's own pairing: `HOP start-only proj, far key` has no valid control on it
+## Item 1930 — **PRICED, NOT BUILT: the GQL sort residual is the COMPILED-KEY ROUTE, not the expression** — 238 ns a row against the arithmetic's 31 — and the remaining lever needs a post-projection sort arm for 1.69x-1.9x. ⚠️ **ITS STATED BLOCKER IS MIS-SCOPED — see item 1960: the windowed-sort fault rule is GATED ON `windowed` in the code, so it does not reach the non-windowed shape the screen nominates, and changing the sort key's SOURCE does not change which rows get projected at all.** ⚠️ **AND ITS SCOPE IS TOO NARROW — see item 1961: framed as a REWRITE it cannot help an UNPROJECTED key, which it calls un-elidable; framed as "give the keyed route a cheaper sort" ONE arm covers both, and the route is isolated at 269 ns/row with the extra property read proved FREE.** ⚠️ Also corrects the screen's own pairing: `HOP start-only proj, far key` has no valid control on it
 
 Item 1929 closed the equivalent-spelling half of this family (`ORDER BY x + 1` reaching no rung,
 3.2-3.4x). What remained was the within-rung residual item 1902 described and mis-attributed. This
@@ -94273,5 +94273,69 @@ binding), so item 1930's cost estimate stands even though its blocker does not; 
 the reason for declining was wrong.
 
 NO ENGINE BEHAVIOUR CHANGED — one heading correction and this entry.
+
+GATES. `bun run check` 0.
+
+## Item 1961 — **the sort route isolated at 269 ns/row with a control that proves the extra property read is FREE**, and ⚠️ **two of my own arms were confounded before that** — plus item 1711's refuted numeric comparator caught me reaching for it from a profile
+
+Item 1960 cleared item 1930's blocker; this measures the lever properly before building. Three
+corrections came out of it, two of them to instruments.
+
+⚠️ **CORRECTION 1: `exprsort-prof-1929.mjs`'s `exprOther` arm was TYPE-CONFOUNDED.** It reads
+`ORDER BY n.k` against a projection of `n.n` — and in that fixture `n` is NUMERIC while `k` is a
+STRING. `sortColumnKind` classifies a string column as reducible and a numeric one as `generic`, so
+that arm changes the ROUTE, the key's TYPE and the COMPARATOR KIND at once, and adds a property
+read. Its 2.08x was being read as route cost. Added `numProj`/`numOther` (both `ORDER BY n.m`, a
+second NUMERIC property) so only projectedness varies.
+
+⚠️ **CORRECTION 2: AND `numProj` WAS STILL THE WRONG CONTROL — my own, one step later.** `numOther`
+reads TWO properties per row (`n.n` to project, `n.m` for the key) where `numProj` reads one, and
+`propOf` is **30% of `numOther`'s profile**, so that is not a rounding error. `numTwoProj`
+(`RETURN n.n AS x, n.m AS y ORDER BY n.m` — two reads, both projected, so `aliasOf` rewrites the key
+to a column) is the honest control:
+
+```text
+  none        no sort at all                                7.03 ms
+  numProj     1 read, column arm                           49.31
+  numTwoProj  2 reads, column arm                           48.92   ⬅ the extra read is FREE
+  numOther    2 reads, KEYED route                         102.68   ⬅ 2.10x, the route ALONE
+  expr1       ORDER BY n.n + 1, keyed route                110.40   ⬅ 2.26x against 48.92
+  exprId      ORDER BY n.n (projected)                      49.73   ⬅ identical to the alias
+```
+
+So the route is **53.76 ms over 200,000 rows = 269 ns a row**, against item 1930's 238 ns on the hop
+— two shapes agreeing, and now with the read cost excluded rather than assumed. `exprId` matching
+the alias exactly also shows the route is not inherently dear: it is dear only when the key cannot
+be resolved to a column.
+
+🔑 **THE MECHANISM, NAMED.** The keyed arm is `deferredSortedNodeWalk`, whose closure opens
+`const keyed = []` and allocates a wrapper per row — item 1930's "KeyRow allocation" — then sorts
+the wrappers and extracts the rows. The column arm sorts the rows array in place by `a[col]`. Both
+use the same generic `compareSort` for a numeric column, so the comparator is NOT the difference;
+the wrappers and the extra indirection are.
+
+⚠️ **WHICH REFRAMES ITEM 1930'S LEVER, AND WIDENS IT.** That item scoped a REWRITE — a sort key
+expressed over projected columns — which by construction cannot help `numOther`, and it says so
+("an expression over a column the projection does NOT read, which no monotone rewrite could ever
+elide"). But the cost is the keyed SORT, not the key's spelling, so **one arm covers both**: for a
+non-windowed sort, carry the per-row keys in a parallel array and sort an INDEX PERMUTATION, instead
+of allocating a wrapper per row. `Array.prototype.sort` is stable, so index order breaks ties by
+arrival exactly as the full sort does today — which item 605 established is observable between the
+engines. Covers `numOther`'s 2.10x and `expr1`'s 2.26x, needs no expression rewrite, and the
+windowed case is untouched (item 1960 established the fault rule is gated on `windowed`).
+
+⚠️⚠️ **AND THE PROFILE SENT ME AT A LEVER THAT IS ALREADY REFUTED.** `compareValues` is 15% of
+`numOther`, and `sortColumnKind` returns `generic` for every numeric column while the reduced
+comparator's own comment says one expression serves numbers and strings alike — which reads exactly
+like a missed case. It is not: **item 1711 built the numeric arm, measured it six times across four
+runs at 0.93x / 1.05x / 1.06x / 1.11x / 1.14x / 1.18x, and dropped it** because the O(n) scan eats
+the ~25% comparator win, with an explicit _"do not rebuild it without reading this"_ in the module
+header. Third time this session the repo's own record stopped a re-derivation (items 1954, 1960, this).
+
+⚠️ **FIXTURE SENSITIVITY WORTH RECORDING:** adding `m` to the vertices moved `expr1` from 78.21 to
+~111 ms on the same query — one extra property on every vertex. So no number in this family is
+comparable across a fixture change, and every arm above was re-run after it.
+
+NO ENGINE BEHAVIOUR CHANGED — three new probe arms, one heading correction, and this entry.
 
 GATES. `bun run check` 0.
