@@ -247,6 +247,14 @@ accounted for — `multi-pattern` a genuine product (1864), `chain-rows` a layou
 `var-length` `{2,3}` a TRAIL correctness refusal (1879/1252), `aggregate` `sum`/`avg` the
 byte-identity summation order (1830/376) — so a NEW big number from this probe is the signal.
 
+⚠️⚠️ **AN ACCOUNTING NOTE THAT EXPLAINS A SHAPE'S SIZE CAN HIDE A SEPARATE TERM INSIDE IT, and item
+2017 is the worked example.** "`multi-pattern` a genuine product" is true of the ROW COUNT — a comma
+pattern really is |E|x|F| rows — and says nothing about the 7.7 EXTRA SECONDS its `ORDER BY` added
+on top, which was the largest single number on the GQL surface and had sat behind that label through
+~15 items of sort work. **So read an accounted shape's note for WHAT it accounts for**: the same row
+with and without its `ORDER BY` was 2206 against 9909 ms, and that difference was nobody's entry.
+(Item 2017 took it: 1.49x on this shape and sixteen families flat or better.)
+
 ⚠️ `worst owns N%` is a share of the sum over DISTINCT shapes, not weighted by the generator's draw
 rate. It names the slowest shape, not necessarily the one owning the family's screen time.
 

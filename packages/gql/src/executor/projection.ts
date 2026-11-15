@@ -818,8 +818,12 @@ export const applyProjection = (
     keyed = map((group: Binding[]) => {
       const rep: Binding = group[0] ?? new Map();
       const projected = projectBinding(proj, rep, params, graph, group);
-      // ORDER BY sees the output columns overlaid on the input variables.
-      const sortBinding = orderBy.length > 0 ? new Map([...rep, ...projected]) : rep;
+      // ORDER BY sees the output columns overlaid on the input variables — but only BUILDS that
+      // overlay when a key actually reads one. See the non-aggregating twin below for the
+      // measurement; this branch is where `ORDER BY <an aggregate alias>` lands, which is the case
+      // that genuinely needs the merge.
+      const sortBinding =
+        orderBy.length > 0 && proj.orderNeedsOutput ? new Map([...rep, ...projected]) : rep;
 
       return {
         b: projected,
@@ -830,7 +834,49 @@ export const applyProjection = (
     // Non-aggregating: a lazy map — rows are projected on demand.
     keyed = map((b: Binding) => {
       const projected = projectBinding(proj, b, params, graph);
-      const sortBinding = orderBy.length > 0 ? new Map([...b, ...projected]) : b;
+      /*
+       * ⚠️⚠️ **THE OVERLAY IS BUILT ONLY WHEN A SORT KEY READS AN OUTPUT COLUMN, AND `ORDER BY x`
+       * OVER A PLAIN ALIAS DOES NOT** (item 2017). `compileProjection` rewrites a sort key through
+       * `aliasDefinition` BEFORE compiling it, so `RETURN b.n AS x … ORDER BY x` compiles to a key
+       * reading `b.n` — from the INPUT binding. `orderNeedsOutput` records exactly that and is
+       * already trusted for the top-k path above, which keeps only input bindings, a stronger
+       * reliance than this one. So for every such shape the merged `Map` was a per-row allocation
+       * whose `projected` half no key ever read.
+       *
+       * Per row it cost: `[...b]` and `[...projected]` (each materializing one two-element array
+       * per entry), a concat, and a fresh `Map` insert per entry. At 2,250,000 rows that is the
+       * profile's top frame at **18.2% self**, with 12.9% in the garbage collector behind it.
+       *
+       * Isolated at 2,250,000 rows, one arm per process, best of 5, digests identical:
+       *
+       * ```text
+       *     MATCH (a:T)-[:E]->(b:T), (c:T)-[:F]->(d:T) RETURN b.n AS x, d.n AS y ORDER BY x, y
+       *       before   3255 ms   1447 ns/row    the GQL surface's largest shape
+       *       after    2205      980            1.49x
+       *     the one-key sibling ORDER BY x
+       *       before   2319      1031
+       *       after    1168       519            1.98x
+       *     the same query with NO ORDER BY       561 ms    249 ns/row   (control, flat)
+       *     a hand 2-key sort of the same rows    218 ms     97 ns/row
+       * ```
+       *
+       * ⚠️ AND IT IS NOT ONE SHAPE. Every query with an `ORDER BY` over plain aliases was paying
+       * this, so the whole-screen A/B (`overlay-gate-ab-2017.sh`, four alternated rounds, one child
+       * process per family) moves **sixteen families flat or better**: `in-list` 1.60x, `optional`
+       * 1.23x, `neighbors` 1.20x, `point-lookup` 1.19x, `edge-filter` 1.13x, `union` and
+       * `var-length` 1.11x, nothing worse than 0.97x (noise).
+       *
+       * ⚠️ A COLUMNAR SORT WAS PRICED AND REFUTED BEFORE BEING PROPOSED: sorting an index
+       * permutation over a `Float64Array` of pairs read 245 ms against the boxed-object sort's 218,
+       * i.e. SLOWER. Do not reach for it from this profile.
+       *
+       * ⚠️ WHEN THE FLAG IS TRUE THE MERGE STAYS, and those shapes are real: an aggregate alias
+       * (`RETURN count(*) AS c … ORDER BY c`) has no input variable to read, and `RETURN *` carries
+       * every in-scope variable to the output so any reference counts. Both were measured as
+       * `orderNeedsOutput=true` and keep the overlay.
+       */
+      const sortBinding =
+        orderBy.length > 0 && proj.orderNeedsOutput ? new Map([...b, ...projected]) : b;
 
       return {
         b: projected,

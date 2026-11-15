@@ -98768,3 +98768,132 @@ GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-
 files; 7 new `edge-flat` unit tests and 19 new rung tests (50 → 52 in that file);
 `edge-flat-order-2016.mjs` 9 shapes, 0 disagreements, including that a write sends the next ask back
 to the bucket walk and that the write genuinely changes the answer.
+
+## Item 2017 — ✅ **the ORDER BY overlay is built only when a key reads an output column: the GQL surface's largest shape 3255 → 2205 ms (1.49x), its one-key sibling 1.98x, and SIXTEEN families flat or better.** 🔑 **The flag that licenses it already existed and the code ignored it.** ⚠️ Plus a mutation hole in the aggregating branch that predates this change, and a columnar sort refuted before being proposed
+
+Profile-first. `family-split-1880.ts` (the body split, because a family total hides its worst shape)
+nominates something no family number can show: **`ORDER BY` is the difference in the worst shape of
+three separate families.**
+
+```text
+    multi-pattern   6,750,000 rows   2206.3 -> 9908.6 ms   4.49x
+    chain-rows        384,000        29.5   -> 83.9        2.84x
+    optional            6,000         6.2   -> 14.5        2.34x
+```
+
+⚠️ **AND IT LOOKED LIKE CLOSED GROUND, WHICH IS WHY IT SAT.** The sort path has had ~15 items
+(1711, 1902-1905, 1929, 1930, 1960-1968) and item 1976 swept it clean; `PROBES.md` labels
+`multi-pattern` "a genuine product (1864)". That label is TRUE of the row count — a comma pattern
+really is |E|x|F| rows — and silent about the **7.7 extra seconds of sort on top**, which is the
+largest single number on the GQL surface by two orders of magnitude. An accounting note that
+explains a family's SIZE can hide a separate term inside it.
+
+Priced first (`crossproduct-sort-2017.mjs`, one arm per process under a 16G cap, every arm's first
+and last rows compared POSITIONALLY so an arm that did not really sort is visible):
+
+```text
+    product   the cross product, no ORDER BY    567 ms   252 ns/row
+    ordered   the same with ORDER BY x, y      3255      1447         <- the nominated shape
+    handsort  a hand 2-key sort of those rows   213        95
+```
+
+So the sort term was 2688 ms against a hand sort's 213 — **12.6x**, about 57 ns a comparison against
+the hand sort's 4.5.
+
+⚠️ **A COLUMNAR SORT IS REFUTED BEFORE ANYONE PROPOSES IT.** Sorting an index permutation over a
+`Float64Array` of pairs measured **245 ms against the boxed-object sort's 218** — SLOWER. That arm
+is in the probe permanently, for the reason item 1893's own probe carried one: so the rows above are
+not read as the ceiling and so a profile does not send the next reader to build it.
+
+🔑 **AND IT IS NOT THE COMPARATOR, WHICH IS WHERE EVERY EARLIER ITEM LOOKED.** Item 1711 took the
+comparator for STRINGS and explicitly dropped the numeric arm (six readings 0.93x-1.18x, straddling
+1.0 — the O(n) scan ate a reduction worth ~25%). The profile of this shape puts the top frame
+somewhere else entirely, at **18.2% self with 12.9% in the garbage collector behind it**:
+
+```ts
+const sortBinding = orderBy.length > 0 ? new Map([...b, ...projected]) : b; // PER ROW
+```
+
+Two array spreads — each materializing one two-element array per entry — a concat, and a fresh `Map`
+insert per entry, 2,250,000 times.
+
+🔑 **THE FLAG THAT SAYS WHEN THAT IS NEEDED ALREADY EXISTED.** `CProjection.orderNeedsOutput` is
+computed on the sort keys AFTER `aliasDefinition` rewrites them, so `RETURN b.n AS x … ORDER BY x`
+compiles to a key reading `b.n` — from the INPUT binding. It is already trusted by the top-k path,
+which keeps only input bindings, a STRONGER reliance than this one. **Verified rather than reasoned
+about**: compiled the nominated query and read the flag — `orderNeedsOutput=false`. The merged map's
+`projected` half was never read by any key. The whole change is one condition, in both branches.
+
+```text
+    ORDER BY x, y   3255 -> 2205 ms   1.49x   (medians 3415 -> 2301)
+    ORDER BY x      2319 -> 1168      1.98x
+    no ORDER BY      567 ->  561      flat (control)
+```
+
+⚠️ **AND IT IS NOT ONE SHAPE — THE WIDE INSTRUMENT IS THE POINT HERE.** This sits in the general
+projection path that EVERY GQL query goes through, which is a far wider blast radius than a rung
+([[executor-edits-perturb]], where a new walk cost unrelated rows 16% and item 1466 declined a 3.3x
+on that ground). So the A/B is the whole 17-family screen over four alternated rounds, one child
+process per family (`overlay-gate-ab-2017.sh`): **sixteen families flat or better.**
+
+| family                                                   | PRE min | POST min | ratio              |
+| -------------------------------------------------------- | ------- | -------- | ------------------ |
+| in-list                                                  | 28.4    | 17.7     | 1.60x              |
+| optional                                                 | 928.6   | 752.1    | 1.23x              |
+| neighbors                                                | 272.5   | 226.4    | 1.20x              |
+| point-lookup                                             | 43.9    | 36.9     | 1.19x              |
+| edge-filter                                              | 1043.1  | 923.5    | 1.13x              |
+| union                                                    | 37.3    | 33.6     | 1.11x              |
+| var-length                                               | 406.6   | 365.9    | 1.11x              |
+| distinct / grouped / projection / chain-rows / aggregate |         |          | 1.02-1.05x         |
+| existence / range-scan / temporal-range                  |         |          | 0.97-0.99x (noise) |
+
+Re-profiled after (item 2006's rule): the old top frame is **18.2% -> 2.6%** and `cmp` is now the
+top at 17.5%, which is where an `n log n` sort's cost belongs.
+
+⚠️⚠️ **A MUTATION HOLE IN THE AGGREGATING BRANCH THAT PREDATES THIS CHANGE.** The overlay spreads
+`projected` AFTER the input so an output alias SHADOWS an input variable of the same name
+(`orderNeedsOutput`'s own doc states the rule). `agg-overlay-reversed` — reversing that spread in the
+aggregating branch — **survived this item's own tests AND the entire @lenke/gql suite**. The branch
+has carried the same overlay since it was written. Closed with the discriminating spelling, which
+took three attempts to find:
+
+```text
+    RETURN a.n AS a ORDER BY a         the BARE key is rewritten to `a.n`, so it reads the input
+                                       vertex either way — DIRECTION UNOBSERVABLE
+    RETURN * ORDER BY a.n              with star, `projected` carries the same entries as `b`, so
+                                       the two halves AGREE — unobservable again
+    RETURN a.n AS a ORDER BY a + 2     arithmetic is NOT rewritten, so the key reads the NAME out of
+                                       the overlay. Correct: `a` is the number. Reversed: `a` is the
+                                       VERTEX and it RAISES. ⬅ this one
+```
+
+⚠️ **AND DROPPING THE INPUT HALF NEEDS A MIXED-SOURCE SORT, which took a fourth attempt.** A mutant
+building `new Map([...projected])` survived this file while being caught by a CALL test elsewhere,
+whose shape is one key rewritten into an INPUT read inside a projection whose flag is TRUE because a
+DIFFERENT key keeps an output name. My first two mixed attempts had BOTH keys resolving inside
+`projected`, so they could not see it; the second key has to read a variable the projection never
+emits (`ORDER BY a + 2, b.s`).
+
+⚠️ **THE `always` MUTANT IS UNCATCHABLE BY ANY ANSWER TEST AND THAT IS NOT A HOLE** — building the
+overlay unconditionally IS the pre-item-2017 behaviour, so it is answer-equivalent by construction
+and the A/B is the only evidence against it (`count-shortcut.ts` records the same for its own
+`seenBefore` gate). What IS guarded is the gate's INPUT: assertions that `orderNeedsOutput` reads
+FALSE for the plain aliased sorts and TRUE where the overlay is load-bearing, so a regression in that
+computation — which would silently restore the per-row `Map` while keeping every answer right — is
+loud. [[perf-gate-needs-its-own-test]], sixth instance.
+
+⚠️ THREE OF MY OWN EXPECTATIONS WERE WRONG AND THE ENGINE WAS RIGHT EACH TIME (a group sum, a
+two-key tie order, and the label on `ORDER BY x + 1`, which I filed under "needs the overlay" by
+guessing when the flag says FALSE — item 1929's alias resolution reaches inside expressions). Each
+was corrected against the engine, not around it.
+
+STILL OPEN on this shape: the sort term is now 1644 ms against the hand sort's 218, **7.5x**, and
+the re-profile names the terms — `cmp` 17.5%, GC 16.9%, `visitRemaining` 14.9% (the product
+enumeration itself), `mapToRow` 11.6% (a plain object built per row from a Map, with dynamic keys).
+`mapToRow` is the next candidate and it is NOT sort-specific.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
+`bun run fuzz` all seven green plus **8/8 sweeps clean** (the differential fuzzer compares TS against
+native and is the real net under a sort change); 16 new tests; **9/10 mutants caught across two
+filters**, the tenth being the unobservable `always`.
