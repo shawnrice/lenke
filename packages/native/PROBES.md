@@ -2679,3 +2679,62 @@ and item 1920 showed this shape of cost falling to a whole-plan claim.
 default is the other one. ⚠️ A mutant flipping that default SURVIVED until a test looked at it
 directly (`expect(newContext().keysStable).toBe(false)`): the production call site always passes an
 explicit value, so nothing else exercises it. **A safe default that nothing asserts is a comment.**
+
+## ⚠️ A LENGTH GATE'S TEST IS THE SHAPE ONE TOO LONG _THAT NOTHING ELSE REFUSES_ (item 1923)
+
+`normalizeDepth1SimplePath` gates on `steps.length !== 3 && steps.length !== 4`. Loosening it to
+`steps.length < 3` SURVIVED every assertion — including the one written specifically for it.
+
+```
+the depth-TWO case it looks like it admits:  V().out(E).out(E).simplePath()
+                                             -> the 4th step is the second `out`, so the
+                                                `tail.kind !== 'simplePath'` check refuses it and
+                                                the length gate never fires at all
+what the length gate ACTUALLY protects:      [V, out, simplePath, values, count]
+                                             -> destructures to the first four, the FIFTH step is
+                                                silently DROPPED: 599,998 rows for a query that
+                                                asked for ONE
+```
+
+⚠️ **Item 1912 recorded the identical hole** ("nothing reached the case where the fifth step IS a
+values and a SIXTH is silently dropped — 800,000 rows where the query asked for two"), in the same
+module family. **When several checks overlap, a mutant on one of them is only caught by an input the
+OTHERS let through** — so enumerate which check each test actually exercises.
+
+## ⚠️ `as_`/`select` ARE NOT PATH-DEPENDENT — a stale claim that steered two items (item 1923)
+
+Items 1900 and 1912 both state "`as_`/`select`/`path` make `planReadsPath` true, and every fused walk
+is gated on `!tracksPath`". Measured:
+
+```
+V().out(E).simplePath()               readsPath = true
+V().out(E).path()                     readsPath = true
+V().as_(x).out(E).where(neq(x))       readsPath = FALSE
+V().as_(x).out(E).select(x)           readsPath = FALSE
+V().as_(x).out(E)                     readsPath = FALSE
+```
+
+`PATH_DEPENDENT_KINDS` contains neither `as` nor `select`. Those shapes were slow because **no rung
+MATCHED them** — a different diagnosis with a different fix, and the one items 1912/1914 actually
+applied. ⚠️ Both CLOSED.md lines are struck. The correction is load-bearing for item 1923: it is what
+makes `V().as_(t).out(T).where(neq(t))` a legal rewrite TARGET, since that shape is path-free.
+
+**So: check `readsPath` on the actual plan rather than inheriting a claim about which steps set it.**
+One `console.log` settles it.
+
+## `pathfam-shape-1923.mjs` + `simplepath-parity-1923.mjs` — the family's remaining shapes
+
+What `simplePath`/`cyclicPath`/`path().by(k)` actually yield at depth one, read off the engine:
+
+```
+V().out(E)                       b  c  d        <- d is the self-loop
+V().out(E).simplePath()          b  c           <- the FAR VERTEX, self-loop dropped: a pure FILTER
+V().out(E).cyclicPath()          d              <- the complement
+V().out(E).path().by(n)          [a b] [b c] [d d]
+V().out(E).out(E).simplePath()   c              <- depth 2 needs all THREE distinct: different test
+```
+
+⚠️ **THE PARITY PROBE ASSERTS ITS FIXTURE CONTAINS SELF-LOOPS BEFORE COMPARING ANYTHING.** Without
+them `simplePath` and the plain hop agree and all ten comparisons pass for the wrong reason — the
+"answer INVARIANT to the property you varied" trap. It also checks the PARTITION
+(`out(E) 60000 = simplePath 59998 + cyclicPath 2`), because a wrong filter returns a plausible count.

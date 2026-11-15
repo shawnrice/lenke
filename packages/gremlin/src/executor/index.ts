@@ -1911,6 +1911,88 @@ export const dropCountedSelect = (plan: Plan): Plan => {
  */
 const EDGE_TO_FAR: Readonly<Record<string, 'inV' | 'outV'>> = { outE: 'inV', inE: 'outV' };
 
+/**
+ * `V().out(T).simplePath()` becomes `V().as_(t).out(T).where(neq(t))` — a DEPTH-ONE rewrite into a
+ * shape item 1912 already fuses (item 1923).
+ *
+ * ⚠️ WHY A REWRITE AND NOT A RUNG. On a plan whose path is exactly `[near, far]`, `simplePath()` is
+ * "near !== far" — the hop MINUS its self-loops — which is precisely what `tagged-hop-values.ts`
+ * computes for `where(neq(tag))`. Read off the engine rather than assumed
+ * (`pathfam-shape-1923.mjs`): `V().out(E).simplePath()` yields the FAR VERTICES `b, c` where
+ * `V().out(E)` yields `b, c, d` and `d` is the self-loop. So the step is a pure filter and the row
+ * shape is the plain hop's.
+ *
+ * And the path dependence is the whole cost, measured:
+ *
+ * ```text
+ *   V().out(E).simplePath()               readsPath = TRUE     -> no rung at all
+ *   V().as_(t).out(E).where(neq(t))       readsPath = false    -> item 1912's rung
+ * ```
+ *
+ * ⚠️ DEPTH TWO IS A DIFFERENT TEST AND IS REFUSED. `V().out(E).out(E).simplePath()` requires all
+ * THREE elements distinct, not just the ends — the probe returned one row where the one-hop form
+ * returns two, so a rewrite admitting it would answer a different question.
+ *
+ * ⚠️ `cyclicPath()` IS **NOT** REWRITTEN, and that is a refusal with a reason rather than an
+ * oversight: it is the complement, so it needs `where(eq(t))`, and item 1912's rung explicitly
+ * declines `eq` — "a shape nobody has measured and not what this rung computes". Rewriting into a
+ * shape that then declines would add a step for nothing. It stays at 161.82 ms for its 2 rows.
+ *
+ * ⚠️ THE TRAILING `values(k)` FORM IS ADMITTED BECAUSE THAT IS WHAT THE SCREEN MEASURES — item
+ * 1912's own lesson, where a four-step rung won 17.6x in isolation and left the screen's rows
+ * untouched because the screen's spellings carry a fifth step. `tagged-hop-values` admits five steps
+ * when the last is a single-key `values`, so the rewrite passes it through.
+ *
+ * ⚠️ THE SYNTHETIC TAG CANNOT COLLIDE, and the gate is why: the plan is exactly three or four steps,
+ * so there is no other step that could bind or read a tag. Nothing downstream observes it.
+ */
+const SIMPLE_PATH_TAG = '~simplePath';
+
+export const normalizeDepth1SimplePath = (plan: Plan): Plan => {
+  const { steps } = plan;
+
+  if (steps.length !== 3 && steps.length !== 4) {
+    return plan;
+  }
+
+  const [source, hop, tail, proj] = steps;
+
+  if (source.kind !== 'V' || (source.ids?.length ?? 0) > 0) {
+    return plan;
+  }
+
+  if ((hop.kind !== 'out' && hop.kind !== 'in') || hop.labels.length !== 1) {
+    return plan;
+  }
+
+  if (tail.kind !== 'simplePath') {
+    return plan;
+  }
+
+  // Only a single-key `values` may trail, which is the bound `tagged-hop-values` itself has.
+  if (proj !== undefined && (proj.kind !== 'values' || proj.keys.length !== 1)) {
+    return plan;
+  }
+
+  const rewrittenSteps: Step[] = [
+    source,
+    { kind: 'as', label: SIMPLE_PATH_TAG },
+    hop,
+    { kind: 'where', pred: { op: 'neq', value: SIMPLE_PATH_TAG } },
+  ];
+
+  if (proj !== undefined) {
+    rewrittenSteps.push(proj);
+  }
+
+  return {
+    ...rewritten(plan, rewrittenSteps),
+    // See `normalizeDirectedOtherV`: this pass REMOVES the path-dependent step, which is the one
+    // direction `rewritten` does not recompute for.
+    readsPath: rewrittenSteps.some(stepReadsPath),
+  };
+};
+
 export const normalizeDirectedOtherV = (plan: Plan): Plan => {
   const { steps } = plan;
 
@@ -2595,7 +2677,7 @@ export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
    * place sets `tracksPath` and `effectivePlan` is then skipped WHOLESALE — taking item 1307's
    * `outE(T).inV()` -> `out(T)` with it. 328.12 ms against the twin spelling's 46.21 (item 1921).
    */
-  const planned = normalizeDirectedOtherV(plan);
+  const planned = normalizeDepth1SimplePath(normalizeDirectedOtherV(plan));
 
   // Decide once whether any step observes the path; if not, traversers skip
   // path bookkeeping for the whole run (see planReadsPath / startTraverser).

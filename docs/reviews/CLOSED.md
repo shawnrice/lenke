@@ -89565,6 +89565,11 @@ retracted a flag for exactly that:
       select('a') after as_('a')       179.39      800,000
       out('E').values('n')              42.61      800,000        the floor
 
+🔬 ~~**AND THE MECHANISM IS ALREADY VISIBLE for three of the five**: `as_`, `select` and `path` all make~~
+⚠️ **ONLY `path` DOES — CORRECTED at item 1923, measured.** `PATH_DEPENDENT_KINDS` contains neither
+`as` nor `select`, and `V().as_(x).out(E).select(x)` reads `readsPath = FALSE`. Those shapes were slow
+because no rung MATCHED them, which is a different diagnosis with a different fix — and the one items
+1912/1914 actually applied. The original text follows:
 🔬 **AND THE MECHANISM IS ALREADY VISIBLE for three of the five**: `as_`, `select` and `path` all make
 `planReadsPath` true, and EVERY fused walk in this package is gated on `!tracksPath` — the walks emit
 bare values and build no traverser, so a plan that reads the path cannot ride one. Those three
@@ -90517,7 +90522,10 @@ semantics.
 
 Items 1909-1911 cleared the list-shaped Gremlin shapes, leaving the surface's top four all
 path-gated: `where(neq)` 406.18, `select` two 265.02 / one 195.92, `path` 154.98. Item 1900 had
-priced that cluster and declined it, writing that `as_`/`select`/`path` make `planReadsPath` true,
+priced that cluster and declined it, writing that ~~`as_`/`select`/`path` make `planReadsPath` true~~
+(⚠️ **only `path` does — corrected at item 1923; `as`/`select` are not in `PATH_DEPENDENT_KINDS` and
+measure `readsPath = false`, so the cluster was slow for want of a MATCHING rung, not because the
+gate excluded it**),
 every fused walk is gated on `!tracksPath`, and "their cost is a question about that bookkeeping
 rather than a missing rung".
 
@@ -91609,3 +91617,123 @@ id spaces at all, where id-keying is correct only because of a contract clause e
 
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers;
 `bun run spelling:gremlin`; the workload screen at 200,000 vertices.
+
+## Item 1923 — **8.17x**: `V().out(T).simplePath()` goes 308.81 ms to **37.81** by being REWRITTEN into a shape item 1912 already fused. No new walk, no new module — and ⚠️ a stale claim in items 1900/1912 corrected: `as_`/`select` do NOT make `planReadsPath` true
+
+Item 1921 made the path-dependent family visible and item 1922 took `tree()`'s key. `simplePath` was
+the next row at 308.81 ms for 599,998 rows, against the plain hop's 50.21 for 600,000.
+
+🔑 **AT DEPTH ONE `simplePath` IS "near !== far"** — the hop MINUS its self-loops — which is exactly
+what `tagged-hop-values.ts` computes for `where(neq(tag))` (item 1912). Read off the engine rather
+than assumed (`pathfam-shape-1923.mjs`): `V().out(E).simplePath()` yields the FAR VERTICES `b, c`
+where `V().out(E)` yields `b, c, d` and `d` is the self-loop. **So the step is a pure filter and the
+row shape is the plain hop's.**
+
+✅ **SO IT IS A REWRITE, NOT A RUNG**, and the measurement that settles which:
+
+      V().out(E).simplePath()             readsPath = TRUE     -> no rung at all
+      V().as_(t).out(E).where(neq(t))     readsPath = false    -> item 1912's rung
+
+      pathdep: simplePath   308.81  ->  37.81 ms   ⬅ 8.17x, 599,998 rows
+
+⚠️ **37.81 IS BELOW THE PLAIN HOP'S 50.21, WHICH LOOKS WRONG AND IS NOT.** Item 1913 measured exactly
+this fused shape at **38.96 against the hop control's 41.18** and noted it "should always have been
+below — it reads the same properties minus the self-loops". The rewrite lands on an independently
+measured number, which is corroboration rather than a coincidence to explain away.
+
+⚠️ **THE TRAILING `values(k)` FORM IS ADMITTED BECAUSE THAT IS WHAT THE SCREEN MEASURES** — item
+1912's own lesson, where a four-step rung won 17.6x in isolation and left the screen's rows untouched
+because the screen's spellings carry a fifth step. Had this gate stopped at three steps, the 8.17x
+would never have reached the row.
+
+## ⚠️ A stale claim corrected: `as_`/`select` are NOT path-dependent
+
+Items 1900 and 1912 both state that "`as_`/`select`/`path` make `planReadsPath` true, and every fused
+walk is gated on `!tracksPath`" — and I repeated that framing while choosing targets this session.
+Measured directly:
+
+      V().out(E).simplePath()               readsPath = true
+      V().out(E).path()                     readsPath = true
+      V().as_(x).out(E).where(neq(x))       readsPath = FALSE
+      V().as_(x).out(E).select(x)           readsPath = FALSE
+      V().as_(x).out(E)                     readsPath = FALSE
+
+`PATH_DEPENDENT_KINDS` contains neither `as` nor `select`. So item 1912's shapes were slow because
+**no rung MATCHED them**, not because the gate excluded them — a different diagnosis with a different
+fix, and the one that item actually applied. ⚠️ The correction matters here specifically: it is what
+makes the rewrite target legal, since the shape it rewrites INTO is path-free.
+
+## 🛑 Two refusals, each with a reason rather than an omission
+
+      ❌ DEPTH TWO. `V().out(E).out(E).simplePath()` requires all THREE elements distinct, not just
+         the ends — the probe returns ONE row where the one-hop form returns two. A rewrite admitting
+         it answers a different question.
+
+      ❌ `cyclicPath()`. It is the complement, so it needs `where(eq(t))` — and item 1912's rung
+         explicitly declines `eq`: "a shape nobody has measured and not what this rung computes".
+         Rewriting into a shape that then declines would add a step for nothing. It stays at 161.82 ms
+         for its 2 rows, which is the cheapest row in the family anyway.
+
+## Mutation
+
+**11 mutants, 10 caught, 1 declared — after one survivor that was item 1912's hole repeating in the
+same module family.** Loosening the length gate to `steps.length < 3` survived everything:
+
+      🛑 THE DEPTH-TWO CASE IT LOOKS LIKE IT ADMITS IS ALREADY REFUSED ELSEWHERE — for
+         `V().out(E).out(E).simplePath()` the fourth step is the second `out`, so the
+         `tail.kind !== 'simplePath'` check catches it and the length gate never fires.
+
+      🔑 WHAT THE LENGTH GATE ACTUALLY PROTECTS is a plan LONGER than the rewrite can carry: with
+         the mutant, `[V, out, simplePath, values, count]` destructures to the first four and the
+         FIFTH step is silently DROPPED — 599,998 rows where the query asked for ONE. Item 1912
+         recorded the identical hole ("nothing reached the case where the fifth step IS a values and
+         a SIXTH is silently dropped — 800,000 rows where the query asked for two").
+
+⚠️ **SO A LENGTH GATE'S TEST IS NOT "THE SHAPE ONE TOO LONG" — it is the shape one too long THAT THE
+OTHER CHECKS DO NOT ALREADY REFUSE.** Three five-step spellings and the answers a dropped step would
+get wrong are now asserted.
+
+The single declared survivor is the route itself: not calling the pass leaves the plan path-tracking,
+which answers the same rows. Everything else is caught because the pass is EXPORTED and tested on its
+output plan and on identity for each refusal.
+
+## Correctness
+
+`simplepath-parity-1923.mjs`, 20,000 vertices / 80,000 edges, each shape asked COLD (bucket arm) and
+WARM (CSR arm) against a declining spelling: **10/10 identical**. ⚠️ And the fixture ASSERTS IT
+CONTAINS SELF-LOOPS before comparing anything — without them `simplePath` and the plain hop agree and
+every comparison passes for the wrong reason, which is CLAUDE.md's "an answer INVARIANT to the
+property you varied cannot validate the fixture".
+
+✅ **AND THE PARTITION IS CHECKED**, because a wrong filter can return a plausible count:
+
+      out(E) 60000 = simplePath 59998 + cyclicPath 2
+
+## ⚠️ The per-call cost of a new pass, and a spelling flag that is NOT this item's
+
+Both normalizations run on EVERY plan, which is the hot path `ast.ts` records per-call overhead
+mattering on (315-456 ns for shapes whose graph work is 2-5 ns). Measured with
+`gremlin-plan-overhead-probe.mjs`, the `work` column (plan reused, which isolates per-call cost):
+
+      shape       PRE    POST
+      filtered    691    690
+      hop         189    194
+      vals        782    799
+
+**+5 to +17 ns per call**, consistent with two early-out scans (`steps.some(kind === 'otherV')` plus
+two length comparisons) and inside the instrument's own spread. Recorded rather than claimed to be
+zero.
+
+⚠️ **AND THE SPELLING PROBE FLAGGED TWO GROUPS, NEITHER OF THEM THIS ITEM'S** — reported because
+quoting a clean run would be the easy thing:
+
+      label, VACUOUS, before a hop: hasLabel(Univ).out vs out        3.33x in-sweep
+        -> run ALONE it falls UNDER the probe's 500 ns floor and is not compared. In-sweep noise.
+      edge-type union vs an explicit union: out(T, U) vs union(...)  3.16x, and STILL flags alone
+        -> flags on the **PRE** build too, twice, so it is pre-existing. Already recorded at 2.75x
+           and 4.49x in earlier runs, with a note that it has previously fallen below the floor —
+           a standing flag that drifts in and out of the comparable range with the calibration.
+
+GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers; the
+workload screen at 200,000 vertices. `bun run spelling:gremlin`: 0 answer disagreements, 2 groups
+flagged and both shown above to be pre-existing rather than this item's.
