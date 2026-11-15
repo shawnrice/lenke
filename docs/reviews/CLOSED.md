@@ -91672,7 +91672,12 @@ makes the rewrite target legal, since the shape it rewrites INTO is path-free.
       ❌ `cyclicPath()`. It is the complement, so it needs `where(eq(t))` — and item 1912's rung
          explicitly declines `eq`: "a shape nobody has measured and not what this rung computes".
          Rewriting into a shape that then declines would add a step for nothing. It stays at 161.82 ms
-         for its 2 rows, which is the cheapest row in the family anyway.
+         for its 2 rows, ~~which is the cheapest row in the family anyway~~ ⚠️ WHICH WAS TRUE OF THE
+         FAMILY AND IS NOT TRUE OF THE SCREEN: at `NODES=200000` item 1954 measured it at 200.91 ms,
+         the SECOND largest absolute cost on the whole Gremlin screen behind `tree()`. The `eq`
+         blocker stands; the "cheapest anyway" dismissal does not, and item 1955 notes a mechanism
+         this refusal never considered — a ONE-HOP `cyclicPath` is exactly the SELF-LOOP edges, so
+         it needs no path tracking and no `where(eq(t))` at all.
 
 ## Mutation
 
@@ -93921,5 +93926,72 @@ worth removing measures flat. **Do not re-price it without a new mechanism.**
 
 NO ENGINE BEHAVIOUR CHANGED — two instruments and this entry; `projection.ts` is byte-identical to
 `HEAD` (`git diff` empty over `packages/gremlin`).
+
+GATES. `bun run check` 0; `bun run test -- --skip-nx-cache` 21 projects.
+
+## Item 1955 — **THE EDGE-PREDICATE FAMILY'S THREE GENERIC ROWS, PRICED AT 4.45-4.83x — the walk already exists.** ⚠️ And the family's biggest raw gap (2.28x more) is **CORRECTNESS-BLOCKED by stream order**, which a checksum could not see and a positional compare settled
+
+Continuing the Gremlin screen after item 1954 declined `tree()`. The screen's largest REALISTIC row
+is `V().outE('E').has('w', gt(3)).inV().values('n')` — a property-filtered hop, which real
+traversals are full of — at 101.61 ms for 457,142 rows.
+
+**THAT ROW IS ALREADY FUSED, and the route screen says so rather than the timing**
+(`edgef: outE has inV values  SHORTCUT  0 applyStep calls`). Item 1882 built `edgeFilteredHopValues`
+for exactly it. So its residual is inside a working rung, and
+[[rung-precedence-decides-speed]]'s rule — timing cannot tell _declined_ from _more work_ — is what
+sent me to the route screen first instead of building a second rung on top of the first.
+
+⚠️⚠️ **THE 2.28x I FOUND FIRST IS NOT AVAILABLE, AND THE REASON IS WORTH THE WHOLE ITEM.**
+`edgefilter-1955.mjs` prices the fused row against two hand ceilings:
+
+```text
+  engine                     111.1 ms   259 ns/row
+  hand, start-driven          67.2      157          1.61x   ← same access pattern
+  hand, EDGE BUCKET           30.1       70          3.54x   ← 2.28x beyond that
+```
+
+`V().outE('E')` enumerates every `E` edge anyway, so driving `edgesByLabel` is the same _work_ and
+looked free. It is not: the Gremlin differential fuzzer compares this shape **STRICTLY ORDERED** —
+a single-type `outE('E')` is not in its unordered set, which needs two or more labels or a bare
+`both`/`bothE` — so the TS stream order here is a cross-engine contract under the byte-identity
+invariant. **A checksum cannot see an order change**, and mine agreed on all three arms. A
+POSITIONAL compare settled it in one line:
+
+```text
+  engine vs hand edge-bucket  : first differs at 0: 5 vs 7
+  engine vs hand start-driven : IDENTICAL
+```
+
+The engine emits per-vertex order. So the edge-bucket arm would change a pinned answer, and the
+legal ceiling for this row is the start-driven 1.61x, not 3.54x. ⚠️ **A multiset guard is the wrong
+instrument for any change that reorders a stream** — this is the same class as item 1948's GROUP BY
+first-seen order, caught before building rather than after.
+
+🔑 **AND THE REAL TARGET IS ELSEWHERE, WHICH THE ROUTE SCREEN HANDED OVER FOR FREE.** Three siblings
+in the same family never got a route, and the walk they need is the one item 1882 already wrote —
+only the TERMINAL differs. `edgecount-1955.mjs`, 200,000 vertices / 1,000,000 edges, median of 9,
+**ns per EDGE VISITED** (all shapes visit the same 1,000,000; a per-row figure would flatter them,
+which is item 1858's recorded mistake):
+
+```text
+  shape                             ms    ns/visit     rows      ceiling    gap
+  outE has inV values  (FUSED)      84.3        84   428571            —    the rung works
+  outE has inV count   (generic)   188.1       188        1         38.9    4.83x
+  outE has count       (generic)   173.2       173        1         38.9    4.45x
+  outE has values      (generic)   192.6       193   428571         42.0    4.59x
+```
+
+Every arm agrees on 428,571, and both ceilings are **order-preserving** (per-vertex adjacency), so
+unlike the 2.28x these gaps are legally claimable. A `count()` needs strictly LESS than the fused
+values projection — no cell, no row object, no result stream — so these three are paying a full
+four-call generator chain to compute something cheaper than what the fused arm already computes.
+Generic is 2.2x the fused row on the identical walk.
+
+That is the next build: extend `edgeFilteredHopValues` to the `count()` terminal and to an EDGE
+property projection, which is a terminal change on an existing walk rather than a new module.
+⚠️ `bothE has otherV count` stays refused — item 1882's reason (two buckets make "the other end"
+depend on which bucket the edge came from, and a self-loop appears in both) is a real one.
+
+NO ENGINE BEHAVIOUR CHANGED — three instruments and this entry.
 
 GATES. `bun run check` 0; `bun run test -- --skip-nx-cache` 21 projects.
