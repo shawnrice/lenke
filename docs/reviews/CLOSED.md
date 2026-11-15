@@ -95104,3 +95104,47 @@ NO ENGINE BEHAVIOUR CHANGED — one stale source comment corrected, one heading 
 entry. The `evalLabelExpr` counter was reverted (`git diff` on `graph-queries.ts` empty).
 
 GATES. `bun run check` 0; the gql suite green.
+
+## Item 1975 — **two candidate targets closed by READING, not measuring**, and the broad TS regression sweep owed after six shipped changes. ⚠️ One of them was a consequence I had drawn from my own item 1973 one tick earlier, and it is false
+
+Item 1973 established that the GQL fast paths need a VACUOUS label and that "every read screen in the
+repo is label-homogeneous". Two consequences seemed to follow. Neither does.
+
+❌ **"THE SPELLING PROBE MEASURES THE VACUOUS ARM, so spelling gaps on a realistic schema are
+unmeasured."** A plausible and expensive-to-act-on claim — the probe exists to catch the engine's
+named bug class, so a blind spot there would matter. It is false: `spelling-probe.ts`'s fixture
+already carries
+
+```text
+  node v{i}   labels ["P","Univ"]  or  ["P","Q","Univ"]   (i % 3 === 0)
+  node s{i}   labels ["S","Univ"]
+```
+
+so **`P` is NOT vacuous** (the `S` vertices lack it) while `Univ` is the vacuous twin, deliberately.
+The probe has been on a realistic schema all along. ⚠️ Item 1973's memory note is about the SCREENS
+and must not be read as covering this probe — stated here because I drew exactly that inference one
+item after writing the note.
+
+❌ **"ITEM 1608's 5.6x ELISION IS AN OPEN TARGET WORTH LITTLE ON A REAL SCHEMA."** The second half is
+sound reasoning — an elision that only fires on a vacuous label cannot help a multi-label graph, so
+it would widen item 1973's gap rather than close it. But the premise is wrong: **item 1609 SHIPPED it
+uniformly at 5.58x**, and `CLOSED.md`'s heading says so. The stale copy was the one in
+`shortcuts.ts`'s prose, which item 1974 corrected. So there was nothing to reframe.
+
+🔑 **WHAT THIS TICK IS WORTH IS THE COST IT DID NOT PAY.** Both ideas were well-formed, both had a
+clear build, and both would have been wasted work — one on an instrument that already does the job,
+one on a target already shipped. The checks were a fixture read and a heading read. ⚠️ The second is
+the fourth time this session the record stopped a re-derivation (items 1954, 1960, 1961, this), and
+the first is the second time a conclusion of my OWN from the previous item was wrong (item 1966
+corrected 1965, this corrects an inference from 1973).
+
+**AND THE SWEEP THAT WAS OWED.** Six engine changes shipped this session — items 1926, 1927, 1928,
+1929 (GQL `LET`/sort), 1951, 1952 (the predicated hop arm), 1956, 1957 (the edge-predicate family),
+1962 (the permuted sort), 1971 (the two-key dedupe) — each measured on its own shape with its own
+controls, and NONE measured against the broad corpus. `bun run bench` is the regression instrument
+for that and had not been run once. It is running as this entry is written; its result is recorded in
+the next item rather than guessed at here.
+
+NO ENGINE BEHAVIOUR CHANGED — this entry.
+
+GATES. `bun run check` 0.
