@@ -94692,7 +94692,10 @@ with that conservatism, which is why flipping it is a no-op. Its own header stat
 _"the reduced copy's items are synthetic closures with no AST to analyse — so the walk is told to
 bind EVERY endpoint a key could name."_
 
-**WHICH MAKES THE FOLD BUILDABLE AFTER ALL, and names the work.** The conservatism is not forced by
+❌ **AND THE FOLD IS DEAD ANYWAY — item 1968 settled it without building anything: NATIVE's tie
+order follows the START-DRIVEN arrival order, so a far-driven deferred arm is a cross-engine WRONG
+ANSWER. The conservatism below is protecting a real contract.** ~~**WHICH MAKES THE FOLD BUILDABLE
+AFTER ALL, and names the work.**~~ The conservatism is not forced by
 information the arm lacks: `proj.orderBy`'s keys come FROM the AST, so `freePredicateVars(k.expr)`
 can establish that every key reads only the far variable — exactly the analysis `deferredSortKeys`
 already does on the node side (`nameRead !== nodeVar` declines there). With `keysReadStart` computed
@@ -94705,5 +94708,59 @@ non-vacuous fixture) is what would have to settle it.
 
 NO ENGINE BEHAVIOUR CHANGED — the flag was restored (`git status` clean beyond the new probe), one
 heading corrected, and this entry.
+
+GATES. `bun run check` 0.
+
+## Item 1968 — ❌ **THE FOLD IS DEAD, and it is a CORRECTNESS answer settled with no engine change: NATIVE's `ORDER BY` tie order follows the START-DRIVEN arrival order** (`start-driven=true far-driven=false`, on a fixture where the two provably differ). So `walkReadFlags`' conservatism is protecting a contract, and item 1966's 198 ns/row term keeps only its small lever
+
+Item 1967 relocated the blocker to `walkReadFlags` and said computing `keysReadStart` from the AST
+would unlock the far-driven template fold. Before building that: a far-driven walk visits rows in a
+different arrival order, `Array.prototype.sort` is stable, so TIE ORDER under `ORDER BY` changes —
+and item 605 established that tie order is observable between the engines.
+
+🔑 **THAT IS ANSWERABLE WITHOUT BUILDING THE ARM.** Compute both candidate arrival orders BY HAND,
+stable-sort each by the key, and ask which one NATIVE matches. `tiewalk-1968.mjs`, 8 vertices, fan-out
+2, the sort key on the START (`a.k`, two values so every group is a large tie) and the projected tag
+on the FAR end:
+
+```text
+  hand START-driven : v2,v3,v4,v5,v6,v7,v8,v1,v3,v4,v5,v6,v7,v8,v1,v2
+  hand FAR-driven   : v1,v2,v3,v4,v5,v6,v7,v8,v1,v2,v3,v4,v5,v6,v7,v8
+  TS engine         : v2,v3,v4,v5,v6,v7,v8,v1,v3,v4,v5,v6,v7,v8,v1,v2
+  NATIVE engine     : v2,v3,v4,v5,v6,v7,v8,v1,v3,v4,v5,v6,v7,v8,v1,v2
+
+  the two hand orders DIFFER? true        ⬅ the vacuity guard
+  native matches: start-driven=true  far-driven=false
+```
+
+**So a far-driven deferred hop would diverge from native on every tie-heavy `ORDER BY`** — a wrong
+answer under the byte-identity invariant, not a slow path. The fold is refused for correctness, and
+`walkReadFlags`' conservative `itemsReadStart: s.hasStartVar` turns out to protect exactly this,
+whether or not it was written for it.
+
+⚠️ **THE FIXTURE DESIGN IS THE WHOLE EXPERIMENT, and the obvious one cannot ask the question.** Rows
+for one FAR vertex share a far-read key, so after sorting they are adjacent whichever way the walk
+ran — a key on the far end makes the two orders coincide and the probe passes vacuously. Putting the
+SORT KEY on the start and the PROJECTED VALUE on the far end is what makes them differ, and the
+`DIFFER? true` line is printed so a future fixture change cannot quietly re-vacuum it. Item 1967's
+probe was vacuous for the mirror-image reason; that is twice in two items, on the same question.
+
+**WHAT SURVIVES OF THE THREAD.** Items 1963-1968 priced the hop sort family end to end and shipped
+nothing, which is the right outcome:
+
+      1963  the permutation shape for the column arm        ❌ 0.82x, refuted outside the engine
+      1964  the post-sort re-projection                     ❌ 1.0-1.29x, declined on 1466's precedent
+      1965  "the sorted arm loses the fused read"           ❌ wrong mechanism, corrected at 1966
+      1966  the KEY EVALUATION is 67% (198 ns/row)          ✅ the real term, by ablation
+      1967  `startDriven: true` is the blocker              ❌ no-op; the gate is `walkReadFlags`
+      1968  fold the key per far vertex                     ❌ WRONG ANSWER against native
+
+The one lever left is specializing the key closure to a direct read when it is shaped
+`<farVar>.<prop>` — no walk reordering, so no tie-order exposure — worth perhaps 1.3-1.5x of a 198
+ns/row term, in the file where item 1964 declined 1.0-1.29x and item 1466 declined 3.3x. By this
+repo's own bar that is borderline, and it is the honest end of this thread rather than a target to
+take because it is the last one standing.
+
+NO ENGINE BEHAVIOUR CHANGED — one probe, one heading correction, and this entry.
 
 GATES. `bun run check` 0.
