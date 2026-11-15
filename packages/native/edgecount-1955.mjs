@@ -125,16 +125,42 @@ const time = (fn) => {
   return { ms: med(ts), rows, first };
 };
 
-console.log(
-  `NODES=${String(NODES)} FANOUT=${String(FANOUT)} |E|=${String(EDGES)} REPS=${String(REPS)} median`,
-);
-console.log(`# ns/visit is per EDGE VISITED (${String(EDGES)}), never per row\n`);
-console.log('shape                             ms    ns/visit     rows   first');
+/*
+ * ⚠️ ONE SHAPE PER PROCESS WHEN `ONLY` IS SET, and item 1956 is why it had to be added. Run as a
+ * sweep, this probe reported that item's target at 2.40x AND its untouched control — the already
+ * fused `outE has inV values` row — moving 84.3 -> 109.1, a 1.29x regression an isolated
+ * re-measure refuted. Six shapes in one process interfere through shared dispatch sites and inline
+ * caches; CLAUDE.md records that at item 737, and item 762 names the giveaway (a control moving
+ * MORE than the target). The sweep stays for the regression pass; an A/B must use
+ * `ONLY=<substring>`.
+ */
+const only = process.env.ONLY;
+const chosen = Object.entries(SHAPES).filter(([name]) => only === undefined || name.includes(only));
 
-for (const [name, fn] of Object.entries(SHAPES)) {
+if (chosen.length === 0) {
+  console.log(`no shape matches ONLY=${String(only)}`);
+  process.exit(1);
+}
+
+if (only === undefined) {
+  console.log(
+    `NODES=${String(NODES)} FANOUT=${String(FANOUT)} |E|=${String(EDGES)} REPS=${String(REPS)} median`,
+  );
+  console.log(`# ns/visit is per EDGE VISITED (${String(EDGES)}), never per row\n`);
+  console.log('shape                             ms    ns/visit     rows   first');
+}
+
+for (const [name, fn] of chosen) {
   const r = time(fn);
 
-  console.log(
-    `${name.padEnd(32)} ${r.ms.toFixed(1).padStart(6)}  ${((r.ms * 1e6) / EDGES).toFixed(0).padStart(8)}  ${String(r.rows).padStart(7)}   ${String(r.first)}`,
-  );
+  if (only === undefined) {
+    console.log(
+      `${name.padEnd(32)} ${r.ms.toFixed(1).padStart(6)}  ${((r.ms * 1e6) / EDGES).toFixed(0).padStart(8)}  ${String(r.rows).padStart(7)}   ${String(r.first)}`,
+    );
+  } else {
+    // One machine-readable line, so an A/B harness can take the last line of output.
+    console.log(
+      `RESULT\t${name.trim()}\t${r.ms.toFixed(1)}\t${((r.ms * 1e6) / EDGES).toFixed(0)}\t${String(r.rows)}\t${String(r.first)}`,
+    );
+  }
 }

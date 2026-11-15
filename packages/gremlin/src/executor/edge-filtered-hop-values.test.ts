@@ -270,3 +270,98 @@ describe('edgeFilteredHopValues — the route', () => {
     ).toBeUndefined();
   });
 });
+
+/*
+ * Item 1956: the `count()` TERMINAL. It used to decline the whole plan, so
+ * `V().outE(E).has(w, gt 3).inV().count()` ran the generic four-call chain while its `values(n)`
+ * sibling — strictly more work — was fused by this rung. Isolated A/B at 200,000 vertices /
+ * 1,000,000 edges: **179.1 ms -> 76.9, 2.33x**, with two controls flat.
+ *
+ * 🔑 THE DISCRIMINATING FACT IS THAT A COUNT AND A `values(n)` DISAGREE ON THIS FIXTURE. The five
+ * surviving `E` edges land on c, f, d, d, d — and `f` has no `n`, which `values('n')` DROPS. So the
+ * count is 5 and the values row count is 4. A test that only checked "count equals the number of
+ * value rows" would pass with the drop wrongly applied to the count; these assert both numbers.
+ */
+describe('the count terminal (item 1956)', () => {
+  it('counts the surviving far vertices, which is NOT the values row count', () => {
+    const g = fixture();
+
+    // e2 a->c (5), e3 a->f (7), e5 b->d (9), e7 c->d (6), e8 d->d (8). Five edges, five far ends.
+    expect(toArray(traversal(V(), outE('E'), has('w', gt(3)), inV(), count()), g)).toEqual([5]);
+    // `f` has no `n`, so `values('n')` drops it: FOUR rows, not five.
+    expect(toArray(traversal(V(), outE('E'), has('w', gt(3)), inV(), values('n')), g)).toEqual([
+      3, 4, 4, 4,
+    ]);
+  });
+
+  it('takes the route, and leaves `count` in `rest` rather than consuming it', () => {
+    const g = fixture();
+    const route = edgeFilteredHopValues(
+      traversal(V(), outE('E'), has('w', gt(3)), inV(), count()),
+      g,
+    );
+
+    expect(route).toBeDefined();
+    // The walk serves `outE`+`has`+`inV`; the terminal still runs where it did.
+    expect(route?.rest.map((step) => step.kind)).toEqual(['count']);
+  });
+
+  it('a plan ending at the MOVE still has an empty rest (the regression this field could break)', () => {
+    const g = fixture();
+    const route = edgeFilteredHopValues(traversal(V(), outE('E'), has('w', gt(3)), inV()), g);
+
+    expect(route).toBeDefined();
+    expect(route?.rest).toEqual([]);
+    expect(toArray(traversal(V(), outE('E'), has('w', gt(3)), inV()), g).length).toBe(5);
+  });
+
+  it('`values(k)` and `id()` are still CONSUMED, so their rest is empty', () => {
+    const g = fixture();
+
+    for (const t of [
+      traversal(V(), outE('E'), has('w', gt(3)), inV(), values('n')),
+      traversal(V(), outE('E'), has('w', gt(3)), inV(), id()),
+    ]) {
+      expect(edgeFilteredHopValues(t, g)?.rest).toEqual([]);
+    }
+  });
+
+  it('the inE/outV direction counts too', () => {
+    const g = fixture();
+
+    // The same five edges, from the far side: a, a, b, c, d.
+    expect(toArray(traversal(V(), inE('E'), has('w', gt(3)), outV(), count()), g)).toEqual([5]);
+  });
+
+  it('two `has` steps narrow the count', () => {
+    const g = fixture();
+
+    // `w > 3` AND `w > 5` keeps e3 (7), e7 (6), e8 (8), e5 (9) — four edges.
+    expect(
+      toArray(traversal(V(), outE('E'), has('w', gt(3)), has('w', gt(5)), inV(), count()), g),
+    ).toEqual([4]);
+  });
+
+  it('a predicate that keeps nothing counts ZERO rather than answering nothing', () => {
+    const g = fixture();
+
+    expect(toArray(traversal(V(), outE('E'), has('w', gt(1000)), inV(), count()), g)).toEqual([0]);
+  });
+
+  it('an absent `w` is still rejected, so the count excludes it', () => {
+    const g = fixture();
+
+    // e4 (b->c) has no `w`. `gt(0)` keeps e1(1), e2(5), e3(7), e5(9), e7(6), e8(8) — six, not seven.
+    expect(toArray(traversal(V(), outE('E'), has('w', gt(0)), inV(), count()), g)).toEqual([6]);
+  });
+
+  it('a terminal this walk cannot serve still declines the plan', () => {
+    const g = fixture();
+
+    // `order()` is neither a projection it picks nor a terminal it can leave in `rest` safely
+    // without the far element, so it must keep declining rather than silently changing the answer.
+    expect(
+      edgeFilteredHopValues(traversal(V(), outE('E'), has('w', gt(3)), inV(), otherV()), g),
+    ).toBeUndefined();
+  });
+});

@@ -93989,9 +93989,77 @@ Generic is 2.2x the fused row on the identical walk.
 
 That is the next build: extend `edgeFilteredHopValues` to the `count()` terminal and to an EDGE
 property projection, which is a terminal change on an existing walk rather than a new module.
+✅ **THE COUNT TERMINAL IS DONE at item 1956 — 2.33x isolated.** The two EDGE-projection rows
+(`outE has count`, `outE has values`, 4.45x and 4.59x) remain open: they keep the stream on the
+EDGE, so they need the walk to yield edges rather than far vertices.
 ⚠️ `bothE has otherV count` stays refused — item 1882's reason (two buckets make "the other end"
 depend on which bucket the edge came from, and a self-loop appears in both) is a real one.
 
 NO ENGINE BEHAVIOUR CHANGED — three instruments and this entry.
 
 GATES. `bun run check` 0; `bun run test -- --skip-nx-cache` 21 projects.
+
+## Item 1956 — ✅ **2.33x on `outE(E).has(k,p).inV().count()`** (179.1 → 76.9 ms) by admitting a terminal the rung declined. ⚠️ **And the sweep accused my change of a 1.29x REGRESSION on an untouched control that does not exist** — the shape is BIMODAL across processes, and min-of-3 cannot see that
+
+Item 1955 priced this: the rung `edgeFilteredHopValues` fuses
+`V().outE(T).has(k,p).inV().values(j)` but DECLINED the same plan with a `count()` terminal, so a
+count ran the generic four-call generator chain while its `values` sibling — strictly more work,
+since a count needs no cell, no row and no result stream — was fused.
+
+**THE FIX IS ONE FIELD.** `pickFor` conflated "the plan ends at the move" with "I consumed the
+projection step", both expressed as `proj === undefined`. Splitting them into an explicit
+`consumed: boolean` lets a terminal be admitted WITHOUT being consumed: the walk serves
+`outE`+`has`+`inV`, and `count` stays in `rest` and runs over that stream. The route screen shows
+the chain collapsing from **4 `applyStep` calls `[count has inV outE]` to 1 `[count]`**.
+
+```text
+  isolated A/B, 200,000 vertices / 1,000,000 edges, ONE shape per process, arms alternated,
+  each arm asserted to BE its code by line count before being built:
+
+    target  PRE  179.1  183.8  180.8    POST  77.7  77.4  76.9    2.33x   (428,571 both)
+    control, the already-fused `values` row            — see below
+    control, `outE has count` (untouched, generic)     171.7 -> 175.1   +2.0%, unimodal
+```
+
+⚠️⚠️ **THE CONTROL SCARE, WHICH IS THE METHODOLOGICAL HALF OF THIS ITEM.** The six-shape sweep
+reported the untouched fused `values` row moving **84.3 → 109.1 ms, a 1.29x regression** — exactly
+the signature CLAUDE.md warns about (item 762: a control moving more than the target is the
+giveaway for a redistribution artifact), and this file's own history has edits costing unrelated
+rows up to 16% (items 1441, 1466). An isolated A/B then read 109.1/110.4/**81.5** against
+112.6/109.7/108.5 — min-of-3 saying 1.33x worse. Nine rounds a side settled it:
+
+```text
+  PRE : 81.5  83.9  84.1  85.2 | 96.0 | 109.1  110.4  112.8  119.9
+  POST: 83.6  84.3  84.3       |      | 108.5  109.7  109.9  112.0  112.6  116.6
+```
+
+**The shape is BIMODAL across whole processes**, with modes at ~84 and ~110 ms. Within each mode the
+arms are equal (fast: 81.5 vs 83.6; slow: 109.1 vs 108.5); all that differed was the MIX (4 of 9
+fast against 3 of 9). So the sweep's 1.29x and the first A/B's 1.33x were both mode-mix artifacts,
+and there is no regression. 🔑 **A bimodal shape must be compared MODE BY MODE** — CLAUDE.md records
+bimodality for the TS scalar path and prescribes medians over mins, and this is the same effect one
+level up, at process granularity rather than rep granularity. `edgecount-1955.mjs` gained an
+`ONLY=<substring>` mode so an A/B runs one shape per process at all; the sweep stays for the
+regression pass it is for.
+
+**MUTATION: 7 KILLED, 2 PROVED-UNREACHABLE SURVIVORS, 0 UNEXPECTED — after three of my expectations
+were wrong.**
+
+- ✅ _The route choice itself is CAUGHT_, which is [[perf-gate-needs-its-own-test]] actually working.
+  Re-refusing the count terminal is answer-equivalent, so no differential test can see it — but the
+  rung is EXPORTED and the route test asserts `rest.map(kind) === ['count']`, which fails the moment
+  the plan declines. I had written it down as an expected survivor and it killed.
+- ⚠️ _`drops: true` on the count survived_, and the rung's own header already said why: `drops`
+  gates a `pick` returning `undefined`, and `(far) => far` never does. Unreachable, the same
+  equivalence the file documents for the bare move and `id()`.
+- ⚠️ _`consumed: true` on the bare move survived_, by arithmetic: that branch is reached only when
+  the plan ENDS at the move, where `slice(at+1)` and `slice(at+2)` are both empty.
+
+Nine tests added, with a HAND oracle rather than the engine. 🔑 The discriminating fact is that a
+count and a `values(n)` **disagree on the fixture**: the five surviving edges land on c, f, d, d, d
+and `f` has no `n`, which `values('n')` drops — so the count is 5 and the values row count is 4. A
+test asserting only "count equals the number of value rows" would pass with the drop wrongly applied
+to the count.
+
+GATES. `bun run check` 0; `bun run test -- --skip-nx-cache` 21 projects; `bun run fuzz` 57/0 across
+all seven byte-identity fuzzers.

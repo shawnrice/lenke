@@ -117,13 +117,24 @@ export const edgeFilteredHopValues = (plan: Plan, graph: Graph): HopValues | und
   const { pick, drops } = picked;
 
   return {
-    rest: steps.slice(at + 1 + (proj === undefined ? 0 : 1)),
+    // `consumed` rather than `proj === undefined`: an unconsumed terminal must stay in `rest`.
+    rest: steps.slice(at + 1 + (picked.consumed ? 1 : 0)),
     values: walk(graph, { type, outward, edgeTest, pick, drops }),
   };
 };
 
 type Far = { readonly id: string; readonly properties: Record<string, unknown> };
-type Picked = { pick: (far: Far) => unknown; drops: boolean };
+type Picked = {
+  pick: (far: Far) => unknown;
+  drops: boolean;
+  /**
+   * Did `pickFor` CONSUME the step it was given? `values(k)` and `id()` do; a terminal this walk
+   * does not project (item 1956's `count()`) does not, and must be left in `rest` to run over the
+   * walk's own stream. Before this field the two cases were conflated by `proj === undefined`,
+   * which is why a `count()` terminal declined the whole plan.
+   */
+  consumed: boolean;
+};
 
 /**
  * What the plan asks for about the far vertex. `undefined` means a projection this walk does not
@@ -135,14 +146,38 @@ type Picked = { pick: (far: Far) => unknown; drops: boolean };
  */
 const pickFor = (proj: Step | undefined, valueKey: string | undefined): Picked | undefined => {
   if (valueKey !== undefined) {
-    return { pick: (far) => far.properties[valueKey], drops: true };
+    return { pick: (far) => far.properties[valueKey], drops: true, consumed: true };
   }
 
   if (proj === undefined) {
-    return { pick: (far) => far, drops: false };
+    return { pick: (far) => far, drops: false, consumed: false };
   }
 
-  return proj.kind === 'id' ? { pick: (far) => far.id, drops: false } : undefined;
+  if (proj.kind === 'id') {
+    return { pick: (far) => far.id, drops: false, consumed: true };
+  }
+
+  /*
+   * 🔑 A TERMINAL THIS WALK DOES NOT PROJECT STILL GETS THE WALK (item 1956). `count()` after the
+   * vertex move used to decline the ENTIRE plan here, so
+   * `V().outE(E).has(w, gt 3).inV().count()` ran the four-call generic generator chain while its
+   * `values(n)` sibling — strictly MORE work, since a count needs no cell, no row and no result
+   * stream — was fused by this same rung. The route screen is what showed it:
+   *
+   * ```text
+   *   SHORTCUT  edgef: outE has inV values      0 applyStep calls
+   *   generic   edgef: outE has inV count       4
+   * ```
+   *
+   * Measured at 200,000 vertices / 1,000,000 edges, ns per EDGE VISITED (item 1955): the generic
+   * count 188 against a hand count's 39, a 4.83x gap, while the fused values row sat at 84.
+   *
+   * ⚠️ IT IS NOT CONSUMED, deliberately. This walk has nothing to contribute to a count beyond
+   * yielding the surviving far vertices, so `count` stays in `rest` and runs over this stream
+   * instead of over the generic chain. Admitting the plan is the whole change; the step still
+   * executes where it did.
+   */
+  return proj.kind === 'count' ? { pick: (far) => far, drops: false, consumed: false } : undefined;
 };
 
 /**
