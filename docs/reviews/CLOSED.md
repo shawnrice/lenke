@@ -92299,7 +92299,7 @@ its first rows with the right one.
 
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers.
 
-## Item 1930 — **PRICED, NOT BUILT: the GQL sort residual is the COMPILED-KEY ROUTE, not the expression** — 238 ns a row against the arithmetic's 31 — and the remaining lever needs a post-projection sort arm for 1.69x-1.9x. ⚠️ **ITS STATED BLOCKER IS MIS-SCOPED — see item 1960: the windowed-sort fault rule is GATED ON `windowed` in the code, so it does not reach the non-windowed shape the screen nominates, and changing the sort key's SOURCE does not change which rows get projected at all.** ⚠️ **AND ITS SCOPE IS TOO NARROW — see item 1961: framed as a REWRITE it cannot help an UNPROJECTED key, which it calls un-elidable; framed as "give the keyed route a cheaper sort" ONE arm covers both, and the route is isolated at 269 ns/row with the extra property read proved FREE.** ⚠️ Also corrects the screen's own pairing: `HOP start-only proj, far key` has no valid control on it
+## Item 1930 — ~~**PRICED, NOT BUILT**~~ ✅ **BUILT AT ITEM 1962 (1.85x-2.68x and 2.95x, both controls flat)**: the GQL sort residual is the COMPILED-KEY ROUTE, not the expression — 238 ns a row against the arithmetic's 31 — and the remaining lever needs a post-projection sort arm for 1.69x-1.9x. ⚠️ **ITS STATED BLOCKER IS MIS-SCOPED — see item 1960: the windowed-sort fault rule is GATED ON `windowed` in the code, so it does not reach the non-windowed shape the screen nominates, and changing the sort key's SOURCE does not change which rows get projected at all.** ⚠️ **AND ITS SCOPE IS TOO NARROW — see item 1961: framed as a REWRITE it cannot help an UNPROJECTED key, which it calls un-elidable; framed as "give the keyed route a cheaper sort" ONE arm covers both, and the route is isolated at 269 ns/row with the extra property read proved FREE.** ⚠️ Also corrects the screen's own pairing: `HOP start-only proj, far key` has no valid control on it
 
 Item 1929 closed the equivalent-spelling half of this family (`ORDER BY x + 1` reaching no rung,
 3.2-3.4x). What remained was the within-rung residual item 1902 described and mis-attributed. This
@@ -94339,3 +94339,69 @@ comparable across a fixture change, and every arm above was re-run after it.
 NO ENGINE BEHAVIOUR CHANGED — three new probe arms, one heading correction, and this entry.
 
 GATES. `bun run check` 0.
+
+## Item 1962 — ✅ **SHIPPED: the permuted sort arm. `ORDER BY n.n + 1` 111.1 → 37.7 ms (2.95x), an unprojected key 103.0 → 55.7 (1.85x, 2.68x in its fast mode), both column-arm controls FLAT.** ⚠️⚠️ And it turned up a test oracle that has been **comparing one arm against itself since item 1902**
+
+Item 1930 priced this and declined it; item 1960 showed its blocker was gated on `windowed`; item
+1961 isolated the route at 269 ns/row and named the mechanism. This builds it.
+
+**WHAT IT IS.** `deferredSortedNodeWalk` allocated `{ [HELD_VERTEX]: v }` per row — an object
+literal with a COMPUTED SYMBOL key — stored each sort key into it, sorted those objects, then
+projected the survivors. `permutedSortedNodeWalk` keeps the keys in PARALLEL ARRAYS and sorts an
+INDEX PERMUTATION. Chosen once per compile by `permutedSortAxes`, so the windowed arm
+(`keyRowSortedNodeWalk`) is byte-for-byte what it was — this module's own rule, after items
+1033/1034 measured a branch in a sibling hot loop at ~2x.
+
+🔑 **AND THE FIRST CUT ONLY GOT 1.16x OF A 2.10x GAP, which located the rest.** It collected
+vertices and keys, sorted, then projected in permuted order — **two passes**. Nine rounds a side:
+102.6 → 88.1 ms. The column arm it was chasing does ONE pass. Projecting DURING the scan is legal
+here and only here (non-windowed ⇒ every row is emitted ⇒ projecting early cannot raise on a row the
+query never returns, items 610/1062), and that is the whole difference:
+
+```text
+  isolated A/B, 200,000 rows, ONE shape per process, arms alternated, each arm asserted by symbol
+  count before being built:
+
+    ORDER BY n.n + 1        PRE 111.1  (106.5-115.5)   POST 37.7  (36.8-39.2)   2.95x
+    ORDER BY n.m (unproj.)  PRE 103.0  (91.4-104.0)    POST 55.7  (52.0-58.4)   1.85x
+                            an earlier round read POST 38.5 (bimodal ~37/~57)   2.68x
+    CONTROL numTwoProj (column arm)   50.0 -> 49.8   1.00x
+    CONTROL alias      (column arm)   50.3 -> 50.9   0.99x
+```
+
+**POST now BEATS the column arm** (37.7 against ~50): sorting an index array of integers is cheaper
+than sorting row objects. So the fastest sort route in the engine is now the one that used to be the
+slowest, and the column arm is a candidate for the same treatment — a separate item.
+
+⚠️⚠️ **THE ORACLE FINDING, which is the part worth reading.** `unwindowed-expr-sort.test.ts` checks
+every answer with `bothRoutes`, which appends `OFFSET 0` and asserts the two agree. Its header says
+_"THE ORACLE IS `OFFSET 0`, AND IT NEEDS NO KILL SWITCH … runs the GENERAL PATH"_. **That stopped
+being true at item 1902** — whose own test in that very file is named _"a SKIP with no LIMIT now
+reaches the rung too"_. Measured with a counter on the PRE build: the bare query and its `OFFSET 0`
+twin BOTH entered the keyed arm, so nine answer assertions were comparing one arm **against
+itself**, passing for free for sixty items.
+
+✅ **This item restores it, and the gate is what does it.** `permutedSortAxes` takes `noWindow`
+rather than reading `plan.skip === 0` — the plan NORMALIZES an absent skip to 0 and the skip-only
+case forces it to 0, so the plan cannot tell `OFFSET 0` from no OFFSET. With `noWindow` the bare
+query takes the PERMUTED arm and `OFFSET 0` takes the KEYED one (`perm=1 keyed=0` against
+`perm=0 keyed=1`), so `bothRoutes` is a genuine two-route comparison again. ⚠️ It is still not the
+general path and the header now says so: widen this gate and the oracle goes vacuous again without
+any test saying so.
+
+**MUTATION: 9 of 9 KILLED, 0 SURVIVORS — after one real gap.** Ignoring `nullsFirst` on the
+single-axis comparator SURVIVED the whole suite: nothing asserted an explicit NULLS placement on
+this arm. Two tests now pin `NULLS FIRST`, the default `NULLS LAST`, and `DESC NULLS FIRST`
+composing. The other eight: the permutation ignored (20 failing), the sort dropped (17), the
+comparator reversed (18), `descending` ignored (5), the multi-axis loop stopping after one axis (1),
+axes mapped by POSITION instead of by column name (2), a window admitted (29), and the route never
+taken (1) — that last one caught by `permutedSortAxes`' own unit tests, since a route choice is
+answer-equivalent and no differential test can see it ([[perf-gate-needs-its-own-test]]).
+
+Order is byte-identity on a sort path, so three things make it exact rather than equivalent: the
+same `compareSort` with the same `descending`/`nullsFirst`; axes mapped BY COLUMN NAME from the same
+`plan.sorts`; and `Array.prototype.sort`'s stability, so equal keys keep index order, which is
+arrival order (item 605: tie order is observable between the engines).
+
+GATES. `bun run check` 0; `bun run test -- --skip-nx-cache` 21 projects; `bun run fuzz` 57/0 across
+all seven byte-identity fuzzers.

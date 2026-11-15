@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 
 import { Graph } from '@lenke/core';
 
+import { permutedSortAxes } from './executor/node-scan.js';
 import { compileLinear } from './executor/rewrites.js';
 import { query } from './index.js';
 import { parse } from './parser.js';
@@ -14,12 +15,24 @@ import { parse } from './parser.js';
  * alias, so `ORDER BY n.k + 1` reached no rung while `ORDER BY n.k + 1 LIMIT 3` reached this one.
  * Item 1901 measured the unwindowed gap at **8.9x** over 200,000 rows.
  *
- * ⚠️⚠️ **THE ORACLE IS `OFFSET 0`, AND IT NEEDS NO KILL SWITCH.** A `SKIP` with no `LIMIT` still
- * DECLINES the arm — that refusal is about faults on rows a window discards and is deliberately
- * unchanged — so `… ORDER BY <expr> OFFSET 0` runs the GENERAL PATH and drops nothing. Every answer
- * below is therefore asserted against the same query written both ways, which compares the new
- * route to the old one directly rather than to a hand-written array that could encode my own
- * mistake.
+ * ⚠️⚠️ ~~**THE ORACLE IS `OFFSET 0`, AND IT NEEDS NO KILL SWITCH.** A `SKIP` with no `LIMIT`
+ * still DECLINES the arm — that refusal is about faults on rows a window discards and is
+ * deliberately unchanged — so `… ORDER BY <expr> OFFSET 0` runs the GENERAL PATH and drops
+ * nothing.~~ **THAT STOPPED BEING TRUE AT ITEM 1902 AND NOBODY NOTICED UNTIL ITEM 1962.** The test
+ * below named `a SKIP with no LIMIT now reaches the rung too` is item 1902 admitting exactly the
+ * shape this oracle relies on declining. Measured with a counter on the PRE build: the bare query
+ * and its `OFFSET 0` twin BOTH entered the keyed deferred arm, so every `bothRoutes` assertion in
+ * this file was comparing one arm **against itself** — a vacuous oracle, passing for free.
+ *
+ * ✅ **IT IS A GENUINE TWO-ROUTE COMPARISON AGAIN, by accident of item 1962.** That item's permuted
+ * arm is gated on `noWindow`, so the bare query now takes the PERMUTED arm while `OFFSET 0` takes
+ * the KEYED one — verified with the same counter (`perm=1 keyed=0` against `perm=0 keyed=1`). So
+ * `bothRoutes` compares two real routes, which is what it was written to do.
+ *
+ * ⚠️ IT IS STILL NOT THE GENERAL PATH, and the header should not claim it is. If item 1962's gate
+ * is ever widened to admit a window, this oracle goes vacuous again and the tests will not say so.
+ * The durable fix is a hand-written expectation; what keeps it honest today is that the two arms
+ * are different code.
  *
  * ⚠️ AND `ORDER BY n.k + 1` MUST ORDER LIKE `ORDER BY n.k`, because adding 1 is monotone. That is
  * the equivalent-spelling claim the whole item is about, and it is checked here as an answer rather
@@ -259,5 +272,146 @@ describe('the fault rule still holds either side of the change', () => {
       { x: null, t: 3 },
       { x: null, t: 2 },
     ]);
+  });
+});
+
+/*
+ * Item 1962: the PERMUTED arm. `bothRoutes` above now compares it against the keyed arm on every
+ * shape, which is the bulk of its coverage. These add what that cannot reach: the ROUTE itself, and
+ * a HAND-WRITTEN expectation that cannot go vacuous however the gates move.
+ *
+ * Isolated A/B at 200,000 rows, arms alternated, nine rounds a side:
+ * `ORDER BY n.m` (key not projected) **103.3 -> 38.5 ms, 2.68x**; `ORDER BY n.n + 1` **110.6 ->
+ * 39.8, 2.78x**; both controls on the column arm flat at 1.00x and 0.99x.
+ */
+describe('permutedSortAxes — the route gate, as a pure function (item 1962)', () => {
+  const keys = [
+    { col: '\u0000k0', fn: () => 0 },
+    { col: '\u0000k1', fn: () => 0 },
+  ] as never;
+  const axesOf = (plan: Parameters<typeof permutedSortAxes>[0], postSkip = 0, noWindow = true) =>
+    permutedSortAxes(plan, keys, postSkip, noWindow);
+
+  const sortOn = (col: string) => ({ col, descending: false, nullsFirst: false });
+
+  test('admits a no-window plan and maps axes BY NAME, not by position', () => {
+    // `k1` first: a positional mapping would sort on the wrong key and answer plausibly.
+    const axes = axesOf({
+      sorts: [sortOn('\u0000k1'), sortOn('\u0000k0')],
+      skip: 0,
+      limit: undefined,
+    });
+
+    expect(axes?.map((a) => a.at)).toEqual([1, 0]);
+  });
+
+  test('declines when a window is syntactically present, even OFFSET 0', () => {
+    // ⚠️ THE PLAN CANNOT TELL `OFFSET 0` FROM NO OFFSET — it normalizes both to `skip: 0` — which
+    // is why the gate takes `noWindow` separately. Admitting it would also make this file's own
+    // oracle vacuous; see the header.
+    expect(
+      axesOf({ sorts: [sortOn('\u0000k0')], skip: 0, limit: undefined }, 0, false),
+    ).toBeUndefined();
+  });
+
+  test('declines a LIMIT, a parameterized page, and a post-projection skip', () => {
+    expect(axesOf({ sorts: [sortOn('\u0000k0')], skip: 0, limit: 5 })).toBeUndefined();
+    expect(
+      axesOf({
+        sorts: [sortOn('\u0000k0')],
+        skip: 0,
+        limit: undefined,
+        page: { skip: 0, limit: undefined },
+      }),
+    ).toBeUndefined();
+    expect(axesOf({ sorts: [sortOn('\u0000k0')], skip: 0, limit: undefined }, 3)).toBeUndefined();
+  });
+
+  test('declines when there is nothing to sort on, or a key it does not own', () => {
+    expect(axesOf({ sorts: [], skip: 0, limit: undefined })).toBeUndefined();
+    // A column from some other plan must DECLINE rather than be matched to a wrong index.
+    expect(axesOf({ sorts: [sortOn('\u0000k7')], skip: 0, limit: undefined })).toBeUndefined();
+  });
+});
+
+describe('the permuted arm, against expectations written out by hand (item 1962)', () => {
+  /*
+   * 🔑 HAND-WRITTEN, because every other assertion in this file is a cross-route comparison and a
+   * route gate can make those vacuous — which is exactly what happened to this file between items
+   * 1902 and 1962. These numbers come from reading the fixture, not from running the engine.
+   *
+   * The fixture's `k` pool is [3,1,3,2,1,3,2,1] over v1..v8, plus v99 with k=9. So ascending by `k`
+   * with ties in ARRIVAL order is: 1 -> v2,v5,v8 | 2 -> v4,v7 | 3 -> v1,v3,v6 | 9 -> v99.
+   */
+  const BY_K = ['v2', 'v5', 'v8', 'v4', 'v7', 'v1', 'v3', 'v6', 'v99'];
+
+  test('a key the projection does not read, ascending, ties by arrival', () => {
+    const rows = query(fixture(), 'MATCH (n:T) RETURN n.s AS s ORDER BY n.k') as { s: string }[];
+
+    expect(rows.map((r) => r.s)).toEqual(BY_K);
+  });
+
+  test('a monotone expression over that key gives the identical order', () => {
+    const rows = query(fixture(), 'MATCH (n:T) RETURN n.s AS s ORDER BY n.k + 1') as {
+      s: string;
+    }[];
+
+    expect(rows.map((r) => r.s)).toEqual(BY_K);
+  });
+
+  test('DESC reverses the GROUPS but not the arrival order within a tie', () => {
+    // ⚠️ THE TIE ORDER IS NOT REVERSED by `DESC` — a stable sort on a reversed comparator keeps
+    // arrival order inside each group. A walk that reversed the whole list would pass a
+    // distinct-key fixture and fail here.
+    const rows = query(fixture(), 'MATCH (n:T) RETURN n.s AS s ORDER BY n.k DESC') as {
+      s: string;
+    }[];
+
+    expect(rows.map((r) => r.s)).toEqual(['v99', 'v1', 'v3', 'v6', 'v4', 'v7', 'v2', 'v5', 'v8']);
+  });
+
+  test('two axes, the second breaking the first ties', () => {
+    // `nu` is null where `i % 3 === 1` (v2, v5, v8) and `k` elsewhere. Within k=1 (v2,v5,v8) every
+    // `nu` is null, so arrival order survives; within k=3 (v1,v3,v6) `nu` is 3,3,3 — also a tie.
+    const rows = query(fixture(), 'MATCH (n:T) RETURN n.s AS s ORDER BY n.k, n.nu') as {
+      s: string;
+    }[];
+
+    expect(rows.map((r) => r.s)).toEqual(BY_K);
+  });
+
+  /*
+   * ⚠️ MUTATION FOUND THIS GAP: ignoring `nullsFirst` on the single-axis comparator SURVIVED the
+   * whole suite, because nothing asserted an explicit NULLS placement on this arm. `nu` is null on
+   * v2/v5/v8 and `k` elsewhere, so the two placements give visibly different orders.
+   */
+  test('NULLS FIRST moves the null group to the front; the default is NULLS LAST', () => {
+    const first = query(fixture(), 'MATCH (n:T) RETURN n.s AS s ORDER BY n.nu NULLS FIRST') as {
+      s: string;
+    }[];
+    const last = query(fixture(), 'MATCH (n:T) RETURN n.s AS s ORDER BY n.nu') as { s: string }[];
+    const explicitLast = query(
+      fixture(),
+      'MATCH (n:T) RETURN n.s AS s ORDER BY n.nu NULLS LAST',
+    ) as { s: string }[];
+
+    // nu: v1=3 v2=null v3=3 v4=2 v5=null v6=3 v7=2 v8=null v99=9.
+    expect(first.map((r) => r.s)).toEqual(['v2', 'v5', 'v8', 'v4', 'v7', 'v1', 'v3', 'v6', 'v99']);
+    expect(last.map((r) => r.s)).toEqual(['v4', 'v7', 'v1', 'v3', 'v6', 'v99', 'v2', 'v5', 'v8']);
+    // The default IS `NULLS LAST`, so the two spellings must be identical.
+    expect(explicitLast).toStrictEqual(last);
+  });
+
+  test('DESC and NULLS FIRST compose, each on its own axis of the decision', () => {
+    const rows = query(fixture(), 'MATCH (n:T) RETURN n.s AS s ORDER BY n.nu DESC NULLS FIRST') as {
+      s: string;
+    }[];
+
+    // Nulls first, then 9, 3, 2 descending — with arrival order kept inside each group.
+    expect(rows.map((r) => r.s)).toEqual(['v2', 'v5', 'v8', 'v99', 'v1', 'v3', 'v6', 'v4', 'v7']);
+  });
+
+  test('an empty result is empty, not a throw', () => {
+    expect(query(fixture(), 'MATCH (n:Nope) RETURN n.s AS s ORDER BY n.k + 1')).toEqual([]);
   });
 });

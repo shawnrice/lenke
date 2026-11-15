@@ -72,6 +72,7 @@ import {
   soleEqualityKey,
   sortGroupRows,
 } from './shortcuts.js';
+import { compareSort } from './values.js';
 import { isNullish, propOf } from './values.js';
 
 /**
@@ -549,7 +550,151 @@ export const deferredSortKeys = (
  * `binding` is always written here, with no `allDirect` test: this arm is reached only when some
  * item is NOT a direct property read, so the binding is always consulted.
  */
-export const deferredSortedNodeWalk = (spec: {
+/**
+ * Item 1962: the NON-WINDOWED sibling, which carries its sort keys in PARALLEL ARRAYS and sorts an
+ * INDEX PERMUTATION instead of allocating a wrapper object per row.
+ *
+ * ⚠️ WHY A SIBLING AND NOT A BRANCH: this module's own rule, stated at `deferredSortedNodeWalk` and
+ * learned at items 1033/1034 — a branch added to a sibling hot loop cost three queries about 2x.
+ * The choice is made ONCE PER COMPILE below, so the windowed arm is byte-for-byte what it was.
+ *
+ * 🔑 WHAT IT REMOVES, and item 1961 measured it on two shapes. The keyed arm builds
+ * `{ [HELD_VERTEX]: v }` per row — an object literal with a COMPUTED SYMBOL key — then stores each
+ * sort key into it, sorts those objects, and projects the survivors. Item 1961 isolated that route
+ * at **269 ns a row** (102.68 ms against 48.92 for the same query with the key projected, where a
+ * control proved the extra property read itself is FREE), agreeing with item 1930's 238 ns on the
+ * hop. The keys must be evaluated either way and the projection must happen either way; the
+ * wrapper per row is the part that need not exist.
+ *
+ * ⚠️ THE ORDER IS BYTE-IDENTICAL, not merely equivalent, and that is the one thing this cannot get
+ * wrong (`sortRowsByColumns`' own note: "a second derivation of which row sorts first is the one
+ * thing byte-identity cannot survive"). Three things make it exact: the comparator is the SAME
+ * `compareSort` with the same `descending`/`nullsFirst`; the axes are mapped BY COLUMN NAME from
+ * the same `plan.sorts`, so a reordered plan cannot silently permute them; and
+ * `Array.prototype.sort` is STABLE, so equal keys keep index order, which is arrival order — the
+ * same tie-break the keyed arm gets from sorting a stable array of rows in arrival order. Item 605
+ * established that tie order is observable between the engines, so this is a correctness
+ * requirement rather than a nicety.
+ *
+ * ⚠️ NON-WINDOWED ONLY. With a window the keyed arm must rank BEFORE projecting so an item that
+ * faults on a discarded row never runs (items 610/1062), and it also owns the bounded heap. Here
+ * every row is emitted, so projecting all of them is what the engine already does.
+ */
+const permutedSortedNodeWalk = (spec: {
+  cstart: CNode | undefined;
+  label: LabelExpr | undefined;
+  labelName: string | undefined;
+  gate: InlineGate | undefined;
+  nodeVar: string;
+  cols: readonly string[];
+  fns: readonly CompiledExpr[];
+  directKeys: readonly (string | undefined)[];
+  keys: readonly DeferredKey[];
+  plan: SortPlan;
+  soleKey: string | undefined;
+  axes: readonly {
+    readonly at: number;
+    readonly descending: boolean;
+    readonly nullsFirst: boolean | undefined;
+  }[];
+}): ((graph: Graph, params: Params) => Row[]) => {
+  const { cstart, label, labelName, gate, nodeVar, cols, fns, directKeys, keys, soleKey, axes } =
+    spec;
+  const width = cols.length;
+  const keyCount = keys.length;
+  // The single-axis case gets its own comparator, mirroring `sortRowsByColumns`' own split: one
+  // comparison instead of a loop over a one-element array, on the shape that is almost all of them.
+  const sole = axes.length === 1 ? axes[0] : undefined;
+
+  return (graph, params) => {
+    // ⚠️ THE ROW IS BUILT DURING THE SCAN, not in a second pass over the sorted order (item 1962's
+    // own first cut did the latter and measured only 1.16x of a 2.10x gap, because it walked the
+    // rows TWICE — once to collect vertices and keys, once to project). Legal here and only here:
+    // the arm is non-windowed, so every row is emitted and projecting during the scan cannot raise
+    // on a row the query never returns, which is the whole content of the fault rule
+    // (items 610/1062, and item 1960 for where it is gated).
+    const rows: Row[] = [];
+    // ONE array per sort key, so a key value is a plain element store rather than a property store
+    // into a symbol-keyed object.
+    const keyVals: unknown[][] = [];
+
+    for (let i = 0; i < keyCount; i += 1) {
+      keyVals.push([]);
+    }
+
+    const binding = new Map<string, unknown>();
+    const env = { binding, params, graph };
+    const { vertices, seeded, eqKey } = scanCandidates(graph, cstart, label, labelName, env);
+    // Both hoists are the keyed arm's, for the reasons it states (items 1609/1610).
+    const labelEff = effectiveLabel(graph, label);
+    const exactSeed = seeded !== undefined && seedIsExact({ eqKey }, soleKey);
+
+    for (const v of vertices) {
+      if (seeded !== undefined && !matchesLabel(v, labelEff)) {
+        continue;
+      }
+
+      if (!exactSeed && gate !== undefined && !gate(v, binding, params, graph)) {
+        continue;
+      }
+
+      binding.set(nodeVar, v);
+
+      for (let i = 0; i < keyCount; i += 1) {
+        keyVals[i].push(keys[i].fn(env));
+      }
+
+      // The keyed arm's projection loop, verbatim, including the two rejections its comments
+      // record (items 1477 and 1744) — which apply here for the same reasons.
+      const row: Row = {};
+
+      for (let i = 0; i < width; i += 1) {
+        const dk = directKeys[i];
+
+        row[cols[i]] = dk === undefined ? fns[i](env) : propOf(v, dk);
+      }
+
+      rows.push(row);
+    }
+
+    const n = rows.length;
+    const idx: number[] = [];
+
+    for (let i = 0; i < n; i += 1) {
+      idx.push(i);
+    }
+
+    if (sole !== undefined) {
+      const vals = keyVals[sole.at];
+      const { descending, nullsFirst } = sole;
+
+      idx.sort((a, b) => compareSort(vals[a], vals[b], descending, nullsFirst));
+    } else {
+      idx.sort((a, b) => {
+        for (const ax of axes) {
+          const vals = keyVals[ax.at];
+          const c = compareSort(vals[a], vals[b], ax.descending, ax.nullsFirst);
+
+          if (c !== 0) {
+            return c;
+          }
+        }
+
+        return 0;
+      });
+    }
+
+    const out: Row[] = [];
+
+    for (let j = 0; j < n; j += 1) {
+      out.push(rows[idx[j]]);
+    }
+
+    return out;
+  };
+};
+
+const keyRowSortedNodeWalk = (spec: {
   cstart: CNode | undefined;
   label: LabelExpr | undefined;
   labelName: string | undefined;
@@ -674,6 +819,100 @@ export const deferredSortedNodeWalk = (spec: {
 
     return postSkip > 0 ? out.slice(postSkip) : out;
   };
+};
+
+/**
+ * The route between {@link keyRowSortedNodeWalk} and item 1962's permuted sibling, decided ONCE PER
+ * COMPILE.
+ *
+ * ⚠️ EXTRACTED AS A PURE FUNCTION because the choice is ANSWER-EQUIVALENT — both arms return the
+ * same rows in the same order — so every mutation of a condition written inline here would survive
+ * the differential tests. That is `perf-gate-needs-its-own-test`, the rule items 1038/1044 taught
+ * this module and `heapBeatsSort`/`topKPlan` below already follow.
+ *
+ * The permuted arm needs FOUR things, and each is a correctness condition rather than a preference:
+ *
+ *   - NO WINDOW (`skip === 0`, no `limit`, no parameterized `page`), because with one the keyed arm
+ *     must rank before projecting so an item that faults on a discarded row never runs (items
+ *     610/1062), and it owns the bounded heap.
+ *   - `postSkip === 0`, which is the same rule once more: a post-projection skip means rows the
+ *     query does not emit.
+ *   - At least one sort axis. With none there is nothing to permute and the keyed arm's shape is
+ *     already right.
+ *   - EVERY `plan.sorts` column must map to one of this walk's own `keys`. Mapping by NAME rather
+ *     than by position is what makes a reordered or foreign plan decline instead of silently
+ *     sorting on the wrong axis.
+ */
+export const permutedSortAxes = (
+  plan: SortPlan,
+  keys: readonly DeferredKey[],
+  postSkip: number,
+  noWindow: boolean,
+):
+  | readonly {
+      readonly at: number;
+      readonly descending: boolean;
+      readonly nullsFirst: boolean | undefined;
+    }[]
+  | undefined => {
+  /*
+   * ⚠️ `noWindow` RATHER THAN `plan.skip === 0`, and item 1962 found out the hard way why it has to
+   * be. The plan NORMALIZES an absent skip to 0 (and the skip-only case forces it to 0 so the page
+   * can be taken after the projection), so `plan.skip === 0` cannot tell `OFFSET 0` from no OFFSET
+   * at all. Admitting `OFFSET 0` here would have made
+   * `unwindowed-expr-sort.test.ts`'s ORACLE VACUOUS: that file checks every answer with
+   * `bothRoutes`, which appends `OFFSET 0` expecting the GENERAL path, so both sides would have
+   * been this one arm. (It is already self-comparing for a different reason — see that file's
+   * corrected header — and this would have been a second way to get there.)
+   *
+   * Declining a syntactically present window is also the conservative reading of the fault rule:
+   * `postSkip` means rows the query does not emit, and the keyed arm is what
+   * `skip-only-fault-parity.test.ts` pins against native for exactly those shapes.
+   */
+  if (!noWindow || plan.limit !== undefined || plan.page !== undefined || postSkip !== 0) {
+    return undefined;
+  }
+
+  if (plan.sorts.length === 0) {
+    return undefined;
+  }
+
+  const axes: { at: number; descending: boolean; nullsFirst: boolean | undefined }[] = [];
+
+  for (const sort of plan.sorts) {
+    const at = keys.findIndex((k) => k.col === sort.col);
+
+    if (at < 0) {
+      return undefined;
+    }
+
+    axes.push({ at, descending: sort.descending, nullsFirst: sort.nullsFirst });
+  }
+
+  return axes;
+};
+
+export const deferredSortedNodeWalk = (spec: {
+  cstart: CNode | undefined;
+  label: LabelExpr | undefined;
+  labelName: string | undefined;
+  gate: InlineGate | undefined;
+  nodeVar: string;
+  cols: readonly string[];
+  fns: readonly CompiledExpr[];
+  directKeys: readonly (string | undefined)[];
+  keys: readonly DeferredKey[];
+  plan: SortPlan;
+  soleKey: string | undefined;
+  postSkip: number;
+  /** Is there NO `SKIP`/`LIMIT` clause at all? See {@link permutedSortAxes} for why this and not the plan. */
+  noWindow: boolean;
+}): ((graph: Graph, params: Params) => Row[]) => {
+  const axes = permutedSortAxes(spec.plan, spec.keys, spec.postSkip, spec.noWindow);
+
+  return axes === undefined
+    ? keyRowSortedNodeWalk(spec)
+    : permutedSortedNodeWalk({ ...spec, axes });
 };
 /**
  * Is selecting `cap` of `rows` with a heap cheaper than sorting all of them?
@@ -1010,6 +1249,7 @@ export const deferredRoute = (spec: {
       limit: typeof limit === 'number' ? limit : undefined,
     },
     postSkip: skipOnly ? skip : 0,
+    noWindow,
   });
 };
 export const detectNodeProjection = (
