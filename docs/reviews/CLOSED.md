@@ -96578,3 +96578,73 @@ actually runs.
 
 GATES. `bun run fmt` 0; `bun run check` 0; `bun run test -- --skip-nx-cache` 0 across 21 projects;
 `bun run fuzz` 0, 57 pass / 0 fail; the Gremlin suite 2,425 pass / 0 fail.
+
+## Item 1991 — 🔭 **`choose` PRICED AT 2.89x A MEASURED HAND CEILING on a realistic conditional — 324.36 ms against 112.33 for the same 800,000 rows in the same order.** ⚠️ **And `choose(test, X)` WITH NO ELSE IS NOT A FILTER — the traverser is PASSED THROUGH, which the AST comment reads the other way and which killed my first twin attempt**
+
+Item 1990 closed `coalesce` by normalizing it into `optional`. Its own entry noted that `choose` and
+`branch` — the other two reconverging kinds the workload screen never carries — have no
+`optional`-shaped twin, so each needs its own pricing. This is `choose`'s.
+
+### 🛑 FIRST, A SEMANTIC CORRECTION THAT COST THE OBVIOUS APPROACH
+
+`choose(test, thenPlan, elsePlan?)` looked like it had an exact twin: with no `elsePlan`, "if test
+yields run thenPlan, else nothing" is `where(test)` when `thenPlan` is `identity()`. The AST comment
+supports that reading — _"If the test plan yields ≥1 result, run thenPlan; else elsePlan (if
+present)"_. **Measured against the engine, it is false:**
+
+```text
+    where(out(E))                 ["a","b"]              only the vertices WITH an edge
+    filter(out(E))                ["a","b"]
+    choose(out(E), identity())    ["a","b","c","d"]      ⬅ EVERY vertex
+```
+
+With the else-plan absent the traverser is **passed through**, so a no-else `choose` is not a filter —
+and `choose(test, identity())` is a no-op `identity()` whatever the test says. ⚠️ Recorded because
+the comment invites the other reading, and a twin-based optimization built on it would have changed
+answers rather than timings. Checking the equivalence against the engine took one script.
+
+### THE PRICING, AGAINST A MEASURED CEILING RATHER THAN THE BARE HOP
+
+A conditional genuinely must run its test per traverser and THEN one arm, so the bare hop is NOT its
+floor — item 1951's rule, and estimating from the hop would have overstated the gap as ~6x. The
+ceiling is hand-rolled in plain JavaScript over the adjacency, doing exactly that work:
+
+```text
+    200,001 vertices / 800,000 edges, one shape per process, median of 7
+      bare hop                                            45.28 ms   800,000 rows    57 ns/row
+      optional(out(E))                                    42.41      800,001         53
+      coalesce(out(E), identity())   [item 1990]          50.72      800,001         63
+      choose(has(n,0), out(E), in_(E)).values(n)         324.36      800,000        405   ⬅
+      HAND CEILING, same work, same order                112.33      800,000        140
+      => engine / ceiling                                 2.89x
+      choose(out(E), values(n), constant('none'))         92.56      200,001        463
+      branch(values(n)).option(0,out).option(1,in).none   41.78      212,373        197
+```
+
+✅ **THE CEILING IS VALID AND THAT WAS CHECKED, NOT ASSUMED**: its first six and last three rows are
+identical to the engine's, positionally — `[3,68,36,4,63,18]…[95,50,19]` both sides. A ceiling that
+answers a different question or a different order is not a ceiling (item 600's rule), and for this
+family order is a cross-engine contract (item 1987).
+
+⚠️ **AND THE CEILING IS ITSELF 2.5x THE BARE HOP** (140 against 57 ns/row), which is the whole reason
+to measure it: the test-per-vertex and the direction choice are real work. The available prize is
+**2.89x on a 324 ms shape**, not the ~7x the hop row suggests.
+
+### 🔭 WHAT IS AND IS NOT NOMINATED
+
+- **`choose` at 2.89x is the nomination**, priced and ready. Not built this tick: it is a general
+  conditional, so unlike item 1990 there is no existing rung to normalize into — the work is a fused
+  route of its own, which is a different size of change from a plan rewrite.
+- **`branch` at 197 ns/row is NOT priced.** Its rows are mostly `identity()` passthroughs (the test
+  `values('n')` matches `option(0)`/`option(1)` for ~2 of 97 vertices), so 197 ns/row for a
+  near-passthrough looks high — but without a hand ceiling that is an impression, and the shape's
+  arm mix is a fixture choice rather than a property of `branch`. Recorded as unpriced, deliberately.
+- ⚠️ Minor API note, because it cost a throw: the builder's default arm is **`.none(plan)`**, not
+  `.default(plan)`.
+
+INSTRUMENT. `packages/native/coalesce-vs-optional-1990.mjs` grew the `choose`/`branch`/hand-ceiling
+arms and its header now says so — the filename is kept so item 1990's citation still resolves.
+
+NO ENGINE BEHAVIOUR CHANGED — probe arms and this entry.
+
+GATES. `bun run fmt` 0; `bun run check` 0.

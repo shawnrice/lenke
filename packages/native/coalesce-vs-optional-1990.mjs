@@ -1,3 +1,10 @@
+// Items 1990/1991 — the RECONVERGING-BRANCH family: `coalesce`, `choose` and `branch`.
+//
+// ⚠️ IT OUTGREW ITS NAME. Item 1990 built it to compare `coalesce(out(T), identity())` with
+// `optional(out(T))` — the pair below — and item 1991 added `choose`/`branch` plus a HAND CEILING,
+// because those two have no cheaper twin to compare against. The filename is kept so the entry that
+// cites it still resolves.
+//
 // Item 1990 — `coalesce(out(T), identity())` against `optional(out(T))`, which are the SAME QUESTION.
 //
 // ⚠️⚠️ **THESE TWO SPELLINGS HAVE DIFFERENT HISTORIES AND THAT IS THE POINT.** `optional` has two
@@ -26,7 +33,21 @@
 //     bun coalesce-vs-optional-1990.mjs            # all arms, answers compared, then times
 //     ARM=coalesce bun coalesce-vs-optional-1990.mjs
 import { Graph } from '@lenke/core';
-import { identity, coalesce, optional, out, toArray, traversal, V, values } from '@lenke/gremlin';
+import {
+  branch,
+  choose,
+  coalesce,
+  constant,
+  has,
+  identity,
+  in_,
+  optional,
+  out,
+  toArray,
+  traversal,
+  V,
+  values,
+} from '@lenke/gremlin';
 
 const NODES = Number(process.env.NODES ?? 200000);
 const FANOUT = Number(process.env.FANOUT ?? 4);
@@ -66,9 +87,56 @@ const ARMS = {
   hop: () => traversal(V(), out('E'), values('n')),
   optional: () => traversal(V(), optional(out('E')), values('n')),
   coalesce: () => traversal(V(), coalesce(out('E'), identity()), values('n')),
+  /*
+   * ⚠️ `choose` AND `branch` HAVE NO CHEAPER TWIN, so these are priced against the REFERENCE rows
+   * above rather than against an equivalent spelling (item 1991). A conditional genuinely must run
+   * its test per traverser and then one arm, so the expectation is roughly test + arm — NOT the
+   * bare hop. The bare hop is here as a scale, not a ceiling (item 1951's rule).
+   *
+   * ⚠️ AND `choose(test, X)` WITH NO ELSE IS NOT A FILTER. Measured against the engine: with the
+   * else-plan absent the traverser is PASSED THROUGH, so `choose(out(E), identity())` returns every
+   * vertex where `where(out(E))` returns only those with an edge. The AST comment ("else elsePlan
+   * (if present)") reads the other way and a filter-shaped twin was the first thing tried here.
+   */
+  chooseTwoArm: () => traversal(V(), choose(has('n', 0), out('E'), in_('E')), values('n')),
+  chooseConst: () => traversal(V(), choose(out('E'), values('n'), constant('none'))),
+  /*
+   * ⚠️ THE MEASURED CEILING for `chooseTwoArm`, in plain JavaScript over the adjacency — because the
+   * bare hop is NOT its floor (item 1951's rule): a conditional must run its test per traverser and
+   * THEN one arm, so its floor is test + arm, and estimating that from the hop row would understate
+   * it. This does exactly the engine's work: one property test a vertex, then that vertex's `E`
+   * edges in the chosen direction, projecting `n`.
+   */
+  handChoose: 'HAND',
+  branchTwo: () =>
+    traversal(
+      V(),
+      branch(values('n')).option(0, out('E')).option(1, in_('E')).none(identity()),
+      values('n'),
+    ),
 };
 
 const med = (xs) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];
+
+/** The hand ceiling for `chooseTwoArm`, driven in vertex order so the rows are comparable. */
+const handChooseRows = () => {
+  const rows = [];
+
+  for (const v of g.vertices) {
+    // The test: `has('n', 0)` is one property read a vertex.
+    const box = v.properties.n === 0 ? v.adjFrom?.get('E') : v.adjTo?.get('E');
+
+    if (box === undefined) {
+      continue;
+    }
+
+    for (const e of box) {
+      rows.push((v.properties.n === 0 ? e.to : e.from).properties.n);
+    }
+  }
+
+  return rows;
+};
 
 const run = (name) => {
   const build = ARMS[name];
@@ -78,7 +146,7 @@ const run = (name) => {
 
   for (let r = 0; r < REPS; r += 1) {
     const t0 = performance.now();
-    const got = toArray(build(), g);
+    const got = build === 'HAND' ? handChooseRows() : toArray(build(), g);
 
     ts.push(performance.now() - t0);
     rows = got.length;
