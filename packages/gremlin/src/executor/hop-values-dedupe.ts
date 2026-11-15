@@ -1,4 +1,4 @@
-import type { Edge, Graph } from '@lenke/core';
+import type { Edge, Graph, Vertex } from '@lenke/core';
 
 import type { By, Plan, Step } from '../ast.js';
 import { chainCsrFor } from './count-shortcut.js';
@@ -64,9 +64,9 @@ export const hopValuesDedupe = (plan: Plan, graph: Graph): HopValues | undefined
     return undefined;
   }
 
-  const key = dedupedKey(third, fourth);
+  const keys = dedupedKey(third, fourth);
 
-  if (key === undefined) {
+  if (keys === undefined) {
     return undefined;
   }
 
@@ -75,7 +75,8 @@ export const hopValuesDedupe = (plan: Plan, graph: Graph): HopValues | undefined
     values: walk(graph, {
       forward: hop.kind === 'out',
       type: hop.labels[0],
-      key,
+      key: keys.key,
+      projectKey: keys.projectKey,
       labels: hop.labels,
       kind: hop.kind,
     }),
@@ -89,29 +90,48 @@ export const hopValuesDedupe = (plan: Plan, graph: Graph): HopValues | undefined
  * a different question from "distinct values" — and `nodeValuesDedupeShortcut` refuses it for the
  * same reason.
  */
-const dedupedKey = (third: Step | undefined, fourth: Step | undefined): string | undefined => {
+const dedupedKey = (
+  third: Step | undefined,
+  fourth: Step | undefined,
+): { readonly key: string; readonly projectKey: string } | undefined => {
   if (third === undefined || fourth === undefined) {
     return undefined;
   }
 
-  // `values(k).dedupe()`
+  // `values(k).dedupe()` — the dedupe is over the VALUE, so both keys are the same one.
   if (third.kind === 'values' && fourth.kind === 'dedupe') {
     return third.keys.length === 1 &&
       (fourth.labels?.length ?? 0) === 0 &&
       (fourth.bys?.length ?? 0) === 0
-      ? third.keys[0]
+      ? { key: third.keys[0], projectKey: third.keys[0] }
       : undefined;
   }
 
-  // `dedupe().by(k).values(k)` — the SAME key at both positions, see the header.
+  /*
+   * `dedupe().by(k).values(j)` — item 1971 admits `j !== k`, which this rung used to decline.
+   *
+   * ⚠️ THE HEADER'S OBJECTION STANDS AND IS NOT BEING OVERRULED: `dedupe().by(k).values(j)` is NOT
+   * "the distinct `j` values", and it is a different question from `values(j).dedupe()`. What item
+   * 1971 observed is that being a different question does not make it unfusable — it keeps the
+   * first element per distinct `k` and reads `j` off it, which this walk can do by reading two
+   * properties instead of one. The two SPELLINGS still take different routes because they ask
+   * different things, so `bun run spelling:gremlin` has nothing to flag.
+   *
+   * Measured at item 1970, 200,000 vertices / 1,000,000 edges, identical 97 rows either way:
+   * **524 ns a visit against the same-key spelling's 253 — 2.07x**, with a both-fused control at
+   * 1.05x proving the pairing sound.
+   *
+   * ⚠️ AND THE MISSING-KEY SEMANTICS ARE THE WHOLE RISK, so they were measured off the GENERIC
+   * pipeline before anything was built (`dedupekeys-1971.mjs`): an element missing the DEDUPE key is
+   * dropped entirely, while one missing the PROJECTED key still CONSUMES its dedupe slot and emits
+   * nothing. The loops below reproduce exactly that, and this file's header is why it was checked —
+   * items 1561/1562 each found a silent ANSWER change in this area.
+   */
   if (third.kind === 'dedupe' && fourth.kind === 'values') {
     const by = byKey(third.bys);
 
-    return by !== undefined &&
-      (third.labels?.length ?? 0) === 0 &&
-      fourth.keys.length === 1 &&
-      fourth.keys[0] === by
-      ? by
+    return by !== undefined && (third.labels?.length ?? 0) === 0 && fourth.keys.length === 1
+      ? { key: by, projectKey: fourth.keys[0] }
       : undefined;
   }
 
@@ -146,7 +166,13 @@ const byKey = (bys: readonly By[] | undefined): string | undefined => {
 type WalkSpec = {
   readonly forward: boolean;
   readonly type: string;
+  /** The key the DEDUPE is keyed on. */
   readonly key: string;
+  /**
+   * The key the row PROJECTS. Equal to {@link WalkSpec.key} for both spellings this rung served
+   * before item 1971; different for `dedupe().by(k).values(w)`, which the header above describes.
+   */
+  readonly projectKey: string;
   readonly kind: 'out' | 'in';
   readonly labels: readonly string[];
 };
@@ -165,10 +191,26 @@ type WalkSpec = {
 const walk = (graph: Graph, spec: WalkSpec): HopWalk => ({
   *[Symbol.iterator]() {
     const keep = valueDedupeFilter();
+    const { key, projectKey } = spec;
 
-    for (const far of farValues(graph, spec)) {
-      if (keep(far)) {
-        yield far;
+    /*
+     * ⚠️ `farElements` YIELDS THE ELEMENT, not the value, since item 1971 — because two keys have to
+     * be read off the SAME element and a generator yielding a pair would allocate per element. The
+     * three tests below are in the order the generic pipeline applies them, and that order is the
+     * answer: a missing DEDUPE key drops the element without consuming a slot, while a missing
+     * PROJECTED key consumes its slot and emits nothing (`dedupekeys-1971.mjs` measured both).
+     */
+    for (const far of farElements(graph, spec)) {
+      const value = far.properties[key];
+
+      if (value === undefined || !keep(value)) {
+        continue;
+      }
+
+      const projected = far.properties[projectKey];
+
+      if (projected !== undefined) {
+        yield projected;
       }
     }
   },
@@ -185,7 +227,7 @@ const walk = (graph: Graph, spec: WalkSpec): HopWalk => ({
    * mutant for each copy.
    */
   drain() {
-    const { forward, type, key, kind, labels } = spec;
+    const { forward, type, key, projectKey, kind, labels } = spec;
     const keep = valueDedupeFilter();
     const csr = seenBefore(graph, forward, type) ? chainCsrFor(graph, forward, [type]) : undefined;
     const out: unknown[] = [];
@@ -197,10 +239,17 @@ const walk = (graph: Graph, spec: WalkSpec): HopWalk => ({
         const to = memo.off[slot] + memo.len[slot];
 
         for (let i = memo.off[slot]; i < to; i += 1) {
-          const value = vtx[memo.flat[i]].properties[key];
+          const far = vtx[memo.flat[i]];
+          const value = far.properties[key];
 
           if (value !== undefined && keep(value)) {
-            out.push(value);
+            // The PROJECTED key off the element the dedupe just kept. Identical to the read this
+            // loop always did when the two keys are the same.
+            const projected = far.properties[projectKey];
+
+            if (projected !== undefined) {
+              out.push(projected);
+            }
           }
         }
       }
@@ -215,10 +264,15 @@ const walk = (graph: Graph, spec: WalkSpec): HopWalk => ({
       };
 
       for (const e of set) {
-        const value = (fwd ? e.to : e.from).properties[key];
+        const far = fwd ? e.to : e.from;
+        const value = far.properties[key];
 
         if (value !== undefined && keep(value)) {
-          out.push(value);
+          const projected = far.properties[projectKey];
+
+          if (projected !== undefined) {
+            out.push(projected);
+          }
         }
       }
     }
@@ -235,8 +289,8 @@ const walk = (graph: Graph, spec: WalkSpec): HopWalk => ({
  * the key (`k in props`), so such a far vertex contributes no row at all — and therefore must not
  * occupy the dedupe set either, or the first missing key would swallow a later real `undefined`.
  */
-const farValues = function* (graph: Graph, spec: WalkSpec): Iterable<unknown> {
-  const { forward, type, key, kind, labels } = spec;
+const farElements = function* (graph: Graph, spec: WalkSpec): Iterable<Vertex> {
+  const { forward, type, kind, labels } = spec;
   const csr = seenBefore(graph, forward, type) ? chainCsrFor(graph, forward, [type]) : undefined;
 
   if (csr !== undefined) {
@@ -246,11 +300,7 @@ const farValues = function* (graph: Graph, spec: WalkSpec): Iterable<unknown> {
       const to = memo.off[slot] + memo.len[slot];
 
       for (let i = memo.off[slot]; i < to; i += 1) {
-        const value = vtx[memo.flat[i]].properties[key];
-
-        if (value !== undefined) {
-          yield value;
-        }
+        yield vtx[memo.flat[i]];
       }
     }
 
@@ -271,11 +321,7 @@ const farValues = function* (graph: Graph, spec: WalkSpec): Iterable<unknown> {
     };
 
     for (const e of set) {
-      const value = (fwd ? e.to : e.from).properties[key];
-
-      if (value !== undefined) {
-        yield value;
-      }
+      yield fwd ? e.to : e.from;
     }
   }
 };

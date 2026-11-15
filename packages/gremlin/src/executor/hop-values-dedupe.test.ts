@@ -246,13 +246,181 @@ describe('hopValuesDedupe — what it declines', () => {
     return toArray(plan, g);
   };
 
-  it('declines a `by` key that differs from the projected key — a different question', () => {
+  /*
+   * ⚠️ THIS USED TO BE A `declines` CASE, and item 1971 ADMITTED the shape. The old comment's
+   * reasoning is kept because every word of it about the ANSWER is still true — it is a different
+   * question from the distinct `other` values, and an absent `by` key filters the element — and the
+   * conclusion it drew ("so the two keys cannot be fused into one walk in either direction") is the
+   * part that was wrong. Being a different question does not make it unfusable: the walk reads the
+   * dedupe key and the projected key off the SAME element, which is two property reads instead of
+   * one. Measured at item 1970/1971: **524 -> 258 ns a visit, and 2.07x against its same-key sibling
+   * becomes 1.10x** — closed to inside the both-fused control's own 1.05x.
+   */
+  it('takes a `by` key differing from the projected key, and answers what the pipeline did', () => {
     // Keeps the FIRST element per `n` (b=2, k=null, d=3, a=1) and reads `other` off each: none of
     // those four carries `other`, so the answer is EMPTY — where the distinct `other` values are
-    // [9], which is the row the fused walk returns for the matching-key spelling above. ⚠️ A `by`
-    // whose key is absent also FILTERS the element (that is why `f` never reaches the projection),
-    // so the two keys cannot be fused into one walk in either direction.
-    expect(declines(traversal(V(), out('E'), dedupe().by('n'), values('other')))).toStrictEqual([]);
+    // [9]. ⚠️ A `by` whose key is absent also FILTERS the element, which is why `f` never reaches
+    // the projection.
+    const plan = traversal(V(), out('E'), dedupe().by('n'), values('other'));
+
+    expect(hopValuesDedupe(plan, g)).toBeDefined();
+    expect(toArray(plan, g)).toStrictEqual([]);
+  });
+
+  /*
+   * 🔑 THE MISSING-KEY SEMANTICS, WHICH ARE THE WHOLE RISK OF ITEM 1971 and were measured off the
+   * GENERIC pipeline before the arm was written (`dedupekeys-1971.mjs`). This file's header records
+   * that items 1561/1562 each found a silent ANSWER change in this area, so these are asserted as
+   * values rather than trusted:
+   *
+   *   - an element missing the DEDUPE key is dropped and does NOT consume a slot;
+   *   - an element missing the PROJECTED key DOES consume its slot and emits nothing, so a later
+   *     element with the same dedupe key is still suppressed.
+   *
+   * The second is the one a hand-written walk gets wrong, and it is observable only when two
+   * elements share a dedupe key and the FIRST lacks the projected one.
+   */
+  it('a missing PROJECTED key still consumes its dedupe slot', () => {
+    const h = new Graph();
+
+    for (const [id, props] of [
+      ['s', { n: 0 }],
+      // Same `k`, and the FIRST has no `w`: the pipeline emits NOTHING for this pair.
+      ['f1', { k: 1 }],
+      ['f2', { k: 1, w: 11 }],
+      // A distinct `k` that does carry `w`, so the answer is not empty for the wrong reason.
+      ['f3', { k: 2, w: 12 }],
+    ] as [string, Record<string, unknown>][]) {
+      h.addVertex({ id, labels: ['T'], properties: props });
+    }
+
+    const s = h.getVertexById('s');
+
+    for (const id of ['f1', 'f2', 'f3']) {
+      const far = h.getVertexById(id);
+
+      if (s === null || far === null) {
+        throw new Error('fixture');
+      }
+
+      h.addEdge({ id: `e${id}`, from: s, to: far, labels: ['E'], properties: {} });
+    }
+
+    const plan = traversal(V(), out('E'), dedupe().by('k'), values('w'));
+
+    expect(hopValuesDedupe(plan, h)).toBeDefined();
+    // f1 consumed k=1 and had no `w`; f2 is suppressed; only f3 emits. A walk that let f2 through
+    // would answer [11, 12], and one that dropped f1 before the dedupe would answer [11, 12] too.
+    expect(toArray(plan, h)).toStrictEqual([12]);
+  });
+
+  /*
+   * ⚠️ THE LAZY ARM NEEDS ITS OWN CASE, and mutation is what proved it: reordering the iterator's
+   * two key tests so a missing PROJECTED key frees its dedupe slot **SURVIVED with 0 failing**,
+   * because every other assertion here goes through `toArray`, which prefers `drain`. The walk keeps
+   * three copies of this loop (iterator, drain CSR, drain bucket) and item 169 named that hazard;
+   * spreading `run` is how this file reaches the first of them.
+   */
+  it('the LAZY arm applies the two keys in the same order as the drain', () => {
+    const h = new Graph();
+
+    for (const [id, props] of [
+      ['s', { n: 0 }],
+      ['f1', { k: 1 }],
+      ['f2', { k: 1, w: 11 }],
+      ['f3', { k: 2, w: 12 }],
+      // ⚠️ NO `k` AT ALL, and mutation is why it is here: without it, deleting the lazy arm's
+      // `value === undefined` test changed no answer. `f4` must contribute nothing AND must not
+      // occupy the `undefined` dedupe slot in a way that suppresses anything.
+      ['f4', { w: 13 }],
+    ] as [string, Record<string, unknown>][]) {
+      h.addVertex({ id, labels: ['T'], properties: props });
+    }
+
+    const s = h.getVertexById('s');
+
+    for (const id of ['f1', 'f2', 'f3', 'f4']) {
+      const far = h.getVertexById(id);
+
+      if (s === null || far === null) {
+        throw new Error('fixture');
+      }
+
+      h.addEdge({ id: `e${id}`, from: s, to: far, labels: ['E'], properties: {} });
+    }
+
+    // f1 consumes k=1 with no `w`; f2 is suppressed; only f3 emits — the drain's answer, through
+    // the iterator.
+    expect([...run(traversal(V(), out('E'), dedupe().by('k'), values('w')), h)]).toStrictEqual([
+      12,
+    ]);
+  });
+
+  /*
+   * ⚠️ THE CSR ARM NEEDS THE DIFFERING-KEY SHAPE TOO, and mutation is why: with the two keys EQUAL,
+   * the `projected !== undefined` test item 1971 added already excludes an undefined dedupe key, so
+   * deleting the dedupe-key check is answer-equivalent — the mutant SURVIVED. It is observable only
+   * when the keys DIFFER, and only on the CSR arm, which `twice()` is the way to reach.
+   */
+  it('the CSR arm applies both keys on the second ask', () => {
+    const h = new Graph();
+
+    for (const [id, props] of [
+      ['s1', { n: 0 }],
+      ['s2', { n: 0 }],
+      ['s3', { n: 0 }],
+      // Distinct `k` on each, so a CSR over-read would show; `f2` carries no `w`, `f3` no `k`.
+      ['f1', { k: 1, w: 10 }],
+      ['f2', { k: 2 }],
+      ['f3', { w: 12 }],
+    ] as [string, Record<string, unknown>][]) {
+      h.addVertex({ id, labels: ['T'], properties: props });
+    }
+
+    for (const [i, far] of ['f1', 'f2', 'f3'].entries()) {
+      const s = h.getVertexById(`s${String(i + 1)}`);
+      const f = h.getVertexById(far);
+
+      if (s === null || f === null) {
+        throw new Error('fixture');
+      }
+
+      h.addEdge({ id: `e${far}`, from: s, to: f, labels: ['E'], properties: {} });
+    }
+
+    // f1 emits 10; f2 consumes k=2 and has no `w`; f3 has no `k` and is dropped.
+    expect(twice(() => traversal(V(), out('E'), dedupe().by('k'), values('w')), h)).toStrictEqual([
+      10,
+    ]);
+  });
+
+  it('a missing DEDUPE key drops the element without consuming a slot', () => {
+    const h = new Graph();
+
+    for (const [id, props] of [
+      ['s', { n: 0 }],
+      // No `k` at all, but a `w` — it must contribute nothing, and must not block anything.
+      ['f1', { w: 10 }],
+      ['f2', { k: 1, w: 11 }],
+    ] as [string, Record<string, unknown>][]) {
+      h.addVertex({ id, labels: ['T'], properties: props });
+    }
+
+    const s = h.getVertexById('s');
+
+    for (const id of ['f1', 'f2']) {
+      const far = h.getVertexById(id);
+
+      if (s === null || far === null) {
+        throw new Error('fixture');
+      }
+
+      h.addEdge({ id: `e${id}`, from: s, to: far, labels: ['E'], properties: {} });
+    }
+
+    const plan = traversal(V(), out('E'), dedupe().by('k'), values('w'));
+
+    expect(toArray(plan, h)).toStrictEqual([11]);
   });
 
   it('declines a label-scoped `dedupe(label)`, which dedupes a tagged tuple', () => {

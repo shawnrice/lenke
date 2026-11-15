@@ -22,7 +22,88 @@ const TESTS = ['src/executor/hop-values-dedupe.test.ts'];
 
 /** `[name, which, from, to, expectedOccurrences, occurrence?]` */
 const MUTANTS = [
-  ['the `by` key need not equal the projected key', 'ded', 'fourth.keys[0] === by', 'true', 1],
+  /*
+   * ⚠️ THE MUTANT THAT BECAME THE BEHAVIOUR. This used to assert the gate REQUIRED the `by` key to
+   * equal the projected key (`fourth.keys[0] === by`), and item 1971 removed that condition
+   * deliberately: the shape is a different QUESTION but a fusable one, worth 524 -> 258 ns a visit.
+   * The mutants below test the two-key logic that replaced it, which is where the risk now lives —
+   * this file's header records items 1561/1562 each finding a silent ANSWER change in this area.
+   *
+   * ⚠️⚠️ ONE MUTANT PER ARM, AND THAT IS NOT PEDANTRY: this harness replaces the FIRST occurrence
+   * unless an index is given, and the walk has THREE copies of each read — the lazy iterator, the
+   * drain's CSR arm and the drain's bucket arm. A single mutant on occurrence 0 hit the iterator
+   * while `toArray` uses the drain, and **SURVIVED with 0 failing**. That is item 169's named hazard
+   * (`the same loop twice`) showing up in the mutation harness rather than in the engine.
+   */
+  [
+    'projects the DEDUPE key — lazy ITERATOR arm',
+    'ded',
+    'const projected = far.properties[projectKey];',
+    'const projected = far.properties[key];',
+    3,
+    0,
+  ],
+  [
+    'projects the DEDUPE key — drain CSR arm',
+    'ded',
+    'const projected = far.properties[projectKey];',
+    'const projected = far.properties[key];',
+    3,
+    1,
+  ],
+  [
+    'projects the DEDUPE key — drain BUCKET arm',
+    'ded',
+    'const projected = far.properties[projectKey];',
+    'const projected = far.properties[key];',
+    3,
+    2,
+  ],
+  [
+    'dedupes on the PROJECTED key — drain BUCKET arm',
+    'ded',
+    'const value = far.properties[key];',
+    'const value = far.properties[projectKey];',
+    3,
+    2,
+  ],
+  [
+    'a missing PROJECTED key is emitted as undefined — drain BUCKET arm',
+    'ded',
+    `const projected = far.properties[projectKey];
+
+          if (projected !== undefined) {
+            out.push(projected);
+          }`,
+    `const projected = far.properties[projectKey];
+
+          out.push(projected);`,
+    1,
+  ],
+  [
+    '⚠⚠ the PROJECTED key is tested BEFORE the dedupe, so a missing one frees its slot',
+    'ded',
+    `      const value = far.properties[key];
+
+      if (value === undefined || !keep(value)) {
+        continue;
+      }
+
+      const projected = far.properties[projectKey];
+
+      if (projected !== undefined) {
+        yield projected;
+      }`,
+    `      const value = far.properties[key];
+      const projected = far.properties[projectKey];
+
+      if (value === undefined || projected === undefined || !keep(value)) {
+        continue;
+      }
+
+      yield projected;`,
+    1,
+  ],
   [
     'a `by` carrying a traversal is admitted as a key',
     'ded',
@@ -61,8 +142,10 @@ const MUTANTS = [
   [
     'a multi-key `values` is admitted — `by` spelling',
     'ded',
-    'fourth.keys.length === 1 &&',
-    'true &&',
+    // ⚠️ RE-ANCHORED at item 1971: that condition no longer ends in `&&`, because the key-equality
+    // test that used to follow it is gone.
+    '(third.labels?.length ?? 0) === 0 && fourth.keys.length === 1',
+    '(third.labels?.length ?? 0) === 0',
     1,
   ],
   [
@@ -126,96 +209,106 @@ const MUTANTS = [
   [
     'the far vertex is the SLOT, not the flat target — EAGER drain (occurrence 0)',
     'ded',
-    'const value = vtx[memo.flat[i]].properties[key];',
-    'const value = vtx[slot].properties[key];',
-    2,
-    0,
+    // ⚠️ RE-ANCHORED at item 1971: the element is now bound to `far` before its keys are read, so
+    // the CSR indexing moved off the `.properties[key]` line onto its own.
+    'const far = vtx[memo.flat[i]];',
+    'const far = vtx[slot];',
+    1,
   ],
   [
-    'the far vertex is the SLOT, not the flat target — LAZY iterator (occurrence 1)',
+    'the far vertex is the SLOT, not the flat target — LAZY iterator',
     'ded',
-    'const value = vtx[memo.flat[i]].properties[key];',
-    'const value = vtx[slot].properties[key];',
-    2,
+    // ⚠️ A DIFFERENT ANCHOR from its drain twin since item 1971: the lazy arm yields the ELEMENT,
+    // so its CSR indexing sits on a `yield` rather than on an assignment. Two copies of one loop
+    // with two different shapes is exactly why each needs its own mutant (item 169).
+    'yield vtx[memo.flat[i]];',
+    'yield vtx[slot];',
     1,
   ],
   // ⚠️ EACH MISSING-KEY ANCHOR CARRIES ITS OWN PRECEDING LINE, because the three arms' guard blocks
   // are byte-identical and a bare guard matched 3 times.
   [
-    'a MISSING key is deduped as a value — CSR arm, LAZY iterator',
+    /*
+     * ⚠️ ONE MUTANT WHERE THERE WERE TWO (item 1971). The lazy arm used to test
+     * `value !== undefined` inside `farValues`' CSR loop AND inside its bucket loop; both now yield
+     * the ELEMENT and the single `undefined` test lives in the consumer, so the two old anchors are
+     * one. The drain's two copies keep their own mutants below.
+     */
+    'a MISSING dedupe key is deduped as a value — LAZY iterator',
     'ded',
-    `const value = vtx[memo.flat[i]].properties[key];
+    `      const value = far.properties[key];
 
-        if (value !== undefined) {
-          yield value;
-        }`,
-    `const value = vtx[memo.flat[i]].properties[key];
+      if (value === undefined || !keep(value)) {
+        continue;
+      }`,
+    `      const value = far.properties[key];
 
-        yield value;`,
+      if (!keep(value)) {
+        continue;
+      }`,
     1,
   ],
   [
     'a MISSING key is deduped as a value — CSR arm, EAGER drain (item 1913)',
     'ded',
-    'if (value !== undefined && keep(value)) {\n            out.push(value);\n          }',
-    'if (keep(value)) {\n            out.push(value);\n          }',
+    // ⚠️ RE-ANCHORED at item 1971: the push became a two-key read, so the condition is anchored on
+    // its own line and distinguished from the bucket arm's twin by INDENTATION (10 spaces here).
+    '          if (value !== undefined && keep(value)) {',
+    '          if (keep(value)) {',
     1,
   ],
   [
     'the DRAIN drops the dedupe filter (item 1913)',
     'ded',
-    'if (value !== undefined && keep(value)) {\n            out.push(value);\n          }',
-    'if (value !== undefined) {\n            out.push(value);\n          }',
+    // ⚠️ RE-ANCHORED at item 1971 onto the CSR arm's condition line (10 spaces), since the push it
+    // used to include is now a nested two-key read. Shares its anchor with the mutant above and
+    // differs in the replacement, which is what distinguishes "drops the undefined check" from
+    // "drops the dedupe".
+    '          if (value !== undefined && keep(value)) {',
+    '          if (value !== undefined) {',
     1,
   ],
   [
-    'a MISSING key is deduped as a value — bucket arm',
+    'the bucket arm reads the NEAR end — EAGER drain',
     'ded',
-    `const value = (fwd ? e.to : e.from).properties[key];
-
-      if (value !== undefined) {
-        yield value;
-      }`,
-    `yield (fwd ? e.to : e.from).properties[key];`,
+    // ⚠️ RE-ANCHORED at item 1971: the endpoint is bound to `far` before its keys are read, and the
+    // lazy twin now YIELDS it, so the two arms need two anchors instead of one indexed pair.
+    'const far = fwd ? e.to : e.from;',
+    'const far = fwd ? e.from : e.to;',
     1,
   ],
   [
-    'the bucket arm reads the NEAR end — EAGER drain (occurrence 0)',
+    'the bucket arm reads the NEAR end — LAZY iterator',
     'ded',
-    'const value = (fwd ? e.to : e.from).properties[key];',
-    'const value = (fwd ? e.from : e.to).properties[key];',
-    2,
-    0,
-  ],
-  [
-    'the bucket arm reads the NEAR end — LAZY iterator (occurrence 1)',
-    'ded',
-    'const value = (fwd ? e.to : e.from).properties[key];',
-    'const value = (fwd ? e.from : e.to).properties[key];',
-    2,
+    'yield fwd ? e.to : e.from;',
+    'yield fwd ? e.from : e.to;',
     1,
   ],
   [
     'the dedupe is dropped — LAZY iterator',
     'ded',
-    `      if (keep(far)) {
-        yield far;
-      }`,
-    `      yield far;`,
+    // ⚠️ RE-ANCHORED at item 1971: the lazy arm no longer dedupes the yielded value directly — it
+    // dedupes the DEDUPE key and yields the PROJECTED one, so dropping the filter means dropping
+    // `keep` from the combined guard.
+    `      if (value === undefined || !keep(value)) {`,
+    `      if (value === undefined) {`,
     1,
   ],
   [
     'the dedupe set is rebuilt per vertex rather than per walk — DRAIN (item 1913)',
     'ded',
-    'if (value !== undefined && keep(value)) {\n            out.push(value);\n          }',
-    'if (value !== undefined && valueDedupeFilter()(value)) {\n            out.push(value);\n          }',
+    // ⚠️ RE-ANCHORED at item 1971 onto the CSR arm's condition line (10 spaces); the push it used to
+    // include is now a nested two-key read.
+    '          if (value !== undefined && keep(value)) {',
+    '          if (value !== undefined && valueDedupeFilter()(value)) {',
     1,
   ],
   [
     'the dedupe set is rebuilt per element — LAZY iterator',
     'ded',
-    '      if (keep(far)) {\n        yield far;\n      }',
-    '      if (valueDedupeFilter()(far)) {\n        yield far;\n      }',
+    // ⚠️ RE-ANCHORED at item 1971: the lazy arm now dedupes the DEDUPE key inside a combined guard.
+    `      if (value === undefined || !keep(value)) {`,
+    `      if (value === undefined || !valueDedupeFilter()(value)) {`,
     1,
   ],
 ];

@@ -94852,8 +94852,9 @@ short-circuit to ~0 ms. Four disagreements, no cost.
 `…values('k')`: same hop, same `dedupe().by('k')`, **the identical 97 rows**, and the only difference
 is whether the projected key IS the dedupe key. The fused rung takes the first spelling and declines
 the second — **2.07x, and 524 ns a visit over 1,000,000 visits is ~524 ms against 253**, which is
-larger in absolute terms than anything on the Gremlin workload screen except `tree()`. That is the
-next build: let the fused dedupe rung project a key other than the one it deduped on.
+larger in absolute terms than anything on the Gremlin workload screen except `tree()`. ~~That is the
+next build: let the fused dedupe rung project a key other than the one it deduped on.~~ ✅ **BUILT AT
+ITEM 1971 — 524 → 258 ns a visit, and the 2.07x gap closes to 1.10x, inside the control's own 1.05x.**
 
 ⚠️ The screen's remaining `ded:` rows (`labelled dedupe`, `multi key values`, `deduped then limit`)
 are NOT dismissed — they are UNPRICED, because no comparable sibling exists for them in the screen
@@ -94863,3 +94864,65 @@ a ratio against a shape that answers something else.
 NO ENGINE BEHAVIOUR CHANGED — one instrument, one header correction, and this entry.
 
 GATES. `bun run check` 0.
+
+## Item 1971 — ✅ **SHIPPED: `dedupe().by(k).values(j)` fused. 524 → 258 ns a visit, and the 2.07x gap to its same-key sibling closes to 1.10x** — inside the both-fused control's own 1.05x. ⚠️ The rung declined this ON PURPOSE, and the decline's reasoning was right about the ANSWER and wrong about fusability
+
+Item 1970 priced this and called it a build. `hop-values-dedupe.ts` declined it deliberately:
+
+> ⚠️ AND THE `by` KEY MUST EQUAL THE PROJECTED KEY. `dedupe().by('n').values('k')` keeps the first
+> element per `n` and projects `k` off it, which is NOT the distinct `k` values — a different
+> question, declined here.
+
+**Every word about the ANSWER is correct, and the conclusion drawn from it was not.** Being a
+different question does not make it unfusable: the walk reads the dedupe key and the projected key
+off the SAME element, which is two property reads instead of one. The two SPELLINGS still take
+different routes because they ask different things, so `spelling:gremlin` has nothing to flag.
+
+🔑 **THE SEMANTICS WERE MEASURED OFF THE GENERIC PIPELINE BEFORE ANYTHING WAS WRITTEN**, because
+this file's header records that **items 1561/1562 each found a silent ANSWER change in this area**
+and warns that a second keyer "would be the third". `dedupekeys-1971.mjs`, a fixture built to
+separate the four missing-key cases:
+
+```text
+  f1(k1,w10) f2(k1,w11) f3(k2,-) f4(-,w12) f5(k3,w13) f6(-,w14) f7(k2,w15)
+
+  dedupe.by(k).values(w)  -> [10, 13]                 <- the target
+  dedupe.by(k).values(k)  -> [1, 2, 3]
+  values(w).dedupe()      -> [10,11,12,13,14,15]      <- a genuinely different question
+```
+
+So: **an element missing the DEDUPE key is dropped without consuming a slot** (f4, f6), while **one
+missing the PROJECTED key DOES consume its slot and emits nothing** (f3 takes k=2, so f7's w=15
+never appears). The arm reproduces exactly that, and after the change all four answers are
+byte-identical to the pre-change pipeline.
+
+⚠️ **AND THERE IS NO NATIVE ORACLE HERE, which is worth recording:** the Rust engine answers
+"unsupported Gremlin step `dedupe`" for every one of these, so the TS pipeline is the only authority
+and the byte-identity fuzzers cannot reach this shape through the text boundary. That removed the
+cross-engine risk and also removed the cross-engine safety net.
+
+```text
+  routegap-1970.mjs, 200,000 vertices / 1,000,000 edges, median of 9, 97 rows either way:
+
+    ded: dedupe.by(k).values(w) vs .values(k)   524 -> 258 ns/visit    2.07x -> 1.10x
+    CONTROL out.values(k) vs out.values(w)       97 /  95              1.05x   <- unchanged
+```
+
+**MUTATION: 26 MUTANTS, ALL CAUGHT, 0 SURVIVORS — and getting there took four rounds of work the
+change itself did not.**
+
+- ⚠️⚠️ **ONE MUTANT PER ARM, and a single one SURVIVED with 0 failing before that.** The harness
+  replaces the FIRST occurrence unless given an index, and this walk keeps THREE copies of each read
+  (lazy iterator, drain CSR, drain bucket). A mutant on occurrence 0 hit the iterator while every
+  assertion went through `toArray`, which prefers `drain`. That is item 169's named hazard — "the
+  same loop twice" — surfacing in the mutation harness rather than in the engine.
+- ⚠️ **EIGHT PRE-EXISTING ANCHORS DRIFTED** and each was re-anchored before any verdict was read.
+  Binding the element to `far` before reading its keys moved every CSR and bucket anchor in the file.
+- ⚠️ **TWO NEW TEST GAPS, both found by mutants surviving.** The lazy arm needed its own case (a far
+  vertex with NO dedupe key, else deleting its `undefined` test changes nothing), and the CSR arm
+  needed a `twice()` case with DIFFERING keys — because with equal keys the new
+  `projected !== undefined` test already excludes an undefined dedupe key, making the first check
+  answer-equivalent. That equivalence is a consequence of this change, so it needed new cover rather
+  than a note.
+
+GATES. `bun run check` 0; `bun run test -- --skip-nx-cache` 21 projects; `bun run fuzz` 57/0.
