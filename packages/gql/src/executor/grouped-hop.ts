@@ -255,9 +255,29 @@ export const detectGroupedHopCount = (clauses: readonly Clause[]): ReachFn | nul
   const keyed = onStart ? start : far;
   const other = onStart ? far : start;
 
-  // The NON-keyed end must be plain: the walks apply nothing to it beyond its label, and the
-  // start-key walk cannot apply even that (it adds a whole degree, not per-edge matches).
-  if (!plainNode(other) || (onStart && other.label !== undefined)) {
+  /*
+   * The NON-keyed end must be plain: the walks apply nothing to it beyond its label.
+   *
+   * ⚠️⚠️ **A FAR LABEL USED TO BE REFUSED OUTRIGHT WHEN GROUPING BY THE START, and that was one
+   * clause stricter than the runtime needs** (item 2011). The reasoning was sound about the DEGREE
+   * walk — it adds a whole degree, not per-edge matches, so it cannot apply a far label — but the
+   * closure already chooses between two walks per call: the degree sum only when
+   * `farPb === undefined`, and the per-edge walk otherwise, whose own comment lists "a far label has
+   * to be applied per edge" as one of its three reasons for existing. `farPb` is
+   * `vacuousLabel(graph, farLabel) ? undefined : farLabel`, which is a GRAPH property, so the right
+   * place to decide was never the gate.
+   *
+   * COST OF THE REFUSAL, measured: `MATCH (a:T)-[:E]->(b:T) LET g = a.n RETURN g, count(*) GROUP BY
+   * g` — the realistic corpus's own spelling, since `GROUP BY` takes a bound name — reached NO rung
+   * and read **24.54 ms against a 0.20 ms hand ceiling, 124x**, purely because `b` carried the same
+   * label as `a`. Dropping `(b:T)` made the identical question fast, which is this repo's named
+   * defect class: two spellings of one question, one of them 124x.
+   *
+   * ⚠️ GROUP ORDER IS PRESERVED BECAUSE BOTH WALKS ARE UNCHANGED — this admits more shapes into the
+   * SAME two walks, which visit start vertices via `candidateVertexSource` and then each vertex's
+   * own bucket. First-seen group order is the contract item 1313 records; nothing here reorders.
+   */
+  if (!plainNode(other)) {
     return null;
   }
 

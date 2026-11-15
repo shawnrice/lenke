@@ -91,7 +91,11 @@ describe('every fast-path detector fires for its own shape', () => {
     [
       'grouped hop count on the NEAR key',
       'MATCH (a:L)-[:R]->(b:L) RETURN a.k AS k, count(*) AS c',
-      ['groupedHopAggregate'],
+      // ⚠️ `groupHopShortcut` JOINED THIS CASE AT ITEM 2011, and the far label is why. The shortcut
+      // used to refuse a NEAR-keyed hop whose FAR end carried any label — one clause stricter than
+      // its own runtime, which already picks the degree walk only when that label is vacuous and the
+      // per-edge walk otherwise. The refusal cost 124x on the realistic corpus's own spelling.
+      ['groupHopShortcut', 'groupedHopAggregate'],
     ],
 
     // --- projections --------------------------------------------------------------------

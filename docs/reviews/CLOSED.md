@@ -98251,3 +98251,82 @@ GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-
 no flake; `bun run fuzz` 57/57 EIGHT times (this rung computes the same answer a DIFFERENT WAY, so
 cross-engine repetition is the real test — and item 2005's sweep caught a real wrong answer three
 items ago); gql 4,986; the ceiling probe's answer check YES on every row.
+
+## Item 2011 — ✅ **ONE CLAUSE DELETED: a grouped hop count keyed on the NEAR end goes 24.54 → 0.38 ms (64.6x), within 1.1x of its hand ceiling.** 🔑 **The rung's RUNTIME already handled the case its GATE refused** ⚠️ And one fuzzer failure I could NOT attribute or reproduce, recorded rather than counted away
+
+Body-split first, per items 2007/2009. `grouped` read 10.52 ms/query for 6.6 rows — the worst per-row
+on item 2009's re-screen — and splits cleanly:
+
+```text
+    chain count (2-hop)   55.74     hop count            18.59
+    chain count ORDER     51.84     hop count by e.w     17.78
+    hop sum               19.21     scan min              2.93
+    scan count             0.17     scan count ORDER      0.09   [ms, 5,000 vertices]
+```
+
+A grouped count keyed on the START needs no row at all: every path out of a source lands in that
+source's own group, so it is a DEGREE SUM per group. `groupceiling-2011.mjs` (reading adjacency SIZES,
+the structure the engine's own grouped rungs read — not a CSR, which would flatter the ratio),
+answers checked as sorted (group, count) pairs:
+
+```text
+    hop   GROUP BY a.n    24.54 → ceiling 0.20    124.0x    97 groups   agree YES
+    chain GROUP BY a.n    57.74 → ceiling 1.15     50.2x    97 groups   agree YES
+```
+
+## 🔑 THE GATE WAS ONE CLAUSE STRICTER THAN ITS OWN RUNTIME
+
+`detectGroupedHopCount` refused a near-keyed hop whose FAR end carried any label:
+
+```ts
+if (!plainNode(other) || (onStart && other.label !== undefined)) return null;
+```
+
+The reasoning was sound **about the degree walk** — it adds a whole degree, not per-edge matches, so
+it cannot apply a far label. But the closure already chooses between TWO walks per call: the degree
+sum only when `farPb === undefined`, and the per-edge walk otherwise, whose own comment lists "a far
+label has to be applied per edge" among its three reasons for existing. And `farPb` is
+`vacuousLabel(graph, farLabel) ? undefined : farLabel` — a GRAPH property. **So the decision already
+existed at runtime, in the right place, and the gate was refusing shapes the closure was built to
+serve.**
+
+Deleting the clause: `hop GROUP BY a.n` **24.54 → 0.38 ms, 64.6x**, within 1.1x of the ceiling, answers
+identical. ⚠️ The cost was being paid on the realistic corpus's own spelling — `GROUP BY` takes a bound
+name, so `LET g = a.n … GROUP BY g` is the only legal form, and `(b:T)` carrying the same label as `a`
+was the whole reason it reached no rung. **Dropping `(b:T)` made the identical question 64x faster**,
+which is this repo's named defect class.
+
+⚠️ GROUP ORDER IS UNTOUCHED, which is the one thing that could have gone wrong invisibly: the module
+records first-seen group order as "the pinned contract both engines keep" and notes **the differential
+fuzzer compares grouped results as MULTISETS and cannot see it.** This change admits more shapes into
+the SAME two walks — neither is modified — and the tests that pin order (`paged-count.test.ts`,
+`grouped-hop-rel-variable.test.ts`, whose case is named "the TALLY answers as it does without the
+name, IN ORDER") are in the 4,986 that pass.
+
+STILL OPEN in this family, with numbers: `chain count` at 55.14 ms (a 2-hop grouped count, 50.2x its
+ceiling — the degree-sum argument generalises to `Σ deg(b) over b in N(a)` but needs its own rung),
+`hop sum` at 18.38 (a grouped `sum` — the byte-identity refusal), and `hop count by e.w` at 17.26 (the
+key is an EDGE property, and `keySource` must be a property of one END).
+
+## ⚠️⚠️ ONE FUZZER FAILURE I COULD NOT ATTRIBUTE, AND THE METHOD ERROR THAT COST ME THE EVIDENCE
+
+Run 2 of four post-change sweeps reported `56 pass 1 fail`. It did not reproduce in **49 subsequent
+runs**: 17 further full sweeps, 8 `differential`-only, and 24 `gremlin`-only (testing the documented
+1-in-30 `gremlin-fuzz-families` residual, which did not fire either). `bun run check` 0, the 21-project
+suite 0, gql 4,986.
+
+⚠️ **I CANNOT SAY WHICH FUZZER IT WAS, because my verification loop piped each run through
+`grep -oE "pass|fail"` and discarded everything else.** That is the same class of mistake as item
+2005's `| tail` — throwing away the information I would need if the thing I was watching for actually
+happened. **A loop that exists to catch a rare failure must capture the failing run's OUTPUT, not its
+tally.** The later loops in this item do.
+
+Structurally, this change is in `packages/gql`, so it cannot reach the `gremlin`, `codec`, `write`,
+`injection`, `algo` or `parity` fuzzers at all; only `differential` could, and that ran 25 times clean
+after. ⚠️ That is an argument, not a proof, and it is recorded as such — [[gremlin-fuzz-families]]'s
+rule is to rule a suspect out STRUCTURALLY rather than by counting failures, and the structural
+argument is the only one here that carries weight.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
+`bun run fuzz` 22 of 23 full sweeps clean with the one unattributed failure above; gql 4,986; both
+ceiling probes' answer checks YES.
