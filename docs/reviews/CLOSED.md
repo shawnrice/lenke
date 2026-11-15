@@ -92676,7 +92676,7 @@ NO ENGINE BEHAVIOUR CHANGED — two instruments and this entry.
 
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects.
 
-## Item 1935 — ⚠️⚠️ **THE LABEL-VACUITY CLIFF IS ARCHITECTURAL, NOT ONE GATE: 43 call sites across 7 files**, and it is worst on the CLOSED-FORM shortcuts — **one isolated off-label vertex turns an O(1) hop `count(*)` into a full enumeration, 1157x**. Also: the cheap fix (a rewrite to `IS LABELED`) is REFUTED, and two fixture bugs of mine were caught by an answer guard. ⚠️ ~~43 gates, up to 1157x~~ **RE-SCOPED at item 1936 by measuring what is RECOVERABLE rather than what is lost: the closed-form COUNT is already within 1.34x of a hand loop off its fast arm, so `shortcuts.ts`'s 10 gates are NOT a target and the 1157x is algorithmic. The hop PROJECTION has 7.23x, and a hand loop shows label filtering costs ~9 ns a row while abandoning edge iteration costs 220**
+## Item 1935 — ⚠️⚠️ **THE LABEL-VACUITY CLIFF IS ARCHITECTURAL, NOT ONE GATE: 43 call sites across 7 files**, and it is worst on the CLOSED-FORM shortcuts — **one isolated off-label vertex turns an O(1) hop `count(*)` into a full enumeration, 1157x**. Also: the cheap fix (a rewrite to `IS LABELED`) is REFUTED, and two fixture bugs of mine were caught by an answer guard. ⚠️ ~~43 gates, up to 1157x~~ **RE-SCOPED at item 1936 by measuring what is RECOVERABLE rather than what is lost: the closed-form COUNT is already within 1.34x of a hand loop off its fast arm, so `shortcuts.ts`'s 10 gates are NOT a target and the 1157x is algorithmic. The hop PROJECTION has 7.23x, and a hand loop shows label filtering costs ~9 ns a row while abandoning edge iteration costs 220**. ⚠️ ~~the blocker comment is false: the start endpoint is already in hand~~ **WRONG, corrected at item 1937: the far-driven walk COUNTS adjacency and never touches an edge, so the comment is precise. The 7.23x needs a NEW edge-iterating walk, not one more test**
 
 Item 1934 measured the cliff on one shape (hop projection, 6.2x) and estimated the lever at ~2x via
 a plan rewrite. ❌ **Both the scope and the fix were wrong, and this item corrects them.**
@@ -92762,7 +92762,7 @@ NO ENGINE BEHAVIOUR CHANGED — one instrument, one extended probe arm, and this
 
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects.
 
-## Item 1936 — **THE CLIFF IS NOT THE COST OF LABEL FILTERING — IT IS THE COST OF ABANDONING EDGE ITERATION.** A hand loop over the same edges WITH both label tests runs at **34 ns a row against the fast arm's 25**, where the engine off that arm is **245**. ⚠️ So item 1935's 43-gate scope is wrong: the closed-form COUNT is already near-optimal off its fast arm (1.34x) and is not a target at all
+## Item 1936 — **THE CLIFF IS NOT THE COST OF LABEL FILTERING — IT IS THE COST OF ABANDONING EDGE ITERATION.** A hand loop over the same edges WITH both label tests runs at **34 ns a row against the fast arm's 25**, where the engine off that arm is **245**. ⚠️ So item 1935's 43-gate scope is wrong: the closed-form COUNT is already near-optimal off its fast arm (1.34x) and is not a target at all. ⚠️ ~~the hand loop is the far-driven loop plus one test~~ **CORRECTED at item 1937: it is a DIFFERENT algorithm (edge iteration), because the far-driven walk counts rather than walks. The 7.23x stands; its cost is a new walk variant**
 
 Item 1935 priced the label-vacuity cliff at up to 1157x across 43 gates and left the scope as an
 owner decision. ❌ **Measuring what is RECOVERABLE rather than what is LOST cuts that scope roughly
@@ -92819,5 +92819,75 @@ argument: the start vertex IS `out ? edge.from : edge.to`, and testing it costs 
   not "up to 1157x across 43", which is a materially different trade.
 
 NO ENGINE BEHAVIOUR CHANGED — one instrument and this entry.
+
+GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects.
+
+## Item 1937 — ⚠️⚠️ **CORRECTION: the blocker comment I called false in items 1935 and 1936 is CORRECT.** The far-driven walk COUNTS adjacency (`off[slot+1] - off[slot]`) and never touches an edge, so a start label is not "one more test" — applying it means becoming a different algorithm. The 7.23x target stands, but it is a NEW WALK with a new walk's full cost
+
+Items 1935 and 1936 both asserted that `hop-projection.ts`'s comment — "the far-driven walk cannot
+apply a START label - it iterates the far end" — was a false blocker claim, on the grounds that
+iterating EDGES yields both endpoints and the start is `out ? edge.from : edge.to`. ❌ **That is
+wrong, and reading the walk rather than the comment is what shows it.**
+
+## What the walk actually does
+
+`farDrivenHopWalk` does not iterate edges at all. Its multi-type branch iterates FAR VERTICES via
+`candidateVertexSource(graph, farLabel)` and takes `unionCount(buckets, …)`; its single-type branch
+takes the CSR arm where
+
+        let n = off[slot + 1] - off[slot];      // ⬅ the DEGREE, not an edge
+        binding.set(farVar, order[slot]);
+        const template = projectRow(proj, binding, params, graph);
+        rows.push(template);
+        for (n -= 1; n > 0; n -= 1) rows.push({ ...template });
+
+🔑 **The whole premise is that the projection reads only the FAR variable, so each far vertex emits
+`n` IDENTICAL rows and the adjacency can be COUNTED instead of walked.** That is why it costs 25 ns
+a row. A start label cannot be tested against a count — you would have to visit each edge to see
+which start it came from, which destroys the premise. **The comment is precise, and I misread it as
+the edge-iterating walks elsewhere in the same file** (`const far: Vertex = out ? edge.to :
+edge.from` appears at a dozen other sites, which is where my "already in hand" came from).
+
+## So what was my hand loop measuring?
+
+A DIFFERENT ALGORITHM, and that is the honest reading of item 1936's 34 ns a row:
+
+        for (const edge of bucket) {
+          if (edge.from.labels.has('T') && edge.to.labels.has('T')) rows.push({ x: edge.to.properties.n });
+        }
+
+Edge iteration with two label tests — not "the far-driven loop plus one test". ✅ **The 7.23x it
+prices is still real and still reachable**: 34 ns a row against the engine's 245 off the fast arm,
+and nearly the 25 of the counting walk. But the thing that reaches it is a THIRD walk variant for
+the non-vacuous-label case, with a gate, tests, a mutation battery and the byte-identity fuzzers —
+and [[executor-edits-perturb]] prices a new walk variant at up to 16% on unrelated shapes, which is
+exactly the cost item 1466 declined 3.3x on `simplePath` to avoid.
+
+## ⚠️ And the failure mode is worth more than the correction
+
+Items 1927 and 1929 both found a stated blocker that did not hold, and 1935 made the same claim a
+third time **by pattern rather than by verification**. The pattern was right twice and wrong the
+third time, and the difference is that I checked the mechanism in 1927/1929 and only checked the
+COMMENT in 1935. [[check-the-blocker-still-holds]] says to verify the blocker — it does not say
+blockers are usually wrong, and a run of successes is not evidence about the next one.
+
+Item 1895's own note in this file is the standing counter-example, and it was there to be read:
+"this rung is already AT its hand floor" (1.09x of a hand far-driven walk), with the remaining gap
+needing a flat `(far, degree)` index or row codegen, the latter FIRM policy against
+([[no-runtime-codegen]]).
+
+## 🔭 The target, finally framed correctly
+
+**An edge-iterating hop walk for the case where a start or far label is not vacuous.** 7.23x on the
+most common shape in the language, for every graph that is not label-homogeneous; measured ceiling
+34 ns a row; and the cost is a new rung rather than a line. Nothing above it on either surface is
+larger, and the measurement work is done — `countceiling-probe-1936.mjs` and
+`vacuityscope-probe-1935.mjs` are the A/B.
+
+⚠️ Two things that stay true from 1935/1936 and are NOT affected by this correction: the closed-form
+`count(*)` is already within 1.34x off its fast arm (so `shortcuts.ts` is not a target), and every
+read screen in the repo is label-homogeneous (so none of this has been measured off the fast arm).
+
+NO ENGINE BEHAVIOUR CHANGED — this entry and two corrected ones.
 
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects.
