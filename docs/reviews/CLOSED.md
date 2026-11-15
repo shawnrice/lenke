@@ -93381,7 +93381,7 @@ NO ENGINE BEHAVIOUR CHANGED — one instrument and this entry.
 
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects.
 
-## Item 1946 — ❌ **REFUTED: item 1945's short-circuiting far pass is NEVER better than a plain edge pass** (1.37x-4.55x worse, monotone across coverage), and the two probes DISAGREE on the same question — so 1945's "73.2 ms ceiling" is withdrawn. ✅ The deduped hop's real target is 2.4x through the arm item 1940 ALREADY BUILT
+## Item 1946 — ❌ **REFUTED: item 1945's short-circuiting far pass is NEVER better than a plain edge pass** (1.37x-4.55x worse, monotone across coverage), and the two probes DISAGREE on the same question — so 1945's "73.2 ms ceiling" is withdrawn. ✅ The deduped hop's real target is 2.4x through the arm item 1940 ALREADY BUILT ❌ **And the corrected 2.4x target is itself DECLINED at item 1948: the edge pass changes a `GROUP BY`'s first-seen group order, a pinned cross-engine contract, and the rung cannot distinguish `GROUP BY` from `DISTINCT`**
 
 Item 1945 priced the deduped hop at 234.4 ms against a 73.2 "ceiling" and named a mechanism: a
 `DISTINCT` needs EXISTENCE, not a count, so a far-vertex pass can `break` on the first qualifying
@@ -93490,3 +93490,54 @@ NO ENGINE BEHAVIOUR CHANGED — this entry, and a worktree created and removed.
 
 GATES. bun run check 0 (nothing to build); the tree is clean and `git worktree list` shows only the
 main checkout.
+
+## Item 1948 — ❌ **DECLINED FOR CORRECTNESS, and the test suite caught it: the dedup rung's edge pass changes a `GROUP BY`'s FIRST-SEEN group order, which is a pinned cross-engine contract.** The rung cannot tell `DISTINCT x` from `x GROUP BY x`, so there is nowhere to gate it. ⚠️ A genuine blocker, unlike the three I found avoidable
+
+Item 1946 corrected the deduped hop's target to an edge pass and item 1947 cleared the perturbation
+concern, so this built it: a fourth walk for `detectDistinctProjection` / `detectDistinctCount`,
+gated on `EDGE_DRIVEN_MIN_COVERAGE`, measured by hand at **2.96x / 2.23x / 1.94x** at coverage
+0.60 / 0.40 / 0.25.
+
+It typechecked, built, and **failed two tests in `dedup-hop-direct.test.ts`**:
+
+        keyed on the FAR end, values and ORDER match the general path
+        the GROUP BY spelling walks the same way
+
+## 🔑 The second one is a contract, not an over-specified test
+
+        MATCH (s:P)-[:T]->(f) LET x = f.n RETURN x GROUP BY x    expects [{x:30},{x:20}]
+
+`farDrivenFits`'s own header draws this line explicitly. Item 198 decided that row order without an
+`ORDER BY` is UNSPECIFIED and converted the tests that pinned it to multisets — **but it carved out
+exactly this**: "What this does NOT touch: the grouped count's FIRST-SEEN group order, which the
+code calls a pinned contract both engines keep." An edge pass emits in edge-bucket order where
+`walkStartSide` emits in start-vertex order, so the first group seen changes. That is a WRONG
+ANSWER for `GROUP BY`, not a reordering the contract permits.
+
+⚠️ **AND THERE IS NOWHERE TO GATE IT.** `distinctShape` carries `mode: 'rows' | 'count'` and a
+`sort`, but no `GROUP BY` discriminator: `RETURN DISTINCT x` and `RETURN x GROUP BY x` reach the rung
+as the SAME shape. So the order contract applies to the whole rung and the arm cannot be admitted for
+the half that tolerates reordering. Gating on `sort !== undefined` would be sound — a sort determines
+the order — but a sorted query's cost is dominated by the sort, which is most of what the arm would
+have saved.
+
+## ⚠️ This is a REAL blocker, and saying so matters after three that were not
+
+Items 1927 and 1929 each found a stated blocker that did not hold, and at 1935 I claimed a third was
+false **by pattern rather than verification** — item 1937 corrected that. The lesson there was not
+"blockers are usually wrong"; it was "check the mechanism". Checked here, the mechanism holds: the
+contract is documented, the discriminator is absent, and the tests encode both. ✅ The right outcome
+is a decline, and the suite earning it before the change could ship is the system working.
+
+## 🔭 What would unblock it, priced
+
+A `GROUP BY` discriminator on the shape (so the arm serves only `DISTINCT`), or an owner decision
+that first-seen group order is NOT a contract. The first is a change to `distinctShape` plus the
+cross-engine question of whether native agrees on group order for this shape — which is the part
+that makes it an owner call rather than a refactor. **The prize stays ~2x-3x on a realistic graph**,
+and `dedupe-coverage-1946.mjs` is the A/B.
+
+REVERTED — `git diff` empty, suite green across 21 projects. No instrument or entry changed besides
+this one.
+
+GATES. bun run test --skip-nx-cache across 21 projects (after the revert).
