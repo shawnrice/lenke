@@ -88,6 +88,11 @@ const SHAPES = [
     { p0: 3 },
   ],
   [
+    'VL seeded count, inline WHERE',
+    'MATCH (a:T WHERE a.n = $p0)-[:E]->{1,3}(b:T) RETURN count(*) AS c',
+    { p0: 3 },
+  ],
+  [
     'VL seeded count, INLINE',
     'MATCH (a:T {n: $p0})-[:E]->{1,3}(b:T) RETURN count(*) AS c',
     { p0: 3 },

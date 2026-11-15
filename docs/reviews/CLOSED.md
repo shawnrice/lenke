@@ -9164,7 +9164,7 @@ handful, read the TAIL of the matches, not the head. Third time this session tha
 re-derived; the first two searched the wrong store, this one searched the right store and truncated
 it.
 
-## 583 — CLOSED: a bounded var-length `count(*)` with an ENDPOINT PREDICATE, TS, 6.2-8.7x
+## 583 — CLOSED: a bounded var-length `count(*)` with an ENDPOINT PREDICATE, TS, 6.2-8.7x — 🧹 and ~~a gate on the START stays REFUSED (a seed filter this rung does not carry)~~ **CARRIED at item 1907 in all three spellings: 135.8x / 97.9x. The refusal was a CAPABILITY claim, and every arm of the rung accumulates over the source list, so filtering sources restricts exactly the outer sum**
 
 Item 573's `varLengthDegreeCount` took an unfiltered endpoint and an endpoint LABEL and declined
 any endpoint PREDICATE. It now carries one, in **all three spellings**, as a compiled `InlinePred`
@@ -90163,8 +90163,82 @@ where they ARE equivalent, and this pair's exception is now written down.
 
 ⚠️ **NOT a spelling gap — both seeded spellings reach no rung**, so `varLengthCount` simply refuses a
 seeded start. That makes it a MISSING RUNG, and the same "a filter that makes a query slower" shape
-at 129-138x rather than 9x. Priced, not built.
+at 129-138x rather than 9x. ~~Priced, not built.~~ **BUILT at item 1907: 135.8x / 97.9x, all three spellings.**
 
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers;
 `bun run spelling` at SPELL_N=200000 SPELL_REPS=9 (2 flagged groups, both item 1902's known
 residual, no new ones) plus the new group isolated; item 1904's sort matrix.
+
+## Item 1907 — **135.8x / 97.9x**: the var-length COUNT rung carries a START predicate, in all three spellings. Item 583's refusal was a CAPABILITY claim, not a correctness one — and every arm of the rung turns out to accumulate over the source list
+
+Item 1906's screen rows turned this up: the UNSEEDED count takes `varLengthCount` at **14.32 ms**
+while both seeded spellings reached no rung at all. Adding a predicate that cuts the source set
+8-fold cost **129-138x** — audit item 159's shape again, two rungs over.
+
+✅ **AND `CLOSED.md` HAD THE REFUSAL, WHICH IS WHY READING IT FIRST MATTERED.** Item 583 wrote:
+"**Still REFUSED, deliberately:** a gate on the START (a seed filter, which this rung does not carry
+— native needed a separate mask at item 575)". ⚠️ That is a CAPABILITY statement plus an existence
+proof that it is buildable, not a correctness argument — exactly what
+[[check-the-blocker-still-holds]] says to re-check. And item 1906 had just built the same mechanism
+one rung over.
+
+🔑 **THE SOUNDNESS ARGUMENT, which is not obvious and is the reason this was worth checking rather
+than assuming.** This rung does not walk paths; it counts them with degree arithmetic, a level
+recurrence, and closed-form trail corrections at depths 3 and 4. Restricting the sources is sound
+because **every arm accumulates over the source list**: the level arrays `u_j` span all vertices (as
+they must — a path traverses them), but the answer is read off as `sum over sources s of u_j(s)`, the
+depth-3 trail correction's terms are each anchored at the SOURCE (a self-loop at the source, an edge
+out of it), and `trailCorrectionAt` / `trailsAt4From` take `srcIdx` / a source index. So filtering
+the two source lists restricts exactly the outer sum and nothing the tables hold.
+
+      200,000 vertices / 1,000,000 edges, one shape per process, median of 7 less warm-up:
+
+        clause  WHERE a.n = $p        1978.42  ->  14.57 ms    ⬅ 135.8x
+        inline  (a:T {n: $p})         1850.34  ->  18.90       ⬅  97.9x
+        inline  (a:T WHERE a.n = $p)  (general) ->  19.52
+        CONTROL unseeded                 14.32  ->  14.12       flat
+        spelling probe: 16.03 / 14.38 / 16.03 — the three converge
+
+⚠️ **ALL THREE SPELLINGS MOVED TOGETHER, WHICH IS ITEM 583'S OWN REASONING APPLIED RATHER THAN
+DROPPED.** It declined the gate to keep "both of ITS spellings on the walk together rather than
+making a new cliff" — so carrying only the clause form would have created the inline-vs-clause cliff
+this repo names first. `degreeCountShape`'s `plainNode(pattern.start)` is lifted in the same change
+so an inline start reaches the detector, and all three go through one `gateWith`, the same
+composition item 583 built for the ENDPOINT.
+
+      CORRECTNESS: 26 tests / 615 assertions against native over item 573's adversarial fixture —
+      a cycle, a SELF-LOOP (the depth-3 correction's only witness), a PARALLEL pair (what breaks a
+      naive correction), a MULTI-LABEL edge, a second edge type, an isolated vertex and a
+      key-less vertex — crossed over 8 bounds x 3 modes x 3 spellings x 5 seed values. Native has
+      carried a seed mask since item 575, so it is the reference implementation for this question.
+
+## What the mutation run cost, and the three instrument findings worth keeping
+
+**9 mutants, 9 caught, 0 survivors** — after three corrections, none of them to the engine.
+
+🛑 **`{0,1}` IS THE ONLY BOUND THAT REACHES THE PER-SOURCE LOOP, and without it a 540-assertion
+suite could not see two real mutants.** `takesTheLevelRecurrence` is `max >= 2 && (!isTrail || max
+<= 4)`, so only `max <= 1` reaches `varLengthDegreeCount`'s `for (const s of sources)` — and `{1,1}`
+does not reach this rung at all (`countShortcut` takes it as a vacuous quantifier). Seven bounds all
+exercised the LEVEL arm. ⚠️ **A matrix over the obvious axis can still miss an arm**; the dispatch
+condition is what says which cases are needed.
+
+🛑 **THREE TIMES THIS SESSION A TEMPLATED BATTERY SILENTLY TESTED THE WRONG SUBJECT**, and all three
+were config fields a slice-based `replace` never reached — the `cwd` (item 1906), the `SRCS` path,
+and `NATIVE_TESTS`, which still named item 1906's parity test so two real mutants reported SURVIVED
+against a suite that cannot see them. ⚠️ **Assert every intended replacement matched exactly once,
+over the WHOLE file.** A battery is a measuring instrument and its own configuration is the first
+thing to verify — the same lesson as item 1906's stale dist, one level up.
+
+✅ **AND ONE MUTANT RETIRED A GUARD I HAD JUST WRITTEN.** I gave the seed test its own binding map
+with a comment claiming the endpoint test would otherwise overwrite its variable. The mutant sharing
+one map SURVIVED — correctly: `inlineHolds` writes the node's OWN variable and a pattern's start and
+endpoint are necessarily different variables. One map now, with the reasoning inverted in place.
+Item 475's rule, in the direction that deletes code.
+
+      ROUTE ASSERTIONS ARE SEPARATE (`varlen-seed-route.test.ts`): carrying the gate is
+      answer-equivalent, so a mutant restoring item 583's refusal passed the whole cross-engine
+      suite. [[perf-gate-needs-its-own-test]].
+
+GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers;
+`bun run spelling` with the new count group converging; item 1904's sort matrix untouched.

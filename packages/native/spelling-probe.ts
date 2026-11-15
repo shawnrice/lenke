@@ -441,6 +441,18 @@ const GROUPS: [string, readonly string[]][] = [
     // `WHERE a.k = null` is three-valued and matches nothing, while `{k: null}` is a property-value
     // match and null is a PRESENT value here. Verified identical in both engines for the node, hop
     // and var-length shapes, so it is policy rather than a divergence.
+    // ⚠️ THE COUNT TWIN (item 1907). Item 583 refused a START gate on the COUNT rung, which kept all
+    // three spellings on the walk TOGETHER — no cliff, but 129-138x slower than the unseeded count
+    // that takes the rung (1978 / 1850 ms against 14.32 at 200,000 vertices). Carrying it for all
+    // three keeps them together AND fast, which is what item 583's own reasoning asked for.
+    'seeded var-length COUNT: three spellings of one seed (item 1907)',
+    [
+      'MATCH (a:P)-[:E]->{1,3}(b:P) WHERE a.k = 7 RETURN count(*) AS c',
+      'MATCH (a:P {k: 7})-[:E]->{1,3}(b:P) RETURN count(*) AS c',
+      'MATCH (a:P WHERE a.k = 7)-[:E]->{1,3}(b:P) RETURN count(*) AS c',
+    ],
+  ],
+  [
     'seeded var-length: clause WHERE vs inline {k: v} (item 1906)',
     [
       'MATCH (a:P)-[:E]->{1,3}(b:P) WHERE a.k = 7 RETURN DISTINCT b.k AS x',

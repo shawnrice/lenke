@@ -25,7 +25,6 @@ import type { Clause, PathPattern } from '../ast.js';
 import { edgesOfTypes, relTypeNames } from './adjacency.js';
 import type { Params, Row } from './core.js';
 import { csrFor } from './csr-cache.js';
-import { plainNode } from './hop-sides.js';
 import { inlineHolds } from './inline-gate.js';
 import { vacuousLabel } from './labels.js';
 import { alwaysTrue, chainGatesOf, countStarColumn, gateWith } from './shortcuts.js';
@@ -101,6 +100,19 @@ export type DegreeCountSpec = {
   /** Walk the IN-adjacency instead of the out-adjacency — the mirror spelling (item 744). */
   inward: boolean;
   startName: string | undefined;
+  /**
+   * A per-SEED test, from either spelling of a start predicate (item 1907) — `undefined` when
+   * there is none.
+   *
+   * ⚠️⚠️ **SOUND BECAUSE EVERY ARM OF THIS RUNG ACCUMULATES OVER THE SOURCE LIST, which is worth
+   * stating because the arithmetic is not obviously per-source.** The level arrays `u_j` span all
+   * vertices, as they must — a path traverses them — but the answer is read off as
+   * `sum over sources s of u_j(s)`, the depth-3 trail correction's terms are each anchored at the
+   * SOURCE (a self-loop at the source, an edge out of it), and `trailCorrectionAt`/`trailsAt4From`
+   * take `srcIdx` / a source index. So restricting the sources restricts exactly the outer sum and
+   * nothing the tables hold.
+   */
+  seedPasses?: (v: Vertex) => boolean;
   passes: (v: Vertex) => boolean;
   /** True when `passes` cannot reject, so the degree is a set SIZE rather than a walk. */
   passesIsVacuous: boolean;
@@ -413,7 +425,7 @@ export const buildTrailMasks = (
   return { pass, selfLoops, passDeg };
 };
 export const walkLevelCount = (graph: Graph, spec: DegreeCountSpec): number => {
-  const { types, min, max, isTrail, inward, startName, passes } = spec;
+  const { types, min, max, isTrail, inward, startName, passes, seedPasses } = spec;
   // The flattened adjacency, from the cross-query cache — see {@link csrFor}. The tables are READ
   // ONLY from here down, which is the property that lets them be shared.
   const { order, idx, off, nbr } = csrFor(graph, inward, types);
@@ -426,7 +438,11 @@ export const walkLevelCount = (graph: Graph, spec: DegreeCountSpec): number => {
     u[i] = passes(order[i]) ? 1 : 0;
   }
 
-  const src = startName === undefined ? order : [...(graph.verticesByLabel.get(startName) ?? [])];
+  const unfiltered =
+    startName === undefined ? order : [...(graph.verticesByLabel.get(startName) ?? [])];
+  // ⚠️ FILTERED ONCE, HERE, so every later reader — the depth-3 correction's `for (const s of src)`
+  // and `srcIdx`, which `trailCorrectionAt` and `trailsAt4From` index by — sees the same set.
+  const src = seedPasses === undefined ? unfiltered : unfiltered.filter((v) => seedPasses(v));
   // The sources' indices, resolved ONCE. They are read at every level, and when the start label is
   // absent that is one map lookup per vertex per level — the same cost this route exists to remove.
   const srcIdx = new Int32Array(src.length);
@@ -595,7 +611,7 @@ export const varLengthDegreeCount = (graph: Graph, spec: DegreeCountSpec): numbe
     return walkLevelCount(graph, spec);
   }
 
-  const { types, min, max, isTrail, startName, passes, passesIsVacuous } = spec;
+  const { types, min, max, isTrail, startName, passes, passesIsVacuous, seedPasses } = spec;
   // `edgesOfTypes`, NOT a sum of per-label `set.size`. A MULTI-LABEL edge sits in several of
   // this box's buckets, so summing their sizes counts it once per label it carries — which is
   // what `multi-label-edges.test.ts` ("a reachability walk visits each edge once") caught,
@@ -665,6 +681,12 @@ export const varLengthDegreeCount = (graph: Graph, spec: DegreeCountSpec): numbe
   let total = 0;
 
   for (const s of sources) {
+    // ⚠️ THE SEED GATE, before any term — a source that fails it contributes no path of any length.
+    // ⚠️ THE SEED GATE, before any term — a source that fails it contributes no path of any length.
+    if (seedPasses !== undefined && !seedPasses(s)) {
+      continue;
+    }
+
     // The zero-length path: its endpoint is the SOURCE.
     if (min === 0 && passes(s)) {
       total += 1;
@@ -735,7 +757,6 @@ export const degreeCountShape = (pattern: PathPattern): boolean => {
     pattern.pathVar !== undefined ||
     pattern.segments.length !== 1 ||
     (pattern.selector !== undefined && pattern.selector !== 'walk') ||
-    !plainNode(pattern.start) ||
     (pattern.mode !== undefined && pattern.mode !== 'trail' && pattern.mode !== 'walk')
   ) {
     return false;
@@ -916,15 +937,31 @@ export const detectVarLengthCount = (
     return null;
   }
 
-  // A gate on the START is a filter on the SEED, which this rung does not carry — declining
-  // keeps both of ITS spellings on the walk together rather than making a new cliff. Its INLINE
-  // spelling needs no test here: `degreeCountShape` already requires `plainNode(pattern.start)`,
-  // so a start carrying properties or an inline `WHERE` never reaches this function. A duplicate
-  // guard here SURVIVED mutation for exactly that reason, which is what dead code looks like.
-  if (
-    pattern.start.variable !== undefined &&
-    (gates?.get(pattern.start.variable)?.length ?? 0) > 0
-  ) {
+  /*
+   * ⚠️⚠️ A GATE ON THE START IS NOW CARRIED, FROM EITHER SPELLING (item 1907), where item 583
+   * refused it. Its reason was a capability rather than a correctness one — "a filter on the SEED,
+   * which this rung does not carry" — plus the observation that native needed a separate mask
+   * (`node_pass_mask`, item 575) to do it. [[check-the-blocker-still-holds]]: the mechanism now
+   * exists, `gateWith` already composes both spellings for the ENDPOINT, and every arm of this rung
+   * accumulates over the source list, so restricting the sources restricts exactly the outer sum.
+   *
+   * ⚠️ AND BOTH SPELLINGS MOVE TOGETHER, WHICH IS ITEM 583'S OWN REASONING APPLIED RATHER THAN
+   * DROPPED. It declined to keep "both of ITS spellings on the walk together rather than making a
+   * new cliff" — so carrying only the clause form would have created exactly the inline-vs-clause
+   * cliff this repo names first. `degreeCountShape`'s `plainNode(pattern.start)` is lifted in the
+   * same change, so an inline `{k: v}` start reaches here too and goes through this one `gateWith`.
+   *
+   * COST OF THE REFUSAL, at 200,000 vertices / 1,000,000 edges: the unseeded count takes this rung
+   * at 14.32 ms while BOTH seeded spellings reached no rung at all — 1978.42 (clause) and 1850.34
+   * (inline), i.e. **129-138x**, and the same "a filter that makes a query slower is a declined
+   * fast path" shape as audit item 159.
+   */
+  const startPred = gateWith(
+    pattern.start,
+    pattern.start.variable === undefined ? undefined : gates?.get(pattern.start.variable),
+  );
+
+  if (startPred === null) {
     return null;
   }
 
@@ -963,7 +1000,11 @@ export const detectVarLengthCount = (
   // split did not fix a measured regression. It is kept because an unfiltered query running
   // literally the code it ran before cannot produce an ambiguous reading like that again —
   // which is the cheap half of the lesson.
-  if (endPred === undefined) {
+  // ⚠️ THE PREDICATE-FREE CLOSURE NOW REQUIRES BOTH TO BE ABSENT, which keeps item 583's split
+  // doing what it was for: an unfiltered query runs literally the code it ran before, with exactly
+  // the captures it had ([[ts-closure-size-is-load-bearing]]). A start predicate routes to the
+  // carrying closure below, which is reached only by a query that has one.
+  if (endPred === undefined && startPred === undefined) {
     return (graph) => {
       // A VACUOUS endpoint label costs a per-edge test that cannot fail, which is the difference
       // between a degree product and a per-edge scan wearing one (item 566 / `effectiveLabel`).
@@ -1008,6 +1049,15 @@ export const detectVarLengthCount = (
         ? (v: Vertex): boolean => inlineHolds(endPred, v, binding, params, graph)
         : (v: Vertex): boolean =>
             v.labels.has(eff) && inlineHolds(endPred, v, binding, params, graph);
+    // ⚠️ ONE BINDING MAP FOR BOTH TESTS, and a mutant is why it is not two. `inlineHolds` writes the
+    // node's OWN variable, and a pattern's start and endpoint are necessarily different variables —
+    // so the two tests write different keys and cannot overwrite each other. A separate map for the
+    // seed test survived mutation, which is what an unnecessary one looks like; the idiom here is
+    // already "one binding map reused", for the same reason.
+    const seedPasses =
+      startPred === undefined
+        ? undefined
+        : (v: Vertex): boolean => inlineHolds(startPred, v, binding, params, graph);
 
     return [
       {
@@ -1019,6 +1069,7 @@ export const detectVarLengthCount = (
           inward,
           startName: startLabel?.name,
           passes,
+          seedPasses,
           // A carried predicate is never vacuous — it is the whole reason this arm exists.
           passesIsVacuous: false,
         }),
