@@ -35,7 +35,7 @@ import {
 } from './expr-analysis.js';
 import { primedEndpointExtremum, withPrimedEndpointExtremum } from './hop-endpoint-extremum.js';
 import { plainNode, plainRel } from './hop-sides.js';
-import { vacuousLabel } from './labels.js';
+import { EDGE_DRIVEN_MIN_COVERAGE, labelCoverage, vacuousLabel } from './labels.js';
 import { indexCandidates } from './matching.js';
 import type { SortPlan } from './ordered-rows.js';
 import {
@@ -3058,15 +3058,48 @@ export const detectHopProjection = (
     }
 
     const farDriven = farDrivenHopWalk({ types, typeName, out, farVar, farLabel, proj: walkProj });
+    // ⚠️ BUILT LAZILY, ON FIRST USE — the same rule the multi-type arm above states: constructed
+    // eagerly it is a closure every compile allocates and the declining path never calls, which
+    // item 1388 measured as a real cost on the control (-3.7%).
+    let edgeDriven: ((graph: Graph, params: Params) => Row[]) | undefined;
 
     // Which walk is chosen is a PER-CALL decision, not a per-row one, so the branch costs the
-    // inner loop nothing. The far-driven walk cannot apply a START label — it iterates the far
-    // end — so it runs only where no vertex could fail that label.
-    return sorted((graph, params) =>
-      !startDrivenForOrder && (startLabel === undefined || vacuousLabel(graph, startLabel))
-        ? farDriven(graph, params)
-        : startDriven(graph, params),
-    );
+    // inner loop nothing. The far-driven walk cannot apply a START label — it COUNTS adjacency and
+    // never visits an edge — so it runs only where no vertex could fail that label.
+    return sorted((graph, params) => {
+      if (startDrivenForOrder) {
+        return startDriven(graph, params);
+      }
+
+      if (startLabel === undefined || vacuousLabel(graph, startLabel)) {
+        return farDriven(graph, params);
+      }
+
+      /*
+       * 🔑 THE MIDDLE GROUND (item 1940). The start label excludes somebody, so the counting walk
+       * is out — but falling to the start-driven walk costs 245 ns a row against an edge pass's 34.
+       * Coverage decides: this arm is O(|E|) whatever the label excludes, while `startDriven`
+       * iterates the label BUCKET and is sub-linear when the label is selective, so a BOOLEAN gate
+       * here would be a 25x regression at 1% coverage (item 1938). The threshold is item 1939's
+       * swept crossover band (0.18-0.35 across 1:1-5:1 fanout and 50k-200k vertices) plus headroom.
+       */
+      const coverage = labelCoverage(graph, startLabel);
+
+      if (coverage === undefined || coverage < EDGE_DRIVEN_MIN_COVERAGE) {
+        return startDriven(graph, params);
+      }
+
+      edgeDriven ??= edgeDrivenHopWalk({
+        typeName,
+        out,
+        farVar,
+        farLabel,
+        startLabel,
+        proj: walkProj,
+      });
+
+      return edgeDriven(graph, params);
+    });
   }
 
   // ⚠️ `walkProj === proj` IS LOAD-BEARING. The deferred ORDER BY arm hands back a REDUCED copy of
@@ -3538,6 +3571,75 @@ const farDrivenPredicatedHopWalk = (w: {
   };
 };
 
+/**
+ * A hop walk that iterates the EDGE bucket and tests BOTH endpoint labels per edge (item 1940).
+ *
+ * ⚠️⚠️ WHY A THIRD WALK EXISTS AT ALL. {@link farDrivenHopWalk} does not iterate edges — it iterates
+ * far vertices and COUNTS their adjacency (`off[slot + 1] - off[slot]`), emitting `n` identical
+ * rows, which is why it costs 25 ns a row. A start label cannot be tested against a count, so that
+ * walk runs only where no vertex fails the label (`vacuousLabel`). Item 1937 corrected the opposite
+ * claim: the start endpoint is NOT "already in hand" there, because no edge is ever visited.
+ *
+ * So for a NON-vacuous label the engine fell all the way back to the start-driven walk, and one
+ * isolated off-label vertex in 50,000 cost the most common shape in the language 8.92x (item 1934).
+ * This arm is the middle ground that was missing: O(|E|), one pass, both labels tested.
+ *
+ * ```text
+ *   engine, label vacuous (counting arm)    2.48 ms    25 ns a row
+ *   engine, 1 off-label (start-driven)     24.48      245 ns a row
+ *   THIS SHAPE, by hand                     3.39       34 ns a row    <- item 1936
+ * ```
+ *
+ * 🔑 IT IS GATED ON COVERAGE, NOT ON NON-VACUITY, and that distinction is load-bearing: this walk is
+ * O(|E|) whatever the label excludes, while the start-driven walk iterates the label BUCKET and is
+ * sub-linear when the label is selective. Gating on non-vacuity alone measured a **25x REGRESSION**
+ * at 1% coverage (item 1938). {@link EDGE_DRIVEN_MIN_COVERAGE} is item 1939's swept band plus
+ * headroom.
+ *
+ * ⚠️ ROW ORDER DIFFERS FROM BOTH OTHER ARMS — this emits in edge-bucket order where they emit in
+ * vertex order. That is permitted: row order is unspecified for an unordered result (the repo's own
+ * WON'T-FIX, like SQL without `ORDER BY`), and an `ORDER BY` forces `startDrivenForOrder` and never
+ * reaches here. Its tests therefore compare answers as MULTISETS.
+ */
+const edgeDrivenHopWalk = (w: {
+  typeName: string;
+  out: boolean;
+  farVar: string;
+  farLabel: LabelExpr | undefined;
+  startLabel: LabelExpr | undefined;
+  proj: CProjection;
+}): ((graph: Graph, params: Params) => Row[]) => {
+  const { typeName, out, farVar, farLabel, startLabel, proj } = w;
+
+  return (graph, params) => {
+    const rows: Row[] = [];
+    const binding = new Map<string, unknown>();
+    const bucket = graph.edgesByLabel.get(typeName);
+
+    if (bucket === undefined) {
+      return rows;
+    }
+
+    for (const edge of bucket) {
+      const far: Vertex = out ? edge.to : edge.from;
+      const start: Vertex = out ? edge.from : edge.to;
+
+      if (farLabel !== undefined && !matchesLabel(far, farLabel)) {
+        continue;
+      }
+
+      // ⚠️ THE TEST THE COUNTING WALK CANNOT DO. Here the edge is in hand, so both endpoints are.
+      if (startLabel !== undefined && !matchesLabel(start, startLabel)) {
+        continue;
+      }
+
+      binding.set(farVar, far);
+      rows.push(projectRow(proj, binding, params, graph));
+    }
+
+    return rows;
+  };
+};
 const farDrivenHopWalk = (w: {
   types: readonly string[];
   typeName: string;

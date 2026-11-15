@@ -92599,7 +92599,7 @@ NO ENGINE BEHAVIOUR CHANGED — three instruments and this entry.
 
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects.
 
-## Item 1934 — ⚠️⚠️ **ONE VERTEX OF A SECOND LABEL COSTS A HOP READ 6.2x**, and it is a CLIFF at one vertex, not a gradient. The far-driven walk requires a LABEL-HOMOGENEOUS graph — and **every read screen in this repo is one**, so every GQL hop number on them is measured on an arm a realistic graph cannot reach. ⚠️ ~~the lever is a plan rewrite worth ~2x~~ **CORRECTED at item 1935: the rewrite route is REFUTED (`IS LABELED` measures 0.94x, worse) and the scope is 43 gates across 7 files — with the worst case **1157x**, not 6.2x: one isolated off-label vertex turns an O(1) hop `count(*)` into a full enumeration**
+## Item 1934 — ⚠️⚠️ **ONE VERTEX OF A SECOND LABEL COSTS A HOP READ 6.2x**, and it is a CLIFF at one vertex, not a gradient. The far-driven walk requires a LABEL-HOMOGENEOUS graph — and **every read screen in this repo is one**, so every GQL hop number on them is measured on an arm a realistic graph cannot reach. ⚠️ ~~the lever is a plan rewrite worth ~2x~~ **CORRECTED at item 1935: the rewrite route is REFUTED (`IS LABELED` measures 0.94x, worse) and the scope is 43 gates across 7 files — with the worst case **1157x**, not 6.2x: one isolated off-label vertex turns an O(1) hop `count(*)` into a full enumeration** ✅ **TAKEN at item 1940: 4.6x, cliff 8.92x -> 2.21x**
 
 Item 1932's write screen nominated a "1.84x GQL-only read demotion after a vertex insert". ❌ **That
 framing is wrong and this item replaces it.** The demotion is not caused by the write at all.
@@ -92955,7 +92955,7 @@ NO ENGINE BEHAVIOUR CHANGED — one instrument and this entry.
 
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects.
 
-## Item 1939 — ✅ **THE CROSSOVER IS A STABLE CONSTANT: 0.18-0.35 across a 4x size range and a 5x fanout range**, so the gate can be a constant (~0.4, conservative) rather than a function of the edge:node ratio — with **2.6x-5.1x** above it. ⚠️ Two instrument faults found on the way, both named in notes already written
+## Item 1939 — ✅ **THE CROSSOVER IS A STABLE CONSTANT: 0.18-0.35 across a 4x size range and a 5x fanout range**, so the gate can be a constant (~0.4, conservative) rather than a function of the edge:node ratio — with **2.6x-5.1x** above it. ⚠️ Two instrument faults found on the way, both named in notes already written ✅ **BUILT at item 1940 on that threshold: 4.6x, 10 of 11 mutants caught**
 
 Item 1938 found the crossover at ~0.2 from ONE fixture at ONE size and ONE fanout and refused to
 build a threshold on it. This runs both sweeps CLAUDE.md requires.
@@ -93019,3 +93019,77 @@ pointed at accumulation rather than that cell being too large.
 NO ENGINE BEHAVIOUR CHANGED — one instrument and this entry.
 
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects.
+
+## Item 1940 — ✅ **BUILT: the edge-driven hop walk. 4.6x on the shape item 1934 found** — the one-off-label hop projection goes 28.00 ms to 6.06, cliff 8.92x to 2.21x — gated on label COVERAGE (0.4, above item 1939's swept band) and not on non-vacuity. ⚠️ One existing test converted to a multiset, and one mutant recorded as an HONEST untested survivor after my third attempt to kill it turned out to be a false positive on myself
+
+The target items 1934-1939 narrowed: a third walk for the case where a label is not vacuous, between
+the counting far-driven arm (which cannot test a start label because it never visits an edge, item 1937) and the start-driven walk.
+
+      `labelvacuity-probe-1934.mjs` / `vacuityscope-probe-1935.mjs`, 50,000 vertices:
+
+        MATCH (a:T)-[:E]->(b:T), ONE off-label vertex    20.63 ms ->  5.53    ~4x
+        the same on the scope probe                      28.00     ->  6.06    4.6x
+        the cliff against the vacuous graph               8.92x    ->  2.21x
+        CONTROL T vacuous (counting arm)                   2.75     ->  2.75   flat
+        CONTROL count shortcut (a DIFFERENT gate)        880x        unchanged
+        CONTROL two hop (a different gate)               297x        unchanged
+
+🔑 **GATED ON COVERAGE, NOT ON NON-VACUITY.** `labelCoverage` (a plain label only — a disjunction's
+buckets overlap, a conjunction's intersection is not a bucket) plus a named
+`EDGE_DRIVEN_MIN_COVERAGE = 0.4`, which sits ABOVE item 1939's swept crossover band of 0.18-0.35 and
+so can only decline a win, never regress. A boolean gate here measured a **25x regression** at 1%
+coverage (item 1938).
+
+## ⚠️ An existing test broke, and checking the HARDER invariant first is what settled it
+
+`hop-projection.test.ts`'s "the reversed spelling walks the other index" compared the fast path
+against the general path ORDER-SENSITIVELY, and an in-hop now arrives in edge-bucket order. Rather
+than assume my own reading of the contract, the fuzzers ran first: green, and
+`differential-fuzz.test.ts` states its "comparison is structural (row multiset)" and gives every
+`ORDER BY` query a final sort key because "row order is otherwise unspecified". ✅ And the file
+ALREADY had `asMultiset` with exactly this rationale from item 167 ("the fused path may drive the FAR
+side …, which reorders rows and changes nothing else — so the tests whose subject is AGREEMENT
+compare multisets"). This one had simply never been converted; its LENGTH assertion, the real
+content, is untouched.
+
+## ⚠️⚠️ And one mutant survived three attempts, the third of which was a false positive on ME
+
+The `startDrivenForOrder` early return. What it is FOR is documented and real: `deferredHopOrder`
+sets `startDriven: true` because "the far-driven walk REORDERS rows and a stable sort leaves ties on
+ARRIVAL ORDER, which is observable between the engines (item 605)".
+
+      attempt 1   a plain `ORDER BY x`                        — does not set the flag at all
+      attempt 2   windowed `ORDER BY x LIMIT 5`, TIES, with
+                  the insertion index projected               — same
+      attempt 3   a faulting projection under a window
+                  (`b.n / b.id2 … LIMIT 3`)                   — ⚠️ THREW, and I took that as the
+                                                                mutant biting
+
+❌ **It throws on the PRISTINE engine too** — the stack points at a different walk entirely. I had
+compared the mutant's output against my EXPECTATION rather than against a control, which is the
+frame-attribution trap in a new costume. Test removed.
+
+So the mutant is recorded as an EXPECTED SURVIVOR with all three attempts listed and the verdict
+stated as **unknown**: item 475's rule is that "a surviving mutant on a new guard means REDUNDANT as
+readily as UNTESTED, and the two have opposite fixes". The guard STAYS — it is cheap, it encodes a
+stated cross-engine contract, and the direction of doubt is safety — but it is not dressed up as
+covered.
+
+**MUTATION: 11 mutants, 10 caught, 1 recorded survivor.** The five wrong-answer mutants (a label test
+dropped, the endpoints swapped, the start label tested against the far vertex, the walk binding the
+start) all fail the answer tests; the five ROUTE mutants change no answer and are caught through
+`labelCoverage` and the threshold as pure values ([[perf-gate-needs-its-own-test]]).
+
+TESTS: 14 — `labelCoverage` as a pure function (plain label, every compound kind declining, empty
+graph, and the threshold asserted ABOVE the swept band), then answer-equivalence as MULTISETS across
+coverages above and below the gate, the far label, an in-hop, an `ORDER BY`, a compound start label,
+and a label no vertex carries.
+
+🔭 **Follow-up found while measuring, with its number:** `MATCH (a:T)-[:E]->(b:T)` (5.53) is now
+FASTER than `MATCH (a)-[:E]->(b:T)` (8.70), because the unlabelled spelling has no start label and
+routes to the counting arm, which still struggles with a non-vacuous FAR label. That is a new
+equivalent-spelling asymmetry worth ~2.5x, and it needs the mirror coverage gate on `farLabel`
+(selective far labels make `candidateVertexSource` sub-linear — item 1688). Not widened into this
+item.
+
+GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers.

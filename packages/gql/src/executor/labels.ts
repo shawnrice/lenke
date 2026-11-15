@@ -51,6 +51,41 @@ import type { LabelExpr } from '../ast.js';
  * it may drive the FAR side (a start label it cannot apply by iteration is only ignorable when
  * no vertex fails it).
  */
+/**
+ * What FRACTION of the graph's vertices carry `expr`, or `undefined` when that cannot be read
+ * cheaply (item 1940).
+ *
+ * ⚠️ DELIBERATELY NARROWER THAN {@link vacuousLabel}: only a PLAIN label, because only there is the
+ * bucket's size the coverage. A disjunction's buckets overlap (their sizes do not add), a
+ * conjunction's intersection is not a bucket at all, and a negation's complement would need the
+ * whole-graph count minus a bucket it may not have — so each returns `undefined` and the caller
+ * declines rather than guessing. `vacuousLabel` can answer the compound kinds because `===
+ * vertexCount` is an EXACT test it can derive; a fraction is not.
+ *
+ * 🔑 WHY A FRACTION AT ALL. The edge-driven hop walk is O(|E|) whatever a start label excludes,
+ * while the start-driven walk iterates the label BUCKET and is sub-linear when the label is
+ * selective. Item 1939 swept the crossover across 1:1-5:1 fanout and 50k-200k vertices and found it
+ * STABLE at 0.18-0.35, so a coverage test with a conservative constant decides between them. A
+ * BOOLEAN non-vacuity test instead measured a **25x regression** at 1% coverage (item 1938), which
+ * is what this exists to prevent.
+ */
+export const labelCoverage = (graph: Graph, expr: LabelExpr | undefined): number | undefined => {
+  if (expr?.kind !== 'label') {
+    return undefined;
+  }
+
+  const total = graph.vertexCount;
+
+  // An empty graph has no edges either, so the walk choice cannot matter; `undefined` declines.
+  return total === 0 ? undefined : (graph.verticesByLabel.get(expr.name)?.size ?? 0) / total;
+};
+/**
+ * ⚠️ The threshold the edge-driven hop walk needs, as a named constant rather than a literal at the
+ * gate. Item 1939's crossover band is 0.18-0.35 across every (size, fanout) cell it swept, so 0.4
+ * sits ABOVE all of them: it can only decline a win, never cause a regression. The win above it
+ * measured 2.6x-5.1x.
+ */
+export const EDGE_DRIVEN_MIN_COVERAGE = 0.4;
 export const vacuousLabel = (graph: Graph, expr: LabelExpr | undefined): boolean => {
   if (expr === undefined) {
     return false;

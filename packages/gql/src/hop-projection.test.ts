@@ -143,7 +143,19 @@ describe('fused hop projection', () => {
     const g = build();
     const [fast, slow] = bothWays(g, 'MATCH (a:P)<-[:T]-(x) RETURN x.name AS n');
 
-    expect(fast).toEqual(slow);
+    /*
+     * ⚠️ A MULTISET, like the other AGREEMENT tests in this file — converted at item 1940, which is
+     * when it first mattered. `P` is not vacuous in this fixture, so an in-hop now takes the
+     * EDGE-DRIVEN arm and emits in edge-bucket order where the previous walk emitted in
+     * target-vertex order. That is the reordering `asMultiset`'s own note already describes for
+     * item 167's far-driven arm ("reorders rows and changes nothing else"), one arm later.
+     *
+     * 🔑 Multiset is the CONTRACT and not a convenience: `differential-fuzz.test.ts` states its
+     * "comparison is structural (row multiset)" and gives every `ORDER BY` query a final sort key
+     * because "row order is otherwise unspecified". The LENGTH assertion below is the real content
+     * of this test and is unchanged.
+     */
+    expect(asMultiset(fast)).toEqual(asMultiset(slow));
     // Edges INTO the P vertices, grouped by target in candidate order: v1 has three
     // in-edges (v0 twice, itself), v2 one, v3 one.
     expect(fast).toHaveLength(5);
