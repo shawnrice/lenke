@@ -94626,8 +94626,8 @@ and `detectHopProjection` already wires `farDrivenHopWalk` with `proj: walkProj`
 `deferredHopOrder` returns **`startDriven: true`**, so the deferred arm never reaches that walk.
 ⚠️ I did NOT establish why that flag is set; the plausible reason is TIE ORDER, which item 605 makes
 observable between the engines, and `walkReadFlags`' header records item 1903's wrong answer where
-"the rows came back in the walk's arrival order". **Whether `startDriven: true` is load-bearing for
-tie order is the question a build has to settle first, and this item does not settle it** — stated
+"the rows came back in the walk's arrival order". ~~**Whether `startDriven: true` is load-bearing for
+tie order is the question a build has to settle first, and this item does not settle it**~~ ✅ **SETTLED AT ITEM 1967, and the flag is the WRONG SUSPECT: `walkReadFlags`' conservatism forces the start binding on its own** — stated
 as unknown rather than guessed, which is what item 1960 was about.
 
 **WHAT IS LEFT, PRICED HONESTLY.** Specializing the key closure to a direct read when it is shaped
@@ -94646,5 +94646,64 @@ frame is attribution until a deletion test with a control says otherwise; the de
 
 NO ENGINE BEHAVIOUR CHANGED — the ablation was reverted (`git status` clean), one heading corrected,
 and this entry.
+
+GATES. `bun run check` 0.
+
+## Item 1967 — ✅ **`startDriven: true` IS NOT THE BLOCKER — flipping it changes NOTHING, and a vacuity guard is the only reason I know that.** The real gate is `walkReadFlags`' conservatism, which forces the start binding for any pattern naming a start variable. ⚠️ Without the guard this item would have reported the fold unlocked
+
+Item 1966 left one question: is `deferredHopOrder`'s `startDriven: true` load-bearing for TIE ORDER,
+which item 605 makes observable between the engines? Flipping it and running the suites answers
+nothing — **with the flag `false` the gql suite is 4948/0 and `bun run fuzz` is 57/0** — and the
+reason is structural: the GQL differential fuzzer compares as a ROW MULTISET and appends a final sort
+key to every `ORDER BY` query _precisely so that row order is not compared_. A tie-order change is
+invisible to both by construction.
+
+So `tieorder-1967.mjs` asks the contract directly: a TIE-HEAVY fixture (four `k` values over twelve
+vertices, fan-in 3 on every far vertex, a `tag` column recording arrival order) through the TS engine
+and the NATIVE engine, compared POSITIONALLY with four shapes that each reach the deferred arm.
+
+```text
+  computed key, no window     ordered=true  multiset=true  36/36
+  computed key, LIMIT         ordered=true  multiset=true    8/8
+  computed item and key       ordered=true  multiset=true  36/36
+  key reads the START         ordered=true  multiset=true  36/36
+```
+
+⚠️⚠️ **AND THAT RESULT IS WORTHLESS WITHOUT THE NEXT LINE.** "TS agrees with native" means nothing
+unless the flag under test actually CHANGES the TS order — otherwise both builds agree and the probe
+measured nothing. The probe prints a digest of the TS order for every shape, and the digests are
+**byte-identical between the `true` and `false` builds**:
+
+```text
+  flag TRUE   v5v5v5v9v9v9v1v1v1v2v6v6v6v10v10v10v2v2v3v3v7v7v…
+  flag FALSE  v5v5v5v9v9v9v1v1v1v2v6v6v6v10v10v10v2v2v3v3v7v7v…
+```
+
+**The probe is VACUOUS, and the guard is what says so.** `gremlin-order-by-key-parity.ts` carries the
+same guard for the same reason, having been vacuous on its own first run. Without it this item would
+have concluded "native agrees with the flag flipped, so the fold is unlocked" — which is false, and
+would have been acted on.
+
+🔑 **THE REAL GATE, found by reading what the flag competes with.** `walkReadFlags` with
+`deferredWalk: true` returns **`itemsReadStart: s.hasStartVar`** — TRUE for any pattern that names a
+start variable, which is every realistic hop. So the walk is told to bind the start whatever
+`startDriven` says, and a start-binding walk is start-driven by construction. The flag is REDUNDANT
+with that conservatism, which is why flipping it is a no-op. Its own header states the reason:
+_"the reduced copy's items are synthetic closures with no AST to analyse — so the walk is told to
+bind EVERY endpoint a key could name."_
+
+**WHICH MAKES THE FOLD BUILDABLE AFTER ALL, and names the work.** The conservatism is not forced by
+information the arm lacks: `proj.orderBy`'s keys come FROM the AST, so `freePredicateVars(k.expr)`
+can establish that every key reads only the far variable — exactly the analysis `deferredSortKeys`
+already does on the node side (`nameRead !== nodeVar` declines there). With `keysReadStart` computed
+rather than assumed, a far-only deferred hop stops binding the start, the far-driven template fold
+becomes reachable, and item 1966's 198 ns/row key term folds by the fan-in.
+⚠️ Item 1903's wrong answer was _deriving these flags wrongly_ — four of five end/key combinations —
+so `hop-deferred-key-parity.test.ts` is the cover, and the tie-order question above becomes live
+again at that point: a genuinely far-driven deferred walk WOULD reorder ties, and this probe (with a
+non-vacuous fixture) is what would have to settle it.
+
+NO ENGINE BEHAVIOUR CHANGED — the flag was restored (`git status` clean beyond the new probe), one
+heading corrected, and this entry.
 
 GATES. `bun run check` 0.
