@@ -91075,3 +91075,108 @@ the three is fixed, which is the whole point of pinning rather than commenting.
 
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects. No engine behaviour changed
 — one test file, four instruments, and two comments.
+
+## Item 1918 — **2.48x / 2.42x, BUILT AND REVERTED**: fusing `values(k).sum()` / `.mean()` overturns a refusal items 1830/1831 made deliberately AND that a TEST locks in, so it is the owner's call. What this item adds is the two pieces of evidence that decision lacked — the invariant measured against RUST (12/12 bit-identical), and the fuzzer coverage the shape never had
+
+`V().out(E).values(k).sum()` costs **174.35 ms against 64.60 for the same walk MATERIALIZING every
+value it adds** — 2.7x to add numbers already in hand — and `mean` 185.36, where the fused
+`min`/`max` sit at 86.44 / 74.70. The route screen says why: `agg: hop values sum` reads
+**`generic, 1 applyStep call [sum]`** against `hop1: min`'s `SHORTCUT, 0`.
+
+🛑 **THE REFUSAL IS DELIBERATE, TWICE, WITH THE OBVIOUS EXPERIMENT ALREADY RUN.** `aggregation.ts`:
+"an f64 addition is order-sensitive in its last ulp … the fused walk's visit order is not the
+traverser pipeline's by construction, and byte-identity with the Rust engine is a hard invariant."
+Item 1831 answered the order question empirically — **25 cases, identical sequences** — and item
+1830 STILL declined, writing that this is "evidence, not proof", that the invariant "is a hard
+invariant rather than a target", and that the trade was "recorded here with its numbers and left
+alone rather than put to the owner as a menu".
+
+🛑 **AND IT IS NOT ONLY A COMMENT — `projected-aggregate.test.ts` HAS A TEST NAMED "sum and mean are
+NOT folded".** That is how this item found out it was overturning a lock rather than filling a gap:
+the mutation battery's own BASELINE check failed, on a test asserting the refusal. ⚠️ Worth keeping
+as a method note — a baseline assertion caught what the diff did not say out loud.
+
+## What this item adds, and why more of item 1831's evidence would not have been an argument
+
+⚠️ **TS-AGAINST-TS IS A PROXY.** This item first measured 11 fused walk shapes against the same
+question with the fusion declined (`fusedorder-matrix-1918.mjs`): 11/11 identical order and
+bit-identical sums, every row controlled by a fixture whose sum changes when reversed. That refutes
+the stated PREMISE — but it is the same class of evidence item 1831 already had and item 1830
+rejected as insufficient. The invariant is TS against **Rust**, and Rust is free to sum in a
+different internal order than it emits `values` in, in which case matching the emission order buys
+nothing.
+
+✅ **SO THE INVARIANT WAS MEASURED WHERE IT LIVES.** `sumorder-native-1918.ts` runs each shape on the
+TS engine and on the Rust engine over the FFI and compares the f64 bit for bit:
+
+      4,000 vertices / 20,000 edges, a RECIPROCAL RAMP so the sum is order-sensitive, with the
+      native text DERIVED from the TS plan by `planToGremlin` (two hand-written spellings could
+      drift into two different questions, and then a disagreement would mean nothing):
+
+        out typed · in typed · both typed · untyped · multi-type · chain · outE.inV ·
+        edge-filtered · far-filtered · dedupe-by-key · values-then-dedupe · mean
+        -> 12/12 BIT-IDENTICAL, with a control confirming the fixture can see summation order
+
+✅ **AND THE SHAPE HAD NO FUZZER COVERAGE AT ALL — that half is KEPT regardless of the decision.**
+The generator's `values` arm and its `sum` arm were mutually exclusive branches, so `values(k).sum()`
+had **never** been compared between the engines; a break there would have been caught by nothing.
+
+      ✅ The widening went in FIRST and was green BEFORE the engine change, so a later failure is
+         attributable to the fusion rather than to the widening.
+      ✅ Weight comes entirely out of the bare-`sum` window (0.60-0.70 split 0.05/0.025/0.025), so
+         no other terminal's probability moves.
+      ✅ It reports its own hit count every run — `values(k).sum()/.mean()=16 of 400` — because a
+         generator branch that never fires is a guard that guards nothing, silently.
+
+      INTERLEAVED PRE/POST, 3 rounds, 200,000 vertices / 1,000,000 edges, median of 9:
+
+        V().out(E).values(k).sum()    177.03  ->  71.30 ms   ⬅ 2.48x
+        V().out(E).values(k).mean()   176.71  ->  73.05      ⬅ 2.42x
+        CONTROL values(k), the floor   62.68  ->  64.26       flat
+        CONTROL values(k).min()        77.03  ->  76.71       flat
+        CONTROL values(s).min()       191.23  ->  191.49      flat
+
+⚠️ **THE A/B IS INTERLEAVED BECAUSE THE FIRST SINGLE-RUN PAIR SAID THE CONTROLS IMPROVED** — `min`
+86.44 -> 74.25 and `strmin` 233.05 -> 205.91, ~12-14% in the change's favour on arms it cannot
+reach. Under three alternating rounds with a per-arm `grep` assertion, all three are flat. A control
+moving in the change's favour is CLAUDE.md's named giveaway; here it was noise.
+
+## 🛑 Why it is reverted rather than shipped
+
+The change is answer-preserving as measured, so this is not "trading the invariant away" — it is
+claiming the invariant HOLDS on the fused route, with the proxy replaced by a direct measurement.
+That is a real argument. It is still not mine to make: a prior item considered this exact trade,
+called it "a judgement about what the invariant is for", and chose neither to build it nor to
+escalate it; and the refusal is pinned by a test. Shipping past both would be deciding unilaterally
+what a hard invariant is for. [[label-index-vs-setter]] is the same shape and carries the same rule.
+
+🔭 **WHAT IS STILL NOT ESTABLISHED, so the decision is made on the real state**: 12 shapes plus
+random fuzzer coverage is sampling, not proof. That is the standard every other fusion in this
+package meets, and it is weaker than "proved". What changed from the state item 1830 declined is
+that the invariant is now (a) measured where it actually lives and (b) re-measured on random plans
+every `bun run fuzz`.
+
+      REVERTED: `aggregation.ts` (the widened gate + `foldProjectedNumeric`), `index.ts` (the
+      residual branch), and `projected-numeric-fold.test.ts` (13 tests, which cover code that no
+      longer exists).
+      KEPT: the fuzzer widening and its counter; `minmax-prof-1918.mjs`,
+      `fusedorder-check-1918.mjs`, `fusedorder-matrix-1918.mjs`, `sumorder-native-1918.ts`,
+      `minmax-ab-1918.sh`, and `numfold-mutants-1918.mjs` — which detects the absent fold and exits
+      0 with a pointer here, so it can never fail a sweep and runs as written if the change is taken.
+
+⚠️ **THE 12-MUTANT BATTERY WAS WRITTEN AND THE ONE THAT MATTERS IS NAMED**: a REVERSED ADDITION
+ORDER — every value present, the right count, a wrong answer in the last ulp, invisible to any
+assertion that compares rounded output. The test written for it asserts its own control first (the
+two orders of the same values must differ, or the test is vacuous). If the change is taken, that
+test and that mutant are the gate.
+
+⚠️ **NO SPELLING GROUP WAS ADDED, deliberately**: `sum()` has no second surface spelling in this
+grammar (a scoped `sum(local)` is a different question), so a group would have one member, and
+`gremlin-spelling-probe.ts`'s header records a vacuous group as worse than none — item 1899's first
+cut flagged nothing because both its members answered `0:[]`.
+
+⚠️ **THE GQL SIDE'S IDENTICAL EXCLUSION (items 1830/1853) IS UNTOUCHED** and would need its own
+measurement: different walk shapes, different fused routes.
+
+GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers with the
+widened generator; the route screen PRE and POST. No engine behaviour changed in what is committed.

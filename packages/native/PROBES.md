@@ -2357,3 +2357,80 @@ exit **1** — so the pin fails the day the gap closes, which is the reason to p
 half was already priced and put to the owner at item 1553 and is still pending; this item
 re-derived it from a profile without checking, the second time that same note has been bypassed.
 Only the events and rollback halves were new.
+
+## ⚠️ A FUZZER BLIND SPOT MADE OF TWO MUTUALLY EXCLUSIVE BRANCHES (item 1918)
+
+`gremlin-fuzz.test.ts`'s terminal generator returned EITHER `[values(k)]` OR `[sum()]` — never both
+— so **`values(k).sum()` had never been compared between the engines at all**, and its f64 result is
+order-sensitive in the last ulp. The composed shape was unreachable not because anyone excluded it
+but because the two arms were alternatives in one `if` chain.
+
+```
+values(k).sum()/.mean()=16 of 400 generated     <- now printed every run
+```
+
+✅ **Three things make the widening trustworthy, and each is a rule worth reusing:**
+
+- **It went in FIRST and was green BEFORE the engine change it guards**, so a later failure is
+  attributable to the change and not to the widening.
+- **Its weight comes entirely out of the bare-`sum` window** (0.60-0.70 split 0.05/0.025/0.025), so
+  no other terminal's probability moves and the widening cannot be confused with a shift in the rest
+  of the distribution.
+- **It reports its own hit count**, because a generator branch that never fires is a guard that
+  guards nothing — silently. Same reasoning as the `order(local)` counter beside it.
+
+⚠️ The general form: **when a generator picks one arm from a chain of alternatives, every PAIR of
+arms is unreachable by construction.** Ask which compositions the chain cannot express, not just
+which steps it can.
+
+## `minmax-prof-1918.mjs` — the reducing terminals against the floor that materializes their input
+
+```
+bare hop (no projection)   4.31 ms   800,000 rows
+values(k) — THE FLOOR     64.60      800,000
+min                       86.44            1
+max                       74.70            1
+sum                      174.35            1     <- 2.7x the floor, to ADD what it already has
+mean                     185.36            1
+strmin (a STRING key)    233.05            1
+```
+
+⚠️ **THE FLOOR IS THE POINT: a fold that builds no array should beat materializing every value it
+folds.** `min`/`max` are fused (route screen: `SHORTCUT, 0 applyStep calls`) and still lose slightly;
+`sum`/`mean` were NOT fused (`generic, 1 call [sum]`) and lose by 2.7x. Reading the fold against the
+bare hop instead would have made all five look fine.
+
+## ⚠️ MEASURE THE INVARIANT, NOT A PROXY FOR IT (item 1918)
+
+Fusing `sum`/`mean` was refused because summing in a different order is a different f64 and
+byte-identity with Rust is a hard invariant. Items 1830/1831 tested **TS-fused against TS-generic**
+— 25 cases, identical sequences — and still declined, correctly: that comparison is a PROXY. Rust is
+free to sum in a different internal order than it emits `values` in, and then matching the emission
+order buys nothing.
+
+- **`fusedorder-check-1918.mjs` / `fusedorder-matrix-1918.mjs`** do the proxy comparison properly
+  (11 fused walk shapes, fused vs declined via a `limit` above the row count): 11/11 identical order
+  and bit-identical sums.
+- **`sumorder-native-1918.ts`** does the real one: each shape on the TS engine and on the RUST
+  engine over the FFI, f64 compared bit for bit. **12/12 bit-identical.**
+
+⚠️ **THE NATIVE TEXT IS DERIVED FROM THE TS PLAN** by `planToGremlin`, never written out beside it:
+two hand-maintained spellings can drift into two different questions, and then a disagreement means
+nothing. (The differential fuzzer does the same.)
+
+⚠️ **AND EVERY ARM CARRIES AN ORDER CONTROL — the first fixture FAILED IT.** `i % 7 === 0 ? 1e16 : 1`
+looks order-sensitive and is not: the big term recurs ~N/7 times, dominates, and the sum came out
+bit-identical forward and reversed, so the whole probe was vacuous and said so. A reciprocal ramp
+`1/(i+1)` spans magnitudes without one term dominating. **An f64 agreement over associative input
+proves nothing about summation order.**
+
+## ⚠️ A MUTATION BATTERY'S BASELINE CHECK IS A FINDING IN ITS OWN RIGHT (item 1918)
+
+`numfold-mutants-1918.mjs` never reached its first mutant: the BASELINE run failed, on an existing
+test named `sum and mean are NOT folded` in `projected-aggregate.test.ts`. That is how the item
+learned the refusal it was overturning is **locked in by a test**, not merely described in a comment
+— which changed the decision from "fill a gap" to "overturn a deliberate lock", and the change was
+reverted to the owner.
+
+So: **assert the baseline passes before mutating.** It costs one run and it catches the case where
+the thing you are "fixing" was decided on purpose.

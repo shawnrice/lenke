@@ -18,74 +18,75 @@ import { existsSync, writeFileSync } from 'node:fs';
 
 import { Edge, Graph, isElement } from '@lenke/core';
 import {
-  isTsOnly,
-  cyclicPath,
-  in_,
-  V,
-  E,
-  both,
-  bothE,
-  count,
-  dedupe,
-  groupCount,
-  eq,
-  fold,
-  gt,
-  gte,
-  has,
-  hasLabel,
-  id,
-  inE,
-  inV,
-  label,
-  limit,
-  lt,
-  lte,
-  order,
-  Order,
-  Scope,
-  out,
-  outE,
-  outV,
-  otherV,
-  path,
-  planToGremlin,
-  range,
-  simplePath,
-  skip,
-  sum,
-  toArray,
-  traversal,
-  values,
   aggregate,
   and,
   as_,
   barrier,
+  both,
+  bothE,
   cap,
-  elementMap,
-  hasId,
-  hasNot,
-  hasValue,
-  index,
-  match,
-  none,
-  or,
-  pipe,
-  properties,
-  propertyMap,
-  sample,
-  select,
-  sideEffect,
-  store,
-  subgraph,
-  where,
-  createTestTinkerGraph,
   choose,
   coalesce,
+  count,
+  createTestTinkerGraph,
+  cyclicPath,
+  dedupe,
+  E,
+  elementMap,
+  eq,
+  fold,
+  groupCount,
+  gt,
+  gte,
+  has,
+  hasId,
+  hasLabel,
+  hasNot,
+  hasValue,
+  id,
+  in_,
+  index,
+  inE,
   inject,
+  inV,
+  isTsOnly,
+  label,
+  limit,
+  lt,
+  lte,
+  match,
+  mean,
+  none,
   optional,
-  union,
+  or,
+  Order,
+  order,
+  otherV,
+  out,
+  outE,
+  outV,
+  path,
+  pipe,
+  planToGremlin,
+  properties,
+  propertyMap,
+  range,
+  sample,
+  Scope,
+  select,
+  sideEffect,
+  simplePath,
+  skip,
+  store,
+  subgraph,
+  sum,
+  toArray,
+  traversal,
   type Plan,
+  union,
+  V,
+  values,
+  where,
 } from '@lenke/gremlin';
 import { deserialize as tsDeserialize } from '@lenke/serialization';
 
@@ -713,8 +714,28 @@ const terminal = (r: () => number): unknown[] => {
     return [values(pick(r, KEYS))];
   }
 
-  if (p < 0.7) {
+  if (p < 0.65) {
     return [sum()];
+  }
+
+  /*
+   * ⚠️ `values(k)` FOLLOWED BY `sum()` / `mean()` WAS A BLIND SPOT (item 1918). The bare `sum()`
+   * above is a terminal on ELEMENTS; this generator could not compose a projection with a numeric
+   * fold at all, because the `values` arm and the `sum` arm were mutually exclusive branches. So
+   * the shape `V().out(T).values(k).sum()` — whose f64 result is ORDER-SENSITIVE in its last ulp,
+   * and which item 1918 fuses — was never compared between the engines.
+   *
+   * ⚠️ THE WEIGHT COMES ENTIRELY OUT OF THE BARE-`sum` WINDOW (0.60-0.70 split 0.05/0.025/0.025),
+   * so no other terminal's probability moves and this widening cannot be confused with a change in
+   * the rest of the distribution. Same construction as the `values + groupCount` arm below, which
+   * exists for the same reason: a composition the general generator could not reach.
+   */
+  if (p < 0.675) {
+    return [values(pick(r, KEYS)), sum()];
+  }
+
+  if (p < 0.7) {
+    return [values(pick(r, KEYS)), mean()];
   }
 
   if (p < 0.8) {
@@ -858,6 +879,13 @@ suite('differential fuzz: gremlin (TS engine vs Rust ENGINE)', () => {
     // the one that means anything — a pass-through over an EMPTY frontier passes whatever the
     // step does.
     let orderLocalGenerated = 0;
+    /**
+     * ⚠️ A GENERATOR BRANCH THAT NEVER FIRES IS A GUARD THAT GUARDS NOTHING (item 1918). The
+     * composed numeric folds were added because `values(k).sum()` / `.mean()` had NO coverage, and
+     * a weight that turned out unreachable would leave exactly the blind spot the widening was for
+     * — silently. Reported like `order(local)` so the count is visible every run.
+     */
+    let projectedNumericFold = 0;
     let orderLocalNonEmpty = 0;
     // A third floor, because the other two can both be met without a single null in sight —
     // which is exactly how the null placement stayed hidden while the arm was pinned to
@@ -926,6 +954,10 @@ suite('differential fuzz: gremlin (TS engine vs Rust ENGINE)', () => {
 
       if (text.includes('order(local)')) {
         orderLocalGenerated += 1;
+      }
+
+      if (/values\([^)]*\)\.(?:sum|mean)\(\)/.test(text)) {
+        projectedNumericFold += 1;
       }
 
       // Naming two REAL edge types makes the per-vertex adjacency order
@@ -1015,6 +1047,13 @@ suite('differential fuzz: gremlin (TS engine vs Rust ENGINE)', () => {
     if (process.env.GREMLIN_DUMP !== undefined) {
       writeFileSync(process.env.GREMLIN_DUMP, `${dumped.join('\n')}\n`);
     }
+
+    const foldWarn =
+      projectedNumericFold === 0 ? '   ⚠️ BRANCH NEVER FIRED — the widening guards nothing' : '';
+
+    console.log(
+      `  values(k).sum()/.mean()=${projectedNumericFold} of ${ITERATIONS} generated${foldWarn}`,
+    );
 
     if (skippedUnordered > 0) {
       console.log(
