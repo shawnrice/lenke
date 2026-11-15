@@ -424,11 +424,259 @@ export const buildTrailMasks = (
 
   return { pass, selfLoops, passDeg };
 };
+/**
+ * The four CSR tables the per-source routes read, exactly the ones {@link csrFor} returns. Named so
+ * the two routes take one argument rather than four and stay inside the lint's parameter cap.
+ */
+type PerSourceTables = {
+  readonly order: readonly Vertex[];
+  readonly idx: ReadonlyMap<Vertex, number>;
+  readonly off: Int32Array;
+  readonly nbr: Int32Array;
+};
+
+/**
+ * May a SEEDED count try the per-source route instead of the level recurrence? (item 1978)
+ *
+ * The recurrence is O(`levels` · (|V| + |E|)) WHATEVER the seed admits, because `u_j` spans every
+ * vertex — item 1907's soundness argument ("the level arrays span all vertices, as they must — a
+ * path traverses them") read as a cost statement. Item 1977 measured that: 22.9-25.4 ns PER VERTEX,
+ * dead flat across 8x of |V|, for a query with ONE source, where the same count written as a
+ * `COUNT { }` subquery cost 5.47 us — **83x at 20,000 vertices and 141x at 40,000, unbounded in |V|**.
+ *
+ * A pure function because it is the ROUTE CHOICE and a route choice is answer-equivalent: every
+ * mutant of an inline gate survives the differential tests, so the arithmetic has to be reachable
+ * from a unit test ([[perf-gate-needs-its-own-test]]). `var-length-gate.test.ts` owns it.
+ *
+ * ⚠️ IT IS DELIBERATELY NOT THE COST COMPARISON. `sources · deg^levels` against the recurrence
+ * would be the natural gate and is wrong here: `deg` is an AVERAGE, and this repo's own fixtures
+ * include ones piling 93% of the edges on 7% of the vertices (item 702), so a skewed graph makes
+ * the estimate arbitrarily optimistic. The estimate only decides whether to ATTEMPT; the attempt
+ * carries a WORK BUDGET and abandons, so skew costs bounded waste rather than a wrong route.
+ *
+ * ⚠️ AND IT REQUIRES A SEED. With no seed predicate `src` is every vertex (or every vertex of the
+ * start label), the attempt could only ever blow its budget, and the 2x it would cost lands on
+ * item 573's unseeded rung — the shape this file was built for.
+ */
+export const perSourceAdmissible = (seeded: boolean, sources: number, vertices: number): boolean =>
+  seeded && sources > 0 && sources * PER_SOURCE_MIN_RATIO <= vertices;
+
+/**
+ * How much more selective than the whole vertex set a seed must be to attempt the per-source route.
+ *
+ * SWEPT, not chosen: see item 1978's entry. The per-source route wins hugely at one source and
+ * loses only its bounded attempt when the seed is broad, so the threshold wants to sit well inside
+ * the measured crossover rather than on it.
+ */
+const PER_SOURCE_MIN_RATIO = 8;
+
+/**
+ * The work a per-source attempt may spend before abandoning to the recurrence.
+ *
+ * Set to the RECURRENCE'S OWN COST, so an abandoned attempt costs at most what the route it falls
+ * back to was always going to cost: the worst case is 2x and the typical case is item 1977's 83x.
+ * That bound is what makes the admissibility test above allowed to be approximate.
+ */
+export const perSourceBudget = (levels: number, vertices: number, edges: number): number =>
+  levels * (vertices + edges);
+
+/**
+ * A WALK count from each source, as a frontier carrying multiplicity.
+ *
+ * `u_0 = passes` propagated BACKWARDS is what the recurrence computes, so `u_j(s)` is the number of
+ * j-walks from `s` ending at a passing vertex. Forwards from one source that is a frontier
+ * expansion of depth `max` — the same sums, and no |V|-wide vector.
+ *
+ * ⚠️ RETURNS `undefined` RATHER THAN A NUMBER IT CANNOT GUARANTEE, in two cases that are both about
+ * agreeing with the route it replaces:
+ *
+ *   over budget         the graph was too dense for this route; the caller runs the recurrence.
+ *   past 2^53           the recurrence sums f64 and so does this, and both are EXACT for integers
+ *                       below 2^53 — which is why reordering the sums cannot change the answer and
+ *                       byte-identity survives. Above it they could round differently, so this
+ *                       declines instead. A walk count that large is unreachable in practice; the
+ *                       guard costs one comparison per level and makes the claim total.
+ */
+const perSourceWalkCount = (
+  src: readonly Vertex[],
+  tables: PerSourceTables,
+  spec: DegreeCountSpec,
+  budget: number,
+): number | undefined => {
+  const { order, idx, off, nbr } = tables;
+  const { min, max, passes } = spec;
+  let work = 0;
+  let total = 0;
+
+  for (const s of src) {
+    if (min === 0 && passes(s)) {
+      total += 1;
+    }
+
+    let frontier = new Map<number, number>([[idx.get(s) ?? 0, 1]]);
+
+    for (let len = 1; len <= max; len += 1) {
+      const next = new Map<number, number>();
+
+      for (const [v, c] of frontier) {
+        const end = off[v + 1];
+
+        work += end - off[v];
+
+        if (work > budget) {
+          return undefined;
+        }
+
+        for (let k = off[v]; k < end; k += 1) {
+          const w = nbr[k];
+
+          next.set(w, (next.get(w) ?? 0) + c);
+        }
+      }
+
+      frontier = next;
+
+      if (len >= min) {
+        for (const [v, c] of frontier) {
+          if (passes(order[v])) {
+            total += c;
+          }
+        }
+      }
+    }
+
+    if (total > Number.MAX_SAFE_INTEGER) {
+      return undefined;
+    }
+  }
+
+  return total;
+};
+
+/**
+ * A TRAIL count from each source, by enumerating trails over CSR POSITIONS.
+ *
+ * 🔑 THIS NEEDS NO INCLUSION-EXCLUSION AT ALL, which is the part worth stating. The recurrence
+ * counts WALKS and subtracts edge-reuse terms — `trailCorrectionAt`'s depth-2/3/4 closed forms,
+ * derived over items 600/601/692 and the reason the detector is bounded at 4. Enumerating from one
+ * source instead, "no edge reused" is just a mark per position, so the correction has nothing to
+ * correct and the DEPTH BOUND is not needed on this route.
+ *
+ * ⚠️ POSITIONS, NOT NEIGHBOURS. One CSR position is one EDGE — `csr-cache` builds `nbr` from
+ * `edgesOfTypes`, which dedupes a MULTI-LABEL edge through a `Set`, so a position cannot be the
+ * same edge twice. Marking neighbours instead would forbid two PARALLEL edges to the same vertex,
+ * which are distinct edges and a legal trail: item 600 records parallel edges as exactly what
+ * breaks a naive correction, and they break a naive enumeration the same way.
+ *
+ * ⚠️ The depth bound still applies to whether the DETECTOR admits the query; this route does not
+ * widen it. Relaxing the detector because this route is exact is a separate change with its own
+ * correctness argument, and item 692 is what that mistake costs.
+ */
+const perSourceTrailCount = (
+  src: readonly Vertex[],
+  tables: PerSourceTables,
+  spec: DegreeCountSpec,
+  budget: number,
+): number | undefined => {
+  const { order, idx, off, nbr } = tables;
+  const { min, max, passes } = spec;
+  const used = new Set<number>();
+  let work = 0;
+  let total = 0;
+  let blown = false;
+
+  const extend = (v: number, len: number): void => {
+    if (blown) {
+      return;
+    }
+
+    if (len >= 1 && len >= min && passes(order[v])) {
+      total += 1;
+    }
+
+    if (len === max) {
+      return;
+    }
+
+    const end = off[v + 1];
+
+    work += end - off[v];
+
+    if (work > budget) {
+      blown = true;
+
+      return;
+    }
+
+    for (let k = off[v]; k < end; k += 1) {
+      if (used.has(k)) {
+        continue;
+      }
+
+      used.add(k);
+      extend(nbr[k], len + 1);
+      used.delete(k);
+
+      if (blown) {
+        return;
+      }
+    }
+  };
+
+  for (const s of src) {
+    if (min === 0 && passes(s)) {
+      total += 1;
+    }
+
+    extend(idx.get(s) ?? 0, 0);
+
+    if (blown) {
+      return undefined;
+    }
+  }
+
+  return total;
+};
 export const walkLevelCount = (graph: Graph, spec: DegreeCountSpec): number => {
   const { types, min, max, isTrail, inward, startName, passes, seedPasses } = spec;
   // The flattened adjacency, from the cross-query cache — see {@link csrFor}. The tables are READ
   // ONLY from here down, which is the property that lets them be shared.
   const { order, idx, off, nbr } = csrFor(graph, inward, types);
+  const unfiltered =
+    startName === undefined ? order : [...(graph.verticesByLabel.get(startName) ?? [])];
+  // ⚠️ FILTERED ONCE, HERE, so every later reader — the depth-3 correction's `for (const s of src)`
+  // and `srcIdx`, which `trailCorrectionAt` and `trailsAt4From` index by — sees the same set.
+  const src = seedPasses === undefined ? unfiltered : unfiltered.filter((v) => seedPasses(v));
+
+  /*
+   * ⚠️⚠️ THE PER-SOURCE ROUTE (item 1978), and WHERE IT SITS IS HALF THE WIN — which is a
+   * correction of my own first attempt, measured. `src` is resolved above it because the route
+   * needs the seed applied; everything BELOW it is O(|V|) that a taken route never pays.
+   *
+   * Placed after the two `Float64Array(|V|)` vectors and the |V| `passes` init pass — one line
+   * further down, which looked equivalent — the same route measured **1.25-1.28x** instead of the
+   * **1.55-1.88x** it measures here, because the preamble it was skipping over was most of what
+   * remained. [[frame-attribution-trap]]'s lesson in a new shape: the saving is bounded by what is
+   * ABOVE the branch, not by what the branch replaces.
+   *
+   * It takes a SEEDED, SELECTIVE count off a route that is O(levels · (|V| + |E|)) however narrow
+   * the seed is, which is item 1977's finding.
+   *
+   * ⚠️ IT CAN DECLINE, and the fall-through below is the recurrence running exactly the code it ran
+   * before — nothing it reads has been allocated or mutated by a declined attempt.
+   */
+  if (perSourceAdmissible(seedPasses !== undefined, src.length, order.length)) {
+    const budget = perSourceBudget(max, order.length, nbr.length);
+    const tables = { order, idx, off, nbr };
+    const quick = isTrail
+      ? perSourceTrailCount(src, tables, spec, budget)
+      : perSourceWalkCount(src, tables, spec, budget);
+
+    if (quick !== undefined) {
+      return quick;
+    }
+  }
+
   // f64 accumulators, which is what the Map held: a JS number IS an f64, so this stores the same
   // bits and sums in the same adjacency order. Not a semantic change, a layout one.
   let u = new Float64Array(order.length);
@@ -438,11 +686,6 @@ export const walkLevelCount = (graph: Graph, spec: DegreeCountSpec): number => {
     u[i] = passes(order[i]) ? 1 : 0;
   }
 
-  const unfiltered =
-    startName === undefined ? order : [...(graph.verticesByLabel.get(startName) ?? [])];
-  // ⚠️ FILTERED ONCE, HERE, so every later reader — the depth-3 correction's `for (const s of src)`
-  // and `srcIdx`, which `trailCorrectionAt` and `trailsAt4From` index by — sees the same set.
-  const src = seedPasses === undefined ? unfiltered : unfiltered.filter((v) => seedPasses(v));
   // The sources' indices, resolved ONCE. They are read at every level, and when the start label is
   // absent that is one map lookup per vertex per level — the same cost this route exists to remove.
   const srcIdx = new Int32Array(src.length);

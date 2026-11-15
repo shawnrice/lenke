@@ -95201,7 +95201,7 @@ NO ENGINE BEHAVIOUR CHANGED — this entry.
 
 GATES. `bun run check` 0.
 
-## Item 1977 — 🔭 **ITEM 1907's 135.8x WIN LEFT THE RUNG PAYING |V| FOR A ONE-SOURCE QUERY: a seeded var-length count is O(|V|) where the SAME count written as a `COUNT { }` subquery is O(degree^depth), 82x at 20k vertices and 141x at 40k, same answer.** ⚠️ The row that nominated this is NOT itself a defect — it reads 0.60x or 0.93x depending only on the estimator
+## Item 1977 — 🔭 **ITEM 1907's 135.8x WIN LEFT THE RUNG PAYING |V| FOR A ONE-SOURCE QUERY: a seeded var-length count is O(|V|) where the SAME count written as a `COUNT { }` subquery is O(degree^depth), 82x at 20k vertices and 141x at 40k, same answer.** ⚠️ **ITEM 1978 BUILT IT AND GOT 1.39-1.60x, NOT 83x — the attribution below is WRONG: the level recurrence is ~30% of this cost and the rest is the per-vertex SEED FILTER two lines above it, so the 83x lives in seeding `src` from the index.** ⚠️ The row that nominated this is NOT itself a defect — it reads 0.60x or 0.93x depending only on the estimator
 
 Reached by pivot, not by list. Item 1976 found the GQL read corpus attributed at every one of its
 seven largest rows, so this tick went to `bench:usage`, whose 7 write / 3 interleaved / 2 analytic
@@ -95335,3 +95335,125 @@ beside every time, which is what kept A-D comparable.
 NO ENGINE BEHAVIOUR CHANGED — a new probe and this entry.
 
 GATES. `bun run check` 0.
+
+## Item 1978 — ✅ **SHIPPED the per-source route for a seeded var-length COUNT: 1.39-1.60x across 5k/20k/40k vertices and both seed spellings, both controls flat.** ⚠️ **It is NOT item 1977's 83x, and that item's attribution was wrong: the level recurrence is about a THIRD of the cost — the rest is a seed filter over every vertex of the start label, so a selective seed on an INDEXED key never consults the index**
+
+Item 1977 priced this at 83x and named the mechanism as the level recurrence's two `Float64Array(|V|)`
+vectors and its `max · (|V| + |E|)` loop. Building it says the mechanism was right and the share was
+not.
+
+### WHAT SHIPPED
+
+`walkLevelCount` gains a route that walks from the SOURCES instead of running the recurrence:
+
+- a **WALK** is a multiplicity frontier — `u_0 = passes` propagated backwards is what the recurrence
+  computes, so `u_j(s)` is the number of j-walks from `s` to a passing vertex, and forwards from one
+  source that is a frontier expansion of depth `max` with no |V|-wide vector.
+- a **TRAIL** is an enumeration over CSR **positions**, and 🔑 **it needs no inclusion-exclusion at
+  all** — where the recurrence counts walks and subtracts `trailCorrectionAt`'s depth-2/3/4 closed
+  forms (items 600/601/692, and the reason the detector is bounded at 4), "no edge reused" is just a
+  mark per position. Positions and not neighbours: one position is one edge because `csr-cache`
+  builds `nbr` from `edgesOfTypes`, which dedupes a multi-label edge through a `Set`, and marking
+  neighbours would forbid two PARALLEL edges to one vertex — a legal trail, and item 600's record of
+  what breaks a naive correction. ⚠️ The route being exact does NOT widen the detector's depth bound;
+  relaxing that is a separate change and item 692 is what the mistake costs.
+
+Gated on `perSourceAdmissible(seeded, sources, vertices)` — a seed must exist, be non-empty and be
+8x more selective than the whole vertex set — with `perSourceBudget(levels, |V|, |E|)` equal to the
+RECURRENCE'S OWN cost, so an abandoned attempt costs at most what the route it falls back to was
+always going to cost. That bound is what lets the admissibility test be approximate: `sources ·
+deg^levels` would be the natural gate and is wrong here, because `deg` is an average and this repo's
+own fixtures include ones piling 93% of the edges on 7% of the vertices (item 702).
+
+### THE NUMBERS, AND THE CONTROLS THAT MAKE THEM READABLE
+
+`countsubq-1977.mjs`, median of the last third, us/op, PRE taken from `git show HEAD:` after an
+arm-identity check:
+
+```text
+    shape                                    5,000          20,000         40,000
+    B  seeded, clause WHERE          127.69 -> 80.72   454.52 -> 323.66  1058.36 -> 702.41
+                                          1.58x             1.40x             1.51x
+    G  seeded, inline {k: $p}        110.47 -> 72.39   429.83 -> 308.41   990.93 -> 618.09
+                                          1.53x             1.39x             1.60x
+    H  UNSEEDED            [CONTROL] 159.47 ->165.39   668.07 -> 669.71  1460.02 ->1411.84
+                                          0.96x             1.00x             1.03x
+    I  BROAD seed, declines[CONTROL] 325.55 ->340.44  1347.53 ->1360.70  2910.74 ->2909.09
+                                          0.96x             0.99x             1.00x
+```
+
+**Both spellings move together**, which is item 583's requirement carried rather than dropped — a
+route that took only one would have built the inline-vs-clause cliff this repo names first. **Both
+controls are flat**: the unseeded rung runs literally the code it ran before, and the broad-seed arm
+shows the gate refusing BEFORE attempting, so a declined query pays nothing measurable.
+[[executor-edits-perturb]] prices a new walk variant at up to 16% on unrelated shapes and this one
+sits in the same function, so H is the row that mattered most.
+
+### ⚠️ WHERE THE GATE SITS IS HALF THE WIN, WHICH I GOT WRONG FIRST
+
+Placed one line lower — after the two `Float64Array(|V|)` allocations and the |V| `passes` init pass,
+which looked equivalent — the identical route measured **1.25-1.28x**. Above them it measures
+1.39-1.60x. **The saving is bounded by what sits ABOVE the branch, not by what the branch replaces**
+— [[frame-attribution-trap]]'s lesson in a new shape.
+
+### 🔭 AND THE REMAINDER IS THE REAL TARGET, WHICH ITEM 1977 MIS-ATTRIBUTED
+
+The shape is **still linear in |V|** after this: 16.1 / 16.2 / 17.6 ns a vertex at 5k / 20k / 40k,
+down from 22.9-25.4. So the recurrence was ~30% of it and what remains is two lines above the gate:
+
+```ts
+const unfiltered =
+  startName === undefined ? order : [...(graph.verticesByLabel.get(startName) ?? [])];
+const src = seedPasses === undefined ? unfiltered : unfiltered.filter((v) => seedPasses(v));
+```
+
+The label's whole extent is COPIED and the seed predicate is evaluated on EVERY vertex of it, so a
+selective equality on an indexed key never reaches the index. ✅ **That retro-explains item 1977's
+first refuted hypothesis**: it found `NOINDEX=1` left these shapes unchanged and concluded the index
+"is not consulted", which was right — and then attributed the cost elsewhere. The splitter row added
+this item makes it legible: a BROAD seed where every vertex passes costs 1347.5 us against the
+unseeded 668.1, so the per-vertex seed filter alone is roughly as expensive as the entire recurrence
+it sits beside. **Seeding `src` from the index is the next target and it is where item 1977's 83x
+actually lives.**
+
+### WHAT THE TESTS AND THE MUTATION ROUND COST
+
+🛑 **ITEM 1907's PARITY SUITE STRUCTURALLY CANNOT SEE THIS CHANGE, and that is the finding to keep.**
+Its fixture is item 573's motif ONCE — six vertices — and one source needs eight, so
+`perSourceAdmissible` refuses: measured `entered=1, taken=0` on its graph, while 801 assertions pass.
+So `varlen-per-source-parity.test.ts` replicates the same motif 20x (120 vertices, every adversarial
+structure preserved: 3-cycle, self-loop, parallel pair, multi-label edge, second edge type, isolated
+and key-less vertices) and **asserts its own reachability** — raise `PER_SOURCE_MIN_RATIO` past this
+fixture and the assertion fails loudly instead of the suite going quietly blind. 55 tests / 1,305
+assertions against native across 8 bounds x 3 modes x 3 spellings x 8 seeds, plus a broad seed, a
+seed matching nothing, `IS NULL`, an endpoint predicate and two edge-type unions.
+
+`var-length-per-source-gate.test.ts` owns the gate as arithmetic, because **a route choice is
+answer-equivalent and every answer-comparing test is blind to it** ([[perf-gate-needs-its-own-test]]).
+Its oracle is the two routes against EACH OTHER: a broad seed is refused and runs the recurrence, so
+the per-source answers summed over all sources must equal it — no hand-computed number, and nothing
+circular.
+
+**13 mutants, 13 caught — after one SURVIVED and had to be earned.**
+
+🛑 **`{0,2}` IS LOAD-BEARING AND A SURVIVOR IS WHY.** Dropping the `min === 0` term from the WALK
+route survived the first round: the only min-0 test was `{0,0}`, and `takesTheLevelRecurrence` is
+`max >= 2`, so `{0,0}` never reaches this route at all. ⚠️ **Item 1907 recorded the identical trap one
+bound down** — "`{0,1}` IS THE ONLY BOUND THAT REACHES THE PER-SOURCE LOOP, and without it a
+540-assertion suite could not see two real mutants" — and it recurred because the DISPATCH CONDITION,
+not the obvious axis, is what says which cases are needed. With `{0,2}`/`{0,3}` in the oracle and an
+explicit `zero === one + 1` test, the mutant fails 3 tests.
+
+⚠️ **AND MY A/B's "PRISTINE" ARM WAS NOT PRISTINE.** The copy was saved AFTER the route was added, so
+the first PRE build still contained it — caught by the arm-identity grep (`perSourceAdmissible in
+dist = 2, expect 0`) before any number was read, which is CLAUDE.md's rule earning itself. The real
+PRE came from `git show HEAD:`. Both the timeout and the cgroup cap were proved to kill first (137 on
+an allocator bomb, 124 on a bare loop) — load-bearing here because the trail route is RECURSIVE with
+a budget a mutant can delete.
+
+INSTRUMENTS. `packages/native/varlen-per-source-mutants-1978.sh` (13 mutants, both suites per mutant,
+anchor-match asserted, restore-before-apply, verdict read from stdout+stderr then the exit code);
+`countsubq-1977.mjs` gains shapes H and I.
+
+GATES. `bun run fmt` 0; `bun run check` 0; `bun run test -- --skip-nx-cache` 0, 21 projects;
+`bun run fuzz` 0, 57 pass / 0 fail; the native parity suites 55 pass / 1,305 assertions.

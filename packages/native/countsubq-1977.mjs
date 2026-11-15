@@ -106,6 +106,26 @@ const SHAPES = [
     'G top-level count, INLINE seed  [1906 fast form]',
     'MATCH (u:User {name: $n})-[:FOLLOWS]->{1,3}(x:User) RETURN count(*) AS spread',
   ],
+  /*
+   * ⚠️ H AND I ARE THE CONTROLS ITEM 1978 NEEDS, and they answer different questions.
+   *
+   * H is UNSEEDED, so `perSourceAdmissible` refuses it outright and it runs item 573's rung exactly
+   * as it always did. It is the row that must NOT move: [[executor-edits-perturb]] prices a new
+   * walk variant at up to 16% on UNRELATED shapes, and this one sits in the same function.
+   *
+   * I is a BROAD seed (every vertex passes), which is the one that separates the two costs inside
+   * B. It pays the same |V| preamble — the two `Float64Array(|V|)`, the `|V|` init pass, the start
+   * label's array copy and the per-vertex seed filter — but ALSO the level loop and a 20,000-source
+   * sum. If I and B are close, the preamble dominates and the level recurrence was never the cost.
+   */
+  [
+    'H UNSEEDED count  [CONTROL, must not move]',
+    'MATCH (u:User)-[:FOLLOWS]->{1,3}(x:User) RETURN count(*) AS spread',
+  ],
+  [
+    'I BROAD seed, every vertex passes  [splitter]',
+    'MATCH (u:User)-[:FOLLOWS]->{1,3}(x:User) WHERE u.name >= $lo RETURN count(*) AS spread',
+  ],
 ];
 
 const tsGraph = tsDeserialize(NDJSON, 'ndjson', new Graph());
@@ -167,13 +187,14 @@ for (const [name, q] of SHAPES) {
   // ⚠️ THE ANSWER IS PRINTED because a route gap only matters between shapes that AGREE. On a
   // permutation graph A-D must all read 3 and E-F must read 1.
   const answer = JSON.stringify(
-    tsQuery(tsGraph, q, { n: 'user7' })?.[0]?.spread ?? tsQuery(tsGraph, q, { n: 'user7' })?.[0]?.c,
+    tsQuery(tsGraph, q, { n: 'user7', lo: '' })?.[0]?.spread ??
+      tsQuery(tsGraph, q, { n: 'user7', lo: '' })?.[0]?.c,
   );
-  const ts = measure((i) => void tsQuery(tsGraph, q, { n: `user${String(i)}` }));
+  const ts = measure((i) => void tsQuery(tsGraph, q, { n: `user${String(i)}`, lo: '' }));
   let nat;
 
   if (nativeGraph !== undefined) {
-    nat = measure((i) => void nativeGraph.query(q, { n: `user${String(i)}` }));
+    nat = measure((i) => void nativeGraph.query(q, { n: `user${String(i)}`, lo: '' }));
   }
 
   console.log(
