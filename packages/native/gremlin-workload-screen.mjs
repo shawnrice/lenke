@@ -248,7 +248,23 @@ console.log(
 );
 console.log(`# vertices=${String(g.vertexCount)} edges=${String(g.edgeCount)}`);
 console.log(
-  '# ⚠️ SORTED BY ABSOLUTE ms. Read `rows` beside it: a shape returning 0 measures a miss.\n',
+  '# ⚠️ SORTED BY ABSOLUTE ms. Read `rows` beside it: a shape returning 0 measures a miss.',
+);
+/*
+ * ⚠️⚠️ THE CAVEAT IS PRINTED, NOT FILED (item 1988, the same fix as item 1985's probe banner).
+ *
+ * A full run puts ~44 shapes through one process, so every shared dispatch site is polymorphic and
+ * the rows inflate UNEQUALLY. Measured three times now: item 1958 at 1.4-1.9x, item 1984 at 2.3x on
+ * a GQL row, and item 1988 at 1.3-1.56x on this screen's own `simplePath` / `where: neq` pair —
+ * where the inflation made two STRUCTURALLY IDENTICAL plans read 59.88 and 69.97 ms and look like
+ * this repo's named spelling-gap defect. Isolated they are 46.12 and 44.44.
+ *
+ * So the absolutes are for RANKING a run against itself, and a cross-row ratio needs `ONLY=`.
+ */
+console.log(
+  '#    ⚠️ ABSOLUTES ARE INFLATED 1.3-1.9x UNEQUALLY by the ~44 shapes sharing this process.\n' +
+    '#    Rank with them; do NOT compare two rows or two runs. For either, re-run with\n' +
+    "#    ONLY='<the row's name>' so the shape has a process to itself (items 1958, 1984, 1988).\n",
 );
 console.log('      ms      rows   shape');
 console.log('-------------------------------------------------------');

@@ -96362,3 +96362,74 @@ NO ENGINE BEHAVIOUR CHANGED — two prose corrections (item 1986's entry, `cycli
 note) and this entry.
 
 GATES. `bun run fmt` 0; `bun run check` 0.
+
+## Item 1988 — ❌ **AN APPARENT SPELLING GAP ON THE SCREEN'S OWN ROWS IS SCREEN INTERFERENCE: two STRUCTURALLY IDENTICAL plans read 59.88 and 69.97 ms in a full run and 46.12 / 44.44 isolated.** ✅ Which incidentally VERIFIES item 1923's rewrite adds no measurable cost over its target — an invariant that rewrite depends on and nobody had checked. ✅ And the screen now PRINTS the caveat, third measurement of the effect
+
+With `cyclicPath` taken (item 1986) and `tree()` re-declined (item 1987), the full Gremlin workload
+screen was run at `NODES=200000` to re-rank the surface. Two of its rows looked impossible together:
+
+```text
+    69.97   599998   where: neq filter      V(), as_('a'), out('E'), where(neq('a')), values('n')
+    59.88   599998   pathdep: simplePath    V(), out('E'), simplePath(), values('n')
+```
+
+🔑 **`simplePath` IS A REWRITE INTO THE OTHER ONE.** Item 1923 built
+`normalizeDepth1SimplePath`, and its emitted steps are exactly
+`[source, as(tag), hop, where(neq tag), proj]` — the neq row's shape, differing only in the tag
+STRING (`~simplePath` against `a`). So `simplePath` should cost the neq row PLUS a rewrite, and it
+measured **1.17x cheaper**. Same row count, both 599,998.
+
+That is this repo's named defect class in its purest form — two spellings of one question at
+different prices — so it got isolated before it got a hypothesis (item 1984's lesson):
+
+```text
+    ONE ROW PER PROCESS, NODES=200000, three reps each
+      pathdep: simplePath    44.38  46.31  46.12     median 46.12
+      where: neq filter      44.44  43.14  46.38     median 44.44     1.04x, ranges OVERLAP
+```
+
+❌ **No gap. The 1.17x was the full screen's cross-row interference**, and both rows are inflated
+**1.3-1.56x** in it (≈45 ms isolated against 59.88 / 69.97). Item 762 names the mechanism: ~44
+shapes in one process leave every shared dispatch site polymorphic, so the figure belongs to the
+mix.
+
+### ✅ THE NEGATIVE RESULT IS WORTH MORE THAN IT LOOKS
+
+Item 1923's rewrite is only sound as a PERFORMANCE change if the shape it rewrites INTO is not more
+expensive than the one it replaces — and that was assumed, never measured, because the rewrite's own
+8.17x was measured against the _unrewritten_ `simplePath`, not against a hand-written neq. These two
+readings close that: **46.12 against 44.44 means the rewrite costs nothing measurable over its
+target**, so its win is the rung it reaches and not an artifact of the tag it introduces. Recorded
+because a rewrite whose target is slower than its source is a real failure mode and nothing in the
+suite would show it.
+
+### ✅ AND THE SCREEN NOW PRINTS THE CAVEAT — third measurement, so it stops being folklore
+
+The effect is now measured three times: item 1958 at **1.4-1.9x**, item 1984 at **2.3x** (a GQL row
+where a 3-row `BENCH_ONLY` selection made one row bimodal), and this item at **1.3-1.56x**. ⚠️ And
+`gremlin-workload-screen.mjs` carried no warning at all, while `PROBES.md` calls it "Start here
+(Gremlin)" and it prints absolutes SORTED DESCENDING — which is an invitation to compare two rows,
+exactly what misled this item for one step. It now prints:
+
+```text
+    #    ⚠️ ABSOLUTES ARE INFLATED 1.3-1.9x UNEQUALLY by the ~44 shapes sharing this process.
+    #    Rank with them; do NOT compare two rows or two runs. For either, re-run with
+    #    ONLY='<the row's name>' so the shape has a process to itself (items 1958, 1984, 1988).
+```
+
+Same fix as item 1985's probe banner and for the same reason: **a warning filed where the reader is
+not is a warning that does not fire.** The effect had been measured twice and written down twice, in
+`CLOSED.md` and in memory, and it still cost a step — because the number that misleads you is printed
+by a tool that says nothing.
+
+### ⚠️ WHAT THIS MEANS FOR THE SCREEN'S OTHER ROWS, stated so the next reader does not repeat it
+
+The run's ranking stands — `tree()` first by a wide margin, then `path().by(k)` 90.16,
+`edge: outE.has(w).inV` 75.98, `where: neq filter` 69.97 — but **no ratio between two of those rows
+is usable**, and neither is a comparison against a figure from an earlier run. Each candidate needs
+an `ONLY=` reading before it is priced. That is not new advice; it is the advice this item needed and
+did not have in front of it.
+
+NO ENGINE BEHAVIOUR CHANGED — a printed caveat in one screen and this entry.
+
+GATES. `bun run fmt` 0; `bun run check` 0. The screen re-run after the edit and its output verified.
