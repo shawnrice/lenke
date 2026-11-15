@@ -92762,7 +92762,7 @@ NO ENGINE BEHAVIOUR CHANGED — one instrument, one extended probe arm, and this
 
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects.
 
-## Item 1936 — **THE CLIFF IS NOT THE COST OF LABEL FILTERING — IT IS THE COST OF ABANDONING EDGE ITERATION.** A hand loop over the same edges WITH both label tests runs at **34 ns a row against the fast arm's 25**, where the engine off that arm is **245**. ⚠️ So item 1935's 43-gate scope is wrong: the closed-form COUNT is already near-optimal off its fast arm (1.34x) and is not a target at all. ⚠️ ~~the hand loop is the far-driven loop plus one test~~ **CORRECTED at item 1937: it is a DIFFERENT algorithm (edge iteration), because the far-driven walk counts rather than walks. The 7.23x stands; its cost is a new walk variant**
+## Item 1936 — **THE CLIFF IS NOT THE COST OF LABEL FILTERING — IT IS THE COST OF ABANDONING EDGE ITERATION.** A hand loop over the same edges WITH both label tests runs at **34 ns a row against the fast arm's 25**, where the engine off that arm is **245**. ⚠️ So item 1935's 43-gate scope is wrong: the closed-form COUNT is already near-optimal off its fast arm (1.34x) and is not a target at all. ⚠️ ~~the hand loop is the far-driven loop plus one test~~ **CORRECTED at item 1937: it is a DIFFERENT algorithm (edge iteration), because the far-driven walk counts rather than walks. The 7.23x stands; its cost is a new walk variant** ⚠️ **And the 7.23x is a NARROW BAND — item 1938 swept the selectivity: 1.4x-4x above ~30% coverage, a 25x REGRESSION below ~20%, so the gate must be a COST test and not a boolean**
 
 Item 1935 priced the label-vacuity cliff at up to 1157x across 43 gates and left the scope as an
 owner decision. ❌ **Measuring what is RECOVERABLE rather than what is LOST cuts that scope roughly
@@ -92889,5 +92889,68 @@ larger, and the measurement work is done — `countceiling-probe-1936.mjs` and
 read screen in the repo is label-homogeneous (so none of this has been measured off the fast arm).
 
 NO ENGINE BEHAVIOUR CHANGED — this entry and two corrected ones.
+
+GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects.
+
+## Item 1938 — ⚠️⚠️ **A GATE ON "NON-VACUOUS" WOULD BE A 25x REGRESSION on selective labels**, and item 1936's 7.23x sits in a narrow band. Measured across the selectivity range the edge-driven arm is worth **1.4x-4x above ~30% coverage and loses below ~20%** — so this needs a COST gate, not a boolean, and the threshold needs sweeps this item did not do
+
+Item 1937 framed the target correctly (a new edge-iterating walk, 7.23x) and left the build next.
+❌ **Measuring the gate's INPUT first changed the proposition, and would have caught a bad
+implementation.**
+
+## The preconditions, read from the code rather than assumed
+
+The gate lives in `hop-projection.ts`'s branch at
+`if (farPred === undefined && gate === undefined && !needsStart)`, with `types.length === 1` by the
+earlier early-return. ✅ **`!needsStart` is the load-bearing one**: nothing reads the start vertex,
+which is why an edge-iterating walk needs only `farVar` bound — exactly the hand loop's shape.
+
+## ❌ But a boolean gate on non-vacuity is wrong, and the first fixture could not show it
+
+`|E|` must be held CONSTANT while the start label's coverage varies. The first version of
+`edgedriven-crossover-1938.mjs` created edges only FROM the T-vertices, so `|E|` shrank with the T
+count and the edge-driven arm's O(|E|) shrank with it — **no crossover could appear, because the
+fixture was invariant to the thing being varied** (it reported the arm winning 1.47x-2.86x
+everywhere). With every vertex an edge source, and both ends carrying the selective label — the
+shape item 1936 measured and the shape a real schema has:
+
+        T frac     rows    engine   hand edge   ratio   agree
+         1.000   100000      4.93        3.51   1.41x    true   ⬅ T vacuous: counting arm
+         0.500    26535      5.87        1.48   3.97x    true   ⬅ peak
+         0.200     5109      0.78        0.77   1.02x    true   ⬅ CROSSOVER
+         0.050      714      0.19        0.63   0.30x    true
+         0.010       71      0.02        0.47   0.04x    true   ⬅ start-driven wins 25x
+         0.002       14      0.00        0.58   0.01x    true
+
+🔑 **Edge iteration is O(|E|) whatever the selectivity; the start-driven walk iterates the label
+BUCKET, so it is sub-linear when the label is selective.** That is item 1688's lesson, which this
+file already records for the FAR label and which applies identically to the start.
+
+⚠️ **AND IT RELOCATES ITEM 1936's 7.23x TO A NARROW BAND.** That measurement used a label covering
+50,000 of 50,001 vertices — just barely non-vacuous. At 50% coverage the win is 3.97x; at full
+coverage only 1.41x, because the label is vacuous again and the engine takes the counting arm. So the
+honest headline is **1.4x-4x over roughly the top third of the selectivity range**, not 7.23x.
+
+## 🔭 What a build now needs, and what this item deliberately did not do
+
+- A **cost gate**, not a boolean: route to edge-driven only when the start label's coverage is above
+  a threshold near 0.2-0.3. `farDrivenPaysForMultiType(typeEdgeCount, farEndpoints)` is the
+  precedent for a numeric gate in this file.
+- ⚠️ **THAT THRESHOLD IS NOT YET TRUSTWORTHY.** It comes from ONE fixture at ONE size (50,000) and
+  ONE fanout (2). CLAUDE.md requires the size sweep (the cache-resident transition is between 200k
+  and 1M) and the fanout sweep (per-edge costs scale with the edge:node ratio, per-node costs do
+  not) before a threshold can be believed — and the crossover is exactly where both matter, since it
+  is a ratio between an O(|E|) arm and an O(tCount x degree) one.
+- Then the walk, a gate, tests asserting answers as MULTISETS (row order is unspecified
+  [[order-is-unspecified]], and this arm emits in edge-bucket order where the others emit in vertex
+  order), a mutation battery, and the byte-identity fuzzers.
+
+**So the remaining decision is sharper than before:** 1.4x-4x on part of the range, for a new rung
+plus a cost threshold needing two more sweeps, in a file where a new walk variant has measured up to
+16% on unrelated shapes. ⚠️ And the naive version of this change — gate on `!vacuousLabel` — is a
+**25x regression** on any selective label, which is the trap this item exists to have found before
+the code did.
+
+NO ENGINE BEHAVIOUR CHANGED — one instrument and this entry.
 
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects.
