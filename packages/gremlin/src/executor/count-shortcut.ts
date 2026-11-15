@@ -3,6 +3,7 @@ import type { Edge, Graph, Vertex } from '@lenke/core';
 import type { ID, Plan, Predicate, Step } from '../ast.js';
 import { matches, specializePredicate } from '../predicates.js';
 import { seedForStep, seekWorthTaking } from './index-seed.js';
+import { seenBefore } from './second-ask.js';
 import { asStringId } from './sources.js';
 
 /**
@@ -2404,6 +2405,40 @@ const hopChainCount = (mid: readonly Step[], graph: Graph): number | undefined =
   // stays for that case, and `gremlin-hop-chain-count.test.ts` pins both routes against native.
   if (unfiltered && hops.length === 2) {
     const [h0, h1] = hops;
+
+    /*
+     * ⚠️⚠️ DENSE SLOTS ON A REPEAT ASK (item 1983). Items 1859-1861 priced this at 3.97x and
+     * DECLINED it; item 1982 re-opened the decline and located the arm, which is THIS one and not
+     * the walk those items measured.
+     *
+     * The identity below is O(V) with no edge walk at all — two degree reads a vertex — so it looks
+     * unbeatable by an O(V + E) propagation. It is not: those reads are a `Map.get` plus a `.size`
+     * each, and item 1546 measured that pair at **25.8% of `hopcount3`'s whole profile** with its
+     * single-type short-circuit refuted as NULL. At 200,000 vertices the identity costs 258 ns a
+     * vertex (51.6 ms); the same count over flat `Int32Array` degrees costs 13.0 (item 1860's
+     * hand-rolled ceiling, re-measured at item 1982). **3.97x, and it is the array reads.**
+     *
+     * 🔑 WHY IT IS SAFE NOW AND WAS NOT AT ITEM 1860. Item 1695's criterion — "safe iff the walk
+     * costs more than the rebuild" — fails here (52 ms walk against a 160 ms rebuild) and exists
+     * because a build can be WASTED. `seenBefore` is item 1889's second-ask policy, keyed on
+     * `graph.topologyVersion`: a ONE-SHOT query never builds, a WRITE-EVERY-READ workload never
+     * reaches a second ask on any one version so it never builds either, and only a repeated read
+     * on a stable topology builds — the case that wins. [[check-the-blocker-still-holds]].
+     *
+     * ⚠️ THE KEY IS REUSED, NOT RE-KEYED, which is the convention `optional-hop-values.ts` states
+     * for this policy — and here it is load-bearing rather than tidy: `slotChainCount` reads
+     * `chainCsrFor(graph, forward, labels)`, the SAME entry those single-hop callers warm, so a
+     * graph where `V().out(T)` has already been asked hands this route a CSR it need not build.
+     */
+    if (twoHopDenseShape(hops) && seenBefore(graph, h0.kind === 'out', h0.labels[0])) {
+      // UNFILTERED means the source set is every vertex, which is exactly this seed list.
+      const dense = denseChainCount(hops, [...graph.verticesById.values()], graph);
+
+      if (dense !== undefined) {
+        return dense;
+      }
+    }
+
     let total = 0;
 
     for (const w of graph.verticesById.values()) {
@@ -2592,6 +2627,40 @@ const denseChainCount = (
   oneWalkThroughout(hops) && seeds.length > Math.max(graph.vertexCount >> 4, 1024)
     ? slotChainCount(hops, seeds, graph)
     : undefined;
+
+/**
+ * May an UNFILTERED two-hop count try the dense slot route? (item 1983)
+ *
+ * ⚠️⚠️ **A ROUTE CHOICE, SO ANSWER-EQUIVALENT, and every behavioural test in this package is blind
+ * to a mutant of it** — both arms count the same walks ([[perf-gate-needs-its-own-test]]). Exported
+ * for its own unit test, not for a caller.
+ *
+ * All three conditions are load-bearing and none is cosmetic:
+ *
+ *   not `both`           a `both` hop arrives AND departs along both index boxes, so one CSR cannot
+ *                        express it — item 590's reason that `both.out` and `out.both` differ.
+ *                        ⚠️ `oneWalkThroughout` does NOT exclude it: two `both` hops share a `kind`
+ *                        and labels, so it reports true, and only this clause refuses them. Measured
+ *                        UNREACHABLE today — a `both` chain is answered by the `chainDegree` arm and
+ *                        reached this gate 0 of 2 asks under a route counter — so it is a GUARD
+ *                        against a later reordering rather than a fix. ⚠️ A wrong answer here would
+ *                        be INVISIBLE: `denseChainCount` admits only when
+ *                        `seeds.length > max(vertexCount >> 4, 1024)`, and every fixture in this
+ *                        package is below that, so no existing test could reach it.
+ *   `oneWalkThroughout`  the chain CSR is ONE index with ONE label set; a mixed-direction chain
+ *                        (`out` then `in`) walks two, and taking this route for it would count a
+ *                        FORWARD chain — a wrong answer, not a slow one.
+ *   one label            `seenBefore` and `chainCsrFor` are keyed on a single type, and an UNTYPED
+ *                        hop has `labels.length === 0`, so `labels[0]` would be `undefined` and the
+ *                        key would collide across every untyped shape.
+ *
+ * The second-ask half of the gate is `seenBefore`, which has its own test in
+ * `hop-values-csr.test.ts`. ⚠️ The CONJUNCTION at the call site is not reachable from a unit test
+ * without a route counter, so a mutant dropping `&& seenBefore(...)` survives this file; it is
+ * caught instead by `twohop-coldask-1983.mjs`, whose one-shot and write-every-read arms would move.
+ */
+export const twoHopDenseShape = (hops: readonly HopStep[]): boolean =>
+  hops[0].kind !== 'both' && oneWalkThroughout(hops) && hops[0].labels.length === 1;
 
 /** Do all hops walk the same index with the same labels? The memo is a function of exactly that. */
 const oneWalkThroughout = (hops: readonly HopStep[]): boolean => {

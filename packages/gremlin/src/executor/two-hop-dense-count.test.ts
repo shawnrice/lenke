@@ -24,6 +24,7 @@ import { describe, expect, test } from 'bun:test';
 import { Graph } from '@lenke/core';
 
 import { count, hasLabel, in_, out, toArray, traversal, V } from '../index.js';
+import { twoHopDenseShape } from './count-shortcut.js';
 
 /**
  * ⚠️ 2,000 VERTICES, NOT A HANDFUL. `max(2000 >> 4, 1024)` is 1024, so a full-graph frontier of
@@ -163,5 +164,49 @@ describe('the two-hop count agrees with a hand walk above the dense threshold', 
 
     expect(mixed()).toBe(want);
     expect(mixed()).toBe(want);
+  });
+});
+
+/*
+ * ⚠️⚠️ THE ROUTE CHOICE AS ARITHMETIC. The tests above check the ANSWER, which both arms get right —
+ * so they cannot see a gate mutant at all. These can.
+ */
+describe('twoHopDenseShape', () => {
+  /** A `HopStep` with only the two fields the predicate reads — `kind` and `labels`. */
+  const hop = (
+    kind: 'out' | 'in' | 'both',
+    labels: readonly string[],
+  ): Parameters<typeof twoHopDenseShape>[0][number] => ({ kind, labels });
+
+  test('admits a same-direction, single-type chain', () => {
+    expect(twoHopDenseShape([hop('out', ['E']), hop('out', ['E'])])).toBe(true);
+    expect(twoHopDenseShape([hop('in', ['E']), hop('in', ['E'])])).toBe(true);
+  });
+
+  test('REFUSES a mixed-direction chain', () => {
+    // The chain CSR is one index; taking it here would count a FORWARD chain — a wrong answer.
+    expect(twoHopDenseShape([hop('out', ['E']), hop('in', ['E'])])).toBe(false);
+    expect(twoHopDenseShape([hop('in', ['E']), hop('out', ['E'])])).toBe(false);
+  });
+
+  test('REFUSES a `both` hop', () => {
+    // A `both` hop arrives and departs along the same pair of boxes, so its two factors coincide —
+    // which is why `both.out` and `out.both` come out different (item 590) and why one index cannot
+    // express it.
+    expect(twoHopDenseShape([hop('both', ['E']), hop('both', ['E'])])).toBe(false);
+  });
+
+  test('REFUSES differing label sets', () => {
+    expect(twoHopDenseShape([hop('out', ['E']), hop('out', ['F'])])).toBe(false);
+  });
+
+  test('REFUSES an UNTYPED hop, where `labels[0]` would be undefined', () => {
+    // `seenBefore` and `chainCsrFor` are keyed on a single type, so an empty label list would key on
+    // `undefined` and collide across every untyped shape.
+    expect(twoHopDenseShape([hop('out', []), hop('out', [])])).toBe(false);
+  });
+
+  test('REFUSES a multi-type hop for the same keying reason', () => {
+    expect(twoHopDenseShape([hop('out', ['E', 'F']), hop('out', ['E', 'F'])])).toBe(false);
   });
 });

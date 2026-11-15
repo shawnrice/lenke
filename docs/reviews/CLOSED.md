@@ -86751,7 +86751,7 @@ NO ENGINE CODE CHANGED. One new instrument; the findings above are the deliverab
 GATES. Not applicable — no source change. The screen and the Gremlin bench both ran under the cgroup
 cap and are quoted above.
 
-## Item 1860 — the dense two-hop count is a REAL 4.05x and is DECLINED, because item 1695's criterion says so; and the chain arm's own write exposure is 7.95x, which that item did not measure ⚠️ **THE DECLINE NO LONGER HOLDS: item 1982 re-opened it — the criterion guards against a WASTED build, and item 1889's second-ask policy removes the waste. The target is arm A2405 (the unfiltered degree inner product), NOT the walk this item measured.**
+## Item 1860 — the dense two-hop count is a REAL 4.05x and is DECLINED, because item 1695's criterion says so; and the chain arm's own write exposure is 7.95x, which that item did not measure ⚠️ **THE DECLINE NO LONGER HOLDS: item 1982 re-opened it — the criterion guards against a WASTED build, and item 1889's second-ask policy removes the waste. The target is arm A2405 (the unfiltered degree inner product), NOT the walk this item measured.** ✅ **BUILT AT ITEM 1983: 3.85x, within 3% of the 3.97x ceiling THIS item measured by hand, with the one-shot and write-every-read controls flat.**
 
 ⚠️ **TWO CORRECTIONS FROM ITEM 1861, both to numbers below rather than to the decline.** (1) The
 rebuild is **~160 ms, not the 221 ms quoted here**: `cold - warm` also contains the JIT tiering up,
@@ -95860,11 +95860,121 @@ fixture. ⚠️ `denseChainCount` admits only when `seeds.length > max(vertexCou
 reach that arm — item 1978's hole, one package over. The test asserts its own admissibility so a
 later change to the threshold fails loudly.
 
-🔭 **OPEN, with the target located**: the dense slot route on arm A2405 behind `seenBefore`, worth
-3.97x on a 51.6 ms row. Not built this tick because the arm was identified only after the first
-attempt was reverted.
+🔭 ~~**OPEN, with the target located**~~ ✅ **BUILT AT ITEM 1983** — the dense slot route on arm
+A2405 behind `seenBefore`, measured at 3.85x against this item's 3.97x hand ceiling. Not built in
+this tick because the arm was identified only after the first attempt was reverted.
 
 NO ENGINE BEHAVIOUR CHANGED — the patch was reverted and `count-shortcut.ts` is byte-identical to
 HEAD (verified: no `seenBefore`, no counters).
 
 GATES. `bun run fmt` 0; `bun run check` 0; the Gremlin suite 2,414 pass / 0 fail.
+
+## Item 1983 — ✅ **SHIPPED the two-hop dense route item 1860 declined: `V().out().out().count()` 51.6 → 13.4 ms, 3.85x — which lands on item 1860's own measured ceiling of 3.97x — and the ordering anomaly that nominated it is GONE** (2-hop 8.5 < 3-hop 21.7 < 4-hop 26.4, monotonic for the first time). ⚠️ **The one-shot and write-every-read controls are FLAT, which is the whole safety argument and what `bench:gremlin` structurally cannot test**
+
+Item 1982 re-opened item 1860's decline and located the arm. This builds it there.
+
+### THE CHANGE
+
+On the UNFILTERED two-hop arm, the dense slot route behind `seenBefore` — item 1889's second-ask
+policy. The identity that arm uses is O(V) with **no edge walk at all** (two degree reads a vertex,
+item 590's degree inner product), which looks unbeatable by an O(V + E) propagation. It is not: those
+reads are a `Map.get` plus a `.size` each, which item 1546 measured at **25.8% of `hopcount3`'s whole
+profile** with its single-type short-circuit refuted as NULL. 258 ns a vertex against flat
+`Int32Array` degrees.
+
+🔑 **AND THE KEY IS REUSED RATHER THAN RE-KEYED** — the convention `optional-hop-values.ts` states
+for this policy, and here it is load-bearing rather than tidy: `slotChainCount` reads
+`chainCsrFor(graph, forward, labels)`, the SAME entry `seenBefore`'s existing single-hop callers
+warm, so a graph where `V().out(T)` has already been asked hands this route a CSR it need not build.
+
+⚠️ **A LEAF MODULE CAME OUT OF IT.** `count-shortcut.ts` importing `hop-values-csr.ts` is a
+dependency CYCLE — the lint caught it — so the policy moved to `second-ask.ts` and
+`hop-values-csr.ts` re-exports it, leaving its five existing importers untouched. That is the right
+shape regardless now that the policy has seven callers.
+
+### THE NUMBERS, AND THE TWO INSTRUMENTS DISAGREE BY DESIGN
+
+```text
+    bench:gremlin (200k / 1M, min of 5 after 3 warm-ups, ~30 shapes in one process)
+      V().out().out().count()              51.6 -> 13.4   3.85x   ⬅
+      V().repeat(out).times(2).count()     51.4 ->  9.5   5.41x
+      V().out().out().out().count()        22.3 -> 22.8   flat    [CONTROL]
+      V().out()x4.count()                  26.9 -> 27.0   flat    [CONTROL]
+      V().has().out().count()              22.9 -> 23.0   flat    [CONTROL]
+      every row still reports `same`
+```
+
+⚠️ **THE FIGURE IS THE MODE OF FOUR READINGS, NOT MY FIRST ONE, AND THE DIFFERENCE MATTERED.** The
+first run of this row read **8.5 ms** and I was about to report 6.07x. Four isolated runs read
+**8.5 / 12.5 / 12.9 / 13.4 / 13.4** — so 13.4 is the stable mode and 8.5 was the best single draw of
+five. ✅ The corrected 3.85x is also the better result to have, because it lands on the ceiling item
+1860 measured independently by hand (**3.97x**): a shipped route arriving within 3% of a
+hand-rolled ceiling is a consistency check that a 6.07x would have quietly failed.
+
+⚠️⚠️ **`bench:gremlin` CANNOT TEST THE SAFETY CLAIM, because min-of-5-after-3-warm-ups IS the
+repeated case by construction.** The claim is about what a NON-repeated query pays, and item 1889's
+own history is why it needs measuring: before that policy existed its cold arm read **0.61x — a
+1.64x first-query regression**. So `twohop-coldask-1983.mjs` measures the three modes, one arm per
+process, PRE from `git show HEAD:`:
+
+```text
+    mode                                 PRE      POST     read
+    one-shot (fresh graph per ask)      75.86    65.01    both take the walk; never a second ask
+    write-every-read                    33.93    32.51    1.04x — invalidated before it can build
+    repeated                            29.44    14.89    1.98x
+```
+
+✅ **Both controls flat is the finding, not the 1.98x.** A one-shot never reaches a second ask on any
+topology version and a write-every-read workload never reaches one either, so neither pays a build —
+which is exactly what item 1695's criterion was protecting and why its literal verdict (walk 52 ms
+against a 160 ms rebuild = FAILS) no longer decides the case.
+
+⚠️ **THE TWO INSTRUMENTS STILL DISAGREE — 3.85x in-bench against 1.98x isolated — AND THAT IS
+REPORTED RATHER THAN AVERAGED.** The fixtures are structurally equivalent (200k vertices, 1M edges,
+out-degree 5, one label, one edge type, both splitting on the repeat index). The difference is the
+PROCESS: the bench runs ~30 shapes through the shared `degreeOfTypes` callee where the probe runs
+one, and the dense route bypasses that callee entirely — so it would help more where the callee is
+polymorphic. ⚠️ **That is a HYPOTHESIS and is not verified**; item 762's lesson is the same mechanism
+read the other way round. The honest range is 1.98x isolated to 3.85x in a multi-shape process.
+
+### 🛑 A WRONG-ANSWER HAZARD MY OWN GATE ADMITTED, caught by the gate test and nothing else
+
+`twoHopDenseShape` first read `oneWalkThroughout(hops) && hops[0].labels.length === 1`. ⚠️ **Two
+`both` hops share a `kind` and labels, so `oneWalkThroughout` reports TRUE for them** — and a `both`
+hop arrives AND departs along both index boxes, which one CSR cannot express (item 590's reason that
+`both.out` and `out.both` differ). The gate test caught it on its first run.
+
+✅ Route-counted before fixing, rather than assumed: a `both` chain reaches this gate **0 of 2 asks**
+(it is answered by the `chainDegree` arm), so the admission was a latent hazard and not a live bug,
+and the clause is a GUARD against a later reordering. ⚠️ **A wrong answer there would have been
+invisible**: `denseChainCount` admits only when `seeds.length > max(vertexCount >> 4, 1024)`, and
+every fixture in the package is below that — the hole item 1982's test file was written for, which
+is why that file could catch this and 2,419 tests plus seven fuzzers could not. A 3-hop `both` chain
+was also checked against a hand oracle and is correct (648000), so nothing was inferred about
+`denseChainCount`'s own `both` handling from my predicate's bug.
+
+### THE MUTATION ROUND, AND THE THREE SURVIVORS ARE NAMED
+
+**8 mutants, 5 caught by the gate test** (`gate-admits-both`, `gate-drops-onewalk`,
+`gate-drops-single-label`, `gate-always-true`, `gate-always-false`).
+
+⚠️ **THREE SURVIVE, all three PERFORMANCE-ONLY, and they are recorded rather than papered over:**
+
+```text
+    callsite-drops-second-ask    the route fires on a FIRST ask  — safety lost, answers unchanged
+    callsite-wrong-direction     the policy arms the wrong key   — route rarely fires, answers unchanged
+    route-seeds-empty            seeds `[]` fails the width gate — route NEVER fires, answers unchanged
+```
+
+All three live at the CALL SITE, where a unit test cannot see them without a route counter in
+production code. ✅ **And the backstop is measured rather than claimed**: with `route-seeds-empty`
+applied, `twohop-coldask-1983.mjs` in `repeat` mode reads **32.18 ms against the shipped 14.89** — a
+2.16x move, loud. So the probe catches what the suite cannot, and that is now a demonstrated
+property of this item rather than an assertion in a comment.
+
+INSTRUMENTS. `packages/native/twohop-coldask-1983.mjs` (one-shot / write-every-read / repeated, one
+arm per process); `packages/native/twohop-dense-mutants-1983.sh` (8 mutants, both suites per mutant,
+anchor-match asserted, restore-before-apply, verdict from stdout+stderr then the exit code).
+
+GATES. `bun run fmt` 0; `bun run check` 0; `bun run test -- --skip-nx-cache` 0 across 21 projects;
+`bun run fuzz` 0, 57 pass / 0 fail; the Gremlin suite 2,419 pass / 0 fail.

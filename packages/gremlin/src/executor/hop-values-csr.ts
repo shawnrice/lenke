@@ -3,6 +3,7 @@ import type { Graph } from '@lenke/core';
 import type { Plan, Step } from '../ast.js';
 import { chainCsrFor } from './count-shortcut.js';
 import type { HopValues, HopWalk } from './hop-values.js';
+import { seenBefore } from './second-ask.js';
 
 /**
  * `V().out(T).values(k)` over the CSR — the ONE-hop twin of the walk the TWO-hop rung has used since
@@ -92,61 +93,7 @@ export const hopValuesCsr = (plan: Plan, graph: Graph): HopValues | undefined =>
   };
 };
 
-/**
- * Has this (graph, topology version, hop shape) been asked for BEFORE? The first ask returns
- * `false` and records it; every later ask returns `true`.
- *
- * ⚠️⚠️ **THIS POLICY IS THE ITEM.** The CSR is keyed on `topologyVersion`, so the first query after
- * any topology write pays the build — and `hop-values.ts` priced exactly that at items 1693/1694
- * without settling it ("`handCsrPlusBuild` 167.00 ms, **0.83x**, the FIRST query only"). Measured
- * here with a kill-switch A/B at 200,000 vertices / 1,000,000 edges, three order-alternated rounds,
- * BEFORE this policy existed:
- *
- * ```text
- *   hop   WARM   89.0 93.6 83.9  ->  42.3 48.9 42.1     2.10x
- *   hop   COLD  106.7 109.2 110.1 -> 181.2 180.0 165.5   0.61x   ⬅ a 1.64x REGRESSION, first query
- *   hop2  [control]                                      1.09x
- *   optional [control]                                   1.06x
- * ```
- *
- * So the warm win is real and the cold loss is real, which is why the lever sat open for ~200 items.
- * Deferring the build to the SECOND ask removes the loss without touching the win:
- *
- *   - a ONE-SHOT query never builds, and pays nothing;
- *   - a WRITE-HEAVY workload (write, read, write, read) never reaches a second ask on any one
- *     topology version, so it never builds either — which is the case item 1694 was most worried
- *     about and the reason the key includes the version;
- *   - a repeated read pays the build once and wins from then on.
- *
- * ⚠️ IT IS A ROUTE CHOICE, SO IT IS ANSWER-EQUIVALENT AND EVERY MUTANT OF IT SURVIVES THE
- * BEHAVIOURAL TESTS — [[perf-gate-needs-its-own-test]]. Hence a pure function with its own unit
- * test, which is what item 1776 did for `unsortedPageRoute`.
- *
- * ⚠️ AND IT IS KEYED ON THE VERSION, NOT MERELY STAMPED WITH IT: a generation is dropped WHOLE on
- * any topology write, the same discipline `chainCsrCache` uses, so nothing leaks one dead entry per
- * shape per write.
- */
-const seen = new WeakMap<Graph, { tv: number; shapes: Set<string> }>();
-
-export const seenBefore = (graph: Graph, forward: boolean, type: string): boolean => {
-  const tv = graph.topologyVersion;
-  let entry = seen.get(graph);
-
-  if (entry === undefined || entry.tv !== tv) {
-    entry = { tv, shapes: new Set() };
-    seen.set(graph, entry);
-  }
-
-  const key = `${forward ? '>' : '<'}${type}`;
-
-  if (entry.shapes.has(key)) {
-    return true;
-  }
-
-  entry.shapes.add(key);
-
-  return false;
-};
+export { seenBefore };
 
 type Element = { readonly id: string; readonly properties: Record<string, unknown> };
 type Picked = {
