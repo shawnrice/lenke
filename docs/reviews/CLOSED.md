@@ -94984,3 +94984,66 @@ Declined, with the numbers.
 NO ENGINE BEHAVIOUR CHANGED — one instrument, one heading correction, and this entry.
 
 GATES. `bun run check` 0.
+
+## Item 1973 — 🔑 **THE LABEL-VACUITY CLIFF ON AN INDEXED KEYED READ: one isolated off-label vertex costs TS 2.4-2.6x (243.6k → 94.4k ops/s) and native nothing** — which is the complete explanation of `bench:usage`'s only row where TS loses to native. ⚠️ Three of my own hypotheses were refuted first, and my probe's fixture was the problem
+
+A surface untouched this session: `bun run bench:usage`, the serving bench. Among INDEXED reads, TS
+beats native everywhere — `point lookup` 1.54M against 495.8k (3.1x), `permission check` 494.1k
+against 145.6k (3.4x), `2-hop` 570.8k against 252.2k (2.3x) — **except one**:
+
+```text
+  read: keyed dedup lookup          ts 94.3k   engine 166.5k    TS 1.77x SLOWER
+  read: keyed dedup lookup [inline] ts 93.0k   engine 177.8k         1.91x
+```
+
+Reproducible across runs (93.1k/166.3k on a second), so not noise.
+
+⚠️ **FOUR HYPOTHESES, THREE REFUTED, and the refutations are the useful part of the trail.**
+
+1. ❌ **A 2x spelling gap on writes** (`append node` 307.3k against `append node [params]` 639.4k).
+   The harness's own comment (item 662) explains it: the unparameterized row interpolates `i` into
+   the query TEXT, so every operation is a new string paying a parse+plan cache miss. Documented and
+   inherent, not a defect.
+2. ❌ **Index count.** The bench indexes `name` AND `score` while the query reads only `score`; a
+   12-round probe made that look like a **4.5x** cost. It is not — that reading was the WARMUP. At 24
+   rounds the sweep is flat and TS WINS throughout: 0 spare indexes 244.5k, 2 spare 251.0k, 4 spare
+   280.7k, native 148-161k. ⚠️ **The TS path on this shape climbs 17x from cold** (14k → 244k over
+   ~13 rounds of 200 ops), so a median over few rounds measures tiering, not steady state.
+3. ❌ **Shape pollution.** `BENCH_ONLY` runs the row alone, and it still read 99.4k against native's
+   169.7k — so the bench's 22-shapes-in-one-process is not depressing it.
+4. ❌ **`active` selectivity.** The bench sets `active: i % 3 === 0` where my fixture set it `true`
+   for all. Matched: 243.6k, unchanged.
+
+✅ **THE CAUSE, AND IT IS A TRAP I DOCUMENTED MYSELF.** My probe's fixture was users-only, which makes
+`User` a **VACUOUS** label — and [[label-vacuity-gates-fast-paths]] records that the GQL fast paths
+REQUIRE vacuity at 43 gates across 7 files, warning that "every read screen in the repo is
+label-homogeneous, so screen numbers are an arm a real schema cannot reach". The bench's graph
+carries Teams and Resources. Appending **one isolated, edgeless `Team` vertex**:
+
+```text
+  fixture                              ts warm   native warm   ts/native
+  users only (`User` VACUOUS)           243.6k      156.2k       1.56x   TS wins
+  + one Team vertex (non-vacuous)        94.4k      158.8k       0.59x   TS loses
+  …with 2 spare indexes                 102.3k      156.5k       0.65x
+  …with 4 spare indexes                 103.9k      154.9k       0.67x
+```
+
+**94.4k against the bench's 93-99k is a match**, native is flat across the change, and the cliff is
+**2.4-2.6x**. So the bench row is not an anomaly to explain away — it is the realistic number, and my
+"TS wins 1.65x" was the unreachable arm.
+
+🔑 **WHAT IS NEW HERE.** The vacuity cliff was documented for HOP projections (items 1934-1942 built
+three middle-ground arms for it). This is the same cliff on an **indexed keyed read with a secondary
+filter** — a different family, where it was not known to apply, and where it decides whether TS beats
+native or loses to it by ~2x. That is the next target, and it has a shape: items 1940/1941/1951 each
+replaced a vacuity gate with a COVERAGE gate on the same question, and the measurement mode already
+exists (`MIXED=1`).
+
+⚠️ **AND THE METHODOLOGICAL NOTE I OWE:** I built a users-only fixture to "control" the comparison
+and thereby removed the one property that mattered, then spent three hypotheses on the difference.
+The memory entry warning about exactly this is one I wrote. **A single-label fixture is not a control
+for a labelled query** — `MIXED=1` is now in this probe for that reason.
+
+NO ENGINE BEHAVIOUR CHANGED — three instruments and this entry.
+
+GATES. `bun run check` 0.
