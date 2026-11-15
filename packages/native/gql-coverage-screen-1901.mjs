@@ -65,6 +65,33 @@ const SHAPES = [
     {},
   ],
   ['CONTROL varlen {1,3} rows', 'MATCH (a:T)-[:E]->{1,3}(b:T) RETURN DISTINCT b.n AS x', {}],
+  // The UNSEEDED count takes `varLengthCount`; both SEEDED spellings reach no rung at all, so the
+  // count shape is a MISSING RUNG rather than a spelling gap. Priced for the next item.
+  ['CONTROL varlen count unseeded', 'MATCH (a:T)-[:E]->{1,3}(b:T) RETURN count(*) AS c', {}],
+  // ⚠️⚠️ THE CLAUSE-`WHERE` vs INLINE SPELLING OF ONE SEEDED VAR-LENGTH QUERY (item 1906). The
+  // inline form reaches `reachShortcut`; the clause form reaches NO rung. Same answer, same 8 rows,
+  // and the clause form is SLOWER THAN NOT SEEDING AT ALL — which is `audit item 159`'s "a filter
+  // that makes a query slower is a declined fast path, not the cost of filtering".
+  [
+    'VL seeded, clause WHERE',
+    'MATCH (a:T)-[:E]->{1,3}(b:T) WHERE a.n = $p0 RETURN DISTINCT b.n AS x',
+    { p0: 3 },
+  ],
+  [
+    'VL seeded, INLINE',
+    'MATCH (a:T {n: $p0})-[:E]->{1,3}(b:T) RETURN DISTINCT b.n AS x',
+    { p0: 3 },
+  ],
+  [
+    'VL seeded count, clause WHERE',
+    'MATCH (a:T)-[:E]->{1,3}(b:T) WHERE a.n = $p0 RETURN count(*) AS c',
+    { p0: 3 },
+  ],
+  [
+    'VL seeded count, INLINE',
+    'MATCH (a:T {n: $p0})-[:E]->{1,3}(b:T) RETURN count(*) AS c',
+    { p0: 3 },
+  ],
   [
     'CONTROL seeded {1,3} rows',
     'MATCH (a:T)-[:E]->{1,3}(b:T) WHERE a.n = $p0 RETURN DISTINCT b.n AS x',

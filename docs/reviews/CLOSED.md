@@ -90083,3 +90083,88 @@ read. Priced at item 1902, still priced.
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers;
 `bun run spelling` at SPELL_N=200000 SPELL_REPS=9 (2 flagged groups, both item 1902's known
 residual, no new ones); item 1904's matrix and census.
+
+## Item 1906 — **9.25x**, and it is this repo's FIRST-NAMED defect class found live: the reachability rung refused any clause `WHERE`, so a seeded var-length query cost **2996 ms spelled with `WHERE` and 342 spelled inline** — and the clause form was **7.4x slower than not seeding at all**
+
+Found profile-first, from the GQL coverage screen's own rows after items 1902-1905 moved the sort
+shapes out of the way. Two of its rows differ only in where the seed predicate is written:
+
+      200,000 vertices / 1,000,000 edges, one shape per process, median of 7 less warm-up:
+
+        MATCH (a:T)-[:E]->{1,3}(b:T) WHERE a.n = $p RETURN DISTINCT b.n   2996.17 ms   8 rows
+        MATCH (a:T {n: $p})-[:E]->{1,3}(b:T) RETURN DISTINCT b.n           342.45       8
+        ... the same query with NO seed at all                             405.22       8
+
+⚠️⚠️ **`CLAUDE.md` NAMES THAT PAIR FIRST.** "Every index-seeding bug found in the old engine had one
+shape: the planner recognized one spelling of a predicate and scanned for another that meant exactly
+the same thing — … a clause `WHERE` vs an inline `{k: $x}` … Each cost 100-300x and each returned the
+correct answer, so no correctness test could catch it." ⚠️ And the third line is audit item 159's
+rule: **a filter that makes a query slower is a declined fast path, not the cost of filtering.**
+Adding a predicate that cuts the seed set 8-fold made the query 7.4x slower.
+
+🔑 **THE CAUSE WAS ONE CONDITION**: `detectReachableShortcut` refused `m.where !== undefined`
+outright. The inline form reaches the rung because the start node's properties compile INTO the
+pattern, and `runReach` already applies them per seed (`matchNode`). So the fix is to carry a clause
+`WHERE` reading only the START as a second per-seed gate, beside the one already there.
+
+        clause WHERE   2996.17  ->  323.70 ms    ⬅ 9.25x
+        inline          342.45  ->  332.22        flat (control — it already had the rung)
+        unseeded        405.22  ->  400.59        flat (control)
+        spelling probe, the new group: 34.90 against 31.05 = 1.12x, where it was ~8x
+
+⚠️ **START-ONLY IS A SEMANTIC BOUND, NOT CAUTION.** A predicate on the start narrows the SEED SET,
+which is what this rung expresses. One reading the far variable filters the ANSWER — and since the
+walk DEDUPES reached vertices rather than enumerating paths, applying it per reached vertex is a
+different computation needing its own reasoning. One reading both is not expressible here. Routes,
+read off `compileLinear`: start-only → `reachShortcut`; far / both / loop-invariant / subquery /
+anonymous-start → general path, each asserted as a refusal.
+
+      `carriedStartGate` is a pure exported function with 10 unit tests, for item 1903's two
+      reasons: the mistakes are ANSWER-visible (a far-reading predicate admitted as a seed test
+      narrows the wrong set) and the detector sits on the complexity cap.
+
+## Three findings from the mutation run, all about the instrument rather than the code
+
+**MUTATION: 10 mutants, 10 caught, 0 survivors** — but only after two fixes to the battery itself,
+and those are the transferable part.
+
+🛑 **A MUTATION BATTERY MUST REBUILD THE DIST PER MUTANT.** `@lenke/gql` resolves to `dist` inside
+`packages/native` ([[fuzzers-read-built-dists]]), so the cross-engine tests ran against an
+UNMUTATED build and **all three run-time seed-gate mutants survived with the native suite nominally
+in the test set** — admitting every vertex, admitting an UNKNOWN result, never consulting the gate.
+A battery that mutates source and asserts against a stale artifact compares the code to an old copy
+of itself. ⚠️ And `restoreAll()` in the `finally` is not enough either: restoring the source is not
+restoring the artifact, so the rebuild belongs there too or the last mutant stays in the dist.
+
+🛑 **THE `hasSubquery` GUARD'S LOAD-BEARING SPELLING IS THE CONJUNCTION, not the bare subquery.**
+`freePredicateVars` returns the EMPTY set for a subquery, so a bare one is already refused by
+`vars.size !== 1` and a mutant deleting the guard SURVIVED the test using that spelling. In
+`a.n = 1 AND EXISTS { MATCH (b)-… }` the sibling supplies the start variable, the free set is `{a}`,
+and the gate would admit a predicate whose subquery reads the FAR end — evaluated per seed with `b`
+unbound. Item 475's rule in the direction nobody checks: the surviving mutant meant my TEST was
+weak, not that the guard was redundant.
+
+✅ **AND THE TWO SPELLINGS ARE NOT THE SAME QUESTION FOR A NULL OPERAND**, which the parity test
+found and which bounds the equivalence claim:
+
+        WHERE a.n = $p   with $p null  ->  []          three-valued equality, UNKNOWN
+        (a:T {n: $p})    with $p null  ->  the row     a property-value match, and null is a
+                                                       PRESENT value here ([[null-first-class-policy]])
+
+⚠️ Verified identical in BOTH engines and for the node, hop AND var-length shapes, so it is
+consistent policy rather than a divergence. "Equivalent spellings must cost the same" binds only
+where they ARE equivalent, and this pair's exception is now written down.
+
+🔭 **THE NOMINATION THIS TURNED UP IS BIGGER THAN THE FIX: 129x on the seeded var-length COUNT.**
+
+        MATCH (a:T)-[:E]->{1,3}(b:T) RETURN count(*)                      14.32 ms   varLengthCount
+        MATCH (a:T)-[:E]->{1,3}(b:T) WHERE a.n = $p RETURN count(*)     1978.42      GENERAL PATH
+        MATCH (a:T {n: $p})-[:E]->{1,3}(b:T) RETURN count(*)            1850.34      GENERAL PATH
+
+⚠️ **NOT a spelling gap — both seeded spellings reach no rung**, so `varLengthCount` simply refuses a
+seeded start. That makes it a MISSING RUNG, and the same "a filter that makes a query slower" shape
+at 129-138x rather than 9x. Priced, not built.
+
+GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers;
+`bun run spelling` at SPELL_N=200000 SPELL_REPS=9 (2 flagged groups, both item 1902's known
+residual, no new ones) plus the new group isolated; item 1904's sort matrix.

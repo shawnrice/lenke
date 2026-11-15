@@ -29,6 +29,7 @@ import { outNeighbors, relTypeNames } from './adjacency.js';
 import { matchNode, relHasPredicate } from './bindings.js';
 import { compileExpr } from './core.js';
 import type { CClause, CNode, CReturnItem, CompiledExpr, EvalEnv, Params, Row } from './core.js';
+import { freePredicateVars, hasSubquery } from './expr-analysis.js';
 import { seedVertices } from './matching.js';
 import { sortRowsByColumns } from './ordered-rows.js';
 import type { ColSort } from './ordered-rows.js';
@@ -154,6 +155,25 @@ export type ReachSpec = {
   types: string[] | undefined;
   minZero: boolean;
   /**
+   * A clause `WHERE` reading ONLY the start variable, compiled — applied per SEED (item 1906).
+   *
+   * ⚠️⚠️ **CARRYING IT IS WHAT MAKES TWO SPELLINGS OF ONE QUESTION COST THE SAME.** The detector
+   * used to refuse any clause `WHERE` outright, so `MATCH (a:T {n: $p})-[:E]->{1,3}(b:T)` reached
+   * this rung and the equivalent `MATCH (a:T)-[:E]->{1,3}(b:T) WHERE a.n = $p` reached NO rung:
+   * **2996.17 ms against 342.45 over 200,000 vertices / 1,000,000 edges, 8.75x, for the same 8
+   * rows.** `CLAUDE.md` names that pair first among the index-seeding bugs the old engine had — "a
+   * clause `WHERE` vs an inline `{k: $x}`" — and the clause form was also 7.4x SLOWER THAN NOT
+   * SEEDING AT ALL, which is audit item 159's "a filter that makes a query slower is a declined
+   * fast path, not the cost of filtering".
+   *
+   * ⚠️ START-ONLY, AND THAT IS A SEMANTIC BOUND RATHER THAN CAUTION. A predicate on the start
+   * narrows the SEED SET, which is what this rung can express. One reading the far variable is a
+   * filter on the ANSWER — and since the walk dedupes reached vertices rather than enumerating
+   * paths, applying it per reached vertex would be a different computation that has to be reasoned
+   * about separately. One reading both is not expressible here at all.
+   */
+  startGate?: { fn: CompiledExpr; variable: string };
+  /**
    * The quantifier's upper bound, or `undefined` for an unbounded `->*` / `->+` — item 1848.
    *
    * ⚠️ A BOUND MAKES THE WALK LEVEL-ORDERED, not merely shorter. The unbounded arm is a DFS
@@ -177,6 +197,30 @@ export const runReach = (spec: ReachSpec, graph: Graph, params: Params): Row[] =
   // A `$param` bound resolves here (validated up-front); a literal passes through.
   const skipN = resolveCount(spec.skip, params) ?? 0;
   const limit = resolveCount(spec.limit, params);
+  /**
+   * The carried clause `WHERE`, as a per-seed test — `() => true` when there is none.
+   *
+   * ⚠️ ONE BINDING, REUSED, which is every walk in this engine's habit; and the gate runs AFTER
+   * `matchNode` so an inline predicate still narrows first. Both are per SEED, not per reached
+   * vertex, so neither is in the walk's inner loop.
+   */
+  const seedGate = ((): ((v: Vertex) => boolean) => {
+    const g = spec.startGate;
+
+    if (g === undefined) {
+      return () => true;
+    }
+
+    const binding = new Map<string, unknown>();
+    const env: EvalEnv = { binding, params, graph };
+
+    return (v) => {
+      binding.set(g.variable, v);
+
+      return g.fn(env) === true;
+    };
+  })();
+
   // Seeds matching the start's label + inline props/WHERE. `seedVertices` only
   // narrows by label/index, so a no-index inline predicate (`{k:0}`) still needs a
   // per-seed check — otherwise we'd seed from the whole label and overcount the
@@ -185,7 +229,7 @@ export const runReach = (spec: ReachSpec, graph: Graph, params: Params): Row[] =
   // above it, so the narrowing is a plan shape rather than a function.
   // (`reach_seed_vertices` xref:gone.)
   const seeds = [...seedVertices(graph, cstart, new Map(), params)].filter(
-    (v) => matchNode(new Map(), cstart, v, params, graph) !== null,
+    (v) => matchNode(new Map(), cstart, v, params, graph) !== null && seedGate(v),
   );
   const nbrs = (v: Vertex): Vertex[] => outNeighbors(graph, v, out, types);
 
@@ -470,6 +514,55 @@ export const needsGeneralMatcher = (p: PathPattern): boolean =>
 const isSingleHopUnit = (seg: Segment | undefined): boolean =>
   seg !== undefined && (seg.unitRest?.length ?? 0) === 0 && seg.innerQ === undefined;
 
+/**
+ * A clause `WHERE` the reachability rung can CARRY, as a per-seed gate — or `null` to decline, or
+ * `undefined` for "there is no clause WHERE" (item 1906).
+ *
+ * ⚠️⚠️ **CARRYING IT IS WHAT MAKES TWO SPELLINGS OF ONE QUESTION COST THE SAME.** The detector
+ * refused any clause `WHERE` outright, so `MATCH (a:T {n: $p})-[:E]->{1,3}(b:T)` reached this rung
+ * and the equivalent `MATCH (a:T)-[:E]->{1,3}(b:T) WHERE a.n = $p` reached NO rung: **2996.17 ms
+ * against 342.45 over 200,000 vertices / 1,000,000 edges, 8.75x, for the same 8 rows.** `CLAUDE.md`
+ * names that pair FIRST among the index-seeding bugs the old engine had — "a clause `WHERE` vs an
+ * inline `{k: $x}`" — and the clause form was also 7.4x SLOWER THAN NOT SEEDING AT ALL, which is
+ * audit item 159's "a filter that makes a query slower is a declined fast path, not the cost of
+ * filtering".
+ *
+ * ⚠️ START-ONLY, AND THAT IS A SEMANTIC BOUND RATHER THAN CAUTION. A predicate on the start narrows
+ * the SEED SET, which is what this rung can express. One reading the far variable is a filter on the
+ * ANSWER, and since the walk DEDUPES reached vertices rather than enumerating paths, applying it per
+ * reached vertex is a different computation that needs its own reasoning. One reading both is not
+ * expressible here at all.
+ *
+ * ⚠️ A pure function because the mistakes are ANSWER-visible and `detectReachableShortcut` sits on
+ * the complexity cap — the same extraction item 1903 made for `walkReadFlags`, for both reasons.
+ */
+export const carriedStartGate = (
+  where: Expr | undefined,
+  compiled: CompiledExpr | undefined,
+  startVar: string | undefined,
+): { fn: CompiledExpr; variable: string } | null | undefined => {
+  if (where === undefined) {
+    return undefined;
+  }
+
+  const vars = freePredicateVars(where);
+
+  // ⚠️ A LOOP-INVARIANT PREDICATE (no free variables) IS NOT CARRIED and declines instead: it is a
+  // whole-query gate rather than a seed test, `loopInvariantWhere`'s own case, and the general path
+  // answers it without walking at all.
+  if (startVar === undefined || vars.size !== 1 || !vars.has(startVar)) {
+    return null;
+  }
+
+  // A SUBQUERY was a live cross-engine divergence at item 213, and `freePredicateVars` does not
+  // descend into one — so its names are invisible to the test above and it must be refused here.
+  if (hasSubquery(where)) {
+    return null;
+  }
+
+  return compiled === undefined ? null : { fn: compiled, variable: startVar };
+};
+
 export const detectReachableShortcut = (
   clauses: readonly Clause[],
   compiled: readonly CClause[],
@@ -484,7 +577,6 @@ export const detectReachableShortcut = (
   if (
     m.kind !== 'match' ||
     m.optional ||
-    m.where !== undefined ||
     m.patterns.length !== 1 ||
     ret.kind !== 'return' ||
     cm.kind !== 'match' ||
@@ -532,6 +624,18 @@ export const detectReachableShortcut = (
     return null;
   }
 
+  /*
+   * ⚠️⚠️ A CLAUSE `WHERE` IS CARRIED WHEN IT READS ONLY THE START (item 1906), where it used to be
+   * refused outright — see `ReachSpec.startGate` for the 8.75x that cost and why the bound is
+   * start-only. The compiled form is `cm.where`, the same expression the general path would
+   * evaluate, so there is nothing to keep in step by hand.
+   */
+  const startGate = carriedStartGate(m.where, cm.where, m.patterns[0].start.variable);
+
+  if (startGate === null) {
+    return null;
+  }
+
   const { projection } = ret;
   const count = reachCount(projection, bVar);
   const isRows = projection.distinct && projection.items.every((it) => refsOnlyVar(it.expr, bVar));
@@ -549,6 +653,7 @@ export const detectReachableShortcut = (
     out: rel.direction === 'out',
     types: types ?? undefined,
     minZero: q.min === 0,
+    startGate,
     maxDepth: q.max ?? undefined,
     isCount: count !== null,
     countArg: count?.countArg,

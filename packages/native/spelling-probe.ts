@@ -428,6 +428,26 @@ const GROUPS: [string, readonly string[]][] = [
     ],
   ],
   [
+    // ⚠️⚠️ THE SEEDED VAR-LENGTH PAIR (item 1906), and its absence is why an 8.75x survived: the
+    // probe has clause-vs-inline groups for the node and hop shapes and none for a QUANTIFIED one.
+    // `reachShortcut` refused any clause `WHERE` outright, so the inline spelling took the rung and
+    // the clause spelling reached none — 2996.17 ms against 342.45 over 200,000 vertices, for the
+    // same 8 rows, and the clause form was 7.4x slower than not seeding at all.
+    //
+    // ⚠️ A LITERAL, not a `$param`: this probe's main groups take no params (the seek section has
+    // its own). The routing under test is clause-vs-inline, which a literal exercises identically.
+    //
+    // ⚠️ AND A NON-NULL OPERAND MATTERS. With null the two spellings are NOT the same question —
+    // `WHERE a.k = null` is three-valued and matches nothing, while `{k: null}` is a property-value
+    // match and null is a PRESENT value here. Verified identical in both engines for the node, hop
+    // and var-length shapes, so it is policy rather than a divergence.
+    'seeded var-length: clause WHERE vs inline {k: v} (item 1906)',
+    [
+      'MATCH (a:P)-[:E]->{1,3}(b:P) WHERE a.k = 7 RETURN DISTINCT b.k AS x',
+      'MATCH (a:P {k: 7})-[:E]->{1,3}(b:P) RETURN DISTINCT b.k AS x',
+    ],
+  ],
+  [
     // ⚠️⚠️ THE UNWINDOWED TWIN OF THE GROUP ABOVE, AND ITS ABSENCE IS WHY THE GAP SURVIVED TO ITEM
     // 1901. Every alias-vs-expression group in this file carried a `LIMIT 10`, because item 1062
     // built the deferred compiled-key arm for WINDOWED sorts — so the probe only ever asked the

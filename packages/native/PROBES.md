@@ -1978,3 +1978,20 @@ top-k projects survivors only); `LIMIT 0` MUST RETURN `[]` (still refused, and f
 slicing before the projection fails the two skip-only hop cases, and the same mutation on the node
 arm fails the node cases. A stored NaN is the only way to make a projection fault (ingest coerces
 NaN to null), so it is computed with `SET`.
+
+## ⚠️ A MUTATION BATTERY MUST REBUILD THE DIST PER MUTANT (item 1906)
+
+`reach-gate-mutants-1906.mjs` mutates `packages/gql/src` and asserts against BOTH that package's
+tests and the cross-engine ones in `packages/native`. ⚠️⚠️ **`@lenke/gql` resolves to `dist` inside
+`packages/native`** ([[fuzzers-read-built-dists]]), so the first version ran the native suite against
+an UNMUTATED build and **all three run-time mutants survived with that suite nominally in the test
+set**. A battery that mutates source and asserts against a stale artifact is comparing the code to an
+old copy of itself — the same trap `backend-parity-fuzz` has for the wasm artifact, one layer up.
+
+⚠️ And `restoreAll()` in the `finally` is not enough: restoring the SOURCE is not restoring the
+ARTIFACT, so the rebuild belongs there too, or the last mutant stays in the dist that every TS
+harness reads afterwards.
+
+⚠️ One reading note for any battery spanning two packages: the `N failing` count printed beside a
+verdict is the FIRST result line in the concatenated output, so a mutant caught only by the second
+suite prints `0 failing` beside its ✅. The verdict comes from the exit code, which is the contract.
