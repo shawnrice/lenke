@@ -94459,9 +94459,67 @@ the binding from the carrier columns, call `projectRow`. That is a second row al
 `width`-entry binding rebuild per row, where the alias spelling projects once. The non-windowed case
 may project during the walk (item 1960's reasoning, unchanged), which is what should close the 1.62x
 — but the keys would then have to travel beside the rows rather than inside them, and the walk
-machinery writes rows through `walkProj`. That is the next build, and it is owed rather than
-optional.
+machinery writes rows through `walkProj`. ~~That is the next build, and it is owed rather than
+optional.~~ ❌ **DECLINED AT ITEM 1964, and that sentence was written before pricing it: the
+achievable win is well under the 1.29x an ablation suggested, in the engine's most
+perturbation-sensitive file. The node/hop asymmetry is narrower than this entry claims — item 1962's
+win was deleting a wrapper the hop never had.**
 
 NO ENGINE BEHAVIOUR CHANGED — one instrument, two heading corrections, and this entry.
 
 GATES. `bun run check` 0.
+
+## Item 1964 — ❌ **the hop deferred sort DECLINED, and ⚠️ it corrects item 1963's own "owed rather than optional"** — which I wrote before pricing it. The ablation says 1.29x; a CORRECT fix cannot reach that, because the ablation removed work the fix must keep
+
+Item 1963 found that item 1962 moved the node spelling and not the hop one, and called closing it
+owed. This prices it. The arms, one shape per process, 200,000 vertices / 1,000,000 edges:
+
+```text
+  none     no ORDER BY                              25.6 ms    26 ns/row   the floor
+  alias    ORDER BY x                              282.9      283
+  exprId   ORDER BY b.n   (projected, rewritten)   282.6      283   ⬅ IDENTICAL to the alias
+  expr     ORDER BY b.n + 1                        454.4      454   ⬅ 1.61x
+  other    ORDER BY b.m   (not projected)          466.0      466   ⬅ 1.65x
+```
+
+Exactly the node shape's structure (item 1961), one spelling over: a key that resolves to a column
+costs nothing, and the route is 171 ns a row.
+
+**THE MECHANISM, ABLATED RATHER THAN READ OFF THE PROFILE.** `deferredHopOrder` sorts rows carrying
+KEY + CARRIER columns and then RE-PROJECTS each one from a rebuilt binding. Deleting that
+re-projection (a wrong answer — the guard's checksum goes `NaN`, which is how I know it was really
+deleted) prices it:
+
+```text
+  expr    454.4 -> 351.7    102.7 ms over 1,000,000 rows   103 ns/row
+  other   466.0 -> 325.4    140.6                          141 ns/row
+```
+
+⚠️⚠️ **AND 1.29x IS NOT THE LEVER, which is the methodological half of this item.** The ablated arm
+returns the keyed rows RAW — it does no projection at all. A correct restructure (project during the
+walk, carry keys in a parallel array) still calls `projectRow` once per row, exactly as the alias arm
+does; what it drops is the KEYED-ROW build and the binding rebuild. Those are one row-object
+construction against another, so the net is the binding rebuild plus one allocation — a fraction of
+the 103 ns, not the whole of it. **An ablation that removes work the real fix must keep over-states
+the lever**, which is item 1954's lesson in a new place (there it was the tree's cardinality; here it
+is a pass the fix cannot skip).
+
+**THE DECISION, against this repo's own precedent.** The honest range is ~1.0x-1.29x, and the change
+lands in `hop-projection.ts`, where items 1441/1466 measured edits costing UNRELATED rows up to 16%,
+arbitrarily signed — and where **item 1466 declined a 3.3x win on exactly that basis**. A target
+under 1.3x there is not a trade. Declined, with the numbers, which is what item 1466 did.
+
+⚠️ **AND THE DIVERGENCE IS NARROWER THAN ITEM 1963 SAID.** That entry invoked `node-scan.ts`'s
+"named defect class" note, and the note is real — but item 1962's win was deleting a **symbol-keyed
+wrapper object** that `deferredHopOrder` never had. The hop arm was already the better shape (item
+1963's own probe shows sorting rows beats extract-and-permute). What actually differs is one
+post-sort pass, now priced. Calling it owed before measuring it was the mistake, and the sentence is
+struck.
+
+NO ENGINE BEHAVIOUR CHANGED — one instrument, one heading correction, and this entry.
+`hop-projection.ts` is byte-identical to `HEAD` (`git status` clean after the ablation was reverted).
+
+GATES. `bun run check` 0; `bun run test -- --skip-nx-cache` 21 projects — ⚠️ one run exited 1 with nx
+flagging **`@lenke/sync` and `@lenke/native` as flaky tasks**; isolated they are 176/0 and 1280/0 and
+the re-run was green, which is [[sync-test-flake-is-timing]]'s known run-many flake (item 1952 hit
+the same thing on `@lenke/native` alone).
