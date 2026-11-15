@@ -85404,7 +85404,7 @@ has to reach THREE row-building points rather than two, with 167.3 / 210.8 ms as
 GATES. bun run check 0 read unpiped. gql 4,577 pass / 0 fail. gremlin 2,134 pass / 0 fail.
 native 1,165 pass / 0 fail. bun run fuzz 57 pass / 0 fail.
 
-### Item 1823 — ⚠️ **THE BETWEEN-RUNGS GAP IS NOW MECHANIZED, AND IT FOUND SIX FLAGS ON ITS FIRST RUN** — including a DEPTH-1 inversion (multi-column `DISTINCT` at one hop costs **22.7x its own undeduped twin and 3.3x the DEEPER two-hop cell**) and `count(DISTINCT …)` at 4.8-10.3x across every depth ≥2. No engine change; both targets priced and open
+### Item 1823 — ⚠️ **THE BETWEEN-RUNGS GAP IS NOW MECHANIZED, AND IT FOUND SIX FLAGS ON ITS FIRST RUN** — including a DEPTH-1 inversion (multi-column `DISTINCT` at one hop costs **22.7x its own undeduped twin and 3.3x the DEEPER two-hop cell**) and `count(DISTINCT …)` at 4.8-10.3x across every depth ≥2. No engine change; both targets priced and open ⚠️ **ITS TWO FLAGS CANNOT SEE A CELL THAT SHOULD NOT SCALE — item 1980 added a SCALE flag after both missed item 1979's 897x, and the fixture it needs is a UNIQUE seed.**
 
 WHY A GRID, AND WHY NOTHING ELSE HERE CAN FIND THIS. Items 1821 and 1822 each found a rung gap BY
 HAND, and the second existed only because the first happened to measure three widths on one fixture
@@ -95582,3 +95582,104 @@ replacement.
 GATES. `bun run fmt` 0; `bun run check` 0; `bun run test -- --skip-nx-cache` 0 across 21 projects;
 `bun run fuzz` 0; the native parity suites 72 pass / 1,491 assertions; the gql suites 82 pass /
 3,410 assertions.
+
+## Item 1980 — 🛑 **THE SCREEN BUILT TO FIND "A SIMPLER QUERY COSTING MORE" WAS BLIND TO THE BIGGEST INSTANCE OF IT, and adding the obvious axis did NOT fix that** — item 1979's 897x stayed invisible until the screen could compare a cell to ITSELF at another |V|. Proven both ways against the live defect: 4 flags on the pre-1979 build, none on the fixed one
+
+Item 1979 found a seeded var-length `COUNT` costing **897x** its own `DISTINCT` twin — same pattern,
+same predicate, only the projection changed. That is a PAIR GAP, which is precisely what
+`rung-gap-screen.mjs` (item 1823) exists to flag. It never did, and asking why found two separate
+blind spots.
+
+### THE FIRST: THREE STRUCTURAL GAPS IN THE GRID
+
+Every cell the screen builds starts `MATCH (a:P)` with **no start predicate**, none is
+**quantified**, and it creates **no index**. Item 1979's defect needed all three. So the screen gains
+two axes:
+
+```text
+    SEED=none    (default) `MATCH (a:P)`          — every number this screen has ever reported
+    SEED=clause  `… WHERE a.k = $p`               — the spelling item 1906 had to carry
+    SEED=inline  `MATCH (a:P {k: $p})…`           — its twin; the two must never split
+    SEED=unique / unique-inline                   — the same on the fixture's UNIQUE key `n`
+    QUANT=1      `-[:E]->{1,depth}(b:P)`          — the depth axis becomes the quantifier's bound
+```
+
+plus an index on the seeded key, created only when a seed is live. ⚠️ **Defaults are the old
+behaviour on purpose**: several items quote this screen's numbers, so an unflagged invocation must
+still build the grid it always did (verified).
+
+### 🛑 THE SECOND, AND IT IS THE ONE WORTH READING: THE AXIS WAS NOT ENOUGH
+
+Run against the **pre-1979 build** with the new axes, `SEED=clause QUANT=1 NODES=160000` reported
+**NO FLAGS** while the defect was live and 14-18x in its own cells:
+
+```text
+    modifier     depth1   depth2   depth3        (pre-1979, SEED=clause)
+    rows            0.6      6.1      6.3
+    count           0.3      7.1      5.8    ⬅ the defect, 14-18x the fixed build's 0.4/0.4/0.5
+    distinct        2.0      2.7      3.9
+    => NO FLAGS
+```
+
+**Both existing flags missed it for the same reason, and it is a reason worth generalizing: they
+compare a cell to another CELL.** The pair baseline is `rows`, a full enumeration that is itself
+slow (6.1-6.3), so a cell that ought to be O(1) and is O(|V|) still looks cheap beside it; and the
+depth flag needs a shallower cell to cost more, which this does not. **A baseline cannot express
+"this should not scale."**
+
+⚠️ **AND `SEED=clause` CANNOT BE FIXED BY A BETTER THRESHOLD, because with `k` the seed admits
+|V|/97 sources — so every cell grows with |V| legitimately and growth carries no information.** The
+unique key admits exactly ONE source at every size. That is what makes growth diagnostic.
+
+### ✅ THE FLAG THAT WORKS: COMPARE A CELL TO ITSELF AT ANOTHER |V|
+
+`SCALE=1` runs the whole grid again on a graph `SCALE_DIV` (4) times smaller. With one source
+admitted at both sizes nothing in the question grows with |V|, so **any cell that grows is scanning**.
+Against the pre-1979 build:
+
+```text
+    - count depth2: 4.2 ms at |V|=160000 is 6.4x its 0.7 ms at |V|/4 — ONE source is admitted at
+      both sizes, so this cell SCANS |V| instead of seeking its seed
+    - count depth3: 4.5 ms is 6.9x its 0.6 ms at |V|/4            — same
+    - count depth2: 4.2 ms is 137.5x its own rows cell (0.0)
+    - count depth3: 4.5 ms is 124.2x its own rows cell (0.0)
+```
+
+✅ **And the unique seed repairs the PAIR flag as a side effect** — with one source `rows` is ~0 ms,
+so `count`'s 4.2 ms stands out 137.5x where against |V|/97 sources it hid at 1.1x. Two flags from one
+fixture change.
+
+**On the FIXED build the same invocation reports NO FLAGS** (`count` growth 1.5x, under both the
+2.5x threshold and `FLOOR_MS`). So the instrument is proven in both directions, which is the standard
+this repo sets for a generative test and had not been applied to a screen: a flag that fires on a
+known defect AND stays quiet once it is fixed.
+
+### ⚠️ A RATIO FLOOR IN ABSOLUTE MILLISECONDS HIDES A DEFECT THAT IS LINEAR IN |V|
+
+Worth recording separately because it would have suppressed the flag even with the axis in place.
+`FLOOR_MS` (3 ms) exists so a ratio between two sub-millisecond cells is not reported as noise — its
+own note says so, and it is right. But item 1979's seeded count was **0.35 ms at this screen's
+DEFAULT `NODES=20000`** while being 160x its twin, and only reached 3.9 ms at `NODES=160000`. So at
+the default fixture the defect was invisible BY MAGNITUDE. The honest response is not to lower the
+floor — that floods the grid with sub-millisecond noise — so the screen now PRINTS the warning when a
+seed is live below `NODES=100000`.
+
+### ⚠️ One cell is dropped under a unique seed, and dropping a cell looks like hiding one
+
+`skiponly` is `SKIP 5`, and one source over a FANOUT=1 fixture yields `depth` rows — ONE at depth 1.
+So the cell is empty BY CONSTRUCTION and trips the ZERO ROWS guard, which exists to catch cells that
+are _accidentally_ empty. Lowering the constant only moves the problem to depth 1 and weakening the
+guard costs it the cases it is for, so the modifier is excluded in that mode with the reason stated
+in the code. An absent cell is honest; a permanently false flag is not.
+
+### 🔭 One new row this turned up, not chased
+
+On the FIXED build at `SEED=clause QUANT=1 NODES=160000`, `distinct` at depth 1 reads **3.1 ms
+against its `rows` cell's 0.6 — 5.3x**, and `distinct` is nearly FLAT in depth (3.1 / 3.4 / 5.0)
+where `rows` grows (0.6 / 6.6 / 7.7). So the flat rung `DISTINCT` takes has a fixed overhead that
+loses at depth 1. Absolute cost is 2.5 ms; recorded as OPEN, unpriced.
+
+NO ENGINE BEHAVIOUR CHANGED — this is an instrument item. Verified: the only modified file is
+`packages/native/rung-gap-screen.mjs`.
+
+GATES. `bun run fmt` 0; `bun run check` 0. The default `SEED=none` grid re-run and unchanged.

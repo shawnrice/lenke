@@ -111,15 +111,70 @@ const JUMP_FLAG = Number(process.env.JUMP_FLAG ?? 5);
  */
 const FANOUT = Number(process.env.FANOUT ?? 1);
 const ENGINE = process.env.ENGINE ?? 'gql';
+/*
+ * ⚠️⚠️ THE SEED AXIS (item 1980), and it exists because this screen was STRUCTURALLY BLIND to the
+ * biggest instance of the class it was built to find.
+ *
+ * Item 1979 found a seeded var-length COUNT costing **897x** its own `DISTINCT` twin — the same
+ * pattern, the same predicate, only the projection changed, which is exactly a PAIR GAP. This
+ * screen could not see it, for three independent reasons: every pattern it builds starts
+ * `MATCH (a:P)` with NO start predicate, none is QUANTIFIED, and it creates NO INDEX. The defect
+ * needed all three.
+ *
+ *   SEED=none     (default) `MATCH (a:P)` — every number this screen has ever reported.
+ *   SEED=clause   `MATCH (a:P)… WHERE a.k = $p` — the spelling item 1906 had to carry.
+ *   SEED=inline   `MATCH (a:P {k: $p})…`        — its twin; the two must never split.
+ *   SEED=unique   the same CLAUSE spelling on the fixture's UNIQUE key `n`, so the seed admits
+ *                 EXACTLY ONE source at every |V|.
+ *   SEED=unique-inline   its inline twin.
+ *
+ * ⚠️⚠️ **`unique` IS THE ONE THAT CAN ACTUALLY CATCH ITEM 1979, and `clause` DEMONSTRABLY CANNOT.**
+ * Run against the pre-1979 build, `SEED=clause QUANT=1 NODES=160000` reported **NO FLAGS** while the
+ * defect was live and 14-18x in its own cells (`count` 0.3 / 7.1 / 5.8 ms against the fixed build's
+ * 0.4 / 0.4 / 0.5). Both flags missed it for the same reason: the PAIR baseline is `rows`, a full
+ * enumeration that is itself slow (6.1 / 6.3), so a cell that should be O(1) and is O(|V|) still
+ * looks cheap NEXT TO IT. A baseline cannot express "this should not scale".
+ *
+ * Scaling can. With `k` the seed admits |V|/97 sources, so every cell legitimately grows with |V|
+ * and growth says nothing. With the UNIQUE key it admits one source at every size — so any cell
+ * whose time grows with |V| is scanning something it does not need, which is exactly the defect.
+ * That is what `SCALE=1` measures below, and it is the flag this screen was missing rather than a
+ * third axis.
+ *
+ *   QUANT=1       the chain becomes `-[:E]->{1,depth}(b:P)`, so the DEPTH axis becomes the
+ *                 quantifier's bound and the var-length rungs are reached at all.
+ *
+ * ⚠️ DEFAULTS ARE THE OLD BEHAVIOUR ON PURPOSE. Several items quote this screen's numbers, so an
+ * unflagged invocation must still build the same grid it always did.
+ */
+const SEED = process.env.SEED ?? 'none';
+/** True for the two modes that seed on the UNIQUE key, so the source count is 1 at every |V|. */
+const SEED_UNIQUE = SEED === 'unique' || SEED === 'unique-inline';
+/** The seeded property: `k` has 97 values (|V|/97 sources), `n` is unique (exactly one). */
+const SEED_KEY = SEED_UNIQUE ? 'n' : 'k';
+const SEED_INLINE = SEED === 'inline' || SEED === 'unique-inline';
+/**
+ * Run the WHOLE grid at `NODES` and at `NODES / SCALE_DIV`, and flag any cell that grows with |V|.
+ *
+ * Only meaningful with a UNIQUE seed, where one source is admitted at either size — see the note
+ * above. Off by default: it doubles the runtime and says nothing without that seed.
+ */
+const SCALE = process.env.SCALE === '1';
+const SCALE_DIV = Number(process.env.SCALE_DIV ?? 4);
+/** A cell is flagged when it grows by this much across a `SCALE_DIV`-fold rise in |V|. */
+const SCALE_FLAG = Number(process.env.SCALE_FLAG ?? 2.5);
+const QUANT = process.env.QUANT === '1';
+/** The seeded key's value — `k` spans 100 values, so this selects ~1% of the graph. */
+const SEED_VALUE = Number(process.env.SEED_VALUE ?? 7);
 
 if (ENGINE !== 'gql' && ENGINE !== 'gremlin') {
   throw new Error(`ENGINE must be gql|gremlin, got ${ENGINE}`);
 }
 
-const build = () => {
+const build = (nodes = NODES) => {
   const g = new Graph();
 
-  for (let i = 0; i < NODES; i += 1) {
+  for (let i = 0; i < nodes; i += 1) {
     g.addVertex({
       id: `v${i}`,
       labels: ['P'],
@@ -127,9 +182,9 @@ const build = () => {
     });
   }
 
-  for (let e = 0; e < NODES * FANOUT; e += 1) {
-    const i = e % NODES;
-    const hop = Math.floor(e / NODES);
+  for (let e = 0; e < nodes * FANOUT; e += 1) {
+    const i = e % nodes;
+    const hop = Math.floor(e / nodes);
 
     g.addEdge({
       id: `e${e}`,
@@ -137,7 +192,7 @@ const build = () => {
       // one vertex's FANOUT edges all land on the SAME target, every k-hop count is `F^k` by
       // construction, and every degree still looks perfect.
       from: g.getVertexById(`v${i}`),
-      to: g.getVertexById(`v${(i * 7 + 3 + hop * 2_654_435_761) % NODES}`),
+      to: g.getVertexById(`v${(i * 7 + 3 + hop * 2_654_435_761) % nodes}`),
       labels: ['E'],
       properties: { w: e % 13 },
     });
@@ -148,7 +203,20 @@ const build = () => {
 
 /** `MATCH (a:P)-[:E]->(x1:P)-[:E]->…` of the given depth, with the far variable's name. */
 const chain = (depth) => {
-  let text = 'MATCH (a:P)';
+  // ⚠️ THE SEED GOES ON THE START NODE for `inline` and into a trailing clause for `clause`, and
+  // both are built here so every modifier in the grid inherits the same seed. A modifier that adds
+  // its own `WHERE` (the `where` cell) then carries BOTH, which is the realistic shape: a seeded
+  // query with a far-end filter.
+  const start = SEED_INLINE ? `MATCH (a:P {${SEED_KEY}: $p})` : 'MATCH (a:P)';
+
+  if (QUANT) {
+    // The depth axis becomes the QUANTIFIER'S BOUND. `{1,depth}` and a fixed chain of `depth` hops
+    // answer different questions (a bound admits every shorter path too), so the two pattern modes
+    // are not comparable cell-for-cell — which is why this is a MODE rather than another modifier.
+    return { text: `${start}-[:E]->{1,${String(depth)}}(b:P)`, far: 'b' };
+  }
+
+  let text = start;
   let far = 'a';
 
   for (let d = 1; d <= depth; d += 1) {
@@ -157,6 +225,35 @@ const chain = (depth) => {
   }
 
   return { text, far };
+};
+
+/**
+ * The trailing clause seed, appended AFTER the modifier has built its projection — because a GQL
+ * `WHERE` belongs to the MATCH clause and the modifiers end in `RETURN`.
+ *
+ * ⚠️ So `clause` is applied by rewriting the query text rather than by composing it, which is ugly
+ * and is the only way to keep the modifier table untouched. Asserted below: the rewrite must match
+ * exactly once per query or the cell is reported as broken rather than silently unseeded.
+ */
+const withClauseSeed = (q) => {
+  if (SEED === 'none' || SEED_INLINE) {
+    return q;
+  }
+
+  const at = q.indexOf(' RETURN ');
+
+  if (at < 0) {
+    throw new Error(`cannot place a clause seed: no RETURN in ${q}`);
+  }
+
+  // A modifier may already carry its own far-end `WHERE`; AND them rather than dropping either.
+  const head = q.slice(0, at);
+  const tail = q.slice(at);
+  const joined = head.includes(' WHERE ')
+    ? `${head} AND a.${SEED_KEY} = $p`
+    : `${head} WHERE a.${SEED_KEY} = $p`;
+
+  return joined + tail;
 };
 
 /**
@@ -217,12 +314,51 @@ const median = (xs) => {
   return s.length % 2 === 1 ? s[m] : (s[m - 1] + s[m]) / 2;
 };
 
-const g = build();
+/** `let`, because `SCALE=1` runs the whole grid against a second, smaller graph. */
+let g = build();
+
+/*
+ * ⚠️ THE INDEX, WITHOUT WHICH THE SEED AXIS MEASURES NOTHING IT WAS ADDED FOR. Item 1979's defect
+ * is a rung that scans the start label's extent instead of SEEKING — so with no index on the seeded
+ * key both the fixed and the fast route scan, and the gap the axis exists to find cannot appear.
+ * Created only when a seed is live, so `SEED=none` builds the graph this screen always built.
+ */
+const indexIfSeeded = (graph) => {
+  if (SEED !== 'none') {
+    graph.createIndex({ on: 'vertex', kind: 'hash', keys: [SEED_KEY] });
+  }
+};
+
+indexIfSeeded(g);
 
 console.log(
   `# rung-gap-screen ENGINE=${ENGINE} NODES=${NODES} FANOUT=${FANOUT} reps=${REPS} drop=${WARMUP}`,
 );
 console.log(`# vertices=${g.vertexCount} edges=${g.edgeCount}`);
+console.log(
+  `# SEED=${SEED}${SEED === 'none' ? '' : ` (a.${SEED_KEY} = ${String(SEED_VALUE)}, INDEXED` + `${SEED_UNIQUE ? ', ONE source at every |V|' : `, |V|/97 sources`})`} ` +
+    `PATTERN=${QUANT ? '-[:E]->{1,depth}(b:P)  [QUANTIFIED]' : 'fixed chain of depth hops'}`,
+);
+
+/*
+ * ⚠️⚠️ A RATIO FLOOR IN ABSOLUTE MILLISECONDS HIDES A DEFECT THAT IS LINEAR IN |V|, and item 1980
+ * found that the hard way. `FLOOR_MS` exists because a ratio between two sub-millisecond cells is
+ * noise (its own note) — but item 1979's seeded count was **0.35 ms at NODES=20,000** while being
+ * 160x its twin, and only reached 3.9 ms at NODES=160,000. So at this screen's DEFAULT fixture the
+ * flag it needed was suppressed for being too small, and the defect was invisible by magnitude even
+ * once the axis above existed to express it.
+ *
+ * The honest fix is to say so rather than to lower the floor, which would flood the grid with
+ * sub-millisecond noise: a seeded run wants a fixture big enough for the slow arm to clear the
+ * floor, and this prints the warning when it does not.
+ */
+if (SEED !== 'none' && NODES < 100_000) {
+  console.log(
+    `# ⚠️ SEED is live at NODES=${String(NODES)}, where a LINEAR-in-|V| defect may sit under ` +
+      `FLOOR_MS=${String(FLOOR_MS)} ms and be suppressed. Item 1979's needed NODES=160000 to clear it.`,
+  );
+}
+
 console.log(
   FANOUT === 1
     ? '# FANOUT=1 so every depth returns the same row count — a depth difference is ROUTE.\n'
@@ -245,7 +381,10 @@ const cell = (built) => {
     const t0 = performance.now();
 
     try {
-      rows = ENGINE === 'gql' ? query(g, built).length : toArray(built, g).length;
+      rows =
+        ENGINE === 'gql'
+          ? query(g, built, SEED === 'none' ? {} : { p: SEED_VALUE }).length
+          : toArray(built, g).length;
     } catch {
       return { ms: Number.NaN, rows: -1 };
     }
@@ -258,9 +397,19 @@ const cell = (built) => {
 
 /** The query or traversal for one cell, built ONCE — see `cell`. */
 const buildCell = (name, depth) =>
-  ENGINE === 'gql' ? MODIFIERS[name](chain(depth)) : GREMLIN_MODIFIERS[name](depth);
+  ENGINE === 'gql' ? withClauseSeed(MODIFIERS[name](chain(depth))) : GREMLIN_MODIFIERS[name](depth);
 
-const names = Object.keys(ENGINE === 'gql' ? MODIFIERS : GREMLIN_MODIFIERS);
+/*
+ * ⚠️ `skiponly` IS DROPPED UNDER A UNIQUE SEED, and the reason is worth stating because dropping a
+ * cell looks like hiding one. One source over a FANOUT=1 fixture yields `depth` rows — ONE of them
+ * at depth 1 — so `SKIP 5` returns nothing and the ZERO ROWS guard fires on a cell that is empty BY
+ * CONSTRUCTION. Lowering the constant only moves the problem to depth 1; weakening the guard would
+ * cost it the genuinely-empty cells it exists to catch. An absent cell is honest, a permanently
+ * false flag is not.
+ */
+const names = Object.keys(ENGINE === 'gql' ? MODIFIERS : GREMLIN_MODIFIERS).filter(
+  (n) => !(SEED_UNIQUE && n === 'skiponly'),
+);
 const grid = new Map();
 
 console.log(
@@ -285,8 +434,78 @@ for (const name of names) {
   console.log(`${name.padEnd(11)}${cells}   ${row[row.length - 1].rows}`);
 }
 
+/*
+ * ⚠️⚠️ THE SCALING PASS (item 1980) — the grid again on a graph `SCALE_DIV` times smaller.
+ *
+ * With a UNIQUE seed exactly one source is admitted at either size, so nothing in the question
+ * grows with |V| and any cell that does is scanning. This is the flag that catches item 1979's
+ * class, which neither the pair flag nor the depth flag can: both compare a cell to another CELL,
+ * and the defect is a cell compared to ITSELF at another size.
+ *
+ * ⚠️ It reports rather than flags when the seed is not unique, because with |V|/97 sources every
+ * cell grows legitimately and a growth flag would fire on all of them.
+ */
+const small = new Map();
+
+if (SCALE) {
+  const big = g;
+
+  g = build(Math.max(1000, Math.floor(NODES / SCALE_DIV)));
+  indexIfSeeded(g);
+
+  const caveat = SEED_UNIQUE ? '' : ' — ⚠️ seed is NOT unique, growth is expected and NOT flagged';
+
+  console.log(
+    `\n# SCALE pass at NODES=${String(g.vertexCount)} (1/${String(SCALE_DIV)}), same grid${caveat}`,
+  );
+  console.log(
+    `${'modifier'.padEnd(11)}${DEPTHS.map((d) => `depth${d}`.padStart(12)).join('')}   grow@maxdepth`,
+  );
+
+  for (const name of names) {
+    const row = DEPTHS.map((depth) => cell(buildCell(name, depth)));
+
+    small.set(name, row);
+
+    const cells = row
+      .map((c) => (Number.isNaN(c.ms) ? 'ERR' : c.ms.toFixed(1)).padStart(12))
+      .join('');
+    const bigRow = grid.get(name);
+    const last = row.length - 1;
+    const grow = row[last].ms > 0 ? `${(bigRow[last].ms / row[last].ms).toFixed(1)}x` : '-';
+
+    console.log(`${name.padEnd(11)}${cells}   ${grow}`);
+  }
+
+  g = big;
+}
+
 // ── THE FLAGS ───────────────────────────────────────────────────────────────────────────────────
 const flags = [];
+
+if (SCALE && SEED_UNIQUE) {
+  for (const [name, row] of grid) {
+    const sm = small.get(name);
+
+    row.forEach((c, i) => {
+      const s0 = sm?.[i];
+
+      if (s0 === undefined || Number.isNaN(c.ms) || Number.isNaN(s0.ms) || s0.ms <= 0) {
+        return;
+      }
+
+      const ratio = c.ms / s0.ms;
+
+      if (c.ms >= FLOOR_MS && ratio >= SCALE_FLAG) {
+        flags.push(
+          `${name} depth${String(DEPTHS[i])}: ${c.ms.toFixed(1)} ms at |V|=${String(NODES)} is ` +
+            `${ratio.toFixed(1)}x its ${s0.ms.toFixed(1)} ms at |V|/${String(SCALE_DIV)} — ONE source ` +
+            'is admitted at both sizes, so this cell SCANS |V| instead of seeking its seed',
+        );
+      }
+    });
+  }
+}
 
 for (const [name, row] of grid) {
   row.forEach((c, i) => {
