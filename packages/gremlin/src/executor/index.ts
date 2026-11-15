@@ -18,6 +18,7 @@ import {
   FILTER_WRAPPER_BITS,
   KIND_BITS,
   maskOfSteps,
+  stepReadsPath,
 } from '../ast.js';
 import { tagsObservedFrom } from '../ast.js';
 import type { Plan, Step } from '../ast.js';
@@ -1872,6 +1873,80 @@ export const dropCountedSelect = (plan: Plan): Plan => {
   return bound ? rewritten(plan, [...plan.steps.slice(0, n - 2), last]) : plan;
 };
 
+/**
+ * `outE(T).otherV()` becomes `outE(T).inV()`, and `inE(T).otherV()` becomes `inE(T).outV()`
+ * (item 1921).
+ *
+ * ⚠️ THIS IS A PATH-DEPENDENCE REMOVAL, NOT A SPEED REWRITE, and that is why it earns its own pass
+ * ahead of everything else. `otherV` is in `PATH_DEPENDENT_KINDS` because in general it needs to
+ * know which end the traverser ARRIVED from — true after `bothE`, and false after a DIRECTED edge
+ * step, where the far end is fixed by the direction alone. So the long spelling made
+ * `planReadsPath` true, `effectivePlan` is skipped entirely when `tracksPath` is set, and the shape
+ * reached no rung at all — including item 1307's `outE(T).inV()` -> `out(T)`, the very rewrite that
+ * would have fixed it.
+ *
+ * The measured gap, at 200,000 vertices / 800,000 edges on the workload screen:
+ *
+ * ```text
+ *   V().outE(E).otherV().values(n)   328.12 ms     600,000 rows
+ *   V().outE(E).inV().values(n)       46.21        the IDENTICAL answer, 7.1x
+ * ```
+ *
+ * ⚠️ `bothE(T).otherV()` IS REFUSED and must stay so: there the arrival end is not determined by
+ * the step, which is the whole reason `otherV` exists. `V().otherV()` with no edge step before it is
+ * refused too.
+ *
+ * ⚠️⚠️ `readsPath` IS RECOMPUTED HERE, which `rewritten` deliberately does NOT do. Its note explains
+ * why that is normally sound — "a rewrite can merge or remove steps but never introduce a
+ * path-dependent one … so a carried-over `true` is at worst stale and only declines an
+ * optimisation" — and this pass is the exception that proves it: REMOVING the path-dependent step is
+ * the entire point, so a carried-over `true` would decline the optimisation it just enabled.
+ *
+ * ⚠️ AND THE COMPOSED SHAPE IS WHAT MATTERS, NOT THIS PASS'S OUTPUT. This only gets the plan to
+ * `outE(T).inV()`; item 1307's rewrite then takes it to `out(T)`, and the fused walks serve that.
+ * [[rewrite-composition-is-not-free]] records three cases where a comment claimed a rewrite composed
+ * with its neighbours and it did not, so `other-v-normalize.test.ts` asserts the FINAL shape rather
+ * than this one.
+ */
+const EDGE_TO_FAR: Readonly<Record<string, 'inV' | 'outV'>> = { outE: 'inV', inE: 'outV' };
+
+export const normalizeDirectedOtherV = (plan: Plan): Plan => {
+  const { steps } = plan;
+
+  if (!steps.some((s) => s.kind === 'otherV')) {
+    return plan;
+  }
+
+  let changed = false;
+  const next = steps.map((step, i) => {
+    if (step.kind !== 'otherV' || i === 0) {
+      return step;
+    }
+
+    const far = EDGE_TO_FAR[steps[i - 1].kind];
+
+    if (far === undefined) {
+      return step;
+    }
+
+    changed = true;
+
+    return { kind: far };
+  });
+
+  if (!changed) {
+    return plan;
+  }
+
+  const steps2 = next;
+
+  return {
+    ...rewritten(plan, steps2),
+    // See the note above: this is the one pass that REMOVES path dependence.
+    readsPath: steps2.some(stepReadsPath),
+  };
+};
+
 export const effectivePlan = (plan: Plan, graph: Graph, tracksPath: boolean): Plan =>
   tracksPath
     ? plan
@@ -2513,21 +2588,29 @@ export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
     plan[EFF_CHECKED] = true;
   }
 
+  /*
+   * ⚠️ THE `otherV` NORMALIZATION RUNS BEFORE THE PATH DECISION, and it has to: after a DIRECTED
+   * edge step `otherV` is exactly `inV`/`outV`, but it is path-dependent by kind, so leaving it in
+   * place sets `tracksPath` and `effectivePlan` is then skipped WHOLESALE — taking item 1307's
+   * `outE(T).inV()` -> `out(T)` with it. 328.12 ms against the twin spelling's 46.21 (item 1921).
+   */
+  const planned = normalizeDirectedOtherV(plan);
+
   // Decide once whether any step observes the path; if not, traversers skip
   // path bookkeeping for the whole run (see planReadsPath / startTraverser).
-  const ctx = newContext(planReadsPath(plan));
+  const ctx = newContext(planReadsPath(planned));
 
   // Peel leading source-configuration steps (`withSack`) — like TinkerPop's
   // GraphTraversalSource config they precede the actual source (V()/E()/…), so
   // they set up the context rather than seed a stream.
   let head = 0;
 
-  while (head < plan.steps.length && plan.steps[head].kind === 'withSack') {
-    ctx.sackInit = { value: (plan.steps[head] as Extract<Step, { kind: 'withSack' }>).init };
+  while (head < planned.steps.length && planned.steps[head].kind === 'withSack') {
+    ctx.sackInit = { value: (planned.steps[head] as Extract<Step, { kind: 'withSack' }>).init };
     head++;
   }
 
-  const sliced = head === 0 ? plan : rewritten(plan, plan.steps.slice(head));
+  const sliced = head === 0 ? planned : rewritten(planned, planned.steps.slice(head));
   // A VACUOUS `hasLabel` is dropped before anything else looks at the plan. Every shortcut below
   // matches a plan PREFIX that begins at the source, so one extra step in front of the hop makes
   // all of them decline — and a label every element carries is exactly such a step while

@@ -91405,3 +91405,104 @@ edge-indexed CSR a further 1.79x and NOT built), and `where: neq filter` at 72.7
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers;
 `bun run spelling:gremlin`; the workload screen at 200,000 vertices, all 42 rows compared before and
 after.
+
+## Item 1921 — asked what the screen does NOT ask, on the PATH-DEPENDENT family, and found **five shapes above everything else on the surface**. Took the spelling gap among them: `outE(T).otherV()` goes **328.12 ms to 48.71, 6.7x**, landing on its twin's 47.72 — and the fix is removing a FALSE path dependence, not adding a rung
+
+`ast.ts`'s `PATH_DEPENDENT_KINDS` lists ten step kinds that make `planReadsPath` TRUE, and every
+fused walk in this package is gated on `!tracksPath` — so each of them reaches no rung at all. The
+workload screen carried exactly ONE of the ten (`path()`, added at item 1898 and taken at 1920). Item
+1898's lesson, applied to the family rather than to a shape:
+
+      200,000 vertices / 800,000 edges, the six rows this item added:
+
+        pathdep: tree                  1294.12 ms        1 row    ⬅ 16x the previous top row
+        pathdep: outE.otherV            328.12      600,000
+        pathdep: simplePath             318.82      599,998
+        pathdep: path().by(k)           314.43      600,000
+        pathdep: cyclicPath             162.00            2
+        pathdep: outE.inV (the twin)     46.21      600,000      ⬅ the IDENTICAL answer
+        ------------------------------------------------------
+        edge: outE.has(w).inV            77.84      342,856      ⬅ the screen's previous top row
+
+**Five of the six are above the entire rest of the screen**, which is item 1898's finding repeating
+exactly: a clean screen means the shapes it HAS are fast.
+
+## ✅ `otherV` — a spelling gap, and the fix is a path-dependence removal
+
+`otherV` is path-dependent BY KIND because in general it must know which end the traverser ARRIVED
+from — true after `bothE`, and **false after a DIRECTED edge step**, where the far end is fixed by the
+direction alone. Verified on a fixture including a self-loop before any code:
+
+      V().outE(E).otherV()  ==  V().outE(E).inV()  ==  V().out(E)     ->  b, c, d
+
+⚠️⚠️ **AND THE COST WAS NOT THE STEP — IT WAS THE GUARD CASCADE.** Setting `tracksPath` makes
+`effectivePlan` skipped **WHOLESALE**, and that chain contains item 1307's
+`outE(T).inV()` -> `out(T)`. So the long spelling disabled the very rewrite that would have fixed it:
+
+      V().outE(E).otherV().values(n)   328.12  ->  48.71 ms   ⬅ 6.7x
+      V().outE(E).inV().values(n)       46.21      47.72       the twin, untouched
+
+🔑 **THE SUCCESS CRITERION IS EQUALITY WITH THE TWIN, not merely "faster".** A spelling gap is closed
+when the spellings cost the same, and 48.71 against 47.72 is that. The two new
+`gremlin-spelling-probe.ts` groups now hold all three spellings (`otherV` / `inV` / the plain hop,
+and the incoming mirror) at a 1.17x and 1.14x spread with identical answers. ⚠️ **Those groups are
+what would have caught this and did not exist** — every answer was correct the whole time.
+
+⚠️ `bothE(T).otherV()` IS REFUSED AND MUST STAY SO, since there the arrival end is not fixed by the
+step — the entire reason `otherV` exists. Its answer is pinned rather than reasoned about, and the
+gate test asserts the plan comes through as `[V, bothE, otherV]` with `readsPath` still true.
+
+## ⚠️ `readsPath` is recomputed here, and `rewritten` deliberately does NOT
+
+`rewritten`'s own note explains why that is normally sound: "a rewrite can merge or remove steps but
+never introduce a path-dependent one that was not already inside the step it replaced, so a
+carried-over `true` is at worst stale and only declines an optimisation." **This pass is the
+exception that proves it** — REMOVING the path-dependent step is the entire point, so a carried-over
+`true` would decline the optimisation it had just enabled. A mutant carrying it over is in the
+battery.
+
+⚠️ **AND THE COMPOSED SHAPE IS WHAT MATTERS.** This pass only reaches `outE(T).inV()`; item 1307's
+rewrite then takes it to `out(T)`, and the fused walks serve THAT.
+[[rewrite-composition-is-not-free]] records three cases where a comment claimed a rewrite composed
+with its neighbours and it did not, so the test asserts the FINAL answer equals the plain hop's
+rather than this pass's output alone.
+
+## Mutation
+
+**11 mutants, 10 caught, 1 declared — after TWO survivors the first run exposed.** The one that
+matters is **`bothE` admitted** — a silent wrong end on every undirected edge, with the right row
+count.
+
+      ❌ THE `changed` SHORT-CIRCUIT'S IDENTITY GUARANTEE WAS UNTESTED. Dropping
+         `if (!changed) return plan` survived, because the only identity assertion used a plan with
+         NO `otherV`, which takes the EARLIER early-out. `bothE` is the case that reaches the second
+         one, and it now has its own assertion.
+
+      ❌ AND THE `i === 0` GUARD LOOKED DEAD AND IS NOT. Dropping it survived too, so
+         `otherv-index0-probe-1921.mjs` asked whether the case can arise rather than assuming either
+         way — CLAUDE.md's "prove it is dead before deleting it", which items 1899 and 1903 answered
+         oppositely on one guard each. `traversal()` always puts a source first, but **`toArray`
+         accepts a PLAN OBJECT**, so a plan whose steps begin with `otherV` is reachable through the
+         public API: with the guard the executor raises its own `otherV() requires an edge`; without
+         it, `steps[-1]` is `undefined` and `undefined.kind` throws a raw `TypeError`. Kept, and now
+         driven by a test.
+
+⚠️ **ONLY ONE SURVIVOR, AND THAT IS A CONSEQUENCE OF EXPORTING THE PASS.**
+`normalizeDirectedOtherV` is exported and tested on its OUTPUT PLAN — the step kinds and `readsPath`
+— so a mutant that mis-rewrites or stops rewriting fails **even though the ANSWER is unchanged**.
+Without that, every route mutant would have been a declared survivor instead of one.
+
+🛑 **A HAND ORACLE WAS WRONG AGAIN — the fifth time in this corpus.** I predicted
+`bothE(E).otherV()` as five rows (`b a c b d`), assuming `both` dedupes a self-loop seen from each
+bucket. It does not: `d` contributes TWICE, so there are six. ⚠️ The engine is the right authority
+_there specifically_ and not in general: the normalization provably does not touch that shape, so the
+answer is pre-existing behaviour this item cannot have changed — which is also what makes pinning it
+useful, because a future rewrite that DID admit `bothE` fails on it.
+
+🔭 **WHAT THIS LEAVES, and it is a lot**: `tree()` at **1294.12 ms for ONE row** is now the largest
+shape on the whole Gremlin surface by 4x, and `simplePath` (318.82) is a 1-hop "near ≠ far" test —
+which is exactly what `where(neq(tag))` computes and item 1912 already fused tag-free. Both are open
+and both are in the family this item made visible. `path().by(k)` at 314.43 is the third.
+
+GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers;
+`bun run spelling:gremlin` with the two new groups; the workload screen at 200,000 vertices.

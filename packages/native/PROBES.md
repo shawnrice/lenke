@@ -2559,3 +2559,60 @@ uses `in`.
 **So the fourth path is not just (arm x laziness) — it is (arm x laziness x the input that can tell
 the two branches apart).** Enumerating the arms is not enough if every test feeds them the case
 where both branches agree.
+
+## ⚠️⚠️ THE PATH-DEPENDENT FAMILY WAS NINE-TENTHS UNMEASURED (item 1921)
+
+`ast.ts`'s `PATH_DEPENDENT_KINDS` lists TEN step kinds that make `planReadsPath` true, and every
+fused walk in the package is gated on `!tracksPath` — so each of them reaches no rung at all. The
+workload screen carried exactly ONE (`path()`, added at item 1898, taken at 1920). Adding the rest:
+
+```
+pathdep: tree                  1294.12 ms        1 row    <- 16x the previous top row
+pathdep: outE.otherV            328.12      600,000
+pathdep: simplePath             318.82      599,998
+pathdep: path().by(k)           314.43      600,000
+pathdep: cyclicPath             162.00            2
+pathdep: outE.inV (the twin)     46.21      600,000      <- the IDENTICAL answer
+-----------------------------------------------------
+edge: outE.has(w).inV            77.84      342,856      <- the screen's previous TOP row
+```
+
+**Five of six are above the entire rest of the screen.** ⚠️ The general form, and this is the second
+time it has paid: when a gate excludes a whole FAMILY from every optimisation, measure the family —
+not the one member that happened to get a screen row.
+
+## ⚠️ A FALSE PATH DEPENDENCE COSTS MORE THAN THE STEP IT SITS ON (item 1921)
+
+`outE(T).otherV()` is exactly `outE(T).inV()` — after a DIRECTED edge step the far end is fixed by
+the direction, so nothing needs the path. But `otherV` is path-dependent BY KIND, and:
+
+🔑 **SETTING `tracksPath` MAKES `effectivePlan` SKIPPED WHOLESALE** — and that chain holds item
+1307's `outE(T).inV()` -> `out(T)`. So the long spelling disabled the very rewrite that would have
+fixed it: **328.12 ms against the twin's 46.21.** The cost was the guard cascade, not the step.
+
+✅ So the fix is a path-dependence REMOVAL ahead of the path decision, not a new rung — after which
+every existing fusion applies. ⚠️ And `readsPath` must be RECOMPUTED there, which `rewritten`
+deliberately does not do: its note says a carried-over `true` is "at worst stale and only declines an
+optimisation", and this is the one pass where that staleness would decline the optimisation it just
+enabled.
+
+⚠️ **THE SUCCESS CRITERION FOR A SPELLING GAP IS EQUALITY WITH THE TWIN, not "faster"**: 48.71
+against 47.72. `gremlin-spelling-probe.ts` now carries all three spellings (and the incoming mirror)
+at a 1.17x / 1.14x spread — the groups that would have caught this and did not exist.
+
+## ⚠️ "PROVE IT IS DEAD BEFORE DELETING IT" CUT THE OTHER WAY (item 1921)
+
+A mutant dropping the `i === 0` guard in `normalizeDirectedOtherV` SURVIVED, which looked like dead
+code. `otherv-index0-probe-1921.mjs` asked instead of assuming: `traversal()` always puts a source
+first, **but `toArray` accepts a PLAN OBJECT**, so a plan whose steps begin with `otherV` is
+reachable through the public API. With the guard the executor raises its own
+`otherV() requires an edge`; without it, `steps[-1]` is `undefined` and `undefined.kind` throws a raw
+`TypeError`.
+
+So the guard was kept and given a test. Items 1899 and 1903 answered this same question oppositely on
+one guard each — **the probe is what distinguishes them, and a surviving mutant is the prompt to
+write it, not the verdict.**
+
+⚠️ Its sibling survivor is worth the same note: the `if (!changed) return plan` identity guarantee was
+untested because the only identity assertion used a plan with NO `otherV` — which takes an EARLIER
+early-out. **Two early-outs need two tests**, and `bothE` is the input that reaches the second.

@@ -46,13 +46,13 @@ import {
   E,
   eq,
   filter,
+  groupCount,
   gte,
   has,
   hasId,
   hasKey,
   hasLabel,
   hasNot,
-  groupCount,
   in_,
   inE,
   inV,
@@ -60,10 +60,12 @@ import {
   lt,
   not,
   or,
-  order,
   Order,
+  order,
+  otherV,
   out,
   outE,
+  outV,
   toArray,
   traversal,
   union,
@@ -552,6 +554,35 @@ const GROUPS: readonly Group[] = [
       traversal(V(), in_('T'), dedupe().by('k'), values('k')),
     ],
   ],
+  // ---- THE FAR END OF A DIRECTED EDGE STEP, three ways (item 1921) ----
+  //
+  // ⚠️ THIS GROUP IS THE ONE THAT WOULD HAVE CAUGHT ITEM 1921, and it did not exist. `otherV` after
+  // a DIRECTED edge step is exactly `inV`, but it is path-dependent BY KIND, so it set `tracksPath`
+  // — and `effectivePlan` is skipped WHOLESALE when that is set, which took item 1307's
+  // `outE(T).inV()` -> `out(T)` with it. The result was **328.12 ms against the twin's 46.21, 7.1x**,
+  // on three spellings of one question, with every answer correct.
+  //
+  // ⚠️ `bothE(T).otherV()` IS DELIBERATELY NOT HERE: after `bothE` the arrival end is not fixed by
+  // the step, so it is a DIFFERENT question and a group containing it would be comparing answers
+  // rather than spellings — the mistake this probe's own header records three groups being rejected
+  // for.
+  [
+    'the far end of a directed hop: otherV vs inV vs the plain hop',
+    [
+      traversal(V(), outE('T'), otherV(), values('k')),
+      traversal(V(), outE('T'), inV(), values('k')),
+      traversal(V(), out('T'), values('k')),
+    ],
+  ],
+  [
+    'the far end, incoming: otherV vs outV vs in(T)',
+    [
+      traversal(V(), inE('T'), otherV(), values('k')),
+      traversal(V(), inE('T'), outV(), values('k')),
+      traversal(V(), in_('T'), values('k')),
+    ],
+  ],
+
   // ---- SUB-PLAN EXISTENCE: five spellings of "does this vertex have an out-T" (item 1915) ----
   //
   // ⚠️ THESE ARE ONE QUESTION IN FIVE SURFACE FORMS, which is exactly what CLAUDE.md's

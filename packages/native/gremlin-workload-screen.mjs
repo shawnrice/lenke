@@ -33,9 +33,12 @@
  */
 import { Graph } from '@lenke/core';
 import {
-  V,
+  aggregate,
+  as_,
   both,
+  cap,
   count,
+  cyclicPath,
   dedupe,
   groupCount,
   gt,
@@ -43,31 +46,32 @@ import {
   hasLabel,
   id,
   in_,
+  inV,
   limit,
   max,
   mean,
   min,
+  neq,
   optional,
   order,
+  otherV,
   out,
   outE,
-  inV,
+  path,
+  project,
+  range,
   repeat,
+  select,
+  simplePath,
   toArray,
   traversal,
+  tree,
   union,
+  V,
   valueMap,
   values,
-  within,
-  as_,
-  select,
-  project,
   where,
-  neq,
-  path,
-  range,
-  aggregate,
-  cap,
+  within,
 } from '@lenke/gremlin';
 
 const NODES = Number(process.env.NODES ?? 1500);
@@ -173,6 +177,25 @@ const SHAPES = {
   'page: range mid': () => traversal(V(), out('E'), values('n'), range(1000, 1010)),
   'dedupe: by key': () => traversal(V(), out('E'), dedupe().by('n'), values('n')),
   'sideeffect: aggregate + cap': () => traversal(V(), out('E'), aggregate('x'), cap('x')),
+  /**
+   * ⚠️ THE PATH-DEPENDENT FAMILY, which this screen never carried (item 1921). `ast.ts`'s
+   * `PATH_DEPENDENT_KINDS` lists ten step kinds that make `planReadsPath` TRUE, and every fused walk
+   * in the package is gated on `!tracksPath` — so each of them reaches no rung at all. Item 1898
+   * found that asking what a screen does NOT ask turned up the five biggest shapes on the surface,
+   * and item 1920 then took `path()` itself at 14.8x once it was measured. These are the rest of
+   * that family, as an application would write them.
+   *
+   * ⚠️ `outE(T).otherV()` IS THE INTERESTING ONE: for a DIRECTED edge step it is exactly
+   * `outE(T).inV()`, verified on a fixture including a self-loop — but `otherV` reads the path and
+   * `inV` does not, so one spelling is fused and the other cannot be. That is this repo's named bug
+   * class, and the pair is here side by side so the gap is visible rather than inferred.
+   */
+  'pathdep: outE.otherV': () => traversal(V(), outE('E'), otherV(), values('n')),
+  'pathdep: outE.inV (the twin)': () => traversal(V(), outE('E'), inV(), values('n')),
+  'pathdep: simplePath': () => traversal(V(), out('E'), simplePath(), values('n')),
+  'pathdep: cyclicPath': () => traversal(V(), out('E'), cyclicPath(), values('n')),
+  'pathdep: tree': () => traversal(V(), out('E'), tree()),
+  'pathdep: path().by(k)': () => traversal(V(), out('E'), path().by('n')),
 };
 
 const names = Object.keys(SHAPES).filter((k) => ONLY === '' || k.includes(ONLY));
