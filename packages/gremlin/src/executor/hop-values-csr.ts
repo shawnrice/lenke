@@ -83,7 +83,7 @@ export const hopValuesCsr = (plan: Plan, graph: Graph): HopValues | undefined =>
   return {
     // ⚠️ A `fold` IS NOT CONSUMED: it stays in `rest` for `fusedProjectedResidual` to fold over
     // the drained walk (item 1909), which is the whole point of admitting it here.
-    rest: steps.slice(proj === undefined || proj.kind === 'fold' ? 2 : 3),
+    rest: steps.slice(picked.consumesProj ? 3 : 2),
     values: walk(graph, {
       forward: hop.kind === 'out',
       type: hop.labels[0],
@@ -149,7 +149,18 @@ export const seenBefore = (graph: Graph, forward: boolean, type: string): boolea
 };
 
 type Element = { readonly id: string; readonly properties: Record<string, unknown> };
-type Picked = { pick: (e: Element) => unknown; drops: boolean };
+type Picked = {
+  pick: (e: Element) => unknown;
+  drops: boolean;
+  /**
+   * Does the projection step get CONSUMED, or stay in `rest` for the residual dispatch? (item 1911.)
+   *
+   * ⚠️ CARRIED HERE rather than re-derived at the `rest` slice: two copies of "which kinds are
+   * consumed" is how one falls behind the other (item 606's reason), and a `rest` that disagreed
+   * with the pick would either drop a step or run it twice.
+   */
+  consumesProj: boolean;
+};
 
 /**
  * What the plan asks for about the far vertex; `undefined` declines the plan.
@@ -161,7 +172,7 @@ type Picked = { pick: (e: Element) => unknown; drops: boolean };
  */
 const pickFor = (proj: Step | undefined, valueKey: string | undefined): Picked | undefined => {
   if (valueKey !== undefined) {
-    return { pick: (e) => e.properties[valueKey], drops: true };
+    return { pick: (e) => e.properties[valueKey], drops: true, consumesProj: true };
   }
 
   /*
@@ -171,11 +182,20 @@ const pickFor = (proj: Step | undefined, valueKey: string | undefined): Picked |
    * 29.71 ms against 4.13 for the identical hop through this CSR, after item 1910's gate change had
    * already taken it from 99.53.
    */
-  if (proj === undefined || proj.kind === 'fold') {
-    return { pick: (e) => e, drops: false };
+  if (
+    proj === undefined ||
+    proj.kind === 'fold' ||
+    proj.kind === 'aggregate' ||
+    proj.kind === 'store'
+  ) {
+    // ⚠️ `consumesProj: false` — the step STAYS in `rest` for the residual dispatch to decide.
+    // Carried on `Picked` rather than re-derived at the `rest` slice (item 1911): two copies of
+    // "which kinds are consumed" is how one of them falls behind the other, which is item 606's
+    // reason and the shape of the wrong answer item 1903 cost.
+    return { pick: (e) => e, drops: false, consumesProj: false };
   }
 
-  return proj.kind === 'id' ? { pick: (e) => e.id, drops: false } : undefined;
+  return proj.kind === 'id' ? { pick: (e) => e.id, drops: false, consumesProj: true } : undefined;
 };
 
 type WalkSpec = {

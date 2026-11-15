@@ -25,6 +25,7 @@ import {
   foldProjectedList,
   foldProjectedMinMax,
   fusableProjectedAggregate,
+  fusableProjectedBagCap,
   fusableProjectedFold,
   fusableProjectedOrder,
   fusableValuesAggregate,
@@ -2393,6 +2394,18 @@ const fusedProjectedResidual = (
    * a time; the numbers are recorded at item 1909 for whoever takes it.
    */
   if (fusableProjectedFold(projected.rest)) {
+    return foldProjectedList(projected.values);
+  }
+
+  /**
+   * `aggregate(k).cap(k)` AND `store(k).cap(k)` ARE THE SAME LIST (item 1911), so they take the
+   * same drain. Item 1909 measured them at 1.09x and 1.03x of `fold` and declined them on a
+   * contract argument that `fusableProjectedBagCap` shows does not bind with `cap` terminal.
+   *
+   *     V().out(E).aggregate(x).cap(x)   107.61 ms   ->  the fold's 4.13
+   *     V().out(E).store(x).cap(x)       101.83
+   */
+  if (fusableProjectedBagCap(projected.rest)) {
     return foldProjectedList(projected.values);
   }
 

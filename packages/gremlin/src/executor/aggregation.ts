@@ -273,6 +273,50 @@ export const fusableProjectedFold = (rest: readonly Step[]): boolean => {
 };
 
 /**
+ * Is the residual exactly `aggregate(k).cap(k)` or `store(k).cap(k)`? (item 1911.)
+ *
+ * ⚠️⚠️ **ITEM 1909 REFUSED THIS PAIR AND THE REASON IT GAVE DOES NOT HOLD AT THIS SCOPE.** That
+ * entry said a side effect which "also PASSES THE STREAM THROUGH is a different emit contract from a
+ * barrier that replaces it, and `aggregate` and `store` differ from each other on eagerness in
+ * TinkerPop" — both true in general, and both UNOBSERVABLE here, which reading the two steps
+ * settles:
+ *
+ *   - `aggregateStep` pushes every `t.value` into `ctx.sideEffects[key]` — an ARRAY, a bag, in walk
+ *     order — and returns the stream. `capStep` then DRAINS the stream and yields one traverser
+ *     holding that array. So the pair's answer IS `fold`'s list, element for element.
+ *   - the PASS-THROUGH is unobservable because `cap` is the last step: there is nothing downstream
+ *     to see the traversers it forwards.
+ *   - EAGERNESS is unobservable for the same reason. `aggregate` buffers (`[...stream]`) so a
+ *     downstream `limit(0)` cannot cancel the collection and `store` does not — but `cap` consumes
+ *     the whole stream either way, so with `cap` terminal the two cannot be told apart. The
+ *     distinction is real and is what the `rest.length === 2` bound preserves: anything AFTER `cap`
+ *     declines, and so does anything between the side effect and it.
+ *
+ * ⚠️ THE KEYS MUST MATCH, and that is not a formality: `aggregate('a').cap('b')` yields side effect
+ * `b`, which this plan never populated — an empty list, not the walk.
+ *
+ * ⚠️ AND NO OTHER STEP MAY REFERENCE A SIDE EFFECT, which the caller's `rest` bound gives for free
+ * here: the fused rungs claim `V()` plus one hop, so a plan reaching this residual has exactly four
+ * steps and the two in `rest` are the only ones that can touch `ctx`. A second `aggregate('x')`
+ * earlier would make `cap` yield the CONCATENATION, and there is no room for one.
+ */
+export const fusableProjectedBagCap = (rest: readonly Step[]): boolean => {
+  if (rest.length !== 2) {
+    return false;
+  }
+
+  const [bag, capped] = rest;
+
+  if (bag.kind !== 'aggregate' && bag.kind !== 'store') {
+    return false;
+  }
+
+  // ⚠️ `subgraph` ALSO WRITES A KEY `capStep` READS FIRST (`ctx.subgraphs`), and it is deliberately
+  // not admitted above: its value is a GRAPH, not a bag of the walk's elements.
+  return capped.kind === 'cap' && capped.key === bag.key;
+};
+
+/**
  * The already-projected values as ONE list-shaped row.
  *
  * ⚠️⚠️ **THE DRAIN IS THE WHOLE POINT, not a micro-optimization.** The generic `foldStep` wraps every

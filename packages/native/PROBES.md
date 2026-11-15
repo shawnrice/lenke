@@ -2050,3 +2050,17 @@ in total, and now identical to the bare hop.**
 **So "it is fused now" is not a finish line** — it was true at 29.71. What said otherwise was carrying
 the bare walk as a FLOOR in the same instrument (`sideeffect-prof-1909.mjs`'s `bare` arm, 4.1-4.5 ms
 across every run of this item), which is the only reason the remaining 7x was visible at all.
+
+## ⚠️ THE BLOCKER YOU WROTE YOURSELF IS THE HARD ONE TO RE-CHECK (item 1911)
+
+Item 1909 declined `aggregate(k).cap(k)` with a reason of its own making — "a side effect that also
+PASSES THE STREAM THROUGH is a different emit contract from a barrier that replaces it, and
+`aggregate` and `store` differ on eagerness in TinkerPop". Both clauses are TRUE IN GENERAL. Neither
+binds with `cap` TERMINAL, which reading the two steps settles in a minute: `aggregateStep` pushes
+into an array and returns the stream, `capStep` drains and yields that array, so the pair's answer IS
+`fold`'s list — and with nothing downstream, neither the pass-through nor the buffering can be seen.
+**26.0x and 24.5x**, two items later.
+
+[[check-the-blocker-still-holds]] is written for inherited notes, and this is the harder case:
+nothing about a note you wrote two items ago looks stale. The tell was the number sitting beside it —
+1.09x of a shape that had just moved 24x.

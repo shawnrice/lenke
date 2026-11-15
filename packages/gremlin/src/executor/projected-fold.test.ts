@@ -2,8 +2,24 @@ import { describe, expect, it } from 'bun:test';
 
 import { Graph } from '@lenke/core';
 
-import { V, both, fold, id, in_, limit, out, run, toArray, traversal, values } from '../index.js';
-import { fusableProjectedFold, foldProjectedList } from './aggregation.js';
+import {
+  V,
+  aggregate,
+  both,
+  cap,
+  fold,
+  id,
+  in_,
+  limit,
+  out,
+  run,
+  store,
+  subgraph,
+  toArray,
+  traversal,
+  values,
+} from '../index.js';
+import { foldProjectedList, fusableProjectedBagCap, fusableProjectedFold } from './aggregation.js';
 
 /**
  * A residual global `fold()` over a fused projection (item 1909).
@@ -179,6 +195,136 @@ describe('a residual fold over a BARE hop', () => {
 
     expect(toArray(traversal(V(), out('E'), fold(), limit(0)), g)).toHaveLength(0);
     expect(toArray(traversal(V(), out('E'), fold(), limit(1)), g)).toHaveLength(1);
+  });
+});
+
+/**
+ * `aggregate(k).cap(k)` and `store(k).cap(k)` over a fused hop (item 1911).
+ *
+ * ⚠️⚠️ **ITEM 1909 REFUSED THIS PAIR, so these tests are the evidence for reversing that**, not
+ * cover added afterwards. Its reason — a side effect that passes the stream through is a different
+ * emit contract, and `aggregate`/`store` differ on eagerness — is true in general and unobservable
+ * with `cap` TERMINAL. The declines below are where it becomes observable again, and they are the
+ * reason the gate is `rest.length === 2` and not "a side effect somewhere".
+ */
+describe('a residual aggregate/store + cap over a fused hop', () => {
+  const twice = (make: () => ReturnType<typeof traversal>, g: Graph): unknown[] => {
+    const first = toArray(make(), g);
+    const second = toArray(make(), g);
+
+    expect(second).toStrictEqual(first);
+
+    return second;
+  };
+
+  const ids = (list: unknown[]): unknown[] => list.map((v) => (v as { id: string }).id);
+
+  it('aggregate + cap is the bare hop as ONE list, in walk order', () => {
+    const g = fixture();
+    const got = listOf(twice(() => traversal(V(), out('E'), aggregate('x'), cap('x')), g));
+
+    expect(ids(got)).toStrictEqual(ids(twice(() => traversal(V(), out('E')), g)));
+    expect(ids(got)).toStrictEqual(['b', 'c', 'f', 'd', 'b', 'd']);
+  });
+
+  it('store + cap answers identically — the eagerness is unobservable here', () => {
+    const g = fixture();
+    const agg = listOf(twice(() => traversal(V(), out('E'), aggregate('x'), cap('x')), g));
+    const sto = listOf(twice(() => traversal(V(), out('E'), store('y'), cap('y')), g));
+
+    expect(ids(sto)).toStrictEqual(ids(agg));
+  });
+
+  it('serves the projected spelling too', () => {
+    const g = fixture();
+    const got = listOf(
+      twice(() => traversal(V(), out('E'), values('k'), aggregate('x'), cap('x')), g),
+    );
+
+    expect(got).toStrictEqual([2, 2, 3, 2, 3]);
+  });
+
+  it('an empty hop caps to an empty list', () => {
+    expect(
+      listOf(twice(() => traversal(V(), out('NOSUCH'), aggregate('x'), cap('x')), fixture())),
+    ).toStrictEqual([]);
+  });
+
+  /** ⚠️ MISMATCHED KEYS: `cap('b')` reads a side effect this plan never wrote. */
+  it('aggregate(a) + cap(b) is an EMPTY list, not the walk', () => {
+    const g = fixture();
+
+    expect(listOf(toArray(traversal(V(), out('E'), aggregate('a'), cap('b')), g))).toStrictEqual(
+      [],
+    );
+  });
+
+  /**
+   * ⚠️⚠️ THE EAGERNESS DISTINCTION, WHICH BECOMES OBSERVABLE THE MOMENT `cap` IS NOT TERMINAL —
+   * `side-effects.ts` names this exact shape. `aggregate` buffers the upstream so a later `limit(0)`
+   * cannot cancel the collection; `store` is lazy, so it can. The fusion must not reach either, and
+   * `rest.length === 2` is what keeps it away.
+   */
+  it('a step BETWEEN the side effect and cap keeps the generic semantics', () => {
+    const g = fixture();
+    const eager = toArray(traversal(V(), out('E'), aggregate('x'), limit(0), cap('x')), g);
+    const lazy = toArray(traversal(V(), out('E'), store('y'), limit(0), cap('y')), g);
+
+    // ⚠️ THE NUMBERS ARE THE GENERIC PATH'S, UNCHANGED — this shape has three residual steps so the
+    // fusion declines it, and what matters is that the two still DIFFER. The barrier collected the
+    // whole upstream before the slice (6); the lazy one was pulled once before `limit(0)` rejected
+    // it (1), which is this engine's existing behaviour and not something this item decides.
+    expect(listOf(eager)).toHaveLength(6);
+    expect(listOf(lazy)).toHaveLength(1);
+    expect(listOf(eager).length).not.toBe(listOf(lazy).length);
+  });
+
+  it('a step AFTER cap still runs', () => {
+    const g = fixture();
+
+    expect(toArray(traversal(V(), out('E'), aggregate('x'), cap('x'), limit(0)), g)).toHaveLength(
+      0,
+    );
+    expect(toArray(traversal(V(), out('E'), aggregate('x'), cap('x'), limit(1)), g)).toHaveLength(
+      1,
+    );
+  });
+
+  it('a bare aggregate with NO cap passes the stream through, unchanged', () => {
+    const g = fixture();
+    const got = toArray(traversal(V(), out('E'), aggregate('x')), g);
+
+    expect(ids(got)).toStrictEqual(['b', 'c', 'f', 'd', 'b', 'd']);
+  });
+});
+
+describe('fusableProjectedBagCap — what it admits', () => {
+  const stepsOf = (p: ReturnType<typeof traversal>) => p.steps;
+
+  it('admits aggregate + cap and store + cap on the same key', () => {
+    expect(fusableProjectedBagCap(stepsOf(traversal(aggregate('x'), cap('x'))))).toBe(true);
+    expect(fusableProjectedBagCap(stepsOf(traversal(store('x'), cap('x'))))).toBe(true);
+  });
+
+  it('declines mismatched keys', () => {
+    expect(fusableProjectedBagCap(stepsOf(traversal(aggregate('a'), cap('b'))))).toBe(false);
+  });
+
+  it('declines a bare side effect, a bare cap, and anything longer', () => {
+    expect(fusableProjectedBagCap(stepsOf(traversal(aggregate('x'))))).toBe(false);
+    expect(fusableProjectedBagCap(stepsOf(traversal(cap('x'))))).toBe(false);
+    expect(fusableProjectedBagCap(stepsOf(traversal(aggregate('x'), cap('x'), limit(1))))).toBe(
+      false,
+    );
+  });
+
+  it('declines the wrong order', () => {
+    expect(fusableProjectedBagCap(stepsOf(traversal(cap('x'), aggregate('x'))))).toBe(false);
+  });
+
+  /** ⚠️ `subgraph` writes a key `capStep` reads FIRST, and its value is a GRAPH, not a bag. */
+  it('declines subgraph + cap', () => {
+    expect(fusableProjectedBagCap(stepsOf(traversal(subgraph('x'), cap('x'))))).toBe(false);
   });
 });
 

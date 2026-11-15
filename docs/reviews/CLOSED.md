@@ -90367,7 +90367,7 @@ unrecognised step as a residual over a bare hop would quietly re-route a large f
 nothing here has measured"_. Admitting `fold` SPECIFICALLY is narrower than that — it is the obvious
 next item, worth ~95 ms, and it needs the bare-hop gate rather than the residual dispatch.
 
-❌ **`aggregate`/`store` + `cap` ARE DELIBERATELY NOT HERE** even though they measure 1.09x and 1.03x
+❌ ~~**`aggregate`/`store` + `cap` ARE DELIBERATELY NOT HERE**~~ ✅ **BUILT at item 1911 (26.0x / 24.5x): the contract argument below is true in general and UNOBSERVABLE with `cap` terminal.** They measure 1.09x and 1.03x
 of `fold` and would ride the same win. A side effect that also PASSES THE STREAM THROUGH is a
 different emit contract from a barrier that replaces it, and `aggregate` and `store` differ from each
 other on eagerness in TinkerPop. One question at a time.
@@ -90440,7 +90440,7 @@ one route; "it is fused now" was true at 29.71 and still 7x off.**
       declining the fold yields the SAME list in the SAME order from a slower walk. Their gates are
       `sideeffect-prof-1909.mjs` and the route screen's row, named at each entry.
 
-🔭 **STILL OPEN, UNCHANGED AND PRICED**: `aggregate('x').cap('x')` reads **124.28 ms** on the
+🔭 ~~**STILL OPEN, UNCHANGED AND PRICED**~~ ✅ **TAKEN at item 1911 (26.0x / 24.5x)**: `aggregate('x').cap('x')` read **124.28 ms** on the
 workload screen and `store('x').cap('x')` 101.83 isolated — 1.09x and 1.03x of what `fold` cost
 before this item, so they would ride the same win. They stay out for item 1909's reason: a side
 effect that also PASSES THE STREAM THROUGH is a different emit contract from a barrier that replaces
@@ -90450,3 +90450,65 @@ largest non-path-gated shape on the Gremlin surface.
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers;
 `bun run spelling:gremlin` (0 disagreements, 0 groups over 2x); the route screen and the workload
 screen at 200,000 vertices.
+
+## Item 1911 — **26.0x / 24.5x**: `aggregate(k).cap(k)` and `store(k).cap(k)` take the fold's drain. **The blocker was mine, written two items earlier, and reading the two steps retired it** — with `cap` terminal both of its halves are unobservable
+
+Item 1909 measured this pair at 1.09x and 1.03x of `fold`, said it "would ride the same win", and
+declined it:
+
+> ❌ **`aggregate`/`store` + `cap` ARE DELIBERATELY NOT HERE** … A side effect that also PASSES THE
+> STREAM THROUGH is a different emit contract from a barrier that replaces it, and `aggregate` and
+> `store` differ from each other on eagerness in TinkerPop. One question at a time.
+
+⚠️⚠️ **BOTH CLAUSES ARE TRUE IN GENERAL AND NEITHER BINDS AT THIS SCOPE**, which reading
+`side-effects.ts` settles — [[check-the-blocker-still-holds]] applied to a note I wrote myself two
+items earlier, which is the harder case because nothing about it looked stale:
+
+- `aggregateStep` pushes every `t.value` into `ctx.sideEffects[key]` — an ARRAY, a bag, in walk
+  order — and returns the stream; `capStep` DRAINS the stream and yields one traverser holding
+  that array. **So the pair's answer IS `fold`'s list, element for element.**
+- the PASS-THROUGH is unobservable because `cap` is last: nothing downstream sees the traversers.
+- EAGERNESS is unobservable for the same reason — `aggregate` buffers so a later `limit(0)` cannot
+  cancel the collection and `store` does not, but `cap` consumes the whole stream either way.
+
+  200,000 vertices / 1,000,000 edges, one shape per process, median of 7, min of 3 rounds:
+
+      V().out(E).aggregate(x).cap(x)   107.61  ->  4.14 ms    ⬅ 26.0x
+      V().out(E).store(x).cap(x)       101.83  ->  4.16       ⬅ 24.5x
+      CONTROL V().out(E).fold()          4.13  ->  4.12        flat (item 1910)
+      CONTROL V().out(E)                 4.18  ->  4.18        flat — all four now IDENTICAL
+      route screen: `list: hop aggregate cap` and `… store cap`  generic (3 calls) -> SHORTCUT (0)
+      workload screen: `sideeffect: aggregate + cap` has left the top rows (was 5th at 124.28)
+
+✅ **THE DISTINCTION IS PRESERVED BY THE `rest.length === 2` BOUND, and that is tested rather than
+asserted.** The moment `cap` is not terminal the eagerness is observable again, and
+`side-effects.ts` names the exact shape: `V().out(E).aggregate(x).limit(0).cap(x)` collects **6**
+where the `store` spelling collects **1**. Three residual steps, so the fusion declines both and the
+generic semantics stand. ⚠️ Those two numbers are the generic path's, UNCHANGED by this item — what
+matters is that they still DIFFER, and the test asserts that explicitly rather than just the lengths.
+
+      ALSO DECLINED, each with a test: mismatched keys (`aggregate('a').cap('b')` is an EMPTY list,
+      not the walk — a side effect this plan never wrote), a bare side effect with no `cap`, a bare
+      `cap`, the reversed order, anything after `cap`, and ⚠️ `subgraph(k).cap(k)` — which
+      `capStep` reads FIRST from `ctx.subgraphs` and whose value is a GRAPH, not a bag of elements.
+
+🔑 **ONE DESIGN NOTE WORTH THE NEXT READER'S TIME.** The CSR rung decided "is the projection step
+consumed?" in two places — `pickFor`'s return and the `rest` slice beside it — and admitting two more
+step kinds would have made them drift. `Picked` now carries `consumesProj` and the slice reads it, so
+the two cannot disagree. That is item 606's reason ("two copies of this list is how one of them falls
+behind the other") and the shape of the wrong answer item 1903 cost.
+
+      MUTATION: 15 mutants, 11 caught, 4 expected survivors — all four route-only, because
+      declining a fusion yields the same list from a slower walk. Gates named at each entry
+      (`sideeffect-prof-1909.mjs` and the route screen's rows).
+
+🔭 **THE GREMLIN SURFACE'S TOP FOUR ARE NOW ALL PATH-GATED** — `where(neq)` 405.60, `select` two
+270.74 and one 190.11, `path` 153.08 — which is item 1900's finding standing: `as_`/`select`/`path`
+make `planReadsPath` true and every fused walk is gated on `!tracksPath`, so their cost is the
+bookkeeping rather than a missing rung. Item 1900 took 1.09x of the first and priced the rest of it
+as the generator chain.
+
+GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers;
+`bun run spelling:gremlin` (0 disagreements, 0 groups over 2x); the route and workload screens at
+200,000 vertices; the whole Gremlin suite (2,299 tests) which carries the existing side-effect
+semantics.

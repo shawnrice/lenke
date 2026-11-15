@@ -187,10 +187,16 @@ export const hopValuesShortcut = (plan: Plan, graph: Graph): HopValues | undefin
     pick = (far) => far.properties[valueKey];
     drops = true;
     consumed = 3;
-  } else if (proj === undefined || proj.kind === 'order' || proj.kind === 'fold') {
+  } else if (
+    proj === undefined ||
+    proj.kind === 'order' ||
+    proj.kind === 'fold' ||
+    proj.kind === 'aggregate' ||
+    proj.kind === 'store'
+  ) {
     /**
-     * ⚠️ `order` AND `fold` RIDE AS RESIDUALS OVER THE BARE HOP (items 1783 and 1910) — the two
-     * step kinds this shortcut NAMES, which is the bounded version of the change this file warns
+     * ⚠️ `order`, `fold`, `aggregate` AND `store` RIDE AS RESIDUALS OVER THE BARE HOP (items 1783,
+     * 1910 and 1911) — the step kinds this shortcut NAMES, which is the bounded version of the change this file warns
      * against a few lines above ("treating an unrecognised step as a residual over a bare hop would
      * quietly re-route a large family of plans that nothing here has measured").
      *
@@ -202,6 +208,12 @@ export const hopValuesShortcut = (plan: Plan, graph: Graph): HopValues | undefin
      * (`fusableProjectedFold` / `foldProjectedList`, which DRAINS) and took the `values(k).fold()`
      * spelling at 3.14x; this gate is what the ELEMENT spelling needed, so the two now agree on
      * route as well as on answer.
+     *
+     * ⚠️ `aggregate` AND `store` ARE THE THIRD AND FOURTH NAMES (item 1911), admitted here only
+     * because the PAIR `aggregate(k).cap(k)` is `fold` by another spelling — see
+     * `fusableProjectedBagCap`, which is what actually decides it. A bare `aggregate('x')` with no
+     * `cap` reaches `rest` here and that gate declines it, so the residual dispatch falls through
+     * and the plan runs generically, exactly as before.
      *
      * `V().out(T).order().by(k)` was the heaviest row on the Gremlin bench at **1537.5 ns/row**
      * (item 1782's ranking) for a reason that is entirely routing: an unrecognised third step

@@ -67,8 +67,8 @@ const MUTANTS = [
   [
     'the ELEMENT fold is not admitted on the bare hop (pre-1910)',
     'hv',
-    "} else if (proj === undefined || proj.kind === 'order' || proj.kind === 'fold') {",
-    "} else if (proj === undefined || proj.kind === 'order') {",
+    "    proj.kind === 'fold' ||\n",
+    '',
     1,
   ],
   [
@@ -81,15 +81,50 @@ const MUTANTS = [
   [
     'the CSR rung does not admit the fold (so the slower bucket walk serves it)',
     'csr',
-    "  if (proj === undefined || proj.kind === 'fold') {",
-    '  if (proj === undefined) {',
+    "    proj.kind === 'fold' ||\n",
+    '',
     1,
   ],
   [
     'the CSR rung CONSUMES the fold instead of leaving it in rest',
     'csr',
-    "rest: steps.slice(proj === undefined || proj.kind === 'fold' ? 2 : 3),",
+    'rest: steps.slice(picked.consumesProj ? 3 : 2),',
     'rest: steps.slice(3),',
+    1,
+  ],
+  [
+    'the bag+cap pair is not fused (the pre-1911 route)',
+    'idx',
+    'if (fusableProjectedBagCap(projected.rest)) {',
+    'if (false) {',
+    1,
+  ],
+  [
+    'the KEYS need not match, so cap reads a side effect nobody wrote',
+    'agg',
+    "return capped.kind === 'cap' && capped.key === bag.key;",
+    "return capped.kind === 'cap';",
+    1,
+  ],
+  [
+    'a residual of any length is admitted as a bag+cap',
+    'agg',
+    '  if (rest.length !== 2) {\n    return false;\n  }',
+    '  if (rest.length < 2) {\n    return false;\n  }',
+    1,
+  ],
+  [
+    '`subgraph` is admitted as a bag, though its value is a GRAPH',
+    'agg',
+    "if (bag.kind !== 'aggregate' && bag.kind !== 'store') {",
+    "if (bag.kind !== 'aggregate' && bag.kind !== 'store' && bag.kind !== 'subgraph') {",
+    1,
+  ],
+  [
+    'the CSR rung consumes the side-effect step instead of leaving it in rest',
+    'csr',
+    '    return { pick: (e) => e, drops: false, consumesProj: false };',
+    '    return { pick: (e) => e, drops: false, consumesProj: true };',
     1,
   ],
   [
@@ -120,6 +155,12 @@ const EXPECTED_SURVIVORS = new Set([
    */
   'the ELEMENT fold is not admitted on the bare hop (pre-1910)',
   'the CSR rung does not admit the fold (so the slower bucket walk serves it)',
+  /*
+   * ⚠️ ITEM 1911'S ROUTE MUTANT, for the same reason: declining the bag+cap pair yields the SAME
+   * list from the generic pipeline. Its gate is `sideeffect-prof-1909.mjs` — 107.61 -> 4.14 ms for
+   * `aggregate`, 101.83 -> 4.16 for `store` — and the route screen's `list: hop aggregate cap` row.
+   */
+  'the bag+cap pair is not fused (the pre-1911 route)',
 ]);
 
 /*
