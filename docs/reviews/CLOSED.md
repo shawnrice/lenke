@@ -96898,7 +96898,7 @@ NO ENGINE BEHAVIOUR CHANGED — this entry.
 
 GATES. `bun run fmt` 0; `bun run check` 0.
 
-## Item 1996 — 🛑 **THE "PER-ROW TOLL" OF ITEMS 1993/1995 IS TWO SEPARATE THINGS, and one of them is not a defect at all: ~1.9x is simply NOT BEING CSR-FUSED, and ~2.1x on top is coalesce-specific.** ⚠️ My twin was a FUSED route all along, and a fourth hypothesis (closure size) is refuted with a null
+## Item 1996 — 🛑 ⚠️ **[ITEM 1997 REFUTES THIS SPLIT: `both` IS ITSELF FULLY FUSED (0 `applyStep` calls), as are `out(E)` and `out(E,F)`. There is no coalesce-specific residual — the whole gap is that `coalesce` alone runs the general stream.]** THE "PER-ROW TOLL" OF ITEMS 1993/1995 IS TWO SEPARATE THINGS, and one of them is not a defect at all: ~1.9x is simply NOT BEING CSR-FUSED, and ~2.1x on top is coalesce-specific.** ⚠️ My twin was a FUSED route all along, and a fourth hypothesis (closure size) is refuted with a null
 
 Item 1995 priced `coalesce(out(T), in_(T)).values(k)` at 4.67x a bare hop that returns the
 positionally identical answer. This tick tried to build the cure and instead corrected the diagnosis.
@@ -96964,3 +96964,70 @@ NO ENGINE BEHAVIOUR CHANGED — the lift was built, measured, reverted; `git dif
 `packages/gremlin` against HEAD is empty. This entry is what ships.
 
 GATES. `bun run fmt` 0; `bun run check` 0; the Gremlin suite 2,435 pass / 0 fail.
+
+## Item 1997 — 🛑 **EVERY "GENERIC-PATH CONTROL" I USED ACROSS ITEMS 1993-1996 WAS ITSELF FULLY FUSED — 0 `applyStep` calls. There is no coalesce-specific residual: the whole 3.7-4.7x is one fact, that `coalesce` is the only shape of the four that runs the general stream.** ⚠️ I applied item 1982's route-counter rule to the code I was CHANGING and never to the controls I was COMPARING AGAINST
+
+Four items priced this family against hop controls. A counter on `applyStep` — two minutes of work,
+no timing involved — says what every one of those comparisons actually was:
+
+```text
+    out(E).values(n)              applyStep calls: 0   kinds: (none)            FULLY FUSED
+    out(E,F).values(n)            applyStep calls: 0   kinds: (none)            FULLY FUSED
+    both(E).values(n)             applyStep calls: 0   kinds: (none)            FULLY FUSED
+    coalesce(out,in).values(n)    applyStep calls: 2   kinds: coalesce values   GENERAL STREAM
+```
+
+🛑 **SO THERE WAS NEVER A GENERIC-PATH CONTROL IN ANY OF IT.** The three shapes I used to separate
+"the cost of not being fused" from "the cost of `coalesce`" are all fused, by three different rungs.
+The 82 / 113 / 149 ns-a-row spread among them is a spread among FUSED ROUTES, not evidence about the
+general path at all.
+
+### WHAT EACH ITEM GOT WRONG, IN ORDER
+
+```text
+    1993  "a ~300 ns per-ROW toll of the per-traverser sub-plan contract"
+          → the number is right; the attribution is not. It is the gap to a FUSED route.
+    1995  "4.67x against a twin returning the identical answer"
+          → the ratio is right and the twin is a twin; it is just also FUSED, so the gap is
+            "unfused vs fused", not a `coalesce` defect.
+    1996  "~1.9x not being fused, ~2.1x coalesce-specific" (using `both` as the generic control)
+          → both terms measured fused routes. The split is an artifact.
+    this tick's first half  "1.38x not fused, 2.68x residual" (using `out(E,F)`)
+          → same error, smaller numbers. `out(E,F)` is fused too.
+```
+
+✅ **AND THE CODE READING THAT PROMPTED THE COUNTER WAS RIGHT**: `soleTypeBucket` is a cached
+`Map.get` priced at **16.1 ns** by items 162/321, and its own header records it as FASTER than
+`adjacentEdges`, which delegates through `iterByLabel`/`iterLabeled` and allocates a `{edge, node}`
+per edge. So coalesce's fast arm should BEAT a generic hop — which is what made a 2.68x "residual"
+impossible and sent me to count routes instead of theorising a fifth mechanism.
+
+### 🔑 THE CORRECTED CONCLUSION, WHICH IS SIMPLER THAN ANY OF THEM
+
+**`coalesce(hop, hop).values(k)` is the only one of these shapes that runs the general stream, and
+that single fact accounts for the entire gap.** There is no residual to explain and no fifth
+hypothesis to test. The cure is exactly one thing — a fused route — and item 1995's description of it
+stands: `optional-hop-values.ts`'s structure with the fallback changed from "the input" to "arm 1's
+bucket".
+
+⚠️ **THE PRIZE IS STILL ~3.7x** (243.02 against 65.61 ms at 200,000 vertices / 800,000 edges) and it
+is now attributed to the right cause. What changed is that it is **one** piece of work rather than a
+bounded piece plus a mystery.
+
+### ⚠️ THE METHOD FAILURE, WHICH IS THE PART WORTH KEEPING
+
+Item 1982 recorded the rule after a route counter corrected a reading of the code: _"count the route
+before patching it, not after."_ I have applied that to every arm I have changed since — and never
+once to a CONTROL. A control's route is exactly as unknown as the subject's, and on this engine the
+prior is that a hop shape IS fused: **all three I reached for were.**
+
+**So the rule generalizes: count the route of BOTH SIDES of any ratio.** On an engine with ~15 fused
+rungs, "I picked a simple shape" is not evidence that the shape is simple to execute — and a
+comparison between two fused routes, or between fused and unfused, looks identical in a timing table.
+Four items' worth of attribution rested on an assumption that one counter refuted.
+
+NO ENGINE BEHAVIOUR CHANGED — `dispatch.ts` was instrumented, read, and restored; `git diff` over
+`packages/gremlin` against HEAD is empty. This entry and the corrections to items 1995/1996 are what
+ship.
+
+GATES. `bun run fmt` 0; `bun run check` 0.
