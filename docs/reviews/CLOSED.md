@@ -93541,3 +93541,55 @@ REVERTED — `git diff` empty, suite green across 21 projects. No instrument or 
 this one.
 
 GATES. bun run test --skip-nx-cache across 21 projects (after the revert).
+
+## Item 1949 — **`FILTER` after a hop, priced ISOLATED at 5.02x** (368.7 ms against a 73.4 ceiling) — the largest confirmed realistic-graph gap left. ⚠️ But a pre-existing test's own comment warns that an order-pinning case exists for EXACTLY the shape an edge pass would claim, and chasing it found something I do not understand about item 1940's REACH
+
+Item 1943's `MIXED=1` diff put `MATCH (a:T)-[:E]->(b:T) FILTER b.n > $p0 RETURN b.n AS x` at
+61.44 -> 297.04 (4.83x). Item 1947 bounded that sweep's inflation at 1.2x-1.3x, so the nomination
+survives it — and measured isolated, one shape per process, it is LARGER:
+
+      `filterhop-probe-1949.mjs`, 200,000 vertices / 1,000,000 edges, median of 9, 499,990 rows:
+
+        mode            engine   ns/visit    HAND ceiling   ns/visit   ratio
+        homogeneous       69.1         69            58.3         58   1.19x
+        MIXED            368.7        369            73.4         73   5.02x
+
+✅ The homogeneous arm is already near its ceiling (1.19x). On a realistic graph the same query is
+**5x off a plain edge pass** — and unlike the DISTINCT at items 1945/1948 there is no short-circuit
+to find (every surviving row is emitted) and no grouping to reorder (a `FILTER` emits rows).
+
+## ⚠️ The order hazard, found BEFORE building this time
+
+Item 1948 cost a build-and-revert by checking the order contract afterwards. Checking first,
+`filteredHopWalk` carries no `groupBy`, no `onStart` and no first-seen references — but
+`hop-projection.test.ts` has this, and its comment is a warning written for exactly this situation:
+
+        test('rows and their ORDER match the general path', …
+          // This one still pins the exact ORDER after item 167, and the reason is specific: `P` is
+          // NOT vacuous in this fixture (v5 is not a `P`), so a start label has to be applied by
+          // iteration and the START-driven walk takes it. Do not read this as a general guarantee
+          // that row order is stable — an unconstrained start drives the far side instead.
+
+A non-vacuous start label is precisely what an edge pass claims.
+
+## ⚠️⚠️ And that raises a question about code I already shipped
+
+That test is a PLAIN hop projection (`MATCH (a:P)-[:T]->(x) RETURN x.name AS n`), with `P` on 6 of 7
+vertices — coverage **0.857, above `EDGE_DRIVEN_MIN_COVERAGE`**. So **item 1940's edge-driven arm
+should have claimed it and changed its row order**, and the test pins that order exactly. The suite
+was green through 1940 and is green now.
+
+🔑 **So item 1940's arm has a narrower reach than I believed, and I do not yet know what narrows
+it.** The answers are correct either way — that test pins VALUES and passes — so this is a question
+about reach, not a wrong answer. But it means the 4.6x I measured at 1940 may apply to fewer shapes
+than its entry implies, and I should not extend the same mechanism to a SECOND rung while the first
+one's gate is not fully understood.
+
+**That is the next step, and it comes before the build:** determine empirically which branch
+`MATCH (a:P)-[:T]->(x) RETURN x.name AS n` takes on that fixture, and reconcile it with item 1940's
+gate. Either the gate has a condition I have forgotten, or the arm is not reached for a reason worth
+knowing.
+
+NO ENGINE BEHAVIOUR CHANGED — one instrument and this entry.
+
+GATES. bun run check 0; the suite is green (nothing was modified).
