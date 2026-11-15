@@ -89723,7 +89723,7 @@ runs of `bun run spelling:gremlin` (0 disagreements; one run flagged a group and
 refuted it, the same bimodality item 1899 saw). MUTATION: 7 mutants, 4 caught, 3 expected survivors
 each with its reason stated at the entry.
 
-## Item 1901 — item 1898's coverage sweep applied to GQL, and it found the same thing: **the surface's biggest shapes are outside the corpus**. `ORDER BY <an expression>` costs **8.9x** the bound-name spelling for the same rows in the same order — and the WINDOWED form of that very key takes the rung, so the capability is already there — ✅ **TAKEN at item 1902 (3.75x; ~2.8x residual)**, and ~~the HOP half is still open at 4.3x / 1190 ms~~ **TAKEN at item 1903 (2.64x) — which uncovered a TS-ONLY WRONG ANSWER in that arm, four of five end/key combinations**
+## Item 1901 — item 1898's coverage sweep applied to GQL, and it found the same thing: **the surface's biggest shapes are outside the corpus**. ⚠️ ~~Its two path rows (741.10 / 738.46) are read against a one-hop control~~ **CORRECTED at item 1916: that control is the wrong floor, and the SAME match returning a scalar costs 548.74 — so 71% of those numbers is the var-length match, not the path value.** `ORDER BY <an expression>` costs **8.9x** the bound-name spelling for the same rows in the same order — and the WINDOWED form of that very key takes the rung, so the capability is already there — ✅ **TAKEN at item 1902 (3.75x; ~2.8x residual)**, and ~~the HOP half is still open at 4.3x / 1190 ms~~ **TAKEN at item 1903 (2.64x) — which uncovered a TS-ONLY WRONG ANSWER in that arm, four of five end/key combinations**
 
 Items 1879/1880 split the existing seventeen families until "the addressable time is exhausted" —
 a conclusion that is only ever true of the shapes a screen HAS. Item 1898 falsified exactly that on
@@ -89736,8 +89736,8 @@ item 1890 applied the SIZE lesson to the GQL grid, nobody applied the COVERAGE o
 
         21977.17 ms        8   CONTROL varlen {2,3}   ⬅ items 1879/1880's documented refusal
          2335.62    2099864   any shortest
-          741.10     500000   path accessor edges(p)[0]
-          738.46     500000   path value + edges()
+          741.10     500000   path accessor edges(p)[0]   ⬅ see 1916: 71% is the MATCH
+          738.46     500000   path value + edges()        ⬅ not the path value
           180.39     200000   order by EXPRESSION
           179.03     200000   order by expr, two terms
           172.92     200000   CALL procedure YIELD
@@ -90898,3 +90898,99 @@ third and is now taken.
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers;
 `bun run spelling:gremlin` (0 disagreements, 0 groups over 2x); the Gremlin suite and the workload
 screen at 200,000 vertices.
+
+## Item 1916 — a pricing item with FOUR results and no code change to the engine: **71% of the GQL surface's largest open shape is not what item 1901 attributed it to**, all four path accessors cost full reconstruction including the one that returns a number, `flatAdj`'s 13.1% profile frame is worth **0.4%**, and the `{2,2}` "spelling gap" is not one
+
+Item 1901's coverage sweep left `path value + edges()` at **738.46 ms** and
+`path accessor edges(p)[0]` at **741.10** for 500,000 rows — the largest OPEN GQL shapes after the
+documented `{2,3}` refusal and `any shortest` (which item 1908 found no lever ≥5% in). Both were
+read against the sweep's `CONTROL one-hop projection` at 26.22 ms for 800,000 rows.
+
+❌ **THAT CONTROL IS THE WRONG FLOOR, and it is why this item exists.** A seeded `{1,2}` var-length
+match does far more work than a one-hop projection whatever it returns, and `edges(p)` returns a
+LIST of edge objects per row where the control returns a scalar. Comparing them prices "var-length
+matching + building path values" against "a one-hop scalar" and calls the whole difference the path
+value. Item 1878's lesson, which cost an item to a 4.7x that turned out to be 2 microseconds.
+
+      `pathval-prof-1916.mjs`, 200,000 vertices / 1,000,000 edges, one shape per process,
+      median of 7. THE FLOOR IS THE SAME MATCH RETURNING A SCALAR — identical pattern, identical
+      seed, identical row count, no path value anywhere:
+
+        CONTROL one-hop, unseeded        21.17 ms    800,000 rows
+        ------------------------------------------------------------
+        FLOOR  same match, scalar       548.74       500,000     ⬅ 71% of the "path" shape
+        path VARIABLE bound, unread     558.55       500,000     ⬅ binding a path: +1.8%
+        path_length(p)                  763.81       500,000
+        edges(p)[0]                     772.22       500,000
+        edges(p)                        772.59       500,000
+        nodes(p)                        787.00       500,000
+
+✅ **SO THE 741 WAS NEVER MOSTLY THE PATH VALUE: 548.74 of it is the var-length MATCH**, which has
+nothing to do with paths, and binding a path variable costs 1.8%. Item 1901's heading is corrected
+in the same commit.
+
+## 🔭 OPEN, and the one real finding here: all four accessors cost the SAME ~210 ms
+
+`path_length(p)` returns ONE INTEGER and `edges(p)[0]` returns ONE EDGE, yet both cost what
+returning the whole edge list costs — 763.81 and 772.22 against `edges(p)`'s 772.59, within 3% of
+each other and all ~210 ms above the unread-path arm's 558.55.
+
+The mechanism is visible: ANY accessor sets `wantPath`, which routes the walk to
+`trailEndsViaUnit` and reconstructs `verts`/`edges`/`steps` per emitted path. For `edges(p)` that
+reconstruction is the answer. For `path_length(p)` it is a count the walk already knows (the
+repetition depth), and for `edges(p)[0]` it is one element of a list that is then discarded. ⚠️ Not
+taken here and not priced beyond this number — the shapes are narrow next to `edges(p)` itself,
+which genuinely needs the edges.
+
+## ❌ REFUTED: `flatAdj`'s per-visit bucket copy, a 13.1% frame worth 0.4%
+
+`flatAdj`'s fast arm does `Array.from(bucket)` for EVERY vertex visited at EVERY depth, because the
+DFS frame needs indexed access (`adj.edges[top.idx]`); a `Set` iterator held in the frame would need
+none. On `MATCH (a:T)-[:E]->{2,2}(b:T) WHERE a.n = $p0` the profile puts `Array.from` at **13.1%**
+and `flatAdj` at 5.2%, and an older note in `var-length-count.ts` independently records `flatAdj` at
+**36.6%** on a declined depth-4 shape. Two hot-frame nominations pointing at one line.
+
+      `flatadj-ceiling-1916.mjs`, over the REAL visit list (125,000 visits, 500,000 edges, mean
+      degree 4.00 — built from the graph, not assumed):
+
+        copy    Array.from(bucket) then index it     31.527 ms
+        iter    hold the Set iterator, call next()    29.428      ⬅ 1.07x — the WHOLE win
+        forof   for…of over the Set                   22.418      ⬅ NOT usable: the frame resumes
+
+**2.099 ms of a 513.78 ms row. 0.4%.** Both arms pay the Set traversal; only the ALLOCATION is
+removed. [[frame-attribution-trap]] and CLAUDE.md's "a self-time share is a NOMINATION, NOT A PRICE",
+both earned again — and the `forof` arm is the tempting one and is unreachable, because a DFS frame
+has to suspend and resume mid-bucket, which is exactly what `for…of` cannot do. The refutation sits
+above `FlatAdj` in `matching.ts`, and the 36.6% note is corrected to say it is attribution.
+
+⚠️ **THE AREA HAD ALREADY WARNED, AND READING THAT WARNING IS WHAT MADE THIS CHEAP.** The comment
+above `flatAdj` records a previous change here at ~1.04x against a BIMODAL before-arm, withdrawn;
+item 735's ablation found the walk is ~20% of depth-5 enumeration with ~80% downstream of the yield.
+Pricing before building cost one micro and a few minutes.
+
+## ❌ NOT A SPELLING GAP: `{2,2}` against the written-out two-hop, 1.45x
+
+      MATCH (a:T)-[:E]->{2,2}(b:T) WHERE a.n = $p0        513.78 ms   400,000 rows
+      MATCH (a:T)-[:E]->(m:T)-[:E]->(b:T) WHERE a.n=$p0   353.76      400,000 rows
+
+Identical row counts on this fixture, 1.45x apart, and it would be this repo's named bug class if
+the two were one question. **They are not.** `ast.ts` records that the repeated-element restrictor
+on a var-length walk **defaults to `trail`**, so `{2,2}` excludes a path that reuses an edge and the
+written form does not. They agree here only because the fixture has no 2-hop that can reuse one.
+⚠️ Recorded so the 1.45x is not claimed later as a spelling gap — ISO-GQL is not Cypher and the
+default path mode is exactly where that assumption would have bitten.
+
+The rest of the split, which is clean: `{1,1}` costs what the written one-hop costs (35.09 against
+37.52), and `{1,2}` is almost exactly `{1,1}` + `{2,2}` (554.74 against 548.87) — **so the
+quantifier machinery adds no overhead of its own at these depths.** And the clause-vs-inline seed
+gap item 1906 took is closed for the ROWS shape too: 554.74 against 545.77, 1.6%.
+
+🔭 **WHAT THIS LEAVES AS THE GQL SIDE'S OPEN TOP**: the 548.74 ms var-length floor itself, now known
+to be ~71% of the largest open shape and NOT reachable through `flatAdj`. Item 735's ablation says
+~80% of depth-5 enumeration is downstream of the yield (`walkSegments`, `matchNode` per end, the
+sink) and which of those three dominates is still open — that is the next ablation, and this item
+adds that at depth 2 the walk's own share is larger than at depth 5, so the measurement has to be
+made at the depth being optimized.
+
+GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers. No
+engine code changed — three comments and four new instruments.

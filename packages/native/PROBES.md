@@ -2234,3 +2234,69 @@ vertex; an indexed loop moved it 36.70 to 36.35, i.e. nothing. The same substitu
 both mean exactly `p`), which took it to 20.85. So the cost is a LOOPING GENERATOR BODY with a
 mutable accumulator against a straight-line `const hit = …`, not the iterator. Both rejected
 substitutions are recorded in place with their numbers.
+
+## `pathval-prof-1916.mjs` — the path accessors, against a floor that is the SAME match
+
+⚠️⚠️ **THE FLOOR A SHAPE IS READ AGAINST IS PART OF THE MEASUREMENT, and item 1901's two path rows
+had the wrong one.** It priced `edges(p)` at 738.46 ms and `edges(p)[0]` at 741.10 against its
+`CONTROL one-hop projection` (26.22 ms) — but a seeded `{1,2}` var-length match does far more work
+than a one-hop projection whatever it returns, and `edges(p)` returns a LIST per row where the
+control returns a scalar. The floor here is the **same pattern, same seed, same row count, scalar
+return**, so the difference is the path machinery and nothing else:
+
+```
+FLOOR  same match, scalar       548.74 ms   500,000 rows   ⬅ 71% of the "path" shape
+path VARIABLE bound, unread     558.55       500,000       ⬅ binding a path: +1.8%
+path_length(p)                  763.81       500,000
+edges(p)[0]                     772.22       500,000
+edges(p)                        772.59       500,000
+nodes(p)                        787.00       500,000
+```
+
+🔭 **ALL FOUR ACCESSORS COST THE SAME ~210 ms** — `path_length(p)` returns one integer and
+`edges(p)[0]` one edge, yet both cost what the whole edge list costs, because ANY accessor sets
+`wantPath` and routes the walk to `trailEndsViaUnit`, which reconstructs `verts`/`edges`/`steps` per
+emitted path. Open, and narrow next to `edges(p)` itself.
+
+The probe's extra arms split the floor further: `{1,1}` costs what the written one-hop costs (35.09
+against 37.52) and `{1,2}` is almost exactly `{1,1}` + `{2,2}` (554.74 against 548.87), so **the
+quantifier machinery adds no overhead of its own at these depths.**
+
+## ⚠️ `{2,2}` vs A WRITTEN-OUT TWO-HOP IS NOT A SPELLING GAP (item 1916)
+
+```
+MATCH (a:T)-[:E]->{2,2}(b:T) WHERE a.n = $p0        513.78 ms   400,000 rows
+MATCH (a:T)-[:E]->(m:T)-[:E]->(b:T) WHERE a.n=$p0   353.76      400,000 rows
+```
+
+Same row count on that fixture, 1.45x apart — and it would be this repo's named bug class if the two
+were one question. **They are not.** `ast.ts` records that the repeated-element restrictor on a
+var-length walk **defaults to `trail`**, so `{2,2}` excludes a path that reuses an edge and the
+written form does not; they agree there only because the fixture has no 2-hop that can reuse one.
+
+⚠️ The general lesson: **equal row counts on one fixture are not evidence that two spellings are one
+question.** ISO-GQL is not Cypher, and a quantified path's default path mode is exactly where that
+assumption bites — check the restrictor before calling a quantified/unquantified pair equivalent.
+
+## ❌ `flatadj-ceiling-1916.mjs` — A 13.1% FRAME WORTH 0.4%, PRICED BEFORE BUILDING
+
+`flatAdj`'s fast arm does `Array.from(bucket)` for every vertex visited at every depth of a
+var-length walk, because the DFS frame needs indexed access. The profile puts `Array.from` at
+**13.1%**, and an older note in `var-length-count.ts` independently records `flatAdj` at **36.6%** on
+a declined depth-4 shape — two hot-frame nominations on one line.
+
+```
+copy    Array.from(bucket) then index it     31.527 ms
+iter    hold the Set iterator, call next()   29.428      ⬅ 1.07x — the WHOLE win
+forof   for…of over the Set                  22.418      ⬅ NOT usable: the frame must resume
+```
+
+**2.099 ms of a 513.78 ms row. 0.4%.** Both arms pay the Set traversal; only the allocation goes.
+[[frame-attribution-trap]] again, and the `forof` arm is the tempting one and is unreachable — a DFS
+frame has to suspend and resume mid-bucket, which is exactly what `for…of` cannot do.
+
+⚠️ Two things made this cheap, and both are reusable: **the visit list is built FROM THE GRAPH**
+(125,000 real visits, mean degree 4.00) rather than sampled uniformly, so it is a ceiling for the
+real shape; and **the area had already warned** — the comment above `flatAdj` records a previous
+change there at ~1.04x against a bimodal before-arm, withdrawn. Reading the warning first cost one
+micro.

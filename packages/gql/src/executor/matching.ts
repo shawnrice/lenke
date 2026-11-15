@@ -1869,6 +1869,26 @@ export const relHasInlinePred = (rel: CRel): boolean => hasPredicate(rel.pred);
  *  ablation is the inner `yield* walkSegments` in the quantified branch.
  *
  *  For scale: TS's bare walk alone (1462.2) is still 7.3x native's WHOLE pipeline (199.2). */
+/**
+ * ⚠️⚠️ REFUTED, WITH ITS NUMBERS (item 1916): replacing the `Array.from(bucket)` below with a `Set`
+ * ITERATOR held in the DFS frame — so the walk needs no indexed access and no copy — is worth
+ * **2.099 ms of a 513.78 ms row, 0.4%.** Do not build it.
+ *
+ * The profile says otherwise and the profile is wrong about this, which is the point worth keeping:
+ * on `MATCH (a:T)-[:E]->{2,2}(b:T) WHERE a.n = $p0` at 200,000 vertices, `Array.from` samples at
+ * **13.1%** and `flatAdj` at 5.2%, and an older note in `var-length-count.ts` independently records
+ * `flatAdj` at **36.6%** on a declined depth-4 shape. `flatadj-ceiling-1916.mjs` priced the
+ * substitution directly over the REAL visit list (125,000 visits, 500,000 edges, mean degree 4.00):
+ *
+ *     copy    Array.from(bucket) then index it     31.527 ms
+ *     iter    hold the Set iterator, call next()   29.428      ⬅ 1.07x, the whole available win
+ *     forof   for…of over the Set                  22.418      ⬅ NOT usable: the frame must resume
+ *
+ * Both arms pay the Set traversal; only the array ALLOCATION is removed, and that is 7% of this
+ * slice and 0.4% of the row. [[frame-attribution-trap]], and CLAUDE.md's "a self-time share is a
+ * NOMINATION, NOT A PRICE". The `forof` arm is the tempting one and it is unreachable: the DFS frame
+ * has to suspend and resume mid-bucket, which is exactly what a `for…of` cannot do.
+ */
 type FlatAdj = { edges: Edge[]; nodes: Vertex[] | null; fwd: boolean };
 
 const NO_EDGES: Edge[] = [];

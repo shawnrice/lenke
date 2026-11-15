@@ -812,6 +812,12 @@ export const degreeCountShape = (pattern: PathPattern): boolean => {
  * `walkLevelCount`, no `varLengthDegreeCount`, no `trailsAt4From` — it is `flatAdj` 36.6%,
  * `evalLabelExpr` 15.6%, `trailEnds` 14.6%, `walkSegments` 8.1%.
  *
+ * ⚠️ AND `flatAdj` 36.6% IS ATTRIBUTION, NOT AN AVAILABLE WIN — do not read this list as a target
+ * list. Item 1916 priced the one substitution that frame invites (its `Array.from(bucket)` replaced
+ * by a `Set` iterator held in the DFS frame) at **2.099 ms of a 513.78 ms row, 0.4%**, and declined
+ * it. Both forms pay the Set traversal; only the allocation is removed. The refutation and its
+ * three arms are recorded above `FlatAdj` in `matching.ts`.
+ *
  * THE GATE ITSELF IS CORRECT and must not be relaxed on its own: the depth-4 terms are derived for a
  * trivial mask, and item 692 already shipped that mistake once — the walk count, 450,000 against the
  * trail's 449,998, caught by printing answers beside times. Fixing this needs a way to DECLINE AFTER
