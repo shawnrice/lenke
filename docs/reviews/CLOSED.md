@@ -91737,3 +91737,84 @@ quoting a clean run would be the easy thing:
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers; the
 workload screen at 200,000 vertices. `bun run spelling:gremlin`: 0 answer disagreements, 2 groups
 flagged and both shown above to be pre-existing rather than this item's.
+
+## Item 1924 — **3.78x**: `V().out(T).path().by(k)` goes 304.87 ms to **80.55**, landing exactly on its own floor (two property reads a row). ⚠️ And the probe that priced it was LYING until its renderer changed: `JSON.stringify` renders `undefined` inside an array AS `null`, hiding the one distinction the fusion had to get right
+
+Item 1920 fused the bare `path()` to 8.40 ms and explicitly REFUSED `path().by(k)` — "the rung emits
+the ELEMENTS, so serving a `by` would silently return vertices where the contract says their
+property values". Item 1921 then measured that refused form at **304.87 ms for 600,000 rows**, the
+family's second-largest shape after `tree()`. Same walk, one more mode.
+
+      200,000 vertices / 800,000 edges, the workload screen:
+
+        pathdep: path().by(k)   304.87  ->  80.55 ms   ⬅ 3.78x
+        hop1: values             44.99       44.99      ONE property read a row
+        path() (item 1920)        8.40        8.40      the same walk, no reads at all
+
+✅ **80.55 IS THE FLOOR, NOT A RESIDUAL**: `values(k)` costs 44.99 for one property-bag read per row
+and this does TWO, so ~90 is the expectation and 80.55 beats it. There is nothing left here without
+caching the bag read itself.
+
+## 🛑 The probe was lying, and the renderer was the lie
+
+`pathby-shape-1924.mjs`'s first version printed rows with `JSON.stringify`. It reported
+`path().by(opt)` as `[[1,null],[1,null]]` for a graph where one far vertex is MISSING `opt` and the
+other holds a stored `null` — so the two looked identical and the obvious implementation (`?? null`)
+looked correct.
+
+⚠️⚠️ **`JSON.stringify` RENDERS `undefined` INSIDE AN ARRAY AS `null`.** The real values differ:
+
+      path().by(opt)      [1, undefined]   <- the far vertex has NO `opt`
+                          [1, null]        <- the far vertex has a STORED null
+      values(opt)         null             <- ONE row: `values` DROPS the absent key, keeps the null
+      path().by(toString) [undefined, undefined]   <- Object.hasOwn, not `in`
+
+So `path()`'s `by` and `values()` disagree on an absent key by design — one yields `undefined` in
+place, the other drops the row — and a fusion building `null` would have been **a wrong answer no
+JSON comparison could ever see**. The implementation mirrors `evalBy`'s `'key'` arm exactly:
+`Object.hasOwn(bag, key) ? bag[key] : undefined`, reading the bag ONCE because `properties` is a
+getter `evalBy` measures at ~225 ns cold.
+
+⚠️ **AND `Object.hasOwn` RATHER THAN `in` IS LOAD-BEARING**: `evalBy`'s own note says an inherited
+name must never leak a prototype function, and `path().by(toString)` answers
+`[undefined, undefined]`. With `in` the row would hold `function toString()`.
+[[prototype-key-class-not-a-bug]].
+
+## Refusals
+
+      ❌ TWO `by`s. They CYCLE round-robin across path positions — `path().by(n).by(opt)` projects
+         position 0 through `n` and position 1 through `opt`, which the probe shows as
+         `["a", undefined]`. A different answer, so only one is admitted.
+      ❌ A NON-`key` BY. Item 1899 shipped a gate testing `typeof by === 'string'` when the AST holds
+         `{kind: 'key', key}`, and only measuring BOTH spellings caught it — so the KIND is tested
+         here and a `by(traversal(...))` falls through.
+
+## Mutation
+
+The battery is item 1920's, extended rather than duplicated (same subject, same four walk paths).
+⚠️ **ADDING A MODE MULTIPLIES THE PATHS AGAIN**: a walk written twice (lazy, eager) over two arms
+(CSR, bucket) is four, and a mode makes eight. Item 1920's own battery found three of its four
+untested, so each of the new four has a per-arm mutant and the test file drives the iterator's CSR
+and BUCKET arms for the `by` mode specifically — not just the drain that `toArray` takes.
+
+The two mutants that matter are the ones the renderer had hidden: **an absent key becoming `null`
+instead of `undefined`**, and **`in` replacing `Object.hasOwn`** so a prototype function leaks into
+the row. A third survived the first run — **the gate admitting a non-`key` `by`** — because every
+`by` in the tests was a key; a `by(traversal(...))` case now covers it, which is the mirror of item
+1899's bug (a gate testing `typeof by === 'string'` against an AST holding `{kind: 'key', key}`).
+
+## ⚠️⚠️ NINE OF ITEM 1920'S ANCHORS DRIFTED AT ONCE, and the harness said so in one run
+
+Adding the mode rewrote every row site and the gate, so nine mutants from item 1920 matched ZERO
+occurrences and **did not run**. The battery reported all nine together rather than throwing on the
+first — item 1914's harness fix earning itself, in the precise situation it was built for ("a
+refactor that moves five of them costs five runs to discover").
+
+✅ **EACH WAS RE-ANCHORED ONTO THE NEW TEXT, KEEPING ITS NAME AND INTENT**, because a dead mutant
+silently loses the coverage the earlier item built — and a battery that reports "20 caught" while
+nine of its entries never executed is worse than no battery. ⚠️ The general form: **extending a fused
+rung invalidates the previous item's anchors by construction**, so re-running its battery is part of
+the change, not a formality.
+
+GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers;
+`bun run spelling:gremlin`; the workload screen at 200,000 vertices.

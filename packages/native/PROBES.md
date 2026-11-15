@@ -2738,3 +2738,51 @@ V().out(E).out(E).simplePath()   c              <- depth 2 needs all THREE disti
 them `simplePath` and the plain hop agree and all ten comparisons pass for the wrong reason — the
 "answer INVARIANT to the property you varied" trap. It also checks the PARTITION
 (`out(E) 60000 = simplePath 59998 + cyclicPath 2`), because a wrong filter returns a plausible count.
+
+## 🛑 `JSON.stringify` RENDERS `undefined` INSIDE AN ARRAY AS `null` — a probe that hid the one thing that mattered (item 1924)
+
+`pathby-shape-1924.mjs`'s first version printed rows with `JSON.stringify` and reported
+`path().by(opt)` as `[[1,null],[1,null]]` for a graph where one far vertex is MISSING `opt` and the
+other holds a stored `null`. The two looked identical, and the obvious implementation (`?? null`)
+looked correct. **They are not identical:**
+
+```
+path().by(opt)      [1, undefined]   <- the far vertex has NO `opt`
+                    [1, null]        <- the far vertex has a STORED null
+values(opt)         null             <- ONE row: `values` DROPS the absent key, keeps the null
+path().by(toString) [undefined, undefined]   <- Object.hasOwn, not `in`
+```
+
+So `path()`'s `by` and `values()` disagree on an absent key **by design** — one yields `undefined`
+in place, the other drops the row — and a fusion building `null` would have been **a wrong answer no
+JSON comparison could ever see**.
+
+⚠️ **THE RULE: if a probe's output passes through `JSON.stringify`, it cannot distinguish `undefined`
+from `null`, a sparse hole from a filled one, or a `Map` from `{}`** (the last one is a bug this repo
+already shipped — `treeStep`'s note records a nested `Map` stringifying to `{}` as "the silent
+empty-tree bug this replaces"). Render the values yourself when the distinction is the point.
+
+⚠️ And mirror the real projection rather than re-deriving it: `evalBy`'s `'key'` arm is
+`Object.hasOwn(bag, key) ? bag[key] : NO_VALUE` and `byOr` maps NO_VALUE to `undefined`.
+`Object.hasOwn` rather than `in` is load-bearing — with `in`, `path().by(toString)` would put
+`function toString()` in the row. [[prototype-key-class-not-a-bug]]
+
+## ⚠️ EXTENDING A FUSED RUNG INVALIDATES THE PREVIOUS ITEM'S MUTANT ANCHORS BY CONSTRUCTION (item 1924)
+
+Adding the `by(k)` mode to item 1920's rung rewrote every row site and the gate, so **NINE of that
+item's mutants matched zero occurrences and did not run**. The battery reported all nine in ONE run
+rather than throwing on the first — item 1914's harness fix earning itself in exactly the situation
+it was built for ("a refactor that moves five of them costs five runs to discover").
+
+✅ Each was **re-anchored onto the new text, keeping its original name and intent**. A dead mutant
+silently loses the coverage the earlier item built, and a battery reporting "20 caught" while nine
+entries never executed is worse than no battery at all.
+
+⚠️ **So re-running the previous item's battery is part of the change, not a formality** — and the
+thing to read is the ANCHOR-DRIFT list, not just the survivor count. A drifted anchor reports as
+neither caught nor survived.
+
+⚠️ **AND A MODE MULTIPLIES THE PATHS AGAIN**: a walk written twice (lazy, eager) over two arms (CSR,
+bucket) is four paths; a mode makes eight. Item 1920's battery found three of its four untested, so
+each new arm gets its own per-arm mutant and the tests drive the iterator's CSR _and_ cold-BUCKET
+arms for the new mode specifically — not just the drain that `toArray` happens to take.

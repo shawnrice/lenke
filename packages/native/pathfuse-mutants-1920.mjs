@@ -1,5 +1,5 @@
 /**
- * DOES `path-hop-values.test.ts` HAVE TEETH? (item 1920)
+ * DOES `path-hop-values.test.ts` HAVE TEETH? (items 1920 and 1924)
  *
  * ⚠️ THE SUBJECT EMITS A TWO-ELEMENT ARRAY PER ROW, so the failure mode is a wrong ORDER or a wrong
  * END with the right row count — invisible to any assertion that counts rows, which is exactly what
@@ -12,6 +12,11 @@
  *
  * ⚠️ WRITTEN DIRECTLY, not templated (item 1907), and every test path listed from the directory
  * (item 1915 found a non-existent path in its own first draft).
+ *
+ * ⚠️⚠️ NINE ANCHORS DRIFTED AT ONCE when item 1924 added the `by(k)` mode, because it rewrote every
+ * row site and the gate. The battery reported ALL NINE in one run rather than throwing on the first
+ * — item 1914's harness fix earning itself — and each was RE-ANCHORED onto the new text keeping its
+ * original name and intent, because a dead mutant silently loses the coverage item 1920 built.
  *
  *     bun pathfuse-mutants-1920.mjs
  */
@@ -39,43 +44,43 @@ const MUTANTS = [
   [
     'the path is REVERSED — EAGER drain (occurrence 0)',
     'path',
-    'out.push([from, vtx[memo.flat[i]]]);',
-    'out.push([vtx[memo.flat[i]], from]);',
+    '            byKey === undefined ? [from, far] : [byVal(from, byKey), byVal(far, byKey)],',
+    '            byKey === undefined ? [far, from] : [byVal(from, byKey), byVal(far, byKey)],',
     1,
   ],
   [
     'the path is REVERSED — LAZY iterator (occurrence 0 of the yield)',
     'path',
-    'yield [from, vtx[memo.flat[i]]];',
-    'yield [vtx[memo.flat[i]], from];',
+    '        yield byKey === undefined ? [from, far] : [byVal(from, byKey), byVal(far, byKey)];',
+    '        yield byKey === undefined ? [far, from] : [byVal(from, byKey), byVal(far, byKey)];',
     1,
   ],
   [
     'the NEAR slot holds the far vertex too — drain, CSR arm',
     'path',
-    'out.push([from, vtx[memo.flat[i]]]);',
-    'out.push([vtx[memo.flat[i]], vtx[memo.flat[i]]]);',
+    '            byKey === undefined ? [from, far] : [byVal(from, byKey), byVal(far, byKey)],',
+    '            byKey === undefined ? [far, far] : [byVal(from, byKey), byVal(far, byKey)],',
     1,
   ],
   [
     'the bucket arm reads the WRONG END — drain (occurrence 0)',
     'path',
-    'out.push([v, direct.forward ? e.to : e.from]);',
-    'out.push([v, e.to]);',
+    '        const far = direct.forward ? e.to : e.from;\n\n        out.push(',
+    '        const far = e.to;\n\n        out.push(',
     1,
   ],
   [
     'the bucket arm reads the WRONG END — iterator',
     'path',
-    'yield [v, direct.forward ? e.to : e.from];',
-    'yield [v, e.to];',
+    '      const far = direct.forward ? e.to : e.from;\n\n      yield',
+    '      const far = e.to;\n\n      yield',
     1,
   ],
   [
     'the path is ONE element, not two — drain, CSR arm',
     'path',
-    'out.push([from, vtx[memo.flat[i]]]);',
-    'out.push([vtx[memo.flat[i]]]);',
+    '            byKey === undefined ? [from, far] : [byVal(from, byKey), byVal(far, byKey)],',
+    '            byKey === undefined ? [far] : [byVal(from, byKey), byVal(far, byKey)],',
     1,
   ],
   // ---- the gate ----
@@ -94,16 +99,16 @@ const MUTANTS = [
     1,
   ],
   [
-    'the gate admits `path().by(...)`',
+    'the gate admits a NON-path tail as if it were bare',
     'path',
-    "  step.kind === 'path' && (!('bys' in step) || (step.bys?.length ?? 0) === 0);",
-    "  step.kind === 'path';",
+    "  if (step.kind !== 'path') {\n    return undefined;\n  }",
+    '',
     1,
   ],
   [
     'the gate admits any tail step, not just path',
     'path',
-    '  if (!isBarePath(tail)) {\n    return undefined;\n  }',
+    '  if (form === undefined) {\n    return undefined;\n  }',
     '',
     1,
   ],
@@ -117,11 +122,75 @@ const MUTANTS = [
   [
     'the direction is inverted, so `out` walks the in-bucket',
     'path',
-    "    values: walk(graph, { forward: hop.kind === 'out', type: hop.labels[0] }),",
-    "    values: walk(graph, { forward: hop.kind === 'in', type: hop.labels[0] }),",
+    "      forward: hop.kind === 'out',",
+    "      forward: hop.kind === 'in',",
     1,
   ],
   // ---- the wiring ----
+  // ---- item 1924's `by(k)` mode, per arm ----
+  [
+    '⚠️ an ABSENT key becomes null instead of undefined',
+    'path',
+    'return Object.hasOwn(bag, key) ? bag[key] : undefined;',
+    'return Object.hasOwn(bag, key) ? bag[key] : null;',
+    1,
+  ],
+  [
+    '⚠️ `in` replaces Object.hasOwn, leaking a prototype function',
+    'path',
+    'return Object.hasOwn(bag, key) ? bag[key] : undefined;',
+    'return key in bag ? bag[key] : undefined;',
+    1,
+  ],
+  [
+    'the by mode is ignored, so the row holds the ELEMENTS',
+    'path',
+    "      byKey: form === 'bare' ? undefined : form.key,",
+    '      byKey: undefined,',
+    1,
+  ],
+  [
+    'the gate admits TWO bys, which cycle round-robin',
+    'path',
+    '  if (bys === undefined || bys.length !== 1) {\n    return undefined;\n  }',
+    '',
+    1,
+  ],
+  [
+    'the gate admits a non-key by (a traversal or identity)',
+    'path',
+    "  return by.kind === 'key' && by.direction === undefined ? { key: by.key } : undefined;",
+    '  return { key: (by as { key: string }).key };',
+    1,
+  ],
+  [
+    'the by row projects the FAR end twice — EAGER drain, CSR arm',
+    'path',
+    '            byKey === undefined ? [from, far] : [byVal(from, byKey), byVal(far, byKey)],',
+    '            byKey === undefined ? [from, far] : [byVal(far, byKey), byVal(far, byKey)],',
+    1,
+  ],
+  [
+    'the by row projects the FAR end twice — LAZY iterator, CSR arm',
+    'path',
+    '        yield byKey === undefined ? [from, far] : [byVal(from, byKey), byVal(far, byKey)];',
+    '        yield byKey === undefined ? [from, far] : [byVal(far, byKey), byVal(far, byKey)];',
+    1,
+  ],
+  [
+    'the by row swaps the ends — drain, BUCKET arm',
+    'path',
+    '        out.push(byKey === undefined ? [v, far] : [byVal(v, byKey), byVal(far, byKey)]);',
+    '        out.push(byKey === undefined ? [v, far] : [byVal(far, byKey), byVal(v, byKey)]);',
+    1,
+  ],
+  [
+    'the by row swaps the ends — iterator, BUCKET arm',
+    'path',
+    '      yield byKey === undefined ? [v, far] : [byVal(v, byKey), byVal(far, byKey)];',
+    '      yield byKey === undefined ? [v, far] : [byVal(far, byKey), byVal(v, byKey)];',
+    1,
+  ],
   [
     'the rung is never taken (the pre-1920 route)',
     'idx',

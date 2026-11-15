@@ -41,7 +41,7 @@
 //     hand walk, far vertex only   19.35
 //     hand walk, [near, far]       26.11        <- the allocation is 6.75 ms, not the win
 //     the engine, this shape      124.55        <- so up to 98.44 ms, 4.77x, is available
-import type { Graph } from '@lenke/core';
+import type { Graph, Vertex } from '@lenke/core';
 
 import type { Plan, Step } from '../ast.js';
 import { chainCsrFor } from './count-shortcut.js';
@@ -49,7 +49,41 @@ import { seenBefore } from './hop-values-csr.js';
 import type { HopValues, HopWalk } from './hop-values.js';
 import { soleTypeBucket } from './movement.js';
 
-type WalkSpec = { readonly forward: boolean; readonly type: string };
+type WalkSpec = {
+  readonly forward: boolean;
+  readonly type: string;
+  /**
+   * The single `by(k)` modulator's key, or `undefined` for a bare `path()` (item 1924).
+   *
+   * ⚠️ WITH A KEY THE ROW HOLDS THE PROJECTED VALUES, not the elements — `[near[k], far[k]]` — and
+   * the two cases below are NOT interchangeable.
+   */
+  readonly byKey: string | undefined;
+};
+
+/**
+ * One path position projected through a `by(k)` modulator, mirroring `evalBy`'s `'key'` arm exactly.
+ *
+ * ⚠️⚠️ AN ABSENT KEY AND A STORED NULL ARE DIFFERENT VALUES, and a probe is why rather than a
+ * reading of the code: `pathby-shape-1924.mjs` prints `path().by(opt)` as `[1, undefined]` for a
+ * vertex MISSING `opt` and `[1, null]` for one holding a stored `null`. ⚠️ The first version of that
+ * probe used `JSON.stringify`, which renders `undefined` inside an array AS `null` — so it showed
+ * both as `null` and hid the distinction entirely. A fusion building `null` for an absent key would
+ * have been a wrong answer no JSON comparison could see.
+ *
+ * ⚠️ AND IT IS `Object.hasOwn`, NOT `in`: `evalBy`'s own note says an inherited name must never leak
+ * a prototype function, and `path().by(toString)` answers `[undefined, undefined]`. Using `in` here
+ * would put `function toString()` in the row. [[prototype-key-class-not-a-bug]].
+ *
+ * Hoisted to module scope ([[ts-closure-size-is-load-bearing]]).
+ */
+const byVal = (v: Vertex, key: string): unknown => {
+  // Read the bag ONCE: `properties` is a getter doing a string-keyed lookup into the graph's whole
+  // property store, which `evalBy` measures at ~225ns cold.
+  const bag = v.properties;
+
+  return Object.hasOwn(bag, key) ? bag[key] : undefined;
+};
 
 /**
  * ⚠️ ONE LOOP, PARAMETERIZED, AT MODULE SCOPE ([[ts-closure-size-is-load-bearing]]), with the eager
@@ -71,7 +105,7 @@ const walk = (graph: Graph, spec: WalkSpec): HopWalk => ({
     yield* each(graph, spec);
   },
   drain() {
-    const { forward, type } = spec;
+    const { forward, type, byKey } = spec;
     const csr = seenBefore(graph, forward, type) ? chainCsrFor(graph, forward, [type]) : undefined;
     const out: unknown[] = [];
 
@@ -83,7 +117,9 @@ const walk = (graph: Graph, spec: WalkSpec): HopWalk => ({
         const to = memo.off[slot] + memo.len[slot];
 
         for (let i = memo.off[slot]; i < to; i += 1) {
-          out.push([from, vtx[memo.flat[i]]]);
+          const far = vtx[memo.flat[i]];
+
+          out.push(byKey === undefined ? [from, far] : [byVal(from, byKey), byVal(far, byKey)]);
         }
       }
 
@@ -108,7 +144,9 @@ const walk = (graph: Graph, spec: WalkSpec): HopWalk => ({
       }
 
       for (const e of direct.set) {
-        out.push([v, direct.forward ? e.to : e.from]);
+        const far = direct.forward ? e.to : e.from;
+
+        out.push(byKey === undefined ? [v, far] : [byVal(v, byKey), byVal(far, byKey)]);
       }
     }
 
@@ -118,7 +156,7 @@ const walk = (graph: Graph, spec: WalkSpec): HopWalk => ({
 
 /** The lazy twin of `drain`, for a consumer that does not offer to drain. */
 const each = function* (graph: Graph, spec: WalkSpec): Iterable<unknown> {
-  const { forward, type } = spec;
+  const { forward, type, byKey } = spec;
   const csr = seenBefore(graph, forward, type) ? chainCsrFor(graph, forward, [type]) : undefined;
 
   if (csr !== undefined) {
@@ -129,7 +167,9 @@ const each = function* (graph: Graph, spec: WalkSpec): Iterable<unknown> {
       const to = memo.off[slot] + memo.len[slot];
 
       for (let i = memo.off[slot]; i < to; i += 1) {
-        yield [from, vtx[memo.flat[i]]];
+        const far = vtx[memo.flat[i]];
+
+        yield byKey === undefined ? [from, far] : [byVal(from, byKey), byVal(far, byKey)];
       }
     }
 
@@ -144,14 +184,43 @@ const each = function* (graph: Graph, spec: WalkSpec): Iterable<unknown> {
     }
 
     for (const e of direct.set) {
-      yield [v, direct.forward ? e.to : e.from];
+      const far = direct.forward ? e.to : e.from;
+
+      yield byKey === undefined ? [v, far] : [byVal(v, byKey), byVal(far, byKey)];
     }
   }
 };
 
-/** Is the last step a bare `path()`? */
-const isBarePath = (step: Step): boolean =>
-  step.kind === 'path' && (!('bys' in step) || (step.bys?.length ?? 0) === 0);
+/**
+ * The `path()` form this rung serves: `'bare'`, or the single `by(k)` modulator's key (item 1924).
+ *
+ * ⚠️ EXACTLY ONE `by`, because they CYCLE round-robin across path positions: `path().by(n).by(opt)`
+ * projects position 0 through `n` and position 1 through `opt`, which the probe shows as
+ * `["a", undefined]`. Two keys is a different answer, so only one is admitted.
+ *
+ * ⚠️ AND ONLY A `'key'` BY. Item 1899 shipped a gate testing `typeof by === 'string'` when the AST
+ * holds `{kind: 'key', key}`, and only measuring BOTH spellings caught it — so the kind is tested
+ * here, and a `by(traversal(...))` or a bare `by()` identity falls through.
+ */
+const pathForm = (step: Step): 'bare' | { readonly key: string } | undefined => {
+  if (step.kind !== 'path') {
+    return undefined;
+  }
+
+  const bys = 'bys' in step ? step.bys : undefined;
+
+  if ((bys?.length ?? 0) === 0) {
+    return 'bare';
+  }
+
+  if (bys?.length !== 1) {
+    return undefined;
+  }
+
+  const [by] = bys;
+
+  return by.kind === 'key' && by.direction === undefined ? { key: by.key } : undefined;
+};
 
 /**
  * `V(), <one directed single-type vertex hop>, path()` — or `undefined` for every other plan.
@@ -185,12 +254,18 @@ export const pathHopValues = (plan: Plan, graph: Graph): HopValues | undefined =
     return undefined;
   }
 
-  if (!isBarePath(tail)) {
+  const form = pathForm(tail);
+
+  if (form === undefined) {
     return undefined;
   }
 
   return {
     rest: [],
-    values: walk(graph, { forward: hop.kind === 'out', type: hop.labels[0] }),
+    values: walk(graph, {
+      forward: hop.kind === 'out',
+      type: hop.labels[0],
+      byKey: form === 'bare' ? undefined : form.key,
+    }),
   };
 };

@@ -60,6 +60,10 @@ const fixture = (): Graph => {
 };
 
 /** Each path rendered as the ids it holds, so a wrong END is visible rather than a wrong count. */
+/** Projected rows rendered the same way, so a wrong END is visible rather than a wrong count. */
+const paths2 = (rows: readonly unknown[]): string[] =>
+  rows.map((p) => (Array.isArray(p) ? p.map((e) => String(e)).join('>') : `?${String(p)}`));
+
 const paths = (rows: readonly unknown[]): string[] =>
   rows.map((p) =>
     Array.isArray(p) ? p.map((e) => String((e as Vertex).id)).join('>') : `?${String(p)}`,
@@ -187,6 +191,49 @@ describe('pathHopValues — the answer, on both walks', () => {
     ]);
   });
 
+  /**
+   * ⚠️ THE `by` MODE NEEDS THE ITERATOR ARMS TOO — all four paths, which is item 1920's own finding
+   * in this very module: a walk written twice (lazy, eager) over two arms (CSR, bucket) is FOUR
+   * paths, and that item's battery found three of them untested. Adding a MODE multiplies them
+   * again, so each is driven here rather than assumed to follow from the drain.
+   */
+  it('the by mode on the LAZY iterator — CSR arm', () => {
+    const g = fixture();
+    const make = (): ReturnType<typeof traversal> => traversal(V(), out('E'), path().by('k'));
+
+    toArray(make(), g); // warms the CSR
+
+    expect([...run(make(), g)]).toStrictEqual([
+      ['a', 'b'],
+      ['a', 'c'],
+      ['b', 'b'],
+      ['c', 'd'],
+    ]);
+  });
+
+  it('the by mode on the LAZY iterator — COLD, the BUCKET arm', () => {
+    // A FRESH graph, because `seenBefore` records per (graph, topology, shape).
+    const g = fixture();
+
+    expect([...run(traversal(V(), out('E'), path().by('k')), g)]).toStrictEqual([
+      ['a', 'b'],
+      ['a', 'c'],
+      ['b', 'b'],
+      ['c', 'd'],
+    ]);
+  });
+
+  it('the by mode reads the other end for `in`', () => {
+    const g = fixture();
+
+    expect(paths2(twice(() => traversal(V(), in_('E'), path().by('k')), g))).toStrictEqual([
+      'b>a',
+      'b>b',
+      'c>a',
+      'd>c',
+    ]);
+  });
+
   /** The path elements are the GRAPH'S OWN vertices, not copies — identity is the contract. */
   it('holds the real vertices, which downstream steps compare by identity', () => {
     const g = fixture();
@@ -227,21 +274,102 @@ describe('the fused path agrees with the generic path', () => {
   });
 
   /**
-   * ⚠️ `path().by(k)` PROJECTS EACH ELEMENT, and a mutant letting the gate admit it SURVIVED the
-   * first battery because nothing asked. The rung emits the ELEMENTS, so serving a `by` would
-   * silently return vertices where the contract says their property values.
+   * ⚠️ `path().by(k)` IS NOW SERVED (item 1924) where item 1920 refused it — **304.87 -> 80.55 ms,
+   * 3.78x**, which lands at its floor: `values(k)` is 44.99 for ONE property read per row and this
+   * does two.
    */
-  it('path().by(k) is refused, and still projects each element', () => {
+  it('path().by(k) projects each element through the modulator', () => {
     const g = fixture();
 
-    expect(pathHopValues(traversal(V(), out('E'), path().by('k')), g)).toBeUndefined();
-    // Read off the engine by `pathshape-probe-1920.mjs`, not guessed: each element becomes its `k`.
+    expect(pathHopValues(traversal(V(), out('E'), path().by('k')), g)).not.toBeUndefined();
     expect(toArray(traversal(V(), out('E'), path().by('k')), g)).toStrictEqual([
       ['a', 'b'],
       ['a', 'c'],
       ['b', 'b'],
       ['c', 'd'],
     ]);
+  });
+
+  /**
+   * ⚠️⚠️ AN ABSENT KEY AND A STORED NULL ARE DIFFERENT VALUES — `undefined` and `null` — and this is
+   * the assertion a JSON comparison cannot make. `pathby-shape-1924.mjs`'s FIRST version used
+   * `JSON.stringify`, which renders `undefined` inside an array AS `null`, and so showed the two as
+   * identical. A fusion building `null` for an absent key would have passed it.
+   */
+  it('an absent key is undefined and a stored null is null', () => {
+    const g = new Graph();
+    const mk = (id: string, props: Record<string, unknown>): Vertex =>
+      g.addVertex({ id, labels: ['P'], properties: props });
+    const a = mk('a', { opt: 1 });
+
+    mk('b', {}); // no `opt` at all
+    mk('c', { opt: null }); // a STORED null
+
+    g.addEdge({
+      id: 'x1',
+      from: a,
+      to: g.getVertexById('b') as Vertex,
+      labels: ['E'],
+      properties: {},
+    });
+    g.addEdge({
+      id: 'x2',
+      from: a,
+      to: g.getVertexById('c') as Vertex,
+      labels: ['E'],
+      properties: {},
+    });
+
+    const rows = toArray(traversal(V(), out('E'), path().by('opt')), g) as unknown[][];
+
+    expect(rows).toHaveLength(2);
+    expect(rows[0][1]).toBeUndefined();
+    expect(rows[1][1]).toBeNull();
+    // And the distinction survives a round trip the naive comparison would lose.
+    expect(rows[0][1] === null).toBe(false);
+  });
+
+  /**
+   * ⚠️ `Object.hasOwn`, NOT `in`: `evalBy`'s own note says an inherited name must never leak a
+   * prototype function. With `in` the row would hold `function toString()`.
+   */
+  it('an inherited name does not leak a prototype function', () => {
+    const g = fixture();
+    const rows = toArray(traversal(V(), out('E'), path().by('toString')), g) as unknown[][];
+
+    for (const row of rows) {
+      expect(row[0]).toBeUndefined();
+      expect(row[1]).toBeUndefined();
+    }
+  });
+
+  /**
+   * ⚠️ TWO `by`s CYCLE ROUND-ROBIN across path positions, so they are a DIFFERENT answer and must be
+   * refused: `path().by(n).by(opt)` projects position 0 through `n` and position 1 through `opt`.
+   */
+  it('two bys are refused, and still cycle', () => {
+    const g = fixture();
+
+    expect(pathHopValues(traversal(V(), out('E'), path().by('k').by('n')), g)).toBeUndefined();
+    /*
+     * ⚠️ AND A NON-`key` BY IS REFUSED TOO — a mutant is why. Dropping the `by.kind === 'key'` test
+     * survived, because every `by` in these tests is a key. Item 1899 shipped the mirror of this
+     * bug (a gate testing `typeof by === 'string'` when the AST holds `{kind: 'key', key}`) and
+     * only measuring BOTH spellings caught it.
+     */
+    expect(
+      pathHopValues(traversal(V(), out('E'), path().by(traversal(values('k')))), g),
+    ).toBeUndefined();
+    // And the traversal-by still answers, through the generic path.
+    expect(toArray(traversal(V(), out('E'), path().by(traversal(values('k')))), g)).toStrictEqual([
+      ['a', 'b'],
+      ['a', 'c'],
+      ['b', 'b'],
+      ['c', 'd'],
+    ]);
+    // Both keys hold the same values in this fixture, so the assertion is on the REFUSAL plus the
+    // answer still being produced by the generic path.
+    expect(toArray(traversal(V(), out('E'), path().by('k').by('n')), g)).toHaveLength(4);
   });
 
   it('and the DECLINED shapes are untouched', () => {
