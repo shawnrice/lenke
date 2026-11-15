@@ -3780,12 +3780,23 @@ const farDrivenHopWalk = (w: {
     const viaCsr = csrHopRoute(graph, out, typeName, farLabel);
 
     if (viaCsr !== undefined) {
-      const { order, off } = viaCsr;
+      const { order, off } = viaCsr.tables;
+      /*
+       * ⚠️ WHETHER THE FAR LABEL STILL HAS TO BE APPLIED (item 1941). The route used to decline any
+       * non-vacuous far label outright; it now admits a BROAD one and says so here, because the
+       * `order` array IS the far vertices and testing a label on one is O(1). Admitting it without
+       * running this test would be a wrong answer, so the flag is read, not assumed.
+       */
+      const { testFarLabel } = viaCsr;
 
       for (let slot = 0; slot < order.length; slot += 1) {
         let n = off[slot + 1] - off[slot];
 
         if (n === 0) {
+          continue;
+        }
+
+        if (testFarLabel && farLabel !== undefined && !matchesLabel(order[slot], farLabel)) {
           continue;
         }
 

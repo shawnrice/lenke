@@ -93020,7 +93020,7 @@ NO ENGINE BEHAVIOUR CHANGED — one instrument and this entry.
 
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects.
 
-## Item 1940 — ✅ **BUILT: the edge-driven hop walk. 4.6x on the shape item 1934 found** — the one-off-label hop projection goes 28.00 ms to 6.06, cliff 8.92x to 2.21x — gated on label COVERAGE (0.4, above item 1939's swept band) and not on non-vacuity. ⚠️ One existing test converted to a multiset, and one mutant recorded as an HONEST untested survivor after my third attempt to kill it turned out to be a false positive on myself
+## Item 1940 — ✅ **BUILT: the edge-driven hop walk. 4.6x on the shape item 1934 found** — the one-off-label hop projection goes 28.00 ms to 6.06, cliff 8.92x to 2.21x — gated on label COVERAGE (0.4, above item 1939's swept band) and not on non-vacuity. ⚠️ One existing test converted to a multiset, and one mutant recorded as an HONEST untested survivor after my third attempt to kill it turned out to be a false positive on myself ⚠️ **It created an asymmetry (the UNLABELLED spelling became the slower one), CLOSED at item 1941 — 3.1x — and that item REFUTED the obvious mirror fix first**
 
 The target items 1934-1939 narrowed: a third walk for the case where a label is not vacuous, between
 the counting far-driven arm (which cannot test a start label because it never visits an edge, item 1937) and the start-driven walk.
@@ -93091,5 +93091,78 @@ routes to the counting arm, which still struggles with a non-vacuous FAR label. 
 equivalent-spelling asymmetry worth ~2.5x, and it needs the mirror coverage gate on `farLabel`
 (selective far labels make `candidateVertexSource` sub-linear — item 1688). Not widened into this
 item.
+
+GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers.
+
+## Item 1941 — ✅ **BUILT: a BROAD far label no longer declines the CSR arm — it is applied PER SLOT. `MATCH (a)-[:E]->(b:T)` goes 8.70 ms to 2.77, 3.1x**, and item 1940's asymmetry is closed. ⚠️ The obvious mirror (an edge-driven far arm) was REFUTED first, and 7 reps turned out to be too few for this probe
+
+Item 1940 left an asymmetry it created: `MATCH (a:T)-[:E]->(b:T)` at 5.53 ms against the UNLABELLED
+`MATCH (a)-[:E]->(b:T)` at 8.70 — the less constrained spelling slower, which is this repo's named
+bug class pointing the other way.
+
+## ❌ The obvious mirror is refuted
+
+Extending item 1940's edge-driven arm to the far label looked like the fix. The sweep says no:
+ratios **noisy and non-monotone** (1.22, 0.68, 1.38, 0.60, 0.47, 0.29, 0.20) and mostly BELOW 1,
+because the counting arm's `candidateVertexSource` visits only `tCount` vertices and is already
+efficient there. Edge iteration buys nothing on the far side.
+
+## ✅ The cause was the CSR declining, and item 1934's own numbers pointed at it
+
+`csrHopRoute` declined on ANY far label, dropping the walk off the CSR to per-vertex `Map` lookups —
+1.87 ms when `T` is vacuous against 8.70 when ONE vertex lacks it. But the CSR's `order` array IS
+the far vertices, so a broad label can be applied PER SLOT in O(1): the same move item 1940 made on
+the start end.
+
+      `farlabel-crossover-1941.mjs`, 50,000 vertices, 15 reps, cells alternated:
+
+        coverage   engine BEFORE   engine AFTER   hand CSR
+            0.60            5.51           2.50       1.04     2.2x taken
+            0.45          ~1.7-2.2          1.22       0.71     1.6x taken
+            0.30            ~1.2           ~1.16       0.51     below the gate — unchanged
+            0.04            0.13           0.13       0.33     below the gate — bucket wins 2.4x
+
+      `labelvacuity-probe-1934.mjs`, the headline spelling:
+
+        MATCH (a)-[:E]->(b:T), ONE off-label vertex    8.70 -> 2.77    3.1x
+        ten off-label                                  8.66 -> 2.46    3.5x
+        5,000 off-label (coverage 0.9)                 9.82 -> 5.18    1.9x
+
+✅ **AND THE ORDERING IS RESTORED**: `a` (2.77) is now faster than `a:T` (5.31), as it should be with
+one less label to test.
+
+## ⚠️ Seven reps was too few for this probe, and I nearly took a cell
+
+Two adjacent cells disagreed **3.7x per row** on an arm that should be smooth — 0.6 read 6.44x and
+0.45 read 1.07x. Re-run at 15 reps with the cells alternated, both land near 2.4x-5.1x: the 6.44x
+and the 1.07x were noise either side of the truth. The band is what the threshold is set from, never
+a cell.
+
+## 🔑 The threshold stays SHARED at 0.4, and an existing test is why
+
+The far side's own crossover is LOWER than the start side's — it straddles 1.0x at 0.10-0.18 and
+loses clearly at 0.04 — so 0.25 would have captured more. ⚠️ But `hop-projection-csr.test.ts`'s
+fixture has `Q` on 2 of 7 vertices (**0.286**), and its "a selective far label declines" assertion
+encodes item 1688's lesson. A 0.25 constant would have flipped it, and a 7-vertex fixture is no
+place to set a threshold. So the shared conservative 0.4 stands, forfeiting the far side's 0.25-0.4
+band (~1.5x-2.6x there) and capturing everything above.
+
+## `testFarLabel` is a CONTRACT, not a hint
+
+The route now admits a label it has NOT applied, so the return shape changed rather than just the
+condition. One test makes every vertex point at the single off-label one: skipping the per-slot test
+yields 9 rows where the answer is 0.
+
+**MUTATION: 8 mutants, 8 caught, 0 survivors** — the per-slot test removed, the flag ignored at the
+call site, `testFarLabel` pinned false and pinned true, a SELECTIVE label admitted, the comparison
+inverted, the route claiming its own first ask, and ⚠️ **an unreadable coverage defaulting to
+`?? 1`** — which survived the first run. That one changes no answer (`matchesLabel` handles
+compounds) and only sends an O(V) arm at a possibly-selective label, so it needed a direct route
+assertion: a non-vacuous `B|C` must decline. 18 tests.
+
+🔭 **Follow-up, with its number:** `a:T` now takes item 1940's EDGE-driven arm at 5.31 where this
+CSR arm does the unlabelled spelling in 2.77. A single CSR arm testing whichever labels are broad —
+both ends, not one — is worth a further ~1.8x on the labelled spelling, and would unify the two arms
+this pair of items added.
 
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers.

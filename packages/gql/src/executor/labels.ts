@@ -80,10 +80,19 @@ export const labelCoverage = (graph: Graph, expr: LabelExpr | undefined): number
   return total === 0 ? undefined : (graph.verticesByLabel.get(expr.name)?.size ?? 0) / total;
 };
 /**
- * ⚠️ The threshold the edge-driven hop walk needs, as a named constant rather than a literal at the
- * gate. Item 1939's crossover band is 0.18-0.35 across every (size, fanout) cell it swept, so 0.4
- * sits ABOVE all of them: it can only decline a win, never cause a regression. The win above it
- * measured 2.6x-5.1x.
+ * ⚠️ The threshold for applying a label PER ELEMENT instead of declining a fast arm, as a named
+ * constant rather than a literal at a gate. Both arms that use it ask the same question: is this
+ * label broad enough that testing it per element beats iterating its BUCKET?
+ *
+ *   - the edge-driven hop walk (item 1940), for a non-vacuous START label. Item 1939's crossover
+ *     band is 0.18-0.35 across every (size, fanout) cell it swept; the win above it is 2.6x-5.1x.
+ *   - the CSR arm's FAR label (item 1941). Its own crossover is LOWER — the counting walk straddles
+ *     1.0x at 0.10-0.18 coverage and loses clearly at 0.04 — and the win above is ~2.4x-5.1x.
+ *
+ * 🔑 ONE CONSTANT, DELIBERATELY, AND IT IS THE CONSERVATIVE END. 0.4 sits above BOTH crossovers, so
+ * either arm can only decline a win and never cause a regression. It forfeits the far side's
+ * 0.25-0.4 band (measured ~1.5x-2.6x there), which is the smallest part of the range — and a
+ * second constant would have had to come from the noisier low end of one sweep.
  */
 export const EDGE_DRIVEN_MIN_COVERAGE = 0.4;
 export const vacuousLabel = (graph: Graph, expr: LabelExpr | undefined): boolean => {

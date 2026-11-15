@@ -10,7 +10,7 @@ import type { Edge, Graph, Vertex } from '@lenke/core';
 
 import type { LabelExpr } from '../ast.js';
 import { edgesOfTypes } from './adjacency.js';
-import { vacuousLabel } from './labels.js';
+import { EDGE_DRIVEN_MIN_COVERAGE, labelCoverage, vacuousLabel } from './labels.js';
 
 /** The flattened adjacency the level recurrence reads. Built once, then READ ONLY — every write to
  *  `off`, `nbr`, `order` and `idx` lives in {@link buildCsr}, which is what makes it cacheable. */
@@ -253,14 +253,38 @@ export const csrHopRoute = (
   out: boolean,
   typeName: string,
   farLabel: LabelExpr | undefined,
-): CsrTables | undefined => {
-  if (farLabel !== undefined && !vacuousLabel(graph, farLabel)) {
+): { readonly tables: CsrTables; readonly testFarLabel: boolean } | undefined => {
+  /*
+   * ⚠️ A NON-VACUOUS FAR LABEL NO LONGER DECLINES OUTRIGHT (item 1941). It used to, for the reason
+   * above — `candidateVertexSource` iterates the label BUCKET, so a SELECTIVE label makes the
+   * existing walk sub-linear where this arm is O(V). That reason holds only while the label IS
+   * selective: the CSR's `order` array is the far vertices, so a broad label can be applied PER
+   * SLOT in O(1) instead, which is the move item 1940 made on the start end.
+   *
+   * 🔑 MEASURED, NOT ASSUMED. `farlabel-crossover-1941.mjs` at 50,000 vertices, 15 reps with the
+   * cells alternated: the engine is 1.71-5.51 ms where a hand CSR with a per-slot label test is
+   * 0.70-1.07 (2.4x-5.1x) at 0.45-0.6 coverage, while at 0.04 the bucket walk wins 2.4x. ⚠️ At 7
+   * reps the same cells read 1.07x and 6.44x — noise either side of the truth, which is why the
+   * band and not a cell is what this constant is set from.
+   *
+   * `testFarLabel` is how the caller knows the label still has to be applied: admitting it here
+   * WITHOUT that flag would be a wrong answer, which is why the return shape changed rather than
+   * the condition alone.
+   */
+  const broadFarLabel =
+    farLabel !== undefined && (labelCoverage(graph, farLabel) ?? 0) >= EDGE_DRIVEN_MIN_COVERAGE;
+
+  if (farLabel !== undefined && !vacuousLabel(graph, farLabel) && !broadFarLabel) {
     return undefined;
   }
 
-  return csrAskedBefore(graph, `hop:${out ? '<' : '>'}${typeName}`)
+  const tables = csrAskedBefore(graph, `hop:${out ? '<' : '>'}${typeName}`)
     ? csrFor(graph, out, [typeName])
     : undefined;
+
+  return tables === undefined
+    ? undefined
+    : { tables, testFarLabel: farLabel !== undefined && !vacuousLabel(graph, farLabel) };
 };
 
 /**

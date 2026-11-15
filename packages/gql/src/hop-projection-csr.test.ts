@@ -77,6 +77,160 @@ const twice = (g: Graph, q: string): unknown[] => {
  * arm shipped: reading the label's vacuity from the AST declines every labelled pattern, which is
  * nearly all of them, and it measured as a flat null.
  */
+/**
+ * Item 1941: a BROAD non-vacuous far label no longer declines the CSR arm — it is applied PER SLOT.
+ *
+ * ```text
+ *   MATCH (a)-[:E]->(b:T), ONE off-label vertex in 50,000:   8.70 ms -> 2.77   3.1x
+ *   ten off-label                                            8.66    -> 2.46   3.5x
+ *   at 0.6 coverage on the sweep                             5.51    -> 2.50   2.2x
+ *   at 0.04 coverage (below the gate)                        unchanged — the bucket walk wins 2.4x
+ * ```
+ *
+ * ⚠️ `testFarLabel` IS THE CONTRACT, not a hint: the route admits a label it has not applied, so a
+ * caller that ignored the flag would emit rows for off-label far vertices. That is why the return
+ * shape changed rather than just the condition.
+ */
+describe('csrHopRoute — a BROAD far label is admitted and flagged (item 1941)', () => {
+  // `label` is defined inside the neighbouring describe's scope, so this block needs its own.
+  const label = (name: string): never => ({ kind: 'label', name }) as never;
+
+  it('a vacuous far label is admitted with testFarLabel FALSE', () => {
+    const g = fixture();
+
+    // Every vertex carries `P`, so nothing can fail it and no per-slot test is needed.
+    expect(csrHopRoute(g, true, 'E', label('P'))).toBeUndefined(); // first ask declines
+    const route = csrHopRoute(g, true, 'E', label('P'));
+
+    expect(route).not.toBeUndefined();
+    expect(route?.testFarLabel).toBe(false);
+  });
+
+  it('no far label at all is admitted with testFarLabel FALSE', () => {
+    const g = fixture();
+
+    csrHopRoute(g, true, 'E', undefined);
+
+    expect(csrHopRoute(g, true, 'E', undefined)?.testFarLabel).toBe(false);
+  });
+
+  it('⚠️ a SELECTIVE far label still declines — item 1688s lesson is unchanged', () => {
+    // `Q` is on 2 of 7 vertices (0.286), BELOW the shared threshold, so bucket iteration wins and
+    // the route must stay out of the way. This is the assertion the threshold choice protected:
+    // a lower constant would have flipped it, and a 7-vertex fixture is no place to set one.
+    const g = fixture();
+
+    expect(csrHopRoute(g, true, 'E', label('Q'))).toBeUndefined();
+    expect(csrHopRoute(g, true, 'E', label('Q'))).toBeUndefined();
+    expect(csrHopRoute(g, true, 'E', label('Q'))).toBeUndefined();
+  });
+
+  it('a BROAD non-vacuous far label is admitted WITH testFarLabel true', () => {
+    const g = new Graph();
+
+    // 9 of 10 carry `B`, so coverage is 0.9 — above the threshold, and not vacuous.
+    for (let i = 0; i < 10; i += 1) {
+      g.addVertex({ id: `w${String(i)}`, labels: i === 0 ? ['A'] : ['A', 'B'], properties: {} });
+    }
+
+    for (let i = 0; i < 9; i += 1) {
+      const from = g.getVertexById(`w${String(i)}`);
+      const to = g.getVertexById(`w${String(i + 1)}`);
+
+      if (from === null || to === null) {
+        throw new Error('fixture');
+      }
+
+      g.addEdge({ id: `x${String(i)}`, from, to, labels: ['E'], properties: {} });
+    }
+
+    csrHopRoute(g, true, 'E', label('B'));
+    const route = csrHopRoute(g, true, 'E', label('B'));
+
+    expect(route).not.toBeUndefined();
+    expect(route?.testFarLabel).toBe(true);
+  });
+
+  it('⚠️ a COMPOUND far label whose coverage is UNREADABLE declines the route', () => {
+    /*
+     * ⚠️ `labelCoverage` answers only for a PLAIN label — a disjunction's buckets overlap so their
+     * sizes do not add. The route must then DECLINE rather than guess, which is what `?? 0` encodes.
+     *
+     * 🔑 THIS TEST EXISTS BECAUSE A MUTANT SURVIVED WITHOUT IT. Defaulting an unreadable coverage to
+     * `?? 1` (i.e. "assume broad") changes NO answer — `matchesLabel` handles compounds, so the
+     * per-slot test is still correct — it only sends an O(V) arm at a label that might be selective,
+     * where bucket iteration is sub-linear (item 1688). A route-only regression, invisible to every
+     * test over rows, so the route decision is asserted directly.
+     */
+    const g = new Graph();
+
+    // `B` on 5 of 10 and `C` on 2, so `B|C` covers 7 — NOT vacuous, and not readable as a fraction.
+    for (let i = 0; i < 10; i += 1) {
+      const labels = ['A'];
+
+      if (i < 5) {
+        labels.push('B');
+      } else if (i < 7) {
+        labels.push('C');
+      }
+
+      g.addVertex({ id: `z${String(i)}`, labels, properties: { n: i } });
+    }
+
+    for (let i = 0; i < 9; i += 1) {
+      const from = g.getVertexById(`z${String(i)}`);
+      const to = g.getVertexById(`z${String(i + 1)}`);
+
+      if (from === null || to === null) {
+        throw new Error('fixture');
+      }
+
+      g.addEdge({ id: `y${String(i)}`, from, to, labels: ['E'], properties: {} });
+    }
+
+    const or = { kind: 'or', left: label('B'), right: label('C') } as never;
+
+    // Asked twice, because the arm declines its own first ask regardless (item 1890).
+    expect(csrHopRoute(g, true, 'E', or)).toBeUndefined();
+    expect(csrHopRoute(g, true, 'E', or)).toBeUndefined();
+    // ...and the query still answers correctly off that arm.
+    expect(query(g, 'MATCH (a)-[:E]->(b:B|C) RETURN b.n AS x', {}).length).toBe(6);
+  });
+
+  it('and the rows EXCLUDE the off-label far vertex, so the flag is actually honoured', () => {
+    const g = new Graph();
+
+    for (let i = 0; i < 10; i += 1) {
+      g.addVertex({
+        id: `w${String(i)}`,
+        labels: i === 9 ? ['A'] : ['A', 'B'],
+        properties: { n: i },
+      });
+    }
+
+    // Every vertex points at w9, which is the ONLY one lacking `B`. If the per-slot test is
+    // skipped, w9 appears as a far endpoint and the count is 9 instead of 0.
+    for (let i = 0; i < 9; i += 1) {
+      const from = g.getVertexById(`w${String(i)}`);
+      const to = g.getVertexById('w9');
+
+      if (from === null || to === null) {
+        throw new Error('fixture');
+      }
+
+      g.addEdge({ id: `x${String(i)}`, from, to, labels: ['E'], properties: {} });
+    }
+
+    const q = 'MATCH (a)-[:E]->(b:B) RETURN b.n AS x';
+
+    query(g, q, {});
+
+    expect(query(g, q, {}).length).toBe(0);
+    // ...and the same walk WITHOUT the far label sees all nine.
+    expect(query(g, 'MATCH (a)-[:E]->(b) RETURN b.n AS x', {}).length).toBe(9);
+  });
+});
+
 describe('csrHopRoute — the route decision', () => {
   const label = (name: string): never => ({ kind: 'label', name }) as never;
 
