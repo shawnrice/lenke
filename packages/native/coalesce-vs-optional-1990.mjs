@@ -107,6 +107,13 @@ const ARMS = {
    * it. This does exactly the engine's work: one property test a vertex, then that vertex's `E`
    * edges in the chosen direction, projecting `n`.
    */
+  /*
+   * ⚠️ DECOMPOSITION ARMS (item 1992). `chooseStep` makes TWO `applyPlanToStream` calls per
+   * traverser — one for the test, one for the chosen arm — so before optimizing either, these say
+   * which dominates. Trivial arms isolate the TEST; a trivial test isolates the ARMS.
+   */
+  chooseTrivialArms: () => traversal(V(), choose(has('n', 0), identity(), identity()), values('n')),
+  chooseHopTest: () => traversal(V(), choose(out('E'), identity(), identity()), values('n')),
   handChoose: 'HAND',
   branchTwo: () =>
     traversal(

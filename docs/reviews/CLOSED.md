@@ -96648,3 +96648,53 @@ arms and its header now says so — the filename is kept so item 1990's citation
 NO ENGINE BEHAVIOUR CHANGED — probe arms and this entry.
 
 GATES. `bun run fmt` 0; `bun run check` 0.
+
+## Item 1992 — 🛑 **THE FIX I WAS ABOUT TO BUILD TARGETED THE MINOR TERM: `choose`'s cost is the ARM invocation at ~1501 ns a vertex, where the TEST is 136.** Decomposed before building, which is the only reason the wrong change was not made
+
+Item 1991 priced `choose` at 2.89x a hand ceiling and left the build to this tick. Reading
+`chooseStep` showed two `applyPlanToStream` calls per traverser — one for the test, one for the
+chosen arm — and `sub-plan-existence.ts` already holds the machinery `where`/`filter` use to answer
+"does this sub-plan yield anything" without building a generator chain (`singleHopExistence` +
+`hasAdjacency`). Reusing it for the test looked like the obvious, proven fix.
+
+**It is the minor term.** Two diagnostic arms, trivial arms to isolate the test and a trivial test to
+isolate the arms, all over the same 200,001 vertices:
+
+```text
+    shape                                              ms      ns a VERTEX
+    choose(has(n,0), identity(), identity())         27.21        136     ⬅ the test, with machinery
+    choose(out(E),   identity(), identity())         90.45        452        a HOP test costs 316 more
+    choose(has(n,0), out(E),     in_(E))            327.40       1637     ⬅ the real shape
+    HAND CEILING (test + arm + four property reads) 119.27        596
+```
+
+🔑 **SO THE ARM COSTS ~1501 ns A VERTEX** (1637 − 136) while the whole hand-rolled job — test, arm
+and four property reads — costs 596. A test-side fix could have recovered at most ~136 ns a vertex
+of 1637, i.e. **8%**, and I had the module open to build it.
+
+⚠️ **THIS IS ITEM 1979's LESSON IN A NEW PLACE**: there, a route's saving was bounded by the |V|
+preamble ABOVE the branch rather than by the loop it replaced; here it is bounded by the sibling call
+BESIDE it. In both cases reading the code identified a real cost and the arithmetic of _which_ cost
+was skipped. **Decompose before building, even when the mechanism is obvious and the machinery
+already exists.**
+
+### WHAT THE FIX HAS TO BE INSTEAD
+
+Avoid the per-traverser arm invocation, not the test's. For a single-step arm, apply the step inline —
+walk `t.value.adjFrom.get(T)` and yield — rather than calling `applyPlanToStream([hop], [t])`, which
+builds a generator chain and an array per traverser. That is precisely what the hand ceiling does and
+what `optional-hop-values.ts` does for `optional`.
+
+⚠️ **AND PARTITIONING IS NOT AVAILABLE, which is worth stating because it is the first idea.**
+Evaluating the test for the whole stream and then running arm A over the passers and arm B over the
+rest would build each chain ONCE — but it emits all of A's rows before any of B's, and row order for
+a single-type Gremlin shape is a cross-engine contract compared STRICTLY ORDERED by the differential
+fuzzer (item 1987). So the routing has to stay per-traverser and only the invocation can get cheaper.
+
+🔭 **STILL OPEN at 2.89x**, now with the cost located: the arm, not the test. The build is a fused
+route for `choose` whose arms are single hop steps — narrower than a general fix, and the shape the
+measurement actually covers.
+
+NO ENGINE BEHAVIOUR CHANGED — two diagnostic probe arms and this entry. `chooseStep` is untouched.
+
+GATES. `bun run fmt` 0; `bun run check` 0.
