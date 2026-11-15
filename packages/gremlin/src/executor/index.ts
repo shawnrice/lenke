@@ -37,6 +37,7 @@ import {
   fusedValuesTopK,
 } from './aggregation.js';
 import { countShortcut } from './count-shortcut.js';
+import { cyclicPathShortcut } from './cyclic-path-shortcut.js';
 import { applyStep } from './dispatch.js';
 import { edgeFilteredHopValues } from './edge-filtered-hop-values.js';
 import { hopChainValuesShortcut } from './hop-chain-values.js';
@@ -1936,7 +1937,14 @@ const EDGE_TO_FAR: Readonly<Record<string, 'inV' | 'outV'>> = { outE: 'inV', inE
  * ⚠️ `cyclicPath()` IS **NOT** REWRITTEN, and that is a refusal with a reason rather than an
  * oversight: it is the complement, so it needs `where(eq(t))`, and item 1912's rung explicitly
  * declines `eq` — "a shape nobody has measured and not what this rung computes". Rewriting into a
- * shape that then declines would add a step for nothing. It stays at 161.82 ms for its 2 rows.
+ * shape that then declines would add a step for nothing. ~~It stays at 161.82 ms for its 2 rows.~~
+ *
+ * ✅ **AND IT DOES NOT STAY THERE: item 1986 ANSWERS IT WITHOUT A REWRITE.** The refusal above is
+ * about the rewrite route and is still correct; what it did not consider is that a ONE-HOP cyclic
+ * path is exactly the SELF-LOOP edges, so it needs no path tracking and no `where(eq(t))` at all.
+ * See `cyclicPathShortcut`, which answers the plan before the path decision: **169.39 -> 43.99 ms**
+ * on the workload screen with five sibling controls flat. (The 161.82 quoted above was also stale —
+ * the screen had moved to 200.91 by item 1954.)
  *
  * ⚠️ THE TRAILING `values(k)` FORM IS ADMITTED BECAUSE THAT IS WHAT THE SCREEN MEASURES — item
  * 1912's own lesson, where a four-step rung won 17.6x in isolation and left the screen's rows
@@ -2678,6 +2686,20 @@ export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
    * `outE(T).inV()` -> `out(T)` with it. 328.12 ms against the twin spelling's 46.21 (item 1921).
    */
   const planned = normalizeDepth1SimplePath(normalizeDirectedOtherV(plan));
+
+  /*
+   * ⚠️ A ONE-HOP `cyclicPath()` ANSWERS THE WHOLE PLAN HERE, BEFORE THE PATH DECISION — and that
+   * placement is the point (item 1986). `cyclicPath` is in `PATH_DEPENDENT_KINDS`, so one step below
+   * this line `tracksPath` is true, `effectivePlan` is skipped WHOLESALE and every fused walk has
+   * already declined. A one-hop cyclic path is exactly the SELF-LOOP edges, so it needs no path
+   * bookkeeping to set up at all: 293.32 ms -> 30.25 on the screen's fixture, same rows in the same
+   * order. See `cyclicPathShortcut`, which carries the measurement and the refusal it re-opens.
+   */
+  const cyclic = cyclicPathShortcut(planned, graph);
+
+  if (cyclic !== undefined) {
+    return cyclic;
+  }
 
   // Decide once whether any step observes the path; if not, traversers skip
   // path bookkeeping for the whole run (see planReadsPath / startTraverser).

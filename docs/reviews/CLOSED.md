@@ -91669,7 +91669,9 @@ makes the rewrite target legal, since the shape it rewrites INTO is path-free.
          the ends — the probe returns ONE row where the one-hop form returns two. A rewrite admitting
          it answers a different question.
 
-      ❌ `cyclicPath()`. It is the complement, so it needs `where(eq(t))` — and item 1912's rung
+      ❌ ~~`cyclicPath()`~~ ✅ **TAKEN AT ITEM 1986 WITHOUT A REWRITE — 3.85x — via the self-loop
+         mechanism this very refusal named below.** It is the complement, so it needs
+         `where(eq(t))` — and item 1912's rung
          explicitly declines `eq`: "a shape nobody has measured and not what this rung computes".
          Rewriting into a shape that then declines would add a step for nothing. It stays at 161.82 ms
          for its 2 rows, ~~which is the cheapest row in the family anyway~~ ⚠️ WHICH WAS TRUE OF THE
@@ -96158,3 +96160,111 @@ NO ENGINE BEHAVIOUR CHANGED — the only edits are the stderr banner in three pr
 
 GATES. `bun run fmt` 0; `bun run check` 0. All three probes re-run after the edit and still emit
 their JSON result.
+
+## Item 1986 — ✅ **SHIPPED: a one-hop `cyclicPath()` IS the SELF-LOOP EDGES, so it needs no path tracking at all — 169.39 → 43.99 ms on the screen, 3.85x, five sibling controls flat, and the engine now sits ON its hand-rolled ceiling (1.0x)**. ⚠️ Found through a STALE CLAIM in `PROBES.md` — the file CLAUDE.md says to read first — which item 1923 had already corrected and which misled my target choice for a step
+
+Both corpora were swept clean (items 1983/1984) and all three profile probes report closed ground
+(item 1985), so this tick used `PROBES.md`'s own section **"ASK WHAT THE SCREEN DOES NOT ASK"**.
+
+### ⚠️ THE INDEX FILE'S CLAIM IS STALE, AND IT COSTS A TARGET-SELECTION STEP
+
+`PROBES.md` states that three of the five biggest Gremlin shapes are "path-gated by construction
+(`as_`/`select`/`path` make `planReadsPath` true, and every fused walk is gated on `!tracksPath`)".
+**Item 1923 measured that and it is false** — `PATH_DEPENDENT_KINDS` contains neither `as` nor
+`select`:
+
+```text
+    V().as_(x).out(E).select(x)    readsPath = FALSE
+    V().as_(x).out(E)              readsPath = FALSE
+    V().out(E).simplePath()        readsPath = true
+```
+
+Item 1923's own entry says it plainly: "item 1912's shapes were slow because **no rung MATCHED
+them**, not because the gate excluded them — a different diagnosis with a different fix." ⚠️ **And
+that item records having repeated the wrong framing while choosing targets, exactly as I just did.**
+The claim is now corrected in `PROBES.md` with the citation.
+
+### 🔑 WHICH LED TO THE REAL TARGET, AND TO A REFUSAL WORTH RE-OPENING
+
+Item 1923 declined `cyclicPath` for a stated reason: it is `simplePath`'s complement, so a REWRITE
+needs `where(eq(tag))`, and item 1912's rung declines `eq`. **That argument is sound and still holds
+— about the rewrite route.** But the same entry recorded a mechanism its refusal had not considered,
+and `index.ts`'s note never carried it:
+
+> a ONE-HOP `cyclicPath` is exactly the SELF-LOOP edges, so it needs no path tracking and no
+> `where(eq(t))` at all
+
+A one-hop path is `[start, far]`, so it revisits a vertex exactly when `far === start` — exactly a
+self-loop. ⚠️ `index.ts`'s note also still quoted **161.82 ms** where the screen had moved to
+200.91; both are corrected.
+
+**THE ANSWER CONTRACT WAS ESTABLISHED AGAINST THE ENGINE FIRST**, on a fixture with a PARALLEL
+self-loop, because that is the one thing this route could get wrong:
+
+```text
+    V().out(E).cyclicPath()            ["a","a","c"]    one row per self-loop EDGE
+    V().out(E).cyclicPath().values(k)  ["a","a","c"]
+    V().in_(E).cyclicPath()            ["a","a","c"]    a self-loop sits in BOTH directions
+```
+
+A fixture with at most one self-loop per vertex cannot tell a per-edge answer from a per-vertex one.
+
+### THE NUMBERS
+
+**The standing instrument, `gremlin-workload-screen.mjs` at `NODES=200000 ONLY=pathdep`, PRE and
+POST in the same configuration minutes apart:**
+
+```text
+    row                              PRE      POST     ratio
+    pathdep: cyclicPath            169.39    43.99     3.85x   ⬅
+    pathdep: tree                  616.98   605.60     1.02x   [CONTROL]
+    pathdep: path().by(k)           77.81    77.16     1.01x   [CONTROL]
+    pathdep: outE.otherV            47.04    46.63     1.01x   [CONTROL]
+    pathdep: outE.inV (the twin)    46.46    45.22     1.03x   [CONTROL]
+    pathdep: simplePath             37.66    37.64     1.00x   [CONTROL]
+```
+
+`cyclicPath` was the screen's **second largest** absolute cost behind `tree()`; it is now fifth of
+six. ✅ **And the engine has landed ON the hand-rolled ceiling**: `cyclicpath-ceiling-1986.mjs`
+reads engine **32.18** against ceiling A's **33.42** — a 1.0x ratio where the same probe read 8.3x
+against the PRE build, with the answers identical including order.
+
+⚠️ **THE TWO INSTRUMENTS GIVE 3.85x AND ~9x, AND THE SCREEN'S IS THE ONE QUOTED.** The probe's
+fixture is `FANOUT=5` (1,000,002 edges, 6 self-loops) against the screen's `FANOUT=4` (800,000, 2),
+and the probe builds its traversal per rep where the screen builds once — so the probe's PRE carries
+plan construction the screen's does not. The screen is the standing instrument and has controls;
+the probe's value is the CEILING check, not the ratio.
+
+### ❌ MEASURED AND NOT TAKEN: the edge-set arm, 4.6x faster again
+
+Iterating the type's edges directly is O(|E_T|) with no per-vertex walk — **6.93 ms against the
+shipped route's 32.18**. It is not built, and the reason is not a capability one: its order is
+edge-insertion order rather than vertex order, so it changes which row comes first. Row order for an
+unordered traversal is unspecified in this engine ([[order-is-unspecified]]), so this may well be
+free — but **"may well be" is not the standard for changing observable output**, and it is an owner
+decision rather than a refactoring. Priced here at 4.6x further, left unbuilt.
+
+### WHAT THE GATE AND THE ROUTE CHECK COST
+
+✅ **THE RUNG WAS ROUTE-COUNTED, not inferred from a green suite** — this session has twice had a
+test pass against the wrong arm (items 1982, 1983):
+
+```text
+    V().out(E).cyclicPath()              rung TAKEN 1
+    V().out(E).cyclicPath().values(k)    rung TAKEN 1
+    V().both(E).cyclicPath()             rung TAKEN 0   ⬅ must decline: a `both` hop reaches a
+                                                           self-loop from BOTH boxes, so the
+                                                           multiplicity is not one row per edge
+    V(id).out(E).cyclicPath()            rung TAKEN 0
+    V().out(E)   [no cyclicPath]         rung TAKEN 0
+```
+
+The `both` decline is checked by answer too: it returns 6 rows on the 3-vertex fixture against the
+directed form's 3, so a gate that admitted it would be wrong rather than slow.
+
+INSTRUMENT. `packages/native/cyclicpath-ceiling-1986.mjs` — the engine against two hand ceilings,
+comparing ANSWERS before ratios, with a parallel self-loop in the fixture and `NODES`/`FANOUT`/`REPS`
+knobs.
+
+GATES. `bun run fmt` 0; `bun run check` 0; `bun run test -- --skip-nx-cache` 0 across 21 projects;
+`bun run fuzz` 0, 57 pass / 0 fail; the Gremlin suite 2,425 pass / 0 fail.

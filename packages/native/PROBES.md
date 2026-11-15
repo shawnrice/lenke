@@ -48,9 +48,18 @@ A clean screen means the shapes IT HAS are fast. Item 1898 added nine families t
 never carried — `select`/`as`, `project`, `where(sub)`, `where(neq)`, `path`, `range`,
 `dedupe().by(k)`, `aggregate`+`cap` — and **all five of the biggest shapes on the surface at 200,000
 vertices turned out to be among them** (432 / 310 / 272 / 203 / 160 ms against a plain hop's 43).
-Three of the five are path-gated by construction (`as_`/`select`/`path` make `planReadsPath` true,
-and every fused walk is gated on `!tracksPath`); the two that are not — `dedupe().by(k)` at 264 ms
-for EIGHT rows, and bare `dedupe()` at 232 — are the open nomination.
+~~Three of the five are path-gated by construction (`as_`/`select`/`path` make `planReadsPath`
+true…)~~ ⚠️ **THAT IS STALE AND ITEM 1923 MEASURED IT FALSE** — `PATH_DEPENDENT_KINDS` contains
+neither `as` nor `select`, so `V().as_(x).out(E).select(x)` has `readsPath = FALSE`. Those shapes
+were slow because **no rung MATCHED them**, not because the gate excluded them: a different
+diagnosis with a different fix, and item 1923 records having repeated the wrong framing while
+choosing targets. ⚠️ Item 1986 was misled by this paragraph for a step, which is why the correction
+is here rather than only in `CLOSED.md`.
+
+The dedupe pair (`dedupe().by(k)` at 264 ms for EIGHT rows, bare `dedupe()` at 232) was the open
+nomination and items 1899/1971/1972 worked it. `path()` and `simplePath()` genuinely ARE path-gated;
+`simplePath` was taken at item 1923 (8.17x) and `cyclicPath` at item 1986 (3.85x — a one-hop cyclic
+path is exactly the self-loop edges and needs no path tracking).
 
 ## ⚠️ SWEEP THE SIZE BEFORE BELIEVING A CLEAN SCREEN (item 1889)
 
