@@ -94524,7 +94524,7 @@ flagging **`@lenke/sync` and `@lenke/native` as flaky tasks**; isolated they are
 the re-run was green, which is [[sync-test-flake-is-timing]]'s known run-many flake (item 1952 hit
 the same thing on `@lenke/native` alone).
 
-## Item 1965 — 🔑 **THE HOP SORT FAMILY'S MASS IS NOT THE SORT: a sorted hop loses the FUSED DIRECT-READ projection, and the same `b.n` costs 29 ns a row without a sort and 173 WITH one.** ⚠️ Which reframes items 1963/1964 — both were pricing the wrong term — and the top-k heap turns out to be firing and cheap all along
+## Item 1965 — 🔑 **THE HOP SORT FAMILY'S MASS IS NOT THE SORT** ⚠️ ~~a sorted hop loses the FUSED DIRECT-READ projection, and the same `b.n` costs 29 ns a row without a sort and 173 WITH one~~ **— THE MECHANISM IS WRONG, corrected at item 1966: `farPropRow` requires a BARE `prop` item and the profiled shape projects `b.n + 1`, which it could never specialize. The 29-against-173 comparison was confounded by the far-driven TEMPLATE FOLD, which the unsorted arm gets and the sorted one does not. The mass is real and is the deferred arm's KEY EVALUATION — 67% by ablation.** ⚠️ Which reframes items 1963/1964 — both were pricing the wrong term — and the top-k heap turns out to be firing and cheap all along
 
 The GQL screen has `CONTROL hop windowed alias key` at **411.72 ms for TEN rows**, dearer than the
 unwindowed `HOP order by alias`'s 357.66 for 800,000. A `LIMIT 10` cannot cost more than no limit
@@ -94580,5 +94580,71 @@ had no no-sort control for a COMPUTED projection, without which none of the abov
 attributed (item 1961's lesson, third application).
 
 NO ENGINE BEHAVIOUR CHANGED — one instrument extended and this entry.
+
+GATES. `bun run check` 0.
+
+## Item 1966 — ⚠️ **CORRECTING ITEM 1965's MECHANISM (my own, last tick) and pricing the real one: the deferred hop arm's KEY EVALUATION is 67% of the shape** — 296.5 → 98.4 ms with the key stubbed. The obvious fold is blocked by arrival order; what is left is a ~1.3-1.5x specialization in the file item 1964 declined
+
+Item 1965 reported "a sorted hop loses the FUSED DIRECT-READ projection" from a 29-vs-173 ns/row
+comparison. **Two things were wrong with it.**
+
+1. ❌ **`farPropRow` could never have applied to that shape.** It requires the projection to be a
+   single BARE `prop` item (`item.expr.kind !== 'prop'` declines), and the profiled query projects
+   `b.n + 1`. So a lost `farProp` cannot be the mechanism, and reading the gate would have shown
+   that before the profile was interpreted.
+2. ❌ **The 29-vs-173 pair was confounded by the far-driven TEMPLATE FOLD.** Sweeping fan-in
+   separates them:
+
+```text
+                      fan-in ~5 (FANOUT=5)        fan-in ~1 (FANOUT=1)
+  RETURN b.n + 1 AS c        29 ns/row                   59 ns/row
+  … ORDER BY c              313                         244
+  ratio                      10.8x                        4.1x
+```
+
+The unsorted arm doubles per row when fan-in drops to 1 — it had been projecting once per FAR VERTEX
+and copying for the in-edges (item 167's hoist). The sorted arm does not get that. So part of
+item 1965's "6x" was a fold the two arms do not share, not a specialization one of them lost.
+
+✅ **THE REAL TERM, BY ABLATION RATHER THAN BY PROFILE.** Stubbing the deferred arm's sort-key
+closure (`fn: k.fn` → `fn: () => 0`, a wrong answer — the checksum collapses to 59, which is how I
+know it took):
+
+```text
+  RETURN b.n + 1 AS c ORDER BY c LIMIT 10        296.5 -> 98.4 ms    the key is 198 ms, 67%
+  … ORDER BY b.n + 1 LIMIT 10                    298.6 -> 89.8       209 ms
+  … ORDER BY b.n + 1 (no window)                 472.8 -> 300.0      173 ms
+```
+
+So ~200 ns a row, and it is the dominant term — bigger than item 1964's re-projection (103 ns/row)
+and bigger than the sort. ⚠️ The 3.01x this implies is an upper bound: a key cannot be free, so the
+usable figure is whatever a cheaper key costs, not zero.
+
+🔒 **AND THE OBVIOUS FOLD IS BLOCKED BY CONSTRUCTION.** The key `b.n + 1` reads only the far vertex,
+so every row of one far vertex shares it — exactly the condition the far-driven template fold wants,
+and `detectHopProjection` already wires `farDrivenHopWalk` with `proj: walkProj`. But
+`deferredHopOrder` returns **`startDriven: true`**, so the deferred arm never reaches that walk.
+⚠️ I did NOT establish why that flag is set; the plausible reason is TIE ORDER, which item 605 makes
+observable between the engines, and `walkReadFlags`' header records item 1903's wrong answer where
+"the rows came back in the walk's arrival order". **Whether `startDriven: true` is load-bearing for
+tie order is the question a build has to settle first, and this item does not settle it** — stated
+as unknown rather than guessed, which is what item 1960 was about.
+
+**WHAT IS LEFT, PRICED HONESTLY.** Specializing the key closure to a direct read when it is shaped
+`<farVar>.<prop>` (the walk already holds the far vertex, so `far.properties[key]` replaces
+`binding.get(farVar)` + `propOf`) is the `farProp` idea applied to the KEY rather than the
+projection. Against a 198 ns/row term it is worth perhaps 1.3-1.5x — in `hop-projection.ts`, where
+**item 1964 declined 1.0-1.29x and item 1466 declined 3.3x** on perturbation grounds. That is
+borderline by this repo's own bar, and it should be measured against those precedents rather than
+taken because it is the last idea standing.
+
+🔑 **THE LESSON I OWE FROM 1965:** I took a profile frame (58% in a compiled `prop` closure), paired
+it with a no-sort control, and named a mechanism — without checking that the mechanism's gate could
+even fire on that shape, and without controlling for the fold. [[frame-attribution-trap]] says a
+frame is attribution until a deletion test with a control says otherwise; the deletion test here
+(the key ablation) named a DIFFERENT cause than the frame reading did.
+
+NO ENGINE BEHAVIOUR CHANGED — the ablation was reverted (`git status` clean), one heading corrected,
+and this entry.
 
 GATES. `bun run check` 0.
