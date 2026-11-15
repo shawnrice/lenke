@@ -92676,7 +92676,7 @@ NO ENGINE BEHAVIOUR CHANGED — two instruments and this entry.
 
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects.
 
-## Item 1935 — ⚠️⚠️ **THE LABEL-VACUITY CLIFF IS ARCHITECTURAL, NOT ONE GATE: 43 call sites across 7 files**, and it is worst on the CLOSED-FORM shortcuts — **one isolated off-label vertex turns an O(1) hop `count(*)` into a full enumeration, 1157x**. Also: the cheap fix (a rewrite to `IS LABELED`) is REFUTED, and two fixture bugs of mine were caught by an answer guard
+## Item 1935 — ⚠️⚠️ **THE LABEL-VACUITY CLIFF IS ARCHITECTURAL, NOT ONE GATE: 43 call sites across 7 files**, and it is worst on the CLOSED-FORM shortcuts — **one isolated off-label vertex turns an O(1) hop `count(*)` into a full enumeration, 1157x**. Also: the cheap fix (a rewrite to `IS LABELED`) is REFUTED, and two fixture bugs of mine were caught by an answer guard. ⚠️ ~~43 gates, up to 1157x~~ **RE-SCOPED at item 1936 by measuring what is RECOVERABLE rather than what is lost: the closed-form COUNT is already within 1.34x of a hand loop off its fast arm, so `shortcuts.ts`'s 10 gates are NOT a target and the 1157x is algorithmic. The hop PROJECTION has 7.23x, and a hand loop shows label filtering costs ~9 ns a row while abandoning edge iteration costs 220**
 
 Item 1934 measured the cliff on one shape (hop projection, 6.2x) and estimated the lever at ~2x via
 a plan rewrite. ❌ **Both the scope and the fix were wrong, and this item corrects them.**
@@ -92759,5 +92759,65 @@ The win is large and the blast radius is large, and they are not separable by me
   TRUSTS `verticesByLabel`.
 
 NO ENGINE BEHAVIOUR CHANGED — one instrument, one extended probe arm, and this entry.
+
+GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects.
+
+## Item 1936 — **THE CLIFF IS NOT THE COST OF LABEL FILTERING — IT IS THE COST OF ABANDONING EDGE ITERATION.** A hand loop over the same edges WITH both label tests runs at **34 ns a row against the fast arm's 25**, where the engine off that arm is **245**. ⚠️ So item 1935's 43-gate scope is wrong: the closed-form COUNT is already near-optimal off its fast arm (1.34x) and is not a target at all
+
+Item 1935 priced the label-vacuity cliff at up to 1157x across 43 gates and left the scope as an
+owner decision. ❌ **Measuring what is RECOVERABLE rather than what is LOST cuts that scope roughly
+in half and raises confidence in the rest.**
+
+## ❌ The 1157x on `count(*)` is irreducible, so `shortcuts.ts` is not the target
+
+The vacuous case is O(1) because EVERY edge qualifies — the count IS the E-bucket's size. With the
+label non-universal each edge's endpoints must be tested, which is O(E) by construction: counting
+label-filtered edges cannot be O(1) without a per-(label, edgeType) index, and an incremental
+counter is write-side bookkeeping the owner has already pushed back on. So the question is only the
+CONSTANT FACTOR, against a hand loop over the bucket with two label tests:
+
+        engine, T vacuous          0.002 ms   (O(1) bucket size)
+        engine, 1 off-label        2.375      ⬅ the "1157x"
+        HAND loop, 1 off-label     1.771      ⬅ the engine is 1.34x this, i.e. 6.0 ns an edge
+
+**The engine is NOT enumerating on the non-vacuous count — its fallback is already near-optimal.**
+1.34x is below this session's own bar and below the noise on several of its instruments. So the ten
+`shortcuts.ts` gates are correctly gated and the 1157x, while real, is the price of the question
+rather than a defect.
+
+## ✅ But the hop PROJECTION has 7.23x, and the hand loop shows why
+
+Same two graphs, same 100,000 rows:
+
+        engine, T vacuous           2.48 ms    25 ns a row   ⬅ the far-driven fast arm
+        engine, 1 off-label        24.48      245 ns a row   ⬅ start-driven
+        HAND loop, 1 off-label      3.39       34 ns a row   ⬅ edge iteration + BOTH label tests
+
+🔑 **THE HAND LOOP ON THE NON-VACUOUS GRAPH IS NEARLY AS FAST AS THE ENGINE'S FAST ARM ON THE VACUOUS
+ONE — 34 ns against 25.** Label filtering costs about **9 ns a row**. The cliff's other **220 ns a
+row** is the engine abandoning edge iteration for a start-driven walk. So the 8.92x is not the cost
+of filtering; it is the cost of giving up the walk because of the filter.
+
+And the hand loop's structure is exactly the far-driven loop's, plus one test on the other endpoint:
+
+        for (const edge of bucket) {
+          if (edge.from.labels.has('T') && edge.to.labels.has('T')) { …push… }
+        }
+
+which is item 1935's point about the blocker comment, now with a measured target rather than an
+argument: the start vertex IS `out ? edge.from : edge.to`, and testing it costs ~9 ns a row.
+
+## 🔭 The target, re-scoped by measurement
+
+- **Take:** the hop-walk gates (`hop-projection.ts`'s 18, and whichever of `grouped-hop`'s 4 and
+  `var-length-count`'s 3 share the structure) — **7.23x on the most common shape in the language**,
+  for every graph that is not label-homogeneous, with a hand loop proving the target reachable.
+- **Leave:** `shortcuts.ts`'s 10 closed-form gates. Their fallback is already within 1.34x of
+  optimal and the headline 1157x is algorithmic.
+- **Still the owner's call** whether to spend a central-walk change (a measured 16% risk to
+  unrelated shapes, [[executor-edits-perturb]]) on 7.23x — but it is now 7.23x on ~half the gates,
+  not "up to 1157x across 43", which is a materially different trade.
+
+NO ENGINE BEHAVIOUR CHANGED — one instrument and this entry.
 
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects.
