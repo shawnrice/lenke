@@ -92422,3 +92422,85 @@ output would remove if the row count were known in advance (it is: `off[N]`).
 NO ENGINE BEHAVIOUR CHANGED — one probe, and this entry.
 
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects.
+
+## Item 1932 — **NO SCREEN IN THIS REPO CARRIED A SINGLE WRITE**, so writes have never been screened on either surface. Built the one that does, and it nominates two gaps: a **1.84x GQL-only read demotion** after any vertex insert, and GQL `SET` at **3.42x** Gremlin's `property` for the identical mutation
+
+Items 1930/1931 took both READ surfaces to their floors. A grep for `INSERT|SET|REMOVE|DELETE`
+across `gql-coverage-screen-1901.mjs`, `workload-perf-screen.mjs` and `gremlin-workload-screen.mjs`
+— 100+ shapes between them — matches only `OFFSET` and `CONTROL SET` in prose. **Writes are half of
+what the engine does and no instrument priced them.**
+
+🔑 That is the coverage move that has paid twice before: item 1898 asked what the Gremlin screen did
+NOT ask and found all five of the surface's biggest shapes among the answers; item 1927 asked which
+SPELLINGS a rewrite never saw and found 11 of 13 stranded. Asking what a screen omits beats
+re-pricing what it carries.
+
+## ⚠️ A write screen is not a read screen, and two of its rules invert
+
+- **`rows` IS MEANINGLESS FOR A WRITE.** A GQL write with no `RETURN` answers an EMPTY array, so the
+  first smoke run had nine of twenty rows reporting 0 — a `SET` touching every vertex
+  indistinguishable from one matching nothing. The read screens' rule ("a shape returning 0 rows
+  measures a miss") does not transfer. Every shape now carries a `verify`, run ONCE OUTSIDE THE
+  TIMER, counting what actually changed; a `work` of 0 prints as a BROKEN ROW.
+- **A WRITE IS NOT IDEMPOTENT**, so min-of-N over one fixture is dishonest: the second `INSERT` runs
+  against a bigger graph and a `DELETE` has nothing to delete the second time. Each rep REBUILDS,
+  with the build excluded from the timer. That is also why the default size is 20,000 and not
+  200,000 — the question is per-write cost, not bulk ingest, which
+  [[ts-ingest-is-constant-factor]] already closed.
+- `_MERGE` needs a unique constraint on its key or it measures an EXCEPTION rather than an upsert,
+  so the fixture declares one.
+
+      `NODES=20000 REPS=7 bun write-workload-screen-1932.mjs`, fresh graph per rep:
+
+        24.02        1   gql: read after write          ⬅ see the decomposition below
+        15.69    20000   gql: set two props, all rows
+        14.88    20000   gql: remove prop, all rows
+        13.53    20000   gql: set one prop, all rows
+        11.66    20000   gql: set NEW prop, all rows
+         7.44        1   gql: read, no write (CONTROL)
+         7.22        1   gremlin: read after write
+         6.75        1   gremlin: read, no write (CONTROL)
+         3.96    20000   gremlin: property all          ⬅ 3.42x FASTER than the GQL twin
+         0.19        1   gql: insert edge between matched
+         0.17        1   gql: detach delete one
+         0.10        1   gremlin: addV one / gql: insert node
+
+## ⚠️⚠️ And the screen's own top row conflates two costs — my first reading of it was wrong twice
+
+The screen reads `gql: read after write` at 24.02 against a 7.44 control and invites "3.23x,
+GQL-only". `writecliff-probe-1932.mjs` decomposes it, and **two successive corrections were needed**:
+
+1. ❌ **A 14.37x "cliff" that was my own cartesian write.** The probe's edge arm was
+   `WHERE a.n = 0 AND b.n = 1`, and `n` is `i % 97` — so each side matched ~206 vertices and the
+   product inserted **~42,000 edges**. 80.72 ms of bulk ingest, reported as a read cliff. I had
+   built exactly this check into the SCREEN an hour earlier and did not apply it to the probe. It
+   now asserts the arm writes exactly ONE edge and throws otherwise.
+2. ❌ **Then 3.23x, which conflates the write with the read.** The `ALONE` arms settle it:
+
+        gql: insert ALONE         0.10 ms      gql read alone     6.86 ms
+        gql: insert, read        12.70         so the READ went 6.86 -> ~12.60
+        grem: insert, read        6.22         against its own 6.47 baseline — 0.96x, NOTHING
+
+🔑 **SO THE HONEST NUMBER IS 1.84x, AND IT IS GQL-ONLY.** A vertex insert — no edge, no relation to
+the `T`/`E` subgraph the read traverses — demotes the next GQL hop read by 1.84x, while the same
+write on the same core graph leaves Gremlin flat. That locates it in the GQL read path's caching,
+NOT in core, which is the opposite of where CLAUDE.md's native `csr_fresh` note would have pointed.
+
+What the other arms rule out: a property write costs 1.26x and an EMPTY write 1.08x (so the
+demotion is specific to STRUCTURAL writes, not to "a write statement ran"); five inserts cost the
+same as one (2.09x against 2.11x — ONE invalidation, not per-write work); and a verified
+single-edge insert costs 1.59x, less than a vertex insert, so it is not adjacency-specific.
+
+## 🔭 Open, with numbers and an instrument
+
+- **the 1.84x read demotion** — GQL-only, one invalidation, structural writes only. Every real
+  serving workload interleaves, so this is the read cost of writing at all. `writecliff-probe-1932`
+  is the A/B.
+- **GQL `SET` at 3.42x Gremlin `property`** for the identical mutation on the identical graph
+  (13.53 against 3.96 at 20,000 vertices). [[ts-set-is-o-width]] prices the mechanism — three O(K)
+  passes a write against native's O(1) columnar — and this is the first cross-surface measurement
+  of it.
+
+NO ENGINE BEHAVIOUR CHANGED — two instruments and this entry.
+
+GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects.
