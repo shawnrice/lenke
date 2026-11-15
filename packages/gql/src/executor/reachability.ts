@@ -19,6 +19,7 @@ import type {
   CountValue,
   Expr,
   LabelExpr,
+  PathMode,
   PathPattern,
   Projection,
   Quantifier,
@@ -185,6 +186,11 @@ export type ReachSpec = {
    * branch first would mark it seen at the wrong depth and could exclude it.
    */
   maxDepth?: number;
+  /**
+   * The quantifier's LOWER bound. Only `>= 2` changes anything: the BFS arms answer `min <= 1` by
+   * construction, and `minZero` carries the zero-length case separately (item 2008).
+   */
+  minLen: number;
   /**
    * Produce the reached set by an ACYCLIC DFS instead of the BFS (item 2004).
    *
@@ -427,6 +433,81 @@ const adjReached = (
   return reached;
 };
 
+/**
+ * The reached set for a `{min >= 2}` TRAIL quantifier — a trail DFS over the CSR (item 2008).
+ *
+ * ⚠️⚠️ **WHY A DFS AND NOT A PER-LEVEL BFS: item 2007 REFUTED that by measurement.** The answer for
+ * `{min,max}` is the union over `d` in `[min,max]` of "reachable in exactly `d` steps", which is one
+ * O(|V| + |E|) pass per level — but "exactly `d` steps" is a WALK notion, and this rung serves TRAIL
+ * and the default (which IS trail). Over nine hazard fixtures the modes diverged in **10 of 27
+ * cells**: a walk of length 2 on one self-loop is `a->a->a`, reusing the edge, and no trail does
+ * that. So the per-level set recurrence answers the wrong question here.
+ *
+ * 🔑 **A TRAIL DFS NEEDS NO THEOREM, because trail-ness is its LOOP CONDITION** — the same reason
+ * item 2004's acyclic arm works, one axis over (that one keys the marker on the VERTEX, this on the
+ * EDGE). `perSourceTrailCount` has done exactly this for COUNTS since item 1978, so the shape is
+ * proven in this codebase rather than invented here.
+ *
+ * ⚠️ THE MARKER IS KEYED ON THE CSR **POSITION**, not on an edge id, and that is sound rather than
+ * convenient: a directed out-adjacency lists each edge at exactly one position, so position and edge
+ * occurrence coincide. `perSourceTrailCount` keys its `used` set the same way. (It would NOT hold for
+ * a `both` walk, where one edge appears twice — this rung's `out` is a single direction.)
+ *
+ * MEASURED CEILING against the general matcher, which is what runs this shape today — a hand DFS over
+ * a CSR it builds itself, answers verified identical to the engine's:
+ *
+ * ```text
+ *     |V|      bound    general matcher    hand trail DFS    ratio
+ *     5,000    {2,3}            547.98              7.56     72.5x
+ *     20,000   {2,3}           2818.46             38.25     73.7x
+ *     5,000    {2,2}            103.37              3.58     28.8x
+ *     20,000   {2,2}            525.93             20.42     25.8x
+ *     5,000    {3,3}            486.79              7.46     65.3x
+ * ```
+ */
+const trailReached = (
+  csr: CsrTables,
+  seeds: readonly Vertex[],
+  minLen: number,
+  maxLen: number,
+  minZero: boolean,
+): Vertex[] => {
+  const { order, idx, off, nbr } = csr;
+  const usedPos = new Uint8Array(nbr.length);
+  const answer = new Uint8Array(order.length);
+  const reached: Vertex[] = [];
+  const walk = (v: number, len: number): void => {
+    // ⚠️ `len >= minLen` IS THE WHOLE POINT OF THIS ARM — the BFS arms cannot express it, which is
+    // why `reachQuantifierIsExact` refuses `min > 1` for them.
+    if (len >= minLen && answer[v] === 0) {
+      answer[v] = 1;
+      reached.push(order[v]);
+    }
+
+    if (len === maxLen) {
+      return;
+    }
+
+    const end = off[v + 1];
+
+    for (let k = off[v]; k < end; k += 1) {
+      if (usedPos[k] === 1) {
+        continue;
+      }
+
+      usedPos[k] = 1;
+      walk(nbr[k], len + 1);
+      usedPos[k] = 0;
+    }
+  };
+
+  for (const sv of seeds) {
+    walk(idx.get(sv)!, 0);
+  }
+
+  return minZero ? withZeroLength(reached, seeds, answer, idx) : reached;
+};
+
 /** `->*` also admits the zero-length path — the seeds themselves, if not already reached. */
 const withZeroLength = (
   reached: Vertex[],
@@ -538,6 +619,16 @@ export const runReach = (spec: ReachSpec, graph: Graph, params: Params): Row[] =
   const csr =
     spec.acyclic || wide || csrIsBuilt(graph, !out, types) ? csrFor(graph, !out, types) : undefined;
   const produce = (): Vertex[] => {
+    /*
+     * ⚠️ THE `min >= 2` ARM COMES FIRST AND REQUIRES THE TABLES, like the acyclic one: the BFS arms
+     * cannot express a lower bound at all (`reachQuantifierIsExact` refuses `min > 1` for exactly
+     * that reason), and its alternative is the general matcher — which item 2008 measured at 26-74x
+     * this DFS. A build is repaid many times over, so the seed-share gate does not apply.
+     */
+    if (spec.minLen >= 2) {
+      return trailReached(csr!, seeds, spec.minLen, spec.maxDepth ?? 0, minZero);
+    }
+
     if (csr === undefined) {
       return adjReached(graph, seeds, out, types, spec.maxDepth, minZero);
     }
@@ -760,6 +851,37 @@ export const reachCount = (proj: Projection, bVar: string): { countArg?: Compile
  */
 export const reachQuantifierIsExact = (q: Quantifier | undefined): boolean =>
   q !== undefined && (q.min ?? 0) <= 1 && (q.max === null || q.max >= 1);
+
+/**
+ * Is this a `{min >= 2}` quantifier the TRAIL DFS arm can serve? (item 2008)
+ *
+ * ⚠️⚠️ **MODE-SPECIFIC ON PURPOSE, and each exclusion is a measured divergence rather than caution**
+ * (item 2007, nine hazard fixtures x three bounds):
+ *
+ *   - `WALK` reaches vertices a trail cannot, by reusing an edge — one self-loop at `{2,2}` gives
+ *     `[0]` for WALK and `[]` for every other mode. A trail DFS would UNDER-answer it.
+ *   - `SIMPLE` is a different restriction again: `two self-loops {2,2}` gives `[0]` for WALK and
+ *     TRAIL and `[]` for SIMPLE.
+ *   - `ACYCLIC` is excluded for a SECOND reason on top of that: `acyclicReached` collects at every
+ *     depth and has no `min` term at all, because it has only ever been reachable with `min <= 1`.
+ *     Admitting it here would silently include depth-1 vertices in a `{2,3}` answer.
+ *
+ * So only TRAIL and the DEFAULT (which IS trail) are admitted — and those two agreed in all 27 cells
+ * of that probe, as they must, being the same mode.
+ *
+ * ⚠️ BOUNDED ONLY. An unbounded trail DFS is exponential in the graph, and this rung cannot decline
+ * at runtime (`clauses.ts` returns its result directly), so `max === null` stays refused.
+ */
+export const trailMinAdmissible = (
+  q: Quantifier | undefined,
+  mode: PathMode | undefined,
+): boolean =>
+  q !== undefined &&
+  (mode === undefined || mode === 'trail') &&
+  (q.min ?? 0) >= 2 &&
+  q.max !== null &&
+  q.max !== undefined &&
+  q.max >= (q.min ?? 0);
 /**
  * ⚠️ `WALK` IS ADMITTED ALONGSIDE THE DEFAULT (item 1255), and `SIMPLE`/`ACYCLIC` are not.
  *
@@ -786,6 +908,26 @@ export const reachQuantifierIsExact = (q: Quantifier | undefined): boolean =>
  * nine shapes: self-loop, 2-cycle, 3-cycle, chain, chain with a back-edge, lollipop, two joined
  * cycles, in-tree and diamond, at both `->*` and `->+` — 18 of 18 agreed.
  */
+/**
+ * Can any arm of this rung serve the quantifier? The BFS region (`min <= 1`, any admitted mode) or
+ * the trail DFS region (`min >= 2`, TRAIL or default, bounded).
+ *
+ * ⚠️ ONE NAMED PREDICATE because the detector is at the lint complexity cap — two calls joined by
+ * `||` at the call site took it to 37 against a limit of 35. Third time this stretch a lint gate has
+ * pushed a condition into a name, and third time the name is the better code.
+ */
+/**
+ * The quantifier's lower bound, defaulted.
+ *
+ * ⚠️ A NAMED HELPER FOR `q.min ?? 0` ONLY BECAUSE THE DETECTOR IS AT THE LINT COMPLEXITY CAP — adding
+ * that one `??` inline took `detectReachableShortcut` from 35 to 36. It is used for BOTH `minZero`
+ * and `minLen`, so the default lives in one place rather than being spelled twice.
+ */
+export const quantMin = (q: Quantifier): number => q.min ?? 0;
+
+export const quantifierServed = (q: Quantifier | undefined, mode: PathMode | undefined): boolean =>
+  reachQuantifierIsExact(q) || trailMinAdmissible(q, mode);
+
 export const needsGeneralMatcher = (p: PathPattern): boolean =>
   (p.selector ?? 'walk') !== 'walk' ||
   !admissibleMode(p) ||
@@ -958,7 +1100,7 @@ export const detectReachableShortcut = (
   // enumerates trails over an unbounded pattern and THROWS on the trail budget.
   if (
     q === undefined ||
-    !reachQuantifierIsExact(q) ||
+    !quantifierServed(q, m.patterns[0].mode) ||
     rel.variable !== undefined ||
     rel.direction === 'both' ||
     (rel.properties?.length ?? 0) > 0 ||
@@ -999,9 +1141,10 @@ export const detectReachableShortcut = (
     bLabel: node.label,
     out: rel.direction === 'out',
     types: types ?? undefined,
-    minZero: q.min === 0,
+    minZero: quantMin(q) === 0,
     startGate,
     maxDepth: q.max ?? undefined,
+    minLen: quantMin(q),
     acyclic: isAcyclicMode(m.patterns[0]),
     isCount: count !== null,
     countArg: count?.countArg,

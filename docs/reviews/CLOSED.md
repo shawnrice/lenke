@@ -97946,7 +97946,7 @@ GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-
 `bun run fuzz` 57/57 FOUR times (the previous item's run caught a real wrong answer, so this is not
 ceremony); gql 4,985; parity 105/105 across both acyclic files.
 
-## Item 2007 — 🔭 **`{2,3}` DISTINCT COSTS 674x ITS `{1,3}` TWIN — 640.28 ms against 0.95 at 5,000 vertices — and that one bound is where the realistic `var-length` family's whole cost lives.** ⚠️⚠️ **WHICH MEANS ITEMS 2003-2006 MOVED THE FAMILY BY NOTHING: 39.44 → 40.58 ms/query across four items and 3.7-67x on my own probe's rows. I never checked the family number between them.** ⚠️ The obvious cure is REFUTED by measurement
+## Item 2007 — ✅ **[TAKEN BY ITEM 2008 at 137-158x, and its scoping was WRONG in the useful direction: it called the cure "the trail-correction problem on the rows side", when a trail DFS needs no correction at all because trail-ness is its loop condition. The refutation of the per-level BFS stands and is what pointed at the DFS.]** **`{2,3}` DISTINCT COSTS 674x ITS `{1,3}` TWIN — 640.28 ms against 0.95 at 5,000 vertices — and that one bound is where the realistic `var-length` family's whole cost lives.** ⚠️⚠️ **WHICH MEANS ITEMS 2003-2006 MOVED THE FAMILY BY NOTHING: 39.44 → 40.58 ms/query across four items and 3.7-67x on my own probe's rows. I never checked the family number between them.** ⚠️ The obvious cure is REFUTED by measurement
 
 ## ⚠️⚠️ FIRST, THE CORRECTION TO MY OWN TARGET SELECTION
 
@@ -98027,3 +98027,77 @@ before measuring, and item 2003's cheap cure died on a fixture it had not been s
 with a refuted naive cure and a known-hard real one is worth stating precisely and leaving open.
 
 GATES. `bun run fmt` 0; `bun run check` 0. (Probes only — no engine code changed.)
+
+## Item 2008 — ✅ **`{min>=2}` ROWS GET A TRAIL DFS: `{2,3}` DISTINCT goes 640.28 → 4.65 ms at 5,000 vertices (137.7x), 3494.33 → 22.12 at 20,000 (158x) — and the REALISTIC `var-length` family goes 1014.6 → 39.4 ms (25.8x), the number item 2007 said four previous items had failed to move**
+
+Takes item 2007's 674x. ⚠️ That item refuted the obvious cure (a per-level BFS answers WALK
+reachability; the modes diverge in 10 of 27 cells at `min >= 2`) and scoped the real one as "the
+trail-correction problem on the rows side". **It was wrong about that, and item 2004's mechanism is
+why:** a trail DFS needs no correction and no theorem, because **trail-ness is its loop condition.**
+`perSourceTrailCount` has done exactly this for COUNTS since item 1978 — the shape was already in the
+codebase, one projection over.
+
+⚠️ CEILING FIRST, over the CSR rather than the adjacency buckets — item 1999's lesson, where a hand
+ceiling built on `v.adjFrom.get(T)` understated a target and the cure then beat the "ceiling" by
+2.11x. `minbound-ceiling-2008.mjs`, answers verified identical to the engine's:
+
+```text
+    |V|      bound    general matcher    hand trail DFS    ratio
+    5,000    {2,3}            547.98              7.56     72.5x
+    20,000   {2,3}           2818.46             38.25     73.7x
+    5,000    {2,2}            103.37              3.58     28.8x
+    20,000   {2,2}            525.93             20.42     25.8x
+    5,000    {3,3}            486.79              7.46     65.3x
+```
+
+SHIPPED, and it beats its own ceiling — 4.65 ms against the hand arm's 7.56, because `csrFor` is
+cached across asks where the hand arm rebuilt the tables every rep:
+
+```text
+DISTINCT, bound {2,3}            5k        20k        40k
+    plain   PRE              640.28    3494.33    7316.79
+            POST               4.65      22.12      52.56   137.7x / 158x / 139x
+    TRAIL   PRE              661.40    3590.49    7541.23
+            POST               4.59      20.63      52.23   144.1x / 174x / 144x
+
+var-length FAMILY (the realistic corpus)     1014.6 → 39.4 ms      25.8x
+                                        40.58 → 1.58 ms/query
+```
+
+🔑 **AND THAT FAMILY NUMBER IS THE POINT OF THE ITEM.** Items 2003-2006 produced 3.7-67x on probe rows
+and moved it from 39.44 to 40.58 ms/query — nothing. One item aimed at the bound that actually carried
+the cost moved it 25.8x. The difference was not effort or care; it was asking which row the FAMILY
+spends its time in before optimizing a row.
+
+## ⚠️ THE ADMISSION IS MODE-SPECIFIC, AND EVERY EXCLUSION IS A MEASURED DIVERGENCE
+
+`trailMinAdmissible` admits `min >= 2` for TRAIL and the DEFAULT only (which IS trail — they agreed in
+all 27 cells of item 2007's probe, as they must). Refused, each for its own reason:
+
+- **WALK** reaches vertices a trail cannot, by reusing an edge: one self-loop at `{2,2}` is `[0]` for
+  WALK and `[]` for every other mode. A trail DFS would UNDER-answer it.
+- **SIMPLE** is a third restriction again: `two self-loops {2,2}` is `[0]` for WALK and TRAIL, `[]`
+  for SIMPLE.
+- **ACYCLIC** is excluded for a SECOND reason on top of that, and it is the kind that ships a wrong
+  answer: `acyclicReached` collects at EVERY depth and has no `min` term at all, because it has only
+  ever been reachable with `min <= 1`. Admitting it here would silently include depth-1 vertices in a
+  `{2,3}` answer. ⚠️ Found by reading the producer before relaxing the gate, not by a test.
+- **UNBOUNDED** (`max === null`) stays refused: a trail DFS is exponential in the graph, and this rung
+  cannot decline at runtime (`clauses.ts` returns its result directly), so there would be no way out.
+
+⚠️ A PRE-EXISTING ROUTE TEST FIRED, CORRECTLY, AND ITS OWN NOTE LICENSED THE REVERSAL. It asserted
+`min > 1` must not take the rung — and said why that was not the real guard: "a test that only
+asserted 'does not take the rung' would pass if the rung were removed entirely". Its ANSWER half is
+untouched: `{2,3}` from `a` still excludes `b`, which is reachable only at depth 1, so a DFS ignoring
+`minLen` would answer `['b','c','d']` and every route assertion would still pass. A new test pins that
+WALK, SIMPLE and ACYCLIC stay refused AND still answer.
+
+⚠️ THE LINT GATE SHAPED THIS FOR THE THIRD AND FOURTH TIME THIS STRETCH, and was right both times:
+the two gate calls joined by `||` at the call site took `detectReachableShortcut` to 37 (cap 35), so
+they became `quantifierServed`; then the one `q.min ?? 0` for the new spec field took it to 36, so
+that became `quantMin`, now used for BOTH `minZero` and `minLen` so the default is spelled once.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
+`bun run fuzz` 57/57 EIGHT times across the item (five before the lint refactor, three after — this is
+a new route for a shape the rung previously refused, and item 2005's sweep caught a real wrong answer,
+so repetition here is evidence rather than ceremony); gql 4,986; parity 105/105.

@@ -178,22 +178,53 @@ describe('a bounded var-length reachability query', () => {
 });
 
 describe('the bounded rung refuses what it must', () => {
-  /**
-   * ⚠️ `min > 1` IS REFUSED AND ITS ANSWER IS STILL CHECKED. The refusal is a correctness
-   * condition, so a test that only asserted "does not take the rung" would pass if the rung were
-   * removed entirely. On this fixture `{2,3}` from `a` must NOT include `b` (reachable only at
-   * depth 1) but must include `c` and `d`.
+  /*
+   * ⚠️⚠️ **`min > 1` NOW TAKES THE RUNG (item 2008) AND THE ANSWER HALF IS UNCHANGED — which is
+   * exactly the guard this test's original note described.** It said: "a test that only asserted
+   * 'does not take the rung' would pass if the rung were removed entirely", and that reasoning is
+   * why the reversal is safe to make — the assertion that carries the correctness condition is the
+   * one below, and it is untouched.
+   *
+   * The refusal was a property of the BFS, not of the question: a shortest-distance search cannot
+   * see that a vertex found at `d = 1` is ALSO reachable at length 2. `trailReached` is a DFS with a
+   * `len >= minLen` test, so it can. ⚠️ Item 2007 refuted the cheap alternative (a per-level BFS
+   * answers WALK reachability, and the modes diverge in 10 of 27 cells at `min >= 2`), which is why
+   * only TRAIL and the default are admitted.
    */
-  test('a minimum above one does not take the rung, and still answers', () => {
+  test('a minimum above one NOW takes the rung, and still answers', () => {
     const g = build(CHAIN);
 
-    expect(routes("MATCH (s:T {n: 'a'})-[:E]->{2,3}(b:T) RETURN DISTINCT b.n AS x")).not.toContain(
+    expect(routes("MATCH (s:T {n: 'a'})-[:E]->{2,3}(b:T) RETURN DISTINCT b.n AS x")).toContain(
       'reachShortcut',
     );
+    // ⚠️ UNCHANGED: `b` is reachable from `a` only at depth 1, so `{2,3}` must EXCLUDE it. A DFS
+    // that ignored `minLen` would answer `['b','c','d']` and every route assertion would still pass.
     expect(reached(g, "MATCH (s:T {n: 'a'})-[:E]->{2,3}(b:T) RETURN DISTINCT b.n AS x")).toEqual([
       'c',
       'd',
     ]);
+  });
+
+  test('min > 1 stays REFUSED for WALK, SIMPLE and ACYCLIC — each for its own measured reason', () => {
+    /*
+     * ⚠️ Item 2007's probe: `WALK` reaches vertices a trail cannot by reusing an edge (one self-loop
+     * at `{2,2}` is `[0]` for WALK and `[]` for the rest), `SIMPLE` is a third restriction again
+     * (`two self-loops {2,2}` is `[0]` for WALK and TRAIL, `[]` for SIMPLE), and `ACYCLIC` is
+     * excluded for a SECOND reason on top: `acyclicReached` has no `min` term at all, so admitting
+     * it would include depth-1 vertices in a `{2,3}` answer.
+     */
+    for (const kw of ['MATCH WALK', 'MATCH SIMPLE', 'MATCH ACYCLIC']) {
+      expect(
+        routes(`${kw} (s:T {n: 'a'})-[:E]->{2,3}(b:T) RETURN DISTINCT b.n AS x`),
+      ).not.toContain('reachShortcut');
+    }
+
+    // And they still answer: the general matcher serves them, as it did before item 2008.
+    const g = build(CHAIN);
+
+    expect(
+      reached(g, "MATCH WALK (s:T {n: 'a'})-[:E]->{2,3}(b:T) RETURN DISTINCT b.n AS x"),
+    ).toEqual(['c', 'd']);
   });
 
   /**
