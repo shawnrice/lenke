@@ -96830,7 +96830,7 @@ NO ENGINE BEHAVIOUR CHANGED — five screen rows, three imports, and this entry.
 GATES. `bun run fmt` 0; `bun run check` 0. The screen re-run after the edit: 49 rows, no flags, no
 zero-row misses in the new family.
 
-## Item 1995 — 🔭 **`coalesce(hop, hop)` PRICED AT 4.67x A TWIN THAT RETURNS THE IDENTICAL ANSWER — 209.55 ms against 44.87, isolated, 600,000 rows each.** The twin equality is verified POSITIONALLY, and ⚠️ it is FIXTURE-DEPENDENT, which is the constraint on any cure
+## Item 1995 — 🔭 ⚠️ **[ITEM 1996 SPLITS THIS 4.67x IN TWO: ~1.9x is not being CSR-FUSED (which every generic-path hop pays, `both` included) and ~2.1x is coalesce-specific. The twin was a FUSED route, so quoting 4.67x as a `coalesce` defect overstates the step's share by about half.]** `coalesce(hop, hop)` PRICED AT 4.67x A TWIN THAT RETURNS THE IDENTICAL ANSWER — 209.55 ms against 44.87, isolated, 600,000 rows each.** The twin equality is verified POSITIONALLY, and ⚠️ it is FIXTURE-DEPENDENT, which is the constraint on any cure
 
 Item 1994 put the reconverging family on the standing screen and its `coalesce: two hops` row came
 out 8.8x its identity-arm neighbour in a full 49-shape run. That run's absolutes are not comparable
@@ -96897,3 +96897,70 @@ decides the design rather than the reverse.
 NO ENGINE BEHAVIOUR CHANGED — this entry.
 
 GATES. `bun run fmt` 0; `bun run check` 0.
+
+## Item 1996 — 🛑 **THE "PER-ROW TOLL" OF ITEMS 1993/1995 IS TWO SEPARATE THINGS, and one of them is not a defect at all: ~1.9x is simply NOT BEING CSR-FUSED, and ~2.1x on top is coalesce-specific.** ⚠️ My twin was a FUSED route all along, and a fourth hypothesis (closure size) is refuted with a null
+
+Item 1995 priced `coalesce(out(T), in_(T)).values(k)` at 4.67x a bare hop that returns the
+positionally identical answer. This tick tried to build the cure and instead corrected the diagnosis.
+
+### ❌ HYPOTHESIS FOUR, REFUTED WITH A NULL
+
+Item 1629's fast arm already reads `soleTypeBucket` and yields directly — **no array, no
+`applyPlanToStream`** — so neither materialization nor sub-plan invocation can be the cost, and the
+hot loop is then structurally `traverseToVertex`'s. The remaining difference was that the generator
+ALSO contains the fallback (array spread, plan loop, `applyPlanToStream`), and
+[[ts-closure-size-is-load-bearing]] prices an inlined walk beside other code at up to 4x. So the
+fallback was lifted to module scope.
+
+```text
+    coalesce: two hops   209.55 -> 211.27 ms     NULL (1.01x, the wrong way)
+```
+
+**Reverted.** `iteration.ts` is byte-identical to HEAD, verified. That is the fourth refuted
+hypothesis for this family — arm plumbing (1993), the test (1992/1993), direction (1993), closure
+size (here).
+
+✅ **AND THE FAST ARM WAS VERIFIED TO FIRE before any of that was concluded** — a counter says
+`fast: 2000, general: 0` for this shape, and `0/0` for the identity-arm form because item 1990
+normalizes it away. Three items had assumed arm 0's path without checking it.
+
+### 🛑 THE TWIN WAS A FUSED ROUTE, WHICH IS WHY THE GAP LOOKED LIKE ONE NUMBER
+
+`hop1: values` is not `traverseToVertex` — it is item 1889's **CSR walk**, whose own entry prices it
+at 16 ns a row against a bucket walk's 102. So items 1993 and 1995 were comparing a FUSED route
+against a GENERAL step and reading the difference as a single toll. A control on the generic path
+separates them:
+
+```text
+    200,000 vertices / 800,000 edges, median of 5, one process
+      out(E).values(n)            CSR-FUSED    62.33 ms    800,000 rows    78 ns/row
+      both(E).values(n)           GENERIC     233.95     1,600,000        146        1.9x of fused
+      coalesce(out,in).values(n)  GENERIC     243.67       800,000        305        2.1x of generic
+```
+
+⚠️ **`both` IS THE RIGHT CONTROL AND IT TOOK FOUR TICKS TO REACH IT**: `hopValuesCsr`'s gate excludes
+`both`, so it is the one hop shape that stays on the generic path and can price "what not being fused
+costs" independently of "what `coalesce` costs".
+
+### 🔭 SO THERE ARE TWO PRIZES, NOT ONE, AND THEY NEED DIFFERENT WORK
+
+```text
+    ~1.9x    give `coalesce(hop, hop)` the CSR route — the same work `optional-hop-values.ts` does,
+             and NOT a defect in `coalesce`: every generic-path hop pays it, `both` included
+    ~2.1x    a coalesce-SPECIFIC residual above a generic hop, cause unknown. `extend` is shared,
+             the row counts are comparable, and `soleTypeBucket` against `adjacentEdges` is the only
+             structural difference left unmeasured
+```
+
+⚠️ **AND THE 4.67x HEADLINE OF ITEM 1995 IS THE PRODUCT OF BOTH**, so quoting it as a coalesce defect
+overstates the step's share by about half. Its entry is corrected.
+
+**What this tick is worth is the correction.** Four hypotheses have now been refuted by measurement
+on this family and the one survivor — the missing CSR route — is a known, bounded piece of work
+rather than a mystery. The residual is the genuinely open question and it now has a control that can
+isolate it.
+
+NO ENGINE BEHAVIOUR CHANGED — the lift was built, measured, reverted; `git diff` over
+`packages/gremlin` against HEAD is empty. This entry is what ships.
+
+GATES. `bun run fmt` 0; `bun run check` 0; the Gremlin suite 2,435 pass / 0 fail.
