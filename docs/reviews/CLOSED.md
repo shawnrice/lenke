@@ -93094,7 +93094,7 @@ item.
 
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers.
 
-## Item 1941 — ✅ **BUILT: a BROAD far label no longer declines the CSR arm — it is applied PER SLOT. `MATCH (a)-[:E]->(b:T)` goes 8.70 ms to 2.77, 3.1x**, and item 1940's asymmetry is closed. ⚠️ The obvious mirror (an edge-driven far arm) was REFUTED first, and 7 reps turned out to be too few for this probe
+## Item 1941 — ✅ **BUILT: a BROAD far label no longer declines the CSR arm — it is applied PER SLOT. `MATCH (a)-[:E]->(b:T)` goes 8.70 ms to 2.77, 3.1x**, and item 1940's asymmetry is closed. ⚠️ The obvious mirror (an edge-driven far arm) was REFUTED first, and 7 reps turned out to be too few for this probe ⚠️ ~~follow-up: one CSR arm testing both ends, ~1.8x~~ **WRONG, corrected at item 1942: the CSR arm counts and never visits an edge, so it cannot test a START label. The route map is COMPLETE at four arms**
 
 Item 1940 left an asymmetry it created: `MATCH (a:T)-[:E]->(b:T)` at 5.53 ms against the UNLABELLED
 `MATCH (a)-[:E]->(b:T)` at 8.70 — the less constrained spelling slower, which is this repo's named
@@ -93166,3 +93166,59 @@ both ends, not one — is worth a further ~1.8x on the labelled spelling, and wo
 this pair of items added.
 
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers.
+
+## Item 1942 — ⚠️ **CORRECTION: item 1941's own follow-up ("one CSR arm testing both ends") is IMPOSSIBLE**, for the reason item 1937 already established — the CSR arm COUNTS adjacency and never visits an edge. ✅ The route map is COMPLETE at four arms, and the edge-driven arm's remaining **1.45x is `projectRow`, NOT the label dispatch** — measured, and FIRM policy puts it out of reach
+
+Item 1941 closed with: "a single CSR arm testing whichever labels are broad — both ends, not one —
+is worth a further ~1.8x". ❌ **That cannot be built, and I had already written down why.** The CSR
+arm takes `n = off[slot + 1] - off[slot]` and emits `n` identical rows; it never sees an edge, so a
+START label has nothing to test against. Item 1937 corrected exactly this conflation of the counting
+arm with the edge-iterating ones. **Second time.**
+
+## ✅ So the route map is complete — there is no fifth arm
+
+        start label        far label          arm
+        vacuous/absent     vacuous/absent     CSR, counting                 (fastest)
+        vacuous/absent     broad non-vacuous  CSR + per-slot far test       (item 1941)
+        broad non-vacuous  anything           EDGE-driven, both tested      (item 1940)
+        selective          anything           start-driven (bucket walk)    (correctly declined)
+
+A start label that excludes anybody forces edge iteration. Nothing is missing.
+
+## ❌ And the edge-driven arm's residual is NOT the label dispatch
+
+      `edgearm-residual-1942.mjs`, 50,000 vertices / 100,000 edges, median of 15, ONE fixture:
+
+        engine a:T (edge-driven)      5.64 ms   56 ns a row
+        engine a   (CSR + far test)   2.96      30 ns a row   ⬅ a floor `a:T` cannot reach
+        HAND edge-driven              4.13      41 ns a row
+        HAND + LabelExpr dispatch     3.28      33 ns a row   ⬅ FASTER than the direct arm
+
+🔑 **THE DISPATCH ARM READ FASTER THAN THE DIRECT ONE, WHICH IS MECHANICALLY IMPOSSIBLE** — so the
+two hand arms are within noise of each other and `matchesLabel`'s per-edge call plus switch costs
+NOTHING measurable. V8 inlines the monomorphic switch. That was my hypothesis for the residual and it
+is refuted by its own control.
+
+What is left is `binding.set` + `projectRow`, the generic projection every arm pays — which item
+1895 already priced on this very shape: "the same building each row as a LITERAL 14.89 ms — needs
+codegen, which is FIRM policy here" ([[no-runtime-codegen]]: it forces `unsafe-eval` into every
+embedder's CSP). So the remaining 1.45x is **unreachable, not pending**.
+
+## 🔭 Where the label-vacuity family stands, closed
+
+Items 1934-1942 took it from "one off-label vertex costs a hop read 6.2x" to:
+
+        MATCH (a:T)-[:E]->(b:T)   20.63 ms -> 5.53    ~4x    (item 1940)
+        MATCH (a)-[:E]->(b:T)      8.70    -> 2.77    3.1x   (item 1941)
+        closed-form count(*)       already within 1.34x off its fast arm — not a target (1936)
+        the rest                   the generic projection, FIRM policy against codegen
+
+⚠️ And the two things that survived every correction: the **closed-form `count(*)`'s 1157x is
+algorithmic** (counting label-filtered edges cannot be O(1) without a per-(label, edgeType) index,
+and an incremental counter is write-side bookkeeping the owner has rejected), and **every read screen
+in the repo is still label-homogeneous**, so the screens measure the vacuous arm unless a probe says
+otherwise.
+
+NO ENGINE BEHAVIOUR CHANGED — one instrument and this entry.
+
+GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects.
