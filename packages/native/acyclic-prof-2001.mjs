@@ -86,9 +86,17 @@ for (const v of g.vertices) {
   }
 }
 
-const ACYCLIC = `MATCH ACYCLIC (a:T)-[:E]->${BOUND}(b:T) RETURN count(*) AS x`;
-const TRAIL = `MATCH TRAIL (a:T)-[:E]->${BOUND}(b:T) RETURN count(*) AS x`;
-const PLAIN = `MATCH (a:T)-[:E]->${BOUND}(b:T) RETURN count(*) AS x`;
+/*
+ * ⚠️ `PROJ` SWITCHES THE PROJECTION, which is the whole axis (item 2003). `count(*)` and
+ * `RETURN DISTINCT b.n` ask the same pattern of the same graph and take DIFFERENT rungs — item 2002
+ * routed the count and left the DISTINCT at 1405 ms against its plain twin's 60, so the two have to
+ * be profiled separately or the count's cure masks the DISTINCT's cost.
+ * [[vary-only-the-projection]].
+ */
+const PROJ = process.env.PROJ === 'distinct' ? 'RETURN DISTINCT b.n AS x' : 'RETURN count(*) AS x';
+const ACYCLIC = `MATCH ACYCLIC (a:T)-[:E]->${BOUND}(b:T) ${PROJ}`;
+const TRAIL = `MATCH TRAIL (a:T)-[:E]->${BOUND}(b:T) ${PROJ}`;
+const PLAIN = `MATCH (a:T)-[:E]->${BOUND}(b:T) ${PROJ}`;
 
 const once = (text) => [...query(g, text, { p0: 3 })];
 const time = (text, reps) => {

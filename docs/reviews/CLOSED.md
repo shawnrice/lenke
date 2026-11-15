@@ -97504,3 +97504,82 @@ GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-
 `bun run fuzz` 7/7 (the differential fuzzer draws ~1,100 `var-length` plans a run, with ACYCLIC among
 its count bodies, so the new route is exercised against the Rust engine rather than only against
 itself); gql 4,980 + 4 new; parity 63/63.
+
+## Item 2003 — 🔭 **`DISTINCT ACYCLIC` IS 22x ITS `TRAIL` TWIN (629.47 ms against 28.61) FOR THE SAME 97 VALUES, and it is the same route defect item 2002 fixed one projection over.** ⚠️⚠️ **And the CHEAP cure is REFUTED by measurement — a BFS plus a closed-case correction is UNSOUND, which only showed up once the SEED axis was varied. I nearly built it**
+
+Item 2002 routed `count(*) ACYCLIC` to a DFS (19.5x) and said explicitly that `DISTINCT ACYCLIC` was
+untouched. This prices and diagnoses that half, and settles which cure it gets. **Nothing is built
+here**: the deliverable is the refutation that stopped an unsound build.
+
+THE DIAGNOSIS, windowed and two-sided (`PROJ=distinct bun acyclic-prof-2001.mjs`, 20,000 vertices):
+
+```text
+frame                              DISTINCT ACYCLIC   DISTINCT TRAIL
+(anon) [gql]                                 30.4%             1.0%
+generatorResume                              20.3%             0.9%
+rowKey [gql]                                  7.9%             0.0%   ACYCLIC-ONLY
+Array.from / arrayFromFast                   10.3%             0.0%   ACYCLIC-ONLY
+withBinding [gql]                             5.5%             4.2%
+projectBinding [gql]                          4.8%             0.0%   ACYCLIC-ONLY
+flatAdj [gql]                                 2.9%             0.0%   ACYCLIC-ONLY
+outNeighbors [gql]                            0.0%             2.6%   ⬅ TRAIL's BFS reach rung
+```
+
+`DISTINCT ACYCLIC` runs the general matcher — path enumeration, a binding per row, `projectBinding`,
+then `rowKey` to dedupe — where TRAIL takes `reachability.ts`'s BFS over the reached set.
+`needsGeneralMatcher` refuses `acyclic`, and that refusal is MEASURED, not cautious: on one node with
+one self-loop `MATCH ACYCLIC (x)-[:R]->+(y)` is 0 where SIMPLE and a BFS answer 1.
+
+🔑 **AND ALL THREE MODES RETURN THE SAME 97 VALUES on the screen's fixture, in a different ORDER.**
+Row order without `ORDER BY` is unspecified here and the GQL differential fuzzer compares row
+MULTISETS, so the DFS's traversal order is admissible — and the existing ACYCLIC arm ALREADY emits in
+a different order from `plain`, so no cross-mode order is being promised today.
+
+## ⚠️⚠️ TWO CURES WERE POSSIBLE AND THE CHEAP ONE IS NOW REFUTED
+
+- **(a) a DFS that collects the reached set** — item 2002's mechanism, correct by construction, but it
+  ENUMERATES paths so it is exponential in the bound.
+- **(b) the existing BFS plus a correction for the closed case** — O(|V| + |E|) at ANY bound, strictly
+  better _if sound_. `reachability.ts` admits SIMPLE on exactly this kind of argument (item 1257:
+  "strip the cycles from any walk and what remains visits each node at most once … a closed walk
+  decomposes into simple cycles, at least one through the source"), so (b) was the one to try first.
+
+`acyclic-reachset-2003.mjs` compares ACYCLIC's and SIMPLE's reached SETS across twelve fixtures —
+`reachability.ts`'s own hazard list (self-loop, 2-cycle, 3-cycle, chain, chain + back-edge, lollipop,
+two joined cycles, in-tree, diamond) plus three self-loop variants — at six bounds. ⚠️ Sets, not
+counts: `DISTINCT y.n` projects a PROPERTY, so two vertices can collapse to one row and a count would
+hide a divergence; every vertex here has a distinct `n`.
+
+**UNSEEDED, the answer looked like a clean yes for (b): 20 divergences, ALL 20 the closed case — and
+every one involving a SELF-LOOP.** The 2-cycle, 3-cycle, lollipop, back-edge and joined-cycle
+fixtures showed no divergence at all, because a vertex on a cycle of length >= 2 is reached from its
+predecessor, which is not itself.
+
+⚠️⚠️ **THAT CONCLUSION WAS A CONCLUSION ABOUT ONE VALUE OF AN AXIS I HAD NOT VARIED.** With every
+vertex a source, the only way a vertex's sole witness can be itself is a self-loop. RESTRICT the
+sources and a 2-cycle diverges too: over `b->x, x->b` with sources `{b}`, ACYCLIC reaches `{x}` while
+SIMPLE also reaches `b` by the closed path `b->x->b` — and `b`'s in-neighbour is `x`, **not itself**,
+so a correction keyed on "only self-loop in-neighbours" misses it entirely. Measured:
+
+```text
+    seed            divergences   closed-case only   verdict
+    none                     20                 20   (b) not refuted  ⬅ the misleading run
+    WHERE x.n = 0            26                 15   (b) REFUTED
+    WHERE x.n = 1            22                  5   (b) REFUTED
+```
+
+**So (b) is unsound and (a) is the cure.** This is item 2000's own lesson one level in — vary the
+seed, because a conclusion drawn at one value of an axis is a conclusion about that value — and it is
+the third time in four items that the seed or projection axis decided an answer. Had the probe
+stopped at the unseeded row I would have built a BFS correction that returns wrong rows for any
+seeded query, and its 20-of-20 agreement would have read as proof.
+
+NEXT: build (a). The wiring is clean and does NOT need `needsGeneralMatcher` relaxed for the BFS —
+`runReach` computes a reached SET and everything downstream of it (projection, DISTINCT, ordering,
+`count(DISTINCT b)`) is mode-agnostic, so an acyclic arm replaces only how that set is produced.
+⚠️ The work budget must be sized against the GENERAL MATCHER and not against the BFS, which is item
+2002's own mistake in this exact shape: there the ceiling was copied from a route whose alternative
+was a cheap recurrence, and it declined the one case the route existed for while staying invisible to
+every correctness test.
+
+GATES. `bun run fmt` 0; `bun run check` 0. (Probes only — no engine code changed.)
