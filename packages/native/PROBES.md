@@ -2616,3 +2616,66 @@ write it, not the verdict.**
 ⚠️ Its sibling survivor is worth the same note: the `if (!changed) return plan` identity guarantee was
 untested because the only identity assertion used a plan with NO `otherV` — which takes an EARLIER
 early-out. **Two early-outs need two tests**, and `bothE` is the input that reaches the second.
+
+## 🛑 A TEST FOR "THIS CACHE MUST NOT BE USED HERE" NEEDS A FIXTURE WHERE THE CACHED VALUE DIFFERS (item 1922)
+
+`tree()` keys every path position by `JSON.stringify(node.toJSON())` — the byte-identity contract —
+which is **744 ms of a 1013 ms shape**, because a 600,000-row two-element path calls it 1,200,000
+times over only 200,000 distinct vertices. A per-element memo is the obvious fix and is **gated on a
+correctness condition**: the stream is pulled lazily, so a mutation step upstream of `tree()` runs
+interleaved with the tree insertion, and an element keyed on both sides of its own mutation has two
+legitimately different keys.
+
+⚠️⚠️ **THE FIRST MUTATION RUN LEFT FIVE SURVIVORS, FOUR OF THEM THE GATE MUTANTS** — memo on
+unconditionally, `keysStable` forced true, gate inverted, `keysStable` defaulting true. The gate was
+right; **the test could not have caught any of them.**
+
+```
+asserted: "1 of 2 top-level keys mentions z" on an acyclic a->b, b->c
+reality:  the property step reaches the FAR end BEFORE tree keys it, so every element is
+          mutated before its FIRST keying — a memo stores the already-mutated key and answers
+          IDENTICALLY. The "1 of 2" was only "a was never mutated at all".
+```
+
+🔑 **TWO THINGS THE DISCRIMINATING FIXTURE NEEDS:**
+
+- **A CYCLE**, so an element is keyed CLEAN, mutated, then keyed AGAIN. With `a->b, b->c, c->a` the
+  traverser order is `[a,b] [b,c] [c,a]`: `a` is keyed at the top in the first and, after `property`
+  mutates it in the third, keyed again under `c`.
+- **A NESTED position, not the top level.** Every vertex there has one out-edge, so the top level is
+  always three keys whatever happens. `treememo-stale-probe-1922.mjs` had to print the WHOLE tree:
+  top-level `a` carries no `z`, nested `c > a` does — the same element with two different keys in one
+  tree, which is exactly what a memo collapses.
+
+⚠️ **THE GENERAL FORM**: an acyclic graph cannot produce a stale read however the mutation is placed,
+so the test was asserting something true for the wrong reason — the same class as CLAUDE.md's "an
+answer that is INVARIANT to the property you varied cannot validate the fixture". **Before trusting a
+"must not cache" test, construct the case where caching would give a different answer, and check the
+test fails without the gate.**
+
+## ⚠️ `tree-prof-1922.mjs` — `by(k)` IS THE INSTRUMENT THAT ISOLATES THE KEY
+
+```
+tree()           1013.61 -> 547.01 ms   <- 1.85x
+tree().by(k)      269.67     267.90      flat: the SAME shape with treeKey SKIPPED
+path()              8.66                 the same 600,000 paths, no keys at all
+out(E).values(n)   30.32                 the walk alone
+```
+
+A `by` modulator replaces `treeKey` with the stringified modulator value and changes nothing else, so
+`tree - treeby` is the key cost and nothing else: **73%.** Reading `tree()` against the hop or the
+path floor instead would have mixed the key, the traversers and the nested insert together.
+
+🔭 **AND IT PRICES WHAT IS LEFT**: the residual key cost is ~279 ms for the 200,000 genuinely
+DISTINCT serializations (~1.4 µs each), reachable only by caching the canonical rendering ON THE
+ELEMENT — a core change with the invalidation problem [[graph-counters-are-async]] describes. And
+`tree().by(k)` at 267.90 is **31x `path()`'s 8.66** for the same paths: that is the tree MACHINERY,
+and item 1920 showed this shape of cost falling to a whole-plan claim.
+
+## ⚠️ `RunContext`'s CONSERVATIVE-DEFAULT CONVENTION, and why it needs its own assertion
+
+`tracksPath` defaults to `true` so a context built without it is "always correct, just unoptimized".
+`keysStable` (item 1922) follows it and defaults to **`false`** for the same reason — the dangerous
+default is the other one. ⚠️ A mutant flipping that default SURVIVED until a test looked at it
+directly (`expect(newContext().keysStable).toBe(false)`): the production call site always passes an
+explicit value, so nothing else exercises it. **A safe default that nothing asserts is a comment.**

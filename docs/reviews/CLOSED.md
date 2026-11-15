@@ -91506,3 +91506,106 @@ and both are in the family this item made visible. `path().by(k)` at 314.43 is t
 
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers;
 `bun run spelling:gremlin` with the two new groups; the workload screen at 200,000 vertices.
+
+## Item 1922 — **1.85x on the surface's largest shape**: `tree()` goes 1013.61 ms to **547.01**, because its canonical KEY was recomputed 1,200,000 times over 200,000 distinct vertices. ⚠️ And the memo is gated on a CORRECTNESS condition a probe found, not on a tuning judgement
+
+Item 1921 made the path-dependent family visible and `tree()` came out at **1294.12 ms for ONE ROW**
+— the largest shape on the whole Gremlin surface by 4x. (It reads 1013.61 in this item's own probe;
+the screen's figure carries the screen's fixture and its `FANOUT=4` edge mix.)
+
+🔑 **THE KEY, NOT THE TREE — AND AN ARM THAT SKIPS ONLY THE KEY SAYS SO.** `treeStep` keys every path
+position by `JSON.stringify(node.toJSON())`, the canonical `{id, labels, properties}` rendering that
+is the byte-identity contract with the Rust engine and not optional. A 600,000-row two-element path
+calls it **1,200,000 times** — over only **200,000 distinct vertices**, since every vertex is a near
+end and several far ends.
+
+      200,000 vertices / 800,000 edges, one shape per process, median of 7:
+
+        tree()           1013.61  ->  547.01 ms   ⬅ 1.85x
+        tree().by(k)      269.67      267.90       flat — the SAME shape with `treeKey` SKIPPED
+        path()              8.66                   the same 600,000 paths, no keys at all
+        out(E).values(n)   30.32                   the walk alone
+
+⚠️ **`tree().by(k)` IS THE INSTRUMENT HERE**, not a control of convenience: a `by` modulator replaces
+`treeKey` with the stringified modulator value and changes nothing else, so `tree - treeby` is the
+key cost and nothing else. **744 ms of 1013, i.e. 73%.**
+
+## 🛑 The memo is gated on a correctness condition, and a probe is why
+
+The obvious memo is unconditional. It would be a wrong answer.
+
+⚠️⚠️ **THE STREAM IS PULLED LAZILY, so a mutation step upstream of `tree()` runs INTERLEAVED with the
+tree insertion** — an element can be keyed, mutated, and keyed again inside one build, and the two
+keys legitimately differ. `treekey-mutation-probe-1922.mjs` asked rather than assumed:
+
+      V().out(E).tree()                      2 top-level keys, 0 mention the new property
+      V().property(z,1).out(E).tree()        2 keys, 2 mention it
+      V().out(E).property(z,2).tree()        2 keys, **1 mentions it**   ⬅ the straddle
+
+**One of the two entries carries the new property and the other does not** — the same element keyed
+on both sides of its own mutation. A memo answers from the stale side; native recomputes. And
+`Graph` has **no synchronous counter** to invalidate on: `version`/`epoch` advance when the mutation
+queue DRAINS, on a microtask ([[graph-counters-are-async]]), so a reactive memo is not available
+either.
+
+✅ **SO THE GATE IS STATIC: `planMutates(plan)`**, and the memo exists only when no mutation step
+appears anywhere, sub-plans included. `RunContext.keysStable` carries it, defaulting to **`false`**
+— the same convention `tracksPath` uses and for the same reason its note gives: a context built
+without it (sub-plan evaluation, a hand-made call) is then always correct, just unoptimized. ⚠️ **The
+dangerous default is the other one**, and a mutant flipping it is in the battery.
+
+⚠️ `planMutates` WALKS `plans` AND `bys` EXPLICITLY, because `SUBPLAN_FIELDS` contains neither — the
+first by design (its own note), the second because a `by(traversal(...))` can hold a mutation. One
+scan per query against a wrong answer.
+
+## 🔭 What the 1.85x leaves, and why it is not 3x
+
+The residual key cost is **547.01 - 267.90 ≈ 279 ms** for the 200,000 genuinely-DISTINCT
+serializations — about 1.4 µs each for `toJSON()` plus `JSON.stringify`. The memo removed the
+redundancy and cannot touch that; only caching the canonical rendering ON THE ELEMENT, invalidated
+on write, would — a core change with its own invalidation problem, and exactly the problem
+[[graph-counters-are-async]] describes. **Not attempted, and priced here so the next reader does not
+re-derive it.**
+
+🔭 **AND THE OTHER HALF IS STILL OPEN: `tree().by(k)` at 267.90 is 31x `path()`'s 8.66** for the same
+600,000 paths. That is the tree MACHINERY — traversers, path accumulation, the nested-map insert —
+and item 1920 showed exactly this shape of cost falling to a whole-plan claim. `tree()` would need
+the nested insert in the walk; the path layout is already known to be `[near, far]`.
+
+## Mutation
+
+**11 mutants, 8 caught, 3 declared — and the first run was a FAILURE worth recording in full: FOUR
+of the five survivors were the gate mutants, the exact ones this item's whole correctness argument
+rests on.** "Memo on unconditionally", "keysStable forced true", "gate inverted" and "keysStable
+defaults true" all survived. The gate was right; the test was not.
+
+🛑 **WHY THE STRADDLE TEST COULD NOT CATCH THEM, which is the reusable part.** It asserted "1 of 2
+top-level keys mentions `z`" on an acyclic `a->b, b->c` fixture. But there the property step runs on
+the FAR end **before** `tree` keys it, so every element is mutated before its FIRST keying — a memo
+stores the already-mutated key and answers identically. The observed "1 of 2" was only "`a` was never
+mutated at all".
+
+      🔑 THE DISCRIMINATING SHAPE NEEDS A CYCLE, so an element is keyed CLEAN, mutated, and keyed
+         AGAIN. With `a->b, b->c, c->a` the traverser order is [a,b], [b,c], [c,a]: `a` is keyed at
+         the top in the first and, after `property` mutates it in the third, keyed again UNDER `c`.
+
+      🔑 AND IT IS A NESTED KEY, NOT A TOP-LEVEL ONE. Every vertex there has exactly one out-edge, so
+         the top level is always three keys whatever happens. `treememo-stale-probe-1922.mjs` had to
+         print the WHOLE tree to find it: top-level `a` carries no `z`, nested `c > a` does — **the
+         same element with two different keys in one tree**, which is precisely what a memo
+         collapses.
+
+⚠️ **THE GENERAL FORM: a test for "a cache must not be used here" needs a fixture where the cached
+value would actually DIFFER.** An acyclic graph cannot produce a stale read no matter how the
+mutation is placed, so the test was asserting something true for the wrong reason — the same class as
+CLAUDE.md's "an answer that is INVARIANT to the property you varied cannot validate the fixture".
+
+The three declared survivors are all answer-equivalent: never populating the memo (identical answers
+at the old price), memoizing scalars too (correct, but a `Map` entry per distinct scalar where
+`String(node)` is one operation), and keying the memo by `node.id` rather than by identity — which can
+only collide if a vertex and an edge share an id, recorded as OUT OF CONTRACT and WON'T-FIX
+([[cross-engine-divergences-open]]). Identity-keying is kept anyway: it cannot collide across the two
+id spaces at all, where id-keying is correct only because of a contract clause elsewhere.
+
+GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers;
+`bun run spelling:gremlin`; the workload screen at 200,000 vertices.

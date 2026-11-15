@@ -786,6 +786,18 @@ export const emptyPlan: Plan = {
  * exhaustive against every `.path` read in the executor — keep it in sync if a new path-consuming
  * step is added, since a missed entry would silently drop paths.
  */
+/**
+ * Step kinds that CHANGE the graph, so an element's canonical rendering is not stable while such a
+ * plan runs (item 1922).
+ *
+ * ⚠️ AN ALLOWLIST WOULD BE THE WRONG SHAPE HERE and this is a denylist for the same reason
+ * {@link PATH_DEPENDENT_KINDS} is: a MISSED entry must degrade to the slow-but-correct side. A
+ * missing kind here means `keysStable` stays... TRUE, which would be a wrong answer — so the
+ * CONSUMER defaults to `false` and only turns the memo on when this set says the plan is clean,
+ * and the four kinds are taken from `dispatch.ts`'s own mutation cases rather than recalled.
+ */
+export const MUTATION_KINDS: ReadonlySet<string> = new Set(['addV', 'addE', 'property', 'drop']);
+
 export const PATH_DEPENDENT_KINDS: ReadonlySet<string> = new Set([
   'path',
   'tree',
@@ -909,6 +921,48 @@ const SUBPLAN_FIELDS = ['body', 'until', 'emit', 'plan', 'test', 'thenPlan', 'el
  * No recursion: a nested plan is built before the step that holds it, so `sub.readsPath` is already
  * settled. That is what turns a tree walk per execution into one OR per construction.
  */
+/**
+ * Does this plan contain a mutation step anywhere, including inside a sub-plan? (item 1922)
+ *
+ * ⚠️ IT RECURSES THROUGH SUB-PLANS, because a mutation inside `union(...)` or `choose(...)` changes
+ * elements just as a top-level one does. `stepReadsPath` has the same shape and the same reason.
+ */
+export const planMutates = (plan: Plan): boolean =>
+  plan.steps.some((step) => {
+    if (MUTATION_KINDS.has(step.kind)) {
+      return true;
+    }
+
+    const fields = step as unknown as Record<string, unknown>;
+
+    for (const name of SUBPLAN_FIELDS) {
+      const sub = fields[name] as Plan | undefined;
+
+      if (sub !== undefined && planMutates(sub)) {
+        return true;
+      }
+    }
+
+    const list = fields.plans as readonly Plan[] | undefined;
+
+    if (list?.some(planMutates) === true) {
+      return true;
+    }
+
+    /*
+     * ⚠️ `bys` IS CHECKED HERE THOUGH IT IS NOT IN `SUBPLAN_FIELDS`, and that omission is
+     * deliberate THERE (its own note says so) — but a `by(traversal(...))` can hold a mutation, and
+     * this consumer must err toward "not stable". One scan per query against a wrong answer.
+     */
+    const bys = fields.bys as readonly { kind: string; plan?: Plan }[] | undefined;
+
+    return (
+      bys?.some(
+        (by) => by.kind === 'traversal' && by.plan !== undefined && planMutates(by.plan),
+      ) === true
+    );
+  });
+
 export const stepReadsPath = (step: Step): boolean => {
   if (PATH_DEPENDENT_KINDS.has(step.kind)) {
     return true;

@@ -18,6 +18,7 @@ import {
   FILTER_WRAPPER_BITS,
   KIND_BITS,
   maskOfSteps,
+  planMutates,
   stepReadsPath,
 } from '../ast.js';
 import { tagsObservedFrom } from '../ast.js';
@@ -2598,7 +2599,7 @@ export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
 
   // Decide once whether any step observes the path; if not, traversers skip
   // path bookkeeping for the whole run (see planReadsPath / startTraverser).
-  const ctx = newContext(planReadsPath(planned));
+  const ctx = newContext(planReadsPath(planned), !planMutates(planned));
 
   // Peel leading source-configuration steps (`withSack`) — like TinkerPop's
   // GraphTraversalSource config they precede the actual source (V()/E()/…), so

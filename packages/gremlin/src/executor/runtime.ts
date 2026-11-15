@@ -210,12 +210,33 @@ export type RunContext = {
    * Mutable: set once by the leading `withSack` step. This is the laziness gate.
    */
   sackInit?: { readonly value: unknown };
+  /**
+   * Can an element's canonical rendering be MEMOIZED for the duration of this run? True only when
+   * the plan contains no mutation step anywhere, so nothing can change an element while it is being
+   * keyed (item 1922).
+   *
+   * ⚠️ DEFAULTS TO `false`, the conservative value, for {@link RunContext.tracksPath}'s reason: a
+   * context built without it (sub-plan evaluation, a hand-made call) is then always correct, just
+   * unoptimized. The dangerous default is the other one.
+   *
+   * ⚠️ WHY IT IS NEEDED AT ALL, measured rather than assumed. `treeStep` keys every path position by
+   * `JSON.stringify(node.toJSON())` — the byte-identity contract with the Rust engine — which is
+   * **744 ms of a 1013 ms shape** at 200,000 vertices (`tree().by(k)`, which skips that key, is
+   * 269.67). A per-element memo collapses 1,200,000 serializations into ~200,000 distinct ones. But
+   * the stream is pulled LAZILY, so a mutation step upstream runs interleaved with the tree
+   * insertion: `treekey-mutation-probe-1922.mjs` showed `V().out(E).property(z,2).tree()` keying
+   * **1 of its 2 top-level entries WITH the new property and the other without** — an element keyed
+   * on both sides of its own mutation. A memo there is a wrong answer, and `Graph` has no
+   * synchronous counter to invalidate on ([[graph-counters-are-async]]).
+   */
+  readonly keysStable?: boolean;
 };
 
-export const newContext = (tracksPath = true): RunContext => ({
+export const newContext = (tracksPath = true, keysStable = false): RunContext => ({
   sideEffects: new Map(),
   subgraphs: new Map(),
   tracksPath,
+  keysStable,
 });
 
 /**
