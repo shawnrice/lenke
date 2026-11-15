@@ -245,6 +245,26 @@ const build = () => {
     g.addVertex({ id: String(i + 1), labels: i % 6 === 2 ? ['T', 'U'] : ['T'], properties });
   }
 
+  /*
+   * ⚠️⚠️ `MIXED=1` MAKES THE FIXTURE NON-HOMOGENEOUS, AND WITHOUT IT THIS SCREEN MEASURES AN ARM A
+   * REAL GRAPH CANNOT REACH (items 1934-1942). Every vertex above carries `T`, so `T` is VACUOUS —
+   * `verticesByLabel.get('T').size === vertexCount` — and the GQL fast paths that elide a universal
+   * label or drive the far end all engage. A real schema (`Person` and `Company`) never satisfies
+   * that: ONE vertex lacking the label disqualifies it for the whole graph, permanently.
+   *
+   * 🔑 THE OFF-LABEL VERTEX IS ISOLATED, which is what makes the two modes COMPARABLE. It carries no
+   * edges and a label nothing matches, so every shape's ANSWER is identical in both modes and only
+   * `graph.vertexCount` differs — which is exactly what `vacuousLabel` compares against. Item 1935
+   * got this wrong first by RELABELLING a vertex, which changed the `T` count and the edge set, and
+   * its answer guard caught ratios of 1221x that were two different questions.
+   *
+   * So `MIXED=1 bun gql-coverage-screen-1901.mjs` against the default is a per-shape diff of
+   * "vacuous arm" against "the arm a realistic graph gets", with the answers held fixed.
+   */
+  if (process.env.MIXED === '1') {
+    g.addVertex({ id: 'offlabel', labels: ['Z'], properties: { n: 0, s: 'z', m: {} } });
+  }
+
   for (let e = 0; e < NODES * FANOUT; e += 1) {
     const i = e % NODES;
     const hop = Math.floor(e / NODES);

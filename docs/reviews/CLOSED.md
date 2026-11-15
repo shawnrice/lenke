@@ -93222,3 +93222,64 @@ otherwise.
 NO ENGINE BEHAVIOUR CHANGED — one instrument and this entry.
 
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects.
+
+## Item 1943 — ✅ **`MIXED=1` on the GQL screen: the realistic-graph mode the repo never had.** The per-shape diff names THREE shapes and clears 45 — ⚠️ `deduped hop` **7.52x**, `one-hop projection` **5.85x**, `FILTER after a hop` **4.83x**, everything else ≤1.64x. And the one-hop number says items 1940/1941's new arm is SIZE-SENSITIVE
+
+Items 1934-1942 established that `vacuousLabel` gates the GQL fast-path layer and that **every read
+screen is label-homogeneous**, so every row measures an arm a real schema cannot reach. This makes
+that testable with a flag instead of a bespoke probe.
+
+`MIXED=1` appends ONE ISOLATED off-label vertex — no edges, a label nothing matches — so every
+shape's ANSWER is unchanged and only `graph.vertexCount` moves, which is exactly what `vacuousLabel`
+compares against. (Item 1935's design, including the mistake it made first: RELABELLING a vertex
+changed the `T` count AND the edge set, and produced 1221x ratios that were two different questions.)
+
+⚠️ **AND THE BASELINE HAD TO BE RE-RUN.** The homogeneous screen I already had predated items
+1940/1941, so diffing against it would have credited the FLAG with my own fixes. Both runs are on
+the same build.
+
+      200,000 vertices / 1,000,000 edges, median of 7, one child process per shape.
+      48 shapes in both runs; ratio = MIXED / homogeneous:
+
+        CONTROL deduped hop                24.89 ->  187.15   7.52x  ⬅ NOT covered by 1940/1941
+        CONTROL one-hop projection         22.43 ->  131.18   5.85x  ⬅ see below
+        FILTER after a hop                 61.44 ->  297.04   4.83x  ⬅ the filtered walk's own gate
+        CONTROL varlen count unseeded      14.99 ->   24.60   1.64x
+        … 43 more between 1.61x and 0.81x …
+        CONTROL varlen {2,3} rows       21521.92 -> 21590.14   1.00x  (the documented refusal)
+        chained LET                        16.36 ->   17.03   1.04x  ⬅ not label-gated at all
+        single LET                         15.17 ->   14.57   0.96x  ⬅ nor is the LET family
+
+🔑 **THE NEGATIVE RESULT IS HALF THE VALUE.** 45 of 48 shapes move less than 1.65x, and the `LET`
+family, the string functions, the sort keys and the `OFFSET` pages are all flat — so those screen
+rows DO apply to a real schema, and the label cliff is specific to three walk families rather than
+general. Before this run, "the screens are optimistic" was true but unquantified.
+
+⚠️ **THE ROW-COUNT GUARD EARNED ITSELF AGAIN.** `CALL procedure YIELD` is flagged `rows: NO` —
+`degree()` yields one row per vertex, so the extra vertex makes it 200,001 against 200,000. Its
+0.99x is meaningless and the diff says so rather than reporting it.
+
+## ⚠️ And the one-hop number is a finding about my own new arm
+
+`CONTROL one-hop projection` is `MATCH (a:T)-[:E]->(b:T)`, coverage 0.999995 — above the gate, so it
+takes item 1940's EDGE-DRIVEN arm. At **164 ns a row** (131.18 ms / 800,000) against the counting
+arm's 28. But item 1942 measured that same arm at **56 ns a row** on a 50,000-vertex / 100,000-edge
+fixture, and its hand ceiling at 36.
+
+**So the edge-driven arm's per-row cost roughly TRIPLES between 100k and 1M edges**, where the
+counting arm's does not. That is CLAUDE.md's size rule ("cache-resident and not are different
+questions; the transition is between 200k and 1M elements") landing on an arm I added two items ago
+and measured at ONE size. Edge-bucket iteration over 1M edges is a different memory-access pattern
+from a CSR slot scan, and I did not sweep it.
+
+## 🔭 Nominations, in order, all on realistic graphs
+
+1. **`deduped hop` 7.52x** — the largest, and a gate items 1940/1941 did not touch (dedup, not the
+   hop walk). 187.15 ms for EIGHT rows.
+2. **the edge-driven arm's size sensitivity** — 56 ns a row at 100k edges, 164 at 1M. Needs the
+   sweep item 1939 did for the threshold but nobody did for the arm.
+3. **`FILTER after a hop` 4.83x** — the filtered walk's own vacuity gate, also untouched.
+
+NO ENGINE BEHAVIOUR CHANGED — one screen knob and this entry.
+
+GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects.
