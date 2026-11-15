@@ -90696,8 +90696,11 @@ templated config, item 1913's swapped per-arm labels, this), and the pattern acr
 same: **a measuring instrument's own configuration is the first thing to verify, and it fails
 silently by default.**
 
-🔭 **WHAT IS LEFT ON THE SCREEN** is `path: hop path` at 149.25, which genuinely needs the path —
-`V().out(E).path()` returns path objects, so there is no tag-free rewrite — and
+🔭 **WHAT IS LEFT ON THE SCREEN** is ~~`path: hop path` at 149.25, which genuinely needs the path —
+`V().out(E).path()` returns path objects, so there is no tag-free rewrite~~ **WRONG, and TAKEN at
+item 1920: 14.8x, to 8.40 ms. Returning path objects does not mean the path must be ACCUMULATED —
+`V().out(T).path()` is `[near, far]` per edge, which the walk builds directly, on the same
+whole-plan warrant this very item used for the tagged shapes.** And
 `edge: outE.has(w).inV` at 105.18, `agg: hop values min` at 103.00, ~~`where: sub-traversal` at
 95.44~~ **TAKEN at item 1915: 4.14x, to 20.87 ms, with its `count` twin at 6.11x and three sibling
 spellings (`filter`, `not`, `and`) at 3.91-6.57x.** The tagged cluster that was the top four at item
@@ -90712,8 +90715,8 @@ the workload screen at 200,000 vertices.
 ## Item 1915 — **4.14x / 6.11x / 6.57x / 3.91x / 4.55x**: `where(out(T))` and its four sibling spellings ran a sub-pipeline PER VERTEX to answer a yes/no. The screen's largest non-path shape, and the gate can be BROADER than the hop rung's because dedupe and endpoint are unobservable in an existence test
 
 Items 1909-1914 cleared the list-shaped and tagged Gremlin shapes. What was left at the top of the
-workload screen at 200,000 vertices / 1,000,000 edges was `path: hop path` (149, which genuinely
-returns path objects), `edge: outE.has(w).inV` (70) and `agg: hop values min` (63) — **both already
+workload screen at 200,000 vertices / 1,000,000 edges was ~~`path: hop path` (149, which genuinely
+returns path objects)~~ **TAKEN at item 1920 (14.8x) — it returns path objects AND is still fusable**, `edge: outE.has(w).inV` (70) and `agg: hop values min` (63) — **both already
 priced and declined** (item 1893: the edge rung is 2.08x a hand walk over the identical `Set`s, the
 `drain` half taken, the edge-indexed CSR priced at a further 1.79x and NOT built; item 1892: the min
 fold is "~17 ms for an order-invariant fold … not a route gap") — and `where: sub-traversal` at
@@ -91281,3 +91284,124 @@ same non-idempotence, seen from the other side. If an unrelated markdown file sh
 
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers;
 `bun run spelling:gremlin`; the route screen with the two new string rows.
+
+## Item 1920 — **14.8x on the Gremlin screen's TOP row**: `V().out(T).path()` goes 124.55 ms to **8.40**, by building the path instead of ACCUMULATING it. ⚠️ And the hand-written ceiling this was priced against turned out to be measuring the WRONG ARM — the engine beat it by 3x
+
+`path: hop path` had been the workload screen's top row for five items, recorded each time as not
+takeable: `path()` makes `planReadsPath` TRUE, every fused walk in the package is gated on
+`!tracksPath`, and item 1914's closing note said "`V().out(E).path()` returns path objects, so there
+is no tag-free rewrite". The second half of that is wrong.
+
+      200,000 vertices / 800,000 edges, the workload screen:
+
+        path: hop path   124.55  ->  8.40 ms   ⬅ 14.8x, 600,000 rows
+        hop1: values      45.75      45.75      the SAME 600,000 rows, no path — untouched
+
+✅ **THE WARRANT IS ITEMS 1912/1914'S: CLAIM THE WHOLE PLAN.** Three steps, `rest` always `[]`, so
+there is no downstream step left that could ask for a path — and a fourth step declines, which is
+also what makes `limit(BIG)` a usable oracle with no kill switch.
+
+🔑 **AND THE LAYOUT WAS READ OFF THE ENGINE, NOT ASSUMED** (`pathshape-probe-1920.mjs`), because
+CLAUDE.md records hand oracles in this corpus being wrong four times in one stretch and a fusion
+built on a guessed path layout is a wrong answer no aggregate would show:
+
+      V().out(E).path()            [V:a V:b] [V:b V:c] [V:d V:d]   ⬅ [near, far]; self-loop [d,d]
+      V().in(E).path()             [V:b V:a] [V:c V:b] [V:d V:d]   ⬅ near is STILL the scan vertex,
+                                                                      so one row shape serves both
+      V().outE(E).path()           [V:a E:e1]                      ⬅ an EDGE in the path: REFUSED
+      V().out(E).values(n).path()  [V:a V:b "b"]                   ⬅ a SCALAR too: REFUSED
+      V().out(E).out(E).path()     [V:a V:b V:c]                   ⬅ three deep: REFUSED
+
+## ⚠️⚠️ The ceiling probe measured the WRONG ARM, and the engine beat it by 3x
+
+`pathfuse-ceiling-1920.mjs` was written first, to check that the one 2-element array per row this
+rung must allocate would not eat the win:
+
+      hand walk, no row built      15.78 ms
+      hand walk, far vertex only   19.35
+      hand walk, [near, far]       26.11      ⬅ "the ceiling": the allocation is only 6.75 ms
+      the engine, before          124.55      ⬅ so up to 98.44 ms, 4.77x, looked available
+
+**The engine then landed at 8.40 — three times FASTER than its own ceiling, which is a contradiction
+and was treated as one.** The cause is ordinary and the lesson is not: the probe walked the adjacency
+`Set`s (`v.adjFrom.get(type)`), i.e. the BUCKET arm, while the engine takes the **CSR arm** on the
+second ask — a dense `Int32Array` walk instead of iterating 200,000 `Set`s.
+
+🔑 **SO A HAND CEILING MUST USE THE DATA STRUCTURE THE ENGINE WILL ACTUALLY USE.** Mine understated
+the available win by 3x and would have justified declining a 14.8x if the number had come out the
+other way round. Item 1893's `handCsr` arm had this right — it is named for the structure — and this
+probe quietly did not. ⚠️ The arm it DID price is still the thing it was for: the allocation is 6.75
+ms either way, so the question it was built to answer ("does the array eat the win?") was answered
+correctly. It is the _scale_ of the headroom it got wrong.
+
+## ⚠️ A 14.8x is a reason to distrust the measurement, not to publish it
+
+The fused row (8.40) is FASTER than `hop1: values` (45.75) — reading one property per row costs more
+than building a 2-element array — and faster than the hand walk. A row COUNT cannot tell a correct
+fusion from one building 600,000 cheap WRONG arrays, so `pathfuse-parity-1920.mjs` compares CONTENTS
+against the declining spelling, element by element:
+
+      out E / in E / out F, each asked COLD (bucket arm) and WARM (CSR arm):
+        6/6 identical, rows are 2-element arrays, every element identical to the generic path's
+
+✅ **AND THE PATH HOLDS THE GRAPH'S OWN VERTICES, checked by IDENTITY rather than by id** — a fusion
+that rebuilt them would compare equal by id while being different objects, which a downstream
+`select`/`where(neq)` would see. A self-loop's two slots are the SAME object, not two equal ones.
+
+## Mutation
+
+**13 mutants, 13 caught, 1 declared — after TWO real gaps the first run exposed.** The per-arm pair
+is the one worth naming: the row expression appears TWICE — once in the eager `drain`, once in the
+lazy `each` — and ⚠️ **`walk` (which holds the drain) is defined BEFORE `each`, so occurrence 0 is
+the DRAIN**, which is item 1913's mislabelling hazard applied up front rather than discovered.
+
+      ❌ THE ITERATOR'S BUCKET ARM, READ WITH THE WRONG END, SURVIVED. That arm reads
+         `direct.forward ? e.to : e.from`, and for `out` that IS `e.to` — so a mutant replacing the
+         whole expression with `e.to` was invisible, because every cold-iterator test used `out`.
+         The discriminating case is `in`, and it is the FOURTH path: iterator x bucket x the
+         direction that can tell them apart. Item 1914's finding again — a walk written twice over
+         two arms is four paths and the obvious tests reach two.
+
+      ❌ `path().by(k)` HAD NO TEST AT ALL, so a gate admitting it survived. The rung emits the
+         ELEMENTS, so serving a `by` would return vertices where the contract says their property
+         values — and the expected values were read off the engine by the shape probe rather than
+         guessed.
+
+⚠️ **ONLY ONE SURVIVOR, AND THAT IS A CONSEQUENCE OF EXPORTING THE GATE.** `pathHopValues` is
+exported and unit-tested directly, so every gate mutant (`both` admitted, a fourth step dropped,
+`path().by()` admitted, `V(id)` admitted, the direction inverted) fails **even with the route
+disabled**. Without that the set would have been six entries instead of one. The remaining survivor
+is the route itself — declining it answers the same arrays in the same order — gated by the screen
+row and the parity probe.
+
+## The wide measurement: all 42 rows, same screen, before and after
+
+⚠️ A NEW MODULE WAS CHOSEN PARTLY FOR THIS — item 1482 measured the toll on editing the hop files at
+up to ~16% on unrelated rows — so the claim needs the whole screen, not just the row that moved:
+
+      row                        PRE      POST
+      path: hop path          124.55     8.40    ⬅ left the top of the screen entirely
+      edge: outE.has(w).inV    80.03    77.84
+      where: neq filter        72.78    72.02
+      group: hop groupCount    63.77    60.94
+      agg: hop values min      54.36    55.02
+      hop1: values             50.65    50.21    ⬅ the floor, untouched
+      optional: hop            50.47    48.92
+      dedupe: by key           36.61    34.42
+      order: values order      32.55    32.42
+      hop2: values             30.58    30.84
+      hop2: count              30.16    30.16
+      repeat: times 2          29.97    30.12
+      where: sub-traversal     20.88    20.62
+      scan: valueMap           18.98    17.26
+
+Every other row is flat within ~5%, which is the toll NOT being paid.
+
+🔭 **WHAT THIS LEAVES AT THE TOP OF THE SCREEN**: `edge: outE.has(w).inV` at 80.03, which item 1893
+priced (the engine's rung is 2.08x a hand walk over the identical `Set`s, the drain half taken, the
+edge-indexed CSR a further 1.79x and NOT built), and `where: neq filter` at 72.78, which items
+1912/1913 already took from 406. The path cluster is gone.
+
+GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers;
+`bun run spelling:gremlin`; the workload screen at 200,000 vertices, all 42 rows compared before and
+after.

@@ -54,6 +54,7 @@ import {
   seededNodeValuesShortcut,
 } from './node-values.js';
 import { optionalHopValues } from './optional-hop-values.js';
+import { pathHopValues } from './path-hop-values.js';
 import { groupCountShortcut, tallyProjectedGroupCount } from './projection.js';
 import type { RunContext } from './runtime.js';
 import {
@@ -2676,6 +2677,26 @@ export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
 
   if (tagged !== undefined) {
     return tagged.values;
+  }
+
+  /*
+   * ⚠️ THE BARE PATH RUNG, ALSO WITHOUT THE `tracksPath` GUARD and on exactly the same warrant
+   * (item 1920): `V(), <one directed single-type hop>, path()` is three steps and `rest` is always
+   * `[]`, so nothing downstream can ask for a path. `pathHopValues` states the argument and lists
+   * every refusal with its reason.
+   *
+   * It sits AFTER `taggedHopValues` only for reading — the two gates are disjoint, since that one
+   * requires an `as_` step as its second and this one requires a hop there. Neither can steal the
+   * other's shape.
+   *
+   *     200,000 vertices / 800,000 edges, the workload screen:
+   *       path: hop path   124.55 ms for 600,000 rows   <- the screen's TOP row
+   *       hop1: values      50.65     for 600,000       <- the same walk, fused, no path
+   */
+  const bare = pathHopValues(effective, graph);
+
+  if (bare !== undefined) {
+    return bare.values;
   }
 
   const projected = fusedProjectedValues(effective, graph, ctx.tracksPath);

@@ -2496,3 +2496,66 @@ Plus the twin that the fallback still works (a walk with no `drain`, and a plain
 item 1919's battery is **6 mutants, 6 caught, 0 survivors** — a perf change gated by a test rather
 than by an instrument. Prefer this to declaring the survivor whenever the choice is reachable through
 an exported helper.
+
+## ⚠️⚠️ A HAND CEILING MUST USE THE DATA STRUCTURE THE ENGINE WILL USE (item 1920)
+
+`pathfuse-ceiling-1920.mjs` priced the `V().out(T).path()` fusion before it was built — the right
+instinct, and it understated the available win by **3x**:
+
+```
+hand walk, no row built      15.78 ms
+hand walk, far vertex only   19.35
+hand walk, [near, far]       26.11      <- "the ceiling"; the allocation is only 6.75 ms
+the engine, before          124.55      <- so 4.77x looked available
+the engine, after             8.40      <- THREE TIMES FASTER THAN ITS OWN CEILING
+```
+
+The probe walked the adjacency `Set`s (`v.adjFrom.get(type)`) — the BUCKET arm — while the engine
+takes the **CSR arm** on the second ask, a dense `Int32Array` walk instead of iterating 200,000
+`Set`s. **A ceiling measured on the slower arm is a floor for the faster one**, and had the numbers
+fallen the other way it would have justified declining a 14.8x.
+
+✅ Item 1893's `handCsr` arm got this right and is NAMED for the structure; this probe quietly was
+not. The arm it did price is still the thing it was built for — the array allocation is 6.75 ms
+either way, so "does the row allocation eat the win?" was answered correctly. It is the SCALE of the
+headroom it got wrong.
+
+## ⚠️ A 14.8x IS A REASON TO DISTRUST THE MEASUREMENT (item 1920)
+
+The fused `path: hop path` row (8.40 ms) came out FASTER than `hop1: values` (50.21) — reading one
+property per row costs more than building a 2-element array — and faster than the hand walk. A row
+COUNT cannot tell a correct fusion from one building 600,000 cheap WRONG arrays.
+
+`pathfuse-parity-1920.mjs` compares CONTENTS against the declining spelling (a `limit` above the row
+count makes the plan four steps, so the gate refuses), element by element, asking each shape **COLD
+(bucket arm) and WARM (CSR arm)** — 6/6 identical. And it checks the path holds the graph's OWN
+vertices by **IDENTITY rather than by id**: a fusion that rebuilt them would compare equal by id
+while being different objects, which a downstream `select`/`where(neq)` would see. A self-loop's two
+slots must be the SAME object.
+
+## ⚠️ `pathshape-probe-1920.mjs` — READ A LAYOUT OFF THE ENGINE BEFORE FUSING IT
+
+```
+V().out(E).path()            [V:a V:b] [V:b V:c] [V:d V:d]   [near, far]; self-loop [d,d]
+V().in(E).path()             [V:b V:a] [V:c V:b] [V:d V:d]   near is STILL the scan vertex
+V().outE(E).path()           [V:a E:e1]                      an EDGE in the path
+V().out(E).values(n).path()  [V:a V:b "b"]                   a SCALAR in the path
+V().out(E).out(E).path()     [V:a V:b V:c]                   three deep
+V().out(E).path().by(n)      ["a" "b"]                       EVERY element projected
+```
+
+Only the first two share a row shape, which is what the gate admits. ⚠️ The `by` row was added AFTER
+a mutant letting the gate admit `path().by(k)` survived — a shape with no test is a shape the gate
+can quietly claim.
+
+## ⚠️ THE FOURTH PATH IS THE DIRECTION THAT DISCRIMINATES (item 1920)
+
+Item 1914 established that a walk written twice (lazy iterator, eager drain) over two arms (CSR,
+bucket) is FOUR paths and the obvious tests reach two. Item 1920 reached all four and a mutant
+still survived: the bucket arm reads `direct.forward ? e.to : e.from`, and **for `out` that IS
+`e.to`** — so replacing the whole expression with `e.to` is invisible unless a cold-iterator test
+uses `in`.
+
+**So the fourth path is not just (arm x laziness) — it is (arm x laziness x the input that can tell
+the two branches apart).** Enumerating the arms is not enough if every test feeds them the case
+where both branches agree.
