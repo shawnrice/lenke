@@ -1954,6 +1954,64 @@ const EDGE_TO_FAR: Readonly<Record<string, 'inV' | 'outV'>> = { outE: 'inV', inE
  * ⚠️ THE SYNTHETIC TAG CANNOT COLLIDE, and the gate is why: the plan is exactly three or four steps,
  * so there is no other step that could bind or read a tag. Nothing downstream observes it.
  */
+/**
+ * `coalesce(X, identity())` IS `optional(X)` — the same rows in the same order (item 1990).
+ *
+ * The AST's own comments say so: `coalesce` "yields the first non-empty plan's results per
+ * traverser", and an `identity` plan yields the input traverser — which is exactly what `optional`
+ * does "if it yields nothing". ✅ Verified empirically before this was written, not just read:
+ * `V().coalesce(out(E), identity()).values(n)` and `V().optional(out(E)).values(n)` agree on row
+ * COUNT and POSITIONALLY on a 200,001-vertex fixture carrying a vertex with no `E` edges — the only
+ * rows on which either differs from a bare hop.
+ *
+ * 🔑 **AND THE PRICES DIFFER BY 4.99x, WHICH IS WHY THIS EXISTS.** `optional` has two dedicated
+ * fused modules (`optional-hop.ts`, `optional-hop-values.ts`, the latter riding item 1889's CSR
+ * behind the second-ask policy); `coalesce` has none — item 1629 gave `coalesceStep` a direct
+ * adjacency-bucket read worth 1.26x and that is all. Measured, one shape per process:
+ *
+ * ```text
+ *     bare hop                            40.80 ms   800,000 rows    51 ns/row
+ *     optional(out(E))                    43.72      800,001         55       1.07x of the hop
+ *     coalesce(out(E), identity())       218.23      800,001        273       5.35x of the hop
+ * ```
+ *
+ * ⚠️ **ITEM 1480 PRICED THIS FAMILY AT ~4.7x AND CALLED THE BLOCKER STRUCTURAL** — "the fused walks
+ * are SOURCE-ANCHORED, so no sub-plan can reach them". That was true of both spellings when written.
+ * `optional` was then given its own rungs and `coalesce` was not, so the structural claim stopped
+ * covering the gap and nothing re-checked it. [[check-the-blocker-still-holds]].
+ *
+ * ⚠️ TOP-LEVEL STEPS ONLY, deliberately: this maps the plan's own step list, so a `coalesce` nested
+ * inside a `union` arm or a `local` keeps the general loop. Widening it needs a recursive walk over
+ * sub-plans, which is a different change with its own risk, and `applyPlanToStream` is where nested
+ * plans are handled.
+ *
+ * ⚠️ EXACTLY TWO ARMS, and the second exactly one `identity` step. Three arms are not `optional`,
+ * and an `identity` with anything after it inside arm 1 is a different question — the test file
+ * `coalesce-bucket-hop.test.ts` records that appending `identity()` INSIDE arm 0 is how its own
+ * oracle reaches the general loop, so these shapes are genuinely distinguishable.
+ */
+export const normalizeCoalesceIdentity = (plan: Plan): Plan => {
+  let changed = false;
+
+  const steps = plan.steps.map((step): Step => {
+    if (step.kind !== 'coalesce' || step.plans.length !== 2) {
+      return step;
+    }
+
+    const [first, second] = step.plans;
+
+    if (second.steps.length !== 1 || second.steps[0].kind !== 'identity') {
+      return step;
+    }
+
+    changed = true;
+
+    return { kind: 'optional', plan: first };
+  });
+
+  return changed ? rewritten(plan, steps) : plan;
+};
+
 const SIMPLE_PATH_TAG = '~simplePath';
 
 export const normalizeDepth1SimplePath = (plan: Plan): Plan => {
@@ -2685,7 +2743,12 @@ export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
    * place sets `tracksPath` and `effectivePlan` is then skipped WHOLESALE — taking item 1307's
    * `outE(T).inV()` -> `out(T)` with it. 328.12 ms against the twin spelling's 46.21 (item 1921).
    */
-  const planned = normalizeDepth1SimplePath(normalizeDirectedOtherV(plan));
+  // ⚠️ `normalizeCoalesceIdentity` RUNS FIRST so the later passes see an `optional` step rather than
+  // a `coalesce` wrapping one — the two-arm form IS `optional` (item 1990), and normalising it early
+  // is what lets it reach `optional`'s own fused rungs at all.
+  const planned = normalizeDepth1SimplePath(
+    normalizeDirectedOtherV(normalizeCoalesceIdentity(plan)),
+  );
 
   /*
    * ⚠️ A ONE-HOP `cyclicPath()` ANSWERS THE WHOLE PLAN HERE, BEFORE THE PATH DECISION — and that

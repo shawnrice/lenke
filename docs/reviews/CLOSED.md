@@ -57274,7 +57274,7 @@ items 1303 and 1447 paid for, and [[rewrite-composition-is-not-free]] exists for
 core 431/0, gql 3709/0, gremlin 1276/0 (1264 + 12 new), native 961/0, serialization 144/0,
 `bun run fuzz` 20/0. `bun run check` 0 read unpiped.
 
-### Item 1480 — ❌ PRICED, NOT BUILT: `optional` and `coalesce` cost ~~**~19-20x a bare hop**~~ **(⚠️ that floor rides the values walk and does LESS work — item 1484 measures the real fused-vs-general ratio at 4.66x-15.68x depending on the projection, so the prize is nearer 4.7x)**, and item 1479's fusion CANNOT transfer. The cause is structural and now has three instances: the fused walks are SOURCE-ANCHORED, so no sub-plan can reach them
+### Item 1480 — ❌ PRICED, NOT BUILT: `optional` and `coalesce` cost ⚠️ **[`optional` WAS LATER GIVEN ITS OWN RUNGS AND IS NOW 1.07x A BARE HOP; `coalesce` WAS NOT, AND ITEM 1990 CLOSED THE RESULTING 4.99x GAP BY NORMALIZING `coalesce(X, identity())` INTO `optional(X)`. The source-anchored blocker below was true of BOTH spellings when written and stopped covering the gap.]** ~~**~19-20x a bare hop**~~ **(⚠️ that floor rides the values walk and does LESS work — item 1484 measures the real fused-vs-general ratio at 4.66x-15.68x depending on the projection, so the prize is nearer 4.7x)**, and item 1479's fusion CANNOT transfer. The cause is structural and now has three instances: the fused walks are SOURCE-ANCHORED, so no sub-plan can reach them
 
 Item 1479 fused `local()` away for a 20.7x. `coalesce`/`choose`/`optional`/`branch` route each
 traverser individually too — but for them that is the semantics, not an artefact, so the same trick
@@ -96490,3 +96490,91 @@ is open.**
 NO ENGINE BEHAVIOUR CHANGED — this entry.
 
 GATES. `bun run fmt` 0; `bun run check` 0.
+
+## Item 1990 — ✅ **SHIPPED: `coalesce(X, identity())` IS `optional(X)`, and they cost 4.99x apart — 218.23 → ~47.8 ms, the gap closing to 0.96x.** Found by diffing the engine's 103 step kinds against what the screen exercises: **68 are never touched**. ⚠️ Item 1480's structural blocker was true of BOTH spellings when written, `optional` was given rungs, and nothing re-checked the claim for `coalesce`
+
+Items 1986-1989 left the Gremlin workload screen's four largest rows each closed with a reason, so
+this tick asked what the screen does not carry — mechanically, not by intuition:
+
+```text
+    engine step kinds in ast.ts                     103
+    never exercised by gremlin-workload-screen.mjs   68
+```
+
+The reconverging branches (`coalesce`, `choose`, `branch`) are the strongest of those by application
+weight — defaults and conditionals are everywhere in real traversals — and `optional` is their
+screened near-twin at **46.24 ms against a bare hop's 45.88**, i.e. free.
+
+### THE GAP
+
+`optional(X)` and `coalesce(X, identity())` are the same question. The AST says so in its own
+comments — `coalesce` "yields the first non-empty plan's results per traverser", and an `identity`
+plan yields the input traverser, which is what `optional` does "if it yields nothing" — and ✅ it was
+confirmed empirically BEFORE anything was built, on a fixture carrying a vertex with no `E` edges
+(the only rows on which either differs from a bare hop): identical row counts and identical
+**POSITIONAL** order, not merely equal multisets.
+
+```text
+    one shape per process, 200,001 vertices / 800,000 edges, median of 7
+      bare hop                          40.80 ms   800,000 rows    51 ns/row
+      optional(out(E))                  43.72      800,001         55       1.07x of the hop
+      coalesce(out(E), identity())     218.23      800,001        273       5.35x of the hop
+      => coalesce / optional            4.99x
+```
+
+⚠️⚠️ **ITEM 1480 PRICED THIS FAMILY AT ~4.7x AND CALLED THE BLOCKER STRUCTURAL** — "the fused walks
+are SOURCE-ANCHORED, so no sub-plan can reach them." **That was true of both spellings when it was
+written.** `optional` then got two dedicated modules (`optional-hop.ts`, `optional-hop-values.ts`,
+the latter riding item 1889's CSR behind the second-ask policy) and `coalesce` got only item 1629's
+adjacency-bucket read, worth 1.26x. So the structural claim stopped covering the gap and nothing
+re-checked it — [[check-the-blocker-still-holds]], and the second time this session a "structural"
+refusal turned out to be a statement about code that had since changed.
+
+### THE FIX IS A NORMALIZATION, NOT A WALK
+
+`normalizeCoalesceIdentity` maps the top-level steps: a `coalesce` with exactly two arms whose second
+arm is exactly one `identity` step becomes `{ kind: 'optional', plan: arm0 }`. It runs FIRST in the
+`planned` chain so the later passes see an `optional`, which is what lets it reach rungs that already
+exist. Item 1923's pattern — no new walk, no new module.
+
+```text
+    POST, four runs, one shape per process
+      coalesce   45.45  50.19  52.18  43.62     median ~47.8
+      optional   50.18  40.98  52.13  49.67     median ~49.9
+      bare hop   46.70  46.52  46.84  43.24     median ~46.6
+      => coalesce / optional  0.96x   (per-run spread 0.84-1.22x, i.e. NOISE)
+      => coalesce 218.23 -> ~47.8     4.57x
+```
+
+⚠️ **THE RATIO IS QUOTED, NOT THE ABSOLUTES, because all three arms drifted ~1.14x between the PRE
+and POST sessions.** Within a run the three are now indistinguishable, which is the claim; the
+drift-normalized figure is `coalesce / hop` going **5.35x → 1.03x**.
+
+### 🔑 THE GATE'S ASYMMETRY IS THE CORRECTNESS QUESTION
+
+**`coalesce(identity(), X)` IS NOT `optional(X)`** — arm 0 always produces, so it never reaches X and
+is simply `identity()`. The gate therefore tests `plans[1]`, and ⚠️ a mutant reading `plans[0]` or
+`plans.some(isIdentity)` **passes every answer test on a fixture where X is non-empty everywhere**.
+The route test pins the asymmetry directly, and the answer test checks that this form still returns
+every vertex's own value rather than the hop's.
+
+**6 mutants, 6 caught by the ROUTE test**: arm-0-instead-of-arm1, any-arm-identity, drops-arm-count-gate,
+drops-single-step-gate, never-rewrites, emits-arm1. ⚠️ `never-rewrites` first reported ANCHOR-BAD at
+10 matches (`changed = true;` is common in that file) and was re-run against a unique anchor rather
+than having its verdict read — item 1983's lesson applied without needing to relearn it.
+
+### ⚠️ SCOPE, STATED
+
+TOP-LEVEL STEPS ONLY. A `coalesce(X, identity())` nested inside a `union` arm or a `local` keeps the
+general loop; widening it needs a recursive walk over sub-plans, which is a different change with its
+own risk, and `applyPlanToStream` is where nested plans are handled. `choose` and `branch` were NOT
+touched — they are the other two reconverging kinds the screen does not carry, and neither has an
+`optional`-shaped twin to normalize into, so each needs its own pricing.
+
+INSTRUMENT. `packages/native/coalesce-vs-optional-1990.mjs` — the three arms, one per process via
+`ARM=`, comparing a POSITIONAL prefix+suffix digest rather than a checksum (an order change is
+exactly what a checksum cannot see, item 1955) and carrying a no-edge vertex so the fallback arm
+actually runs.
+
+GATES. `bun run fmt` 0; `bun run check` 0; `bun run test -- --skip-nx-cache` 0 across 21 projects;
+`bun run fuzz` 0, 57 pass / 0 fail; the Gremlin suite 2,425 pass / 0 fail.
