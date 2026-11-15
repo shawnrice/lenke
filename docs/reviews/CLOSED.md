@@ -95677,7 +95677,16 @@ in the code. An absent cell is honest; a permanently false flag is not.
 On the FIXED build at `SEED=clause QUANT=1 NODES=160000`, `distinct` at depth 1 reads **3.1 ms
 against its `rows` cell's 0.6 — 5.3x**, and `distinct` is nearly FLAT in depth (3.1 / 3.4 / 5.0)
 where `rows` grows (0.6 / 6.6 / 7.7). So the flat rung `DISTINCT` takes has a fixed overhead that
-loses at depth 1. Absolute cost is 2.5 ms; recorded as OPEN, unpriced.
+loses at depth 1. Absolute cost is 2.5 ms.
+
+~~recorded as OPEN, unpriced~~ ❌ **NOT A DEFECT — CLOSED AT ITEM 1984 BY ARITHMETIC, NOT
+MEASUREMENT.** The fixture is `k: i % 97`, so `SEED=clause`'s `a.k = $p` admits **1,649 of 160,000
+sources** where `SEED=unique` admits ONE. `distinct`'s 3.1 ms is therefore ~1.9 us per source
+through the reachability rung, and the same cell reads **0.0 ms** in the `SEED=unique` run two
+paragraphs above. ⚠️ The ratio against `rows` was the misleading part: at depth 1 a one-hop
+projection returns few rows and does little, while `distinct` runs its rung over every admitted
+source — so the pair differ in SOURCES, not in route quality. A per-cell ratio on this axis is only
+readable at `SEED=unique`, which is the arm the scale flag requires anyway.
 
 NO ENGINE BEHAVIOUR CHANGED — this is an instrument item. Verified: the only modified file is
 `packages/native/rung-gap-screen.mjs`.
@@ -95978,3 +95987,94 @@ anchor-match asserted, restore-before-apply, verdict from stdout+stderr then the
 
 GATES. `bun run fmt` 0; `bun run check` 0; `bun run test -- --skip-nx-cache` 0 across 21 projects;
 `bun run fuzz` 0, 57 pass / 0 fail; the Gremlin suite 2,419 pass / 0 fail.
+
+## Item 1984 — ✅ **The GQL sweep after items 1978/1979 is CLEAN: three rows read as regressions and all three are REFUTED isolated.** 🛑 **And the refutation found a sharper thing than the sweep did: `BENCH_ONLY` with a substring that matches THREE rows is NOT isolation — the same row reads 10.6 ms alone and 24.6-24.8 ms beside its two siblings, a 2.3x artifact from the SELECTION.** ⚠️ I nearly reported that as a bimodality my own items had cured
+
+Items 1978 and 1979 both changed GQL (`var-length-count.ts`, `matching.ts`, `rewrites.ts`) and
+nothing had swept the corpus since item 1976. `bun run bench` with `BENCH_ENGINES=ts`, exit 0.
+
+### THE THREE ROWS THAT LOOKED WRONG, AND WHAT THEY ACTUALLY ARE
+
+```text
+    row                              item 1976   this sweep   isolated POST    verdict
+    count 4-hop                          9.1        14.4      8.9 / 8.9 / 8.9   artifact
+    count 4-hop + start filter           9.7        16.7     10.1 / 9.9 / 10.3  artifact
+    count 4-hop quantified [TRAIL]      76.4        80.0     63.8 /63.4 /64.4   artifact
+```
+
+Isolated, every one reads **at or better than** item 1976's figure, and `count 4-hop` has zero
+spread across three reps. ⚠️ All three are FIXED chains that items 1978/1979 cannot reach — the
+var-length detector and `seekedSeeds` are gated on a quantified pattern and a seed — but
+[[executor-edits-perturb]] prices a new export in a hot module at up to 16% on unrelated rows, so
+"unreachable" was not accepted as an argument and a PRE arm was built.
+
+**Isolated PRE against isolated POST, same single-row instrument, six reps each:**
+
+```text
+    count 4-hop + start filter    PRE  10.6 10.8 10.9 10.5 10.6 10.6   median 10.6
+                                  POST 10.5  9.9 10.0 10.5 10.6 10.5   median 10.5   1.01x
+```
+
+So the row is flat and the sweep's 16.7 was in-sweep inflation — CLAUDE.md's documented effect, and
+the same conclusion item 1976 reached about two other rows.
+
+### 🛑 THE FINDING: A SUBSTRING SELECTION IS NOT ISOLATION
+
+`BENCH_ONLY` exists so a per-row question gets a per-row instrument — CLAUDE.md's rule, and
+`bench.ts` says it in its own header ("ONE case, isolated in its own process"). But it matches by
+SUBSTRING, and `BENCH_ONLY='count 4-hop'` matches **three** rows: the plain chain, the start-filtered
+one, and the quantified one. Measured on the same code, same machine, minutes apart:
+
+```text
+    count 4-hop + start filter, BENCH_ONLY='count 4-hop'   (3 rows)   24.8 / 10.1 / 24.6   BIMODAL
+    count 4-hop + start filter, BENCH_ONLY='4-hop + start' (1 row)    10.6 ... 10.9        FLAT
+```
+
+**A 2.3x swing produced entirely by which siblings shared the process**, and item 762 already names
+the mechanism: with three shapes in one process the shared dispatch site is polymorphic, and the
+figure you read belongs to the mix rather than to the row.
+
+⚠️⚠️ **AND IT NEARLY BECAME A FINDING IN MY OWN FAVOUR.** I had the PRE arm reading 24.8 / 10.1 /
+24.6 and the POST arm reading 10.1 / 9.9 / 10.3 on the same 3-row selection, and the natural
+sentence — _"items 1978/1979 removed a slow mode"_ — was one step away. It is false: both arms read
+~10.6 on a 1-row selection. The POST arm simply drew three fast reps of a bimodal mixture and the
+PRE arm drew two slow ones. ⚠️ **A plausible mechanism was available too** (a new export in
+`matching.ts` changing the module's shape, which this repo HAS measured moving unrelated rows), which
+is what makes this class dangerous: the artifact arrives with a ready-made explanation.
+
+**THE RULE, sharper than the one CLAUDE.md gives:** isolation is per-ROW, and `BENCH_ONLY` is only
+isolation when its argument matches exactly one row. **Count the matched rows before reading the
+number** — the bench prints them, so it costs a glance. Prefer the longest distinguishing substring
+(`'4-hop + start'`, not `'count 4-hop'`), and a trailing `$` where one row's name is a prefix of
+another's, which `bench.ts` already supports for exactly this reason.
+
+### ⚠️ One row moved 8.8% and is NOT investigated, with a reason
+
+`traverse 1-hop project + order by` reads **810.0** against item 1976's 744.3. It is the corpus's
+largest row, item 1718 decomposed it (walk + scan + a genuine `n log n` sort, no anomaly), and
+CLAUDE.md records in-sweep variance on rows like this at up to 2x. 8.8% on a single full-sweep
+reading of an 810 ms row is inside that, and chasing it is how item 1718 lost five measurements to a
+phantom. Recorded, not chased.
+
+### ✅ THREE TARGETS CLOSED BY READING, none of them measured
+
+- **`V().out().has().count()`** — 42.0 ms at **40.9x native**, the biggest remaining ratio in
+  `bench:gremlin`. A documented **shared floor**, closed at items 235/661: it reads the same 41.7 ms
+  as GQL's `traverse 1-hop + filter`, which is what proves both languages take one route, and item
+  661 states that no row in either bulk screen is an unexplained target.
+- **`V().out().values(age).order()`** — 178.6 ms, the largest row where TS loses, with ~123 ms in the
+  sort. ❌ **DECLINED, and deliberately not re-opened**: the blocker is a byte-identity invariant,
+  not a capability claim — `compareSort` is the single comparator held byte-identical to Rust's
+  `compare_sort`, and `ordered-rows.ts` states that "a second derivation of 'which row sorts first'
+  is the one thing byte-identity cannot survive". ⚠️ One half of the recorded argument IS weaker than
+  it reads — the stability objection cites item 605's ROW fixture, where ties are observable, whereas
+  two equal bare numbers are indistinguishable — but `-0`/`+0` order differently between
+  `Array.prototype.sort` with a comparator and `Float64Array.prototype.sort`, and a hard invariant is
+  not re-opened on a half-argument.
+- **Item 1980's `distinct` row** — struck in place at its own entry rather than only here: the 5.3x
+  was 1,649 sources against one, not a route defect.
+
+NO ENGINE BEHAVIOUR CHANGED — this entry plus the correction to item 1980's open row. `git diff` on
+the three GQL executor files against HEAD is empty (both A/B arms were restored).
+
+GATES. `bun run fmt` 0; `bun run check` 0.
