@@ -90,6 +90,17 @@ const SHAPES = {
   hopAlias: 'MATCH (a:T)-[:E]->(b:T) RETURN b.n AS x ORDER BY x',
   hopExpr: 'MATCH (a:T)-[:E]->(b:T) RETURN b.n AS x ORDER BY b.n + 1',
   hopAliasEx: 'MATCH (a:T)-[:E]->(b:T) RETURN b.n AS x ORDER BY x + 1',
+  /*
+   * 🔑 IS THE REMAINING ~1.65x THE ARITHMETIC OR THE KEY MACHINERY? `hopProp` sorts by the bare
+   * PROPERTY that the projection already emits, so `aliasOf` maps it to the alias and it should
+   * reach the column-sort arm. If it lands at `hopAlias`, the whole residual is the compiled-key
+   * route and the arithmetic is incidental; if it lands at `hopExpr`, the arithmetic is the cost.
+   */
+  hopProp: 'MATCH (a:T)-[:E]->(b:T) RETURN b.n AS x ORDER BY b.n',
+  // The far-key shape the screen carries: the key reads an end the projection does NOT emit, so
+  // the row genuinely lacks the value and no rewrite can source it from a column.
+  hopFar: 'MATCH (a:T)-[:E]->(b:T) RETURN a.n AS c ORDER BY b.n + 1',
+  hopFarBare: 'MATCH (a:T)-[:E]->(b:T) RETURN a.n AS c ORDER BY b.n',
 };
 
 const text = SHAPES[SHAPE];

@@ -148,7 +148,18 @@ const SHAPES = [
     'MATCH (a:T)-[:E]->(b:T) RETURN b.n + 1 AS c ORDER BY c LIMIT 10',
     {},
   ],
-  // The unwindowed start-only shape, which is what the wrong answer was found on.
+  /*
+   * The unwindowed start-only shape, which is what the wrong answer was found on.
+   *
+   * ⚠️⚠️ ITS NEIGHBOUR IS NOT ITS CONTROL (item 1930). This row (470.97) sits beside
+   * `CONTROL hop windowed, START-only proj` (298.23) and reads as a 1.58x gap. It is not a pair:
+   * the control carries `LIMIT 10` and returns TEN rows where this returns 800,000. Against its
+   * genuine twin — `HOP order by EXPRESSION` at 456.92, the same shape projecting the far end
+   * instead of the start — it costs nothing extra, which isolated arms confirm (126.11 against
+   * 122.94). So this row is not a nomination, and the windowed CONTROL SET above must not be read
+   * as one: those rows are there to catch a regression from item 1903's flag fix, not to price
+   * these.
+   */
   ['HOP start-only proj, far key', 'MATCH (a:T)-[:E]->(b:T) RETURN a.n AS c ORDER BY b.n + 1', {}],
   ['order by expr, two terms', 'MATCH (n:T) RETURN n.n AS x ORDER BY n.x * 2, n.n', {}],
   [

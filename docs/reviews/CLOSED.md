@@ -92293,3 +92293,62 @@ with insertion order, because item 1903 established that a tie-heavy fixture let
 its first rows with the right one.
 
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers.
+
+## Item 1930 — **PRICED, NOT BUILT: the GQL sort residual is the COMPILED-KEY ROUTE, not the expression** — 238 ns a row against the arithmetic's 31 — and the remaining lever needs a post-projection sort arm for 1.69x-1.9x. ⚠️ Also corrects the screen's own pairing: `HOP start-only proj, far key` has no valid control on it
+
+Item 1929 closed the equivalent-spelling half of this family (`ORDER BY x + 1` reaching no rung,
+3.2-3.4x). What remained was the within-rung residual item 1902 described and mis-attributed. This
+measures it rather than describing it.
+
+      `exprsort-prof-1929.mjs`, 200,000 vertices / 200,000 edges, median of 9, one shape per process:
+
+        hopAlias    ORDER BY x                        72.20 ms   the column-sort arm
+        hopProp     ORDER BY b.n     (b.n projected)  72.18     ⬅ IDENTICAL to the alias
+        hopExpr     ORDER BY b.n + 1 (b.n projected) 122.94      +50.74
+        hopFarBare  ORDER BY b.n     (NOT projected) 119.86     ⬅ a BARE property, already +47.66
+        hopFar      ORDER BY b.n + 1 (NOT projected) 126.11      +6.25 over hopFarBare
+
+🔑 **THE SPLIT.** The arithmetic costs **6.25 ms over 200,000 rows — 31 ns a row**. The compiled-key
+route costs **47.66 ms — 238 ns a row**, and it is paid by a BARE PROPERTY key with no arithmetic in
+it at all. So the residual is the route, and the expression is incidental: a correction to item
+1902's "per-row compiled-key evaluation plus a `KeyRow` allocation", which named the right mechanism
+but attached it to the wrong discriminator.
+
+✅ **THE DISCRIMINATOR, CONFIRMED BY THE PAIR THAT ISOLATES IT:** `hopProp` and `hopFarBare` are the
+SAME sort key (`ORDER BY b.n`) and differ only in whether the projection happens to emit that
+property — 72.18 against 119.86. `aliasOf` maps a projected `prop` key to its column and reaches the
+column-sort arm; an unprojected one cannot be sourced from a row and takes the compiled-key arm.
+
+## 🔭 The remaining lever, priced
+
+`RETURN b.n AS x ORDER BY b.n + 1` pays the **unprojected** floor (122.94) even though the row holds
+`b.n` as column `x`. Sorting it by an expression over the OUTPUT ROW would reach ~72 — **1.69x on the
+hop, and 95.63 -> ~50 (1.9x) on the node.** Value-identical by the same argument item 1929 uses in
+reverse: the column holds exactly the aliased expression's value.
+
+⚠️ **WHY IT IS NOT BUILT HERE, stated as a cost rather than a difficulty.** `outputColumnSorts`
+admits only a key that NAMES a column; an expression over columns is not a supported arm, so this is
+a NEW arm (project, then sort by an expression over the projected rows) and it lands squarely on the
+windowed-sort FAULT RULE that items 610/1062/1903 all turn on — projecting before ranking raises on
+rows the query may never emit, which is the exact wrong answer item 1903 spent an item fixing. 1.69x
+for a new sort arm with that interaction is the same call item 1925 made on `tree()` at 1.55x and
+item 1893 made on the edge-indexed CSR at 1.79x: priced, recorded, left.
+
+⚠️ **AND THE MONOTONE SHORTCUT IS UNSOUND, so it is not the cheaper route in.** `ORDER BY b.n + 1`
+is order-equivalent to `ORDER BY b.n` only when the column is numeric; on a string column `+` may
+fault, and dropping the computation would elide that fault. The engine cannot prove numeric-ness
+statically (schemaless), so this is a TECHNICAL blocker, not a policy one
+([[check-the-blocker-still-holds]]'s distinction).
+
+## ⚠️ One correction to the screen itself
+
+`HOP start-only proj, far key` (470.97) sits next to `CONTROL hop windowed, START-only proj` (298.23)
+and reads as a 1.58x gap. **It is not a pair:** the control carries `LIMIT 10` and returns ten rows
+where the subject returns 800,000. Against its genuine twin — `HOP order by EXPRESSION` at 456.92,
+the same shape projecting the far end instead of the start — it costs nothing extra. The isolated
+arms above confirm it: `hopFar` 126.11 against `hopExpr` 122.94. So that row is not a nomination and
+the screen's control set should not be read as one.
+
+NO ENGINE BEHAVIOUR CHANGED — three probe arms and this entry.
+
+GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects.
