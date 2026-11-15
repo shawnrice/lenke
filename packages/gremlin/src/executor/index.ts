@@ -66,6 +66,7 @@ import {
 } from './runtime.js';
 import { applySource } from './sources.js';
 import { startFilteredHopValues } from './start-filtered-hop-values.js';
+import { taggedHopValues } from './tagged-hop-values.js';
 
 /**
  * Fault on a plan that is invalid whatever the data.
@@ -2653,6 +2654,28 @@ export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
 
   if (tallied !== undefined) {
     return tallied;
+  }
+
+  /*
+   * ⚠️⚠️ THE TAGGED HOP RUNG IS CONSULTED BEFORE THE CHAIN AND **WITHOUT THE `tracksPath` GUARD**
+   * (item 1912), which no other fusion here does. Its warrant is that it claims the WHOLE plan —
+   * exactly four steps, `rest` always empty — so there is no downstream step left to ask for a
+   * path. `taggedHopValues` states the argument in full.
+   *
+   * ⚠️ IT CANNOT STEAL FROM ANY RUNG BELOW. Every member of `fusedProjectedValues` is behind the
+   * `!tracksPath` guard and these two shapes make `planReadsPath` TRUE, so each of them reaches no
+   * rung at all today — the precedence question `rung-precedence-decides-speed` warns about does not
+   * arise, because there is nothing above or below competing for this shape.
+   *
+   *     200,000 vertices / 1,000,000 edges, isolated, median of 7:
+   *       V().as_(a).out(E).select(a)        160.47 ms
+   *       V().as_(a).out(E).where(neq(a))    217.06
+   *       V().out(E) — the same walk, fused    43.00
+   */
+  const tagged = taggedHopValues(effective, graph);
+
+  if (tagged !== undefined) {
+    return tagged.values;
   }
 
   const projected = fusedProjectedValues(effective, graph, ctx.tracksPath);

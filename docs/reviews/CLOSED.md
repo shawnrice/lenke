@@ -89649,7 +89649,7 @@ GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all sev
 runs of `bun run spelling:gremlin` (0 disagreements, 0 groups over 2x — one run reported 1, which the
 next two refuted as that run's own variance).
 
-## Item 1900 — the Gremlin surface's LARGEST shape, profiled rather than inherited: item 1898 called `where(neq)` path-gated by construction, and the profile named **two per-row allocations instead**. 1.09x taken; the remaining **5x is the generator chain**, priced here with a control the screen never had
+## Item 1900 — the Gremlin surface's LARGEST shape, profiled rather than inherited: item 1898 called `where(neq)` path-gated by construction, and the profile named **two per-row allocations instead**. 1.09x taken; the remaining **5x is the generator chain**, priced here with a control the screen never had — ✅ and ~~the remaining 5x generator chain~~ **TAKEN at item 1912 for the tagged shapes (10.9x on this very row), by a rung that claims the whole plan and so may ride past `tracksPath`**
 
 `V().as_('a').out('E').where(neq('a'))` is the biggest shape on the Gremlin surface at 200,000
 vertices / 1,000,000 edges. Item 1898 nominated it and then explained it away: `as_`/`select`/`path`
@@ -90502,7 +90502,7 @@ behind the other") and the shape of the wrong answer item 1903 cost.
       declining a fusion yields the same list from a slower walk. Gates named at each entry
       (`sideeffect-prof-1909.mjs` and the route screen's rows).
 
-🔭 **THE GREMLIN SURFACE'S TOP FOUR ARE NOW ALL PATH-GATED** — `where(neq)` 405.60, `select` two
+🔭 ~~**THE GREMLIN SURFACE'S TOP FOUR ARE NOW ALL PATH-GATED**~~ ✅ **THREE OF THE FOUR TAKEN at item 1912 (17.6x / 13.8x / 10.9x / 4.25x) — the path gating was real and the BOOKKEEPING was only ~15% of the cost** — `where(neq)` 405.60, `select` two
 270.74 and one 190.11, `path` 153.08 — which is item 1900's finding standing: `as_`/`select`/`path`
 make `planReadsPath` true and every fused walk is gated on `!tracksPath`, so their cost is the
 bookkeeping rather than a missing rung. Item 1900 took 1.09x of the first and priced the rest of it
@@ -90512,3 +90512,72 @@ GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all sev
 `bun run spelling:gremlin` (0 disagreements, 0 groups over 2x); the route and workload screens at
 200,000 vertices; the whole Gremlin suite (2,299 tests) which carries the existing side-effect
 semantics.
+
+## Item 1912 — the path-gated cluster, taken: **17.6x / 13.8x / 10.9x / 4.25x** on the four tagged hop shapes. Item 1900 recorded their cost as "the bookkeeping rather than a missing rung" and the profile says the bookkeeping is **~15%** — the other 64% was running the hop generically
+
+Items 1909-1911 cleared the list-shaped Gremlin shapes, leaving the surface's top four all
+path-gated: `where(neq)` 406.18, `select` two 265.02 / one 195.92, `path` 154.98. Item 1900 had
+priced that cluster and declined it, writing that `as_`/`select`/`path` make `planReadsPath` true,
+every fused walk is gated on `!tracksPath`, and "their cost is a question about that bookkeeping
+rather than a missing rung".
+
+❌ **THE SECOND HALF OF THAT IS WRONG, AND THE PROFILE SAYS SO.** At 50,000 vertices, where the query
+dominates the fixture, `as_(a).out(E).select(a)` is **39.2% `generatorResume` + 25.2% the adjacency
+generator** and only ~15% in the tag machinery (`asStep` 8.6%, `extend` 2.1%, `Map` 1.4%,
+`cloneObject` 2.6%). The tags were never the expensive part: the cost is running the HOP generically,
+which is what every fusion in this package exists to fix.
+
+✅ **AND BOTH SHAPES ARE TAG-FREE COMPUTATIONS, verified on a fixture before any code:**
+
+      V().as_(a).out(E).select(a)      ->  the NEAR vertex, once per out-edge   (a,a,b,c)
+      V().as_(a).out(E).where(neq(a))  ->  the FAR vertices that are not near   (b,c,c)
+      V().out(E)                       ->  (b,c,c,c)   — the same walk
+
+`select(k)` repeats the near vertex by its degree; `where(neq(k))` is the bare hop minus self-loops.
+Neither needs a tag MAP — the walk holds the near vertex already.
+
+      200,000 vertices / 1,000,000 edges, one shape per process, median of 7, min of 3 rounds:
+
+        as_(a).out(E).select(a)                 160.47  ->   9.13 ms   ⬅ 17.6x
+        as_(a).out(E).select(a).values(n)       186.50  ->  13.48      ⬅ 13.8x
+        as_(a).out(E).where(neq(a))             217.06  ->  19.89      ⬅ 10.9x
+        as_(a).out(E).where(neq(a)).values(n)   325.22  ->  76.50      ⬅ 4.25x
+        CONTROL V().out(E).values(n)             43.00  ->  42.50       flat
+        workload screen: `where: neq filter` 406.18 -> 94.66, `select one` left the top rows
+
+⚠️⚠️ **THIS RUNG RIDES PAST THE `tracksPath` GUARD, WHICH NO OTHER FUSION HERE DOES, and the whole
+warrant is that it claims the ENTIRE plan.** Four steps, or five with a trailing single-key
+`values(k)`, and `rest` is always `[]` — so there is no downstream step left to ask for a path. A
+sixth step declines. ⚠️ It also cannot steal from any rung below: every member of
+`fusedProjectedValues` sits behind the same guard and these shapes make `planReadsPath` TRUE, so each
+reaches no rung at all today — the precedence hazard `rung-precedence-decides-speed` warns about does
+not arise, because nothing is competing for this shape.
+
+🛑 **THE FIRST CUT WON 17.6x AND DID NOT REACH THE SHAPE ANYONE HAD FLAGGED.** The four-step rung left
+the workload screen's rows at 406 and 196 ms — because the screen's spellings carry a FIFTH step,
+`values('n')`, which is what an application writes (you want a property off the tagged element, not
+the element). **The screen's own definitions are what showed it**, read after the measurement looked
+finished. Admitting a trailing single-key `values` folded into the pick is what moved the screen.
+
+      CORRECTNESS: 20 tests. ⚠️ Every answer is checked against `limit(1000)` — a FIFTH/SIXTH step
+      declines the rung, so the same query runs the GENERIC path while a limit above the row count
+      changes nothing, which gives an oracle with no kill switch. ⚠️ Asserted on the REPEAT call for
+      item 1889's second-ask policy (bucket walk then CSR). ⚠️ The fixture has a SELF-LOOP because it
+      is the ONLY thing the two shapes differ on — `select` emits it, `where(neq)` drops it, and
+      getting that backwards is a wrong answer on one edge that no aggregate would show.
+
+      MUTATION: 19 mutants over this item's gate and walk, 17 caught, 2 route-only survivors with
+      their gates named. ⚠️ **One mutant found a real gap**: loosening the length gate to `< 4` left
+      every assertion green, because a five-step plan ending in `limit` still declined (the fifth
+      step is not a `values`) and nothing reached the case where the fifth step IS a `values` and a
+      SIXTH is silently dropped — 800,000 rows where the query asked for two. That test exists now.
+
+🔭 **WHAT REMAINS**: `select('a','b')` at 273.93 is now the screen's top row and is a different
+question — it projects a MAP of two tags, not a repeat of one. And `where(neq).values(n)` at 76.50
+is still **1.8x the hop control's 42.50** on nearly identical row counts, which this item does not
+explain; the filter is a pointer compare and should be free. Recorded as a residual rather than
+guessed at.
+
+GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers;
+`bun run spelling:gremlin` (0 disagreements, 0 groups over 2x); the Gremlin suite (2,314 tests) and
+the workload screen at 200,000 vertices.

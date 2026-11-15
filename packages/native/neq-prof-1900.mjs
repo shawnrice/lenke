@@ -42,6 +42,12 @@ const PLANS = {
   // per-row predicate clone. Item 1900 changed only `whereCurrentStep`, so this is the arm that
   // must NOT move, and its own cost prices the follow-up.
   wherecmp: traversal(V(), as_('a'), out('E'), as_('b'), where('b', neq('a'))),
+  // ⚠️ THE WORKLOAD SCREEN'S OWN SPELLINGS, which carry a trailing `values('n')` — a FIFTH step.
+  // Item 1912's first cut served only the four-step shapes and left these two untouched at 406 and
+  // 196 ms on the screen, which is how it found that the win had not reached the shape anyone had
+  // flagged.
+  neqv: traversal(V(), as_('a'), out('E'), where(neq('a')), values('n')),
+  selv: traversal(V(), as_('a'), out('E'), select('a'), values('n')),
   // ⚠️ THE CONTROL THE SCREEN LACKS: the identical walk with NO tag, so the difference is the
   // bookkeeping and not the hop.
   hop: traversal(V(), out('E'), values('n')),

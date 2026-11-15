@@ -23,11 +23,14 @@ const SRCS = {
   // Item 1910's two gates: the bare-hop residual, in both rungs that serve a bare hop.
   hv: `${ROOT}/packages/gremlin/src/executor/hop-values.ts`,
   csr: `${ROOT}/packages/gremlin/src/executor/hop-values-csr.ts`,
+  // Item 1912's tagged rung, which rides past the `tracksPath` guard.
+  tag: `${ROOT}/packages/gremlin/src/executor/tagged-hop-values.ts`,
 };
 const PRISTINE = `${ROOT}/crates/lenke-engine/target/pristine-1909m`;
 const CWD = `${ROOT}/packages/gremlin`;
 /** ⚠️ The neighbours are in the set so a mutant that breaks the UNFUSED fold still fails. */
 const TESTS = [
+  'src/executor/tagged-hop-values.test.ts',
   'src/executor/projected-fold.test.ts',
   'src/executor/hop-values-csr.test.ts',
   'src/executor/hop-values-dedupe.test.ts',
@@ -128,6 +131,105 @@ const MUTANTS = [
     1,
   ],
   [
+    'select and where(neq) swap: the near/far pick is inverted',
+    'tag',
+    "    return onlyTag && plain ? 'near' : undefined;",
+    "    return onlyTag && plain ? 'far' : undefined;",
+    1,
+  ],
+  [
+    'the self-loop is kept by where(neq) — CSR arm',
+    'tag',
+    '        if (!near && far === from) {\n          continue;\n        }\n',
+    '',
+    1,
+  ],
+  [
+    'the self-loop is kept by where(neq) — BUCKET arm',
+    'tag',
+    '      if (!near && far === v) {\n        continue;\n      }\n',
+    '',
+    1,
+  ],
+  [
+    'select admits a DIFFERENT label than the tag',
+    'tag',
+    'const onlyTag = tail.labels.length === 1 && tail.labels[0] === label;',
+    'const onlyTag = tail.labels.length === 1;',
+    1,
+  ],
+  [
+    'select admits a `by` modulator and pop=all',
+    'tag',
+    "    const plain = (tail.bys?.length ?? 0) === 0 && tail.pop !== 'all';",
+    '    const plain = true;',
+    1,
+  ],
+  [
+    'any predicate operator is admitted, not just neq',
+    'tag',
+    "  return pred.op === 'neq' && 'value' in pred && pred.value === label ? 'far' : undefined;",
+    "  return 'value' in pred && pred.value === label ? 'far' : undefined;",
+    1,
+  ],
+  [
+    'the two-tag where form is admitted',
+    'tag',
+    "if (tail.kind !== 'where' || !('pred' in tail) || 'startKey' in tail) {",
+    "if (tail.kind !== 'where' || !('pred' in tail)) {",
+    1,
+  ],
+  [
+    'the CSR arm reads the SLOT as the far vertex',
+    'tag',
+    '        const far = vtx[memo.flat[i]];',
+    '        const far = vtx[slot];',
+    1,
+  ],
+  [
+    'the FIFTH step is not admitted (the screen\u2019s own spelling)',
+    'tag',
+    '  if (steps.length !== 4 && steps.length !== 5) {',
+    '  if (steps.length !== 4) {',
+    1,
+  ],
+  [
+    'a SIXTH step is admitted, so a residual is silently dropped (the tracksPath warrant)',
+    'tag',
+    '  if (steps.length !== 4 && steps.length !== 5) {',
+    '  if (steps.length < 4) {',
+    1,
+  ],
+  [
+    'a multi-key values is admitted as the fifth step',
+    'tag',
+    "  proj.kind === 'values' && proj.keys.length === 1 ? proj.keys[0] : undefined;",
+    "  proj.kind === 'values' ? proj.keys[0] : undefined;",
+    1,
+  ],
+  [
+    'the CSR arm emits a MISSING key as undefined instead of dropping it',
+    'tag',
+    `        const value = held.properties[valueKey];
+
+        if (value !== undefined) {
+          yield value;
+        }`,
+    '        yield held.properties[valueKey];',
+    1,
+  ],
+  [
+    'the BUCKET arm emits a MISSING key instead of dropping it',
+    'tag',
+    `      const value = held.properties[valueKey];
+
+      if (value !== undefined) {
+        yield value;
+      }`,
+    '      yield held.properties[valueKey];',
+    1,
+  ],
+  [
     'the ITERATOR arm is dropped, so a walk without a drain answers empty',
     'agg',
     'values.drain === undefined ? [...values] : values.drain(),',
@@ -161,6 +263,13 @@ const EXPECTED_SURVIVORS = new Set([
    * `aggregate`, 101.83 -> 4.16 for `store` — and the route screen's `list: hop aggregate cap` row.
    */
   'the bag+cap pair is not fused (the pre-1911 route)',
+  /*
+   * ⚠️ ITEM 1912'S FIFTH-STEP ADMISSION IS ROUTE-ONLY TOO: without it the five-step spellings fall
+   * to the generic path and answer identically, 4.25x and 13.8x slower. Its gate is
+   * `neq-prof-1900.mjs`'s `neqv`/`selv` arms (325.22 -> 76.50 and 186.50 -> 13.48) and the workload
+   * screen's own rows (406.18 -> 94.66 for `where: neq filter`).
+   */
+  'the FIFTH step is not admitted (the screen\u2019s own spelling)',
 ]);
 
 /*

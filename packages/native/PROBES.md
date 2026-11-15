@@ -2064,3 +2064,17 @@ into an array and returns the stream, `capStep` drains and yields that array, so
 [[check-the-blocker-still-holds]] is written for inherited notes, and this is the harder case:
 nothing about a note you wrote two items ago looks stale. The tell was the number sitting beside it —
 1.09x of a shape that had just moved 24x.
+
+## ⚠️ A WIN CAN MISS THE SHAPE THAT NOMINATED IT (item 1912)
+
+The tagged-hop rung measured **17.6x** on `V().as_(a).out(E).select(a)` and left the workload
+screen's rows at **406 and 196 ms**, unmoved. The screen's spellings carry a FIFTH step —
+`values('n')` — which is what an application writes, and the four-step rung declined them.
+
+**Read the screen's own definitions, not its labels.** `'select: as + select one'` is
+`traversal(V(), as_('a'), out('E'), select('a'), values('n'))`, not the four-step shape the name
+suggests. The isolated instrument was measuring a sibling of the flagged row, and only re-running the
+screen after the win looked finished exposed it.
+
+⚠️ And the same reading gives the follow-up honestly: `select: as + select two` (273.93 ms) is
+`select('a', 'b')` — a MAP of two tags, a different question from repeating one.
