@@ -22,6 +22,7 @@
 import type { Edge, Graph, Vertex } from '@lenke/core';
 
 import type { Clause, PathPattern } from '../ast.js';
+import { acyclicCountRow } from './acyclic-count.js';
 import { edgesOfTypes, relTypeNames } from './adjacency.js';
 import type { CClause, Params, Row } from './core.js';
 import { csrFor } from './csr-cache.js';
@@ -1037,12 +1038,30 @@ export const varLengthDegreeCount = (graph: Graph, spec: DegreeCountSpec): numbe
  * The ENDPOINT node is no longer required to be plain (item 583): its constraint is carried as an
  * `InlinePred` and applied per reached endpoint. The detector decides whether it can be carried.
  */
+/**
+ * Is this mode's depth bounded by the TRAIL closed form's reach?
+ *
+ * A WALK takes the level recurrence at any depth, and `acyclic` takes a DFS that is exact at any
+ * depth (its COST, not its correctness, is what its work budget guards) — so only a TRAIL is held at
+ * four hops, which is where its correction's terms stop (item 2002).
+ */
+const boundedByTrailCorrection = (mode: PathPattern['mode']): boolean =>
+  mode !== 'walk' && mode !== 'acyclic';
+
 export const degreeCountShape = (pattern: PathPattern): boolean => {
   if (
     pattern.pathVar !== undefined ||
     pattern.segments.length !== 1 ||
     (pattern.selector !== undefined && pattern.selector !== 'walk') ||
-    (pattern.mode !== undefined && pattern.mode !== 'trail' && pattern.mode !== 'walk')
+    (pattern.mode !== undefined &&
+      pattern.mode !== 'trail' &&
+      pattern.mode !== 'walk' &&
+      // ⚠️ `acyclic` IS ADMITTED BUT GOES NOWHERE NEAR THIS FILE'S ARITHMETIC (item 2002). It is
+      // routed to `acyclic-count.ts`'s DFS by its own closure in `detectVarLengthCount`, BEFORE
+      // `isTrail` is computed — because `isTrail` is `mode !== 'walk'`, so letting an acyclic
+      // pattern reach the level recurrence would hand it the TRAIL correction and answer a trail
+      // count. That is item 692's wrong answer with a different mode name.
+      pattern.mode !== 'acyclic')
   ) {
     return false;
   }
@@ -1114,7 +1133,12 @@ export const depth4Admissible = (
   max: number,
   mode: string | undefined,
   endPred: unknown,
-): boolean => max !== 4 || mode === 'walk' || endPred === undefined;
+): boolean =>
+  // ⚠️ `acyclic` IS EXEMPT because none of this predicate's reasoning applies to it: the depth-4
+  // rule guards the TRAIL closed form, whose terms are derived for a trivial endpoint mask. The
+  // acyclic route is a DFS with no terms and applies the endpoint test per reached endpoint, so a
+  // filtering label is not a hazard there (item 2002).
+  max !== 4 || mode === 'walk' || mode === 'acyclic' || endPred === undefined;
 /**
  * Whether the MIRROR spelling (`<-[:T]-{n,m}`) may take this route (item 744).
  *
@@ -1200,7 +1224,13 @@ export const detectVarLengthCount = (
   // exactly one way to reuse an edge and the closed form subtracts it, while at three there are
   // several interacting ways and no single term. Native drew the line in the same place at item
   // 587, which is what keeps the two engines on one answer.
-  if (max === null || max < 1 || (max > 4 && pattern.mode !== 'walk')) {
+  // ⚠️ ACYCLIC IS EXEMPT FROM THE DEPTH CEILING, and that is not a relaxation of the trail bound.
+  // The ceiling exists because the TRAIL correction is a closed form whose terms are derived per
+  // depth ("at two hops there is exactly one way to reuse an edge … at three there are several
+  // interacting ways and no single term"). A DFS has no terms: it is exact at any depth, and the
+  // only risk is COST, which its work budget catches by declining to the general clause loop —
+  // the loop that runs this shape today, so a decline is a no-op rather than a regression.
+  if (max === null || max < 1 || (max > 4 && boundedByTrailCorrection(pattern.mode))) {
     return null;
   }
 
@@ -1281,6 +1311,34 @@ export const detectVarLengthCount = (
 
   if (startLabel !== undefined && startLabel.kind !== 'label') {
     return null;
+  }
+
+  /*
+   * ⚠️⚠️ **THE ACYCLIC ROUTE RETURNS BEFORE `isTrail` EXISTS, and that ordering is the safety
+   * property** (item 2002). `isTrail` is `mode !== 'walk'`, so every arm below treats an acyclic
+   * pattern as a trail and would answer a TRAIL count — item 692's wrong answer (a depth-4 trail
+   * taking the walk arithmetic, 3 where the trail answers 0) with a different mode name. Returning
+   * here means nothing below is reachable for `acyclic`, so there is no bound to keep in step.
+   *
+   * ⚠️ THE CLOSURE IS BUILT IN `acyclic-count.ts`, NOT HERE, and that is a lint gate's doing worth
+   * recording: written inline it pushed this function to a complexity of 38 against a cap of 35 —
+   * the cap this file's own note warns about ("`varLengthDegreeCount` is at the lint complexity cap
+   * — an extra `||` in there is refused"). Moving it out is what the design said anyway: nothing
+   * about ACYCLIC belongs in the file that owns the walk/trail arithmetic.
+   */
+  if (pattern.mode === 'acyclic') {
+    return acyclicCountRow({
+      types,
+      min,
+      max,
+      inward,
+      column,
+      endLabel,
+      endPred,
+      startPred,
+      startLabel,
+      compiled: cm,
+    });
   }
 
   const isTrail = pattern.mode !== 'walk';

@@ -102,7 +102,18 @@ describe('ACYCLIC/TRAIL/WALK over a quantified path: TS vs native', () => {
           }
 
           const tsRows = [...tsQuery(tsGraphOf(fx.ndjson), text, {})];
-          const nativeRows = graphFromNdjson(nativeBackend(), fx.ndjson).query(text);
+          // ⚠️ FREED DETERMINISTICALLY. The engine warns when a `RustGraph` is garbage-collected
+          // without `free()` — finalizers are not guaranteed to run, so a leaked handle sits
+          // unreleased. One handle per test case here, so the warning fires once per case and the
+          // fix is one `try/finally`.
+          const nativeGraph = graphFromNdjson(nativeBackend(), fx.ndjson);
+          const nativeRows = (() => {
+            try {
+              return nativeGraph.query(text);
+            } finally {
+              nativeGraph.free();
+            }
+          })();
 
           /*
            * ⚠️ COMPARED AS ARRAYS, ORDERED. `RustGraph.query` returns row OBJECTS — the same shape
@@ -117,5 +128,186 @@ describe('ACYCLIC/TRAIL/WALK over a quantified path: TS vs native', () => {
         });
       }
     }
+  }
+});
+
+/*
+ * ⚠️⚠️ **A GENERATED FIXTURE WITH REAL CYCLES, because the four hand fixtures above are 1-2 vertices
+ * and a DFS can be wrong in ways they cannot show** (item 2002). The acyclic COUNT route is a
+ * depth-first walk carrying a visited set; the cases that distinguish it from a trail walk are
+ * 2-cycles and longer returns, at a depth where the pruning actually changes the answer. This graph
+ * carries self-loops, 2-cycles, a triangle and parallel edges at once, and it is compared against
+ * the Rust engine — an INDEPENDENT implementation, which is the only oracle here that was not
+ * written by the same person as the route.
+ *
+ * ⚠️ AND THE COUNTS ARE ASSERTED NON-TRIVIAL. A route that answered 0 everywhere, or that declined
+ * and silently fell back, would agree with native on every row — so the test checks that ACYCLIC and
+ * WALK actually DIFFER on this graph. Without that, the parity assertions pass on a fixture where
+ * acyclicity never bites, which is exactly the hole item 2001's first correction formula fell into.
+ */
+const CYCLIC_NDJSON = (() => {
+  const lines: string[] = [];
+  const N = 60;
+
+  for (let i = 0; i < N; i += 1) {
+    lines.push(
+      `{"type":"node","id":"v${String(i)}","labels":["T"],"properties":{"n":${String(i % 7)}}}`,
+    );
+  }
+
+  let e = 0;
+  const edge = (from: number, to: number): void => {
+    lines.push(
+      `{"type":"edge","id":"g${String(e)}","labels":["E"],"from":"v${String(from)}","to":"v${String(to)}","properties":{}}`,
+    );
+    e += 1;
+  };
+
+  for (let i = 0; i < N; i += 1) {
+    edge(i, (i + 1) % N); // the ring
+    edge((i + 1) % N, i); // every ring edge also goes BACK — a 2-cycle at every position
+    edge(i, (i + 7) % N); // a chord, so triangles and longer returns exist
+
+    if (i % 11 === 0) {
+      edge(i, i); // a self-loop every 11th vertex
+    }
+
+    if (i % 13 === 0) {
+      edge(i, (i + 1) % N); // a PARALLEL copy of a ring edge
+    }
+  }
+
+  /*
+   * ⚠️⚠️ **A HUB: vertex 0 has many out-edges and no matching in-edges, so a SEEDED query sees a
+   * different graph forwards and backwards.** ⚠️ An earlier version of this comment claimed the hub
+   * was needed because the construction above is reverse-isomorphic to itself and therefore made
+   * inward and outward counts equal. **That reasoning was wrong, and asserting it failed at every
+   * bound.** An UNSEEDED total path count is equal to its reverse for EVERY graph — reversing a
+   * path is a bijection between the length-k paths of G and those of G-reversed — so no fixture can
+   * make those two numbers differ, and the inward test below has to be SEEDED to see direction at
+   * all. The hub is what makes the seeded counts differ.
+   */
+  for (let k = 2; k < 20; k += 1) {
+    edge(0, (k * 3) % N);
+  }
+
+  /*
+   * ⚠️ AN ISOLATED VERTEX, AND A MUTATION ROUND IS WHY. The route skips a source whose CSR slot is
+   * `undefined` — a vertex carrying no edge of the queried type. Without such a vertex here, the
+   * mutant that removes that guard SURVIVED: every source in a fully-connected fixture has a slot,
+   * so the guard is unreachable and its removal changes nothing.
+   */
+  lines.push('{"type":"node","id":"alone","labels":["T"],"properties":{"n":3}}');
+  // And one carrying ONLY a different edge type, so it is in the graph but not in THIS CSR.
+  lines.push('{"type":"node","id":"other","labels":["T"],"properties":{"n":4}}');
+  lines.push(
+    '{"type":"edge","id":"gx","labels":["F"],"from":"other","to":"alone","properties":{}}',
+  );
+
+  return lines.join('\n');
+})();
+
+describe('ACYCLIC counts over a cyclic generated graph: TS vs native', () => {
+  for (const bound of ['{1,1}', '{1,2}', '{1,3}', '{2,3}', '{1,4}'] as const) {
+    test(`count(*) ACYCLIC ${bound}`, () => {
+      if (!nativeReady) {
+        expect(nativeReady).toBe(false);
+
+        return;
+      }
+
+      const text = `MATCH ACYCLIC (x:T)-[:E]->${bound}(y:T) RETURN count(*) AS c`;
+      const walkText = `MATCH (x:T)-[:E]->${bound}(y:T) RETURN count(*) AS c`;
+      const tsRows = [...tsQuery(tsGraphOf(CYCLIC_NDJSON), text, {})];
+      const nativeGraph = graphFromNdjson(nativeBackend(), CYCLIC_NDJSON);
+      const nativeRows = (() => {
+        try {
+          return nativeGraph.query(text);
+        } finally {
+          nativeGraph.free();
+        }
+      })();
+
+      expect(nativeRows).toEqual(tsRows);
+
+      // ⚠️ NON-TRIVIALITY: acyclicity must actually bite here, or the parity above proves nothing.
+      const walk = [...tsQuery(tsGraphOf(CYCLIC_NDJSON), walkText, {})][0] as { c: number };
+      const acyclic = tsRows[0] as { c: number };
+
+      expect(acyclic.c).toBeGreaterThan(0);
+      expect(acyclic.c).toBeLessThan(walk.c);
+    });
+
+    test(`count(*) ACYCLIC ${bound} INWARD`, () => {
+      if (!nativeReady) {
+        expect(nativeReady).toBe(false);
+
+        return;
+      }
+
+      /*
+       * ⚠️ THE MIRROR SPELLING, AND A MUTATION ROUND IS WHY. The route reads the IN-adjacency when
+       * `inward` is set; the mutant hard-coding `csrFor(graph, false, types)` SURVIVED because no
+       * test used `<-[:E]-`. On this graph the in- and out-counts are NOT equal (the chords are
+       * one-directional), so a route that ignored `inward` answers the outward count here.
+       */
+      // ⚠️ SEEDED, AND THAT IS LOAD-BEARING. An unseeded total count is identical forwards and
+      // backwards for every graph (see the hub note above), so the unseeded spelling cannot catch a
+      // route that ignores `inward` no matter what the fixture looks like.
+      const text = `MATCH ACYCLIC (x:T)<-[:E]-${bound}(y:T) WHERE x.n = 3 RETURN count(*) AS c`;
+      const tsRows = [...tsQuery(tsGraphOf(CYCLIC_NDJSON), text, {})];
+      const nativeGraph = graphFromNdjson(nativeBackend(), CYCLIC_NDJSON);
+      const nativeRows = (() => {
+        try {
+          return nativeGraph.query(text);
+        } finally {
+          nativeGraph.free();
+        }
+      })();
+
+      expect(nativeRows).toEqual(tsRows);
+      expect((tsRows[0] as { c: number }).c).toBeGreaterThan(0);
+
+      /*
+       * ⚠️ THE DIRECTION MUST ACTUALLY MATTER HERE, AND IT IS ASSERTED RATHER THAN ASSUMED. Parity
+       * alone is satisfied by a route that ignores `inward` whenever the two spellings happen to
+       * agree — which, for an UNSEEDED count, they always do. With the seed they differ because of
+       * the hub, and this line is what fails if a later edit removes that asymmetry instead of the
+       * coverage silently evaporating.
+       */
+      const outward = [
+        ...tsQuery(
+          tsGraphOf(CYCLIC_NDJSON),
+          `MATCH ACYCLIC (x:T)-[:E]->${bound}(y:T) WHERE x.n = 3 RETURN count(*) AS c`,
+          {},
+        ),
+      ][0] as { c: number };
+
+      expect((tsRows[0] as { c: number }).c).not.toBe(outward.c);
+    });
+
+    test(`count(*) ACYCLIC ${bound} with a seed and an endpoint label`, () => {
+      if (!nativeReady) {
+        expect(nativeReady).toBe(false);
+
+        return;
+      }
+
+      // The SEEDED arm takes a different path through the route (seeked sources + a seed predicate),
+      // and an endpoint predicate exercises the per-reached-endpoint test.
+      const text = `MATCH ACYCLIC (x:T)-[:E]->${bound}(y:T) WHERE x.n = 3 AND y.n <> 5 RETURN count(*) AS c`;
+      const tsRows = [...tsQuery(tsGraphOf(CYCLIC_NDJSON), text, {})];
+      const nativeGraph = graphFromNdjson(nativeBackend(), CYCLIC_NDJSON);
+      const nativeRows = (() => {
+        try {
+          return nativeGraph.query(text);
+        } finally {
+          nativeGraph.free();
+        }
+      })();
+
+      expect(nativeRows).toEqual(tsRows);
+      expect((tsRows[0] as { c: number }).c).toBeGreaterThan(0);
+    });
   }
 });

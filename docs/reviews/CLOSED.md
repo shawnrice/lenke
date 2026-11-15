@@ -97297,7 +97297,7 @@ wants to be a rung rather than a change to the shared path.
 
 GATES. `bun run fmt` 0; `bun run check` 0. (Instrument only — no engine code changed.)
 
-## Item 2001 — 🔭 **THE 520x IS A ROUTE, NOT A COST: `MATCH ACYCLIC` is DECLINED by `degreeCountShape` and falls to the general matcher, which enumerates all 600,000 paths as binding `Map`s to count them.** ⚠️⚠️ **And I wrote TWO wrong correction formulas and ONE false cross-engine claim getting here — all three because I validated against my own model instead of the engine**
+## Item 2001 — ✅ **[TAKEN BY ITEM 2002: the count half is routed to a per-source DFS, 821.13 -> 42.09 ms (19.5x), and it needed NO inclusion-exclusion — the two wrong formulas below were the wrong approach, not a wrong derivation. `DISTINCT ACYCLIC` remains open.]** **THE 520x IS A ROUTE, NOT A COST: `MATCH ACYCLIC` is DECLINED by `degreeCountShape` and falls to the general matcher, which enumerates all 600,000 paths as binding `Map`s to count them.** ⚠️⚠️ **And I wrote TWO wrong correction formulas and ONE false cross-engine claim getting here — all three because I validated against my own model instead of the engine**
 
 Item 2000 priced it; this profiles it. ⚠️ **WINDOWED** (`profileWindow`, profiler started AFTER the
 40k/200k fixture is built), because `PROBES.md`'s closed-frames table exists for exactly this
@@ -97393,3 +97393,114 @@ shared path.
 
 GATES. `bun run fmt` 0; `bun run check` 0; `acyclic-selfloop-parity` 48/48. (Instruments and one test
 — no engine code changed.)
+
+## Item 2002 — ✅ **`MATCH ACYCLIC … RETURN count(*)` ROUTED TO A PER-SOURCE DFS: 821.13 → 42.09 ms, 19.5x unseeded and 10.9x seeded, controls flat.** 🔑 **And it needed NO inclusion-exclusion — which is why it worked, after item 2001 derived the closed form wrong twice.** ⚠️⚠️ **My own budget cost the route its entire purpose and NO correctness test could see it; and my mutation harness read the wrong exit status, voiding the first round**
+
+Takes item 2001's route defect. ACYCLIC was declined by `degreeCountShape` and fell to the general
+matcher, which enumerates every path as a binding `Map` to count it (~86% of the window) while
+excluding 64 paths in 600,000. New module `packages/gql/src/executor/acyclic-count.ts`.
+
+```text
+bound {1,2}, fanout 5, median of 5             5k        20k        40k    vs PRE
+count(*) ACYCLIC unseeded      PRE          61.95     316.16     821.13
+                               POST          5.34      21.95      42.09    19.5x
+count(*) ACYCLIC WHERE-all     POST          4.92      21.85      44.24    19.9x
+count(*) ACYCLIC seeded-1%     PRE/POST     1.23/0.17  6.09/0.91  15.28/1.40   10.9x
+count(*) plain   unseeded      control       0.50       0.86       1.73    flat (was 1.58)
+count(*) TRAIL   unseeded      control       0.59       1.18       2.41    flat (was 2.36)
+DISTINCT ACYCLIC unseeded      untouched   134.55     621.52    1405.80   ⬅ STILL OPEN, see below
+```
+
+The TRAIL gap closes from **348x to 17.5x**. The residue is structural and not a defect: TRAIL has a
+level-wise recurrence that never enumerates, ACYCLIC has a DFS that does.
+
+## 🔑 THE DESIGN, AND WHY IT SUCCEEDED WHERE ITEM 2001'S ARITHMETIC FAILED
+
+Item 2001 derived a closed-form acyclic correction **twice** and both were wrong — the first
+invisibly, since its error term `sum(L_a^2)` is ~0 on any graph without dense self-loops. The cure
+was to stop deriving. `perSourceTrailCount` is already a DFS carrying visited EDGE POSITIONS; the
+acyclic route is the same DFS carrying visited VERTICES. **Acyclicity becomes the loop condition, so
+there is no correction term to get wrong.** The three awkward semantics then fall out:
+
+- a SELF-LOOP's far end is the vertex being stood on, already in `seen` → skipped;
+- PARALLEL edges are separate `k` iterations with the same `nbr[k]`, each pushing and popping → both
+  counted;
+- a 2-CYCLE `a->b->a` fails at the second hop — the only case that makes ACYCLIC differ at all.
+
+⚠️ **IT LIVES IN ITS OWN MODULE AND RETURNS BEFORE `isTrail` EXISTS, which is a correctness property
+and not tidiness.** `isTrail` is `mode !== 'walk'`, so an acyclic pattern reaching the level
+recurrence would be handed the TRAIL correction and answer a trail count — **item 692's recorded
+wrong answer** (a depth-4 trail taking the walk arithmetic, 3 where the trail answers 0) with a
+different mode name. Nothing below the branch is reachable for this mode, so there is no sibling
+bound to leave stale. The two depth conditions moved into `depth4Admissible` and a new
+`boundedByTrailCorrection` for the same reason — and because written inline the branch took
+`detectVarLengthCount` to a lint complexity of **38 against a cap of 35**, the cap that file's own
+note already warns is reached.
+
+## ⚠️⚠️ THE BUDGET COST THE ROUTE ITS WHOLE PURPOSE, AND NO CORRECTNESS TEST COULD SEE IT
+
+Sized at `levels * (|V| + |E|)`, copied from `perSourceBudget`, with the stated reasoning "a route
+that exceeds what the level recurrence would have cost has lost its reason to exist". **That
+comparator does not exist for this mode.** `perSourceBudget` guards a route whose alternative IS the
+recurrence; ACYCLIC has no recurrence, so its alternative is the general clause loop — which walks
+**the same path set** and allocates a `Map` per path. There is no crossover to find.
+
+The number is the lesson: **the UNSEEDED count, the 520x case the route was built for, declined on
+the budget and stayed at 869 ms** while the seeded case took the route and went 15.28 → 1.05. At
+40,000 vertices the DFS does `40000 * (5 + 25)` = 1.2M edge steps against a ceiling of `2 * 240000` =
+480k, so it over-ran by 2.5x at EVERY size — a total decline, not a size-dependent one, so no sweep
+would have found a crossover either. **And the answers were identical both ways, because declining
+falls through to the general loop: a 19x regression against the route's own reason for existing,
+invisible to every correctness test.** `acyclic-budget.test.ts` now pins the claim that matters — not
+a constant, but that the ceiling ADMITS the shape the route exists for, plus that it still declines
+rather than hanging at a depth that explodes.
+
+## ⚠️⚠️ AND THE MUTATION HARNESS READ THE WRONG EXIT STATUS, VOIDING THE WHOLE FIRST ROUND
+
+`run_test` ran both filters in one subshell — `$(cd native && bun test parity; cd gql && bun test)` —
+and read `$?`, **which is the LAST command's status only.** So every mutant caught by the parity test
+but not by the GQL suite was reported SURVIVED. It printed six survivors; `min-ignored` then failed by
+hand on the first check (2 fail). This is CLAUDE.md's "piping clippy into grep takes grep's exit
+status" in a new costume, and it invalidated the round rather than a row of it. Fixed to read each
+suite's status separately and never chained — and the fix immediately showed that **three catches are
+PARITY-ONLY** (`min-ignored`, `endpoint-test-dropped`, `seed-filter-dropped` all read `gql=0`): the
+cross-engine test sees things the 4,980-test GQL suite cannot.
+
+FINAL ROUND: 14 mutants, **13 caught, 1 declared expected survivor.**
+
+- ⚠️ **A ROUTE COUNTER SETTLED WHETHER THE SURVIVORS WERE GAPS OR UNREACHABLE CODE** (item 1982's
+  rule, applied before guessing): all nine shapes — `min>1`, seeded, endpoint-pred, inward, `{1,5}`,
+  endpoint-label — reach the route, so each survivor was a real gap. Closed by adding an isolated
+  vertex, a vertex carrying only another edge type, and inward coverage.
+- ⚠️⚠️ **AND MY "FIXTURE DEFECT" DIAGNOSIS FOR `inward-ignored` WAS ITSELF WRONG, which the test
+  caught.** I concluded the cyclic fixture was reverse-isomorphic to itself and added a hub to break
+  the symmetry; asserting the asymmetry then failed at **every bound.** The real reason is a
+  mathematical identity: **an unseeded total path count equals its reverse for EVERY graph**, since
+  reversing a path is a bijection between the length-k paths of G and of G-reversed. No fixture can
+  make those differ, so the inward test has to be SEEDED to observe direction at all. With a seed it
+  catches the mutant (4 fail). The hub is kept, with its rationale corrected.
+- `missing-slot-counted` is the expected survivor, and the mechanism is VERIFIED rather than asserted:
+  without the guard `slot` is `undefined`, so `off[undefined + 1]` is `off[NaN]` → `undefined`, the
+  `for` bound never holds, and `len >= 1` short-circuits before `passes(order[undefined])`. The
+  answer is unchanged. It is kept — not as speculation about future edits, but because the condition
+  is REACHABLE today and the guard makes "skip this source" the stated behaviour rather than an
+  accident of NaN index semantics that any change to the loop bound would quietly remove.
+
+CROSS-ENGINE. `acyclic-selfloop-parity.test.ts` grew from 48 to **63 cases**: four hand fixtures (a
+lone self-loop, a self-loop beside a real edge, parallel edges, a 2-cycle) plus a 62-vertex generated
+graph carrying self-loops, 2-cycles at every position, chords, parallel edges, a hub, an isolated
+vertex and a foreign-type vertex — x WALK/TRAIL/ACYCLIC x five bounds, TS against the Rust engine's
+INDEPENDENT implementation, compared as ORDERED arrays, with non-triviality asserted (ACYCLIC must
+differ from WALK, and the inward count from the outward one) so parity cannot pass on a fixture where
+acyclicity never bites. ⚠️ Handles are `free()`d explicitly — the engine warns when a `RustGraph` is
+GC'd unfreed, and it was warning.
+
+STILL OPEN: **`DISTINCT ACYCLIC` is untouched at 1405.80 ms**, 23x its plain twin. It does not use
+the count rung at all, so nothing here reaches it — a `reachability.ts`-side question, and that file
+refuses ACYCLIC for the measured reason `CLOSED.md` records (a self-loop makes it diverge from set
+reachability). ⚠️ Do not read this item's 19.5x as covering it.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
+`bun run fuzz` 7/7 (the differential fuzzer draws ~1,100 `var-length` plans a run, with ACYCLIC among
+its count bodies, so the new route is exercised against the Rust engine rather than only against
+itself); gql 4,980 + 4 new; parity 63/63.
