@@ -31871,7 +31871,7 @@ run was clean; 27 runs of 120,000 were not. Whether to widen the registry entry 
 left open — extending the static check to inline pattern predicates has been tried twice and was
 worse both times.
 
-## 1063 — ✅ SHIPPED: the HOP rung's deferred order. 2.7-8.9x across all five walk variants, no walk changed — 🛑 **AND IT SHIPPED A WRONG ANSWER, found at item 1903: the walk's three binding flags described the REAL projection while the walk built `walkProj`, so a sort key reading an end the projection does not ranked on NULL keys. Four of five end/key combinations diverged from native; fixed by `walkReadFlags`, at 7.6x on the one shape that was wrong**
+## 1063 — ✅ SHIPPED: the HOP rung's deferred order. 2.7-8.9x across all five walk variants, no walk changed — 🧹 and ~~its SKIP-with-no-LIMIT refusal~~ **lifted at item 1905 by projecting before slicing (2.85x), with the fault parity it was protecting asserted against native** — 🛑 **AND IT SHIPPED A WRONG ANSWER, found at item 1903: the walk's three binding flags described the REAL projection while the walk built `walkProj`, so a sort key reading an end the projection does not ranked on NULL keys. Four of five end/key combinations diverged from native; fixed by `walkReadFlags`, at 7.6x on the one shape that was wrong**
 
 Item 1062's twin, on the rung it recorded as untouched. `hopOrderPlan` refused a window whenever any
 projected item could fault; `deferredHopOrder` ranks on the keys and projects only the emitted rows.
@@ -89958,7 +89958,7 @@ bare variable read in a sort key. Item 1902 closed that for the NODE shape; this
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers THREE
 times on random seeds (the corpus changed); `bun run spelling` on the new group.
 
-## Item 1904 — the instrument item 1903's wrong answer should have been found by: **320 sort shapes against native, in order, with verified teeth (30 shapes catch the pre-1903 derivation)** — and its route census says every sort shape that CAN take a rung now does
+## Item 1904 — the instrument item 1903's wrong answer should have been found by: **320 sort shapes against native, in order, with verified teeth (30 shapes catch the pre-1903 derivation)** — and its route census says every sort shape that CAN take a rung now does — 🧹 ~~the skip-only refusal it priced at 2.9x~~ **TAKEN at item 1905 (2.85x hop, 3.44x node); the census is now 64 general-path shapes, ALL of them the `LIMIT 0` speed guard**
 
 Item 1903 found a shipped TS-only wrong answer BY ACCIDENT: a perf gate routed a second spelling
 into a broken arm, and one pre-existing test happened to cover one case. ⚠️ **Nothing was asking
@@ -90020,3 +90020,66 @@ NO ENGINE CODE CHANGED. One shared module, one test, one probe, two priced scree
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects (one run exited 1 with Nx
 reporting `@lenke/errors` FLAKY — green on a re-run and green isolated, which is
 [[sync-test-flake-is-timing]]'s shape); all seven fuzzers.
+
+## Item 1905 — the last sort refusal, taken: a `SKIP` with no `LIMIT` reaches the deferred arm on BOTH the node and hop rungs — **3.44x** and **2.85x** — by moving the slice AFTER the projection. Item 1904's census now reads **64 general-path shapes, all of them the `LIMIT 0` speed guard**
+
+Item 1904's matrix left exactly one correctness refusal standing and priced it: 43 of its 320 shapes
+were `OFFSET` with no `LIMIT`, and the expression-keyed hop sort read 1290.48 ms against 448.77 for
+the same key with no offset.
+
+✅ **AND THE REFUSAL WAS A REAL RULE, NOT CAUTION — which is why this item is mostly evidence.** Its
+stated reason: with no cap the general path sorts, projects EVERY row, and drops the skipped ones
+afterwards, so an item that faults on a discarded row RAISES there — while an arm that ranks and
+projects only the survivors emits fewer rows than it projects and silently returns rows instead.
+`page-fold-fault.test.ts`'s control caught item 1062's first cut doing exactly that.
+
+      THE CHANGE IS THEREFORE NOT "ADMIT IT" BUT "PROJECT FIRST, SLICE SECOND": `plan.skip` is
+      forced to 0, every ranked row is re-projected, and the page is taken from the projected
+      rows. Fault behaviour is then identical to the general path's BY CONSTRUCTION — the same
+      reasoning that let item 1903 admit the no-window case, which is this one's `skip = 0`.
+
+      200,000 vertices / 1,000,000 edges, one shape per process, median of 7 less warm-up:
+
+        hop  expr key, OFFSET 3     1290.48  ->  453.23 ms   799,997 rows   ⬅ 2.85x
+        hop  ALIAS key, OFFSET 3     278.88  ->  273.57                      flat (control)
+        node expr key, OFFSET 3      167.00  ->   48.60      199,997         ⬅ 3.44x
+        node ALIAS key, OFFSET 3      19.76  ->   20.65                       flat (control)
+
+✅ **BOTH ARMS IN STEP, DELIBERATELY.** `deferredRoute`/`deferredSortedNodeWalk` and
+`deferredHopOrder` are separate walks, and a route policy that differed between the node and hop
+spellings of one question is this repo's named defect class. ⚠️ And "the hop is fault-equal" is not
+evidence about the node, so `skip-only-fault-parity.test.ts` asserts both against native separately
+— and the teeth were verified separately too: slicing before the projection makes the two skip-only
+cases stop raising on the hop arm, and the same mutation on the node arm fails the node cases.
+
+      ITS CASES SPELL OUT THE VERDICT rather than only comparing engines:
+        OFFSET 1 / SKIP 1 / no window      MUST RAISE      (every row is projected)
+        DESC LIMIT 2 / OFFSET 1 LIMIT 2    MUST RETURN ROWS (a true top-k projects survivors only)
+        LIMIT 0                            MUST RETURN []   (still refused, and for correctness)
+
+⚠️ **THREE ROUTE-EXPECTATION TESTS SAID THE OPPOSITE AND WERE UPDATED, two of them item 1062's own
+deliberate refusals.** That is the part worth flagging: a test asserting a REFUSAL is a test that
+fails when the refusal is lifted, and the only honest way past it is to prove the reason no longer
+applies. The shapes moved from `REFUSED` to a claimed list with the argument and the evidence named
+at the move, not deleted.
+
+✅ **AND ITEM 1904'S CENSUS IS THE CLOSING MEASUREMENT.** Over the same 320 shapes:
+
+                        before 1902   after 1903   after 1905
+        hopProjection       —             131          160
+        nodeProjection      —              82           96
+        GENERAL PATH        —             107           64   ⬅ ALL 64 are `LIMIT 0`
+
+`LIMIT 0` is a SPEED guard and answer-equivalent (`applyProjection` returns `[]` before projecting,
+so does the slice, and mutation at item 604 recorded that admitting it SURVIVES). **So every sort
+shape in the matrix that can take a rung now does, and the one that does not is the one where taking
+it would be slower rather than wrong.** This closes the line of work items 1901-1905 opened.
+
+🔭 **WHAT STAYS OPEN, with its number**: the expression key is still ~2.8x the bound-name spelling
+unwindowed (`bun run spelling` flags both node groups at 2.85x/2.72x, unchanged by this item) — the
+per-row compiled-key evaluation plus the `KeyRow` allocation against the plain arm's direct column
+read. Priced at item 1902, still priced.
+
+GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers;
+`bun run spelling` at SPELL_N=200000 SPELL_REPS=9 (2 flagged groups, both item 1902's known
+residual, no new ones); item 1904's matrix and census.

@@ -1008,6 +1008,30 @@ const deferredHopOrder = (s: {
    * beating the general matcher. Measured 1190.77 -> 451.50 ms, 2.64x, over 800,000 rows.
    */
   const noWindow = skip === undefined && limit === undefined;
+  /*
+   * ⚠️⚠️ A `SKIP` WITH NO `LIMIT` IS ADMITTED TOO (item 1905), AND ONLY BECAUSE THE ROWS ARE
+   * PROJECTED BEFORE THE SLICE. The refusal's stated reason is exact and still holds for the
+   * ranking form: with no cap the general path sorts, projects EVERY row, and drops the skipped
+   * ones afterwards, so an item that faults on a discarded row RAISES there — while an arm that
+   * ranks and projects only the survivors would emit fewer rows than it projects and silently not
+   * raise. `page-fold-fault.test.ts` caught item 1062's first cut doing exactly that.
+   *
+   * ✅ So this arm does what the general path does: `plan.skip` is forced to 0, every ranked row is
+   * re-projected, and the slice happens AFTER. Fault parity is then identical by construction
+   * rather than by argument — the same reasoning that let item 1903 admit the no-window case, which
+   * is the degenerate `skip = 0` of this one.
+   *
+   * ⚠️ `limit === 0` STILL DECLINES and that is CORRECTNESS, not speed: `applyProjection` returns
+   * `[]` BEFORE projecting anything, so evaluating keys to emit nothing would raise where the query
+   * does not. A parameterized window still declines too — the route is chosen once while the value
+   * lives in `params`.
+   *
+   * COST OF THE REFUSAL, at 200,000 vertices / 1,000,000 edges: the expression-keyed hop sort read
+   * 448.77 ms with no window and 1290.48 with `OFFSET 3` — 2.9x — while the ALIAS spelling was
+   * unaffected at 278.88, so only the expression key fell through. 43 of the 320 shapes in item
+   * 1904's matrix are this case.
+   */
+  const skipOnly = limit === undefined && typeof skip === 'number';
 
   if (proj.orderBy.length === 0 || proj.orderNeedsOutput) {
     return null;
@@ -1015,6 +1039,7 @@ const deferredHopOrder = (s: {
 
   if (
     !noWindow &&
+    !skipOnly &&
     (typeof limit !== 'number' || limit === 0 || (skip !== undefined && typeof skip !== 'number'))
   ) {
     return null;
@@ -1050,15 +1075,21 @@ const deferredHopOrder = (s: {
   // The window and the sort are cleared from the walk's copy deliberately: the wrapper applies
   // both, and a walk that paged first would truncate before the ranking.
   const walkProj: CProjection = { ...proj, items, orderBy: [], skip: undefined, limit: undefined };
+  const literalSkip = skipOnly || typeof skip !== 'number' ? 0 : skip;
   const plan: SortPlan = {
     sorts: proj.orderBy.map((k, i) => ({
       col: defKey(i),
       descending: k.descending,
       nullsFirst: k.nullsFirst,
     })),
-    skip: typeof skip === 'number' ? skip : 0,
+    // ⚠️ ZERO FOR THE SKIP-ONLY CASE, because the slice moves AFTER the re-projection — see the
+    // gate above. Every other window keeps its skip here, where `sortRowsByColumns` applies it
+    // before the survivors are projected, which is what makes a top-k a top-k.
+    skip: literalSkip,
     limit,
   };
+  /** Applied AFTER projection, so a faulting item raises exactly where the general path's does. */
+  const postSkip = skipOnly ? skip : 0;
   const width = carriers.length;
 
   return {
@@ -1089,7 +1120,7 @@ const deferredHopOrder = (s: {
               out.push(projectRow(proj, binding, params, graph));
             }
 
-            return out;
+            return postSkip > 0 ? out.slice(postSkip) : out;
           },
   };
 };

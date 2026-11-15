@@ -1960,3 +1960,21 @@ of the two documented refusals (64 `LIMIT 0`, a speed guard; 43 `OFFSET` with no
 correctness one). No unwindowed shape falls through any more. 🔭 The skip-only refusal is priced at
 2.9x (1290.48 ms against 448.77 without the offset, 800,000 rows), and the design to take it is item
 1903's: project EVERY row and slice after, which is fault-equal to the general path.
+
+## `src/skip-only-fault-parity.test.ts` — the evidence that let a refusal be removed (item 1905)
+
+Not cover added after the fact: this file IS the argument. `deferredHopOrder` and `deferredRoute`
+refused a `SKIP` with no `LIMIT` because ranking-then-projecting emits fewer rows than it projects,
+so an item faulting on a discarded row would silently not raise — `page-fold-fault.test.ts` caught
+item 1062's first cut doing that. Item 1905 lifts the refusal by projecting EVERY ranked row and
+slicing AFTER, and this asserts the resulting fault behaviour against native for BOTH arms.
+
+⚠️ **ITS CASES SPELL OUT THE VERDICT**, not just engine agreement: `OFFSET 1` / `SKIP 1` / no window
+MUST RAISE (every row is projected); `DESC LIMIT 2` / `OFFSET 1 LIMIT 2` MUST RETURN ROWS (a true
+top-k projects survivors only); `LIMIT 0` MUST RETURN `[]` (still refused, and for correctness —
+`applyProjection` returns `[]` before projecting anything).
+
+⚠️ **TEETH VERIFIED PER ARM**, because "the hop is fault-equal" is not evidence about the node:
+slicing before the projection fails the two skip-only hop cases, and the same mutation on the node
+arm fails the node cases. A stored NaN is the only way to make a projection fault (ingest coerces
+NaN to null), so it is computed with `SET`.

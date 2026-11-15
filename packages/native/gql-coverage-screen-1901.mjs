@@ -73,6 +73,9 @@ const SHAPES = [
 
   // --- ordering by something other than a bound name ---
   ['order by EXPRESSION', 'MATCH (n:T) RETURN n.n AS x ORDER BY n.n + 1', {}],
+  // The NODE twin of the skip-only refusal item 1905 took.
+  ['NODE expr key, OFFSET no LIMIT', 'MATCH (n:T) RETURN n.n AS x ORDER BY n.n + 1 OFFSET 3', {}],
+  ['NODE alias key, OFFSET no LIMIT', 'MATCH (n:T) RETURN n.n AS x ORDER BY x OFFSET 3', {}],
   // ⚠️⚠️ THE INVERSION ITEM 1901 FOUND: adding a WINDOW makes the expression key ACCEPTABLE. The
   // route census says `ORDER BY n.k + 1` reaches NO rung while `ORDER BY n.k + 1 LIMIT 3` reaches
   // `nodeProjection` — so the engine ALREADY evaluates an arbitrary expression sort key, and it is

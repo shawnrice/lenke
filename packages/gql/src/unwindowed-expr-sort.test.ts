@@ -176,9 +176,16 @@ describe('the ROUTE, which the answers cannot see', () => {
     );
   });
 
-  /** ⚠️ The two refusals the item left alone, asserted as refusals rather than assumed. */
-  test('a SKIP with no LIMIT still reaches NO rung', () => {
-    expect(rungsFor('MATCH (n:T) RETURN n.n AS x ORDER BY n.n + 1 OFFSET 1')).toStrictEqual([]);
+  /**
+   * ⚠️ A SKIP WITH NO LIMIT WAS REFUSED HERE AND IS NOW CLAIMED (item 1905). It was refused because
+   * ranking-then-projecting emits fewer rows than it projects, so an item faulting on a discarded
+   * row would silently not raise; the arm now forces `plan.skip` to 0, projects every ranked row and
+   * slices AFTER, which `skip-only-fault-parity.test.ts` asserts against native.
+   */
+  test('a SKIP with no LIMIT now reaches the rung too', () => {
+    expect(rungsFor('MATCH (n:T) RETURN n.n AS x ORDER BY n.n + 1 OFFSET 1')).toContain(
+      'nodeProjection',
+    );
   });
 
   test('LIMIT 0 still reaches NO rung', () => {

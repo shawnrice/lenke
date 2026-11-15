@@ -561,9 +561,23 @@ export const deferredSortedNodeWalk = (spec: {
   keys: readonly DeferredKey[];
   plan: SortPlan;
   soleKey: string | undefined;
+  /** Applied AFTER projection, so a faulting item raises where the general path's does. */
+  postSkip: number;
 }): ((graph: Graph, params: Params) => Row[]) => {
-  const { cstart, label, labelName, gate, nodeVar, cols, fns, directKeys, keys, plan, soleKey } =
-    spec;
+  const {
+    cstart,
+    label,
+    labelName,
+    gate,
+    nodeVar,
+    cols,
+    fns,
+    directKeys,
+    keys,
+    plan,
+    soleKey,
+    postSkip,
+  } = spec;
   const width = cols.length;
 
   return (graph, params) => {
@@ -658,7 +672,7 @@ export const deferredSortedNodeWalk = (spec: {
       out.push(row);
     }
 
-    return out;
+    return postSkip > 0 ? out.slice(postSkip) : out;
   };
 };
 /**
@@ -945,9 +959,22 @@ export const deferredRoute = (spec: {
    * equivalent-spelling gap and `bun run spelling` is where it belongs as a standing check.
    */
   const noWindow = skip === undefined && limit === undefined;
+  /*
+   * ⚠️ AND A `SKIP` WITH NO `LIMIT` TOO (item 1905), the node twin of the same change on
+   * `deferredHopOrder` — kept in step deliberately, because a route policy differing between the
+   * node and hop spellings of one question is this repo's named defect class. It is admitted only
+   * because the slice moves AFTER the projection: `plan.skip` is forced to 0, every ranked row is
+   * projected, and the page is taken from the projected rows. The refusal's stated reason —
+   * ranking-then-projecting emits fewer rows than it projects, so an item faulting on a discarded
+   * row would not raise — is then satisfied by construction rather than by argument.
+   * `skip-only-fault-parity.test.ts` asserts it against native, and has teeth: slicing BEFORE the
+   * projection makes both skip-only cases stop raising.
+   */
+  const skipOnly = limit === undefined && typeof skip === 'number';
 
   if (
     !noWindow &&
+    !skipOnly &&
     (typeof limit !== 'number' || limit === 0 || (skip !== undefined && typeof skip !== 'number'))
   ) {
     return null;
@@ -976,11 +1003,13 @@ export const deferredRoute = (spec: {
         descending: k.descending,
         nullsFirst: k.nullsFirst,
       })),
-      skip: typeof skip === 'number' ? skip : 0,
+      // ⚠️ ZERO FOR THE SKIP-ONLY CASE, because `postSkip` takes the page after the projection.
+      skip: skipOnly || typeof skip !== 'number' ? 0 : skip,
       // `undefined` for the no-window case, which is what `sortRowsByColumns` already takes for an
       // unwindowed sort — the same value `outputColumnSorts` hands it on the plain arm.
       limit: typeof limit === 'number' ? limit : undefined,
     },
+    postSkip: skipOnly ? skip : 0,
   });
 };
 export const detectNodeProjection = (

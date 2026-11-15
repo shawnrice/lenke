@@ -102,8 +102,6 @@ describe('the deferred arm claims the shapes the fault rule used to refuse', () 
     // projects EVERY row before dropping the skipped ones — and so does native. Deferring would
     // answer rows where the query raises; `page-fold-fault.test.ts`'s own control caught the first
     // cut of this arm admitting it.
-    'MATCH (n:P) RETURN n.k + 1 AS c ORDER BY c SKIP 1',
-    'MATCH (n:P) RETURN n.k AS c, n.k + 1 AS d ORDER BY c OFFSET 1',
     // An alias that SHADOWS the scan's own variable. In the sort scope the output columns are
     // overlaid on the binding, so the `n` inside `n.k + 1` would resolve to the COLUMN — a number
     // — and mean something else. `aliasDefinition` declines for the same reason, and native
@@ -280,4 +278,34 @@ describe('the deferred arm answers what the plain spelling answers', () => {
       query(fixture(), 'MATCH (n:P) RETURN n.k + 1 AS c ORDER BY c DESC SKIP 99 LIMIT 2'),
     ).toEqual([]);
   });
+});
+
+/**
+ * ⚠️⚠️ THE SKIP-ONLY SHAPES MOVED OUT OF `REFUSED` AT ITEM 1905, and the move is the point. They
+ * were refused because ranking-then-projecting emits fewer rows than it projects, so an item that
+ * faults on a discarded row would silently not raise — `page-fold-fault.test.ts`'s control caught
+ * the first cut of this arm doing exactly that, which is why the refusal was a real rule and not
+ * caution.
+ *
+ * ✅ The arm now forces `plan.skip` to 0, re-projects EVERY ranked row and takes the page AFTER, so
+ * fault behaviour is identical to the general path's by construction. The evidence is
+ * `skip-only-fault-parity.test.ts`, which asserts it against native for BOTH the node and hop arms
+ * and has teeth: slicing before the projection makes the skip-only cases stop raising.
+ *
+ * ⚠️ `LIMIT 0` IS STILL REFUSED and stays in `REFUSED` above — that one is correctness too, but of
+ * the opposite kind: `applyProjection` returns `[]` BEFORE projecting anything, so evaluating keys
+ * to emit nothing would raise where the query does not.
+ */
+describe('a skip-only page now takes the deferred arm (item 1905)', () => {
+  const CLAIMED_NOW = [
+    'MATCH (n:P) RETURN n.k + 1 AS c ORDER BY c SKIP 1',
+    'MATCH (n:P) RETURN n.k AS c, n.k + 1 AS d ORDER BY c OFFSET 1',
+    'MATCH (n:P) RETURN n.k AS c ORDER BY n.k + 1 OFFSET 2',
+  ] as const;
+
+  for (const q of CLAIMED_NOW) {
+    it(`routes ${q}`, () => {
+      expect(routes(q)).toEqual(['nodeProjection']);
+    });
+  }
 });
