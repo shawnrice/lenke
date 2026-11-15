@@ -91818,3 +91818,78 @@ the change, not a formality.
 
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers;
 `bun run spelling:gremlin`; the workload screen at 200,000 vertices.
+
+## Item 1925 — **DECLINED on its ceiling: fusing `tree()` is worth at most 1.55x**, because 350 of its 543 ms is the contractual KEY plus the nested INSERT and neither is reachable by claiming the plan. ⚠️ Plus one more guess refuted at ~2%: `forEach`'s per-row closure is not the cost
+
+Items 1920-1924 cleared the path-dependent family: `path()` 14.8x, `otherV` 6.7x, `tree()`'s key 1.85x,
+`simplePath` 8.17x, `path().by(k)` 3.78x. `tree()` is what is left — **542.94 ms for ONE ROW**, still
+the largest shape on the Gremlin surface — and the obvious next move is item 1920's: claim the whole
+plan so there is no traverser and no accumulated path.
+
+      THE PROFILE, after item 1922's memo (one shape per process, REPS=20):
+
+        (anonymous) projection.ts   27.0%   the `t.path.forEach` CALLBACK, 2 calls a row
+        memoizedTreeKey             24.5%   memo lookups + the 200,000 distinct serializations
+        generatorResume             15.8%   the traverser pipeline
+        stringify                    6.5%
+        iterLabeled                  5.6%   the adjacency generator chain
+        sort                         2.8%   `toJSON()` sorting property keys
+
+## ❌ First guess refuted: the `forEach` closure
+
+That 27% frame is a `forEach` with a callback allocated per ROW (it captures `cursor`, which changes)
+and invoked 1,200,000 times. Replacing it with an indexed loop measured **535-538 ms against 546 —
+about 2%, inside the instrument's spread.** V8 inlines the callback, so the 27% is the WORK inside it
+(the `bys` test, the key dispatch, the nested lookup and insert), not the dispatch. Reverted, with
+the number recorded above the loop so it is not re-attempted.
+
+## ❌ And the fusion itself, priced on the CSR arm
+
+      `tree-ceiling-1925.mjs`, 200,000 vertices / 600,000 E-edges, median of 7:
+
+        walk    the CSR traversal, no tree, no keys        0.36 ms   ⬅ the walk is FREE
+        keys    + the canonical key, memoized              149.65     the CONTRACTUAL floor
+        tree    + the nested insert — the WHOLE tree       350.23     ⬅ the ceiling
+        ------------------------------------------------------------
+        the engine today                                  542.94     so 1.55x, ~193 ms available
+
+⚠️⚠️ **THE HAND ARM USES THE CSR WALK, WHICH IS ITEM 1920'S MISTAKE NOT REPEATED.** That item priced
+its fusion against a hand walk over the adjacency `Set`s — the BUCKET arm — while the engine takes
+the CSR arm on the second ask, so its "ceiling" came out **3x BELOW** what the engine then achieved.
+A ceiling measured on the slower arm is a floor for the faster one, and here the CSR walk is 0.36 ms
+where the bucket walk was 15.78 at the same size (item 1920's probe).
+
+🔑 **AND THE SPLIT IS WHY THIS IS DECLINED RATHER THAN BUILT.** Of the 350 ms ceiling:
+
+      149 ms is the canonical key, which item 1922 established is CONTRACTUAL — `toJSON()`
+          stringified is the byte-identity contract with the Rust engine, already memoized down to
+          the 200,000 DISTINCT serializations, and unreachable without caching the rendering on the
+          element itself (a core change with the invalidation problem [[graph-counters-are-async]]
+          describes).
+      200 ms is the nested INSERT — 600,000 two-level writes into plain objects, ~334 ns each. ⚠️ And
+          the plain object is contractual TOO: `treeKey`'s own note records that "a nested `Map`
+          would stringify to `{}` — the silent-empty-tree bug this replaces". So the faster
+          structure is the one that was already removed for being wrong.
+
+Neither term is touched by claiming the plan. What a fusion removes is `generatorResume` +
+`iterLabeled` + the per-row path array — the ~193 ms gap between the hand tree and the engine, and
+**less than that in practice**, since a real rung pays its own gate and walk wrapper.
+
+## The decision, stated against this session's own bar
+
+**1.55x at best, for a new fused fold with its own gate, tests and mutation battery.** Items
+1920-1924 delivered 14.8x, 8.17x, 6.7x, 3.78x and 1.85x on the same family; this is the weakest
+remaining target by a wide margin and the ceiling says so before any code was written. Priced and
+left, which is item 1893's pattern — that item priced the edge-indexed CSR at a further 1.79x and
+did not build it either.
+
+🔭 **SO THE PATH-DEPENDENT FAMILY IS DONE as an optimisation target**, and what remains on the Gremlin
+screen is `tree()` at 542.94 (this entry), `cyclicPath` at 172.42 for TWO rows (item 1923 records why
+it is refused: it needs `where(eq(t))`, which item 1912's rung declines), and
+`edge: outE.has(w).inV` at ~78 — priced at item 1893, where the engine's rung is 2.08x a hand walk
+and the edge-indexed CSR a further 1.79x, not built.
+
+NO ENGINE BEHAVIOUR CHANGED. One rejected-optimisation note above `treeStep`'s loop, and one
+instrument.
+
+GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects.

@@ -2786,3 +2786,37 @@ neither caught nor survived.
 bucket) is four paths; a mode makes eight. Item 1920's battery found three of its four untested, so
 each new arm gets its own per-arm mutant and the tests drive the iterator's CSR _and_ cold-BUCKET
 arms for the new mode specifically — not just the drain that `toArray` happens to take.
+
+## ❌ `tree()` FUSION DECLINED AT 1.55x — and the ceiling arm is where item 1920's mistake was NOT repeated (item 1925)
+
+```
+tree-ceiling-1925.mjs, 200,000 vertices / 600,000 E-edges, median of 7:
+
+walk    the CSR traversal, no tree, no keys        0.36 ms   <- the walk is FREE
+keys    + the canonical key, memoized            149.65      the CONTRACTUAL floor
+tree    + the nested insert — the WHOLE tree      350.23      <- the ceiling
+the engine today                                  542.94      so 1.55x, ~193 ms available
+```
+
+⚠️⚠️ **THE HAND ARM WALKS THE CSR, NOT THE BUCKETS.** Item 1920 priced its fusion against a hand walk
+over the adjacency `Set`s while the engine takes the CSR arm on the second ask — its "ceiling" came
+out **3x BELOW** what the engine then achieved. Here the same size reads **0.36 ms on the CSR against
+15.78 on the buckets**, which is the whole difference between a useful ceiling and a misleading one.
+
+🔑 **WHY 350 ms IS A FLOOR AND NOT A RESIDUAL**: 149 ms is the canonical `toJSON()` key (contractual
+byte-identity, already memoized to the 200,000 distinct serializations) and 200 ms is 600,000
+two-level inserts into plain objects (~334 ns each). ⚠️ **The plain object is contractual too** —
+`treeKey`'s note records that "a nested `Map` would stringify to `{}` — the silent-empty-tree bug
+this replaces", so the faster structure is the one already removed for being wrong. A whole-plan
+claim removes only the pipeline between them.
+
+## ❌ AND `forEach`'s PER-ROW CLOSURE IS NOT THE COST (item 1925)
+
+`treeStep`'s `t.path.forEach(callback)` allocates a closure per ROW (it captures `cursor`) and is
+invoked 1,200,000 times, and the profile puts **27%** in that frame. Replacing it with an indexed
+loop: **535-538 ms against 546, ~2%, inside the spread.**
+
+⚠️ V8 inlines the callback, so the frame's 27% is the WORK inside it — the `bys` test, the key
+dispatch, the nested lookup and insert — not the dispatch. **A `forEach` frame high in a profile is
+not evidence that `forEach` is the problem**, which is [[frame-attribution-trap]] in its third form
+this session (after a getter frame at item 1916 and a lazy-iterator frame at item 1919).
