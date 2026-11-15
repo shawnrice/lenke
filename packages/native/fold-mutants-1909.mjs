@@ -20,6 +20,9 @@ const ROOT = '/home/shawn/projects/pl-graph';
 const SRCS = {
   agg: `${ROOT}/packages/gremlin/src/executor/aggregation.ts`,
   idx: `${ROOT}/packages/gremlin/src/executor/index.ts`,
+  // Item 1910's two gates: the bare-hop residual, in both rungs that serve a bare hop.
+  hv: `${ROOT}/packages/gremlin/src/executor/hop-values.ts`,
+  csr: `${ROOT}/packages/gremlin/src/executor/hop-values-csr.ts`,
 };
 const PRISTINE = `${ROOT}/crates/lenke-engine/target/pristine-1909m`;
 const CWD = `${ROOT}/packages/gremlin`;
@@ -62,6 +65,34 @@ const MUTANTS = [
     1,
   ],
   [
+    'the ELEMENT fold is not admitted on the bare hop (pre-1910)',
+    'hv',
+    "} else if (proj === undefined || proj.kind === 'order' || proj.kind === 'fold') {",
+    "} else if (proj === undefined || proj.kind === 'order') {",
+    1,
+  ],
+  [
+    'the bare-hop arm CONSUMES the fold instead of leaving it in rest',
+    'hv',
+    '    pick = (far) => far;\n    consumed = 2;',
+    '    pick = (far) => far;\n    consumed = 3;',
+    1,
+  ],
+  [
+    'the CSR rung does not admit the fold (so the slower bucket walk serves it)',
+    'csr',
+    "  if (proj === undefined || proj.kind === 'fold') {",
+    '  if (proj === undefined) {',
+    1,
+  ],
+  [
+    'the CSR rung CONSUMES the fold instead of leaving it in rest',
+    'csr',
+    "rest: steps.slice(proj === undefined || proj.kind === 'fold' ? 2 : 3),",
+    'rest: steps.slice(3),',
+    1,
+  ],
+  [
     'the ITERATOR arm is dropped, so a walk without a drain answers empty',
     'agg',
     'values.drain === undefined ? [...values] : values.drain(),',
@@ -81,6 +112,14 @@ const EXPECTED_SURVIVORS = new Set([
    * [[perf-gate-needs-its-own-test]].
    */
   'the fold residual is never fused (the pre-1909 route)',
+  /*
+   * ⚠️ ITEM 1910'S TWO GATE MUTANTS ARE ROUTE-ONLY FOR THE SAME REASON: declining the fold sends
+   * the shape to a slower walk that yields the SAME list in the SAME order. Their gates are
+   * `sideeffect-prof-1909.mjs` (99.53 -> 29.71 for the `hop-values.ts` gate, then -> 4.13 for the
+   * CSR one) and `gremlin-route-screen.mjs`'s `list: hop fold` row.
+   */
+  'the ELEMENT fold is not admitted on the bare hop (pre-1910)',
+  'the CSR rung does not admit the fold (so the slower bucket walk serves it)',
 ]);
 
 /*

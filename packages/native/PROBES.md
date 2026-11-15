@@ -2038,3 +2038,15 @@ adjacency generator).
 measurement is **41.9-43.1**, unchanged. The screen has gained rows since (nine families at 1898,
 more after), so its in-process dispatch pollution is worse. **It is a FINDER; a regression read off
 it is not a regression** (items 737/1871), and this is that warning with a fresh number.
+
+## ⚠️ A FUSED ROUTE IS NOT ONE ROUTE (item 1910)
+
+`V().out(T).fold()` cost 99.53 ms. Admitting `fold` as a named residual in `hop-values.ts` took it to
+**29.71** — a 3.35x, a clean win, and **still 7x the identical walk's 4.13**. The gap was a SECOND
+gate: `hopValuesCsr` is consulted FIRST and its `pickFor` declined a `fold` projection, so the shape
+fell past the CSR to the slower bucket walk. Admitting it there too closed the rest: **4.13 ms, 24.1x
+in total, and now identical to the bare hop.**
+
+**So "it is fused now" is not a finish line** — it was true at 29.71. What said otherwise was carrying
+the bare walk as a FLOOR in the same instrument (`sideeffect-prof-1909.mjs`'s `bare` arm, 4.1-4.5 ms
+across every run of this item), which is the only reason the remaining 7x was visible at all.

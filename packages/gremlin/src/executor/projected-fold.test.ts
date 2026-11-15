@@ -118,6 +118,70 @@ describe('a residual fold over a fused projection', () => {
   });
 });
 
+/**
+ * The ELEMENT fold (item 1910) — `V().out(T).fold()`, with no projection between.
+ *
+ * ⚠️⚠️ ASSERTED ON THE REPEAT CALL, because this shape now rides item 1889's CSR and its
+ * SECOND-ASK policy: the first ask declines and records, so a single `toArray` measures the bucket
+ * walk and a repeat measures the CSR. Both must answer identically — five mutants survived a
+ * single-`toArray` suite at item 1889 for exactly this reason.
+ */
+describe('a residual fold over a BARE hop', () => {
+  const twice = (make: () => ReturnType<typeof traversal>, g: Graph): unknown[] => {
+    const first = toArray(make(), g);
+    const second = toArray(make(), g);
+
+    expect(second).toStrictEqual(first);
+
+    return second;
+  };
+
+  const ids = (list: unknown[]): unknown[] => list.map((v) => (v as { id: string }).id);
+
+  it('folds the far ELEMENTS into one list, in walk order', () => {
+    const g = fixture();
+    const folded = listOf(twice(() => traversal(V(), out('E'), fold()), g));
+
+    // The same elements the bare hop emits, in the same order — asserted against that walk AND
+    // spelled out, so a change to both at once cannot pass.
+    expect(ids(folded)).toStrictEqual(ids(twice(() => traversal(V(), out('E')), g)));
+    expect(ids(folded)).toStrictEqual(['b', 'c', 'f', 'd', 'b', 'd']);
+  });
+
+  it('serves `in`, and `both` through the non-CSR arm', () => {
+    const g = fixture();
+
+    for (const step of [in_('E'), both('E')]) {
+      const folded = listOf(twice(() => traversal(V(), step, fold()), g));
+
+      expect(ids(folded)).toStrictEqual(ids(twice(() => traversal(V(), step), g)));
+    }
+  });
+
+  it('a hop matching nothing folds to an empty list', () => {
+    expect(listOf(twice(() => traversal(V(), out('NOSUCH'), fold()), fixture()))).toStrictEqual([]);
+  });
+
+  it('the lazy iterator agrees with the drained fold', () => {
+    const g = fixture();
+    const make = () => traversal(V(), out('E'), fold());
+
+    toArray(make(), g);
+
+    const lazy = [...run(make(), g)];
+
+    expect(lazy).toHaveLength(1);
+    expect(ids(lazy[0] as unknown[])).toStrictEqual(['b', 'c', 'f', 'd', 'b', 'd']);
+  });
+
+  it('a step AFTER the element fold still runs', () => {
+    const g = fixture();
+
+    expect(toArray(traversal(V(), out('E'), fold(), limit(0)), g)).toHaveLength(0);
+    expect(toArray(traversal(V(), out('E'), fold(), limit(1)), g)).toHaveLength(1);
+  });
+});
+
 describe('fusableProjectedFold — what it admits', () => {
   const stepsOf = (p: ReturnType<typeof traversal>) => p.steps;
 

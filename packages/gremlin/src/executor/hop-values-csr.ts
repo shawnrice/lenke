@@ -81,7 +81,9 @@ export const hopValuesCsr = (plan: Plan, graph: Graph): HopValues | undefined =>
   }
 
   return {
-    rest: steps.slice(proj === undefined ? 2 : 3),
+    // ⚠️ A `fold` IS NOT CONSUMED: it stays in `rest` for `fusedProjectedResidual` to fold over
+    // the drained walk (item 1909), which is the whole point of admitting it here.
+    rest: steps.slice(proj === undefined || proj.kind === 'fold' ? 2 : 3),
     values: walk(graph, {
       forward: hop.kind === 'out',
       type: hop.labels[0],
@@ -162,7 +164,14 @@ const pickFor = (proj: Step | undefined, valueKey: string | undefined): Picked |
     return { pick: (e) => e.properties[valueKey], drops: true };
   }
 
-  if (proj === undefined) {
+  /*
+   * ⚠️ A `fold` PROJECTION IS THE BARE-ELEMENT PICK WITH THE FOLD LEFT IN `rest` (item 1910) — the
+   * same named residual `hop-values.ts` admits, so the two rungs agree on which shapes they serve.
+   * Without it this rung declined `V().out(T).fold()` and the shape fell to the SLOWER bucket walk:
+   * 29.71 ms against 4.13 for the identical hop through this CSR, after item 1910's gate change had
+   * already taken it from 99.53.
+   */
+  if (proj === undefined || proj.kind === 'fold') {
     return { pick: (e) => e, drops: false };
   }
 

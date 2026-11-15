@@ -187,10 +187,21 @@ export const hopValuesShortcut = (plan: Plan, graph: Graph): HopValues | undefin
     pick = (far) => far.properties[valueKey];
     drops = true;
     consumed = 3;
-  } else if (proj === undefined || proj.kind === 'order') {
+  } else if (proj === undefined || proj.kind === 'order' || proj.kind === 'fold') {
     /**
-     * ⚠️ `order` RIDES AS A RESIDUAL OVER THE BARE HOP (item 1783), which is the one other step
-     * kind this shortcut names.
+     * ⚠️ `order` AND `fold` RIDE AS RESIDUALS OVER THE BARE HOP (items 1783 and 1910) — the two
+     * step kinds this shortcut NAMES, which is the bounded version of the change this file warns
+     * against a few lines above ("treating an unrecognised step as a residual over a bare hop would
+     * quietly re-route a large family of plans that nothing here has measured").
+     *
+     * ⚠️⚠️ `fold` IS THE SECOND, AND ITS NUMBER IS THE SAME SHAPE AS THE FIRST'S.
+     * `V().out(E).fold()` measured **99.53 ms against the identical walk's 4.12** at 200,000
+     * vertices / 1,000,000 edges: an unrecognised third step declined the whole shortcut, so the hop
+     * fell to the traverser pipeline and paid the generator chain per edge — 124 ns an element to
+     * build a list, where an array push is ~2 ns. Item 1909 built the residual folder
+     * (`fusableProjectedFold` / `foldProjectedList`, which DRAINS) and took the `values(k).fold()`
+     * spelling at 3.14x; this gate is what the ELEMENT spelling needed, so the two now agree on
+     * route as well as on answer.
      *
      * `V().out(T).order().by(k)` was the heaviest row on the Gremlin bench at **1537.5 ns/row**
      * (item 1782's ranking) for a reason that is entirely routing: an unrecognised third step

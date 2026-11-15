@@ -90314,7 +90314,7 @@ matcher's, which `needsGeneralMatcher` states.
 
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers.
 
-## Item 1909 — **3.14x**: a residual `fold()` over a fused projection becomes one DRAINED list. The side-effect shape that nominated it turned out to be 1.09x `fold`, and the 118 ns/element was never the accumulation — it was ITERATING a walk that can be drained
+## Item 1909 — **3.14x**: a residual `fold()` over a fused projection becomes one DRAINED list. The side-effect shape that nominated it turned out to be 1.09x `fold`, and the 118 ns/element was never the accumulation — it was ITERATING a walk that can be drained — 🧹 and its named next item, the ELEMENT fold, **TAKEN at item 1910 (24.1x)**
 
 Item 1898 put `aggregate('x').cap('x')` at the top of the Gremlin workload screen among the shapes
 that are NOT path-gated (123 ms for ONE row of 800,000 elements). Splitting it isolated, one shape
@@ -90361,7 +90361,7 @@ from the pipeline's would already be failing on the bare projection.
 
 ## What was NOT taken, with the numbers and the reasons
 
-❌ **THE ELEMENT FOLD (`V().out(E).fold()`, 100.07 ms) IS UNCHANGED**, and the refusal is the
+❌ ~~**THE ELEMENT FOLD (`V().out(E).fold()`, 100.07 ms) IS UNCHANGED**~~ ✅ **TAKEN at item 1910: 24.1x, to 4.13 ms — exactly the bare hop's cost. It needed TWO gates, the second found because the first left it 7x above that floor.**, and the refusal is the
 source's own: `hopValuesShortcut` declines any unrecognised third step because _"treating an
 unrecognised step as a residual over a bare hop would quietly re-route a large family of plans that
 nothing here has measured"_. Admitting `fold` SPECIFICALLY is narrower than that — it is the obvious
@@ -90395,3 +90395,58 @@ pointing at the previous item's subject. Every field in `fold-mutants-1909.mjs` 
 
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers;
 `bun run spelling:gremlin` (0 disagreements, 0 groups over 2x).
+
+## Item 1910 — **24.1x**: the ELEMENT fold, which item 1909 named and priced. `V().out(T).fold()` goes 99.53 ms to **4.13**, exactly what the identical walk with no fold costs — and it took TWO gates, the second found because the first left it 7x above that floor
+
+Item 1909 built the residual folder and took `values(k).fold()` at 3.14x, leaving the element
+spelling at 100 ms with the gate it needed named: `hopValuesShortcut` declines any unrecognised
+third step, because — in that file's own words — _"treating an unrecognised step as a residual over a
+bare hop would quietly re-route a large family of plans that nothing here has measured"_.
+
+✅ **THE BOUNDED VERSION OF THAT CHANGE ALREADY HAD A PRECEDENT IN THE SAME GATE.** Item 1783 admitted
+`order` there as a NAMED residual over the bare hop, with the note: _"NAMED, NOT 'anything
+unrecognised' … One named step kind, with its own measurement, is the bounded version of that
+change."_ `fold` is the second name, and its number is the same shape as `order`'s was.
+
+      200,000 vertices / 1,000,000 edges, one shape per process, median of 7, min of 3 rounds:
+
+        V().out(E).fold()        99.53  ->  29.71  ->  4.13 ms    ⬅ 24.1x over the two gates
+        CONTROL V().out(E)        4.12  ->   4.09  ->  4.15        flat — and now IDENTICAL
+        CONTROL values(k).fold() 42.35  ->  41.65  ->  41.34       flat (item 1909's shape)
+        CONTROL values(k)        44.19  ->  42.29  ->  41.42       flat
+        route screen `list: hop fold`:  generic (2 calls)  ->  SHORTCUT (0)
+
+⚠️⚠️ **THE SECOND GATE WAS FOUND BY NOT STOPPING AT 3.35x.** After `hop-values.ts` admitted the fold
+the shape read 29.71 ms — a good number, and still **7x the bare hop's 4.13 for the same walk**. That
+gap is the whole reason to carry a floor: `hopValuesCsr` is consulted FIRST and its `pickFor`
+declined a `fold` projection, so the shape fell past the CSR to the slower bucket walk. Admitting it
+there too — the same named residual, kept in `rest` — closed the remaining 7x. **A fused route is not
+one route; "it is fused now" was true at 29.71 and still 7x off.**
+
+      TWO ONE-TOKEN GATES, both leaving the `fold` in `rest` for item 1909's `foldProjectedList`
+      to drain:
+        `hop-values.ts`      `proj.kind === 'order'`  ->  `… || proj.kind === 'fold'`
+        `hop-values-csr.ts`  `pickFor`'s bare-element arm, and the `rest` slice beside it
+
+      CORRECTNESS: `projected-fold.test.ts` gains the element shapes, ⚠️ asserted on the REPEAT
+      call because this shape now rides item 1889's CSR and its SECOND-ASK policy — a single
+      `toArray` measures the bucket walk and the repeat measures the CSR, and both must answer
+      identically (five mutants survived a single-`toArray` suite at item 1889). The list is
+      checked against the bare hop's own output AND spelled out, so a change to both at once
+      cannot pass; `in`, `both` (the non-CSR arm), an empty hop, the lazy iterator and a trailing
+      step are each covered.
+
+      MUTATION: 10 mutants, 7 caught, 3 expected survivors — all three route-only, because
+      declining the fold yields the SAME list in the SAME order from a slower walk. Their gates are
+      `sideeffect-prof-1909.mjs` and the route screen's row, named at each entry.
+
+🔭 **STILL OPEN, UNCHANGED AND PRICED**: `aggregate('x').cap('x')` reads **124.28 ms** on the
+workload screen and `store('x').cap('x')` 101.83 isolated — 1.09x and 1.03x of what `fold` cost
+before this item, so they would ride the same win. They stay out for item 1909's reason: a side
+effect that also PASSES THE STREAM THROUGH is a different emit contract from a barrier that replaces
+it, and `aggregate` and `store` differ from each other on eagerness in TinkerPop. That is now the
+largest non-path-gated shape on the Gremlin surface.
+
+GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers;
+`bun run spelling:gremlin` (0 disagreements, 0 groups over 2x); the route screen and the workload
+screen at 200,000 vertices.
