@@ -36,7 +36,11 @@ import {
   aggregate,
   as_,
   both,
+  branch,
   cap,
+  choose,
+  coalesce,
+  constant,
   count,
   cyclicPath,
   dedupe,
@@ -45,6 +49,7 @@ import {
   has,
   hasLabel,
   id,
+  identity,
   in_,
   inV,
   limit,
@@ -169,6 +174,35 @@ const SHAPES = {
   'order: values order': () => traversal(V(), values('n'), order()),
   'order: values order limit': () => traversal(V(), values('n'), order(), limit(10)),
   'optional: hop': () => traversal(V(), optional(out('E')), values('n')),
+  /*
+   * ⚠️⚠️ THE RECONVERGING-BRANCH FAMILY (item 1994), which this screen has never carried — and the
+   * reason it is added as a FAMILY rather than one row is item 1898's: it added nine families and
+   * **all five of the biggest shapes on the surface turned out to be among them**. A step kind the
+   * screen does not exercise cannot be ranked, however large it is.
+   *
+   * Found by diffing `ast.ts`'s step kinds against this file's combinators: **103 kinds, 68 never
+   * exercised** (item 1990). These three are the highest-application-weight group of those —
+   * defaults and conditionals are everywhere in real traversals — and measuring them immediately
+   * found `coalesce` at **4.99x** its own equivalent `optional` (fixed at item 1990) and `choose` at
+   * **2.59x** a hand ceiling (open, cost located at item 1993).
+   *
+   * ⚠️ `coalesce: hop + identity` IS THE PAIR FOR `optional: hop` DIRECTLY ABOVE IT. They are the
+   * same question — item 1990 normalizes one into the other — so a gap between these two rows is a
+   * spelling defect by definition, which is exactly what this screen exists to surface.
+   */
+  'coalesce: hop + identity': () => traversal(V(), coalesce(out('E'), identity()), values('n')),
+  'coalesce: two hops': () => traversal(V(), coalesce(out('E'), in_('E')), values('n')),
+  // ⚠️ `has('n', 0)` over `n = i % 97` sends ~96 of 97 vertices to the SECOND arm. Item 1993 lost a
+  // measurement to comparing this against an `out` control for exactly that reason.
+  'choose: has then two hops': () =>
+    traversal(V(), choose(has('n', 0), out('E'), in_('E')), values('n')),
+  'choose: hop test + const': () => traversal(V(), choose(out('E'), values('n'), constant('none'))),
+  'branch: two options': () =>
+    traversal(
+      V(),
+      branch(values('n')).option(0, out('E')).option(1, in_('E')).none(identity()),
+      values('n'),
+    ),
   'union: out + in': () => traversal(V(), union(out('E'), in_('E')), count()),
   'repeat: times 2': () => traversal(V(), repeat(traversal(out('E'))).times(2), count()),
   'repeat: times 3': () => traversal(V(), repeat(traversal(out('E'))).times(3), count()),

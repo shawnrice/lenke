@@ -96763,3 +96763,66 @@ NO ENGINE BEHAVIOUR CHANGED — the inline arm was built, measured, and reverted
 this entry are what ship.
 
 GATES. `bun run fmt` 0; `bun run check` 0; the Gremlin suite 2,435 pass / 0 fail after the revert.
+
+## Item 1994 — ✅ **THE RECONVERGING-BRANCH FAMILY IS NOW ON THE STANDING SCREEN — five rows the instrument never carried**, and adding it immediately surfaces a NEW pair: **`coalesce: two hops` is 8.8x its own identity-arm twin.** ⚠️ I chose coverage over building a narrow rung for a shape I had invented myself
+
+Items 1990-1993 worked `coalesce` and `choose` through a bespoke probe. The next step looked like a
+fused `choose` route — item 1993 named the cure and located the cost. ❌ **I did not build it, and
+the reason is item 1912's warning**: it measured a four-step rung winning **17.6x in isolation** and
+leaving the screen's rows untouched, because the screen's spellings carry a fifth step. My `choose`
+shape is one I invented for a probe; **the screen does not carry `choose` at all**, so a rung built
+against my shape would be optimizing a query nobody has shown anyone writes.
+
+🔑 **THE DURABLE WIN IS COVERAGE, and item 1898 is the precedent that makes that concrete**: it added
+nine families this screen had never carried and **all five of the biggest shapes on the surface
+turned out to be among them.** A step kind the screen does not exercise cannot be ranked, however
+large it is — and item 1990's diff found **103 engine step kinds with 68 never exercised**.
+
+### WHAT WENT ON THE SCREEN
+
+```text
+    coalesce: hop + identity      the PAIR for `optional: hop`, which sits directly above it
+    coalesce: two hops            the form no normalization can reach
+    choose: has then two hops     the conditional, with ~96 of 97 vertices taking the SECOND arm
+    choose: hop test + const      a hop test with a constant fallback
+    branch: two options           two matched options plus a default
+```
+
+⚠️ **`coalesce: hop + identity` IS PLACED DIRECTLY BELOW `optional: hop` ON PURPOSE.** They are the
+same question — item 1990 normalizes one into the other — so a gap between those two adjacent rows
+is a spelling defect by definition, which is what this screen exists to surface. It is now a
+standing regression check on that normalization rather than a one-off probe reading.
+
+### ✅ AND THE ADDITION PAID IMMEDIATELY, TWICE
+
+At `NODES=20000`, every new row producing rows (no misses, no flags):
+
+```text
+      21.36   60000   choose: has then two hops     ⬅ the family's largest
+       8.02   60000   coalesce: two hops            ⬅ 8.8x the row below it
+       7.89   20000   choose: hop test + const
+       6.78   25000   branch: two options
+       1.14   60000   optional: hop
+       0.91   60000   coalesce: hop + identity      ⬅ item 1990's fix, visible on the instrument
+```
+
+1. ✅ **Item 1990's normalization is confirmed on the standing screen**, not just in its own probe:
+   the `coalesce`/`optional` pair now agrees (0.91 against 1.14), where before the fix `coalesce`
+   was 4.99x.
+2. 🔭 **A NEW ROW PAIR: `coalesce: two hops` at 8.02 against `coalesce: hop + identity`'s 0.91.**
+   Same step, same row count, 8.8x apart — and the difference is that the identity-arm form is
+   normalized into `optional` while the two-hop form reaches no rung. ⚠️ **This is item 1993's
+   per-row toll on a shape NO normalization can reach**, because there is no equivalent spelling to
+   rewrite into. It needs the fused route, and unlike my invented `choose` shape it is now a row on
+   the standing instrument, so whoever builds it can measure the thing that is ranked.
+
+### ⚠️ WHAT THIS DOES NOT CLAIM
+
+The absolutes above are from a full 49-shape run at `NODES=20000` and are **not comparable across
+rows** — item 1988's caveat, which this screen now prints. The 8.8x pair is worth an `ONLY=` reading
+before it is priced, and the family's rows are ranked here rather than measured.
+
+NO ENGINE BEHAVIOUR CHANGED — five screen rows, three imports, and this entry.
+
+GATES. `bun run fmt` 0; `bun run check` 0. The screen re-run after the edit: 49 rows, no flags, no
+zero-row misses in the new family.
