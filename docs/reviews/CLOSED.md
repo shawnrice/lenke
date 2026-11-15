@@ -98475,3 +98475,84 @@ someone widens it later, that case tells them the cliff is theirs to re-check.
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
 `bun run fuzz` **12/12 sweeps clean via `fuzz-sweep.sh`**, which keeps the failing run's output —
 built last item precisely because item 2011's unattributable failure had none; gql 4,988.
+
+## Item 2014 — ✅ **`choose(<one hop>, <value arm>, <value arm>)` FUSED: 101.40 → 18.86 ms, 5.4x, 507 → 94 ns/row.** 🔑 **The test never traverses an edge — `choose`'s "does the sub-plan produce anything" is, for a bare hop, just "is the adjacency non-empty".** ⚠️ And the fixture that PRICED it could not have CHECKED it
+
+Back to the Gremlin surface after fourteen GQL items. Re-screened: `pathdep: tree` is still top at
+2.22 ms and still CLOSED (items 1922/1925 declined fusing it at 1.55x — 73% is `treeKey`'s
+`JSON.stringify`, the byte-identity contract), and behind it sit `choose: hop test + const` and
+`branch: two options` at 0.63 ms each. Isolated at 200,000 vertices, one shape per process (item 762):
+
+```text
+    chooseConst  choose(out(E), values(n), constant('none'))   101.40 ms   507 ns/row
+    branchTwo                                                   48.28      227 ns/row
+    chooseTwoArm (item 1999's rung)                              49.14       61 ns/row
+    hop          (the floor)                                     45.26       57 ns/row
+```
+
+⚠️ **IT IS THE MIRROR OF ITEM 1999's RUNG, AND THAT ITEM'S DECLINE IS WHY IT EXISTS.**
+`choose-hop-values.ts` takes a VERTEX-FILTER test with HOP arms and refuses a hop test — "that asks
+whether an edge exists, not a vertex predicate" — with a route test pinning the decline. This is the
+shape that decline left behind. The two gates are disjoint by construction and a test asserts each
+refuses the other's shape.
+
+🔑 **THE CURE IS THAT THE TEST NEEDS NO TRAVERSAL.** `choose`'s test is "does the sub-plan produce
+anything", and for a bare hop that is exactly "is the adjacency non-empty" — a bucket presence check.
+The general path runs the hop as a sub-plan per traverser and materializes its output to ask whether
+it was empty. Hand ceiling (one bucket lookup, one property read, digest identical): **9.89 ms,
+49 ns/row**, so the shipped rung is within 1.9x of it.
+
+## ⚠️⚠️ THE PRICING FIXTURE COULD NOT HAVE CHECKED THE ANSWER, AND THE THREE ARMS DIFFER IN ONE PLACE
+
+`coalesce-vs-optional-1990.mjs` gives every vertex an `n`. The arm kinds disagree about exactly one
+thing:
+
+```text
+    values(k)     emits NOTHING for a vertex without `k`  — the row DISAPPEARS
+    identity()    emits the vertex itself                 — always one row
+    constant(c)   emits `c`                               — always one row
+```
+
+**So a route emitting `undefined` for a missing key would have matched the pricing fixture digest for
+digest and diverged on any graph with a sparse property.** `battery-2014.mjs` and the test file both
+make `n` sparse: `b` has an `E` edge and no `n`, so `choose(out(E), values(n), constant('none'))`
+answers **five rows for six vertices**. The mutant `values-emits-undefined` is CAUGHT (3 fail) only
+because of that.
+
+⚠️ 17 shapes x 3 asks, compared POSITIONALLY against the general path with the rung disabled —
+**byte-identical**, 0 UNSTABLE. Gremlin stream order for a single-type step with no `order()` is
+compared ORDERED against native, so a reordering route would be wrong rather than different.
+
+MUTATION ROUND: 12 mutants, **12 CAUGHT** — but two survived the first pass and both were real
+wrong-answer gaps:
+
+- `multistep-arm-accepted`: dropping `plan.steps.length !== 1` means `valueArmOf` reads `steps[0]`
+  and IGNORES the rest, so `traversal(values(n), identity())` would be served as a bare `values`. My
+  multi-step case started with a HOP, which declines on the kind check and never reaches the length
+  check. ⚠️ **A decline test must be declined by the clause you think it is testing** — the same
+  lesson item 1999 recorded, in the same position.
+- `else-decline-dropped`: `valueArmOf` returns `null` for an arm it cannot serve, and
+  `otherwise ?? undefined` would turn that refusal into an ABSENT else — which PASSES THE TRAVERSER
+  THROUGH. `choose(out(E), values(n), out(E))` would answer the vertex where the general path answers
+  the hop.
+
+⚠️ AND ONE ASSERTION I ADDED WAS SIMPLY WRONG: I expected `choose(test, then, else, extra)` to
+decline, but the builder ignores a fourth argument, so that traversal IS the admissible three-arm
+form. I was testing the builder's arity, not this rung — replaced rather than weakened.
+
+⚠️ THE HARNESS'S ARM-IDENTITY CHECK REFUSED TWO OF MY OWN MUTANTS, CORRECTLY: a multi-line anchor
+cannot match under `grep -F`, and an INSERTING sed leaves the anchor count unchanged so `n == after`
+reads as not-applied. It cannot distinguish an insertion from a no-op, so the fix is an anchor that
+DISAPPEARS. Both reported ANCHOR-DID-NOT-APPLY rather than counting as survivors, which is the whole
+reason that check exists.
+
+⚠️ A LINT RULE CAUGHT A REAL HAZARD, not a style point: the walk's spec object had a `then` property,
+which makes it **thenable** — it would be awaited rather than passed if it ever reached an `await`.
+`unicorn/no-thenable`. Renamed to `whenTrue`.
+
+STILL OPEN on this surface: `branch: two options` at 227 ns/row, unpriced against a ceiling (item
+1999 also left it so); `pathdep: tree` is CLOSED and must not be re-nominated from the ranking.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
+`bun run fuzz` 6/6 sweeps clean via `fuzz-sweep.sh`; gremlin 2,464 + 12 new; battery 0 UNSTABLE and
+byte-identical to the general path.

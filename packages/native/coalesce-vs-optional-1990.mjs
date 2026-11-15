@@ -131,6 +131,12 @@ const ARMS = {
   /* Test = identity (always yields, so always arm 0) — a trivially cheap test with a real arm. */
   chooseIdTest: () => traversal(V(), choose(identity(), out('E'), in_('E')), values('n')),
   handChoose: 'HAND',
+  // ⚠️ THE CEILING FOR `chooseConst` (item 2014), which the screen put second on the Gremlin surface
+  // behind the CLOSED `tree` row. The shape is `choose(out(E), values(n), constant('none'))`: test
+  // whether the vertex HAS an `E` edge, then emit its own `n` or the constant. So the honest ceiling
+  // is one bucket lookup and one property read per vertex — no edge is ever traversed, which is what
+  // makes the 541 ns/row measured for the real arm worth pricing.
+  handChooseConst: 'HANDCONST',
   branchTwo: () =>
     traversal(
       V(),
@@ -161,6 +167,21 @@ const handChooseRows = () => {
   return rows;
 };
 
+/** The hand ceiling for `chooseConst`: a degree test and a property read, in vertex order. */
+const handChooseConstRows = () => {
+  const rows = [];
+
+  for (const v of g.vertices) {
+    // `has an E edge?` — the bucket's presence, not its contents. `choose`'s test is "does the
+    // sub-plan produce anything", and for a bare hop that is exactly a non-empty adjacency.
+    const box = v.adjFrom?.get('E');
+
+    rows.push(box !== undefined && box.size > 0 ? v.properties.n : 'none');
+  }
+
+  return rows;
+};
+
 const run = (name) => {
   const build = ARMS[name];
   const ts = [];
@@ -169,7 +190,11 @@ const run = (name) => {
 
   for (let r = 0; r < REPS; r += 1) {
     const t0 = performance.now();
-    const got = build === 'HAND' ? handChooseRows() : toArray(build(), g);
+    // ⚠️ A LOOKUP, NOT NESTED TERNARIES — the hand arms are named by a sentinel string, and a third
+    // one would have nested again.
+    const HANDS = { HAND: handChooseRows, HANDCONST: handChooseConstRows };
+    const hand = typeof build === 'string' ? HANDS[build] : undefined;
+    const got = hand === undefined ? toArray(build(), g) : hand();
 
     ts.push(performance.now() - t0);
     rows = got.length;

@@ -37,6 +37,7 @@ import {
   fusedValuesTopK,
 } from './aggregation.js';
 import { chooseHopValues } from './choose-hop-values.js';
+import { chooseTestValues } from './choose-test-values.js';
 import { coalesceHopValues } from './coalesce-hop-values.js';
 import { countShortcut } from './count-shortcut.js';
 import { cyclicPathShortcut } from './cyclic-path-shortcut.js';
@@ -2733,6 +2734,11 @@ const fusedProjectedValues = (
       // AFTER the coalesce rung rather than beside it, because the two gates are disjoint by step
       // kind and the chain's order is then a fact about precedence rather than about these two.
       chooseHopValues(effective, graph) ??
+      // The CHOOSE-TEST rung (item 2014): `choose(<one hop>, <value arm>, <value arm>)` — the MIRROR
+      // of the rung above, which takes a vertex-filter test with HOP arms and explicitly declines a
+      // hop test. ⚠️ BELOW it, so the two cannot contend: their gates are disjoint (a hop test vs a
+      // filter test), and the order is then a fact about precedence rather than about these two.
+      chooseTestValues(effective, graph) ??
       hopChainValuesShortcut(effective, graph));
 
 export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
