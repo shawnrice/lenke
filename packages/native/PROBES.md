@@ -167,6 +167,27 @@ the fused sibling's 31 — 7.2x**. The two instruments are below; the rung is no
 - **`edge-filter-floor-1882.mjs`** — its price. `SHAPE=filtered|unfiltered|hop`, ONE PER PROCESS,
   and it reports **ns per EDGE VISIT** as well as per row, because the filtered shape emits 46% of
   the rows and a per-row ratio flatters it (item 1858 declined a target for exactly that).
+  ⚠️⚠️ **ITS `unfiltered` ARM IS NOT A FLOOR, AND READING IT AS ONE OVERSTATES THE PREDICATE'S COST
+  BY MOST OF ITS 1.88x** (item 2016). `unfiltered` and `hop` take item 1889's vertex CSR from their
+  SECOND ask; the filtered walk had no CSR arm at all, so the comparison is a flat-array walk
+  against a `Set` walk. **A floor arm must take the same ROUTE, not merely visit the same edges** —
+  one level up from CLAUDE.md's rule about hand ceilings. Use `edge-filter-series-2016.mjs` instead,
+  or alongside: min-of-N structurally cannot see this, because with REPS >= 2 the armed rep is
+  always the minimum.
+- **`edge-filter-series-2016.mjs`** — the PER-REP SERIES for this family, plus the ceiling arms the
+  floor probe lacks: `SHAPE=filtered|unfiltered|hop|hand|flat|flatlinear|flatclosure|flatdynkey`,
+  one per process. `hand` is the engine's own `drain` over the same `Set`s; the four `flat*` arms
+  decompose the rest. It is what showed that **closure dispatch costs ~3 ns while the DYNAMIC
+  PROPERTY KEY costs 1.41x** — refuting item 1893's table row, which charged that term to the
+  closures and prescribed plumbing the predicate's operator into the walk.
+- **`edge-flat-order-2016.mjs`** — the flat edge array's ORDER against the bucket walk's, compared
+  POSITIONALLY. ⚠️ The second-ask policy makes it self-checking: within one process ask 1 IS the
+  bucket walk and ask 2 IS the flat array, so the two arms need no kill switch. It also asserts that
+  a topology write sends the next ask back to the bucket walk AND that the write changes the answer
+  — without the second half the staleness check cannot fail.
+- **`edge-flat-ab-2016.sh`** / **`edge-flat-mutants-2016.sh`** — the flat arm's PRE/POST A/B with
+  `hop`/`unfiltered` as controls (their `first/best` ratio is the check that the `'e'` namespace did
+  not arm their CSR builds), and its 16-mutant round across three source files.
 - **`edge-filtered-oracle-1883.mjs`** — the rung's contract against the route it DISPLACES. Two arms
   of one build (PRE = the dist call site replaced by `void 0`, POST = shipped), 23 traversals over 3
   fixtures, ORDERED comparison, with both arms asserted (the killed arm must claim nothing, the

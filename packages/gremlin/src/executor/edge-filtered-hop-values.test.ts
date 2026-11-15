@@ -21,6 +21,8 @@ import {
   values,
 } from '../index.js';
 import { edgeFilteredHopValues } from './edge-filtered-hop-values.js';
+import { edgeFlatIsBuilt } from './edge-flat.js';
+import { seenBefore } from './second-ask.js';
 
 /**
  * The EDGE-PREDICATE hop rung (items 1882/1883).
@@ -474,5 +476,180 @@ describe('no vertex move: the edge-valued shapes (item 1957)', () => {
     ]) {
       expect(edgeFilteredHopValues(t, g)).toBeUndefined();
     }
+  });
+});
+
+describe('the FLAT edge array arm (item 2016)', () => {
+  /*
+   * ⚠️⚠️ **EVERY TEST ABOVE BUILDS A FRESH `fixture()`, SO EVERY ONE OF THEM REACHES THE BUCKET WALK
+   * AND NONE REACHES THE FLAT ARRAY.** The flat arm is behind the second-ask policy (item 1889's, in
+   * its own `'e'` namespace), so ask 1 on a topology version is the bucket walk and ask 2 onward is
+   * the flat pass. A suite that never asks twice tests one of the two arms — item 2015 found exactly
+   * this shape one item earlier, where `toArray` reaching the `drain` left the generator unexercised.
+   *
+   * 🔑 AND THE SECOND-ASK POLICY MAKES THE INVARIANT SELF-CHECKING: within one graph, with no write
+   * between, ask 1 and ask 2 are the two different walks and must agree ELEMENT FOR ELEMENT.
+   * Gremlin rows are compared ORDERED against the Rust engine for a single-type step
+   * ([[order-is-unspecified]] does not cover it), so a reordering is a cross-engine failure rather
+   * than a liberty — and a checksum cannot see one (item 1955), hence `toEqual` on the arrays.
+   */
+  const shapes: readonly (readonly [string, () => ReturnType<typeof traversal>])[] = [
+    ['outE has inV values', () => traversal(V(), outE('E'), has('w', gt(3)), inV(), values('n'))],
+    /*
+     * ⚠️⚠️ **`gt(0)`, NOT `gt(3)`, AND A SURVIVING MUTANT IS WHY.** The flat array's FIRST element is
+     * `e1` (a->b, `w: 1`), which FAILS `gt(3)` — so every other shape in this list is blind to an
+     * off-by-one at the START of the array: `for (let i = 1; ...)` dropped the first edge and
+     * changed no answer. A loop bound is exactly where an off-by-one stops being academic
+     * (CLAUDE.md says so about non-termination; here it is a silently missing row). With `gt(0)` the
+     * first edge SURVIVES and is the first row, so skipping it is visible.
+     */
+    [
+      'outE has(gt 0) inV values — THE FIRST EDGE SURVIVES',
+      () => traversal(V(), outE('E'), has('w', gt(0)), inV(), values('n')),
+    ],
+    ['outE has(gt 0) values(w)', () => traversal(V(), outE('E'), has('w', gt(0)), values('w'))],
+    ['outE has inV id', () => traversal(V(), outE('E'), has('w', gt(3)), inV(), id())],
+    ['outE has inV count', () => traversal(V(), outE('E'), has('w', gt(3)), inV(), count())],
+    ['outE has inV elements', () => traversal(V(), outE('E'), has('w', gt(3)), inV())],
+    ['outE has values(w)', () => traversal(V(), outE('E'), has('w', gt(3)), values('w'))],
+    ['outE has count', () => traversal(V(), outE('E'), has('w', gt(3)), count())],
+    [
+      'outE has has inV values',
+      () => traversal(V(), outE('E'), has('w', gt(3)), has('w', gt(5)), inV(), values('n')),
+    ],
+    ['inE has outV values', () => traversal(V(), inE('E'), has('w', gt(3)), outV(), values('n'))],
+    ['inE has values(w)', () => traversal(V(), inE('E'), has('w', gt(3)), values('w'))],
+    // A residual step after the projection, so `rest` runs over the flat arm's output too.
+    [
+      'outE has inV values order',
+      () => traversal(V(), outE('E'), has('w', gt(3)), inV(), values('n'), order()),
+    ],
+  ];
+
+  for (const [name, make] of shapes) {
+    it(`the flat arm agrees with the bucket walk, positionally — ${name}`, () => {
+      const g = fixture();
+      const ask1 = toArray(make(), g);
+      const ask2 = toArray(make(), g);
+      const ask3 = toArray(make(), g);
+
+      // ⚠️ A NON-EMPTY ANSWER IS ASSERTED FIRST: two empty arrays agree trivially, and an
+      // always-empty flat arm would pass every comparison below.
+      expect(ask1.length).toBeGreaterThan(0);
+      expect(ask2).toEqual(ask1);
+      expect(ask3).toEqual(ask1);
+    });
+  }
+
+  it('a topology write sends the next ask back to the bucket walk, and they still agree', () => {
+    /*
+     * ⚠️ IF THE CACHE WERE MERELY STAMPED WITH THE VERSION RATHER THAN KEYED ON IT, this is the
+     * assertion that fails: a stale flat array over a changed topology, which is a WRONG ANSWER
+     * rather than a slow one.
+     */
+    const g = fixture();
+    const make = (): ReturnType<typeof traversal> =>
+      traversal(V(), outE('E'), has('w', gt(3)), inV(), values('n'));
+
+    const before = toArray(make(), g);
+
+    toArray(make(), g); // arm the flat array
+
+    g.addEdge({
+      id: 'eNEW',
+      from: g.getVertexById('e') as never,
+      to: g.getVertexById('a') as never,
+      labels: ['E'],
+      properties: { w: 9 },
+    });
+
+    const afterBucket = toArray(make(), g);
+    const afterFlat = toArray(make(), g);
+
+    // The write must CHANGE the answer, or this test cannot see staleness at all.
+    expect(afterBucket).not.toEqual(before);
+    expect(afterFlat).toEqual(afterBucket);
+  });
+
+  it('WHICH ROUTE FIRED: not on the first ask, yes on the second', () => {
+    /*
+     * ⚠️⚠️ **FOUR MUTANTS SURVIVED THE ANSWER TESTS ABOVE AND THIS IS WHAT CATCHES THEM**
+     * ([[perf-gate-needs-its-own-test]]). `ask1 === ask2` is satisfied when BOTH asks take the
+     * bucket walk, so it cannot tell "the flat arm ran and was right" from "the flat arm never ran":
+     * mutants making the arm never fire (`if (false)`), always fire (`if (true)`) and bypass the
+     * policy (`const flat = true`) all passed. `edgeFlatIsBuilt` is a pure peek — it never builds —
+     * so it can say which route ran without arming the thing under test.
+     */
+    const g = fixture();
+    const make = (): ReturnType<typeof traversal> =>
+      traversal(V(), outE('E'), has('w', gt(3)), inV(), values('n'));
+
+    expect(edgeFlatIsBuilt(g, true, 'E')).toBe(false);
+
+    toArray(make(), g);
+
+    // ⚠️ THE FIRST ASK MUST NOT BUILD. This is item 1889's second-ask policy, whose whole point is
+    // that a ONE-SHOT query pays nothing — measured there at a 1.64x regression on the first query.
+    expect(edgeFlatIsBuilt(g, true, 'E')).toBe(false);
+
+    toArray(make(), g);
+
+    expect(edgeFlatIsBuilt(g, true, 'E')).toBe(true);
+  });
+
+  it('a topology write un-arms the route, so the next query is a bucket walk again', () => {
+    const g = fixture();
+    const make = (): ReturnType<typeof traversal> =>
+      traversal(V(), outE('E'), has('w', gt(3)), inV(), values('n'));
+
+    toArray(make(), g);
+    toArray(make(), g);
+
+    expect(edgeFlatIsBuilt(g, true, 'E')).toBe(true);
+
+    g.addVertex({ id: 'zz', labels: ['T'], properties: { n: 99 } });
+
+    expect(edgeFlatIsBuilt(g, true, 'E')).toBe(false);
+
+    toArray(make(), g);
+
+    expect(edgeFlatIsBuilt(g, true, 'E')).toBe(false);
+  });
+
+  it('this rung does NOT arm the vertex-CSR rungs’ builds — the `kind` namespace', () => {
+    /*
+     * ⚠️⚠️ **A PERFORMANCE CONTRACT WITH NO ANSWER TO OBSERVE, AND A MUTANT DROPPING IT SURVIVED.**
+     * The nine vertex-CSR callers share `seenBefore`'s default namespace deliberately, because they
+     * all build `chainCsrFor` from that key. This rung builds a flat `Edge[]` instead, so if it
+     * asked in the default namespace its first ask would mark `>E` as seen and every CSR rung would
+     * then build on ITS first ask — the cold-build regression the policy exists to prevent. Testing
+     * `seenBefore` directly (as `edge-flat.test.ts` does) cannot see this: the mutant is in the
+     * CALL, so the observation has to be made THROUGH the rung.
+     */
+    const g = fixture();
+
+    toArray(traversal(V(), outE('E'), has('w', gt(3)), inV(), values('n')), g);
+
+    // The default namespace must be untouched: a `V().out('E')` query is still on its FIRST ask.
+    expect(seenBefore(g, true, 'E')).toBe(false);
+  });
+
+  it('`run` keeps the LAZY bucket walk on every ask — the flat pass is drain-only', () => {
+    /*
+     * ⚠️ THE FLAT ARM HAS NO GENERATOR TWIN, deliberately: it is reached only from `drain`, so
+     * `run` stays exactly as lazy as it was for a caller that `break`s out (`hop-values.ts`'s rule).
+     * This pins that — a later edit adding a flat generator must update this test rather than
+     * silently changing `run`'s laziness.
+     */
+    const g = fixture();
+    const make = (): ReturnType<typeof traversal> =>
+      traversal(V(), outE('E'), has('w', gt(3)), inV(), values('n'));
+
+    toArray(make(), g);
+    toArray(make(), g); // the flat arm is armed from here on
+
+    const lazy = [...run(make(), g)];
+
+    expect(lazy).toEqual(toArray(make(), g));
   });
 });

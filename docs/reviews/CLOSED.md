@@ -89245,7 +89245,7 @@ disagreements, 0 groups over 2x clear of the null control.
 
 GATES. bun run check 0 and bun run test -- --skip-nx-cache across 21 projects, each read unpiped.
 
-## Item 1893 — the edge-filter rung was **2.08x its own hand-written walk over the same data**, and half of that was the missing eager fill: **1.64x for a `drain`**. The edge-indexed CSR two items had named is priced at a further 1.79x and NOT built
+## Item 1893 — the edge-filter rung was **2.08x its own hand-written walk over the same data**, and half of that was the missing eager fill: **1.64x for a `drain`**. ~~The edge-indexed CSR two items had named is priced at a further 1.79x and NOT built~~ — **BUILT at item 2016, and it is a flat `Edge[]` with NO `off`/`len`: 1.28x shipped, because the hand arm's extra speed was mostly a LITERAL property key, which is plan data and unreachable without codegen**
 
 Items 1891 and 1892 both ended by naming `V().outE(T).has(k, p).inV().values(j)` as the Gremlin
 screen's top shape at scale and saying it "wants an edge-indexed CSR". This item priced that claim
@@ -89274,11 +89274,11 @@ family adds.
 
 🔭 **WHAT IS LEFT, PRICED, WITH WHAT EACH WOULD TAKE:**
 
-| from  | to    | what it is                                                                                                                                                                                                                                                                                    |
-| ----- | ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 79.04 | 62.23 | **1.27x** — the `pick` and `edgeTest` CLOSURES, one call each per row where the hand walk inlines both. Reaching it means plumbing the predicate's operator into the walk so the comparison can be written inline, not another closure. `specializePredicate` hands back a closure by design. |
-| 62.23 | 34.69 | **1.79x** — the edge-indexed CSR: a flat `Edge[]` per slot replacing the `Map.get` + `Set` iterator. Its build measured **25 ms** at this size, so it inherits items 1889/1890's second-ask policy wholesale.                                                                                 |
-| 34.69 | 2.46  | not reachable — it hoists both property BAGS into `Float64Array`s, which is a columnar store, not a graph. It is in the probe to price the two getters (~32 ms) so the rows above are not read as the ceiling.                                                                                |
+| from  | to    | what it is                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| ----- | ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 79.04 | 62.23 | ~~**1.27x** — the `pick` and `edgeTest` CLOSURES, one call each per row where the hand walk inlines both. Reaching it means plumbing the predicate's operator into the walk.~~ ⚠️ **MISATTRIBUTED, and item 2016 measured it: closure DISPATCH is ~3 ns, not 1.27x.** A flat-array walk with the engine's two closures and LITERAL keys read 56 ns/edge against 53 fully inlined — so plumbing the operator in would have bought ~5%, and the term this row describes is actually the DYNAMIC PROPERTY KEY (`edge.properties[key]` against `edge.properties.w`), which measured **1.41x** and is UNREACHABLE: the key is plan data, so a literal access needs runtime codegen and [[no-runtime-codegen]] is FIRM. Do not build the operator plumbing on this row's authority. |
+| 62.23 | 34.69 | **1.79x** — the edge-indexed CSR: a flat `Edge[]` per slot replacing the `Map.get` + `Set` iterator. Its build measured **25 ms** at this size, so it inherits items 1889/1890's second-ask policy wholesale.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| 34.69 | 2.46  | not reachable — it hoists both property BAGS into `Float64Array`s, which is a columnar store, not a graph. It is in the probe to price the two getters (~32 ms) so the rows above are not read as the ceiling.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 
 **NOT BUILT, deliberately**: the CSR arm is a new structure plus a cache plus a policy for 1.79x on
 one shape, where this tick's `drain` was 1.64x for twenty lines. The probe stays so the next attempt
@@ -98655,3 +98655,116 @@ GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-
 15 new route/answer tests; **18/18 mutants caught**, re-verified after `fmt` reflowed the gate;
 `battery-2015.mjs` 23 shapes x 3 asks, 0 UNSTABLE and byte-identical to the general path with the
 rung made to actually decline.
+
+## Item 2016 — ✅ **the edge-filter walk gets a flat `Edge[]`: 129.6 → 101.0 ms, 1.28x on medians (1.45x on bests).** 🔑 **The vertex CSR could never serve it — a CSR stores FAR VERTEX ids, so an edge predicate has nothing left to test.** ⚠️⚠️ And TWO of this family's recorded numbers were wrong: the "unfiltered floor" is a DIFFERENT DATA STRUCTURE, and the residual item 1893 charged to closure dispatch is the DYNAMIC PROPERTY KEY
+
+Profile-first, from the workload screen rather than from this file's open headings. At NODES=50000 the
+screen's top cluster behind the CLOSED `pathdep: tree` is the **edge-filter family** — four rows,
+~40 ms of the sweep: `outE.has(w).inV` 11.65, `.inV.count` 10.16, `.count` 9.57, `.values(w)` 8.72.
+
+⚠️⚠️ **THE FIRST THING FOUND WAS THAT THE FAMILY'S OWN FLOOR PROBE IS NOT A FLOOR**, and two
+derivations of "what the predicate costs" disagreeing by 4x is what exposed it.
+`edge-filter-floor-1882.mjs` reads `filtered` 98 ns and `unfiltered` 52 ns per edge visit and
+presents that as the predicate costing 1.88x. Solving the two arms as `tests·T + picks·P` gives
+**T = 68 ns a test** — more than the pick, which chases a far vertex. The CPU profile of the filtered
+shape says the opposite: the pick closure is **23.6% self**, the test closure **8.6%**, a test near
+18 ns. Both cannot be right.
+
+🔑 **THE PER-REP SERIES SETTLED IT, AND MIN-OF-N STRUCTURALLY CANNOT** (`edge-filter-series-2016.mjs`,
+built for this; [[ts-spelling-probe]] records the same lesson from the other side — print the series
+before trusting a summary of it):
+
+```text
+    filtered    139.9 163.4 206.7 168.6 168.2 126.4 126.9 125.7 120.1   flat tail, NO step
+    unfiltered  152.3 202.1 106.2  89.1  90.8  85.4  84.6  82.9  81.1   a STEP at rep 3
+    hop         153.5 201.5 102.1  84.2  81.7  83.9  86.1  80.6  83.8   the same step
+```
+
+That step is item 1889's CSR arming on the second ask. **`edge-filtered-hop-values.ts` has no CSR arm
+at all** — confirmed by absence: no `chainCsrFor`, no `seenBefore`. So the probe's `unfiltered` arm
+is not this walk minus a predicate, it is a flat-array walk against a `Set` walk, and most of the
+1.88x was never the predicate. CLAUDE.md's "a hand ceiling is only a floor if it uses the structure
+the cure will use", one level up: **a FLOOR ARM must take the same ROUTE.**
+
+🔑 **AND THE VERTEX CSR COULD NEVER HAVE SERVED THIS SHAPE, which is why the rung went ~130 items
+without a fast arm.** `chainCsrFor` stores far-vertex ids — the edge is gone by the time the walk
+reads a slot, so `has('w', gt(3))` has nothing to test. Every other hop-values rung could take item
+1889's CSR because none of them looks at an edge.
+
+**What was built: a flat `Edge[]` per (graph, topology version, direction, type), with NO `off`/`len`
+at all.** This shape never needs the vertex — the predicate reads the edge's own bag and the
+projection reads `edge.to` — so the per-vertex loop existed only to find the next bucket. Appending
+each bucket in `graph.vertices` order makes a LINEAR pass reproduce the nested loop's row sequence
+exactly, which is load-bearing: Gremlin rows are compared ORDERED against the Rust engine for a
+single-type step.
+
+⚠️⚠️ **THE HAND ARMS PROMISED 2.30x AND THE SHIPPED WIN IS 1.28x, AND THE DECOMPOSITION IS THE REAL
+RESULT OF THIS ITEM** (200,000 vertices / 1,000,000 edges, one shape per process, same 571,428 rows
+on every arm):
+
+```text
+    the engine's bucket walk                      122 ns/edge-visit
+    THE FLAT ARM AS SHIPPED                       101              1.28x  ⬅ medians, A/B
+    the same walk BY HAND over the same Sets        86
+    a flat array, two closures, DYNAMIC key        79   ⬅ the REACHABLE floor
+    the same, LITERAL property key                 56   ⬅ 1.41x is the KEYED LOAD ALONE
+    the flat array, fully inlined                  53   ⬅ closure dispatch is ~3 ns
+```
+
+**So the keyed load is the largest residual term and it is UNREACHABLE, not pending.** The property
+key is plan data, so `edge.properties[key]` cannot become `edge.properties.w` without runtime
+codegen, and [[no-runtime-codegen]] is FIRM (`new Function` forces `unsafe-eval` into every
+embedder's CSP). **This also REFUTES item 1893's own table row**, which charged 1.27x to "the `pick`
+and `edgeTest` CLOSURES" and prescribed "plumbing the predicate's operator into the walk so the
+comparison can be written inline". That would have bought ~5%. The row is struck in this commit, in
+place, because it would have sent the next reader to build the wrong thing on its authority.
+
+⚠️ **`for...of` vs AN INDEXED LOOP IS FLAT, AND THE LINT RULE IS THEREFORE FREE.** Measured both ways
+rather than disabled: for-of 86.7/90.0 best and 102.9/100.2 median across two rounds, indexed
+88.9/98.7 and 95.8/105.7 — each winning one metric in each round. V8 lowers a for-of over a plain
+array to an indexed walk, so there is no iterator to remove; the win is losing the 200,000
+`adjFrom.get(type)` lookups and 200,000 `Set` iterators, not the loop form.
+
+⚠️ **`seenBefore` GAINED A `kind` NAMESPACE, AND OMITTING IT IS STILL CORRECT FOR THE NINE ORIGINAL
+CALLERS.** They share the default namespace DELIBERATELY — `optional-hop-values.ts` says so, "THE
+POLICY IS ITEM 1889'S, REUSED RATHER THAN RE-KEYED" — and they are right to, because every one of
+them builds the SAME `chainCsrFor` from that key. That argument fails for a caller building a
+different structure: sharing it here would mark `>E` as seen and arm every CSR rung's build on ITS
+OWN first ask, which is the **1.64x first-query regression** item 1889's policy exists to prevent.
+The A/B's controls confirm it held: `unfiltered` and `hop` keep a `first/best` ratio of 1.87-1.95 in
+POST, i.e. their first ask is still the cold one.
+
+⚠️⚠️ **FOUR MUTANTS SURVIVED THE FIRST ROUND AND ALL FOUR WERE THE ROUTE CHOICE** — the arm made to
+NEVER fire, to ALWAYS fire, the policy bypassed, and the namespace dropped. `ask1 === ask2` is
+satisfied when BOTH asks take the bucket walk, so it cannot tell "the flat arm ran and was right"
+from "the flat arm never ran". The cure is `edgeFlatIsBuilt`, a pure peek that never builds — the
+same role GQL's `csrIsBuilt` plays (item 2005), for the same reason — plus one assertion made
+THROUGH the rung for the namespace, because testing `seenBefore` directly cannot see a mutant in the
+CALL. [[perf-gate-needs-its-own-test]], fifth instance.
+
+⚠️ **AND MY INDENTATION ARGUMENT FOR ANCHOR UNIQUENESS WAS BACKWARDS.** Two mutants reported
+`anchors=3`: `grep -F` counts lines CONTAINING the pattern, and an 8-space line CONTAINS the 4-space
+string as a substring — so a less-indented anchor matches the more-indented copies, not the reverse.
+Those two are relabelled `ALL-THREE-walks-*` and two new mutants anchored on lines unique to
+`flatDrain` isolate the arm. Item 2015 asserted the opposite in a comment; this corrects it.
+
+⚠️ **A FIFTH SURVIVOR WAS A FIXTURE GAP AT A LOOP BOUND.** `for (let i = 1; ...)` — dropping the
+flat array's FIRST element — changed no answer, because that element is `e1` (`w: 1`) and every
+shape in the suite gates on `gt(3)`. A `gt(0)` shape, where the first edge SURVIVES and is the first
+row, is what gives the start-of-array bound teeth.
+
+⚠️ MEMORY COST, stated rather than buried: an entry holds ONE REFERENCE PER EDGE of its type and
+lives as long as the graph, so it is heavier per edge than `chainCsrFor`'s typed arrays. The 8-shape
+cap and the second-ask policy bound it, and a one-shot query allocates nothing.
+
+STILL OPEN on this family: the reachable floor is **79 ns against the shipped 101**, i.e. ~1.28x
+more, and it is the `drops` boolean plus `edgeTest` being a closure that calls `specializePredicate`'s
+closure — TWO calls per edge visit where one would do. That is worth ~5% by the decomposition above,
+not the 1.27x item 1893's row claimed. The `'e'`-namespaced flat array is also available to any other
+edge-reading rung that wants it.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
+`bun run fuzz` all seven green plus 6/6 sweeps clean; **16/16 mutants caught** across three source
+files; 7 new `edge-flat` unit tests and 19 new rung tests (50 → 52 in that file);
+`edge-flat-order-2016.mjs` 9 shapes, 0 disagreements, including that a write sends the next ask back
+to the bucket walk and that the write genuinely changes the answer.

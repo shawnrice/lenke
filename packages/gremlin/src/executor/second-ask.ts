@@ -44,9 +44,23 @@ import type { Graph } from '@lenke/core';
  * any topology write, the same discipline `chainCsrCache` uses, so nothing leaks one dead entry per
  * shape per write.
  */
+/**
+ * ⚠️⚠️ **`kind` NAMESPACES THE RECORD, AND OMITTING IT IS CORRECT FOR EVERY CALLER THAT DOES** (item
+ * 2016). The nine original callers all share the default namespace deliberately —
+ * `optional-hop-values.ts` says so in terms, "THE POLICY IS ITEM 1889'S, REUSED RATHER THAN
+ * RE-KEYED" — and they are right to, because every one of them builds the SAME structure from that
+ * key, `chainCsrFor(graph, forward, [type])`. One rung's ask really is evidence that another's CSR
+ * will be reused.
+ *
+ * That argument fails for a caller building a DIFFERENT structure. `edge-flat.ts` builds a flat
+ * `Edge[]`, not a vertex CSR, so if it shared the namespace it would mark `>E` as seen and arm every
+ * CSR rung's build on its OWN first ask — paying exactly the cold build this policy exists to
+ * avoid, measured above at a 1.64x regression on the first query. So a caller whose structure is not
+ * the vertex CSR passes a `kind`, and the two records cannot arm each other.
+ */
 const seen = new WeakMap<Graph, { tv: number; shapes: Set<string> }>();
 
-export const seenBefore = (graph: Graph, forward: boolean, type: string): boolean => {
+export const seenBefore = (graph: Graph, forward: boolean, type: string, kind = ''): boolean => {
   const tv = graph.topologyVersion;
   let entry = seen.get(graph);
 
@@ -55,7 +69,7 @@ export const seenBefore = (graph: Graph, forward: boolean, type: string): boolea
     seen.set(graph, entry);
   }
 
-  const key = `${forward ? '>' : '<'}${type}`;
+  const key = `${kind}${forward ? '>' : '<'}${type}`;
 
   if (entry.shapes.has(key)) {
     return true;
