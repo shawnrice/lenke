@@ -2434,3 +2434,65 @@ reverted to the owner.
 
 So: **assert the baseline passes before mutating.** It costs one run and it catches the case where
 the thing you are "fixing" was decided on purpose.
+
+## ⚠️ A FOLD'S COST CAN TRACK THE VALUE TYPE, NOT THE COMPARISON (item 1919)
+
+`V().out(E).values(s).min()` measured **199.92 ms** against the numeric twin's 78.50, and against
+its OWN floor — `values(s)`, which materializes all 800,000 strings — at **76.74**. So a fold that
+builds no array cost **2.6x the arm that builds an 800,000-element one**, where the numeric fold was
+1.26x its floor. Two hypotheses, both refuted before building:
+
+- ❌ **THE STRING COMPARATOR.** `strcmp-ceiling-1919.mjs` prices the classify-as-you-fold reduction
+  (`sort-key-specialize.ts`'s trick, which a fold can do with no O(n) pre-scan) at **4.98 ms** on
+  ASCII — and at **nothing at all** once 1 string in 1000 carries a surrogate. `compareCodePoints`
+  is 13.5 ns a call; all 800,000 comparisons are ~11 ms against a 123 ms gap.
+- ❌ **A ROUTE DIFFERENCE.** "Same code" is not "same route", so the route screen gained
+  `hop1: min STRING` / `hop1: values STRING` rather than the assumption being made. Both read
+  `SHORTCUT, 0 applyStep calls`, identical to their numeric twins.
+
+✅ **IT WAS A GENERATOR BOUNDARY.** The fold iterated lazily where a `drain` exists (`toArray`
+prefers one since item 1412; `foldProjectedList` takes it since 1909). **2.00x / 1.93x.**
+
+⚠️⚠️ **AND THE PROFILE NAMES THE SAME FRAME FOR BOTH ARMS, WHICH IS THE REUSABLE PART.** Both put
+
+> 52% in `walk$3`'s lazy iterator — but it costs **~105 ns an element for numbers and ~210 for
+> strings**, because the fixture's integers yield as SMIs where a string yields a HEAP POINTER. Same
+> frame, same code, same route, 2x by value type.
+
+**So read a fold against a floor of its OWN value type.** Comparing the string row to the NUMERIC
+floor makes the gap look like the comparator, and it points there forever.
+
+## 🛑 AN ORACLE THAT CANNOT READ ITS FIXTURE'S TYPE IS NOT AN ORACLE (item 1919)
+
+`projected-aggregate.test.ts` had no all-string column — only a MIXED one, which it excludes on good
+grounds (replicating `compareTotal`'s cross-type ranks would make the oracle a second copy of the
+engine). Adding `['pear','apple','fig','apple','quince']` failed TWO existing tests, and **the
+engine was right**: the oracle reduced with `Number(b) < Number(a)`, `Number('apple')` is `NaN`, so
+every comparison was false and the reduce returned the **FIRST** element — calling `fig` the minimum
+where the engine correctly said `apple`.
+
+✅ The comparison is now chosen from the COLUMN'S TYPE: numeric columns keep the numeric reduce,
+string columns get `<` (code-point order for ASCII), mixed stays excluded. A single-type column needs
+no type ranks, so this is not re-implementing the subject. It had been passing for ~60 items purely
+because no fixture exercised it.
+
+## ✅ HOW TO MAKE A `drain` CHOICE NON-ROUTE-ONLY (item 1909, applied at 1919)
+
+Taking a walk's `drain` yields the same elements in the same order, so no answer test can see it —
+the textbook route-only mutant. Item 1909 declared exactly that an expected survivor, then REMOVED
+the entry after driving the helper with a walk whose `drain` and iterator **disagree**:
+
+```js
+const walk = {
+  *[Symbol.iterator]() {
+    yield 999;
+  },
+  drain: () => [5, 3, 7],
+};
+expect(foldProjectedMinMax(walk, 'min')).toStrictEqual([3]); // 3, not 999
+```
+
+Plus the twin that the fallback still works (a walk with no `drain`, and a plain array). With both,
+item 1919's battery is **6 mutants, 6 caught, 0 survivors** — a perf change gated by a test rather
+than by an instrument. Prefer this to declaring the survivor whenever the choice is reachable through
+an exported helper.

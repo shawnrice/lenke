@@ -215,11 +215,46 @@ export const fusableProjectedAggregate = (rest: readonly Step[]): 'min' | 'max' 
  * 1832's drift hazard, and here the tie-break is that BOTH are also checked against a plain
  * JavaScript reduce, which is outside the engine and cannot share a mistake with either.
  */
-export const foldProjectedMinMax = (values: Iterable<unknown>, kind: 'min' | 'max'): unknown[] => {
+export const foldProjectedMinMax = (values: HopWalk, kind: 'min' | 'max'): unknown[] => {
   let best: unknown;
   let seen = false;
 
-  for (const v of values) {
+  /**
+   * ⚠️ THE EAGER DRAIN WHEN THE WALK OFFERS ONE (item 1919) — **2.09x on a STRING key**, and the
+   * reason it matters so much more there than for a number is worth keeping.
+   *
+   * `toArray` already prefers a walk's `drain` (item 1412) and `foldProjectedList` takes it for
+   * `fold()` (item 1909); this fold iterated lazily, so every element crossed a GENERATOR boundary.
+   * Item 1913 priced that frame at 1.6-2.0x on four shapes. Measured here at 200,000 vertices /
+   * 1,000,000 edges:
+   *
+   * ```text
+   *   values(s).min()   199.92 -> 95.50 ms   2.09x      <- its own floor, values(s), is 78.19
+   *   values(k).min()    78.50 -> 68.50      1.15x      <- numeric, already near its 62 floor
+   *   CONTROL values(s)  76.74 -> 78.19      flat
+   * ```
+   *
+   * 🔑 WHY THE STRING KEY PAYS 8x WHAT THE NUMERIC ONE DOES, which is the part that was not obvious:
+   * it is NOT the comparison. `strcmp-ceiling-1919.mjs` priced all 800,000 string comparisons at
+   * ~11 ms in a tight loop (and `compareCodePoints` at 13.5 ns a call), against a 123 ms gap. Both
+   * profiles put >52% in the SAME frame — the CSR walk's lazy iterator — but it costs ~105 ns an
+   * element for numbers and ~210 for strings. The fixture's `k` values are small integers, so they
+   * yield as SMIs; a string yields a HEAP POINTER. Removing the generator removes that difference,
+   * which is why the win tracks the VALUE TYPE rather than the comparator.
+   *
+   * ⚠️ AND THAT IS WHY THE COMPARATOR REDUCTION WAS **NOT** BUILT. `sort-key-specialize.ts`'s string
+   * arm is real for `order()`, and the obvious move here was to reuse it — classifying as the fold
+   * goes, which needs no O(n) pre-scan. Priced first: **4.98 ms** of the row on ASCII, and
+   * **nothing at all** once 1 string in 1000 carries a surrogate. Do not re-attempt it for this
+   * fold.
+   *
+   * ⚠️ ORDER IS NOT A QUESTION HERE, unlike item 1918's `sum`/`mean`: `min`/`max` over a total order
+   * are order-INVARIANT, so draining cannot change the answer even in the last ulp. That is the
+   * same split items 1830/1853 made, and it is why this needed no decision.
+   */
+  const src = values.drain === undefined ? values : values.drain();
+
+  for (const v of src) {
     if (v == null) {
       continue;
     }

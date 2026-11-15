@@ -80,6 +80,12 @@ const SHAPES = {
   'hop1: order values': "traversal(V(), out('E'), values('k'), order())",
   'hop1: limit values': "traversal(V(), out('E'), values('k'), limit(10))",
   'hop1: min': "traversal(V(), out('E'), values('k'), min())",
+  // ⚠️ THE STRING-KEY TWIN (item 1919). `values('s').min()` measures 199.92 ms against the numeric
+  // twin's 78.50 and against its OWN floor (`values('s')`) at 76.74 — and the string comparison is
+  // only ~11 ms of that, measured. A route difference is the remaining candidate, so the screen
+  // needs the row.
+  'hop1: min STRING': "traversal(V(), out('E'), values('s'), min())",
+  'hop1: values STRING': "traversal(V(), out('E'), values('s'))",
   'hop1: fold': "traversal(V(), out('E'), values('k'), fold())",
   'hop1: both': "traversal(V(), both('E'), count())",
   'hop1: outE inV': "traversal(V(), outE('E'), inV(), count())",
@@ -171,7 +177,7 @@ ${IMPORTS}
 const N = 2000;
 const g = new Graph();
 for (let i = 0; i < N; i += 1) {
-  g.addVertex({ id: 'v' + i, labels: ['T'], properties: { k: i % 7 } });
+  g.addVertex({ id: 'v' + i, labels: ['T'], properties: { k: i % 7, s: 's' + (i % 7) } });
 }
 for (let i = 0; i < N; i += 1) {
   g.addEdge({ id: 'e' + i, from: g.getVertexById('v' + i), to: g.getVertexById('v' + ((i * 7 + 3) % N)), labels: ['E'], properties: { w: [1, 2, 3, 4, 5, 7, 9][i % 7] } });

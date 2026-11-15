@@ -22,7 +22,7 @@ import { describe, expect, test } from 'bun:test';
 import { Graph } from '@lenke/core';
 
 import { V, max, mean, min, out, sum, toArray, traversal, values } from '../index.js';
-import { fusableProjectedAggregate } from './aggregation.js';
+import { foldProjectedMinMax, fusableProjectedAggregate } from './aggregation.js';
 
 /**
  * ⚠️ THE VALUES ARE CHOSEN SO THE FOLD'S RULES ARE OBSERVABLE: a stored `null` (skipped), an
@@ -61,8 +61,40 @@ const FIXTURES: Record<string, readonly unknown[]> = {
   'negatives and zero': [-5, 0, 3, -1, 0],
   'all null': [null, null],
   'mixed strings and numbers': [3, 'b', 1, 'a', 7],
+  /**
+   * ⚠️ AN ALL-STRING COLUMN, added at item 1919 because the win there is 2.00x on exactly this and
+   * the file had no such fixture — only the MIXED one, whose numbers mean `compareTotal`'s type
+   * rank decides the answer before any string comparison happens. A column that is wholly strings
+   * is a different path through the comparator.
+   */
+  'all strings': ['pear', 'apple', 'fig', 'apple', 'quince'],
   single: [42],
 };
+
+/**
+ * The oracle's comparison, chosen by the COLUMN'S TYPE.
+ *
+ * ⚠️ WHY THIS IS NOT RE-IMPLEMENTING THE THING UNDER TEST, which the note below rightly warns
+ * against for the MIXED fixture: a cross-type order needs `compareTotal`'s type ranks, and copying
+ * those here would make the oracle a second copy of the engine. A column that is wholly numbers or
+ * wholly strings needs no ranks at all — `<` on two ASCII strings IS code-point order — so each
+ * single-type column gets the plain JavaScript comparison for its type and the mixed one stays
+ * excluded.
+ *
+ * ⚠️ AND THE NUMERIC ORACLE WAS SILENTLY WRONG FOR STRINGS, which is how item 1919 found this:
+ * `Number('apple')` is NaN, so every `Number(b) < Number(a)` was false and the reduce returned the
+ * FIRST element — reporting `fig` as the minimum of `[pear, apple, fig, apple, quince]` while the
+ * engine correctly said `apple`. An oracle that cannot read its own fixture's type is not an oracle.
+ */
+const lessThan = (vals: readonly unknown[]): ((a: unknown, b: unknown) => boolean) =>
+  vals.every((v) => v === null || v === undefined || typeof v === 'string')
+    ? (a, b) => String(b) < String(a)
+    : (a, b) => Number(b) < Number(a);
+
+const greaterThan = (vals: readonly unknown[]): ((a: unknown, b: unknown) => boolean) =>
+  vals.every((v) => v === null || v === undefined || typeof v === 'string')
+    ? (a, b) => String(b) > String(a)
+    : (a, b) => Number(b) > Number(a);
 
 describe('a residual min/max over the fused values walk', () => {
   test('agrees with a plain JavaScript reduce over the walk’s own output', () => {
@@ -89,12 +121,9 @@ describe('a residual min/max over the fused values walk', () => {
          * would be re-implementing the thing under test, so that case is covered by the
          * element-reading arm instead.
          */
+        const cmp = kind === 'min' ? lessThan(vals) : greaterThan(vals);
         const expected =
-          nonNull.length === 0
-            ? null
-            : nonNull.reduce((a, b) =>
-                (kind === 'min' ? Number(b) < Number(a) : Number(b) > Number(a)) ? b : a,
-              );
+          nonNull.length === 0 ? null : nonNull.reduce((a, b) => (cmp(a, b) ? b : a));
 
         /**
          * ⚠️ THE LENGTH IS PART OF THE ASSERTION, and `got[0] ?? null` alone was not enough: a
@@ -123,9 +152,11 @@ describe('a residual min/max over the fused values walk', () => {
       const got = toArray(traversal(V(), out('E'), out('E'), values('k'), min()), g);
       const nonNull = walked.filter((v) => v !== null && v !== undefined);
 
+      const cmp = lessThan(vals);
+
       expect(`${name}: ${JSON.stringify(got[0] ?? null)}`).toBe(
         `${name}: ${JSON.stringify(
-          nonNull.length === 0 ? null : nonNull.reduce((a, b) => (Number(b) < Number(a) ? b : a)),
+          nonNull.length === 0 ? null : nonNull.reduce((a, b) => (cmp(a, b) ? b : a)),
         )}`,
       );
     }
@@ -178,5 +209,84 @@ describe('the residual fold refuses what it must', () => {
     expect(toArray(traversal(V(), out('E'), values('k'), mean()), g)[0]).toBe(
       total / walked.length,
     );
+  });
+});
+
+/**
+ * THE EAGER DRAIN (item 1919) — **2.00x on `values(s).min()` and 1.93x on `max`**, interleaved over
+ * 3 rounds at 200,000 vertices / 1,000,000 edges with both controls flat:
+ *
+ *     values(s).min()   191.53 -> 95.62 ms    its own floor, values(s), is 75.10
+ *     values(s).max()   176.52 -> 91.61
+ *     values(k).min()    71.94 -> 67.74       numeric, already near its 62.81 floor
+ *
+ * ⚠️ WHY THE STRING KEY GAINS 8x WHAT THE NUMERIC ONE DOES, because it is NOT the comparator:
+ * `strcmp-ceiling-1919.mjs` priced all 800,000 string comparisons at ~11 ms in a tight loop against
+ * a 123 ms gap. Both profiles put >52% in the SAME frame — the CSR walk's lazy iterator — costing
+ * ~105 ns an element for numbers and ~210 for strings, because the fixture's numbers yield as SMIs
+ * where a string yields a HEAP POINTER across the generator boundary. Removing the generator
+ * removes that difference.
+ *
+ * ⚠️ AND THESE TESTS EXIST SO THE DRAIN IS NOT A ROUTE-ONLY CHANGE. Taking a walk's `drain` yields
+ * the same elements in the same order, so no answer test can see it — `projected-fold.test.ts` hit
+ * exactly this and solved it the same way, with a walk whose `drain` and iterator DISAGREE. Without
+ * these two, a mutant reverting the drain survives the whole suite.
+ */
+describe('the min/max fold takes the walk drain', () => {
+  test('foldProjectedMinMax uses the walk DRAIN when present', () => {
+    let drained = 0;
+    const walk = {
+      *[Symbol.iterator]() {
+        yield 999;
+      },
+      drain: () => {
+        drained += 1;
+
+        return [5, 3, 7];
+      },
+    };
+
+    // 3 is the min of the DRAINED values; 999 is what the iterator would have given.
+    expect(foldProjectedMinMax(walk, 'min')).toStrictEqual([3]);
+    expect(drained).toBe(1);
+  });
+
+  test('and falls back to iteration when the walk offers no drain', () => {
+    let iterated = 0;
+    const walk = {
+      *[Symbol.iterator]() {
+        iterated += 1;
+
+        yield 5;
+
+        yield 3;
+
+        yield 7;
+      },
+    };
+
+    expect(foldProjectedMinMax(walk, 'max')).toStrictEqual([7]);
+    expect(iterated).toBe(1);
+    // A plain array has no `drain` either, which is how every other test here calls it.
+    expect(foldProjectedMinMax([5, 3, 7], 'min')).toStrictEqual([3]);
+  });
+
+  /** The drain must not change WHICH value wins for a string column — the shape item 1919 sped up. */
+  test('a string column answers the same through either path', () => {
+    const g = build(FIXTURES['all strings']);
+    const walked = toArray(traversal(V(), out('E'), values('k')), g) as string[];
+    // Code-point order for ASCII; `localeCompare` would be a different order and not the contract.
+    const oracle = [...walked].sort((a, b) => {
+      if (a < b) {
+        return -1;
+      }
+
+      return a > b ? 1 : 0;
+    });
+
+    expect(toArray(traversal(V(), out('E'), values('k'), min()), g)).toStrictEqual([oracle[0]]);
+    expect(toArray(traversal(V(), out('E'), values('k'), max()), g)).toStrictEqual([
+      oracle[oracle.length - 1],
+    ]);
   });
 });

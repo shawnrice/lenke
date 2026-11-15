@@ -91180,3 +91180,104 @@ measurement: different walk shapes, different fused routes.
 
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers with the
 widened generator; the route screen PRE and POST. No engine behaviour changed in what is committed.
+
+## Item 1919 — **2.00x / 1.93x on a STRING key**: the `min`/`max` fold iterated the walk lazily where a `drain` exists. ⚠️ TWO hypotheses were priced and REFUTED first — the string comparator (worth 4.98 ms, not 107) and a route difference (there is none) — and the win turns out to track the VALUE TYPE, not the comparison
+
+Item 1918's probe left a datum unexplained: `V().out(E).values(s).min()` at **199.92 ms** against the
+numeric twin's 78.50. Read against the numeric floor that looks like a comparator problem. Read
+against its OWN floor it still does: `values(s)` materializes all 800,000 strings in **76.74**, so a
+fold that builds no array costs **2.6x the arm that builds an 800,000-element one**, where the
+numeric fold is only 1.26x its floor.
+
+      INTERLEAVED PRE/POST, 3 rounds, 200,000 vertices / 1,000,000 edges, median of 9:
+
+        values(s).min()   191.53  ->  95.62 ms   ⬅ 2.00x    its own floor is 75.10
+        values(s).max()   176.52  ->  91.61      ⬅ 1.93x
+        values(k).min()    71.94  ->  67.74       1.06x     numeric, already near its 62.81 floor
+        CONTROL values(k)  63.79  ->  62.81       flat
+        CONTROL values(s)  76.30  ->  75.10       flat
+
+## ❌ The first hypothesis: the string comparator. REFUTED at 4.98 ms
+
+`compareTotal` runs a chain per comparison — four null tests, the number/NaN block, two `typeRank`
+calls, the `cmpSameType` dispatch, and a surrogate test on BOTH strings inside `compareCodePoints` —
+to re-establish a fact that is per-string and invariant. `sort-key-specialize.ts` already eliminates
+exactly that for `order()`, and its note says the STRING arm is the one worth having while a NUMERIC
+arm was built, measured six times at 0.93x-1.18x and dropped because an O(n) classification scan ate
+it. It names the open question as "a cheaper classification".
+
+🔑 **A FOLD IS WHERE THAT CHEAPER CLASSIFICATION EXISTS** — it can classify AS IT FOLDS, for free,
+because it already visits every element once in order, where a sort must classify BEFORE it sorts.
+Same structural difference item 1918 found. So it looked like the answer. Priced first
+(`strcmp-ceiling-1919.mjs`, over the fixture's own 7 values, 800,000 comparisons):
+
+      full    the transcribed compareTotal chain    11.13 ms
+      real    compareCodePoints directly           10.81          ⬅ 13.5 ns a call
+      fused   classify-as-you-fold, plain `<`       6.15          ⬅ saves 4.98 ms
+      bare    `<` with no classification            4.21          ⬅ unreachable (wrong on surrogates)
+
+      and with 1 string in 1000 carrying an astral character:
+      full 10.35, fused 10.37 — the reduction is worth NOTHING at all
+
+**4.98 ms against a 123 ms gap, and zero on realistic mixed data.** ⚠️ NOT BUILT, and recorded here
+so it is not re-attempted for this fold: the per-element share of `compareCodePoints` was always
+going to be small, and the profile's 1.8% for it was the honest number while the 60.3% frame above it
+was not what it looked like.
+
+## ❌ The second hypothesis: a route difference. REFUTED — there is none
+
+The numeric and string folds are the same code, but "same code" is not the same as "same route", so
+the route screen gained the row rather than the assumption being made: `hop1: min STRING` and
+`hop1: values STRING` both read **SHORTCUT, 0 applyStep calls**, identical to their numeric twins.
+
+## ✅ What it actually is: a generator boundary, and the value TYPE decides what it costs
+
+`toArray` already prefers a walk's `drain` (item 1412) and `foldProjectedList` takes it for `fold()`
+(item 1909). **This fold iterated lazily**, so every element crossed a generator boundary — the
+pattern item 1913 priced at 1.6-2.0x on four shapes and found twice in code written by the same hand.
+
+⚠️⚠️ **AND THE PROFILE NAMES THE SAME FRAME FOR BOTH, WHICH IS THE PART WORTH KEEPING.** Both
+profiles put >52% in `walk$3`'s lazy iterator — but it costs **~105 ns an element for numbers and
+~210 for strings**. The fixture's `k` values are small integers, so they yield as SMIs; a string
+yields a HEAP POINTER. So the same frame, the same code and the same route cost 2x by value type,
+and removing the generator removes the difference. That is why the win is 2.00x on `s` and 1.06x on
+`k`, and why reading the string row against the NUMERIC floor rather than its own would have pointed
+at the comparator forever.
+
+## 🛑 A latent ORACLE bug, found by widening the fixture set
+
+`projected-aggregate.test.ts` had no all-string column — only a MIXED one, which it excludes because
+replicating `compareTotal`'s cross-type ranks would make the oracle a second copy of the engine.
+Adding `['pear','apple','fig','apple','quince']` failed TWO existing tests, and **the engine was
+right**: the oracle reduced with `Number(b) < Number(a)`, and `Number('apple')` is `NaN`, so every
+comparison was false and the reduce returned the **FIRST** element — reporting `fig` as the minimum
+while the engine correctly said `apple`.
+
+✅ Fixed by choosing the comparison from the COLUMN'S TYPE: wholly-numeric columns keep the numeric
+reduce, wholly-string columns get `<` (which IS code-point order for ASCII), and the mixed column
+stays excluded. ⚠️ That is not re-implementing the thing under test — a single-type column needs no
+type ranks at all. **An oracle that cannot read its own fixture's type is not an oracle**, and this
+one had been passing for 60-odd items because no fixture ever exercised it.
+
+## Mutation
+
+**6 mutants, 6 caught, 0 survivors — including the route one, which is the point.** Taking a drain
+yields the same elements in the same order, so it is ordinarily invisible to every answer test;
+item 1909 declared exactly this mutant an expected survivor and then removed the entry after adding
+a unit test that drives the helper with a walk whose `drain` and iterator DISAGREE. This item copied
+that, so **item 1919 has no route-only survivor at all** — a perf change with a real test behind it
+rather than an instrument. [[perf-gate-needs-its-own-test]], satisfied instead of invoked.
+
+⚠️ **ORDER IS NOT A QUESTION HERE**, unlike item 1918's `sum`/`mean`: `min`/`max` over a total order
+are order-INVARIANT, so draining cannot change the answer even in the last ulp. That is the same
+split items 1830/1853 made, and it is why this item needed no owner decision where the last one did.
+
+⚠️ **AND A NOTE ON THE FORMATTER, because it cost two checks**: mid-item, `bun run fmt` reindented a
+markdown list continuation in the unrelated `packages/gremlin/GAPS.md`, and a later `fmt` run
+reverted it again — so the file appeared as modified, then clean, and is NOT in this commit.
+[[prettier-scope-gotcha]] records `fmt` exiting 0 as not the same as `fmt:check` passing; this is the
+same non-idempotence, seen from the other side. If an unrelated markdown file shows up dirty after
+`fmt`, re-run `fmt` before concluding anything about it.
+
+GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers;
+`bun run spelling:gremlin`; the route screen with the two new string rows.

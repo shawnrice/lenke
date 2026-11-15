@@ -72,6 +72,13 @@ const SHAPES = {
   mean: traversal(V(), out('E'), values('k'), mean()),
   // A STRING key, which no numeric arm can reach — the control for a numeric specialization.
   strmin: traversal(V(), out('E'), values('s'), min()),
+  /**
+   * ⚠️ THE STRING FLOOR, missing from the first cut and the reason `strmin`'s 194-233 ms could not
+   * be read as a finding: a string property is bigger to read than a number, so the comparison that
+   * matters is against the same walk MATERIALIZING the strings, not against the numeric fold.
+   */
+  strvalues: traversal(V(), out('E'), values('s')),
+  strmax: traversal(V(), out('E'), values('s'), max()),
   // CONTROL: the walk with no projection and no terminal at all.
   bare: traversal(V(), out('E')),
 };
