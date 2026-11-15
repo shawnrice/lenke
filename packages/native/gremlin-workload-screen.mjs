@@ -148,6 +148,17 @@ const SHAPES = {
   'hop2: count': () => traversal(V(), out('E'), out('E'), count()),
   'hop3: count': () => traversal(V(), out('E'), out('E'), out('E'), count()),
   'edge: outE.has(w).inV': () => traversal(V(), outE('E'), has('w', gt(3)), inV(), values('n')),
+  /*
+   * ⚠️ THESE THREE WERE MISSING, AND THAT IS WHY THREE SHIPPED WINS WERE INVISIBLE HERE (item 1958).
+   * Items 1956 and 1957 took the edge-predicate family's other terminals — `inV().count()` at
+   * 2.33x, `values(w)` on the EDGE at 3.66x, `count()` on the edge at 2.28x — and this screen's
+   * top rows did not move at all, because it carried only the `inV().values(n)` spelling, which was
+   * already fused. A screen is a claim about THE SHAPES IT HAS; these are now among them, so the
+   * regression sweep covers what those items changed.
+   */
+  'edge: outE.has(w).inV.count': () => traversal(V(), outE('E'), has('w', gt(3)), inV(), count()),
+  'edge: outE.has(w).values(w)': () => traversal(V(), outE('E'), has('w', gt(3)), values('w')),
+  'edge: outE.has(w).count': () => traversal(V(), outE('E'), has('w', gt(3)), count()),
   'edge: outE count': () => traversal(V(), outE('E'), count()),
   'agg: values min': () => traversal(V(), values('n'), min()),
   'agg: values max': () => traversal(V(), values('n'), max()),

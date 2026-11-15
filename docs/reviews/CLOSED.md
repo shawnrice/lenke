@@ -94123,3 +94123,56 @@ VACUOUS and is recorded as such in the test: "the `E` list must not contain 9" i
 
 GATES. `bun run check` 0; `bun run test -- --skip-nx-cache` 21 projects; `bun run fuzz` 57/0 across
 all seven byte-identity fuzzers.
+
+## Item 1958 — ⚠️⚠️ **THE 45-SHAPE SCREEN MANUFACTURED A SPELLING GAP THAT DOES NOT EXIST** — it read `outE.otherV` at 108.55 against its twin's 81.14 (1.34x) where one-shape-per-process reads **56.3 against 55.9**. ✅ Item 1921's closure HOLDS, nothing regressed, and the three wins from items 1956/1957 were **invisible to the screen because it had no rows for them**
+
+Re-ran `gremlin-workload-screen.mjs` after four Gremlin items to see what moved. Two findings, and
+the first is about the instrument.
+
+**1. THE SCREEN'S TOP DID NOT MOVE, AND SHOULD NOT HAVE.** Items 1956 and 1957 took three shapes at
+2.33x, 3.66x and 2.28x — and the screen carried **none of them**. Its only edge-predicate row is
+`outE.has(w).inV().values(n)`, the one spelling that was ALREADY fused before this session. A screen
+is a claim about the shapes it has; three shipped wins sat outside it. All three are now rows
+(`edge: outE.has(w).inV.count`, `edge: outE.has(w).values(w)`, `edge: outE.has(w).count`), reading
+51.91 / 46.47 / 49.99 ms against the fused `inV` row's 124.41 — faster, consistently, because they
+never deref the far vertex.
+
+**2. ⚠️⚠️ AND THE SCREEN REPORTED A SPELLING GAP THAT ISN'T THERE, which is the expensive kind of
+false positive.** This repo's named bug class is two spellings of one question costing differently,
+and the screen deliberately carries `outE(T).otherV()` beside `outE(T).inV()` so the pair stays
+visible. Item 1921 closed that gap by normalizing `otherV` after a DIRECTED edge step
+(328.12 → 48.71 against the twin's 47.72 — EQUAL, which is the success criterion). Today's screen:
+
+```text
+  pathdep: outE.otherV          108.55 ms      ⬅ 1.34x
+  pathdep: outE.inV (the twin)   81.14
+```
+
+Two earlier runs of the same screen in the same session read 1.03x and 1.04x. Normalized, the two
+spellings are **the same plan**, and the same plan cannot cost two different amounts — so this was
+either a regression from items 1956/1957 or an artifact. `othervgap-1958.mjs`, one shape per
+process, three rounds alternated:
+
+```text
+  otherv   56.3  57.7  59.1        rows 1,000,000   checksum 5,499,920
+  inv      57.9  55.9  61.1        rows 1,000,000   checksum 5,499,920
+```
+
+**Identical within noise, same answer, and BOTH ~57 ms against the screen's 108.55 and 81.14.** So
+the screen inflates these rows by **1.4x-1.9x and inflates them UNEQUALLY**, which is what
+fabricated the 1.34x. Item 1921's closure holds and nothing regressed.
+
+🔑 **THE RULE THIS SHARPENS.** CLAUDE.md already records in-sweep inflation (item 737's phantom
+1.66x, item 747's cause) and says a sub-1.3x question needs a per-row instrument. This item adds the
+consequence that matters most here: **a sweep can invent a SPELLING GAP, and a spelling gap is the
+one signal this repo treats as a planner bug on sight.** A false one sends someone hunting a
+rewrite that is already correct. So a spelling pair is confirmed or refuted ONE SHAPE PER PROCESS,
+never from a screen row — the same discipline items 1956 and 1957 needed for bimodality, applied to
+the comparison the screen exists to make visible.
+
+⚠️ The screen stays as it is, and the `otherV`/`inV` pair stays in it: its job is to keep the pair
+VISIBLE so somebody looks, and it did exactly that. What changes is what a reading of it licenses.
+
+NO ENGINE BEHAVIOUR CHANGED — three screen rows, one instrument, and this entry.
+
+GATES. `bun run check` 0; `bun run test -- --skip-nx-cache` 21 projects.
