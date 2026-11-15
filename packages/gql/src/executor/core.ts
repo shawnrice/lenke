@@ -5552,6 +5552,12 @@ export type CLinear = {
   hopDistinctProjection: RowsFn | null;
   /** The grouped `count(*)` at two and three-plus segments — item 1832. */
   hop2GroupedCount: AlwaysRowsFn | null;
+  /**
+   * The LEVEL-RECURRENCE arm for a chain's grouped count (item 2013) — checked BEFORE
+   * `chainGroupedCount`, which answers the same shapes by walking every path, and which refuses the
+   * `LET … GROUP BY` spelling outright on a clause count.
+   */
+  chainGroupedLevels: AlwaysRowsFn | null;
   chainGroupedCount: AlwaysRowsFn | null;
   /**
    * The two-hop and chain rungs under `ORDER BY <output columns>` — item 1827. `RowsFn`, because

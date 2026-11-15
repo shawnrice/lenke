@@ -1922,6 +1922,16 @@ const deepWidthReductions = (linear: CLinear, graph: Graph, params: Params): Row
     return linear.hop2FoldedAggregate(graph, params);
   }
 
+  /*
+   * ⚠️ ABOVE `chainGroupedCount`, which answers the same shapes by walking every path AND refuses the
+   * `LET … GROUP BY` spelling on a clause count (a 2.96x cliff, item 2012). This arm is a backward
+   * level recurrence — O(k·(|V| + |E|)) against O(paths) — and takes both spellings. Strictly
+   * narrower otherwise, so everything it declines lands below exactly as before.
+   */
+  if (linear.chainGroupedLevels) {
+    return linear.chainGroupedLevels(graph, params);
+  }
+
   if (linear.chainGroupedCount) {
     return linear.chainGroupedCount(graph, params);
   }

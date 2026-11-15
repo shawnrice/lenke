@@ -1,11 +1,13 @@
 import type { Graph, Vertex } from '@lenke/core';
 
-import type { Clause, NodePattern, RelPattern } from '../ast.js';
-import type { CClause, Params } from './core.js';
+import type { Clause, Expr, NodePattern, PathPattern, RelPattern } from '../ast.js';
+import type { CClause, Params, Row } from './core.js';
 import { csrFor } from './csr-cache.js';
 import type { AlwaysRowsFn } from './hop-projection.js';
 import { plainNode, plainRel } from './hop-sides.js';
-import { valueKey } from './rows.js';
+import { columnName, resolveCount, valueKey } from './rows.js';
+import { groupedClauses, groupedProjection, groupedSortApplier } from './shortcuts.js';
+import { propOf } from './values.js';
 
 /**
  * `MATCH <chain of 2+ segments> RETURN min|max|count(<far>.k)` — answered by a LEVEL RECURRENCE
@@ -159,49 +161,42 @@ const levelWalk = (
   return { u, order: first.order };
 };
 
-export const detectChainFoldLevels = (
-  clauses: readonly Clause[],
-  compiled: readonly CClause[],
-): AlwaysRowsFn | null => {
-  if (clauses.length !== 2) {
-    return null;
-  }
+/**
+ * The pattern-side admission, shared by both detectors in this module (item 2012).
+ *
+ * ⚠️ ONE READER, because `chain-projection.ts` warns twice that two copies of one shape rule is how
+ * the far endpoint ended up on a per-edge tally. It is deliberately NARROWER than
+ * `detectChainProjection`'s: no relationship variable, no inline properties, no union types,
+ * single-name labels — so everything it refuses falls to the existing rungs unchanged.
+ */
+type ChainShape = {
+  readonly levels: readonly Level[];
+  readonly startLabel: string | undefined;
+  readonly pattern: PathPattern;
+};
 
-  const [m, ret] = clauses;
-  const [, cret] = compiled;
-
+const chainShapeOf = (m: Clause): ChainShape | null => {
   if (
     m.kind !== 'match' ||
     m.optional ||
     m.patterns.length !== 1 ||
-    // ⚠️ NO CARRIED `WHERE`. The existing rung carries one; this reader does not, so a filtered
-    // chain declines to it rather than being walked without its filter.
-    m.where !== undefined ||
-    ret.kind !== 'return' ||
-    cret.kind !== 'return'
+    // ⚠️ NO CARRIED `WHERE`: the existing rungs carry one, this reader does not, so a filtered chain
+    // declines to them rather than being walked without its filter.
+    m.where !== undefined
   ) {
     return null;
   }
 
   const [pattern] = m.patterns;
 
-  // TWO OR MORE SEGMENTS. One hop has `hop-endpoint-extremum.ts` (item 1246) and is already fast.
   /*
-   * ⚠️⚠️ **THE PATH MODE IS DELIBERATELY NOT CHECKED, and checking it was this rung's first bug —
-   * it declined EVERY query.** The parser stamps `mode: 'trail'` and `selector: 'walk'` as DEFAULTS
-   * on every pattern, so `mode !== undefined` is false for nothing at all.
-   *
-   * 🔑 AND THE RIGHT ANSWER IS NOT `mode === 'trail'` EITHER — mode is IRRELEVANT here, on two
-   * independent pieces of evidence. `CLOSED.md` records that "the restrictors apply per REPETITION
-   * of a quantifier … and a quantifier is declined by `plainRel`", which `levelOf` enforces; and the
-   * engine's own `count(d.n)` over a default (`mode: trail`) 3-hop chain reads **625000 = 5000 × 5³
-   * exactly**, which is the WALK count — so no edge- or vertex-distinctness rule is in play for a
-   * non-quantified chain. Items 2007/2008 spent two items on the fact that mode DOES matter for a
-   * quantified path; this is the other side of that line.
-   *
-   * ⚠️ THE SELECTOR IS CHECKED, with the `?? 'walk'` default `needsGeneralMatcher` uses: an
-   * `ANY`/`ALL SHORTEST` selector changes which paths exist and the recurrence would answer over all
-   * of them.
+   * ⚠️⚠️ **THE PATH MODE IS DELIBERATELY NOT CHECKED, and checking it declined EVERY query** when
+   * this module was written (item 2010): the parser stamps `mode: 'trail'` and `selector: 'walk'` as
+   * DEFAULTS, so `mode !== undefined` is false for nothing at all. And `mode === 'trail'` would be
+   * wrong too — mode is IRRELEVANT without a quantifier, on two independent pieces of evidence.
+   * `CLOSED.md`: "the restrictors apply per REPETITION of a quantifier … and a quantifier is declined
+   * by `plainRel`", which `levelOf` enforces; and the engine's own `count(d.n)` over a default
+   * (`mode: trail`) 3-hop chain reads **625000 = 5000 × 5³ exactly**, the WALK count.
    */
   if (
     pattern.segments.length < 2 ||
@@ -230,6 +225,31 @@ export const detectChainFoldLevels = (
     levels.push(level);
   }
 
+  return { levels, startLabel: startLabelExpr?.name, pattern };
+};
+
+export const detectChainFoldLevels = (
+  clauses: readonly Clause[],
+  compiled: readonly CClause[],
+): AlwaysRowsFn | null => {
+  if (clauses.length !== 2) {
+    return null;
+  }
+
+  const [m, ret] = clauses;
+  const [, cret] = compiled;
+
+  if (ret.kind !== 'return' || cret.kind !== 'return') {
+    return null;
+  }
+
+  const shape = chainShapeOf(m);
+
+  if (shape === null) {
+    return null;
+  }
+
+  const { levels, startLabel, pattern } = shape;
   const proj = cret.projection;
   const agg = proj.foldedAggs?.length === 1 ? proj.foldedAggs[0] : undefined;
 
@@ -271,7 +291,7 @@ export const detectChainFoldLevels = (
   const { argFn } = agg;
 
   return (graph: Graph, params: Params) => {
-    const { u, order } = levelWalk(graph, levels, startLabelExpr?.name);
+    const { u, order } = levelWalk(graph, levels, startLabel);
     const binding = new Map<string, unknown>();
     const env: FoldEnv = { binding, params, graph };
 
@@ -358,4 +378,191 @@ const foldLevel = (pass: FoldPass): unknown => {
   // not a sentinel. `have` distinguishes "no reached vertex had a non-null value" from "the minimum
   // happens to be falsy".
   return have ? best : null;
+};
+
+/**
+ * Walks FROM each start, by running the recurrence BACKWARD (item 2013).
+ *
+ * 🔑 **`levelWalk` ANSWERS "HOW MANY WALKS END HERE"; A GROUPED COUNT KEYED ON THE START NEEDS "HOW
+ * MANY WALKS BEGIN HERE".** Same recurrence, traversed the other way, reusing the same per-level CSR
+ * tables and the same label masks rather than a second mechanism:
+ *
+ * ```text
+ *     f_k(v) = [v matches L_k] ? 1 : 0
+ *     f_i(v) = [v matches L_i] * sum over v -> x of type t_{i+1} of f_{i+1}(x)
+ * ```
+ *
+ * ⚠️ THE EDGE DIRECTION IS UNCHANGED; only the ACCUMULATION reverses. Each step still reads `v`'s
+ * out-edges of the level's own type (`csrFor(graph, !forward, [type])`, the same table `levelWalk`
+ * uses) and sums the NEXT level's values at their targets. Reversing the TABLES instead would answer
+ * a mirror-image question on any graph that is not symmetric — the defect item 2004's
+ * `direction-ignored` mutant exists to catch.
+ */
+const walksFromStart = (
+  graph: Graph,
+  levels: readonly Level[],
+  startLabel: string | undefined,
+): { f: Float64Array; order: readonly Vertex[] } => {
+  const first = csrFor(graph, !levels[0].forward, [levels[0].type]);
+  const n = first.order.length;
+  const last = levels[levels.length - 1].label;
+  let f = new Float64Array(n);
+  let prev = new Float64Array(n);
+
+  for (let v = 0; v < n; v += 1) {
+    f[v] = last === undefined || first.order[v].labels.has(last) ? 1 : 0;
+  }
+
+  for (let i = levels.length - 1; i >= 0; i -= 1) {
+    const level = levels[i];
+    const { off, nbr, order } = csrFor(graph, !level.forward, [level.type]);
+    // Position `i` is entered by level `i`'s edge, so stepping OUT of position `i - 1` reads level
+    // `i`'s type and tests position `i - 1`'s own label — the start's at `i === 0`.
+    const hereLabel = i === 0 ? startLabel : levels[i - 1].label;
+    const swap = prev;
+
+    prev = f;
+    f = swap;
+    f.fill(0);
+
+    for (let v = 0; v < n; v += 1) {
+      if (hereLabel !== undefined && !order[v].labels.has(hereLabel)) {
+        continue;
+      }
+
+      const end = off[v + 1];
+      let acc = 0;
+
+      for (let k = off[v]; k < end; k += 1) {
+        acc += prev[nbr[k]];
+      }
+
+      f[v] = acc;
+    }
+  }
+
+  return { f, order: first.order };
+};
+
+/**
+ * `MATCH <chain of 2+ segments> … RETURN <start>.k, count(*)` GROUPED — from the walk counts, with
+ * no row materialized (item 2013).
+ *
+ * ⚠️⚠️ **IT TAKES BOTH SPELLINGS, AND THAT IS HALF THE POINT.** `detectChainGroupedCount` opens with
+ * `clauses.length !== 2`, and `LET g = a.n … GROUP BY g` parses as THREE clauses — so the explicit
+ * grouping, which is the ONLY way to write it (`GROUP BY` takes a bound name) and the form item
+ * 1817's realistic corpus uses, reached no rung at all: **72.08 ms against the aliased form's 24.38
+ * for the same 97 groups, a 2.96x cliff** (item 2012). `groupedClauses` admits 2 OR 3 clauses and
+ * `groupedProjection` resolves the key through the LET — both already exported and used by
+ * `grouped-hop.ts` and `node-scan.ts`, so this rung uses the shared readers rather than a third copy.
+ *
+ * 🔑 **AND THE KEY IS READ DIRECTLY, NOT THROUGH THE COMPILED PROJECTION, which is what makes the LET
+ * form work at all.** For the 3-clause form the compiled key item evaluates the variable `g`, bound
+ * by a LET clause this rung skips — so calling it would read an unbound name. `grouped-hop.ts`
+ * resolves the key to a PROPERTY of one end and reads it with `propOf`; this does the same.
+ *
+ * ⚠️ `ORDER BY` AND THE WINDOW GO THROUGH THE SHARED APPLIERS (`groupedSortApplier`, `keepGroups`),
+ * because about half the corpus's grouped draws are wrapped in one and refusing them would leave half
+ * the family on the slow path. `having` is refused — it needs a group representative this rung does
+ * not build.
+ *
+ * ⚠️ GROUP ORDER IS FIRST-SEEN AND IS A CONTRACT THE DIFFERENTIAL FUZZER CANNOT SEE
+ * (`grouped-hop.ts`: "the pinned contract both engines keep"; grouped results compare as MULTISETS).
+ * This walks `order`, which `csrFor` builds from `graph.verticesById` in insertion order — the same
+ * order the general path visits starts in — and inserts into a `Map`, which preserves it.
+ */
+export const detectChainGroupedLevels = (clauses: readonly Clause[]): AlwaysRowsFn | null => {
+  const shape = groupedClauses(clauses);
+
+  if (shape === null) {
+    return null;
+  }
+
+  const chain = chainShapeOf(shape.match);
+
+  if (chain === null) {
+    return null;
+  }
+
+  const letName = shape.let?.var;
+  const picked = groupedProjection(shape.ret.projection, letName);
+
+  if (picked === null || picked.having !== undefined || picked.keyCol === undefined) {
+    return null;
+  }
+
+  // Resolve the key to a property of the START, through the LET when there is one.
+  let keySource: Expr | undefined = picked.keyExpr;
+
+  if (shape.let !== undefined) {
+    keySource =
+      picked.keyExpr.kind === 'var' && picked.keyExpr.name === letName ? shape.let.expr : undefined;
+  }
+
+  // ⚠️ THE KEY MUST BE ON THE **START**: keyed anywhere else the count is not a per-start quantity
+  // and this recurrence cannot express it. `grouped-hop.ts`'s far-key walk is the shape that needs
+  // per-edge visits, and item 1313 records why it cannot be reordered.
+  if (
+    keySource?.kind !== 'prop' ||
+    chain.pattern.start.variable === undefined ||
+    keySource.variable !== chain.pattern.start.variable
+  ) {
+    return null;
+  }
+
+  const { key } = keySource;
+  const { keyCol, countAt } = picked;
+  const countItem = shape.ret.projection.items[countAt];
+  // ⚠️ THE ALIAS WINS WHEN THERE IS ONE — `count(*) AS c` names the column `c`, and `columnName`
+  // derives a name from the EXPRESSION, which for an aggregate is not what the row is keyed by.
+  const countCol = countItem.alias ?? columnName(countItem.expr);
+  const applySort = groupedSortApplier(
+    shape.ret.projection.orderBy ?? [],
+    [keyCol, countCol],
+    keyCol,
+    keySource,
+  );
+
+  if (applySort === null) {
+    return null;
+  }
+
+  const { skip, limit } = shape.ret.projection;
+
+  return (graph: Graph, params: Params) => {
+    const { f, order } = walksFromStart(graph, chain.levels, chain.startLabel);
+    const groups = new Map<string, { key: unknown; n: number }>();
+
+    for (let v = 0; v < order.length; v += 1) {
+      // ⚠️ A ZERO COUNT IS NOT A GROUP: a start with no matching chain contributes no row on the
+      // general path either, so an empty group must never appear.
+      if (f[v] === 0) {
+        continue;
+      }
+
+      const kv = propOf(order[v], key);
+      const kk = valueKey(kv);
+      const seen = groups.get(kk);
+
+      if (seen === undefined) {
+        groups.set(kk, { key: kv, n: f[v] });
+      } else {
+        seen.n += f[v];
+      }
+    }
+
+    const rows: Row[] = [];
+
+    for (const { key: kv, n } of groups.values()) {
+      rows.push({ [keyCol]: kv, [countCol]: n });
+    }
+
+    const sorted = applySort(rows);
+    const from = resolveCount(skip, params) ?? 0;
+    const take = resolveCount(limit, params);
+
+    return from === 0 && take === undefined
+      ? sorted
+      : sorted.slice(from, take === undefined ? undefined : from + take);
+  };
 };

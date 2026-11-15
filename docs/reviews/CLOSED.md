@@ -98331,7 +98331,7 @@ GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-
 `bun run fuzz` 22 of 23 full sweeps clean with the one unattributed failure above; gql 4,986; both
 ceiling probes' answer checks YES.
 
-## Item 2012 — 🔭 **A 2.96x SPELLING CLIFF ON THE GROUPED CHAIN COUNT: `LET g = a.n … GROUP BY g` reads 72.08 ms where the aliased `RETURN a.n AS g, count(*)` reads 24.38 — same 97 groups, same counts.** ⚠️ **And the FAST spelling is itself 21x its own ceiling (1.15 ms).** 🧰 Plus `fuzz-sweep.sh`, because I destroyed the failure evidence twice
+## Item 2012 — ✅ **[BOTH HALVES TAKEN BY ITEM 2013: the cliff is gone (both spellings 0.69-0.71 ms) and the fast spelling went 24.38 -> 0.71, 34.3x. Its 50.2x pricing was an UNDER-estimate, because the ceiling it used walked adjacency boxes and the cure uses a CSR.]** **A 2.96x SPELLING CLIFF ON THE GROUPED CHAIN COUNT: `LET g = a.n … GROUP BY g` reads 72.08 ms where the aliased `RETURN a.n AS g, count(*)` reads 24.38 — same 97 groups, same counts.** ⚠️ **And the FAST spelling is itself 21x its own ceiling (1.15 ms).** 🧰 Plus `fuzz-sweep.sh`, because I destroyed the failure evidence twice
 
 ## 🧰 FIRST, THE HARNESS — I LOST THE EVIDENCE TWICE AND THAT IS A METHOD BUG
 
@@ -98405,3 +98405,73 @@ in `graph.verticesById` order, which is what `csrFor`'s `order` already is.
 
 GATES. `bun run fmt` 0; `bun run check` 0. (A harness and a probe — no engine code changed; the
 reverted recurrence is not in the tree.)
+
+## Item 2013 — ✅ **THE GROUPED CHAIN COUNT GETS THE BACKWARD RECURRENCE, AND THE 2.96x SPELLING CLIFF IS GONE: aliased 24.38 → 0.71 ms (34.3x), `LET … GROUP BY` 72.08 → 0.69 (104.5x), both spellings now identical.** 🔑 **The engine is now FASTER than its own hand ceiling** ⚠️ `grouped` family 10.52 → 4.84 ms/query (2.17x)
+
+Takes both halves item 2012 left: the cliff (a clause count) and the 21x (a path walk). One rung fixes
+both, because the thing that made the LET form reachable is the same thing that made the recurrence
+possible.
+
+```text
+    spelling               PRE      POST    vs PRE   agree
+    chain aliased        24.38      0.71     34.3x     yes
+    chain LET+GROUP BY   72.08      0.69    104.5x     yes
+    hop   aliased         0.42      0.38     flat (item 2011)
+    hop   LET+GROUP BY    0.22      0.20     flat
+    grouped FAMILY       10.52      4.84      2.17x
+```
+
+🔑 **THE RECURRENCE RUNS BACKWARD, which is the whole idea.** Item 2010's `levelWalk` answers "how many
+walks END here"; a grouped count keyed on the START needs "how many walks BEGIN here" — the same
+recurrence traversed the other way, reusing the same per-level CSR tables and label masks:
+
+```text
+    f_k(v) = [v matches L_k] ? 1 : 0
+    f_i(v) = [v matches L_i] * sum over v -> x of type t_{i+1} of f_{i+1}(x)
+```
+
+`f_0(v)` is then the number of chain matches beginning at `v`, bucketed by `key(v)` — no row
+materialized, no path visited. ⚠️ THE EDGE DIRECTION IS UNCHANGED; only the ACCUMULATION reverses.
+Reversing the TABLES instead would answer a mirror-image question on any asymmetric graph, which is
+the defect item 2004's `direction-ignored` mutant exists to catch.
+
+🔑 **AND READING THE KEY DIRECTLY IS WHAT MAKES THE LET FORM WORK AT ALL.** For the 3-clause spelling
+the compiled key item evaluates the variable `g`, bound by a LET clause this rung skips — calling it
+would read an unbound name. `grouped-hop.ts` resolves the key to a PROPERTY of one end and reads it
+with `propOf`; this does the same. **So the cliff was not a separate fix bolted on: a recurrence that
+controls its own binding has to resolve the key anyway, and resolving it is what admits the LET.**
+
+⚠️ THE SHARED READERS DID THE REST. `groupedClauses` already admits 2 OR 3 clauses and
+`groupedProjection` already resolves the key through a LET — both exported, both used by
+`grouped-hop.ts` and `node-scan.ts`. The chain rung was the one place with a hand-rolled
+`clauses.length !== 2`. ⚠️ `ORDER BY` and the window go through `groupedSortApplier` and
+`resolveCount`, because about half the corpus's grouped draws are wrapped in an `ORDER BY` and
+refusing them would leave half the family on the slow path; `having` is refused (it needs a group
+representative this rung does not build).
+
+⚠️ **THE ENGINE NOW BEATS ITS OWN HAND CEILING — 0.48 ms against 1.03, a ratio of 0.5x** — because
+item 2011's ceiling walks `v.adjFrom.get('E')` per vertex and sums `degOf(e.to)`, while the recurrence
+reads `Int32Array`s. That is the THIRD time this stretch a ceiling built on adjacency boxes has been
+beaten by a CSR cure (items 1999, 2008, here), and it is the same lesson each time: **a ceiling is
+only a floor if it uses the structure the cure will use.** The 50.2x this was priced at was an
+UNDER-estimate for exactly that reason.
+
+## ⚠️ TWO MISTAKES, ONE OF WHICH THE SUITE CAUGHT LOUDLY
+
+- **I PASSED THE COMPILED CLAUSES WHERE THE AST WAS WANTED** — `detectChainGroupedLevels(clauses)`
+  instead of `(fast)`. `groupedProjection` then received compiled items, which carry `.fn` and not
+  `.expr`, and crashed inside `isStarCount`: **406 failures**. A loud, immediate, single-cause failure,
+  which is what a wrong argument SHOULD look like; the typecheck flagged it in the same breath.
+- ⚠️ **AND THE COMPLETENESS GUARD FIRED TWICE, AS DESIGNED.** `routes-fired.test.ts` asserts
+  `all.size` equals the detector count, so a 34th fails there rather than going unguarded. My first
+  route case then expected `chainGroupedCount` for a TWO-segment pattern — but that rung wants three
+  or more, so the real overlap is `hop2GroupedCount`. The test named the actual routes and I corrected
+  the expectation to what fires.
+
+⚠️ A NEW CASE PINS THE CLIFF ITSELF: `chain grouped count, LET + GROUP BY spelling` expects **only**
+`chainGroupedLevels`, which is the assertion that the old rung still declines that spelling. If
+someone widens it later, that case tells them the cliff is theirs to re-check.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
+`bun run fuzz` **12/12 sweeps clean via `fuzz-sweep.sh`**, which keeps the failing run's output —
+built last item precisely because item 2011's unattributable failure had none; gql 4,988.

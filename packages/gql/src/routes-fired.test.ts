@@ -191,10 +191,36 @@ describe('every fast-path detector fires for its own shape', () => {
      * aggregate is item 1829's order-sensitivity question again. Both decline, and nothing in the
      * ANSWERS would reveal it if they stopped declining.
      */
+    /*
+     * ⚠️ KEYED ON THE **FAR** END, which is why `chainGroupedLevels` does NOT join this case: its
+     * recurrence answers walks-per-START, so a far key is not a per-start quantity. The two cases
+     * below are the near-keyed shapes it does take.
+     */
     [
       'three-hop grouped count',
       'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L)-[:R]->(d:L) RETURN d.k AS k, count(*) AS c',
       ['chainGroupedCount'],
+    ],
+    [
+      'chain grouped count on the NEAR key',
+      'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L) RETURN a.k AS k, count(*) AS c',
+      // ⚠️ TWO segments, so the overlap is `hop2GroupedCount` — `chainGroupedCount` wants three or
+      // more. `chainGroupedLevels` admits 2+ and sits above both; the ladder runs it first.
+      ['chainGroupedLevels', 'hop2GroupedCount'],
+    ],
+    /*
+     * ⚠️⚠️ **THIS CASE PINS A 2.96x SPELLING CLIFF.** `LET g = a.k … GROUP BY g` parses as THREE
+     * clauses and `detectChainGroupedCount` opens with `clauses.length !== 2`, so it reached NO rung
+     * — 72.08 ms against the aliased form's 24.38 for the same groups (item 2012). `GROUP BY` takes
+     * a BOUND NAME, so this is the only way to write the grouping explicitly, and it is the form
+     * item 1817's realistic corpus uses. **The expectation listing ONLY `chainGroupedLevels` is the
+     * assertion that the old rung still declines it** — if someone widens that rung later, this case
+     * tells them the cliff is theirs to re-check.
+     */
+    [
+      'chain grouped count, LET + GROUP BY spelling',
+      'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L) LET g = a.k RETURN g, count(*) AS c GROUP BY g',
+      ['chainGroupedLevels'],
     ],
     [
       'two-hop grouped count',
@@ -521,7 +547,7 @@ describe('every fast-path detector fires for its own shape', () => {
 
   // Every one is covered by the table above. Asserted rather than claimed, so a
   // detector added later without a route case fails HERE instead of going unguarded.
-  it('covers all thirty-three detectors', () => {
+  it('covers all thirty-four detectors', () => {
     const covered = new Set(CASES.flatMap(([, , want]) => want));
     const all = new Set(
       Object.keys(
@@ -533,7 +559,7 @@ describe('every fast-path detector fires for its own shape', () => {
     );
 
     expect([...all].filter((k) => !covered.has(k)).sort()).toEqual([]);
-    expect(all.size).toBe(33);
+    expect(all.size).toBe(34);
   });
 });
 
