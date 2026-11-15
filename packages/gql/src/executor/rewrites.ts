@@ -70,7 +70,6 @@ import {
 } from './core.js';
 import { detectCountShortcut } from './count-shortcut.js';
 import {
-  SUBQUERY_EXPRS,
   andExprOf,
   asLabelTest,
   cannotFault,
@@ -596,13 +595,36 @@ const inlineTrailingLet = (clauses: readonly Clause[]): readonly Clause[] => {
   //   - read ZERO times, the binding's evaluation disappears and with it any fault it raises.
   //
   // One reference is the only case where substituting changes nothing observable.
-  const subqueryBound = [...bound].filter(([, e]) => SUBQUERY_EXPRS.has(e.kind)).map(([n]) => n);
+  /*
+   * ⚠️ THE GUARD NOW COVERS EVERY NON-CHEAP BINDING, not just subqueries (item 1926). `boundExprs`
+   * used to admit only `cheapPureExpr` or a subquery; it now admits ANY expression, because this
+   * once-read proof is what makes admission sound and it never depended on the expression being
+   * cheap or total — read exactly once, it is evaluated once per row either way.
+   *
+   * So the filter is "anything a projection may NOT duplicate or drop freely", which is the
+   * complement of `cheapPureExpr`. A property, variable, literal or parameter still folds however
+   * many times it is read, or none.
+   */
+  const guardedBound = [...bound].filter(([, e]) => !cheapPureExpr(e)).map(([n]) => n);
 
-  if (subqueryBound.length > 0) {
+  if (guardedBound.length > 0) {
+    /*
+     * ⚠️ OCCURRENCES, NOT NAMES. This used to be
+     * `guardedBound.filter((n) => freePredicateVars(e).has(n)).length`, which counts how many
+     * guarded NAMES appear rather than how many TIMES — so `RETURN pow(a, a)` scored 1, passed the
+     * guard, and `subst`'s function-argument arm then substituted BOTH, doubling the very work the
+     * guard exists to hold constant. A `Set` cannot carry multiplicity, so the count is taken at
+     * the only two sites `subst` ever substitutes: the whole expression as a bare name, and a
+     * function's bare-name ARGUMENTS. Any other mention makes `subst` return null and the rewrite
+     * declines, so no third site needs counting.
+     */
+    const guarded = (e: Expr): boolean => e.kind === 'var' && guardedBound.includes(e.name);
     const reads = (e: Expr): number => {
-      const free = freePredicateVars(e);
+      if (guarded(e)) {
+        return 1;
+      }
 
-      return subqueryBound.filter((name) => free.has(name)).length;
+      return e.kind === 'func' ? e.args.filter(guarded).length : 0;
     };
     const total =
       proj.items.reduce((acc, it) => acc + reads(it.expr), 0) +

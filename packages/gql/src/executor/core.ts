@@ -5633,10 +5633,29 @@ export const boundExprs = (c: Clause): Map<string, Expr> | null => {
 
     const [{ var: name, expr }] = c.items;
 
-    // A SUBQUERY is neither cheap nor total, and is admitted anyway — but only because
-    // `inlineTrailingLet` then proves the projection reads the name EXACTLY ONCE, which is what
-    // keeps the evaluation count unchanged. See the once-read guard there.
-    return cheapPureExpr(expr) || SUBQUERY_EXPRS.has(expr.kind) ? new Map([[name, expr]]) : null;
+    /*
+     * ⚠️⚠️ ANY EXPRESSION IS ADMITTED, and the once-read guard in `inlineTrailingLet` is what makes
+     * that sound (item 1926). The rule used to be `cheapPureExpr(expr) || SUBQUERY_EXPRS.has(…)`,
+     * and the subquery half already carried the whole argument: a subquery "is neither cheap nor
+     * total, and is admitted anyway — but only because `inlineTrailingLet` then proves the
+     * projection reads the name EXACTLY ONCE, which is what keeps the evaluation count unchanged".
+     *
+     * 🔑 THAT ARGUMENT NEVER DEPENDED ON CHEAPNESS OR TOTALITY. Read exactly once, the expression is
+     * evaluated once per row before the fold and once per row after it — same count, same faults,
+     * same cost. So the narrower test was excluding expressions it did not need to, and
+     * ARITHMETIC was the one that mattered: `LET a = n.n + 1 RETURN a AS x` kept its `LET`, and a
+     * standing `LET` is off every rung. Measured at 200,000 vertices:
+     *
+     * ```text
+     *   MATCH (n:T) LET a = n.n + 1 RETURN a AS x    54.99 ms   <- the LET stands
+     *   MATCH (n:T) RETURN (n.n + 1) AS x             9.26      <- the same answer, folded
+     * ```
+     *
+     * `cheapPureExpr` still decides whether the once-read guard APPLIES: a property, variable,
+     * literal or parameter may be duplicated or dropped freely, so those fold however many times
+     * the projection reads them (or none). Everything else now takes the subquery's path.
+     */
+    return new Map([[name, expr]]);
   }
 
   if (c.kind !== 'with' || c.where !== undefined) {
@@ -6092,7 +6111,6 @@ import { edgesOfTypes, outNeighbors, relTypeNames } from './adjacency.js';
 import { consistent, hasPredicate } from './bindings.js';
 import { matchClauseBindings } from './clauses.js';
 import {
-  SUBQUERY_EXPRS,
   asIdCompare,
   asMembershipNode,
   asNegatedCompare,

@@ -165,6 +165,19 @@ const SHAPES = [
     { p0: 3 },
   ],
   ['chained LET', 'MATCH (n:T) LET a = n.n + 1 LET b = a * 2 RETURN b AS x', {}],
+  /*
+   * ⚠️ THE SINGLE LET WAS MISSING, AND THAT OMISSION IS WHY `chained LET` SAT OPEN FOR 25 ITEMS.
+   * The row above reads as "a CHAIN is expensive", so item 1901's entry priced the chain — and the
+   * cost was in ONE binding all along: at item 1926 the single `LET` measured 54.99 ms against the
+   * hand-folded `RETURN (n.n + 1) AS x`'s 9.26, because `boundExprs` admitted only
+   * `cheapPureExpr` or a subquery and ARITHMETIC is neither. Now 8.33. The chain row cannot show
+   * that, since BOTH spellings carry a standing `LET` either way.
+   *
+   * 🔑 So a screen row that composes a feature with itself needs the ONE-of-it row beside it, or
+   * the composition takes the blame for the primitive.
+   */
+  ['single LET', 'MATCH (n:T) LET a = n.n + 1 RETURN a AS x', {}],
+  ['single LET, hand-folded CONTROL', 'MATCH (n:T) RETURN (n.n + 1) AS x', {}],
   ['NEXT composition', 'MATCH (n:T) WHERE n.n = $p0 RETURN n.n AS x NEXT RETURN x AS y', { p0: 3 }],
   [
     'CALL inline scoped',

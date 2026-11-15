@@ -1333,16 +1333,6 @@ export const truthCannotRaise = (e: Expr): boolean => {
 export const cheapPureExpr = (e: Expr): boolean =>
   e.kind === 'prop' || e.kind === 'var' || e.kind === 'lit' || e.kind === 'param';
 /**
- * The correlated-subquery expression kinds. `boundExprs` admits one as a `LET` binding, and
- * {@link inlineTrailingLet} then requires the projection to read the name EXACTLY ONCE before
- * substituting it (item 565).
- */
-export const SUBQUERY_EXPRS: ReadonlySet<string> = new Set([
-  'exists',
-  'countSubquery',
-  'valueSubquery',
-]);
-/**
  * One conjunct as itself, several as an `and` — the inverse of {@link flattenConjuncts}.
  *
  * `hop-projection.ts` carries its own two-line copy of this. Deliberately not shared: that module

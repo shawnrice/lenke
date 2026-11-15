@@ -89728,7 +89728,7 @@ runs of `bun run spelling:gremlin` (0 disagreements; one run flagged a group and
 refuted it, the same bimodality item 1899 saw). MUTATION: 7 mutants, 4 caught, 3 expected survivors
 each with its reason stated at the entry.
 
-## Item 1901 — item 1898's coverage sweep applied to GQL, and it found the same thing: **the surface's biggest shapes are outside the corpus**. ⚠️ ~~Its two path rows (741.10 / 738.46) are read against a one-hop control~~ **CORRECTED at item 1916: that control is the wrong floor, and the SAME match returning a scalar costs 548.74 — so 71% of those numbers is the var-length match, not the path value.** `ORDER BY <an expression>` costs **8.9x** the bound-name spelling for the same rows in the same order — and the WINDOWED form of that very key takes the rung, so the capability is already there — ✅ **TAKEN at item 1902 (3.75x; ~2.8x residual)**, and ~~the HOP half is still open at 4.3x / 1190 ms~~ **TAKEN at item 1903 (2.64x) — which uncovered a TS-ONLY WRONG ANSWER in that arm, four of five end/key combinations**
+## Item 1901 — item 1898's coverage sweep applied to GQL, and it found the same thing: **the surface's biggest shapes are outside the corpus**. ⚠️ ~~Its two path rows (741.10 / 738.46) are read against a one-hop control~~ **CORRECTED at item 1916: that control is the wrong floor, and the SAME match returning a scalar costs 548.74 — so 71% of those numbers is the var-length match, not the path value.** `ORDER BY <an expression>` costs **8.9x** the bound-name spelling for the same rows in the same order — and the WINDOWED form of that very key takes the rung, so the capability is already there — ✅ **TAKEN at item 1902 (3.75x; ~2.8x residual)**, and ~~the HOP half is still open at 4.3x / 1190 ms~~ **TAKEN at item 1903 (2.64x) — which uncovered a TS-ONLY WRONG ANSWER in that arm, four of five end/key combinations**. ⚠️ ~~Its `chained LET` row (88.17) prices the CHAIN~~ **CORRECTED at item 1926: the chain was never the cost. The SINGLE `LET` measured 54.99 against the hand-folded 9.26 — `boundExprs` admitted only `cheapPureExpr` or a subquery, so ARITHMETIC never folded. Now 8.33, 6.6x. The screen carried no single-LET row, which is why the composition took the blame for the primitive**
 
 Items 1879/1880 split the existing seventeen families until "the addressable time is exhausted" —
 a conclusion that is only ever true of the shapes a screen HAS. Item 1898 falsified exactly that on
@@ -91893,3 +91893,124 @@ NO ENGINE BEHAVIOUR CHANGED. One rejected-optimisation note above `treeStep`'s l
 instrument.
 
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects.
+
+## Item 1926 — **6.6x: a trailing `LET` of ARITHMETIC now folds**, so `LET a = n.n + 1 RETURN a AS x` goes 54.99 ms to 8.33 and lands on its hand-folded ceiling. ⚠️ And the once-read guard that makes the widening sound had a hole: it counted NAMES where it meant OCCURRENCES, so `power(a, a)` passed it and doubled the work
+
+Item 1901's GQL coverage sweep measured `chained LET` at **88.17 ms for 200,000 rows** and left it
+open. The hypothesis was the CHAIN — `inlineTrailingLet` folds one level, so two bindings leave one
+standing, and a standing `LET` is off every one of the twenty-one rungs (items 512/516 measured that
+at 83x; item 1662 at 11.28x). ⚠️ **THE HYPOTHESIS WAS WRONG, and one probe said so:**
+
+      `chainedlet-prof-1926.mjs`, 200,000 vertices, median of 7-9, ONE SHAPE PER PROCESS:
+
+        plain    RETURN n.n AS x                          5.89 ms   the control
+        folded   RETURN (n.n + 1) * 2 AS x                9.26      the hand-folded ceiling
+        single   LET a = n.n + 1 RETURN a AS x           54.99     ⬅ 5.9x, and it is ONE binding
+        chain2   + LET b = a * 2                         74.15
+        chain3   + LET c = b + 3                         89.44
+
+The SINGLE `LET` — the exact case `inlineTrailingLet` exists to fold — was **5.9x** its folded
+spelling, and each extra binding added only ~17 ms. The chain was never the cost; the fold was not
+firing at all.
+
+🔑 **WHY, READ OFF `compileLinear` RATHER THAN GUESSED** (`letroute-probe-1926.ts`, because timing
+cannot tell "declined" from "more work" — [[rung-precedence-decides-speed]]): `single` kept
+`clauses=[match,let,return]` with `parsedProj=[var/as]`, a bare aliased variable and the ideal shape,
+so the refusal was UPSTREAM of the rewrite. It was in `boundExprs`:
+
+```ts
+return cheapPureExpr(expr) || SUBQUERY_EXPRS.has(expr.kind) ? new Map([[name, expr]]) : null;
+```
+
+`cheapPureExpr` is `prop | var | lit | param`. ARITHMETIC is in neither half, so `n.n + 1` was never
+admitted.
+
+## ✅ The fix is an argument the code already made about its OTHER half
+
+The subquery exemption is commented: a subquery "is neither cheap nor total, and is admitted anyway
+— but only because `inlineTrailingLet` then proves the projection reads the name EXACTLY ONCE, which
+is what keeps the evaluation count unchanged".
+
+🔑 **THAT ARGUMENT NEVER DEPENDED ON CHEAPNESS OR TOTALITY.** Read exactly once, the expression is
+evaluated once per row before the fold and once per row after it — same count, same faults, same
+cost. So `boundExprs` now admits ANY expression for a single-item `LET`, and the once-read guard is
+widened from "subquery bindings" to its true scope: the complement of `cheapPureExpr`, which may
+still be duplicated or dropped freely.
+
+        single   54.99 -> 8.33 ms   6.6x, now [match, return]
+        folded            12.45     the ceiling — and it evaluates TWO operations where single has ONE
+        plain     5.89 -> 6.64-7.36 the control, flat across three order-alternated rounds
+        chain2   74.15 -> 63.38     1.17x incidental: the LAST binder now folds, one still stands
+        chain3   89.44 -> 79.40     1.13x
+
+## ⚠️ Widening the guard's SCOPE exposed a hole in the guard ITSELF
+
+Pre-existing and silent. `reads` counted how many guarded NAMES appear in an expression, via
+`freePredicateVars(e)` — a `Set`, which cannot carry multiplicity. So `RETURN power(a, a)` scored 1,
+passed the guard, and `subst`'s function-argument arm then substituted BOTH, **doubling exactly the
+work the guard exists to hold constant.** It was reachable before this item with a subquery binding;
+arithmetic made it ordinary. The count is now taken at the only two sites `subst` ever substitutes —
+the whole expression as a bare name, and a function's bare-name ARGUMENTS — and any other mention
+makes `subst` decline anyway, so no third site needs counting.
+
+## The tests assert the CLAUSE KINDS, not only the rows
+
+The fold is answer-equivalent, so no test over rows can tell a folded plan from a standing one
+([[perf-gate-needs-its-own-test]]). Twelve cases over `compileLinear(...).clauses.map(c => c.kind)`:
+read once (folds — bare name and function argument, node shape and hop shape), read twice in one
+expression, read twice as two function arguments, read once in the projection and once in `ORDER BY`,
+read zero times, a cheap binding folding freely either way, a subquery binding behaving exactly as
+before, two items in one clause still declining, and a chain still leaving one standing.
+
+**MUTATION: 13 mutants, 13 caught, 0 survivors** — including the pre-1926 narrow gate, the pre-1926
+name-counting `reads`, a guard that never applies, a guard that applies to everything, both
+polarities of the threshold, and `ORDER BY` reads going uncounted. ⚠️ Three anchors matched ZERO on
+the first run (I wrote `guardedBound` at the `reads` indent rather than its own); the harness
+reported all three together instead of throwing on the first — item 1914's fix earning itself again.
+
+⚠️ **MY HAND ORACLE WAS WRONG IN SIX OF TWELVE CASES, all the same way: NULL sorts LAST under
+`ORDER BY`, not first.** The `clauseKinds` assertions passed in every one of them, so the engine did
+exactly what the change predicted and only my literals were off — the useful shape of that mistake,
+and the fifth hand-oracle slip this session.
+
+## ✅ The fuzzer DOES reach this shape
+
+Worth stating, because a green run over shapes a fuzzer never emits earns nothing
+([[fuzzer-blind-to-one-column-group]] is the same caution). `differential-fuzz.test.ts` carries a
+**6% probability band** generating
+
+```text
+MATCH (n:T) LET v = <genExpr depth 2> RETURN v AS x, n.n AS t ORDER BY t
+```
+
+— a trailing `LET` bound to an ARBITRARY expression, read exactly once, with `ORDER BY` on a sibling
+item. That is precisely the shape this item newly admits, compared against the Rust engine. Green on
+random seeds plus five deterministic ones (1926, 7, 104729, 555, 31337).
+
+## 🧹 One dead constant removed, verified dead rather than assumed
+
+`SUBQUERY_EXPRS` had no reader left anywhere in `packages` or `crates` once `boundExprs` admitted any
+expression — only comments mentioned it — and it was never in the package barrel. Gone, with both
+imports. The mutant that restored the old gate was re-pointed at `cheapPureExpr` alone so it still
+fails for the right reason instead of failing to compile.
+
+## ⚠️ And the screen gained the row whose absence caused the misdiagnosis
+
+`gql-coverage-screen-1901.mjs` carried only `chained LET`, which reads as "a chain is expensive" —
+and a chain CANNOT show this, because both its spellings keep a standing `LET` either way. A
+`single LET` row and its hand-folded control now sit beside it.
+
+🔑 **The general form: a screen row that composes a feature with ITSELF needs the one-of-it row next
+to it, or the composition takes the blame for the primitive.**
+
+## 🔭 What is left, and it is now priced
+
+`inlineTrailingLet` runs ONCE, not to a fixpoint, so `chain2` at 63.38 still carries a standing `LET`
+against the 12.45 its fully folded spelling reaches. **A fixpoint is the obvious next move AND the
+once-read guard is what would make it safe** — the blowup shape `LET b = a + a` folds to a projection
+reading `a` twice, which the guard then refuses. Not built here; this item is the admission gate.
+
+GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all seven fuzzers; the GQL
+coverage screen as the regression pass — controls flat against item 1901's table (one-hop projection
+26.22 -> 26.89, deduped hop 24.71 -> 27.14, `CALL procedure YIELD` 172.92 -> 171.18) and
+`chained LET` 88.17 -> 75.80.
