@@ -86874,7 +86874,7 @@ rebuilt and re-checked for the marker, and the probe re-run against the restored
 
 GATES. bun run check 0 read unpiped; gremlin 2166 tests green against the restored dist.
 
-## Item 1862 — the FORKED multi-pattern has no rung: ~~125x on `count(*)`~~ **TAKEN at item 1863, 25.7-37.9x** / 6.8x on rows **STILL OPEN**, and it JOINS rather than products, so my quadratic hypothesis was wrong for the third tick running
+## Item 1862 — the FORKED multi-pattern has no rung: ~~125x on `count(*)`~~ **TAKEN at item 1863, 25.7-37.9x** / ~~6.8x on rows **STILL OPEN**~~ ✅ **THE ROW HALF IS CLOSED TOO, at item 1864: `forkRows` is within 1.6x of its chain twin (6.3 against 3.9), by REWRITING the fork as a chain with its first leg reversed rather than building the rung this item scoped. Verified at item 1959 against item 1864's own entry — this heading had advertised a 6.8x target that two items later did not exist.** And it JOINS rather than products, so my quadratic hypothesis was wrong for the third tick running
 
 ⚠️ **THE `count(*)` HALF IS CLOSED (item 1863) AND THE BUILD BELOW IS NOT WHAT IT NEEDED.** This item
 scoped a new fused fork rung; the actual fix was six lines in `keyedCountOf`, which already computed
@@ -87031,7 +87031,7 @@ the general matcher, so an answer-only test would pass with this item reverted. 
 `countShortcut` off `compileLinear` directly — true for the four new spellings, false for the
 self-loop one.
 
-**STILL OPEN, and item 1862's statement of it stands:** the ROW shape (`forkRows`, 6.8x against its
+~~**STILL OPEN, and item 1862's statement of it stands:**~~ ✅ **CLOSED AT ITEM 1864 (1.6x, by rewrite not by rung) — struck at item 1959:** the ROW shape (`forkRows`, 6.8x against its
 chain twin) is untouched, and so is the screen's own `multi-pattern` body, which carries
 `WHERE b.n <> c.n` — a clause `WHERE` that `keyedCountOf` refuses outright because it can correlate
 the two sides. **This win does not move the workload screen's `multi-pattern` row.**
@@ -94176,3 +94176,32 @@ VISIBLE so somebody looks, and it did exactly that. What changes is what a readi
 NO ENGINE BEHAVIOUR CHANGED — three screen rows, one instrument, and this entry.
 
 GATES. `bun run check` 0; `bun run test -- --skip-nx-cache` 21 projects.
+
+## Item 1959 — ⚠️ **A 6.8x TARGET THAT HAS NOT EXISTED SINCE ITEM 1864 WAS STILL ADVERTISED IN TWO HEADINGS.** Verified against the source entry, not cross-referenced — and this is the pattern CLAUDE.md prices at 22 of 40 corrections being closed by the VERY NEXT item
+
+Only four of this file's 100 item headings still advertise open work, so they are cheap to audit.
+The oldest is item 1862's: _"the FORKED multi-pattern has no rung: ~~125x on `count(*)`~~ TAKEN at
+item 1863 / **6.8x on rows STILL OPEN**"_. Item 1863's heading repeats it verbatim
+(_"STILL OPEN, and item 1862's statement of it stands"_).
+
+**Item 1864 closed it.** Its own entry: _"`forkRows` is now within 1.6x of its chain twin (6.3
+against 3.9), down from 6.8x"_ — taken by REWRITING the fork as a chain with its first leg reversed,
+not by building the fused rung items 1862 and 1863 both scoped. Two items after it was stated, and
+both headings kept pointing at it.
+
+🔑 **WHY THIS IS WORTH AN ITEM RATHER THAN A QUIET EDIT.** A heading is what a reader scanning for
+open work actually sees, and this one offers a 6.8x on a central shape — the most attractive number
+in the file's open set. Anyone picking targets from headings would have spent a cycle re-deriving a
+closed result, which is precisely the cost item 1301's sweep measured (40 corrections in 265 lines,
+35 of them advertising work already done, 22 closed by the very next item). Both headings now carry
+the strike and the closing number.
+
+⚠️ **AND IT WAS FOUND BY READING THE CLOSING ENTRY, NOT BY GREPPING.** Item 1864's entry does not
+contain the word "1862" in its heading, so a cross-reference from 1862 forward finds nothing
+conclusive — the string `forkRows` is what connects them, three entries apart. CLAUDE.md's rule
+already says to verify a heading against the SOURCE before trusting its number; this is the third
+instance in this session (items 1923, 1949/1951, and now 1862/1863).
+
+NO ENGINE BEHAVIOUR CHANGED — two heading corrections and this entry.
+
+GATES. `bun run check` 0.
