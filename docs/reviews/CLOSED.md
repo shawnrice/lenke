@@ -90174,7 +90174,7 @@ GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects; all sev
 `bun run spelling` at SPELL_N=200000 SPELL_REPS=9 (2 flagged groups, both item 1902's known
 residual, no new ones) plus the new group isolated; item 1904's sort matrix.
 
-## Item 1907 — **135.8x / 97.9x**: the var-length COUNT rung carries a START predicate, in all three spellings. Item 583's refusal was a CAPABILITY claim, not a correctness one — and every arm of the rung turns out to accumulate over the source list
+## Item 1907 — **135.8x / 97.9x**: the var-length COUNT rung carries a START predicate, in all three spellings. ⚠️ **But the rung still pays O(|V|) for a ONE-SOURCE query — the seed restricts only the outer sum, and item 1977 measures the same count 83x faster as a `COUNT { }` subquery.** Item 583's refusal was a CAPABILITY claim, not a correctness one — and every arm of the rung turns out to accumulate over the source list
 
 Item 1906's screen rows turned this up: the UNSEEDED count takes `varLengthCount` at **14.32 ms**
 while both seeded spellings reached no rung at all. Adding a predicate that cuts the source set
@@ -95198,5 +95198,140 @@ isolated, 1.4x) means a full-sweep figure reads HIGH. 744.3 in-sweep against 792
 `BENCH_ONLY` selection is therefore a floor on the improvement, not a ceiling.
 
 NO ENGINE BEHAVIOUR CHANGED — this entry.
+
+GATES. `bun run check` 0.
+
+## Item 1977 — 🔭 **ITEM 1907's 135.8x WIN LEFT THE RUNG PAYING |V| FOR A ONE-SOURCE QUERY: a seeded var-length count is O(|V|) where the SAME count written as a `COUNT { }` subquery is O(degree^depth), 82x at 20k vertices and 141x at 40k, same answer.** ⚠️ The row that nominated this is NOT itself a defect — it reads 0.60x or 0.93x depending only on the estimator
+
+Reached by pivot, not by list. Item 1976 found the GQL read corpus attributed at every one of its
+seven largest rows, so this tick went to `bench:usage`, whose 7 write / 3 interleaved / 2 analytic
+rows nothing this session had touched. Three rows there have TS losing to native:
+
+```text
+    row                                ts(+)    engine(+)   TS      status
+    analytic: fan-out spread 1-3 hops  188.1k    313.2k     0.60x   no entry, 1 mention ⬅
+    interleaved: append + link         188.0k    265.1k     0.71x   closed, items 576/577
+    write: append node                 315.3k    430.7k     0.73x   closed, item 312
+    read: keyed dedup lookup (+inline)  92.9k    169.5k     0.55x   closed, items 1973/1974
+```
+
+🔑 **THE NOMINATION WAS AN ORDERING THAT COULD NOT BE RIGHT, not the ratio** — items 748/749's
+heuristic. On the SAME graph and the SAME anchor, TS makes the 1-3 hop count **3.2x HARDER** than the
+2-hop count (5.32 us against 1.64) while native makes it **1.29x EASIER**. One engine had the shapes
+in the wrong order.
+
+### ⚠️ FIRST: THE NOMINATED ROW IS NOT A DEFECT, AND THE 0.60x IS AN ESTIMATOR READING
+
+Isolated, that row's own shape reads **0.93x** at `OPS=400 ROUNDS=15` and **0.61x** at `OPS=200
+ROUNDS=12`. Across SIX runs at the same `GRAPH=20000` it spanned **182.7k, 208.4k, 311.2k, 324.4k,
+330.3k, 350.0k ops/s — 0.60x to 1.03x**, a **1.9x swing with the query, the fixture and the process
+shape all held fixed**,
+because TS climbs steeply from cold on this shape (item 1973 measured 17x over ten rounds on its
+cousin) and the usage bench uses 250 ms batches, best of 3. The bench's own table already records two
+write rows reading as sweep regressions and being **refuted in isolation**; this is the same effect on
+a read row. ⚠️ **Nothing from that bench's ratio column is a target until it is re-run isolated with
+a warm-aware estimator.**
+
+### 🔑 AND THE REAL FINDING, WHICH NOBODY WAS LOOKING FOR
+
+Six spellings of the same count, 20,000 vertices, `name` indexed, median of the last third:
+
+```text
+    spelling                                              answer    ts us/op   native   ts/nat
+    A  RETURN COUNT { MATCH (u)-[:FOLLOWS]->{1,3}(x:User) }     3       5.47      3.33    0.61x
+    B  (u:User)-[…]->{1,3}(x:User) WHERE u.name=$n  count(*)    3     452.65     72.46    0.16x  ⬅
+    C  A without the far label                                  3       3.03      2.34    0.77x
+    D  B without the far label                                  3     454.11     60.24    0.13x
+    E  2-hop FIXED chain, top-level count    [CONTROL]          1       1.48      3.67    2.47x
+    F  2-hop FIXED chain in a COUNT { }      [CONTROL]          1       0.96      1.98    2.06x
+    G  B with an INLINE seed `{name: $n}`  [1906's fast form]   3     433.29     71.94    0.17x
+```
+
+**B is 83x A and 306x the fixed-chain control E, and returns the same number.** That is the shape
+`CLAUDE.md` names first ("100-300x and each returned the correct answer"), so the first three
+hypotheses were about seeding. All three are WRONG and each was refuted cheaply:
+
+❌ **"The index is starving the rung"** ([[rung-precedence-decides-speed]]'s documented mode, and
+items 1906/1907's probes created no index while this bench does). `NOINDEX=1`: B/D/G read
+469/459/435 us against the indexed 453/454/433 — **the index changes nothing for them**, while A
+moves 5.47 → 208 and E 1.48 → 625. So the index is live and these shapes simply do not consult it.
+
+❌ **"It is item 1906's clause-vs-inline gap, regressed."** G is 1906's _fast_ spelling and is just
+as slow (433 against 453 us). Both spellings lose together, which is what item 1907 built on purpose.
+
+❌ **"The far label `x:User` costs a per-element test."** D and B differ by 0.3%.
+
+✅ **THE CAUSE IS IN ITEM 1907's OWN SOUNDNESS ARGUMENT, READ AS A COST STATEMENT.** It says the
+level arrays "span all vertices (as they must — a path traverses them)" and the seed restricts only
+the outer sum. `walkLevelCount` (`var-length-count.ts:427`) does exactly that, per query:
+
+```ts
+    let u = new Float64Array(order.length);        // |V|
+    let next = new Float64Array(order.length);     // |V|
+    for (let i = 0; i < order.length; i += 1) u[i] = passes(order[i]) ? 1 : 0;   // |V|
+    const src = seedPasses === undefined ? unfiltered : unfiltered.filter(…);    // 1 of 20,000
+```
+
+So B is **on the fast rung** and the rung is O(|V| · depth) whether the seed admits 20,000 sources
+or one. The size sweep confirms it is |V| and nothing else:
+
+```text
+    GRAPH      B us/op    ns per VERTEX     A us/op    native B us/op
+     5,000      127.12        25.4            4.36        74.6
+    10,000      228.91        22.9            4.10        69.0
+    20,000      457.53        22.9            4.80        72.5
+    40,000      981.71        24.5            6.95        86.2
+```
+
+**Dead flat per vertex over 8x, and native is flat in ABSOLUTE terms** — so native does not run a
+|V|-wide recurrence for one source and is the existence proof that this is avoidable, as it was for
+item 1907's seed mask (item 575). ⚠️ The TS/native ratio therefore FALLS WITHOUT BOUND as the graph
+grows: 0.59x at 5k, 0.09x at 40k. Any figure quoted for this gap must carry its |V|.
+
+✅ **AND THE NON-VACUOUS ARM CONFIRMS THE MECHANISM RATHER THAN JUST WIDENING THE GAP** — `MIXED=1`,
+one off-label vertex of 20,001:
+
+```text
+    spelling                          vacuous   MIXED     change
+    B  far label `x:User`              452.65   635.42    1.40x WORSE
+    G  far label, inline seed          433.29   619.68    1.43x WORSE
+    D  NO far label                    454.11   468.68    flat   ⬅ the discriminator
+    A  far label, in a COUNT { }         5.47     3.08    flat (better, inside its own swing)
+```
+
+The two that worsen are exactly the two that carry a far label and run the recurrence, and the one
+that drops the label is flat — which is the `u[i] = passes(order[i]) ? 1 : 0` init pass paying a REAL
+`evalLabelExpr` per vertex once `User` is no longer vacuous, |V| times, for a query with one source.
+So the realistic arm is 1.40x worse than the figure above, and [[label-vacuity-gates-fast-paths]]'s
+rule holds here in its sharper form: the vacuous reading UNDERSTATES this gap.
+
+### THE TARGET, PRICED
+
+**When the seed is selective, route a seeded var-length count to a per-source walk instead of the
+level recurrence.** The walk route already exists, is already correct for this shape, and is already
+83x faster on it — it is what spelling A takes. The crossover is where `|src| · degree^depth`
+≈ `|V| · depth`, which at degree 1 and depth 3 is ~|V|/3 sources, so a one-source query is four
+orders of magnitude inside it. Gain at the bench's own size: **82x**; at 40k, **141x**; unbounded in
+|V|.
+
+⚠️ **NOT BUILT THIS TICK, AND THE REASON IS THE AREA.** `walkLevelCount` carries the depth-2/3/4
+trail corrections, item 1907's 26 tests / 615 assertions against native over item 573's adversarial
+fixture, and byte-identity. A route choice is answer-equivalent, so
+[[perf-gate-needs-its-own-test]] applies — every mutant survives the differential tests and the
+gate needs the arithmetic extracted as a pure function. Priced here, built next.
+
+⚠️ **AND THE FIXTURE IS NOT A FAN-OUT FIXTURE, despite the row's name.** `bench:usage` builds
+`to = u{(i * 7919) % GRAPH}` with ONE edge per vertex, and 7919 is coprime with 20,000, so the follow
+graph is a PERMUTATION: out-degree exactly 1, in-degree exactly 1, a union of cycles. `->{1,3}`
+reaches exactly THREE vertices from any anchor. So `analytic: fan-out spread 1-3 hops` measures no
+fan-out at all — it is CLAUDE.md's generator trap in its benign form (harmless at FANOUT=1, since
+degree 1 cannot branch) but it means the row cannot see a fan-out regression. Recorded, not fixed:
+raising its fanout would move every figure above and the gap found here does not depend on it.
+
+INSTRUMENT. `packages/native/countsubq-1977.mjs`, with `GRAPH` / `OPS` / `ROUNDS`, `NOINDEX=1` for
+the starving test and `MIXED=1` for the non-vacuous arm. It prints the vacuity guard and the ANSWER
+beside every time, which is what kept A-D comparable.
+
+NO ENGINE BEHAVIOUR CHANGED — a new probe and this entry.
 
 GATES. `bun run check` 0.
