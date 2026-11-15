@@ -98102,7 +98102,7 @@ GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-
 a new route for a shape the rung previously refused, and item 2005's sweep caught a real wrong answer,
 so repetition here is evidence rather than ceremony); gql 4,986; parity 105/105.
 
-## Item 2009 — 🔭 **ORDER-INDEPENDENT FOLDS PAST TWO HOPS HAVE NO RUNG: `min`/`max`/`count(x)` over a 3-hop chain cost 234-315x a level-wise recurrence, and over a 4-hop chain 1069-1515x — answers verified IDENTICAL.** ⚠️ **And `count(*)` is the WRONG ceiling, which I almost quoted at 107x; the honest ratio is larger, not smaller** ⚠️ `sum` is excluded by the byte-identity refusal, not by difficulty
+## Item 2009 — ✅ **[TAKEN BY ITEM 2010 at 109-585x. Its prediction that the FAMILY would barely move held exactly: 9.76 -> 8.60 ms/query, because the family's cost is the `sum` byte-identity refusal and not these folds.]** **ORDER-INDEPENDENT FOLDS PAST TWO HOPS HAVE NO RUNG: `min`/`max`/`count(x)` over a 3-hop chain cost 234-315x a level-wise recurrence, and over a 4-hop chain 1069-1515x — answers verified IDENTICAL.** ⚠️ **And `count(*)` is the WRONG ceiling, which I almost quoted at 107x; the honest ratio is larger, not smaller** ⚠️ `sum` is excluded by the byte-identity refusal, not by difficulty
 
 Item 2008's lesson applied first: **re-screen the families before drilling.** All fifteen measurable
 families, individually (the whole-screen run keeps hitting the 600 s wall):
@@ -98180,3 +98180,74 @@ refused there for the reason above — admitting them with a multiplicity weight
 arithmetic, which is precisely what byte-identity forbids.
 
 GATES. `bun run fmt` 0; `bun run check` 0. (Probes only — no engine code changed.)
+
+## Item 2010 — ✅ **ORDER-INVARIANT CHAIN FOLDS GET A LEVEL RECURRENCE: 3-hop `min` 53.04 → 0.43 ms (123x), `count(x)` 45.87 → 0.42 (109x); 4-hop `min` 288.72 → 0.50 (577x), `count(x)` 251.76 → 0.43 (585x) — answers identical, within 1.5-2.4x of the hand ceiling.** ⚠️ **And the FAMILY moves only 1.14x, exactly as item 2009 predicted, because its cost is the `sum` refusal**
+
+Takes item 2009's 234-1515x. ⚠️ The rung it replaces was NOT missing: `detectChainFoldedAggregate`
+(item 1824) already admits exactly these folds, but its own note says it "reuses
+`detectChainProjection`'s ENTIRE GATE by handing it a synthetic projection" — so it rides that
+module's PATH WALK. It avoids materializing rows; it still visits every path, 3,125,000 of them for
+one row at depth 4.
+
+`chain-fold-levels.ts` answers them from `u_k(v)`, the number of length-k walks ending at `v`:
+`min`/`max` read only which entries are NON-ZERO (multiplicity is irrelevant to an extremum over a
+multiset), and `count(x)` needs exactly the multiplicity the recurrence already carries. O(k·(|V| +
+|E|)) against O(paths). Placed ABOVE the existing rung and strictly NARROWER, so everything it
+declines lands there exactly as before.
+
+```text
+    depth    fold          PRE ms    POST ms    ceiling    vs PRE   agree
+    3 hops   min(d.n)       53.04       0.43       0.24      123x     YES
+    3 hops   count(d.n)     45.87       0.42       0.24      109x     YES
+    4 hops   min(e.n)      288.72       0.50       0.33      577x     YES
+    4 hops   count(e.n)    251.76       0.43       0.18      585x     YES
+```
+
+⚠️ **THE `aggregate` FAMILY MOVES 9.76 → 8.60 ms/query, 1.14x — AND THAT IS THE PREDICTED RESULT, NOT
+A DISAPPOINTMENT.** Item 2009 split the family and found the `sum` bodies dominating it (3-hop
+`sum(d.n)` at 253.60 ms), resting on the byte-identity refusal items 1829/1830 record. So the family
+number was never the thing these folds could move, and saying so in advance is what makes the 1.14x a
+confirmation rather than a surprise. **Two items now (2007, 2009) have found a family average
+dominated by something the target could not reach.**
+
+## ⚠️⚠️ THE GATE'S FIRST VERSION DECLINED EVERY QUERY, AND THE REASON IS WORTH THE LINE
+
+I refused `pattern.mode !== undefined` and `pattern.selector !== undefined`. **The parser stamps
+`mode: 'trail'` and `selector: 'walk'` as DEFAULTS on every pattern**, so those tests are false for
+nothing at all — the rung compiled and never fired, which the route test caught as a MISSING route
+rather than a wrong answer.
+
+🔑 **AND `mode === 'trail'` WOULD HAVE BEEN WRONG TOO: mode is IRRELEVANT for a non-quantified chain,
+on two independent pieces of evidence.** `CLOSED.md` records that "the restrictors apply per
+REPETITION of a quantifier … and a quantifier is declined by `plainRel`", which `levelOf` enforces;
+and the engine's own `count(d.n)` over a default (`mode: trail`) 3-hop chain reads **625000 =
+5000 × 5³ exactly**, the WALK count. Items 2007/2008 spent two items establishing that mode DOES
+matter for a quantified path; this is the other side of that line, and the measurement settled it
+rather than the reasoning.
+
+⚠️ THE LABEL MASK IS PER LEVEL, which is what lets this admit a LABELLED chain instead of depending on
+vacuity: `(a:T)-[:E]->(b:Q)-[:E]->(c:T)` zeroes every non-`Q` entry after the first step. A rung that
+ignored those labels would OVER-count — the one way this module could produce a wrong answer rather
+than merely decline.
+
+⚠️⚠️ **`sum`/`avg`/`collect` ARE EXCLUDED BY CONTRACT, AND THE TRAP IS SPECIFIC.** Writing `sum` here
+as `Σ u_k(v) · value(v)` is arithmetically appealing and is a DIFFERENT COMPUTATION from adding the
+per-path values one at a time — f64 addition is not associative, so the two disagree in the last ulp.
+Item 1829's note predicted that someone would arrive here motivated to widen it, which is exactly
+what happened; the module header now carries the refusal beside the temptation.
+
+⚠️ THE ROUTE TEST IS A COMPLETENESS GUARD AND IT FIRED AS DESIGNED: `routes-fired.test.ts` asserts
+`all.size` equals the detector count, so a 33rd detector fails there instead of going unguarded. Four
+existing cases now expect `['chainFoldLevels', <the old rung>]` — both compile, and the ladder decides
+— which documents the precedence rather than hiding it. ⚠️ Two of those four are TWO-hop shapes: this
+rung admits 2+ segments and sits above `hop2FoldedAggregate` too, where 2-hop `min` was 9.63 ms.
+
+⚠️ THE LINT GATE SHAPED THIS FOR THE FIFTH AND SIXTH TIME THIS STRETCH: `foldLevel` took eight
+parameters against a cap of six, so it takes one object — which is what `chain-projection.ts` records
+item 1803 doing for the same cap, with `ts-closure-size-is-load-bearing` as the second reason to keep
+it at module scope.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21 with
+no flake; `bun run fuzz` 57/57 EIGHT times (this rung computes the same answer a DIFFERENT WAY, so
+cross-engine repetition is the real test — and item 2005's sweep caught a real wrong answer three
+items ago); gql 4,986; the ceiling probe's answer check YES on every row.

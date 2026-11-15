@@ -5536,6 +5536,12 @@ export type CLinear = {
    * `chainProjection` by construction: that rung refuses an aggregating projection and this one
    * requires one.
    */
+  /**
+   * The LEVEL-RECURRENCE arm for a chain's order-invariant fold (item 2010) — checked BEFORE
+   * `chainFoldedAggregate`, which answers the same shapes by walking every path. Strictly narrower,
+   * so everything it declines falls to that rung.
+   */
+  chainFoldLevels: AlwaysRowsFn | null;
   chainFoldedAggregate: AlwaysRowsFn | null;
   /** The two-hop twin of `chainFoldedAggregate` — item 1824. */
   hop2FoldedAggregate: AlwaysRowsFn | null;

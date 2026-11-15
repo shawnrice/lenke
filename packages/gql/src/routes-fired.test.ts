@@ -127,12 +127,16 @@ describe('every fast-path detector fires for its own shape', () => {
     [
       'three-hop count(DISTINCT)',
       'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L)-[:R]->(d:L) RETURN count(DISTINCT d.k) AS c',
-      ['chainFoldedAggregate'],
+      // ⚠️ BOTH FIRE, and that is the design rather than a redundancy: `chainFoldLevels` (item 2010)
+      // is a LEVEL RECURRENCE for the same shapes `chainFoldedAggregate` answers by walking every
+      // path, and it is strictly narrower — so both compile and `clauses.ts` runs the level arm
+      // first. A shape the level arm declines still has the path arm compiled and waiting.
+      ['chainFoldLevels', 'chainFoldedAggregate'],
     ],
     [
       'two-hop count(DISTINCT)',
       'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L) RETURN count(DISTINCT c.k) AS c',
-      ['hop2FoldedAggregate'],
+      ['chainFoldLevels', 'hop2FoldedAggregate'],
     ],
     /**
      * ⚠️ ITEM 1830's ALLOWLIST, ADMISSIONS AND REFUSALS BOTH. The refusals are the load-bearing
@@ -144,17 +148,17 @@ describe('every fast-path detector fires for its own shape', () => {
     [
       'three-hop max',
       'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L)-[:R]->(d:L) RETURN max(d.k) AS m',
-      ['chainFoldedAggregate'],
+      ['chainFoldLevels', 'chainFoldedAggregate'],
     ],
     [
       'two-hop min',
       'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L) RETURN min(c.k) AS m',
-      ['hop2FoldedAggregate'],
+      ['chainFoldLevels', 'hop2FoldedAggregate'],
     ],
     [
       'three-hop count(x)',
       'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L)-[:R]->(d:L) RETURN count(d.k) AS c',
-      ['chainFoldedAggregate'],
+      ['chainFoldLevels', 'chainFoldedAggregate'],
     ],
     [
       'SUM must stay OFF the rung',
@@ -511,9 +515,9 @@ describe('every fast-path detector fires for its own shape', () => {
    */
   const NON_DETECTORS = new Set(['clauses', 'writes']);
 
-  // Every one of the twenty-one is covered by the table above. Asserted rather than claimed, so a
+  // Every one is covered by the table above. Asserted rather than claimed, so a
   // detector added later without a route case fails HERE instead of going unguarded.
-  it('covers all thirty-two detectors', () => {
+  it('covers all thirty-three detectors', () => {
     const covered = new Set(CASES.flatMap(([, , want]) => want));
     const all = new Set(
       Object.keys(
@@ -525,7 +529,7 @@ describe('every fast-path detector fires for its own shape', () => {
     );
 
     expect([...all].filter((k) => !covered.has(k)).sort()).toEqual([]);
-    expect(all.size).toBe(32);
+    expect(all.size).toBe(33);
   });
 });
 

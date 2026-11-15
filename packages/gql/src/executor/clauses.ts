@@ -1903,6 +1903,17 @@ export const pagedWidthProjections = (
 };
 
 const deepWidthReductions = (linear: CLinear, graph: Graph, params: Params): Row[] | undefined => {
+  /*
+   * ⚠️ ABOVE `chainFoldedAggregate`, WHICH ANSWERS THE SAME SHAPES BY WALKING EVERY PATH. This arm
+   * is a level recurrence — O(k·(|V| + |E|)) against O(paths) — and measured 234-1515x on its hand
+   * ceiling at depths 3 and 4 (item 2009/2010). It is strictly NARROWER (no carried `WHERE`, no
+   * relationship variable, no union types, single-name labels), so everything it declines lands on
+   * the rung below exactly as before.
+   */
+  if (linear.chainFoldLevels) {
+    return linear.chainFoldLevels(graph, params);
+  }
+
   if (linear.chainFoldedAggregate) {
     return linear.chainFoldedAggregate(graph, params);
   }

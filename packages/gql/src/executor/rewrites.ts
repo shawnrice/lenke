@@ -34,6 +34,7 @@ import type {
   SortItem,
 } from '../ast.js';
 import { isSyntheticParam } from '../auto-param.js';
+import { detectChainFoldLevels } from './chain-fold-levels.js';
 import {
   detectChainFoldedAggregate,
   detectChainGroupedCount,
@@ -2602,6 +2603,7 @@ export const compileLinear = (linear: LinearQuery): CLinear => {
     hopProjection: detectHopProjection(fast, clauses),
     hop2Projection: detectHop2Projection(fast, clauses),
     chainProjection: detectChainProjection(fast, clauses),
+    chainFoldLevels: detectChainFoldLevels(fast, clauses),
     chainFoldedAggregate: detectChainFoldedAggregate(fast, clauses),
     hop2FoldedAggregate: detectHop2FoldedAggregate(fast, clauses),
     hopDistinctProjection: detectHopDistinctProjection(fast, clauses),
