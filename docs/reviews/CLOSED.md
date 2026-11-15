@@ -95583,7 +95583,7 @@ GATES. `bun run fmt` 0; `bun run check` 0; `bun run test -- --skip-nx-cache` 0 a
 `bun run fuzz` 0; the native parity suites 72 pass / 1,491 assertions; the gql suites 82 pass /
 3,410 assertions.
 
-## Item 1980 — 🛑 **THE SCREEN BUILT TO FIND "A SIMPLER QUERY COSTING MORE" WAS BLIND TO THE BIGGEST INSTANCE OF IT, and adding the obvious axis did NOT fix that** — item 1979's 897x stayed invisible until the screen could compare a cell to ITSELF at another |V|. Proven both ways against the live defect: 4 flags on the pre-1979 build, none on the fixed one
+## Item 1980 — 🛑 **THE SCREEN BUILT TO FIND "A SIMPLER QUERY COSTING MORE" WAS BLIND TO THE BIGGEST INSTANCE OF IT, and adding the obvious axis did NOT fix that** — item 1979's 897x stayed invisible until the screen could compare a cell to ITSELF at another |V|. Proven both ways against the live defect: 4 flags on the pre-1979 build, none on the fixed one ⚠️ **ITS THRESHOLD WAS ABSOLUTE AND UNCALIBRATED — item 1981 found it sat inside the CACHE-TRANSITION baseline (every cell grows 1.7-2.7x at FANOUT=5) and would have reported `collect` as a scan; the flag is now RELATIVE to the column median.**
 
 Item 1979 found a seeded var-length `COUNT` costing **897x** its own `DISTINCT` twin — same pattern,
 same predicate, only the projection changed. That is a PAIR GAP, which is precisely what
@@ -95683,3 +95683,87 @@ NO ENGINE BEHAVIOUR CHANGED — this is an instrument item. Verified: the only m
 `packages/native/rung-gap-screen.mjs`.
 
 GATES. `bun run fmt` 0; `bun run check` 0. The default `SEED=none` grid re-run and unchanged.
+
+## Item 1981 — 🛑 **ITEM 1980's SCALE FLAG WAS ABSOLUTE AND WOULD HAVE REPORTED THE CACHE TRANSITION AS A DEFECT: every cell grows 1.7-2.7x at FANOUT=5, uniformly, with matching row counts — so `collect`'s 2.7x sat ON TOP of a 2.5x threshold.** Now relative to the column median, re-proven on both arms. ✅ **And the seeded surface screens CLEAN across both engines: GQL fixed-chain, GQL quantified to depth 6, and Gremlin**
+
+Item 1980 built the flag and proved it on the one defect it was designed around. Using it on three
+more surfaces found that the threshold was calibrated against nothing.
+
+### 🛑 THE FLAG WAS MEASURING THE CACHE, AND THE THRESHOLD WAS INSIDE THE NOISE
+
+Raising `FANOUT` is what gives a one-source seeded screen any resolution — it adds work per source
+without adding sources, so growth stays diagnostic. At `FANOUT=5 NODES=160000` against |V|/4:
+
+```text
+    rows 2.2x   distinct 1.9x   distinct2 1.7x   count 1.3x   countdist 2.2x   where 1.7x
+    twocol 1.7x   orderby 2.1x   topk 2.0x   sum 1.7x   maxagg 2.1x   grouped 2.0x
+    collect 2.7x   ⬅ against an ABSOLUTE threshold of 2.5x
+```
+
+**Uniform, and not the fixture** — the row counts match at both sizes (`rows` 780 and 780,
+`distinct` 97 and 97, `collect` 1 and 1), so the same question is being asked. It is the cache
+transition CLAUDE.md names: "cache-resident and not are different questions; the transition is
+between 200k and 1M elements". The same edge visits cost more on the larger working set.
+
+So `collect` would have been reported as **"this cell SCANS |V| rather than seeking its seed"** while
+every one of its siblings grew just as much. ⚠️ A threshold chosen to catch one known defect is not
+calibrated — it is fitted, and item 1980 proved it on that defect in both directions without ever
+asking what the FLOOR of the measurement was.
+
+✅ **THE FIX IS TO COMPARE A CELL TO ITS SIBLINGS' GROWTH, not to a constant.** A cell is suspicious
+only when it grows MORE than its column's median, which is immune to anything that moves the whole
+column — cache, allocator, machine load. Re-proven on both arms rather than argued:
+
+```text
+    pre-1979 (defect live)   count depth2  grew 5.7x where the column MEDIAN grew 1.5x  => 3.8x relative  FLAGGED
+                             count depth3  grew 5.0x where the median grew 1.7x         => 3.0x relative  FLAGGED
+    fixed build FANOUT=1     no flags
+    fixed build FANOUT=5     no flags   ⬅ the case the absolute flag got wrong
+```
+
+### ⚠️ AND A ROW-COUNT GUARD INSIDE THE FLAG, because one modifier does differ
+
+`where` returned **430 rows at |V| and 435 at |V|/4** — a smaller graph's walk reaches a different
+far set, so `k > 44` admits a different number. Its growth ratio is therefore about the fixture, and
+the flag now refuses to compute growth for any cell whose row count differs between the two sizes.
+That is CLAUDE.md's "match the fixture to the claim" applied INSIDE the flag written to enforce it,
+which is where it was quietly violated.
+
+### ✅ THE SEEDED SURFACE IS CLEAN, WHICH IS THE OTHER HALF OF THIS ITEM
+
+The Gremlin grid had **no seed axis at all**, which made the two tables incomparable exactly where
+item 1979's defect lived — item 1826 built that grid so "a difference between the two tables is a
+difference between the engines and not between two sets of questions", and that only holds while
+both sides ask the same question. With `SEED` live the GQL side seeded and Gremlin did not. It now
+seeds through `has(key, value)`, which `@lenke/gremlin`'s `index-seed.ts` serves. ⚠️ There is no
+inline-vs-clause distinction in Gremlin — one spelling — so that column is single where GQL's is
+double, which is the honest shape rather than a gap.
+
+Screened with the relative flag, all at `SEED=unique SCALE=1 NODES=160000`:
+
+```text
+    GQL   fixed chain, depths 1-3        NO FLAGS   every cell sub-0.05 ms
+    GQL   quantified {1,d}, depths 3-6   NO FLAGS   so even {1,5}/{1,6}, which the detector REFUSES
+                                                    (trails are bounded at 4) and which fall to the
+                                                    general matcher, SEEK their seed
+    GREMLIN fixed chain, depths 1-3      NO FLAGS   Gremlin seeks where GQL now does
+```
+
+🔑 **The `{1,5}`/`{1,6}` result is the one worth keeping**: the general clause loop was the obvious
+place for a second instance of item 1979's defect to hide, and it does not have one.
+
+### ⚠️ A printed ratio that is noise invites a false finding
+
+At `FANOUT=1` with one source every cell reads 0.0 ms, and the `grow` column still printed ratios of
+two sub-measurement values — `rows 5.4x` on the Gremlin table, which is a ratio of ~0.0 to ~0.0.
+`FLOOR_MS` correctly suppressed the FLAG, but nothing suppressed the NUMBER, and this repo's own
+history is mostly people believing printed numbers. Recorded here; the usage note is that a seeded
+scale screen wants `FANOUT=5` for resolution, which is also the configuration where the two
+depth-based flags are suppressed and **the scale flag is the only one still valid** — it compares a
+cell to itself at another size, so `rows = F^k` does not disturb it.
+
+NO ENGINE BEHAVIOUR CHANGED — instrument only; the single modified file is
+`packages/native/rung-gap-screen.mjs`. The default `SEED=none` grid was re-run on both engines and
+is unchanged.
+
+GATES. `bun run fmt` 0; `bun run check` 0.

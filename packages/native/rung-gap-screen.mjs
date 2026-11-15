@@ -161,7 +161,23 @@ const SEED_INLINE = SEED === 'inline' || SEED === 'unique-inline';
  */
 const SCALE = process.env.SCALE === '1';
 const SCALE_DIV = Number(process.env.SCALE_DIV ?? 4);
-/** A cell is flagged when it grows by this much across a `SCALE_DIV`-fold rise in |V|. */
+/**
+ * A cell is flagged when it grows this many times MORE than its column's MEDIAN growth.
+ *
+ * ⚠️⚠️ **RELATIVE, NOT ABSOLUTE, AND THE FIRST VERSION OF THIS FLAG WAS ABSOLUTE AND WRONG.** At
+ * `FANOUT=5 NODES=160000` against |V|/4, every cell grows **1.7-2.7x** — uniformly, with matching
+ * row counts at both sizes (780 / 97 / 1), so it is not the fixture and not a scan. It is the cache
+ * transition CLAUDE.md names ("cache-resident and not are different questions; the transition is
+ * between 200k and 1M elements"): the same edge visits cost more on the bigger working set.
+ *
+ * An absolute 2.5x threshold sits ON TOP of that baseline — `collect` read 2.7x and would have been
+ * reported as scanning |V| when every one of its siblings grew just as much. **A cell is suspicious
+ * only when it grows MORE THAN ITS SIBLINGS**, which is what the median comparison measures, and it
+ * is immune to any effect that moves the whole column.
+ *
+ * Checked against both arms: item 1979's defect grew 6.4-6.9x where the column median was ~1.4x
+ * (4.6x relative — flagged), and the fixed build grows 1.5x against the same median (1.07x — quiet).
+ */
 const SCALE_FLAG = Number(process.env.SCALE_FLAG ?? 2.5);
 const QUANT = process.env.QUANT === '1';
 /** The seeded key's value — `k` spans 100 values, so this selects ~1% of the graph. */
@@ -290,22 +306,44 @@ const MODIFIERS = {
  * those would compare egress shapes, not routes.
  */
 const GREMLIN_MODIFIERS = {
-  rows: (d) => traversal(V(), hasLabel('P'), ...hops(d), values('k')),
-  distinct: (d) => traversal(V(), hasLabel('P'), ...hops(d), values('k'), dedupe()),
-  count: (d) => traversal(V(), hasLabel('P'), ...hops(d), count()),
-  countdist: (d) => traversal(V(), hasLabel('P'), ...hops(d), values('k'), dedupe(), count()),
-  where: (d) => traversal(V(), hasLabel('P'), ...hops(d), has('k', gt(44)), values('k')),
-  orderby: (d) => traversal(V(), hasLabel('P'), ...hops(d), values('k'), order()),
-  topk: (d) => traversal(V(), hasLabel('P'), ...hops(d), values('k'), order(), limit(10)),
-  skiponly: (d) => traversal(V(), hasLabel('P'), ...hops(d), values('k'), skip(5)),
-  sum: (d) => traversal(V(), hasLabel('P'), ...hops(d), values('k'), sum()),
-  maxagg: (d) => traversal(V(), hasLabel('P'), ...hops(d), values('k'), max()),
-  grouped: (d) => traversal(V(), hasLabel('P'), ...hops(d), groupCount({ by: 'k' })),
-  collect: (d) => traversal(V(), hasLabel('P'), ...hops(d), values('k'), fold()),
+  rows: (d) => traversal(...gremlinStart(d), values('k')),
+  distinct: (d) => traversal(...gremlinStart(d), values('k'), dedupe()),
+  count: (d) => traversal(...gremlinStart(d), count()),
+  countdist: (d) => traversal(...gremlinStart(d), values('k'), dedupe(), count()),
+  where: (d) => traversal(...gremlinStart(d), has('k', gt(44)), values('k')),
+  orderby: (d) => traversal(...gremlinStart(d), values('k'), order()),
+  topk: (d) => traversal(...gremlinStart(d), values('k'), order(), limit(10)),
+  skiponly: (d) => traversal(...gremlinStart(d), values('k'), skip(5)),
+  sum: (d) => traversal(...gremlinStart(d), values('k'), sum()),
+  maxagg: (d) => traversal(...gremlinStart(d), values('k'), max()),
+  grouped: (d) => traversal(...gremlinStart(d), groupCount({ by: 'k' })),
+  collect: (d) => traversal(...gremlinStart(d), values('k'), fold()),
 };
 
 /** `d` repetitions of `out('E')`, so the depth axis is the same quantity on both surfaces. */
 const hops = (d) => Array.from({ length: d }, () => out('E'));
+
+/**
+ * The Gremlin START, seeded to match the GQL side (item 1981).
+ *
+ * ⚠️⚠️ **THE GREMLIN GRID HAD NO SEED AXIS AT ALL, which made the two tables incomparable exactly
+ * where item 1979's defect lived.** Item 1826 built this grid so that "a difference between the two
+ * tables is a difference between the engines and not between two sets of questions" — and that only
+ * holds while both sides ask the same question. With `SEED` live the GQL side seeds and this side
+ * did not, so every seeded cell compared a seeked query against an unseeded traversal.
+ *
+ * `has(key, value)` is the seeded spelling and `@lenke/gremlin` has `index-seed.ts` to serve it, so
+ * the question "does Gremlin seek where GQL now does" is answerable rather than assumed.
+ *
+ * ⚠️ There is no inline-vs-clause distinction in Gremlin — one spelling — so `inline` and `clause`
+ * map to the same traversal here. That is not a gap being papered over: the cliff item 583 guards
+ * is a GQL surface property, and a Gremlin table showing one column where GQL shows two would be
+ * the honest shape.
+ */
+const gremlinStart = (d) =>
+  SEED === 'none'
+    ? [V(), hasLabel('P'), ...hops(d)]
+    : [V(), hasLabel('P'), has(SEED_KEY, SEED_VALUE), ...hops(d)];
 
 const median = (xs) => {
   const s = [...xs].sort((a, b) => a - b);
@@ -484,27 +522,61 @@ if (SCALE) {
 const flags = [];
 
 if (SCALE && SEED_UNIQUE) {
-  for (const [name, row] of grid) {
-    const sm = small.get(name);
+  /** Each cell's growth across the size change, or `undefined` where it cannot be computed. */
+  const growth = (name, i) => {
+    const big = grid.get(name)?.[i];
+    const sml = small.get(name)?.[i];
 
-    row.forEach((c, i) => {
-      const s0 = sm?.[i];
+    if (big === undefined || sml === undefined) {
+      return undefined;
+    }
 
-      if (s0 === undefined || Number.isNaN(c.ms) || Number.isNaN(s0.ms) || s0.ms <= 0) {
-        return;
+    if (Number.isNaN(big.ms) || Number.isNaN(sml.ms) || sml.ms <= 0) {
+      return undefined;
+    }
+
+    /*
+     * ⚠️ THE ROW COUNTS MUST MATCH, or the two cells answered different questions and their ratio
+     * is about the FIXTURE. A unique seed keeps them equal for almost every modifier, but not all:
+     * `where` returned 430 rows at |V| and 435 at |V|/4, because a smaller graph's walk reaches a
+     * different far set. Comparing those would have been CLAUDE.md's "match the fixture to the
+     * claim" violated inside the flag meant to enforce it.
+     */
+    if (big.rows !== sml.rows) {
+      return undefined;
+    }
+
+    return big.ms / sml.ms;
+  };
+
+  DEPTHS.forEach((depth, i) => {
+    const column = [...grid.keys()].map((name) => growth(name, i)).filter((r) => r !== undefined);
+
+    if (column.length < 3) {
+      return;
+    }
+
+    const base = median(column);
+
+    for (const name of grid.keys()) {
+      const ratio = growth(name, i);
+      const cellMs = grid.get(name)[i].ms;
+
+      if (ratio === undefined || base <= 0 || cellMs < FLOOR_MS) {
+        continue;
       }
 
-      const ratio = c.ms / s0.ms;
-
-      if (c.ms >= FLOOR_MS && ratio >= SCALE_FLAG) {
+      if (ratio / base >= SCALE_FLAG) {
         flags.push(
-          `${name} depth${String(DEPTHS[i])}: ${c.ms.toFixed(1)} ms at |V|=${String(NODES)} is ` +
-            `${ratio.toFixed(1)}x its ${s0.ms.toFixed(1)} ms at |V|/${String(SCALE_DIV)} — ONE source ` +
-            'is admitted at both sizes, so this cell SCANS |V| instead of seeking its seed',
+          `${name} depth${String(depth)}: ${cellMs.toFixed(1)} ms at |V|=${String(NODES)} grew ` +
+            `${ratio.toFixed(1)}x across |V|/${String(SCALE_DIV)} where its column's MEDIAN grew ` +
+            `${base.toFixed(1)}x (${(ratio / base).toFixed(1)}x relative) — ONE source is admitted ` +
+            'at both sizes and the siblings did not grow, so this cell SCANS |V| rather than ' +
+            'seeking its seed',
         );
       }
-    });
-  }
+    }
+  });
 }
 
 for (const [name, row] of grid) {
