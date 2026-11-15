@@ -365,3 +365,114 @@ describe('the count terminal (item 1956)', () => {
     ).toBeUndefined();
   });
 });
+
+/*
+ * Item 1957: NO VERTEX MOVE — the stream stays on the EDGE. These plans used to decline outright,
+ * so `V().outE(E).has(w, gt 3).values(w)` and `.count()` ran the generic chain while their MOVED
+ * siblings were fused. Isolated A/B at 200,000 vertices / 1,000,000 edges:
+ * **values 188.0 -> 51.4 ms (3.66x)** and **count 171.9 -> 75.3 (2.28x)**, with both previously
+ * fused rows flat as controls.
+ *
+ * 🔑 THE ORDER IS PART OF THE ANSWER, so every expectation is an ARRAY in walk order: global vertex
+ * order, each vertex's bucket in its own insertion order. The fixture's `E` buckets are
+ * a: e1 e2 e3 | b: e4 e5 | c: e7 | d: e8 — read off by hand, not from the engine.
+ */
+describe('no vertex move: the edge-valued shapes (item 1957)', () => {
+  it('projects an EDGE property in walk order', () => {
+    const g = fixture();
+
+    // Surviving `w > 3`: e2(5), e3(7) from a; e5(9) from b; e7(6) from c; e8(8) from d.
+    expect(toArray(traversal(V(), outE('E'), has('w', gt(3)), values('w')), g)).toEqual([
+      5, 7, 9, 6, 8,
+    ]);
+  });
+
+  it('counts the surviving EDGES', () => {
+    const g = fixture();
+
+    expect(toArray(traversal(V(), outE('E'), has('w', gt(3)), count()), g)).toEqual([5]);
+  });
+
+  it('drops an edge missing the projected key, and keeps the ones that have it', () => {
+    const g = fixture();
+
+    // The five `w > 3` survivors carry no `q`, so `values('q')` emits NOTHING — the count is still
+    // five. A walk that conflated "absent" with "null" would emit five nulls here.
+    expect(toArray(traversal(V(), outE('E'), has('w', gt(3)), values('q')), g)).toEqual([]);
+    expect(toArray(traversal(V(), outE('E'), has('w', gt(3)), count()), g)).toEqual([5]);
+    // e4 is the only edge with `q`, and it has no `w` at all.
+    expect(toArray(traversal(V(), outE('E'), has('q', gt(0)), values('q')), g)).toEqual([1]);
+  });
+
+  it('the inE direction walks the reverse buckets in vertex order', () => {
+    const g = fixture();
+
+    // adjTo: b: e1 | c: e2 e4 | d: e5 e7 e8 | f: e3. With `w > 3`: c->5, d->9,6,8, f->7.
+    expect(toArray(traversal(V(), inE('E'), has('w', gt(3)), values('w')), g)).toEqual([
+      5, 9, 6, 8, 7,
+    ]);
+  });
+
+  it('a bare filtered edge stream yields the edges themselves', () => {
+    const g = fixture();
+    const edges = toArray(traversal(V(), outE('E'), has('w', gt(3))), g) as { id: string }[];
+
+    expect(edges.map((e) => e.id)).toEqual(['e2', 'e3', 'e5', 'e7', 'e8']);
+  });
+
+  it('`id()` on the edge stream takes the EDGE id, not an endpoint id', () => {
+    const g = fixture();
+
+    expect(toArray(traversal(V(), outE('E'), has('w', gt(3)), id()), g)).toEqual([
+      'e2',
+      'e3',
+      'e5',
+      'e7',
+      'e8',
+    ]);
+  });
+
+  it('the type filter still holds: the F-only edge never appears', () => {
+    const g = fixture();
+
+    // ⚠️ "the E list must not contain 9" WOULD BE WRONG: e5 legitimately carries w=9, so the only
+    // honest check is that each type's list is EXACTLY right. e6 (b->e) is `F`-only with w=9, and
+    // e7 carries BOTH types — so `F` sees e6 then e7 (b before c), and `E` sees neither e6 nor a
+    // duplicate of e7.
+    expect(toArray(traversal(V(), outE('F'), has('w', gt(3)), values('w')), g)).toEqual([9, 6]);
+    expect(toArray(traversal(V(), outE('E'), has('w', gt(3)), values('w')), g)).toEqual([
+      5, 7, 9, 6, 8,
+    ]);
+  });
+
+  it('takes the route, with the right rest for each terminal', () => {
+    const g = fixture();
+    const consumedRest = edgeFilteredHopValues(
+      traversal(V(), outE('E'), has('w', gt(3)), values('w')),
+      g,
+    );
+    const unconsumedRest = edgeFilteredHopValues(
+      traversal(V(), outE('E'), has('w', gt(3)), count()),
+      g,
+    );
+
+    expect(consumedRest?.rest).toEqual([]);
+    expect(unconsumedRest?.rest.map((step) => step.kind)).toEqual(['count']);
+  });
+
+  it('still declines a step that is neither the matching move nor a projection it serves', () => {
+    const g = fixture();
+
+    for (const t of [
+      // `otherV` needs both buckets; `outV` after `outE` walks back to the source.
+      traversal(V(), outE('E'), has('w', gt(3)), otherV(), values('n')),
+      traversal(V(), outE('E'), has('w', gt(3)), outV(), values('n')),
+      // A multi-key `values` on the EDGE fans out per key, same bound as on the far side.
+      traversal(V(), outE('E'), has('w', gt(3)), values('w', 'q')),
+      // `order()` is not a projection this walk can pick.
+      traversal(V(), outE('E'), has('w', gt(3)), order()),
+    ]) {
+      expect(edgeFilteredHopValues(t, g)).toBeUndefined();
+    }
+  });
+});

@@ -96,16 +96,32 @@ export const edgeFilteredHopValues = (plan: Plan, graph: Graph): HopValues | und
   // vertex-moving `out`/`in` reach in one step. The OTHER pairing (`outE().outV()`) walks back to
   // the vertex the traversal came from — a different question, and not this walk.
   const wanted = hop.kind === 'outE' ? 'inV' : 'outV';
-
-  if (move?.kind !== wanted) {
-    return undefined;
-  }
-
-  const proj = steps[at + 1];
+  /*
+   * 🔑 THE MOVE IS OPTIONAL (item 1957). Without it the stream STAYS ON THE EDGE, which this rung
+   * used to decline outright — so `V().outE(E).has(w, gt 3).values(w)` and the same plan with
+   * `.count()` ran the generic chain at three `applyStep` calls each, while their MOVED sibling was
+   * fused. Measured at 200,000 vertices / 1,000,000 edges, ns per EDGE VISITED (item 1955):
+   *
+   * ```text
+   *   outE has values   193 ns   against a hand walk's 41.1   4.59x
+   *   outE has count    173                          38.9     4.45x
+   * ```
+   *
+   * Nothing about the WALK changes for them: the adjacency enumeration and the edge tests are
+   * identical, and only what is picked out of each surviving edge differs. That is why this is one
+   * walk with five picks rather than a second module — the fork item 1527 warns against. A step at
+   * this position that is NEITHER the matching move NOR a projection this rung serves still
+   * declines, because `pickFor` returns undefined for it.
+   */
+  const moved = move?.kind === wanted;
+  // The projection sits after the move when there is one, and in the move's place when there isn't.
+  const projAt = moved ? at + 1 : at;
+  const proj = steps[projAt];
   // ONE key, for `hopValuesShortcut`'s reason: `values()` with no key emits every property value
   // and `values(a, b)` fans out per key.
   const valueKey = proj?.kind === 'values' && proj.keys.length === 1 ? proj.keys[0] : undefined;
-  const picked = pickFor(proj, valueKey);
+  const outward = hop.kind === 'outE';
+  const picked = pickFor(proj, valueKey, moved, outward);
 
   if (picked === undefined) {
     return undefined;
@@ -113,19 +129,24 @@ export const edgeFilteredHopValues = (plan: Plan, graph: Graph): HopValues | und
 
   const edgeTest = compileEdgeTests(steps.slice(2, at));
   const [type] = hop.labels;
-  const outward = hop.kind === 'outE';
   const { pick, drops } = picked;
 
   return {
     // `consumed` rather than `proj === undefined`: an unconsumed terminal must stay in `rest`.
-    rest: steps.slice(at + 1 + (picked.consumed ? 1 : 0)),
+    rest: steps.slice(projAt + (picked.consumed ? 1 : 0)),
     values: walk(graph, { type, outward, edgeTest, pick, drops }),
   };
 };
 
-type Far = { readonly id: string; readonly properties: Record<string, unknown> };
+/*
+ * ⚠️ `pick` TAKES THE EDGE, NOT THE FAR VERTEX (item 1957). It used to take the far end, with the
+ * walk doing `pick(outward ? edge.to : edge.from)` — which hard-wired the assumption that every
+ * served shape projects the FAR side. The edge-valued shapes do not, so the endpoint deref moved
+ * into the far-reading picks themselves. The hot loop got SIMPLER (`pick(edge)`) and the `outward`
+ * branch is now captured once per closure instead of re-tested per edge.
+ */
 type Picked = {
-  pick: (far: Far) => unknown;
+  pick: (edge: Edge) => unknown;
   drops: boolean;
   /**
    * Did `pickFor` CONSUME the step it was given? `values(k)` and `id()` do; a terminal this walk
@@ -144,17 +165,59 @@ type Picked = {
  * a bare move and `id()` drop nothing, and neither can produce `undefined` of its own, so the
  * sentinel cannot swallow a real value.
  */
-const pickFor = (proj: Step | undefined, valueKey: string | undefined): Picked | undefined => {
+/*
+ * ⚠️ THE DIRECTION AND THE SUBJECT ARE FOLDED IN AT COMPILE TIME, NOT COMPOSED — and item 1957
+ * measured the difference. The first cut built one `subject` closure and wrapped it
+ * (`(edge) => subject(edge).properties[key]`), which is TWO closure calls per edge where the code
+ * before the item had one. On the already-fused `inV().values(k)` row that cost **+10% in the
+ * shape's FAST mode** (80.5 -> 89.3 ms), while its slow mode and its MEDIAN were flat — the median
+ * even improved, because the post arm happened to land in fast mode more often. Only a
+ * mode-by-mode comparison showed it (item 1956's rule, earning itself one item later).
+ *
+ * Built this way each pick is ONE call, and `outward` is resolved per QUERY rather than per edge —
+ * so the walk no longer evaluates `outward ? edge.to : edge.from` a million times either. That is
+ * strictly less per-edge work than before the item, not merely equal.
+ */
+const valuePick = (key: string, moved: boolean, outward: boolean): ((edge: Edge) => unknown) => {
+  if (!moved) {
+    return (edge) => edge.properties[key];
+  }
+
+  return outward ? (edge) => edge.to.properties[key] : (edge) => edge.from.properties[key];
+};
+
+const elementPick = (moved: boolean, outward: boolean): ((edge: Edge) => unknown) => {
+  if (!moved) {
+    return (edge) => edge;
+  }
+
+  return outward ? (edge) => edge.to : (edge) => edge.from;
+};
+
+const idPick = (moved: boolean, outward: boolean): ((edge: Edge) => unknown) => {
+  if (!moved) {
+    return (edge) => edge.id;
+  }
+
+  return outward ? (edge) => edge.to.id : (edge) => edge.from.id;
+};
+
+const pickFor = (
+  proj: Step | undefined,
+  valueKey: string | undefined,
+  moved: boolean,
+  outward: boolean,
+): Picked | undefined => {
   if (valueKey !== undefined) {
-    return { pick: (far) => far.properties[valueKey], drops: true, consumed: true };
+    return { pick: valuePick(valueKey, moved, outward), drops: true, consumed: true };
   }
 
   if (proj === undefined) {
-    return { pick: (far) => far, drops: false, consumed: false };
+    return { pick: elementPick(moved, outward), drops: false, consumed: false };
   }
 
   if (proj.kind === 'id') {
-    return { pick: (far) => far.id, drops: false, consumed: true };
+    return { pick: idPick(moved, outward), drops: false, consumed: true };
   }
 
   /*
@@ -177,7 +240,9 @@ const pickFor = (proj: Step | undefined, valueKey: string | undefined): Picked |
    * instead of over the generic chain. Admitting the plan is the whole change; the step still
    * executes where it did.
    */
-  return proj.kind === 'count' ? { pick: (far) => far, drops: false, consumed: false } : undefined;
+  return proj.kind === 'count'
+    ? { pick: elementPick(moved, outward), drops: false, consumed: false }
+    : undefined;
 };
 
 /**
@@ -223,7 +288,7 @@ type WalkSpec = {
   readonly type: string;
   readonly outward: boolean;
   readonly edgeTest: (edge: Edge) => boolean;
-  readonly pick: (far: Far) => unknown;
+  readonly pick: (edge: Edge) => unknown;
   readonly drops: boolean;
 };
 
@@ -255,7 +320,7 @@ const walk = (graph: Graph, spec: WalkSpec): HopWalk => ({
           continue;
         }
 
-        const value = pick(outward ? edge.to : edge.from);
+        const value = pick(edge);
 
         if (!drops || value !== undefined) {
           yield value;
@@ -296,7 +361,7 @@ const walk = (graph: Graph, spec: WalkSpec): HopWalk => ({
           continue;
         }
 
-        const value = pick(outward ? edge.to : edge.from);
+        const value = pick(edge);
 
         if (!drops || value !== undefined) {
           out.push(value);

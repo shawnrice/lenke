@@ -93989,9 +93989,11 @@ Generic is 2.2x the fused row on the identical walk.
 
 That is the next build: extend `edgeFilteredHopValues` to the `count()` terminal and to an EDGE
 property projection, which is a terminal change on an existing walk rather than a new module.
-✅ **THE COUNT TERMINAL IS DONE at item 1956 — 2.33x isolated.** The two EDGE-projection rows
+✅ **THE COUNT TERMINAL IS DONE at item 1956 — 2.33x isolated.** ~~The two EDGE-projection rows
 (`outE has count`, `outE has values`, 4.45x and 4.59x) remain open: they keep the stream on the
-EDGE, so they need the walk to yield edges rather than far vertices.
+EDGE, so they need the walk to yield edges rather than far vertices.~~ ✅ **BOTH DONE at item 1957 —
+3.66x and 2.28x — and they needed no new walk at all: the move became optional and the pick took
+the edge. THE WHOLE FAMILY IS NOW ROUTED except `bothE has otherV count`, which stays refused.**
 ⚠️ `bothE has otherV count` stays refused — item 1882's reason (two buckets make "the other end"
 depend on which bucket the edge came from, and a self-loop appears in both) is a real one.
 
@@ -94060,6 +94062,64 @@ count and a `values(n)` **disagree on the fixture**: the five surviving edges la
 and `f` has no `n`, which `values('n')` drops — so the count is 5 and the values row count is 4. A
 test asserting only "count equals the number of value rows" would pass with the drop wrongly applied
 to the count.
+
+GATES. `bun run check` 0; `bun run test -- --skip-nx-cache` 21 projects; `bun run fuzz` 57/0 across
+all seven byte-identity fuzzers.
+
+## Item 1957 — ✅ **3.66x and 2.28x on the family's last two rows**, by making the vertex move OPTIONAL rather than writing a second walk. ⚠️ **And my first cut cost an untouched control 10% IN ONE OF ITS TWO MODES while its median IMPROVED** — item 1956's mode-by-mode rule catching a regression one item after earning itself
+
+Item 1955's two open rows keep the stream on the EDGE, which this rung declined outright
+(`move?.kind !== wanted` → `undefined`). The fix is not a second module: **nothing about the walk
+changes for them** — same adjacency enumeration, same compiled edge tests — only what is picked out
+of each surviving edge. So the move became optional, the projection's position became
+`moved ? at + 1 : at`, and `pick` took the EDGE instead of the far vertex.
+
+```text
+  isolated A/B, 200,000 vertices / 1,000,000 edges, ONE shape per process, arms alternated:
+
+    outE has values   PRE  197.7 206.4 188.0   POST  52.0 71.7 51.4    3.66x   (428,571 both)
+    outE has count     PRE  172.1 179.1 171.9   POST  75.3 83.2 76.1    2.28x   (428,571 both)
+
+  controls, both previously fused by this same rung:
+    outE has inV count   75.5 -> 76.9   +1.9%, unimodal
+    outE has inV values  fast mode 83.3 -> 84.8 (+1.8%), slow mode 108.0 -> 106.8 (-1.1%)
+```
+
+`outE has values` now sits **1.25x** off its hand ceiling (51.4 against 41.1). Routes:
+`outE has values` 3 `applyStep` calls → **0**; `outE has count` 3 → 1 (`[count]`).
+
+⚠️⚠️ **THE REGRESSION I ALMOST SHIPPED, AND WHY ONLY ONE INSTRUMENT COULD SEE IT.** My first cut
+built a single `subject` closure and wrapped it — `(edge) => subject(edge).properties[key]` — which
+is **two** closure calls per edge where the pre-item code had one. On the already-fused
+`inV().values(k)` row that cost **+10% in the shape's FAST mode (80.5 → 89.3 ms)**, while its slow
+mode was flat and its **MEDIAN IMPROVED**, because the post arm happened to land in fast mode 6 times
+of 9 against the pre arm's 3. A median would have called it a win. A min-of-3 would have called it
+noise. Only the mode-by-mode split item 1956 established showed it — one item later, which is as
+fast as a methodology rule has ever paid off here.
+
+The fix also made the result STRICTLY BETTER than the starting point rather than merely equal: with
+`valuePick`/`elementPick`/`idPick` folding both `moved` and `outward` in at compile time, each pick
+is one call AND the walk no longer evaluates `outward ? edge.to : edge.from` a million times.
+
+🔑 **AND THE ANCHOR THAT MATCHED TWICE.** `const value = pick(outward ? edge.to : edge.from)` occurs
+in BOTH of the walk's bodies — the iterator and the `drain` path. My first script asserted a single
+match and refused to write; the file's own note says a drift between those two consumers is a
+cross-engine failure, so a one-sided edit would have been exactly that. **Assert the count, do not
+assume it is one.**
+
+**MUTATION: 16 KILLED, 2 PROVED-UNREACHABLE SURVIVORS, 0 UNEXPECTED**, across the nine new 1957
+mutants and the nine from 1956 — all of which drifted, since this item rewrote `pickFor`, and were
+re-anchored before any verdict was read. Both survivors carry arithmetic proofs: `drops` gates a
+`pick` that cannot return `undefined`, and the bare branch is reached only when the plan ENDS at
+`projAt`, where `slice(projAt)` and `slice(projAt + 1)` are both empty (true for a moved plan and an
+edge plan alike, so item 1956's proof survives this item unchanged).
+
+Nine tests added, hand-computed in walk order off the fixture's buckets (`a: e1 e2 e3 | b: e4 e5 |
+c: e7 | d: e8`), covering the edge-property projection, the edge count, the drop of an edge missing
+the key, the `inE` reverse direction, a bare edge stream, `id()` on an edge, the two-type edge, the
+`rest` for each terminal, and four shapes that must still decline. ⚠️ One assertion I wrote was
+VACUOUS and is recorded as such in the test: "the `E` list must not contain 9" is wrong, because
+`e5` legitimately carries `w = 9` — the only honest check is that each type's list is exactly right.
 
 GATES. `bun run check` 0; `bun run test -- --skip-nx-cache` 21 projects; `bun run fuzz` 57/0 across
 all seven byte-identity fuzzers.
