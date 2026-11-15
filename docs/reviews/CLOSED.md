@@ -92352,3 +92352,73 @@ the screen's control set should not be read as one.
 NO ENGINE BEHAVIOUR CHANGED — three probe arms and this entry.
 
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects.
+
+## Item 1931 — **THE GREMLIN SURFACE IS AT ITS FLOOR after items 1920-1925**, and the floor itself is **1.84x** off a hand CSR ceiling — the smallest ratio of the three targets priced and declined this session, on the most central code path in the engine. ⚠️ Plus a cross-fixture comparison of my own, caught and corrected mid-probe
+
+The screen, re-run at the size the earlier Gremlin numbers were taken at. ⚠️ **First run was at its
+default `NODES=1500`** and came back with every row sub-millisecond over 1,500-4,500 rows — useless
+for nomination, and exactly the output that invites a false "nothing left here".
+
+      `NODES=200000 bun gremlin-workload-screen.mjs`, median of 9:
+
+        586.64        1   pathdep: tree              ⬅ DECLINED at 1925 (1.55x ceiling)
+        163.46        2   pathdep: cyclicPath        ⬅ REFUSED at 1923 (needs `where(eq(t))`)
+         85.39   600000   pathdep: path().by(k)      ⬅ TAKEN at 1924 (3.78x), on its floor
+         74.78   599998   where: neq filter
+         73.39   342856   edge: outE.has(w).inV      ⬅ PRICED at 1893 (2.08x / 1.79x), not built
+         69.98        1   group: hop groupCount
+         59.72   599998   pathdep: simplePath        ⬅ TAKEN at 1923 (8.17x)
+         54.40   600000   pathdep: outE.otherV       ⬅ TAKEN at 1921 (6.7x)
+         52.02   600000   hop1: values               ⬅ FUSED at 1586 (1.90x) — THE FLOOR
+
+🔑 **EVERYTHING BELOW THE TOP TWO IS `hop1: values` PLUS A LITTLE.** `where: neq filter` is it +1.44x,
+`edge: outE.has(w).inV` +1.41x, `group: hop groupCount` +1.35x, `optional: hop` and
+`pathdep: outE.inV` BELOW it (they emit the same rows with less work per row). Two ratios that
+looked suspicious dissolved on inspection: `dedupe: by key` is 32.00 ms emitting 8 rows where the
+walk emitting 600,000 is 52.02 — it skips the emission — and `groupCount`'s own cost over a hop is
+~30 ns an element against the node scan's 16, which walk-vs-scan explains.
+
+## So the question that moves the most is whether the FLOOR is at its own ceiling
+
+      `walkfloor-ceiling-1931.mjs`, 200,000 vertices / 400,000 E-edges, median of 9, ONE fixture:
+
+        engine     V().out('E').values('n')          20.76 ms   48.1 ns/row
+        walk       the CSR traversal alone            0.28       0.7     ⬅ the walk is FREE
+        read       + the property read, discarded     7.63      19.1
+        emit       + pushing the output array        11.26      28.1     ⬅ THE CEILING
+        emitSized  the same, pre-sized                8.27      20.7
+
+**1.84x, or 23.7 ns a row.** The walk is free; the cost is the property read (19 ns) plus the array
+(9 ns), and the engine's residual over that is the rung gate and the walk wrapper.
+
+## ⚠️⚠️ And the first version of that probe compared across FIXTURES, reporting 4.93x
+
+It defaulted to the screen's 52.02 ms for the engine arm. But the screen's fixture is FANOUT 4 with
+a different label mix and **600,000 E-edges where this one has 400,000** — 87 ns a row against 48.
+The honest fix was to put the engine ON THE SAME GRAPH as the hand arms, which is what turned 4.93x
+into 1.84x. CLAUDE.md's "match the fixture to the claim", walked into and then caught; the
+`ENGINE_MS` knob is gone so the ratio is always self-measured.
+
+(The fixture's own statistics were checked first — 200,000 DISTINCT targets, 100% of V — because
+`to = (a*k + b) % N` is invariant under `k -> k + N` and a FUNCTIONAL graph looks perfect in every
+degree count. Items 1516/1518 are why that line is in the probe.)
+
+## 🔭 Why 1.84x is not taken
+
+- It is the smallest ratio of the three priced and declined this session: `tree()` 1.55x (1925),
+  the post-projection sort arm 1.69x (1930), this 1.84x.
+- It sits on **the most central code path in the engine**, and edits there have a measured cost to
+  unrelated shapes: [[pull-alignment-is-load-bearing]] (any edit to `exec::pull` costs the
+  filtered-count cluster 1.08-1.24x and never gains) and [[executor-edits-perturb]] (a new walk
+  variant costs unrelated rows up to 16%; item 1466 declined 3.3x on `simplePath` for this).
+- Item 1586 already fused this shape for 1.90x, so this is the residual AFTER the fusion, and
+  [[gremlin-values-is-the-floor]] records the mechanism it already removed.
+
+**What a future attempt should know:** the 23.7 ns a row is gate + wrapper, not the read and not the
+walk — `read` at 19.1 ns and `walk` at 0.7 ns are both already paid by the hand arm. So the lever is
+dispatch, not data layout, and `emitSized` says ~7 ns of the 28 is array growth that a pre-sized
+output would remove if the row count were known in advance (it is: `off[N]`).
+
+NO ENGINE BEHAVIOUR CHANGED — one probe, and this entry.
+
+GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects.
