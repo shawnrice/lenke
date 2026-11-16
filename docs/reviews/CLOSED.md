@@ -100239,7 +100239,7 @@ answer, not an engine change.
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `node --check` on the probe. No engine change.
 
-## Item 2036 — ✅ **THE GREMLIN SIDE HAS A LABEL CLIFF TOO, and no Gremlin fixture in this repo had ever been label-mixed: `V().hasLabel(T).values(k)` costs 2.05x at 50k and 1.61x at 200k from ONE isolated off-label vertex, controls 1.06x / 0.98x.** 🔑 Found by a ROUTE CENSUS — exactly 1 of 98 rows changes route — and item 1870's refusal does NOT cover the lever it nominates
+## Item 2036 — ✅ **CLOSED BY ITEM 2037 (1.66x; the cliff is now 1.09x).** **THE GREMLIN SIDE HAS A LABEL CLIFF TOO, and no Gremlin fixture in this repo had ever been label-mixed: `V().hasLabel(T).values(k)` costs 2.05x at 50k and 1.61x at 200k from ONE isolated off-label vertex, controls 1.06x / 0.98x.** 🔑 Found by a ROUTE CENSUS — exactly 1 of 98 rows changes route — and item 1870's refusal does NOT cover the lever it nominates
 
 Six GQL items had just ended in refutations traceable to one vacuity-gated family, so this asked the
 same question on the other engine. Gremlin has **16** vacuity/coverage gate sites in source and **no
@@ -100300,10 +100300,82 @@ candidate set — so none of 1870's 678x applies — and adds the fused walk's p
 that index on this exact path. Item 1870's own note says as much — "Refusing simply lets
 `seedFromIndex`, which already reads it, do the work."
 
-NOT BUILT THIS ITEM — measured and nominated, deliberately, because item 1870's recorded lesson is
+~~NOT BUILT THIS ITEM~~ — ✅ **BUILT AT ITEM 2037: 1.66x, and this cliff is now 1.09x.** Measured and nominated here deliberately, because item 1870's recorded lesson is
 that _"an A/B's verdict decays when the arm it beat gets faster, and nothing here was watching."_
 Getting the framing on the record before writing code is the cheap half.
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `node --check` on both probes. No engine
 change. ⚠️ `node --check` earned itself immediately: the census fixture is a TEMPLATE LITERAL, and a
 backticked identifier in a comment inside it terminates the template.
+
+## Item 2037 — ✅ **SHIPPED: `V().hasLabel(L).values(k)` on a REALISTIC (non-vacuous) label, 187.1 → 112.7 ms (1.66x), and item 2036's route cliff falls from 1.81x to 1.09x.** 🔑 Most of the win is `drain`, not the fusion — the generator alone got 1.33x of it — and the remaining ~2.2x is deliberately left behind an owner decision
+
+Item 2036 found the cliff; this closed it. One off-label vertex makes `dropVacuousLabels` keep the
+`hasLabel` step, which declines `nodeValuesShortcut`'s exact-shape gate, and the plan falls to the
+generic pipeline. `labelSeededValuesFusion` fuses the `values` STEP onto the stream `seedFromIndex`
+already produces.
+
+MEASURED, two alternated pairs, arms `LIVE`/`KILLED` (the kill switch is `(false ? f(...) : undefined)`,
+never `undefined ?? f(...)`), one MODE per process:
+
+| row                                  | KILLED | LIVE  |                                             |
+| ------------------------------------ | ------ | ----- | ------------------------------------------- |
+| `hasLabel values`, mixed             | 187.1  | 112.7 | **1.66x**                                   |
+| `hasLabel values`, VACUOUS (control) | 102.0  | 103.0 | 0.99x — that route never reaches the fusion |
+| `values` (control), mixed            | 103.3  | 106.8 | 0.97x                                       |
+| `values` (control), vacuous          | 101.9  | 102.3 | 1.00x                                       |
+
+**And item 2036's cliff is now 1.09x** (103.0 vacuous against 112.7 mixed), down from 1.81x.
+
+🔑 **MOST OF THE WIN IS `drain`, AND THE FUSION ALONE WOULD HAVE LOOKED LIKE A THIRD OF IT.** Shipped
+first as a generator, it took the row 193.4 → 145.9 (1.33x) against the ~85 ms ceiling the split
+measurement predicted — a `yield` per value is not free. Adding `drain` (which `toArray` prefers when
+the walk consumed the whole plan, this gate's own precondition) took it to 112.7. **Had I stopped at
+the generator I would have banked 1.33x and recorded the ceiling as unreachable.**
+
+⚠️ THE SPLIT MEASUREMENT IS WHAT MADE THE CEILING KNOWABLE, and it is worth keeping:
+
+```text
+    hasLabel BARE (seed + traverser wrapping, nothing after)    78.8 ms
+    hasLabel values (plus the `values` step)                   191.7       -> the STEP is 112.9, 59%
+    HAND bucket read (no traversers at all)                     35.3
+```
+
+⚠️⚠️ **THE REMAINING ~2.2x IS LEFT ON PURPOSE.** It is the TRAVERSER WRAPPING inside the seed, and
+removing it needs a rung that reads `graph.verticesByLabel` itself — an OPEN owner decision, since the
+public `v.labels = [...]` setter leaves that index stale ([[label-index-vs-setter]]). This fusion
+consumes the stream the seed ALREADY built, so it adds no reader and needed no decision.
+
+⚠️ **AND IT IS NOT ITEM 1870's REFUSED RUNG.** That one admitted `hasLabel` into the SCAN
+(`graph.vertices` + a label test), a full scan whatever the label matches, losing 1.93x / 3.35x /
+7.98x / 46x / 678x as coverage narrows; `node-values-label-refusal.test.ts` pins it out. This rides the
+SEEDED candidate set, so it is proportional to the label's size exactly as the pipeline is, and cannot
+degrade into that scan — it never touches `graph.vertices`.
+
+VERIFICATION. 15 new tests, **8/8 mutants caught**, and two faults of my own on the way:
+
+- **A `drain`-presence route assertion was WRONG, and the premise was the bug, not the code.**
+  `V().hasLabel(T).out(E).values(k)` is served by the FUSED HOP WALK, which offers its own `drain`, so
+  drain-presence discriminates only where no other drain-offering rung applies. Replaced with direct
+  unit tests of the gate ([[perf-gate-needs-its-own-test]]).
+- **Two mutants reported ANCHOR-DID-NOT-APPLY** because the iterator's and `drain`'s guards were the
+  identical line `if (value !== undefined) {`. The drain's is now an early `continue`, making both
+  anchorable — the two guards `toStrictEqual` exists to protect were otherwise untested by mutation.
+
+⚠️ `run`'s COMPLEXITY GATE took three attempts: 37 inline, 36 after extracting the call, 36 again with
+a `??` at the call site (a `??` counts), and 35 only once the residual-versus-fusion choice moved
+INSIDE the helper. The helper also documents why the seeded call is never wasted — `residual` is
+non-undefined only when `projected !== undefined`, and `seeded` is `null` in exactly that case.
+
+⚠️ A SWEEP FAILED AND IT WAS NOT THIS: `FUZZ_SEED=3908458595` hit the known `OPTIONAL MATCH` +
+inline-predicate divergence with a THIRD operand kind (`acos(n.s)`, after `date(…)` and
+`atan2(…, '1e3')`). Proven unrelated rather than assumed: the GQL differential fuzzer has **zero**
+references to `@lenke/gremlin` and this change is Gremlin-only. The third kind is recorded in
+`optional-inline-predicate-divergence.test.ts`, with the ~1-in-280,000 rate that makes a 20,000-query
+sweep hit it about every fourteenth run — so the next person sees the class, not a coincidence. A
+4-run sweep after recording it: 4/4 clean.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
+gremlin suite 2,590 (15 new); `bun run fuzz` all seven green. The wide workload screen moved 8 of 58
+rows beyond ±10%, every one sub-2.5 ms and 7 of the 8 in LIVE's favour (0.83-0.91x); the single 1.25x
+is a 0.04 → 0.05 ms row. Largest absolute mover `tree`, 2.41 → 2.17, faster.

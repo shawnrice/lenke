@@ -933,3 +933,123 @@ export const edgeValuesShortcut = (plan: Plan, graph: Graph): NodeValues | undef
     drain: () => [...edgeValuesWalk(labels, key, graph)],
   };
 };
+
+/**
+ * `V() + <seedable filter> + values(k)` — the `values` STEP fused onto `seedFromIndex`'s stream.
+ *
+ * 🔑 **WHY THIS IS THE SOUND HALF OF A 5.56x, AND WHAT IT DELIBERATELY LEAVES** (item 2037). One
+ * ISOLATED off-label vertex makes `dropVacuousLabels` keep a `hasLabel` step, which declines
+ * {@link nodeValuesShortcut}'s exact-shape gate, and the plan falls to the generic pipeline — a route
+ * cliff the Gremlin route census caught as the ONLY one of 98 rows to change arm. Priced at 200,000
+ * vertices, one MODE per process, controls at 1.01x:
+ *
+ *     V().hasLabel(T).values(k)   vacuous 107.0   mixed 193.4    1.81x cliff
+ *
+ * Split, to find where the 193.4 lives:
+ *
+ *     hasLabel BARE (seed + traverser wrapping)      78.8
+ *     hasLabel values (plus the `values` step)      191.7   -> the STEP is 112.9 ms, 59%
+ *     HAND bucket read (no traversers at all)        35.3
+ *
+ * So this fusion removes the 112.9 ms step and inherits the 78.8 ms seed: a ~2.26x ceiling. The
+ * remaining ~2.2x is the TRAVERSER WRAPPING inside the seed, and reaching it needs a rung that reads
+ * `graph.verticesByLabel` itself.
+ *
+ * ⚠️⚠️ **THAT READER IS AN OPEN OWNER DECISION AND IS NOT TAKEN HERE**: the public `v.labels = [...]`
+ * setter leaves `verticesByLabel` stale, so every new reader widens a known wrong-answer surface.
+ * This fusion consumes the stream `seedFromIndex` ALREADY produced, so it adds no reader and needs no
+ * decision.
+ *
+ * ⚠️ AND IT IS NOT ITEM 1870's REFUSED RUNG. That one admitted `hasLabel` into the SCAN
+ * (`graph.vertices` + `labels.some`), which is a full scan whatever the label matches and loses
+ * 1.93x / 3.35x / 7.98x / 46x / 678x as coverage narrows — `node-values-label-refusal.test.ts` pins
+ * it out. This rides the SEEDED candidate set, so it is proportional to the label's size exactly as
+ * the pipeline is, and cannot degrade into that scan: it never looks at `graph.vertices`.
+ * ⚠️ DISTINCT FROM `seededNodeValuesShortcut`, which is PROPERTY-index seeded: its `seededShape`
+ * requires a `has(k, eq(v))` (with an optional `hasLabel` before it), so `V() + hasLabel + values(k)`
+ * — no `has` at all — matches neither of its two forms and had no rung before this.
+ */
+export const labelSeededValuesFusion = (
+  stream: Iterable<{ value: unknown }>,
+  steps: readonly Step[],
+  tracksPath: boolean,
+): Iterable<unknown> | undefined => {
+  // The walk emits bare values and builds no path, so a plan that reads one cannot ride it — the
+  // same gate every values walk in this file carries.
+  if (tracksPath || steps.length !== 1) {
+    return undefined;
+  }
+
+  const [only] = steps;
+
+  /*
+   * ONE key only. `values()` with no key emits every property value and `values(a, b)` fans out per
+   * key, so neither is one read per element — the same restriction {@link nodeValuesShortcut} states.
+   */
+  if (only?.kind !== 'values' || only.keys.length !== 1) {
+    return undefined;
+  }
+
+  const [key] = only.keys;
+
+  /*
+   * ⚠️ A MISSING KEY IS DROPPED, NOT EMITTED AS `undefined`. That is what `valuesStep` does, and
+   * bun's `toEqual` treats a trailing `undefined` as absent — so a mutant emitting it survives a
+   * `toEqual` assertion ([[toequal-blind-to-trailing-undefined]]). The tests use `toStrictEqual`.
+   */
+  /*
+   * ⚠️ ONE loop body, used by BOTH the iterator and `drain` — item 169's lesson, and Gremlin results
+   * are compared ORDERED by the differential fuzzer, so a divergence between the two derivations
+   * would be a cross-engine failure rather than an unspecified-order liberty.
+   */
+  const pick = (t: { value: unknown }): unknown =>
+    (t.value as { properties?: Record<string, unknown> } | undefined)?.properties?.[key];
+
+  const walk = function* (): Iterable<unknown> {
+    for (const t of stream) {
+      const value = pick(t);
+
+      if (value !== undefined) {
+        yield value;
+      }
+    }
+  };
+
+  /*
+   * 🔑 **`drain` IS WHERE MOST OF THIS ITEM'S WIN LIVES, AND THE GENERATOR ALONE FELL SHORT.** The
+   * fusion first shipped as the generator above and took the mixed row 193.4 -> 145.9 ms (1.33x)
+   * against a ~85 ms ceiling — a yield per value is not free. `toArray` prefers `drain` when the walk
+   * consumed the WHOLE plan, which is this gate's precondition (`steps.length === 1` and that step is
+   * the `values`), so there is no downstream step to reason about: a trailing `limit` would land in
+   * `steps` and decline above.
+   *
+   * ⚠️ `run` ITSELF STAYS AS LAZY AS IT WAS — a caller that `break`s out of the iterable still gets
+   * the generator; only the already-eager terminal takes the eager route (item 1412's rule).
+   */
+  const out = walk() as Iterable<unknown> & { drain: () => unknown[] };
+
+  out.drain = (): unknown[] => {
+    const rows: unknown[] = [];
+
+    for (const t of stream) {
+      const value = pick(t);
+
+      /*
+       * ⚠️ WRITTEN AS AN EARLY `continue` SO THIS GUARD IS TEXTUALLY DISTINCT from the iterator's
+       * `value !== undefined` above. Both derivations must drop a missing key identically, and a
+       * mutation round cannot target either one while the two lines are identical — item 2037's
+       * first round reported ANCHOR-DID-NOT-APPLY for exactly that reason, leaving the two guards
+       * that `toStrictEqual` exists to protect untested against mutation.
+       */
+      if (value === undefined) {
+        continue;
+      }
+
+      rows.push(value);
+    }
+
+    return rows;
+  };
+
+  return out;
+};

@@ -59,6 +59,7 @@ import {
   idSeededValuesShortcut,
   nodeValuesDedupeShortcut,
   nodeValuesShortcut,
+  labelSeededValuesFusion,
   nodeValuesWhereShortcut,
   scanValuesResidual,
   scanWhereValuesResidual,
@@ -2581,6 +2582,34 @@ const fusedHopChainGroupCount = (
  * correctness. Both must stay ahead of the generic residual route below, which is what they
  * replace: placed after it, neither would ever be reached.
  */
+/**
+ * ⚠️ EXTRACTED FOR THE COMPLEXITY GATE, as `scanValuesShortcut`, `fusedProjectedResidual` and
+ * `scanResidualWalk` were before it — `run` reached 37 against a limit of 35 when the label-seeded
+ * fusion was wired inline (item 2037). It decides nothing the call site did not: a null seed has no
+ * stream to fuse.
+ */
+const labelSeededFusionFor = (
+  residual: Iterable<unknown> | undefined,
+  seeded: { stream: Iterable<{ value: unknown }>; steps: readonly Step[] } | null,
+  tracksPath: boolean,
+): Iterable<unknown> | undefined => {
+  /*
+   * 🔑 THE RESIDUAL KEEPS ITS PRECEDENCE, and the choice lives HERE rather than at the call site so
+   * `run` carries one `if` and no `??`: each of those counts against the complexity gate, and `run`
+   * sits at the limit (item 2037 hit 37, then 36, before this shape).
+   *
+   * The seeded call is never wasted: `residual` is non-undefined only when `projected !== undefined`,
+   * and `seeded` is `null` in exactly that case.
+   */
+  if (residual !== undefined) {
+    return residual;
+  }
+
+  return seeded === null
+    ? undefined
+    : labelSeededValuesFusion(seeded.stream, seeded.steps, tracksPath);
+};
+
 const fusedProjectedResidual = (
   projected: HopValues,
   effective: Plan,
@@ -3058,13 +3087,30 @@ export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
   const residual =
     projected === undefined ? undefined : fusedProjectedResidual(projected, effective);
 
-  if (residual !== undefined) {
-    return residual;
-  }
-
   // If the plan opens `V()`/`E()` + a seedable `has` on an indexed key, seed
   // from the index and apply only the residual steps; otherwise scan as usual.
   const seeded = projected === undefined ? seedFromIndex(effective, graph, ctx.tracksPath) : null;
+  /*
+   * THE LABEL-SEEDED `values` FUSION (item 2037), the moment the seed exists and before its residual
+   * runs through the generic pipeline. It can preempt nothing: every values shortcut above has
+   * already declined this plan — their gates require `values` IMMEDIATELY after the source, and a
+   * surviving `hasLabel` sits between — which is why the shape fell through to the seed at all.
+   */
+  /*
+   * ⚠️ ONE early return for BOTH fusions, which keeps `run` inside the complexity gate — a second
+   * `if` put it at 36 against a limit of 35 (item 2037).
+   *
+   * 🔑 THE `??` PRESERVES THE RESIDUAL'S PRECEDENCE, which the comment above requires, and the
+   * SEEDED CALL IS NOT WASTED: `residual` is non-undefined only when `projected !== undefined`, and
+   * `seeded` is `null` in exactly that case — so whenever the residual wins, the label fusion was
+   * handed a null seed and declined without work.
+   */
+  const fused = labelSeededFusionFor(residual, seeded, ctx.tracksPath);
+
+  if (fused !== undefined) {
+    return fused;
+  }
+
   // A RESIDUAL RIDES THE SHORTCUT (item 608) rather than defeating it. The walk's values are
   // wrapped as traversers and the leftover steps run over them, exactly as a seeded plan's stream
   // feeds its own residual below. The wrapping is real work — but `V().values(k)` runs the WHOLE

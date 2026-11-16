@@ -63,6 +63,24 @@ const build = (): Graph => {
   return g;
 };
 
+/*
+ * ⚠️⚠️ **THREE OPERAND KINDS HAVE NOW ARRIVED FOR THIS ONE CLASS, which is why it is a CLASS and not a
+ * coincidence.** Each was found by the differential fuzzer on a different random seed:
+ *
+ *     FUZZ_SEED=1493132919   date('2020-01-01')        a temporal in boolean position
+ *     FUZZ_SEED=3826437490   atan2(n.m.k, '1e3')       a string argument to a numeric fn
+ *     FUZZ_SEED=3908458595   acos(n.s)                 a string argument to a numeric fn (item 2037)
+ *
+ * The shape is identical every time: a statically non-boolean operand in an inline pattern predicate
+ * under `OPTIONAL MATCH`, where this engine's conjunct order settles the row before evaluating the
+ * bad operand and the Rust engine evaluates it and raises `E_INVALID_VALUE`. `OPTIONAL MATCH` then
+ * turns "no match" into NULL-filled rows, so the outer results differ: six rows against an error.
+ *
+ * 🔑 THE RATE IS ROUGHLY 1 IN 280,000 GENERATED QUERIES, so a 20,000-query sweep hits it about every
+ * fourteenth run — which is exactly how it keeps surfacing in `fuzz-sweep.sh` and being
+ * re-diagnosed. Anyone seeing a sweep fail on an `OPTIONAL MATCH` + inline-predicate query should
+ * check this file FIRST.
+ */
 const Q =
   "MATCH (t:T) OPTIONAL MATCH (t)-[:E]->(n WHERE ((atan2(n.m.k, '1e3') >= n.x) AND " +
   '((n.m.k >= 3) AND (n.x < 0)))) RETURN t.n AS x, n.n AS y ORDER BY x, y';
