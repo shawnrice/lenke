@@ -101105,3 +101105,62 @@ a backticked identifier in a comment inside the generated driver terminates the 
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
 `node --check` on the new probe. New probe only; no engine change.
+
+## Item 2050 — ✅ **DIAGNOSED: an UNDIRECTED multi-hop chain declines the chain fusion entirely and falls to the general pattern matcher — 0.838 µs a row against the directed twin's 0.295, a 2.84x PER-ROW gap.** 🔑 Found by sweeping all 51 GQL shapes for absolute cost: one shape is 19x the next
+
+Item 2049 showed every GQL rung is reached, so coverage cannot nominate anything there. **Coverage says
+nothing about whether a reached rung still earns its place**, so this swept all 51 shapes in the
+profile probe for per-op cost and let the most expensive nominate itself:
+
+```text
+    123.27  hop3rowsboth      <- 19x the next
+      6.50  callscoped
+      5.84  callinline
+      3.58  hop3rows
+      2.78  hop3distinct
+```
+
+⚠️ **AND THE ABSOLUTE NUMBER IS NOT THE FINDING — the per-ROW cost is.** `hop3rowsboth` is the same
+query with `-` instead of `->`, and an undirected 3-hop chain legitimately produces far more rows:
+
+| shape                                             | ms/op | rows/op | µs/row    |
+| ------------------------------------------------- | ----- | ------- | --------- |
+| `hop3rows` — `(a)-[:E]->(b)-[:E]->(c)-[:E]->(d)`  | 5.89  | 20,000  | **0.295** |
+| `hop3rowsboth` — `(a)-[:E]-(b)-[:E]-(c)-[:E]-(d)` | 134.1 | 160,000 | **0.838** |
+
+8x the rows, **22.8x the time** — so 2.84x more expensive per row, on the same graph and the same
+pattern. That is the gap worth explaining; the raw 123 vs 3.58 would have overstated it 8-fold.
+
+🔑 **THE PROFILE DIFF NAMES THE CAUSE: they take different ROUTES.**
+
+|       | directed                                             | undirected                                                                                      |
+| ----- | ---------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| route | `sweepBlock` 47.2 ms (18.6%) — the FUSED chain sweep | `matchPattern` → `walkSegments` → `walkBothSegment` **1147.2 ms (30.7%)** — the GENERAL MATCHER |
+| plus  | `(anonymous) in sweep` 19.0                          | `withBinding` 442.6 (11.8%), `bothBuckets` 364.6 (9.8%), GC 422.2 (11.3%)                       |
+
+**A multi-hop undirected chain gets no chain fusion at all.** `hop-projection.ts` has an
+`undirectedHopWalk` for the ONE-hop far-end projection, optimized to 357-395 ns a row (its own
+comment), but a CHAIN of undirected hops declines and falls through to the pattern matcher.
+
+### Why the two sub-leads in that profile are NOT the target
+
+- **`withBinding` 11.8%** — this is the per-row binding allocation, **already priced and refused** at
+  items 2023 and 2024 ([[binding-allocation-is-closed]]): a no-copy view and a reused map were both
+  built, measured and declined.
+- **`bothBuckets` 9.8%** — tempting, with one call site and a fresh 2-tuple allocated per call. But it
+  is two `Map.get` calls on a vertex's `adjFrom`/`adjTo`, taken once per SEGMENT WALK rather than per
+  row, so most of its self time is likely the lookups themselves ([[frame-attribution-trap]]: a small
+  wrapper's frame is attribution until a deletion test says otherwise). ⚠️ **NOT measured — and it does
+  not need to be**: eliminating the frame entirely caps at **9.8%**, against a route gap of **2.84x**.
+  Bounded out rather than refuted.
+
+**So the target is the route, and it is substantial**: an undirected chain arm for the fused sweep. Two
+recorded constraints a builder must respect — the chain CSR is "ONE index with ONE label set, [and] a
+mixed-direction chain key would collide across every untyped shape" (`count-shortcut.ts`), and ROW
+ORDER is observable for a projection, which is why the one-hop undirected walk emits out-steps then
+in-steps per start vertex and why item 478's two-pass trick is confined to aggregates.
+
+NOT BUILT — diagnosed and bounded. The sweep itself is the reusable part: it is the first time all 51
+GQL shapes have been ranked by cost in one pass.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped. No source change — a sweep and two profiles.
