@@ -33,6 +33,7 @@
  */
 import { Graph } from '@lenke/core';
 import {
+  gte,
   not,
   and,
   aggregate,
@@ -151,6 +152,15 @@ for (let e = 0; e < NODES * FANOUT; e += 1) {
  */
 const SHAPES = {
   'point: V(id)': () => traversal(V('700'), values('n')),
+  /*
+   * ⚠️ THE EQUAL-EMISSION ARM (item 2057). `point: has(k,v)` keeps 1 vertex in 50, so comparing it to
+   * the unfiltered `scan: values` confounds the ROUTE with 50x fewer row emissions. This predicate
+   * keeps EVERY vertex, so both arms scan 200,000 and emit 200,000 — the only difference left is the
+   * generic has+values route against the fused values one.
+   */
+  'point: has(all) values': () => traversal(V(), has('k', gte(0)), values('n')),
+  // Half the vertices (k is 0-49), to place the selectivity curve between the two ends.
+  'point: has(half) values': () => traversal(V(), has('k', gte(25)), values('n')),
   'point: has(k,v)': () => traversal(V(), has('k', 7), values('n')),
   'point: has + limit 1': () => traversal(V(), has('k', 7), limit(1), values('n')),
   'scan: count': () => traversal(V(), count()),

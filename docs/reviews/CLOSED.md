@@ -101509,3 +101509,47 @@ three separate items.
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
 gremlin suite 2,616 (7 new); all seven fuzzers green; 5/5 sweeps clean.
+
+## Item 2057 — ✅ **IT IS THE PREDICATE KIND, NOT THE ROUTE: an EQUALITY `has` costs ~0 per vertex (31.5 ns against the unfiltered scan's 32) while a RANGE `has` costs ~40 ns more (72-75 ns).** ⚠️ And my first reading was 1.15x because the arms emitted 50x different row counts — a confound I introduced and then caught
+
+Item 2056 took one of the census's two unexplained generic rows; this took the other,
+`scan: has values` (`V().has('k', v).values('k')`, generic, 2 dispatches) — noting the asymmetry that
+`scan: has count` beside it is FUSED.
+
+⚠️⚠️ **THE FIRST COMPARISON WAS CONFOUNDED AND SAID 1.15x.** `point: has(k,v)` keeps 1 vertex in 50, so
+measuring it against the unfiltered `scan: values` compares a route difference against a **50x
+difference in row emissions** — the filtered arm saves so much materialization that the route cost
+hides inside it (6.31 against 6.37 ms). **An equal-emission arm was needed**, and with one the picture
+changes completely.
+
+| arm                                     | ms    | rows    | ns per vertex scanned |
+| --------------------------------------- | ----- | ------- | --------------------- |
+| `values` — no filter, FUSED             | 6.37  | 200,000 | **32**                |
+| `has('k', 7)` — EQUALITY                | 6.31  | 4,000   | **31.5**              |
+| `has('k', gte(0))` — RANGE, keeps all   | 14.39 | 200,000 | **72**                |
+| `has('k', gte(25))` — RANGE, keeps half | 15.02 | 100,000 | **75**                |
+
+🔑 **THE CURVE IS NON-MONOTONIC, AND THAT IS WHAT IDENTIFIES THE CAUSE.** `has(half)` costs MORE than
+`has(all)` while emitting half the rows, so row emission is not the driver; both range arms sit at
+72-75 ns a vertex regardless of how many rows survive. Meanwhile the EQUALITY arm sits at 31.5 ns —
+indistinguishable from the unfiltered fused scan's 32. **So an equality `has` is essentially free per
+vertex and a range `has` adds ~40 ns**, which is 2.26x the whole row when emissions are held equal.
+
+⚠️ **WHAT IS NOT SEPARATED, and saying so is the point**: how much of that ~40 ns is the RANGE
+PREDICATE's own evaluation versus the GENERIC route it forces. Both change together in every arm this
+fixture allows — `k` is `i % 50`, so no equality predicate keeps every vertex, and there is no fused
+arm that evaluates a `gte`. **The route is therefore NOT established as the cost**, and the census's
+"generic" label is not evidence that fusing would recover the 40 ns. A `has(gte)` arm in a fused walk
+is what would answer it.
+
+**So `scan: has values` is NOT nominated as a fusion target** on this evidence. The thing worth
+pricing is the range-predicate evaluation itself, and the instrument needed is a fixture with a
+constant-valued property (so an equality can keep everything) plus a fused comparison arm.
+
+⚠️ THE CONFOUND IS THE SAME ONE ITEMS 2053-2055 WITHDREW RATIOS FOR — arms differing in more than the
+term under test — and this is the fourth consecutive item to hit it. Here it was caught by the arms
+disagreeing non-monotonically, which is a cheap tell worth looking for: **if a "more selective" arm is
+SLOWER, the selectivity is not what you are measuring.**
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `node --check` on the screen. Two screen rows
+added (`point: has(all) values`, `point: has(half) values`); no engine change.
