@@ -100396,15 +100396,15 @@ Nine labelled rows added, on `T` (vacuous without `MIXED=1`, non-vacuous with it
 matched pair and `dropVacuousLabels` deleting the step is what the pair measures). Two alternated
 pairs at 100,000 vertices, `ONLY=label` so no other shape pollutes the dispatch, min of each arm:
 
-| row                    | vacuous (r1/r2) | mixed (r1/r2) | ratio                                   |
-| ---------------------- | --------------- | ------------- | --------------------------------------- |
-| `label: hop values`    | 14.25 / 14.77   | 44.76 / 44.14 | **3.10x** — tight in both arms          |
-| `label: values`        | 2.34 / 2.71     | 8.71 / 6.02   | 2.57x — ⚠️ mixed arm spreads 1.45x      |
-| `label: dedupe values` | 2.67 / 2.50     | 4.83 / 4.47   | **1.79x**                               |
-| `label: order values`  | 11.54 / 8.64    | 15.28 / 14.55 | 1.68x — ⚠️ vacuous arm spreads 1.34x    |
-| `label: has values`    | 2.99 / 2.23     | 5.15 / 2.75   | 1.23x — both arms spread; says nothing  |
-| `label: id`            | 5.12 / 6.46     | 3.63 / 3.91   | **0.71x — the MIXED arm is FASTER**     |
-| `label: count`         | 0.01            | 0.00          | `countShortcut`, O(1) from bucket sizes |
+| row                    | vacuous (r1/r2) | mixed (r1/r2) | ratio                                                              |
+| ---------------------- | --------------- | ------------- | ------------------------------------------------------------------ |
+| `label: hop values`    | 14.25 / 14.77   | 44.76 / 44.14 | **3.10x** — tight in both arms                                     |
+| `label: values`        | 2.34 / 2.71     | 8.71 / 6.02   | 2.57x — ⚠️ mixed arm spreads 1.45x                                 |
+| `label: dedupe values` | 2.67 / 2.50     | 4.83 / 4.47   | ~~1.79x~~ ❌ **REFUTED at item 2041: 1.02x isolated — pollution**  |
+| `label: order values`  | 11.54 / 8.64    | 15.28 / 14.55 | 1.68x — ⚠️ **UNDERSTATED: 2.36x isolated, DIAGNOSED at item 2041** |
+| `label: has values`    | 2.99 / 2.23     | 5.15 / 2.75   | 1.23x — both arms spread; says nothing                             |
+| `label: id`            | 5.12 / 6.46     | 3.63 / 3.91   | **0.71x — the MIXED arm is FASTER**                                |
+| `label: count`         | 0.01            | 0.00          | `countShortcut`, O(1) from bucket sizes                            |
 
 🔑 **THE NOMINATION IS `label: hop values` — 3.10x, and both arms are tight across two rounds.** It is
 `V().hasLabel(T).out(E).values(n)`: a labelled one-hop projection, about as common as a real Gremlin
@@ -100566,3 +100566,58 @@ bucket, and Gremlin results are compared ORDERED — was settled empirically: al
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped (⚠️ two attempts — `prefer-optional-chain` and
 `no-unnecessary-boolean-literal-compare` both fired on the distinct drain guard); `bun run test --
 --skip-nx-cache` 21/21; gremlin suite 2,597 (7 new); all seven fuzzers green; sweeps 6/6 and 4/4.
+
+## Item 2041 — ✅ **DIAGNOSED: a labelled scan + `order()` is 2.36x / 2.31x slower on two fixtures once the label is non-vacuous, and the profile diff names it — the surviving step knocks the plan off item 1630's IN-PLACE sort onto the generic `orderStep` chain.** ❌ **And its sibling `label: dedupe values` is REFUTED: 1.02x isolated, so item 2038's 1.79x was pollution**
+
+Item 2038's nine-row screen left two rows unexplained. Measured ISOLATED (one shape per process) at
+100,000 vertices, they turn out to be opposite findings:
+
+| row                    | vacuous | mixed |                                                                                |
+| ---------------------- | ------- | ----- | ------------------------------------------------------------------------------ |
+| `label: order values`  | 7.13    | 16.79 | **2.36x — REAL, and larger than the 1.68x reported**                           |
+| `label: dedupe values` | 4.60    | 4.69  | **1.02x — NO CLIFF.** The 1.79x was in-process pollution                       |
+| `label: values`        | 2.22    | 4.52  | 2.04x — still open on this fixture (item 2037's fusion reads 1.09x on its own) |
+
+**So separating them mattered in both directions**: one row was understated and one did not exist. A
+nine-shape process cannot price either.
+
+Confirmed on a second fixture (the Gremlin profile probe, 20,000 vertices, FANOUT 5, 60 reps), with a
+label-free floor as the control:
+
+```text
+    labelorder        vacuous  87.1 ms   mixed 201.2 ms   2.31x   (sink 1,200,000 both)
+    labelorderfloor   vacuous  82.4      mixed  83.4      flat
+```
+
+The floor's sink differs by 60 — correct, since with no label step the off-label vertex contributes
+its own `k`.
+
+🔑 **THE PROFILE DIFF, and the frames are different functions, not the same ones grown:**
+
+|                              | vacuous  | mixed     |
+| ---------------------------- | -------- | --------- |
+| `sorted` (the in-place sort) | **58.5** | —         |
+| `sortByBys`                  | —        | 69.2      |
+| `orderStep`                  | —        | 32.1      |
+| `unwrap`                     | —        | 22.3      |
+| `projectValues`              | —        | 21.0      |
+| **total sort-path cost**     | **58.5** | **144.6** |
+
+With the label vacuous, `dropVacuousLabels` deletes the step and the plan reaches **item 1630's
+fusion** — its own comment: _"A RESIDUAL THAT IS ONLY A GLOBAL `order()` IS SORTED IN PLACE, instead
+of wrapping every value in a traverser for `orderStep` to spread back into an array."_ With the step
+surviving, the plan wraps every value and spreads it back.
+
+⚠️⚠️ **AND THE CAUSE IS IN MY OWN ITEM 2037 FUSION.** `labelSeededValuesFusion` requires the seeded
+residual to be EXACTLY `[values]` (`steps.length !== 1` declines), so `V().hasLabel(L).values(k).order()`
+has a two-step residual and falls through — taking the fused sort with it. **The fix is the pattern
+items 1956 / 2027 / 2028 already established three times: return `{ values, rest }` so a trailing
+terminal rides `fusedProjectedResidual` instead of declining the whole plan.** That is the same gap,
+in the rung I built four items ago, found the same way.
+
+NOT BUILT HERE — the loop was paused at this item. The nomination is precise: widen
+`labelSeededValuesFusion` to a `{ values, rest }` result and let `fusedProjectedResidual` take the
+trailing `order`/`count`/`fold`/`min`/`max` it already handles.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `node --check` on the probe. Probe-only change:
+`labelorder` and `labelorderfloor` shapes added to the Gremlin profile probe.

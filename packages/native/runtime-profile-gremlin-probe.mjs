@@ -150,6 +150,16 @@ const SHAPES = {
   hopcount2: traversal(V(), hasLabel('P'), out('E'), out('E'), count()),
   // A row-RETURNING hop, so no count shortcut can claim it.
   hopbare: traversal(V(), out('E')),
+  /*
+   * Item 2041's target: a LABELLED scan + ORDER. Isolated at 100,000 vertices this reads 7.13 ms
+   * vacuous against 16.79 mixed — **2.36x**, LARGER than the 1.68x item 2038 reported from a
+   * nine-row process. Its sibling `label: dedupe values` was REFUTED the same way (4.60 vs 4.69,
+   * 1.02x — the 1.79x there was pollution), so the two had to be separated before either was
+   * believed.
+   */
+  labelorder: traversal(V(), hasLabel('P'), values('k'), order()),
+  // The floor: same projection and sort, no label step for the gate to lose.
+  labelorderfloor: traversal(V(), values('k'), order()),
   // Item 2039's target: a LABELLED one-hop projection, 3.10-3.56x slower once `P` is non-vacuous.
   labelhop: traversal(V(), hasLabel('P'), out('E'), values('k')),
   // Its floor, same route minus the label step — what the vacuous arm effectively runs.
