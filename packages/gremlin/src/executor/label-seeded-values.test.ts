@@ -16,7 +16,20 @@ import { describe, expect, test } from 'bun:test';
 
 import { Graph } from '@lenke/core';
 
-import { count, hasLabel, limit, out, path, run, toArray, traversal, V, values } from '../index.js';
+import {
+  count,
+  hasLabel,
+  limit,
+  order,
+  out,
+  path,
+  run,
+  sum,
+  toArray,
+  traversal,
+  V,
+  values,
+} from '../index.js';
 import { labelSeededValuesFusion } from './node-values.js';
 
 const build = (): Graph => {
@@ -149,21 +162,82 @@ describe('label-seeded values fusion (item 2037)', () => {
   });
 });
 
+describe('a trailing order() end to end (item 2042)', () => {
+  /*
+   * ⚠️⚠️ **THE ORDER IS THE ANSWER HERE, so this asserts the SEQUENCE against an independent sort** —
+   * not a row count, which `sink` already matched while the plan took the slow route. The fixture
+   * scrambles `k` so a sort is genuinely required, and carries one ISOLATED off-label vertex so the
+   * `hasLabel` step SURVIVES; without it `dropVacuousLabels` deletes the step and this test would
+   * exercise the unlabelled path instead (item 2018's lesson).
+   */
+  const build = (): Graph => {
+    const g = new Graph();
+
+    for (let i = 0; i < 200; i += 1) {
+      g.addVertex({ id: `w${i}`, labels: ['T'], properties: { k: (i * 7919) % 200 } });
+    }
+
+    g.addVertex({ id: 'woff', labels: ['Q'], properties: { k: 9999 } });
+
+    return g;
+  };
+
+  test('the values come back SORTED, and the off-label vertex is not among them', () => {
+    const g = build();
+    const want = Array.from({ length: 200 }, (_, i) => i);
+
+    expect(toArray(traversal(V(), hasLabel('T'), values('k'), order()), g)).toStrictEqual(want);
+  });
+
+  test('a trailing count() also rides the residual', () => {
+    const g = build();
+
+    expect(toArray(traversal(V(), hasLabel('T'), values('k'), count()), g)).toStrictEqual([200]);
+  });
+
+  test('a residual `fusedProjectedResidual` REFUSES still answers correctly', () => {
+    /*
+     * `sum` is refused for byte-identity (f64 addition is order-sensitive in the last ulp), so this
+     * declines the fusion and takes the generic route — the answer must be unchanged either way.
+     */
+    const g = build();
+
+    expect(toArray(traversal(V(), hasLabel('T'), values('k'), sum()), g)).toStrictEqual([19900]);
+  });
+});
+
 describe('the gate itself, called directly (item 2037)', () => {
   const one = [{ value: { properties: { k: 7 } } }];
   const valuesStep = { kind: 'values', keys: ['k'] } as const;
 
-  test('ACCEPTS exactly one `values` step with one key, and projects it', () => {
+  test('ACCEPTS a one-key `values` step and projects it, with an EMPTY residual', () => {
     const out = labelSeededValuesFusion(one, [valuesStep], false);
 
     expect(out).toBeDefined();
-    expect([...(out as Iterable<unknown>)]).toStrictEqual([7]);
-    expect((out as unknown as { drain: () => unknown[] }).drain()).toStrictEqual([7]);
+    expect([...out!.values]).toStrictEqual([7]);
+    expect((out!.values as { drain: () => unknown[] }).drain()).toStrictEqual([7]);
+
+    // ⚠️ THE RESIDUAL'S CONTENT, not merely its presence (item 2021): an empty `rest` is what tells
+    // the caller the walk answered the whole plan.
+    expect(out!.rest).toStrictEqual([]);
   });
 
-  test('DECLINES a path-tracking plan, a second step, no step, and a non-`values` step', () => {
+  test('a TRAILING step is REPORTED as the residual rather than declining (item 2042)', () => {
+    /*
+     * ⚠️⚠️ **THIS IS THE WHOLE OF ITEM 2042.** The first cut required `steps.length === 1`, so a
+     * trailing `order()` declined the plan and took item 1630's in-place sort with it — 2.31-2.36x on
+     * two fixtures. The residual is now handed back for `fusedProjectedResidual` to fuse.
+     */
+    const orderStep = { kind: 'order', bys: [] } as const;
+    const out = labelSeededValuesFusion(one, [valuesStep, orderStep] as never, false);
+
+    expect(out).toBeDefined();
+    expect([...out!.values]).toStrictEqual([7]);
+    expect(out!.rest.map((st) => st.kind)).toStrictEqual(['order']);
+  });
+
+  test('DECLINES a path-tracking plan, no step, and a non-`values` first step', () => {
     expect(labelSeededValuesFusion(one, [valuesStep], true)).toBeUndefined();
-    expect(labelSeededValuesFusion(one, [valuesStep, valuesStep], false)).toBeUndefined();
     expect(labelSeededValuesFusion(one, [], false)).toBeUndefined();
     expect(labelSeededValuesFusion(one, [{ kind: 'count' }] as never, false)).toBeUndefined();
   });
@@ -182,7 +256,7 @@ describe('the gate itself, called directly (item 2037)', () => {
     const lazy = labelSeededValuesFusion(mixed, [valuesStep], false);
     const eager = labelSeededValuesFusion(mixed, [valuesStep], false);
 
-    expect([...(lazy as Iterable<unknown>)]).toStrictEqual([1]);
-    expect((eager as unknown as { drain: () => unknown[] }).drain()).toStrictEqual([1]);
+    expect([...lazy!.values]).toStrictEqual([1]);
+    expect((eager!.values as { drain: () => unknown[] }).drain()).toStrictEqual([1]);
   });
 });

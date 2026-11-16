@@ -2592,6 +2592,7 @@ const labelSeededFusionFor = (
   residual: Iterable<unknown> | undefined,
   seeded: { stream: Iterable<{ value: unknown }>; steps: readonly Step[] } | null,
   tracksPath: boolean,
+  effective: Plan,
 ): Iterable<unknown> | undefined => {
   /*
    * 🔑 THE RESIDUAL KEEPS ITS PRECEDENCE, and the choice lives HERE rather than at the call site so
@@ -2605,9 +2606,25 @@ const labelSeededFusionFor = (
     return residual;
   }
 
-  return seeded === null
-    ? undefined
-    : labelSeededValuesFusion(seeded.stream, seeded.steps, tracksPath);
+  const fused =
+    seeded === null ? undefined : labelSeededValuesFusion(seeded.stream, seeded.steps, tracksPath);
+
+  if (fused === undefined) {
+    return undefined;
+  }
+
+  /*
+   * 🔑 **A TRAILING TERMINAL RIDES `fusedProjectedResidual` (item 2042).** An empty `rest` means the
+   * walk answered the whole plan, which is item 2037's case. A non-empty one is offered to the same
+   * fusion every other values walk uses — it takes `order`/`count`/`fold`/`min`/`max`/`aggregate().cap()`
+   * and declines the rest, and declining returns `undefined`, leaving the plan exactly where it was
+   * before this rung existed.
+   *
+   * ⚠️ THE CHOICE LIVES HERE, NOT AT THE CALL SITE: `run` sits at the complexity limit, and item
+   * 2037 already spent three attempts discovering that an extra `if` or even a `??` out there costs
+   * one point each.
+   */
+  return fused.rest.length === 0 ? fused.values : fusedProjectedResidual(fused, effective);
 };
 
 const fusedProjectedResidual = (
@@ -3105,7 +3122,7 @@ export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
    * `seeded` is `null` in exactly that case — so whenever the residual wins, the label fusion was
    * handed a null seed and declined without work.
    */
-  const fused = labelSeededFusionFor(residual, seeded, ctx.tracksPath);
+  const fused = labelSeededFusionFor(residual, seeded, ctx.tracksPath, effective);
 
   if (fused !== undefined) {
     return fused;

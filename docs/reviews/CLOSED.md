@@ -100567,7 +100567,7 @@ GATES. `bun run fmt` 0; `bun run check` 0 read unpiped (⚠️ two attempts — 
 `no-unnecessary-boolean-literal-compare` both fired on the distinct drain guard); `bun run test --
 --skip-nx-cache` 21/21; gremlin suite 2,597 (7 new); all seven fuzzers green; sweeps 6/6 and 4/4.
 
-## Item 2041 — ✅ **DIAGNOSED: a labelled scan + `order()` is 2.36x / 2.31x slower on two fixtures once the label is non-vacuous, and the profile diff names it — the surviving step knocks the plan off item 1630's IN-PLACE sort onto the generic `orderStep` chain.** ❌ **And its sibling `label: dedupe values` is REFUTED: 1.02x isolated, so item 2038's 1.79x was pollution**
+## Item 2041 — ✅ **FIXED AT ITEM 2042 (2.17x; the cliff is now 1.08x).** **DIAGNOSED: a labelled scan + `order()` is 2.36x / 2.31x slower on two fixtures once the label is non-vacuous, and the profile diff names it — the surviving step knocks the plan off item 1630's IN-PLACE sort onto the generic `orderStep` chain.** ❌ **And its sibling `label: dedupe values` is REFUTED: 1.02x isolated, so item 2038's 1.79x was pollution**
 
 Item 2038's nine-row screen left two rows unexplained. Measured ISOLATED (one shape per process) at
 100,000 vertices, they turn out to be opposite findings:
@@ -100615,9 +100615,66 @@ items 1956 / 2027 / 2028 already established three times: return `{ values, rest
 terminal rides `fusedProjectedResidual` instead of declining the whole plan.** That is the same gap,
 in the rung I built four items ago, found the same way.
 
-NOT BUILT HERE — the loop was paused at this item. The nomination is precise: widen
+~~NOT BUILT HERE — the loop was paused at this item.~~ ✅ **BUILT AT ITEM 2042, exactly as nominated.** The nomination is precise: widen
 `labelSeededValuesFusion` to a `{ values, rest }` result and let `fusedProjectedResidual` take the
 trailing `order`/`count`/`fold`/`min`/`max` it already handles.
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `node --check` on the probe. Probe-only change:
 `labelorder` and `labelorderfloor` shapes added to the Gremlin profile probe.
+
+## Item 2042 — ✅ **SHIPPED: a trailing terminal now rides the label-seeded fusion — `V().hasLabel(L).values(k).order()` 207.8 → 95.7 ms (2.17x), and item 2041's cliff falls from 2.31x to 1.08x.** 🔑 The gap was in the rung I wrote at item 2037, and it is the FOURTH rung to have it
+
+Item 2041 diagnosed it: `labelSeededValuesFusion` required the seeded residual to be EXACTLY `[values]`
+(`steps.length !== 1`), so a trailing `order()` made it two steps, declined, and took **item 1630's
+in-place sort** with it — `sorted` at 58.5 ms replaced by an
+`orderStep`/`sortByBys`/`unwrap`/`projectValues` chain costing 144.6 ms.
+
+**The fix is the pattern items 1956, 2027 and 2028 each established: _a terminal this walk does not
+project still gets the walk._** The fusion now returns `{ values, rest }`, and `labelSeededFusionFor`
+hands a non-empty `rest` to `fusedProjectedResidual` — the same fusion every other values walk uses,
+which takes `order`/`count`/`fold`/`min`/`max`/`aggregate().cap()` and declines the rest. **Three prior
+items closed this exact gap in three other rungs; the rung I wrote four items earlier reproduced it.**
+
+MEASURED, alternated rounds, arms `LIVE`/`KILLED` where KILLED restores item 2037's exact condition —
+so the baseline is the shipped behaviour of four items ago, not "no fusion at all":
+
+| row                                                             | KILLED        | LIVE          |               |
+| --------------------------------------------------------------- | ------------- | ------------- | ------------- |
+| `labelorder`, `MIXED=1` (the target)                            | 207.8         | 95.7          | **2.17x**     |
+| `labelorder`, `MIXED=0` (label VACUOUS — step dropped upstream) | 84.2          | 83.4          | 1.01x         |
+| `labelorderfloor`, `MIXED=0` / `=1` (no label step at all)      | 83.1 / 83.0   | 84.5 / 83.8   | 0.98x / 0.99x |
+| `labelhop`, `MIXED=0` / `=1` (item 2040's arm)                  | 129.0 / 147.4 | 132.6 / 142.8 | 0.97x / 1.03x |
+
+Same sink in every arm (1,200,000). **Item 2041's cliff is now 1.08x** (83.4 vacuous against 95.7
+mixed), down from 2.31x.
+
+⚠️⚠️ **AND THE WIDE SCREEN CRIED REGRESSION FOR THE THIRD TIME THIS SESSION — `optional: hop count` at
+3.15x WORSE (1.82 → 5.73).** Two things made it suspect before anything else: the screen runs 47 rows
+in ONE process (the pollution item 2039 established as unreliable), and my LIVE/KILLED rounds were
+UNBALANCED (1 against 3), which biases min-of-N against LIVE. Re-measured isolated and alternated:
+
+```text
+    optional: hop count       LIVE 1.83   KILLED 1.90    LIVE 1.04x BETTER
+    select: as + select one   LIVE 3.95   KILLED 4.04    LIVE 1.02x better
+    label: dedupe values      LIVE 5.28   KILLED 4.88    0.92x, inside its known band
+```
+
+**No regression.** Items 2038, 2040 and now 2042 have each produced a false regression signal from a
+multi-row screen run, and all three dissolved under one-shape-per-process. 🔑 **A multi-row screen
+ranks; it does not price.** Its own header says so and it keeps being worth re-learning.
+
+VERIFICATION. 19 tests in the file (3 new end-to-end, 1 new gate), **6/6 mutants caught**. The end-to-end
+test asserts the **SEQUENCE** against an independently sorted array, not a row count — the `sink`
+matched in both arms while the plan was taking the slow route, so a count could never have seen this.
+It also covers `sum()`, which `fusedProjectedResidual` REFUSES for byte-identity (f64 addition is
+order-sensitive in the last ulp), confirming a refused residual still answers correctly by the generic
+route.
+
+⚠️ A SELF-INFLICTED A/B FAULT: the KILLED arm's verification used `grep -cF 'steps.length !== 1'`,
+which occurs in several shortcuts in that file, so the guard rejected a correctly-applied edit
+("KILLED ARM NOT SET"). The `sed` had used the unique FULL LINE; only the check was loose. Anchoring
+the check on the same full line fixed it — **count a string's occurrences before trusting it as a
+verification, not just as an anchor.**
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped (one attempt lost to an unused import I added);
+`bun run test -- --skip-nx-cache` 21/21; gremlin suite 2,601; all seven fuzzers green; 5/5 sweeps clean.

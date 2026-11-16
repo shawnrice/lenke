@@ -973,10 +973,22 @@ export const labelSeededValuesFusion = (
   stream: Iterable<{ value: unknown }>,
   steps: readonly Step[],
   tracksPath: boolean,
-): Iterable<unknown> | undefined => {
+): { values: NodeValues; rest: readonly Step[] } | undefined => {
+  /*
+   * ⚠️⚠️ **THIS RETURNS `{ values, rest }` RATHER THAN A BARE ITERABLE, AND ITEM 2041 IS WHY.** The
+   * first cut required the seeded residual to be EXACTLY `[values]` (`steps.length !== 1`), so
+   * `V().hasLabel(L).values(k).order()` had a two-step residual, fell through, and took item 1630's
+   * IN-PLACE sort with it — profiled at `sorted` 58.5 ms against an `orderStep`/`sortByBys`/`unwrap`/
+   * `projectValues` chain costing **144.6 ms, 2.31-2.36x on two fixtures**.
+   *
+   * 🔑 A TRAILING TERMINAL NOW RIDES `fusedProjectedResidual`, which is the pattern items 1956, 2027
+   * and 2028 each established: **a terminal this walk does not project still gets the walk.** Three
+   * prior items closed exactly this gap in three other rungs, and the rung I wrote at item 2037
+   * reproduced it.
+   */
   // The walk emits bare values and builds no path, so a plan that reads one cannot ride it — the
   // same gate every values walk in this file carries.
-  if (tracksPath || steps.length !== 1) {
+  if (tracksPath || steps.length === 0) {
     return undefined;
   }
 
@@ -1026,7 +1038,7 @@ export const labelSeededValuesFusion = (
    * ⚠️ `run` ITSELF STAYS AS LAZY AS IT WAS — a caller that `break`s out of the iterable still gets
    * the generator; only the already-eager terminal takes the eager route (item 1412's rule).
    */
-  const out = walk() as Iterable<unknown> & { drain: () => unknown[] };
+  const out = walk() as NodeValues & { drain: () => unknown[] };
 
   out.drain = (): unknown[] => {
     const rows: unknown[] = [];
@@ -1051,5 +1063,11 @@ export const labelSeededValuesFusion = (
     return rows;
   };
 
-  return out;
+  /*
+   * ⚠️ `rest` IS WHAT IS LEFT AFTER THE `values` STEP THIS WALK CONSUMED. An empty `rest` is the
+   * item-2037 case (the walk answered the whole plan); a non-empty one is handed to
+   * `fusedProjectedResidual`, which either fuses the terminal or declines — and declining leaves the
+   * plan exactly where it was before this rung existed.
+   */
+  return { values: out, rest: steps.slice(1) };
 };
