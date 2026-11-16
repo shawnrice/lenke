@@ -265,13 +265,33 @@ describe('⚠️ item 1506 — the two passes gated LAST, and the kind I first m
     // explicit `step.kind ===` tests. The fifth is `pushSplit`, which runs unconditionally at the
     // bottom of the loop and splits `hasLabelAnd` (item 1309); two existing tests failed on it.
     // Enumerating from the code rather than the comments is what fixed it.
-    for (const kind of ['not', 'filter', 'or', 'and', 'hasLabelAnd'] as const) {
+    for (const kind of ['not', 'filter', 'or', 'and', 'hasLabelAnd', 'where'] as const) {
       expect(KIND_BITS[kind], kind).toBeGreaterThan(0);
       expect(
         FILTER_WRAPPER_BITS & KIND_BITS[kind],
         `${kind} must be in FILTER_WRAPPER_BITS`,
       ).not.toBe(0);
     }
+  });
+
+  it('⚠️ EVERY bit in FILTER_WRAPPER_BITS is a REAL KIND_BITS entry', () => {
+    /*
+     * ⚠️⚠️ **THIS IS THE ASSERTION THAT WOULD HAVE CAUGHT ITEM 2047's DEAD CODE.** `KIND_BITS` is
+     * `Readonly<Record<string, number>>`, so `KIND_BITS.where` type-checked while being `undefined`,
+     * and `FILTER_WRAPPER_BITS | undefined` is a no-op — the mask was unchanged, every `where`-only
+     * plan kept `kinds === 0`, and a new rewrite behind the gate never ran. The test above only
+     * checks the kinds it NAMES, so a sixth that resolves to `undefined` slips straight through it.
+     *
+     * Summing the named bits and comparing against the mask catches that in either direction: a bit
+     * in the mask with no entry, or an entry the mask forgot.
+     */
+    const named = Object.values(KIND_BITS).reduce((a, b) => a | b, 0);
+
+    expect(
+      FILTER_WRAPPER_BITS & ~named,
+      'a bit in FILTER_WRAPPER_BITS with no KIND_BITS entry',
+    ).toBe(0);
+    expect(FILTER_WRAPPER_BITS).toBeGreaterThan(0);
   });
 
   it('⚠️ the hasLabelAnd split still FIRES — the fold the four-bit gate silently lost', () => {

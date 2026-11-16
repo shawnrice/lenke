@@ -641,6 +641,15 @@ export const KIND_BITS: Readonly<Record<string, number>> = {
   // it to do — the same gate reasoning as `hasLabel` above, and for the same measured reason: a pass
   // that runs on every query shows up in a reused-plan call.
   as: 8192,
+  /*
+   * ⚠️⚠️ ADDED AT ITEM 2047, AND ITS ABSENCE MADE A SHIPPED REWRITE DEAD CODE. `KIND_BITS` is typed
+   * `Readonly<Record<string, number>>`, so `KIND_BITS.where` TYPE-CHECKED while being `undefined` at
+   * runtime — and `x | undefined` is `x`, so adding `where` to {@link FILTER_WRAPPER_BITS} changed
+   * the mask by nothing. A `where`-only plan therefore had `kinds === 0`, every kinds-gated pass
+   * returned early, and the new `where(and(…))` unwrap never executed. It compiled, reached the dist,
+   * and the route census read an unchanged 2002 dispatches with no hint why.
+   */
+  where: 16384,
   // Item 1643. `seedSingleHasId` turns `V().hasId(x)` into the seeded source `V(x)`, so a plan with
   // no `hasId` has nothing for it to do — the same gate reasoning as `as` and `hasLabel` above.
   hasId: 16_384,
@@ -656,7 +665,25 @@ export const EDGE_STEP_BITS = KIND_BITS.outE | KIND_BITS.inE | KIND_BITS.bothE;
 
 /** Every bit {@link flattenFilterWrappers} can act on — see the four entries above. */
 export const FILTER_WRAPPER_BITS =
-  KIND_BITS.not | KIND_BITS.filter | KIND_BITS.or | KIND_BITS.and | KIND_BITS.hasLabelAnd;
+  KIND_BITS.not |
+  KIND_BITS.filter |
+  KIND_BITS.or |
+  KIND_BITS.and |
+  KIND_BITS.hasLabelAnd |
+  /*
+   * ⚠️⚠️ `where` ADDED AT ITEM 2047, AND WITHOUT IT THE PASS'S NEW BRANCH WAS DEAD CODE. This mask
+   * is read as `(plan.kinds & FILTER_WRAPPER_BITS) === 0 -> return plan`, over TOP-LEVEL kinds only,
+   * so `where(and(…))` — whose top level is just `V` and `where` — never entered
+   * `flattenFilterWrappers` at all. The unwrap compiled, shipped into the dist, and changed nothing;
+   * the route census read an unchanged 2002 dispatches and gave no hint why.
+   *
+   * ⚠️ IT WIDENS THE GATE: every plan containing a `where` now runs the pass's per-step loop, which
+   * item 1506 built this mask to avoid. The loop is plan-time and its result is cached on
+   * `plan[EFF_PREFIX]`, and `where` plans are precisely the ones this pass now has something to say
+   * about — but the cost is real and is why the controls for item 2047 include `where` shapes the
+   * unwrap CANNOT touch.
+   */
+  KIND_BITS.where;
 
 /**
  * Step kinds for which `checkStep` can raise. A plan containing NONE of them cannot fault in

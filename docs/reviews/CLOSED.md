@@ -100910,7 +100910,7 @@ it. For this family the DISPATCH COUNT is the signal, not the label.
 
 `twoHopDenseShape` is working: SHORTCUT, 0 dispatches, 4.22 ms.
 
-NOT BUILT — the 1.43x fix is nominated, not attempted. The three rungs now have census rows AND screen
+~~NOT BUILT — the 1.43x fix is nominated, not attempted.~~ ✅ **BUILT AT ITEM 2047: 1.40x, and the two spellings now converge within 2%.** The three rungs now have census rows AND screen
 rows, which is the point: whatever their verdicts are, they can no longer decay unobserved.
 
 ⚠️ TWO SELF-INFLICTED FAULTS, BOTH CAUGHT BY `node --check` OR A GUARD:
@@ -100923,3 +100923,75 @@ rows, which is the point: whatever their verdicts are, they can no longer decay 
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped (one attempt lost to an unused import);
 `bun run test -- --skip-nx-cache` 21/21; `node --check` on all three touched probes.
+
+## Item 2047 — ✅ **SHIPPED: `where(and(…))` unwraps to `and(…)` — 2002 dispatches become 2, 23.19 → 16.62 ms (1.40x), and the two spellings now converge within 2%.** ⚠️⚠️ **And the rewrite was DEAD CODE for most of this item while every gate stayed green, because `KIND_BITS.where` type-checked as `undefined`**
+
+Item 2046 found it: `where(and(X, Y))` re-dispatched its sub-plan once per traverser — 2002 `applyStep`
+calls against the direct `and(X, Y)`'s 2 — for an answer-equivalent spelling. This closed it.
+
+**THE REWRITE IS ONE WRAPPER REMOVED, NOT A BODY SPLICED**, and that distinction is why it is sound
+where item 1308's splice must decline. That pass inlines a body's steps into the chain, legal only for
+`PURE_ELEMENT_FILTERS` — `filter(out('T'))` has to decline because splicing `out('T')` would REPLACE
+each vertex with its neighbours. This leaves the inner step exactly where it was: `where(body)` keeps
+the element when `body` yields ≥1 result, and `and`/`or`/`not` each yield the element unchanged or
+nothing, so `where(S)` and `S` keep the same elements in the same order.
+
+| row                                    | before | after (min of 3) |           |
+| -------------------------------------- | ------ | ---------------- | --------- |
+| `where(and(out E, out F))` + count     | 23.19  | **16.62**        | **1.40x** |
+| `and(out E, out F))` + count (control) | 16.24  | 16.36            | 0.99x     |
+| `not(out E)` + count (control)         | 5.32   | 5.17             | 1.03x     |
+| `dense: two hop count` (control)       | 4.22   | 4.18             | 1.01x     |
+
+**The two spellings now converge: 16.62 against 16.36, within 2%** — the equivalent-spelling property
+restored, which is the real deliverable. ⚠️ A single round had `not direct` at 7.24 (1.36x worse) and I
+had PREDICTED a gate-widening cost, so it was alternated rather than accepted: across three rounds it
+reads 5.17 and the 7.24 was an outlier.
+
+### ⚠️⚠️ The failure that cost most of this item: a loosely-typed mask
+
+The unwrap compiled, type-checked, reached the dist **verbatim**, and changed nothing. The route census
+read an unchanged 2002 dispatches with no hint why. The chain:
+
+```text
+    KIND_BITS is Readonly<Record<string, number>>
+      -> KIND_BITS.where TYPE-CHECKS and is `undefined` at runtime
+      -> FILTER_WRAPPER_BITS | undefined  is a NO-OP, so the mask never changed
+      -> a `where`-only plan has kinds === 0
+      -> flattenFilterWrappers' gate returns early (item 1506's optimisation)
+      -> the new branch never executes
+```
+
+🔑 **`where` had no bit in `KIND_BITS` at all** (now 16384). A `Record<string, number>` index silently
+yields `undefined` for a missing key, so the one line that would have caught this — adding the kind to
+the mask — is exactly the line the type system could not check.
+
+**The existing guard could not catch it either**, and that is now fixed: `plan-kind-mask.test.ts`
+asserted `KIND_BITS[kind] > 0` for a HARDCODED list of five kinds, so a sixth resolving to `undefined`
+slipped straight through. It now also asserts the INVERSE — `FILTER_WRAPPER_BITS & ~(every named bit)
+=== 0` — which catches a bit in the mask with no entry, in either direction.
+
+⚠️ AND I MISDIAGNOSED IT TWICE ON THE WAY, both recorded because each looked conclusive:
+
+- **"the dist is stale, nx served a cached build"** — the dist was NEWER than the source and my
+  `grep -c` found 0 occurrences. Both true, both irrelevant: the dist uses DOUBLE quotes, so my
+  single-quoted pattern could not match. `python3 str.count` with the right quoting found it present,
+  verbatim. (`grep` also silently skips the dist for Unicode, which is why the count printed nothing
+  at all for that file — [[grep-silently-skips-unicode]], my own note.)
+- **"item 1308's pass must be dead for fluent-built plans too"** — a real worry, since `kinds` was 0.
+  Refuted in one test: `filter(has(…))` has kinds **256** and `effectivePlan` unwraps it to `V,has`.
+  The builder populates `kinds` correctly; only `where` had no bit.
+
+VERIFICATION. 6 new tests asserting the **PLAN SHAPE**, not the answer — the answer was always right,
+which is the whole reason this was invisible. **5/5 mutants caught**, after one survived: relaxing the
+gate from `=== 1` to `>= 1` drops all but the first step of a multi-step body, and my first multi-step
+test started with `out`, so the kind check declined and the mutant was never exercised. A body that is
+multi-step AND starts with `and` is the only shape that distinguishes them.
+
+⚠️ THE GATE IS NOW WIDER: every plan containing a `where` runs `flattenFilterWrappers`' per-step loop,
+which item 1506's mask exists to avoid. It is plan-time and cached on `plan[EFF_PREFIX]`, and the three
+flat controls above include `where` shapes the unwrap cannot touch — but the cost is real and recorded
+rather than assumed away.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
+gremlin suite 2,602 + 6 new; all seven fuzzers green; 5/5 sweeps clean.

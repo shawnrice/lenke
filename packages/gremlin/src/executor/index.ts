@@ -1052,6 +1052,45 @@ export const flattenFilterWrappers = (plan: Plan): Plan => {
       }
     }
 
+    /*
+     * `where(and(…))` BECOMES `and(…)` — ONE WRAPPER REMOVED, NOT A BODY SPLICED (item 2047).
+     *
+     * 🔑 **WHY THIS IS A DIFFERENT ARGUMENT FROM THE SPLICE ABOVE.** That one inlines a body's steps
+     * into the chain, which is sound only for `PURE_ELEMENT_FILTERS` — `filter(out('T'))` must
+     * decline because splicing `out('T')` would REPLACE each vertex with its neighbours. This removes
+     * a redundant WRAPPER while leaving the inner step exactly where it was: `where(body)` keeps the
+     * element when `body` yields at least one result, and `and`/`or`/`not` each yield the element
+     * unchanged or nothing, so `where(S)` and `S` keep precisely the same elements in the same order.
+     *
+     * ⚠️ `where(out('T'))` MUST NOT BE TOUCHED, which is why the set is three kinds and not "any
+     * filter-ish step": `out` replaces the element, and that spelling is already fused by
+     * `singleHopExistence`.
+     *
+     * ⚠️ STATEFUL STEPS ARE EXCLUDED BY CONSTRUCTION, and `dedupe` is why the gate is a allowlist
+     * rather than "anything that keeps-or-drops". `where(dedupe())` runs `dedupe` in a SUB-PLAN per
+     * traverser, so each traverser sees its own empty dedupe state and NOTHING is filtered; a bare
+     * `dedupe()` dedupes across the stream. The two are not equivalent, and a keeps-or-drops test
+     * would have admitted it.
+     *
+     * ⚠️ ONLY THE SUB-PLAN FORM. `{ kind: 'where'; startKey; pred; bys? }` and
+     * `{ kind: 'where'; pred }` are separate members of the step union, so the label-scoped and
+     * bare-predicate spellings cannot reach this branch at all — the `'plan' in step` test is what
+     * selects the right member.
+     *
+     * WHAT IT IS WORTH: the census read `where(and(out, out))` at **2002 `applyStep` calls** against
+     * the direct `and(out, out)`'s **2** — the sub-plan re-dispatched once per traverser — and 23.19
+     * against 16.24 ms at 100,000 vertices (item 2046). Both spellings answer 300.
+     */
+    if (step.kind === 'where' && 'plan' in step && step.plan.steps.length === 1) {
+      const [only] = step.plan.steps;
+
+      if (only.kind === 'and' || only.kind === 'or' || only.kind === 'not') {
+        steps.push(only);
+        changed = true;
+        continue;
+      }
+    }
+
     // `or(has(k,a), has(k,b))` is not a chain — it is a MEMBERSHIP (item 1312). Handled here
     // rather than in its own pass so that an `or` nested inside an `and` is folded too: the `and`
     // arm below splices its branches through `pushSplit`, and a folded membership is a plain `has`
