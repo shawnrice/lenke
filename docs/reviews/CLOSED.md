@@ -100044,3 +100044,69 @@ modes.
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; tree
 verified pristine (`grep -c 'a.properties?.k'` = 0) and rebuilt. Probe-only change.
+
+## Item 2033 — ✅ **COUNTED, not guessed: the realistic hop count runs 240,000,000 label tests to return 621 rows — and ZERO in the vacuous mode.** 🔑 ≤13.0 ns a test against item 1599's 5.5 ns at a different site, but the real finding is structural: `tallyHopCount` is EDGE-driven for a start predicate that selects **1%** of vertices
+
+Item 2032's cliff map left `hopfilter`
+(`MATCH (a:P)-[:E]->(b:P) WHERE a.k = 5 RETURN count(*)`) as the one LIVE target: 466.8 ms vacuous
+against 3485.0 under `MIXED=1`. Profiling the **reachable** arm put label work at **58.7%**:
+
+```text
+    evalLabelExpr   2203.2 ms   46.2%
+    tallyHopCount    575.0      12.1%
+    get labels       440.0       9.2%
+    matchesLabel     155.0       3.3%
+```
+
+⚠️ **46.2% IS ITEM 1599's NUMBER TO ONE DECIMAL** (it profiled `evalLabelExpr` at 46.1% on a seeded
+count), and that item REFUTED both cures: a per-query closure measured FLAT (V8 already inlined it)
+and bucket identity (`verticesByLabel.get(name).has(v)`) measured SLOWER, 3.95 ns against 3.25. So the
+frame was not taken at face value.
+
+🔑 **A COUNTER, BECAUSE ARITHMETIC ON A SHARE IS THE MISTAKE ITEM 1599's OWN HEADING CORRECTS** ("the
+dismissal was arithmetic on a share, not a measurement"). One instrumented build, both modes:
+
+|                       | ms     | label tests     |
+| --------------------- | ------ | --------------- |
+| `MIXED=0` (vacuous)   | 453.5  | **0**           |
+| `MIXED=1` (realistic) | 3570.3 | **240,000,000** |
+
+**240M = 2 per edge × 60,000 edges × 2000 reps**, exactly. Zero in the vacuous mode is item 1609's
+`effectiveLabel` hoist working. The delta is 3116.8 ms over 240M tests = **≤13.0 ns each** — an UPPER
+bound, since some of the delta is other work — against the ~5.5 ns item 1599 measured at the
+seeded-count site. Whether this site is genuinely 2.4x dearer per test is unresolved and NOT claimed
+here.
+
+### The structural finding, which is larger than the test
+
+**240,000,000 label tests to return 621 rows.** `tallyHopCount` iterates EDGES and tests
+`matchesLabel(near, pa)` and `matchesLabel(far, pb)` per edge — O(|E|) — while the start predicate
+`a.k = 5` selects **207 of 20,001 vertices, about 1%**. A start-driven walk would scan 20,001 vertices
+and visit **621** edges, ~100x fewer than 60,000, with no index needed (`k` is unindexed in this
+fixture).
+
+⚠️ **AND BOTH MODES WALK EVERY EDGE** — the vacuous arm's 453.5 ms is the same O(|E|) walk with the
+tests elided, which is why the two differ by almost exactly the tests' cost. So the edge-driven choice
+is not a `MIXED` artifact: it is this shape's route in both modes, and it is the thing to question
+rather than the 13 ns.
+
+[[label-vacuity-gates-fast-paths]]'s route map gates on LABEL COVERAGE
+(`EDGE_DRIVEN_MIN_COVERAGE = 0.4`), and coverage here is 20000/20001 ≈ **0.99995** — so the gate is
+answering the question it was built for, correctly. The unweighed term is **predicate selectivity**:
+a 1%-selective start filter makes the start-driven arm ~100x cheaper in edges touched, and nothing in
+the gate looks at it. That is the next target, and it is NOT item 1974's withdrawal (an indexed keyed
+read, where a label-blind index leaves no second arm to route to).
+
+⚠️ TWO INSTRUMENT FAULTS, BOTH CAUGHT BY GUARDS RATHER THAN BY ME:
+
+- **`grep -cF` counts LINES containing the pattern, not occurrences.** The counter is one line with
+  two mentions, so a `== 2` guard failed it as "COUNTER NOT SET". My own item 2015 note records this
+  exact trap; the guard is what applied it.
+- **An absent global and ZERO calls are indistinguishable**, and my first wording asserted the wrong
+  one ("UNINSTRUMENTED BUILD") for a build that was provably instrumented — the same build reported
+  240M in the other mode. Zero is the interesting answer, so the note now states what is known and
+  says to cross-check another mode on the SAME build.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped — ⚠️ it took TWO passes, the known
+`fmt`/`fmt:check` non-idempotency on md lists, not a real failure. Engine source verified clean
+(`grep -c __LBL` = 0) and rebuilt. Probe-only change.

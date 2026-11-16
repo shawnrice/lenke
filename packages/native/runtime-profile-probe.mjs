@@ -580,6 +580,32 @@ if (want !== undefined) {
 }
 
 /*
+ * ⚠️ `LBL_REPORT=1` prints a counter an INSTRUMENTED build sets (item 2033's
+ * `labeltest-count-2033.sh`). On a normal build the global is absent and this prints nothing, so the
+ * line is inert — it exists so the count and the timing come from ONE run rather than two.
+ */
+if (process.env.LBL_REPORT === '1') {
+  const tests = globalThis.__LBL;
+
+  /*
+   * ⚠️ AN ABSENT GLOBAL AND ZERO CALLS ARE INDISTINGUISHABLE HERE, and my first wording ("UNINSTRUMENTED
+   * BUILD") asserted the wrong one: item 2033's `MIXED=0` run printed it from a build that was
+   * provably instrumented, because the SAME build reported 240,000,000 under `MIXED=1`. Zero calls is
+   * the interesting answer (item 1609's hoist eliding the test on a vacuous label), so the note now
+   * says what is actually known instead of guessing which cause it was.
+   */
+  console.log(
+    JSON.stringify({
+      labelTests: tests ?? 0,
+      note:
+        tests === undefined
+          ? 'ZERO calls, or an uninstrumented build — indistinguishable; cross-check another mode on the SAME build'
+          : 'instrumented',
+    }),
+  );
+}
+
+/*
  * ⚠️⚠️ THE CLOSED-FRAMES REMINDER IS PRINTED, NOT JUST FILED (item 1985).
  *
  * `PROBES.md` opens with a table of frames that are closed targets, and its own sentence is "read
