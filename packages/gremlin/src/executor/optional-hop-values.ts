@@ -89,7 +89,8 @@ export const optionalHopValues = (plan: Plan, graph: Graph): HopValues | undefin
   }
 
   return {
-    rest: steps.slice(proj === undefined ? 2 : 3),
+    // `consumed` rather than `proj === undefined`: an unconsumed terminal must stay in `rest`.
+    rest: steps.slice(picked.consumed ? 3 : 2),
     values:
       chain === undefined
         ? oneHopValues(graph, { hop: hop as Hop, ...picked })
@@ -466,7 +467,15 @@ const descend = function* (
 };
 
 type Element = { readonly id: string; readonly properties: Record<string, unknown> };
-type Picked = { pick: (e: Element) => unknown; drops: boolean };
+type Picked = {
+  pick: (e: Element) => unknown;
+  drops: boolean;
+  /**
+   * Did the projection step get CONSUMED? `false` leaves it in `rest` to run over this walk's output
+   * — which is what lets a terminal this walk cannot project still ride the walk (item 2027).
+   */
+  consumed: boolean;
+};
 
 /**
  * What the plan asks for about each emitted element. `undefined` declines the plan.
@@ -478,14 +487,41 @@ type Picked = { pick: (e: Element) => unknown; drops: boolean };
  */
 const pickFor = (proj: Step | undefined, valueKey: string | undefined): Picked | undefined => {
   if (valueKey !== undefined) {
-    return { pick: (e) => e.properties[valueKey], drops: true };
+    return { pick: (e) => e.properties[valueKey], drops: true, consumed: true };
   }
 
   if (proj === undefined) {
-    return { pick: (e) => e, drops: false };
+    return { pick: (e) => e, drops: false, consumed: false };
   }
 
-  return proj.kind === 'id' ? { pick: (e) => e.id, drops: false } : undefined;
+  if (proj.kind === 'id') {
+    return { pick: (e) => e.id, drops: false, consumed: true };
+  }
+
+  /*
+   * 🔑 **A TERMINAL THIS WALK DOES NOT PROJECT STILL GETS THE WALK (item 2027).** `count()` used to
+   * decline the ENTIRE plan here, so `V().optional(out(E)).count()` ran the generic traverser
+   * pipeline — two `applyStep` calls — while its `values(n)` sibling, which does strictly MORE work
+   * (80,000 rows against one number), was fused. The route census read `opt: optional count` generic
+   * with all four of its siblings fused.
+   *
+   * ```text
+   *     V().optional(out(E)).count()     7.20 ms   ⬅ one number
+   *     V().optional(out(E)).values(n)   1.23      80,000 rows, fused
+   *     V().out(E).count()               0.00      O(1) from bucket sizes, countShortcut
+   * ```
+   *
+   * ⚠️ IT IS NOT CONSUMED, deliberately — the identical decision item 1956 made for the EDGE-FILTER
+   * rung, in the same words: this walk has nothing to contribute to a count beyond yielding the
+   * elements, so `count` stays in `rest` and runs over this stream instead of over the generic
+   * chain. Admitting the plan is the whole change. Since item 2020 that residual is counted on the
+   * walk's `drain`, so it gets the eager fill too.
+   *
+   * ⚠️ AND THE OPTIONAL FORM CANNOT BE O(1) like the plain hop's: `countShortcut` sums bucket sizes,
+   * but an unmatched vertex contributes ITSELF to an `optional`, so the count depends on which
+   * vertices have no edge. One walk is the floor here, not a sum.
+   */
+  return proj.kind === 'count' ? { pick: (e) => e, drops: false, consumed: false } : undefined;
 };
 
 type WalkSpec = {

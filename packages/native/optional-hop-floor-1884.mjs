@@ -21,7 +21,17 @@
  *       SHAPE=$s bun optional-hop-floor-1884.mjs; done
  */
 import { Graph } from '@lenke/core';
-import { V, groupCount, id, optional, out, toArray, traversal, values } from '@lenke/gremlin';
+import {
+  V,
+  count,
+  groupCount,
+  id,
+  optional,
+  out,
+  toArray,
+  traversal,
+  values,
+} from '@lenke/gremlin';
 
 const N = Number(process.env.N ?? 20_000);
 const FANOUT = Number(process.env.FANOUT ?? 5);
@@ -84,6 +94,16 @@ const SHAPES = {
   // The CHAIN arm (item 1887), beside the two-hop walk that bounds it.
   opt2: () => traversal(V(), optional(traversal(out('E'), out('E'))), values('n')),
   hop2: () => traversal(V(), out('E'), out('E'), values('n')),
+  /*
+   * ⚠️ ITEM 2027's ARMS. The route census shows `opt: optional count` GENERIC while all four of its
+   * siblings (`optional values`, `optional id`, `optional bare`, `optional two hops`) are fused —
+   * both steps run generically, so `optionalHopValues` declines the whole plan. `pickFor` returns
+   * `undefined` for a `count` projection, which is exactly the gap item 1956 closed in the
+   * EDGE-FILTER rung ("a terminal this walk does not project still gets the walk") and this rung
+   * never learned. `optcount_hop` is the control: the same count on a plain hop, already fused.
+   */
+  optcount: () => traversal(V(), optional(traversal(out('E'))), count()),
+  optcount_hop: () => traversal(V(), out('E'), count()),
   // Item 1892: the grouped count over a hop, which had its OWN copy of the rung chain.
   group: () => traversal(V(), out('E'), groupCount().by('n')),
   group2: () => traversal(V(), out('E'), out('E'), groupCount().by('n')),

@@ -99657,3 +99657,76 @@ through to the pipeline with the same answer. The step KINDS are pinned.
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
 `bun run fuzz` all seven green; 18 tests in the rung's file (13 from item 2025 plus 5 here);
 **7/7 mutants caught across two filters.**
+
+## Item 2027 — ✅ **`V().optional(<hop>).count()` rides the walk: 38.04 → 2.90 ms (13.1x) on the screen, 7.20 → 0.48 isolated (15.0x), controls flat.** 🔑 Found by the ROUTE CENSUS, not by timing — it was the only generic shape among five siblings. The edge-filter rung learned this at item 1956 and the optional rung never did
+
+The route census (`gremlin-route-screen.mjs`) over the whole Gremlin surface, read for DISAGREEMENTS
+rather than for generic routes — most steps have no shortcut and never will:
+
+```text
+    opt: optional values=fused, optional id=fused, optional bare=fused,
+         optional count=GENERIC, optional two hops=fused
+```
+
+One generic shape among five siblings, and both its steps running generically (`[count optional]`),
+which means the rung declined the **whole plan**. The cause is three lines away: `pickFor` returns
+`undefined` for a `count` projection, so the gate refuses. **The edge-filter rung closed exactly this
+gap at item 1956** — "a terminal this walk does not project still gets the walk" — and this rung
+never learned it.
+
+```text
+    V().optional(out(E)).count()     7.20 ms   ⬅ ONE number
+    V().optional(out(E)).values(n)   1.23      80,000 rows, fused
+    V().out(E).count()               0.00      O(1) from bucket sizes (countShortcut)
+```
+
+So counting cost **5.9x** the sibling that emits 80,000 values — the same wrong-way-round signature
+item 2020 found for the edge-filter family. One line admits it, as an UNCONSUMED terminal, so the
+count stays in `rest` and runs over the walk's stream; since item 2020 that residual is counted on the
+`drain`, so it gets the eager fill too.
+
+| shape                                                         | PRE           | POST          | ratio     |
+| ------------------------------------------------------------- | ------------- | ------------- | --------- |
+| `optional: hop count`                                         | 38.04 / 38.20 | 2.90 / 3.06   | **13.1x** |
+| `optional: hop` (the sibling this rung already served)        | 47.86 / 47.75 | 46.59 / 47.00 | flat      |
+| `hop1: count` (`countShortcut`, O(1) — unreachable from here) | 0.00          | 0.01          | flat      |
+| `hop1: values`, `hop2: values`                                |               |               | flat      |
+
+Counting is now cheaper than projecting (0.48 against 1.24 isolated), which is the ordering it should
+always have had. ⚠️ AND IT CANNOT BE O(1) LIKE THE PLAIN HOP'S: `countShortcut` sums bucket sizes, but
+an unmatched vertex contributes ITSELF to an `optional`, so the count depends on which vertices have
+no edge. One walk is the floor here, not a sum.
+
+🔑 **WHY THE GATE NEED NOT CHECK `count`'s SCOPE, WHERE ITEM 2020's FUSED COUNT MUST.** An UNCONSUMED
+terminal is still executed by its own step, so `Scope.local` is honoured by `countStep` itself —
+verified against the seeded (pipeline) route, which this rung refuses: both answer `[1, 1, 1, 1]`.
+Item 2020 REPLACES the count with a drain, so there the scope has to be refused at the gate. Two
+superficially identical gates, two different obligations, and the difference is whether the step
+still runs.
+
+⚠️ THREE MUTANTS SURVIVE, each unobservable by construction rather than untested:
+
+- **`count-drops`** — `drops` skips a pick returning `undefined`, and this pick is `(e) => e`, an
+  element, never `undefined`.
+- **`count-picks-id`** — a COUNT observes only HOW MANY values are emitted, never which. `(e) => e`
+  is kept because it is the element a future residual would need: correct by intent, not by test.
+- **`bare-marked-consumed`** — the bare arm is reached only when `proj` is `undefined`, i.e. a
+  two-step plan, where `slice(2)` and `slice(3)` are both `[]`.
+
+⚠️ **AND THE WORKLOAD SCREEN HAD NO ROW FOR THE SHAPE — ADDED BEFORE MEASURING THIS TIME.** Item 2026
+learned this the hard way (its A/B read flat everywhere because the combination it fused had no row);
+`optional: hop count` was added in the same commit as the change, which is how the 13.1x above is
+measurable at all. **A rung that gains a shape should gain the screen row in the same commit.**
+
+⚠️⚠️ **AND A `//` MARKER IN AN A/B ARM SWALLOWED THE LINE IT MARKED.** The replaced line is a
+SINGLE-LINE ternary, so `return false ? // AB-ARM-DEAD-2027` ate its own branches: the build failed
+and the round printed **nothing**. Two of four rounds came back silently empty, which reads as a
+missing row rather than a broken arm. A marker that must sit mid-line has to be `/* … */`. (The
+grep-based arm assertion did not catch it because the arm WAS set — it was the build that failed,
+and `>/dev/null 2>&1` hid the error.)
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
+gremlin suite 2,557 + 5 new (28 in the rung's file); `bun run fuzz` all seven green;
+`optional-oracle-1884.mjs` **75 pairs, both routes, ORDERED — every pair identical**, with the rung
+claiming 63 in POST against 0 in PRE (asserted); **7/10 mutants caught across two filters**, the three
+survivors documented above.

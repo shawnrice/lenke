@@ -175,6 +175,13 @@ const SHAPES = {
   'order: values order limit': () => traversal(V(), values('n'), order(), limit(10)),
   'optional: hop': () => traversal(V(), optional(out('E')), values('n')),
   /*
+   * ⚠️ ADDED AT ITEM 2027, BEFORE MEASURING RATHER THAN AFTER — item 2026's lesson. That item fused a
+   * shape the screen had no row for, so its own four-round A/B read flat everywhere and the win was
+   * only visible in a dedicated probe. A rung that gains a shape should gain the row in the same
+   * commit, or the screen cannot regression-test it.
+   */
+  'optional: hop count': () => traversal(V(), optional(out('E')), count()),
+  /*
    * ⚠️⚠️ THE RECONVERGING-BRANCH FAMILY (item 1994), which this screen has never carried — and the
    * reason it is added as a FAMILY rather than one row is item 1898's: it added nine families and
    * **all five of the biggest shapes on the surface turned out to be among them**. A step kind the

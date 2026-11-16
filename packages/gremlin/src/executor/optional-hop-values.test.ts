@@ -1,8 +1,22 @@
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, test } from 'bun:test';
 
 import { Graph } from '@lenke/core';
 
-import { V, both, id, in_, optional, out, run, toArray, traversal, values } from '../index.js';
+import {
+  V,
+  Scope,
+  both,
+  count,
+  fold,
+  id,
+  in_,
+  optional,
+  out,
+  run,
+  toArray,
+  traversal,
+  values,
+} from '../index.js';
 import { optionalHopValues } from './optional-hop-values.js';
 
 /**
@@ -480,5 +494,112 @@ describe('optionalHopValues — the route', () => {
     ]) {
       expect(optionalHopValues(t, g)).toBeUndefined();
     }
+  });
+});
+
+describe('a residual count() rides the walk (item 2027)', () => {
+  /*
+   * ⚠️⚠️ **`count()` USED TO DECLINE THE ENTIRE PLAN**, so `V().optional(out(E)).count()` ran the
+   * generic traverser pipeline — the route census read `opt: optional count` generic with all four of
+   * its siblings fused — while its `values(n)` sibling, which does strictly MORE work (80,000 rows
+   * against one number), was fused:
+   *
+   *     V().optional(out(E)).count()     7.20 ms  ->  0.48   15.0x
+   *     V().optional(out(E)).values(n)   1.23         1.24   flat (control)
+   *
+   * The same decision item 1956 made for the EDGE-FILTER rung: the terminal is NOT consumed, so it
+   * stays in `rest` and runs over this walk's stream instead of over the generic chain.
+   *
+   * 🔑 **AND THAT IS WHY THE GATE NEED NOT CHECK `count`'s SCOPE, where item 2020's fused count
+   * MUST.** An UNCONSUMED terminal is still executed by its own step, so `Scope.local` is honoured
+   * by `countStep` itself; item 2020 REPLACES the count with a drain, so there the scope has to be
+   * refused at the gate. Both scope cases are asserted below, against the seeded (pipeline) route.
+   */
+  const build = (): Graph => {
+    const g = new Graph();
+
+    for (const id of ['a', 'b', 'c']) {
+      g.addVertex({ id, labels: ['P'], properties: {} });
+    }
+
+    g.addEdge({
+      id: 'e1',
+      from: g.getVertexById('a')!,
+      to: g.getVertexById('b')!,
+      labels: ['E'],
+      properties: {},
+    });
+    g.addEdge({
+      id: 'e2',
+      from: g.getVertexById('a')!,
+      to: g.getVertexById('c')!,
+      labels: ['E'],
+      properties: {},
+    });
+
+    return g;
+  };
+
+  test('THE ROUTE: the rung CLAIMS the count shape, and reports it as a residual', () => {
+    /*
+     * ⚠️⚠️ **ANSWER-EQUIVALENT, SO NOTHING ELSE HERE CAN SEE THE RUNG DECLINING.** The mutation round
+     * proved it: making `count` decline again survived this file AND the whole @lenke/gremlin suite,
+     * because the pipeline returns the same number. [[perf-gate-needs-its-own-test]].
+     *
+     * ⚠️ AND THE RESIDUAL'S CONTENT IS ASSERTED, NOT ITS PRESENCE — item 2021's lesson: a wrong
+     * `rest` still returns a non-`undefined` object, then declines downstream and falls through to
+     * the pipeline with the same answer.
+     */
+    const claimed = optionalHopValues(
+      traversal(V(), optional(traversal(out('E'))), count()),
+      build(),
+    );
+
+    expect(claimed?.rest.map((st) => st.kind)).toEqual(['count']);
+
+    // The `values` sibling CONSUMES its projection, so its residual is empty — the other side of
+    // the same `consumed` flag.
+    const consumed = optionalHopValues(
+      traversal(V(), optional(traversal(out('E'))), values('n')),
+      build(),
+    );
+
+    expect(consumed?.rest).toEqual([]);
+  });
+
+  test('the GLOBAL count counts far ends PLUS each unmatched vertex itself', () => {
+    // `a` has two out-edges -> b, c. `b` and `c` have none -> each yields ITSELF. 2 + 1 + 1 = 4.
+    expect(toArray(traversal(V(), optional(traversal(out('E'))), count()), build())).toEqual([4]);
+  });
+
+  test('a vertex with NO edge contributes exactly one — the optional’s whole point', () => {
+    const g = new Graph();
+
+    g.addVertex({ id: 'lonely', labels: ['P'], properties: {} });
+
+    expect(toArray(traversal(V(), optional(traversal(out('E'))), count()), g)).toEqual([1]);
+  });
+
+  test('`count(Scope.local)` matches the SEEDED pipeline, which this rung declines', () => {
+    /*
+     * ⚠️ THE ORACLE IS `V('a','b','c')` — naming every vertex is the same question, and the rung
+     * refuses a narrowed source, so the twin runs the pipeline. Local counts each traverser's own
+     * value: every value here is a vertex, so each is 1.
+     */
+    const g = build();
+    const fast = toArray(traversal(V(), optional(traversal(out('E'))), count(Scope.local)), g);
+    const general = toArray(
+      traversal(V('a', 'b', 'c'), optional(traversal(out('E'))), count(Scope.local)),
+      g,
+    );
+
+    expect(fast).toEqual([1, 1, 1, 1]);
+    expect(fast).toEqual(general);
+  });
+
+  test('`fold()` then a local count still sees one list of four', () => {
+    expect(
+      toArray(traversal(V(), optional(traversal(out('E'))), fold(), count(Scope.local)), build()),
+    ).toEqual([4]);
   });
 });
