@@ -100238,3 +100238,72 @@ answer, not an engine change.
   habit.
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `node --check` on the probe. No engine change.
+
+## Item 2036 — ✅ **THE GREMLIN SIDE HAS A LABEL CLIFF TOO, and no Gremlin fixture in this repo had ever been label-mixed: `V().hasLabel(T).values(k)` costs 2.05x at 50k and 1.61x at 200k from ONE isolated off-label vertex, controls 1.06x / 0.98x.** 🔑 Found by a ROUTE CENSUS — exactly 1 of 98 rows changes route — and item 1870's refusal does NOT cover the lever it nominates
+
+Six GQL items had just ended in refutations traceable to one vacuity-gated family, so this asked the
+same question on the other engine. Gremlin has **16** vacuity/coverage gate sites in source and **no
+probe had ever run a mixed-label fixture** — the same blindness that hid the GQL cliff until item 2032.
+Its mechanism also differs and is more cliff-prone: `dropVacuousLabels` **removes** a vacuous
+`hasLabel` STEP from the plan, so one off-label vertex makes the step survive.
+
+🔑 **THE ROUTE CENSUS IS WHAT FOUND IT**, not a timing. `gremlin-route-screen.mjs` gained `MIXED=1`
+(one ISOLATED off-label vertex — no edges, so no answer changes) and exactly ONE of 98 rows moved:
+
+```text
+    scan: hasLabel values     SHORTCUT  ->  generic
+```
+
+97 rows route-identical, so the cliff is NARROW — but `V().hasLabel(X)` is among the most common
+shapes in the language. Priced, with controls that carry no label step and so cannot be reached:
+
+| shape                          | vacuous      | mixed        |                                  |
+| ------------------------------ | ------------ | ------------ | -------------------------------- |
+| `hasLabel values`, N=50k       | 17.7         | 36.3         | **2.05x**                        |
+| `hasLabel values`, N=200k      | 111.7        | 179.7        | **1.61x**                        |
+| `hasLabel count`               | 0.1          | 0.1          | flat — `countShortcut` serves it |
+| `values` (control), 50k / 200k | 16.3 / 102.5 | 17.3 / 100.2 | 1.06x / **0.98x**                |
+
+⚠️ SWEPT, AND THE FIRST SWEEP WAS NOT TRUSTWORTHY: at `OPS=5` the CONTROL moved 1.23x (200k) and
+0.81x (500k), so those readings say nothing. The ratio shrinks with N because the scan's own cost
+dilutes the per-element step.
+
+⚠️⚠️ **AND THE 200k ROW IS THE ONE TO QUOTE, NOT THE LARGER 50k ONE.** Across four runs of the 50k
+config the cliff read **2.03x / 2.05x / 2.25x** — stable — but its CONTROL ranged **0.82x to 1.06x**,
+i.e. ±20% on a row the change cannot reach. The 200k run at `OPS=20 REPS=9` put the control at
+**0.98x** and the cliff at **1.61x**. So the honest figure is **1.61x on the instrument whose control
+is tight**, and the cliff is real either way: it sits far outside the control's band in every run
+(2.03x against at most 1.06x). Quoting 2.05x off an instrument with a ±20% control would be picking
+the friendliest number.
+
+### ⚠️⚠️ WHY ITEM 1870's REFUSAL DOES NOT CLOSE THIS, read before proposing the obvious fix
+
+The obvious cure — teach `nodeValuesShortcut` to admit a leading `hasLabel` — **was shipped at item
+1482 (2.39x) and deliberately REFUSED at item 1870**, whose table is unambiguous: the rung is a FULL
+SCAN whatever the label matches, while the pipeline's `seedFromIndex` scales with the label's size, so
+the rung loses 1.93x / 3.35x / 7.98x / 46x / 678x as coverage narrows and only TIES at 1-in-1.
+`node-values-label-refusal.test.ts` pins that route. **Re-adding it would re-introduce a 678x
+regression.**
+
+🔑 **BUT ITEM 1870's AXIS IS NOT THIS ONE.** It compared _scan-and-test_ against _seed-and-pipeline_ —
+both **with** the label step present. This measurement compares _no label step at all_ (the fused
+`values` walk, after `dropVacuousLabels` removes it) against _the step surviving_ (the pipeline). So
+the 1.61-2.05x is the cost of **the step existing**, which 1870 never measured.
+
+**The unexplored lever, stated precisely:** when the plan is `V() + hasLabel(L) + values(k)` and
+`seedFromIndex` can seed from the label index, fuse the VALUES projection onto that **seeded**
+iteration rather than running the generic pipeline over it. That keeps the pipeline's sub-linear
+candidate set — so none of 1870's 678x applies — and adds the fused walk's projection.
+
+⚠️ AND IT ADDS NO NEW READER OF `verticesByLabel`, which is the open owner decision
+([[label-index-vs-setter]]) a scan-and-test rung would have to raise: `seedFromIndex` already reads
+that index on this exact path. Item 1870's own note says as much — "Refusing simply lets
+`seedFromIndex`, which already reads it, do the work."
+
+NOT BUILT THIS ITEM — measured and nominated, deliberately, because item 1870's recorded lesson is
+that _"an A/B's verdict decays when the arm it beat gets faster, and nothing here was watching."_
+Getting the framing on the record before writing code is the cheap half.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `node --check` on both probes. No engine
+change. ⚠️ `node --check` earned itself immediately: the census fixture is a TEMPLATE LITERAL, and a
+backticked identifier in a comment inside it terminates the template.

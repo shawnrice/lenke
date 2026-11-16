@@ -227,6 +227,17 @@ const markerInDist = () =>
   readFileSync(`${ROOT}/packages/gremlin/dist/esm/index.mjs`, 'utf8').includes(MARKER);
 
 const measure = (src) => {
+  /*
+   * ⚠️⚠️ **MIXED=1 APPENDS ONE ISOLATED OFF-LABEL VERTEX** (item 2036). Gremlin's
+   * `dropVacuousLabels` REMOVES a vacuous `hasLabel` step from the plan, so one vertex lacking the
+   * label makes the step SURVIVE — and a rung whose gate expects an exact step shape may then
+   * decline. That would be a ROUTE cliff, which only a census can see. NO Gremlin fixture in this
+   * repo has ever been label-mixed; on the GQL side the same blindness hid 7.47x (item 2032).
+   *
+   * ⚠️ THE PROSE LIVES OUT HERE, NOT IN THE GENERATED SOURCE: the fixture is a template literal, so
+   * a backticked identifier inside it terminates the template. `node --check` caught that.
+   */
+  const MIXED = process.env.MIXED === '1';
   const code = `
 import { Graph } from '@lenke/core';
 ${IMPORTS}
@@ -235,6 +246,7 @@ const g = new Graph();
 for (let i = 0; i < N; i += 1) {
   g.addVertex({ id: 'v' + i, labels: ['T'], properties: { k: i % 7, s: 's' + (i % 7) } });
 }
+${MIXED ? "g.addVertex({ id: 'vOFF', labels: ['Q'], properties: { k: -1, s: 'off' } });" : ''}
 for (let i = 0; i < N; i += 1) {
   g.addEdge({ id: 'e' + i, from: g.getVertexById('v' + i), to: g.getVertexById('v' + ((i * 7 + 3) % N)), labels: ['E'], properties: { w: [1, 2, 3, 4, 5, 7, 9][i % 7] } });
 }
