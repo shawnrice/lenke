@@ -101214,3 +101214,71 @@ generator in a probe nobody re-derives.
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `node --check` on the new probe. New probe
 only; no engine change.
+
+## Item 2052 — ✅ **THE GQL PROFILE PROBE COULD NOT RUN AT ANY SIZE BUT 20,000: eleven of its 51 shapes carried row counts FITTED to that fixture.** Now functions of `NODES`, 51/51 at both 20k and 200k — and the 200k re-ranking moves the CALL shapes from 2nd/3rd to 7th/8th
+
+Item 2051 showed a single-size ranking misleads: the undirected-chain gap read **3.74x at 20k and
+1.85x at 200k**, and item 2050's whole nomination rested on the smaller figure. So this re-ranked the
+surface at 200k — and found the probe could not get there.
+
+**Eleven of 51 shapes threw**, each by exactly the factor the fixture grew:
+
+```text
+    wideproj       returned 20620 rows,   expected 2070
+    distincthi     returned 200000 rows,  expected 20000
+    unioned        returned 4124 rows,    expected 414
+    hop3rowsboth   returned 1600000 rows, expected 160000
+```
+
+The guards were right and the table could not describe the fixture — **the same failure item 2030 fixed
+for FANOUT, now for NODES.** A probe that cannot change size cannot answer the question a sweep exists
+for.
+
+🔑 **EACH FORMULA IS DERIVED FROM THE QUERY AND CHECKED AGAINST TWO POINTS** — the constant it replaces
+at 20,000 AND the count observed at 200,000 — so a fitted-but-wrong formula cannot pass:
+
+| shape                                                  | formula                             | 20k       | 200k        |
+| ------------------------------------------------------ | ----------------------------------- | --------- | ----------- |
+| `wideproj`, `wide2`, `narrow1`, `defwide`, `defnarrow` | `kLt(n, 10)`                        | 2070 ✓    | 20620 ✓     |
+| `unioned`, `unioneddistinct`                           | `kEq(n, 5) + kEq(n, 6)`             | 414 ✓     | 4124 ✓      |
+| `excepted`                                             | `kLt(n, 10) - kEq(n, 6)`            | 1863 ✓    | —           |
+| `hop3rowsboth`                                         | `n * 8` (both-degree 2, three hops) | 160,000 ✓ | 1,600,000 ✓ |
+| `distincthi`                                           | `n`                                 | 20,000 ✓  | 200,000 ✓   |
+| `hop2rowswhere`                                        | `kEq(n, 5)`                         | 207 ✓     | —           |
+
+**51/51 shapes now run at both sizes, zero errors.**
+
+### The re-ranking, and what it changes
+
+```text
+    rank    at 20,000                  at 200,000
+      1     hop3rowsboth  123.27       hop3rowsboth  1450.12
+      2     callscoped      6.50       hop3rows       137.06
+      3     callinline      5.84       hop2rows       114.28
+      4     hop3rows        3.58       hop3distinct   114.26
+      5     hop3distinct    2.78       hop2rowswhere  109.02
+      6     hop2rows        2.63       hop2distinct   106.40
+      7     hop2rowswhere   2.52       callscoped      95.70
+      8     varlenplus      2.12       callinline      65.90
+```
+
+**The CALL shapes fall from 2nd/3rd to 7th/8th**, and the multi-hop family rises past them — so a
+nomination made from the 20k ranking would have gone after `CALL` when the hop chains dominate at
+scale. The hop family adds ~35-40 ms per extra hop at 200k (hoprows 39.4 → hop2rows 114.3 → hop3rows
+137.1), which is the expected shape.
+
+⚠️ **`hop3rowsboth` IS STILL #1 BY ABSOLUTE COST at 200k — 10.6x the next — AND IT WAS STILL RIGHT TO
+DECLINE IT** (item 2051): it produces 8x the rows of its directed twin, so its per-ROW cost is 1.39-1.41x
+there, not the 2.84x the 20k fixture suggested. **Absolute rank and per-row cost disagree, and the
+per-row figure is the one that decides a build.** Keeping both in view is the point of the table.
+
+⚠️ AND NO NEW NOMINATION SURVIVED INSPECTION. `hop2rowswhere` at 109.02 ms looked promising — it returns
+~2,062 rows where `hop2rows` returns 200,000 for 114.28 — i.e. the `WHERE c.k = 5` saves almost
+nothing. But `c` is the FAR end of the chain, so the predicate cannot be pushed down without an index
+on `k` (there is none here): every `c` must be reached to be tested, and the filter can only save row
+materialization. The 5 ms it does save is exactly that. **Correct, not a gap** — and its own comment
+already records it as "THREE segments returning rows, which no rung answers" (item 1622).
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; 51/51 shapes run at 20k and at 200k. The sweep
+ran under `systemd-run --user --scope -p MemoryMax=16G -p MemorySwapMax=0` per CLAUDE.md, since it is a
+probe over generated input at scale. Probe-only change.

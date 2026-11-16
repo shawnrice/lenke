@@ -479,6 +479,28 @@ const expectJoin = (nodes, fanout, stride) => {
   return rows;
 };
 
+/*
+ * ⚠️⚠️ **ROW EXPECTATIONS AS FUNCTIONS OF `NODES`, BECAUSE ELEVEN OF THE 51 SHAPES COULD NOT RUN AT ANY
+ * OTHER SIZE** (item 2052). They carried constants fitted to `NODES=20000` — `wideproj: 2070`,
+ * `unioned: 414`, `hop3rowsboth: 160_000` — so a sweep at 200,000 threw on each one
+ * ("returned 20620 rows, expected 2070"). The guard was right and the table could not describe the
+ * fixture, exactly as item 2030 found for FANOUT.
+ *
+ * 🔑 **THAT MATTERS BECAUSE ITEM 2051 SHOWED A SINGLE-SIZE RANKING IS MISLEADING**: the undirected-chain
+ * gap read 3.74x at 20k and 1.85x at 200k, and the whole 51-shape ranking reorders between the two.
+ * A probe that cannot change size cannot answer the question the sweep exists for.
+ *
+ * ⚠️ EACH FORMULA IS DERIVED FROM THE QUERY AND CHECKED AGAINST **TWO** POINTS — the constant it
+ * replaces at 20,000 AND the count actually observed at 200,000 — so a fitted-but-wrong formula
+ * cannot pass. `k` is `i % 97`, `n` is `i`, and every vertex has one out-edge.
+ */
+
+/** Vertices with `k < m`: whole 97-blocks contribute `m` each, then the partial block. */
+const kLt = (n, m) => Math.floor(n / 97) * m + Math.min(n % 97, m);
+
+/** Vertices with `k === v`. */
+const kEq = (n, v) => Math.floor(n / 97) + (n % 97 > v ? 1 : 0);
+
 const EXPECTED = {
   hopfilter: { rowsPerRun: 1, answer: expectHopFilter },
   hopall: { rowsPerRun: 1, answer: (n, f) => n * f },
@@ -489,11 +511,11 @@ const EXPECTED = {
   sortedpage: { rowsPerRun: 10, answer: 's0' },
   distinct: { rowsPerRun: 97 },
   distinctstr: { rowsPerRun: 1000 },
-  distincthi: { rowsPerRun: 20_000 },
+  distincthi: { rowsPerRun: (n) => n },
   grouped: { rowsPerRun: 97 },
-  wideproj: { rowsPerRun: 2070 },
-  wide2: { rowsPerRun: 2070 },
-  narrow1: { rowsPerRun: 2070 },
+  wideproj: { rowsPerRun: (n) => kLt(n, 10) },
+  wide2: { rowsPerRun: (n) => kLt(n, 10) },
+  narrow1: { rowsPerRun: (n) => kLt(n, 10) },
   hoprows: { rowsPerRun: (n) => n },
   /**
    * ⚠️ ADDED AT ITEM 1805 BECAUSE ITS ABSENCE COST A MEASUREMENT — item 1749's lesson, a second
@@ -508,23 +530,25 @@ const EXPECTED = {
    * carries a value because its `WHERE c.k = 5` makes it determinate.
    */
   hop2rows: { rowsPerRun: (n) => n },
-  hop2rowswhere: { rowsPerRun: 207, answer: 5 },
+  hop2rowswhere: { rowsPerRun: (n) => kEq(n, 5), answer: 5 },
   hop3rows: { rowsPerRun: (n) => n },
   // 97 distinct `k` values (`i % 97`), whatever the chain's row count — so this answer is a real
   // guard on the dedupe and not just on the walk.
   hop3distinct: { rowsPerRun: 97 },
   hop2distinct: { rowsPerRun: 97 },
-  hop3rowsboth: { rowsPerRun: 160_000 },
+  // Both-degree is 2 (one out, one in), so a 3-hop undirected chain is 2^3 per start.
+  hop3rowsboth: { rowsPerRun: (n) => n * 8 },
   // The paging and set-operation shapes, same gap.
   topkwide: { rowsPerRun: 10 },
   topknarrow: { rowsPerRun: 10 },
-  defwide: { rowsPerRun: 2070 },
-  defnarrow: { rowsPerRun: 2070 },
+  defwide: { rowsPerRun: (n) => kLt(n, 10) },
+  defnarrow: { rowsPerRun: (n) => kLt(n, 10) },
   defsortwide: { rowsPerRun: 5, answer: 1 },
   defsortnarrow: { rowsPerRun: 5, answer: 1 },
-  unioned: { rowsPerRun: 414 },
-  unioneddistinct: { rowsPerRun: 414 },
-  excepted: { rowsPerRun: 1863 },
+  unioned: { rowsPerRun: (n) => kEq(n, 5) + kEq(n, 6) },
+  // The two arms are disjoint (k=5 vs k=6) and `n` is unique, so UNION equals UNION ALL here.
+  unioneddistinct: { rowsPerRun: (n) => kEq(n, 5) + kEq(n, 6) },
+  excepted: { rowsPerRun: (n) => kLt(n, 10) - kEq(n, 6) },
   control: { rowsPerRun: 1, answer: 1 },
 };
 const want = EXPECTED[SHAPE];
