@@ -99,6 +99,17 @@ const build = () => {
     });
   }
 
+  /*
+   * ⚠️⚠️ **MIXED=1 APPENDS ONE ISOLATED OFF-LABEL VERTEX, AND WITHOUT IT EVERY LABELLED SHAPE HERE
+   * PROFILES THE WRONG ARM** (item 2039). `P` covers every vertex above, so `dropVacuousLabels`
+   * DELETES any `hasLabel('P')` step and the profile shows a plan the step never reached. One
+   * isolated off-label vertex (no edges, so no answer changes) makes the step survive — which is the
+   * regime a real schema is always in.
+   */
+  if (process.env.MIXED === '1') {
+    g.addVertex({ id: 'vOFF', labels: ['Q'], properties: { k: -1, s: 'off', n: -1 } });
+  }
+
   for (let k = 0; k < NODES * FANOUT; k += 1) {
     g.addEdge({
       id: `e${k}`,
@@ -132,6 +143,10 @@ const SHAPES = {
   hopcount2: traversal(V(), hasLabel('P'), out('E'), out('E'), count()),
   // A row-RETURNING hop, so no count shortcut can claim it.
   hopbare: traversal(V(), out('E')),
+  // Item 2039's target: a LABELLED one-hop projection, 3.10-3.56x slower once `P` is non-vacuous.
+  labelhop: traversal(V(), hasLabel('P'), out('E'), values('k')),
+  // Its floor, same route minus the label step — what the vacuous arm effectively runs.
+  labelhopfloor: traversal(V(), out('E'), values('k')),
   // The ORDER path, the Gremlin twin of GQL's `sortedpage` — item 1358's biggest GQL find.
   hoporder: traversal(V(), out('E'), values('k'), order()),
   // Grouping, the twin of GQL's `grouped`, which item 1358 found is 66% of its shape.

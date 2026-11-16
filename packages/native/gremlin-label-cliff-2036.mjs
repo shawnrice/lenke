@@ -27,11 +27,29 @@ const N = Number(process.env.N ?? 50000);
 const REPS = Number(process.env.REPS ?? 7);
 const OPS = Number(process.env.OPS ?? 20);
 
+/*
+ * ⚠️⚠️ **FANOUT AND MULTI EXIST TO SETTLE ONE DISCREPANCY** (item 2039). Item 2037 measured
+ * `V().hasLabel(T).values(k)` at a 1.09x cliff on THIS probe; item 2038's workload screen read the
+ * SAME SHAPE at 2.57x. The fusion claims the shape on both fixtures (`drain` present), so the route
+ * is identical and the difference must be the FIXTURE. The two differ in exactly three ways, and
+ * `N_POOL` is already ruled out — it is eight small integers, monomorphic, like this probe's `k`.
+ * So: FANOUT (screen 4, probe 1) and MULTI (screen gives 1 vertex in 6 a SECOND label), one variable
+ * at a time.
+ */
+const FANOUT = Number(process.env.FANOUT ?? 1);
+const MULTI = process.env.MULTI === '1';
+
 const build = (mixed) => {
   const g = new Graph();
 
   for (let i = 0; i < N; i += 1) {
-    g.addVertex({ id: `v${i}`, labels: ['T'], properties: { k: i % 7, s: `s${i % 7}` } });
+    g.addVertex({
+      id: `v${i}`,
+      // The screen's shape: a SECOND label on 1 vertex in 6. `T` still covers every vertex, so this
+      // alone does not change vacuity — it changes what `labels` holds per element.
+      labels: MULTI && i % 6 === 2 ? ['T', 'U'] : ['T'],
+      properties: { k: i % 7, s: `s${i % 7}` },
+    });
   }
 
   if (mixed) {
@@ -40,13 +58,18 @@ const build = (mixed) => {
     g.addVertex({ id: 'vOFF', labels: ['Q'], properties: { k: -1, s: 'off' } });
   }
 
-  for (let i = 0; i < N; i += 1) {
+  for (let e = 0; e < N * FANOUT; e += 1) {
+    const i = e % N;
+    // ⚠️ SPLIT ON THE REPEAT INDEX, or all of one vertex's FANOUT edges land on the SAME target and
+    // the graph is FUNCTIONAL while out-degree looks perfect (CLAUDE.md's generator trap).
+    const hop = Math.floor(e / N);
+
     g.addEdge({
-      id: `e${i}`,
+      id: `e${e}`,
       from: g.getVertexById(`v${i}`),
-      to: g.getVertexById(`v${(i * 7 + 3) % N}`),
+      to: g.getVertexById(`v${(i * 7 + 3 + hop * 2_654_435_761) % N}`),
       labels: ['E'],
-      properties: { w: i % 13 },
+      properties: { w: e % 13 },
     });
   }
 
@@ -170,11 +193,22 @@ for (const [name, mk] of Object.entries(SHAPES)) {
 
     const series = [];
 
+    /*
+     * ⚠️⚠️ **REUSE=1 BUILDS THE PLAN ONCE, AND IT IS THE LAST STRUCTURAL DIFFERENCE FROM THE WORKLOAD
+     * SCREEN** (item 2039). The screen does `const plan = SHAPES[name]()` and then calls
+     * `toArray(plan, g)` per rep, while this probe rebuilt the traversal every op — so the probe pays
+     * plan construction per measurement and the screen does not. Everything else between the two
+     * fixtures has been ruled out one variable at a time: FANOUT (1 vs 4), MULTI (a second label on 1
+     * vertex in 6), `N_POOL` polymorphism (eight small integers, monomorphic), and in-process
+     * pollution (`ONLY=` isolates a single row).
+     */
+    const reused = process.env.REUSE === '1' ? mk() : undefined;
+
     for (let r = 0; r < REPS; r += 1) {
       const t0 = performance.now();
 
       for (let o = 0; o < OPS; o += 1) {
-        toArray(mk(), g);
+        toArray(reused ?? mk(), g);
       }
 
       series.push(performance.now() - t0);

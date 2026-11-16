@@ -100380,7 +100380,7 @@ gremlin suite 2,590 (15 new); `bun run fuzz` all seven green. The wide workload 
 rows beyond ±10%, every one sub-2.5 ms and 7 of the 8 in LIVE's favour (0.83-0.91x); the single 1.25x
 is a 0.04 → 0.05 ms row. Largest absolute mover `tree`, 2.41 → 2.17, faster.
 
-## Item 2038 — ✅ **THE GREMLIN TIMING SCREEN HAD ONE LABELLED ROW OF 58, AND ITS LABEL COULD NOT MOVE.** Nine added; four now show label cliffs, the largest **`V().hasLabel(T).out(E).values(n)` at 3.10x** — and `label: id` is 0.71x, i.e. the seeded route WINS there
+## Item 2038 — ✅ **THE GREMLIN TIMING SCREEN HAD ONE LABELLED ROW OF 58, AND ITS LABEL COULD NOT MOVE.** Nine added; four now show label cliffs, the largest **`V().hasLabel(T).out(E).values(n)` at 3.10x** (⚠️ **3.56x isolated, 3.61x on a third fixture — DIAGNOSED at item 2039**) — and `label: id` is 0.71x, i.e. the seeded route WINS there
 
 Item 2037 fixed the one route cliff item 2036's census found. This asked the question a census
 cannot: **does a row that keeps its route in BOTH label modes still pay for a surviving label step?**
@@ -100415,7 +100415,7 @@ query gets.
 GQL side gave at item 2031 (where the vacuous arm was 4.7% SLOWER on a two-hop count). Do not assume
 a sign.
 
-⚠️ **AN UNRESOLVED TENSION, RECORDED RATHER THAN SMOOTHED OVER.** `label: values` reads 2.57x here,
+⚠️ ~~**AN UNRESOLVED TENSION**~~ — ✅ **SETTLED AT ITEM 2039: the ROW is unstable at this precision (the same config read 1.12x and 1.36x), after five candidates were ruled out.** `label: values` reads 2.57x here,
 while item 2037 measured the _same shape_ at **1.09x** after its fusion — and a direct check confirms
 the fusion DOES claim the shape on this screen's fixture (single-label and multi-label alike, `drain`
 present). So the gap is the FIXTURE, not the route: this screen uses FANOUT=4 and pooled property
@@ -100425,3 +100425,66 @@ matters is the next question; the mixed arm's own 1.45x spread here means this r
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `node --check` on the screen. Screen-only
 change — nine rows and one `MIXED` knob; no engine code touched.
+
+## Item 2039 — ✅ **DIAGNOSED: a labelled one-hop projection is 3.10x / 3.56x / 3.61x slower on THREE independent fixtures once the label is non-vacuous, and a profile DIFF names the cause — the surviving step routes to a DIFFERENT walk whose `drain` costs 31.4 → 258.1 ms (8.2x)**. ⚠️ And item 2038's `label: values` discrepancy is the ROW's own instability, after ruling out five candidates
+
+Item 2038 nominated `label: hop values` at 3.10x and left `label: values` reading 2.57x against item
+2037's 1.09x on the same shape. This settled both.
+
+### The nomination is real, on three fixtures
+
+```text
+    workload screen, 9 label rows in one process     14.25 -> 44.76    3.10x
+    workload screen, ONLY= (one shape per process)   12.73 -> 45.36    3.56x
+    runtime-profile-gremlin-probe, its own fixture  144.1  -> 520.8    3.61x
+```
+
+Same sink in every arm (6,000,000 rows on the profile probe), so these are the same question answered
+twice, not two questions. **It got LARGER when isolated** (3.10x → 3.56x), so in-process pollution was
+flattering the fast arm, not inventing the gap.
+
+🔑 **THE PROFILE DIFF IS WHAT NAMED THE CAUSE, and one profile could not have.** The two arms' hot
+frames carry DIFFERENT LINE NUMBERS — they are different functions:
+
+| frame            | vacuous                               | mixed                                |
+| ---------------- | ------------------------------------- | ------------------------------------ |
+| `drain`          | **31.4** (`walk$4`, the CSR hop walk) | **258.1** (`startFilteredHopValues`) |
+| `pick`           | 59.4 (`pickFor$1`)                    | 81.1 (`startFilteredHopValues`)      |
+| `get properties` | 31.1                                  | 54.8                                 |
+
+**8.2x on the `drain` frame alone.** With the label vacuous, `dropVacuousLabels` deletes the step and
+the plan reaches the CSR hop walk; with it surviving, the plan routes to `startFilteredHopValues`,
+which walks **per-vertex adjacency** (`v.adjFrom?.get(type)` — a Map lookup then Set iteration per
+vertex) where the CSR makes one flat pass over offsets and a dense array.
+
+⚠️ **THAT IS THE SAME MECHANISM ITEM 2035 PRICED ON THE GQL SIDE** (per-vertex adjacency indirection
+against a flat scan, 3.4-4.4x there). Two engines, two rungs, one cause.
+
+⚠️ **AND THE CURE IS NOT FREE, WHICH IS WHY IT IS NOT BUILT HERE.** A CSR walk restricted to a SUBSET
+of start vertices needs a start→slot mapping, i.e. a lookup per start — which is the indirection the
+CSR exists to avoid. [[label-vacuity-gates-fast-paths]] also records that the CSR arm "never visits an
+edge, so it CANNOT test a START label"; that objection does NOT apply here (the seed already yields
+only labelled starts), but the slot-mapping cost does, and it has to be measured before the arm is
+believed.
+
+### ⚠️⚠️ Item 2038's `label: values` discrepancy: the ROW, not the fixture
+
+Five candidates ruled out one variable at a time, each on the probe whose control is tight:
+
+| candidate                                                     | result                                                      |
+| ------------------------------------------------------------- | ----------------------------------------------------------- |
+| FANOUT (screen 4, probe 1)                                    | 1.16x at 1, 1.09x at 4 — no                                 |
+| MULTI (a second label on 1 vertex in 6)                       | 1.11x / 1.12x — no                                          |
+| `N_POOL` property polymorphism                                | eight small integers, monomorphic — ruled out by inspection |
+| in-process pollution (9 label rows share a process)           | explains 2.57x → 1.99x, not the rest                        |
+| PLAN REUSE (the screen builds once, the probe rebuilt per op) | 1.36x vs 1.39x — no                                         |
+
+🔑 **THE ANSWER IS THAT THE ROW IS UNSTABLE AT THIS PRECISION.** The SAME config (`FANOUT=4 MULTI=1`)
+read **1.12x** in one run and **1.36x** in another, and the screen's isolated reading was 1.99x — so
+the "discrepancy" was mostly the band, not a fixture difference. Chasing it further would be pricing
+noise. **Recorded so the next reader does not re-run the same five experiments.**
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `node --check` on both probes. Probe-only
+change: `FANOUT`/`MULTI`/`REUSE` knobs on the cliff probe, and `MIXED` plus a `labelhop` shape (with
+its label-free floor) on the Gremlin profile probe — which had no `MIXED` mode, so **every labelled
+shape it has ever profiled was the vacuous arm.**
