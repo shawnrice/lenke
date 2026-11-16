@@ -100854,3 +100854,72 @@ packaging decision.
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `node --check` on the new probe. New probe
 (`parseplan-prof-2045.mjs`) only; no engine change.
+
+## Item 2046 — ✅ **A MECHANICAL RUNG-COVERAGE AUDIT: 40 benchmark shapes entered only 30 of 37 Gremlin rungs, and THREE OPTIMIZATION RUNGS had no row in any screen or census.** 🔑 Covering them found an equivalent-spelling gap: `where(and(X, Y))` dispatches its sub-plan **2002 times against the direct `and(X, Y)`'s 2**, and costs **1.43x** for the same answer
+
+Items 2028 and 2036 each found an unmeasured rung by reading source — `pickFor` across five files,
+then `hasLabel` across the census. **This asks the question mechanically**, with V8's own per-function
+coverage (`NODE_V8_COVERAGE`): run the benchmark shapes, then list every exported rung whose function
+was never ENTERED.
+
+```text
+    40 shapes x 2 passes, 37 exported rungs:  30 reached, 7 NEVER ENTERED
+
+      aggregateStep, connectedComponentStep, pageRankStep, peerPressureStep   <- OLAP, deferred
+      allHopExistence, hopExistenceCombinedStep                               <- sub-plan-existence.ts
+      twoHopDenseShape                                                        <- count-shortcut.ts
+```
+
+The four OLAP steps are legitimately outside a traversal benchmark. **The other three are optimization
+rungs — code whose only purpose is speed — that nothing measured.** Item 1870 is why that matters: a
+**678x** regression sat in a shipped rung invisibly, because the suite kept passing and no test
+asserted the rung still claimed its shape.
+
+Six shapes closed the gap (33/37, the rest OLAP): the and/or/not forms over a one-step sub-plan (the
+bare `where(out(T))` was already covered, which is why only the COMBINED forms were missing), and the
+two-hop COUNT, which is the only form that reaches `twoHopDenseShape`.
+
+### What covering them found
+
+```text
+    generic   exist: and two hops         2 applyStep call(s)   [and values]
+    generic   exist: where and count   2002 applyStep call(s)   [and count where]
+    SHORTCUT  dense: two hop count        0 applyStep call(s)
+```
+
+🔑 **`where(and(X, Y))` RE-DISPATCHES THE SUB-PLAN PER TRAVERSER** — 2000 vertices, 2002 calls — while
+the DIRECT `and(X, Y)` takes the fusion at 2. Measured at 100,000 vertices, one shape per process:
+
+| spelling                             | ms        | answer |
+| ------------------------------------ | --------- | ------ |
+| `and(out(E), out(F))` + count        | **16.24** | 300    |
+| `where(and(out(E), out(F)))` + count | **23.19** | 300    |
+| `not(out(E))` + count                | 5.32      | 0      |
+
+**1.43x for an answer-equivalent spelling** (verified directly: 300 = 300, and `not` 0 = 0 through
+both forms). That is the defect class CLAUDE.md gives its own section to — _"the planner recognized one
+spelling of a predicate and scanned for another that meant exactly the same thing… each cost 100-300x
+and each returned the correct answer, so no correctness test could catch it."_ This one is 1.43x, not
+100x, because each extra dispatch is cheap against the adjacency work — but it is the same shape of
+bug, and the dispatch count (2002 vs 2) is what makes it unambiguous.
+
+⚠️ **A CAVEAT ON READING THE CENSUS FOR THESE ROWS:** `exist: and two hops` shows as "generic" with 2
+calls, yet coverage proves `allHopExistence` IS entered. The fusion lives INSIDE the `and` step, not
+at plan level, so the census's fused/generic label — which counts top-level `applyStep` — cannot see
+it. For this family the DISPATCH COUNT is the signal, not the label.
+
+`twoHopDenseShape` is working: SHORTCUT, 0 dispatches, 4.22 ms.
+
+NOT BUILT — the 1.43x fix is nominated, not attempted. The three rungs now have census rows AND screen
+rows, which is the point: whatever their verdicts are, they can no longer decay unobserved.
+
+⚠️ TWO SELF-INFLICTED FAULTS, BOTH CAUGHT BY `node --check` OR A GUARD:
+
+- **Backticks inside a template literal** terminated the generated driver — the identical trap item
+  2036 hit. The probe now asserts no backtick survives inside the template.
+- **`process.execPath` under `bun` IS bun**, which does not honour `NODE_V8_COVERAGE`, so the first
+  run reported "no coverage recorded" — reading like a broken facility rather than the wrong
+  interpreter. It now spawns `node` by name.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped (one attempt lost to an unused import);
+`bun run test -- --skip-nx-cache` 21/21; `node --check` on all three touched probes.

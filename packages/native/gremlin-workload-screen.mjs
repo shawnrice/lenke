@@ -33,6 +33,8 @@
  */
 import { Graph } from '@lenke/core';
 import {
+  not,
+  and,
   aggregate,
   as_,
   both,
@@ -164,6 +166,17 @@ const SHAPES = {
    * matched pair across the two modes, and `dropVacuousLabels` deleting the step is itself what the
    * pair measures. `U` would have been useless here for exactly the reason the old row is.
    */
+  /*
+   * ⚠️ ITEM 2046's ROWS: three rungs that no screen or census reached until a V8-coverage audit found
+   * them (30 of 37 rungs entered by 40 shapes). The `where(and(...))` row is the one that matters —
+   * the census reads it at **2002 applyStep calls**, i.e. the sub-plan re-dispatched PER TRAVERSER,
+   * while the DIRECT `and(...)` form takes the fusion at 2.
+   */
+  'exist: and direct': () => traversal(V(), and(traversal(out('E')), traversal(out('F'))), count()),
+  'exist: where and': () =>
+    traversal(V(), where(and(traversal(out('E')), traversal(out('F')))), count()),
+  'exist: not direct': () => traversal(V(), not(traversal(out('E'))), count()),
+  'dense: two hop count': () => traversal(V(), out('E'), out('E'), count()),
   'label: values': () => traversal(V(), hasLabel('T'), values('n')),
   'label: count': () => traversal(V(), hasLabel('T'), count()),
   'label: id': () => traversal(V(), hasLabel('T'), id()),

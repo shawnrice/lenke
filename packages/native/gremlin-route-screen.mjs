@@ -202,6 +202,22 @@ const SHAPES = {
     "traversal(V(), choose(traversal(out('E')), values('k'), constant('x')), count())",
   'br: two options':
     "traversal(V(), branch(traversal(values('k'))).option(3, traversal(out('E'))).option(5, traversal(in_('E'))).none(traversal(identity())))",
+  /*
+   * ⚠️⚠️ **THESE THREE RUNGS HAD NO ROW ANYWHERE UNTIL ITEM 2046**, which a V8-coverage audit found
+   * mechanically: of 37 exported Gremlin rungs, 40 benchmark shapes entered only 30. `allHopExistence`
+   * and `hopExistenceCombinedStep` (sub-plan-existence.ts, the and/or/not forms — the bare `where`
+   * was covered) and `twoHopDenseShape` (count-shortcut.ts, reachable only via the COUNT form) were
+   * never executed by any screen or census. Item 1870 is why that matters: a 678x regression sat in a
+   * shipped rung invisibly because nothing asserted it still claimed its shape.
+   */
+  'exist: and two hops':
+    "traversal(V(), and(traversal(out('E')), traversal(out('F'))), values('k'))",
+  'exist: or two hops': "traversal(V(), or(traversal(out('E')), traversal(out('F'))), values('k'))",
+  'exist: not one hop': "traversal(V(), not(traversal(out('E'))), values('k'))",
+  'exist: where and count':
+    "traversal(V(), where(and(traversal(out('E')), traversal(out('F')))), count())",
+  'dense: two hop count': "traversal(V(), out('E'), out('E'), count())",
+  'dense: mixed type count': "traversal(V(), out('E'), out('F'), count())",
   'resid: hop order': "traversal(V(), out('E'), values('n'), order())",
   'resid: hop fold': "traversal(V(), out('E'), values('n'), fold())",
   'resid: hop max': "traversal(V(), out('E'), values('n'), max())",
@@ -219,7 +235,7 @@ const SHAPES = {
 };
 
 const IMPORTS =
-  "import { E, V, aggregate, both, bothE, cap, count, dedupe, fold, groupCount, gt, has, hasId, hasLabel, id, inE, inV, in_, limit, min, optional, order, otherV, out, outE, outV, store, branch, choose, coalesce, constant, fold, identity, max, order, sum, toArray, traversal, values, where } from '@lenke/gremlin';";
+  "import { E, V, aggregate, both, bothE, cap, count, dedupe, fold, groupCount, gt, has, hasId, hasLabel, id, inE, inV, in_, limit, min, optional, order, otherV, out, outE, outV, store, and, branch, choose, coalesce, constant, fold, identity, max, not, or, order, sum, toArray, traversal, values, where } from '@lenke/gremlin';";
 
 const build = () => execFileSync('bun', ['run', 'build'], { cwd: ROOT, stdio: 'ignore' });
 
