@@ -101331,6 +101331,8 @@ plain answers **600,000**, the CALL **200,000** — and the probe now prints tha
 labels the ratio NOT A FLOOR. Had the check not been run, the item would have claimed a 33,000x
 opportunity that does not exist.
 
+⚠️ **ITEM 2055 REFRAMES THIS: the ~8-9x was measured on the HOP body, which a rung rescues; the general per-row subquery path is ~1.26 µs a row, or ~30x the same hand floor.**
+
 NOT BUILT. The target is ~8x per outer row on a correlated CALL, which is a real ISO-GQL feature
 ([[gql-call-statement]]: both forms ship byte-identical with scope isolation and a slot-mapping
 trick). Reducing it means restructuring per-row subquery execution, and [[executor-edits-perturb]]
@@ -101402,3 +101404,58 @@ in a tight loop instead of re-entering the general clause runner — substantial
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped. Profile and a semantics check; no source
 change.
+
+## Item 2055 — ❌ **THE DECOMPOSITION I BUILT DOES NOT WORK, and the numbers say so loudly: a "trivial" subquery body is DEARER than the hop body (1.261 against 0.331 µs a row).** ✅ What survives is one controlled comparison — **a pattern-free aggregate body is 3.81x the hop body** — which reframes item 2053: its ~8-9x was measured on the GOOD case
+
+Item 2054 left a question: can a single-group `count(*)` inside a correlated `CALL` skip the grouping
+machinery? A profile share cannot answer that — the sibling item says so outright, _"a body run ONCE
+shows exactly those frames too… a share is not a count"_ — so this built the correlated twin of
+`uncorrelated-call-reuse-probe.mjs`, meaning to scale outer rows and body cost independently.
+
+```text
+    outer=ALL   body=hop           65.22 ms   0.331 us/row
+    outer=1/97  body=hop           10.29 ms
+    outer=1     body=hop            8.16 ms
+    outer=ALL   body=RETURN 1      95.06 ms   0.480 us/row
+    outer=ALL   body=count(*)     252.83 ms   1.261 us/row
+    outer=ALL   no call             0.00 ms
+```
+
+⚠️⚠️ **FOUR OF SIX ARMS ARE CONFOUNDED, and the giveaway is that subtraction gives a NEGATIVE body cost
+and a 146% "plumbing share".** Two distinct faults:
+
+1. **THE BODY'S ROUTE CHANGES WITH THE BODY.** `MATCH (n)-[:E]->(x) RETURN count(*)` is served by the
+   count rung (item 1661) off a bucket size; a pattern-free body has no rung and takes the general
+   path. **Picking a "cheaper" body picked a slower ROUTE**, so body cost is not additive with
+   plumbing and no difference between these arms is a decomposition.
+2. **THE LOW-OUTER ARMS ARE THE OUTER SCAN.** `WHERE n.n = 12345` is unindexed here, so narrowing to
+   one outer row still scans 200,000 vertices — the 8.16 ms is that scan, not the body.
+
+**This is the error items 2053 and 2054 withdrew ratios for, reached from a new direction**: arms
+assumed to differ in one term while differing in route. I set out to avoid it and built a probe around
+it. The derived lines are gone; the probe now prints the single controlled comparison and a comment
+saying why the others are not reported.
+
+### What survives, and what it reframes
+
+Identical 200,000 outer rows and identical outer scan, only the body differing:
+
+| body                                  | µs a row  |                          |
+| ------------------------------------- | --------- | ------------------------ |
+| `MATCH (n)-[:E]->(x) RETURN count(*)` | **0.331** | hits the count rung      |
+| `RETURN 1`                            | 0.480     | projection, general path |
+| `RETURN count(*)`                     | **1.261** | aggregate, general path  |
+
+🔑 **THE PATTERN-FREE AGGREGATE BODY IS 3.81x THE HOP BODY — the simpler query is the dearer one** —
+because the hop body is rescued by a rung and the pattern-free one is not. **So item 2053's ~8-9x
+against a hand floor was measured on the OPTIMIZED case.** The general per-row subquery path is
+~1.26 µs a row, which is ~30x that item's 0.042 µs hand floor.
+
+⚠️ **AND THE QUESTION I SET OUT TO ANSWER IS STILL OPEN.** `RETURN 1` against `RETURN count(*)` is
+2.6x on the same pattern-free body, which is tempting to call "the grouping machinery" — but adding an
+aggregate switches the body from the projection path to the aggregate path, so that difference is a
+route change too, not grouping in isolation. **`buildGroups`' own per-row cost remains unpriced**, and
+saying so is better than banking 0.78 µs against a number that cannot carry it.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `node --check` on the new probe. Ran under
+`systemd-run --user --scope -p MemoryMax=16G -p MemorySwapMax=0`. Probe-only change.
