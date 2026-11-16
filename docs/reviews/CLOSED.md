@@ -100111,7 +100111,7 @@ GATES. `bun run fmt` 0; `bun run check` 0 read unpiped — ⚠️ it took TWO pa
 `fmt`/`fmt:check` non-idempotency on md lists, not a real failure. Engine source verified clean
 (`grep -c __LBL` = 0) and rebuilt. Probe-only change.
 
-## Item 2034 — ✅ **MEASURED: a start-driven arm is 13.62x the engine on the realistic hop count at FANOUT=3, and the ROUTE alone (hand against hand) is worth 1.07x / 3.14x / 5.18x at FANOUT 1 / 3 / 5.** 🔑 The gap is INVISIBLE at one edge per vertex, which is the fixture this family was always measured on
+## Item 2034 — ✅ **MEASURED: a start-driven arm is 13.62x the engine on the realistic hop count at FANOUT=3, and the ROUTE alone (hand against hand) is worth 1.07x / 3.14x / 5.18x at FANOUT 1 / 3 / 5.** ⚠️ **NOT BUILT — item 2035 measured the same arm 3.46x WORSE at 100% selectivity, with no signal to tell the cases apart; and an INDEX on the filtered key is 28.9x, which the engine already takes.** 🔑 The gap is INVISIBLE at one edge per vertex, which is the fixture this family was always measured on
 
 Item 2033 counted the realistic (`MIXED=1`) hop count
 (`MATCH (a:P)-[:E]->(b:P) WHERE a.k = 5 RETURN count(*)`) doing **240,000,000 label tests to return
@@ -100173,3 +100173,68 @@ is ~20,622 visits against 60,000 edges. The honest number is the measured **3.14
 swapped argument.
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped. New probe only; no engine change.
+
+## Item 2035 — ❌ **NOT BUILT: item 2034's 3.14x start-driven arm is 3.46x WORSE when the predicate keeps everything, and the engine has no signal to tell the two apart.** ✅ But where a signal DOES exist the engine already beats my hand arm 2.37x — and indexing the filtered key is **28.9x** on this shape
+
+Item 2034 measured a hand start-driven arm at 3.14x the edge-driven one (hand to hand, FANOUT=3) on
+`MATCH (a:P)-[:E]->(b:P) WHERE a.k = 5 RETURN count(*)` under `MIXED=1`. The obvious next step was to
+build it. **The first thing measured was the regime where it is WRONG**, which is why it was not
+built. Every cell answers its oracle; ms per 200 ops, median of the plateau:
+
+|                                      | FANOUT | engine | HAND edge-driven | HAND start-driven | start vs edge    |
+| ------------------------------------ | ------ | ------ | ---------------- | ----------------- | ---------------- |
+| **SEL=one** (`a.k = 5`, keeps 1%)    | 1      | 114.7  | 26.2             | 24.4              | 1.07x better     |
+|                                      | 3      | 350.1  | 82.2             | 26.3              | **3.13x better** |
+|                                      | 5      | 611.5  | 146.8            | 27.7              | **5.30x better** |
+| **SEL=all** (`a.k >= 0`, keeps 100%) | 1      | 116.3  | 46.0             | 200.3             | **4.35x WORSE**  |
+|                                      | 3      | 370.9  | 137.1            | 474.5             | **3.46x WORSE**  |
+|                                      | 5      | 583.9  | 251.5            | 864.1             | **3.44x WORSE**  |
+
+**So the arm is 3.4-4.4x WORSE at 100% selectivity** — and I had guessed "+33%, worst case". The cause
+is per-vertex adjacency indirection: `edgesFromByLabel.get(v.id)` plus Set iteration per start, against
+one flat pass over `edgesByLabel.get('E')`. A flat scan beats scattered adjacency badly enough to
+dwarf the edges it skips.
+
+🔑 **AND THE ENGINE CANNOT TELL THE TWO CASES APART.** `startWalkFits` already gates a start-driven arm
+on the two signals that exist — an index seek (`hopSeek`) and a selective start LABEL — and in this
+fixture `k` is unindexed and `P` covers 0.99995, so neither fires. An unindexed equality predicate's
+selectivity needs **statistics the engine does not keep.** Preferring the arm blind buys 3.13x in one
+regime and pays 3.46x in the other, so it is NOT BUILT: the lever is real and is gated behind a
+cardinality-estimator design question, not behind a missing route.
+
+⚠️⚠️ **AND MY PREDICTION ABOUT THE INDEXED CASE WAS WRONG, WHICH IS THE USEFUL PART.** `startWalkFits`
+requires `pb === undefined` ("the walk never visits the far endpoint, so it cannot apply the far
+label"), so I predicted that an INDEXED start with a LABELLED far end would still fall to the full edge
+scan with the selectivity signal in hand. It does not:
+
+```text
+  FANOUT=3, SEL=one    INDEXED=0   engine 341.0      INDEXED=1   engine  11.8
+  FANOUT=5, SEL=one    INDEXED=0   engine 573.3      INDEXED=1   engine  19.8
+```
+
+**28.9x at both fanouts from an index on the filtered key** — and at 11.8 ms the engine is **2.37x
+better than my hand start-driven arm** (28.0). Another rung takes the seeded route and does it better
+than the arm I was proposing to add. So the `pb === undefined` restriction is not costing what I
+thought, and there is nothing to build on the indexed path.
+
+⚠️ The index is also correctly DECLINED when it cannot help: `INDEXED=1 SEL=all` reads 350.8 against
+the unindexed 370.9 — the same number, not a regression, so the seek is not misapplied to a predicate
+that keeps everything.
+
+**THE PRACTICAL FINDING, which is the one worth repeating:** on a realistic (`MIXED=1`) labelled hop
+count with a selective filter, **indexing the filtered key is worth 28.9x.** That is a user-facing
+answer, not an engine change.
+
+⚠️ THREE PROBE-SURGERY FAULTS, TWO CAUGHT BY ASSERTIONS AND ONE NOT:
+
+- `oxfmt` had parenthesized the oracle to `(e % NODES) % 97`, so an unasserted `replace` matched
+  nothing and the oracle silently kept the OLD predicate — caught only because the arm then failed
+  answer-equivalence (`answered 60000, expected 621`). **The replace I did not assert is the one that
+  slipped**, which is this repo's oldest lesson about anchors.
+- An assertion that `keeps` is declared BEFORE the oracle's IIFE caught a TDZ ordering bug before it
+  ran.
+- Moving the `INDEXED` block by index arithmetic truncated it (`node --check`: "Unexpected end of
+  input"), needing a hand repair. A syntax check on a generated edit costs nothing and is now the
+  habit.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `node --check` on the probe. No engine change.

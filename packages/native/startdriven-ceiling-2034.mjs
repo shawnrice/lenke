@@ -39,6 +39,19 @@ const NODES = Number(process.env.NODES ?? 20000);
 const FANOUT = Number(process.env.FANOUT ?? 3);
 const REPS = Number(process.env.REPS ?? 7);
 const OPS = Number(process.env.OPS ?? 200);
+/*
+ * ⚠️⚠️ **SEL IS THE TERM THE GATE CANNOT SEE, AND THE WORST CASE DECIDES THE POLICY** (item 2035).
+ * `k = 5` keeps 1% of starts; `k >= 0` keeps ALL of them. A start-driven arm visits |V| vertices and
+ * THEN their edges, so against the tally's |E| it wins by skipping edges and loses by scanning
+ * vertices. At SEL=all it can only lose, and by how much is what says whether "prefer start-driven
+ * whenever the far side is labelled" is safe or needs a selectivity estimate the engine does not
+ * have. Measuring the arm I want to build in the regime where it is WRONG is the point.
+ */
+const SEL = process.env.SEL ?? 'one';
+
+const WHERE = SEL === 'all' ? 'a.k >= 0' : 'a.k = 5';
+const keeps = SEL === 'all' ? () => true : (k) => k === 5;
+const Q = `MATCH (a:P)-[:E]->(b:P) WHERE ${WHERE} RETURN count(*) AS c`;
 
 const g = new Graph();
 
@@ -71,11 +84,24 @@ for (let e = 0; e < NODES * FANOUT; e += 1) {
 }
 
 // The oracle: recomputed from the fixture's closed form, with no Graph and no engine call.
+/*
+ * ⚠️⚠️ **INDEXED=1 IS THE ARM THAT MATTERS, and the SEL grid is why** (item 2035). Start-driven is
+ * 3.13x BETTER at 1% selectivity and 3.46x WORSE at 100%, so "prefer it when the far end is
+ * labelled" is unsafe and the gate needs a real selectivity SIGNAL. An unindexed `k` offers none.
+ * An INDEX does: `hopSeek` returns a narrow seed, and the engine then knows the candidate set is
+ * small WITHOUT estimating anything. This knob asks whether the engine takes that route when the far
+ * end is labelled — `startWalkFits` requires `pb === undefined`, so the prediction is that it does
+ * NOT, and falls to the full edge scan with the selectivity signal in hand.
+ */
+if (process.env.INDEXED === '1') {
+  g.createIndex({ on: 'vertex', kind: 'hash', keys: ['k'] });
+}
+
 const expected = (() => {
   let rows = 0;
 
   for (let e = 0; e < NODES * FANOUT; e += 1) {
-    if ((e % NODES) % 97 === 5) {
+    if (keeps((e % NODES) % 97)) {
       rows += 1;
     }
   }
@@ -96,8 +122,6 @@ if (reach.size < NODES * 0.5) {
   );
 }
 
-const Q = 'MATCH (a:P)-[:E]->(b:P) WHERE a.k = 5 RETURN count(*) AS c';
-
 const engine = () => Number(query(g, Q)[0].c);
 
 /*
@@ -109,7 +133,7 @@ const handStartDriven = () => {
   let rows = 0;
 
   for (const v of g.vertices) {
-    if (v.properties.k !== 5 || !v.labels.has('P')) {
+    if (!keeps(v.properties.k) || !v.labels.has('P')) {
       continue;
     }
 
@@ -137,7 +161,7 @@ const handEdgeDriven = () => {
 
   if (bucket !== undefined) {
     for (const edge of bucket) {
-      if (edge.from.labels.has('P') && edge.from.properties.k === 5 && edge.to.labels.has('P')) {
+      if (edge.from.labels.has('P') && keeps(edge.from.properties.k) && edge.to.labels.has('P')) {
         rows += 1;
       }
     }
@@ -188,7 +212,7 @@ for (const [name, fn] of Object.entries(ARMS)) {
 }
 
 console.log(
-  `\n  answer ${expected} rows, ${NODES} vertices + 1 off-label, ${NODES * FANOUT} edges, ${reach.size} distinct targets\n` +
+  `\n  SEL=${SEL} (${WHERE}), answer ${expected} rows, ${NODES} vertices + 1 off-label, ${NODES * FANOUT} edges, ${reach.size} distinct targets\n` +
     `  start-driven is ${(results['engine (edge-driven)'] / results['HAND start-driven']).toFixed(2)}x the engine\n` +
     `  the engine is ${(results['engine (edge-driven)'] / results['HAND edge-driven']).toFixed(2)}x its OWN hand shape (edge-driven)\n`,
 );
