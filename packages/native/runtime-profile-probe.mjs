@@ -438,6 +438,29 @@ const expectExists = (nodes, fanout, stride) => {
   return rows;
 };
 
+/*
+ * `OPTIONAL MATCH` emits one row PER MATCH, and one NULL-filled row for a matching `a` with no edge —
+ * so it is NOT `expectExists`.
+ *
+ * ⚠️ I GOT THIS WRONG AT ITEM 2030 and the probe's own guard caught it ("optional answered 621,
+ * expected 207"), which is the instrument doing its job: `EXISTS` collapses to one row per `a` (207 at
+ * every fanout, which is why `existssub` was right) while `OPTIONAL` does not. A constant table could
+ * not have told them apart, because at FANOUT=1 the two agree — the regime the probe was stuck in
+ * until item 2030.
+ */
+const expectOptional = (nodes, fanout, stride) => {
+  const adj = fixtureEdges(nodes, fanout, stride);
+  let rows = 0;
+
+  for (let i = 0; i < nodes; i += 1) {
+    if (i % 97 === 5) {
+      rows += Math.max(1, (adj.get(i) ?? []).length);
+    }
+  }
+
+  return rows;
+};
+
 // `MATCH (a)-[:E]->(b) MATCH (b)-[:E]->(c) WHERE a.k = 5` — the two-hop product.
 const expectJoin = (nodes, fanout, stride) => {
   const adj = fixtureEdges(nodes, fanout, stride);
@@ -460,7 +483,7 @@ const EXPECTED = {
   hopfilter: { rowsPerRun: 1, answer: expectHopFilter },
   hopall: { rowsPerRun: 1, answer: (n, f) => n * f },
   existssub: { rowsPerRun: 1, answer: expectExists },
-  optional: { rowsPerRun: 1, answer: expectExists },
+  optional: { rowsPerRun: 1, answer: expectOptional },
   join: { rowsPerRun: 1, answer: expectJoin },
   point: { rowsPerRun: 1, answer: 's345' },
   sortedpage: { rowsPerRun: 10, answer: 's0' },

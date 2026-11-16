@@ -99979,3 +99979,68 @@ plus a rebuild; the numbers above are all post-rebuild.
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; tree verified pristine (`grep -c 'false &&
 aLabel'` = 0) and rebuilt. Probe-only change.
+
+## Item 2032 — ❌ **THE WHOLE `join` PROFILE IS A VACUOUS-ARM ARTIFACT: a direct start predicate is worth 2.00x homogeneous and 0.99x once ONE off-label vertex exists.** ✅ And the cliff map that found says where the real cost is: **`hopall` 184x, `hopfilter` 7.47x**, five other shapes 0.91-1.14x
+
+Item 2031 refuted the `join` profile's label frames (20.9% → 0% reachable). This priced its two
+REMAINING unpriced frames — `twoHopFilteredCsrCount.accept` 15.3% and `variable.variable in
+compileExpr` 14.2%, the latter literally `(env) => env.binding.get(name)`. The nomination was strong:
+that Map round-trip was closed TWICE elsewhere (items 224/230 for predicates, `detectNodeProjection`
+for projections) on a byte-identical-by-construction argument, this rung never got it, and
+`predReadsOnlyStart` is **already computed at its gate**.
+
+The ablation hardcodes the fixture's own predicate (`a.properties.k === 5`) in place of
+`binding.set(startVar, a)` + `pred.fn(env)` — not shippable, a ceiling. Answers identical (1863, 621),
+which is what makes it one:
+
+|                                       | LIVE   | ABLATE |                     |
+| ------------------------------------- | ------ | ------ | ------------------- |
+| `join`, homogeneous                   | 1035.4 | 516.4  | **2.00x**           |
+| `join`, `MIXED=1`                     | 1001.6 | 1010.1 | **0.99x — NOTHING** |
+| `hopfilter` (different rung, control) | 444.4  | 450.7  | flat                |
+
+⚠️⚠️ **SO BOTH OF THIS PROFILE'S NOMINATIONS DIE THE SAME WAY, AND THE REASON IS STRUCTURAL: the
+entire `twoHopFilteredCsrCount` RUNG is gated behind label vacuity**, so every frame in its profile is
+unreachable in a real schema. **A profile of this shape measures an arm a `Person`/`Company` graph
+never reaches** — and I predicted in the A/B's own header that this lever, not being vacuity-gated,
+_should_ survive `MIXED=1`. It did not. The gating is upstream of the lever.
+
+🔑 **THE CLIFF MAP IS THE DELIVERABLE** (20,000 vertices, FANOUT=3, `MIXED=1` adds ONE isolated
+off-label vertex, so every answer is unchanged and only `vertexCount` moves):
+
+```text
+  shape        MIXED=0   MIXED=1    ratio
+  hopall           9.9    1824.1   184x      <- the closed-form count collapsing to a walk
+  hopfilter      466.8    3485.0     7.47x   <- LIVE TARGET
+  optional       432.5     491.0     1.14x
+  sortedpage    1069.9    1077.8     1.01x
+  grouped        339.9     339.3     1.00x
+  join          1066.5    1009.5     0.95x   <- INVERTED (item 2031)
+  point          419.3     387.1     0.92x
+  existssub      790.3     720.8     0.91x
+```
+
+**Nobody had measured this cliff across shapes, and it is not uniform**: two shapes fall off it
+catastrophically, one is inverted, and five are flat. "The vacuity cliff" is not a property of the
+engine — it is a property of the shape, and it has to be measured per family.
+
+- **`hopall`'s 184x is CLOSED, not a target.** It is the closed-form `count(*)` lever
+  ([[label-vacuity-gates-fast-paths]] records 1157x): counting label-filtered edges cannot be O(1)
+  without a per-(label, edgeType) index, and an incremental counter is write-side bookkeeping the
+  owner has rejected.
+- **`hopfilter`'s 7.47x is LIVE and it is the next target.** ⚠️ It must not be confused with item
+  1974's withdrawal, which is about an **indexed keyed read**: there the index is LABEL-BLIND, so a
+  non-vacuous label must be tested per candidate and there is no second arm to route to. This is the
+  **hop** family, where items 1940/1941/1951 DID build coverage-gated arms — and `labelCoverage` here
+  is 20000/20001 ≈ **0.99995**, far above `EDGE_DRIVEN_MIN_COVERAGE = 0.4`. So a coverage gate would
+  keep the fast arm, where today one isolated vertex costs 7.47x.
+
+⚠️ AND THE PROBE CAUGHT A BUG I INTRODUCED AT ITEM 2030: `optional`'s oracle was `expectExists`, but
+`OPTIONAL MATCH` emits one row PER MATCH (621 at FANOUT=3) while `EXISTS` collapses to one row per `a`
+(207 at every fanout, which is why `existssub` was correct). **A constant table could not have told
+them apart, because at FANOUT=1 the two agree** — the regime the probe was stuck in until item 2030.
+Fixed as `expectOptional` (`max(1, outdeg)` per matching start) and verified at both fanouts in both
+modes.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; tree
+verified pristine (`grep -c 'a.properties?.k'` = 0) and rebuilt. Probe-only change.
