@@ -99852,7 +99852,7 @@ measurement rather than the hypothesis.
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped. No source change.
 
-## Item 2030 — ✅ **the GQL profile probe can now run FANOUT>1, which it never could: `answer` was a CONSTANT, so `FANOUT=3 … join` threw. Replaced with ORACLES that recompute the answer from the fixture's closed form.** 🔑 And the first profile it unlocked nominates a 20.9% target: `two-hop-filtered-csr.ts` tests labels per element and has ZERO mentions of `vacuousLabel`, where 43 other gates elide
+## Item 2030 — ✅ **the GQL profile probe can now run FANOUT>1, which it never could: `answer` was a CONSTANT, so `FANOUT=3 … join` threw. Replaced with ORACLES that recompute the answer from the fixture's closed form.** 🔑 And the first profile it unlocked nominated a ~~20.9% target~~ in `two-hop-filtered-csr.ts`'s per-element label tests — **REFUTED at item 2031: a 13.6% ablation ceiling and 0% REACHABLE, so no elision was built**
 
 `runtime-profile-probe.mjs` guarded every shape with an expected answer, and `rowsPerRun` already
 accepted a function of NODES — but `answer` did not:
@@ -99916,3 +99916,66 @@ the item that builds it owes a MIXED fixture showing no regression there — not
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped. Probe-only change; oracles cross-checked
 against the engine at FANOUT 1 and 3.
+
+## Item 2031 — ❌ **REFUTED, and item 2030's own nomination is the thing refuted: the two-hop rung's label tests are 20.9% of the profile, a 13.6% ablation ceiling, and 0% REACHABLE.** 🔑 Deleting the SAME TWO LINES wins 1.136x on a homogeneous graph and 0.99x once ONE isolated off-label vertex exists. No 44th `vacuousLabel` elision was built
+
+Item 2030's profile nominated `two-hop-filtered-csr.ts` — 20.9% of the `join` profile in label frames
+(`evalLabelExpr` 13.3%, `get labels` 5.0%, `matchesLabel` 2.6%), and ZERO mentions of `vacuousLabel`
+where 43 other gates elide. Two lines, both per-element:
+
+```text
+    :143   if (aLabel !== undefined && !matchesLabel(a, aLabel))     per START vertex
+    :181   if (w !== 0 && matchesLabel(order[s], midEff))            per MIDDLE slot
+```
+
+⚠️ **IT WAS NOT BUILT, BECAUSE TWO MEMORIES SAID THE PROFILE MIGHT BE LYING.**
+[[frame-attribution-trap]]: a GETTER frame is attribution until a deletion test with a CONTROL says
+otherwise — and `get labels` is exactly that. [[label-vacuity-gates-fast-paths]] goes further and
+records the per-edge `matchesLabel` dispatch as **measured free** on the edge-driven arm ("a hand arm
+WITH the dispatch measured faster than one without"). So the 20.9% was a hypothesis, and the deletion
+test is its oracle.
+
+🔑 **THE ABLATION IS ANSWER-EQUIVALENT, WHICH IS WHAT MAKES IT A VALID CEILING**: the fixture gives
+every vertex label `P`, so both labels are VACUOUS and neither test excludes anybody. Item 2030's
+independent oracles assert the answer, so a non-equivalent ablation would have failed loudly instead
+of quietly measuring a different query. Every arm answered 1863.
+
+| fixture                                   | LIVE   | ABLATE |                     |
+| ----------------------------------------- | ------ | ------ | ------------------- |
+| homogeneous (`MIXED=0`)                   | 1029.8 | 906.8  | **1.136x**          |
+| one isolated off-label vertex (`MIXED=1`) | 983.6  | 998.0  | **0.99x — NOTHING** |
+
+**So the chain is 20.9% claimed → 13.6% ceiling → 0% reachable.** The profile was inflated by ~1.5x
+(attribution, as [[frame-attribution-trap]] predicts), the residue is real on a homogeneous
+graph — spreads 0.9-1.3%, non-overlapping — and it vanishes entirely the moment the graph has a second
+label, because the plan then takes a different arm in which those two lines are not the hot path. A
+`Person`/`Company` schema never satisfies vacuity, so a vacuity-gated elision would fire **only** in
+the regime that is already an artifact of the fixture.
+
+⚠️⚠️ **AND THE VACUOUS ARM IS THE SLOWER ONE HERE, WHICH INVERTS THE USUAL FRAMING.** Across 8 LIVE
+readings the ranges do not overlap:
+
+```text
+    MIXED=0 (vacuous)   1029.8  1042.8  1053.8  1068.2
+    MIXED=1 (realistic)  983.6   988.5   990.8  1008.8
+```
+
+**~4.7%, with the homogeneous graph consistently SLOWER.** [[label-vacuity-gates-fast-paths]]'s cliff
+(one off-label vertex cost 2.4-2.6x on an indexed keyed read, item 1973) does not merely fail to
+appear on this shape — it runs backwards, so the vacuity gate is routing the homogeneous case to a
+worse route than the mixed one. Small, near the noise floor, and recorded rather than chased.
+
+⚠️ **NO 44th `verticesByLabel` ELISION WAS ADDED**, which also sidesteps raising
+[[label-index-vs-setter]]'s open decision for a win that measured zero in the only regime that
+matters. `MIXED=1` is now a knob on `runtime-profile-probe.mjs` (one ISOLATED off-label vertex, so
+every answer is unchanged and only `vertexCount` moves) — the mode every future nomination from this
+probe should be checked in.
+
+⚠️ A PROCESS ERROR WORTH THE LINE: the first MIXED pair read 918.9 against 1023.7 and looked like the
+cliff appearing. Both came from the **ablated dist** — the A/B's `ROUND=RESTORE` returns before the
+rebuild, and `@lenke/*` resolve to dist ([[fuzzers-read-built-dists]]), so a restored SOURCE with a
+stale BUILD measures the experiment under the control's name. Caught by `grep -c` on the arm marker
+plus a rebuild; the numbers above are all post-rebuild.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; tree verified pristine (`grep -c 'false &&
+aLabel'` = 0) and rebuilt. Probe-only change.

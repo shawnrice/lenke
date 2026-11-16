@@ -45,6 +45,21 @@ const build = () => {
     });
   }
 
+  /*
+   * ⚠️⚠️ **MIXED=1 APPENDS ONE ISOLATED OFF-LABEL VERTEX, AND IT IS THE REALISTIC MODE** (item 2031).
+   * `vacuousLabel` is `verticesByLabel.get(name)?.size === graph.vertexCount`, so ONE vertex lacking
+   * the label disqualifies the whole graph PERMANENTLY — a cliff, not a gradient. Every read screen
+   * in this repo is label-homogeneous, so every row measures the vacuous arm, which a
+   * `Person`/`Company` schema can never reach.
+   *
+   * 🔑 THE VERTEX IS ISOLATED (no edges) ON PURPOSE: every answer is unchanged and only `vertexCount`
+   * moves, so the two modes are directly comparable and the oracles stay valid. That is exactly what
+   * `gql-coverage-screen-1901.mjs`'s own MIXED mode does.
+   */
+  if (process.env.MIXED === '1') {
+    g.addVertex({ id: 'vOFF', labels: ['Q'], properties: { k: -1, s: 'off', n: -1 } });
+  }
+
   // ⚠️ FANOUT=1 IS SPARSE, AND THIS PROBE HAD NO KNOB FOR IT (item 1488). CLAUDE.md's own rule:
   // "One edge per node is sparse — per-edge costs scale with the edge:node ratio, per-node costs do
   // not", with a change that measured flat at 1:1 and -5% at 5:1. So the unpriced-frame screen has
