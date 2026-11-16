@@ -289,6 +289,30 @@ and four of the six arms land in that band. **The RATIO is still worth chasing**
 loop and grew, 2.17x to 2.6-3.6x — but the millisecond figure beside a fast arm is not worth quoting,
 and a flag should be re-measured with a loop before it is priced.
 
+## ⚠️⚠️ A PER-OP FIGURE FROM AN `OPS` LOOP UNDERSTATES A SINGLE QUERY BY 1.4-1.8x (item 2043)
+
+Every probe here that reports `ms / N ops` divides a tight loop. Varying ONLY the ops-per-sample, on
+one fixture, one shape per process:
+
+```text
+    OPS/sample   per-op (vacuous arm)   per-op (mixed arm)
+    20                   2.31                  3.00
+    5                    2.16                  3.38
+    1                    4.20                  5.60
+```
+
+**A single call costs 1.4-1.8x what the same call costs as one of twenty.** A tight loop reuses the
+plan, the graph and the inline caches; a single call pays a cold-ish entry. It is general — the
+unlabelled CONTROL moves too (2.62 -> 3.70).
+
+Two consequences:
+
+- **Do not compare absolute per-op numbers across harnesses with different loop depths.** The
+  workload screen times ONE call per sample; most probes here time twenty. A cross-instrument gap on
+  one row was chased for three items (2038, 2039, 2042) and was entirely this.
+- **A figure quoted as "X ms per query" from such a loop is a HOT-LOOP figure.** The screen's
+  one-call-per-sample numbers are the closer analogue of a user's single query.
+
 ## ⚠️ FRAMES THAT ARE CLOSED — read this BEFORE nominating anything from a profile
 
 Every profile taken in this package surfaces the same handful of frames, because a write is not

@@ -38,6 +38,9 @@ const OPS = Number(process.env.OPS ?? 20);
  */
 const FANOUT = Number(process.env.FANOUT ?? 1);
 const MULTI = process.env.MULTI === '1';
+const POOL = process.env.POOL === '1';
+const N_POOL = [3, 5, 7, 11, 13, 17, 1, 99];
+const PROJ = POOL ? 'n' : 'k';
 
 const build = (mixed) => {
   const g = new Graph();
@@ -48,14 +51,27 @@ const build = (mixed) => {
       // The screen's shape: a SECOND label on 1 vertex in 6. `T` still covers every vertex, so this
       // alone does not change vacuity — it changes what `labels` holds per element.
       labels: MULTI && i % 6 === 2 ? ['T', 'U'] : ['T'],
-      properties: { k: i % 7, s: `s${i % 7}` },
+      /*
+       * ⚠️ POOL=1 COPIES THE WORKLOAD SCREEN'S EXACT PROPERTY SHAPE (item 2043) — three properties
+       * with `n` drawn from an eight-value pool — and the projection follows it. That screen reads
+       * this shape at 2.17x where this probe reads 1.32x on nominally the same fixture (N, FANOUT and
+       * MULTI all matched), and the property layout is the last untested difference: item 2039 ruled
+       * out FANOUT, MULTI, plan reuse and in-process pollution, and dismissed pooling BY INSPECTION
+       * (eight small integers, monomorphic) without ever measuring it.
+       */
+      properties: POOL
+        ? { n: N_POOL[i % N_POOL.length], k: i % 50, s: `s${i % 7}` }
+        : { k: i % 7, s: `s${i % 7}` },
     });
   }
 
   if (mixed) {
     // ISOLATED and off-label: `vacuous` is an exact size test against the vertex count, so this one
     // vertex flips it permanently while leaving every answer over `T` untouched.
-    g.addVertex({ id: 'vOFF', labels: ['Q'], properties: { k: -1, s: 'off' } });
+    // ⚠️ IT MUST CARRY THE PROJECTED PROPERTY TOO, or the UNLABELLED control drops it and the probe's
+    // own row-count guard fires (`returned 100000 rows, expected 100001`) — which is exactly what
+    // happened when POOL=1 first projected `n`. The guard caught my fixture, not the engine.
+    g.addVertex({ id: 'vOFF', labels: ['Q'], properties: { n: -1, k: -1, s: 'off' } });
   }
 
   for (let e = 0; e < N * FANOUT; e += 1) {
@@ -77,7 +93,7 @@ const build = (mixed) => {
 };
 
 const SHAPES = {
-  'hasLabel values': () => traversal(V(), hasLabel('T'), values('k')),
+  'hasLabel values': () => traversal(V(), hasLabel('T'), values(PROJ)),
   /*
    * ⚠️ THE SPLIT ARM (item 2037): `hasLabel` with NOTHING after it is the SEED alone — bucket
    * iteration plus the traverser wrapping `seedFromIndex` does — so `hasLabel values` minus this is
@@ -88,7 +104,7 @@ const SHAPES = {
   'hasLabel bare': () => traversal(V(), hasLabel('T')),
   'hasLabel count': () => traversal(V(), hasLabel('T'), count()),
   // ⚠️ CONTROLS: no label step, so no vacuity gate can reach them.
-  'values (control)': () => traversal(V(), values('k')),
+  'values (control)': () => traversal(V(), values(PROJ)),
   'count (control)': () => traversal(V(), count()),
 };
 

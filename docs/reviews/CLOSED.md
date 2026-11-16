@@ -100479,7 +100479,7 @@ Five candidates ruled out one variable at a time, each on the probe whose contro
 | in-process pollution (9 label rows share a process)           | explains 2.57x → 1.99x, not the rest                        |
 | PLAN REUSE (the screen builds once, the probe rebuilt per op) | 1.36x vs 1.39x — no                                         |
 
-🔑 **THE ANSWER IS THAT THE ROW IS UNSTABLE AT THIS PRECISION.** The SAME config (`FANOUT=4 MULTI=1`)
+🔑 ~~**THE ANSWER IS THAT THE ROW IS UNSTABLE AT THIS PRECISION.**~~ ⚠️ **CORRECTED AT ITEM 2043: the row is REPRODUCIBLE on each instrument; what differs is the OPS-PER-SAMPLE, worth 1.4-1.8x. Right in effect, wrong in mechanism.** The SAME config (`FANOUT=4 MULTI=1`)
 read **1.12x** in one run and **1.36x** in another, and the screen's isolated reading was 1.99x — so
 the "discrepancy" was mostly the band, not a fixture difference. Chasing it further would be pricing
 noise. **Recorded so the next reader does not re-run the same five experiments.**
@@ -100678,3 +100678,60 @@ verification, not just as an anchor.**
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped (one attempt lost to an unused import I added);
 `bun run test -- --skip-nx-cache` 21/21; gremlin suite 2,601; all seven fuzzers green; 5/5 sweeps clean.
+
+## Item 2043 — ✅ **EXPLAINED, and it is a HARNESS property, not an engine one: a single `toArray` call costs 1.4-1.8x what the SAME call costs as one of 20 in a tight loop.** 🔑 That closes the cross-instrument gap three ticks chased — ⚠️ and it means every per-op figure derived by dividing an OPS loop UNDERSTATES a single query by that much
+
+Item 2038 found `label: values` at 2.57x, item 2039 ruled out five candidates and concluded "the row is
+unstable", and item 2042 left it still reading **2.17x on the workload screen against 1.32x on the
+cliff probe** — on a fixture matched for N, FANOUT and MULTI, with the fusion claiming the shape on
+both (`drain` present). This settled it.
+
+**Two more candidates ruled out first**, bringing the total to seven:
+
+| candidate                                                                    | result                                                                                                                                                                                                               |
+| ---------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| the screen's PROPERTY SHAPE (three properties, `n` from an eight-value pool) | 1.22x vs 1.27x — **no**. Item 2039 dismissed pooling by inspection; this MEASURED it                                                                                                                                 |
+| profiling the screen's row to diff the frames                                | **impossible** — at 100,000 vertices the row costs 5 ms against ~1 s of fixture, so the profile is ~80% `getVertexById`/`indexEdgeLabel`/`getEdgeById`/`commitElementLabels`, every one of PROBES.md's closed frames |
+
+🔑 **THE CAUSE IS THE OPS-PER-SAMPLE.** The screen times ONE `toArray` per sample; the probe times
+TWENTY in a tight loop and divides. Varying only that:
+
+```text
+    OPS/sample   vacuous per-op   mixed per-op
+    20                 2.31            3.00
+    5                  2.16            3.38
+    1                  4.20            5.60
+```
+
+At `OPS=1` the probe's mixed arm (5.60) lands on the screen's (5.09). **It is general, not specific to
+the labelled shape** — the unlabelled control moves too:
+
+```text
+    shape                 per-op at OPS=20    per-op at OPS=1
+    hasLabel values               2.19               3.60     1.64x
+    values (control)              2.62               3.70     1.41x
+```
+
+⚠️⚠️ **SO TWO HARNESSES WITH DIFFERENT LOOP DEPTHS CANNOT BE COMPARED ON ABSOLUTE PER-OP NUMBERS**, and
+the gap I chased across three ticks was never an engine difference. A tight loop reuses the same plan,
+the same graph and the same inline caches; a single call pays for a cold-ish entry each time. Both are
+legitimate — they answer _"what does a query cost in a hot loop"_ and _"what does one query cost"_ —
+but they are different questions.
+
+⚠️ **ITEM 2039's VERDICT WAS RIGHT IN EFFECT AND WRONG IN MECHANISM.** It said the row was "unstable at
+this precision"; the row is in fact reproducible on each instrument (2.17x and 1.32x, measured twice
+each). What varies is the LOOP DEPTH, which is a property of the instrument, not noise in the row.
+Corrected in place, because "unstable" invites a re-measurement while "different question" does not.
+
+⚠️ **AND THE PRACTICAL CONSEQUENCE IS WORTH MORE THAN THE PUZZLE:** every probe in this package that
+reports `ms / N ops` understates a single query by **1.4-1.8x**. A figure quoted as "X ms per query"
+from such a loop is a hot-loop figure. The workload screen's one-call-per-sample numbers are the
+closer analogue of a user's single query.
+
+⚠️ A FIXTURE FAULT OF MY OWN, CAUGHT BY THE PROBE'S OWN GUARD: the off-label vertex carried no `n`
+property, so projecting `n` dropped it and the unlabelled control's row count failed
+(`returned 100000 rows, expected 100001`). The guard caught my fixture rather than the engine, which
+is what item 2030's oracles were added for.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `node --check` on the probe. Probe-only
+change: `POOL` knob plus the off-label vertex's missing property. No engine change.
