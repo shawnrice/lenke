@@ -196,7 +196,23 @@ const handSortPairs = (L) => {
 };
 
 /* eslint-enable typescript/prefer-for-of */
+/*
+ * ⚠️ ITEM 2023's ARMS. The no-copy binding VIEW is worth what its CONSUMER makes it worth, so these
+ * three read the product's bindings three different ways:
+ *
+ *     product     RETURN b.n AS x, d.n AS y   — two `get`s a row, where a view should shine
+ *     star        RETURN *                    — copies EVERY entry, so a view pays per access
+ *     distinct    RETURN DISTINCT …           — `rowKey` iterates the whole binding, likewise
+ *
+ * A view that wins on the first and loses on the other two is not a win; it is a trade whose sign
+ * depends on the query. That is the question item 2022 left open and could not answer from a probe.
+ */
+const Q_STAR = 'MATCH (a:T)-[:E]->(b:T), (c:T)-[:F]->(d:T) RETURN *';
+const Q_DISTINCT = Q_PRODUCT.replace('RETURN', 'RETURN DISTINCT');
+
 const ARMS = {
+  star: () => [...query(g, Q_STAR)],
+  distinct: () => [...query(g, Q_DISTINCT)],
   product: () => [...query(g, Q_PRODUCT)],
   ordered: () => [...query(g, Q_ORDERED)],
   ordered1: () => [...query(g, Q_ORDERED1)],
@@ -262,8 +278,22 @@ const HANDS = {
   handsortpairs: handSortPairs,
 };
 
-const show = (v) =>
-  typeof v === 'object' && v !== null ? `${String(v.x)}/${String(v.y)}` : String(v);
+/*
+ * ⚠️ GENERIC OVER THE ROW'S SHAPE. `x`/`y` is the projected arms' shape; `RETURN *` rows carry the
+ * pattern's variables instead, and hard-coding `x`/`y` printed `undefined/undefined` for every row
+ * of the `star` arm — which reads as a broken arm rather than a mismatched digest.
+ */
+const show = (v) => {
+  if (typeof v !== 'object' || v === null) {
+    return String(v);
+  }
+
+  return Object.values(v)
+    .map((cell) =>
+      typeof cell === 'object' && cell !== null && 'id' in cell ? String(cell.id) : String(cell),
+    )
+    .join('/');
+};
 const build = ARMS[ARM];
 
 if (build === undefined) {

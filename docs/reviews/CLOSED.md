@@ -99280,8 +99280,9 @@ the outer key — and **every arm checked for identical key ORDER and values bef
     a no-copy VIEW over both maps      3.5        2           132x    ⬅ see below
 ```
 
-⚠️⚠️ **THE 132x VIEW IS NOT A DEFERRED WIN — IT IS AN UNMEASURED ONE, AND THE PROBE FLATTERS IT BY
-CONSTRUCTION.** That arm reads ONE key per row. The engine's consumers differ: `projectRow` reads a
+⚠️⚠️ ~~**THE 132x VIEW IS NOT A DEFERRED WIN — IT IS AN UNMEASURED ONE**~~ — **MEASURED AND DECLINED
+AT ITEM 2023: 1.98x on its best shape and 2.58x SLOWER on `RETURN *`.** The original note, kept
+because its reasoning was right: That arm reads ONE key per row. The engine's consumers differ: `projectRow` reads a
 key per output column (where a view would indeed be nearly free), while `RETURN *` copies every
 entry and `DISTINCT`'s `rowKey` iterates the whole binding — a view pays per access on both. It also
 makes every `Binding` consumer depend on a `ReadonlyMap`-shaped class rather than a `Map`. **Item
@@ -99366,3 +99367,62 @@ GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-
 `bun run fuzz` all seven green plus **10/10 sweeps clean** on the confirming run; 8 new merge tests
 and 2 pinning the divergence; **6/8 mutants caught across two filters**, the two survivors documented
 above as answer-equivalent.
+
+## Item 2023 — ❌ **the no-copy binding VIEW, built, measured IN SITU and DECLINED. Its 132x is a probe artifact: 1.98x on its best shape, and 2.58x SLOWER on `RETURN *`.** 🔑 The probe read one key a row; the engine's consumers do not
+
+Item 2022 shipped a copying merge (1.79x) and explicitly refused to bank the view's 132x, recording it
+as "an UNMEASURED win, not a deferred one". This is the measurement. **No engine change shipped.**
+
+Built as a `ReadonlyMap`-shaped view over the two maps and swapped in at the product's cached-rows
+site. Four alternated rounds, one arm per process, three consumer shapes over the SAME product:
+
+| what reads the binding                         | COPY  | VIEW  |                  |
+| ---------------------------------------------- | ----- | ----- | ---------------- |
+| `RETURN b.n AS x, d.n AS y` — two `get`s a row | 349.3 | 176.2 | **1.98x faster** |
+| `RETURN *` — copies EVERY entry                | 326.5 | 841.5 | **2.58x SLOWER** |
+| `RETURN DISTINCT …` — `rowKey` iterates        | 778.1 | 612.9 | 1.27x faster     |
+| `… ORDER BY x, y`                              | 967.2 | 761.9 | 1.27x faster     |
+
+🔑 **SO THE IDEA'S REAL SIZE IS 1.98x ON ITS BEST SHAPE, NOT 132x.** The probe read ONE key per row;
+the engine does more per row than that, so the copy it avoids is a smaller share. And it does not
+merely fail to help `RETURN *` — it **costs that shape 2.58x**, because a view pays per access where
+a copy pays once.
+
+⚠️ THREE COSTS THE PROBE COULD NOT SHOW, each found only by building it:
+
+- **NOT A DROP-IN.** TypeScript's `ReadonlyMap` requires `MapIterator` — the iterator-helper
+  protocol, `map`/`filter`/`take`/`drop` and nine more — so a generator-backed view satisfies it only
+  with casts that must not ship. Shipping honestly means narrowing the `Binding` type to what
+  consumers actually use, across the whole engine.
+- **IT MAKES EVERY `binding.get` CALL SITE POLYMORPHIC** — two shapes where there was one. That cost
+  appears in no probe of the merge and would need the whole-screen sweep to bound.
+- **IT HOLDS REFERENCES**, so it is sound only while every matcher yield site builds a FRESH binding.
+  The sites inspected do (`new Map(binding)` then `set`), and `projectRow`'s note records that the
+  mutate-in-place pattern belongs to `hop-projection.ts` — but inspected is not proved.
+
+**The only version worth pricing further is gated on the consumer** (`!proj.star`), which would
+capture both wins — but the matcher does not know the projection, so it needs plumbing in, and the
+2.58x is what a wrong gate costs. The numbers are recorded at `mergeBinding` itself, next to the code
+it would have changed, so the next reader meets the 1.98x and the 2.58x rather than the 132x.
+
+⚠️⚠️ **AND THE A/B'S ARM NAMES WERE A TRAP I WALKED INTO.** With rounds called `PRE`/`POST`, the first
+run installed the VIEW under the label "PRE" — because `round PRE "$DEAD" …` sets the DEAD arm, and
+the DEAD arm here IS the experiment. Its `product` arm read **186.7 ms** and I nearly read that as the
+baseline, which would have inverted the entire conclusion. Renamed to `COPY`/`VIEW`: **an A/B whose
+arms are not named for WHAT THEY ARE invites reading the result backwards**, and the usual
+PRE/POST convention silently assumes the shipped arm is POST.
+
+⚠️ AND ENDING A SWEEP ON THE EXPERIMENTAL ARM LEFT IT IN THE TREE — then deleting the view function
+left a call site referring to a name that no longer existed. `tsc` caught it, but only afterwards: the
+`trap` restores only when the arm is NEITHER, and a round that deliberately installed VIEW leaves
+VIEW. The script now has an explicit `ROUND=RESTORE`. Fourth instance this session of an A/B leaving
+its arm behind ([[ab-scripts-need-a-restore-trap]]), and the first where the trap was working as
+designed and still insufficient.
+
+⚠️ ONE PROBE FIX WORTH NOTING: the digest hard-coded the projected arms' `x`/`y` shape, so every
+`RETURN *` row printed `undefined/undefined` — which reads as a broken ARM rather than a mismatched
+digest. Generalized over the row's own keys.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
+`bun run fuzz` all seven green plus 6/6 sweeps clean; the tree verified back on the copying merge by
+re-measuring (`product` 349.0, the COPY arm's own figure).

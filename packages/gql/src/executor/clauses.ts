@@ -672,6 +672,37 @@ const recordTail = function* (
  * Item 762's lesson in its general form: a micro-benchmark's consumer is not the engine's. Pricing
  * it needs an in-situ A/B with the ITERATING shapes as controls, which is a separate item.
  *
+ *
+ * ⚠️⚠️ **THE NO-COPY VIEW WAS BUILT, MEASURED IN SITU AND DECLINED (item 2023). Do not rebuild it
+ * from the 132x figure above — that number is a probe artifact.** A `ReadonlyMap`-shaped view over
+ * the two maps, swapped in at the product's cached-rows site, four alternated rounds, one arm per
+ * process, arms named COPY and VIEW:
+ *
+ * ```text
+ *     consumer                              COPY     VIEW
+ *     RETURN b.n AS x, d.n AS y  (2 gets)   349.3    176.2   1.98x FASTER
+ *     RETURN *                   (iterates) 326.5    841.5   2.58x SLOWER  ⬅ the refusal
+ *     RETURN DISTINCT …          (iterates) 778.1    612.9   1.27x faster
+ *     … ORDER BY x, y                       967.2    761.9   1.27x faster
+ * ```
+ *
+ * So the idea's real size is **1.98x on its best shape, not 132x** — the probe read one key a row
+ * where the engine does more — and it **REGRESSES `RETURN *` by 2.58x**, which is a shape people
+ * write. Three further costs the probe could not show:
+ *
+ *   - NOT A DROP-IN: TypeScript's `ReadonlyMap` requires `MapIterator` (the iterator-helper
+ *     protocol), so a generator-backed view needs either casts that must not ship or a narrowing of
+ *     the `Binding` type across the whole engine.
+ *   - IT MAKES EVERY `binding.get` CALL SITE POLYMORPHIC — two shapes where there was one — a cost
+ *     that appears in no probe of this function and would need the whole-screen sweep to bound.
+ *   - IT HOLDS REFERENCES, so it is sound only while every matcher yield site builds a FRESH
+ *     binding. Inspected, not proved.
+ *
+ * Gating it on the consumer (`!proj.star`) would capture both wins and is the only version worth
+ * pricing further — but the matcher does not know the projection, so it needs that plumbed in, and
+ * the 2.58x cliff is what a wrong gate costs. Numbers recorded here so that is a decision with
+ * evidence rather than an idea with a headline.
+ *
  * ⚠️ KEY ORDER IS IDENTICAL AND THAT IS A CONTRACT, not a detail: `visitRemaining` documents the
  * merge order as "outer keys, then `pat`'s, then the tail's — which `RETURN *` projects in", and
  * column order is bytes ([[column-order-is-observable]]). `Map.set` on an EXISTING key keeps that
