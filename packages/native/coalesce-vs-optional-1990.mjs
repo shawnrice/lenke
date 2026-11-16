@@ -36,6 +36,8 @@ import { Graph } from '@lenke/core';
 import {
   branch,
   count,
+  fold,
+  order,
   choose,
   coalesce,
   constant,
@@ -169,6 +171,20 @@ const ARMS = {
    * back because the rung refuses the plan. Each count arm is priced beside its already-fused
    * `values` twin, which does strictly MORE work (emits every row rather than one number).
    */
+  /*
+   * ⚠️ ITEM 2029's ARMS. `fusedProjectedResidual` (the trailing order/fold/min/max fusion) has only
+   * TWO call sites, both on the scan/hop paths, so no reconverging rung passes through it. The route
+   * census answered SHORTCUT with 0 `applyStep` calls for all nine such shapes — i.e. `run`'s own
+   * loop already serves the terminal — but the census counts `applyStep` and is BLIND to a slower
+   * non-step path, so each terminal is timed against the SAME ROUTE WITHOUT IT (item 2016's rule: a
+   * floor arm must take the same route, not merely touch the same data).
+   */
+  optionalOrder: () => traversal(V(), optional(out('E')), values('n'), order()),
+  optionalFloor: () => traversal(V(), optional(out('E')), values('n')),
+  hopOrder: () => traversal(V(), out('E'), values('n'), order()),
+  hopFloor: () => traversal(V(), out('E'), values('n')),
+  coalesceFold: () => traversal(V(), coalesce(out('E'), in_('E')), values('n'), fold()),
+  coalesceFoldFloor: () => traversal(V(), coalesce(out('E'), in_('E')), values('n')),
   coalesceCount: () => traversal(V(), coalesce(out('E'), in_('E')), count()),
   chooseCount: () => traversal(V(), choose(has('n', 0), out('E'), in_('E')), count()),
   branchCount: () =>

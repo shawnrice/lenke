@@ -202,12 +202,24 @@ const SHAPES = {
     "traversal(V(), choose(traversal(out('E')), values('k'), constant('x')), count())",
   'br: two options':
     "traversal(V(), branch(traversal(values('k'))).option(3, traversal(out('E'))).option(5, traversal(in_('E'))).none(traversal(identity())))",
+  'resid: hop order': "traversal(V(), out('E'), values('n'), order())",
+  'resid: hop fold': "traversal(V(), out('E'), values('n'), fold())",
+  'resid: hop max': "traversal(V(), out('E'), values('n'), max())",
+  'resid: optional order': "traversal(V(), optional(traversal(out('E'))), values('n'), order())",
+  'resid: optional fold': "traversal(V(), optional(traversal(out('E'))), values('n'), fold())",
+  'resid: optional max': "traversal(V(), optional(traversal(out('E'))), values('n'), max())",
+  'resid: coalesce order':
+    "traversal(V(), coalesce(traversal(out('E')), traversal(in_('E'))), values('n'), order())",
+  'resid: coalesce fold':
+    "traversal(V(), coalesce(traversal(out('E')), traversal(in_('E'))), values('n'), fold())",
+  'resid: choose order':
+    "traversal(V(), choose(has('k', 3), traversal(out('E')), traversal(in_('E'))), values('n'), order())",
   'br: two options count':
     "traversal(V(), branch(traversal(values('k'))).option(3, traversal(out('E'))).option(5, traversal(in_('E'))).none(traversal(identity())), count())",
 };
 
 const IMPORTS =
-  "import { E, V, aggregate, both, bothE, cap, count, dedupe, fold, groupCount, gt, has, hasId, hasLabel, id, inE, inV, in_, limit, min, optional, order, otherV, out, outE, outV, store, branch, choose, coalesce, constant, identity, sum, toArray, traversal, values, where } from '@lenke/gremlin';";
+  "import { E, V, aggregate, both, bothE, cap, count, dedupe, fold, groupCount, gt, has, hasId, hasLabel, id, inE, inV, in_, limit, min, optional, order, otherV, out, outE, outV, store, branch, choose, coalesce, constant, fold, identity, max, order, sum, toArray, traversal, values, where } from '@lenke/gremlin';";
 
 const build = () => execFileSync('bun', ['run', 'build'], { cwd: ROOT, stdio: 'ignore' });
 

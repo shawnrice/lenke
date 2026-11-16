@@ -99804,3 +99804,50 @@ With those, **21/21 mutants caught** across the three rungs and two filters.
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
 gremlin suite 2,571 (14 new across three files); `bun run fuzz` all seven green plus 6/6 sweeps clean.
+
+## Item 2029 — ❌ **REFUTED: the five fused-walk rungs do NOT need `fusedProjectedResidual`. The trailing `order` costs 73.11 ms over its floor where the rung that DOES reach the fusion pays 68.67 — 1.065x, inside the row's noise.** 🔑 The same `pickFor` audit that paid 19.6x at item 2028, run on the next shared gate helper, and this time the answer was no
+
+Item 2028's method was to audit a shared gate helper across every rung rather than hunt a slow shape.
+Applied to the next one, `fusedProjectedResidual` — which fuses a trailing
+`order`/`count`/`fold`/`min`/`max`/`aggregate().cap()` over a projected walk — the audit looked just
+as promising:
+
+```text
+    fusedProjectedResidual has exactly TWO call sites, both on the scan/hop paths.
+    The five rungs that fuse a RECONVERGING or edge-filtered walk pass through NEITHER.
+```
+
+So `optional(…).values(k).order()` and its eight siblings looked like they were paying the step
+machinery for a terminal the hop path gets fused. **They are not.** Nine census rows, all of them:
+
+```text
+    SHORTCUT  resid: optional order / fold / max       0 applyStep call(s)
+    SHORTCUT  resid: coalesce order / fold            0 applyStep call(s)
+    SHORTCUT  resid: choose order                     0 applyStep call(s)
+```
+
+`run`'s own loop already serves these terminals, so there is no route difference to price — not even
+the weaker "a route difference is not always a cost one" (item 1854), which presumes one exists.
+
+⚠️ **AND THE CENSUS ALONE WOULD NOT HAVE SETTLED IT**: it counts `applyStep` and is blind to a slower
+NON-STEP path, so each terminal was also timed against **the same route without it** (item 2016's
+floor rule):
+
+| shape                                           | with terminal | same-route floor | the terminal costs |
+| ----------------------------------------------- | ------------- | ---------------- | ------------------ |
+| `optional(…).values(n).order()` — NO fusion     | 124.82        | 51.71            | **73.11**          |
+| `out(E).values(n).order()` — REACHES the fusion | 113.99        | 45.32            | **68.67**          |
+| `coalesce(…).values(n).fold()`                  | 44.83         | 43.62            | 1.21               |
+
+**73.11 against 68.67 is 1.065x.** The reason is structural and worth keeping: sorting 800,000 values
+IS the work, so whatever the fusion removes is bounded by ~6.5% of the row and sits inside its own
+noise. A fusion can only pay where the step machinery is a large FRACTION of the step's work — which
+is why item 2028's `count` was worth 19.6x (the sub-plan was re-dispatched 4002 times, and a count's
+own work is ~nothing) and this is worth nothing.
+
+**So the two halves of the same method, back to back: the audit nominates, the floor decides.** Item
+2028 took three rungs at 19.6x / 7.72x / 4.66x; item 2029 is the same audit on the next helper
+returning a clean no. The nine census rows and three probe arms are KEPT, so the next reader finds the
+measurement rather than the hypothesis.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped. No source change.
