@@ -99066,3 +99066,93 @@ sweep may omit a family where the movement is genuine.
 
 GATES. `bunx tsc --noEmit` 0; `projection.ts` byte-identical to the shipped arm after the bisect
 (the `trap` restored it); no engine change in this item.
+
+## Item 2020 — ✅ **a residual `count()` is counted on the walk's drain: 11.46 → 2.74 ms (4.18x) and 11.33 → 1.99 (5.69x), controls flat.** 🔑 **Counting cost 2.1x MATERIALIZING 85,713 rows, which is the wrong way round and is what nominated it** — `count` was the only reduce still on the generic route
+
+Profile-first from a fresh Gremlin screen (not re-screened since item 2016, whose win is visible:
+`edge: outE.has(w).inV` 11.65 → 5.08). The new top, behind the CLOSED `pathdep: tree`, was a pair
+that makes no sense on its face:
+
+```text
+    V().outE(E).has(w, gt 3).inV()           5.31 ms   ⬅ builds 85,713 ROWS
+    V().outE(E).has(w, gt 3).inV().count()  11.20      ⬅ builds ONE number   2.1x
+    V().outE(E).has(w, gt 3).count()        11.05
+```
+
+🔑 **THE CAUSE: `count` LEFT THE RESIDUAL NON-EMPTY AND NO FUSED CASE CLAIMED IT.** A walk whose
+`rest` is empty is returned whole and `toArray` reads its `drain` (item 1412); a walk with a residual
+goes to the generic route, which wraps every element in a traverser for `countStep`. Item 1956 made
+`count` RIDE this rung rather than decline the plan — "it is not consumed, deliberately" — which was
+right, and left the reduce on the slow route. `min`/`max` (1908), `fold` (1909), `aggregate().cap()`
+(1911) and `order()` (1630) each got a fused case over the years. **`count`, the cheapest reduce in
+the language, did not.** Item 1909 had already priced the iteration it was paying: ~95 ms per 800,000
+elements (~119 ns each) against a drained 4.48 ms, 73% of the profile in `generatorResume`.
+
+One generic case in `fusedProjectedResidual`, so it serves EVERY fused walk rather than one rung.
+`count-residual-ab-2020.sh`, two alternated passes, one shape per process:
+
+| shape                                     | PRE           | POST        | ratio                                                               |
+| ----------------------------------------- | ------------- | ----------- | ------------------------------------------------------------------- |
+| `outE.has(w).inV.count`                   | 11.46 / 11.55 | 2.74 / 2.85 | **4.18x**                                                           |
+| `outE.has(w).count`                       | 11.33 / 11.51 | 1.99 / 2.19 | **5.69x**                                                           |
+| `hop1: count`                             | 0.00          | 0.00        | untouched — `countShortcut` already answers it from the bucket size |
+| `outE.has(w).inV` (control)               | 5.41 / 10.35  | 5.34 / 5.72 | flat                                                                |
+| `hop1: values`, `hop2: values` (controls) |               |             | flat                                                                |
+
+And counting is now CHEAPER than materializing, which is the ordering it should always have had.
+
+⚠️ ONE SHAPE PER PROCESS IS LOAD-BEARING HERE, not boilerplate: this change REDISTRIBUTES call sites
+(count shapes leave the generic route), and item 762 records that a shared dispatch site flatters
+exactly that, by up to 1.56x on a control.
+
+⚠️⚠️ **`countIterable` WAS UNREACHED BY EVERY TEST AND A MUTANT PROVED IT** — `n += 1` → `n += 2`
+survived this item's whole file AND the entire @lenke/gremlin suite. Not dead code: a surviving
+mutant has three meanings and this was the third, a missing test. Several rungs return a walk with NO
+`drain` — item 2014's `choose-test-values.ts` among them, plus one arm of `hop-values.ts` and one of
+`tagged-hop-values.ts` — so the branch is live. `choose(<one hop>, <value arm>, <value arm>).count()`
+reaches it, and the test ASSERTS that walk has no drain, so a later edit adding one makes the test
+fail loudly rather than silently moving coverage off the branch.
+
+⚠️ AND `count-never-fused` (the gate forced to refuse everything) SURVIVED both filters until the
+gate got its own assertions — the route choice is answer-equivalent, so the generic path returns the
+same numbers. [[perf-gate-needs-its-own-test]], seventh instance. `fusableProjectedCount` is exported
+and tested directly, which also covers the three gate-widening mutants.
+
+⚠️ `count` CARRIES A SCOPE WHERE `fold` DOES NOT — `{ kind: 'count'; scope?: 'global' | 'local' }`. A
+LOCAL count counts each traverser's own iterable value, so after `fold()` it is 6 where a global
+count is 1. Refused, and the test pins both numbers. (`fusableProjectedFold` has no such guard and
+says why: its node has no scope field and a guard against it SURVIVED mutation.)
+
+⚠️ THE ONE SURVIVOR IS `count-ignores-drain` — always counting by iteration instead of the drain.
+That is answer-equivalent by construction (same number, slower), so no test can see it and the A/B is
+the only evidence, exactly as item 2017's `always` mutant and `count-shortcut.ts`' own `seenBefore`
+gate.
+
+⚠️⚠️ **THREE HARNESS FAULTS IN THIS ITEM, ALL THE SAME CLASS — AN AMBIGUOUS STRING:**
+
+- **A CONTROL THAT WAS SECRETLY THE TARGET.** The screen's `ONLY` filter uses `includes`, so
+  `ONLY='edge: outE.has(w).inV'` selects BOTH that row and `…inV.count`, and a `grep -F` for the
+  shorter name reported the COUNT row's 11.34 ms as the control's reading. Now matched as the line's
+  exact trailing field.
+- **AN A/B ARM THAT COULD NOT BE FOUND.** `DEAD='  return false;'` appears many times in
+  `aggregation.ts`, so `set_arm`'s "already set" check matched a line it did not write and the
+  restore guard saw "a dead arm present" and did nothing — leaving the tree with the residual
+  DISABLED after the first run. The arm now carries a marker comment.
+- **A MUTANT THAT EDITED FOUR GATES.** `  if (rest.length !== 1) {` sits at the same indent in four
+  gates in this file; a line-start anchor hit all of them, so the verdict covered four decisions at
+  once. Scoped with a sed ADDRESS RANGE. (Item 2018 hit the same thing and fixed it by extracting
+  its gate.)
+
+⚠️ A SECOND BIMODAL ROW, noted rather than chased: the `edge: outE.has(w).inV` control read **5.41
+and 10.35 on identical code** across the two PRE passes. Item 2019 measured `range-scan` at a 1.72x
+floor; this row has one too. Both readings of the POST arm were 5.3-5.7, so the control is flat on
+minima, but a two-reading comparison of THIS row would be as untrustworthy as item 2019's.
+
+STILL OPEN: `drain().length` still builds the array it then measures. A `drainCount()` on `HopWalk`
+would count without materializing, which is a bigger change (every walk implements it) for a win on
+top of 4-5.7x — priced at nothing yet, and worth measuring before building.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
+`bun run fuzz` all seven green plus **8/8 sweeps clean** (the gremlin fuzzer compares against the
+Rust engine, which is the real net under a reduce change); 10 new tests; **7/8 mutants caught across
+two filters**, the eighth being the answer-equivalent `count-ignores-drain`.

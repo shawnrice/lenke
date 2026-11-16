@@ -24,10 +24,12 @@ import {
 import { tagsObservedFrom } from '../ast.js';
 import type { Plan, Step } from '../ast.js';
 import {
+  countProjectedWalk,
   foldProjectedList,
   foldProjectedMinMax,
   fusableProjectedAggregate,
   fusableProjectedBagCap,
+  fusableProjectedCount,
   fusableProjectedFold,
   fusableProjectedOrder,
   fusableValuesAggregate,
@@ -2600,6 +2602,15 @@ const fusedProjectedResidual = (
 
   if (folded !== undefined) {
     return foldProjectedMinMax(projected.values, folded);
+  }
+
+  /*
+   * A RESIDUAL THAT IS ONLY A GLOBAL `count()` IS COUNTED ON THE DRAIN (item 2020) — the cheapest
+   * reduce in the language was the only one still on the generic route, and it measured 2.1x the
+   * cost of the sibling that MATERIALIZES 85,713 rows. See `fusableProjectedCount`.
+   */
+  if (fusableProjectedCount(projected.rest)) {
+    return countProjectedWalk(projected.values);
   }
 
   /**

@@ -361,6 +361,75 @@ export const fusableProjectedBagCap = (rest: readonly Step[]): boolean => {
  * are ~95 ms over 800,000 elements — the cost of ITERATING a walk that can be DRAINED (item 1412),
  * not of accumulating a list.
  */
+/**
+ * A RESIDUAL THAT IS ONLY A GLOBAL `count()` (item 2020).
+ *
+ * ⚠️⚠️ **COUNTING COST 2.1x MATERIALIZING, which is the wrong way round and is what nominated this.**
+ * On the Gremlin screen at 50,000 vertices, one shape per process:
+ *
+ * ```text
+ *     V().outE(E).has(w, gt 3).inV()           5.31 ms   ⬅ builds 85,713 ROWS
+ *     V().outE(E).has(w, gt 3).inV().count()  11.20      ⬅ builds ONE number
+ *     V().outE(E).has(w, gt 3).count()        11.05
+ * ```
+ *
+ * 🔑 **THE CAUSE IS THAT `count` LEFT THE RESIDUAL NON-EMPTY AND NO FUSED CASE CLAIMED IT.** A walk
+ * whose `rest` is empty is returned whole and `toArray` reads its `drain` (item 1412); a walk with a
+ * residual goes to the generic route, which wraps every element in a traverser for `countStep`. Item
+ * 1956 made `count` RIDE this rung rather than decline the plan — "it is not consumed, deliberately"
+ * — and that was the right call, but it left the reduce on the slow route. `min`/`max` (item 1908),
+ * `fold` (1909), `aggregate().cap()` (1911) and `order()` (1630) each got a fused case; `count`,
+ * the cheapest reduce of all, did not.
+ *
+ * Item 1909 priced that iteration directly: ~95 ms per 800,000 elements (~119 ns each) against a
+ * drained 4.48 ms, with 73% of the profile in `generatorResume` and the adjacency generator.
+ *
+ * ⚠️ `count` CARRIES A SCOPE, UNLIKE `fold` — `{ kind: 'count'; scope?: 'global' | 'local' }`. A
+ * LOCAL count counts each traverser's own iterable value rather than the stream, which is a
+ * different question, so it is refused here exactly as `fusableProjectedAggregate` refuses it for
+ * `min`/`max`. (`fusableProjectedFold` has no such guard and says why: `fold`'s node has no scope
+ * field, and a guard against it SURVIVED mutation.)
+ */
+export const fusableProjectedCount = (rest: readonly Step[]): boolean => {
+  if (rest.length !== 1) {
+    return false;
+  }
+
+  const [step] = rest;
+
+  if (step.kind !== 'count') {
+    return false;
+  }
+
+  return !('scope' in step) || step.scope === undefined || step.scope === 'global';
+};
+
+/** Count without a traverser: the drained array's length, or one counting pass. */
+const countIterable = (it: Iterable<unknown>): number => {
+  let n = 0;
+
+  for (const _ of it) {
+    void _;
+
+    n += 1;
+  }
+
+  return n;
+};
+
+/**
+ * ⚠️ THE DRAIN IS PREFERRED, and for this family that is two wins rather than one: it skips the
+ * traverser wrapping AND it is where item 2016's flat edge array lives, so an edge-filtered count
+ * now takes the same linear pass its projecting sibling does. A walk without a `drain` is counted in
+ * one pass rather than materialized — `[...values].length` would allocate an array to throw away.
+ *
+ * ⚠️ RETURNS A ONE-ELEMENT ARRAY, which is Gremlin's contract for a reducing terminal and what
+ * `foldProjectedList` returns for its own.
+ */
+export const countProjectedWalk = (values: HopWalk): unknown[] => [
+  values.drain === undefined ? countIterable(values) : values.drain().length,
+];
+
 export const foldProjectedList = (values: HopWalk): unknown[] => [
   values.drain === undefined ? [...values] : values.drain(),
 ];
