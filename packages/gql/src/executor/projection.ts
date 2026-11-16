@@ -176,13 +176,18 @@ export const projectedRows = (
   params: Params,
   graph: Graph,
 ): Row[] => {
-  if (
-    proj.aggregating ||
-    proj.orderBy.length > 0 ||
-    proj.distinct ||
-    resolveCount(proj.skip, params) !== undefined ||
-    resolveCount(proj.limit, params) !== undefined
-  ) {
+  const windowed =
+    resolveCount(proj.skip, params) !== undefined || resolveCount(proj.limit, params) !== undefined;
+
+  /*
+   * ⚠️ THE SORTED FAST PATH (item 2018) — see `sortedDirectRoute` for every refusal and why, and
+   * `sortedRowsDirect` for what it skips: ~193 ns a row, 3.1x of the sort itself.
+   */
+  if (sortedDirectRoute(proj, windowed)) {
+    return sortedRowsDirect(proj, bindings, params, graph);
+  }
+
+  if (proj.aggregating || proj.orderBy.length > 0 || proj.distinct || windowed) {
     return mapToArray(applyProjection(proj, bindings, params, graph), mapToRow);
   }
 
@@ -583,6 +588,146 @@ export const buildGroups = (
 
   return groups;
 };
+/**
+ * Does this projection take `sortedRowsDirect`? A pure function of the compiled projection (item
+ * 2018).
+ *
+ * ⚠️⚠️ **A ROUTE CHOICE, SO ANSWER-EQUIVALENT — every mutant of it survives the behavioural tests**
+ * ([[perf-gate-needs-its-own-test]]). Extracted and exported for the same reason item 1776 extracted
+ * `unsortedPageRoute`: the arithmetic is the only thing a test can hold. It also gives the mutation
+ * round a UNIQUE anchor, which the inline form did not — `!proj.aggregating` appears four times in
+ * this file, so a mutant "admitting aggregates" silently edited three other decisions too.
+ *
+ * THE FOUR REFUSALS, each for its own reason:
+ *
+ *   - AGGREGATING — a group has no per-input row to project; `projectBinding` is handed a group
+ *     representative and the whole branch is different.
+ *   - DISTINCT — its dedup key is built from the projected `Map` (`rowKey`), which is exactly the
+ *     allocation this path removes.
+ *   - WINDOWED — with `SKIP`/`LIMIT` the general path keeps top-k INPUT bindings and projects only
+ *     survivors (item 145), so an item that faults on a discarded row never raises there;
+ *     projecting everything and slicing after would raise where the query does not (item 604,
+ *     measured on both engines). The top-k path is also simply better for that shape.
+ *   - `orderNeedsOutput` — the sort keys read projected COLUMNS, which this path never builds as a
+ *     binding. Item 2017's flag, and the same one the top-k path relies on.
+ *
+ * And `orderBy.length > 0`, because with no sort the UNSORTED fast path above already projects
+ * straight to the row.
+ */
+export const sortedDirectRoute = (proj: CProjection, windowed: boolean): boolean =>
+  !proj.aggregating &&
+  !proj.distinct &&
+  !windowed &&
+  !proj.orderNeedsOutput &&
+  proj.orderBy.length > 0;
+
+/**
+ * `ORDER BY` WITH NO `Map` ROUND-TRIP — the sorted twin of `projectedRows`' unsorted fast path
+ * (item 2018).
+ *
+ * 🔑 **THE SORTED PATH ALLOCATED TWICE PER ROW AND ITERATED TWICE.** `applyProjection` builds the
+ * projected columns as a `Map` (`projectBinding`), sorts, and then has `mapToRow` copy each `Map`
+ * into a plain object — which is verbatim the "two allocations and two iterations per row where one
+ * of each will do" that `projectRow`'s header describes having fixed for the UNSORTED path. It was
+ * still here because the `Map` form has two other consumers: the `ORDER BY` overlay and `DISTINCT`'s
+ * row keys. The gate below requires BOTH to be absent, so nothing downstream wants the `Map`.
+ *
+ * Priced in isolation at 2,250,000 rows, one arm per process, digests identical
+ * (`crossproduct-sort-2017.mjs`, arms `handsort` and `handsortviamap`):
+ *
+ * ```text
+ *     the same sort, rows built DIRECTLY       207 ms    92 ns/row
+ *     the same sort VIA a Map per row          642      285           3.1x
+ * ```
+ *
+ * So the round-trip is ~193 ns a row. The CPU profile under-reports it badly — `mapToRow` shows as
+ * 11.6% self with the rest split across `projectBinding`, `internalMap` and the garbage collector,
+ * which is why this was priced with an A/B arm rather than read off the profile (item 2017's lesson
+ * about frame attribution, one item on).
+ *
+ * ⚠️ WHY THE SORT KEYS MAY READ THE INPUT BINDING: `!proj.orderNeedsOutput` is exactly item 2017's
+ * condition — the keys were rewritten through `aliasDefinition` and read input variables, so the
+ * projected columns are not needed to evaluate them. The same flag the top-k path has relied on.
+ *
+ * ⚠️ NO WINDOW. With `SKIP`/`LIMIT` the general path keeps top-k INPUT bindings and projects only
+ * survivors (item 145), so an item that faults on a discarded row never raises there — projecting
+ * everything and slicing after would raise where the query does not. `ordered-rows.ts` states this
+ * rule and item 604 measured it on both engines. The top-k path above is also simply better for
+ * that shape, so this declines it twice over.
+ *
+ * ⚠️ THE COMPARATOR IS `keyedComparator`, NOT A COPY — see its header. And tie order is input order
+ * in both paths, because rows are projected in input order and `Array.prototype.sort` is stable.
+ *
+ * ⚠️ COLUMN ORDER IS UNCHANGED, which is the observable shape of the output
+ * ([[column-order-is-observable]]): `projectRow` writes `proj.items` in order, and `mapToRow` walked
+ * the `Map` in insertion order, which was that same `proj.items` order. `projectRow`'s own header
+ * makes this argument for the unsorted path and it is the same argument here.
+ */
+const sortedRowsDirect = (
+  proj: CProjection,
+  bindings: Iterable<Binding>,
+  params: Params,
+  graph: Graph,
+): Row[] => {
+  const { orderBy } = proj;
+  const keyed: { row: Row; keys: unknown[] }[] = [];
+
+  for (const b of bindings) {
+    /*
+     * ⚠️ PROJECT FIRST, THEN THE KEYS, in this order — because the projection is what can FAULT and
+     * the general path projects a row before it is ever compared. Evaluating keys first would raise
+     * a key's error where the query raises the projection's.
+     */
+    const row = projectRow(proj, b, params, graph);
+    const env: EvalEnv = { binding: b, params, graph };
+    const keys: unknown[] = [];
+
+    for (const s of orderBy) {
+      keys.push(s.fn(env));
+    }
+
+    keyed.push({ row, keys });
+  }
+
+  keyed.sort(keyedComparator(orderBy));
+
+  const out: Row[] = new Array(keyed.length);
+
+  for (let i = 0; i < keyed.length; i += 1) {
+    out[i] = keyed[i].row;
+  }
+
+  return out;
+};
+
+/**
+ * "Which of these two keyed rows sorts first" — ONE derivation, shared (item 2018).
+ *
+ * ⚠️⚠️ **A SECOND COPY OF THIS IS THE ONE THING BYTE-IDENTITY CANNOT SURVIVE**, which is
+ * `sortRowsByColumns`' own warning in `values.ts` and `sort-column-specialize.ts`' reason for being
+ * branch ELIMINATION rather than a rewrite. `applyProjection` and `sortedRowsDirect` both need it —
+ * the second is a fast path that skips the `Map` round-trip and must sort IDENTICALLY, ties
+ * included — so it lives here and neither writes its own.
+ *
+ * ⚠️ TIE ORDER IS THE CALLER'S, NOT THIS FUNCTION'S: returning 0 leaves the rows in the order the
+ * sort received them, and `Array.prototype.sort` is required to be STABLE, so both callers keep
+ * input order on a tie. A caller that pre-sorted or re-ordered its input would change the answer
+ * without changing this comparator.
+ */
+const keyedComparator =
+  <T extends { readonly keys: readonly unknown[] }>(orderBy: CProjection['orderBy']) =>
+  (a: T, b: T): number => {
+    for (let i = 0; i < orderBy.length; i += 1) {
+      const c = compareSort(a.keys[i], b.keys[i], orderBy[i].descending, orderBy[i].nullsFirst);
+
+      if (c !== 0) {
+        return c;
+      }
+    }
+
+    return 0;
+  };
+
 export const applyProjection = (
   proj: CProjection,
   bindings: Iterable<Binding>,
@@ -610,17 +755,7 @@ export const applyProjection = (
 
   type Keyed = { b: Binding; keys: readonly unknown[] };
 
-  const cmp = (a: Keyed, b: Keyed): number => {
-    for (let i = 0; i < orderBy.length; i += 1) {
-      const c = compareSort(a.keys[i], b.keys[i], orderBy[i].descending, orderBy[i].nullsFirst);
-
-      if (c !== 0) {
-        return c;
-      }
-    }
-
-    return 0;
-  };
+  const cmp = keyedComparator<Keyed>(orderBy);
 
   // Top-k: `ORDER BY … LIMIT n` whose sort keys don't read the output. The keys
   // come from the input binding alone, so only the top-k INPUT bindings are kept

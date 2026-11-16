@@ -55,6 +55,20 @@ round() {
   measure "$1"
 }
 
+# ⚠️⚠️ **RESTORE ON ANY EXIT, NOT ONLY AT THE END — AND A KILL IS THE CASE THAT PROVES IT.** Item
+# 2018's run of this script was killed mid-round by the system's low-memory reaper and left the PRE
+# arm (`&& false`) in `projection.ts`: the fast path silently disabled, the tree still compiling, and
+# nothing to notice it but a `git diff`. The mutation harnesses restore in a loop and re-verify at
+# the end; an A/B that swaps arms needs a `trap`, because it can die between the swap and the swap
+# back. SIGTERM, SIGINT and ordinary EXIT all land here.
+restore_live() {
+  if ! grep -F -q -- "$LIVE" "$SRC"; then
+    print -- "\n[trap] restoring the LIVE arm in $SRC"
+    set_arm "$LIVE" "$DEAD" || print -- "[trap] COULD NOT RESTORE — fix $SRC by hand"
+  fi
+}
+trap restore_live EXIT INT TERM
+
 round PRE "$DEAD" "$LIVE"
 round POST "$LIVE" "$DEAD"
 round 'POST (2)' "$LIVE" "$DEAD"

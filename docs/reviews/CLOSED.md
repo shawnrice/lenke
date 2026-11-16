@@ -98897,3 +98897,111 @@ GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-
 `bun run fuzz` all seven green plus **8/8 sweeps clean** (the differential fuzzer compares TS against
 native and is the real net under a sort change); 16 new tests; **9/10 mutants caught across two
 filters**, the tenth being the unobservable `always`.
+
+## Item 2018 — ✅ **the sorted path stops round-tripping every row through a `Map`: the nominated shape 2205 → 1567 ms (1.41x), 2.08x cumulative with item 2017.** ⚠️⚠️ And my first test file tested NOTHING — five walk mutants survived it, because every shape in it was answered by a rung above the code under test
+
+Item 2017's re-profile named the term: `mapToRow` 11.6% self. Priced with an A/B arm instead of read
+off the profile, which is the whole reason it was worth taking (2,250,000 rows, one arm per process,
+digests identical, `crossproduct-sort-2017.mjs`):
+
+```text
+    the same sort, rows built DIRECTLY       207 ms    92 ns/row
+    the same sort VIA a Map per row          642      285           3.1x
+```
+
+**~193 ns a row — 3.1x of the sort itself, where the profile showed 11.6%.** Self-time split the
+cost across `mapToRow`, `projectBinding`, `internalMap` and the garbage collector, so no single frame
+looked like a target. Item 2017's lesson about frame attribution, one item on.
+
+What it is: `applyProjection` builds the projected columns as a `Map` per row, sorts, then has
+`mapToRow` copy every `Map` into a plain object — verbatim the "two allocations and two iterations
+per row where one of each will do" that `projectRow`'s header describes having fixed for the
+UNSORTED path. It stayed because the `Map` has two other consumers, the `ORDER BY` overlay and
+`DISTINCT`'s row keys. `sortedDirectRoute` requires both absent, so nothing downstream wants it.
+
+```text
+    ORDER BY x, y   2205 -> 1567 ms   1.41x   (3255 -> 1567, 2.08x with item 2017)
+    ORDER BY x      1168 ->  987      1.18x
+    no ORDER BY      561 ->  567      flat (control)
+```
+
+⚠️⚠️ **MY FIRST TEST FILE PASSED 13 TESTS AND TESTED NOTHING, and the mutation round is the only
+reason I know.** `sort-removed`, `keys-reversed`, `first-row-dropped`, `cmp-ignores-descending` and
+`cmp-first-key-only` all SURVIVED it. Every query in it was a node-scan or hop shape, and those are
+answered by rungs above `projectedRows` — the new code never ran.
+[[rung-precedence-decides-speed]], and the reason it is invisible is that the tests PASS: a rung
+answering the shape gives the right answer, so nothing looks wrong.
+
+🔑 **THE MUTANT IS THE DETECTOR FOR "DOES THIS SHAPE REACH THE CODE".** Delete the `keyed.sort(...)`
+call, re-run a candidate list, and the shapes whose ROW ORDER changes are exactly the routed ones:
+
+```text
+    rung     MATCH (a:T) RETURN a.n AS x ORDER BY x
+    rung     MATCH (a:T) RETURN a.t AS t, a.n AS x ORDER BY t, x
+    rung     MATCH (a:T)-[:E]->(b:T) RETURN a.n AS x, b.n AS y ORDER BY x, y
+    REACHES  MATCH (a:T), (b:T) …   ← every comma-pattern spelling
+```
+
+That is also why the comma pattern was the shape that got faster: it is the one with no rung. After
+rewriting the file around comma patterns, **16/16 mutants caught by both filters.**
+
+⚠️ TWO FURTHER GAPS THE ROUND FOUND, each a fixture property rather than a missing test:
+
+- **The second sort key had no teeth.** `ORDER BY x, y` over a fixture whose `y` values ARRIVE as
+  10, 20 — already ascending — so a comparator ignoring every key after the first, and one comparing
+  `keys[0]` twice, both returned the right array. `ORDER BY x, y DESC` requires 20, 10, the opposite
+  of arrival.
+- **`cmp-ignores-nullsfirst` needed stored nulls in a non-trivial position**, which the tie/null
+  fixture now carries (nulls last in BOTH directions, and in input order among themselves).
+
+⚠️ **THE GATE IS AN EXTRACTED PURE FUNCTION, AND THE MUTATION ROUND IS WHY.** Inline,
+`!proj.aggregating` matched FOUR lines in `projection.ts`, so a mutant "admitting aggregates"
+silently edited three other decisions too — and the resulting verdict was uninterpretable.
+`sortedDirectRoute(proj, windowed)` has one definition, a unique anchor, and its own assertions,
+which are the only thing that can see an answer-equivalent refusal being dropped
+([[perf-gate-needs-its-own-test]], item 1776's pattern). Verified exactly: each `^  <pattern>` sed
+anchor now hits ONE line (618-621), all inside that function. The `anchors` column over-counts
+because `grep -F` counts lines CONTAINING the pattern and a four-space line contains a two-space
+one — grep's arithmetic, not sed's.
+
+⚠️ **`keyedComparator` IS SHARED, NOT COPIED.** Two sort paths now need "which of these keyed rows
+sorts first", and a second derivation of that is the one thing byte-identity cannot survive —
+`sortRowsByColumns`' own warning, and `sort-column-specialize.ts`' reason for being branch
+ELIMINATION rather than a rewrite. Tie order is the caller's, not the comparator's: returning 0
+leaves rows as the sort received them and `Array.prototype.sort` is required to be stable, so both
+paths keep input order on a tie.
+
+⚠️⚠️ **THE WIDE SWEEP WAS KILLED AND IS NOT RE-RUN, SO THIS ITEM'S CONTROL EVIDENCE IS NARROWER THAN
+ITEM 2017'S.** The four-round whole-screen A/B was stopped mid-round by the system's low-memory
+reaper. What replaced it (`sorted-direct-controls-2018.sh`) is five cheap `ORDER BY`-bearing
+families, two rounds, one child process each, `multi-pattern` deliberately omitted as the memory
+cost:
+
+| family     | PRE min | POST min | ratio                                                                                                    |
+| ---------- | ------- | -------- | -------------------------------------------------------------------------------------------------------- |
+| optional   | 748.1   | 685.1    | 1.09x (POST tight at 685.1/685.4 against a spread PRE)                                                   |
+| neighbors  | 218.7   | 203.7    | 1.07x                                                                                                    |
+| chain-rows | 6310.8  | 6173.7   | 1.02x                                                                                                    |
+| projection | 73.0    | 72.2     | 1.01x                                                                                                    |
+| distinct   | 704.8   | 726.7    | 0.97x — **and `DISTINCT` is a gate REFUSAL, so the change cannot reach it: this row IS the noise floor** |
+
+Read it as "nothing nearby moved against the change", not as item 2017's sweep.
+
+⚠️⚠️ **AND THE KILL LEFT THE PRE ARM IN THE TREE** — `sortedDirectRoute` ending in `&& false`, the
+fast path silently disabled, the tree still compiling, nothing to notice it but a `git diff`. An
+earlier broken run of the same script had already written a literal `\&\&` into the source (zsh keeps
+backslashes inside single quotes) and exited before restoring. **So every A/B script here now carries
+a `trap restore_live EXIT INT TERM` plus a start-of-run check that the LIVE arm is present and the
+tree typechecks.** The mutation harnesses have restored in-loop and re-verified since item 1998; an
+A/B that swaps arms needs the same, because it can die between the swap and the swap back. One of
+the four scripts names its source `$IDX` rather than `$SRC`, and under `set -u` a trap naming the
+wrong variable dies at exactly the moment it is needed — fixed.
+
+STILL OPEN on this shape: 1567 ms against a hand 2-key sort's 218. The remaining terms, from item
+2017's re-profile, are `cmp` (the genuine `n log n` work), GC, and `visitRemaining` — the cross
+product's own enumeration, which is not a sort question at all. ⚠️ The full four-round whole-screen
+A/B for this change is OWED and was not run.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
+`bun run fuzz` all seven green plus 6/6 sweeps clean; 16 new tests including an oracle that forces
+the general route with a `LIMIT 1000`; **16/16 mutants caught across two filters.**

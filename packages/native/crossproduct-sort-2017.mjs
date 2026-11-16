@@ -204,10 +204,59 @@ const ARMS = {
   handsort: 'HAND',
   handsort1: 'HAND',
   handsortpairs: 'HAND',
+  /*
+   * ⚠️ ITEM 2018's QUESTION, isolated: the SORTED path builds a `Map` per row (`projectBinding`),
+   * sorts, then has `mapToRow` copy each `Map` into a plain object — "two allocations and two
+   * iterations per row where one of each will do", which `projectRow`'s own header says was fixed
+   * for the NO-SORT path and is still present here. These two arms are the same sort with and
+   * without that intermediate, so the difference IS the Map round-trip.
+   */
+  handsortviamap: 'HAND',
 };
 
+/* eslint-disable typescript/prefer-for-of -- the INDEXED form is what this arm measures too */
+/** The engine's sorted path in miniature: a Map per row, sort, then copy each Map into an object. */
+const handSortViaMap = (L) => {
+  const { xs, ys } = L;
+  const rows = new Array(xs.length * ys.length);
+  let k = 0;
+
+  for (let i = 0; i < xs.length; i += 1) {
+    const x = xs[i];
+
+    for (let j = 0; j < ys.length; j += 1) {
+      // `projectBinding`: the projected columns as a Map, in item order.
+      const m = new Map();
+
+      m.set('x', x);
+      m.set('y', ys[j]);
+      rows[k] = { b: m, keys: [x, ys[j]] };
+      k += 1;
+    }
+  }
+
+  rows.sort((p, q) => (p.keys[0] === q.keys[0] ? p.keys[1] - q.keys[1] : p.keys[0] - q.keys[0]));
+
+  // `mapToRow`: a second allocation and a second iteration per row.
+  const out = new Array(rows.length);
+
+  for (let i = 0; i < rows.length; i += 1) {
+    const row = {};
+
+    for (const [kk, v] of rows[i].b) {
+      row[kk] = v;
+    }
+
+    out[i] = row;
+  }
+
+  return out;
+};
+
+/* eslint-enable typescript/prefer-for-of */
 const HANDS = {
   handproduct: handProduct,
+  handsortviamap: handSortViaMap,
   handsort: handSort,
   handsort1: handSort1,
   handsortpairs: handSortPairs,
