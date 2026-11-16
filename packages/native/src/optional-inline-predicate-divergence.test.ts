@@ -8,6 +8,18 @@
 // Found by `fuzz-sweep.sh` on run 10 of 10 (the sweep exists to keep the failing run's output — item
 // 2012). Replay: `FUZZ_SEED=3826437490 bun test src/differential-fuzz.test.ts`.
 //
+// ⚠️⚠️ **A SECOND INSTANCE AT ITEM 2025 CONFIRMS THIS IS A CLASS, NOT A ONE-OFF** — same shape, a
+// different non-boolean operand:
+//
+//     FUZZ_SEED=1493132919
+//     MATCH (t:T) OPTIONAL MATCH (t)-[:E]->(n WHERE (date('2020-01-01') AND (n.s IS FALSE)))
+//       RETURN t.n AS x, n.n AS y ORDER BY x, y
+//
+// A TEMPORAL literal in a truth position where the first was `atan2(n.m.k, '1e3')`. Both are
+// statically non-boolean operands inside an inline pattern predicate under `OPTIONAL MATCH`; the
+// second case is asserted below. Observed rate across both: **2 in ~28 runs of 20,000 queries**
+// (~1 per 280,000), the same order as the registry's documented sibling.
+//
 // ⚠️ IT IS NOT ITEM 2022's. Verified by replaying the same seed against `HEAD` with that item's
 // change absent: it fails identically. The merge helper cannot affect predicate evaluation order.
 //
@@ -92,4 +104,33 @@ test.failing('AND the Rust engine agrees — it does not: it raises E_INVALID_VA
 
   // The assertion that would hold if the engines agreed: this engine would have to raise too.
   expect(rows).toBeUndefined();
+});
+
+test('the SECOND operand kind — a temporal literal in a truth position (item 2025)', () => {
+  /*
+   * ⚠️ RECORDED, NOT ASSERTED AS CORRECT, exactly like the first case. `date('2020-01-01') AND …`
+   * puts a TEMPORAL in a truth position; this engine settles the row on the other conjunct and never
+   * evaluates it, the Rust engine raises `E_INVALID_VALUE`. Two different operand kinds reaching the
+   * same divergence is what makes this a class — and what makes `s` matter below: the fixture needs
+   * the second conjunct to be decidable without the first.
+   */
+  /*
+   * ⚠️⚠️ **THE FIXTURE DECIDES WHETHER THE DIVERGENCE HAPPENS AT ALL, AND MY FIRST ATTEMPT BROKE IT.**
+   * I set `s = false`, which makes `n.s IS FALSE` **TRUE** — so the AND cannot settle on it, this
+   * engine reaches the temporal and RAISES, and the two engines agree. With `s` ABSENT, `n.s` is null
+   * and `null IS FALSE` is FALSE, which settles the row and short-circuits the temporal away: that is
+   * the fuzzer's fixture and the divergent one. A reproduction of a short-circuit divergence has to
+   * reproduce the SHORT CIRCUIT.
+   */
+  const g = build();
+  const rows = [
+    ...query(
+      g,
+      "MATCH (t:T) OPTIONAL MATCH (t)-[:E]->(n WHERE (date('2020-01-01') AND (n.s IS FALSE))) " +
+        'RETURN t.n AS x, n.n AS y ORDER BY x, y',
+    ),
+  ] as { x: number; y: unknown }[];
+
+  expect(rows.map((r) => r.x)).toEqual([3, 5, 7]);
+  expect(rows.every((r) => r.y === null)).toBe(true);
 });

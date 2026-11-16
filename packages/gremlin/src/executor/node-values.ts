@@ -33,6 +33,7 @@ import type { ID, Plan, Step } from '../ast.js';
 import { seedForStep } from './index-seed.js';
 import { valueDedupeFilter } from './runtime.js';
 import { asStringId } from './sources.js';
+import { hasAdjacency, singleHopExistence } from './sub-plan-existence.js';
 
 /** The same shape `hopValuesShortcut` returns, so `run` can treat both identically. */
 export type NodeValues = Iterable<unknown> & { drain?: () => unknown[] };
@@ -183,6 +184,102 @@ export const scanValuesResidual = (
   const values = nodeValuesShortcut({ ...plan, steps: steps.slice(0, 2) }, graph);
 
   return values === undefined ? undefined : { values, rest: steps.slice(2) };
+};
+
+/**
+ * ONE loop body for both the iterator and `drain`, AT MODULE SCOPE — the EXISTENCE-FILTERED scan
+ * (item 2025). Module scope for this file's own recorded reason: a per-call generator definition
+ * made the sibling vertex rung **1.2x SLOWER than the pipeline it replaces**.
+ *
+ * ⚠️ THE TEST IS `hasAdjacency`, NOT A SECOND DERIVATION. `sub-plan-existence.ts` already decides
+ * "does this vertex have any adjacency the hop would take", and its gate is deliberately BROADER
+ * than `soleTypeBucket`'s — `both`, a multi-type hop and an untyped one are all admissible for a
+ * yes/no, because double-counting, self-loop duplicates and endpoint choice are unobservable in an
+ * existence test. Re-deriving that here would be the one thing byte-identity cannot survive.
+ */
+const nodeValuesWhereWalk = function* (
+  graph: Graph,
+  hop: ReturnType<typeof singleHopExistence> & object,
+  key: string,
+): Generator<unknown> {
+  for (const v of graph.vertices) {
+    if (!hasAdjacency(v, hop)) {
+      continue;
+    }
+
+    const props = v.properties;
+
+    // `values(k)` DROPS an element lacking `k` — `projectValues`' own `k in props` rule.
+    if (key in props) {
+      yield props[key];
+    }
+  }
+};
+
+/**
+ * `V().where(<one hop>).values(k)` — the scan with its existence filter folded in (item 2025).
+ *
+ * ⚠️⚠️ **THE FILTER WAS ALREADY FUSED AND THE PLAN STILL WAS NOT.** `sub-plan-existence.ts` removed
+ * the per-traverser SUB-PLAN dispatch (its header: this shape was **87.35 ms** at 200,000 vertices
+ * against `V().values(n)`'s 4.17, the filter alone **404 ns a vertex**), which is why the row is no
+ * longer catastrophic. But the plan still runs the traverser PIPELINE — a traverser per vertex, then
+ * `projectValues` — because `where` sits BETWEEN `V()` and `values`, so `nodeValuesShortcut`'s
+ * exact-shape gate declines and the scan rung never sees it. Item 2021 widened that gate for a
+ * TRAILING step; this is the same gap one position to the left.
+ *
+ * MEASURED at 200,000 vertices, every vertex passing the filter so the arms are comparable on ROWS
+ * as well as vertices (item 1858's trap), one arm per process, best of 9, digests identical:
+ *
+ * ```text
+ *     V().where(out(E)).values(n)          29.3 ms   146 ns/vertex
+ *     the same BY HAND                      9.2      46            ⬅ 3.19x
+ *     V().values(n)   (the fused scan)      4.9      24
+ *     the bucket test alone, counting       6.4      32
+ * ```
+ *
+ * ⚠️ NO `hasLabel` ARM, deliberately — see `nodeValuesShortcut`'s note: a leading `hasLabel` is
+ * refused there because `seedFromIndex` visits only the labelled vertices while a scan visits all,
+ * and it **never wins** (up to 678x worse at 1-in-1000). An existence filter has no such index, so a
+ * full scan is the only route and the refusal does not transfer.
+ */
+export const nodeValuesWhereShortcut = (plan: Plan, graph: Graph): NodeValues | undefined => {
+  const { steps } = plan;
+
+  if (steps.length !== 3) {
+    return undefined;
+  }
+
+  const [source, filter, proj] = steps;
+
+  // `V(id, …)` enumerates a given set, not the whole graph — the bound every values rung has.
+  if (source.kind !== 'V' || (source.ids?.length ?? 0) > 0) {
+    return undefined;
+  }
+
+  // ONE key: `values()` with no key emits every property value and `values(a, b)` fans out per key.
+  if (proj.kind !== 'values' || proj.keys.length !== 1) {
+    return undefined;
+  }
+
+  /*
+   * ⚠️ ONLY `where(<a sub-plan>)`. The step kind is overloaded — `where(pred)` and
+   * `where(startKey, pred)` are value comparisons against a tagged step, not existence tests — and
+   * `singleHopExistence` reads `plan`, so a `where` without one declines here by construction.
+   */
+  if (filter.kind !== 'where' || !('plan' in filter)) {
+    return undefined;
+  }
+
+  const hop = singleHopExistence(filter.plan);
+
+  return hop === undefined
+    ? undefined
+    : {
+        [Symbol.iterator]: () => nodeValuesWhereWalk(graph, hop, proj.keys[0]),
+        // ⚠️ THE EAGER FILL: `toArray` prefers `drain` (item 1412), and a walk without one is
+        // measured against siblings that have it with its generator hand tied (item 1998's 1.55x).
+        drain: () => [...nodeValuesWhereWalk(graph, hop, proj.keys[0])],
+      };
 };
 
 /**

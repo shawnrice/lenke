@@ -59,6 +59,7 @@ import {
   idSeededValuesShortcut,
   nodeValuesDedupeShortcut,
   nodeValuesShortcut,
+  nodeValuesWhereShortcut,
   scanValuesResidual,
   seededNodeCountShortcut,
   seededNodeValuesShortcut,
@@ -2689,7 +2690,14 @@ const scanValuesShortcut = (
       // The DEDUPED scan (item 1869), below its two undeduped siblings: each of those requires
       // NOTHING after `values`, so all three are disjoint by shape and the order cannot change
       // which plans they answer. It reads last only because it is the narrowest.
-      nodeValuesDedupeShortcut(effective, graph));
+      nodeValuesDedupeShortcut(effective, graph) ??
+      /*
+       * The EXISTENCE-FILTERED scan (item 2025): `V().where(<one hop>).values(k)`. ⚠️ ADDED LAST on
+       * item 1535's rule — its gate requires exactly three steps with a `where` in the middle, which
+       * none of the three above can match (each requires `values` immediately after the source or a
+       * trailing `dedupe`), so the order is a fact about precedence rather than about these four.
+       */
+      nodeValuesWhereShortcut(effective, graph));
 
 /**
  * The fused VALUES walks, consulted in `??` order.

@@ -99496,3 +99496,92 @@ priced against a floor.
 GATES. No engine change in this item. `bun run fmt` 0; `bun run check` 0 read unpiped;
 `bun run test -- --skip-nx-cache` 21/21 (the probe arm is in `binding-merge-cost-2022.mjs`, not the
 engine).
+
+## Item 2025 — ✅ **`V().where(<one hop>).values(k)` gets the scan rung: 21.75 → 16.20 ms on the screen (1.34x), 29.3 → 13.8 isolated (2.12x), controls flat.** 🔑 **The FILTER was already fused and the PLAN still was not — `where` sits between `V()` and `values`, so the exact-shape gate declined.** Item 2021's gap, one position to the left
+
+Profile-first from a fresh Gremlin screen (items 2020/2021 visible: both `count` rows gone from the
+top, `order: values order` 8.01 → 3.69). ⚠️ **AND THE SCREEN'S HEADLINE ROW WAS AN ARTEFACT:**
+`scan: id` read **6.04 ms** in-screen and **1.99 isolated** — the screen's own warning that absolutes
+are inflated 1.3-1.9x unequally, earned again. The real top isolated row is `where: sub-traversal`.
+
+Priced before building (`where-exists-floor-2025.mjs`, 200,000 vertices, **every vertex passing the
+filter** so the arms are comparable on ROWS as well as vertices — item 1858's trap, which declined a
+target that "visits the same 200,000 vertices and emits 7x fewer rows"):
+
+```text
+    V().where(out(E)).values(n)        29.3 ms   146 ns/vertex
+    the same BY HAND                    9.2      46            ⬅ 3.19x
+    V().values(n)  (the fused scan)     4.9      24
+    the bucket test alone, counting     6.4      32
+```
+
+🔑 **THE SURPRISE IS THAT THE FILTER WAS ALREADY FUSED.** `sub-plan-existence.ts` removed the
+per-traverser SUB-PLAN dispatch — its own header records this shape at **87.35 ms** against
+`V().values(n)`'s 4.17, the filter alone at **404 ns a vertex** — which is why the row is no longer
+catastrophic. But the plan still ran the traverser PIPELINE, because `where` sits BETWEEN `V()` and
+`values` and `nodeValuesShortcut`'s gate requires the plan to be exactly `V() + values(k)`. **Item
+2021 widened that gate for a TRAILING step; this is the same gap one position to the left.** Two
+items, two positions, one gate shape.
+
+⚠️ THE TEST IS `hasAdjacency`, NOT A SECOND DERIVATION, and that matters because the existence gate
+is deliberately BROADER than a hop walk's: `sub-plan-existence.ts` admits `both`, a multi-type hop
+and an untyped one, which `soleTypeBucket` refuses, because double-counting a two-label edge, a
+self-loop's duplicate under `both`, and which END an edge is read from are all unobservable in a
+yes/no. All three shapes are asserted in the tests — a gate narrowed to `soleTypeBucket`'s rules
+would decline them (slower), and a walk widened without the existence argument would be wrong.
+
+MEASURED, four alternated rounds, one shape per process:
+
+| shape                                                              | PRE           | POST          | ratio     |
+| ------------------------------------------------------------------ | ------------- | ------------- | --------- |
+| `where: sub-traversal`                                             | 21.75 / 22.45 | 16.59 / 16.20 | **1.34x** |
+| `scan: values` (the sibling gate this sits beside)                 | 5.77 / 5.90   | 6.04 / 4.83   | flat      |
+| `where: neq filter` (a PREDICATE `where`, which this rung refuses) | 48.19 / 46.05 | 45.54 / 45.44 | flat      |
+| `hop1: values`, `hop2: values`                                     |               |               | flat      |
+
+⚠️ **THE TWO INSTRUMENTS DISAGREE ON THE RATIO — 1.34x on the screen against 2.12x isolated — AND
+BOTH ARE RIGHT.** The screen's fixture has FANOUT=4 (800,000 edges) where the dedicated probe has one
+edge a vertex, and the probe's PRE is 29.3 against the screen's 21.75. The screen number is the
+conservative one and the one with controls, so it is the headline; the probe number is what the shape
+costs on a fixture built for it. Quoting only the larger would be the flattering half.
+
+⚠️ `where: neq filter` IS THE CONTROL THAT EARNS ITS PLACE: it is the other `where` row on the screen
+and uses a PREDICATE `where` (compare the traverser to a tagged step), which this rung refuses — so
+its flatness shows the refusal is live and costs nothing, not merely that it was intended.
+
+⚠️ NO `hasLabel` ARM, and the refusal does NOT transfer from `nodeValuesShortcut`: a leading
+`hasLabel` is refused there because `seedFromIndex` visits only the labelled vertices while a scan
+visits all, and it never wins (678x worse at 1-in-1000). An existence filter has no such index, so a
+full scan is the only route.
+
+⚠️ ONE MUTANT SURVIVES AND IS UNOBSERVABLE BY CONSTRUCTION: `key in props` → `props[key] !== undefined`.
+The value model maps a stored `undefined` to NULL, so a PRESENT key never reads `undefined` and the
+two cannot differ on any reachable graph. `key in props` is kept because it is `projectValues`' own
+rule — consistency with the engine, not an observable. (It also showed `anchors=5`: that line is in
+all five walks in the file, so the mutant is scoped with a sed address range.)
+
+### ⚠️ THE PRE-EXISTING DIVERGENCE FROM ITEM 2022 RECURRED — A SECOND OPERAND KIND, SO IT IS A CLASS
+
+`fuzz-sweep.sh` failed on run 3 of 8 with the same shape and a different non-boolean operand:
+
+```text
+    FUZZ_SEED=1493132919
+    MATCH (t:T) OPTIONAL MATCH (t)-[:E]->(n WHERE (date('2020-01-01') AND (n.s IS FALSE)))
+      RETURN t.n AS x, n.n AS y ORDER BY x, y
+```
+
+A TEMPORAL literal in a truth position where item 2022's was `atan2(n.m.k, '1e3')`. ⚠️ NOT ITEM
+2025's: this is an ISO-GQL query and item 2025 changes only `packages/gremlin`. Added to the pinned
+test, which now holds both operand kinds. Observed rate across both: **2 in ~28 runs of 20,000
+queries** (~1 per 280,000).
+
+⚠️⚠️ **AND MY FIRST REPRODUCTION OF IT BROKE THE DIVERGENCE IT WAS REPRODUCING.** I set `s = false`,
+which makes `n.s IS FALSE` **TRUE** — so the AND cannot settle on it, this engine reaches the temporal
+and RAISES, and the two engines agree. With `s` ABSENT, `null IS FALSE` is FALSE, the row settles, and
+the temporal is short-circuited away: the divergent case. **A reproduction of a short-circuit
+divergence has to reproduce the SHORT CIRCUIT** — the fixture decides whether the bug exists at all.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
+`bun run fuzz` all seven green; the 8-sweep hit the pre-existing divergence above on run 3 and was
+otherwise clean; 13 new route/answer tests plus a third case on the divergence pin; **9/10 mutants
+caught across two filters**, the tenth documented above as unobservable.
