@@ -101282,3 +101282,55 @@ already records it as "THREE segments returning rows, which no rung answers" (it
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; 51/51 shapes run at 20k and at 200k. The sweep
 ran under `systemd-run --user --scope -p MemoryMax=16G -p MemorySwapMax=0` per CLAUDE.md, since it is a
 probe over generated input at scale. Probe-only change.
+
+## Item 2053 — ✅ **A CORRELATED `CALL` SUBQUERY COSTS ~8x ITS HAND FLOOR, and the overhead is FLAT IN FANOUT — so it is fixed per-OUTER-ROW scope machinery, ~300 ns of a 340 ns row.** ⚠️ And one of my three ratios was NOT a floor; verified and withdrawn before publishing
+
+Item 2052's 200k ranking put `callscoped` at 95.7 ms returning ONE row:
+
+```text
+    MATCH (n:P) CALL (n) { MATCH (n)-[:E]->(x) RETURN count(*) AS c } RETURN count(*) AS t
+```
+
+🔑 **TWO FLOORS, STATED SEPARATELY SO THE LARGER CLAIM CANNOT BE SMUGGLED IN AS THE SMALLER.**
+FAITHFUL does the work the query asks — per vertex, count its out-edges, then count rows. SEMANTIC
+notices `c` is never read by the outer query, so the subquery's count is DEAD and only its row count
+matters (one per `n`, even at zero edges, since `count(*)` over an empty group still yields a row) —
+that is dead-column elimination across a CALL boundary, a real but much larger claim.
+
+| arm                      | FANOUT=1  | FANOUT=3  | µs/row                                                                      |
+| ------------------------ | --------- | --------- | --------------------------------------------------------------------------- |
+| engine `CALL (n)` scoped | 70.68     | 67.01     | 0.353 / 0.335                                                               |
+| engine `CALL` inline     | 56.08     | 50.42     | 0.280 / 0.252                                                               |
+| HAND faithful            | 8.48      | 8.42      | 0.042                                                                       |
+| HAND semantic            | 3.42      | 3.44      | 0.017                                                                       |
+| **scoped / faithful**    | **8.34x** | **7.96x** | ⚠️ a third run read **9.21x** (and scoped/inline 1.39x) — the band is ~8-9x |
+| scoped / semantic        | 20.64x    | 19.50x    |                                                                             |
+| scoped / inline          | 1.26x     | 1.33x     |                                                                             |
+
+⚠️⚠️ **THE OVERHEAD IS FLAT IN FANOUT (0.353 → 0.335 µs a row while the subquery's own work TRIPLES),
+which is the finding**: this is not per-edge cost, it is the fixed price of entering and leaving a
+correlated subquery once per outer row. ~300 ns of each 340 ns row is machinery above a hand loop
+doing the same adjacency count.
+
+⚠️ **AND THE `CALL (n)` SCOPED FORM COSTS 1.26-1.33x THE INLINE FORM** — a separate, smaller gap. Both
+are correlated here (the inline body also reads `n`), so the difference is the explicit scope
+plumbing, not the correlation. ISO treats the two spellings differently, so this is not an
+equivalent-spelling defect, but the ratio is worth having on record.
+
+⚠️ **ONE OF MY RATIOS WAS NOT A FLOOR, AND I CHECKED BEFORE PUBLISHING IT.** The probe also timed
+`MATCH (n:P)-[:E]->(x) RETURN count(*)`, which the engine answers in **0.00 ms** via the closed-form
+count — a 33,000x "ratio" that looks like the headline. It is a DIFFERENT QUERY: it counts all `(n, x)`
+pairs where the CALL counts one row per `n`. They coincide only at FANOUT=1. Verified at FANOUT=3 —
+plain answers **600,000**, the CALL **200,000** — and the probe now prints that divergence itself and
+labels the ratio NOT A FLOOR. Had the check not been run, the item would have claimed a 33,000x
+opportunity that does not exist.
+
+NOT BUILT. The target is ~8x per outer row on a correlated CALL, which is a real ISO-GQL feature
+([[gql-call-statement]]: both forms ship byte-identical with scope isolation and a slot-mapping
+trick). Reducing it means restructuring per-row subquery execution, and [[executor-edits-perturb]]
+prices an edit in this area at up to 16% on unrelated rows — so it needs its own item with a kill
+switch and wide controls, not a change tacked onto a measurement.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `node --check` on the new probe; every arm
+asserted to answer `t = |P|`. Ran under `systemd-run --user --scope -p MemoryMax=16G -p
+MemorySwapMax=0`. Probe-only change.
