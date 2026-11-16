@@ -100735,3 +100735,71 @@ is what item 2030's oracles were added for.
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `node --check` on the probe. Probe-only
 change: `POOL` knob plus the off-label vertex's missing property. No engine change.
+
+## Item 2044 — ✅ **MEASURED: a first GQL query in a fresh process costs ~21 ms, and the engine's own execution is ~2% of it — 14 ms is MODULE IMPORT, 5 ms is JIT, and 1.8 ms is PARSE+PLAN.** ⚠️ And I had to correct myself mid-item: parse/plan is **83% of a cache-missing query**, not the "negligible" I first read off a trivial one
+
+Item 2043 priced a WARM single call at 1.4-1.8x the hot-loop figure. This asked the other end — what a
+first query costs — after noticing that across seven GQL shapes the hot per-op cost spans **96x**
+(0.0055 to 0.53 ms) while the single-call-in-a-fresh-process cost spans only **1.7x** (6.8 to 11.4 ms):
+
+```text
+    shape        hot/op      single    ratio
+    hopall       0.0055      6.8      1236x
+    point        0.1902      9.8        52x
+    grouped      0.1709      8.4        49x
+    hopfilter    0.2258     10.9        48x
+    distinct     0.2044      7.9        39x
+    wideproj     0.2625      9.4        36x
+    sortedpage   0.5346     11.4        21x
+```
+
+**A cold cost that is almost independent of the query is not the query's cost**, so it was decomposed
+rather than attributed. Three runs, tightly reproducible:
+
+| phase                    | ms          |
+| ------------------------ | ----------- |
+| `import @lenke/core`     | 5.5-6.0     |
+| `import @lenke/gql`      | **8.0-8.6** |
+| build 100 vertices       | 1.6-1.8     |
+| first (trivial) query    | **4.9-5.0** |
+| the same text again      | 0.20-0.21   |
+| a NEW trivial text, warm | 0.146-0.154 |
+
+⚠️⚠️ **MY FIRST READING OF THIS WAS WRONG AND THE PROBE CAUGHT IT.** A cache-MISSING trivial text
+(0.148 ms) costs LESS than the same-text re-run measured right after the first query (0.21 ms), and I
+concluded parse/plan was "≤0.15 ms, so the first query's 5 ms is essentially all JIT". That inference
+rests entirely on a query with almost nothing to parse. A realistic text, run twice on a warm engine —
+the only way to separate parse/plan from execution:
+
+```text
+    MATCH (n:P) WHERE n.k >= 0 AND n.k < 99 RETURN n.k AS k, count(*) AS c ORDER BY k DESC LIMIT 5
+
+    cache MISS   2.088 / 2.270 / 2.217 ms
+    cache HIT    0.373 / 0.380 / 0.378
+    parse+plan   1.715 / 1.890 / 1.839     ->  82-83% OF THE MISS
+```
+
+**So parse+plan is ~1.8 ms for one realistic query, and it is 83% of that query's first execution.**
+That makes items 228/229's PARSE and PLAN caches far more valuable than the trivial query implied —
+they remove five sixths of a repeated query's cost — and it is a real per-shape cost for a server the
+first time it sees each query text.
+
+🔑 **WHERE THE ~21 ms OF A FIRST REALISTIC QUERY GOES:** ~14 ms module import, ~5 ms first-call JIT,
+~1.8 ms parse+plan, ~0.4 ms execution. **The engine's actual work is ~2%.** For a long-lived server
+this is paid once and does not matter; for a CLI or a serverless invocation it is nearly the whole
+cost.
+
+⚠️ **THE IMPORT COST TRACKS BUNDLE SIZE, not eager work.** `@lenke/gql`'s dist is **1319 KB** and takes
+8.0-8.6 ms (~157 KB/ms, about V8's parse-and-compile rate); `@lenke/core` is 246 KB. Only 39 top-level
+regex/`Map`/`Set` constructions exist in that 1.3 MB, so there is little startup work to defer —
+reducing it means a smaller or split bundle, which is a PACKAGING decision (and interacts with the
+wasm-only CLI), not a micro-optimization. **Recorded, not attempted.**
+
+⚠️ AND THE TWO SINGLE-CALL NUMBERS IN THIS SESSION ARE NOT IN CONFLICT, which is worth stating plainly
+because they look it: item 2043's **1.4-1.8x** is a warm process doing one call per timed sample;
+this item's **21-1236x** is a fresh process doing one call ever. Different questions — warm single
+call, and cold start. `hopall`'s 1236x is simply its hot cost being 0.0055 ms, so any fixed cost
+dwarfs it.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `node --check` on the new probe. New probe
+(`coldstart-2044.mjs`) only; no engine change.
