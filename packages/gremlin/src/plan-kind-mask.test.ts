@@ -274,6 +274,25 @@ describe('⚠️ item 1506 — the two passes gated LAST, and the kind I first m
     }
   });
 
+  it('⚠️ every KIND_BITS value is a DISTINCT POWER OF TWO', () => {
+    /*
+     * ⚠️⚠️ **THIS IS THE ASSERTION THAT WOULD HAVE CAUGHT ITEM 2047's COLLISION.** `where` was given
+     * 16_384, which `hasId` already held, because the "next free bit" was computed with a regex of
+     * `name: \d+,` that skips JS numeric separators (`16_384`, `32_768`) — so the maximum read as
+     * 8192. Nothing broke and every gate stayed green: each pass scans the plan and finds nothing, so
+     * only the masks' PURPOSE was lost, silently. Two kinds sharing a bit means each one's gate fires
+     * for the other's plans.
+     */
+    const values = Object.values(KIND_BITS);
+
+    expect(new Set(values).size, 'two kinds share a bit').toBe(values.length);
+
+    for (const [kind, bit] of Object.entries(KIND_BITS)) {
+      expect(bit, `${kind} must be a positive power of two`).toBeGreaterThan(0);
+      expect(bit & (bit - 1), `${kind} = ${bit} is not a power of two`).toBe(0);
+    }
+  });
+
   it('⚠️ EVERY bit in FILTER_WRAPPER_BITS is a REAL KIND_BITS entry', () => {
     /*
      * ⚠️⚠️ **THIS IS THE ASSERTION THAT WOULD HAVE CAUGHT ITEM 2047's DEAD CODE.** `KIND_BITS` is

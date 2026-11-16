@@ -649,7 +649,16 @@ export const KIND_BITS: Readonly<Record<string, number>> = {
    * returned early, and the new `where(and(…))` unwrap never executed. It compiled, reached the dist,
    * and the route census read an unchanged 2002 dispatches with no hint why.
    */
-  where: 16384,
+  /*
+   * ⚠️⚠️ **65_536, AND IT WAS 16_384 FOR ONE ITEM — A COLLISION WITH `hasId` THAT I SHIPPED.** Item
+   * 2047 computed "next free bit" with a regex of `name: \d+,`, which SKIPS the separator-formatted
+   * entries (`hasId: 16_384`, `match: 32_768`) — so it read the maximum as 8192 and picked a bit
+   * already in use. Nothing broke: each pass scans and finds nothing, so answers were unaffected and
+   * every gate stayed green. But a `hasId` plan then ran `flattenFilterWrappers` and a `where` plan
+   * ran `seedSingleHasId`, which defeats the only thing these masks are for. Found by item 2048's
+   * audit, one item later. `plan-kind-mask.test.ts` now asserts DISTINCT POWERS OF TWO.
+   */
+  where: 65_536,
   // Item 1643. `seedSingleHasId` turns `V().hasId(x)` into the seeded source `V(x)`, so a plan with
   // no `hasId` has nothing for it to do — the same gate reasoning as `as` and `hasLabel` above.
   hasId: 16_384,

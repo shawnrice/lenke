@@ -100962,7 +100962,7 @@ read an unchanged 2002 dispatches with no hint why. The chain:
       -> the new branch never executes
 ```
 
-🔑 **`where` had no bit in `KIND_BITS` at all** (now 16384). A `Record<string, number>` index silently
+🔑 **`where` had no bit in `KIND_BITS` at all** (now ~~16384~~ ⚠️ **65_536 — the 16_384 I chose COLLIDED with `hasId`, fixed at item 2048**). A `Record<string, number>` index silently
 yields `undefined` for a missing key, so the one line that would have caught this — adding the kind to
 the mask — is exactly the line the type system could not check.
 
@@ -100995,3 +100995,67 @@ rather than assumed away.
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
 gremlin suite 2,602 + 6 new; all seven fuzzers green; 5/5 sweeps clean.
+
+## Item 2048 — ⚠️ **A BIT COLLISION I SHIPPED ONE ITEM EARLIER: `where` was given 16_384, which `hasId` already held.** Fixed to 65_536, and the guard that would have caught it is now a test. ❌ **Also refuted my own "two passes are dead" hypothesis — `hasId` and `match` both have bits; my regex skipped JS numeric separators**
+
+Item 2047 found `where` had no bit in `KIND_BITS` and added one. This audited every kind against every
+mask, and found the fix itself was wrong.
+
+### The audit, and the hypothesis it raised and then killed
+
+Ten gate sites read `plan.kinds & <mask>`. Diffing the kinds they reference against the entries I could
+parse gave an alarming answer:
+
+```text
+    kinds referenced by a gate:  as, hasId, hasLabel, local, match, path, union, values
+    GATED ON A KIND WITH NO BIT: hasId, match        <- "two whole passes are dead"
+```
+
+`x & undefined` is `0` in JS, so such a gate always returns early — those passes would never run, and
+one of them is `seedSingleHasId`, which turns `V().hasId(x)` into the seeded source `V(x)`. That is the
+O(1)-by-id path.
+
+❌ **IT IS NOT TRUE.** `hasId: 16_384` and `match: 32_768` both exist. **My regex was `name: \d+,`, which
+does not match JS numeric separators** — so the two largest entries were invisible to it. Verified
+before claiming anything, by printing the lines rather than trusting the diff.
+
+### ⚠️⚠️ But the same regex had already caused a real bug, in item 2047
+
+That item computed "next free bit" with the same pattern, read the maximum as **8192** (it is 32_768),
+and assigned `where: 16_384` — **a collision with `hasId`**:
+
+```text
+      16384  where, hasId   <-- COLLISION
+      32768  match
+```
+
+**Nothing broke, and every gate stayed green**, which is why it needed an audit to find: each pass
+scans the plan, finds nothing of its kind, and returns it unchanged. Answers were unaffected
+throughout. What was lost is the only thing these masks are for — a `hasId` plan ran
+`flattenFilterWrappers` and a `where` plan ran `seedSingleHasId`, both pointlessly, defeating item
+1506's gate (measured there at ~13% of a reused-plan call). Fixed to **65_536**.
+
+🔑 **AND THE GUARD IS NOW A TEST, verified by re-introducing the bug.** `plan-kind-mask.test.ts`
+asserts every `KIND_BITS` value is a **distinct power of two**; putting `where` back to 16_384 fails it
+with "two kinds share a bit". Item 2047's own new assertion — every bit in `FILTER_WRAPPER_BITS` has a
+named entry — could not see a collision, because both kinds DO have entries.
+
+**Three ways this mask can go wrong, now all guarded:**
+
+| failure                                                              | caught by                             |
+| -------------------------------------------------------------------- | ------------------------------------- |
+| a kind in the mask with no `KIND_BITS` entry (item 2047's dead code) | `FILTER_WRAPPER_BITS & ~named === 0`  |
+| two kinds sharing a bit (item 2048, this one)                        | distinct-powers-of-two                |
+| a kind the pass acts on that the mask omits                          | the enumerated-kinds test (item 1506) |
+
+⚠️ **THE LESSON IS ABOUT THE TOOL, NOT THE BITS.** A regex over source is how both the dead code and the
+collision were introduced, and it is also how the false "two dead passes" alarm was raised — three
+errors from one pattern that silently skips `16_384`. When parsing source for numbers, match
+`[\d_]+`; when the answer matters, print the matched lines and read them.
+
+VERIFICATION. The unwrap still fires after the bit change (route census: `where and count` at **2**
+`applyStep` calls, `[and count]`), and the two spellings stay converged (16.80 against 17.84 ms).
+`plan-kind-mask.test.ts` 29 tests. No behaviour change beyond restoring the two gates.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; all
+seven fuzzers green; 4/4 sweeps clean.
