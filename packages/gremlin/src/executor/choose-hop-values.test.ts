@@ -28,6 +28,7 @@ import {
   both,
   choose,
   constant,
+  count,
   has,
   hasKey,
   hasLabel,
@@ -35,6 +36,7 @@ import {
   identity,
   in_,
   out,
+  Scope,
   toArray,
   traversal,
   V,
@@ -292,5 +294,72 @@ describe('chooseHopValues: the answers', () => {
     expect(
       stableRows(g, () => traversal(V(), choose(has('n', 0), out('E'), in_('E')), id())),
     ).toEqual(['b', 'b', 'f', 'a', 'a', 'c', 'a']);
+  });
+});
+
+describe('a residual count() rides the walk (item 2028)', () => {
+  /*
+   * ⚠️⚠️ **`count()` USED TO DECLINE THE ENTIRE PLAN**, so the route census read this family's count
+   * shape GENERIC — and for `choose`/`branch` with **4002 `applyStep` calls**, the sub-plan
+   * re-dispatched per traverser, which is the exact cost the rung exists to remove. A `pickFor` audit
+   * found FOUR rungs carrying the gap item 1956 closed for the edge-filter rung and item 2027 for
+   * the `optional` one.
+   *
+   * ⚠️ ANSWER-EQUIVALENT, so the route assertion is the only thing that can see the rung declining
+   * ([[perf-gate-needs-its-own-test]]) — and the RESIDUAL'S CONTENT is asserted, not its presence
+   * (item 2021: a wrong `rest` still returns an object, then declines downstream with the same
+   * answer).
+   *
+   * ⚠️ THE GATE NEED NOT CHECK `count`'s SCOPE, where item 2020's FUSED count must: an unconsumed
+   * terminal is still run by its own step, so `Scope.local` is honoured by `countStep` itself.
+   */
+  const g = build();
+
+  test('THE ROUTE: the rung claims the count shape and reports it as the residual', () => {
+    const claimed = chooseHopValues(
+      traversal(V(), choose(has('n', 1), out('E'), in_('E')), count()),
+      g,
+    );
+
+    expect(claimed?.rest.map((st) => st.kind)).toEqual(['count']);
+
+    // The `values` sibling CONSUMES its projection, so its residual is empty — the other side of
+    // the same `consumed` flag.
+    expect(
+      chooseHopValues(traversal(V(), choose(has('n', 1), out('E'), in_('E')), values('n')), g)
+        ?.rest,
+    ).toEqual([]);
+  });
+
+  test('the count equals the row count of the same walk without it', () => {
+    /*
+     * 🔑 THE ORACLE IS THE SHAPE WITHOUT `count()`: its `rest` is empty, so it takes the walk
+     * directly and does not share the code under test. A non-empty row list is asserted first,
+     * because 0 === 0 agrees trivially.
+     */
+    const rows = toArray(traversal(V(), choose(has('n', 1), out('E'), in_('E'))), g);
+
+    expect(rows.length).toBeGreaterThan(0);
+    expect(toArray(traversal(V(), choose(has('n', 1), out('E'), in_('E')), count()), g)[0]).toBe(
+      rows.length,
+    );
+  });
+
+  test('`count(Scope.local)` matches the narrowed-source twin, which this rung declines', () => {
+    const fast = toArray(
+      traversal(V(), choose(has('n', 1), out('E'), in_('E')), count(Scope.local)),
+      g,
+    );
+
+    expect(fast).toEqual(
+      toArray(
+        traversal(
+          V('a', 'b', 'c', 'd', 'e', 'f'),
+          choose(has('n', 1), out('E'), in_('E')),
+          count(Scope.local),
+        ),
+        g,
+      ),
+    );
   });
 });

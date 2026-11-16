@@ -35,6 +35,7 @@
 import { Graph } from '@lenke/core';
 import {
   branch,
+  count,
   choose,
   coalesce,
   constant,
@@ -155,6 +156,29 @@ const ARMS = {
    * adjacency, while this shape walks 2/97 of them.
    */
   handBranch: 'HANDBRANCH',
+  /*
+   * ⚠️ ITEM 2028's ARMS. A `pickFor` audit across every rung found FOUR with the same gap item 2027
+   * closed in the `optional` rung — a `count` terminal declining the whole plan — and the route
+   * census confirmed three of them, with dispatch counts that name the cost:
+   *
+   *     generic   coal: two hops count              2 calls  [coalesce count]
+   *     generic   cho: filter two hops count     4002 calls  [choose count has in out]
+   *     generic   br: two options count          4002 calls  [branch count identity in out values]
+   *
+   * 4002 is the sub-plan being re-dispatched PER TRAVERSER — the cost items 1999 and 2015 removed,
+   * back because the rung refuses the plan. Each count arm is priced beside its already-fused
+   * `values` twin, which does strictly MORE work (emits every row rather than one number).
+   */
+  coalesceCount: () => traversal(V(), coalesce(out('E'), in_('E')), count()),
+  chooseCount: () => traversal(V(), choose(has('n', 0), out('E'), in_('E')), count()),
+  branchCount: () =>
+    traversal(
+      V(),
+      branch(values('n')).option(0, out('E')).option(1, in_('E')).none(identity()),
+      count(),
+    ),
+  // The fused `values` twins, as the comparison that shows the ordering is wrong.
+  coalesceTwoHops: () => traversal(V(), coalesce(out('E'), in_('E')), values('n')),
 };
 
 const med = (xs) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];

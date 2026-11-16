@@ -124,16 +124,32 @@ const coalesceWalk = (graph: Graph, spec: CoalesceSpec): Iterable<unknown> => ({
 const pickFor = (
   proj: Step | undefined,
   valueKey: string | undefined,
-): { pick: (e: Element) => unknown; drops: boolean } | undefined => {
+): { pick: (e: Element) => unknown; drops: boolean; consumed: boolean } | undefined => {
   if (valueKey !== undefined) {
-    return { pick: (e) => e.properties[valueKey], drops: true };
+    return { pick: (e) => e.properties[valueKey], drops: true, consumed: true };
   }
 
   if (proj === undefined) {
-    return { pick: (e) => e, drops: false };
+    return { pick: (e) => e, drops: false, consumed: false };
   }
 
-  return proj.kind === 'id' ? { pick: (e) => e.id, drops: false } : undefined;
+  if (proj.kind === 'id') {
+    return { pick: (e) => e.id, drops: false, consumed: true };
+  }
+
+  /*
+   * 🔑 A TERMINAL THIS WALK DOES NOT PROJECT STILL GETS THE WALK (item 2028) — item 1956's decision,
+   * applied here after a `pickFor` audit found four rungs still carrying the gap.
+   *
+   * ⚠️⚠️ **AND THIS ONE WAS MEASURED SEPARATELY BECAUSE OPENING THE GATE IS NOT THE SAME AS THE ROUTE
+   * BEING BETTER.** `coalesce`'s generic count path costs only TWO `applyStep` calls (the census
+   * said so) where `choose`'s and `branch`'s cost 4002, so it was already cheap: 41.22 ms against
+   * its own `values` twin's 46.37 — the count was ALREADY faster than projecting. Fusing it makes
+   * the count ride `drain().length`, which materializes an 800,000-element array it then measures
+   * (item 2020's own open note), so a regression was the live possibility rather than a formality.
+   * See CLOSED.md item 2028 for the measured outcome.
+   */
+  return proj.kind === 'count' ? { pick: (e) => e, drops: false, consumed: false } : undefined;
 };
 
 /**
@@ -276,7 +292,8 @@ export const coalesceHopValues = (plan: Plan, graph: Graph): HopValues | undefin
       : undefined;
 
   return {
-    rest: steps.slice(proj === undefined ? 2 : 3),
+    // `consumed` rather than `proj === undefined`: an unconsumed terminal must stay in `rest`.
+    rest: steps.slice(picked.consumed ? 3 : 2),
     values: csr ?? coalesceWalk(graph, spec),
   };
 };

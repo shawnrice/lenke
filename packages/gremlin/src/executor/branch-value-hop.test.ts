@@ -25,14 +25,18 @@ import {
   both,
   branch,
   constant,
+  count,
   identity,
   in_,
   out,
   run,
+  Scope,
   toArray,
   traversal,
   V,
   values,
+  valueMap,
+  id,
 } from '../index.js';
 import { branchValueHop } from './branch-value-hop.js';
 
@@ -363,5 +367,110 @@ describe('branchValueHop: the answers', () => {
         ),
       ),
     ).toStrictEqual([11, 11, 12, 14]);
+  });
+});
+
+describe('a residual count() rides the walk (item 2028)', () => {
+  /*
+   * ⚠️⚠️ **`count()` USED TO DECLINE THE ENTIRE PLAN**, so the route census read this family's count
+   * shape GENERIC — and for `choose`/`branch` with **4002 `applyStep` calls**, the sub-plan
+   * re-dispatched per traverser, which is the exact cost the rung exists to remove. A `pickFor` audit
+   * found FOUR rungs carrying the gap item 1956 closed for the edge-filter rung and item 2027 for
+   * the `optional` one.
+   *
+   * ⚠️ ANSWER-EQUIVALENT, so the route assertion is the only thing that can see the rung declining
+   * ([[perf-gate-needs-its-own-test]]) — and the RESIDUAL'S CONTENT is asserted, not its presence
+   * (item 2021: a wrong `rest` still returns an object, then declines downstream with the same
+   * answer).
+   *
+   * ⚠️ THE GATE NEED NOT CHECK `count`'s SCOPE, where item 2020's FUSED count must: an unconsumed
+   * terminal is still run by its own step, so `Scope.local` is honoured by `countStep` itself.
+   */
+  const g = build();
+
+  test('THE ROUTE: the rung claims the count shape and reports it as the residual', () => {
+    const claimed = branchValueHop(
+      traversal(V(), branch(values('t')).option(0, out('E')).none(identity()), count()),
+      g,
+    );
+
+    expect(claimed?.rest.map((st) => st.kind)).toEqual(['count']);
+
+    // The `values` sibling CONSUMES its projection, so its residual is empty — the other side of
+    // the same `consumed` flag.
+    expect(
+      branchValueHop(
+        traversal(V(), branch(values('t')).option(0, out('E')).none(identity()), values('p')),
+        g,
+      )?.rest,
+    ).toEqual([]);
+  });
+
+  test('the `id()` shape CONSUMES its projection — a perf contract with no answer to see', () => {
+    /*
+     * ⚠️⚠️ **A MUTANT MARKING `id` UNCONSUMED SURVIVED BOTH THIS FILE AND THE WHOLE SUITE.** Leaving
+     * `id` in `rest` still answers correctly: the step simply runs over the walk's ELEMENTS and maps
+     * them to ids, which is the same result by a slower route. So only the residual's emptiness can
+     * see it — the same shape as item 2021's three wrong-residual mutants.
+     */
+    expect(
+      branchValueHop(
+        traversal(V(), branch(values('t')).option(0, out('E')).none(identity()), id()),
+        g,
+      )?.rest,
+    ).toEqual([]);
+  });
+
+  test('a projection kind the walk cannot serve DECLINES', () => {
+    /*
+     * ⚠️ A MUTANT ADMITTING ANY KIND (`return true ? …`) SURVIVED: an element pick plus a residual is
+     * broadly answer-equivalent, because the leftover step just runs over elements. It is still a
+     * route this item never measured, and the gate is meant to name exactly what it serves — so the
+     * decline is asserted rather than left to the next reader to discover.
+     */
+    expect(
+      branchValueHop(
+        traversal(V(), branch(values('t')).option(0, out('E')).none(identity()), valueMap()),
+        g,
+      ),
+    ).toBeUndefined();
+  });
+
+  test('the count equals the row count of the same walk without it', () => {
+    /*
+     * 🔑 THE ORACLE IS THE SHAPE WITHOUT `count()`: its `rest` is empty, so it takes the walk
+     * directly and does not share the code under test. A non-empty row list is asserted first,
+     * because 0 === 0 agrees trivially.
+     */
+    const rows = toArray(
+      traversal(V(), branch(values('t')).option(0, out('E')).none(identity())),
+      g,
+    );
+
+    expect(rows.length).toBeGreaterThan(0);
+    expect(
+      toArray(
+        traversal(V(), branch(values('t')).option(0, out('E')).none(identity()), count()),
+        g,
+      )[0],
+    ).toBe(rows.length);
+  });
+
+  test('`count(Scope.local)` matches the narrowed-source twin, which this rung declines', () => {
+    const fast = toArray(
+      traversal(V(), branch(values('t')).option(0, out('E')).none(identity()), count(Scope.local)),
+      g,
+    );
+
+    expect(fast).toEqual(
+      toArray(
+        traversal(
+          V('a', 'b', 'c', 'd', 'e', 'f', 'j'),
+          branch(values('t')).option(0, out('E')).none(identity()),
+          count(Scope.local),
+        ),
+        g,
+      ),
+    );
   });
 });

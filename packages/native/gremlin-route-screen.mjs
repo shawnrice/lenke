@@ -178,10 +178,36 @@ const SHAPES = {
   'opt: optional bare': "traversal(V(), optional(traversal(out('E'))))",
   'opt: optional count': "traversal(V(), optional(traversal(out('E'))), count())",
   'opt: optional two hops': "traversal(V(), optional(traversal(out('E'), out('E'))), values('k'))",
+  /*
+   * ⚠️⚠️ **THE RECONVERGING FAMILIES HAD NO CENSUS ROWS AT ALL** until item 2028, despite gaining
+   * rungs at items 1998 (`coalesce`), 1999 and 2014 (`choose`) and 2015 (`branch`). A rung with no
+   * route row cannot have its gaps seen — which is how item 2027's `count` gap sat unapplied in the
+   * `optional` rung for ~70 items after the edge-filter rung closed it at 1956. The `count` column
+   * is the one that found that, so every family gets one.
+   */
+  'coal: two hops values':
+    "traversal(V(), coalesce(traversal(out('E')), traversal(in_('E'))), values('k'))",
+  'coal: two hops id': "traversal(V(), coalesce(traversal(out('E')), traversal(in_('E'))), id())",
+  'coal: two hops bare': "traversal(V(), coalesce(traversal(out('E')), traversal(in_('E'))))",
+  'coal: two hops count':
+    "traversal(V(), coalesce(traversal(out('E')), traversal(in_('E'))), count())",
+  'cho: filter two hops values':
+    "traversal(V(), choose(has('k', 3), traversal(out('E')), traversal(in_('E'))), values('k'))",
+  'cho: filter two hops bare':
+    "traversal(V(), choose(has('k', 3), traversal(out('E')), traversal(in_('E'))))",
+  'cho: filter two hops count':
+    "traversal(V(), choose(has('k', 3), traversal(out('E')), traversal(in_('E'))), count())",
+  'cho: hop test consts': "traversal(V(), choose(traversal(out('E')), values('k'), constant('x')))",
+  'cho: hop test consts count':
+    "traversal(V(), choose(traversal(out('E')), values('k'), constant('x')), count())",
+  'br: two options':
+    "traversal(V(), branch(traversal(values('k'))).option(3, traversal(out('E'))).option(5, traversal(in_('E'))).none(traversal(identity())))",
+  'br: two options count':
+    "traversal(V(), branch(traversal(values('k'))).option(3, traversal(out('E'))).option(5, traversal(in_('E'))).none(traversal(identity())), count())",
 };
 
 const IMPORTS =
-  "import { E, V, aggregate, both, bothE, cap, count, dedupe, fold, groupCount, gt, has, hasId, hasLabel, id, inE, inV, in_, limit, min, optional, order, otherV, out, outE, outV, store, sum, toArray, traversal, values, where } from '@lenke/gremlin';";
+  "import { E, V, aggregate, both, bothE, cap, count, dedupe, fold, groupCount, gt, has, hasId, hasLabel, id, inE, inV, in_, limit, min, optional, order, otherV, out, outE, outV, store, branch, choose, coalesce, constant, identity, sum, toArray, traversal, values, where } from '@lenke/gremlin';";
 
 const build = () => execFileSync('bun', ['run', 'build'], { cwd: ROOT, stdio: 'ignore' });
 

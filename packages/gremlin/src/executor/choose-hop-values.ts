@@ -224,16 +224,35 @@ const csrBothArms = (
 const pickFor = (
   proj: Step | undefined,
   valueKey: string | undefined,
-): { pick: (e: Element) => unknown; drops: boolean } | undefined => {
+): { pick: (e: Element) => unknown; drops: boolean; consumed: boolean } | undefined => {
   if (valueKey !== undefined) {
-    return { pick: (e) => e.properties[valueKey], drops: true };
+    return { pick: (e) => e.properties[valueKey], drops: true, consumed: true };
   }
 
   if (proj === undefined) {
-    return { pick: (e) => e, drops: false };
+    return { pick: (e) => e, drops: false, consumed: false };
   }
 
-  return proj.kind === 'id' ? { pick: (e) => e.id, drops: false } : undefined;
+  if (proj.kind === 'id') {
+    return { pick: (e) => e.id, drops: false, consumed: true };
+  }
+
+  /*
+   * 🔑 **A TERMINAL THIS WALK DOES NOT PROJECT STILL GETS THE WALK (item 2028).** `count()` used to
+   * decline the ENTIRE plan here, so the route census read this family's count shape GENERIC with
+   * **4002 `applyStep` calls** — the sub-plan re-dispatched per traverser, which is exactly the cost
+   * the rung exists to remove. The same decision item 1956 made for the edge-filter rung and item
+   * 2027 for the `optional` one; a `pickFor` audit found four rungs still carrying the gap.
+   *
+   * ⚠️ IT IS NOT CONSUMED: this walk has nothing to contribute to a count beyond yielding the
+   * elements, so `count` stays in `rest` and runs over this stream. Since item 2020 that residual is
+   * counted on the walk's `drain`.
+   *
+   * ⚠️ AND THE GATE NEED NOT CHECK `count`'s SCOPE, where item 2020's FUSED count must: an
+   * unconsumed terminal is still executed by its own step, so `Scope.local` is honoured by
+   * `countStep` itself. Item 2020 replaces the count, so there the scope is refused at the gate.
+   */
+  return proj.kind === 'count' ? { pick: (e) => e, drops: false, consumed: false } : undefined;
 };
 
 /** The arm's CSR if it qualifies AND has been asked before, else `undefined`. */
@@ -320,7 +339,8 @@ export const chooseHopValues = (plan: Plan, graph: Graph): HopValues | undefined
       : undefined;
 
   return {
-    rest: steps.slice(proj === undefined ? 2 : 3),
+    // `consumed` rather than `proj === undefined`: an unconsumed terminal must stay in `rest`.
+    rest: steps.slice(picked.consumed ? 3 : 2),
     values: csr ?? chooseWalk(graph, spec),
   };
 };

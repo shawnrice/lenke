@@ -22,7 +22,21 @@ import { describe, expect, test } from 'bun:test';
 
 import { Graph } from '@lenke/core';
 
-import { both, coalesce, id, identity, in_, out, toArray, traversal, V, values } from '../index.js';
+import {
+  both,
+  coalesce,
+  count,
+  id,
+  identity,
+  in_,
+  out,
+  Scope,
+  toArray,
+  traversal,
+  V,
+  values,
+  valueMap,
+} from '../index.js';
 import { coalesceHopValues } from './coalesce-hop-values.js';
 
 const build = (): Graph => {
@@ -201,5 +215,74 @@ describe('coalesceHopValues: the answers', () => {
     expect(rows.filter((x) => x === 'b')).toHaveLength(2);
     // `b -> c` and `c -> c` both land on `c`.
     expect(rows.filter((x) => x === 'c')).toHaveLength(2);
+  });
+});
+
+describe('a residual count() rides the walk (item 2028)', () => {
+  /*
+   * ⚠️⚠️ **THIS ONE WAS MEASURED BEFORE BEING BELIEVED, AND MY PREDICTION WAS WRONG.** Unlike
+   * `choose`/`branch`, whose generic count path cost **4002 `applyStep` calls** (the sub-plan
+   * re-dispatched per traverser), `coalesce`'s cost only TWO — so it was already cheap at 41.22 ms
+   * against its own `values` twin's 46.37: **the count was already FASTER than projecting.** Fusing
+   * it makes the count ride `drain().length`, which materializes an 800,000-element array it then
+   * measures (item 2020's own open note), so I expected ~1.0x or a regression.
+   *
+   * It measured **40.84 -> 5.29 ms, 7.72x.** The drain-array reasoning was right in isolation and
+   * wrong about magnitudes: this rung's CSR walk is so much cheaper than the generic coalesce path
+   * that the allocation is noise. Recorded because the prediction was the wrong one.
+   *
+   * ⚠️ ANSWER-EQUIVALENT, so the route assertion is the only thing that can see the rung declining,
+   * and the RESIDUAL'S CONTENT is asserted rather than its presence (item 2021).
+   */
+  const g = build();
+
+  test('THE ROUTE: the rung claims the count shape and reports it as the residual', () => {
+    const claimed = coalesceHopValues(traversal(V(), coalesce(out('E'), in_('E')), count()), g);
+
+    expect(claimed?.rest.map((st) => st.kind)).toEqual(['count']);
+    expect(
+      coalesceHopValues(traversal(V(), coalesce(out('E'), in_('E')), values('n')), g)?.rest,
+    ).toEqual([]);
+  });
+
+  test('the `id()` shape CONSUMES its projection — a perf contract with no answer to see', () => {
+    /*
+     * ⚠️⚠️ **A MUTANT MARKING `id` UNCONSUMED SURVIVED BOTH THIS FILE AND THE WHOLE SUITE.** Leaving
+     * `id` in `rest` still answers correctly: the step simply runs over the walk's ELEMENTS and maps
+     * them to ids, which is the same result by a slower route. So only the residual's emptiness can
+     * see it — the same shape as item 2021's three wrong-residual mutants.
+     */
+    expect(coalesceHopValues(traversal(V(), coalesce(out('E'), in_('E')), id()), g)?.rest).toEqual(
+      [],
+    );
+  });
+
+  test('a projection kind the walk cannot serve DECLINES', () => {
+    /*
+     * ⚠️ A MUTANT ADMITTING ANY KIND (`return true ? …`) SURVIVED: an element pick plus a residual is
+     * broadly answer-equivalent, because the leftover step just runs over elements. It is still a
+     * route this item never measured, and the gate is meant to name exactly what it serves — so the
+     * decline is asserted rather than left to the next reader to discover.
+     */
+    expect(
+      coalesceHopValues(traversal(V(), coalesce(out('E'), in_('E')), valueMap()), g),
+    ).toBeUndefined();
+  });
+
+  test('the count equals the row count of the same walk without it', () => {
+    const rows = toArray(traversal(V(), coalesce(out('E'), in_('E'))), g);
+
+    expect(rows.length).toBeGreaterThan(0);
+    expect(toArray(traversal(V(), coalesce(out('E'), in_('E')), count()), g)[0]).toBe(rows.length);
+  });
+
+  test('`count(Scope.local)` matches the narrowed-source twin, which this rung declines', () => {
+    const fast = toArray(traversal(V(), coalesce(out('E'), in_('E')), count(Scope.local)), g);
+    const general = toArray(
+      traversal(V('a', 'b', 'c', 'd', 'e', 'f'), coalesce(out('E'), in_('E')), count(Scope.local)),
+      g,
+    );
+
+    expect(fast).toEqual(general);
   });
 });

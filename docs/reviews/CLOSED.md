@@ -99730,3 +99730,77 @@ gremlin suite 2,557 + 5 new (28 in the rung's file); `bun run fuzz` all seven gr
 `optional-oracle-1884.mjs` **75 pairs, both routes, ORDERED — every pair identical**, with the rung
 claiming 63 in POST against 0 in PRE (asserted); **7/10 mutants caught across two filters**, the three
 survivors documented above.
+
+## Item 2028 — ✅ **the `count` terminal admitted in THREE more rungs: `choose` 184.66 → 9.43 ms (19.6x), `coalesce` 40.84 → 5.29 (7.72x), `branch` 35.43 → 7.61 (4.66x), controls flat.** 🔑 Found by AUDITING EVERY `pickFor` after item 2027, not by profiling — and the reconverging families had NO census rows at all
+
+Item 2027's gap was a `pickFor` refusing `count`, closed in the `optional` rung ~70 items after the
+edge-filter rung closed the identical thing at item 1956. **So the question was not "what is slow"
+but "which other rungs carry this gap".** A `pickFor` audit across the executor:
+
+| rung                              | admitted `count`?                                                            |
+| --------------------------------- | ---------------------------------------------------------------------------- |
+| `edge-filtered-hop-values` (1956) | ✅                                                                           |
+| `optional-hop-values` (2027)      | ✅                                                                           |
+| `choose-hop-values` (1999)        | ❌ values / bare / id only                                                   |
+| `coalesce-hop-values` (1998)      | ❌                                                                           |
+| `branch-value-hop` (2015)         | ❌                                                                           |
+| `hop-values-csr`                  | ❌ — and it HAS the unconsumed concept, admitting `fold`/`aggregate`/`store` |
+
+⚠️⚠️ **AND THE RECONVERGING FAMILIES HAD NO ROUTE-CENSUS ROWS AT ALL**, despite gaining rungs at items
+1998, 1999, 2014 and 2015. A rung with no census row cannot have its gaps seen — which is exactly how
+item 1956's lesson sat unapplied for ~70 items. Rows added; the census then confirmed the audit:
+
+```text
+    generic   coal: two hops count              2 calls  [coalesce count]
+    generic   cho: filter two hops count     4002 calls  [choose count has in out]
+    generic   br: two options count          4002 calls  [branch count identity in out values]
+```
+
+**4002 is the sub-plan re-dispatched PER TRAVERSER** — the cost items 1999 and 2015 exist to remove,
+back because the rung refuses the plan. (`cho: hop test consts count` was already fused: item 2014's
+rung happens to put the count in `rest`.)
+
+MEASURED, four alternated pairs, arms named `HEAD`/`FUSED`, one arm per process:
+
+| shape                                           | HEAD   | FUSED | ratio                                                              |
+| ----------------------------------------------- | ------ | ----- | ------------------------------------------------------------------ |
+| `choose(has, out, in).count()`                  | 184.66 | 9.43  | **19.6x**                                                          |
+| `coalesce(out, in).count()`                     | 40.84  | 5.29  | **7.72x**                                                          |
+| `branch(values).option…none.count()`            | 35.43  | 7.61  | **4.66x**                                                          |
+| `chooseTwoArm` (control)                        | 52.73  | 46.42 | 1.14x                                                              |
+| `coalesceTwoHops`, `optional`, `hop` (controls) |        |       | 1.00-1.03x                                                         |
+| `branchTwo` (control)                           | 9.08   | 9.62  | 0.94x on minima, inside its documented 9.35-13.73 band (item 2015) |
+
+⚠️ **AND THE CONTROLS LOOKED WORSE UNTIL THE FOURTH PAIR.** After two pairs, `chooseTwoArm`,
+`branchTwo` and `optional` all read 0.92-0.95x — the signal item 1466 declined a 3.3x on. But the
+second FUSED round carried outliers on **three arms simultaneously** (67.74, 15.40, 69.60), which is a
+round-level excursion rather than a per-arm effect; two more pairs put `chooseTwoArm` at 1.14x and the
+rest at 1.00-1.03x. **A control moving is a reason to take more data, not to conclude** — in either
+direction.
+
+⚠️⚠️ **MY PREDICTION FOR `coalesce` WAS WRONG AND IT IS THE MOST USEFUL PART.** Unlike `choose` and
+`branch`, its generic count path cost only TWO dispatches, so it was already cheap — **41.22 ms
+against its own `values` twin's 46.37: the count was already FASTER than projecting.** Fusing it makes
+the count ride `drain().length`, materializing an 800,000-element array it then measures (item 2020's
+own open note), so I expected ~1.0x or a regression and measured each rung separately for that reason.
+It came back **7.72x**. The drain-array reasoning was right in isolation and wrong about magnitudes:
+this rung's CSR walk is so much cheaper than the generic coalesce path that the allocation is noise.
+**Opening a gate is not the same as the route being better — and "it will not help" needs measuring
+just as much as "it will".**
+
+⚠️ `hop-values-csr` IS LEFT ALONE, deliberately: `V().out(E).count()` is answered by `countShortcut`
+from bucket SIZES at 0.00 ms, so a walk-based count could only lose. Its missing `count` is not a gap.
+
+⚠️ TWO MUTANTS SURVIVED ON TWO OF THE THREE RUNGS, both answer-equivalent and both now closed:
+
+- **`id-marked-unconsumed`** — leaving `id` in `rest` still answers correctly, because the step runs
+  over the walk's ELEMENTS and maps them to ids: the same result by a slower route. Only the
+  residual's EMPTINESS can see it (item 2021's shape again), so that is now asserted.
+- **`count-admits-any-kind`** (`return true ?`) — an element pick plus a residual is broadly
+  answer-equivalent, since the leftover step just runs over elements. Still a route this item never
+  measured, so the decline is asserted rather than left to be discovered.
+
+With those, **21/21 mutants caught** across the three rungs and two filters.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
+gremlin suite 2,571 (14 new across three files); `bun run fuzz` all seven green plus 6/6 sweeps clean.
