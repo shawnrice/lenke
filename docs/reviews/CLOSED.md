@@ -101283,7 +101283,7 @@ GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; 51/51 shapes run at 20k 
 ran under `systemd-run --user --scope -p MemoryMax=16G -p MemorySwapMax=0` per CLAUDE.md, since it is a
 probe over generated input at scale. Probe-only change.
 
-## Item 2053 — ✅ **A CORRELATED `CALL` SUBQUERY COSTS ~8x ITS HAND FLOOR, and the overhead is FLAT IN FANOUT — so it is fixed per-OUTER-ROW scope machinery, ~300 ns of a 340 ns row.** ⚠️ And one of my three ratios was NOT a floor; verified and withdrawn before publishing
+## Item 2053 — ⚠️ **ITS scoped-vs-inline RATIO IS WITHDRAWN AT ITEM 2054 (different queries, not two spellings); the ~8-9x floor gap stands.** ✅ **A CORRELATED `CALL` SUBQUERY COSTS ~8x ITS HAND FLOOR, and the overhead is FLAT IN FANOUT — so it is fixed per-OUTER-ROW scope machinery, ~300 ns of a 340 ns row.** ⚠️ And one of my three ratios was NOT a floor; verified and withdrawn before publishing
 
 Item 2052's 200k ranking put `callscoped` at 95.7 ms returning ONE row:
 
@@ -101312,10 +101312,16 @@ which is the finding**: this is not per-edge cost, it is the fixed price of ente
 correlated subquery once per outer row. ~300 ns of each 340 ns row is machinery above a hand loop
 doing the same adjacency count.
 
-⚠️ **AND THE `CALL (n)` SCOPED FORM COSTS 1.26-1.33x THE INLINE FORM** — a separate, smaller gap. Both
+~~⚠️ **AND THE `CALL (n)` SCOPED FORM COSTS 1.26-1.33x THE INLINE FORM** — a separate, smaller gap. Both
 are correlated here (the inline body also reads `n`), so the difference is the explicit scope
-plumbing, not the correlation. ISO treats the two spellings differently, so this is not an
-equivalent-spelling defect, but the ratio is worth having on record.
+plumbing, not the correlation.~~
+
+❌ **WITHDRAWN AT ITEM 2054: THE TWO FORMS ARE DIFFERENT QUERIES, so that ratio means nothing.** `CALL {
+… }` with no scope list is NON-CORRELATED by ISO design — its `n` is a FRESH variable, not the outer
+one. Verified on a fixture with uneven out-degrees: `sum(c)` is **3** through the scoped form (each
+vertex's own edges) and **12** through the inline one (all 3 edges × 4 outer rows). The engine is
+correct; the comparison was mine and it was wrong. ⚠️ **This is the SAME error this item caught for the
+plain-hop ratio — I caught one and published the other.**
 
 ⚠️ **ONE OF MY RATIOS WAS NOT A FLOOR, AND I CHECKED BEFORE PUBLISHING IT.** The probe also timed
 `MATCH (n:P)-[:E]->(x) RETURN count(*)`, which the engine answers in **0.00 ms** via the closed-form
@@ -101334,3 +101340,65 @@ switch and wide controls, not a change tacked onto a measurement.
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `node --check` on the new probe; every arm
 asserted to answer `t = |P|`. Ran under `systemd-run --user --scope -p MemoryMax=16G -p
 MemorySwapMax=0`. Probe-only change.
+
+## Item 2054 — ✅ **WHERE THE CORRELATED `CALL`'s ~300 ns A ROW LIVES: plan DISPATCH, not scope setup or row collection — `matchPattern` + `runLinearClauses` + `walkSegments` + `candidateVertices` are ~30% while the useful `bucketSize` is 7.9%.** ❌ **And item 2053's scoped-vs-inline ratio is WITHDRAWN: they are different queries**
+
+Item 2053 priced the correlated CALL at ~8-9x its hand floor with per-row overhead FLAT in fanout, and
+asked which of scope setup, plan dispatch or row collection holds it. Profiled at 200,000 vertices, 30
+reps, so the query dominates the fixture build:
+
+| frame                              | ms    | share |
+| ---------------------------------- | ----- | ----- |
+| `matchPattern`                     | 419.5 | 12.4% |
+| `(anonymous) in runLinearClauses`  | 396.9 | 11.7% |
+| `bucketSize` — **the useful work** | 269.9 | 7.9%  |
+| `withBinding`                      | 225.3 | 6.6%  |
+| `(garbage collector)`              | 197.6 | 5.8%  |
+| `hoistedMatch`                     | 155.0 | 4.6%  |
+| `evalLabelExpr`                    | 150.7 | 4.4%  |
+| `walkSegments`                     | 107.6 | 3.2%  |
+| `candidateVertices`                | 92.8  | 2.7%  |
+| `buildGroups`                      | 91.7  | 2.7%  |
+
+🔑 **PLAN DISPATCH DOMINATES**: `matchPattern` + `runLinearClauses` + `walkSegments` +
+`candidateVertices` ≈ **1017 ms, ~30%** — the subquery re-entering the general clause runner once per
+outer row — against **7.9%** doing the adjacency count the query actually asks for. `withBinding`
+(6.6%) is the per-row binding allocation already **built, priced and refused** at items 2023/2024, and
+`buildGroups` (2.7%) is the subquery's `count(*)` going through the GROUPING machinery for a single
+group per row.
+
+⚠️ **ONE HYPOTHESIS CHECKED AND REFUTED: the subquery is NOT re-compiled per row.** `compileLinear`
+appears nowhere in `clauses.ts`'s per-row path, and the profile shows no compile frames — so the
+tempting "cache the plan" win does not exist. `hoistedMatch` is a per-row generator in `clauses.ts`,
+not a compile step; its name invites the opposite reading.
+
+### ❌ Withdrawing item 2053's scoped-vs-inline ratio
+
+That item reported the scoped form costing 1.26-1.39x the inline one and explained it as "explicit
+scope plumbing", asserting both were correlated. **They are not the same query.** `clauses.ts` states
+it plainly — "`CALL { … }` with no scope list is NON-CORRELATED by ISO design" — so the inline body's
+`n` is a FRESH variable. Verified on a 4-vertex fixture with uneven out-degrees (v0 → 2 edges, v1 → 1,
+v2/v3 → 0):
+
+```text
+    MATCH (n:P) CALL (n) { MATCH (n)-[:E]->(x) RETURN count(*) AS c } RETURN sum(c)   ->  3
+    MATCH (n:P) CALL    { MATCH (n)-[:E]->(x) RETURN count(*) AS c } RETURN sum(c)   -> 12
+```
+
+3 is each vertex's own edges; 12 is all 3 edges paired with each of 4 outer rows. **The engine is
+correct per ISO and the comparison was mine.** The two shapes answer `t = 200000` alike in the probe
+only because `count(*)` collapses the difference — which is exactly why the `sum(c)` form was needed
+to see it.
+
+⚠️⚠️ **AND THIS IS THE SAME ERROR ITEM 2053 ITSELF CAUGHT ONE PARAGRAPH EARLIER.** That item withdrew a
+39,000x "ratio" against the plain hop count for precisely this reason — a different query whose answer
+coincided — and then published this one. **Checking one suspicious comparison does not clear the
+others**: every arm in a ratio needs its own equivalence check, and `count(*)` is especially good at
+hiding a semantic difference behind an equal number.
+
+NOT BUILT. The target is the ~30% in per-row plan dispatch, which means executing a compiled subquery
+in a tight loop instead of re-entering the general clause runner — substantial, and
+[[executor-edits-perturb]] prices edits here at up to 16% on unrelated rows.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped. Profile and a semantics check; no source
+change.
