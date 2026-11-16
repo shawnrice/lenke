@@ -159,7 +159,41 @@ class MergedBinding {
 
 const facade = (b, t) => new MergedBinding(b, t);
 
-const ARMS = { spread, copyset, presized, facade };
+/*
+ * ⚠️ ITEM 2024's ARM: REUSE ONE MAP ACROSS THE INNER LOOP. In `visitRemaining`'s cached-tail product
+ * the OUTER binding is fixed for the whole inner loop and only the TAIL's keys vary — and the tail's
+ * key SET is fixed too. So the merged map can be built once per outer row and have only the tail's
+ * keys overwritten per inner row: no allocation at all in the inner loop.
+ *
+ * ⚠️⚠️ **IT IS ONLY SOUND IF NO CONSUMER RETAINS THE YIELDED BINDING PAST THE NEXT ITERATION**, which
+ * is the whole question and is NOT answered by this probe. The pattern is already established in this
+ * engine — `projectRow`'s note records that every caller in `hop-projection.ts` "passes a `Binding`
+ * allocated once and mutated in place" — so the shape is not novel; whether the matcher's consumers
+ * allow it is a separate audit.
+ *
+ * ⚠️ AND THE PROBE MUST NOT FLATTER IT THE WAY THE `facade` ARM WAS FLATTERED (item 2023): the row is
+ * READ inside the loop, so a reused map that the consumer would have had to copy is not counted as
+ * free. What this arm cannot show is a consumer that RETAINS, which is exactly what killed the view.
+ */
+const reuse = (() => {
+  let merged;
+  let lastOuter;
+
+  return (b, t) => {
+    if (lastOuter !== b) {
+      merged = new Map(b);
+      lastOuter = b;
+    }
+
+    for (const [k, v] of t) {
+      merged.set(k, v);
+    }
+
+    return merged;
+  };
+})();
+
+const ARMS = { spread, copyset, presized, facade, reuse };
 const build = ARMS[ARM];
 
 if (build === undefined) {

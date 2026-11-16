@@ -99426,3 +99426,73 @@ digest. Generalized over the row's own keys.
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
 `bun run fuzz` all seven green plus 6/6 sweeps clean; the tree verified back on the copying merge by
 re-measuring (`product` 349.0, the COPY arm's own figure).
+
+## Item 2024 — ❌ **REUSING ONE MAP ACROSS THE PRODUCT'S INNER LOOP: 3.76x on the frame, DECLINED.** 🔑 Its soundness needs every binding RETAINER enumerated across a lazy engine, grep cannot prove that, and the one unbounded retainer's fix costs exactly what the reuse saves. **With item 2023, the per-row binding allocation is now CLOSED — two independent attempts, both priced, both refused**
+
+Item 2022's re-profile leaves `mergeBinding` the top frame of the GQL surface's largest shape:
+
+```text
+    mergeBinding         28.49% self
+    (garbage collector)  23.97%
+    visitRemaining       10.56%
+    hoistedMatch          7.52%
+```
+
+So the allocation itself is what remains. In `visitRemaining`'s cached-tail product the OUTER binding
+is fixed for the whole inner loop and only the TAIL's keys vary — and the tail's key SET is fixed too
+— so the merged map could be built once per outer row and have only the tail's keys overwritten per
+inner row: **no allocation in the inner loop at all.** Priced on the item 2022 probe, 2,250,000 rows:
+
+```text
+    new Map([...outer, ...inner])   459.4 ms   204 ns/row   (the original)
+    copy, then set                  228.1      101          (shipped at 2022)
+    REUSE one map                    60.6       27          3.76x over shipped, 7.6x over original
+```
+
+⚠️ **AND UNLIKE ITEM 2023's VIEW IT HAS NO TYPE OR POLYMORPHISM COST** — the binding stays a real
+`Map`, every `get` call site keeps one shape, and the pattern is already established in this engine:
+`projectRow`'s note records that every caller in `hop-projection.ts` "passes a `Binding` allocated
+once and mutated in place". So this looked like the better idea, and on the numbers it is.
+
+🔑 **IT IS DECLINED ON SOUNDNESS, AND THE AUDIT IS THE RESULT WORTH KEEPING.** Reuse is correct only
+if no consumer RETAINS a yielded binding past the next iteration. Searching for stores of a binding
+into anything longer-lived finds three real retainers (a fourth, `shortcuts.ts`' `inner.add(b)`, turns
+out to dedup VALUES, not bindings):
+
+| site                                                                                                                    | what it retains                                 | cost to make it copy                               |
+| ----------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- | -------------------------------------------------- |
+| `clauses.ts:637` — `recordTail`'s `seen`                                                                                | the tail cache, capped at `TAIL_CACHE_CAP` 4096 | bounded, once per fill — cheap                     |
+| `projection.ts:854` — the top-k heap (item 2017's path keeps the best `cap` INPUT bindings)                             | ≤ `skip + limit`                                | bounded — cheap                                    |
+| `projection.ts:563` — GROUPING, when an aggregate needs whole groups (`collect`; not `countedGroups`, not `foldedAggs`) | **every binding of every group, unbounded**     | **one Map per row — exactly what the reuse saves** |
+
+So the third retainer's fix cancels the win for the queries that reach it. That alone would make this
+a gated change rather than a clean one.
+
+⚠️⚠️ **BUT THE DECISIVE PROBLEM IS COMPLETENESS, NOT COST.** The list above was found by PATTERN
+(`.push(b)`, `.set(k, b)`, `.add(b)`, `[...b]`), and a pattern search cannot prove there is no
+fourth — **particularly in an engine that is lazy throughout**, where a binding yielded now may be
+read after the next iteration has overwritten it. A closure capturing a binding, or a generator
+resumed later, retains it without matching any of those patterns. `hop-projection.ts` can use
+mutate-in-place safely because its walk is self-contained and its single consumer is known by
+construction; the matcher's output flows to arbitrary consumers through lazy pipelines.
+
+**And the payoff is asymmetric.** The win is 3.76x on ONE frame of ONE family — `multi-pattern`,
+which items 2017/2018/2022 have already taken from 9908 to 3837 ms. The risk is a silent wrong
+answer in the matcher, which is the most correctness-critical code in the engine. An aliasing bug of
+this kind is usually loud (every row identical), but "usually" is not a property to ship a wrong-answer
+class on.
+
+🔑 **TAKEN WITH ITEM 2023, THE PER-ROW BINDING ALLOCATION IS CLOSED.** Two independent ideas for
+removing it — a no-copy VIEW and a REUSED map — were each built, each priced in or near the engine,
+and each refused for a different and documented reason (the view: 1.98x real against a 2.58x
+regression on `RETURN *`, plus a `Binding` type change; the reuse: unprovable retention safety). The
+remaining `mergeBinding` 28.5% + GC 24.0% on that shape is therefore **accounted for, not open** —
+and a future reader who re-derives either idea should find these numbers first.
+
+⚠️ WHAT _IS_ STILL OPEN on that shape, from item 2022's own re-profile: `visitRemaining` 10.6%,
+`hoistedMatch` 7.5%, `projectRow` 5.8%, `propOf` 5.7%. None is the allocation, and none has been
+priced against a floor.
+
+GATES. No engine change in this item. `bun run fmt` 0; `bun run check` 0 read unpiped;
+`bun run test -- --skip-nx-cache` 21/21 (the probe arm is in `binding-merge-cost-2022.mjs`, not the
+engine).

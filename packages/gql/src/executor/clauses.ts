@@ -698,8 +698,17 @@ const recordTail = function* (
  *   - IT HOLDS REFERENCES, so it is sound only while every matcher yield site builds a FRESH
  *     binding. Inspected, not proved.
  *
- * Gating it on the consumer (`!proj.star`) would capture both wins and is the only version worth
- * pricing further — but the matcher does not know the projection, so it needs that plumbed in, and
+ * ⚠️⚠️ **AND REUSING ONE MAP ACROSS THE INNER LOOP WAS ALSO BUILT, PRICED AND DECLINED (item 2024):
+ * 3.76x on this frame, with no type or polymorphism cost — refused because its soundness needs every
+ * binding RETAINER enumerated across a LAZY engine and a pattern search cannot prove that, while the
+ * one unbounded retainer (grouping, for a whole-group aggregate) needs a copy per row that cancels
+ * the win. Three retainers found: `recordTail`'s cache (bounded 4096), the top-k heap (bounded by the
+ * window), and grouping (unbounded). TAKEN TOGETHER WITH THE VIEW ABOVE, THE PER-ROW ALLOCATION IS
+ * CLOSED — two independent attempts, each priced, each refused for a different documented reason. Do
+ * not re-derive either from a profile; the numbers are in CLOSED.md at items 2023 and 2024.**
+ *
+ * Gating the view on the consumer (`!proj.star`) would capture both of its wins and is the only
+ * version of EITHER idea worth pricing further — but the matcher does not know the projection, so it needs that plumbed in, and
  * the 2.58x cliff is what a wrong gate costs. Numbers recorded here so that is a decision with
  * evidence rather than an idea with a headline.
  *
