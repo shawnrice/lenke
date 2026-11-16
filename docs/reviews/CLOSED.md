@@ -100379,3 +100379,49 @@ GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-
 gremlin suite 2,590 (15 new); `bun run fuzz` all seven green. The wide workload screen moved 8 of 58
 rows beyond ±10%, every one sub-2.5 ms and 7 of the 8 in LIVE's favour (0.83-0.91x); the single 1.25x
 is a 0.04 → 0.05 ms row. Largest absolute mover `tree`, 2.41 → 2.17, faster.
+
+## Item 2038 — ✅ **THE GREMLIN TIMING SCREEN HAD ONE LABELLED ROW OF 58, AND ITS LABEL COULD NOT MOVE.** Nine added; four now show label cliffs, the largest **`V().hasLabel(T).out(E).values(n)` at 3.10x** — and `label: id` is 0.71x, i.e. the seeded route WINS there
+
+Item 2037 fixed the one route cliff item 2036's census found. This asked the question a census
+cannot: **does a row that keeps its route in BOTH label modes still pay for a surviving label step?**
+
+⚠️⚠️ **THE FIRST ANSWER WAS A FALSE ALL-CLEAR, AND THE INSTRUMENT WAS THE REASON.** `MIXED=1` on the
+58-row workload screen moved **zero** rows past 1.15x — because **exactly ONE row of 58 carries a
+`hasLabel` at all**, and it uses `U` (already 1-in-6, so non-vacuous in both modes and structurally
+incapable of moving). A 58-row screen with one labelled row cannot see a label cliff; item 2036's
+1.81x and item 2037's fusion were both invisible to it. **Every real query carries a label**, so this
+was blindness to the regime its users are in, not a clean bill of health.
+
+Nine labelled rows added, on `T` (vacuous without `MIXED=1`, non-vacuous with it — so each row is a
+matched pair and `dropVacuousLabels` deleting the step is what the pair measures). Two alternated
+pairs at 100,000 vertices, `ONLY=label` so no other shape pollutes the dispatch, min of each arm:
+
+| row                    | vacuous (r1/r2) | mixed (r1/r2) | ratio                                   |
+| ---------------------- | --------------- | ------------- | --------------------------------------- |
+| `label: hop values`    | 14.25 / 14.77   | 44.76 / 44.14 | **3.10x** — tight in both arms          |
+| `label: values`        | 2.34 / 2.71     | 8.71 / 6.02   | 2.57x — ⚠️ mixed arm spreads 1.45x      |
+| `label: dedupe values` | 2.67 / 2.50     | 4.83 / 4.47   | **1.79x**                               |
+| `label: order values`  | 11.54 / 8.64    | 15.28 / 14.55 | 1.68x — ⚠️ vacuous arm spreads 1.34x    |
+| `label: has values`    | 2.99 / 2.23     | 5.15 / 2.75   | 1.23x — both arms spread; says nothing  |
+| `label: id`            | 5.12 / 6.46     | 3.63 / 3.91   | **0.71x — the MIXED arm is FASTER**     |
+| `label: count`         | 0.01            | 0.00          | `countShortcut`, O(1) from bucket sizes |
+
+🔑 **THE NOMINATION IS `label: hop values` — 3.10x, and both arms are tight across two rounds.** It is
+`V().hasLabel(T).out(E).values(n)`: a labelled one-hop projection, about as common as a real Gremlin
+query gets.
+
+⚠️ **AND `label: id` AT 0.71x IS WORTH ITS OWN LINE: the seeded route BEATS the vacuous scan.** So
+"non-vacuous label is slower" is not a law — the direction is per-shape, which is the same lesson the
+GQL side gave at item 2031 (where the vacuous arm was 4.7% SLOWER on a two-hop count). Do not assume
+a sign.
+
+⚠️ **AN UNRESOLVED TENSION, RECORDED RATHER THAN SMOOTHED OVER.** `label: values` reads 2.57x here,
+while item 2037 measured the _same shape_ at **1.09x** after its fusion — and a direct check confirms
+the fusion DOES claim the shape on this screen's fixture (single-label and multi-label alike, `drain`
+present). So the gap is the FIXTURE, not the route: this screen uses FANOUT=4 and pooled property
+values (`N_POOL`), item 2037's probe used one edge per vertex and a dense integer key. Which of those
+matters is the next question; the mixed arm's own 1.45x spread here means this row cannot settle it.
+**No mechanism is claimed.**
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `node --check` on the screen. Screen-only
+change — nine rows and one `MIXED` knob; no engine code touched.

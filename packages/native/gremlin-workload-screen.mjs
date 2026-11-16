@@ -99,6 +99,21 @@ for (let i = 0; i < NODES; i += 1) {
   });
 }
 
+/*
+ * ⚠️⚠️ **MIXED=1 APPENDS ONE ISOLATED OFF-LABEL VERTEX, AND THE ROUTE CENSUS CANNOT REPLACE THIS**
+ * (item 2038). Every vertex above carries `T`, so `T` is VACUOUS and `dropVacuousLabels` deletes any
+ * `hasLabel('T')` step; one off-label vertex makes every such step SURVIVE. Item 2036's census found
+ * the one row of 98 whose ROUTE changed, and item 2037 fixed it — but a row that keeps its route in
+ * BOTH modes can still pay surviving per-element label tests, and no census can see that. Only
+ * timing can.
+ *
+ * 🔑 THE VERTEX IS ISOLATED, so every answer is unchanged and only `vertexCount` moves — which is
+ * what makes the two modes comparable row by row.
+ */
+if (process.env.MIXED === '1') {
+  g.addVertex({ id: 'vOFF', labels: ['Q'], properties: { n: -1, k: -1, s: 'off' } });
+}
+
 for (let e = 0; e < NODES * FANOUT; e += 1) {
   const i = e % NODES;
   const hop = Math.floor(e / NODES);
@@ -138,6 +153,25 @@ const SHAPES = {
   'point: has + limit 1': () => traversal(V(), has('k', 7), limit(1), values('n')),
   'scan: count': () => traversal(V(), count()),
   'scan: hasLabel count': () => traversal(V(), hasLabel('U'), count()),
+  /*
+   * ⚠️⚠️ **THE LABELLED FAMILY, AND THE REASON IT EXISTS: THIS SCREEN HAD **ONE** LABELLED ROW OF 58**
+   * (item 2038) — the `hasLabel('U')` count above, whose label is already 1-in-6 and so cannot move
+   * between label modes at all. EVERY REAL QUERY CARRIES A LABEL, so a 58-row screen with one
+   * labelled row is blind to the regime its users are in: item 2036's route cliff (1.81x) and item
+   * 2037's fusion were both invisible here.
+   *
+   * 🔑 THESE USE `T`, WHICH IS VACUOUS WITHOUT `MIXED=1` AND NON-VACUOUS WITH IT — so each row is a
+   * matched pair across the two modes, and `dropVacuousLabels` deleting the step is itself what the
+   * pair measures. `U` would have been useless here for exactly the reason the old row is.
+   */
+  'label: values': () => traversal(V(), hasLabel('T'), values('n')),
+  'label: count': () => traversal(V(), hasLabel('T'), count()),
+  'label: id': () => traversal(V(), hasLabel('T'), id()),
+  'label: hop values': () => traversal(V(), hasLabel('T'), out('E'), values('n')),
+  'label: hop count': () => traversal(V(), hasLabel('T'), out('E'), count()),
+  'label: has values': () => traversal(V(), hasLabel('T'), has('k', 3), values('n')),
+  'label: order values': () => traversal(V(), hasLabel('T'), values('n'), order()),
+  'label: dedupe values': () => traversal(V(), hasLabel('T'), values('s'), dedupe()),
   'scan: values': () => traversal(V(), values('n')),
   'scan: id': () => traversal(V(), id()),
   'scan: valueMap': () => traversal(V(), valueMap()),
