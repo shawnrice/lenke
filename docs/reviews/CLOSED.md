@@ -99156,3 +99156,88 @@ GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-
 `bun run fuzz` all seven green plus **8/8 sweeps clean** (the gremlin fuzzer compares against the
 Rust engine, which is the real net under a reduce change); 10 new tests; **7/8 mutants caught across
 two filters**, the eighth being the answer-equivalent `count-ignores-drain`.
+
+## Item 2021 — ✅ **the scan rung can carry a RESIDUAL, so `V().values(k).order()` stops falling to the pipeline: 32.12 → 15.70 ms (2.05x), 40.4 → 15.1 isolated (2.68x), controls flat.** 🔑 **One gate, five residuals — the family had been growing a rung per trailing step**
+
+Profile-first. With item 2020 clearing both `count` rows, the Gremlin screen's leading row was
+`order: values order`. ⚠️ **ITS 138 ns/row IS NOT EVIDENCE OF ANYTHING**, which is why the floor came
+first: a comparison sort of n elements is `n log n` comparisons, so a per-ROW figure on a sorted row
+grows with n by construction, and item 1976 declined a 744 ms row for exactly that reason. At
+200,000 vertices, one arm per process, best of 9:
+
+```text
+    engine   V().values(n).order()          40.4 ms   202 ns/row
+    nosort   V().values(n)                   6.0      30          the walk alone
+    handsort collect, then total-order sort  11.8      59          ⬅ 3.4x off its own floor
+    handcollect  collect alone                3.1      16
+    numericsort  the same array, `a - b`     11.9      60
+```
+
+⚠️ **`numericsort` ≈ `handsort` (11.9 against 11.8), SO A NUMERIC-SPECIALIZED COMPARATOR BUYS NOTHING
+HERE** — independently reproducing item 1711's numeric refusal on a different surface and a different
+engine. That arm stays in the probe so a profile does not send the next reader to build it.
+
+🔑 **AND THE SORT WAS NOT THE PROBLEM: THE SHAPE WAS NOT FUSED AT ALL.** The profile is the generic
+traverser pipeline end to end — `sortByBys` 23.8%, `orderStep` 10.6%, `unwrap` 5.5%, `projectValues`
+5.4%, `extend` 3.6%, `sourceFromIds` 3.3% — a traverser allocated per value so `orderStep` can spread
+them back into an array. `nodeValuesShortcut`'s gate requires the plan to be EXACTLY `V() + values(k)`
+("and nothing after it"), so every trailing step dropped the whole query onto the pipeline.
+
+**That is why `dedupe` needed a rung of its own** (item 1869, which priced the same gap at 11.96
+against a 5.81 floor) **and why `order()` never got one.** The fix is not a sixth rung:
+`fusedProjectedResidual` has handled a trailing `order()` (1630), `count()` (2020), `fold()` (1909),
+`min`/`max` (1908) and `aggregate().cap()`/`store().cap()` (1911) for the HOP walks all along — the
+scan simply had no way to reach it. `scanValuesResidual` hands it the scan walk.
+
+⚠️ IT REUSES `nodeValuesShortcut` BY ASKING IT ABOUT THE PREFIX rather than hoisting that walk to
+module scope and sharing it. The alternative edits the code path of `V().values(k)` itself — a 6 ms
+row — and [[executor-edits-perturb]] prices that kind of edit at up to 16% on unrelated shapes. One
+`Plan` object and one `slice` per QUERY, not per row. It also inherits item 1870's `hasLabel`
+refusal for free (a full scan loses to `seedFromIndex` for every selective label, up to 678x), which
+a re-derived gate would have had to remember.
+
+`scan-residual-ab-2021.sh`, two alternated passes, one shape per process, N=200,000:
+
+| shape                                                              | PRE           | POST          | ratio                |
+| ------------------------------------------------------------------ | ------------- | ------------- | -------------------- |
+| `order: values order`                                              | 32.12 / 32.76 | 15.70 / 16.31 | **2.05x**            |
+| `order: values order limit`                                        | 11.92 / 10.43 | 11.25 / 10.75 | **flat** — see below |
+| `agg: values min` / `max`                                          | 6.01 / 5.89   | 6.04 / 6.28   | flat                 |
+| `scan: values`, `agg: values mean`, `hop1: values`, `hop2: values` |               |               | flat                 |
+
+⚠️ **TWO ROWS I EXPECTED TO MOVE AND DID NOT, both for good reasons.** `agg: values min`/`max` were
+ALREADY fast in the PRE arm (6.01/5.89 against `scan: values`' 4.81) because `fusableValuesAggregate`
+gives them their own route — so they are controls, not targets, and I had them in the wrong list
+until the PRE numbers said so. And the CAPPED order form was already 2.7x cheaper than the uncapped
+one in PRE (10.43 against 32.76), so `orderStep` already short-circuits a small `limit`; the residual
+path neither helps nor hurts it.
+
+⚠️ `sum`/`mean` STAY ON THE PIPELINE, and the test pins their answers. `fusableProjectedAggregate`
+admits only `min`/`max` because f64 addition is order-sensitive in its last ulp and the fused walk's
+visit order is not the pipeline's — byte-identity with the Rust engine is a hard invariant (items
+1830/1853 declined the same pair on the GQL side).
+
+⚠️⚠️ **THREE MUTANTS SURVIVED BECAUSE THE GATE TEST ASKED THE WRONG QUESTION.** It asserted
+`scanValuesResidual` returned SOMETHING; it never asserted the `rest` was RIGHT. A wrong residual —
+empty, off by one, or the whole plan — still returns a non-`undefined` object, so `routed(...) ===
+true` passes; `fusedProjectedResidual` then recognises no case, declines, and the plan falls through
+to the pipeline with the SAME ANSWER. Two of the three survived this file AND the whole
+@lenke/gremlin suite. Asserting the residual's step KINDS catches all three. **The lesson
+generalizes: for a gate that returns a VALUE rather than a boolean, "it returned something" is not
+the contract — the value is.**
+
+⚠️ AND `limit(n)` COMPILES TO A `take` STEP, which is what the residual carries — my first assertion
+said `limit` and failed, correctly.
+
+⚠️ THE COMPLEXITY GATE SHAPED THE CALL SITE, twice: written as a nested `if` the block took `run` to
+**38**, then **36**, against a limit of 35. As one `??` it adds no branch, which is why every other
+rung in that function is a `??` — the gate is enforcing the file's own convention.
+
+STILL OPEN: the engine is now **1.31x** its hand floor on this row (15.1 against 11.5), down from
+3.4x. What remains is the drain plus `fusedProjectedOrder`'s in-place sort against a bare
+`collect + sort`, which is close enough that the next move on this family is a different shape.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped (after the complexity fix);
+`bun run test -- --skip-nx-cache` 21/21; gremlin suite 2,525 + 14 new; `bun run fuzz` all seven green
+plus **6/6 sweeps clean** both before and after the complexity refactor; **8/8 mutants caught across
+two filters**, re-run after that refactor.

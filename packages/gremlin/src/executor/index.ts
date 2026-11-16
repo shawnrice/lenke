@@ -59,6 +59,7 @@ import {
   idSeededValuesShortcut,
   nodeValuesDedupeShortcut,
   nodeValuesShortcut,
+  scanValuesResidual,
   seededNodeCountShortcut,
   seededNodeValuesShortcut,
 } from './node-values.js';
@@ -2758,6 +2759,34 @@ const fusedProjectedValues = (
       branchValueHop(effective, graph) ??
       hopChainValuesShortcut(effective, graph));
 
+/**
+ * THE SAME SCAN WITH A RESIDUAL (item 2021) — `V().values(k)` plus a trailing step the fused
+ * residual machinery already knows.
+ *
+ * ⚠️ EXTRACTED FOR THE COMPLEXITY GATE, as `scanValuesShortcut`, `fusedProjectedResidual` and
+ * `fusedValuesWalks` were before it: inlining these five lines took `run` to **38 against a limit of
+ * 35**. Nothing else changed.
+ *
+ * ⚠️ DISJOINT FROM `nodeValuesShortcut` BY CONSTRUCTION — `scanValuesResidual` returns `undefined`
+ * when there is no residual, so it cannot shadow that rung's own shape — and disjoint from every hop
+ * rung by shape, so it cannot change the route of any plan those answer. `fusedProjectedResidual`
+ * has handled a trailing `order`/`count`/`fold`/`min`/`max`/`cap` for the HOP walks since items
+ * 1630-2020; the scan simply had no way to reach it.
+ */
+const scanResidualWalk = (
+  effective: Plan,
+  graph: Graph,
+  tracksPath: boolean,
+): Iterable<unknown> | undefined => {
+  if (tracksPath) {
+    return undefined;
+  }
+
+  const scanned = scanValuesResidual(effective, graph);
+
+  return scanned === undefined ? undefined : fusedProjectedResidual(scanned, effective);
+};
+
 export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
   // Before anything runs: static faults the engine raises at parse time — a plan that
   // cannot succeed on any graph, and an aggregate/sort/vertex-move on the wrong frontier.
@@ -2863,7 +2892,15 @@ export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
   //
   // The same `tracksPath` guard covers both, and for the same reason: each walk emits bare values
   // and builds no path.
-  const nodeValues = scanValuesShortcut(effective, graph, ctx.tracksPath);
+  /*
+   * ⚠️ ONE `??`, NOT AN `if` — the complexity gate. Written as a nested `if` this took `run` to 38
+   * and then 36 against a limit of 35; the chain adds no branch, which is the same reason every
+   * other rung in this function is a `??`. `scanResidualWalk` is item 2021's and is disjoint from
+   * `scanValuesShortcut` by construction: it returns `undefined` unless there IS a residual.
+   */
+  const nodeValues =
+    scanValuesShortcut(effective, graph, ctx.tracksPath) ??
+    scanResidualWalk(effective, graph, ctx.tracksPath);
 
   if (nodeValues !== undefined) {
     return nodeValues;

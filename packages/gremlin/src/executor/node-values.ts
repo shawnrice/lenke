@@ -134,6 +134,58 @@ export const nodeValuesShortcut = (plan: Plan, graph: Graph): NodeValues | undef
 };
 
 /**
+ * The scan walk for a `V().values(k)` PREFIX, with whatever follows returned as a RESIDUAL
+ * (item 2021).
+ *
+ * ⚠️⚠️ **`nodeValuesShortcut` REQUIRES THE PLAN TO BE EXACTLY `V() + values(k)` — "and nothing after
+ * it" — SO EVERY TRAILING STEP DROPPED THE WHOLE QUERY ONTO THE TRAVERSER PIPELINE.** That is why
+ * `dedupe` needed a rung of its own below (item 1869, which priced the same gap at 11.96 against a
+ * 5.81 floor), and it is why `order()` never got one. Measured at 200,000 vertices, one arm per
+ * process, best of 9:
+ *
+ * ```text
+ *     V().values(n)                      6.0 ms    30 ns/row   the fused scan
+ *     V().values(n).order()             40.4      202          the PIPELINE
+ *     the same by hand, collect + sort  11.8       59          ⬅ 3.4x off its own floor
+ *     collect alone                      3.1       16
+ * ```
+ *
+ * The profile of the slow arm is the generic pipeline end to end — `sortByBys` 23.8%, `orderStep`
+ * 10.6%, `unwrap` 5.5%, `projectValues` 5.4%, `extend` 3.6%, `sourceFromIds` 3.3% — i.e. a traverser
+ * allocated per value so `orderStep` can spread them back into an array.
+ *
+ * 🔑 **SO THE FIX IS NOT A RUNG PER RESIDUAL, WHICH IS THE SHAPE THIS FAMILY HAD BEEN GROWING.**
+ * `fusedProjectedResidual` already handles a trailing `order()` (item 1630), `count()` (2020),
+ * `fold()` (1909), `min`/`max` (1908) and `aggregate().cap()`/`store().cap()` (1911) for the HOP
+ * walks. Handing it the scan walk too gives all five to this shape in one change.
+ *
+ * ⚠️ IT REUSES `nodeValuesShortcut` RATHER THAN RE-DERIVING THE WALK, by asking it about the prefix.
+ * The alternative — hoisting that walk to module scope and sharing it — would edit the code path of
+ * `V().values(k)` itself, which is a 6 ms row, and [[executor-edits-perturb]] prices that kind of
+ * edit at up to 16% on unrelated shapes. This way the existing walk is untouched: one `Plan` object
+ * and one `slice` per QUERY, not per row.
+ *
+ * ⚠️ A PLAN WITH NO RESIDUAL RETURNS `undefined`, so `nodeValuesShortcut` keeps owning its own
+ * shape and this cannot shadow it. The `dedupe` rung also runs BEFORE this (both are inside
+ * `scanValuesShortcut`), so `values(k).dedupe()` keeps its narrower, better path.
+ */
+export const scanValuesResidual = (
+  plan: Plan,
+  graph: Graph,
+): { values: NodeValues; rest: readonly Step[] } | undefined => {
+  const { steps } = plan;
+
+  // `V()` + `values(k)` is two steps; with nothing after them the rung above owns the plan.
+  if (steps.length <= 2) {
+    return undefined;
+  }
+
+  const values = nodeValuesShortcut({ ...plan, steps: steps.slice(0, 2) }, graph);
+
+  return values === undefined ? undefined : { values, rest: steps.slice(2) };
+};
+
+/**
  * ONE loop body for both the iterator and `drain`, AT MODULE SCOPE — the fused scan DEDUPE walk
  * (item 1869).
  *
