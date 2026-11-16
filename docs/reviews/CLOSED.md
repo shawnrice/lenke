@@ -101106,7 +101106,7 @@ a backticked identifier in a comment inside the generated driver terminates the 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
 `node --check` on the new probe. New probe only; no engine change.
 
-## Item 2050 — ✅ **DIAGNOSED: an UNDIRECTED multi-hop chain declines the chain fusion entirely and falls to the general pattern matcher — 0.838 µs a row against the directed twin's 0.295, a 2.84x PER-ROW gap.** 🔑 Found by sweeping all 51 GQL shapes for absolute cost: one shape is 19x the next
+## Item 2050 — ⚠️ **ITS 2.84x IS A 20k-FIXTURE ARTIFACT — item 2051 swept the size and found 1.39x at 200k, and DECLINED the build.** ✅ **DIAGNOSED: an UNDIRECTED multi-hop chain declines the chain fusion entirely and falls to the general pattern matcher — 0.838 µs a row against the directed twin's 0.295, a 2.84x PER-ROW gap.** 🔑 Found by sweeping all 51 GQL shapes for absolute cost: one shape is 19x the next
 
 Item 2049 showed every GQL rung is reached, so coverage cannot nominate anything there. **Coverage says
 nothing about whether a reached rung still earns its place**, so this swept all 51 shapes in the
@@ -101154,7 +101154,7 @@ comment), but a CHAIN of undirected hops declines and falls through to the patte
   not need to be**: eliminating the frame entirely caps at **9.8%**, against a route gap of **2.84x**.
   Bounded out rather than refuted.
 
-**So the target is the route, and it is substantial**: an undirected chain arm for the fused sweep. Two
+~~**So the target is the route, and it is substantial**~~ 🔒 **PRICED AND DECLINED AT ITEM 2051: 1.39x at 200k against a 1.33x accepted residual, and an edit to these walks costs up to 16% on unrelated rows.** The route finding stands: an undirected chain arm for the fused sweep. Two
 recorded constraints a builder must respect — the chain CSR is "ONE index with ONE label set, [and] a
 mixed-direction chain key would collide across every untyped shape" (`count-shortcut.ts`), and ROW
 ORDER is observable for a projection, which is why the one-hop undirected walk emits out-steps then
@@ -101164,3 +101164,53 @@ NOT BUILT — diagnosed and bounded. The sweep itself is the reusable part: it i
 GQL shapes have been ranked by cost in one pass.
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped. No source change — a sweep and two profiles.
+
+## Item 2051 — ⚠️ **ITEM 2050's 2.84x IS A SMALL-FIXTURE ARTIFACT: the undirected-chain gap decays monotonically with size — 3.74x headroom at 20k, 2.25x at 50k, 1.85x at 200k — and against the directed route it is only 1.39x per row there.** 🔒 The build is priced and NOT recommended
+
+Item 2050 diagnosed the route (directed rides the fused `sweepBlock`; undirected falls to the general
+pattern matcher) and priced it at 2.84x per row — **at 20,000 vertices, the only size it measured.**
+This built the floor it owed, and then swept the size.
+
+🔑 **THE FLOOR IS VALID BECAUSE IT REPRODUCES THE ROW SEQUENCE, not the multiset.**
+`hop-projection.ts` records that `expand` emits, per start vertex, the out-steps then the in-steps,
+skipping a self-loop in the in-pass because a loop is indexed under BOTH maps — and that order is
+OBSERVABLE for a projection. The hand arm does exactly that, and the probe compares element by element
+and **voids the floor** if they diverge (they do not, at every size).
+
+```text
+    NODES     engine undirected   HAND undirected   engine directed   headroom   undir/dir per row
+    20,000        0.804 us/row       0.215 us/row      0.335 us/row     3.74x         2.40x
+    50,000        0.864              0.383             0.512            2.25x         1.69x
+   200,000        0.866              0.469             0.624            1.85x         1.39x
+```
+
+⚠️⚠️ **THE HEADROOM DECAYS BECAUSE THE HAND ARM WAS CACHE-RESIDENT AT 20k, NOT BECAUSE THE ENGINE
+IMPROVES.** Hand per-row cost rises 0.215 → 0.469 (2.18x) across the sweep while the engine's rises
+0.804 → 0.866 (1.08x) — the engine is already dominated by its own overhead, so only the floor moves.
+**This is precisely what CLAUDE.md's "sweep the size" rule exists to catch**, and item 2050's single
+20k fixture is what it catches.
+
+⚠️ RE-RUN AFTER HOISTING THE HAND WALK to module scope (a lint rule caught the closure, and
+[[ts-closure-size-is-load-bearing]] agrees): **1.91x headroom, 1.41x per row, 1.36x residual** at 200k
+— unchanged within noise, so the floor is stable and not an artifact of how the arm was written. The
+figures below are the first run's; the two bracket each other.
+
+🔒 **SO THE AVAILABLE WIN IS ~1.39-1.41x AT A REALISTIC SIZE, NOT 2.84x**, and reaching even that means
+bringing the undirected route to the directed route's own residual — which is **1.33x** against the
+same hand arm at 200k, stable across the sweep and matching the figure
+[[label-vacuity-gates-fast-paths]] already records ("within 1.34x of a hand loop"). So the honest
+target is 1.85x → 1.33x on one shape.
+
+**Against that:** an undirected chain arm must solve the chain-CSR keying problem (`count-shortcut.ts`:
+"the chain CSR is ONE index with ONE label set; a mixed-direction chain key would collide across every
+untyped shape") and preserve observable row order, and [[executor-edits-perturb]] prices an edit to
+these walks at up to **16% on unrelated rows** (items 1413/1415/1440/1442/1462). **A ~1.39x win on one
+shape does not carry that.** Recorded as priced-and-declined rather than open.
+
+⚠️ AND A PROBE-OUTPUT FAULT WORTH THE LINE: my first version printed "the directed route is 0.34x
+cheaper per row", which is the reciprocal and reads as the opposite of what it means. All three ratios
+are now stated the same way round. A label that has to be mentally inverted is a wrong-answer
+generator in a probe nobody re-derives.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `node --check` on the new probe. New probe
+only; no engine change.
