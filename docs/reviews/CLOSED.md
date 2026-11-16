@@ -98997,9 +98997,10 @@ A/B that swaps arms needs the same, because it can die between the swap and the 
 the four scripts names its source `$IDX` rather than `$SRC`, and under `set -u` a trap naming the
 wrong variable dies at exactly the moment it is needed — fixed.
 
-STILL OPEN on this shape: 1567 ms against a hand 2-key sort's 218. The remaining terms, from item
+~~STILL OPEN on this shape: 1567 ms against a hand 2-key sort's 218. The remaining terms, from item
 2017's re-profile, are `cmp` (the genuine `n log n` work), GC, and `visitRemaining` — the cross
-product's own enumeration, which is not a sort question at all. ~~⚠️ The full four-round whole-screen
+product's own enumeration, which is not a sort question at all.~~ **`visitRemaining` TAKEN at item
+2022 (1.83x unordered, 1.63x with the sort, 3.34x cumulative); what remains is `cmp` and GC.** ~~⚠️ The full four-round whole-screen
 A/B for this change is OWED and was not run.~~ **RUN AT ITEM 2019 — clean, every family flat or
 better, and the one apparent regression REFUTED as that row's own noise.**
 
@@ -99241,3 +99242,127 @@ GATES. `bun run fmt` 0; `bun run check` 0 read unpiped (after the complexity fix
 `bun run test -- --skip-nx-cache` 21/21; gremlin suite 2,525 + 14 new; `bun run fuzz` all seven green
 plus **6/6 sweeps clean** both before and after the complexity refactor; **8/8 mutants caught across
 two filters**, re-run after that refactor.
+
+## Item 2022 — ✅ **the matcher's per-row binding merge stops going through two array spreads: the unordered cross product 610 → 334 ms (1.83x), with `ORDER BY` 1588 → 975 (1.63x), 3.34x cumulative with items 2017/2018.** ⚠️⚠️ And a 132x arm in the pricing probe is **UNMEASURED, not deferred** — its consumer is not the engine's. Plus a PRE-EXISTING cross-engine divergence found on the way
+
+Profile-first. Re-running the GQL body split after items 2017/2018 shows how much they moved —
+`multi-pattern`'s worst shape 9908 → 3837, `optional` 14.5 → 4.9, `var-length` 11.7 → 8.7 — and
+leaves `multi-pattern` the largest by 45x. Item 2018 had named the open term: `visitRemaining`, the
+product's own enumeration, "which is not a sort question at all". Profiling the UNORDERED arm:
+
+```text
+    visitRemaining     43.46% self
+    (garbage collector) 21.31%
+    hoistedMatch         7.44%
+    projectRow           5.46%
+    propOf               5.40%
+```
+
+~65% in the enumeration and the garbage it makes. The uncorrelated-tail optimization (item 121) is
+already there — the tail is matched ONCE and cached — so what was left was one line per output row:
+
+```js
+    yield new Map([...b, ...t]);
+```
+
+Two array spreads, each materializing a two-element array per entry, a concat, and then the Map
+insert that was the only necessary part. The same shape item 2017 removed from `applyProjection`,
+in the matcher this time, at four call sites.
+
+🔑 **PRICED IN ISOLATION BEFORE ANY ENGINE EDIT** (`binding-merge-cost-2022.mjs`, 2,250,000 rows,
+the engine's own key shape — an outer binding of one variable, each side adding two, overlapping on
+the outer key — and **every arm checked for identical key ORDER and values before being timed**):
+
+```text
+    new Map([...outer, ...inner])    461.4 ms   205 ns/row
+    copy, then set                   257.4      114           1.79x   ⬅ shipped
+    a pre-sized Map (knows the keys) 220.5       98           the floor for one Map per row
+    a no-copy VIEW over both maps      3.5        2           132x    ⬅ see below
+```
+
+⚠️⚠️ **THE 132x VIEW IS NOT A DEFERRED WIN — IT IS AN UNMEASURED ONE, AND THE PROBE FLATTERS IT BY
+CONSTRUCTION.** That arm reads ONE key per row. The engine's consumers differ: `projectRow` reads a
+key per output column (where a view would indeed be nearly free), while `RETURN *` copies every
+entry and `DISTINCT`'s `rowKey` iterates the whole binding — a view pays per access on both. It also
+makes every `Binding` consumer depend on a `ReadonlyMap`-shaped class rather than a `Map`. **Item
+762's lesson in general form: a micro-benchmark's consumer is not the engine's.** Pricing it needs an
+in-situ A/B with the ITERATING shapes as controls. The arm stays in the probe, labelled, so the next
+reader sees the number and the reason it cannot be banked.
+
+MEASURED, four alternated rounds, one arm per process, digests identical throughout:
+
+| shape                         | PRE             | POST          | ratio     |
+| ----------------------------- | --------------- | ------------- | --------- |
+| the cross product, unordered  | 610.4 / 637.1   | 342.1 / 333.8 | **1.83x** |
+| the same with `ORDER BY x, y` | 1588.1 / 1612.1 | 974.7 / 990.2 | **1.63x** |
+
+⚠️ **THE WHOLE-SCREEN SWEEP CANNOT SHOW THIS WIN, AND THAT IS THE SCREEN, NOT THE CHANGE.** The merge
+fires only on an UNCORRELATED product, and the one screen family that has those — `multi-pattern` —
+is capped at the screen's 15 s BUDGET ("1/100 queries in 15000 ms") in both arms, so its ratio is ~1
+by construction. The other 15 families are CONTROLS and read flat (`edge-filter` 832.0 → 824.0,
+`optional` 685.9 → 667.2, `chain-rows` 6200.5 → 6160.7, nothing moving against the change). Both
+instruments are reported because each answers only half the question.
+
+⚠️ TWO MUTANTS SURVIVE AND BOTH ARE EXPECTED, documented in the round rather than chased:
+
+- **`merge-inner-loses`** (outer wins on a shared key instead of inner) — the sides overlap ONLY on
+  the outer binding's keys and those hold the SAME values on both sides, so the direction cannot
+  differ. On the CLAUSE path there is no overlap at all: that cache is matched against an EMPTY
+  binding, so it holds only the clause's own variables. A fact about the data, not a missing test.
+- **`clause-bare-path-lost`** (always merge, even when the incoming binding is empty) —
+  answer-equivalent; merging an empty Map adds nothing. It is the `bare` fast path, worth 1.93x on a
+  20,000-row scan, so the A/B is its only evidence.
+
+⚠️⚠️ **AND TWO MUTANTS CAUGHT A TEST GAP WORTH GENERALIZING: I CHECKED ROW ZERO'S COLUMN ORDER ONLY.**
+The product has two merge call sites — the FIRST outer row streams the tail through `recordTail` while
+filling the cache, and every LATER row reads the filled cache. `Object.keys(got[0])` exercises only
+the first, so swapping the merge arguments on the CACHED path reordered the columns of rows 2..n and
+survived this file AND the whole @lenke/gql suite. Asserting the key order of EVERY row catches both.
+Key order is the contract here, not the values: `visitRemaining` documents it as "outer keys, then
+`pat`'s, then the tail's — which `RETURN *` projects in", and column order is bytes
+([[column-order-is-observable]]).
+
+### ⚠️⚠️ A PRE-EXISTING CROSS-ENGINE DIVERGENCE, found on the way and NOT caused by this item
+
+`fuzz-sweep.sh` failed on run 10 of 10 — which is what that script exists for (item 2012 built it
+after destroying the evidence twice). The seed replays:
+
+```text
+    FUZZ_SEED=3826437490 bun test src/differential-fuzz.test.ts
+
+    MATCH (t:T) OPTIONAL MATCH (t)-[:E]->(n WHERE ((atan2(n.m.k, '1e3') >= n.x) AND
+      ((n.m.k >= 3) AND (n.x < 0)))) RETURN t.n AS x, n.n AS y ORDER BY x, y
+      ts:     ok  [{"x":3,"y":null}, … six rows, every y null]
+      native: err E_INVALID_VALUE
+```
+
+⚠️ **NOT THIS ITEM'S: the same seed fails identically at `HEAD` with the change absent** — verified
+by replaying it against a restored `clauses.ts`. A merge helper cannot affect predicate evaluation
+order.
+
+🔑 **AND IT IS A CLASS THE REGISTRY DELIBERATELY REFUSES TO EXCUSE.** Its one entry is narrow —
+`E_INVALID_VALUE` against an EMPTY result, "never wrong data, and never rows" — and says in terms
+that "an error against a NON-EMPTY result is a different thing entirely … and is NOT covered here".
+Here native raises and this engine returns six rows.
+
+⚠️ **THE NUANCE THE REGISTRY'S MATCHER CANNOT SEE, and it is the whole question**: the inline
+predicate is inside an `OPTIONAL MATCH` and matches NOTHING on either engine, so at the PATTERN level
+this IS the covered shape — a malformed predicate against no rows. `OPTIONAL MATCH` then turns "no
+match" into a row with NULLs, so the STATEMENT's result is non-empty and the matcher, which only sees
+final results, classifies it as the excluded shape. **So the bound's wording does not settle it: does
+"never rows" mean the pattern's rows or the statement's?** That is a conformance decision about
+`OPTIONAL MATCH`'s null rows, not a defect to patch — and item 259 already tried the obvious fix for
+the sibling shape (extending this engine's static boolean-context check to inline pattern predicates)
+and made things WORSE, 1 divergence a run becoming 7 ([[boolean-context-static-check]]).
+
+Recorded rather than decided: `optional-inline-predicate-divergence.test.ts` pins this engine's
+behaviour and holds the disagreement as `test.failing`, so it cannot be forgotten and cannot go green
+unnoticed. ⚠️ **AND NO REGISTRY ENTRY WAS ADDED.** Adding one would silence the fuzzer on exactly the
+class the registry forbids excusing; the honest cost is that `bun run fuzz` can flag this. Measured
+frequency: **once in 20 runs of 20,000 queries** (~1 per 200,000), the same order as the registry's
+documented sibling.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
+`bun run fuzz` all seven green plus **10/10 sweeps clean** on the confirming run; 8 new merge tests
+and 2 pinning the divergence; **6/8 mutants caught across two filters**, the two survivors documented
+above as answer-equivalent.

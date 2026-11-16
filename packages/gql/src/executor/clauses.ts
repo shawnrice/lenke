@@ -644,6 +644,50 @@ const recordTail = function* (
   return complete;
 };
 
+/**
+ * `outer` extended by `inner` — ONE Map per row, without the intermediate arrays (item 2022).
+ *
+ * ⚠️⚠️ **THIS LINE WAS 43.5% SELF WITH ANOTHER 21.3% IN THE GARBAGE COLLECTOR** on the GQL surface's
+ * largest shape. `visitRemaining`'s uncorrelated-tail product (item 121) already matches the tail
+ * ONCE and caches it; what was left was `new Map([...outer, ...inner])` run per output row — two
+ * array spreads, each materializing a two-element array per entry, a concat, and then the Map insert
+ * that was the only necessary part.
+ *
+ * Priced in isolation at 2,250,000 rows with the engine's own key shape — an outer binding of one
+ * variable, each side adding two more, overlapping on the outer key — every arm checked to produce
+ * the SAME key order and values before being timed (`binding-merge-cost-2022.mjs`):
+ *
+ * ```text
+ *     new Map([...outer, ...inner])    461.4 ms   205 ns/row
+ *     THIS — copy, then set            257.4      114           1.79x
+ *     a pre-sized Map (knows the keys) 220.5       98           the floor for one Map per row
+ *     a no-copy VIEW over both maps      3.5        2           ⬅ see the warning below
+ * ```
+ *
+ * ⚠️⚠️ **THE 132x VIEW IS NOT A DEFERRED WIN, IT IS AN UNMEASURED ONE, and the probe flatters it by
+ * construction.** That arm reads ONE key per row; the engine's consumers vary — `projectRow` reads
+ * a key per output column (where a view would indeed be nearly free), while `RETURN *` copies every
+ * entry and `DISTINCT`'s `rowKey` iterates the whole binding, and a view pays per access on both. It
+ * also makes every `Binding` consumer depend on a `ReadonlyMap`-shaped class rather than a `Map`.
+ * Item 762's lesson in its general form: a micro-benchmark's consumer is not the engine's. Pricing
+ * it needs an in-situ A/B with the ITERATING shapes as controls, which is a separate item.
+ *
+ * ⚠️ KEY ORDER IS IDENTICAL AND THAT IS A CONTRACT, not a detail: `visitRemaining` documents the
+ * merge order as "outer keys, then `pat`'s, then the tail's — which `RETURN *` projects in", and
+ * column order is bytes ([[column-order-is-observable]]). `Map.set` on an EXISTING key keeps that
+ * key's original position, so copy-then-set and the spread agree for the overlapping keys too; the
+ * probe asserts it rather than arguing it.
+ */
+const mergeBinding = (outer: Binding, inner: Binding): Binding => {
+  const merged = new Map(outer);
+
+  for (const [k, v] of inner) {
+    merged.set(k, v);
+  }
+
+  return merged;
+};
+
 const visitRemaining = function* (
   graph: Graph,
   patterns: readonly CPath[],
@@ -696,7 +740,7 @@ const visitRemaining = function* (
         let next = tail.next();
 
         while (next.done !== true) {
-          yield new Map([...b, ...next.value]);
+          yield mergeBinding(b, next.value);
           next = tail.next();
         }
 
@@ -706,7 +750,7 @@ const visitRemaining = function* (
 
       if (complete) {
         for (const t of seen) {
-          yield new Map([...b, ...t]);
+          yield mergeBinding(b, t);
         }
 
         continue;
@@ -874,7 +918,7 @@ const hoistedMatch = function* (
 
     if (cached !== undefined) {
       for (const c of cached) {
-        yield new Map([...binding, ...c]);
+        yield mergeBinding(binding, c);
       }
 
       continue;
@@ -907,7 +951,7 @@ const hoistedMatch = function* (
     let next = tail.next();
 
     while (next.done !== true) {
-      yield bare ? next.value : new Map([...binding, ...next.value]);
+      yield bare ? next.value : mergeBinding(binding, next.value);
       next = tail.next();
     }
 
