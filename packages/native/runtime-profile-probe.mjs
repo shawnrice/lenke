@@ -340,12 +340,113 @@ if (sink === 0) {
 //
 // Values verified against HEAD at item 1749.
 const first = rows0 === undefined ? undefined : rows0[Object.keys(rows0)[0]];
+/*
+ * ⚠️⚠️ **THE EXPECTED ANSWERS WERE CONSTANTS, SO NO SHAPE COULD BE PROFILED AT FANOUT>1** (item 2030).
+ * `rowsPerRun` already accepted a function of NODES; `answer` did not, so `FANOUT=3 … join` threw
+ * "answered 1863, expected 207" — the guard firing correctly on a fixture it simply could not
+ * describe. That is the one regime CLAUDE.md insists on for a per-edge shape ("per-edge costs scale
+ * with the edge:node ratio"), and `join` is per-edge work, so the probe could only ever profile it
+ * in the regime that misprices it.
+ *
+ * 🔑 THE FIX IS AN ORACLE, NOT A WIDER CONSTANT TABLE. `expectJoin` and friends recompute the answer
+ * from the fixture's own CLOSED FORM in plain JS — no engine call, no `Graph` — so they are an
+ * INDEPENDENT check rather than a recording of what the engine said once. A constant captured at
+ * FANOUT=3 would have agreed with whatever the engine printed, including a wrong number, which is the
+ * failure the surrounding comment spends ten lines on.
+ *
+ * ⚠️ IT ALSO ASSERTS THE FIXTURE BRANCHES. CLAUDE.md's generator trap is that `to = (a*k + b) % N` is
+ * invariant under `k -> k + N`, so every one of a vertex's FANOUT edges lands on the SAME target and
+ * the graph is FUNCTIONAL while out-degree looks perfect. This generator already splits on the repeat
+ * index, and `distinctTargets` now proves it per run instead of trusting the comment that says so.
+ */
+const fixtureEdges = (nodes, fanout, stride) => {
+  const out = new Map();
+
+  for (let e = 0; e < nodes * fanout; e += 1) {
+    const i = e % nodes;
+    const hop = Math.floor(e / nodes);
+    const from = stride === 'scattered' ? (e * 7919) % nodes : i;
+    const to =
+      stride === 'scattered'
+        ? ((e % nodes) * 104729 + hop * 977) % nodes
+        : (i * 7 + 3 + hop * 2654435761) % nodes;
+
+    const bucket = out.get(from);
+
+    if (bucket === undefined) {
+      out.set(from, [to]);
+    } else {
+      bucket.push(to);
+    }
+  }
+
+  return out;
+};
+
+const distinctTargets = (adj) => {
+  const seen = new Set();
+
+  for (const targets of adj.values()) {
+    for (const t of targets) {
+      seen.add(t);
+    }
+  }
+
+  return seen.size;
+};
+
+// `MATCH (a:P)-[:E]->(b:P) WHERE a.k = 5 RETURN count(*)` — a.k is `i % 97`.
+const expectHopFilter = (nodes, fanout, stride) => {
+  const adj = fixtureEdges(nodes, fanout, stride);
+  let rows = 0;
+
+  for (const [from, targets] of adj) {
+    if (from % 97 === 5) {
+      rows += targets.length;
+    }
+  }
+
+  return rows;
+};
+
+// The same shape under EXISTS / OPTIONAL counts matching `a`s once, not edges.
+const expectExists = (nodes, fanout, stride) => {
+  const adj = fixtureEdges(nodes, fanout, stride);
+  let rows = 0;
+
+  for (const [from, targets] of adj) {
+    if (from % 97 === 5 && targets.length > 0) {
+      rows += 1;
+    }
+  }
+
+  return rows;
+};
+
+// `MATCH (a)-[:E]->(b) MATCH (b)-[:E]->(c) WHERE a.k = 5` — the two-hop product.
+const expectJoin = (nodes, fanout, stride) => {
+  const adj = fixtureEdges(nodes, fanout, stride);
+  let rows = 0;
+
+  for (const [from, targets] of adj) {
+    if (from % 97 !== 5) {
+      continue;
+    }
+
+    for (const b of targets) {
+      rows += (adj.get(b) ?? []).length;
+    }
+  }
+
+  return rows;
+};
+
 const EXPECTED = {
-  hopfilter: { rowsPerRun: 1, answer: 207 },
-  hopall: { rowsPerRun: 1, answer: 20_000 },
-  existssub: { rowsPerRun: 1, answer: 207 },
-  optional: { rowsPerRun: 1, answer: 207 },
-  join: { rowsPerRun: 1, answer: 207 },
+  hopfilter: { rowsPerRun: 1, answer: expectHopFilter },
+  hopall: { rowsPerRun: 1, answer: (n, f) => n * f },
+  existssub: { rowsPerRun: 1, answer: expectExists },
+  optional: { rowsPerRun: 1, answer: expectExists },
+  join: { rowsPerRun: 1, answer: expectJoin },
   point: { rowsPerRun: 1, answer: 's345' },
   sortedpage: { rowsPerRun: 10, answer: 's0' },
   distinct: { rowsPerRun: 97 },
@@ -414,10 +515,29 @@ if (want !== undefined) {
     );
   }
 
-  if (want.answer !== undefined && first !== want.answer) {
+  const wantAnswer =
+    typeof want.answer === 'function' ? want.answer(NODES, FANOUT, STRIDE) : want.answer;
+
+  if (wantAnswer !== undefined && first !== wantAnswer) {
     throw new Error(
-      `${SHAPE} answered ${String(first)}, expected ${String(want.answer)} — this arm is NOT answer-equivalent, so its timing is meaningless`,
+      `${SHAPE} answered ${String(first)}, expected ${String(wantAnswer)} — this arm is NOT answer-equivalent, so its timing is meaningless`,
     );
+  }
+
+  /*
+   * ⚠️ THE FIXTURE MUST BRANCH, and only a DISTINCT-ENDPOINT count can say so (CLAUDE.md: out-degree,
+   * in-degree and isolated-vertex counts all look perfect under the `k -> k + N` collapse). At
+   * FANOUT=1 one vertex cannot branch, so the check applies above it.
+   */
+  if (FANOUT > 1) {
+    const reach = distinctTargets(fixtureEdges(NODES, FANOUT, STRIDE));
+    const floor = Math.floor(NODES * 0.5);
+
+    if (reach < floor) {
+      throw new Error(
+        `fixture reaches only ${reach} distinct targets of ${NODES} at FANOUT=${FANOUT} — a DEGENERATE (functional) graph, so any branching claim from it is meaningless`,
+      );
+    }
   }
 }
 

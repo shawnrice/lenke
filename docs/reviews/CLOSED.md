@@ -99851,3 +99851,68 @@ returning a clean no. The nine census rows and three probe arms are KEPT, so the
 measurement rather than the hypothesis.
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped. No source change.
+
+## Item 2030 — ✅ **the GQL profile probe can now run FANOUT>1, which it never could: `answer` was a CONSTANT, so `FANOUT=3 … join` threw. Replaced with ORACLES that recompute the answer from the fixture's closed form.** 🔑 And the first profile it unlocked nominates a 20.9% target: `two-hop-filtered-csr.ts` tests labels per element and has ZERO mentions of `vacuousLabel`, where 43 other gates elide
+
+`runtime-profile-probe.mjs` guarded every shape with an expected answer, and `rowsPerRun` already
+accepted a function of NODES — but `answer` did not:
+
+```text
+    NODES=20000 FANOUT=3 … join
+    Error: join answered 1863, expected 207 — this arm is NOT answer-equivalent
+```
+
+The guard fired **correctly** on a fixture it simply could not describe. So the probe could only ever
+profile in the FANOUT=1 regime — and CLAUDE.md's own rule is that "one edge per node is sparse:
+per-edge costs scale with the edge:node ratio". `join` is per-edge work, so the one shape most in need
+of a branching fixture was the one locked out of it.
+
+🔑 **THE FIX IS AN ORACLE, NOT A WIDER CONSTANT TABLE.** `expectJoin`/`expectHopFilter`/`expectExists`
+recompute the answer from the fixture's CLOSED FORM in plain JS — no engine call, no `Graph` — so they
+are an independent check rather than a recording of what the engine said once. A constant captured at
+FANOUT=3 would have agreed with whatever the engine printed, **including a wrong number.** They agree
+with the engine at both fanouts (207 at 1, 1863 at 3), so the engine was right and the guard is now
+honest at any fixture.
+
+⚠️ AND THE FIXTURE'S BRANCHING IS NOW ASSERTED PER RUN, not trusted to the comment claiming it. The
+generator does split on the repeat index (`hop * 2654435761`), which is the cure for CLAUDE.md's
+`to = (a*k + b) % N` collapse — but items 1516/1518 found that exact defect in six generators whose
+comments also said they were fine, so `distinctTargets` now counts the distinct endpoints and throws
+below `NODES/2`. Only a distinct-endpoint count can see it: out-degree, in-degree and isolated-vertex
+counts all look perfect under the collapse.
+
+**AND THE FIRST MEASUREMENT IT UNLOCKED IS ITSELF A FINDING:** `join` reads **1062.4 ms at FANOUT=1 and
+1036.7 at FANOUT=3** — flat, against 3x the edges and 9x the answer (207 → 1863 rows). So its cost is
+NOT per-edge, and anything priced against it as if it were would be mispriced.
+
+### What the profile nominates (not yet built)
+
+The shape takes the fused `twoHopFilteredCsrCount` route, and **20.9% of the profile is label testing**:
+
+| frame                              | ms        | share     |
+| ---------------------------------- | --------- | --------- |
+| `evalLabelExpr`                    | 166.7     | 13.3%     |
+| `get labels`                       | 62.3      | 5.0%      |
+| `matchesLabel`                     | 32.7      | 2.6%      |
+| **label work total**               | **261.7** | **20.9%** |
+| `twoHopFilteredCsrCount.accept`    | 191.1     | 15.3%     |
+| `variable.variable in compileExpr` | 177.9     | 14.2%     |
+
+`packages/gql/src/executor/two-hop-filtered-csr.ts` has **ZERO** mentions of `vacuousLabel`, and tests
+labels per element at two sites:
+
+```text
+    :143   if (aLabel !== undefined && !matchesLabel(a, aLabel))     per START vertex
+    :181   if (w !== 0 && matchesLabel(order[s], midEff))            per MIDDLE slot
+```
+
+Both could be set `undefined` at PLAN time when the label is vacuous, which is what the 43 existing
+`vacuousLabel(` gates do.
+
+⚠️⚠️ **BUT ITS VALUE IS BOUNDED BY LABEL HOMOGENEITY AND THAT MUST BE MEASURED BOTH WAYS**, per
+[[label-vacuity-gates-fast-paths]]: a label is vacuous only when EVERY vertex carries it, so this
+fixture (all `P`) is the arm a real schema cannot reach. The elision is a no-op on a mixed graph, so
+the item that builds it owes a MIXED fixture showing no regression there — not just the 20.9% here.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped. Probe-only change; oracles cross-checked
+against the engine at FANOUT 1 and 3.
