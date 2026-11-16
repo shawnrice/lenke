@@ -100110,3 +100110,66 @@ read, where a label-blind index leaves no second arm to route to).
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped — ⚠️ it took TWO passes, the known
 `fmt`/`fmt:check` non-idempotency on md lists, not a real failure. Engine source verified clean
 (`grep -c __LBL` = 0) and rebuilt. Probe-only change.
+
+## Item 2034 — ✅ **MEASURED: a start-driven arm is 13.62x the engine on the realistic hop count at FANOUT=3, and the ROUTE alone (hand against hand) is worth 1.07x / 3.14x / 5.18x at FANOUT 1 / 3 / 5.** 🔑 The gap is INVISIBLE at one edge per vertex, which is the fixture this family was always measured on
+
+Item 2033 counted the realistic (`MIXED=1`) hop count
+(`MATCH (a:P)-[:E]->(b:P) WHERE a.k = 5 RETURN count(*)`) doing **240,000,000 label tests to return
+621 rows**, because `tallyHopCount` walks every edge while the start predicate selects 207 of 20,001
+vertices (~1%). This priced the alternative instead of arguing about it. All three arms answer 621,
+asserted against a closed-form oracle with no engine call:
+
+| FANOUT | engine (edge-driven) | HAND edge-driven | HAND start-driven | route gap, hand↔hand |
+| ------ | -------------------- | ---------------- | ----------------- | -------------------- |
+| 1      | 113.8                | 26.2             | 24.4              | **1.07x**            |
+| 3      | 346.3                | 79.7             | 25.4              | **3.14x**            |
+| 5      | 572.0                | 147.0            | 28.4              | **5.18x**            |
+
+(ms per 200 ops, median of the plateau over 7 reps with the first three dropped, series printed.)
+
+**TWO INDEPENDENT GAPS, and they multiply to 13.62x at FANOUT=3:**
+
+1. **THE ROUTE.** Hand-to-hand, start-driven beats edge-driven **3.14x** at FANOUT=3 — pure algorithm,
+   no engine overhead in it. The start-driven arm is nearly FLAT in fanout (24.4 → 25.4 → 28.4)
+   because it scales with _matching starts × their degree_ (207 × F), while the edge arm is exactly
+   linear in |E| (1x / 3.04x / 5.61x). **So the gap GROWS with density**, and a people-graph vertex
+   has many edges.
+2. **THE ARM.** The engine is **4.35x its own hand edge-driven shape** at FANOUT=3 — the per-edge
+   machinery, which is the residual items 1936/1942 were already measuring.
+
+⚠️⚠️ **AND THE REASON NOBODY FOUND THIS: AT FANOUT=1 THE TWO ARMS ARE EQUAL (1.07x).** With one edge
+per vertex, walking all edges and walking the matching starts' edges are the same work, because the
+vertex scan dominates both. CLAUDE.md's rule — "one edge per node is sparse; per-edge costs scale with
+the edge:node ratio" — and `runtime-profile-probe.mjs` could not run FANOUT>1 at all until item 2030
+fixed its constant expectations. **The instrument's limit was hiding the target.**
+
+🔑 **WHAT THE GATE IS MISSING, precisely.** Item 1942's route map is indexed by **LABEL** selectivity:
+
+```text
+    start label        far label         arm
+    vacuous/absent     vacuous/absent    CSR, counting
+    vacuous/absent     broad non-vac     CSR + per-slot far test
+    broad non-vac      anything          EDGE-driven, both tested   <- fires here, CORRECTLY
+    selective          anything          start-driven (bucket)
+```
+
+`P` covers 20000/20001 ≈ **0.99995**, so "broad non-vacuous" is the right answer to the question the
+gate ASKS, and `EDGE_DRIVEN_MIN_COVERAGE = 0.4` is doing its job. **The unweighed term is the start
+PREDICATE's selectivity** — 1% here — which no row considers. A start-driven arm is reserved for a
+selective LABEL and never offered to a broad label with a selective predicate.
+
+⚠️ NOT item 1974's withdrawal: that is an indexed keyed read, where the index is LABEL-BLIND so the
+label must be tested per candidate and there is **no second arm to route to**. Here the second arm
+exists, is 3.14x, and the fixture needs no index at all (`k` is unindexed — the start-driven arm scans
+vertices).
+
+⚠️ **A CORRECTION TO MY OWN ITEM 2033 FRAMING**, recorded because it would have oversold this: that
+item said a start-driven walk visits "621 edges, ~100x fewer than 60,000". True of EDGES, misleading
+about the SPEEDUP — `k` is unindexed, so the arm still scans all 20,001 vertices, and its total work
+is ~20,622 visits against 60,000 edges. The honest number is the measured **3.14x**, not 100x.
+
+⚠️ And `query`'s signature is `query(graph, text)`, not `query(text, graph)` — the reversed call threw
+`E_SYNTAX: got 'eof'` (an empty token stream), which reads like a mangled query string rather than a
+swapped argument.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped. New probe only; no engine change.
