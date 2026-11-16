@@ -99585,3 +99585,75 @@ GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-
 `bun run fuzz` all seven green; the 8-sweep hit the pre-existing divergence above on run 3 and was
 otherwise clean; 13 new route/answer tests plus a third case on the divergence pin; **9/10 mutants
 caught across two filters**, the tenth documented above as unobservable.
+
+## Item 2026 — ✅ **the corner two earlier items left: an existence-filtered scan with a TRAILING residual. 41.05 → 25.68 ms (1.60x) on the screen, 49.5 → 24.6 isolated (2.01x), controls flat.** ⚠️ And the screen had NO ROW for the shape, so its own A/B read flat everywhere until one was added
+
+Item 2021 let the plain scan carry a trailing residual; item 2025 let it carry a leading existence
+filter. **Neither admits both.** Rather than guess which combinations still declined, the route census
+was asked (`gremlin-route-screen.mjs`, extended with the combination rows):
+
+```text
+    SHORTCUT  scan: where values                    ⬅ item 2025
+    generic   scan: where values order     3 calls  [order values where]
+    generic   scan: where values count     3 calls  [count hasKey where]
+    generic   scan: where values dedupe    3 calls  [dedupe values where]
+```
+
+Priced against the SAME residual on the already-fused prefix, so the question is what the residual
+costs when the prefix is fused rather than whether a sort is expensive (200,000 vertices, every vertex
+passing the filter — item 1858's trap):
+
+```text
+                      with `where`   without   fused prefix + residual
+    … .order()           49.5 ms      13.9      ~23.9   ⬅ ~2.1x available
+    … .count()           19.3          2.3      ~12.3   ~1.6x
+    … .dedupe()          18.6          4.4      ~14.4   ~1.3x
+```
+
+One gate — the where-rung asked about its own PREFIX, item 2021's pattern — covers
+`order`/`fold`/`min`/`max`/`cap`. Measured, four alternated rounds, one shape per process:
+
+| shape                                                                    | PRE           | POST          | ratio     |
+| ------------------------------------------------------------------------ | ------------- | ------------- | --------- |
+| `where: sub-traversal order`                                             | 41.16 / 41.05 | 25.68 / 26.60 | **1.60x** |
+| `where: sub-traversal` (item 2025's 3-step rung, which this sits beside) | 16.48 / 16.66 | 16.60 / 16.11 | flat      |
+| `order: values order` (item 2021's shape)                                | 15.00 / 15.77 | 15.68 / 15.50 | flat      |
+| `scan: values`, `hop1: values`, `hop2: values`                           |               |               | flat      |
+
+Isolated on a dedicated fixture the same shape is **49.5 → 24.6 (2.01x)**; the screen's fixture has
+FANOUT=4 against the probe's one edge a vertex. The screen number is the headline because it is the
+conservative one and the one with controls.
+
+⚠️⚠️ **AND THE SCREEN HAD NO ROW FOR THE SHAPE, SO ITS OWN A/B READ FLAT EVERYWHERE.** My first four
+rounds measured `order: values order` — item 2021's plain shape, which this item does not touch — and
+every row was flat, which is exactly what a _correct_ control sweep looks like and says nothing about
+the target. **A family whose COMBINATIONS are not on the screen cannot be regression-tested by it**:
+items 2021 and 2025 each added a fused shape and neither added the row for its combination with the
+other. `where: sub-traversal order` is now a screen row, which is how the 1.60x above was measured at
+all.
+
+⚠️ **`count` IS FLAT AND THE REASON IS A NORMALIZATION, NOT THIS GATE** — 19.3 before, 18.5 after.
+`values(k).count()` is rewritten to `hasKey(k).count()` before any rung sees it, which is settled and
+sensible (counting a single key's values IS counting the vertices that have it), so the plan reaching
+this rung is `V(), where, hasKey, count` with no `values` step. Two independent confirmations: the
+census printing `[count hasKey where]`, and `values-is-count.test.ts` asserting the rewritten kinds
+are `['V', 'hasKey', 'count']`. **The remaining count gap belongs to `countShortcut`, which does not
+admit a leading existence filter** — a different rung and a separate change, recorded here so the
+next reader does not re-derive "count didn't improve" as a defect in this gate.
+
+⚠️ AND MY FIRST TEST OF THAT ASSERTED THE GATE RETURNS `undefined` FOR THE COUNT SHAPE, WHICH IS
+FALSE: the gate accepts the raw shape perfectly well, because the normalization runs inside `run` on
+the EFFECTIVE plan, not on a plan handed to the gate directly. So the acceptance is harmless but
+DEAD. The test now asserts what is true and references the existing pin rather than re-deriving it.
+
+⚠️ `dedupe` IS NOT COVERED, deliberately: `fusedProjectedResidual` handles
+`order`/`count`/`fold`/`min`/`max`/`cap`, while `dedupe` has its own rung (item 1869) that this
+prefix cannot reach. Its ~1.3x is the smallest of the three and stays open.
+
+⚠️ THE RESIDUAL'S CONTENT IS ASSERTED, NOT ITS PRESENCE — item 2021's lesson, where three mutants
+returned a non-`undefined` object with a WRONG residual that then declines downstream and falls
+through to the pipeline with the same answer. The step KINDS are pinned.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
+`bun run fuzz` all seven green; 18 tests in the rung's file (13 from item 2025 plus 5 here);
+**7/7 mutants caught across two filters.**

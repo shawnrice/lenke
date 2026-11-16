@@ -283,6 +283,61 @@ export const nodeValuesWhereShortcut = (plan: Plan, graph: Graph): NodeValues | 
 };
 
 /**
+ * The EXISTENCE-FILTERED scan for a `V().where(<one hop>).values(k)` PREFIX, with whatever follows
+ * returned as a RESIDUAL (item 2026).
+ *
+ * ⚠️⚠️ **THE CORNER LEFT BY WIDENING THE GATE FROM TWO SIDES.** Item 2021 let the plain scan carry a
+ * trailing residual; item 2025 let it carry a leading existence filter. Neither admits BOTH, so the
+ * route census read:
+ *
+ * ```text
+ *     SHORTCUT  scan: where values
+ *     generic   scan: where values order     [order values where]
+ *     generic   scan: where values count     [count hasKey where]
+ *     generic   scan: where values dedupe    [dedupe values where]
+ * ```
+ *
+ * Priced at 200,000 vertices, every vertex passing the filter, against the SAME residual on the
+ * already-fused prefix — so the question is what the residual costs when the prefix is fused rather
+ * than whether a sort is expensive:
+ *
+ * ```text
+ *                        with `where`   without   fused prefix + residual
+ *     … .order()            49.5 ms      13.9      ~23.9   ⬅ ~2.1x available
+ *     … .count()            19.3          2.3      ~12.3   ~1.6x
+ *     … .dedupe()           18.6          4.4      ~14.4   ~1.3x
+ *     … (no residual)       14.6          4.6
+ * ```
+ *
+ * ⚠️ `dedupe` IS NOT COVERED and that is not an oversight: `fusedProjectedResidual` handles
+ * `order`/`count`/`fold`/`min`/`max`/`cap`, while `dedupe` has its own rung
+ * (`nodeValuesDedupeShortcut`, item 1869) which this prefix cannot reach. Its ~1.3x stays open and
+ * is the smallest of the three.
+ *
+ * ⚠️ IT REUSES `nodeValuesWhereShortcut` BY ASKING IT ABOUT THE PREFIX — item 2021's pattern, for
+ * item 2021's reason: the alternative edits the walk that serves the 3-step shape, and
+ * [[executor-edits-perturb]] prices that kind of edit at up to 16% on unrelated rows. One `Plan`
+ * object and one `slice` per QUERY, not per row. It also inherits every refusal that rung makes —
+ * the predicate-`where` overload, the multi-key projection, the narrowed source — rather than
+ * restating them.
+ */
+export const scanWhereValuesResidual = (
+  plan: Plan,
+  graph: Graph,
+): { values: NodeValues; rest: readonly Step[] } | undefined => {
+  const { steps } = plan;
+
+  // `V()` + `where` + `values(k)` is three steps; with nothing after them the rung above owns it.
+  if (steps.length <= 3) {
+    return undefined;
+  }
+
+  const values = nodeValuesWhereShortcut({ ...plan, steps: steps.slice(0, 3) }, graph);
+
+  return values === undefined ? undefined : { values, rest: steps.slice(3) };
+};
+
+/**
  * ONE loop body for both the iterator and `drain`, AT MODULE SCOPE — the fused scan DEDUPE walk
  * (item 1869).
  *

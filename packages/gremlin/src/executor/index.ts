@@ -61,6 +61,7 @@ import {
   nodeValuesShortcut,
   nodeValuesWhereShortcut,
   scanValuesResidual,
+  scanWhereValuesResidual,
   seededNodeCountShortcut,
   seededNodeValuesShortcut,
 } from './node-values.js';
@@ -2790,7 +2791,14 @@ const scanResidualWalk = (
     return undefined;
   }
 
-  const scanned = scanValuesResidual(effective, graph);
+  /*
+   * ⚠️ TWO PREFIXES, ONE `??` — the plain scan (item 2021) and the existence-filtered one (2026).
+   * They are disjoint by construction: the first needs `values` immediately after the source, the
+   * second a `where` between them, and each returns `undefined` unless there IS a residual. Written
+   * as a chain rather than two `if`s because the complexity gate on `run` counts branches, which is
+   * what shaped item 2021's call site too.
+   */
+  const scanned = scanValuesResidual(effective, graph) ?? scanWhereValuesResidual(effective, graph);
 
   return scanned === undefined ? undefined : fusedProjectedResidual(scanned, effective);
 };

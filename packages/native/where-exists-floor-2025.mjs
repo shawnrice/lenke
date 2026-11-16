@@ -35,7 +35,7 @@
  *     ARM=engine bun where-exists-floor-2025.mjs
  */
 import { Graph } from '@lenke/core';
-import { out, toArray, traversal, V, values, where } from '@lenke/gremlin';
+import { count, dedupe, order, out, toArray, traversal, V, values, where } from '@lenke/gremlin';
 
 const N = Number(process.env.N ?? 200_000);
 const REPS = Number(process.env.REPS ?? 9);
@@ -90,8 +90,28 @@ const handTest = () => {
   return [kept];
 };
 
+/*
+ * ⚠️ ITEM 2026's ARMS. The route census (`gremlin-route-screen.mjs`) shows `scan: where values` FUSED
+ * (item 2025) and its three RESIDUAL combinations still generic — the gap left by widening the gate
+ * from two sides without covering the corner:
+ *
+ *     SHORTCUT  scan: where values
+ *     generic   scan: where values order     [order values where]
+ *     generic   scan: where values count     [count hasKey where]
+ *     generic   scan: where values dedupe    [dedupe values where]
+ *
+ * Each is priced against the residual's own cost on the ALREADY-FUSED sibling, so the question is
+ * "what does the residual cost when the prefix is fused vs not" rather than "is a sort expensive".
+ */
 const ARMS = {
   engine: () => toArray(traversal(V(), where(traversal(out('E'))), values('n')), g),
+  whereorder: () => toArray(traversal(V(), where(traversal(out('E'))), values('n'), order()), g),
+  wherecount: () => toArray(traversal(V(), where(traversal(out('E'))), values('n'), count()), g),
+  wherededupe: () => toArray(traversal(V(), where(traversal(out('E'))), values('n'), dedupe()), g),
+  // The same residuals on the FUSED prefix (no `where`), as the comparison that isolates the gap.
+  plainorder: () => toArray(traversal(V(), values('n'), order()), g),
+  plaincount: () => toArray(traversal(V(), values('n'), count()), g),
+  plaindedupe: () => toArray(traversal(V(), values('n'), dedupe()), g),
   nofilter: () => toArray(traversal(V(), values('n')), g),
   handfilter: handFilter,
   handtest: handTest,

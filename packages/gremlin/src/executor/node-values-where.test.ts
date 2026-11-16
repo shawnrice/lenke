@@ -17,8 +17,24 @@ import { describe, expect, test } from 'bun:test';
 
 import { Graph } from '@lenke/core';
 
-import { both, hasLabel, in_, neq, out, toArray, traversal, V, values, where } from '../index.js';
-import { nodeValuesWhereShortcut } from './node-values.js';
+import {
+  both,
+  count,
+  dedupe,
+  fold,
+  hasLabel,
+  in_,
+  min,
+  neq,
+  order,
+  out,
+  toArray,
+  traversal,
+  V,
+  values,
+  where,
+} from '../index.js';
+import { nodeValuesWhereShortcut, scanWhereValuesResidual } from './node-values.js';
 
 const build = (): Graph => {
   const g = new Graph();
@@ -184,5 +200,86 @@ describe('the pipeline is the ORACLE', () => {
       expect(fast.length).toBeGreaterThan(0);
       expect(fast).toEqual(general);
     }
+  });
+});
+
+describe('scanWhereValuesResidual: the corner both earlier items left (item 2026)', () => {
+  const g = build();
+
+  test('a trailing `order()` is served, and sorts the filtered values', () => {
+    // The survivors' `n` are 1 (a), 6 (f) — `d` passes the filter and has no `n`.
+    expect(rows(traversal(V(), where(traversal(out('E'))), values('n'), order()), g)).toEqual([
+      1, 6,
+    ]);
+  });
+
+  test('`fold` and `min` are served too — one gate, several residuals', () => {
+    expect(rows(traversal(V(), where(traversal(out('E'))), values('n'), fold()), g)).toEqual([
+      [1, 6],
+    ]);
+    expect(rows(traversal(V(), where(traversal(out('E'))), values('n'), min()), g)).toEqual([1]);
+  });
+
+  test('the RESIDUAL it reports is exactly the steps after `values(k)`', () => {
+    /*
+     * ⚠️ ASSERTING "IT RETURNED SOMETHING" IS NOT THE CONTRACT — item 2021's round found three
+     * mutants that returned a non-`undefined` object with a WRONG residual, which then declines
+     * downstream and falls through to the pipeline with the same answer. The value is the contract.
+     */
+    const one = scanWhereValuesResidual(
+      traversal(V(), where(traversal(out('E'))), values('n'), order()),
+      g,
+    );
+
+    expect(one?.rest.map((st) => st.kind)).toEqual(['order']);
+
+    const none = scanWhereValuesResidual(
+      traversal(V(), where(traversal(out('E'))), values('n')),
+      g,
+    );
+
+    // No residual: the three-step rung owns that shape, and this must not shadow it.
+    expect(none).toBeUndefined();
+  });
+
+  test('a trailing `count()` DECLINES — and the reason is a NORMALIZATION, not this gate', () => {
+    /*
+     * ⚠️⚠️ **`values(k).count()` IS REWRITTEN TO `hasKey(k).count()` BEFORE ANY RUNG SEES IT**, which
+     * is a settled and sensible normalization: counting a single key's values IS counting the
+     * vertices that have it. So the plan reaching this rung is `V(), where, hasKey, count` — no
+     * `values` step — and declining is correct rather than a miss.
+     *
+     * Measured: `where(out(E)).values(n).count()` is 19.3 ms before this item and 18.5 after, i.e.
+     * FLAT, where `order` went 49.5 -> 24.6. The remaining gap belongs to `countShortcut`, which
+     * does not admit a leading existence filter — a different rung and a separate change. Pinned
+     * here so the next reader does not re-derive "count didn't improve" as a defect in this gate.
+     */
+    const plan = traversal(V(), where(traversal(out('E'))), values('n'), count());
+
+    /*
+     * ⚠️ MY FIRST VERSION OF THIS ASSERTED THE GATE RETURNS `undefined` AND THAT WAS WRONG: the gate
+     * accepts the RAW shape perfectly well, because the normalization runs inside `run` on the
+     * EFFECTIVE plan, not on a plan handed to the gate directly. So the gate's acceptance here is
+     * harmless but DEAD — the engine never presents it this shape.
+     */
+    expect(scanWhereValuesResidual(plan, g)?.rest.map((st) => st.kind)).toEqual(['count']);
+
+    // The answer is unaffected either way: three survivors, two with an `n`.
+    expect(rows(plan, g)).toEqual([2]);
+
+    /*
+     * ⚠️ THE NORMALIZATION ITSELF IS ALREADY PINNED by `values-is-count.test.ts`, which asserts the
+     * rewritten kinds are `['V', 'hasKey', 'count']` — so this file references that rather than
+     * re-deriving it. Two independent confirmations that the engine takes the `hasKey` shape: that
+     * test, and `gremlin-route-screen.mjs` printing this row's steps as `[count hasKey where]`.
+     */
+  });
+
+  test('a trailing `dedupe()` declines — `fusedProjectedResidual` does not cover it', () => {
+    // `dedupe` has its own rung (`nodeValuesDedupeShortcut`, item 1869) which this prefix cannot
+    // reach. Its ~1.3x stays open and is the smallest of the three combinations.
+    expect(rows(traversal(V(), where(traversal(out('E'))), values('n'), dedupe()), g)).toEqual([
+      1, 6,
+    ]);
   });
 });

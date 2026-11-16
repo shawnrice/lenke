@@ -217,6 +217,15 @@ const SHAPES = {
   'select: as + select two': () => traversal(V(), as_('a'), out('E'), as_('b'), select('a', 'b')),
   'project: two keys': () => traversal(V(), project('n', 'i').by('n').by('k')),
   'where: sub-traversal': () => traversal(V(), where(traversal(out('E'))), values('n')),
+  /*
+   * ⚠️ ADDED AT ITEM 2026 BECAUSE THE SCREEN COULD NOT SEE THE SHAPE IT FUSED. Items 2021 and 2025
+   * widened the scan-values gate from two sides and 2026 covered the corner — a trailing residual on
+   * an existence-filtered scan — but no screen row had that combination, so its PRE/POST read flat
+   * everywhere and the win was only visible in a dedicated probe (49.5 -> 24.6 ms at 200,000). A
+   * family whose combinations are not on the screen cannot be regression-tested by it.
+   */
+  'where: sub-traversal order': () =>
+    traversal(V(), where(traversal(out('E'))), values('n'), order()),
   'where: neq filter': () => traversal(V(), as_('a'), out('E'), where(neq('a')), values('n')),
   'path: hop path': () => traversal(V(), out('E'), path()),
   'page: range mid': () => traversal(V(), out('E'), values('n'), range(1000, 1010)),

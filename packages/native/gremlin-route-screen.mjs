@@ -78,6 +78,18 @@ const SHAPES = {
   'scan: has values': "traversal(V(), has('k', 3), values('k'))",
   'scan: fold': "traversal(V(), values('k'), fold())",
   'scan: id': 'traversal(V(), id())',
+  /*
+   * ⚠️ THE COMBINATIONS ITEMS 2021 AND 2025 CREATED. Each of those widened the scan-values gate from
+   * one side — 2021 for a TRAILING residual, 2025 for a LEADING existence filter — so the rows that
+   * matter now are the ones that need BOTH, which neither rung admits on its own. Added as a census
+   * rather than assumed: the screen's job is to say which route answers a shape.
+   */
+  'scan: where values': "traversal(V(), where(traversal(out('E'))), values('k'))",
+  'scan: where values order': "traversal(V(), where(traversal(out('E'))), values('k'), order())",
+  'scan: where values count': "traversal(V(), where(traversal(out('E'))), values('k'), count())",
+  'scan: where values dedupe': "traversal(V(), where(traversal(out('E'))), values('k'), dedupe())",
+  'scan: values order limit': "traversal(V(), values('k'), order(), limit(10))",
+  'scan: values min': "traversal(V(), values('k'), min())",
   'hop1: values': "traversal(V(), out('E'), values('k'))",
   'hop1: count': "traversal(V(), out('E'), count())",
   'hop1: id': "traversal(V(), out('E'), id())",
@@ -169,7 +181,7 @@ const SHAPES = {
 };
 
 const IMPORTS =
-  "import { E, V, aggregate, both, bothE, cap, count, dedupe, fold, groupCount, gt, has, hasId, hasLabel, id, inE, inV, in_, limit, min, optional, order, otherV, out, outE, outV, store, sum, toArray, traversal, values } from '@lenke/gremlin';";
+  "import { E, V, aggregate, both, bothE, cap, count, dedupe, fold, groupCount, gt, has, hasId, hasLabel, id, inE, inV, in_, limit, min, optional, order, otherV, out, outE, outV, store, sum, toArray, traversal, values, where } from '@lenke/gremlin';";
 
 const build = () => execFileSync('bun', ['run', 'build'], { cwd: ROOT, stdio: 'ignore' });
 
