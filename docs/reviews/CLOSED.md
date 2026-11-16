@@ -98999,9 +98999,70 @@ wrong variable dies at exactly the moment it is needed — fixed.
 
 STILL OPEN on this shape: 1567 ms against a hand 2-key sort's 218. The remaining terms, from item
 2017's re-profile, are `cmp` (the genuine `n log n` work), GC, and `visitRemaining` — the cross
-product's own enumeration, which is not a sort question at all. ⚠️ The full four-round whole-screen
-A/B for this change is OWED and was not run.
+product's own enumeration, which is not a sort question at all. ~~⚠️ The full four-round whole-screen
+A/B for this change is OWED and was not run.~~ **RUN AT ITEM 2019 — clean, every family flat or
+better, and the one apparent regression REFUTED as that row's own noise.**
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
 `bun run fuzz` all seven green plus 6/6 sweeps clean; 16 new tests including an oracle that forces
 the general route with a `LIMIT 1000`; **16/16 mutants caught across two filters.**
+
+## Item 2019 — ✅ **item 2018's OWED whole-screen sweep, run: every family flat or better.** ⚠️⚠️ It first read `range-scan` as a **1.45x REGRESSION** — non-overlapping across both rounds, exactly what a real one looks like — and that is **the row's own 1.72x noise floor**, measured on one fixed binary
+
+Item 2018 shipped on a reduced control sweep (five cheap families, two rounds) because its four-round
+whole-screen A/B had been killed mid-round by the system's low-memory reaper. The entry recorded the
+full sweep as OWED. This is that sweep, run as **four separate FOREGROUND calls** — the whole thing
+exceeds the harness's 600 s foreground cap, which is why it had been backgrounded and therefore
+reapable in the first place. `sorted-direct-ab-2018.sh` now takes `ROUND=PRE|POST|RESTORE`.
+
+```text
+    family           PRE1    PRE2   POST1   POST2   ratio
+    edge-filter     959.2   942.1   831.3   806.6   1.17x  better
+    neighbors       226.1   223.6   204.3   206.7   1.09x  better
+    point-lookup     38.1    38.5    39.5    33.5   1.14x  better
+    optional        786.0   740.1   690.6   687.2   1.08x
+    chain-rows     6154.5  6240.2  6195.3  6216.7   0.99x
+    ... (every other family within 0.98-1.02x)
+    range-scan       32.4    33.5    49.1    47.0   0.69x  <-- looked like a 1.45x REGRESSION
+```
+
+⚠️ AND `multi-pattern` CHANGED IN KIND, not just degree: **"NOT MEASURABLE — KILLED BY SIGTERM" in
+both PRE rounds, and completing in both POST rounds** (one query in 15 s, 100,000,000 rows, still
+over the screen's budget). That is the family item 2017/2018's probe was built on, and it is now
+inside the child timeout.
+
+⚠️⚠️ **THE `range-scan` REGRESSION IS NOT REAL, AND EVERYTHING ABOUT IT LOOKED REAL.** PRE 32.4/33.5
+against POST 49.1/47.0 — two rounds each, non-overlapping ranges, consistent direction. The standard
+reading of that is a regression. Two instruments refuted it:
+
+1. **A three-arm bisect** (`rangescan-bisect-2019.sh`: before item 2018 / the `keyedComparator`
+   extraction ALONE with the new path gated off / the full change), order-alternated A-B-C then
+   C-B-A. The slow reading followed **POSITION, not ARM** — 50.4 ms for the first arm of pass 1,
+   48.0 for the second arm of pass 2 — while all three arms read **32.4-32.7 at their best**.
+2. **Eight consecutive runs on ONE FIXED BINARY**, no code change between them:
+
+```text
+    range-scan   54.8  35.6  33.1  31.9  33.3  32.5  34.0  47.5     1.72x
+    union        36.7  36.5  38.1  38.1                             1.04x   (control)
+```
+
+So the row is bimodal with a ~1.7x spread and the family is specific — the control is tight. Two slow
+draws landing in the two POST slots was coincidence. `union`'s 0.95x in the same sweep was already
+inside its own range.
+
+🔑 **TWO RULES THIS EARNS, both now in `PROBES.md` beside the screen:**
+
+- **A two-round A/B cannot resolve `range-scan`.** It needs the eight-run series, or a bisect against
+  an arm the change provably cannot reach.
+- **"Non-overlapping across both rounds" is NOT sufficient evidence on a bimodal row.** That property
+  is the entire reason this looked like a finding, and CLAUDE.md's "know the noise floor — some rows
+  range 2x for the same binary" is the rule it violates. The floor has to be measured for the ROW,
+  not assumed from the harness.
+
+⚠️ AND THE REDUCED SWEEP'S OWN LIMITATION WAS REAL, which is worth keeping separate from the above:
+`range-scan` was not among the five families item 2018 measured, so the reduced sweep could not have
+raised this at all. That it turned out to be noise is luck, not vindication — the next substituted
+sweep may omit a family where the movement is genuine.
+
+GATES. `bunx tsc --noEmit` 0; `projection.ts` byte-identical to the shipped arm after the bisect
+(the `trap` restored it); no engine change in this item.

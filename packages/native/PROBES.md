@@ -258,6 +258,29 @@ with and without its `ORDER BY` was 2206 against 9909 ms, and that difference wa
 ⚠️ `worst owns N%` is a share of the sum over DISTINCT shapes, not weighted by the generator's draw
 rate. It names the slowest shape, not necessarily the one owning the family's screen time.
 
+### ⚠️⚠️ `range-scan` HAS A 1.72x NOISE FLOOR ON THIS SCREEN — ANYTHING UNDER ~1.7x ON THAT ROW IS UNINTERPRETABLE
+
+Measured at item 2019 on ONE FIXED BINARY, eight consecutive `FAMILY=range-scan` runs:
+
+```text
+    54.8  35.6  33.1  31.9  33.3  32.5  34.0  47.5     1.72x, no code change
+    union control (4 runs)   36.7 36.5 38.1 38.1        1.04x
+```
+
+So it is this family specifically, not the harness. **It has already cost one false regression**: item
+2018's owed four-round sweep read `range-scan` at **0.69x** — PRE 32.4/33.5 against POST 49.1/47.0,
+non-overlapping across both rounds, which is exactly what a real regression looks like. A three-arm
+bisect (before / the extraction alone / the full change) then put the slow reading on whichever arm
+ran FIRST in a pass, with all three arms at 32.4-32.7 at their best, and the eight-run series above
+settled it. **Two slow draws landing in the two POST slots was coincidence.**
+
+Two rules this earns:
+
+- **A two-round A/B cannot resolve this row.** Give it the eight-run series, or bisect it against a
+  control arm that the change cannot reach.
+- **"Non-overlapping across both rounds" is not sufficient evidence on a bimodal row.** It was the
+  reason the regression looked real, and it was wrong.
+
 ## ⚠️ `surface-parity-probe.ts` TIMES ONE CALL PER REP — its fast arms' ABSOLUTES are inflated ~6x
 
 Item 1877 looped its `seek-count` arm 20,000 times inside the timed region and read **2.86 us against

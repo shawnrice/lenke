@@ -46,11 +46,13 @@ round() {
 # ⚠️ VERIFY THE TREE IS CLEAN AND COMPILES BEFORE TOUCHING IT. An interrupted earlier run leaves
 # its arm in place, and the next run then measures that arm as if it were the baseline — or, as
 # happened here, writes a syntactically invalid line and exits.
-grep -F -q -- "$LIVE" "$SRC" || {
-  print -- "REFUSING: the LIVE arm is not in $SRC — a previous run left its arm behind."
+# ⚠️ EITHER ARM IS ACCEPTABLE AT START (an alternating round finds the previous round's), but a tree
+# holding NEITHER means a run died mid-swap and the baseline cannot be trusted.
+if ! grep -F -q -- "$LIVE" "$SRC" && ! grep -F -q -- "$DEAD" "$SRC"; then
+  print -- "REFUSING: $SRC holds neither arm — a previous run died mid-swap."
   grep -n 'proj.orderBy.length > 0' "$SRC" | tail -3
   exit 1
-}
+fi
 (cd "$ROOT" && timeout 600 bunx tsc --noEmit >/dev/null 2>&1) || {
   print -- "REFUSING: the tree does not typecheck before any arm was applied."
   exit 1
@@ -63,15 +65,31 @@ grep -F -q -- "$LIVE" "$SRC" || {
 # the end; an A/B that swaps arms needs a `trap`, because it can die between the swap and the swap
 # back. SIGTERM, SIGINT and ordinary EXIT all land here.
 restore_live() {
-  if ! grep -F -q -- "$LIVE" "$SRC"; then
-    print -- "\n[trap] restoring the LIVE arm in $SRC"
+  # ⚠️ A ROUND LEAVES ITS OWN ARM IN PLACE ON PURPOSE so the next call can alternate, so the trap
+  # must only act when the arm is NEITHER — a round that died part-way through its own swap.
+  if ! grep -F -q -- "$LIVE" "$SRC" && ! grep -F -q -- "$DEAD" "$SRC"; then
+    print -- "\n[trap] arm is NEITHER live nor dead — restoring LIVE in $SRC"
     set_arm "$LIVE" "$DEAD" || print -- "[trap] COULD NOT RESTORE — fix $SRC by hand"
   fi
 }
 trap restore_live EXIT INT TERM
 
-round PRE "$DEAD" "$LIVE"
-round POST "$LIVE" "$DEAD"
-round 'PRE (2)' "$DEAD" "$LIVE"
-round 'POST (2)' "$LIVE" "$DEAD"
-print -- "\nrestored to LIVE (gated)"
+# ⚠️⚠️ **ONE ROUND PER INVOCATION, BECAUSE THE FOUR-ROUND FORM WAS KILLED.** The whole sweep exceeds
+# the harness's 600 s foreground cap, so it ran as a BACKGROUND shell — where Claude Code's
+# low-memory reaper stopped it mid-round, leaving the DEAD arm in the tree (the `trap` above is what
+# now prevents that). A single round fits the foreground cap, so the sweep is four separate calls:
+#
+#     ROUND=PRE  zsh sorted-direct-ab-2018.sh
+#     ROUND=POST zsh sorted-direct-ab-2018.sh
+#     ROUND=PRE  zsh sorted-direct-ab-2018.sh    # order-alternated second pass
+#     ROUND=POST zsh sorted-direct-ab-2018.sh
+#     ROUND=RESTORE zsh sorted-direct-ab-2018.sh # only if the last call was not POST
+#
+# ⚠️ EACH CALL LEAVES THE TREE ON *ITS* ARM so the next can alternate, which is why the trap below
+# only acts when the arm is NEITHER cleanly LIVE nor cleanly DEAD — i.e. a round that died part-way.
+case "${ROUND:-}" in
+  PRE) round PRE "$DEAD" "$LIVE" ;;
+  POST) round POST "$LIVE" "$DEAD" ;;
+  RESTORE) set_arm "$LIVE" "$DEAD" && print -- "restored to LIVE" ;;
+  *) print -- "set ROUND=PRE | POST | RESTORE"; exit 1 ;;
+esac
