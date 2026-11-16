@@ -100426,7 +100426,7 @@ matters is the next question; the mixed arm's own 1.45x spread here means this r
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `node --check` on the screen. Screen-only
 change — nine rows and one `MIXED` knob; no engine code touched.
 
-## Item 2039 — ✅ **DIAGNOSED: a labelled one-hop projection is 3.10x / 3.56x / 3.61x slower on THREE independent fixtures once the label is non-vacuous, and a profile DIFF names the cause — the surviving step routes to a DIFFERENT walk whose `drain` costs 31.4 → 258.1 ms (8.2x)**. ⚠️ And item 2038's `label: values` discrepancy is the ROW's own instability, after ruling out five candidates
+## Item 2039 — ✅ **FIXED AT ITEM 2040 (3.48x).** **DIAGNOSED: a labelled one-hop projection is 3.10x / 3.56x / 3.61x slower on THREE independent fixtures once the label is non-vacuous, and a profile DIFF names the cause — the surviving step routes to a DIFFERENT walk whose `drain` costs 31.4 → 258.1 ms (8.2x)**. ⚠️ And item 2038's `label: values` discrepancy is the ROW's own instability, after ruling out five candidates
 
 Item 2038 nominated `label: hop values` at 3.10x and left `label: values` reading 2.57x against item
 2037's 1.09x on the same shape. This settled both.
@@ -100460,7 +100460,7 @@ vertex) where the CSR makes one flat pass over offsets and a dense array.
 ⚠️ **THAT IS THE SAME MECHANISM ITEM 2035 PRICED ON THE GQL SIDE** (per-vertex adjacency indirection
 against a flat scan, 3.4-4.4x there). Two engines, two rungs, one cause.
 
-⚠️ **AND THE CURE IS NOT FREE, WHICH IS WHY IT IS NOT BUILT HERE.** A CSR walk restricted to a SUBSET
+~~⚠️ **AND THE CURE IS NOT FREE, WHICH IS WHY IT IS NOT BUILT HERE.**~~ ✅ **BUILT AT ITEM 2040 — and the feared cost does NOT exist: the CSR walk already indexes `vtx[slot]`, which IS the start vertex, so there is no slot mapping to build.** A CSR walk restricted to a SUBSET
 of start vertices needs a start→slot mapping, i.e. a lookup per start — which is the indirection the
 CSR exists to avoid. [[label-vacuity-gates-fast-paths]] also records that the CSR arm "never visits an
 edge, so it CANNOT test a START label"; that objection does NOT apply here (the seed already yields
@@ -100488,3 +100488,81 @@ GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `node --check` on both p
 change: `FANOUT`/`MULTI`/`REUSE` knobs on the cliff probe, and `MIXED` plus a `labelhop` shape (with
 its label-free floor) on the Gremlin profile probe — which had no `MIXED` mode, so **every labelled
 shape it has ever profiled was the vacuous arm.**
+
+## Item 2040 — ✅ **SHIPPED: a leading `hasLabel` admitted into the CSR hop walk and tested PER SLOT — 494.2 → 142.2 ms (3.48x) on the realistic arm, controls 0.96-1.01x.** 🔑 The threshold is SWEPT, not assumed: the crossover is between 0.02 and 0.1 coverage, and 0.1 sits above it so the gate can only decline a win
+
+Item 2039 diagnosed it: with the label non-vacuous the step survives, `hop-values-csr`'s gate (which
+destructures exactly `[V, hop, values]`) declines, and the plan falls to `startFilteredHopValues` —
+which walks PER-VERTEX ADJACENCY (`v.adjFrom?.get(type)`, a Map lookup then Set iteration per vertex)
+where the CSR makes one flat pass. The profile diff priced that at **drain 31.4 → 258.1 ms (8.2x)**,
+and the labelled arm at **4.08x above the label-free floor the engine already reached on the same
+data.**
+
+🔑 **THE FIX IS CHEAPER THAN IT LOOKED, because the CSR walk already indexes `vtx[slot]` per row** —
+`vtx[slot]` IS the start vertex, so a per-slot start test needs no slot lookup at all. (Item 2039
+feared a start→slot mapping; there is none to build.) One `continue` before the inner loop skips a
+start's entire run.
+
+MEASURED, two alternated pairs, arms `LIVE`/`KILLED` (the kill switch raises the coverage threshold
+above 1, leaving every line compiled), one shape per process:
+
+| row                                                                | KILLED | LIVE  |           |
+| ------------------------------------------------------------------ | ------ | ----- | --------- |
+| `labelhop`, `MIXED=1` (the target)                                 | 494.2  | 142.2 | **3.48x** |
+| `labelhop`, `MIXED=0` (label VACUOUS — the arm is never consulted) | 128.9  | 134.7 | 0.96x     |
+| `labelhopfloor`, `MIXED=0` (no label step at all)                  | 126.7  | 128.1 | 0.99x     |
+| `labelhopfloor`, `MIXED=1`                                         | 130.3  | 129.1 | 1.01x     |
+
+The 0.96x is the per-slot `startTest !== undefined` branch in the hottest loop, and it sits inside
+that row's own 128.9-137.9 band. **66 wide-screen rows: ZERO outside ±12%.**
+
+⚠️ **AND THE WIN IS FIXTURE-DEPENDENT, which is worth stating beside the headline:** 3.48x on the
+profile probe's fixture (20k vertices, FANOUT 5) and **1.20x** on the workload screen's (100k,
+FANOUT 4, pooled property values, 1-in-6 multi-label) — 23.02 → 19.12 isolated. Both are real; the
+screen's is the conservative one.
+
+### The threshold is swept, because this arm has item 1870's shape
+
+This arm tests EVERY slot while the walk it replaces visits only the SELECTED starts, so at low
+coverage the trade inverts — exactly how item 1870's full-scan rung lost 1.93x / 3.35x / 7.98x / 46x /
+678x as a label narrowed. The arm was forced ON and OFF at each coverage:
+
+```text
+    coverage   declining (seeded walk)   firing (this arm)   verdict
+    1.0                 529.7 ms               159.1 ms      firing 3.33x
+    0.5                 373.4                  105.0         firing 3.56x
+    0.25                166.0                   67.7         firing 2.45x
+    0.1                  58.3                   49.8         firing 1.17x
+    0.02                 36.9                   39.0         DECLINING wins 1.05x
+```
+
+**The crossover is between 0.02 and 0.1** — this arm pays ~39 ms of fixed cost walking every slot,
+which a seeded walk over a few hundred starts undercuts. `CSR_START_LABEL_MIN_COVERAGE = 0.1` sits
+ABOVE it, so **the gate can only decline a win and never causes a regression** — the same reasoning
+`EDGE_DRIVEN_MIN_COVERAGE = 0.4` records for its own swept band.
+
+⚠️ **THE COVERAGE READ ADDS NO NEW READER OF `verticesByLabel`**: it is `verticesByLabel.get(name)?.size`,
+_the same read `dropVacuousLabels` already performs_ (comparing that size against the vertex count).
+A different threshold on an existing read is not a new dependency — which matters because the public
+`v.labels = [...]` setter leaves that index stale ([[label-index-vs-setter]]).
+
+VERIFICATION. 7 new tests, **9/9 mutants caught**, every one targeting a single derivation. The order
+question — this arm emits in CSR SLOT order while the walk it replaces iterates `verticesByLabel`'s
+bucket, and Gremlin results are compared ORDERED — was settled empirically: all seven fuzzers green,
+6/6 then 4/4 sweeps clean, and the Gremlin fuzzer clean three times in a row.
+
+⚠️ TWO FAULTS OF MY OWN, BOTH CAUGHT BY GUARDS:
+
+- **Every guard mutant reported `anchors=2`**, because the iterator's and drain's tests were the
+  identical line — so a fault in ONE derivation was untestable by mutation. The drain's is now an
+  optional chain (`startTest?.(vtx[slot]) === false`, where `=== false` is load-bearing: `undefined`
+  must not skip the slot). **Second time this exact gap has appeared** — item 2037 had it too.
+- **Two screen rows looked like a 2.67x REGRESSION** (`label: has values` 0.06 → 0.16,
+  `label: dedupe values` 0.15 → 0.28), consistent across both rounds, so I did not dismiss them as
+  noise. At 1500 vertices those rows are sub-0.2 ms; re-measured isolated at 100,000 they read 2.52
+  against 2.83 (LIVE 1.12x BETTER) and 6.74 against 6.59 (flat). **Quantization, confirmed rather than
+  assumed.**
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped (⚠️ two attempts — `prefer-optional-chain` and
+`no-unnecessary-boolean-literal-compare` both fired on the distinct drain guard); `bun run test --
+--skip-nx-cache` 21/21; gremlin suite 2,597 (7 new); all seven fuzzers green; sweeps 6/6 and 4/4.

@@ -51,6 +51,58 @@ import { seenBefore } from './second-ask.js';
  * topology write. Item 1695's criterion — safe iff the walk costs more than the rebuild — is checked
  * in the entry rather than assumed, including at the small size where the walk is cheapest.
  */
+/**
+ * The crossover above which testing EVERY slot beats visiting only the selected starts.
+ *
+ * ⚠️⚠️ **MEASURED, NOT ASSUMED** — item 1939's rule, and item 1870 is what happens without it: a
+ * full-scan arm admitted unconditionally lost 1.93x / 3.35x / 7.98x / 46x / 678x as a label narrowed.
+ * This arm has the same shape, so it got the same discipline. 20,000 vertices, FANOUT 5, 60 reps,
+ * the arm forced ON and OFF at each coverage:
+ *
+ *     coverage   declining (seeded walk)   firing (this arm)   verdict
+ *     1.0                 529.7 ms               159.1 ms      firing 3.33x
+ *     0.5                 373.4                  105.0         firing 3.56x
+ *     0.25                166.0                   67.7         firing 2.45x
+ *     0.1                  58.3                   49.8         firing 1.17x
+ *     0.02                 36.9                   39.0         DECLINING wins 1.05x
+ *
+ * The crossover is between 0.02 and 0.1: this arm pays ~39 ms of fixed cost walking every slot, which
+ * a seeded walk over a few hundred starts undercuts. **0.1 sits ABOVE the crossover, so the gate can
+ * only decline a win and never causes a regression** — exactly the reasoning
+ * `EDGE_DRIVEN_MIN_COVERAGE = 0.4` records for its own swept band.
+ */
+const CSR_START_LABEL_MIN_COVERAGE = 0.1;
+
+/**
+ * The per-slot start predicate for a leading one-name `hasLabel`, or `undefined` when the label is
+ * too selective for this arm to win.
+ *
+ * ⚠️ THE COVERAGE READ IS `verticesByLabel.get(name)?.size`, which is **the same read
+ * `dropVacuousLabels` already performs** (it compares that size against the vertex count). So this
+ * adds no new dependency on that index — which matters, because the public `v.labels = [...]` setter
+ * leaves it stale and every NEW reader widens a known wrong-answer surface
+ * ([[label-index-vs-setter]]). A different threshold on an existing read is not a new reader.
+ */
+const startTestFor = (
+  labelStep: { readonly labels: readonly string[] } | undefined,
+  graph: Graph,
+): ((v: Element) => boolean) | undefined => {
+  if (labelStep === undefined) {
+    return undefined;
+  }
+
+  const [name] = labelStep.labels;
+  const covered = graph.verticesByLabel.get(name)?.size ?? 0;
+  const total = graph.vertexCount;
+
+  if (total === 0 || covered / total < CSR_START_LABEL_MIN_COVERAGE) {
+    return undefined;
+  }
+
+  // `hasLabel` is `labels.some(l => v.labels.has(l))`; with one name that is exactly this.
+  return (v: Element): boolean => v.labels.has(name);
+};
+
 export const hopValuesCsr = (plan: Plan, graph: Graph): HopValues | undefined => {
   const { steps } = plan;
 
@@ -58,10 +110,34 @@ export const hopValuesCsr = (plan: Plan, graph: Graph): HopValues | undefined =>
     return undefined;
   }
 
-  const [source, hop, proj] = steps;
+  /*
+   * 🔑 **A LEADING `hasLabel` IS ADMITTED AND TESTED PER SLOT (item 2040).** Without this the step
+   * made the plan four steps long and this gate declined, sending it to `startFilteredHopValues`,
+   * which walks PER-VERTEX ADJACENCY (`v.adjFrom?.get(type)` — a Map lookup then Set iteration per
+   * vertex) where this walk makes one flat pass. Item 2039's profile DIFF priced that at
+   * **drain 31.4 -> 258.1 ms, 8.2x**, and the labelled arm at **4.08x above the label-free floor the
+   * engine already reaches on the same data** (529.7 against 130.0).
+   *
+   * ⚠️ ONE LABEL NAME ONLY. `hasLabel(a, b)` is a UNION (`labels.some(l => v.labels.has(l))`), so a
+   * multi-name test is a different predicate; it declines rather than guessing.
+   *
+   * ⚠️ AND IT IS COVERAGE-GATED, because this arm tests EVERY slot while the walk it replaces visits
+   * only the SELECTED starts. At low coverage that trade inverts — the same shape as item 1870's
+   * refusal (a full scan loses 1.93x-678x as a label narrows) and item 1939's swept crossover. The
+   * threshold is measured, not assumed; see {@link CSR_START_LABEL_MIN_COVERAGE}.
+   */
+  const [source] = steps;
+  const labelStep =
+    steps[1]?.kind === 'hasLabel' && steps[1].labels.length === 1 ? steps[1] : undefined;
+  const hop = labelStep === undefined ? steps[1] : steps[2];
+  const proj = labelStep === undefined ? steps[2] : steps[3];
 
   // `V(id, …)` enumerates a given set, not the whole graph — the same bound every values rung has.
   if (source.kind !== 'V' || (source.ids?.length ?? 0) > 0) {
+    return undefined;
+  }
+
+  if (hop === undefined) {
     return undefined;
   }
 
@@ -81,13 +157,23 @@ export const hopValuesCsr = (plan: Plan, graph: Graph): HopValues | undefined =>
     return undefined;
   }
 
+  const startTest = startTestFor(labelStep, graph);
+
+  // A label step that is present but NOT worth testing per slot declines the whole arm, leaving the
+  // seeded walk to serve it — the arm is only better where the label is broad.
+  if (labelStep !== undefined && startTest === undefined) {
+    return undefined;
+  }
+
   return {
     // ⚠️ A `fold` IS NOT CONSUMED: it stays in `rest` for `fusedProjectedResidual` to fold over
     // the drained walk (item 1909), which is the whole point of admitting it here.
-    rest: steps.slice(picked.consumesProj ? 3 : 2),
+    // ⚠️ THE LABEL STEP SHIFTS EVERY INDEX BY ONE, `rest` included — it is CONSUMED by `startTest`.
+    rest: steps.slice((picked.consumesProj ? 3 : 2) + (labelStep === undefined ? 0 : 1)),
     values: walk(graph, {
       forward: hop.kind === 'out',
       type: hop.labels[0],
+      startTest,
       ...picked,
     }),
   };
@@ -95,7 +181,16 @@ export const hopValuesCsr = (plan: Plan, graph: Graph): HopValues | undefined =>
 
 export { seenBefore };
 
-type Element = { readonly id: string; readonly properties: Record<string, unknown> };
+/**
+ * ⚠️ `labels` IS PART OF THIS because the CSR's `vtx` array holds VERTICES only — both `pick` and
+ * item 2040's per-slot `startTest` are called with `vtx[...]`, never with an edge. Narrowing it to
+ * `{ id, properties }` was accurate until the start test needed the label.
+ */
+type Element = {
+  readonly id: string;
+  readonly properties: Record<string, unknown>;
+  readonly labels: ReadonlySet<string>;
+};
 type Picked = {
   pick: (e: Element) => unknown;
   drops: boolean;
@@ -150,6 +245,12 @@ type WalkSpec = {
   readonly type: string;
   readonly pick: (e: Element) => unknown;
   readonly drops: boolean;
+  /**
+   * An optional per-SLOT test on the start vertex (item 2040). `undefined` keeps the loop exactly as
+   * it was — no branch is added to the unlabelled arm beyond one `!== undefined` per SLOT, not per
+   * row, which is what makes this safe to put in the hot walk at all.
+   */
+  readonly startTest: ((v: Element) => boolean) | undefined;
 };
 
 /**
@@ -160,10 +261,19 @@ type WalkSpec = {
  */
 const walk = (graph: Graph, spec: WalkSpec): HopWalk => ({
   *[Symbol.iterator]() {
-    const { forward, type, pick, drops } = spec;
+    const { forward, type, pick, drops, startTest } = spec;
     const { vtx, memo } = chainCsrFor(graph, forward, [type]);
 
     for (let slot = 0; slot < vtx.length; slot += 1) {
+      /*
+       * ⚠️ PER SLOT, NOT PER ROW, and that is the whole economy of this arm (item 2040): one test per
+       * START vertex skips its entire run. `vtx[slot]` is the start; `vtx[memo.flat[i]]` is the
+       * neighbour — the two are easy to confuse and a mutant swapping them is in the battery.
+       */
+      if (startTest !== undefined && !startTest(vtx[slot])) {
+        continue;
+      }
+
       const from = memo.off[slot];
       const to = from + memo.len[slot];
 
@@ -193,11 +303,27 @@ const walk = (graph: Graph, spec: WalkSpec): HopWalk => ({
    * cross-engine failure rather than an unspecified-order liberty.
    */
   drain() {
-    const { forward, type, pick, drops } = spec;
+    const { forward, type, pick, drops, startTest } = spec;
     const { vtx, memo } = chainCsrFor(graph, forward, [type]);
     const out: unknown[] = [];
 
     for (let slot = 0; slot < vtx.length; slot += 1) {
+      /*
+       * ⚠️ THE SAME TEST, in the same position — item 169's rule, and Gremlin results are compared
+       * ORDERED, so the two derivations must skip the identical slots.
+       *
+       * ⚠️ WRITTEN AS AN OPTIONAL CHAIN so it is TEXTUALLY DISTINCT from the iterator's
+       * `startTest !== undefined && !startTest(...)`. Identical lines cannot be mutated
+       * INDEPENDENTLY — item 2040's first round reported anchors=2 for every guard mutant, so a fault
+       * in ONE derivation was untestable, which is exactly what the iterator/drain agreement test
+       * exists to catch (item 2037 hit this too). The `=== false` is load-bearing, not a lint
+       * violation: the chain yields `undefined` when there is no test, and `undefined` must NOT skip
+       * the slot.
+       */
+      if (startTest?.(vtx[slot]) === false) {
+        continue;
+      }
+
       const from = memo.off[slot];
       const to = from + memo.len[slot];
 

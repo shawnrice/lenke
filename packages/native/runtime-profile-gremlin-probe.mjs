@@ -81,6 +81,7 @@ const SHAPE = process.argv[2] ?? 'hopcount3';
 const REPS = Number(process.argv[3] ?? 200);
 /** ⚠️ See the size note in `runtime-profile-probe.mjs`: 20,000 is the CACHE-RESIDENT regime only. */
 const NODES = Number(process.env.NODES ?? 20_000);
+const COVER = Number(process.env.COVER ?? 1);
 const FANOUT = Number(process.env.FANOUT ?? 5);
 
 /**
@@ -94,7 +95,13 @@ const build = () => {
   for (let i = 0; i < NODES; i += 1) {
     g.addVertex({
       id: `v${i}`,
-      labels: ['P'],
+      /*
+       * ⚠️ COVER CONTROLS THE LABEL'S COVERAGE (item 2040), which is the variable that decides whether
+       * a CSR arm testing EVERY slot beats a seeded walk visiting only the selected starts. `P` on
+       * everything (COVER=1) is the vacuous end; `P` on a tenth is where the trade should invert. The
+       * off-label vertices get `R` so they are still reachable by other shapes.
+       */
+      labels: i / NODES < COVER ? ['P'] : ['R'],
       properties: { k: i % 97, s: `s${i % 1000}`, n: i },
     });
   }
