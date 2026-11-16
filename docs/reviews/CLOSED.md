@@ -100736,7 +100736,7 @@ is what item 2030's oracles were added for.
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `node --check` on the probe. Probe-only
 change: `POOL` knob plus the off-label vertex's missing property. No engine change.
 
-## Item 2044 — ✅ **MEASURED: a first GQL query in a fresh process costs ~21 ms, and the engine's own execution is ~2% of it — 14 ms is MODULE IMPORT, 5 ms is JIT, and 1.8 ms is PARSE+PLAN.** ⚠️ And I had to correct myself mid-item: parse/plan is **83% of a cache-missing query**, not the "negligible" I first read off a trivial one
+## Item 2044 — ⚠️ **ITS PARSE/PLAN SPLIT IS CORRECTED BY ITEM 2045: the 1.8 ms is WARM-UP, not parse/plan work — the same query fully warm costs 0.035 ms.** ✅ **MEASURED: a first GQL query in a fresh process costs ~21 ms, and the engine's own execution is ~2% of it — 14 ms is MODULE IMPORT, 5 ms is JIT, and 1.8 ms is PARSE+PLAN.** ⚠️ And I had to correct myself mid-item: parse/plan is **83% of a cache-missing query**, not the "negligible" I first read off a trivial one
 
 Item 2043 priced a WARM single call at 1.4-1.8x the hot-loop figure. This asked the other end — what a
 first query costs — after noticing that across seven GQL shapes the hot per-op cost spans **96x**
@@ -100779,7 +100779,7 @@ the only way to separate parse/plan from execution:
     parse+plan   1.715 / 1.890 / 1.839     ->  82-83% OF THE MISS
 ```
 
-**So parse+plan is ~1.8 ms for one realistic query, and it is 83% of that query's first execution.**
+~~**So parse+plan is ~1.8 ms for one realistic query, and it is 83% of that query's first execution.**~~ ⚠️ **ITEM 2045: that is WARM-UP. The same cache-missing query costs 6.922 ms as a process's first call, 1.357 after 50 warm-ups (this item's regime) and 0.035 fully warm — 198x. Parse/plan is ~0.015 ms and is CLOSED as a target.**
 That makes items 228/229's PARSE and PLAN caches far more valuable than the trivial query implied —
 they remove five sixths of a repeated query's cost — and it is a real per-shape cost for a server the
 first time it sees each query text.
@@ -100803,3 +100803,54 @@ dwarfs it.
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `node --check` on the new probe. New probe
 (`coldstart-2044.mjs`) only; no engine change.
+
+## Item 2045 — ❌ **PARSE/PLAN IS NOT A TARGET, and item 2044's "1.8 ms parse+plan" was WARM-UP, not work: the same cache-missing query costs 6.922 ms as a process's first, 1.357 ms after 50 warm-ups, and 0.035 ms fully warm — a 198x decline**
+
+Item 2044 measured parse+plan at 1.715-1.890 ms and called it 83% of a realistic query's first
+execution. This went to split that by frame and found there was almost nothing to split.
+
+🔑 **THE INSTRUMENT: 2000 texts that are STRUCTURALLY IDENTICAL AND TEXTUALLY DISTINCT** (only the
+`RETURN` alias differs). Every call misses the parse/plan cache — it is keyed on the text — while the
+plan produced, and therefore the execution, is the same work every time. A structurally varying set
+would have mixed parse cost with execution cost. The fixture is 100 vertices so execution is near
+zero, and the answer is asserted (5 rows × 2000).
+
+**It read 0.07-0.09 ms per query — 25x cheaper than item 2044's single call.** So the curve was
+measured rather than guessed at:
+
+```text
+                        WARM=0    WARM=50
+    1st query            6.922      1.357
+    2nd                  0.524      0.433
+    median 1-10          0.322      0.290
+    median 10-50         0.183      0.209
+    median 50-200        0.124      0.128
+    median last 500      0.035      0.035
+```
+
+⚠️⚠️ **SO ITEM 2044's NUMBER WAS RIGHT AND ITS INTERPRETATION WAS WRONG.** `WARM=50`'s first call
+(1.357 ms) reproduces its 1.8 ms — that is exactly the regime it measured in, a handful of prior
+queries deep. But the same query, fully warm, costs **0.035 ms**: a **198x** decline from a cold
+process's first call. The 1.8 ms was V8 tiering up the parser, planner and executor, **not the cost of
+parsing or planning.**
+
+**Corrected picture of a first realistic GQL query in a fresh process (~21 ms):** ~14 ms module import,
+and essentially ALL of the remaining ~7 ms is JIT warm-up of the query path. Steady-state cost for
+that query is **0.035 ms**. Item 2044 split the 7 ms into "5 ms JIT + 1.8 ms parse+plan"; it is JIT
+either way.
+
+🔒 **SO "OPTIMIZE THE PARSER / PLANNER" IS CLOSED as a target.** Warm, the parse/plan frames are about
+a fifth of a 0.07 ms query — `tokenize` 6.6%, `compileLinear` 5.3%, `parse` 2.6%, `normalizeLiterals`
+2.2%, `parseCached` 1.8%, `compilePredicate` 1.8% — so roughly **0.015 ms** is available in total. There
+is no micro-optimization here, and anyone pricing one off item 2044's 1.8 ms would be pricing warm-up.
+
+⚠️ **AND THIS IS THE THIRD TIME IN THREE ITEMS THAT LOOP DEPTH HAS BEEN THE ANSWER.** Item 2043: a
+single call is 1.4-1.8x the hot-loop figure. Item 2044: a cold process's first call is 21-1236x it.
+Item 2045: a cold parse path is 198x its warm self. **The engine's steady-state cost and its first-call
+cost differ by two orders of magnitude, and nearly every surprising ratio in this stretch was one of
+the two being compared with the other.** The remaining lever is not in the query path at all — it is
+how much code has to warm up, which is the bundle-size observation item 2044 recorded and left as a
+packaging decision.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `node --check` on the new probe. New probe
+(`parseplan-prof-2045.mjs`) only; no engine change.
