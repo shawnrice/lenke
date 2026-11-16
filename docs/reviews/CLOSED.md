@@ -101459,3 +101459,53 @@ saying so is better than banking 0.78 µs against a number that cannot carry it.
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `node --check` on the new probe. Ran under
 `systemd-run --user --scope -p MemoryMax=16G -p MemorySwapMax=0`. Probe-only change.
+
+## Item 2056 — ✅ **SHIPPED: `V().id()` admitted into the scan rung — 8.53 → 3.14 ms (2.72x) over 200,000 vertices, and it is now FASTER than `V().values(k)` (3.14 against 5.80), which is the correct ordering.** 🔑 The route census found it; the timing alone looked like noise on an 8 ms row
+
+After four measurement items that each needed a ratio interpreted, this went back to the census — a
+fused-or-generic signal that needs none. Of 104 rows, 16 are generic and **the maximum dispatch count
+among them is 4**, so the per-traverser explosions items 2027/2028 chased are gone. Most of the 16 are
+documented refusals (`sum` for byte-identity, the dedupe family at item 1869, the existence fusions
+living INSIDE their step per item 2046's caveat). Two were unexplained, and one of those was this.
+
+```text
+    scan: values   (V().values(k))   fused     4.42 ms / 200,000 rows
+    scan: id       (V().id())        GENERIC   8.29 ms / 200,000 rows   <- 1.88x
+```
+
+🔑 **THE CHEAPER READ WAS THE SLOWER ROW.** An id is a field read; a property is a map lookup. The only
+reason `id()` cost more is that `matchShape` required a `values` step, so `V() + id()` declined and ran
+the step generically.
+
+MEASURED, two alternated pairs, arms `LIVE`/`KILLED` where KILLED removes only the `id` clause — so the
+baseline is the rung exactly as it shipped:
+
+| row                                          | KILLED | LIVE     |           |
+| -------------------------------------------- | ------ | -------- | --------- |
+| `scan: id` (target)                          | 8.53   | **3.14** | **2.72x** |
+| `scan: values` (control — shares the rung)   | 5.35   | 5.80     | 0.92x     |
+| `label: values` (control — a different gate) | 5.72   | 4.93     | 1.16x     |
+| `scan: count` (control — unreachable)        | 0.00   | 0.00     | flat      |
+
+⚠️ **THE TWO MOVING CONTROLS MOVE IN OPPOSITE DIRECTIONS** (0.92x and 1.16x) within the 5.35-6.13 band
+those rows show across four readings, so the 8% on `scan: values` is the row and not the change — which
+matters, because a single pre/post pair had read 4.42 against 5.69 and looked like a real regression.
+
+⚠️ **TWO CLOSURES, NOT A BRANCH.** The projection is chosen once, outside the loop, so the `values` walk
+is the loop it was before. This file's own record is that "a branch in that inner loop" cost 1.6x on
+the hot shape (item 159), and the hot shape here is the `values` one that already rode the rung.
+
+⚠️ **AND THE `id` ARM INHERITS ITEM 1870's REFUSAL RATHER THAN RE-OPENING IT:** `V().hasLabel(T).id()`
+still declines, because the rung is a FULL SCAN while the pipeline seeds from the label index — the
+refusal that item measured at up to 678x as a label narrows. `nodeValuesDedupeShortcut` also declines an
+`id` projection deliberately: ids are already distinct, so `V().id().dedupe()` is a tautology this rung
+would pay for, and a second keyer in that area silently changed an ANSWER twice (items 1561/1562).
+
+VERIFICATION. 7 new tests, **6/6 mutants caught**. The decisive test is a vertex with NO properties:
+`V().values('k')` correctly drops it while `V().id()` must not, so a walk that copied the `values`
+guard would silently lose a row — and the mutant that adds exactly that guard is caught. ⚠️ Its anchor
+failed first as a multi-line pattern; the harness matches single lines, which has now cost an anchor in
+three separate items.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
+gremlin suite 2,616 (7 new); all seven fuzzers green; 5/5 sweeps clean.

@@ -45,9 +45,20 @@ export type NodeValues = Iterable<unknown> & { drain?: () => unknown[] };
  * `values()` with no key emits every property value and `values(a, b)` fans out per key — both are
  * different shapes, and each would need its own walk rather than this one.
  */
+/**
+ * The projection this rung can serve: one property, or the element id.
+ *
+ * 🔑 **`id` ADDED AT ITEM 2056, AND IT WAS THE SLOWER OF THE TWO DESPITE BEING THE CHEAPER READ.**
+ * `V().values(k)` rode this rung at **4.42 ms** over 200,000 vertices while `V().id()` ran generically
+ * at **8.29 — 1.88x** — even though an id is a field read and a property is a map lookup. The route
+ * census named it unambiguously (`scan: id` generic, 1 dispatch `[id]`) where a timing alone would
+ * have looked like noise on an 8 ms row.
+ */
+type ScanProjection = { readonly kind: 'values'; readonly key: string } | { readonly kind: 'id' };
+
 const matchShape = (
   steps: readonly Step[],
-): { label: Extract<Step, { kind: 'hasLabel' }> | undefined; key: string } | undefined => {
+): { label: Extract<Step, { kind: 'hasLabel' }> | undefined; proj: ScanProjection } | undefined => {
   const [source, second, third] = steps;
 
   if (source?.kind !== 'V' || (source.ids?.length ?? 0) > 0) {
@@ -55,7 +66,13 @@ const matchShape = (
   }
 
   if (steps.length === 2 && second?.kind === 'values' && second.keys.length === 1) {
-    return { label: undefined, key: second.keys[0] };
+    return { label: undefined, proj: { kind: 'values', key: second.keys[0] } };
+  }
+
+  // ⚠️ `id()` TAKES NO MODULATOR and always yields, so there is no key to check and no row to drop —
+  // which is why its walk below is a separate closure rather than a branch.
+  if (steps.length === 2 && second?.kind === 'id') {
+    return { label: undefined, proj: { kind: 'id' } };
   }
 
   if (
@@ -64,7 +81,7 @@ const matchShape = (
     third?.kind === 'values' &&
     third.keys.length === 1
   ) {
-    return { label: second, key: third.keys[0] };
+    return { label: second, proj: { kind: 'values', key: third.keys[0] } };
   }
 
   return undefined;
@@ -112,13 +129,20 @@ export const nodeValuesShortcut = (plan: Plan, graph: Graph): NodeValues | undef
     return undefined;
   }
 
-  const { key } = shape;
+  const { proj } = shape;
 
-  // ⚠️ ONE loop body, used by BOTH the iterator and `drain`. Writing `drain` as a second derivation
-  // is item 169's lesson, and Gremlin results are compared ORDERED by the differential fuzzer, so a
-  // divergence between the two would be a cross-engine failure rather than an unspecified-order
-  // liberty.
-  const walk = function* (): Generator<unknown> {
+  /*
+   * ⚠️ ONE loop body, used by BOTH the iterator and `drain`. Writing `drain` as a second derivation
+   * is item 169's lesson, and Gremlin results are compared ORDERED by the differential fuzzer, so a
+   * divergence between the two would be a cross-engine failure rather than an unspecified-order
+   * liberty.
+   *
+   * ⚠️⚠️ **TWO CLOSURES, NOT ONE WITH A BRANCH** — this file's own record is that "a branch in that
+   * inner loop" cost 1.6x on the hot shape (item 159), and the hot shape here is the `values` one that
+   * already rode this rung. The projection is chosen ONCE, outside the loop, so the `values` walk is
+   * byte-for-byte the loop it was before item 2056.
+   */
+  const walkValues = function* (key: string): Generator<unknown> {
     for (const v of graph.vertices) {
       const props = v.properties;
 
@@ -127,6 +151,14 @@ export const nodeValuesShortcut = (plan: Plan, graph: Graph): NodeValues | undef
       }
     }
   };
+
+  const walkIds = function* (): Generator<unknown> {
+    for (const v of graph.vertices) {
+      yield v.id;
+    }
+  };
+
+  const walk = proj.kind === 'id' ? walkIds : (): Generator<unknown> => walkValues(proj.key);
 
   return {
     [Symbol.iterator]: walk,
@@ -446,7 +478,19 @@ export const nodeValuesDedupeShortcut = (plan: Plan, graph: Graph): NodeValues |
     return undefined;
   }
 
-  const { key } = shape;
+  /*
+   * ⚠️ AN `id` PROJECTION DECLINES HERE, DELIBERATELY. `matchShape` learned `id()` at item 2056 for
+   * the undeduped scan; this rung's walk dedupes PROPERTY VALUES, and `V().id().dedupe()` is a
+   * different question (ids are already distinct, so the dedupe is a tautology this rung would pay
+   * for). Declining leaves it to the general path rather than guessing — and [[hop-values-dedupe]]'s
+   * header records that items 1561/1562 each found a silent ANSWER change from a second keyer in this
+   * area.
+   */
+  if (shape.proj.kind !== 'values') {
+    return undefined;
+  }
+
+  const { key } = shape.proj;
 
   return {
     [Symbol.iterator]: () => nodeValuesDedupeWalk(graph, undefined, key),
