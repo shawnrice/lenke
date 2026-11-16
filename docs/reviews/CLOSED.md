@@ -101059,3 +101059,49 @@ VERIFICATION. The unwrap still fires after the bit change (route census: `where 
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; all
 seven fuzzers green; 4/4 sweeps clean.
+
+## Item 2049 — ✅ **THE GQL ENGINE HAS NO RUNG-COVERAGE GAP: all 34 `detect*` rungs are entered by the profile probe's 51 shapes, against Gremlin's 7-of-37 unreached.** ⚠️ And the first run reported the same clean 34/34 from a SILENTLY WEAKER corpus — 50 shapes with one truncated — which is how a coverage audit flatters itself
+
+Item 2046 gave Gremlin this audit and found three optimization rungs no screen or census touched, one
+of which hid a 1.40x equivalent-spelling gap (items 2046/2047). **The GQL engine had never had it**,
+and it has the larger surface: 34 `detect*` shape detectors.
+
+```text
+    51 shapes x 2 passes (102 ran, 0 threw); 34 detect* rungs
+    REACHED 34        NEVER ENTERED 0
+```
+
+🔑 **So the two engines are in genuinely different states, and that is the finding.** The GQL corpus
+has been built up across ~2,000 items and reaches every rung; Gremlin's screens are newer and left
+7 of 37 untouched (4 OLAP, deferred; 3 real, now covered). **Nothing to build here** — the audit's
+value is the negative result, and it means a future GQL nomination cannot be "no benchmark reaches
+this rung".
+
+### ⚠️⚠️ The first run was clean for partly wrong reasons
+
+The corpus is read out of `runtime-profile-probe.mjs`'s SOURCE so the two cannot drift. My first
+pattern — single-quoted, single-line — **silently lost two of the 51 shapes**:
+
+- **`stringfn`** uses DOUBLE quotes, because its own text contains `'ZZZ'`;
+- **`proj10`** is a CONCATENATION across two lines, so the regex took the first fragment and produced
+  a syntactically invalid query that threw `Unexpected 'eof' in expression` — counted as "2 threw"
+  and shrugged off.
+
+**And the audit still reported 34/34.** The result was right, but a 50-shape corpus with one truncated
+query would have reported the same thing had a rung genuinely been missed. Now each entry's slice has
+its comments stripped and ALL string fragments joined (both quote styles, concatenation), the parsed
+count is asserted, and **a shape that throws is a hard failure** rather than a tally — a truncated
+query exercises fewer rungs and makes coverage look better than it is.
+
+⚠️ **THIS IS THE SAME ERROR CLASS AS ITEM 2048's**, one item apart: a regex over source that skips a
+legal spelling — there `name: \d+,` missing `16_384`, here a quote style and a line continuation.
+Both produced a confident, wrong reading. The guard that generalises: **assert the parse count AND
+assert the parsed thing works**, because a silently-shrunken input set is invisible in the output.
+
+⚠️ AND THE BACKTICK-IN-A-TEMPLATE TRAP FIRED FOR THE THIRD TIME THIS SESSION (items 2036, 2046, 2049):
+a backticked identifier in a comment inside the generated driver terminates the template, and
+`node --check` reports it at a confusing line. It is now ASSERTED in this probe —
+`if (driver.includes('`')) throw` — rather than remembered.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
+`node --check` on the new probe. New probe only; no engine change.
