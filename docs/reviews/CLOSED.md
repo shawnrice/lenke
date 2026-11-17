@@ -105974,3 +105974,63 @@ their cost is volume: 5,000,000 two-hop paths at ~48 ns each. A win there has to
 cost, not from an ordering.
 
 GATES. Probe only, no engine change; `bun run fmt` 0; `bun run check` 0 read unpiped.
+
+## Item 2128 — ⚠️⚠️ **PRICED, NOT BUILT: the FILTERED two-hop count never reaches the CSR route, and that is 20x.** A vacuous predicate costs 247.4 ms where the identical answer costs 11.6 without it. Floor measured at 5.72 ms
+
+Item 2127's screen nominated this by ABSOLUTE cost (244 ms), noting it was healthy in RATIO so the cost
+looked like volume rather than a route. ⚠️ **That reading was wrong, and the vacuous control is what shows
+it.**
+
+```text
+    traversal                               ms      answer       route
+    V().out().out().count()               11.6   5,000,000   slotChainCount (89% of profile)
+    V().out().out().has(gt(-1)).count()  247.4   5,000,000   degreeOfTypes (61%) + countShortcut
+    V().out().out().has(gt(44)).count()  125.2   2,499,750   same
+```
+
+🔑 **THE SAME ANSWER, 20x APART, FOR A PREDICATE THAT REJECTS NOTHING.** This is the eighth instance of the
+"a rung for each half, none for the pair" shape — the bare chain has the dense CSR route and the filtered
+chain has none.
+
+### 🔑 CONFIRMED BY ABLATION, NOT BY READING THE PROFILE
+
+Disabling `denseChainCount` moves ONLY the unfiltered arm, which is what proves the filtered one never
+reaches it:
+
+```text
+    arm            CSR on   CSR off
+    unfiltered       11.6     35.5    <- the CSR route is worth 3.06x here
+    filtered (vac)  247.4    237.5    <- UNCHANGED: never reaches it
+    filtered (half) 125.2    126.8    <- UNCHANGED
+```
+
+### 🔑 THE FLOOR, HAND-ROLLED, WITH THE ANSWERS PINNED
+
+`slotChainCount` is a CSR level recurrence whose last step is `total += ways[slot] * len[slot]`. ⚠️ A
+far-side predicate does NOT need a new walk — it needs `len[slot]` replaced by the count of that slot's
+PASSING neighbours, which is one O(V) mask plus one O(E) pass over `Int32Array`s:
+
+```text
+    CSR 2-hop unfiltered              3.08 ms   = 5,000,000  ✓
+    CSR 2-hop + far mask, gt(44)      5.72      = 2,499,750  ✓   against the engine's 125.2  -> 21.9x
+    CSR 2-hop + far mask, gt(-1)      4.87      = 5,000,000  ✓   against the engine's 247.4  -> 50.8x
+```
+
+⚠️⚠️ **THOSE RATIOS ARE A CEILING, NOT A PREDICTION, AND THIS FILE SAYS WHY.** Item 591's inlined probe
+read 18.29 ms against its row's 42.2 and the difference was not in the loop at all; item 2125 repeated the
+mistake one tick earlier. The engine must also build and memoize the CSR, carry multi-label hops, and gate
+the route — so the real number comes from an A/B of the rung, and anything from 4x up would be worth
+having.
+
+⚠️ **NOT BUILT** — a new rung needs its own gate, tests and mutation round. 🔑 What it must preserve: the
+`unfiltered` condition (`arrivals(w)` from a FILTERED source is a per-edge question again, which is why
+the map walk stays for that case), the multi-type decline (a `T|S` edge sits in two buckets and summing
+them double-counts), and byte-identity of the count.
+
+🔑 **AND IT CORRECTS ITEM 2127's OWN NOMINATION**: that item said these rows' cost "has to come from the
+per-path cost, not from an ordering" because their sharp/vacuous ratio was healthy at 0.09x. ⚠️ A healthy
+ratio means the filter is applied early ENOUGH — it says nothing about whether the whole shape is on the
+right route. The screen measures one thing and I read it as measuring two.
+
+GATES. Probe only, no engine change (`count-shortcut.ts` restored from the live copy and verified);
+`bun run fmt` 0; `bun run check` 0 read unpiped; 2,760 Gremlin tests green.

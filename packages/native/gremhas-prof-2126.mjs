@@ -96,6 +96,10 @@ const PLANS = {
   nearside: traversal(V(), has('age', gt(44)), out('KNOWS'), count()),
   /* 🔑 SELECTIVE — where a predicate-first order should pay most, and vacuous where it pays least. */
   selective: traversal(V(), out('KNOWS'), has('age', gt(85)), count()),
+  /* 🔑 ITEM 2128's TARGETS, nominated by ABSOLUTE cost: 244 ms and 135 ms, both healthy in ratio. */
+  twohop_vac: traversal(V(), out('KNOWS'), out('KNOWS'), has('age', gt(-1)), count()),
+  twohop_half: traversal(V(), out('KNOWS'), out('KNOWS'), has('age', gt(44)), count()),
+  values_vac: traversal(V(), out('KNOWS'), has('age', gt(-1)), values('age')),
   /* ⚠️ CONTROLS this rung cannot reach. */
   twohop_ctl: traversal(V(), out('KNOWS'), out('KNOWS'), count()),
   values_ctl: traversal(V(), out('KNOWS'), has('age', gt(44)), values('age')),
