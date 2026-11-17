@@ -104349,7 +104349,7 @@ GATES. Probe only — no engine change. `bun run check` 0 read unpiped; `node --
 answer is asserted against a hand-computed expectation, including the DENIED subject's 0 — a selective
 check that silently matched nothing would otherwise be the fastest row in the table.
 
-## Item 2101 — 🔑🔑 **AN EQUIVALENT-SPELLING GAP OF 71.5x** ⚠️ (ITEM 2102 CORRECTS THE DIAGNOSIS: the trigger is the PROJECTION, not the seed side as such — `count(*)` seeds from a far predicate and every ROW-RETURNING projection does not, up to **330x**): "who can see this doc" written from the USER scans every user; written from the DOC it seeds and scales with its ANSWER.** Same question, same answer, no engine change needed to exploit it — but the planner is not choosing its seed
+## Item 2101 — 🔑🔑 **AN EQUIVALENT-SPELLING GAP OF 71.5x** ⚠️ (ITEM 2103: the "not local, needs both engines" caveat below is WRONG — the GQL fuzzer compares row MULTISETS, and the cause is `hop2Projection` preempting the orienting matcher) ⚠️ (ITEM 2102 CORRECTS THE DIAGNOSIS: the trigger is the PROJECTION, not the seed side as such — `count(*)` seeds from a far predicate and every ROW-RETURNING projection does not, up to **330x**): "who can see this doc" written from the USER scans every user; written from the DOC it seeds and scales with its ANSWER.** Same question, same answer, no engine change needed to exploit it — but the planner is not choosing its seed
 
 Item 2100 found `list: subjects for object` unmoved by an index (30.5 → 31.7 ms). The reason is where the
 predicate sits: the row is `MATCH (u:User)-[:MEMBER_OF]->(:Team)-[:CAN_VIEW]->(d:Doc) WHERE d.name = $d`
@@ -104395,7 +104395,7 @@ GATES. Probe only — no engine change. `bun run check` 0 read unpiped; `node --
 THROWS unless the two spellings return identical rows: a reversed pattern is exactly where a
 self-inflicted wrong answer would hide, and the whole comparison depends on them being one question.
 
-## Item 2102 — 🔑🔑 **330x, AND THE TRIGGER IS THE PROJECTION, NOT THE SHAPE: `count(*)` SEEDS from a far predicate and EVERY ROW-RETURNING PROJECTION DOES NOT.** ⚠️ Which corrects item 2101's framing and my own by-depth probe in the same item
+## Item 2102 — ⚠️ (ITEM 2103 LOCATED THE CAUSE: `hop2Projection`, 59x slower than declining; and its "both engines or neither" caveat is WRONG) 🔑🔑 **330x, AND THE TRIGGER IS THE PROJECTION, NOT THE SHAPE: `count(*)` SEEDS from a far predicate and EVERY ROW-RETURNING PROJECTION DOES NOT.** ⚠️ Which corrects item 2101's framing and my own by-depth probe in the same item
 
 Item 2101 found 71.5x between two spellings of one authz query and attributed it to the seed side. This
 asked whether that generalizes — and the answer is sharper than the question.
@@ -104452,3 +104452,51 @@ a seed-side choice must be taken on both engines or neither.
 GATES. Probes only — no engine change. `bun run check` 0 read unpiped; `node --check` on both. Each pair
 THROWS unless the two spellings agree on the row count, because a reversed pattern is where a
 self-inflicted wrong answer would hide.
+
+## Item 2103 — 🔑🔑🔑 **DIAGNOSED: a vacuous `LIMIT` makes the query 59x FASTER, because `hop2Projection` preempts the generic matcher and is 59x SLOWER than declining.** `orient` already exists and the rung never asks it. ⚠️ And the "must be taken on both engines" blocker I asserted at items 2101/2102 is WRONG — the GQL fuzzer compares row MULTISETS
+
+Items 2101/2102 priced 330x between two spellings and I recorded, twice, that the engine fix "is not
+local" because reversing the drive side reverses emission order and the differential fuzzer compares
+against Rust. ⚠️ **I asserted that without checking it. `differential-fuzz.test.ts` says in terms:
+"Comparison is structural (row multiset), which is the correct…"** — so a seed-side choice is local to
+the TS engine and needs no Rust change at all. Both earlier headings are corrected above.
+
+### 🔑 THE MECHANISM EXISTS AND THIS SHAPE IS ITS DOCUMENTED CASE
+
+`matching.ts`'s `orient` — "pick which end of a fixed-length path to seed from: the side with the
+smaller estimated seed" — already does exactly the right thing, and its own comment measures THIS authz
+pattern: "inline start AND an INDEXED far anchor → 0.12ms, and it must STAY there — reversing is right
+when the far end is a genuine seek". It has **one caller**, on `matchPattern`'s general branch.
+
+### ⚠️⚠️ SO THE QUERY NEVER REACHES IT — A FAST RUNG TAKES IT AND LOSES BY 59x
+
+Same question, same 451 rows, 200,000 users, indexed:
+
+| spelling                            | ms        | rung that answers                               |
+| ----------------------------------- | --------- | ----------------------------------------------- |
+| rows, as written                    | **25.56** | **`hop2Projection`**                            |
+| rows **+ a vacuous `LIMIT 100000`** | **0.43**  | **(none)** — the generic matcher, which ORIENTS |
+| rows written from the DOC           | 0.27      | (none)                                          |
+| `count(*)`                          | 0.02      | `countShortcut`                                 |
+
+🔑 **A `LIMIT` that cannot change a 451-row answer makes the query 59x faster**, because it defeats the
+length-gated rung and lets the plan fall through to the matcher that orients. **`hop2Projection` walks
+from the WRITTEN start and never asks `orient`.**
+
+⚠️ **This is a defect in a FAST PATH, not a missing feature**: a rung whose purpose is speed is 59x
+slower than declining, and it is invisible to every correctness test because the answer is identical —
+the exact failure mode CLAUDE.md's "equivalent spellings" section describes, found in a rung rather
+than in a predicate form.
+
+### The fix, and why it is local after all
+
+`detectHop2Projection` returns `AlwaysRowsFn`, so it cannot currently hand the query back. The change is
+item 2087's shape: return a closure that DECLINES AT EXECUTION TIME when the far node has a selective
+index seek — which `orient`/`estimateSeedFrom` already decide, so no new cost model is needed. Index
+state is a graph property, so the decision cannot be made when the rung is compiled.
+
+⚠️ It must not regress what `hop2Projection` legitimately serves, so the gate has to be exactly
+`orient`'s own test (`endEst.indexed && endEst.count < startEst.count`) and nothing broader.
+
+GATES. Diagnosis only in this commit — no engine change yet. `bun run check` 0 read unpiped. The
+probe asserts all three spellings return the same 451 rows.
