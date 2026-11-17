@@ -104894,3 +104894,67 @@ is worth more than a number that would not hold.
 
 GATES. No source change; tree verified clean (`TALLY_SEEK_MARGIN = 8`, `SEEK_MAX_FRACTION = 0.25`, no
 instrumentation left); 5,115 GQL tests green.
+
+## Item 2110 — ⚠️ **NO CHANGE: `tree()` is the Gremlin screen's largest shape at 754 ms, and its container lever is REFUTED — nested `Map`s are 1.36x SLOWER, 2.14x with the conversion the caller is owed.** 🔑 The profile attributes all of it, and the memo it already has is PERFECT
+
+Five of the previous six items were GQL, so this profiled the Gremlin surface. The workload screen at
+200,000 / fanout 5 nominated `pathdep: tree` at **699.55 ms for ONE row** — 3x the next shape — and it
+held at **681.59 isolated**, so not sweep inflation.
+
+### 🔑 THE DENOMINATOR FIRST, AND IT SURVIVED
+
+⚠️ `tree()` returns one row, so the absolute means nothing alone (item 2096's headline was 8x row count).
+Divided by the paths walked, against the two shapes that share the walk — fixture verified at 100%
+distinct targets, per CLAUDE.md's generator rule:
+
+```text
+    tree()             754.56 ms   1 row          755 ns/path
+    path()              16.25      1,000,000       16 ns/path
+    values('n')         67.58      1,000,000       68 ns/path
+```
+
+🔑 **`path()` is 46x cheaper than `tree()` and cheaper than plain `values`** — so path materialization is
+refuted as the cause, and ~738 of the 754 ms is the tree itself.
+
+### Where it goes, and why none of it is available
+
+The CPU profile (fixture pollution identified and discounted) splits it: **`memoizedTreeKey` ~26%** and
+**the insert `forEach` ~37%**.
+
+- ⚠️ **THE MEMO IS PERFECT, measured not assumed.** Instrumented hit/miss: **90% hit rate, misses exactly
+  1.00x the distinct-vertex count** (50,000 for 50,000). Identity keying is doing its job, which also
+  refutes my own hypothesis that it was missing — I expected ~295 ns per `Map.get` and went looking.
+- ⚠️ **The `forEach` lever was already refuted at item 1925** (2%, "do not re-attempt").
+- 🔑 **THE CONTAINER IS THE UNEXPLORED ONE, AND IT IS NOW REFUTED.** `cursor[key]` puts a 200,000-key
+  null-prototype object into V8's DICTIONARY MODE, and this repo records a dictionary-mode cliff
+  elsewhere. Priced on the real key shape (long `JSON.stringify` strings, 1,000,000 two-element paths):
+
+```text
+    Object.create(null)  — what the engine does      252 ns/path   (minimum of 3 rounds)
+    a plain {}                                       248           1.01x — EQUIVALENT
+    nested Map                                       301           1.20x SLOWER
+    nested Map + conversion to objects               543           2.16x SLOWER
+```
+
+🔑 **V8's null-proto dictionary BEATS a `Map` on long string keys**, and a `Map` build would still owe the
+caller a conversion, since `tree()` returns the nested object.
+
+⚠️⚠️ **TWO OF MY OWN NUMBERS NEEDED CORRECTING, AND ONE CHANGED THE CONCLUSION.** A single reading had the
+plain `{}` at 1.18x ahead of the null-prototype one, which would have made the reserved-key safety a
+measurable cost. Over three rounds they are **1.01x apart and the plain object was SLOWER in one** — so
+that safety is FREE, not a trade. The `Map` arm likewise reads 1.20x over three rounds, not the 1.36x of
+one. 🔑 The hoist that `lint` forced (a closure inside one arm the others did not pay) is what prompted
+re-running them.
+
+⚠️ **The container is 252 of 754 ns/path — 33%, and already the best option available.** The remaining
+67% is `treeKey` (`JSON.stringify(node.toJSON())`, the byte-identity contract with Rust, not optional)
+plus the walk.
+
+### What stands
+
+No change. 🔑 The refutation is recorded **next to the code it would have changed**, beside item 1925's,
+which is where the repo's rule puts it. The shape is expensive because one row is built from 1,000,000
+canonical keys, and every layer of that has now been priced: the walk (16 ns/path via `path()`), the
+container (255), the memo (perfect), and the key (a contract).
+
+GATES. Comment-only change; 2,731 Gremlin tests green; instrumentation verified removed.
