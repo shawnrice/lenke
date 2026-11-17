@@ -102835,3 +102835,62 @@ nomination that would follow from this table is one this file has already closed
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped. Floor probe only; no engine change, and the
 `.cpuprofile` artifacts are removed rather than committed.
+
+## Item 2078 — ✅ **SHIPPED: `V().aggregate(k).values(key)` — the barrier BEFORE the projection — 16.74 → 6.57 ms (2.55x), closing the census's LAST unexplained generic row.** 🔑 The bag holds VERTICES here, not values, which is the one thing this fusion could get wrong
+
+Item 2070 took the barrier AFTER the projection and left this one noted-but-unpursued: _"`V().aggregate(x).values(k)` → no fused walk at all"_. It was the only generic census row without an explanation.
+
+### 🔑 SAME STEP KINDS, OPPOSITE ORDER, DIFFERENT BAG CONTENTS
+
+|                          | item 2070                | **this item**                  |
+| ------------------------ | ------------------------ | ------------------------------ |
+| shape                    | `values(k).aggregate(x)` | `aggregate(x).values(k)`       |
+| the bag holds            | the projected VALUES     | **the VERTICES**               |
+| a vertex lacking the key | never reaches the bag    | **IS BAGGED, but not emitted** |
+
+⚠️⚠️ **THAT LAST ROW IS THE WHOLE RISK.** `aggregate` runs before `values` has the chance to drop a
+vertex, so the bag is NOT the row set — three vertices banked against two rows emitted on the test
+fixture. A fusion that bagged only the emitted rows would answer correctly and lose exactly those
+vertices, which no row-count test could see. Two mutants cover it (`bag-only-emitted-rows`,
+`bag-only-the-emitted-vertices`) and both are CAUGHT.
+
+⚠️ **`store` IS REFUSED, for item 2070's reason unchanged by the step order:** `values` hands its
+stream to a caller who may stop early, `aggregate` already materializes its upstream, and a drained
+`store` would collect what an early-exiting caller must never have caused to be collected. The
+`gate-admits-STORE` mutant is CAUGHT, and `list: hop store values` stays generic — correctly.
+
+| row                                           | KILLED | LIVE     |                  |
+| --------------------------------------------- | ------ | -------- | ---------------- |
+| `V().aggregate(x).values(n)` (target)         | 16.74  | **6.57** | **2.55x**        |
+| `V().values(n)` — the bare scan               | 4.34   | 4.66     | 1.04x at REPS=15 |
+| `values(n).aggregate(x)` — item 2070's row    | 52.17  | 50.66    | 1.03x            |
+| `store(x).values(n)` — REFUSED, must not move | 184.18 | 181.14   | 1.02x            |
+| `scan: values`                                | 5.30   | 5.17     | 1.03x at REPS=15 |
+
+⚠️ Two controls first read 0.89x and 0.93x; three pairs at REPS=15 put both at 1.03-1.04x. The residue
+is 1.9 ms for 200,000 bag pushes (~10 ns each) — the bag is the contract, so that is the floor.
+
+VERIFICATION. 9 tests, **9/9 mutants caught** — after one anchor failed as a multi-line pattern, which
+has now cost an anchor in four separate items. ⚠️ `run`'s complexity gate went to 36 again (the squeeze
+items 2042/2056/2069 each hit); the guard and call are hoisted into `scanBaggedValues`.
+
+### ⚠️ A SWEEP FAILED AND IT WAS NEITHER A DIVERGENCE NOR MINE
+
+`4/5 clean` — but unlike item 2070's failure this was **not** the `OPTIONAL MATCH` divergence. It was
+the differential fuzzer's own GENERATOR-COVERAGE assertion: `hopUntypedGenerated: cov… > 19` came out
+false, i.e. the generator happened not to emit an untyped relationship among 20,000 random queries.
+
+**I measured the counter before touching the floor**, because the file's own comment says these floors
+are "~40% under the observed minimum" and that "a floor tight enough to flag a 25% dip is a floor that
+flags the weather":
+
+```text
+    six runs: 32  42  30  36  35  30     floor 19 — 37% under the observed minimum
+```
+
+✅ **THE FLOOR IS CORRECTLY PLACED AND WAS NOT CHANGED.** A draw of ≤19 from a count near 34 is roughly
+1 in 300, which a five-run sweep will show occasionally. Recorded so the next person seeing it does not
+loosen a guard that is doing its job. Re-run: 5/5 clean.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 2,668
+gremlin tests; all seven fuzzers green; 5/5 sweeps clean on the re-run.

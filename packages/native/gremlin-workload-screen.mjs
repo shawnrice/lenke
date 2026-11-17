@@ -321,6 +321,13 @@ const SHAPES = {
   'sideeffect: values then aggregate': () => traversal(V(), out('E'), values('n'), aggregate('x')),
   'sideeffect: values then store': () => traversal(V(), out('E'), values('n'), store('x')),
   'sideeffect: values alone': () => traversal(V(), out('E'), values('n')),
+  /*
+   * ⚠️ ITEM 2078: the SCAN-based barrier, where the side effect sits BEFORE the projection so the bag
+   * holds VERTICES and the output holds values. `list: scan aggregate values` is the census's last
+   * unexplained generic row — item 2070 noted it reaches no fused walk at all and left it.
+   */
+  'sideeffect: scan aggregate values': () => traversal(V(), aggregate('x'), values('n')),
+  'sideeffect: scan values alone': () => traversal(V(), values('n')),
   /**
    * ⚠️ THE PATH-DEPENDENT FAMILY, which this screen never carried (item 1921). `ast.ts`'s
    * `PATH_DEPENDENT_KINDS` lists ten step kinds that make `planReadsPath` TRUE, and every fused walk

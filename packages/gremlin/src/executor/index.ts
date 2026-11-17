@@ -66,6 +66,7 @@ import {
   labelSeededValuesFusion,
   nodeValuesWhereShortcut,
   scanValuesResidual,
+  scanBagValuesShortcut,
   scanWhereHasKeyCountResidual,
   scanWhereValuesResidual,
   seededNodeCountShortcut,
@@ -2937,6 +2938,22 @@ const fusedProjectedValues = (
  * cannot be served from either. The shapes they admit contain nothing path-dependent, so a mutant
  * deleting this guard survives — it is the SHORTCUTS' CONTRACT, not a statement about today's shapes.
  */
+/**
+ * `V().aggregate(k).values(key)` (item 2078), hoisted out of `run` for the complexity gate.
+ *
+ * ⚠️ `run` SITS AT THE LIMIT (35) AND THIS CALL SITE TOOK IT TO 36 — the same squeeze items 2042,
+ * 2056 and 2069 each hit, where a `??` or a ternary costs one point. The guard and the call live here
+ * so the gate sees one `if` at the call site.
+ *
+ * ⚠️ `tracksPath` gates it like every values rung: the walk emits bare values and keeps no traverser.
+ */
+const scanBaggedValues = (
+  effective: Plan,
+  graph: Graph,
+  ctx: RunContext,
+): NodeValues | undefined =>
+  ctx.tracksPath ? undefined : scanBagValuesShortcut(effective, graph, ctx);
+
 const valuesFromIndexOrScan = (
   effective: Plan,
   graph: Graph,
@@ -3120,6 +3137,24 @@ export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
 
   if (seededValues !== undefined) {
     return seededValues;
+  }
+
+  /*
+   * `V().aggregate(k).values(key)` — the barrier BEFORE the projection (item 2078), which no fused
+   * walk reached at all: the census had it generic with 2 dispatches and item 2070 noted it and left
+   * it. 16.91 ms against the bare scan's 5.76 at 200,000 vertices, same rows out.
+   *
+   * ⚠️ `tracksPath` GATES IT like every values rung: the walk emits bare values and keeps no
+   * traverser, so a path-tracking query cannot be served from it.
+   *
+   * ⚠️ IT CANNOT SHADOW THE RUNGS ABOVE — each of them requires `values` immediately after the source
+   * or a `has`/`hasLabel` there, and this one requires an `aggregate`. Item 1535's rule: the order is
+   * a fact about precedence, stated rather than relied upon.
+   */
+  const scanBagged = scanBaggedValues(effective, graph, ctx);
+
+  if (scanBagged !== undefined) {
+    return scanBagged;
   }
 
   /*

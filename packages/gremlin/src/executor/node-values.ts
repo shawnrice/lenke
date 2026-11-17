@@ -32,6 +32,7 @@ import type { Graph } from '@lenke/core';
 import type { ID, Plan, Predicate, Step } from '../ast.js';
 import { matches, specializePredicate } from '../predicates.js';
 import { seedForStep } from './index-seed.js';
+import type { RunContext } from './runtime.js';
 import { valueDedupeFilter } from './runtime.js';
 import { asStringId } from './sources.js';
 import { hasAdjacency, singleHopExistence } from './sub-plan-existence.js';
@@ -1117,6 +1118,91 @@ export const unindexedHasValuesShortcut = (plan: Plan, graph: Graph): NodeValues
     pickScanWalk(fast) === 'general' || fast === undefined
       ? (): Generator<unknown> => hasValuesWalkGeneral(graph, key, projKey, pred)
       : (): Generator<unknown> => hasValuesWalkFast(graph, key, projKey, fast);
+
+  return {
+    [Symbol.iterator]: walk,
+    // ⚠️ THE EAGER FILL: `toArray` prefers `drain` (item 1412), and a walk without one is measured
+    // against siblings that have it with its generator hand tied (item 1998's 1.55x).
+    drain: () => [...walk()],
+  };
+};
+
+/*
+ * The scan walk that TAPS every vertex into a side-effect bag before projecting (item 2078).
+ *
+ * ⚠️⚠️ **THE BAG HOLDS VERTICES, NOT VALUES, AND THAT IS THE WHOLE DIFFERENCE FROM ITEM 2070.** There
+ * the `aggregate` sat AFTER the projection, so `barrierProjectedBag` banked the already-projected
+ * values. Here it sits BEFORE, so it banks the ELEMENTS — and a vertex lacking the projected key is
+ * BAGGED but not EMITTED, because `aggregate` ran before `values` had the chance to drop it. A fusion
+ * that bagged only the emitted rows would lose exactly those vertices.
+ */
+const scanBagValuesWalk = function* (
+  graph: Graph,
+  key: string,
+  bucket: unknown[],
+): Generator<unknown> {
+  for (const v of graph.vertices) {
+    // ⚠️ THE PUSH IS UNCONDITIONAL AND COMES FIRST. See the header: the bag is not the row set.
+    bucket.push(v);
+
+    const props = v.properties;
+
+    if (key in props) {
+      yield props[key];
+    }
+  }
+};
+
+/**
+ * `V().aggregate(k).values(key)` — the barrier BEFORE the projection (item 2078).
+ *
+ * ⚠️⚠️ **`store` IS REFUSED FOR ITEM 2070's REASON, which is unchanged by the step order.** The
+ * terminal `values` passes its stream to a caller who may stop early, and `hop-values.ts`'s rule is
+ * that "`run` stays as lazy as it was for a caller that `break`s out". `aggregate` already
+ * materializes its upstream — `side-effects.ts` buffers the whole thing so a later `limit(0)` cannot
+ * cancel the collection — so draining it changes nothing observable. A drained `store` would collect
+ * what an early-exiting caller must never have caused to be collected.
+ *
+ * 🔑 MEASURED BEFORE IT WAS BUILT: `V().aggregate(x).values(n)` reads **16.91 ms** against the bare
+ * fused scan's **5.76** at 200,000 vertices, same 200,000 rows out — **2.94x**, and the census had it
+ * as its last unexplained generic row.
+ */
+export const scanBagValuesShortcut = (
+  plan: Plan,
+  graph: Graph,
+  ctx: RunContext,
+): NodeValues | undefined => {
+  const { steps } = plan;
+
+  if (steps.length !== 3) {
+    return undefined;
+  }
+
+  const [source, bag, proj] = steps;
+
+  // `V(id, …)` enumerates a given set, not the whole graph — the bound every values rung has.
+  if (source.kind !== 'V' || (source.ids?.length ?? 0) > 0) {
+    return undefined;
+  }
+
+  // ⚠️ `aggregate` ONLY. `store` is lazy by contract; see the header.
+  if (bag.kind !== 'aggregate') {
+    return undefined;
+  }
+
+  // ONE key: `values()` with no key emits every property value and `values(a, b)` fans out per key.
+  if (proj.kind !== 'values' || proj.keys.length !== 1) {
+    return undefined;
+  }
+
+  const [key] = proj.keys;
+
+  if (!ctx.sideEffects.has(bag.key)) {
+    ctx.sideEffects.set(bag.key, []);
+  }
+
+  const bucket = ctx.sideEffects.get(bag.key)!;
+  const walk = (): Generator<unknown> => scanBagValuesWalk(graph, key, bucket);
 
   return {
     [Symbol.iterator]: walk,
