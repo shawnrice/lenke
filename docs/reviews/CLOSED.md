@@ -104296,3 +104296,55 @@ reference scan is either closed, already priced, or ordinary per unit of work. A
 SHAPE, not a re-reading of these.
 
 GATES. Probe only — no engine change. `bun run fmt` 0; `bun run check` 0 read unpiped; `node --check`.
+
+## Item 2100 — 🔑 **NEW SHAPE SPACE: ReBAC authz. An authz CHECK without an index on the subject key scales with the TENANT — 144x at 200,000 users — and with one it is FLAT.** The planner does the right thing; the finding is a DOCS one. ⚠️ Plus: `Group` is a RESERVED WORD, and it is the first label this domain reaches for
+
+Items 2096/2097 exhausted the GQL corpus's largest shape and 2099 showed the Gremlin screen is a smooth
+per-edge gradient with no outlier. **A new target needed a new SHAPE, not another pass over those rows.**
+Authz is the family the record names as a real ask and neither screen contains: Zanzibar-style checks
+are `EXISTS <grant> AND NOT EXISTS <deny>`, and that double-quantifier form appears nowhere in the
+corpus.
+
+Fixture: users, teams and docs with **SKEWED membership** (one team holds a tenth of all users), plus
+explicit per-user denies — because an authz check's cost depends on which size of group it lands in, and
+a uniform fanout would not exercise the question.
+
+### 🔑 THE FINDING: THE CHECK SCALES WITH THE TENANT UNLESS THE SUBJECT KEY IS INDEXED
+
+| users                 | `check: grant only`  | `list: subjects for object` |
+| --------------------- | -------------------- | --------------------------- |
+| 20,000 — no index     | 0.779 ms             | 4.030 ms                    |
+| 20,000 — **indexed**  | **0.027** (**29x**)  | 5.222                       |
+| 200,000 — no index    | 4.892                | 30.513                      |
+| 200,000 — **indexed** | **0.034** (**144x**) | 31.746                      |
+
+🔑 **Indexed, the check is FLAT across a 10x size increase** (0.027 → 0.034 ms) — independent of tenant
+size, which is the only correct asymptotics for a permission check. Unindexed it grows **6.1x for 10x
+the users**, because `MATCH (u:User) WHERE u.name = $u` scans every user to find the subject.
+
+⚠️ **AND `list: subjects for object` CORRECTLY DOES NOT BENEFIT** (30.5 → 31.7, marginally worse): it
+must enumerate all 20,000 users who can see the doc, so its cost is proportional to its ANSWER, not to
+the lookup. A row that failed to improve is the control here — it shows the index is being used for the
+seek and not papering over the enumeration.
+
+**So the engine is doing the right thing and the gap is DISCOVERABILITY** — the standing finding that
+"features work but every wall was unfound syntax". An authz guide has to say, in the first paragraph,
+that the subject key needs an index; the difference is 144x at a size a real tenant reaches.
+
+### ⚠️ `Group` IS A RESERVED WORD, AND IT IS THE FIRST LABEL THIS DOMAIN REACHES FOR
+
+`(:Group)` is a SYNTAX ERROR — `Group` is reserved (`GROUP BY`). 🔑 The engine's diagnostic is exactly
+right ("`Group` is a reserved word and can't be used bare as a label name; quote it as a delimited
+identifier with backticks: `` `Group` ``") and the backtick form works. But a ReBAC schema's most
+natural label does not parse on first writing, which is a docs/example matter rather than a bug.
+
+### ⚠️ An instrument correction inside this item
+
+With two warm-up reps dropped, the FIRST shape in the table read **1.138 ms** while the shape below it —
+which does strictly MORE work, a second quantifier — read **0.584**. That is the first-shape-pays-the-JIT
+artefact, and reading it as "the extra conjunct made it faster" would have been a false finding about
+conjunct order. Four of thirteen reps are now dropped and the ordering is sane (0.802 / 0.686).
+
+GATES. Probe only — no engine change. `bun run check` 0 read unpiped; `node --check`. Every shape's
+answer is asserted against a hand-computed expectation, including the DENIED subject's 0 — a selective
+check that silently matched nothing would otherwise be the fastest row in the table.
