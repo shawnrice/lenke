@@ -1696,6 +1696,60 @@ export const edgeValuesShortcut = (plan: Plan, graph: Graph): NodeValues | undef
  * requires a `has(k, eq(v))` (with an optional `hasLabel` before it), so `V() + hasLabel + values(k)`
  * — no `has` at all — matches neither of its two forms and had no rung before this.
  */
+/**
+ * The seeded-stream walk for `id()` and `label()` — the always-yielding accessors (item 2089).
+ *
+ * ⚠️ ONE FUNCTION FOR BOTH, CHOSEN ONCE PER QUERY by a boolean rather than per element: the accessor
+ * is known when the plan is compiled, and item 159 measured an inner-loop branch on this shape at
+ * 1.6x. The two closures below are selected before the loop runs.
+ *
+ * ⚠️ `labelOf` IS IMPORTED, NOT RE-IMPLEMENTED. Item 2085 made it a field read for the single-label
+ * case, falling back to iterating the set for a multi-labelled element.
+ *
+ * ⚠️⚠️ **NO `?? null` HERE, AND THAT IS DELIBERATE: ON THIS PATH IT IS DEAD CODE.** `dispatch.ts`'s
+ * `case 'label'` coerces a missing label to `null`, and item 2080's BARE-scan arm must too — but this
+ * walk is reached only from `labelSeededValuesFusion`, whose single call site passes a `hasLabel`-
+ * SEEDED stream. An element that satisfies `hasLabel(L)` carries `L`, so `labelOf` cannot return
+ * `undefined` here. Three mutants proved it: a dropped coercion, a null-dropping guard and a
+ * drain/iterator disagreement were all ANSWER-EQUIVALENT, because no input distinguishes them.
+ *
+ * 🔑 The branch is REMOVED rather than kept-and-documented, which is `RowsFn`'s own argument in this
+ * package: "a defensive `?? []` at its call site would be an untestable branch — a mutant replacing it
+ * is equivalent code, which is how a test suite comes to look like it has teeth it does not."
+ */
+const seededAccessorWalk = (
+  stream: Iterable<{ value: unknown }>,
+  wantId: boolean,
+  steps: readonly Step[],
+): { values: NodeValues; rest: readonly Step[] } => {
+  const pick = wantId
+    ? (t: { value: unknown }): unknown => (t.value as { id: unknown }).id
+    : (t: { value: unknown }): unknown =>
+        labelOf(t.value as { labels: ReadonlySet<string>; soleLabel?: string });
+
+  const walk = function* (): Iterable<unknown> {
+    for (const t of stream) {
+      yield pick(t);
+    }
+  };
+
+  // ⚠️ THE EAGER FILL, for the reason the `values` arm states: `toArray` prefers `drain`, and a walk
+  // without one is measured against siblings that have it with its generator hand tied.
+  const out = walk() as NodeValues & { drain: () => unknown[] };
+
+  out.drain = (): unknown[] => {
+    const rows: unknown[] = [];
+
+    for (const t of stream) {
+      rows.push(pick(t));
+    }
+
+    return rows;
+  };
+
+  return { values: out, rest: steps.slice(1) };
+};
+
 export const labelSeededValuesFusion = (
   stream: Iterable<{ value: unknown }>,
   steps: readonly Step[],
@@ -1722,14 +1776,33 @@ export const labelSeededValuesFusion = (
   const [only] = steps;
 
   /*
-   * ONE key only. `values()` with no key emits every property value and `values(a, b)` fans out per
-   * key, so neither is one read per element — the same restriction {@link nodeValuesShortcut} states.
+   * ⚠️⚠️ **`id` AND `label` RIDE THIS TOO SINCE ITEM 2089, AND THEY ARE ITEM 2080's GAP ONE LEVEL UP.**
+   * That item found `V().id()` fused and `V().label()` generic on a BARE scan. The same split existed
+   * here: this fusion took `values` and left the two zero-argument accessors to the generic step, so
+   * `V().hasLabel(L).id()` measured **3.36 ms/rep with a vacuous label and 8.42 with a real one —
+   * 2.51x** at 200,000 vertices. With a vacuous label `dropVacuousLabels` deletes the `hasLabel` and
+   * the plan is the two-step `V().id()` that item 2056 already fused; with a real one the step
+   * SURVIVES, the stream is seeded, and the accessor was generic.
+   *
+   * 🔑 THE SEEDED STREAM IS NOT RE-DERIVED HERE. Whether a leading `hasLabel` may seed from
+   * `verticesByLabel` is settled upstream (item 1870 measured the seed FASTER than scanning and
+   * testing); this walk only replaces the traverser over whatever stream it is handed.
    */
-  if (only?.kind !== 'values' || only.keys.length !== 1) {
+  const accessor = only?.kind;
+
+  if (accessor !== 'values' && accessor !== 'id' && accessor !== 'label') {
     return undefined;
   }
 
-  const [key] = only.keys;
+  /*
+   * ONE key only. `values()` with no key emits every property value and `values(a, b)` fans out per
+   * key, so neither is one read per element — the same restriction {@link nodeValuesShortcut} states.
+   */
+  if (only.kind === 'values' && only.keys.length !== 1) {
+    return undefined;
+  }
+
+  const key = only.kind === 'values' ? only.keys[0] : undefined;
 
   /*
    * ⚠️ A MISSING KEY IS DROPPED, NOT EMITTED AS `undefined`. That is what `valuesStep` does, and
@@ -1741,6 +1814,17 @@ export const labelSeededValuesFusion = (
    * are compared ORDERED by the differential fuzzer, so a divergence between the two derivations
    * would be a cross-engine failure rather than an unspecified-order liberty.
    */
+  /*
+   * ⚠️⚠️ **THE TWO ACCESSORS ALWAYS YIELD AND `values` DOES NOT, so they CANNOT share this walk.**
+   * `values(k)` DROPS an element lacking the key; `id()` and `label()` emit a row for every element
+   * — `label()` emitting `null` where there is no label, which is `dispatch.ts`'s `?? null`. A single
+   * loop with a branch would also cost what item 159 measured at 1.6x on this shape, so the accessor
+   * arms get their own walk below and this one stays exactly as it was.
+   */
+  if (key === undefined) {
+    return seededAccessorWalk(stream, accessor === 'id', steps);
+  }
+
   const pick = (t: { value: unknown }): unknown =>
     (t.value as { properties?: Record<string, unknown> } | undefined)?.properties?.[key];
 

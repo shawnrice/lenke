@@ -103620,3 +103620,89 @@ priced and closed.**
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; item
 2087's mutation round re-run after the revert. No net engine change — 19 lines of comment.
+
+## Item 2089 — ✅ **SHIPPED: `id()`/`label()` on the label-SEEDED stream — 8.08 → 4.40 ms (1.84x).** 🔑 Item 2080's sibling gap one level up. ⚠️ Plus a REPRODUCIBLE cross-engine divergence found in passing, and three mutants proven UNREACHABLE rather than untested
+
+Items 2087/2088 closed both routes to the GQL label cliffs, so this swept **Gremlin** under a realistic
+label distribution — which items 2036-2038 established a knob for and item 2038 said only timing could
+read ("a row that keeps its route in BOTH modes can still pay surviving per-element label tests, and no
+census can see that").
+
+### ⚠️ THE SCREEN MANUFACTURED THREE OF ITS FIVE CANDIDATES
+
+Both modes, 79 rows matched, then the top five priced ISOLATED (`ONLY='=row'`, one process each):
+
+| row                                  | screen said | isolated         |
+| ------------------------------------ | ----------- | ---------------- |
+| `sideeffect: aggregate + cap`        | 2.75x       | **1.00x**        |
+| `sideeffect: aggregate pass-through` | 2.21x       | **1.02x**        |
+| `agg: hop values min`                | 2.13x       | **1.02x**        |
+| **`label: id`**                      | 2.61x       | **2.51x — real** |
+| `label: hop values`                  | 1.60x       | 1.42x            |
+
+🔑 Three dissolved completely. The Gremlin workload screen runs every row in ONE process, which is the
+interference items 737/762 priced — so it ranks and does not price, in the direction that INVENTS
+findings. (Item 2086 found the same screen understating; both failures are real and opposite.)
+
+### 🔑 `V().hasLabel(T).id()` — ITEM 2080's GAP ONE LEVEL UP
+
+With a vacuous label `dropVacuousLabels` deletes the `hasLabel` and the plan is the two-step `V().id()`
+that item 2056 fused. With a REAL label the step survives, the stream is label-seeded, and
+`labelSeededValuesFusion` took only `values` — leaving the two zero-argument accessors to the generic
+step. **Exactly the disagreement item 2080 found between `V().id()` and `V().label()` on the bare scan.**
+
+| row                                             | KILLED | LIVE     |           |
+| ----------------------------------------------- | ------ | -------- | --------- |
+| `V().hasLabel(T).id()` (target)                 | 8.08   | **4.40** | **1.84x** |
+| `V().hasLabel(T).values(n)` — the arm untouched | 10.43  | 10.39    | 1.00x     |
+| `V().id()`                                      | 3.20   | 3.11     | 1.03x     |
+| `V().values(n)`                                 | 5.76   | 6.06     | 0.95x     |
+| `scan: count`                                   | 0.00   | 0.00     | flat      |
+
+The mode penalty on that row falls from **2.51x to 1.33x**. ⚠️ The A/B runs in `MIXED=1`: with a vacuous
+label the plan never reaches this fusion, so the arm would measure flat for the wrong reason.
+
+⚠️ **THE SEEDED STREAM IS NOT RE-DERIVED.** Whether a leading `hasLabel` may seed from
+`verticesByLabel` is settled upstream — item 1870 measured the seed FASTER than scanning and testing,
+and inverted item 1482's 2.39x. This walk only replaces the traverser over whatever stream it is handed.
+
+🔑 **THE TWO ACCESSORS CANNOT SHARE THE `values` WALK**: `values(k)` DROPS an element lacking the key
+while `id()`/`label()` emit a row for every element. A separate closure, chosen once per query — item
+159 measured an inner-loop branch on this shape at 1.6x.
+
+### ⚠️⚠️ THREE MUTANTS SURVIVED, AND THEY ARE UNREACHABLE RATHER THAN UNTESTED
+
+10 of 11 caught. The three survivors are all the same impossibility: a dropped `?? null`, a
+null-dropping guard, and a drain/iterator disagreement on null. 🔑 **An element that satisfies
+`hasLabel(L)` carries `L`, so `labelOf` can never return `undefined` on this path** — there is no input
+that distinguishes them.
+
+So the `?? null` was **REMOVED**, not kept-and-documented, which is this package's own argument in
+`RowsFn`'s doc: "a defensive `?? []` at its call site would be an untestable branch — a mutant
+replacing it is equivalent code, which is how a test suite comes to look like it has teeth it does
+not." ⚠️ The mutant is retargeted to RE-ADD the branch, and its survival is now the PROOF that removing
+it changed no answer. (`dispatch.ts` and item 2080's bare-scan arm still coerce, because an unlabelled
+vertex reaches those.)
+
+### ⚠️⚠️ FOUND IN PASSING: A REPRODUCIBLE CROSS-ENGINE DIVERGENCE ON `sum()` AFTER `bothE`
+
+One sweep in five failed, and unlike the usual rare-seed residual **this one replays 3/3**:
+
+```text
+    FUZZ_SEED=2298995149
+    g.V().out('KNOWS').bothE('CREATED', 'KNOWS').values('weight').sum()
+        ts:     [5.5]
+        native: [5.500000000000001]
+```
+
+⚠️ **NOT THIS ITEM'S CHANGE** — the same seed fails with this arm KILLED (the structural ruling-out,
+not a resemblance argument). And not a fuzzer gap either: item 1918 added `values(k).sum()`
+DELIBERATELY, expecting the engines to agree on visit order. 🔑 They do not for a `bothE`-fed sum: the
+two engines walk `bothE('CREATED','KNOWS')` in a different ORDER, and f64 addition is not associative,
+so the last ulp differs. Row order is UNSPECIFIED here by policy, which makes a float `sum` over it
+not well-defined across engines by construction. **Recorded with its seed, NOT fixed — it is a
+correctness question outside this loop's remit, and it will keep reddening ~1 sweep in 5 until it is
+taken.**
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 2,731
+gremlin tests; all seven fuzzers green on their own run; 4/5 sweeps with the fifth above.
