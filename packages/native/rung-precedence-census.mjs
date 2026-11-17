@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+
 // eslint-disable-next-line boundaries/no-cross-package-relative-import -- internal planner entry point, read pre-build; see below
 import { compileLinear } from '../gql/src/executor/rewrites.ts';
 /**
@@ -61,30 +63,116 @@ import { parse } from '../gql/src/parser.ts';
  * `compileLinear`'s returned key order below — this is the probe's load-bearing assumption and it is
  * asserted, not assumed.
  */
-const CHAIN = [
-  'varLengthCount',
-  'countShortcut',
-  'optionalHopCount',
-  'forCount',
-  'forProjection',
-  'optionalHopProjection',
-  'groupCountShortcut',
-  'groupHopShortcut',
-  'reachShortcut',
-  'hopProjection',
-  'hop2Projection',
-  'hopAggregate',
-  'multiHopAggregate',
-  'distinctProjection',
-  'distinctCount',
-  'nodeProjection',
-  'nodeAggregate',
-  'multiNodeAggregate',
-  'groupedNodeAggregate',
-  'groupedHopAggregate',
-];
-
 const NON_RUNG = new Set(['clauses', 'writes']);
+
+/*
+ * ⚠️⚠️ **DERIVED FROM THE SOURCE, NOT TRANSCRIBED — item 2117, and that IS the fix item 1901 scoped.**
+ * That item left this census dark with a precise prerequisite: *"the drift is not a stale transcription
+ * to patch — ten compiled fields are consumed somewhere other than the single ladder, and
+ * re-establishing the precedence oracle means finding where."*
+ *
+ * 🔑 THEY ARE CONSUMED IN FOUR HELPERS that `fastPath` calls at specific points — `scanAggregates`,
+ * `pagedWidthProjections`, `chainStarCountOrCountShortcut` and `deepWidthReductions`. So the runtime
+ * order is `fastPath`'s own sequence with each helper's rungs spliced in WHERE IT IS CALLED, which is
+ * what `chainOrder` below reconstructs by reading `clauses.ts`.
+ *
+ * ⚠️ **AND THE DOCUMENTED INVARIANT IS VIOLATED, WHICH IS WHY TRANSCRIBING CANNOT WORK.** The header
+ * above says `compileLinear`'s field order "is kept identical to that chain deliberately". It is not —
+ * five rungs disagree, `chainStarCount` most sharply (15th as a field, 2nd at runtime). A transcription
+ * has to be corrected whenever either file moves; a derivation cannot go stale.
+ *
+ * ⚠️ IT IS STILL ASSERTED, just differently: the derived chain must contain EXACTLY `compileLinear`'s
+ * rung keys, both directions. A derivation bug then fails loudly rather than reporting a confident
+ * census of an order nobody runs.
+ */
+const CLAUSES_SRC = readFileSync(
+  new URL('../gql/src/executor/clauses.ts', import.meta.url),
+  'utf8',
+);
+
+/** The body of a top-level `const <name> = (` in `clauses.ts`, to its closing `};`. */
+const bodyOf = (src, name) => {
+  const m = new RegExp(`^(?:export )?const ${name} = \\(`, 'm').exec(src);
+
+  if (m === null) {
+    throw new Error(
+      `clauses.ts has no top-level const ${name} — the census cannot derive the chain`,
+    );
+  }
+
+  const end = src.indexOf('\n};', m.index);
+
+  return src.slice(m.index, end === -1 ? undefined : end);
+};
+
+/* The helpers `fastPath` delegates to. ⚠️ Derived, not listed: any function it calls that reads rungs. */
+const helperNames = (src) => {
+  const top = bodyOf(src, 'fastPath');
+  const out = [];
+
+  for (const m of top.matchAll(/\b([a-z][A-Za-z0-9_]*)\(/g)) {
+    const [, name] = m;
+
+    if (out.includes(name)) {
+      continue;
+    }
+
+    try {
+      if (/linear\.[A-Za-z0-9_]+/.test(bodyOf(src, name))) {
+        out.push(name);
+      }
+    } catch {
+      /* not a top-level const in this file — not a rung helper. */
+    }
+  }
+
+  return out;
+};
+
+const chainOrder = (src) => {
+  const helpers = helperNames(src);
+
+  /*
+   * ⚠️ AN EMPTY HELPER LIST IS A DERIVATION BUG, NOT A VALID STATE — `fastPath` delegates to four of
+   * them. Without this the alternation below becomes `()`, which matches the empty string and the walk
+   * goes wrong in a way whose stack trace says nothing about the cause (verified by mutating
+   * `helperNames` to return `[]`).
+   */
+  if (helpers.length === 0) {
+    throw new Error(
+      'the census found NO rung-reading helpers called from `fastPath` — `helperNames` is broken, ' +
+        'or `fastPath` no longer delegates. Either way the derived chain would be `fastPath`-only.',
+    );
+  }
+
+  const walk = (name, depth) => {
+    const out = [];
+    const pat = new RegExp(`linear\\.([A-Za-z0-9_]+)|\\b(${helpers.join('|')})\\s*\\(`, 'g');
+
+    for (const m of bodyOf(src, name).matchAll(pat)) {
+      const [, rung, helper] = m;
+
+      if (rung !== undefined) {
+        if (!NON_RUNG.has(rung) && !out.includes(rung)) {
+          out.push(rung);
+        }
+      } else if (depth < 3) {
+        for (const r of walk(helper, depth + 1)) {
+          if (!out.includes(r)) {
+            out.push(r);
+          }
+        }
+      }
+    }
+
+    return out;
+  };
+
+  return walk('fastPath', 0);
+};
+
+/** The RUNTIME precedence order, derived. */
+const CHAIN = chainOrder(CLAUSES_SRC);
 
 /**
  * The corpus. Spread across the dimensions the twenty detectors actually discriminate on — pattern
@@ -236,13 +324,28 @@ const shapesOf = (q) => {
 // ---------------------------------------------------------------------------
 const probeKeys = Object.keys(shapesOf(SHAPES[0][1])).filter((k) => !NON_RUNG.has(k));
 
-if (probeKeys.length !== CHAIN.length || probeKeys.some((k, i) => k !== CHAIN[i])) {
-  console.error('⚠️  compileLinear key order does NOT match the transcribed runLinear chain.');
-  console.error('    compileLinear:', probeKeys.join(', '));
-  console.error('    CHAIN:        ', CHAIN.join(', '));
+/*
+ * ⚠️⚠️ **THE ASSERTION IS NOW SET EQUALITY, NOT ORDER EQUALITY — item 2117.** `compileLinear`'s FIELD
+ * order and the runtime chain have DRIFTED in five places (`chainStarCount` is the 15th field and the
+ * 2nd rung to run), so an order check can only fail. 🔑 What must hold is that the derived chain covers
+ * exactly the rungs `compileLinear` produces: a derivation that missed one would silently report that
+ * rung as never firing, and one that invented a name would crash on the lookup.
+ */
+const missingFromChain = probeKeys.filter((k) => !CHAIN.includes(k));
+const notAField = CHAIN.filter((k) => !probeKeys.includes(k));
+
+if (missingFromChain.length > 0 || notAField.length > 0) {
+  console.error("⚠️  the DERIVED chain and `compileLinear`'s rung keys disagree.");
+  console.error(
+    `    in compileLinear but not reached by the derived chain: ${missingFromChain.join(', ') || '(none)'}`,
+  );
+  console.error(
+    `    derived but not a compileLinear field:                 ${notAField.length > 0 ? notAField.join(', ') : '(none)'}`,
+  );
   console.error('');
-  console.error('    Every FIRES/STARVED reading below would be against the wrong order, so this');
-  console.error('    probe refuses to report. Re-transcribe CHAIN from runLinear in clauses.ts.');
+  console.error('    Every FIRES/STARVED reading below would be incomplete, so this probe refuses');
+  console.error('    to report. The derivation is in `chainOrder` — a new rung consumed somewhere');
+  console.error('    other than `fastPath` or one of its helpers needs that walk widened.');
   process.exit(1);
 }
 

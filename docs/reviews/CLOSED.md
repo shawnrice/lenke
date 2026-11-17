@@ -89728,7 +89728,7 @@ runs of `bun run spelling:gremlin` (0 disagreements; one run flagged a group and
 refuted it, the same bimodality item 1899 saw). MUTATION: 7 mutants, 4 caught, 3 expected survivors
 each with its reason stated at the entry.
 
-## Item 1901 — item 1898's coverage sweep applied to GQL, and it found the same thing: **the surface's biggest shapes are outside the corpus**. ⚠️ ~~Its two path rows (741.10 / 738.46) are read against a one-hop control~~ **CORRECTED at item 1916: that control is the wrong floor, and the SAME match returning a scalar costs 548.74 — so 71% of those numbers is the var-length match, not the path value.** `ORDER BY <an expression>` costs **8.9x** the bound-name spelling for the same rows in the same order — and the WINDOWED form of that very key takes the rung, so the capability is already there — ✅ **TAKEN at item 1902 (3.75x; ~2.8x residual)**, and ~~the HOP half is still open at 4.3x / 1190 ms~~ **TAKEN at item 1903 (2.64x) — which uncovered a TS-ONLY WRONG ANSWER in that arm, four of five end/key combinations**. ⚠️ ~~Its `chained LET` row (88.17) prices the CHAIN~~ **CORRECTED at item 1926: the chain was never the cost. The SINGLE `LET` measured 54.99 against the hand-folded 9.26 — `boundExprs` admitted only `cheapPureExpr` or a subquery, so ARITHMETIC never folded. Now 8.33, 6.6x. The screen carried no single-LET row, which is why the composition took the blame for the primitive**
+## Item 1901 — item 1898's coverage sweep applied to GQL, and it found the same thing: **the surface's biggest shapes are outside the corpus**. ⚠️ ~~Its two path rows (741.10 / 738.46) are read against a one-hop control~~ **CORRECTED at item 1916: that control is the wrong floor, and the SAME match returning a scalar costs 548.74 — so 71% of those numbers is the var-length match, not the path value.** `ORDER BY <an expression>` costs **8.9x** the bound-name spelling for the same rows in the same order — and the WINDOWED form of that very key takes the rung, so the capability is already there — ✅ **TAKEN at item 1902 (3.75x; ~2.8x residual)**, and ~~the HOP half is still open at 4.3x / 1190 ms~~ **TAKEN at item 1903 (2.64x) — which uncovered a TS-ONLY WRONG ANSWER in that arm, four of five end/key combinations**. ⚠️ ~~Its `chained LET` row (88.17) prices the CHAIN~~ **CORRECTED at item 1926: the chain was never the cost. The SINGLE `LET` measured 54.99 against the hand-folded 9.26 — `boundExprs` admitted only `cheapPureExpr` or a subquery, so ARITHMETIC never folded. Now 8.33, 6.6x. The screen carried no single-LET row, which is why the composition took the blame for the primitive** ⚠️ **ITS DARK-CENSUS PREREQUISITE IS SATISFIED AT ITEM 2117: the ten fields are consumed in four helpers `fastPath` calls, the chain is now DERIVED rather than transcribed, and the census reports again — naming `hop2FoldedAggregate` as STARVED.**
 
 Items 1879/1880 split the existing seventeen families until "the addressable time is exhausted" —
 a conclusion that is only ever true of the shapes a screen HAS. Item 1898 falsified exactly that on
@@ -105350,3 +105350,69 @@ list to its own distinct count. Replaced with a `limit(4)`, whose absence is vis
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 2,760
 Gremlin tests; seven fuzzers green; 5/5 sweeps. ⚠️ The Gremlin spelling probe flags FEWER groups with this
 change than without it (1 against 2, compared arm-to-arm), so it introduces no spelling gap.
+
+## Item 2117 — 🔑 **THE RUNG-PRECEDENCE CENSUS IS ALIVE AGAIN after 200+ items dark, and it immediately names a STARVED rung.** ⚠️ The invariant its method rested on is VIOLATED in five places, so the fix is to DERIVE the chain, not transcribe it
+
+Item 2116 cost two items to a route I had not attributed, so this tick went to the instrument. ⚠️ **It
+already existed** (`rung-precedence-census.mjs`, item 1775 — "which of the rungs answers each shape, and
+which willing rungs are STARVED") — and it **refused to report**, as item 1901 recorded:
+
+> _"the drift is not a stale transcription to patch — ten compiled fields are consumed somewhere other
+> than the single ladder, and re-establishing the precedence oracle means finding where."_
+
+🔑 **THEY ARE CONSUMED IN FOUR HELPERS** that `fastPath` calls at specific points: `scanAggregates`,
+`pagedWidthProjections`, `chainStarCountOrCountShortcut`, `deepWidthReductions`. So the runtime order is
+`fastPath`'s sequence with each helper's rungs spliced in WHERE IT IS CALLED.
+
+### ⚠️⚠️ AND THE DOCUMENTED INVARIANT IS FALSE, WHICH IS WHY TRANSCRIBING CANNOT WORK
+
+The census's header says `compileLinear`'s field order "is kept identical to that chain deliberately".
+Measured, five rungs disagree:
+
+| rung                    | field position                  | runtime position |
+| ----------------------- | ------------------------------- | ---------------- |
+| `chainStarCount`        | 15th                            | **2nd**          |
+| `hopDistinctProjection` | 18th                            | 29th             |
+| `hop2GroupedCount`      | before `chainGroupedLevels`     | after            |
+| `hop2OrderedProjection` | before `chainOrderedProjection` | after            |
+| `hop2PagedProjection`   | before `chainPagedProjection`   | after            |
+
+🔑 So `CHAIN` is now **DERIVED from `clauses.ts`** — `chainOrder` reads `fastPath`, finds the helpers that
+read rungs (itself derived, not listed), and splices them in call order. A transcription needs correcting
+whenever either file moves; a derivation cannot go stale. ⚠️ The assertion becomes SET equality (the
+derived chain must cover exactly `compileLinear`'s rung keys, both directions) rather than order equality,
+which can now only fail.
+
+### What it reports, now that it reports
+
+**87 shapes, 35 rungs, 81 with a willing rung, 6 on the general path, 8 contested** — and five distinct
+precedence decisions:
+
+```text
+   2x  distinctCount      >  nodeAggregate          node.distinctcount, node.distinctcountprop
+   2x  groupHopShortcut   >  groupedHopAggregate    hop.group.far, hop.group.start
+   2x  chainStarCount     >  countShortcut          hop2.count, hop3.count
+   1x  groupCountShortcut >  groupedNodeAggregate   node.group
+   1x  chainFoldLevels    >  hop2FoldedAggregate    hop2.distinctcount
+```
+
+🔑 **`hop2FoldedAggregate` IS WILLING SOMEWHERE AND NEVER FIRES ANYWHERE** — the item-1583 signature
+exactly (a rung written, correct, willing and starved by a broader one ahead of it; worth up to **6.00x**
+there). ⚠️ A starved rung is a CANDIDATE, not a finding — item 418 measured a branch moved ahead of a hot
+dispatch costing the shape it does not claim 1.12x. That is the next item, not this one.
+
+⚠️ `chainStarCount > countShortcut` is MINE (item 2087, 5.25x) and is correctly ordered.
+
+### The guard has teeth, verified
+
+Two mutants on the derivation: the walk not descending into helpers → the guard fires and **names all 14
+unreached rungs**; `helperNames` returning `[]` → it crashed with a stack trace, so an explicit check was
+added and now says what is wrong in one line. 🔑 A revived oracle that others will trust is worth
+mutating before it is trusted.
+
+⚠️ One lint wanted `??` where the code had `||`; **that would have been wrong** — an empty `join` is `''`,
+which is falsy but not nullish, so the placeholder would never appear. Replaced with an explicit length
+test rather than silencing the rule.
+
+GATES. Probe only — no engine change. `bun run fmt` 0; `bun run check` 0 read unpiped; the census reports
+81 attributed shapes.
