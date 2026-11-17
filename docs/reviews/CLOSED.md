@@ -102776,3 +102776,62 @@ are the 200,000 ones and the small-N run is reported only as the reason not to u
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; three
 new shapes with DERIVED guards (`min(n.k)` is 0 because `i % 97` starts there; `sum(n.n)` is the
 triangular number, the same formula `scalaraggs` uses). Probe only; no engine change.
+
+## Item 2077 — ❌ **`sum`'s THREE PASSES ARE REAL AND NOT THE COST: all three together are 0.773 ms against the query's 7.57 ms/rep.** 🔑 The profile puts the money in per-vertex VALUE EXTRACTION, not aggregation — and my own floor came out INCOHERENT, which is how I know not to publish a pass-count ratio
+
+Item 2076 left `sum(n.n)` at 2.04x its hand floor. This profiled it.
+
+### What the profile found, and it is explicit in the source
+
+`aggregateOverValues` in `projection.ts`:
+
+```js
+    case 'sum':
+      if (values.some(isTemporal)) return temporalSum(values);
+      if (values.some(Array.isArray)) throw nonNumericAgg();
+      return values.reduce((s, v) => s + numArg(v), 0);
+```
+
+**THREE full passes over the values array**, and neither `some` short-circuits on an all-numeric
+column. ⚠️ The design is deliberate and its own header says so: _"the operation is chosen by looking at
+the WHOLE collection (a temporal anywhere means `temporalSum`, an array anywhere throws), which item
+467 is the entry about."_ `isTemporal` showing up at all in a numeric sum's profile is that structure.
+
+### ⚠️⚠️ THE FLOOR CAME OUT INCOHERENT, AND THAT IS THE FINDING
+
+200,000 all-numeric values, three arms that must sum identically:
+
+```text
+    three pass        0.773 ms   3.9 ns/value    ⬅ the engine's shape
+    one pass          0.183      0.9             ⬅ fused, bail on the first offender
+    reduce only       1.036      5.2             ⬅ SLOWER than three pass, which CONTAINS it
+```
+
+**`reduce only` is dearer than `three pass`, which performs the same reduce plus two extra scans.**
+That is impossible if the arms are additive, so the derived "two pre-passes cost" comes out at
+**−1.3 ns a value** — a negative term, the same signal items 2055 and 2067 withdrew decompositions
+for. V8 optimizes a `for…of` over a packed Smi array differently from a `reduce` closure, so these arms
+measure the optimizer, not the pass count. **No pass-count ratio is published.**
+
+🔑 **WHAT SURVIVES IS THE BOUND, AND IT REFUTES THE TARGET:** all three passes together are **0.773 ms**
+against the query's **7.57 ms/rep** — at most ~10%, on work whose own floor cannot be measured
+reliably. A fused single pass with an optimistic numeric assumption is buildable, and it is not worth
+building.
+
+### Where the 7.57 ms actually goes — per rep, 200,000 vertices
+
+| frame                                                        | ms/rep |
+| ------------------------------------------------------------ | ------ |
+| the scan closure (`:23754`, `valueScanOf`'s returned fn)     | 2.65   |
+| `aggregateOverValues` — the whole aggregate, passes included | 1.63   |
+| `propOf`                                                     | 1.02   |
+| `variable.variable`                                          | 0.57   |
+| `get properties`                                             | 0.45   |
+
+**The aggregation is a MINORITY of its own query.** The majority is per-vertex value extraction —
+`propOf` + `variable.variable` + `get properties` — which is the same territory item 2067 took five
+floor arms to refute, where the attributed cost was 23x what the bare operation measures. ⚠️ So the
+nomination that would follow from this table is one this file has already closed once.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped. Floor probe only; no engine change, and the
+`.cpuprofile` artifacts are removed rather than committed.
