@@ -106916,3 +106916,56 @@ profile, which no ablation here touched.
 
 GATES. No engine change (both probe edits reverted; `values.ts` verified clean of the counter and the
 probe); `bun run check` 0 read unpiped.
+
+## Item 2144 — ⚠️ **CLOSED, NOTHING BUILT: Gremlin's `values(k).order()` is bounded by TWO ALREADY-WORKED SITES.** The typed-array sort prices at 4.4%, and the larger term is item 1586's fused path. ✅ Also confirms this session's four Gremlin wins in the bench
+
+🔑 Re-running `bun run bench:gremlin` shows the session's work landed:
+
+```text
+    row                                  before   now
+    V().out().out().count()                12.8    0.0    (item 2131's memo)
+    V().out().out().out().count()          22.3    0.0
+    V().out()x4.count()                    27.1    0.0
+    V().repeat(out).times(2).count()       13.1    0.0
+    V().out().has().count()                42.1   22.8    (item 2126)
+```
+
+The biggest remaining TS-slow row by absolute cost is `V().out().values(age).order()` at **177.2 ms against
+native's 81.62 (2.2x)**, with its unordered twin at 56.5.
+
+### 🔑 THE SORT IS ~1.6-1.9x ITS FLOOR, AND THE FLOOR IS SMALL
+
+```text
+    Array.sort((a,b)=>a-b) on 1M numbers        53.1 ms
+    Array.sort(total-order cmp)                 48.0      <- what the engine does
+    Float64Array.from + .sort()                 40.2      <- the typed-array alternative
+    Float64Array.sort() alone                   38.7
+    Array.sort DEFAULT (lexicographic)          75.7
+```
+
+⚠️ **So a typed-array numeric sort is worth 7.8 ms of a 177 ms row — 4.4% — and needs an extra conversion
+pass.** 🔑 Priced, not built; one measurement, no edit.
+
+### 🔑 AND THE SITE IS ALREADY OPTIMIZED, WITH A WARNING ATTACHED
+
+Item 1713 put a one-pass type scan (`allStr`/`allNum`, rejecting NaN because `compareTotal` orders it last
+and the reduced comparator has no arm for it) plus `reducedValueComparator` at this exact site. ⚠️ Its own
+comment is explicit: _"THIS IS THE SITE THE `values(k).order()` ROW ACTUALLY REACHES. The first attempt
+wired only `sortByBys` and changed nothing at all: a counter on all six sort sites showed the row entering
+HERE and the admit/decline counter never firing."_
+
+🔑 **The arithmetic closes it**: ~27 ms for the one-pass type scan (three checks plus a call per value over
+1M) + ~48 ms for the specialized sort = the ~75 ms `sorted` profiles at. Both halves are item 1713's work.
+
+### ⚠️ THE LARGER TERM IS THE UNORDERED PATH, WHICH IS ALSO WORKED
+
+The unordered twin profiles as `pick` 63.5% + `get properties` 32.9% = **117.4 ms for 1M values, 117 ns
+each**, against native's 26.52 ms (26 ns). 🔑 That is item 1586's FUSED `values()` path (a 1.90x win when
+built) and its residual is the generator-chain constant factor, not a missing route.
+
+🔑 **FOURTH CONSECUTIVE TICK WITH NO LEVER FOUND, and that is itself the finding**: the benched TS surface
+is largely at its documented floors. Items 2140-2144 each closed a row by measurement rather than opening
+one. ⚠️ What remains unexplored on this row: nothing in the profile — `sorted` + `pick` + `get properties`
+account for 83.5% and all three are priced above.
+
+GATES. No engine change; `bun run check` 0 read unpiped.
