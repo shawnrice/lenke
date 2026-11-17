@@ -357,6 +357,56 @@ export const fusableProjectedFold = (rest: readonly Step[]): boolean => {
  * ⚠️ `cap` IS NOT ADMITTED HERE and `count` is not admitted by {@link fusableProjectedBagCap}: the
  * two arms are disjoint by their second step, so neither can shadow the other.
  */
+/**
+ * A BARE TRAILING `aggregate(k)` over a fused walk — the barrier with nothing after it (item 2070).
+ *
+ * ⚠️⚠️ **`store` IS DELIBERATELY NOT ADMITTED, AND THAT IS THE WHOLE CONTRACT.** Item 2069 could take
+ * BOTH bag steps because `count()` consumes the stream entirely, so eager and lazy collection were
+ * indistinguishable. Here the residual is the LAST step and the stream passes through to the caller,
+ * who may stop early — `hop-values.ts`'s rule is that "`run` stays as lazy as it was for a caller
+ * that `break`s out", and [[eager-tail-cache]] records what breaking that costs elsewhere (473x and
+ * 3680x). So:
+ *
+ *   - `aggregate(k)` is a COLLECTING BARRIER: `side-effects.ts` already materializes the entire
+ *     upstream at that point, precisely so a later `limit(0)` cannot cancel the collection. A drain
+ *     IS that behaviour, so fusing it changes nothing observable.
+ *   - `store(k)` is lazy by contract. A drain would fill the bag with elements an early-exiting
+ *     caller must never have caused to be collected. **It stays on the generic path, measured at
+ *     170.92 ms, and that is correct rather than unfinished.**
+ *
+ * Item 2070 measured the gap on the eager form: **47.14 ms for the fused walk alone against 165.64
+ * with the barrier appended — 3.51x**, same 600,000 rows either way.
+ */
+export const fusableProjectedBarrier = (rest: readonly Step[]): boolean =>
+  rest.length === 1 && rest[0].kind === 'aggregate';
+
+/**
+ * The drained walk pushed into the bag and PASSED THROUGH (item 2070).
+ *
+ * ⚠️ IT RETURNS THE DRAINED ARRAY, NOT A COUNT — the barrier passes its stream on, which is what
+ * makes this different from {@link countProjectedBag}. The bag is filled FIRST, in walk order, so the
+ * result is answer-identical to the generic path and not merely equal in length.
+ */
+export const barrierProjectedBag = (
+  values: HopWalk,
+  key: string,
+  ctx: { readonly sideEffects: Map<string, unknown[]> },
+): unknown[] => {
+  const drained = values.drain === undefined ? [...values] : values.drain();
+
+  if (!ctx.sideEffects.has(key)) {
+    ctx.sideEffects.set(key, []);
+  }
+
+  const bucket = ctx.sideEffects.get(key)!;
+
+  for (const value of drained) {
+    bucket.push(value);
+  }
+
+  return drained;
+};
+
 export const fusableProjectedBagCount = (rest: readonly Step[]): boolean => {
   if (rest.length !== 2) {
     return false;

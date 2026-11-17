@@ -64,12 +64,18 @@ const build = (): Graph => {
 };
 
 /*
- * ⚠️⚠️ **THREE OPERAND KINDS HAVE NOW ARRIVED FOR THIS ONE CLASS, which is why it is a CLASS and not a
+ * ⚠️⚠️ **FOUR OPERAND KINDS HAVE NOW ARRIVED FOR THIS ONE CLASS, which is why it is a CLASS and not a
  * coincidence.** Each was found by the differential fuzzer on a different random seed:
  *
  *     FUZZ_SEED=1493132919   date('2020-01-01')        a temporal in boolean position
  *     FUZZ_SEED=3826437490   atan2(n.m.k, '1e3')       a string argument to a numeric fn
  *     FUZZ_SEED=3908458595   acos(n.s)                 a string argument to a numeric fn (item 2037)
+ *     FUZZ_SEED=1387327370   ('\t\n' AND (NOT true))   a STRING LITERAL as a conjunct (item 2070)
+ *
+ * 🔑 **THE FOURTH IS THE SIMPLEST ONE YET AND THAT MATTERS:** the first three put a non-boolean in
+ * boolean position through a FUNCTION CALL, so "the function returns the wrong type" was an available
+ * reading. A bare string literal as the left conjunct of an `AND` removes it — the class is about a
+ * statically non-boolean OPERAND, whatever produces it.
  *
  * The shape is identical every time: a statically non-boolean operand in an inline pattern predicate
  * under `OPTIONAL MATCH`, where this engine's conjunct order settles the row before evaluating the

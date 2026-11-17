@@ -27,7 +27,12 @@ import {
   V,
   values,
 } from '../index.js';
-import { countProjectedBag, fusableProjectedBagCount } from './aggregation.js';
+import {
+  barrierProjectedBag,
+  countProjectedBag,
+  fusableProjectedBagCount,
+  fusableProjectedBarrier,
+} from './aggregation.js';
 
 const fixture = (): Graph => {
   const g = new Graph();
@@ -204,5 +209,89 @@ describe('aggregate/store + count fusion (item 2069)', () => {
       traversal(V(), out('E'), aggregate('x'), count());
 
     expect(toArray(make(), g)).toStrictEqual(toArray(make(), g));
+  });
+});
+
+describe('a bare trailing aggregate barrier (item 2070)', () => {
+  test('THE GATE: `aggregate` alone is claimed, `store` alone is NOT', () => {
+    /*
+     * ⚠️⚠️ **THE ASYMMETRY IS THE CONTRACT, and it is the opposite shape from item 2069's.** There,
+     * `count()` consumed the stream so eager and lazy were indistinguishable and BOTH bag steps were
+     * admitted. Here the residual is the LAST step, so the stream passes through to a caller who may
+     * stop early: `aggregate` already materializes its upstream (a drain changes nothing), while
+     * `store` is lazy and a drain would collect what an early-exiting caller must never have caused
+     * to be collected.
+     */
+    expect(fusableProjectedBarrier([{ kind: 'aggregate', key: 'x' }])).toBe(true);
+    expect(fusableProjectedBarrier([{ kind: 'store', key: 'x' }])).toBe(false);
+  });
+
+  test('a TWO-step residual declines — that is item 2069s arm, and the two must stay disjoint', () => {
+    expect(fusableProjectedBarrier([{ kind: 'aggregate', key: 'x' }, { kind: 'count' }])).toBe(
+      false,
+    );
+    expect(fusableProjectedBarrier([])).toBe(false);
+  });
+
+  test('the barrier PASSES THE STREAM THROUGH and fills the bag with the projected values', () => {
+    /*
+     * 🔑 IT RETURNS THE ROWS, NOT A COUNT — that is what distinguishes this from
+     * `countProjectedBag`. The bag holds the VALUES here, because the `aggregate` sits AFTER the
+     * projection; a fusion that banked the elements instead would be a different answer.
+     */
+    const ctx = { sideEffects: new Map<string, unknown[]>() };
+    const walk = { [Symbol.iterator]: () => [1, 2, 3][Symbol.iterator](), drain: () => [1, 2, 3] };
+
+    expect(barrierProjectedBag(walk, 'x', ctx)).toStrictEqual([1, 2, 3]);
+    expect(ctx.sideEffects.get('x')).toStrictEqual([1, 2, 3]);
+  });
+
+  test('it APPENDS to an existing bucket, as `aggregateStep` does', () => {
+    const ctx = { sideEffects: new Map<string, unknown[]>([['x', [9]]]) };
+    const walk = { [Symbol.iterator]: () => [1][Symbol.iterator](), drain: () => [1] };
+
+    expect(barrierProjectedBag(walk, 'x', ctx)).toStrictEqual([1]);
+    expect(ctx.sideEffects.get('x')).toStrictEqual([9, 1]);
+  });
+
+  test('the END-TO-END answer and bag match the generic path', () => {
+    const g = fixture();
+
+    // Five edges projected, and the bag read back through a cap on the generic (3-step) path.
+    expect(toArray(traversal(V(), out('E'), values('n'), aggregate('x')), g)).toStrictEqual([
+      1, 2, 3, 4, 5,
+    ]);
+
+    const capped = toArray(traversal(V(), out('E'), values('n'), aggregate('x'), cap('x')), g);
+
+    expect(capped).toHaveLength(1);
+    expect(capped[0]).toStrictEqual([1, 2, 3, 4, 5]);
+  });
+
+  test('⚠️⚠️ `store` STILL PASSES THROUGH LAZILY — the behaviour the decline protects', () => {
+    /*
+     * ⚠️⚠️ **THIS IS WHY `store` IS REFUSED, stated as a measurement rather than an intention.** With
+     * a `limit(0)` after it, the lazy `store` is pulled once and then rejected, so its bag holds ONE
+     * element; the eager `aggregate` collected the whole upstream first and holds five. If the fusion
+     * ever admitted `store`, this test fails — which is the point of asserting it here as well as in
+     * `projected-fold.test.ts`.
+     */
+    const g = fixture();
+    const lazy = toArray(traversal(V(), out('E'), values('n'), store('y'), limit(0), cap('y')), g);
+    const eager = toArray(
+      traversal(V(), out('E'), values('n'), aggregate('x'), limit(0), cap('x')),
+      g,
+    );
+
+    expect((lazy[0] as unknown[]).length).toBe(1);
+    expect((eager[0] as unknown[]).length).toBe(5);
+  });
+
+  test('the store row still ANSWERS correctly on the generic path', () => {
+    const g = fixture();
+
+    expect(toArray(traversal(V(), out('E'), values('n'), store('y')), g)).toStrictEqual([
+      1, 2, 3, 4, 5,
+    ]);
   });
 });

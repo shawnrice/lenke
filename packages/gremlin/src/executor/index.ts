@@ -24,6 +24,7 @@ import {
 import { tagsObservedFrom } from '../ast.js';
 import type { Plan, Step } from '../ast.js';
 import {
+  barrierProjectedBag,
   countProjectedBag,
   countProjectedWalk,
   foldProjectedList,
@@ -31,6 +32,7 @@ import {
   fusableProjectedAggregate,
   fusableProjectedBagCap,
   fusableProjectedBagCount,
+  fusableProjectedBarrier,
   fusableProjectedCount,
   fusableProjectedFold,
   fusableProjectedOrder,
@@ -2763,6 +2765,21 @@ const fusedProjectedResidual = (
    * Item 2068 measured the gap: 22.4 ms against the `cap` sibling's 3.0 for the same enumeration and
    * the same bag — 7.3x, with a traverser per element as the whole difference.
    */
+  /*
+   * A BARE TRAILING `aggregate(k)` (item 2070) — the barrier with nothing after it. ⚠️ `store` is NOT
+   * admitted: the stream passes through to a caller who may stop early, and `store` is lazy by
+   * contract where `aggregate` already materializes the upstream. `fusableProjectedBarrier` carries
+   * the argument. 47.14 ms fused against 165.64 generic, same 600,000 rows.
+   */
+  if (fusableProjectedBarrier(projected.rest)) {
+    const [barrier] = projected.rest;
+
+    // ⚠️ Narrowed, not cast — the gate's boolean does not carry the kind to the type system.
+    if (barrier.kind === 'aggregate') {
+      return barrierProjectedBag(projected.values, barrier.key, ctx);
+    }
+  }
+
   if (fusableProjectedBagCount(projected.rest)) {
     const [bag] = projected.rest;
 

@@ -312,6 +312,15 @@ const SHAPES = {
    */
   'sideeffect: aggregate pass-through': () => traversal(V(), out('E'), aggregate('x'), count()),
   'sideeffect: store pass-through': () => traversal(V(), out('E'), store('x'), values('n')),
+  /*
+   * ⚠️ ITEM 2070: the BARE TRAILING BARRIER, with the side effect AFTER the projection so the walk's
+   * residual is exactly ["aggregate"]. Item 2069's gate requires two residual steps and declines it.
+   * Its lazy twin is deliberately beside it: `aggregate` is an eager barrier so a drain is correct,
+   * `store` is lazy and a drain would collect what an early-exiting caller must not see.
+   */
+  'sideeffect: values then aggregate': () => traversal(V(), out('E'), values('n'), aggregate('x')),
+  'sideeffect: values then store': () => traversal(V(), out('E'), values('n'), store('x')),
+  'sideeffect: values alone': () => traversal(V(), out('E'), values('n')),
   /**
    * ⚠️ THE PATH-DEPENDENT FAMILY, which this screen never carried (item 1921). `ast.ts`'s
    * `PATH_DEPENDENT_KINDS` lists ten step kinds that make `planReadsPath` TRUE, and every fused walk

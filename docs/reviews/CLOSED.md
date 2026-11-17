@@ -102373,3 +102373,65 @@ APPENDED to. **That is the one assertion a fusion which skipped the bag entirely
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 2,649
 gremlin tests; all seven fuzzers green; 5/5 sweeps clean.
+
+## Item 2070 — ✅ **SHIPPED: a BARE TRAILING `aggregate(k)` rides the fused residual — 165.06 → 52.59 ms (3.14x), with `store` deliberately REFUSED and measured flat at 1.01x.** 🔑 The contract flips from item 2069: there `count` consumed the stream so BOTH bag steps were safe; here the stream passes through, so only the eager one is
+
+Item 2069 took `[aggregate|store, count]`. This takes `[aggregate]` — the barrier with nothing after
+it — and the asymmetry is the whole item.
+
+### 🔑 WHY `store` IS REFUSED, and why that is the opposite of item 2069
+
+| residual                   | `aggregate` | `store`        | why                                                                  |
+| -------------------------- | ----------- | -------------- | -------------------------------------------------------------------- |
+| `[bag, count]` (item 2069) | ✅ fused    | ✅ fused       | `count` consumes everything, so eager and lazy are indistinguishable |
+| `[bag]` (this item)        | ✅ fused    | ❌ **refused** | the stream passes through to a caller who may stop early             |
+
+`aggregate` is a COLLECTING BARRIER — `side-effects.ts` already materializes the entire upstream at
+that point, so a drain IS its behaviour. `store` is lazy by contract, and `hop-values.ts`'s rule is
+that "`run` stays as lazy as it was for a caller that `break`s out"; a drain would fill the bag with
+elements an early-exiting caller must never have caused to be collected. ⚠️ **`store` therefore stays
+on the generic path at ~170 ms, and that is correct rather than unfinished** — a mutant admitting it is
+CAUGHT.
+
+The shapes were found by asking what the fused walks actually leave as a residual, rather than reading
+census labels:
+
+```text
+    V().out(E).store(x).values(k)    -> walk claims the hop, rest = [store, values]   (lazy: refused)
+    V().aggregate(x).values(k)       -> no fused walk at all
+    V().out(E).values(k).aggregate(x)-> rest = [aggregate]                            ⬅ THIS ITEM
+```
+
+| row                                           | KILLED | LIVE      |           |
+| --------------------------------------------- | ------ | --------- | --------- |
+| `values(n).aggregate(x)` (target)             | 165.06 | **52.59** | **3.14x** |
+| `values(n).store(x)` — REFUSED, must not move | 170.53 | 168.40    | 1.01x     |
+| `values(n)` alone — the floor                 | 46.36  | 45.66     | 1.02x     |
+| `aggregate(x).count()` — item 2069's row      | 5.55   | 5.52      | 1.01x     |
+| `scan: values`                                | 5.54   | 5.47      | 1.01x     |
+
+⚠️ **THE RESIDUE IS THE BAG AND IT IS IRREDUCIBLE:** 52.59 against the bare walk's 45.66 is **7 ms for
+600,000 pushes, ~12 ns each.** The bag is the contract, so that is the floor for this shape.
+
+VERIFICATION. 19 tests (7 new), **8/8 mutants caught** — including `gate-admits-STORE`, which is the
+one that would silently break the laziness contract. The end-to-end test asserts the lazy/eager split
+directly: with a `limit(0)` after it, `store`'s bag holds ONE element and `aggregate`'s holds five.
+
+### ⚠️ A FUZZ SWEEP FAILED, AND IT WAS RULED OUT STRUCTURALLY RATHER THAN BY RE-RUNNING
+
+`4/5 clean, 1 failing` on `MATCH (t:T) OPTIONAL MATCH (t)-[:E]->(n WHERE ('\t\n' AND (NOT true)))`.
+Structural ruling-out, which is this repo's rule for a rare residual:
+
+1. every change in this item is in `packages/gremlin/src/executor/` plus one probe;
+2. the failing fuzzer is the **GQL** differential, and `differential-fuzz.test.ts` has **ZERO**
+   `@lenke/gremlin` imports (its two "gremlin" mentions are both comments);
+3. the divergence is already pinned in `optional-inline-predicate-divergence.test.ts`.
+
+✅ **AND IT IS A FOURTH OPERAND KIND, NOW RECORDED THERE.** The three on file —
+`date('2020-01-01')`, `atan2(n.m.k, '1e3')`, `acos(n.s)` — are all FUNCTION CALLS, so "the function
+returns the wrong type" was an available reading. 🔑 **A bare STRING LITERAL as the left conjunct of an
+`AND` removes that reading: the class is about a statically non-boolean OPERAND, whatever produces
+it.** The re-run was 5/5 clean, consistent with the recorded ~1-in-280,000 rate.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 2,661
+gremlin tests; all seven fuzzers green; 5/5 sweeps clean on the re-run.
