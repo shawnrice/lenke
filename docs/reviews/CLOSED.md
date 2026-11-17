@@ -103886,3 +103886,69 @@ standing guard that fails loudly if a future rung starts resolving ids per row.*
 
 GATES. Probe only — no engine change. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test --
 --skip-nx-cache` 21/21; `node --check` on the probe.
+
+## Item 2093 — 🔑 **A NON-MONOTONIC 12.07x in the TS CSR cache: the worst place to be is EXACTLY TWO reads per write (20.49 ms/read against one read's 6.21 and batched's 1.70).** The arming builds on the second ask and the next write discards it UNUSED. ⚠️ The TS engine does NOT have the native engine's unbounded demotion
+
+The write side had no instrument at all. The opening question was whether the TS GQL engine shares the
+native engine's documented pathology — "every adjacency write clears `csr_fresh` with nothing to re-arm
+it, so ONE `add_edge` demotes EVERY later read for the rest of the session."
+
+### ✅ IT DOES NOT, AND THE PER-READ SERIES IS THE ONLY WAY TO SEE IT
+
+Ten reads per phase at 60,000 vertices / 180,000 edges, one edge added between phases:
+
+```text
+    warm   : 26.3 42.4 0.2 0.1 0.1 0.1 0.2 0.1 0.1 0.1
+    +1 edge: 10.8 36.2 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1
+    +2 edge: 10.2 27.7 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1
+```
+
+**Exactly TWO demoted reads per write, then 0.1 ms** — `csrAskedBefore`'s second-ask arming visible as
+a step (ask 1 takes the non-CSR path, ask 2 BUILDS, the rest are cached). Bounded, unlike native's.
+
+⚠️⚠️ **EVERY MEDIAN IN THAT TABLE IS 0.1.** A median- or min-of-10 reports NO EFFECT AT ALL from a 42 ms
+rebuild. [[floor-arm-must-take-same-route]] says "min-of-N hides a second-ask arming, the per-rep
+SERIES shows it as a step" — this is that, in the one place it costs the most.
+
+### 🔑 THE HYPOTHESIS WAS WRONG IN THE USEFUL DIRECTION
+
+With one read per topology version the arming never builds, so an interleaved workload pays the
+non-CSR path every time: **78.3 ms against batched's 37.7, 2.08x** for the same 12 writes and 12 reads.
+The obvious reading is "reading twice would recover the cache". ⚠️ **It does the opposite**, and
+sweeping the ratio with the READ COUNT HELD CONSTANT shows why:
+
+| reads per write | ms/read   |                                     |
+| --------------- | --------- | ----------------------------------- |
+| 1               | 6.21      | never builds — the arming is right  |
+| **2**           | **20.49** | ⚠️ **3.3x worse than reading ONCE** |
+| 3               | 13.30     |                                     |
+| 4               | 10.24     |                                     |
+| 6               | 6.98      |                                     |
+| 12              | 3.44      |                                     |
+| 24              | 1.70      | fully amortized                     |
+
+**worst/best = 12.07x, and the curve is NON-MONOTONIC**: reading more is cheaper per read everywhere
+except the 1→2 step. At exactly two reads the build lands on the version's LAST read and is thrown away
+by the next write, so every cycle pays a full ~30 ms rebuild and amortizes none of it.
+
+⚠️ `write, verify, re-read` is a plausible real pattern, which is what makes 2 the unlucky number
+rather than a curiosity.
+
+### What the naive fix does, stated as an ARGUMENT and not a measurement
+
+Raising the arming threshold from 2 to 3 asks would take the 2-read workload off the build (≈6.2 ms a
+read instead of 20.49, 3.3x) — and would MOVE the pathology to 3 reads, which then builds on its last
+read. ⚠️ **It relocates the cliff rather than removing it**, so this is NOT presented as the fix. A real
+fix has to notice that a build was DISCARDED UNUSED and back off — adaptive-cache behaviour, which is a
+design decision rather than a tuning one, and belongs in its own item.
+
+⚠️ **This is a measurement item: nothing is changed.** The naive-fix reasoning above is unmeasured by
+construction (it needs an engine change to test), and is labelled so rather than quoted as a result.
+
+VERIFICATION OF THE INSTRUMENT. The probe asserts the reads actually OBSERVE the write — a two-hop
+count moves when an edge is added, so it requires **2 distinct answers** across the run and throws
+otherwise. Without that, a run whose reads were served entirely from a stale cache would produce the
+same timings and mean nothing.
+
+GATES. Probes only — no engine change. `bun run check` 0 read unpiped; `node --check` on both
+(`write-demotes-reads-2093.mjs`, `csr-arming-sweep-2093.mjs`).
