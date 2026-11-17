@@ -418,13 +418,53 @@ export const indexCandidates = function* (
  * choice since item 173, records its own crossover "near 3,250 of 20,000" = 16.25%, reached
  * after a plain guard measured a **3.1x REGRESSION** on an indexed-but-unselective filter.
  *
- * The value is `SEEK_MARGIN`'s 1/8 rather than this item's 0.18, deliberately: it is the one
- * threshold here that was already measured AND shipped, both numbers bracket it, and the two
- * errors are not symmetric — a wrong DECLINE costs the scan it fell back to, a wrong SEEK is
- * unbounded (5.02x at 60%, and nothing capped it before this). Re-tuning a path with a
- * documented 3.1x regression is not something to do as a side effect.
+ * ~~The value is `SEEK_MARGIN`'s 1/8 rather than this item's 0.18~~ — ⚠️ **RAISED TO 0.25 AT ITEM 2108,
+ * DERIVED RATHER THAN FITTED.** The reasoning above stands as written; what it lacked was this engine's
+ * own per-unit costs, which is how the NATIVE twin sets its number (`opt.rs`: "a scan costs 1.88 ns per
+ * node scanned and a seek 12.2 ns per row returned ... so a seek stops being worth it at 1.88/12.2 =
+ * 15.4%"). Measured the same way on the TS engine, 200,000 nodes, one fixture built twice so only the
+ * index differs:
+ *
+ * ```text
+ *                      TS          native      ratio
+ *     scan      33.64 ns/node    1.88 ns/node    18x   <- a Map walk + a property read, not a u32 compare
+ *     seek     127.61 ns/row    12.20 ns/row     10x
+ *     break-even      26.4%          15.4%
+ * ```
+ *
+ * 🔑 **THE TWO ENGINES SHOULD NOT SHARE THIS NUMBER, AND THE RATIO SAYS WHY**: the TS scan is 18x more
+ * expensive per node while its seek is only 10x more expensive per row, so its break-even is
+ * proportionally HIGHER. Native's own file already carries FOUR such constants (`_CHEAP_SCAN` 0.031,
+ * `_BOOL` 0.05, an interval one at 0.05) because a dictionary column and a bool column scan at different
+ * rates — the same discipline, applied here, gives a different number rather than the same one.
+ *
+ * ⚠️ AND A CURVE SWEEP AGREES, INDEPENDENTLY. Five values of this constant against two shapes (a plain
+ * node range — item 409's own shape — and a one-hop aggregate), 200,000 nodes, medians of 11:
+ *
+ * ```text
+ *     % of graph      plain 1/8 -> 0.25        hop 1/8 -> 0.25
+ *          14.3        5.795 -> 2.788  2.08x   57.29 -> 29.72  1.93x
+ *          16.7        5.874 -> 3.002  1.96x   58.19 -> 36.93  1.58x
+ *          20.0        5.377 -> 4.189  1.28x   60.72 -> 43.01  1.41x
+ *          25.0        5.389 -> 4.519  1.19x   62.64 -> 58.73  1.07x
+ *       28.6-50        same route both arms    same route both arms
+ * ```
+ *
+ * ⚠️ At 0.35 BOTH shapes REGRESS at 33% (0.84x and 0.79x), which is the asymmetry this file's original
+ * note warns about and the reason the value is 0.25 and not the derived 26.4%: **it stays BELOW the
+ * crossover**, so the residual error is a wrong DECLINE (bounded by the scan) rather than a wrong SEEK
+ * (unbounded). That principle is unchanged; only the number it is applied to has moved.
+ *
+ * ⚠️ **ITEM 409's ~18% IS NOW STALE, not wrong when written.** It measured seek/scan RATIOS on this
+ * engine as it then was; the unit costs above are today's, after items 2104-2107 changed what the
+ * surrounding rungs do. A ratio measured against a moving arm dates; a rate does not, which is the
+ * argument for deriving this rather than fitting it.
+ *
+ * 🔑 STILL OPEN: whether the TS engine needs native's per-COLUMN variants. It has no columnar or
+ * dictionary store — properties are plain object reads — so there may be no cheap-scan case to separate,
+ * but that is untested here rather than established.
  */
-export const SEEK_MAX_FRACTION = 1 / 8;
+export const SEEK_MAX_FRACTION = 0.25;
 
 /**
  * Below this many vertices the seek-vs-scan choice is unmeasurable, so existing behaviour

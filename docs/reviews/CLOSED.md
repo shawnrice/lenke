@@ -104746,3 +104746,89 @@ both spellings, so it is a materialization cost rather than a seed-side one.
 
 GATES. `bun run fmt` 0; `bun run check` 0 unpiped; `bun run test -- --skip-nx-cache` 21/21; 5,110 GQL
 tests; seven fuzzers green; 5/5 sweeps.
+
+## Item 2108 — ✅ **SHIPPED: `SEEK_MAX_FRACTION` 1/8 → 0.25, DERIVED from this engine's own per-unit costs rather than fitted — up to 2.08x, and every spelling of the seeded group 2.5-3.1x faster.** ⚠️ The constant's own rationale warned against re-tuning it; this is the measurement it was missing
+
+Item 2107 left `size(collect(a.n))` at 5.5x `min`. ⚠️ **IT WAS NOT A DEFECT**: sweeping the collected count
+showed `collect` LINEAR (ns/value flat at ~450-1400) and the walk dominating both folds, so the ratio is
+the job. 🔑 But the sweep exposed something else — **2x the rows for 7.8x the time, then FLAT**, which is
+a ceiling, not scaling. Narrowed in three steps, each ruling out a hypothesis:
+
+1. ⚠️ **Not the fold** — `min` showed the same cliff, so it is in the walk.
+2. ⚠️ **Not the predicate FORM** — equality on a two-valued key and a range over the same vertices read
+   0.69-1.08x of each other at nine selectivities.
+3. 🔑 **A ROUTE FLIP, confirmed against the no-index floor**: past ~25,000 of 200,000 vertices the indexed
+   cost EQUALS the scan floor (~70 ms), where the seek curve extrapolates to ~29.
+
+That is `seekIsWorthIt` declining at `SEEK_MAX_FRACTION = 1/8`.
+
+### 🔑 THE CONSTANT WAS FITTED; NATIVE'S TWIN IS DERIVED, AND THAT IS THE DIFFERENCE
+
+The TS value took `SEEK_MARGIN`'s already-shipped 1/8, bracketed by two curve measurements (~18% at item
+409, 16.25% at item 173). ⚠️ Native sets its own from first principles (`opt.rs`): _"a scan costs 1.88 ns
+per node scanned and a seek 12.2 ns per row returned ... so a seek stops being worth it at 1.88/12.2 =
+15.4%"_. Measured the same way here, one fixture built twice so only the index differs:
+
+```text
+                     TS          native      ratio
+    scan      33.64 ns/node    1.88 ns/node    18x   <- a Map walk + a property read, not a u32 compare
+    seek     127.61 ns/row    12.20 ns/row     10x
+    break-even      26.4%          15.4%
+```
+
+🔑 **The two engines should NOT share this number**, and the ratio is why: the TS scan is 18x dearer per
+node while its seek is only 10x dearer per row. ⚠️ Native's file already carries FOUR such constants
+(`_CHEAP_SCAN` 0.031, `_BOOL` 0.05, an interval 0.05) because different columns scan at different rates —
+the same discipline, applied to TS, gives a different number rather than the same one.
+
+**A five-value curve sweep on two shapes agrees independently** — a plain node range (item 409's own
+shape) and a one-hop aggregate, 200,000 nodes, medians of 11:
+
+| % of graph | plain 1/8 → 0.25        | hop 1/8 → 0.25          |
+| ---------- | ----------------------- | ----------------------- |
+| 14.3       | 5.795 → **2.788** 2.08x | 57.29 → **29.72** 1.93x |
+| 16.7       | 5.874 → **3.002** 1.96x | 58.19 → **36.93** 1.58x |
+| 20.0       | 5.377 → 4.189 1.28x     | 60.72 → 43.01 1.41x     |
+| 25.0       | 5.389 → 4.519 1.19x     | 62.64 → 58.73 1.07x     |
+| 28.6-50    | same route both arms    | same route both arms    |
+
+⚠️ **At 0.35 BOTH shapes REGRESS at 33%** (0.84x and 0.79x), which is why the value is 0.25 and not the
+derived 26.4%: it stays BELOW the crossover, so the residual error is a wrong DECLINE (bounded by the
+scan) rather than a wrong SEEK (unbounded). 🔑 **The rationale's asymmetry principle is unchanged — only
+the number it is applied to has moved.** Item 409's ~18% is stale rather than wrong: it measured ratios
+against an arm that items 2104-2107 have since changed, and a rate dates less than a ratio.
+
+### The costs, stated
+
+⚠️ **~5% on `hop2rows`**, isolated and non-overlapping over two rounds (105.7/107.1 against 101.8/101.0).
+Mechanism identified: `rangeCountCap` is `candidateCount * SEEK_MAX_FRACTION` and `countRange` is
+O(distinct values in range) bounded by that cap, so doubling the fraction walks further before stopping.
+That is the price of the better decision.
+
+⚠️ **The spelling probe flagged `SEEK: a param equality AND a second conjunct` at 3.8x, reproducibly** —
+and the probe's OWN protocol clears it. Isolated, three runs, both arms:
+
+```text
+                     clause  inline  inline  clause   spread
+    0.25               1.29    1.04    1.05    1.42    1.37x
+    1/8                3.97    3.52    3.47    4.02    1.16x
+```
+
+🔑 **Every spelling is 2.5-3.1x FASTER** and the spread stays far under the 2x threshold; the 3.8x is the
+in-process interference the probe warns about. ⚠️ The spread does widen 1.15x → 1.3x, recorded here
+rather than left for someone to rediscover.
+
+⚠️ **AND MY OWN TEST WAS WRONG BEFORE THE ENGINE WAS.** The answer-equivalence test failed with 29
+differences — all REORDERINGS (81 against 70, …), because seeking and scanning emit the same rows in a
+different order and row order is unspecified by policy. Verified the multisets identical at all nine
+selectivities, then fixed the test to compare bags, as the differential fuzzer does.
+
+**5 tests** pinning the value, the gate at the boundary (N and N-1), item 176's wider-than-bucket rule,
+answer-equivalence across the boundary as multisets, and `rangeCountCap`'s exactness argument. 🔑 **4/5
+mutants CAUGHT**, including all three fraction changes and the inversion.
+
+🔑 **STILL OPEN: whether the TS engine needs native's per-COLUMN variants.** It has no columnar or
+dictionary store, so there may be no cheap-scan case to separate — untested rather than established.
+
+GATES. `bun run fmt` 0; `bun run check` 0 unpiped; `bun run test -- --skip-nx-cache` 21/21; 5,115 GQL
+tests; seven fuzzers green; 5/5 sweeps; both spelling probes read per-arm.
