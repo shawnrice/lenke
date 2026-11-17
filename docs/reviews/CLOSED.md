@@ -105416,3 +105416,54 @@ test rather than silencing the rule.
 
 GATES. Probe only — no engine change. `bun run fmt` 0; `bun run check` 0 read unpiped; the census reports
 81 attributed shapes.
+
+## Item 2118 — ✅ **THE STARVATION IS CORRECT BY 37x: `chainFoldLevels` supersedes `hop2FoldedAggregate`, which is now DEAD BUT HARMLESS.** 🔑 **And the same run found a 27x: `RETURN DISTINCT <far prop>` over two hops costs 27x its own `count(DISTINCT)` twin for the SAME 97 values**
+
+Item 2117's revived census named `hop2FoldedAggregate` as willing-everywhere-firing-nowhere, starved by
+`chainFoldLevels`. ⚠️ **The stakes were a shipped fix**: that rung exists because item 1824 removed a
+3.8x inversion with it, so a later rung landing above could have silently undone that.
+
+🔑 **IT DID NOT — the precedence is right by a wide margin.** Both rungs are willing for
+`MATCH (a:P)-[:E]->(b)-[:E]->(c) RETURN count(DISTINCT c)`; disabling `chainFoldLevels` with
+`(false && …)` — not `undefined ?? rung(…)`, which still evaluates the call — hands the shape to
+`hop2FoldedAggregate`:
+
+```text
+    shape                      chainFoldLevels ON   OFF (1824's rung fires)
+    hop2.distinctcount                27.09 ms            1001.35      37x WORSE
+    hop2.distinctcountprop            17.84                737.05      41x
+    hop3.distinctcount (control)      28.46               3193.76     112x
+    hop2.count (control)               0.34                  0.36      flat ✓
+```
+
+⚠️ So item 1824's rung is SUPERSEDED, not starved — `chainFoldLevels`'s level recurrence avoids
+materializing the 1.8M paths its predecessor walks. 🔑 **The census's own caveat held**: a starved rung is
+a CANDIDATE, and this one priced out as a correct decision. ⚠️ It is now dead code (written, correct,
+willing, never fires, 37x worse than what does) — item 1790's `boundedTop` precedent says that is worth
+removing eventually, but removing a rung is its own item and the answers are identical either way.
+
+### 🔑 AND THE CONTROLS FOUND SOMETHING BIGGER — 27x, SAME VALUES, SAME WALK
+
+```text
+    hop2  count(DISTINCT c.n)    18.8 ms    1 row
+    hop2  RETURN DISTINCT c.n   517.5      97 rows     <- 27x for the SAME 97 distinct values
+    hop1  RETURN DISTINCT b.n    19.7      97
+    hop3  RETURN DISTINCT d.n  1610.8      97
+```
+
+⚠️⚠️ **BOTH TWO-HOP SHAPES COMPUTE THE SAME SET.** `count(DISTINCT c.n)` must build the 97 distinct
+values and then report their number; `RETURN DISTINCT c.n` builds the same 97 and returns them. The count
+is free on top of the set — so the row-returning spelling costs **27x to do strictly less**.
+
+🔑 **AND ONE HOP IS FINE (19.7), TWO IS NOT (517.5) — 26x for one more hop** on a shape whose answer is
+97 rows either way. The route explains it: `RETURN DISTINCT` at two hops is claimed by `hop2Projection`
+ALONE, while the count twin gets `chainFoldLevels`'s level recurrence. ⚠️ The neighbouring prior work is
+about other axes — item 1820/1843 gave the THREE-plus-segment rung its in-walk dedupe, items 485/486 the
+anonymous-end and rel-variable spellings, item 847 dates, and the multi-column case at depth zero is
+separately open. **The one-column two-hop row spelling against its own count twin is not among them.**
+
+⚠️ NOT BUILT. Extending the level recurrence to the rows case is a new rung or a widened gate, and it
+needs its own mutation round. Expected 517 → ~19.
+
+GATES. Probe only — no engine change (the oracle was reverted; `chainFoldLevels`'s gate verified back).
+`bun run check` 0 read unpiped; 5,087 GQL tests green.
