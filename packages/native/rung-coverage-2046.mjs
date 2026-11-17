@@ -18,7 +18,7 @@
  *     bun rung-coverage-2046.mjs        # spawns the node pass itself
  */
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -81,12 +81,25 @@ for (let i = 0; i < 1600; i += 1) {
 
 const { V, out, in_, both, values, count, hasLabel, has, order, dedupe, limit, path, optional,
   coalesce, choose, branch, identity, constant, union, groupCount, select, as_, fold, max, min,
-  sum, traversal, toArray, where, neq, gt, and, or, not } = G;
+  sum, traversal, toArray, where, neq, gt, and, or, not, aggregate, store } = G;
 
 // EVERY SHAPE RUN TWICE: the second-ask policy makes several rungs DECLINE their first call, so a
 // single pass would report them unreached when they are merely cold. (No backticks in here: this
 // text lives inside a template literal, and node --check caught the first version.)
+const failures = [];
+
 const shapes = [
+  // ⚠️ ITEM 2068: the three shapes that reach aggregateStep, which this audit had reported NEVER
+  // ENTERED. aggregate('x').cap('x') does NOT reach it -- item 1911's fused residual claims that
+  // shape whole -- so dropping the cap is the only way in. Added here as well as to both screens,
+  // because an audit that keeps reporting a gap already covered elsewhere teaches you to ignore it.
+  //
+  // ⚠️⚠️ NO BACKTICKS IN THIS LIST. It is embedded in the generated driver's TEMPLATE LITERAL, so a
+  // backtick here terminates it -- the trap items 2036, 2046 and 2049 each hit, and which this file
+  // already asserts against for the driver's own text.
+  () => traversal(V(), out('E'), aggregate('x'), count()),
+  () => traversal(V(), out('E'), store('x'), values('n')),
+  () => traversal(V(), aggregate('x'), values('n')),
   () => traversal(V(), values('n')),
   () => traversal(V(), count()),
   () => traversal(V(), hasLabel('T'), values('n')),
@@ -139,17 +152,40 @@ const shapes = [
 ];
 
 for (let pass = 0; pass < 2; pass += 1) {
-  for (const mk of shapes) {
+  for (const [i, mk] of shapes.entries()) {
     try {
       toArray(mk(), g);
-    } catch {
-      // A shape this build refuses is still a data point; the coverage is what matters.
+    } catch (e) {
+      // ⚠️⚠️ A SWALLOWED THROW USED TO BE INVISIBLE, AND THAT COST ITEM 2068 THREE RUNS. Three new
+      // shapes referenced aggregate/store, which the driver did not destructure from the
+      // namespace, so every one threw on an undefined callee -- and the audit reported the SAME
+      // "36 reached, aggregateStep NEVER ENTERED" it had before, which reads as "the shape does not
+      // reach it" rather than "the shape did not run". Item 2033's rule: an absent global and zero
+      // calls are indistinguishable unless you say which happened.
+      //
+      // A shape a BUILD refuses is still a data point, so this is not fatal -- but it is REPORTED.
+      failures.push(i + ': ' + String(e && e.message ? e.message : e));
     }
   }
 }
 
-process.stdout.write(JSON.stringify({ shapes: shapes.length }));
+process.stdout.write(JSON.stringify({ shapes: shapes.length, failures }));
 `;
+
+/*
+ * ⚠️⚠️ **THE ASSERTION THIS FILE ONLY HAD A COMMENT ABOUT (item 2068).** A backtick anywhere in the
+ * driver's text terminates the template it lives in, and the failure surfaces as a SyntaxError about
+ * whatever identifier followed it — nothing that names the real cause. The trap has now fired at
+ * items 2036, 2046, 2049 and TWICE inside 2068, the second time in a comment warning about it. Item
+ * 2046's entry says this probe "now asserts no backtick survives", but the file carried only a prose
+ * note; this is the assertion.
+ */
+if (driver.includes('\u0060')) {
+  throw new Error(
+    'a BACKTICK survives inside the generated driver — it would terminate the template and the error ' +
+      'would name an unrelated identifier. Rewrite the offending comment or string without one.',
+  );
+}
 
 const dir = mkdtempSync(join(tmpdir(), 'rungcov-'));
 const driverPath = join(HERE, 'rung-coverage-driver-2046-tmp.mjs');
@@ -162,12 +198,39 @@ writeFileSync(driverPath, driver);
  * with a node-only env var and reported "no coverage recorded", which reads like a broken facility
  * rather than the wrong interpreter.
  */
-const out = execFileSync('node', [driverPath], {
-  env: { ...process.env, NODE_V8_COVERAGE: dir },
-  encoding: 'utf8',
-});
+/*
+ * ⚠️⚠️ THE DRIVER IS DELETED IN A `finally`, AND IT WAS NOT (item 2068). It is written into THIS
+ * directory rather than the temp dir — deliberately, so `@lenke/gremlin` resolves — and nothing
+ * removed it, so every run of this probe left a generated file in the repo that `bun run lint` then
+ * failed on (`prefer-template`, four times). A probe that breaks the gate after it runs is a probe
+ * nobody runs twice.
+ */
+let out;
 
-const shapeCount = JSON.parse(out).shapes;
+try {
+  out = execFileSync('node', [driverPath], {
+    env: { ...process.env, NODE_V8_COVERAGE: dir },
+    encoding: 'utf8',
+  });
+} finally {
+  rmSync(driverPath, { force: true });
+}
+
+const driverResult = JSON.parse(out);
+const shapeCount = driverResult.shapes;
+
+/*
+ * ⚠️⚠️ A SHAPE THAT THREW IS REPORTED, NOT SWALLOWED (item 2068). Three shapes referencing
+ * `aggregate`/`store` threw on an undefined callee because the driver did not destructure them, and
+ * the audit reported the same "NEVER ENTERED" as before — indistinguishable from the shape genuinely
+ * not reaching the rung. This makes the two cases different on the page.
+ */
+if (driverResult.failures !== undefined && driverResult.failures.length > 0) {
+  console.log(
+    `\n  ⚠️ ${String(driverResult.failures.length)} shape(s) THREW and reached nothing — a coverage ` +
+      `gap below may be this, not the rung:\n    ${driverResult.failures.join('\n    ')}`,
+  );
+}
 
 /** V8 writes one or more coverage files; find the gremlin dist's entry in whichever has it. */
 const entries = readdirSync(dir)

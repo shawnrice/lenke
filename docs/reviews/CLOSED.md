@@ -102230,3 +102230,84 @@ retired: the 27% profile share, the 1.69x ceiling and the specialization that wo
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `hop2-projection.ts` byte-identical to HEAD
 (`git diff --stat` empty). Probe and harness only; no engine change.
+
+## Item 2068 — ✅ **THE CENSUS HAD NO CANDIDATES LEFT, SO IT WAS WIDENED BY COVERAGE — and the first rung it exposed is a 7.3x: `aggregate('x').count()` costs 22.4 ms where `aggregate('x').cap('x')` costs 3.0 for the SAME enumeration and the SAME bag**
+
+After item 2061 every one of the census's 14 generic rows is accounted for: the `limit` family closed
+at item 1660 ("TINY", 0.073 ms), the `exist:` family at 2046/2047 (whose census label is a known
+artifact — the fusion lives INSIDE the `and` step, so dispatch count is the signal there), the `ded:`
+rows closed as lazy/degenerate or declined at 1.3-1.8x, `agg: hop values sum` refused for
+byte-identity, `edgef: bothE has otherV count` refused at item 1882, and `scan: where values count`
+SHIPPED at 2061. **A target-finder with nothing left to find is an instrument to widen, not a signal to
+re-read.**
+
+### Widening by RUNG COVERAGE rather than by guessing shapes
+
+`rung-coverage-2046.mjs`: **36 of 40 exported rungs reached.** Of the four misses, three are
+graph-algorithm steps (`pageRankStep`, `connectedComponentStep`, `peerPressureStep`) which have their
+own bench. The fourth, **`aggregateStep`, is a TRAVERSAL step** — and both screens already carried
+`aggregate('x').cap('x')` rows, which do NOT reach it: item 1911's fused residual claims that shape
+whole, so the generic pass-through step was dead in every benchmark here.
+
+🔑 **DROPPING THE `cap` IS WHAT EXPOSED IT**, and the census shows the disagreement immediately:
+
+```text
+    SHORTCUT  list: hop aggregate cap        0 applyStep call(s)
+    SHORTCUT  list: hop store cap            0
+    generic   list: hop aggregate count      2   [aggregate count]
+    generic   list: hop store values         2   [store values]
+    generic   list: scan aggregate values    2   [aggregate values]
+```
+
+### The price, and why the obvious baseline is the WRONG one
+
+| row                                               | ms                        | rows |
+| ------------------------------------------------- | ------------------------- | ---- |
+| `V().out(E).aggregate(x).cap(x)` — FUSED          | **3.08 / 2.96 / 3.04**    | 1    |
+| `V().out(E).aggregate(x).count()` — generic       | **22.37 / 22.16 / 22.44** | 1    |
+| `V().hasLabel(T).out(E).count()` — no side effect | 0.01                      | 1    |
+
+⚠️ **THE 0.01 ms ROW IS NOT THE BASELINE, AND USING IT WOULD HAVE MANUFACTURED A 2,200x.** A plain hop
+count is answered in CLOSED FORM from bucket sizes, so it never enumerates; `aggregate` must visit
+every element to push it into the bag, and 22.4 against 0.01 is the side effect being REAL work, not a
+gap. **The honest comparison is the `cap` sibling, which enumerates exactly the same elements and
+pushes into the same bag — and is 7.3x cheaper.** Stable across three rounds, one row per process.
+
+**NOMINATED:** an `aggregate`/`store` arm on the residual path that does not require a trailing `cap`.
+The fused `cap` walk already proves the enumeration can be done at 3 ms; the pass-through form pays a
+traverser per element for a side effect that needs none.
+
+⚠️ **NOT ESTABLISHED: the `store` figure.** `V().out(E).store(x).values(n)` reads **178.75 / 181.88
+ms**, but its tail emits 200,000 rows where the aggregate rows emit 1, so it has no comparable sibling
+here and its number is reported, not priced. A baseline for it is part of the build item, not this one.
+
+### ⚠️⚠️ FOUR INSTRUMENT FAULTS FOUND AND FIXED ON THE WAY, three of them silent
+
+1. **`rung-coverage-2046.mjs` NEVER DELETED ITS GENERATED DRIVER.** It writes
+   `rung-coverage-driver-2046-tmp.mjs` into the package directory (deliberately, so `@lenke/gremlin`
+   resolves) and nothing removed it — so every run of the audit left a file that `bun run lint` then
+   failed on, four times over, with `prefer-template`. **A probe that breaks the gate after it runs is
+   a probe nobody runs twice.** Now unlinked in a `finally`.
+2. ⚠️⚠️ **THE AUDIT SILENTLY SWALLOWED A THROWING SHAPE.** My three new shapes referenced
+   `aggregate`/`store`, which the DRIVER did not destructure from the namespace, so each threw on an
+   undefined callee — and the audit reported the SAME "36 reached, `aggregateStep` NEVER ENTERED" as
+   before. That reads as "the shape does not reach the rung" when the truth was "the shape did not
+   run" — item 2033's rule, that an absent global and zero calls are indistinguishable unless you say
+   which happened. It now REPORTS them, and the reporting was proven by injecting a thrower.
+3. ⚠️⚠️ **BACKTICKS TERMINATED THE DRIVER TEMPLATE — TWICE IN THIS ITEM**, the second time inside a
+   comment warning about backticks. Item 2046's entry claims this probe "now asserts no backtick
+   survives"; the file carried only a prose note. **There is now an actual assertion**, written with a
+   `\u0060` escape so the guard cannot break the file it guards, and proven by injecting one. That
+   trap has fired at items 2036, 2046, 2049 and twice here.
+4. **`store` was not imported in the workload screen**, which THREW rather than skipping — the one
+   fault that was loud. ⚠️ My own output extraction then turned that stack trace into a
+   plausible-looking number (`store pass-through=at`), which is why the fix was to read the raw output
+   instead of trusting the pipeline.
+
+⚠️ **COVERAGE IS NOW 37 OF 40**, the remaining three being `pageRankStep`,
+`connectedComponentStep` and `peerPressureStep` — graph-algorithm steps with their own bench, not
+traversal-census gaps.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
+`node --check` on all three touched probes, and both new guards proven by mutation. Three census rows,
+two workload rows and three coverage shapes added; no engine change.

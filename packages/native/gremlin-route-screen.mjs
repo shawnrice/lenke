@@ -154,6 +154,16 @@ const SHAPES = {
   'list: hop values fold': "traversal(V(), out('E'), values('k'), fold())",
   'list: hop aggregate cap': "traversal(V(), out('E'), aggregate('x'), cap('x'))",
   'list: hop store cap': "traversal(V(), out('E'), store('x'), cap('x'))",
+  /*
+   * ⚠️ ADDED AT ITEM 2068 BECAUSE `aggregateStep` WAS NEVER ENTERED. `rung-coverage-2046.mjs` reports
+   * 36 of 40 rungs reached; of the four misses, three are graph-algorithm steps with their own bench,
+   * and this one is a TRAVERSAL step. The `+ cap` rows above do not reach it: item 1911's fused
+   * residual claims that whole shape, so the generic step is dead in the census. These rows drop the
+   * `cap`, which the fusion cannot claim — a pass-through side effect.
+   */
+  'list: hop aggregate count': "traversal(V(), out('E'), aggregate('x'), count())",
+  'list: hop store values': "traversal(V(), out('E'), store('x'), values('k'))",
+  'list: scan aggregate values': "traversal(V(), aggregate('x'), values('k'))",
   'list: hop count': "traversal(V(), out('E'), count())",
 
   // ⚠️ THE DEDUPED-VALUES FAMILY, added at item 1899, and the rows exist because that item's bug was

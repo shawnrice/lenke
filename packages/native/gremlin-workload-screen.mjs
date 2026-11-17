@@ -77,6 +77,7 @@ import {
   union,
   V,
   valueMap,
+  store,
   values,
   where,
   within,
@@ -304,6 +305,13 @@ const SHAPES = {
   'page: range mid': () => traversal(V(), out('E'), values('n'), range(1000, 1010)),
   'dedupe: by key': () => traversal(V(), out('E'), dedupe().by('n'), values('n')),
   'sideeffect: aggregate + cap': () => traversal(V(), out('E'), aggregate('x'), cap('x')),
+  /*
+   * ⚠️ ITEM 2068: the rows that actually reach `aggregateStep`. The `+ cap` row above does not —
+   * item 1911's fused residual claims it whole — so the generic pass-through step had no bench row
+   * at all. Dropping the `cap` is what exposes it.
+   */
+  'sideeffect: aggregate pass-through': () => traversal(V(), out('E'), aggregate('x'), count()),
+  'sideeffect: store pass-through': () => traversal(V(), out('E'), store('x'), values('n')),
   /**
    * ⚠️ THE PATH-DEPENDENT FAMILY, which this screen never carried (item 1921). `ast.ts`'s
    * `PATH_DEPENDENT_KINDS` lists ten step kinds that make `planReadsPath` TRUE, and every fused walk
