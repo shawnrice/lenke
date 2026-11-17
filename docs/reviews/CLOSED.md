@@ -102311,3 +102311,65 @@ traversal-census gaps.
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
 `node --check` on all three touched probes, and both new guards proven by mutation. Three census rows,
 two workload rows and three coverage shapes added; no engine change.
+
+## Item 2069 — ✅ **SHIPPED: `aggregate(k).count()` / `store(k).count()` ride the fused residual — 22.36 → 5.49 ms (4.07x) with controls flat.** 🔑 Item 1909's refusal of the pass-through form is REAL and does not bind here, because `count` is a NON-CANCELLING FULL CONSUMER
+
+Item 2068 priced this at 7.3x against its `cap` sibling. ⚠️ **AND THE CODE REFUSED IT ON CONTRACT, NOT
+SPEED** — `index.ts`, verbatim: _"a side effect that also PASSES THE STREAM THROUGH is a different emit
+contract from a barrier that replaces it, and `aggregate` and `store` differ from each other on
+eagerness in TinkerPop. One question at a time."_ My nomination had not weighed that, so the first
+thing this item did was read it.
+
+### 🔑 Why the refusal does not bind under `count`
+
+Both halves of it are true. The engine implements the barrier faithfully — `aggregateStep` with
+`eager: true` materializes the ENTIRE upstream at that point so a later `limit(0)` cannot cancel the
+collection, while `store` stays lazy — and `projected-fold.test.ts` pins where that is observable:
+
+```text
+    V().out(E).aggregate(x).limit(0).cap(x)   ->  5 elements   (the barrier collected first)
+    V().out(E).store(y).limit(0).cap(y)       ->  1            (pulled once, then rejected)
+```
+
+**`count()` never rejects a traverser.** It consumes the whole stream, so eager and lazy collection
+reach the same bag and the same number — the distinction is unobservable exactly here, and
+`fusableProjectedBagCount` is gated to `rest.length === 2` with a GLOBAL `count` so it cannot reach the
+shapes above. ⚠️ `count(local)` is excluded too: it counts WITHIN each element, a different question.
+
+⚠️⚠️ **THE BAG IS STILL FILLED, IDENTICALLY — the fusion is NOT licensed to skip it.** `ast.ts` exposes
+`sideEffects` to expression evaluation, so a bag is observable in general even though this shape's query
+never reads it. Threading `ctx` through `fusedProjectedResidual` and three helpers was the cost of not
+weakening that; those helpers now take `ctx` instead of a bare `tracksPath`, because two parameters
+carrying one context is how they drift apart.
+
+| row                                         | KILLED | LIVE     |           |
+| ------------------------------------------- | ------ | -------- | --------- |
+| `aggregate(x).count()` (target)             | 22.36  | **5.49** | **4.07x** |
+| `aggregate(x).cap(x)` — the fused sibling   | 2.87   | 2.86     | 1.00x     |
+| `store(x).values(n)` — declines, 180 ms row | 177.23 | 182.36   | 0.97x     |
+| `scan: values`                              | 5.82   | 5.51     | 1.06x     |
+| `hop1: values`                              | 42.55  | 42.83    | 0.99x     |
+| `scan: count`                               | 0.00   | 0.00     | flat      |
+
+⚠️ **4.07x, NOT ITEM 2068's 7.3x**, and the gap is honest: the fused form still pushes 200,000 values
+into the bag, where the `cap` sibling folds them straight into its one row. The bag is the contract, so
+that difference is not recoverable. ⚠️ A `scan: values` control first read 0.88x; three pairs at 15 reps
+put it at 1.06x.
+
+VERIFICATION. 12 tests, **8/8 mutants caught** — after two survived:
+
+- ⚠️ **`gate-admits-any-bag-step` survived because the CALL SITE independently narrows** before reading
+  `bag.key`, so removing the gate's own check changed no answer. That is defence in depth worth
+  keeping, but it left the gate's contract untested; a direct assertion now covers it.
+- ⚠️ **`drain-arm-never-taken` is retired as ANSWER-EQUIVALENT** with the reason recorded next to it:
+  both arms produce the same bag and count, and which is faster is the per-walk question item 2062
+  settled (`countIterable` won on one row, lost ~3x on two others). The no-drain arm is covered by a
+  unit test, so it is not dead code.
+
+⚠️ And one test in this file originally promised "the engine-level test below" checks the fused bag,
+when no such test existed. The fused two-step shape has NO reader for its bag, so
+`countProjectedBag` is now asserted DIRECTLY — contents, order, and that an existing bucket is
+APPENDED to. **That is the one assertion a fusion which skipped the bag entirely would have passed.**
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 2,649
+gremlin tests; all seven fuzzers green; 5/5 sweeps clean.

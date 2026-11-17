@@ -24,11 +24,13 @@ import {
 import { tagsObservedFrom } from '../ast.js';
 import type { Plan, Step } from '../ast.js';
 import {
+  countProjectedBag,
   countProjectedWalk,
   foldProjectedList,
   foldProjectedMinMax,
   fusableProjectedAggregate,
   fusableProjectedBagCap,
+  fusableProjectedBagCount,
   fusableProjectedCount,
   fusableProjectedFold,
   fusableProjectedOrder,
@@ -2632,7 +2634,9 @@ const fusedHopChainGroupCount = (
 const labelSeededFusionFor = (
   residual: Iterable<unknown> | undefined,
   seeded: { stream: Iterable<{ value: unknown }>; steps: readonly Step[] } | null,
-  tracksPath: boolean,
+  // ⚠️ `ctx` RATHER THAN `tracksPath` (item 2069) — same reason as `valuesFromIndexOrScan`: the
+  // residual needs the side-effect bag, and two parameters carrying one context drift apart.
+  ctx: RunContext,
   effective: Plan,
 ): Iterable<unknown> | undefined => {
   /*
@@ -2648,7 +2652,9 @@ const labelSeededFusionFor = (
   }
 
   const fused =
-    seeded === null ? undefined : labelSeededValuesFusion(seeded.stream, seeded.steps, tracksPath);
+    seeded === null
+      ? undefined
+      : labelSeededValuesFusion(seeded.stream, seeded.steps, ctx.tracksPath);
 
   if (fused === undefined) {
     return undefined;
@@ -2665,12 +2671,19 @@ const labelSeededFusionFor = (
    * 2037 already spent three attempts discovering that an extra `if` or even a `??` out there costs
    * one point each.
    */
-  return fused.rest.length === 0 ? fused.values : fusedProjectedResidual(fused, effective);
+  return fused.rest.length === 0 ? fused.values : fusedProjectedResidual(fused, effective, ctx);
 };
 
 const fusedProjectedResidual = (
   projected: HopValues,
   effective: Plan,
+  /*
+   * ⚠️ `ctx` IS HERE ONLY FOR THE SIDE-EFFECT BAG (item 2069). The `aggregate`/`store` + `count` arm
+   * must populate the bag identically to the generic path — `ast.ts` exposes `sideEffects` to
+   * expression evaluation, so a bag is observable in general and this fusion is not licensed to skip
+   * it. Threading one parameter was the cost of not weakening that.
+   */
+  ctx: RunContext,
 ): Iterable<unknown> | undefined => {
   /**
    * ONE ORDER-INVARIANT AGGREGATE, FOLDED IN PLACE — item 1857. Measured at 50,000 vertices x
@@ -2738,6 +2751,29 @@ const fusedProjectedResidual = (
    */
   if (fusableProjectedBagCap(projected.rest)) {
     return foldProjectedList(projected.values);
+  }
+
+  /*
+   * `aggregate(k).count()` / `store(k).count()` (item 2069). ⚠️ ITEM 1909's REFUSAL OF THE
+   * PASS-THROUGH FORM DOES NOT BIND UNDER `count`, because `count` is a NON-CANCELLING full consumer
+   * and the eagerness difference it names is observable only when something stops the stream early.
+   * `fusableProjectedBagCount` carries the argument; `projected-fold.test.ts` pins the shape where it
+   * WOULD bind (`aggregate(x).limit(0).cap(x)` = 6 against `store(y).limit(0).cap(y)` = 1).
+   *
+   * Item 2068 measured the gap: 22.4 ms against the `cap` sibling's 3.0 for the same enumeration and
+   * the same bag — 7.3x, with a traverser per element as the whole difference.
+   */
+  if (fusableProjectedBagCount(projected.rest)) {
+    const [bag] = projected.rest;
+
+    /*
+     * ⚠️ NARROWED, NOT CAST. `fusableProjectedBagCount` has already established that this step is an
+     * `aggregate` or a `store`, both of which carry a `key` — but the gate's boolean return does not
+     * carry that to the type system, and a cast here would survive the gate being widened later.
+     */
+    if (bag.kind === 'aggregate' || bag.kind === 'store') {
+      return countProjectedBag(projected.values, bag.key, ctx);
+    }
   }
 
   // A RESIDUAL THAT IS ONLY A GLOBAL `order()` IS SORTED IN PLACE (item 1630), instead of wrapping
@@ -2887,18 +2923,21 @@ const fusedProjectedValues = (
 const valuesFromIndexOrScan = (
   effective: Plan,
   graph: Graph,
-  tracksPath: boolean,
+  // ⚠️ `ctx` RATHER THAN `tracksPath` (item 2069): the residual below needs the side-effect bag, and
+  // two parameters carrying the same context is how they drift apart.
+  ctx: RunContext,
 ): NodeValues | undefined =>
-  tracksPath
+  ctx.tracksPath
     ? undefined
     : (seededNodeValuesShortcut(effective, graph) ?? unindexedHasValuesShortcut(effective, graph));
 
 const scanResidualWalk = (
   effective: Plan,
   graph: Graph,
-  tracksPath: boolean,
+  // ⚠️ `ctx` RATHER THAN `tracksPath` (item 2069), same reason as its two siblings.
+  ctx: RunContext,
 ): Iterable<unknown> | undefined => {
-  if (tracksPath) {
+  if (ctx.tracksPath) {
     return undefined;
   }
 
@@ -2916,7 +2955,7 @@ const scanResidualWalk = (
     // (item 2061). It is gated to a `count` residual alone, so it cannot shadow either sibling.
     scanWhereHasKeyCountResidual(effective, graph);
 
-  return scanned === undefined ? undefined : fusedProjectedResidual(scanned, effective);
+  return scanned === undefined ? undefined : fusedProjectedResidual(scanned, effective, ctx);
 };
 
 export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
@@ -3031,8 +3070,7 @@ export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
    * `scanValuesShortcut` by construction: it returns `undefined` unless there IS a residual.
    */
   const nodeValues =
-    scanValuesShortcut(effective, graph, ctx.tracksPath) ??
-    scanResidualWalk(effective, graph, ctx.tracksPath);
+    scanValuesShortcut(effective, graph, ctx.tracksPath) ?? scanResidualWalk(effective, graph, ctx);
 
   if (nodeValues !== undefined) {
     return nodeValues;
@@ -3061,7 +3099,7 @@ export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
   // `tracksPath` gates it for the same reason, and the same caveat applies: the shape list it
   // admits contains nothing path-dependent, so a mutant deleting the guard survives — it is the
   // SHORTCUT'S CONTRACT, not a statement about today's shapes.
-  const seededValues = valuesFromIndexOrScan(effective, graph, ctx.tracksPath);
+  const seededValues = valuesFromIndexOrScan(effective, graph, ctx);
 
   if (seededValues !== undefined) {
     return seededValues;
@@ -3184,7 +3222,7 @@ export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
   // ⚠️ BEFORE the `seedFromIndex` / residual path below, and the ordering matters: the generic
   // residual route is what this replaces, so a later placement would never be reached.
   const residual =
-    projected === undefined ? undefined : fusedProjectedResidual(projected, effective);
+    projected === undefined ? undefined : fusedProjectedResidual(projected, effective, ctx);
 
   // If the plan opens `V()`/`E()` + a seedable `has` on an indexed key, seed
   // from the index and apply only the residual steps; otherwise scan as usual.
@@ -3204,7 +3242,7 @@ export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
    * `seeded` is `null` in exactly that case — so whenever the residual wins, the label fusion was
    * handed a null seed and declined without work.
    */
-  const fused = labelSeededFusionFor(residual, seeded, ctx.tracksPath, effective);
+  const fused = labelSeededFusionFor(residual, seeded, ctx, effective);
 
   if (fused !== undefined) {
     return fused;

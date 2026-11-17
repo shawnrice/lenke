@@ -335,6 +335,72 @@ export const fusableProjectedFold = (rest: readonly Step[]): boolean => {
  * steps and the two in `rest` are the only ones that can touch `ctx`. A second `aggregate('x')`
  * earlier would make `cap` yield the CONCATENATION, and there is no room for one.
  */
+/**
+ * `aggregate(k).count()` / `store(k).count()` over a fused walk (item 2069).
+ *
+ * ⚠️⚠️ **ITEM 1909 REFUSED THE PASS-THROUGH FORM ON A CONTRACT ARGUMENT, AND THAT ARGUMENT DOES NOT
+ * BIND UNDER `count`.** Its reason, quoted from `index.ts`: "a side effect that also PASSES THE
+ * STREAM THROUGH is a different emit contract from a barrier that replaces it, and `aggregate` and
+ * `store` differ from each other on eagerness in TinkerPop."
+ *
+ * 🔑 **BOTH HALVES OF THAT ARE TRUE AND NEITHER IS OBSERVABLE HERE, because `count()` is a
+ * NON-CANCELLING FULL CONSUMER.** The eagerness difference becomes visible only when something
+ * downstream stops the stream early — `projected-fold.test.ts` pins exactly that shape, where
+ * `aggregate(x).limit(0).cap(x)` yields 6 and `store(y).limit(0).cap(y)` yields 1. A `count` never
+ * rejects a traverser, so eager and lazy collection reach the same bag and the same number.
+ *
+ * ⚠️ **THE BAG IS STILL POPULATED, IDENTICALLY.** `ast.ts` exposes `sideEffects` to expression
+ * evaluation, so a bag is observable in general; this fusion is NOT licensed to skip it just because
+ * this shape's query never reads it. Same contents, same order, same eagerness — only the traverser
+ * per element goes.
+ *
+ * ⚠️ `cap` IS NOT ADMITTED HERE and `count` is not admitted by {@link fusableProjectedBagCap}: the
+ * two arms are disjoint by their second step, so neither can shadow the other.
+ */
+export const fusableProjectedBagCount = (rest: readonly Step[]): boolean => {
+  if (rest.length !== 2) {
+    return false;
+  }
+
+  const [bag, counted] = rest;
+
+  if (bag.kind !== 'aggregate' && bag.kind !== 'store') {
+    return false;
+  }
+
+  /*
+   * ⚠️ A GLOBAL `count()` ONLY. `count(local)` counts WITHIN each element rather than the stream, so
+   * it is a different question and must not reach a drain of the whole walk.
+   */
+  return counted.kind === 'count' && !('scope' in counted && counted.scope === 'local');
+};
+
+/**
+ * The drained walk pushed into the side-effect bag, answered as its LENGTH (item 2069).
+ *
+ * ⚠️ THE BAG IS FILLED BEFORE THE COUNT IS RETURNED, in walk order, which is what makes this
+ * answer-identical to the generic path rather than merely equal in the number.
+ */
+export const countProjectedBag = (
+  values: HopWalk,
+  key: string,
+  ctx: { readonly sideEffects: Map<string, unknown[]> },
+): unknown[] => {
+  const drained = values.drain === undefined ? [...values] : values.drain();
+
+  if (!ctx.sideEffects.has(key)) {
+    ctx.sideEffects.set(key, []);
+  }
+
+  const bucket = ctx.sideEffects.get(key)!;
+
+  for (const value of drained) {
+    bucket.push(value);
+  }
+
+  return [drained.length];
+};
+
 export const fusableProjectedBagCap = (rest: readonly Step[]): boolean => {
   if (rest.length !== 2) {
     return false;
