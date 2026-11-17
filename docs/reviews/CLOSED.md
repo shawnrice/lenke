@@ -103160,3 +103160,87 @@ fix is a LINE-ANCHORED match (`(?m)^MUTANTS=\($`) with an asserted count of 1, w
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped (two lints fixed: `prefer-destructuring`, an
 unnecessary `!`); `bun run test -- --skip-nx-cache` 21/21; 2,722 gremlin tests; all seven fuzzers green;
 5/5 sweeps clean. Both mutation rounds re-run AFTER the lint fix changed an anchor.
+
+## Item 2083 — ❌ **The binding ROUND TRIP is 3.7% and REFUTED. 🔑 But the same floor CORRECTS item 2077: `sum`'s array MATERIALIZATION is 4x the three passes it priced, and a streaming fold is byte-identical after all** — priced, designed, not built
+
+Items 2080-2082 took the Gremlin scan-projection gaps. This tick profiled GQL, which had no new
+instrument since item 2077. ⚠️ **Four CPU profiles were thrown away first** — `SHAPE=` is not an env
+var (it is `argv[2]`), so three "different" shapes all profiled `hopfilter`; and at 30 reps the FIXTURE
+BUILD was a third of the samples (`indexEdgeLabel`, `commitElementLabels`, `#commitNormalized`). At 600
+reps the build frames drop under 2% and the profile means something.
+
+### What the frames actually say
+
+```text
+    hop2distinct   56.6%  the FUSED two-hop walk itself   <- already on a fast rung; not a target
+    scalaraggs     30.4%  scanAggregates' row loop
+                   16.9%  aggregateOverValues
+                   10.8%  the compiled `prop` closure
+                   10.3%  propOf
+```
+
+### ❌ REFUTED: the binding round trip (3.7%)
+
+`scanAggregates` holds `v`, does `binding.set(sv, v)`, and the accumulator's closure immediately does
+`env.binding.get(variable)` to pull the same vertex back out. Priced by hand, 200,000 rows, medians of
+14, two rounds, **every arm asserted to the same sum**:
+
+| arm                                    | median | over floor |
+| -------------------------------------- | ------ | ---------- |
+| loop + direct read (THE CONTROL)       | 0.299  | —          |
+| closure, no Map                        | 0.482  | 0.183      |
+| Map **set**, closure reads the element | 1.088  | 0.789      |
+| set **+ get** (what the engine does)   | 1.139  | 0.840      |
+
+🔑 **THE `get` I NOMINATED COSTS 0.05 ms — the `set` costs 0.6.** The whole round trip is 4.2 ns a row
+against `aggsum`'s measured 38.8, so **3.7%**. ⚠️ This is a DIFFERENT site from the matcher's binding
+that [[binding-allocation-is-closed]] refused at items 2023/2024 — but it arrives at the same place,
+and the useful correction is that the read side was never the cost at either.
+
+### 🔑 CORRECTION TO ITEM 2077: the PUSH is 4x the PASSES
+
+`sum` is not a fold — `state[i].push(value)` materializes every value, then `aggregateOverValues` runs
+`some(isTemporal)`, `some(Array.isArray)` and `reduce`. **Item 2077 priced those three passes at 0.773
+ms, found them small, and put the money in "per-vertex VALUE EXTRACTION".** The passes are indeed small;
+the array is not:
+
+| arm                      | median | over floor |
+| ------------------------ | ------ | ---------- |
+| floor                    | 0.281  | —          |
+| streaming fold, no array | 0.347  | 0.066      |
+| **push only**            | 1.392  | **1.111**  |
+| push + the three passes  | 1.663  | 1.382      |
+
+So push-then-pass is **4.79x** a streaming fold, and **80% of that is the push** (1.111 of 1.382). Item
+2077's conclusion about the passes stands; its attribution does not.
+
+⚠️⚠️ **AND THE BYTE-IDENTITY OBJECTION DOES NOT APPLY.** `aggregateOverValues`'s own comment says a
+hand-written streaming fold "could not even be written — the operation is chosen by looking at the WHOLE
+collection", and `ORDER_INVARIANT_AGGREGATES` excludes `sum` because f64 addition is order-sensitive in
+the last ulp. **But a stream fold would add in SCAN ORDER, which is exactly the order the array is
+reduced in** — so the sum is bit-for-bit the same. The real blocker is only the temporal/array
+detection, and `graph.vertices` is re-iterable, so a numeric fast arm that bails to the collecting path
+on the first non-number is available. ⚠️ Priced at **14% of `aggsum`** — above the noise floor, below
+what justifies touching this path without a shape that needs it. NOT BUILT; the pricing is the
+deliverable.
+
+### ⚠️ A NUMBER THAT LOOKS BACKWARDS AND IS NOT
+
+| shape                       | ms/rep at 200,000 | per aggregate |
+| --------------------------- | ----------------- | ------------- |
+| `aggsum` — ONE non-foldable | 7.76              | 7.76          |
+| `aggminmax` — TWO foldable  | **9.62**          | 4.81          |
+| `scalaraggs` — FOUR mixed   | 24.4              | 6.1           |
+
+The foldable-only shape is SLOWER per QUERY than the non-foldable one, which reads as a refutation of
+the push and is not: it has twice the aggregates, and per aggregate the fold is 1.6x cheaper. ⚠️ Quoting
+either figure without the other inverts the conclusion.
+
+**And ~70% of `aggsum`'s 38.8 ns a row is explained by NEITHER term** — not the binding (4.2), not the
+push (5.5), not the passes (1.4). It is 5.09x a hand floor doing the same push and the same three
+passes, and that residue is the honest open question this item leaves. ⚠️ Item 2076's "one sum is 2.04x
+its hand floor" is a DIFFERENT floor from this one; both cannot be the same quantity, and this entry's
+floor is the one with its arms asserted equal.
+
+GATES. Measurement only — no engine change. `bun run check` 0 read unpiped; `node --check` on both new
+probes.
