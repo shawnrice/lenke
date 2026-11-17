@@ -312,6 +312,25 @@ export const detectChainStarCount = (
     return null;
   }
 
+  /*
+   * ⚠️⚠️ **TWO SEGMENTS MINIMUM, AND ONE SEGMENT WAS TRIED AND REFUTED (item 2088).** `hopall`
+   * (`MATCH (a:P)-[:E]->(b:P) RETURN count(*)`) is a 5.35x MIXED-mode cliff whose profile is 55% label
+   * test, so a one-level recurrence looked like the same win this rung took for two hops. Measured at
+   * 100,000 vertices, MIXED, both arms asserted to the same answer:
+   *
+   * ```text
+   *     FANOUT    recurrence   per-edge tally
+   *       1          8.80          4.22        <- tally wins 2.09x
+   *       3          9.80          7.58        <- tally wins 1.29x
+   *       6         12.23         13.08        <- recurrence wins 1.07x
+   * ```
+   *
+   * 🔑 **THE RECURRENCE'S ADVANTAGE IS ABOUT HOP COUNT, NOT LABELS.** A per-edge tally over k hops
+   * walks every PATH, which is superlinear in k; the recurrence is O(k·(|V|+|E|)). At ONE hop the
+   * tally is already linear, so there is nothing to beat — and the recurrence additionally pays two
+   * `Float64Array` allocations and two full |V| mask passes, which at FANOUT=1 is the SAME number of
+   * label tests the tally does per endpoint. It only pulls ahead past FANOUT≈6 and then by 1.07x.
+   */
   const shape = chainShapeOf(m);
 
   if (shape === null) {

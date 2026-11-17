@@ -103570,3 +103570,53 @@ this rung does not cover (it needs 2+ segments).
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 5,033
 GQL tests; all seven fuzzers green; 5/5 sweeps clean.
+
+## Item 2088 — ❌ **REFUTED: a ONE-segment level recurrence for `hopall` — 2.09x SLOWER at the default fanout, and it only wins past FANOUT≈6 by 1.07x.** 🔑 The recurrence's advantage is about HOP COUNT, not labels, and item 2087's win is therefore not extensible downward
+
+Item 2087 left `hopall` (`MATCH (a:P)-[:E]->(b:P) RETURN count(*)`) as the largest remaining MIXED
+cliff. Measured isolated at 200,000: **1.17 ms/rep vacuous against 6.26 real — 5.35x** — and the
+profile says it is the same term item 2087 took:
+
+```text
+    23.7%  get soleLabel     }
+    14.5%  matchesLabel      }  ~55% of the query, after discounting ~30% fixture-build frames
+```
+
+So a ONE-level recurrence looked like the same win, admitted by parameterizing `chainShapeOf`'s
+minimum (⚠️ parameterized rather than copied, because this module's header says "ONE READER … two
+copies of one shape rule is how the far endpoint ended up on a per-edge tally").
+
+### ⚠️ IT REGRESSED THE COMMON CASE 2.09x
+
+100,000 vertices, MIXED, both arms asserted to the same answer:
+
+| FANOUT | recurrence | per-edge tally |                       |
+| ------ | ---------- | -------------- | --------------------- |
+| 1      | 8.80       | **4.22**       | tally wins **2.09x**  |
+| 3      | 9.80       | **7.58**       | tally wins 1.29x      |
+| 6      | **12.23**  | 13.08          | recurrence wins 1.07x |
+
+🔑 **THE MECHANISM, AND IT RE-READS ITEM 2087.** A per-edge tally over k hops walks every PATH, which
+is superlinear in k; the recurrence is O(k·(|V|+|E|)). **At ONE hop the tally is already linear, so
+there is nothing to beat** — and the recurrence additionally pays two `Float64Array` allocations and
+two full |V| mask passes, which at FANOUT=1 is the SAME number of label tests the tally does per
+endpoint. The tally scales with |E| (4.22 → 13.08 for 6x the edges) while the recurrence is nearly
+flat (8.80 → 12.23), which is why it crosses over at all — but ≈6 is past most real fanouts and 1.07x
+is not worth a cost-model gate.
+
+⚠️ So item 2087's 5.25x is **not a label win that happens to live in a chain rung** — it is a
+hop-count win, and it does not extend downward. The parameter is REVERTED (an argument no caller passes
+is dead code); only the refutation note stays, on the gate it would have changed.
+
+### What is left of `hopall`'s cliff, and why it is hard
+
+The start label is ALREADY elided on an unseeded scan — `scanCandidates` drives from
+`verticesByLabel.get(name)` and the loop tests the label only `if (seeded !== undefined)`. So the
+residue is **one label test per edge on the FAR endpoint**, inherent to a per-edge walk. Avoiding it
+needs either the label bucket (⚠️ [[label-index-vs-setter]]: `verticesByLabel` is not maintained by the
+`v.labels =` setter — a WRONG ANSWER, and item 1599 already found identity SLOWER anyway) or a
+per-vertex mask, which is the recurrence this item just refuted at one hop. **Both routes are now
+priced and closed.**
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; item
+2087's mutation round re-run after the revert. No net engine change — 19 lines of comment.
