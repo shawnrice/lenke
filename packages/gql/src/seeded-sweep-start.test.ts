@@ -237,12 +237,61 @@ describe('the seek is PRICED, not taken whenever an index exists', () => {
     expect(walked).toBeGreaterThan(0);
   });
 
-  test('an END-gated chain still sweeps — it flips to the UNLABELLED far end', () => {
-    const { walked } = walkedBy(indexedWalk, () =>
+  test('⚠️ an END-gated chain now SEEKS — it no longer sweeps at all (item 2106)', () => {
+    /*
+     * ⚠️⚠️ **THIS TEST ASSERTED THE OPPOSITE UNTIL ITEM 2106, AND THE CHANGE IS AN IMPROVEMENT.** It read
+     * "an END-gated chain still sweeps — it flips to the UNLABELLED far end" and asserted `walked > 0`.
+     * That was true and was a LIMIT: this item's own table above records the end-gated case as a
+     * non-result —
+     *
+     * ```text
+     *     WHERE n2.k = 7 (end)    3.2587 -> 3.2031      1.02x
+     * ```
+     *
+     * — because the sweep FLIPPED to the far end but could not SEED from it. `threeSegmentRoute` took
+     * only `cstart` ("carried only so the sweep can seed its START set"), and a three-segment pattern's
+     * end was never passed anywhere. Item 2106 builds both orientations and picks at run time, so this
+     * shape now seeks: **12.34 ms -> 0.49 at 200,000 vertices, 25x**, and `walked` is 0 because NEITHER
+     * vertex source is enumerated.
+     *
+     * 🔑 `walked === 0` IS THE ASSERTION NOW, and it is a strong one — it can only hold if the index was
+     * used, since any sweep would pull from one of the two sources this spy covers.
+     *
+     * ⚠️ AND THE ANSWER IS ASSERTED, which the old test did not do. It checked only the surface, so a
+     * route change that returned the wrong count would have passed it.
+     */
+    const { walked, value } = walkedBy(indexedWalk, () =>
       query(indexed, `MATCH (a:P)${chain(3)} WHERE n2.k = 7 RETURN count(*) AS c`, {}),
     );
+    const unindexed = query(
+      plain,
+      `MATCH (a:P)${chain(3)} WHERE n2.k = 7 RETURN count(*) AS c`,
+      {},
+    );
 
-    expect(walked).toBeGreaterThan(0);
+    expect(walked).toBe(0);
+    expect(Number(value[0]?.c)).toBe(Number(unindexed[0]?.c));
+  });
+
+  test('⚠️ an END-gated chain with NO index is UNTOUCHED — asserted by answer, not by surface', () => {
+    /*
+     * 🔑 THE OTHER HALF, and item 1330's own reason for seeding rather than declining: whether a key is
+     * indexed is a property of the GRAPH, and plans are cached across graphs. Admitting the flip
+     * unconditionally would be that item's rejected 2.9x regression in a new place.
+     *
+     * ⚠️⚠️ **THIS TEST FIRST ASSERTED `walked > 0` AND THAT WAS NEVER TRUE — verified by running it with
+     * item 2106's change KILLED, where it fails identically.** An end-gated chain with no index
+     * enumerates NEITHER vertex source: the degree product answers it from degrees without walking
+     * anything. So the surface spy is the wrong instrument here, exactly as this file's own
+     * `spyLabelWalk` comment warns ("a spy on `verticesById.values()` alone read 0 ... which looked like
+     * proof the route was unobservable").
+     *
+     * 🔑 SO IT ASSERTS THE ANSWER INSTEAD, against the indexed graph. That is the property item 1330
+     * cared about and the one a route change can break.
+     */
+    const q = `MATCH (a:P)${chain(3)} WHERE n2.k = 7 RETURN count(*) AS c`;
+
+    expect(Number(query(plain, q, {})[0]?.c)).toBe(Number(query(indexed, q, {})[0]?.c));
   });
 });
 

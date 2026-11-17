@@ -46038,7 +46038,7 @@ Item 1276's heading is narrowed in the same commit per the heading rule: its row
 counts, so "the multi-hop count family is a constant factor, not a missing path" is sound for what
 it measured and over-broad for the family it names.
 
-## 1330 — ✅ SHIPPED: the way-count SWEEP seeds its START from an index instead of walking the label bucket — **458x**; and the compile-time DECLINE that looked equivalent was a 2.9x regression
+## 1330 — ✅ SHIPPED: the way-count SWEEP seeds its START from an index instead of walking the label bucket — **458x**; and the compile-time DECLINE that looked equivalent was a 2.9x regression — ⚠️ **ITS `WHERE n2.k = 7 (end)  1.02x` ROW WAS A REAL TARGET, NOT A NULL: item 2106 took it at 29.7x. The sweep FLIPPED to the far end but could not SEED from it, because `threeSegmentRoute` receives only `cstart` and a three-segment pattern's end node was never passed anywhere. This item's own test asserted the limit as the behaviour ("an END-gated chain still sweeps") and has been rewritten.**
 
 Item 1329 stopped an id-pinned start from sweeping, by DECLINING the rung. The same cliff exists
 for a property-pinned start, and the depth ladder locates it exactly — 200,000 vertices, `k`
@@ -104617,3 +104617,64 @@ this is a sixth operand kind for it. The re-run after the refactor was 5/5 clean
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 5,073
 GQL tests; all seven fuzzers green; 5/5 sweeps.
+
+## Item 2106 — ✅ **SHIPPED: a three-hop `count(*)` seeds from the END when the end is the seek — 13.05 → 0.44 ms (29.7x).** 🔑 Item 1330's own table priced this at **1.02x** and it was a REAL target
+
+The aggregate surface had never been screened with items 2104/2105's vacuous-`LIMIT` instrument. ⚠️ A
+`LIMIT` after an aggregate limits the AGGREGATE ROWS, so it never reaches the walk — the spelling that
+does is the HAND-REVERSED pattern, which turns item 2101's 330x finding into an instrument. 21 shapes,
+7 aggregates x 3 depths, answers asserted equal between spellings:
+
+| aggregate                | 1 hop           | 2 hops | 3 hops        |
+| ------------------------ | --------------- | ------ | ------------- |
+| `count(*)`               | 1.44x           | 0.96x  | **27.08x** ⚠️ |
+| `count(DISTINCT)`        | **5.95x** ⚠️    | 1.05x  | 1.35x         |
+| `min`/`max`/`sum`/`avg`  | **2.8-5.5x** ⚠️ | ~1.0x  | ~1.0x         |
+| grouped count, `collect` | ~1.1x           | ~1.0x  | ~1.0x         |
+
+### 🔑 THE CAUSE IS ONE MISSING PARAMETER, AND ITS ABSENCE IS DOCUMENTED IN THE CODE
+
+`patternCountOf` takes `cstart`, `cfar` and `cend` — ⚠️ but `cend` is `segments[1].node`, **the end of a
+TWO-segment pattern** (item 220 wired that). A three-segment pattern's end is `segments[2]`, and
+`threeSegmentRoute` receives only `cstart`, its own doc saying _"carried only so the sweep can seed its
+START set (item 1330)"_. So a three-hop `count(*)` whose selective predicate sat on the far node had no
+way to reach it.
+
+⚠️⚠️ **ITEM 1330's TABLE RECORDS THIS AS A NON-RESULT** — `WHERE n2.k = 7 (end)  3.2587 -> 3.2031
+1.02x` — and its test asserted the limit as the behaviour: _"an END-gated chain still sweeps — it flips
+to the UNLABELLED far end"_. The sweep FLIPPED but could not SEED. 🔑 **That is the entry corrected in
+this commit**, and it is why CLAUDE.md says to verify a heading against the source: nothing later
+mentioned it, so no cross-reference could have found it.
+
+### What shipped
+
+`reverseRawPath`, a mirror of `reversePath` for the RAW AST path (`patternCountOf` walks the AST and
+receives compiled nodes separately). `countShortcut` builds BOTH orientations at compile time — no graph
+work — and picks at run time with item 2104's `farEndSeeksNarrower`. ⚠️ `count(*)` is the safest place
+for this: a path count is direction-agnostic and the projection is `star`, so no output column can
+observe which end was the seed. Gate refuses `< 3` segments, since item 220 already seeds two.
+
+A/B, two rounds alternated: **13.05 → 0.44 (29.7x)**; the already-fast reversed spelling 0.47 → 0.38; the
+1-hop control the gate refuses **FLAT** at 0.04-0.05.
+
+⚠️ **TWO REVERSERS THAT DISAGREE WOULD BE A WRONG ANSWER**, so neither is tested alone: 13 tests reverse
+the same pattern both ways and compare the structures over 8 shapes, plus double-reversal identity, the
+carried fields, and answers across all four depths indexed-vs-unindexed. 🔑 **`reverseRawPath` is 6/6
+CAUGHT** including both field drops and the node off-by-one; the seed choice is 3/5, with
+`always-flips` among the caught — the gate's SELECTIVITY has teeth. The two survivors are route
+equivalences (`< 3` vs `< 2`: both orientations are correct at two segments).
+
+14 end-gated shapes were verified indexed-against-unindexed before the test was touched, because the
+old test asserted only a surface and no answer.
+
+⚠️ **A SECOND TEST I WROTE ASSERTED SOMETHING THAT WAS NEVER TRUE** — that an UNINDEXED end-gated chain
+sweeps. It reads `walked === 0` with this change KILLED too: the degree product answers it from degrees
+without enumerating either source. Rewritten to assert the answer, with the reason recorded.
+
+🔑 **STILL OPEN: the one-hop scalar folds, 2.8-5.95x** (`count(DISTINCT)`, `max`, `min`, `sum`, `avg` —
+all on `hopAggregate`, while `count(*)`, grouped count and `collect` are clean at the same depth).
+Absolute times are small (0.13-0.48 ms against 0.02-0.08) but the pattern is systematic and the rung is
+one function.
+
+GATES. `bun run fmt` 0; `bun run check` 0 unpiped; `bun run test -- --skip-nx-cache` 21/21; 5,087 GQL
+tests; seven fuzzers green; 5/5 sweeps.

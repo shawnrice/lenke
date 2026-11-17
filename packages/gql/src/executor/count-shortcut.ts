@@ -22,6 +22,7 @@ import type { Graph } from '@lenke/core';
 
 import type { Clause } from '../ast.js';
 import type { CClause, Params, Row } from './core.js';
+import { farEndSeeksNarrower, reversePath, reverseRawPath } from './matching.js';
 import { columnName } from './rows.js';
 import type { CountFn } from './shortcuts.js';
 import { keyedCountOf, pageOneRow, patternCountOf, productCountOf } from './shortcuts.js';
@@ -143,8 +144,60 @@ export const detectCountShortcut = (
       // And the END of a two-segment pattern, which the reversed reading seeds from (item 220).
       // `cfar` is `segments[0].node` — the MIDDLE when there are two segments, not the end.
       const cend = cm?.kind === 'match' ? cm.patterns[0]?.segments[1]?.node : undefined;
+      const written = patternCountOf(m.patterns[0], m.where, rowOf, cstart, cfar, cend);
 
-      return patternCountOf(m.patterns[0], m.where, rowOf, cstart, cfar, cend);
+      /*
+       * ⚠️⚠️ **SEED FROM THE END WHEN THE END IS THE SEEK — item 2106, measured 27x.** `cend` above is
+       * `segments[1].node`, the end of a TWO-segment pattern (item 220 wired that). A THREE-segment
+       * pattern's end is `segments[2]`, which nothing passes — and `threeSegmentRoute` takes only
+       * `cstart`, its doc saying "carried only so the sweep can seed its START set". So a three-hop
+       * `count(*)` whose selective predicate sits on the far node had NO WAY to reach it:
+       *
+       * ```text
+       *     MATCH (a:P)-[:E]->(m)-[:E]->(m2)-[:E]->(b:P) WHERE b.tag = $t RETURN count(*)
+       *       as written   12.34 ms      <- the sweep seeds `a` and scans all 200,000
+       *       hand-reversed  0.46        <- the SAME rung, seeding the one tagged vertex
+       * ```
+       *
+       * 🔑 **ONE QUESTION, 27x APART, AND `count(*)` IS THE SAFEST PLACE TO FIX IT**: a path count is
+       * direction-agnostic (the same path set, counted), and this rung's projection is `star`, so no
+       * output column can observe which end was the seed. Reversing is what `orient` does for the
+       * matcher; here the rung does it for itself, because it already answers BOTH spellings — this is
+       * NOT items 2104/2105's decline, where a rung handed the query back.
+       *
+       * ⚠️ BOTH ORIENTATIONS ARE BUILT AT COMPILE TIME AND CHOSEN AT RUN TIME, because whether an index
+       * seek exists is a property of the GRAPH. Building the second costs no graph work — `patternCountOf`
+       * only inspects the pattern — and a rung that cannot build both simply keeps the written one.
+       */
+      const cPath = cm?.kind === 'match' ? cm.patterns[0] : undefined;
+
+      if (cPath === undefined || cPath.segments.length < 3) {
+        return written;
+      }
+
+      const rc = reversePath(cPath);
+      const reversed = patternCountOf(
+        reverseRawPath(m.patterns[0]),
+        m.where,
+        rowOf,
+        rc.start,
+        rc.segments[0]?.node,
+        rc.segments[rc.segments.length - 1]?.node,
+      );
+
+      if (written === null || reversed === null) {
+        return written;
+      }
+
+      /*
+       * ⚠️ THE GATE IS ITEM 2104's `farEndSeeksNarrower`: a genuine index seek, narrower than the start.
+       * A label-bucket difference must NOT flip a walk whose cost is symmetric — that was 2104's first,
+       * too-broad gate, and two unit tests caught it.
+       */
+      return (graph, params) =>
+        farEndSeeksNarrower(graph, cPath, new Map(), params)
+          ? reversed(graph, params)
+          : written(graph, params);
     }
 
     // A product first — it is the cheaper answer and covers disjoint patterns. When it

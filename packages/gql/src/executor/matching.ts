@@ -6,7 +6,14 @@ import { DEFAULT_CONFIG, Path } from '@lenke/core';
 import type { Edge, Graph, IndexableValue, RangeBound, Vertex } from '@lenke/core';
 import { ErrorCode, LenkeError } from '@lenke/errors';
 
-import type { LabelExpr, PathMode, PathSelector, RelPattern } from '../ast.js';
+import type {
+  LabelExpr,
+  PathMode,
+  PathPattern,
+  PathSelector,
+  RelPattern,
+  Segment,
+} from '../ast.js';
 import {
   bothBuckets,
   candidateCount,
@@ -644,6 +651,45 @@ export const reversePath = (path: CPath): CPath => {
  * with a variable-length segment keep their written orientation (reversing a
  * quantified walk is not handled here).
  */
+/**
+ * `reversePath`'s twin for a RAW (uncompiled) `PathPattern` — item 2106.
+ *
+ * ⚠️⚠️ **IT EXISTS BECAUSE `count(*)`'s THREE-SEGMENT ROUTE TAKES THE RAW PATH, NOT THE COMPILED ONE.**
+ * The compiled twin above serves the matcher; `patternCountOf` walks the AST path and receives compiled
+ * NODES separately, so reversing its walk needs this. Measured: a three-hop `count(*)` with a selective
+ * far predicate read **12.34 ms written forward against 0.46 reversed — 27x** for one question, because
+ * the sweep can only seed its START.
+ *
+ * 🔑 THE TWO MUST AGREE, so this is a line-for-line mirror: same segment reversal, same `FLIP_DIRECTION`,
+ * same carry-over of `pathVar`/`selector`/`mode`. ⚠️ A divergence between them would be a wrong answer in
+ * one engine and not the other, so `reverse-raw-path.test.ts` asserts the two against each other on the
+ * same shapes rather than testing each alone.
+ *
+ * ⚠️ `binds`/`reads` have no raw counterpart — they are computed during compilation — so there is nothing
+ * to carry here and nothing missing.
+ */
+export const reverseRawPath = (path: PathPattern): PathPattern => {
+  const nodes = [path.start, ...path.segments.map((s) => s.node)];
+  const segments: Segment[] = [];
+
+  for (let i = path.segments.length - 1; i >= 0; i--) {
+    const seg = path.segments[i];
+
+    segments.push({
+      rel: { ...seg.rel, direction: FLIP_DIRECTION[seg.rel.direction] },
+      node: nodes[i],
+    });
+  }
+
+  return {
+    start: nodes[nodes.length - 1],
+    segments,
+    ...(path.pathVar !== undefined ? { pathVar: path.pathVar } : {}),
+    ...(path.selector !== undefined ? { selector: path.selector } : {}),
+    ...(path.mode !== undefined ? { mode: path.mode } : {}),
+  };
+};
+
 /**
  * Would the far end of this path be reached by a GENUINE INDEX SEEK that is narrower than the start?
  * (item 2104)
