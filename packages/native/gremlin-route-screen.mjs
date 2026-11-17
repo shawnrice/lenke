@@ -164,6 +164,25 @@ const SHAPES = {
   'list: hop aggregate count': "traversal(V(), out('E'), aggregate('x'), count())",
   'list: hop store values': "traversal(V(), out('E'), store('x'), values('k'))",
   'list: scan aggregate values': "traversal(V(), aggregate('x'), values('k'))",
+  /*
+   * ⚠️⚠️ ITEM 2080: TWELVE READ-STEP FAMILIES THE CENSUS HAD NEVER COVERED. Enumerating the AST's 103
+   * step kinds against this table found 65 with no row — most of them write steps, algorithm steps
+   * with their own bench, or lambda forms that are user functions rather than engine routes. These
+   * are the READ-PATH ones a real query reaches for, and the census's job is to say which route
+   * answers them. Item 2068 found a 7.3x exactly this way.
+   */
+  'proj: project two': "traversal(V(), project('a', 'b').by('k').by('s'))",
+  'proj: valueMap': 'traversal(V(), valueMap())',
+  'proj: elementMap': 'traversal(V(), elementMap())',
+  'proj: properties': "traversal(V(), properties('k'))",
+  'proj: label': 'traversal(V(), label())',
+  'page: range': "traversal(V(), values('k'), range(0, 10))",
+  'page: tail': "traversal(V(), values('k'), tail(10))",
+  'page: skip': "traversal(V(), values('k'), skip(10))",
+  'grp: group by key': "traversal(V(), group().by('k'))",
+  'misc: unfold fold': "traversal(V(), values('k'), fold(), unfold())",
+  'misc: is filter': "traversal(V(), values('k'), is(5))",
+  'misc: simplePath': "traversal(V(), out('E'), simplePath(), values('k'))",
   'list: hop count': "traversal(V(), out('E'), count())",
 
   // ⚠️ THE DEDUPED-VALUES FAMILY, added at item 1899, and the rows exist because that item's bug was
@@ -245,7 +264,7 @@ const SHAPES = {
 };
 
 const IMPORTS =
-  "import { E, V, aggregate, both, bothE, cap, count, dedupe, fold, groupCount, gt, has, hasId, hasLabel, id, inE, inV, in_, limit, min, optional, order, otherV, out, outE, outV, store, and, branch, choose, coalesce, constant, fold, identity, max, not, or, order, sum, toArray, traversal, values, where } from '@lenke/gremlin';";
+  "import { E, V, aggregate, both, bothE, cap, count, dedupe, fold, groupCount, gt, has, hasId, hasLabel, id, inE, inV, in_, limit, min, optional, order, otherV, out, outE, outV, store, project, valueMap, elementMap, properties, label, range, tail, skip, group, unfold, is, simplePath, and, branch, choose, coalesce, constant, fold, identity, max, not, or, order, sum, toArray, traversal, values, where } from '@lenke/gremlin';";
 
 const build = () => execFileSync('bun', ['run', 'build'], { cwd: ROOT, stdio: 'ignore' });
 

@@ -37,6 +37,8 @@ import {
   not,
   and,
   aggregate,
+  properties,
+  label,
   as_,
   both,
   branch,
@@ -201,6 +203,14 @@ const SHAPES = {
   // and no `hasLabel` to confound it. `label: dedupe values` carries a label test the `where` rows do
   // not, so it cannot isolate what a FUSED dedupe costs.
   'scan: values dedupe': () => traversal(V(), values('n'), dedupe()),
+  /*
+   * ⚠️ ITEM 2080: `V().label()` beside `V().id()`. Both are zero-argument ELEMENT ACCESSORS over a
+   * bare scan, and item 2056 fused `id()` at 2.72x — but the census shows `label()` generic. That is
+   * a DISAGREEMENT between siblings, which is the census's actual signal (item 1854: a generic route
+   * is not a defect on its own).
+   */
+  'scan: label': () => traversal(V(), label()),
+  'scan: properties': () => traversal(V(), properties('n')),
   'scan: id': () => traversal(V(), id()),
   'scan: valueMap': () => traversal(V(), valueMap()),
   'range: has(gt)': () => traversal(V(), has('n', gt(5)), values('n')),

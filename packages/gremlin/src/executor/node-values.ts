@@ -33,7 +33,7 @@ import type { ID, Plan, Predicate, Step } from '../ast.js';
 import { matches, specializePredicate } from '../predicates.js';
 import { seedForStep } from './index-seed.js';
 import type { RunContext } from './runtime.js';
-import { valueDedupeFilter } from './runtime.js';
+import { firstLabel, valueDedupeFilter } from './runtime.js';
 import { asStringId } from './sources.js';
 import { hasAdjacency, singleHopExistence } from './sub-plan-existence.js';
 
@@ -64,7 +64,10 @@ export type NodeValues = Iterable<unknown> & {
  * census named it unambiguously (`scan: id` generic, 1 dispatch `[id]`) where a timing alone would
  * have looked like noise on an 8 ms row.
  */
-type ScanProjection = { readonly kind: 'values'; readonly key: string } | { readonly kind: 'id' };
+type ScanProjection =
+  | { readonly kind: 'values'; readonly key: string }
+  | { readonly kind: 'id' }
+  | { readonly kind: 'label' };
 
 const matchShape = (
   steps: readonly Step[],
@@ -83,6 +86,20 @@ const matchShape = (
   // which is why its walk below is a separate closure rather than a branch.
   if (steps.length === 2 && second?.kind === 'id') {
     return { label: undefined, proj: { kind: 'id' } };
+  }
+
+  /*
+   * ⚠️ `label()` IS `id()`'s SIBLING AND WAS GENERIC WHILE `id()` WAS FUSED (item 2080). The census
+   * put them side by side: both are zero-argument element accessors over a bare scan, and at 200,000
+   * vertices `V().id()` read **3.19 ms** against `V().label()`'s **11.56** — 3.62x, same 200,000 rows
+   * out. That disagreement between siblings is the census's actual signal (item 1854).
+   *
+   * ⚠️ WHAT IS NOT RECOVERED: the Set iterator. `firstLabel` walks `v.labels` to take its first
+   * element because a Set has no indexed access, and the step's semantics are "the element's label",
+   * so that stays. Only the traverser goes.
+   */
+  if (steps.length === 2 && second?.kind === 'label') {
+    return { label: undefined, proj: { kind: 'label' } };
   }
 
   if (
@@ -168,7 +185,36 @@ export const nodeValuesShortcut = (plan: Plan, graph: Graph): NodeValues | undef
     }
   };
 
-  const walk = proj.kind === 'id' ? walkIds : (): Generator<unknown> => walkValues(proj.key);
+  /*
+   * ⚠️ `firstLabel` IS IMPORTED, NOT RE-IMPLEMENTED, and `?? null` matches the step exactly: a vertex
+   * with NO labels yields `null` there, not `undefined`, so a direct read must coerce here or the two
+   * routes disagree on an unlabelled vertex. `dispatch.ts`'s `case 'label'` is the contract.
+   */
+  const walkLabels = function* (): Generator<unknown> {
+    for (const v of graph.vertices) {
+      yield firstLabel(v.labels) ?? null;
+    }
+  };
+
+  /*
+   * ⚠️ THREE SIBLING CLOSURES, NOT A BRANCH IN THE LOOP. Item 159 measured an inner-loop branch at
+   * 1.6x on this shape, and the projection is known once per QUERY — so the choice is made here and
+   * each arm is its own generator.
+   */
+  // ⚠️ AN `if` CHAIN, NOT A NESTED TERNARY — the lint refuses the latter, and the shape matters anyway:
+  // the choice is made ONCE PER QUERY and each arm stays its own closure, which is item 159's finding
+  // (a branch in this inner loop measured 1.6x).
+  let walk: () => Generator<unknown>;
+
+  if (proj.kind === 'id') {
+    walk = walkIds;
+  } else if (proj.kind === 'label') {
+    walk = walkLabels;
+  } else {
+    const { key } = proj;
+
+    walk = (): Generator<unknown> => walkValues(key);
+  }
 
   return {
     [Symbol.iterator]: walk,

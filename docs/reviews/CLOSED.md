@@ -102951,3 +102951,79 @@ against 62.9 on a reused one).
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 2,677
 gremlin tests; all seven fuzzers green; 5/5 sweeps clean.
+
+## Item 2080 — ✅ **SHIPPED: `V().label()` joins the scan rung — 11.97 → 6.19 ms (1.93x).** 🔑 Found by widening the census with TWELVE read-step families it had never covered, then reading the one DISAGREEMENT: `id()` was fused and its sibling `label()` was not
+
+Items 2078/2079 exhausted the census's unexplained and priced rows. **So the census was widened**, the
+same move that found item 2068's 7.3x — but at the STEP level rather than the rung level.
+
+### Enumerating the AST against the census
+
+103 step kinds; **65 with no census row**. Most are not candidates and saying why is the filter: write
+steps (`addV`, `addE`, `drop`, `property`), algorithm steps with their own bench (`pageRank`,
+`connectedComponent`, `peerPressure`, `shortestPath`), lambda forms that are user functions rather than
+engine routes (`filterFn`, `mapFn`, `flatMapFn`, `foldFn`, `sideEffectFn`), and internals (`plan`,
+`tag`, `token`). Twelve READ-PATH families a real query reaches for now have rows:
+
+```text
+    generic   proj: project two      proj: valueMap     proj: elementMap
+    generic   proj: properties       proj: label        page: range
+    generic   page: tail             page: skip         grp: group by key
+    generic   misc: unfold fold      misc: is filter
+    SHORTCUT  misc: simplePath
+```
+
+⚠️ **ELEVEN GENERIC IS NOT ELEVEN FINDINGS** — item 1854's rule is in the census's own header: "a
+generic route is NOT a defect on its own — most steps have no shortcut and never will. The candidates
+are the DISAGREEMENTS."
+
+### 🔑 THE DISAGREEMENT: `id()` FUSED, `label()` GENERIC
+
+Both are zero-argument ELEMENT ACCESSORS over a bare `V()`, and item 2056 fused `id()` at 2.72x. At
+200,000 vertices, equal emissions:
+
+```text
+    scan: id        3.19 ms  (FUSED)
+    scan: label    11.56     (generic)   <- 3.62x its own sibling
+```
+
+| row                          | KILLED | LIVE     |           |
+| ---------------------------- | ------ | -------- | --------- |
+| `V().label()` (target)       | 11.97  | **6.19** | **1.93x** |
+| `V().id()` — the sibling arm | 3.39   | 3.33     | 1.02x     |
+| `V().values(n)`              | 5.84   | 4.45     | flat      |
+| `scan: count`                | 0.00   | 0.00     | flat      |
+
+⚠️ **WHAT IS NOT RECOVERED, AND IT IS MOST OF WHAT REMAINS:** `firstLabel` walks `v.labels` to take
+its first element, because a Set has no indexed access and the step's semantics are "the element's
+label". Fused `label` is 6.19 against `id`'s 3.33 — **~2.9 ms for 200,000 Set iterations (~14 ns
+each)**, and that stays. Only the traverser went.
+
+⚠️ `properties('n')` at **29.40 ms against `values(n)`'s 4.59** is NOT claimed as the same kind of gap:
+it returns property OBJECTS, one constructed per row, so part of that 6.4x is work `values` does not do.
+It has a row now and is left unpriced rather than nominated.
+
+VERIFICATION. 14 tests, **7/7 mutants caught**. The contract tests are the null ones: an unlabelled
+vertex yields **`null`, not `undefined`, and still yields a ROW** — unlike `values(k)`, which drops a
+vertex lacking the key — and a multi-label vertex yields its FIRST label in insertion order.
+`firstLabel` is imported from `runtime.ts`, not re-implemented, so the fused and generic routes cannot
+drift.
+
+### ⚠️ THREE INSTRUMENT FAULTS, AND ONE OF THEM ALMOST COST A FALSE REGRESSION
+
+1. ⚠️⚠️ **`scan: id` READ 0.68-0.80x ON MINIMA** — the sibling arm, whose pick I had just edited, which
+   is exactly [[executor-edits-perturb]]'s shape. Six readings at REPS=15: LIVE 3.04/3.40/3.04, KILLED
+   3.04/3.04/**2.20**. **On MEDIANS it is 1.00x** — the 0.72x was one fast outlier, and CLAUDE.md says
+   so in as many words: "for the TS per-row path, `min`-of-N is the wrong estimator… The general scalar
+   path plateaus high and emits a RARE fast rep."
+2. **`\?` IN A sed BRE MEANS "zero or one", NOT a literal `?`** — so `\?\?` is nonsense and five
+   mutants reported ANCHOR-DID-NOT-APPLY while their anchors matched the source exactly.
+3. **`ROWS="scan: id scan: values"` SPLIT ON SPACES** because a row name contains one; the loop
+   measured nothing. The sibling A/B scripts set `IFS=$'\n'` for this reason, and this one now does.
+
+⚠️ The nested ternary the three-way pick needed is refused by the lint, so the choice is an `if` chain
+— which keeps it once per QUERY with each arm its own closure, item 159's finding (an inner-loop branch
+measured 1.6x). The mutation round was re-run against the restructured code: still 7/7.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 2,689
+gremlin tests; all seven fuzzers green; 5/5 sweeps clean.

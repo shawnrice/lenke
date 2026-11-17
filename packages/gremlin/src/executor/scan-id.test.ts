@@ -9,7 +9,7 @@ import { describe, expect, test } from 'bun:test';
 
 import { Graph } from '@lenke/core';
 
-import { dedupe, hasLabel, id, order, toArray, traversal, V, values } from '../index.js';
+import { dedupe, hasLabel, id, label, order, toArray, traversal, V, values } from '../index.js';
 import { nodeValuesDedupeShortcut, nodeValuesShortcut } from './node-values.js';
 
 const build = (): Graph => {
@@ -52,6 +52,58 @@ describe('scan id arm (item 2056)', () => {
 
     expect(claimed).toBeDefined();
     expect([...claimed!]).toStrictEqual(claimed!.drain!());
+  });
+
+  test('THE ROUTE: the rung claims V().label() too (item 2080)', () => {
+    expect(nodeValuesShortcut(traversal(V(), label()), g)).toBeDefined();
+  });
+
+  test('⚠️ every label is emitted IN ORDER, and a MULTI-LABEL vertex yields its FIRST', () => {
+    /*
+     * 🔑 `firstLabel` TAKES THE SET'S FIRST ELEMENT, which is insertion order — so a vertex created
+     * with `['T', 'U']` yields `T`. The fused walk must agree with `dispatch.ts`'s `case 'label'`
+     * exactly, which is why `firstLabel` is imported there rather than re-implemented.
+     */
+    const multi = new Graph();
+
+    multi.addVertex({ id: 'm', labels: ['T', 'U'], properties: {} });
+    multi.addVertex({ id: 'n', labels: ['U', 'T'], properties: {} });
+
+    expect(toArray(traversal(V(), label()), multi)).toStrictEqual(['T', 'U']);
+  });
+
+  test('⚠️⚠️ an UNLABELLED vertex yields NULL, not undefined', () => {
+    /*
+     * ⚠️ `?? null` IS THE CONTRACT, not a tidy-up: `dispatch.ts` returns `firstLabel(v.labels) ?? null`,
+     * so a vertex with no labels produces a NULL row — and it still produces a ROW, unlike `values(k)`
+     * which drops a vertex lacking the key. A fused walk that yielded `undefined`, or dropped the row,
+     * would differ from the generic path on exactly this vertex.
+     */
+    const bare = new Graph();
+
+    bare.addVertex({ id: 'x', labels: [], properties: {} });
+    bare.addVertex({ id: 'y', labels: ['T'], properties: {} });
+
+    expect(toArray(traversal(V(), label()), bare)).toStrictEqual([null, 'T']);
+  });
+
+  test("the label walk's ITERATOR and `drain` agree exactly", () => {
+    const claimed = nodeValuesShortcut(traversal(V(), label()), g);
+
+    expect(claimed).toBeDefined();
+    expect([...claimed!]).toStrictEqual(claimed!.drain!());
+  });
+
+  test('⚠️ a LABELLED label() declines — item 1870s refusal covers this arm too', () => {
+    expect(nodeValuesShortcut(traversal(V(), hasLabel('T'), label()), g)).toBeUndefined();
+  });
+
+  test('a TRAILING step after label() declines', () => {
+    expect(nodeValuesShortcut(traversal(V(), label(), order()), g)).toBeUndefined();
+  });
+
+  test('the DEDUPE rung declines a label projection — its gate is `values` only', () => {
+    expect(nodeValuesDedupeShortcut(traversal(V(), label(), dedupe()), g)).toBeUndefined();
   });
 
   test('a LABELLED id declines — item 1870s refusal still governs this rung', () => {
