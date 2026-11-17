@@ -312,6 +312,58 @@ export const threeHopGatedDegreeProductOverCsr = (
  * memo, no branch in the inner loop) and it serves `count 3-hop`, the 5.7 ms row this file exists
  * for.
  */
+/** One compiled query's topology-keyed count slot (item 2135). */
+export type TopologyMemo = {
+  get: (graph: Graph, memoable: boolean) => number | undefined;
+  put: (graph: Graph, n: number, memoable: boolean) => void;
+};
+
+/**
+ * One compiled query's topology-keyed count slot (item 2135). `get` answers `undefined` unless the stored
+ * generation is still current AND the caller says the question is topology-only; `put` stores on the same
+ * condition, so read and write can never disagree about what is cacheable.
+ */
+export const topologyMemo = (): TopologyMemo => {
+  // `-1` means empty: `topologyVersion` is a non-negative counter, so no real generation collides.
+  let tv = -1;
+  let count = 0;
+
+  return {
+    get: (graph, memoable) => (memoable && tv === graph.topologyVersion ? count : undefined),
+    put: (graph, n, memoable) => {
+      if (memoable) {
+        tv = graph.topologyVersion;
+        count = n;
+      }
+    },
+  };
+};
+
+/**
+ * May the three-segment count be memoized on `topologyVersion` alone (item 2135)?
+ *
+ * 🔑 `csrDegreeProductApplies` is the certificate: reaching it means the start, `c` and end labels are
+ * all absent-or-vacuous, neither interior gate is present, and no leg is undirected — so the number is a
+ * function of the EDGES alone. Those effective labels are recomputed per call, so a label write that
+ * makes one non-vacuous re-routes before the memo is consulted.
+ *
+ * ⚠️ `bLabel` is the one that gate does NOT check — the MIDDLE label is passed to `threeHopCsrCount`
+ * separately — so it is required absent here. ⚠️⚠️ **AND THAT REQUIREMENT IS REDUNDANT TODAY: its mutant
+ * SURVIVES, checked rather than assumed.** Admitting a present `bLabel` and then taking the label away
+ * answers 64 → 56 CORRECTLY, so something downstream already re-derives the mid-label set per call. Two
+ * fixtures were built to separate it (a vacuous `:P` mid label, then two distinct universal labels so
+ * only the mid one stops being vacuous) and neither produced a stale read. It stays as belt-and-braces on
+ * a cache whose staleness would be SILENT, and as the explicit statement that this memo is topology-only
+ * — recorded as redundant rather than left looking load-bearing (item 2124's practice; item 2134's lesson
+ * about claiming a test for a case that cannot happen).
+ *
+ * Module scope, not inline in the builder: that function was at 35 of 35 before this item.
+ */
+export const topologyOnlyProduct = (
+  bLabel: LabelExpr | undefined,
+  w: Parameters<typeof csrDegreeProductApplies>[0],
+): boolean => bLabel === undefined && csrDegreeProductApplies(w);
+
 export const threeHopCsrCount = (
   graph: Graph,
   bLabel: LabelExpr | undefined,
@@ -334,7 +386,46 @@ export const threeHopCsrCount = (
     bGate: InlineGate | undefined;
     params: Params;
   },
+  /**
+   * This compiled query's topology-keyed slot (item 2135) — POSITIONAL, not part of `shape`, so the
+   * caller's argument literal stays on one line: `shortcuts.ts` is at its 3000 CODE-line cap and
+   * `max-lines` does not count comments, so an expanded object literal alone broke the gate.
+   */
+  memo: TopologyMemo,
 ): number | undefined => {
+  /*
+   * 🔑 `csrDegreeProductApplies` is the certificate that the number is a function of the EDGES alone: the
+   * start, `c` and end labels absent-or-vacuous, neither interior gate present, no undirected leg. Those
+   * effective labels are recomputed per call, so a label write that makes one non-vacuous re-routes
+   * before the memo is reached.
+   */
+  /*
+   * ⚠️ `bLabel === undefined` IS THE ONE LABEL `csrDegreeProductApplies` DOES NOT CHECK, since `bLabel`
+   * arrives as its own parameter. Required for the memo and REDUNDANT today: its mutant SURVIVES, checked
+   * rather than assumed — admitting a present `bLabel` and then removing the label answers 64 → 56
+   * CORRECTLY, over two fixtures built to separate it (a vacuous `:P` middle, then two distinct universal
+   * labels so only the middle one stops being vacuous). 🔑 Kept as belt-and-braces on a cache whose
+   * staleness would be SILENT — item 2124's practice, and item 2134's lesson about claiming a test for a
+   * case that cannot happen.
+   */
+  const memoable =
+    bLabel === undefined &&
+    csrDegreeProductApplies({
+      aBoth: shape.aBoth,
+      midBoth: shape.midBoth,
+      dBoth: shape.dBoth,
+      aEff: shape.aEff,
+      cEff: shape.cEff,
+      dEff: shape.dEff,
+      bGated: shape.bGate !== undefined,
+      cGated: shape.cGate !== undefined,
+    });
+  const hit = memo.get(graph, memoable);
+
+  if (hit !== undefined) {
+    return hit;
+  }
+
   if (
     csrDegreeProductApplies({
       aBoth: shape.aBoth,
@@ -347,7 +438,14 @@ export const threeHopCsrCount = (
       cGated: shape.cGate !== undefined,
     })
   ) {
-    return threeHopDegreeProductOverCsr(graph, bLabel, legs);
+    const n = threeHopDegreeProductOverCsr(graph, bLabel, legs);
+
+    // 🔑 Stored only when `memoable`; the setter enforces that, so read and write cannot disagree.
+    if (n !== undefined) {
+      memo.put(graph, n, memoable);
+    }
+
+    return n;
   }
 
   if (

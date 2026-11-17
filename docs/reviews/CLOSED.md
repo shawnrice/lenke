@@ -106385,8 +106385,8 @@ end keeps the vertex walk, verified by instrumenting the branch at 200,000 verti
 ### ⚠️⚠️ THE SWEEP SAID THE LABELLED CONTROL IMPROVED 2.00x. IT DID NOT — IT IS 1.21x
 
 That control takes the SAME vertex walk in both arms, so it could not move; it read 9.58 → 4.78
-consistently across both sweep rounds anyway. 🔑 CLAUDE.md names this exactly: *a two-dist in-process A/B
-flatters any change that REDISTRIBUTES call sites.* My sweep ran both shapes in one process, so in the NEW
+consistently across both sweep rounds anyway. 🔑 CLAUDE.md names this exactly: _a two-dist in-process A/B
+flatters any change that REDISTRIBUTES call sites._ My sweep ran both shapes in one process, so in the NEW
 arm the unlabelled query returns early and the vertex-walk loop sees one shape instead of two.
 
 ```text
@@ -106402,7 +106402,7 @@ in-process effect cut both ways.
 
 ### ⚠️⚠️ AND I WROTE A TEST FOR A CASE THAT CANNOT HAPPEN — THE MUTANT CAUGHT ME
 
-My `bucket.size > 0` guard came with a test claiming *"the index can hold an EMPTY set after a removal"*.
+My `bucket.size > 0` guard came with a test claiming _"the index can hold an EMPTY set after a removal"_.
 🔑 Deleting the guard SURVIVED that test, and the reason is the claim is false: measured, `removeEdge`
 **DELETES** the per-type bucket when its last edge goes (`byLabel.get(type)` returns `undefined`; the outer
 per-vertex entry persists). So a present bucket always holds an edge and `bucket !== undefined` suffices.
@@ -106417,4 +106417,59 @@ graph, and a property key keeping its own route. **4/6 mutants CAUGHT**, with tw
 vertex walk, the same class as items 2130/2131).
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 5,167 GQL
+tests; seven fuzzers green; 5/5 sweeps.
+
+## Item 2135 — ✅✅ **SHIPPED (GQL): the three-segment unfiltered count is memoized per topology generation — 7.75 → 0.0 ms.** Closes the largest gap in the cross-language table. ⚠️ My first version was a WRONG ANSWER an existing test caught
+
+🔑 Item 2132's table, re-run after items 2133/2134 landed: `distinct far count` 22.90 → **4.07** (at parity)
+and `1-hop projection, filtered` 38.88 → **10.11**. The remaining giant was `3-hop count` at **7.75 ms
+against Gremlin's 0.00 — 1818x**, which is GQL-computes against Gremlin-memoizes (item 2131).
+
+### 🔑 THE BLOCKER I'D PARKED DISSOLVED ON READING, NOT ARGUING
+
+Item 2132 left this "blocked on label invalidation". ⚠️ Reading `csrDegreeProductApplies` settled it: the
+CSR product is admitted ONLY when the start, `c` and end labels are absent-or-vacuous, neither interior
+gate is present and no leg is undirected — so **the number is a function of the EDGES alone**, and those
+effective labels are recomputed per call, so a label write re-routes before the memo is reached.
+
+```text
+    3-segment unfiltered   [286.4 8.1 0 0 0 0 0]   = 25,000,000
+    3-seg with MID LABEL    13.3-16.4 ms            ✓ correctly NOT memoized
+    3-seg FILTERED           8.0-15.2               ✓ correctly NOT memoized
+    INVALIDATION            25,000,000 -> 25,000,075 after one addEdge
+```
+
+### ⚠️⚠️ MY FIRST VERSION SHIPPED A WRONG ANSWER, AND `three-hop-interior-filter.test.ts` CAUGHT IT
+
+I read the memo at the TOP of the compiled closure, on the assumption that **"the closure IS the shape"**.
+🔑 **It is not** — the same closure serves the ungated question and `WHERE c.k > 1000`, so the memo
+returned the ungated **6 where 0 is correct**. ⚠️ The fix is structural rather than a patch: the memo now
+lives inside `threeHopCsrCount`, with the function whose result it caches, so **the read is necessarily
+behind the write's own conditions** and the two cannot drift apart.
+
+### ⚠️ TWO GUARDS ARE REDUNDANT TODAY, AND I CHECKED RATHER THAN CLAIMED
+
+`bLabel === undefined` (the one label the CSR gate does not check, since it arrives separately) — its
+mutant SURVIVES. 🔑 Admitting a present `bLabel` and then removing the label answers **64 → 56,
+correctly**, so something downstream already re-derives the mid-label set per call. I built two fixtures to
+separate it — a vacuous `:P` middle, then two DISTINCT universal labels so only the middle one stops being
+vacuous — and neither produced a stale read. ⚠️ It stays as belt-and-braces on a cache whose staleness
+would be SILENT, recorded as redundant in both the code and the test rather than left looking
+load-bearing (item 2124's practice; item 2134's lesson).
+
+**9 tests**: a gate matching nothing after the ungated ask (the regression wall for my bug), a vacuous and
+a selective gate, a vacuous mid label with a label write, added/removed edges, two writes in a row
+yielding three distinct answers, and a mutated first result not changing the second (the memo stores the
+NUMBER, so `rowOf` runs fresh and no caller is handed an aliased row). **1/6 mutants CAUGHT, 5 named**: the
+memo is a pure route choice, so disabling it or mis-stamping its generation is answer-equivalent — the
+same class as items 2130/2131 — and the two guards above are redundant.
+
+⚠️ **THE LINT GATES COST FIVE ITERATIONS AND ARE WORTH RECORDING.** `shortcuts.ts` was at BOTH its caps:
+`buildThreeHopCount` at 35 of 35 complexity, and the file at 3000 lines. 🔑 Two findings: **`max-lines`
+counts CODE lines, so trimming comments does nothing** (I tried twice), and an expanded argument object
+costs 10 of them — hence the memo is a POSITIONAL parameter, not a field of `shape`. Two short destructures
+in the same function gave the two lines back. The memo moving into `threeHopCsrCount` is what fixed the
+complexity, and it was the right structure anyway.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 5,176 GQL
 tests; seven fuzzers green; 5/5 sweeps.

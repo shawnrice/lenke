@@ -84,7 +84,7 @@ import { satisfies } from './predicates.js';
 import { foldFor } from './projection.js';
 import { columnName, resolveCount, valueKey } from './rows.js';
 import { AGGREGATES, asTruth } from './scalars.js';
-import { threeHopCsrCount } from './three-hop-degree-product.js';
+import { threeHopCsrCount, topologyMemo } from './three-hop-degree-product.js';
 import { twoHopFilteredCsrApplies, twoHopFilteredCsrCount } from './two-hop-filtered-csr.js';
 
 export type CountFn = (graph: Graph, params: Params) => Row;
@@ -3158,18 +3158,17 @@ const buildThreeHopCount = <T>(
   const bLabel = s1.node.label;
   const cLabel = s2.node.label;
   const dLabel = s3.node.label;
-  // `a` is reached from b's reverse side; `d` from c's forward side; the middle leg runs b -> c.
-  const toAOut = s1.rel.direction === 'in';
-  const fromDOut = s3.rel.direction === 'out';
+  // Paired to keep `shortcuts.ts` under its 3000 CODE-line cap, which item 2135's memo needed two back.
+  const [toAOut, fromDOut] = [s1.rel.direction === 'in', s3.rel.direction === 'out'];
   const midOut = s2.rel.direction === 'out';
-  const aBoth = s1.rel.direction === 'both';
-  const midBoth = s2.rel.direction === 'both';
+  const [aBoth, midBoth] = [s1.rel.direction === 'both', s2.rel.direction === 'both'];
   const dBoth = s3.rel.direction === 'both';
 
   // `composeInlineGate` directly: the local alias this used to go through captured nothing from
   // its enclosing scope, so it was rebuilt on every call to buy a shorter name.
   const bGate = composeInlineGate(interior.b);
   const cGate = composeInlineGate(interior.c);
+  const memo = topologyMemo();
 
   return (graph, params) => {
     // The same guard on the three-hop shape, for the same reason (item 1552).
@@ -3254,11 +3253,17 @@ const buildThreeHopCount = <T>(
      * Item 1689's row is the one the `needsC` loop gates ONCE PER MIDDLE EDGE: 526.8 ms against the
      * same question's start- and end-filtered twins at 10.3 and 21.5 after item 1688.
      */
+    /*
+     * ITEM-2135-TOPOLOGY-MEMO: `threeHopCsrCount` consults and fills this query's slot itself, so this
+     * builder gains no branch (it was at 35 of the 35 complexity cap) and the read is necessarily behind
+     * the write's conditions — the bug my first version shipped. See `TopologyMemo`.
+     */
     const viaCsr = threeHopCsrCount(
       graph,
       bLabel,
       { toAOut, t1, midOut, t2, fromDOut, t3 },
       { aBoth, midBoth, dBoth, aEff, cEff, dEff, cGate, bGate, params },
+      memo,
     );
 
     if (viaCsr !== undefined) {
