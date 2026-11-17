@@ -104348,3 +104348,49 @@ conjunct order. Four of thirteen reps are now dropped and the ordering is sane (
 GATES. Probe only — no engine change. `bun run check` 0 read unpiped; `node --check`. Every shape's
 answer is asserted against a hand-computed expectation, including the DENIED subject's 0 — a selective
 check that silently matched nothing would otherwise be the fastest row in the table.
+
+## Item 2101 — 🔑🔑 **AN EQUIVALENT-SPELLING GAP OF 71.5x: "who can see this doc" written from the USER scans every user; written from the DOC it seeds and scales with its ANSWER.** Same question, same answer, no engine change needed to exploit it — but the planner is not choosing its seed
+
+Item 2100 found `list: subjects for object` unmoved by an index (30.5 → 31.7 ms). The reason is where the
+predicate sits: the row is `MATCH (u:User)-[:MEMBER_OF]->(:Team)-[:CAN_VIEW]->(d:Doc) WHERE d.name = $d`
+— **the selective predicate is on the LAST node while the pattern is written from the first.**
+
+In ISO-GQL `(u)-[:M]->(:T)-[:C]->(d)` and `(d)<-[:C]-(:T)<-[:M]-(u)` describe the same paths. Measured,
+both spellings asserted to the SAME answer:
+
+| users   | doc                            | from the USER | from the DOC |           |
+| ------- | ------------------------------ | ------------- | ------------ | --------- |
+| 50,000  | `d1` — a small team, 451 users | 9.55 ms       | **0.20**     | **47.8x** |
+| 50,000  | `d0` — the skewed team, ~5,000 | 10.51         | 2.26         | 4.6x      |
+| 200,000 | `d1`                           | 26.47         | **0.37**     | **71.5x** |
+| 200,000 | `d0` — ~20,000                 | 32.71         | 12.39        | 2.6x      |
+
+### 🔑 THE SCALING SIGNATURE, AND THE CONTROL THAT CONFIRMS IT
+
+- **From the DOC the cost tracks the ANSWER**: `d1` 0.20 → 0.37 for 4x the users (its answer barely
+  moves), while `d0` goes 2.26 → 12.39 as its own answer grows to 20,000. That is a seeded walk.
+- **From the USER the cost tracks |V|**: 9.55 → 26.47 **regardless of how many rows come back**. That is
+  a full scan with the filter applied at the end.
+- ⚠️ **AND THE GAP SHRINKS TO 2.6x WHEN THE ANSWER IS LARGE** — correctly, because the enumeration then
+  dominates either way. **A constant-factor difference would not do that**, which is what makes this a
+  seed-choice finding rather than a slow-walk one.
+
+This is exactly the class CLAUDE.md's own section exists for: "the planner recognized one spelling of a
+predicate and scanned for another that meant exactly the same thing… each cost 100-300x and each
+returned the correct answer, so no correctness test could catch it." ⚠️ `selectiveFirst` (item 181)
+chooses which END'S LABEL to test first; **nothing chooses which end to SEED from.**
+
+### Two separate conclusions, and the first needs no engine change
+
+1. 🔑 **ACTIONABLE TODAY, 71.5x**: write the pattern from the end that carries the selective predicate.
+   That is a GUIDE finding like item 2100's indexing one, and in the same domain — a share dialog
+   ("who can see this?") is the natural second query after a permission check.
+2. ⚠️ **THE ENGINE-SIDE FIX IS A PLANNER CHANGE AND IS NOT ATTEMPTED HERE**: seeding from whichever node
+   carries the selective predicate, independent of writing order. It must respect ROW ORDER — reversing
+   the drive side reverses the emission order, and while unordered row order is unspecified by policy,
+   the GQL differential fuzzer compares against the Rust engine, so a seed-side choice has to be taken
+   on both or neither. That is a cross-engine decision, not a local optimization.
+
+GATES. Probe only — no engine change. `bun run check` 0 read unpiped; `node --check`. ⚠️ The probe
+THROWS unless the two spellings return identical rows: a reversed pattern is exactly where a
+self-inflicted wrong answer would hide, and the whole comparison depends on them being one question.
