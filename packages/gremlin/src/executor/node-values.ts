@@ -1516,8 +1516,12 @@ export const scanBagValuesShortcut = (
     return undefined;
   }
 
-  // ⚠️ `aggregate` ONLY. `store` is lazy by contract; see the header.
-  if (bag.kind !== 'aggregate') {
+  /*
+   * ⚠️ ~~`aggregate` ONLY. `store` is lazy by contract~~ — **`store` IS ADMITTED SINCE ITEM 2113**, and
+   * takes a different result below. The header's argument was about a DRAINED result; this walk is a
+   * generator and was already as lazy as `store` requires. See `scanBagValuesResult`.
+   */
+  if (bag.kind !== 'aggregate' && bag.kind !== 'store') {
     return undefined;
   }
 
@@ -1533,13 +1537,76 @@ export const scanBagValuesShortcut = (
   }
 
   const bucket = ctx.sideEffects.get(bag.key)!;
+
+  return scanBagValuesResult(graph, key, bucket, bag.kind === 'store');
+};
+
+/**
+ * The fused scan-bag walk's result: a RE-WALKABLE pair for `aggregate`, a SINGLE-PASS one for `store`.
+ *
+ * ⚠️⚠️ **THE TWO BAG STEPS NEED DIFFERENT RESULTS, AND THE REASON IS THE BAG, NOT THE ROWS.** Both emit
+ * the same rows. But this walk banks every vertex it VISITS, so what the result lets a caller do decides
+ * how many times a vertex is banked:
+ *
+ *   - `aggregate` is a COLLECTING BARRIER — `side-effects.ts` materializes its whole upstream so a later
+ *     `limit(0)` cannot cancel it. A factory per consumer is what it had and what it keeps.
+ *   - `store` is LAZY: a caller that `break`s out must not have caused collection it never pulled. 🔑 A
+ *     generator already satisfies that — the refusal this replaces was about a DRAINED result
+ *     (`barrierProjectedBag`), not about this walk.
+ *
+ * ⚠️ BUT THE FACTORY WOULD DOUBLE-BAG IT. `[Symbol.iterator]: walk` makes a NEW generator per call and
+ * `drain` made another, so iterate-part-way-THEN-drain banks the prefix twice — item 2098 demonstrated
+ * exactly that (10 where 5 is correct) and concluded a single-use latch was needed. 🔑 It is not: ONE
+ * generator pulled by both paths makes "exactly once" the generator's own guarantee. Item 2112 shipped
+ * the same design for the trailing-`store` barrier.
+ *
+ * ⚠️ SO THE `store` RESULT IS SINGLE-PASS, and that is strictly SAFER than what `aggregate` gets rather
+ * than a new hazard: with the factory, iterating twice already banks every vertex twice. Nothing in the
+ * engine does either, and `scan-bag-store.test.ts` pins all four consumption patterns.
+ */
+const scanBagValuesResult = (
+  graph: Graph,
+  key: string,
+  bucket: unknown[],
+  single: boolean,
+): NodeValues => {
   const walk = (): Generator<unknown> => scanBagValuesWalk(graph, key, bucket);
 
+  if (!single) {
+    return {
+      [Symbol.iterator]: walk,
+      // ⚠️ THE EAGER FILL: `toArray` prefers `drain` (item 1412), and a walk without one is measured
+      // against siblings that have it with its generator hand tied (item 1998's 1.55x).
+      drain: () => [...walk()],
+    };
+  }
+
+  const gen = walk();
+
   return {
-    [Symbol.iterator]: walk,
-    // ⚠️ THE EAGER FILL: `toArray` prefers `drain` (item 1412), and a walk without one is measured
-    // against siblings that have it with its generator hand tied (item 1998's 1.55x).
-    drain: () => [...walk()],
+    /*
+     * ⚠️⚠️ **A `function*` WRAPPER, NOT `() => gen`, AND A TEST CAUGHT THE DIFFERENCE.** Handing the raw
+     * generator out means `for...of` calls `.return()` on IT when the caller `break`s — which CLOSES it,
+     * so a later `drain` yields NOTHING. That is silent LOSS, the mirror of item 2098's doubling, and the
+     * part-way-then-drain test read `[]` where `[30, 40]` is correct.
+     *
+     * 🔑 Wrapping means `break` closes the WRAPPER and `gen` survives at its cursor, so the drain resumes
+     * from where the iterator stopped. Item 2112's barrier uses the same shape for the same reason.
+     */
+    [Symbol.iterator]: function* (): Generator<unknown> {
+      for (let step = gen.next(); step.done !== true; step = gen.next()) {
+        yield step.value;
+      }
+    },
+    drain: (): unknown[] => {
+      const rows: unknown[] = [];
+
+      for (let step = gen.next(); step.done !== true; step = gen.next()) {
+        rows.push(step.value);
+      }
+
+      return rows;
+    },
   };
 };
 

@@ -105090,3 +105090,68 @@ GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-
 Gremlin tests; seven fuzzers green; 5/5 sweeps. ⚠️ One sweep failed mid-run on `FUZZ_SEED=1640954475` —
 the known `OPTIONAL MATCH` + raising-inline-predicate family, in the **GQL** fuzzer while this change is
 Gremlin-only; ruled out STRUCTURALLY by replaying it with the gate KILLED, where it fails identically.
+
+## Item 2113 — ✅ **SHIPPED: `V().store(k).values(key)` takes item 2078's fused scan walk — 14.48 → 5.75 ms (2.52x), now AT the no-bag floor, three flat controls.** ⚠️ **And a test caught me shipping SILENT LOSS, the mirror of item 2098's doubling**
+
+The route screen named it outright: `scan + aggregate + values` is a SHORTCUT (item 2078) while
+`scan + store + values` is generic. 🔑 Item 2078 refused `store` citing item 2070's argument — _"a drained
+`store` would collect what an early-exiting caller must never have caused to be collected"_.
+
+⚠️⚠️ **THAT ARGUMENT DESCRIBES A DRAINED RESULT, NOT THIS WALK.** `scanBagValuesWalk` is a GENERATOR: it
+banks a vertex and yields it, so a caller that `break`s out stops the walk and only the pulled vertices
+are banked. It was already exactly as lazy as `store` requires — the same discovery as item 2112, in a
+different place.
+
+### What had to change was the RESULT, not the walk
+
+`[Symbol.iterator]` was a FACTORY and `drain` built a second generator, so iterate-part-way-then-drain
+banked the prefix TWICE. 🔑 `store` now gets a SINGLE-PASS result over one shared generator; `aggregate`
+keeps the re-walkable one, which is correct for a collecting barrier. ⚠️ Single-pass is strictly SAFER
+than what `aggregate` gets rather than a new hazard: with the factory, iterating twice already banks
+every vertex twice.
+
+```text
+    scan + store + values    14.48 -> 5.75 ms   2.52x
+    scan + aggregate         (already fused)     0.96x  ✓ control
+    scan + values, no bag                        0.98x  ✓ control — and the target now MEETS it (5.75 / 5.29)
+    hop + store + values     (gate cannot reach) 1.02x  ✓ control
+```
+
+🔑 **2.52x, better than the 1.74x predicted** from the `aggregate` comparison, because the single-pass
+result also avoids the factory's second generator. ⚠️ And the target now sits ON the no-bag floor, so the
+bag is nearly free.
+
+### ⚠️⚠️ A TEST CAUGHT ME SHIPPING SILENT LOSS
+
+My first result handed out the raw generator (`[Symbol.iterator]: () => gen`). ⚠️ **`for...of` calls
+`.return()` on the iterator when the caller `break`s, which CLOSES it** — so a later `drain` yielded
+NOTHING. The part-way-then-drain test read `[]` where `[30, 40]` is correct: **silent LOSS, the exact
+mirror of item 2098's doubling**, and no row count or length check would have seen it.
+
+🔑 The fix is a `function*` WRAPPER, so `break` closes the wrapper and the inner generator survives at its
+cursor. Item 2112's barrier already had that shape, which is why its own part-way test passed — and this
+is now the second place the same design is load-bearing.
+
+### The tests, and why they are where they are
+
+⚠️ Item 2112 learned that five behavioural tests can all survive deleting the bag push, because a bare
+bag step has **no public reader**. So all 7 tests here assert `ctx.sideEffects` CONTENTS directly. 🔑 The
+fixture gives TWO of six vertices no `n`, which is the only thing that makes "the bag is not the row set"
+observable — item 2078's header says a keyless vertex is _bagged but not emitted_, and a fixture where
+every vertex carries the key would pass a bag check that returned the rows.
+
+**6/6 mutants CAUGHT**: the gate, `store` given the factory (the doubling path), `aggregate` given
+single-pass (the re-walkability), the unwrapped generator (the LOSS bug), the bag push deleted, and the
+bag moved after the key test (which makes the bag the row set). ⚠️ The last was hand-applied — the sed
+spec needed two expressions and the harness takes one.
+
+⚠️ **Item 2078's guard test was updated, not deleted** — it asserted `toBeUndefined()` and now asserts the
+shortcut IS returned, pointing at the behavioural file, because a gate boolean cannot express "lazy for a
+breaking caller".
+
+🔑 **STILL OPEN: the HOP form.** `hop + store + values` is 142 ms at 200,000 / fanout 3 and the route
+screen has it generic with 2 `applyStep` calls. Per row it is **89 ns against the no-bag hop's 13 — 6.7x**
+for adding a bag. This fusion does not claim it and a hop twin would be a new rung.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 2,749
+Gremlin tests; seven fuzzers green; 5/5 sweeps.

@@ -83,16 +83,24 @@ describe('scan-bag values fusion (item 2078)', () => {
     expect(ctxA.sideEffects.get('x')).toStrictEqual(ctxB.sideEffects.get('x'));
   });
 
-  test('⚠️⚠️ `store` IS REFUSED — its laziness is observable under a pass-through terminal', () => {
+  test('⚠️⚠️ `store` IS ADMITTED SINCE ITEM 2113 — and its laziness is PRESERVED, not traded away', () => {
     /*
-     * ⚠️ ITEM 2070's ARGUMENT, UNCHANGED BY THE STEP ORDER. `values` hands its stream to a caller who
-     * may stop early, and `aggregate` already materializes its upstream so a drain changes nothing
-     * observable; `store` is lazy by contract, and a drained `store` would collect what an
-     * early-exiting caller must never have caused to be collected.
+     * ⚠️⚠️ **THIS ASSERTED `toBeUndefined()` UNTIL ITEM 2113.** The reasoning below was item 2070's and it
+     * is about a DRAINED result (`barrierProjectedBag` returns the drained array, so every consumer gets
+     * an eager one). 🔑 `scanBagValuesWalk` is a GENERATOR: it banks a vertex and yields it, so a caller
+     * that `break`s out stops the walk and only the pulled vertices are banked. It was already exactly as
+     * lazy as `store` requires.
+     *
+     * ⚠️ WHAT DID HAVE TO CHANGE is the RESULT, not the walk. `[Symbol.iterator]` was a FACTORY and
+     * `drain` built another generator, so iterate-part-way-then-drain banked the prefix TWICE — item
+     * 2098's demonstrated doubling. `store` now gets a SINGLE-PASS result over one shared generator.
+     *
+     * 🔑 The laziness this test was named for is asserted behaviourally in `scan-bag-store.test.ts`,
+     * across all four consumption patterns; a `toBeUndefined()` could never have expressed it.
      */
     expect(
       scanBagValuesShortcut(traversal(V(), store('x'), values('n')), g, ctxOf() as never),
-    ).toBeUndefined();
+    ).not.toBeUndefined();
   });
 
   test('the END-TO-END answer matches, and the eager/lazy split is intact', () => {
