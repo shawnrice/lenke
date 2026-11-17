@@ -325,7 +325,39 @@ const SHAPES = {
   'pathdep: path().by(k)': () => traversal(V(), out('E'), path().by('n')),
 };
 
-const names = Object.keys(SHAPES).filter((k) => ONLY === '' || k.includes(ONLY));
+/*
+ * ⚠️⚠️ **`ONLY` IS A SUBSTRING MATCH, AND FIVE ROW NAMES ARE PREFIXES OF OTHERS** — so
+ * `ONLY='where: sub-traversal'` silently runs THREE shapes in one process, defeating the
+ * one-shape-per-process rule this file exists to enforce (items 1958, 1984, 1988). Worse, the table
+ * prints SORTED BY TIME, so a `| tail -1` picks the FASTEST row rather than the named one: item
+ * 2061's A/B read its `count` row twice and never measured the plain arm at all.
+ *
+ * `ONLY='=where: sub-traversal'` (a leading `=`) requires an EXACT name. The affected prefixes are
+ * `range: has(gt)`, `edge: outE.has(w).inV`, `order: values order`, `optional: hop` and
+ * `where: sub-traversal`.
+ */
+const exactly = ONLY.startsWith('=');
+const wanted = exactly ? ONLY.slice(1) : ONLY;
+const matchesRow = (k) => {
+  if (ONLY === '') {
+    return true;
+  }
+
+  return exactly ? k === wanted : k.includes(wanted);
+};
+const names = Object.keys(SHAPES).filter(matchesRow);
+
+if (ONLY !== '' && names.length === 0) {
+  throw new Error(`ONLY='${ONLY}' matched no row — a typo measures nothing and reports nothing`);
+}
+
+if (ONLY !== '' && !exactly && names.length > 1) {
+  console.log(
+    `#  ⚠️ ONLY='${ONLY}' matched ${String(names.length)} rows (${names.join(', ')}) — they share ` +
+      `one process, which is what this file tells you not to do. Use ONLY='=${names[0]}' for exactly one.`,
+  );
+}
+
 const rows = [];
 
 for (const name of names) {

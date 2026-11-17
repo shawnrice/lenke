@@ -62,6 +62,7 @@ import {
   labelSeededValuesFusion,
   nodeValuesWhereShortcut,
   scanValuesResidual,
+  scanWhereHasKeyCountResidual,
   scanWhereValuesResidual,
   seededNodeCountShortcut,
   seededNodeValuesShortcut,
@@ -2908,7 +2909,12 @@ const scanResidualWalk = (
    * as a chain rather than two `if`s because the complexity gate on `run` counts branches, which is
    * what shaped item 2021's call site too.
    */
-  const scanned = scanValuesResidual(effective, graph) ?? scanWhereValuesResidual(effective, graph);
+  const scanned =
+    scanValuesResidual(effective, graph) ??
+    scanWhereValuesResidual(effective, graph) ??
+    // ⚠️ THIRD, and reachable only because the `values -> hasKey` count rewrite runs BEFORE this
+    // (item 2061). It is gated to a `count` residual alone, so it cannot shadow either sibling.
+    scanWhereHasKeyCountResidual(effective, graph);
 
   return scanned === undefined ? undefined : fusedProjectedResidual(scanned, effective);
 };

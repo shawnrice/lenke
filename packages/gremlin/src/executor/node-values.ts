@@ -354,6 +354,60 @@ export const nodeValuesWhereShortcut = (plan: Plan, graph: Graph): NodeValues | 
  * the predicate-`where` overload, the multi-key projection, the narrowed source — rather than
  * restating them.
  */
+/**
+ * The COUNT of the existence-filtered scan, reached through the `hasKey` spelling the engine's own
+ * rewrite produces (item 2061).
+ *
+ * ⚠️⚠️ **A SOUND REWRITE WAS DEFEATING A BIGGER FUSION.** `index.ts` turns `values(k) … count()` into
+ * `hasKey(k) … count()` so a count never materializes values — a good rewrite, and the reason this
+ * route was expected to be CHEAP. But `scanWhereValuesResidual` matches on `values` in the projection
+ * slot, so the rewritten plan declined and fell through to the full generic pipeline. Item 2060
+ * measured the result: **counting cost MORE than counting AND materializing every value** (18.99
+ * against 16.37 ms, emitting 1 row against 200,000), and the two arms shared NO profile frames —
+ * `hopExistenceStep`, `filterStream`, `sourceFromIds`, `countStep`, `startTraverser` all count-only,
+ * because the count arm allocated a traverser per vertex and re-evaluated the existence hop in each.
+ *
+ * ```text
+ *     V where values count   -> residual claimed, rest=[count]
+ *     V where hasKey count   -> DECLINED            <- what the engine actually hands the rung
+ * ```
+ *
+ * 🔑 **THE EQUIVALENCE IS THE ENGINE'S OWN, NOT ONE INVENTED HERE.** The rewrite's comment states it:
+ * `hasKey` is "exactly 'the property is present', i.e. what `values(k)` emitting nothing for a
+ * missing key already means". So the number of rows a `values(k)` walk emits IS the `hasKey(k)` count,
+ * and handing the prefix to `nodeValuesWhereShortcut` as a `values` step counts the right vertices.
+ *
+ * ⚠️⚠️ **GATED TO A `count` RESIDUAL AND NOTHING ELSE — ANY OTHER RESIDUAL WOULD BE A WRONG ANSWER.**
+ * `hasKey` keeps ELEMENTS (vertices); `values` emits VALUES. A residual that only asks "how many" is
+ * blind to the difference, but `order()`, `min()`, `max()` and `fold()` are not: substituting the
+ * projection under those would sort or fold the VALUES where the plan asks for the VERTICES. That is
+ * why this is a separate narrow rung rather than a `hasKey` arm inside `scanWhereValuesResidual`, and
+ * `where-haskey-count.test.ts` asserts each of those still declines.
+ */
+export const scanWhereHasKeyCountResidual = (
+  plan: Plan,
+  graph: Graph,
+): { values: NodeValues; rest: readonly Step[] } | undefined => {
+  const { steps } = plan;
+
+  // Exactly `V()` + `where` + `hasKey(k)` + `count()`. Anything longer carries a further residual
+  // whose element type would matter, so it is not this shape.
+  if (steps.length !== 4) {
+    return undefined;
+  }
+
+  const [, , projection, tail] = steps;
+
+  if (tail?.kind !== 'count' || projection?.kind !== 'hasKey' || projection.keys.length !== 1) {
+    return undefined;
+  }
+
+  const asValues: Step = { kind: 'values', keys: [projection.keys[0]] };
+  const values = nodeValuesWhereShortcut({ ...plan, steps: [steps[0], steps[1], asValues] }, graph);
+
+  return values === undefined ? undefined : { values, rest: [tail] };
+};
+
 export const scanWhereValuesResidual = (
   plan: Plan,
   graph: Graph,

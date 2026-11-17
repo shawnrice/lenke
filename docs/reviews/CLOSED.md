@@ -101761,3 +101761,80 @@ wide controls.
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `node --check` on both probes. One screen row
 and one profile probe added; no engine change.
+
+## Item 2061 — ✅ **SHIPPED: the fused COUNT of the existence-filtered scan — 18.60 → 16.20 ms (1.15x) with four flat controls. A SOUND REWRITE WAS DEFEATING A BIGGER FUSION.** ⚠️ And the workload screen's `ONLY=` filter is a SUBSTRING match, so five row names silently run several shapes in one process — the rule this file exists to enforce
+
+Item 2060 measured the inversion (counting cost more than counting AND materializing) and located it.
+This takes it.
+
+**THE CAUSE.** `index.ts` rewrites `values(k) … count()` into `hasKey(k) … count()` so a count never
+materializes values — a good rewrite, and exactly why this route was expected to be cheap. But
+`scanWhereValuesResidual` matches on `values` in the projection slot, so the rewritten plan declined
+and fell through to the full generic pipeline:
+
+```text
+    V where values count   -> residual claimed, rest=[count]
+    V where hasKey count   -> DECLINED            <- what the engine actually hands the rung
+```
+
+🔑 **THE EQUIVALENCE IS THE ENGINE'S OWN.** The rewrite's comment states it: `hasKey` is "exactly 'the
+property is present', i.e. what `values(k)` emitting nothing for a missing key already means". So the
+row count of the fused `values(k)` walk IS the `hasKey(k)` count, and `scanWhereHasKeyCountResidual`
+hands the prefix to `nodeValuesWhereShortcut` as a `values` step.
+
+⚠️⚠️ **GATED TO A `count` RESIDUAL AND NOTHING ELSE, BECAUSE ANY OTHER RESIDUAL WOULD BE A WRONG
+ANSWER.** `hasKey` keeps ELEMENTS; `values` emits VALUES. A `count()` cannot tell them apart, but
+`order()`, `min()`, `max()` and `fold()` can — substituting the projection under those would sort or
+fold the values where the plan asks for the vertices. All four are asserted to decline AND to still
+answer, since [[rung-precedence-hides-the-code-under-test]] is why a decline is only half a test.
+
+| row                                              | KILLED | LIVE      |           |
+| ------------------------------------------------ | ------ | --------- | --------- |
+| `where: sub-traversal count` (target)            | 18.60  | **16.20** | **1.15x** |
+| `where: sub-traversal` — the prefix it reuses    | 16.17  | 15.91     | 1.02x     |
+| `where: sub-traversal order` — 4 steps, declines | 25.76  | 25.59     | 1.01x     |
+| `scan: values`                                   | 5.79   | 5.50      | 1.05x     |
+| `scan: count`                                    | 0.00   | 0.00      | flat      |
+
+### ⚠️⚠️ AN INSTRUMENT FAULT THAT HAS BEEN THERE ALL ALONG: `ONLY=` IS A SUBSTRING MATCH
+
+`ONLY='where: sub-traversal'` runs **three** shapes in one process — the exact thing this screen's own
+header warns against (items 1958, 1984, 1988) — because `k.includes(ONLY)` and the name is a PREFIX of
+two others. **Five of 72 rows are affected**: `range: has(gt)`, `edge: outE.has(w).inV`,
+`order: values order`, `optional: hop`, `where: sub-traversal`. And because the table prints SORTED BY
+TIME, a `| tail -1` takes the FASTEST row rather than the named one — this item's first A/B read its
+`count` row twice and never measured the plain arm at all.
+
+✅ `ONLY='=<exact name>'` now requires an exact match; a substring matching several rows prints a
+warning naming them; and a typo matching nothing THROWS instead of measuring nothing.
+
+⚠️ **I CREATED ONE OF THE FIVE COLLISIONS MYSELF** by adding `where: sub-traversal count` at item 2060.
+⚠️ Item 2060's own readings survive it — pre-fusion the plain row was the fastest of the three, so
+`tail -1` happened to pick it — but that was luck, not method. `scan: values` and `scan: id`, the
+controls used throughout items 2056-2060, are NOT among the five.
+
+### What is left, and it is bigger than what was taken
+
+```text
+    engine fused count   14.74 ms
+    HAND floor            7.85 ms      <- 1.88x still available
+```
+
+🔑 **THE COUNT STILL MATERIALIZES EVERY VALUE.** `countProjectedWalk` is
+`values.drain === undefined ? countIterable(values) : values.drain().length` — and this walk HAS a
+`drain` (the eager fill, item 1412), so a query returning ONE NUMBER builds a 200,000-element array to
+read its `.length`. That is why the fusion lands LEVEL with the arm that emits all 200,000 rows rather
+than below it, and it is the whole of the remaining 1.88x.
+
+⚠️ **NOT CHANGED HERE, AND NOT AN OVERSIGHT.** `countProjectedWalk` is shared by every count fusion, so
+flipping it needs its own wide controls — and which way it should go is NOT obvious: item 1998 measured
+a walk WITHOUT a drain at 1.55x, so `countIterable` over a generator may lose to `drain().length`
+despite the allocation. That is a measurement, not a refactor.
+
+VERIFICATION. 10 tests, **8/8 mutants caught** — after one survived the narrow file: deleting the
+`hasKey` gate makes the rung read `projection.keys[0]` off ANY step, which for a keyless `id()` is a
+TypeError rather than a wrong route. The wide suite caught it; the file had nothing that put a keyless
+step in that slot, and now does.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; all
+seven fuzzers green; 5/5 sweeps clean.
