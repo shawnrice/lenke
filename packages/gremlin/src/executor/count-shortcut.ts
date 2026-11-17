@@ -2478,6 +2478,96 @@ const hopChainCount = (mid: readonly Step[], graph: Graph): number | undefined =
 
   const { hops, source, rest, unfiltered } = shape;
 
+  /*
+   * ITEM-2131-UNFILTERED-MEMO: an UNFILTERED chain count is a pure function of the TOPOLOGY, so a repeat
+   * ask is free.
+   *
+   * 🔑 THE GQL TWIN ALREADY DOES THIS (item 1890 put the degree product on its CSR) and the gap it leaves
+   * is the biggest cross-language one measured. Steady state, 200,000 vertices / 1,000,000 edges, the
+   * identical question and the identical answer (5,000,000):
+   *
+   * ```text
+   *     GQL  MATCH (a:P)-[:E]->(b)-[:E]->(c) RETURN count(*)     0.3-0.5 ms   <- answered from a cache
+   *     GRM  V().out(E).out(E).count()                          10.6-15.4     <- recomputed every call
+   * ```
+   *
+   * ⚠️ BOTH ENGINES WARM UP OVER TWO REPS (82.5 then 204 for GQL, 80.6 then 150.6 here), so the figures
+   * above are the steady state and not a first-call artifact — the series was printed rather than
+   * summarised, which is what separates the two.
+   *
+   * ⚠️⚠️ **SOUND ONLY BECAUSE IT IS UNFILTERED, AND `topologyVersion` IS WHY.** That counter advances
+   * SYNCHRONOUSLY on an edge or vertex write (verified: 2 -> 4 on `addEdge`, unchanged across a microtask
+   * drain — unlike `version`/`epoch`, which advance only on the drain and whose use as a cache key cost
+   * item 1646 its design). ⚠️ But it does NOT advance on a PROPERTY write, so a cached FILTERED count
+   * would be a wrong answer the moment a property changed. Hence `unfiltered` in the guard: this count
+   * reads no property at all.
+   *
+   * 🔑 It rides `chainCsrFor`'s generation map, which is already dropped WHOLE on any topology write, so
+   * there is no second invalidation path to keep correct.
+   */
+  if (unfiltered) {
+    const memoKey = `n${hops.length}\u0001${hops.map((h) => `${h.kind}\u0002${h.labels.join('\u0003')}`).join('\u0001')}`;
+    const cached = unfilteredChainMemo(graph, memoKey);
+
+    if (cached !== undefined) {
+      return cached;
+    }
+
+    const computed = hopChainCountUncached(hops, source, rest, unfiltered, graph);
+
+    if (computed !== undefined) {
+      unfilteredChainMemo(graph, memoKey, computed);
+    }
+
+    return computed;
+  }
+
+  return hopChainCountUncached(hops, source, rest, unfiltered, graph);
+};
+
+/**
+ * Read or write the unfiltered-chain-count memo for `graph`, on `chainCsrFor`'s generation map so the
+ * single `topologyVersion` invalidation covers both (item 2131).
+ *
+ * ⚠️ Passing `value` writes; omitting it reads. 🔑 The generation is replaced wholesale when
+ * `topologyVersion` moves, so a stale count cannot survive a write — the same argument the CSR itself
+ * relies on, and deliberately not a second mechanism to keep in step.
+ */
+const unfilteredChainMemo = (graph: Graph, key: string, value?: number): number | undefined => {
+  const tv = graph.topologyVersion;
+  let entry = unfilteredCountCache.get(graph);
+
+  if (entry === undefined || entry.tv !== tv) {
+    entry = { tv, counts: new Map<string, number>() };
+    unfilteredCountCache.set(graph, entry);
+  }
+
+  if (value === undefined) {
+    return entry.counts.get(key);
+  }
+
+  // ⚠️ CAPPED like the CSR's own shape map: an entry is one number, but the KEY space is every distinct
+  // hop shape, and the map lives as long as the graph generation.
+  if (entry.counts.size >= MAX_CHAIN_SHAPES) {
+    entry.counts.clear();
+  }
+
+  entry.counts.set(key, value);
+
+  return value;
+};
+
+/** One generation of unfiltered chain counts per graph, keyed by `topologyVersion` (item 2131). */
+const unfilteredCountCache = new WeakMap<Graph, { tv: number; counts: Map<string, number> }>();
+
+/** `hopChainCount`'s body, split out so the memo above can wrap it without a second shape parse. */
+const hopChainCountUncached = (
+  hops: readonly HopStep[],
+  source: Iterable<Vertex>,
+  rest: readonly VertexFilter[],
+  unfiltered: boolean,
+  graph: Graph,
+): number | undefined => {
   // A `both` ANYWHERE in the chain takes its own function, chosen ONCE here. The arms below are
   // then exactly the code they were, which is the whole point — see `HopStep` for the 1.54x the
   // alternative cost a control it could not reach.

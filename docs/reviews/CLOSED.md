@@ -106161,3 +106161,76 @@ before the expectation was changed.
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 2,783
 Gremlin tests; seven fuzzers green; 5/5 sweeps.
+
+## Item 2131 — ✅✅ **SHIPPED (Gremlin): the UNFILTERED chain count is memoized per topology generation — 11.1 → 0.0 ms at two hops, 19.6 → 0.0 at three (>100x).** Closes the biggest cross-language gap measured, and Gremlin now beats GQL on it
+
+🔑 **FOUND BY ASKING WHETHER THE GQL TWIN HAD ITEM 2130's DEFECT. It did not — it had the CURE.** GQL puts
+the degree product on its CSR (item 1890) and answers a repeat ask from the cache; Gremlin recomputed the
+O(V) identity every call. Steady state, 200,000 vertices / 1,000,000 edges, identical question and
+identical answer (5,000,000):
+
+```text
+    GQL  MATCH (a:P)-[:E]->(b)-[:E]->(c) RETURN count(*)     0.3-0.5 ms
+    GRM  V().out(E).out(E).count()                          10.6-15.4      ~30x
+    GRM  after this item                                     0.0-0.1
+```
+
+⚠️ **BOTH ENGINES WARM UP OVER TWO REPS** (GQL 82.5 then 204; Gremlin 80.6 then 150.6), so those are
+steady-state figures and not a first-call artifact — the SERIES was printed rather than summarised, which
+is the only thing that separates the two readings.
+
+```text
+    row                        BEFORE      MEMO
+    unfiltered 2-hop             11.1       0.0     >100x
+    unfiltered 3-hop             19.6       0.0     >100x
+    filtered 2-hop (control)     12.9      17.9      0.72x   ⚠️ see below
+    one-hop filtered (control)   17.3      16.9      1.02x   ✓
+    unfiltered, CHURNED          28.4      28.7      1.01x   ✓
+```
+
+🔑 **THE CHURNED ARM IS THE CONTROL THAT MATTERS**: an `addEdge` before every ask, so the memo can never
+hit. 28.7 against 28.4 — **a miss costs nothing**, which is what makes this safe for write-heavy use.
+
+### ⚠️⚠️ SOUNDNESS: WHY ONLY THE UNFILTERED COUNT MAY BE CACHED
+
+The key is `graph.topologyVersion`, chosen for two MEASURED properties:
+
+- **It advances SYNCHRONOUSLY** on an edge or vertex write — verified 2 → 4 on `addEdge`, unchanged across
+  a microtask drain. ⚠️ Unlike `version`/`epoch`, which advance only ON the drain and whose use as a cache
+  key cost item 1646 its design.
+- **It does NOT advance on a PROPERTY write** — verified. 🔑 So a cached FILTERED count would go stale
+  silently the moment a property changed. Hence `unfiltered` in the guard: this count reads no property at
+  all, and the last test in the file is that boundary (a property write must still change a filtered
+  count).
+
+It rides `chainCsrFor`'s generation map, already dropped WHOLE on any topology write, so there is no
+second invalidation path to keep in step.
+
+**9 tests, every one asking twice with a write in between** — an added edge (+4, arithmetic checked), a
+removed edge, an added vertex (where the answer CANNOT move, so the generation key is asserted directly),
+two writes in a row against a brute-force enumeration, two hop counts, two edge labels, and the
+property-write boundary. **4/5 mutants CAUGHT**, with one NAMED EXPECTED survivor: stamping `tv: 0` makes
+every lookup miss, so the cache is simply dead and the answer unchanged.
+
+⚠️ **AND ONE OF MY MUTANTS WAS WEAK BEFORE IT WAS RIGHT.** `s@unfilteredChainMemo(graph, memoKey)@…'ONE'@g`
+hit only the READ call — the write is `(graph, memoKey, computed)`, different text — so reads missed and
+writes stored, which is a DISABLED CACHE masquerading as a key collision, and it survived for that reason.
+Retargeted at `, memoKey` (2 occurrences, both sites) it is CAUGHT by the two-labels test. 🔑 A `g` flag
+does not help when the same substring appears in two different enclosing forms.
+
+### ⚠️ THE FILTERED CONTROL'S 0.72x IS IN-SWEEP INTERFERENCE — SECOND TICK RUNNING
+
+It had a plausible mechanism (the split into `hopChainCountUncached` adds a call to every filtered count)
+and was consistent across both sweep rounds. 🔑 On its own instrument, one shape per process, three
+alternated rounds of 14 reps:
+
+```text
+    round       MEMO    BEFORE
+      1        12.91     12.37
+      2        13.31     14.28     <- MEMO faster
+      3        12.74     13.38     <- MEMO faster
+    min of medians  12.74  12.37    1.03x — FLAT, and MEMO's min is lower (11.50 vs 11.59)
+```
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 2,792
+Gremlin tests; seven fuzzers green; 5/5 sweeps.
