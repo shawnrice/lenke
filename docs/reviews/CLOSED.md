@@ -106349,3 +106349,72 @@ walk. The second became a sharper test than the one I meant to write.
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 5,157 GQL
 tests; seven fuzzers green; 5/5 sweeps.
+
+## Item 2134 — ✅✅ **SHIPPED (GQL): `count(DISTINCT <far element>)` counts from the GRAPH-LEVEL edge index — 20.84 → 3.30 ms (6.3x), at the Gremlin floor.** The algorithm was already right; the STRUCTURE READ was the cost
+
+🔑 Nominated by item 2132's cross-language table: GQL **22.90 ms** against Gremlin's 4.28 (5.4x), both
+answering 200,000. ⚠️ **AND THE RUNG WAS ALREADY FIRING** — instrumented rather than guessed: `distinctCount`
+is willing, and its `countFarSide` arm is already O(V) with **no dedup set at all**, the same trick item
+1590 found by profiling Gremlin's fast side.
+
+### 🔑 SO THE COST WAS NEITHER THE ALGORITHM NOR A MISSING RUNG — IT WAS WHICH STRUCTURE IS READ
+
+```text
+    countFarSide (before)   per candidate vertex: far.adjTo?.get(type)   ~80 ns   <- pointer chase + Map.get
+    Gremlin distinctHopCount: iterate graph.edgesToByLabel.values()      ~19 ns   <- never touches a vertex
+```
+
+`edgesToByLabel` is `Map<vertexId, Map<label, Set<Edge>>>` and holds **only vertices with an edge on that
+side**, so iterating its values both skips the zero-degree vertices and stays inside one structure. Both
+engines share `@lenke/core`, so GQL can read the same index.
+
+```text
+    row                     BEFORE     NEW
+    target (isolated)        20.84     3.30     6.3x    (3 rounds: 22.81/22.16/20.84 vs 3.30/4.09/4.10)
+    Gremlin floor                      3.78     at parity
+    incoming direction        3.91     4.00     0.98x   ✓
+    count(DISTINCT b.age)    32.43    32.46     1.00x   ✓ a property key keeps its own route
+    RETURN DISTINCT b rows   72.45    67.62     1.07x   ✓
+    count(*)                  0.00     0.00     ✓
+```
+
+⚠️ **ONLY WHEN THERE IS NO FAR LABEL.** The index is keyed by id, so honouring a far label would mean
+resolving each id back to its vertex — ~190 ns (item 194), dearer than the walk it replaces. A labelled far
+end keeps the vertex walk, verified by instrumenting the branch at 200,000 vertices.
+
+### ⚠️⚠️ THE SWEEP SAID THE LABELLED CONTROL IMPROVED 2.00x. IT DID NOT — IT IS 1.21x
+
+That control takes the SAME vertex walk in both arms, so it could not move; it read 9.58 → 4.78
+consistently across both sweep rounds anyway. 🔑 CLAUDE.md names this exactly: *a two-dist in-process A/B
+flatters any change that REDISTRIBUTES call sites.* My sweep ran both shapes in one process, so in the NEW
+arm the unlabelled query returns early and the vertex-walk loop sees one shape instead of two.
+
+```text
+    one shape per process, 3 rounds   NEW    BEFORE
+                                      7.30     8.81
+                                      6.82    11.18
+                                      8.27     8.24    <- a tie
+    min of medians                    6.82     8.24    1.21x, not 2.00x
+```
+
+⚠️ The target was re-measured the same way and came back **6.3x**, HIGHER than the sweep's 5.44x — so the
+in-process effect cut both ways.
+
+### ⚠️⚠️ AND I WROTE A TEST FOR A CASE THAT CANNOT HAPPEN — THE MUTANT CAUGHT ME
+
+My `bucket.size > 0` guard came with a test claiming *"the index can hold an EMPTY set after a removal"*.
+🔑 Deleting the guard SURVIVED that test, and the reason is the claim is false: measured, `removeEdge`
+**DELETES** the per-type bucket when its last edge goes (`byLabel.get(type)` returns `undefined`; the outer
+per-vertex entry persists). So a present bucket always holds an edge and `bucket !== undefined` suffices.
+⚠️ The guard stays as the index's invariant — Gremlin's `anyNonEmpty` tests the same thing — but it is now
+documented as unreachable in both the code and the test, rather than left looking load-bearing.
+
+**10 tests**: distinct endpoints vs edge count, a vertex whose in-edges are all of ANOTHER type (the index
+entry exists, so this is the sharpest case), a removal reflected, an addition reflected, a self-loop, the
+incoming direction, a vacuous far label agreeing with the unlabelled route, a selective far label, an empty
+graph, and a property key keeping its own route. **4/6 mutants CAUGHT**, with two NAMED survivors: the
+`size > 0` guard above, and disabling the index path entirely (answer-equivalent — it falls back to the
+vertex walk, the same class as items 2130/2131).
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 5,167 GQL
+tests; seven fuzzers green; 5/5 sweeps.

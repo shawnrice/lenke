@@ -5546,6 +5546,46 @@ const countFarSide = (graph: Graph, plan: WalkPlan): number => {
   const direct = plan.direct as DirectHop;
   let n = 0;
 
+  /*
+   * ITEM-2134-INDEX-DRIVEN: count from the GRAPH-LEVEL edge index, touching no vertex object.
+   *
+   * ⚠️⚠️ **THE ALGORITHM BELOW IS ALREADY RIGHT — O(V), no dedup set — AND IT WAS STILL 5.4x THE GREMLIN
+   * TWIN.** `count(DISTINCT b)` over one hop read 21.3 ms against `V().out(E).dedupe().count()`'s 3.9,
+   * both answering 200,000. 🔑 The difference is the STRUCTURE READ, not the loop: this walk visits every
+   * candidate vertex and does `far.adjTo?.get(type)` — a pointer chase into the vertex object plus a
+   * string-keyed `Map.get` — at ~80 ns each (item 2126 measured the `adjTo` read at 16.15 ms over
+   * 200,000), where Gremlin's `distinctHopCount` iterates `graph.edgesToByLabel` and never touches a
+   * vertex at all, at ~19 ns.
+   *
+   * 🔑 THAT INDEX IS `Map<vertexId, Map<label, Set<Edge>>>` AND IT HOLDS ONLY VERTICES WITH AN EDGE ON
+   * THAT SIDE — so iterating its values both skips the zero-degree vertices and stays inside one
+   * structure.
+   *
+   * ⚠️⚠️ **THE `size > 0` TEST IS UNREACHABLE TODAY AND ITS MUTANT SURVIVES** — recorded rather than left
+   * looking load-bearing. Measured: `removeEdge` DELETES the per-type bucket when its last edge goes
+   * (`byLabel.get(type)` returns `undefined`; the outer per-vertex entry persists), so a present bucket
+   * always holds at least one edge. 🔑 It stays because it is the index's invariant rather than this
+   * walk's assumption: Gremlin's `anyNonEmpty` tests the same thing, and the day a removal leaves an
+   * empty bucket, dropping this would over-count silently.
+   *
+   * ⚠️ ONLY WHEN THERE IS NO FAR LABEL TO TEST. The index is keyed by id, so honouring a far label would
+   * mean resolving each id back to its vertex — a string-keyed `Map.get` at ~190 ns (item 194), dearer
+   * than the walk it replaces. A labelled far end keeps the vertex walk below.
+   */
+  if (farLabel === undefined) {
+    const index = direct.forward ? graph.edgesToByLabel : graph.edgesFromByLabel;
+
+    for (const byLabel of index.values()) {
+      const bucket = byLabel.get(direct.type);
+
+      if (bucket !== undefined && bucket.size > 0) {
+        n += 1;
+      }
+    }
+
+    return n;
+  }
+
   for (const far of candidateVertexSource(graph, farLabel)) {
     const bucket = (direct.forward ? far.adjTo : far.adjFrom)?.get(direct.type);
 
