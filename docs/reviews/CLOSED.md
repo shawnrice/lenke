@@ -103706,3 +103706,66 @@ taken.**
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 2,731
 gremlin tests; all seven fuzzers green on their own run; 4/5 sweeps with the fifth above.
+
+## Item 2090 — ❌ **REFUTED: `label: hop values`'s 1.31x MIXED penalty is TWO DIFFERENT RUNGS, and the filtered one's top profile frame (`pick`, 27-29%) is ATTRIBUTION — the ternary, the closure call and the variable-key load are ALL free, measured**
+
+Item 2089's Gremlin sweep left this row as its last candidate. The penalty is real and reproducible —
+three alternated rounds at 200,000 vertices, identical 600,000 rows out:
+
+```text
+    MIXED=0   45.58  45.65  50.74      median 45.65
+    MIXED=1   58.97  60.08  59.80      median 59.80     1.31x
+```
+
+### ⚠️ IT IS NOT ONE ROUTE SLOWING DOWN — IT IS TWO RUNGS
+
+With a vacuous label `dropVacuousLabels` DELETES the `hasLabel`, so the plan reaching the engine is
+`V().out(E).values(n)` and `hopValuesShortcut` owns it. With a real label the step survives and
+`startFilteredHopValues` takes it. ⚠️ **Asking the rung directly is what established this** — it claims
+the plan in both modes, so the difference is upstream of it, in the vacuity drop.
+
+Filtering the starts is genuine extra work, so the ratio BETWEEN the rungs is not the question. The
+question is whether the filtered rung is near ITS OWN floor.
+
+### 🔑 THE FLOOR SAYS THE LABEL TEST IS FREE, AND SO IS EVERYTHING I COULD NAME
+
+A hand floor over REAL engine vertices from the engine's own containers (item 2084's rule), 600,000
+rows, medians of 11, two rounds:
+
+| arm                                                   | round 1 | round 2 |
+| ----------------------------------------------------- | ------- | ------- |
+| floor — scan, `labels.has`, typed adjacency, property | 43.25   | 43.35   |
+| the same with NO label test                           | 40.41   | 44.12   |
+| the same via `soleLabel`                              | 41.14   | 45.08   |
+
+⚠️ **The no-label arm is SLOWER than the floor in round 2**, so the label test's cost is within noise on
+this shape — which already refutes the obvious reading of a 55%-label-test profile elsewhere.
+
+Then the engine's own shape, isolating each mechanism `startFilteredHopValues` has that the floor does
+not — `pick(forward ? edge.to : edge.from)` puts a CLOSURE CALL and a TERNARY ON A LOOP-INVARIANT on
+every edge, and `pick` reads a VARIABLE key:
+
+| arm                                            | round 1 | round 2 |
+| ---------------------------------------------- | ------- | ------- |
+| engine-like (ternary + closure + variable key) | 43.38   | 46.49   |
+| ternary hoisted, closure kept                  | 48.49   | 44.86   |
+| closure gone, variable key kept                | 43.43   | 47.36   |
+| floor (all three absent)                       | 49.69   | 43.34   |
+
+🔑 **ALL FOUR ARE THE SAME AND THE ORDERING FLIPS BETWEEN ROUNDS.** Every mechanism I could name is
+free: the walk is dominated by the adjacency traversal and 600,000 array pushes. ⚠️ So `pick` at
+**27-29% of the profile is ATTRIBUTION** — [[frame-attribution-trap]]'s exact shape ("a FIELD READ or
+GETTER frame is attribution until a deletion test with a CONTROL says otherwise"), and the fourth
+instance of it recorded here.
+
+⚠️ **THE PROFILE ALSO LIED ABOUT THE DIRECTION.** The two `--cpu-prof` runs totalled **4809.7 ms for
+MIXED=1 against 5926.6 for MIXED=0** — i.e. the slower mode profiled FASTER, with every top frame
+lower. Process totals include the fixture build and the sampler's own distortion; the row's own timing,
+repeated and alternated, is the only figure that held.
+
+**So there is nothing to build here.** The engine's filtered rung is ~1.2-1.4x a hand floor whose own
+round-to-round spread is ±15%, which is below what this instrument resolves. A real target on this
+shape needs a harness that can separate 20%, and CLAUDE.md's standing threshold says so.
+
+GATES. Measurement only — no engine change. `bun run check` 0 read unpiped; `node --check` on the new
+floor probe (`startfilt-floor-2090.mjs`, six arms).
