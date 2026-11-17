@@ -24,22 +24,43 @@ import { join } from 'node:path';
 const HERE = import.meta.dirname;
 const GQL_SRC = join(HERE, '..', 'gql', 'src', 'executor');
 
-/** Every `detect*` shape detector — the GQL engine's rung entry points — read from SOURCE. */
+/*
+ * The GQL engine's rung entry points, read from SOURCE.
+ *
+ * ⚠️⚠️ **`detect*` ALONE WAS NOT THE WHOLE SET (item 2072).** Item 2071 found the GREMLIN audit's
+ * suffix filter missing fifteen route-deciders while its rung LIST was derived correctly, and the same
+ * check here finds the `*Applies` family invisible: `twoHopFilteredCsrApplies`,
+ * `twoHopUnfilteredCsrApplies`, `filteredChainCsrApplies`, `csrDegreeProductApplies`,
+ * `csrGatedDegreeProductApplies`, `farDrivenPredicatedApplies` — six functions whose entire job is to
+ * say whether a rung claims a plan, which is this audit's own definition of a rung.
+ *
+ * ⚠️ **DECIDERS ONLY, NOT THE WALKS THEY SERVE.** `gql/src/executor` exports 458 consts; `allWalk`,
+ * `shortestWalk`, `walkSegments` and `projectedRows` are implementations, and pulling them in would
+ * bury the question exactly as the Gremlin audit's own comment warns. The second pattern is three
+ * suffixes plus two named decision predicates, and nothing else.
+ */
+const DECIDER = /^export const ((?:detect[a-zA-Z0-9]+|[a-zA-Z0-9]+(?:Applies|Shape|Seek))) = \(/gm;
+
+/** Two decision predicates that carry no shared suffix; named rather than pattern-matched. */
+const NAMED_DECIDERS = ['seekIsWorthIt', 'endpointFoldBeatsRowWalk'];
+
 const rungs = [
-  ...new Set(
-    readdirSync(GQL_SRC)
+  ...new Set([
+    ...readdirSync(GQL_SRC)
       .filter((f) => f.endsWith('.ts') && !f.includes('.test.'))
-      .flatMap((f) => [
-        ...readFileSync(join(GQL_SRC, f), 'utf8').matchAll(
-          /^export const (detect[a-zA-Z0-9]+) = \(/gm,
-        ),
-      ])
+      .flatMap((f) => [...readFileSync(join(GQL_SRC, f), 'utf8').matchAll(DECIDER)])
       .map((m) => m[1]),
-  ),
+    ...NAMED_DECIDERS,
+  ]),
 ].sort();
 
-if (rungs.length < 30) {
-  throw new Error(`parsed only ${rungs.length} detect* rungs — the regex has drifted`);
+/*
+ * ⚠️ THE FLOOR IS RAISED WITH THE PATTERN. It was 30 for `detect*` alone; widening the pattern without
+ * widening the guard would let a future drift back to 34 pass silently, which is the whole failure
+ * mode this guard exists for.
+ */
+if (rungs.length < 40) {
+  throw new Error(`parsed only ${rungs.length} rungs — the regex has drifted`);
 }
 
 /** The query texts, read out of the profile probe so there is ONE corpus. */

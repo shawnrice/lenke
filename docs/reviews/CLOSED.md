@@ -102491,3 +102491,59 @@ one, so the driver failed to compile before any shape ran. Loud, immediate, and 
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
 `node --check` on the probe. Instrument only; no engine change.
+
+## Item 2072 — ✅ **THE SAME FILTER DECAY ON THE GQL SIDE: the audit tracked 34 `detect*` rungs and missed the whole `*Applies` family. Now 45 tracked, 39 reached — and all six unreached are DIAGNOSED rather than reported as gaps**
+
+Item 2071 found the Gremlin audit's suffix filter missing fifteen route-deciders. This ran the same
+check on `gql-rung-coverage-2049.mjs`, which matched only `/^export const (detect[a-zA-Z0-9]+)/`.
+
+🔑 **SIX `*Applies` FUNCTIONS WERE INVISIBLE, and their entire job is to say whether a rung claims a
+plan** — this audit's own definition of a rung: `twoHopFilteredCsrApplies`,
+`twoHopUnfilteredCsrApplies`, `filteredChainCsrApplies`, `csrDegreeProductApplies`,
+`csrGatedDegreeProductApplies`, `farDrivenPredicatedApplies`. The pattern now also takes `*Shape` and
+`*Seek`, plus two named decision predicates (`seekIsWorthIt`, `endpointFoldBeatsRowWalk`) that carry no
+shared suffix.
+
+⚠️ **DECIDERS ONLY.** `gql/src/executor` exports **458** consts; `allWalk`, `shortestWalk`,
+`walkSegments` and `projectedRows` are implementations, and admitting them would bury the question
+exactly as the Gremlin audit's own comment warns. ⚠️ The drift guard was raised from 30 to 40 in the
+same edit — widening a pattern without raising its floor would let a silent drift back to 34 pass.
+
+### ⚠️⚠️ ALL SIX UNREACHED RUNGS DIAGNOSED — item 2071's lesson applied immediately
+
+Item 2071's widening manufactured two false gaps, so nothing here is reported as a gap without asking
+why it is unreached:
+
+| rung                           | why unreached                                                                                                                                                                                        | is it a gap?            |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------- |
+| `edgeSeek`, `seekIsWorthIt`    | **UNREACHABLE BY CONSTRUCTION** — the corpus is read out of `runtime-profile-probe.mjs`, whose fixture has **ZERO `createIndex` calls**, so no seek rung can fire                                    | ❌ a fixture property   |
+| `filteredChainCsrApplies`      | serves `filteredChainCsrCount` — a filtered CHAIN COUNT the corpus lacks; has its own test file asserting it "as a pure function"                                                                    | ❌ live and tested      |
+| `csrGatedDegreeProductApplies` | a three-hop degree-product gate; has a test file                                                                                                                                                     | ❌ live and tested      |
+| `farDrivenPredicatedApplies`   | not NAMED in any test, but its header records a MUTATION round on its two keys — "both mutants survive… resolved in the REDUNDANT direction rather than left as an untested guard" (item 475's rule) | ❌ covered, differently |
+| `endpointFoldBeatsRowWalk`     | ✅ **a measured route threshold, extracted as a pure function at item 1344 and never unit-tested**                                                                                                   | ✅ **the one real gap** |
+
+⚠️ **AND A CORRECTION TO MY OWN METHOD:** I counted coverage with `grep -rl <name> *.test.ts`, which
+asks whether a function is NAMED in a test — not whether its behaviour is covered.
+`farDrivenPredicatedApplies` scored zero and is mutation-tested. **A name count is not a coverage
+measurement**, and reporting it as one would have been the third false gap in two items.
+
+### ✅ What shipped: the one real gap closed
+
+`endpoint-fold-threshold.test.ts` pins `endpointFoldBeatsRowWalk(edgeCount, vertexCount)` —
+`edgeCount >= vertexCount * 2`. ⚠️ **NO ANSWER TEST CAN REACH IT:** both arms answer identically, which
+is what makes the fold legal, so every engine-level test passes whichever side of the boundary it lands
+on. The boundary is a measured table, quoted in the test:
+
+```text
+    degree   fold     walk     winner
+         1   87.68    71.89    walk, 1.22x   <- the rung was a PESSIMIZATION here
+         2   89.29    88.66    tie,  1.007x
+         3   87.54   104.61    fold, 1.19x
+```
+
+**`>=` and not `>` is the deliberate part** — the degree-2 row is a tie, so the boundary costs nothing
+either way while keeping every measured win on the fold. 5 tests, **3/3 mutants caught** (operator
+`>=`→`>`, threshold 2→3, threshold 2→1), tree restored byte-identical.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
+`node --check` on the probe. One test file and one instrument fix; no engine change.
