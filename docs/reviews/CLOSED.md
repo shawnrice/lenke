@@ -103769,3 +103769,59 @@ shape needs a harness that can separate 20%, and CLAUDE.md's standing threshold 
 
 GATES. Measurement only — no engine change. `bun run check` 0 read unpiped; `node --check` on the new
 floor probe (`startfilt-floor-2090.mjs`, six arms).
+
+## Item 2091 — ✅ **VERIFIED: by-id access IS O(1), within 0.99-1.05x of a raw `Map.get` from 25,000 to 1,000,000 elements — and the curve PLATEAUS past 400k.** 🔑 A standing requirement that had never been measured, and the naive reading of the numbers says the opposite
+
+`getVertexById` appears in EVERY profile taken across items 2083-2090 at 5-16%, and by-id access is the
+one complexity guarantee this work is held to. It had never been measured — and it is the kind of thing
+no screen here can see, because the fixture BUILD calls it heavily, so it is a hot frame whether or not
+it has degraded.
+
+### ⚠️ THE FIRST READING LOOKED LIKE A DEFECT
+
+200,000 lookups per rep (held CONSTANT across sizes, so only the working set varies), scattered ids,
+every lookup asserted to HIT, medians of 9:
+
+```text
+          N     vertex ns/call
+      25000          23.04
+     100000          57.30         x2.49
+     400000         141.90         x6.16      <- 6.16x for a 16x size increase
+```
+
+**6.16x growth is not flat, and reporting it alone would have read as "not O(1)".** It is not: a
+string-keyed `Map` is O(1) and still gets slower with N — more entries means more cache and TLB
+misses, and the ids themselves grow longer (`v399999` hashes more than `v24999`).
+
+### 🔑 THE RAW-`Map` CONTROL IS WHAT MAKES THE PROBE MEAN ANYTHING
+
+A bare `Map.get` over the SAME keys at the SAME sizes:
+
+| N         | vertex | edge   | raw `Map` | engine/raw | vertex growth | raw growth |
+| --------- | ------ | ------ | --------- | ---------- | ------------- | ---------- |
+| 25,000    | 29.61  | 32.83  | 28.66     | **1.03x**  | 1.00          | 1.00       |
+| 100,000   | 65.33  | 89.22  | 62.37     | **1.05x**  | 2.21          | 2.18       |
+| 400,000   | 136.78 | 139.73 | 138.38    | **0.99x**  | 4.83          | 4.85       |
+| 1,000,000 | 142.09 | 156.04 | 138.92    | **1.02x**  | 5.02          | 4.87       |
+
+🔑 **The engine adds 1-5% over the bare structure, and the two growth curves are IDENTICAL** (4.83
+against 4.85 at 400k). So every bit of the growth belongs to the hash, and the wrapper contributes no
+asymptotic term.
+
+🔑 **AND THE CURVE PLATEAUS: 400,000 → 1,000,000 is a 2.5x size increase for 1.04x cost** (the raw
+control: 1.00x). Steep to ~400k while the working set outgrows cache, flat after — which is exactly
+what O(1)-with-a-cache-constant looks like, and what neither O(log N) nor O(N) can do.
+
+⚠️ **WHAT A READER SHOULD TAKE FROM THE ABSOLUTE NUMBER**: 142 ns a call at a million elements is the
+MAP, not the engine. The hot paths already avoid it — audit item 321 priced the four ways to reach an
+adjacency and found a string key at 59.7 ns against a **cached reference at 16.1**, which is why
+`Vertex` caches its boxes rather than looking itself up. A rung doing per-ROW by-id lookups at a
+million elements would be paying 142 ns a row, and that is worth knowing before writing one.
+
+⚠️ Edge lookups run slightly dearer than vertex ones at the ends of the range (156.04 against 142.09 at
+1M, 1.10x) and track the control at 1.12x. Recorded, not chased: it is within the band the rest of this
+file treats as unresolvable.
+
+GATES. Measurement only — no engine change. `bun run check` 0 read unpiped; `node --check` on the probe
+(`byid-scaling-2091.mjs`), whose hit assertions throw rather than letting a missing id measure the
+cheaper MISS path.
