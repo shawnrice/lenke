@@ -104247,3 +104247,52 @@ owner-level call on whether a side-effecting walk may carry single-use state.
 
 GATES. Probe only — no engine change. `bun run check` 0 read unpiped; `node --check` on the probe
 (`lazystore-floor-2098.mjs`), which throws unless the bag holds exactly one copy.
+
+## Item 2099 — ❌ **The 20-26 ms Gremlin band has NO hidden target: normalized per INPUT EDGE the hop rows are a smooth 52.6 → 86.6 ns gradient.** ⚠️ The normalization corrects exactly ONE misleading figure, not the general picture — and this entry corrects its own first conclusion
+
+The screen reports ms and OUTPUT rows. For a hop row the work is per INPUT EDGE, and
+`edge: outE.has(w).inV` reads **143.2 ns a row** — 5x a bare `values` scan's 28 — which looked like a
+target.
+
+### It is fused, and the 143 is a division artefact
+
+The census shows `edgef: outE has inV values` at **0 `applyStep` calls** — fully fused since an earlier
+item, so there was never a route gap. And its `has(w, gt(3))` filters 300,000 edges down to 171,428
+rows, so the engine did 300,000 edges' work: **81.8 ns an input edge**, which is the middle of the pack.
+
+```text
+    shape                                   ms   ns/OUT row   ns/INPUT
+    pathdep: tree                       278.26    (one row)      927.5   <- closed 1922/1925/1954
+    sideeffect: store pass-through       53.72        179.1       179.1   <- item 2098, 2.1x, BLOCKED
+    sideeffect: values then store        51.57        171.9       171.9   <- item 2098
+    sideeffect: values then aggregate    28.54         95.1        95.1
+    where: neq filter                    25.98         86.6        86.6
+    pathdep: simplePath                  24.63         82.1        82.1
+    edge: outE.has(w).inV                24.54        143.2        81.8   <- the ONE row this corrects
+    pathdep: path().by(k)                22.61         75.4        75.4
+    coalesce: hop + identity             18.91         63.0        63.0
+    agg: hop values min                  15.79    (one row)        52.6
+    scan: values (reference)              2.81         28.1        28.1
+```
+
+### ⚠️⚠️ AND THIS ENTRY CORRECTS ITS OWN FIRST CONCLUSION
+
+The probe originally printed "the per-row view invents variation the per-input view does not show".
+**That is overstated.** At this fixture `NODES * FANOUT` edges produce `NODES * FANOUT` rows, so for
+NINE of the eleven rows output EQUALS input and the normalization changes nothing whatsoever. 🔑 It
+corrects **exactly one row** — the filtered edge row above — and the 6.37x-vs-3.40x spread difference I
+first reported comes almost entirely from that single entry. The probe now says so in those terms.
+
+### The reading
+
+Excluding `tree` (closed three times over), the hop rows run **52.6 → 86.6 ns an input edge in a smooth
+gradient** that tracks how much each shape does per edge — a `neq` against a tag, a `simplePath` check,
+a path accumulation, a `coalesce` branch. **No outlier, so nothing to nominate.** The two genuinely
+dearer rows are the `store` pair at 179/172, which is item 2098's 2.1x, already priced and blocked on an
+owner-level statefulness question.
+
+⚠️ **So the Gremlin workload screen is exhausted at its current coverage**: every row above the
+reference scan is either closed, already priced, or ordinary per unit of work. A new target needs a new
+SHAPE, not a re-reading of these.
+
+GATES. Probe only — no engine change. `bun run fmt` 0; `bun run check` 0 read unpiped; `node --check`.
