@@ -103952,3 +103952,76 @@ same timings and mean nothing.
 
 GATES. Probes only — no engine change. `bun run check` 0 read unpiped; `node --check` on both
 (`write-demotes-reads-2093.mjs`, `csr-arming-sweep-2093.mjs`).
+
+## Item 2094 — ✅ **SHIPPED: the CSR arming predicts from HISTORY instead of arming after one ask — the 2-reads-per-write cliff goes 20.49 → 4.85 ms/read (4.23x) and the whole curve's spread collapses 12.07x → 3.61x, with PARITY at the read-heavy end.** 🔑 A fixed threshold cannot do this, and that is measured at four of them
+
+Item 2093 found the cliff and argued — explicitly as an argument, not a result — that raising the
+threshold would only MOVE it. ⚠️ **Measured at four thresholds, that argument is exactly right**: the
+cliff sits at `reads per write == threshold`, always.
+
+| reads/write | T=2 (shipped) | T=3       | T=6       | T=12 |
+| ----------- | ------------- | --------- | --------- | ---- |
+| 2           | **18.51**     | 5.52      | 5.15      | 5.29 |
+| 3           | 12.81         | **15.93** | 5.40      | 4.91 |
+| 6           | 6.82          | 6.95      | **10.35** | 4.81 |
+| 24          | **1.48**      | 1.82      | 2.29      | 3.41 |
+
+🔑 And raising it is not free: the read-heaviest workload goes **1.48 → 3.41 (2.3x worse)** because the
+build is delayed. No constant can win, because the build always lands on the LAST ask of some workload.
+
+### 🔑 SO THE POLICY PREDICTS FROM THE PREVIOUS VERSION'S ASK COUNT
+
+A version whose predecessor was read `k` times will almost certainly be read about `k` times too.
+`csrAskedBefore` now carries the outgoing version's per-shape counts forward as evidence:
+
+- **prior ≥ `AMORTIZE_ASKS` (6)** → arm on the second ask, as before.
+- **prior below it** → never arm: a build serving one reuse is a ~30 ms loss.
+- **no prior at all** → arm on the second ask, so a cold graph behaves exactly as it did.
+- ⚠️⚠️ **plus a SELF-CORRECTING clause**: arm anyway once THIS version has asked 6 times, whatever the
+  prior said. A pessimistic prior is a PREDICTION, and once it is being contradicted in front of us the
+  build will amortize.
+
+🔑 **`AMORTIZE_ASKS = 6` IS MEASURED, NOT CHOSEN** (item 2093): a build is ~30 ms at 60,000 vertices /
+180,000 edges and a cached read saves ~6.1 ms, so break-even is ~5 reads AFTER the build. The old
+policy armed after ONE.
+
+| reads/write | before    | after    |                    |
+| ----------- | --------- | -------- | ------------------ |
+| 1           | 6.21      | 6.18     | 1.00x              |
+| **2**       | **20.49** | **4.85** | **4.23x**          |
+| **3**       | 13.30     | 4.98     | **2.67x**          |
+| **4**       | 10.24     | 5.78     | **1.77x**          |
+| 6           | 6.98      | 6.11     | 1.14x              |
+| 12          | 3.44      | 3.18     | 1.08x              |
+| 24          | 1.70      | 1.71     | **1.00x — parity** |
+
+**worst/best across the curve: 12.07x → 3.61x, and nothing is now worse than reading once.**
+
+### ⚠️ THE SELF-CORRECTING CLAUSE IS LOAD-BEARING, AND THE FIRST VERSION WITHOUT IT REGRESSED
+
+Without it, a steady 24-reads-per-write workload read **2.25 ms a read against the old policy's 1.63
+(0.72x)**: the first version after a cold prior never builds and its whole run is on the slow path.
+With it, parity.
+
+⚠️ **AND MY FIRST MEASUREMENT OF THAT ARM WAS AN INSTRUMENT FAULT.** The sweep split a fixed read
+budget by the reads-per-write ratio, so the 24-reads arm got exactly **ONE write** — a policy that
+predicts from the previous version cannot converge in one version, and its figure was the warm-up's
+verdict rather than the policy's. A fixed-threshold policy has no state and cannot show that, so the
+old sweep shape was adequate for item 2093 and silently wrong for this one. The sweep now enforces a
+minimum number of versions per arm.
+
+VERIFICATION. 19 tests in `two-hop-count-csr.test.ts`, **9/9 mutants caught** — every arm of the
+policy: the prior ignored, the prior always trusted, the self-correction removed, the self-correction
+always firing, the prior not carried over, the counts not resetting, a cold shape never arming, and the
+ask not being counted at all.
+
+⚠️ **ONE EXISTING TEST'S CONTRACT CHANGED AND WAS REWRITTEN, NOT WEAKENED.** "RESETS on a topology
+write" asserted that the second ask after a write arms. 🔑 Its own comment is the argument FOR this
+change — "a write/count/write/count workload would rebuild on every count — the case this policy exists
+to avoid" — and item 2093 measured that it rebuilt anyway. The reset itself is still asserted (a
+shape armed a moment ago is not armed on its first ask after a write); the arming half became four
+tests covering the new policy.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 5,055
+GQL tests; all seven fuzzers green; 5/5 sweeps clean. Read-side spot check unchanged (`count2` 19.74,
+`hopall` 9.07, `hop2distinct` 126.65 — all with their expected answers).

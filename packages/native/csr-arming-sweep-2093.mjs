@@ -53,7 +53,18 @@ for (const perVersion of [1, 2, 3, 4, 6, 12, 24]) {
   query(g, READ);
   query(g, READ);
 
-  const writes = Math.max(1, Math.floor(TOTAL / perVersion));
+  /*
+   * ⚠️⚠️ **AT LEAST `MIN_WRITES` TOPOLOGY VERSIONS PER ARM, AND ITEM 2094 IS WHY.** With `TOTAL`
+   * reads split by `perVersion`, the 24-reads arm got exactly ONE write — so a policy that predicts
+   * from the PREVIOUS version's ask count never converged, and its figure was the 2-ask warm-up's
+   * verdict rather than the policy's. A fixed-threshold policy has no state and cannot show that, so
+   * the old shape was adequate for item 2093 and silently wrong for this one.
+   *
+   * 🔑 The read count per arm is therefore `MIN_WRITES * perVersion` where that exceeds `TOTAL`, and
+   * the per-READ figure is what is compared — so more reads in an arm do not flatter it.
+   */
+  const MIN_WRITES = Number(process.env.MIN_WRITES ?? 5);
+  const writes = Math.max(MIN_WRITES, Math.floor(TOTAL / perVersion));
   let sink = 0;
   const t0 = performance.now();
 

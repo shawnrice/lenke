@@ -350,23 +350,79 @@ export const csrHopRoute = (
  * ⚠️ AND IT IS KEYED PER LEG SHAPE, not per graph: two different two-hop counts over different edge
  * types are different CSRs and each amortizes on its own.
  */
-const asked = new WeakMap<Graph, { tv: number; shapes: Set<string> }>();
+const asked = new WeakMap<
+  Graph,
+  {
+    tv: number;
+    /** Asks this topology version has received, per leg shape. */
+    shapes: Map<string, number>;
+    /** Asks the PREVIOUS version received, per leg shape — the evidence the policy predicts from. */
+    prior: Map<string, number>;
+  }
+>();
+
+/*
+ * How many asks a topology version must receive before a CSR build pays for itself.
+ *
+ * 🔑 MEASURED, NOT CHOSEN (item 2093): a build is ~30 ms at 60,000 vertices / 180,000 edges, and a
+ * cached read saves ~6.1 ms against the non-CSR path — so the break-even is ~5 reads AFTER the build.
+ * The old policy armed after ONE, which is why it could pay 30 ms for a single reuse.
+ */
+const AMORTIZE_ASKS = 6;
+
+/** The ask at which a shape with NO history is given the benefit of the doubt. */
+const FIRST_ASK_THRESHOLD = 2;
 
 export const csrAskedBefore = (graph: Graph, key: string): boolean => {
   const tv = graph.topologyVersion;
   let entry = asked.get(graph);
 
   if (entry === undefined || entry.tv !== tv) {
-    entry = { tv, shapes: new Set() };
+    // ⚠️ THE OUTGOING VERSION'S COUNTS BECOME THE EVIDENCE for the incoming one. This is the whole
+    // difference from a fixed threshold: a steady workload reading k times per write is RECOGNISED
+    // after one version instead of being re-discovered, and badly, every version.
+    entry = { tv, shapes: new Map(), prior: entry?.shapes ?? new Map() };
     asked.set(graph, entry);
   }
 
-  if (entry.shapes.has(key)) {
+  const seen = (entry.shapes.get(key) ?? 0) + 1;
+
+  entry.shapes.set(key, seen);
+
+  /*
+   * 🔑 THE ADAPTIVE POLICY. A fixed threshold ALWAYS has a cliff at `reads == threshold`, because the
+   * build then lands on the version's LAST ask and is discarded unused — item 2094 measured that
+   * cliff moving to 2, 3, 6 and 12 as the threshold did. History is the only thing that can tell a
+   * version which will be read again from one which will not.
+   *
+   * ⚠️ AN UNSEEN SHAPE FALLS BACK TO THE SECOND-ASK POLICY, so a first encounter behaves exactly as
+   * before and nothing regresses on a cold graph.
+   */
+  const priorAsks = entry.prior.get(key);
+
+  if (priorAsks === undefined) {
+    return seen >= FIRST_ASK_THRESHOLD;
+  }
+
+  // The previous version was read enough to amortize: build early and reuse it.
+  if (priorAsks >= AMORTIZE_ASKS) {
+    return seen >= FIRST_ASK_THRESHOLD;
+  }
+
+  /*
+   * 🔑 **SELF-CORRECTING WITHIN THE VERSION, AND WITHOUT THIS THE READ-HEAVIEST WORKLOAD PAYS.** The
+   * prior says this shape was not read enough last time — but if THIS version has already asked
+   * `AMORTIZE_ASKS` times, the prediction is being contradicted in front of us and the build will
+   * amortize. ⚠️ Measured: without this clause a steady 24-reads-per-write workload read 2.25 ms a
+   * read against the fixed policy's 1.63 (0.72x), because the FIRST version after a cold prior never
+   * builds and its whole run is on the slow path. With it, the penalty is one SHAPE's first version
+   * rather than one version per shape per workload change.
+   */
+  if (seen >= AMORTIZE_ASKS) {
     return true;
   }
 
-  entry.shapes.add(key);
-
+  // Otherwise the prediction stands: this version will not be read enough, so never pay for a build.
   return false;
 };
 

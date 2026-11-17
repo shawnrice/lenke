@@ -254,11 +254,17 @@ describe('csrAskedBefore — the second-ask policy', () => {
   });
 
   /**
-   * ⚠️ THE LOAD-BEARING HALF: a topology write invalidates the CSR, so the generation must reset or
-   * a write/count/write/count workload would rebuild on every count — the case this policy exists
-   * to avoid.
+   * ⚠️ THE LOAD-BEARING HALF: a topology write invalidates the CSR, so the generation must reset or a
+   * write/count/write/count workload would rebuild on every count — the case this policy exists to
+   * avoid.
+   *
+   * ⚠️⚠️ **AND IT DID NOT AVOID IT.** Item 2093 measured that exact workload: at EXACTLY two reads per
+   * write the old second-ask policy paid a full ~30 ms build on the version's LAST read and the next
+   * write discarded it unused — **20.49 ms a read against 6.21 for reading once, and 12.07x worse than
+   * batching.** So the reset below is still asserted, but arming is now predicted from the PREVIOUS
+   * version's ask count rather than granted after one ask.
    */
-  it('RESETS on a topology write', () => {
+  it('RESETS the count on a topology write', () => {
     const g = fixture();
 
     expect(csrAskedBefore(g, '>E|>E')).toBe(false);
@@ -271,7 +277,87 @@ describe('csrAskedBefore — the second-ask policy', () => {
       labels: ['E'],
     });
 
+    // The count really did reset: a shape that was armed a moment ago is not armed on its first ask.
+    expect(csrAskedBefore(g, '>E|>E')).toBe(false);
+  });
+
+  /**
+   * 🔑 THE FIX FOR THE CLIFF (item 2094). A version whose predecessor was read only twice will almost
+   * certainly be read twice too, and a build that serves one reuse is a ~30 ms loss. So it does NOT
+   * arm on the second ask any more.
+   */
+  it('⚠️ does NOT arm after a write when the PREVIOUS version was read too few times', () => {
+    const g = fixture();
+
+    // Two asks on this version — far short of what a build needs to amortize.
+    csrAskedBefore(g, '>E|>E');
+    csrAskedBefore(g, '>E|>E');
+
+    g.addEdge({
+      id: 'w1',
+      from: g.getVertexById('a') as never,
+      to: g.getVertexById('c') as never,
+      labels: ['E'],
+    });
+
+    // The old policy answered TRUE here and paid for a build the next write threw away.
+    expect(csrAskedBefore(g, '>E|>E')).toBe(false);
+    expect(csrAskedBefore(g, '>E|>E')).toBe(false);
+  });
+
+  it('arms on the SECOND ask when the previous version WAS read enough', () => {
+    const g = fixture();
+
+    // Six asks is the measured break-even: a build is ~30 ms and a cached read saves ~6.1 ms.
+    for (let i = 0; i < 6; i += 1) {
+      csrAskedBefore(g, '>E|>E');
+    }
+
+    g.addEdge({
+      id: 'w2',
+      from: g.getVertexById('a') as never,
+      to: g.getVertexById('c') as never,
+      labels: ['E'],
+    });
+
     expect(csrAskedBefore(g, '>E|>E')).toBe(false);
     expect(csrAskedBefore(g, '>E|>E')).toBe(true);
+  });
+
+  /**
+   * ⚠️⚠️ THE SELF-CORRECTING CLAUSE, and without it the READ-HEAVIEST workload pays. A cold or
+   * pessimistic prior is a PREDICTION; once this version has itself asked enough times the prediction
+   * is being contradicted in front of us, and the build will amortize.
+   *
+   * 🔑 Measured: without this clause a steady 24-reads-per-write workload read 2.25 ms a read against
+   * the old policy's 1.63 (0.72x). With it, parity — 1.56 against 1.56.
+   */
+  it('⚠️ arms anyway once THIS version has asked enough, whatever the prior said', () => {
+    const g = fixture();
+
+    csrAskedBefore(g, '>E|>E');
+    csrAskedBefore(g, '>E|>E');
+
+    g.addEdge({
+      id: 'w3',
+      from: g.getVertexById('a') as never,
+      to: g.getVertexById('c') as never,
+      labels: ['E'],
+    });
+
+    // Asks 1-5 decline on the pessimistic prior …
+    for (let i = 0; i < 5; i += 1) {
+      expect(csrAskedBefore(g, '>E|>E')).toBe(false);
+    }
+
+    // … and the sixth arms regardless, because the evidence has arrived.
+    expect(csrAskedBefore(g, '>E|>E')).toBe(true);
+  });
+
+  it('⚠️ an UNSEEN shape still arms on its second ask — nothing regresses on a cold graph', () => {
+    const g = fixture();
+
+    expect(csrAskedBefore(g, '>NEW|>NEW')).toBe(false);
+    expect(csrAskedBefore(g, '>NEW|>NEW')).toBe(true);
   });
 });
