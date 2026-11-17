@@ -105786,7 +105786,7 @@ assumed:**
 each costs one comparison per COMPILE — with that reasoning written beside them so the next reader does
 not conclude the tests are blind.
 
-### ⚠️⚠️ NOT AT ITS FLOOR — THE NEXT TARGET, WITH A NUMBER
+### ⚠️⚠️ NOT AT ITS FLOOR — THE NEXT TARGET, WITH A NUMBER — ⚠️⚠️ ~~1.85x, ~45 ms unexplained~~ **WRONG: a WORK-COUNT error. The OPTIONAL form has 1.33x the rows by construction, so the gap is 1.39x and the ~45 ms was mostly those rows. Corrected at item 2125**
 
 ```text
     OPTIONAL far-key (this item)   112.0 ms
@@ -105802,3 +105802,64 @@ ms is UNEXPLAINED** — enough to be worth a profile rather than a guess. Likely
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 5,146 GQL
 tests; seven fuzzers green; 5/5 sweeps; the spelling probe flags 0 groups.
+
+## Item 2125 — ⚠️⚠️ **TWO OF MY OWN CLAIMS REFUTED: item 2124's "1.85x above its floor / ~45 ms unexplained" was a WORK-COUNT ERROR (it is 1.39x), and the polymorphic-iterable mechanism measured 1.02-1.11x.** Plus the package's first WINDOWED profiler
+
+Item 2124 closed by nominating its own gap. This tick profiled it, built the nominated fix, and found
+**both halves of the nomination wrong**. Recorded in full because the arithmetic error is the reusable part.
+
+### ⚠️⚠️ THE FLOOR AND THE TARGET DO DIFFERENT AMOUNTS OF WORK, SO THE RATIO WAS NEVER 1.85x
+
+Only **100,000 of the fixture's 200,000 anchors have edges** (the generator steps `i += 2`). So:
+
+```text
+    OPTIONAL far rows     400,000     <- 300,000 edge rows + 100,000 NULL rows
+    non-OPTIONAL far rows 300,000
+```
+
+🔑 **The OPTIONAL form has 1.33x the rows by construction.** Work-adjusted the floor is 60.5 × 4/3 =
+**80.7 ms**, so the gap is **112 / 80.7 = 1.39x** — and the "~45 ms unexplained" was mostly the extra
+100,000 rows the comparison never accounted for. ⚠️ This is the `accounted-shape-hides-a-term` shape in
+reverse: I priced a RATIO without pricing the row counts on each side of it.
+
+### ⚠️ AND THE MECHANISM THE PROFILE NOMINATED IS WORTH ~NOTHING
+
+The windowed profile showed my walk closure at **40 ms** against the floor's **12** for the same edges,
+plus 13.3% phantom self-time in `optionalHopCounts` — a two-branch dispatcher that cannot cost 13 ms. The
+hypothesis: `edgesOfTypes` returns `Iterable<Edge>` (a union of a `Set`, an array and a generator), so the
+`for…of` is POLYMORPHIC, where `directedBucket` returns a known `Set`. Its own header and item 1621's 1.83x
+both say that substitution pays.
+
+```text
+    arm             BUCKET    edgesOfTypes
+    farkey           106.6      118.5        1.11x
+    farkey_filtered  104.4      106.5        1.02x   ⚠️ the two arms DISAGREE
+```
+
+🔑 **REVERTED.** 1.11x against 1.02x on the same change is the noise floor, not a win — and shipping it
+would have put a documented-looking mechanism in the code that the measurement does not support.
+
+### ✅ WHAT IS KEPT: `optfar-prof-2125.mjs`, the first WINDOWED profiler here
+
+⚠️⚠️ **AND IT CARRIES THE CAVEAT THAT COST THIS ITEM ITS TARGET: A CALLEE AND ITS CALLER TRADE SELF TIME
+RUN TO RUN.** Four runs, same binary, same fixture: the walk closure read 43.1 / 42.6 / 38.4 / 40.2% while
+`optionalHopCounts` read **8.1 / 18.2 / 40.1 / 13.3%** — the same two-branch dispatcher, 5x apart. 🔑 V8's
+inlining varies per run and the two frames swap attribution while their SUM stays put. ⚠️ I read one of
+those splits as "phantom self-time in a dispatcher that cannot cost 13 ms" and built on it. **A nomination
+that depends on which of a callee and its caller is hot is not a finding** — sum them, or ablate with a
+control. That caveat is now in the probe's own header, where the reader is.
+
+🔑 It starts V8's profiler via `node:inspector` AFTER the fixture is built and stops it before teardown, so
+`PROBES.md`'s closed frames (`indexEdgeLabel`, `commitElementLabels`, `#commitNormalized` — six prior
+arrivals between them) are **structurally absent** rather than something to remember to ignore. ⚠️ Run it
+with `node`, not `bun`. Three arms (`farkey`, `floor`, `startkey`) chosen so a frame heavy in one and
+absent from another isolates the edge itemization from the anchor visiting.
+
+⚠️ **STILL OPEN, correctly sized this time:** the far-keyed arm is **1.39x** its work-adjusted floor. The
+row counts are now equal in the accounting, so the residual is a genuine constant-factor difference
+between two routes — but identifying the floor's route is a fresh investigation, not a continuation of a
+refuted mechanism.
+
+GATES. No engine change shipped (the probe is additive; `optional-hop.ts` restored from pristine and
+verified at 0 occurrences of `directedBucket`); `bun run fmt` 0; `bun run check` 0 read unpiped; 5,146 GQL
+tests green.
