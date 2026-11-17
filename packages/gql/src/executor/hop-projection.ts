@@ -3566,11 +3566,30 @@ const farDrivenPredicatedHopWalk = (w: {
     const binding = new Map<string, unknown>();
 
     for (const far of candidateVertexSource(graph, farLabel)) {
-      const bucket = (out ? far.adjTo : far.adjFrom)?.get(typeName);
+      /*
+       * ITEM-2133-PREDICATE-FIRST: the predicate runs BEFORE the adjacency lookup.
+       *
+       * ⚠️⚠️ **THE BUCKET READ IS THE DEAR HALF AND IT USED TO RUN FOR EVERY FAR VERTEX.** `far.adjTo` is
+       * a cold pointer chase — a vertex's IN-edges arrive from widely separated writes, so its `adjTo`
+       * sets do not sit together, and item 2126 measured the typed-degree read at **16.15 ms against
+       * `adjFrom`'s 6.92** over 200,000 vertices. At 4.4% selectivity this walk was paying that for the
+       * 95.6% it was about to reject.
+       *
+       * 🔑 SOUND BY THE CALLER'S OWN GATE, not by a fresh argument. `predicatedFarRoute` admits this walk
+       * only when `truthCannotRaise(clauseWhere) && predicateCannotRaise(farPred)` — BOTH raise-freedom
+       * keys — and its comment says why: *"A route that reorders which far vertex is evaluated first
+       * needs BOTH."* ⚠️ The displaced comment here kept the old order to hold the EVALUATED SET identical
+       * to the start-driven walk's, **"even though the caller's gate means neither route can fault"** — so
+       * the parity it was protecting was already vacuous. With no fault possible, widening the evaluated
+       * set to the vertices that fail the predicate is unobservable; a vertex with no bucket emits no
+       * rows either way.
+       *
+       * ⚠️ Item 936 declined to reason past fault parity for a DIFFERENT route, one with no such gate.
+       * That decline stands where it was made; this walk's gate is what makes the reorder available here.
+       */
+      binding.set(farVar, far);
 
-      // Guarded for the reason the unfiltered twin states: the spread form pushes the template
-      // FIRST and would emit one spurious row for an empty bucket.
-      if (bucket === undefined || bucket.size === 0) {
+      if (!satisfies(far, farPred, binding, params, graph)) {
         continue;
       }
 
@@ -3578,13 +3597,11 @@ const farDrivenPredicatedHopWalk = (w: {
         continue;
       }
 
-      binding.set(farVar, far);
+      // 🔑 ONLY NOW the adjacency read. Guarded for the reason the unfiltered twin states: the spread
+      // form pushes the template FIRST and would emit one spurious row for an empty bucket.
+      const bucket = (out ? far.adjTo : far.adjFrom)?.get(typeName);
 
-      // ⚠️ ONCE PER FAR VERTEX, AND AFTER THE BUCKET AND LABEL TESTS — the whole item. The ordering
-      // is what keeps the EVALUATED SET identical to the start-driven walk's: a far vertex this
-      // walk could emit no rows for is never evaluated, so the fault set matches even though the
-      // caller's gate means neither route can fault.
-      if (!satisfies(far, farPred, binding, params, graph)) {
+      if (bucket === undefined || bucket.size === 0) {
         continue;
       }
 

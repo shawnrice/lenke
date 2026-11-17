@@ -106291,3 +106291,61 @@ before any ask also reads 12 where 16 is correct. 🔑 **No cache is involved** 
 against 12 → 12). So it is not a shared design choice — one engine already does the right thing.
 
 GATES. Probe only, no engine change; `bun run fmt` 0; `bun run check` 0 read unpiped.
+
+## Item 2133 — ✅✅ **SHIPPED (GQL): `farDrivenPredicatedHopWalk` tests the far predicate BEFORE the adjacency read — 25.6 → 7.3 ms (3.51x) at 4.4% selectivity, 33.7 → 27.8 (1.21x) at 50%.** Item 2126's defect, in the other engine, unblocked by a gate that was already there
+
+🔑 Nominated by item 2132's cross-language table: GQL **38.88 ms** against Gremlin's 5.47 for the identical
+question (7.1x). After this item the row reads **10.67 against 5.41 — 2.0x**, confirmed by that independent
+instrument.
+
+```text
+    selectivity              BEFORE     NEW
+    4.4% pass                 25.6      7.3     3.51x
+    50%  pass                 33.7     27.8     1.21x
+    100% pass (vacuous)       71.4     67.4     1.06x   ✓ not a cost
+    the same filter, COUNTED   5.9      5.8     1.02x   ✓ control
+```
+
+### ⚠️⚠️ THE BUCKET READ IS THE DEAR HALF, AND IT RAN FOR EVERY FAR VERTEX
+
+The loop did `far.adjTo?.get(typeName)` and a size check **before** the predicate, so at 4.4% selectivity
+it paid the adjacency read for the 95.6% it was about to reject. 🔑 Item 2126 measured that read at
+**16.15 ms against `adjFrom`'s 6.92** over 200,000 vertices — a vertex's IN-edges arrive from widely
+separated writes, so its `adjTo` sets are a cold pointer chase.
+
+### 🔑 SOUND BY THE CALLER'S OWN GATE — WHICH I FOUND BY READING, NOT BY ARGUING
+
+`predicatedFarRoute` admits this walk only when `truthCannotRaise(clauseWhere) && predicateCannotRaise(farPred)`
+— BOTH raise-freedom keys — and its comment states the reason: _"A route that reorders which far vertex is
+evaluated first needs BOTH."_ ⚠️ The loop's own displaced comment kept the old order to hold the evaluated
+set identical **"even though the caller's gate means neither route can fault."** 🔑 So the parity it was
+protecting was already vacuous, exactly as at item 2126. Item 936's decline stands where it was made — a
+different route, with no such gate.
+
+### ⚠️ TWO WRONG TURNS, BOTH MEASURED AND BOTH DISCARDED
+
+- **`satisfies` allocates `{ binding, params, graph }` per call** — 200,000 loop-invariant allocations that
+  escape into `value(env)`, so V8 should not elide them. I built the hoist (`satisfiesIn` taking a prebuilt
+  env): **24.1 ms against a 24.2-25.3 baseline — worth NOTHING.** Reverted rather than left in with a
+  comment claiming a benefit it does not have. Fourth refuted mechanism guess in this stretch.
+- **The `NO_PRED` ablation was invalid**: removing the predicate changed the row count from 26,664 to
+  600,000, so its 65.8 ms measured a different query. 🔑 The valid ablation holds the ANSWER fixed — a
+  hand-written predicate at the same selectivity (18.1 ms, so the generic evaluator is 1.34x) and a
+  constant row template (24.3 against 25.3, so **the row build is only 4%**).
+
+**11 tests**, two halves: the ANSWER at four selectivities plus multiplicity (a far vertex with three
+in-edges must still yield three rows — the sharpest dropped-row shape), and the GATE (a raising operand
+must not reach this walk). **6/6 mutants CAUGHT.** ⚠️ `far-label-ignored` is caught by the WIDE suite and
+not by my own file: the labelled query routes to the sibling walk with a start label, so my file's label
+case does not exercise this walk's check. Recorded rather than claimed as coverage.
+
+⚠️ **TWO OF MY OWN EXPECTATIONS WERE WRONG AND THE ENGINE CORRECTED BOTH** — written by eye, which this
+repo's own note (item 1611) warns against. The incoming hop has ONE qualifying path, not two; and
+`WHERE b.age` over a number is a **STATIC** boolean-context error, not a coercion, so it never reaches any
+walk. The second became a sharper test than the one I meant to write.
+
+⚠️ The GQL spelling probe flags 2 groups (`a predicate on the FAR node` 2.74x, `SEEK … clause vs inline`
+3.82x) — **both PRE-EXISTING**, verified against the pristine build at 2.76x and 3.79x.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 5,157 GQL
+tests; seven fuzzers green; 5/5 sweeps.
