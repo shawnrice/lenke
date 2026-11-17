@@ -102607,3 +102607,56 @@ after the change: `hoprows` with no `INDEXED` still answers 100,000 rows, unchan
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
 `node --check` on both probes. Two corpus shapes, one opt-in fixture knob, one oracle-signature fix and
 one assertion; no engine change.
+
+## Item 2074 — ✅ **THE INDEXED SURFACE, MEASURED WHOLE FOR THE FIRST TIME: 53 shapes × 2 configurations, EVERY ANSWER UNCHANGED, the seek worth up to 5.07x at 200,000 — and nothing is slower at scale.** ⚠️ The five apparent regressions at 20,000 all dissolved
+
+Item 2073 made this measurable. This is the sweep: every corpus shape with and without the index, one
+shape per process, answers compared and not just times.
+
+### ✅ THE SEEK'S ADVANTAGE GROWS WITH N, which is what a sublinear route should do
+
+| shape                            | 20,000        | **200,000**                   |
+| -------------------------------- | ------------- | ----------------------------- |
+| `join`                           | 2.23x         | **5.07x** (145.5 → 28.7)      |
+| `unioned`                        | 1.71x         | **3.56x** (70.9 → 19.9)       |
+| `unioneddistinct`                | 2.60x         | **3.49x** (76.8 → 22.0)       |
+| `existssub`                      | 1.54x         | **1.99x** (72.3 → 36.3)       |
+| `excepted`                       | 2.05x         | **1.96x** (102.9 → 52.4)      |
+| `reledgewhere` / `reledgeinline` | 2.20x / 2.01x | **3.42x / 3.18x** (item 2073) |
+
+⚠️⚠️ **AND EVERY ONE OF THE 53 ANSWERS IS IDENTICAL BETWEEN THE TWO ARMS** — the sweep compares
+`answer` and `sink`, not just `ms`, because an index that changed a row would be a WRONG ANSWER and its
+timing would be meaningless. That is the whole-corpus version of the check items 2053-2059 kept
+failing to secure one shape at a time.
+
+### ⚠️ THE FIVE "REGRESSIONS" AT 20,000 WERE NOT REAL
+
+The screen flagged `hop2distinct` 0.79x, `varlen12` 0.84x, `intersected` 0.86x, `hoprows` 0.88x,
+`groupedhop` 0.93x — an index making queries SLOWER, which would be a route-selection defect worth
+chasing. At 200,000, one shape per process:
+
+```text
+    hop2distinct   530.5 -> 545.3   0.97x
+    varlen12       143.0 -> 148.8   0.96x
+    intersected    231.4 -> 218.2   1.06x   ⬅ now FASTER
+```
+
+**None survived.** This is CLAUDE.md's rule earning itself again — "a multi-row screen ranks; it does
+not price" — and the asymmetry is the useful part: **the wins grew with N while the regressions
+vanished**, which is exactly the signature of a sublinear seek against a linear scan rather than of a
+planner mis-choosing.
+
+🔑 **SO THE INDEXED SURFACE IS NOT A TARGET — IT IS WORKING.** The value here is that it is now
+MEASURED and comparable, so a future regression in it has a baseline to fail against. It had none
+before item 2073.
+
+### ⚠️ AND THE FIRST FORM OF THIS SWEEP SILENTLY COVERED 48 OF 53 ROWS
+
+The extraction matched `"answer":[-0-9]+`, so five shapes reported `THREW or no match` — which reads as
+a broken SHAPE rather than a broken READER. `point` answers `"s345"` (a string) and `collected` answers
+an ARRAY; neither is an integer. **A screen that quietly drops a tenth of its rows is the failure this
+file exists to prevent**, so the comparison now goes through `json.loads` instead of pattern-matching.
+All five are flat (0.92-1.06x) with identical answers.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
+`zsh -n` on the sweep. Sweep script only; no engine or probe change beyond item 2073's.
