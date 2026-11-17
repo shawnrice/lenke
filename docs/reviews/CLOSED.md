@@ -106520,3 +106520,47 @@ the more certainly the query drops off the CSR onto the map walk. **The floor th
 from a whole-graph CSR build is also what denies the selective case its win.** Worth ~3.8x; not built.
 
 GATES. Probe/instrument only, no engine change; `bun run fmt` 0; `bun run check` 0 read unpiped.
+
+## Item 2137 — ⚠️⚠️ **BUILT AND REVERTED: "the seed floor denies the selective case its CSR win" is REFUTED, and so is my follow-up mechanism.** The measurement names the real one: string-keyed `Map.get` at ~190 ns
+
+Item 2136 nominated Gremlin's filtered two-hop count: GQL gets FASTER as the filter sharpens (6.5 → 4.5 ms)
+and Gremlin stays FLAT (15.1 → 17.2). 🔑 The gate looked like the answer — `denseChainCount` refuses unless
+`seeds.length > max(vertexCount >> 4, 1024)`, and at 4.4% of 200,000 the 8,800 survivors fall under the
+12,500 floor, so the sharper the filter the more certainly the query drops off the CSR.
+
+### ⚠️ REFUTATION 1: I WIDENED THE GATE AND NOTHING MOVED
+
+The floor exists to avoid BUILDING a whole-graph CSR for a small source, so I let an ALREADY-BUILT CSR
+bypass it (`chainCsrIsBuilt`, a cache read that does not populate). Measured: **sharp stayed at 15.8-17.3
+ms.** 🔑 Then the chicken-and-egg explanation — nothing ever builds the CSR for a selective-only workload —
+was tested too, by running the unfiltered query FIRST to build it:
+
+```text
+    SHARP, cold (CSR not built)     [39.3 23.6 20.1 18.4 17.9 17.1 17.3]
+    SHARP, after the CSR IS built   [20.8 21.1 20.1 19.3 18.4 19.3 15.0]   <- no change
+```
+
+⚠️ So the CSR route is simply **not** the answer for a small seed set, and the gate was not denying a win.
+**REVERTED** (verified at 0 occurrences of the marker).
+
+### ⚠️ REFUTATION 2: AND MY EXPLANATION FOR _THAT_ WAS WRONG
+
+I inferred `slotChainCount`'s two whole-graph `Float64Array` allocations were its fixed floor. Priced:
+
+```text
+    two new Float64Array(200000)            0.01 ms   <- essentially free
+    ... plus a full 200k sweep each         0.96
+    220,000 string-keyed Map.get           41.90      <- the real order of magnitude
+```
+
+🔑 **The allocation is free and the STRING-KEYED LOOKUPS dominate** — 190 ns each, which is exactly the
+figure this repo already recorded at item 194, and 220,000 of them is the right order for the map walk's
+observed cost. ⚠️ That is a measurement, not an inference, and it is where the next attempt should start:
+the map walk resolves endpoints by id through `Map<string, …>` where the CSR uses dense integer slots.
+
+🔑 **FIVE MECHANISM GUESSES REFUTED IN NINE ITEMS** (2125's polymorphic iterable, 2127's per-path cost,
+2129's filter position, 2133's `EvalEnv` allocation, and both halves of this one). ⚠️ The two that LANDED
+(2130, 2133) both came from **reading a gate or a comment that already answered the question** — not from a
+profile or a plausible story. That is now the first move, not the fallback.
+
+GATES. No engine change shipped; `bun run fmt` 0; `bun run check` 0 read unpiped; 2,792 Gremlin tests green.
