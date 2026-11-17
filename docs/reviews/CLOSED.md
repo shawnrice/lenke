@@ -106731,3 +106731,68 @@ dominant removable term is required by the default path mode. **Recorded so this
 a fourth time.**
 
 GATES. No engine change; `bun run check` 0 read unpiped.
+
+## Item 2141 — 🔑 **FOUND AND PRICED, NOT BUILT: the shared string comparator runs TWO REGEX TESTS PER COMPARISON, which DOUBLES a 1M-row sort (75.4 → 150.5 ms).** The lever is hoisting the surrogate test to a per-COLUMN check. ⚠️ And two nominations of mine were already-closed work
+
+### ⚠️⚠️ FIRST, TWO WRONG NOMINATIONS — BOTH ANSWERED BY NOTES ALREADY IN THE REPO
+
+1. **The serving bench's write rows** (`append node` 312.6k against native's 427.7k; `interleaved
+append + link` 210.9k against 282.0k), which item 2139 handed forward as the next target. 🔑 The
+   BENCH'S OWN COMMENTS answer both: `append node` uses INTERPOLATED text so every query misses the parse
+   cache, and its parameterized twin reads **644.3k against native's 416.6k — TS 1.55x FASTER**; and
+   `interleaved append + link` was chased at item 576, which decomposed it to "properties cost 2.9x" and
+   **was wrong** — the cost was the changing query TEXT.
+2. **The `hop min+max [wide multi-agg]` family** (113.1 / 103.2 / 101.6 ms at 33-44x ffi) looked like a
+   four-row family and therefore a structural defect. ⚠️ `CLOSED.md` says otherwise: _"The three
+   `hop min+max … [wide multi-agg]` bench rows are **NATIVE watchers** (1184)"_, and item 1343 recorded
+   _"the hop multi-aggregate: route CONFIRMED fine in TS"_.
+
+🔑 Both are the rule working — check before pricing — and both cost only a grep.
+
+### 🔑 THE REAL FIND: THE BIGGEST LIVE ROW, WHICH THE AUDIT ITSELF FLAGS AS UNEXAMINED
+
+Item 1686's field screen lists `traverse 1-hop project + order by` as **"barely examined (2 mentions, no
+entry)"**, and it is the largest non-decode TS row: **765.7 ms against ffi's 207.9 (3.68x)**. ⚠️ Its
+UNSORTED twin is **19.9 ms and TS is 11x FASTER than ffi there** — so adding `ORDER BY` costs TS a **38x
+jump** while ffi barely moves (225.4 → 207.9). The sort is the whole story.
+
+🔑 **AND THE COMPARATOR IS WHERE A MEASURABLE PIECE OF IT LIVES.** `core`'s `compareCodePoints` guards its
+code-point walk with a regex, twice per call:
+
+```ts
+if (!HAS_SURROGATE.test(a) && !HAS_SURROGATE.test(b)) {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+```
+
+A 1M-element sort makes ~20M comparisons, so ~40M regex tests. Priced over 1M strings:
+
+```text
+    sort, plain comparator                      75.4 ms
+    sort, TWO regex tests then plain           150.5        <- the engine: 2.00x
+    sort, a charCodeAt scan instead            206.8        <- WORSE; the regex is the better of the two
+    the regex alone, 40M calls                 328.9
+    ---- for scale ----
+    sort 1M strings, DEFAULT comparator         54.7
+    sort 1M ROW OBJECTS by a string field      106.5
+    sort 1M strings via localeCompare          545.9        <- NOT used by the engine (tests only)
+```
+
+⚠️ **`localeCompare` was my first hypothesis and it is WRONG** — it appears only in test files, never in
+`core` or `gql`. Reading `string-order.ts` replaced the guess with the real guard.
+
+### 🔑 THE DESIGN, AND AN HONEST PROPORTION
+
+**Hoist the surrogate test from per-COMPARISON to per-COLUMN**: scan the column once (O(n)), and if no
+value carries a high surrogate, sort with the plain comparator. That turns ~20M regex tests into ~1M.
+
+⚠️ **IT IS ~75 ms OF THE ROW'S ~746 ms OF SORT — about 10%, not the gap.** The rest is elsewhere (the
+engine sorts ROW OBJECTS and extracts the field per comparison; raw strings cost 75.4 against 106.5 for
+objects). 🔑 Worth having, and worth saying plainly that it does not close a 3.68x.
+
+⚠️ **NOT BUILT, and the reason is scope**: `compareCodePoints` is a `core` primitive with THREE callers
+(GQL's `compareValues`, GQL's ORDER BY column specialization, Gremlin's `cmpSameType`) and it is
+byte-identity-critical — item 1712 put it there to fix the 15th value divergence. A per-column pre-scan
+needs caller cooperation, so it is a cross-package change with a correctness contract, not a local edit.
+
+GATES. No engine change; `bun run check` 0 read unpiped.
