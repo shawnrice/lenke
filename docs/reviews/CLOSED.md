@@ -104079,3 +104079,59 @@ exists so that nobody re-derives the measurement first.
 GATES. Probe only — no engine change. `bun run check` 0 read unpiped; `node --check` on the probe
 (`gremlin-arming-sweep-2095.mjs`), which asserts the reads return rows and enforces ≥5 versions per arm
 (item 2094's instrument fault).
+
+## Item 2096 — ❌ **REFUTED: `bothBuckets`'s per-call 2-tuple is NOT the cost, and the obvious fix is 1.19x WORSE.** 🔑 The corpus's most expensive shape profiled for the first time — `hop3rowsboth` at 1944 ms/rep — and its 8x over the directed twin is the ROW COUNT, not the route
+
+The write path was the intended target and is not where time goes: a single `addEdge` measured **0.02
+ms** at item 2093, and ingest is closed (`addVertex` withdrawn at 7.4%, `addEdge`'s parts refuted). So
+this took the largest absolute cost in the corpus instead, which had never been profiled.
+
+```text
+    hop3rowsboth   MATCH (a:P)-[:E]-(b:P)-[:E]-(c:P)-[:E]-(d:P) RETURN d.k    1944.2 ms/rep
+    hop3rows       the same chain, DIRECTED                                    139.2
+    hop2distinct                                                               108.5
+```
+
+⚠️ **THE 14x IS MOSTLY ROWS, NOT ROUTE.** Three undirected hops emit 2³ = **8x** the rows (1,600,000
+against 200,000), so per row it is **1.2 µs against the directed 0.7** — a 1.7x per-row gap inside a
+14x total. Quoting the 14x as a target would have been wrong by 8x.
+
+### The nomination, and why it was the right one to test
+
+```text
+    walkBothSegment   30.0%
+    (gc)              11.7%
+    bothBuckets       11.5%     <- a helper beside GC, which is what an allocation in a hot loop looks like
+    withBinding       10.8%
+    walkSegments       8.0%
+```
+
+`directedBucket` returns the adjacency `Set` ITSELF; `bothBuckets` returns `[outSet, inSet]` — a fresh
+array per call, per element, per segment. 🔑 And the `both` family is demonstrably the one left behind:
+item 1802 took the directed path for **1.109x on `hop3rows` with the `both` family FLAT at 1.011x**.
+
+### ❌ IT IS ATTRIBUTION, AND THE FIX REGRESSES
+
+Hand floor over the engine's own vertices and adjacency Sets, 600,000 edges, medians of 11, two rounds,
+**every arm asserted to the same edge count**:
+
+| arm                                         | round 1   | round 2   |                    |
+| ------------------------------------------- | --------- | --------- | ------------------ |
+| tuple — what the engine does                | 27.53     | 27.69     |                    |
+| **two separate accessor calls — the "fix"** | **32.07** | **33.76** | ⚠️ **1.19x WORSE** |
+| inline, no helper (the floor)               | 24.19     | 25.58     |                    |
+
+🔑 V8 elides the short-lived tuple; two calls cost two dispatches instead. The helper is within **1.11x
+of inline** — about 2.7 ms over 600,000 edges, which is **0.14% of the 1944 ms query**.
+
+⚠️ **This is the fifth frame-attribution refutation this session** (2067, 2077, 2084, 2090, and here),
+and the strongest: the previous four measured FLAT, this one measured the fix going BACKWARDS. A
+helper's frame sitting next to GC is not evidence that it allocates — V8's escape analysis decides
+that, and only a deletion test with a floor can say.
+
+**So `hop3rowsboth`'s per-row gap is in `walkBothSegment` itself (30%), not in the helper it calls**, and
+the shape's headline number is a row count. OPEN, unpriced: whether `walkBothSegment`'s 1.7x per row
+over the directed walk is recoverable or inherent to walking two buckets with a self-loop skip.
+
+GATES. Probe only — no engine change. `bun run check` 0 read unpiped; `node --check` on the probe
+(`bothtuple-floor-2096.mjs`), which throws unless all three arms count the same edges.
