@@ -106234,3 +106234,60 @@ alternated rounds of 14 reps:
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 2,792
 Gremlin tests; seven fuzzers green; 5/5 sweeps.
+
+## Item 2132 — ✅ **THE CROSS-LANGUAGE TABLE: the same question in both surface languages, steady state.** It nominates FOUR GQL targets, the largest being an UNCACHED 3-hop count at 1763x. And it confirms item 2131 introduced no staleness
+
+🔑 This comparison produced a win two ticks running (item 2130's 801x, item 2131's >100x), so it becomes an
+instrument. `cross-language-2132.mjs` runs 13 questions with a GQL spelling and a Gremlin spelling each,
+compares the ANSWERS, and reports which side is slower and by how much.
+
+```text
+    question                         GQL   Gremlin       ratio
+    2-hop count                     0.32      0.01   50.6x GQL    (both sub-ms: below the floor)
+    3-hop count                     7.64      0.00  1763.4x GQL   ⚠️
+    1-hop projection, filtered     38.80      5.45    7.1x GQL    ⚠️
+    distinct far count             21.58      3.99    5.4x GQL    ⚠️
+    property projection            16.23      6.39    2.5x GQL    ⚠️
+    2-hop count, far filter         7.49     15.10    2.0x GRM
+    1-hop projection               46.10     79.16    1.7x GRM
+```
+
+⚠️ **THE DIRECTION FLIPPED THIS SESSION.** Items 2126/2130/2131 moved Gremlin ahead on the chain-count
+family, and GQL is now the side with the missing routes on five of thirteen rows.
+
+### ⚠️⚠️ TWO GUARDS THE TABLE NEEDED, BOTH LEARNED THE HARD WAY
+
+- **STEADY STATE, AND PRINT THE SERIES.** Both engines warm up over ~2 reps: GQL's 2-hop reads
+  `[53.4 215.7 0.4 0.3 0.3 …]` and Gremlin's `[38.3 0.1 0.0 …]`. 🔑 A `min` over all reps reports one
+  side's warm-up against the other's steady state, and a `median` over all of them reports neither. Item
+  2131's 30x was visible only because the series was printed.
+- **A RATIO NEEDS AN ABSOLUTE FLOOR.** `node count` read 0.00 against 0.01 and flagged **2.3x** — a ratio
+  between two readings that are both essentially zero. 🔑 Same guard the vacuous screen needed at item
+  2127: large ratio **AND** a loser worth beating.
+
+### 🔑 THE LARGEST TARGET, DIAGNOSED: GQL CACHES THE 2-HOP CHAIN COUNT AND NOT THE 3-HOP
+
+```text
+    GQL 2-hop  [53.4 215.7 0.4 0.3 0.3 0.3 0.3 0.3 0.3]   <- cached
+    GQL 3-hop  [18.2  9.8  8.9 8.0 7.6 7.5 7.5 8.1 7.5]   <- FLAT: no caching at all
+```
+
+⚠️ **AND THE CONSTRAINT IS LABELS, NOT TOPOLOGY.** `topologyVersion` does **NOT** advance on a label write
+(verified: `v.labels =` and `addLabel` both leave it unchanged), so a naive memo on a label-bearing pattern
+would go stale. 🔑 GQL currently answers a label change CORRECTLY on all three shapes — 2-hop labelled
+12 → 16, 3-hop labelled 24 → 32 — so its existing cache covers the topology-only part and re-applies the
+label per call. **A 3-hop memo must preserve that**, which is why this is not a copy of item 2131.
+
+### ✅ AND IT CLEARS ITEM 2131 OF A STALENESS BUG I WENT LOOKING FOR
+
+Since `topologyVersion` ignores label writes, I checked whether item 2131's memo could serve a stale
+label-filtered count. ⚠️ It cannot — a `hasLabel` makes `filters.length !== 0`, so `unfiltered` is false
+and the memo never fires. Verified against the PRISTINE build: `V().hasLabel(P).out(E).out(E).count()`
+reads 12 before and after a label write **with and without the memo**, and a FRESH graph whose label is set
+before any ask also reads 12 where 16 is correct. 🔑 **No cache is involved** — it is the known
+`verticesByLabel`-not-maintained-by-the-setter issue, an open owner decision, and NOT a regression.
+
+🔑 **NEW FACT FOR THAT OPEN DECISION, though: GQL answers it CORRECTLY where Gremlin does not** (12 → 16
+against 12 → 12). So it is not a shared design choice — one engine already does the right thing.
+
+GATES. Probe only, no engine change; `bun run fmt` 0; `bun run check` 0 read unpiped.
