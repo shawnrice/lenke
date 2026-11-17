@@ -105159,6 +105159,15 @@ Gremlin tests; seven fuzzers green; 5/5 sweeps.
 
 ## Item 2114 — ❌ **REFUTED AND REVERTED: the `hop + bag + values` fusion delivers 1.00x, and the 4.17x that justified building it was MY FLOOR MEASURING A DIFFERENT TRAVERSAL**
 
+> ⚠️⚠️ **CORRECTION FROM ITEM 2115: THIS ENTRY'S EXPLANATION IS WRONG, THOUGH ITS 1.00x AND THE REVERT
+> STAND.** It concluded "the BAG is the cost — ~110 ms to push 600,000 vertex objects into an array, which
+> no fusion removes". 🔑 **That division was never done: 110 ms / 600,000 is 185 ns per push, and an array
+> push is single-digit nanoseconds.** Measured at item 2115 on the engine's own vertex objects: pushing
+> 600,000 of them costs **2.4 ms** (4.1 ns each), 1.6 pre-sized, and through a `pick`-shaped closure the
+> pushes add **5.6 ms** over the same read without them. ⚠️ So the bag is ~2-6 ms and **~105 ms of this
+> shape remains UNEXPLAINED** — see item 2115. The fusion really is 1.00x and really was built on a bad
+> floor; what this entry got wrong is where the money goes.
+
 Item 2113 left the hop form of the scan-bag shape generic — the route screen reports "2 `applyStep`
 calls [store values]" — at 89 ns/row against the no-bag hop's 13. A floor put the win at **4.17x**:
 
@@ -105214,3 +105223,66 @@ its own no-bag reference (28.0) while claiming to add 600,000 array pushes is no
 
 GATES. Change reverted; route verified generic again; 2,749 Gremlin tests green; `bun run check` 0 read
 unpiped.
+
+## Item 2115 — 🔑 **ITEM 2114's EXPLANATION WAS WRONG AND IS CORRECTED: the bag costs 2.4 ms, not 110.** The real cause is that a 4-STEP plan is LOCKED OUT of the CSR walk — worth **3.3x**, measured, and item 2040 is the precedent
+
+Item 2114 concluded _"the BAG is the cost — ~110 ms to push 600,000 vertex objects into an array, which no
+fusion removes"_. ⚠️⚠️ **That division was never done: 110 ms / 600,000 is 185 ns per push.** An array push
+is single-digit nanoseconds, so the claim was arithmetically impossible on its face.
+
+Measured on the engine's OWN vertex objects (not plain records — item 2084's rule), 600,000 of them:
+
+```text
+    push into a plain array          2.4 ms    4.1 ns each
+    the same, pre-sized              1.6       2.7
+    push + read via a `pick` closure 12.1      20.2
+    the same read, NO push            6.5      10.9      <- so the pushes add 5.6 ms
+```
+
+🔑 **The bag is ~2-6 ms.** Item 2114's entry is corrected in place; its 1.00x and its revert stand, and so
+does its floor-error lesson — only the explanation was wrong.
+
+### 🔑 THE COST IS SUPERADDITIVE, WHICH IS WHAT NAMED THE REAL CAUSE
+
+```text
+    hop + store            14.8 ms   600,000 rows   <- the bag alone
+    hop + values           29.9      480,000        <- the projection alone
+    hop + store + values  137.8      480,000        <- 3.1x the SUM of the parts (44.7)
+```
+
+⚠️ **AND IT IS NOT THE RESIDUAL STEPS.** Item 2114's fusion removed them (route screen: 2 `applyStep`
+calls → 0) for 1.00x. A throwaway ORACLE — the same fusion with the bag push omitted, so the bag stays
+empty and only the mechanism is priced — read **142.8 ms**, identical to the generic route. So neither the
+bag nor the generic residual is the money.
+
+### THE CAUSE, AND IT IS WORTH 3.3x
+
+`hopValuesCsr` is consulted FIRST in the `??` chain and serves `V().out(T).values(k)` — THREE steps. A bag
+between the hop and the projection makes the plan FOUR, so that gate declines and the plan falls to
+`hopValuesShortcut`'s per-vertex adjacency walk. A/B on the gate itself:
+
+| shape                            | CSR live | CSR killed |                                         |
+| -------------------------------- | -------- | ---------- | --------------------------------------- |
+| `hop + values` (3 steps)         | **30.3** | 99.4       | the CSR walk is worth **3.3x**          |
+| `hop + store + values` (4 steps) | 140.8    | 168.9      | only 1.2x — it never gets the main walk |
+
+🔑 **ITEM 2040 IS THE DOCUMENTED PRECEDENT FOR EXACTLY THIS MECHANISM.** A leading `hasLabel` made a plan
+four steps long, this same gate declined, and the fallback — _"walks PER-VERTEX ADJACENCY where this walk
+makes one flat pass"_ — was priced at **drain 31.4 → 258.1 ms, 8.2x**. That item fixed it by admitting the
+extra step. ⚠️ So the lever here is the same one, and the 1.95-2.60x its own header claims is an
+understatement at this fixture: 3.3x.
+
+### What is open, and what this item does NOT do
+
+⚠️ **NOT BUILT.** Admitting a `[bag, values]` tail to `hopValuesCsr` means filling the bag during the CSR
+pass, in a file whose arms are coverage-gated (`CSR_START_LABEL_MIN_COVERAGE`) — a real change, and my
+previous attempt on this shape (item 2114) was a 1.00x revert. 🔑 It deserves its own item with a fresh
+mutation round rather than a tail-end patch.
+
+🔑 **What this item delivers**: item 2114's false explanation is corrected, the bag is priced at 2-6 ms,
+the 3.1x superadditivity is isolated, the residual-step hypothesis is REFUTED by an oracle, and the real
+lever is identified and measured at 3.3x with its precedent named. ⚠️ Expected after the fix: ~141 ms
+toward ~45 (the 3-step CSR time plus the bag's 15), not to 30 — the bag is real work.
+
+GATES. Probes only — no engine change (the oracle and the CSR kill were both reverted; `git status` clean
+apart from the new probes). 2,749 Gremlin tests green; `bun run check` 0 read unpiped.
