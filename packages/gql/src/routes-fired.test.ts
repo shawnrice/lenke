@@ -515,6 +515,16 @@ describe('every fast-path detector fires for its own shape', () => {
       'MATCH (a:L) OPTIONAL MATCH (a)-[:R]->(b) RETURN count(*) AS c',
       ['optionalHopCount'],
     ],
+    /*
+     * 🔑 THE GROUPED TWIN (item 2123). Each half had a rung and the PAIR did not, which cost 18x.
+     * ⚠️ The two cannot compete: this one needs a two-item projection and its sibling a bare
+     * `count(*)`, so they are disjoint by construction.
+     */
+    [
+      'optional hop GROUPED count',
+      'MATCH (a:L) OPTIONAL MATCH (a)-[:R]->(b) RETURN a.k AS g, count(*) AS c',
+      ['optionalGroupedHopCount'],
+    ],
     [
       // Item 1853: the multi-column DISTINCT over a node scan, which had no rung at all while
       // every hop and chain width had one — 27.7x the one-column spelling.
@@ -572,7 +582,7 @@ describe('every fast-path detector fires for its own shape', () => {
 
   // Every one is covered by the table above. Asserted rather than claimed, so a
   // detector added later without a route case fails HERE instead of going unguarded.
-  it('covers all thirty-six detectors', () => {
+  it('covers all thirty-seven detectors', () => {
     const covered = new Set(CASES.flatMap(([, , want]) => want));
     const all = new Set(
       Object.keys(
@@ -587,7 +597,8 @@ describe('every fast-path detector fires for its own shape', () => {
     // 34 -> 35 at item 2087 (`chainStarCount`). This number failing is the guard WORKING: it is how
     // a detector added without a route case above gets found.
     // 35 -> 36 at item 2119 (`chainDistinctLevels`).
-    expect(all.size).toBe(36);
+    // 36 -> 37 at item 2123 (`optionalGroupedHopCount`).
+    expect(all.size).toBe(37);
   });
 });
 

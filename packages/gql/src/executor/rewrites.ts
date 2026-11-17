@@ -113,7 +113,7 @@ import {
   detectNodeDistinctProjection,
   detectNodeProjection,
 } from './node-scan.js';
-import { detectOptionalHopCount } from './optional-hop.js';
+import { detectOptionalGroupedHopCount, detectOptionalHopCount } from './optional-hop.js';
 import { detectReachableShortcut } from './reachability.js';
 import { columnName } from './rows.js';
 import { collectAggregates, hasAggregate } from './scalars.js';
@@ -2597,6 +2597,11 @@ export const compileLinear = (linear: LinearQuery): CLinear => {
     clauses,
     varLengthCount: detectVarLengthCount(fast, clauses),
     countShortcut: detectCountShortcut(fast, clauses),
+    /*
+     * ⚠️ The GROUPED optional-hop count (item 2123), above its ungrouped sibling because it is the
+     * narrower shape: a bare `count(*)` cannot reach it.
+     */
+    optionalGroupedHopCount: detectOptionalGroupedHopCount(fast),
     optionalHopCount: detectOptionalHopCount(fast),
     forCount: detectForCount(fast, clauses),
     forProjection: detectForProjection(fast, clauses),

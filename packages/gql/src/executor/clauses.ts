@@ -1659,8 +1659,16 @@ const fastPath = (linear: CLinear, graph: Graph, params: Params): Row[] | undefi
 
   // The OPTIONAL-hop count (item 510). Below the plain one because it is strictly narrower —
   // three clauses with the middle one optional — and never competes with it for a shape.
-  if (linear.optionalHopCount) {
-    return linear.optionalHopCount(graph, params);
+  /*
+   * ⚠️ ABOVE the ungrouped rung (item 2123) and the two cannot compete: `optionalGroupedHopCount` needs
+   * a TWO-item projection (`a.k, count(*)`) and `optionalHopCount` a bare `count(*)`, so the shapes are
+   * disjoint by construction and either order answers the same queries. It sits here because the
+   * narrower gate reads first.
+   */
+  const optCounts = optionalHopCounts(linear, graph, params);
+
+  if (optCounts !== undefined) {
+    return optCounts;
   }
 
   // A constant `FOR` over a counted query: the base count times the list length (item 515).
@@ -2075,6 +2083,29 @@ const declinableRung = (rung: RowsFn | null, graph: Graph, params: Params): Row[
   }
 
   return rung(graph, params) ?? undefined;
+};
+
+/**
+ * The two OPTIONAL-hop count rungs, asked together (item 2123).
+ *
+ * ⚠️ **HOISTED FOR THE COMPLEXITY CAP, AND THAT IS THE EIGHTH TIME.** Adding the grouped rung's branch
+ * took `fastPath` to 36 against a cap of 35. `bun run lint` is a gate, so the branch moves rather than
+ * the cap.
+ *
+ * 🔑 THE TWO CANNOT COMPETE: the grouped rung needs a TWO-item projection (`a.k, count(*)`) and the
+ * ungrouped one a bare `count(*)`, so the shapes are disjoint by construction and either order answers
+ * the same queries. The narrower gate is asked first because that is how a reader expects to find it.
+ */
+const optionalHopCounts = (linear: CLinear, graph: Graph, params: Params): Row[] | undefined => {
+  if (linear.optionalGroupedHopCount) {
+    return linear.optionalGroupedHopCount(graph, params);
+  }
+
+  if (linear.optionalHopCount) {
+    return linear.optionalHopCount(graph, params);
+  }
+
+  return undefined;
 };
 
 const deepWidthReductions = (linear: CLinear, graph: Graph, params: Params): Row[] | undefined => {

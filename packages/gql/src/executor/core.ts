@@ -5508,6 +5508,11 @@ export type CLinear = {
   forCount: ((graph: Graph, params: Params) => Row[]) | null;
   /** The `FOR` PROJECTION off the label bucket (item 528); else null. */
   forProjection: ((graph: Graph, params: Params) => Row[]) | null;
+  /*
+   * `MATCH (a:L) OPTIONAL MATCH (a)-[:T]->(b) RETURN a.k, count(*)` — the grouped twin of the rung
+   * below (item 2123). ⚠️ The pair had no rung though each half did, which cost 18x.
+   */
+  optionalGroupedHopCount: ((graph: Graph, params: Params) => Row[]) | null;
   optionalHopCount: ((graph: Graph, params: Params) => Row[]) | null;
   /** `MATCH (n:L) RETURN DISTINCT <2+ items>` — item 1853. */
   nodeDistinctProjection: AlwaysRowsFn | null;

@@ -105689,3 +105689,54 @@ rung: **378 → ~21-25**, so **~15-18x**.
 unexplained and smaller; the quantifier is the difference from its fixed-chain floor.
 
 GATES. Probe only — no engine change. `bun run check` 0 read unpiped; 5,129 GQL tests green.
+
+## Item 2123 — ✅ **SHIPPED: `OPTIONAL MATCH` + `GROUP BY` gets a rung — 307.8 → 29.0 ms (10.6x), three controls flat.** The seventh "a rung for each half, none for the pair" defect in a row
+
+Item 2122 isolated it: each half had a rung and the pair fell to the general path — one binding and one
+row per edge, then grouping.
+
+🔑 **IT IS THE UNGROUPED RUNG'S ARITHMETIC, PER GROUP.** `detectOptionalHopCount` sums `max(1, degree)`
+over the anchors; this adds each anchor's `max(1, degree)` to the group its key names. ⚠️ The `max(1, …)`
+is the whole difference from the plain grouped count — an anchor with no qualifying edge still contributes
+its one null-filled row, **to its own group**. It reuses `anchorFilterGate` and `sideOfVertex` unchanged.
+
+```text
+    arm                           KILLED     LIVE
+    target                        307.8      29.0    10.6x
+    filtered anchor               305.8      31.0     9.9x
+    non-OPTIONAL twin (control)    12.6      12.3     1.02x  ✓
+    ungrouped OPTIONAL (control)    6.9       6.6     1.05x  ✓
+    FAR-keyed (the gate refuses)  363.4     361.5     1.01x  ✓
+```
+
+⚠️ **10.6x here against item 2122's 18x, and the difference is the fixture**: this one gives only half the
+vertices any edges (so the general path has half the rows to build), which is also what makes the
+arithmetic testable at all. Both numbers are real for their fixtures.
+
+### ⚠️⚠️ MY FIRST MEASUREMENT FIXTURE COULD NOT TEST THE RUNG
+
+Every vertex had degree 3, so `max(1, d) === d` and the OPTIONAL and plain arithmetics AGREED — 378 → 20.8
+matched its non-OPTIONAL twin and proved nothing about correctness. 🔑 Every fixture now has zero-degree
+anchors, and one test asserts the two forms **DISAGREE** (`c=4124` against the twin's 3093) so a fixture
+that stops distinguishing them fails loudly.
+
+**9 tests**: unmatched anchors counted, an all-zero graph (where the plain twin returns NO rows), a NULL
+group key as its own group, a filtered anchor, `count(b)` shown to be a DIFFERENT question (it excludes
+the null row), an incoming hop, a far key, a type matching nothing — each against the general path.
+
+⚠️ **AND `ORDER BY` IS THE SAME TRAP AS ITEM 2119's, caught the same way.** Eight tests compared BAGS —
+right, since group order is unspecified — and a bag cannot see a dropped sort. Deleting the `orderBy`
+clause from the gate returned **[5,1,4,2,3] where [1,2,3,4,5] is correct** with all eight passing. 🔑 **8/8
+mutants CAUGHT** after the order-sensitive test was added.
+
+⚠️ The complexity cap bit for the EIGHTH time (36 against 35): the two OPTIONAL-count branches are hoisted
+to `optionalHopCounts`. They cannot compete — the grouped rung needs a two-item projection and the
+ungrouped a bare `count(*)`.
+
+🔑 **STILL OPEN: the FAR-keyed form.** `RETURN b.k AS g, count(*)` over an OPTIONAL hop is **361 ms** and
+flat across both arms — this gate refuses it because the walk makes one pass over anchors, and a far key
+needs the edges. `detectGroupedHopCount` has a far-keyed walk for the non-OPTIONAL case; the OPTIONAL twin
+would need the null rows folded into it.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 5,139 GQL
+tests; seven fuzzers green; 5/5 sweeps. `routes-fired.test.ts`'s detector count moved 36 → 37.
