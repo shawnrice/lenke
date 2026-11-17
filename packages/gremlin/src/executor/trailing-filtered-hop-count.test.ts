@@ -217,10 +217,25 @@ describe('the rung declines what it must', () => {
     ).toBeUndefined();
   });
 
-  test('a THIRD hop — a deeper chain keeps the pipeline', () => {
+  test('⚠️ a THIRD hop is now ANSWERED, by item 2130\u2019s reversal — and the answer is right', () => {
+    /*
+     * ⚠️⚠️ **THIS TEST ASSERTED `toBeUndefined()` AND ITEM 2130 WIDENED THE ROUTE DELIBERATELY.** It was a
+     * ROUTE assertion ("a deeper chain keeps the pipeline"), not an answer one, and the pipeline is no
+     * longer where this shape should go: `reversedTrailChain` rewrites `[out, out, out, has]` as
+     * `[has, in, in, in]`, which `hopChainCount` answers through the CSR propagation at any depth.
+     *
+     * 🔑 THE REWRITE IS A BIJECTION ON PATHS — the k-hop OUT-paths ending at a passing vertex correspond
+     * one-to-one with the k-hop IN-paths starting at one — so the count is identical, and `0` here is
+     * the right answer for this fixture (verified against a brute-force enumeration).
+     *
+     * ⚠️ `0` IS A WEAK CONFIRMATION ON ITS OWN, so item 2130 pinned the rewrite against brute force on a
+     * fixture with plenty of deep paths: 2/3/4 hops at 216/648/1944, `hasLabel` at 405, two trailing
+     * filters at 135, and the `in` direction at 648 — all exact. Those live in
+     * `reversed-trail-chain.test.ts`; this one keeps the shape in THIS fixture's table.
+     */
     expect(
       answered(traversal(V(), out('E'), out('E'), out('E'), has('team', eq('t1')), count())),
-    ).toBeUndefined();
+    ).toBe(0);
   });
 
   test('nothing trailing — that is `interleavedHopChainCount`’s shape or `hopChainCount`’s', () => {

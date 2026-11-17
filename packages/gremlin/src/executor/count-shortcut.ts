@@ -193,6 +193,30 @@ export const countShortcut = (plan: Plan, graph: Graph): number | undefined => {
     return chained;
   }
 
+  /*
+   * ITEM-2130-REVERSED-TRAIL: the same chain spelled with its filter at the FAR end.
+   *
+   * ⚠️⚠️ **WITHOUT THIS, ITEM 2130's OTHER HALF CREATES A 9.4x EQUIVALENT-SPELLING GAP** — the defect class
+   * this repo is organised around. `hopChainShape` collects hops from the END backwards and takes what
+   * precedes them as filters, so it sees `[out, out, has]` as zero hops and declines. Giving the LEADING
+   * spelling the CSR route and not this one measured **13.31 ms against 125.52 for the identical answer**
+   * (2,499,750). Nothing got slower; the gap alone is the bug.
+   *
+   * 🔑 THE REWRITE IS A BIJECTION ON PATHS, not an approximation. The k-hop OUT-paths from any vertex
+   * that END at a vertex passing P are in one-to-one correspondence with the k-hop IN-paths that START
+   * at a P-passing vertex — reverse each path. A count is order-free, so the two are the same number.
+   * Self-loops and parallel edges need no special case: reversal maps each walk to exactly one walk.
+   *
+   * ⚠️ `both` IS REFUSED by the hop scan below, and a LEADING filter makes it decline too (the scan
+   * requires a hop at index 0, so `has(a).out.out.has(b)` yields no hops) — that shape would need both
+   * ends filtered, which is not this rewrite.
+   */
+  const trailed = reversedTrailCount(mid, graph);
+
+  if (trailed !== undefined) {
+    return trailed;
+  }
+
   // A filter BETWEEN two hops (item 1602) — the one shape in this family that reached none of the
   // rungs, at 32x the identical GQL question. AFTER `hopChainCount` so that rung keeps every shape
   // it answers, and disjoint from all four of its siblings by construction: see its own note.
@@ -1732,6 +1756,62 @@ type HopStep = Extract<Step, { kind: 'out' | 'in' | 'both' }>;
  * read 43 against a maximum of 35. The same split `tallyGroupShapes` and `genQuantifiedGroup`
  * make, and the same reason.
  */
+/**
+ * `hopChainCount` asked again with the chain reversed, or `undefined` when the shape is not one
+ * `reversedTrailChain` rewrites (item 2130).
+ *
+ * ⚠️ **HOISTED FOR THE COMPLEXITY CAP, WHICH THIS MAKES THE NINTH TIME IN THE TWO ENGINES.** Inlining the
+ * two branches at the call site took `countShortcut` to 36 against a cap of 35. `bun run lint` is a gate,
+ * so the branch moves rather than the cap.
+ */
+const reversedTrailCount = (mid: readonly Step[], graph: Graph): number | undefined => {
+  const reversed = reversedTrailChain(mid);
+
+  return reversed === undefined ? undefined : hopChainCount(reversed, graph);
+};
+
+/**
+ * `[out, out, has]` rewritten as `[has, in, in]` — the same count read from the other end, or `undefined`
+ * when the shape is not a hop run followed by vertex filters (item 2130).
+ *
+ * 🔑 Exported for its own unit test: this is a ROUTE rewrite, so both spellings answer identically either
+ * way and every behavioural test in this package is blind to a mutant of it.
+ */
+export const reversedTrailChain = (mid: readonly Step[]): Step[] | undefined => {
+  let i = 0;
+
+  // ⚠️ `both` is deliberately not accepted: its reverse is itself, so the rewrite would be a no-op that
+  // re-enters `hopChainCount` with the same shape.
+  while (i < mid.length && (mid[i].kind === 'out' || mid[i].kind === 'in')) {
+    i += 1;
+  }
+
+  const hops = mid.slice(0, i);
+  const trail = mid.slice(i);
+
+  // Two hops minimum (one hop is `filteredHopCount`'s shape and it already drives the far side), and at
+  // least one trailing filter — with none, the unreversed call above already answered it.
+  if (hops.length < 2 || trail.length === 0) {
+    return undefined;
+  }
+
+  for (const step of trail) {
+    if (step.kind !== 'has' && step.kind !== 'hasLabel') {
+      return undefined;
+    }
+  }
+
+  const flipped: Step[] = [];
+
+  for (let h = hops.length - 1; h >= 0; h -= 1) {
+    const hop = hops[h];
+
+    flipped.push({ ...hop, kind: hop.kind === 'out' ? 'in' : 'out' } as Step);
+  }
+
+  return [...trail, ...flipped];
+};
+
 const hopChainShape = (
   mid: readonly Step[],
   graph: Graph,
@@ -2519,12 +2599,36 @@ const hopChainCount = (mid: readonly Step[], graph: Graph): number | undefined =
   // rounds, because 120,000 `Map.set`/`get` pairs on vertex objects cost more than the edge
   // walk itself.
   if (hops.length === 2) {
+    /*
+     * ITEM-2130-FILTERED-DENSE: the CSR propagation, with the SURVIVORS as its seeds.
+     *
+     * ⚠️⚠️ **THE UNFILTERED IDENTITY IS GONE HERE AND THAT IS THE WHOLE COST** (items 2128/2129). Above,
+     * an unfiltered two-hop count is O(V) with no edge walk — `arrive * degreeOfTypes(outBox)`, two
+     * degree reads a vertex. 🔑 A filter of ANY kind invalidates it, because `arrivals(w)` would have to
+     * count in-edges FROM THE SURVIVORS, so the route fell to the per-edge walk below: **14.23 ms
+     * unfiltered against 123 filtered, and 238 when the predicate is VACUOUS.** The vacuous arm being
+     * dearer than the selective one is the identity's absence, not a predicate cost.
+     *
+     * 🔑 `slotChainCount` needs no identity: it propagates multiplicities over a CSR in O(V + E) and
+     * already takes an ARBITRARY seed set. It was simply never called with filtered seeds — its only
+     * call site sat inside the `unfiltered` branch.
+     *
+     * ⚠️ The seeds are materialized because `slotChainCount` reads `seeds.length` for its own floor and
+     * iterates them once; the generator cannot answer the first without being consumed.
+     */
+    const seeds = [...survivors()];
+    const dense = denseChainCount(hops, seeds, graph);
+
+    if (dense !== undefined) {
+      return dense;
+    }
+
     const [h0, h1] = hops;
     const fwd0 = h0.kind === 'out';
     const fwd1 = h1.kind === 'out';
     let two = 0;
 
-    for (const v of survivors()) {
+    for (const v of seeds) {
       const box0 = fwd0 ? v.adjFrom : v.adjTo;
 
       if (box0 === undefined) {
@@ -2651,7 +2755,14 @@ const mapChainCount = (hops: readonly HopStep[], seeds: readonly Vertex[]): numb
  * The two conditions live here rather than at the call site so `hopChainCount` keeps its
  * complexity budget — it was already at 33 of 35 before this item.
  */
-const denseChainCount = (
+/*
+ * 🔑 EXPORTED FOR ITS OWN UNIT TEST, NOT FOR A CALLER — item 1983's practice for a route decision in this
+ * file. ⚠️ Item 2130 relies on it answering for a PARTIAL seed set (the survivors of a filter), which is
+ * a capability no answer-comparing test can see: replacing the call with `undefined` is
+ * answer-equivalent, so that mutant SURVIVES by construction. Testing the function directly is the
+ * strongest check available ([[perf-gate-needs-its-own-test]]).
+ */
+export const denseChainCount = (
   hops: readonly HopStep[],
   seeds: readonly Vertex[],
   graph: Graph,

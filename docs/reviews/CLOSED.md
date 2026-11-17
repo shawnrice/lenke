@@ -106085,3 +106085,79 @@ work is a rung with its own gate, tests and mutation round.
 
 GATES. Probe only, no engine change — `count-shortcut.ts` verified at 0 occurrences of both the
 instrumentation marker and the ablation; `bun run fmt` 0; `bun run check` 0; 2,767 Gremlin tests green.
+
+## Item 2130 — ✅✅ **SHIPPED (Gremlin): the FILTERED chain count gets the CSR route — 13,857.5 → 17.3 ms (801x) at three hops, 122.9 → 14.9 (8.2x) at two, 244.2 → 17.4 (14.0x) vacuous.** Both spellings converge; the one-hop control's apparent 0.79x was in-sweep interference
+
+Items 2128/2129 finished the diagnosis: an unfiltered two-hop count uses an O(V) degree identity, **a
+filter of any kind invalidates it**, and `slotChainCount` — a CSR propagation that needs no identity and
+already takes an ARBITRARY seed set — was never called with filtered seeds, its only call site sitting
+inside the `unfiltered` branch.
+
+```text
+    row                        BEFORE      NEW
+    3-hop trailing filter    13857.5     17.3     801x
+    2-hop trailing, vacuous    244.2     17.4      14.0x
+    2-hop trailing              122.9     14.9       8.2x
+    2-hop leading               119.0     11.5      10.3x
+    both ends filtered          124.7     12.2      10.2x
+    no filter (control)          14.4     10.6       1.36x
+    one-hop filtered (ctl)       14.2     17.9       0.79x  ⚠️ see below
+```
+
+Answers identical in every row (2,499,750 / 5,000,000 / 12,498,750 / 499,950).
+
+### ⚠️⚠️ THE FIRST HALF ALONE WOULD HAVE SHIPPED A 9.4x EQUIVALENT-SPELLING GAP
+
+Wiring the CSR route into the filtered branch gave the LEADING spelling 9.2x and left the TRAILING one
+**unchanged at 125.52 against 13.31** — the same answer, 9.4x apart. 🔑 Nothing got slower, and the gap
+alone is the defect this repo is organised around. Item 2129 had concluded "the filter's POSITION is
+irrelevant" from the two costing the same; ⚠️ **they cost the same because both were slow, not because
+they shared a route** — a coincidence of costs read as a shared mechanism.
+
+🔑 `reversedTrailChain` closes it: `[out, out, has]` is rewritten as `[has, in, in]`. **A bijection on
+paths**, not an approximation — the k-hop OUT-paths ending at a passing vertex correspond one-to-one with
+the k-hop IN-paths starting at one, and a count is order-free. Self-loops and parallel edges need no case.
+After both halves the spread is **1.17x** (14.9 against 11.5).
+
+### ⚠️ THE ONE-HOP CONTROL'S 0.79x IS IN-SWEEP INTERFERENCE, MEASURED NOT ASSUMED
+
+It looked like a 26% regression on item 2126's shape, consistently across both sweep rounds. 🔑 On its own
+instrument, one shape per process, three alternated rounds of 14 reps:
+
+```text
+    round        NEW     BEFORE
+      1        17.36      16.24
+      2        18.64      18.28
+      3        16.32      16.43     <- NEW faster
+    min of medians  16.32  16.24    1.005x — FLAT
+```
+
+⚠️ CLAUDE.md's rule exactly: _a per-row question needs a per-row instrument; rows interfere._
+
+### 🔑 WHAT IT PRESERVES, AND WHAT THE SPELLING PROBE SAYS
+
+`both` is refused (its reverse is itself, so the rewrite would not progress); a LEADING filter makes the
+rewrite decline (the hop scan requires a hop at index 0), leaving `trailingFilteredHopCount` (item 1612)
+to handle a lead filter; the multi-type decline and the seed floor are untouched.
+
+⚠️ **The Gremlin spelling probe flags 3 groups where pristine flags 2 — and the third is NOT this change.**
+Run alone, three times per arm, `V(ids) vs hasId(ids)` falls BELOW the probe's own 0.0005 ms floor ("not
+compared") in 2 of 3 runs on **both** arms. The probe's own warning — _a flag can still be this harness_ —
+doing its job. One pre-existing flag improved (`hasLabel(Univ).out` 2.27x → 2.07x).
+
+**16 tests** against a BRUTE-FORCE enumeration written in the test file (2/3/4 hops, `in` direction,
+`hasLabel` where labels are not a partition, two trailing filters, and the seed-floor decline).
+**7/8 mutants CAUGHT**; the eighth is a NAMED EXPECTED survivor — replacing the `denseChainCount` call with
+`undefined` is answer-equivalent, so no behavioural test can see it, which is item 1983's own finding for a
+route choice in this file. `denseChainCount` is exported for the capability test, as that item's comment
+prescribes.
+
+⚠️ An existing test asserted the 3-hop shape must DECLINE ("a deeper chain keeps the pipeline"). That was a
+ROUTE assertion and the route widened deliberately; its answer (`0`) was verified against brute force
+before the expectation was changed.
+
+⚠️ The complexity cap bit for the NINTH time (36 against 35): the two branches are hoisted to
+`reversedTrailCount`.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 2,783
+Gremlin tests; seven fuzzers green; 5/5 sweeps.
