@@ -17,6 +17,7 @@ import type {
   EvalEnv,
   Params,
   Row,
+  CPath,
 } from './core.js';
 import {
   aggregateOverValues,
@@ -36,6 +37,7 @@ import {
 import { primedEndpointExtremum, withPrimedEndpointExtremum } from './hop-endpoint-extremum.js';
 import { plainNode, plainRel } from './hop-sides.js';
 import { EDGE_DRIVEN_MIN_COVERAGE, labelCoverage, vacuousLabel } from './labels.js';
+import { farEndSeeksNarrower, reversePath, reverseRawPath } from './matching.js';
 import { indexCandidates } from './matching.js';
 import type { SortPlan } from './ordered-rows.js';
 import {
@@ -6174,6 +6176,64 @@ const hopPercentile = (
   return frac === null ? null : { name: e.name, frac, orderSensitive: false };
 };
 
+/**
+ * Build the REVERSED raw + compiled clause pair for a one-hop aggregate, and the direction that goes
+ * with them — item 2107.
+ *
+ * ⚠️⚠️ **EXPORTED SO THE PAIR'S CONSISTENCY CAN BE ASSERTED WITHOUT TIMING.** Reversing only one half
+ * returns the right answer and costs **1765x** (56.5 ms against 0.032): `hopAggregateWalks` builds a
+ * valid walk from a mismatched description instead of refusing it, so the walk visits the wrong
+ * adjacency and the predicate filters afterwards. Two mutants did exactly that and SURVIVED 14 answer
+ * tests — which is why the construction is one function rather than three expressions at a call site.
+ *
+ * 🔑 THE DIRECTION IS READ FROM THE REVERSED PATTERN, not computed. `reverseRawPath` already flips each
+ * segment's direction, so a separately-flipped `hopDir` is a second source of truth for one fact — and
+ * measured, the mutant that passed the UNflipped `hopDir` read identically (0.032), proving the argument
+ * was dead weight that could silently disagree with the pattern it describes.
+ */
+/** The sole compiled pattern of a one-pattern `MATCH`, or `undefined` for anything else. */
+const matchPatternOf = (cm: CClause): CPath | undefined =>
+  cm.kind === 'match' && cm.patterns.length === 1 ? cm.patterns[0] : undefined;
+
+/**
+ * The REVERSED walk set for a one-hop aggregate, or `null` when the shape has none — item 2107.
+ *
+ * ⚠️ HOISTED OUT OF `detectHopAggregate`, which the inline version carried to complexity 43 against a
+ * cap of 35. It also puts the whole construction — narrowing, pairing, and the walk build — in one place
+ * next to `reversedHopClauses`, whose consistency is what the unit tests assert.
+ */
+const reversedHopAggregateWalks = (
+  m: Clause,
+  cm: CClause,
+  synthRet: Clause,
+  synthCret: CClause,
+  opts: { idempotent: boolean; forceStartDriven: boolean },
+): ReturnType<typeof hopAggregateWalks> => {
+  const cPath = matchPatternOf(cm);
+
+  if (cPath === undefined || cm.kind !== 'match' || m.kind !== 'match' || m.patterns.length !== 1) {
+    return null;
+  }
+
+  const pair = reversedHopClauses(m, cm, cPath);
+
+  return hopAggregateWalks(pair.raw, synthRet, pair.compiled, synthCret, pair.direction, opts);
+};
+
+export const reversedHopClauses = (
+  m: Extract<Clause, { kind: 'match' }>,
+  cMatch: Extract<CClause, { kind: 'match' }>,
+  cPath: CPath,
+): { raw: Clause; compiled: CClause; direction: RelPattern['direction'] } => {
+  const raw = reverseRawPath(m.patterns[0]);
+
+  return {
+    raw: { ...m, patterns: [raw] },
+    compiled: { ...cMatch, patterns: [reversePath(cPath)] },
+    direction: raw.segments[0]?.rel.direction ?? 'out',
+  };
+};
+
 export const detectHopAggregate = (
   clauses: readonly Clause[],
   compiled: readonly CClause[],
@@ -6332,7 +6392,50 @@ export const detectHopAggregate = (
     return null;
   }
 
-  const { walks, noSelfLoops, looped } = turned;
+  // ⚠️ `walks` is NOT destructured here: the seed-side pick below reads `side.walks` (item 2107).
+  const { noSelfLoops, looped } = turned;
+  /*
+   * ⚠️⚠️ **THE SAME WALKS, SEEDED FROM THE OTHER END — item 2107, measured 5.73x.** This rung folds over
+   * a START-DRIVEN walk. When the selective predicate sits on the FAR node, that start is the whole label
+   * bucket; written the other way round the identical rung seeds the index. Isolated, one shape per
+   * process, 24 reps with 4 dropped, medians, alternated:
+   *
+   * ```text
+   *     RETURN min(a.n)              as written 0.249 ms   reversed 0.044    5.73x
+   *     RETURN count(DISTINCT a.n)              0.311               0.065    4.80x
+   *     RETURN count(*)       (control)         0.010               0.010    0.98x
+   *     RETURN size(collect(a.n))  (control)    0.177               0.194    0.91x
+   * ```
+   *
+   * 🔑 **AND DECLINING WOULD HAVE BEEN A NET LOSS, WHICH AN ORACLE SETTLED BEFORE THIS WAS BUILT.** Items
+   * 2104/2105 fixed their rungs by handing the query back; forcing THIS rung to decline measured 0.285 as
+   * written and 0.281 reversed — the general path does not seed a one-hop aggregate either, so handing
+   * back costs the reversed spelling **6.4x** (0.044 -> 0.281) to gain nothing on the written one. The
+   * fast arm is this rung's OWN walk; it only needed the better end.
+   *
+   * ⚠️ BOTH SETS ARE BUILT AT COMPILE TIME AND PICKED AT RUN TIME, because whether an index exists is a
+   * property of the GRAPH. `hopAggregateWalks` inspects the pattern only, so the second build does no
+   * graph work; a pattern it refuses reversed simply keeps the written walks.
+   *
+   * ⚠️ REVERSING RENAMES NOTHING — `min(a.n)` still reads `a`, and `reversePath`'s contract is that the
+   * bindings are identical and only the seed side changes. That is what makes this safe for an aggregate
+   * whose argument names a variable, where item 2106's `count(*)` had no column to worry about.
+   */
+  /*
+   * ⚠️ `cMatch` IS NARROWED BEFORE THE SPREAD, not after. `{ ...cm, patterns: [...] }` widens `cm` back
+   * to the whole clause union — whose `INSERT` arm carries `CInsertPath` — so the reversed clause has to
+   * be built from the match variant itself.
+   */
+  /*
+   * ⚠️ HOISTED (item 2107): inline, this construction took the function to complexity 43 against a cap
+   * of 35 — the seventh time that cap has bitten. `bun run lint` is a gate, so the branch moves rather
+   * than the cap.
+   */
+  const reversedTurned = reversedHopAggregateWalks(m, cm, synthRet, synthCret, {
+    idempotent: EXTREMA.has(aggNode.name),
+    forceStartDriven: orderSensitive,
+  });
+  const aggCPath = matchPatternOf(cm);
   const fold = agg?.fold;
 
   const walkRows: RowsFn = (graph, params) => {
@@ -6345,7 +6448,18 @@ export const detectHopAggregate = (
       return null;
     }
 
-    const chosenWalks = chosen === undefined ? walks : [chosen];
+    /*
+     * ⚠️ THE SEED-SIDE PICK (item 2107) SITS HERE, not around the whole rung, so everything else — the
+     * self-loop choice above, the two fold loops below, and `withPrimedEndpointExtremum`'s wrapper
+     * outside — is untouched by it. Only WHICH walks are folded changes.
+     */
+    const side =
+      reversedTurned !== null &&
+      aggCPath !== undefined &&
+      farEndSeeksNarrower(graph, aggCPath, new Map(), params)
+        ? reversedTurned
+        : turned;
+    const chosenWalks = chosen === undefined ? side.walks : [chosen];
 
     // TWO loops, branched ONCE on which path this is, rather than one loop with the branch
     // inside it — so the fold path's inner loop is unchanged from before this item.

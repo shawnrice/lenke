@@ -104618,7 +104618,7 @@ this is a sixth operand kind for it. The re-run after the refactor was 5/5 clean
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 5,073
 GQL tests; all seven fuzzers green; 5/5 sweeps.
 
-## Item 2106 — ✅ **SHIPPED: a three-hop `count(*)` seeds from the END when the end is the seek — 13.05 → 0.44 ms (29.7x).** 🔑 Item 1330's own table priced this at **1.02x** and it was a REAL target
+## Item 2106 — ✅ **SHIPPED: a three-hop `count(*)` seeds from the END when the end is the seek — 13.05 → 0.44 ms (29.7x).** ⚠️ **ITS OTHER FINDING — the one-hop scalar folds at 2.8-5.95x — WAS TAKEN AT ITEM 2107 (7.25x), and needed a REVERSAL where a decline would have cost 6.4x.** 🔑 Item 1330's own table priced this at **1.02x** and it was a REAL target
 
 The aggregate surface had never been screened with items 2104/2105's vacuous-`LIMIT` instrument. ⚠️ A
 `LIMIT` after an aggregate limits the AGGREGATE ROWS, so it never reaches the walk — the spelling that
@@ -104677,4 +104677,72 @@ Absolute times are small (0.13-0.48 ms against 0.02-0.08) but the pattern is sys
 one function.
 
 GATES. `bun run fmt` 0; `bun run check` 0 unpiped; `bun run test -- --skip-nx-cache` 21/21; 5,087 GQL
+tests; seven fuzzers green; 5/5 sweeps.
+
+## Item 2107 — ✅ **SHIPPED: `hopAggregate` folds over the walk seeded from the BETTER end — `min` 0.232 → 0.032 ms (7.25x), `count(DISTINCT)` 5.84x, both controls exactly flat.** 🔑 And a REVERSAL was right where items 2104/2105's DECLINE would have cost 6.4x — an oracle settled that before anything was built
+
+Item 2106's screen left five one-hop scalar folds flagged at 2.8-5.95x. ⚠️ **A screen RANKS, so they were
+re-priced isolated first**, one shape per process, 24 reps with 4 dropped, medians, alternated — and the
+gap survived with both controls clean:
+
+| shape                          | as written | reversed | ratio     |
+| ------------------------------ | ---------- | -------- | --------- |
+| `min(a.n)`                     | 0.249      | 0.044    | **5.73x** |
+| `count(DISTINCT a.n)`          | 0.311      | 0.065    | **4.80x** |
+| `count(*)` (control)           | 0.010      | 0.010    | 0.98x     |
+| `size(collect(a.n))` (control) | 0.177      | 0.194    | 0.91x     |
+
+### 🔑 THE ORACLE THAT CHOSE THE MECHANISM, RUN BEFORE ANY CODE
+
+Items 2104/2105 fixed their rungs by DECLINING to the orienting matcher, and reaching for that again was
+the obvious move. ⚠️ Forcing `detectHopAggregate` to decline unconditionally measured **0.285 written
+and 0.281 reversed** — the general path does not seed a one-hop aggregate either. So declining would
+have cost the reversed spelling **6.4x** (0.044 → 0.281) to gain nothing on the written one. 🔑 **The
+fast arm is this rung's OWN walk; it only ever needed the better end.** Three items in a row with the
+same symptom, and the third needed the opposite fix.
+
+### What shipped, and the A/B
+
+Both walk sets are built at compile time (`hopAggregateWalks` inspects the pattern only, so no graph
+work) and picked at run time by item 2104's `farEndSeeksNarrower`. A/B, two alternated rounds:
+
+```text
+    min(a.n)                     0.232 -> 0.032    7.25x
+    count(DISTINCT a.n)          0.222 -> 0.038    5.84x
+    count(*)          (control)  0.010 -> 0.010    1.00x  ✓
+    size(collect(a.n)) (control) 0.175 -> 0.174    1.01x  ✓
+```
+
+⚠️ `count(*)` read 0.010 in all four runs. An earlier single reading showed 0.010 → 0.018 and the A/B
+is what settled it as noise rather than my assuming so.
+
+### ⚠️⚠️ TWO MUTANTS RETURNED THE CORRECT ANSWER AND COST 1765x
+
+Reversing only ONE half of the raw + compiled clause pair left the walk description mismatched.
+`hopAggregateWalks` builds a _valid_ walk from it rather than refusing, so:
+
+```text
+    raw path not reversed       56.478 ms   <- 1765x slower than 0.032, and SLOWER than the unfixed 0.232
+    compiled path not reversed   5.774      <- 180x
+    direction not flipped        0.032      <- IDENTICAL: the argument was dead weight
+```
+
+🔑 **All three survived 14 answer tests.** The fix was to build the pair in ONE exported function,
+`reversedHopClauses`, and assert its halves against each other structurally — directions and node
+variables in order — which needs no timing. ⚠️ And the direction is now READ FROM the reversed pattern
+rather than separately flipped, because the third mutant proved a separate `FLIP_DIRECTION[hopDir]` was a
+second source of truth for one fact that could silently disagree.
+
+**23 tests**: 10 aggregates asserted indexed-against-unindexed, every one hand-reversed too, an
+undirected hop on both a loopless and a self-looped graph, a start-side predicate, grouped and
+multi-aggregate projections, plus 9 on the pair's consistency. 🔑 **4/8 mutants CAUGHT and they are
+exactly the four that were silent catastrophes**; the survivors are the answer-equivalent route choices.
+
+⚠️ The complexity cap bit for the SEVENTH time (43 against 35) — the construction is hoisted to
+`reversedHopAggregateWalks`, and the win was re-measured after hoisting (0.032 unchanged).
+
+🔑 **STILL OPEN: `size(collect(a.n))` costs 0.175 ms where `min` now costs 0.032 — 5.5x**, symmetric in
+both spellings, so it is a materialization cost rather than a seed-side one.
+
+GATES. `bun run fmt` 0; `bun run check` 0 unpiped; `bun run test -- --skip-nx-cache` 21/21; 5,110 GQL
 tests; seven fuzzers green; 5/5 sweeps.
