@@ -105635,3 +105635,57 @@ that is worth removing (−93 lines there), and removing a rung is its own item 
 
 GATES. Probe/corpus only — no engine change (both oracles reverted, `clauses.ts` verified clean of the
 `// ORACLE` marker). `bun run check` 0 read unpiped; the census reports 94/100 shapes with a willing rung.
+
+## Item 2122 — 🔑 **THE SIX GENERAL-PATH SHAPES PRICED: the `LIMIT` hypothesis is REFUTED (early exit works, 0.01x), three are the `sum` POLICY, and ONE is a real candidate — `OPTIONAL` + `GROUP BY` at 18x**
+
+Item 2121 left six of 100 census shapes reaching no rung. ⚠️ **A general-path shape is not a defect** — most
+steps have no shortcut and never will — so each was paired with the cheapest thing answering the same
+question:
+
+```text
+    shape                      general      floor     ratio   rows (gen / floor)
+    node.limit                    0.08       7.57      0.01x   10 / 200,000
+    hop.limit                     0.04      19.34      0.00x   10 / 600,000
+    hop.group.sum.crossend      439.13      22.47     19.54x   97 / 97
+    opt.group                   394.67      18.90     20.88x   97 / 97
+    hop2.sum.end               1401.12      14.12     99.23x   1 / 1
+    varlen.proj                7025.37    2373.97      2.96x   7,799,974 / 5,400,000  (~2.0x per row)
+```
+
+### 🔑 THE SHARPEST HYPOTHESIS WAS WRONG, AND THAT IS GOOD NEWS
+
+A `LIMIT 10` that cost what its unlimited twin costs would be the `eager-tail-cache` class, which this repo
+has measured at **473x and 3680x in both engines**. ⚠️ Measured: **0.08 ms for ten rows against 7.57 for all
+200,000** — early exit works, on both the scan and the hop. The general path is the right answer for those
+two and no rung is wanted.
+
+### ⚠️ THREE OF THE FOUR CANDIDATES ARE A STANDING POLICY, NOT A GAP
+
+`hop2.sum.end` (99x), `hop.group.sum.crossend` (19.5x) and part of the rest are `sum`. The level
+recurrence refuses it deliberately (items 1830/2010): **a multiplicity-weighted sum is different
+arithmetic from a per-path one and f64 addition is not associative**, so folding it would break
+byte-identity with Rust wherever the two orders differ. `min`/`max` are admitted because an extremum over
+a multiset IS the extremum over its support. 🔑 The refusal holds; what this item adds is its PRICE — **99x
+at two hops** — recorded so nobody re-derives it as an available win.
+
+### 🔑 THE ONE REAL CANDIDATE: `OPTIONAL MATCH` + `GROUP BY`, 18x, SUPERADDITIVE
+
+Isolated at 200,000 vertices / 600,000 edges — the same signature as item 2115 (each half cheap, the pair
+expensive):
+
+```text
+    OPTIONAL alone (plain count)      8.6 ms     1 row    <- has a rung (`optionalHopCount`)
+    grouping alone (MATCH + group)   20.7       97        <- has a rung (`groupHopShortcut`)
+    OPTIONAL + grouping             378.3       97        <- 18.3x the grouped MATCH, 44x the OPTIONAL count
+    OPTIONAL rows (the walk)        129.7  600,000        <- so the grouped form is 2.9x the walk itself
+    node group count (floor)          3.6       97
+```
+
+⚠️ Every shape I have shipped this session has had this shape: a rung for each half and none for the pair
+(items 2112/2113's bag+values, 2116's hop+bag+values, 2119/2120's chain DISTINCT). 🔑 Expected after a
+rung: **378 → ~21-25**, so **~15-18x**.
+
+⚠️ NOT BUILT — a new detector with its own tests and mutation round. `varlen.proj`'s ~2.0x per row is also
+unexplained and smaller; the quantifier is the difference from its fixed-chain floor.
+
+GATES. Probe only — no engine change. `bun run check` 0 read unpiped; 5,129 GQL tests green.
