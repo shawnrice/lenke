@@ -1271,14 +1271,7 @@ const filteredHopCount = (hop: Step, rest: readonly Step[], graph: Graph): numbe
         continue;
       }
 
-      const deg = degreeOfTypes(byType, hop.labels);
-
-      // A vertex with no edge of this type is not a far endpoint of this hop, so it must not be
-      // tested — that is what keeps the evaluated set identical.
-      if (deg === 0) {
-        continue;
-      }
-
+      // ITEM-2126-PREDICATE-FIRST: the degree moved BELOW the predicate; see the note at `n += deg`.
       // THE FAR-END LABEL TESTS (item 1302), before the property chain. The ORDER between the two
       // groups is unobservable — neither a label test nor a `matches` can fault (item 930 proved
       // the latter by a mutant removing the short-circuit, which SURVIVED) — so this is a cost
@@ -1317,7 +1310,40 @@ const filteredHopCount = (hop: Step, rest: readonly Step[], graph: Graph): numbe
         }
       }
 
-      if (hit) {
+      if (!hit) {
+        continue;
+      }
+
+      /*
+       * ⚠️⚠️ **THE DEGREE IS COMPUTED HERE, BELOW THE PREDICATE, AND THE ORDER IS THE POINT** (item 2126).
+       * It used to sit above the filters, so the dear half ran for EVERY vertex and the predicate's
+       * selectivity was thrown away.
+       *
+       * 🔑 THE TELL WAS A VACUOUS-PREDICATE CONTROL (item 570's instrument): `has(age, gt(-1))`, which
+       * keeps every row, measured **32.4 ms against the real predicate's 31.9**. A predicate rejecting
+       * half costing what one rejecting nothing costs means the cost is the ROUTE, not the rows.
+       *
+       * ⚠️ AND THE DEAR HALF IS `adjTo`, NOT THE PREDICATE. Reading each box's typed degree over 200,000
+       * vertices / 1,000,000 edges: `adjFrom` 6.92 ms, `adjTo` **16.15** — 2.3x, and not the box read
+       * (both boxes read in ~1.1 ms). A vertex's out-edges are created consecutively so its `adjFrom`
+       * sets sit together; its IN-edges arrive from widely separated iterations, so `adjTo` is a cold
+       * pointer chase. This rung drives the FAR side (item 168's 3x), so `out` reads the dear one.
+       *
+       * ⚠️ ANSWER- AND FAULT-EQUIVALENT. A degree-0 vertex contributes 0 either way, so the `deg === 0`
+       * skip is an optimization, not semantics. The displaced comment said the old order "keeps the
+       * evaluated set identical" — that argument exists to preserve FAULT parity with the edge-driven
+       * walk, and item 930 established no `matches` can fault (a mutant removing the short-circuit
+       * SURVIVED; two tests written to assert a throw both failed). With no faults possible the
+       * evaluated set is unobservable, which is the same reason the label group may precede the
+       * property chain two blocks above.
+       *
+       * ⚠️ THE NUMBER HERE IS FROM AN A/B OF THE REAL RUNG, not a micro-probe — this loop's own history
+       * says why (item 591's inlined probe read 18.29 ms against the row's 42.2 and the difference was
+       * not in the loop at all), and item 2125 repeated the mistake one tick before this one.
+       */
+      const deg = degreeOfTypes(byType, hop.labels);
+
+      if (deg !== 0) {
         n += deg;
       }
 
@@ -1344,9 +1370,15 @@ const filteredHopCount = (hop: Step, rest: readonly Step[], graph: Graph): numbe
       //
       // What is left here is constant-factor: a JS property read and a predicate dispatch per
       // vertex against native's columnar read, which is item 566's layout ceiling rather than a
-      // missing route. The ORDER is already optimal — without an index on the key every vertex
-      // with a matching edge must be tested, and `seedForStep` already hands the indexed case to
-      // the index path.
+      // missing route. ~~The ORDER is already optimal~~ — ⚠️⚠️ **WRONG, AND ITEM 2126 MEASURED IT AT
+      // 1.81-5.65x.** That sentence answers "can we test FEWER vertices?" (no, not without an index)
+      // and reads as though it settled "in what order?", which it did not: the DEGREE was computed
+      // above the predicate, so the dear half ran unconditionally and selectivity bought nothing. A
+      // vacuous predicate costing what a real one costs (32.4 against 31.9) was the tell. The degree
+      // now sits below the predicate — see the note at `n += deg`.
+      //
+      // Still true: without an index on the key every vertex with a matching edge must be tested, and
+      // `seedForStep` already hands the indexed case to the index path.
     }
 
     return n;

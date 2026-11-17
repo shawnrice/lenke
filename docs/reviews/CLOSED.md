@@ -105863,3 +105863,62 @@ refuted mechanism.
 GATES. No engine change shipped (the probe is additive; `optional-hop.ts` restored from pristine and
 verified at 0 occurrences of `directedBucket`); `bun run fmt` 0; `bun run check` 0 read unpiped; 5,146 GQL
 tests green.
+
+## Item 2126 — ✅ **SHIPPED (Gremlin): `filteredHopCount` tests the predicate BEFORE the far degree — 32.4 → 17.9 ms (1.81x) at 50% selectivity, 31.1 → 5.5 (5.65x) at 4.4%.** And it CORRECTS this loop's own "the ORDER is already optimal"
+
+🔑 Nominated by `bun run bench:gremlin` with no interpretation needed: `V().out().count()` is **0.0 ms**
+and `V().out().has().count()` was **42.1** (39.9x native's 1.05). The rung was already on the right route —
+ablating `filteredHopCount` gives 393.9 ms, so it was buying 12.5x — but it computed the far DEGREE for
+every vertex and only then tested the predicate, so the dear half ran unconditionally.
+
+### 🔑 THE TELL WAS A VACUOUS-PREDICATE CONTROL, AND IT IS THE PROOF TOO
+
+A `has(age, gt(-1))` that keeps every row measured **32.4 ms against the real predicate's 31.9** —
+identical. ⚠️ A predicate rejecting half costing what one rejecting nothing costs means the cost is the
+ROUTE, not the rows (item 570's instrument). 🔑 And after the fix that same arm is correctly **FLAT**
+(31.1 → 30.0, 1.04x), which is what proves the win comes from skipping rejected vertices and nothing else.
+
+```text
+    arm                      degree-first   predicate-first
+    filtered (50% pass)          32.4           17.9     1.81x
+    selective (4.4% pass)        31.1            5.5     5.65x
+    vacuous (100% pass)          31.1           30.0     1.04x   ✓ correctly flat
+    two-hop (control)            11.4           11.2     1.02x   ✓
+```
+
+Answers identical in every arm. ✅ **And the full bench confirms it independently: the row reads 42.1 →
+20.5 ms (2.05x), native ratio 39.9x → 19.7x, every other row unchanged.**
+
+### ⚠️ THE DEAR HALF IS `adjTo`, NOT THE PREDICATE
+
+Reading each box's typed degree over 200,000 vertices / 1,000,000 edges: `adjFrom` **6.92 ms**, `adjTo`
+**16.15** — 2.3x, and **not** the box read (both boxes read in ~1.1 ms). 🔑 A vertex's out-edges are
+created consecutively so its `adjFrom` sets sit together; its IN-edges arrive from widely separated
+iterations, so `adjTo` is a cold pointer chase. This rung drives the FAR side (item 168's 3x), so an `out`
+hop reads the dear one — which is exactly why skipping it for rejected vertices pays.
+
+### ⚠️⚠️ A PRIOR ARRIVAL SAID "THE ORDER IS ALREADY OPTIMAL", AND IT IS STRUCK IN THIS COMMIT
+
+That sentence answers _"can we test FEWER vertices?"_ — no, not without an index — and reads as though it
+settled _"in what order?"_, which it did not. 🔑 The distinction is the whole item. Its heading is
+corrected in place rather than left advertising a settled question.
+
+⚠️ **AND THE SAME COMMENT WARNED ABOUT MY METHOD: "a micro-probe mispriced a ratio; take ratios from an
+A/B of the real thing"** (item 591's inlined probe read 18.29 ms against the row's 42.2). My 1.83x/6.88x
+came from a hand-written floor — so every number above is from an A/B of the real rung, alternated, with
+controls. They agree with the micro-probe this time; item 2125, one tick earlier, is where they did not.
+
+### ⚠️ SOUNDNESS: FAULT PARITY, NOT ANSWER PARITY
+
+Moving the predicate above the `deg === 0` skip widens the EVALUATED SET to include zero-degree vertices.
+🔑 That is unobservable **iff** a predicate cannot fault, which item 930 established (a mutant removing the
+short-circuit SURVIVED; two tests written to assert a throw both failed). ⚠️ **The reorder depends on that
+claim, so it now has its own test** — a cross-type comparison on a non-endpoint vertex, which the old order
+never evaluated and the new one does. If it ever fails, the skip goes back above the predicate.
+
+**7 tests**, each a vertex where the two orders could disagree. **4/5 mutants CAUGHT**; the fifth is a
+NAMED EXPECTED survivor — `if (deg !== 0)` → `if (true)` is semantically equivalent, because `n += 0` is a
+no-op, so that guard is now pure optimization.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 2,760
+Gremlin tests; seven fuzzers green; 5/5 sweeps.
