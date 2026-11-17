@@ -103096,3 +103096,67 @@ measuring the wrong row.
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; all
 seven fuzzers green; 5/5 sweeps clean.
+
+## Item 2082 — ✅ **SHIPPED: `V().values(k).tail(n)` fused with a ring — 9.41 → 3.15 ms (2.99x), and the generic `tail` rings too.** 🔑 The PROFILE REFUTED the obvious nomination first: the `shift` it was blamed on is 7% of the query, and a surviving mutant then caught a DIVERGENCE the ring had introduced
+
+Item 2081 left `tail(10)` priced at 1.74x the full scan while emitting 10 rows. The obvious reading —
+`tail` materializes the stream — is **wrong**: `tailTraversers` already buffered boundedly. The next
+suspect was its `buf.shift()`, one per row past `n`. ⚠️ **Priced by hand before building anything**,
+200,000 rows, medians of 14, two rounds:
+
+```text
+    walk alone (THE CONTROL)   0.222 ms
+    push + shift               0.960      -> 0.74 ms of buffering
+    ring store                 0.286      -> 0.064 ms
+```
+
+🔑 **So the shift is 3.4x the ring on the buffering and 7% OF THE QUERY** — under CLAUDE.md's noise
+floor, and not the explanation for anything. The gap against a bare `values()` is the FUSION this shape
+loses: item 2081 measured the generic projection path at ~12 ms for the same 200,000 rows. Without the
+hand floor this item would have shipped a ring, measured the fusion's win, and credited the ring.
+
+| row                               | KILLED | LIVE     |                                 |
+| --------------------------------- | ------ | -------- | ------------------------------- |
+| `V().values(n).tail(10)` (target) | 9.41   | **3.15** | **2.99x** (medians 2.63x)       |
+| `V().label()` (item 2080)         | 6.04   | 6.10     | 0.99x                           |
+| `V().values(n).is(p)` (item 2081) | 5.28   | 5.56     | 0.95x                           |
+| `V().values(n)`                   | 4.40   | 5.32     | ⚠️ noisy, as in items 2080/2081 |
+| `scan: count`                     | 0.00   | 0.00     | flat                            |
+
+⚠️ **THE KILLED ARM ALREADY HAS THE RING**, so 2.99x is the fusion ALONE. The fused walk ends up FASTER
+than a bare `values()` scan (3.15 against ~5) because it scans 200,000 rows and materializes ten.
+
+### ⚠️⚠️ A SURVIVING MUTANT CAUGHT A DIVERGENCE **THE RING HAD JUST INTRODUCED**
+
+The generic `tailTraversers` now rings as well — strictly less work for the same answer, reaching every
+`tail` shape the fusion declines. Its `n < 1` arm exists because `% 0` is NaN, and it first `return`ed
+without touching the stream. The mutant deleting that guard **survived**, and chasing why found this:
+
+```text
+    store('x').tail(0).cap('x')      HEAD: bag = 5      my ring: bag = 0
+```
+
+🔑 HEAD's loop consumed the stream unconditionally; an early `return` does not, and **`store` is lazy by
+contract** (items 2070/2078) — it banks only what actually flows through it. ⚠️ **`aggregate` CANNOT SEE
+THIS**: it is an eager barrier, so its bag was full either way, and the first version of this check used
+it. The zero arm now drains, and a test pins all three of `tail(0)`, `tail(1)`, `tail(3)` at a bag of 5.
+
+VERIFICATION. 15 tests, **14/14 mutants on the fused rung and 6/6 on the generic ring**. The ring's
+arithmetic is the risk and four mutants target it directly: `seen === n + 1` is the discriminating case,
+where the buffer as STORED reads `[70, 10, 30, 40, 50, 60]` and the answer is `[10, 30, 40, 50, 60,
+70]` — the right COUNT, the wrong ORDER, so `toStrictEqual` on the sequence is what fails. And
+`new Array(n)` is n HOLES, so a `kept` taken from the ring's length instead of `seen` emits trailing
+`undefined`s, which [[toequal-blind-to-trailing-undefined]] says `toEqual` would pass.
+
+⚠️ `tail(local)` is refused: it slices each row's own iterable value, a different step.
+
+### ⚠️ A SPLICE INTO A GENERATED SCRIPT LANDED INSIDE A ROW
+
+Rebuilding the mutant list, `s.index('MUTANTS=(')` + `s.index('\n)\n')` produced a file whose first row
+read `"rung-never-fires@@  if (last.kind !== 'MUTANTS=(` — a zsh parse error, so it failed loudly. The
+fix is a LINE-ANCHORED match (`(?m)^MUTANTS=\($`) with an asserted count of 1, which is
+[[ambiguous-anchor-strings]]'s rule applied to the harness rather than to the code under test.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped (two lints fixed: `prefer-destructuring`, an
+unnecessary `!`); `bun run test -- --skip-nx-cache` 21/21; 2,722 gremlin tests; all seven fuzzers green;
+5/5 sweeps clean. Both mutation rounds re-run AFTER the lint fix changed an anchor.

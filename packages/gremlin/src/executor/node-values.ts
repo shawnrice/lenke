@@ -530,6 +530,94 @@ const valuesIsWalkGeneral = function* (
  * `projectValues` drops before `is` sees anything — and a walk that tested the predicate against
  * `undefined` would differ on exactly those vertices.
  */
+/*
+ * THE RING FOR `V().values(k).tail(n)` (item 2082).
+ *
+ * ⚠️⚠️ **THE PROFILE REFUTED THE OBVIOUS NOMINATION, AND THE RING IS THE SMALL HALF.** `tail` already
+ * buffers boundedly — it is not materializing the stream — so the suspect was its `buf.shift()`, one
+ * per row past `n`. Measured by hand over 200,000 rows (medians of 14, two rounds):
+ *
+ *     walk alone (control)   0.222 ms
+ *     push + shift           0.960        -> 0.74 ms of buffering
+ *     ring store             0.286        -> 0.064 ms
+ *
+ * So the shift costs 0.74 ms against a query of 9.58 — **7%**, under CLAUDE.md's noise floor. The gap
+ * against a bare `values()` (5.52) is the FUSION this shape loses, not the buffer: item 2081 measured
+ * the generic projection path at ~12 ms for the same 200,000 rows. The ring is kept because it is free
+ * once the walk is being written, not because it was the target.
+ */
+const valuesTailWalk = function* (graph: Graph, key: string, n: number): Generator<unknown> {
+  /*
+   * ⚠️ A RING, SO THE WRAP POINT IS THE OLDEST ROW. `seen % n` overwrites in place; after the loop the
+   * oldest surviving row is at `seen % n` when `seen > n`, and at 0 when it is not — which is why the
+   * emit below starts there and wraps, rather than iterating the buffer as stored.
+   */
+  const buf: unknown[] = new Array<unknown>(n);
+  let seen = 0;
+
+  for (const v of graph.vertices) {
+    const props = v.properties;
+
+    if (key in props) {
+      buf[seen % n] = props[key];
+      seen++;
+    }
+  }
+
+  const kept = seen < n ? seen : n;
+  const start = seen < n ? 0 : seen % n;
+
+  for (let i = 0; i < kept; i++) {
+    yield buf[(start + i) % n];
+  }
+};
+
+/**
+ * `V().values(k).tail(n)` — the fused scan with a ring buffer (item 2082).
+ *
+ * ⚠️ `tail(0)` IS A REAL CASE AND `new Array(0)` plus `% 0` IS NaN, so it is refused above rather than
+ * handled: `n < 1` declines and the generic path answers it. A fused walk that divided by zero would
+ * emit nothing for every input, which is coincidentally RIGHT for `tail(0)` and wrong the moment the
+ * guard is reused.
+ */
+export const valuesTailShortcut = (plan: Plan, graph: Graph): NodeValues | undefined => {
+  const { steps } = plan;
+
+  if (steps.length !== 3) {
+    return undefined;
+  }
+
+  const [source, proj, last] = steps;
+
+  if (source.kind !== 'V' || (source.ids?.length ?? 0) > 0) {
+    return undefined;
+  }
+
+  if (proj.kind !== 'values' || proj.keys.length !== 1) {
+    return undefined;
+  }
+
+  // ⚠️ GLOBAL SCOPE ONLY: `tail(local)` slices each row's own iterable value, a different step.
+  if (last.kind !== 'tail' || last.scope === 'local') {
+    return undefined;
+  }
+
+  const { n } = last;
+
+  // ⚠️ See the doc comment: `% 0` is NaN and a zero-length ring cannot hold the answer.
+  if (!Number.isInteger(n) || n < 1) {
+    return undefined;
+  }
+
+  const [key] = proj.keys;
+  const walk = (): Generator<unknown> => valuesTailWalk(graph, key, n);
+
+  return {
+    [Symbol.iterator]: walk,
+    drain: () => [...walk()],
+  };
+};
+
 export const valuesIsShortcut = (plan: Plan, graph: Graph): NodeValues | undefined => {
   const { steps } = plan;
 

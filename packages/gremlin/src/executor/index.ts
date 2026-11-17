@@ -70,6 +70,7 @@ import {
   scanWhereHasKeyCountResidual,
   scanWhereValuesDedupe,
   valuesIsShortcut,
+  valuesTailShortcut,
   scanWhereValuesResidual,
   seededNodeCountShortcut,
   seededNodeValuesShortcut,
@@ -2856,7 +2857,9 @@ const scanValuesShortcut = (
        * after the source with NOTHING after it, a trailing `dedupe`, or a `where` in the middle, and
        * this needs a trailing `is`. Item 1535's rule, stated rather than relied upon.
        */
-      valuesIsShortcut(effective, graph));
+      valuesIsShortcut(effective, graph) ??
+      // `V().values(k).tail(n)` (item 2082) — the fused scan with a ring buffer.
+      valuesTailShortcut(effective, graph));
 
 /**
  * The fused VALUES walks, consulted in `??` order.
