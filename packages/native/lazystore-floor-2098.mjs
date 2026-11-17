@@ -39,6 +39,76 @@ const fusedWalk = () => {
   return out;
 };
 
+/**
+ * The SAME walk whose `drain` RESPECTS THE CURSOR — item 2111.
+ *
+ * ⚠️⚠️ **THIS IS WHY ITEM 2098's ARM BOTH WON AND DOUBLED: ONE CAUSE.** Its `drain` is `values.slice()`,
+ * which ignores whatever the iterator already yielded. That is what made it fast (an O(1) slice instead
+ * of a walk) AND what doubled the bag on iterate-then-drain. The two are not separable in that design.
+ *
+ * 🔑 A CURSOR SEPARATES THEM. The walk tracks how far it has yielded, so `drain` slices FROM there —
+ * still one O(1) slice, and each element is yielded exactly once. ⚠️ No latch, no flag, no "has it been
+ * consumed" state: the cursor is the position the generator already had to keep, exposed.
+ */
+const cursoredWalk = () => {
+  let at = 0;
+  const out = (function* () {
+    while (at < ROWS) {
+      const v = values[at];
+
+      at += 1;
+
+      yield v;
+    }
+  })();
+
+  out.drain = () => {
+    const rest = values.slice(at);
+
+    at = ROWS;
+
+    return rest;
+  };
+
+  return out;
+};
+
+/**
+ * ⚠️⚠️ THE SAME CURSORED DESIGN WHOSE `drain` **WALKS** INSTEAD OF SLICING — item 2111, and this is the
+ * arm that matters.
+ *
+ * 🔑 THE ENGINE'S FUSED-WALK DRAINS ARE WALKS. Both `drain` implementations in `node-values.ts` build
+ * their rows with `for (const t of stream) rows.push(...)`; there is NO underlying array to slice, and
+ * `far-mask-drain.ts` is a mark/resolve/emit pass rather than a stored list. So an arm that slices
+ * `values` is measuring a drain this engine does not have — which is the one thing item 2098's floor did
+ * not model.
+ */
+const walkingCursoredWalk = () => {
+  let at = 0;
+  const out = (function* () {
+    while (at < ROWS) {
+      const v = values[at];
+
+      at += 1;
+
+      yield v;
+    }
+  })();
+
+  // ⚠️ A WALK, as the engine's own drains are — the cursor still makes it exactly-once.
+  out.drain = () => {
+    const rows = [];
+
+    for (const v of out) {
+      rows.push(v);
+    }
+
+    return rows;
+  };
+
+  return out;
+};
+
 const arms = {
   /*
    * THE GENERIC PATH, as item 2070 measured it: the bag step appended to a traverser stream. Modelled
@@ -83,6 +153,74 @@ const arms = {
     return { n, bag: bag.length };
   },
   /*
+   * 🔑🔑 ITEM 2111's DECISIVE ARM: cursored AND the drain WALKS, which is the engine's real shape.
+   */
+  walkcursored: () => {
+    const bag = [];
+    const src = walkingCursoredWalk();
+    const result = {
+      [Symbol.iterator]: function* () {
+        for (const v of src) {
+          bag.push(v);
+
+          yield v;
+        }
+      },
+      drain: () => {
+        const rest = src.drain();
+
+        for (const v of rest) {
+          bag.push(v);
+        }
+
+        return rest;
+      },
+    };
+    const rows = result.drain();
+    let n = 0;
+
+    for (const v of rows) {
+      n += v === -1 ? 1 : 0;
+    }
+
+    return { n, bag: bag.length };
+  },
+  /*
+   * 🔑🔑 ITEM 2111's ARM: the same proposal over a CURSORED walk, so `drain` slices from where the
+   * iterator stopped. Correct on all four consumption patterns (asserted below) with no latch, and this
+   * measures whether correctness costs the 2.1x.
+   */
+  cursored: () => {
+    const bag = [];
+    const src = cursoredWalk();
+    const result = {
+      [Symbol.iterator]: function* () {
+        for (const v of src) {
+          bag.push(v);
+
+          yield v;
+        }
+      },
+      drain: () => {
+        const rest = src.drain();
+
+        for (const v of rest) {
+          bag.push(v);
+        }
+
+        return rest;
+      },
+    };
+    const rows = result.drain();
+    let n = 0;
+
+    for (const v of rows) {
+      n += v === -1 ? 1 : 0;
+    }
+
+    return { n, bag: bag.length };
+  },
+  /*
    * 🔑 THE PROPOSAL: lazy as an iterator, eager via `drain`. `toArray` takes the drain, so this arm
    * measures what the common path would cost.
    */
@@ -118,6 +256,111 @@ const arms = {
     return { n, bag: bag.length };
   },
 };
+
+/*
+ * ⚠️⚠️ FOUR CONSUMPTION PATTERNS ON THE CURSORED DESIGN, asserted before anything is timed — item 2111.
+ * Item 2098's arm passed the first two and DOUBLED on the fourth, which is the whole reason it was not
+ * shipped. A faster arm that double-fills the bag is a wrong answer, not a win.
+ */
+const checkCursored = () => {
+  const build = () => {
+    const bag = [];
+    const src = cursoredWalk();
+
+    return {
+      bag,
+      result: {
+        [Symbol.iterator]: function* () {
+          for (const v of src) {
+            bag.push(v);
+
+            yield v;
+          }
+        },
+        drain: () => {
+          const rest = src.drain();
+
+          for (const v of rest) {
+            bag.push(v);
+          }
+
+          return rest;
+        },
+      },
+    };
+  };
+  const BREAK_AT = 1000;
+  const out = [];
+
+  {
+    const { result, bag } = build();
+
+    result.drain();
+    out.push(['drain only', bag.length, ROWS]);
+  }
+
+  {
+    const { result, bag } = build();
+
+    for (const _v of result) {
+      void _v;
+    }
+
+    out.push(['iterate fully', bag.length, ROWS]);
+  }
+
+  {
+    const { result, bag } = build();
+    let n = 0;
+
+    for (const _v of result) {
+      void _v;
+      n += 1;
+
+      if (n >= BREAK_AT) {
+        break;
+      }
+    }
+
+    // 🔑 THE BREAKING CALLER bags ONLY what it pulled — the refusal's whole purpose.
+    out.push(['iterate part-way', bag.length, BREAK_AT]);
+  }
+
+  {
+    const { result, bag } = build();
+    let n = 0;
+
+    for (const _v of result) {
+      void _v;
+      n += 1;
+
+      if (n >= BREAK_AT) {
+        break;
+      }
+    }
+
+    result.drain();
+    out.push(['part-way THEN drain', bag.length, ROWS]);
+  }
+
+  for (const [name, got, want] of out) {
+    const verdict = got === want ? 'OK' : '⚠️ WRONG';
+
+    console.log(
+      `  ${String(name).padEnd(21)} bag=${String(got).padStart(7)} want=${String(want).padStart(7)}  ${verdict}`,
+    );
+
+    if (got !== want) {
+      throw new Error(`cursored: ${String(name)} bag=${String(got)}, expected ${String(want)}`);
+    }
+  }
+};
+
+if (process.env.CHECK === '1') {
+  console.log('  CURSORED CORRECTNESS (item 2111)');
+  checkCursored();
+  process.exit(0);
+}
 
 const arm = process.env.ARM;
 

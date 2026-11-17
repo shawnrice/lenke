@@ -104186,7 +104186,7 @@ a target.
 GATES. Probe only — no engine change. `bun run check` 0 read unpiped; `node --check` on the probe
 (`genchain-floor-2097.mjs`), which throws unless all three arms agree on rows AND sink.
 
-## Item 2098 — ⚠️ **OPEN, PRICED AT 2.1x AND NOT SHIPPED: item 2070's `store` refusal covers the EAGER form only, and a lazy-iterator-with-`drain` form is sound — but it can SILENTLY DOUBLE THE BAG, demonstrated**
+## Item 2098 — ⚠️ **OPEN, PRICED AT 2.1x AND NOT SHIPPED: item 2070's `store` refusal covers the EAGER form only, and a lazy-iterator-with-`drain` form is sound — but it can SILENTLY DOUBLE THE BAG, demonstrated** — ⚠️⚠️ **BOTH HALVES CORRECTED AT ITEM 2111: the doubling needs NO LATCH (a cursor suffices, all four consumption patterns verified), and the 2.1x is really ~1.50x because this floor's `drain` SLICES A STORED ARRAY while the engine's fused-walk drains WALK the stream. Still open; now a question of size, not of single-use state.**
 
 Two shapes ruled out first, from the record rather than by re-measuring:
 
@@ -104958,3 +104958,72 @@ canonical keys, and every layer of that has now been priced: the walk (16 ns/pat
 container (255), the memo (perfect), and the key (a contract).
 
 GATES. Comment-only change; 2,731 Gremlin tests green; instrumentation verified removed.
+
+## Item 2111 — 🔑 **ITEM 2098's BLOCKER IS REMOVED — a CURSOR needs no latch, and all four consumption patterns are correct.** ⚠️ **And its 2.1x is really ~1.50x: its floor sliced an array the engine's drains do not have.** Still open, now correctly priced
+
+The Gremlin screen's second shape (`sideeffect: store pass-through`, 240 ns/row) IS item 2098's target,
+found again from the other end. That item priced a lazy-`store` arm at **2.1x**, demonstrated that it
+**silently doubles the bag** on iterate-then-drain, and concluded: _"A fix needs a single-use latch, which
+is new statefulness in a hot path whose failure mode is a wrong answer in a side-effect bag … It needs an
+owner-level call on whether a side-effecting walk may carry single-use state."_
+
+⚠️ **A "not built because X" note is a claim about X.** The discipline is to separate a TECHNICAL blocker
+from a policy one before re-raising anything — and here X was a property of 2098's ARM, not of lazy side
+effects.
+
+### 🔑 THE LATCH IS UNNECESSARY: THE CURSOR IS STATE THE GENERATOR ALREADY HAD
+
+2098's arm has the iterator walk `src` while `drain()` calls `src.drain()` — **two independent paths both
+pushing to the bag**, so an element reached by both is pushed twice. Expose the position the generator
+already keeps and `drain` resumes from there. No latch, no flag, no "has this been consumed" state.
+
+Asserted on **2098's own fixture**, all four patterns, before anything was timed:
+
+```text
+    drain only            bag= 600000 want= 600000  OK
+    iterate fully         bag= 600000 want= 600000  OK
+    iterate part-way      bag=   1000 want=   1000  OK   <- bags ONLY what it pulled
+    part-way THEN drain   bag= 600000 want= 600000  OK   <- 2098's demonstrated doubling, gone
+```
+
+🔑 The third line is the one the original refusal exists to protect (a `break`ing caller must not cause
+collection it never pulled), and the fourth is the hazard that stopped the item.
+
+### ⚠️⚠️ BUT THE PRICE WAS MEASURED AGAINST A DRAIN THIS ENGINE DOES NOT HAVE
+
+2098's floor builds `out.drain = () => values.slice()` — an O(1) slice of a stored array. 🔑 **The
+engine's fused-walk drains are WALKS**: both `drain` implementations in `node-values.ts` are
+`for (const t of stream) rows.push(...)`, and `far-mask-drain.ts` is a mark/resolve/emit pass, not a
+stored list. There is no array to slice.
+
+⚠️ **AND THE SLICE IS WHERE THE WIN CAME FROM — the same cause as the bug.** `values.slice()` ignores
+what the iterator already yielded, which is simultaneously why it was fast and why it doubled. One A/B,
+same design, slice drain against walk drain, minima of three rounds on 2098's fixture:
+
+| arm                                                           | ns/row   | vs today  |
+| ------------------------------------------------------------- | -------- | --------- |
+| `generic` — what `store` does today                           | 24.0     | —         |
+| `lazydrain` — 2098's, **buggy**                               | 11.2     | 2.14x     |
+| `cursored` — correct, slice drain                             | 11.4     | 2.11x     |
+| **`walkcursored` — correct, WALK drain (the engine's shape)** | **16.0** | **1.50x** |
+
+🔑 **So correctness costs ~2% (11.2 → 11.4) and REALISM costs 1.4x (11.4 → 16.0).** The win is real and
+worth having; the number was 1.4x too high because the floor modelled the wrong drain. ⚠️ `walkcursored`
+is the noisiest arm (18.6 / 16.0 / 21.3), so 1.50x is its best case and the honest range is 1.1-1.5x.
+
+### What stands, and what this does NOT do
+
+⚠️ **STILL NOT SHIPPED, and the reason has changed.** It is no longer blocked on an owner call about
+single-use state — that question is moot, because no single-use state is needed. 🔑 It is now a question
+of SIZE: the drain protocol appears in **73 files**, `store`'s refusal in the `[bag]` residual is
+mutant-guarded (item 2070, and that mutant correctly guards the EAGER admission, which stays refused),
+and a cursor contract would have to hold for every fused walk that exposes `drain`. That is its own item
+with its own tests and mutation round, not a tail-end change to this one.
+
+🔑 **What this item contributes**: the blocker is retired with a demonstrated design, the price is
+corrected from 2.1x to 1.1-1.5x, and item 2098's heading is corrected so nobody builds it expecting the
+larger number. ⚠️ Had I shipped on 2098's figure I would have delivered 1.4x less than the entry
+promised, against a mutant-guarded refusal.
+
+GATES. Probe only — no engine change. `node --check` on both probes; `bun run check` 0 read unpiped;
+2,731 Gremlin tests green.
