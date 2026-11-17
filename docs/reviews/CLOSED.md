@@ -104501,7 +104501,7 @@ state is a graph property, so the decision cannot be made when the rung is compi
 GATES. Diagnosis only in this commit — no engine change yet. `bun run check` 0 read unpiped. The
 probe asserts all three spellings return the same 451 rows.
 
-## Item 2104 — ✅ **SHIPPED: `hop2Projection` hands the query to the orienting matcher when the far node carries a genuine index seek — 25.56 → 0.31 ms (82x), and all three spellings now cost the same.** ⚠️ My FIRST gate was too broad and the mutation round caught it
+## Item 2104 — ✅ **SHIPPED: `hop2Projection` hands the query to the orienting matcher when the far node carries a genuine index seek — 25.56 → 0.31 ms (82x), and all three spellings now cost the same.** ⚠️ **ITS SIBLING HAD THE SAME DEFECT AT 1521x — see item 2105, which also SCREENED every other row rung.** ⚠️ My FIRST gate was too broad and the mutation round caught it
 
 Item 2103 diagnosed it: a vacuous `LIMIT` made the query 59x faster because it defeated this rung's
 length gate and let the plan reach `matchPattern`, which calls `orient`. The rung walks from the
@@ -104554,3 +104554,66 @@ pass, which `tsc` confirmed.
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 5,062
 GQL tests; all seven fuzzers green; 5/5 sweeps clean. ⚠️ The fuzzer compares row MULTISETS (item 2103),
 which is why this needed no Rust-side change.
+
+## Item 2105 — ✅ **SHIPPED: the SAME defect in `chainProjection` is worth 1521x — a three-hop row projection went from 2129.12 ms to 1.40.** 🔑 Found by SCREENING every row rung for item 2104's signature
+
+Item 2104's diagnostic is a one-line screen: **a vacuous `LIMIT` cannot change an answer smaller than
+itself, but it DOES defeat a length-gated rung.** So if "as written" is slower than "as written +
+`LIMIT`", that rung is losing to declining. Applied to every row rung at 200,000 vertices:
+
+| shape                 | before      | + `LIMIT` | after    |                                  |
+| --------------------- | ----------- | --------- | -------- | -------------------------------- |
+| 1 hop rows            | 0.46        | 0.33      | 0.45     | 1.38x — ⚠️ no defect, left alone |
+| 2 hops rows           | 0.68        | 0.93      | 0.67     | fixed at 2104                    |
+| **3 hops rows**       | **2129.12** | **2.28**  | **1.45** | 🔑 **1521x**                     |
+| **3 hops `DISTINCT`** | **2145.32** | **2.50**  | **2.25** | **865x**                         |
+
+🔑 **A TWO-SECOND QUERY THAT SHOULD TAKE 1.4 ms**, and no correctness test could see it — the answer is
+identical either way. This is the largest number of the session, and it was found by screening rather
+than by profiling: the same shape, one hop deeper.
+
+### ⚠️ THE NO-REGRESSION CHECK IS THE ONE THAT MATTERED
+
+This rung's DOCUMENTED wins are on fixtures with NO seek — item 1820 measured **5.8x** for a three-hop
+`RETURN DISTINCT` (418.6 ms against 72.2) and 1843 another 2.69x. A gate that declined there would hand
+back 5.8x to buy 1521x. Alternated A/B, gate LIVE against KILLED:
+
+```text
+  UNINDEXED (the gate must KEEP)        LIVE     KILLED
+    3h DISTINCT (item 1820's shape)   389.25     397.42     ~1.00x  ✓ win intact
+    3h rows                           401.31     408.23     ~1.00x
+    3h folded min                     400.63     402.42     ~1.00x
+    3h grouped count                  383.93     407.53     ~1.00x
+
+  INDEXED (the gate must FIRE)
+    3h DISTINCT                         0.92     422.07      459x
+    3h rows                             0.43     425.30      989x
+    3h folded min                       0.63     422.37      670x
+    3h grouped count                    0.89     422.05      474x
+    ⚠️ control, NO far predicate      382.89     386.06     1.01x  ✓ flat
+```
+
+🔑 **The control — no far predicate, so the gate cannot reach it — is FLAT at 1.01x while the four rows
+beside it gain 459-989x.** That is what separates "the gate fires in the right place" from a harness
+measuring something else.
+
+### What it reuses, and the two notes
+
+⚠️ **NO NEW PREDICATE.** It calls item 2104's `farEndSeeksNarrower`, already 4/5 CAUGHT under mutation.
+**10 new tests** assert instead that this rung and its two COMPOSING rungs (`chainFoldedAggregate`,
+`chainGroupedCount`) are wired to it: each shape asked three ways — as written, via a vacuous `LIMIT`,
+and hand-reversed — on both an indexed and an unindexed fixture, answers required to agree. Both
+composing mutants CAUGHT; the three call-site wirings survive, answer-equivalent as established.
+
+⚠️ **THE COMPLEXITY CAP BIT FOR THE SIXTH TIME** (36 against 35). Six `if`-nested decline sites became
+one hoisted `declinableRung(rung, graph, params)`. 🔑 It collapses two DIFFERENT absences that both mean
+"not an answer": `null` at COMPILE time (never claimed the shape) and `null` at RUN time (claimed it,
+then found a better route) — which is why it returns `Row[] | undefined`.
+
+⚠️ **One sweep of five failed and it is PRE-EXISTING** — `FUZZ_SEED=1241609519`, `OPTIONAL MATCH` with a
+raising inline predicate (`n.s OR zoned_datetime(…)`), `ts: ok` against `native: err E_INVALID_VALUE`.
+Ruled out STRUCTURALLY: the same seed fails with this change KILLED. It is the 15th open divergence, and
+this is a sixth operand kind for it. The re-run after the refactor was 5/5 clean.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 5,073
+GQL tests; all seven fuzzers green; 5/5 sweeps.

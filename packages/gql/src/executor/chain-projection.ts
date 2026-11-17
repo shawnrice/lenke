@@ -10,6 +10,7 @@ import type { AlwaysRowsFn, RowsFn } from './hop-projection.js';
 import type { UnionHop } from './hop-sides.js';
 import { claimedByEarlierType, plainNode, plainRel, unionHopOf } from './hop-sides.js';
 import { effectiveLabel } from './labels.js';
+import { farEndSeeksNarrower } from './matching.js';
 import {
   outputColumnSorts,
   pagedRows,
@@ -70,7 +71,12 @@ import { rowLocal } from './shortcuts.js';
 export const detectChainProjection = (
   clauses: readonly Clause[],
   compiled: readonly CClause[],
-): AlwaysRowsFn | null => {
+  /*
+   * ⚠️ `RowsFn`, NOT `AlwaysRowsFn` (item 2105): this rung DECLINES AT EXECUTION TIME when the far node
+   * carries a genuine index seek, because whether one exists is a property of the GRAPH. Same defect and
+   * same gate as `hop2Projection` at item 2104 — measured 934x here, the larger of the two.
+   */
+): RowsFn | null => {
   if (clauses.length !== 2) {
     return null;
   }
@@ -237,9 +243,33 @@ export const detectChainProjection = (
    */
   // Already deduped INSIDE the walk when `distinct` was built; `distinctRows` would then be a
   // second pass over rows that are already unique. The wider projection still needs it.
-  return ret.projection.distinct && distinct === undefined
-    ? (graph, params) => distinctRows(rows(graph, params))
-    : rows;
+  const answered: AlwaysRowsFn =
+    ret.projection.distinct && distinct === undefined
+      ? (graph, params) => distinctRows(rows(graph, params))
+      : rows;
+
+  const [cPath] = cm.patterns;
+
+  /*
+   * ⚠️⚠️ **THE EXECUTION-TIME DECLINE (item 2105), AND IT IS WORTH MORE HERE THAN ANYWHERE.** This rung
+   * walks from the pattern's WRITTEN start; `matchPattern` calls `orient` and seeds the narrower end.
+   * Measured at 200,000 vertices, fanout 3, a far `tag` selective 1 in 2,000, SAME rows out:
+   *
+   * ```text
+   *     3 hops, rows, as written      2129.12 ms   <- this rung, scanning every vertex
+   *     3 hops, rows, + LIMIT 1000000    2.28      <- rung declines; the matcher seeds the seek
+   *     3 hops, RETURN DISTINCT       2145.32  ->   2.50
+   * ```
+   *
+   * 🔑 **934x, AND A VACUOUS `LIMIT` WAS THE DIAGNOSTIC** — it cannot change an answer smaller than
+   * itself, but it defeats this rung's length gate. A two-second query that should take two milliseconds,
+   * and no correctness test can see it: the answer is identical either way.
+   *
+   * ⚠️ The ONE-HOP rung (`hop-projection.ts`) was measured in the same probe at 1.40x and does NOT
+   * have this defect — one hop from a seek is one adjacency lookup either way.
+   */
+  return (graph, params) =>
+    farEndSeeksNarrower(graph, cPath, new Map(), params) ? null : answered(graph, params);
 };
 
 /**
@@ -1061,7 +1091,8 @@ const ORDER_INVARIANT_AGGREGATES: ReadonlySet<string> = new Set(['min', 'max', '
 export const detectChainFoldedAggregate = (
   clauses: readonly Clause[],
   compiled: readonly CClause[],
-): AlwaysRowsFn | null => {
+  // ⚠️ `RowsFn`: inherits `detectChainProjection`'s execution-time decline (item 2105).
+): RowsFn | null => {
   if (clauses.length !== 2) {
     return null;
   }
@@ -1116,9 +1147,19 @@ export const detectChainFoldedAggregate = (
   }
 
   return (graph, params) => {
+    /*
+     * ⚠️ THIS RUNG COMPOSES `detectChainProjection`'s WALK, so it inherits its execution-time decline
+     * (item 2105): a fold over a handed-back walk has nothing to fold.
+     */
+    const inner = rows(graph, params);
+
+    if (inner === null) {
+      return null;
+    }
+
     let acc = agg.fold.init();
 
-    for (const row of rows(graph, params)) {
+    for (const row of inner) {
       const v = (row as Record<string, unknown>)[column];
 
       // Nullish never reaches `step` on the general path either (`stepFolded`'s `isNullish`), and
@@ -1312,7 +1353,8 @@ export const detectChainPagedProjection = (
 export const detectChainGroupedCount = (
   clauses: readonly Clause[],
   compiled: readonly CClause[],
-): AlwaysRowsFn | null => {
+  // ⚠️ `RowsFn`: inherits `detectChainProjection`'s execution-time decline (item 2105).
+): RowsFn | null => {
   if (clauses.length !== 2) {
     return null;
   }
@@ -1367,8 +1409,14 @@ export const detectChainGroupedCount = (
     // order given the row order item 1831 measured. The bucket holds the KEY VALUE as well as the
     // count, because `valueKey` is not reversible — `countedGroups` calls that the representative.
     const groups = new Map<string, { key: unknown; n: number }>();
+    // ⚠️ Inherits the walk's execution-time decline (item 2105) — see the sibling rung above.
+    const inner = rows(graph, params);
 
-    for (const row of rows(graph, params)) {
+    if (inner === null) {
+      return null;
+    }
+
+    for (const row of inner) {
       const key = (row as Record<string, unknown>)[keyItem.name];
       const k = valueKey(key);
       const seen = groups.get(k);

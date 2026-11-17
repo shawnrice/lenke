@@ -5532,7 +5532,11 @@ export type CLinear = {
   // matcher would seed from the other end of the pattern (item 2104). The caller falls through.
   hop2Projection: RowsFn | null;
   /** THREE OR MORE segments projecting rows (item 1814) — `detectChainProjection`. */
-  chainProjection: AlwaysRowsFn | null;
+  /*
+   * ⚠️ `RowsFn` (item 2105): declines at EXECUTION time when the far node carries a genuine index
+   * seek — a property of the GRAPH, not the query. Measured 934x; the consumer must fall through.
+   */
+  chainProjection: RowsFn | null;
   /**
    * The same chain under `count(DISTINCT <expr over the far end>)` — item 1824. Disjoint from
    * `chainProjection` by construction: that rung refuses an aggregating projection and this one
@@ -5547,7 +5551,11 @@ export type CLinear = {
   // ⚠️ Declines at EXECUTION time (vacuity is a graph property) with `undefined`, exactly as
   // `varLengthCount` above it does, so the caller's existing fall-through applies unchanged.
   chainStarCount: ((graph: Graph, params: Params) => Row[] | undefined) | null;
-  chainFoldedAggregate: AlwaysRowsFn | null;
+  /*
+   * ⚠️ `RowsFn` (item 2105): declines at EXECUTION time when the far node carries a genuine index
+   * seek — a property of the GRAPH, not the query. Measured 934x; the consumer must fall through.
+   */
+  chainFoldedAggregate: RowsFn | null;
   /** The two-hop twin of `chainFoldedAggregate` — item 1824. */
   // ⚠️ `RowsFn`, not `AlwaysRowsFn`: these three DECLINE AT EXECUTION TIME when the generic
   // matcher would seed from the other end of the pattern (item 2104). The caller falls through.
@@ -5567,7 +5575,11 @@ export type CLinear = {
    * `LET … GROUP BY` spelling outright on a clause count.
    */
   chainGroupedLevels: AlwaysRowsFn | null;
-  chainGroupedCount: AlwaysRowsFn | null;
+  /*
+   * ⚠️ `RowsFn` (item 2105): declines at EXECUTION time when the far node carries a genuine index
+   * seek — a property of the GRAPH, not the query. Measured 934x; the consumer must fall through.
+   */
+  chainGroupedCount: RowsFn | null;
   /**
    * The two-hop and chain rungs under `ORDER BY <output columns>` — item 1827. `RowsFn`, because
    * `sortedRows` passes a run-time decline THROUGH rather than answering `[]`.

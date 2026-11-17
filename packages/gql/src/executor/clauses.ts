@@ -30,6 +30,7 @@ import type {
   Params,
   Row,
 } from './core.js';
+import type { RowsFn } from './hop-projection.js';
 import { matchPattern } from './matching.js';
 import { boundedTopKeyed } from './ordered-rows.js';
 import { applyProjection, projectedRows } from './projection.js';
@@ -1737,12 +1738,10 @@ const fastPath = (linear: CLinear, graph: Graph, params: Params): Row[] | undefi
    * the generic matcher would seed from the other end of the pattern. Measured at 59x — a vacuous
    * `LIMIT`, which defeated the rung's length gate, made the query 25.56 ms -> 0.43.
    */
-  if (linear.hop2Projection) {
-    const rows = linear.hop2Projection(graph, params);
+  const h2 = declinableRung(linear.hop2Projection, graph, params);
 
-    if (rows !== null) {
-      return rows;
-    }
+  if (h2 !== undefined) {
+    return h2;
   }
 
   /**
@@ -1755,8 +1754,15 @@ const fastPath = (linear: CLinear, graph: Graph, params: Params): Row[] | undefi
    * free — item 418 measured a branch ahead of a hot dispatch costing the shape it does not claim
    * 1.12x — which is why it goes BELOW both hop rungs rather than above them.
    */
-  if (linear.chainProjection) {
-    return linear.chainProjection(graph, params);
+  /*
+   * ⚠️ FALLS THROUGH ON `null` (item 2105): this rung DECLINES AT EXECUTION TIME when the far node
+   * carries a genuine index seek. Measured **934x** — a vacuous `LIMIT`, which defeated the rung's
+   * length gate, made a three-hop row projection 2129.12 ms -> 2.28. The largest of the two.
+   */
+  const chain = declinableRung(linear.chainProjection, graph, params);
+
+  if (chain !== undefined) {
+    return chain;
   }
 
   const reduced = deepWidthReductions(linear, graph, params);
@@ -2036,6 +2042,26 @@ const chainStarCountOrCountShortcut = (
   return undefined;
 };
 
+/**
+ * Ask a rung that can DECLINE AT EXECUTION TIME, collapsing its two-step protocol to one call.
+ *
+ * ⚠️ **IT EXISTS FOR THE COMPLEXITY CAP, AND THAT IS THE SIXTH TIME.** Items 2104 and 2105 gave three
+ * rungs an execution-time decline, and each call site is a nested `if` — which took this function to 36
+ * against a cap of 35. `bun run lint` is a gate, so the branch gets hoisted rather than the cap raised.
+ *
+ * 🔑 THE TWO ABSENCES ARE DIFFERENT AND BOTH MAP TO `undefined`: a rung that is `null` at COMPILE time
+ * never claimed the shape, and one that returns `null` at RUN time claimed it and then found a better
+ * route in the graph. Neither is an answer, so the caller falls through identically — which is why one
+ * helper can serve both and why its return type is `Row[] | undefined` rather than `| null`.
+ */
+const declinableRung = (rung: RowsFn | null, graph: Graph, params: Params): Row[] | undefined => {
+  if (rung === null) {
+    return undefined;
+  }
+
+  return rung(graph, params) ?? undefined;
+};
+
 const deepWidthReductions = (linear: CLinear, graph: Graph, params: Params): Row[] | undefined => {
   /*
    * ⚠️ ABOVE `chainFoldedAggregate`, WHICH ANSWERS THE SAME SHAPES BY WALKING EVERY PATH. This arm
@@ -2048,8 +2074,13 @@ const deepWidthReductions = (linear: CLinear, graph: Graph, params: Params): Row
     return linear.chainFoldLevels(graph, params);
   }
 
+  // ⚠️ Falls through on `null` — the composed walk's execution-time decline (item 2105).
   if (linear.chainFoldedAggregate) {
-    return linear.chainFoldedAggregate(graph, params);
+    const rows = linear.chainFoldedAggregate(graph, params);
+
+    if (rows !== null) {
+      return rows;
+    }
   }
 
   // ⚠️ Falls through on `null` — the composed walk's execution-time decline (item 2104).
@@ -2071,8 +2102,13 @@ const deepWidthReductions = (linear: CLinear, graph: Graph, params: Params): Row
     return linear.chainGroupedLevels(graph, params);
   }
 
+  // ⚠️ Falls through on `null` — the composed walk's execution-time decline (item 2105).
   if (linear.chainGroupedCount) {
-    return linear.chainGroupedCount(graph, params);
+    const rows = linear.chainGroupedCount(graph, params);
+
+    if (rows !== null) {
+      return rows;
+    }
   }
 
   // ⚠️ Falls through on `null` — the composed walk's execution-time decline (item 2104).
