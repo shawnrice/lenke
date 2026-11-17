@@ -106860,3 +106860,59 @@ unnecessary.
 
 GATES. No engine change (the `propOf` counter was reverted; `values.ts` verified clean);
 `bun run check` 0 read unpiped.
+
+## Item 2143 — ⚠️⚠️ **MY OWN ITEM 2142 OVERTURNED: `propOf` is NOT the ORDER BY row's cost. Removing the property read makes the full sort SLOWER (253.7 → 283.4 ms).** The 43% self-time was attribution, and the first ablation's 3.71x was a confound I built myself
+
+Item 2142 read `propOf` at 35-43% of the sorted arms and 2.9% of the unsorted one and concluded that is
+where the time goes. 🔑 Three measurements this item, each correcting the one before it.
+
+### 🔑 1. THE CALL COUNTS, WHICH ARE A REAL AND USEFUL FACT
+
+```text
+    shape                rows out   propOf calls   per row
+    unsorted              600,000        200,000      0.33
+    ORDER BY              600,000        600,000      1.00
+    ORDER BY LIMIT 10          10        600,000      1.00
+```
+
+⚠️⚠️ **THE UNSORTED (FAR-DRIVEN) WALK READS EACH FAR VERTEX ONCE AND REUSES IT FOR ALL THREE ARRIVING
+EDGES** — 0.33 calls per row. The start-driven walk that `ORDER BY` forces reads once per EDGE. 🔑 That 3x
+is real and worth recording; it is just not worth 180 ms.
+
+### ⚠️ 2. MY FIRST ABLATION SAID 3.71x AND WAS A CONFOUND I BUILT MYSELF
+
+Replacing `propOf`'s body with a CONSTANT took `ordered` from 247.6 to 66.7 ms. ⚠️ But a constant makes
+every sort key IDENTICAL, so it removed the property read **and** collapsed the sort's work. Two changes,
+one number.
+
+### ⚠️⚠️ 3. THE CORRECTED ABLATION REVERSES THE SIGN
+
+A VARYING key (a counter, no property read) keeps the sort's distribution while skipping the read:
+
+```text
+    arm        LIVE     VARYING
+    ordered   253.7      283.4     0.90x — removing the read is SLOWER
+    limit10   151.3       82.9     1.83x  (but the heap's sift count changes with the distribution too)
+    unsorted   33.1       40.3     0.82x
+```
+
+🔑 **A frame cannot be 43% of the cost and also make the query slower when removed.** `propOf` is a
+one-line arrow, and `frame-attribution-trap` says exactly this: _a field read or getter frame is
+attribution until a deletion test with a CONTROL says otherwise._ ⚠️ I had the rule, cited it, and still
+needed two ablations to apply it correctly.
+
+### 🔑 SO THIS LINE IS CLOSED WITH NO LEVER FOUND, AND THAT IS THE RESULT
+
+Three successive candidates for this row, all refuted by measurement: item 2141's comparator regex (a
+number key costs 94% of a string key), item 2142's `propOf` (removing it is slower), and the top-k's
+projection (its 1.83x is entangled with the heap's key distribution and cannot be read off this
+instrument). ⚠️ The row is **765.7 ms against ffi's 207.9** and the unsorted twin is **TS 11x FASTER than
+ffi** — the ordered form is constrained by a route `ORDER BY` cannot take, and nothing inside it has been
+shown to be removable.
+
+🔑 **What a future attempt should NOT re-derive**: the comparator, `propOf`, and a constant-return ablation
+of either. **What is still unmeasured**: the two anonymous frames at 18.7% and 13.8% of the `ordered`
+profile, which no ablation here touched.
+
+GATES. No engine change (both probe edits reverted; `values.ts` verified clean of the counter and the
+probe); `bun run check` 0 read unpiped.
