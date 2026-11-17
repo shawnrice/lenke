@@ -104349,7 +104349,7 @@ GATES. Probe only — no engine change. `bun run check` 0 read unpiped; `node --
 answer is asserted against a hand-computed expectation, including the DENIED subject's 0 — a selective
 check that silently matched nothing would otherwise be the fastest row in the table.
 
-## Item 2101 — 🔑🔑 **AN EQUIVALENT-SPELLING GAP OF 71.5x: "who can see this doc" written from the USER scans every user; written from the DOC it seeds and scales with its ANSWER.** Same question, same answer, no engine change needed to exploit it — but the planner is not choosing its seed
+## Item 2101 — 🔑🔑 **AN EQUIVALENT-SPELLING GAP OF 71.5x** ⚠️ (ITEM 2102 CORRECTS THE DIAGNOSIS: the trigger is the PROJECTION, not the seed side as such — `count(*)` seeds from a far predicate and every ROW-RETURNING projection does not, up to **330x**): "who can see this doc" written from the USER scans every user; written from the DOC it seeds and scales with its ANSWER.** Same question, same answer, no engine change needed to exploit it — but the planner is not choosing its seed
 
 Item 2100 found `list: subjects for object` unmoved by an index (30.5 → 31.7 ms). The reason is where the
 predicate sits: the row is `MATCH (u:User)-[:MEMBER_OF]->(:Team)-[:CAN_VIEW]->(d:Doc) WHERE d.name = $d`
@@ -104394,3 +104394,61 @@ chooses which END'S LABEL to test first; **nothing chooses which end to SEED fro
 GATES. Probe only — no engine change. `bun run check` 0 read unpiped; `node --check`. ⚠️ The probe
 THROWS unless the two spellings return identical rows: a reversed pattern is exactly where a
 self-inflicted wrong answer would hide, and the whole comparison depends on them being one question.
+
+## Item 2102 — 🔑🔑 **330x, AND THE TRIGGER IS THE PROJECTION, NOT THE SHAPE: `count(*)` SEEDS from a far predicate and EVERY ROW-RETURNING PROJECTION DOES NOT.** ⚠️ Which corrects item 2101's framing and my own by-depth probe in the same item
+
+Item 2101 found 71.5x between two spellings of one authz query and attributed it to the seed side. This
+asked whether that generalizes — and the answer is sharper than the question.
+
+### ⚠️ FIRST, BY DEPTH — WHICH LOOKED LIKE AN ANSWER AND WAS A CONFOUND
+
+All-`:P` chain, selective far predicate (1 in 2,000), indexed, `count(*)`:
+
+| depth  | from the FREE end | from the PREDICATE |            |
+| ------ | ----------------- | ------------------ | ---------- |
+| 1 hop  | 0.04              | 0.03               | 1.27x      |
+| 2 hops | 0.08              | 0.05               | 1.54x      |
+| 3 hops | **13.10**         | 0.42               | **31.32x** |
+
+That reads as "the gap needs three hops" — ⚠️ **but item 2101's shape is only TWO segments and measured
+71.5x, so depth cannot be the trigger.** The probe above used `count(*)` at every depth, which is
+exactly what hid it.
+
+### 🔑 VARYING ONLY THE PROJECTION — THE TRIGGER
+
+Same two-segment pattern, same far predicate, same fixture, both spellings asserted to the same row
+count; ONLY the `RETURN` changes:
+
+| projection                                       | from the FREE end | from the PREDICATE |                    |
+| ------------------------------------------------ | ----------------- | ------------------ | ------------------ |
+| `count(*)`                                       | 0.03              | 0.02               | **1.23x — seeded** |
+| `count(DISTINCT u.name)`                         | 26.50             | 0.34               | **77.80x**         |
+| `RETURN DISTINCT u.name`                         | 60.12             | 0.57               | **105.97x**        |
+| **`RETURN u.name`** — the plainest form there is | **59.13**         | **0.18**           | **329.98x**        |
+
+🔑 **`count(*)` seeds from the far predicate. Nothing that returns a VALUE does.** The most ordinary
+query form imaginable — return some rows, filtered on the far end of a two-hop pattern — is **330x**
+slower written one way than the other, with the same answer.
+
+⚠️ **[[vary-only-the-projection]] IS EXACTLY THIS TECHNIQUE AND IT FOUND AN 897x BEFORE**: "hold
+pattern+predicate, change the RETURN, and a sibling rung's missing index seek shows up as 897x (flat vs
+linear in |V|)". Same class, new place. The count path has the seek; the row paths were never given it.
+
+### So there are TWO findings, and item 2101's heading is corrected above
+
+1. 🔑 **Row-returning projections never seed from a far predicate — up to 330x.** This is the big one:
+   it affects the commonest shape in any application, not just authz.
+2. **The `count(*)` path itself falls off at THREE segments** (31.32x) while seeding correctly at one and
+   two — a separate, narrower gap in the count rung.
+
+⚠️ **Still actionable with no engine change**: write the pattern from the end carrying the selective
+predicate. Items 2100 (index the subject key, 144x) and 2101/2102 (write from the selective end, 330x)
+are now the two largest things an application can do for itself, and both belong in a guide.
+
+⚠️ **AND THE ENGINE FIX IS STILL NOT LOCAL** — the constraint item 2101 recorded stands: reversing the
+drive side reverses emission order, and the GQL differential fuzzer compares against the Rust engine, so
+a seed-side choice must be taken on both engines or neither.
+
+GATES. Probes only — no engine change. `bun run check` 0 read unpiped; `node --check` on both. Each pair
+THROWS unless the two spellings agree on the row count, because a reversed pattern is where a
+self-inflicted wrong answer would hide.
