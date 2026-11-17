@@ -197,6 +197,10 @@ const SHAPES = {
   'label: order values': () => traversal(V(), hasLabel('T'), values('n'), order()),
   'label: dedupe values': () => traversal(V(), hasLabel('T'), values('s'), dedupe()),
   'scan: values': () => traversal(V(), values('n')),
+  // ⚠️ ITEM 2079: the EXACT pair for the dedupe portion — same prefix, with and without `dedupe()`,
+  // and no `hasLabel` to confound it. `label: dedupe values` carries a label test the `where` rows do
+  // not, so it cannot isolate what a FUSED dedupe costs.
+  'scan: values dedupe': () => traversal(V(), values('n'), dedupe()),
   'scan: id': () => traversal(V(), id()),
   'scan: valueMap': () => traversal(V(), valueMap()),
   'range: has(gt)': () => traversal(V(), has('n', gt(5)), values('n')),
@@ -298,6 +302,15 @@ const SHAPES = {
    */
   'where: sub-traversal count': () =>
     traversal(V(), where(traversal(out('E'))), values('n'), count()),
+  /*
+   * ⚠️ ITEM 2079: the one priced row item 2026 left open. Its note: "`dedupe` IS NOT COVERED and that
+   * is not an oversight: `fusedProjectedResidual` handles order/count/fold/min/max/cap, while
+   * `dedupe` has its own rung (`nodeValuesDedupeShortcut`, item 1869) which this prefix cannot
+   * reach. Its ~1.3x stays open and is the smallest of the three." That 1.3x was arithmetic on a
+   * census, not a measurement, so it needed a row.
+   */
+  'where: sub-traversal dedupe': () =>
+    traversal(V(), where(traversal(out('E'))), values('n'), dedupe()),
   'where: sub-traversal order': () =>
     traversal(V(), where(traversal(out('E'))), values('n'), order()),
   'where: neq filter': () => traversal(V(), as_('a'), out('E'), where(neq('a')), values('n')),

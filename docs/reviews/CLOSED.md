@@ -102894,3 +102894,60 @@ loosen a guard that is doing its job. Re-run: 5/5 clean.
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 2,668
 gremlin tests; all seven fuzzers green; 5/5 sweeps clean on the re-run.
+
+## Item 2079 — ✅ **SHIPPED: `V().where(<one hop>).values(k).dedupe()` — 19.07 → 11.75 ms (1.62x), closing the LAST priced row item 2026 left open.** 🔑 Its "~1.3x" was arithmetic; measured with an exact pair it is 1.62x, because a fused dedupe does not merely remove a cost — it also skips 200,000 materializations
+
+Item 2078 closed the census's last unexplained row. This closes the last PRICED one — item 2026's own
+note: _"`dedupe` IS NOT COVERED and that is not an oversight… Its ~1.3x stays open and is the smallest
+of the three."_
+
+### 🔑 THE EXACT PAIR IS WHAT MADE IT COMPARABLE
+
+My first comparison was `label: dedupe values` (6.49 ms) against `where: sub-traversal dedupe` (19.90)
+— ⚠️ **not comparable**, because the label form does no existence hop. The pair that isolates the
+dedupe is the same prefix with and without it:
+
+| prefix     | without `dedupe`     | with `dedupe`      | what the dedupe DID    |
+| ---------- | -------------------- | ------------------ | ---------------------- |
+| fused scan | 5.86 (200,000 rows)  | **4.91** (8 rows)  | **−0.95 ms, a SAVING** |
+| `where`    | 16.16 (200,000 rows) | **19.65** (8 rows) | **+3.49 ms, a COST**   |
+
+**On a fused prefix a `dedupe` makes the query CHEAPER** — 8 rows materialized instead of 200,000. On
+the `where` prefix it made it dearer, because the generic path pays a traverser per element. The 4.44
+ms between those two behaviours is what predicted ~1.29x.
+
+### ✅ And it came out at 1.62x, above the prediction
+
+| row                                              | KILLED | LIVE      |           |
+| ------------------------------------------------ | ------ | --------- | --------- |
+| `where(hop).values(n).dedupe()` (target)         | 19.07  | **11.75** | **1.62x** |
+| `where(hop).values(n)` — 3 steps, declines       | 16.47  | 15.50     | 1.06x     |
+| `where(hop).values(n).count()` — item 2061's row | 10.09  | 10.46     | 0.96x     |
+| `scan: values dedupe` — the sibling rung         | 5.69   | 4.66      | 1.22x     |
+| `scan: values`                                   | 5.64   | 5.27      | 1.07x     |
+
+⚠️ **THE PREDICTION WAS LOW BECAUSE IT ASSUMED THE FUSION WOULD ONLY REMOVE THE COST.** It also moves
+the row to the saving side: 16.04 → 11.92 means the deduped form is now CHEAPER than the undeduped
+one, which is the shape the scan prefix already had. A ceiling built from "remove the +3.49" misses the
+"−0.95" on the other side of the same ledger.
+
+VERIFICATION. 12 tests, **9/9 mutants caught** — after two survived, and both were real gaps in MY
+file:
+
+- ⚠️ **`admits-by-keyed-dedupe` survived everywhere.** My test used `dedupe('x')`, which exercises the
+  `labels` gate; `dedupe().by(k)` is the `bys` modulator — a DIFFERENT field, and deleting its check
+  changed no answer. That is the "second keyer" territory where items 1561/1562 each found a silent
+  ANSWER change, so it is the gate that most needed a test.
+- ⚠️ **`admits-any-last-step` survived my file and was caught only by the wide suite**: I tested
+  `order()` as a FIFTH step, which the length gate rejects, never as a non-dedupe FOURTH.
+
+⚠️ And one test was MISNAMED — "a PREDICATE `where` declines" ran `values().dedupe().dedupe()`, four
+steps with no `where` at all, so it asserted the length gate under a name claiming the overload. The
+same mislabelling cost item 2063 a surviving mutant.
+
+`valueDedupeFilter` is IMPORTED, not re-implemented, and the walk is at MODULE SCOPE — the sibling rung
+measured **1.2x SLOWER than the pipeline** when written as a per-call closure (`drain()` at 203 ns
+against 62.9 on a reused one).
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 2,677
+gremlin tests; all seven fuzzers green; 5/5 sweeps clean.

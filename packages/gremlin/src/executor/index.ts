@@ -68,6 +68,7 @@ import {
   scanValuesResidual,
   scanBagValuesShortcut,
   scanWhereHasKeyCountResidual,
+  scanWhereValuesDedupe,
   scanWhereValuesResidual,
   seededNodeCountShortcut,
   seededNodeValuesShortcut,
@@ -2839,7 +2840,15 @@ const scanValuesShortcut = (
        * none of the three above can match (each requires `values` immediately after the source or a
        * trailing `dedupe`), so the order is a fact about precedence rather than about these four.
        */
-      nodeValuesWhereShortcut(effective, graph));
+      nodeValuesWhereShortcut(effective, graph) ??
+      /*
+       * The same prefix with a FUSED `dedupe` (item 2079) — the one priced row item 2026 left open,
+       * measured at 1.29x with an exact pair. ⚠️ ADDED LAST, and it cannot shadow any sibling: each of
+       * them requires `values` immediately after the source or a trailing `dedupe` on a BARE scan,
+       * while this needs a `where` in the middle AND a `dedupe` at the end — four steps, which none
+       * of the four above admits. Item 1535's rule, stated rather than relied upon.
+       */
+      scanWhereValuesDedupe(effective, graph));
 
 /**
  * The fused VALUES walks, consulted in `??` order.

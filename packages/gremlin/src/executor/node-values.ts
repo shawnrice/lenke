@@ -374,6 +374,108 @@ export const nodeValuesWhereShortcut = (plan: Plan, graph: Graph): NodeValues | 
       };
 };
 
+/*
+ * The existence-filtered scan with a FUSED `dedupe` (item 2079).
+ *
+ * ⚠️⚠️ **THIS IS THE ONE PRICED ROW ITEM 2026 LEFT OPEN, and its estimate was arithmetic.** That
+ * item's note: "`dedupe` IS NOT COVERED and that is not an oversight: `fusedProjectedResidual` handles
+ * `order`/`count`/`fold`/`min`/`max`/`cap`, while `dedupe` has its own rung
+ * (`nodeValuesDedupeShortcut`, item 1869) which this prefix cannot reach. Its ~1.3x stays open and is
+ * the smallest of the three."
+ *
+ * 🔑 **MEASURED AT 1.29x WITH THE EXACT PAIR, which is what makes the two behaviours comparable** —
+ * same prefix, with and without `dedupe()`, and no `hasLabel` to confound it:
+ *
+ * ```text
+ *     scan prefix     5.86 ms (200,000 rows)  ->  4.91 with dedupe (8 rows)   -0.95  a SAVING
+ *     where prefix   16.16    (200,000 rows)  -> 19.65 with dedupe (8 rows)   +3.49  a COST
+ * ```
+ *
+ * On the fused prefix a `dedupe` SAVES time, because 8 rows are materialized instead of 200,000. On
+ * the `where` prefix it COSTS, because the generic path pays a traverser per element. The 4.44 ms
+ * between those two behaviours is what this recovers.
+ *
+ * ⚠️ `valueDedupeFilter` IS THE EXISTING KEYER, imported rather than re-implemented. This file's own
+ * header records that "items 1561/1562 each found a silent ANSWER change from a second keyer in this
+ * area", and `nodeValuesDedupeWalk` beside this uses the same one.
+ *
+ * ⚠️ MODULE SCOPE, AND ONE BODY FOR BOTH CONSUMERS. Written as a closure inside the shortcut, the
+ * sibling dedupe rung measured **1.2x SLOWER than the pipeline it replaces** — `drain()` at 203 ns on
+ * a freshly constructed rung against 62.9 on a reused one, all of it the per-call closure.
+ */
+const nodeValuesWhereDedupeWalk = function* (
+  graph: Graph,
+  hop: ReturnType<typeof singleHopExistence> & object,
+  key: string,
+): Generator<unknown> {
+  const keep = valueDedupeFilter();
+
+  for (const v of graph.vertices) {
+    if (!hasAdjacency(v, hop)) {
+      continue;
+    }
+
+    const props = v.properties;
+
+    if (key in props && keep(props[key])) {
+      yield props[key];
+    }
+  }
+};
+
+/**
+ * `V().where(<one hop>).values(k).dedupe()` — the existence-filtered scan with the dedupe fused in
+ * (item 2079). See {@link nodeValuesWhereDedupeWalk} for the measurement and the keyer rule.
+ *
+ * ⚠️ IT REUSES `nodeValuesWhereShortcut`'s GATE by asking it about the PREFIX, which is items
+ * 2021/2025/2026's pattern and for their reason: the alternative edits the walk that serves the
+ * three-step shape, and [[executor-edits-perturb]] prices that at up to 16% on unrelated rows. Every
+ * refusal that rung makes — the predicate-`where` overload, the multi-key projection, the narrowed
+ * source — is inherited rather than restated.
+ */
+export const scanWhereValuesDedupe = (plan: Plan, graph: Graph): NodeValues | undefined => {
+  const { steps } = plan;
+
+  if (steps.length !== 4) {
+    return undefined;
+  }
+
+  const [, , , last] = steps;
+
+  /*
+   * ⚠️ A BARE `dedupe()` ONLY — the same three conditions the sibling rung checks. A labelled or
+   * `by`-keyed dedupe keys on something else entirely, and no `scope` check exists because `dedupe`
+   * has no local form in this AST (item 1016's rule: a gate nothing can observe comes out).
+   */
+  if (last?.kind !== 'dedupe' || (last.labels?.length ?? 0) > 0 || (last.bys?.length ?? 0) > 0) {
+    return undefined;
+  }
+
+  // The prefix must be exactly what the undeduped rung answers; `hop` is recovered the same way.
+  if (nodeValuesWhereShortcut({ ...plan, steps: steps.slice(0, 3) }, graph) === undefined) {
+    return undefined;
+  }
+
+  const [, filter, proj] = steps;
+
+  if (filter.kind !== 'where' || !('plan' in filter) || proj.kind !== 'values') {
+    return undefined;
+  }
+
+  const hop = singleHopExistence(filter.plan);
+
+  if (hop === undefined) {
+    return undefined;
+  }
+
+  const [key] = proj.keys;
+
+  return {
+    [Symbol.iterator]: () => nodeValuesWhereDedupeWalk(graph, hop, key),
+    drain: () => [...nodeValuesWhereDedupeWalk(graph, hop, key)],
+  };
+};
+
 /**
  * The EXISTENCE-FILTERED scan for a `V().where(<one hop>).values(k)` PREFIX, with whatever follows
  * returned as a RESIDUAL (item 2026).
