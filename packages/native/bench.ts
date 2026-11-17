@@ -186,6 +186,40 @@ const hopPairDoc = (() => {
   return lines.join('\n');
 })();
 
+/**
+ * THE OPTIONAL-MATCH FIXTURE: HALF THE VERTICES HAVE NO OUT-EDGE (item 2145).
+ *
+ * ⚠️⚠️ **`graphDoc` AND `sparseDoc` CANNOT MEASURE `OPTIONAL MATCH` AT ALL, AND THAT IS WHY THIS EXISTS.**
+ * Both give every node at least one out-edge, and the whole difference between `OPTIONAL MATCH` and a
+ * plain `MATCH` is the null-filled row an UNMATCHED anchor contributes. With no unmatched anchor the two
+ * are the same question, so a row on either fixture would watch nothing.
+ *
+ * 🔑 Item 2123 learned this the hard way: its first measurement fixture gave every vertex degree 3, the
+ * OPTIONAL and plain forms agreed, and `378 -> 20.8 ms` "matched its non-OPTIONAL twin" while proving
+ * nothing about correctness. Every anchor index here is EVEN, so the odd half contributes null rows.
+ *
+ * ⚠️ The repeat index is the second term in `to`, for items 1516/1518's reason — a flat `(a*k + b) % N`
+ * sends one vertex's whole fan-out to the same target and every degree check still looks perfect.
+ */
+const optionalDoc = (() => {
+  const lines = Array.from(
+    { length: N },
+    (_, i) =>
+      `{"type":"node","id":"v${i}","labels":["Person"],"properties":{"age":${i % 90},"k":${i % 97}}}`,
+  );
+  let id = 0;
+
+  for (let d = 0; d < 3; d++) {
+    for (let i = 0; i < N; i += 2) {
+      lines.push(
+        `{"type":"edge","id":"o${id++}","labels":["KNOWS"],"from":"v${i}","to":"v${(i * 7 + 3 + d * 104_729) % N}","properties":{}}`,
+      );
+    }
+  }
+
+  return lines.join('\n');
+})();
+
 // THE SPARSE TWIN of `hopPairDoc` — same columns, ONE edge per node instead of five.
 //
 // It exists for item 1345's degree gate. The per-endpoint extremum fold (1246/1247) costs
@@ -1408,6 +1442,66 @@ const CASES: Case[] = [
     ...onGraph(
       () => hopPairDoc,
       (e, g) => void e.query(g, 'MATCH (a:Person)-[:KNOWS]->(x) RETURN x.name AS n ORDER BY n'),
+    ),
+  },
+  {
+    /*
+     * ⚠️⚠️ **TWO RUNGS SHIPPED THIS SESSION WITH NO ROW TO GUARD THEM** (item 2145): item 2123 took
+     * `OPTIONAL MATCH` + `GROUP BY` from 307.8 to 29.0 ms (10.6x) and item 2124 the FAR-keyed variant from
+     * 358.3 to 111.3 (3.22x). 🔑 `bench.ts` already quotes the rule that makes this a defect — item 1177's
+     * *"a win with no row is a win that quietly comes undone"* — and item 1184's rows exist for exactly
+     * this reason: deleting a chain entry is ANSWER-EQUIVALENT and survives every test and every fuzzer.
+     *
+     * ⚠️ ON `optionalDoc`, NOT `graphDoc`: half the anchors must have NO out-edge or the OPTIONAL and
+     * plain forms are the same question. See that fixture's note.
+     */
+    name: 'query: OPTIONAL + GROUP BY [item 2123]',
+    ...onGraph(
+      () => optionalDoc,
+      (e, g) =>
+        void e.query(
+          g,
+          'MATCH (a:Person) OPTIONAL MATCH (a)-[:KNOWS]->(b) RETURN a.k AS g, count(*) AS c',
+        ),
+    ),
+  },
+  {
+    // The FAR-keyed twin (item 2124): each EDGE lands in the group its own far end names, and an
+    // unmatched anchor contributes one row to the NULL group. A different walk, so a separate row.
+    name: 'query: OPTIONAL + GROUP BY, far key [2124]',
+    ...onGraph(
+      () => optionalDoc,
+      (e, g) =>
+        void e.query(
+          g,
+          'MATCH (a:Person) OPTIONAL MATCH (a)-[:KNOWS]->(b) RETURN b.k AS g, count(*) AS c',
+        ),
+    ),
+  },
+  {
+    // The UNGROUPED sibling (`optionalHopCount`), and the control for the two above: a change admitting
+    // the grouped forms must move them and leave this one alone.
+    name: 'query: OPTIONAL plain count',
+    ...onGraph(
+      () => optionalDoc,
+      (e, g) =>
+        void e.query(g, 'MATCH (a:Person) OPTIONAL MATCH (a)-[:KNOWS]->(b) RETURN count(*) AS c'),
+    ),
+  },
+  {
+    /*
+     * 🔑 `UNION ALL` HAS NO ROW ANYWHERE EITHER, and item 2145 measured it as FREE — 43.97 ms for both
+     * arms against 49.6 for the two run separately, so the concatenation costs less than nothing (the
+     * arms share work). ⚠️ The row exists to keep it that way, not because it is slow.
+     */
+    name: 'query: UNION ALL of two hops',
+    ...onGraph(
+      () => optionalDoc,
+      (e, g) =>
+        void e.query(
+          g,
+          'MATCH (a:Person)-[:KNOWS]->(b) RETURN b.k AS k UNION ALL MATCH (a:Person)-[:KNOWS]->(b) RETURN b.k AS k',
+        ),
     ),
   },
 ];

@@ -106969,3 +106969,65 @@ one. ⚠️ What remains unexplored on this row: nothing in the profile — `sor
 account for 83.5% and all three are priced above.
 
 GATES. No engine change; `bun run check` 0 read unpiped.
+
+## Item 2145 — ✅ **FIVE FEATURES HAD NO BENCH ROW, AND `OPTIONAL MATCH` WAS ONE — so this session's two rungs were unguarded.** Four rows added on a new fixture; `UNION ALL` measured FREE; and the new rows nominate a closed form at 33x
+
+🔑 Items 2140-2144 each closed a benched row, so this item asked the other question: **what is not benched
+at all?** Grepping the three bench files for feature keywords:
+
+```text
+    OPTIONAL MATCH                none
+    UNION / EXCEPT / INTERSECT    none
+    ANY SHORTEST                  none
+    _MERGE                        none
+    SKIP                          none
+```
+
+⚠️⚠️ **`OPTIONAL MATCH` IS THE ONE THAT MATTERS, BECAUSE THIS SESSION SHIPPED TWO RUNGS FOR IT AND NEITHER
+HAD A ROW** — item 2123 (307.8 → 29.0 ms, 10.6x) and item 2124 (358.3 → 111.3, 3.22x). 🔑 `bench.ts` itself
+quotes the rule this breaks, item 1177's *"a win with no row is a win that quietly comes undone"*, and item
+1184's rows exist because deleting a chain entry is ANSWER-EQUIVALENT and survives every test and fuzzer.
+
+### ⚠️⚠️ THE EXISTING FIXTURES CANNOT MEASURE IT, WHICH IS WHY A NEW ONE WAS NEEDED
+
+`graphDoc` gives every node five out-edges and `sparseDoc` one. 🔑 The whole difference between
+`OPTIONAL MATCH` and a plain `MATCH` is the null-filled row an UNMATCHED anchor contributes — so on either
+fixture the two are the SAME QUESTION and a row would watch nothing. ⚠️ Item 2123 made exactly this mistake
+("378 → 20.8 ms matched its non-OPTIONAL twin" and proved nothing). `optionalDoc` gives edges to the EVEN
+half only.
+
+### ✅ FOUR ROWS ADDED, AND THEY EARN THEIR PLACE IMMEDIATELY
+
+```text
+    row                                          ts     ffi    ts/ffi
+    query: OPTIONAL + GROUP BY [item 2123]     24.7     3.2      7.77x
+    query: OPTIONAL + GROUP BY, far key [2124] 97.0     2.9     33.74x
+    query: OPTIONAL plain count                18.5     0.6     33.12x
+    query: UNION ALL of two hops               19.7    36.1      0.55x   <- TS FASTER
+```
+
+### 🔑 `UNION ALL` IS FREE — MEASURED, AND MY FIRST READING WAS WRONG
+
+The screen flagged `UNION ALL` at 3.7x its one-hop reference. ⚠️ Normalizing per row refutes that: 43.97 ms
+for both arms against **49.6 for the two arms run SEPARATELY** — the concatenation costs less than nothing
+because the arms share work. 🔑 The row stays to keep it that way, not because it is slow.
+
+⚠️ **AND THE NORMALIZATION FOUND SOMETHING ELSE**: `MATCH (a:Admin)-[:E]->(b)` costs **338 ns/row** against
+`MATCH (a:P)-[:E]->(b)`'s **53** — 6.4x, because `P` is vacuous and `Admin` is on a third of the vertices.
+That is the documented label-vacuity gate (43 gates across 7 files), not a new finding, and it is the
+realistic case a benched vacuous label never reaches.
+
+### 🔑 WHAT THE NEW ROWS NOMINATE: A CLOSED FORM AT 33x
+
+`query: OPTIONAL plain count` is **18.5 ms against native's 0.6**. 🔑 Native's figure is far too small for a
+pass over 200,000 anchors, so a closed form exists — and the arithmetic is available here too:
+
+```text
+    count(*) over OPTIONAL = |edges of the type| + |anchors with NO qualifying edge|
+```
+
+The first term is a stored counter. ⚠️ The second is `|anchors| − |anchors having a bucket of that type|`,
+and the per-vertex bucket index is exactly what item 2134 used to take `count(DISTINCT far)` from 20.84 ms
+to 3.30 (6.3x). **Not built; nominated with its mechanism.**
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; the bench runs with the four new rows.
