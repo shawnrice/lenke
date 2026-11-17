@@ -5528,7 +5528,9 @@ export type CLinear = {
   /** Fused `MATCH (a)-[:T]->(x) RETURN <exprs over x>` row builder; else null. */
   hopProjection: RowsFn | null;
   /** A two-segment pattern projecting rows (item 1619) — `detectHop2Projection`. */
-  hop2Projection: AlwaysRowsFn | null;
+  // ⚠️ `RowsFn`, not `AlwaysRowsFn`: these three DECLINE AT EXECUTION TIME when the generic
+  // matcher would seed from the other end of the pattern (item 2104). The caller falls through.
+  hop2Projection: RowsFn | null;
   /** THREE OR MORE segments projecting rows (item 1814) — `detectChainProjection`. */
   chainProjection: AlwaysRowsFn | null;
   /**
@@ -5547,14 +5549,18 @@ export type CLinear = {
   chainStarCount: ((graph: Graph, params: Params) => Row[] | undefined) | null;
   chainFoldedAggregate: AlwaysRowsFn | null;
   /** The two-hop twin of `chainFoldedAggregate` — item 1824. */
-  hop2FoldedAggregate: AlwaysRowsFn | null;
+  // ⚠️ `RowsFn`, not `AlwaysRowsFn`: these three DECLINE AT EXECUTION TIME when the generic
+  // matcher would seed from the other end of the pattern (item 2104). The caller falls through.
+  hop2FoldedAggregate: RowsFn | null;
   /**
    * One hop under `RETURN DISTINCT <several columns>` — item 1825. A `RowsFn`, not an
    * `AlwaysRowsFn`: it delegates to `detectHopProjection`, whose `null` is a RUNTIME decline.
    */
   hopDistinctProjection: RowsFn | null;
   /** The grouped `count(*)` at two and three-plus segments — item 1832. */
-  hop2GroupedCount: AlwaysRowsFn | null;
+  // ⚠️ `RowsFn`, not `AlwaysRowsFn`: these three DECLINE AT EXECUTION TIME when the generic
+  // matcher would seed from the other end of the pattern (item 2104). The caller falls through.
+  hop2GroupedCount: RowsFn | null;
   /**
    * The LEVEL-RECURRENCE arm for a chain's grouped count (item 2013) — checked BEFORE
    * `chainGroupedCount`, which answers the same shapes by walking every path, and which refuses the

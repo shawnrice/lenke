@@ -104500,3 +104500,57 @@ state is a graph property, so the decision cannot be made when the rung is compi
 
 GATES. Diagnosis only in this commit — no engine change yet. `bun run check` 0 read unpiped. The
 probe asserts all three spellings return the same 451 rows.
+
+## Item 2104 — ✅ **SHIPPED: `hop2Projection` hands the query to the orienting matcher when the far node carries a genuine index seek — 25.56 → 0.31 ms (82x), and all three spellings now cost the same.** ⚠️ My FIRST gate was too broad and the mutation round caught it
+
+Item 2103 diagnosed it: a vacuous `LIMIT` made the query 59x faster because it defeated this rung's
+length gate and let the plan reach `matchPattern`, which calls `orient`. The rung walks from the
+pattern's WRITTEN start and never asked.
+
+| spelling                        | before       | after    |
+| ------------------------------- | ------------ | -------- |
+| rows, as written                | **25.56 ms** | **0.31** |
+| rows + a vacuous `LIMIT 100000` | 0.43         | 0.30     |
+| rows written from the DOC       | 0.27         | 0.41     |
+
+🔑 **82x, and the three spellings of one question now cost the same** — which is the actual goal;
+CLAUDE.md's section on this is titled "equivalent spellings must cost the same".
+
+**No regression on what the rung serves**, alternated A/B, minima of two rounds each: `hop2rows` 1.04x,
+`hop2distinct` 0.99x, `hop2rowswhere` 1.11x, `hoprows` 1.01x, `control` 1.05x.
+
+### ⚠️⚠️ MY FIRST GATE ASKED `orient` BY IDENTITY AND WAS TOO BROAD
+
+The obvious implementation is "decline if `orient` would return a different pattern". ⚠️ **`orient` also
+reverses on LABEL-BUCKET SIZE ALONE** — 4 Docs against 40 Users, no index anywhere — which is right for
+the matcher (its cost is the same either way) and **wrong as a reason for this rung to give up its fused
+walk**, which items 1821/1822 measured at 13.8x on `hop2distinct`. Two unit tests failed on exactly that
+and said so before anything shipped.
+
+🔑 So the gate is a NARROWER predicate, `farEndSeeksNarrower`: the far node must be seekable at all
+(`mightSeek`, no graph work), the estimate must be a GENUINE INDEX SEEK (`endEst.indexed` — a real count,
+not a bucket size), and it must be narrower than the start. ⚠️ It lives in `matching.ts` beside `orient`
+and reuses `estimateSeedFrom`, so the two cannot come to disagree.
+
+### ⚠️ THE DECLINE HAS NO BEHAVIOURAL OBSERVABLE — NOT EVEN ROW ORDER
+
+I built the first test on emission order, reasoning that the rung emits in scan order and the matcher in
+the far node's adjacency order. **Measured, both routes emit `u37,u33,u29,u25` — identical, indexed or
+not.** Three mutants against the gate survived that test, and inverting the fixture's insertion order did
+not separate them either.
+
+🔑 So the predicate is EXPORTED and unit-tested directly — the standing rule for a route choice. **8
+tests; the predicate's substantive conditions are 4/5 CAUGHT** (the `indexed` requirement, an
+always-false, the count comparison, and a quantified segment — that last one added BECAUSE a mutant
+survived). ⚠️ The remaining two survivors are honest: `mightSeek` is a pure short-circuit (deleting it
+does more work for the same answer) and the call-site wiring is answer-equivalent by construction.
+
+⚠️ **TWO COMPOSING RUNGS INHERITED THE DECLINE.** `hop2FoldedAggregate` and `hop2GroupedCount` fold over
+this walk's rows, so a handed-back walk leaves them nothing to fold; both now decline too, and their
+mutants are CAUGHT. ⚠️ And one process note: a `s[s.index(...):]` slice while editing truncated the module
+and deleted five helpers — the file was restored from its pristine copy and every edit reapplied in one
+pass, which `tsc` confirmed.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 5,062
+GQL tests; all seven fuzzers green; 5/5 sweeps clean. ⚠️ The fuzzer compares row MULTISETS (item 2103),
+which is why this needed no Rust-side change.

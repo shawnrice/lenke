@@ -4,12 +4,13 @@ import type { Clause, LabelExpr, NodePattern, RelPattern } from '../ast.js';
 import { matchesLabel } from '../graph-queries.js';
 import type { OneColumnKeys } from './clauses.js';
 import { addOneColumnKey, distinctRows, newOneColumnKeys } from './clauses.js';
-import type { CClause, CompiledExpr, CProjection, EvalEnv, Params, Row } from './core.js';
+import type { CClause, CompiledExpr, CPath, CProjection, EvalEnv, Params, Row } from './core.js';
 import { freePredicateVars } from './expr-analysis.js';
 import type { AlwaysRowsFn, RowsFn } from './hop-projection.js';
 import type { UnionHop } from './hop-sides.js';
 import { claimedByEarlierType, plainNode, plainRel, unionHopOf } from './hop-sides.js';
 import { effectiveLabel } from './labels.js';
+import { farEndSeeksNarrower } from './matching.js';
 import {
   outputColumnSorts,
   pagedRows,
@@ -86,7 +87,11 @@ import { rowLocal } from './shortcuts.js';
 export const detectHop2Projection = (
   clauses: readonly Clause[],
   compiled: readonly CClause[],
-): AlwaysRowsFn | null => {
+  /*
+   * ⚠️ `RowsFn`, NOT `AlwaysRowsFn` (item 2104): this rung DECLINES AT EXECUTION TIME when the far node
+   * carries a genuine index seek, because whether one exists is a property of the GRAPH.
+   */
+): RowsFn | null => {
   if (clauses.length !== 2) {
     return null;
   }
@@ -318,10 +323,53 @@ export const detectHop2Projection = (
    */
   // Already deduped INSIDE the walk when `distinct` was built; `distinctRows` would be a second
   // pass over rows that are already unique. The wider projection still needs it.
-  return ret.projection.distinct && distinct === undefined
-    ? (graph, params) => distinctRows(rows(graph, params))
-    : rows;
+  const answered: AlwaysRowsFn =
+    ret.projection.distinct && distinct === undefined
+      ? (graph, params) => distinctRows(rows(graph, params))
+      : rows;
+
+  // The COMPILED path, for the orientation question. `cm` is narrowed to a match clause above.
+  const [cPath] = cm.patterns;
+
+  /*
+   * ⚠️⚠️ **THE EXECUTION-TIME DECLINE (item 2104), WRAPPING BOTH ARMS.** This rung walks from the
+   * pattern's WRITTEN start; `matchPattern` calls `orient` and seeds the narrower end. Measured at
+   * 200,000 users, the same 451 rows out:
+   *
+   * ```text
+   *     rows, as written                 25.56 ms   <- this rung, scanning every User
+   *     rows + a vacuous LIMIT 100000     0.43      <- rung declines; the matcher seeds the one Doc
+   * ```
+   *
+   * 🔑 **A `LIMIT` THAT CANNOT CHANGE THE ANSWER MADE THE QUERY 59x FASTER**, because it defeated this
+   * rung's length gate (item 2103). A fast path losing 59x to DECLINING is a defect, and no correctness
+   * test can see it: the answer is identical either way.
+   */
+  return (graph, params) =>
+    shouldDeclineToOrientedMatcher(graph, cPath, params) ? null : answered(graph, params);
 };
+
+/**
+ * Should this rung hand the query to the orienting matcher? (item 2104)
+ *
+ * ⚠️⚠️ **EXPORTED AND UNIT-TESTED BECAUSE THE DECLINE HAS NO BEHAVIOURAL OBSERVABLE AT ALL.** Both
+ * routes return the same rows IN THE SAME ORDER — measured `u37,u33,u29,u25` from the rung and from the
+ * matcher, indexed or not — so a mutation of the gate changes nothing a query can see. Three mutants
+ * against it SURVIVED a test built on row order before this function existed, which is the standing rule
+ * for a route choice: extract the arithmetic as a pure function and test IT.
+ *
+ * ⚠️ IT ASKS `farEndSeeksNarrower`, NOT `orient`. The first version asked `orient` by identity and was
+ * TOO BROAD: `orient` also reverses on label-bucket size alone (4 Docs against 40 Users, no index
+ * anywhere), and that is no reason to give up this rung's fused walk — items 1821/1822 measured it at
+ * 13.8x on `hop2distinct`. Only a genuine SEEK on the far node justifies handing the query back.
+ *
+ * ⚠️ The empty binding is deliberate: this rung answers a whole two-clause query, so nothing is bound.
+ */
+export const shouldDeclineToOrientedMatcher = (
+  graph: Graph,
+  cPath: CPath,
+  params: Params,
+): boolean => farEndSeeksNarrower(graph, cPath, new Map(), params);
 
 type Hop = { readonly type: string; readonly forward: boolean };
 
@@ -718,7 +766,8 @@ const ORDER_INVARIANT_AGGREGATES: ReadonlySet<string> = new Set(['min', 'max', '
 export const detectHop2FoldedAggregate = (
   clauses: readonly Clause[],
   compiled: readonly CClause[],
-): AlwaysRowsFn | null => {
+  // ⚠️ `RowsFn`: inherits `detectHop2Projection`'s execution-time decline (item 2104).
+): RowsFn | null => {
   if (clauses.length !== 2) {
     return null;
   }
@@ -767,9 +816,19 @@ export const detectHop2FoldedAggregate = (
   }
 
   return (graph, params) => {
+    /*
+     * ⚠️ THIS RUNG COMPOSES `detectHop2Projection`'s WALK, so it inherits its execution-time decline
+     * (item 2104): a fold over a handed-back walk has nothing to fold.
+     */
+    const inner = rows(graph, params);
+
+    if (inner === null) {
+      return null;
+    }
+
     let acc = agg.fold.init();
 
-    for (const row of rows(graph, params)) {
+    for (const row of inner) {
       const v = (row as Record<string, unknown>)[column];
 
       if (v !== null && v !== undefined) {
@@ -960,7 +1019,8 @@ export const detectHop2PagedProjection = (
 export const detectHop2GroupedCount = (
   clauses: readonly Clause[],
   compiled: readonly CClause[],
-): AlwaysRowsFn | null => {
+  // ⚠️ `RowsFn`: inherits `detectHop2Projection`'s execution-time decline (item 2104).
+): RowsFn | null => {
   if (clauses.length !== 2) {
     return null;
   }
@@ -1015,8 +1075,14 @@ export const detectHop2GroupedCount = (
     // order given the row order item 1831 measured. The bucket holds the KEY VALUE as well as the
     // count, because `valueKey` is not reversible — `countedGroups` calls that the representative.
     const groups = new Map<string, { key: unknown; n: number }>();
+    // ⚠️ Inherits the walk's execution-time decline (item 2104) — see the sibling rung above.
+    const inner = rows(graph, params);
 
-    for (const row of rows(graph, params)) {
+    if (inner === null) {
+      return null;
+    }
+
+    for (const row of inner) {
       const key = (row as Record<string, unknown>)[keyItem.name];
       const k = valueKey(key);
       const seen = groups.get(k);

@@ -644,6 +644,47 @@ export const reversePath = (path: CPath): CPath => {
  * with a variable-length segment keep their written orientation (reversing a
  * quantified walk is not handled here).
  */
+/**
+ * Would the far end of this path be reached by a GENUINE INDEX SEEK that is narrower than the start?
+ * (item 2104)
+ *
+ * ⚠️⚠️ **THIS IS NARROWER THAN `orient` ON PURPOSE, AND THE FIRST VERSION OF ITEM 2104's GATE WAS NOT.**
+ * `orient` also reverses on LABEL-BUCKET SIZE alone — 4 Docs against 40 Users reverses with no index
+ * anywhere — which is right for the matcher, whose cost is the same either way. It is WRONG as a reason
+ * for `hop2Projection` to hand a query back: that rung's fused walk can beat the generic matcher even
+ * from the larger end (items 1821/1822 measured 13.8x on `hop2distinct`), so a bucket-size difference
+ * must not cost it the query.
+ *
+ * 🔑 An INDEX SEEK is different in kind: `estimateSeedFrom` reports a REAL count for it rather than a
+ * bucket size, and item 2103 measured the rung losing **59x** (25.56 ms against 0.43) by scanning when
+ * such a seek was available on the far node. So this returns true ONLY for that case.
+ */
+export const farEndSeeksNarrower = (
+  graph: Graph,
+  pattern: CPath,
+  binding: Binding,
+  params: Params,
+): boolean => {
+  if (pattern.segments.length === 0 || pattern.segments.some((seg) => seg.rel.quantifier)) {
+    return false;
+  }
+
+  const endNode = pattern.segments[pattern.segments.length - 1].node;
+
+  // No graph work when the far node cannot be seeked at all — `orient`'s own first gate.
+  if (!mightSeek(endNode)) {
+    return false;
+  }
+
+  const endEst = estimateSeedFrom(graph, endNode, binding, params);
+
+  if (!endEst.indexed) {
+    return false;
+  }
+
+  return endEst.count < estimateSeedFrom(graph, pattern.start, binding, params).count;
+};
+
 export const orient = (graph: Graph, pattern: CPath, binding: Binding, params: Params): CPath => {
   if (pattern.segments.length === 0 || pattern.segments.some((s) => s.rel.quantifier)) {
     return pattern;

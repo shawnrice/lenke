@@ -1732,8 +1732,17 @@ const fastPath = (linear: CLinear, graph: Graph, params: Params): Row[] | undefi
    * `perf-gate-needs-its-own-test`'s remedy is to extract the arithmetic as a pure function, and
    * here there is no arithmetic. Recorded rather than papered over.
    */
+  /*
+   * ⚠️ FALLS THROUGH ON `null` (item 2104): this rung DECLINES AT EXECUTION TIME when `orient` says
+   * the generic matcher would seed from the other end of the pattern. Measured at 59x — a vacuous
+   * `LIMIT`, which defeated the rung's length gate, made the query 25.56 ms -> 0.43.
+   */
   if (linear.hop2Projection) {
-    return linear.hop2Projection(graph, params);
+    const rows = linear.hop2Projection(graph, params);
+
+    if (rows !== null) {
+      return rows;
+    }
   }
 
   /**
@@ -2043,8 +2052,13 @@ const deepWidthReductions = (linear: CLinear, graph: Graph, params: Params): Row
     return linear.chainFoldedAggregate(graph, params);
   }
 
+  // ⚠️ Falls through on `null` — the composed walk's execution-time decline (item 2104).
   if (linear.hop2FoldedAggregate) {
-    return linear.hop2FoldedAggregate(graph, params);
+    const rows = linear.hop2FoldedAggregate(graph, params);
+
+    if (rows !== null) {
+      return rows;
+    }
   }
 
   /*
@@ -2061,8 +2075,13 @@ const deepWidthReductions = (linear: CLinear, graph: Graph, params: Params): Row
     return linear.chainGroupedCount(graph, params);
   }
 
+  // ⚠️ Falls through on `null` — the composed walk's execution-time decline (item 2104).
   if (linear.hop2GroupedCount) {
-    return linear.hop2GroupedCount(graph, params);
+    const rows = linear.hop2GroupedCount(graph, params);
+
+    if (rows !== null) {
+      return rows;
+    }
   }
 
   return undefined;
