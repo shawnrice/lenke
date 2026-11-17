@@ -18,6 +18,23 @@
  * them reports neither. Item 2131 found a 30x gap only because the series was printed. Here: 9 reps, drop
  * the first 3, median the rest, and `SERIES=1` shows every reading.
  *
+ * ⚠️⚠️ **A PAIR THAT RETURNS DIFFERENT SHAPES IS NOT COMPARABLE ON COST, AND TWO ROWS HERE DO** (item 2136).
+ * GQL's `RETURN a.age AS k` must yield 200,000 one-key ROW OBJECTS; Gremlin's `values('age')` yields
+ * 200,000 raw scalars. 🔑 Hand-written floors over the same 200,000 vertices:
+ *
+ * ```text
+ *     iterate only                      0.83 ms
+ *     push raw values                   2.76        <- Gremlin's contract
+ *     push {k: value} objects           8.25        <- GQL's contract
+ *     GQL  RETURN a.age AS k            8.14        <- AT its floor; nothing to win
+ *     GRM  values(age)                  5.38        <- 1.95x ABOVE its floor
+ * ```
+ *
+ * ⚠️ So `property projection` and `1-hop projection…` flag GQL for a cost its CONTRACT imposes — those
+ * rows carry `shapes: 'row-vs-scalar'` and are reported without a flag. 🔑 The row-counting rows are
+ * unaffected: both languages return one number, so they compare cleanly, and that is where items
+ * 2130-2135's wins came from.
+ *
  * ⚠️ **THE ANSWERS ARE COMPARED, NOT ASSUMED.** A pair whose answers differ is not a cost finding at all —
  * it is either a fixture mistake or a conformance divergence, and the row says `ANSWER MISMATCH` rather
  * than a ratio. (Row ORDER is unspecified without an explicit sort, so only counts and sorted scalars are
@@ -169,16 +186,19 @@ const PAIRS = [
   },
   {
     name: 'property projection',
+    shapes: 'row-vs-scalar',
     gql: ['MATCH (a:P) RETURN a.age AS k', sortedValues],
     grm: [traversal(V(), values('age')), sortedValues],
   },
   {
     name: '1-hop projection',
+    shapes: 'row-vs-scalar',
     gql: ['MATCH (a:P)-[:E]->(b) RETURN b.age AS k', sortedValues],
     grm: [traversal(V(), out('E'), values('age')), sortedValues],
   },
   {
     name: '1-hop projection, filtered',
+    shapes: 'row-vs-scalar',
     gql: ['MATCH (a:P)-[:E]->(b) WHERE b.age > 85 RETURN b.age AS k', sortedValues],
     grm: [traversal(V(), out('E'), has('age', gt(85)), values('age')), sortedValues],
   },
@@ -235,6 +255,12 @@ for (const pair of PAIRS) {
 
   if (!agree) {
     flag = '  ⚠️⚠️ ANSWER MISMATCH';
+  } else if (pair.shapes === 'row-vs-scalar') {
+    /*
+     * 🔑 NOT A NOMINATION: GQL must build a row object per value and Gremlin must not, which is worth
+     * ~5.5 ms per 200,000 rows on its own (item 2136). The ratio is printed for reference and not flagged.
+     */
+    flag = '  (row-vs-scalar: contract, not a defect)';
   } else if (ratio > 2 && Math.max(g.ms, m.ms) > FLOOR_MS) {
     flag = `  ⚠️ ${loser} is ${ratio.toFixed(1)}x`;
   }

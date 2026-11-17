@@ -106473,3 +106473,50 @@ complexity, and it was the right structure anyway.
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 5,176 GQL
 tests; seven fuzzers green; 5/5 sweeps.
+
+## Item 2136 — ⚠️ **TWO OF MY OWN "GQL TARGETS" WERE A CONTRACT, NOT A DEFECT: GQL's property projection is AT its floor (8.14 against a hand-written 8.25).** The instrument now says so itself — and the sweep nominates GREMLIN at 3.8x
+
+🔑 Item 2132's table flagged `property projection` at 2.9x GQL. ⚠️ **It is not comparable**: GQL's
+`RETURN a.age AS k` must yield 200,000 one-key ROW OBJECTS where Gremlin's `values('age')` yields 200,000
+raw scalars. Hand-written floors over the same 200,000 vertices:
+
+```text
+    iterate only                      0.83 ms
+    push raw values                   2.76        <- Gremlin's contract
+    push {k: value} objects           8.25        <- GQL's contract
+    GQL  RETURN a.age AS k            8.14        <- AT its floor: nothing to win
+    GRM  values(age)                  5.38        <- 1.95x ABOVE its floor
+```
+
+🔑 **GQL is already at — in fact a hair under — the floor for what it must return**, and the headroom is on
+the GREMLIN side. The three projection rows now carry `shapes: 'row-vs-scalar'` and print
+`(row-vs-scalar: contract, not a defect)` instead of a flag. ⚠️ The row-COUNTING rows are unaffected: both
+languages return one number, and that is where items 2130-2135's wins all came from.
+
+### ✅ THE TABLE AFTER SIX ITEMS
+
+```text
+    3-hop count                    7.75 -> 0.01     (item 2135)
+    distinct far count            22.90 -> 3.90     (item 2134, at parity)
+    1-hop projection, filtered    38.88 -> 10.37    (item 2133)
+    2-hop count, far filter        6.84 vs 15.13    ⚠️ GREMLIN is now 2.2x
+    node count, filtered           2.76 vs  1.36    ⚠️ GQL 2.0x, but only 1.4 ms absolute
+```
+
+### ⚠️⚠️ AND THE NOMINATION IS MY OWN ITEM 2130's CODE, WITH THE SAME DEFECT SIGNATURE
+
+Swept by selectivity, GQL gets FASTER as the filter sharpens and Gremlin does not:
+
+```text
+    selectivity        GQL    Gremlin
+    50% pass           6.5     11.9-15.1
+    4.4% pass          4.5     17.2        <- FLAT: selectivity buys nothing
+```
+
+🔑 That is the vacuous-screen signature (items 2126, 2133) a third time. ⚠️ The mechanism is visible in the
+gate rather than guessed: `denseChainCount` refuses unless `seeds.length > max(vertexCount >> 4, 1024)`,
+and at 4.4% of 200,000 the 8,800 surviving seeds fall UNDER the 12,500 floor — so the sharper the filter,
+the more certainly the query drops off the CSR onto the map walk. **The floor that protects a small source
+from a whole-graph CSR build is also what denies the selective case its win.** Worth ~3.8x; not built.
+
+GATES. Probe/instrument only, no engine change; `bun run fmt` 0; `bun run check` 0 read unpiped.
