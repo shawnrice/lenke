@@ -101911,3 +101911,73 @@ and the exposure of the method itself, each scoped to this function since the ga
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; all
 seven fuzzers green; 5/5 sweeps clean.
+
+## Item 2063 — ✅ **SHIPPED: a tight-loop `count()` on the EDGE-FILTERED walk — 1.38x and 1.34x on the two rows item 2062 left.** ⚠️⚠️ And my first floor was NOT a floor: the engine is 1.61x FASTER than a hand walk over the per-vertex Sets, because `flatDrain` walks a contiguous array
+
+Item 2062's census found three rows reaching `countProjectedWalk`. One got a tight-loop count; these
+are the other two — and they are the rows where the GENERATOR arm was 3x WORSE, so their drain was
+already doing something right.
+
+### ⚠️⚠️ THE FIRST FLOOR WAS BEATEN BY THE SUBJECT, WHICH MEANS IT WAS NOT A FLOOR
+
+```text
+    engine outE.has.count      25.00 ms
+    HAND bucket floor          40.38      ⬅ the "floor" is 1.61x SLOWER than the engine
+```
+
+`flatDrain` walks a CONTIGUOUS array (`edgeFlatFor`), losing the 200,000 `adjFrom.get(type)` lookups
+and the 200,000 `Set` iterators the hand walk pays. [[floor-arm-must-take-same-route]] is exactly this,
+and it would have made a 1.6x "opportunity" out of my own slower code. **The comparison that decides it
+is same-layout**, both over a pre-built flat array:
+
+```text
+    flat drain + length   17.74 ms
+    flat COUNT            14.19      ⬅ 1.25x, and that is the whole opportunity
+```
+
+Two things are saved, neither of which a drain can avoid: the output array and its ~1,000,000 pushes,
+and `pick(edge)`.
+
+⚠️ **`drops` IS THE CORRECTNESS HINGE.** `valuePick` (a `values(k)` projection) sets `drops: true` and
+such a walk omits a row whose value is `undefined`, so the count MUST call `pick` and repeat that test;
+`elementPick`/`idPick` set `drops: false`, which is why the two counting rows skip the projection
+entirely. ⚠️ It also mirrors the drain's flat/bucket split rather than picking one — counting over
+buckets when the flat array exists would throw away the 1.61x above.
+
+| row                                            | KILLED | LIVE     |           |
+| ---------------------------------------------- | ------ | -------- | --------- |
+| `edge: outE.has(w).count`                      | 10.44  | **7.55** | **1.38x** |
+| `edge: outE.has(w).inV.count`                  | 11.08  | **8.28** | **1.34x** |
+| `edge: outE.has(w).inV` — same walk, no count  | 49.80  | 49.50    | 1.01x     |
+| `where: sub-traversal count` — item 2062's row | 9.90   | 10.69    | 0.93x     |
+| `scan: values`                                 | 5.35   | 5.31     | 1.01x     |
+
+⚠️ **A 1.15x FIRST READING WAS NOT REPRODUCIBLE AND NEITHER WAS A 20% "REGRESSION".** At REPS=11 the
+target rows overlapped KILLED entirely (LIVE 7.59-13.46 against KILLED 11.54-12.94); at REPS=15 over
+three pairs every LIVE reading fell below every KILLED reading. And `edge: outE.has(w).values(w)` first
+read 0.80x with clean separation — five pairs later its ranges overlap fully (LIVE 10.81-14.13, KILLED
+9.83-12.70, minima 0.91x), which is below what this instrument resolves on a row with 40% spread. **No
+establishable regression; stated as a limit rather than a clearance.**
+
+### Verification, and three mutants retired as ANSWER-EQUIVALENT with the measurement that proves it
+
+12 tests, **6/6 mutants caught** — after a round where four survived:
+
+- ⚠️⚠️ **`guard-undefined-inverted` survived on ARITHMETIC COINCIDENCE.** The fixture gave exactly HALF
+  the edges a `k`, so of 22 passing edges 11 had it — and inverting `pick(edge) !== undefined` counts
+  the complement, also 11. `% 3` instead of `% 2` makes the two sides unequal, and the test now
+  asserts `counted !== allPassing - counted` so it cannot quietly become vacuous again.
+- ⚠️ **`wrong-direction-bucket` is genuinely equivalent FOR A COUNT**: a full scan visits every edge
+  exactly once whichever bucket it reads, and `outE.has(w,gt2).inV()` / `inE.has(w,gt2).outV()` both
+  answer 22. It matters to the walk's VALUES, which `pick` selects — but a `drops: false` count never
+  calls `pick`. Not a test gap; a property of the function.
+- ⚠️ **`flat-arm-never-taken` / `flat-arm-always-taken`** are a ROUTE choice measured to give identical
+  answers, and unlike item 2062's case the choice is made in `second-ask.ts`, not here.
+
+⚠️ One test was MISNAMED — "an INWARD hop counts the same way" ran the OUTWARD plan — and a second gap
+followed from it: every assertion ran against an already-asked graph, so all of them took the FLAT arm
+and half of `walkCount` was dead code in the tests. Both fixed: a real `inE … outV()` case, and a
+fresh-graph case for the first-ask bucket route.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 2,649
+gremlin tests; all seven fuzzers green; 5/5 sweeps clean.

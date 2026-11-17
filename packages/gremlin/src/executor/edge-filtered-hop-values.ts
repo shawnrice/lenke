@@ -384,6 +384,65 @@ const flatDrain = (graph: Graph, spec: WalkSpec): unknown[] => {
   return out;
 };
 
+/**
+ * The ROW COUNT of {@link walk}, without the array and without the projection (item 2063).
+ *
+ * ⚠️⚠️ **PRICED BEFORE IT WAS BUILT, AND THE FIRST FLOOR WAS WRONG.** A hand walk over the per-vertex
+ * `Set`s reads 40.38 ms against the engine's 25.00 — **the engine is 1.61x FASTER than that "floor"**,
+ * because `flatDrain` walks a contiguous array and loses 200,000 `adjFrom.get(type)` lookups and
+ * 200,000 `Set` iterators. A floor that the subject beats is not a floor (see
+ * [[floor-arm-must-take-same-route]]). The comparison that decides this is same-layout, both over a
+ * pre-built flat array:
+ *
+ * ```text
+ *     flat drain + length   17.74 ms
+ *     flat COUNT            14.19      ⬅ 1.25x, and that is the whole opportunity
+ * ```
+ *
+ * 🔑 **TWO THINGS ARE SAVED, both of which the drain cannot avoid:** the output array and its ~1,000,000
+ * pushes, and `pick(edge)` — which a count may skip ONLY when the spec does not `drop`.
+ *
+ * ⚠️ **`drops` IS THE CORRECTNESS HINGE.** `valuePick` (a `values(k)` projection) sets `drops: true`,
+ * and such a walk omits a row whose value is `undefined` — so the count MUST call `pick` and repeat
+ * that test. `elementPick` and `idPick` set `drops: false` and always yield, which is why the two
+ * counting rows this serves can skip the projection entirely. A count that skipped it unconditionally
+ * would over-count exactly the rows a `values()` walk drops.
+ *
+ * ⚠️ IT MIRRORS THE DRAIN'S FLAT/BUCKET SPLIT rather than picking one: `spec.flat` was decided by the
+ * second-ask policy when the plan was admitted, and counting over buckets when the flat array exists
+ * would throw away the 1.61x above.
+ */
+const walkCount = (graph: Graph, spec: WalkSpec): number => {
+  const { type, outward, edgeTest, pick, drops } = spec;
+  let n = 0;
+
+  if (spec.flat) {
+    for (const edge of edgeFlatFor(graph, outward, type)) {
+      if (edgeTest(edge) && (!drops || pick(edge) !== undefined)) {
+        n += 1;
+      }
+    }
+
+    return n;
+  }
+
+  for (const v of graph.vertices) {
+    const bucket = outward ? v.adjFrom?.get(type) : v.adjTo?.get(type);
+
+    if (bucket === undefined) {
+      continue;
+    }
+
+    for (const edge of bucket) {
+      if (edgeTest(edge) && (!drops || pick(edge) !== undefined)) {
+        n += 1;
+      }
+    }
+  }
+
+  return n;
+};
+
 const walk = (graph: Graph, spec: WalkSpec): HopWalk => ({
   *[Symbol.iterator]() {
     const { type, outward, edgeTest, pick, drops } = spec;
@@ -425,6 +484,9 @@ const walk = (graph: Graph, spec: WalkSpec): HopWalk => ({
    * whole plan. And it is the SAME loop written twice (item 169), because Gremlin results are
    * compared ORDERED.
    */
+  // ⚠️ THE COUNTING FAST PATH (item 2063), read by `countProjectedWalk` when a residual is only a
+  // `count()`. It never replaces the iterable or the drain — `hop-values.ts`'s rule.
+  count: () => walkCount(graph, spec),
   drain() {
     /*
      * ⚠️ THE ROUTE CHOICE IS MADE ONCE, HERE, OUTSIDE THE LOOP — not per vertex and not per edge.
