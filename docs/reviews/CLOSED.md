@@ -104832,3 +104832,65 @@ dictionary store, so there may be no cheap-scan case to separate — untested ra
 
 GATES. `bun run fmt` 0; `bun run check` 0 unpiped; `bun run test -- --skip-nx-cache` 21/21; 5,115 GQL
 tests; seven fuzzers green; 5/5 sweeps; both spelling probes read per-arm.
+
+## Item 2109 — ⚠️ **NO CHANGE: `TALLY_SEEK_MARGIN`'s own priced "1.8x by interpolation" does NOT reproduce at EITHER scale, and two instrumentations disagreed about whether the shapes reach it.** 🔑 Item 2108's method did not transfer, and this records why rather than leaving the heading advertising it
+
+Item 2108 found one fitted seek constant 2.1x off when derived from per-unit rates. ⚠️ This applied the
+same method to the engine's other two, and the answer is different for each:
+
+- **`SEEK_MARGIN = 8`** (`hop-projection.ts`): its table puts the crossover at "near 3,250 of 20,000" =
+  **16.25%**, threshold 12.5% — conservative by only **1.3x**. Not worth disturbing a path whose file
+  moves unrelated rows 3.4-5.8% per edit (item 1415).
+- **`TALLY_SEEK_MARGIN = 8`** (`shortcuts.ts`): crossover "near 7,000 of 20,000" = **35%**, threshold
+  12.5% — conservative by **2.8x**, and its own comment prices the gap: the threshold sits "inside the
+  region where seeding still wins about **1.8x** by interpolation". That is the one worth measuring.
+
+### ⚠️ MEASURED AT BOTH SCALES, AND THE 1.8x IS NOT THERE
+
+The original table is at 20,000 users / 40,000 edges, so CLAUDE.md's rule applies — sweep the size.
+Margins 8, 3, 1 and 1,000,000, at 200,000 and at the original 20,000, two shapes (a start-predicate hop
+count and an edge-predicate hop count), answers asserted equal at every point:
+
+```text
+  USERS=200,000, vertex tally          USERS=20,000
+    %seeded   m=8     m=3     m=1        %seeded   m=8     m=1
+        1.0  0.379   0.385   0.385           1.0  0.064   0.053
+       12.5  5.235   4.422   3.368          12.5  0.282   0.259
+       16.7  5.356   7.661   6.078          16.7  0.346   0.351
+       25.0 11.584  14.319  13.145          25.0  0.605   0.625
+       50.0 14.102  13.438  12.530          50.0  0.615   0.639
+```
+
+🔑 **Scattered and non-monotonic — m=1 wins at 12.5%, m=8 wins at 16.7% and 25%.** The edge-seek arm is
+FLAT at ~11-14 ms for every margin including 1,000,000. Nothing here is a 1.8x.
+
+### ⚠️⚠️ AND TWO INSTRUMENTATIONS DISAGREED ABOUT REACHABILITY — DISCLOSED, NOT RESOLVED
+
+A route sweep that measures nothing has two explanations, and the standing rule is to check which
+(`rung-precedence-hides-the-code-under-test`). ⚠️ The first instrument — a global counter on the
+`TALLY_SEEK_MARGIN` token — reported the constant consulted **0 times** by both shapes. A second, placed
+at `tallyEdges`'s entry and on `worthIt`'s real expression, reported **`tallyEdges`=1, `worthIt`=2 for
+every one of ten shapes**. A third, logging `worthIt`'s actual arguments, logged **nothing at all**.
+
+🔑 **Three instruments, three answers, so reachability is UNRESOLVED and is recorded as unresolved.** The
+fixtures differed between runs (two labels against one, with and without an edge index), which is the
+likeliest cause and is exactly the confound that makes a global counter the wrong instrument here. What
+would settle it: a reachability assertion built as a TEST against a fixed fixture, not a counter injected
+into a build.
+
+### What stands
+
+⚠️ **No change to either constant.** `TALLY_SEEK_MARGIN` stays 8 and `SEEK_MARGIN` stays 8. 🔑 The useful
+output is the correction to the first one's heading: **its priced 1.8x should not be treated as available
+work** — it was interpolated from a 20,000-scale table, and a direct margin sweep at 20,000 and 200,000
+finds no systematic effect at all.
+
+🔑 **AND THE METHOD'S LIMIT IS THE REAL LESSON.** Item 2108's rate derivation worked because its constant
+compares TWO measurable rates over ONE denominator (ns/node scanned against ns/row seeked). This one
+trades "an adjacency lookup per seeded vertex" against "the edges of the vertices it skips", which is a
+DEGREE-dependent quantity, and the same constant is reused for an EDGE-denominated decision in
+`edgeSeek`. A single ratio cannot be derived for it — so the 2108 method does not transfer, and saying so
+is worth more than a number that would not hold.
+
+GATES. No source change; tree verified clean (`TALLY_SEEK_MARGIN = 8`, `SEEK_MAX_FRACTION = 0.25`, no
+instrumentation left); 5,115 GQL tests green.

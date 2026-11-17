@@ -1798,8 +1798,27 @@ const edgesOfVertices = function* (
  *
  * So the crossover is near 7,000 of 20,000, and `hopSeek`'s guard alone sends the last row the
  * wrong way — measured at 1946-2076us against the 1383 it replaced. A margin of 8 puts the
- * threshold at 2,500 here, inside the region where seeding still wins about 1.8x by
- * interpolation and clear of the one where it loses. (Item 177 landed on the same divisor for a
+ * threshold at 2,500 here, ~~inside the region where seeding still wins about 1.8x by
+ * interpolation~~ and clear of the one where it loses.
+ *
+ * ⚠️⚠️ **THAT 1.8x IS INTERPOLATED AND DOES NOT REPRODUCE — DO NOT TREAT IT AS AVAILABLE WORK
+ * (item 2109).** Margins 8, 3, 1 and 1,000,000 were measured directly, at the 20,000 of this table AND
+ * at 200,000, over two shapes with answers asserted equal at every point. The readings are scattered and
+ * NON-MONOTONIC — m=1 wins at 12.5% selectivity, m=8 wins at 16.7% and 25% — and the `edgeSeek` arm is
+ * flat at ~11-14 ms for every margin including 1,000,000.
+ *
+ * 🔑 AND IT CANNOT BE DERIVED THE WAY `SEEK_MAX_FRACTION` WAS AT ITEM 2108. That constant compares two
+ * measurable RATES over one denominator (ns/node scanned against ns/row seeked), which is why deriving
+ * it corrected a 2.1x error. This one trades "an adjacency lookup per seeded vertex" against "the edges
+ * of the vertices it skips" — DEGREE-dependent — and the same number is reused for an EDGE-denominated
+ * decision below. One ratio cannot serve that.
+ *
+ * ⚠️ REACHABILITY IS UNRESOLVED, and is recorded as such rather than assumed either way: three
+ * instruments gave three answers (a counter on this token said 0 consults; one at `tallyEdges`'s entry
+ * said every shape reaches it twice; one logging `worthIt`'s arguments logged nothing). The fixtures
+ * differed between runs, which is the likeliest cause and the reason a counter injected into a build is
+ * the wrong instrument. What would settle it is a reachability assertion written as a TEST over a fixed
+ * fixture. (Item 177 landed on the same divisor for a
  * different cost model; the number coinciding is not a shared rule, so it is measured and named
  * separately.)
  */
