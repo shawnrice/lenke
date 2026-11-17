@@ -109,7 +109,11 @@ const SHAPES = {
   // per-edge cost is what it measures.
   hoprows: 'MATCH (a:P)-[:E]->(b:P) RETURN b.k AS k',
   /**
-   * ⚠️ Item 1618: TWO HOPS RETURNING ROWS, which `gql-cliff-finder.ts` found has NO rung at all.
+   * ⚠️⚠️ **ITEM 1618's "NO rung at all" IS STALE — ITEM 2064 PROFILED THIS SHAPE AND FOUND A FUSED
+   * TWO-HOP WALK.** `hop2-projection.ts`'s `walk` serves it with hoisted label elision, the gate
+   * before `projectRow` and a fused one-column `DISTINCT`; the hot frame is that walk's own closure,
+   * not a generic pipeline. The gap it leaves is 561 ns a row against the one-hop rung's 204 — a
+   * route that EXISTS and is dearer, which is a different question from a missing one.
    * `hop2/count` is a closed form at 415 us; `hop2/rows` reads PIPELINE at 226.68 ms over 319,972
    * rows — **708 ns a row against the ONE-hop projection's 29**, and against the Gremlin engine's
    * ~50 after items 1614/1617 fused the same shape there. Every two-hop shape in this corpus and in

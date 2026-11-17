@@ -101264,8 +101264,10 @@ at 20,000 AND the count observed at 200,000 — so a fitted-but-wrong formula ca
 
 **The CALL shapes fall from 2nd/3rd to 7th/8th**, and the multi-hop family rises past them — so a
 nomination made from the 20k ranking would have gone after `CALL` when the hop chains dominate at
-scale. The hop family adds ~35-40 ms per extra hop at 200k (hoprows 39.4 → hop2rows 114.3 → hop3rows
-137.1), which is the expected shape.
+scale. ⚠️ **CORRECTED BY ITEM 2064: ~~the hop family adds ~35-40 ms per extra hop~~ — the deltas in this
+entry's OWN table are +74.9 and +22.8, so neither is 35-40 and nor is their average.** Re-measured at
+item 2064: hoprows 40.7 → hop2rows 112.3 → hop3rows 134.8, i.e. **+71.6 then +22.5** — the FIRST extra
+hop costs 3.2x the second, which is a finding rather than "the expected shape".
 
 ⚠️ **`hop3rowsboth` IS STILL #1 BY ABSOLUTE COST at 200k — 10.6x the next — AND IT WAS STILL RIGHT TO
 DECLINE IT** (item 2051): it produces 8x the rows of its directed twin, so its per-ROW cost is 1.39-1.41x
@@ -101981,3 +101983,68 @@ fresh-graph case for the first-ask bucket route.
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 2,649
 gremlin tests; all seven fuzzers green; 5/5 sweeps clean.
+
+## Item 2064 — ⚠️⚠️ **TWO STALE CLAIMS CORRECTED, ONE OF THEM THE PREMISE I STARTED FROM: item 1618's "two-hop rows have NO rung at all" is WRONG — a fused two-hop walk serves it, and the profile's hot frame IS that walk.** ✅ The real shape: 204 → 561 → 674 ns a row, so the FIRST extra hop costs 3.2x the second
+
+First GQL item since 2055. ⚠️ **AND THE FIRST TWO ATTEMPTS MEASURED NOTHING, BOTH THROUGH MISUSING MY
+OWN INSTRUMENT**: `runtime-profile-probe.mjs` has TWO size knobs — `NODES` (env, the GRAPH) and `N`
+(argv[3], the REP COUNT) — and passing `200000` as argv[3] ran each query **200,000 times over a
+20,000-vertex graph**: `hoprows` read 80,704.9 ms with `sink: 4000000000`. Absurd output is what caught
+it; a plausible-looking wrong number would not have been.
+
+With `NODES=200000` the four shapes reproduce item 2052's table to within 2% (hoprows 40.7 against
+39.4, hop2rows 112.3 against 114.3, hop3rows 134.8 against 137.1, hop2distinct 107.1 against 106.4).
+
+### ⚠️ CORRECTION 1: item 2052's own summary contradicts its own table
+
+It says the family "adds ~35-40 ms per extra hop" beside numbers whose deltas are **+74.9 and +22.8**.
+Re-measured: **+71.6 then +22.5**. Every hop shape emits exactly 200,000 rows here, so this is a
+naturally EQUAL-EMISSION comparison — the confound that cost items 2057-2059 re-measurements does not
+arise:
+
+| shape                   | ms/rep | ns/row  |
+| ----------------------- | ------ | ------- |
+| `hoprows` — one hop     | 40.7   | **204** |
+| `hop2rows` — two hops   | 112.3  | **561** |
+| `hop3rows` — three hops | 134.8  | **674** |
+
+🔑 **THE FIRST EXTRA HOP COSTS 357 ns A ROW AND THE SECOND ONLY 113.** That non-uniformity is the
+finding; "the expected shape" is what the old summary called it.
+
+### ⚠️⚠️ CORRECTION 2: the premise. There IS a two-hop rows rung
+
+The probe's own comment carried item 1618's verdict — _"TWO HOPS RETURNING ROWS, which
+`gql-cliff-finder.ts` found has NO rung at all"_ — and I started this item intending to build one. The
+profile diff says otherwise. Self time, closed write frames excluded, hop2rows minus hoprows:
+
+| delta | hop2 | hop1  | frame                                                    |
+| ----- | ---- | ----- | -------------------------------------------------------- |
+| 700   | 700  | **0** | `(anonymous)` — **the fused two-hop walk's own closure** |
+| 253   | 262  | 8     | `propOf`                                                 |
+| 93    | 100  | 7     | `get properties`                                         |
+| 41    | 41   | 0     | `get adjFrom`                                            |
+| 31    | 31   | 0     | `get to`                                                 |
+
+Mapping the dist line back lands in `hop2-projection.ts`'s `walk`, which already has the hoisted label
+elision (items 1551/1552/1609), the gate before `projectRow`, and the fused one-column `DISTINCT`
+(item 1843). **So the question is not a missing route but an existing route that is 2.75x the one-hop
+rung per row** — a different question, and item 1618's line is now struck in the probe.
+
+### The nomination, with the caveat that decides whether it is real
+
+`propOf` + `get properties` is **362 ms of 1,347 — 27%** — and the one-hop file has exactly the thing
+the two-hop walk lacks: a projection specialization that reads the property DIRECTLY, with
+`hop-projection.ts` noting "a specialized row builder would BYPASS `propOf`".
+
+⚠️⚠️ **BUT A PROFILE SHARE IS NOT A REACHABLE WIN, AND THIS FILE HAS THE WORKED EXAMPLE: item 2030
+nominated 20.9% in the two-hop rung's label tests, item 2031 ablated it to a 13.6% CEILING and 0%
+REACHABLE, and nothing was built.** `get properties` is also a GETTER frame, which
+[[frame-attribution-trap]] says is attribution until a deletion test with a control says otherwise —
+four instances, one with the control moving 7.5x. And `hop-projection.ts` itself records, unmeasured,
+that "a specialized row builder does not make `propOf` cheaper or `item.fn` monomorphic".
+
+**So the next step is an ABLATION CEILING, not a build:** delete the projection work from the two-hop
+walk, measure what that bounds, and only then decide. 27% is the ceiling's upper bound, not the win.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `node --check` on the probe. Two stale claims
+corrected (item 2052's per-hop summary, the probe's item-1618 comment); no engine change.
