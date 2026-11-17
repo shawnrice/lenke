@@ -106669,3 +106669,65 @@ the gap is NOT closed; `trailEnds` and `walkSegments` are where the rest is.
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 5,176 GQL
 tests; seven fuzzers green; 5/5 sweeps.
+
+## Item 2140 — ⚠️ **CLOSED, NOTHING BUILT: the quantified-spread residual is CONSTANT-FACTOR with no removable dominant term.** The allocations price at 1.7%, the `marks` Set is semantically required (ceiling 1.28x), and a suspected 18% spelling gap was REFUTED
+
+Item 2139 took the `flatAdj` third of this profile for 1.06x and left `trailEnds` (23.7%) and
+`walkSegments` (19.8%). 🔑 The row is still 1.39x behind native (225.9k ops/s against 314.3k), so the
+question was whether the rest is a missing route. **It is not.** Three measurements, none of which needed a
+build:
+
+### 🔑 1. THE PER-VISIT ALLOCATIONS: 1.7%, PRICED NOT BUILT
+
+`trailEnds` allocates a DFS frame and `flatAdj` an `Array.from(bucket)` per visited vertex. At degree 3 a
+`{1,3}` walk visits ~40, so:
+
+```text
+    Array.from(set)              12.6 ns/call
+    [...set]                     11.7
+    iterate the set, no array     7.1      <- the best case
+    set.size only                 1.2
+    frame object + Array.from    13.6
+```
+
+⚠️ Avoiding the array saves ~5.5 ns × ~40 calls = **220 ns of a ~13 µs query, 1.7%.** 🔑 One measurement
+instead of a build — the rule item 2137 wrote down, working.
+
+### 🔑 2. THE `marks` SET IS SEMANTICALLY REQUIRED, AND ITS CEILING IS 1.28x
+
+A trail must not repeat an edge, so every step does `has`/`add`/`delete`. ⚠️ The DEFAULT mode IS trail
+(`pattern.mode ?? 'trail'` in two files), so this is not an optional cost. Asking the same question in
+`WALK` mode, which skips the marks entirely, bounds what any removal could ever buy:
+
+```text
+    default (trail)         2.75 ms    ans=39
+    WALK (no marks)         2.15       ans=39     <- the CEILING: 1.28x, and unavailable
+    fixed 3-hop chain       0.68       ans=27     <- no quantifier, for scale
+```
+
+### ⚠️⚠️ 3. A SUSPECTED 18% EQUIVALENT-SPELLING GAP, REFUTED BY ORDER ALTERNATION
+
+The same run showed `TRAIL` explicit at **2.34** against the default's **2.75** — and since the default IS
+trail, that would be two spellings of ONE question differing 18%, exactly the defect class this repo is
+organised around. 🔑 Alternating the order WITHIN each process, three rounds:
+
+```text
+    round   default   TRAIL   TRAIL(rev)  default(rev)
+      1       2.76     2.84      2.68        4.10
+      2       2.77     2.51      2.53        2.44
+      3       3.20     2.68      2.67        2.71
+    minima  default 2.44   TRAIL 2.51   <- the DEFAULT is marginally faster
+```
+
+⚠️ **No gap. The 18% was a single-run ordering artifact**, and the property holds. 🔑 Worth recording
+because the first reading looked like a textbook finding — the alternation is what refuted it, and a
+one-direction sweep would have shipped it as real.
+
+### 🔑 SO THE RESIDUAL IS A LAYOUT/CONSTANT-FACTOR GAP, NOT A MISSING ROUTE
+
+⚠️ Native's 314.3k against TS's 225.9k stands, and nothing in this profile is a route defect: the two
+larger frames are the DFS itself and the segment driver, the removable allocation is 1.7%, and the
+dominant removable term is required by the default path mode. **Recorded so this profile is not re-derived
+a fourth time.**
+
+GATES. No engine change; `bun run check` 0 read unpiped.
