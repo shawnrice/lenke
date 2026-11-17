@@ -101554,7 +101554,7 @@ SLOWER, the selectivity is not what you are measuring.**
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `node --check` on the screen. Two screen rows
 added (`point: has(all) values`, `point: has(half) values`); no engine change.
 
-## Item 2058 — ⚠️⚠️ **ITEM 2057's CONCLUSION IS REFUTED AND ITS HEADING CORRECTED. The predicate KIND is FREE — equality 72.4 ns a vertex against range 72.7 on the same property. ✅ What costs is the `has` STEP ITSELF: ~47 ns a vertex against a 25 ns fused scan, so a one-comparison filter nearly TRIPLES the row.** Both of my wrong readings came from traps already written down in this file
+## Item 2058 — ⚠️ **PARTLY CORRECTED BY ITEM 2059: the "~47 ns A VERTEX" is the KEEP-EVERYTHING case, not a general per-vertex figure** — a `has` keeping 1 vertex in 50 scans the same 200,000 and costs 29 ns a scan, not 74, and a linear scan/emit model is refuted by the arms themselves. ✅ **The findings that STAND: the predicate KIND is free (equality 72.4 against range 72.7 on the same property), and the `has` STEP, not the predicate, is what costs.** Both of my wrong readings came from traps already written down in this file
 
 Item 2057 ended by naming the instrument that would settle predicate-versus-route: a CONSTANT-valued
 property, so an equality can keep every vertex. Built, and it refuted the item that asked for it.
@@ -101607,3 +101607,86 @@ prices a new walk variant at up to 16% on unrelated rows, so it needs the usual 
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `node --check`. Probe-only change; item 2057's
 heading corrected in this same commit per the CLOSED.md rule.
+
+## Item 2059 — ✅ **SHIPPED: the unindexed `V().has(k, pred).values(key)` fused scan — 2.63x keeping every vertex, 3.17x keeping half, 1.69x keeping one in fifty, with flat controls.** ⚠️ And the first cut shipped a REGRESSION that an existing test caught: precedence alone does not mean "unindexed", because the seeded rung declines a RANGE on an indexed key while the PIPELINE still seeds it
+
+Item 2058 localized the cost to the `has` step's generic route and nominated this. `seededShape`
+already matched `V() + has + values` but `seededNodeValuesShortcut` declines whenever the key is not
+indexed, which dropped the shape onto the traverser pipeline.
+
+MEASURED, arms `LIVE`/`KILLED` where KILLED removes only the new call site, one arm per PROCESS,
+200,000 vertices:
+
+| arm                                | emits   | KILLED | LIVE      |            |
+| ---------------------------------- | ------- | ------ | --------- | ---------- |
+| `has('c', 1)` — keeps every vertex | 200,000 | 14.86  | **6.45**  | **2.30x**  |
+| `has('k', gte(25))` — keeps half   | 100,000 | 14.58  | **4.39**  | **3.32x**  |
+| `has('k', 7)` — keeps one in fifty | 4,000   | 5.87   | **3.13**  | **1.88x**  |
+| `scan: values` — CONTROL           | 200,000 | 5.54   | 5.22      | 1.06x      |
+| `scan: id` — CONTROL               | 200,000 | 3.08   | 2.21-3.14 | flat, wide |
+| `scan: count` — CONTROL            | 1       | 0.00   | 0.00      | flat       |
+
+⚠️⚠️ **THESE ARE THE POST-REFACTOR NUMBERS, AND AN EARLIER SET WAS MEASURED ON A MIXED TREE.** This
+A/B script snapshots `index.ts` and restores it on EXIT, so a complexity fix made to that file AFTER
+the snapshot was silently reverted by the script's own restore: the lint gate went red again, and one
+round measured the new walk against a pre-refactor call site. The start-of-run `cmp` CANNOT catch
+that — the EXIT trap guarantees `SRC == PRISTINE` before every run, so the check passes trivially
+while the snapshot is stale relative to the source you MEANT to have. The snapshot is refreshed, the
+hazard is written into the script, and these readings come from a run whose `bun run check` is 0
+afterwards. ⚠️ The kill switch also had to be rewritten once because `bun run fmt` collapses the
+two-line `??` onto one line, so the old anchor matched 0 times — and the script refused loudly rather
+than measuring nothing, which is the behaviour wanted.
+
+### ⚠️⚠️ THE REGRESSION, AND WHY PRECEDENCE WAS THE WRONG GATE
+
+The first cut had NO index check. It sat below `seededNodeValuesShortcut` and reasoned that a seekable
+key would already have been claimed. **That is false for a RANGE predicate:** the seeded rung's
+`seedForStep` cap of `0` demands a `removable` candidate, which "a range candidate never is", so it
+declines — while the PIPELINE still seeds that range from the index. The shape fell through to a full
+scan and **changed the row SEQUENCE from bucket order to vertex order**:
+
+```text
+    (fail) the seeded shortcut agrees with the pipeline, in ORDER > a RANGE predicate
+```
+
+🔑 That sibling test's own comment had said those cases _"DECLINE the shortcut … the oracle and the
+subject are then the same path"_ — a premise this rung silently broke. The gate is now the direct
+question, `!graph.vertexPropertyIndex.isIndexed(key)`, so an indexed key keeps the index seek whatever
+its predicate kind. **One `isIndexed` call per QUERY.** ⚠️ The mutant harness is what surfaced it: it
+refuses to mutate while the wide baseline is red, so it reported the failure instead of a verdict
+table.
+
+### Verification, and three instrument faults found on the way
+
+13 tests, **13/13 mutants caught** — but only after three rounds that each reported a fiction:
+
+1. ⚠️ **Three mutants showed `anchors 2`**, because `if (steps.length !== 3) {`, the multi-key check
+   and the `V(ids)` check are IDENTICAL in `nodeValuesWhereShortcut` above — so each was editing BOTH
+   rungs and being "caught" by code it was not aiming at ([[ambiguous-anchor-strings]]). Each gate
+   mutant is now range-scoped to this function; a duplicated anchor is then fine, because the count
+   drops 2 → 1 and that proves the edit landed HERE.
+2. ⚠️ **Seven mutants reported ANCHOR-DID-NOT-APPLY on a run where every sed had applied**, because
+   the harness verifies by RE-COUNTING THE ANCHOR — so the anchor must BE the mutated text.
+3. ⚠️⚠️ **MY VERDICT GREP USED `SURVIVED` AND THE HARNESS PRINTS `survived`**, so a round with TWO
+   survivors read as "10/10 caught". Both were real gaps:
+   - `general-walk-drops-in-test` survived because no test had a vertex passing a
+     NON-specializable predicate while lacking the PROJECTED key. Vertex `f` (`s: 'xf'`, no `n`)
+     exists for exactly that.
+   - `always-takes-the-general-walk` survived because the two walks are answer-equivalent BY DESIGN.
+     [[perf-gate-needs-its-own-test]] prescribes the fix verbatim — extract the decision as a pure
+     function — so `pickScanWalk` is exported and asserted directly.
+
+⚠️ **AND A `scan: values` CONTROL READ 0.91x ON ONE SAMPLE.** Five more alternated rounds put it at
+0.96x and `scan: id` at 1.01x. A single control reading is not a regression and not a clearance.
+
+⚠️ **WHAT IS NOT CLAIMED: a per-scanned-vertex versus per-emitted-row split.** The keep-all and
+keep-half arms both sit at 70-77 ns a SCAN while the one-in-fifty arm sits at 29 ns, so a linear
+`a·scanned + b·emitted` model is refuted by the arms themselves — and the keep-all arm reads a
+different property from the other two, so they are not a clean series. Item 2058's heading is
+corrected accordingly in this commit: its "~47 ns a vertex" is the keep-everything case.
+
+⚠️ `run`'s complexity gate (35) went to 37, the same squeeze as items 2042 and 2056 — a `??` counts as
+a branch. Both branches are hoisted into `valuesFromIndexOrScan`, which lands below where it started.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
+gremlin suite 1,082 executor tests (13 new); all seven fuzzers green; 5/5 sweeps clean.

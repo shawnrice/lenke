@@ -29,7 +29,8 @@
 // `seededNodeCountShortcut` is index-seeded and `idSeededCount` is id-seeded (item 1649).
 import type { Graph } from '@lenke/core';
 
-import type { ID, Plan, Step } from '../ast.js';
+import type { ID, Plan, Predicate, Step } from '../ast.js';
+import { matches, specializePredicate } from '../predicates.js';
 import { seedForStep } from './index-seed.js';
 import { valueDedupeFilter } from './runtime.js';
 import { asStringId } from './sources.js';
@@ -858,6 +859,159 @@ const seededCountShape = (
   }
 
   return undefined;
+};
+
+/**
+ * WHICH WALK a predicate takes, as a pure function so the choice can be TESTED (item 2059).
+ *
+ * ⚠️⚠️ **THIS EXISTS BECAUSE A MUTANT SURVIVED.** Forcing the rung to always take the general walk
+ * changes NO answer — the two walks are answer-equivalent by construction, which is the whole point
+ * of specializing — so every differential and unit test passed with the fast walk unreachable. That
+ * is [[perf-gate-needs-its-own-test]] verbatim: "a route CHOICE is answer-equivalent, so every mutant
+ * survives the differential tests; extract the arithmetic as a pure fn and unit-test it."
+ */
+export const pickScanWalk = (
+  fast: ((value: unknown) => boolean) | undefined,
+): 'fast' | 'general' => (fast === undefined ? 'general' : 'fast');
+
+/*
+ * TWO WALKS, NOT ONE WITH A BRANCH. Item 159 measured a branch in an inner loop like this at 1.6x,
+ * and `specializePredicate` declines for a predicate whose operand is neither number nor string, so
+ * both paths are genuinely reachable. The gate is evaluated ONCE per query, in the rung below.
+ *
+ * ⚠️ THE `in` TEST IS THE `values()` CONTRACT, NOT AN OPTIMISATION: a vertex that passes the filter
+ * but lacks the PROJECTED key emits NO row, exactly as `V().values(k)` drops it. A walk that yielded
+ * `undefined` there would add rows the generic route does not produce, and
+ * [[toequal-blind-to-trailing-undefined]] is why that would survive a careless test.
+ */
+const hasValuesWalkFast = function* (
+  graph: Graph,
+  key: string,
+  projKey: string,
+  test: (value: unknown) => boolean,
+): Generator<unknown> {
+  for (const v of graph.vertices) {
+    const props = v.properties;
+
+    if (test(props[key]) && projKey in props) {
+      yield props[projKey];
+    }
+  }
+};
+
+const hasValuesWalkGeneral = function* (
+  graph: Graph,
+  key: string,
+  projKey: string,
+  pred: Predicate,
+): Generator<unknown> {
+  for (const v of graph.vertices) {
+    const props = v.properties;
+
+    if (matches(pred, props[key]) && projKey in props) {
+      yield props[projKey];
+    }
+  }
+};
+
+/**
+ * The UNINDEXED `V().has(k, pred).values(key)` scan (item 2059).
+ *
+ * ⚠️⚠️ **THE GAP THIS FILLS WAS MIS-DIAGNOSED TWICE BEFORE IT WAS LOCATED.** Item 2057 read the `has`
+ * row as 1.15x and called it correct-not-a-gap, because its filtered arm emitted 50x fewer rows than
+ * the arm it was compared against. Item 2058 then put a RANGE predicate 14-23 ns a vertex AHEAD of an
+ * EQUALITY — sign-consistent over three rounds — because all four arms shared `filterStream`'s
+ * callback site in one process. One arm per process, emissions held equal, 200,000 vertices:
+ *
+ * ```text
+ *     V().values(n)                     25.1 ns/vertex   the fused scan
+ *     V().has('c', 1).values(n)         72.4             EQUALITY
+ *     V().has('c', gte(0)).values(n)    72.7             RANGE — indistinguishable
+ * ```
+ *
+ * 🔑 **SO THE PREDICATE KIND IS FREE AND THE ~47 ns IS THE ROUTE.** `specializePredicate` (item 1492)
+ * already compiles both ops to a one-comparison closure, and
+ * [[closure-dispatch-is-cheap-keyed-loads-are-not]] prices calling one at ~3 ns. The rest is the
+ * generic pipeline's per-element plumbing: `filterStream`'s generator layer, the
+ * `isVertex(v) || isEdge(v)` recheck on every element, and a traverser per surviving row.
+ *
+ * ⚠️⚠️ **UNINDEXED MEANS `isIndexed(key)` IS FALSE, AND PRECEDENCE ALONE WAS NOT ENOUGH — an existing
+ * test caught that.** The first cut gated this rung only by sitting BELOW `seededNodeValuesShortcut`
+ * in `index.ts`, reasoning that a seekable key would already have been claimed. That is wrong,
+ * because **the seeded rung declines a RANGE predicate even on an indexed key** (its `seedForStep`
+ * cap of `0` demands a `removable` candidate, which "a range candidate never is") while the PIPELINE
+ * still seeds that range from the index. So a range on an indexed key fell through to this full scan
+ * and changed the row SEQUENCE from bucket order to vertex order — which
+ * `seeded-node-values.test.ts`'s "a RANGE predicate" case pins, and which failed:
+ *
+ * ```text
+ *     (fail) the seeded shortcut agrees with the pipeline, in ORDER > a RANGE predicate
+ * ```
+ *
+ * That test's own comment had said those cases "DECLINE the shortcut … the oracle and the subject
+ * are then the same path", and this rung quietly broke that premise. 🔑 **The gate is now the direct
+ * question — `!graph.vertexPropertyIndex.isIndexed(key)` — so an indexed key keeps the index seek
+ * whatever its predicate kind**, which is both the ordering the test pins and the faster route.
+ *
+ * ⚠️ **A LEADING `hasLabel` IS REFUSED, inheriting item 1870's measurement rather than re-opening
+ * it**: this rung is a FULL SCAN whatever the label matches, while the pipeline seeds from
+ * `graph.verticesByLabel`, so the labelled form loses from 1.93x at one-in-two to 678x at
+ * one-in-a-thousand and never wins.
+ *
+ * ⚠️ **ITS OWN WALK, NOT AN EDIT TO THE PLAIN SCAN'S.** Items 2021/2025/2026 all took the
+ * reuse-by-prefix route for one reason — [[executor-edits-perturb]] prices a new variant inside an
+ * existing walk at up to 16% on unrelated rows — but the filter here is INTERLEAVED with the
+ * projection, so there is no prefix to delegate. A separate module-scope walk leaves
+ * `V().values(k)`'s own 25 ns row untouched.
+ */
+export const unindexedHasValuesShortcut = (plan: Plan, graph: Graph): NodeValues | undefined => {
+  const { steps } = plan;
+
+  if (steps.length !== 3) {
+    return undefined;
+  }
+
+  const [source, filter, proj] = steps;
+
+  // `V(id, …)` enumerates a given set, not the whole graph — the bound every values rung has.
+  if (source.kind !== 'V' || (source.ids?.length ?? 0) > 0) {
+    return undefined;
+  }
+
+  if (filter.kind !== 'has') {
+    return undefined;
+  }
+
+  // ONE key: `values()` with no key emits every property value and `values(a, b)` fans out per key.
+  if (proj.kind !== 'values' || proj.keys.length !== 1) {
+    return undefined;
+  }
+
+  const { key, pred } = filter;
+
+  /*
+   * ⚠️ THE INDEX CHECK IS THIS RUNG'S DEFINING GATE, not an optimisation — see the header. An
+   * indexed key is seeded by the pipeline (and by the seeded rung when the predicate is seekable),
+   * which visits only the matching bucket and emits in BUCKET order; a full scan here would be both
+   * slower and a different row sequence. One `isIndexed` call per QUERY, not per row.
+   */
+  if (graph.vertexPropertyIndex.isIndexed(key)) {
+    return undefined;
+  }
+
+  const [projKey] = proj.keys;
+  const fast = specializePredicate(pred);
+  const walk =
+    pickScanWalk(fast) === 'general' || fast === undefined
+      ? (): Generator<unknown> => hasValuesWalkGeneral(graph, key, projKey, pred)
+      : (): Generator<unknown> => hasValuesWalkFast(graph, key, projKey, fast);
+
+  return {
+    [Symbol.iterator]: walk,
+    // ⚠️ THE EAGER FILL: `toArray` prefers `drain` (item 1412), and a walk without one is measured
+    // against siblings that have it with its generator hand tied (item 1998's 1.55x).
+    drain: () => [...walk()],
+  };
 };
 
 export const seededNodeCountShortcut = (plan: Plan, graph: Graph): number | undefined => {

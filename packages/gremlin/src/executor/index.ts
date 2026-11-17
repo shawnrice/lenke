@@ -65,6 +65,7 @@ import {
   scanWhereValuesResidual,
   seededNodeCountShortcut,
   seededNodeValuesShortcut,
+  unindexedHasValuesShortcut,
 } from './node-values.js';
 import { optionalHopValues } from './optional-hop-values.js';
 import { pathHopValues } from './path-hop-values.js';
@@ -2867,6 +2868,30 @@ const fusedProjectedValues = (
  * has handled a trailing `order`/`count`/`fold`/`min`/`max`/`cap` for the HOP walks since items
  * 1630-2020; the scan simply had no way to reach it.
  */
+/**
+ * The INDEXED seek, then the UNINDEXED fused scan, for `V().has(k, pred).values(key)` (item 2059).
+ *
+ * 🔑 **THE ORDER IS THE POINT:** `seededNodeValuesShortcut` visits only the index bucket, so it wins
+ * whenever the key is seekable; `unindexedHasValuesShortcut` is a FULL SCAN and gates itself on
+ * `isIndexed(key)` being false, so the two are DISJOINT rather than merely ordered — which matters,
+ * because relying on order alone shipped a regression (see that rung's header).
+ *
+ * ⚠️ IT IS A MODULE-SCOPE HELPER BECAUSE `run`'s COMPLEXITY GATE IS 35 AND THE CALL SITE TOOK IT TO
+ * 37 — the same squeeze items 2042 and 2056 hit, where a `??` counts as a branch.
+ *
+ * ⚠️ `tracksPath` gates both: each yields VALUES and keeps no traverser, so a path-tracking query
+ * cannot be served from either. The shapes they admit contain nothing path-dependent, so a mutant
+ * deleting this guard survives — it is the SHORTCUTS' CONTRACT, not a statement about today's shapes.
+ */
+const valuesFromIndexOrScan = (
+  effective: Plan,
+  graph: Graph,
+  tracksPath: boolean,
+): NodeValues | undefined =>
+  tracksPath
+    ? undefined
+    : (seededNodeValuesShortcut(effective, graph) ?? unindexedHasValuesShortcut(effective, graph));
+
 const scanResidualWalk = (
   effective: Plan,
   graph: Graph,
@@ -3030,11 +3055,23 @@ export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
   // `tracksPath` gates it for the same reason, and the same caveat applies: the shape list it
   // admits contains nothing path-dependent, so a mutant deleting the guard survives — it is the
   // SHORTCUT'S CONTRACT, not a statement about today's shapes.
-  const seededValues = ctx.tracksPath ? undefined : seededNodeValuesShortcut(effective, graph);
+  const seededValues = valuesFromIndexOrScan(effective, graph, ctx.tracksPath);
 
   if (seededValues !== undefined) {
     return seededValues;
   }
+
+  /*
+   * The UNINDEXED twin (item 2059), BELOW the seeded rung and reachable only once it declines —
+   * which is the whole gate: a seekable key should visit the index bucket, not scan. Item 2058
+   * priced the generic route this replaces at ~47 ns a vertex against a 25 ns fused scan, for a
+   * filter whose predicate closure costs ~3 ns.
+   *
+   * ⚠️ `tracksPath` GATES IT for the same reason the seeded rung is gated: the rung yields VALUES
+   * and keeps no traverser, so a path-tracking query cannot be served from it. The shapes it admits
+   * contain nothing path-dependent, so a mutant deleting this guard survives — it is the SHORTCUT'S
+   * CONTRACT, not a statement about today's shapes.
+   */
 
   // The COUNT twin (item 1596). `countShortcut` above declines this shape on purpose —
   // `filterChainCount` refuses a `has` the moment a seek looks better — and the seeding path then

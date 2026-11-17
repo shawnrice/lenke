@@ -54,7 +54,21 @@ const ARMS = {
    * figure. D is a RANGE over the SAME constant property B reads, so `D - B` varies kind alone.
    */
   'D has(c,gte(0))  range': () => traversal(V(), has('c', gte(0)), values('n')),
+  /*
+   * ⚠️⚠️ ARMS E AND F EXIST BECAUSE ITEM 2058 COULD NOT TELL "PER SCANNED VERTEX" FROM "PER EMITTED
+   * ROW" — every arm above scans 200,000 AND emits 200,000, so the two counts are the same number
+   * and ~47 ns was attributed to the scan. The workload screen's `point: has(k,v)` scans 200,000 and
+   * emits 4,000, and item 2059's fusion left it FLAT while lifting B by ~3x. These arms vary the
+   * surviving fraction while holding the scan at 200,000, which is what separates the two.
+   *
+   * ⚠️ THEY BREAK THE `rows === NODES` ASSERTION ON PURPOSE, so the check below is per-arm.
+   */
+  'E has(k,gte(25)) half': () => traversal(V(), has('k', gte(25)), values('n')),
+  'F has(k,7)       1-in-50': () => traversal(V(), has('k', 7), values('n')),
 };
+
+/** Arms A-D emit one row per vertex; E and F deliberately do not. */
+const EMITS_ALL = new Set(['A', 'B', 'C', 'D']);
 
 /*
  * ⚠️⚠️ **ONE ARM PER PROCESS IS THE RULE, AND RUNNING ALL FOUR TOGETHER BROKE IT.** CLAUDE.md: "In the
@@ -76,9 +90,15 @@ for (const [name, mk] of Object.entries(ARMS)) {
 
   const rows = toArray(mk(), g).length;
 
-  if (rows !== NODES) {
+  if (EMITS_ALL.has(name[0]) && rows !== NODES) {
     throw new Error(
       `${name} emitted ${rows} rows, expected ${NODES} — the arms are not comparable`,
+    );
+  }
+
+  if (!EMITS_ALL.has(name[0]) && rows >= NODES) {
+    throw new Error(
+      `${name} emitted ${rows} rows — it is meant to be SELECTIVE, so this proves nothing`,
     );
   }
 
@@ -97,7 +117,7 @@ for (const [name, mk] of Object.entries(ARMS)) {
 
   ms[name] = m;
   console.log(
-    `  ${name.padEnd(28)} ${m.toFixed(2).padStart(8)} ms   ${((m * 1e6) / NODES).toFixed(1).padStart(6)} ns/vertex`,
+    `  ${name.padEnd(28)} ${m.toFixed(2).padStart(8)} ms  ${String(rows).padStart(7)} rows  ${((m * 1e6) / NODES).toFixed(1).padStart(6)} ns/scan  ${((m * 1e6) / rows).toFixed(1).padStart(6)} ns/row`,
   );
 }
 
