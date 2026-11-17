@@ -2064,7 +2064,21 @@ const flatAdj = (graph: Graph, v: Vertex, rel: CRel, binding: Binding, params: P
 
   if (!hasPred && rel.direction !== 'both' && label?.kind === 'label') {
     const fwd = rel.direction === 'out';
-    const bucket = (fwd ? graph.edgesFromByLabel : graph.edgesToByLabel).get(v.id)?.get(label.name);
+    /*
+     * ITEM-2139-OWN-BOX: the VERTEX'S OWN cached adjacency, not a hash of its id into the graph's index.
+     *
+     * ⚠️⚠️ **THIS IS ITEM 591's LESSON, UNLEARNED IN THIS RUNG.** `count-shortcut.ts` records it with
+     * numbers at 200,000 vertices / 1,000,000 edges — `edgesToByLabel.get(v.id)` + predicate **32.86 ms**
+     * against `v.adjTo` + predicate **18.29**, 1.80x — and its own note says *"one rung in this file
+     * learned the lesson and its neighbour did not"*. 🔑 A string-keyed `Map.get` is ~190 ns (item 194)
+     * against ~30 ns for the vertex's box (item 321), and the getter caches per vertex.
+     *
+     * 🔑 WHY IT MATTERS HERE: a quantified `->{1,3}` calls this once per VISITED VERTEX, so the id hash
+     * is paid per step of the expansion, not once per query. The serving bench's `analytic: fan-out
+     * spread 1-3 hops` row is TS's largest shortfall against native in the indexed column (216.4k ops/s
+     * against 310.7k), and a windowed profile puts 19.8% of it in this function.
+     */
+    const bucket = (fwd ? v.adjFrom : v.adjTo)?.get(label.name);
 
     return { edges: bucket === undefined ? NO_EDGES : Array.from(bucket), nodes: null, fwd };
   }

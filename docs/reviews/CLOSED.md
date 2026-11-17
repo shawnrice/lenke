@@ -106614,3 +106614,58 @@ whole gap, and the remainder is unexplained.
 a sound DESIGN, and it still had to be measured — a design being right does not make it faster here.
 
 GATES. No engine change shipped; `bun run check` 0 read unpiped; 2,792 Gremlin tests green.
+
+## Item 2139 — ✅ **SHIPPED (GQL, small): `flatAdj` reads the VERTEX'S OWN adjacency box instead of hashing its id — 1.06x on the quantified spread, 3/3 rounds.** ⚠️ And two of my own nominations from the serving bench were wrong
+
+🔑 **A FRESH SURFACE: `bun run bench:usage`, untouched all session.** It is the serving counterpart — small
+operations against a warm graph, with and without indexes — and it answers the brief's O(1)-by-id concern
+directly.
+
+### ✅ WHAT IT SAYS ABOUT THE TS ENGINE, which is mostly good news
+
+```text
+    indexed read          ts(+)     engine(+)
+    point lookup          1.91M      480.0k     <- TS 4.0x AHEAD
+    permission check      594.3k     150.8k     <- TS 3.9x
+    2-hop recommendation  652.8k     238.7k     <- TS 2.7x
+    keyed dedup lookup    179.9k     169.6k
+    fan-out spread 1-3    216.4k     310.7k     ⚠️ TS 1.44x BEHIND — the largest such gap
+```
+
+🔑 O(1) access by id is healthy: an indexed point lookup runs at **1.91M ops/s**, four times native's.
+
+### ⚠️⚠️ TWO NOMINATIONS OF MINE, BOTH WRONG, BOTH CAUGHT BY DOING THE DIVISION
+
+1. I flagged `keyed dedup lookup` at 179.9k as "3.3x below its siblings". ⚠️ **It seeks ~200 matches per
+   op** (100 distinct scores over 20,000 users) where `point lookup` returns ONE — so at 180k ops/s it is
+   **36M matches/s, the HIGHEST throughput on the board.** 🔑 Comparing ops/s across rows that do different
+   amounts of work is item 2125's error exactly, and I made it again.
+2. The first A/B of the fix read **1.23x**; isolated, one shape per process, 24 reps and three alternated
+   rounds, it is **1.06x** — and the noisy sweep's rounds OVERLAPPED (NEW 6.3/5.1 against BEFORE 6.1/6.8)
+   while a control read SLOWER in NEW. The sweep could not support any number.
+
+### 🔑 THE FIX IS A DOCUMENTED LESSON THIS RUNG HAD NOT LEARNED
+
+`flatAdj`'s fast path did `(graph.edgesFromByLabel).get(v.id)?.get(label.name)` — a STRING-KEYED `Map.get`
+(~190 ns, item 194) where the vertex's own cached box is ~30 ns (item 321). ⚠️ `count-shortcut.ts` records
+the same swap at **32.86 ms against 18.29, 1.80x** (item 591) and says of it: _"one rung in this file
+learned the lesson and its neighbour did not."_ **This was another neighbour.** 🔑 It matters here because a
+quantified `->{1,3}` calls `flatAdj` once per VISITED VERTEX, so the hash is paid per step of the expansion.
+
+```text
+    isolated, 24 reps, 3 alternated rounds    NEW    BEFORE
+                                             2.68      3.17
+                                             2.78      2.88
+                                             2.72      2.84
+    min of medians                           2.68      2.84    1.06x, 3/3 rounds
+    serving bench row                        225.9k vs 216.4k  1.04x
+```
+
+⚠️ **1.06x, NOT 1.80x, and the reason is specific**: item 591's rung was mostly the lookup, while a
+windowed profile puts this one at 19.8% behind `trailEnds` (23.7%) and `walkSegments` (19.8%). 🔑 Shipped
+anyway — it is strictly less work, removes a documented anti-pattern, aligns the rung with its sibling, and
+is consistent in direction across every round. ⚠️ Native still leads this row at 314.3k against 225.9k, so
+the gap is NOT closed; `trailEnds` and `walkSegments` are where the rest is.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 5,176 GQL
+tests; seven fuzzers green; 5/5 sweeps.
