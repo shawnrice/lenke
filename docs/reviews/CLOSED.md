@@ -68173,7 +68173,7 @@ seven still lack the arm — which is where this family's remaining work now is.
 serialization 144 — 0 fail. `bun run fuzz` 20/0 under the 16G cap. `bun run spelling` at
 `SPELL_N=200000 SPELL_REPS=9`: unchanged flag set.
 
-### Item 1599 — the label test IS **1.53x** of the seeded count, not the ~1.1x item 1597 priced — and **BOTH levers aimed at it are REFUTED**: compiling it per query measures FLAT, and the bucket-identity test is SLOWER than hoisting the getter. ⚠️ Which also removes the PERF reason to settle the `label-index-vs-setter` decision ⚠️ (NARROWED BY 1623: the two levers it refuted were ways to make the label test CHEAPER, and that still holds; ELIDING the test where the label is vacuous is a different mechanism and took 1.17x in the generic matcher.)
+### Item 1599 — the label test IS **1.53x** of the seeded count, not the ~1.1x item 1597 priced — and ~~**BOTH levers aimed at it are REFUTED**~~ ⚠️ **ONLY THE TWO IT TRIED; A THIRD TOOK 2.65x AT ITEM 2085** — this item's numbers are all from **400 candidates**, where the test costs 4.73 ns and a `soleLabel` compare 3.89 (1.22x, correctly not worth having). At **200,000** scattered candidates the same probe reads **14.52 against 7.56** — the saving is a CACHE MISS, so it barely exists cache-resident. Below: compiling it per query measures FLAT, and the bucket-identity test is SLOWER than hoisting the getter. ⚠️ Which also removes the PERF reason to settle the `label-index-vs-setter` decision ⚠️ (NARROWED BY 1623: the two levers it refuted were ways to make the label test CHEAPER, and that still holds; ELIDING the test where the label is vacuous is a different mechanism and took 1.17x in the generic matcher.)
 
 Profile-first, and the profile had moved. Item 1598 took most of the predicate cost out of the
 seeded count, so a fresh profile of the same query nominated a different frame:
@@ -102952,7 +102952,7 @@ against 62.9 on a reused one).
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 2,677
 gremlin tests; all seven fuzzers green; 5/5 sweeps clean.
 
-## Item 2080 — ✅ **SHIPPED: `V().label()` joins the scan rung — 11.97 → 6.19 ms (1.93x).** 🔑 Found by widening the census with TWELVE read-step families it had never covered, then reading the one DISAGREEMENT: `id()` was fused and its sibling `label()` was not
+## Item 2080 — ✅ **SHIPPED: `V().label()` joins the scan rung — 11.97 → 6.19 ms (1.93x).** ⚠️ Its "WHAT IS NOT RECOVERED: the Set iterator… that stays" was TAKEN AT ITEM 2085 (`LabelBox.sole`), a further 1.15x on this row. 🔑 Found by widening the census with TWELVE read-step families it had never covered, then reading the one DISAGREEMENT: `id()` was fused and its sibling `label()` was not
 
 Items 2078/2079 exhausted the census's unexplained and priced rows. **So the census was widened**, the
 same move that found item 2068's 7.3x — but at the STEP level rather than the rung level.
@@ -103327,3 +103327,91 @@ decomposition does not model.
 GATES. Measurement only — no engine change. `bun run check` 0 read unpiped; `node --check` on both new
 probes. ⚠️ `realvertex-2084.mjs` must run FROM `packages/native`: `@lenke/core` does not resolve from
 the scratchpad.
+
+## Item 2085 — ✅ **SHIPPED, BOTH ENGINES: `LabelBox.sole` — GQL `hopfilter` on a REALISTIC schema 35.36 → 13.36 ms (2.65x), Gremlin `V().label()` 1.15x.** 🔑 Item 1599 refuted this family from **400 candidates**; at 200,000 the saving is a CACHE MISS and is 3x bigger
+
+Item 2084 found `matchesLabel` costing 11.3 ns a row and noted it is paid only by SEEDED scans. This
+measured those — and the first number reframed the whole item:
+
+```text
+    hopfilter   plain labels     4.5 ms/rep
+    hopfilter   MIXED=1         26.7            <- 5.98x, and MIXED is the REALISTIC mode
+    point       plain / MIXED    3.7 / 3.7      <- unaffected
+```
+
+[[label-vacuity-gates-fast-paths]] records why: a vacuous label is elided, and **one unlabelled vertex
+defeats the elision for every query anchored on that label** (item 325, which calls it "a CLIFF worth
+knowing"). So the realistic cost of this query is 26.7 ms, and a profile says where:
+
+```text
+    29.0%  evalLabelExpr        }
+    15.9%  matchesLabel         }  51.9% — the label test
+     7.0%  get labels           }
+```
+
+### 🔑 WHY ITEM 1599's REFUTATION DID NOT COVER THIS
+
+Item 1599 priced `v.labels.has(n)` at **5.5 ns a candidate** over **400 candidates** and refuted two
+levers: compiling the test per query (FLAT) and testing bucket identity (SLOWER, and blocked by the
+unmaintained `verticesByLabel`). Both numbers are cache-resident. Sweeping the candidate count with the
+test count held at 200,000 so only the WORKING SET varies:
+
+| candidates | `v.labels.has(n)` | `sole ===` | ratio     | null control |
+| ---------- | ----------------- | ---------- | --------- | ------------ |
+| 400        | 4.73              | 3.89       | 1.22x     | 0.77         |
+| 200,000    | **14.52**         | **7.56**   | **1.92x** | 0.84         |
+
+At 400 candidates I reproduce 1599's figure almost exactly, and its verdict on ITS OWN two levers
+stands. 🔑 **The third lever's value is a CACHE MISS, so it barely exists at 400 and is 1.92x at
+200,000** — CLAUDE.md's first rule ("sweep the size; the transition is between 200k and 1M") deciding a
+target rather than a measurement. `v.labels.has(n)` is a pointer chase (element → box → `.set` → hash
+bucket); `sole` is a field on the box already in cache.
+
+| row                          | KILLED | LIVE      |           | answer       |
+| ---------------------------- | ------ | --------- | --------- | ------------ |
+| GQL `hopfilter`, MIXED       | 35.36  | **13.36** | **2.65x** | 2062 both    |
+| GQL `point` (control)        | 6.15   | 5.89      | 1.04x     | s345 both    |
+| Gremlin `scan: label`        | 5.84   | **5.06**  | **1.15x** | 200,000 both |
+| Gremlin `scan: id` (control) | 3.06   | 3.10      | 0.99x     | 200,000 both |
+
+⚠️ The kill is in BOTH consumers, because one field feeds two engines — killing only `matchesLabel`
+would have measured half the change. **Gremlin's gain is item 2080's own residue**: that item fused
+`V().label()` and recorded "WHAT IS NOT RECOVERED: the Set iterator… so that stays". Its heading is
+corrected above; `labelOf` is now a field read with the iterator as the multi-label fallback.
+
+### ⚠️⚠️ THREE WRITE SITES, NOT ONE — AND THE DOC SAYS ONE
+
+`commitElementLabels`'s own comment calls it "**the single funnel for every label write** — the two
+element setters and the four add/remove-label methods here." 🔑 **That is true of the MAP ENTRY and
+false of the box's FIELDS:** both `Vertex`'s and `Edge`'s `set labels` write `this.#lbox.set = next`
+directly whenever the element already holds its box — the common case, since reading labels caches it.
+A `sole` maintained only in the funnel would be correct until the first re-write of an element that had
+already been read. ⚠️ That is [[label-index-vs-setter]]'s failure one layer down, and it was found by
+grepping for the write rather than by trusting the comment.
+
+VERIFICATION. 7 core tests, **11/11 mutants across all three write sites** (the funnel, both setters).
+Every label-writing test reads FIRST, to force the cached-box branch — a test that writes before
+reading exercises the funnel and would pass against a stale-setter bug. The shared-box case is covered
+too: two `Vertex` instances for one id must see each other's write, which is why `sole` lives on the box
+and not on the element.
+
+⚠️ **A WITNESS TEST FAILED, AND FIXING IT WAS THE POINT.** `label-check-order.test.ts` counts reads of
+the `labels` getter to prove the walk checks the selective end first (item 181); the counts fell from
+
+> 25 to **2**, because the reads moved to `soleLabel`. The behaviour under test was unchanged — the
+> witness was pinned to one accessor. It now spies on both, and its failure was the clearest confirmation
+> the change took effect.
+
+### Two anomalies, both ruled out STRUCTURALLY rather than by resemblance
+
+- One of five fuzz sweeps failed: `FUZZ_SEED=3369177423`, `OPTIONAL MATCH … (n WHERE (… AND (null <>
+n.m.k)))`. 🔑 **The same seed fails with this change's fast arm KILLED**, so it is the known 15th
+  divergence — now recorded with its operand kind (a MAP MEMBER ACCESS, the fifth distinct one), which
+  rules out the narrowest reading of that bug.
+- `bun run spelling` flagged `a predicate on the FAR node: three spellings` at 3.1-3.2x over three
+  isolated runs. ⚠️ **It reads 3.2x with the arm KILLED too** — pre-existing, and left as item 780's.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped (an `import/no-cycle` on the way: importing the
+helper as a VALUE from `Graph.ts` made a real cycle where the old `import type` was erased, so it lives
+in a leaf module); `bun run test -- --skip-nx-cache` 21/21; all seven fuzzers green; 4/5 sweeps with the
+fifth ruled out above.

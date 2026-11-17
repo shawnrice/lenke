@@ -359,8 +359,35 @@ export const labelsMatch = (labels: ReadonlySet<string>, expr: LabelExpr): boole
  * remaining ~5 ns a candidate is the test's PRESENCE in the loop rather than the test — the shape
  * `ts-closure-size-is-load-bearing` describes — which no change to this function can recover.
  */
-export const matchesLabel = (v: Vertex, expr: LabelExpr | undefined): boolean =>
-  expr === undefined || evalLabelExpr(expr, v.labels);
+export const matchesLabel = (v: Vertex, expr: LabelExpr | undefined): boolean => {
+  if (expr === undefined) {
+    return true;
+  }
+
+  /*
+   * ⚠️⚠️ **THE SINGLE-LABEL CASE READS `soleLabel`, NOT THE SET (item 2085).** `v.labels.has(n)` is a
+   * pointer chase — vertex -> box -> `.set` -> hash bucket — and over 200,000 scattered candidates it
+   * measured **14.52 ns a test against 7.56** for this compare, a 1.92x. The label test is **52% of
+   * a MIXED-label `hopfilter`** by profile (`evalLabelExpr` 29.0%, `matchesLabel` 15.9%, `get labels`
+   * 7.0%), so this is the biggest single term in a query over a REALISTIC schema.
+   *
+   * ⚠️ WHY ITEM 1599's REFUTATION DOES NOT COVER THIS. It refuted two levers — compiling the test per
+   * query (FLAT) and testing bucket identity (SLOWER, and blocked by the unmaintained
+   * `verticesByLabel`) — both measured over **400 candidates**, where the same probe reads 4.73
+   * against 3.89 (1.22x). The saving is a CACHE MISS, so it barely exists cache-resident. CLAUDE.md's
+   * first rule, earning itself: sweep the size.
+   *
+   * ⚠️ `soleLabel === undefined` MEANS ZERO **OR MANY**, so the fallback is required and is not an
+   * optimisation detail: a multi-labelled vertex must still match either of its labels.
+   */
+  if (expr.kind === 'label') {
+    const sole = v.soleLabel;
+
+    return sole === undefined ? v.labels.has(expr.name) : sole === expr.name;
+  }
+
+  return evalLabelExpr(expr, v.labels);
+};
 
 /**
  * A label the expression *guarantees* is present, usable to seed from a label

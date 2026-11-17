@@ -182,6 +182,23 @@ export const firstLabel = (s: ReadonlySet<string>): string | undefined => {
   return undefined;
 };
 
+/**
+ * An element's label, preferring the core's cached `soleLabel` over iterating the set (item 2085).
+ *
+ * 🔑 ITEM 2080 FUSED `V().label()` AND LEFT THIS TERM: a `Set` has no indexed access, so taking "the
+ * first label" allocated an iterator per element — measured there at ~14 ns a row, the whole residue
+ * of that fusion. `soleLabel` is a field read on the label box, maintained at the three sites that
+ * write it.
+ *
+ * ⚠️ `soleLabel === undefined` MEANS ZERO **OR MANY**, so the fallback to `firstLabel` is required
+ * and must keep INSERTION order — `dispatch.ts`'s `case 'label'` yields `firstLabel(...) ?? null`,
+ * and a multi-label vertex created as `['T', 'U']` must still yield `T`.
+ */
+export const labelOf = (el: {
+  labels: ReadonlySet<string>;
+  soleLabel?: string;
+}): string | undefined => el.soleLabel ?? firstLabel(el.labels);
+
 // ---------- Run context ----------
 
 /**

@@ -4,6 +4,7 @@ import { ErrorCode, LenkeError } from '@lenke/errors';
 import type { Clock } from '../temporal.js';
 import { Edge } from './Edge.js';
 import type { GraphEvent, GraphEvents, GraphEventType } from './GraphEvents.js';
+import { soleLabelOf } from './label-sole.js';
 import { isRecord } from './LenkeRecord.js';
 import { PropertyIndex, type RangeBound } from './PropertyIndex.js';
 import { validateElementNames, validateLabel } from './validate.js';
@@ -58,7 +59,27 @@ export type PropBox = {
  * goes stale. The box exists only so an element can hold a direct reference to its own label
  * state; see {@link Graph.elementLabels}.
  */
-export type LabelBox = { set: Set<string> };
+export type LabelBox = {
+  set: Set<string>;
+  /**
+   * The element's ONE label when it has exactly one, `undefined` for zero or many (item 2085).
+   *
+   * ⚠️⚠️ **MAINTAINED IN `commitElementLabels` AND NOWHERE ELSE**, which is the only reason this is
+   * safe to add: that function's own doc calls it "the single funnel for every label write — the two
+   * element setters and the four add/remove-label methods here", and nothing mutates `box.set` in
+   * place (checked: the only in-place `Set.add`/`delete` calls on this codebase's label path are
+   * `PropertyIndex`'s own buckets). A derived field with more than one writer is how
+   * `verticesByLabel` came to disagree with `v.labels`.
+   *
+   * WHY IT EXISTS. `matchesLabel` is the most-called helper in the hot paths, and `v.labels.has(n)`
+   * is a pointer chase — element -> box -> `.set` -> hash bucket. Measured over 200,000 scattered
+   * candidates, 200,000 tests either way: **14.52 ns against 7.56** for a compare against this
+   * field, a **1.92x** on the test. ⚠️ At 400 candidates the same probe reads 4.73 against 3.89
+   * (1.22x) — the saving is a CACHE MISS, so it barely exists cache-resident and is why item 1599,
+   * measuring 400 candidates, priced this family as unreachable.
+   */
+  sole: string | undefined;
+};
 
 /** Which element an index covers (see {@link Graph.createIndex}). */
 export type IndexTarget = 'vertex' | 'edge';
@@ -1853,11 +1874,15 @@ export class Graph {
    */
   commitElementLabels = (id: string, next: Set<string>): void => {
     const box = this.elementLabels.get(id);
+    // ⚠️ DERIVED HERE AND ONLY HERE — see `LabelBox.sole`. Computed once per WRITE, so the
+    // `values().next()` iterator it costs is paid on a label change, never on a read.
+    const sole = soleLabelOf(next);
 
     if (box) {
       box.set = next;
+      box.sole = sole;
     } else {
-      this.elementLabels.set(id, { set: next });
+      this.elementLabels.set(id, { set: next, sole });
     }
   };
 

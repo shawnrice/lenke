@@ -71,6 +71,13 @@ const build = (): Graph => {
  *     FUZZ_SEED=3826437490   atan2(n.m.k, '1e3')       a string argument to a numeric fn
  *     FUZZ_SEED=3908458595   acos(n.s)                 a string argument to a numeric fn (item 2037)
  *     FUZZ_SEED=1387327370   ('\t\n' AND (NOT true))   a STRING LITERAL as a conjunct (item 2070)
+ *   FUZZ_SEED=3369177423  (null <> n.m.k)  — a MAP MEMBER ACCESS as the operand, and the FIFTH
+ *     distinct operand kind on this divergence (item 2085, found in a routine sweep). ⚠️ Recorded
+ *     because it rules out the narrowest reading of the bug: `n.m.k` is not a bad TYPE or a missing
+ *     property but a lookup INSIDE a property's value, so whatever raises here is reached through a
+ *     different accessor than the four before it. ⚠️ It was also the one failure in a 5-run sweep
+ *     during a core change, and was ruled out STRUCTURALLY — the same seed fails with that change's
+ *     fast arm KILLED — rather than by resembling this family.
  *
  * 🔑 **THE FOURTH IS THE SIMPLEST ONE YET AND THAT MATTERS:** the first three put a non-boolean in
  * boolean position through a FUNCTION CALL, so "the function returns the wrong type" was an available

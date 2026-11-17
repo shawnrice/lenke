@@ -77,7 +77,7 @@ import {
   evalBy,
   filterStream,
   filterTraverser,
-  firstLabel,
+  labelOf,
   hasAny,
   isEdge,
   isVertex,
@@ -552,7 +552,9 @@ export const applyStep = (
     case 'label':
       return mapTraverser(stream, (v) => {
         if (isVertex(v) || isEdge(v)) {
-          return firstLabel(v.labels) ?? null;
+          // ⚠️ `labelOf` PREFERS THE CACHED SOLE LABEL (item 2085) and falls back to iterating
+          // the set, which keeps insertion order for a multi-label element.
+          return labelOf(v) ?? null;
         }
 
         // For `{key, value}` property objects produced by `properties()`,

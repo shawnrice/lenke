@@ -33,7 +33,7 @@ import type { ID, Plan, Predicate, Step } from '../ast.js';
 import { matches, specializePredicate } from '../predicates.js';
 import { seedForStep } from './index-seed.js';
 import type { RunContext } from './runtime.js';
-import { firstLabel, valueDedupeFilter } from './runtime.js';
+import { labelOf, valueDedupeFilter } from './runtime.js';
 import { asStringId } from './sources.js';
 import { hasAdjacency, singleHopExistence } from './sub-plan-existence.js';
 
@@ -94,9 +94,11 @@ const matchShape = (
    * vertices `V().id()` read **3.19 ms** against `V().label()`'s **11.56** — 3.62x, same 200,000 rows
    * out. That disagreement between siblings is the census's actual signal (item 1854).
    *
-   * ⚠️ WHAT IS NOT RECOVERED: the Set iterator. `firstLabel` walks `v.labels` to take its first
-   * element because a Set has no indexed access, and the step's semantics are "the element's label",
-   * so that stays. Only the traverser goes.
+   * ⚠️ ~~WHAT IS NOT RECOVERED: the Set iterator.~~ **TAKEN AT ITEM 2085.** This entry said the
+   * per-element Set iterator "stays", because a Set has no indexed access — and it was the whole
+   * residue of this fusion (~14 ns a row). Item 2085 added `soleLabel` to the core's label box, so
+   * `labelOf` is a field read for the single-label case and only falls back to iterating for a
+   * multi-labelled element. The traverser went here; the iterator went there.
    */
   if (steps.length === 2 && second?.kind === 'label') {
     return { label: undefined, proj: { kind: 'label' } };
@@ -186,13 +188,13 @@ export const nodeValuesShortcut = (plan: Plan, graph: Graph): NodeValues | undef
   };
 
   /*
-   * ⚠️ `firstLabel` IS IMPORTED, NOT RE-IMPLEMENTED, and `?? null` matches the step exactly: a vertex
+   * ⚠️ `labelOf` IS IMPORTED, NOT RE-IMPLEMENTED, and `?? null` matches the step exactly: a vertex
    * with NO labels yields `null` there, not `undefined`, so a direct read must coerce here or the two
    * routes disagree on an unlabelled vertex. `dispatch.ts`'s `case 'label'` is the contract.
    */
   const walkLabels = function* (): Generator<unknown> {
     for (const v of graph.vertices) {
-      yield firstLabel(v.labels) ?? null;
+      yield labelOf(v) ?? null;
     }
   };
 

@@ -160,30 +160,44 @@ describe('the label checks run selective-first (item 181)', () => {
 // cannot hide is how many endpoint LABELS it reads: the second check dereferences the other end,
 // so the selective order reads far fewer. Counting them is the witness.
 describe('the walk really asks selectiveFirst (item 181)', () => {
-  /** Total `labels` reads across every vertex during one query. */
+  /**
+   * Total label reads across every vertex during one query.
+   *
+   * ⚠️⚠️ **BOTH ACCESSORS ARE COUNTED, AND ITEM 2085 IS WHY.** This witness watched only `labels`, and
+   * when `matchesLabel` started reading `soleLabel` for the single-label case the counts fell from
+   * >25 to **2** — the test failed while the behaviour it exists to check was unchanged. The ORDER of
+   * the endpoint checks is the subject; which accessor carries the read is not, and a witness pinned
+   * to one accessor silently stops witnessing when the implementation picks another.
+   *
+   * 🔑 The throw below is the guard that made this loud instead of silent: if either accessor stops
+   * being a prototype getter, the witness says so rather than counting zero.
+   */
   const labelReads = (q: string): number => {
     const g = skewed();
     let reads = 0;
 
     for (const v of g.vertices) {
       const proto = Object.getPrototypeOf(v) as object;
-      const desc = Object.getOwnPropertyDescriptor(proto, 'labels');
 
-      if (desc?.get === undefined) {
-        throw new Error('labels is not a prototype getter; this witness needs rewriting');
+      for (const name of ['labels', 'soleLabel'] as const) {
+        const desc = Object.getOwnPropertyDescriptor(proto, name);
+
+        if (desc?.get === undefined) {
+          throw new Error(`${name} is not a prototype getter; this witness needs rewriting`);
+        }
+
+        // `.bind` immediately, so no unbound method reference is held.
+        const read = desc.get.bind(v);
+
+        Object.defineProperty(v, name, {
+          configurable: true,
+          get: () => {
+            reads += 1;
+
+            return read();
+          },
+        });
       }
-
-      // `.bind` immediately, so no unbound method reference is held.
-      const read = desc.get.bind(v);
-
-      Object.defineProperty(v, 'labels', {
-        configurable: true,
-        get: () => {
-          reads += 1;
-
-          return read();
-        },
-      });
     }
 
     query(g, q);

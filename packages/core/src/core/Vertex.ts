@@ -4,6 +4,7 @@ import { rando, sortedByKey } from '@lenke/utils';
 
 import type { Edge } from './Edge.js';
 import type { Graph, LabelBox, PropBox } from './Graph.js';
+import { soleLabelOf } from './label-sole.js';
 
 /**
  * Bags wider than this memoize their key list on the {@link PropBox} (audit item 336). Below
@@ -136,6 +137,15 @@ export class Vertex {
     // measured 32.0ms through the funnel against 29.9ms for the old single `Map.set`).
     if (this.#lbox) {
       this.#lbox.set = next;
+      /*
+       * ⚠️⚠️ **`sole` IS MAINTAINED HERE TOO, AND THIS SITE IS WHY IT NEARLY WENT STALE.**
+       * `commitElementLabels`'s own doc calls itself "the single funnel for every label write" — and
+       * that is true of the MAP ENTRY, not of the box's FIELDS: this branch writes the box directly
+       * whenever the element already holds it, which is the common case. A derived field maintained
+       * only in the funnel would be correct until the first re-write of an element that had already
+       * read its labels. That is the `verticesByLabel` failure exactly, one layer down.
+       */
+      this.#lbox.sole = soleLabelOf(next);
 
       return;
     }
@@ -143,6 +153,23 @@ export class Vertex {
     // Otherwise through the graph's funnel, which mutates the box rather than replacing the map
     // entry, so another instance for this id that has already cached the box sees the write.
     this.#graph!.commitElementLabels(this.id, next);
+  }
+  /**
+   * This element's ONE label when it has exactly one, `undefined` for zero or many (item 2085).
+   *
+   * 🔑 FOR THE HOT LABEL TEST. `labels.has(n)` is a pointer chase — element -> box -> `.set` -> hash
+   * bucket — and over 200,000 scattered candidates that measured **14.52 ns a test against 7.56** for
+   * a compare against this field (1.92x). ⚠️ At 400 candidates the same probe reads 4.73 against 3.89,
+   * so the saving is a CACHE MISS and is nearly invisible cache-resident; that is why item 1599
+   * priced this family as unreachable from 400 candidates.
+   *
+   * ⚠️ `undefined` MEANS ZERO **OR** MANY, so a caller testing one label must fall back to
+   * `labels.has(n)` when this is `undefined` — it is not "no label".
+   */
+  get soleLabel(): string | undefined {
+    this.#lbox ??= this.#graph?.elementLabels.get(this.id);
+
+    return this.#lbox?.sole;
   }
 
   /**
