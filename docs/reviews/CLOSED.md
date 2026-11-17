@@ -102660,3 +102660,61 @@ All five are flat (0.92-1.06x) with identical answers.
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
 `zsh -n` on the sweep. Sweep script only; no engine or probe change beyond item 2073's.
+
+## Item 2075 — ✅ **TWENTY OF THE PROBE'S 53 SHAPES HAD NO GUARD AT ALL — including `callscoped` and `callinline`, which items 2053-2055 measured. Now 53/53, every formula DERIVED and checked at two sizes.** ⚠️ And mutation proved three of them VACUOUS at the default FANOUT
+
+I went looking for the largest unopened shape and found `scalaraggs` (one mention in this file, ever).
+It has no `EXPECTED` entry — and `const want = EXPECTED[SHAPE]` is followed by
+`if (want !== undefined)`, so **a shape absent from that table is checked for nothing: not its row
+count, not its answer.**
+
+🔑 **TWENTY OF 53 WERE IN THAT POSITION:**
+
+```text
+    varlen12  count2  count3  varlenplus  anyshortest  countdistinct  collected  groupedhop
+    collecthop  scalaraggs  callinline  callscoped  topkhop  stringfn  intersected
+    unionedbig  unionedbigdistinct  proj1  proj2  proj10
+```
+
+⚠️⚠️ **THIS IS ITEM 1805's FAULT AT FOUR TIMES THE SIZE.** That item added guards to five shapes after
+_"an ablation of the matcher's binding copy — a deliberate wrong answer, run only to price it"_ went
+unnoticed. The hole was still open for twenty more, two of which (`callscoped`, `callinline`) items
+2053-2055 measured repeatedly. Those items did their own equivalence checks by hand — item 2054
+withdrew a ratio when `sum(c)` read 3 against 12 — so the discipline was applied; the INSTRUMENT was
+not enforcing it.
+
+### Every formula derived from the query, then checked at 20,000 AND 40,000
+
+Item 2052's rule, so a fitted-but-wrong formula cannot pass:
+
+| shape                               | guard                                                  | checked                     |
+| ----------------------------------- | ------------------------------------------------------ | --------------------------- |
+| `varlen12`                          | `n·f + n·f²`                                           | 40,000 → 80,000 ✓           |
+| `count2` / `count3`                 | `n·f²` / `n·f³`                                        | ✓                           |
+| `scalaraggs`                        | `n(n−1)/2` — sum over `n.n = 0 … N−1`                  | 199,990,000 → 799,980,000 ✓ |
+| `proj1` / `proj2` / `proj10`        | `kLt(n, 10)` — item 2052's own helper, REUSED          | 2,070 → 4,130 ✓             |
+| `unionedbig` / `unionedbigdistinct` | `2n` / `n` — UNION ALL keeps both sides, UNION dedupes | ✓                           |
+| `intersected`                       | `n` — INTERSECT of a set with ITSELF                   | ✓                           |
+| `countdistinct` / `groupedhop`      | `min(n, 97)`                                           | ✓                           |
+
+⚠️ **`anyshortest`'s ANSWER IS DELIBERATELY LEFT UNGUARDED**, with the reason in the file: it is the
+orbit length of `i → (i·7+3) % n` from vertex 0, reading 200 at 20,000 and 400 at 40,000 — which LOOKS
+like `n/100` and is **not derivable from the query**. CLAUDE.md spends a whole section on fixtures
+whose structure invites exactly that fit, so its row count is guarded and the number is not.
+
+### ⚠️⚠️ AND THREE GUARDS ARE VACUOUS AT THE DEFAULT FANOUT — PROVEN, NOT REASONED
+
+Mutating `count2`'s query into a ONE-hop count:
+
+```text
+    FANOUT=1   SURVIVED   ⬅ f, f² and f³ are all 1, so every depth answers n
+    FANOUT=3   CAUGHT
+```
+
+**The formulas are right; their teeth depend on the knob.** A default run checks that these shapes
+return a count of n — not that they walk the depth they claim — and the probe now says so, because
+anyone ablating a hop depth at FANOUT=1 would get a green guard from a broken query. Two other mutants
+(`scalaraggs` reading the wrong column, `unionedbig` silently deduping) were CAUGHT at the default.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; all
+20 new guards pass at NODES=20000 and NODES=200000; `node --check`. Probe only; no engine change.

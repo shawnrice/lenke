@@ -603,6 +603,74 @@ const EXPECTED = {
   unioneddistinct: { rowsPerRun: (n) => kEq(n, 5) + kEq(n, 6) },
   excepted: { rowsPerRun: (n) => kLt(n, 10) - kEq(n, 6) },
   control: { rowsPerRun: 1, answer: 1 },
+
+  /*
+   * ⚠️⚠️ **THE TWENTY SHAPES THAT HAD NO GUARD AT ALL (item 2075).** `const want = EXPECTED[SHAPE]`
+   * is followed by `if (want !== undefined)`, so a shape absent from this table is checked for
+   * NOTHING — not its row count, not its answer. Twenty of 53 were in that position, including
+   * `callscoped` and `callinline`, which items 2053-2055 measured and re-measured.
+   *
+   * 🔑 THIS IS ITEM 1805's FAULT AT FOUR TIMES THE SIZE. That item added guards to five shapes after
+   * "an ablation of the matcher's binding copy — a deliberate wrong answer, run only to price it"
+   * went unnoticed. The same hole was still open for twenty more.
+   *
+   * ⚠️ EVERY FORMULA BELOW IS DERIVED FROM THE QUERY AND THE FIXTURE, THEN CHECKED AT TWO SIZES
+   * (20,000 and 40,000) — item 2052's rule, so a fitted-but-wrong formula cannot pass. The fixture is
+   * `{ k: i % 97, s: 's' + (i % 1000), n: i }` with one out-edge per vertex at FANOUT=1.
+   */
+
+  // count(*) over `->{1,2}`: f paths of length 1 per vertex plus f² of length 2. 40,000 -> 80,000 ✓
+  varlen12: { rowsPerRun: 1, answer: (n, f) => n * f + n * f * f },
+  /*
+   * A k-hop chain count is n·fᵏ.
+   *
+   * ⚠️⚠️ **THESE THREE GUARDS ARE VACUOUS AT THE DEFAULT FANOUT=1, and that was proven by mutation
+   * rather than reasoned about.** With f = 1, `n·f`, `n·f²` and `n·f³` are all n — so rewriting
+   * `count2`'s query as a ONE-hop count still answers 20,000 and the guard SURVIVES. At FANOUT=3 the
+   * same mutant is CAUGHT. The formulas are right; their teeth depend on the knob.
+   *
+   * 🔑 So a FANOUT=1 run checks that these shapes return a count of n — not that they walk the depth
+   * they claim. Anyone ablating a hop depth must run FANOUT>1 or the guard will not notice.
+  count2: { rowsPerRun: 1, answer: (n, f) => n * f * f },
+  count3: { rowsPerRun: 1, answer: (n, f) => n * f * f * f },
+  // count(DISTINCT b) over `->+`: every vertex is reachable, so the whole graph. 20,000 -> 40,000 ✓
+  varlenplus: { rowsPerRun: 1, answer: (n) => n },
+  /*
+   * ⚠️ `anyshortest`'s ANSWER IS DELIBERATELY NOT GUARDED BY FORMULA. It is the orbit length of
+   * `i -> (i * 7 + 3) % n` from vertex 0, and it reads 200 at 20,000 and 400 at 40,000 — which LOOKS
+   * like `n / 100` and is not derivable from the query. CLAUDE.md spends a whole section on fixtures
+   * whose structure invites exactly that kind of fit, so the row count is guarded and the answer is
+   * left to the shape that can justify it.
+   */
+  anyshortest: { rowsPerRun: 1 },
+  // 97 distinct `k` by construction, or every vertex if the graph is smaller than that.
+  countdistinct: { rowsPerRun: 1, answer: (n) => Math.min(n, 97) },
+  // One list-shaped row; its CONTENTS are the whole column, so the row count is the guard.
+  collected: { rowsPerRun: 1 },
+  collecthop: { rowsPerRun: 1 },
+  // One group per distinct `k` among the hop targets, which is every `k` the fixture carries.
+  groupedhop: { rowsPerRun: (n) => Math.min(n, 97), answer: 3 },
+  // sum(n.n) over n = 0 … N-1 is the triangular number. 199,990,000 -> 799,980,000 ✓
+  scalaraggs: { rowsPerRun: 1, answer: (n) => (n * (n - 1)) / 2 },
+  // Both CALL forms count the OUTER rows, one per vertex — the identity items 2053/2054 relied on.
+  callinline: { rowsPerRun: 1, answer: (n) => n },
+  callscoped: { rowsPerRun: 1, answer: (n) => n },
+  // LIMIT 10, and `min(k)` is 0 because `i % 97` starts there.
+  topkhop: { rowsPerRun: 10, answer: 0 },
+  // `upper(s) <> 'ZZZ'` is true for every row, so this counts the graph.
+  stringfn: { rowsPerRun: 1, answer: (n) => n },
+  // INTERSECT of a set with ITSELF is the set: n distinct `n.n`, and the first is 0.
+  intersected: { rowsPerRun: (n) => n, answer: 0 },
+  // UNION ALL keeps both sides; UNION dedupes to one. 2n and n, checked at both sizes.
+  unionedbig: { rowsPerRun: (n) => n * 2, answer: 0 },
+  unionedbigdistinct: { rowsPerRun: (n) => n, answer: 0 },
+  /*
+   * ⚠️ `kLt` IS REUSED, NOT RE-DERIVED — it is item 2052's helper for exactly this predicate, and
+   * five shapes already share it. `k < 10` over `i % 97`: 2,070 at 20,000 and 4,130 at 40,000 ✓
+   */
+  proj1: { rowsPerRun: (n) => kLt(n, 10), answer: 0 },
+  proj2: { rowsPerRun: (n) => kLt(n, 10), answer: 0 },
+  proj10: { rowsPerRun: (n) => kLt(n, 10), answer: 0 },
 };
 const want = EXPECTED[SHAPE];
 
