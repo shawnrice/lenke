@@ -101826,7 +101826,8 @@ controls used throughout items 2056-2060, are NOT among the five.
 read its `.length`. That is why the fusion lands LEVEL with the arm that emits all 200,000 rows rather
 than below it, and it is the whole of the remaining 1.88x.
 
-⚠️ **NOT CHANGED HERE, AND NOT AN OVERSIGHT.** `countProjectedWalk` is shared by every count fusion, so
+⚠️ **NOT CHANGED HERE, AND NOT AN OVERSIGHT.** ~~`countProjectedWalk` is shared by every count
+fusion~~ — ⚠️ **ITEM 2062's CENSUS REFUTED THAT: only THREE of 14 count-bearing shapes reach it.** So
 flipping it needs its own wide controls — and which way it should go is NOT obvious: item 1998 measured
 a walk WITHOUT a drain at 1.55x, so `countIterable` over a generator may lose to `drain().length`
 despite the allocation. That is a measurement, not a refactor.
@@ -101835,6 +101836,78 @@ VERIFICATION. 10 tests, **8/8 mutants caught** — after one survived the narrow
 `hasKey` gate makes the rung read `projection.keys[0]` off ANY step, which for a keyless `id()` is a
 TypeError rather than a wrong route. The wide suite caught it; the file had nothing that put a keyless
 step in that slot, and now does.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; all
+seven fuzzers green; 5/5 sweeps clean.
+
+## Item 2062 — ✅ **SHIPPED: a tight-loop `count()` on the walk — 16.46 → 10.01 ms (1.64x), closing item 2061's floor gap from 1.88x to 1.23x.** ⚠️⚠️ NEITHER EXISTING ARM COULD BE PREFERRED: `countIterable` is 1.15x FASTER on one row and 2.99x/3.57x SLOWER on the other two, so a blanket flip would have been a ~3x regression
+
+Item 2061 left a measured 1.88x in `countProjectedWalk`:
+`values.drain === undefined ? countIterable(values) : values.drain().length`. With a `drain` present it
+builds the whole array to read `.length`, so a query returning ONE NUMBER materializes every row.
+
+### ⚠️ FIRST, THE CENSUS — AND IT REFUTED MY OWN ITEM-2061 CLAIM
+
+I had written that this function is "shared by every count fusion". `countwalk-census-2062.mjs` patches
+it, counts calls per shape, and says otherwise — **3 of 14 count-bearing shapes reach it**:
+
+```text
+    row                          calls  walk hands it
+    scan: where values count         1  drain
+    edgef: outE has count            1  drain
+    edgef: outE has inV count        1  drain
+    scan: count                      0  —        <- closed form, a bucket `size`
+    hop1/hop2: count, has count,     0  —
+      dedupe count, values count     0  —
+    control: scan values, hop1 fold  0  —
+```
+
+🔑 **GUESSING FROM ROW NAMES WOULD HAVE BEEN WRONG IN BOTH DIRECTIONS**, and the census needs no timing
+to be trustworthy. ⚠️ Its own guard fired first and refused to report: my "known to reach it" probe row
+(`hop1: values count`) sees ZERO calls, because an absent global and zero calls are indistinguishable
+(item 2033) — so the probe row became one that provably arrives there.
+
+### The A/B that settled the direction by refusing to have one
+
+| row                           | DRAIN     | ITERATE   |                          |
+| ----------------------------- | --------- | --------- | ------------------------ |
+| `where: sub-traversal count`  | 16.16     | **14.07** | iterate **1.15x faster** |
+| `edge: outE.has(w).inV.count` | **12.67** | 37.94     | drain **2.99x faster**   |
+| `edge: outE.has(w).count`     | **10.89** | 38.88     | drain **3.57x faster**   |
+
+⚠️⚠️ **OPPOSITE DIRECTIONS, SO NEITHER ARM MAY BE PREFERRED GLOBALLY** — this is item 1998's finding (a
+walk without a drain at 1.55x) at three times the size. A generator's per-`yield` cost loses to a tight
+drain loop on the edge walks even though the drain allocates; on the scan walk the 200,000-element
+array dominates instead. **The choice is a property of the WALK.**
+
+### ✅ So the walk says what it can do, and a tight loop beats both arms
+
+`NodeValues`/`HopWalk` gained an optional `count?: () => number`, `countProjectedWalk` prefers it, and
+`nodeValuesWhereCount` implements it for the scan-where walk — no generator, no array:
+
+| row                                                   | KILLED | LIVE      |           |
+| ----------------------------------------------------- | ------ | --------- | --------- |
+| `where: sub-traversal count` (target)                 | 16.46  | **10.01** | **1.64x** |
+| `edge: outE.has(w).inV.count` — no `count`, untouched | 11.41  | 11.45     | 1.00x     |
+| `edge: outE.has(w).count` — no `count`, untouched     | 10.67  | 11.29     | 0.94x     |
+| `scan: values`                                        | 5.75   | 5.16      | 1.11x     |
+| `scan: count`                                         | 0.00   | 0.00      | flat      |
+
+**Cumulative over items 2061+2062 for this shape: 18.60 → 10.01 ms, 1.86x.** The hand floor gap closes
+from **1.88x to 1.23x**, so most of what item 2061 left is taken and the residue is the walk's own
+vertex iteration.
+
+⚠️ **THE WRONG-ANSWER RISK IS A SECOND IMPLEMENTATION OF THE SAME PREDICATE.** `nodeValuesWhereCount`
+repeats the existence hop AND the `key in props` drop that is `values(k)`'s contract; if the two ever
+disagree, every `… count()` on this shape silently returns a different number from the rows it claims
+to count, and no test of the walk alone would see it. So the count is asserted equal to BOTH
+`drain().length` and the iterated length, at three selectivities including both degenerate ends.
+
+⚠️ One of those tests initially used `id` as the "key every vertex carries" — not a property here, so it
+re-tested the zero case under a name claiming otherwise. The fixture now carries a real universal key.
+
+VERIFICATION. 12 tests, **8/8 mutants caught** (the hop test, the key test, the increment, the return,
+and the exposure of the method itself, each scoped to this function since the gate lines recur).
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; all
 seven fuzzers green; 5/5 sweeps clean.

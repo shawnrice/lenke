@@ -81,7 +81,11 @@ import { adjacentEdges, otherEndpoint } from './movement.js';
  * item 169's lesson, and Gremlin results are compared ORDERED by the differential fuzzer, so a
  * reordering here is a cross-engine failure rather than an unspecified-order liberty.
  */
-export type HopWalk = Iterable<unknown> & { drain?: () => unknown[] };
+export type HopWalk = Iterable<unknown> & {
+  drain?: () => unknown[];
+  /** See `NodeValues.count` (item 2062): a tight-loop row count, where one beats drain and iterate. */
+  count?: () => number;
+};
 
 export type HopValues = { values: HopWalk; rest: readonly Step[] };
 

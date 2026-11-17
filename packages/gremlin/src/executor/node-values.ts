@@ -37,7 +37,15 @@ import { asStringId } from './sources.js';
 import { hasAdjacency, singleHopExistence } from './sub-plan-existence.js';
 
 /** The same shape `hopValuesShortcut` returns, so `run` can treat both identically. */
-export type NodeValues = Iterable<unknown> & { drain?: () => unknown[] };
+export type NodeValues = Iterable<unknown> & {
+  drain?: () => unknown[];
+  /**
+   * The row count WITHOUT materializing the rows (item 2062). Present only on walks where a tight
+   * loop beats both `drain().length` and `countIterable` — see {@link nodeValuesWhereCount} for the
+   * A/B that split in opposite directions across rows and why this is per-walk rather than global.
+   */
+  count?: () => number;
+};
 
 /**
  * `V()` with no explicit ids, optionally one `hasLabel`, then `values(k)` for exactly ONE key, and
@@ -230,6 +238,53 @@ export const scanValuesResidual = (
  * yes/no, because double-counting, self-loop duplicates and endpoint choice are unobservable in an
  * existence test. Re-deriving that here would be the one thing byte-identity cannot survive.
  */
+/**
+ * The COUNT of {@link nodeValuesWhereWalk}, as a tight loop (item 2062).
+ *
+ * ⚠️⚠️ **THIS EXISTS BECAUSE NEITHER EXISTING ARM WINS.** `countProjectedWalk` chooses between
+ * `drain().length` and `countIterable`, and an A/B over the three rows that actually reach it split
+ * in OPPOSITE directions:
+ *
+ * ```text
+ *     where: sub-traversal count     drain 16.16   iterate 14.07   <- iterate 1.15x FASTER
+ *     edge: outE.has(w).inV.count    drain 12.67   iterate 37.94   <- drain  2.99x faster
+ *     edge: outE.has(w).count        drain 10.89   iterate 38.88   <- drain  3.57x faster
+ * ```
+ *
+ * So a blanket flip would be a ~3x REGRESSION on two rows (item 1998's finding, larger than it was
+ * measured there). The choice is a property of the WALK, not of the count — so the walk that can
+ * count cheaply says so, and the others are untouched.
+ *
+ * 🔑 **AND A TIGHT LOOP BEATS BOTH ARMS, because neither avoids the generator.** `drain().length`
+ * allocates a 200,000-element array for a query returning one number; `countIterable` skips the array
+ * but still pays a `yield` per surviving row. This pays neither — item 2061's hand floor for exactly
+ * this shape was 7.85 ms against the engine's 14.74.
+ *
+ * ⚠️ IT MUST STAY THE SAME PREDICATE AS THE WALK ABOVE, including the `key in props` drop that is
+ * `values(k)`'s contract — a count that disagreed with the walk it claims to count would be a wrong
+ * answer no row-count test on the walk alone could see. `where-haskey-count.test.ts` asserts the two
+ * agree.
+ */
+const nodeValuesWhereCount = (
+  graph: Graph,
+  hop: ReturnType<typeof singleHopExistence> & object,
+  key: string,
+): number => {
+  let n = 0;
+
+  for (const v of graph.vertices) {
+    if (!hasAdjacency(v, hop)) {
+      continue;
+    }
+
+    if (key in v.properties) {
+      n += 1;
+    }
+  }
+
+  return n;
+};
+
 const nodeValuesWhereWalk = function* (
   graph: Graph,
   hop: ReturnType<typeof singleHopExistence> & object,
@@ -309,6 +364,9 @@ export const nodeValuesWhereShortcut = (plan: Plan, graph: Graph): NodeValues | 
     ? undefined
     : {
         [Symbol.iterator]: () => nodeValuesWhereWalk(graph, hop, proj.keys[0]),
+        // ⚠️ THE COUNTING FAST PATH (item 2062), consumed by `countProjectedWalk` when a residual is
+        // only a `count()`. Optional on the type, so every other walk is unaffected.
+        count: () => nodeValuesWhereCount(graph, hop, proj.keys[0]),
         // ⚠️ THE EAGER FILL: `toArray` prefers `drain` (item 1412), and a walk without one is
         // measured against siblings that have it with its generator hand tied (item 1998's 1.55x).
         drain: () => [...nodeValuesWhereWalk(graph, hop, proj.keys[0])],

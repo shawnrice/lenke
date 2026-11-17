@@ -426,9 +426,20 @@ const countIterable = (it: Iterable<unknown>): number => {
  * ⚠️ RETURNS A ONE-ELEMENT ARRAY, which is Gremlin's contract for a reducing terminal and what
  * `foldProjectedList` returns for its own.
  */
-export const countProjectedWalk = (values: HopWalk): unknown[] => [
-  values.drain === undefined ? countIterable(values) : values.drain().length,
-];
+export const countProjectedWalk = (values: HopWalk): unknown[] => {
+  /*
+   * ⚠️⚠️ **THREE ARMS, AND THE ORDER IS MEASURED, NOT STYLISTIC (item 2062).** An A/B over the only
+   * three rows that reach this function — found by census, not assumed — split in OPPOSITE
+   * directions: `countIterable` was 1.15x FASTER on the scan-where row and 2.99x/3.57x SLOWER on the
+   * two edge rows. So neither of the original arms may be preferred globally, and `count` exists for
+   * walks that can do better than both with a tight loop.
+   */
+  if (values.count !== undefined) {
+    return [values.count()];
+  }
+
+  return [values.drain === undefined ? countIterable(values) : values.drain().length];
+};
 
 export const foldProjectedList = (values: HopWalk): unknown[] => [
   values.drain === undefined ? [...values] : values.drain(),

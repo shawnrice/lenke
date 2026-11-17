@@ -42,12 +42,12 @@ const build = (): Graph => {
   const g = new Graph();
 
   // Has an out-E edge AND the key: counted.
-  g.addVertex({ id: 'a', labels: ['T'], properties: { n: 10 } });
-  g.addVertex({ id: 'b', labels: ['T'], properties: { n: 20 } });
+  g.addVertex({ id: 'a', labels: ['T'], properties: { n: 10, u: 1 } });
+  g.addVertex({ id: 'b', labels: ['T'], properties: { n: 20, u: 1 } });
   // Has an out-E edge but NO `n`: the key test must drop it.
-  g.addVertex({ id: 'c', labels: ['T'], properties: { other: 1 } });
+  g.addVertex({ id: 'c', labels: ['T'], properties: { other: 1, u: 1 } });
   // Has `n` but NO out-E edge: the existence hop must drop it.
-  g.addVertex({ id: 'd', labels: ['T'], properties: { n: 30 } });
+  g.addVertex({ id: 'd', labels: ['T'], properties: { n: 30, u: 1 } });
 
   g.addEdge({
     id: 'e1',
@@ -133,6 +133,50 @@ describe('fused where+hasKey+count (item 2061)', () => {
     expect(
       toArray(traversal(V(), where(traversal(out('E'))), values('n'), order()), g),
     ).toStrictEqual([10, 20]);
+  });
+
+  test('⚠️⚠️ THE COUNT METHOD AGREES EXACTLY WITH THE WALK IT CLAIMS TO COUNT (item 2062)', () => {
+    /*
+     * ⚠️⚠️ **THIS IS THE WRONG-ANSWER GUARD FOR THE WHOLE FAST PATH.** `nodeValuesWhereCount` is a
+     * SECOND implementation of the walk's predicate — the existence hop AND the `key in props` drop
+     * that is `values(k)`'s contract. If the two ever disagree, every `… count()` on this shape
+     * silently returns a different number from the rows it is supposed to be counting, and no test of
+     * the walk alone would see it.
+     *
+     * The fixture is built so each clause matters independently: `c` has the edge but no key, `d` has
+     * the key but no edge. A count missing the key test answers 3; missing the hop test, 3; missing
+     * both, 4.
+     */
+    const claimed = scanWhereHasKeyCountResidual(rewritten(['n'], { kind: 'count' }), g);
+
+    expect(claimed).toBeDefined();
+    expect(claimed!.values.count).toBeDefined();
+    expect(claimed!.values.count!()).toBe(claimed!.values.drain!().length);
+    expect(claimed!.values.count!()).toBe([...claimed!.values].length);
+    expect(claimed!.values.count!()).toBe(2);
+  });
+
+  test('the count method agrees with the walk on a key NO vertex carries, and on one EVERY vertex carries', () => {
+    /*
+     * ⚠️ THE TWO DEGENERATE ENDS, because an off-by-one in a tight loop shows up at the boundaries:
+     * a key nothing has must count 0, and one everything has must count exactly the vertices passing
+     * the existence hop (3 of 4 here — `d` has no out-E edge).
+     */
+    const none = scanWhereHasKeyCountResidual(rewritten(['__absent__'], { kind: 'count' }), g);
+
+    expect(none!.values.count!()).toBe(0);
+    expect(none!.values.count!()).toBe(none!.values.drain!().length);
+
+    /*
+     * ⚠️ `u` IS ON EVERY VERTEX, which is what makes this the OTHER end rather than the absent case
+     * twice. My first attempt used `id` — not a property here — so it re-tested 0 under a name that
+     * claimed otherwise. The answer is the vertices passing the existence hop: `a`, `b`, `c` have an
+     * out-E edge and `d` does not.
+     */
+    const every = scanWhereHasKeyCountResidual(rewritten(['u'], { kind: 'count' }), g);
+
+    expect(every!.values.count!()).toBe(3);
+    expect(every!.values.count!()).toBe(every!.values.drain!().length);
   });
 
   test('a MULTI-KEY hasKey declines — `hasKey(a, b)` is "either is present", not one projection', () => {
