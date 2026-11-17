@@ -101510,7 +101510,7 @@ three separate items.
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
 gremlin suite 2,616 (7 new); all seven fuzzers green; 5/5 sweeps clean.
 
-## Item 2057 — ✅ **IT IS THE PREDICATE KIND, NOT THE ROUTE: an EQUALITY `has` costs ~0 per vertex (31.5 ns against the unfiltered scan's 32) while a RANGE `has` costs ~40 ns more (72-75 ns).** ⚠️ And my first reading was 1.15x because the arms emitted 50x different row counts — a confound I introduced and then caught
+## Item 2057 — ⚠️⚠️ **HEADING CORRECTED BY ITEM 2058 — ~~IT IS THE PREDICATE KIND, NOT THE ROUTE: an EQUALITY `has` costs ~0 per vertex while a RANGE `has` costs ~40 ns more~~ IS WRONG IN BOTH DIRECTIONS.** One arm per process puts equality at 72.4 ns and range at 72.7 on the SAME property — indistinguishable. **The predicate kind is FREE; it is the `has` step itself, at ~47 ns a vertex against a 25 ns fused scan.** What survives below is the confound diagnosis, not the conclusion
 
 Item 2056 took one of the census's two unexplained generic rows; this took the other,
 `scan: has values` (`V().has('k', v).values('k')`, generic, 2 dispatches) — noting the asymmetry that
@@ -101553,3 +101553,57 @@ SLOWER, the selectivity is not what you are measuring.**
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `node --check` on the screen. Two screen rows
 added (`point: has(all) values`, `point: has(half) values`); no engine change.
+
+## Item 2058 — ⚠️⚠️ **ITEM 2057's CONCLUSION IS REFUTED AND ITS HEADING CORRECTED. The predicate KIND is FREE — equality 72.4 ns a vertex against range 72.7 on the same property. ✅ What costs is the `has` STEP ITSELF: ~47 ns a vertex against a 25 ns fused scan, so a one-comparison filter nearly TRIPLES the row.** Both of my wrong readings came from traps already written down in this file
+
+Item 2057 ended by naming the instrument that would settle predicate-versus-route: a CONSTANT-valued
+property, so an equality can keep every vertex. Built, and it refuted the item that asked for it.
+
+**ONE ARM PER PROCESS**, three rounds, 200,000 vertices, every arm emitting 200,000 rows:
+
+| arm                                               | r1    | r2   | r3   | min      |
+| ------------------------------------------------- | ----- | ---- | ---- | -------- |
+| A `V().values(n)` — no predicate, FUSED           | 25.1  | 31.6 | 26.6 | **25.1** |
+| B `has('c', 1)` — EQUALITY on a constant          | 74.5  | 72.4 | 74.5 | **72.4** |
+| C `has('k', gte(0))` — range on a varying key     | 122.5 | 79.6 | 77.4 | **77.4** |
+| D `has('c', gte(0))` — RANGE on the same constant | 72.7  | 77.1 | 74.7 | **72.7** |
+
+🔑 **B AND D ARE THE COMPARISON THAT MATTERS** — same property, same emissions, same declining rung,
+only the predicate kind differs — **and they are indistinguishable (72.4 against 72.7).** So:
+
+- ❌ **2057's "an equality `has` is essentially free" is WRONG.** It measured `has('k', 7)`, which keeps
+  1 vertex in 50, so its apparent cheapness was 196,000 row emissions it never paid for.
+- ❌ **2057's "a range `has` costs ~40 ns more" is WRONG** in the other direction: the kind is free.
+- ✅ **The `has` STEP costs ~47 ns a vertex** (72.4 − 25.1) against a 25 ns fused scan — it nearly
+  TRIPLES the row to apply a specialized closure doing `v === 1`.
+
+### ⚠️ Both of my wrong readings are traps this file already records, and I walked into each
+
+1. **Item 2057: unequal emissions.** Caught and corrected inside 2057 itself.
+2. **Item 2058's own first pass: FOUR ARMS IN ONE PROCESS.** It reported a RANGE predicate beating an
+   EQUALITY by 14-23 ns a vertex, **sign-consistent across three rounds**, which is why repetition did
+   not save me — all four arms share `filterStream`'s callback site, so each arm makes it more
+   polymorphic for the next. CLAUDE.md states the rule in these words: _"The fix is one shape per
+   PROCESS, so no other shape pollutes the dispatch."_ One arm per process and the effect is gone.
+
+⚠️ **AND THE MECHANISM CHECK IS WHAT CONDEMNED IT, NOT THE NUMBERS.** `specializePredicate` (item 1492)
+compiles BOTH ops, and the equality closure is the SIMPLER one — `(v) => v === b` against
+`(v) => typeof v === 'number' && v >= b` — while `seededNodeValuesShortcut` declines both arms
+identically (no index here, and `seedForStep` runs once per QUERY, not per vertex). A stable
+three-round number that no mechanism can explain is still wrong.
+
+### ✅ So the route IS the cost, and the target is now specific
+
+~47 ns to apply a one-comparison closure, where [[closure-dispatch-is-cheap-keyed-loads-are-not]]
+prices closure dispatch at ~3 ns. The rest is the generic route's per-element plumbing: `filterStream`'s
+generator layer, the `isVertex(v) || isEdge(v)` recheck per element, and a VARIABLE-key
+`v.properties[key]` load (1.41x over a literal, same memory).
+
+**NOMINATED FOR THE NEXT ITEM:** `seededShape` already matches `V() + has + values`, and
+`seededNodeValuesShortcut` declines it whenever the key is not indexed — which sends it to the generic
+route. A fused scan arm with the predicate inlined, taken when the index declines, should recover most
+of the gap. ⚠️ Item 1870's refusal still governs the LABELLED form, and [[executor-edits-perturb]]
+prices a new walk variant at up to 16% on unrelated rows, so it needs the usual wide controls.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `node --check`. Probe-only change; item 2057's
+heading corrected in this same commit per the CLOSED.md rule.
