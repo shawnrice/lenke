@@ -18,6 +18,8 @@ import { describe, expect, test } from 'bun:test';
 
 import { Graph } from '@lenke/core';
 
+import { rowKeyOf } from './executor/clauses.js';
+import { valueKey as valueKeyOf } from './executor/rows.js';
 import { query } from './index.js';
 
 /** `null`, `NaN` and `-0` rendered distinguishably — see the header. */
@@ -199,18 +201,119 @@ describe('chainDistinctLevels (item 2119)', () => {
     expect(limited.map((r) => r.n)).toStrictEqual([1, 2]);
   });
 
-  test('⚠️ TWO columns are refused — the multi-column case is separately open', () => {
+  test('🔑 TWO columns are CLAIMED since item 2120 — and agree with the general path', () => {
+    /*
+     * ⚠️ MEASURED: 834.2 ms -> 30.8 at two hops (27.1x) and 2477.8 -> 29.1 at three (85.2x), with the
+     * ONE-column path held at 0.96x by its own specialized loop (folding the two cost it 1.30x).
+     */
     const g = ringOf([
       { n: 1, k: 'a' },
       { n: 1, k: 'b' },
       { n: 2, k: 'a' },
+      { n: 1, k: 'a' },
+      { other: 1, k: 'c' },
+      { n: 3 },
     ]);
     const q = 'MATCH (a:P)-[:E]->(b)-[:E]->(c) RETURN DISTINCT c.n AS n, c.k AS k';
-    const got = query(g, q, {}) as Record<string, unknown>[];
-    const ref = query(g, `${q} ORDER BY n, k`, {}) as never as Record<string, unknown>[];
+    const fused = query(g, q, {});
+    const general = query(g, `${q} ORDER BY n, k`, {});
 
-    expect(got).toHaveLength(ref.length);
-    expect(bagOf(got, 'k')).toBe(bagOf(ref, 'k'));
+    // 🔑 A JOINT key: `(1,a)` and `(1,b)` are DIFFERENT rows, which a per-column dedupe would merge.
+    expect(fused).toHaveLength(general.length);
+    expect(bagOf(fused, 'n')).toBe(bagOf(general, 'n'));
+    expect(bagOf(fused, 'k')).toBe(bagOf(general, 'k'));
+    // ⚠️ And the pairs must match, not just each column's multiset.
+    const pairs = (rows: readonly Record<string, unknown>[]): string =>
+      rows
+        .map((r) => `${tag(r.n)}|${tag(r.k)}`)
+        .sort()
+        .join(',');
+
+    expect(pairs(fused)).toBe(pairs(general));
+  });
+
+  test('⚠️ `rowKeyOf` IS a separator-joined `valueKey` list — the shape the rung mirrors', () => {
+    /*
+     * 🔑 `distinctLevel` builds its key from the CELLS (`valueKey` joined by `\u0001`) instead of
+     * building a row and calling `rowKeyOf`, which would allocate the row even for a duplicate. ⚠️ That
+     * is the SAME algorithm, not a second definition — and items 1561/1562 each shipped a silent answer
+     * change in exactly this area, so the equivalence is checked on the values that make keying hard.
+     */
+    const hard: readonly unknown[][] = [
+      [0, -0],
+      [Number.NaN, Number.NaN],
+      [null, undefined],
+      ['a\u0001b', 'c'],
+      ['a', 'b\u0001c'],
+      [1, '1'],
+      [true, 'true'],
+    ];
+
+    for (const cells of hard) {
+      const row: Record<string, unknown> = {};
+
+      for (const [i, c] of cells.entries()) {
+        row[`c${i}`] = c;
+      }
+
+      /*
+       * ⚠️⚠️ **THIS DOES NOT TEST THE RUNG — it pins `rowKeyOf`'s SHAPE, which the rung mirrors.** My
+       * first version of this test claimed to assert the rung's key and did not: it compared `rowKeyOf`
+       * against a join written here in the test file, so a rung that keyed differently would still have
+       * passed. ⚠️ And the rung's separator mutant DOES survive, because `valueKey` prefixes every value
+       * with a type tag that already delimits — see `chain-fold-levels.ts`, where that is recorded next
+       * to the code rather than left as an unexplained survivor.
+       *
+       * 🔑 What guards the rung's keying is the ANSWER tests above, against the general path, on the
+       * values that make keying hard (`-0`/`0`, `NaN`, null-vs-missing, embedded `\u0001`).
+       */
+      const joined = cells.map((c) => valueKeyOf(c)).join('\u0001');
+
+      expect(joined).toBe(rowKeyOf(row as never));
+    }
+  });
+
+  test('⚠️ A JOINT KEY IS NOT TWO INDEPENDENT ONES — the separator matters', () => {
+    /*
+     * 🔑 `('a\u0001b', 'c')` and `('a', 'b\u0001c')` join to the SAME string if the separator is not
+     * distinguishable from the data. ⚠️ `valueKey` prefixes strings (so a raw `\u0001` in a value cannot
+     * forge a boundary) — asserted here through the ANSWER rather than the key, because the answer is
+     * what a user sees.
+     */
+    const g = ringOf([
+      { n: 'a\u0001b', k: 'c' },
+      { n: 'a', k: 'b\u0001c' },
+      { n: 'z', k: 'z' },
+    ]);
+    const q = 'MATCH (a:P)-[:E]->(b)-[:E]->(c) RETURN DISTINCT c.n AS n, c.k AS k';
+    const fused = query(g, q, {});
+
+    // THREE distinct pairs, not two: the two ambiguous ones must not collide.
+    expect(fused).toHaveLength(3);
+    expect(query(g, `${q} ORDER BY n, k`, {})).toHaveLength(3);
+  });
+
+  test('⚠️⚠️ a SECOND column reading the START is refused — not just the first', () => {
+    /*
+     * 🔑 THIS TEST EXISTS BECAUSE A MUTANT SURVIVED. Restricting the far-variable check to
+     * `items.slice(0, 1)` left a second column reading `a` to evaluate against an unbound name — a
+     * silent wrong answer, and every other test here uses a far-only projection so none noticed.
+     *
+     * ⚠️ The answer, not the route, is what is asserted: the general path is the reference.
+     */
+    const g = ringOf([{ n: 1 }, { n: 2 }, { n: 3 }]);
+    const q = 'MATCH (a:P)-[:E]->(b)-[:E]->(c) RETURN DISTINCT c.n AS n, a.n AS an';
+    const fused = query(g, q, {});
+    const general = query(g, `${q} ORDER BY n, an`, {});
+    const pairs = (rows: readonly Record<string, unknown>[]): string =>
+      rows
+        .map((r) => `${tag(r.n)}|${tag(r.an)}`)
+        .sort()
+        .join(',');
+
+    expect(pairs(fused)).toBe(pairs(general));
+    // ⚠️ And the start column must actually VARY, or an unbound read would coincide with the truth.
+    expect(new Set(general.map((r) => tag(r.an))).size).toBeGreaterThan(1);
   });
 
   test('⚠️ ONE hop is not this rung — and still agrees', () => {

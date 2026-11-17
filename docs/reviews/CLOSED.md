@@ -105532,3 +105532,61 @@ that `propOf` makes unreachable; it is documented as defensive rather than left 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 5,126 GQL
 tests; seven fuzzers green; 5/5 sweeps; the spelling probe flags the same two pre-existing groups as
 before the change.
+
+## Item 2120 — ✅ **SHIPPED: the MULTI-COLUMN `RETURN DISTINCT` over a chain joins item 2119's recurrence — 834.2 → 30.8 ms (27.1x) at two hops, 2477.8 → 29.1 (85.2x) at three.** ⚠️ **And the first version REGRESSED the one-column path 1.30x, which the A/B caught**
+
+Item 2119's gate refused a second column and CLOSED.md had the multi-column case as separately open. ⚠️
+Item 1853 closed it at depth ZERO (4.3x) and recorded that "every hop and chain width already claimed
+one" — true, and the claimant at two hops was `hop2Projection`, the same rung that was 493 ms on the
+one-column spelling. **So the multi-column shape had the identical defect, bigger:**
+
+```text
+    hop2  DISTINCT c.n, c.k     951.0 ms   5,141 rows
+    hop3  DISTINCT d.n, d.k    2509.6      5,141
+    hop1  DISTINCT b.n, b.k      37.5      5,141      <- one hop was fine
+    node  DISTINCT n.n, n.k      18.1      5,141      <- depth zero was fine (item 1853)
+```
+
+🔑 25x for one more hop on identical output.
+
+### ⚠️⚠️ THE FIRST VERSION COST THE ONE-COLUMN PATH 1.30x, AND SHIPPING IT WOULD HAVE BEEN A NET LOSS
+
+Widening `distinctLevel` to N columns put a per-column loop, a `cells` array and a string concat on the
+path item 2119 had just made fast. Alternated A/B against 2119's shipped state:
+
+| shape                     | 2119     | first N-col cut  | specialized        |
+| ------------------------- | -------- | ---------------- | ------------------ |
+| **onecol**                | **17.2** | **22.5 — 0.77x** | **18.0 — 0.96x ✓** |
+| twocol                    | 834.2    | 34.9             | **30.8 (27.1x)**   |
+| threecol                  | 1225.4   | 37.1             | **37.6 (32.6x)**   |
+| hop3two                   | 2477.8   | 29.0             | **29.1 (85.2x)**   |
+| `count(DISTINCT)` control | 17.3     | 16.8             | 17.5 (0.99x ✓)     |
+
+🔑 **One column keeps its OWN loop** (`distinctLevelOne`), chosen once per query — a separate function, not
+a branch in the row body, which is item 159's rule and measured at 1.6x here historically. ⚠️ The
+regression was reproducible twice in each of two rounds, so a cross-run reading would have been enough to
+notice but not to trust; the file-swap A/B is what settled it.
+
+### The joint key
+
+`valueKey` per cell, joined by `\u0001` — `rowKeyOf`'s algorithm, computed from the CELLS so a duplicate
+never allocates a row. ⚠️ **13 tests**, including a `('a\u0001b','c')` against `('a','b\u0001c')` pair that
+must stay THREE distinct rows, and `-0`/`0`, `NaN`, null-vs-missing.
+
+⚠️⚠️ **TWO OF MY OWN TESTS WERE WRONG AND ARE CORRECTED IN PLACE.** One claimed to assert the rung's key
+and compared `rowKeyOf` against a join written in the test file — so a rung keying differently would have
+passed; it is now labelled as pinning `rowKeyOf`'s SHAPE, with the answer tests named as what actually
+guards the rung. ⚠️ And the `\u0001` separator's mutant SURVIVES: `valueKey` prefixes every value with a
+type tag, so `('ab','c')` keys as `sabsc` and `('a','bc')` as `sasbc` and the tag is itself the boundary.
+🔑 The separator stays (it matches `rowKeyOf`, and a future `valueKey` dropping a prefix would make it
+load-bearing with nothing to catch it) — recorded next to the code rather than left unexplained.
+
+**5/8 mutants CAUGHT** — the key collapsing to the last column, the one-column arm always taken, both
+dedupe deletions, and the far-variable check restricted to the first column (⚠️ that last one is SEMANTIC
+and survived until a test was added for a SECOND column reading the start). The three survivors are the
+documented separator, a pure route choice between the two loops, and an unreachable zero-column gate.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 5,129 GQL
+tests; seven fuzzers green; 5/5 sweeps. ⚠️ One sweep failed mid-run on `FUZZ_SEED=1901961545` — the known
+`OPTIONAL MATCH` + raising-inline-predicate family — ruled out STRUCTURALLY by replaying with the rung
+killed, where it fails identically.

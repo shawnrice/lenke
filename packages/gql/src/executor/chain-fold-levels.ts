@@ -1,7 +1,7 @@
 import type { Graph, Vertex } from '@lenke/core';
 
 import type { Clause, Expr, NodePattern, PathPattern, RelPattern } from '../ast.js';
-import type { CClause, Params, Row } from './core.js';
+import type { CompiledExpr, CClause, Params, Row } from './core.js';
 import { csrFor } from './csr-cache.js';
 import { freePredicateVars } from './expr-analysis.js';
 import type { AlwaysRowsFn } from './hop-projection.js';
@@ -446,10 +446,28 @@ export const detectChainStarCount = (
  * ⚠️ ROW ORDER IS VERTEX ORDER, which is unspecified for a `DISTINCT` projection with no `ORDER BY`
  * (`order-is-unspecified`) — the general path's order is its own and neither is the answer.
  */
-const distinctLevel = (
-  pass: Omit<FoldPass, 'name' | 'distinct'> & { readonly outName: string },
-): Row[] => {
-  const { u, order, argFn, env, binding, farVar, outName } = pass;
+/**
+ * The ONE-COLUMN arm of {@link distinctLevel}, kept separate — item 2120.
+ *
+ * ⚠️⚠️ **MEASURED: FOLDING IT INTO THE N-COLUMN LOOP COST THE ONE-COLUMN SHAPE 1.30x.** Item 2119 shipped
+ * this path at 17.3 ms; widening `distinctLevel` to N columns put a per-column loop, a `cells` array and
+ * a string concat on it and it read **22.5 ms, twice in each of two alternated rounds** — against a 24.1x
+ * gain on the two-column spelling. 🔑 One column is the commoner spelling, so it keeps its own loop
+ * rather than paying for the general one.
+ *
+ * ⚠️ A SEPARATE FUNCTION, NOT A BRANCH IN THE LOOP — item 159's rule, which this repo has measured at
+ * 1.6x for a per-row branch ahead of a hot body. The two are chosen ONCE per query, in `distinctLevel`.
+ */
+const distinctLevelOne = (pass: {
+  readonly u: Float64Array;
+  readonly order: readonly Vertex[];
+  readonly env: FoldEnv;
+  readonly binding: Map<string, unknown>;
+  readonly farVar: string;
+  readonly name: string;
+  readonly fn: CompiledExpr;
+}): Row[] => {
+  const { u, order, env, binding, farVar, name, fn } = pass;
   const seen = new Set<string>();
   const rows: Row[] = [];
 
@@ -460,11 +478,77 @@ const distinctLevel = (
 
     binding.set(farVar, order[v]);
 
-    const cell = argFn(env);
-    // ⚠️ `valueKey` IS THE ONE DEFINITION OF DISTINCTNESS in this engine — shared with
-    // `UNION`/`EXCEPT`/`INTERSECT` and matched byte-for-byte by the Rust engine. A second keying here
-    // would diverge on exactly the hard values (`-0` against `0`, `NaN`, an element keyed by id).
+    const cell = fn(env);
     const key = valueKey(cell);
+
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    rows.push({ [name]: cell ?? null });
+  }
+
+  return rows;
+};
+
+const distinctLevel = (
+  pass: Omit<FoldPass, 'name' | 'distinct' | 'argFn'> & {
+    /*
+     * ⚠️ N COLUMNS SINCE ITEM 2120, not one. The multi-column spelling had the SAME defect as the
+     * one-column one and bigger: `RETURN DISTINCT c.n, c.k` over two hops cost **951.0 ms where one hop
+     * costs 37.5 and depth zero 18.1 — for identical 5,141 rows**.
+     */
+    readonly cols: readonly { readonly name: string; readonly fn: CompiledExpr }[];
+  },
+): Row[] => {
+  const { u, order, cols, env, binding, farVar } = pass;
+
+  /*
+   * 🔑 THE ONE-COLUMN SPECIALIZATION, chosen ONCE here rather than per row. See `distinctLevelOne`: the
+   * general loop below costs that shape 1.30x, measured.
+   */
+  if (cols.length === 1) {
+    return distinctLevelOne({ u, order, env, binding, farVar, name: cols[0].name, fn: cols[0].fn });
+  }
+
+  const seen = new Set<string>();
+  const rows: Row[] = [];
+
+  for (let v = 0; v < order.length; v += 1) {
+    if (u[v] === 0) {
+      continue;
+    }
+
+    binding.set(farVar, order[v]);
+
+    /*
+     * ⚠️ `valueKey` IS THE ONE DEFINITION OF DISTINCTNESS in this engine — shared with
+     * `UNION`/`EXCEPT`/`INTERSECT` and matched byte-for-byte by the Rust engine. A second keying here
+     * would diverge on exactly the hard values (`-0` against `0`, `NaN`, an element keyed by id).
+     *
+     * 🔑 THE MULTI-COLUMN KEY IS `rowKeyOf`'s ALGORITHM, not a new one: `Object.values(row).map(valueKey)
+     * .join('\x01')`. ⚠️ It is computed from the CELLS rather than by building a row first and calling
+     * `rowKeyOf`, which would allocate the row even for a duplicate — and `chain-distinct-levels.test.ts`
+     * asserts the ANSWERS against the general path for the values that make keying hard, because items
+     * 1561 and 1562 each shipped a silent answer change in exactly this area.
+     *
+     * ⚠️⚠️ **THE `\u0001` SEPARATOR'S MUTANT SURVIVES, AND THE REASON IS WORTH KNOWING BEFORE ANYONE
+     * REMOVES IT.** Dropping it changes no answer, because `valueKey` PREFIXES every value with a type
+     * tag — so `('ab','c')` keys as `sabsc` and `('a','bc')` as `sasbc`, and the tag is itself the
+     * boundary. 🔑 It stays anyway: `rowKeyOf` joins with `\u0001`, these keys live in the same
+     * conceptual space, and a future `valueKey` that dropped the prefix for some type would make the
+     * separator load-bearing again with nothing to catch it. The cost is one character per extra column.
+     */
+    const cells: unknown[] = [];
+    let key = '';
+
+    for (const [i, col] of cols.entries()) {
+      const cell = col.fn(env);
+
+      cells.push(cell);
+      key = i === 0 ? valueKey(cell) : `${key}\u0001${valueKey(cell)}`;
+    }
 
     if (seen.has(key)) {
       continue;
@@ -478,7 +562,15 @@ const distinctLevel = (
      * having to re-derive that `argFn` can never produce `undefined`: the cost is one `??` on a path that
      * runs once per DISTINCT value, not per path.
      */
-    rows.push({ [outName]: cell ?? null });
+    const row: Row = {};
+
+    for (const [i, col] of cols.entries()) {
+      // ⚠️ `?? null` MATCHES `propOf`: an absent property is NULL in ISO GQL. Defensive for a property
+      // read (which already nulls) and NOT for an arbitrary expression, which can yield `undefined`.
+      row[col.name] = cells[i] ?? null;
+    }
+
+    rows.push(row);
   }
 
   return rows;
@@ -541,9 +633,9 @@ export const detectChainDistinctLevels = (
     !proj.distinct ||
     proj.aggregating ||
     proj.star ||
-    proj.items.length !== 1 ||
+    proj.items.length === 0 ||
     (proj.orderBy?.length ?? 0) > 0 ||
-    proj.items[0].isAgg ||
+    proj.items.some((it) => it.isAgg) ||
     ret.projection.skip !== undefined ||
     ret.projection.limit !== undefined
   ) {
@@ -563,21 +655,27 @@ export const detectChainDistinctLevels = (
    * this requirement in a comment and does not test it; its argument comes from an aggregate whose
    * lowering already bounded it, and this one's does not.
    */
-  const reads = freePredicateVars(ret.projection.items[0].expr);
+  /*
+   * ⚠️⚠️ EVERY column must read ONLY the far variable (item 2120 widened this from one). The pass binds
+   * `farVar` and nothing else, so a column reading the START would evaluate against an unbound name — a
+   * silent wrong answer, not a decline.
+   */
+  for (const item of ret.projection.items) {
+    const reads = freePredicateVars(item.expr);
 
-  if (reads.size !== 1 || !reads.has(farVar)) {
-    return null;
+    if (reads.size !== 1 || !reads.has(farVar)) {
+      return null;
+    }
   }
 
-  const outName = proj.items[0].name;
-  const argFn = proj.items[0].fn;
+  const cols = proj.items.map((it) => ({ name: it.name, fn: it.fn }));
 
   return (graph: Graph, params: Params) => {
     const { u, order } = levelWalk(graph, levels, startLabel);
     const binding = new Map<string, unknown>();
     const env: FoldEnv = { binding, params, graph };
 
-    return distinctLevel({ u, order, argFn, env, binding, farVar, outName });
+    return distinctLevel({ u, order, cols, env, binding, farVar });
   };
 };
 
