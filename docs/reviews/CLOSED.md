@@ -102105,3 +102105,61 @@ would refute it is the specialized arm landing near 554 rather than near 328.
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; the tree restored and rebuilt, verified by the
 start-of-run `cmp` on the next invocation. Ablation harness only; no engine change committed.
+
+## Item 2066 — ❌ **REFUTED, AND THE CEILING MEANT SOMETHING ELSE: the direct-read projection specialization recovers NOTHING of item 2065's 1.69x. Built, proven to fire, measured at 721.8 — and the UNSPECIALIZED build measured 723.9 in the same session.** 🔑 The ablation was pricing the row OBJECT, not the property read. Reverted to byte-identity
+
+Item 2065 ablated the two-hop walk's projection out and measured a **1.69x** ceiling with flat
+controls. Item 2064 had named the mechanism: `propOf` + `get properties` at 27% of the profile, with
+`hop-projection.ts`'s one-hop twin carrying a direct-read specialization this walk lacks. This built it.
+
+⚠️ **GENERATED FROM `walk`'s SOURCE, AND A SIBLING CLOSURE RATHER THAN A BRANCH** — item 1447 built the
+one-hop twin as a function-valued local, measured **-4.8%/+0.7%** and reverted it, because a shared
+body makes one polymorphic bytecode site per row. `farPropRow` was IMPORTED rather than
+re-implemented. 5,028 GQL tests pass.
+
+### ⚠️ IT FIRES — this is a refutation, not dead code
+
+Item 2047's trap is a dead arm with every gate green, so the arm was made to THROW and the shapes run:
+
+```text
+    hop2rows shape   -> SPECIALIZED ARM FIRES
+    with DISTINCT    -> general closure      (correctly declines: item 1843's own emit)
+    two columns      -> general closure      (correctly declines)
+```
+
+### ⚠️⚠️ AND THE NUMBER THAT SETTLED IT WAS THE _UNSPECIALIZED_ ONE
+
+| build                                                   | `hop2rows`, 7 reps                        |
+| ------------------------------------------------------- | ----------------------------------------- |
+| specialized                                             | 739.8 / 721.8 / 755.0 / 743.1 → **721.8** |
+| item 2065's LIVE baseline, measured a tick earlier      | 776.3 / 790.2 → 776.3                     |
+| **unspecialized, byte-identical to HEAD, same session** | **723.9**                                 |
+
+I first read this as 1.08x. ⚠️ **It is nothing: the baseline itself drifted ~7% between ticks, and the
+unspecialized build matches the specialized one.** I had compared against a number measured in a
+PREVIOUS session instead of re-measuring it alongside — which is the entire reason this file's A/B
+scripts alternate arms inside one run, a discipline I skipped because the baseline "was already
+measured". ⚠️ Item 2065's 1.69x stands, because that one WAS alternated within a single run.
+
+### 🔑 So what was the ablation measuring?
+
+**The row OBJECT, not the property read.** The ablation pushed ONE shared frozen constant, so it
+removed every per-row allocation. The specialization still builds `{ [rowKey]: c.properties[key] ?? null }`
+per row — it deletes a `propOf` call and keeps the object. The 1.69x was almost entirely the 200,000
+row objects, and **no projection specialization can reach it while rows are objects.**
+
+⚠️ **THIS REFRAMES ITEM 2064's 27% PROFILE SHARE TOO:** `propOf` and `get properties` profile hot
+because they run per row, but deleting the _call_ leaves the _allocation_ — the same shape as
+[[frame-attribution-trap]], where a getter frame is attribution until a deletion test says otherwise.
+Here the deletion test was mine and I mis-read which of two bundled costs it had removed.
+
+**REVERTED to byte-identity with HEAD** — ~105 duplicated lines of a triple-nested loop for no
+measurable win, in a file whose own header records that edits here move unrelated rows 3.4-5.8%.
+
+⚠️ **DO NOT RE-PROPOSE A PROJECTION SPECIALIZATION FOR THIS WALK.** A columnar or reused-row emit is a
+different and much larger question, constrained by the row contract and [[no-runtime-codegen]]; the
+`DISTINCT` arm already shows what a per-row-object-free emit looks like and it only works because a
+one-column key IS the value.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 5,028
+GQL tests green with the specialization in place, and the file reverted afterwards.
