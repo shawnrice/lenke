@@ -288,6 +288,15 @@ const SHAPES = {
    * everywhere and the win was only visible in a dedicated probe (49.5 -> 24.6 ms at 200,000). A
    * family whose combinations are not on the screen cannot be regression-tested by it.
    */
+  /*
+   * ⚠️ ADDED AT ITEM 2060 BECAUSE THE SCREEN HAD NO `where … count` ROW AT ALL — item 2026 priced a
+   * trailing `count()` on this prefix at ~1.6x available from a route census plus arithmetic, and the
+   * row needed to measure it never existed. The census still shows the shape GENERIC, which looks
+   * like an unclaimed 1.6x; the rewrite at `index.ts` turns `values(k) … count()` into
+   * `hasKey(k) … count()`, so it may already be the cheaper route rather than a gap.
+   */
+  'where: sub-traversal count': () =>
+    traversal(V(), where(traversal(out('E'))), values('n'), count()),
   'where: sub-traversal order': () =>
     traversal(V(), where(traversal(out('E'))), values('n'), order()),
   'where: neq filter': () => traversal(V(), as_('a'), out('E'), where(neq('a')), values('n')),

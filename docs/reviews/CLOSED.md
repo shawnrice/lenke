@@ -101690,3 +101690,74 @@ a branch. Both branches are hoisted into `valuesFromIndexOrScan`, which lands be
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
 gremlin suite 1,082 executor tests (13 new); all seven fuzzers green; 5/5 sweeps clean.
+
+## Item 2060 — ✅ **COUNTING COSTS MORE THAN COUNTING _AND_ MATERIALIZING: `where(hop).values(n).count()` is 1.16x the same prefix emitting all 200,000 rows (18.99 against 16.37 ms), and 1.54x it in the profile probe.** 🔑 The two arms share NO frames — the plain one is fused with no traverser, the count one runs the entire generic pipeline. ⚠️ And the screen row needed to see this did not exist until now
+
+The census after item 2059 shows the `has` family almost entirely routed (`scan: has count`,
+`scan: has values`, `hop1`/`hop2: has count` and five `edgef` variants all SHORTCUT). Of the 14
+remaining generic rows, **two CLOSED.md checks eliminated the two largest candidates before any
+measurement** — exactly what that discipline is for:
+
+- the `limit`/`take` family (4 rows, the biggest) is closed: item 1660 priced
+  `values(k).limit(10)` at **0.073 ms**, "TINY", so the limit makes the work negligible and the route
+  cannot matter;
+- `edgef: bothE has otherV count` (the highest dispatch count, 4) is a documented refusal — item
+  1882's reason, that two buckets make "the other end" ambiguous.
+
+### The disagreement that survived
+
+`scan: where values count` reads GENERIC with 3 dispatches `[count hasKey where]` — while
+`scan: where values order` beside it is FUSED. ⚠️ **`hasKey` is not in the query**: `index.ts` rewrites
+`values(k) … count()` into `hasKey(k) … count()`, which is a SOUND and desirable rewrite (it avoids
+materializing values just to count them) and was the reason to expect this route to be _cheaper_.
+
+⚠️⚠️ **ITEM 2026 PRICED THIS AT "~1.6x AVAILABLE" FROM A CENSUS PLUS ARITHMETIC, AND THE SCREEN HAD NO
+ROW FOR IT.** Its comment also states `fusedProjectedResidual` "handles `order`/`count`/…", which reads
+as already-shipped. Adding the row (`where: sub-traversal count`) is what settled it. One row per
+process, 200,000 vertices, three rounds:
+
+```text
+    where: sub-traversal         16.37  17.46  18.01    emits 200,000 rows
+    where: sub-traversal count   18.99  19.09  19.77    emits 1 row        <- 1.16x
+```
+
+🔑 **THE SIGN IS THE FINDING, NOT THE RATIO.** Counting cannot legitimately cost more than counting AND
+materializing every value. At `FANOUT=5` over 150 reps the profile probe puts it at **2106 against
+1370 ms — 1.54x**, emitting 1 row per rep against 1,600,000.
+
+### The profile DIFF, which is unambiguous
+
+Self time, closed write frames from `PROBES.md` excluded, count arm minus plain arm:
+
+| delta | count | plain | frame              |
+| ----- | ----- | ----- | ------------------ |
+| 350   | 350   | **0** | `hopExistenceStep` |
+| 304   | 304   | **0** | `filterStream`     |
+| 266   | 266   | **0** | `sourceFromIds`    |
+| 234   | 234   | **0** | `countStep`        |
+| 121   | 121   | **0** | `isVertexShaped`   |
+| 26    | 26    | **0** | `startTraverser`   |
+
+**Every frame is count-only, and the plain arm has ZERO in all of them** — so this is not "the same
+route, more work". The plain arm is served by `nodeValuesWhereShortcut` with no traverser at all; the
+count arm allocates a traverser per vertex and **re-evaluates the existence hop per traverser** in
+`hopExistenceStep`. Confirmed directly rather than inferred from frames:
+
+```text
+    plain   claimed by nodeValuesWhereShortcut: true
+    counted claimed by nodeValuesWhereShortcut: false
+    counted step kinds: V where values count
+```
+
+The rung requires exactly three steps, so the four-step counted form declines, and nothing downstream
+picks it up.
+
+**NOMINATED FOR THE NEXT ITEM:** a counting arm for the fused `where(<one hop>)` prefix. The fused
+prefix already visits exactly the right vertices and the count needs none of the emissions, so the
+target is BELOW the plain arm's 16.37 ms, not merely level with it — which would corroborate item
+2026's ~1.6x. ⚠️ [[executor-edits-perturb]] prices a new walk variant at up to 16% on unrelated rows,
+and this prefix serves a 16 ms row, so it needs the reuse-by-prefix pattern (items 2021/2025/2026) and
+wide controls.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `node --check` on both probes. One screen row
+and one profile probe added; no engine change.
