@@ -105922,3 +105922,55 @@ no-op, so that guard is now pure optimization.
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 2,760
 Gremlin tests; seven fuzzers green; 5/5 sweeps.
+
+## Item 2127 — ✅ **THE VACUOUS-PREDICATE SCREEN, generalized from item 2126's one control — and it finds NO further instance: the filtered family is CLEAN.** Two apparent flags proven false by the engine BEATING a hand-written scan
+
+Item 2126 found 1.81-5.65x with a single control: a predicate rejecting NOTHING cost the same as one
+rejecting half, which means the expensive work runs BEFORE the filter and selectivity buys nothing. 🔑 That
+is a mechanical test, so it is now an instrument rather than a thing to remember.
+
+`vacuous-screen-2127.mjs` runs every filtered Gremlin shape at **three** selectivities — `gt(-1)` (100%
+pass), `gt(44)` (~50%) and `gt(85)` (~4.4%) — and reports `sharp / vacuous`. 🔑 Three and not two, because
+a single pair cannot tell "filters late" from "the filter is most of the work": a healthy rung SEPARATES
+across the levels, a defective one is flat.
+
+```text
+    shape                  vacuous      half     sharp   sharp/vac
+    out.has.count            30.53     18.13      5.32       0.17x   <- item 2126's fix, was ~0.98
+    has.count                 1.91      1.81      1.79       0.94x
+    has.has.count             5.95      5.16      3.67       0.62x
+    hasLabel.has.count        1.60      1.63      1.70       1.06x
+    has.out.count             6.97      6.71      5.08       0.73x
+    out.has.values          135.18     63.37      5.83       0.04x
+    has.values                6.79      5.21      3.57       0.53x
+    out.out.has.count       244.15    126.37     21.32       0.09x
+```
+
+### ⚠️⚠️ A FLAT RATIO IS NOT A DEFECT, AND THE SCREEN NOW SAYS SO ITSELF
+
+Two rows read ~1.0 (`has.count` 0.94x, `hasLabel.has.count` 1.06x) and **neither is a defect**: where the
+predicate IS the whole work — `V().has(p).count()` must test every vertex — selectivity cannot help and
+flat is the CORRECT reading. 🔑 Checked rather than assumed, against a hand-written scan:
+
+```text
+    hand-written scan + predicate            2.58 ms
+    engine V().has(age,gt(85)).count()       1.44      <- the engine is 1.8x FASTER than the naive loop
+    engine V().hasLabel().has(...).count()   1.34
+    bare scan, no predicate                  0.90      <- the iteration floor
+```
+
+⚠️ **The engine is already BELOW a naive scan, so there is nothing to win.** The screen's flag therefore
+needs two conditions, not one: flat ratio **AND** a cost materially above scanning the vertices once
+(`SCAN_FLOOR_MS`, from the measured ~4.5 ns a vertex with a 4x margin). With that guard the screen flags
+**nothing** — which is the result, not an absence of one.
+
+🔑 **WHAT THIS CLOSES:** item 2126's heading said the `has(...).count()` family was "45-99x native at 2-4
+ms absolute" and worth a look. It is not: those rows are at the scan floor and beat a hand-written loop.
+The large native ratios there are item 566's columnar layout ceiling, not a missing route.
+
+🔑 **AND WHAT IT NOMINATES, by absolute cost rather than ratio:** `out.out.has.count` at **244 ms** and
+`out.has.values` at **135** (vacuous). ⚠️ Both are HEALTHY in ratio (0.09x, 0.04x) — they filter early, and
+their cost is volume: 5,000,000 two-hop paths at ~48 ns each. A win there has to come from the per-path
+cost, not from an ordering.
+
+GATES. Probe only, no engine change; `bun run fmt` 0; `bun run check` 0 read unpiped.
