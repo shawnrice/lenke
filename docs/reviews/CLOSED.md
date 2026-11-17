@@ -102435,3 +102435,59 @@ it.** The re-run was 5/5 clean, consistent with the recorded ~1-in-280,000 rate.
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 2,661
 gremlin tests; all seven fuzzers green; 5/5 sweeps clean on the re-run.
+
+## Item 2071 — ✅ **THE COVERAGE AUDIT'S FILTER WAS MISSING FIFTEEN ROUTE-DECIDERS, ELEVEN OF THEM PREDATING THIS WEEK'S WORK. It tracked 40 rungs; it now tracks 55, and 52 of them are reached.** ⚠️ And widening the filter manufactured two "gaps" that were artifacts — fixed by adding SHAPES, not by reporting them
+
+Items 2069 and 2070 added four exported rungs. The audit's count stayed at **40**, which is what
+prompted this: a list that does not grow when you add to it is not tracking what it claims to.
+
+### ⚠️ THE LIST COULD NOT GO STALE. THE FILTER COULD, AND HAD
+
+`rung-coverage-2046.mjs` derives its rungs from source — its comment says so, and that part is true —
+then filters by a SUFFIX pattern: `/(Shortcut|HopValues|Hop|Csr|Fusion|Walk|Residual|Existence|Shape|Step)$/`.
+🔑 **Every `fusable*` gate and every `*Projected*` emit ends in something else** — `Count`, `Cap`,
+`Fold`, `Order`, `Bag`, `List`, `MinMax`, `TopK`, `Barrier` — so fifteen route-deciders were invisible:
+
+```text
+    fusableProjectedBagCap      fusableProjectedCount    fusableProjectedFold
+    fusableProjectedOrder       fusableProjectedAggregate fusableValuesAggregate
+    fusableValuesTopK           foldProjectedList        foldProjectedMinMax
+    fusedProjectedOrder         tallyProjectedGroupCount  (+ item 2069/2070's four)
+```
+
+**ELEVEN PREDATE ITEM 2069**, so a residual gate could have sat unreached indefinitely while this audit
+reported full coverage — the exact decay item 2046 built it to prevent. A second pattern now matches
+them by PREFIX (`fusable`/`fused`) and by the `Projected` infix, which is narrow enough to keep out the
+scores of helpers the suffix filter existed to exclude.
+
+### ⚠️⚠️ AND THEN THE WIDENING MANUFACTURED TWO FALSE GAPS
+
+With 55 rungs tracked, the audit reported `barrierProjectedBag` and `tallyProjectedGroupCount` as NEVER
+ENTERED. **Neither is an engine gap:**
+
+- `barrierProjectedBag` is item 2070's own rung, measured at 3.14x the day it shipped;
+- `tallyProjectedGroupCount` serves `groupCount().by(k)`, which the census reports **FUSED**.
+
+🔑 **WIDENING THE RUNG FILTER WITHOUT WIDENING THE SHAPE LIST TURNS "UNMATCHED" INTO "NEVER ENTERED",
+and that reads as a finding.** It is an artifact of the instrument, and the fix is three shapes
+(`values(n).aggregate(x)`, `out(E).groupCount().by(n)`, `groupCount().by(n)`), not an entry claiming a
+gap. ⚠️ Had I reported them, the next item would have gone looking for a rung that was already working.
+
+### Where coverage stands
+
+**52 reached; 3 never entered, and all three are covered elsewhere** — verified rather than assumed:
+
+| unreached                                                    | covered by                                                                                                                                                                                                                    |
+| ------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pageRankStep`, `connectedComponentStep`, `peerPressureStep` | `algo-scaling-bench.mjs` for the ALGORITHMS, and `algo-surface-overhead-probe.mjs` for the STEP WRAPPERS specifically — "a user writes `g.pageRank()`… that wrapper has never been measured" is that probe's opening question |
+
+⚠️ The census's 15 generic rows are also all still accounted for: the `limit` family (item 1660), the
+`exist:` family (2046/2047), the `ded:` rows, `agg: hop values sum`, `edgef: bothE has otherV count`
+(1882), `scan: where values dedupe` (2026's smallest, ~1.3x, still open) — plus
+`list: hop store values`, which item 2070 REFUSED on the laziness contract and is correctly generic.
+
+⚠️ One self-inflicted fault, caught at parse: my added `groupCount` destructure duplicated an existing
+one, so the driver failed to compile before any shape ran. Loud, immediate, and the right failure mode.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
+`node --check` on the probe. Instrument only; no engine change.

@@ -33,6 +33,20 @@ const GREMLIN_SRC = join(HERE, '..', 'gremlin', 'src', 'executor');
  * consults to claim a plan, and they are named for it.
  */
 const RUNG = /(Shortcut|HopValues|Hop|Csr|Fusion|Walk|Residual|Existence|Shape|Step)$/;
+
+/*
+ * ⚠️⚠️ **A SECOND PATTERN, BECAUSE THE SUFFIX ONE MISSED FIFTEEN ROUTE-DECIDERS (item 2071).** The
+ * comment above says the list "cannot go stale", and as a list it cannot — but the FILTER could, and
+ * had: every `fusable*` gate and every `*Projected*` emit ends in `Count`, `Cap`, `Fold`, `Order`,
+ * `Bag`, `List`, `MinMax`, `TopK` or `Barrier`, none of which the suffix pattern matches. ELEVEN of
+ * the fifteen predate item 2069, so a residual gate could have sat unreached for a long time with
+ * this audit reporting full coverage.
+ *
+ * These are rungs by the audit's own definition — "the thing `run` consults to claim a plan". They
+ * are matched by PREFIX (`fusable`/`fused`) and by the `Projected` infix the emit helpers share,
+ * which is narrow enough to keep the scores of helpers the suffix filter was written to exclude out.
+ */
+const RESIDUAL_RUNG = /^(?:fusable|fused)|Projected[A-Za-z]*$/;
 const rungs = [
   ...new Set(
     readdirSync(GREMLIN_SRC)
@@ -46,7 +60,7 @@ const rungs = [
       ),
   ),
 ]
-  .filter((n) => RUNG.test(n))
+  .filter((n) => RUNG.test(n) || RESIDUAL_RUNG.test(n))
   .sort();
 
 /*
@@ -98,6 +112,12 @@ const shapes = [
   // backtick here terminates it -- the trap items 2036, 2046 and 2049 each hit, and which this file
   // already asserts against for the driver's own text.
   () => traversal(V(), out('E'), aggregate('x'), count()),
+  // ⚠️ ITEM 2071: shapes for two rungs that PROVABLY WORK but had no shape here. Widening the rung
+  // FILTER without widening the SHAPES turns "unmatched" into "never entered" - which reads as an
+  // engine gap and is an instrument artifact. The census reports both of these FUSED.
+  () => traversal(V(), out('E'), values('n'), aggregate('x')),
+  () => traversal(V(), out('E'), groupCount().by('n')),
+  () => traversal(V(), groupCount().by('n')),
   () => traversal(V(), out('E'), store('x'), values('n')),
   () => traversal(V(), aggregate('x'), values('n')),
   () => traversal(V(), values('n')),
