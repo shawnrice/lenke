@@ -104959,7 +104959,7 @@ container (255), the memo (perfect), and the key (a contract).
 
 GATES. Comment-only change; 2,731 Gremlin tests green; instrumentation verified removed.
 
-## Item 2111 — 🔑 **ITEM 2098's BLOCKER IS REMOVED — a CURSOR needs no latch, and all four consumption patterns are correct.** ⚠️ **And its 2.1x is really ~1.50x: its floor sliced an array the engine's drains do not have.** Still open, now correctly priced
+## Item 2111 — 🔑 **ITEM 2098's BLOCKER IS REMOVED — a CURSOR needs no latch, and all four consumption patterns are correct.** ⚠️ **BUILT AT ITEM 2112 — 1.11x, the conservative end of this item's range; and the 73-file worry was wrong (one call site, no walk contract).** ⚠️ **And its 2.1x is really ~1.50x: its floor sliced an array the engine's drains do not have.** Still open, now correctly priced
 
 The Gremlin screen's second shape (`sideeffect: store pass-through`, 240 ns/row) IS item 2098's target,
 found again from the other end. That item priced a lazy-`store` arm at **2.1x**, demonstrated that it
@@ -105027,3 +105027,66 @@ promised, against a mutant-guarded refusal.
 
 GATES. Probe only — no engine change. `node --check` on both probes; `bun run check` 0 read unpiped;
 2,731 Gremlin tests green.
+
+## Item 2112 — ✅ **SHIPPED: a bare trailing `store(k)` is now fused — 222.99 → 200.19 ms (1.11x) with three flat controls.** 🔑 Item 2098's blocker needed no latch and the change needed no walk contract; ⚠️ **and two hand-applied mutants proved my first five tests asserted nothing about the bag**
+
+Item 2111 cleared the blocker and priced the arm at **1.1-1.5x**. ⚠️ The remaining worry was SIZE — the
+drain protocol appears in 73 files. That worry was wrong, and scoping it is most of this item:
+
+- 🔑 **ONE call site** (`index.ts`), **ONE gate** (`fusableProjectedBarrier`), and the refusal is a single
+  condition: `barrier.kind === 'aggregate'`.
+- 🔑 **`store` IS ALREADY FUSED when followed by `count()` or `cap()`** — `fusableProjectedBagCount` and
+  `fusableProjectedBagCap` admit both kinds and both DRAIN. So "lazy by contract" was never absolute;
+  only the BARE trailing form was refused.
+- 🔑 **AND NO WALK NEEDS A CURSOR.** The new arm holds the walk's own ITERATOR and never calls the walk's
+  `drain` — which is just as well, since those are `[...walk()]` and re-walk from scratch. One generator,
+  pulled by whichever path the caller uses.
+
+### The measurement
+
+A/B, two alternated rounds, each row isolated with `ONLY=` so it has a process to itself:
+
+```text
+    values then store          222.99 -> 200.19   1.11x
+    values then aggregate       70.22 ->  70.69   0.99x  ✓ control
+    values alone                62.19 ->  61.59   1.01x  ✓ control
+    store pass-through (rest=2) 240.44 -> 239.73   1.00x  ✓ control — the gate cannot reach it
+```
+
+⚠️ **1.11x is the CONSERVATIVE END of item 2111's 1.1-1.5x**, not its 1.50x best case — which is why that
+item recorded a range. 🔑 The fourth control is the screen's _heaviest_ store row (`store(x), values(n)` —
+store BEFORE values, so `rest.length === 2`) and the gate correctly cannot claim it; I nearly measured
+that row by mistake, and an instrumented counter on the new function is what caught it.
+
+### ⚠️⚠️ TWO MUTANTS PROVED MY FIRST FIVE TESTS ASSERTED NOTHING ABOUT THE BAG
+
+Deleting `bucket.push` from the iterator path, and from the drain path, **BOTH SURVIVED** five tests that
+exercised all four consumption patterns through the public API. 🔑 Because a bare trailing `store(k)` has
+NO READER for its bag from outside the engine — and my `cap` test used a separate traversal that routes
+through `fusableProjectedBagCap`, a different arm entirely. The tests passed while the fusion could have
+skipped the side effect completely.
+
+⚠️ `bag-count-fusion.test.ts` had already hit this and written it down — _"from outside the engine the
+two-step form's bag has no reader, so a unit test of the function is the only place it is visible at
+all"_ — and calls its function directly with a `ctx`. **6 more tests do that here**: drain only, iterate
+fully, iterate part-way (the bag holds ONLY what was pulled — item 2070's whole purpose), part-way THEN
+drain (exactly once — item 2098's demonstrated doubling), an existing bag appended not replaced, and two
+keys kept separate. 🔑 **All three semantic mutants are now CAUGHT**, including one that swaps in the
+walk's own re-walking `drain` — the doubling bug itself.
+
+⚠️ **Item 2070's guard test was updated, not deleted.** It asserted `store` is NOT admitted by the gate;
+it now asserts `store` IS admitted and points at the behavioural file, because a gate boolean cannot
+express "lazy for a breaking caller". `store` remains refused from `barrierProjectedBag`, which is what
+that test's reasoning was actually about.
+
+### Process notes
+
+⚠️ **I hit the `$@` sed fault AGAIN** — a `$` immediately before `@` inside a double-quoted mutant spec
+is a positional-parameter expansion, which silently ate three anchors. It is in my notes from item 2106
+and I repeated it. ⚠️ Two further anchors failed because the iterator and drain loop bodies are textually
+IDENTICAL, so no single-line anchor is unique — those two were hand-applied instead.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 2,742
+Gremlin tests; seven fuzzers green; 5/5 sweeps. ⚠️ One sweep failed mid-run on `FUZZ_SEED=1640954475` —
+the known `OPTIONAL MATCH` + raising-inline-predicate family, in the **GQL** fuzzer while this change is
+Gremlin-only; ruled out STRUCTURALLY by replaying it with the gate KILLED, where it fails identically.

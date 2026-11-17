@@ -378,7 +378,68 @@ export const fusableProjectedFold = (rest: readonly Step[]): boolean => {
  * with the barrier appended — 3.51x**, same 600,000 rows either way.
  */
 export const fusableProjectedBarrier = (rest: readonly Step[]): boolean =>
-  rest.length === 1 && rest[0].kind === 'aggregate';
+  rest.length === 1 && (rest[0].kind === 'aggregate' || rest[0].kind === 'store');
+
+/**
+ * A bare trailing `store(k)`: the walk banked into the bag, LAZY for the caller — item 2112.
+ *
+ * ⚠️⚠️ **WHY `store` COULD NOT USE {@link barrierProjectedBag}, AND STILL CANNOT.** That returns the
+ * DRAINED ARRAY, so every consumer gets an eager result — and `run` is the public lazy API, so a caller
+ * that `break`s out would have caused elements to be collected it never pulled. ⚠️ `aggregate` is
+ * exempt because it already materializes its upstream by contract; `store` does not.
+ *
+ * 🔑 **THIS RESULT IS LAZY AS AN ITERATOR AND EAGER VIA `drain`**, which is both halves of item 1412's
+ * rule: the breaking caller takes the iterator and bags only what it pulled; `toArray` takes `drain` and
+ * bags everything, which is its definition.
+ *
+ * ⚠️⚠️ **ONE GENERATOR, PULLED BY BOTH PATHS — AND THAT IS THE WHOLE CORRECTNESS ARGUMENT.** Item 2098
+ * built this with the iterator walking the source while `drain()` called the source's OWN `drain`, which
+ * is TWO independent paths both pushing to the bag: an element reached by both is pushed twice and the
+ * bag SILENTLY DOUBLES (demonstrated there, at 10 where 5 is correct). That item concluded a single-use
+ * latch was needed. 🔑 It is not: a generator cannot yield the same element twice, so pulling ONE of them
+ * from both paths makes "exactly once" the generator's own guarantee rather than new state this code has
+ * to maintain. No latch, no flag, no consumed-bit.
+ *
+ * ⚠️ IT DELIBERATELY DOES NOT USE `values.drain`. The fused walks' drains are `[...walk()]` — they call
+ * the walk factory AGAIN and re-walk from scratch, which would re-bag everything the iterator already
+ * pulled. Driving the iterator here is what keeps this independent of every walk's drain, so no walk
+ * needs a new contract. 🔑 That costs the drain its fast path, and the cost is measured: item 2111 priced
+ * this arm at **1.50x over the generic path** (16.0 ns/row against 24.0), where a slice-backed drain
+ * would have been 2.11x — the 2.1x item 2098 advertised was measured against a `values.slice()` drain
+ * this engine does not have.
+ */
+export const barrierProjectedStore = (
+  values: HopWalk,
+  key: string,
+  ctx: { readonly sideEffects: Map<string, unknown[]> },
+): Iterable<unknown> & { drain: () => unknown[] } => {
+  if (!ctx.sideEffects.has(key)) {
+    ctx.sideEffects.set(key, []);
+  }
+
+  const bucket = ctx.sideEffects.get(key)!;
+  const gen = values[Symbol.iterator]();
+
+  return {
+    [Symbol.iterator]: function* (): Generator<unknown> {
+      for (let step = gen.next(); step.done !== true; step = gen.next()) {
+        bucket.push(step.value);
+
+        yield step.value;
+      }
+    },
+    drain: (): unknown[] => {
+      const rows: unknown[] = [];
+
+      for (let step = gen.next(); step.done !== true; step = gen.next()) {
+        bucket.push(step.value);
+        rows.push(step.value);
+      }
+
+      return rows;
+    },
+  };
+};
 
 /**
  * The drained walk pushed into the bag and PASSED THROUGH (item 2070).

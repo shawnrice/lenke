@@ -25,6 +25,7 @@ import { tagsObservedFrom } from '../ast.js';
 import type { Plan, Step } from '../ast.js';
 import {
   barrierProjectedBag,
+  barrierProjectedStore,
   countProjectedBag,
   countProjectedWalk,
   foldProjectedList,
@@ -2781,6 +2782,16 @@ const fusedProjectedResidual = (
     // ⚠️ Narrowed, not cast — the gate's boolean does not carry the kind to the type system.
     if (barrier.kind === 'aggregate') {
       return barrierProjectedBag(projected.values, barrier.key, ctx);
+    }
+
+    /*
+     * ⚠️ `store` TAKES A DIFFERENT ARM, NOT THE SAME ONE (item 2112). `barrierProjectedBag` returns the
+     * drained array, which would make the result eager for every consumer — and `run` is the lazy public
+     * API. `barrierProjectedStore` is lazy as an iterator and eager via `drain`, over ONE generator, so a
+     * caller that `break`s out bags only what it pulled. 1.50x over the generic path (item 2111).
+     */
+    if (barrier.kind === 'store') {
+      return barrierProjectedStore(projected.values, barrier.key, ctx);
     }
   }
 

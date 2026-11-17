@@ -223,7 +223,17 @@ describe('a bare trailing aggregate barrier (item 2070)', () => {
      * to be collected.
      */
     expect(fusableProjectedBarrier([{ kind: 'aggregate', key: 'x' }])).toBe(true);
-    expect(fusableProjectedBarrier([{ kind: 'store', key: 'x' }])).toBe(false);
+    /*
+     * ⚠️⚠️ **THIS ASSERTED `false` UNTIL ITEM 2112, AND THE REASON ABOVE IS WHY IT COULD.** The gate now
+     * admits `store` too — but it takes a DIFFERENT ARM (`barrierProjectedStore`), lazy as an iterator
+     * and eager only via `drain`, so an early-exiting caller still bags only what it pulled. The
+     * comment above describes `barrierProjectedBag`, which `store` is still refused from.
+     *
+     * 🔑 The invariant that replaced it is BEHAVIOURAL and lives in `store-lazy-barrier.test.ts`: four
+     * consumption patterns through the public API, including the part-way iteration this refusal existed
+     * to protect. A gate boolean cannot express that, which is why the stronger test is elsewhere.
+     */
+    expect(fusableProjectedBarrier([{ kind: 'store', key: 'x' }])).toBe(true);
   });
 
   test('a TWO-step residual declines — that is item 2069s arm, and the two must stay disjoint', () => {
