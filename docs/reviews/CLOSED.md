@@ -106796,3 +106796,67 @@ byte-identity-critical — item 1712 put it there to fix the 15th value divergen
 needs caller cooperation, so it is a cross-package change with a correctness contract, not a local edit.
 
 GATES. No engine change; `bun run check` 0 read unpiped.
+
+## Item 2142 — ⚠️⚠️ **ITEM 2141's LEVER IS REFUTED AS THE MAIN TERM, and the ORDER BY row is bounded by a CLOSED limit plus a SEMANTIC constraint.** A number key costs what a string key costs
+
+Item 2141 priced the string comparator's regex guard at 2.00x on a 1M sort and offered it as ~10% of
+`traverse 1-hop project + order by`. 🔑 This item profiled the row properly and the comparator is **not**
+where the time goes.
+
+### ⚠️ THE DECISIVE MEASUREMENT: THE KEY'S TYPE BARELY MATTERS
+
+```text
+    unsorted reference                 34.3 ms   600,000 rows
+    ORDER BY, string key              292.1
+    ORDER BY, NUMBER key              274.3      <- 94% of the string cost
+    ORDER BY, low-cardinality string  225.8
+    ORDER BY ... LIMIT 10 (top-k)     199.1      <- 10 rows out
+```
+
+🔑 **A number key costs 94% of a string key.** Numbers compare far faster than strings and need no
+surrogate guard at all, so the COMPARATOR cannot be the dominant term. ⚠️ Item 2141's regex finding stands
+as a real 2.00x _on a sort in isolation_ — it is simply not what this row is paying.
+
+### 🔑 WHERE IT ACTUALLY GOES: `propOf`, WHICH IS A CLOSED LIMIT
+
+Windowed profiles, fixture build excluded:
+
+```text
+    arm            propOf   GC      other
+    ordered        19.7%   38.7%   two anonymous frames at 18.7 / 13.8
+    orderedNum     35.2%   15.4%   the sort itself at 20.3
+    orderedLimit   43.1%   18.8%   `get properties` 9.3
+    unsorted        2.9%   75.3%   -
+```
+
+⚠️⚠️ **`propOf` is 35-43% of the SORTED arms and 2.9% of the UNSORTED one — at the SAME 600,000 rows.** So
+the unsorted path is not calling it per row at all; the sorted path has fallen onto a general projection
+that does. 🔑 And `propOf` is one line:
+
+```ts
+export const propOf = (bound, key) => bound?.properties?.[key] ?? null;
+```
+
+A **variable-key** property load. ⚠️ That is already priced and closed: `o.properties[key]` with a variable
+key is **1.41x** over a literal, _"'inline the predicate' is worth ~5%; the real term needs codegen and is
+unreachable"_ — and runtime codegen is a FIRM refusal in this repo (it would force `unsafe-eval` into every
+embedder's CSP).
+
+### 🔑 AND THE ROUTE CHANGE IS SEMANTICALLY REQUIRED, WHICH THE BENCH ALREADY SAYS
+
+`bench.ts`'s own comment on this row: _"Sorting also forces the START-DRIVEN walk, because the far-driven
+one reorders rows deliberately and tie order under `ORDER BY` is observable between the engines — so this
+row additionally watches that the locality win is given up only where order matters."_
+
+⚠️ So the fast projection the unsorted twin uses is **unavailable to the sorted form by design**, and the
+difference is not a defect. 🔑 The unsorted row is TS **19.9 ms against ffi's 225.4 — TS 11x FASTER**; the
+sorted one is 765.7 against 207.9. **The same engine, two routes, and the ordered one is constrained.**
+
+⚠️ **NOT A TARGET**, then: the dominant term is a closed keyed-load limit whose only fix is refused, and
+the route that avoids it cannot be taken where order is observable. 🔑 One live sub-lever remains and it is
+small: `ORDER BY … LIMIT 10` costs **199.1 ms for TEN rows**, with `propOf` at 43.1% — a top-k that still
+pays the general projection for all 600,000. That is the one shape here where the work is provably
+unnecessary.
+
+GATES. No engine change (the `propOf` counter was reverted; `values.ts` verified clean);
+`bun run check` 0 read unpiped.
