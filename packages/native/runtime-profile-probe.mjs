@@ -37,6 +37,32 @@ if (STRIDE !== 'sequential' && STRIDE !== 'scattered') {
 const build = () => {
   const g = new Graph();
 
+  /*
+   * ⚠️⚠️ **INDEXED=1 GIVES THE CORPUS AN INDEX, AND WITHOUT IT A WHOLE SURFACE IS UNREACHABLE** (item
+   * 2073). Item 2072's coverage audit reported `edgeSeek` and `seekIsWorthIt` as NEVER ENTERED, and
+   * the cause was this fixture: it has never created an index, so no seek rung can fire on any of the
+   * 51 shapes. That is not a gap in the engine — it is a surface the probe could not see.
+   *
+   * 🔑 **OPT-IN, NOT DEFAULT, AND THAT IS THE WHOLE DESIGN.** An index changes which route answers
+   * `WHERE n.k = 5` — that is what it is for — so creating one unconditionally would move most of the
+   * 51 rows at once and invalidate every figure recorded against this probe. `MIXED=1` is opt-in for
+   * the same reason (item 2031), and the two knobs compose.
+   *
+   * ⚠️ CREATED BEFORE THE VERTICES, because `createIndex` on a populated graph is a different
+   * operation (a backfill) from one that maintains as it goes — and the backfill's cost would land in
+   * the fixture build, which `PROBES.md` warns is already most of the process at small `N`.
+   */
+  if (process.env.INDEXED === '1') {
+    g.createIndex({ on: 'vertex', kind: 'hash', keys: ['k'] });
+    /*
+     * ⚠️ THE EDGE INDEX IS A SEPARATE SURFACE, and `edgeSeek` reads `graph.edgePropertyIndex` rather
+     * than the vertex one — so the vertex index above cannot reach it however many shapes are added.
+     * Both are behind this one knob because both change which route answers a shape, which is the
+     * thing that must not happen by default.
+     */
+    g.createIndex({ on: 'edge', kind: 'hash', keys: ['w'] });
+  }
+
   for (let i = 0; i < NODES; i += 1) {
     g.addVertex({
       id: `v${i}`,
@@ -108,6 +134,19 @@ const SHAPES = {
   // presence count 1485). `hoprows` materializes a row per edge, so nothing can shortcut it and
   // per-edge cost is what it measures.
   hoprows: 'MATCH (a:P)-[:E]->(b:P) RETURN b.k AS k',
+  /*
+   * ⚠️⚠️ ITEM 2073: THE CORPUS HAD NO SHAPE THAT CONSTRAINS AN EDGE PROPERTY AT ALL. All 38 of its rel
+   * patterns were anonymous `[:E]`, so `edgeSeek` -- which reads `graph.edgePropertyIndex` -- could
+   * never fire, and item 2072 correctly declined to call that an engine gap. The fixture's edges have
+   * carried `w: e % 13` all along; only the queries were missing.
+   *
+   * 🔑 BOTH SPELLINGS, because `edgeSeek` takes exactly two and CLAUDE.md gives equivalent spellings
+   * their own section: "the planner recognized one spelling of a predicate and scanned for another
+   * that meant exactly the same thing ... each cost 100-300x and each returned the correct answer".
+   * A lifted clause `WHERE` on the rel is item 1034's spelling; the inline brace form is the other.
+   */
+  reledgewhere: 'MATCH (a:P)-[r:E]->(b:P) WHERE r.w = 5 RETURN b.k AS k',
+  reledgeinline: 'MATCH (a:P)-[:E {w: 5}]->(b:P) RETURN b.k AS k',
   /**
    * ⚠️⚠️ **ITEM 1618's "NO rung at all" IS STALE — ITEM 2064 PROFILED THIS SHAPE AND FOUND A FUSED
    * TWO-HOP WALK.** `hop2-projection.ts`'s `walk` serves it with hoisted label elision, the gate
@@ -502,6 +541,9 @@ const expectJoin = (nodes, fanout, stride) => {
 /** Vertices with `k < m`: whole 97-blocks contribute `m` each, then the partial block. */
 const kLt = (n, m) => Math.floor(n / 97) * m + Math.min(n % 97, m);
 
+/** Edges with `w === v`, where `w` is `e % 13` over `edges` edges. */
+const wEq = (edges, v) => Math.floor(edges / 13) + (edges % 13 > v ? 1 : 0);
+
 /** Vertices with `k === v`. */
 const kEq = (n, v) => Math.floor(n / 97) + (n % 97 > v ? 1 : 0);
 
@@ -521,6 +563,13 @@ const EXPECTED = {
   wide2: { rowsPerRun: (n) => kLt(n, 10) },
   narrow1: { rowsPerRun: (n) => kLt(n, 10) },
   hoprows: { rowsPerRun: (n) => n },
+  /*
+   * ⚠️ THE ORACLE IS A COUNT OF EDGES, NOT OF VERTICES (item 2073). `w` is `e % 13` over
+   * `NODES * FANOUT` edges, so the surviving rows are the edges with `w === 5` — and BOTH spellings
+   * must produce the identical number, which is the equivalence the two rows exist to check.
+   */
+  reledgewhere: { rowsPerRun: (n, f) => wEq(n * f, 5) },
+  reledgeinline: { rowsPerRun: (n, f) => wEq(n * f, 5) },
   /**
    * ⚠️ ADDED AT ITEM 1805 BECAUSE ITS ABSENCE COST A MEASUREMENT — item 1749's lesson, a second
    * time. These are the hop-ROW shapes, and the five largest rows in the probe had NO guard at
@@ -573,7 +622,14 @@ if (want !== undefined) {
    * level. Relaxing the check to "roughly N" would have let a degenerate fixture through, which is
    * the failure CLAUDE.md spends a whole section on.
    */
-  const perRun = typeof want.rowsPerRun === 'function' ? want.rowsPerRun(NODES) : want.rowsPerRun;
+  /*
+   * ⚠️ `FANOUT` IS PASSED TOO (item 2073), because `answer` already took `(n, f)` and `rowsPerRun`
+   * took only `(n)` — an asymmetry that silently produced `expected NaN` the moment a shape needed
+   * the edge count. Every existing one-argument oracle ignores the second argument, so this removes
+   * the trap without touching any of them.
+   */
+  const perRun =
+    typeof want.rowsPerRun === 'function' ? want.rowsPerRun(NODES, FANOUT) : want.rowsPerRun;
 
   if (sink !== perRun * N) {
     throw new Error(

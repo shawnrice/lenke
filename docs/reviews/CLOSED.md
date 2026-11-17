@@ -102547,3 +102547,63 @@ either way while keeping every measured win on the fold. 5 tests, **3/3 mutants 
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
 `node --check` on the probe. One test file and one instrument fix; no engine change.
+
+## Item 2073 — ✅ **THE GQL CORPUS COULD NOT REACH ITS OWN SEEK SURFACE, AND NOW DOES: both seek rungs covered (39 → 41), and the edge seek measures 3.42x / 3.18x — on a surface that had NO shape at all.** 🔑 Both spellings take it and converge at 1.05x
+
+Item 2072 declined to call `edgeSeek` and `seekIsWorthIt` engine gaps and said why: the corpus's
+fixture created no index. This took that seriously.
+
+### Two different reasons, not one
+
+- **`seekIsWorthIt` needed an INDEX.** The corpus already contains seekable equality predicates
+  (`n.k = 5`, `a.k = 5`, an inline `{ k: … }`); only the index was missing. Reached the moment one
+  existed.
+- ⚠️ **`edgeSeek` needed a SHAPE, and then a DIFFERENT index.** All 38 of the corpus's rel patterns
+  were anonymous `[:E]` — **not one shape in 51 constrained an edge property** — and `edgeSeek` reads
+  `graph.edgePropertyIndex`, which no vertex index can reach however many shapes are added. The
+  fixture's edges have carried `w: e % 13` all along; only the queries were absent.
+
+🔑 **BOTH SPELLINGS WERE ADDED, because `edgeSeek` takes exactly two and CLAUDE.md gives equivalent
+spellings their own section** — "the planner recognized one spelling of a predicate and scanned for
+another that meant exactly the same thing… each cost 100-300x and each returned the correct answer":
+
+```text
+    reledgewhere   MATCH (a:P)-[r:E]->(b:P) WHERE r.w = 5 RETURN b.k    (item 1034's lifted clause)
+    reledgeinline  MATCH (a:P)-[:E {w: 5}]->(b:P) RETURN b.k            (the inline form)
+```
+
+### What the new surface measures, at 200,000 vertices
+
+|                | `reledgewhere` | `reledgeinline` | spread |
+| -------------- | -------------- | --------------- | ------ |
+| no index       | 216.0          | 211.4           | 1.02x  |
+| **edge index** | **63.1**       | **66.4**        | 1.05x  |
+|                | **3.42x**      | **3.18x**       |        |
+
+✅ **THE SEEK IS LARGE AND BOTH SPELLINGS REACH IT.** Identical answers (38) and identical row counts
+(76,925) in all four configurations, so this is answer-equivalent throughout — which is the precondition
+the spelling discipline needs and which items 2053-2059 kept failing to secure. ⚠️ A 1.15x spread at
+20,000 did NOT scale; at 200,000 the two converge, so there is no spelling defect here.
+
+### ⚠️ THE INDEX IS OPT-IN, AND THAT IS THE DESIGN
+
+`INDEXED=1`, like `MIXED=1` (item 2031). An index changes which route answers a predicate — that is
+what it is for — so creating one by default would move most of the 51 rows at once and invalidate every
+figure ever recorded against this probe. The audit's own fixture creates both indexes
+UNCONDITIONALLY, because it measures which rungs are REACHED and not what anything costs. Verified
+after the change: `hoprows` with no `INDEXED` still answers 100,000 rows, unchanged.
+
+### ⚠️ Two instrument faults, both caught loudly
+
+1. **`rowsPerRun` took `(n)` while `answer` took `(n, f)`** — an asymmetry that produced `expected NaN`
+   the moment a shape needed the EDGE count. The guard fired with the real row count (1,539/run, which
+   confirmed the arithmetic), and `rowsPerRun` now receives `FANOUT` too; every existing one-argument
+   oracle ignores it, so the trap is gone without touching any of them.
+2. ⚠️⚠️ **BACKTICKS TERMINATED A GENERATED DRIVER FOR THE SIXTH TIME THIS SESSION** (items 2036, 2046,
+   2049, twice in 2068, here) — and this file is item 2049's own probe, which never got the assertion I
+   added to its Gremlin twin at item 2068. **It has one now**, written with a ``` escape so the
+   guard cannot break the file it guards.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
+`node --check` on both probes. Two corpus shapes, one opt-in fixture knob, one oracle-signature fix and
+one assertion; no engine change.

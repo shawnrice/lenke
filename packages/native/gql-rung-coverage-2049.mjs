@@ -110,6 +110,26 @@ import { query } from '@lenke/gql';
 const NODES = 400;
 const g = new Graph();
 
+/*
+ * ⚠️⚠️ THE INDEX IS WHY edgeSeek AND seekIsWorthIt READ AS NEVER ENTERED (item 2073). This fixture
+ * created none, so no seek rung could fire on any of the 51 shapes -- and item 2072 correctly refused
+ * to call that an engine gap. The corpus DOES contain seekable equality predicates (n.k = 5, a.k = 5,
+ * an inline brace-k form), so an index on k is all that was missing.
+ *
+ * ⚠️ IT IS CREATED UNCONDITIONALLY HERE, UNLIKE IN THE PROFILE PROBE. This audit measures WHICH RUNGS
+ * ARE REACHED, not what anything costs, so changing which route answers a shape is the point rather
+ * than a hazard. The profile probe gates the same index behind INDEXED=1 precisely because there a
+ * route change would move every recorded figure.
+ *
+ * ⚠️⚠️ NO BACKTICKS IN THIS COMMENT. It sits inside the generated driver's TEMPLATE LITERAL, so one
+ * would terminate it and the error would name an unrelated identifier -- the trap that has now fired
+ * at items 2036, 2046, 2049, twice in 2068 and once here. The assertion below is the durable fix.
+ */
+g.createIndex({ on: 'vertex', kind: 'hash', keys: ['k'] });
+// ⚠️ AND AN EDGE INDEX: edgeSeek reads graph.edgePropertyIndex, which the vertex index cannot reach
+// however many shapes the corpus gains (item 2073).
+g.createIndex({ on: 'edge', kind: 'hash', keys: ['w'] });
+
 for (let i = 0; i < NODES; i += 1) {
   g.addVertex({ id: 'v' + i, labels: ['P'], properties: { k: i % 97, s: 's' + (i % 50), n: i } });
 }
@@ -173,6 +193,19 @@ if (driver.includes('`')) {
 
 const dir = mkdtempSync(join(tmpdir(), 'gqlcov-'));
 const driverPath = join(HERE, 'gql-rung-coverage-driver-2049-tmp.mjs');
+
+/*
+ * ⚠️⚠️ **THE ASSERTION THE GREMLIN TWIN GOT AT ITEM 2068 AND THIS FILE DID NOT (item 2073).** A
+ * backtick anywhere in the driver's text terminates the template it lives in, and the failure
+ * surfaces as a SyntaxError naming whatever identifier follows it — never the real cause. It has
+ * fired six times across this session's probes, once in a comment warning about it.
+ */
+if (driver.includes('\u0060')) {
+  throw new Error(
+    'a BACKTICK survives inside the generated driver — it would terminate the template and the error ' +
+      'would name an unrelated identifier. Rewrite the offending comment or string without one.',
+  );
+}
 
 writeFileSync(driverPath, driver);
 
