@@ -291,6 +291,14 @@ const SHAPES = {
   // YIELDING; a three-hop count is neither, and a count can be answered without materialising rows
   // so it is a different route from `hop3rows` entirely.
   count2: 'MATCH (a:P)-[:E]->(b:P)-[:E]->(c:P) RETURN count(*) AS c',
+  /*
+   * ⚠️⚠️ ITEM 2087: THE SAME CHAIN, COUNTED BY A PROPERTY INSTEAD OF BY `*`. `detectChainFoldLevels`
+   * answers `count(<far>.k)` over a CSR LEVEL RECURRENCE and applies the label mask per level, so it
+   * admits a labelled chain; `count(*)` has no such rung and falls to the per-edge tally once a label
+   * is non-vacuous. The two are NOT semantically equal (`count(c.k)` skips nulls) — the point is that
+   * `count(*)` does strictly LESS work and should not be slower.
+   */
+  count2prop: 'MATCH (a:P)-[:E]->(b:P)-[:E]->(c:P) RETURN count(c.k) AS c',
   count3: 'MATCH (a:P)-[:E]->(b:P)-[:E]->(c:P)-[:E]->(d:P) RETURN count(*) AS c',
   varlenplus: 'MATCH (a:P)-[:E]->+(b:P) RETURN count(DISTINCT b) AS c',
   anyshortest: 'MATCH p = ANY SHORTEST (a:P)-[:E]->+(b:P) WHERE a.n = 0 RETURN count(*) AS c',
@@ -645,6 +653,9 @@ const EXPECTED = {
    * 🔑 So a FANOUT=1 run checks that these shapes return a count of n — not that they walk the depth
    * they claim. Anyone ablating a hop depth must run FANOUT>1 or the guard will not notice.
   count2: { rowsPerRun: 1, answer: (n, f) => n * f * f },
+  // Every `c` in the fixture carries `k`, so the property count equals the row count — which is what
+  // makes the pair comparable at all.
+  count2prop: { rowsPerRun: 1, answer: (n, f) => n * f * f },
   count3: { rowsPerRun: 1, answer: (n, f) => n * f * f * f },
   // count(DISTINCT b) over `->+`: every vertex is reachable, so the whole graph. 20,000 -> 40,000 ✓
   varlenplus: { rowsPerRun: 1, answer: (n) => n },

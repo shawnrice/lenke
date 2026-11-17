@@ -1650,8 +1650,10 @@ const fastPath = (linear: CLinear, graph: Graph, params: Params): Row[] | undefi
     }
   }
 
-  if (linear.countShortcut) {
-    return linear.countShortcut(graph, params);
+  const starCount = chainStarCountOrCountShortcut(linear, graph, params);
+
+  if (starCount !== undefined) {
+    return starCount;
   }
 
   // The OPTIONAL-hop count (item 510). Below the plain one because it is strictly narrower —
@@ -1981,6 +1983,45 @@ export const pagedWidthProjections = (
     if (rows !== null) {
       return rows;
     }
+  }
+
+  return undefined;
+};
+
+/**
+ * The chain `count(*)` rung and `countShortcut`, in that order (item 2087).
+ *
+ * ⚠️⚠️ **ABOVE `countShortcut`, AND THE FIRST ATTEMPT PUT IT 357 LINES BELOW.** `count(*)` over a
+ * labelled chain fell to `countShortcut`'s per-edge tally — **100.57 ms/rep against 19.15 here, 5.25x**
+ * — while `count(c.k)`, the query doing strictly MORE work, took 20.51 because it had a level
+ * recurrence. The rung was willing the whole time: placed in `deepWidthReductions`, its gate ACCEPTED
+ * the shape (verified by an instrumented build printing each gate's inputs) and that function was
+ * never entered, because `countShortcut` answers first. Timing alone cannot tell a DECLINED rung from
+ * a STARVED one.
+ *
+ * 🔑 It is safe above `countShortcut` only because it declines at EXECUTION time when every label is
+ * vacuous — the case that rung answers better still (`twoHopUnfilteredCsrCount`, 12.57 ms/rep against
+ * this one's ~20). That is `varLengthCount`'s pattern, one rung further up, for its reason.
+ *
+ * ⚠️ HOISTED OUT OF ITS CALLER because adding the branch took that function to a complexity of 36
+ * against a cap of 35 — the fifth time this gate has been hit in this file, and the fix is always a
+ * module-scope helper rather than a raised cap.
+ */
+const chainStarCountOrCountShortcut = (
+  linear: CLinear,
+  graph: Graph,
+  params: Params,
+): Row[] | undefined => {
+  if (linear.chainStarCount) {
+    const rows = linear.chainStarCount(graph, params);
+
+    if (rows !== undefined) {
+      return rows;
+    }
+  }
+
+  if (linear.countShortcut) {
+    return linear.countShortcut(graph, params);
   }
 
   return undefined;

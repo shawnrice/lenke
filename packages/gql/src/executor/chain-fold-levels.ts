@@ -5,6 +5,7 @@ import type { CClause, Params, Row } from './core.js';
 import { csrFor } from './csr-cache.js';
 import type { AlwaysRowsFn } from './hop-projection.js';
 import { plainNode, plainRel } from './hop-sides.js';
+import { vacuousLabel } from './labels.js';
 import { columnName, resolveCount, valueKey } from './rows.js';
 import { groupedClauses, groupedProjection, groupedSortApplier } from './shortcuts.js';
 import { propOf } from './values.js';
@@ -226,6 +227,179 @@ const chainShapeOf = (m: Clause): ChainShape | null => {
   }
 
   return { levels, startLabel: startLabelExpr?.name, pattern };
+};
+
+/**
+ * Is this label name absent, or carried by EVERY vertex?
+ *
+ * ⚠️ `vacuousLabel` TAKES A `LabelExpr`, and the chain shape carries plain NAMES — so the expr is
+ * synthesized rather than the test re-implemented. Item 1549 found a hand-rolled copy of this test
+ * handling only one of `LabelExpr`'s five kinds.
+ */
+const vacuousOrAbsent = (graph: Graph, name: string | undefined): boolean =>
+  name === undefined || vacuousLabel(graph, { kind: 'label', name });
+
+/**
+ * Is EVERY label on this chain vacuous or absent? — the rung's execution-time decline, as a pure
+ * function (item 2087).
+ *
+ * ⚠️⚠️ **EXPORTED AND UNIT-TESTED BECAUSE A ROUTE CHOICE IS ANSWER-EQUIVALENT.** Both routes return
+ * the same count, so a mutation round found FIVE survivors here — a decline that never fires, one
+ * that always fires, one ignoring the levels, one ignoring the start, and a `vacuousOrAbsent` stuck
+ * at `true`. Every one is a pure PERF change and no differential test can see it. The repo's rule for
+ * exactly this ("extract the arithmetic as a pure fn and unit-test it") is the only thing that gives
+ * it teeth.
+ *
+ * 🔑 THE SEMANTICS: `true` means `countShortcut` should keep the query — all labels elide, so its
+ * unfiltered CSR arm answers at 12.57 ms/rep against this rung's ~20. `false` means a label really
+ * filters, where that rung falls to a per-edge tally at 94.01 and this one answers at 19.21.
+ */
+export const chainLabelsAllVacuous = (
+  graph: Graph,
+  startLabel: string | undefined,
+  levels: readonly { readonly label: string | undefined }[],
+): boolean =>
+  vacuousOrAbsent(graph, startLabel) && levels.every((l) => vacuousOrAbsent(graph, l.label));
+
+/**
+ * `MATCH <chain of 2+ segments> RETURN count(*)` — the PATH count, straight off the level recurrence
+ * (item 2087).
+ *
+ * ⚠️⚠️ **WHY THIS EXISTS: THE SIMPLER SPELLING WAS 4.58x SLOWER THAN THE HARDER ONE.**
+ * `detectChainFoldLevels` next door answers `count(<far>.k)` over this same recurrence and applies the
+ * label mask per level, so it admits a LABELLED chain. `count(*)` was rejected one line into its gate
+ * (`agg.expr.star`) and fell to the per-edge tally the moment a label stopped being vacuous. Measured
+ * at 200,000 vertices, the same chain, same answer (200,000):
+ *
+ * ```text
+ *                      vacuous label   REAL label
+ *     count(*)             12.57          94.01      <- 7.48x mode penalty
+ *     count(c.k)           20.02          20.51      <- flat; it had this rung
+ * ```
+ *
+ * So with a real label the query doing strictly LESS work (no null test per reached vertex) cost 4.58x
+ * the one doing more. CLAUDE.md's "equivalent spellings must cost the same" in its sharpest form —
+ * these two are not equivalent, which makes the inversion worse rather than excusable.
+ *
+ * 🔑 `count(*)` IS `sum(u)` AND NOTHING ELSE. The recurrence's multiplicity vector after the final
+ * level holds, per vertex, the number of label-satisfying paths ending there — so the total is their
+ * sum. No `argFn`, no far variable, no null test: that is why this is a separate detector rather than
+ * a branch in its neighbour, whose every remaining field exists to serve a projected value.
+ *
+ * ⚠️ THE START AND EVERY INTERMEDIATE LABEL ARE ALREADY HANDLED by `levelWalk` — the start as the
+ * seed mask, each level's target label as a post-step zeroing. A reader checking this rung's
+ * correctness should check THAT function, not this one.
+ */
+export const detectChainStarCount = (
+  clauses: readonly Clause[],
+  compiled: readonly CClause[],
+  /*
+   * ⚠️ NOT an `AlwaysRowsFn`: the returned closure DECLINES at execution time, because vacuity is a
+   * property of the graph. `undefined` rather than `null` is deliberate — it is exactly
+   * `varLengthCount`'s convention, which sits one rung above for the same reason ("cannot decide at
+   * COMPILE time whether a depth-4 trail's endpoint label is vacuous"), and the caller's fall-through
+   * already tests `!== undefined`.
+   */
+): ((graph: Graph, params: Params) => Row[] | undefined) | null => {
+  if (clauses.length !== 2) {
+    return null;
+  }
+
+  const [m, ret] = clauses;
+  const [, cret] = compiled;
+
+  if (ret.kind !== 'return' || cret.kind !== 'return') {
+    return null;
+  }
+
+  const shape = chainShapeOf(m);
+
+  if (shape === null) {
+    return null;
+  }
+
+  const { levels, startLabel } = shape;
+  const proj = cret.projection;
+
+  /*
+   * ⚠️⚠️ **`count(*)` IS NOT IN `foldedAggs`, AND THE FIRST VERSION OF THIS GATE LOOKED THERE.** A
+   * folded aggregate carries an EXPRESSION to fold; a star has no argument, so `foldedAggs` is
+   * `undefined` for `count(*)` and the gate declined every query it was written for. 🔑 The flag that
+   * means "every aggregate here is `count(*)`" is `countedGroups`, which `core.ts` derives with
+   * `everyAggregateIsCountStar` over both the items AND the ORDER BY keys, and which also implies no
+   * `HAVING`.
+   *
+   * ⚠️ The diagnosis was an INSTRUMENTED BUILD printing each gate's inputs, not a reading of the
+   * code: timing cannot tell a declined rung from a starved one, and the field name alone looks
+   * plausible either way.
+   */
+  if (!proj.aggregating || !proj.countedGroups || proj.items.length !== 1) {
+    return null;
+  }
+
+  if (proj.star || proj.distinct || ret.projection.items.length !== 1) {
+    return null;
+  }
+
+  /*
+   * ⚠️ A GROUPED count is a DIFFERENT shape and `chainGroupedLevels` owns it — `sum(u)` is one total,
+   * not one per group.
+   */
+  if ((proj.groupKeys?.length ?? 0) > 0) {
+    return null;
+  }
+
+  /*
+   * ⚠️⚠️ `SKIP`/`LIMIT` ARE REFUSED, AND `LIMIT 0` IS WHY. This rung returns its one row
+   * unconditionally, so a `LIMIT 0` — which must yield NO rows — would be a wrong answer, not a slow
+   * one. `ORDER BY` over a single row cannot reorder anything, but it travels with them here and
+   * costs nothing to refuse alongside.
+   */
+  if (proj.skip !== undefined || proj.limit !== undefined || (proj.orderBy?.length ?? 0) > 0) {
+    return null;
+  }
+
+  const outName = proj.items[0].name;
+
+  return (graph: Graph) => {
+    /*
+     * ⚠️⚠️ **AN EXECUTION-TIME DECLINE, AND IT IS WHAT MAKES THIS SAFE TO PUT ABOVE `countShortcut`.**
+     * Vacuity is a property of the GRAPH, not of the query, so it cannot be decided when this rung is
+     * compiled. When every label is vacuous, `effectiveLabel` elides them all and `countShortcut`
+     * reaches `twoHopUnfilteredCsrCount` — **12.57 ms/rep against this rung's ~20**. Returning `null`
+     * hands those queries back to it unchanged; only the non-vacuous case, which it answers with a
+     * per-edge tally at **94.01**, lands here.
+     *
+     * 🔑 This is `var-length-count.ts`'s established pattern ("the closure can test `vacuousLabel`
+     * with the graph in hand and fall back"), not a new one — and `vacuousLabel` is CALLED rather
+     * than re-derived, because it is the one reader that knows the compound label kinds (item 1549
+     * found four of five spellings unhandled in a copy).
+     */
+    if (chainLabelsAllVacuous(graph, startLabel, levels)) {
+      return undefined;
+    }
+
+    const { u } = levelWalk(graph, levels, startLabel);
+    let total = 0;
+
+    /*
+     * ⚠️⚠️ AN INDEXED LOOP, AND THE LINT'S `prefer-for-of` IS DISABLED ON MEASUREMENT, not taste.
+     * Summing a 200,000-element `Float64Array`, medians of 14:
+     *
+     *     indexed   0.122 ms
+     *     for...of  1.739      <- 14.3x, the iterator protocol per element
+     *     reduce    1.577
+     *
+     * 1.6 ms is ~8% of this query at that size, so the suggested form would give back a tenth of
+     * what this rung wins. A typed array is the one case where `for...of` is not free.
+     */
+    // eslint-disable-next-line @typescript-eslint/prefer-for-of -- 14.3x; see the note above
+    for (let i = 0; i < u.length; i += 1) {
+      total += u[i];
+    }
+
+    return [{ [outName]: total }];
+  };
 };
 
 export const detectChainFoldLevels = (

@@ -67,9 +67,20 @@ describe('every fast-path detector fires for its own shape', () => {
     ['node count', 'MATCH (n:L) RETURN count(*) AS c', ['countShortcut']],
     ['hop count', 'MATCH (a:L)-[:R]->(b:L) RETURN count(*) AS c', ['countShortcut']],
     [
+      /*
+       * ⚠️⚠️ TWO RUNGS COMPILE FOR THIS SHAPE SINCE ITEM 2087, and the ORDER of this list is
+       * alphabetical (the helper sorts), not precedence. `chainStarCount` is consumed ABOVE
+       * `countShortcut` and DECLINES AT EXECUTION TIME when every label is vacuous — so with a
+       * vacuous label `countShortcut` still answers (12.57 ms/rep via `twoHopUnfilteredCsrCount`),
+       * and with a real one the level recurrence does (19.21 against the per-edge tally's 94.01).
+       *
+       * 🔑 THIS TEST CANNOT SEE WHICH ONE ANSWERS — it reads the compiled record, so a rung that is
+       * merely WILLING appears here identically to one that fires. That is exactly how item 2087's
+       * first attempt looked correct while being starved 357 lines down the chain.
+       */
       'two-hop count',
       'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L) RETURN count(*) AS c',
-      ['countShortcut'],
+      ['chainStarCount', 'countShortcut'],
     ],
     [
       'bounded var-length count',
@@ -547,7 +558,7 @@ describe('every fast-path detector fires for its own shape', () => {
 
   // Every one is covered by the table above. Asserted rather than claimed, so a
   // detector added later without a route case fails HERE instead of going unguarded.
-  it('covers all thirty-four detectors', () => {
+  it('covers all thirty-five detectors', () => {
     const covered = new Set(CASES.flatMap(([, , want]) => want));
     const all = new Set(
       Object.keys(
@@ -559,7 +570,9 @@ describe('every fast-path detector fires for its own shape', () => {
     );
 
     expect([...all].filter((k) => !covered.has(k)).sort()).toEqual([]);
-    expect(all.size).toBe(34);
+    // 34 -> 35 at item 2087 (`chainStarCount`). This number failing is the guard WORKING: it is how
+    // a detector added without a route case above gets found.
+    expect(all.size).toBe(35);
   });
 });
 

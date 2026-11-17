@@ -34,7 +34,11 @@ import type {
   SortItem,
 } from '../ast.js';
 import { isSyntheticParam } from '../auto-param.js';
-import { detectChainFoldLevels, detectChainGroupedLevels } from './chain-fold-levels.js';
+import {
+  detectChainFoldLevels,
+  detectChainGroupedLevels,
+  detectChainStarCount,
+} from './chain-fold-levels.js';
 import {
   detectChainFoldedAggregate,
   detectChainGroupedCount,
@@ -2604,6 +2608,9 @@ export const compileLinear = (linear: LinearQuery): CLinear => {
     hop2Projection: detectHop2Projection(fast, clauses),
     chainProjection: detectChainProjection(fast, clauses),
     chainFoldLevels: detectChainFoldLevels(fast, clauses),
+    // `count(*)` over the same chain, off the same recurrence (item 2087). Its neighbour REFUSES the
+    // star, so the two partition cleanly and neither can shadow the other.
+    chainStarCount: detectChainStarCount(fast, clauses),
     chainFoldedAggregate: detectChainFoldedAggregate(fast, clauses),
     hop2FoldedAggregate: detectHop2FoldedAggregate(fast, clauses),
     hopDistinctProjection: detectHopDistinctProjection(fast, clauses),

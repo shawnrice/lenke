@@ -103481,3 +103481,92 @@ sound only because its shapes happened to be order-independent — a preconditio
 one an index (which also changes the route, and so the order) does not guarantee either.
 
 GATES. Sweep only — no engine change. `bun run check` 0 read unpiped; `zsh -n` on the sweep.
+
+## Item 2087 — ✅ **SHIPPED: `count(*)` over a labelled chain joins the level recurrence — 100.57 → 19.15 ms (5.25x).** 🔑 Found because the SIMPLER spelling was 4.58x slower than the harder one, and the rung was WILLING the whole time — starved 357 lines down the chain
+
+Item 2086 priced `count2` (`MATCH (a:P)-[:E]->(b:P)-[:E]->(c:P) RETURN count(*)`) at a **7.60x** penalty
+between the vacuous and realistic label modes, and named the mechanism as the CSR arm declining.
+
+### 🔑 THE FINDING: `count(c.k)` HAD A RUNG AND `count(*)` DID NOT
+
+`detectChainFoldLevels` answers `count(<far>.k)` over a CSR level recurrence and applies the label mask
+PER LEVEL — so it admits a labelled chain. `count(*)` was rejected one line into its gate and fell to a
+per-edge tally. Same chain, same answer (200,000), 200,000 vertices:
+
+```text
+                     vacuous label   REAL label
+    count(*)             12.57          94.01      <- 7.48x mode penalty
+    count(c.k)           20.02          20.51      <- flat; it had the rung
+```
+
+⚠️ **With a real label the query doing strictly LESS work cost 4.58x the one doing more.** The two are
+not semantically equal (`count(c.k)` skips nulls), which makes the inversion worse rather than
+excusable: `count(*)` is `sum(u)` over the recurrence and needs no per-vertex null test at all.
+
+| row                                             | KILLED | LIVE      |           |
+| ----------------------------------------------- | ------ | --------- | --------- |
+| `count2` — `count(*)`, MIXED (target)           | 100.57 | **19.15** | **5.25x** |
+| `count2prop` — `count(c.k)`, the neighbour rung | 22.94  | 22.24     | 1.03x     |
+| `hopall`                                        | 8.81   | 8.36      | 1.05x     |
+| `hopfilter`                                     | 13.60  | 14.07     | 0.97x     |
+| `control`                                       | 1.98   | 2.04      | 1.03x     |
+
+⚠️ **AND THE VACUOUS CASE IS UNCHANGED AT 12.91 ms/rep**, because the rung DECLINES AT EXECUTION TIME
+when every label is vacuous — `countShortcut`'s `twoHopUnfilteredCsrCount` answers that more cheaply
+still (12.57 against this rung's ~20). Vacuity is a property of the GRAPH, so it cannot be decided at
+compile time; this is `varLengthCount`'s established pattern one rung above, not a new one.
+
+### ⚠️⚠️ THE RUNG WAS WILLING AND STARVED, AND TIMING COULD NOT SAY WHICH
+
+First placed in `deepWidthReductions`, it measured **no change at all**. Three readings of the same
+tree, each needed:
+
+1. An instrumented build printing every gate input said the gate **ACCEPTED** the shape.
+2. A marker at the top of `deepWidthReductions` never printed — **the function was never entered**.
+3. The consumption order in `clauses.ts` puts `countShortcut` at line 1652 and that function at 1750.
+
+🔑 [[rung-precedence-decides-speed]] exactly: a willing fast rung starved by a broader one above it,
+and **timing cannot tell declined from starved** — the rung now sits above `countShortcut`.
+
+⚠️ **AND THE FIRST GATE LOOKED IN THE WRONG FIELD.** `count(*)` is NOT in `foldedAggs` — a folded
+aggregate carries an expression to fold and a star has no argument, so that field is `undefined` for
+every query this rung was written for. The flag is `countedGroups`. Its neighbour's `agg.expr.star`
+refusal can never fire either, for the same reason.
+
+### ⚠️ SEVEN SURVIVORS IN THE FIRST MUTATION ROUND, AND EACH TAUGHT SOMETHING
+
+Final: **10 of 12 caught**. The road there is the content:
+
+- **`admits-LIMIT` survived, and admitting `LIMIT` IS a wrong answer** — `LIMIT 0` returns `[{c: 20}]`
+  instead of `[]`, measured by temporarily admitting it. 🔑 My test missed it because its fixture had
+  NO off-label vertex: the label was vacuous, the rung DECLINED, and the general path answered `[]`
+  whatever the gate said. **The test never reached the code it was written for** — the same shape as
+  item 2085's "every label-writing test reads FIRST".
+- **`admits-a-grouped-count` survived TWO fixes.** `RETURN c.k, count(*)` has two projection items, so
+  `items.length !== 1` declines first; `LET k = … GROUP BY k` is THREE clauses, so the length gate
+  declines first. 🔑 `GROUP BY <pattern variable>` is the only shape that reaches the guard.
+- **Five survivors were PURE ROUTE CHOICES** — a decline that never fires, one that always fires, one
+  ignoring the levels, one ignoring the start, `vacuousOrAbsent` stuck at `true`. Both routes return
+  the same count, so no differential test can see them. [[perf-gate-needs-its-own-test]]'s prescription
+  — extract the arithmetic as a pure fn and unit-test it — turned three of the five into CAUGHT
+  (`chainLabelsAllVacuous` is exported with five tests).
+- ⚠️ **The two that remain are the predicate's CALL SITE** (`if (predicate) return undefined`), which
+  is answer-equivalent by construction. Recorded as a known limit, not as coverage.
+- ⚠️ **The mutant count fell 10 → 8 after a refactor**, because `fmt` collapsed a multi-line `if (`
+  onto one line and two anchors stopped matching. Re-anchored; item 2082 had the same lesson.
+
+⚠️ `prefer-for-of` is DISABLED on the sum, on measurement: over a 200,000-element `Float64Array` the
+indexed loop is **0.122 ms against `for...of`'s 1.739 — 14.3x**, which is ~8% of this query. A typed
+array is the one case where `for...of` is not free. And the branch took `clauses.ts` to a complexity of
+36 against a cap of 35 — the fifth time — so it is a module-scope helper.
+
+VERIFICATION. 18 tests. ⚠️ **The fixture's branching is ASSERTED before any count is trusted** (every
+source has FANOUT distinct targets, all vertices reached): `n·f^k` is true by construction on a
+degenerate generator, and six fixtures here had that bug. Counts checked at FANOUT 1, 2 and 3, with the
+intermediate, start and far label masks each shown to filter to 0.
+
+**NEXT: `hopall` is now the largest MIXED cliff at 2.9x** (16.1 → 47) — a ONE-hop labelled count, which
+this rung does not cover (it needs 2+ segments).
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 5,033
+GQL tests; all seven fuzzers green; 5/5 sweeps clean.

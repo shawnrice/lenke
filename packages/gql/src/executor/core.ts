@@ -5542,6 +5542,9 @@ export type CLinear = {
    * so everything it declines falls to that rung.
    */
   chainFoldLevels: AlwaysRowsFn | null;
+  // ⚠️ Declines at EXECUTION time (vacuity is a graph property) with `undefined`, exactly as
+  // `varLengthCount` above it does, so the caller's existing fall-through applies unchanged.
+  chainStarCount: ((graph: Graph, params: Params) => Row[] | undefined) | null;
   chainFoldedAggregate: AlwaysRowsFn | null;
   /** The two-hop twin of `chainFoldedAggregate` — item 1824. */
   hop2FoldedAggregate: AlwaysRowsFn | null;
