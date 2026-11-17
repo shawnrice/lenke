@@ -36,10 +36,14 @@ const shapes = {
   target: 'MATCH (a:P) OPTIONAL MATCH (a)-[:E]->(b) RETURN a.k AS g, count(*) AS c',
   filtered:
     'MATCH (a:P) WHERE a.n > 10 OPTIONAL MATCH (a)-[:E]->(b) RETURN a.k AS g, count(*) AS c',
+  /* 🔑 ITEM 2124's TARGET — the far-keyed arm, which item 2123's gate refused at 361 ms. */
+  farkey: 'MATCH (a:P) OPTIONAL MATCH (a)-[:E]->(b) RETURN b.k AS g, count(*) AS c',
+  farkey_filtered:
+    'MATCH (a:P) WHERE a.n > 10 OPTIONAL MATCH (a)-[:E]->(b) RETURN b.k AS g, count(*) AS c',
   /* ⚠️ CONTROLS the gate cannot reach. */
   plain_ctl: 'MATCH (a:P)-[:E]->(b) RETURN a.k AS g, count(*) AS c',
   optcount_ctl: 'MATCH (a:P) OPTIONAL MATCH (a)-[:E]->(b) RETURN count(*) AS c',
-  farkey_ctl: 'MATCH (a:P) OPTIONAL MATCH (a)-[:E]->(b) RETURN b.k AS g, count(*) AS c',
+  edgekey_ctl: 'MATCH (a:P) OPTIONAL MATCH (a)-[r:E]->(b) RETURN r.k AS g, count(*) AS c',
 };
 const out = [];
 

@@ -158,16 +158,143 @@ describe('optionalGroupedHopCount (item 2123)', () => {
     expect(fused).toBe(general);
   });
 
-  test('⚠️ a key on the FAR end is REFUSED — grouping is per anchor', () => {
-    /*
-     * 🔑 The walk makes ONE pass over anchors, so a key over `b` would need the edges — that is
-     * `detectGroupedHopCount`'s far-keyed walk and a different shape. Asserted by the ANSWER.
-     */
-    const g = graphOf([2, 0, 1, 0, 2, 0]);
-    const q = 'MATCH (a:P) OPTIONAL MATCH (a)-[:E]->(b) RETURN b.k AS g, count(*) AS c';
-    const { fused, general } = bothRoutes(g, q);
+  /*
+   * ⚠️ ITEM 2123 REFUSED A FAR KEY AND ITEM 2124 ADMITS IT, so the test that asserted the refusal is
+   * replaced rather than kept — it was only ever an answer check, and the answer is unchanged.
+   */
+  describe('the FAR-keyed arm (item 2124)', () => {
+    const FQ = 'MATCH (a:P) OPTIONAL MATCH (a)-[:E]->(b) RETURN b.k AS g, count(*) AS c';
 
-    expect(fused).toBe(general);
+    test('⚠️⚠️ each EDGE lands in its own far end\u2019s group, and unmatched anchors in the NULL group', () => {
+      /*
+       * 🔑 THE TWO WALKS DIFFER IN KIND. The start-keyed arm reads the anchor's key ONCE and adds its
+       * whole degree; here the anchor's group is not known in advance, because each edge lands wherever
+       * its own far endpoint points. ⚠️ So an anchor with several edges can contribute to several
+       * groups — which the start-keyed arm can never do, and this fixture must show.
+       */
+      const g = graphOf([2, 0, 1, 0, 2, 0]);
+      const { fused, general } = bothRoutes(g, FQ);
+
+      expect(fused).toBe(general);
+      // ⚠️ And it must DIFFER from the start-keyed answer, or the fixture cannot tell the arms apart.
+      expect(fused).not.toBe(bothRoutes(g).fused);
+    });
+
+    test('⚠️⚠️ a NULL-keyed far vertex MERGES with the unmatched-anchor group', () => {
+      /*
+       * 🔑 THE SUBTLE CASE, and it is why both contributions key through the same `valueKey(… ?? null)`.
+       * An edge to a far vertex that LACKS the key produces a NULL group, and so does an anchor with no
+       * edge at all — ISO GQL has one NULL, so these are ONE group, not two.
+       *
+       * ⚠️ Verified against the general path: two such edges plus three unmatched anchors answer a
+       * single group of FIVE. Keeping them apart would be a wrong answer no bag comparison of the
+       * non-null groups could see.
+       */
+      const g = new Graph();
+
+      g.addVertex({ id: 'v0', labels: ['P'], properties: { k: 'g0' } });
+      g.addVertex({ id: 'v1', labels: ['P'], properties: { other: 1 } });
+      g.addVertex({ id: 'v2', labels: ['P'], properties: { k: 'g0' } });
+      g.addVertex({ id: 'v3', labels: ['P'], properties: { k: null } });
+
+      for (const [i, to] of ['v1', 'v3'].entries()) {
+        g.addEdge({
+          id: `e${i}`,
+          from: g.getVertexById('v0')!,
+          to: g.getVertexById(to)!,
+          labels: ['E'],
+          properties: {},
+        });
+      }
+
+      const { fused, general } = bothRoutes(g, FQ);
+
+      expect(fused).toBe(general);
+      // v0's two edges -> NULL twice; v1, v2, v3 unmatched -> NULL three more. ONE group of five.
+      expect(fused).toBe('null:5');
+    });
+
+    test('⚠️ an ALL-ZERO graph puts every anchor in the NULL group', () => {
+      const g = graphOf([0, 0, 0, 0, 0, 0]);
+      const { fused, general } = bothRoutes(g, FQ);
+
+      expect(fused).toBe(general);
+      expect(fused).toBe('null:6');
+    });
+
+    test('🔑 a FAR LABEL excludes the edges it rejects, and those anchors fall to NULL', () => {
+      /*
+       * ⚠️ The far label is tested in the far walk exactly as `sideOfVertex` tests it, so both arms
+       * agree on WHICH edges qualify. 🔑 An anchor whose every edge is rejected by the label has no
+       * qualifying edge, so it contributes its null row — the label must not just drop the edge.
+       */
+      const g = new Graph();
+
+      g.addVertex({ id: 'v0', labels: ['P'], properties: { k: 'a' } });
+      g.addVertex({ id: 'v1', labels: ['P', 'Q'], properties: { k: 'b' } });
+      g.addVertex({ id: 'v2', labels: ['P'], properties: { k: 'c' } });
+      g.addEdge({
+        id: 'e0',
+        from: g.getVertexById('v0')!,
+        to: g.getVertexById('v1')!,
+        labels: ['E'],
+        properties: {},
+      });
+      g.addEdge({
+        id: 'e1',
+        from: g.getVertexById('v0')!,
+        to: g.getVertexById('v2')!,
+        labels: ['E'],
+        properties: {},
+      });
+
+      const q = 'MATCH (a:P) OPTIONAL MATCH (a)-[:E]->(b:Q) RETURN b.k AS g, count(*) AS c';
+      const { fused, general } = bothRoutes(g, q);
+
+      expect(fused).toBe(general);
+      // Only the edge to v1 qualifies: group 'b' = 1, and v1/v2 (unmatched) give NULL = 2.
+      // ⚠️ `bagOf` renders with `String`, not JSON — so the value is `b`, unquoted.
+      expect(fused).toBe('b:1,null:2');
+    });
+
+    test('⚠️ an INCOMING far-keyed hop agrees too', () => {
+      const g = graphOf([2, 0, 1, 0, 2, 0]);
+      const q = 'MATCH (a:P) OPTIONAL MATCH (a)<-[:E]-(b) RETURN b.k AS g, count(*) AS c';
+      const { fused, general } = bothRoutes(g, q);
+
+      expect(fused).toBe(general);
+    });
+
+    test('🔑 a FILTERED anchor restricts the far-keyed walk too', () => {
+      const g = graphOf([2, 0, 1, 0, 2, 0]);
+      const q =
+        'MATCH (a:P) WHERE a.n > 1 OPTIONAL MATCH (a)-[:E]->(b) RETURN b.k AS g, count(*) AS c';
+      const { fused, general } = bothRoutes(g, q);
+
+      expect(fused).toBe(general);
+      expect(fused).not.toBe(bothRoutes(g, FQ).fused);
+    });
+
+    test('⚠️ a key over a THIRD variable is refused, not guessed at', () => {
+      /*
+       * 🔑 The key must name one END of this hop. `r.k` over the edge variable names neither, so the
+       * gate declines and the general path answers. ⚠️ Asserted by the ANSWER, which must still be
+       * right either way.
+       */
+      const g = graphOf([2, 0, 1, 0, 2, 0]);
+      const q = 'MATCH (a:P) OPTIONAL MATCH (a)-[r:E]->(b) RETURN r.k AS g, count(*) AS c';
+      const { fused, general } = bothRoutes(g, q);
+
+      expect(fused).toBe(general);
+    });
+
+    test('⚠️⚠️ `ORDER BY` is refused HERE too, and admitting it would drop the sort', () => {
+      const g = graphOf([2, 1, 1, 1, 2, 1]);
+      const sorted = query(g, `${FQ} ORDER BY g`).map((r) => r.g);
+      const asc = [...sorted].sort((x, y) => Number(x) - Number(y));
+
+      expect(sorted).toStrictEqual(asc);
+    });
   });
 
   test('⚠️⚠️ `ORDER BY` IS REFUSED, AND ADMITTING IT DROPS THE SORT — a silent wrong answer', () => {

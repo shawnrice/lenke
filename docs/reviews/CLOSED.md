@@ -105690,7 +105690,7 @@ unexplained and smaller; the quantifier is the difference from its fixed-chain f
 
 GATES. Probe only — no engine change. `bun run check` 0 read unpiped; 5,129 GQL tests green.
 
-## Item 2123 — ✅ **SHIPPED: `OPTIONAL MATCH` + `GROUP BY` gets a rung — 307.8 → 29.0 ms (10.6x), three controls flat.** The seventh "a rung for each half, none for the pair" defect in a row
+## Item 2123 — ✅ **SHIPPED: `OPTIONAL MATCH` + `GROUP BY` gets a rung — 307.8 → 29.0 ms (10.6x), three controls flat.** The seventh "a rung for each half, none for the pair" defect in a row — ⚠️ ~~and the FAR-keyed form left open at 361 ms~~ **TAKEN at item 2124 (3.22x), though still 1.85x above its floor**
 
 Item 2122 isolated it: each half had a rung and the pair fell to the general path — one binding and one
 row per edge, then grouping.
@@ -105740,3 +105740,65 @@ would need the null rows folded into it.
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 5,139 GQL
 tests; seven fuzzers green; 5/5 sweeps. `routes-fired.test.ts`'s detector count moved 36 → 37.
+
+## Item 2124 — ✅ **SHIPPED: the FAR-keyed OPTIONAL grouped count joins the rung — 358.3 → 111.3 ms (3.22x), four controls flat.** Item 2123's own heading advertised it as open; ⚠️ **and it is NOT at its floor — 1.85x remains**
+
+Item 2123 refused a far key and priced the refusal at 361 ms. 🔑 **TWO WALKS, BECAUSE THE KEY'S END
+DECIDES THE SHAPE** — `detectGroupedHopCount`'s own rule, and the OPTIONAL twin needs it for the same
+reason:
+
+- **START-keyed** (item 2123): read the anchor's property ONCE, add its whole `max(1, degree)`. O(V).
+- **FAR-keyed** (this item): the anchor's group is not known in advance — each EDGE lands in the group its
+  own far endpoint names, and an anchor with NO qualifying edge contributes one row to the NULL group.
+  O(V + E).
+
+```text
+    arm                             OFF       LIVE
+    farkey                        358.3     111.3     3.22x
+    farkey_filtered               365.5     103.5     3.53x
+    start-keyed (2123, control)    27.4      24.4     1.12x  ✓
+    non-OPTIONAL (control)         11.3      11.5     0.98x  ✓
+    ungrouped (control)             6.3       6.3     1.00x  ✓
+    EDGE key r.k (declines)       341.9     318.2     1.07x  ✓
+```
+
+### ⚠️⚠️ THE SUBTLE CASE: A NULL-KEYED FAR VERTEX MERGES WITH THE UNMATCHED GROUP
+
+An edge to a far vertex that LACKS the key produces a NULL group, and so does an anchor with no edge at
+all. 🔑 ISO GQL has ONE null, so these are **one group, not two** — verified against the general path: two
+such edges plus three unmatched anchors answer a single group of FIVE. Keying both contributions through
+the same `valueKey(… ?? null)` is what makes that automatic, and no bag comparison of the non-null groups
+could have caught it.
+
+**16 tests** (9 from item 2123, 7 new), each against the general path. **9/11 mutants CAUGHT.**
+
+⚠️⚠️ **THE TWO SURVIVORS ARE UNREACHABLE CODE, NOT WEAK TESTS — each candidate was CHECKED rather than
+assumed:**
+
+- A key over the EDGE (`r.k`) needs a named relationship variable, which `rel.variable !== undefined`
+  refuses ABOVE, before the projection is analyzed. Verified: the query answers correctly via the general
+  path with the guard mutated away.
+- A key over an UNBOUND variable (`c.k`) **throws** at validation, before any rung is consulted.
+- `key.variable` is never `undefined` for a `prop` expression, so the `farVar !== undefined` arm cannot
+  fire.
+
+🔑 They stay as the gate's contract — the walk reads one end or the other and has no third behaviour, and
+each costs one comparison per COMPILE — with that reasoning written beside them so the next reader does
+not conclude the tests are blind.
+
+### ⚠️⚠️ NOT AT ITS FLOOR — THE NEXT TARGET, WITH A NUMBER
+
+```text
+    OPTIONAL far-key (this item)   112.0 ms
+    non-OPTIONAL far-key (FLOOR)    60.5          <- still 1.85x
+    non-OPTIONAL start-key           23.3
+    OPTIONAL start-key (2123)        31.9
+```
+
+🔑 Part of that 52 ms is inherent: the OPTIONAL form MUST visit every anchor to find the unmatched ones,
+while the non-OPTIONAL can drive from the edges. ⚠️ **But 200,000 anchor visits at ~34 ns is ~7 ms, so ~45
+ms is UNEXPLAINED** — enough to be worth a profile rather than a guess. Likely the per-vertex
+`edgesOfTypes` lookup against whatever the non-OPTIONAL route drives from.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 5,146 GQL
+tests; seven fuzzers green; 5/5 sweeps; the spelling probe flags 0 groups.

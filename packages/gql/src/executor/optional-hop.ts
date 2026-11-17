@@ -18,7 +18,8 @@
 import type { Graph, Vertex } from '@lenke/core';
 
 import type { Clause, Projection } from '../ast.js';
-import { relTypeNames } from './adjacency.js';
+import { matchesLabel } from '../graph-queries.js';
+import { edgesOfTypes, relTypeNames } from './adjacency.js';
 import type { Params, Row } from './core.js';
 import { plainNode, plainRel, sideOfVertex } from './hop-sides.js';
 import { valueKey } from './rows.js';
@@ -231,13 +232,13 @@ export const detectOptionalGroupedHopCount = (
     return null;
   }
 
-  const picked = anchorKeyedCountStar(ret.projection, v);
+  const picked = hopKeyedCountStar(ret.projection, v, node.variable);
 
   if (picked === null) {
     return null;
   }
 
-  const { keyCol, countCol, keyProp } = picked;
+  const { keyCol, countCol, keyProp, onFar } = picked;
   const out = rel.direction === 'out';
   const far = node.label;
   const name = label?.name;
@@ -258,17 +259,49 @@ export const detectOptionalGroupedHopCount = (
         continue;
       }
 
-      const d = sideOfVertex(vertex, out, types, far);
-      // 🔑 THE `max(1, …)`: an unmatched anchor still contributes its null-filled row, to ITS group.
-      const add = d === 0 ? 1 : d;
-      const key = vertex.properties[keyProp] ?? null;
-      const k = valueKey(key);
-      const seen = groups.get(k);
+      /*
+       * ⚠️⚠️ **TWO WALKS, BECAUSE THE KEY'S END DECIDES THE SHAPE** — `detectGroupedHopCount`'s own rule,
+       * and the OPTIONAL twin needs it for the same reason.
+       *
+       * 🔑 START-KEYED: read the anchor's property ONCE and add its whole `max(1, degree)` to that group.
+       * O(V), and the degree never has to be itemized.
+       *
+       * 🔑 FAR-KEYED (item 2124): the anchor's group is not known in advance — each EDGE lands in the
+       * group its own far endpoint names, and an anchor with NO qualifying edge contributes one row to
+       * the NULL group (verified: `b.k` of a null `b` is NULL). O(V + E).
+       *
+       * ⚠️ AND A FAR VERTEX WHOSE KEY IS LEGITIMATELY NULL MERGES WITH THAT GROUP — verified against the
+       * general path: two edges to null-keyed far ends plus three unmatched anchors answer ONE group of
+       * five, not two groups. Keying both through `valueKey(… ?? null)` is what makes that automatic.
+       */
+      if (!onFar) {
+        const d = sideOfVertex(vertex, out, types, far);
+        // 🔑 THE `max(1, …)`: an unmatched anchor still contributes its null-filled row, to ITS group.
+        const add = d === 0 ? 1 : d;
 
-      if (seen === undefined) {
-        groups.set(k, { key, n: add });
-      } else {
-        seen.n += add;
+        bump(groups, vertex.properties[keyProp] ?? null, add);
+
+        continue;
+      }
+
+      let matched = 0;
+
+      for (const edge of edgesOfTypes(out ? vertex.adjFrom : vertex.adjTo, types)) {
+        const other = out ? edge.to : edge.from;
+
+        // The far label is tested here exactly as `sideOfVertex` tests it, so both walks agree on WHICH
+        // edges qualify.
+        if (far !== undefined && !matchesLabel(other, far)) {
+          continue;
+        }
+
+        matched += 1;
+        bump(groups, other.properties[keyProp] ?? null, 1);
+      }
+
+      if (matched === 0) {
+        // ⚠️ THE NULL-FILLED ROW: `b` is null, so `b.k` is NULL and the row groups there.
+        bump(groups, null, 1);
       }
     }
 
@@ -282,17 +315,34 @@ export const detectOptionalGroupedHopCount = (
   };
 };
 
+/** Add `n` to the group `key` names, keeping the key value as the group's representative. */
+const bump = (groups: Map<string, { key: unknown; n: number }>, key: unknown, n: number): void => {
+  const k = valueKey(key);
+  const seen = groups.get(k);
+
+  if (seen === undefined) {
+    /*
+     * ⚠️ INSERTION-ORDERED, and the bucket holds the KEY VALUE as well as the tally: `valueKey` is not
+     * reversible, so the representative has to be kept. That is `detectGroupedHopCount`'s own rule.
+     */
+    groups.set(k, { key, n });
+  } else {
+    seen.n += n;
+  }
+};
+
 /**
- * `RETURN <anchor>.<k> AS g, count(*) AS c` — the two-item projection this rung answers, or `null`.
+ * `RETURN <a-or-b>.<k> AS g, count(*) AS c` — the two-item projection this rung answers, or `null`.
  *
  * ⚠️ EXACTLY TWO ITEMS, one a property of the ANCHOR and one a bare `count(*)`. 🔑 `SKIP`/`LIMIT`/`ORDER
  * BY` are refused: the walk emits in group-insertion order, and a page or a sort would make that order
  * decide WHICH rows survive — the same reason items 2119/2120's gates refuse them.
  */
-const anchorKeyedCountStar = (
+const hopKeyedCountStar = (
   proj: Projection,
   anchorVar: string,
-): { keyCol: string; countCol: string; keyProp: string } | null => {
+  farVar: string | undefined,
+): { keyCol: string; countCol: string; keyProp: string; onFar: boolean } | null => {
   if (
     proj.items.length !== 2 ||
     proj.distinct ||
@@ -328,7 +378,33 @@ const anchorKeyedCountStar = (
 
   const key = keyItem.expr;
 
-  if (key.kind !== 'prop' || key.variable !== anchorVar || typeof key.key !== 'string') {
+  if (key.kind !== 'prop' || typeof key.key !== 'string') {
+    return null;
+  }
+
+  /*
+   * ⚠️ THE KEY MUST NAME ONE END OF THIS HOP — the anchor or the far node — and nothing else.
+   *
+   * ⚠️⚠️ **BOTH CONDITIONS BELOW ARE UNREACHABLE TODAY, AND THEIR MUTANTS SURVIVE BECAUSE OF IT** — not
+   * because the tests are weak. Item 2124 checked each candidate instead of asserting teeth it does not
+   * have:
+   *
+   * - A key over the EDGE (`r.k`) needs a named relationship variable, which `rel.variable !== undefined`
+   *   refuses ABOVE, before the projection is analyzed. Verified: the query answers correctly via the
+   *   general path with the guard mutated away.
+   * - A key over an UNBOUND variable (`c.k`) **throws** at validation (`variable \`c\` is not defined`),
+   *   before any rung is consulted.
+   * - `key.variable` is never `undefined` for a `prop` expression, so the `farVar !== undefined` arm
+   *   cannot fire either; it exists so an anonymous far end can never match by comparing
+   *   `undefined === undefined`.
+   *
+   * 🔑 They stay because they are the gate's CONTRACT — the walk below reads one end or the other and has
+   * no third behaviour — and because each costs one comparison per COMPILE, not per row. ⚠️ A reader who
+   * mutates them and sees a survivor should read this comment rather than conclude the tests are blind.
+   */
+  const onFar = key.variable === farVar && farVar !== undefined;
+
+  if (!onFar && key.variable !== anchorVar) {
     return null;
   }
 
@@ -339,5 +415,5 @@ const anchorKeyedCountStar = (
     return null;
   }
 
-  return { keyCol: keyItem.alias, countCol: countItem.alias, keyProp: key.key };
+  return { keyCol: keyItem.alias, countCol: countItem.alias, keyProp: key.key, onFar };
 };
