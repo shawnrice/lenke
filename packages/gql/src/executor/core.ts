@@ -5547,6 +5547,12 @@ export type CLinear = {
    * `chainFoldedAggregate`, which answers the same shapes by walking every path. Strictly narrower,
    * so everything it declines falls to that rung.
    */
+  /*
+   * `RETURN DISTINCT <far>.<k>` over a 2+-segment chain, off the level recurrence (item 2119) — the
+   * row twin of `chainFoldLevels`. ⚠️ It must be consulted ABOVE `hop2Projection`, which claimed the
+   * shape and was 27x slower on the same values.
+   */
+  chainDistinctLevels: AlwaysRowsFn | null;
   chainFoldLevels: AlwaysRowsFn | null;
   // ⚠️ Declines at EXECUTION time (vacuity is a graph property) with `undefined`, exactly as
   // `varLengthCount` above it does, so the caller's existing fall-through applies unchanged.

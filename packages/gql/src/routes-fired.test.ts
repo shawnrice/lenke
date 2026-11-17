@@ -153,6 +153,20 @@ describe('every fast-path detector fires for its own shape', () => {
       'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L) RETURN count(DISTINCT c.k) AS c',
       ['chainFoldLevels', 'hop2FoldedAggregate'],
     ],
+    /*
+     * 🔑 THE ROW TWIN of the case above (item 2119). Both compute the same distinct set; the count
+     * reports its size, which is free on top — so the row spelling was paying **27x to do strictly
+     * less** (517.5 ms against 18.8 on the same 97 values) because only the count had the recurrence.
+     *
+     * ⚠️ `hop2Projection` IS STILL WILLING and is listed: it claimed this shape before item 2119 and is
+     * the 517.5. `chainDistinctLevels` is consulted above it, which is the only precedence change that
+     * item made.
+     */
+    [
+      'two-hop RETURN DISTINCT <far prop>',
+      'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L) RETURN DISTINCT c.k AS k',
+      ['chainDistinctLevels', 'hop2Projection'],
+    ],
     /**
      * ⚠️ ITEM 1830's ALLOWLIST, ADMISSIONS AND REFUSALS BOTH. The refusals are the load-bearing
      * half: `sum`/`avg` are order-sensitive in the last ulp and `collect`'s order IS its answer, so
@@ -558,7 +572,7 @@ describe('every fast-path detector fires for its own shape', () => {
 
   // Every one is covered by the table above. Asserted rather than claimed, so a
   // detector added later without a route case fails HERE instead of going unguarded.
-  it('covers all thirty-five detectors', () => {
+  it('covers all thirty-six detectors', () => {
     const covered = new Set(CASES.flatMap(([, , want]) => want));
     const all = new Set(
       Object.keys(
@@ -572,7 +586,8 @@ describe('every fast-path detector fires for its own shape', () => {
     expect([...all].filter((k) => !covered.has(k)).sort()).toEqual([]);
     // 34 -> 35 at item 2087 (`chainStarCount`). This number failing is the guard WORKING: it is how
     // a detector added without a route case above gets found.
-    expect(all.size).toBe(35);
+    // 35 -> 36 at item 2119 (`chainDistinctLevels`).
+    expect(all.size).toBe(36);
   });
 });
 

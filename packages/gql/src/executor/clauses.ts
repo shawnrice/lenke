@@ -1738,6 +1738,21 @@ const fastPath = (linear: CLinear, graph: Graph, params: Params): Row[] | undefi
    * the generic matcher would seed from the other end of the pattern. Measured at 59x — a vacuous
    * `LIMIT`, which defeated the rung's length gate, made the query 25.56 ms -> 0.43.
    */
+  /*
+   * ⚠️⚠️ **ABOVE `hop2Projection` DELIBERATELY, AND THAT IS THE ONLY PRECEDENCE CHANGE HERE (item 2119).**
+   * `hop2Projection` claims `RETURN DISTINCT <far>.<k>` over a two-hop chain and costs **517.5 ms where
+   * the `count(DISTINCT)` twin costs 18.8 on the same 97 values** — 27x to do strictly less, because the
+   * count had the level recurrence and the row spelling did not.
+   *
+   * 🔑 A NARROW GATE ABOVE A BROAD RUNG is item 1583's own fix shape. ⚠️ The risk item 418 names — a
+   * branch ahead of a hot dispatch costing the shape it does NOT claim 1.12x — is why
+   * `detectChainDistinctLevels` refuses a second column, an aggregate, `ORDER BY`, `SKIP`, `LIMIT`, and
+   * any item reading a variable other than the far one.
+   */
+  if (linear.chainDistinctLevels) {
+    return linear.chainDistinctLevels(graph, params);
+  }
+
   const h2 = declinableRung(linear.hop2Projection, graph, params);
 
   if (h2 !== undefined) {

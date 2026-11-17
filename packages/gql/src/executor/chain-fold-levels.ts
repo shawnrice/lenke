@@ -3,6 +3,7 @@ import type { Graph, Vertex } from '@lenke/core';
 import type { Clause, Expr, NodePattern, PathPattern, RelPattern } from '../ast.js';
 import type { CClause, Params, Row } from './core.js';
 import { csrFor } from './csr-cache.js';
+import { freePredicateVars } from './expr-analysis.js';
 import type { AlwaysRowsFn } from './hop-projection.js';
 import { plainNode, plainRel } from './hop-sides.js';
 import { vacuousLabel } from './labels.js';
@@ -418,6 +419,165 @@ export const detectChainStarCount = (
     }
 
     return [{ [outName]: total }];
+  };
+};
+
+/**
+ * The DISTINCT values of a far-end expression, straight off the level recurrence — item 2119.
+ *
+ * ⚠️⚠️ **IT KEEPS NULL AND `foldLevel` DROPS IT, AND THAT IS NOT A STYLE DIFFERENCE.** `count(DISTINCT x)`
+ * counts non-null values; `RETURN DISTINCT x` treats NULL as a present value and emits one row for it.
+ * Verified on a graph with reachable far vertices variously missing the key, holding `null`, and holding
+ * values:
+ *
+ * ```text
+ *     RETURN DISTINCT c.n   ->  [{"n":null},{"n":2},{"n":1}]    three rows, null INCLUDED
+ *     count(DISTINCT c.n)   ->  [{"c":2}]                        nulls EXCLUDED
+ * ```
+ *
+ * 🔑 So this cannot reuse `foldLevel`'s loop with a flag: the `cell === null` skip there is load-bearing
+ * for its own semantics, and sharing it would make one of the two silently wrong. That is the same trap
+ * `detectChainDistinctCount`'s header records ("`distinctRows(rows).length` would be a silent wrong
+ * answer").
+ *
+ * ⚠️ MULTIPLICITY IS IRRELEVANT, exactly as for `min`/`max`: the distinct SET of a multiset is the
+ * distinct set of its support, which is why this is expressible without the paths at all.
+ *
+ * ⚠️ ROW ORDER IS VERTEX ORDER, which is unspecified for a `DISTINCT` projection with no `ORDER BY`
+ * (`order-is-unspecified`) — the general path's order is its own and neither is the answer.
+ */
+const distinctLevel = (
+  pass: Omit<FoldPass, 'name' | 'distinct'> & { readonly outName: string },
+): Row[] => {
+  const { u, order, argFn, env, binding, farVar, outName } = pass;
+  const seen = new Set<string>();
+  const rows: Row[] = [];
+
+  for (let v = 0; v < order.length; v += 1) {
+    if (u[v] === 0) {
+      continue;
+    }
+
+    binding.set(farVar, order[v]);
+
+    const cell = argFn(env);
+    // ⚠️ `valueKey` IS THE ONE DEFINITION OF DISTINCTNESS in this engine — shared with
+    // `UNION`/`EXCEPT`/`INTERSECT` and matched byte-for-byte by the Rust engine. A second keying here
+    // would diverge on exactly the hard values (`-0` against `0`, `NaN`, an element keyed by id).
+    const key = valueKey(cell);
+
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    /*
+     * ⚠️ `?? null` IS DEFENSIVE AND ITS MUTANT SURVIVES — recorded rather than left unexplained. `propOf`
+     * already yields NULL for an absent property, so `argFn` cannot return `undefined` for the shapes
+     * this gate admits and the coalesce is unreachable. 🔑 It stays because the alternative is a reader
+     * having to re-derive that `argFn` can never produce `undefined`: the cost is one `??` on a path that
+     * runs once per DISTINCT value, not per path.
+     */
+    rows.push({ [outName]: cell ?? null });
+  }
+
+  return rows;
+};
+
+/**
+ * `MATCH <chain of 2+ segments> RETURN DISTINCT <far>.<k>` — the distinct SET off the recurrence
+ * (item 2119).
+ *
+ * ⚠️⚠️ **WHY: THE ROW SPELLING COST 27x ITS OWN `count(DISTINCT)` TWIN FOR THE SAME VALUES.** Both must
+ * build the same distinct set; the count then reports its size, which is free on top. Measured at
+ * 200,000 vertices / 600,000 edges, both answering the same 97 distinct values:
+ *
+ * ```text
+ *     hop2  count(DISTINCT c.n)    18.8 ms    1 row     <- had this recurrence
+ *     hop2  RETURN DISTINCT c.n   517.5      97 rows    <- 27x, claimed by `hop2Projection` alone
+ *     hop1  RETURN DISTINCT b.n    19.7      97         <- one hop was already fine
+ *     hop3  RETURN DISTINCT d.n  1610.8      97
+ * ```
+ *
+ * 🔑 So the row-returning spelling paid 27x to do strictly LESS work than its count twin. Item 2118
+ * found it in the CONTROLS of an unrelated question.
+ *
+ * ⚠️ IT MUST SIT ABOVE `hop2Projection`, which claims this shape today and is the 517 ms. A narrow gate
+ * above a broad rung is item 1583's own fix shape; the risk item 418 names (a branch ahead of a hot
+ * dispatch costing the shape it does not claim 1.12x) is why the gate below refuses everything it has
+ * not measured.
+ */
+export const detectChainDistinctLevels = (
+  clauses: readonly Clause[],
+  compiled: readonly CClause[],
+): AlwaysRowsFn | null => {
+  if (clauses.length !== 2) {
+    return null;
+  }
+
+  const [m, ret] = clauses;
+  const [, cret] = compiled;
+
+  if (ret.kind !== 'return' || cret.kind !== 'return') {
+    return null;
+  }
+
+  const shape = chainShapeOf(m);
+
+  if (shape === null) {
+    return null;
+  }
+
+  const { levels, startLabel, pattern } = shape;
+  const proj = cret.projection;
+
+  /*
+   * ⚠️ ONE COLUMN, `DISTINCT`, NOT AGGREGATING, AND NOTHING AFTER IT. Each clause is a shape this rung
+   * has measured: a second column needs a joint key (the multi-column case is separately open), an
+   * aggregate belongs to the fold next door, and `ORDER BY`/`SKIP`/`LIMIT` make row order decide WHICH
+   * rows survive — which a vertex-order pass may not.
+   */
+  if (
+    !proj.distinct ||
+    proj.aggregating ||
+    proj.star ||
+    proj.items.length !== 1 ||
+    (proj.orderBy?.length ?? 0) > 0 ||
+    proj.items[0].isAgg ||
+    ret.projection.skip !== undefined ||
+    ret.projection.limit !== undefined
+  ) {
+    return null;
+  }
+
+  const farVar = pattern.segments[pattern.segments.length - 1].node.variable;
+
+  if (farVar === undefined) {
+    return null;
+  }
+
+  /*
+   * ⚠️⚠️ **THE ITEM MUST READ ONLY THE FAR VARIABLE, AND THIS IS CHECKED RATHER THAN ASSUMED.** The pass
+   * binds `farVar` and nothing else, so an item reading the START (`RETURN DISTINCT a.n`) would evaluate
+   * against an unbound name — a silent wrong answer, not a decline. 🔑 `foldLevel`'s neighbour states
+   * this requirement in a comment and does not test it; its argument comes from an aggregate whose
+   * lowering already bounded it, and this one's does not.
+   */
+  const reads = freePredicateVars(ret.projection.items[0].expr);
+
+  if (reads.size !== 1 || !reads.has(farVar)) {
+    return null;
+  }
+
+  const outName = proj.items[0].name;
+  const argFn = proj.items[0].fn;
+
+  return (graph: Graph, params: Params) => {
+    const { u, order } = levelWalk(graph, levels, startLabel);
+    const binding = new Map<string, unknown>();
+    const env: FoldEnv = { binding, params, graph };
+
+    return distinctLevel({ u, order, argFn, env, binding, farVar, outName });
   };
 };
 

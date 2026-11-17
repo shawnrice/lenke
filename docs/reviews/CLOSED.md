@@ -105417,7 +105417,7 @@ test rather than silencing the rule.
 GATES. Probe only — no engine change. `bun run fmt` 0; `bun run check` 0 read unpiped; the census reports
 81 attributed shapes.
 
-## Item 2118 — ✅ **THE STARVATION IS CORRECT BY 37x: `chainFoldLevels` supersedes `hop2FoldedAggregate`, which is now DEAD BUT HARMLESS.** 🔑 **And the same run found a 27x: `RETURN DISTINCT <far prop>` over two hops costs 27x its own `count(DISTINCT)` twin for the SAME 97 values**
+## Item 2118 — ✅ **THE STARVATION IS CORRECT BY 37x: `chainFoldLevels` supersedes `hop2FoldedAggregate`, which is now DEAD BUT HARMLESS.** ⚠️ **ITS 27x WAS TAKEN AT ITEM 2119 — 25.8x at two hops, 85.1x at three.** 🔑 **And the same run found a 27x: `RETURN DISTINCT <far prop>` over two hops costs 27x its own `count(DISTINCT)` twin for the SAME 97 values**
 
 Item 2117's revived census named `hop2FoldedAggregate` as willing-everywhere-firing-nowhere, starved by
 `chainFoldLevels`. ⚠️ **The stakes were a shipped fix**: that rung exists because item 1824 removed a
@@ -105467,3 +105467,68 @@ needs its own mutation round. Expected 517 → ~19.
 
 GATES. Probe only — no engine change (the oracle was reverted; `chainFoldLevels`'s gate verified back).
 `bun run check` 0 read unpiped; 5,087 GQL tests green.
+
+## Item 2119 — ✅ **SHIPPED: `RETURN DISTINCT <far>.<k>` over a 2+-segment chain goes on the level recurrence — 493.3 → 19.1 ms (25.8x) at two hops and 1633.0 → 19.2 (85.1x) at three, three controls flat**
+
+Item 2118 found it in the CONTROLS of an unrelated question: the row spelling cost **27x its own
+`count(DISTINCT)` twin for the same 97 values**. Both must build the same distinct set; the count then
+reports its size, which is free on top — so the row spelling paid 27x to do strictly less, because only
+the count had `chainFoldLevels`'s level recurrence.
+
+```text
+    shape                            KILLED     LIVE
+    hop2  RETURN DISTINCT c.n        493.3      19.1    25.8x
+    hop3  RETURN DISTINCT d.n       1633.0      19.2    85.1x
+    hop2  count(DISTINCT c.n)         18.5      19.7     0.94x  ✓ control
+    hop1  RETURN DISTINCT b.n         20.1      20.3     0.99x  ✓ control
+    hop2  RETURN c.n (not distinct)  700.5     682.5     1.03x  ✓ control — must emit every row
+```
+
+🔑 The row spelling now costs what its count twin costs (19.1 against 19.7), which is the actual goal.
+
+### ⚠️⚠️ IT CANNOT REUSE `foldLevel`'s LOOP, AND NULL IS WHY
+
+`count(DISTINCT x)` counts non-null values; **`RETURN DISTINCT x` treats NULL as a present value and emits
+a row for it.** Verified before anything was written, on reachable far vertices variously missing the key,
+holding `null`, and holding values:
+
+```text
+    RETURN DISTINCT c.n   ->  [{"n":null},{"n":2},{"n":1}]    three rows, null INCLUDED
+    count(DISTINCT c.n)   ->  [{"c":2}]                        nulls EXCLUDED
+```
+
+🔑 So `distinctLevel` is a separate loop; sharing `foldLevel`'s with a flag would have made one of the two
+silently wrong, which is the trap `detectChainDistinctCount`'s header already records. ⚠️ Distinctness
+itself is `valueKey` — the engine's ONE definition, shared with `UNION`/`EXCEPT`/`INTERSECT` and matched
+byte-for-byte by Rust. Verified against the general path with `null`, `NaN` and `-0` rendered
+distinguishably: both routes answer `0,1,2,NaN,null` (so `-0` merges with `0`, `NaN` stays distinct from
+`null`, and a missing key unifies with an explicit one).
+
+### ⚠️ A GUARD THE NEIGHBOURING RUNG DOES NOT HAVE
+
+The pass binds only the far variable, so an item reading the START (`RETURN DISTINCT a.n`) would evaluate
+against an unbound name — a wrong answer, not a decline. 🔑 `foldLevel`'s neighbour states that
+requirement in a comment and does not test it (its argument comes from an aggregate whose lowering already
+bounded it); this gate checks the item's free variables with `freePredicateVars`.
+
+⚠️ **ONE PRECEDENCE CHANGE**: consulted ABOVE `hop2Projection`, which claimed the shape and was the 493
+ms. A narrow gate above a broad rung is item 1583's own fix shape, and the gate refuses a second column,
+an aggregate, `ORDER BY`, `SKIP`, `LIMIT`, and any item reading another variable.
+
+### ⚠️⚠️ A MUTANT PROVED MY TESTS WERE BLIND TO A DROPPED SORT
+
+Nine of the ten tests compare BAGS, correctly — row order is unspecified for a `DISTINCT` projection
+without `ORDER BY`. ⚠️ **But a bag cannot see a dropped sort.** Deleting the `orderBy` clause from the gate
+passed all eight tests, and measured directly returned **[5,1,4,2,3] where [1,2,3,4,5] is correct**. So the
+refusal is LOAD-BEARING, not conservative, and one test now asserts a LIST.
+
+**10 tests; 7/8 mutants CAUGHT** — the null skip, multiplicity ignored, dedupe removed, the far-var check
+dropped, two columns admitted, `ORDER BY` admitted, non-DISTINCT admitted. ⚠️ The survivor is a `?? null`
+that `propOf` makes unreachable; it is documented as defensive rather than left unexplained.
+
+⚠️ `routes-fired.test.ts` enforces that EVERY detector has a shape that fires it — the guard against item
+2118's dead-rung class — so the new rung has a route case and the count moved 35 → 36.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 5,126 GQL
+tests; seven fuzzers green; 5/5 sweeps; the spelling probe flags the same two pre-existing groups as
+before the change.

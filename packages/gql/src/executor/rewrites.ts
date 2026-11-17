@@ -35,6 +35,7 @@ import type {
 } from '../ast.js';
 import { isSyntheticParam } from '../auto-param.js';
 import {
+  detectChainDistinctLevels,
   detectChainFoldLevels,
   detectChainGroupedLevels,
   detectChainStarCount,
@@ -2607,6 +2608,11 @@ export const compileLinear = (linear: LinearQuery): CLinear => {
     hopProjection: detectHopProjection(fast, clauses),
     hop2Projection: detectHop2Projection(fast, clauses),
     chainProjection: detectChainProjection(fast, clauses),
+    /*
+     * ⚠️ `RETURN DISTINCT <far>.<k>` off the SAME recurrence (item 2119) — the row twin of the fold
+     * below, which the row spelling was paying 27x to do without.
+     */
+    chainDistinctLevels: detectChainDistinctLevels(fast, clauses),
     chainFoldLevels: detectChainFoldLevels(fast, clauses),
     // `count(*)` over the same chain, off the same recurrence (item 2087). Its neighbour REFUSES the
     // star, so the two partition cleanly and neither can shadow the other.
