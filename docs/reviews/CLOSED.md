@@ -105590,3 +105590,48 @@ GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-
 tests; seven fuzzers green; 5/5 sweeps. ⚠️ One sweep failed mid-run on `FUZZ_SEED=1901961545` — the known
 `OPTIONAL MATCH` + raising-inline-predicate family — ruled out STRUCTURALLY by replaying with the rung
 killed, where it fails identically.
+
+## Item 2121 — 🔑 **THE CENSUS CORPUS GOES FROM 22/36 RUNGS REACHED TO 34/36, and the "never fires" list collapses from 14 to 2 — both now DEFINITIVELY STARVED rather than unknown.** Two new precedence pairs priced: correct by 82x and 21x
+
+Item 2117 revived the census; running it after items 2119/2120 showed the new pair correctly — and showed
+that **twelve rungs had NO corpus shape at all**, so the census could say nothing about them. Its own
+caveat is _"STARVED or a CORPUS GAP, rule out the gap first"_, and for those twelve the gap WAS the
+answer.
+
+🔑 **THEY ARE NOT A RANDOM TWELVE**: ordered, paged, grouped and multi-column-DISTINCT chains, plus `FOR`
+and `OPTIONAL`+`ORDER BY` — **exactly the shapes items 2119/2120's gates refuse.** The surface those items
+declined was the surface nothing reported on. Each shape added is taken from the detector's own header
+rather than guessed.
+
+```text
+    before          after
+    87 shapes       100 shapes
+    22/36 reached   34/36 reached
+    6 pairs          8 pairs
+    14 never fire    2 never fire  (and both are STARVED, not gaps)
+```
+
+### The two new pairs, priced rather than assumed
+
+⚠️ A starved rung is a CANDIDATE — item 2118 priced the sibling pair and found the starvation **correct by
+37x**. Same treatment, with the oracle form (`false && …`, never `undefined ?? rung(…)`):
+
+| shape                                                         | recurrence OFF | ON       |         |
+| ------------------------------------------------------------- | -------------- | -------- | ------- |
+| `chain3.foldedagg` (`chainFoldLevels > chainFoldedAggregate`) | 2418.3 ms      | **29.5** | **82x** |
+| `hop2.groupedstart` (`chainGroupedLevels > hop2GroupedCount`) | 542.7          | **25.9** | **21x** |
+| `hop2.count` (control)                                        | 0.4            | 0.4      | flat ✓  |
+| `node.proj` (control)                                         | 5.4            | 6.5      | flat ✓  |
+
+🔑 **SO ALL THREE STARVATION RELATIONSHIPS ARE CORRECT — 37x, 82x, 21x.** The level recurrence (items
+2010/2087) has superseded the path-walking fold rungs across every width the census reaches.
+
+### ⚠️ WHAT THAT LEAVES: TWO RUNGS THAT ARE DEAD, NOT STARVED
+
+`chainFoldedAggregate` and `hop2FoldedAggregate` are now the only rungs that never fire — **written,
+correct, willing, and 37-82x worse than what supersedes them.** Item 1790's `boundedTop` precedent says
+that is worth removing (−93 lines there), and removing a rung is its own item with its own mutation round.
+⚠️ Recorded here so the next reader does not re-derive the pricing: it is done, three times.
+
+GATES. Probe/corpus only — no engine change (both oracles reverted, `clauses.ts` verified clean of the
+`// ORACLE` marker). `bun run check` 0 read unpiped; the census reports 94/100 shapes with a willing rung.

@@ -310,6 +310,43 @@ const SHAPES = [
   ['let.count', 'MATCH (a:P)-[:E]->(b) LET v = b.k RETURN count(v) AS c'],
   ['filter.count', 'MATCH (a:P)-[:E]->(b) FILTER b.k > 5 RETURN count(*) AS c'],
   ['filter.node.count', 'MATCH (n:P) FILTER n.k > 5 RETURN count(*) AS c'],
+  /*
+   * ⚠️⚠️ **TWELVE RUNGS HAD NO CORPUS SHAPE AT ALL (item 2121), so the census could say nothing about
+   * them** — not whether they are starved, not whether they are dead. Its own caveat is "STARVED or a
+   * CORPUS GAP, rule out the gap first", and for these the gap WAS the answer. Each shape below is taken
+   * from the detector's own header rather than guessed.
+   *
+   * 🔑 THEY ARE NOT RANDOM: ordered, paged, grouped and multi-column-DISTINCT chains are exactly the
+   * shapes items 2119/2120's gates REFUSE, so this is the surface those items declined and nothing
+   * reported on.
+   */
+  // --- FOR (list unwind), items 528 / for-unwind.ts --------------------------
+  ['for.count', 'MATCH (n:P) FOR t IN n.tags RETURN count(*) AS c'],
+  ['for.proj', 'MATCH (n:P) FOR t IN n.tags RETURN t AS t'],
+  // --- OPTIONAL + ORDER BY ---------------------------------------------------
+  [
+    'optional.ordered',
+    'MATCH (a:P) OPTIONAL MATCH (a)-[:E]->(b:P) RETURN a.k AS x, b.k AS y ORDER BY x, y',
+  ],
+  // --- three-segment chains (rows, folded aggregate, grouped, ordered, paged) -
+  ['chain3.rows', 'MATCH (a:P)-[:E]->(b:P)-[:E]->(c:P)-[:E]->(d:P) RETURN d.k AS k'],
+  [
+    'chain3.foldedagg',
+    'MATCH (a:P)-[:E]->(b:P)-[:E]->(c:P)-[:E]->(d:P) RETURN count(DISTINCT d.k) AS c',
+  ],
+  [
+    'chain3.grouped',
+    'MATCH (a:P)-[:E]->(b:P)-[:E]->(c:P)-[:E]->(d:P) RETURN d.k AS k, count(*) AS c',
+  ],
+  ['chain3.ordered', 'MATCH (a:P)-[:E]->(b:P)-[:E]->(c:P)-[:E]->(d:P) RETURN d.k AS k ORDER BY k'],
+  ['chain3.paged', 'MATCH (a:P)-[:E]->(b:P)-[:E]->(c:P)-[:E]->(d:P) RETURN d.k AS k SKIP 5'],
+  // --- two-hop ordered / paged / grouped-by-start -----------------------------
+  ['hop2.ordered', 'MATCH (a:P)-[:E]->(b:P)-[:E]->(c:P) RETURN c.k AS k ORDER BY k'],
+  ['hop2.paged', 'MATCH (a:P)-[:E]->(b:P)-[:E]->(c:P) RETURN c.k AS k SKIP 5'],
+  ['hop2.groupedstart', 'MATCH (a:P)-[:E]->(b:P)-[:E]->(c:P) RETURN a.k AS k, count(*) AS c'],
+  // --- multi-column DISTINCT at depth 0 and 1 (items 1853 / hop-projection) ---
+  ['node.distinctrows2', 'MATCH (n:P) RETURN DISTINCT n.k AS a, n.n AS b'],
+  ['hop.distinctrows2', 'MATCH (a:P)-[:E]->(b:P) RETURN DISTINCT b.k AS x, b.n AS y'],
 ];
 
 const shapesOf = (q) => {
