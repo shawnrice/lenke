@@ -105149,9 +105149,68 @@ spec needed two expressions and the harness takes one.
 shortcut IS returned, pointing at the behavioural file, because a gate boolean cannot express "lazy for a
 breaking caller".
 
-🔑 **STILL OPEN: the HOP form.** `hop + store + values` is 142 ms at 200,000 / fanout 3 and the route
-screen has it generic with 2 `applyStep` calls. Per row it is **89 ns against the no-bag hop's 13 — 6.7x**
-for adding a bag. This fusion does not claim it and a hop twin would be a new rung.
+⚠️ ~~**STILL OPEN: the HOP form.**~~ — **CLOSED AT ITEM 2114: the hop twin was BUILT, is correct, and is
+worth 1.00x.** The 6.7x is the BAG (110 ms of object pushes over the 28 ms walk), not the route, and it is
+paid either way. The 4.17x that justified building it was a floor measuring a materialized array against a
+live adjacency walk.
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 2,749
 Gremlin tests; seven fuzzers green; 5/5 sweeps.
+
+## Item 2114 — ❌ **REFUTED AND REVERTED: the `hop + bag + values` fusion delivers 1.00x, and the 4.17x that justified building it was MY FLOOR MEASURING A DIFFERENT TRAVERSAL**
+
+Item 2113 left the hop form of the scan-bag shape generic — the route screen reports "2 `applyStep`
+calls [store values]" — at 89 ns/row against the no-bag hop's 13. A floor put the win at **4.17x**:
+
+```text
+    engine today                       139.5 ms   291 ns/row
+    the fused hop, bagged BY HAND       33.5        70        <- "the floor"
+    the fused hop + values, NO bag      28.0        58
+```
+
+The fusion was built: a `[bag, values(k)]` branch in `hopValuesShortcut` whose bag push rides in `pick`
+(called exactly once per far vertex at all 13 walk sites), `consumed = 4`, both bag kinds admitted since
+the walk is a generator, with `ctx` threaded through two call sites as an optional parameter.
+
+🔑 **IT WORKS AND IT IS CORRECT**: the route screen went to **0 `applyStep` calls**, the direct call
+returns 480,000 rows with a 600,000-element bag and an empty residual, and all 2,749 Gremlin tests pass.
+
+### ⚠️⚠️ AND IT IS WORTH NOTHING — 1.00x, ALTERNATED
+
+```text
+    arm                  KILLED    LIVE
+    engine               138.9    139.9   1.00x
+    engineBare (control)  27.8     26.4   1.05x
+```
+
+🔑 **THE FLOOR WAS THE ERROR.** `handFused` calls `toArray(traversal(V(), out('E')), g)` first — which
+MATERIALIZES the hop's 600,000 far vertices into an array using the fast bare-hop walk — and then scans
+that flat array. The engine walks the LIVE adjacency. **Two different traversals**, so 33.5 against 139.5
+was never the bag's cost; it was an array scan against an adjacency walk.
+
+⚠️ The same numbers read honestly say the opposite: `engineBare` 28 ms against `engine` 139 is **the BAG
+ITSELF** — ~110 ms to push 600,000 vertex objects into an array — and that is paid on either route.
+Measured directly, the fused walk costs **104 ms where the generic route costs ~107**.
+
+### Reverted, and why rather than keeping it
+
+⚠️ A no-op fusion is not free to keep: it threads a `ctx` parameter through two call sites and adds a
+SIXTH closure shape to a `pick` call site shared by 13 walk variants — `ts-closure-size-is-load-bearing`
+and `executor-edits-perturb` both price that kind of change at up to 16% on unrelated rows. 🔑 So the
+change is reverted in full (route verified back to generic, 2,749 tests green) and the probe is kept with
+a corrected header.
+
+### What this closes
+
+🔑 **The hop-bag shape is CLOSED, not open**: the bag is the cost and it is irreducible at this
+granularity. Item 2113's closing note — "a hop twin would be a new rung" — is answered: the rung is
+buildable, correct, and worth 1.00x. ⚠️ Anything that attacks this shape must attack the 110 ms of object
+pushes, not the route.
+
+⚠️ **AND THE METHOD LESSON IS THE DURABLE PART.** `floor-arm-must-take-same-route` is a standing rule here
+and I broke it in the one place it mattered: a floor whose source is a MATERIALIZED INTERMEDIATE is a
+floor for a different query. The tell was available before building — `handFused` (33.5) being only 1.2x
+its own no-bag reference (28.0) while claiming to add 600,000 array pushes is not credible.
+
+GATES. Change reverted; route verified generic again; 2,749 Gremlin tests green; `bun run check` 0 read
+unpiped.
