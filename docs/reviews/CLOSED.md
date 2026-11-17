@@ -103244,3 +103244,86 @@ floor is the one with its arms asserted equal.
 
 GATES. Measurement only — no engine change. `bun run check` 0 read unpiped; `node --check` on both new
 probes.
+
+## Item 2084 — 🔑 **`aggsum`'s residue LOCATED: the `properties` GETTER is 9.5 ns a row, 25% of the query.** ❌ And BOTH fixes are disqualified — the big one by a cross-element staleness hazard, the small one by measurement (the sign FLIPPED between rounds)
+
+Item 2083 priced the binding (4.2 ns a row), the array push (5.5) and the three passes (1.4) against
+`aggsum`'s measured 38.8, leaving ~70% unattributed. This builds the loop up term by term — a
+CONSTRUCTIVE decomposition, because item 2067 established that substituting a constant measures a
+different loop. Every arm is asserted to the same sum; 200,000 rows, medians of 14, two rounds.
+
+### ⚠️ ONE ARM PRICED A TERM THE ENGINE DOES NOT PAY
+
+| arm                                                              | ns/row   |
+| ---------------------------------------------------------------- | -------- |
+| the container alone (`verticesByLabel.get(name)` is a **`Set`**) | 1.8      |
+| + `matchesLabel` per row                                         | 13.1     |
+| **the engine's actual envelope** (no label test)                 | **15.0** |
+| + the label test                                                 | 26.3     |
+
+🔑 **THE LABEL TEST IS 11.3 ns A ROW — AND `aggsum` NEVER RUNS IT.** The dist reads `if (seeded !==
+void 0 && !matchesLabel(v, labelEff)) continue;`, and with no `WHERE` there is no seed, so the test is
+skipped. ⚠️ That arm is kept, because the 11.3 ns IS paid by every SEEDED scan — the `point`/`hopfilter`
+family — which is a target this item did not pursue and a later one should.
+
+### 🔑 THE REAL TERM: THE FLOOR WAS BUILT ON PLAIN OBJECTS
+
+Every arm above used `{ properties: { … } }`, a plain FIELD read. A real `Vertex` exposes
+`get properties()`, which was visible in the profile at 3.7%. Same loop, same container, real elements:
+
+| arm                                 | ns/row   |
+| ----------------------------------- | -------- |
+| plain object, field read            | 3.1      |
+| **real `Vertex`, getter**           | 8.7      |
+| the envelope over plain objects     | 10.8     |
+| **the envelope over real vertices** | **20.3** |
+
+So the getter is **9.5 ns a row in context** — 25% of `aggsum` — and this is why items 2067 and 2077 kept
+landing on value-extraction frames and finding no lever: the frame was real. ⚠️ [[floor-arm-must-take-same-route]]
+said this in general terms; here the wrong data structure hid a quarter of the query.
+
+### ❌ THE BIG FIX IS A WRONG ANSWER WAITING
+
+The steady-state getter is three private-field reads (`#graph`, `#box`, `#box`) plus `?.bag ?? {}`.
+Caching `box.bag` in a private field would cut that to one — **and it goes stale**: `box.bag = frozen`
+IS reassigned by the properties setter, and boxes are **SHARED BY ID** across elements, so element A's
+cached bag is wrong the moment a different element with the same id writes. ⚠️ That is exactly
+[[label-index-vs-setter]]'s shape — an index trusted by a fast path that a public setter does not
+maintain — and it is why this is recorded as disqualified rather than deferred.
+
+### ❌ AND THE SMALL FIX IS NOT MEASURABLE — THE SIGN FLIPPED
+
+Removing only the redundant third private read is staleness-free (the bag is still read fresh each
+call). Priced against the current shape, ⚠️ **with the box cache warmed first**, since the first read per
+element populates `#box` and an unwarmed run prices 200,000 Map lookups the engine pays once:
+
+```text
+    round 1    three 8.02   one 6.53      one FASTER by 1.5 ns
+    round 2    three 6.68   one 8.73      one SLOWER by 2.1 ns
+    plain      2.10 / 2.22                stable
+```
+
+🔑 **The sign flips, so the field count is not the cost — the ACCESSOR CALL is.** `plain` is stable at
+2.1 against the getter's 6.7-8.0, and that ~4.5 ns cannot be removed without making `properties` a
+field, which is what the freeze and index maintenance exist to prevent. Nothing to build.
+
+### What is accounted for, and what is not
+
+| term                               | ns/row  | of 38.8  |
+| ---------------------------------- | ------- | -------- |
+| container iteration                | 1.8     | 5%       |
+| the envelope's own work            | 9.0     | 23%      |
+| **the `properties` getter**        | **9.5** | **25%**  |
+| the array push (item 2083)         | 5.5     | 14%      |
+| the three passes (item 2083)       | 1.4     | 4%       |
+| the binding round trip (item 2083) | 4.2     | 11%      |
+| **still unexplained**              | **~7**  | **~18%** |
+
+⚠️ These overlap — the envelope figure already contains the binding and the push — so they are not
+additive, and the honest statement is that the envelope over REAL vertices (20.3) is **52% of the
+engine's 38.8**, with the remainder in the compiled-closure dispatch and the per-query setup the
+decomposition does not model.
+
+GATES. Measurement only — no engine change. `bun run check` 0 read unpiped; `node --check` on both new
+probes. ⚠️ `realvertex-2084.mjs` must run FROM `packages/native`: `@lenke/core` does not resolve from
+the scratchpad.
