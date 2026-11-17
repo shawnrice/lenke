@@ -102049,7 +102049,7 @@ walk, measure what that bounds, and only then decide. 27% is the ceiling's upper
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `node --check` on the probe. Two stale claims
 corrected (item 2052's per-hop summary, the probe's item-1618 comment); no engine change.
 
-## Item 2065 — ✅ **THE ABLATION CEILING IS REAL THIS TIME: removing the two-hop walk's projection is 1.69x (776.3 → 458.7), and removing the per-row binding too is 1.86x — with both controls flat.** ⚠️ Unlike item 2031's 20.9%-share nomination, which ablated to 0% reachable
+## Item 2065 — ⚠️⚠️ **WITHDRAWN BY ITEM 2067 — ~~THE ABLATION CEILING IS REAL THIS TIME: removing the two-hop walk's projection is 1.69x~~ IS NOT A CEILING.** The ablation replaced a computed value with a CONSTANT, which does not bound the cost of computing it: item 2066's real specialization won 0, and five floor arms at item 2067 found no 154 ns/row term in the read, the keyed-ness, the row object, the push or locality. The controls WERE flat and the arms WERE alternated; the fault is in what a constant-substitution ablation can mean
 
 Item 2064 nominated `propOf` + `get properties` at 27% of the two-hop walk's profile and refused to
 build on a profile share, because this same rung is where item 2030 nominated 20.9% and item 2031
@@ -102163,3 +102163,70 @@ one-column key IS the value.
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 5,028
 GQL tests green with the specialization in place, and the file reverted afterwards.
+
+## Item 2067 — ❌ **ITEM 2065's 1.69x IS WITHDRAWN: an ablation that substitutes a CONSTANT into the innermost loop does not bound the cost of computing the value.** Five floor arms find no 154 ns/row term — not the read (6.7 ns), not the keyed-ness (22 ms), not the row object (23 ms), not the push, not locality (0.8 ns). 🔑 The 2064-2066 thread is retired
+
+Item 2066 built the specialization item 2065's ceiling nominated and it won **nothing** against a
+same-session control. This item asked what the ceiling had actually been measuring. The answer is: not
+a cost.
+
+### The four engine arms, each differing from its neighbour in ONE term
+
+| arm           | what it pushes                                         | `hop2rows`, 7 reps |
+| ------------- | ------------------------------------------------------ | ------------------ |
+| LIVE          | `projectRow(projection, binding, params, graph)`       | **741.8**          |
+| STATICKEY     | `{ k: c.properties[key] ?? null }`                     | **719.0**          |
+| NAMEDLOAD     | `{ k: c.properties.k ?? null }`                        | **699.5**          |
+| FRESHOBJ      | `{ k: 0 }`                                             | **472.0**          |
+| READTHENCONST | reads `c.properties.k`, DISCARDS it, pushes `{ k: 0 }` | **715.4**          |
+
+Read as differences: `projectRow` dispatch + computed row key ≈ **23**, keyed against named load ≈
+**22**, and everything else — **~215** — sits between NAMEDLOAD and FRESHOBJ. 🔑 **`READTHENCONST`
+says that 215 is the READ**: performing it and throwing the value away costs the same as using it.
+
+### ⚠️⚠️ BUT THE READ COSTS 6.7 ns, NOT 154
+
+`propread-floor-2067.mjs` prices the same operations outside any engine, 200,000 vertices, 11 reps:
+
+```text
+    loop floor (v.id)          5.9 ns/read
+    v.properties.k            13.2        ⬅ the READ alone is 6.7 ns a row
+    hoisted bag.k             12.8
+    SEQUENTIAL order read     10.5
+    RANDOM order read         11.4        ⬅ locality is 0.8 ns a row, not 154
+```
+
+**Every candidate mechanism fails by more than an order of magnitude:**
+
+- the property read: **6.7 ns** against the 154 attributed;
+- the `properties` getter: already box-cached (`#box ??=`), two private-field reads;
+- the keyed load: measured separately at 22 ms total, and `hoisted bag.k` is no cheaper;
+- the row object: 23 ms total;
+- **locality — the hypothesis the engine arms forced**, since the walk reaches its vertex THROUGH AN
+  EDGE while the floor iterates `g.vertices` in order: **0.8 ns a row**. Refuted.
+- the push itself: unstable across runs (const 2.45-3.84, read 3.76-6.12), so it cannot carry weight
+  either way — stated rather than used.
+
+### 🔑 So the finding is methodological, and it is the useful one
+
+**An ablation that replaces a computed value with a CONSTANT measures a different loop, not the cost of
+the computation.** Substituting `0` into the innermost body changes what V8 can optimize there —
+[[ts-closure-size-is-load-bearing]] records a walk inlined in a returned closure giving UNRELATED
+queries a new slow mode at 4x — so the 215 ms is an artifact of the ablation, and item 2065's 1.69x is
+**not a bound on anything buildable**. Item 2066 is the direct evidence: the real change, proven to
+fire, won 0.
+
+⚠️ **WHAT I AM NOT CLAIMING:** that I have identified what the 215 ms IS. Five arms rule out five
+mechanisms; none of them explains it. Saying so is the honest end of this thread rather than inventing
+a sixth.
+
+⚠️ **ITEM 2065's METHOD WAS NOT SLOPPY — ITS ARMS WERE ALTERNATED AND ITS CONTROLS WERE FLAT**, which
+is why this took three items to catch. The flaw is in what a constant-substitution ablation can mean,
+not in how carefully it was run. **The rule that follows: an ablation arm must still COMPUTE what the
+real code computes** — delete the consumer, not the computation — or its ratio bounds nothing.
+
+**DO NOT RE-PRICE THE TWO-HOP PROJECTION FROM A CONSTANT-SUBSTITUTION ABLATION.** Items 2064-2066 are
+retired: the 27% profile share, the 1.69x ceiling and the specialization that would take it.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `hop2-projection.ts` byte-identical to HEAD
+(`git diff --stat` empty). Probe and harness only; no engine change.
