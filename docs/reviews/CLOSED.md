@@ -103825,3 +103825,64 @@ file treats as unresolvable.
 GATES. Measurement only — no engine change. `bun run check` 0 read unpiped; `node --check` on the probe
 (`byid-scaling-2091.mjs`), whose hit assertions throw rather than letting a missing id measure the
 cheaper MISS path.
+
+## Item 2092 — ✅ **NO query path resolves ids per row — COUNTED across nine shapes in both engines, 0.0000 per row, with the counter's teeth PROVEN both ways**
+
+Item 2091 priced a by-id lookup at **142 ns a call at a million elements**. A rung doing one PER ROW
+would pay that on every row, so this asks whether any does.
+
+### The static read: 59 call sites, none per-row
+
+Every `getVertexById` / `getEdgeById` / `verticesById.get` / `edgesById.get` in the three packages'
+`src` (excluding tests and fixtures) falls into one of:
+
+- **the fixture/graph BUILD** — `addVertex`/`addEdge` resolving endpoints. This is why
+  `getVertexById` is 5-16% of EVERY profile in items 2083-2090 and means nothing about query cost.
+- **undo/rollback** — `recordUndo` closures, run only on a rollback.
+- **`Edge`'s cached `??=`** (`#fromV ??= getVertexById(#from)`) — once per edge LIFETIME, then a field.
+- **`hasId(…)` / `V(id)` / `E(id)`** — bounded by the QUERY's own id list, not by the data. ⚠️
+  `index-seed.ts`'s `byId` resolver is reached ONLY by `idSeed` for a `hasId` step, which is why it
+  takes the raw map rather than the method.
+
+🔑 **The one historical per-row instance was already found and fixed**: `count-shortcut.ts` records a
+rung that "iterated the index's ENTRIES and called `getVertexById(id)` per candidate — 1009957 ns
+against this version's 616026", **1.64x**, replaced by driving from the vertices and reading each one's
+cached adjacency box.
+
+### 🔑 BUT A STATIC READ IS NOT A GUARD — SO IT IS COUNTED
+
+`byid-callcount-2092.mjs` patches both the METHODS and the RAW MAPS (⚠️ both, because
+`seedFromIndex` deliberately uses `graph.verticesById.get` rather than `getVertexById`, so counting
+only the method would miss the index-seed path — the one place a per-row resolution could plausibly
+live), counts only WHILE A QUERY RUNS, and reports calls per ROW:
+
+```text
+    shape                                      rows  by-id calls   per row
+    gremlin V().values(n)                     20001            0    0.0000
+    gremlin V().hasLabel(P).id()              20000            0    0.0000
+    gremlin V().out(E).values(n)              60000            0    0.0000
+    gremlin V().both(E).dedupe().count()          1            0    0.0000
+    gql MATCH (n:P) RETURN n.n                20000            0    0.0000
+    gql one hop rows                          60000            0    0.0000
+    gql one hop count                             1            0    0.0000
+    gql two hop count                             1            0    0.0000
+    gql seeded point                            207            0    0.0000
+```
+
+### ⚠️⚠️ A ZERO FROM A BROKEN COUNTER LOOKS IDENTICAL, so the teeth are proven BOTH WAYS
+
+1. **A POSITIVE CONTROL in the probe itself**: `V('v5').values(n)` MUST resolve its id, and it counts
+   **2** calls. The probe THROWS if that reads zero — "the counter is not wired, so every zero below is
+   meaningless".
+2. **An injected per-row lookup is CAUGHT**: adding `graph.getVertexById(v.id)` inside the bare values
+   walk read **2.0000 per row** and threw against the 0.01 limit.
+3. **An injected ONCE-PER-WALK lookup PASSES** (0.0001 per row) — correct, because a bounded lookup is
+   fine. The guard discriminates proportional from constant, which is the distinction that matters.
+
+The injection was reverted and the file confirmed BYTE-IDENTICAL (`git diff --stat` empty).
+
+**So the O(1)-by-id requirement is not merely met (item 2091) but UNUSED on the hot paths, with a
+standing guard that fails loudly if a future rung starts resolving ids per row.**
+
+GATES. Probe only — no engine change. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test --
+--skip-nx-cache` 21/21; `node --check` on the probe.
