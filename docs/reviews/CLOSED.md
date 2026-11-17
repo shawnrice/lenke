@@ -106985,7 +106985,7 @@ at all?** Grepping the three bench files for feature keywords:
 
 ⚠️⚠️ **`OPTIONAL MATCH` IS THE ONE THAT MATTERS, BECAUSE THIS SESSION SHIPPED TWO RUNGS FOR IT AND NEITHER
 HAD A ROW** — item 2123 (307.8 → 29.0 ms, 10.6x) and item 2124 (358.3 → 111.3, 3.22x). 🔑 `bench.ts` itself
-quotes the rule this breaks, item 1177's *"a win with no row is a win that quietly comes undone"*, and item
+quotes the rule this breaks, item 1177's _"a win with no row is a win that quietly comes undone"_, and item
 1184's rows exist because deleting a chain entry is ANSWER-EQUIVALENT and survives every test and fuzzer.
 
 ### ⚠️⚠️ THE EXISTING FIXTURES CANNOT MEASURE IT, WHICH IS WHY A NEW ONE WAS NEEDED
@@ -107031,3 +107031,65 @@ and the per-vertex bucket index is exactly what item 2134 used to take `count(DI
 to 3.30 (6.3x). **Not built; nominated with its mechanism.**
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; the bench runs with the four new rows.
+
+## Item 2146 — ✅✅ **SHIPPED: the OPTIONAL hop count from THREE O(1) COUNTER READS — 18.5 → 0.0 ms in the bench, and TS is now FASTER than native (0.0 against ffi's 0.5).** The row added at item 2145 proved it within one cycle
+
+🔑 Item 2145 added the bench row and nominated this with its mechanism: native answered in **0.6 ms**, far
+too fast for a pass over 200,000 anchors, so a closed form had to exist.
+
+### 🔑 THE ARITHMETIC
+
+Each anchor contributes `max(1, degree)` (item 2123), and `Σ max(1, d) = Σ d + |{anchors with d = 0}|`:
+
+```text
+    count = |edges of the type| + (|anchors| - |anchors having ≥1 such edge|)
+          = edgesByLabel.get(t).size + (vertexCount - edgesFromByLabel.size)
+```
+
+Priced before building: those reads are **0.001 ms and 0.000** against the per-anchor walk's **6.731** over
+200,000 anchors, and `300,000 + (200,000 - 100,000) = 400,000` is exactly what the walk answers.
+
+```text
+    row                       BEFORE     NEW
+    target                      5.12     0.00    >500x
+    incoming direction         14.27     0.00   >1400x
+    far label (declines)       50.75    43.28     ✓
+    anchor WHERE (declines)     9.09     8.92     ✓
+    grouped (control)          18.16    19.21     ✓
+    plain MATCH (control)       0.00     0.00     ✓
+    ---- the bench row ----
+    query: OPTIONAL plain count 18.5     0.0     and ffi is 0.5, so TS now LEADS
+```
+
+### ⚠️⚠️ FOUR CONDITIONS, EACH MAKING ONE TERM EXACT — AND THE SUBTLE ONE IS CHECKED PER CALL
+
+- a **VACUOUS or absent anchor label**, so `vertexCount` is `|anchors|` and every edge of the type leaves
+  an anchor;
+- **no anchor `WHERE`**, for the same reason;
+- **no FAR label** — "qualifying" would depend on the far END, which no counter knows;
+- ⚠️ **exactly ONE edge label in the whole graph.** `edgesFromByLabel` is keyed by VERTEX and its `.size`
+  is "vertices with ANY out-edge"; that equals "vertices with an edge of OUR type" only when one label
+  exists. 🔑 **Checked per CALL, not per compile**, because a write can add a second label to a graph the
+  closure was compiled against — and because both asks share a query TEXT, the plan cache hands back the
+  same closure. A test adds an `F` edge between two asks and pins the answer.
+
+**16 tests**: the arithmetic at five degree distributions against the general path (forced with `ORDER BY`),
+the unmatched-anchor guard (OPTIONAL 8 against plain MATCH's 5, so a fixture that stops distinguishing them
+fails), the incoming direction, all four declines with their answers pinned, three write-then-ask cases, and
+an empty graph. **8/8 mutants CAUGHT** — all four arithmetic mutations and all four gates — with one NAMED
+survivor: disabling the closed form is answer-equivalent (the walk answers identically), the same class as
+items 2130/2131/2134.
+
+### ⚠️ A FUZZ FAILURE RULED OUT STRUCTURALLY, NOT BY COUNTING
+
+The sweep reported `4/5 clean, 1 failing`: `differential fuzz: gremlin`, seed 1600094787. 🔑 Ruled out two
+ways — `git diff` shows this change touches NEITHER `packages/gremlin` NOR `packages/core`, so it cannot
+reach that fuzzer; and replaying the seed with the change REVERTED fails identically (44 pass, 1 fail).
+⚠️ Pre-existing, and a NEW seed in the known Gremlin residual family rather than one that replays clean.
+
+⚠️ **AND MY TEST LITERALS WERE WRONG AGAIN** — four tests asserted 4 where `[2,0,1,0]` gives
+`2+1+1+1 = 5`. Second time this session (item 2133 was the first); the engine corrected me both times, and
+the repo's own item 1611 records the same failure. **Derive the literal from the arithmetic, not by eye.**
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 5,192 GQL
+tests; seven fuzzers green; the sweep's one failure proven pre-existing.

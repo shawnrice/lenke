@@ -108,6 +108,44 @@ export const detectOptionalHopCount = (
   const far = node.label;
   const name = label?.name;
   const one = (graph: Graph, params: Params): Row => {
+    /*
+     * ITEM-2146-CLOSED-FORM: the whole count from THREE O(1) READS, no walk at all.
+     *
+     * 🔑 THE ARITHMETIC. Each anchor contributes `max(1, degree)` (item 2123), and
+     * `Σ max(1, d) = Σ d + |{anchors with d = 0}|`. The first term is every qualifying edge; the second
+     * is the anchors that have none:
+     *
+     * ```text
+     *     count = |edges of the type| + (|anchors| - |anchors having ≥1 such edge|)
+     * ```
+     *
+     * Verified against the walk on the bench fixture: 300,000 + (200,000 - 100,000) = **400,000**, which
+     * is exactly what the per-anchor walk answers.
+     *
+     * ⚠️⚠️ **EVERY TERM IS EXACT ONLY UNDER THE FOUR CONDITIONS BELOW, and each one is load-bearing:**
+     *
+     * - **a VACUOUS or absent anchor label**, so `|anchors|` is `vertexCount` and every edge of the type
+     *   leaves an anchor. A selective label would need the edges FROM that label's vertices, which is not
+     *   a counter;
+     * - **no anchor `WHERE`** (`anchorGate`), for the same reason;
+     * - **no FAR label** — "qualifying" would then depend on the far END, which no counter knows;
+     * - **exactly ONE edge label in the whole graph**, which is what makes
+     *   `edgesFromByLabel.size` — the vertices with ANY out-edge — equal the vertices with one of OUR
+     *   type. ⚠️ With two labels present that identity breaks silently, and a test pins it.
+     *
+     * 🔑 PRICED BEFORE BUILDING: `edgesByLabel.get(t).size` and `edgesFromByLabel.size` are **0.001 ms and
+     * 0.000**, against the walk's **6.731** over 200,000 anchors. The row reads 18.5 ms against native's
+     * 0.6, and native's figure is what said a closed form had to exist.
+     */
+    if (closedFormFits(graph, anchorGate, far, types, name)) {
+      const [type] = types as string[];
+      const withEdge = (out ? graph.edgesFromByLabel : graph.edgesToByLabel).size;
+
+      return {
+        [column]: (graph.edgesByLabel.get(type)?.size ?? 0) + (graph.vertexCount - withEdge),
+      };
+    }
+
     const vertices: Iterable<Vertex> =
       name === undefined ? graph.verticesById.values() : (graph.verticesByLabel.get(name) ?? []);
     // ONE binding map for the whole scan, rewritten per anchor — the general path's cost is a
@@ -137,6 +175,33 @@ export const detectOptionalHopCount = (
   return (graph, params) =>
     pageOneRow(() => one(graph, params), graph, params, proj.skip, proj.limit);
 };
+
+/**
+ * May the OPTIONAL hop count be answered from counters alone (item 2146)?
+ *
+ * 🔑 Each condition makes one term of `|edges| + (|anchors| - |anchors with an edge|)` exact; see the note
+ * at the call site for the arithmetic and the measured prices.
+ *
+ * ⚠️ `edgesByLabel.size === 1` is the subtle one: `edgesFromByLabel` is keyed by VERTEX and its `.size` is
+ * "vertices with ANY out-edge". That equals "vertices with an edge of OUR type" only when the graph holds
+ * exactly one edge label. 🔑 Checked per CALL, not per compile, because a write can add a second label to
+ * a graph this closure was compiled against.
+ */
+const closedFormFits = (
+  graph: Graph,
+  /* Only tested for presence, so the gate's own type need not be imported here. */
+  anchorGate: unknown,
+  far: unknown,
+  types: string[] | undefined,
+  name: string | undefined,
+): boolean =>
+  anchorGate === undefined &&
+  far === undefined &&
+  types?.length === 1 &&
+  graph.edgesByLabel.size === 1 &&
+  graph.edgesByLabel.has(types[0]) &&
+  // A vacuous (or absent) anchor label: every vertex is an anchor, so `vertexCount` is `|anchors|`.
+  (name === undefined || graph.verticesByLabel.get(name)?.size === graph.vertexCount);
 
 /**
  * THE GROUPED OPTIONAL-HOP COUNT: `MATCH (a:L) OPTIONAL MATCH (a)-[:T]->(b) RETURN a.k, count(*)`.
