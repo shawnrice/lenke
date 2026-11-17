@@ -106034,3 +106034,54 @@ right route. The screen measures one thing and I read it as measuring two.
 
 GATES. Probe only, no engine change (`count-shortcut.ts` restored from the live copy and verified);
 `bun run fmt` 0; `bun run check` 0 read unpiped; 2,760 Gremlin tests green.
+
+## Item 2129 — ⚠️ **A MID-TICK ROOT CAUSE OF MY OWN, REFUTED: the filter's POSITION is irrelevant (123.07 vs 123.58 ms).** The rule is that ANY filter costs 8.7x, because the O(V) degree identity needs the source to be every vertex — which this file already documents
+
+Item 2128 priced the gap and confirmed by ablation that the filtered two-hop count never reaches the CSR
+route. 🔑 This tick went looking for WHY and produced a wrong answer first, which is the part worth
+recording.
+
+⚠️ **THE WRONG ANSWER**: `hopChainShape` collects hops from the END backwards and takes everything BEFORE
+them as filters, so `[out, out, has]` breaks immediately, yields zero hops and declines. That reading is
+literally true and explains NOTHING — because the leading spelling, which the gate accepts, costs the same:
+
+```text
+    LEADING filter    has(gt44).out.out.count    123.07 ms   = 2,499,750
+    TRAILING filter   out.out.has(gt44).count    123.58      = 2,499,750
+    no filter         out.out.count               14.23      = 5,000,000
+    LEADING vacuous   has(gt-1).out.out.count    238.51      = 5,000,000
+```
+
+🔑 **THE TWO SPELLINGS AGREE TO WITHIN 0.4%**, which is this repo's equivalent-spelling property HOLDING —
+so whatever the cost is, it is not a gate that one spelling trips and the other does not. ⚠️ I had a
+mechanism that fit one observation and never checked it against the obvious second one.
+
+### 🔑 THE ACTUAL RULE, AND IT IS WRITTEN IN THE FILE ALREADY
+
+> _"ONLY when the source set is every vertex. With a filtered source, `arrivals(w)` would have to count
+> in-edges FROM THE SURVIVORS, which is a per-edge question again — so the walk below stays for that case."_
+
+The unfiltered two-hop count uses an O(V) identity — `arrive * degreeOfTypes(outBox)` per vertex, two
+degree reads and no edge walk. 🔑 **A filter of any kind invalidates that identity**, so the route falls to
+a per-edge walk: 14.23 → 123 (half) or 238 (vacuous). The vacuous arm being DEARER than the selective one
+is the identity's absence, not a predicate cost.
+
+### 🔑 SO THE FIX IS THE ONE `denseChainCount` WAS BUILT FOR, AND IT IS SMALL
+
+`slotChainCount` is a CSR propagation that already takes `seeds: readonly Vertex[]` — **an arbitrary seed
+set, not necessarily every vertex.** It is simply never called with filtered seeds: the only call site sits
+inside the `unfiltered` branch. ⚠️ A CSR propagation answers the filtered question in O(V + E) with no
+identity needed, which is why item 2128's hand-rolled floor measured **5.72 ms with the answer pinned at
+2,499,750** against the engine's 123.
+
+**Next step, concretely:** in the filtered branch, materialize the survivors and try
+`denseChainCount(hops, survivors, graph)` before the per-edge walk. 🔑 What must be preserved: the
+multi-type decline (a `T|S` edge sits in two buckets and summing them double-counts), `oneWalkThroughout`
+(the CSR memo is a function of exactly the direction and labels), and the seed-count floor that keeps a
+small source off a whole-graph CSR build.
+
+⚠️ **STILL NOT BUILT.** Two ticks have now gone to diagnosis; the diagnosis is finished and the remaining
+work is a rung with its own gate, tests and mutation round.
+
+GATES. Probe only, no engine change — `count-shortcut.ts` verified at 0 occurrences of both the
+instrumentation marker and the ablation; `bun run fmt` 0; `bun run check` 0; 2,767 Gremlin tests green.
