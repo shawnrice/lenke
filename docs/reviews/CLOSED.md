@@ -106564,3 +106564,53 @@ the map walk resolves endpoints by id through `Map<string, …>` where the CSR u
 profile or a plausible story. That is now the first move, not the fallback.
 
 GATES. No engine change shipped; `bun run fmt` 0; `bun run check` 0 read unpiped; 2,792 Gremlin tests green.
+
+## Item 2138 — ⚠️⚠️ **BUILT AND REVERTED: the masked-CSR design does NOT beat the reversal in the engine (17-19 ms against ~15), and item 2128's hand-rolled 5.72 ms was a MICRO-PROBE MISPRICE.** One real sub-target found and priced: 5.4 ms of seeding
+
+🔑 **THE DESIGN CAME FROM READING THE GQL TWIN, which is the move that has actually worked.**
+`filtered-chain-csr.ts`'s header names both the cost Gremlin pays and the cure: _"36.2% profiled in
+`sweepOneDirection` (`edgesOfTypes` generator plus a string-keyed slot lookup per edge)"_ and _"EVERY
+POSITION'S CONSTRAINT BECOMES A PER-SLOT MASK … a label and an inline gate are both per-vertex questions,
+so each costs O(V) once per query against a walk over E per pass — free at any realistic degree."_
+
+⚠️ Item 2130 answered this shape by REVERSING the chain so the far filter became a SEED filter, and item
+2137 measured the consequence: a selective filter drops the seed set under `denseChainCount`'s floor, so
+the sharper the filter the more certainly the query fell to the map walk. 🔑 **Masked and UNREVERSED, the
+chain is seeded from every vertex so the floor is always cleared** — which is why this looked like the fix.
+
+### ⚠️ BUILT, CORRECT, FIRES — AND NOT FASTER
+
+```text
+    GRM sharp (4.4%)      19.71 ms   = 222,200     <- the masked arm, instrumented to confirm it ANSWERS
+    GRM half (50%)        16.17      = 2,499,750
+    GRM vacuous (100%)    16.96      = 5,000,000
+    GQL sharp (the floor)  6.92      = 222,200
+```
+
+🔑 Verified by instrumenting the ENTRY and every decline, not inferred: at 200,000 vertices the arm prints
+`ENTERED` then `ANSWERED 222200`, so it IS the route. ⚠️ It is simply no better than the reversal it sits
+in front of, so it is **REVERTED** (0 occurrences of the marker, 2,792 tests green, `check` 0).
+
+### ⚠️⚠️ ITEM 2128's 5.72 ms WAS A MICRO-PROBE MISPRICE — THE FOURTH IN THIS FILE'S HISTORY
+
+That item hand-rolled "CSR 2-hop + far mask" at **5.72 ms with the answer pinned** and recorded it as the
+available floor. 🔑 The SAME algorithm inside the engine costs **17-19 ms**. ⚠️ It joins item 591's inlined
+probe (18.29 against its row's 42.2), item 2125's polymorphic iterable and item 2130's first half. The
+difference is specific and measured, not hand-waved: my hand-rolled version seeded with `ways.fill(1)`
+where `slotChainCount` resolves every seed through a `Map<Vertex, number>`:
+
+```text
+    seed via slotOf.get + frontier push (200k)     6.21 ms
+    seed via ways.fill(1) + dense frontier         0.79
+    ways.fill(1) only                              0.49
+```
+
+🔑 **SO THE ONE REAL SUB-TARGET IS THE ALL-SEEDS PATH: ~5.4 ms of the 17 is seeding** — 200,000
+object-keyed `Map.get` plus 200,000 frontier pushes, both avoidable when the seed set IS every vertex.
+⚠️ Priced, NOT built: 17 − 5.4 ≈ 11.6 still does not reach GQL's 6.9, so it is worth having but is not the
+whole gap, and the remainder is unexplained.
+
+🔑 **SIX MECHANISM GUESSES REFUTED IN TEN ITEMS, and the pattern held again**: reading the GQL header gave
+a sound DESIGN, and it still had to be measured — a design being right does not make it faster here.
+
+GATES. No engine change shipped; `bun run check` 0 read unpiped; 2,792 Gremlin tests green.
