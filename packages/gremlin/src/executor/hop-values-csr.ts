@@ -103,7 +103,12 @@ const startTestFor = (
   return (v: Element): boolean => v.labels.has(name);
 };
 
-export const hopValuesCsr = (plan: Plan, graph: Graph): HopValues | undefined => {
+export const hopValuesCsr = (
+  plan: Plan,
+  graph: Graph,
+  /* ⚠️ Optional, and only for the `[bag, values]` tail (item 2116) — without it that arm declines. */
+  ctx?: { readonly sideEffects: Map<string, unknown[]> },
+): HopValues | undefined => {
   const { steps } = plan;
 
   if (steps.length < 2) {
@@ -146,7 +151,29 @@ export const hopValuesCsr = (plan: Plan, graph: Graph): HopValues | undefined =>
   }
 
   const valueKey = proj?.kind === 'values' && proj.keys.length === 1 ? proj.keys[0] : undefined;
-  const picked = pickFor(proj, valueKey);
+  /*
+   * The `[bag, values(k)]` tail (item 2116). ⚠️ Requires a `ctx` for the bucket; without one this is
+   * `undefined` and the element arm claims the bag step exactly as before.
+   */
+  const bagTail = ((): { bucket: unknown[]; key: string } | undefined => {
+    if (ctx === undefined || (proj?.kind !== 'aggregate' && proj?.kind !== 'store')) {
+      return undefined;
+    }
+
+    const after = steps[labelStep === undefined ? 3 : 4];
+
+    // ONE key, for `valueKey`'s own reason: `values()` and `values(a, b)` are different shapes.
+    if (after?.kind !== 'values' || after.keys.length !== 1) {
+      return undefined;
+    }
+
+    if (!ctx.sideEffects.has(proj.key)) {
+      ctx.sideEffects.set(proj.key, []);
+    }
+
+    return { bucket: ctx.sideEffects.get(proj.key)!, key: after.keys[0] };
+  })();
+  const picked = pickFor(proj, valueKey, bagTail);
 
   if (picked === undefined) {
     return undefined;
@@ -169,7 +196,7 @@ export const hopValuesCsr = (plan: Plan, graph: Graph): HopValues | undefined =>
     // ⚠️ A `fold` IS NOT CONSUMED: it stays in `rest` for `fusedProjectedResidual` to fold over
     // the drained walk (item 1909), which is the whole point of admitting it here.
     // ⚠️ THE LABEL STEP SHIFTS EVERY INDEX BY ONE, `rest` included — it is CONSUMED by `startTest`.
-    rest: steps.slice((picked.consumesProj ? 3 : 2) + (labelStep === undefined ? 0 : 1)),
+    rest: steps.slice(2 + picked.consumes + (labelStep === undefined ? 0 : 1)),
     values: walk(graph, {
       forward: hop.kind === 'out',
       type: hop.labels[0],
@@ -201,7 +228,14 @@ type Picked = {
    * consumed" is how one falls behind the other (item 606's reason), and a `rest` that disagreed
    * with the pick would either drop a step or run it twice.
    */
-  consumesProj: boolean;
+  /*
+   * How many steps AFTER the hop this pick consumes (item 2116 widened this from a boolean).
+   *
+   * ⚠️ 0 leaves the projection in `rest` for the residual dispatch; 1 consumes a `values`/`id`; 2
+   * consumes a `[bag, values]` PAIR. Carried here rather than re-derived at the `rest` slice for item
+   * 1911's reason: two copies of "which kinds are consumed" is how one falls behind the other.
+   */
+  consumes: 0 | 1 | 2;
 };
 
 /**
@@ -212,9 +246,14 @@ type Picked = {
  * own, so the sentinel cannot swallow a real value. A property stored as `null` is PRESENT and is
  * emitted.
  */
-const pickFor = (proj: Step | undefined, valueKey: string | undefined): Picked | undefined => {
+const pickFor = (
+  proj: Step | undefined,
+  valueKey: string | undefined,
+  /* The bucket and key for a `[bag, values(k)]` tail, or `undefined` when the shape is not that. */
+  bagTail: { bucket: unknown[]; key: string } | undefined,
+): Picked | undefined => {
   if (valueKey !== undefined) {
-    return { pick: (e) => e.properties[valueKey], drops: true, consumesProj: true };
+    return { pick: (e) => e.properties[valueKey], drops: true, consumes: 1 };
   }
 
   /*
@@ -224,20 +263,57 @@ const pickFor = (proj: Step | undefined, valueKey: string | undefined): Picked |
    * 29.71 ms against 4.13 for the identical hop through this CSR, after item 1910's gate change had
    * already taken it from 99.53.
    */
+  /*
+   * ⚠️⚠️ **`[bag, values(k)]` AS ONE PICK — item 2116, and it must come BEFORE the element arm below,
+   * which would otherwise claim the same `aggregate`/`store` and leave both steps in `rest`.**
+   *
+   * 🔑 THAT RESIDUAL IS THE WHOLE COST. Both shapes already reach THIS rung — verified by instrumenting
+   * its entry, where `hopValuesShortcut` is never even asked — so they share the CSR walk and differ
+   * only in what runs over it:
+   *
+   * ```text
+   *     hop + values           30 ms   480,000 rows   <- `consumes: 1`, emits VALUES, rest empty
+   *     hop + store            15      600,000        <- the bag alone
+   *     hop + store + values  138      480,000        <- 3.1x the SUM: a 2-step GENERIC residual
+   * ```
+   *
+   * ⚠️ Items 2114 and 2115 attacked this in `hop-values.ts` and read 1.00x — because that file is NOT
+   * CONSULTED for this shape at 200,000 vertices (this rung is first and claims it). Both of those
+   * measurements were of dead code; their entries are corrected.
+   *
+   * ⚠️ THE ORDER INSIDE `pick` IS LOAD-BEARING: BAG FIRST, THEN THE VALUE. Item 2078's rule is that the
+   * bag holds every element the walk VISITS while the rows hold only those carrying the key — "a vertex
+   * lacking the projected key is BAGGED but not EMITTED". `drops: true` makes the walk's own
+   * `value !== undefined` test drop the ROW after this has banked the ELEMENT.
+   */
+  if (bagTail !== undefined && (proj?.kind === 'aggregate' || proj?.kind === 'store')) {
+    const { bucket, key } = bagTail;
+
+    return {
+      pick: (e) => {
+        bucket.push(e);
+
+        return e.properties[key];
+      },
+      drops: true,
+      consumes: 2,
+    };
+  }
+
   if (
     proj === undefined ||
     proj.kind === 'fold' ||
     proj.kind === 'aggregate' ||
     proj.kind === 'store'
   ) {
-    // ⚠️ `consumesProj: false` — the step STAYS in `rest` for the residual dispatch to decide.
+    // ⚠️ `consumes: 0` — the step STAYS in `rest` for the residual dispatch to decide.
     // Carried on `Picked` rather than re-derived at the `rest` slice (item 1911): two copies of
     // "which kinds are consumed" is how one of them falls behind the other, which is item 606's
     // reason and the shape of the wrong answer item 1903 cost.
-    return { pick: (e) => e, drops: false, consumesProj: false };
+    return { pick: (e) => e, drops: false, consumes: 0 };
   }
 
-  return proj.kind === 'id' ? { pick: (e) => e.id, drops: false, consumesProj: true } : undefined;
+  return proj.kind === 'id' ? { pick: (e) => e.id, drops: false, consumes: 1 } : undefined;
 };
 
 type WalkSpec = {

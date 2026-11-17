@@ -18,7 +18,7 @@ import { out, store, toArray, traversal, V, values } from '@lenke/gremlin';
 
 const N = Number(process.env.N ?? 200000);
 const FANOUT = Number(process.env.FANOUT ?? 3);
-const ROUNDS = Number(process.env.ROUNDS ?? 9);
+const ROUNDS = Number(process.env.ROUNDS ?? 15);
 const SHAPE = process.env.SHAPE ?? 'bag';
 const g = new Graph();
 
@@ -70,7 +70,10 @@ for (let r = 0; r < ROUNDS; r += 1) {
   series.push(performance.now() - t0);
 }
 
-const sorted = [...series].sort((a, b) => a - b);
+/* ⚠️ THE FIRST FIVE REPS ARE DROPPED: the CSR arms on the SECOND ask of a topology version, and the
+ * per-rep series shows it settling only by rep 6 (204 134 58 58 56 36 35 35 35). A median over all reps
+ * reports the arming, not the steady state. */
+const sorted = series.slice(5).sort((a, b) => a - b);
 
 console.log(`  SHAPE=${SHAPE}  edges=${e}  rows=${rows}`);
 console.log(

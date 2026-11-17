@@ -2615,7 +2615,7 @@ const fusedHopChainGroupCount = (
    * route list is the hazard `detectDistinctCount`'s note names on the GQL side, and this is the
    * Gremlin instance of it.
    */
-  const walked = fusedProjectedValues(byKey.plan, graph, ctx.tracksPath);
+  const walked = fusedProjectedValues(byKey.plan, graph, ctx.tracksPath, ctx);
 
   return walked?.rest.length === 0 ? [tallyProjectedGroupCount(walked.values)] : undefined;
 };
@@ -2893,6 +2893,8 @@ const fusedProjectedValues = (
   effective: Plan,
   graph: Graph,
   tracksPath: boolean,
+  /* ⚠️ Threaded for `hopValuesCsr`'s `[bag, values]` tail only (item 2116). */
+  ctx: RunContext,
 ): HopValues | undefined =>
   tracksPath
     ? undefined
@@ -2909,7 +2911,8 @@ const fusedProjectedValues = (
       // projection to be the LAST step, so none of them can claim this shape — the ordering is for
       // reading, and item 1535's rule keeps it true if a gate is ever widened.
       (hopValuesDedupe(effective, graph) ??
-      hopValuesCsr(effective, graph) ??
+      // ⚠️ `ctx` is for the `[bag, values]` tail (item 2116); without it that arm declines.
+      hopValuesCsr(effective, graph, ctx) ??
       hopValuesShortcut(effective, graph) ??
       startFilteredHopValues(effective, graph) ??
       // The EDGE-PREDICATE rung (items 1882/1883): `outE(T).has(k, p).inV()`.
@@ -3289,7 +3292,7 @@ export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
     return bare.values;
   }
 
-  const projected = fusedProjectedValues(effective, graph, ctx.tracksPath);
+  const projected = fusedProjectedValues(effective, graph, ctx.tracksPath, ctx);
 
   // NOTHING LEFT OVER is the shape this shortcut has always served: the values ARE the answer, so
   // they are returned without ever building a traverser. Unchanged, and it stays the fast path.

@@ -105157,7 +105157,7 @@ live adjacency walk.
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 2,749
 Gremlin tests; seven fuzzers green; 5/5 sweeps.
 
-## Item 2114 — ❌ **REFUTED AND REVERTED: the `hop + bag + values` fusion delivers 1.00x, and the 4.17x that justified building it was MY FLOOR MEASURING A DIFFERENT TRAVERSAL**
+## Item 2114 — ❌ **REFUTED AND REVERTED: the `hop + bag + values` fusion delivers 1.00x, and the 4.17x that justified building it was MY FLOOR MEASURING A DIFFERENT TRAVERSAL** ⚠️⚠️ **THE 1.00x WAS DEAD CODE — see item 2116.** `hopValuesCsr` claims this shape and `hopValuesShortcut` is never asked at 200,000 vertices, so the fusion built here never ran. The same fusion in the CSR rung is **3.52x**. The floor-error lesson stands; the revert was right for the wrong reason.
 
 > ⚠️⚠️ **CORRECTION FROM ITEM 2115: THIS ENTRY'S EXPLANATION IS WRONG, THOUGH ITS 1.00x AND THE REVERT
 > STAND.** It concluded "the BAG is the cost — ~110 ms to push 600,000 vertex objects into an array, which
@@ -105224,7 +105224,7 @@ its own no-bag reference (28.0) while claiming to add 600,000 array pushes is no
 GATES. Change reverted; route verified generic again; 2,749 Gremlin tests green; `bun run check` 0 read
 unpiped.
 
-## Item 2115 — 🔑 **ITEM 2114's EXPLANATION WAS WRONG AND IS CORRECTED: the bag costs 2.4 ms, not 110.** The real cause is that a 4-STEP plan is LOCKED OUT of the CSR walk — worth **3.3x**, measured, and item 2040 is the precedent
+## Item 2115 — 🔑 **ITEM 2114's EXPLANATION WAS WRONG AND IS CORRECTED: the bag costs 2.4 ms, not 110.** ⚠️⚠️ **AND THIS ENTRY'S OWN ORACLE WAS ALSO DEAD CODE — see item 2116.** It "refuted" the residual-step hypothesis by measuring `hop-values.ts`, which this shape NEVER REACHES; the residual WAS the cost, and fusing it in the right file (`hop-values-csr.ts`) is 3.52x. The bag-arithmetic correction and the 3.1x superadditivity stand. The real cause is that a 4-STEP plan is LOCKED OUT of the CSR walk — worth **3.3x**, measured, and item 2040 is the precedent
 
 Item 2114 concluded _"the BAG is the cost — ~110 ms to push 600,000 vertex objects into an array, which no
 fusion removes"_. ⚠️⚠️ **That division was never done: 110 ms / 600,000 is 185 ns per push.** An array push
@@ -105286,3 +105286,67 @@ toward ~45 (the 3-step CSR time plus the bag's 15), not to 30 — the bag is rea
 
 GATES. Probes only — no engine change (the oracle and the CSR kill were both reverted; `git status` clean
 apart from the new probes). 2,749 Gremlin tests green; `bun run check` 0 read unpiped.
+
+## Item 2116 — ✅ **SHIPPED: `hop + bag + values(k)` is ONE PICK on the CSR walk — 138.4 → 39.3 ms (3.52x), both controls flat.** ⚠️ **And it corrects items 2114 AND 2115: both measured a file that is NEVER CONSULTED for this shape**
+
+Item 2115 pinned the lever at 3.3x and named item 2040 as the precedent. ⚠️ It also got the mechanism
+wrong, and so did 2114 — **both attacked `hop-values.ts`, which this shape never reaches.**
+
+🔑 **INSTRUMENTING THE RUNG ENTRIES SETTLED IT IN ONE RUN**: `hopValuesCsr` is consulted FIRST and claims
+BOTH shapes, so `hopValuesShortcut` is never even asked:
+
+```text
+    hop + values         second ask asked: CSR:asked:3
+    hop + store + values second ask asked: CSR:asked:4
+```
+
+⚠️⚠️ **SO ITEM 2114's FUSION AND ITEM 2115's ORACLE WERE BOTH DEAD CODE at 200,000 vertices.** 2114 read
+1.00x and concluded the fusion mechanism was worthless; 2115 read 142.8 and concluded the residual-step
+hypothesis was refuted. **Neither measured anything** — the code never ran. (The route screen's "0
+`applyStep`" at 2114 came from its 50,000-vertex fixture, where the CSR's second-call policy declines and
+`hopValuesShortcut` really does serve the shape. A smaller fixture took a different route, and I read it
+as confirmation.) ⚠️ Both entries are corrected.
+
+### The change, in the file that runs
+
+`pickFor` already saw `aggregate`/`store` and returned `consumes: 0` — leaving BOTH remaining steps as a
+generic two-step residual over 600,000 elements. 🔑 A new arm claims the PAIR: the bag push rides in
+`pick` and the projected value is returned, so one pass does both. `Picked.consumesProj: boolean` became
+`consumes: 0 | 1 | 2` (two copies of "which steps are consumed" is item 1911's named hazard, so the count
+is carried, not re-derived).
+
+⚠️ **THE ORDER INSIDE `pick` IS LOAD-BEARING: bag first, then the value.** Item 2078's rule — the bag holds
+every element the walk VISITS, the rows only those carrying the key. `drops: true` lets the walk's own
+`value !== undefined` test drop the ROW after the ELEMENT is banked.
+
+```text
+    hop + store + values   138.4 -> 39.3 ms   3.52x
+    hop + values           (control)   29.1 -> 28.9   1.01x  ✓
+    hop + store            (control)   14.7 -> 14.9   0.99x  ✓
+```
+
+🔑 39.3 sits just above the no-bag 28.9 — the residual is gone and what remains is the walk plus the bag.
+
+⚠️ **THE PER-REP SERIES IS THE ESTIMATOR, NOT A MEDIAN OVER ALL REPS.** The CSR arms on the SECOND ask of
+a topology version, and the series shows it settling only by rep 6: `204 134 58 58 56 36 35 35 35`. A
+median over everything reports the arming (55.9) rather than the steady state (35-39), so the probe drops
+five reps and says why.
+
+### The tests, and the two survivors that forced a gate test
+
+**11 tests.** The bag's CONTENTS are asserted directly — item 2112 proved five behavioural tests can all
+survive deleting a bag push, because a bare bag step has no public reader. 🔑 The fixture gives a fifth of
+its vertices no `n`, which is the only thing that makes "the bag is not the row set" observable: 20 bagged
+against 16 emitted, with `v4` IN the bag and absent from the rows.
+
+⚠️ **5/7 mutants caught at first, and BOTH survivors were "the fusion silently declines"** — answer-
+equivalent, since the old route is correct. So the ROUTE is asserted directly (4 more tests: the pair
+consumed leaves an EMPTY residual; no ctx leaves 2; a bag with no `values` leaves 1; a plain `values`
+still consumes exactly 1). 🔑 **7/7 CAUGHT** after that.
+
+⚠️ One of my own tests asserted nothing: it named a `dedupe` and built the plan WITHOUT one, comparing a
+list to its own distinct count. Replaced with a `limit(4)`, whose absence is visible in the rows.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 2,760
+Gremlin tests; seven fuzzers green; 5/5 sweeps. ⚠️ The Gremlin spelling probe flags FEWER groups with this
+change than without it (1 against 2, compared arm-to-arm), so it introduces no spelling gap.
