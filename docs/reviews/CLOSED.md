@@ -103415,3 +103415,69 @@ GATES. `bun run fmt` 0; `bun run check` 0 read unpiped (an `import/no-cycle` on 
 helper as a VALUE from `Graph.ts` made a real cycle where the old `import type` was erased, so it lives
 in a leaf module); `bun run test -- --skip-nx-cache` 21/21; all seven fuzzers green; 4/5 sweeps with the
 fifth ruled out above.
+
+## Item 2086 — 🔑 **The corpus swept under MIXED labels for the first time: `count2` is a 7.60x cliff, `hopall` 4.60x, and the mechanism is a ROUTE CHANGE (the CSR arm declines).** ✅ Item 2085 independently confirmed — `hopfilter`'s mode penalty is now **1.41x, down from 5.98x**. ⚠️ And the sweep's one "WRONG ANSWER" was the sweep comparing an ORDER-DEPENDENT field
+
+Item 2085 found a 5.98x between the two label modes on one shape and took 2.65x of it. ⚠️ **Almost
+nothing in this file has been measured in the MIXED mode**, which is the realistic one: `MIXED=1`
+appends ONE isolated off-label vertex, which is enough to make `:P` non-vacuous and defeat
+`effectiveLabel`'s elision for every query anchored on it (item 325's cliff). This sweeps all 56 shapes
+in both modes, one shape per process.
+
+### ⚠️⚠️ THE FIRST RUN WAS AT THE WRONG SIZE, AND IT INVERTED THE ANSWER
+
+At `NODES=20000` the sweep reports `hopfilter` at **0.78x** — i.e. barely moved. At 200,000 the same
+pair is the 5.98x item 2085 built on. **The elision's absence costs a CACHE MISS per candidate, so a
+20,000-vertex screen cannot see the effect it exists to find.** Default raised to 200,000. Same rule as
+item 2085's re-pricing of item 1599, hit again one item later.
+
+And the screen UNDERSTATES even at the right size, in the direction that loses targets — at `REPS=3`
+against `REPS=15` isolated:
+
+| shape                           | plain | MIXED | screen said | **isolated** |
+| ------------------------------- | ----- | ----- | ----------- | ------------ |
+| `count2` — a TWO-hop count      | 12.55 | 95.37 | 1.76x       | **7.60x**    |
+| `hopall` — a one-hop count      | 1.62  | 7.46  | 2.18x       | **4.60x**    |
+| `hopfilter` (item 2085's shape) | 47    | 66.2  | 1.41x       | —            |
+
+🔑 **`hopfilter`'s mode penalty is 1.41x where it was 5.98x before item 2085** — that item measured its
+own win in an A/B; this is the same result reached from the other side, by a sweep that knows nothing
+about it.
+
+### 🔑 THE MECHANISM IS A ROUTE CHANGE, NOT A PER-ROW COST
+
+Profiling `count2` in both modes shows two different programs:
+
+```text
+    MIXED=0   buildCsr 5.9%, and the top frames are all FIXTURE BUILD — the query is 1.6 ms/rep
+    MIXED=1   countEdges 18.5%   edgesOfTypes 16.0%   get soleLabel 11.0%   matchesLabel 9.3%
+```
+
+So the **CSR arm declines under a non-vacuous label** and the query falls to `countEdges`/`edgesOfTypes`.
+⚠️ [[label-vacuity-gates-fast-paths]] records that "the CSR arm CANNOT test a start label (got that
+wrong twice)" — so that route question is NOT re-derived here; it is the next target and it needs its
+own item. What this one establishes is the SIZE of the prize (7.60x on a two-hop count) and that the
+label test is no longer the dominant term on the fallback (20.3% between `soleLabel` and
+`matchesLabel`, against the 51.9% item 2085 profiled before its fix).
+
+⚠️ `get soleLabel` at 11.0% is item 2085's own accessor, and item 2084 established that an accessor
+CALL is ~4.5 ns and cannot be removed without making the field public — so that 11% is a floor, not a
+target.
+
+### ⚠️⚠️ THE ONE "WRONG ANSWER" WAS THE SWEEP, AND IT QUALIFIES ITEM 2074
+
+`hoprows` reported `ANSWER/ROWS DIFFER — WRONG ANSWER` between the modes: **0 against 3, with an
+IDENTICAL `sink`**. It is not a wrong answer. `MATCH (a:P)-[:E]->(b:P) RETURN b.k` has no `ORDER BY`,
+the two modes take different routes, and row order is unspecified here — a settled WON'T-FIX compared
+as multisets. 🔑 **`EXPECTED.hoprows` is `{ rowsPerRun }` with NO `answer`, for exactly that reason**,
+and the sweep was reading the field anyway.
+
+So the sweep now compares the ROW COUNT for every shape and the `answer` only for the **31 of 56**
+shapes whose `EXPECTED` declares one — those are the order-independent ones by construction. All 31
+are identical across both modes at 200,000, which is the real correctness result of this item.
+
+⚠️ **Item 2074's sweep compared answers unconditionally and reported all 53 identical.** That was
+sound only because its shapes happened to be order-independent — a precondition it did not state, and
+one an index (which also changes the route, and so the order) does not guarantee either.
+
+GATES. Sweep only — no engine change. `bun run check` 0 read unpiped; `zsh -n` on the sweep.
