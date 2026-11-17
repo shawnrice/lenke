@@ -102048,3 +102048,60 @@ walk, measure what that bounds, and only then decide. 27% is the ceiling's upper
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `node --check` on the probe. Two stale claims
 corrected (item 2052's per-hop summary, the probe's item-1618 comment); no engine change.
+
+## Item 2065 — ✅ **THE ABLATION CEILING IS REAL THIS TIME: removing the two-hop walk's projection is 1.69x (776.3 → 458.7), and removing the per-row binding too is 1.86x — with both controls flat.** ⚠️ Unlike item 2031's 20.9%-share nomination, which ablated to 0% reachable
+
+Item 2064 nominated `propOf` + `get properties` at 27% of the two-hop walk's profile and refused to
+build on a profile share, because this same rung is where item 2030 nominated 20.9% and item 2031
+ablated it to a 13.6% ceiling and **0% reachable**. This is that ablation.
+
+⚠️ **A DELETION TEST, NOT A CANDIDATE CHANGE.** The ablated build pushes a hoisted frozen constant, so
+the row COUNT is unchanged — which is what makes the timing comparable — while every row's CONTENT is
+wrong. It must never be committed, and the probe's own oracle confirms the ablation landed: `answer`
+goes from 24 to **0** in both ablated arms.
+
+Two ceilings, because they bound different changes. 7 reps, two rounds, 200,000 vertices:
+
+| arm                                                   | `hop2rows`        | ceiling   |
+| ----------------------------------------------------- | ----------------- | --------- |
+| LIVE                                                  | 776.3 / 790.2     | —         |
+| PROJECT — `projectRow` removed                        | **458.7** / 466.2 | **1.69x** |
+| BOTH — also the per-row `binding.set`                 | **418.3** / 431.1 | **1.86x** |
+| `hoprows` — CONTROL, the one-hop rung in another file | 226.9 → 219.8     | flat (3%) |
+| `hop2distinct` — CONTROL                              | 681.2 → 680.2     | flat      |
+
+🔑 **PER ROW, THE WHOLE STORY:**
+
+```text
+    hoprows            LIVE             162 ns/row   (one hop, projection INCLUDED)
+    hop2rows           LIVE             554
+    hop2rows           PROJECT ablated  328          ⬅ two hops with NO projection at all
+    hop2rows           BOTH ablated     299
+```
+
+**So the extra hop itself is ~166 ns a row (328 against 162) and the projection is ~226** — i.e. the
+two-hop walk spends MORE on projecting one column than on the entire second hop. And the one-hop rung
+returns `b.k` for 162 ns a row ALL IN, which is less than the two-hop walk's projection alone. That is
+consistent with the one-hop file having a direct-read specialization the two-hop walk lacks, which is
+item 2064's nomination.
+
+### ⚠️ TWO THINGS THE RUN REPORTED THAT I DID NOT ASK FOR
+
+1. **`hop2distinct` is flat under the PROJECT ablation** — correctly, because its `DISTINCT` arm has
+   its own one-column emit (item 1843) and never calls `projectRow`. An internal consistency check I
+   had not planned: an ablation that moved it would have meant I cut the wrong line.
+2. ⚠️ **`hop2distinct` THREW in the BOTH arm** (no output row at all), because `distinct.fn({ binding,
+… })` reads the binding the ablation removed. **So "skip the binding" is NOT universally available**
+   — the 1.86x bound applies only where nothing downstream reads it, and the distinct path does. The
+   1.69x is the bound that holds for both.
+
+### What is nominated, and what would refute it
+
+Port the one-hop rung's direct-read projection to this walk. ⚠️ **1.69x IS A CEILING, NOT A FORECAST:**
+it is what "projection costs nothing" would buy, and a specialization makes the read direct rather than
+free. `hop-projection.ts` itself records, unmeasured, that "a specialized row builder does not make
+`propOf` cheaper or `item.fn` monomorphic" — so the arm to build is the direct read, and the thing that
+would refute it is the specialized arm landing near 554 rather than near 328.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; the tree restored and rebuilt, verified by the
+start-of-run `cmp` on the next invocation. Ablation harness only; no engine change committed.
