@@ -479,6 +479,99 @@ const nodeValuesWhereDedupeWalk = function* (
  * refusal that rung makes — the predicate-`where` overload, the multi-key projection, the narrowed
  * source — is inherited rather than restated.
  */
+/*
+ * TWO WALKS FOR `V().values(k).is(pred)` (item 2081), split the way `unindexedHasValuesShortcut`'s are
+ * and for the same measured reason: `specializePredicate` declines a predicate whose operand is
+ * neither number nor string, so both paths are genuinely reachable, and item 159 measured a branch in
+ * an inner loop like this at 1.6x. The gate runs ONCE per query.
+ *
+ * ⚠️ `is` FILTERS THE PROJECTED VALUE, not another property — that is the whole difference from the
+ * `has` arm. `dispatch.ts`'s `case 'is'` is `matches(step.pred, t.value)`, so the predicate sees
+ * exactly what the walk is about to yield.
+ */
+const valuesIsWalkFast = function* (
+  graph: Graph,
+  key: string,
+  test: (value: unknown) => boolean,
+): Generator<unknown> {
+  for (const v of graph.vertices) {
+    const props = v.properties;
+
+    if (key in props && test(props[key])) {
+      yield props[key];
+    }
+  }
+};
+
+const valuesIsWalkGeneral = function* (
+  graph: Graph,
+  key: string,
+  pred: Predicate,
+): Generator<unknown> {
+  for (const v of graph.vertices) {
+    const props = v.properties;
+
+    if (key in props && matches(pred, props[key])) {
+      yield props[key];
+    }
+  }
+};
+
+/**
+ * `V().values(k).is(pred)` — a value filter on the fused scan (item 2081).
+ *
+ * ⚠️⚠️ **FOUND BY PRICING A CENSUS ROW ITEM 2080 ADDED AND LEFT, and the first version of that row was
+ * USELESS:** `values('n').is(5)` matched NOTHING on the screen's fixture — 0 rows — so it priced a
+ * filter that never fires. With `is(gt(-1))`, which keeps every row, the comparison has EQUAL
+ * EMISSIONS and reads **5.52 ms against 15.50 — 2.81x**, where the only difference is the filter.
+ *
+ * ⚠️ `key in props` COMES FIRST, matching `values(k)`'s contract: a vertex lacking the key emits no
+ * row and its (absent) value is never offered to the predicate. The generic path has the same order —
+ * `projectValues` drops before `is` sees anything — and a walk that tested the predicate against
+ * `undefined` would differ on exactly those vertices.
+ */
+export const valuesIsShortcut = (plan: Plan, graph: Graph): NodeValues | undefined => {
+  const { steps } = plan;
+
+  if (steps.length !== 3) {
+    return undefined;
+  }
+
+  const [source, proj, filter] = steps;
+
+  // `V(id, …)` enumerates a given set, not the whole graph — the bound every values rung has.
+  if (source.kind !== 'V' || (source.ids?.length ?? 0) > 0) {
+    return undefined;
+  }
+
+  // ONE key: `values()` with no key emits every property value and `values(a, b)` fans out per key.
+  if (proj.kind !== 'values' || proj.keys.length !== 1) {
+    return undefined;
+  }
+
+  if (filter.kind !== 'is') {
+    return undefined;
+  }
+
+  const [key] = proj.keys;
+  const { pred } = filter;
+  const fast = specializePredicate(pred);
+  let walk: () => Generator<unknown>;
+
+  if (fast === undefined) {
+    walk = (): Generator<unknown> => valuesIsWalkGeneral(graph, key, pred);
+  } else {
+    walk = (): Generator<unknown> => valuesIsWalkFast(graph, key, fast);
+  }
+
+  return {
+    [Symbol.iterator]: walk,
+    // ⚠️ THE EAGER FILL: `toArray` prefers `drain` (item 1412), and a walk without one is measured
+    // against siblings that have it with its generator hand tied (item 1998's 1.55x).
+    drain: () => [...walk()],
+  };
+};
+
 export const scanWhereValuesDedupe = (plan: Plan, graph: Graph): NodeValues | undefined => {
   const { steps } = plan;
 

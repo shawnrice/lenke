@@ -103027,3 +103027,72 @@ measured 1.6x). The mutation round was re-run against the restructured code: sti
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 2,689
 gremlin tests; all seven fuzzers green; 5/5 sweeps clean.
+
+## Item 2081 — ✅ **SHIPPED: `V().values(k).is(pred)` — 12.08 → 5.80 ms (2.08x).** 🔑 And the census row that found it was USELESS as first written: `is(5)` matched NOTHING on the fixture, so it priced a filter that never fires
+
+Item 2080 added eleven generic census rows and took only the one clear sibling disagreement. This
+prices the rest. Three of the ten turn out not to be gaps at all, and saying why is most of the value:
+
+| row             | ms       | rows    | reading                                                                                                                                                                     |
+| --------------- | -------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `limit(10)`     | **0.03** | 10      | item 1660's "TINY", confirmed — it stops early                                                                                                                              |
+| `tail(10)`      | 9.58     | 10      | ⚠️ 1.74x the FULL scan while emitting 10 rows — **open**                                                                                                                    |
+| `skip(10)`      | 13.65    | 199,990 | discards a prefix, emits the rest                                                                                                                                           |
+| `group().by(k)` | 8.75     | 1       | vs `groupCount().by(k)`'s 3.14 — but `group` COLLECTS the elements per key and `groupCount` counts them, so most of the 2.79x is work it genuinely does. **Not nominated.** |
+
+⚠️ **AND THE ROW THAT FOUND THE TARGET WAS WORTHLESS ON ITS FIRST READING.** `values('n').is(5)`
+returned **0 rows** — the fixture's `n` never equals 5 — so it priced a filter that never fires against
+a sibling matching 25,000, and the 3.64x was two different questions. With `is(gt(-1))`, which keeps
+every row, the arms have EQUAL EMISSIONS and the gap is the filter alone:
+
+| row                               | KILLED | LIVE     |                           |
+| --------------------------------- | ------ | -------- | ------------------------- |
+| `V().values(n).is(pred)` (target) | 12.08  | **5.80** | **2.08x** (medians 2.39x) |
+| `V().values(n)`                   | 4.87   | 5.19     | 0.94x                     |
+| `V().label()` (item 2080)         | 6.09   | 6.17     | 0.99x                     |
+| `V().id()`                        | 3.00   | 3.33     | ⚠️ 0.92x — see below      |
+| `scan: count`                     | 0.00   | 0.00     | flat                      |
+
+⚠️ **THE CONTROLS ARE NOT CLEARED, THEY ARE BELOW RESOLUTION.** `scan: id` reads 0.92x on medians over
+five readings a side (LIVE 2.29-3.43, KILLED 3.00-3.42 — overlapping ranges, outliers both ways), and
+`scan: values` similarly. CLAUDE.md's threshold is "anything under ~10% needs its own isolated
+harness", and this is at it. The rung is NEW code in a chain `scan: id` returns from before reaching
+it, so there is no mechanism — but that is an argument, not a measurement, and it is recorded as a
+limit rather than a pass.
+
+The residue is the predicate itself: 5.80 against a bare `values`'s ~5.19 is **~7 ns a row** for 200,000
+calls, which is [[closure-dispatch-is-cheap-keyed-loads-are-not]]'s figure.
+
+### ⚠️⚠️ THE CONTRACT: `key in props` COMES FIRST, AND TWO MUTANTS PROVED MY TEST COULD NOT SEE IT
+
+`values(k)` drops a vertex lacking the key BEFORE `is` sees anything, so a walk offering the predicate
+an ABSENT value differs from the generic path on exactly those vertices. Both drop-deleting mutants
+**SURVIVED** the first round — and the test's own comment had named the hazard and then chosen the
+predicate that coincidentally agrees. The oracle has to satisfy two conditions at once, measured:
+
+```text
+                     matches(p, undefined)   specializePredicate(p)
+    gt(-1)                 false             specialized    <- cannot see it, wrong walk
+    regex('^.')            false             DECLINED       <- right walk, cannot see it
+    neq(999)               TRUE              specialized    <- sees it, FAST walk only
+    without(999, 998)      TRUE              DECLINED       <- the general walk's only oracle
+```
+
+⚠️ The extra row appears LAST and holds `undefined`, which is precisely
+[[toequal-blind-to-trailing-undefined]]: `toEqual` passes `[10, 20, 5, undefined]` against `[10, 20,
+5]`. `toStrictEqual` is load-bearing on both assertions. 11 tests, **9/9 mutants caught**.
+
+### ⚠️ `props[key]` IN A sed PATTERN IS A CHARACTER CLASS
+
+Four mutants reported ANCHOR-DID-NOT-APPLY while their anchors matched the source exactly: in a BRE,
+`props[key]` matches `props` followed by one of **k/e/y**, never the literal text. Earlier items in
+this directory escape the brackets; this one did not. ⚠️ Note it is the OPPOSITE of item 2080's fault,
+where `?` is literal in a BRE and escaping it broke the match — so "escape it to be safe" is not the
+rule; the rule is that BRE metacharacters are a specific list.
+
+And the A/B's row list came through as ONE multi-line string, so `ONLY=` matched nothing — caught
+loudly by item 2071's own guard ("a typo measures nothing and reports nothing") rather than silently
+measuring the wrong row.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; all
+seven fuzzers green; 5/5 sweeps clean.

@@ -69,6 +69,7 @@ import {
   scanBagValuesShortcut,
   scanWhereHasKeyCountResidual,
   scanWhereValuesDedupe,
+  valuesIsShortcut,
   scanWhereValuesResidual,
   seededNodeCountShortcut,
   seededNodeValuesShortcut,
@@ -2848,7 +2849,14 @@ const scanValuesShortcut = (
        * while this needs a `where` in the middle AND a `dedupe` at the end — four steps, which none
        * of the four above admits. Item 1535's rule, stated rather than relied upon.
        */
-      scanWhereValuesDedupe(effective, graph));
+      scanWhereValuesDedupe(effective, graph) ??
+      /*
+       * `V().values(k).is(pred)` (item 2081) — a value filter on the fused scan, measured at 2.81x
+       * with EQUAL emissions. ⚠️ It cannot shadow a sibling: each of those needs `values` immediately
+       * after the source with NOTHING after it, a trailing `dedupe`, or a `where` in the middle, and
+       * this needs a trailing `is`. Item 1535's rule, stated rather than relied upon.
+       */
+      valuesIsShortcut(effective, graph));
 
 /**
  * The fused VALUES walks, consulted in `??` order.

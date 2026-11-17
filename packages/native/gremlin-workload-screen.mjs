@@ -37,6 +37,10 @@ import {
   not,
   and,
   aggregate,
+  skip,
+  tail,
+  is,
+  group,
   properties,
   label,
   as_,
@@ -210,6 +214,29 @@ const SHAPES = {
    * is not a defect on its own).
    */
   'scan: label': () => traversal(V(), label()),
+  /*
+   * ⚠️ ITEM 2081: the pairs item 2080's widening left unpriced, each beside its NEAREST FUSED SIBLING
+   * so the comparison is a route difference and not a different question.
+   *
+   *   group().by(k)   against  groupCount().by(k)  — the same grouping, a different aggregate
+   *   is(v)           against  has(k, v)           — a value filter against an element filter
+   *   fold().unfold()  against  fold()             — the round trip against the one-way
+   *   range/tail/skip  against  limit              — ⚠️ NOT the same: `limit` can stop early, `tail`
+   *                                                  must see the whole stream and `skip` discards a
+   *                                                  prefix, so item 1660's "TINY" does not cover them.
+   */
+  'group: group by key': () => traversal(V(), group().by('n')),
+  'group: groupCount by key': () => traversal(V(), groupCount().by('n')),
+  /*
+   * ⚠️ `is(5)` MATCHED NOTHING AND THE ROW WAS USELESS — 0 rows, so it priced a filter that never
+   * fires against one matching 25,000. The fixture's `n` is not in that range; `gt(-1)` keeps every
+   * row, which makes the two filters comparable on EMISSIONS as well as on scan.
+   */
+  'filt: is value': () => traversal(V(), values('n'), is(gt(-1))),
+  'filt: has element': () => traversal(V(), has('n', 5), values('n')),
+  'page: tail 10': () => traversal(V(), values('n'), tail(10)),
+  'page: skip 10': () => traversal(V(), values('n'), skip(10)),
+  'page: limit 10': () => traversal(V(), values('n'), limit(10)),
   'scan: properties': () => traversal(V(), properties('n')),
   'scan: id': () => traversal(V(), id()),
   'scan: valueMap': () => traversal(V(), valueMap()),
