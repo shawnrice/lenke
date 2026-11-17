@@ -102718,3 +102718,61 @@ anyone ablating a hop depth at FANOUT=1 would get a green guard from a broken qu
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; all
 20 new guards pass at NODES=20000 and NODES=200000; `node --check`. Probe only; no engine change.
+
+## Item 2076 — ❌ **THE POISONING HYPOTHESIS IS REFUTED: a non-foldable `sum` does NOT disqualify the foldable terms beside it.** ✅ And `scalaraggs` is opened at last — one `sum` is **2.25x** its hand floor. ⚠️⚠️ I first reported 365 ns a vertex, which was a 7-REP TOTAL divided by NODES once
+
+`scalaraggs` had ONE mention in this file, ever. Item 2075 gave it a guard; this opens it.
+
+### The hypothesis, and why it was reasonable
+
+`chain-projection.ts`'s `ORDER_INVARIANT_AGGREGATES` is `{min, max, count}` — `sum`/`avg` are REFUSED
+as foldable because "f64 addition is order-sensitive in the last ulp", a byte-identity requirement.
+`scalaraggs` mixes both kinds, so the question was whether ONE non-foldable term poisons a projection
+containing foldable ones. Three new shapes isolate it; per rep at 200,000 vertices:
+
+| shape                              | ms/rep    | aggregates       |
+| ---------------------------------- | --------- | ---------------- |
+| `control`                          | 2.30      | none             |
+| `aggsum` — `sum(n.n)`              | **10.44** | 1, non-foldable  |
+| `aggminmax` — `min(n.k), max(n.k)` | 13.20     | 2, BOTH foldable |
+| `aggmixed` — `sum(n.n), min(n.k)`  | 16.86     | 2, one of each   |
+| `scalaraggs`                       | 29.27     | 4                |
+
+❌ **NO POISONING.** Two foldables (13.20) sit BELOW one-of-each (16.86), so the non-foldable term does
+cost more — 1.28x for the same arity — but the foldable ones beside it are not dragged to its level.
+The cost tracks the NUMBER of aggregates, ~4-6 ms per additional one, not their kind alone.
+
+⚠️ **NO DECOMPOSITION IS PUBLISHED** beyond that. Solving the four rows for per-aggregate constants
+gives `sum` ≈ 70 and `avg` ≈ 42, i.e. the simpler operation dearer than the one containing it — which
+is the signature of **non-additive** arms, exactly what items 2055 and 2067 withdrew ratios for. Four
+rows cannot be four independent terms when the route changes with the projection.
+
+### ⚠️⚠️ AND THE FIRST FIGURE I REPORTED WAS WRONG BY 9.5x
+
+I read `aggsum` at **73.1 ms** and called it 365 ns a vertex. **That 73.1 is the TOTAL across 7 reps**
+— the corpus probe reports cumulative `ms`, as item 2064 already had to establish about its two size
+knobs. Per rep it is 10.44 ms, 52 ns a vertex. A dedicated floor probe measuring the same query
+per-rep read **7.67 ms**, and that 9.5x disagreement with my own stated number is what caught it.
+
+🔑 **THE FLOOR, with one term moving at a time:**
+
+```text
+    engine sum(n.n)          9.23 ms/rep   46.2 ns/vertex
+    hand labelled            4.52          22.6          ⬅ 2.04x
+    hand unlabelled          2.46          12.3
+    loop only, no read       1.37           6.9
+```
+
+**The label test is 10.3 ns a vertex — 46% of the hand labelled arm, and nearly twice the read-and-add
+at 5.4 ns.** That is the same `vacuousLabel` territory items 2030/2031 ablated to 0% reachable on
+another rung, and it is why the engine's 2.04x is against a floor that may itself be paying for
+something the engine elides. ⚠️ So 2.04x is an upper bound on the gap, not a target.
+
+⚠️⚠️ **AND THIS DECOMPOSITION ONLY HOLDS AT 200,000.** The same probe at 20,000 reports the label test
+at **−11.2 ns a vertex** and the read-and-add at 0.05 ms — a NEGATIVE term, which is the signal item
+2055 withdrew a whole decomposition for. At that size the arms are not separable, so the figures above
+are the 200,000 ones and the small-N run is reported only as the reason not to use it.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; three
+new shapes with DERIVED guards (`min(n.k)` is 0 because `i % 97` starts there; `sum(n.n)` is the
+triangular number, the same formula `scalaraggs` uses). Probe only; no engine change.

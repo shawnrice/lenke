@@ -305,6 +305,19 @@ const SHAPES = {
   groupedhop: 'MATCH (a:P)-[:E]->(b:P) RETURN b.k AS k, count(*) AS c',
   collecthop: 'MATCH (a:P)-[:E]->(b:P) RETURN collect(b.k) AS ks',
   scalaraggs: 'MATCH (n:P) RETURN sum(n.n) AS s, avg(n.n) AS a, min(n.k) AS mn, max(n.k) AS mx',
+  /*
+   * ⚠️ ITEM 2076: `scalaraggs` MIXES FOLDABLE AND NON-FOLDABLE AGGREGATES, and the corpus had no way
+   * to tell which half costs. `chain-projection.ts`'s `ORDER_INVARIANT_AGGREGATES` is
+   * `{min, max, count}` — `sum`/`avg` are REFUSED as foldable because "f64 addition is order-sensitive
+   * in the last ulp", a byte-identity requirement and not an oversight.
+   *
+   * 🔑 THE QUESTION THESE THREE ASK: does ONE non-foldable term poison a projection that also contains
+   * foldable ones? `aggminmax` is foldable-only, `aggsum` non-foldable-only, and `aggmixed` is one of
+   * each — so if the mixed row sits with `aggsum` rather than between, the answer is yes.
+   */
+  aggminmax: 'MATCH (n:P) RETURN min(n.k) AS mn, max(n.k) AS mx',
+  aggsum: 'MATCH (n:P) RETURN sum(n.n) AS s',
+  aggmixed: 'MATCH (n:P) RETURN sum(n.n) AS s, min(n.k) AS mn',
   // ⚠️ `callinline` HAS NO SCOPE LIST, SO IT IS NON-CORRELATED — the inner `n` is a FRESH variable,
   // not the outer one, which is the scope isolation the ISO form exists for. Item 1565 read that as
   // a quadratic DEFECT; item 1566 retracted it. The body genuinely scans the graph, and running it
@@ -652,6 +665,12 @@ const EXPECTED = {
   groupedhop: { rowsPerRun: (n) => Math.min(n, 97), answer: 3 },
   // sum(n.n) over n = 0 … N-1 is the triangular number. 199,990,000 -> 799,980,000 ✓
   scalaraggs: { rowsPerRun: 1, answer: (n) => (n * (n - 1)) / 2 },
+  // ⚠️ DERIVED, not observed: `min(n.k)` is 0 because `i % 97` starts at 0, and `sum(n.n)` over
+  // `n = 0 … N-1` is the triangular number — the same formula `scalaraggs` uses, which is what makes
+  // the three rows comparable.
+  aggminmax: { rowsPerRun: 1, answer: 0 },
+  aggsum: { rowsPerRun: 1, answer: (n) => (n * (n - 1)) / 2 },
+  aggmixed: { rowsPerRun: 1, answer: (n) => (n * (n - 1)) / 2 },
   // Both CALL forms count the OUTER rows, one per vertex — the identity items 2053/2054 relied on.
   callinline: { rowsPerRun: 1, answer: (n) => n },
   callscoped: { rowsPerRun: 1, answer: (n) => n },
