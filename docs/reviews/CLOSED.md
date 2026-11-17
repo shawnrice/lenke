@@ -104185,3 +104185,65 @@ a target.
 
 GATES. Probe only — no engine change. `bun run check` 0 read unpiped; `node --check` on the probe
 (`genchain-floor-2097.mjs`), which throws unless all three arms agree on rows AND sink.
+
+## Item 2098 — ⚠️ **OPEN, PRICED AT 2.1x AND NOT SHIPPED: item 2070's `store` refusal covers the EAGER form only, and a lazy-iterator-with-`drain` form is sound — but it can SILENTLY DOUBLE THE BAG, demonstrated**
+
+Two shapes ruled out first, from the record rather than by re-measuring:
+
+- **`pathdep: tree` — 278 ms for ONE row, the Gremlin surface's largest cost — is CLOSED.** Item 1922
+  shipped 1.85x, item 1925 declined the fusion on a **1.55x ceiling** (350 of 543 ms is the contractual
+  key plus the nested insert), and item 1954 declined it outright: "no cheap lever left".
+- The GQL side's largest shape was exhausted at items 2096/2097.
+
+So the second tier, where the screen shows an asymmetry nobody had explained:
+
+```text
+    V().out(E).values(n).store(x)        51.57 ms / 300,000 rows = 172 ns/row
+    V().out(E).values(n).aggregate(x)    28.54 ms / 300,000 rows =  95 ns/row    1.8x
+```
+
+### 🔑 THE REFUSAL IS CORRECT FOR THE FORM IT REFUSED, AND NARROWER THAN IT READS
+
+Item 2070 refused `store` in the `[bag]` residual and guards it with a mutant. The reason is exact and
+I verified it in the code rather than from the entry: **`barrierProjectedBag` RETURNS THE DRAINED
+ARRAY**, so admitting `store` there makes the result eager for EVERY consumer — and `run` is the
+public lazy API, so a caller that `break`s out would have caused elements to be collected it never
+pulled.
+
+⚠️ **What that does not cover**: `toArray`'s own rule (item 1412), stated in its source — "an
+already-eager terminal takes an eager walk… `run` is left exactly as lazy as it was, which is what a
+caller that `break`s out of it depends on." A result that is LAZY as an iterator and ALSO offers
+`drain` satisfies both halves: the breaking caller takes the iterator and collects only what it pulled;
+`toArray` takes `drain` and collects everything, which is its definition.
+
+| arm                                        | ns/row (r1 / r2) |           |
+| ------------------------------------------ | ---------------- | --------- |
+| generic — what `store` does today          | 24.0 / 25.2      |           |
+| eager — refused; what `aggregate` gets     | 15.6 / 13.9      |           |
+| **lazy iterator + `drain` — the proposal** | **11.9 / 11.5**  | **~2.1x** |
+
+🔑 The proposal beats even the eager form, because `drain` slices once where the eager arm pushes per
+element.
+
+### ⚠️⚠️ AND THE BLOCKER IS DEMONSTRATED, NOT ASSERTED
+
+A side-effecting LAZY walk is STATEFUL in a way the array form cannot be: the bag must be filled
+EXACTLY ONCE. Consume it twice — iterate and then drain — and:
+
+```text
+    bag after iterate-then-drain: 10, where 5 is correct   -> SILENTLY DOUBLED
+```
+
+The array form cannot do this. A fix needs a single-use latch, which is new statefulness in a hot path
+whose failure mode is a **wrong answer in a side-effect bag** — the kind of thing no row count catches
+(the probe here asserts `bag.length === ROWS` for exactly that reason, and that assertion is what
+makes the hazard visible at all).
+
+**So: NOT SHIPPED.** ⚠️ Shipping a stateful side-effecting walk against an explicit, mutant-guarded
+refusal on my own reading is how a silent wrong answer gets in. What this item contributes is that the
+refusal's scope is now precise (it is about the EAGER form), the alternative is priced (**2.1x on the
+bag term**), and the one thing standing in the way is demonstrated rather than feared. ⚠️ It needs an
+owner-level call on whether a side-effecting walk may carry single-use state.
+
+GATES. Probe only — no engine change. `bun run check` 0 read unpiped; `node --check` on the probe
+(`lazystore-floor-2098.mjs`), which throws unless the bag holds exactly one copy.
