@@ -104135,3 +104135,53 @@ over the directed walk is recoverable or inherent to walking two buckets with a 
 
 GATES. Probe only — no engine change. `bun run check` 0 read unpiped; `node --check` on the probe
 (`bothtuple-floor-2096.mjs`), which throws unless all three arms count the same edges.
+
+## Item 2097 — ❌ **REFUTED: the 3-deep `yield*` chain is 15x improvable IN ISOLATION and only 3.4% of the query.** 🔑 So `walkBothSegment`'s 30% profile frame is its BODY, not its delegation — and every term that body spends on is already closed
+
+Item 2096 left `walkBothSegment` at 30% of the corpus's most expensive shape with its 1.7x per-row gap
+unpriced. `walkSegments`/`walkBothSegment` recurse by `yield* walkSegments(...)` once PER EDGE, so every
+row of a three-segment pattern is handed up through THREE generator frames —
+[[gremlin-values-is-the-floor]] records the same mechanism on the other engine ("the reduce is free;
+the cost is the generator chain").
+
+### What was ruled out BEFORE measuring, rather than re-derived
+
+- **The per-row Binding Map copy** — 28.5% self + 24% GC, with a no-copy VIEW built at item 2023 and a
+  REUSED map at 2024, **both priced and REFUSED**. [[binding-allocation-is-closed]].
+- **`withBinding` on the anonymous relationship** — it short-circuits (`if (!name) return binding`), so
+  `[:E]` costs it no allocation at all. ⚠️ Its 10.8% frame is the NODE bindings (`a`,`b`,`c`,`d` are
+  named), which is the closed Map-copy question above wearing a different frame name.
+
+### 🔑 THE CHAIN IS REAL, LARGE IN ISOLATION, AND SMALL IN CONTEXT
+
+1,638,400 rows through a 3-deep tree, medians of 11, two rounds, **every arm asserted to the same row
+count AND the same sink**:
+
+| arm                                                          | ns/row (r1 / r2) |          |
+| ------------------------------------------------------------ | ---------------- | -------- |
+| `yield*` chain, one generator per level — the engine's shape | 43.6 / 39.3      |          |
+| ONE generator with an explicit stack                         | 23.0 / 17.9      | **2.1x** |
+| a callback, no generator at all                              | 2.5 / 2.7        | **15x**  |
+
+⚠️ **AND THEN THE DIVISION THAT KILLS IT**: ~41 ns a row against `hop3rowsboth`'s measured **1.2 µs a
+row is 3.4%**. Flattening the recursion to one generator would take 2.1x of 3.4% — about **1.7% of the
+query**. Removing generators entirely is not available: the matcher's contract is a lazy `Iterable`, and
+a caller that `break`s out early depends on it (item 1412's rule, enforced across this engine).
+
+🔑 **So `walkBothSegment`'s 30% is its BODY** — `consistent`, `withBinding`, `satisfies`,
+`matchNodeLabelled` and the two-bucket loop — **not its delegation.** A frame that recurses through
+generators is not thereby a generator-cost frame, which is the same lesson as item 2096's helper-beside-GC
+one arrived at from the opposite direction.
+
+**`hop3rowsboth` is therefore left where it is**: its headline 14x is 8x row count (item 2096), its
+helper is attribution (2096), its delegation is 3.4% (here), and its binding copy is closed (2023/2024).
+⚠️ That is the whole of its profile accounted for, with no lever in it.
+
+### The reusable number
+
+**A 3-deep `yield*` chain costs ~41 ns a row, and one generator with an explicit stack costs ~20.** Worth
+knowing before designing any nested-generator walk — but worth DIVIDING BY THE QUERY before calling it
+a target.
+
+GATES. Probe only — no engine change. `bun run check` 0 read unpiped; `node --check` on the probe
+(`genchain-floor-2097.mjs`), which throws unless all three arms agree on rows AND sink.
