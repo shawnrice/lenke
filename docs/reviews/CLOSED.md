@@ -104025,3 +104025,57 @@ tests covering the new policy.
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 5,055
 GQL tests; all seven fuzzers green; 5/5 sweeps clean. Read-side spot check unchanged (`count2` 19.74,
 `hopall` 9.07, `hop2distinct` 126.65 — all with their expected answers).
+
+## Item 2095 — ⚠️ **Gremlin's `seenBefore` has the SAME cliff and it is 2.2x MILDER: 1.47x at two reads per write against GQL's 3.3x. DECLINED for now** — the available win is one point on the curve, and the reason is a build/read cost ratio that differs between the engines
+
+Item 2094 shipped an adaptive arming for GQL's CSR. `second-ask.ts`'s `seenBefore` is **structurally
+identical** to the policy it replaced — a `Set` per topology version, armed on the second ask — so the
+cliff should transfer. ⚠️ "Should" is not a measurement: the two engines build different structures from
+different rungs, and the build cost and per-read saving are exactly the two numbers that set the
+break-even.
+
+| reads per write | ms/read   |                                                       |
+| --------------- | --------- | ----------------------------------------------------- |
+| 1               | 9.06      | never builds                                          |
+| **2**           | **13.33** | ⚠️ **1.47x worse than reading ONCE** — GQL's was 3.3x |
+| 3               | 9.05      | 🔑 **dead even with never building**                  |
+| 4               | 7.06      |                                                       |
+| 6               | 5.38      |                                                       |
+| 12              | 4.92      |                                                       |
+| 24              | 3.41      | amortized                                             |
+
+**worst/best 3.91x**, against GQL's 12.07x before item 2094.
+
+### 🔑 WHY THE SAME POLICY IS NEARLY RIGHT HERE AND BADLY WRONG THERE
+
+The break-even is `build cost / per-read saving`, and both differ:
+
+```text
+                       build      saving/read    break-even
+    GQL  (item 2093)   ~30 ms       ~6.1 ms      ~5 asks     armed at 2 -> 3.3x loss
+    Gremlin            ~19.8        ~5.65        ~3.5 asks   armed at 2 -> 1.47x loss
+```
+
+🔑 **The curve CONFIRMS that arithmetic independently**: it crosses the never-build line at **exactly 3
+reads** (9.05 against 9.06), which is where a ~3.5-ask break-even predicts. So Gremlin's policy is
+mildly too eager rather than badly so.
+
+### Why this is DECLINED rather than built
+
+- The available win is **1.47x at exactly two reads per write and nothing anywhere else** — at 3 it is
+  already break-even and beyond that the build pays. GQL's adaptive policy took 4.23x / 2.67x / 1.77x
+  across three points.
+- Item 2094's adaptive policy carries a **convergence cost on the first version of a new shape**, which
+  it paid for with a 4.23x. Against a 1.47x on one point, that trade is no longer obviously positive,
+  and measuring it properly would cost more than the win.
+- ⚠️ The two policies live in separate packages with no shared module, so this is not a case of one
+  reader needing an update — it would be a second implementation of the adaptive rule, with its own
+  tests and its own mutation round.
+
+**So: recorded with numbers, not built.** ⚠️ If a workload is found that reads exactly twice per write
+through Gremlin's CSR rungs, the fix is item 2094's, already written and tested next door — this entry
+exists so that nobody re-derives the measurement first.
+
+GATES. Probe only — no engine change. `bun run check` 0 read unpiped; `node --check` on the probe
+(`gremlin-arming-sweep-2095.mjs`), which asserts the reads return rows and enforces ≥5 versions per arm
+(item 2094's instrument fault).
