@@ -202,6 +202,17 @@ console.log(
 );
 
 const timings = new Map<string, number>();
+/*
+ * ⚠️⚠️ **THE RUNG VERDICT IS NOW CARRIED INTO THE PAIR TABLE, because a reader (me, item 2206) read the
+ * ratios WITHOUT the verdict column and spent a tick on three non-defects.** This probe's own doc already
+ * said a ratio is a SUSPECT and not a verdict, and that what makes a cliff is the NEIGHBOUR being `CLOSED`
+ * while the shape itself is `pipeline`. Requiring two tables to be cross-referenced is what made that easy
+ * to miss, so each pair line now states its own verdict.
+ *
+ * ✅ BOTH BRANCHES ARE EXERCISED: forcing one shape's verdict to `pipeline` turns its pair line into
+ * `<-- CLIFF (pipeline beside a closed neighbour)` at 137.52x while its sibling still reads `both CLOSED`.
+ */
+const rungs = new Map<string, string>();
 
 for (const s of picked) {
   /**
@@ -246,6 +257,7 @@ for (const s of picked) {
   const ns = ((performance.now() - t0) * 1e6) / REPS;
 
   timings.set(`${s.family}/${s.name}`, ns);
+  rungs.set(`${s.family}/${s.name}`, rung);
   console.log(
     `${s.family.padEnd(7)} ${s.name.padEnd(32)} ${rung.padEnd(8)} ${ns.toFixed(0).padStart(10)}  ${rows}`,
   );
@@ -268,8 +280,31 @@ const PAIRS: readonly [string, string][] = [
   ['other/hop dedupe count', 'other/hop + far has, dedupe count'],
 ];
 
+/**
+ * The pair's verdict, stated rather than left to a cross-reference (item 2207).
+ *
+ * 🔑 THE THREE CASES, in the order that matters:
+ *   - the slower shape is `pipeline` beside a `CLOSED` neighbour -> a real CLIFF, whatever the ratio;
+ *   - BOTH `CLOSED` -> the ratio is a WORKLOAD difference (a filtered arm walks and then filters). Item
+ *     2206 measured one such pair's 149x as the engine beating a HAND-ROLLED WALK by 51x;
+ *   - neither closed -> both ride the pipeline, so a big ratio is worth a look but names no rung.
+ */
+const verdictOf = (ratio: number, fastIsClosed: boolean, slowIsClosed: boolean): string => {
+  if (fastIsClosed && !slowIsClosed) {
+    return '  <-- CLIFF (pipeline beside a closed neighbour)';
+  }
+
+  if (ratio <= 5) {
+    return '';
+  }
+
+  return fastIsClosed && slowIsClosed
+    ? '      both CLOSED - a workload difference, NOT a cliff'
+    : '  <-- SUSPECT (both pipeline)';
+};
+
 console.log(
-  '\nNEIGHBOUR PAIRS (one step apart). A large ratio next to a CLOSED neighbour is a cliff.',
+  '\nNEIGHBOUR PAIRS (one step apart). THE VERDICT IS THE RUNG, NOT THE RATIO: a cliff is a `pipeline`\n  shape beside a CLOSED neighbour. Two CLOSED shapes differ by WORKLOAD however large the ratio.',
 );
 
 for (const [a, b] of PAIRS) {
@@ -281,7 +316,16 @@ for (const [a, b] of PAIRS) {
   }
 
   const ratio = y / x;
-  const flag = ratio > 5 ? '  <-- SUSPECT' : '';
+  const slowIsClosed = rungs.get(b) === 'CLOSED';
+  const fastIsClosed = rungs.get(a) === 'CLOSED';
+  /*
+   * 🔑 THE THREE CASES, in the order that matters:
+   *   - the slower shape is `pipeline` beside a `CLOSED` neighbour -> a real CLIFF, whatever the ratio;
+   *   - BOTH `CLOSED` -> the ratio is a WORKLOAD difference (a filtered arm walks and then filters), and
+   *     item 2206 measured one such pair's 149x as the engine beating a hand-rolled walk by 51x;
+   *   - neither closed -> both ride the pipeline, so a big ratio is worth a look but names no rung.
+   */
+  const verdict = verdictOf(ratio, fastIsClosed, slowIsClosed);
 
-  console.log(`  ${a.padEnd(34)} -> ${b.padEnd(38)} ${ratio.toFixed(2)}x${flag}`);
+  console.log(`  ${a.padEnd(34)} -> ${b.padEnd(38)} ${ratio.toFixed(2)}x${verdict}`);
 }

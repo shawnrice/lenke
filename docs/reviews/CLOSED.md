@@ -110463,7 +110463,7 @@ look elsewhere rather than re-pricing these rows.
 
 GATES. `bun run fmt` 0, `bun run check` 0. No production change.
 
-## Item 2206 — ✅ **CLOSED: the Gremlin cliff finder's THREE "SUSPECTS" (65x, 72x, 149x) ARE ALL NON-DEFECTS — the engine's filtered count beats a hand-rolled walk by 51x. The ratios compare a near-optimal arm against an O(1) CLOSED FORM, which is the SEVENTH mismatched-floor false nomination**
+## Item 2206 — ✅ **CLOSED: the Gremlin cliff finder's THREE "SUSPECTS" (65x, 72x, 149x) ARE ALL NON-DEFECTS — the engine's filtered count beats a hand-rolled walk by 51x.** ~~The ratios compare a near-optimal arm against an O(1) CLOSED FORM, which is the SEVENTH mismatched-floor false nomination~~ ⚠️ **THAT CLAIM IS WITHDRAWN — see item 2207: the finder ALREADY documented that a ratio is not a verdict and that both members being `CLOSED` means no cliff. I read the ratio table without the verdict column. Not an instrument fault, and NOT an eighth instance of that class.**
 
 Both screens are quiet and the multi-clause surface is exhausted (item 2205), so this tick went after the
 Gremlin composition surface. ⚠️ **It did NOT need a new probe, and finding that out was the first win:**
@@ -110518,3 +110518,47 @@ conclusion was ratio-shaped. **Cross-checking against the existing probe is what
 second, independent reason to run the corpus's instrument before writing a new one.
 
 GATES. `bun run fmt` 0, `bun run check` 0. No production change; no new probe (deliberately).
+
+## Item 2207 — ✅ **I MISREAD MY OWN INSTRUMENT, AND ITEM 2206'S FRAMING WAS WRONG. The cliff finder already documented that a ratio is not a verdict; it just made the reader cross-reference two tables. Each pair line now STATES its verdict, both branches verified**
+
+Item 2206 closed three "suspects" as non-defects and blamed the instrument for producing them — "the
+seventh mismatched-floor false nomination". ⚠️⚠️ **That framing was wrong, and the finder's own doc says so:**
+
+> A ratio is a SUSPECT, not a verdict — the filtered member of a pair can legitimately do more work (it
+> walks the same traversers and then filters). **What makes it a cliff is the neighbour being CLOSED while
+> it is `pipeline`**, which the column above states.
+
+🔑 All three of my suspects had **both** members marked `CLOSED` in the rung column, so by the instrument's
+own stated rule they were never cliffs. The tool was right; **I read the ratio table without the verdict
+column.** So this is not an eighth instance of the mismatched-floor class — it is a misread, and the
+correction belongs on item 2206's entry.
+
+### ✅ WHAT WAS ACTUALLY WRONG: THE VERDICT WAS COMPUTED AND THEN THROWN AWAY
+
+`rung` was derived per shape and printed in the upper table, but only `timings` was carried into the pair
+loop — so the pair line could not state what it meant, and a reader had to join two tables by hand. Now a
+`rungs` map carries it, and `verdictOf(ratio, fastIsClosed, slowIsClosed)` prints one of three things:
+
+```text
+    count/hop        -> count/hop + far has            74.04x   both CLOSED - a workload difference, NOT a cliff
+    count/hop hop    -> count/hop hop + trailing has  141.26x   both CLOSED - a workload difference, NOT a cliff
+    count/hop hop    -> count/hop + mid has + hop      70.13x   both CLOSED - a workload difference, NOT a cliff
+```
+
+### ⚠️ BOTH BRANCHES VERIFIED, AND THE SECOND VERIFICATION WAS NOT OPTIONAL
+
+A new two-branch arm needs a test per branch (item 2191's lesson). Forcing one shape's verdict to
+`pipeline` turns exactly its pair line into a cliff while its sibling is unchanged:
+
+```text
+    count/hop hop + trailing has    pipeline
+    count/hop     -> count/hop + far has             67.40x   both CLOSED - a workload difference, NOT a cliff
+    count/hop hop -> count/hop hop + trailing has   146.12x  <-- CLIFF (pipeline beside a closed neighbour)
+```
+
+🔑 It was checked TWICE, because `no-nested-ternary` forced a refactor from a nested conditional into a
+named `verdictOf` helper **after** the first verification — and a refactor that changes the logic's shape
+invalidates the evidence for it. ⚠️ Also: restoring the pristine copy to undo the mutant wiped the real
+change the first time; the second round saved the new file to `target/` first.
+
+GATES. `bun run fmt` 0, `bun run check` 0 (read unpiped). Instrument only; no engine change.
