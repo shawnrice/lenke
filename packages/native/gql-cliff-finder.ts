@@ -162,9 +162,83 @@ const hopRows = (): { k: unknown }[] => {
 
 const byK = (x: { k: unknown }, y: { k: unknown }): number => (x.k as number) - (y.k as number);
 
+/** Every two-hop path's far `k` — the work a `hop2` `RETURN c.k` must do. */
+const hop2Rows = (): { k: unknown }[] => {
+  const out: { k: unknown }[] = [];
+
+  for (const a of g.verticesByLabel.get('P') ?? []) {
+    for (const e1 of g.edgesFromByLabel.get(a.id)?.get('E') ?? []) {
+      for (const e2 of g.edgesFromByLabel.get(e1.to.id)?.get('E') ?? []) {
+        out.push({ k: e2.to.properties.k });
+      }
+    }
+  }
+
+  return out;
+};
+
+/** One walk, accumulating BOTH aggregates — the floor for a two-aggregate shape. */
+const hopAcc = (): { sum: number; min: number } => {
+  let sum = 0;
+  let min = Infinity;
+
+  for (const a of g.verticesByLabel.get('P') ?? []) {
+    for (const e of g.edgesFromByLabel.get(a.id)?.get('E') ?? []) {
+      sum += e.to.properties.n as number;
+      min = Math.min(min, e.to.properties.k as number);
+    }
+  }
+
+  return { sum, min };
+};
+
+/** One walk, tallying by `k` — the floor for a grouped hop count. */
+const hopTally = (): Map<unknown, number> => {
+  const by = new Map<unknown, number>();
+
+  for (const a of g.verticesByLabel.get('P') ?? []) {
+    for (const e of g.edgesFromByLabel.get(a.id)?.get('E') ?? []) {
+      const { k } = e.to.properties;
+
+      by.set(k, (by.get(k) ?? 0) + 1);
+    }
+  }
+
+  return by;
+};
+
+/**
+ * Count the `(a:P)-[:E]->(b:P)` paths, optionally keeping only `k === want`.
+ *
+ * ⚠️ A COUNT'S FLOOR MUST NOT MATERIALIZE ROWS — that would charge the engine for allocation its own
+ * closed form avoids, which is the mirror image of item 698's mistake (a floor doing LESS work than the
+ * query overstates; one doing MORE understates and hides a real gap).
+ */
+const hopCount = (want?: number): number => {
+  let n = 0;
+
+  for (const a of g.verticesByLabel.get('P') ?? []) {
+    for (const e of g.edgesFromByLabel.get(a.id)?.get('E') ?? []) {
+      if (want === undefined || e.to.properties.k === want) {
+        n += 1;
+      }
+    }
+  }
+
+  return n;
+};
+
 const SHAPES: Shape[] = [
   // --- node scans: the family items 1607/1609/1610/1611 worked on, kept as the CONTROL -------
-  { family: 'node', name: 'count', q: 'MATCH (n:P) RETURN count(*) AS c' },
+  {
+    family: 'node',
+    name: 'count',
+    q: 'MATCH (n:P) RETURN count(*) AS c',
+    floor: {
+      label: 'label bucket size',
+      run: () => (g.verticesByLabel.get('P') ?? new Set()).size,
+    },
+  },
   { family: 'node', name: 'count + where', q: 'MATCH (n:P) WHERE n.k = 5 RETURN count(*) AS c' },
   {
     family: 'node',
@@ -175,23 +249,39 @@ const SHAPES: Shape[] = [
   { family: 'node', name: 'rows + where', q: 'MATCH (n:P) WHERE n.k = 5 RETURN n.k AS k' },
 
   // --- one hop, count then rows then aggregates ---------------------------------------------
-  { family: 'hop', name: 'count', q: 'MATCH (a:P)-[:E]->(b:P) RETURN count(*) AS c' },
+  {
+    family: 'hop',
+    name: 'count',
+    q: 'MATCH (a:P)-[:E]->(b:P) RETURN count(*) AS c',
+    floor: { label: 'walk + count', run: () => hopCount() },
+  },
   {
     family: 'hop',
     name: 'count + far where',
     q: 'MATCH (a:P)-[:E]->(b:P) WHERE b.k = 5 RETURN count(*) AS c',
   },
-  { family: 'hop', name: 'rows', q: 'MATCH (a:P)-[:E]->(b:P) RETURN b.k AS k' },
+  {
+    family: 'hop',
+    name: 'rows',
+    q: 'MATCH (a:P)-[:E]->(b:P) RETURN b.k AS k',
+    floor: { label: 'walk + read k', run: hopRows },
+  },
   {
     family: 'hop',
     name: 'rows + far where',
     q: 'MATCH (a:P)-[:E]->(b:P) WHERE b.k = 5 RETURN b.k AS k',
   },
-  { family: 'hop', name: 'sum', q: 'MATCH (a:P)-[:E]->(b:P) RETURN sum(b.n) AS s' },
+  {
+    family: 'hop',
+    name: 'sum',
+    q: 'MATCH (a:P)-[:E]->(b:P) RETURN sum(b.n) AS s',
+    floor: { label: 'walk + sum n', run: () => hopAcc().sum },
+  },
   {
     family: 'hop',
     name: 'two aggregates',
     q: 'MATCH (a:P)-[:E]->(b:P) RETURN sum(b.n) AS s, min(b.k) AS m',
+    floor: { label: 'walk + sum + min', run: () => hopAcc() },
   },
   {
     family: 'hop',
@@ -202,6 +292,7 @@ const SHAPES: Shape[] = [
     family: 'hop',
     name: 'distinct rows',
     q: 'MATCH (a:P)-[:E]->(b:P) RETURN DISTINCT b.k AS k',
+    floor: { label: 'walk + Set of k', run: () => [...new Set(hopRows().map((r) => r.k))] },
   },
 
   // --- two hops, the family the Gremlin side just closed ------------------------------------
@@ -214,6 +305,7 @@ const SHAPES: Shape[] = [
     family: 'hop2',
     name: 'rows',
     q: 'MATCH (a:P)-[:E]->(b:P)-[:E]->(c:P) RETURN c.k AS k',
+    floor: { label: 'two-hop walk + read k', run: hop2Rows },
   },
   {
     family: 'hop2',
@@ -237,6 +329,7 @@ const SHAPES: Shape[] = [
     family: 'page',
     name: 'grouped hop count',
     q: 'MATCH (a:P)-[:E]->(b:P) RETURN b.k AS k, count(*) AS c',
+    floor: { label: 'walk + Map tally', run: hopTally },
   },
   {
     family: 'page',
@@ -263,7 +356,12 @@ const SHAPES: Shape[] = [
      */
     floor: { label: 'hop + sort + slice', run: () => hopRows().sort(byK).slice(0, 10) },
   },
-  { family: 'page', name: 'collect', q: 'MATCH (n:P) RETURN collect(n.k) AS ks' },
+  {
+    family: 'page',
+    name: 'collect',
+    q: 'MATCH (n:P) RETURN collect(n.k) AS ks',
+    floor: { label: 'scan + collect', run: () => scanRows().map((r) => r.k) },
+  },
   {
     family: 'page',
     name: 'collect over a hop',
@@ -320,8 +418,14 @@ for (const s of picked) {
   timings.set(`${s.family}/${s.name}`, ns);
 
   const fl = s.floor === undefined ? undefined : floorNs(s.floor.run);
-  /* 🔑 Flag on the FLOOR ratio, which is the only one that says a win is reachable. */
-  const over = fl === undefined ? '' : `${(ns / fl).toFixed(2)}x${ns / fl > 2 ? ' <--' : ''}`;
+  /*
+   * 🔑 Flag on the FLOOR ratio, which is the only one that says a win is reachable — **AND on an absolute
+   * size**, which item 2212 added after `node/count` flagged at 17.63x for 1,410 ns against an 80 ns
+   * `Set.size` read. A big ratio between two trivial numbers is arithmetic, not a target; 50 us is roughly
+   * where this repo's ~10%-of-something-real threshold starts to mean anything.
+   */
+  const over =
+    fl === undefined ? '' : `${(ns / fl).toFixed(2)}x${ns / fl > 2 && ns > 50_000 ? ' <--' : ''}`;
 
   console.log(
     `${s.family.padEnd(6)} ${s.name.padEnd(24)} ${ns.toFixed(0).padStart(11)} ${(fl === undefined ? '-' : fl.toFixed(0)).padStart(11)} ${over.padStart(9)} ${String(rows).padStart(7)}  ${

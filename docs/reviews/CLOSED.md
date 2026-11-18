@@ -110754,3 +110754,51 @@ unchanged — so the marker is not dead code. (Item 2191's rule; item 2207 neede
 a lint-forced refactor invalidated the first one.)
 
 GATES. `bun run fmt` 0, `bun run check` 0. Instrument only; no engine change.
+
+## Item 2212 — ✅ **FLOORS NOW COVER 14 OF THE FINDER'S 24 SHAPES, and the two rows that survive both trace to the KNOWN boxed-vs-columnar aggregate cost. A "does it walk once per aggregate?" question is answered: NO — a THIRD aggregate is FREE**
+
+Item 2211 added the `floor` mechanism with five floors. This fills in the families that printed `-`, which
+is where the largest absolute numbers were.
+
+```text
+    family shape                    ns/op       floor  vs floor    rows  rungs
+    node   count                     1410          80    17.63x       1  countShortcut
+    node   rows                    360072      150830     2.39x   20000  nodeProjection
+    hop    count                     1260      657353     0.00x       1  countShortcut
+    hop    rows                   1196986     3032416     0.39x   79996  hopProjection
+    hop    sum                    5770230     2248482 2.57x <--       1  hopAggregate
+    hop    two aggregates         9271957     2122801 4.37x <--       1  multiHopAggregate
+    hop    distinct rows           413832     4239751     0.10x     100  distinctProjection
+    hop2   rows                  33437792    27090240     1.23x  319972  hop2Projection
+    page   grouped hop count      2909305     3145616     0.92x     100  groupHopShortcut
+    page   collect                 287992      205351     1.40x       1  nodeAggregate
+```
+
+🔑 **Four rows show the engine BEATING a hand-rolled arm outright** — `hop/count` at 0.00x (a closed form
+against a real walk), `hop/distinct rows` 0.10x, `hop/rows` 0.39x, `page/grouped hop count` 0.92x. Those are
+the rows a neighbour-ratio table made look alarming for three items running.
+
+### ✅ THE ONE REAL QUESTION THE FLOORS RAISED, AND ITS ANSWER
+
+`hop/two aggregates` read **4.37x** against a floor that computes BOTH aggregates in ONE walk — which would
+be the signature of the engine walking twice. **It does not:**
+
+```text
+    hop count              17 us
+    1 aggregate (sum)    7212 us
+    2 aggregates        10458 us   vs 1: 1.45x
+    3 aggregates        10006 us   vs 1: 1.39x   <- a THIRD aggregate is FREE
+```
+
+🔑 Three aggregates cost the same as two, so there is one walk. **The cost is the FIRST aggregate** — 7,212 us
+against a 17 us count — which is the boxed-vs-columnar `sum` cost priced at items 2173 and 2196 and recorded
+there as architectural, NOT a target. So both surviving flags are already-closed work, correctly surfaced.
+
+### ⚠️ AND THE FLAG NEEDED AN ABSOLUTE SIZE, WHICH ONLY A FLOOR COULD REVEAL
+
+`node/count` flagged at **17.63x** — 1,410 ns against an 80 ns `Set.size` read. **A big ratio between two
+trivial numbers is arithmetic, not a target**, so the flag now also requires `ns > 50_000`. That threshold is
+roughly where this repo's "~10% of something real" rule starts to mean anything.
+
+GATES. `bun run fmt` 0, `bun run check` 0 (two lint fixes on the way: an unused helper when a floor failed to
+attach, and `prefer-destructuring`). Instrument only; no engine change.
