@@ -157,6 +157,48 @@ describe('the deferred-check skip (item 2181)', () => {
       }).toThrow();
     });
 
+    test('⚠️⚠️ a NEW VERTEX violating a constraint inside a transaction (the addVertex path)', () => {
+      /*
+       * 🔑🔑 THE PATH ITEM 2184 GUARDED, which item 2181's tests did not reach: `addVertex` has its OWN
+       * `txTouched.add`, separate from `deferConstraint`'s. ⚠️ A vertex CREATED inside the transaction must
+       * still be checked at commit — this is the test that makes that guard's term load-bearing.
+       */
+      const g = new Graph();
+
+      g.createRequiredConstraint('P', 'req');
+
+      expect(() => {
+        g.transaction(() => {
+          g.addVertex({ id: 'fresh', labels: ['P'], properties: { other: 1 } });
+        });
+      }).toThrow();
+      expect(g.getVertexById('fresh')).toBeNull();
+    });
+
+    test('⚠️ a new vertex violating a UNIQUE constraint inside a transaction', () => {
+      const g = new Graph();
+
+      g.createUniqueConstraint('P', 'u');
+      g.addVertex({ id: 'u1', labels: ['P'], properties: { u: 7 } });
+
+      expect(() => {
+        g.transaction(() => {
+          g.addVertex({ id: 'u2', labels: ['P'], properties: { u: 7 } });
+        });
+      }).toThrow();
+      expect(g.getVertexById('u2')).toBeNull();
+    });
+
+    test('🔑 and with NO constraints a new vertex in a transaction commits', () => {
+      const g = new Graph();
+
+      g.transaction(() => {
+        g.addVertex({ id: 'ok', labels: ['P'], properties: { n: 1 } });
+      });
+
+      expect(g.getVertexById('ok')?.properties.n).toBe(1);
+    });
+
     test('⚠️⚠️ a CARDINALITY constraint (vertexCardinalityConstraints)', () => {
       /*
        * 🔑 THE FOURTH UNTESTED KIND, and the one that justifies the guard covering an EDGE-driven path:

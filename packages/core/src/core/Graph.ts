@@ -1735,7 +1735,16 @@ export class Graph {
     if (this.applyingUndo) {
       // rollback replay restores known-good state — never re-check.
     } else if (this.txDepth > 0) {
-      this.txTouched.add(vertex.id);
+      /*
+       * ⚠️⚠️ **GUARDED, AND ITEM 2182 REVERTED THIS ON A BAD READING — see item 2184.** With no vertex-side
+       * check declared there is nothing for `runDeferredChecks` to find, so recording the id is pure cost.
+       * A DELETION TEST under the differential profiler priced it exactly: removing this one line takes
+       * the transaction's penalty on a bulk add from **340.2 to 171.0 ns/op**, i.e. HALF, and makes both
+       * `addVertex`'s own +114.9 (the Set insert, inlined) and `runDeferredChecks`' +59.3 disappear.
+       */
+      if (this.hasDeferrableVertexChecks) {
+        this.txTouched.add(vertex.id);
+      }
     } else {
       const missing = this.missingRequired(vertex.labels, vertex.properties);
 

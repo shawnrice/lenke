@@ -109147,7 +109147,7 @@ rolls back), so the real behaviour is asserted instead. The difference I feared 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
 `bun run fuzz` all seven green; 12 new tests.
 
-## Item 2182 — ⚠️⚠️ **BUILT AND REVERTED: item 2181's guard does NOT pay at `addVertex`/`addLabelToVertex`. THREE hypotheses refuted, including a 19.3% frame that is pure attribution — and `getVertexById` is confirmed O(1), ONE call per add**
+## Item 2182 — ⚠️⚠️ ~~**BUILT AND REVERTED: item 2181's guard does NOT pay at `addVertex`**~~ **THE REVERT WAS WRONG AND IS UNDONE AT ITEM 2184 — the guard is 1.29x, reproduced three times. This item's round 1 (240.2 → 187.7) was the TRUE reading and its round 2 the artefact.** The three refutations below still stand, including a 19.3% frame that is pure attribution — and `getVertexById` is confirmed O(1), ONE call per add
 
 Item 2181's closing note pointed here: seven `txTouched.add` sites exist and only one was guarded, so a bulk
 `INSERT` still pays what `SET` no longer does. ⚠️ **It does not, and the premise behind the follow-up was
@@ -109255,3 +109255,58 @@ directory, so the arm script must live in this package — setting `cwd` does no
 profile to exactly that, this file's header says so, **and I did it again on the first run anyway.**
 
 GATES. Instrument only. `bun run fmt` 0; `bun run check` 0 read unpiped; no stray arm scripts left behind.
+
+## Item 2184 — ✅✅ **SHIPPED, AND IT UNDOES ITEM 2182's REVERT: the `addVertex` guard is 1.29x on a bulk transactional add, reproduced three times. A DELETION TEST proved one line is HALF the transaction's penalty**
+
+Item 2183's differential profiler nominated `addVertex`'s own self time doubling inside a transaction
+(+114.9 ns/op) with no tx-only frame to explain it. That instrument's own warning says a frame can gain
+time from being called more OR from different inlining, and demands a call count or a deletion test.
+
+### 🔑🔑 THE DELETION TEST, WHICH IS THE WHOLE ITEM
+
+`addVertex` is called exactly N times in BOTH arms, so it is not called more — and the NO-TX arm runs
+_more_ constraint work (the inline-check branch) while being faster. So the extra time had to be inside the
+transaction branch, whose only statement is `txTouched.add(vertex.id)`. Deleting that line (unsound,
+diagnostic, reverted at once):
+
+```text
+    arm                           penalty    addVertex delta   runDeferredChecks delta
+    pristine                   340.2 / 320.4 ns/op   +114.9         +59.3
+    one line DELETED           171.0               gone           gone
+    GUARDED (the shipped fix)  197.4               gone           gone
+```
+
+🔑 **One line is half the transaction's entire penalty on a bulk add**, and the guard reproduces the
+deletion. `addVertex`'s +114.9 was the Set insert, inlined into it.
+
+### ⚠️⚠️ AND THAT MEANS ITEM 2182's REVERT WAS WRONG — ITS OWN ROUND 1 WAS RIGHT
+
+```text
+    six alternated arms, 200k addVertex in a transaction
+    BEFORE   241.6 / 245.7 / 242.8     mean 243.4
+    NEW      189.7 / 192.4 / 182.1     mean 188.1      1.29x
+    no-tx control (unreachable by the change)
+             167.5 / 176.0 / 167.0  vs  175.4 / 176.5 / 169.0    no trend
+```
+
+🔑 Item 2182 ran TWO pairs and read 1.28x then 1.02x, concluded the effect was noise, and reverted. **Three
+pairs show 1.29x with no control trend — its round 1 was the signal and its round 2 the artefact.** ⚠️ The
+transaction's penalty falls from 71.5 ms to 16.2 ms, so the guarded transactional add is now close to the
+unguarded no-transaction floor.
+
+**THE LESSON IS NOT "trust the first reading".** Item 2182 reverted correctly _given two pairs_; what was
+missing was a mechanism. The deletion test supplied one, and a mechanism plus three pairs is a different
+evidential position from two pairs alone. ⚠️ Item 2182's heading is corrected in this same commit.
+
+### 🔑 SCOPE, AND WHAT IS DELIBERATELY NOT HERE
+
+Only the `addVertex` site is guarded. `addLabelToVertex` measured 37-41 ms in both arms at item 2182 with
+no signal, so it is left alone rather than changed on consistency grounds. The cardinality call sites
+(`cardinalityGateOnInsert`, `cardinalityNoteOnRemove`) still record unconditionally and are untouched.
+
+**15 tests** (three new, for the `addVertex` path: a new vertex violating REQUIRED and UNIQUE inside a
+transaction must still be caught and rolled back, and with no constraints it must commit). **5 of 6 mutants
+caught**; `guard-always-true` survives by definition — always recording IS the pre-change behaviour.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
+`bun run fuzz` all seven green.
