@@ -110089,3 +110089,60 @@ against 5.85 native, 1.0x** — the values walk is AT PARITY and every reduce ov
 its own shortcut.
 
 GATES. `bun run fmt` 0, `bun run check` 0. Bench instrument only; no engine change.
+
+## Item 2200 — ✅ **THE O(1)-BY-ID INVARIANT VERIFIED AGAINST A CALIBRATED FLOOR: `getVertexById` is a `Map.get` plus a CONSTANT, and the ratio SHRINKS to 1.5x at a million elements. Three harness traps caught on the way, one of which produced an impossible number**
+
+Both screens flag nothing after item 2199, so this tick profiled a shape NEITHER covers: the serving path —
+small operations against a warm graph — which is also where the standing O(1)-by-id requirement lives.
+
+### ✅ FIRST, THE READ PATH IS HEALTHY: EVERY SPELLING SEEDS THE INDEX
+
+```text
+    hash index on k, 50,000 vertices / 150,000 edges, median of 800 reps
+    LITERAL  WHERE a.k = 42      16.6 us
+    PARAM    WHERE a.k = $x      16.8 us
+    INLINE   {k: 42}             16.8 us
+    INLINE   {k: $x}             21.4 us
+    REVERSED WHERE 42 = a.k      20.9 us
+    no-pred CONTROL               0.2 us   (a closed form)
+```
+
+🔑 All five agree on the answer (1548) and on the route. The 1.29x spread is item 579's already-recorded
+clause-vs-inline gap on a numeric seeked key, well under the probe's 2x threshold. **No 100-300x spelling
+bug of the kind `CLAUDE.md` warns about.** Unindexed, the same query costs 630 us — the index is working.
+
+### ✅ THE INVARIANT, MEASURED AGAINST A RAW `Map.get` ON THE SAME KEYS
+
+```text
+    N          Map.get floor   getVertexById   getEdgeById   vtx/floor
+    25,000          7.00            18.01         16.23        2.6x
+    100,000        13.21            49.29         47.48        3.7x
+    400,000        41.10            76.05         82.71        1.9x
+    1,000,000      80.01           119.92        117.44        1.5x
+```
+
+🔑🔑 **THE FLOOR ITSELF GROWS 7 → 80 ns (11x), which is CACHE, not algorithm** — a `Map.get` into a large
+cold map IS a cache miss. `getVertexById` tracks it with a constant overhead, so **the ratio FALLS as the
+graph grows**. By-id access is a hash lookup plus a small constant, and at a million elements it is within
+1.5x of the bare data structure. ⚠️ A single-size reading would have reported "4.7x overhead" (the N=200,000
+figure) and been wrong about the trend — `CLAUDE.md`'s _sweep the size_ rule changed the conclusion.
+
+### ⚠️⚠️ THREE HARNESS TRAPS, AND THE FIRST PRODUCED AN IMPOSSIBLE NUMBER
+
+1. **0.2 ns/op.** Discarding the result let the JIT eliminate the call; the reading was below one L1 access.
+   **A per-op figure under ~1 ns is not a fast path, it is a dead-code artifact.** Consuming the result into
+   an accumulated sink (and printing whether the sink was non-zero) is the fix.
+2. **String concat inside the timed loop.** `'v' + i` per op hid the lookup it was supposed to measure. Keys
+   are now pre-built into an array before timing.
+3. **No null control and no floor.** Without `i & 1` (0.73 ns) and a raw `Map.get` (7-80 ns), there was
+   nothing to say whether 52 ns was good or bad. The floor is what makes the answer interpretable — and it
+   is the same lesson items 2196 and 2199 paid for, now applied BEFORE drawing a conclusion.
+
+⚠️ `getEdgeById(...).from` is NOT a fair by-id arm: `Edge.from` memoizes into `#fromV`, so repeated reads
+measure a cached deref. The table above uses `.fromId.length`, which allocates nothing.
+
+🔑 Noted while reading, NOT a defect: `addVertex` calls `getVertexById` twice — but the second only fires on
+a duplicate-id hit, which returns immediately, so the common insert path is one lookup. That matches item
+2182's measured 1.00 calls per add.
+
+GATES. No production change. `bun run check` 0.
