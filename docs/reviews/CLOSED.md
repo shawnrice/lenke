@@ -115511,3 +115511,56 @@ a comment in the code rather than an entry in this file. **The grep that found i
 withBinding packages/gql/src/`** — every hit was a comment pricing it.
 
 GATES. `bun run fmt` 0, `bun run check` 0. No production change; no probe needed.
+
+## Item 2308 — ✅ **THE BENCH'S LARGEST ROW IS NOT A REGRESSION, AND IT IS NOT MINE: `traverse 1-hop project + order by` reads 826.3 ms against a recorded 221-300, and BOTH halves of that gap are fixture, not engine. My two far-driven ships are ruled out by a same-binary A/B (112.7 against 115.8)**
+
+Var-length being the repo's most-worked surface (**216 entries**), this tick took the wide net instead:
+`bun run bench`, which this session had never run. 🔑 One row dominates:
+
+```text
+    traverse 1-hop project + order by     826.3 ms    <- 43.5x its own unordered control
+    traverse 1-hop project                 19.0
+    query: nodes(p) on a 1-hop path        666.2      [2160, worked]
+    query: sum over a hop                  294.3      [2157, worked]
+```
+
+⚠️ **And unlike every other large row, its label carries no item number** — the audit says so in terms:
+_"300.9 traverse 1-hop project + order by — barely examined (2 mentions, no entry)"_.
+
+### ⚠️ RULING MYSELF OUT CAME FIRST, AND THE ROW'S OWN COMMENT IS WHY
+
+> _"Sorting also forces the START-DRIVEN walk, because the far-driven one reorders rows deliberately and
+> tie order under `ORDER BY` is observable between the engines."_
+
+🔑 **Items 2297/2298 admitted more shapes to that far-driven walk.** A row at 2.7x its recorded value,
+naming that walk, immediately after two ships, is a self-suspicion worth paying for. Env switch inside ONE
+binary (item 2294's instrument):
+
+```text
+    shape      ships OFF   ships ON
+    plain         11.4       9.1
+    ordered      112.7     115.8     <- identical within noise
+```
+
+✅ **Not mine.** The row has no far predicate, so the gate's `farPred !== undefined` conjunct refuses it
+before anything I changed is consulted — and the measurement agrees with the reading.
+
+### ✅ AND THE APPARENT REGRESSION IS TWO FIXTURE FACTS
+
+**1. The 826.3 against my probe's 113.** `hopPairDoc` builds `N * 5` edges — **1,000,000 rows** at
+N=200,000 — where my probe built one edge per vertex. 5x the rows to sort accounts for the gap.
+
+**2. The 221-300 against today's 826.3**, from the fixture's own comment: _"THE REPEAT-INDEX SPLIT, ADDED
+AT ITEM 1633. Item 1516 fixed `graphDoc` above and left THIS generator — also five edges per node —
+invariant under `k -> k + N`, so every one of a vertex's five out-edges landed on the SAME target."_
+🔑 **The old numbers were measured on a degenerate fixture where five edges per vertex collapsed to one
+target.** Item 1633 made it legitimately harder. ⚠️ `CLAUDE.md`'s own rule covers exactly this: _"when
+judging what a degenerate fixture invalidated… any claim about branching, selectivity or fan-out does
+not"_ survive — and a SORT's cost is a claim about distinct values.
+
+✅ **So 826.3 ms is 826 ns per row to sort 1,000,000 strings, which is ordinary.** The row is the bench's
+largest because its work is the largest. **Nothing to fix, and the "barely examined" note now has an
+entry.**
+
+GATES. `bun run fmt` 0, `bun run check` 0, switch removed and verified gone. One probe; no production
+change.
