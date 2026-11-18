@@ -109960,3 +109960,79 @@ the 16 ms, and `min` proves it is paid by every grouped fold, not just `sum`.** 
 larger question than the one this item asked.
 
 GATES. No production change; both files reverted and verified identical to pristine. `bun run check` 0.
+
+## Item 2197 — ✅ **CLOSED, NO LEVER: item 2196's handoff over-promised. The grouped-fold path's extra cost is INTRINSIC WORK, and the reducible residual is already refuted next to the code**
+
+Item 2196 handed off "`argFn(env)` plus the per-vertex `binding.set` — ~13 of the grouped path's 16 ms". ⚠️
+A differential profile of `grouped min` (already a fold) against `grouped count` says that framing was wrong.
+
+```text
+    frame                     count      MIN    delta ms over 60 reps
+    scanAggregates + (anon)     0.0    314.3    +314.3   <- 94% of the difference
+    propOf                     22.1     73.9     +51.8
+    bump + (anon)             130.9      0.0    -130.9   <- count's tally
+    get properties             30.2     51.6     +21.4
+```
+
+🔑 **AND A THROW PROBE INVERTED MY HYPOTHESIS.** I expected `count(*)` to hold the specialized rung and the
+folds to fall to a generic path. The opposite:
+
+```text
+    grouped count(*)       generic scanAggregates
+    grouped min            SPECIALIZED rung
+    grouped sum            SPECIALIZED rung
+    grouped avg            SPECIALIZED rung
+    grouped count(a.age)   SPECIALIZED rung
+    grouped collect        SPECIALIZED rung
+```
+
+So every fold is ALREADY on `detectGroupedNodeAggregate`; `count(*)` simply has an even cheaper one (a pure
+counter bump needing no binding write and no argument evaluation). The gap is real work, not a missed route.
+
+⚠️⚠️ **AND THE RESIDUAL WAS ALREADY REFUTED, IN A COMMENT DIRECTLY ABOVE `propOf`.** `propOf` is
+`bound?.properties?.[key] ?? null` — nothing to shave. The recorded measurement there: ~1.12x is the
+per-item call machinery and **2.8x is the ROW OBJECT'S HIDDEN CLASS**, reachable only with a generated
+constructor, and `no-runtime-codegen` is FIRM policy. A template-plus-fill arm measured WORSE (185.2 ms).
+
+🔑 **The lesson is about the handoff, not the code: I priced a target in a closing summary without checking
+it against `CLOSED.md` and memory first.** A handoff is a claim, and it deserves the same check as a target.
+
+GATES. No production change. `bun run check` 0.
+
+## Item 2198 — 🔑🔑 **DIAGNOSED, BUILD HANDED OFF: Gremlin's `values(k).max()` pays 298 ms of GENERATOR CHAIN for a fold that already exists. `count()` was fused at item 1586 and `max`/`sum` never were — the floor is measured and sits in the same table**
+
+With the GQL screen's flags all closed, worked or policy-blocked, the Gremlin screen was re-run and gives a
+nomination with its own floor one row above it:
+
+```text
+    row                              ts   native   marginal ts
+    FLOOR V().values(k).count()    2.52     0.46        —        <- the fused shape
+    V().values(k).max()            6.76     0.11      +4.24      63.3x
+    V().values(k).sum()            4.54     0.11      +2.02      39.5x
+```
+
+A differential profile of `max()` against `count()` names the whole difference:
+
+```text
+    frame                     count      MAX    delta ms over 60 reps
+    propertyCount             123.3      0.0    -123.3   <- count's FUSED closed form
+    drain                       0.0    190.2    +190.2
+    walkValues                  0.0    108.0    +108.0
+    foldProjectedMinMax         0.0     71.6     +71.6
+    compareTotal                0.0     15.7     +15.7
+```
+
+🔑🔑 **`foldProjectedMinMax` ALREADY EXISTS — the fold is not the problem.** It is being driven through
+`drain` + `walkValues`, 298 ms of generator chain, where `count()` reaches `propertyCount` and never
+materializes a value at all. That is precisely item 1586's finding (`gremlin-values-is-the-floor`: _the
+reduce is free; the cost is the generator chain_), which fused `count()` for 1.90x and left the reductions.
+
+**WHAT THE BUILD NEEDS, and the placement is already recorded:** the fusion goes in **`run`'s loop, NOT
+`applyPlanToStream`** (that one is for nested plans only) — item 1586's own note. Expected ceiling is the
+`count()` floor beside it, 6.76 → ~2.5 ms, so ~2.7x for `max`/`min` and ~1.8x for `sum`.
+
+⚠️ Handed off rather than built because item 1586's sibling warning applies: `executor-edits-perturb` prices
+a new walk variant at up to 16% on UNRELATED rows, so this wants a full tick with controls, not the tail of
+a diagnosis.
+
+GATES. No production change. `bun run check` 0.
