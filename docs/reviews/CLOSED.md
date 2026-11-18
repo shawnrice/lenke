@@ -116310,3 +116310,54 @@ the failure leaves the tree inconsistent in a way that reads as done.
 GATES. `bun run fmt` 0, `bun run check` 0 (after four redundant type assertions it caught), `bun run fuzz`
 **57/0**, `bun run test -- --skip-nx-cache` 0, gremlin spelling probe **0 answer disagreements, 1 flagged
 group (from 3)**.
+
+## Item 2324 — ✅✅ **BOTH SPELLING SURFACES VERIFIED CLEAN AFTER SIX SHIPS, AND BOTH REMAINING FLAGS DISMISSED WITH EVIDENCE: the Gremlin one is two CLOSED FORMS differing by ~500 ns (flat across an 8x sweep in |E| while the answer grows 8x), and the GQL one is IN-SWEEP POLLUTION — 3.99x in the full run, 1.30x isolated, which is exactly where item 579 left it**
+
+The regression sweep for items 2319-2323. ⚠️ **Neither flag was taken at face value and neither was waved
+away** — each got the treatment its own probe prescribes.
+
+### ✅ GREMLIN: `out(T, U)` vs `union(out(T), out(U))` IS NOT A DEFECT
+
+🔑 **Per-arm, not the ratio** (`gremlin-spelling-probe`'s own rule): `out(T,U)` **199.1 ns**, the explicit
+union **691.0 ns**. ⚠️ Both answer `[500000]`, and **199 ns cannot visit 500,000 edges** — so both must be
+closed forms. The sweep confirms it:
+
+```text
+    N          edges     out(T,U)    union(out(T), out(U))   answer
+    50,000    100,000     495.9 ns        1372.2 ns          125,000
+    200,000   400,000     201.4           864.0              500,000
+    400,000   800,000     213.6           830.3            1,000,000
+```
+
+✅ **Flat — slightly DECREASING — across an 8x sweep while the answer grows 8x.** Both closed form. So the
+flag is **a few hundred ns of per-call structure** (a union of two sub-traversals and a union step, versus
+one filtered adjacency pass) at a baseline small enough for the probe's 2x threshold to trip on it. ⚠️ Not
+an index-seeding defect, not asymptotic, and **the union form genuinely asks for a different plan.** NOT A
+TARGET.
+
+### ✅ GQL: THE 3.99x IS THE SWEEP, NOT THE ENGINE
+
+```text
+    isolated, all four spellings compared (NOT under the floor):
+      1.75ms  MATCH (n:P) WHERE n.s = $s AND n.k >= 0 RETURN count(*)
+      1.35ms  MATCH (n:P {s: $s}) WHERE n.k >= 0
+      1.37ms  MATCH (n:P WHERE n.s = $s) WHERE n.k >= 0
+      1.65ms  MATCH (n:P) WHERE n.k >= 0 AND n.s = $s
+```
+
+✅ **1.30x isolated against 3.99x in the full sweep**, three isolated runs all reporting 0 over 2x. 🔑 And
+**1.30x is exactly item 579's recorded 1.3-1.6x for this group**, so nothing moved — items 2293/2297/2298
+were GQL ships this session and the first suspicion was that one of them had done this.
+
+⚠️⚠️ **THE IN-SWEEP INFLATION HERE IS 3.07x, MUCH LARGER THAN THE 1.4x ITEM 737 RECORDED.** That matters for
+how the full sweep is read: a flagged group at 2-4x may be entirely the sweep. ✅ The probe's own
+instruction — re-run the group ALONE, three times — is load-bearing, not ceremony.
+
+⚠️ **AND I CHECKED THE ISOLATED RUN WAS NOT VACUOUS**: an isolated group can fall under the 1 ms floor and
+be SKIPPED, which reports "0 over 2x" while comparing nothing. The output says **"0 group(s) under 1ms,
+not compared"** and lists all four timings, so the comparison really happened. ⚠️ Same discipline as
+asserting a shortcut was taken before trusting a parity test.
+
+GATES. No production change in this item. ✅ **Post-ship state: Gremlin probe 0 answer disagreements and
+1 flag explained as a closed-form threshold artifact; GQL probe 0 answer disagreements and 1 flag explained
+as sweep pollution. Both surfaces are clean.**
