@@ -76,6 +76,22 @@ const SHAPES: Array<[string, Plan]> = [
   ['count hop', traversal(V(), hasLabel('User'), out('E'), count())],
   ['count hop + far has', traversal(V(), hasLabel('User'), out('E'), has('team', 7), count())],
   ['values groupCount', traversal(V(), hasLabel('User'), values('team'), groupCount())],
+  /*
+   * 🔑🔑 **REAL WORK, ONE ROW — WHERE AN ENGINE COMPARISON ACTUALLY LIVES (item 2242).** The rows above
+   * are engine-bound but TINY in absolute terms: `count hop` is a DEGREE-SUM CLOSED FORM at ~10 us, so its
+   * 5.25x is ~8 us of difference and means nothing. The `[BOUNDARY]` rows below have real work but their
+   * result set prices the FFI boundary instead. ⚠️ **Both failure modes are avoided by a shape that walks a
+   * lot and returns ONE row** — a filtered multi-hop count. These are the finder's own heavy shapes.
+   */
+  ['count hop hop', traversal(V(), hasLabel('User'), out('E'), out('E'), count())],
+  [
+    'count hop hop + trailing has',
+    traversal(V(), hasLabel('User'), out('E'), out('E'), has('team', 7), count()),
+  ],
+  [
+    'count hop + mid has + hop',
+    traversal(V(), hasLabel('User'), out('E'), has('team', 7), out('E'), count()),
+  ],
   ['[BOUNDARY] values hop', traversal(V(), hasLabel('User'), out('E'), values('team'))],
   [
     '[BOUNDARY] values hop hop',

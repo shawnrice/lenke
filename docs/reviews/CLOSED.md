@@ -112197,7 +112197,7 @@ or matched, which is its own methodological question.
 
 GATES. `bun run fmt` 0, `bun run check` 0. No instrument or production change — a verification item.
 
-## Item 2241 — 🔑🔑 **THE GREMLIN SURFACE IS TIMED AGAINST THE NATIVE ENGINE FOR THE FIRST TIME: ~5x on engine-bound shapes. AND A HAND-ROLLED TS FLOOR IS NOT A LOWER BOUND — native beats `values groupCount`'s floor by ~2.5x. The new checker cried wolf TWICE before it was right**
+## Item 2241 — 🔑🔑 **THE GREMLIN SURFACE IS TIMED AGAINST THE NATIVE ENGINE FOR THE FIRST TIME:** ⚠️ ~~~5x on engine-bound shapes~~ **ONLY WHERE TS HAS NO SHORTCUT — item 2242 found TS beating native 20x and 4.8x on multi-hop counts, so "~5x native" is not the headline.** AND A HAND-ROLLED TS FLOOR IS NOT A LOWER BOUND — native beats `values groupCount`'s floor by ~2.5x. The new checker cried wolf TWICE before it was right**
 
 Item 2240 left open whether a fair ts-vs-native Gremlin comparison is constructible. `gremlin-fuzz.test.ts`
 settles it: **`planToGremlin` renders a programmatic plan to text**, so ONE plan drives `toArray(plan, g)` on
@@ -112247,3 +112247,48 @@ check because it is believed.**
 
 GATES. `bun run fmt` 0, `bun run check` 0. New instruments `gremlin-crossengine-2241.ts` (6 shapes, answer
 check, boundary labels) and `gc-probe-2241.ts` (the reduction); no production change.
+
+## Item 2242 — 🔑🔑🔑 **THE TS ENGINE BEATS THE NATIVE ENGINE BY UP TO 20x ON MULTI-HOP COUNTS. Item 2241's "~5x native" was measured only on shapes TS has no shortcut for — and the standing "Rust core is 1.5-4x pure-TS" needs that qualification**
+
+Item 2241's instrument had a blind spot in BOTH directions, and naming it is what produced this result:
+
+- its engine-bound rows are **tiny in absolute terms** — `count hop` is a DEGREE-SUM CLOSED FORM at ~10 us,
+  so its 5.25x is ~8 us of difference and means nothing;
+- its `[BOUNDARY]` rows have real work but their result set prices the **FFI boundary**, not the engine.
+
+⚠️ **An engine comparison needs a shape that WALKS A LOT and returns ONE ROW.** Added three — the finder's
+own heavy shapes — and they invert the conclusion:
+
+```text
+    N=20000 vertices, 80000 edges        ts ms   ffi ms   ratio   answers
+    count hop hop                         0.01     0.21   0.05x   AGREE   <- TS 20x FASTER
+    count hop + mid has + hop             0.21     1.01   0.21x   AGREE   <- TS 4.8x FASTER
+    count hop hop + trailing has          0.43     0.26   1.65x   AGREE
+    count hop + far has                   0.33     0.07   5.09x   AGREE
+    values groupCount                     1.20     0.28   4.25x   AGREE
+    count hop (closed form, ~10 us)       0.01     0.00   4.40x   AGREE   <- ratio on nothing
+```
+
+### 🔑🔑 WHAT THIS MEANS
+
+**Where the TS engine has a closed-form count shortcut it does not merely keep up — it wins outright**, by
+20x on `count hop hop` and 4.8x on a mid-filtered two-hop. The native engine walks; the TS shortcut computes.
+✅ **And the answers AGREE in every row**, so the shortcuts are right as well as fast — which the cliff
+finder could not have told us, since it compares TS against a hand-rolled TS floor and never against the
+other engine.
+
+⚠️⚠️ **SO TWO RECORDED CLAIMS NEED QUALIFYING:**
+
+- **Item 2241's "~5x native"** — struck above. It sampled only shapes where TS has no shortcut.
+- **`CLAUDE.md`'s "the Rust core is 1.5-4x pure-TS depending on workload"** is true of ingest and raw
+  traversal, and **FALSE for shortcut-covered counts, where pure-TS is 5-20x FASTER.** 🔑 That is a
+  qualification worth carrying, because it reverses the usual reason for preferring the native build.
+
+### ✅ AND IT SHARPENS THE TARGET LIST TO TWO ROWS
+
+Native still wins where TS must do real per-element work: **`count hop + far has` (5.09x, 0.33 ms)** and
+**`values groupCount` (4.25x, 1.20 ms)**. ⚠️ Both are shapes TS _has_ a shortcut for — `count hop + far has`
+is `CLOSED` at 13x its hand-rolled floor — **so the remaining gap is inside the shortcut, not a missing
+one.** That is a much better-posed question than "why is TS slower", and it is where the next profile goes.
+
+GATES. `bun run fmt` 0, `bun run check` 0. Instrument extended by three shapes; no production change.
