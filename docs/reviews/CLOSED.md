@@ -113704,3 +113704,48 @@ and **64 distinct statements is a small application**: a people-graph service ha
 
 GATES. `bun run fmt` 0, `bun run check` 0, `bun run test -- --skip-nx-cache` 0 (21 projects),
 `bun run fuzz` 57 pass / 0 fail. One constant changed, with the measurement recorded in situ beside it.
+
+## Item 2272 — ✅ **GREMLIN IS STRUCTURALLY IMMUNE TO ITEM 2271's DEFECT, AND IT IS MEASURED NOT ASSUMED: 500 distinct shapes cost 1.23x against one shape's 1.00x, where GQL cost 5x. 🔑 Its caches key on `(Graph, tv, shapeKey)`, never on text or a plan object — and it has no parse step at all**
+
+Item 2271 shipped `PARSE_CACHE_CAP` 64 → 512 because a GQL session cycling over more than 64 distinct texts
+paid ~5x. **The obvious question is whether Gremlin has the same cliff**, and it has never been asked: every
+screen and bench row builds its `traversal(...)` ONCE and reuses the object, while an application builds one
+per request.
+
+### ✅ THE STRUCTURE SAYS NO, AND THE MEASUREMENT AGREES
+
+```text
+    unfilteredCountCache   WeakMap<Graph, { tv, counts: Map<string, number> }>
+    chainCsrCache          WeakMap<Graph, { tv, byShape: Map<string, ChainCsr> }>
+    edge-flat cache        WeakMap<Graph, { tv, byShape: Map<string, readonly Edge[]> }>
+```
+
+🔑 Every one keys on **the GRAPH plus a SHAPE STRING** — never on the plan object and never on text — so a
+freshly built but identical traversal hits the same `shapeKey`. **And Gremlin has no parse step**: the
+caller constructs the plan directly, so there is nothing for a text-keyed cache to miss.
+
+```text
+    400 vertices (execution cheap), 2000 calls/rep, median of 7, row count asserted every rep
+    arm                                               ns/call   vs reuse
+    reuse      ONE plan object, called 2000 times        1851     1.00x   — what every screen measures
+    fresh      a NEW traversal() per call, same shape    2183     1.18x   — what an application does
+    distinct   a NEW traversal() per call, 500 shapes    2275     1.23x   — tests the byShape caches
+```
+
+✅ **500 distinct shapes cost 5% more than one** (1.18x → 1.23x). ⚠️ Contrast GQL before item 2271: **5x**.
+🔑 And Gremlin is **~2x faster in absolute terms than GQL's best** (1,851 against 3,323 ns/statement), which
+is what having no parse step buys.
+
+### ✅ THE ONLY PER-CALL TOLL, AND IT IS NOT AN ENGINE DEFECT
+
+**Building a fresh traversal costs 18% (332 ns/call).** That is the caller's own `traversal(...)` object
+allocation, not engine work — **an application that hoists its traversals out of the request path saves
+it**, which is worth knowing and is not something the engine can do for them.
+
+⚠️ One instrument note: the first version used `has('k', { gte: … })` as an object literal and the row-count
+guard **fired immediately** — the predicate helpers are functions (`gte(…)`, from a set of 20 including
+`between`, `within`, `matches`). 🔑 **The guard is why that cost one run instead of becoming a wrong
+number**, which is the same reason item 2269's arms assert their row counts.
+
+GATES. `bun run fmt` 0, `bun run check` 0. New instrument `gremstmt-2272.ts`
+(`ARM=reuse|fresh|distinct`, `DISTINCT=`); no production change.
