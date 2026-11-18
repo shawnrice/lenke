@@ -109464,3 +109464,53 @@ screen). ⚠️ Read item **1466** first: it declined a 3.3x `simplePath` change
 grow the graph 13x and measure a different graph every rep (item 2176's note). They need a per-rep rebuild.
 
 GATES. Instrument only. `bun run fmt` 0; `bun run check` 0 read unpiped.
+
+## Item 2188 — 🔑🔑🔑 **`MIXED=1` ON BOTH SCREENS, AND IT FINDS THE SESSION'S LARGEST GAP: a TWO-HOP COUNT is 75x slower once ONE off-label vertex exists (0.19 → 14.4 ms), and EXISTS is 13.5x. Same answers. The realistic schema is the slow one**
+
+Item 2187 left `simplePath` as the only Gremlin candidate. ⚠️ **Item 1466 DECLINED it, by the user, with
+"do not re-raise it"** — so reading that first was the whole value of my own note to do so. That exhausted
+both screens' rows, which turned the question to what the screens cannot see.
+
+### 🔑 `label-vacuity-gates-fast-paths` NAMED THIS AND BOTH SCREENS WERE BLIND TO IT
+
+43 GQL elisions gate on a VACUOUS label — one that matches every vertex — and **a homogeneous fixture makes
+that vacuous by construction.** Item 1943 built a `MIXED=1` flag for a different screen; neither of these
+two had it, and my 24 rows added at items 2176/2187 had never been measured against a realistic schema.
+
+The flag appends **ONE ISOLATED off-label vertex**: no edges, a label nothing matches, so every ANSWER is
+unchanged and only `vertexCount` moves — which is exactly what the vacuity check compares.
+
+```text
+    GQL screen, homogeneous vs MIXED, same build
+    row                        homo    MIXED    ratio
+    two-hop projection         0.19    14.39   75.74x
+    EXISTS subquery            1.54    15.31    9.94x
+    NOT EXISTS subquery        1.59    14.85    9.34x
+    var-length 1..2 hops       7.30    13.61    1.86x
+    (18 other rows)                            ≤1.08x
+```
+
+⚠️ **ISOLATED, ONE PROCESS PER ARM, TWICE** — because item 1947 bounds in-sweep MIXED diffs at a 1.2-1.3x
+over-report, so a sweep number alone is not a finding:
+
+```text
+    two-hop   homo 0.19 / 0.19    mixed 14.39 / 14.16    answers 300000 both
+    EXISTS    homo 1.70 / 1.55    mixed 23.02 / 20.49    answers 100000 both
+```
+
+🔑 **Same answers, ~75x and ~13.5x apart.** A pure routing collapse: the label stops being vacuous, 43
+elisions disqualify, and the shape falls to the general matcher. **Any real schema has more than one
+label**, so the fast arm these rows were measuring is one a real application cannot reach.
+
+### ⚠️ AND THE GREMLIN SCREEN FINDS NOTHING, WHICH IS ALSO A RESULT
+
+Its biggest in-sweep movement was `V().out().dedupe().count()` at 1.54x — inside 1947's over-report band.
+Isolated over three rounds it **does not reproduce** (homo 5.48/5.52/5.37 against mixed 5.39/5.40/6.57 —
+mixed is FASTER in two of three). 🔑 That fits: label vacuity gates **GQL's** elisions, not Gremlin's, so
+the flag belongs on both screens but only bites on one.
+
+**NOT BUILT.** The fix is not a rung but the GATES: a non-vacuous label should make a fast path FILTER by
+label rather than disqualify it, across 43 sites in 7 files. That is a large, careful item and the
+nomination is now measured rather than suspected.
+
+GATES. Instrument only. `bun run fmt` 0; `bun run check` 0 read unpiped; both screens run both ways.

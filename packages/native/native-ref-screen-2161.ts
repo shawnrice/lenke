@@ -30,6 +30,22 @@ import { createFfiEngineBackend } from './src/backend-ffi-engine.js';
 import { graphFromNdjson } from './src/graph.js';
 
 const N = Number(process.env.SCREEN_N ?? 200_000);
+/*
+ * ⚠️⚠️ **`MIXED=1`: THE REALISTIC-SCHEMA MODE, and without it every row measures an arm a real schema
+ * cannot reach** (item 1943's design, applied to this screen at item 2188). The GQL fast-path layer gates
+ * 43 elisions on a VACUOUS label — one that matches every vertex — and a homogeneous fixture makes that
+ * vacuous by construction.
+ *
+ * 🔑 The flag appends ONE ISOLATED off-label vertex: no edges, a label nothing matches. So every shape's
+ * ANSWER is unchanged and only `vertexCount` moves, which is exactly what the vacuity check compares
+ * against. ⚠️ Item 1935's first attempt RELABELLED a vertex instead, which changed the match count AND the
+ * edge set and produced 1221x ratios that were two different questions.
+ *
+ * ⚠️ **BOTH ARMS MUST RUN ON THE SAME BUILD** — item 1943's note, because diffing against a stale
+ * homogeneous baseline credits the flag with whatever shipped in between.
+ */
+const MIXED = process.env.MIXED === '1';
+
 const FANOUT = Number(process.env.SCREEN_FANOUT ?? 3);
 /*
  * ⚠️⚠️⚠️ **13 REPS DROPPING 6, AND BOTH NUMBERS ARE MEASURED (item 2172).** This screen ran 5 reps
@@ -104,6 +120,10 @@ const doc = (() => {
         `{"type":"edge","id":"e${id++}","labels":["KNOWS"],"from":"v${i}","to":"v${(i * 7 + 3 + d * 104_729) % N}","properties":{"w":${i % 7}}}`,
       );
     }
+  }
+
+  if (MIXED) {
+    lines.push('{"type":"node","id":"offlabel","labels":["NoSuchLabel"],"properties":{}}');
   }
 
   return lines.join('\n');
