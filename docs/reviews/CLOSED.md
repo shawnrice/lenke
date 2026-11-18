@@ -112529,7 +112529,7 @@ the ABSOLUTE after-times and quote the floor separately.
 GATES. `bun run fmt` 0, `bun run check` 0. New instrument `drain-2247.ts` (`ARM=none|sync|drained`,
 `SHAPE=nolabel`); no production change.
 
-## Item 2248 — 🔑🔑🔑 **THE CHURN PENALTY IS A DATA REBUILD THAT SCALES SUPERLINEARLY: ~48 ns/vertex at 5k rising to ~171 at 80k, where ONE write makes the next read 2.8-3.4x slower. `verticesByLabel` is exonerated, joining `pick` and `drain`**
+## Item 2248 — 🔑🔑🔑 **THE CHURN PENALTY** ⚠️ ~~IS A DATA REBUILD~~ **(NOT A REBUILD — the adjacency memo aliases a live Map; item 2249 refutes this framing and nominates JIT deopt) THAT SCALES SUPERLINEARLY: ~48 ns/vertex at 5k rising to ~171 at 80k, where ONE write makes the next read 2.8-3.4x slower. `verticesByLabel` is exonerated, joining `pick` and `drain`**
 
 Item 2247 left ~89% of the interleaved-write penalty unidentified, and the `hasLabel` comparison owed a
 re-run on the trustworthy 60-round harness. ⚠️ **One design correction first**: the two shapes do different
@@ -112578,3 +112578,57 @@ is the clue — a structure whose rebuild is worse than O(V) narrows the candida
 profile would name it where a CPU profile at this resolution could not (2246).**
 
 GATES. `bun run fmt` 0, `bun run check` 0. Instrument `drain-2247.ts` reused unchanged; no production change.
+
+## Item 2249 — 🔑🔑🔑 **THE CHURN PENALTY NEEDS THE ADJACENCY WALK AND IS NOT A REBUILD AT ALL: the adjacency memo ALIASES a live Map, so it needs no invalidation. Leading explanation is JIT DEOPTIMIZATION, which fits every measurement. ⚠️ And THREE allocation instruments failed — each failure is recorded so the next reader does not repeat them**
+
+Item 2248 established a superlinear, size-scaling penalty and called it a "data rebuild". ⚠️ **That framing
+is now wrong, and this item says why.**
+
+### ⚠️⚠️ THREE INSTRUMENTS FAILED. THE FAILURES ARE THE USEFUL PART
+
+- **`node --heap-prof`, twice.** Reported **3.4 MB** then **4.1 MB** total for runs materializing
+  80,000-320,000 rows per round — physically impossible — with Node's own module loader (`ModuleJob`,
+  `getHighWaterMark`, `compileForInternalLoader`) as the top frames both times, and a churn delta of
+  **+7 KB/round**. Only **4 samples** in the first run; `--heap-prof-interval=2048` raised it to 679 but did
+  not change the picture. **It is missing ~95% of allocations, so its silence is not evidence.**
+- **`process.memoryUsage().heapUsed` deltas: 0.0 MB on BOTH arms.** The 80,000 row values are allocated and
+  collected WITHIN each read, so a before/after pair sees nothing. Transient allocation is invisible to it.
+- (And the CPU profile was already rejected at item 2246.)
+
+### ✅ SO THE STRUCTURE WAS LOCATED BY SHAPE INSTEAD, WITH THE INSTRUMENT THAT WORKS
+
+```text
+    shape                              floor          after          ratio
+    scan     V().values('team')     0.52 / 0.56    0.38 / 0.35    0.73x / 0.62x   NO PENALTY
+    nolabel  V().out('E').values    1.12 / 1.25    2.39 / 2.42    2.13x / 1.94x   FULL PENALTY
+```
+
+🔑 **The penalty requires the ADJACENCY WALK.** A scan plus property read is completely unaffected.
+⚠️ `wrong=60/60` on the scan arm is my row-count assertion being INAPPLICABLE to that shape — a scan yields
+one row per VERTEX, not per edge — not an engine defect.
+
+### 🔑🔑 AND THE PREDICTED MECHANISM IS REFUTED BY THE SOURCE
+
+The obvious candidate was a global adjacency-memo stamp: `Vertex` holds `#adjFrom`/`#adjTo`, `Graph` has a
+`topologyVersion` bumped in six places, so a write might force all V vertices to re-resolve (20,000 × ~50 ns
+≈ 1 ms — a suspiciously good fit for the measured penalty). ⚠️ **It is wrong: `Vertex` never references
+`topologyVersion` (0 occurrences).** `#adjFrom ??= graph.edgesFromByLabel.get(id)` caches the **Map
+reference**, and `addEdge` mutates that same Map in place — so the memo **aliases live structures, is
+correct by aliasing, and is never rebuilt.** ✅ That also explains item 2245's correctness result mechanically.
+
+### 🔑 LEADING EXPLANATION: JIT DEOPTIMIZATION — IT FITS ALL SIX OBSERVATIONS
+
+| observation                                 | fits deopt?                                |
+| ------------------------------------------- | ------------------------------------------ |
+| needs the adjacency walk (2249)             | ✅ that is where write and read share code |
+| one write costs the same as 100 (2246)      | ✅ one deopt, not per-write work           |
+| scales with V, superlinearly (2248)         | ✅ the deoptimized loop runs per vertex    |
+| recovers after 1-2 reads (2245)             | ✅ re-optimization                         |
+| NO extra allocation (this item)             | ✅ same code, slower                       |
+| invisible to CPU-profile attribution (2246) | ✅ same frames, just slower                |
+
+⚠️ **Stated as the leading hypothesis, NOT as proven** — confirming it needs `--trace-deopt` /
+`--trace-opt-verbose`, which is the next step. If it holds, the lever is making the write path not share
+inline-cache sites with the read path, and **item 2248's "data rebuild" heading is corrected above.**
+
+GATES. `bun run fmt` 0, `bun run check` 0. New probe `alloc-2249.ts`; `drain-2247.ts` gained `SHAPE=scan`.

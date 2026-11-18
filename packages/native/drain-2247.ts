@@ -17,7 +17,7 @@
  * which a profile at this resolution could not.
  */
 import { Graph } from '@lenke/core';
-import { V, hasLabel, out, toArray, traversal, values } from '@lenke/gremlin';
+import { V, hasLabel, out, toArray, traversal, values, type Plan } from '@lenke/gremlin';
 import { deserialize } from '@lenke/serialization';
 
 const N = Number(process.env.N ?? 20000);
@@ -49,10 +49,31 @@ const g = deserialize(doc, 'ndjson', new Graph());
  * `verticesByLabel`, a global index a write could invalidate, so `SHAPE=nolabel` drops it. If the residual
  * penalty goes with it, the label index is the rest; if not, it is the adjacency side.
  */
-const plan =
-  process.env.SHAPE === 'nolabel'
-    ? traversal(V(), out('E'), values('team'))
-    : traversal(V(), hasLabel('User'), out('E'), values('team'));
+/*
+ * 🔑🔑 **SHAPE BISECTION (item 2249).** Three allocation instruments failed to name the rebuilt structure —
+ * a CPU profile was ambiguous, `--heap-prof` missed ~95% of allocations twice, and `heapUsed` deltas read
+ * 0.0 MB because the rows are transient. So the structure is located by SHAPE instead, using the one
+ * instrument that works here (timing, absolutes, 60 rounds):
+ *
+ *     scan      V().values('team')                     scan + property read, NO adjacency
+ *     nolabel   V().out('E').values('team')            adds the adjacency walk
+ *     (default) V().hasLabel('User').out('E').values() adds the label filter (exonerated at 2248)
+ *
+ * If the penalty appears only once adjacency is walked, it is the adjacency structure.
+ */
+const planFor = (shape: string | undefined): Plan => {
+  if (shape === 'scan') {
+    return traversal(V(), values('team'));
+  }
+
+  if (shape === 'nolabel') {
+    return traversal(V(), out('E'), values('team'));
+  }
+
+  return traversal(V(), hasLabel('User'), out('E'), values('team'));
+};
+
+const plan = planFor(process.env.SHAPE);
 const read = (): number => toArray(plan, g).length;
 
 let added = 0;
