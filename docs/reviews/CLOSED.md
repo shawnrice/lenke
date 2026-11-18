@@ -115412,3 +115412,58 @@ reader needs to know whether their own measurement is anomalous.
 
 GATES. `bun run fmt` 0, `bun run check` 0, guide suite **9 pass / 0 fail**. One probe, one guide section,
 one test; no production change.
+
+## Item 2306 — 🔑 **THE POST-SHIP AUTHZ LIST HAS A NEW PROFILE, AND ITS TOP FRAMES ARE `walkSegments` (15.1%) + `withBinding` (13.2%) + GC (10.0%). ⚠️ `withBinding` IS NOT `mergeBinding`: items 2023/2024 priced and refused the PRODUCT's merge, never the path walk's per-segment copy — a distinct, unpriced lever whose BLOCKER nonetheless transfers**
+
+Item 2293 changed which route the authz list takes, so **item 2288's profile of it was stale**. Re-profiled
+post-ship, calibrated (`inner=64`, 327 ns/result):
+
+```text
+    15.14%  walkSegments @ index.mjs:4284
+    13.18%  withBinding @ index.mjs:2701
+    10.03%  (garbage collector)
+     8.97%  getVertexById
+     6.48%  #commitNormalized    <- fixture build
+     4.58%  commitElementLabels  <- fixture build
+     4.19%  matchPattern
+```
+
+⚠️ **~18% of that profile is the fixture build** (400,000 vertices once against 768 query runs), so the
+query's own frames are the rest. The dominant pair is a generator walk and the binding it threads.
+
+### ⚠️ MY OWN MEMORY CONFLATED TWO FUNCTIONS, AND THE DISTINCTION IS THE FINDING
+
+```js
+const withBinding = (binding, name, value) => {
+  if (!name) return binding;
+  const next = new Map(binding); // a COPY per segment per match
+  next.set(name, value);
+  return next;
+};
+```
+
+🔑 Items 2022/2023/2024 worked **`mergeBinding`** — merging TWO bindings in a cross-product's inner loop
+(the copying merge shipped at 2022, the no-copy VIEW declined at 2023, the REUSED map declined at 2024).
+**`withBinding` is a different function at a different call site**: it adds ONE key while walking a path.
+⚠️ My note that "the matcher's per-row Map … don't re-derive either" reads as covering both; it does not.
+**This one has never been priced.**
+
+### ⚠️ BUT ITEM 2024's BLOCKER TRANSFERS, AND IT IS THE HARD KIND
+
+Its refusal was not "too small" — it measured **3.76x on the frame** — but _"its soundness needs every
+binding RETAINER enumerated across a lazy engine"_. 🔑 **`walkSegments` is a GENERATOR that YIELDS
+bindings**, so a consumer can retain one past the next iteration; mutating a shared map under it is exactly
+the unsound shape 2024 declined. For a 2-hop at 2,000 results that is ~4,000 small-map allocations, which
+is why GC sits at 10% beside it — **allocation, not copy cost**, since the maps hold at most three entries.
+
+✅ **So: NOT BUILT, and not for the reason my memory would have given.** The lever is distinct and
+unpriced; its blocker is a soundness enumeration across a lazy engine, which items 2023 and 2024 between
+them show costs more to establish than the frame is worth on the shapes measured so far. ⚠️ Recorded as a
+separate entry so the next reader does not either (a) re-derive it believing it closed, or (b) build it
+believing the merge's refusal does not apply.
+
+**OPEN, with a precondition rather than a price:** anyone taking `withBinding` must first enumerate what
+retains a yielded binding — `distinctRows`, `rowKey`, the sort's key arrays, `Path.fromSteps` — and that
+enumeration is the work, not the mutation.
+
+GATES. `bun run fmt` 0, `bun run check` 0. No production change.
