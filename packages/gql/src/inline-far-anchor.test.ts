@@ -29,10 +29,21 @@ describe('inlineFarIsPlainAnchor: props only, everything else refused by name', 
     expect(inlineFarIsPlainAnchor({ props: [] })).toBe(false);
   });
 
-  test('⚠️ refuses EVERY other family by name, each with its own witness', () => {
-    const families = [
+  test('admits `eqProps`, because the CLAUSE path already runs that exact compiled predicate (item 2298)', () => {
+    /*
+     * ✅ Instrumenting the three spellings showed `farPred` IDENTICAL for the clause form and the inline
+     * `WHERE` — `[props:0, eqProps:1]` in both — and the clause form was already admitted. So admitting
+     * `eqProps` gives the walk nothing new; it removes a discrimination between two spellings of one
+     * predicate. Worth 24.2x (102.13 → 4.22 ms).
+     */
+    expect(inlineFarIsPlainAnchor({ props: [], eqProps: [{ key: 'k', value: 5 }] } as never)).toBe(
+      true,
+    );
+  });
+
+  test('⚠️ refuses EVERY family that is NOT props or eqProps, each with its own witness', () => {
+    const refused = [
       'where',
-      'eqProps',
       'cmpProps',
       'truthProps',
       'notTruthProps',
@@ -40,15 +51,19 @@ describe('inlineFarIsPlainAnchor: props only, everything else refused by name', 
       'nullProps',
     ] as const;
 
-    for (const family of families) {
+    for (const family of refused) {
       /* Populated alongside a valid `props`, so only the extra family can be what refuses it. */
       const pred = { ...plainAnchor, [family]: family === 'where' ? () => true : [{ key: 'x' }] };
 
       expect(inlineFarIsPlainAnchor(pred as never)).toBe(false);
     }
 
-    /* The list above must stay complete: CPredicate had exactly eight families at item 2297. */
-    expect(families.length + 1).toBe(8);
+    /*
+     * ⚠️ THE LIST MUST STAY COMPLETE. `CPredicate` had exactly eight families at item 2298; two are
+     * admitted (`props`, `eqProps`) and these six are refused. A ninth added later makes this fail,
+     * which is the point — a forgotten family would be admitted silently otherwise.
+     */
+    expect(refused.length + 2).toBe(8);
   });
 
   test('⚠️ `nullProps` is refused in particular: `{k: null}` is IS NULL, not an equality (item 260)', () => {

@@ -3485,9 +3485,24 @@ const inEarlier = (buckets: readonly ReadonlySet<Edge>[], i: number, e: Edge): b
  */
 export const inlineFarIsPlainAnchor = (closedFar: CPredicate | undefined): boolean =>
   closedFar === undefined ||
-  (closedFar.props.length > 0 &&
+  /*
+   * ✅ **`eqProps` IS ADMITTED TOO, AND THE EVIDENCE IS THAT THE CLAUSE PATH ALREADY RUNS IT** (item
+   * 2298). Instrumenting the three spellings showed the compiled predicate the walk would run:
+   *
+   * ```text
+   *     inlineWhere  closedFar=[props:0,eqProps:1]  farPred=[props:0,eqProps:1]   <- was REFUSED
+   *     inlineProp   closedFar=[props:1]            farPred=[props:1]
+   *     clause       closedFar=[undef]              farPred=[props:0,eqProps:1]   <- ADMITTED
+   * ```
+   *
+   * 🔑 The clause spelling's `farPred` is IDENTICAL to the inline `WHERE`'s. So admitting `eqProps` does
+   * not give the walk anything it was not already running — it removes a discrimination between two
+   * spellings of one predicate. ⚠️ And `eqProps` carries only `<ownVar>.<key> = <non-null literal>`
+   * conjuncts read straight off the element, so the `{k: null}`/`IS NULL` hazard (item 260) cannot
+   * arise in it; `nullProps` is where that lives, and it stays refused.
+   */
+  ((closedFar.props.length > 0 || (closedFar.eqProps?.length ?? 0) > 0) &&
     closedFar.where === undefined &&
-    closedFar.eqProps === undefined &&
     closedFar.cmpProps === undefined &&
     closedFar.truthProps === undefined &&
     closedFar.notTruthProps === undefined &&

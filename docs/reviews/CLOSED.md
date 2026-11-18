@@ -115030,3 +115030,55 @@ flags after a fix invites the assumption that the fix did nothing.
 GATES. `bun run fmt` 0, `bun run check` 0, `bun run test` **21 projects OK**, `bun run fuzz` **57 pass / 0
 fail** (byte-identity holds). 5 unit tests; **two mutants caught** (dropping the `nullProps` family fails
 2, allowing empty `props` fails 1), each verified as actually applied.
+
+## Item 2298 — ✅✅✅ **SHIPPED: the inline `WHERE` arm too — 102.13 → 4.22 ms (24.2x), all three far-node spellings now converge, and the GQL spelling probe's group reports "0 group(s) over 2x" across three isolated runs.** The justification is the strongest kind: the CLAUSE path was already running the identical compiled predicate
+
+Item 2297 fixed the inline ANCHOR and left the inline `WHERE` as the group's new outlier. 🔑 The blocker
+looked principled — an inline `WHERE` is a general expression that can raise, and a far-driven walk
+evaluates the predicate on vertices a start-driven walk might never reach, so admitting one would need
+BOTH raise-freedom keys relaxed, each for its own reason.
+
+### ✅ INSTRUMENTING MADE THE DESIGN QUESTION DISAPPEAR
+
+```text
+    inlineWhere  closedFar=[props:0,eqProps:1]  farPred=[props:0,eqProps:1]   anchorOk=FALSE
+    inlineProp   closedFar=[props:1]            farPred=[props:1]             anchorOk=true
+    clause       closedFar=[undef]              farPred=[props:0,eqProps:1]   anchorOk=true
+```
+
+🔑🔑 **The clause spelling's `farPred` is IDENTICAL to the inline `WHERE`'s** — `eqProps:1` in both, because
+`closedFarPred` compiles with `ownVar = farVar` (item 780's fix) and `b.k = 5` lifts into `eqProps`
+exactly as the clause form's does. ✅ **So the engine was ALREADY running this predicate on this walk**; the
+gate was discriminating on spelling alone, not on anything the walk would do differently.
+
+⚠️ No key needed relaxing. The change is one condition: admit `eqProps` alongside `props`.
+**`eqProps` carries only `<ownVar>.<key> = <non-null literal>` conjuncts read straight off the element**, so
+item 260's `{k: null}`/`IS NULL` hazard cannot arise in it — that lives in `nullProps`, which stays
+refused, as do `cmpProps`, `truthProps`, `notTruthProps`, `memberProps` and `where`.
+
+### ✅ THE GROUP NOW CONVERGES, AND THE PROBE SAYS SO
+
+```text
+    arm                   original   after 2297   after 2298
+    (b {k: 5})             130.66       38.1        37.7-39.0    <- now the FASTEST arm
+    (b WHERE b.k = 5)      146.73      146.9        45.8-47.2    <- 24.2x on the isolated fixture
+    (b) WHERE b.k = 5       46.34       47.2        45.9-47.3    <- unchanged, as it must be
+    probe verdict         FLAGGED     FLAGGED      0 group(s) over 2x, three isolated runs
+```
+
+✅ On item 2296's own fixture: **102.13 → 4.22 ms**, and all three spellings land within 4.11-4.89.
+
+### 🔑 WHAT MADE THIS TRACTABLE, WORTH KEEPING
+
+⚠️ I had a two-leg soundness design ready and it was unnecessary. **Printing the compiled families first
+replaced an argument with a fact** — and the fact (identical `farPred`) is a far stronger warrant than any
+reasoning about raise-freedom would have been. Items 2282, 2285, 2287 and 2292 each cost a cycle to a
+mechanism that merely fit; this is the same lesson paying forward.
+
+✅ My own unit test asserted `eqProps` was refused and FAILED, which is correct — it was the only failure in
+21 projects, so nothing else depended on the discrimination. Updated with the evidence, still exhaustive:
+two families admitted, six refused by name, and `refused.length + 2 === 8` so a ninth family fails loudly.
+
+GATES. `bun run fmt` 0, `bun run check` 0, `bun run test` **21 projects OK**, `bun run fuzz` **57 pass / 0
+fail** (byte-identity holds). 6 unit tests; **two mutants caught** (dropping `nullProps` fails 2, dropping
+`cmpProps` fails 1), each verified as applied.
