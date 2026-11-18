@@ -112431,3 +112431,53 @@ for adjacency that means enumerating edges (`values` after a hop), not counting 
 Both arms are kept (`SHAPE=count`) so the distinction stays visible.
 
 GATES. `bun run fmt` 0, `bun run check` 0. New instrument `cacheinval-2245.ts`; no production change.
+
+## Item 2246 — 🔑🔑🔑 **INTERLEAVED READ/WRITE COSTS 2.25x PER READ, AND THE PENALTY IS CONSTANT IN THE NUMBER OF WRITES: one write costs the same as a hundred. A fixed global rebuild, not per-write work. ⚠️ The profile's nomination is NOT trustworthy and is not banked**
+
+Item 2245 found a SINGLE write clean — correct answer, no demotion, memos re-arm on the next read. ⚠️ But
+"re-arms on the next read" is exactly what can THRASH when writes keep arriving, and this is the user's real
+workload: a people-graph taking corrections between queries. The knob is **writes per read**:
+
+```text
+    N=20000 vertices / 80000 edges, WALKING shape (values after a hop), rows checked every round
+    W        warm read   after W writes   ratio   per-write   wrong
+    0          1.27 ms        0.87 ms     0.69x        —      0/12
+    1          1.26           2.84        2.25x   1575.3 us   0/12
+    10         1.27           2.83        2.23x    155.8 us   0/12
+    100        1.26           2.95        2.34x     16.9 us   0/12
+    1000       1.20           5.68        4.73x      4.5 us   0/12
+```
+
+### 🔑🔑 ONE WRITE COSTS THE SAME AS A HUNDRED
+
+`W=1` reads 2.25x and `W=100` reads 2.34x. **`per-write` falls as pure 1/W** — 1575 → 156 → 16.9 us — which
+is the signature of a **constant numerator**. So the cost is a fixed ~1.6 ms rebuild charged to the FIRST
+read after any write, not work proportional to the writes. ✅ In a batch workload it amortizes to nothing; in
+an interleaved one **every read pays it**.
+
+⚠️ **This matches `CLAUDE.md`'s recorded ~2.5x for the NATIVE engine's interleaving penalty**, so both
+engines have it — and the TS one is not the better-behaved half here, which item 2245's single-write result
+might have suggested. 🔑 `W=1000` rising to 4.73x is a separate effect (1000 extra edges is only 1.25% more
+graph, so it is not size) and is not explained.
+
+✅ **`wrong=0/12` at every W** — row counts matched `N*4 + added` exactly, every round. The 2245 correctness
+result holds under sustained churn.
+
+### ⚠️⚠️ WHAT I WILL NOT CLAIM
+
+A differential profile (clean reads vs write-then-read, 120 rounds) nominated `pick` (+0.837 ms/round) and
+`drain` (+0.568). **Both are rejected as attribution:**
+
+- **`pick`'s delta (+100 ms) EXCEEDS the total delta (+38 ms)**, so other frames got cheaper and the
+  per-frame arithmetic does not close. A frame whose delta is larger than the whole cannot be the whole.
+- **The names resolve to `choose-hop-values.ts`, a `choose()` step rung — and the query has no `choose()`
+  step.** The profiler reports BUNDLED dist line numbers (`pick:9364`), and `pick`/`drain` recur across
+  rungs, so the mapping is ambiguous.
+- The profiled round includes the WRITE as well as the read, and 120 rounds is thin.
+
+🔑 So the mechanism is **measured but unidentified**. Naming it needs a source-mapped build or a
+per-phase timer that separates the write from the first read — not another CPU profile at this resolution.
+That is the honest state, and it is recorded rather than dressed up: the 2.25x is solid, the cause is not.
+
+GATES. `bun run fmt` 0, `bun run check` 0. New instruments `churn-2246.ts` (W sweep, answers checked) and
+`prof-2246.mjs` (two arms); no production change.
