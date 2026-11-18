@@ -109206,3 +109206,52 @@ profile (in-tx minus no-tx) is the instrument this needs, and it is not built.**
 
 GATES. No production change; the probe and the guard both reverted, tree verified identical to pristine.
 `bun run check` 0; item 2181's 12 tests still green.
+
+## Item 2183 — 🔑🔑 **THE DIFFERENTIAL PROFILER, which item 2182 said was the missing instrument. It ranks what a transaction ADDS to a bulk add — and it RECONCILES 2182's revert: the guard is worth ~5%, under that A/B's noise floor**
+
+`diff-profile-2183.ts`: two arms, each in its own process, per-frame self time divided by the operation
+count so the columns are per-operation costs and their difference is what the switch adds.
+
+⚠️ **WHY A ONE-ARM PROFILE CANNOT ANSWER THIS.** Item 2182 profiled the slow arm alone and every frame it
+found appeared in BOTH arms, so the ranking described the WORKLOAD, not the transaction. Three hypotheses
+were eliminated and the question stayed open for want of this.
+
+```text
+    200,000 ops x 12 reps per arm, one process each
+    in-tx 3749 ms   no-tx 2932 ms   difference 817 ms  (340.2 ns per op)
+
+    frame                     in-tx    no-tx   delta ns/op
+    addVertex:2940            203.1     88.2       +114.9
+    (garbage collector)       289.9    193.4        +96.5
+    runDeferredChecks:4294     59.3      0.0        +59.3   <- TX-ONLY, the largest such term
+    getVertexById:3225        270.6    224.1        +46.5   (attribution — item 2182 counted 1.00/add)
+    Graph.absorbTokens:2596    27.3      0.0        +27.3   <- TX-ONLY
+    emit:4119                  23.7      1.3        +22.3
+    transaction:4142           21.0      0.0        +21.0   <- TX-ONLY
+    recordUndo:4239            16.3      0.0        +16.3   <- TX-ONLY
+    commitTransaction:4192      6.4      0.0         +6.4   <- TX-ONLY
+    commitElementLabels:3002  145.1    166.7        -21.7
+    #commitNormalized:1189    192.0    202.6        -10.6
+```
+
+Reproducible across runs: 340.2 then 320.4 ns/op; `addVertex` +114.9 then +102.1.
+
+### 🔑🔑 IT RECONCILES ITEM 2182's REVERT RATHER THAN OVERTURNING IT
+
+The tx-only frames sum to **~130 of the 340 ns/op**, and `runDeferredChecks` alone is **59.3 ns/op =
+11.9 ms over 200,000 adds, about 5%** of that workload. ⚠️ Item 2182's A/B had a control swinging
+158-179 ms, so a 5% effect was **structurally invisible to it** — its revert was correct on its own
+evidence, and this instrument explains why the first round read 1.28x and the second 1.02x.
+
+**NOT RE-BUILT.** Re-landing a guard for 5% that no A/B here can demonstrate would repeat the mistake item
+2182 correctly avoided; it needs an isolated per-row instrument first, and that is a separate build.
+
+🔑 **What the ranking nominates instead:** `addVertex`'s OWN self time more than DOUBLES inside a
+transaction (+114.9 ns/op), which no tx-only frame explains — and GC adds +96.5. Those two are 62% of the
+difference and neither is bookkeeping I have accounted for.
+
+⚠️ **AND THE FILE CARRIES ITS OWN WARNING, EARNED TWICE.** Node resolves bare specifiers from the SCRIPT's
+directory, so the arm script must live in this package — setting `cwd` does not help. Item 2171 lost a
+profile to exactly that, this file's header says so, **and I did it again on the first run anyway.**
+
+GATES. Instrument only. `bun run fmt` 0; `bun run check` 0 read unpiped; no stray arm scripts left behind.
