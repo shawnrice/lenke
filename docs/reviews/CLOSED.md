@@ -109310,3 +109310,53 @@ caught**; `guard-always-true` survives by definition — always recording IS the
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
 `bun run fuzz` all seven green.
+
+## Item 2185 — 🔑🔑 **THE ENTIRE REMAINING TRANSACTION PENALTY IS BUFFERED EVENTS: a deletion test turns it NEGATIVE (197.4 → −49.4 ns/op). Priced, designed, NOT BUILT — the sound gate risks silently dropping host events**
+
+Item 2184 left GC at +96.5 ns/op as the largest unexplained term. It is not GC on its own terms.
+
+### ⚠️ ITEM 862 ALREADY CLOSED THE OBVIOUS LEVER, AND READING IT FIRST SAVED THE TICK
+
+`862` establishes that a `hasListeners` guard on the property mutators **cannot fire**: all sixteen
+mutation types get TWO internal listeners for the graph's lifetime, so `hasListeners` is always true.
+Its ablation, outside a transaction: `full 100 ns/write → build-but-don't-emit 68 → neither 55`, so
+**allocation 13 ns (inside noise), DISPATCH 32 ns.**
+
+🔑🔑 **BUT THAT WAS MEASURED OUTSIDE A TRANSACTION, WHERE AN EVENT IS DISPATCHED AND IMMEDIATELY GARBAGE.**
+Inside one, `emit` tags the event, calls `pushTokens`, and **pushes it into `txEvents` where it is RETAINED
+until commit** — 200,000 adds hold 200,000 events live. A nursery cost becomes a live-set cost, which is a
+different question from the one 862 answered.
+
+### 🔑🔑 THE DELETION TEST PRICES IT AT MORE THAN THE WHOLE PENALTY
+
+```text
+    arm                               tx penalty      GC delta    pushTokens
+    pristine (2184's guard in)          197.4 ns/op     +96.5       present
+    tx event buffering DELETED          -49.4           +42.5       0.0 in tx
+```
+
+⚠️⚠️ **With the buffering gone the transactional arm is FASTER than the non-transactional one.** So
+buffered-event retention is ~247 ns/op — the entire residual penalty and then some. (Unsound: events never
+fire at commit. Reverted at once; tree verified identical.)
+
+### 🔑 THE SOUND DESIGN, AND WHY IT IS NOT BUILT HERE
+
+Events MUST fire at commit — React reactivity and the sync WriteLog both treat an emitted event as
+signalling a _committed_ write. 🔑 But the reactive TOKENS are captured separately into `txTokens` by that
+same code path, so the internal bookkeeping does not need the retained events; `txEvents` exists purely to
+dispatch to listeners later. **So the gate is: skip the push when no HOST listener is subscribed** — item
+862's own second suggested lever ("leaving the snapshot empty when no host listener is subscribed").
+
+⚠️⚠️ **THE RISK IS THE REASON TO STOP HERE.** `Emitter` exposes `hasListeners` but no count, and
+`hasListeners` is always true because of the internal pair. A gate built on a magic "more than 2" breaks
+silently the moment the internal set changes, and the failure mode is **host listeners quietly not
+receiving commit events** — a silent reactivity bug, the worst class in this codebase. The robust version
+records the internal listener references at construction and asks whether the set holds anything else,
+which means an `Emitter` API change plus tests for the mid-transaction-subscribe window `onMutate`'s
+comment already describes.
+
+**That is a careful item, not the tail of this one.** The price is now known and the design is written down;
+items 2180 → 2181 followed exactly this shape and the build landed at 1.83x.
+
+GATES. No production change; the diagnostic deletion reverted, tree verified identical to pristine,
+item 2184's guard and its 15 tests intact. `bun run check` 0.
