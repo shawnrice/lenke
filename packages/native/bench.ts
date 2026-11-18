@@ -1494,6 +1494,24 @@ const CASES: Case[] = [
      * arms against 49.6 for the two run separately, so the concatenation costs less than nothing (the
      * arms share work). ⚠️ The row exists to keep it that way, not because it is slow.
      */
+    /*
+     * 🔑 THE DEDUPING TWIN, added at item 2147 to guard its own 5.55x. That item pushed the DISTINCT into
+     * each arm of a non-`ALL` set operator — `DISTINCT(A ∪ B) = DISTINCT(DISTINCT(A) ∪ DISTINCT(B))` — so
+     * each arm yields its distinct values instead of its whole row set. ⚠️ The `UNION ALL` row below is
+     * its control: the rewrite must NOT touch it, and a row count there is the only thing that can see a
+     * violation (deduping an `ALL` operator is a WRONG ANSWER the deduping forms would hide).
+     */
+    name: 'query: UNION of two hops [item 2147]',
+    ...onGraph(
+      () => optionalDoc,
+      (e, g) =>
+        void e.query(
+          g,
+          'MATCH (a:Person)-[:KNOWS]->(b) RETURN b.k AS k UNION MATCH (a:Person)-[:KNOWS]->(b) RETURN b.k AS k',
+        ),
+    ),
+  },
+  {
     name: 'query: UNION ALL of two hops',
     ...onGraph(
       () => optionalDoc,

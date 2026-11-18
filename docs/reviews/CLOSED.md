@@ -107093,3 +107093,58 @@ the repo's own item 1611 records the same failure. **Derive the literal from the
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 5,192 GQL
 tests; seven fuzzers green; the sweep's one failure proven pre-existing.
+
+## Item 2147 — ✅✅ **SHIPPED: the DISTINCT pushed into each arm of a non-`ALL` set operator — `UNION` 5.55x, `INTERSECT` 4.71x, `EXCEPT` 4.05x. It was an EQUIVALENT-SPELLING GAP: the same question with the DISTINCT written by hand was already 5x faster**
+
+🔑 Item 2145's screen found five features with no bench row. Item 2146 took `OPTIONAL MATCH`; this took the
+set operators, and the first measurement was the finding:
+
+```text
+    MATCH (a:P) RETURN DISTINCT a.k    2.39 ms   97 rows   <- the reference
+    UNION                             15.00
+    EXCEPT                            15.75
+    INTERSECT                         16.26
+```
+
+⚠️ **The set ops scan 1.33x the reference's rows (200,000 + 66,667) for 4.4-6.3x the time** — the
+superadditive signature. 🔑 And the cause is NOT the combine step, which items 1473/1561/1562 already
+optimized: it is that each ARM materializes its whole row set before anything dedups.
+
+### 🔑 SOUND BECAUSE SET UNION IS IDEMPOTENT
+
+`DISTINCT(A ∪ B) = DISTINCT(DISTINCT(A) ∪ DISTINCT(B))`, and likewise for `∩` and `\` — a duplicate changes
+neither membership nor the deduped result. ⚠️ **`UNION ALL` is exactly where it fails**, so an `all`
+operator refuses, and a part is rewritten only if EVERY operator touching it is non-`ALL` (parts join
+left-associatively, so in `A UNION ALL B UNION C` pushing into `A` would change the inner multiplicity).
+`ORDER BY`/`SKIP`/`LIMIT` on an arm refuse too: deduping before a page changes which rows survive it.
+
+```text
+    row                        BEFORE     NEW
+    UNION                       16.32     2.94    5.55x
+    EXCEPT                      12.00     2.96    4.05x
+    INTERSECT                   13.74     2.92    4.71x
+    UNION ALL [must not move]   12.33     8.66    266,667 rows BOTH arms
+    arm with ORDER BY LIMIT      7.74     6.01    refuses
+    single DISTINCT [control]     2.22     2.13    flat
+```
+
+### ⚠️⚠️ THE MUTATION ROUND IS 2/8 INDIVIDUALLY, AND THE SIX SURVIVORS ARE STRUCTURAL — ONE OF THEM I HAD TO PROVE
+
+Caught: `ALL-not-refused` and `pushes-with-no-set-op` — the two that BREAK equivalence. ⚠️ The rest survive
+because **the rewrite is answer-equivalent by its own soundness claim**: `push-disabled` and
+`distinct-set-to-false` make it a no-op, and `groupBy-not-refused` pushes a DISTINCT the outer dedup
+subsumes.
+
+🔑🔑 **BUT `LIMIT-not-refused` SURVIVING LOOKED LIKE A REAL HOLE, because a test asserts that exact
+difference** (`ORDER BY k LIMIT 2` keeps rows `1, 1` → union `{1}`, while the hand-pushed form reaches
+`{1, 2}`). ⚠️ **The reason is that the guards CO-REFUSE**: every `LIMIT` whose result is deterministic needs
+an `ORDER BY`, so the `orderBy` guard catches the same arm and the `limit` guard is individually redundant.
+🔑 **Verified rather than asserted** — removing all three paging guards TOGETHER fails 2 tests. So the set
+is load-bearing and each member is not, which is a fact about the guards, not a gap in the tests.
+
+🔑 A `UNION` bench row was added in the same commit, per item 2146's lesson. It reads 59.2 TS against ffi's
+36.9 (**1.60x — an OPEN nomination**, since the rewrite's win depends on the projected column's
+cardinality and that fixture's is high).
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 5,204 GQL
+tests; `bun run fuzz` all seven green.

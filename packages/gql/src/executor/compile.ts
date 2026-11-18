@@ -17,7 +17,7 @@ import type { Graph } from '@lenke/core';
 import { ErrorCode, LenkeError } from '@lenke/errors';
 
 import { isTxControl } from '../ast.js';
-import type { Query, SetOp, Statement } from '../ast.js';
+import type { LinearQuery, Query, SetOp, Statement } from '../ast.js';
 import { combineRows, queryHasWrite, runLinear, runTxControl } from './clauses.js';
 import { bumpExecEpoch, withCompileScope } from './compile-state.js';
 import type { CLinear, Params, Plan, Row } from './core.js';
@@ -25,6 +25,72 @@ import { checkLinearScope } from './core.js';
 import { compileLinear } from './rewrites.js';
 
 // --- compile & execute -------------------------------------------------------
+
+/**
+ * `A UNION B` compiled as `(DISTINCT A) UNION (DISTINCT B)` — the DISTINCT pushed into each arm
+ * (item 2147).
+ *
+ * ⚠️⚠️ **THE SAME QUESTION WRITTEN WITH THE DISTINCT BY HAND WAS 5x FASTER, which makes this an
+ * EQUIVALENT-SPELLING GAP** — the defect class this repo is organised around. Measured over 200,000
+ * vertices projecting a 97-value column:
+ *
+ * ```text
+ *     operator     as written   DISTINCT by hand
+ *     UNION          14.75 ms        2.97          4.97x
+ *     EXCEPT         12.84           2.87          4.47x
+ *     INTERSECT      14.82           2.91          5.09x
+ * ```
+ *
+ * Identical answers in every pair. 🔑 The cause is not the COMBINE step, which items 1473/1561/1562
+ * already optimized (lazy right-keys, one- and two-column keying): it is that each ARM materializes its
+ * whole row set — 200,000 and 66,667 rows — before anything dedups. With the DISTINCT inside, each arm
+ * yields 97 and the combine sees 194 instead of 266,667.
+ *
+ * 🔑 SOUND BECAUSE SET UNION IS IDEMPOTENT: `DISTINCT(A ∪ B) = DISTINCT(DISTINCT(A) ∪ DISTINCT(B))`, and
+ * likewise for `∩` and `\` — a duplicate changes neither membership nor the deduped result. ⚠️ `UNION ALL`
+ * is exactly the case where it does NOT hold, so an `all` operator refuses.
+ *
+ * ⚠️ **AND A PART IS REWRITTEN ONLY IF EVERY OPERATOR TOUCHING IT IS NON-`ALL`.** Parts are joined
+ * left-associatively, so part `i` is the right operand of `ops[i - 1]` and the left of `ops[i]`; in
+ * `A UNION ALL B UNION C`, pushing into `A` would change `UNION ALL`'s multiplicity.
+ *
+ * ⚠️ `ORDER BY` / `SKIP` / `LIMIT` on an arm also refuse: deduping BEFORE a page changes which rows
+ * survive it. So does an arm that already says `DISTINCT` (nothing to do), a `RETURN *` (the items are
+ * not known here) and a grouped or aggregated arm (its result is already one row per group).
+ */
+const pushDistinctIntoSetArms = (query: Query): readonly LinearQuery[] => {
+  if (query.ops.length === 0 || query.ops.some((o) => o.all)) {
+    return query.parts;
+  }
+
+  return query.parts.map((part) => {
+    const last = part.clauses[part.clauses.length - 1];
+
+    if (last?.kind !== 'return') {
+      return part;
+    }
+
+    const proj = last.projection;
+
+    if (
+      proj.distinct ||
+      proj.star ||
+      proj.items.length === 0 ||
+      proj.groupBy !== undefined ||
+      proj.having !== undefined ||
+      proj.orderBy !== undefined ||
+      proj.skip !== undefined ||
+      proj.limit !== undefined
+    ) {
+      return part;
+    }
+
+    return {
+      ...part,
+      clauses: [...part.clauses.slice(0, -1), { ...last, projection: { ...proj, distinct: true } }],
+    };
+  });
+};
 
 /** A whole compiled query: its linear parts and the set operators joining them. */
 type CQuery = { parts: readonly CLinear[]; ops: readonly SetOp[] };
@@ -190,7 +256,7 @@ export const compile = <R extends Row = Row>(query: Query): Plan<R> => {
     unknownFns,
     countParams,
     !queryHasWrite(query),
-    () => ({ parts: query.parts.map(compileLinear), ops: query.ops }),
+    () => ({ parts: pushDistinctIntoSetArms(query).map(compileLinear), ops: query.ops }),
   );
 
   // Eager unknown-function rejection: a name the query references that resolves
