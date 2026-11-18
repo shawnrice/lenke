@@ -107452,3 +107452,71 @@ where the seed's position decides the count (3 against 1) — and the engine was
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 5,247 GQL
 tests; `bun run fuzz` all seven green.
+
+## Item 2153 — ✅ **SHIPPED: the far-label test ELIDED where the label cannot reject — 1.11-1.26x at depth 2, 1.33x at depth 1. ⚠️ THE FIRST SPELLING OF IT COST THE REALISTIC CASE 8%, and the A/B is the only reason I know**
+
+A windowed profile of item 2151's rung named it without ambiguity, the code being mine:
+
+```text
+    reachableCount   68.8%      <- the BFS itself
+    get soleLabel    13.1%      <- the far-label test, once per DISCOVERED ENDPOINT
+    get adjFrom       9.3%
+    get to / get id   5.4%
+```
+
+🔑 Item 1599 refuted two ways of making the label test cheaper, and its own item-1623 narrowing names
+ELIDING it where the label is vacuous as a **separate mechanism that took 1.17x**. ⚠️ At 200,000 scattered
+candidates that item measured the test at **14.52 ns against 7.56** because the read is a CACHE MISS —
+which is the regime a BFS over scattered neighbours is in.
+
+### ⚠️⚠️ THE FIRST SPELLING HELPED THE UNREALISTIC CASE AND TAXED THE REALISTIC ONE
+
+A per-endpoint `vacuous || matchesLabel(…)` guard:
+
+```text
+    arm                         BEFORE     NEW
+    vacuous {1,2}                186.4    165.1    1.13x
+    vacuous {1,1}                 69.1     49.7    1.33x
+    MIXED, 1 in 3 Other          130.8    140.8    0.92x   <- 8% SLOWER
+```
+
+⚠️⚠️ **`label-vacuity-gates-fast-paths` records that MIXED is the realistic schema** — "every read screen
+is label-homogeneous, so screen rows measure an arm a real schema cannot reach". A change that buys 1.13x
+on a graph with one label and costs 8% on a graph with two is a REJECT, and only the control row showed it.
+
+🔑 **THE FIX IS A SPELLING, NOT A TRADE-OFF.** `matchesLabel(v, undefined)` returns `true` on its FIRST
+line without touching `soleLabel`, so resolving the label ONCE PER CALL — `farLabel = vacuous ? undefined :
+shape.farLabel` — buys the same saving and adds nothing to the path that still needs the test:
+
+```text
+    arm                         BEFORE     NEW
+    vacuous {1,2}                197.7    158.3-178.6   1.11-1.26x
+    vacuous {1,1}                 64.5     47.6         1.33x
+    MIXED, 1 in 3 Other          132.0    126.3-134.3   NEUTRAL
+    gated / walk [controls]                             flat
+    ---- bench rows ----
+    ANY SHORTEST no WHERE        249.5    224.2   and 5.16x native -> 4.65x
+    ANY SHORTEST 1-6 hops         12.1     10.3   and 6.86x native -> 5.90x
+```
+
+⚠️ `vac2` is the noisy row (158.3 and 178.6 across two NEW rounds against a tight 197.7 / 199.7), so the
+honest figure is a RANGE, not its best reading.
+
+### 🔑 VACUITY IS COMPUTED PER CALL, AND A TEST PINS WHY
+
+A write can add a vertex without the label to a graph the closure was compiled against, and both asks share
+a query TEXT so the plan cache returns the same closure. ⚠️ The test adds an unlabelled vertex between two
+asks and asserts the count does NOT grow, while the bare `(b)` spelling DOES see it — which proves the new
+vertex is genuinely reachable rather than simply unreached.
+
+**45 tests.** The sharpest is the MIXED case asserting the two spellings DIVERGE: an elision that fired
+there would count an `R` as a `P`. **3/6 mutants caught**, and all three survivors verified structural:
+looking up a wrong label just declines; disabling the route is answer-equivalent; and `far.kind === 'label'`
+is redundant **by the type's shape** — only that variant carries a `name`, so every composite misses the
+lookup anyway. Kept for the reader, as item 2151's `max === null` was.
+
+⚠️ A `wildcard` label is deliberately NOT claimed vacuous: whether `:%` means "any label" or "has at least
+one label" decides it, and that is an ISO question rather than a guess to make in a perf gate.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 5,259 GQL
+tests; `bun run fuzz` all seven green.

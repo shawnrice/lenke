@@ -464,6 +464,107 @@ describe('the ANY SHORTEST endpoint count (item 2151)', () => {
     });
   });
 
+  describe('⚠️⚠️ the VACUOUS far-label elision (item 2153)', () => {
+    /** Three `P` vertices in a line; `extra` optionally adds a vertex WITHOUT the `P` label. */
+    const lineOf = (extraUnlabelled: boolean): Graph => {
+      const g = new Graph();
+
+      for (let i = 0; i < 4; i += 1) {
+        g.addVertex({ id: `w${i}`, labels: ['P'], properties: { k: i } });
+      }
+
+      if (extraUnlabelled) {
+        g.addVertex({ id: 'odd', labels: ['R'], properties: { k: 9 } });
+      }
+
+      for (let i = 0; i < 3; i += 1) {
+        g.addEdge({
+          id: `m${i}`,
+          from: g.getVertexById(`w${i}`)!,
+          to: g.getVertexById(`w${i + 1}`)!,
+          labels: ['T'],
+          properties: {},
+        });
+      }
+
+      if (extraUnlabelled) {
+        g.addEdge({
+          id: 'modd',
+          from: g.getVertexById('w0')!,
+          to: g.getVertexById('odd')!,
+          labels: ['T'],
+          properties: {},
+        });
+      }
+
+      return g;
+    };
+
+    test('a VACUOUS label answers as NO label does', () => {
+      // 🔑 Every vertex is a P, so `(b:P)` cannot reject anything — the two spellings must agree.
+      const g = lineOf(false);
+
+      expect(query(g, 'MATCH ANY SHORTEST (a:P)-[:T]->{1,3}(b:P) RETURN count(*) AS c')[0].c).toBe(
+        query(g, 'MATCH ANY SHORTEST (a:P)-[:T]->{1,3}(b) RETURN count(*) AS c')[0].c,
+      );
+    });
+
+    test('⚠️⚠️ a MIXED graph still RUNS the test — the two spellings DIVERGE', () => {
+      /*
+       * 🔑 THE ASSERTION THAT MAKES THE ELISION SAFE. With one `R` vertex reachable, `(b:P)` rejects it
+       * and `(b)` does not, so the answers MUST differ. ⚠️ An elision that fired here would silently
+       * count the `R` as a `P`.
+       */
+      const g = lineOf(true);
+      const labelled = query(g, 'MATCH ANY SHORTEST (a:P)-[:T]->{1,3}(b:P) RETURN count(*) AS c');
+      const bare = query(g, 'MATCH ANY SHORTEST (a:P)-[:T]->{1,3}(b) RETURN count(*) AS c');
+
+      expect(labelled[0].c).not.toBe(bare[0].c);
+      expect(labelled[0].c).toBe(
+        query(g, 'MATCH ANY SHORTEST (a:P)-[:T]->{1,3}(b:P) RETURN count(*) AS c ORDER BY c')[0].c,
+      );
+    });
+
+    test('⚠️⚠️ a WRITE that ENDS the vacuity, between two asks', () => {
+      /*
+       * 🔑 THE REASON VACUITY IS COMPUTED PER CALL, NOT PER COMPILE. Both asks share a query TEXT, so
+       * the plan cache hands back the same closure; adding a vertex without the label must make the
+       * test start running again.
+       */
+      const g = lineOf(false);
+      const q = 'MATCH ANY SHORTEST (a:P)-[:T]->{1,3}(b:P) RETURN count(*) AS c';
+      const before = Number(query(g, q)[0].c);
+
+      g.addVertex({ id: 'later', labels: ['R'], properties: { k: 7 } });
+      g.addEdge({
+        id: 'mlater',
+        from: g.getVertexById('w0')!,
+        to: g.getVertexById('later')!,
+        labels: ['T'],
+        properties: {},
+      });
+
+      // ⚠️ `later` is reachable but is NOT a P, so the count must be unchanged — not `before + 1`.
+      expect(query(g, q)[0].c).toBe(before);
+      expect(query(g, q)[0].c).toBe(query(g, `${q} ORDER BY c`)[0].c);
+      // And the bare spelling DOES see it, which proves the new vertex is genuinely reachable.
+      expect(
+        Number(query(g, 'MATCH ANY SHORTEST (a:P)-[:T]->{1,3}(b) RETURN count(*) AS c')[0].c),
+      ).toBe(before + 1);
+    });
+
+    test('⚠️ a COMPOSITE label expression is NOT treated as vacuous', () => {
+      /*
+       * 🔑 `farLabelIsVacuous` reads only the single `label` kind; `matchesLabel` owns composite logic,
+       * and duplicating it to save a call is how a vacuity check becomes a wrong answer.
+       */
+      const g = lineOf(true);
+      const q = 'MATCH ANY SHORTEST (a:P)-[:T]->{1,3}(b:P|R) RETURN count(*) AS c';
+
+      expect(query(g, q)[0].c).toBe(query(g, `${q} ORDER BY c`)[0].c);
+    });
+  });
+
   test('⚠️ a WRITE between two asks is reflected', () => {
     /*
      * 🔑 The rung reads `graph` at RUN time, never at compile time, and both asks share a query TEXT so

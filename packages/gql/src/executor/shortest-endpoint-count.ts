@@ -158,6 +158,30 @@ const shapeOf = (pattern: PathPattern, clauseWhere: Expr | undefined): Shape | u
 };
 
 /**
+ * Whether the far label cannot reject any vertex, so the per-endpoint test is pure overhead.
+ *
+ * ⚠️ TRUE only for an ABSENT label or a single `label` kind that every vertex carries. 🔑 A composite
+ * label expression (`:A&B`, `:A|B`) is NOT read here — `matchesLabel` owns that logic, and duplicating
+ * it to save a call is how a vacuity check becomes a WRONG ANSWER.
+ *
+ * ⚠️ `far.kind === 'label'` is REDUNDANT BY THE TYPE'S SHAPE, and mutation says so: only that variant
+ * carries a `name`, so for any other one `far.name` is `undefined`, the lookup misses and the test
+ * declines regardless. 🔑 Kept because reading it as "every composite happens to miss a `Map` lookup" is
+ * not how a reader should have to establish that `:A&B` is handled.
+ *
+ * ⚠️ A `wildcard` (`kind: 'wildcard'`) is deliberately NOT claimed vacuous: whether `:%` means "any
+ * label" or "has at least one label" decides it, and a vertex with no labels at all distinguishes them.
+ * That is an ISO question, not a guess to make here.
+ */
+const farLabelIsVacuous = (graph: Graph, far: LabelExpr | undefined): boolean => {
+  if (far === undefined) {
+    return true;
+  }
+
+  return far.kind === 'label' && graph.verticesByLabel.get(far.name)?.size === graph.vertexCount;
+};
+
+/**
  * Endpoints reachable from `seed` at a distance in `[min, max]` that carry the far label.
  *
  * 🔑 A plain BFS over the typed adjacency bucket — the same read item 2149 gave the shortest-path walk,
@@ -165,8 +189,13 @@ const shapeOf = (pattern: PathPattern, clauseWhere: Expr | undefined): Shape | u
  * seed at distance 0, so a cycle back to the seed counts it as an endpoint exactly once (and only when
  * `min` admits the distance at which it closes).
  */
-const reachableCount = (graph: Graph, seed: Vertex, shape: Shape): number => {
-  const { type, out, min, max, farLabel } = shape;
+const reachableCount = (
+  graph: Graph,
+  seed: Vertex,
+  shape: Shape,
+  farLabel: LabelExpr | undefined,
+): number => {
+  const { type, out, min, max } = shape;
   const dist = new Map<string, number>([[seed.id, 0]]);
   let frontier: Vertex[] = [seed];
   let depth = 0;
@@ -214,6 +243,25 @@ const reachableCount = (graph: Graph, seed: Vertex, shape: Shape): number => {
         dist.set(nbr.id, depth);
         next.push(nbr);
 
+        /*
+         * ITEM-2153-VACUOUS-FAR-LABEL: the label test ELIDED when it cannot reject anything.
+         *
+         * 🔑 `get soleLabel` was **13.1% self** in a windowed profile of this rung at depth 2 — the test
+         * runs once per DISCOVERED ENDPOINT, and on a single-label graph every one of them passes. ⚠️ At
+         * 200,000 scattered candidates item 1599 measured the test at 14.52 ns against 7.56 because the
+         * read is a CACHE MISS, which is the regime a BFS over scattered neighbours is in.
+         *
+         * ⚠️ Item 1599 refuted two ways of making the test CHEAPER; this is the third mechanism its own
+         * item-1623 narrowing names as separate, which took 1.17x in the generic matcher.
+         *
+         * ⚠️⚠️ **THE ELISION IS SPELT AS `farLabel = undefined`, NOT AS A `vacuous ||` GUARD HERE, AND
+         * THE FIRST SPELLING COST THE REALISTIC CASE 8%.** A per-endpoint `vacuous ||` reads 1.13-1.33x
+         * on an all-one-label graph and **0.92x on a MIXED one** (130.8 ms → 140.8), where the extra
+         * boolean always falls through — and `label-vacuity-gates-fast-paths` records that MIXED is the
+         * realistic schema, so that version was a reject. 🔑 `matchesLabel(v, undefined)` returns `true`
+         * on its FIRST line without touching `soleLabel`, so resolving the label once per CALL buys the
+         * same saving and adds nothing to the path that still needs the test.
+         */
         if (depth >= min && matchesLabel(nbr, farLabel)) {
           count += 1;
         }
@@ -269,6 +317,11 @@ export const detectShortestEndpointCount = (
   return (graph: Graph, params: Params): Row[] => {
     /* ⚠️ ONE binding, reused across every seed — `inlineHolds` writes the element into it and reads it. */
     const binding = new Map<string, unknown>();
+    /*
+     * 🔑 COMPUTED ONCE PER CALL, not per endpoint and not at compile time: a write can add a vertex
+     * without the label, and the same closure serves the graph afterwards.
+     */
+    const farLabel = farLabelIsVacuous(graph, shape.farLabel) ? undefined : shape.farLabel;
     let total = 0;
 
     for (const seed of candidateVertices(graph, shape.startLabel)) {
@@ -276,7 +329,7 @@ export const detectShortestEndpointCount = (
         continue;
       }
 
-      total += reachableCount(graph, seed, shape);
+      total += reachableCount(graph, seed, shape, farLabel);
     }
 
     return [{ [column]: total }];
