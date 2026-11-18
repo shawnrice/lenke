@@ -111502,3 +111502,49 @@ know that.
 before any `@lenke/*` timing** (item 2225's lesson).
 
 GATES. `bun run fmt` 0, `bun run check` 0. No production change.
+
+## Item 2227 — ✅ **`node/rows` IS CLOSED: the per-row binding `Map` (refused twice) is most of the gap and the hidden-class row build is the rest. AND A HARNESS BUG WORTH MORE THAN THE TARGET — `JSON.stringify` INSIDE THE TIMED LOOP DILUTES EVERY RATIO TOWARD 1.0, so items 2215/2220/2225's numbers are CONSERVATIVE**
+
+Item 2226 nominated `node/rows` (`MATCH (n:P) RETURN n.k AS k`) as the only monotonically rising shape.
+
+### ⚠️⚠️ FIRST, TWO INSTRUMENTS DISAGREED 2x, AND THE HARNESS WAS WRONG
+
+My ladder read the engine at **1.3x** the floor where the cliff finder read **3.04x**. Edges were not the
+cause (with and without, both ~1.3x). The cause was my own timing loop:
+
+```text
+    expensive sink (JSON.stringify per iteration)   floor 2792   engine 3760   1.35x
+    cheap sink     (a length read)                  floor 1024   engine 2408   2.35x
+```
+
+🔑🔑 **A LARGE COST IDENTICAL IN BOTH ARMS COMPRESSES THE RATIO TOWARD 1.0.** Stringifying 80,000 rows per
+iteration added ~1,400 us to each arm and halved the measured gap. ⚠️ It is the exact mirror of item 2200's
+dead-code trap: **consuming NOTHING lets the JIT delete the work; consuming EXPENSIVELY swamps it.** A length
+read is enough.
+
+⚠️⚠️ **THIS AFFECTS EARLIER ITEMS, AND IN THE GENEROUS DIRECTION:** `asof-rows-2215.ts` and
+`midfilter-2220.ts` both stringify inside the timed loop, so **items 2215, 2220 and 2225's ratios are
+DILUTED — the real gaps and the real 3.17x speedup are LARGER than reported.** No conclusion flips, because
+dilution moves every arm the same way, but the numbers are conservative and should be re-read that way.
+
+### ✅ AND WITH THE HARNESS FIXED, THE LADDER CLOSES THE TARGET
+
+```text
+    arm                      round 1   round 2
+    floor                       1374      1024
+    + per-row binding Map       2020      2034   <- MOST OF THE GAP
+    + compiled closure          1409      1360   <- near-free, as recorded
+    + computed-key row build    1960      1325
+    engine                      2561      2408
+```
+
+🔑 **The binding rung alone is ~700-1,000 us of the ~1,200-1,400 us gap, and `binding-allocation` was BUILT
+AND REFUSED TWICE** (items 2023/2024 — a no-copy view and a reused map, both measured and declined). The
+remainder is the computed-key row build, which is item 2201's ROW-OBJECT HIDDEN CLASS needing a generated
+constructor, and `no-runtime-codegen` is FIRM.
+
+**So the plainest shape in the table is explained entirely by two already-closed causes.** That is the
+ladder doing its job for the third time (items 2216/2217, 2222, 2227) — and the second time it has retired a
+nomination in one tick rather than a build.
+
+GATES. `bun run fmt` 0, `bun run check` 0. New probe `packages/native/noderows-2227.ts`; no engine change.
