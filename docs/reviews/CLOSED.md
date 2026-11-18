@@ -110900,3 +110900,55 @@ bare specifiers resolve from the SCRIPT's directory, so it must live under `pack
 **NET: the domain path is healthy at every size measured, and nothing here is a target.**
 
 GATES. `bun run fmt` 0, `bun run check` 0. No production change.
+
+## Item 2215 — 🔑🔑🔑 **DIAGNOSED, BUILD HANDED OFF: the AS-OF _rows_ shape is 2.6x its HONEST floor — 19.0 ms against 7.5 ms, reproducible across separate-process rounds — and ONE frame is two thirds of the gap: `relBoundFilteredHopWalk` at +8.28 ms/rep**
+
+Item 2214 left one row unexplained: the as-of shape returning rows (29 ms for 22,401 rows) rather than a
+count. `packages/native/asof-rows-2215.ts` floors it, with **one arm per PROCESS** (`ARM=`) because item
+2214's in-process table manufactured a 2.6x that did not exist.
+
+### ✅ THE FLOOR BUILDS THE SAME ROWS, AND THE DECOMPOSITION LOCALIZES THE COST
+
+```text
+    40,000 people / 160,000 employment edges, as of 2010, 22,401 rows
+    arm                                 round 1   round 2
+    engine                               19540     20041 us
+    floor  (walk + test + build rows)     7212      7706 us   <- 2.6x
+    count  (walk + test, NO rows)         5049      4905 us
+```
+
+🔑 The floor materializes the SAME two-column rows — a floor that only counted would charge the engine for
+work it is supposed to do (item 698's error, mirrored). And the third arm separates the terms: **walk+filter
+is 5.0 ms, building 22,401 rows adds only 2.2 ms**, so the engine spends **~12 ms more than the floor on
+identical work**.
+
+### 🔑 ONE FRAME IS TWO THIRDS OF IT
+
+```text
+    frame                        floor ms   engine ms
+    relBoundFilteredHopWalk          0.00        8.28   +8.28
+    relSeekedHopWalk                 0.00        2.17   +2.17
+    propOf                           0.00        2.11   +2.11
+    get properties (Edge)            2.16        3.83   +1.67
+    variable.variable                0.00        1.04
+    matchesLabel                     0.00        0.74
+```
+
+🔑🔑 `relBoundFilteredHopWalk` is the rung for a hop whose RELATIONSHIP is bound and filtered — exactly
+`-[w:WORKED_AT]->` with predicates on `w.vf`/`w.vt`, which is the canonical bitemporal shape. It is doing
+8.28 ms/rep of work the hand-rolled loop does for ~0, on top of a `propOf` term the floor also avoids.
+
+### WHAT THE BUILD NEEDS
+
+The floor's inner loop is `ed.properties.vf <= T && ed.properties.vt > T` read directly off the edge. The
+engine routes the same test through the general predicate machinery plus a binding write per edge. ⚠️ Any
+fix belongs where `executor-edits-perturb`'s 16% does not land — and `hop-projection.ts` is at **2,932 of
+3,000 code lines**, so a new arm goes in a NEW FILE (item 2194's constraint).
+
+⚠️ **AND CHECK THE PRIOR ART FIRST**: `binding-allocation-is-closed` (items 2023/2024, built and refused
+twice) and the `propOf`/hidden-class refutation above `propOf` itself (item 2201) both touch this
+neighbourhood. The 2.6x is measured; whether any of it is REACHABLE is the first question for the next tick,
+not the last.
+
+GATES. `bun run fmt` 0, `bun run check` 0 (three lint rounds on the new probe: `curly`, then `padding-lines`
+twice). New probe; no engine change.
