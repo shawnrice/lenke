@@ -112840,3 +112840,50 @@ than change when it is armed — and `second-ask.ts` records that a generation i
 so _"nothing leaks one dead entry per shape per write"_, which an incremental patch must answer.
 
 GATES. `bun run fmt` 0, `bun run check` 0. New instrument `buildcost-2253.ts`; no production change.
+
+## Item 2254 — ✅ **VERIFIED: every gate green, all SEVEN new instruments report, and the churn thread's two key findings REPRODUCE at a different size**
+
+Items 2245-2253 added seven probe files and produced no production change. This item verifies the gates and
+that each file still works — lint-clean is not working (item 2244's lesson).
+
+### ✅ GATES
+
+```text
+    bun run fmt                       0
+    bun run check                     0   (typecheck + oxlint + clippy, read UNPIPED)
+    bun run test -- --skip-nx-cache   0   (21 projects)
+    bun run fuzz                      57 pass / 0 fail
+```
+
+### ✅ SEVEN INSTRUMENTS, SEVEN REPORTING — AND TWO FINDINGS REPRODUCED AT N=4000
+
+```text
+    cacheinval-2245.ts    PERFORMANCE: no demotion beyond noise
+    churn-2246.ts         series 1.0 0.6 0.5 0.7 0.7 0.7
+    drain-2247.ts         series 1.0 0.6 0.5 0.5 0.5 0.5
+    alloc-2249.ts         alloc series 0 0 0 0 0 0
+    tvtest-2252.ts        ARM=setprop  penalty -0.00 ms  writes=6  tv moved 0
+    buildcost-2253.ts     ask1 1.31  ask2 1.30  ask3 0.26  steady 0.24 ms
+    prof-2246.mjs         arm=churn rounds=3 writes=3 rows=12003
+```
+
+🔑 **Two of these are more than smoke tests.** `buildcost-2253` reproduces the **build-then-cached
+transition** at a fifth of the size (ask3 drops to 0.26 from ask2's 1.30), and `tvtest-2252` reproduces
+**property writes being free** (penalty -0.00 ms, `tv moved 0`) — so neither finding was an artefact of the
+20k fixture. ✅ And `prof-2246.mjs` reports its arm and row count, per item 2244's fix.
+
+### ✅ STATE
+
+- **Working tree clean; 211 commits unpushed** — flagged, not pushed.
+- **Ten ships verified present in source**, unchanged since items 2235/2244 (checked with python `str.count`,
+  not `grep` — `Graph.ts` is one of the files `grep` skips).
+- **Items 2245-2253 shipped NOTHING, deliberately**: the whole thread was a measurement of the interleaved
+  write/read penalty, ending with my own proposed lever refuted at 4x and the existing `second-ask.ts`
+  policy vindicated with numbers it previously lacked.
+- **Three framings of that one cost measured and discarded**: JIT deopt (2249, `--trace-deopt`), a CSR
+  rebuild (2250, refuted by the policy's own doc at 2251), and cross-version arming (2253, 4x worse).
+- **Three instruments shown NOT to work on this problem and recorded as such**: `--heap-prof` (missing ~95%
+  of allocations, twice), `heapUsed` deltas (transients invisible), and a CPU profile at this resolution
+  (frame delta exceeded the total).
+
+GATES. As above, each read unpiped. No engine change in this item.
