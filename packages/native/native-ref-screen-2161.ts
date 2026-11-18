@@ -110,7 +110,26 @@ const doc = (() => {
 })();
 
 /** Each row: a name and the query. The REFERENCE is native's own time for the same query. */
-const ROWS: ReadonlyArray<readonly [string, string]> = [
+const SUM_FLOOR = 'MATCH (a:Person) RETURN sum(a.k) AS c';
+const COUNT_FLOOR = 'MATCH (a:Person) RETURN count(a.k) AS c';
+
+/*
+ * ⚠️⚠️⚠️ **A ROW'S FLOOR MUST MATCH ITS OUTER AGGREGATE, AND THIS IS THE FOURTH TIME A MISMATCHED FLOOR
+ * PRODUCED A FALSE NOMINATION** (items 2168 twice, 2170, and `CASE` at item 2175).
+ *
+ * 🔑 `sum`/`avg` pay ~3 ms over `count` that native pays ~0.02 for — architectural, boxed vs columnar,
+ * priced at item 2173 and NOT a target. So flooring a `sum(...)` row with `count(a.k)` charges it for that
+ * gap and flags it. `CASE` read **+5.08 / +1.58 (3.2x)** that way:
+ *
+ * ```text
+ *     against count(a.k)   8.04 - 3.12 = +4.92 ts   1.78 - 0.10 = +1.68 nat   2.9x  <- FLAGGED
+ *     against sum(a.k)     8.04 - 6.31 = +1.73 ts   1.78 - 0.12 = +1.66 nat   1.04x <- PARITY
+ * ```
+ *
+ * ⚠️ Both readings are reproducible across rounds; only the SUBTRAHEND differed. The third element of each
+ * row names its floor, defaulting to the `count` one.
+ */
+const ROWS: ReadonlyArray<readonly [string, string, string?]> = [
   /*
    * ⚠️⚠️⚠️ **THE FLOOR, AND WITHOUT IT THIS SCREEN NOMINATES PHANTOMS (item 2172).** Item 2167 measured TS
    * reading 200,000 properties in 4.29 ms against native's 0.09 — **48x** — so a RAW ratio on any row that
@@ -133,16 +152,21 @@ const ROWS: ReadonlyArray<readonly [string, string]> = [
    * `col0` by native, so the screen's own answer-agreement check voids the row — the values match
    * (200000), only the key differs.
    */
-  ['FLOOR count(a.k)', 'MATCH (a:Person) RETURN count(a.k) AS c'],
+  ['FLOOR count(a.k)', COUNT_FLOOR],
+  ['FLOOR sum(a.k)', SUM_FLOOR],
   // ── String predicates, none of which has a bench row ──────────────────────────────────────────
   ['CONTAINS', 'MATCH (a:Person) WHERE a.name CONTAINS "999" RETURN count(*) AS c'],
   ['STARTS WITH', 'MATCH (a:Person) WHERE a.name STARTS WITH "person1" RETURN count(*) AS c'],
   ['ENDS WITH', 'MATCH (a:Person) WHERE a.name ENDS WITH "99" RETURN count(*) AS c'],
   // ── Scalars and list handling ─────────────────────────────────────────────────────────────────
-  ['size() of a list prop', 'MATCH (a:Person) RETURN sum(size(a.tags)) AS c'],
-  ['COALESCE', 'MATCH (a:Person) RETURN sum(coalesce(a.k, 0)) AS c'],
+  ['size() of a list prop', 'MATCH (a:Person) RETURN sum(size(a.tags)) AS c', SUM_FLOOR],
+  ['COALESCE', 'MATCH (a:Person) RETURN sum(coalesce(a.k, 0)) AS c', SUM_FLOOR],
   ['IN a literal list', 'MATCH (a:Person) WHERE a.k IN [1, 2, 3] RETURN count(*) AS c'],
-  ['CASE expression', 'MATCH (a:Person) RETURN sum(CASE WHEN a.k > 50 THEN 1 ELSE 0 END) AS c'],
+  [
+    'CASE expression',
+    'MATCH (a:Person) RETURN sum(CASE WHEN a.k > 50 THEN 1 ELSE 0 END) AS c',
+    SUM_FLOOR,
+  ],
   // ── Aggregates beyond item 2157's sum/avg ─────────────────────────────────────────────────────
   ['stddev_pop over a scan', 'MATCH (a:Person) RETURN stddev_pop(a.k) AS c'],
   ['percentile_cont', 'MATCH (a:Person) RETURN percentile_cont(a.k, 0.5) AS c'],
@@ -269,15 +293,22 @@ if (ONE_ROW !== undefined) {
     process.exit(0);
   }
 
-  const [[fname, fq]] = ROWS;
-  const ft = timeLong(() => tsQuery(tsGraph, fq));
-  const fn2 = timeLong(() => nativeGraph.query(fq));
   const [name, q] = row;
-  const t = idx === 0 ? ft : timeLong(() => tsQuery(tsGraph, q));
-  const n = idx === 0 ? fn2 : timeLong(() => nativeGraph.query(q));
+  /*
+   * ⚠️⚠️ **EXACTLY ONE QUERY PER PROCESS, AND MEASURING THE FLOOR BESIDE THE ROW BROKE THAT** (item 2175).
+   * The child used to time the floor and the row together. Once the floor became `sum(a.k)` for the
+   * `sum(...)` rows, the two shared the aggregate dispatch and polluted each other's inline caches:
+   * `CASE` read **10.89 ms in-child against 8.04 measured alone**, twice. 🔑 That is item 762's rule —
+   * one shape per PROCESS so no other shape pollutes the dispatch — and the floor is another shape.
+   *
+   * 🔑 So the FLOOR ROWS ARE ORDINARY ROWS now (indices 0 and 1), each measured in its own child, and the
+   * driver does the subtraction.
+   */
+  const t = timeLong(() => tsQuery(tsGraph, q));
+  const n = timeLong(() => nativeGraph.query(q));
 
   console.log(
-    `ROWDATA\t${idx}\t${name}\t${t.ms ?? `E:${t.note}`}\t${n.ms ?? `E:${n.note}`}\t${ft.ms ?? 0}\t${fn2.ms ?? 0}\t${normalize(t.answer) === normalize(n.answer) ? 'AGREE' : 'DIFFER'}\t${fname}`,
+    `ROWDATA\t${idx}\t${name}\t${t.ms ?? `E:${t.note}`}\t${n.ms ?? `E:${n.note}`}\t${normalize(t.answer) === normalize(n.answer) ? 'AGREE' : 'DIFFER'}`,
   );
   nativeGraph.free();
   process.exit(0);
@@ -297,6 +328,10 @@ if (!IN_PROC) {
   );
 
   const self = new URL(import.meta.url).pathname;
+  const floors = [
+    { ts: 0, nat: 0 },
+    { ts: 0, nat: 0 },
+  ];
 
   for (let i = 0; i < ROWS.length; i += 1) {
     const lines: string[] = [];
@@ -338,12 +373,20 @@ if (!IN_PROC) {
     const [[, , name]] = cells;
     const tsRaw = minOf(3);
     const natRaw = minOf(4);
-    const fTs = minOf(5);
-    const fNat = minOf(6);
-    const agree = cells.every((c) => c[7] === 'AGREE') ? 'AGREE' : 'DIFFER';
+    const agree = cells.every((c) => c[5] === 'AGREE') ? 'AGREE' : 'DIFFER';
+
+    if (i < 2) {
+      floors[i] = { ts: Number(tsRaw), nat: Number(natRaw) };
+    }
+
+    /* 🔑 The row's own floor — index 1 (`sum`) for a row that named `SUM_FLOOR`, else index 0. */
+    const useSum = ROWS[i][2] === SUM_FLOOR;
+    const fTs = String(floors[useSum ? 1 : 0].ts);
+    const fNat = String(floors[useSum ? 1 : 0].nat);
+    const floorName = useSum ? 'sum(a.k)' : 'count(a.k)';
     const tsMs = tsRaw.startsWith('E:') ? null : Number(tsRaw);
     const natMs = natRaw.startsWith('E:') ? null : Number(natRaw);
-    const isFloor = i === 0;
+    const isFloor = i < 2;
     const mTs = (tsMs ?? 0) - Number(fTs);
     const mNat = (natMs ?? 0) - Number(fNat);
     const marginal =
@@ -351,7 +394,7 @@ if (!IN_PROC) {
     const flag = agree === 'AGREE' && !isFloor && mTs > 2 && mNat > 0.05 && mTs / mNat > 3;
 
     console.log(
-      `  ${name.padEnd(24)} ${(tsMs === null ? tsRaw.slice(2) : tsMs.toFixed(2)).padStart(9)} ${(natMs === null ? natRaw.slice(2) : natMs.toFixed(2)).padStart(9)} ${(tsMs !== null && natMs !== null && natMs > 0 ? `${(tsMs / natMs).toFixed(1)}x` : '--').padStart(8)} ${marginal.padStart(16)}${flag ? '  <-- FLAG' : ''}${agree === 'DIFFER' && tsMs !== null && natMs !== null ? '  <-- VOID: answers differ' : ''}`,
+      `  ${name.padEnd(24)} ${(tsMs === null ? tsRaw.slice(2) : tsMs.toFixed(2)).padStart(9)} ${(natMs === null ? natRaw.slice(2) : natMs.toFixed(2)).padStart(9)} ${(tsMs !== null && natMs !== null && natMs > 0 ? `${(tsMs / natMs).toFixed(1)}x` : '--').padStart(8)} ${marginal.padStart(16)} ${(isFloor ? '' : `[/${floorName}]`).padEnd(12)}${flag ? '  <-- FLAG' : ''}${agree === 'DIFFER' && tsMs !== null && natMs !== null ? '  <-- VOID: answers differ' : ''}`,
     );
   }
 

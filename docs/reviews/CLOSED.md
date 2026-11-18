@@ -108739,3 +108739,59 @@ disagreement about an answer, and the label now requires both sides to have answ
 +2.69 ms absolute, and its own probe put it at +1.67 on one run.
 
 GATES. Instrument only. `bun run fmt` 0; `bun run check` 0 read unpiped; both screen modes exercised.
+
+## Item 2175 — ⚠️⚠️ **THE `CASE` FLAG WAS THE `sum` FLOOR: 3.2x becomes 1.04x against the right subtrahend. Two more estimator defects fixed, and the GQL screen is down to ONE flag**
+
+Nothing optimized. `CASE` was item 2174's nomination; it does not exist, and finding that out exposed two
+further defects in the instrument.
+
+### ⚠️ DEFECT ONE: A ROW'S FLOOR MUST MATCH ITS OUTER AGGREGATE — the FOURTH mismatched-floor phantom
+
+The row is `sum(CASE WHEN a.k > 50 THEN 1 ELSE 0 END)`, and item 2173 priced `sum(a.k)` at **+2.80 ms over
+`count(a.k)`** — architectural (boxed vs columnar), not a target. Flooring a `sum` row with `count` charges
+it for that:
+
+```text
+    against count(a.k)   8.04 - 3.12 = +4.92 ts   1.78 - 0.10 = +1.68 nat   2.9x  <- FLAGGED
+    against sum(a.k)     8.04 - 6.31 = +1.73 ts   1.78 - 0.12 = +1.66 nat   1.04x <- PARITY
+```
+
+🔑 Both readings reproduce across rounds; only the SUBTRAHEND differed. Rows now name their own floor
+(`SUM_FLOOR` / `COUNT_FLOOR`) and the output prints which one each used, e.g. `[/sum(a.k)]`.
+
+⚠️ This is the fourth mismatched floor in one session — items 2168 (twice), 2170, and this. **The rule that
+covers all four: a floor is only valid while it does the SAME WORK as the row above it**, and "same work"
+includes the outer aggregate, not just the property touched.
+
+### ⚠️⚠️ DEFECT TWO: MEASURING THE FLOOR BESIDE THE ROW IS NOT ONE SHAPE PER PROCESS
+
+Pointing the `sum` rows at `sum(a.k)` made them LOOK worse, not better — `CASE` read **10.89** where an
+isolated probe read **8.04 twice**. 🔑 The child was timing the floor and the row in the same process, and
+once the floor shared the row's aggregate kind the two polluted each other's dispatch. **That is item 762's
+rule, and the floor is another shape.**
+
+Floor queries are now ORDINARY ROWS, each in its own child, and the driver subtracts. `CASE` immediately
+read **8.07** against the standalone 8.04.
+
+### 🔑 THE SURFACE, ON AN INSTRUMENT THAT NOW AGREES WITH ISOLATED PROBES
+
+```text
+    shape                 ts   native   marginal ts/nat   floor         verdict
+    FLOOR count(a.k)    3.06     0.10                                   the 31x scan
+    FLOOR sum(a.k)      5.22     0.12                                   +2.2 over it, architectural
+    percentile_cont     5.85     0.42   +2.79 / +0.32    count(a.k)     FLAG 8.7x — the only one left
+    CASE expression     8.07     1.70   +2.85 / +1.58    sum(a.k)       1.8x  clears
+    COALESCE            5.58     0.86   +0.36 / +0.74    sum(a.k)       ⚠️ TS's OWN COST IS BELOW NATIVE'S
+    size() of a list    6.45     7.06   +1.23 / +6.94    sum(a.k)       TS 5.6x faster on the step
+    ORDER BY two keys   4.86     1.65   +1.80 / +1.55    count(a.k)     1.2x  parity
+    DISTINCT two cols   8.42     5.60   +5.37 / +5.50    count(a.k)     1.0x  parity
+    collect over a scan 4.36     0.42   +1.31 / +0.32    count(a.k)     under the absolute floor
+```
+
+🔑🔑 **ITEM 2173's COALESCE WIN IS NOW VISIBLE AS AN OVERTAKE**: +0.36 ms against native's +0.74 on the
+step's own cost, where before the change it was the screen's loudest flag.
+
+**The GQL screen's nominations are exhausted except `percentile_cont` (+2.79 ms, 8.7x)**, and even that has
+read as low as +1.67 on a standalone probe — so it is a small-absolute target, not a cliff.
+
+GATES. Instrument only. `bun run fmt` 0; `bun run check` 0 read unpiped.
