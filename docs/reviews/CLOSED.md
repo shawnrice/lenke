@@ -108948,3 +108948,68 @@ repeated.**
 
 GATES. Instrument only. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache`
 21/21.
+
+## Item 2179 — ✅ **CLOSED, NOTHING BUILT: the UNION flag is the property-scan floor a THIRD time. ⚠️ I built a routing hypothesis, a throw CONFIRMED the routing difference, and then the timing REFUTED the story — the "slow" route is the fast one**
+
+Item 2176's widened screen put `UNION of two scans` at 23.7x (+9.24 against native's +0.39).
+
+### 🔑 THE DECOMPOSITION, AND THE FIRST READING WAS UNUSABLE
+
+```text
+    12 reps, dropping 6          40 reps, median of last 15, 2 rounds
+    one part alone      4.53     4.00 / 3.96
+    UNION (dedups)     28.80    11.49 / 11.57
+    UNION ALL          7.99      7.61 / 7.63
+    one part+DISTINCT  11.22     5.43 / 5.74
+    UNION of 3 parts   17.76    17.32 / 17.25
+```
+
+⚠️ At 12 reps the 2-part UNION (28.80) read SLOWER than the 3-part one (17.76), which cannot be true. At 40
+reps it is monotonic and reproducible to the hundredth. **This is the fourth item in a row where the first
+rep count was too low** — 12 is not enough for this family either.
+
+🔑 **Settled arithmetic:** a part costs ~4.0 ms (native 0.24), `UNION ALL` is ~2x a part, three parts ~3x,
+and the dedup adds ~3.9. **So the 23.5x is the scan floor: ONE PART ALONE is already 16.7x**, which items
+2167/2172/2175 priced as architectural (boxed vs columnar).
+
+### ⚠️⚠️ THE HYPOTHESIS I BUILT, CONFIRMED, AND THEN HAD TO DROP
+
+A windowed profile showed `take` (30.4%) and `walkStartSide` (14.9%) in UNION's profile and **absent from
+UNION ALL's**, which shows `fastPath` instead. Both frames live in `hop-projection.ts` — a HOP walk for a
+query with NO hop. 🔑 A throw confirmed it exactly:
+
+```text
+    one part alone   no hop walk
+    UNION            WALK-START-SIDE-RAN     <- a hop walk, for a hopless query
+    UNION ALL        no hop walk
+```
+
+🔑 The mechanism is real and worth recording: **`pushDistinctIntoSetArms` sets `distinct: true` on every
+arm** of a UNION (sound, since `distinct(A ∪ B) = distinct(distinct(A) ∪ distinct(B))`), and a ONE-COLUMN
+`DISTINCT` routes to that walk where a TWO-COLUMN one takes `fastPath`:
+
+```text
+    DISTINCT a.k          (one column)   HOP WALK
+    DISTINCT a.k, a.j     (two columns)  fastPath
+    plain a.k   + WHERE                  fastPath
+```
+
+⚠️⚠️ **AND THEN THE TIMING KILLED THE STORY**: the hop-walk route is the **FAST** one.
+
+```text
+    DISTINCT 1 col  [the "slow" route]   3.04 ms   nat 0.41
+    DISTINCT 2 col  [the "fast" route]  10.57      nat 5.58
+    plain 1 col                          6.35      nat 9.53
+```
+
+🔑 The one-column form returns 97 rows where the others return 200,000, so these were never comparable in
+the first place — `floor-arm-must-take-same-route`, which I had already written down. **A confirmed
+mechanism is not a confirmed defect**, and a throw can only tell you WHICH code runs, never whether that is
+the code you want.
+
+⚠️ The asymmetry is still notable for a different reason: it is the same shape as
+`fuzzer-blind-to-one-column-group` (every fuzzer's grouped shape is the TWO-column form), and this screen's
+`DISTINCT two columns` row reads parity precisely because it is the two-column form. **The one-column form
+was never measured** — item 2176's coverage lesson, again.
+
+GATES. No production change; both throws reverted and the tree verified identical to pristine.
