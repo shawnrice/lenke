@@ -114123,9 +114123,11 @@ ingest.** ⚠️ But `byid` rose **4.5x**, which is the user's standing constrai
     direct      same map, .get inline                       67.4    101.3
 ```
 
-🔑🔑 **`getVertexById` is a per-instance ARROW FIELD, so every `new Graph()` mints a new function object.**
-Building one graph per rep made a single call site see nine callees — **megamorphic, which defeats
-inlining**. A real application holds ONE graph, and there it runs at **46 ns on a 160k-vertex graph,
+🔑🔑 **Building one graph per rep made a single call site see nine receivers, and it degrades badly.**
+⚠️ ~~Because `getVertexById` is a per-instance ARROW FIELD, so every `new Graph()` mints a new function
+object~~ — **NO: that mechanism is WRONG, refuted at item 2282.** A prototype method degrades _identically_
+(1.01x), so the cost is in the RECEIVERS and their maps, not in function identity. The measurement below
+stands; only the explanation was mine to get wrong. A real application holds ONE graph, and there it runs at **46 ns on a 160k-vertex graph,
 FASTER than an inline `.get` on the same map**, because the engine's own site is monomorphic. ✅ **The
 constraint holds, flat, and now has a measured curve behind it.** Per-rep series confirm: `oneGraph` settles
 304 → 45, `manyGraphs` plateaus at ~215 and never reaches it.
@@ -114140,3 +114142,38 @@ one-shape-per-process rule; this is its allocation-site twin.
 
 GATES. `bun run fmt` 0, `bun run check` 0 (it caught three type/lint errors in the probes). Three probes;
 no production change — **nothing to fix, which is the result**.
+
+## Item 2282 — ⚠️⚠️ **REFUTED, AND IT CORRECTS ITEM 2281's MECHANISM: A PROTOTYPE METHOD DEGRADES IDENTICALLY TO AN ARROW FIELD ACROSS INSTANCES (1.01x). The multi-graph cost is the RECEIVER, not the function object — converting methods buys NOTHING**
+
+Item 2281 measured one graph at 46 ns and nine graphs at 222 ns and attributed it to arrow fields: every
+`new Graph()` mints a new function object, so the call site sees many callees. 🔑 **That predicted a fix** —
+declare the hot methods on the prototype, where one function object is shared — and **multiple graphs is a
+real shape here** (per-tenant/per-room graphs, the NDJSON fork/merge path, every test file). So before
+touching the engine, the mechanism was measured in isolation: two classes identical but for the
+declaration, each at 1 and at 9 instances with their own maps.
+
+```text
+    N=200000, 50000 lookups, median of 11          run A    run B
+    prototype method,  1 instance                   133.0    122.2
+    prototype method,  9 instances                  202.6    174.0    1.42-1.52x its own 1-instance
+    arrow field,       1 instance                   122.6    112.3
+    arrow field,       9 instances                  204.1    175.7    1.56-1.67x its own 1-instance
+    9-instance proto vs arrow                        1.01x    1.01x   <- THE WIN, AND THERE IS NONE
+```
+
+✅ **1.01x, twice.** The prototype arm degrades as much as the arrow arm, so **the polymorphism that costs
+is in the receiver's hidden class and its map — not the function identity.** ⚠️ **The lever is dead**, and
+it would have been a wide, API-visible refactor: arrow fields are bound, so `const f = g.getVertexById`
+keeps working today and a prototype method would break every such caller.
+
+### 🔑 WHAT THIS SAYS ABOUT MECHANISM GUESSES
+
+Item 2281's **measurement** was right and reproducible; its **explanation** was a guess that fit. ⚠️ Had I
+acted on it, the refactor would have landed, measured flat, and the real cause — receivers and maps, which
+no declaration change touches — would still be there. ✅ Correcting 2281's entry in place rather than
+leaving a plausible-but-wrong mechanism in the record, because a wrong mechanism is what gets re-derived.
+This is the recorded "when mechanism guesses keep failing, profile the other side" rule arriving from the
+other direction: **price the mechanism in isolation before building on it.**
+
+GATES. `bun run fmt` 0, `bun run check` 0. One probe; no production change; item 2281's mechanism corrected
+in the same commit.
