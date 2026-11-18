@@ -108318,3 +108318,60 @@ lesson as `ts-spelling-probe`'s note that single runs are bimodal.
 `EXISTS` 31.0x → 2.9x, 2165's `coalesce` 1.3x). Everything else on it resolved to the scan floor.
 
 GATES. No code change; `bun run check` 0; 5,324 tests green.
+
+## Item 2168 — 🔑🔑 **A FLOOR-SUBTRACTED GREMLIN SCREEN, and it flags `V().values(k).dedupe().count()` at 7.5x on the STEP's own cost. ⚠️ Two of my own floors were invalid and the screen says why**
+
+Gremlin has had one item in twenty, and its bench compares raw TS against native — which item 2167 showed
+is dominated by the **48x property-scan floor**. 🔑 So this screen prints the MARGINAL cost of each step
+over the cheapest step that touches the same data, and flags only when the step's OWN cost is over 3x
+native's and over 2 ms.
+
+```text
+    step                                 ts  native   ratio   marginal ts/native
+    FLOOR V().values(k).count()        2.43    0.48    5.1x
+    V().has(k, gt).count()             3.05    0.05   63.2x    +0.61 / -0.43
+    V().values(k).dedupe().count()     8.38    1.27    6.6x    +5.95 / +0.79   <-- FLAG, 7.5x
+    V().values(k).order()             15.16   14.00    1.1x   +12.72 / +13.52   PARITY
+    V().id().count()                   5.98    1.90    3.1x    +3.54 / +1.42
+    FLOOR2 V().out().id().count()      7.71    4.00    1.9x
+    V().out().dedupe().count()         5.49    1.17    4.7x    -2.22 / -2.83    CHEAPER than its floor
+```
+
+⚠️⚠️ **THE RAW RATIO WOULD HAVE MISSED IT AND FLAGGED THE WRONG ROWS.** `V().has(k, gt).count()` reads
+63.2x raw and **+0.61 ms marginal** — the step is free and the ratio is the scan. The flagged row is only
+6.6x raw.
+
+### ⚠️⚠️ TWO INVALID FLOORS, BOTH MINE, BOTH INSTRUCTIVE
+
+1. **`V().out().count()` as the edge floor.** It reads **0.00 ms in BOTH engines** — a counter rung answers
+   it without touching an edge — so subtracting it leaves the RAW time and three edge rows "flagged" on
+   their scan cost. 🔑 The floor must touch the same DATA, not merely the same elements.
+2. **`V().out().id().count()` as the replacement.** Better for TS, but it produced **NEGATIVE native
+   marginals**: native answers `out().values(k).count()` in 0.11 ms against `out().id().count()`'s 4.00,
+   because counting edges needs no value read at all while `id()` materializes. ⚠️ **No floor makes those
+   comparable across engines when the two engines elide different work.** The three edge-side rows are
+   therefore reported but NOT flagged.
+
+### 🔑 THE FLAG'S MECHANISM, PROFILED
+
+```text
+    V().values(k).count()  (2.70 ms/rep)    + dedupe()  (8.71 ms/rep)
+    propertyCount   99.7%                   generatorResume   73.3%
+                                            startTraverser    19.1%
+                                            extend             5.9%
+```
+
+🔑🔑 **Adding `dedupe()` drops the query off a fused rung onto the GENERATOR TRAVERSER pipeline** —
+`generatorResume` at 73.3%. That is `gremlin-values-is-the-floor`'s shape exactly ("the reduce is free; the
+cost is the generator chain", fused at 1586 for 1.90x), and its rule says a Gremlin fusion belongs in
+`run`'s loop. ⚠️ `propertyCount` serves a `has` step, so that 99.7% is attribution, not the literal callee.
+
+🔑 **AND THE GAP IS REAL BECAUSE BOTH DEDUPE RUNGS ARE ELEMENT-BASED, verified by reading them:**
+`distinctHopCount` (one hop) and `dedupedHopChainCount` (two or more, whose comment says "one hop is the
+rung above"). **Neither covers dedupe over VALUES.** Item 2079 fused the `where`-GATED values-dedupe
+(1.62x) and item 1970 found the `limit` form near zero — the bare `count()` form is unserved.
+
+⚠️ **NOT BUILT THIS ITEM.** Per item 2158's lesson the next tick starts with a `throw` at the count-shortcut
+chain to confirm which rung declines, before any edit.
+
+GATES. New instrument only; `bun run check` 0; 5,324 tests green.
