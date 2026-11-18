@@ -28,6 +28,9 @@ import { freePredicateVars } from './expr-analysis.js';
 import { predFor } from './inline-gate.js';
 import type { InlinePred } from './inline-gate.js';
 
+/** The empty labelled set, shared so the arm below need not allocate one per execution. */
+const EMPTY_VERTICES: ReadonlySet<{ readonly id: string }> = new Set();
+
 type CountOf<T> = (graph: Graph, params: Params) => T;
 
 /** A one-hop `EXISTS` on the start variable, peeled of a `NOT`, or `undefined`. */
@@ -128,7 +131,13 @@ const existsHopNodeCount = <T>(
     return undefined;
   }
 
-  return (graph, params) => {
+  /*
+   * ⚠️ `_params` IS UNUSED NOW AND THAT IS THE POINT: the pre-2191 arm's only use of it was
+   * `walk(graph, params)`, the non-vacuous fallback this item replaced. `walk` is still read by the GATE
+   * above (`walk === null` declines), so the parameter stays in the signature — but nothing in the body
+   * delegates any more, because both the vacuous and the non-vacuous cases are answered here.
+   */
+  return (graph, _params) => {
     /*
      * ⚠️⚠️ **THE FALLBACK IS INSIDE THE CLOSURE, AND IT HAS TO BE.** Vacuity is a RUN-time property — a
      * write can add a vertex without the label to a graph this closure was compiled against, and the plan
@@ -136,11 +145,61 @@ const existsHopNodeCount = <T>(
      * the non-vacuous case delegates to the per-candidate walk rather than returning a wrong number.
      * (My first draft returned `NaN` here, which would have answered rather than declined.)
      */
-    if (label !== undefined && graph.verticesByLabel.get(label.name)?.size !== graph.vertexCount) {
-      return walk(graph, params);
+    const index = hop.out ? graph.edgesFromByLabel : graph.edgesToByLabel;
+    /*
+     * ⚠️⚠️ **`?? EMPTY` IS LOAD-BEARING AND ITS ABSENCE WAS A WRONG ANSWER I WROTE.** A label NOTHING
+     * carries has NO bucket, so `get` returns `undefined` — and treating that as "no label" takes the arm
+     * below, which ignores the label and answered `vertexCount - withEdge` (3 on a fixture where the
+     * right answer is 0). 🔑 An absent bucket means an EMPTY labelled set, which is a different thing
+     * from an absent label. Caught by this item's own `a label NOTHING carries` test.
+     */
+    const labelled =
+      label === undefined ? undefined : (graph.verticesByLabel.get(label.name) ?? EMPTY_VERTICES);
+
+    /*
+     * ⚠️⚠️ **THE NON-VACUOUS ARM, ADDED AT ITEM 2191 — IT USED TO DELEGATE TO THE FULL WALK.** The
+     * original fallback here was `return walk(graph, params)`, which is correct and was the top
+     * nomination on the realistic screen once item 2190 made `MIXED` the default:
+     *
+     * ```text
+     *     EXISTS subquery      marginal +12.17 ms against native's +0.79    15.4x
+     *     NOT EXISTS subquery  marginal +12.75                              16.1x
+     * ```
+     *
+     * 🔑 They read 1.54 and 1.59 ms on a HOMOGENEOUS fixture, where the label is vacuous and the index
+     * arm below answers — so this fallback was invisible until the screen got a realistic schema. A
+     * differential profile named it exactly: `get adjFrom` **+239 ms**, `existsReachable` **+84**,
+     * `oneHopExists` **+36**, all **0.0** in the vacuous arm.
+     *
+     * 🔑 **THE SHAPE IS AN INTERSECTION, NOT A WALK**: `EXISTS { (a)-[:T]->(b) }` asks only whether `a`
+     * has a T-bucket, so counting the labelled vertices that have one needs no predicate evaluation and
+     * no traverser. ⚠️ It drives from the SMALLER side — the labelled set is usually far smaller than the
+     * whole adjacency index, but a near-vacuous label makes the reverse true.
+     *
+     * ⚠️⚠️ **`byType.has(type)` AND NOT `index.has(id)`** — item 2162 shipped a WRONG ANSWER on exactly
+     * that confusion: an outer entry SURVIVES the removal of its last edge, so the entry's existence does
+     * not mean the vertex still has an edge of that type.
+     */
+    if (labelled !== undefined) {
+      let hit = 0;
+
+      if (labelled.size <= index.size) {
+        for (const v of labelled) {
+          if (index.get(v.id)?.has(hop.type) === true) {
+            hit += 1;
+          }
+        }
+      } else {
+        for (const [id, byType] of index) {
+          if (byType.has(hop.type) && graph.getVertexById(id)?.labels.has(label!.name) === true) {
+            hit += 1;
+          }
+        }
+      }
+
+      return rowOf(hop.negated ? labelled.size - hit : hit);
     }
 
-    const index = hop.out ? graph.edgesFromByLabel : graph.edgesToByLabel;
     let withEdge = 0;
 
     for (const byType of index.values()) {

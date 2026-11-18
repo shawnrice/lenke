@@ -109616,3 +109616,68 @@ the flag belongs on both screens (a future row might need it) but only ever bite
 says plainly that a nomination taken from it is a nomination against an arm no application reaches.
 
 GATES. Instrument only. `bun run fmt` 0; `bun run check` 0 read unpiped; both screens run.
+
+## Item 2191 — ✅✅ **SHIPPED: `EXISTS`/`NOT EXISTS` under a NON-VACUOUS label is an intersection, not a walk — 2.1x and 1.6x. And my own test caught a WRONG ANSWER I wrote into it**
+
+Item 2190's realistic screen made these the top two nominations (+12.17 and +12.75 ms, 15-16x). ⚠️ They
+read **1.54 and 1.59 ms on the homogeneous screen** — the arm was invisible until the fixture got a real
+schema.
+
+### 🔑 THE DIAGNOSIS, BY DIFFERENTIAL PROFILE
+
+```text
+    frame               homo    MIXED    delta ms
+    get adjFrom          0.0    239.1     +239.1
+    existsReachable      0.0     84.3      +84.3
+    inlineHolds          0.0     70.6      +70.6
+    oneHopExists         0.0     35.9      +35.9
+    (anon):12760        46.7      1.1      -45.6   <- the homogeneous fast frame
+```
+
+🔑 Every added frame is **0.0** in the vacuous arm: the MIXED arm runs a different path entirely. And the
+cause was my OWN code from item 2163 — its fallback was a plain `return walk(graph, params)`:
+
+```ts
+if (label !== undefined && graph.verticesByLabel.get(label.name)?.size !== graph.vertexCount) {
+  return walk(graph, params);
+}
+```
+
+🔑 **`EXISTS { (a)-[:T]->(b) }` asks only whether `a` has a T-bucket** — no predicate, no traverser, no far
+vertex. So the labelled vertices that have one can be counted directly, driving from the SMALLER of the
+labelled set and the adjacency index.
+
+```text
+    one shape per process, MIXED fixture, two rounds
+    row                  BEFORE           NEW
+    EXISTS          23.16 / 24.65   11.82 / 11.04    2.1x
+    NOT EXISTS      21.49 / 19.41   13.23 / 12.11    1.6x
+    plain count ctl      0.00            0.00        flat
+    one-hop ctl     8.05 /  7.73    7.93 /  7.71     flat
+```
+
+Answers identical throughout. On the screen: **+12.17 → +7.36** and **+12.75 → +7.76**. ⚠️ Both still flag
+at ~9x marginal — the residual is 100,000 per-vertex map lookups against native's columnar read, which this
+item does not address.
+
+### ⚠️⚠️ AND I WROTE A WRONG ANSWER, CAUGHT BY THIS ITEM'S OWN TEST
+
+`verticesByLabel.get('Nope')` is `undefined` for a label nothing carries, and treating that as "no label"
+took the arm that IGNORES the label — `NOT EXISTS` over a non-existent label answered **3 where 0 is
+right**. 🔑 An absent bucket means an EMPTY labelled set, which is a different thing from an absent label.
+The pre-change `walk` fallback handled it correctly, so this was a regression I introduced and the test
+caught before it shipped.
+
+### 🔑 MUTATION: 5 of 7, AND THE GAP WAS A BRANCH MY TRAP TEST NEVER REACHED
+
+⚠️ `has-type-to-entry-exists` (item 2162's confusion — an outer entry SURVIVES the removal of its last
+edge) first survived, because my trap fixture has 6 labelled vertices against a 3-entry index and so takes
+the INDEX-driven branch. A second trap with the sizes inverted (2 labelled against a 30-entry index)
+reaches the labelled branch and catches it. ⚠️ The two `drive-always-*` mutants survive by design: both
+branches must agree, and a test asserts they do.
+
+⚠️ `Small` is a RESERVED WORD in ISO-GQL — it surfaced as a parse error inside a test, not as a clear
+message. Labels in tests want unreserved names.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
+`bun run fuzz` all seven green; 11 new tests.
