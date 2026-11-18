@@ -1539,6 +1539,50 @@ const CASES: Case[] = [
      * materializing 300,000 `Row`s before aggregating them, which is where item 2157 left the lever.
      * The `max` row below is the control: same clause, same rows, a sane cost.
      */
+    /*
+     * 🔑 THE PATH ACCESSORS, which had no bench row before item 2160 — found by the same
+     * unbenched-feature screen that produced items 2146, 2147 and 2157.
+     *
+     * ⚠️⚠️ **BINDING A PATH IS FREE; READING IT COSTS 24-28x PROJECTING A PROPERTY** over the same
+     * 300,000 rows:
+     *
+     * ```text
+     *     p bound, accessor UNUSED       0.00 ms   <- elided entirely
+     *     p bound, projecting b.k       13.97      <- the fast hop-projection rung
+     *     p bound, nodes(p)            332.25      <- ~1.1 us PER ROW
+     *     p bound, edges(p)            386.43
+     * ```
+     *
+     * 🔑 A profile says why: the property arm shows `projectRow`/`walkRows` (the rung), and the
+     * `nodes(p)` arm shows `walkSegments` 30.5%, `withBinding` 14.8%, `matchPattern` 8.4% — **the
+     * GENERAL MATCHER**. ⚠️ Reading the path drops the query off the rung, the same shape item 2151
+     * fixed for `ANY SHORTEST`. For a SINGLE-segment path, `nodes(p)` is `[a, b]` and `edges(p)` is
+     * `[edge]`, all three already in hand during the walk — so 1.1 us/row is overhead, not allocation.
+     *
+     * ⚠️ The ratio against a plain hop COUNT is meaningless (that is a counter rung at 0.00 ms); the
+     * property-projection row below is the reference that isolates the accessor.
+     */
+    name: 'query: nodes(p) on a 1-hop path [2160]',
+    ...onGraph(
+      () => graphDoc,
+      (e, g) => void e.query(g, 'MATCH p = (a:Person)-[:KNOWS]->(b) RETURN count(nodes(p)) AS c'),
+    ),
+  },
+  {
+    name: 'query: path bound, project a prop [2160 ctl]',
+    ...onGraph(
+      () => graphDoc,
+      (e, g) => void e.query(g, 'MATCH p = (a:Person)-[:KNOWS]->(b) RETURN count(b.k) AS c'),
+    ),
+  },
+  {
+    name: 'query: labels(a) over a scan [2160]',
+    ...onGraph(
+      () => nodesDoc,
+      (e, g) => void e.query(g, 'MATCH (a:Person) RETURN count(labels(a)) AS c'),
+    ),
+  },
+  {
     name: 'query: sum over a hop [item 2157]',
     ...onGraph(
       () => graphDoc,

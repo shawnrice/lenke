@@ -107861,3 +107861,57 @@ silently wrong answer.
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 5,283 GQL
 tests; `bun run fuzz` all seven green.
+
+## Item 2160 — ⚠️⚠️ **NOTHING TO BUILD: both candidates RETRACTED by the cross-engine column, after TS-internal ratios of 24x and 7.5x. `labels()` turns out to be FASTER in TS than native (0.77x). The method lesson is the output**
+
+Continuing item 2157's screen of features with no bench row. Nine shapes measured against a reference
+each; `CONTAINS` 1.9x, `STARTS WITH` 2.4x, `size()` 1.3x, `COALESCE` 2.6x, `IN [list]` 1.5x — all modest.
+Two flagged, and both looked strong:
+
+```text
+    p bound, accessor UNUSED       0.00 ms    <- elided entirely
+    p bound, projecting b.k       13.97       <- the fast hop-projection rung
+    p bound, nodes(p)            332.25       <- 24x the property projection
+    p bound, edges(p)            386.43
+    count(labels(a))              25.80       <- 8.2x count(a.k)'s 3.14
+```
+
+🔑 And a profile named a real mechanism: the property arm shows `projectRow`/`walkRows` (the rung), the
+`nodes(p)` arm shows `walkSegments` 30.5%, `withBinding` 14.8%, `matchPattern` 8.4% — **the general
+matcher.** Reading the path drops the query off the rung, which is the shape item 2151 fixed for
+`ANY SHORTEST`. I wrote down that for a single-segment path `nodes(p)` is `[a, b]` and `edges(p)` is
+`[edge]`, all already in hand, so 1.1 µs/row "must be overhead, not allocation".
+
+### ⚠️⚠️ THEN THE BENCH ROWS, WHICH CARRY A NATIVE COLUMN, SAID OTHERWISE
+
+```text
+    row                                   TS      ffi    ratio
+    nodes(p) on a 1-hop path           691.7    342.5    2.02x
+    path bound, project a prop [ctl]    22.6      5.5    4.13x
+    labels(a) over a scan               11.3     14.6    0.77x   <- TS is FASTER
+```
+
+⚠️ **NATIVE PAYS 342.5 ms FOR `nodes(p)` TOO.** So building a path per row is largely INHERENT work in
+both engines, the TS gap is **2.02x** rather than 24x, and my "overhead, not allocation" claim was wrong —
+native's own ~1.1 µs/row refutes it. 🔑 And `labels()` has no gap to close at all: TS is 0.77x native, so
+the 8.2x was entirely a TS-internal comparison against a property read.
+
+### 🔑 THE METHOD LESSON, WHICH IS WHY THIS ITEM IS WORTH ITS COMMIT
+
+⚠️ **A TS-INTERNAL RATIO MEASURES THIS ENGINE'S OWN ROUTING, NOT HEADROOM.** Both flags here were "feature
+X costs N times feature Y in TS", and both evaporated against the cross-engine column. `gremlin-ts-unmeasured`
+already records the same failure from item 234 — _"a FLOOR per shape retracted 2 of 3 targets; the big
+ratio was data layout, not overhead"_ — and this is its third instance.
+
+🔑 **So the screen's reference should be NATIVE where a native row can be had**, and a TS-internal
+reference only nominates a ROUTING question (which rung serves it), not a size. The routing finding here is
+real and recorded: `nodes(p)` does fall to the general matcher. It is simply worth 2.02x, not 24x, and that
+is below the bar for touching `executor-edits-perturb`'s blast radius.
+
+⚠️ Two conformance notes found in passing, NOT perf: `properties(a)` raises `E_UNKNOWN_FUNCTION`, and
+`collect(labels(a))` raises `E_UNSUPPORTED`. Both are ISO scalar/aggregate gaps rather than slow paths.
+
+🔑 Three bench rows added anyway — `nodes(p)`, the property-projection control, and `labels(a)` — because
+their value is exactly the native column that corrected me.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; 5,283 tests green. No engine change.
