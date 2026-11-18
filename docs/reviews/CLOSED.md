@@ -113787,3 +113787,46 @@ rungs. ✅ The row-count assertion in this probe is what makes the new numbers t
 refused the old comparison outright.
 
 GATES. `bun run fmt` 0, `bun run check` 0. New instrument `surfcost-2273.ts`; no production change.
+
+## Item 2274 — ✅ **VERIFIED AFTER A PRODUCTION CHANGE: every gate green, THREE fuzz sweeps, and item 2271's win re-confirmed at 3.4-4.2x. ⚠️ A smoke test read 11,103 ns and I checked it instead of dismissing it — it was my own reduced settings, not a regression**
+
+Item 2271 changed production (`PARSE_CACHE_CAP` 64 → 512), so this verification is stricter than items
+2244/2254/2267's: the fuzzers are what guard a cache change, and they ran three times.
+
+### ✅ GATES
+
+```text
+    bun run fmt / check / test -- --skip-nx-cache      0 / 0 / 0 (21 projects)
+    bun run fuzz                                      57 pass / 0 fail   x3 sweeps
+    PARSE_CACHE_CAP in source                         512
+    working tree clean; 231 commits unpushed
+```
+
+### ⚠️ THE SMOKE TEST RAISED A DOUBT, AND CHECKING IT WAS THE RIGHT CALL
+
+`stmtcache-2269.ts` at `DISTINCT=100` read **11,103 ns/statement** where the shipped build gave **3,949** —
+which would have meant the ship had regressed. 🔑 **It was my own reduced smoke settings** (`STMTS=300
+REPS=4`), demonstrated by varying only that:
+
+```text
+    DISTINCT=100   STMTS=300    5308 ns     <- and REPS=4 leaves a median of only TWO settled reps
+                   STMTS=2000   4204
+    full settings  DISTINCT=10    3987   DISTINCT=100  5172   DISTINCT=1000  18102
+```
+
+✅ **At full settings `DISTINCT=100` reads 4,204-5,172 against 17,858 at cap=64 — the win holds at
+3.4-4.2x.** ⚠️ A small `STMTS` inflates by ~26% because the JIT has not settled, which is worth remembering
+when a probe is run quickly: **a smoke test's absolute is not a measurement, only evidence the instrument
+runs.**
+
+🔑 Run-to-run variance at `DISTINCT=100` is 3,949 / 4,204 / 5,172 across three runs (~30%), so **the figure
+to quote is "3-4x", not a single number** — the win is far above that spread either way.
+
+### ✅ STATE
+
+**Eleven ships now hold**: 2169, 2170, 2173, 2177, 2181, 2184, 2191, 2194, **2203 (38x)**, 2225, and
+**2271 (3-4x on multi-statement sessions)**. ⚠️ Items 2236-2270 shipped nothing — thirty-five items of
+measurement — and item 2271 came directly out of that work: the uncovered shape (2268), the effect (2269),
+the cap (2270), the ship (2271), the Gremlin check (2272) and the fair cross-surface comparison (2273).
+
+GATES. As above, each read unpiped. No production change in this item.
