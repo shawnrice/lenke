@@ -114805,3 +114805,47 @@ far bucket satisfies any ratio and is not evidence about orientation.
 
 GATES. `bun run fmt` 0, `bun run check` 0, `bun run test` **21 projects OK**, `bun run fuzz` **57 pass / 0
 fail** (byte-identity holds), clean `nx build @lenke/gql`, `spelling:orient` unflagged.
+
+## Item 2294 — ✅ **THE WIDER REGRESSION SURFACE AFTER ITEM 2293's PLANNER GATE: all six spelling probes, the suite and the fuzzers are clean, and the ONE adjacent flag was proved pre-existing by a SAME-BINARY A/B rather than by reading an item number.**
+
+A planner gate changed, so the probes that exist to catch exactly that were run.
+
+```text
+    GQL spelling          2 groups over 2x, 0 answer disagreements   <- both pre-existing, see below
+    gremlin spelling      2 groups over 2x, 0 answer disagreements   <- the KNOWN steady state (items 1306-1312)
+    direction spelling    all four spellings 0.0 ms, ts === native asserted
+    edge / present / compile spelling   no flags
+    bun run test          21 projects OK
+    bun run fuzz          57 pass / 0 fail   (byte-identity holds)
+```
+
+### 🔑 THE ADJACENT FLAG, AND HOW IT WAS CLEARED
+
+⚠️ **"a predicate on the FAR node: three spellings (item 780)" flagged at 2.76x, and a far-node predicate
+is precisely what item 2293 touched.** An item number in the group's title suggests it is pre-existing, but
+that is an argument from authority, not a measurement.
+
+✅ **Isolated, three runs each, and the arm switched by an ENV VAR inside ONE BINARY** — so the two arms
+share a build, and neither a code swap nor a rebuild can differ between them:
+
+```text
+    WITHOUT the new arm (LENKE_NO_2293=1)    3.2x   3.2x   3.2x
+    WITH the new arm, same binary            3.2x   3.1x   3.2x
+```
+
+🔑 **Identical.** The 3.2x is item 780's own, untouched. ✅ **The env switch is a better instrument than
+the code swap I have used before**: `ab-scripts-need-a-restore-trap` and
+`name-ab-arms-for-what-they-are` both exist because swapping files between arms has gone wrong here, and a
+switch inside one binary removes the failure mode entirely. ⚠️ It was removed again before commit (verified
+0 occurrences), because a permanent env hook in planner code is a behaviour surface nobody asked for.
+
+### ⚠️ WHAT THIS LEAVES AS THE NEAREST OPEN SPELLING FLAG
+
+**Item 780's far-node group, 3.2x, reproducible across six isolated runs**, and the other GQL flag — "SEEK:
+a param equality AND a second conjunct — clause vs inline (item 578)" at 3.80x. 🔑 Both are CLAUSE-vs-INLINE
+shapes, the same family item 2291 diagnosed and 2293 fixed for the two-hop case — so the machinery now
+exists to ask whether the one-hop versions have the same cause. ⚠️ They are NOT the same shape (one hop, and
+2293's ratio gate needs a bucket disparity these fixtures may not have), so that is a question, not a
+prediction.
+
+GATES. As listed above, each read unpiped. No production change in this item.
