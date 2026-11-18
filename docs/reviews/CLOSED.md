@@ -113370,3 +113370,47 @@ items of analysis has been assumed, not verified, unless it was re-measured in o
 catch was a smoke test at a different size, which is luck, not method.
 
 GATES. As above, each read unpiped. No production change in this item.
+
+## Item 2265 — 🔑🔑 **THE SCREEN IS REPRODUCIBLE WITHIN A SIZE SET AND NOT ACROSS ONE: `node/rows + where`'s dip-then-jump REPEATS exactly (2.63/2.31/3.72 then 2.61/2.27/3.57) but the same size reads 4.44x in a sweep whose OTHER sizes differed. And the 80k peak DECAYS to 2.21x at 200k, so it is cache residency, not a trend**
+
+Item 2264's lesson was to sweep the size first. `finder-sweep-2224.ts` already does it (one process per
+size, trend per row), so it was RUN rather than rebuilt. Three sweeps:
+
+```text
+    shape                      sweep1 (5k/20k/80k)   sweep3 (5k/20k/80k)   sweep2 (20k/80k/200k)
+    hop/sum                    2.11 / 2.82 / 1.98    2.11 / 2.66 / 2.02          — / —  / —
+    hop/two aggregates         4.26 / 3.91 / 3.22    4.19 / 4.10 / 2.98
+    node/count                14.22 /12.67 /14.00   13.89 /14.38 /12.44    20.67 /14.25 /13.25
+    node/count + where         1.90 / 2.90 / 2.16    1.87 / 2.89 / 2.07     2.83 / 2.03 / 1.36
+    node/rows                  1.43 / 1.35 / 2.41    1.55 / 1.65 / 1.77     1.74 / 2.44 / 1.51
+    node/rows + where          2.63 / 2.31 / 3.72    2.61 / 2.27 / 3.57     4.44 / 3.59 / 2.21
+```
+
+### ✅ WITHIN AN IDENTICAL SIZE SET, THE SCREEN REPRODUCES TIGHTLY
+
+Sweeps 1 and 3 ran the same sizes and agree closely on every row — including the one that matters:
+**`node/rows + where` reads 2.63/2.31/3.72 then 2.61/2.27/3.57.** 🔑 **So its dip-at-20k, jump-at-80k is a
+REAL and REPEATABLE pattern, not spread** — which is a sharper verdict than item 2210's rule alone would
+have given, because non-monotonic-but-repeatable is a third category.
+
+### ⚠️⚠️ ACROSS SIZE SETS, THE SAME SIZE CAN SHIFT ~2x — AND I NEARLY MIS-DIAGNOSED THAT
+
+Sweep 2 read `node/rows + where` at 20000 as **4.44x** where sweeps 1 and 3 read 2.31x and 2.27x. ⚠️ I first
+took this as "the screen is only reproducible to ±2x", which would have invalidated every screen-based
+nomination this session. **It is narrower than that**: sweep 2 included 200000, making it far longer and
+heavier, and each size runs in its own process on a differently-loaded machine. 🔑 **Compare a row only
+against a sweep with the SAME size set.**
+
+### ✅ AND THE 80k PEAK IS CACHE RESIDENCY, NOT A TREND
+
+`node/rows + where` goes 3.59x at 80k → **2.21x at 200k**, and `node/rows` 2.44x → 1.51x. **The peak decays
+at the larger size**, which is the signature of a fixture crossing a cache boundary rather than a cost that
+grows. ⚠️ `CLAUDE.md` puts that transition between 200k and 1M ELEMENTS — at 5 properties a node, 80,000
+nodes is in that window. ✅ **So the shape is worst where it is least representative, and at the size that
+matters it is 2.21x and falling** — not where to optimize.
+
+🔑 `page/topk over a hop` crossed 1.0x at 200k (0.81 → 0.76 → 1.03x), its first reading above its floor;
+recorded for the next sweep rather than chased, since one crossing at one size is exactly what this item
+shows cannot be trusted alone.
+
+GATES. `bun run fmt` 0, `bun run check` 0. Existing instrument re-run; no production change.
