@@ -109404,3 +109404,63 @@ it would make this test wrong on purpose. **Not proposed.**
 
 GATES. No production change; the build reverted, tree verified identical to pristine, 486/486 core tests
 green. `bun run check` 0.
+
+## Item 2187 — 🔑 **TWELVE ROWS ADDED TO THE GREMLIN SCREEN: `out()` was the ONLY traversal step in it. Nothing flags, THREE rows show TS AHEAD, and one candidate turned out to be noise**
+
+The nine original rows were exhausted — items 2169/2170 took both vertex-side flags and item 2171 closed
+the big edge row as refuted ground. ⚠️ Item 2176 is why that is not the same as healthy: **a screen at
+parity may have narrow coverage.** Widening the GQL screen found a +593 ms gap on its first run.
+
+### ⚠️ WHAT THE GREMLIN SCREEN NEVER MEASURED
+
+**`out()` was the only traversal step in the entire file.** No `in`, no `both`, no `outE`, no two-hop
+chain, no `path`, no `simplePath`, no grouping, no set operations, no projection shape, no scalar aggregate
+beyond `count`.
+
+```text
+    row                                ts   native    marginal ts/native
+    V().in().count()                 0.00     0.00    counter rung, both engines
+    V().both().count()               0.00     0.01
+    V().outE().count()               0.00     0.00
+    V().out().out().count()          0.00     1.65    ⚠️ TS answers from a counter, native does not
+    V().out().simplePath().count() 101.79    52.94    +99.37 / +52.47    1.9x — biggest absolute
+    V().out().path().count()        69.53   461.01    ⚠️ TS 6.6x FASTER
+    V().groupCount().by(k)           7.65     2.92     +5.23 / +2.46     2.1x
+    V().out().dedupe().fold()      110.79   113.30    parity
+    V().values(k).sum()              4.33     0.12     +1.92 / +-0.35
+    V().values(k).max()              6.66     0.11     +4.24 / +-0.36
+    V().valueMap().count()           8.74    38.61    ⚠️ TS 4.4x FASTER
+    V().limit(10).count()            0.01     0.00
+```
+
+🔑 **Nothing clears the flag** (marginal > 2 ms AND > 3x native's). Three rows have TS comfortably ahead,
+which is worth recording next to the scan-floor rows where it trails.
+
+### ⚠️ THE ONE CANDIDATE I CHASED WAS NOISE, AND ITS OWN CONTROL SAID SO
+
+`max` at +4.24 against `sum`'s +1.92 looked like a clean same-shape gap — both are single-pass scalar folds
+over identical values, and `gremlin-values-is-the-floor` says the reduce is free. One process per shape,
+two rounds:
+
+```text
+                round 1   round 2
+    count         2.50      2.55     stable
+    sum           4.19      4.73
+    mean          4.29      4.18
+    max           5.53      6.97
+    min           6.96      5.35     <-- max and min SWAP PLACES
+    fold          5.00      5.03
+```
+
+⚠️ **`max` and `min` trade places between rounds**, so the spread is ~±1.5 ms on a 5 ms quantity — which
+swamps the sum-vs-max difference entirely. **The gap is not established**, and at 2-7 ms absolute it does
+not justify building the tighter instrument that would settle it.
+
+🔑 **The row worth a later tick is `simplePath` at +99.37 ms marginal** (1.9x, the biggest absolute on the
+screen). ⚠️ Read item **1466** first: it declined a 3.3x `simplePath` change specifically because of
+`executor-edits-perturb`, so this shape has priced history.
+
+⚠️ **NO WRITE ROWS, deliberately**: the harness times 13 reps against ONE fixture, so `addV`/`addE` would
+grow the graph 13x and measure a different graph every rep (item 2176's note). They need a per-rep rebuild.
+
+GATES. Instrument only. `bun run fmt` 0; `bun run check` 0 read unpiped.

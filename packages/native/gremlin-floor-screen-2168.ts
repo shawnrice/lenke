@@ -22,17 +22,28 @@
 import { Graph as TsGraph } from '@lenke/core';
 import {
   V,
+  both,
   count,
   dedupe,
+  fold,
+  groupCount,
   gt,
   has,
   hasLabel,
   id,
+  in_,
+  limit,
+  max,
   order,
   out,
+  outE,
+  path,
   planToGremlin,
+  simplePath,
+  sum,
   toArray,
   traversal,
+  valueMap,
   values,
 } from '@lenke/gremlin';
 import type { Plan } from '@lenke/gremlin';
@@ -134,6 +145,40 @@ const ROWS: ReadonlyArray<readonly [string, Plan, boolean]> = [
     false,
   ],
   ['RAW V().out().dedupe().count()', traversal(V(), out('KNOWS'), dedupe(), count()), false],
+  /*
+   * ── ROWS ADDED AT ITEM 2187 ───────────────────────────────────────────────────────────────────
+   *
+   * 🔑 The nine rows above are exhausted: items 2169/2170 took both vertex-side flags and item 2171
+   * CLOSED the big edge row as refuted ground (`degreeOfTypes`, three ways). ⚠️ That is the same state
+   * the GQL screen reached at item 2175 — and item 2176 showed what it actually meant: **a screen at
+   * parity may have narrow COVERAGE, not a healthy engine.** Widening the GQL one found a +593 ms gap on
+   * the first run.
+   *
+   * ⚠️ So these cover what the Gremlin screen never measured: the OTHER directions (`in`, `both`), path
+   * and repeat, grouping, set operations, selection, and the scalar aggregates. **`out()` was the only
+   * traversal step in the whole file.**
+   *
+   * ⚠️⚠️ **NO WRITE ROWS HERE, DELIBERATELY.** A write row must be idempotent because the harness times
+   * 13 reps against ONE fixture (item 2176's note): `addV`/`addE` grow the graph 13x and would measure a
+   * different graph every rep. They need a per-rep rebuild, which is a different instrument.
+   */
+  // ── Directions other than `out`, which was the only one measured ──────────────────────────────
+  ['V().in().count()', traversal(V(), in_('KNOWS'), count()), false],
+  ['V().both().count()', traversal(V(), both('KNOWS'), count()), false],
+  ['V().outE().count()', traversal(V(), outE('KNOWS'), count()), false],
+  // ── Paths and repetition ──────────────────────────────────────────────────────────────────────
+  ['V().out().out().count()', traversal(V(), out('KNOWS'), out('KNOWS'), count()), false],
+  ['V().out().simplePath().count()', traversal(V(), out('KNOWS'), simplePath(), count()), false],
+  ['V().out().path().count()', traversal(V(), out('KNOWS'), path(), count()), false],
+  // ── Grouping and set operations ───────────────────────────────────────────────────────────────
+  ['V().groupCount().by(k)', traversal(V(), values('k'), groupCount()), false],
+  ['V().out().dedupe().fold()', traversal(V(), out('KNOWS'), dedupe(), fold()), false],
+  // ── Scalar aggregates over a scan ─────────────────────────────────────────────────────────────
+  ['V().values(k).sum()', traversal(V(), values('k'), sum()), false],
+  ['V().values(k).max()', traversal(V(), values('k'), max()), false],
+  // ── Projection shapes ─────────────────────────────────────────────────────────────────────────
+  ['V().valueMap().count()', traversal(V(), valueMap(), count()), false],
+  ['V().limit(10).count()', traversal(V(), limit(10), count()), false],
 ];
 
 const median = (xs: number[]): number => {
