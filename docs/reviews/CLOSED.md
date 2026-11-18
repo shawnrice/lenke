@@ -109146,3 +109146,63 @@ rolls back), so the real behaviour is asserted instead. The difference I feared 
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
 `bun run fuzz` all seven green; 12 new tests.
+
+## Item 2182 — ⚠️⚠️ **BUILT AND REVERTED: item 2181's guard does NOT pay at `addVertex`/`addLabelToVertex`. THREE hypotheses refuted, including a 19.3% frame that is pure attribution — and `getVertexById` is confirmed O(1), ONE call per add**
+
+Item 2181's closing note pointed here: seven `txTouched.add` sites exist and only one was guarded, so a bulk
+`INSERT` still pays what `SET` no longer does. ⚠️ **It does not, and the premise behind the follow-up was
+wrong.**
+
+### 🔑 THE SIGNAL THAT STARTED IT WAS REAL
+
+```text
+    deserialize 200k nodes                 180.6 ms
+    200k addVertex, NO transaction         148.5
+    200k addVertex INSIDE a transaction    232.1      <- 1.56x for being in a transaction
+```
+
+A transaction really does make bulk add ~1.3-1.6x slower on a constraint-free graph. **Everything after
+that about WHY was wrong.**
+
+### ⚠️ REFUTATION ONE: the guard is not measurable
+
+```text
+    row                        BEFORE    NEW    BEFORE    NEW
+    200k addVertex in a tx      240.2   187.7    233.9   228.4     1.28x then 1.02x
+    20k addLabel in a tx         37.2    39.6     41.2    36.7
+    deserialize        [ctl]    192.2   193.0    200.7   188.0
+    200k addVertex no tx [ctl]  179.5   175.4    177.4   158.1     ⚠️ 1.12x on a row the guard CANNOT reach
+```
+
+🔑 One round said 1.28x, the next 1.02x, and a control the change cannot touch moved 1.12x. **Reverted** —
+an unmeasurable change is not worth the branch, and keeping it would imply a win I cannot demonstrate.
+⚠️ Item 2181's guard at `deferConstraint` stays: that one reproduced across four alternated arms at 1.83x.
+
+### ⚠️ REFUTATION TWO: it is not the undo log either
+
+My fallback explanation for the 1.56x was `recordUndo`. A profile of 200,000 `addVertex` inside a
+transaction puts it at **1.6%**, and `txTouched` does not appear in the top twelve frames at all.
+
+### ⚠️⚠️ REFUTATION THREE: `getVertexById` at 19.3% is ATTRIBUTION, and the O(1) claim HOLDS
+
+```text
+    (garbage collector)   21.0%
+    getVertexById         19.3%   <- on a bulk ADD
+    #commitNormalized     14.9%
+    commitElementLabels   11.3%
+    recordUndo             1.6%
+```
+
+🔑 A 19.3% frame for `getVertexById` during a bulk _add_ looked alarming, and this repo's standing
+requirement is that getting a vertex or edge by id stays O(1). **Counted the calls: exactly 1.00 per add,
+identical with and without a transaction**, and the body is a single `verticesById.get(id) ?? null`. ⚠️ So
+the frame is V8 attributing inlined callee time to an arrow-property getter — `frame-attribution-trap`,
+fifth instance — and being equal in both arms it cannot explain the gap either.
+
+**WHAT REMAINS OPEN:** the ~1.3x transaction penalty on bulk add is real and now has three eliminated
+causes. The frames left standing (`#commitNormalized` 14.9%, `commitElementLabels` 11.3%, GC 21%) appear in
+BOTH arms, so whatever the transaction adds is not yet visible in a self-time profile. **A differential
+profile (in-tx minus no-tx) is the instrument this needs, and it is not built.**
+
+GATES. No production change; the probe and the guard both reverted, tree verified identical to pristine.
+`bun run check` 0; item 2181's 12 tests still green.
