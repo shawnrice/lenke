@@ -114504,3 +114504,66 @@ ratio moves by 2x.
 
 GATES. `bun run fmt` 0, `bun run check` 0. One probe (`rebaclist-2288.mjs`, five arms, env-selected); no
 production change.
+
+## Item 2289 — 🔴🔴🔴 **AN EQUIVALENT-SPELLING CLIFF ON THE AUTHZ LIST, AND IT IS ASYMPTOTIC: the natural spelling is O(TENANT) and its reversed twin is O(RESULTS) — 13.4x at 400,000 users, same answer, and the gap grows without bound. Gremlin cannot reach the flat route at all: 31.5x.** ⚠️ Item 2288's "the planner orients" was MY OWN WRONG CONCLUSION from a sweep with no control
+
+Item 2288 left a ~25x on `list: subjects for object` with the mechanism unverified. 🔑 Two ablations, and
+the second found something much larger than the thing it was testing.
+
+### ✅ ABLATION 1 REFUTED THE OBVIOUS STORY
+
+The hypothesis was that the hop scans a vertex's whole adjacency and filters by label, where the floor's
+`edgesToByLabel` is indexed. ✅ **Decoy edges of an unwanted type test that with no engine edit:**
+
+```text
+    DECOYS     gqlList    handRows
+    0            0.55 ms     0.02
+    2000         0.58        0.02
+    8000         0.61        0.05     <- 4x the wanted edges, engine moved 1.11x
+```
+
+⚠️ A scan-and-filter walk would have slowed several-fold. **So `get adjFrom` at 29.92% of the profile is
+ATTRIBUTION, not cause** — `frame-attribution-trap`, fifth instance. The unnamed 19.31% frame is `walk`,
+a PURPOSE-BUILT two-hop closure, so this is not the generic matcher and **not** items 2023/2024's closed
+per-row-binding ground either. Label verification also got priced properly: it costs the floor **1 ns** per
+result (10 → 11) and the engine **51** (226 → 277).
+
+### 🔴 ABLATION 2 — THE CONTROL ITEM 2288 DID NOT HAVE
+
+⚠️ **Item 2288 swept USERS and read ns/result flat — but its member count was `USERS / 10`, so the RESULTS
+grew with the users.** "Flat per result" cannot distinguish a per-USER cost from a per-RESULT one, and on
+that basis I concluded the planner orients. **It does not.** Pinning the result count at 2,000:
+
+```text
+    USERS      gqlList   gqlDocFirst   gremList   handLabels      (2,000 results throughout)
+    20000       0.53 ms      0.71        0.94        0.05
+    100000      2.27         0.68          —         0.08
+    400000      9.24         0.69       21.72        0.05
+                O(tenant)   O(results)  O(tenant)   flat
+```
+
+🔑 **The engine CAN answer this in O(results)** — `MATCH (d:Doc)<-[:CAN_VIEW]-(t:Team)<-[:MEMBER_OF]-(u:User)`
+is **0.69 ms at every size**. The natural spelling, `MATCH (u:User)-[:MEMBER_OF]->(t:Team)-[:CAN_VIEW]->(d:Doc)`,
+visits every user: **13.4x** at 400,000 and unbounded in the tenant. ⚠️ **Both return the same 2,000 rows**,
+which is why no correctness test can see it — the exact shape `CLAUDE.md`'s equivalent-spelling section
+describes, and this engine's central performance invariant is that two spellings optimizing to one plan
+cannot differ.
+
+### 🔴 AND GREMLIN IS WORSE, WRITTEN THE _GOOD_ WAY
+
+`V().hasLabel('Doc').has('name', …).in_('CAN_VIEW').in_('MEMBER_OF').values('name')` is **already
+doc-first** — the orientation GQL needs — and it still scales with the tenant: **21.72 ms at 400,000,
+31.5x its GQL twin and 434x the floor.** So this is two separate defects, not one.
+
+### ✅ WHAT A CALLER CAN DO TODAY
+
+Write the authz list from the OBJECT end. That is a two-minute edit and worth 13.4x at 400,000 users,
+growing. ⚠️ It is not a fix: the engine should not care, and Gremlin has no such escape.
+
+**OPEN, and the largest target the session has found:** (1) orient the user-first GQL spelling onto the flat
+route, (2) give the Gremlin traversal that route, (3) the residual 13.8x of `gqlDocFirst` over the floor,
+which is item 2288's original per-row question. ⚠️ **And the GQL spelling probe should have caught (1) — it
+needs this group added**; it is MATCH-only and this is a MATCH shape.
+
+GATES. `bun run fmt` 0, `bun run check` 0. Probe `rebaclist-2288.mjs` (seven arms, one shape per process,
+`MEMBERS`/`DECOYS`/`USERS` knobs); no production change.

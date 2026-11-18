@@ -39,7 +39,27 @@ g.addEdge({
   properties: {},
 });
 
-const MEMBERS = Math.floor(USERS / 10);
+/*
+ * ⚠⚠ **DECOY EDGES OF ANOTHER TYPE, TO ABLATE THE ADJACENCY HYPOTHESIS (item 2289).** Item 2288 left the
+ * ~30x with its mechanism UNVERIFIED and one obvious story: the hop scans a vertex's WHOLE adjacency and
+ * filters by label, where the floor's `edgesToByLabel` is a direct indexed lookup.
+ *
+ * 🔑 That story makes a sharp PREDICTION, testable with no engine edit: adding edges of an UNWANTED type
+ * to the same vertices must slow the engine and leave the floor flat. If both stay flat, the cost is the
+ * per-row machinery and the adjacency frame in the profile is attribution, not cause
+ * (`frame-attribution-trap`). This is `expand_bench`'s question, which `CLAUDE.md` says scales with degree
+ * AND with how many types the degree spans.
+ */
+const DECOYS = Number(process.env.DECOYS ?? 0);
+
+/*
+ * ⚠⚠ **THE CONTROL MY FIRST SWEEP LACKED (item 2289).** Item 2288 varied USERS and read ns/result flat —
+ * but the member count was `USERS / 10`, so the RESULTS grew with the users and "flat per result" cannot
+ * tell a per-USER cost from a per-RESULT one. 🔑 `MEMBERS` pins the result count, so raising USERS alone
+ * adds non-member users the walk must either skip or never touch. If the cost grows, the walk visits every
+ * user; if it is flat, it reaches the members directly. `vary-only-the-projection` is the same technique.
+ */
+const MEMBERS = Number(process.env.MEMBERS ?? Math.floor(USERS / 10));
 
 for (let i = 0; i < USERS; i += 1) {
   g.addVertex({ id: `u${i}`, labels: ['User'], properties: { name: `user${i}` } });
@@ -51,6 +71,22 @@ for (let i = 0; i < MEMBERS; i += 1) {
     from: g.getVertexById(`u${i}`),
     to: g.getVertexById('teamBig'),
     labels: ['MEMBER_OF'],
+    properties: {},
+  });
+}
+
+/*
+ * The decoys hang off the TEAM, which is the vertex the walk expands to reach the members — so they inflate
+ * exactly the adjacency the hypothesis says is scanned, and they cannot change the answer because no query
+ * here mentions `DECOY`.
+ */
+for (let i = 0; i < DECOYS; i += 1) {
+  g.addVertex({ id: `d${i}`, labels: ['Decoy'], properties: { name: `decoy${i}` } });
+  g.addEdge({
+    id: `dk${i}`,
+    from: g.getVertexById(`d${i}`),
+    to: g.getVertexById('teamBig'),
+    labels: ['DECOY_OF'],
     properties: {},
   });
 }
@@ -119,12 +155,56 @@ const handRows = () => {
 const GQL_LIST_DOCFIRST =
   'MATCH (d:Doc)<-[:CAN_VIEW]-(t:Team)<-[:MEMBER_OF]-(u:User) WHERE d.name = $doc RETURN u.name AS n';
 
+/*
+ * ⚠⚠ **TWO ARMS THAT CLOSE THE LAST GAP IN WORK (item 2289).** The decoy ablation refuted the
+ * scan-and-filter story, but it also exposed that `matchesLabel` is 9% of the profile because the engine
+ * verifies `:User`, `:Team` and `:Doc` on every row — and my floor checks NO labels, trusting the edge
+ * types instead. 🔑 So:
+ *
+ *   gqlUnlabelled   the same question with the labels dropped  — how much of the gap IS label verification
+ *   handLabels      the floor, now verifying the same labels    — the floor doing the engine's work
+ *
+ * In this fixture the labels are implied by the edge types, so dropping them cannot change the answer —
+ * asserted by the printed count, as every arm here is.
+ */
+const GQL_UNLABELLED =
+  'MATCH (u)-[:MEMBER_OF]->(t)-[:CAN_VIEW]->(d) WHERE d.name = $doc RETURN u.name AS n';
+
+const handLabels = () => {
+  const doc = g.getVertexById('doc1');
+  const rows = [];
+
+  if (!doc.hasLabel('Doc')) {
+    return rows;
+  }
+
+  for (const e1 of doc.edgesToByLabel('CAN_VIEW')) {
+    const team = e1.from;
+
+    if (!team.hasLabel('Team')) {
+      continue;
+    }
+
+    for (const e2 of team.edgesToByLabel('MEMBER_OF')) {
+      const user = e2.from;
+
+      if (user.hasLabel('User')) {
+        rows.push({ n: user.properties.name });
+      }
+    }
+  }
+
+  return rows;
+};
+
 const ARMS = {
   gqlList: () => query(g, GQL_LIST, { doc: 'doc1' }).length,
   gqlCount: () => query(g, GQL_COUNT, { doc: 'doc1' })[0].c,
   gremList: () => toArray(gremList, g).length,
   handList: () => handList().length,
   handRows: () => handRows().length,
+  handLabels: () => handLabels().length,
+  gqlUnlabelled: () => query(g, GQL_UNLABELLED, { doc: 'doc1' }).length,
   gqlDocFirst: () => query(g, GQL_LIST_DOCFIRST, { doc: 'doc1' }).length,
 };
 
@@ -145,5 +225,5 @@ for (let r = 0; r < ROUNDS; r += 1) {
 }
 
 console.log(
-  `  USERS=${USERS} SHAPE=${SHAPE.padEnd(9)} median ${med(ts).toFixed(2).padStart(8)} ms   answer=${answer}   ${((med(ts) * 1e6) / Math.max(answer, 1)).toFixed(0)} ns/result`,
+  `  USERS=${USERS} DECOYS=${String(DECOYS).padEnd(5)} SHAPE=${SHAPE.padEnd(9)} median ${med(ts).toFixed(2).padStart(8)} ms   answer=${answer}   ${((med(ts) * 1e6) / Math.max(answer, 1)).toFixed(0)} ns/result`,
 );
