@@ -111870,3 +111870,51 @@ re-deriving it. Verified: the diff against pristine is 18 lines, **all additions
 is open.
 
 GATES. `bun run fmt` 0, `bun run check` 0; `nx build @lenke/core` 0; tree verified additions-only.
+
+## Item 2235 — ✅ **THE SESSION'S STATE IS SHIPPABLE: every gate green, FOUR independent fuzz sweeps, a clean tree, and all ten ships verified present in source**
+
+Items 2230-2234 left every measured surface floored with no unexplained ratio, so this item confirms the
+state rather than hunting a target the instruments say is not there.
+
+### ✅ GATES
+
+```text
+    bun run fmt                       0
+    bun run check                     0   (typecheck + oxlint + clippy, read UNPIPED)
+    bun run test -- --skip-nx-cache   0   (21 projects)
+    bun run fuzz                      57 pass / 0 fail   x4 INDEPENDENT SWEEPS
+```
+
+🔑 **The fuzzers ran FOUR times with fresh random seeds**, not once. This session's two shipped changes are
+TypeScript — a rewrite (`dropPassThroughWith`) and a rung (`midOnlyRaiseFreeGate`) — and the byte-identity
+suite comparing TS against native is exactly the invariant either could break, so one green run is weaker
+evidence than four. ⚠️ `crates/lenke-engine`'s `rewrite_fuzz` is NOT required here: no Rust changed this
+session, and that fuzzer guards the Rust optimizer, not the TS rewrites.
+
+### ✅ THE SHIPS, VERIFIED PRESENT IN SOURCE (not just in the log)
+
+```text
+    OK  item 2169  valuesDedupeCount            gremlin count-shortcut
+    OK  item 2181/2184  hasDeferrableVertexChecks   Graph.ts
+    OK  item 2191  EMPTY_VERTICES               exists-hop-count
+    OK  item 2194  bothLabelledHopCount         both-labelled-hop
+    OK  item 2203  dropPassThroughWith          rewrites.ts
+    OK  item 2225  midOnlyRaiseFreeGate         hop2-projection
+    OK  item 2234  "REJECTED lever (item 2234)" the refutation recorded IN SITU
+```
+
+⚠️ Checked with python `str.count`, not `grep` — `Graph.ts` is one of the files `grep` silently skips
+(item 2234 hit that again).
+
+### 🔑 STATE
+
+- **Working tree CLEAN** (0 modified files).
+- **192 commits unpushed.** ⚠️ Flagged, not pushed: pushing is the owner's call and has not been asked for.
+- **Ten ships**: 2169 (3.9x), 2170, 2173 (1.48x), 2177 (62x/85x **plus a pre-existing wrong answer fixed**),
+  2181 (1.83x), 2184 (1.29x), 2191 (2.1x/1.6x), 2194 (12.2x/14.6x), 2203 (**38x**), 2225 (3.2-3.6x).
+- **Four instruments built or repaired**: per-group floors on both screens, `vs floor` columns on both cliff
+  finders (42 shapes total), the size sweep, and the differential profiler.
+- **Five claims of my own withdrawn after measurement** (2206's framing, 2209, 2210, 2220's framing, 2222) —
+  each struck in its own entry's heading so a reader scanning for open work is not misled.
+
+GATES. As above, each read unpiped. No production change in this item.
