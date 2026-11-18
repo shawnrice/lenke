@@ -57,6 +57,71 @@ const floor = (): { p: unknown; c: unknown }[] => {
   return out;
 };
 
+/*
+ * --- THE REACHABILITY LADDER (item 2216) ------------------------------------------------------
+ *
+ * ⚠️⚠️ **A MEASURED GAP IS NOT A REACHABLE ONE.** Item 2215 measured 2.6x and named
+ * `relBoundFilteredHopWalk`, but TWO refutations sit in that neighbourhood: the per-row binding `Map`
+ * was built and REFUSED TWICE (items 2023/2024), and `propOf`'s residual is a hidden-class problem
+ * needing codegen, which `no-runtime-codegen` forbids (item 2201).
+ *
+ * 🔑 So each rung ADDS ONE PIECE of the engine's machinery to the bare floor. A rung that closes most of
+ * the gap names the cause — and if that cause is already closed, the gap is NOT a target.
+ */
+
+/** Rung 1: the floor plus a per-edge binding `Map` write — the thing items 2023/2024 refused to remove. */
+const floorWithBinding = (): { p: unknown; c: unknown }[] => {
+  const out: { p: unknown; c: unknown }[] = [];
+  const binding = new Map<string, unknown>();
+
+  for (const p of g.verticesByLabel.get('Person') ?? []) {
+    for (const ed of g.edgesFromByLabel.get(p.id)?.get('WORKED_AT') ?? []) {
+      binding.set('p', p);
+      binding.set('w', ed);
+      binding.set('c', ed.to);
+
+      if ((ed.properties.vf as number) <= T && (ed.properties.vt as number) > T) {
+        out.push({ p: p.properties.name, c: ed.to.properties.name });
+      }
+    }
+  }
+
+  return out;
+};
+
+/* ⚠️ HOISTED: `consistent-function-scoping` — these capture nothing, so recreating them per call would
+ * be measuring the wrong thing anyway. */
+const readP = (b: Map<string, unknown>): unknown =>
+  (b.get('p') as { properties: Record<string, unknown> }).properties.name;
+const readC = (b: Map<string, unknown>): unknown =>
+  (b.get('c') as { properties: Record<string, unknown> }).properties.name;
+
+/** Rung 2: rung 1 plus the test and the projection read through CLOSURES, as a compiled plan does. */
+const floorWithClosures = (): { p: unknown; c: unknown }[] => {
+  const out: { p: unknown; c: unknown }[] = [];
+  const binding = new Map<string, unknown>();
+  /* Compiled once, exactly as the planner would — the per-row cost is the CALL, not the compile. */
+  const pred = (b: Map<string, unknown>): boolean => {
+    const w = b.get('w') as { properties: Record<string, unknown> };
+
+    return (w.properties.vf as number) <= T && (w.properties.vt as number) > T;
+  };
+
+  for (const p of g.verticesByLabel.get('Person') ?? []) {
+    for (const ed of g.edgesFromByLabel.get(p.id)?.get('WORKED_AT') ?? []) {
+      binding.set('p', p);
+      binding.set('w', ed);
+      binding.set('c', ed.to);
+
+      if (pred(binding)) {
+        out.push({ p: readP(binding), c: readC(binding) });
+      }
+    }
+  }
+
+  return out;
+};
+
 /** The same walk but counting only — isolates MATERIALIZATION from the walk+filter. */
 const countOnly = (): number => {
   let n = 0;
@@ -80,6 +145,14 @@ const run = (): unknown => {
 
   if (arm === 'count') {
     return countOnly();
+  }
+
+  if (arm === 'bind') {
+    return floorWithBinding();
+  }
+
+  if (arm === 'closure') {
+    return floorWithClosures();
   }
 
   const r = tsQuery(g, Q) as unknown as { rows?: unknown[] };

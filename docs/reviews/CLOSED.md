@@ -110952,3 +110952,51 @@ not the last.
 
 GATES. `bun run fmt` 0, `bun run check` 0 (three lint rounds on the new probe: `curly`, then `padding-lines`
 twice). New probe; no engine change.
+
+## Item 2216 — 🔑🔑🔑 **REACHABILITY ANSWERED BEFORE ANY CODE: of item 2215's ~12 ms gap, the binding `Map` is 21% (CLOSED twice) and closure dispatch 6% — leaving 72% UNEXPLAINED BY EITHER CLOSED CAUSE, which is what makes this worth building**
+
+Item 2215 measured 2.6x and named `relBoundFilteredHopWalk`. ⚠️ But two refutations sit in that
+neighbourhood — the per-row binding `Map` was built and **REFUSED TWICE** (items 2023/2024), and `propOf`'s
+residual needs codegen that `no-runtime-codegen` forbids (item 2201). **A measured gap is not a reachable
+one**, and this session has withdrawn two claims for exactly that reason (items 2209, 2210). So the first
+question was reachability, not implementation.
+
+### ✅ THE LADDER: EACH RUNG ADDS ONE PIECE OF THE ENGINE'S MACHINERY
+
+```text
+    one arm per PROCESS, two rounds        round 1   round 2   adds
+    floor  (walk + test + build rows)        7656      7734      —
+    bind   (+ per-edge binding Map writes)  10104     10596    +2.6 ms
+    closure(+ compiled pred/projection)     10992     11122    +0.7 ms
+    engine                                  20222     19501    +8.6 ms UNEXPLAINED
+```
+
+🔑🔑 **THE DECOMPOSITION OF THE ~12 ms:**
+
+| term                          | cost              | status                                            |
+| ----------------------------- | ----------------- | ------------------------------------------------- |
+| per-edge binding `Map` writes | **+2.6 ms (21%)** | **CLOSED** — built and refused at items 2023/2024 |
+| compiled closure dispatch     | **+0.7 ms (6%)**  | matches `closure-dispatch-is-cheap`'s "~5%"       |
+| **everything else**           | **+8.6 ms (72%)** | ⚠️ **NOT accounted for by either**                |
+
+✓ And the 8.6 ms residual matches item 2215's profiled `relBoundFilteredHopWalk` at **8.28 ms/rep** almost
+exactly — two independent instruments agreeing on the same number, which is the first time this session a
+target has had that.
+
+### 🔑 WHAT THE WALK DOES THAT THE LADDER DOES NOT, read from the source
+
+`relBoundFilteredHopWalk`'s returned closure, per CALL, additionally: runs `indexCandidates` over `cfar` to
+decide whether to decline (a seek-margin check), computes `vacuousLabel(graph, farLabel)` — whose own comment
+prices it at **32.0% of this row** (`evalLabelExpr` 19.2%, `get labels` 7.7%, `matchesLabel` 5.1%) — and then
+per VERTEX runs the start gate inside a `try`/`catch` for raise parity before reading the adjacency bucket.
+
+⚠️ **THE FAR LABEL IS NON-VACUOUS IN THIS SHAPE** (`Company` is 2,000 of 42,000 vertices), so `fl` stays set
+and `matchesLabel` runs PER EDGE — but item 2215's profile puts that at only +0.74 ms, so it is not the
+residual either.
+
+**NEXT: ablate the per-call terms** (the `cfar` seek-margin scan and the `vacuousLabel` computation) to see
+which owns the 8.6 ms, before designing an arm. ⚠️ `hop-projection.ts` is at 2,932 of 3,000 code lines, so
+anything built goes in a NEW FILE.
+
+GATES. `bun run fmt` 0, `bun run check` 0 (three more lint rounds on the probe: `curly`, `padding-lines`,
+`consistent-function-scoping`). Probe only; no engine change.
