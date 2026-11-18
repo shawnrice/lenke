@@ -113278,3 +113278,53 @@ that reports nothing useful".
 
 GATES. `bun run fmt` 0, `bun run check` 0. `sortkey-2261.ts` extended with two floor arms; no production
 change.
+
+## Item 2263 — ✅ **THE SORT THREAD (2259-2263) CLOSES: the differential profile names `propOf` + `get properties`, and item 2066 ALREADY BUILT that specialization and recovered NOTHING — "the ablation was pricing the row OBJECT, not the property read". 🔑 And `sortColumnKind` is NOT a defect**
+
+Item 2262 left the sort's residual as an honest **~160-190 ns/row of row-pipeline overhead**. A differential
+profile, same rung, same fixture, differing only in `ORDER BY` (20 rounds x 150,000 rows, one arm per
+process):
+
+```text
+    frame                      plain ms   sorted ms   SORT-ONLY
+    (anon):5246                     0.0       318.6     +318.6     the comparator / sort internals
+    (anon):4851                     0.0       189.0     +189.0
+    propOf                          3.2       113.8     +110.6     <- the KEY EVALUATION
+    startDriven                     0.0        92.6      +92.6     <- a START-driven walk, not far-driven
+    sortColumnKind                  0.0        49.6      +49.6
+    get properties / get to         5.2        46.5      +55.0
+    (garbage collector)           105.2       146.1      +40.9
+```
+
+### ✅ `sortColumnKind` IS NOT A DEFECT — RECORDED SO NOBODY FILES ONE
+
+It reads as a per-row type check and is not: `ordered-rows.ts:659` calls it **ONCE per query**
+(`reducedRowComparator(sortColumnKind(rows, col), col, descending)`), so its 49.6 ms is a single O(N)
+classify pass at ~16 ns/row **that buys a specialized comparator.** ✅ And because the comparator takes a
+COLUMN NAME, it reads `row[col]` — **the key is NOT re-evaluated per comparison**, so the "17 key
+evaluations per row instead of one" worry does not apply.
+
+### ❌ AND THE REMAINING TERMS ARE ALREADY REFUTED, EACH BY A BUILD
+
+- **`propOf` + `get properties` (+166 ms together)** — this is the sorted arm losing the fused projection,
+  exactly item 1966's _"far-driven TEMPLATE FOLD, which the unsorted arm gets and the sorted one does
+  not"_. ⚠️ **Item 2066 BUILT the direct-read specialization for it** (`farPropRow` imported, not
+  re-implemented; proven to fire; 5,028 tests passing) and measured **721.8 specialized against 723.9
+  unspecialized in the same session — nothing.** Its conclusion: _"the ablation was pricing the row OBJECT,
+  not the property read."_
+- **The row object** — [[binding-allocation-is-closed]]: a no-copy VIEW (item 2023) and a REUSED map (2024),
+  **both built, priced and refused.**
+- **The generator chain** — priced at ~4% with its best arm forbidden by contract (item 2258, this session).
+
+🔑 **So every named term in the sort's residual traces to a build that was already done and declined.**
+
+### ✅ WHAT THE THREAD LEAVES BEHIND, WHICH IS NOT NOTHING
+
+Five items produced **no ship, and two corrections of my own numbers** — but the surface is now measured
+properly where it was not: **a FAIR floor exists** (the engine's own `compareValues` over row objects,
+item 2262), the route is **read rather than inferred** (2260), and the ~160-190 ns/row residual is
+**decomposed and traced**. ⚠️ Item 2066's own lesson is the one to carry: its 1.08x was _"nothing — the
+baseline itself drifted ~7% between ticks"_, so **re-measure the baseline alongside, never against a
+previous session's number.**
+
+GATES. `bun run fmt` 0, `bun run check` 0. New probe `prof-2263.mjs`; no production change.
