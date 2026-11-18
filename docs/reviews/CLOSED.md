@@ -110206,3 +110206,74 @@ getting the sole label out of a single-element `Set` needs an iterator either wa
 diagnosis, not a target, until someone ablates it. Do not open it without an allocation instrument.
 
 GATES. No production change. `bun run check` 0.
+
+## Item 2202 — 🔑🔑🔑 **NEW INSTRUMENT, VIRGIN SURFACE, SIX FLAGS: both existing screens are SINGLE-CLAUSE, so NOTHING here had ever priced an ISO-GQL composition. `NEXT` is 166x native and 34x the plain hop it ANSWERS IDENTICALLY — an equivalent-spelling violation**
+
+Items 2199-2201 left both screens quiet and the read / by-id / write paths verified or mined out. The gap was
+structural: `native-ref-screen-2161` varies the projection and predicate over ONE `MATCH`, and the Gremlin
+screen varies one step chain. **Neither can reach a second `MATCH`, `OPTIONAL MATCH`, a scoped `CALL`, a
+nested `EXISTS`, `NEXT`, `LET` or `FILTER`** — so this repo has never measured them.
+
+`packages/native/multiclause-probe-2202.ts` fixes that, with **each shape paired to its own single-clause
+floor** (the discipline items 2168, 2170, 2175 and 2199 each paid for — a mismatched floor has now produced
+a false nomination five times).
+
+```text
+    200,000 nodes / fanout 3, MIXED=1, median of reps 4-9
+    shape                        ts    native   ratio   marginal ts/nat       answer
+    FLOOR scan                 0.00      0.00    0.5x                         200000
+    FLOOR hop                  7.99      0.49   16.4x                         300000
+    two MATCH clauses          0.00      0.00    0.6x    +0.00 / +0.00     4.0e10 (a product — correct)
+    OPTIONAL MATCH hop         8.13      3.59    2.3x    +0.14 / +3.11         300000
+    WHERE EXISTS { hop }      12.49      0.87   14.3x    +4.50 / +0.38  FLAG   100000
+    nested EXISTS in EXISTS  118.42      2.93   40.4x  +110.43 / +2.45  FLAG   100000
+    CALL (a) { hop }          10.66      1.98    5.4x    +2.68 / +1.50         300000
+    NEXT composition         269.07      1.62  166.3x  +261.08 / +1.13  FLAG   300000
+    LET then count             5.64      0.82    6.9x    +5.64 / +0.82  FLAG   200000
+    FILTER clause              3.30      0.13   24.7x    +3.30 / +0.13  FLAG     2062
+    multi-pattern one MATCH   11.67      0.70   16.7x    +3.68 / +0.21  FLAG  3.0e10 (a product)
+```
+
+🔑 The two cross-product rows read 0.00 ms because a count over a product is a closed form, and their
+answers (200000² and the multi-pattern product) confirm the fixture rather than contradicting it.
+
+### ⚠️⚠️ `NEXT` IS AN EQUIVALENT-SPELLING VIOLATION, NOT A SLOW FEATURE
+
+`MATCH (a:Person) RETURN a NEXT MATCH (a)-[:KNOWS]->(b) RETURN count(*)` answers **300000 — exactly the
+plain hop's answer at 7.99 ms**. The same question, one spelling, **34x the cost**. That is the failure mode
+`CLAUDE.md`'s _equivalent spellings must cost the same_ section exists for, and no correctness test can see
+it.
+
+A differential profile (plain hop x300 reps against `NEXT` x12, per-rep normalized) says why:
+
+```text
+    frame                 plain/rep   NEXT/rep
+    walkSegments               0.00      57.83
+    matchPattern               0.00      39.10
+    withBinding                0.00      37.43
+    (garbage collector)        1.19      38.42
+    hoistedMatch               0.00      25.80
+    get adjFrom                2.91      23.17
+    matchesLabel               0.00      13.29
+```
+
+🔑🔑 **THE PLAIN HOP USES NONE OF THESE — every frame reads 0.00 in that arm.** It reaches a shortcut rung;
+the `NEXT` form falls all the way to the GENERAL MATCHER. **So the target is not the matcher's speed, it is
+that a composed form never reaches the rung its equivalent spelling already gets.**
+
+⚠️ `withBinding` at 37.43 ms/rep is the per-row binding Map, and that IS closed — `binding-allocation` was
+built and refused twice (items 2023, 2024). Speeding up the matcher is the WRONG lever here; routing is the
+right one.
+
+### 🔑 HANDED OFF, with the next tick's order of work
+
+1. **`NEXT` (+261 ms, 166x)** — check whether a trailing `RETURN <var>` that merely passes the binding
+   through can be ELIDED, letting the two segments concatenate into one pattern and reach the existing rung.
+2. **nested `EXISTS` in `EXISTS` (+110 ms, 40x)** — item 2191 took the single `EXISTS` to an intersection;
+   the nested form is plainly not reaching it.
+3. The four smaller flags (`WHERE EXISTS`, `multi-pattern`, `LET`, `FILTER`) are 3-6 ms each.
+
+⚠️ `executor-edits-perturb` prices a new branch at up to 16% on unrelated rows, so the build needs controls
+and belongs in its own tick, not the tail of a diagnosis.
+
+GATES. `bun run fmt` 0, `bun run check` 0. New bench instrument; no engine change.
