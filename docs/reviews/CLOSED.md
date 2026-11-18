@@ -107798,3 +107798,66 @@ item. **Put the throw in before the edit, not after the measurement disappoints.
 🔑 Reverted; tree clean. The finding and its bench rows from item 2157 stand unchanged.
 
 GATES. Tree reverted to pristine; `bun run check` 0; 5,266 tests green.
+
+## Item 2159 — ✅ **SHIPPED, SMALL: `sum()` over a hop streams instead of collecting — 1.09-1.15x. ⚠️⚠️ AND THE 3.6x THAT NOMINATED IT IS NOT AVAILABLE: it is the ORDER-SENSITIVE WALK, which float non-associativity requires. Two of my own hypotheses corrected**
+
+Item 2158 failed by editing an unreachable detector. 🔑 **This item put the throw in FIRST** and it paid
+immediately: site `hop-projection.ts:6589` is reached by `sum` and `avg` over a hop, and NOT by `max`
+(which folds elsewhere) or `sum` over a plain scan. Site 6957 is reached by none of them.
+
+### 🔑 THE CHANGE, WHICH TURNED OUT TO BE SMALL
+
+That function already has both arms — a collecting one (`values.push` → `aggregateOverValues`) and a
+folding one (`fold.step` → `fold.finish`) — and `sum` simply arrives with `fold === undefined`, because
+`foldFor` carries only `count`/`min`/`max`. 🔑 Supplying a fold there needed **no coupling change at all**:
+`orderSensitive` comes from `pct` independently and is already `true`, so folding adds no reordering
+freedom. (Adding `sum` to the shared `foldFor` would NOT have been safe — call sites there infer
+order-insensitivity from foldability.)
+
+```text
+    row                        BEFORE     NEW
+    sum(b.k) far side           103.9     93.5    1.09x
+    sum(a.k) start side          36.2     31.2    1.15x
+    sum(e.w) edge prop           50.7     51.9    flat
+    avg / max / scan [controls]                   flat
+    ---- bench row ----
+    sum over a hop              295.2    278.0    and 38.32x native -> 36.42x
+```
+
+### ⚠️⚠️ THE NOMINATION'S 3.6x IS A CORRECTNESS REQUIREMENT, AND THAT IS THIS ITEM'S REAL FINDING
+
+`max` costs 14.5 ms on this shape where `sum` costs 93.5. 🔑 **That gap is the WALK, not the accumulation**:
+`max` is order-insensitive so the planner takes the FAR-DRIVEN walk, while `sum` must take the start-driven
+one. ⚠️ Float addition is not associative, so reordering the addends changes the last ulp and breaks
+byte-identity with the Rust engine. An ablation isolates it exactly — **`sum(1)` 48.25 ms against `max(1)`
+12.88 with no property read at all.** So items 2157/2158's framing of the 3.6x as recoverable was wrong,
+and the recoverable part is the ~1.1x shipped here.
+
+**TWO OF MY OWN HYPOTHESES NEEDED CORRECTING TO GET HERE:**
+
+1. Item 2157: _"the lever is the row materialization"_ — ⚠️ corrected at 2158: both arms call
+   `walk(graph, params)`, which returns a `Row[]` either way.
+2. Item 2158: _"then it is the `values` array plus `aggregateOverValues`' three passes, worth the 3.6x"_ —
+   ⚠️ corrected HERE: removing exactly that bought **1.09x**, so it was never the 3.6x either.
+
+🔑 Each correction came from measuring the thing I had just claimed, which is the only reason the third
+answer is trustworthy.
+
+### 🔑 CORRECTNESS: THE BAIL-OUT IS THE PART THAT NEEDED TESTS
+
+`aggregateOverValues` routes a column containing ANY temporal to `temporalSum`, which needs every value in
+hand — a look-ahead a stream cannot do. So `step` throws a sentinel on anything that is not a plain number
+and the caller re-runs the collecting arm. ⚠️ **The sentinel is a singleton `Error`, not a `Symbol`**: the
+`only-throw-error` lint caught that and is right, since a thrown non-Error loses its stack and confuses
+every `catch` that inspects one.
+
+**17 tests.** The sharpest is a column that is numeric until its LAST row — the fold has three numbers
+accumulated when it meets the string, so a bail that returned its partial sum would answer 6 instead of
+throwing. ⚠️ `6/8 mutants CAUGHT`, including that one, `init: () => 1`, and `step` not adding. Two named
+survivors: not supplying the fold is answer-equivalent, and `err !== NOT_PLAIN_NUMBERS` is currently
+**unreachable** defence in depth — `SUM_FOLD` is the only fold at this site that throws at all. Kept for
+item 2151's reason: a `catch` that swallows everything would turn the next fold's real error into a
+silently wrong answer.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 5,283 GQL
+tests; `bun run fuzz` all seven green.

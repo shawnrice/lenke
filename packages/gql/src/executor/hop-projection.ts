@@ -6197,6 +6197,71 @@ const hopAggregateWalks = (
 /** The two ordered-set aggregates, which sort their values and so read no row order. */
 const PERCENTILES: ReadonlySet<string> = new Set(['percentile_cont', 'percentile_disc']);
 
+/**
+ * `sum()` as a STREAMING fold for the single-aggregate hop walk (item 2159).
+ *
+ * 🔑 THE SAVING IS THE SECOND ARRAY, NOT THE ROWS. Both arms of `walkRows` call `walk(graph, params)`,
+ * which returns a `Row[]` either way — item 2158 corrected item 2157's record on that. What the collecting
+ * arm adds is a `values` array plus `aggregateOverValues`' **three further passes** over it
+ * (`some(isTemporal)`, `some(Array.isArray)`, `reduce`). Measured on a 300,000-edge hop:
+ *
+ * ```text
+ *     PROJECT b.k (300,000 rows)   19.82 ms     <- what the walk alone costs
+ *     max(b.k)  [folds today]      19.4-29.9
+ *     sum(b.k)  [collects]        108.4-110.0
+ * ```
+ *
+ * ⚠️⚠️ **ORDER IS PRESERVED BECAUSE `pct.orderSensitive` ALREADY FORCES THE START-DRIVEN WALK**, and that
+ * is not incidental: float addition is not associative, so a far-driven walk would REORDER the addends
+ * and change the last ulp, breaking byte-identity with the Rust engine. 🔑 This fold is supplied only
+ * where `orderSensitive` is already true, so folding adds no reordering freedom.
+ *
+ * ⚠️ **THE TEMPORAL BRANCH IS WHY `step` BAILS INSTEAD OF COERCING.** `aggregateOverValues` routes a
+ * column containing ANY temporal to `temporalSum`, which needs every value in hand — a look-ahead a
+ * stream cannot do. So anything that is not a plain number throws `NOT_PLAIN_NUMBERS`, and the caller
+ * re-runs the collecting arm, keeping the temporal path and its error messages exactly as they were.
+ *
+ * ⚠️ `isNullish` values are skipped by both arms BEFORE the accumulator sees them, so null handling is
+ * shared and must not be duplicated here. An empty input yields `0`, matching `reduce(…, 0)`.
+ */
+class NotPlainNumbers extends Error {}
+
+/*
+ * ⚠️ A SINGLETON `Error`, NOT A `Symbol`. Throwing a bare symbol trips `only-throw-error`, and the lint
+ * is right: a non-Error thrown value loses its stack and confuses every `catch` that inspects one. 🔑 One
+ * shared instance, so the bail costs no allocation on the path it is meant to make cheaper.
+ */
+const NOT_PLAIN_NUMBERS = new NotPlainNumbers('sum: not plain numbers');
+
+/**
+ * The walk's fold: the one `compileProjection` already lowered, or {@link SUM_FOLD} for a `sum`.
+ *
+ * ⚠️ Hoisted, and taking BOTH arguments, purely to keep its caller under the `complexity` cap (35):
+ * inlining the choice took it to 38, and leaving even `agg?.fold ??` at the call site left it at 36.
+ */
+const foldOf = (
+  agg: { fold?: AggFold } | undefined,
+  pct: { name: string } | null,
+): AggFold | undefined => {
+  if (agg?.fold !== undefined) {
+    return agg.fold;
+  }
+
+  return pct?.name === 'sum' ? SUM_FOLD : undefined;
+};
+
+const SUM_FOLD: AggFold = {
+  init: () => 0,
+  step: (acc, v) => {
+    if (typeof v !== 'number') {
+      throw NOT_PLAIN_NUMBERS;
+    }
+
+    return (acc as number) + v;
+  },
+  finish: (acc) => acc,
+};
+
 const ORDER_SENSITIVE_AGGREGATES: ReadonlySet<string> = new Set([
   'sum',
   'avg',
@@ -6493,7 +6558,19 @@ export const detectHopAggregate = (
     forceStartDriven: orderSensitive,
   });
   const aggCPath = matchPatternOf(cm);
-  const fold = agg?.fold;
+  /*
+   * ITEM-2159-SUM-FOLD: `sum` streams here, where it used to collect.
+   *
+   * 🔑 `agg` is `proj.foldedAggs[0]`, and `foldFor` carries only `count`/`min`/`max` — so `sum` arrives
+   * with `fold === undefined` and takes the collecting arm below. ⚠️ Supplying the fold HERE rather than
+   * in `foldFor` is deliberate: that shared function's result is read by call sites which infer
+   * ORDER-INSENSITIVITY from foldability, and `sum` is order-sensitive. At this site `orderSensitive`
+   * comes from `pct` independently and is already `true`, so folding adds no reordering freedom.
+   *
+   * ⚠️ Proven by throw before being written (item 2158's lesson): this site is reached by `sum` and `avg`
+   * over a hop, and NOT by `max` (which folds elsewhere) or by `sum` over a plain scan.
+   */
+  const fold = foldOf(agg, pct);
 
   const walkRows: RowsFn = (graph, params) => {
     // A self-loop would be met by BOTH turned walks; `expand` yields it once. The single
@@ -6529,7 +6606,14 @@ export const detectHopAggregate = (
     // (125-180 for the same source), so three alternated rounds can read disjoint by luck.
     // The split stays because one loop per path is clearer, not because it was measured faster
     // (item 533).
-    if (fold === undefined) {
+    /*
+     * ⚠️ HOISTED so the fold arm can FALL BACK to it (item 2159). `SUM_FOLD` bails on anything that is
+     * not a plain number, because `aggregateOverValues` routes a temporal column to `temporalSum` and
+     * that needs every value in hand. 🔑 Re-running this arm keeps the temporal result and the error
+     * messages identical to before the fold existed — at the cost of one extra walk, on a shape that
+     * previously took this arm anyway.
+     */
+    const collect = (): Row[] | null => {
       const values: unknown[] = [];
 
       for (const walk of chosenWalks) {
@@ -6549,6 +6633,10 @@ export const detectHopAggregate = (
       }
 
       return [{ [outName]: aggregateOverValues(pct!.name, values, pct!.frac) }];
+    };
+
+    if (fold === undefined) {
+      return collect();
     }
 
     let acc = fold.init();
@@ -6567,7 +6655,26 @@ export const detectHopAggregate = (
         // The array path folds over the non-null values and the streaming step skips nullish
         // the same way; this is the third place that rule lives, so it reads the same as both.
         if (!isNullish(v)) {
-          acc = fold.step(acc, v);
+          try {
+            acc = fold.step(acc, v);
+          } catch (err) {
+            /*
+             * ⚠️ ONLY the private sentinel is caught — any other throw is a real error and must
+             * propagate exactly as it did before this fold existed.
+             *
+             * ⚠️ **CURRENTLY UNREACHABLE DEFENCE IN DEPTH, and mutation says so**: a mutant replacing
+             * this test with `false` survives, because `SUM_FOLD.step` is the only fold reaching this
+             * site that throws at all, and the sentinel is all it throws. 🔑 Kept for the same reason
+             * item 2151 kept its `max === null`: the next fold wired here may throw something real, and
+             * a `catch` that swallows everything would turn that into a silently wrong answer rather
+             * than an error.
+             */
+            if (err !== NOT_PLAIN_NUMBERS) {
+              throw err;
+            }
+
+            return collect();
+          }
         }
       }
     }
