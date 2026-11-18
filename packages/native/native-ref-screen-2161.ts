@@ -184,6 +184,46 @@ const ROWS: ReadonlyArray<readonly [string, string, string?]> = [
   ['ORDER BY two keys', 'MATCH (a:Person) RETURN a.k AS k, a.age AS g ORDER BY k, g LIMIT 10'],
   ['ORDER BY DESC', 'MATCH (a:Person) RETURN a.k AS k ORDER BY k DESC LIMIT 10'],
   ['DISTINCT two columns', 'MATCH (a:Person) RETURN DISTINCT a.k AS k, a.age AS g'],
+  /*
+   * ── ROWS ADDED AT ITEM 2176 ───────────────────────────────────────────────────────────────────
+   *
+   * 🔑 The 16 rows above are at parity or better, which was starting to read as "the engine is fine"
+   * when it really meant **this screen measures a narrow surface well**. Three ticks of estimator work
+   * (items 2172-2175) earned a trustworthy instrument; these rows point it somewhere new.
+   *
+   * ⚠️ The gaps were structural: **not one WRITE row**, no OPTIONAL MATCH, no grouped aggregate, no
+   * variable-length path, no UNION, no multi-hop projection. Those are the shapes a people-graph
+   * application actually runs.
+   *
+   * ⚠️⚠️ **A WRITE ROW MUST BE IDEMPOTENT**, because the child times 40 reps against ONE fixture. `SET` to
+   * a CONSTANT is (the second write stores what the first did); an `INSERT` is not, and would measure a
+   * graph growing 40x while the reads above it measure a fixed one. So inserts are not here — they need a
+   * per-rep rebuild, which is a different instrument.
+   */
+  // ── Writes, which had NO row at all ───────────────────────────────────────────────────────────
+  ['SET one property', 'MATCH (a:Person) WHERE a.k = 1 SET a.seen = 1 RETURN count(*) AS c'],
+  ['SET on every row', 'MATCH (a:Person) SET a.seen = 1 RETURN count(*) AS c'],
+  // ── OPTIONAL MATCH, whose only coverage was a bench row ───────────────────────────────────────
+  [
+    'OPTIONAL MATCH a hop',
+    'MATCH (a:Person) OPTIONAL MATCH (a)-[:KNOWS]->(b:Person) RETURN count(b) AS c',
+  ],
+  // ── Grouped aggregation ───────────────────────────────────────────────────────────────────────
+  ['grouped count by key', 'MATCH (a:Person) RETURN a.k AS k, count(*) AS c'],
+  ['grouped sum by key', 'MATCH (a:Person) RETURN a.k AS k, sum(a.age) AS c'],
+  // ── Multi-hop projection and paths ────────────────────────────────────────────────────────────
+  [
+    'two-hop projection',
+    'MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person) RETURN count(c) AS c',
+  ],
+  ['var-length 1..2 hops', 'MATCH (a:Person)-[:KNOWS]->{1,2}(b:Person) RETURN count(b) AS c'],
+  // ── Set operations ────────────────────────────────────────────────────────────────────────────
+  [
+    'UNION of two scans',
+    'MATCH (a:Person) WHERE a.k = 1 RETURN a.k AS k UNION MATCH (a:Person) WHERE a.k = 2 RETURN a.k AS k',
+  ],
+  // ── Deep paging, the complement of the LIMIT 10 rows above ────────────────────────────────────
+  ['ORDER BY + deep OFFSET', 'MATCH (a:Person) RETURN a.k AS k ORDER BY k OFFSET 199990 LIMIT 10'],
 ];
 
 /*

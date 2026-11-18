@@ -108795,3 +108795,51 @@ step's own cost, where before the change it was the screen's loudest flag.
 read as low as +1.67 on a standalone probe — so it is a small-absolute target, not a cliff.
 
 GATES. Instrument only. `bun run fmt` 0; `bun run check` 0 read unpiped.
+
+## Item 2176 — 🔑🔑🔑 **NINE ROWS ADDED AND THE SCREEN IMMEDIATELY FOUND A +593 ms GAP. `var-length 1..2 hops` is 596 ms against native's 22 — 26.8x, and I had been mining 1-5 ms margins for three ticks**
+
+No engine change. Items 2172-2175 earned a trustworthy estimator; this points it somewhere new, and the
+first look says the instrument's COVERAGE was the binding constraint, not its accuracy.
+
+### ⚠️ WHAT THE 16 ORIGINAL ROWS DID NOT COVER
+
+**Not one WRITE row.** No OPTIONAL MATCH, no grouped aggregate, no variable-length path, no UNION, no
+multi-hop projection. 🔑 Those are the shapes a people-graph application actually runs, and the surface
+reading "healthy" was a statement about scalar expressions over a single scan.
+
+```text
+    row                      ts    native   marginal ts/nat    ratio
+    var-length 1..2 hops  596.36    22.20   +593.33 / +22.11   26.8x  <-- FLAG, and the whole ballgame
+    UNION of two scans     12.27     0.49     +9.24 / +0.39    23.7x  <-- FLAG
+    SET one property        6.96     0.40     +3.94 / +0.30    13.1x  <-- FLAG
+    grouped sum by key      9.14     1.77     +6.12 / +1.67     3.7x  <-- FLAG
+    two-hop projection     15.74     4.24    +12.71 / +4.14     3.1x  <-- FLAG
+    SET on every row      106.85    25.41  +103.82 / +25.31     4.1x  <-- FLAG
+    ORDER BY deep OFFSET   14.79     8.77    +11.76 / +8.68     1.3x
+    OPTIONAL MATCH a hop    5.77     3.26     +2.74 / +3.16     0.9x  ⚠️ TS FASTER
+    grouped count by key    2.82     1.00    +-0.21 / +0.90     a count rung answers it
+```
+
+Answers agree on every row (the screen voids a row where they do not).
+
+### ⚠️⚠️ THE LESSON IS ABOUT WHERE I WAS LOOKING, NOT ABOUT THE ESTIMATOR
+
+Items 2172-2175 fixed four real estimator defects and were worth doing — three phantom nominations came out
+of them and one refutation they produced was itself wrong. ⚠️ But the conclusion I drew at 2175 ("the GQL
+screen's nominations are exhausted") was true only of the rows IN it. **A screen that measures 16 shapes
+perfectly still cannot nominate the 17th.** The honest reading of three ticks at parity was coverage, not
+health.
+
+🔑 `var-length 1..2 hops` already has a bench row at ~177-250 ms (recorded in
+[[bench-methodology]]); this fixture's 300,000 edges at fanout 3 put it at 596. **Either way it is two
+orders of magnitude above everything items 2172-2175 weighed.**
+
+**Next: profile the var-length walk.** ⚠️ `one-knob-two-quantities` (`limits.trail` is both a per-source hop
+budget AND a global row cap) and `eager-tail-cache` (a 4096-row tail cache, 473x) are both in this
+neighbourhood and should be read before pricing it.
+
+⚠️ A write row must be IDEMPOTENT here, because the child times 40 reps against ONE fixture: `SET` to a
+constant is, an `INSERT` is not and would measure a graph growing 40x. Inserts need a per-rep rebuild,
+which is a different instrument and is not in this one.
+
+GATES. Instrument only. `bun run fmt` 0; `bun run check` 0 read unpiped.
