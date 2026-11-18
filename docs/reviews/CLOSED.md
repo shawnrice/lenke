@@ -111989,3 +111989,54 @@ instrument that distinguishes the two, and the precondition for touching anythin
 
 GATES. `bun run fmt` 0, `bun run check` 0. New instrument `parity-2236.ts` + probe `prof-2236.mjs`; no
 production change.
+
+## Item 2237 — 🔑🔑 **THE DELETION TEST PAYS OFF: the per-edge property read is ~220 ns and 56% of the far-keyed grouped count (2.25-2.28x), and the CPU PROFILE UNDER-ATTRIBUTED IT 3.7x — the walk closure was absorbing the inlined access**
+
+Item 2236 refused to act on a `get properties` frame at 59.7 ns of 346, because
+[[frame-attribution-trap]] says a getter frame is attribution until a deletion test with a CONTROL says
+otherwise, and `Vertex.ts` already carries a refutation of optimizing that getter. **The test now exists.**
+
+### 🔑 THE DELETION KEEPS THE KEY VARYING — A CONSTANT WOULD HAVE OVERSTATED IT
+
+`optional-hop.ts:398` is `bump(groups, other.properties[keyProp] ?? null, 1)`, once PER EDGE. Replacing it
+with a CONSTANT would send every contribution to one `bump` bucket instead of 97, changing the Map's hit
+pattern and inflating the result. ⚠️ So the deleted arm uses a module-scope counter `% 97` — **same type,
+same range, same 97 groups, verified same 98 output rows** — removing only the getter call, the keyed index
+and the `?? null`.
+
+```text
+    query                 LIVE r1 / r2      DELETED r1 / r2     effect
+    farkey  (TARGET)     117.9 / 116.0       51.8 / 51.7      2.28x / 2.25x
+    plain   (CONTROL)      1.8 /   1.7        1.7 /  1.7      FLAT ✓
+    startkey(CONTROL)     22.4 /  20.2       29.9 / 25.0      WORSE — see below
+```
+
+Arms asserted with an EXPECTED COUNT PER ARM (`live`/`deleted` both checked, plus the start-keyed line
+verified intact in both), `nx build @lenke/gql` per arm, median of post-warm-up reps, restore trap armed.
+
+### ⚠️⚠️ THE PROFILE UNDER-ATTRIBUTED THIS BY 3.7x
+
+66 ms over **300,000 edge contributions is ~220 ns per read** — against the **59.7 ns** the profile
+assigned to `get properties`. 🔑 **The `(anon)` walk frame at 160.9 ns was absorbing the inlined property
+access.** That is the attribution trap firing in the direction nobody guards against: not a getter frame
+inflated by its caller, but a getter frame **deflated** because the work was inlined into the caller.
+**A deletion test is the only instrument that sees this.**
+
+### ⚠️ THE START-KEYED CONTROL GOT WORSE, AND THAT IS THE KNOWN TOLL
+
+22.4/20.2 → 29.9/25.0. The deleted arm adds a module-scope counter and changes the closure, and
+[[executor-edits-perturb]] prices exactly this at up to 16% on unrelated rows; this is ~25%. ⚠️ It does not
+weaken the target's 2.25x — the target moved the other way and far harder — but it does mean **any real fix
+here must be measured with the start-keyed row as a watched control**, not assumed free.
+
+### 🔑 WHAT IS NOT YET KNOWN
+
+The deletion removed **three things at once** — the `properties` getter, the VARIABLE-keyed index, and the
+`?? null`. ⚠️ 220 ns is far more than a warm `#box` read should cost (the box is cached on first read, and a
+warm private-field load is ~3 ns), so the leading hypothesis is that **`edge.to` hands back a Vertex whose
+`#box` is cold, making each contribution pay a string-keyed `Map.get` on `elementProperties`** — but
+`get to` profiled at only 9.7 ns, which argues against a fresh wrapper. **Separating the three terms is the
+next measurement**, and it decides whether the fix is local or is the recorded boxed-vs-columnar ceiling.
+
+GATES. `bun run fmt` 0, `bun run check` 0; tree restored to LIVE and verified. New probe
+`packages/native/deltest-2237.ts`; no production change.
