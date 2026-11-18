@@ -114744,3 +114744,64 @@ too broadly, and is precisely why item 2104 chose "a genuine seek" as the bar.
 
 GATES. `bun run fmt` 0, `bun run check` 0, `bun run test` 21 projects OK (both with the change and after
 the revert), clean `nx build @lenke/gql`. No production change.
+
+## Item 2293 — ✅✅✅ **SHIPPED: the authz list is O(RESULTS) in every spelling — 9.08 → 0.69 ms at 400,000 users (13.2x), and `bun run spelling:orient`'s spread falls from 29.51x to 1.29x, below tolerance.** Item 2104 set the bar at "a genuine seek"; this adds "or a far bucket 64x smaller", which its own 4-against-40 counterexample survives
+
+Item 2292 ruled out two of three candidates. 🔑 Candidate (c) — let `hop2Projection` decline on a
+constrained-but-unseekable far node — turned out to need no new predicate analysis at all, because the gate
+**already computes both seed estimates** and simply refuses to use an unindexed one:
+
+```ts
+if (!endEst.indexed) { return false; }                                       // the old bar
+return endEst.count < estimateSeedFrom(graph, pattern.start, ...).count;
+```
+
+⚠️ **Item 2104 rejected bucket-size evidence deliberately**: _"`orient` also reverses on LABEL-BUCKET SIZE
+ALONE — 4 Docs against 40 Users"_, and giving up the fused walk for that costs **13.8x on `hop2distinct`**
+(items 1821/1822). ✅ **Sound at a 10x ratio. Not sound at 400,000x.** So the bar becomes a RATIO:
+
+```ts
+export const FAR_BUCKET_DECISIVE = 64;
+export const FAR_BUCKET_TINY = 1024;
+export const farBucketIsDecisive = (endCount, startCount) =>
+  endCount > 0 && endCount * FAR_BUCKET_DECISIVE <= startCount;
+```
+
+### ✅ THE RESULT, AND THE PROBE THAT WAS BUILT TO CATCH THIS NOW PASSES
+
+```text
+    spelling                              before     after
+    subject-first (the natural one)       14.90 ms    0.78
+    object-first (the mirror)              0.78       0.61
+    subject-first, INLINE far predicate    0.50       0.60
+    object-first, hops reordered           0.66       0.63
+    spread                                29.51x     1.29x   <- below the 2x tolerance, NO FLAG
+    "the slow arm is …x the scan"           1.25x      0.06x  <- it no longer scans the tenant
+```
+
+🔑 **13.2x on the `rebaclist` fixture (9.08 → 0.69 at 400,000 users), and the gap was UNBOUNDED in the
+population before**, so the ratio keeps growing with tenant size. ✅ All four spellings of one question now
+cost the same, which is `CLAUDE.md`'s stated goal and was item 2104's.
+
+### ⚠️ THE FIRST VERSION REGRESSED THE ROWS THE RUNG SERVES, AND THE CODE PREDICTED IT
+
+Computing the START estimate unconditionally cost `hop2startwhere` **3.63 → 4.45 ms**, `hop2rows` 1.06x and
+`hop3sel` 1.08x. 🔑 `orient`'s own comment says why: _"asking it after the estimates cost the clause-`WHERE`
+shape item 172 had just fixed 2.00ms -> 2.33 … because where item 172 short-circuited this paid for two
+seed estimates."_ ✅ `FAR_BUCKET_TINY` restores the short-circuit — a far bucket that is not tiny cannot be
+64x smaller than anything, so it returns having asked nothing more.
+
+⚠️ **AND THE RESIDUAL 1.18x ON `hop2startwhere` WAS NOISE, PROVED BY ALTERNATION**: 4.08 WITH against 4.29
+WITHOUT on the next round — **the sign reversed**, and the gate provably cannot fire on a single-label
+fixture (its `:P` bucket is 20,000, above `FAR_BUCKET_TINY`). ✅ Post-fix rows: `hop2rows` 37.76 against
+39.96, `hop2where` 27.34 against 32.39, `hop3sel` 5.00 against 4.92.
+
+### ✅ TESTS WITH TEETH, BECAUSE NOTHING ELSE CAN SEE THIS
+
+A route choice is answer-equivalent, so the arithmetic is extracted and unit-tested
+(`perf-gate-needs-its-own-test`). **8 tests, and two mutants are caught**: loosening the ratio to 8 (which
+would take item 2104's 4-against-40 case) fails 2, and dropping the `endCount > 0` guard fails 1 — an empty
+far bucket satisfies any ratio and is not evidence about orientation.
+
+GATES. `bun run fmt` 0, `bun run check` 0, `bun run test` **21 projects OK**, `bun run fuzz` **57 pass / 0
+fail** (byte-identity holds), clean `nx build @lenke/gql`, `spelling:orient` unflagged.

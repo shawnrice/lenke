@@ -766,11 +766,63 @@ export const farEndSeeksNarrower = (
   const endEst = estimateSeedFrom(graph, endNode, binding, params);
 
   if (!endEst.indexed) {
-    return false;
+    /*
+     * ⚠️⚠️ **THE TINY-BUCKET PRE-CHECK EXISTS SO THE COMMON CASE PAYS NOTHING, AND ITS ABSENCE WAS
+     * MEASURED.** A first version computed the START estimate unconditionally and the rows this rung
+     * serves got worse for no gain — `hop2startwhere` 3.63 → 4.45 ms, `hop2rows` 1.06x, `hop3sel` 1.08x.
+     * 🔑 `orient`'s own comment predicts exactly that: *"asking it after the estimates cost the
+     * clause-`WHERE` shape item 172 had just fixed 2.00ms -> 2.33 … because where item 172
+     * short-circuited this paid for two seed estimates."*
+     *
+     * ✅ A far bucket that is not TINY cannot be 64x smaller than any start worth reversing for, so it
+     * returns here having asked nothing more. (With the pre-check, `hop2startwhere` measured 4.08 WITH
+     * against 4.29 WITHOUT on an alternated round — the sign reversed, so it is noise.)
+     */
+    if (endEst.count > FAR_BUCKET_TINY) {
+      return false;
+    }
+
+    return farBucketIsDecisive(
+      endEst.count,
+      estimateSeedFrom(graph, pattern.start, binding, params).count,
+    );
   }
 
   return endEst.count < estimateSeedFrom(graph, pattern.start, binding, params).count;
 };
+
+/**
+ * The far end is not INDEXED, but is its label bucket so much smaller that walking from the written
+ * start is wrong anyway? (item 2293)
+ *
+ * ⚠️⚠️ **ITEM 2104 CONSIDERED BUCKET SIZE AND REJECTED IT, FOR A REASON THAT DOES NOT COVER EVERY
+ * RATIO.** Its words: *"`orient` also reverses on LABEL-BUCKET SIZE ALONE — 4 Docs against 40 Users, no
+ * index anywhere — which is right for the matcher and wrong as a reason for this rung to give up its
+ * fused walk"*, which items 1821/1822 measured at **13.8x on `hop2distinct`**. ✅ Sound at 4-against-40,
+ * a 10x ratio.
+ *
+ * 🔑 **Not sound at 1-against-400,000.** Item 2289's authz list walked every user in a tenant whose far
+ * end is a single document: **9.08 ms against 0.68 for the same 2,000 rows, growing without bound in the
+ * population** — and a fused walk worth 13.8x cannot pay for an O(tenant) scan. So the bar is a RATIO:
+ * far above item 2104's 10x case, far below the 400,000x this exists for.
+ *
+ * ⚠️ PURE FUNCTIONS because the choice is ANSWER-EQUIVALENT — both routes return the same rows in the
+ * same order — so a mutation of a condition inline in the gate survives every differential test and only
+ * these unit tests can see it (`perf-gate-needs-its-own-test`, items 1038/1044).
+ */
+export const FAR_BUCKET_DECISIVE = 64;
+
+/**
+ * Above this many far-end candidates the ratio question is not even asked (item 2293).
+ *
+ * 🔑 COST, not correctness: it keeps the unindexed path from paying for a second seed estimate in the
+ * common case where the far bucket is ordinary. A bucket larger than this would need a start of 64x it —
+ * at least 65,536 candidates — before the ratio could fire.
+ */
+export const FAR_BUCKET_TINY = 1024;
+
+export const farBucketIsDecisive = (endCount: number, startCount: number): boolean =>
+  endCount > 0 && endCount * FAR_BUCKET_DECISIVE <= startCount;
 
 export const orient = (graph: Graph, pattern: CPath, binding: Binding, params: Params): CPath => {
   if (pattern.segments.length === 0 || pattern.segments.some((s) => s.rel.quantifier)) {
