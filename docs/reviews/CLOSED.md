@@ -112196,3 +112196,54 @@ text for native and a plan for TS, a timing comparison is fair only if the TS si
 or matched, which is its own methodological question.
 
 GATES. `bun run fmt` 0, `bun run check` 0. No instrument or production change — a verification item.
+
+## Item 2241 — 🔑🔑 **THE GREMLIN SURFACE IS TIMED AGAINST THE NATIVE ENGINE FOR THE FIRST TIME: ~5x on engine-bound shapes. AND A HAND-ROLLED TS FLOOR IS NOT A LOWER BOUND — native beats `values groupCount`'s floor by ~2.5x. The new checker cried wolf TWICE before it was right**
+
+Item 2240 left open whether a fair ts-vs-native Gremlin comparison is constructible. `gremlin-fuzz.test.ts`
+settles it: **`planToGremlin` renders a programmatic plan to text**, so ONE plan drives `toArray(plan, g)` on
+TS and `gremlinJson(handle, text)` on the native engine.
+
+```text
+    N=20000 vertices, 80000 edges        ts ms   ffi ms   ratio   answers
+    parse floor V().count()               0.00     0.00   1.65x   AGREE
+    count hop                             0.01     0.00   5.25x   AGREE
+    count hop + far has                   0.32     0.06   5.01x   AGREE
+    values groupCount                     1.31     0.29   4.57x   AGREE
+    [BOUNDARY] values hop                 1.29     1.99   0.65x   AGREE
+    [BOUNDARY] values hop hop             4.15     8.66   0.48x   AGREE
+```
+
+### ⚠️⚠️ A LARGE RESULT SET MAKES THIS A MARSHALLING BENCHMARK, NOT AN ENGINE ONE
+
+The `[BOUNDARY]` rows show TS "winning" at 0.65x and 0.48x. **That is not an engine result**: the native arm
+serializes every row to JSON and this side parses it back, so 80,000 and 320,000 values price the FFI
+boundary. 🔑 Only SMALL-RESULT shapes compare engines — the rows are labelled in the source so the next
+reader cannot take the boundary for a win. **Native is ~5x TS on engine-bound Gremlin shapes.**
+
+### 🔑🔑🔑 AND THE RESULT THAT REFRAMES THIS SESSION'S CLOSURES
+
+`values groupCount` is the shape item 2240 closed at **1.85x against a hand-rolled TS floor** — yet the
+native engine runs it **4.57x** faster than TS. ⚠️ **So a hand-rolled TS floor is NOT a lower bound on what
+is achievable; it is a lower bound on what THIS OBJECT MODEL achieves.** Every "at its floor" in this
+session should be read that way — the remaining headroom is real but architectural, which is exactly what
+[[element-caches-beat-the-store]] found when a store-read "optimization" came out 1.7x worse.
+
+### ⚠️⚠️ THE NEW CHECKER REPORTED TWO DIVERGENCES THAT DID NOT EXIST
+
+Both were representation, not disagreement, and both are now handled with the reason written beside the code:
+
+- **`JSON.stringify(new Map([[0, 2]]))` is `"{}"`.** Every `groupCount()` row hashed identically, and the
+  first run reported a divergence where ts `Map(3){0=>2,1=>2,2=>2}` and ffi `{"0":2,"1":2,"2":2}` are the
+  same answer. ⚠️ **A blind spot of exactly the kind the checker exists to catch** — and it would have been
+  reported as an engine bug if the reduction had not printed the Map's entries.
+- **A group map crosses the FFI as a plain JSON object, so its keys are STRINGS.** A `Map` keyed on the
+  number `0` and an object keyed on `"0"` are the same answer. Keys are stringified on both sides now.
+- Element group keys also render differently by design (`Vertex (v0) {}` vs the id), so an element key is
+  reduced to `el(<id>)`.
+
+🔑 Item 2236's GQL checker is NOT affected — GQL rows are plain objects — but the lesson generalizes: **an
+answer check is only as good as its canonicalization, and a hash of the wrong rendering is worse than no
+check because it is believed.**
+
+GATES. `bun run fmt` 0, `bun run check` 0. New instruments `gremlin-crossengine-2241.ts` (6 shapes, answer
+check, boundary labels) and `gc-probe-2241.ts` (the reduction); no production change.
