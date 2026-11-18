@@ -34,6 +34,7 @@ The [`examples/service-map`](../../examples/service-map) app threads one feature
 Cross-cutting guides that apply on any build:
 
 - **[algorithms](./algorithms.md)** — the in-engine graph algorithms (PageRank, connected/strongly-connected components, label propagation, betweenness/closeness, shortest path, …), their four call surfaces, and the byte-identity guarantee across engines.
+- **[query-cost](./query-cost.md)** — the measured differences large enough to change how you write a query on the pure-TS engine: fetch a whole result once rather than paging it, resume from the last key when you do page (and add a tiebreak column), name the properties you need, bind values as parameters, and hoist a Gremlin traversal out of the request path. Every figure cites the probe that produced it.
 - **[bitemporal](./bitemporal.md)** — modelling valid + transaction time from the shipped primitives (`DATE` columns, parameterized `WHERE`, the host clock, atomic corrections). Covers both the edge-period and version-node shapes, "as of" queries, and the supersession pitfalls. A documented recipe — lenke ships no bitemporal engine by design.
 
 ## Conventions in these guides

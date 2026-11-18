@@ -113926,3 +113926,45 @@ beats offset 1.7x, needs a tiebreak column, and an index makes it worse** — an
 whole result should fetch it once (1.7 ms) rather than page it (135-229 ms).
 
 GATES. `bun run fmt` 0, `bun run check` 0. No instrument, no production change — a soundness item.
+
+## Item 2277 — ✅ **THE SESSION'S USER-FACING FINDINGS ARE NOW DISCOVERABLE: `docs/guides/query-cost.md`. 🔑 There was no query-writing guide at all, and for paging a doc is the ONLY available speed intervention — item 2276 closed the code fix on soundness**
+
+Item 2276 refused the resumable-sorted-scan cure as unsound, leaving item 2275's **135x** paging cost as a
+fact a caller can only avoid by writing a different query. ⚠️ **And nothing told them**: `docs/guides/` had
+**zero** mentions of `SKIP` or `paginat`, and `keyset` appeared only in my own `CLOSED.md` entries. The ten
+guides are all deployment-shaped — build choice, frontend/backend, wasm, native — plus `algorithms` and
+`bitemporal`. **No guide covered how to write a fast query.**
+
+🔑 [[discoverability-is-the-bottleneck]] records the standing judgement that _"every dogfood wall was unfound
+syntax/fn; fix DOCS first"_ — and here a doc is not merely first, it is the only lever left.
+
+### ✅ WHAT IT SAYS, EVERY FIGURE CITING ITS PROBE
+
+```text
+    Fetch once, don't page          1.7 ms vs 136 (keyset) vs 229 (offset)    paging-2275.ts
+    Resume from the last key        1.7x better; ADD A TIEBREAK (4/20,000 rows vanish on ties);
+                                    a range index is 27% WORSE — a cursor is not a filter
+    Name the properties you need    RETURN n 111 ns vs RETURN n.name 27 ns = 4.1x; a 2nd prop is FREE
+                                                                              scanfuse-2256.ts
+    Property writes are free        setprop none; addVertex +1.5 ms; addEdge +1.1 ms; ~3x at 80k
+                                                                              tvtest-2252.ts
+    Bind values, don't interpolate  >512 distinct texts costs ~4x/statement    stmtcache-2269.ts
+    Hoist a Gremlin traversal       18% (332 ns) of a small traversal          gremstmt-2272.ts
+```
+
+✅ Five probes cited by path, so every claim is re-runnable rather than folklore. ✅ Headers are neutral per
+[[no-gotchas-in-titles]], and the guide is linked from `docs/guides/index.md`'s "Patterns & topics"
+alongside `algorithms` and `bitemporal`.
+
+### 🔑 WHY THIS IS A SPEED ITEM AND NOT DOCUMENTATION BUSYWORK
+
+Four of the six rules **cannot be fixed in the engine**: paging's cure is unsound (2276), `RETURN n` builds
+the map the surface asked for, a topology write must invalidate adjacency, and a Gremlin traversal is the
+caller's own object. 🔑 **For those, the only thing that makes a caller faster is knowing.** The fifth
+(the statement cache) was fixed in code at item 2271 **and** still rewards a parameter over an
+interpolation, so it belongs in both places.
+
+⚠️ One scope note, stated plainly: the figures are **pure-TS**, and the title says so. The native engine's
+numbers differ and were not measured for this guide.
+
+GATES. `bun run fmt` 0, `bun run check` 0. New guide + one index line; no code change.
