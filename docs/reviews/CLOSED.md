@@ -108221,3 +108221,53 @@ depth with the invariant that would make it load-bearing again.
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 5,324 GQL
 tests; `bun run fuzz` all seven green.
+
+## Item 2166 — ⚠️ **CLOSED, NOTHING BUILT: the SCALAR FAMILY is healthy. Two scalars are FASTER in TS than native, and `bufferedScalarCall`'s per-row overhead is not a systematic gap**
+
+Item 2165 specialized `coalesce` for 1.3x and left an obvious follow-up: `bufferedScalarCall` serves every
+unspecialized scalar and pays per ROW for things constant per call site (a `buf` fill,
+`assertScalarArgTypes`, and two `name`-keyed table lookups). 🔑 If that overhead were the gap, hoisting it
+once would cover the family rather than one function at a time. **It is not the gap.**
+
+```text
+    scalar                     ts    native   ratio    marginal over the 3.90 baseline
+    trim(a.s)                4.88      8.32    0.6x    +0.98   <- TS FASTER
+    substring(a.s, 1, 2)     8.05     10.12    0.8x    +4.15   <- TS FASTER
+    left(a.s, 2)            10.88      9.96    1.1x    +6.98
+    size(a.s)                8.85      6.54    1.4x    +4.95
+    upper(a.s)              10.89      5.14    2.1x    +6.99
+    power(a.k, 2)            5.76      2.62    2.2x    +1.86
+    nullif(a.k, 5)           4.76      1.76    2.7x    +0.86
+    abs(a.k)                 5.27      0.84    6.2x    +1.37
+    coalesce(a.k, 0)         5.33      0.72    7.4x    +1.43   (after item 2165)
+```
+
+⚠️ **The biggest RATIOS have the smallest ABSOLUTE margins.** `abs` and `coalesce` are 6-7x because native
+answers them in under a millisecond; their marginal TS cost is 1.4 ms over 200,000 rows, about 7 ns a row.
+🔑 The scalars with real marginal cost — `upper`, `left`, `size` — are the STRING ones, and native pays
+5.1-10.0 ms for those too. **String work is costly in both engines, which is why TS wins two of these rows
+outright.**
+
+🔑 The compile site already hoists what matters: `UNARY_NUM`, `UNARY_STR` for the names in
+`SCALAR_ASSERTS_STR0_ONLY`, `TRIM_1`, the binary-string calls, and now `coalesce`. What remains on
+`bufferedScalarCall` is a tail, not a family.
+
+### 🔑 AND THE SCREEN'S LAST FLAG, `CASE`, PRICES OUT THE SAME WAY
+
+```text
+                              ts    native     marginal (ts / native)
+    sum(a.k) [baseline]      6.71      0.13
+    CASE, one branch        11.86      1.69     +5.15 / +1.56     3.3x
+    CASE, three branches    14.12      2.31     +7.41 / +2.18     3.4x
+    CASE in a WHERE          8.48      2.66
+```
+
+⚠️ **26 ns a row for a `CASE` evaluation, against native's 8.** A real 3.3x on the marginal term, but 5 ms
+on a 200,000-row query — and `executor-edits-perturb` prices an edit in this area at up to 16% on unrelated
+rows. **Below the bar.**
+
+🔑 So item 2161's screen is now fully worked: `EXISTS`/`NOT EXISTS` SHIPPED at 2163 (31.0x → 2.9x),
+COALESCE shipped at 2165 (1.3x, and its 2.9x residual is per-row closure cost), `CASE` and the scalar family
+CLOSED here, and `ORDER BY DESC` (5.2x) left as the only unexamined row.
+
+GATES. No code change; `bun run check` 0; 5,324 tests green.
