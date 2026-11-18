@@ -113462,7 +113462,7 @@ spread lives.
 GATES. `bun run fmt` 0, `bun run check` 0. Existing instrument re-run (`FINDER=gremlin`); no production
 change.
 
-## Item 2267 — ✅ **THE SESSION'S STANDING O(1)-BY-ID INVARIANT IS VERIFIED BY SWEEP FOR THE FIRST TIME: N grows 80x and the lookup grows 3.84x, so it is O(1) and the rise is CACHE — with the jump exactly at 200,000, where `CLAUDE.md` puts that transition**
+## Item 2267 — ⚠️⚠️ **RE-DERIVED ITEM 1969, WHICH DID IT BETTER — "FOR THE FIRST TIME" IS FALSE (corrected at item 2268). The sweep agrees with it:** N grows 80x and the lookup grows 3.84x, so it is O(1) and the rise is CACHE — with the jump exactly at 200,000, where `CLAUDE.md` puts that transition**
 
 The brief carries one explicit invariant — _"keep good O(1) access to get a vertex or edge by id"_ — which
 had been touched indirectly (item 2200 priced by-id lookup; 2239 found `getVertexById` is one `Map.get` that
@@ -113508,3 +113508,50 @@ surfaces now swept across sizes with reproducibility** (2265/2266), a **fair sor
 headings**.
 
 GATES. As above, each read unpiped. New instrument `byid-2267.ts`; no production change.
+
+## Item 2268 — ⚠️⚠️⚠️ **I RE-DERIVED ITEM 1969 AT ITEM 2267 AND CLAIMED IT WAS "THE FIRST TIME". It had already verified the by-id invariant, WITH A FLOOR I DID NOT BUILD AND WITHOUT THE STRING-CONSTRUCTION FLAW I HAD TO CAVEAT. I skipped the prior-art check that item 2250 taught me**
+
+Looking for an uncovered shape (multi-statement GQL sessions), the prior-art grep surfaced
+**`## Item 1969 — THE BY-ID ACCESS REQUIREMENT, VERIFIED`** — the invariant I had announced verifying "for
+the first time" one tick earlier.
+
+### ⚠️ ITEM 1969 IS STRICTLY MORE THOROUGH THAN MY 2267
+
+```text
+                                      item 1969              item 2267 (mine)
+    floor vs a raw `Map.get`          YES — wrapper FREE     none
+                                      (25.1 vs 24.0 at 10k)
+    keys pre-built and shuffled       YES                    NO — built IN the timed loop
+    sizes                             10k / 100k / 1M        10k / 50k / 200k / 800k
+    missing-key arm                   YES (10.6 ns)          no
+    hits guard                        YES                    yes
+```
+
+🔑 **It also found the same thing**: `getVertexById` is `verticesById.get(id) ?? null`, one `Map.get`; the
+5x from 100k to 1M _"is the memory hierarchy, not complexity"_ — the transition my sweep re-found between
+50k and 200k. ⚠️ **And it avoided the exact flaw I had to caveat**: its loop measures lookups because the
+keys are pre-built, so **1969's absolutes (25-144 ns) are the ones to quote, not my 88-445 ns**, which carry
+per-lookup string construction.
+
+### ⚠️⚠️ THE PROCESS FAILURE IS MINE AND IT IS THE ONE I KEEP NAMING
+
+Item 2250's lesson, which I wrote: _"when a cost is structural and reproducible, grep the source for the
+mechanism BEFORE building an instrument to hunt it."_ Item 2251 then applied it correctly, and 2255 opened
+with a prior-art check that _"nearly ended the item"_. 🔑 **At 2267 I went straight to building** — because
+it felt like verifying a requirement rather than chasing a target, and I never asked whether the
+verification already existed. **A standing invariant is exactly the thing most likely to have been checked
+before.**
+
+✅ **What 2267 legitimately adds, and it is small**: an **800,000** data point above 1969's 1M-element
+ceiling in element terms, and **vertex/edge parity at that size** (444.7 vs 436.6 ns). Its heading is
+corrected above to say so.
+
+### ✅ AND THE ANSWER TO THE QUESTION THAT STARTED THIS ITEM
+
+The shape I came looking for — **a session of MANY DIFFERENT statements, which defeats a warm parse/plan
+cache** — is **not** covered: `parseCache` and `plan cache` appear 34 and 38 times, `LRU` 14, but **"cache
+eviction" and "distinct queries" appear ZERO times.** 🔑 Every screen row runs ONE statement repeatedly, so
+nothing measures a workload whose query text keeps changing. **That is the next target, and it now has a
+prior-art check behind it before any instrument is built.**
+
+GATES. `bun run fmt` 0, `bun run check` 0. No instrument, no production change — a correction item.
