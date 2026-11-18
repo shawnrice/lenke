@@ -111000,3 +111000,52 @@ anything built goes in a NEW FILE.
 
 GATES. `bun run fmt` 0, `bun run check` 0 (three more lint rounds on the probe: `curly`, `padding-lines`,
 `consistent-function-scoping`). Probe only; no engine change.
+
+## Item 2217 — ✅ **CLOSED: BOTH NAMED CANDIDATES ABLATE FLAT, and the 8.6 ms residual is DIFFUSE — seven per-edge terms of 0.6-2.1 ms whose largest is the policy-blocked one. No single lever exists**
+
+Item 2216 localized 72% of the as-of-rows gap to `relBoundFilteredHopWalk`'s own body and named two
+suspects from reading the source. Both are wrong:
+
+```text
+    arm      verified            engine
+    live     vacLines=10         18871 us
+    novac    vacLines=9          18801 us   <- vacuousLabel REMOVED: flat
+    nocfar   ablated=1           19818 us   <- cfar seek-margin scan REMOVED: flat
+    both     9 / 1               19584 us   <- flat
+```
+
+⚠️ Each arm asserts it IS the code it claims (`vacLines` 10→9, `ablated` 0→1), the run begins with a
+pristine-tree check, and a `trap` restores on any exit — the discipline items 2207 and 2184 paid for.
+
+🔑🔑 **WHY THEY COULD NOT HAVE BEEN THE COST, which is obvious only afterwards: both are PER-CALL terms and
+this gap is PER-EDGE.** One `vacuousLabel` computation and one seek-margin scan cannot be 8.6 ms of a 19 ms
+query that walks 160,000 edges. ⚠️ I over-read the comment pricing `vacuousLabel` at "32.0% of this row" —
+**that comment describes a DIFFERENT row**, one whose shape makes it per-edge.
+
+### ✅ THE RESIDUAL IS DIFFUSE, AND ITEM 2215'S PROFILE ALREADY SHOWED IT
+
+```text
+    per-edge term                        ms/rep
+    propOf + get properties (Edge)          3.8
+    variable.variable + compareTruth        1.7
+    matchesLabel + get soleLabel            1.3
+    get to                                  0.7
+    -------------------------------------------
+    ~7.5 ms, i.e. essentially the whole residual
+```
+
+🔑 **Seven terms of 0.6-2.1 ms each — there is no single lever.** And the largest, the property-read pair, is
+the one item 2201 recorded as a ROW-OBJECT HIDDEN-CLASS problem requiring a generated constructor, which
+`no-runtime-codegen` forbids. The predicate-evaluation and label-test terms are the general machinery the
+ladder's `closure` rung already priced at only +0.7 ms when modelled cheaply — so the gap is that the
+engine's versions of those are each a little more expensive, everywhere, rather than one of them being wrong.
+
+**VERDICT: the 2.6x on this shape is real and NOT worth building.** ⚠️ It is also the correct outcome of the
+ladder-then-ablate method: item 2216 showed 72% was not the closed causes, and this item shows that 72% is
+not ONE cause either. Two cheap probes, no engine churn, and no withdrawn claim.
+
+🔑 **The method is the keeper: measure (2215) → ladder for reachability (2216) → ablate the named candidates
+(2217).** Items 2208-2210 reached a withdrawal because they skipped straight from measurement to a target.
+
+GATES. `bun run fmt` 0, `bun run check` 0; tree verified byte-identical to pristine after the run. No
+production change.
