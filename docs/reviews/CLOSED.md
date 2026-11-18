@@ -110710,3 +110710,47 @@ for any projection with a second column.** A general rung could not use it.
 floors. Do not open it again without an instrument that measures the sort's own cost.
 
 GATES. `bun run fmt` 0, `bun run check` 0. No production change.
+
+## Item 2211 — ✅ **THE FLOOR CONVENTION IS NOW IN THE INSTRUMENT, NOT IN MY HEAD: `gql-cliff-finder.ts` grows a hand-rolled `floor` per shape and a `vs floor` column. It settles items 2208-2210 in ONE RUN — the engine is 0.76x of its honest floor, i.e. FASTER than hand-rolled**
+
+Floors caused three wrong calls in four items (2206's unit/floor confusion, 2208/2209's missing `ORDER BY`
+control, 2210's unordered ceiling). ⚠️ Each time the fix was "be more careful next time", which plainly did
+not work — so the convention moved into the tool.
+
+### ✅ WHAT WAS ADDED
+
+`Shape` gains `floor?: { label, run }` — **a hand-rolled arm that does THE SAME WORK as the query**, timed
+by the same min-of-REPS the query gets, printed as a `floor` column and a `vs floor` ratio that flags over
+2x. A shape with no floor prints `-` and is **explicitly unpriced** rather than implicitly compared to
+something irrelevant. The type's doc states the three rules the last four items violated:
+
+- a sorted shape's floor **must sort** (item 698: the honest floor is the unordered query PLUS a bare sort
+  of its own rows; comparing against the unordered query alone **overstates ~1.9x**);
+- a filtered shape's floor must apply the filter;
+- ⚠️ a floor may not use a cheaper ORDER than the engine may use — the far-driven walk reorders rows and tie
+  order is observable between engines (item 605), so a streamed top-k is sound only where ties are identical
+  rows.
+
+### 🔑🔑 AND IT IMMEDIATELY SETTLES THE LAST THREE ITEMS
+
+```text
+    family shape                    ns/op       floor  vs floor    rows  rungs
+    node   rows                    234371      162091     1.45x   20000  nodeProjection
+    page   ordered rows           1056005      947475     1.11x   20000  nodeProjection
+    page   topk                    359641      956455     0.38x      10  nodeProjection
+    page   topk over a hop        7452298     9787720     0.76x      10  hopProjection
+    page   collect over a hop     6201022     4035491     1.54x       1  hopAggregate
+```
+
+🔑🔑 **`topk over a hop` is 0.76x of its honest floor — the engine BEATS a hand-rolled walk+sort+slice**, and
+`topk` beats it by 2.6x (0.38x). Items 2208/2209/2210 chased that row for three ticks; this column answers it
+in one run, which is the whole point. ⚠️ `collect over a hop` at 1.54x is the only row above 1.0 and sits
+under the 2x flag — the candidate item 2208 left open, now priced and NOT worth building.
+
+### ⚠️ BOTH BRANCHES OF THE NEW FLAG VERIFIED
+
+Giving `page/topk` a trivially fast floor renders `6771.24x <--` on exactly that row while its siblings are
+unchanged — so the marker is not dead code. (Item 2191's rule; item 2207 needed the same check twice because
+a lint-forced refactor invalidated the first one.)
+
+GATES. `bun run fmt` 0, `bun run check` 0. Instrument only; no engine change.

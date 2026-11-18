@@ -104,18 +104,74 @@ const routes = (src: string): string[] => {
     .sort();
 };
 
-type Shape = { family: string; name: string; q: string };
+/**
+ * A shape, and optionally THE HONEST FLOOR FOR IT (item 2211).
+ *
+ * ⚠️⚠️ **FLOORS CAUSED THREE WRONG CALLS IN FOUR ITEMS (2206, 2208/2209, 2210), so the convention lives
+ * HERE rather than in my head.** A `floor` is a hand-rolled arm that does **THE SAME WORK** as the query,
+ * including work the query's clauses imply:
+ *
+ *   - a sorted shape's floor MUST SORT. Item 698 states it: the honest floor for an `ORDER BY` is *the
+ *     unordered query PLUS a bare sort of its own rows*, and comparing against the unordered query alone
+ *     **overstates by ~1.9x**. Item 2210 made exactly that error and withdrew a 3.5x "target".
+ *   - a filtered shape's floor must apply the filter.
+ *   - ⚠️ a floor may NOT use a cheaper ORDER than the engine is allowed to. The far-driven walk reorders
+ *     rows and tie order is observable between the engines (item 605), so a streamed top-k is sound only
+ *     where ties are identical rows.
+ *
+ * 🔑 **`vs floor` IS THE VERDICT; the neighbour-pair ratios below are a hint.** A shape with no floor
+ * prints `-` and is explicitly unpriced rather than implicitly compared to something irrelevant.
+ */
+type Shape = {
+  family: string;
+  name: string;
+  q: string;
+  floor?: { label: string; run: () => unknown };
+};
 
 /**
  * ⚠️ EVERY FAMILY VARIES ONE CLAUSE AT A TIME, and each has a member the engine is known to answer
  * in closed form. A family of uniformly-slow shapes says nothing: the signal is the DISAGREEMENT
  * between neighbours, which is why the pairs at the bottom are declared rather than inferred.
  */
+/* --- hand-rolled floors (item 2211): each does THE SAME WORK as its query ------------------- */
+
+/** Every `P` vertex's `k`, as rows — the work a `RETURN n.k` must do. */
+const scanRows = (): { k: unknown }[] => {
+  const out: { k: unknown }[] = [];
+
+  for (const v of g.verticesByLabel.get('P') ?? []) {
+    out.push({ k: v.properties.k });
+  }
+
+  return out;
+};
+
+/** Every `(a:P)-[:E]->(b:P)` path's `b.k`, as rows — the work a one-hop `RETURN b.k` must do. */
+const hopRows = (): { k: unknown }[] => {
+  const out: { k: unknown }[] = [];
+
+  for (const a of g.verticesByLabel.get('P') ?? []) {
+    for (const e of g.edgesFromByLabel.get(a.id)?.get('E') ?? []) {
+      out.push({ k: e.to.properties.k });
+    }
+  }
+
+  return out;
+};
+
+const byK = (x: { k: unknown }, y: { k: unknown }): number => (x.k as number) - (y.k as number);
+
 const SHAPES: Shape[] = [
   // --- node scans: the family items 1607/1609/1610/1611 worked on, kept as the CONTROL -------
   { family: 'node', name: 'count', q: 'MATCH (n:P) RETURN count(*) AS c' },
   { family: 'node', name: 'count + where', q: 'MATCH (n:P) WHERE n.k = 5 RETURN count(*) AS c' },
-  { family: 'node', name: 'rows', q: 'MATCH (n:P) RETURN n.k AS k' },
+  {
+    family: 'node',
+    name: 'rows',
+    q: 'MATCH (n:P) RETURN n.k AS k',
+    floor: { label: 'scan + read k', run: scanRows },
+  },
   { family: 'node', name: 'rows + where', q: 'MATCH (n:P) WHERE n.k = 5 RETURN n.k AS k' },
 
   // --- one hop, count then rows then aggregates ---------------------------------------------
@@ -182,25 +238,62 @@ const SHAPES: Shape[] = [
     name: 'grouped hop count',
     q: 'MATCH (a:P)-[:E]->(b:P) RETURN b.k AS k, count(*) AS c',
   },
-  { family: 'page', name: 'ordered rows', q: 'MATCH (n:P) RETURN n.k AS k ORDER BY k' },
-  { family: 'page', name: 'topk', q: 'MATCH (n:P) RETURN n.k AS k ORDER BY k LIMIT 10' },
+  {
+    family: 'page',
+    name: 'ordered rows',
+    q: 'MATCH (n:P) RETURN n.k AS k ORDER BY k',
+    /* ⚠️ THE SORT IS PART OF THE FLOOR — item 698. */
+    floor: { label: 'scan + sort', run: () => scanRows().sort(byK) },
+  },
+  {
+    family: 'page',
+    name: 'topk',
+    q: 'MATCH (n:P) RETURN n.k AS k ORDER BY k LIMIT 10',
+    floor: { label: 'scan + sort + slice', run: () => scanRows().sort(byK).slice(0, 10) },
+  },
   {
     family: 'page',
     name: 'topk over a hop',
     q: 'MATCH (a:P)-[:E]->(b:P) RETURN b.k AS k ORDER BY k LIMIT 10',
+    /*
+     * ⚠⚠ **THE FLOOR THAT ITEM 2210 GOT WRONG.** A streamed bounded top-10 reads 2,068 us and is NOT
+     * the floor: it never sorts, and it walks in far-driven order, which would reorder ties (item 605).
+     * The honest floor walks, keys, SORTS and slices — and against it the engine is 1.20-1.66x at every
+     * degree, inside item 698's measured band.
+     */
+    floor: { label: 'hop + sort + slice', run: () => hopRows().sort(byK).slice(0, 10) },
   },
   { family: 'page', name: 'collect', q: 'MATCH (n:P) RETURN collect(n.k) AS ks' },
   {
     family: 'page',
     name: 'collect over a hop',
     q: 'MATCH (a:P)-[:E]->(b:P) RETURN collect(b.k) AS ks',
+    floor: { label: 'hop + collect', run: () => hopRows().map((r) => r.k) },
   },
 ];
 
 const picked = FAMILY === 'all' ? SHAPES : SHAPES.filter((s) => s.family === FAMILY);
 
+/** Min-of-REPS for a hand-rolled floor, timed exactly as the query is. */
+const floorNs = (run: () => unknown): number => {
+  for (let i = 0; i < 3; i += 1) {
+    run();
+  }
+
+  let best = Infinity;
+
+  for (let i = 0; i < REPS; i += 1) {
+    const t0 = performance.now();
+
+    run();
+    best = Math.min(best, performance.now() - t0);
+  }
+
+  return best * 1e6;
+};
+
 console.log(
-  `${'family'.padEnd(6)} ${'shape'.padEnd(24)} ${'ns/op'.padStart(11)} ${'rows'.padStart(7)}  rungs`,
+  `${'family'.padEnd(6)} ${'shape'.padEnd(24)} ${'ns/op'.padStart(11)} ${'floor'.padStart(11)} ${'vs floor'.padStart(9)} ${'rows'.padStart(7)}  rungs`,
 );
 
 const timings = new Map<string, number>();
@@ -225,8 +318,13 @@ for (const s of picked) {
   const ns = best * 1e6;
 
   timings.set(`${s.family}/${s.name}`, ns);
+
+  const fl = s.floor === undefined ? undefined : floorNs(s.floor.run);
+  /* 🔑 Flag on the FLOOR ratio, which is the only one that says a win is reachable. */
+  const over = fl === undefined ? '' : `${(ns / fl).toFixed(2)}x${ns / fl > 2 ? ' <--' : ''}`;
+
   console.log(
-    `${s.family.padEnd(6)} ${s.name.padEnd(24)} ${ns.toFixed(0).padStart(11)} ${String(rows).padStart(7)}  ${
+    `${s.family.padEnd(6)} ${s.name.padEnd(24)} ${ns.toFixed(0).padStart(11)} ${(fl === undefined ? '-' : fl.toFixed(0)).padStart(11)} ${over.padStart(9)} ${String(rows).padStart(7)}  ${
       fired.length === 0 ? 'PIPELINE' : fired.join(' ')
     }`,
   );
