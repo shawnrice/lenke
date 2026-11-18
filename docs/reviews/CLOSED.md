@@ -115082,3 +115082,54 @@ two families admitted, six refused by name, and `refused.length + 2 === 8` so a 
 GATES. `bun run fmt` 0, `bun run check` 0, `bun run test` **21 projects OK**, `bun run fuzz` **57 pass / 0
 fail** (byte-identity holds). 6 unit tests; **two mutants caught** (dropping `nullProps` fails 2, dropping
 `cmpProps` fails 1), each verified as applied.
+
+## Item 2299 — ✅ **REGRESSION PASS AFTER TWO GATE CHANGES: the GQL spelling sweep drops from TWO flagged groups to ONE, and the survivor is the harness artifact item 2295 already refuted. ⚠️ The hop-row A/B was INCONCLUSIVE and is reported as such — the rows my change CANNOT reach moved most, and one varies 1.86x on an identical binary**
+
+Items 2297/2298 changed a planner gate twice, so the surface that exists to catch that was run.
+
+```text
+    GQL spelling sweep     2 flagged groups -> 1, 0 answer disagreements
+    survivor               "SEEK: a param equality AND a second conjunct (item 578)" at 4.00x
+                           — item 2295 isolated this THREE times at 1.21-1.42x: a harness artifact
+    gremlin spelling       2 groups, unchanged (the known steady state, items 1306-1312)
+    bun run test           21 projects OK          (item 2298)
+    bun run fuzz           57 pass / 0 fail        (item 2298, byte-identity holds)
+```
+
+✅ **The far-node group no longer flags at all** — it was 3.2x before item 2297 and 3.8x between the two
+ships.
+
+### ⚠️ THE HOP-ROW A/B DID NOT ANSWER ITS QUESTION, AND SAYING SO IS THE POINT
+
+The risk was that admitting more shapes to the far-driven walk costs the rows `hopProjection` serves. An
+env switch inside ONE binary (item 2294's instrument, so both arms share a build):
+
+```text
+    row         WITHOUT   WITH
+    hoprows       2.698   1.436    1.88x "faster"
+    hop2rows     41.769  40.839    flat
+    hop3sel       4.697   5.827    1.24x "worse"
+    noderows      0.563   0.385    1.46x "faster"
+```
+
+🔑 **None of those four shapes has an inline far constraint, so the change CANNOT reach any of them** —
+`hop3sel` is three segments, `noderows` has no hop. Every movement there is definitionally noise, and the
+floor confirms the magnitudes. Same binary, same row, four runs:
+
+```text
+    hop3sel     5.54  4.80  5.05  5.26     spread 1.15x
+    noderows    0.582 0.345 0.642 0.582    spread 1.86x   <- on an IDENTICAL binary
+```
+
+⚠️ **So the 1.88x "bonus win" on `hoprows` is not claimed, and the 1.24x "regression" on `hop3sel` is not
+believed.** The honest guarantee is structural rather than measured: `inlineFarIsPlainAnchor(undefined)`
+is `true`, so the `closedFar === undefined` case is byte-identical to before, and the `clauseWhere`
+branch is unchanged — the gate only ADMITS a case it previously refused. ✅ The differential tests and
+fuzzers confirm no answer moved.
+
+🔑 **A ROW THAT VARIES 1.86x ON ONE BINARY CANNOT ADJUDICATE A 1.46x EFFECT.** This is the recorded
+noise-floor rule arriving with a number: four rows, two of them unusable as evidence at the effect sizes
+on offer, which is why the structural argument carries the verdict here.
+
+GATES. As listed. No production change in this item; the temporary env switch was removed and verified
+gone (`grep -c` → 0).
