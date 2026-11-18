@@ -154,7 +154,20 @@ MATCH (p:Person)-[:WORKS_WITH]->(q:Person) WHERE q.team = $t RETURN count(*) AS 
 The first row is not a rounding of a small number: the unfiltered count is answered from bookkeeping in
 constant time, so it needed over a million repetitions to register on a clock at all. **Adding any
 predicate is four orders of magnitude**, and most of that is **having** a predicate rather than what the
-predicate reads: `WHERE true` already pays 1.17 of the 1.74 ms. This is not a defect — a filtered count genuinely needs the walk — but the step is a cliff
+predicate reads: `WHERE true` already pays 1.17 of the 1.74 ms.
+
+**The same holds when you project rows rather than count them**, and there the ratio is smaller while the
+output is byte-for-byte identical. A 1-hop projection over 50,000 vertices at fan-out 5 returns the same
+250,000 rows either way:
+
+| 1-hop projection, 250,000 rows both ways | ms            |
+| ---------------------------------------- | ------------- |
+| `RETURN x.name AS n`                     | **12.6-15.3** |
+| `WHERE true RETURN x.name AS n`          | **64.2-66.6** |
+
+So a predicate costs 4.2-5.3x on a projection against four orders of magnitude on a count — the count has
+further to fall because it starts from a constant-time answer, not because a projection escapes the
+problem (`packages/native/startcost-2309.mjs`). This is not a defect — a filtered count genuinely needs the walk — but the step is a cliff
 rather than a slope, so if you want a plain total, ask for it without a predicate rather than filtering on a
 condition that keeps everything (`packages/native/farfilter-2286.mjs`, one shape per process).
 

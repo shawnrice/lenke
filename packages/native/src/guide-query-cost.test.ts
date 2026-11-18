@@ -179,6 +179,24 @@ describe('docs/guides/query-cost.md snippets', () => {
     )[0]?.c;
 
     expect(vacuous).toBe(all);
+
+    /*
+     * ⚠️ AND THE SAME FOR A PROJECTION (item 2309), which the guide now also claims: `WHERE true` returns
+     * the identical ROWS, not merely the identical count, so the 4.2-5.3x it costs there is pure overhead.
+     */
+    const projected = query(
+      g,
+      'MATCH (p:Person)-[:WORKS_WITH]->(q:Person) RETURN q.name AS n ORDER BY n',
+      {},
+    );
+    const projectedVacuous = query(
+      g,
+      'MATCH (p:Person)-[:WORKS_WITH]->(q:Person) WHERE true RETURN q.name AS n ORDER BY n',
+      {},
+    );
+
+    expect(projectedVacuous).toStrictEqual(projected);
+    expect(projected).toHaveLength(2);
   });
 
   test('a prepared GQL plan is reusable and returns what query() returns (item 2305)', () => {

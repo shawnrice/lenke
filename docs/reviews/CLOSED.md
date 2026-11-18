@@ -115564,3 +115564,43 @@ entry.**
 
 GATES. `bun run fmt` 0, `bun run check` 0, switch removed and verified gone. One probe; no production
 change.
+
+## Item 2309 — 🔑🔑 **THE BENCH'S UNMARKED 5.8x ROW DECOMPOSES, AND IT IS NOT SELECTIVITY: `WHERE true` on a 1-hop PROJECTION costs 4.2-5.3x for BYTE-IDENTICAL output. That is item 2286's rule on a new shape, and it raises the price of item 2287's reverted vacuous-fold**
+
+`traverse 1-hop project + start filter` reads **110.8 ms** against the plain projection's **19.0** — 5.8x
+MORE time for ~32% of the rows, since `a.age > 60` over `age = i % 90` keeps 29/90. ⚠️ Both compile to
+`hopProjection`, so, as at item 2296, the route difference is inside the rung and `compileLinear`'s fields
+do not show it.
+
+### 🔑 THE CONTROL IS THE WHOLE ANSWER
+
+```text
+    50,000 vertices, fan-out 5         ms              rows      (three rounds)
+    plain  RETURN x.name              15.3 / 12.6 / 15.2    250,000
+    WHERE true  RETURN x.name         64.2 / 66.6 / 64.7    250,000   <- 4.2-5.3x, SAME ROWS
+    WHERE a.age > 60                  13.7                   80,475
+    WHERE a.age = 60                   2.3                    2,775
+    inline {age: 60}                   2.2                    2,775
+```
+
+✅ **The selective forms are FASTER in absolute terms** (2.2-13.7 ms), exactly as they should be. ⚠️ **It is
+the VACUOUS form that costs 4.2-5.3x** — so the bench row's 5.8x is "a predicate is present", with
+selectivity then clawing most of it back. **Nothing about the start POSITION is special**, and the far-side
+twin (`x.age > 60`, 7.1 ms) is cheaper still.
+
+### 🔑 WHAT THIS CHANGES
+
+**1. Item 2286's rule generalizes.** It was measured on a hop COUNT, where the unfiltered arm is a
+constant-time answer and the ratio is four orders of magnitude (item 2303). ✅ **On a projection the same
+mechanism costs 4.2-5.3x with byte-identical output** — so the count's enormous ratio is not an artifact of
+closed-form bookkeeping, it is the same loss with further to fall. The guide now states both.
+
+**2. It raises the price of item 2287's revert.** That item built a vacuous-`WHERE` fold, measured it, and
+reverted it because `WHERE true` is a load-bearing route ORACLE in this repo's tests. ⚠️ **The lever is
+worth more than that item knew**: not only the count's cliff but 4.2-5.3x on every projection a vacuous
+predicate touches. ✅ The decision does not change — the oracle cost and the two-word caller-side fix are
+unaltered — but the entry should not be read as "worth 175x on one odd shape".
+
+GATES. `bun run fmt` 0, `bun run check` 0, guide suite **9 pass / 0 fail, 25 assertions** (the projection
+case asserts `toStrictEqual` on the ROWS, not just a count). One probe, one route reader; no production
+change.
