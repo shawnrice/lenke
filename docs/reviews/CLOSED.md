@@ -114228,7 +114228,7 @@ unfiltered, 1 filtered) so the claim cannot rot.
 GATES. `bun run fmt` 0, `bun run check` 0, guide suite **7 pass / 0 fail**. Two probes, one guide section,
 one test; no production change.
 
-## Item 2284 — 🎯 **A REAL, BOUNDED TARGET: THE TOP-K HEAP IS ENGAGING AND BUYS NOTHING. `LIMIT 100` costs 2.42 ms against 2.41 for sorting ALL 60,000 rows, and the sort is 52% of that row — so a heap that worked is ~2.1x.** ⚠️ Two hypotheses of mine refuted on the way, one by a warm-up pass
+## Item 2284 — ⚠️ ~~🎯 A REAL, BOUNDED TARGET: THE TOP-K HEAP IS ENGAGING AND BUYS NOTHING.~~ **WITHDRAWN at item 2285 — THE HEAP WORKS (1.13-2.17x, growing with N). The "inert" reading was a FOUR-SHAPE-PER-PROCESS artifact; a two-arm process shows the win at every size.** `LIMIT 100` costs 2.42 ms against 2.41 for sorting ALL 60,000 rows, and the sort is 52% of that row — so a heap that worked is ~2.1x.** ⚠️ Two hypotheses of mine refuted on the way, one by a warm-up pass
 
 Item 2283's mix left `ORDER BY + LIMIT` at 3.61 ms as the largest GQL shape with no closed-form route.
 **Prior art first**: top-K is already built (`topKPlan`, item 1064; 5.3-6.1x at item 1501) and its admission
@@ -114273,3 +114273,59 @@ projecting the 59,900 rows it discards, which would make the win larger than the
 
 GATES. `bun run fmt` 0, `bun run check` 0. Four probes (`topkladder`, `sortspell`, `sortshare`,
 `sortroute`); no production change yet.
+
+## Item 2285 — ⚠️⚠️⚠️ **ITEM 2284's TARGET IS WITHDRAWN: THE TOP-K HEAP WORKS (1.13-2.17x, GROWING WITH N). Its "inert" reading was a FOUR-SHAPE-PER-PROCESS ARTIFACT — and this is the one-shape-per-process rule's SECOND instance, this time DESTROYING a real win rather than inflating a fake one**
+
+Item 2284 measured `ORDER BY n LIMIT 100` at 2.42 ms against 2.41 for sorting all 60,000 rows and
+concluded the heap was reached-but-inert, with ~2.1-2.7x available. ✅ **Two checks before building, both
+of which were the right call:**
+
+### ✅ CHECK 1 — DOES THE ARM ACTUALLY RUN? (instrumented, not inferred)
+
+⚠️ My planned oracle was wrong before I ran it: **disabling the arm cannot distinguish "never runs" from
+"runs and is useless"** — both predict no change. So `topKNodeWalk`'s returned closure got a one-shot
+announce, built through `nx build` (dist-resolved), behind a `trap` restore:
+
+```text
+    PROBE2285 topKNodeWalk ran cap=100 allDirect=true     x5
+```
+
+✅ It runs, with the right cap, on the ideal all-direct-keys path.
+
+### ✅ CHECK 2 — IS MY MECHANISM GUESS RIGHT? (it was not, for the second time in three items)
+
+I had `boundedTopKeyed` re-reading the key via `propOf` **per comparison** — ~60k·log₂(100) ≈ 400k reads
+where 60k would do, a textbook Schwartzian fix. 🔑 **Its own header refutes it**: _"Keys are still
+evaluated for every item — nothing here knows which will win — so that part is unavoidable"_, and
+`keysOf` extracts once per item into `Kept.keys`, which the comparator reads. ⚠️ Item 2282 taught this
+exact lesson; **it arrived again one item later.**
+
+### 🔑 AND THEN THE SIZE SWEEP, WHICH ITEM 2284 NEVER DID
+
+```text
+    N          ordered      topk     ratio        (repeat)
+    20000         1.16      0.86     1.36x        1.18x
+    60000         3.18      2.36     1.35x        1.13x
+    200000       14.77      8.23     1.79x        1.83x
+    600000       45.94     21.65     2.12x        2.17x
+```
+
+✅ **The heap works and its win GROWS with N, exactly as an O(n log cap) against O(n log n) should.**
+⚠️ **The same two queries, in the same process as two extra arms, read 2.21 against 2.29 — the win gone
+and slightly inverted**, reproduced twice. `sortshare-2284.mjs` ran `count`, `project`, `ordered`, `topk`
+in sequence with `topk` LAST, so three other shapes had polluted the dispatch sites first.
+
+### ⚠️ WHAT THIS ADDS TO THE RULE
+
+The recorded one-shape-per-process rule (item 762) was about a change that **REDISTRIBUTES call sites
+flattering itself** — a fake win. 🔑 **This is the mirror: an honest 1.13-2.17x erased to 0.97x by two
+unrelated arms in the same process.** So the rule is not "beware flattering comparisons", it is **the
+measurement is only valid for the shape mix the process actually ran** — in both directions. Item 2284's
+sort-term decomposition (sort = 52-63% of the row) came from that same four-arm process and is suspect
+for the same reason.
+
+✅ **NOTHING TO BUILD. Top-K is healthy.** The 60k reading sits near the noise floor (1.13-1.36x), which
+is why 2284's artifact was so easy to believe.
+
+GATES. `bun run fmt` 0, `bun run check` 0, source restored (`grep -c PROBE2285` = 0 in src and dist), clean
+`nx build @lenke/gql`. One sweep probe; no production change; item 2284's heading corrected.
