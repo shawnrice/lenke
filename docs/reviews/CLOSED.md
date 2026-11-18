@@ -113660,3 +113660,47 @@ indexed point lookup from ~8.8 µs to ~0.8 µs) at small distinct counts; **nobo
 64**, which item 2269 puts at **5.5x** — and 64 distinct statements is a small application.
 
 GATES. `bun run fmt` 0, `bun run check` 0. No instrument, no production change — a source-reading item.
+
+## Item 2271 — ✅✅ **SHIPPED: `PARSE_CACHE_CAP` 64 → 512, and a session cycling over 100 distinct statements goes 16,809 → 3,949 ns/statement (4.26x) with BOTH controls flat. 🔑 FIFO turned out not to be needed — the per-hit LRU cost is ALREADY gated below the cap**
+
+Item 2270 found the cap and quoted the source's own named alternative: _"at a larger cap the honest choice
+would have been FIFO eviction instead."_ ⚠️ **Reading the hit paths refuted that**: `parseCacheHit` and
+`parseCached` only do the `delete` + `set` **while `size >= PARSE_CACHE_CAP`** (item 1509's gate, worth
+1.24x on a warm call). **Below the cap a hit is already free**, so the 26%-at-2000 figure the declaration
+cites is for an UNGATED LRU and raising the cap cannot reintroduce it for a caller whose distinct-text
+count fits.
+
+### ✅ THE A/B, WITH THE CONTROLS THAT MAKE IT READABLE
+
+```text
+    ARM=literal (a varying LITERAL — what an app does on every filter), 2000 statements/rep, median of 7
+    DISTINCT      cap 64      cap 512     verdict
+          10        3494         3577     FLAT — below both caps; cannot be helped, must not move
+         100       16809         4371     **3.85x** — the window the raise opens
+        1000       17858        18454     FLAT (+3.3%) — above both caps; correctly unaffected
+```
+
+🔑 **The win appears ONLY between the old and new cap, and both controls are flat** — which is the shape a
+capacity change must have. ⚠️ The +3.3% at 1000 is the honest toll: with 1000 distinct texts the cache is
+full, so the tracked-LRU `delete`+`set` runs per hit.
+
+✅ **Re-verified on the shipped build**, which is a separate measurement from the A/B (item 2066's lesson —
+never compare against a previous session's number):
+
+```text
+    DISTINCT      shipped      was
+          10         3323     3494     flat
+         100         3949    16809     **4.26x**
+        1000        17032    17858     flat
+```
+
+### ⚠️ THE COST IS MEMORY, STATED PLAINLY, AND IT IS WHY NOT 2000
+
+**~2KB a cached statement: ~1MB at 512 against ~128KB at 64.** A cap of 2000 would be ~4MB AND would put
+more workloads back inside the tracked-LRU region where the +3.3% toll lives. **512 is an 8x raise that
+keeps the cache a rounding error against a graph while covering an application's realistic statement set.**
+🔑 The old cap's COST had never been measured — items 227/228 measured the WIN at small distinct counts —
+and **64 distinct statements is a small application**: a people-graph service has hundreds.
+
+GATES. `bun run fmt` 0, `bun run check` 0, `bun run test -- --skip-nx-cache` 0 (21 projects),
+`bun run fuzz` 57 pass / 0 fail. One constant changed, with the measurement recorded in situ beside it.

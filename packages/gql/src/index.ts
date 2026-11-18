@@ -226,8 +226,28 @@ const withClock = (
  *
  * So 64 keeps true LRU behaviour affordable. At a larger cap the honest choice would have been
  * FIFO eviction instead, which costs nothing per hit but keeps the wrong entries.
+ *
+ * ⚠️⚠️ **RAISED 64 -> 512 AT ITEM 2271, AND FIFO TURNED OUT NOT TO BE NEEDED.** The 26% above is an
+ * UNGATED LRU; `parseCacheHit`/`parseCached` only do the `delete` + `set` while `size >= cap`, so BELOW
+ * the cap a hit is already free and raising the cap cannot reintroduce that cost for a caller whose
+ * distinct-text count fits. What the old cap did cost was never measured until item 2269: a session
+ * cycling over more than 64 distinct texts pays ~5x per statement, and **64 distinct statements is a
+ * small application** — a people-graph service has hundreds.
+ *
+ * Measured, `ARM=literal` (a varying LITERAL, which is what an application does on every filter; the
+ * text differs so both caches miss before auto-param is reached), 2000 statements a rep, median of 7:
+ *
+ *     DISTINCT      cap 64      cap 512
+ *           10        3494         3577    flat — below both caps, the control that cannot be helped
+ *          100       16809         4371    **3.85x** — the window the raise opens
+ *         1000       17858        18454    flat (+3.3%) — above both caps, correctly unaffected
+ *
+ * ⚠️ THE COST IS MEMORY, AND IT IS THE REASON NOT TO GO FURTHER: ~2KB a cached statement, so ~1MB at
+ * 512 against ~128KB at 64. 2000 would be ~4MB and would also put more workloads back INSIDE the
+ * tracked-LRU region, where the +3.3% toll lives. 512 is an 8x raise that keeps the cache a rounding
+ * error against a graph while covering an application's realistic statement set.
  */
-const PARSE_CACHE_CAP = 64;
+const PARSE_CACHE_CAP = 512;
 
 /**
  * Parsed statements by query TEXT — a bounded LRU, because `query()` was re-lexing, re-parsing and
