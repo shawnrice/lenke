@@ -108375,3 +108375,64 @@ rung above"). **Neither covers dedupe over VALUES.** Item 2079 fused the `where`
 chain to confirm which rung declines, before any edit.
 
 GATES. New instrument only; `bun run check` 0; 5,324 tests green.
+
+## Item 2169 — ✅✅ **SHIPPED: `V().values(k).dedupe().count()` fused — 9.7 → 2.5 ms (3.9x), and its marginal cost is now BETTER than native's (+0.31 against +0.81). ⚠️ Two process failures on the way, and one of them hid a WRONG ANSWER I had written**
+
+Item 2168 flagged this at 7.5x on the step's own cost, profiled `generatorResume` at 73.3%, and verified
+both existing dedupe rungs are element-based. This built the values form.
+
+```text
+    row                         BEFORE     NEW
+    values(k).dedupe().count()     9.7     2.5    3.9x   (answers identical, [97])
+    values(k).count() [floor]      2.6     2.6    flat   <- the target now EQUALS its floor
+    out().dedupe().count()         5.1     5.0    flat
+    values(k).order()             14.5    16.0    ~1.11x WORSE
+    ---- item 2168's screen ----
+    marginal, ts/native          +5.95/+0.79  ->  +0.31/+0.81    no longer flagged
+```
+
+⚠️ The `order` control is **~11% worse**, which `executor-edits-perturb` prices at up to 16% for a new walk
+variant. Stated, not hidden: 3.9x on the target against 11% on one sibling.
+
+### ⚠️⚠️ FAILURE ONE: THE MUTATION ROUND TESTED UNMUTATED CODE
+
+**8 of 9 mutants "survived"** — including an INVERTED dedupe filter, which no real test could miss. 🔑 The
+cause: my test imported **`@lenke/gremlin`**, which resolves to the BUILT DIST, while the harness edits
+`src/`. Every sibling test in the package imports `./index.js` for exactly this reason.
+**A test that imports the dist cannot witness a source mutation.** With the import fixed: 6/9, then 8/9
+after one gap was closed.
+
+### ⚠️⚠️⚠️ FAILURE TWO: CHASING THE LAST SURVIVOR FOUND A WRONG ANSWER IN MY OWN CODE
+
+`undefined-test-instead-of-in` kept surviving. I assumed it was structural — that `undefined` could not be
+stored — and **checked instead of assuming**: `{k: undefined}` stores `in-map: true, value: undefined`. So
+the two tests genuinely differ, and the question became which side is right:
+
+```text
+    values(k) raw                  [1, null, null]   <- undefined RENDERS as null
+    values(k).dedupe()  (unfused)  [1, null, null]   -> THREE rows
+    my fusion                                3       <- agreed
+```
+
+🔑 I read the rendered duplicate as a bug, "fixed" it with `?? null`, and the fusion answered **2** — a
+wrong answer against its own unfused spelling. ⚠️ The generator's dedupe keys on the RAW value, where
+`undefined` and `null` are distinct, and only the RENDERING collapses them. **Reverted to the raw value,
+with the unfused spelling pinned as the test's oracle rather than a number I chose.**
+
+⚠️ That `values()` renders `undefined` as `null` so a dedupe LOOKS like it kept a duplicate is a
+**pre-existing conformance question**, not something a count rung should decide. Noted, not changed.
+
+### 🔑 AND A LINT FIX THAT WOULD HAVE BEEN A SILENT ROUTE CHANGE
+
+`countShortcut` sits at `complexity` 35 and my branch took it to 36. ⚠️ My first fix folded the check into
+its `mid.length === 2` path as `return valuesDedupeCount(…) ?? filterChainCount(…) ?? startFilteredHopCount(…)`
+— which would have stopped a two-step mid from falling through to the LATER rungs. 🔑 Dispatched from
+inside `filterChainCount` instead, which already owns two-step mids, so the chain is untouched.
+
+**15 tests**, including the `{k: undefined}` case above, an absent key against an explicit null, lists and
+`Date`s compared against the unfused spelling, and a third step after the dedupe (a `limit` that the arity
+gate must not let the rung swallow). **8/9 mutants caught**; the survivor is `fusion-disabled`,
+answer-equivalent by design.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 2,807
+Gremlin tests; `bun run fuzz` all seven green.

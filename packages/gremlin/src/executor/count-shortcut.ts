@@ -3,6 +3,7 @@ import type { Edge, Graph, Vertex } from '@lenke/core';
 import type { ID, Plan, Predicate, Step } from '../ast.js';
 import { matches, specializePredicate } from '../predicates.js';
 import { seedForStep, seekWorthTaking } from './index-seed.js';
+import { valueDedupeFilter } from './runtime.js';
 import { seenBefore } from './second-ask.js';
 import { asStringId } from './sources.js';
 
@@ -1607,6 +1608,20 @@ const bucketsFor = (
 const filterChainCount = (mid: readonly Step[], graph: Graph): number | undefined => {
   if (mid.length < 2) {
     return undefined;
+  }
+
+  /*
+   * ⚠️ `V().values(k).dedupe().count()` IS DISPATCHED FROM HERE RATHER THAN FROM `countShortcut`, and
+   * the reason is a `complexity` cap, not taste: that function sits at 35 and a new branch took it to 36.
+   * 🔑 Folding the check into its `mid.length === 2` path instead would have been a SILENT ROUTE CHANGE —
+   * a two-step mid that declines these rungs must keep falling through to the later ones, and an early
+   * `return … ?? …` would have stopped it. This function already owns two-step mids, so the case belongs
+   * here and `countShortcut` gains nothing.
+   */
+  const valuesDeduped = valuesDedupeCount(mid, graph);
+
+  if (valuesDeduped !== undefined) {
+    return valuesDeduped;
   }
 
   const labelTests: (readonly string[])[] = [];
@@ -3610,6 +3625,95 @@ const bothFilteredHopCount = (mid: readonly Step[], graph: Graph): number | unde
 };
 
 /** The one intermediate step whose count is a bucket size. */
+/**
+ * `V().values(k).dedupe().count()` — one pass over the vertices, no traverser (item 2169).
+ *
+ * ⚠️⚠️ **ADDING `dedupe()` DROPPED THIS SHAPE OFF A FUSED RUNG ONTO THE GENERATOR PIPELINE.** A windowed
+ * profile of the two arms:
+ *
+ * ```text
+ *     V().values(k).count()   2.70 ms/rep    one fused loop
+ *     + dedupe()              8.71           generatorResume 73.3%, startTraverser 19.1%
+ * ```
+ *
+ * 🔑 Flagged by the floor-subtracted Gremlin screen at **+5.95 ms against native's +0.79 — 7.5x on the
+ * STEP's own cost** — where its RAW ratio is only 6.6x and would have been dismissed as item 2167's 48x
+ * property-scan floor. ⚠️ The same screen shows `values(k).order()` at PARITY and
+ * `out().dedupe().count()` CHEAPER than its floor, so this is specific, not "dedupe is slow".
+ *
+ * ⚠️ **BOTH EXISTING DEDUPE RUNGS ARE ELEMENT-BASED, which is why this one was missing**:
+ * `distinctHopCount` (one hop) and `dedupedHopChainCount` (two or more, "one hop is the rung above").
+ * Item 2079 fused the `where`-GATED values-dedupe and item 1970 the `limit` form; the bare `count()` was
+ * unserved.
+ *
+ * ### ⚠️⚠️ THE THREE SEMANTICS, ESTABLISHED EMPIRICALLY RATHER THAN READ
+ *
+ * ```text
+ *     vertices: k=1, k=1, k=2, k=null, (absent)
+ *     values(k)                 [1, 1, 2, null]    <- SKIPS the absent, EMITS the explicit null
+ *     values(k).dedupe()        [1, 2, null]       <- null is a DISTINCT value
+ *     values(k).dedupe().count()         3
+ * ```
+ *
+ * 🔑 So: an ABSENT key contributes nothing, an explicit `null` is a value, and the distinctness test must
+ * be `valueDedupeFilter` — the very function the generator path uses, which handles composites, object
+ * refs, `Date`s and `Temporal`s. **A plain `Set` of raw values would answer differently for those**, and
+ * this package has dedicated tests for temporal and namespaced dedupe keys.
+ */
+const valuesDedupeCount = (mid: readonly Step[], graph: Graph): number | undefined => {
+  if (mid.length !== 2) {
+    return undefined;
+  }
+
+  const [proj, filter] = mid;
+
+  if (proj.kind !== 'values' || proj.keys.length !== 1) {
+    return undefined;
+  }
+
+  /*
+   * ⚠️ `labels` or a `by` on the dedupe changes what it keys on, and both are refused for the same reason
+   * the sibling rungs refuse them.
+   */
+  if (
+    filter.kind !== 'dedupe' ||
+    (filter.labels?.length ?? 0) > 0 ||
+    (filter.bys?.length ?? 0) > 0
+  ) {
+    return undefined;
+  }
+
+  const [key] = proj.keys;
+  const keep = valueDedupeFilter();
+  let n = 0;
+
+  for (const v of graph.verticesById.values()) {
+    const { properties } = v;
+
+    /*
+     * ⚠️ `key in properties` AND NOT `=== undefined`: an explicit `null` IS emitted by `values()` and is
+     * a distinct dedupe value, while an ABSENT key emits nothing at all. Testing for `undefined` would
+     * conflate them and under-count by one whenever a null is present.
+     *
+     * ⚠️⚠️ **AND THE VALUE IS PASSED RAW, NOT `?? null`, WHICH I BRIEFLY GOT WRONG.** A property can
+     * genuinely HOLD `undefined` (`{k: undefined}` stores `in-map: true, value: undefined`), and
+     * `values()` RENDERS it as `null` — so the raw stream for `k=1, k=undefined, k=null` prints
+     * `[1, null, null]` and looks like two duplicates. 🔑 But the UNFUSED `values(k).dedupe()` returns
+     * all THREE rows: the generator's dedupe keys on the raw value, where `undefined` and `null` are
+     * distinct, and only the rendering collapses them. **So 3 is the answer this rung must give**, and
+     * coalescing to `null` first made it 2 — a wrong answer measured against its own unfused spelling.
+     *
+     * ⚠️ That the rendered output then shows a seeming duplicate is a PRE-EXISTING conformance question
+     * about `values()` and `undefined`, not something a count rung should decide. See item 2169's note.
+     */
+    if (key in properties && keep(properties[key])) {
+      n += 1;
+    }
+  }
+
+  return n;
+};
+
 const vertexStepCount = (step: Step, graph: Graph): number | undefined => {
   if (step.kind === 'hasLabel') {
     return labelledCount(step.labels, graph);
