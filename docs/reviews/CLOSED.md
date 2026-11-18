@@ -114227,3 +114227,49 @@ unfiltered, 1 filtered) so the claim cannot rot.
 
 GATES. `bun run fmt` 0, `bun run check` 0, guide suite **7 pass / 0 fail**. Two probes, one guide section,
 one test; no production change.
+
+## Item 2284 — 🎯 **A REAL, BOUNDED TARGET: THE TOP-K HEAP IS ENGAGING AND BUYS NOTHING. `LIMIT 100` costs 2.42 ms against 2.41 for sorting ALL 60,000 rows, and the sort is 52% of that row — so a heap that worked is ~2.1x.** ⚠️ Two hypotheses of mine refuted on the way, one by a warm-up pass
+
+Item 2283's mix left `ORDER BY + LIMIT` at 3.61 ms as the largest GQL shape with no closed-form route.
+**Prior art first**: top-K is already built (`topKPlan`, item 1064; 5.3-6.1x at item 1501) and its admission
+is a swept pure function, `heapBeatsSort(cap, rows) = cap * 16 <= rows`.
+
+### ✅ THE CROSSOVER IS ITS OWN ORACLE, SO NO CODE EDIT WAS NEEDED
+
+With 40,000 matching rows the engine's own constant says `LIMIT 200` is on the heap and `LIMIT 20000` is
+off it. ⚠️ **The ladder came out FLAT across a 200x range of `cap`** — 3.00 to 3.75 ms — with `LIMIT 200`
+(3.60) sometimes **SLOWER** than `LIMIT 40000` (3.08), which sorts everything.
+
+### ⚠️ TWO OF MY OWN HYPOTHESES, BOTH REFUTED
+
+1. **"The `WHERE` declines it."** The unfiltered ladder is just as flat (3.15-3.69). Not the predicate.
+2. **"`ORDER BY <alias>` misses the route that `ORDER BY p.name` takes."** This is the equivalent-spelling
+   class the repo is built around, so it got a probe — which read 2.24 against 4.49, a clean 2.0x. 🔑 **It
+   was the JIT.** `alias|cap=100` was the FIRST cell measured in the process; with a warm-up pass and three
+   order-alternated runs the spellings **converge** (2.43/2.62/2.28 against 2.28/2.11/2.31). ⚠️ Had I
+   stopped at the first run I would have reported a spelling cliff that does not exist.
+
+### 🎯 THE DECOMPOSITION, AND WHAT IS ACTUALLY WRONG
+
+```text
+    count   (closed form, no projection, no sort)    0.00 ms
+    project (all rows, no ORDER BY, no LIMIT)        1.15      +1.15   <- projection term
+    ordered (all rows, ORDER BY, no LIMIT)           2.41      +1.26   <- sort term, 52% of the row
+    topk    (ORDER BY, LIMIT 100)                    2.42      +0.01   <- IDENTICAL to sorting all 60,000
+```
+
+⚠️ **`project` deliberately carries no LIMIT**: `take` short-circuits, so `LIMIT 100` without an `ORDER BY`
+stops after 100 rows and would have been a 600x-smaller scan masquerading as a floor — item 2262's lesson.
+
+🔑 **The heap is not declined — it is reached and inert.** `outputColumnSorts`'s own header says the choice
+"is decided inside `sortRowsByColumns` **at run time**, against the actual `rows.length`", so at
+`cap=100, rows=60000` → `1600 <= 60000` → the heap arm runs. The route reader agrees: every spelling lands
+on `nodeProjection`, the rung that owns `topKPlan` (only `RETURN p AS p` declines to `clauses`).
+✅ **And `heapBeatsSort`'s own documented sweep claims 2.9x at cap=100 — against the 1.00x measured here.**
+
+**So the target is: 52% of a 2.42 ms row, ~2.1x, on a route that is already taken.** ⚠️ The mechanism is
+NOT yet pinned — next step is whether `topKNodeWalk` runs at all on this shape (it should also skip
+projecting the 59,900 rows it discards, which would make the win larger than the sort term alone).
+
+GATES. `bun run fmt` 0, `bun run check` 0. Four probes (`topkladder`, `sortspell`, `sortshare`,
+`sortroute`); no production change yet.
