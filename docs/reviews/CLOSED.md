@@ -115864,3 +115864,59 @@ every caller to add.** ✅ Item 2314's baseline is not wasted — it is the inst
 needs, and it stands at 1.011-1.060x.
 
 GATES. `bun run fmt` 0, `bun run check` 0. One knob added to an existing probe; no production change.
+
+## Item 2316 — ✅✅ **THE INDEXED PROFILE IS FLAT: no frame above 9.78%, against item 2283's 42.24% on the same kind of mix UNINDEXED. Every profile this session took was of a configuration the guide tells callers not to use — this one has the index in place, and it finds no dominant query-time target**
+
+Items 2301 and 2315 each dissolved a target the moment an index was added, and item 2301 found the serving
+bench's worst TS rows were all unindexed scans. 🔑 **That means every profile I had taken was of a
+configuration the guide's FIRST rule tells callers to avoid.** This item profiles the recommended one.
+
+### ✅ AND THE GUIDE NOW CARRIES THE WRITE CASE TOO
+
+Item 2315's numbers belong in the index rule, which had only read figures:
+
+```text
+    200,000 rows, 2,062 matched         no index   indexed
+    WHERE a.k = 5 RETURN count(*)         2.64 ms    0.03
+    WHERE a.k = 5 SET a.n = $v            9.46       1.76
+```
+
+✅ The write keeps ~1.66 ms of real work (≈0.8 µs per row changed) and loses 7.7 ms of searching. Its test
+asserts the RIGHT ROWS changed, not merely a count — **an index consulted wrongly would change the wrong
+rows, which no timing reveals.** Guide suite: 9 pass, 27 assertions.
+
+### 🔑 THE PROFILE, 2,000,000 QUERIES, INDEX PRESENT
+
+```text
+    9.78%  bucketSize          <- index machinery
+    8.44%  countEquals         <- index machinery
+    5.08%  (garbage collector)
+    4.53%  indexCandidates     <- index machinery
+    3.93%  (anon) toArray
+    2.98%  plan                <- the parse/plan cache lookup (item 2305's prepare() saves 9-24%)
+    2.94%  degreeOfTypes
+    2.60%  hopSeekWithKey
+    2.37%  commitTransaction
+```
+
+🔑🔑 **No frame exceeds 10%, and the three largest are all INDEX machinery** — the cost is in USING the fast
+path. ⚠️ Compare item 2283's unindexed mix, where `degreeOfTypes` alone was **42.24% with no rival**: that
+42% was the shape of a missing index, not of a slow engine.
+
+✅ **2,000,000 queries in 3003 ms — 1.5 µs each** across a five-shape mix (point lookup, 1-hop count, 2-hop
+count, filtered write, element projection), consistent with item 2305's measured 177-288 ns floor for the
+cheaper members.
+
+### ✅ WHAT THIS SETTLES FOR THE SESSION'S MANDATE
+
+The instruction was to let hot frames nominate the target rather than a list. ✅ **Profiled at the
+recommended configuration, the frames nominate nothing**: the distribution is flat, the top frames are the
+index doing its job, and the two that are not — `plan` at 2.98% and GC at 5.08% — are respectively already
+addressable by `prepare()` and not attributable (`frame-attribution-trap`).
+
+⚠️ **The honest reading is not "no work remains" but "no work remains WHERE I WAS LOOKING"**: a flat profile
+at 1.5 µs per query says the next real gain is a different workload or a different scale, not a hotter
+frame in this one.
+
+GATES. `bun run fmt` 0, `bun run check` 0, guide suite **9 pass / 0 fail, 27 assertions**. One probe, one
+guide section, one test; no production change.

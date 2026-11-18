@@ -126,6 +126,24 @@ describe('docs/guides/query-cost.md snippets', () => {
 
     expect(ask()).toStrictEqual(before);
     expect(before).toStrictEqual([{ name: 'n3' }]);
+
+    /*
+     * ⚠️ AND THE WRITE PATH USES IT TOO (item 2315), which the guide now claims at 5.4x. The test that
+     * matters is that a filtered write still finds and changes exactly the right rows with an index in
+     * place — an index consulted wrongly would change the WRONG rows, which no timing would reveal.
+     */
+    const changed = query(
+      g,
+      'MATCH (p:Person) WHERE p.surname = $s SET p.team = $t RETURN count(*) AS c',
+      { s: 'Boyd', t: 'moved' },
+    )[0]?.c;
+
+    expect(changed).toBe(2);
+    expect(
+      query(g, 'MATCH (p:Person) WHERE p.team = $t RETURN p.surname AS s', { t: 'moved' }).map(
+        (r) => r.s,
+      ),
+    ).toStrictEqual(['Boyd', 'Boyd']);
   });
 
   test('a bound parameter serves every value — one cache entry, many callers', () => {

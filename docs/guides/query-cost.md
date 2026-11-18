@@ -121,6 +121,18 @@ indexed one costs almost nothing.
 graph.createIndex({ on: 'vertex', kind: 'hash', keys: ['name'] });
 ```
 
+**A filtered write wants the same index.** `MATCH … WHERE … SET …` has to find its rows before it can
+change them, and without an index that search is the same full scan:
+
+| 200,000 rows, 2,062 matched     | no index | indexed     |
+| ------------------------------- | -------- | ----------- |
+| `WHERE a.k = 5 RETURN count(*)` | 2.64 ms  | **0.03 ms** |
+| `WHERE a.k = 5 SET a.n = $v`    | 9.46 ms  | **1.76 ms** |
+
+The write keeps 1.66 ms of real work — about 0.8 µs per row changed, which is what the change itself costs —
+but the 7.7 ms of searching goes. So an index earns its keep on the write path as well as the read path,
+and a workload that writes to rows it selects by key benefits twice.
+
 Two things worth knowing. The index can be created **after** the data, which is how an application adds one
 to a graph it already has. And the **two-hop query gains more than the point lookup** — once the starting
 vertex is pinned, the hops are cheap, so the scan was almost the whole cost either way. That is also why
