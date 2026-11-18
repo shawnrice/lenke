@@ -53,6 +53,7 @@ import type {
 import { candidateCount, candidateVertexSource, matchesLabel } from '../graph-queries.js';
 import { countEdges, edgesOfTypes, relTypeNames } from './adjacency.js';
 import { relHasPredicate } from './bindings.js';
+import { bothLabelledHopCount } from './both-labelled-hop.js';
 // The shortcuts read shared primitives + compiled types out of the executor
 // trunk, and the trunk imports the two detectors back — a safe function-level
 // cycle (resolved lazily at call time), matching the other executor submodules.
@@ -2252,6 +2253,34 @@ const labelOnlyHopCount = (
 
   if (farWalkFits(scan)) {
     return farOnlyHopCount(scan, undefined);
+  }
+
+  /*
+   * ⚠️⚠️ **THE THIRD ARM: BOTH ENDS CARRYING THE SAME LABEL** (item 2194). The two arms above each need
+   * exactly ONE end labelled, so `(a:L)-[:T]->(b:L)` declines to the per-edge `nearThenFar` walk —
+   * **+750.9 ms over 40 reps, the entire far-label cost** by item 2193's differential profile.
+   *
+   * 🔑 PLACED HERE RATHER THAN BEFORE THE `countEdges` CALL, and that is deliberate: this function is
+   * ALREADY called and already returns `null` for the shape, so a third arm adds no branch ahead of the
+   * hot dispatch. ⚠️ Item 2192 measured a **26% regression on an unrelated row** from adding one branch in
+   * this neighbourhood, and this file's own notes price a branch ahead of a hot dispatch at 1.12x-1.6x
+   * (items 159, 418, 469). The arithmetic lives in `both-labelled-hop.ts` because `shortcuts.ts` is AT
+   * its 3000 code-line cap.
+   */
+  /*
+   * ⚠️ NO `cstart`/`cfar` CONDITION, and that was my first gate's mistake: they are compiled-node HANDLES
+   * and are ALWAYS set, so requiring `undefined` made the arm unreachable. 🔑 What matters is that no
+   * PREDICATE filters beyond the label — and this function builds its own scan with `pred: alwaysTrue`
+   * and `inNear`/`inFar` undefined, which is exactly what its two sibling arms test for. (Dumped the
+   * actual values before rewriting the gate, per item 2163's lesson.)
+   */
+  if (
+    types?.length === 1 &&
+    ends.a?.kind === 'label' &&
+    ends.b?.kind === 'label' &&
+    ends.a.name === ends.b.name
+  ) {
+    return bothLabelledHopCount(graph, ends.a.name, types[0]);
   }
 
   return null;

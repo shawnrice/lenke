@@ -109791,3 +109791,67 @@ should be iterated), plus the arm placed where it cannot perturb `bareDegreeSum`
 
 GATES. No production change; both probes (`vacuousLabel`, `matchesLabel`) reverted and the tree verified
 identical. `bun run check` 0.
+
+## Item 2194 — ✅✅✅ **SHIPPED: `(a:L)-[:T]->(b:L)` counted from the label's COMPLEMENT — 12.2x, and the OPTIONAL form 14.6x. The screen's biggest nomination goes 22.28 → 1.91 ms and TS now BEATS native on it**
+
+Item 2193 measured the ceiling at 17x and wrote down two build hazards. Both mattered.
+
+```text
+    one shape per process, MIXED fixture, two rounds
+    row                    BEFORE            NEW
+    both-labelled     30.87 / 30.56    2.14 / 2.88    ~12.2x
+    OPTIONAL + far    31.97 / 31.45    2.28 / 2.05    ~14.6x   <- the screen's nomination
+    one end only [ctl] 7.73 /  7.39    7.15 / 8.25    flat
+    no labels    [ctl] 0.00            0.00           flat
+    minority lbl [ctl]14.27 / 13.11   13.45 / 13.24   flat — the gate DECLINES, as designed
+```
+
+On the screen: `OPTIONAL MATCH a hop` **22.28 → 1.91 ms**, marginal **+19.13 → −1.12**, and at 0.6x **TS is
+now faster than native** on the row that was the biggest absolute flag.
+
+### 🔑 THE ARITHMETIC IS ASYMMETRIC, AND ITEM 2193's CEILING PROBE WOULD HAVE SHIPPED A DOUBLE-COUNT
+
+For every vertex outside `L`: take ALL its out-edges of the type, but its in-edges ONLY where the source is
+inside `L`. 🔑 Then an edge with its source outside is counted via that source, one with only its target
+outside via that target, and one with BOTH outside exactly once (the in-pass excludes it). ⚠️ Summing both
+degrees symmetrically double-counts the both-outside case — **item 2193's ceiling probe did that and still
+got the right answer, because its single off-label vertex had no edges.** The `both out` fixture edge is the
+test that catches it, and a mutant making the in-pass symmetric is CAUGHT.
+
+### ⚠️ BOTH OF ITEM 2193's HAZARDS WERE REAL
+
+1. **Placement.** The arm went into `labelOnlyHopCount`, which is ALREADY called and already returns `null`
+   for this shape — so no branch was added ahead of the hot dispatch. ⚠️ Item 2192 lost 26% on an unrelated
+   row doing otherwise, and this file prices a branch before a hot dispatch at 1.12x-1.6x (items 159, 418,
+   469). Every control here is flat.
+2. **The 3000-line cap.** The arithmetic lives in a new `both-labelled-hop.ts`; `shortcuts.ts` gained an
+   import and a gate.
+
+🔑 **AND MY FIRST GATE MADE THE ARM UNREACHABLE**: it required `cstart`/`cfar` to be `undefined`, and they
+are compiled-node HANDLES that are always set. Dumping the real values (item 2163's lesson) showed the
+siblings gate on the PREDICATES instead, which `labelOnlyHopCount` hardcodes as absent.
+
+### ⚠️⚠️ TWO EXISTING TESTS WERE SUPERSEDED, AND ONE SAID SO IN ITS NAME
+
+```text
+    (fail) the walk really asks selectiveFirst > CONTROL the same-label shape cannot be helped
+    (fail) a both-ends-constrained count seeds its tally > the UNCONSTRAINED count keeps its own O(1) path
+```
+
+🔑 **NEITHER was a wrong answer** — the first counts LABEL READS and asserted `> 25` ("no check ORDER can
+help a same-label shape", which is still true; this removes the per-edge test instead), the second asserts a
+ROUTE (`sides` went `'neither'` → `'both'`) while its answer check of 201 passed before and after. Both are
+updated in place with the reason, not deleted: the order question they control for is still live.
+
+### ⚠️⚠️ AND MY OWN TESTS DID NOT REACH THE ARM — every mutant survived the narrow filter
+
+The gate is `outside * 8 > total`; my fixture had a complement of 2 and six edges, so `16 > 6` **declined**
+and eleven passing tests measured the OLD path. 🔑 Twenty filler edges put `total` at 26 and the arm runs.
+**Same class as item 2169's dist-vs-source import: a test that does not reach the code it names.** After
+the fix: **5 of 7 caught**, the three survivors answer-equivalent (forcing the gate either way, or
+returning `null` for a missing label, all fall through to a path that answers identically — the route is
+guarded by the two updated tests). ⚠️ `arity-check-dropped` was a real gap until a `T|U` alternation test
+was added.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
+`bun run fuzz` all seven green; 11 new tests, 5,371 GQL tests.
