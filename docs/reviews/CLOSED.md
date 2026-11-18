@@ -114330,7 +114330,7 @@ is why 2284's artifact was so easy to believe.
 GATES. `bun run fmt` 0, `bun run check` 0, source restored (`grep -c PROBE2285` = 0 in src and dist), clean
 `nx build @lenke/gql`. One sweep probe; no production change; item 2284's heading corrected.
 
-## Item 2286 — ✅ **THE GUIDE'S PUBLISHED CLAIM CAME FROM THE DEFECTIVE HARNESS AND SURVIVED RE-MEASUREMENT — but the rule it states was WRONG, and `WHERE true` is the better evidence: SAME ANSWER, 175x the cost.** ⚠️ My own audit script had the bug class it was auditing for
+## Item 2286 — ✅ **THE GUIDE'S PUBLISHED CLAIM CAME FROM THE DEFECTIVE HARNESS AND SURVIVED RE-MEASUREMENT — but the rule it states was WRONG, and `WHERE true` is the better evidence: SAME ANSWER,** ⚠️ ~~175x~~ **~49,000x the cost — corrected at item 2303, where inner-iteration calibration showed the unfiltered arm is ~24 ns, not 0.01 ms.** ⚠️ My own audit script had the bug class it was auditing for
 
 Item 2285 showed a nine-shape process can erase a real 2.17x. 🔑 **The same mechanism can manufacture a
 gap — and one was already published**: item 2283 timed nine shapes in one process and put two of them in
@@ -115273,3 +115273,57 @@ not automatically a safe one.**
 
 GATES. `bun run fmt` 0, `bun run check` 0, guide suite **8 pass / 0 fail**. Guide corrected, item 2301's
 heading corrected, `WARM` knob added to the probe; no production change.
+
+## Item 2303 — ⚠️⚠️⚠️ **THE SECOND PUBLISHED NUMBER CORRECTED IN TWO TICKS, SAME CAUSE, SAME DIRECTION: the unfiltered hop count is ~24 ns, not "0.01 ms", so the `WHERE true` cliff is ~49,000x rather than 175x. And the repo already had the fix — `gremlin-spelling-probe` has calibrated inner iterations since item 1644; my ad-hoc probes never did**
+
+Item 2302 found a median-of-9 understating an indexed lookup by 17x. 🔑 This tick triaged the session's
+other numbers by SCALE, which is what decides exposure.
+
+```text
+    items 2293/2297/2298   ms-scale arms (0.69 - 108 ms)      safe
+    item 2286              "0.01 ms" unfiltered arm            ⚠️ EXPOSED — and the guide quotes it
+    item 2300              nanosecond Gremlin figures          ⚠️ most exposed by scale
+```
+
+### ✅ ITEM 2300 IS SOUND, BECAUSE THAT PROBE ALREADY SOLVED THIS
+
+`gremlin-spelling-probe`'s own header, from item 1644:
+
+> _"INNER ITERATIONS, CALIBRATED PER GROUP — and without them this probe could not see a 2.36x. The old
+> form wrapped ONE `toArray` in a `performance.now()` pair. For a sub-microsecond query that measures the
+> clock as much as the work, which is why 19 of this probe's groups reported 'under 1ms, not compared'…
+> each group now calibrates an inner count until one sample takes at least `SAMPLE_MS`."_
+
+🔑 **So its ns figures are warm per-call times and item 2300 stands.** ⚠️ **The repo learned this at items
+1643/1644 and my ad-hoc probes never adopted it** — item 2302 re-derived it the hard way.
+
+### ⚠️ ITEM 2286's ROW WAS WRONG BY ~280x, AND IT IS IN THE GUIDE
+
+Same probe, now with calibration:
+
+```text
+    shape          published (9 reps)   calibrated          inner iterations needed
+    unfiltered       0.01 ms            ~24 ns              1,048,576  (hit the cap)
+    WHERE true       1.75               1.1736 ms           16
+    near filter      1.20               1.0172              32
+    far filter       2.37               1.7372              16
+```
+
+🔑 **The unfiltered count needed over a million repetitions to register on the clock at all** — because it
+is answered from degree bookkeeping in constant time, so the single-shot timer was measuring the clock.
+✅ **That makes the engine look BETTER than published**: a closed-form count really is free, and the cliff
+a predicate creates is **four orders of magnitude**, not two.
+
+✅ Guide corrected: the row reads `~24 ns`, the prose says "about fifty thousand times", and a sentence
+explains that the first row is not a rounded small number but a constant-time answer. Item 2286's heading
+corrected too.
+
+### 🔑 THE PATTERN, NOW NAMED TWICE
+
+Both corrections ran the same way: **a single query wrapped in one `performance.now()` pair, on an arm fast
+enough that the clock and the JIT dominate — understating the win.** ⚠️ Every discipline rule I carry
+guards against overstating; this failure mode is the mirror, and it has now cost two published numbers.
+**The fix is inner-iteration calibration, which this repo already uses in both spelling probes.**
+
+GATES. `bun run fmt` 0, `bun run check` 0, guide suite **8 pass / 0 fail**. Probe upgraded with
+calibration; guide and two headings corrected; no production change.

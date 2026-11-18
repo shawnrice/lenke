@@ -131,7 +131,7 @@ this effect dwarfs everything else here: the rules below shave a walk, while thi
 
 Counting a hop without a predicate does not have to touch an edge at all — the engine answers it from degree
 bookkeeping. **Adding any predicate gives that up**, and the clearest evidence is `WHERE true`, which cannot
-change the answer and still costs 175x:
+change the answer and still costs about fifty thousand times as much:
 
 ```gql
 -- answered from bookkeeping
@@ -146,13 +146,15 @@ MATCH (p:Person)-[:WORKS_WITH]->(q:Person) WHERE q.team = $t RETURN count(*) AS 
 
 | Query                      | 60k vertices, 3 edges each | rows    |
 | -------------------------- | -------------------------- | ------- |
-| hop count, no predicate    | **0.01 ms**                | 180,000 |
-| hop count, `WHERE true`    | **1.75 ms**                | 180,000 |
-| hop count, near-end filter | **1.20 ms**                | 45,000  |
-| hop count, far-end filter  | **2.37 ms**                | 44,962  |
+| hop count, no predicate    | **~24 ns**                 | 180,000 |
+| hop count, `WHERE true`    | **1.17 ms**                | 180,000 |
+| hop count, near-end filter | **1.02 ms**                | 45,000  |
+| hop count, far-end filter  | **1.74 ms**                | 44,962  |
 
-So most of the cost is **having** a predicate, not what the predicate reads: `WHERE true` already pays 1.75
-of the 2.37 ms. This is not a defect — a filtered count genuinely needs the walk — but the step is a cliff
+The first row is not a rounding of a small number: the unfiltered count is answered from bookkeeping in
+constant time, so it needed over a million repetitions to register on a clock at all. **Adding any
+predicate is four orders of magnitude**, and most of that is **having** a predicate rather than what the
+predicate reads: `WHERE true` already pays 1.17 of the 1.74 ms. This is not a defect — a filtered count genuinely needs the walk — but the step is a cliff
 rather than a slope, so if you want a plain total, ask for it without a predicate rather than filtering on a
 condition that keeps everything (`packages/native/farfilter-2286.mjs`, one shape per process).
 
