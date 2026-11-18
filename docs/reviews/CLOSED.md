@@ -92515,7 +92515,7 @@ NO ENGINE BEHAVIOUR CHANGED — two instruments and this entry.
 
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects.
 
-## Item 1933 — **GQL `SET` is 5.38x Gremlin `property` on the WRITE ALONE** (639 ns a row against 119, over a 69 ns host floor), and ⚠️ **TWO hypotheses for it are refuted by controls**: the constraint machinery that owns 22.6% of the profile costs 8 ns a row, and the cost is FLAT in row width. ✅ Plus the 128→256 cliff confirmed as V8, not the engine
+## Item 1933 — **GQL `SET` is** ⚠️ ~~5.38x~~ **NOW 2.60x Gremlin `property` on the WRITE ALONE** (⚠️ ~~639 ns a row against 119~~ **re-measured at item 2255: 351 ns against 135**, over a 69 ns host floor) — **the GQL side improved 1.8x on its own and `generatorResume`, its top frame at 10.97%, is GONE from the profile**, and ⚠️ **TWO hypotheses for it are refuted by controls**: the constraint machinery that owns 22.6% of the profile costs 8 ns a row, and the cost is FLAT in row width. ✅ Plus the 128→256 cliff confirmed as V8, not the engine
 
 Item 1932's write screen flagged `gql: set one prop, all rows` at 13.53 ms against
 `gremlin: property all` at 3.96 — the same mutation on the same graph, both verified to change
@@ -112887,3 +112887,56 @@ transition** at a fifth of the size (ask3 drops to 0.26 from ask2's 1.30), and `
   (frame delta exceeded the total).
 
 GATES. As above, each read unpiped. No engine change in this item.
+
+## Item 2255 — ⚠️⚠️ **ITEM 1933's 5.38x IS NOW 2.60x — THE GQL WRITE IMPROVED 1.8x ON ITS OWN AND ITS TOP FRAME IS GONE. 🔑 And a doubt about even the corrected figure: the subtracted scan control reads 25 ns/row, which a scan plus a property read cannot cost**
+
+⚠️ **PRIOR ART FIRST**, and it nearly ended the item: the write path is called _"CLOSED in every direction"_
+(item 1876), writes were screened on both surfaces (1932), and item 1985 records _"I BECAME THE SEVENTH
+ARRIVAL AT `indexEdgeLabel` AND WAS STOPPED ONLY BY LUCK"_. 🔑 But item 1933 carries a **"🔭 Still open,
+correctly sized"** section, and **nothing after it references it** — which by `CLAUDE.md`'s own rule proves
+nothing, because _"a closure that lives only in the code leaves no later entry to grep."_ So: re-measure.
+
+### ✅ THE TARGET HAS HALVED ON ITS OWN
+
+```text
+                      item 1933        item 2255 (now)
+    gql write alone   639 ns/row       351 ns/row
+    gremlin           119              135
+    ratio             5.38x            2.60x
+    host floor         69               61
+```
+
+🔑 **The GQL side is 1.8x faster than when it was priced**, and the heading is corrected above. ⚠️ This is
+the stale-number failure `CLAUDE.md` warns costs a target-selection cycle — _"item 1260's '~4x' is now a
+floor, because items 1283 and 1287 each sped up the arm it was measured against."_
+
+✅ **And the profile says where the improvement went: `generatorResume`, item 1933's largest frame at
+10.97%, is ABSENT** from the clean profile now. Something in the intervening ~320 items removed the
+generator from this path — the same class of win as item 1586's Gremlin generator fusion (1.90x).
+
+### ⚠️ WHAT REMAINS IS STILL DIFFUSE
+
+```text
+    (garbage collector) 12.24%   matchPattern 8.55%   setProperty 8.51%   withBinding 7.23%
+    #commitNormalized 5.55%   walkSegments 5.23%   hoistedMatch 3.67%   runSet 3.17%
+```
+
+No dominant term. ⚠️ Note ~20% is the MATCH side (`matchPattern` + `walkSegments` + `hoistedMatch` +
+`seedVertices`) against ~21% for the write — so this query is not mostly a write.
+
+### ⚠️⚠️ AND A DOUBT ABOUT THE DECOMPOSITION ITSELF, STATED AS A DOUBT
+
+The "write alone" figure subtracts a scan control, and **that control reads 25 ns/row**. ⚠️ A property read
+_alone_ measured **~73 ns** at item 2238, so a scan plus a property read cannot cost 25. My first guess —
+that the control was a closed-form count — is **wrong**: it is `MATCH (n:T) RETURN n.n AS x`, a genuine
+row-materializing scan. 🔑 The likelier explanation is a **FUSED direct-read projection**, a route `SET`
+cannot take, which would make the subtrahend too small and the write-alone ratio **overstated** — the same
+family as this session's label-vacuity and closed-form traps.
+
+**Recorded as a question, not a conclusion**, because I have already guessed once here and been wrong. The
+check is whether the scan control's route is reachable by the `SET` form; until that is answered, **2.60x is
+an upper bound on the write-alone gap**, and the whole-query ratio (2.20x) is the figure that needs no
+decomposition.
+
+GATES. `bun run fmt` 0, `bun run check` 0. Existing instruments reused unchanged
+(`setgap-prof-1933.mjs`, `setprof-clean-1933.mjs`); no production change.
