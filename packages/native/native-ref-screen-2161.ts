@@ -31,7 +31,24 @@ import { graphFromNdjson } from './src/graph.js';
 
 const N = Number(process.env.SCREEN_N ?? 200_000);
 const FANOUT = Number(process.env.SCREEN_FANOUT ?? 3);
-const REPS = Number(process.env.SCREEN_REPS ?? 5);
+/*
+ * ⚠️⚠️⚠️ **13 REPS DROPPING 6, AND BOTH NUMBERS ARE MEASURED (item 2172).** This screen ran 5 reps
+ * dropping 2 and NOMINATED A PHANTOM: it put `ORDER BY two keys` at a 5.2x floor-subtracted gap, which
+ * a per-rep series refuted outright.
+ *
+ * ```text
+ *     1 col 1 key   44.0 15.8 10.3 27.3 12.1 41.9 | 7.4 7.0 7.4 7.0 7.4 7.8 7.7 ...   settles ~7.4
+ *     2 col 1 key   15.1 15.1  9.7 11.9 10.3 10.1 | 9.6 ... 9.7 10.8 9.3 9.6 ...      settles ~9.7
+ *     2 col 2 key   33.0 18.3 16.8 16.5 17.2      | 11.4 10.3 10.7 10.9 10.8 ...      settles ~10.8
+ * ```
+ *
+ * 🔑 **Warmup runs SIX reps deep, not two**, so a 5-rep window reported 6.22-16.00 ms for the SAME row
+ * across three runs. Settled, the series is monotonic and the finding evaporates: a second COLUMN costs
+ * +2.3 ms and a second KEY only +1.1 (native +0.95). ⚠️ There are also isolated GC spikes (56.6, 41.9)
+ * well past warmup, which is why the estimator is a MEDIAN of the kept window rather than a mean or a min.
+ */
+const REPS = Number(process.env.SCREEN_REPS ?? 13);
+const WARMUP = Number(process.env.SCREEN_WARMUP ?? 6);
 
 /** The bench's own doc shape, so a number here is comparable with a bench row. */
 const doc = (() => {
@@ -62,6 +79,29 @@ const doc = (() => {
 
 /** Each row: a name and the query. The REFERENCE is native's own time for the same query. */
 const ROWS: ReadonlyArray<readonly [string, string]> = [
+  /*
+   * ⚠️⚠️⚠️ **THE FLOOR, AND WITHOUT IT THIS SCREEN NOMINATES PHANTOMS (item 2172).** Item 2167 measured TS
+   * reading 200,000 properties in 4.29 ms against native's 0.09 — **48x** — so a RAW ratio on any row that
+   * touches a property is mostly that one floor. Subtracting it reorders the whole table:
+   *
+   * ```text
+   *     shape          raw    marginal ts/nat   real
+   *     COALESCE       8.5x   +4.83 / +2.91     1.7x   <- near parity, was the TOP flag
+   *     CASE           4.5x   +2.28 / +1.27     1.8x   <- near parity, also flagged
+   *     ORDER BY 2 key 3.7x   +7.86 / +1.52     (and the 7.86 was itself warmup — see REPS)
+   *     DISTINCT 2 col 1.7x  +11.61 / +5.48     2.1x
+   * ```
+   *
+   * 🔑 The two loudest flags were artefacts of the scan, not gaps. The Gremlin screen
+   * (`gremlin-floor-screen-2168.ts`) has flagged on the MARGINAL since it was written; this one did not,
+   * and three items' worth of flags here were the floor talking.
+   */
+  /*
+   * ⚠️ `AS c` IS LOAD-BEARING, as it is on every row here. An UNALIASED column is named `expr` by TS and
+   * `col0` by native, so the screen's own answer-agreement check voids the row — the values match
+   * (200000), only the key differs.
+   */
+  ['FLOOR count(a.k)', 'MATCH (a:Person) RETURN count(a.k) AS c'],
   // ── String predicates, none of which has a bench row ──────────────────────────────────────────
   ['CONTAINS', 'MATCH (a:Person) WHERE a.name CONTAINS "999" RETURN count(*) AS c'],
   ['STARTS WITH', 'MATCH (a:Person) WHERE a.name STARTS WITH "person1" RETURN count(*) AS c'],
@@ -131,6 +171,8 @@ const median = (xs: number[]): number => {
  * there "catches EMPTY, not WRONG", because a `count(*)` query returns exactly one row whatever the count
  * is. **So a ratio on this screen is only reportable when both engines agree on the ANSWER.**
  */
+let floor = { ts: 0, nat: 0 };
+
 const time = (fn: () => unknown): { ms: number | null; note: string; answer: string } => {
   const series: number[] = [];
   let answer = '';
@@ -152,12 +194,12 @@ const time = (fn: () => unknown): { ms: number | null; note: string; answer: str
   }
 
   // ⚠️ Drop the first two reps: they are the JIT tiering up, not the steady state.
-  return { ms: median(series.slice(2)), note: '', answer };
+  return { ms: median(series.slice(WARMUP)), note: '', answer };
 };
 
-console.log(`\n  ${N} nodes / fanout ${FANOUT}, median of reps 3-${REPS}\n`);
+console.log(`\n  ${N} nodes / fanout ${FANOUT}, median of reps ${WARMUP + 1}-${REPS}\n`);
 console.log(
-  `  ${'shape'.padEnd(24)} ${'ts'.padStart(9)} ${'native'.padStart(9)} ${'ratio'.padStart(8)}`,
+  `  ${'shape'.padEnd(24)} ${'ts'.padStart(9)} ${'native'.padStart(9)} ${'ratio'.padStart(8)} ${'marginal ts/nat'.padStart(16)}`,
 );
 
 for (const [name, q] of ROWS) {
@@ -175,10 +217,26 @@ for (const [name, q] of ROWS) {
    * the failure that voided an earlier EXISTS measurement.
    */
   const agree = t.answer === '' || n.answer === '' || normalize(t.answer) === normalize(n.answer);
-  const flag = agree && ratio !== null && ratio > 3 && (t.ms ?? 0) > 5 && (n.ms ?? 0) > 0.5;
+
+  if (name.startsWith('FLOOR') && t.ms !== null && n.ms !== null) {
+    floor = { ts: t.ms, nat: n.ms };
+  }
+
+  /*
+   * ⚠️⚠️ **THE FLAG IS ON THE MARGINAL RATIO, NOT THE RAW ONE** (item 2172, following the Gremlin screen).
+   * A row is nominated only when the work ABOVE the property scan is over 3x native's and over 2 ms in
+   * absolute terms — that is what a change can actually reach.
+   */
+  const mTs = (t.ms ?? 0) - floor.ts;
+  const mNat = (n.ms ?? 0) - floor.nat;
+  const marginal =
+    name.startsWith('FLOOR') || t.ms === null || n.ms === null
+      ? ''
+      : `+${mTs.toFixed(2)} / +${mNat.toFixed(2)}`;
+  const flag = agree && !name.startsWith('FLOOR') && mTs > 2 && mNat > 0.05 && mTs / mNat > 3;
 
   console.log(
-    `  ${name.padEnd(24)} ${(t.ms === null ? t.note : t.ms.toFixed(2)).padStart(9)} ${(n.ms === null ? n.note : n.ms.toFixed(2)).padStart(9)} ${(ratio === null ? '--' : `${ratio.toFixed(1)}x`).padStart(8)}${verdict(flag, agree)}`,
+    `  ${name.padEnd(24)} ${(t.ms === null ? t.note : t.ms.toFixed(2)).padStart(9)} ${(n.ms === null ? n.note : n.ms.toFixed(2)).padStart(9)} ${(ratio === null ? '--' : `${ratio.toFixed(1)}x`).padStart(8)} ${marginal.padStart(16)}${verdict(flag, agree)}`,
   );
 
   if (!agree) {
@@ -188,6 +246,7 @@ for (const [name, q] of ROWS) {
 
 nativeGraph.free();
 console.log(
-  `\n  ⚠️ A FLAG IS A NOMINATION. Both sides must clear the floor (ts > 5 ms, native > 0.5) or the\n` +
-    `  ratio is an artefact — and item 2160 is why native is the reference at all.\n`,
+  `\n  ⚠️ A FLAG IS ON THE MARGINAL over the property-scan FLOOR, never the raw ratio (item 2172: the\n` +
+    `  two loudest raw flags were 1.7-1.8x once the scan was subtracted). Item 2160 is why native is the\n` +
+    `  reference at all, and item 2167 is why the floor has to come out.\n`,
 );

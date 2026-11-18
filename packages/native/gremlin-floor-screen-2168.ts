@@ -43,9 +43,14 @@ import { graphFromNdjson } from './src/graph.js';
 
 const N = Number(process.env.SCREEN_N ?? 200_000);
 const FANOUT = Number(process.env.SCREEN_FANOUT ?? 3);
-const REPS = Number(process.env.SCREEN_REPS ?? 9);
-/* ⚠️ THREE dropped, not two: item 2167's 1.3x "inversion" was warmup inside a 2-dropped window. */
-const WARMUP = Number(process.env.SCREEN_WARMUP ?? 3);
+const REPS = Number(process.env.SCREEN_REPS ?? 13);
+/*
+ * ⚠️⚠️ **SIX dropped, not three.** Item 2167's 1.3x "inversion" was warmup inside a 2-dropped window, and
+ * item 2172 then measured how deep it actually runs: a GQL row read 44.0 15.8 10.3 27.3 12.1 41.9 before
+ * settling at ~7.4, so SIX reps are warmup and a 3-dropped window still reports the tail of it. That
+ * screen nominated a 5.2x phantom on a 2-dropped window.
+ */
+const WARMUP = Number(process.env.SCREEN_WARMUP ?? 6);
 
 const doc = (() => {
   const lines: string[] = [];

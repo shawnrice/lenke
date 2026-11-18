@@ -108556,3 +108556,60 @@ consistent with item 1294's ~10.3 ns property read and item 1546's finding that 
 **So this row is at its floor given the refuted levers. Do not re-profile it without a NEW mechanism.**
 
 GATES. No production change; the probes were reverted and the tree verified identical to pristine.
+
+## Item 2172 — ⚠️⚠️ **MY OWN NOMINATION WAS A PHANTOM, TWICE OVER: `ORDER BY two keys` is 1.0x once the scan floor comes out and the window is long enough. Both screens fixed — 13 reps dropping 6, and the GQL screen now flags on the MARGINAL**
+
+Nothing optimized. The item is the instrument, and it is here because this screen nominated a target that
+does not exist.
+
+### ⚠️ FAILURE ONE: 5 REPS DROPPING 2 WAS NOT ENOUGH, AND THE SAME ROW READ 6.22, 11.72 AND 16.00 MS
+
+```text
+    1 col 1 key   44.0 15.8 10.3 27.3 12.1 41.9 | 7.4 7.0 7.4 7.0 7.4 7.8 7.7 ...   settles ~7.4
+    2 col 1 key   15.1 15.1  9.7 11.9 10.3 10.1 | 9.6 ... 9.7 10.8 9.3 9.6 ...      settles ~9.7
+    2 col 2 key   33.0 18.3 16.8 16.5 17.2      | 11.4 10.3 10.7 10.9 10.8 ...      settles ~10.8
+```
+
+🔑 **Warmup runs SIX reps deep, not two.** The tell was non-monotonicity: I measured "1 col, 1 key" at
+**15.34** against "2 col, 1 key" at **8.45** — adding a column made it 1.8x FASTER, which cannot be true.
+⚠️ Settled, the series is monotonic and the finding evaporates: a second COLUMN costs +2.3 ms and a second
+KEY only **+1.1** (native +0.95). There are also isolated GC spikes (56.6, 41.9) well past warmup, so the
+estimator stays a MEDIAN of the kept window. **Both screens now run 13 reps dropping 6.**
+
+### ⚠️ FAILURE TWO: THE GQL SCREEN FLAGGED ON THE RAW RATIO, WHICH ITEM 2167 HAD ALREADY SHOWN IS THE SCAN
+
+The Gremlin screen has subtracted its floor since item 2168. This one never did, so three items' worth of
+flags here were the 48x property scan talking:
+
+```text
+    shape            raw    marginal ts/nat    real     was it flagged before?
+    COALESCE         8.4x   +4.41 / +0.80      5.5x     yes — and still is, correctly
+    CASE             4.3x   +4.89 / +1.77      2.8x     yes — NOW CLEARS
+    ORDER BY DESC    4.6x   +1.68 / +0.95      1.8x     yes — NOW CLEARS (item 2167 had closed it)
+    ORDER BY 2 keys  2.6x   +1.68 / +1.74      1.0x     my phantom — gone twice over
+    DISTINCT 2 col   1.6x   +6.02 / +5.60      1.1x     at parity
+    percentile_cont 13.4x   +2.71 / +0.34      8.0x     now the highest-ratio nomination
+```
+
+### 🔑 WHAT THE PROFILE SAID, AND WHY IT WAS NOT A SORT PROBLEM EITHER
+
+CPU profile of the two-key shape, 120 reps:
+
+```text
+    (anon) gql:23834         37.7%   <- the projection closure, called straight from `fastPath`
+      -> variable.variable    6.7%
+      -> propOf / get props  11.4%
+    cmpRows + sortRowsByColumns + boundedTopRows + less + compareSort + compareValues  ~16%
+```
+
+🔑 **Projection is ~56%; the whole sort is ~16%** — the same shape item 2167 found for `ORDER BY DESC`.
+And `compileLinear` reports **the same rung (`nodeProjection`) for all four spellings**, so there was no
+precedence cliff to find either.
+
+⚠️ `AS c` is load-bearing on the new floor row: an UNALIASED column is named `expr` by TS and `col0` by
+native, which voids the screen's own answer-agreement check. Values agree.
+
+**Two honest nominations remain: COALESCE's residual (+4.41 against +0.80 — item 2165 shipped a closure
+here and said the twin gap was NOT closed) and `percentile_cont` at 8.0x marginal.**
+
+GATES. Instruments only, no engine change. `bun run fmt` 0; `bun run check` 0 read unpiped.
