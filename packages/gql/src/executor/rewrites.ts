@@ -2003,6 +2003,125 @@ const spliceOnce = (patterns: readonly PathPattern[]): readonly PathPattern[] | 
   return null;
 };
 
+/**
+ * DROP A `WITH` THAT PROJECTS NOTHING BUT THE VARIABLES ALREADY BOUND — item 2203.
+ *
+ * ⚠️⚠️ **A `MATCH` FOLLOWING A `WITH` CANNOT REACH ANY HOP SHORTCUT, AND THE SAME QUESTION SPELLED
+ * WITHOUT THE `WITH` IS 35x FASTER.** Measured at 200,000 nodes / fanout 3, all four answering 300000:
+ *
+ * ```text
+ *     MATCH (a:Person)-[:KNOWS]->(b) RETURN count(*)              9.95 ms
+ *     MATCH (a:Person) MATCH (a)-[:KNOWS]->(b) RETURN count(*)    7.36 ms   <- the elided form
+ *     MATCH (a:Person), (a)-[:KNOWS]->(b) RETURN count(*)         8.54 ms
+ *     MATCH (a:Person) WITH a MATCH (a)-[:KNOWS]->(b) …         261.28 ms   <- 35x
+ * ```
+ *
+ * 🔑🔑 **`NEXT` IS THE SAME BUG, because the parser DESUGARS it to this.** `parseNextChain` rewrites each
+ * pre-`NEXT` `RETURN` into a `WITH`, so `A NEXT B` and `A WITH … B` are one mechanism — measured at 257.05
+ * and 259.95 ms respectively. Item 2202 found it as a `NEXT` row; it is a `WITH` defect.
+ *
+ * 🔑 **TWO ADJACENT `MATCH` CLAUSES ARE ALREADY FAST (7.36 ms), so nothing needs merging** — removing the
+ * clause is the whole fix. A `WITH` that survives this pass is left exactly as it was.
+ *
+ * ⚠️⚠️ **THE DANGEROUS CASE, AND WHY THE GATE COMPARES SETS: a `WITH` NARROWS SCOPE.** In
+ * `MATCH (a)-[:K]->(b) WITH a MATCH (a)-[:K]->(c) …` the `WITH a` DROPS `b`, so eliding it would leave `b`
+ * bound and change what a later clause can reference. So this only fires when the projected names cover
+ * EVERY variable bound so far — then the clause is a true no-op. `WITH *` qualifies by definition.
+ *
+ * ⚠️ DECLINED, each for its own reason: `DISTINCT` (dedupes rows), `ORDER BY` / `SKIP` / `LIMIT` (the
+ * `WITH DISTINCT` arm measured 403.85 ms and is a DIFFERENT question), an alias (renames a column), and
+ * any non-`var` expression (computes a value). On the first `WITH` this pass declines, it stops and hands
+ * back the remaining clauses untouched — after an unknown projection the bound set is no longer derivable
+ * from the `MATCH` clauses alone.
+ */
+export const dropPassThroughWith = (clauses: readonly Clause[]): readonly Clause[] => {
+  /* Fast decline: no `WITH`, nothing to do — the overwhelmingly common shape. */
+  if (!clauses.some((clause) => clause?.kind === 'with')) {
+    return clauses;
+  }
+
+  const kept: Clause[] = [];
+  const bound = new Set<string>();
+
+  for (let i = 0; i < clauses.length; i += 1) {
+    const clause = clauses[i];
+
+    if (clause?.kind === 'match') {
+      for (const name of patternVars(clause.patterns)) {
+        bound.add(name);
+      }
+
+      kept.push(clause);
+      continue;
+    }
+
+    if (clause?.kind !== 'with') {
+      kept.push(clause);
+      continue;
+    }
+
+    /* ⚠️ Never elide a trailing `WITH`: there would be no clause left to carry the output. */
+    if (i === clauses.length - 1 || !passesThrough(clause, bound)) {
+      return [...kept, ...clauses.slice(i)];
+    }
+  }
+
+  return kept;
+};
+
+/** Does this `WITH` project exactly the already-bound variables and nothing else? */
+const passesThrough = (clause: Clause & { kind: 'with' }, bound: ReadonlySet<string>): boolean => {
+  const { projection } = clause;
+
+  /*
+   * ⚠️⚠️ **A `WITH` CAN CARRY A `WHERE`, AND ELIDING ONE DROPS THE FILTER.** `MATCH (a:P) WITH a WHERE
+   * a.k > 1 …` filters the carried rows, so the clause is not a no-op however bare its projection looks.
+   * 🔑 Four existing tests caught this — `TCK WithWhere1/3` twice, the bind-distinction test and the named
+   * `CALL` YIELD test — because the first version of this gate never looked at the field. (Item 2194's
+   * rule is to DUMP the real field values before writing a gate on them; six shapes were dumped and this
+   * was not one of them.)
+   */
+  if (clause.where !== undefined) {
+    return false;
+  }
+
+  if (
+    projection.distinct ||
+    projection.orderBy !== undefined ||
+    projection.limit !== undefined ||
+    projection.skip !== undefined
+  ) {
+    return false;
+  }
+
+  /* `WITH *` projects everything in scope, so it drops nothing by construction. */
+  if (projection.star) {
+    return true;
+  }
+
+  const projected = new Set<string>();
+
+  for (const item of projection.items) {
+    if (item.expr.kind !== 'var' || (item.alias !== undefined && item.alias !== item.expr.name)) {
+      return false;
+    }
+
+    projected.add(item.expr.name);
+  }
+
+  /*
+   * ⚠️ EVERY bound variable must survive. A missing one means the `WITH` was NARROWING scope, and
+   * eliding it would leave that variable visible to later clauses.
+   */
+  for (const name of bound) {
+    if (!projected.has(name)) {
+      return false;
+    }
+  }
+
+  return true;
+};
+
 export const spliceChainedPatterns = (clauses: readonly Clause[]): readonly Clause[] => {
   const splicable = clauses.some(
     (clause) => clause?.kind === 'match' && clause.patterns.length > 1,
@@ -2668,7 +2787,9 @@ export const compileLinear = (linear: LinearQuery): CLinear => {
                           dropUnreadEdgeVar(
                             dropVacuousPage(
                               dropVacuousQuantifier(
-                                foldLabelTestsIntoPatterns(spliceChainedPatterns(linear.clauses)),
+                                foldLabelTestsIntoPatterns(
+                                  spliceChainedPatterns(dropPassThroughWith(linear.clauses)),
+                                ),
                               ),
                             ),
                           ),

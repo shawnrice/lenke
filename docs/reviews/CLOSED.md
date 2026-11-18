@@ -110277,3 +110277,78 @@ right one.
 and belongs in its own tick, not the tail of a diagnosis.
 
 GATES. `bun run fmt` 0, `bun run check` 0. New bench instrument; no engine change.
+
+## Item 2203 — ✅ **SHIPPED, 38x: a `WITH` that projects nothing but the already-bound variables is DROPPED, so the `MATCH` after it reaches the hop shortcuts. `NEXT` is the same bug (the parser desugars it), and `CALL` got faster for free**
+
+Item 2202 nominated `NEXT` at 166x. ⚠️ Reading the parser moved the target: **`parseNextChain` desugars each
+pre-`NEXT` `RETURN` into a `WITH`**, so `NEXT` was never the defect — a pass-through `WITH` is, which is far
+more general. Confirmed before building:
+
+```text
+    plain hop [FLOOR]              6.77 ms
+    NEXT composition             257.05 ms
+    WITH a (the desugaring)      259.95 ms   <- identical, so ONE mechanism
+    WITH a, a.k AS kk            274.00 ms
+    WITH DISTINCT a              403.85 ms
+    WITH a then scan only          0.00 ms   <- `WITH` ALONE IS FREE
+```
+
+🔑 The last row is the diagnosis: `WITH` costs nothing by itself. It is the `MATCH` AFTER one that cannot
+reach a shortcut. And the elided form needs no pattern merging, because it is already fast:
+
+```text
+    ONE pattern                    9.95 ms
+    TWO MATCH correlated on a      7.36 ms   <- what eliding produces
+    ONE match, comma patterns      8.54 ms
+    WITH a between them          261.28 ms
+```
+
+### ✅ THE A/B, 38x AND 36x WITH FIVE FLAT CONTROLS
+
+```text
+    row                       BEFORE              NEW
+    WITH a hop    TARGET  252.01 / 257.18    6.55 / 6.74    ~38x
+    NEXT form     TARGET  258.71 / 260.87    7.68 / 6.82    ~36x
+    WITH DISTINCT   [ctl] 403.47 / 395.30  401.30 / 397.81  flat — the gate DECLINES
+    plain hop       [ctl]   6.42 /   9.69    6.69 /   6.91  flat
+    two MATCH       [ctl]  10.28 /   7.26    6.85 /   9.28  flat
+    scan            [ctl]   0.00              0.00          flat
+    filtered hop    [ctl]   9.29 /   8.24    8.99 /   8.43  flat
+```
+
+🔑 The target now lands ON the plain-hop floor (6.55 against 6.69) — the equivalent spellings finally cost
+the same, which is the invariant `CLAUDE.md` names. On the probe, `NEXT` went **269.07 → 10.06** (+261.08 →
++2.03, 166x → 6.2x, flag gone) and **`CALL (a) { hop }` improved for free, 10.66 → 7.91** with its marginal
+now NEGATIVE — it desugars through a `WITH` too.
+
+### ⚠️⚠️ FOUR EXISTING TESTS CAUGHT A REAL BUG: A `WITH` CAN CARRY A `WHERE`
+
+The first version of the gate never looked at `clause.where`, so `MATCH (a:P) WITH a WHERE a.k > 1 …` had
+its FILTER DROPPED. `TCK WithWhere1/3` (twice), the bind-distinction test and the named-`CALL` YIELD test
+failed — 4 fail against pristine's 0, which is how I knew it was mine. 🔑 Item 2194's rule is to DUMP the
+real field values before writing a gate on them; six shapes were dumped and **that was not one of them**.
+
+### ⚠️ THE MUTATION ROUND REWROTE THE TESTS, AND FOUND A SECOND WRONG ANSWER
+
+First round: **7 of 8 mutants survived.** Not because the guards do nothing —
+
+- disabling `orderBy` AND `limit` TOGETHER answers **8 where 2 is right**, so they are load-bearing;
+- every test query combined `ORDER BY` _with_ `LIMIT`/`SKIP`, so **whichever guard was left standing still
+  declined the clause**. Each guard needs a shape that ISOLATES it: `LIMIT` alone (3, not 8) and `SKIP`
+  alone (0, not 8), with no `ORDER BY`.
+
+Final: **4 of 9 caught** (`limit`, `skip`, `alias`, `where`), and each survivor is explained rather than
+waved at:
+
+- **bound-set comparison** — removing it leaves `… WITH a … RETURN b.k` STILL throwing ``variable `b` is
+not defined``, so scope narrowing is enforced on the original clauses, not here. Kept as a soundness
+  guard, not trusted as the enforcer.
+- **non-var exprs** — redundant with the above: a `prop` expr has no `.name`, so the projected set gets
+  `undefined` and the set comparison declines anyway.
+- **`distinct`** — no fixture tried exhibits it (`WITH DISTINCT b` and `WITH b` both answer 7); the guard
+  stays because `DISTINCT` dedupes by definition.
+- **`orderBy` alone** — cannot change a `count(*)`; pinned as a pair with `limit`.
+- **trailing `WITH`** — a `RETURN` always follows, so the index guard never fires. Defensive only.
+
+GATES. `bun run fmt` 0; `bun run check` 0; `bun run test -- --skip-nx-cache` 21/21 RC=0 (5,388 GQL tests,
+17 new); `bun run fuzz` all seven, 57 pass / 0 fail.
