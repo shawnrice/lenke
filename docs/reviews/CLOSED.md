@@ -114435,3 +114435,72 @@ changed the measurement by nothing**, because the pass never fired. `vacdiag-228
 
 GATES. `bun run fmt` 0, `bun run check` 0, `bun run test` 21 projects OK after revert, clean
 `nx build @lenke/gql`. No production change.
+
+## Item 2288 — 🎯 **A ~30x OPEN TARGET ON A REAL AUTHZ OPERATION: "list the subjects who can see this object" costs 264-347 ns per RESULT against a fair hand-rolled floor's 8-9, flat across a 5x size sweep. Item 2100 measured this row at 30.5 ms, recorded that an index "correctly does not benefit", and never asked for its FLOOR**
+
+⚠️ First, two targets NOT taken, because prior art said so. Re-litigating item 2287's decline one tick
+later would be the re-derivation `CLAUDE.md` warns of, and the narrower fold would only move the oracle
+that item 1851 already had to move once. And ReBAC authz is not new ground: item 2100 opened it and item
+2163 **shipped** `EXISTS`/`NOT EXISTS` one-hop counts (19-27 ms → 1.35). ✅ **Fourth time this session
+prior art redirected the tick, and the rule earned itself again.**
+
+### 🔑 WHAT ITEM 2100 LEFT, AND WHY IT WAS STILL OPEN
+
+Its table records `list: subjects for object` at 30.5 ms unindexed and 31.7 indexed, concluding the index
+_"CORRECTLY DOES NOT BENEFIT"_ — it must enumerate every subject. ⚠️ **That is a claim about the INDEX, not
+about the floor** (`check-the-blocker-still-holds`), and 30.5 ms for 20,000 results is ~1.5 µs each where a
+one-hop enumeration should be nearer 100 ns.
+
+### ✅ THE LADDER, ONE SHAPE PER PROCESS, MATCHED ROUNDS
+
+```text
+    USERS=20000, ROUNDS=400         median      ns/result
+    gqlCount   count(*), same walk    0.01 ms       7      <- FASTER than the hand walk
+    handList   strings into an array  0.02          9
+    handRows   the same ROW OBJECTS   0.02         10      <- the fair floor
+    gqlList    the GQL an app writes  0.55        276      <- 27x
+    gremList   the Gremlin spelling   0.89        443      <- 44x
+```
+
+✅ **The engine's WALK is excellent** — `count(*)` over the identical traversal beats the hand-rolled walk.
+**The gap is entirely in materializing rows**, and it is not the output contract: `handRows` builds the same
+2,000 `{n: name}` objects for 10 ns each.
+
+### ✅ TWO CHECKS THAT COULD HAVE KILLED IT, BOTH PASSED
+
+⚠️ **My floor started from the ONE doc and walked inward; the query starts at `(u:User)`, 20,000
+candidates.** If the planner did not orient, the floor was unfair and the orientation was the finding
+(`floor-arm-must-take-same-route`). It orients:
+
+```text
+    arm                   20k users   100k users   ns/result
+    gqlList                  0.53        2.92       264 -> 292
+    gqlDocFirst (reversed)   0.68        3.47       341 -> 347   <- same cost, so the planner orients
+    handRows                 0.02        0.08         9 -> 8
+```
+
+✅ Both spellings agree within 1.3x — this repo's equivalent-spelling property holding. ✅ And **ns/result
+is FLAT across 5x the users** in every arm, so there is no hidden scan: the cost is per RESULT, which is
+the only shape that makes a ~30x worth chasing.
+
+### 🔑 THE PROFILE NAMES FRAMES; THE MECHANISM IS NOT YET VERIFIED
+
+```text
+    29.92%   get adjFrom @ index.mjs:1330
+    19.31%   (anon) @ index.mjs:23300
+     9.08%   matchesLabel @ index.mjs:806
+     2.83%   variable.variable
+     2.00%   projectRow
+```
+
+⚠️ **Deliberately NOT guessing from here.** Items 2282 and 2285 each punished a mechanism that fit the
+observation (a per-instance arrow field; a per-comparison key read) and was wrong, and 2287 cost a whole
+build cycle to an AST assumption. The obvious story — the hop walks all adjacency and filters by label
+where the floor uses the label-indexed `edgesToByLabel` — is a HYPOTHESIS to test, not a cause.
+
+⚠️ **AND A MEASUREMENT CAUTION FOR WHOEVER TAKES IT**: at `ROUNDS=7` this row reads 1.42 ms and at
+`ROUNDS=400` it reads 0.55 — the JIT is still tiering at 7. Match the round count on both arms or the
+ratio moves by 2x.
+
+GATES. `bun run fmt` 0, `bun run check` 0. One probe (`rebaclist-2288.mjs`, five arms, env-selected); no
+production change.
