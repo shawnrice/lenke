@@ -110,6 +110,21 @@ and the reason is not only that it has to be parsed: the engine keeps a bounded 
 a stream of single-use ones pushes out the entries your other queries were relying on. A caller that
 interpolates values into its text is slower itself and makes everything around it slower.
 
+**There is a second, sharper limit, and it is about how many different queries you have rather than how
+they are written.** A query whose values are bound still has one text, but an application with a great many
+_structurally_ different queries — different return names, different shapes — can exceed what the engine
+keeps. Past that point each query is forgotten before it comes round again:
+
+| distinct query texts in rotation | operations/second |
+| -------------------------------- | ----------------- |
+| 480                              | **641,000**       |
+| 520                              | **60,000**        |
+
+The drop is about tenfold and it happens over a span of forty texts. Few applications have five hundred
+genuinely different queries, so this is unlikely to be your problem — but if you generate query texts
+programmatically, say one per report definition or per tenant, it is worth counting them. The fix is the
+same either way: fewer distinct texts, with the variation moved into parameters.
+
 ## Index the key you look it up by
 
 The single largest effect in this guide, and the one most easily missed: a `WHERE u.name = $n` with no index

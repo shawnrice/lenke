@@ -116592,3 +116592,60 @@ predates the rule**, and the probe's two suppressions each say why.
 
 GATES. `bun run fmt` 0, `bun run check` 0 (after an unused binding and the two documented suppressions).
 One probe (six arms); no production change.
+
+## Item 2329 — ✅✅ **THE SIGHTING FILTER IS DECLINED, AND MEASURING IS WHY: the two hazards live in DIFFERENT CACHES. An interpolated VALUE never touches the parse cache (so `normalizeLiterals` genuinely works) and thrashes the LIFT cache for 2.02x; structurally distinct TEXTS thrash the PARSE cache for a 10.6x CLIFF located to within 40 texts of `PARSE_CACHE_CAP = 512`. A naive admission filter would admit NOTHING on the second shape**
+
+Item 2328 measured a single-use text at 2.02x and left the build to this item. 🔑 Pricing it first split it
+in two.
+
+### ✅ THE CAPACITY CLIFF, AND IT LOCATES ITEM 2271's CAP TO WITHIN 40 TEXTS
+
+A pool of texts differing only in their RETURN ALIAS — distinct cache keys, identical work (item 2328's
+correction, where varying the seeked key made a "control" 50x slower than its arm):
+
+```text
+    distinct texts in rotation     ops/s
+         64                       700,445
+        400                       639,655
+        480                       641,582
+        520                        60,368     <- 10.6x cliff
+        600                        60,328
+       2000                        58,941     <- saturated; more texts change nothing
+```
+
+✅ **The cliff is between 480 and 520, exactly at the 512 cap**, it is **10.6x**, and past it the cost
+saturates.
+
+### 🔑 AND THE COUNTERS SHOW THE TWO HAZARDS ARE DIFFERENT CACHES
+
+```text
+    arm                               parse size Δ   parse seen Δ   liftHits   liftStores
+    interpolated VALUE (item 2328)          0              0            0          2000
+    distinct ALIASES, 480                +460           -460            0             0
+    distinct ALIASES, 2000                  0            +12            0             0
+```
+
+🔑🔑 **An interpolated value leaves the parse cache UNTOUCHED** — so `normalizeLiterals` is doing real work,
+worth about 5x (2.02x against the alias pool's 10.6x) — **and thrashes the LIFT cache instead.** Distinct
+aliases are structurally different texts, so they fill and then thrash the PARSE cache and never reach the
+lift cache at all.
+
+### ⚠️⚠️ WHICH IS A DECISIVE ARGUMENT AGAINST THE FILTER I CAME HERE TO BUILD
+
+An admit-on-second-sighting filter helps a stream of **single-use** texts. ⚠️ **On an over-capacity pool of
+genuinely REUSED texts it would admit NOTHING**: with 2,000 rotating texts no text is seen twice inside the
+window, so every call would parse and nothing would ever be cached. ✅ That is precisely the failure the
+Rust item records — _"shipping a cache 1.16x slower on the shape a parameterless language forces you into
+is a regression dressed as a win"_ — and the TS side has no parameterless language forcing it, but a
+programmatic text generator produces the same shape.
+
+✅ **So: NOT BUILT, and the reason is measured rather than cautious.** The dominant hazard (10.6x) is a
+CAPACITY question, not an admission question, and capacity is already item 2271's shipped answer. ⚠️
+**Whether 512 is the right number is a memory-against-throughput trade for the owner**, not something to
+raise silently — the cliff is now located precisely enough to make that decision on evidence.
+
+✅ **The guide gains the second limit**, stated with its limit: few applications have 500 genuinely
+different queries, so this is unlikely to bite — **but a caller generating texts programmatically (one per
+report definition, one per tenant) should count them.**
+
+GATES. `bun run fmt` 0, `bun run check` 0. One probe arm added; no production change.

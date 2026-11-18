@@ -92,6 +92,31 @@ ARMS.hotWithFixed = (g, i) => {
   query(g, 'MATCH (e:Event) WHERE e.seq = $q RETURN count(*) AS n', { q: i % 97 });
 };
 
+/*
+ * ✅✅ **THE CAPACITY CLIFF, WHICH IS HOW THE EVICTION COMPONENT GETS PRICED (item 2329).** Item 2328
+ * measured a single-use text at 2.02x but could not split the unavoidable PARSE from the recoverable
+ * STORE-AND-EVICT, because the only arm with "parses but does not store" is the sighting filter itself.
+ *
+ * 🔑 A POOL of distinct texts splits it a different way. Under the cache's capacity every text is stored
+ * once and hits forever after — parses amortize to nothing and nothing is evicted. Over capacity the same
+ * pool thrashes: every text is evicted before it is seen again, so every call parses AND stores. ✅ The two
+ * pool sizes differ in NOTHING ELSE, so the step between them is the eviction cost, and it also prices what
+ * item 2271's `PARSE_CACHE_CAP = 512` actually buys.
+ *
+ * ⚠️ The texts vary only by their RETURN ALIAS, so each is a distinct cache key doing IDENTICAL work —
+ * item 2328's correction, where a control that varied the seeked key measured 50x slower than its arm.
+ */
+const POOL = Number(process.env.POOL ?? 400);
+const poolTexts = Array.from(
+  { length: POOL },
+  (_, k) => `MATCH (e:Event) WHERE e.seq = $q RETURN count(*) AS c${k}`,
+);
+
+ARMS.hotWithPool = (g, i) => {
+  query(g, 'MATCH (e:Event) WHERE e.seq = $q RETURN count(*) AS c', { q: i % 97 });
+  query(g, poolTexts[i % POOL], { q: i % 97 });
+};
+
 const arm = ARMS[ARM];
 
 /*
