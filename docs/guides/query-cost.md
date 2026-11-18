@@ -106,10 +106,16 @@ scans every vertex of that label to find one.
 MATCH (u:User) WHERE u.name = $n RETURN u.score AS s
 ```
 
-| 20,000 users, same answer           | no index | indexed on `name`    |
-| ----------------------------------- | -------- | -------------------- |
-| point lookup                        | 0.58 ms  | **0.017 ms** (33.6x) |
-| 2-hop recommendation from that user | 0.71 ms  | **0.017 ms** (42.5x) |
+| 20,000 users, same answer           | no index | indexed on `name` |
+| ----------------------------------- | -------- | ----------------- |
+| point lookup                        | 0.30 ms  | **under 2 µs**    |
+| 2-hop recommendation from that user | 0.43 ms  | **under 2 µs**    |
+
+That is **hundreds of times**, not tens. The range is wide — 188x to 847x across runs — because once the
+index is in place the query takes well under a microsecond and the measurement sits at the timer's own
+resolution; the unindexed side is the stable half (0.30-0.43 ms). Quoting one ratio would be false
+precision, so take the shape of the claim: an unindexed lookup costs a fraction of a millisecond, and an
+indexed one costs almost nothing.
 
 ```ts
 graph.createIndex({ on: 'vertex', kind: 'hash', keys: ['name'] });

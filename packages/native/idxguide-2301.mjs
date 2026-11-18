@@ -59,7 +59,15 @@ const QUERIES = {
 const text = QUERIES[SHAPE];
 const med = (xs) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];
 
-for (let w = 0; w < 3; w += 1) {
+/*
+ * ⚠⚠ **WARM-UP IS THE WHOLE MEASUREMENT AT THIS SCALE (item 2302).** Item 2301 used 3 warm-up reps and
+ * read the indexed point lookup at 17.3 µs; `bench:usage`, which runs 250 ms BATCHES, reports the same
+ * query at 0.63 µs — **27x apart, and the bench is right about the warm steady state an application
+ * reaches.** 🔑 `WARM` makes that explicit instead of implicit.
+ */
+const WARM = Number(process.env.WARM ?? 3);
+
+for (let w = 0; w < WARM; w += 1) {
   query(g, text, { n: 'user7' });
 }
 

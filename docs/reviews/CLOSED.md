@@ -115175,7 +115175,7 @@ is the one to recommend, which it already is. Both return 500,000.
 
 GATES. `bun run fmt` 0, `bun run check` 0. No production change.
 
-## Item 2301 — ✅ **THE SERVING BENCH IS AN UNMINED SURFACE, AND ITS LARGEST TS EFFECT WAS MISSING FROM THE GUIDE: an index on the lookup key is 33.6-42.5x, isolated, same answers. ⚠️ The 10-23x TS-vs-native read ratios are the SAME scan, not separate defects**
+## Item 2301 — ✅ **THE SERVING BENCH IS AN UNMINED SURFACE, AND ITS LARGEST TS EFFECT WAS MISSING FROM THE GUIDE: an index on the lookup key is** ⚠️ ~~33.6-42.5x~~ **HUNDREDS of times — corrected at item 2302, where 3 warm-up reps turned out to understate it by ~17x,** isolated, same answers. ⚠️ The 10-23x TS-vs-native read ratios are the SAME scan, not separate defects**
 
 Both spelling surfaces being closed, this tick ran `bun run bench:usage` — the serving counterpart (small
 operations on a warm graph, interleaved read/write), which **this session had never profiled**.
@@ -115224,3 +115224,52 @@ TS-side floor for a label scan was not measured here. **Noted, not priced.**
 
 GATES. `bun run fmt` 0, `bun run check` 0, guide suite **8 pass / 0 fail**. One probe, one guide section,
 one test; no production change.
+
+## Item 2302 — ⚠️⚠️ **MY OWN PUBLISHED GUIDE NUMBER WAS A COLD-START ARTIFACT, UNDERSTATED BY ~17x: the index is worth HUNDREDS of times, not 33.6x. Three warm-up reps are nowhere near warm for a µs-scale query, and the serving bench — which I had treated as over-reporting — was the right one**
+
+This tick set out to mine the serving rows whose cost is NOT the unindexed scan. 🔑 **Prior art ended that
+search and started a better one.** Item 578 retracted the weakest indexed row as a ceiling; item 1279
+warns the bench over-reports (24% isolating to 3-5%); and **item 1499** had already priced the real shape:
+_"parse+plan is 3.1-6.9x the EXECUTION of a cheap query"_.
+
+### ⚠️ THE DISCREPANCY THAT MATTERED MORE THAN THE SEARCH
+
+`bench:usage` reports the indexed point lookup at **1.58M ops/sec (0.63 µs)**. My item 2301 probe measured
+the same query at **17.3 µs** — **27x apart.** The bench runs 250 ms BATCHES; my probe used 3 warm-up reps
+and a median of 9. ⚠️ **I had implicitly treated the bench as the unreliable one** (items 1279/2285/2286
+all taught that a batched multi-shape harness distorts). Here it was right and my isolated probe was wrong.
+
+### 🔑 SWEEPING THE WARM-UP COUNT SHOWS WHY
+
+```text
+    WARM      no index              indexed                 ratio
+    3         0.4760 ms  2,101/s    0.0039 ms   255,102/s     121x
+    200       0.3040     3,290/s    0.0020      495,050/s     152x
+    20000     0.3012     3,320/s    0.0005    1,960,784/s     590x
+```
+
+✅ **The indexed arm warms 7.8x; the unindexed arm barely warms at all (1.6x)** — so the RATIO itself grows
+with warm-up, and at 20,000 the indexed arm reaches 1.96M ops/sec, matching the bench. 🔑 **A median over
+few reps is a COLD reading, and at this scale the rep count itself warms the measurement** — item 2301's
+REPS=9 read 17.3 µs where REPS=25 reads 3.9 µs for the same arm.
+
+### ✅ WHAT THE GUIDE SAYS NOW, AND WHY IT IS A RANGE
+
+```text
+    shape          no index (stable)   indexed          ratio across runs
+    point lookup   0.3012 / 0.3041     0.0005 / 0.0016  188x - 590x
+    2-hop          0.4320 / 0.4251     0.0007 / 0.0005  634x - 847x
+```
+
+⚠️ **The indexed arm is at `performance.now()`'s resolution** — 500 ns medians — so its 3.2x spread is the
+instrument, not the engine. The unindexed side is the stable half. ✅ So the guide now states the unindexed
+absolute, bounds the indexed one as "under 2 µs", and says **"hundreds of times, not tens"** with the
+188x-847x range and the reason for its width. **Quoting 33.6x was false precision in the wrong direction**:
+a reader could have taken an index for a nice-to-have.
+
+🔑 **AND THE DIRECTION OF THE ERROR IS THE LESSON.** Every measurement-discipline rule I carry is about not
+OVERSTATING a win; this one understated it 17x, and the guide was weaker for it. **A conservative number is
+not automatically a safe one.**
+
+GATES. `bun run fmt` 0, `bun run check` 0, guide suite **8 pass / 0 fail**. Guide corrected, item 2301's
+heading corrected, `WARM` knob added to the probe; no production change.
