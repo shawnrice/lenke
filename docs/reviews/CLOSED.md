@@ -111631,3 +111631,51 @@ proposed.**
 declined and shrinking.** The Gremlin surface is as thoroughly verified as the GQL one now.
 
 GATES. `bun run fmt` 0, `bun run check` 0. Instrument only; no engine change.
+
+## Item 2230 — ✅ **FULL REGRESSION PASS: BOTH SCREENS CLEAN, ALL NINE SHIPS HOLDING, AND NOT ONE UNEXPLAINED FLAG ACROSS EITHER SURFACE**
+
+A consolidated baseline, because the session shipped nine changes and built four instruments; a future reader
+needs to know what "clean" looks like.
+
+### ✅ GQL SCREEN — item 2194's win intact, every flag already closed
+
+```text
+    row                        now            recorded        status
+    OPTIONAL MATCH a hop     1.88  0.6x  -1.13   1.91 (2194)   HELD — TS still BEATS native
+    var-length 1..2 hops    13.65  0.7x  +10.64  (2177)        HELD — TS faster
+    EXISTS / NOT EXISTS     10.59/10.57 +7.57/+7.55            worked at 2191 (was 15-16x)
+    grouped sum by key       9.23  +6.21                        CLOSED at 2196 (ceiling was wrong)
+    UNION of two scans      12.69  +9.67                        CLOSED at 2179 (the scan floor)
+    SET one property         6.50  +3.48                        worked at 2180/2181/2184
+    percentile_cont          5.98  +2.96                        small absolute
+    two-hop projection      14.41  3.1x                         CLOSED at 2189 + 2195
+```
+
+### ✅ GREMLIN SCREEN — ZERO FLAGS
+
+```text
+    V().values(k).max()      6.36   +0.69 / -5.81    (was +4.24 / -0.35 pre-2199)
+    V().values(k).sum()      4.65   -1.02 / -5.80    (was +2.02 / -0.34)
+    V().groupCount().by(k)   7.56   +1.90 / -2.98
+    FLOOR walk fold          5.67 / 5.92  1.0x       the values walk is AT PARITY
+    V().out().path().count() 71.28 vs 462.43  0.2x   TS 6.5x FASTER than native
+    V().valueMap().count()   10.53 vs 43.55   0.2x   TS 4x FASTER
+```
+
+🔑 Both screens' numbers sit within noise of their recorded values, so nothing this session regressed.
+
+### 🔑 THE STATE OF THE SURFACE, as of this item
+
+- **Two screens**: GQL 26 rows (5 flags, all closed/worked/small-absolute), Gremlin 21 rows (ZERO flags).
+- **Two cliff finders, fully floored**: GQL 24 shapes, Gremlin 18 across four families. ⚠️ `vs floor` is the
+  verdict; the neighbour-pair ratios are a hint (item 2207).
+- **A size sweep** (`finder-sweep-2224.ts`): **not one rising shape on either side** after item 2225 shipped
+  and item 2229 floored the composition steps. A falling ratio is the hand-rolled floor losing its cache
+  advantage (item 2223), not an engine win to find.
+- **Nine ships**: 2169 (3.9x), 2170, 2173 (1.48x), 2177 (62x/85x **plus a pre-existing wrong answer**), 2181
+  (1.83x), 2184 (1.29x), 2191 (2.1x/1.6x), 2194 (12.2x/14.6x), 2203 (38x), 2225 (3.2-3.6x).
+- **Policy-blocked or owner-declined, do not re-raise**: row-object hidden class → codegen
+  (`no-runtime-codegen`), per-row binding `Map` (refused twice, 2023/2024), `simplePath` (declined 1466),
+  `sum`/`mean` fusion (byte-identity, 1830/1853/1857), boxed-vs-columnar aggregates (2173/2196).
+
+GATES. `bun run fmt` 0, `bun run check` 0. No production change.
