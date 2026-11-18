@@ -116649,3 +116649,64 @@ different queries, so this is unlikely to bite — **but a caller generating tex
 report definition, one per tenant) should count them.**
 
 GATES. `bun run fmt` 0, `bun run check` 0. One probe arm added; no production change.
+
+## Item 2330 — 🔶 **GREMLIN's WRITE PATH COSTS 1.67x GQL's ON IDENTICAL WORK (3330 vs 1990 ns a vertex, against a 1265 ns host floor), and the cause is that `addV` + three `property()` steps is THREE separate property writes where `INSERT` builds the bag once. ⚠️ But reading `setProperty` cut my own recoverable estimate from 67% to ~20%, because each write's validation, three constraint assertions and undo record are IRREDUCIBLE — declined on that basis**
+
+The five Gremlin ships (items 2319-2323) were all read-side, and the serving bench has no Gremlin write row
+at all. ✅ This item measures it against GQL with the work matched — same label, same three properties,
+values bound, plan hoisted (item 2325 priced not hoisting at 3.96x).
+
+```text
+    arm                       ns/write   over the floor
+    hostAdd  (no language)      1265          —
+    gqlInsert                   1990       +725  (1.57x)
+    gremAddV                    3330      +2065  (2.63x)      1.67x of GQL
+```
+
+### ✅ THE DIFFERENTIAL PROFILE NAMES THE DESIGN DIFFERENCE
+
+```text
+    frame                 grem ns    gql ns
+    #commitNormalized        670       469     (+201 — three commits, not one)
+    setProperty              531         0     <== GREMLIN ONLY
+    propertyStep             165         0     <== GREMLIN ONLY
+    addVertex                143       137     (shared, as expected)
+    addVStep / applyStep /
+      run / toArray          344         0     <== GREMLIN ONLY (step plumbing)
+```
+
+🔑 `addVStep` creates the vertex with an **EMPTY** bag and each `property()` step then writes one key, so
+three properties are three writes plus three commits. GQL's `INSERT` hands `addVertex` a complete bag.
+
+### ⚠️⚠️ AND READING `setProperty` CORRECTED MY OWN ESTIMATE BEFORE IT WAS PUBLISHED
+
+My first reading was "fold `property()` into the create and recover ~897 ns, 67% of the excess". ⚠️ Then
+`Vertex.setProperty` showed what a property write actually does:
+
+```ts
+    validatePropertyKey(key); validatePropertyValue(value);
+    this.#graph?.assertRequiredOnSet(...); assertTypeOnSet(...); assertUniqueOnSet(...);
+    g?.recordUndo(...)
+```
+
+✅ **Validation, THREE constraint assertions and an undo record, per property.** A fold cannot skip any of
+them without changing semantics — a vertex created with a bag must be checked exactly as one built by
+writes, or constraints would be bypassed. ⚠️ **So only the step plumbing is recoverable** (`propertyStep`
+165 ns plus part of the 344 ns of step machinery), **≈265 ns of 1340 — about 20%, not 67%.** Item 2312
+reached the same conclusion on the GQL side: the undo log is 189 ns/row and "not removable: a GQL write
+must be atomic".
+
+### 🔶 DECLINED, WITH THE REASON MEASURED
+
+A new fusion in the mutation path, for ~20% on writes, against `executor-edits-perturb`'s price for a new
+variant and a full fuzzer pass — **that is the trade item 2180 declined at 1.48x and item 2315 dissolved
+entirely.** ⚠️ **It is not a dead end, though**: a fold that KEEPS the per-property checks (build the bag,
+then run the same assertions over it) would be sound, and would recover the plumbing without touching
+semantics. Recorded here so the next attempt starts from the corrected 20%, not the 67%.
+
+⚠️ **AND A HAZARD ANY SUCH FOLD MUST ADDRESS, which the fuzzers cannot see:** `propertyStep` accepts a PLAN
+as its value (a traversal re-evaluated per element), so a fold must gate on `!isPlan(value)`. ✅ And folding
+three writes into one create changes the **event stream** — events are observation-only here, but a
+consumer counting them would observe it, and the differential fuzzer compares RESULTS, not events.
+
+GATES. `bun run fmt` 0, `bun run check` 0. One probe (three arms); no production change.
