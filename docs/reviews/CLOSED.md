@@ -110843,3 +110843,60 @@ in one run, which is the same verdict item 2211 reached for the GQL side.
 be parsed, which is the cheap failure mode. **`bun run check` read unpiped is what caught all three.**
 
 GATES. `bun run fmt` 0, `bun run check` 0. Instrument only; no engine change.
+
+## Item 2214 — ✅ **THE BITEMPORAL "AS OF T" PATH IS HEALTHY IN PURE TS: whole-graph as-of is 1.10x its honest floor, an indexed one-person as-of is 68x faster than unindexed, and a small as-of serving query costs ~1.5 us end to end. One self-inflicted 2.6x "finding" was an IN-PROCESS ORDERING ARTIFACT**
+
+Both screens and both cliff finders now flag nothing against honest floors, so this tick profiled the
+domain none of them covers: a people-graph-over-time (`Person -[WORKED_AT {vf,vt}]-> Company`, validity as
+app-supplied props — the model `no-engine-minted-tx-time` records). ⚠️ It matters that **`'interval'`
+indexes are NATIVE-ONLY and throw in TS**, so an as-of query here must walk edges and post-filter.
+
+### ✅ AND THAT TURNS OUT TO BE FINE, BECAUSE THE WALK _IS_ THE FLOOR
+
+```text
+    40,000 people / 2,000 companies / 160,000 employment edges, as of 2010
+    AS-OF count, engine                  6581 us   answer 22401
+    FLOOR walk + interval test           5972 us   answer 22401   <- engine 1.10x
+    AS-OF rows (22,401 rows)            29134 us
+    ONE person as-of, UNINDEXED          4078 us
+```
+
+🔑 1.10x of a hand-rolled walk+filter: there is no indexing gap to close for the whole-graph shape, because
+without an interval index the honest floor is exactly that walk.
+
+### ✅ THE ANCHOR INDEX WORKS, AND THE ZERO ANSWERS WERE CORRECT
+
+```text
+    ONE person, no interval filter  [INDEXED]      45 us   n=4
+    ONE person AS-OF 2010           [INDEXED]      60 us   n=0
+    ONE person AS-OF 2005           [INDEXED]      47 us   n=0
+```
+
+A hash index on the anchor property takes the one-person as-of from **4,078 → 60 us (68x)** — the seek is
+taken. ⚠️ And the `n=0` rows are RIGHT, not a wrong answer: person123's spells are 2011-15, 2024-29, 2012-18
+and 2000-01, none covering 2010 or 2005. **Printing the spells before trusting the count is what settled
+that** — an answer of 0 is exactly where a fixture bug hides.
+
+### ⚠️⚠️ AND A 2.6x "SPELLING GAP" THAT I MANUFACTURED
+
+An in-process table reported the literal spelling at **16.1 us** against `$param` at **6.3 us** — a 2.6x
+equivalent-spelling gap, which is the class `CLAUDE.md` says costs 100-300x when real. It is not real:
+
+```text
+    one shape per PROCESS, two rounds, order alternated
+    round 1   lit 1.61 us   par 1.62 us
+    round 2   lit 1.46 us   par 1.54 us
+```
+
+🔑🔑 **Identical — and the in-process harness also inflated BOTH arms 4-10x** (1.5 us real against 6.3/16.1
+reported). Five query shapes were timed in sequence in ONE process, so the first paid JIT warm-up the rest
+inherited. **This repo's estimator stack already says one shape per process (items 762, 2172-2175) and I
+violated it.** A differential profile in separate processes is what exposed it, showing the literal arm
+marginally FASTER.
+
+⚠️ Also re-hit, for the third time: a probe script in `/tmp` cannot resolve `@lenke/*` (items 2171, 2183) —
+bare specifiers resolve from the SCRIPT's directory, so it must live under `packages/native/`.
+
+**NET: the domain path is healthy at every size measured, and nothing here is a target.**
+
+GATES. `bun run fmt` 0, `bun run check` 0. No production change.
