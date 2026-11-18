@@ -1755,6 +1755,63 @@ const compileCase = (expr: Extract<Expr, { kind: 'case' }>): CompiledExpr => {
  * ⚠️ Mirrors `firstNonNullish` exactly, including returning `null` (not `undefined`) when every argument
  * is nullish — a difference there would be a wrong answer, not a slower one.
  */
+/**
+ * Can evaluating `expr` RAISE? Conservatively, only three kinds are known not to (item 2173).
+ *
+ * 🔑 A literal is a constant; a variable read is a slot load; and a compiled property read normalizes a
+ * MISSING property to `null` rather than throwing — verified at item 2165, whose own note records that
+ * `a.k` projects as `null` and `a.k IS NULL` is true. ⚠️ Everything else — a function call, an arithmetic
+ * operator, a cast, a subscript — is assumed to raise, because being wrong in that direction only costs
+ * the short-circuit.
+ *
+ * 🔑 The same three kinds are the ones `detectNodeProjection` treats as plain projection items, which is
+ * where the spelling comes from rather than from a fresh list.
+ */
+const cannotRaise = (expr: { readonly kind: string }): boolean =>
+  expr.kind === 'lit' || expr.kind === 'prop' || expr.kind === 'var';
+
+/**
+ * `coalesce` that STOPS at the first non-nullish argument — legal only when no later argument can raise
+ * (item 2173).
+ *
+ * ⚠️⚠️ **THIS IS THE SHORT-CIRCUIT `coalesceCall`'s NOTE CALLS A SEMANTIC CHANGE, AND THAT NOTE IS RIGHT**:
+ * `coalesce(a.k, f())` must keep raising whatever `f()` raises even when `a.k` is non-null, because which
+ * errors surface is behaviour. 🔑 The note is a claim about ARGUMENTS THAT CAN RAISE, though, and
+ * `coalesce(a.k, 0)` has none — so the blocker is respected by gating on `cannotRaise` rather than by
+ * overriding it. Both closures exist and the compiler picks per call site.
+ *
+ * ```text
+ *     one shape per PROCESS, median of reps 26-40, two rounds with the order reversed
+ *     sum(a.k)                        6.33 / 6.43     the floor
+ *     sum(coalesce(a.k, 0))           7.29 / 7.29     +0.96 over it
+ *     sum(coalesce(a.k, .., .., 0))   9.55 / 9.60     +3.2  — LINEAR in arg count, ~1.07 per arg
+ * ```
+ *
+ * ⚠️ The win is DATA-DEPENDENT: it saves the later arguments only while the first is non-nullish, and
+ * `coalesce(a.nope, a.k)` saves nothing. That is inherent to a short-circuit, not a defect.
+ */
+const coalesceShortCircuit = <E>(
+  steps: readonly ((env: E) => unknown)[],
+): ((env: E) => unknown) => {
+  const n = steps.length;
+
+  return (env) => {
+    for (let i = 0; i < n; i += 1) {
+      const v = steps[i](env);
+
+      /*
+       * ⚠️ `isNullish` and not an inlined test, for the reason `coalesceCall` gives: one call to the
+       * shared predicate cannot drift from the `firstNonNullish` both mirror.
+       */
+      if (!isNullish(v)) {
+        return v;
+      }
+    }
+
+    return null;
+  };
+};
+
 const coalesceCall = <E>(steps: readonly ((env: E) => unknown)[]): ((env: E) => unknown) => {
   const n = steps.length;
 
@@ -1958,6 +2015,15 @@ const compileFunc = (expr: FuncExpr): CompiledExpr => {
    * which errors surface is a semantic change, not a speed-up. This closure is behaviour-identical.
    */
   if (name === 'coalesce') {
+    /*
+     * ITEM-2173: the SHORT-CIRCUITING closure when no argument after the first can raise. See
+     * `coalesceShortCircuit` for why that gate is what makes it behaviour-identical, and for the numbers
+     * (the cost is LINEAR in arg count at ~1.07 ms per argument over 200,000 rows).
+     */
+    if (expr.args.slice(1).every((a) => cannotRaise(a))) {
+      return coalesceShortCircuit(args);
+    }
+
     return coalesceCall(args);
   }
 

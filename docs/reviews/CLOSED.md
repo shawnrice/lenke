@@ -108613,3 +108613,74 @@ native, which voids the screen's own answer-agreement check. Values agree.
 here and said the twin gap was NOT closed) and `percentile_cont` at 8.0x marginal.**
 
 GATES. Instruments only, no engine change. `bun run fmt` 0; `bun run check` 0 read unpiped.
+
+## Item 2173 — ✅✅ **SHIPPED: `coalesce` short-circuits when no later argument can raise — 1.48x on the 4-arg form, which now EQUALS the bare `sum` floor. ⚠️ And the route there cost two phantoms: the screen's 5.5x flag was noise, and my first refutation of this very lever was noise too**
+
+Item 2172 left this as the screen's last standing nomination (+4.41 against native's +0.80). The flag was
+mostly wrong and the lever underneath it was real.
+
+### ⚠️⚠️ THE DECOMPOSITION, AND WHY IN-PROCESS TIMING COULD NOT FIND IT
+
+First the row was split, with `count(a.k)` as the floor (`compileLinear` confirms it takes the SAME rung,
+`nodeAggregate`, so it is a fair floor — only `count(*)` routes elsewhere):
+
+```text
+    sum(a.k)               +2.80 ms over the floor   native +0.02
+    sum(coalesce(a.k, 0))  +6.71                     native +0.78
+    avg / max              +3.56 / +3.05             native +0.02 / +0.01
+```
+
+🔑 Every aggregate pays ~3 ms that native does not — per-row keyed loads against a columnar layout, which
+is architectural and NOT this item. ⚠️ So the coalesce looked like +3.91 ms.
+
+**Then an in-process sweep said the coalesce cost NOTHING and scaled the wrong way**: the literal 2-arg
+form read 11.00 while the 4-arg form read 9.32, and a 20-rep series put the bare `sum` at 9.71 against the
+coalesce's 9.52 — **a difference of zero**. I wrote the short-circuit lever off on that basis.
+
+⚠️⚠️ **IT WAS DRIFT, AND THE SERIES SHOWED IT**: `sum(a.k)` ended `6.8 6.7 6.6`, still falling at rep 20.
+**One shape per PROCESS, 40 reps, median of the last 15, two rounds with the order reversed:**
+
+```text
+    sum(a.k)                        6.33 / 6.43     the floor
+    sum(coalesce(a.k, 0))           7.29 / 7.29     +0.96 — reproducible to the hundredth
+    sum(coalesce(a.k, .., .., 0))   9.55 / 9.60     +3.2  — LINEAR, ~1.07 ms per argument
+```
+
+🔑 Linear in arg count means argument evaluation DOES drive it. **The refutation was the artefact.**
+
+### 🔑 THE GATE IS WHAT MAKES IT LEGAL, AND THE BLOCKER IT RESPECTS WAS CORRECT
+
+`coalesceCall`'s own note says short-circuiting is "a semantic change" because `coalesce(a.k, f())` must
+keep raising whatever `f()` raises even when `a.k` is non-null. ⚠️ **That note is right, and it is a claim
+about ARGUMENTS THAT CAN RAISE.** `coalesce(a.k, 0)` has none, so the gate gives the fast closure only when
+every LATER argument is a literal, a property read or a variable — the three kinds
+`detectNodeProjection` already treats as plain, and a missing property normalizes to `null` rather than
+throwing. Both closures exist; the compiler picks per call site.
+
+```text
+    row                     BEFORE     NEW
+    coalesce 4 args           9.72     6.58    1.48x — now EQUAL to the bare sum floor (6.30)
+    coalesce 2 args           7.25     6.60    1.10x
+    1st arg always null       8.17     7.95    flat, nothing to save
+    a RAISING later arg       8.37     8.40    flat — the declining path untouched
+    sum(a.k) [floor]          5.91     6.30    +6.6% (executor-edits-perturb's range)
+```
+
+All answers identical (`[{"c":9599419}]`) across every arm.
+
+### 🔑 12 TESTS, AND MUTATION FOUND A GAP IN THE ONE THAT MATTERS MOST
+
+4 of 6 caught by this item's own file. ⚠️ **`gate-some-not-every` first survived**: `.some` and `.every`
+are indistinguishable when there is exactly ONE later argument, because a raising one makes both false. The
+test now puts a SAFE argument beside a raising one (`coalesce(a.k, a.j, a.s + 1)`), where `.some` would
+short-circuit past the error. ⚠️ Two survivors are structural: `slice(0)` only declines MORE, and
+`sc-disabled` is answer-equivalent by design.
+
+⚠️ Two anchors first reported `ANCHOR-DID-NOT-APPLY` and a third hit **139 sites** — sed regexes over a
+3000-line file. Redone with exact literal replacement asserting each anchor occurs ONCE, which is
+`ambiguous-anchor-strings`'s rule and this item broke it before following it.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
+`bun run fuzz` all seven green. `bun run spelling` reports no flagged group (⚠️ it has no coalesce group, so
+that is an absence of regression elsewhere, not coverage of this change; 57 groups sat under its 1 ms floor
+and were not compared).
