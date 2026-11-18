@@ -113830,3 +113830,51 @@ measurement — and item 2271 came directly out of that work: the uncovered shap
 the cap (2270), the ship (2271), the Gremlin check (2272) and the fair cross-surface comparison (2273).
 
 GATES. As above, each read unpiped. No production change in this item.
+
+## Item 2275 — 🔑🔑🔑 **WALKING EVERY PAGE OF A SORTED RESULT COSTS 135x ONE FETCH, AND NEITHER KEYSET NOR AN INDEX FIXES IT: every page re-scans and re-sorts the whole result. ⚠️ And a TYPECHECK caught me about to report "an index does not help" from an arm with NO index**
+
+The `page/` screen family and items 1866/1867/1885 all measure ONE page; item 2148 closed a single deep
+`SKIP` as _"correctly routed and at its floor"_. ⚠️ **But an application walks the WHOLE result**, and
+`"all pages"`, `"page through"` and `"keyset"` appear **ZERO** times in this file. 🔑 The per-page cost can
+be at its floor and the walk still be ruinous.
+
+```text
+    N=20000 rows, 400 pages of 50, median of 5, `onepass`/`paged` asserted to deliver the same 20,000 rows
+    arm                                      total ms   vs onepass
+    onepass    ONE query, every row              1.7       1x       84 ns/row
+    keyset     WHERE k > $last … LIMIT P       135.9      80x     6798
+    firstonly  page 1, fetched 400 times       129.1      76x     (a control: no skip depth)
+    paged      SKIP k LIMIT P, offset           229.2     135x    11458
+    keysetIdx  keyset + a RANGE index on k      172.2     101x     — 27% WORSE than keyset
+```
+
+### 🔑 WHAT THE ARMS SEPARATE
+
+- **Offset paging costs 135x one fetch.** The skip depth itself is ~100 ms of it (`paged` 229.2 against
+  `firstonly` 129.1) — counting past rows that are then discarded.
+- ✅ **Keyset paging removes that entirely**: 135.9 against `firstonly`'s 129.1 is the same cost as having no
+  skip at all, so a `WHERE k > $last` cursor is **1.7x better than offset** and is expressible in ISO GQL
+  today.
+- ⚠️⚠️ **BUT BOTH ARE DOMINATED BY ~323 us PER PAGE**, because **every page scans and sorts all 20,000
+  rows**. One page costs 19% of fetching everything. **The engine has no resumable sorted scan**, and that
+  is the architectural fact behind the 78-135x.
+- ⚠️ **A RANGE INDEX MAKES IT 27% WORSE.** `k > $last` early in a walk matches nearly every row, so a range
+  index offers **no selectivity for a resume predicate** — a cursor is not a filter — while still costing
+  maintenance.
+- ⚠️ **Keyset has a tie trap: it delivered 19,996 of 20,000 rows.** A strict `>` on a key with duplicates
+  skips the ties; real keyset paging needs a tiebreak column. The probe prints its row count, which is why
+  this is visible rather than a silent four-row loss.
+
+### ⚠️⚠️ AND THE TYPECHECK CAUGHT A FALSE RESULT I WAS ABOUT TO REPORT
+
+The index arm first used `kind: 'ordered'` — **not a valid `IndexKind`** (`'hash' | 'range' | 'interval' |
+'type'`). **bun erases types and ran it anyway**, so the arm created NO index, read 153.2 ms, and I was one
+step from publishing _"an index does not help"_ from an arm with no index. 🔑 **`bun run check` is what
+caught it** — the "assert each A/B arm IS the code it claims" rule enforced by a gate rather than by my own
+reading. The corrected `'range'` arm is the 172.2 ms above.
+
+**NEXT: the ~323 us per-page floor is the target, not the paging strategy** — a resumable sorted scan (hold
+the sorted order across calls, keyed like the CSR on `topologyVersion`) is the shape that would collapse it.
+
+GATES. `bun run fmt` 0, `bun run check` 0. New instrument `paging-2275.ts`
+(`ARM=onepass|paged|firstonly|keyset|keysetIdx`, `PAGE=`); no production change.
