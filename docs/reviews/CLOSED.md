@@ -108684,3 +108684,58 @@ GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-
 `bun run fuzz` all seven green. `bun run spelling` reports no flagged group (⚠️ it has no coalesce group, so
 that is an absence of regression elsewhere, not coverage of this change; 57 groups sat under its 1 ms floor
 and were not compared).
+
+## Item 2174 — 🔑🔑 **THE GQL SCREEN NOW SPAWNS ONE PROCESS PER ROW, TWO ROUNDS, MIN ACROSS THEM — and that was two fixes, not one. It confirms item 2173 landed and leaves exactly two stable flags**
+
+No engine change. Three phantom nominations in two items (2172, 2173) all came from the estimator, so this
+rebuilt it.
+
+### ⚠️ FIX ONE: ONE PROCESS PER ROW, BECAUSE THESE SHAPES DRIFT FOR DOZENS OF REPS
+
+Raising the window from 5/2 to 13/6 was not enough. The series that settled it:
+
+```text
+    in-process, 20 reps     sum(a.k) 9.71   coalesce 9.52   "the coalesce is free"
+    its own series ended    6.8 6.7 6.6     <- still FALLING at rep 20
+    one process per row     sum(a.k) 6.33   coalesce 7.29   +0.96, repeatable to the hundredth
+```
+
+🔑 The driver spawns THIS file with `SCREEN_ROW=<n>`, so the rows, fixture and queries cannot drift between
+modes — one definition of each. Each child measures **its own floor**, so the subtraction pairs two
+readings from the same process. `SCREEN_INPROC=1` keeps the fast sweep as a smoke check, labelled in the
+output as not a basis for nominating anything.
+
+### ⚠️⚠️ FIX TWO: ONE ISOLATED RUN IS STILL ONE READING, AND I FOUND THAT THE HARD WAY AGAIN
+
+The first per-process build still flagged inconsistently — `COALESCE`'s marginal read **+2.36 then +3.37**
+on consecutive sweeps, straddling the 2 ms flag threshold. 🔑 **The TS spelling probe PRINTS this rule for
+itself** ("THREE TIMES: one isolated run is still one reading", item 1073) and this screen did not have it.
+Now two rounds per row, **min across them** per field, with an error in any round kept as an error.
+
+```text
+    COALESCE   +2.36 / +3.37 / stabilizes at +2.30   no longer flags
+```
+
+### 🔑 THE SURFACE IS HEALTHIER THAN THE RAW RATIOS EVER SUGGESTED
+
+```text
+    shape                 ts   native   marginal ts/nat   verdict
+    CASE expression     8.13     1.68   +5.08 / +1.58     FLAG 3.2x — the largest absolute left
+    percentile_cont     5.76     0.42   +2.69 / +0.32     FLAG 8.4x
+    COALESCE            5.38     0.89   +2.30 / +0.79     clears — ITEM 2173's 1.48x IS VISIBLE HERE
+    ORDER BY two keys   4.78     1.65   +1.73 / +1.55     1.1x  (my phantom, now dead twice over)
+    DISTINCT two cols   7.97     5.55   +4.90 / +5.45     0.9x  parity
+    collect over a scan 4.30     0.42   +1.28 / +0.32     under the absolute floor
+    size() of a list    5.73     7.17   +2.64 / +7.07     TS FASTER
+```
+
+⚠️ **`collect(a.k)` on its own measures 4.32 TS against native's 5.02 — TS is FASTER**, which is worth
+recording next to the aggregate family's architectural ~3 ms (item 2173): the gap is not uniform.
+
+⚠️ An `E_SYNTAX` row was briefly mislabelled `VOID: answers differ`. One engine erroring is not a
+disagreement about an answer, and the label now requires both sides to have answered.
+
+**The next target is `CASE` at +5.08 ms (3.2x), not `percentile_cont`** — the percentile's 8.4x sits on a
++2.69 ms absolute, and its own probe put it at +1.67 on one run.
+
+GATES. Instrument only. `bun run fmt` 0; `bun run check` 0 read unpiped; both screen modes exercised.

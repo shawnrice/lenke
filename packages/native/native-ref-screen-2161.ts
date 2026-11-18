@@ -50,6 +50,38 @@ const FANOUT = Number(process.env.SCREEN_FANOUT ?? 3);
 const REPS = Number(process.env.SCREEN_REPS ?? 13);
 const WARMUP = Number(process.env.SCREEN_WARMUP ?? 6);
 
+/*
+ * ⚠️⚠️⚠️ **PER-PROCESS MODE, AND IT IS THE DEFAULT BECAUSE IN-PROCESS TIMING NOMINATED THREE PHANTOMS**
+ * (items 2172 and 2173). Raising the rep count was not enough: these shapes drift MONOTONICALLY for
+ * dozens of reps inside one process, so no window separates them.
+ *
+ * ```text
+ *     in-process, 20 reps          sum(a.k) 9.71   coalesce 9.52   "the coalesce is free"
+ *     its own series ended         6.8 6.7 6.6     <- still FALLING at rep 20
+ *     one shape per PROCESS        sum(a.k) 6.33    coalesce 7.29   +0.96, reproducible to the hundredth
+ * ```
+ *
+ * 🔑 On that reading I refuted a lever that then shipped at **1.48x** (item 2173). Each child measures ITS
+ * OWN floor from its own process, which is stricter than sharing one across rows.
+ *
+ * ⚠️ `SCREEN_INPROC=1` keeps the old single-process sweep — it is ~10x faster and fine for a smoke check,
+ * but a NOMINATION from it is not trustworthy. `SCREEN_ROW=<n>` is the child mode the driver spawns.
+ */
+const ROW_REPS = Number(process.env.SCREEN_ROW_REPS ?? 40);
+const ROW_KEEP = Number(process.env.SCREEN_ROW_KEEP ?? 15);
+const ONE_ROW = process.env.SCREEN_ROW;
+/*
+ * ⚠️⚠️ **TWO CHILDREN PER ROW, BECAUSE ONE ISOLATED RUN IS STILL ONE READING** — the rule the TS spelling
+ * probe prints for itself (item 1073), and this screen needed it too. Per-process timing fixed the DRIFT
+ * but not the run-to-run spread: `COALESCE`'s marginal read **+2.36 then +3.37** on consecutive sweeps, so
+ * a flag threshold of 2 ms sat inside the noise band and the row flagged on one run and not the other.
+ *
+ * 🔑 The estimator is the **MIN across rounds** of each side, which is what [[bench-methodology]] settled
+ * on: a slow round can only be contamination, so the fastest is the closest to the real cost.
+ */
+const ROUNDS = Number(process.env.SCREEN_ROUNDS ?? 2);
+const IN_PROC = process.env.SCREEN_INPROC === '1';
+
 /** The bench's own doc shape, so a number here is comparable with a bench row. */
 const doc = (() => {
   const lines: string[] = [];
@@ -196,6 +228,140 @@ const time = (fn: () => unknown): { ms: number | null; note: string; answer: str
   // ⚠️ Drop the first two reps: they are the JIT tiering up, not the steady state.
   return { ms: median(series.slice(WARMUP)), note: '', answer };
 };
+
+/** The per-process estimator: `ROW_REPS` reps, median of the last `ROW_KEEP`. */
+const timeLong = (fn: () => unknown): { ms: number | null; note: string; answer: string } => {
+  const series: number[] = [];
+  let answer = '';
+
+  try {
+    for (let r = 0; r < ROW_REPS; r += 1) {
+      const t0 = performance.now();
+      const rows = fn();
+
+      series.push(performance.now() - t0);
+      answer = JSON.stringify(rows).slice(0, 40);
+    }
+  } catch (err) {
+    return {
+      ms: null,
+      note: String((err as { code?: string }).code ?? err).slice(0, 18),
+      answer: '',
+    };
+  }
+
+  return { ms: median(series.slice(Math.max(0, series.length - ROW_KEEP))), note: '', answer };
+};
+
+/*
+ * THE CHILD: measure the FLOOR and ONE row in this fresh process, print a parseable line, exit.
+ *
+ * 🔑 The floor is re-measured here rather than passed in, so the subtraction is between two readings from
+ * the SAME process — the only pairing item 2173 found reproducible.
+ */
+if (ONE_ROW !== undefined) {
+  const idx = Number(ONE_ROW);
+  const row = ROWS[idx];
+
+  if (row === undefined) {
+    console.log(`ROW ${idx} ABSENT`);
+    nativeGraph.free();
+    process.exit(0);
+  }
+
+  const [[fname, fq]] = ROWS;
+  const ft = timeLong(() => tsQuery(tsGraph, fq));
+  const fn2 = timeLong(() => nativeGraph.query(fq));
+  const [name, q] = row;
+  const t = idx === 0 ? ft : timeLong(() => tsQuery(tsGraph, q));
+  const n = idx === 0 ? fn2 : timeLong(() => nativeGraph.query(q));
+
+  console.log(
+    `ROWDATA\t${idx}\t${name}\t${t.ms ?? `E:${t.note}`}\t${n.ms ?? `E:${n.note}`}\t${ft.ms ?? 0}\t${fn2.ms ?? 0}\t${normalize(t.answer) === normalize(n.answer) ? 'AGREE' : 'DIFFER'}\t${fname}`,
+  );
+  nativeGraph.free();
+  process.exit(0);
+}
+
+/*
+ * THE DRIVER: one child per row. ⚠️ It spawns THIS file with `SCREEN_ROW` set, so the rows, the fixture
+ * and the queries cannot drift between the two modes — there is one definition of each.
+ */
+if (!IN_PROC) {
+  nativeGraph.free();
+  console.log(
+    `\n  ${N} nodes / fanout ${FANOUT}, ONE PROCESS PER ROW, ${ROUNDS} rounds, min of (median of the last ${ROW_KEEP} of ${ROW_REPS})\n`,
+  );
+  console.log(
+    `  ${'shape'.padEnd(24)} ${'ts'.padStart(9)} ${'native'.padStart(9)} ${'ratio'.padStart(8)} ${'marginal ts/nat'.padStart(16)}`,
+  );
+
+  const self = new URL(import.meta.url).pathname;
+
+  for (let i = 0; i < ROWS.length; i += 1) {
+    const lines: string[] = [];
+
+    for (let round = 0; round < ROUNDS; round += 1) {
+      const out = Bun.spawnSync({
+        cmd: ['bun', 'run', self],
+        env: { ...process.env, SCREEN_ROW: String(i), SCREEN_INPROC: '' },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
+      const got = new TextDecoder()
+        .decode(out.stdout)
+        .split('\n')
+        .find((l) => l.startsWith('ROWDATA'));
+
+      if (got !== undefined) {
+        lines.push(got);
+      }
+    }
+
+    if (lines.length === 0) {
+      console.log(`  ${ROWS[i][0].padEnd(24)} ${'CHILD FAILED'.padStart(9)}`);
+      continue;
+    }
+
+    /*
+     * 🔑 MIN across rounds, per field. ⚠️ An ERROR in any round keeps the error — a shape that errors does
+     * not sometimes answer, so a numeric reading beside it would mean the parse differed, not that it got
+     * faster.
+     */
+    const cells = lines.map((l) => l.split('\t'));
+    const minOf = (col: number): string => {
+      const raws = cells.map((c) => c[col]);
+      const err = raws.find((r) => r.startsWith('E:'));
+
+      return err ?? String(Math.min(...raws.map(Number)));
+    };
+    const [[, , name]] = cells;
+    const tsRaw = minOf(3);
+    const natRaw = minOf(4);
+    const fTs = minOf(5);
+    const fNat = minOf(6);
+    const agree = cells.every((c) => c[7] === 'AGREE') ? 'AGREE' : 'DIFFER';
+    const tsMs = tsRaw.startsWith('E:') ? null : Number(tsRaw);
+    const natMs = natRaw.startsWith('E:') ? null : Number(natRaw);
+    const isFloor = i === 0;
+    const mTs = (tsMs ?? 0) - Number(fTs);
+    const mNat = (natMs ?? 0) - Number(fNat);
+    const marginal =
+      isFloor || tsMs === null || natMs === null ? '' : `+${mTs.toFixed(2)} / +${mNat.toFixed(2)}`;
+    const flag = agree === 'AGREE' && !isFloor && mTs > 2 && mNat > 0.05 && mTs / mNat > 3;
+
+    console.log(
+      `  ${name.padEnd(24)} ${(tsMs === null ? tsRaw.slice(2) : tsMs.toFixed(2)).padStart(9)} ${(natMs === null ? natRaw.slice(2) : natMs.toFixed(2)).padStart(9)} ${(tsMs !== null && natMs !== null && natMs > 0 ? `${(tsMs / natMs).toFixed(1)}x` : '--').padStart(8)} ${marginal.padStart(16)}${flag ? '  <-- FLAG' : ''}${agree === 'DIFFER' && tsMs !== null && natMs !== null ? '  <-- VOID: answers differ' : ''}`,
+    );
+  }
+
+  console.log(
+    `\n  ⚠️ ONE PROCESS PER ROW (items 2172/2173: in-process timing nominated three phantoms, and one\n` +
+      `  refutation it produced was itself wrong — the lever shipped at 1.48x). SCREEN_INPROC=1 for the\n` +
+      `  fast single-process sweep, which is a smoke check and NOT a basis for nominating a target.\n`,
+  );
+  process.exit(0);
+}
 
 console.log(`\n  ${N} nodes / fanout ${FANOUT}, median of reps ${WARMUP + 1}-${REPS}\n`);
 console.log(
