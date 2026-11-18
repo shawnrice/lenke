@@ -113082,7 +113082,7 @@ contract. **Nothing to build; three corrections and a closure.**
 
 GATES. `bun run fmt` 0, `bun run check` 0. No instrument, no production change — a prior-art item.
 
-## Item 2259 — 🔑🔑 **A SORTED HOP COSTS 344 ns/ROW WHERE AN UNSORTED HOP COSTS 23 (15x, SAME RUNG)** ⚠️ ~~where a sorted SCAN costs 87, so ~230 ns/row is unaccounted for~~ **— the scan comparison is CROSS-RUNG and invalid; corrected at item 2260.** Screening by ABSOLUTE cost found it; the ratio screens never would**
+## Item 2259 — 🔑🔑 **A SORTED HOP COSTS ~244-458 ns/ROW WHERE AN UNSORTED HOP COSTS ~30 (SAME RUNG)** ⚠️ ~~15x~~ **the 15.01x was a SINGLE reading — swept at item 2264 it is 7.16x at that same size, so this heading was ~2x high** ⚠️ ~~where a sorted SCAN costs 87, so ~230 ns/row is unaccounted for~~ **— the scan comparison is CROSS-RUNG and invalid; corrected at item 2260.** Screening by ABSOLUTE cost found it; the ratio screens never would**
 
 Four threads had closed without a build, each on a diffuse ratio. So this item screened by **absolute** cost
 instead — where this session's actual ships came from (item 2203's 38x, 2194's 12.2x) — and read the
@@ -113328,3 +113328,45 @@ baseline itself drifted ~7% between ticks"_, so **re-measure the baseline alongs
 previous session's number.**
 
 GATES. `bun run fmt` 0, `bun run check` 0. New probe `prof-2263.mjs`; no production change.
+
+## Item 2264 — ⚠️⚠️ **THE SMOKE TEST CAUGHT WHAT FIVE ITEMS MISSED: I NEVER SWEPT THE SIZE. Item 2259's 15.01x was a SINGLE reading and reads 7.16x at the same N — and the sweep explains the growth as N log N plus a cache term, both intrinsic**
+
+Gates and instrument smoke tests, as at items 2244/2254. ✅ `fmt` 0, `check` 0, `test --skip-nx-cache` 0 (21
+projects), `fuzz` 57 pass / 0 fail; all four new instruments report. 🔑 **But one smoke test, run at a
+different size purely to be quick, printed 3.65x where item 2259 had reported 15.01x — and comparison count
+only grows 1.18x between those sizes, so `N log N` could not explain it.**
+
+### ⚠️ FIVE ITEMS ON THIS SHAPE, AND THE SIZE WAS NEVER SWEPT
+
+`CLAUDE.md`'s FIRST listed trap is _"sweep the size — cache-resident and not are different questions"_. I
+ran items 2259-2263 on one fixture size throughout. Swept, 7 reps each:
+
+```text
+    N        rows      project ns/row   project+order   ratio
+    8000     24000          31              244         7.81x
+    20000    60000          28              246         8.82x
+    50000   150000          49              349         7.16x
+    120000  360000          34              458        13.61x
+```
+
+### ✅ WHAT THE SWEEP SETTLES
+
+- **Item 2259's 15.01x was a single reading.** At the SAME N=50000, seven reps give **7.16x** — the heading
+  is corrected above. ⚠️ The ratio ranges 7.16-13.61x across sizes and is the noisy statistic here; the
+  earlier 3.65x and 15.01x were both outliers.
+- **The sorted path's per-row cost GROWS with N: 244 → 458 ns/row, 1.88x over 15x the rows.** The unsorted
+  path stays **FLAT (28-49)** because it streams.
+- 🔑 **`N log N` accounts for 1.27x of that 1.88x** (log2 24000 → log2 360000). The residual ~1.5x is the
+  cost of **materializing and permuting every row** — cache pressure the streaming arm never pays.
+- ✅ **Both terms are intrinsic to a full sort.** A sort cannot stream, and it cannot compare fewer than
+  `N log N` times. **So the growth is not a defect**, which is the last open question from items 2259-2263.
+
+### 🔑 THE META-LESSON, AND IT IS ON ME
+
+**I built five items of careful decomposition on a headline number I had measured ONCE.** The fair floor
+(2262), the route read (2260), the differential profile (2263) were all sound — but the quantity they were
+explaining was ~2x off, and nothing in that chain would have caught it. ⚠️ **A number that survives five
+items of analysis has been assumed, not verified, unless it was re-measured in one of them.** The accidental
+catch was a smoke test at a different size, which is luck, not method.
+
+GATES. As above, each read unpiped. No production change in this item.
