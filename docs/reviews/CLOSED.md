@@ -114374,3 +114374,64 @@ artifact, and the two closed-form routes really are ~0.
 
 GATES. `bun run fmt` 0, `bun run check` 0, guide suite **7 pass / 0 fail, 18 assertions**. One isolated
 probe; guide rule corrected; no production change.
+
+## Item 2287 — ⚠️⚠️ **BUILT, MEASURED AT 175x, AND REVERTED: folding a vacuous `WHERE` works perfectly and costs this repo a LOAD-BEARING TEST ORACLE. The caller-side fix is deleting two words, which the guide now says — so the intervention belongs there, not in the planner**
+
+Item 2286 measured `WHERE true` at 1.75 ms against 0.01 for the identical answer. 🔑 Items 2128/2129 priced
+the REAL-filter version at 20x and declined it on a mathematical blocker — the closed form is an O(V)
+identity holding _"ONLY when the source set is every vertex"_ — and **a predicate that excludes nothing
+does not break that identity**, so this case escapes it. The lever looked clean, so it was built.
+
+### ✅ IT WORKS, EXACTLY AS DESIGNED
+
+```text
+    SHAPE          before    after
+    unfiltered       0.01     0.01
+    vacuous          1.80     0.01     <- 175x; identical series to the unfiltered arm
+    far filter       1.99     2.19     <- control: a real predicate, unchanged
+```
+
+A pure exported classifier plus a clause-list rewrite, placed INNERMOST in the existing composition
+alongside its siblings `dropVacuousPage` and `dropVacuousQuantifier`, so every downstream route recovers
+its fast path with no executor edit (`executor-edits-perturb` prices those at up to 16% on unrelated rows):
+
+```ts
+export const vacuousPredicate = (expr: Expr | undefined): boolean => {
+  if (expr === undefined) return false;
+  if (expr.kind === 'lit') return expr.value === true;
+  // ONLY `and`: an `or` run is vacuous when ANY operand is true, a different proof; `xor` inverts.
+  if (expr.kind === 'and') return expr.items.length > 0 && expr.items.every(vacuousPredicate);
+  return false;
+};
+```
+
+🔑 **THE CORRECTNESS ARGUMENT IS ABOUT NULL, NOT TRUTH.** A `WHERE` keeps only a clean `TRUE`, so
+`UNKNOWN` is dropped — which makes `p.k = p.k` look always-true while excluding every null-`k` row. Hence
+literals only: no properties, no params, not even `1 = 1`. ✅ Ten tests, and a mutant that accepts any
+`compare` **fails 4 of them**, including the wrong answer (4 rows against 6).
+
+### ⚠️ AND THEN THE FULL SUITE FAILED, FOR A REASON WORTH MORE THAN THE LEVER
+
+Two route tests broke, and the file explains itself:
+
+> _"THE ORACLE IS `WHERE true`, WHICH IS A NO-OP THAT DECLINES THE RUNG … used to be a no-op OUTER
+> `WHERE true`, which declined the rung — until item 1851 taught the rung to carry an anchor predicate, at
+> which point `WHERE true` started TAKING it"_
+
+🔑 **`WHERE true` is a route oracle this repo depends on, already broken once by item 1851 and repaired by
+moving it.** Folding it removes the device **permanently**, for every future test that needs to force a
+generic path — and `disabling-a-rung-for-an-oracle` exists because such devices are scarce.
+
+### 🔑 THE ASYMMETRY THAT DECIDES IT
+
+The engine can never recover 175x for a caller who writes a REAL filter. A caller who writes `WHERE true`
+recovers it by **deleting two words** — and item 2286 already put that in `docs/guides/query-cost.md` with
+the measurement. ✅ So the cheap, total, caller-side fix exists and is documented, while the planner-side
+fix costs a testing technique repo-wide. **Reverted; suite green at 21 projects.**
+
+⚠️ **AND A BUILD-CYCLE LESSON**: a `WHERE` attaches in THREE places — `match.where`, `with.where`, and a
+standalone `{kind: 'filter'}` clause. My first version handled only `filter`, **passed every gate, and
+changed the measurement by nothing**, because the pass never fired. `vacdiag-2287.ts` keeps that fact.
+
+GATES. `bun run fmt` 0, `bun run check` 0, `bun run test` 21 projects OK after revert, clean
+`nx build @lenke/gql`. No production change.
