@@ -30,14 +30,18 @@
  */
 import type { Graph, Vertex } from '@lenke/core';
 
-import type { Clause, LabelExpr, PathPattern } from '../ast.js';
+import type { Clause, Expr, LabelExpr, PathPattern } from '../ast.js';
 import { candidateVertices, matchesLabel } from '../graph-queries.js';
 import type { Params, Row } from './core.js';
-import { countStarColumn } from './shortcuts.js';
+import type { InlinePred } from './inline-gate.js';
+import { inlineHolds } from './inline-gate.js';
+import { chainGatesOf, countStarColumn, gateWith } from './shortcuts.js';
 
 /** The pattern shapes this rung answers, with everything it needs pulled out. */
 type Shape = {
   readonly startLabel: LabelExpr | undefined;
+  /** The clause `WHERE`'s conjuncts on the START variable, as one predicate — item 2152. */
+  readonly startPred: InlinePred | undefined;
   readonly farLabel: LabelExpr | undefined;
   readonly type: string;
   readonly out: boolean;
@@ -48,12 +52,21 @@ type Shape = {
 /**
  * The pattern, if this rung can answer it — otherwise `undefined`.
  *
- * ⚠️ Each condition removes a case whose ANSWER would differ, not merely a case that is awkward:
+ * ⚠️⚠️ **THE START'S INLINE PROPERTIES ARE ADMITTED, AND REFUSING THEM OPENED A SPELLING GAP I HAD TO
+ * CLOSE IN THE SAME ITEM.** `(a:P {k: 1})` means exactly `WHERE a.k = 1`, and with only the clause form
+ * admitted the two measured **8.24 ms against 27.52 — 3.3x apart for one question**, which is the defect
+ * class this repo is organised around. 🔑 `gateWith` folds a node's own inline properties together with
+ * the clause conjuncts, so admitting them is one condition removed, not new code.
+ *
+ * ⚠️ The FAR node's inline properties stay refused, for a real reason: they would have to be evaluated
+ * per discovered endpoint, and whether that is still a win is a separate measurement.
+ *
+ * ⚠️ Each remaining condition removes a case whose ANSWER would differ, not merely a case that is awkward:
  * a path variable or a non-`any` selector wants the paths themselves; `mode` other than the default
  * restricts which walks count, and a BFS over distinct endpoints cannot express that; an inline property constraint or node `WHERE` needs per-element evaluation this rung does not do; and a missing
  * quantifier is a plain hop, which already has its own rung.
  */
-const shapeOf = (pattern: PathPattern): Shape | undefined => {
+const shapeOf = (pattern: PathPattern, clauseWhere: Expr | undefined): Shape | undefined => {
   if (
     pattern.pathVar !== undefined ||
     pattern.segments.length !== 1 ||
@@ -76,7 +89,6 @@ const shapeOf = (pattern: PathPattern): Shape | undefined => {
     variable !== undefined ||
     node.properties !== undefined ||
     node.where !== undefined ||
-    pattern.start.properties !== undefined ||
     pattern.start.where !== undefined
   ) {
     return undefined;
@@ -99,8 +111,44 @@ const shapeOf = (pattern: PathPattern): Shape | undefined => {
     return undefined;
   }
 
+  /*
+   * ITEM-2152-START-GATE: the clause `WHERE`, admitted when it constrains ONLY the start variable.
+   *
+   * 🔑 `chainGatesOf` splits the `WHERE`'s AND conjuncts by the variable each one constrains, and
+   * returns `null` when it cannot attribute them all. ⚠️ A conjunct on the FAR variable is REFUSED here
+   * rather than applied: this rung counts endpoints as the BFS discovers them, so a far-side predicate
+   * would have to run per endpoint, and whether that is still a win is a separate measurement.
+   */
+  const startVar = pattern.start.variable;
+  const gates =
+    clauseWhere === undefined
+      ? undefined
+      : chainGatesOf(clauseWhere, pattern.start, pattern.segments);
+
+  if (gates === null) {
+    return undefined;
+  }
+
+  if (
+    gates !== undefined &&
+    (startVar === undefined || [...gates.keys()].some((k) => k !== startVar))
+  ) {
+    return undefined;
+  }
+
+  const startPred = gateWith(
+    pattern.start,
+    startVar === undefined ? undefined : gates?.get(startVar),
+  );
+
+  /* ⚠️ `gateWith` returns `null` for a predicate it cannot express, which is NOT `undefined`. */
+  if (startPred === null) {
+    return undefined;
+  }
+
   return {
     startLabel: pattern.start.label,
+    startPred,
     farLabel: node.label,
     type: label.name,
     out: direction === 'out',
@@ -193,13 +241,7 @@ export const detectShortestEndpointCount = (
 
   const [m, ret] = clauses;
 
-  if (
-    m?.kind !== 'match' ||
-    m.optional ||
-    m.patterns.length !== 1 ||
-    m.where !== undefined ||
-    ret?.kind !== 'return'
-  ) {
+  if (m?.kind !== 'match' || m.optional || m.patterns.length !== 1 || ret?.kind !== 'return') {
     return null;
   }
 
@@ -218,16 +260,22 @@ export const detectShortestEndpointCount = (
     return null;
   }
 
-  const shape = shapeOf(m.patterns[0]);
+  const shape = shapeOf(m.patterns[0], m.where);
 
   if (shape === undefined) {
     return null;
   }
 
-  return (graph: Graph): Row[] => {
+  return (graph: Graph, params: Params): Row[] => {
+    /* ⚠️ ONE binding, reused across every seed — `inlineHolds` writes the element into it and reads it. */
+    const binding = new Map<string, unknown>();
     let total = 0;
 
     for (const seed of candidateVertices(graph, shape.startLabel)) {
+      if (!inlineHolds(shape.startPred, seed, binding, params, graph)) {
+        continue;
+      }
+
       total += reachableCount(graph, seed, shape);
     }
 

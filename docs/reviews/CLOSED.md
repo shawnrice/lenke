@@ -107401,3 +107401,54 @@ in a comment now, as the other three taught.
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 5,247 GQL
 tests; `bun run fuzz` all seven green — plus `differential` on three explicit seeds, since `ANY SHORTEST`
 is GQL-only and cannot reach the Gremlin residual.
+
+## Item 2152 — ✅✅ **SHIPPED: item 2151's rung now carries a START-GATE predicate — 3.05-3.48x, and the bench row's native ratio falls from 19.44x to 6.86x. ⚠️ It also opened a 3.3x EQUIVALENT-SPELLING GAP that had to be closed in the same item**
+
+Item 2151's rung refused any clause `WHERE`, which left the shape the bench actually measures on the
+general matcher. `chainGatesOf` + `gateWith` + `inlineHolds` is the house pattern for this and
+`var-length-count.ts` is the worked example, so the extension is three existing helpers, not new
+machinery.
+
+```text
+    row                        BEFORE     NEW
+    WHERE {1,6} [bench row]      36.4     11.9    3.05x
+    WHERE {1,3}                  27.8      8.0    3.48x
+    inline {k: 1}                25.2      8.4    3.05x
+    two conjuncts                31.6     10.5    3.06x
+    no WHERE [2151's arm]       188.5    189.5    flat
+    FAR-side WHERE [declines]   772.6    762.3    flat
+    ---- the bench row ----
+    ANY SHORTEST 1-6 hops        34.1     12.1    and 19.44x native -> 6.86x
+```
+
+### ⚠️⚠️ THE SPELLING GAP I OPENED, AND HOW IT SHOWED UP
+
+Admitting only the CLAUSE form left `(a:P {k: 1})` on the general matcher while `WHERE a.k = 1` took the
+rung: **8.24 ms against 27.52, 3.3x apart for one question.** 🔑 That is the defect class this repo is
+organised around, and item 2130 is the precedent for creating one with a half-fix (a 9.4x gap from its own
+first half). ⚠️ It surfaced in the very measurement table above, as a row I had added only as a curiosity —
+which is the argument for measuring the OTHER spelling of anything you gate on.
+
+🔑 The fix is one condition removed, not new code: `gateWith` already folds a node's own inline properties
+together with the clause conjuncts. The pair now reads 8.57 / 9.73 (1.14x), and a test asserts they agree.
+
+⚠️ **The FAR node's predicates stay refused** — they would have to run per discovered endpoint, and whether
+that is still a win is its own measurement.
+
+### 🔑 THE MUTATION ROUND: 8/8, AND THE LAST ONE NEEDED A CASE THAT COULD REACH IT
+
+Caught: the gate never applied, inverted, a far conjunct admitted, an unattributable `WHERE` admitted, the
+predicate not built, the inline properties not folded (**the spelling gap, now guarded**), and the binding
+rebuilt per seed.
+
+⚠️ `ignores-gateWith-null` survived the first round. 🔑 `gateWith` answers `null` for a CORRELATED inline
+value (`{k: b.k}`), which is neither a predicate nor `undefined` — so without that check `inlineHolds`
+takes `null` and throws on `ip.bindVar`. It survived only because no test used a correlated value; two
+decline cases closed it.
+
+⚠️ **AND A FIFTH WRONG LITERAL** (2133, 2146, 2149, 2151, now this): a `$param` test asserted that `k = 0`
+and `k = 1` must differ, and on the chain fixture both reach 4 endpoints within 3 hops. 🔑 Moved to a LINE,
+where the seed's position decides the count (3 against 1) — and the engine was right again.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 5,247 GQL
+tests; `bun run fuzz` all seven green.

@@ -322,6 +322,148 @@ describe('the ANY SHORTEST endpoint count (item 2151)', () => {
     });
   });
 
+  describe('⚠️⚠️ the START GATE (item 2152), and the spelling pair it had to keep together', () => {
+    test('a clause WHERE agrees with the general matcher', () => {
+      const g = chain();
+      const q = 'MATCH ANY SHORTEST (a:P)-[:T]->{1,3}(b:P) WHERE a.k = 0 RETURN count(*) AS c';
+
+      expect(query(g, q)[0].c).toBe(query(g, `${q} ORDER BY c`)[0].c);
+    });
+
+    test('⚠️⚠️ the INLINE spelling answers the same as the clause spelling', () => {
+      /*
+       * 🔑 THE REGRESSION THIS FILE EXISTS TO CATCH. `(a:P {k: 0})` means exactly `WHERE a.k = 0`. When
+       * item 2152 first admitted only the clause form, the two measured **8.24 ms against 27.52** — 3.3x
+       * apart for one question, the defect class this repo is organised around, opened by that change.
+       * ⚠️ They converged to 8.57 / 9.73 once `gateWith` was allowed to fold the node's own properties.
+       */
+      const g = chain();
+      const clause = query(
+        g,
+        'MATCH ANY SHORTEST (a:P)-[:T]->{1,3}(b:P) WHERE a.k = 0 RETURN count(*) AS c',
+      );
+      const inline = query(
+        g,
+        'MATCH ANY SHORTEST (a:P {k: 0})-[:T]->{1,3}(b:P) RETURN count(*) AS c',
+      );
+
+      expect(inline[0].c).toBe(clause[0].c);
+      // ⚠️ And non-vacuous: the unfiltered question answers more.
+      expect(Number(clause[0].c)).toBeLessThan(Number(query(g, AS(3))[0].c));
+    });
+
+    test('BOTH spellings at once compose', () => {
+      const g = chain();
+      const q =
+        'MATCH ANY SHORTEST (a:P {k: 0})-[:T]->{1,3}(b:P) WHERE a.k >= 0 RETURN count(*) AS c';
+
+      expect(query(g, q)[0].c).toBe(query(g, `${q} ORDER BY c`)[0].c);
+    });
+
+    test('several conjuncts on the start', () => {
+      const g = chain();
+      const q =
+        'MATCH ANY SHORTEST (a:P)-[:T]->{1,3}(b:P) WHERE a.k >= 0 AND a.k < 2 RETURN count(*) AS c';
+
+      expect(query(g, q)[0].c).toBe(query(g, `${q} ORDER BY c`)[0].c);
+    });
+
+    test('a $param in the gate', () => {
+      /*
+       * ⚠️ A LINE, NOT THE CHAIN FIXTURE. On the chain, seeds k = 0 and k = 1 BOTH reach 4 endpoints
+       * within 3 hops — a coincidence that made the "different param, different answer" assertion fail
+       * while the engine was right. 🔑 Down a line the seed's POSITION decides the count: n0 reaches 3,
+       * n4 reaches 2.
+       */
+      const g = new Graph();
+
+      for (let i = 0; i < 6; i += 1) {
+        g.addVertex({ id: `n${i}`, labels: ['P'], properties: { k: i } });
+      }
+
+      for (let i = 0; i < 5; i += 1) {
+        g.addEdge({
+          id: `l${i}`,
+          from: g.getVertexById(`n${i}`)!,
+          to: g.getVertexById(`n${i + 1}`)!,
+          labels: ['T'],
+          properties: {},
+        });
+      }
+
+      const q = 'MATCH ANY SHORTEST (a:P)-[:T]->{1,3}(b:P) WHERE a.k = $k RETURN count(*) AS c';
+
+      expect(query(g, q, { k: 0 })[0].c).toBe(3);
+      expect(query(g, q, { k: 4 })[0].c).toBe(1);
+      // 🔑 The gate is read per CALL, not baked into the closure, and both agree with the general path.
+      expect(query(g, q, { k: 0 })[0].c).toBe(query(g, `${q} ORDER BY c`, { k: 0 })[0].c);
+      expect(query(g, q, { k: 4 })[0].c).toBe(query(g, `${q} ORDER BY c`, { k: 4 })[0].c);
+    });
+
+    test('⚠️⚠️ a gate that is TRUE for one seed must not leak to the next', () => {
+      /*
+       * 🔑 ONE binding Map is reused across every seed, which is the habit this engine keeps — and the
+       * risk it carries. ⚠️ With three seeds where only the middle one passes, a leak shows up as a count
+       * that is too high.
+       */
+      const g = new Graph();
+
+      for (let i = 0; i < 3; i += 1) {
+        g.addVertex({ id: `s${i}`, labels: ['P'], properties: { k: i } });
+        g.addEdge({
+          id: `t${i}`,
+          from: g.getVertexById(`s${i}`)!,
+          to: g.getVertexById('s0')!,
+          labels: ['T'],
+          properties: {},
+        });
+      }
+
+      const q = 'MATCH ANY SHORTEST (a:P)-[:T]->{1,2}(b:P) WHERE a.k = 1 RETURN count(*) AS c';
+
+      // Only s1 passes; it reaches s0 in one hop, and s0's own edge is a self-loop so nothing further.
+      expect(query(g, q)[0].c).toBe(query(g, `${q} ORDER BY c`)[0].c);
+      expect(query(g, q)[0].c).toBe(1);
+    });
+
+    test.each([
+      [
+        'a FAR-side WHERE',
+        'MATCH ANY SHORTEST (a:P)-[:T]->{1,3}(b:P) WHERE b.k = 1 RETURN count(*) AS c',
+      ],
+      [
+        'a conjunct on EACH side',
+        'MATCH ANY SHORTEST (a:P)-[:T]->{1,3}(b:P) WHERE a.k = 0 AND b.k = 2 RETURN count(*) AS c',
+      ],
+      [
+        'a FAR inline property',
+        'MATCH ANY SHORTEST (a:P)-[:T]->{1,3}(b:P {k: 2}) RETURN count(*) AS c',
+      ],
+      [
+        'an OR across the two',
+        'MATCH ANY SHORTEST (a:P)-[:T]->{1,3}(b:P) WHERE a.k = 0 OR b.k = 2 RETURN count(*) AS c',
+      ],
+      /*
+       * ⚠️⚠️ A CORRELATED INLINE VALUE reaches this rung's gate — the start's inline properties ARE
+       * admitted — and `gateWith` answers `null` for it, which is NEITHER a predicate nor `undefined`.
+       * 🔑 Without the `startPred === null` check, `inlineHolds` would be handed `null` and THROW on
+       * `ip.bindVar`. A mutation survived until this case existed.
+       */
+      [
+        'a CORRELATED inline value',
+        'MATCH ANY SHORTEST (a:P {k: b.k})-[:T]->{1,3}(b:P) RETURN count(*) AS c',
+      ],
+      [
+        'a WHERE correlating both variables',
+        'MATCH ANY SHORTEST (a:P)-[:T]->{1,3}(b:P) WHERE a.k = b.k RETURN count(*) AS c',
+      ],
+    ])('⚠️ %s still DECLINES and still answers', (_name, q) => {
+      const g = chain();
+
+      expect(query(g, q)[0].c).toBe(query(g, `${q} ORDER BY c`)[0].c);
+    });
+  });
+
   test('⚠️ a WRITE between two asks is reflected', () => {
     /*
      * 🔑 The rung reads `graph` at RUN time, never at compile time, and both asks share a query TEXT so
