@@ -111146,3 +111146,55 @@ absolute gate. `hop/sum` and `two aggregates` remain the known boxed-vs-columnar
 absolute gap — ~15 ms. ⚠️ Per items 2216/2217, the sequence is LADDER then ABLATE before any arm.
 
 GATES. `bun run fmt` 0, `bun run check` 0. Instrument only; no engine change.
+
+## Item 2220 — 🔑🔑🔑 **THE STRONGEST NOMINATION OF THE SESSION, ON THREE INDEPENDENT LINES OF EVIDENCE: a MID-pattern filter is not used to prune the second hop. Start-position filtering prunes (7.4 ms); mid-position costs 29.5 ms where its pruning floor is 2.3 ms**
+
+Item 2219 flagged `hop2/rows + mid where` at 3.67x with its trailing sibling at 1.10x. This tick tested the
+mechanism rather than profiling it.
+
+### 1. THE ENGINE'S COST IS NEARLY FLAT IN SELECTIVITY; THE FLOOR SCALES 18x
+
+```text
+    mid filter               engine ms   floor ms   vs floor      rows
+    b.k = 5          (1%)    26.0/29.5   2.3/4.3  11.11x/6.79x    3200
+    b.k < 10        (10%)    24.8/33.9   4.8/4.2   5.19x/8.02x   32000
+    b.k < 50        (50%)    40.8/42.6       18.6   2.19x/2.30x  159986
+    b.k >= 0       (100%)    59.9/64.1       40.6   1.48x/1.59x  319972
+```
+
+🔑 Two passes in OPPOSITE order (item 2214's rule). The floor goes 2.3 → 40.6 (**~18x**) while the engine
+goes 26 → 60 (**~2.3x**): a **~22 ms near-fixed cost**, so a selective mid-filter barely pays off.
+
+### 2. FILTER POSITION, AT IDENTICAL SELECTIVITY AND IDENTICAL ROW COUNT
+
+```text
+    START    WHERE a.k = 5     7.4 ms   rows=3200
+    TRAILING WHERE c.k = 5    21.0 ms   rows=3200
+    MID      WHERE b.k = 5    29.5 ms   rows=3200
+    NONE     (control)        52.5 ms   rows=319972
+```
+
+🔑🔑 **All three return the SAME 3,200 rows and cost 4x apart by POSITION alone.** The start filter prunes
+properly — **so the engine HAS pruning machinery and does not apply it mid-pattern.** ⚠️ The trailing filter
+cannot prune by nature (every path must be walked to test `c`), and at 21.0 ms it beats its own correct floor
+(the unfiltered walk, ~40 ms), which is why item 2219 measured it at a healthy 1.10x.
+
+### 3. THE HAND-ROLLED PRUNING FLOOR IS 2.3 ms
+
+Prune at `b`, then walk only the survivors' second hop: 2.3 ms for the same 3,200 rows, against the engine's
+29.5. ⚠️ And that floor is the RIGHT one for a mid filter specifically, which is why it must not be applied
+to the trailing row.
+
+**THREE INDEPENDENT LINES AGREEING — flat-in-selectivity, position-at-fixed-rows, and a pruning floor — is
+more corroboration than any target this session has had.**
+
+### ⚠️ AND A SELF-CAUGHT INSTRUMENT BUG THAT WOULD HAVE INVALIDATED EVERYTHING
+
+The first run printed **rows=0 for every case**: the result of this query IS an array, so my
+`(... as {rows?}).rows ?? []` read undefined and the fallback swallowed it. 🔑 The timings used a correct
+accessor, but **a row count invariant to the varied parameter cannot validate the table** (CLAUDE.md, item 702) — printing it is what surfaced the bug, and the zeros were the signal.
+
+**NEXT: ladder then ablate (items 2216/2217) before any arm.** The question is whether the mid-filter's
+~22 ms fixed term is the closed causes (binding, property reads) or a genuine missing prune.
+
+GATES. `bun run fmt` 0, `bun run check` 0. New probe `packages/native/midfilter-2220.ts`; no engine change.
