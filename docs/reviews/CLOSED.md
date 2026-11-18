@@ -112387,3 +112387,47 @@ ANSWER:
   (2237, 2241) and one reversed headline (2242: TS beats native up to 20x on shortcut-covered counts).
 
 GATES. As above, each read unpiped. Instrument reporting only; no engine change.
+
+## Item 2245 — ✅ **THE TS ENGINE PASSES THE TEST THE NATIVE ENGINE FAILS: one write neither returns a stale answer nor demotes later reads, and the memos RE-ARM. ⚠️ And my first shape could not have detected either, because a closed-form count never touches adjacency**
+
+⚠️ **PRIOR ART FIRST, and it redirected this item twice.** Ingest was the plan, and it is CLOSED — item
+2201: _"the write path is MINED OUT: `addVertex` is 659 ns against a 74 ns `Map.set` floor, and FOUR of its
+FIVE top frames already carry a measurement"_. An allocation instrument was the fallback, and `heap-prof`
+already appears **9 times** in this file. 🔑 Checking both saved two items of re-derivation — the failure
+`CLAUDE.md` opens with.
+
+### 🔑 THE QUESTION NOTHING ASKS
+
+Item 2239 proved `#box`, `#toV` and `#adjTo`/`#adjFrom` are **load-bearing** `??=` memos on the ELEMENT
+(replacing them with store lookups was 1.7x WORSE). `CLAUDE.md` records the NATIVE engine failing badly on
+exactly this: one `add_edge` clears `csr_fresh` **with nothing to re-arm it**, so every later read is demoted
+for the rest of the session — up to **24.07x**. So: after a write, does the TS engine return a stale answer,
+or demote, or recover?
+
+```text
+    N=20000 vertices, 80000 edges, one new edge from a vertex that already has four
+    WALKING shape (values after a hop — enumerates edges)
+      warm series    12.9 10.8 1.5 1.1 1.3 1.2 1.3 0.8 0.9
+      after series    5.8  8.9 1.1 0.9 1.1 0.9 0.9 0.9 0.9
+      rows           80001, expected 80001        CORRECTNESS OK
+      median         1.24 -> 0.86 ms  (0.70x)     NO DEMOTION
+    CLOSED-FORM shape (degree-sum count)
+      answer         80001, expected 80001        CORRECTNESS OK
+      median         0.01 -> 0.01 ms              NO DEMOTION
+```
+
+🔑🔑 **And the series shows the MECHANISM, not just the verdict**: after the write, reps 1-2 are elevated
+(5.8, 8.9 against a settled 0.9) and then recover. **That is the memos being re-filled — invalidated by the
+write and RE-ARMED by the next read**, which is precisely the half the native engine is missing. The
+degree-sum closed form is maintained too, so a count does not need to walk to stay correct.
+
+### ⚠️⚠️ MY FIRST SHAPE WAS INCAPABLE OF ANSWERING EITHER QUESTION
+
+`out('E').count()` timed at **0.0 ms** — it is the degree-sum closed form and **never touches an adjacency
+memo**. A "no demotion" verdict from it would have been vacuous, and the only reason that was caught is that
+the printed series was all zeros. 🔑 **A cache-invalidation probe must use a shape that READS THE CACHE** —
+for adjacency that means enumerating edges (`values` after a hop), not counting them. ⚠️ The same trap as
+[[label-vacuity-gates-fast-paths]]: a closed-form rung answers without doing the work the probe is about.
+Both arms are kept (`SHAPE=count`) so the distinction stays visible.
+
+GATES. `bun run fmt` 0, `bun run check` 0. New instrument `cacheinval-2245.ts`; no production change.
