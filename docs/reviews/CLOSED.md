@@ -112092,8 +112092,9 @@ get to(): Vertex { this.#toV ??= this.#graph!.getVertexById(this.#to)!; return t
 
 **Reaching the far property costs TWO string-keyed map lookups**: `getVertexById` to materialize the
 `Vertex`, then `elementProperties.get(id)` for its box. Both are cached (`#toV`, `#box`), which is why
-rep 1 is visibly slower than rep 2 — but the steady state still pays, so the caches are not carrying as
-much as their presence suggests.
+rep 1 is visibly slower than rep 2 — ⚠️ ~~but the steady state still pays, so the caches are not carrying
+as much as their presence suggests~~ **WRONG, refuted at item 2239: the caches carry it ENTIRELY, and
+replacing them with a direct store lookup is 1.7x WORSE.**
 
 ⚠️ And `Edge.ts` already documents the way out, in a comment about its endpoint-**ids** accessor:
 _"The endpoint IDS, without materializing the vertices."_ **A grouped count keyed on `b.k` needs the far
@@ -112106,3 +112107,49 @@ the inflated figure is withdrawn above.
 
 GATES. `bun run fmt` 0, `bun run check` 0; tree restored to LIVE and verified after all three A/B scripts.
 No production change.
+
+## Item 2239 — ⚠️⚠️⚠️ **REFUTED, AND IT INVERTS THE USUAL INTUITION: reading the far property straight from the id-keyed store instead of through the element is 1.7x SLOWER. The per-element caches were carrying it entirely**
+
+Item 2238 named the lever: `edge.to` resolves through `getVertexById` (a string-keyed `Map.get`) and the
+`properties` getter does a SECOND lookup for the box, so a count keyed on `b.k` appeared to be paying two
+lookups to reach a property one could reach. `elementProperties` is public and keyed by the bare id, and
+`edge.toId` returns the id without materializing — so the change is small and obviously correct.
+
+### ✅ BUILT, CORRECT, AND CONSISTENTLY WORSE
+
+```text
+    farkey (ms)       LIVE    POST
+    round 1          117.8   199.5     1.69x WORSE
+    round 2          116.0   207.8     1.79x WORSE
+    round 3          119.7   196.3     1.64x WORSE
+    startkey (ctl)    22-29   21-24     flat
+    plain    (ctl)      1.8     2.0-2.4 flat
+```
+
+`rows=98` in every arm, so the answer is right; the gate is `far === undefined` because a far LABEL must be
+tested against a materialized vertex, which is the one thing an id cannot do. Arm files were built on disk
+and asserted (`LIVE=0`, `POST=1` new-read sites) before any timing, with `nx build @lenke/gql` per arm.
+
+### 🔑🔑🔑 WHY — AND THIS IS THE GENERALIZABLE PART
+
+**`#toV` and `#box` are per-element caches, and they are completely effective.** In steady state the live
+path is TWO WARM PRIVATE-FIELD READS: `edge.to` resolved its vertex once and cached it on the EDGE, and the
+vertex resolved its box once and cached it on the VERTEX. The replacement does an **uncached string-keyed
+`Map.get` against a 200,000-entry map on every contribution of every rep.**
+
+⚠️ **So the columnar intuition — "skip the object, read the store directly" — is BACKWARDS in this engine.**
+A shared id-keyed map lookup cannot beat a cached private-field read, and **any** optimization of the form
+"read from the graph's store instead of from the element" will lose for the same reason. 🔑 It also means
+the by-id path is in good shape: `getVertexById` is one `Map.get` and every element memoizes its result.
+
+### ⚠️ AND IT CORRECTS ITEM 2238's READING OF ITS OWN NUMBERS
+
+2238 wrote that "the steady state still pays, so the caches are not carrying as much as their presence
+suggests" — **struck above.** The caches carry it entirely. What `F_id`'s ~105 ns actually priced was
+`edge.to`'s first-visit resolution plus materialization amortized across reps, not a per-contribution map
+lookup. 🔑 **The ~73 ns property-getter cost is therefore NOT reachable by avoiding materialization** — and
+with the index, the coalesce, the getter and now the store-read all refuted, **this shape is at its floor
+for the TS object model.** Its remaining distance to wasm is the boxed-vs-columnar ceiling, already closed
+twice (items 2173/2196).
+
+REVERTED. GATES. `bun run fmt` 0, `bun run check` 0; tree restored to LIVE and verified.
