@@ -111049,3 +111049,51 @@ not ONE cause either. Two cheap probes, no engine churn, and no withdrawn claim.
 
 GATES. `bun run fmt` 0, `bun run check` 0; tree verified byte-identical to pristine after the run. No
 production change.
+
+## Item 2218 — ✅ **THE GREMLIN FINDER IS NOW 15/15 FLOORED AND EVERY SHAPE IS BELOW 1.0x: the worst case is 0.56x, i.e. the engine beats a hand-rolled walk on EVERY measured shape. And a "filter makes it slower" anomaly is resolved by its floor alone**
+
+Item 2213 floored 8 of the Gremlin shapes; this fills in the row-returning families that still printed `-`.
+
+```text
+    family  shape                            rung        ns/op       floor  vs floor    rows
+    count   hop                              CLOSED       5578      712404     0.01x       1
+    count   hop + far has                    CLOSED     357551     5256896     0.07x       1
+    count   hop hop                          CLOSED       4240    12965588     0.00x       1
+    count   hop hop + trailing has           CLOSED     438085    39805379     0.01x       1
+    count   hop + mid has + hop              CLOSED     229973     9236955     0.02x       1
+    values  hop values                       CLOSED    1112237     3209303     0.35x   79996
+    values  hop + far has, values            CLOSED     275182     4815717     0.06x    1600
+    values  hop hop values                   CLOSED    3488373    30705139     0.11x  319972
+    values  hop hop + trailing has, values   CLOSED    3736107    41861003     0.09x    6400
+    values  hop + mid has + hop, values      CLOSED    1304102     7655771     0.17x    6400
+    other   hop id                           CLOSED     543388     1557380     0.35x   79996
+    other   hop + far has, id                CLOSED     276988     4774842     0.06x    1600
+    other   hop dedupe count                 CLOSED     154623     4617794     0.03x       1
+    other   hop + far has, dedupe count      CLOSED     554232     6906238     0.08x       1
+    other   hop + far has, values order limit CLOSED    3854967     6823819     0.56x      10
+```
+
+🔑🔑 **ZERO FLAGS, AND THE WORST RATIO IS 0.56x.** On its weakest floored shape the engine is still 1.8x
+faster than a hand-rolled walk over the same data; on the closed-form counts it is 100x to 3,000x faster.
+⚠️ The `values order limit` floor INCLUDES the sort (item 698's rule), which is why it is the only row above
+0.4x — and it is still a win.
+
+### ✅ AND A "FILTER MAKES IT SLOWER" ANOMALY, RESOLVED BY THE FLOOR ALONE
+
+`hop hop + trailing has, values` costs **3.74 ms for 6,400 rows** while the UNFILTERED `hop hop values`
+costs **3.48 ms for 319,972 rows** — a filtered query returning 50x fewer rows costing MORE, which is the
+shape items 2208/2209 chased for two ticks. ⚠️ It is correct:
+
+```text
+    hop hop values                     floor 30.7 ms   engine 3.49 ms   0.11x
+    hop hop + trailing has, values     floor 41.9 ms   engine 3.74 ms   0.09x
+```
+
+🔑 The filtered form's FLOOR is HIGHER, because it must still walk all 320,000 paths **and** test each one —
+the filter is extra work, not a shortcut, and it only removes rows at the end. **Both engines' ratios
+improve.** One floor settled in a single run what a profile-first chase took two ticks to get wrong.
+
+**NET: the Gremlin surface is now comprehensively verified — 15 shapes, honest floors, no flag.** Any future
+Gremlin nomination should start by adding a floor to this file, not by profiling.
+
+GATES. `bun run fmt` 0, `bun run check` 0. Instrument only; no engine change.

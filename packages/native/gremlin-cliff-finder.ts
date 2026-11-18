@@ -187,6 +187,42 @@ const hopValues = (want?: string): unknown[] => {
   return vals;
 };
 
+/** Every TWO-hop far node's `n`; `want` filters the FAR node, `mid` the middle one. */
+const hop2Values = (want?: string, mid?: string): unknown[] => {
+  const vals: unknown[] = [];
+
+  for (const a of g.verticesByLabel.get('User') ?? []) {
+    for (const e1 of g.edgesFromByLabel.get(a.id)?.get('E') ?? []) {
+      if (mid !== undefined && e1.to.properties.team !== mid) {
+        continue;
+      }
+
+      for (const e2 of g.edgesFromByLabel.get(e1.to.id)?.get('E') ?? []) {
+        if (want === undefined || e2.to.properties.team === want) {
+          vals.push(e2.to.properties.n);
+        }
+      }
+    }
+  }
+
+  return vals;
+};
+
+/** Every one-hop far node's ID; `want` filters the far node. */
+const hopIds = (want?: string): string[] => {
+  const ids: string[] = [];
+
+  for (const a of g.verticesByLabel.get('User') ?? []) {
+    for (const e of g.edgesFromByLabel.get(a.id)?.get('E') ?? []) {
+      if (want === undefined || e.to.properties.team === want) {
+        ids.push(e.to.id);
+      }
+    }
+  }
+
+  return ids;
+};
+
 /** Distinct far-node ids reached in one hop — the work a `dedupe().count()` must do. */
 const hopDedupeCount = (): number => {
   const seen = new Set<string>();
@@ -250,24 +286,33 @@ const shapes: Shape[] = [
     family: 'values',
     name: 'hop hop values',
     plan: traversal(V_(), hasLabel('User'), out('E'), out('E'), values('n')),
+    floor: { label: 'two-hop + materialize n', run: () => hop2Values() },
   },
   {
     family: 'values',
     name: 'hop hop + trailing has, values',
     plan: traversal(V_(), hasLabel('User'), out('E'), out('E'), has('team', eq('t1')), values('n')),
+    floor: { label: 'two-hop + far filter + materialize', run: () => hop2Values('t1') },
   },
   {
     family: 'values',
     name: 'hop + mid has + hop, values',
     plan: traversal(V_(), hasLabel('User'), out('E'), has('team', eq('t1')), out('E'), values('n')),
+    floor: { label: 'two-hop + mid filter + materialize', run: () => hop2Values(undefined, 't1') },
   },
 
   // --- id / dedupe / order, each a one-step change from a values shape --------------------------
-  { family: 'other', name: 'hop id', plan: traversal(V_(), hasLabel('User'), out('E'), id()) },
+  {
+    family: 'other',
+    name: 'hop id',
+    plan: traversal(V_(), hasLabel('User'), out('E'), id()),
+    floor: { label: 'walk + collect ids', run: () => hopIds() },
+  },
   {
     family: 'other',
     name: 'hop + far has, id',
     plan: traversal(V_(), hasLabel('User'), out('E'), has('team', eq('t1')), id()),
+    floor: { label: 'walk + filter + collect ids', run: () => hopIds('t1') },
   },
   {
     family: 'other',
@@ -279,6 +324,7 @@ const shapes: Shape[] = [
     family: 'other',
     name: 'hop + far has, dedupe count',
     plan: traversal(V_(), hasLabel('User'), out('E'), has('team', eq('t1')), dedupe(), count()),
+    floor: { label: 'walk + filter + Set of ids', run: () => new Set(hopIds('t1')).size },
   },
   {
     family: 'other',
@@ -292,6 +338,13 @@ const shapes: Shape[] = [
       order(),
       limit(10),
     ),
+    floor: {
+      label: 'walk + filter + SORT + slice',
+      run: () =>
+        hopValues('t1')
+          .sort((x, y) => (x as number) - (y as number))
+          .slice(0, 10),
+    },
   },
 ];
 
