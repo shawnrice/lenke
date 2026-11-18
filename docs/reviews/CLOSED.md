@@ -114089,3 +114089,54 @@ mechanism: a row-count assertion, a typecheck, a test, and reading the parser. *
 re-reading**, which is the argument for having all four.
 
 GATES. As above, each read unpiped. No production change in this item.
+
+## Item 2281 — ✅ **THE O(1) BY-ID CONSTRAINT IS VERIFIED AS A GROWTH CURVE FOR THE FIRST TIME: 46 ns AT 160k, FLAT.** ⚠️⚠️ **AND THE 4.5x "DEGRADATION" I FOUND ON THE WAY WAS MY OWN PROBE: ONE GRAPH PER REP MAKES THE API CALL SITE MEGAMORPHIC AND INFLATES EVERY API-CALL MEASUREMENT UP TO 4.8x**
+
+Every fixture in this repo builds a graph and then reads it. ⚠️ An ingesting application does both at once,
+and the failure that shape has — **a per-operation cost that RISES with N**, making ingest quadratic — is
+invisible at any single size. Three curves, 10k → 160k (`growth-2281.ts`):
+
+```text
+    N        write ns/op   byid ns/op   query ns/row
+    10000         881           83          26.2
+    160000       1284          372          17.6
+                 1.46x        4.5x          (control: scales with N, as it must)
+```
+
+✅ **Writes are sublinear** — 1.46x over 16x in N, consistent with allocation pressure. **No quadratic
+ingest.** ⚠️ But `byid` rose **4.5x**, which is the user's standing constraint, so it got a floor.
+
+### 🔑 THREE FLOORS, EACH ONE CORRECTING THE LAST — AND THE THIRD DISSOLVED THE FINDING
+
+1. ⚠️ **A mirror `Map` of tiny `{id}` objects** — unfair: different memory profile at the same entry count.
+   Also **my own keys grew with N** (`v9999` → `v159999`), and string hashing is O(len), so part of the 4.5x
+   was me. Fixed with fixed-width ids.
+2. ⚠️ **The SAME map accessed directly** — read nearly flat (33 → 67 ns) while `getVertexById` went 64 → 304. 🔑 But that function is **one line**, `this.verticesById.get(id) ?? null`, and a `?? null` cannot
+   cost 237 ns. The ratios were also **erratic** (1.94, 2.27, 5.00, 2.57, 4.54) — the signature of an
+   instrument effect, not a growth law.
+3. ✅ **One shape per measurement** (`closureic-2281.ts`), which found it:
+
+```text
+    N=160000, 50000 lookups, median of 11                 run A    run B
+    oneGraph    getVertexById, ONE callee at the site       44.0     46.2     <- 0.46-0.65x the "floor"
+    manyGraphs  getVertexById, 9 callees round-robin       192.2    222.3
+    direct      same map, .get inline                       67.4    101.3
+```
+
+🔑🔑 **`getVertexById` is a per-instance ARROW FIELD, so every `new Graph()` mints a new function object.**
+Building one graph per rep made a single call site see nine callees — **megamorphic, which defeats
+inlining**. A real application holds ONE graph, and there it runs at **46 ns on a 160k-vertex graph,
+FASTER than an inline `.get` on the same map**, because the engine's own site is monomorphic. ✅ **The
+constraint holds, flat, and now has a measured curve behind it.** Per-rep series confirm: `oneGraph` settles
+304 → 45, `manyGraphs` plateaus at ~215 and never reaches it.
+
+### ⚠️ THIS TRAP REACHES MOST PROBES IN THIS REPO
+
+**Anything that builds a fresh `Graph` per rep and measures a Graph METHOD overstates that method's cost**,
+by up to 4.8x here. ✅ It does NOT invalidate A/B work where both arms build graphs identically — both are
+megamorphic, and the comparison survives. ⚠️ It DOES invalidate any absolute "the API costs X" claim, and
+any floor comparison where only one side goes through a Graph method. Same family as the recorded
+one-shape-per-process rule; this is its allocation-site twin.
+
+GATES. `bun run fmt` 0, `bun run check` 0 (it caught three type/lint errors in the probes). Three probes;
+no production change — **nothing to fix, which is the result**.
