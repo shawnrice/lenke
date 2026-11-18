@@ -111348,3 +111348,55 @@ rule is really "a one-size ratio is an upper bound, not a measurement".
 engine's hop overhead AMORTIZES as graphs grow** — which is the useful thing to know about it.
 
 GATES. `bun run fmt` 0, `bun run check` 0. No production change.
+
+## Item 2224 — ✅ **THE SIZE SWEEP IS NOW AN INSTRUMENT, AND IT IMMEDIATELY CORRECTS ITEM 2222's SCOPE: `hop2/rows + mid where` RISES to 5.31x at 80k nodes, where 2222 built and measured it at 20k. GREMLIN has no rising shape at all**
+
+Single-size ratios overstated three verdicts in one session (items 2200, 2205, 2223), so the sweep moved
+into `packages/native/finder-sweep-2224.ts` rather than staying a habit. It spawns a finder **one process
+per size** (items 762/2172-2175) and reports the DIRECTION of each floored row's `vs floor` ratio.
+
+🔑 **THE VERDICT IS THE DIRECTION, NOT THE MAGNITUDE:** a ratio that FALLS is the floor losing its cache
+advantage (item 2223 measured floor per-edge growing 3.1x against the engine's 1.4x); a ratio that RISES is
+a real target that gets worse where it matters.
+
+### ⚠️⚠️ GQL: TWO SHAPES RISE, AND ONE OF THEM IS THE ONE ITEM 2222 JUST BUILT FOR
+
+```text
+    shape                              5000    20000    80000   trend
+    hop2/rows + mid where             3.93x    3.92x    5.31x   RISES <--
+    node/rows + where                 2.52x    2.23x    4.03x   RISES <--  (non-monotonic)
+    node/rows                         1.78x    1.59x    2.23x   RISES <--  (non-monotonic)
+    page/topk over a hop              0.50x    0.76x    0.71x   RISES (but <1.0 — engine wins)
+    hop/sum / two aggregates          2.11x    2.95x    1.89x   flat (known architectural)
+    hop2/count                        0.01x    0.00x    0.00x   falls
+    hop/rows                          0.77x    0.43x    0.16x   falls
+    hop/distinct count                0.09x    0.04x    0.05x   falls
+```
+
+🔑🔑 **ITEM 2222 MEASURED THE MID-FILTER BUILD AT `NODES=20000` — exactly where this sweep reads 3.92x —
+while the gap rises to 5.31x at 80k.** That does not make 2222's revert wrong (the gate fired and the inner
+loop was not where the time went), but it DOES mean the build was evaluated at one size, and the shape it
+targeted is the single GQL row whose ratio grows. ⚠️ `node/rows + where` and `node/rows` rise
+NON-MONOTONICALLY (2.52 → 2.23 → 4.03), which item 2210 established is spread rather than mechanism — so
+`hop2/rows + mid where` is the only credible riser.
+
+### ✅ GREMLIN: NOT ONE RISING SHAPE, AND ALL 14 BELOW 1.0x AT 80k
+
+```text
+    count/hop hop                            0.00x    0.00x    0.00x   flat
+    count/hop + far has                      0.21x    0.07x    0.03x   falls
+    values/hop values                        0.75x    0.39x    0.26x   falls
+    other/hop + far has, values order limit  1.12x    1.28x    0.58x   falls
+```
+
+🔑 Every Gremlin row falls or is flat and every one ends below 1.0x — **the engine beats a hand-rolled walk
+at every size measured**, and the advantage WIDENS with scale. That is a stronger statement than item 2218's
+single-size table could make.
+
+⚠️ Cosmetic, recorded not fixed: the Gremlin finder prints a `rung` column, so the sweep's shape key picks up
+a trailing `CLOSED`. The per-row trend is unaffected because the key is consistent across sizes.
+
+**NEXT: re-measure item 2222's mid-filter build at 80,000 nodes.** It is the one shape that rises, and the
+build already exists in git history with its correctness argument and firing assertion.
+
+GATES. `bun run fmt` 0, `bun run check` 0. New instrument; no engine change.
