@@ -68,6 +68,7 @@ import type {
 } from './core.js';
 import { compileExpr, compilePredicate, specializeNarrowPred, percentileFraction } from './core.js';
 import { twoHopCsrProduct } from './csr-cache.js';
+import { bareNodeCount } from './exists-hop-count.js';
 import { freePredicateVars } from './expr-analysis.js';
 import { filteredChainCsrApplies, filteredChainCsrCount } from './filtered-chain-csr.js';
 import { plainNode, plainRel, side as hopSide, sideOfVertex } from './hop-sides.js';
@@ -3644,45 +3645,9 @@ export const patternCountOf = <T>(
   }
 
   if (segments.length === 0) {
-    // A clause `WHERE` over the single node is the SAME question as the inline
-    // spelling, and tallying one while declining the other would create exactly the
-    // equivalent-spelling gap the probe exists to catch. It is carried as a second
-    // closed predicate rather than by splicing an `AND` into the AST.
-    const preds: InlinePred[] = [];
-
-    if (inStart !== undefined) {
-      preds.push(inStart);
-    }
-
-    if (where !== undefined) {
-      if (start.variable === undefined) {
-        return null;
-      }
-
-      for (const nameRead of freePredicateVars(where)) {
-        if (nameRead !== start.variable) {
-          return null;
-        }
-      }
-
-      // `start.variable` is passed as the predicate's OWN variable, which lets `directEqProps`
-      // read the element directly instead of through the binding. Sound because the loop above has
-      // just proved exactly the precondition that argument documents: every free variable of
-      // `where` IS `start.variable`, so the predicate is element-local. Without it the clause
-      // spelling paid 29.0 ns a vertex against the inline spelling's 17.2 for the same answer, and
-      // 47.4 against 21.1 for an AND of two equalities (audit item 230).
-      preds.push(predFor(compilePredicate(undefined, where, start.variable), start.variable, true));
-    }
-
-    return buildNodeCount(start, rowOf, preds, cstart);
+    return bareNodeCount({ start, where, rowOf, cstart, inStart, walkOf: buildNodeCount });
   }
 
-  // AN END CONSTRAINT ON A SHORT CHAIN GOES TO THE SWEEP (item 306), before the degree products
-  // get a say, because it is the one position they cannot carry.
-  //
-  // NOT WHEN THE START IS PINNED BY AN ID SEED (item 1329): the sweep walks the whole graph, and
-  // for a start pinned to a handful of elements that is 1550x the two-segment form of the same
-  // question. See {@link startIsPinnedById}.
   if (sweepableSegmentCount(segments, cstart) === 3) {
     const swept = endGatedChainCount(start, segments, where, rowOf, cstart);
 

@@ -108048,3 +108048,63 @@ this exact run-many flake.
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; 21/21 projects; 5,286 GQL tests; `bun run fuzz`
 all seven green.
+
+## Item 2163 — ✅✅ **SHIPPED: `EXISTS` / `NOT EXISTS` one-hop counts from the edge index — 19-27 ms → 1.35, and the screen's ratio falls 31.0x → 2.9x. The THROW found a gate that rejected every query, and the first mutation round exposed FOUR fixture coincidences**
+
+Item 2161 flagged this with answers verified equal on both engines; item 2162 displaced the build to fix a
+wrong answer and left the index's removal semantics known.
+
+```text
+    arm                       BEFORE      NEW
+    EXISTS                    19-27      1.35      (native 0.87)
+    NOT EXISTS                22-33      0.95
+    EXISTS incoming              33      3.08
+    far label [declines]                20.65
+    plain / filtered scan [controls]     flat
+    ---- the native-reference screen ----
+    EXISTS                    26.94 / 31.0x  ->  2.44 / 2.9x    no longer flagged
+    NOT EXISTS                22.57 / 26.0x  ->  2.29 / 2.6x    no longer flagged
+```
+
+### 🔑 THE THROW EARNED ITSELF A THIRD TIME
+
+⚠️ My first version was **never reached by any query**, and the measurement looked like a modest win
+(12.35 ms) that I could easily have published. 🔑 The AST dump says why: a plain
+`EXISTS { MATCH (a)-[:T]->(b) }` parses with `selector: 'walk'` and `mode: 'trail'` — the ISO **defaults**
+— not with them absent, and my gate tested `!== undefined`. Accepting both is sound rather than
+convenient: `walk` is the default selector, and `hop-projection.ts` records that a path MODE applies PER
+REPETITION, so on a single non-quantified hop the restrictors are no-ops.
+
+⚠️ A second defect the write-up caught: my first draft answered `rowOf(Number.NaN)` for a non-vacuous
+anchor label. `CountOf` must ANSWER — it cannot decline at run time — so the non-vacuous case now
+delegates to the per-candidate walk, passed in as `walkOf`.
+
+### ⚠️⚠️ THE MUTATION ROUND WENT 4/12 → 7/12 → 11/12, AND BOTH REPAIRS WERE MINE
+
+```text
+    first round    4/12    declines asserted only `typeof === 'number'`
+    second         7/12    + every decline asserts its VALUE
+    third         11/12    + a fixture whose decline answers DIFFER from the form's
+```
+
+🔑 **The first repair:** six mutants that wrongly ADMITTED a shape survived, because a form accepting a far
+label still returns a number — just the wrong one. ⚠️ **The second is the subtler one and I have now hit it
+three times** (items 2152, 2160, here): my decline fixture gave every refused shape the answer **2**, which
+is exactly what the closed form produces by ignoring the condition. A decline test only has teeth when the
+correct answer and the form's answer DISAGREE. The fixture now answers 3 for the form and 1, 2 or 5 for each
+decline.
+
+The one survivor is `form-disabled`, answer-equivalent by design. **24 tests**, including an uncorrelated
+subquery (a constant, which a form skipping its correlation check would answer 3 instead of 5), parallel
+edges collapsing to one source, a self-loop counting on both sides, and a direction test on a fixture with
+3 sources against 2 targets — my first had 2 of each and a hard-coded-index mutant survived it.
+
+### ⚠️ THE FILE WAS AT ITS LINE CAP, SO THE WHOLE ARM MOVED
+
+`shortcuts.ts` sits exactly AT `max-lines`' 3000, so adding even an import broke the gate. 🔑 Rather than
+raise a project cap mid-item, the whole zero-segment arm moved to `exists-hop-count.ts` — 18 code lines
+out, the call site one statement. ⚠️ `buildNodeCount` itself stayed: 259 lines with ten dependencies, so
+moving it risks a cycle; it is passed in instead.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 5,310 GQL
+tests; `bun run fuzz` all seven green.
