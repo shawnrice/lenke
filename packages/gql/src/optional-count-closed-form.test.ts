@@ -13,10 +13,19 @@
  * anchors; the bench row read 18.5 ms against native's 0.6, and native's figure is what said a closed form
  * had to exist.
  *
- * ⚠️⚠️ **THE WHOLE RISK IS THAT A TERM IS NOT EXACT, so every test here is either the arithmetic against
- * the general path or one of the four decline conditions.** The general path is forced with an `ORDER BY`,
- * which this rung's projection gate refuses — so the expectation is the engine's own answer to the same
- * question, not a number I counted.
+ * ⚠️⚠️ **THE `ORDER BY` ORACLE BELOW IS NOT INDEPENDENT, AND ITEM 2162 PROVED IT.** I wrote these tests
+ * believing an appended `ORDER BY` forced the general path, because that is true of several sibling rungs.
+ * 🔑 It is NOT true here: `routes-fired`'s own helper reports `optionalHopCount` for the plain spelling,
+ * the `ORDER BY` spelling AND the `LIMIT` spelling — this rung's gate reads the PATTERN, not the
+ * projection, so ordering a one-row count is a no-op it happily accepts. **So the `both()` comparisons
+ * here compared the closed form against itself**, and a wrong answer in a shared term was invisible to
+ * all sixteen of them.
+ *
+ * 🔑 The genuinely independent oracle is a **freshly LOADED graph** with the same final contents, which is
+ * what caught item 2162's bug: the mutating API and `deserialize` reach the same state by different code.
+ * The `freshOracle` block at the bottom uses it. ⚠️ The `both()` comparisons are kept because they still
+ * pin the ARITHMETIC against a mutation of it (the item's 8/8 mutants were all caught), but they are not
+ * evidence of cross-path agreement and the header no longer claims they are.
  *
  * 🔑 THE SUBTLE TERM IS `edgesFromByLabel.size`: it counts vertices with ANY out-edge, which equals
  * "vertices with an edge of OUR type" **only when the graph holds exactly one edge label**. ⚠️ That is
@@ -218,6 +227,97 @@ describe('the OPTIONAL count closed form (item 2146)', () => {
       g.addVertex({ id: 'lonely', labels: ['P'], properties: {} });
       expect(query(g, Q)[0].c).toBe(6);
       expect(query(g, REF)[0].c).toBe(6);
+    });
+  });
+
+  describe('⚠️⚠️ item 2162: a vertex whose LAST edge is removed (the shipped wrong answer)', () => {
+    /**
+     * The same final state reached two ways: by MUTATION, and by a fresh LOAD.
+     *
+     * 🔑 THE ONLY INDEPENDENT ORACLE THIS RUNG HAS. `deserialize` and the mutating API reach the same
+     * graph through different code, so a disagreement is a bug in one of them — where an appended
+     * `ORDER BY` just takes the same rung again.
+     */
+    const twoWays = (q: string): { mutated: unknown; fresh: unknown } => {
+      const m = new Graph();
+
+      for (let i = 0; i < 3; i += 1) {
+        m.addVertex({ id: `v${i}`, labels: ['P'], properties: { k: i } });
+      }
+
+      const e = m.addEdge({
+        id: 'e0',
+        from: m.getVertexById('v0')!,
+        to: m.getVertexById('v1')!,
+        labels: ['E'],
+        properties: {},
+      });
+
+      m.removeEdge(e);
+
+      const f = new Graph();
+
+      for (let i = 0; i < 3; i += 1) {
+        f.addVertex({ id: `v${i}`, labels: ['P'], properties: { k: i } });
+      }
+
+      return { mutated: query(m, q)[0]?.c, fresh: query(f, q)[0]?.c };
+    };
+
+    test("⚠️⚠️ THE BUG: removing a vertex's only edge must leave it UNMATCHED", () => {
+      /*
+       * 🔑 WHAT WENT WRONG. The `withEdge` term was `edgesFromByLabel.size`, and that index keeps a
+       * vertex's OUTER entry after its last edge is removed — only the inner per-type bucket is deleted.
+       * So `.size` counted a vertex with no edges at all, the unmatched set was UNDER-counted by one, and
+       * three anchors with no edges answered **2**.
+       *
+       * ⚠️ Item 2146's own mutation round asked whether a removed edge is reflected, and it IS — as long
+       * as some OTHER edge survives on that vertex. This is the case that does not.
+       */
+      const { mutated, fresh } = twoWays(Q);
+
+      expect(mutated).toBe(fresh);
+      expect(mutated).toBe(3);
+    });
+
+    test('and with the ORDER BY spelling, which takes the SAME rung', () => {
+      const { mutated, fresh } = twoWays(REF);
+
+      expect(mutated).toBe(fresh);
+      expect(mutated).toBe(3);
+    });
+
+    test('⚠️ one of TWO edges removed still leaves the vertex matched', () => {
+      /*
+       * 🔑 The other side of the boundary, and the case item 2146 DID test: v0 keeps an edge, so it is
+       * still in the matched set and the index entry is legitimately there.
+       */
+      const g = new Graph();
+
+      for (let i = 0; i < 3; i += 1) {
+        g.addVertex({ id: `w${i}`, labels: ['P'], properties: { k: i } });
+      }
+
+      const keep = g.addEdge({
+        id: 'k0',
+        from: g.getVertexById('w0')!,
+        to: g.getVertexById('w1')!,
+        labels: ['E'],
+        properties: {},
+      });
+      const drop = g.addEdge({
+        id: 'd0',
+        from: g.getVertexById('w0')!,
+        to: g.getVertexById('w2')!,
+        labels: ['E'],
+        properties: {},
+      });
+
+      g.removeEdge(drop);
+
+      // w0 keeps one edge (1 row), w1 and w2 are unmatched (1 each) → 3.
+      expect(query(g, Q)[0].c).toBe(3);
+      expect(keep.id).toBe('k0');
     });
   });
 

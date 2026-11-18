@@ -107974,3 +107974,77 @@ confirm which code serves the shape, before any edit.
 they are meant to be supported.
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; 5,283 tests green. No engine change.
+
+## Item 2162 — ⚠️⚠️⚠️ **A WRONG ANSWER I SHIPPED AT ITEM 2146, FIXED. And the reason sixteen tests missed it: my `ORDER BY` ORACLE WAS NOT INDEPENDENT — it took the same rung, so those tests compared the closed form against ITSELF**
+
+This item set out to build the `EXISTS` closed form item 2161 pinned. 🔑 While probing `edgesFromByLabel`
+for it — checking whether the index keeps empty buckets after a removal — the probe answered a different
+question than the one I asked.
+
+### ⚠️ THE BUG
+
+```text
+    after addEdge      entry=yes  hasT=true   index.size=1
+    after removeEdge   entry=yes  hasT=FALSE  index.size=1     <- the entry SURVIVES
+```
+
+🔑 The index is `Map<vertexId, Map<label, Set<Edge>>>`, and removing a vertex's last edge deletes only the
+INNER per-type bucket. ⚠️ Item 2146's closed form used `edgesFromByLabel.size` as "vertices with an
+out-edge", so it counted a vertex with no edges at all, **under-counted the unmatched anchors, and answered
+2 where 3 is right**:
+
+```text
+    3 vertices, 1 edge, then removeEdge:
+      MATCH (a:P) OPTIONAL MATCH (a)-[:E]->(b) RETURN count(*)      2      WRONG
+      the same graph LOADED fresh (both engines)                    3      right
+```
+
+🔑 Fixed with `verticesHavingType`, which walks the index and tests `has(type)` — accurate after a removal,
+as the probe above shows. ⚠️ It trades O(1) for O(entries-with-any-edge): the bench row goes **0.0 → 2.2
+ms**, still far under the 18.5 ms walk item 2146 replaced, and now correct.
+
+### ⚠️⚠️ WHY SIXTEEN TESTS AND 8/8 MUTANTS MISSED IT — THE ORACLE
+
+Item 2146's tests compare the closed form against "the general path, forced with an `ORDER BY`, which this
+rung's projection gate refuses". 🔑 **That is false.** `routes-fired`'s own helper, pointed at the three
+spellings:
+
+```text
+    plain        optionalHopCount
+    + ORDER BY   optionalHopCount        <- SAME RUNG
+    + LIMIT      optionalHopCount
+```
+
+⚠️ This rung's gate reads the PATTERN, not the projection, so ordering a one-row count is a no-op it
+accepts. **Sixteen `both()` comparisons were the closed form against itself.** The mutation round still had
+teeth against arithmetic (a changed term changes both arms, so the pinned literals caught it) — the gap was
+precisely that no test removed a vertex's LAST edge.
+
+🔑🔑 **I AUDITED EVERY `ORDER BY` ORACLE I USED THIS SESSION:**
+
+```text
+    2146 OPTIONAL count    plain=optionalHopCount        ordered=optionalHopCount        INVALID
+    2151 ANY SHORTEST      plain=shortestEndpointCount   ordered=(general path)          valid
+    2152 + a WHERE         plain=shortestEndpointCount   ordered=(general path)          valid
+    2159 sum over a hop    plain=hopAggregate            ordered=hopAggregate            INVALID
+```
+
+✅ 2151/2152 are sound — their gates check `projection.orderBy` explicitly. ⚠️ 2159's oracle is also
+invalid, but it was not relied on: those tests assert literals derived from the arithmetic in comments.
+🔑 **Before using a spelling as an oracle, ask `routes-fired`'s helper whether it changes the rung.** An
+oracle that shares the implementation proves only that the implementation is self-consistent.
+
+🔑 The regression test uses the one genuinely independent oracle this rung has: **the same final state
+reached by MUTATION and by a fresh `deserialize`**, which is what caught the bug. Re-introducing the bug
+fails 2 of the 19 tests, so it has teeth; the header's false claim about the oracle is corrected in place.
+
+⚠️ `hop-projection.ts:3043` reads the same `.size` and is LEFT ALONE: there it feeds
+`farDrivenPaysForMultiType`, a route choice, so a stale count picks a marginally worse plan and cannot be a
+wrong answer.
+
+⚠️ `bun run test -- --skip-nx-cache` exited 1 once with NX reporting `@lenke/native:test` FLAKY, then
+succeeded for all 21 projects; 1,417 tests pass twice in isolation. `sync-test-flake-is-timing` records
+this exact run-many flake.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; 21/21 projects; 5,286 GQL tests; `bun run fuzz`
+all seven green.

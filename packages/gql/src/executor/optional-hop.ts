@@ -15,7 +15,7 @@
  * which is the kind of grab-bag this split exists to undo.
  */
 
-import type { Graph, Vertex } from '@lenke/core';
+import type { Edge, Graph, Vertex } from '@lenke/core';
 
 import type { Clause, Projection } from '../ast.js';
 import { matchesLabel } from '../graph-queries.js';
@@ -129,17 +129,28 @@ export const detectOptionalHopCount = (
      *   a counter;
      * - **no anchor `WHERE`** (`anchorGate`), for the same reason;
      * - **no FAR label** — "qualifying" would then depend on the far END, which no counter knows;
-     * - **exactly ONE edge label in the whole graph**, which is what makes
-     *   `edgesFromByLabel.size` — the vertices with ANY out-edge — equal the vertices with one of OUR
-     *   type. ⚠️ With two labels present that identity breaks silently, and a test pins it.
+     * - **exactly ONE edge label in the whole graph**, checked per CALL because a write can add a second
+     *   one to a graph this closure was compiled against.
      *
-     * 🔑 PRICED BEFORE BUILDING: `edgesByLabel.get(t).size` and `edgesFromByLabel.size` are **0.001 ms and
-     * 0.000**, against the walk's **6.731** over 200,000 anchors. The row reads 18.5 ms against native's
-     * 0.6, and native's figure is what said a closed form had to exist.
+     * ⚠️⚠️ **THE `withEdge` TERM WAS `edgesFromByLabel.size` AND THAT WAS A WRONG ANSWER (item 2162).**
+     * That index keeps a vertex's ENTRY after its last edge is removed — only the per-TYPE bucket inside
+     * is deleted — so `.size` counts vertices that no longer have any out-edge and the unmatched set was
+     * UNDER-counted. Three vertices and one edge, then `removeEdge`, answered **2 where 3 is right**, and
+     * both the closed form and the general path were wrong because the general path's own counter read the
+     * same `.size`. 🔑 Found while probing `edgesFromByLabel` for a DIFFERENT feature (the `EXISTS` closed
+     * form), not by any test — the mutation round at item 2146 asked whether a removed edge is reflected,
+     * and it is, as long as some OTHER edge survives on that vertex.
+     *
+     * 🔑 `verticesHavingType` walks the index and tests `has(type)`, which IS accurate after a removal.
+     * ⚠️ That turns an O(1) read into O(entries-with-any-edge) — still far below the whole-vertex walk it
+     * replaces, and the row's measurement after the fix is recorded at item 2162.
      */
     if (closedFormFits(graph, anchorGate, far, types, name)) {
       const [type] = types as string[];
-      const withEdge = (out ? graph.edgesFromByLabel : graph.edgesToByLabel).size;
+      const withEdge = verticesHavingType(
+        out ? graph.edgesFromByLabel : graph.edgesToByLabel,
+        type,
+      );
 
       return {
         [column]: (graph.edgesByLabel.get(type)?.size ?? 0) + (graph.vertexCount - withEdge),
@@ -187,6 +198,29 @@ export const detectOptionalHopCount = (
  * exactly one edge label. 🔑 Checked per CALL, not per compile, because a write can add a second label to
  * a graph this closure was compiled against.
  */
+/**
+ * How many vertices have at least one edge of `type` on the index's side.
+ *
+ * ⚠️⚠️ **NOT `index.size`, AND THAT DISTINCTION IS A WRONG ANSWER (item 2162).** The index is
+ * `Map<vertexId, Map<label, Set<Edge>>>` and a vertex's OUTER entry survives the removal of its last
+ * edge — only the inner per-type bucket is deleted. Measured directly: after `removeEdge` the entry reads
+ * `entry=yes, hasT=false`, so `.size` counts a vertex with no edges at all while `has(type)` does not.
+ *
+ * 🔑 O(entries having ANY edge on that side), which is already far smaller than the vertex count on a
+ * sparse graph — and much smaller than the per-anchor walk this closed form exists to avoid.
+ */
+const verticesHavingType = (index: Map<string, Map<string, Set<Edge>>>, type: string): number => {
+  let n = 0;
+
+  for (const byType of index.values()) {
+    if (byType.has(type)) {
+      n += 1;
+    }
+  }
+
+  return n;
+};
+
 const closedFormFits = (
   graph: Graph,
   /* Only tested for presence, so the gate's own type need not be imported here. */
