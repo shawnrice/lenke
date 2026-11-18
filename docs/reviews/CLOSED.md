@@ -116361,3 +116361,53 @@ asserting a shortcut was taken before trusting a parity test.
 GATES. No production change in this item. ✅ **Post-ship state: Gremlin probe 0 answer disagreements and
 1 flag explained as a closed-form threshold artifact; GQL probe 0 answer disagreements and 1 flag explained
 as sweep pollution. Both surfaces are clean.**
+
+## Item 2325 — 🎯 **THE SEEKED PER-ROW PATH COSTS ~1.86x THE SCAN PER-ROW PATH, IN GQL, CONFIRMED BY TWO INDEPENDENT MEASURES — a seek visits FEWER rows but pays MORE for each one, which is backwards and is probably why it was never examined. Found by decomposing the serving bench's slowest indexed read; TS is at NATIVE PARITY on that row, so it is not TS overhead**
+
+A regression sweep of `bun run bench:usage` after items 2319-2323. ✅ **Two results.**
+
+### ✅ FIRST: THE SESSION'S GREMLIN WORK CONFIRMED BY AN INDEPENDENT INSTRUMENT
+
+```text
+    read: point lookup (GQL)                 1.69M ops/s
+    gremlin(built) read: reused plan         1.81M        <- now AHEAD of GQL
+    gremlin(built) read: point lookup        457.6k       <- 3.96x for not hoisting
+```
+
+🔑 **Item 2317 measured Gremlin's indexed point lookup at 6.6x SLOWER than its GQL twin.** The five
+drain ships bring it to **parity or better on a different harness, a different fixture and a different
+metric** — which is the independent confirmation those items could not give themselves. ✅ And the
+hoisting cost is now quantified at **3.96x**, which the guide already prescribes.
+
+### 🎯 SECOND: THE SLOWEST INDEXED READ, DECOMPOSED
+
+`read: keyed dedup lookup` is 179.6k ops/s against the point lookup's 1.69M (9.4x), and `engine(+)` is
+170.1k — **TS at NATIVE PARITY, so the usual "TS is just slower" explanation is unavailable.**
+
+```text
+    arm                                              us    ns/visited
+    seek + count       (no predicate)               0.51      2.56     <- closed form off bucket size
+    seek + project                                  4.05     20.79
+    seek + filter + count   (THE BENCH ROW)         6.67     33.37
+    seek + filter + project                         9.52     47.58
+    SAME-ENGINE CONTROLS, whole scan, no seek:
+    scan + project                                223.65     11.18
+    scan + filter + project                       524.30     26.21
+```
+
+🔑🔑 **The seeked per-row path is 20.79 ns against the scan's 11.18 — 1.86x — and the residual predicate
+shows the SAME signature independently: 26.8 ns a row seeked (47.58 − 20.79) against 15.03 scanned
+(26.21 − 11.18).** Two measures, one conclusion: **the seek's bucket walk is systematically less
+optimized than the scan walk.**
+
+⚠️⚠️ **AND A FLOOR-FAIRNESS CORRECTION I OWED MYSELF BEFORE PUBLISHING.** My first comparison used item
+2320's **6.4 ns/row** whole-scan figure, which would have made this 3.2x — but that number is
+**GREMLIN's**, and this row is GQL. ✅ GQL's own whole-scan projection is 11.18, so the honest ratio is
+**1.86x, not 3.2x**. The cross-engine version overstated it by 1.7x. **Fifth floor-fairness correction this
+session** (2262, 2281, 2288, 2312, 2325), and `floor-arm-must-take-same-route` is why I looked.
+
+✅ **NOT BUILT THIS ITEM.** The finding is isolated and the controls are in place; the fix belongs in its
+own item, where the seeked walk can be profiled against the scan walk directly — the differential-profile
+method that found item 2319's `drain` in one step.
+
+GATES. `bun run fmt` 0, `bun run check` 0. One probe (seven arms); no production change.
