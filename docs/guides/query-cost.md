@@ -236,3 +236,23 @@ ends the traversal is what decides it.
 
 Keep the element when you actually want the element: to read several properties, to traverse on from it, or
 to hand it to code that expects a vertex. The cost is the price of a usable object, not waste.
+
+## For a bulk load, insert rows near the ones they share an index key with
+
+An index hands a query the rows matching a key. Reading those rows then means following each reference into
+the graph, and how long that takes depends on where they are in memory. Rows written one after another sit
+near each other; rows written far apart do not, and at a large enough graph the difference stops being
+theoretical.
+
+| 5,000 matched rows per query         | 20,000 vertices | 200,000 vertices |
+| ------------------------------------ | --------------- | ---------------- |
+| rows sharing a key written far apart | 13.7 ns/row     | **64.1 ns/row**  |
+| rows sharing a key written together  | 12.2 ns/row     | **15.4 ns/row**  |
+
+Written together, the cost per row barely moves as the graph grows tenfold. Written far apart, it grows
+about five times — the index is doing the same work, but every row it hands back is a fresh trip to memory.
+
+This only matters when you control the write order, which in practice means a bulk load or an import. If
+you are loading records that will be queried by `team`, inserting them grouped by `team` costs nothing and
+keeps those queries fast as the data grows. Records arriving one at a time from an application cannot be
+ordered this way, and should not be contorted to try.

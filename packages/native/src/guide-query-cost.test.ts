@@ -279,4 +279,47 @@ describe('docs/guides/query-cost.md snippets', () => {
         .sort() as number[],
     ).toStrictEqual([10, 20]);
   });
+
+  /*
+   * ⚠️ **"For a bulk load, insert rows near the ones they share an index key with"** (item 2327) claims a
+   * 4.2x layout effect at 200,000 vertices. 🔑 The TIME is not gate-testable, but the claim a reader acts
+   * on is that **grouping the writes changes nothing about the ANSWER** — if it did, the advice would be
+   * trading correctness for speed, which is not what the section says.
+   */
+  test('grouping a bulk load by the indexed key does not change the answer', () => {
+    const rows = [
+      ['a', 'core'],
+      ['b', 'data'],
+      ['c', 'core'],
+      ['d', 'data'],
+      ['e', 'core'],
+    ] as const;
+
+    const load = (order: readonly (readonly [string, string])[]): string[] => {
+      const g = new Graph();
+
+      for (const [id, team] of order) {
+        /*
+         * ⚠️ `tag` DUPLICATES the id as a PROPERTY deliberately. The first version projected `p.id`,
+         * which is not a property and yields `null` SILENTLY rather than raising — so the assertion
+         * compared three nulls and failed for a reason unrelated to layout.
+         */
+        g.addVertex({ id, labels: ['Person'], properties: { team, tag: id } });
+      }
+
+      g.createIndex({ on: 'vertex', kind: 'hash', keys: ['team'] });
+
+      return query(g, 'MATCH (p:Person) WHERE p.team = $t RETURN p.tag AS tag', { t: 'core' }).map(
+        (r) => String(r.tag),
+      );
+    };
+
+    /* ✅ Interleaved (as an application would write them) against grouped by team. */
+    const interleaved = load(rows);
+    const grouped = load([...rows].sort((x, y) => x[1].localeCompare(y[1])));
+
+    /* ✅ Same rows either way — compared as SETS, because row order is unspecified. */
+    expect([...interleaved].sort()).toStrictEqual(['a', 'c', 'e']);
+    expect([...grouped].sort()).toStrictEqual([...interleaved].sort());
+  });
 });

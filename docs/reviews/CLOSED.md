@@ -116472,3 +116472,61 @@ unmistakable enough to state as a rule: **when an A/B compares two arms, check t
 of work per call, not merely the same KIND.**
 
 GATES. `bun run fmt` 0, `bun run check` 0. One route reader added; no production change.
+
+## Item 2327 — ✅✅ **ITEM 2326's OUTLIER FULLY EXPLAINED AND IT IS MEMORY LAYOUT, NOT THE ENGINE: with a bucket's rows written CONTIGUOUSLY the seek is flat in |V| (12.19 → 15.36 ns a row over a 10x graph) and FASTER than the scan; written STRIDED it grows 4.67x. So the seek's O(1)-per-row holds, and the 4.2x is now a guide rule for bulk loads**
+
+Item 2326 left one unexplained reading: 10,000 rows a call measured 37.49 ns against 13.72 at 5,000. ⚠️
+**Two variables were confounded there** — bucket SIZE and SELECTIVITY — so the first step was separating
+them:
+
+```text
+    USERS    rows/bucket   selectivity   ns/visited
+    20,000      10,000         50%          37.52
+   200,000      10,000          5%          49.06
+   200,000       5,000        2.5%          63.24
+    20,000       5,000         25%          14.06
+```
+
+🔑 **Neither explains it.** Rows 3 and 4 hold bucket size FIXED at 5,000 and differ only in |V| — 14.06
+against 63.24. ⚠️ **A seek's per-row cost should not depend on |V| at all**, which is the user's standing
+O(1) requirement, so this needed settling rather than noting.
+
+### ⚠️ THE OBVIOUS CONTROL WAS ITSELF UNFAIR — ITEM 2326's LESSON, ONE ITEM LATER
+
+The scan degrades 11.48 → 25.79 (2.25x) over the same 10x, suggesting the seek carried a 2.2x excess. ⚠️
+**But at 200,000 the scan's loop runs 200,000 iterations while the seek's runs 5,000** — exactly the
+arm-length mismatch item 2326 had just corrected. So that 2.2x could not be trusted either.
+
+### ✅ THE MECHANISM, TESTED RATHER THAN ARGUED
+
+`score: i % BUCKETS` makes a bucket's members **STRIDED** — i, i+B, i+2B … — so the seek follows references
+scattered across the whole heap, while a scan walks them in **ALLOCATION order**, sequentially. A
+`LAYOUT=contiguous` arm separates the two:
+
+```text
+    layout        20,000     200,000     growth
+    strided        13.72       64.10      4.67x
+    contiguous     12.19       15.36      1.26x
+    (scan control  11.48       25.79      2.25x)
+```
+
+✅ **Contiguous, the seek is essentially FLAT in |V| — 1.26x over a 10x graph — and FASTER than the scan
+(15.36 against 25.79).** So **4.2x of the 4.67x was my fixture's layout**, which is the worst case for
+cache. 🔑 **The seek is sound and its per-row cost is O(1) once layout is held constant.** Item 2326's
+outlier is closed, and item 2325's target stays withdrawn.
+
+### ✅ AND THE FINDING IS USER-FACING, SO IT IS NOW A GUIDE RULE
+
+`docs/guides/query-cost.md`, "For a bulk load, insert rows near the ones they share an index key with":
+written together the per-row cost barely moves as the graph grows tenfold; written far apart it grows about
+five times. ⚠️ **Stated with its limit**: this only matters where the write order is yours — a bulk load or
+an import — and records arriving one at a time from an application **cannot be ordered this way and should
+not be contorted to try.**
+
+⚠️ Its test asserts that grouping the writes **does not change the ANSWER**, since otherwise the advice
+would trade correctness for speed. ⚠️ **The first version projected `p.id`, which is not a property and
+yields `null` SILENTLY** — three nulls compared equal to nothing and the test failed for an unrelated
+reason. Fixed by duplicating the id into a property, with the trap recorded in the test.
+
+GATES. `bun run fmt` 0, `bun run check` 0, guide suite **11 pass / 0 fail, 33 assertions**. One probe knob;
+no production change.

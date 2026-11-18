@@ -21,6 +21,7 @@ const BUCKETS = Number(process.env.BUCKETS ?? 100);
 const SAMPLE_MS = Number(process.env.SAMPLE_MS ?? 40);
 const ROUNDS = Number(process.env.ROUNDS ?? 9);
 const ARM = process.env.ARM ?? 'seekFilterCount';
+const CONTIGUOUS = process.env.LAYOUT === 'contiguous';
 
 const graph = new Graph();
 
@@ -28,7 +29,18 @@ for (let i = 0; i < USERS; i += 1) {
   graph.addVertex({
     id: `u${i}`,
     labels: ['User'],
-    properties: { name: `user${i}`, score: i % BUCKETS, active: i % 7 !== 0 },
+    /*
+     * ⚠️⚠️ **BUCKET LAYOUT IS A VARIABLE, AND THE DEFAULT IS THE WORST CASE (item 2327).** `i % BUCKETS`
+     * makes a bucket's members STRIDED — i, i+B, i+2B … — so a seek walks references scattered across the
+     * whole heap, while a scan walks them in ALLOCATION order, sequentially. 🔑 At 10x the graph that
+     * difference is memory hierarchy, not engine logic. `LAYOUT=contiguous` puts each bucket's members
+     * next to each other, which is the control that separates the two.
+     */
+    properties: {
+      name: `user${i}`,
+      score: CONTIGUOUS ? Math.floor(i / (USERS / BUCKETS)) : i % BUCKETS,
+      active: i % 7 !== 0,
+    },
   });
 }
 
@@ -99,5 +111,5 @@ const med = sorted[Math.floor(sorted.length / 2)];
 const visited = ARM.startsWith('scan') ? USERS : USERS / BUCKETS;
 
 console.log(
-  `  ARM=${ARM.padEnd(18)} ${(med * 1000).toFixed(2).padStart(9)} us  ${((med * 1000 * 1000) / visited).toFixed(2).padStart(7)} ns/visited  ops/s=${Math.round(1000 / med).toLocaleString()}`,
+  `  ARM=${ARM.padEnd(14)} ${CONTIGUOUS ? 'contig' : 'strided'} U=${String(USERS).padStart(6)} ${(med * 1000).toFixed(2).padStart(9)} us  ${((med * 1000 * 1000) / visited).toFixed(2).padStart(7)} ns/visited  ops/s=${Math.round(1000 / med).toLocaleString()}`,
 );
