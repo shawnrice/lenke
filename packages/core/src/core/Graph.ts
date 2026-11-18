@@ -4685,6 +4685,24 @@ export class Graph {
     this.topologyVersion += 1;
     this.edgesByLabel.get(label)?.delete(edge);
 
+    // REJECTED lever (item 2234) — hoisting the repeated lookups below into locals. Each direction reads
+    // its outer map THREE times and its bucket TWICE for one removal, so ten map lookups become four:
+    //
+    //     const fromMap = this.edgesFromByLabel.get(fromId);
+    //     const fromBucket = fromMap?.get(label);
+    //     if (fromBucket?.delete(edge) === true && fromBucket.size === 0) fromMap?.delete(label);
+    //
+    // A profile of the delete phase (fixture build subtracted, 240,000 deletes) made this look like the
+    // obvious target: `deIndexEdgeLabel` is **1,017 ns/delete, 42% of a vertex removal**. It is NOT a win.
+    // Two rounds, arms asserted by grep, `nx build` per arm, per-delete = arm minus the build arm:
+    //
+    //     PRE  vertices 5824 / 5203 ns      POST 6155 / 5983      (edges 1177/1595 -> 1379/871)
+    //
+    // Flat to slightly worse, which is the SAME verdict `indexEdgeLabel`'s note records for the insert
+    // side's `has`-then-`get` collapse (before 2845.9/2893.0/2766.1, after 2913.9/2872.7/2876.7). So the
+    // refutation GENERALIZES: redundant map lookups here are not the cost in either direction, and the
+    // 1,017 ns is the work itself. Do not re-derive it from the profile — the profile points here and the
+    // answer is still no.
     const { fromId } = edge;
 
     if (

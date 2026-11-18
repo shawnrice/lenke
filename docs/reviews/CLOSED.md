@@ -111817,3 +111817,56 @@ target. **A profile of the engine's vertex-delete arm against the floor is the n
 
 GATES. `bun run fmt` 0, `bun run check` 0. New probe `packages/native/delete-2233.ts`
 (`ARM=build|floorbuild|floor|vertices|edges`); no engine change.
+
+## Item 2234 — ✅ **BUILT, MEASURED FLAT, REVERTED — AND THE REFUTATION GENERALIZES: collapsing redundant map lookups is neutral on the DELETE side exactly as `indexEdgeLabel`'s note records for the INSERT side. The 1,017 ns IS the work**
+
+Item 2233 left a 1.7-1.9x on vertex deletes as the only unexplained ratio on either surface. Profiled with
+the fixture build subtracted (240,000 deletes):
+
+```text
+    frame                     ns/delete
+    deIndexEdgeLabel              1017   42% of a vertex removal
+    pushTokens                     482   20%
+    incidentEdges                  435   18%
+    removeEdge                     327
+    deIndexVertexLabel             129
+    removeVertex                    92
+```
+
+### 🔑 THE SOURCE LOOKED LIKE AN OBVIOUS WIN
+
+Each direction read its outer map THREE times and its bucket TWICE for one removal —
+`edgesFromByLabel.get(fromId)?.get(label)` appearing three and two times respectively, twice over for both
+directions: **ten map lookups where four would do.** Hoisted both into locals (and the `deIndexVertexLabel`
+twin, two gets where one does).
+
+### ⚠️⚠️ AND IT IS FLAT
+
+```text
+    two rounds, arms asserted, `nx build` per arm, per-delete = arm MINUS the build arm
+    PRE   vertices 5824 / 5203 ns      edges 1177 / 1595
+    POST  vertices 6155 / 5983 ns      edges 1379 /  871
+```
+
+🔑🔑 **Flat to slightly worse — the SAME verdict `indexEdgeLabel`'s note records for the insert side's
+`has`-then-`get` collapse** (before 2845.9/2893.0/2766.1, after 2913.9/2872.7/2876.7). ⚠️ I had argued this
+was a _different_ change on a _different_ function with a _bigger_ redundancy, and that argument was
+reasonable and wrong. **The refutation generalizes: redundant map lookups are not the cost in either
+direction, and `deIndexEdgeLabel`'s 1,017 ns is the work itself.**
+
+**REVERTED, with the numbers recorded IN SITU** next to `deIndexEdgeLabel` — the same treatment
+`indexEdgeLabel` already carries, so the next profile that points here finds the answer instead of
+re-deriving it. Verified: the diff against pristine is 18 lines, **all additions**.
+
+### ⚠️ TWO HARNESS NOTES
+
+- **`grep` returned EMPTY for strings that exist in `Graph.ts`** (the recorded Unicode/NUL issue), while the
+  same `grep -c` worked inside the A/B script. **Python `str.count` is the reliable check** — and a
+  `difflib` diff against the pristine copy is what actually proved the revert.
+- The delete profile needs the fixture build subtracted; at `DELETES=NODES` the per-delete figure (2,424 ns)
+  is lower than item 2233's 5,915-6,004 because deleting every vertex shrinks the graph as it goes.
+
+**So item 2233's 1.7-1.9x now has a named cause that is measured and refused.** Nothing on the write path
+is open.
+
+GATES. `bun run fmt` 0, `bun run check` 0; `nx build @lenke/core` 0; tree verified additions-only.
