@@ -115174,3 +115174,53 @@ construction — one fused multi-type walk against two traversals plus a union s
 is the one to recommend, which it already is. Both return 500,000.
 
 GATES. `bun run fmt` 0, `bun run check` 0. No production change.
+
+## Item 2301 — ✅ **THE SERVING BENCH IS AN UNMINED SURFACE, AND ITS LARGEST TS EFFECT WAS MISSING FROM THE GUIDE: an index on the lookup key is 33.6-42.5x, isolated, same answers. ⚠️ The 10-23x TS-vs-native read ratios are the SAME scan, not separate defects**
+
+Both spelling surfaces being closed, this tick ran `bun run bench:usage` — the serving counterpart (small
+operations on a warm graph, interleaved read/write), which **this session had never profiled**.
+
+### 🔑 READING THE TABLE: THE WORST TS ROWS ARE ONE SHAPE, NOT MANY
+
+```text
+    row                          ts(-)   engine(-)   ratio      ts(+)     ts(+)/ts(-)
+    read: 2-hop recommendation    1.9k      43.9k     23x      679.2k        357x
+    read: permission check        2.8k      41.0k     14.6x    603.0k        215x
+    read: point lookup            4.1k      55.2k     13x        1.58M       385x
+    write: append node [params] 706.7k     403.5k     TS 1.75x FASTER
+```
+
+⚠️ **Every bad row carries `WHERE u.name = $n` with no index** — a scan of 20,000 users to find one. The
+2-hop row's 23x is the point lookup's 13x plus its hops, so these are **one cost reported four times**, not
+four defects. ✅ And the write rows show TS at parity or ahead, so this is not a general slowness.
+
+### ✅ THE ACTIONABLE NUMBER IS IN THE TS COLUMNS, AND THE GUIDE DID NOT HAVE IT
+
+`docs/guides/query-cost.md` had **no mention of indexes at all** — for the largest effect on the surface.
+Measured one shape per process (the bench runs 250 ms batches of many shapes, which items 2285/2286/2295
+showed can both erase and manufacture gaps):
+
+```text
+    20,000 users, same answers        no index    indexed
+    point lookup                       0.5812 ms   0.0173    33.6x
+    2-hop recommendation               0.7058      0.0166    42.5x
+```
+
+🔑 **The two-hop gains MORE than the point lookup** — once the start is pinned the hops are cheap, so the
+scan was nearly the whole cost either way. ⚠️ The bench's 357x is its hot-loop figure; **42.5x is the
+conservative isolated one and is what the guide quotes.**
+
+✅ Added as the guide's first rule, with the two facts a caller needs: the index may be created AFTER the
+data, and this effect dwarfs the rest of the page because the other rules shave a walk while this one
+removes it. Its test asserts the ANSWER is identical with and without the index — which is what the whole
+claim rests on.
+
+### ⚠️ WHAT IS NOT CLAIMED
+
+The 13x TS-vs-native scan ratio exceeds `CLAUDE.md`'s documented "1.5-4x pure-TS" range, but **this item
+does not open it as a target**: my memory records that a big TS/native ratio has twice turned out to be
+data layout or an algorithmic difference rather than a reachable overhead (items 234, 573), and the
+TS-side floor for a label scan was not measured here. **Noted, not priced.**
+
+GATES. `bun run fmt` 0, `bun run check` 0, guide suite **8 pass / 0 fail**. One probe, one guide section,
+one test; no production change.

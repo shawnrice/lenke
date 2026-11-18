@@ -97,6 +97,30 @@ A session over 512 distinct texts pays roughly **4x** per statement against a ca
 (`packages/native/stmtcache-2269.ts`). Parameters also keep values out of query text, which the
 `no-raw-interpolation` lint asks for on its own grounds.
 
+## Index the key you look it up by
+
+The single largest effect in this guide, and the one most easily missed: a `WHERE u.name = $n` with no index
+scans every vertex of that label to find one.
+
+```gql
+MATCH (u:User) WHERE u.name = $n RETURN u.score AS s
+```
+
+| 20,000 users, same answer           | no index | indexed on `name`    |
+| ----------------------------------- | -------- | -------------------- |
+| point lookup                        | 0.58 ms  | **0.017 ms** (33.6x) |
+| 2-hop recommendation from that user | 0.71 ms  | **0.017 ms** (42.5x) |
+
+```ts
+graph.createIndex({ on: 'vertex', kind: 'hash', keys: ['name'] });
+```
+
+Two things worth knowing. The index can be created **after** the data, which is how an application adds one
+to a graph it already has. And the **two-hop query gains more than the point lookup** — once the starting
+vertex is pinned, the hops are cheap, so the scan was almost the whole cost either way. That is also why
+this effect dwarfs everything else here: the rules below shave a walk, while this one removes it
+(`packages/native/idxguide-2301.mjs`, one shape per process).
+
 ## Any predicate on a hop count leaves the closed form
 
 Counting a hop without a predicate does not have to touch an edge at all — the engine answers it from degree

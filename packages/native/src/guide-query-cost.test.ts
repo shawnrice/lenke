@@ -111,6 +111,23 @@ describe('docs/guides/query-cost.md snippets', () => {
     expect(el.properties.surname).toBe('Adler');
   });
 
+  test('an index on the lookup key is created after the data and does not change the answer (item 2301)', () => {
+    const g = build();
+    const ask = (): unknown[] =>
+      query(g, 'MATCH (p:Person) WHERE p.surname = $s RETURN p.name AS name', { s: 'Cardoso' });
+    const before = ask();
+
+    /*
+     * ⚠️ The guide's largest claim (33-42x) rests on this being a pure speed change — so the test that
+     * matters is that the ANSWER is identical with and without the index, and that creating one AFTER the
+     * data is legal, which is what an application does to a graph it already has.
+     */
+    g.createIndex({ on: 'vertex', kind: 'hash', keys: ['surname'] });
+
+    expect(ask()).toStrictEqual(before);
+    expect(before).toStrictEqual([{ name: 'n3' }]);
+  });
+
   test('a bound parameter serves every value — one cache entry, many callers', () => {
     const g = build();
     const byTeam = (team: string): number =>
