@@ -114567,3 +114567,54 @@ needs this group added**; it is MATCH-only and this is a MATCH shape.
 
 GATES. `bun run fmt` 0, `bun run check` 0. Probe `rebaclist-2288.mjs` (seven arms, one shape per process,
 `MEMBERS`/`DECOYS`/`USERS` knobs); no production change.
+
+## Item 2290 — ✅ **THE ORIENTATION CLIFF NOW HAS A GUARD: `bun run spelling:orient` flags it at 29.30x and DECOMPOSES it — the slow spelling is 1.18x a whole-population scan, so that scan IS the cost.** ⚠️ Three existing spelling probes could not have caught it, each for a structural reason
+
+Item 2289 found a two-hop list costing O(tenant) in its natural spelling and O(results) reversed. 🔑 The
+repo's answer to this bug class is the `spelling_probe` family — _"when adding a predicate form to the
+planner, add its spellings there"_ — so the first question is why five existing probes missed it.
+
+### ⚠️ `direction-spelling-probe.ts` IS THE CLOSEST, AND IT STRUCTURALLY CANNOT SEE IT
+
+It compares `-[:T]->` against `<-[:T]-` on a ONE-HOP COUNT over a UNIFORM fixture. All three differ from
+this shape, and each one is load-bearing:
+
+- **TWO hops**, so there is a middle vertex and therefore an orientation CHOICE to get wrong;
+- **a LIST**, not a count — a count has closed-form routes that bypass the walk entirely (item 2283
+  measured one at 0.00 ms);
+- ⚠️ **a SKEWED fixture.** On a uniform graph both ends are equally selective and **the cliff cannot
+  appear however many spellings are compared.** This is the one that matters: no amount of spelling
+  coverage substitutes for a fixture whose ends differ.
+
+### ✅ THE NEW PROBE, AND WHAT IT PRINTS
+
+```text
+    USERS=400000 MEMBERS=2000 REPS=9 (median of the last 6)
+      subject-first (the natural spelling)       15.89 ms   rows=2000
+      object-first (the mirror)                   0.65      rows=2000
+      object-first, hops reordered                0.54      rows=2000
+      (scan ref: whole population)               13.47      rows=0
+      (control: one selective lookup)             0.00      rows=1
+
+    spread 29.30x across 3 spellings of one question (tolerance 2x)
+    the slow arm is 1.18x the whole-population scan — near 1x, that scan IS the cost
+```
+
+🔑 **The spread GROWS with the population** — 5.53x at 100,000, 12.78x at 200,000, 29.30x at 400,000 — so
+the probe demonstrates the gap is asymptotic rather than a constant factor, which a single-size probe
+cannot. ✅ A third spelling (two separate `MATCH` clauses) also takes the fast route, so the fix is not
+about `<-` syntax but about which end the planner starts from.
+
+### ✅ AND THE MECHANISM IS NOW DECOMPOSED, NOT INFERRED
+
+⚠️ **My "control" was mislabelled, and the mistake was productive.** It looked for a user name that does
+not exist — a full population scan returning nothing — so it was not insensitive to the effect; **it IS the
+effect**. At 400,000 it reads 13.47 against the slow arm's 15.89, which is why the probe now prints that
+ratio: **the subject-first spelling's cost is the scan.** A real control (one selective lookup, 0.00 ms,
+flat) was added beside it, so a noisy instrument is still detectable.
+
+✅ Wired as `bun run spelling:orient` beside `spelling` and `spelling:gremlin`. ⚠️ It is a PROBE, not a
+test — time is the only signal and a CI threshold would be flaky — so it belongs in the same
+run-it-when-you-touch-the-planner category as its siblings.
+
+GATES. `bun run fmt` 0, `bun run check` 0. New probe + one `package.json` script; no production change.
