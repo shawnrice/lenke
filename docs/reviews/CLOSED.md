@@ -109514,3 +109514,60 @@ label rather than disqualify it, across 43 sites in 7 files. That is a large, ca
 nomination is now measured rather than suspected.
 
 GATES. Instrument only. `bun run fmt` 0; `bun run check` 0 read unpiped; both screens run both ways.
+
+## Item 2189 — ✅ **CLOSED: item 2188's 75x is REAL, REALISTIC (82x on a genuine schema) and ALREADY OPTIMIZED. The gate is `chainLabelsAllVacuous`, item 2087 took its labelled arm from 94 → ~20 ms, and the 0.19 ms arm is a closed-form degree product that a filtering label makes mathematically unavailable**
+
+Item 2188 nominated the two-hop count at 75x under `MIXED=1`. This found the gate, questioned whether the
+flag was a fair proxy, and established that the remaining gap is not a defect.
+
+### 🔑 THE GATE, FOUND BY COUNTING `vacuousLabel`'s CALLERS
+
+79 vacuity sites across 9 files (my note said 43 in 7 — it has grown). Rather than read them,
+`vacuousLabel` was instrumented to tally its callers:
+
+```text
+    homo    answer 58   callers: chain-fold-levels.ts:263 x1, labels.ts:169 x3
+    MIXED   answer 58   callers: chain-fold-levels.ts:263 x1          <- short-circuits immediately
+```
+
+🔑 `chainLabelsAllVacuous` in `chain-fold-levels.ts`, and under MIXED the FIRST label test fails so the
+whole chain declines at once.
+
+### ⚠️⚠️ I DOUBTED MY OWN FLAG, AND CHECKING MADE THE FINDING STRONGER
+
+`MIXED=1` adds ONE ISOLATED off-label vertex, and a vertex with no edges cannot affect a hop count — so the
+75x looked like it might be an artefact of the flag's design. Measured against a genuinely mixed schema
+(10% of vertices carrying a different label, fully connected):
+
+```text
+    homo        0.19 ms   answer 300000
+    isolated   14.21      answer 300000     the flag
+    realistic  15.55      answer 160000     a real filtering label
+```
+
+✓ **The realistic schema costs the SAME as the flag**, because the gate is binary — vacuous or not. So the
+flag is a faithful proxy and 2188's number holds at **82x** on a real schema. **The doubt was wrong and
+worth having.**
+
+### ✅ AND THE LABELLED ARM IS ALREADY OPTIMIZED — item 2087's own table
+
+```text
+                     vacuous label   REAL label
+    count(*)             12.57          94.01      <- BEFORE item 2087
+    count(c.k)           20.02          20.51      <- it already had the rung
+```
+
+🔑 Item 2087 built the labelled `count(*)` rung precisely because `count(*)` fell to a per-edge tally at
+94.01 while the harder spelling `count(c.k)` was flat at ~20. **My 15.55 ms sits on that rung** — the
+labelled path is already 4.9x better than the alternative.
+
+⚠️ **The 0.19 ms arm is a CLOSED-FORM DEGREE PRODUCT**, and a product over degrees cannot respect a
+per-vertex label filter: with a real label the count must be computed, not derived. 🔑 The only lever that
+could recover it is **per-label CSR partitions**, which is index-shaped — the family
+`no-dense-vertex-ordinal` records as BUILT AND DISQUALIFIED (deletes 6.18x/11.34x under churn).
+
+**So the 82x is the price of a filtering label, not a missing rung.** Worth knowing precisely: the fast
+number in every homogeneous screen row is unreachable for a real schema, and the realistic number is
+already the optimized one.
+
+GATES. No production change; the `vacuousLabel` probe reverted, tree verified identical. `bun run check` 0.
