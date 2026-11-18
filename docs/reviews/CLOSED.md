@@ -114054,3 +114054,38 @@ the right reason. ✅ 6 tests still pass.
 extending a Cypher-only alias beyond what ISO defines. **Nothing to build.**
 
 GATES. `bun run fmt` 0, `bun run check` 0, `bun test` 6 pass / 0 fail. Three corrections; no code change.
+
+## Item 2280 — ✅ **VERIFIED, INCLUDING THAT THE NEW GUIDE TEST IS ACTUALLY IN THE SUITE — proved by a file-count equality rather than assumed, because bun does not name passing files**
+
+Gates after items 2275-2279 (a guide, a test, a new probe arm, four corrections):
+
+```text
+    bun run fmt / check                               0 / 0
+    bun run test -- --skip-nx-cache                   21 projects, 18 dependent tasks — OK
+    bun run fuzz                                      57 pass / 0 fail
+    @lenke/native suite                               1423 tests across 76 FILES
+    src/*.test.ts on disk                             76 FILES          <- the equality IS the proof
+```
+
+🔑 **A test that the suite does not pick up is worthless**, and `grep guide-query-cost` over even the verbose
+output returns **0** — because bun names only FAILING files. ⚠️ That absence proves nothing, so the check is
+the count: **76 files on disk, 76 files run.** ✅ The guide's six snippet tests are in the gate, so
+`docs/guides/query-cost.md` cannot drift from the engine without the suite going red.
+
+### ✅ WHERE THIS LEAVES THE SESSION
+
+**Eleven ships hold**, the newest being item 2271 (`PARSE_CACHE_CAP` 64 → 512, **3-4x** on multi-statement
+sessions). ⚠️ **Items 2272-2279 shipped no code**, and that was right: Gremlin proved immune to 2271's
+defect (2272), the cross-surface comparison corrected two of my own claims (2273), paging's 135x is real but
+its cure is unsound (2275/2276), and the `SKIP` "inconsistency" was my own Cypher contamination (2279).
+
+✅ **What they produced instead**: `docs/guides/query-cost.md` — the repo's first guide about WRITING a query
+rather than deploying the engine — with six measured rules, every figure citing its probe, and **every
+snippet executed by a test in the gate**.
+
+🔑 **Five corrections to my own work in eight items** (2273's unequal-work ratio, 2278's two wrong snippets,
+2279's Cypher framing, and 2275's index-arm that created no index). Each was caught by a different
+mechanism: a row-count assertion, a typecheck, a test, and reading the parser. **None was caught by my own
+re-reading**, which is the argument for having all four.
+
+GATES. As above, each read unpiped. No production change in this item.
