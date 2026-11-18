@@ -115133,3 +115133,44 @@ on offer, which is why the structural argument carries the verdict here.
 
 GATES. As listed. No production change in this item; the temporary env switch was removed and verified
 gone (`grep -c` → 0).
+
+## Item 2300 — ✅✅ **THE GREMLIN SPELLING SURFACE IS CLOSED: all three remaining flags are N-INVARIANT CONSTANTS of a few hundred nanoseconds, not per-element cliffs. Sweeping `SPELL_N` is what distinguishes them, and the probe does not do it**
+
+Item 2299 left the Gremlin probe's groups unexamined this session. ⚠️ A sweep reported **three** (not the
+two seen earlier — the count itself varies, which is a harness signal before any group is read).
+
+### ✅ ISOLATED, TWO OF THE THREE FALL BELOW THE PROBE'S OWN FLOOR
+
+```text
+    label, VACUOUS: hasLabel(Univ) vs no label          394.1 vs 162.7 ns   <- "not compared"
+    label, VACUOUS, before a hop: hasLabel(Univ).out    450.5 vs 159.6 ns   <- "not compared"
+    edge-type union: out(T,U) vs union(out(T),out(U))   212.9 vs 684.8 ns   <- flags, 3.2x
+```
+
+🔑 `FLOOR_MS` is 0.0005 (500 ns), and the first two slow arms sit at 394/450 ns — under it. **They flagged
+in the sweep at 3.11x and 2.85x only because the sweep's own inflation lifted them over**, which is the
+third instance this session of a sweep manufacturing a flag (items 2295, 2299).
+
+### 🔑 AND SWEEPING `SPELL_N` SETTLES ALL THREE AT ONCE
+
+```text
+    group                        at N=200,000        at N=800,000 (4x)
+    hasLabel(Univ) vs none       394.1 / 162.7 ns    428.8 / 165.6 ns     <- FLAT
+    out(T,U) vs union(...)       212.9 / 684.8       206.1 / 614.2        <- FLAT
+```
+
+✅ **Both are invariant in graph size** — 4x the vertices moves neither arm — so each gap is a CONSTANT of
+plan and dispatch, not a cost that grows with the data. 🔑 **A few hundred nanoseconds per call, on
+traversals answering 800,000 and 2,000,000 respectively.** There is no per-element cliff left on this
+surface.
+
+⚠️ **The probe cannot tell a constant from a cliff, and that is the gap worth naming.** Its `FLOOR_MS`
+excludes small ABSOLUTES, which is a proxy — `union`'s 614 ns clears 500 and flags while `hasLabel`'s 429
+does not, though both are the same KIND of thing. **The discriminating test is N-invariance**, which costs
+one extra run and is not part of the probe.
+
+✅ **Nothing to build.** `out(T, U)` being 3.2x an explicit `union(out(T), out(U))` is plausible by
+construction — one fused multi-type walk against two traversals plus a union step — and the compact form
+is the one to recommend, which it already is. Both return 500,000.
+
+GATES. `bun run fmt` 0, `bun run check` 0. No production change.
