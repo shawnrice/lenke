@@ -177,6 +177,105 @@ const hop2Rows = (): { k: unknown }[] => {
   return out;
 };
 
+/** Scan rows, keeping only `k === want` — the floor for a filtered node shape. */
+const scanRowsWhere = (want: number): { k: unknown }[] => {
+  const out: { k: unknown }[] = [];
+
+  for (const v of g.verticesByLabel.get('P') ?? []) {
+    if (v.properties.k === want) {
+      out.push({ k: v.properties.k });
+    }
+  }
+
+  return out;
+};
+
+/** Count `P` vertices with `k === want`, materializing nothing. */
+const scanCountWhere = (want: number): number => {
+  let n = 0;
+
+  for (const v of g.verticesByLabel.get('P') ?? []) {
+    if (v.properties.k === want) {
+      n += 1;
+    }
+  }
+
+  return n;
+};
+
+/** One hop, keeping only far nodes with `k === want`; materializes rows. */
+const hopRowsWhere = (want: number): { k: unknown }[] => {
+  const out: { k: unknown }[] = [];
+
+  for (const a of g.verticesByLabel.get('P') ?? []) {
+    for (const e of g.edgesFromByLabel.get(a.id)?.get('E') ?? []) {
+      if (e.to.properties.k === want) {
+        out.push({ k: e.to.properties.k });
+      }
+    }
+  }
+
+  return out;
+};
+
+/** Two hops, counting or materializing; `far`/`mid` filter the respective node by `k`. */
+const hop2Where = (
+  far: number | undefined,
+  mid: number | undefined,
+  rows: boolean,
+): { k: unknown }[] | number => {
+  const out: { k: unknown }[] = [];
+  let n = 0;
+
+  for (const a of g.verticesByLabel.get('P') ?? []) {
+    for (const e1 of g.edgesFromByLabel.get(a.id)?.get('E') ?? []) {
+      if (mid !== undefined && e1.to.properties.k !== mid) {
+        continue;
+      }
+
+      for (const e2 of g.edgesFromByLabel.get(e1.to.id)?.get('E') ?? []) {
+        if (far !== undefined && e2.to.properties.k !== far) {
+          continue;
+        }
+
+        if (rows) {
+          out.push({ k: e2.to.properties.k });
+        } else {
+          n += 1;
+        }
+      }
+    }
+  }
+
+  return rows ? out : n;
+};
+
+/** Distinct far NODES reached in one hop — what `count(DISTINCT b)` must do. */
+const hopDistinctCount = (): number => {
+  const seen = new Set<string>();
+
+  for (const a of g.verticesByLabel.get('P') ?? []) {
+    for (const e of g.edgesFromByLabel.get(a.id)?.get('E') ?? []) {
+      seen.add(e.to.id);
+    }
+  }
+
+  return seen.size;
+};
+
+/** Tally `P` vertices by `k` — the floor for a grouped node count. */
+const scanTally = (): Map<unknown, number> => {
+  const by = new Map<unknown, number>();
+
+  for (const v of g.verticesByLabel.get('P') ?? []) {
+    const { k } = v.properties;
+
+    by.set(k, (by.get(k) ?? 0) + 1);
+  }
+
+  return by;
+};
+
 /** One walk, accumulating BOTH aggregates — the floor for a two-aggregate shape. */
 const hopAcc = (): { sum: number; min: number } => {
   let sum = 0;
@@ -239,14 +338,24 @@ const SHAPES: Shape[] = [
       run: () => (g.verticesByLabel.get('P') ?? new Set()).size,
     },
   },
-  { family: 'node', name: 'count + where', q: 'MATCH (n:P) WHERE n.k = 5 RETURN count(*) AS c' },
+  {
+    family: 'node',
+    name: 'count + where',
+    q: 'MATCH (n:P) WHERE n.k = 5 RETURN count(*) AS c',
+    floor: { label: 'scan + count, filtered', run: () => scanCountWhere(5) },
+  },
   {
     family: 'node',
     name: 'rows',
     q: 'MATCH (n:P) RETURN n.k AS k',
     floor: { label: 'scan + read k', run: scanRows },
   },
-  { family: 'node', name: 'rows + where', q: 'MATCH (n:P) WHERE n.k = 5 RETURN n.k AS k' },
+  {
+    family: 'node',
+    name: 'rows + where',
+    q: 'MATCH (n:P) WHERE n.k = 5 RETURN n.k AS k',
+    floor: { label: 'scan + filter + rows', run: () => scanRowsWhere(5) },
+  },
 
   // --- one hop, count then rows then aggregates ---------------------------------------------
   {
@@ -259,6 +368,7 @@ const SHAPES: Shape[] = [
     family: 'hop',
     name: 'count + far where',
     q: 'MATCH (a:P)-[:E]->(b:P) WHERE b.k = 5 RETURN count(*) AS c',
+    floor: { label: 'walk + count, far filter', run: () => hopCount(5) },
   },
   {
     family: 'hop',
@@ -270,6 +380,7 @@ const SHAPES: Shape[] = [
     family: 'hop',
     name: 'rows + far where',
     q: 'MATCH (a:P)-[:E]->(b:P) WHERE b.k = 5 RETURN b.k AS k',
+    floor: { label: 'walk + far filter + rows', run: () => hopRowsWhere(5) },
   },
   {
     family: 'hop',
@@ -287,6 +398,7 @@ const SHAPES: Shape[] = [
     family: 'hop',
     name: 'distinct count',
     q: 'MATCH (a:P)-[:E]->(b:P) RETURN count(DISTINCT b) AS c',
+    floor: { label: 'walk + Set of far nodes', run: hopDistinctCount },
   },
   {
     family: 'hop',
@@ -300,6 +412,7 @@ const SHAPES: Shape[] = [
     family: 'hop2',
     name: 'count',
     q: 'MATCH (a:P)-[:E]->(b:P)-[:E]->(c:P) RETURN count(*) AS c',
+    floor: { label: 'two-hop + count', run: () => hop2Where(undefined, undefined, false) },
   },
   {
     family: 'hop2',
@@ -311,20 +424,28 @@ const SHAPES: Shape[] = [
     family: 'hop2',
     name: 'rows + trailing where',
     q: 'MATCH (a:P)-[:E]->(b:P)-[:E]->(c:P) WHERE c.k = 5 RETURN c.k AS k',
+    floor: { label: 'two-hop + far filter + rows', run: () => hop2Where(5, undefined, true) },
   },
   {
     family: 'hop2',
     name: 'rows + mid where',
     q: 'MATCH (a:P)-[:E]->(b:P)-[:E]->(c:P) WHERE b.k = 5 RETURN c.k AS k',
+    floor: { label: 'two-hop + mid filter + rows', run: () => hop2Where(undefined, 5, true) },
   },
   {
     family: 'hop2',
     name: 'count + trailing where',
     q: 'MATCH (a:P)-[:E]->(b:P)-[:E]->(c:P) WHERE c.k = 5 RETURN count(*) AS c',
+    floor: { label: 'two-hop + far filter + count', run: () => hop2Where(5, undefined, false) },
   },
 
   // --- grouping, ordering, paging: one clause apart from a plain projection ------------------
-  { family: 'page', name: 'grouped count', q: 'MATCH (n:P) RETURN n.k AS k, count(*) AS c' },
+  {
+    family: 'page',
+    name: 'grouped count',
+    q: 'MATCH (n:P) RETURN n.k AS k, count(*) AS c',
+    floor: { label: 'scan + Map tally', run: scanTally },
+  },
   {
     family: 'page',
     name: 'grouped hop count',

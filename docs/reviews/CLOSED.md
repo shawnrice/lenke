@@ -111097,3 +111097,52 @@ improve.** One floor settled in a single run what a profile-first chase took two
 Gremlin nomination should start by adding a floor to this file, not by profiling.
 
 GATES. `bun run fmt` 0, `bun run check` 0. Instrument only; no engine change.
+
+## Item 2219 — ✅ **BOTH FINDERS ARE NOW FULLY FLOORED (24 GQL + 15 Gremlin), AND THE LAST TEN FLOORS SURFACE TWO NEW NOMINATIONS: `node/rows + where` at 5.75x, and `hop2/rows + mid where` at 3.67x WHERE ITS TRAILING-FILTER SIBLING IS 1.10x**
+
+```text
+    family shape                          ns/op       floor  vs floor    rows  rungs
+    node   count                           1190          90    13.22x       1  countShortcut
+    node   count + where                 195471       67471 2.90x <--       1  countShortcut
+    node   rows                          309122      171511     1.80x   20000  nodeProjection
+    node   rows + where                  399902       69590 5.75x <--     200  nodeProjection
+    hop    count                            901      710183     0.00x       1  countShortcut
+    hop    count + far where             248751     2744834     0.09x       1  countShortcut
+    hop    rows + far where              326942     1603728     0.20x     800  hopProjection
+    hop    distinct count                144871     3681289     0.04x       1  distinctCount
+    hop2   count                          45310    10754295     0.00x       1  chainStarCount
+    hop2   rows                        34303486    27360080     1.25x  319972  hop2Projection
+    hop2   rows + trailing where       25774333    23451031     1.10x    3200  hop2Projection
+    hop2   rows + mid where            20478765     5580929 3.67x <--    3200  hop2Projection
+    hop2   count + trailing where        462322    23486730     0.02x       1  countShortcut
+    page   grouped count                 289072      184191     1.57x     100  groupCountShortcut
+```
+
+### 🔑🔑 NOMINATION 1: `node/rows + where` at 5.75x — AND THE FILTER MAKES IT SLOWER, LEGITIMATELY SO
+
+399,902 ns to return **200 rows**, against the UNFILTERED `node/rows` at 309,122 ns returning **20,000**.
+⚠️ Item 2218 warned that a filtered form usually has a HIGHER floor (the filter is extra work that only
+removes rows at the end) — **but here the floor is LOWER: 69,590 against 171,511**, because filtering a
+SCAN avoids building 19,800 row objects. So the floor says filtering should be **2.5x cheaper** and the
+engine instead makes it **1.3x dearer** — a 5.75x gap with the sign of the effect wrong.
+
+### 🔑🔑 NOMINATION 2: `hop2/rows + mid where` at 3.67x, WITH ITS OWN CONTROL ONE ROW ABOVE
+
+```text
+    hop2  rows + trailing where   25774333   floor 23451031   1.10x   <- CONTROL: fine
+    hop2  rows + mid where        20478765   floor  5580929   3.67x   <- 3.3x worse, same shape
+```
+
+🔑🔑 **Same two-hop pattern, same 3,200 rows, only the filter POSITION differs.** A mid-pattern filter should
+prune the second hop hard — the floor does exactly that and lands at 5.6 ms — while the trailing filter
+cannot prune anything and its floor is 23.5 ms. **The engine gets the trailing case right (1.10x) and the
+prunable case wrong (3.67x).** That sibling pair is the strongest evidence form this session has produced:
+one control, one target, identical row counts.
+
+⚠️ `node/count` at 13.22x is 1,190 ns against a 90 ns `Set.size` — correctly UNFLAGGED by item 2212's
+absolute gate. `hop/sum` and `two aggregates` remain the known boxed-vs-columnar cost (items 2173/2196).
+
+**NEXT: ladder nomination 2** (the mid-filter two-hop), because it has a built-in control and the largest
+absolute gap — ~15 ms. ⚠️ Per items 2216/2217, the sequence is LADDER then ABLATE before any arm.
+
+GATES. `bun run fmt` 0, `bun run check` 0. Instrument only; no engine change.
