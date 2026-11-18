@@ -112481,3 +112481,50 @@ That is the honest state, and it is recorded rather than dressed up: the 2.25x i
 
 GATES. `bun run fmt` 0, `bun run check` 0. New instruments `churn-2246.ts` (W sweep, answers checked) and
 `prof-2246.mjs` (two arms); no production change.
+
+## Item 2247 — ⚠️⚠️ **THE MICROTASK DRAIN IS ONLY ~11% OF ITEM 2246's PENALTY, NOT THE CAUSE — AND MY FIRST SPLIT (40%) WAS NOISE THAT REVERSED SIGN ON RE-RUN. 🔑 The lesson is the STATISTIC: a per-process floor varies ±12%, so the RATIO is noisier than the absolute it is built from**
+
+Item 2246 left a fixed ~1.6 ms penalty on the first read after any write, with `pick` rejected as
+attribution and **`drain` surviving** — and a mechanism for it: the graph's mutation events drain on a
+MICROTASK, and item 2246's loop is SYNCHRONOUS (`write(); read();`, no `await`), so the microtask never runs
+between them. One arm settles that: yield a microtask before the read.
+
+### ⚠️ FIRST RUN SAID 40%. SECOND RUN REVERSED THE SIGN.
+
+```text
+    ROUNDS=12       sync 3.18 ms (2.54x)    drained 2.42 ms (1.90x)   <- drain looks like 40%
+    ROUNDS=12 again sync 2.28 ms (1.81x)    drained 2.50 ms (2.19x)   <- drained now SLOWER
+```
+
+🔑 **An effect that reverses sign between runs is noise**, and this is `CLAUDE.md`'s own rule — _"know the
+noise floor… anything under ~10% needs its own isolated harness"_ — met in the field. Re-run at **60 rounds,
+three passes, arm order alternated**:
+
+```text
+    pass    sync (after)    drained (after)
+    1          2.27 ms          2.12 ms
+    2          2.36             2.17
+    3          2.28             2.19
+    median     2.28             2.17        -> the drain is ~0.11 ms of a ~1.0 ms penalty: ~11%
+```
+
+### 🔑🔑 THE METHODOLOGICAL FINDING, WHICH IS THE DURABLE PART
+
+**The RATIO disagreed with itself while the ABSOLUTES agreed.** Per-pass ratios read 1.63x / 1.91x / 1.82x
+for `sync` and 1.89x / 1.67x / 1.74x for `drained` — crossing each other — because each process measures its
+OWN floor and that floor ranged 1.12-1.40 ms (±12%). ⚠️ **Dividing a stable numerator by a noisy denominator
+manufactures a noisy ratio, and that is what flipped the sign.** When both arms share a workload, compare
+the ABSOLUTE after-times and quote the floor separately.
+
+### ✅ WHAT STANDS
+
+- **The interleaved penalty is real and robust**: ~1.8x at 60 rounds, ~2.25x at 12 (so it amortizes mildly
+  with more rounds), `wrong=0/60` throughout — correctness holds under churn.
+- **The deferred mutation drain is ~11% of it.** Not the cause. ⚠️ `drain` is therefore exonerated as the
+  explanation, joining `pick`, and **~89% remains unidentified**.
+- ⚠️ A `hasLabel` / no-`hasLabel` comparison was attempted in the same (noisy, 12-round) run and is **not
+  reported** — it was measured on the instrument whose ratios had just been shown unreliable. It needs the
+  60-round harness before it says anything.
+
+GATES. `bun run fmt` 0, `bun run check` 0. New instrument `drain-2247.ts` (`ARM=none|sync|drained`,
+`SHAPE=nolabel`); no production change.
