@@ -112633,7 +112633,7 @@ inline-cache sites with the read path, and **item 2248's "data rebuild" heading 
 
 GATES. `bun run fmt` 0, `bun run check` 0. New probe `alloc-2249.ts`; `drain-2247.ts` gained `SHAPE=scan`.
 
-## Item 2250 — ✅ **IDENTIFIED, AND IT WAS DOCUMENTED IN THE SOURCE ALL ALONG: the churn penalty is the `topologyVersion`-keyed CSR cache being dropped whole on every write. ⚠️⚠️ JIT deopt REFUTED by `--trace-deopt`, and FOUR items (2246-2249) re-derived a trade-off a grep would have found**
+## Item 2250 — ✅ **IDENTIFIED, AND IT WAS DOCUMENTED IN THE SOURCE ALL ALONG: the churn penalty is the `topologyVersion`-keyed CSR** ⚠️ ~~cache being dropped whole on every write~~ **FAST PATH NEVER BEING ARMED — corrected at item 2251: under write-every-read the CSR is never BUILT, so nothing is rebuilt; the loss is the route, not a rebuild.** ⚠️⚠️ JIT deopt REFUTED by `--trace-deopt`, and FOUR items (2246-2249) re-derived a trade-off a grep would have found**
 
 ### ✅ FIRST, THE DEOPT HYPOTHESIS IS DEAD
 
@@ -112689,3 +112689,55 @@ are the evidence a revisit would need — e.g. an incremental CSR patch for sing
 that declines the CSR route when writes are interleaved. **Not proposed here; recorded as priced.**
 
 GATES. `bun run fmt` 0, `bun run check` 0. No production change.
+
+## Item 2251 — 🔑🔑🔑 **ITEM 2250's MECHANISM IS HALF WRONG, AND THE POLICY'S OWN DOCUMENTATION SAYS SO: under write-every-read the CSR is NEVER BUILT, so nothing is rebuilt. The penalty is the LOST FAST PATH — and `second-ask.ts` measured that same route at 2.10x, against my 2.25x**
+
+⚠️ **PRIOR ART FIRST, this time before building anything** — item 2250's process lesson applied. `grep`
+found "CSR patch" exactly once in `CLOSED.md`: my own sentence from 2250. So the idea was new. But the
+policy it would change, `second-ask.ts`, declares itself _"THIS POLICY IS THE ITEM"_, so **its recorded
+reasoning is the prior art that matters**, and reading it refuted my mechanism:
+
+> _"a **WRITE-HEAVY workload (write, read, write, read) never reaches a second ask** on any one topology
+> version, so it **never builds** either — which is the case item 1694 was most worried about and the reason
+> the key includes the version"_
+
+### 🔑🔑 SO THE COST IS A ROUTE LOSS, NOT A REBUILD
+
+`seenBefore(graph, forward, type)` keys on `(graph, topologyVersion, shape)` and the **first** ask returns
+`false`. In a write-every-read loop every round has a NEW `topologyVersion`, so **every ask is a first ask**:
+the CSR is never built, and every read takes the non-CSR route. ⚠️ Item 2250 said the cost was "the cache
+dropped whole and rebuilt by the next read" — **there is no rebuild, because there was never a build.**
+
+✅ **And the policy's own kill-switch A/B corroborates the size of the loss**, at 200,000 vertices /
+1,000,000 edges, three order-alternated rounds:
+
+```text
+    hop   WARM   89.0 93.6 83.9  ->  42.3 48.9 42.1     2.10x   <- the route this workload never gets
+    hop   COLD  106.7 109.2 110.1 -> 181.2 180.0 165.5  0.61x
+```
+
+🔑 **2.10x is the CSR route's measured warm win; my churn penalty is 2.25x at 20k.** The same number from
+two directions, which is what makes this the explanation rather than another hypothesis.
+
+### ⚠️⚠️ WHAT I GOT WRONG, AND HOW
+
+Item 2250 accepted a mechanism because it _explained every observation_ — and it did, which is exactly why
+it was convincing. ⚠️ **But "consistent with" is not "verified": I never checked whether the CSR is actually
+BUILT in the churn workload, and the policy says it is not.** A rebuild and a never-armed fast path produce
+identical symptoms (constant in write count, scales with V+E, needs the adjacency walk, recovers on repeated
+reads) and are opposite facts. 🔑 **The fix is to test the mechanism's own precondition, not just its
+predictions.**
+
+### ✅ AND THE FRAMING CHANGE MATTERS FOR THE LEVER
+
+- "We pay a rebuild per write" → make the build incremental, so the rebuild is cheap.
+- **"We never get the fast route under interleaving"** → the CSR must SURVIVE a write to be reachable at
+  all. An incremental patch is still the candidate, but its job is to keep a generation ALIVE across a
+  single-edge add, not to make a rebuild cheaper.
+
+⚠️ `second-ask.ts` also records why the version is in the key: a stale generation is _"dropped WHOLE… so
+nothing leaks one dead entry per shape per write"_. **Any incremental patch has to answer that**, and the
+1.64x cold regression the policy exists to prevent is the floor it must not reintroduce. **Priced and
+framed; still not proposed.**
+
+GATES. `bun run fmt` 0, `bun run check` 0. No production change, no instrument — a source-reading item.
