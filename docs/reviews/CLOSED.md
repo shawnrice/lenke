@@ -111248,3 +111248,65 @@ this session's record says a build that starts after the prior art is read goes 
 before. The next tick has the design, the file, the floor (2.3 ms) and the existing helper.
 
 GATES. `bun run fmt` 0, `bun run check` 0. No production change.
+
+## Item 2222 — ⚠️⚠️ **BUILT, VERIFIED FIRING, AND REVERTED: the mid-conjunct push-down the file deferred is CORRECT AND USELESS — flat at every selectivity. The residual is item 2217's diffuse per-edge cost. Two findings survive: a measured raise-free class, and AUTO-PARAM silently disabling the first version**
+
+Item 2221 handed over a design: split the carried `WHERE` and push raise-free, far-var-free conjuncts into
+`walkUnion`/`walk`'s MIDDLE loop. Built, wired, verified, measured, reverted.
+
+### ✅ THE CORRECTNESS ARGUMENT, AND A MEASURED RAISE-FREE CLASS
+
+The file's blocker is raise parity: the general matcher evaluates a clause `WHERE` once per COMPLETE match,
+so a FAULTING predicate must not run on a `b` whose second hop is empty. 🔑 Both halves hold for a
+mid-only, raise-free conjunct — its value is decided once `b` is bound, and evaluating it early has no
+observable effect if it cannot fault.
+
+⚠️ **"CANNOT RAISE" WAS MEASURED RATHER THAN ASSUMED, and my memory was wrong about it:**
+
+```text
+    a.k = 'zz'          (number vs string)      OK, 0 rows
+    a.k <= 'zz'                                 OK, 0 rows     <- memory said this THROWS
+    temporal <= string / <= number              OK, 0 rows
+    missing prop = 1 / <= 1                     OK, 0 rows
+    prop <= [1,2]       (list literal)          OK, 0 rows
+    a.k / 0 = 1         (ARITHMETIC inside)     THROWS E_INVALID_VALUE
+```
+
+🔑 **A `compare` of `lit`/`prop`/`var`/`param` operands NEVER throws, across types included — only
+ARITHMETIC inside one does.** That is a reusable, measured fact; the `cross-type-comparison` note is
+corrected in memory.
+
+### ⚠️⚠️ AUTO-PARAM SILENTLY DISABLED THE FIRST VERSION, AND THE TIMINGS LOOKED IDENTICAL
+
+The first build was wired, compiled, lint-clean — and **never fired**, with timings unchanged. The cause:
+
+```text
+    PROBE midGate=false gate=true raiseFree=false operands=compare[prop|param] free=b farVar=c
+```
+
+🔑🔑 **`auto-param.ts` lifts the literal out of the query text for plan caching, so `b.k = 5` arrives as
+`compare[prop|param]`, NOT `compare[prop|lit]`** — and `cannotRaise`'s three kinds (item 2173's choice for
+`coalesce`) exclude `param`. ⚠️ `cannotRaise` itself was verified correct in isolation first, which is what
+forced the probe to print the OPERAND KINDS instead. **A flat A/B is indistinguishable from a disabled
+feature; only a firing assertion separates them.**
+
+### ⚠️ AND WITH IT FIRING, IT IS STILL FLAT
+
+```text
+    mid filter        before      after      floor
+    b.k = 5   (1%)    26.0/29.5   21.0/23.7    2.2    <- gate FIRES (verified by throw probe)
+    b.k < 10 (10%)    24.8/33.9   29.7         4.3
+    b.k >= 0(100%)    59.9/64.1   57.7        41.1
+```
+
+🔑 The gate fires on the mid shape and correctly declines on the far shape — and changes nothing. **At 1%
+selectivity the engine still walks all 80,000 first-hop edges, and item 2217 already established that the
+per-edge overhead there is DIFFUSE** (`propOf`, property reads, label tests, binding — seven terms, largest
+policy-blocked). Skipping the inner loop saves 320k → 3.2k iterations and that is not where the time is.
+
+**REVERTED**, because `executor-edits-perturb` prices a new branch at up to 16% on unrelated rows and this
+one buys nothing. Both files verified byte-identical to pristine.
+
+🔑 **The file's deferral was right, and now it is right WITH A MEASUREMENT instead of a conjecture.**
+
+GATES. `bun run check` 0; tree verified identical to pristine. No production change.
