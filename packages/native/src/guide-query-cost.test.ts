@@ -50,9 +50,10 @@ describe('docs/guides/query-cost.md snippets', () => {
     const g = build();
 
     /*
-     * ⚠️⚠️ **THIS TEST FOUND A PARSER INCONSISTENCY (item 2278).** `SKIP` and `OFFSET` are synonyms in
-     * ISO-GQL, and the parser's own error message says "after SKIP/OFFSET" — yet a PARAMETER is accepted
-     * after `OFFSET` and refused after `SKIP`. It matters because a paging caller who cannot bind the
+     * ⚠️⚠️ **THIS TEST FOUND A PARSER INCONSISTENCY (item 2278).** `OFFSET` IS THE ISO SPELLING and takes a param;
+     * `SKIP` is a CYPHER-ONLY ALIAS that deliberately passes `allowParam=false` (the parser says so in a
+     * comment), so `SKIP $x` is rejected by design — NOT an inconsistency, which is what I first called it
+     * at item 2278 before item 2279 read the parser. It matters because a paging caller who cannot bind the
      * offset must interpolate it, making every page a distinct query text and defeating the parse cache.
      */
     expect(() =>

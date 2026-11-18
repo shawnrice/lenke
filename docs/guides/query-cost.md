@@ -34,11 +34,11 @@ MATCH (p:Person) RETURN p.surname AS s ORDER BY s OFFSET $skip LIMIT $size
 MATCH (p:Person) WHERE p.surname > $lastSurname RETURN p.surname AS s ORDER BY s LIMIT 50
 ```
 
-**Bind the offset with `OFFSET`, not `SKIP`.** They are synonyms in ISO-GQL, but a parameter is accepted
-after `OFFSET` and **rejected after `SKIP`** (`Expected a non-negative integer after SKIP/OFFSET`). That
-matters beyond tidiness: a caller who cannot bind the offset must put it in the query text, which makes
-every page a distinct statement and walks out of the parse cache described below. Binding it is **1.15x**
-cheaper over a full walk.
+**Bind the offset, and use `OFFSET` to do it.** `OFFSET` is the ISO-GQL keyword and takes a parameter;
+`SKIP` is a Cypher alias kept for familiarity and accepts only a literal, so `SKIP $skip` is rejected
+(`Expected a non-negative integer after SKIP/OFFSET`). That matters beyond spelling: a caller who cannot
+bind the offset has to put it in the query text, which makes every page a distinct statement and walks out
+of the parse cache described below. Binding it is **1.15x** cheaper over a full walk.
 
 Keyset is **1.35x** cheaper again. Two things to know:
 

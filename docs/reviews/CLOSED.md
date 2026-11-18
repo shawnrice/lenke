@@ -113969,7 +113969,7 @@ numbers differ and were not measured for this guide.
 
 GATES. `bun run fmt` 0, `bun run check` 0. New guide + one index line; no code change.
 
-## Item 2278 — 🔑🔑 **WRITING A TEST FOR THE GUIDE FOUND A PARSER INCONSISTENCY: `OFFSET $p` is accepted and `SKIP $p` is a SYNTAX ERROR, though they are ISO-GQL SYNONYMS — and the parser's own message says "after SKIP/OFFSET". Two of my six snippets were wrong**
+## Item 2278 — 🔑 **WRITING A TEST FOR THE GUIDE FOUND THAT `OFFSET $p` BINDS AND `SKIP $p` DOES NOT.** ⚠️ ~~A PARSER INCONSISTENCY — they are ISO-GQL SYNONYMS~~ **NO: corrected at item 2279. `OFFSET` IS THE ISO SPELLING and `SKIP` is a CYPHER-ONLY ALIAS that deliberately rejects a param — the parser says so in a comment. My framing was Cypher-contaminated. Two of my six snippets were wrong**
 
 Item 2277's guide was written from measurements, but its code was **typed, not executed**. 🔑 A guide whose
 snippets do not run is worse than none, because a reader trusts it. So every snippet became a TEST —
@@ -114018,3 +114018,39 @@ second `Boyd`), so the guide's tiebreak advice is justified by a failing-if-remo
 
 GATES. `bun run fmt` 0, `bun run check` 0, `bun test` 6 pass / 0 fail. New test; `paging-2275.ts` gained an
 `offsetParam` arm; guide updated. No engine change.
+
+## Item 2279 — ⚠️⚠️⚠️ **THERE IS NO PARSER INCONSISTENCY: `OFFSET` IS THE ISO SPELLING AND `SKIP` IS A CYPHER-ONLY ALIAS THAT REJECTS A PARAM BY DESIGN — the parser says so in a comment. I called it a defect without reading the code, which is the exact Cypher contamination `CLAUDE.md` opens by warning about**
+
+Item 2278 found `OFFSET $p` accepted and `SKIP $p` rejected and headlined it a **parser inconsistency**
+between _"ISO-GQL synonyms"_. ⚠️ **Before proposing a fix, the deciding question is what ISO says** — and the
+answer was in the parser the whole time:
+
+```ts
+// `SKIP` passes `allowParam=false`, so `SKIP $x` stays rejected (Cypher-only).
+// OFFSET is the ISO spelling and accepts a dynamic `$param`; SKIP is the [alias]
+```
+
+🔑🔑 **`OFFSET` is the ISO keyword. `SKIP` is a Cypher alias the engine tolerates for familiarity**, and it
+takes a literal only — **deliberately**, with the reason written beside the flag. The conformance checklist
+agrees (`GQ12 | OFFSET clause | ✅ | OFFSET/SKIP`). ✅ **The engine is right and my framing was wrong.**
+
+### ⚠️ THE ERROR IS THE ONE THIS REPO IS MOST EMPHATIC ABOUT
+
+`CLAUDE.md` opens with it: _"ISO-GQL is NOT Cypher… Do not reason about the GQL engine using Cypher
+knowledge, Cypher docs, or 'how Neo4j does it'"_, and notes it _"has been gotten wrong many times"_. 🔑 I
+called a Cypher-ism an ISO synonym, inferred a defect from the asymmetry, and scheduled a parser change —
+**all without reading the fifteen-word comment that explains it.** The instruction to answer GQL questions
+from the grammar exists precisely because this is the easy mistake.
+
+### ✅ WHAT SURVIVES, AND IT IS BETTER FOR BEING RIGHT
+
+The measurement is untouched — **a bound offset is 1.15x cheaper over a full walk** (201.2 against 230.7 ms)
+— and the guidance is now _better founded_: **use `OFFSET $s` because it is the ISO spelling AND the one
+that parameterizes**, not because the engine is inconsistent. Corrected in three places: item 2278's
+heading, `docs/guides/query-cost.md`'s wording, and the test's own comment, so a reader of any of them gets
+the right reason. ✅ 6 tests still pass.
+
+⚠️ **AND THE LEVER IS WITHDRAWN**: "accept a param after `SKIP`" would make the engine _less_ faithful by
+extending a Cypher-only alias beyond what ISO defines. **Nothing to build.**
+
+GATES. `bun run fmt` 0, `bun run check` 0, `bun test` 6 pass / 0 fail. Three corrections; no code change.
