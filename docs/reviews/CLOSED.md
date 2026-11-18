@@ -107637,3 +107637,59 @@ each mid-vertex is reached ~1.5 times in this fixture, so it is worth little her
 high-in-degree fixture to price. That is the next thing to try on this row, not another chain rewrite.
 
 GATES. Tree reverted to pristine; `bun run check` 0; 5,266 tests green.
+
+## Item 2156 — ⚠️ **NOTHING TO BUILD: three sweeps, three CLOSED targets. But two closures were re-verified against their own controls with CURRENT numbers, and one of them is now BETTER than recorded**
+
+Items 2146-2155 all worked GQL query rungs, so this tick swept elsewhere: the decode corpus (the largest
+absolute numbers in the bench) and `bench:gremlin` (untouched for seven items).
+
+### ⚠️ 1. `decode pg-text (5 edges/node)` — 3442.8 ms TS against ffi's 407.3 (8.45x), the corpus's largest absolute row
+
+A windowed profile — fixture build and the SERIALIZE step structurally excluded:
+
+```text
+    indexEdgeLabel         17.3%        PROBES.md already records, for this very path:
+    commitElementLabels    14.4%          "indexEdgeLabel ~19%, id resolution ~14%, GC ~13%.
+    getVertexById          11.3%           There is no unpriced remainder to find."
+    (garbage collector)    10.7%
+```
+
+🔑 **The breakdown matches the recorded one almost exactly**, and the audit says this row by name: "`decode
+pg-text/csv` (10.1x/7.6x) → the TS ingest constant factor, `addVertex` withdrawn at 312" and "those were
+NOT chased — `ts-ingest-is-constant-factor` closes them". ⚠️ `indexEdgeLabel` has **six prior arrivals**
+with its only lever BUILT AND DISQUALIFIED (the dense ordinal, 1369-1372/1397); this would have been the
+seventh. The closed-frames table is what stopped it, which is the second time it has earned itself.
+
+### 🔑 2. `V().out().has().count()` — 22.9 ms against native's 1.04 (22.0x), the Gremlin sweep's largest REAL ratio
+
+⚠️ The 35-99x rows above it (`V().has().has().count()` 99.5x, `has(k, eq)` 91.0x, …) all have **0.03-0.07
+ms denominators** — the sub-millisecond trap, and `closed-perf-targets` already records that family as at
+the scan floor.
+
+🔑 `CLOSED.md` line 99 closes this one across items 161/226/235: "**SHARED FLOOR, not a Gremlin gap.**
+`filteredHopCount` already exists and fires. The GQL spelling of the same question costs the same (50.8ms
+vs 51.9ms)". ⚠️⚠️ **BOTH OF THOSE NUMBERS HAVE SINCE HALVED** (53.0 → 42.2 → 22.9), so the control was
+re-measured rather than trusted:
+
+```text
+                          Gremlin     GQL twin
+    far filter count       13.86        15.02      same answer, 299970
+    start filter count      6.30         7.22
+```
+
+🔑🔑 **The conclusion holds and is now BETTER than recorded: Gremlin is 1.08-1.15x AHEAD of the GQL
+spelling, not level with it.** So the gap to native is the shared adjacency floor, with the cross-language
+control proving it.
+
+⚠️ And the GQL pair's own 2.4x spread (17.00 against 7.09 on an earlier run) is **not** a spelling gap: a
+far filter tests once per EDGE (600,000) where a start filter tests once per VERTEX (200,000), which
+`bench-gremlin.ts`' own comment on that row already records.
+
+### 🔑 WHAT THIS ITEM IS FOR
+
+Two sweeps landed on targets whose closures were written when the numbers were 2-3x larger. ⚠️ A closure's
+CONTROL can go stale even when its conclusion does not, and `check-the-blocker-still-holds` exists because
+three were overstated in one session. Re-measuring both cost one tick and confirmed both — one of them
+favourably.
+
+GATES. No code change; `bun run check` 0; 5,266 tests green.
