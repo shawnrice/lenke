@@ -110562,3 +110562,61 @@ invalidates the evidence for it. ⚠️ Also: restoring the pristine copy to und
 change the first time; the second round saved the new file to `target/` first.
 
 GATES. `bun run fmt` 0, `bun run check` 0 (read unpiped). Instrument only; no engine change.
+
+## Item 2208 — 🔑🔑🔑 **DIAGNOSED, BUILD HANDED OFF: `ORDER BY k LIMIT 10` over a hop is 3.4x SLOWER THAN THE SAME HOP WITH NO LIMIT. `boundedTopRows` is already right and cheap (0.123 ms) — the `LIMIT` makes the query DECLINE the fused projection and take a per-row `startDriven` walk that reads properties 20x more expensively. Ceiling 4.4x**
+
+The Gremlin cliff finder reported no real cliffs (item 2207), so this tick ran its GQL twin,
+`gql-cliff-finder.ts`, which prints WHICH of ~22 named rungs fire rather than a boolean.
+
+⚠️ **ITEM 2207'S LESSON APPLIED FIRST: read the rung column AND the row counts, not the ratio.** Three of
+the biggest "suspects" are `count -> rows` pairs (235x, 780x, **1529x**) — one row against 20,000 or
+319,972. Those are workload differences by construction. **Four pairs have EQUAL output size**, and one of
+those is a genuine defect.
+
+```text
+    family shape                      ns/op      rows  rungs
+    page   topk                      381192        10  nodeProjection
+    page   topk over a hop          6091352        10  hopProjection      <- 10 rows, 6.1 ms
+```
+
+### ⚠️⚠️ THE CONTROL THAT MAKES THIS A DEFECT RATHER THAN A WORKLOAD: NO LIMIT IS FASTER
+
+```text
+    engine: topk            [no hop]            886 us
+    engine: topk over a hop  TARGET            9092 us
+    engine: rows over a hop [NO LIMIT]         2700 us   <- 3.4x FASTER than the LIMITED form
+    CEILING streamed bounded top-10            2068 us   <- 4.4x, and it beats the unlimited arm too
+```
+
+🔑🔑 **A `LIMIT` CANNOT BE MORE WORK.** Returning all 319,972 rows costs 2,700 us; asking for the smallest
+ten costs 9,092. That is the `eager-tail-cache` class (items where a cap is computed by materializing
+everything first), and no correctness test can see it.
+
+### 🔑 THE PROFILE NAMES THE MECHANISM, AND IT IS NOT THE TOP-K
+
+```text
+    frame               nolimit/rep   topk/rep
+    propOf                    0.088      1.765   +1.677 ms
+    startDriven               0.000      1.638   +1.638 ms
+    get properties            0.044      0.827   +0.783 ms
+    get to                    0.000      0.325
+    cmpRows                   0.000      0.229
+    boundedTopRows            0.000      0.123   <- ALREADY IMPLEMENTED, and CHEAP
+```
+
+🔑🔑 `boundedTopRows` exists, fires, and costs 0.123 ms — **the bounded top-k is not the problem.** The cost
+is the WALK FEEDING IT: the limited form takes `startDriven` and pays `propOf` **20x** what the unlimited
+form pays (1.765 against 0.088 ms/rep), because the unlimited arm reaches a fused projection that reads `k`
+in bulk. **This is `rung-precedence-decides-speed`: the top-k route starves the faster projection.**
+
+### WHAT THE BUILD NEEDS
+
+Let the bounded top-k consume the FUSED projection rather than a per-row walk — i.e. a routing change, not
+a new algorithm, since both halves already exist. ⚠️ Handed off rather than rushed because
+`executor-edits-perturb` prices a new branch at up to 16% on unrelated rows and `rung-precedence` changes
+are exactly where that bites; it needs its own tick with the no-limit arm as a control.
+
+⚠️ Also measured, same family, same shape of suspicion: `page/collect over a hop` at 4.67 ms for ONE row
+(16.12x its no-hop twin). Not yet ceilinged — do that before pricing it.
+
+GATES. `bun run fmt` 0, `bun run check` 0. No production change.
