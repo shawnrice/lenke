@@ -109681,3 +109681,60 @@ message. Labels in tests want unreserved names.
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
 `bun run fuzz` all seven green; 11 new tests.
+
+## Item 2192 — ⚠️⚠️ **BUILT AND REVERTED: the labelled-anchor OPTIONAL closed form is 1.3x but costs a 26% REGRESSION on the no-label row — a bad trade for a shape nothing nominated. And I mis-identified the screen's row TWICE: it takes `countShortcut`, not the OPTIONAL rung at all**
+
+Item 2190's realistic screen put `OPTIONAL MATCH a hop` at +19.13 ms (5.7x), the biggest absolute. ⚠️ Item
+2146 had shipped it as "THREE O(1) COUNTER READS — 18.5 → 0.0 ms, TS faster than native", so the first
+question was why a rung that reads 0.00 shows 22 ms.
+
+### 🔑 THE 2x2 THAT ISOLATED THE GATE — and it is the ANCHOR, not the far label
+
+```text
+    shape                        homo    MIXED
+    anchor label + far label     0.00    10.70
+    anchor label, no far         0.00     7.65
+    NO anchor label, no far      0.00     0.00   <- vacuity of the ANCHOR is the whole difference
+```
+
+🔑 `closedFormFits` requires `|anchors| === vertexCount`, because it reads a GLOBAL
+`edgesByLabel.get(type).size`. With a real label that count is wrong, so the shape falls to a binding-map
+walk.
+
+### ✅ THE GENERALIZATION IS CORRECT AND WAS BUILT
+
+The arithmetic needs no global edge count: each anchor contributes its own T-degree, or 1 when that degree
+is zero (its null-padded row) — `sum(deg) + |anchors with deg 0|`, one pass over the labelled set.
+
+```text
+    row                          BEFORE           NEW
+    count(*) + anchor  TARGET   9.66 / 10.08   7.66 / 7.55    1.3x
+    count(b) + anchor  ctl      7.43 /  8.04   7.74 / 8.56    flat/worse
+    count(*) no label  ctl      1.95 /  1.62   2.46 / 2.15    ⚠️ 1.26x WORSE
+```
+
+⚠️⚠️ **THE NO-LABEL CONTROL CANNOT BE AFFECTED SEMANTICALLY** — the new arm sits AFTER the existing
+return, so that path is untouched. The 26% is branch perturbation, which `executor-edits-perturb` prices at
+up to 16% and this exceeds. **Gaining 24% on one shape while losing 26% on a fast, common one is a bad
+trade, so it is reverted.** (Answers were identical throughout: 400000 / 300000 / 400001.)
+
+### ⚠️⚠️ AND I MIS-IDENTIFIED THE TARGET TWICE, WHICH IS THE PART WORTH RECORDING
+
+A throw showed my arm is reached ONLY by `count(*)` + a non-vacuous anchor + no far label. The screen's row
+is `count(b)`, and the two spellings take **different rungs**:
+
+```text
+    count(b)  OPTIONAL  ->  countShortcut       7.43 ms measured
+    count(*)  OPTIONAL  ->  optionalHopCount    9.66 ms measured
+```
+
+🔑 So the screen's row never touches the rung I changed, and **`count(b)` is FASTER than `count(*)` here** —
+the opposite of item 2177's asymmetry, and legitimate because the two genuinely differ under OPTIONAL (null
+rows). ⚠️ The screen's 22.28 ms is therefore NOT the vacuity gate; my own 2x2 prices the far label at only
++3 ms, so the remaining ~12 ms is unexplained and lives on the `countShortcut` path.
+
+**OPEN, with the search narrowed: `MATCH (a:L) OPTIONAL MATCH (a)-[:T]->(b:L) RETURN count(b)` on
+`countShortcut`, where a far label costs far more than the 2x2 suggests.** The next attempt should start
+from the differential profiler rather than from a rung I can name.
+
+GATES. No production change; build reverted, tree verified identical, `bun run check` 0, GQL suite green.
