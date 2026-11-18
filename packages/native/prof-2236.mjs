@@ -36,6 +36,8 @@ const doc = (() => {
   return lines.join('\n');
 })();
 
+let rows = 0;
+
 for (let r = 0; r < 6; r += 1) {
   const g = deserialize(doc, 'ndjson', new Graph());
 
@@ -45,5 +47,10 @@ for (let r = 0; r < 6; r += 1) {
     if (out.length < 1) {
       throw new Error('no rows');
     }
+
+    rows = out.length;
   }
 }
+
+/* ⚠️ After the loop, outside the measured work — see prof-2243.mjs's note (item 2244). */
+console.log(`  arm=${ARM} reps=6 nodes=${N} rows=${rows}`);

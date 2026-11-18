@@ -37,6 +37,8 @@ const doc = (() => {
 const plan = traversal(V(), hasLabel('User'), out('E'), has('team', 7), count());
 const g = deserialize(doc, 'ndjson', new Graph());
 
+let answer = 0;
+
 if (ARM !== 'load') {
   for (let r = 0; r < REPS; r += 1) {
     const rows = toArray(plan, g);
@@ -44,5 +46,14 @@ if (ARM !== 'load') {
     if (rows.length !== 1) {
       throw new Error(`expected one row, got ${rows.length}`);
     }
+
+    answer = Number(rows[0]);
   }
 }
+
+/*
+ * ⚠️ PRINTED AFTER THE LOOP, OUTSIDE THE MEASURED WORK — a profiling SUBJECT that prints nothing is
+ * indistinguishable from one that silently did nothing (item 2244's smoke test flagged exactly that). One
+ * line naming the arm, the rep count and the ANSWER makes a no-op run visible.
+ */
+console.log(`  arm=${ARM} reps=${ARM === 'load' ? 0 : REPS} vertices=${N} answer=${answer}`);

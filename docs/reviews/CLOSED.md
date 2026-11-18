@@ -112336,3 +112336,54 @@ profile.
 in either engine comparison, is both large in absolute terms and unexplained.**
 
 GATES. `bun run fmt` 0, `bun run check` 0. New probe `prof-2243.mjs`; no production change.
+
+## Item 2244 — ✅ **EVERY GATE GREEN AND ALL SEVEN NEW INSTRUMENTS SMOKE-TESTED. 🔑 Two of them printed NOTHING, which is correct for a profiling subject and indistinguishable from a broken one — both now report**
+
+Items 2233-2243 added seven probe/instrument files. Lint-clean is not the same as working, so this item
+verifies the gates AND that each file still produces output.
+
+### ✅ GATES
+
+```text
+    bun run fmt                       0
+    bun run check                     0   (typecheck + oxlint + clippy, read UNPIPED)
+    bun run test -- --skip-nx-cache   0   (21 projects)
+    bun run fuzz                      57 pass / 0 fail
+```
+
+### ⚠️⚠️ THE SMOKE TEST FOUND THE AMBIGUITY MY OWN RULE WARNS ABOUT
+
+```text
+    parity-2236.ts                   divergences: 0
+    deltest-2237.ts                  farkey median 1.1 ms rows=98 series 7 1 1 1 1 1 1 2 2
+    gremlin-crossengine-2241.ts      divergences: 0
+    delete-2233.ts                   floorbuild 5213 ns/delete (sink ok)
+    gc-probe-2241.ts                 ts: 0 1 2 0 1 2 | ffi: [0,1,2,0,1,2]
+    prof-2243.mjs                    *** NO OUTPUT ***
+    prof-2236.mjs                    *** NO OUTPUT ***
+```
+
+🔑 The two silent files are **profiling SUBJECTS** — run under `node --cpu-prof`, they are meant to compute
+and exit. ⚠️ **But "designed to print nothing" and "silently did nothing" are indistinguishable from
+outside**, which is the failure the repo's own discipline exists to prevent: a probe believed to be
+measuring while measuring nothing. Both now print one line AFTER the timed region — arm, rep count and the
+ANSWER:
+
+```text
+    arm=farhas reps=3 vertices=3000 answer=124      <- the work ran
+    arm=load   reps=0 vertices=3000 answer=0        <- the load arm, correctly empty
+    arm=farkey reps=6 nodes=3000 rows=98
+```
+
+⚠️ **Printed after the loop, not inside it**, so it cannot dilute the measurement
+([[bench-methodology]]'s sink rule) — and the differential profiler subtracts arms anyway.
+
+### ✅ STATE
+
+- **Working tree clean; 200 commits unpushed** — flagged, not pushed.
+- **Ten ships** unchanged since item 2235, all verified present in source there.
+- **Items 2236-2243 produced NO production change** — four instruments, three refutations
+  (2234 map-lookup collapse, 2239 store-read, 2238's own inflated floor), two corrected headings
+  (2237, 2241) and one reversed headline (2242: TS beats native up to 20x on shortcut-covered counts).
+
+GATES. As above, each read unpiped. Instrument reporting only; no engine change.
