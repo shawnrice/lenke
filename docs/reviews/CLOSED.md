@@ -112292,3 +112292,47 @@ is `CLOSED` at 13x its hand-rolled floor — **so the remaining gap is inside th
 one.** That is a much better-posed question than "why is TS slower", and it is where the next profile goes.
 
 GATES. `bun run fmt` 0, `bun run check` 0. Instrument extended by three shapes; no production change.
+
+## Item 2243 — ✅ **CLOSED BY PROFILE: `count hop + far has` is 11.25 ns/VERTEX against native's 3.5, and the shortcut already INVERTS THE WALK so its filter runs per-vertex not per-edge. ⚠️ And the 25% GC frame is NOT attributable — the load's garbage can be collected in either phase**
+
+Item 2242 narrowed the target list to two rows where native wins DESPITE a TS shortcut existing, making the
+question "what is the shortcut spending inside itself". Profiled with the load subtracted, 300 reps:
+
+```text
+    frame                     ms/rep   share
+    filteredHopCount           0.225     79%
+    (garbage collector)        0.070     25%     ⚠️ NOT ATTRIBUTABLE — see below
+    insertEdge / matches / requireVertex / degreeOfTypes / …   ~0.01 each
+```
+
+### ✅ THE SHORTCUT IS ALREADY THE RIGHT ALGORITHM
+
+`filteredHopCount` **iterates candidate FAR vertices and adds each one's in-degree** — `for (const v of
+graph.vertices)` then `forward ? v.adjTo : v.adjFrom`. 🔑 **So the far filter runs once per VERTEX (20,000),
+not once per EDGE (80,000)**, which is why TS reaches ~4 ns/edge on a shape whose per-edge property read
+would alone cost ~73 ns. It is also already carrying items 930 (arity > 1, an 11.15x cliff), 934 (keys and
+predicates hoisted into monomorphic arrays — reading them off a wide `Step` union per row cost 41.79 vs
+30.25 ms), 1086/1087 (`both` arithmetic) and 1302 (far-end `hasLabel` folding).
+
+**Self-time is 0.225 ms over 20,000 vertices = 11.25 ns/vertex** for an adjacency getter, a label test, a
+filter test and a degree add — four operations. Native does the same in ~3.5 ns/vertex. ⚠️ **That is a 3.2x
+object-model gap, not a 5.09x engine gap**, and the remaining distance is cached-getter-plus-`Set.size`
+against columnar reads — the recorded architectural ceiling, which [[element-caches-beat-the-store]] showed
+cannot be closed by reading the store directly (1.7x WORSE when tried).
+
+### ⚠️⚠️ THE GC FRAME IS A TRAP, AND I ALMOST TOOK IT
+
+25% of the query arm in `(garbage collector)` looks damning for a COUNT, which should not allocate — and the
+obvious suspects were checked and cleared: `adjTo`/`adjFrom` are **cached** getters (`#adjTo ??=`), and
+`graph.vertices` wraps `Map.values()` in one object per CALL, not per vertex. 🔑 Then the arithmetic:
+**the load arm already shows 49 ms of GC and the query arm 69 ms.** The load allocates ~500,000 elements and
+its garbage can be collected in EITHER phase, so the +20.9 ms delta is not the query's. **A GC frame is only
+attributable when the allocating work is confined to one arm** — and here it is not, which is the same
+confound as [[frame-attribution-trap]]'s. Properly answering it needs an allocation instrument, not a CPU
+profile.
+
+**So both of item 2242's two target rows are now accounted for**: this one at its object-model floor, and
+`values groupCount` already closed at item 2240 on an 18 ns/vertex absolute. 🔑 **No shape on either surface,
+in either engine comparison, is both large in absolute terms and unexplained.**
+
+GATES. `bun run fmt` 0, `bun run check` 0. New probe `prof-2243.mjs`; no production change.
