@@ -116028,3 +116028,63 @@ section says. Test added, and **mutated to check it has teeth** (`values('score'
 
 GATES. `bun run fmt` 0, `bun run check` 0, guide suite **10 pass / 0 fail, 31 assertions**, mutant caught.
 One probe extended with five ladder arms; no production change.
+
+## Item 2319 — 🚀🚀 **SHIPPED, 2.16-2.83x: `seededNodeValuesShortcut`'s `drain` was `[...walk()]` — spreading a GENERATOR for a bucket that usually holds ONE vertex. A differential profile against the `V(id)` control put `walk` at 30.05% and `drain` at 8.99% with the control at EXACTLY 0.00% on both; `drain` is now a plain loop and Gremlin's indexed point lookup closes from 5.8x its GQL twin to 1.9x**
+
+Item 2318 narrowed item 2317's gap to one number: **0.92 µs for a seeded `has()` seek over `V(id)`**, both
+flat in |V|, both one row. 🔑 This item found it with a **differential profile** — the same arm against the
+control, one shape per process, then the frame sets diffed.
+
+```text
+    frame                        seek     V(id) control
+    walk:10336                 30.05%        0.00%     <- SEEK ONLY
+    drain:10345                 8.99%        0.00%     <- SEEK ONLY
+    scanValuesResidual          3.68%        0.42%
+    countEquals                 1.69%        0.00%
+    seededNodeValuesShortcut    1.19%        0.00%
+    seededShape                 1.18%        0.00%
+```
+
+✅ **39% in a `walk`+`drain` pair the control never enters**, and `seededNodeValuesShortcut` IS being
+taken — so the seek found its vertex off the index and then drained it through the generator protocol.
+
+### 🔑 THE MECHANISM, READ RATHER THAN GUESSED
+
+```js
+const walk = function* () { for (const v of bucket) { … yield props[key]; } };
+return { [Symbol.iterator]: walk, drain: () => [...walk()] };
+```
+
+⚠️ **`[...walk()]` pays a `next()` call and a `{value, done}` object per element.** The shared loop body was
+DELIBERATE — item 169's lesson, and Gremlin results are compared ORDERED by the differential fuzzer, so two
+derivations could diverge.
+
+✅ **But `drain` was ALREADY eager**, so a plain loop changes the mechanism, not the semantics. The iterator
+stays a generator and stays lazy, which is what a caller that `break`s out of `run` depends on
+(`eager-tail-cache` is the failure mode if that is ever confused). **It is item 1412's own rule — "an
+already-eager terminal takes an eager walk" — applied one level down, to `drain` itself.** The two loops now
+share the per-vertex `emit` decision, so they cannot disagree about membership or order.
+
+```text
+    arm                                  PRE (2318)    POST (two rounds)    gain
+    V(), has(name), values                  1.13        0.40  0.40          2.83x
+    V(), hasLabel, has(name), values        1.21        0.56  0.56          2.16x
+    V(id), values          (control)        0.22        0.21  0.21          1.00x
+    gqlSeek                (control)        0.22        0.21  0.20          1.00x
+```
+
+✅ **Both controls flat and both rounds identical to the hundredth of a µs.** The GQL gap closes from 5.8x
+to **1.9x**.
+
+### ✅ VALIDATION, AND A GUARD THAT EARNED ITSELF IMMEDIATELY
+
+- `bun run fuzz` **57 pass / 0 fail** — byte-identity holds, gremlin fuzzer and the ORDERED differential
+  included, which is precisely item 169's concern.
+- A new test pins **iterator ≡ drain, element for element**, over the label filter, the missing-key skip and
+  a multi-element bucket. ⚠️ **Mutating `drain` to skip `emit` fails 12 tests** (26/38), so it has teeth.
+- ⚠️ **Its `expect(seeded).toBeDefined()` guard fired on the first run**: my fixture had no index, so the
+  shortcut DECLINED and the test would have passed vacuously — the item 2291 trap, caught this time by an
+  explicit assertion rather than by luck.
+
+GATES. `bun run fmt` 0, `bun run check` 0, `bun run test -- --skip-nx-cache` 0, `bun run fuzz` 57/0,
+gremlin suite 38 pass / 0 fail with the mutant caught.

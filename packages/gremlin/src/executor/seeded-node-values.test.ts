@@ -312,3 +312,58 @@ describe('the seeded count ROUTE — answer-equivalent, so its own test', () => 
     expect(takes(traversal(V(), hasLabel('User'), count()), g)).toBe(false);
   });
 });
+/*
+ * ✅✅ **ITEM 169's INVARIANT, MADE EXPLICIT (item 2319).** `seededNodeValuesShortcut` returns an object
+ * with BOTH a lazy `[Symbol.iterator]` (a generator) and an eager `drain`. They used to share one loop
+ * body — `drain` was `[...walk()]` — which made divergence impossible but paid the generator protocol per
+ * element: a differential profile put `walk` at 30.05% and `drain` at 8.99%, with the `V(id)` control at
+ * EXACTLY 0.00% on both. 🔑 `drain` is now its own plain loop (2.16-2.83x), and the two share only the
+ * per-vertex `emit` decision.
+ *
+ * ⚠️ **SO THE THING THAT CAN NOW GO WRONG IS THE THING ITEM 169 WARNED ABOUT**: two derivations that
+ * disagree. Gremlin results are compared ORDERED by the differential fuzzer, so a disagreement about
+ * membership OR order is a wrong answer. This pins them equal, element for element, on shapes that
+ * exercise the label filter, the missing-key skip, and a multi-element bucket.
+ */
+describe('the lazy iterator and the eager drain agree exactly', () => {
+  const build = (): Graph => {
+    const g = new Graph();
+
+    /* ✅ Two vertices share the seeked value, so the bucket has more than one element to order. */
+    g.addVertex({ id: 'a', labels: ['User'], properties: { team: 'core', score: 1 } });
+    g.addVertex({ id: 'b', labels: ['User'], properties: { team: 'core', score: 2 } });
+    /* ✅ Same seeked value, WRONG label — exercises the label filter in both loops. */
+    g.addVertex({ id: 'c', labels: ['Other'], properties: { team: 'core', score: 3 } });
+    /* ✅ Same seeked value, right label, but NO `score` — exercises the missing-key skip. */
+    g.addVertex({ id: 'd', labels: ['User'], properties: { team: 'core' } });
+
+    /*
+     * ⚠️ **WITHOUT THIS THE SHORTCUT DECLINES AND THE TEST PROVES NOTHING.** `seedForStep` needs the key
+     * indexed, so a fixture without the index exercises the general walk instead — the same trap item
+     * 2291 hit in an untypechecked probe. The `toBeDefined` below is what caught it here.
+     */
+    g.createIndex({ on: 'vertex', kind: 'hash', keys: ['team'] });
+
+    return g;
+  };
+
+  for (const [name, plan] of [
+    ['with a label filter', traversal(V(), hasLabel('User'), has('team', 'core'), values('score'))],
+    ['without a label filter', traversal(V(), has('team', 'core'), values('score'))],
+  ] as const) {
+    test(name, () => {
+      const g = build();
+      const seeded = seededNodeValuesShortcut(plan, g);
+
+      /* ⚠️ If the shortcut declined, this test proves nothing — fail loudly rather than pass vacuously. */
+      expect(seeded, 'the shortcut must take this shape').toBeDefined();
+
+      const lazy = [...(seeded as Iterable<unknown>)];
+      const eager = (seeded as { drain: () => unknown[] }).drain();
+
+      /* ✅ Same elements IN THE SAME ORDER — `toStrictEqual` on arrays is order-sensitive. */
+      expect(eager).toStrictEqual(lazy);
+      expect(lazy.length).toBeGreaterThan(1);
+    });
+  }
+});

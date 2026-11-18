@@ -1219,25 +1219,45 @@ export const seededNodeValuesShortcut = (plan: Plan, graph: Graph): NodeValues |
   const { label, key } = shape;
   const labels = label?.labels;
   const bucket = candidate.build();
-  // ONE loop body for both the iterator and `drain`, as above — item 169's lesson, and Gremlin
-  // results are compared ORDERED by the differential fuzzer, so two derivations could diverge.
+  // ONE DECISION BODY for both the iterator and `drain` — item 169's lesson, and Gremlin results are
+  // compared ORDERED by the differential fuzzer, so two derivations could diverge. `emit` is that
+  // single body: it decides per vertex whether a value is yielded and WHICH, so the two loops below
+  // cannot disagree about membership or order, only about how they accumulate.
+  //
+  // ⚠️ `drain` IS A PLAIN LOOP, NOT A GENERATOR SPREAD (item 2319). `[...walk()]` paid the generator
+  // protocol per element — a `next()` call and a `{value, done}` object each — and a differential
+  // profile against the `V(id)` control put `walk` at 30.05% and `drain` at 8.99% with the control at
+  // EXACTLY 0.00% on both. That is ~39% of a shape whose bucket usually holds ONE vertex.
+  //
+  // ✅ NOTHING BECOMES EAGER THAT WAS NOT. `drain` was already defined as `[...walk()]`, so it always
+  // materialized the whole bucket; this changes the mechanism, not the semantics. The iterator stays
+  // a generator and therefore stays lazy, which is what a caller that `break`s out of `run` depends
+  // on (`eager-tail-cache` is the failure mode if that is ever confused). It is item 1412's rule —
+  // "an already-eager terminal takes an eager walk" — applied one level down, to `drain` itself.
+  const emit = (v: { labels: ReadonlySet<string>; properties: Record<string, unknown> }): boolean =>
+    (labels === undefined || labels.some((l) => v.labels.has(l))) && key in v.properties;
+
   const walk = function* (): Generator<unknown> {
     for (const v of bucket) {
-      if (labels !== undefined && !labels.some((l) => v.labels.has(l))) {
-        continue;
-      }
-
-      const props = v.properties;
-
-      if (key in props) {
-        yield props[key];
+      if (emit(v)) {
+        yield v.properties[key];
       }
     }
   };
 
   return {
     [Symbol.iterator]: walk,
-    drain: () => [...walk()],
+    drain: (): unknown[] => {
+      const out: unknown[] = [];
+
+      for (const v of bucket) {
+        if (emit(v)) {
+          out.push(v.properties[key]);
+        }
+      }
+
+      return out;
+    },
   };
 };
 
