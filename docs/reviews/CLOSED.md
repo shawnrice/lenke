@@ -111990,7 +111990,7 @@ instrument that distinguishes the two, and the precondition for touching anythin
 GATES. `bun run fmt` 0, `bun run check` 0. New instrument `parity-2236.ts` + probe `prof-2236.mjs`; no
 production change.
 
-## Item 2237 — 🔑🔑 **THE DELETION TEST PAYS OFF: the per-edge property read is ~220 ns and 56% of the far-keyed grouped count (2.25-2.28x), and the CPU PROFILE UNDER-ATTRIBUTED IT 3.7x — the walk closure was absorbing the inlined access**
+## Item 2237 — 🔑🔑 ~~**the per-edge property read is ~220 ns and 56% of the far-keyed grouped count (2.25-2.28x)**~~ ⚠️ **INFLATED — THE FLOOR ARM WAS DEAD-CODE ELIDED. Corrected at item 2238: the property read is ~73 ns (~1.2x); the larger term is MATERIALIZING the far vertex. The profile under-attribution (3.7x) STANDS**
 
 Item 2236 refused to act on a `get properties` frame at 59.7 ns of 346, because
 [[frame-attribution-trap]] says a getter frame is attribution until a deletion test with a CONTROL says
@@ -112040,3 +112040,69 @@ next measurement**, and it decides whether the fix is local or is the recorded b
 
 GATES. `bun run fmt` 0, `bun run check` 0; tree restored to LIVE and verified. New probe
 `packages/native/deltest-2237.ts`; no production change.
+
+## Item 2238 — ⚠️⚠️ **MY OWN FLOOR ARM WAS DEAD-CODE ELIDED, SO ITEM 2237's 2.25x IS INFLATED. Corrected: the property read is ~73 ns (~1.2x); the bigger term is MATERIALIZING the far vertex — and `Edge.ts` documents the accessor that would skip it**
+
+Item 2237's deletion removed three things at once, so this item laddered them apart. ✅ **The first two
+rungs settled quickly, and both are NEGATIVE results worth recording:**
+
+```text
+    arm (farkey, ms)              r1      r2
+    A_live                     118.2   120.1
+    B_nocoalesce               116.9   106.0     `?? null`           ~FREE
+    C_literalkey               112.6   114.4     VARIABLE-keyed index ~5%
+    E_getteronly               104.7   107.3     index, isolated:    ~FREE
+    D_nogetter                  53.6    52.6
+```
+
+🔑 So neither the `?? null` nor the variable-vs-literal key is the cost — which refutes the obvious reading
+of `o.properties[key]` being 1.41x a literal: **true, and on an absolute so small it does not matter here.**
+
+### ⚠️⚠️⚠️ AND THEN THE FLOOR ARM TURNED OUT NOT TO BE A FLOOR
+
+`D_nogetter` never reads `other` at all. The query `(a)-[:KNOWS]->(b)` gives `b` **no label**, so
+`matchesLabel` is skipped and `const other = out ? edge.to : edge.from` is **dead code** — elided. So
+`C -> D` was not pricing the getter; it was pricing **the getter PLUS materializing the far vertex.**
+Discriminated by swapping in the cheapest possible access:
+
+```text
+    arm (farkey, ms)              r1      r2    over D_none
+    D_none  (no access)         51.9    51.2         —        ⚠️ `edge.to` ELIDED — NOT a floor
+    F_id    (`other.id`)        82.3    85.8     +30-35 ms    <- the HONEST floor
+    E_properties               106.7   105.7     +54 ms
+    G_labels                   107.0   108.8     +55-58 ms
+```
+
+🔑🔑 **`other.id` alone costs ~105 ns**, and that is the giveaway: an id read cannot cost that, so what it
+is really paying for is the `edge.to` the previous arm had elided. **With `F_id` as the floor the property
+box getter is ~22 ms, ~73 ns, ~1.2x — not 2.25x.** ⚠️ And `labels` costs the SAME as `properties`, which
+is consistent with both using the cached-box pattern and with `Vertex.ts`'s recorded refutation of
+optimizing that getter.
+
+🔑 **This is the DEAD-CODE trap from the unfamiliar side.** The recorded form is "consuming nothing lets the
+JIT delete the work, so the measured arm looks fast". Here the deleted arm was the FLOOR, so the elision
+made the _target_ look expensive. **An arm that stops using a value stops paying for producing it — so a
+deletion arm must keep touching what it is not measuring.**
+
+### 🔑🔑 WHAT THE MECHANISM TURNS OUT TO BE, AND THE LEVER IT NAMES
+
+```ts
+get to(): Vertex { this.#toV ??= this.#graph!.getVertexById(this.#to)!; return this.#toV; }
+```
+
+**Reaching the far property costs TWO string-keyed map lookups**: `getVertexById` to materialize the
+`Vertex`, then `elementProperties.get(id)` for its box. Both are cached (`#toV`, `#box`), which is why
+rep 1 is visibly slower than rep 2 — but the steady state still pays, so the caches are not carrying as
+much as their presence suggests.
+
+⚠️ And `Edge.ts` already documents the way out, in a comment about its endpoint-**ids** accessor:
+_"The endpoint IDS, without materializing the vertices."_ **A grouped count keyed on `b.k` needs the far
+vertex's PROPERTY, not the far vertex** — so reading `elementProperties.get(edge.toId)?.bag[keyProp]` is
+ONE lookup where the walk currently does two.
+
+**NEXT: build that, A/B it with `F_id`'s honest floor, and watch the start-keyed row** — which item 2237
+measured moving 25% on an edit to this file ([[executor-edits-perturb]]). ⚠️ Expect ~1.2-1.5x, not 2.25x;
+the inflated figure is withdrawn above.
+
+GATES. `bun run fmt` 0, `bun run check` 0; tree restored to LIVE and verified after all three A/B scripts.
+No production change.
