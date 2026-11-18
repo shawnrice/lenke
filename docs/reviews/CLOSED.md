@@ -112785,3 +112785,58 @@ lever here; recorded so the next reader does not file one.**
 
 GATES. `bun run fmt` 0, `bun run check` 0. New instrument `tvtest-2252.ts`
 (`ARM=none|setprop|addvertex|addedge`); no production change.
+
+## Item 2253 — ❌ **MY OWN LEVER IS DEAD, AND THE EXISTING POLICY IS VINDICATED WITH NUMBERS IT DID NOT HAVE: the CSR build costs ~8.3 ms at 20k against a 2.33 ms CSR-less read, so remembering shapes across versions would be 4x WORSE**
+
+Items 2251/2252 established that an interleaved workload never arms the CSR, because `seenBefore` forgets
+every shape when `topologyVersion` moves. The obvious relaxation: **remember shapes ACROSS versions**, so a
+one-shot query still declines (it never asked that shape) while an interleaved one arms on its first ask of
+each new version. ⚠️ Whether that wins is arithmetic, and the missing term was the BUILD.
+
+### 🔑 THE INSTRUMENT NEEDED TWO CORRECTIONS BEFORE IT SHOWED ANYTHING
+
+`seenBefore(graph, forward, type)` keys on the **direction**, which is the lever that makes the build
+measurable: **warm the JIT on `in_('E')`, measure `out('E')` — same rung, same code, different record.**
+⚠️ Two earlier attempts failed and are worth naming: warming on the measured shape ARMED it, and switching
+to a 2-hop shape left the CSR rung entirely. Both produced a smooth JIT-decay series with **no build step at
+all**, which looks like a null result and is not one.
+
+```text
+    per-ask series, warm=IN / measure=OUT
+    N=20000    7.27   9.34   1.01  0.94  0.92  0.89  0.88  0.91  0.88  0.88
+    N=80000   43.01  41.61   6.70  6.08  6.49  6.53  7.04  7.23  6.50  8.70
+               ask1   ask2   ask3+ ...
+             declines BUILDS cached
+```
+
+✅ **ask2 is the build** — the most expensive rep — and ask3 onward is the cached fast route. The structure
+the policy describes is directly visible.
+
+### ❌ AND THE ARITHMETIC REFUSES THE CHANGE
+
+```text
+    N=20000   build ≈ ask2 − ask3 ≈ 8.3 ms    fast read 0.90 ms    CSR-LESS read 2.33 ms (item 2252)
+              build + fast ≈ 9.2 ms   vs   2.33 ms       -> 4.0x WORSE
+    N=80000   build ≈ 34.9 ms                 fast read 6.5 ms     CSR-LESS read ~20 ms (item 2248)
+              build + fast ≈ 41.4 ms  vs   ~20 ms        -> 2.1x WORSE
+```
+
+🔑🔑 **The build costs several times a whole CSR-less read, so paying it once per topology version is far
+worse than never getting the route.** `second-ask.ts`'s design is correct, and the interleaved case its doc
+calls _"the case item 1694 was most worried about"_ is handled the right way. ⚠️ **This is my proposal
+refuted, not the engine's behaviour — and it is the third framing of this cost to be measured and discarded
+(2250's rebuild, 2249's deopt, now 2253's cross-version arming).**
+
+⚠️ `ask1` (7.27 ms) is larger than item 2252's CSR-less read (2.33 ms) because residual tiering lands on the
+first measured ask; the honest `slowRead` is the churn probe's 2.33, and **using the larger figure would only
+have flattered my own lever** — the conclusion is unchanged either way.
+
+### ✅ SO THE WHOLE THREAD CLOSES
+
+Items 2246-2253: the interleaved-write penalty is **real** (~1.5x at 20k, ~3x at 80k), **bounded** (topology
+writes only — property updates are free, item 2252), **understood** (a lost CSR route, not a rebuild), and
+**the obvious fix is measurably worse**. The remaining lever would have to make the BUILD incremental rather
+than change when it is armed — and `second-ask.ts` records that a generation is dropped whole specifically
+so _"nothing leaks one dead entry per shape per write"_, which an incremental patch must answer.
+
+GATES. `bun run fmt` 0, `bun run check` 0. New instrument `buildcost-2253.ts`; no production change.
