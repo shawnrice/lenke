@@ -111776,3 +111776,44 @@ costs in this language**, not engine slack. ✅ **CLOSED.**
 floor, already worked, or explained by a recorded refutation.
 
 GATES. `bun run fmt` 0, `bun run check` 0. No production change.
+
+## Item 2233 — 🔑 **THE DELETE PATH IS FLOORED FOR THE FIRST TIME: a cascading vertex delete is ~6 us at 1.7-1.9x its hand-rolled floor, and costs ~10x an insert. AND THE FIXTURE BUILD WAS 75% OF THE MEASUREMENT — item 2227's dilution in a different coat**
+
+The last write-path shape with no floored measurement. ⚠️ What was recorded is a statement about a REJECTED
+design: deletes at 6.18x/11.34x under churn disqualified the dense vertex ordinal (items 1369-1372/1397).
+This engine's own delete cost had never been measured against a floor.
+
+### ⚠️⚠️ FIRST, THE SETUP WAS THE MEASUREMENT
+
+The first run read `build` — an arm that does **no deletes at all** — at **17,994 ns/delete**. The fixture
+build is ~75% of every arm, so every number was mostly setup. 🔑 **That is item 2227's dilution with the
+constant moved from the SINK to the SETUP**, and the fix is the same shape: give the shared cost its own arm
+so it can be subtracted. Both halves now have one (`build` / `floorbuild`).
+
+### ✅ THE FLOORED RESULT
+
+```text
+    arm                       raw r1 / r2      build r1 / r2    PER DELETE
+    engine vertex (cascade)  24006 / 23778    18091 / 17774    5915 / 6004
+    engine edge only         20390 / 18851    18091 / 17774    2299 / 1077
+    hand-rolled floor         8625 /  8220     5063 /  5031    3562 / 3189
+```
+
+🔑 **A cascading vertex delete is 1.7-1.9x its floor.** The floor maintains the same four indexes the engine
+does — by-id, by-label, and both adjacency directions — and **cascades**, because `removeVertex` must.
+
+### 🔑 TWO THINGS WORTH KNOWING FROM THE ABSOLUTE NUMBERS
+
+- **A vertex delete costs ~6 us against a ~0.6 us insert — about 10x.** For a people-graph with corrections
+  and retractions (the domain item 2214 measured), that asymmetry is the useful fact, not the ratio.
+- **It is ~1.5 us PER ELEMENT REMOVED.** At `FANOUT=2` each deleted vertex drops itself plus ~4 incident
+  edges, and the edge-only arm independently reads ~1-2 us per edge — so the vertex cost is the cascade,
+  priced consistently by two arms.
+
+⚠️ **The 1.7-1.9x is NOT yet explained**, which distinguishes it from this session's other modest ratios
+(those closed because the cause was named and already refuted). It is also below the bar this session has
+applied to diffuse costs — so it is recorded as an honest open question with its floor, not promoted to a
+target. **A profile of the engine's vertex-delete arm against the floor is the next step if it is pursued.**
+
+GATES. `bun run fmt` 0, `bun run check` 0. New probe `packages/native/delete-2233.ts`
+(`ARM=build|floorbuild|floor|vertices|edges`); no engine change.
