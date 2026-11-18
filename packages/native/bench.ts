@@ -1501,6 +1501,20 @@ const CASES: Case[] = [
      * its control: the rewrite must NOT touch it, and a row count there is the only thing that can see a
      * violation (deduping an `ALL` operator is a WRONG ANSWER the deduping forms would hide).
      */
+    /*
+     * 🔑 DEEP PAGING, added at item 2148 — the last of item 2145's five unbenched features. ⚠️ That item
+     * CLOSED it by measurement rather than building: `ORDER BY k LIMIT 10` costs 4.97 ms against a
+     * scan-all-rows floor of 9.93, so the bounded path genuinely avoids materializing, and a deep `SKIP`
+     * is a near-full sort BECAUSE IT MUST BE. The row exists to catch a regression in that routing, not
+     * because a win is expected.
+     */
+    name: 'query: ORDER BY + deep SKIP [item 2148]',
+    ...onGraph(
+      () => optionalDoc,
+      (e, g) => void e.query(g, 'MATCH (a:Person) RETURN a.k AS k ORDER BY k SKIP 50000 LIMIT 10'),
+    ),
+  },
+  {
     name: 'query: UNION of two hops [item 2147]',
     ...onGraph(
       () => optionalDoc,

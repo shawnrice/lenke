@@ -107148,3 +107148,46 @@ cardinality and that fixture's is high).
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 5,204 GQL
 tests; `bun run fuzz` all seven green.
+
+## Item 2148 — ✅ **CLOSED BY MEASUREMENT, NOTHING BUILT: `ORDER BY` + `SKIP`/`LIMIT` is correctly routed and at its floor. FOUR refutations, three of them my own hypotheses from this item**
+
+The last of item 2145's five unbenched features, after 2146 (`OPTIONAL`, 33x) and 2147 (set ops, 5.55x).
+
+### 🔑 THE BOUNDED PATH IS ALREADY DOING THE RIGHT THING
+
+```text
+    FLOOR: scan + project all 200k, NO sort      9.93 ms
+    ORDER BY k LIMIT 10                          4.97      <- BELOW the all-rows floor
+    ORDER BY k LIMIT 8192                        23.05
+    ORDER BY k (full sort)                       48.39
+```
+
+⚠️ **`LIMIT 10` costs LESS than scanning every row, which is the proof**: the bounded path never materializes
+the 200,000 rows. 🔑 And `SKIP` scales with `skip + limit` exactly as it must — 4.31 ms at `SKIP 10`, 6.52 at
+`SKIP 1000`, 48.84 at `SKIP 150000`, where a full sort is 52.79. A deep skip IS a near-full sort.
+
+### ⚠️⚠️ THREE OF MY OWN HYPOTHESES, EACH REFUTED BY THE NEXT MEASUREMENT
+
+- **"the heap path declines whenever `SKIP` is present"** — the shape that paid off at 2146 and 2147.
+  ⚠️ REFUTED: `SKIP 0/10` cost 4.32/4.31 against `LIMIT 10`'s 5.42, so `SKIP` is routed, not refused.
+- **"for a deep skip, take the COMPLEMENT — a heap of `N - skip` instead of `skip + limit`"** (50,000 against
+  150,010). ⚠️ REFUTED TWICE OVER: the cost is FLAT from 20,000 up (47.09, 45.83, 52.02, 46.38 at 20k/50k/
+  100k/150k), so both sides of the trade sit above the same ceiling — and the complement spelling measured
+  WORSE, 59.81 against the target's 50.85.
+- **"the cliff is `TAIL_CACHE_CAP = 4096`"** — the cap `eager-tail-cache` records at 473x. ⚠️ REFUTED: the
+  curve is SMOOTH across it (13.48 / 13.87 / 14.03 at 4095 / 4096 / 4097). There is no discontinuity; the
+  growth is gradual until it meets the full-sort ceiling.
+
+### ⚠️⚠️ AND THE FOURTH REFUTATION IS THE ONE I ALMOST SHIPPED AS A NOMINATION
+
+A hand-rolled bounded top-k over the same values measured **8.50 ms at k = 8192** against the engine's
+23.05, which reads as a 2.7x gap. 🔑 **It is not one.** The hand version walks a plain `number[]` — no `Row`
+objects, no property reads, no binding — so it prices a different problem. ⚠️ `CLAUDE.md` names this exact
+trap ("a hand-rolled floor is an UPPER BOUND, never a prediction") and the file records FOUR prior
+mispricings by it (items 591, 2125, 2130's first half, 2128/2138). Against the VALID floor — the 9.93 ms
+all-rows scan plus an unavoidable top-k — the engine's 23.05 is ordinary.
+
+🔑 A `ORDER BY + deep SKIP` bench row was added so the ROUTING is guarded, which is the thing that could
+regress; no win is expected there.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped.
