@@ -23,6 +23,9 @@
 import { Graph } from '@lenke/core';
 import { query } from '@lenke/gql';
 
+// eslint-disable-next-line boundaries/no-cross-package-relative-import -- the engine's own ORDER BY comparator, so the floor cannot be a strawman
+import { compareValues } from '../gql/src/executor/values.ts';
+
 const N = Number(process.env.N ?? 50000);
 const FANOUT = Number(process.env.FANOUT ?? 3);
 const REPS = Number(process.env.REPS ?? 7);
@@ -121,7 +124,16 @@ const ROWS = N * FANOUT;
 const strs = Array.from({ length: ROWS }, (_, i) => `n${i % HI}`);
 const nums = Array.from({ length: ROWS }, (_, i) => i % HI);
 
-const floorOf = (make: () => unknown[]): number => {
+/** The cheapest possible comparator — NOT the engine's contract, kept only as the unfair lower bound. */
+const bare = (x: unknown, y: unknown): number => {
+  if (x === y) {
+    return 0;
+  }
+
+  return (x as never) < (y as never) ? -1 : 1;
+};
+
+const floorOf = (make: () => unknown[], cmp: (a: unknown, b: unknown) => number): number => {
   const series: number[] = [];
 
   for (let r = 0; r < REPS; r += 1) {
@@ -129,13 +141,7 @@ const floorOf = (make: () => unknown[]): number => {
     const t = performance.now();
 
     /* The engine's comparator is total and type-aware; a bare `<` is the cheapest possible stand-in. */
-    arr.sort((x, y) => {
-      if (x === y) {
-        return 0;
-      }
-
-      return (x as never) < (y as never) ? -1 : 1;
-    });
+    arr.sort(cmp);
     series.push(performance.now() - t);
 
     if (arr.length !== ROWS) {
@@ -146,12 +152,54 @@ const floorOf = (make: () => unknown[]): number => {
   return (med(series.slice(2)) * 1e6) / ROWS;
 };
 
-const fs = floorOf(() => strs.slice());
-const fn = floorOf(() => nums.slice());
+const fs = floorOf(() => strs.slice(), bare);
+const fn = floorOf(() => nums.slice(), bare);
+
+/*
+ * 🔑🔑🔑 **THE FAIR FLOOR (item 2262): THE ENGINE'S OWN COMPARATOR.** Item 2261's floor used a bare `<`,
+ * which the engine is NOT allowed to use — `sort`/`min`/`max` need a TOTAL ORDER (nulls last, a fixed type
+ * rank so a mixed column is deterministic) for cross-engine byte-identity. A comparator that handles one
+ * type with one operator is not the contract, so that ratio was an upper bound.
+ *
+ * `compareValues` is exported, so the floor can use **the engine's actual comparator with nothing else in
+ * the way**: same contract, bare `Array.prototype.sort`, no pipeline. ✅ That is the fairest floor available
+ * and it cannot be a strawman (item 1682's trap).
+ */
+const fsTotal = floorOf(() => strs.slice(), compareValues);
+const fnTotal = floorOf(() => nums.slice(), compareValues);
+
+/*
+ * ⚠️⚠️ **AND THE FLOOR IS STILL INCOMPLETE FOR THE SAME CLASS OF REASON.** The two arms above sort a FLAT
+ * array of primitives; the engine sorts **ROW OBJECTS by an extracted key**, which is strictly more work —
+ * a field load per comparison, and objects rather than primitives in the array. So those ratios are still
+ * upper bounds.
+ *
+ * 🔑 This arm is the complete floor: the engine's comparator, over `{ n }` rows, extracting the key the way
+ * a row sort must. Nothing is left between it and the engine but the engine's own pipeline.
+ */
+const strRows = strs.map((n) => ({ n }));
+const numRows = nums.map((n) => ({ n }));
+const byField = (x: unknown, y: unknown): number =>
+  compareValues((x as { n: unknown }).n, (y as { n: unknown }).n);
+
+const fsRows = floorOf(() => strRows.slice(), byField);
+const fnRows = floorOf(() => numRows.slice(), byField);
 
 console.log(
-  `\n  FLOOR (Array.sort only)  string ${fs.toFixed(0)} ns/row   number ${fn.toFixed(0)}   type effect ${(fs - fn).toFixed(0)}`,
+  `\n  FLOOR bare less-than (UNFAIR)  string ${fs.toFixed(0)} ns/row   number ${fn.toFixed(0)}`,
 );
 console.log(
-  `  ENGINE sort-attributable  string ${(sHi - 26).toFixed(0)} ns/row   number ${(nHi - 26).toFixed(0)}   vs floor ${((sHi - 26) / Math.max(fs, 1e-9)).toFixed(2)}x / ${((nHi - 26) / Math.max(fn, 1e-9)).toFixed(2)}x`,
+  `  FLOOR compareValues (FAIR)     string ${fsTotal.toFixed(0)} ns/row   number ${fnTotal.toFixed(0)}   -> the contract costs ${(fsTotal - fs).toFixed(0)} / ${(fnTotal - fn).toFixed(0)} ns/row over a bare less-than`,
+);
+console.log(
+  `  ENGINE sort-attributable       string ${(sHi - 26).toFixed(0)} ns/row   number ${(nHi - 26).toFixed(0)}`,
+);
+console.log(
+  `  FLOOR rows+compareValues       string ${fsRows.toFixed(0)} ns/row   number ${fnRows.toFixed(0)}   -> sorting ROWS by a key costs ${(fsRows - fsTotal).toFixed(0)} / ${(fnRows - fnTotal).toFixed(0)} more`,
+);
+console.log(
+  `\n  ENGINE vs flat+total floor     string ${((sHi - 26) / Math.max(fsTotal, 1e-9)).toFixed(2)}x          number ${((nHi - 26) / Math.max(fnTotal, 1e-9)).toFixed(2)}x`,
+);
+console.log(
+  `  ENGINE vs ROW floor (FAIREST)  string ${((sHi - 26) / Math.max(fsRows, 1e-9)).toFixed(2)}x          number ${((nHi - 26) / Math.max(fnRows, 1e-9)).toFixed(2)}x   (bare-less-than floor said ${((sHi - 26) / Math.max(fs, 1e-9)).toFixed(2)}x / ${((nHi - 26) / Math.max(fn, 1e-9)).toFixed(2)}x)`,
 );

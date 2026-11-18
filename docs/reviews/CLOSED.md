@@ -113182,7 +113182,7 @@ wrong, and the remaining term is one item 1966 already priced by ablation.**
 GATES. `bun run fmt` 0, `bun run check` 0. New instrument `sortroute-2260.ts` (route reader; carries the same
 `boundaries/no-cross-package-relative-import` disables the cliff finder does, for the same reason).
 
-## Item 2261 — 🔑🔑 **THE ENGINE'S SORT IS 6-8x A MINIMAL `Array.sort` FLOOR (robust across two runs), AND THE KEY-TYPE SPLIT IS NOISE. ⚠️⚠️ But my floor is UNFAIR BY MY OWN FIRST RULE — a bare `<` does not implement the total order byte-identity requires, so 6-8x is an UPPER BOUND**
+## Item 2261 — 🔑🔑 **THE ENGINE'S SORT IS** ⚠️ ~~6-8x A MINIMAL `Array.sort` FLOOR~~ **2.0-4.0x A FAIR ONE — corrected at item 2262, which built the floor this entry says was missing; the 6-8x was 3x INFLATED. The KEY-TYPE SPLIT IS NOISE.** ⚠️⚠️ But my floor is UNFAIR BY MY OWN FIRST RULE — a bare `<` does not implement the total order byte-identity requires, so 6-8x is an UPPER BOUND**
 
 Item 2260 left one sound question: at a fixed `hopProjection` route, a string `ORDER BY` key cost 344 ns/row
 and a numeric one 197. ⚠️ **I spotted a confound in my own fixture before measuring** — `name` had 9973
@@ -113229,3 +113229,52 @@ allowed to use", which is honest and is not a target.
 
 GATES. `bun run fmt` 0, `bun run check` 0. New instrument `sortkey-2261.ts` (2x2 plus floor arms); no
 production change.
+
+## Item 2262 — ✅ **THE FAIR FLOOR, BUILT IN THREE STAGES, AND IT CUTS MY OWN 6-8x TO 2.0-4.0x. 🔑 The engine adds ~160-190 ns/row of ROW-PIPELINE overhead on top of an honest sort, near-independent of key type — and `compareValues` being EXPORTED is what made a non-strawman floor possible**
+
+Item 2261 reported the engine's sort at 6-8x a floor and flagged that floor as unfair by this session's own
+first rule: **a floor must do the same work.** This item built the fair one.
+
+### ✅ THREE FLOORS, AND THE RATIO FALLS AT EVERY REFINEMENT
+
+```text
+    floor                                  string      number    ENGINE ratio (str / num)
+    bare `<`, flat array      (UNFAIR)     ~61 ns/row  ~33       6.23-6.51x / 6.22-6.80x
+    compareValues, flat array              ~115        ~47       3.18-3.24x / 4.47-4.74x
+    compareValues, ROW objects (FAIREST)   155-185      56       2.03-2.47x / 3.83-4.02x
+```
+
+🔑 **`compareValues` is exported**, so the floor can use **the engine's actual ORDER BY comparator** — nulls
+last, a fixed type rank so a mixed column is deterministic — with nothing else in the way. That is what
+makes this a floor rather than item 1682's strawman.
+
+### ✅ AND THE FLOOR'S OWN COST DECOMPOSES
+
+- **The total-order CONTRACT costs +51-54 ns/row on strings, +12-15 on numbers** over a bare `<`. That is
+  the price of cross-engine byte-identity ([[nan-comparison-policy]]) and the engine has no choice about it.
+- **Sorting ROW OBJECTS by an extracted key costs a further +37-67 / +8.** A field load per comparison, and
+  objects rather than primitives in the array.
+
+### 🔑🔑 THE HONEST RESIDUAL, AND THE RIGHT WAY TO READ IT
+
+**The engine is 2.0-2.5x the fair floor on strings and 3.8-4.0x on numbers** — but the RATIO misleads,
+because the numeric floor is so much cheaper. ✅ **In absolute terms the overhead is nearly the same: string
+374-185 = ~189 ns/row, number 215-56 = ~159.** So the engine adds **~160-190 ns/row of row-pipeline cost on
+top of an honest sort, roughly independent of key type** — key extraction through the compiled closure, row
+construction, and the surrounding machinery. ⚠️ That also squares with item 2259: unsorted hop rows cost 23
+ns/row, so the sorted path's per-row handling is several times the unsorted path's.
+
+### ⚠️⚠️ THE META-FINDING, DEMONSTRATED THREE TIMES IN ONE ITEM
+
+**Each floor refinement I made myself cut my own headline**: 6-8x → 3.2-4.7x → 2.0-4.0x. 🔑 _"A ratio
+without a fair floor is an upper bound"_ is not a caution to recite; it was worth a **3x correction** here.
+And the lesson has a sharper edge than usual — **two of the three unfairnesses were invisible until named**
+(a comparator the engine may not use; sorting primitives where the engine sorts rows).
+
+⚠️ One instrument bug worth recording: a **nested backtick inside a template literal** closed the string
+early, leaving `'…' < '…'` — which printed `true` as a log line and was only caught because oxlint flagged
+it as a Yoda condition. A log line that silently becomes a comparison is a new costume for "an instrument
+that reports nothing useful".
+
+GATES. `bun run fmt` 0, `bun run check` 0. `sortkey-2261.ts` extended with two floor arms; no production
+change.
