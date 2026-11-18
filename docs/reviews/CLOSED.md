@@ -691,10 +691,13 @@ t.n` gave `[2,3]` against native's `[4,1]`).
   by any failure. Re-keyed on a per-execution `execEpoch` (hash only a `closedList` haystack,
   whose value cannot depend on the row), all three spellings now agree within ~14% at every
   length, and the inline-param one is **24.2x faster than it was before 268 ever landed.**
-- ~~**TS `SET`'s O(width)**~~ — **CLOSED BY DESIGN.** Item 147 removed one of the three O(K)
-  passes; the other two are inherent to the frozen immutable bag (a single-key write must build a
-  new object and freeze it, and the freeze is what makes a stray mutation throw). Do not "fix" it
-  without replacing that design. Items 147, 148, confirmed 266.
+- ~~**TS `SET`'s O(width)**~~ — **CLOSED BY DESIGN** ⚠️ **BUT ITS EXPLANATION DOES NOT COVER TODAY'S
+  SET COST — SEE ITEM 2180.** Item 147 removed one of the three O(K) passes; the other two are
+  inherent to the frozen immutable bag (a single-key write must build a new object and freeze it,
+  and the freeze is what makes a stray mutation throw). Do not "fix" it without replacing that
+  design. Items 147, 148, confirmed 266. ⚠️ **Item 2180 measured SET's marginal as FLAT in row
+  width — +4.01 ms at 2 properties against +4.52 at 65, so 32x the width buys 13% — so whatever
+  the screen's 13.1x SET flag is made of, it is NOT the O(width) term this entry closed.**
 - ~~**Native raised on a capped product whose predicate faults past the cap, where TS returned
   rows**~~ — **FIXED by item 288**, as a side effect rather than a target. Two shapes, both loud
   refusals: `MATCH (s:S) MATCH (u:U) WHERE CAST(u.st AS INTEGER) = s.k … LIMIT 1` and the
@@ -109013,3 +109016,61 @@ the code you want.
 was never measured** — item 2176's coverage lesson, again.
 
 GATES. No production change; both throws reverted and the tree verified identical to pristine.
+
+## Item 2180 — ⚠️⚠️ **NOT BUILT, AND THE REASON IS WORTH MORE THAN A RUSHED RUNG: the SET flag splits into TWO separable targets, and the entry that "closed" this ground does not explain either. Both priced**
+
+Item 2176's screen flagged `SET one property` at 13.1x. ⚠️ `CLOSED.md` already said TS `SET`'s O(width) was
+**CLOSED BY DESIGN** — "do not fix it without replacing that design" — so the first job was to check whether
+that claim covers the flag. **It does not.**
+
+### ⚠️ THE CLOSED NOTE'S PREDICTION FAILS: SET's cost is FLAT in row width
+
+```text
+    row width      ts SET marginal     native marginal
+     2 props           +4.01               +0.36
+     5 props           +4.22               +0.36
+    17 props           +4.28               +0.36
+    65 props           +4.52               +0.37
+```
+
+🔑 **32x the width buys 13% more cost.** The frozen-bag rebuild is real, but it is NOT what the 13.1x is
+made of. `check-the-blocker-still-holds` is the rule that got this checked, and the stated blocker was
+again incomplete rather than wrong.
+
+### 🔑 TARGET ONE: a write clause disqualifies EVERY read rung (worth ~1.48x on a filtered write)
+
+```text
+    WHERE + count(*)          countShortcut      2.79 ms
+    WHERE + RETURN a.k        nodeProjection     3.59      <- a binding-producing read
+    WHERE + SET + count(*)    NO RUNG            6.82
+    SET, no WHERE             NO RUNG
+    REMOVE                    NO RUNG
+```
+
+Profiled, SET against its own floor: **`matchPattern` 18.9%, `seedVertices` 13.7%, `candidateVertices`
+10.4%, `rejectedByElementDirect` 8.1% — 51% in the general matcher**, all four ABSENT from the floor's
+profile, which shows fast-path closures. ⚠️ **`runDeferredChecks` is 2.4%, so the write machinery is not the
+cost** — the re-routing is. Same shape as item 2177's `count(b)`.
+
+🔑 `runLinear` wraps a write in `graph.transaction()` and then calls **the same `runLinearClauses` reads
+take**, so the ladder is reachable; the DETECTORS decline because they are read-shaped (`[match, return]`)
+and a write makes it `[match, set, return]`. **Headroom: 6.82 → ~4.6 (3.59 bindings + ~1.0 for 2,060
+writes) = ~1.48x.**
+
+### 🔑 TARGET TWO, THE BIGGER ONE: a width-independent ~0.49 µs PER WRITE
+
+```text
+    SET on EVERY row    98.48 ms / 200,000 writes = 0.49 µs    native 25.41 = 0.127 µs    3.9x
+```
+
+⚠️ A `{...obj, k: v}` plus `Object.freeze` on a 2-property object is ~100-200 ns, and the cost does not
+grow with width, so **~0.3 µs per write is somewhere else and unaccounted for.** This is where the volume
+is — 98 ms against the filtered write's 7.
+
+**WHY NOT BUILT THIS TICK, stated plainly:** target one needs a NEW rung in a file where
+`executor-edits-perturb` prices a new variant at up to 16% on unrelated rows, for 1.48x on one shape —
+that trade needs its own item's measurement discipline, not the tail of a diagnosis. And target two is the
+larger prize but contradicts a standing CLOSED entry, whose heading is corrected above in this same commit
+so the next reader is not sent away by it.
+
+GATES. No production change. `bun run fmt` 0; `bun run check` 0 read unpiped.
