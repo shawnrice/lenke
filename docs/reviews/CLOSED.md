@@ -109017,7 +109017,7 @@ was never measured** — item 2176's coverage lesson, again.
 
 GATES. No production change; both throws reverted and the tree verified identical to pristine.
 
-## Item 2180 — ⚠️⚠️ **NOT BUILT** (⚠️ TARGET TWO's "unaccounted ~0.3 µs" is ACCOUNTED at item 2312: ~189 ns is the transaction's undo log, which a fair floor must carry, and the residual is 2.2x not 3.9x) **— the SET flag splits into TWO separable targets, and the entry that "closed" this ground does not explain either. Both priced**
+## Item 2180 — ⚠️⚠️ **NOT BUILT** (⚠️ TARGET ONE is RE-PRICED at item 2313: **2.39x, not 1.48x** — the read arms got faster and the write arm slower; ⚠️ TARGET TWO's "unaccounted ~0.3 µs" is ACCOUNTED at item 2312: ~189 ns is the transaction's undo log, which a fair floor must carry, and the residual is 2.2x not 3.9x) **— the SET flag splits into TWO separable targets, and the entry that "closed" this ground does not explain either. Both priced**
 
 Item 2176's screen flagged `SET one property` at 13.1x. ⚠️ `CLOSED.md` already said TS `SET`'s O(width) was
 **CLOSED BY DESIGN** — "do not fix it without replacing that design" — so the first job was to check whether
@@ -115732,3 +115732,49 @@ applies to that 30.53%: the fair floor allocates too, so it is not attributable 
 ✅ **Fourth time this session a floor-fairness correction changed the headline** (items 2262, 2281, 2288, 2312) — and the only one where the correction HALVED a gap I was about to publish.
 
 GATES. `bun run fmt` 0, `bun run check` 0. One probe (five arms); no production change.
+
+## Item 2313 — 🎯 **ITEM 2180's TARGET ONE IS NOW WORTH 2.39x, NOT 1.48x: the read arms got FASTER and the write arm SLOWER since it was priced. The filtered write costs 4.8 µs/row against the unfiltered write's 648 ns, because with no rung it SCANS 200,000 rows to write 2,062**
+
+⚠️ **First, a correction to my own framing from item 2312's close.** I had said the three ships this session
+might make this rung cheaper to add. They do not: **all three were GATE RELAXATIONS — a changed condition —
+not new walk variants**, so `executor-edits-perturb`'s price for a NEW rung is untouched by them. The
+bounded question is only whether 2180's numbers still hold.
+
+```text
+    arm                           item 2180   today    rows
+    WHERE + count(*)                 2.79      2.48     2,062
+    WHERE + RETURN a.k               3.59      2.77     2,062
+    WHERE + SET + count(*)           6.82      9.92     2,062
+    SET, no filter                     —     129.56   200,000
+```
+
+🔑 **The read arms improved and the write arm regressed**, so the headroom grew. ✅ Recomputed on today's
+figures: the read rung's scan (2.77) plus 2,062 writes at item 2312's measured 675 ns/row (1.39 ms) is
+**~4.2 ms against 9.92 — 2.39x.**
+
+### 🔑 AND THE PER-ROW VIEW MAKES THE MECHANISM UNMISTAKABLE
+
+```text
+    filtered write      9.92 ms /   2,062 writes = 4.81 µs per write
+    unfiltered write  129.56 ms / 200,000 writes = 0.65 µs per write    <- 7.4x cheaper PER WRITE
+```
+
+⚠️ **A write is not 7.4x more expensive because it is filtered** — it is the same write. The filtered arm
+**scans all 200,000 vertices to find 2,062**, because the write clause disqualifies the read rung that
+would have seeked or shortcut it, while the unfiltered arm's scan is amortized over 200,000 writes. ✅ That
+is exactly item 2180's target one, and the per-row comparison prices it more sharply than the ms figures
+do.
+
+### ✅ NOT MINE, AND RULED OUT BY READING RATHER THAN A SWITCH
+
+`MATCH (a:T)` has **no segments**, and both of this session's gates require them —
+`farEndSeeksNarrower` returns false at `pattern.segments.length === 0`, and `hop-projection`'s detector
+needs a hop. ✅ Consistent with the data: the read arms got FASTER, which no regression of mine could
+produce.
+
+**STILL NOT BUILT, and the reason is unchanged in kind but weaker in degree:** a new rung in that file
+risks up to 16% on unrelated rows. ⚠️ At 1.48x that trade was clearly bad; **at 2.39x on a shape every
+filtered write takes, it is no longer obvious** — which is a decision for its own item with an A/B on the
+rows that file serves, exactly as item 2180 said.
+
+GATES. `bun run fmt` 0, `bun run check` 0. One probe (four arms); no production change.
