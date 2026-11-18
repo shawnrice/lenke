@@ -109,31 +109,128 @@ console.log(
   `${NODES} vertices, ${edges} edges, ${targets.size} distinct targets, ${branching} branching\n`,
 );
 
-type Shape = { family: string; name: string; plan: Plan };
+/**
+ * A shape, and optionally THE HONEST FLOOR FOR IT — ported from the GQL twin (items 2211/2212).
+ *
+ * ⚠️⚠️ **`vs floor` IS THE VERDICT; the neighbour-pair ratios at the bottom are a HINT.** A `floor` is a
+ * hand-rolled arm doing **THE SAME WORK** as the plan, timed the same way. The rules, each paid for:
+ *
+ *   - a FILTERED shape's floor must apply the filter; a SORTED one must sort (item 698 — an unordered
+ *     floor overstates by ~1.9x, and item 2210 withdrew a 3.5x "target" built on one);
+ *   - a COUNT's floor must NOT materialize rows the engine's closed form never builds — a floor doing
+ *     MORE work than the query understates the gap and hides a real one;
+ *   - ⚠️ a floor may not use a cheaper row ORDER than the engine may: the far-driven walk reorders ties
+ *     and tie order is observable between the engines (item 605).
+ *
+ * 🔑 A shape with no floor prints `-` and is EXPLICITLY UNPRICED, rather than implicitly compared against
+ * whichever neighbour happens to sit beside it — which is how items 2206 and 2208-2210 went wrong.
+ */
+type Shape = {
+  family: string;
+  name: string;
+  plan: Plan;
+  floor?: { label: string; run: () => unknown };
+};
 
 const V_ = () => V();
+/* --- hand-rolled floors (item 2213): each does THE SAME WORK as its plan --------------------- */
+
+/** Walk `(User)-[:E]->`, counting; `want` keeps only far nodes whose `team` matches. */
+const hopCount = (want?: string): number => {
+  let n = 0;
+
+  for (const a of g.verticesByLabel.get('User') ?? []) {
+    for (const e of g.edgesFromByLabel.get(a.id)?.get('E') ?? []) {
+      if (want === undefined || e.to.properties.team === want) {
+        n += 1;
+      }
+    }
+  }
+
+  return n;
+};
+
+/** Two hops, counting; `want` filters the FAR node, `mid` filters the middle one. */
+const hop2Count = (want?: string, mid?: string): number => {
+  let n = 0;
+
+  for (const a of g.verticesByLabel.get('User') ?? []) {
+    for (const e1 of g.edgesFromByLabel.get(a.id)?.get('E') ?? []) {
+      if (mid !== undefined && e1.to.properties.team !== mid) {
+        continue;
+      }
+
+      for (const e2 of g.edgesFromByLabel.get(e1.to.id)?.get('E') ?? []) {
+        if (want === undefined || e2.to.properties.team === want) {
+          n += 1;
+        }
+      }
+    }
+  }
+
+  return n;
+};
+
+/** Every one-hop far node's `n`, materialized — the work a `values('n')` must do. */
+const hopValues = (want?: string): unknown[] => {
+  /* ⚠️ NOT `out` — that is the imported `out()` STEP, and shadowing it trips `no-shadow`. */
+  const vals: unknown[] = [];
+
+  for (const a of g.verticesByLabel.get('User') ?? []) {
+    for (const e of g.edgesFromByLabel.get(a.id)?.get('E') ?? []) {
+      if (want === undefined || e.to.properties.team === want) {
+        vals.push(e.to.properties.n);
+      }
+    }
+  }
+
+  return vals;
+};
+
+/** Distinct far-node ids reached in one hop — the work a `dedupe().count()` must do. */
+const hopDedupeCount = (): number => {
+  const seen = new Set<string>();
+
+  for (const a of g.verticesByLabel.get('User') ?? []) {
+    for (const e of g.edgesFromByLabel.get(a.id)?.get('E') ?? []) {
+      seen.add(e.to.id);
+    }
+  }
+
+  return seen.size;
+};
+
 const shapes: Shape[] = [
   // --- counts: the family items 1602/1612 closed, kept as the CONTROL that cliffs are gone -------
-  { family: 'count', name: 'hop', plan: traversal(V_(), hasLabel('User'), out('E'), count()) },
+  {
+    family: 'count',
+    name: 'hop',
+    plan: traversal(V_(), hasLabel('User'), out('E'), count()),
+    floor: { label: 'walk + count', run: () => hopCount() },
+  },
   {
     family: 'count',
     name: 'hop + far has',
     plan: traversal(V_(), hasLabel('User'), out('E'), has('team', eq('t1')), count()),
+    floor: { label: 'walk + count, filtered', run: () => hopCount('t1') },
   },
   {
     family: 'count',
     name: 'hop hop',
     plan: traversal(V_(), hasLabel('User'), out('E'), out('E'), count()),
+    floor: { label: 'two-hop + count', run: () => hop2Count() },
   },
   {
     family: 'count',
     name: 'hop hop + trailing has',
     plan: traversal(V_(), hasLabel('User'), out('E'), out('E'), has('team', eq('t1')), count()),
+    floor: { label: 'two-hop + count, far filter', run: () => hop2Count('t1') },
   },
   {
     family: 'count',
     name: 'hop + mid has + hop',
     plan: traversal(V_(), hasLabel('User'), out('E'), has('team', eq('t1')), out('E'), count()),
+    floor: { label: 'two-hop + count, mid filter', run: () => hop2Count(undefined, 't1') },
   },
 
   // --- values: the family this item is looking at ------------------------------------------------
@@ -141,11 +238,13 @@ const shapes: Shape[] = [
     family: 'values',
     name: 'hop values',
     plan: traversal(V_(), hasLabel('User'), out('E'), values('n')),
+    floor: { label: 'walk + materialize n', run: () => hopValues() },
   },
   {
     family: 'values',
     name: 'hop + far has, values',
     plan: traversal(V_(), hasLabel('User'), out('E'), has('team', eq('t1')), values('n')),
+    floor: { label: 'walk + materialize n, filtered', run: () => hopValues('t1') },
   },
   {
     family: 'values',
@@ -174,6 +273,7 @@ const shapes: Shape[] = [
     family: 'other',
     name: 'hop dedupe count',
     plan: traversal(V_(), hasLabel('User'), out('E'), dedupe(), count()),
+    floor: { label: 'walk + Set of ids', run: hopDedupeCount },
   },
   {
     family: 'other',
@@ -197,8 +297,23 @@ const shapes: Shape[] = [
 
 const picked = FAMILY === 'all' ? shapes : shapes.filter((s) => s.family === FAMILY);
 
+/** Min-of-REPS for a hand-rolled floor, timed exactly as the plan is. */
+const floorNs = (run: () => unknown): number => {
+  for (let i = 0; i < 5; i += 1) {
+    run();
+  }
+
+  const t0 = performance.now();
+
+  for (let i = 0; i < REPS; i += 1) {
+    run();
+  }
+
+  return ((performance.now() - t0) * 1e6) / REPS;
+};
+
 console.log(
-  `${'family'.padEnd(7)} ${'shape'.padEnd(32)} ${'rung'.padEnd(8)} ${'ns/op'.padStart(10)}  rows`,
+  `${'family'.padEnd(7)} ${'shape'.padEnd(32)} ${'rung'.padEnd(8)} ${'ns/op'.padStart(10)} ${'floor'.padStart(10)} ${'vs floor'.padStart(9)}  rows`,
 );
 
 const timings = new Map<string, number>();
@@ -258,8 +373,14 @@ for (const s of picked) {
 
   timings.set(`${s.family}/${s.name}`, ns);
   rungs.set(`${s.family}/${s.name}`, rung);
+
+  const fl = s.floor === undefined ? undefined : floorNs(s.floor.run);
+  /* ⚠️ AND AN ABSOLUTE SIZE (item 2212): a big ratio between two trivial numbers is arithmetic. */
+  const over =
+    fl === undefined ? '' : `${(ns / fl).toFixed(2)}x${ns / fl > 2 && ns > 50_000 ? ' <--' : ''}`;
+
   console.log(
-    `${s.family.padEnd(7)} ${s.name.padEnd(32)} ${rung.padEnd(8)} ${ns.toFixed(0).padStart(10)}  ${rows}`,
+    `${s.family.padEnd(7)} ${s.name.padEnd(32)} ${rung.padEnd(8)} ${ns.toFixed(0).padStart(10)} ${(fl === undefined ? '-' : fl.toFixed(0)).padStart(10)} ${over.padStart(9)}  ${rows}`,
   );
 }
 

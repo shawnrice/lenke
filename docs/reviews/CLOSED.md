@@ -110802,3 +110802,44 @@ roughly where this repo's "~10% of something real" rule starts to mean anything.
 
 GATES. `bun run fmt` 0, `bun run check` 0 (two lint fixes on the way: an unused helper when a floor failed to
 attach, and `prefer-destructuring`). Instrument only; no engine change.
+
+## Item 2213 — ✅ **BOTH CLIFF FINDERS ARE NOW FLOORED, AND EVERY FLOORED GREMLIN SHAPE SHOWS THE ENGINE WINNING: 0.00x-0.39x of a hand-rolled walk. Item 2206's "149x suspect" is 91x FASTER than hand-rolled**
+
+The floor column (items 2211/2212) is ported to `gremlin-cliff-finder.ts`, whose families had never been
+floored at all — which is precisely why item 2206 spent a tick on three non-defects there.
+
+```text
+    family  shape                            rung        ns/op      floor  vs floor    rows
+    count   hop                              CLOSED       6308     642620     0.01x       1
+    count   hop + far has                    CLOSED     370360    4774168     0.08x       1
+    count   hop hop                          CLOSED       3401   13137316     0.00x       1
+    count   hop hop + trailing has           CLOSED     437923   40031282     0.01x       1
+    count   hop + mid has + hop              CLOSED     225398    7217509     0.03x       1
+    values  hop values                       CLOSED    1080174    2805418     0.39x   79996
+    values  hop + far has, values            CLOSED     273684    5360720     0.05x    1600
+    other   hop dedupe count                 CLOSED     158165    4946834     0.03x       1
+```
+
+🔑🔑 **ZERO FLAGS, and not marginally**: the closed-form counts are **90x to 3,800x faster** than walking by
+hand, and even the row-returning `values` shape is 2.5x faster. ⚠️ `count/hop hop` at 0.00x is 3,401 ns
+against 13.1 ms — a degree-product closed form against a real 320,000-path walk.
+
+### 🔑 AND IT CLOSES ITEM 2206 PROPERLY
+
+Item 2206's three "SUSPECTS" (65x, 72x, **149x**) were ratios against O(1) neighbours. The floor column
+answers what they actually cost: `count/hop hop + trailing has` is **0.01x of its honest floor — 91x FASTER
+than a hand-rolled two-hop filtered count.** A tick was spent on that row; this column would have closed it
+in one run, which is the same verdict item 2211 reached for the GQL side.
+
+### ⚠️ THREE MECHANICAL FAILURES ON THE WAY, ALL CAUGHT BY A GATE
+
+1. **A regex insertion that assumed one layout.** The shapes array mixes single-line and multi-line objects;
+   inserting after `plan: …` put the floor AFTER the closing brace on every single-line shape, and the file
+   stopped parsing. Fixed by finding each object's BALANCED braces and rewriting it whole.
+2. **`no-shadow`**: my `hopValues` helper named its accumulator `out`, which is the imported `out()` STEP.
+3. **`prefer-destructuring`** on the GQL twin's tally helper (item 2212).
+
+🔑 None of these would have been caught by a timing run — and the first produced a file that could not even
+be parsed, which is the cheap failure mode. **`bun run check` read unpiped is what caught all three.**
+
+GATES. `bun run fmt` 0, `bun run check` 0. Instrument only; no engine change.
