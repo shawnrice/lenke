@@ -113878,3 +113878,51 @@ the sorted order across calls, keyed like the CSR on `topologyVersion`) is the s
 
 GATES. `bun run fmt` 0, `bun run check` 0. New instrument `paging-2275.ts`
 (`ARM=onepass|paged|firstonly|keyset|keysetIdx`, `PAGE=`); no production change.
+
+## Item 2276 — ❌ **THE RESUMABLE SORTED SCAN IS CLOSED ON SOUNDNESS, NOT PERFORMANCE: no clock in this engine can invalidate a sort. `topologyVersion` is blind to property writes — which MY OWN item 2252 measured at 0.00 per write — and there is no property-write counter at all**
+
+Item 2275 priced walking every page at 78-135x one fetch and named the cure: _"a resumable sorted scan
+(hold the sorted order across calls, keyed like the CSR on `topologyVersion`)"_. ⚠️ **That cure is unsound,
+and the evidence is a measurement from four items earlier.**
+
+### ❌ THE PROPOSED KEY CANNOT WORK
+
+```text
+    item 2252's own table      ARM        penalty   writes   tv moved   per write
+                               setprop     -0.31       60        0        0.00    <- FREE
+```
+
+🔑 **A property write does not move `topologyVersion`** — that is exactly why item 2252 found property-only
+updates free, and it is the same fact seen from the other side. **A sort depends on PROPERTY VALUES**, so a
+sort cache keyed on `topologyVersion` would serve a **stale ORDER after any `SET`** — a wrong answer, not a
+performance trade. ⚠️ The CSR caches are sound on that key precisely because **adjacency IS topology**;
+a sort is not.
+
+### ❌ AND NO OTHER CLOCK WORKS EITHER — CHECKED AGAINST THE SOURCE
+
+```text
+    clock                       synchronous?        sees a property write?
+    topologyVersion             yes                 NO (0.00/write, item 2252)
+    version / epoch(name)       NO — drain-based    (unusable regardless)
+    vertexCount / edgeCount     yes                 NO
+    propertyVersion / propVersion / dataVersion / valueVersion   ZERO occurrences — they do not exist
+```
+
+⚠️ `version` and `epoch` advance only on the microtask DRAIN, and **keying a cache on them is already a
+recorded WRONG ANSWER that cost item 1646 its design**. `vertexCount`/`edgeCount` miss a property write and
+also miss a delete-plus-add. 🔑 **So there is no synchronous, property-sensitive invalidation signal in this
+engine, and a sort cache cannot be made correct with the clocks available.**
+
+### ✅ WHY THAT IS THE RIGHT ANSWER AND NOT A LIMITATION TO FIX CASUALLY
+
+Adding a property-write counter would make every `SET` bump a global, which is the cost
+[[write-cost-deferred-checks]] and items 2181/2184 worked to REMOVE from the write path — and item 2252
+measured property writes as currently **free**. **Buying a read optimization by taxing every write is the
+trade the engine has already declined**, in the opposite direction.
+
+**So item 2275's 78-135x stands as a measured, architectural fact about offset and keyset paging, with its
+cure refused on soundness.** ✅ The actionable guidance from it is unchanged and worth repeating: **keyset
+beats offset 1.7x, needs a tiebreak column, and an index makes it worse** — and a caller who needs the
+whole result should fetch it once (1.7 ms) rather than page it (135-229 ms).
+
+GATES. `bun run fmt` 0, `bun run check` 0. No instrument, no production change — a soundness item.
