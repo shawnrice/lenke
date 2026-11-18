@@ -113968,3 +113968,53 @@ interpolation, so it belongs in both places.
 numbers differ and were not measured for this guide.
 
 GATES. `bun run fmt` 0, `bun run check` 0. New guide + one index line; no code change.
+
+## Item 2278 — 🔑🔑 **WRITING A TEST FOR THE GUIDE FOUND A PARSER INCONSISTENCY: `OFFSET $p` is accepted and `SKIP $p` is a SYNTAX ERROR, though they are ISO-GQL SYNONYMS — and the parser's own message says "after SKIP/OFFSET". Two of my six snippets were wrong**
+
+Item 2277's guide was written from measurements, but its code was **typed, not executed**. 🔑 A guide whose
+snippets do not run is worse than none, because a reader trusts it. So every snippet became a TEST —
+`packages/native/src/guide-query-cost.test.ts`, 6 tests, answers asserted rather than "it parses".
+
+### ⚠️ TWO OF SIX FAILED, AND ONE FAILURE WAS THE ENGINE'S, NOT MINE
+
+```text
+    form                                 result
+    SKIP 2 LIMIT 2       (literals)      OK
+    SKIP $s                              FAIL — "Expected a non-negative integer after SKIP/OFFSET, got 's'"
+    LIMIT $n                             OK
+    OFFSET $s                            OK          <-- the SYNONYM of SKIP, and it binds
+    SKIP $s LIMIT $n                     FAIL
+```
+
+🔑🔑 **`SKIP` and `OFFSET` are synonyms in ISO-GQL, and the error message even names both — yet a parameter
+is accepted after one and refused after the other.** ⚠️ That is the _acceptance_ analogue of
+`CLAUDE.md`'s equivalent-spellings rule: not two spellings costing differently, but one spelling parsing and
+its synonym not.
+
+✅ **And it has real consequences, which is why it is not cosmetic.** A paging caller who cannot bind the
+offset must interpolate it — making **every page a distinct query text**, which defeats the parse cache
+item 2271 just enlarged. **Binding it with `OFFSET` is 1.15x cheaper over a full walk:**
+
+```text
+    one query, every row                         1.7 ms
+    keyset (WHERE k > $last)                   170.6
+    offset BOUND (OFFSET $s LIMIT $n)          201.2     <- 1.15x better than the literal form
+    offset LITERAL (SKIP k LIMIT 50)           230.7
+```
+
+### ⚠️ THE OTHER FAILURE WAS MINE, AND IT CORRECTS THE GUIDE TOO
+
+`RETURN p AS p` hands back the **live element**, whose properties sit under `.properties` — my expectation
+read `.surname` directly and got `undefined`. 🔑 That is the same fact item 2256 priced at 4.1x from the
+other side: the flat `{id, labels, properties}` map is what a serializer **builds from** the element, and
+building it is the cost. The guide now says so.
+
+### ✅ WHAT THE GUIDE GAINED
+
+The `OFFSET`-over-`SKIP` rule with its 1.15x, a corrected paging table (keyset 171 / bound 201 / literal
+231), the live-element note, and a line pointing at the test — **so the page cannot drift from the engine**.
+✅ 6 pass, 0 fail. ⚠️ The tie loss keyset suffers is now PINNED by an assertion (`after('Boyd')` skips the
+second `Boyd`), so the guide's tiebreak advice is justified by a failing-if-removed test rather than prose.
+
+GATES. `bun run fmt` 0, `bun run check` 0, `bun test` 6 pass / 0 fail. New test; `paging-2275.ts` gained an
+`offsetParam` arm; guide updated. No engine change.

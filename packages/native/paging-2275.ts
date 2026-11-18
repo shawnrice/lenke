@@ -92,6 +92,19 @@ for (let r = 0; r < REPS; r += 1) {
       got += out.length;
       last = Number(out[out.length - 1]?.k);
     }
+  } else if (ARM === 'offsetParam') {
+    /*
+     * 🔑🔑 **`OFFSET $s LIMIT $n` IS ACCEPTED WHERE `SKIP $s` IS A SYNTAX ERROR (item 2278)** — they are
+     * ISO-GQL synonyms, so that asymmetry is a parser inconsistency, and it matters: with the offset BOUND
+     * the whole walk is ONE query text, so the parse cache serves every page. The literal `SKIP k` form
+     * below makes every page a distinct text, which defeats it by construction.
+     */
+    for (let p = 0; p < PAGES; p += 1) {
+      got += query(g, 'MATCH (n:T) RETURN n.k AS k ORDER BY k OFFSET $s LIMIT $n', {
+        s: p * PAGE,
+        n: PAGE,
+      }).length;
+    }
   } else {
     for (let p = 0; p < PAGES; p += 1) {
       const skip = ARM === 'firstonly' ? 0 : p * PAGE;

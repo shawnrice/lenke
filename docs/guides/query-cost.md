@@ -1,6 +1,7 @@
 # Query cost on the pure-TypeScript graph
 
-Every figure here is measured, on the pure-TS engine, with the probe named beside it. They are the
+Every figure here is measured, on the pure-TS engine, with the probe named beside it. Every snippet runs in
+`packages/native/src/guide-query-cost.test.ts`, so this page cannot drift from the engine. They are the
 differences large enough to change how you write a query — not micro-optimizations.
 
 ## Fetch a whole result once, rather than paging it
@@ -10,11 +11,12 @@ whole thing costs far more than asking for it once.
 
 20,000 rows, pages of 50 (`packages/native/paging-2275.ts`):
 
-| How                              | Total  |
-| -------------------------------- | ------ |
-| One query returning every row    | 1.7 ms |
-| Keyset pages (`WHERE k > $last`) | 136 ms |
-| Offset pages (`SKIP k LIMIT 50`) | 229 ms |
+| How                                           | Total  |
+| --------------------------------------------- | ------ |
+| One query returning every row                 | 1.7 ms |
+| Keyset pages (`WHERE k > $last`)              | 171 ms |
+| Offset pages, bound (`OFFSET $s LIMIT $n`)    | 201 ms |
+| Offset pages, literal (`SKIP 20000 LIMIT 50`) | 231 ms |
 
 If you need the whole result — an export, a recomputation, a sync — ask for it in one query. Paging is for
 when a person is looking at one screenful.
@@ -26,13 +28,19 @@ last key instead removes that entirely: keyset paging costs the same as fetching
 
 ```gql
 -- offset: page 400 counts past 20,000 rows to return 50
-MATCH (p:Person) RETURN p.surname AS s ORDER BY s SKIP 20000 LIMIT 50
+MATCH (p:Person) RETURN p.surname AS s ORDER BY s OFFSET $skip LIMIT $size
 
 -- keyset: resume where the last page stopped
 MATCH (p:Person) WHERE p.surname > $lastSurname RETURN p.surname AS s ORDER BY s LIMIT 50
 ```
 
-Keyset is **1.7x** cheaper over a full walk. Two things to know:
+**Bind the offset with `OFFSET`, not `SKIP`.** They are synonyms in ISO-GQL, but a parameter is accepted
+after `OFFSET` and **rejected after `SKIP`** (`Expected a non-negative integer after SKIP/OFFSET`). That
+matters beyond tidiness: a caller who cannot bind the offset must put it in the query text, which makes
+every page a distinct statement and walks out of the parse cache described below. Binding it is **1.15x**
+cheaper over a full walk.
+
+Keyset is **1.35x** cheaper again. Two things to know:
 
 - **Add a tiebreak column.** A strict `>` on a key with duplicates skips the rows that tie with the last
   one — in the measurement above, 4 rows of 20,000 vanished. Order by the key _and_ something unique
@@ -53,7 +61,9 @@ for does not.
 | `RETURN n AS n`                         | 111 ns  |
 
 So `RETURN n` is **4.1x** a named projection, and a _second_ property is free — the cost is reaching the
-element, not reading its fields (`packages/native/scanfuse-2256.ts`).
+element, not reading its fields (`packages/native/scanfuse-2256.ts`). `RETURN n` also hands back the live
+element, whose properties sit under `n.properties` rather than as direct fields — the flat
+`{id, labels, properties}` map is what a serializer builds from it, and building it is the cost.
 
 ## Updating a property is cheaper than changing the shape
 
