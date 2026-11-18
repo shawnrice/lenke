@@ -113082,7 +113082,7 @@ contract. **Nothing to build; three corrections and a closure.**
 
 GATES. `bun run fmt` 0, `bun run check` 0. No instrument, no production change — a prior-art item.
 
-## Item 2259 — 🔑🔑 **A SORTED HOP COSTS 344 ns/ROW WHERE A SORTED SCAN COSTS 87 AND AN UNSORTED HOP COSTS 23 — so ~230 ns/row is unaccounted for by either term. Screening by ABSOLUTE cost found it; the ratio screens never would**
+## Item 2259 — 🔑🔑 **A SORTED HOP COSTS 344 ns/ROW WHERE AN UNSORTED HOP COSTS 23 (15x, SAME RUNG)** ⚠️ ~~where a sorted SCAN costs 87, so ~230 ns/row is unaccounted for~~ **— the scan comparison is CROSS-RUNG and invalid; corrected at item 2260.** Screening by ABSOLUTE cost found it; the ratio screens never would**
 
 Four threads had closed without a build, each on a diffuse ratio. So this item screened by **absolute** cost
 instead — where this session's actual ships came from (item 2203's 38x, 2194's 12.2x) — and read the
@@ -113135,3 +113135,49 @@ far-driven TEMPLATE FOLD the sorted one does not, so the 23 ns/row baseline may 
 has to be settled before the ~230 ns is called recoverable.
 
 GATES. `bun run fmt` 0, `bun run check` 0. New instrument `sortgap-2259.ts`; no production change.
+
+## Item 2260 — ✅ **THE SORTED HOP IS NOT DECLINED: it reaches the SAME `hopProjection` rung as the unsorted one, so the 15x is MORE WORK INSIDE one route. ⚠️ And that invalidates part of item 2259's own arithmetic — its 87-vs-344 comparison was CROSS-RUNG**
+
+Item 2259 left ~230 ns/row "unaccounted for". 🔑 [[rung-precedence-decides-speed]]'s rule is that **timing
+cannot distinguish "declined" from "more work"**, so the route was read rather than inferred, using
+`gql-cliff-finder.ts`'s reader (`parse(src).parts[0]` → `compileLinear` → the non-null, non-boolean fields):
+
+```text
+    shape                      fired rungs
+    project (23 ns/row)        clauses, hopProjection
+    project+order (344)        clauses, hopProjection      <- IDENTICAL
+    project+order k (197)      clauses, hopProjection      <- IDENTICAL
+    project+order+limit        clauses, hopProjection
+    scan+order (87)            clauses, nodeProjection     <- a DIFFERENT rung
+    scan (control)             clauses, nodeProjection
+
+    ORDER BY REMOVES: (nothing)      ORDER BY ADDS: (nothing)
+```
+
+### ✅ SO IT IS NOT A ROUTE DEFECT
+
+Adding `ORDER BY` changes the fired-rung SET not at all. **The sorted hop is answered by the same
+`hopProjection` rung as the unsorted one**, so the 15x (23 → 344 ns/row) is extra work _within_ one route,
+not a starved or declined rung. ⚠️ That rules out the shape of defect `CLAUDE.md`'s spelling section is
+about, and it rules in item 1965/1966's already-measured term — _"the deferred arm's KEY EVALUATION — 67%
+by ablation."_
+
+### ⚠️⚠️ AND IT CORRECTS ITEM 2259's DECOMPOSITION
+
+2259 subtracted a **sorted scan (87 ns/row)** from a **sorted hop (344)** and called the remainder
+unexplained. 🔑 **Those are different rungs** — `nodeProjection` and `hopProjection` — doing different work:
+one walks edges, the other does not. **A cross-rung subtraction is not a decomposition**, and the "~230
+ns/row unaccounted" figure is withdrawn (heading struck above).
+
+✅ **What survives is the same-rung comparison, and it is the sound one**: within `hopProjection`, a bare-prop
+string `ORDER BY` costs **15x** the unsorted projection, and a **numeric** key costs 197 against the string's
+344 — so **~147 ns/row is a pure key-TYPE effect at a fixed route**, which is a cleaner question than the
+withdrawn one.
+
+🔑 Two reasons this is a thin target despite the 15x: item 1965 measured the top-k heap as _firing and
+cheap_ (`compareValues` 146 ms of ~2,670), and its `LIMIT 10` on an alias key buys **~5%** — which my
+`project+order+limit` arm confirms reaches the same rung. **So the sort is not the mass, the route is not
+wrong, and the remaining term is one item 1966 already priced by ablation.**
+
+GATES. `bun run fmt` 0, `bun run check` 0. New instrument `sortroute-2260.ts` (route reader; carries the same
+`boundaries/no-cross-package-relative-import` disables the cliff finder does, for the same reason).
