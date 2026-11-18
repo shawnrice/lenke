@@ -97,28 +97,34 @@ A session over 512 distinct texts pays roughly **4x** per statement against a ca
 (`packages/native/stmtcache-2269.ts`). Parameters also keep values out of query text, which the
 `no-raw-interpolation` lint asks for on its own grounds.
 
-## A filter on the far end of a hop leaves the closed-form count
+## Any predicate on a hop count leaves the closed form
 
-Counting a hop without looking at the far vertex does not have to touch an edge at all — the engine answers
-it from degree bookkeeping. Add a condition on the far end and it must walk:
+Counting a hop without a predicate does not have to touch an edge at all — the engine answers it from degree
+bookkeeping. **Adding any predicate gives that up**, and the clearest evidence is `WHERE true`, which cannot
+change the answer and still costs 175x:
 
 ```gql
 -- answered from bookkeeping
 MATCH (p:Person)-[:WORKS_WITH]->(q:Person) RETURN count(*) AS c
 
--- must visit every edge and look at every far vertex
+-- SAME ANSWER, and it walks every edge
+MATCH (p:Person)-[:WORKS_WITH]->(q:Person) WHERE true RETURN count(*) AS c
+
+-- walks every edge and reads every far vertex
 MATCH (p:Person)-[:WORKS_WITH]->(q:Person) WHERE q.team = $t RETURN count(*) AS c
 ```
 
-| Query                     | 60k vertices, 3 edges each |
-| ------------------------- | -------------------------- |
-| hop count, unfiltered     | **0.00 ms**                |
-| hop count, far-end filter | **4.6 ms**                 |
+| Query                      | 60k vertices, 3 edges each | rows    |
+| -------------------------- | -------------------------- | ------- |
+| hop count, no predicate    | **0.01 ms**                | 180,000 |
+| hop count, `WHERE true`    | **1.75 ms**                | 180,000 |
+| hop count, near-end filter | **1.20 ms**                | 45,000  |
+| hop count, far-end filter  | **2.37 ms**                | 44,962  |
 
-This is not a defect — the second question genuinely needs the walk — but the step between them is a cliff
-rather than a slope, so it is worth knowing before adding a casual `WHERE` on the far end. If you need both
-numbers, ask for the unfiltered count separately rather than assuming the filtered one is nearly as cheap
-(`packages/native/shapecost-2283.mjs`).
+So most of the cost is **having** a predicate, not what the predicate reads: `WHERE true` already pays 1.75
+of the 2.37 ms. This is not a defect — a filtered count genuinely needs the walk — but the step is a cliff
+rather than a slope, so if you want a plain total, ask for it without a predicate rather than filtering on a
+condition that keeps everything (`packages/native/farfilter-2286.mjs`, one shape per process).
 
 ## Hoist a Gremlin traversal out of the request path
 

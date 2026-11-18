@@ -149,6 +149,19 @@ describe('docs/guides/query-cost.md snippets', () => {
     /* p1 is platform (odd index), p2 is core — so the filter keeps exactly one of the two edges. */
     expect(all).toBe(2);
     expect(filtered).toBe(1);
+
+    /*
+     * ⚠️⚠️ **`WHERE true` IS THE GUIDE'S EVIDENCE, SO IT IS PINNED HERE**: it cannot change the answer,
+     * and the guide's point is that it still costs 175x because ANY predicate leaves the closed-form
+     * count. If this ever stops returning the unfiltered answer, the rule's premise is gone.
+     */
+    const vacuous = query(
+      g,
+      'MATCH (p:Person)-[:WORKS_WITH]->(q:Person) WHERE true RETURN count(*) AS c',
+      {},
+    )[0]?.c;
+
+    expect(vacuous).toBe(all);
   });
 
   test('the hoisted Gremlin traversal runs and counts', () => {

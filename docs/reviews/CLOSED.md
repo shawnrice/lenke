@@ -114329,3 +114329,48 @@ is why 2284's artifact was so easy to believe.
 
 GATES. `bun run fmt` 0, `bun run check` 0, source restored (`grep -c PROBE2285` = 0 in src and dist), clean
 `nx build @lenke/gql`. One sweep probe; no production change; item 2284's heading corrected.
+
+## Item 2286 — ✅ **THE GUIDE'S PUBLISHED CLAIM CAME FROM THE DEFECTIVE HARNESS AND SURVIVED RE-MEASUREMENT — but the rule it states was WRONG, and `WHERE true` is the better evidence: SAME ANSWER, 175x the cost.** ⚠️ My own audit script had the bug class it was auditing for
+
+Item 2285 showed a nine-shape process can erase a real 2.17x. 🔑 **The same mechanism can manufacture a
+gap — and one was already published**: item 2283 timed nine shapes in one process and put two of them in
+`docs/guides/query-cost.md` as a rule a reader would act on. So it was re-measured **one shape per
+process**, which item 2285 leaves as the only trustworthy configuration.
+
+```text
+    SHAPE=unfiltered   0.01 ms   answer=180000
+    SHAPE=vacuous      1.75 ms   answer=180000     <- WHERE true: IDENTICAL answer, 175x
+    SHAPE=nearfilter   1.20 ms   answer=45000
+    SHAPE=farfilter    2.37 ms   answer=44962      <- published as 4.6; the 9-shape process INFLATED it ~2x
+```
+
+✅ **The cliff is real** (0.01 → 2.37). ⚠️ **But the rule was wrong.** I wrote it as "a filter on the far
+end leaves the closed-form count", implying the far-vertex read is the cost. `WHERE true` — which cannot
+change the answer — already pays **1.75 of the 2.37 ms**, so most of the cost is _having a predicate at
+all_. 🔑 The near-end filter is CHEAPER than the vacuous one (1.20), because fewer rows survive to be
+counted. **My memory already names `WHERE true` as THE control for "why is the filtered version slower";
+I did not use it until the claim had been published.**
+
+The guide now states the correct rule, carries all four rows with their row counts, cites the isolated
+probe, and its test pins `WHERE true`'s answer — so the premise cannot rot even if the cost changes.
+
+### ⚠️ THE AUDIT INSTRUMENT HAD THE BUG IT WAS LOOKING FOR
+
+A census of this session's probes classified `shapecost-2283.mjs` and the KNOWN-BAD `sortshare-2284.mjs`
+as "env-selected", i.e. **safe** — because the arm-selector pattern `ROUND` matched `process.env.ROUNDS`.
+🔑 An audit that clears the very file which motivated it is worse than no audit. Fixed by matching only
+real arm selectors (`SHAPE|ARM|ONLY`) and de-duplicating overlapping globs:
+
+```text
+    !!  mixprof-2283.mjs      5 shapes in one process   -> NOT a defect: a PROFILING driver, mixing is its purpose
+    !!  shapecost-2283.mjs    6 shapes in one process   -> REAL; its per-shape table is suspect in magnitude
+    !!  sortroute-2284.ts     7 shapes in one process   -> NOT a defect: prints ROUTES, times nothing
+    !!  sortshare-2284.mjs    4 shapes in one process   -> REAL, already corrected at item 2285
+```
+
+✅ **Two genuine defects in fifteen probes, both already corrected.** ⚠️ `shapecost-2283`'s ranking stays
+suspect in magnitude, but its qualitative finding is robust: 0.00 against 10.71 ms is not a process
+artifact, and the two closed-form routes really are ~0.
+
+GATES. `bun run fmt` 0, `bun run check` 0, guide suite **7 pass / 0 fail, 18 assertions**. One isolated
+probe; guide rule corrected; no production change.
