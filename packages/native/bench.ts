@@ -1508,6 +1508,23 @@ const CASES: Case[] = [
      * is a near-full sort BECAUSE IT MUST BE. The row exists to catch a regression in that routing, not
      * because a win is expected.
      */
+    /*
+     * 🔑 `ANY SHORTEST`, the last of item 2145's five unbenched features. Item 2149 took it 1.32x at
+     * depth 12 by walking the typed adjacency bucket directly in the BFS instead of through `expand`'s
+     * `{ edge, node }` generator — the saving is the WRAPPER OBJECT, not the lookup, which `expand`
+     * already did the same way.
+     */
+    name: 'query: ANY SHORTEST 1-6 hops [item 2149]',
+    ...onGraph(
+      () => optionalDoc,
+      (e, g) =>
+        void e.query(
+          g,
+          'MATCH ANY SHORTEST (a:Person)-[:KNOWS]->{1,6}(b:Person) WHERE a.k = 1 RETURN count(*) AS c',
+        ),
+    ),
+  },
+  {
     name: 'query: ORDER BY + deep SKIP [item 2148]',
     ...onGraph(
       () => optionalDoc,

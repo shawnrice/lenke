@@ -14,6 +14,7 @@ import type {
   RelPattern,
   Segment,
 } from '../ast.js';
+import type { Step } from '../graph-queries.js';
 import {
   bothBuckets,
   candidateCount,
@@ -848,6 +849,24 @@ export const edgePasses = (
  * — the mirror of native's ascending dense-vertex-id order. `q.max` bounds the
  * BFS depth; `q.min ≤ 1` is guaranteed by the parser.
  */
+/**
+ * The typed adjacency bucket a BFS can walk DIRECTLY, or `undefined` when `expand` must run (item 2149).
+ *
+ * 🔑 The conditions are exactly `expand`'s own fast branch — a single-direction, `label`-kind
+ * relationship — so a shape this declines is one that was already taking the generator. ⚠️ Used by BOTH
+ * BFS walks (`ANY SHORTEST` and the all-predecessors variant behind `ALL SHORTEST`), which is why the
+ * tests exercise each selector.
+ */
+const bfsBucket = (v: Vertex, rel: CRel): Iterable<Edge> | undefined => {
+  const { label } = rel;
+
+  if (rel.direction === 'both' || label?.kind !== 'label') {
+    return undefined;
+  }
+
+  return (rel.direction === 'out' ? v.adjFrom : v.adjTo)?.get(label.name);
+};
+
 export const shortestWalk = function* (
   graph: Graph,
   pattern: CPath,
@@ -889,7 +908,36 @@ export const shortestWalk = function* (
       continue; // don't expand past the hop ceiling
     }
 
-    for (const { edge, node: nbr } of expand(graph, v, rel)) {
+    /*
+     * ITEM-2149-BFS-BUCKET: the typed bucket read DIRECTLY, with no `{ edge, node }` wrapper per edge.
+     *
+     * 🔑 `expand` already reads this exact bucket (`(fwd ? v.adjFrom : v.adjTo)?.get(label.name)`), so
+     * the saving is NOT a better adjacency lookup — it is the **object it yields**. A profile of
+     * `ANY SHORTEST …{1,10}` put `expand` at **38.0% self** with the garbage collector at 2.9% beside
+     * it, against `flatAdj`'s 17.3% on the all-paths arm, which walks a flat array instead.
+     *
+     * ⚠️ `bucket` is `undefined` for every shape `expand`'s fast branch declines (`direction: 'both'`,
+     * a non-`label` relationship kind, a vertex with no edge of that type) and the generator runs as
+     * before — so this adds a route, it does not replace one.
+     */
+    const bucket = bfsBucket(v, rel);
+
+    for (const step of bucket ?? expand(graph, v, rel)) {
+      /*
+       * ⚠️ A PLAIN `if`, NOT a ternary pair: the generator hands over a `{ edge, node }` while the direct
+       * bucket hands over the `Edge` alone, so the neighbour has to be DERIVED from the direction. 🔑
+       * Nothing is allocated on either arm, which is the whole point of the route.
+       */
+      let edge: Edge;
+      let nbr: Vertex;
+
+      if (bucket === undefined) {
+        ({ edge, node: nbr } = step as Step);
+      } else {
+        edge = step as Edge;
+        nbr = rel.direction === 'out' ? edge.to : edge.from;
+      }
+
       if (!edgePasses(rel, edge, binding, params, graph)) {
         continue; // filtered BFS: only expand over predicate-passing edges
       }
@@ -1013,7 +1061,36 @@ export const allShortestWalk = function* (
       continue;
     }
 
-    for (const { edge, node: nbr } of expand(graph, v, rel)) {
+    /*
+     * ITEM-2149-BFS-BUCKET: the typed bucket read DIRECTLY, with no `{ edge, node }` wrapper per edge.
+     *
+     * 🔑 `expand` already reads this exact bucket (`(fwd ? v.adjFrom : v.adjTo)?.get(label.name)`), so
+     * the saving is NOT a better adjacency lookup — it is the **object it yields**. A profile of
+     * `ANY SHORTEST …{1,10}` put `expand` at **38.0% self** with the garbage collector at 2.9% beside
+     * it, against `flatAdj`'s 17.3% on the all-paths arm, which walks a flat array instead.
+     *
+     * ⚠️ `bucket` is `undefined` for every shape `expand`'s fast branch declines (`direction: 'both'`,
+     * a non-`label` relationship kind, a vertex with no edge of that type) and the generator runs as
+     * before — so this adds a route, it does not replace one.
+     */
+    const bucket = bfsBucket(v, rel);
+
+    for (const step of bucket ?? expand(graph, v, rel)) {
+      /*
+       * ⚠️ A PLAIN `if`, NOT a ternary pair: the generator hands over a `{ edge, node }` while the direct
+       * bucket hands over the `Edge` alone, so the neighbour has to be DERIVED from the direction. 🔑
+       * Nothing is allocated on either arm, which is the whole point of the route.
+       */
+      let edge: Edge;
+      let nbr: Vertex;
+
+      if (bucket === undefined) {
+        ({ edge, node: nbr } = step as Step);
+      } else {
+        edge = step as Edge;
+        nbr = rel.direction === 'out' ? edge.to : edge.from;
+      }
+
       if (!edgePasses(rel, edge, binding, params, graph)) {
         continue; // filtered BFS: only expand over predicate-passing edges
       }

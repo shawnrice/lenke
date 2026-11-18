@@ -107191,3 +107191,81 @@ all-rows scan plus an unavoidable top-k — the engine's 23.05 is ordinary.
 regress; no win is expected there.
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped.
+
+## Item 2149 — ✅✅ **SHIPPED: the shortest-path BFS walks the typed adjacency bucket DIRECTLY — 1.32x at depth 12, and 1.29x on the INCOMING direction. The saving is the WRAPPER OBJECT, not the lookup**
+
+The last of item 2145's five unbenched features. ⚠️ **AND THE FIRST MEASUREMENT WAS A CONFOUND I BUILT
+MYSELF**: `ANY SHORTEST` read 34.28 ms in that screen, which was the **unindexed 200,000-row seed scan**.
+With the seed indexed every depth-4 reading is sub-millisecond.
+
+### ⚠️⚠️ THE SECOND CONFOUND WAS THE RATIO, AND MY OWN RULE CAUGHT IT
+
+```text
+    depth   ANY SHORTEST     ALL paths        ratio
+    1-4     0.17 (120)       0.02 (120)       7.07x   <- sub-millisecond, MEANINGLESS
+    1-6     0.67 (1083)      0.86 (1092)      0.78x
+    1-8     6.31 (9527)      5.60 (9836)      1.13x
+    1-10   70.74 (64668)    69.13 (88531)     1.02x
+    1-12  312.99 (188165)  620.14 (796746)    0.50x
+```
+
+🔑 The 7.07x "selector overhead" **inverts at every measurable depth** — the selector works and halves the
+work at depth 12. ⚠️ `uncovered-shapes-2145.mjs` already carries the rule that caught this ("two
+sub-millisecond readings divide into nonsense"); the fix was to scale the work until both arms exceeded
+5 ms.
+
+### 🔑 SO THE TARGET WAS THE ABSOLUTE COST, AND A PROFILE NAMED IT
+
+```text
+    ANY SHORTEST {1,10}          ALL paths {1,10}
+    shortestWalk     38.7%       trailEnds      30.4%
+    expand           38.0%       flatAdj        17.3%
+    (gc)              2.9%       walkSegments   13.3%
+```
+
+⚠️⚠️ **`expand` ALREADY READS THE SAME BUCKET** (`(fwd ? v.adjFrom : v.adjTo)?.get(label.name)`) — so this
+is NOT a better-lookup change, and reading it that way would have been the seventh refuted mechanism guess
+of this session. 🔑 What `expand` also does is **yield a `{ edge, node }` wrapper per edge**, where the
+all-paths arm's `flatAdj` walks a flat array. The BFS now reads the bucket itself and derives the
+neighbour from the direction.
+
+```text
+    row                        BEFORE     NEW
+    depth 12                    294.1    218.0    1.32x
+    depth 10, INCOMING           75.8     59.3    1.29x
+    depth 8                       5.3      4.4    1.25x
+    depth 10, out                65.3     56.0    1.17x
+    both-direction [declines]   110.8    112.3    0.95x   <- the cost, stated
+    all-paths [control]          70.5     71.5    flat
+```
+
+🔑 **The INCOMING direction wins most**, which fits `adjTo` being the dear adjacency (item 2139). ⚠️ **The
+declining both-direction shape pays ~4%** for the extra gate call per queue vertex — `executor-edits-perturb`
+prices this class at up to 16%, so 4% against four rows at 1.17-1.32x is the trade, and it is a cost, not a
+rounding error.
+
+### ⚠️ TWO ROUTED SITES, NOT ONE — THE ASSERT IS WHAT FOUND THE SECOND
+
+The same loop appears in `shortestWalk` AND in the all-predecessors variant behind `ALL SHORTEST`. 🔑 A
+`count == 1` assertion failed with 2, which is the only reason the second was not left unrouted and
+untested; `ambiguous-anchor-strings` is the memory that put that assert there. Both are routed and both
+selectors are tested.
+
+**13 tests**, including the two things that cannot be assumed: the **INCOMING** branch (`edge.from`, where a
+route that always took `edge.to` would answer every OUT query correctly and walk BACKWARDS for every IN
+one — pinned by two directions giving different answers on the same vertex) and **`ALL SHORTEST`**, the
+second site. Plus the seed cycle bracketed at its ceiling, the three declines, and an edge predicate.
+**6/7 mutants CAUGHT** — both direction branches, both gates, the `adjFrom`/`adjTo` swap, the label read —
+with one named survivor (`route-disabled`, answer-equivalent).
+
+⚠️ **AND MY TEST LITERALS WERE WRONG A THIRD TIME** (2133, 2146, now 2149): four expectations omitted the
+seed itself, which the back edge makes reachable at 2 hops. 🔑 The fix was to print the engine's answers and
+DERIVE each one in a comment beside it — and the seed-cycle test is now stronger for it, asserting the
+cycle rather than denying it.
+
+🔑 An `ANY SHORTEST` bench row was added. ⚠️ It reads **18.21x behind native**, the largest gap in this
+session — but that fixture's seed is UNINDEXED, which is exactly the confound this item opened with, so
+**price the seed before reading that row as a finding.**
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 5,217 GQL
+tests; `bun run fuzz` all seven green.
