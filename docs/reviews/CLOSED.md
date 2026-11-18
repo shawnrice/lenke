@@ -107755,3 +107755,46 @@ and skips the array — that is the lever, priced at up to 3.5x and not yet buil
 the next item's work is guarded before it starts, as item 2145's rows guarded 2146's within one cycle.
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; 5,266 tests green. No engine change this item.
+
+## Item 2158 — ⚠️⚠️ **FAILED BUILD: I edited a detector this query never reaches, and I had written the rule that prevents it TWO ITEMS EARLIER. Three concrete facts for the next attempt, and one process failure**
+
+Item 2157 pinned `sum()` over a hop at **38.32x** with the mechanism identified. This item tried to build
+the fix and did not land it.
+
+### ⚠️⚠️ THE PROCESS FAILURE, FIRST, BECAUSE IT IS THE ITEM'S MAIN COST
+
+Item 2150 ends with: _"before editing a line a profile pointed you at, put a `throw` in it. A flat A/B
+looks identical to 'the mechanism is refuted' and to 'this code never ran', and only the throw separates
+them."_ 🔑 **I wrote that, and then here I built `SUM_FOLD`, wired it into `hopSingleAcc`, ran the tests
+green, measured 107.18 ms against the recorded 108-110 — and only THEN put in the throw.** ⚠️ It reported
+`did NOT reach my detector` for all four shapes, **including `max(b.k)`, which I know folds today.** So the
+function I edited is not on any of these paths and never was.
+
+🔑 The throw costs one build and one run. Running it FIRST would have cost ~5k tokens and saved most of an
+item. **Put the throw in before the edit, not after the measurement disappoints.**
+
+### 🔑 THREE FACTS THE NEXT ATTEMPT SHOULD START FROM
+
+1. ⚠️ **A FOLD DOES NOT SAVE THE ROW MATERIALIZATION — item 2157's record is corrected here.** Both
+   accumulator kinds call `walk(graph, params)`, which returns a `Row[]` either way. 🔑 What `kind: 'fold'`
+   saves against `kind: 'values'` is the SECOND array plus `aggregateOverValues`' **three further passes**
+   over it (`some(isTemporal)`, `some(Array.isArray)`, `reduce`). That is still the measured 3.6x between
+   `sum` and `max`, but it is a smaller ceiling than "skip 300,000 Row allocations" implied.
+2. ⚠️ **`hopSingleAcc` (hop-projection.ts ~6655) is NOT the path**, proven by throw. The two live
+   `aggregateOverValues` call sites in that file are **6589** (the percentile/single arm) and **6957** (the
+   multi-aggregate accumulator loop). Start the throw there.
+3. 🔑🔑 **`orderSensitive` AND `kind: 'fold'` ARE COUPLED IN THE EXISTING CODE and must be separated.**
+   Every current `fold` return sets `orderSensitive: false`, which feeds `forceStartDriven`. ⚠️ Folding
+   `sum` naively would therefore let the planner pick the FAR-DRIVEN walk, which REORDERS rows — and float
+   addition is not associative, so that changes the last ulp and breaks byte-identity with the Rust engine.
+   **A `sum` fold must set `orderSensitive: true`.** The two properties are independent; the code does not
+   say so.
+4. ⚠️ And the temporal branch needs a bail-out, not just an addition: `aggregateOverValues` routes a column
+   containing ANY temporal to `temporalSum`, which needs every value in hand — a look-ahead a streaming
+   fold cannot do. A private sentinel thrown from `step`, caught by the caller, re-running the collecting
+   path, is the shape that preserves it. (`isNullish` is already filtered by the caller before either
+   branch, so the fold needs no null handling.)
+
+🔑 Reverted; tree clean. The finding and its bench rows from item 2157 stand unchanged.
+
+GATES. Tree reverted to pristine; `bun run check` 0; 5,266 tests green.
