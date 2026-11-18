@@ -116202,3 +116202,53 @@ repeat-index split), so it is not the degenerate functional graph that class of 
 
 GATES. As listed. **Three convertible spreads remain**, each with the materialized-source test applied and
 a sibling rung available as its control.
+
+## Item 2322 — 🚀 **SHIPPED, 2.34x on `V().where(out(E)).values(k)` and 1.49x on `.values(k).dedupe()`, completing the generator-spread sweep across `graph.vertices`. The arm→rung mapping was left EMPIRICAL, and that is what caught my own misreading: `.tail(n)` was never on a spread**
+
+Items 2319/2320/2321 took three of these (2.83x / 3.86x / 3.47x) and item 2321 established the test for
+which can win: **only a spread whose source is MATERIALIZED.** Three remained over `graph.vertices`.
+
+```text
+    arm                       PRE               POST (two rounds)        gain
+    where(out(E)) + values  645.55  32.28 ns   281.50  270.64  13.5 ns   2.34x
+    values + dedupe         263.50            176.11  177.61             1.49x
+    values + tail(100)       97.53            103.32  100.76             ~1.0x  <- NOT on a spread
+    plainScan   (control)   126.35            130.31  125.43             flat
+```
+
+### ✅ THE MAPPING WAS EMPIRICAL ON PURPOSE, AND IT CORRECTED ME
+
+⚠️ Matching source line numbers to shortcut names put one of the three against the WRONG doc comment, so
+instead of asserting which rung each shape used, **each shape got its own arm and the movement decided**:
+an arm that does not move was not on a converted rung. ✅ `.tail(n)` did not move — **it was never on a
+spread**, which my line-mapping had implied it was.
+
+### ⚠️ AND THE 3% "REGRESSION" ON `tail` DISSOLVED WHEN MEASURED PROPERLY
+
+POST read 103.32 and 100.76 against a PRE of 97.53 — a 3-6% rise, and `executor-edits-perturb` prices
+exactly that. ✅ Four more processes: **103.32 100.76 101.51 100.84 99.24 100.48 — the row's OWN spread is
+1.041x**, and my PRE was a single reading. **A 3% difference is not distinguishable from 4.1% of noise
+measured on one binary** (`non-overlapping-rounds-isnt-proof`). ⚠️ It was worth the four extra runs rather
+than the assumption, in either direction.
+
+### ⚠️⚠️ THE DEDUPE RUNGS CARRY A RISK THE OTHERS DID NOT: `valueDedupeFilter()` IS STATEFUL
+
+The generator builds a fresh filter per invocation. ⚠️ **A `drain` that hoisted it would share ONE filter
+across calls — correct the first time and returning NOTHING every time after.** ✅ So `keep` is constructed
+INSIDE each drain body, with a comment saying why, and **every test calls `drain` TWICE**: a single call
+cannot see that bug at all.
+
+### ✅ VALIDATION
+
+- `bun run fuzz` **57 pass / 0 fail**; `bun run test -- --skip-nx-cache` 0; `fmt` 0; `check` 0.
+- `scan-drain-parity.test.ts`: all three rungs, lazy ≡ eager ≡ the DEFINED output, drain called twice.
+  Mutant (one drain's dedupe guard removed): **2 pass / 1 fail**.
+- ⚠️ A first mutant attempt **failed its own anchor assertion (count 0)** because oxfmt had reflowed the
+  indentation — the assert stopped it before it wrote anything, which is the point of counting anchors
+  rather than trusting a replace.
+- ⚠️ `check` caught two of my own slips this tick: `prefer-destructuring` (the fifth this session) and an
+  unnecessary type assertion. Neither is in `lint`+`fmt` alone.
+
+GATES. As listed. ✅ **The generator-spread sweep over materialized sources is now COMPLETE**: five rungs
+converted (2319, 2320, 2321, 2322×2), measured at 1.49x-3.86x, every one with a parity test and a caught
+mutant. Four spreads remain, all over INDIRECT sources, which item 2321's test says cannot win.

@@ -470,7 +470,30 @@ export const nodeValuesWhereShortcut = (plan: Plan, graph: Graph): NodeValues | 
         count: () => nodeValuesWhereCount(graph, hop, proj.keys[0]),
         // ⚠️ THE EAGER FILL: `toArray` prefers `drain` (item 1412), and a walk without one is
         // measured against siblings that have it with its generator hand tied (item 1998's 1.55x).
-        drain: () => [...nodeValuesWhereWalk(graph, hop, proj.keys[0])],
+        /*
+         * ⚠️ **A PLAIN LOOP, NOT A GENERATOR SPREAD (item 2322)** — items 2319/2320/2321 measured this
+         * pattern at 2.83x / 3.86x / 3.47x, and `graph.vertices` is MATERIALIZED, which is item 2321's test
+         * for whether a conversion can win at all. ✅ `drain` already spread the whole walk, so nothing
+         * becomes eager; the generator is untouched and `[Symbol.iterator]` stays lazy.
+         */
+        drain: (): unknown[] => {
+          const out: unknown[] = [];
+          const [key] = proj.keys;
+
+          for (const v of graph.vertices) {
+            if (!hasAdjacency(v, hop)) {
+              continue;
+            }
+
+            const props = v.properties;
+
+            if (key in props) {
+              out.push(props[key]);
+            }
+          }
+
+          return out;
+        },
       };
 };
 
@@ -753,7 +776,36 @@ export const scanWhereValuesDedupe = (plan: Plan, graph: Graph): NodeValues | un
 
   return {
     [Symbol.iterator]: () => nodeValuesWhereDedupeWalk(graph, hop, key),
-    drain: () => [...nodeValuesWhereDedupeWalk(graph, hop, key)],
+    /*
+     * ⚠️ **A PLAIN LOOP, NOT A GENERATOR SPREAD (item 2322)** — items 2319/2320/2321 measured this
+     * pattern at 2.83x / 3.86x / 3.47x, and `graph.vertices` is MATERIALIZED, which is item 2321's test
+     * for whether a conversion can win at all. ✅ `drain` already spread the whole walk, so nothing
+     * becomes eager; the generator is untouched and `[Symbol.iterator]` stays lazy.
+     */
+    /*
+     * ⚠️⚠️ **`valueDedupeFilter()` IS CONSTRUCTED INSIDE THIS BODY, AND THAT IS LOAD-BEARING.** `keep` is
+     * STATEFUL: hoisting it would share one filter across every `drain` call, so the first call would be
+     * right and every later one would return NOTHING. The generator gets a fresh filter per invocation
+     * and this must match. `scan-drain-parity.test.ts` calls `drain` TWICE for exactly this.
+     */
+    drain: (): unknown[] => {
+      const out: unknown[] = [];
+      const keep = valueDedupeFilter();
+
+      for (const v of graph.vertices) {
+        if (!hasAdjacency(v, hop)) {
+          continue;
+        }
+
+        const props = v.properties;
+
+        if (key in props && keep(props[key])) {
+          out.push(props[key]);
+        }
+      }
+
+      return out;
+    },
   };
 };
 
@@ -991,7 +1043,32 @@ export const nodeValuesDedupeShortcut = (plan: Plan, graph: Graph): NodeValues |
 
   return {
     [Symbol.iterator]: () => nodeValuesDedupeWalk(graph, undefined, key),
-    drain: () => [...nodeValuesDedupeWalk(graph, undefined, key)],
+    /*
+     * ⚠️ **A PLAIN LOOP, NOT A GENERATOR SPREAD (item 2322)** — items 2319/2320/2321 measured this
+     * pattern at 2.83x / 3.86x / 3.47x, and `graph.vertices` is MATERIALIZED, which is item 2321's test
+     * for whether a conversion can win at all. ✅ `drain` already spread the whole walk, so nothing
+     * becomes eager; the generator is untouched and `[Symbol.iterator]` stays lazy.
+     */
+    /*
+     * ⚠️⚠️ **`valueDedupeFilter()` IS CONSTRUCTED INSIDE THIS BODY, AND THAT IS LOAD-BEARING.** `keep` is
+     * STATEFUL: hoisting it would share one filter across every `drain` call, so the first call would be
+     * right and every later one would return NOTHING. The generator gets a fresh filter per invocation
+     * and this must match. `scan-drain-parity.test.ts` calls `drain` TWICE for exactly this.
+     */
+    drain: (): unknown[] => {
+      const out: unknown[] = [];
+      const keep = valueDedupeFilter();
+
+      for (const v of graph.vertices) {
+        const props = v.properties;
+
+        if (key in props && keep(props[key])) {
+          out.push(props[key]);
+        }
+      }
+
+      return out;
+    },
   };
 };
 
