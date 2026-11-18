@@ -15,7 +15,7 @@
 import { describe, expect, test } from 'bun:test';
 
 import { Graph } from '@lenke/core';
-import { query } from '@lenke/gql';
+import { prepare, query } from '@lenke/gql';
 import { V, count, gte, has, hasLabel, toArray, traversal } from '@lenke/gremlin';
 
 const SURNAMES = ['Adler', 'Boyd', 'Boyd', 'Cardoso', 'Devi', 'Eze'] as const;
@@ -179,6 +179,22 @@ describe('docs/guides/query-cost.md snippets', () => {
     )[0]?.c;
 
     expect(vacuous).toBe(all);
+  });
+
+  test('a prepared GQL plan is reusable and returns what query() returns (item 2305)', () => {
+    const g = build();
+    const findBySurname = prepare('MATCH (p:Person) WHERE p.surname = $s RETURN p.name AS name');
+
+    /*
+     * ⚠️ The guide's claim is that `prepare` is a pure speed change, so the test that matters is that the
+     * prepared plan agrees with `query()` and stays reusable across calls with DIFFERENT params — a plan
+     * that captured its first arguments would pass a single-call check.
+     */
+    expect(findBySurname(g, { s: 'Cardoso' })).toStrictEqual(
+      query(g, 'MATCH (p:Person) WHERE p.surname = $s RETURN p.name AS name', { s: 'Cardoso' }),
+    );
+    expect(findBySurname(g, { s: 'Adler' })).toStrictEqual([{ name: 'n0' }]);
+    expect(findBySurname(g, { s: 'Eze' })).toStrictEqual([{ name: 'n5' }]);
   });
 
   test('the hoisted Gremlin traversal runs and counts', () => {

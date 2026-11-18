@@ -115373,3 +115373,42 @@ method, and the method is now in three probes.
 
 GATES. `bun run fmt` 0, `bun run check` 0. `rebaclist-2288.mjs` upgraded with calibration; no production
 change.
+
+## Item 2305 — ✅ **`prepare()` EXISTS, THE GUIDE DID NOT MENTION IT, AND IT IS WORTH 9-24% ON A WARM QUERY. ⚠️ The win is a FIXED 8-31 ns, so it is largest on the cheapest query — and the absolutes it reveals are the better finding: a closed-form count is 25-33 ns, which independently confirms item 2303's ~24 ns from a different probe and shape**
+
+The calibrated instrument needed a target. 🔑 **Prior art pointed at the serving path and then closed most
+of it**: item 1499 priced parse+plan at 3.1-6.9x a cheap query's execution, **item 1502 SHIPPED the fix**
+(`normalizeLiterals`, 1.46-2.07x) and 1501 gated it — all for the cache-MISS case an interpolating caller
+creates. ⚠️ What remained unasked is the cache-HIT case: with constant text and params, `query()` still
+hashes the text, hits the parse cache and looks the plan up in a `WeakMap` on every call.
+
+### ✅ AND THE API TO SKIP THAT ALREADY EXISTS
+
+`@lenke/gql` exports `prepare(text)` — _"Parse + compile a query string into a reusable Plan. Do this once
+for a hot query, then call the plan with just (graph, params) — no re-parse, no re-analysis per run."_
+⚠️ **The guide has a rule for hoisting a GREMLIN traversal (18%) and said nothing about the GQL
+equivalent.**
+
+```text
+    warm, indexed, per call     query()   prepared   saving     (two rounds)
+    count(*) over a label        33 ns     25 ns     24%        33 / 25
+    point lookup                201       183         9%       212 / 177
+    2-hop from that user        288       257        11%
+```
+
+🔑 **The saving is a CONSTANT 8-31 ns** — the text hash plus the cached-plan lookup — so it is worth most
+where the query is cheapest and nearly nothing where real work happens. ✅ Added as a guide rule beside the
+Gremlin one, with a test that the prepared plan agrees with `query()` **and stays reusable across different
+params** (a plan that captured its first arguments would pass a single-call check).
+
+### 🔑 THE ABSOLUTES ARE THE MORE USEFUL RESULT
+
+A closed-form `count(*)` at **25-33 ns**, an indexed point lookup at **177-212 ns**, an indexed 2-hop at
+**257-288 ns**. ✅ **Item 2303 measured a closed-form hop count at ~24 ns with a different probe, a
+different query and a different fixture** — two independent instruments landing on the same floor is the
+strongest evidence this session has produced that the fast paths are genuinely fast. ⚠️ Those numbers are
+also what the guide now quotes as "what a warm query costs when nothing is wrong", which is the figure a
+reader needs to know whether their own measurement is anomalous.
+
+GATES. `bun run fmt` 0, `bun run check` 0, guide suite **9 pass / 0 fail**. One probe, one guide section,
+one test; no production change.

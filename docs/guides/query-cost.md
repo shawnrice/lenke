@@ -158,6 +158,29 @@ predicate reads: `WHERE true` already pays 1.17 of the 1.74 ms. This is not a de
 rather than a slope, so if you want a plain total, ask for it without a predicate rather than filtering on a
 condition that keeps everything (`packages/native/farfilter-2286.mjs`, one shape per process).
 
+## Prepare a hot GQL query once
+
+`prepare()` parses and compiles a query into a reusable plan, so a hot path can skip both on every call:
+
+```ts
+const findUser = prepare('MATCH (u:User) WHERE u.name = $n RETURN u.score AS s');
+
+// then, per request
+findUser(graph, { n: name });
+```
+
+| Warm, indexed, per call | `query()` | `prepare()` once |
+| ----------------------- | --------- | ---------------- |
+| `count(*)` over a label | 33 ns     | **25 ns**        |
+| point lookup            | 201 ns    | **183 ns**       |
+| 2-hop from that user    | 288 ns    | **257 ns**       |
+
+The saving is a fixed 8-31 ns — the work of hashing the text and finding the cached plan — so it is worth
+most on the cheapest queries, where it is 24%, and least on ones that do real work. `query()` already caches
+both the parse and the plan, so this is the last slice of that overhead rather than a different order of
+magnitude; the numbers above are also a useful floor to know, since they say what a warm query costs when
+nothing is wrong (`packages/native/prepare-2305.mjs`).
+
 ## Hoist a Gremlin traversal out of the request path
 
 A Gremlin traversal is a plan object you build, and building one per request costs about **18%** (332 ns)
