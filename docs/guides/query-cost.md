@@ -97,6 +97,29 @@ A session over 512 distinct texts pays roughly **4x** per statement against a ca
 (`packages/native/stmtcache-2269.ts`). Parameters also keep values out of query text, which the
 `no-raw-interpolation` lint asks for on its own grounds.
 
+## A filter on the far end of a hop leaves the closed-form count
+
+Counting a hop without looking at the far vertex does not have to touch an edge at all — the engine answers
+it from degree bookkeeping. Add a condition on the far end and it must walk:
+
+```gql
+-- answered from bookkeeping
+MATCH (p:Person)-[:WORKS_WITH]->(q:Person) RETURN count(*) AS c
+
+-- must visit every edge and look at every far vertex
+MATCH (p:Person)-[:WORKS_WITH]->(q:Person) WHERE q.team = $t RETURN count(*) AS c
+```
+
+| Query                     | 60k vertices, 3 edges each |
+| ------------------------- | -------------------------- |
+| hop count, unfiltered     | **0.00 ms**                |
+| hop count, far-end filter | **4.6 ms**                 |
+
+This is not a defect — the second question genuinely needs the walk — but the step between them is a cliff
+rather than a slope, so it is worth knowing before adding a casual `WHERE` on the far end. If you need both
+numbers, ask for the unfiltered count separately rather than assuming the filtered one is nearly as cheap
+(`packages/native/shapecost-2283.mjs`).
+
 ## Hoist a Gremlin traversal out of the request path
 
 A Gremlin traversal is a plan object you build, and building one per request costs about **18%** (332 ns)

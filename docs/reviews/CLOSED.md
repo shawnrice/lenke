@@ -114177,3 +114177,53 @@ other direction: **price the mechanism in isolation before building on it.**
 
 GATES. `bun run fmt` 0, `bun run check` 0. One probe; no production change; item 2281's mechanism corrected
 in the same commit.
+
+## Item 2283 — ✅ **A PROFILE-FIRST PASS OVER A REALISTIC MIXED WORKLOAD NOMINATED `degreeOfTypes` AT 42% AND ATTRIBUTION PUT IT ON AN ALREADY-CLOSED ROW. What the attribution DID find is user-facing: a far-end filter costs 4.6 ms where the unfiltered hop count costs 0.00, because it leaves the closed-form route**
+
+A mixed workload over ONE graph (60k vertices, 3 edges each, five GQL shapes and three Gremlin, items
+2281/2282's lesson applied), profiled at `ROUNDS=90` so the queries dominate rather than the fixture build:
+
+```text
+    971.4 ms   42.24%   degreeOfTypes @ index.mjs:5782      <- everything else <= 5.22%
+    120.1       5.22%   indexEdgeLabel
+     99.1       4.31%   (anon) @ index.mjs:24140
+     86.6       3.76%   (garbage collector)
+```
+
+⚠️ **A 42% frame with no rival looks like the clearest target of the session.** 🔑 `degreeOfTypes` has **77
+mentions in this file**: items 1065 and 1546 refuted a single-type fast path, 2171 closed the
+`out().values().count()` row _whose dominant frame it is_, and 2243 closed `count hop + far has` by profile.
+✅ **Checking prior art before pricing is what stopped this becoming a re-derivation** — the failure mode
+`CLAUDE.md` describes, where three passes in one session re-derived a closed target.
+
+### ✅ ATTRIBUTION CONFIRMED IT, RATHER THAN LEAVING IT AS AN ARGUMENT FROM AUTHORITY
+
+A profile names a FRAME; a frame does not name a SHAPE. Timing each shape alone:
+
+```text
+    grem 1-hop values count     10.71 ms     <- owns the profile; item 2171's closed row
+    gql 1-hop + far filter       4.24
+    gql ORDER BY + LIMIT         3.61
+    gql grouped count            1.30
+    gql label+prop count         1.19
+    gql scan + LIMIT 500         0.56
+    grem label+prop count        0.56
+    gql 1-hop typed count        0.00        <- closed-form route
+    grem 2-hop count             0.01        <- item 1983's shipped dense route
+```
+
+✅ **The hot shapes are at their recorded ceilings.** After 2283 items that is the honest result, not a
+disappointing one.
+
+### 🔑 WHAT IS NEW, AND IT IS A CALLER-FACING CLIFF
+
+**0.00 ms unfiltered against 4.6 ms with a far-end filter** (reproduced 4.24 / 4.57 / 4.61). The unfiltered
+count never touches an edge — it comes from degree bookkeeping — while the filtered form must visit every
+edge and read every far vertex. ⚠️ **The ratio is effectively unbounded**, and the step between the two
+queries is one `WHERE`. It is not a defect: the second question genuinely needs the walk. But a caller
+adding a casual far-end condition deserves to know it is a cliff rather than a slope, so
+`docs/guides/query-cost.md` has it as a sixth rule with its probe cited, and the test gates both answers (2
+unfiltered, 1 filtered) so the claim cannot rot.
+
+GATES. `bun run fmt` 0, `bun run check` 0, guide suite **7 pass / 0 fail**. Two probes, one guide section,
+one test; no production change.

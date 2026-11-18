@@ -120,6 +120,37 @@ describe('docs/guides/query-cost.md snippets', () => {
     expect(byTeam('platform')).toBe(3);
   });
 
+  test('a far-end filter and an unfiltered hop count both answer, and differ only in cost', () => {
+    const g = build();
+
+    g.addEdge({
+      id: 'w1',
+      from: g.getVertexById('p0')!,
+      to: g.getVertexById('p1')!,
+      labels: ['WORKS_WITH'],
+      properties: {},
+    });
+    g.addEdge({
+      id: 'w2',
+      from: g.getVertexById('p0')!,
+      to: g.getVertexById('p2')!,
+      labels: ['WORKS_WITH'],
+      properties: {},
+    });
+
+    const all = query(g, 'MATCH (p:Person)-[:WORKS_WITH]->(q:Person) RETURN count(*) AS c', {})[0]
+      ?.c;
+    const filtered = query(
+      g,
+      'MATCH (p:Person)-[:WORKS_WITH]->(q:Person) WHERE q.team = $t RETURN count(*) AS c',
+      { t: 'platform' },
+    )[0]?.c;
+
+    /* p1 is platform (odd index), p2 is core — so the filter keeps exactly one of the two edges. */
+    expect(all).toBe(2);
+    expect(filtered).toBe(1);
+  });
+
   test('the hoisted Gremlin traversal runs and counts', () => {
     const g = build();
     /* Built once, as the guide shows — then called. `gte` is a predicate FUNCTION, not an object literal. */
