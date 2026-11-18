@@ -113030,3 +113030,54 @@ match/binding machinery — the same class of specialization as the engine's man
 **Priced and named; not built — and the binding half is already refused.**
 
 GATES. `bun run fmt` 0, `bun run check` 0. New instrument `setdiff-2257.mjs`; no production change.
+
+## Item 2258 — ❌ **MY GENERATOR-FUSION NOMINATION IS CLOSED BY ITEM 2097 BEFORE A LINE WAS WRITTEN, AND I MADE THE EXACT ERROR THAT ITEM NAMES: 96 ms of self time in five generator frames is their BODY, not their delegation. Division puts the lever at ~4%**
+
+Item 2257 localized the GQL-vs-Gremlin `SET` gap to ~88 ms of MATCH machinery. ⚠️ This item looked for a
+label-only SET rung, found no such prior art (`SET rung`, `setShortcut`: 0 mentions) — and then found
+something better.
+
+### 🔑 THE NOMINATION, AND WHY IT LOOKED STRONG
+
+Five of the hot frames are `function*` generators, nested:
+
+```text
+    matchPattern  31.6 ms      walkSegments 30.3      hoistedMatch 13.7
+    seedVertices  12.1         recordTail    8.5      = 96.2 ms, 21.7% of the arm
+```
+
+~2.5M yields over the run, and a five-deep chain. 🔑 `hoistedMatch` is also provably useless here — it
+caches a MATCH whose results do not depend on the incoming row, and a **single-clause** query has only the
+one empty incoming binding, so its cache can never pay.
+
+### ❌ AND ITEM 2097 ALREADY MEASURED THIS, ON THE OTHER ENGINE'S TWIN
+
+```text
+    yield* chain, one generator per level — the engine's shape    43.6 / 39.3 ns/row
+    ONE generator with an explicit stack                          23.0 / 17.9     2.1x
+    a callback, no generator at all                                2.5 /  2.7      15x
+```
+
+⚠️⚠️ **Two things kill it, and both are already recorded:**
+
+- **THE DIVISION.** ~41 ns/row for a 3-deep chain is **~14 ns per level**. My chain is 5 deep → **~68
+  ns/row** of yield protocol against `SET`'s measured **886 ns/row**: **7.7%**. Flattening wins 2.1x of
+  that — **about 4% of the query.** ⚠️ Below the bar, and [[executor-edits-perturb]] prices a new branch at
+  up to 16% on unrelated rows.
+- **THE CONTRACT.** The 15x callback arm **is not available**: the matcher returns a lazy `Iterable` and
+  callers `break` out early (item 1412's rule, enforced engine-wide). So only the 2.1x arm is reachable.
+
+### ⚠️⚠️ AND I MADE THE ERROR ITEM 2097 EXISTS TO NAME
+
+Its words: _"a frame that recurses through generators is not thereby a generator-cost frame."_ I read 96 ms
+of **self time** in five generator frames and inferred a fusion win. 🔑 **That self time is the frames'
+BODIES** — `consistent`, `withBinding`, `satisfies`, label matching, the bucket loops — **not the yield
+protocol.** The same trap as this session's `(garbage collector)` and getter-frame attributions, in a third
+costume.
+
+✅ **So the GQL `SET` thread (2255-2258) closes**: the number was stale (5.38x → 2.60x), its label was wrong
+(the write is SHARED and equal at 1.2x — item 2257), the remainder is GQL's statement pipeline, and the
+pipeline's one sizable-looking term is a generator chain already priced at ~4% with its best arm forbidden by
+contract. **Nothing to build; three corrections and a closure.**
+
+GATES. `bun run fmt` 0, `bun run check` 0. No instrument, no production change — a prior-art item.
