@@ -114684,3 +114684,63 @@ the rung decides). The fix site is named, the measurement is 15.9x and grows wit
 
 GATES. `bun run fmt` 0, `bun run check` 0. Two arms added to `rebaclist-2288.mjs`, one spelling added to the
 orient probe, one route reader; no production change.
+
+## Item 2292 — ⚠️⚠️ **THE ONE-LINE FIX I BUILT IS ON A PATH MY QUERY NEVER TAKES: `orient` lives behind the GENERAL matcher and `hop2Projection` answers the slow spelling. Suite green, zero measured effect, REVERTED.** ✅ But the real blocker is now exact: `mightSeek` reads `pred.props`, and a clause `WHERE` populates nothing there — so item 2104's gate CANNOT fire on a clause spelling, with or without an index
+
+Item 2291 named the fix site. 🔑 Reading further found a genuine looseness and a tempting one-liner:
+
+```ts
+const isConstrained = (node: CNode, prefilter: unknown): boolean =>
+  prefilter !== undefined || hasPredicate(node.pred);
+```
+
+⚠️ **The prefilter names ONE variable (`{ var, pred }`) and this ignores which.** So a clause `WHERE` on
+the FAR node makes the START look constrained, and `orient`'s next line —
+`if (constrained && !mightSeek(endNode)) return pattern` — then refuses to reverse a pattern whose only
+constraint is at the end. The file's own `reversePath` comment says a prefilter "can only gate the side it
+names", and line ~1274 enforces exactly that. ✅ **So the looseness is real.**
+
+### ⚠️ AND IT CHANGED NOTHING, BECAUSE MY QUERY NEVER REACHES `orient`
+
+```text
+    arm             before   after (with the fix)
+    gqlList           9.08     9.31     <- the target: UNCHANGED
+    gqlDocFirst       0.68     0.67
+    gqlInlineFar      0.57     0.59
+```
+
+🔑 `orient` has **one caller, on `matchPattern`'s general branch** — and item 2291 established that the
+slow spelling is answered by `hop2Projection`, not the matcher. **I fixed a function the query does not
+call.** ⚠️ This is `rung-precedence-hides-the-code-under-test` arriving again, and the tell was available
+before the build: item 2291's own route table says which rung answers.
+
+✅ **Suite green at 21 projects**, so the loose form was not load-bearing for answers — worth knowing. ⚠️
+**But a semantic change to a hot planner function with no measured win is a refactor, not an
+optimization**, and `executor-edits-perturb` prices such edits at up to 16% on unrelated rows.
+**Reverted.** The correction is recorded here with its reasoning so it can be taken deliberately, as a
+correctness tidy-up, rather than smuggled in under a performance item.
+
+### ✅ WHAT THE TICK ESTABLISHED, WHICH IS THE USEFUL PART
+
+```ts
+const mightSeek = (node: CNode): boolean =>
+  node.pred.props.length > 0 || (node.seedHints?.length ?? 0) > 0;
+```
+
+🔑 **`farEndSeeksNarrower` requires `mightSeek(endNode)` AND `estimateSeedFrom(...).indexed`.** A clause
+`WHERE` populates neither `pred.props` nor `seedHints`, which is why **an index on the far key changes
+nothing** (item 2291: 9.08 → 9.11) — the gate never gets as far as asking about the index.
+
+⚠️ **AND THE OBVIOUS REWRITE IS UNSOUND, DOCUMENTED BY THE CODEBASE ITSELF.** Turning
+`WHERE d.name = $doc` into `(d:Doc {name: $doc})` is not answer-equivalent: `{k: null}` is `IS NULL` and
+matches a STORED null, where `= null` is UNKNOWN and matches nothing (item 260), and a PARAM "cannot be
+shown non-null at compile time". That is exactly why `liftStartProps` refuses params. ✅ `pushWhereIntoNode`
+also declines any pattern with segments (`path.segments.length > 0`), so it never sees a two-hop shape.
+
+**SO THE REAL FIX IS ONE OF:** (a) a non-null-guarded clause→anchor conversion, (b) teaching
+`estimateSeedFrom` to consult a prefilter naming the far node, or (c) letting `hop2Projection` decline on a
+constrained-but-unseekable far node — ⚠️ which items 1821/1822 price at 13.8x on `hop2distinct` if done
+too broadly, and is precisely why item 2104 chose "a genuine seek" as the bar.
+
+GATES. `bun run fmt` 0, `bun run check` 0, `bun run test` 21 projects OK (both with the change and after
+the revert), clean `nx build @lenke/gql`. No production change.
