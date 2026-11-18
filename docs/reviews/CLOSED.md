@@ -109017,7 +109017,7 @@ was never measured** — item 2176's coverage lesson, again.
 
 GATES. No production change; both throws reverted and the tree verified identical to pristine.
 
-## Item 2180 — ⚠️⚠️ **NOT BUILT, AND THE REASON IS WORTH MORE THAN A RUSHED RUNG: the SET flag splits into TWO separable targets, and the entry that "closed" this ground does not explain either. Both priced**
+## Item 2180 — ⚠️⚠️ **NOT BUILT** (⚠️ TARGET TWO's "unaccounted ~0.3 µs" is ACCOUNTED at item 2312: ~189 ns is the transaction's undo log, which a fair floor must carry, and the residual is 2.2x not 3.9x) **— the SET flag splits into TWO separable targets, and the entry that "closed" this ground does not explain either. Both priced**
 
 Item 2176's screen flagged `SET one property` at 13.1x. ⚠️ `CLOSED.md` already said TS `SET`'s O(width) was
 **CLOSED BY DESIGN** — "do not fix it without replacing that design" — so the first job was to check whether
@@ -115690,3 +115690,45 @@ engine.**
 gate**, and is the session's largest user-facing artifact.
 
 GATES. As listed. No production change in this item.
+
+## Item 2312 — ✅✅ **ITEM 2180's "UNACCOUNTED ~0.3 µs PER WRITE" IS ACCOUNTED, AND MY OWN FLOOR WAS UNFAIR BY 2.5x: the transaction's undo log is 189 ns/row, and correcting the floor takes the gap from 5.9x to 2.2x. The remaining 2.2x has no dominant removable term**
+
+Item 2180 priced two separable `SET` targets, built neither, and left target two explicitly open: _"a
+`{...obj, k: v}` plus `Object.freeze` on a 2-property object is ~100-200 ns, and the cost does not grow
+with width, so **~0.3 µs per write is somewhere else and unaccounted for.** This is where the volume is."_
+
+### ⚠️ TWO FLOOR MISTAKES OF MINE, BOTH CAUGHT BEFORE THEY WERE PUBLISHED
+
+**1. `count(*)` is not a scan floor.** My first floor arm was `MATCH (a:T) RETURN count(*)` and measured
+**0.00 ms** — a closed-form answer that visits no row (items 2286/2303/2309 priced it at ~24 ns). Replaced
+with a projection, which visits and emits every row: **58 ns/row**.
+
+**2. A write floor must carry the TRANSACTION.** The profile named it — `recordUndo` at 1.79% beside
+`(garbage collector)` at **30.53%**, with the actual `setProperty` only 4.93% — and item 2180 records that
+_"`runLinear` wraps a write in `graph.transaction()`"_. My hand-rolled floor wrote with no transaction at
+all.
+
+```text
+    arm                                      ns/row    what it adds
+    projectAll   scan + project, no write        58
+    handSet      the same 200,000 writes        123
+    handSetTx    …inside graph.transaction()    312     +189 = the UNDO LOG, 2.5x
+    setAll       the GQL SET                    675     +363 = GQL machinery, 2.2x over a FAIR floor
+```
+
+### ✅ SO THE ANSWER TO ITEM 2180's QUESTION
+
+🔑 **~189 ns of the unaccounted cost is the transaction's undo log** — and it is not removable: a GQL write
+must be atomic, which is why `r-tx-transactions` shipped it deliberately. **That is the cost of
+correctness, not a defect.** ✅ The honest residual is **2.2x over a floor doing identical writes inside an
+identical transaction**, against the 3.9x-vs-native and 5.9x-vs-my-unfair-floor figures either item would
+otherwise have reported.
+
+⚠️ **And the residual has no dominant removable term**: `matchPattern` 8.57%, `#commitNormalized` 6.33%,
+`withBinding` 5.45% (**fully closed at item 2307**), `walkSegments` 3.77%, `runSet` 3.57% — spread across
+the matcher, with the largest single frame being GC that both arms now pay. 🔑 `frame-attribution-trap`
+applies to that 30.53%: the fair floor allocates too, so it is not attributable to the GQL path.
+
+✅ **Fourth time this session a floor-fairness correction changed the headline** (items 2262, 2281, 2288, 2312) — and the only one where the correction HALVED a gap I was about to publish.
+
+GATES. `bun run fmt` 0, `bun run check` 0. One probe (five arms); no production change.
