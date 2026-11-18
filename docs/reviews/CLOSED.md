@@ -110563,7 +110563,7 @@ change the first time; the second round saved the new file to `target/` first.
 
 GATES. `bun run fmt` 0, `bun run check` 0 (read unpiped). Instrument only; no engine change.
 
-## Item 2208 — 🔑🔑🔑 **DIAGNOSED, BUILD HANDED OFF: `ORDER BY k LIMIT 10` over a hop is 3.4x SLOWER THAN THE SAME HOP WITH NO LIMIT. `boundedTopRows` is already right and cheap (0.123 ms) — the `LIMIT` makes the query DECLINE the fused projection and take a per-row `startDriven` walk that reads properties 20x more expensively. Ceiling 4.4x**
+## Item 2208 — 🔑 **DIAGNOSED, BUILD HANDED OFF (heading CORRECTED by item 2209).** ~~`ORDER BY k LIMIT 10` over a hop is 3.4x SLOWER THAN THE SAME HOP WITH NO LIMIT~~ ⚠️⚠️ **WRONG CONTROL — withdrawn. The `LIMIT` makes the sorted query 1.8x FASTER (12,994 → 7,325 us); I compared against a query with NO SORT AT ALL. What survives: the SORT path keys and projects all 80k rows through the general machinery, and a streamed bounded top-k ceilings at 3.5x. See item 2209.**
 
 The Gremlin cliff finder reported no real cliffs (item 2207), so this tick ran its GQL twin,
 `gql-cliff-finder.ts`, which prints WHICH of ~22 named rungs fire rather than a boolean.
@@ -110618,5 +110618,48 @@ are exactly where that bites; it needs its own tick with the no-limit arm as a c
 
 ⚠️ Also measured, same family, same shape of suspicion: `page/collect over a hop` at 4.67 ms for ONE row
 (16.12x its no-hop twin). Not yet ceilinged — do that before pricing it.
+
+GATES. `bun run fmt` 0, `bun run check` 0. No production change.
+
+## Item 2209 — ⚠️⚠️ **ITEM 2208'S CONTROL WAS WRONG AND ITS HEADLINE IS WITHDRAWN: the `LIMIT` makes the sorted query 1.8x FASTER, not 3.4x slower. What survives is a real 3.5x — the SORT path keys all 80k rows through the general machinery**
+
+Item 2208 reported "`ORDER BY k LIMIT 10` over a hop is 3.4x SLOWER than the same hop with NO LIMIT" and
+called a `LIMIT` costing more than no limit an impossible-therefore-defect. ⚠️ **The control was wrong.** It
+compared the sorted+limited query against one with **no `ORDER BY` at all** — a query that never sorts.
+The right control is `ORDER BY` alone:
+
+```text
+    hop rows, NO order NO limit           1569 us   79996 rows
+    hop rows, ORDER BY only (no limit)   12994 us   79996 rows   <- THE REAL BASELINE
+    hop rows, LIMIT only (no order)        134 us      10 rows
+    hop topk, ORDER BY + LIMIT 10         7325 us      10 rows   <- 1.8x FASTER than sorting alone
+```
+
+🔑🔑 **The bounded top-k heap IS working: adding `LIMIT 10` to the sorted query nearly halves it.** The code
+says so too — `sortRowsByColumns` "applies `skip`/`limit` itself, including item 701's bounded top-k heap",
+which is why `boundedTopRows` appeared in the profile at a cheap 0.123 ms. **There is no "a limit cannot be
+more work" defect here.** That headline is withdrawn and item 2208's heading is struck in this commit.
+
+### ✅ WHAT SURVIVES, AND IT IS STILL WORTH 3.5x
+
+```text
+    engine: hop topk ORDER BY + LIMIT 10      7325 us
+    CEILING streamed bounded top-10           2068 us   <- 3.5x, same answer
+```
+
+🔑 The ceiling is fair: it reads `e.to.properties.k` directly and keeps ten, which is the same per-path work
+the **unsorted** arm does for all 80k rows (1,569 us) — so ~2,100 us is the honest floor for this shape. The
+engine instead **keys and projects every path through the general machinery** before the heap sees it, which
+is the `propOf` 20x (1.765 against 0.088 ms/rep) item 2208 measured. That part of 2208's profile stands; only
+its framing was wrong.
+
+⚠️ **AND THE FIX IS NOT WHERE 2208 SAID.** `hop-projection.ts` is **2,932 code lines** against the 3,000-line
+cap this repo enforces (item 2135 lost five iterations to that wall; item 2163 had to move an arm out), so a
+new arm goes in a NEW FILE — the same constraint item 2194 worked under.
+
+🔑 **THE LESSON, and it is the second time in three items** (cf. item 2207's misread rung column): **a
+control must differ from the target by exactly ONE thing.** `no ORDER BY, no LIMIT` differs by two, and the
+one I wasn't thinking about (the sort) dominated. One extra row in the table — `ORDER BY` alone — would have
+caught it before the write-up.
 
 GATES. `bun run fmt` 0, `bun run check` 0. No production change.
