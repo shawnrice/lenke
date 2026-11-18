@@ -112153,3 +112153,46 @@ for the TS object model.** Its remaining distance to wasm is the boxed-vs-column
 twice (items 2173/2196).
 
 REVERTED. GATES. `bun run fmt` 0, `bun run check` 0; tree restored to LIVE and verified.
+
+## Item 2240 — ✅ **THE GREMLIN SCREEN RE-VERIFIES CLEAN, AND `values groupCount`'s 1.85x IS CLOSED BY ITS ABSOLUTE: an 18 ns/vertex gap. ⚠️ Separately: whether a ts-vs-native GREMLIN timing comparison is even possible is UNRESOLVED, and the place to settle it is named**
+
+Re-ran the 18-shape floored Gremlin finder rather than trust item 2229's record of it. **Nothing new
+rises.** Exactly two `pipeline` shapes sit above their floors, and item 2229 had already swept both:
+
+```text
+    compose values groupCount        pipeline     797438     431765     1.85x
+    compose hop simplePath count     pipeline   12629570    1829459 6.90x <--
+    (2229's sweep)              5000    20000    80000   trend
+    simplePath                 6.65x    6.87x    3.51x   falls   — and OWNER-DECLINED at item 1466
+    values groupCount          3.19x    1.85x    1.84x   falls
+```
+
+### ✅ THE 1.85x IS CLOSED BY ARITHMETIC, NOT BY ANOTHER SWEEP
+
+The shape is `V().hasLabel('User').values('team').groupCount()` — a **scan**, no hop. 797,438 ns over
+**20,000 vertices is ~40 ns per vertex against a ~22 ns floor: an 18 ns gap.** 🔑 A 1.85x on a 40 ns
+absolute does not justify an executor edit that [[executor-edits-perturb]] prices at up to 16% on unrelated
+rows — **which is item 1466's own reasoning applied to the only other candidate it left.** ⚠️ Converting a
+ratio to a per-element absolute before pricing it is the step that settles this in one tick; the ratio alone
+had survived two.
+
+**So both Gremlin screens are closed**, and with the GQL side floored at items 2236-2239, no screen on
+either surface nominates a target.
+
+### ⚠️ WHAT I COULD NOT SETTLE, STATED AS SUCH
+
+`bench-gremlin.ts` is **TS-only** — the Gremlin surface has never been timed against the native engine,
+although `gremlinText(handle, query)` exists on the backend and the `gremlin` fuzzer already guards the
+ANSWERS cross-engine (so the check item 2236 had to BUILD for GQL, Gremlin already has).
+
+⚠️ **The obstacle may be that the two engines take different input**: the native side takes Gremlin **text**,
+while `@lenke/gremlin` exports `traversal(...)`, a **programmatic plan builder** — and the finder and
+spelling probe both drive it that way. I could NOT confirm whether the TS package also parses text: a grep
+for `g.V()` matched only doc comments, which is not evidence either way.
+
+🔑 **WHERE TO SETTLE IT: `packages/native/src/gremlin-fuzz.test.ts` already runs both engines against each
+other, so whatever bridges plan-vs-text is in there.** Read that before building anything — if it builds
+text for native and a plan for TS, a timing comparison is fair only if the TS side's parse cost is excluded
+or matched, which is its own methodological question.
+
+GATES. `bun run fmt` 0, `bun run check` 0. No instrument or production change — a verification item.
