@@ -107575,3 +107575,65 @@ vertex added between asks being a distinct key.
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 5,266 GQL
 tests; `bun run fuzz` all seven green.
+
+## Item 2155 — ⚠️ **NOTHING BUILT: THREE levers aimed at the bench's largest ratio, all refuted. ⚠️⚠️ But item 594's STATED MECHANISM is wrong and is corrected here — `edge.to` is 2.3x CHEAPER than `getVertexById`, not equivalent to it**
+
+`query: 2-hop subquery item` is **165.0 ms TS against native's 5.5 (30.11x)** — the bench's largest ratio
+with real absolute numbers, and it has GROWN from item 594's 113.5 ms / 17.5x. ⚠️ The 56-92x rows above it
+in a sorted sweep all have 0.0-0.1 ms denominators and are the sub-millisecond trap, correctly skipped.
+
+### ⚠️⚠️ FIRST, THE CORRECTION — AND IT IS THE ITEM'S REAL OUTPUT
+
+Item 594 closed this as unreachable because:
+
+> "`Edge` … stores endpoint IDS, and `e.to` is a GETTER calling `getVertexById`. No vertex object is in
+> hand at a first-hop landing, so reading 'the box' pays the lookup it would avoid."
+
+🔑 Measured over 200,000 edges:
+
+```text
+    read edge.to              2.33 ms      <- the accessor
+    getVertexById             5.35         <- 2.3x DEARER
+    read edge.id [control]    1.27
+```
+
+⚠️ **`edge.to` does NOT pay a `getVertexById`** — it is 2.3x cheaper than one. (It IS an accessor, so that
+half was right.) 🔑 **But item 594's CONCLUSION stands for a different reason**, which `side`'s body shows
+and its note does not: the second leg indexes `graph.edgesFromByLabel.get(bId)`, which is **keyed by
+vertex ID**, so no vertex object is wanted at all:
+
+```text
+    e.toId  -> Map.get     5.59 ms
+    e.to.id -> Map.get     9.76         <- 1.75x DEARER
+```
+
+⚠️ The id route wins because the index is id-keyed, NOT because materializing a vertex is expensive. That
+distinction matters: the stated mechanism would discourage holding a vertex anywhere, and item 2154 keyed a
+BFS's visited set on the vertex OBJECT for a 1.19-1.29x win.
+
+### ⚠️ THE OTHER TWO LEVERS, AND HOW EACH DIED
+
+A windowed profile spread the cost across a four-deep call chain:
+
+```text
+    twoHopSide     22.6%      onehop arm (9.0 ms/rep):  get adjFrom 25.2%, bucketSize 24.6%
+    bucketSize     18.9%
+    edgesOfTypes   12.6%
+    side           11.3%      <- 65.4% combined
+```
+
+- **"`edgesOfTypes` has no single-type fast path"** — ⚠️ REFUTED BY READING, before any build: it returns
+  `byType.get(types[0])` directly for one type, exactly as `bucketSize` does. Nothing in the chain is
+  wasteful.
+- **"then the chain itself is the cost — fuse the common second leg"** (single type, no far label: one
+  `Map.get` per first-hop edge instead of four calls). ⚠️ **BUILT AND REFUTED**: the target row read
+  BEFORE 27.9-32.4 against NEW 31.7-33.8, with the best BEFORE reading beating the best NEW, and five
+  controls flat. The real bench row read **172.4 with the fusion against 165.0 without**. 🔑 V8 had already
+  inlined the chain; "65.4% across four frames" was attribution, not overhead. Reverted.
+
+🔑 So the row is at a constant-factor floor for its algorithm: ~433 ns per output row for a two-hop degree
+sum, against native's ~85. ⚠️ **What is NOT yet ruled out** is a memo on the mid-vertex's typed degree —
+each mid-vertex is reached ~1.5 times in this fixture, so it is worth little here and would want a
+high-in-degree fixture to price. That is the next thing to try on this row, not another chain rewrite.
+
+GATES. Tree reverted to pristine; `bun run check` 0; 5,266 tests green.
