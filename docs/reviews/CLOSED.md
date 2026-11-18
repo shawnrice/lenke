@@ -107693,3 +107693,65 @@ three were overstated in one session. Re-measuring both cost one tick and confir
 favourably.
 
 GATES. No code change; `bun run check` 0; 5,266 tests green.
+
+## Item 2157 — 🔑🔑 **FOUND AND PINNED, NOT YET BUILT: `sum()` over a hop costs MORE THAN MATERIALIZING EVERY ROW IT AGGREGATES. New bench row reads 295.2 ms TS against ffi's 7.7 — 38.32x, the largest ratio this session. `ORDER_SENSITIVE_AGGREGATES` is the mechanism and has NEVER been recorded here**
+
+Items 2155/2156 both found the top of the bench already closed, so this tick screened **40 features for
+bench coverage** instead — the method that produced items 2146 (33x) and 2147 (5.5x). ⚠️ 22 had no row;
+`sum(` and `avg(` were the standouts, because `count` has many fast rungs and an aggregate that declines
+them all falls to the general path.
+
+### 🔑 THE MEASUREMENT, WITH `max` AS A BUILT-IN CONTROL
+
+```text
+    over the SAME 300,000-edge hop:
+    count(*)  [a counter rung]        0.00 ms
+    PROJECT b.k (300,000 rows)       19.82
+    max(b.k)                         19.4-29.9     <- sane: the cost of projecting
+    sum(b.k)                        108.4-110.0    <- 3.6x max, 5.5x the projection
+    avg(b.k)                        105.0
+    collect(b.k)                    104.2
+    stddev_pop(b.k)                  97.0
+    sum(a.k)  [START side]           29.2          <- 3.8x cheaper than the FAR side
+    sum(a.k)  [plain scan, 200k]      8.5          <- 40 ns/row against the hop's 347
+```
+
+⚠️ **An aggregate costing 5.5x the materialization of its own input is the signal**, and `max` on the
+identical clause costing exactly the projection is what makes it unambiguous.
+
+### 🔑 THE MECHANISM, FROM READING RATHER THAN GUESSING
+
+`hop-projection.ts` holds `ORDER_SENSITIVE_AGGREGATES = {sum, avg, collect, collect_list, stddev_pop,
+stddev_samp}` — `min`/`max` are absent — and membership forces `forceStartDriven`. ✓ Every member measures
+~100 ms above, which is the prediction confirmed.
+
+⚠️⚠️ **THE ORDER SENSITIVITY IS REQUIRED, NOT AN OVERSIGHT.** Float addition is not associative, so
+summation ORDER is load-bearing for byte-identity with the Rust engine — a hard invariant. 🔑 So the lever
+is NOT "give `sum` the unordered path".
+
+### 🔑 AN ABLATION SEPARATES TWO TERMS, AND THE SECOND IS THE LEVER
+
+```text
+    sum(b.k)  108.41        sum(1)  48.25      <- the PATH alone, no property read
+    max(b.k)   29.87        max(1)  12.88
+                            ratio    3.7x      and on the read: 60.2 against 17.0, 3.5x
+```
+
+🔑 The order-sensitive path is uniformly ~3.5x slower — the machinery AND the read — so it is not one bad
+operation. ⚠️ And `startDriven` itself is NOT at fault: reading it shows a clean typed-bucket walk that even
+carries item 2153's vacuous-label elision. **What it does is `rows.push(projectRow(…))` — it materializes
+300,000 `Row`s, which `aggregateOverValues` then reduces.** 🔑 The walk ORDER is required; materializing
+the rows is not. **Streaming the values into the accumulator in start-driven order preserves the invariant
+and skips the array — that is the lever, priced at up to 3.5x and not yet built.**
+
+### ⚠️ TWO THINGS RULED OUT BEFORE CLAIMING NOVELTY
+
+- **`hop min+max … [wide multi-agg]`** (113.4 / 103.8 / 100.7 ms at 33-42x) looks like the same family and
+  is NOT: item 1184 records those three rows as **NATIVE WATCHERS**, so their ratio is not a TS nomination.
+  ⚠️ My feature grep missed them because they spell the aggregate `min`/`max`.
+- **`ORDER_SENSITIVE_AGGREGATES` has ZERO mentions in this file**, so the mechanism is unrecorded.
+
+🔑 Three bench rows added — `sum` over a hop, `max` over a hop as its control, and `sum` over a scan — so
+the next item's work is guarded before it starts, as item 2145's rows guarded 2146's within one cycle.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; 5,266 tests green. No engine change this item.

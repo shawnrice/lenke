@@ -1519,6 +1519,47 @@ const CASES: Case[] = [
      * from the BFS's reachable set rather than the general matcher, 3.11x at depth 1. ⚠️ The row below
      * keeps a `WHERE`, which that rung DECLINES, so the two rows together guard both arms.
      */
+    /*
+     * 🔑 `sum()` OVER A HOP — and `sum`/`avg` had NO bench row at all before item 2157, found by
+     * screening 40 features for coverage (the method that produced items 2146 at 33x and 2147 at 5.5x).
+     *
+     * ⚠️⚠️ **IT COSTS MORE THAN MATERIALIZING EVERY ROW IT AGGREGATES.** Over this fixture's hop:
+     *
+     * ```text
+     *     count(*)  [a counter rung]      0.00 ms
+     *     PROJECT b.k (300,000 rows)     19.82
+     *     max(b.k)                       19.43-29.9     <- sane
+     *     sum(b.k)                      108.4-110.0     <- 3.6x max
+     *     sum(1)   [no property read]     48.25         <- the PATH alone is 3.7x max(1)'s 12.88
+     * ```
+     *
+     * 🔑 `sum`/`avg`/`collect`/`stddev_*` are `ORDER_SENSITIVE_AGGREGATES`, which forces the
+     * start-driven walk — and that is REQUIRED, not an oversight: float addition is not associative, so
+     * summation order is load-bearing for byte-identity with the Rust engine. ⚠️ What is NOT required is
+     * materializing 300,000 `Row`s before aggregating them, which is where item 2157 left the lever.
+     * The `max` row below is the control: same clause, same rows, a sane cost.
+     */
+    name: 'query: sum over a hop [item 2157]',
+    ...onGraph(
+      () => graphDoc,
+      (e, g) => void e.query(g, 'MATCH (a:Person)-[:KNOWS]->(b) RETURN sum(b.k) AS c'),
+    ),
+  },
+  {
+    name: 'query: max over a hop [2157 control]',
+    ...onGraph(
+      () => graphDoc,
+      (e, g) => void e.query(g, 'MATCH (a:Person)-[:KNOWS]->(b) RETURN max(b.k) AS c'),
+    ),
+  },
+  {
+    name: 'query: sum over a scan [item 2157]',
+    ...onGraph(
+      () => nodesDoc,
+      (e, g) => void e.query(g, 'MATCH (a:Person) RETURN sum(a.k) AS c'),
+    ),
+  },
+  {
     name: 'query: ANY SHORTEST count, no WHERE [2151]',
     ...onGraph(
       () => optionalDoc,
