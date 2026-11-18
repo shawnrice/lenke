@@ -113733,8 +113733,9 @@ caller constructs the plan directly, so there is nothing for a text-keyed cache 
 ```
 
 ✅ **500 distinct shapes cost 5% more than one** (1.18x → 1.23x). ⚠️ Contrast GQL before item 2271: **5x**.
-🔑 And Gremlin is **~2x faster in absolute terms than GQL's best** (1,851 against 3,323 ns/statement), which
-is what having no parse step buys.
+⚠️ ~~And Gremlin is ~2x faster in absolute terms than GQL's best (1,851 against 3,323 ns/statement)~~
+**WRONG — THE TWO ARMS DID DIFFERENT WORK (200 rows vs one). Corrected at item 2273: on equal work GQL is
++14% on a reused statement and FASTER than Gremlin on a fresh one.**
 
 ### ✅ THE ONLY PER-CALL TOLL, AND IT IS NOT AN ENGINE DEFECT
 
@@ -113749,3 +113750,40 @@ number**, which is the same reason item 2269's arms assert their row counts.
 
 GATES. `bun run fmt` 0, `bun run check` 0. New instrument `gremstmt-2272.ts`
 (`ARM=reuse|fresh|distinct`, `DISTINCT=`); no production change.
+
+## Item 2273 — ⚠️⚠️ **MY CROSS-SURFACE "1.8x" WAS AN ARTEFACT OF UNEQUAL WORK. On equal work GQL is +14% on a reused statement and ✅ FASTER THAN GREMLIN on a fresh one (2,073 vs 2,222) — which is item 2271's ship doing more than closing a cliff**
+
+Item 2271 measured GQL at 3,323 ns/statement and item 2272 Gremlin at 1,851 ns/call, and I read that as
+GQL being 1.8x slower. ⚠️ **The arms did different work**: the GQL probe scanned 200 vertices and returned
+**200 rows**; the Gremlin probe scanned 400 and returned **one** (a `count()`). A ratio across those says
+nothing. Same fixture, same predicate, same single-row output on both surfaces:
+
+```text
+    N=400 vertices, 2000 statements/rep, median of 7, EVERY arm asserted to count N
+    arm                              ns/statement
+    gremReuse   ONE plan object             1770
+    gqlReuse    the same TEXT               2016     +14% on Gremlin, not +80%
+    gqlFresh    500 distinct literals       2073     +2.8% over gqlReuse
+    gremFresh   a NEW traversal() per call  2222     +25.5% over gremReuse
+```
+
+### ✅ ON THE REALISTIC SHAPE, GQL NOW WINS
+
+**A fresh statement per request is what an application does, and there GQL is 2,073 against Gremlin's
+2,222.** 🔑 The asymmetry is the two surfaces' per-call costs: **GQL's fresh penalty is 2.8%** because
+item 2271's cap of 512 absorbs 500 distinct texts, while **Gremlin's is 25.5%** because the caller must
+construct a traversal object every time (item 2272 priced that at 332 ns and noted it is the caller's
+allocation, not engine work).
+
+✅ **So item 2271's ship did more than close a 5x cliff — it put GQL ahead of Gremlin on the per-request
+shape.** That was not visible before, because no instrument compared the surfaces on equal work.
+
+### ⚠️ AND BOTH OF MY CROSS-SURFACE CLAIMS ARE WITHDRAWN
+
+Item 2272's _"Gremlin is ~2x faster in absolute terms than GQL's best"_ is struck above, and item 2271's
+implied 1.8x with it. 🔑 **A cross-surface ratio needs the row COUNT and the fixture SIZE held equal, and
+mine held neither** — the same class as item 2260's cross-rung subtraction, two surfaces instead of two
+rungs. ✅ The row-count assertion in this probe is what makes the new numbers trustworthy; it would have
+refused the old comparison outright.
+
+GATES. `bun run fmt` 0, `bun run check` 0. New instrument `surfcost-2273.ts`; no production change.
