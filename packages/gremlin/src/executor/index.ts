@@ -1900,6 +1900,68 @@ const TAG_PRESERVING = new Set([
  * drops a selected element with no `age` — so a modulated select is refused outright.
  */
 // EXPORTED for its own assertion, like `fuseEdgeHop` and `fuseUnionBoth` beside it.
+/**
+ * `… id().count()` and `… label().count()` lose the projection (item 2170).
+ *
+ * 🔑 **BOTH STEPS EMIT EXACTLY ONE VALUE PER ELEMENT** — never dropping one, never multiplying — so a
+ * `count()` tail cannot tell them from the elements themselves. Verified on a 5-vertex, 4-edge graph:
+ *
+ * ```text
+ *     V().count()  = V().id().count()           5 = 5
+ *     E().count()  = E().id().count()           4 = 4
+ *     V().out().count() = V().out().id().count() 4 = 4
+ * ```
+ *
+ * ⚠️ Dropping the projection matters far more than it saves directly: it hands the plan back to the
+ * COUNT RUNGS. `V().id().count()` measured **5.98 ms against `V().count()`'s 0.00** (a counter read), and
+ * `V().out().id().count()` **7.71** against the same. The floor-subtracted screen at item 2168 put
+ * `V().id().count()` at +3.54 ms over its floor where native pays +1.42.
+ *
+ * 🔑 This is `dropCountedSelect`'s reasoning (item 1800) with FEWER caveats. That pass has to prove the
+ * select cannot FILTER — it `continue`s on a missing tag, and a `by()` drops an element lacking the
+ * property — which is what its `TAG_PRESERVING` analysis is for. ⚠️ `id` and `label` have no such case:
+ * every element has both.
+ *
+ * ⚠️⚠️ **`count(local)` IS REFUSED.** Local scope counts WITHIN each value rather than the stream, so
+ * `id().count(local)` asks a different question entirely and the projection is not dead.
+ */
+const COUNT_PRESERVING: ReadonlySet<string> = new Set(['id', 'label']);
+
+export const dropCountedProjection = (plan: Plan): Plan => {
+  const { steps } = plan;
+
+  if (steps.length < 3) {
+    return plan;
+  }
+
+  const last = steps[steps.length - 1];
+  const prev = steps[steps.length - 2];
+
+  if (last.kind !== 'count' || last.scope === 'local') {
+    return plan;
+  }
+
+  /*
+   * ⚠️ `labels` on the projection would be read by a later `select`, and there is no later step here —
+   * but a tagged projection is refused anyway rather than reasoned about, matching how the sibling
+   * passes treat a modulated step.
+   */
+  if (!COUNT_PRESERVING.has(prev.kind)) {
+    return plan;
+  }
+
+  /*
+   * ⚠️ A TAGGED projection is refused rather than reasoned about, matching how the sibling passes treat a
+   * modulated step. 🔑 `labels` is not on every `Step` variant, so the read goes through a narrowed view
+   * rather than an optional chain the type does not allow.
+   */
+  if (((prev as { labels?: readonly string[] }).labels?.length ?? 0) > 0) {
+    return plan;
+  }
+
+  return { ...plan, steps: [...steps.slice(0, -2), last] };
+};
+
 export const dropCountedSelect = (plan: Plan): Plan => {
   const n = plan.steps.length;
   const last = plan.steps[n - 1];
@@ -2162,7 +2224,14 @@ export const effectivePlan = (plan: Plan, graph: Graph, tracksPath: boolean): Pl
     : fuseOrderTake(
         dropUnreadAs(
           dropVacuousLabels(
-            fuseUnionSameDir(dropCountedSelect(flattenLinearMatch(graphFreePrefix(plan))), graph),
+            fuseUnionSameDir(
+              /*
+               * ⚠️ OUTSIDE `dropCountedSelect`, so a plan that loses its `select` can then lose an
+               * `id`/`label` too — `as(x) … select(x).id().count()` needs both passes to reach a counter.
+               */
+              dropCountedProjection(dropCountedSelect(flattenLinearMatch(graphFreePrefix(plan)))),
+              graph,
+            ),
             graph,
           ),
         ),

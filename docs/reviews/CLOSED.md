@@ -108332,7 +108332,7 @@ native's and over 2 ms.
     V().has(k, gt).count()             3.05    0.05   63.2x    +0.61 / -0.43
     V().values(k).dedupe().count()     8.38    1.27    6.6x    +5.95 / +0.79   <-- FLAG, 7.5x
     V().values(k).order()             15.16   14.00    1.1x   +12.72 / +13.52   PARITY
-    V().id().count()                   5.98    1.90    3.1x    +3.54 / +1.42
+    V().id().count()                   5.98    1.90    3.1x    +3.54 / +1.42   <-- ELIMINATED at 2170
     FLOOR2 V().out().id().count()      7.71    4.00    1.9x
     V().out().dedupe().count()         5.49    1.17    4.7x    -2.22 / -2.83    CHEAPER than its floor
 ```
@@ -108436,3 +108436,71 @@ answer-equivalent by design.
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 2,807
 Gremlin tests; `bun run fuzz` all seven green.
+
+## Item 2170 — ✅✅ **SHIPPED: `… id().count()` and `… label().count()` drop the projection — three rows ELIMINATED (5.3/5.9/7.4 ms → 0.00), and TS now beats native on them. ⚠️ And the win RETIRED one of item 2168's floors**
+
+Item 2168's screen left `V().id().count()` at +3.54 ms over its floor against native's +1.42. 🔑 The fix is
+not a faster `id()` — it is noticing the step does not need to run.
+
+**BOTH STEPS EMIT EXACTLY ONE VALUE PER ELEMENT**, so a `count()` tail cannot distinguish them from the
+elements. Verified before building, not assumed:
+
+```text
+    V().count() = V().id().count()              5 = 5
+    E().count() = E().id().count()              4 = 4
+    V().out().count() = V().out().id().count()  4 = 4
+    V().label() on a vertex labelled ['P','Q']  'P'   <- the FIRST label, ONE value
+```
+
+```text
+    row                        BEFORE     NEW
+    V().id().count()              5.3     0.00    eliminated (native 2.08 — TS now FASTER)
+    V().label().count()           5.9     0.00    eliminated
+    V().out().id().count()        7.4     0.00    eliminated
+    V().count()      [control]    0.0     0.00    flat
+    V().id()         [control]    2.80    2.75    unaffected
+    V().values(k).count() [ctl]   2.6     2.5     flat
+```
+
+⚠️ **The `V().id()` control read 1.4x WORSE in-sweep and that was NOISE.** Isolated, 15 reps dropping 5:
+NEW 2.75/2.66 against BEFORE 2.80/**5.33** — the BEFORE arm is the unstable one. `executor-edits-perturb`
+made a 40% reading plausible enough to check, and the per-row instrument refuted it.
+
+🔑 This is `dropCountedSelect`'s reasoning (item 1800) with FEWER caveats: that pass must prove the select
+cannot FILTER — it skips a traverser with no tag, and a `by()` drops an element lacking the property, which
+is what its `TAG_PRESERVING` analysis exists for. `id` and `label` have no such case. The new pass runs
+OUTSIDE it, so `as(x) … select(x).id().count()` can lose both.
+
+### ⚠️⚠️ THE WIN RETIRED ITEM 2168's EDGE FLOOR, AND THE SCREEN NOW SAYS SO
+
+`FLOOR2 V().out().id().count()` became a COUNTER READ at 0.00 ms — the same defect as the
+`V().out().count()` floor that item 2168 had already rejected, arriving by a different route. 🔑 **A floor
+is only valid while it still touches the data, and optimizing the engine can retire one.** Three candidates
+have now failed:
+
+```text
+    V().out().count()          0.00 BOTH engines    a counter rung, touches no edge
+    V().out().id().count()     0.00 in TS           item 2170 made it a counter read
+    V().out().has(k).count()   25.03 ts / 0.28 nat  native elides the endpoint read entirely
+```
+
+⚠️ The third fails for 2168's other reason, so **the edge group is now printed RAW and never flagged**,
+with the reason in the file. 🔑 **A future item on its own terms: `V().out().values(k).count()` reads 40.04
+ms in TS.** Whatever native elides, 300,000 endpoint property reads at 40 ms is a TS-side question.
+
+### 🔑 FOUR MUTATION SURVIVORS, ALL FOUR STRUCTURAL — AND PROVING IT TAUGHT SOMETHING
+
+4 of 8 caught. ⚠️ Rather than assert the rest were equivalent, each was measured:
+
+- **`admits-local-scope`** — `V().id().count(local)` and `V().count(local)` both answer `[1,1,1,1,1]`.
+  `id`/`label` yield one scalar and a vertex IS one element, so local scope is `1` per row either way. The
+  guard is **defensive, not load-bearing**; the test now asserts the value and says so.
+- **`admits-values-too`** — ⚠️⚠️ **admitting `values` is a NO-OP, and the reason is worth knowing.** A probe
+  at the pass's entry prints `ENTERED-V,hasKey,count`: **an upstream rewrite has already turned
+  `values(k).count()` into `hasKey(k).count()`**, so no `values` step reaches this pass in that shape. That
+  is also what item 2168's "values floor" really measures.
+- **`drops-one-step-only`** — `[...slice(0, -1), last]` reconstructs the original plan.
+- **`arity-guard-dropped`** — the kind check already declines a two-step plan.
+
+14 tests. GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
+2,821 Gremlin tests; `bun run fuzz` all seven green.

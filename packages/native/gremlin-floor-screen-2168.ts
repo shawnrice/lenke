@@ -94,16 +94,41 @@ const ROWS: ReadonlyArray<readonly [string, Plan, boolean]> = [
   ['V().id().count()', traversal(V(), id(), count()), false],
   // ── Edge-side steps. ⚠️ Their own floor is the untyped hop, not the vertex scan ───────────────
   /*
-   * ⚠️⚠️ **`V().out().count()` IS NOT A VALID FLOOR AND WAS MY FIRST CHOICE.** It reads 0.00 ms in BOTH
+   * ⚠️⚠️ **`V().out().count()` IS NOT A VALID FLOOR AND WAS MY FIRST CHOICE** (and the `id()` floor that
+   * replaced it was retired by item 2170 — see the note on FLOOR2 below). It reads 0.00 ms in BOTH
    * engines because a counter rung answers it without touching a single edge — so subtracting it leaves
    * the RAW time and the three edge-side rows below all "flagged" on their scan cost. 🔑 The floor has to
    * be the cheapest step that touches the SAME data: `id()` enumerates every edge's endpoint without
    * reading a property.
    */
-  ['FLOOR2 V().out().id().count()', traversal(V(), out('KNOWS'), id(), count()), true],
-  ['V().out().values(k).count()', traversal(V(), out('KNOWS'), values('k'), count()), false],
-  ['V().out().has(k, gt).count()', traversal(V(), out('KNOWS'), has('k', gt(50)), count()), false],
-  ['V().out().dedupe().count()', traversal(V(), out('KNOWS'), dedupe(), count()), false],
+  /*
+   * ⚠️⚠️⚠️ **THE EDGE GROUP HAS NO VALID FLOOR AND IS REPORTED RAW. THREE CANDIDATES HAVE NOW FAILED.**
+   *
+   * ```text
+   *     V().out().count()          0.00 ms BOTH engines   a counter rung, touches no edge
+   *     V().out().id().count()     0.00 ms in TS          item 2170 made it a counter read too
+   *     V().out().has(k).count()   24.95 ts / 0.27 nat    native elides the endpoint read entirely
+   * ```
+   *
+   * 🔑 The first two are the SAME defect by different routes — a floor is only valid while it still
+   * touches the data, and **optimizing the engine can retire a floor**, which is what item 2170 did here.
+   * ⚠️ The third fails for item 2168's other reason: native answers these without reading any endpoint
+   * property, so every floor yields NEGATIVE native marginals. **When the two engines elide different
+   * work, no subtraction makes the rows comparable** — so these rows are printed RAW and never flagged,
+   * and a reader must price them against a native column that is doing less work, not less of the same
+   * work.
+   *
+   * 🔑 Worth a future item on its own terms: `V().out().values(k).count()` reads **41.37 ms in TS**.
+   * Whatever native elides, 300,000 endpoint property reads costing 41 ms is a TS-side question.
+   */
+  ['RAW V().out().has(k).count()', traversal(V(), out('KNOWS'), has('k', gt(-1)), count()), false],
+  ['RAW V().out().values(k).count()', traversal(V(), out('KNOWS'), values('k'), count()), false],
+  [
+    'RAW V().out().has(k, gt).count()',
+    traversal(V(), out('KNOWS'), has('k', gt(50)), count()),
+    false,
+  ],
+  ['RAW V().out().dedupe().count()', traversal(V(), out('KNOWS'), dedupe(), count()), false],
 ];
 
 const median = (xs: number[]): number => {
@@ -142,9 +167,13 @@ for (const [name, plan, isFloor] of ROWS) {
     floor = { ts: t.ms, nat: n.ms };
   }
 
-  const marginal = isFloor
-    ? ''
-    : `+${(t.ms - floor.ts).toFixed(2)} / +${(n.ms - floor.nat).toFixed(2)}`;
+  /* ⚠️ A `RAW ` row has no valid floor (see the edge-group note above): print no marginal at all rather
+   * than a subtraction that would mislead. */
+  const unfloored = name.startsWith('RAW ');
+  const marginal =
+    isFloor || unfloored
+      ? ''
+      : `+${(t.ms - floor.ts).toFixed(2)} / +${(n.ms - floor.nat).toFixed(2)}`;
   /*
    * ⚠️⚠️ **THE FLAG IS ON THE MARGINAL RATIO, NOT THE RAW ONE.** Item 2167 is why: TS's 48x property-scan
    * floor makes almost every raw ratio read 5x or worse while the step itself is at parity. A step is only
@@ -152,7 +181,7 @@ for (const [name, plan, isFloor] of ROWS) {
    */
   const mTs = t.ms - floor.ts;
   const mNat = n.ms - floor.nat;
-  const flag = !isFloor && mTs > 2 && mNat > 0.05 && mTs / mNat > 3;
+  const flag = !isFloor && !unfloored && mTs > 2 && mNat > 0.05 && mTs / mNat > 3;
 
   console.log(
     `  ${name.padEnd(32)} ${t.ms.toFixed(2).padStart(7)} ${n.ms.toFixed(2).padStart(7)} ${`${(t.ms / Math.max(n.ms, 0.001)).toFixed(1)}x`.padStart(7)}  ${marginal.padStart(20)}${flag ? '  <-- FLAG' : ''}`,
