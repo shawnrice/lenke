@@ -17,7 +17,7 @@
  * ⚠️ `plainScan` is the CONTROL — already converted at item 2320, so it must NOT move.
  */
 import { Graph } from '@lenke/core';
-import { V, dedupe, out, tail, toArray, traversal, values, where } from '@lenke/gremlin';
+import { V, dedupe, filter, out, tail, toArray, traversal, values, where } from '@lenke/gremlin';
 
 const NODES = Number(process.env.NODES ?? 20_000);
 const FAN = Number(process.env.FAN ?? 3);
@@ -56,6 +56,14 @@ const plans = {
   dedupeVals: traversal(V(), values('k'), dedupe()),
   tailVals: traversal(V(), values('k'), tail(100)),
   plainScan: traversal(V(), values('k')),
+  /*
+   * ⚠️⚠️ **THE EQUIVALENT SPELLING (item 2323).** `filter(<hop>)` and `where(<hop>)` both keep a traverser
+   * whose inner traversal yields at least one result, and the gremlin spelling probe groups them as
+   * equivalent (0 groups disagree on the ANSWER). 🔑 If `where` reaches item 2322's converted rung and
+   * `filter` does not, then speeding `where` up CREATED a spelling divergence — the defect class this
+   * repo records at 100-300x. The test: `filter`'s ns/row against `where`'s PRE-2322 32.28.
+   */
+  filterHop: traversal(V(), filter(out('E')), values('k')),
 };
 
 const arm = () => toArray(plans[ARM], graph).length;

@@ -451,11 +451,20 @@ export const nodeValuesWhereShortcut = (plan: Plan, graph: Graph): NodeValues | 
   }
 
   /*
-   * ⚠️ ONLY `where(<a sub-plan>)`. The step kind is overloaded — `where(pred)` and
+   * ⚠️ ONLY A SUB-PLAN `where` OR `filter`. The `where` kind is overloaded — `where(pred)` and
    * `where(startKey, pred)` are value comparisons against a tagged step, not existence tests — and
    * `singleHopExistence` reads `plan`, so a `where` without one declines here by construction.
+   *
+   * 🔑 **`filter` IS ADMITTED BECAUSE THE ENGINE ALREADY CONTRACTS IT AS THE SAME STEP (item 2323).**
+   * `dispatch.ts`'s `case 'filter'` says so in as many words — "the same step as the sub-plan `where`,
+   * so the same fusion" — and calls `singleHopExistence(step.plan)` exactly as the `where` case does.
+   * ⚠️ This rung nevertheless gated on `'where'` alone, so `filter(out(E))` fell to the general
+   * pipeline: **78.45 ns a row against `where`'s 13.56, a 5.8x divergence between spellings the
+   * gremlin spelling probe asserts return the SAME ANSWER.** The divergence pre-dated item 2322
+   * (`where` was 32.28 ns before it, already 2.4x) — that ship widened it rather than causing it,
+   * which is how the probe surfaced it.
    */
-  if (filter.kind !== 'where' || !('plan' in filter)) {
+  if ((filter.kind !== 'where' && filter.kind !== 'filter') || !('plan' in filter)) {
     return undefined;
   }
 
@@ -762,7 +771,12 @@ export const scanWhereValuesDedupe = (plan: Plan, graph: Graph): NodeValues | un
 
   const [, filter, proj] = steps;
 
-  if (filter.kind !== 'where' || !('plan' in filter) || proj.kind !== 'values') {
+  /* 🔑 `filter` admitted alongside `where` for item 2323's reason, stated at the sibling rung above. */
+  if (
+    (filter.kind !== 'where' && filter.kind !== 'filter') ||
+    !('plan' in filter) ||
+    proj.kind !== 'values'
+  ) {
     return undefined;
   }
 

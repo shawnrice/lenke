@@ -116252,3 +116252,61 @@ cannot see that bug at all.
 GATES. As listed. ✅ **The generator-spread sweep over materialized sources is now COMPLETE**: five rungs
 converted (2319, 2320, 2321, 2322×2), measured at 1.49x-3.86x, every one with a parity test and a caught
 mutant. Four spreads remain, all over INDIRECT sources, which item 2321's test says cannot win.
+
+## Item 2323 — 🚀🚀 **SHIPPED, 5.73x, AND IT RESTORES THE REPO'S FLAGSHIP INVARIANT: `filter(<hop>)` was 78.45 ns a row against the equivalent `where(<hop>)`'s 13.56 because the rung gated on `'where'` alone — while `dispatch.ts` has always contracted the two as THE SAME STEP. The gremlin spelling probe goes from 3 flagged groups to 1**
+
+A regression sweep after five Gremlin ships. ✅ The spelling probe reported **0 groups disagree on the
+ANSWER** but **3 over 2x**, where memory records 2 — so a ship was the first suspect, and one flagged group
+was `hop existence, incoming: where(in(T)) vs where(inE(T)) vs filter`, which item 2322 had just touched.
+
+### ⚠️ MY FIRST READING WAS THAT I HAD CAUSED IT, AND MEASURING SAID OTHERWISE
+
+```text
+    where(out(E)).values(k)   PRE-2322  32.28 ns/row   POST-2322  13.56 / 12.96
+    filter(out(E)).values(k)                           NOW        78.45 / 75.97
+```
+
+✅ **`filter` is 78 ns — more than double `where`'s PRE-2322 figure**, so the divergence pre-dated item 2322
+at ≈2.4x. ⚠️ **That ship widened it to 5.8x rather than causing it**, which is precisely how the probe
+surfaced it: speeding one spelling up pushed a latent gap past the threshold. ✅ Worth stating plainly in
+both directions — I checked whether I had broken it before concluding I had not.
+
+### 🔑 AND THE ENGINE'S OWN CODE SETTLED THE FIX
+
+`dispatch.ts`'s `case 'filter'` reads, verbatim: **"The same step as the sub-plan `where`, so the same
+fusion"**, and calls `singleHopExistence(step.plan)` exactly as the `where` case does. ⚠️ But both
+`nodeValues…Where…` rungs gated on `filter.kind !== 'where'`, so `filter` fell to the general pipeline.
+✅ **So admitting it is sound by the engine's stated contract, not by my inference about Gremlin
+semantics** — and `node-values.ts` contained ZERO occurrences of `'filter'`, which is what made the gap
+invisible to a reader.
+
+```text
+    arm                         PRE                POST              gain
+    filter(out(E)).values(k)  78.45 75.97      13.49  13.60         5.73x
+    where(out(E)).values(k)   13.56 12.96      13.47  13.81         flat
+    plainScan     (control)    6.32            6.43   6.35          flat
+```
+
+✅ **The spellings now converge exactly** (13.49 against 13.47), and the probe drops from **3 flagged groups
+to 1** — the hop-existence group AND the vacuous-label-before-a-hop group both resolved; the remaining
+`edge-type union` (2.37x) is unrelated.
+
+### ✅ THE TEST IS A ROUTE TEST, BECAUSE AN ANSWER TEST CANNOT GUARD THIS
+
+⚠️ Every historical bug of this class "returned the correct answer, so no correctness test could catch it"
+(`perf-gate-needs-its-own-test`). ✅ `filter-hop-spelling.test.ts` asserts the ROUTE: both spellings reach a
+rung offering the fused `count` (item 2062), which the general pipeline does not. ⚠️ Asserting that for
+`where` alone would have passed BEFORE the fix — the load-bearing half is `filter`. **Mutant (gate
+reverted to the pre-fix state): 2 pass / 1 fail.**
+
+### ⚠️ AND ONE PROCESS FAILURE OF MINE, FIXED IMMEDIATELY
+
+A patch script asserted the gate string appeared **twice**; it appears once (the sibling rung has a third
+conjunct). ✅ The assert stopped the gate edit — **but the comment edit in the same call had already
+applied, leaving a comment describing a change that did not exist.** Corrected in the next action. 🔑 The
+lesson is not "count anchors" (I did) but **put the assert and the edits it guards in ONE transaction**, or
+the failure leaves the tree inconsistent in a way that reads as done.
+
+GATES. `bun run fmt` 0, `bun run check` 0 (after four redundant type assertions it caught), `bun run fuzz`
+**57/0**, `bun run test -- --skip-nx-cache` 0, gremlin spelling probe **0 answer disagreements, 1 flagged
+group (from 3)**.
