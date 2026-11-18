@@ -107269,3 +107269,60 @@ session — but that fixture's seed is UNINDEXED, which is exactly the confound 
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 5,217 GQL
 tests; `bun run fuzz` all seven green.
+
+## Item 2150 — ⚠️ **NOTHING BUILT, AND THE EDIT I DID MAKE WAS TO CODE THIS QUERY NEVER REACHES. But the 18.21x row decomposes, and what it leaves is a PRICED OPEN TARGET: `ANY SHORTEST` + `count(*)` gets no fast rung, costing 4.1x a plain hop for the IDENTICAL answer**
+
+### ⚠️ FIRST, MY OWN CAVEAT FROM ITEM 2149 WAS WRONG
+
+I closed 2149 saying that row's seed is unindexed so "price the seed before reading it as a finding".
+🔑 `k = i % 97`, so `a.k = 1` matches **2,062 anchors**, and the row runs a BFS from every one. The scan is
+3.11 ms of a 36.73 ms row. ⚠️ Not a seed scan — real work, and the caveat sent me looking in the wrong place.
+
+### 🔑 THE DECOMPOSITION, WHICH IS THE USEFUL PART
+
+```text
+    seed count alone (a.k = 1)                        3.11 ms   2062
+    plain scan, a.k = 1 AND a.age = 1                 3.98        23
+    ANY SHORTEST {1,1} + a.k = 1 AND a.age = 1       23.56         0   <- 23 ms for NOTHING
+    ANY SHORTEST {1,1} + a.k = 1                     25.20      3093
+    plain 1 hop      + a.k = 1                        6.14      3093   <- SAME ANSWER, 4.1x cheaper
+    ANY SHORTEST {1,6} + a.k = 1 (the bench row)     36.73     18510
+```
+
+⚠️⚠️ **TWO THINGS HERE ARE THE FINDING.** A query returning ZERO rows costs 23.56 ms, so ~20 ms is fixed
+cost above the 3.98 ms scan; and depth-1 `ANY SHORTEST` costs **4.1x** a plain hop that returns the
+identical 3,093. 🔑 Depth 1 is 25.20 of the depth-6 row's 36.73, so the WALK is the small term — the fixed
+cost is most of the row.
+
+### ⚠️ THE PROFILE NAMED A FRAME AND I BELIEVED THE WRONG OWNER FOR IT
+
+```text
+    ANY SHORTEST (23.9 ms/rep)      plain hop (3.7 ms/rep)
+    withBinding      33.3%          satisfies        32.9%
+    matchPattern      8.5           propOf           13.6
+    seedVertices      8.2           startOnlyHopCount 11.5   <- A FAST RUNG
+    candidateVertices 6.3           degreeOfTypes      9.4
+```
+
+🔑 The plain hop takes a counter-based rung and reads properties straight off the vertex; `ANY SHORTEST`
+runs the general matcher. ⚠️ I attributed `withBinding`'s 33.3% to a `new Map()` per candidate inside
+`reachability.ts`'s seed filter — `[...seedVertices(…)].filter((v) => matchNode(new Map(), …) !== null
+&& seedGate(v))` — whose `&&` does put the allocating conjunct first, with a comment defending that order
+on perf grounds that are backwards. **So I flipped it.** It measured 36.35 / 23.56 / 25.41 against
+36.73 / 23.90 / 25.20: **nothing, at every depth.**
+
+⚠️⚠️ **THEN THE DECISIVE CHECK: a `throw` on that line is never raised — by the `WHERE` form, the INLINE
+form, or the no-predicate form.** 🔑 **That code is not on this query's path at all**, so the reorder could
+not have done anything and the frame belongs to the general matcher instead. `rung-precedence-hides-the-code-under-test`
+is the memory for exactly this, and `frame-attribution-trap` for believing a frame's owner without a
+deletion test. **Reverted; the tree is clean.**
+
+### 🔑 WHAT IS OPEN, PRICED
+
+**`ANY SHORTEST` + `count(*)` has no count rung**, so it runs the general pattern matcher and binds every
+candidate, where a plain hop gets `startOnlyHopCount`. The gap is **4.1x at depth 1 on an identical answer**
+and ~20 ms of it is paid before any walk. ⚠️ Building a count rung for a shortest-path selector is a real
+piece of work, not a reorder — the next item on this should start from `matchPattern`'s route decision, with
+a `throw` in the candidate rung first to prove which code serves the shape.
+
+GATES. Tree reverted to pristine; `bun run check` 0; 5,217 tests green.
