@@ -65,6 +65,15 @@ const pById = traversal(V(NAME_ID), values('score'));
  * ⚠️ **A LADDER IN ONE PROCESS IS THE SHAPE ITEM 2285 SHOWED FLATTERS ITSELF** — each arm pollutes the
  * next one's dispatch. Selected by `ARM`, so each runs alone.
  */
+/*
+ * ✅ **THE WHOLE-SCAN SHAPES (item 2320).** Item 2319 shipped 2.83x by replacing ONE `drain: () =>
+ * [...walk()]`, over a seeded bucket of one. 🔑 Eight siblings remain, and they walk WHOLE LABELS — so the
+ * per-element generator protocol multiplies by |V| even if the ratio is smaller. These arms are the
+ * commonest Gremlin read, and they are the PRE side of that A/B.
+ */
+const pScanVals = traversal(V(), hasLabel('User'), values('score'));
+const pScanValsNoLabel = traversal(V(), values('score'));
+
 const pIdVals = traversal(V(NAME_ID), values('score'));
 const pSeedLabel = traversal(V(), hasLabel('User'));
 const pSeedLabelHas = traversal(V(), hasLabel('User'), has('name', NAME));
@@ -91,6 +100,10 @@ const ARMS = {
   gremHasNoLabel: () => toArray(pHasNoLabel, graph).length,
   /* 🔑 LADDER: seek + projection, no label. */
   gremHasNoLabelVals: () => toArray(pHasNoLabelVals, graph).length,
+  /* ✅ WHOLE-SCAN: the commonest Gremlin read, and where a per-element cost multiplies by |V|. */
+  gremScanVals: () => toArray(pScanVals, graph).length,
+  /* ✅ WHOLE-SCAN without the label, which routes to a different shortcut. */
+  gremScanValsNoLabel: () => toArray(pScanValsNoLabel, graph).length,
 };
 
 const arm = ARMS[ARM];

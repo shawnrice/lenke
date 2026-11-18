@@ -116088,3 +116088,57 @@ to **1.9x**.
 
 GATES. `bun run fmt` 0, `bun run check` 0, `bun run test -- --skip-nx-cache` 0, `bun run fuzz` 57/0,
 gremlin suite 38 pass / 0 fail with the mutant caught.
+
+## Item 2320 — 🚀🚀 **SHIPPED, 3.86x on `V().values(k)` — the commonest Gremlin read: 24.7 → 6.4 ns A ROW over 50,000 vertices. Same pattern as item 2319 one rung over, found by asking whether that ship had siblings; the LABELLED twin is flat at 1.00x, which is the control that attributes the win**
+
+Item 2319 shipped 2.16-2.83x by replacing one `drain: () => [...walk()]`. 🔑 **This item asked whether the
+pattern had siblings** — a python scan (not `grep`: `grep-silently-skips-unicode`) found **16 `drain`
+definitions, 9 of them spreading a generator.**
+
+⚠️ **But I did not convert nine blind.** Item 2319's 2.83x came from a SEEDED bucket of one, where the
+protocol dominates; these walk WHOLE LABELS, where per-element work is larger. So: measure first, convert
+the one the profile nominates.
+
+```text
+    whole-scan V().values(k), 50,000 vertices
+      55.08%  drain:9756
+      35.44%  walkValues:9735      <- 90.52% in the two of them
+       3.96%  get properties
+```
+
+### 🔑 THREE SIBLING DRAINS, MIRRORING THE THREE SIBLING GENERATORS
+
+`nodeValuesShortcut` picks one of `walkIds` / `walkLabels` / `walkValues` ONCE per query — deliberately
+three closures rather than a branch, because **item 159 measured a branch in that inner loop at 1.6x.** ✅ So
+`drain` becomes three sibling plain loops chosen by the same chain, keeping that structure intact.
+
+✅ **Nothing becomes eager that was not**: `drain` was already `[...walk()]`. The three generators are
+untouched, so `[Symbol.iterator]` stays lazy and a caller that `break`s out of `run` is unaffected
+(`eager-tail-cache`). Item 1412's rule again.
+
+```text
+    arm                                     PRE                POST              gain
+    V().values(k)              50,000 rows  1238.76 1230.68    316.59 323.73     3.86x
+    V(),hasLabel,values  (control, 16,667)   372.40  376.78    370.08 374.80     1.00x
+    V(id),values               (control)       0.22    0.22      0.21   0.20     1.00x
+    gqlSeek                    (control)       0.22    0.22      0.21   0.22     1.00x
+```
+
+🔑🔑 **The labelled twin being FLAT is the ideal control**: same workload shape, same row magnitude, a
+DIFFERENT rung — so the 3.86x is attributable to exactly the code changed, and that sibling (still
+22.4 ns/row) is the next target rather than a confound.
+
+### ✅ VALIDATION
+
+- `bun run fuzz` **57 pass / 0 fail** — byte-identity, gremlin fuzzer and the ORDERED differential included.
+- `bun run test -- --skip-nx-cache` 0; `fmt` 0; `check` 0.
+- **`node-values-drain-parity.test.ts`** pins iterator ≡ drain for ALL THREE projections, element for
+  element and in order, on fixtures built for the cases they could differ on: a vertex missing the key, a
+  vertex with NO labels (must yield `null`, not `undefined` — `dispatch.ts`'s contract), and a
+  multi-label vertex. ✅ It also asserts each pair equals the DEFINED output, so **two loops wrong in the
+  same direction still fail** — equality between the pair alone would not catch that.
+- ⚠️ Mutating the label drain's `?? null` away: **2 pass / 1 fail**, restored 3/0. The mutant it caught is
+  precisely the `undefined`-vs-`null` divergence the comment warns about.
+
+GATES. As listed. **7 generator-spreading drains remain**, now with a measured method for pricing them:
+profile the shape each serves, convert one, and keep its sibling rung as the control.

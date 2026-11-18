@@ -207,20 +207,72 @@ export const nodeValuesShortcut = (plan: Plan, graph: Graph): NodeValues | undef
   // the choice is made ONCE PER QUERY and each arm stays its own closure, which is item 159's finding
   // (a branch in this inner loop measured 1.6x).
   let walk: () => Generator<unknown>;
+  /*
+   * ⚠️⚠️ **A SIBLING DRAIN PER PROJECTION, NOT `[...walk()]` (item 2320).** `drain` was spreading the
+   * generator, so a whole-label scan paid a `next()` call and a `{value, done}` object PER VERTEX. A
+   * profile of `V().values(k)` over 50,000 vertices put `drain` at 55.08% and `walkValues` at 35.44%
+   * — **90.52% in the two of them** — and item 2319 measured the same pattern at 2.16-2.83x on the
+   * seeded rung.
+   *
+   * ✅ NOTHING BECOMES EAGER THAT WAS NOT: `drain` was already `[...walk()]`, which materialized
+   * everything. The three generators are untouched, so `[Symbol.iterator]` stays lazy and a caller
+   * that `break`s out of `run` is unaffected (`eager-tail-cache` is the failure mode if that is ever
+   * confused). It is item 1412's "an already-eager terminal takes an eager walk", applied to `drain`.
+   *
+   * ⚠️ THREE CLOSURES, CHOSEN ONCE, MIRRORING THE GENERATORS ABOVE — item 159 measured a branch in
+   * this inner loop at 1.6x, so the projection is still decided per QUERY and each arm keeps its own
+   * loop. ⚠️ The cost is item 169's: three pairs that could DIVERGE. `node-values-drain-parity.test.ts`
+   * pins iterator ≡ drain for all three projections, element for element and in order.
+   */
+  let drain: () => unknown[];
 
   if (proj.kind === 'id') {
     walk = walkIds;
+
+    drain = (): unknown[] => {
+      const out: unknown[] = [];
+
+      for (const v of graph.vertices) {
+        out.push(v.id);
+      }
+
+      return out;
+    };
   } else if (proj.kind === 'label') {
     walk = walkLabels;
+
+    drain = (): unknown[] => {
+      const out: unknown[] = [];
+
+      for (const v of graph.vertices) {
+        out.push(labelOf(v) ?? null);
+      }
+
+      return out;
+    };
   } else {
     const { key } = proj;
 
     walk = (): Generator<unknown> => walkValues(key);
+
+    drain = (): unknown[] => {
+      const out: unknown[] = [];
+
+      for (const v of graph.vertices) {
+        const props = v.properties;
+
+        if (key in props) {
+          out.push(props[key]);
+        }
+      }
+
+      return out;
+    };
   }
 
   return {
     [Symbol.iterator]: walk,
-    drain: () => [...walk()],
+    drain,
   };
 };
 
