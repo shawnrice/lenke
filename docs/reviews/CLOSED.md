@@ -115920,3 +115920,60 @@ frame in this one.
 
 GATES. `bun run fmt` 0, `bun run check` 0, guide suite **9 pass / 0 fail, 27 assertions**. One probe, one
 guide section, one test; no production change.
+
+## Item 2317 — ✅ **GREMLIN'S `has()` DOES SEEK THE INDEX — FLAT 1.36-1.40 µs across a 16x sweep in |V|, with a linear control to prove the instrument — and `V(id)` is 0.21 µs, so O(1) by-id holds on the Gremlin surface too. 🎯 But the indexed point lookup is 5.8-6.6x its GQL twin, N-INVARIANT, and ~16% of that is the vacuous-label rebuild**
+
+Item 2316 found the indexed GQL profile flat, so this item changes workload rather than frame: Gremlin, at
+the same configuration, with the sharpest question first — **does `has('name', x)` seek, or scan?** The
+repo's rule is that equivalent spellings cost the same, and these two are equivalent ACROSS LANGUAGES.
+
+```text
+    arm                       12,500     50,000    200,000     scaling
+    gqlSeek                     0.20       0.22       0.21      FLAT
+    gremHas                     1.39       1.36       1.40      FLAT   <- it SEEKS
+    gremScan (no index)       109.05     424.59    2258.20      LINEAR <- the control
+    gremById                    0.22       0.21       0.21      FLAT   <- O(1) holds
+```
+
+✅ **It seeks**, and `gremScan` — the same shape on an unindexed key — is **linear (20.7x over a 16x sweep)**,
+which is what makes the flat reading evidence rather than an assumption. ✅ **`V(id)` is 0.21 µs and flat**:
+the O(1)-by-id requirement verified on the Gremlin surface, not just GQL's.
+
+### 🎯 THE RESIDUAL IS A REAL TARGET, AND IT IS NOT THE INDEX
+
+⚠️ **`gremHas` 1.39 µs against `gqlSeek` 0.21 µs is 6.6x on identical work.** Both are flat, so this is a
+CONSTANT per-call overhead, not an asymptotic defect. 🔑 **And the decisive control is IN-LANGUAGE:
+`gremById` at 0.21 µs is as fast as GQL**, so the 1.18 µs is specific to the `has()`-seek path, not to
+Gremlin's traversal machinery.
+
+### ⚠️ PRIOR ART CLAIMED MOST OF THE MECHANISM I WAS ABOUT TO PROPOSE
+
+The profile nominated plan analysis and rewriting — `stepMayFault` 5.91%, `effectivePlan` 2.84%,
+`dropVacuousLabels` 2.79%, `anyMayFault` 2.45%, `rewritten` 1.63%, `normalizeCoalesceIdentity` 1.46%,
+`maskOfSteps` 1.38%, **18.46% together on a HOISTED plan**. ⚠️ **But a cache already exists**: items
+1503/1504/1648 built `Plan[EFF_PREFIX]` and `[EFF_CHECKED]` as SCALAR SLOTS, having measured and rejected
+both a `WeakMap` (1.25x worse on a rebuilt plan) and a `{version, plan}` box (+7 to +77 ns per miss). ✅ And
+`dropVacuousLabels` **deliberately cannot** be cached — it reads the graph's label counts, so a stale entry
+is a WRONG ANSWER, with `effective-plan-cache.test.ts` pinning that.
+
+### ✅ SO THE ONE THING LEFT TO MEASURE WAS THE REBUILD, AND IT IS SMALL
+
+⚠️ `label-vacuity-gates-fast-paths` warned that an all-one-label fixture is the unrealistic mode. With a
+selective label nothing is dropped and no rebuild happens:
+
+```text
+                      vacuous label   selective label
+    gqlSeek                0.23            0.22
+    gremHas                1.47            1.28       <- 1.15x
+```
+
+✅ **The rebuild is 1.15x — ~16% of the gap, not the gap.** The remaining **5.8x survives in the realistic
+mode**, which is where a future item should aim; item 1648 already calls this area "the largest per-call
+cost left on a cheap Gremlin query".
+
+⚠️ **One probe bug caught by its own row count**: the first `MIXED=1` run returned `rows=0`, because the
+target vertex was `:Other` in that mode — it timed a MISS against the other mode's HIT. **Printing the row
+count beside the time is what caught it**; the time alone looked like a plausible 1.19 µs.
+
+GATES. `bun run fmt` 0, `bun run check` 0. One probe (four arms, two modes, three sizes); no production
+change.
