@@ -113556,7 +113556,7 @@ prior-art check behind it before any instrument is built.**
 
 GATES. `bun run fmt` 0, `bun run check` 0. No instrument, no production change — a correction item.
 
-## Item 2269 — 🔑🔑🔑 **A SESSION'S COST GROWS WITH THE NUMBER OF DISTINCT STATEMENTS IN THE PROCESS: 3.5 us at 10 texts, 6.3 us at 16-64, ~20 us at 100+ — a 5.5x step no screen can see. ⚠️ And it is probably NOT cache capacity: the caches look unbounded, which contradicts that reading**
+## Item 2269 — 🔑🔑🔑 **A SESSION'S COST GROWS WITH THE NUMBER OF DISTINCT STATEMENTS IN THE PROCESS: 3.5 us at 10 texts, 6.3 us at 16-64, ~20 us at 100+ — a 5.5x step no screen can see. ⚠️ ~~And it is probably NOT cache capacity~~ **IT IS: `PARSE_CACHE_CAP = 64`, found at item 2270 — my refutation rested on a CASE-SENSITIVE GREP BUG**
 
 Item 2268's prior-art check found the uncovered shape: every screen row runs ONE statement repeatedly, so
 the parse/plan caches are always warm. **This measures a session whose query TEXT keeps changing.** ⚠️ The
@@ -113608,3 +113608,55 @@ cannot separate them.
 
 GATES. `bun run fmt` 0, `bun run check` 0. New instrument `stmtcache-2269.ts`
 (`ARM=same|literal|alias`, `DISTINCT=`); no production change.
+
+## Item 2270 — ✅✅ **IT IS CACHE CAPACITY AFTER ALL: `PARSE_CACHE_CAP = 64`, and my sweep's jump sits EXACTLY between 64 and 100. ⚠️ My refutation at item 2269 rested on a CASE-SENSITIVE GREP BUG. 🔑 And one cap governs BOTH caches, with the larger-cap lever named in the source**
+
+Item 2269 measured a 5.5x step as a session's distinct-statement count grows, then argued it was _probably
+not_ capacity because "the grep found no configured cache bound". **The bound exists.**
+
+```text
+    const PARSE_CACHE_CAP = 64;            // packages/gql/src/index.ts
+
+    DISTINCT       10      16      32      64     100    1000    5000
+    ns/statement  3824    6259    6418    6300   20401   22482   19435
+                                           ^^^^   ^^^^^
+                                        at the cap  |  above it — 3.2x in one step
+```
+
+🔑 **The jump is precisely between 64 and 100.** ⚠️⚠️ **And my refutation failed on my own tooling**: the
+grep required `cache|Cache|lru|Lru` on the line, while the declaration is `PARSE_CACHE_CAP` — **uppercase
+CACHE**, which the pattern excluded. The second "refutation" (an unbounded cache would be warm by rep 2) was
+sound reasoning from a false premise. **A case-sensitive pattern is how a correct explanation got
+discarded** — the same class as [[grep-silently-skips-unicode]], and the fix is the same: prefer python
+`str.count`/`re.I` over a hand-rolled grep when absence is the claim.
+
+### 🔑🔑 ONE CAP GOVERNS BOTH CACHES
+
+```text
+    parseCache   Map<string, {chain, stmt}>   bounded LRU, cap 64, keyed on TEXT
+    planCache    WeakMap<Query, Plan>         UNBOUNDED, keyed on the AST OBJECT
+```
+
+✅ **The plan cache needs no cap of its own, and that is deliberate**: it is a `WeakMap` keyed on the
+`Query`, so when `parseCache` evicts a statement the `Query` becomes unreachable and the plan is collected
+with it. Its own note says item 228's admission filter _"is NOT needed here"_ because a `Map` RETAINS —
+_"it kept ~2KB statements alive across 64 further allocations, which tenured them and cost 16%"_. 🔑 So
+**`PARSE_CACHE_CAP` is the single point controlling the effect I measured.**
+
+### ✅ THE LEVER IS NAMED IN THE SOURCE, WITH THE MEASUREMENT THAT SET THE CAP
+
+The declaration's comment records why 64 and what the alternative is:
+
+> _"2000 … 1179.0 26% — would eat the win. So 64 keeps true LRU behaviour affordable. **At a larger cap the
+> honest choice would have been FIFO eviction instead, which costs nothing per hit but keeps the wrong
+> entries.**"_
+
+🔑 True LRU does `delete` + `set` on every HIT, and at 2000 entries that Map reordering cost **26%** — so
+the cap is small to keep per-hit cost low. ✅ **FIFO eviction at a much larger cap is the unbuilt
+alternative the author already identified.**
+
+**AND WHAT THIS ITEM ADDS: the COST of cap=64 was never measured.** Items 227/228 measured the WIN (an
+indexed point lookup from ~8.8 µs to ~0.8 µs) at small distinct counts; **nobody measured the cliff above
+64**, which item 2269 puts at **5.5x** — and 64 distinct statements is a small application.
+
+GATES. `bun run fmt` 0, `bun run check` 0. No instrument, no production change — a source-reading item.
