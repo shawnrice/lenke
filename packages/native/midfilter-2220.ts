@@ -54,18 +54,26 @@ const floor = (pred: (k: number) => boolean): { k: unknown }[] => {
   return out;
 };
 
+/*
+ * ⚠️⚠️ **CONSUME CHEAPLY: `JSON.stringify` INSIDE THE TIMED LOOP DILUTES THE RATIO TOWARD 1.0** (item 2227).
+ * A large cost identical in both arms is added to numerator and denominator alike — stringifying 80,000
+ * rows per iteration halved a measured gap (1.35x against the true 2.35x). 🔑 It is the mirror of item
+ * 2200's dead-code trap: consuming NOTHING lets the JIT delete the work, consuming EXPENSIVELY swamps it.
+ */
+const consume = (v: unknown): number => (Array.isArray(v) ? v.length : Number(v) || 1);
+
 const ms = (fn: () => unknown): number => {
   let sink = 0;
 
   for (let w = 0; w < 3; w += 1) {
-    sink += JSON.stringify(fn()).length;
+    sink += consume(fn());
   }
 
   const t0 = performance.now();
   const I = 8;
 
   for (let i = 0; i < I; i += 1) {
-    sink += JSON.stringify(fn()).length;
+    sink += consume(fn());
   }
 
   return sink > 0 ? (performance.now() - t0) / I : 0;

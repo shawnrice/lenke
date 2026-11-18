@@ -111548,3 +111548,41 @@ ladder doing its job for the third time (items 2216/2217, 2222, 2227) — and th
 nomination in one tick rather than a build.
 
 GATES. `bun run fmt` 0, `bun run check` 0. New probe `packages/native/noderows-2227.ts`; no engine change.
+
+## Item 2228 — ✅ **THE TWO DILUTED PROBES ARE FIXED, AND THE TRUE A/B CONFIRMS ITEM 2225 AT 3.23-3.61x (reported 3.17x). AND A NUANCE THAT MATTERS: DILUTION BITES HARDEST WHEN THE MEASURED WORK IS SMALL — it cost item 2227 a 2x, and item 2225 almost nothing**
+
+Item 2227 found `JSON.stringify` inside the timed loop diluting ratios toward 1.0, and flagged
+`asof-rows-2215.ts` and `midfilter-2220.ts` as carrying the same bug. Both now consume cheaply through one
+shared `consume()` that handles an array arm and a numeric arm.
+
+### ✅ THE TRUE A/B, two rounds, arms ASSERTED, `nx build` per arm
+
+```text
+    NODES=80000              PRE            POST          speedup     vs floor
+    b.k = 5      (1%)   274.5 / 278.8   84.9 / 77.3   3.23x / 3.61x   9.00-12.65x -> 3.92-4.16x
+    b.k < 10    (10%)   287.6 / 286.0  117.5 / 113.2  2.45x / 2.53x
+    b.k < 50    (50%)   345.2 / 322.7  252.1 / 245.2  1.37x / 1.32x
+    b.k >= 0   (100%)   384.7 / 370.0  375.8 / 374.9  1.02x / 0.99x   flat, as it must be
+```
+
+🔑 Each arm asserts its own identity (`gate lines=0` for PRE, `=2` for POST) and rebuilds the dist, so this
+cannot repeat item 2222's unbuilt-null. **The shipped change is confirmed slightly BETTER than reported**, and
+the 100% row is exactly flat — nothing to prune, nothing lost.
+
+### 🔑🔑 THE NUANCE: DILUTION IS PROPORTIONAL TO HOW SMALL THE MEASURED WORK IS
+
+```text
+    item 2227  node/rows     measured  1.35x   true  2.35x   <- a 1.7x error
+    item 2228  mid filter     reported  3.17x   true  3.23-3.61x  <- almost none
+```
+
+⚠️ `JSON.stringify` of N rows is a FIXED addend. On `node/rows` (≈1 ms of real work) it was larger than the
+signal; on the mid filter (≈80-280 ms) it is noise. **So the rule is not "stringify ruins everything" but
+"a constant addend matters in proportion to the work it is added to"** — and the cheap `.length` consume
+costs nothing either way, so there is no reason to keep the expensive form.
+
+🔑 This is why item 2227's correction did NOT flip any conclusion: dilution moves both arms the same
+direction, and on the shapes where it was large the verdicts were already "closed by an existing cause".
+
+GATES. `bun run fmt` 0, `bun run check` 0; tree verified back to the shipped file after the A/B. Probe
+harnesses only; no engine change.
