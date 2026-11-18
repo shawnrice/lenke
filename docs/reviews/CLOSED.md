@@ -115778,3 +115778,46 @@ filtered write takes, it is no longer obvious** — which is a decision for its 
 rows that file serves, exactly as item 2180 said.
 
 GATES. `bun run fmt` 0, `bun run check` 0. One probe (four arms); no production change.
+
+## Item 2314 — ✅✅ **THE A/B ITEM 2180's DECISION NEEDS IS NOW POSSIBLE, AND THE BLOCKER WAS PARTLY INSTRUMENTAL: `noderows` goes from a 1.86x noise floor to 1.011x ACROSS PROCESSES under inner-iteration calibration. A 16% regression is now unmissable on all four read-rung rows**
+
+Item 2313 re-priced item 2180's target one at **2.39x**, and 2180's reason for not building it is that a new
+rung risks **up to 16% on unrelated rows**. 🔑 That makes the decision an A/B — and item 2299 had already
+measured `noderows` at **1.86x spread on an IDENTICAL binary**. **A row that moves 86% by itself cannot
+adjudicate a 16% effect**, so the first question is whether the A/B is possible at all.
+
+### ✅ UNDER CALIBRATION IT IS, AND BY A WIDE MARGIN
+
+```text
+    row            4 across-process medians (ms)              spread    item 2299's figure
+    noderows       0.2257 0.2281 0.2265 0.2273                1.011x    1.86x
+    groupednode    0.3072 0.3063 0.3017 0.3066                1.018x    —
+    orderedrows    1.4494 1.4832 1.4856 1.4436                1.029x    —
+    hoprows        1.2627 1.3328 1.2575 1.2952                1.060x    —
+```
+
+🔑 **1.86x → 1.011x on the same row and the same machine.** The only change is the harness: warm 200 calls,
+then double an inner count until a sample fills 25 ms, and report per call — the pattern
+`gremlin-spelling-probe` has used since item 1644 and which items 2302/2303 cost me two published numbers
+to re-learn.
+
+✅ **Every row is now tight enough**: 1.1% to 6.0% against a 16% effect. ⚠️ `nodecount` is excluded — it is
+a closed-form answer at the clock's floor (~24 ns, items 2303/2305), so nothing is detectable on it and
+nothing needs to be.
+
+### 🔑 WHAT THIS CHANGES ABOUT ITEM 2180
+
+Its decline rested on two things: a 1.48x gain (**now 2.39x**, item 2313) and a 16% risk that could not be
+measured on the rows at stake. ✅ **The second half has dissolved** — the risk is now measurable to about a
+percent, so the trade can be decided on evidence instead of on a precautionary estimate.
+
+⚠️ **This item does NOT build the rung.** It establishes the baseline, in a separate item, before any code
+is touched — which is what item 2180 asked for (_"that trade needs its own item's measurement
+discipline"_). The four medians above ARE that baseline, re-runnable with
+`SHAPE=<row> bun run packages/native/rungnoise-2314.mjs`.
+
+✅ **And the general lesson is larger than this target**: a noise floor is a property of the INSTRUMENT, not
+of the row. Three of this session's "cannot tell" verdicts (items 2299, 2304, and 2313's deferral) were
+instrument-limited rather than engine-limited.
+
+GATES. `bun run fmt` 0, `bun run check` 0. One probe; no production change.
