@@ -116142,3 +116142,63 @@ DIFFERENT rung — so the 3.86x is attributable to exactly the code changed, and
 
 GATES. As listed. **7 generator-spreading drains remain**, now with a measured method for pricing them:
 profile the shape each serves, convert one, and keep its sibling rung as the control.
+
+## Item 2321 — 🚀🚀 **SHIPPED, 3.47x on `E().values(k)`: 26.6 → 7.7 ns AN EDGE over 60,000. And the tick's more durable result is the TEST that decides which of the remaining spreads can win at all — a plain `drain` loop STILL pays the generator protocol when what it iterates is itself a generator, which is why the labelled vertex scan measured flat**
+
+This tick set out to take the labelled whole-scan at 22.4 ns/row. ⚠️ **Reading it closed the target instead:
+its `drain` was ALREADY a plain loop**, which is why item 2320's control was flat — it was never on the
+broken pattern.
+
+```text
+    labelled whole-scan profile
+      29.79%  out.drain:10734      <- ALREADY a plain loop
+      28.70%  (anon):4975          <- the UPSTREAM STREAM, itself a generator
+      16.62%  pick:10726           <- a per-element closure, ~3.9 ns/row
+```
+
+### 🔑 SO THE REAL FINDING IS A TEST, NOT A TARGET
+
+⚠️ `for (const t of stream)` pays the generator protocol **when `stream` is a generator** — the plain loop
+only helps when its source is MATERIALIZED. ✅ That turns eight blind candidates into a decidable list:
+
+```text
+    line   473  nodeValuesWhereWalk        iterates graph.vertices   CONVERTIBLE
+    line   756  nodeValuesWhereDedupeWalk  iterates graph.vertices   CONVERTIBLE
+    line   994  nodeValuesDedupeWalk       iterates graph.vertices   CONVERTIBLE
+    line  1799  edgeValuesWalk             iterates graph.edges      CONVERTIBLE  <- taken here
+    (four more iterate indirectly and need their own look)
+```
+
+🔑 And `pick` at 16.62% ≈ 3.9 ns/row is **closure dispatch**, which
+`closure-dispatch-is-cheap-keyed-loads-are-not` prices at ~3 ns and which is unreachable without codegen
+(`no-runtime-codegen` is FIRM). ✅ So that rung is genuinely well-optimized and is NOT a target.
+
+### ✅ THE EDGE TWIN, TAKEN
+
+```text
+    arm                               PRE                      POST                    gain
+    E().values(k)   60,000 edges   26.60  27.29 ns/edge    7.71  7.76 ns/edge         3.47x
+    V().values(k)   (control)         316.59 µs               307.98 µs                flat
+    V(),hasLabel,values (control)     370.08                  374.73                   flat
+    gqlSeek         (control)           0.21                    0.20                   flat
+```
+
+✅ **Three controls flat, both rounds identical.** ⚠️ Measured in its OWN probe, not a new arm in
+`gremidx-2317.mjs` — adding edges there would change the graph every one of its arms sees and invalidate
+items 2317-2320's PRE numbers. ✅ The fixture asserts **20,000 distinct endpoints of 20,000** (item 1633's
+repeat-index split), so it is not the degenerate functional graph that class of generator produces.
+
+### ✅ VALIDATION, AND A GATE THAT CAUGHT ME
+
+- `bun run fuzz` **57 pass / 0 fail**; `bun run test -- --skip-nx-cache` 0; `fmt` 0; `check` 0.
+- `edge-values-drain-parity.test.ts`: iterator ≡ drain, in order, over an edge missing the key, a
+  non-matching label, and a MULTI-label edge (so `labels.some` is exercised) — **and against the defined
+  output, so two loops wrong the same way still fail.** Mutant (drain ignores the label filter): **1 pass /
+  1 fail**.
+- ⚠️ **`bun run check` first exited 2**: `getVertexById` returns `Vertex | null` and my fixture passed it
+  straight to `addEdge`. ✅ Narrowed with an explicit throw rather than a cast — a null there would have
+  silently built a different graph than the test describes. **This is exactly why `check` and not
+  `lint`+`fmt`: typecheck is in neither** (`local-gates-vs-ci`).
+
+GATES. As listed. **Three convertible spreads remain**, each with the materialized-source test applied and
+a sibling rung available as its control.

@@ -1794,9 +1794,38 @@ export const edgeValuesShortcut = (plan: Plan, graph: Graph): NodeValues | undef
   const labels = shape.label?.labels;
   const { key } = shape;
 
+  /*
+   * ⚠️⚠️ **A PLAIN DRAIN LOOP, NOT `[...edgeValuesWalk()]` (item 2321).** This is the EDGE twin of the
+   * vertex scan item 2320 shipped at 3.86x: `graph.edges` is MATERIALIZED, so a plain loop over it owes
+   * no generator protocol at all, where the spread paid a `next()` call and a `{value, done}` object per
+   * edge. Measured over 60,000 edges, `E().values(k)`.
+   *
+   * 🔑 **THE TEST FOR WHETHER A SPREAD IS WORTH CONVERTING, established at this item**: a plain `drain`
+   * loop STILL pays the protocol if what it iterates is itself a GENERATOR. That is why the labelled
+   * vertex scan — whose `drain` was already a plain loop, but over a `stream` — measured flat at 1.00x.
+   * Convert only where the source is materialized, as `graph.edges` is here.
+   *
+   * ✅ NOTHING BECOMES EAGER THAT WAS NOT: `drain` already spread the whole walk. The generator is
+   * untouched, so `[Symbol.iterator]` stays lazy (`eager-tail-cache` is the failure mode if that is ever
+   * confused). ⚠️ `emit` is the SINGLE per-edge decision body, so the two cannot disagree about
+   * membership or order — item 169's concern, pinned by `edge-values-drain-parity.test.ts`.
+   */
+  const emit = (e: { labels: ReadonlySet<string>; properties: Record<string, unknown> }): boolean =>
+    (labels === undefined || labels.some((l) => e.labels.has(l))) && key in e.properties;
+
   return {
     [Symbol.iterator]: () => edgeValuesWalk(labels, key, graph),
-    drain: () => [...edgeValuesWalk(labels, key, graph)],
+    drain: (): unknown[] => {
+      const out: unknown[] = [];
+
+      for (const e of graph.edges) {
+        if (emit(e)) {
+          out.push(e.properties[key]);
+        }
+      }
+
+      return out;
+    },
   };
 };
 
