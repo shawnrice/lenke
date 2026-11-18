@@ -114849,3 +114849,57 @@ exists to ask whether the one-hop versions have the same cause. ⚠️ They are 
 prediction.
 
 GATES. As listed above, each read unpiped. No production change in this item.
+
+## Item 2295 — ✅ **ONE OF THE TWO REMAINING GQL SPELLING FLAGS IS A HARNESS ARTIFACT AND THE OTHER IS REAL — and the real one runs the OPPOSITE way to item 2291: the CLAUSE spelling is 2.8x FASTER than both inline forms, reproducible to within 1%, with all three on the SAME rung**
+
+Item 2294 left two flags and a question: do the one-hop clause-vs-inline gaps share item 2291's cause?
+🔑 **No** — and establishing that took one read apiece.
+
+```text
+    far-node group    MATCH (a:P)-[:E]->(b …)      the far node is UNLABELLED, so item 2293's
+                                                   bucket-ratio gate cannot fire (an unlabelled
+                                                   bucket is every vertex, never 64x smaller)
+    seek group        MATCH (n:P) WHERE …          NO HOPS AT ALL, so there is no orientation question
+```
+
+### ✅ THE SEEK GROUP'S 3.80x IS THE HARNESS, AS ITS OWN COMMENT CLAIMED
+
+⚠️ Its comment says it _"seeks a STRING key at 28,571 and CONVERGES within 1.07x"_ while the full sweep
+measured **3.80x** — which reads like a regression since the comment was written. ✅ Isolated, three runs:
+
+```text
+    run 1   1.35 / 1.06 / 1.13 / 1.51 ms   spread 1.42x
+    run 2   1.46 / 1.39 / 1.43 / 1.68      spread 1.21x
+    run 3   1.26 / 1.07 / 1.21 / 1.41      spread 1.32x
+```
+
+🔑 **The comment is right and the sweep is not.** The probe's own output says so (_"a flag can still be
+this harness… re-run the group ALONE… THREE TIMES"_), and items 2285/2286 are the same lesson in both
+directions. ✅ **No regression; nothing to fix.**
+
+### 🔑 THE FAR-NODE GROUP IS REAL, AND THE PER-ARM NUMBERS INVERT THE EXPECTATION
+
+```text
+    (b {k: 5})          130.66 / 128.58 / 129.07 ms   inline prop anchor
+    (b WHERE b.k = 5)   146.73 / 143.79 / 145.64      inline WHERE
+    (b) WHERE b.k = 5    46.34 /  46.38 /  46.09      CLAUSE — 2.8x FASTER
+```
+
+⚠️ **The clause spelling WINS here, the opposite direction from item 2291's authz shape**, where a clause
+`WHERE` was the 15.9x loser. 🔑 Reading the group ratio alone would have said "3.2x gap" and left me
+assuming the clause form was slow again — `gremlin-spelling-probe`'s rule to read PER-ARM numbers earned
+itself. ✅ Identical answers (the probe asserts it), and reproducible to within 1% across three isolated
+runs, which is unusually tight for this surface.
+
+✅ **AND IT IS NOT A ROUTE DIFFERENCE**: all five spellings — including labelled variants — compile to
+`hopProjection`. So this is 2.8x _inside one rung_, which is a different and simpler shape than 2291's
+rung-preemption.
+
+⚠️ **MECHANISM NOT GUESSED.** `pushWhereIntoNode`'s own comment offers a candidate — _"a node predicate is
+evaluated once per SCANNED vertex, a clause filter once per SURVIVING BINDING"_ — but items 2282, 2285 and
+2287 each punished a mechanism that fit the observation, so it is a hypothesis for a profile, not a cause.
+
+**OPEN:** a 2.8x on `hopProjection`'s inline-predicate path, 200,000 edges, far node unlabelled. ⚠️ Note the
+direction: making the inline forms faster is the goal, NOT making the clause form "win" — it already does.
+
+GATES. `bun run fmt` 0, `bun run check` 0. One route reader; no production change.
