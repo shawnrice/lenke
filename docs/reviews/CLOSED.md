@@ -108271,3 +108271,50 @@ COALESCE shipped at 2165 (1.3x, and its 2.9x residual is per-row closure cost), 
 CLOSED here, and `ORDER BY DESC` (5.2x) left as the only unexamined row.
 
 GATES. No code change; `bun run check` 0; 5,324 tests green.
+
+## Item 2167 — ⚠️ **CLOSED: `ORDER BY DESC` is not a DESC problem and not a SORT problem. The whole 5.3x is the PROPERTY SCAN — 4.29 ms against native's 0.09, which dominates every row on item 2161's screen. And an "inversion" I reported mid-item was my own measurement artefact**
+
+The screen's last unexamined flag. ⚠️ Three things it is NOT:
+
+```text
+                                     ts    native   ratio
+    ORDER BY k ASC LIMIT 10        5.47      1.03    5.3x
+    ORDER BY k DESC LIMIT 10       5.11      1.03    5.0x   <- DESC is not the issue
+    ORDER BY k ASC  (no limit)    27.11     24.47    1.1x   <- the full sort is at PARITY
+    ORDER BY k DESC (no limit)    25.34     26.39    1.0x
+```
+
+🔑 `DESC` costs what `ASC` costs, and a FULL sort of 200,000 rows is 1.0-1.1x native. **So neither the
+direction nor the sort is the gap.**
+
+### 🔑 THE MARGINAL ANALYSIS LOCATES IT IN ONE LINE
+
+```text
+    shape                        ts    native    marginal over count(a.k)
+    count(*)  [touches no row]  0.00      0.00
+    count(a.k) [reads the prop] 4.29      0.09    <- THE FLOOR: 48x, and it is the whole gap
+    min(a.k)                    4.43      0.11    +0.14 / +0.02
+    max(a.k)                    4.43      0.12    +0.14 / +0.03
+    ORDER BY k LIMIT 1          5.37      0.71    +1.08 / +0.62
+    ORDER BY k LIMIT 10         5.39      1.03    +1.10 / +0.94
+```
+
+⚠️⚠️ **TS READS 200,000 PROPERTIES IN 4.29 ms WHERE NATIVE DOES IT IN 0.09 — 48x.** Every other term here
+is small: the top-10 adds +1.10 ms against native's +0.94 (**1.2x**), and `min`/`max` add +0.14 against
++0.02. 🔑 That single floor explains the 5x-ish ratios across item 2161's whole screen, and it is the
+closed `ts-ingest-is-constant-factor` area — `addVertex` withdrawn at item 312, the dense ordinal built and
+disqualified at 1369-1372/1397.
+
+### ⚠️⚠️ AND A CORRECTION TO MY OWN MID-ITEM CLAIM
+
+A 7-rep run read `min(a.k)` at **6.06 ms** — SLOWER than `ORDER BY k LIMIT 1`'s 4.73 — and I wrote that up
+as an equivalent-spelling INVERSION, since native's `min` is 6x faster than its own `LIMIT 1`. 🔑 **Re-run
+at 9 reps with 3 dropped: `min` is 4.43 and the ORDER BY form 5.37, so the aggregate is the FAST spelling
+in TS exactly as in native.** ⚠️ The 6.06 was warmup inside the kept window. **A claimed inversion between
+two spellings 1.3x apart needs the rep count that separates them before it is written down** — the same
+lesson as `ts-spelling-probe`'s note that single runs are bimodal.
+
+🔑 So item 2161's screen is now fully worked and the two findings it produced are shipped (2163's
+`EXISTS` 31.0x → 2.9x, 2165's `coalesce` 1.3x). Everything else on it resolved to the scan floor.
+
+GATES. No code change; `bun run check` 0; 5,324 tests green.
