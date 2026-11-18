@@ -3455,6 +3455,45 @@ const inEarlier = (buckets: readonly ReadonlySet<Edge>[], i: number, e: Edge): b
  * against this file's limit of 35 — the same cap that made `hopPredicates` and `farPredAndGate`
  * their own functions.
  */
+/**
+ * May a far-driven walk carry this INLINE far constraint? (item 2297)
+ *
+ * ⚠️⚠️ **THIS CONDITION USED TO BE `closedFar === undefined`, AND ITS COMMENT'S LAST CLAIM WAS
+ * FALSIFIED.** It said an inline constraint *"would contribute families whose expression this detector
+ * cannot see, so it declines rather than guessing. Conservative on purpose, and it declines no measured
+ * shape."* ✅ The reasoning is sound; the final clause was true only until measured. Item 2296:
+ *
+ * ```text
+ *     rows        (NO predicate)    5.61 ms   rows=200000   <- the control that made it visible
+ *     clause      WHERE b.k = 5     4.31      rows=2223
+ *     inlineProp  (b {k: 5})      104.28      rows=2223     <- 24x, and 18.6x the UNFILTERED walk
+ * ```
+ *
+ * 🔑 **WHY A PLAIN ANCHOR IS SAFE WHERE THE GENERAL CASE IS NOT.** The detector's AST key reads
+ * `clauseWhere`, so with an inline constraint it tests only PART of the predicate — that is the real
+ * hazard. But `props` is the one family with no expression to miss: an inline anchor is equality against
+ * a non-null literal, which can neither raise nor coerce, so there is nothing for the AST key to say
+ * about it. Every OTHER family is refused by name, including `nullProps` (`{k: null}` is `IS NULL`,
+ * item 260) and `cmpProps`/`memberProps`, whose value sides are exactly what the AST key screens.
+ *
+ * ⚠️ LISTED EXHAUSTIVELY, NOT BY A HELPER, because the correctness condition is that no family is
+ * forgotten: `CPredicate` has eight, and a ninth added later must fail this test rather than slip
+ * through a `where === undefined` shorthand. `predicateCannotRaise` rules out only three of them.
+ *
+ * ⚠️ A PURE FUNCTION because the route is answer-equivalent, so every mutation of a condition inline in
+ * the gate survives the differential tests (`perf-gate-needs-its-own-test`, items 1038/1044).
+ */
+export const inlineFarIsPlainAnchor = (closedFar: CPredicate | undefined): boolean =>
+  closedFar === undefined ||
+  (closedFar.props.length > 0 &&
+    closedFar.where === undefined &&
+    closedFar.eqProps === undefined &&
+    closedFar.cmpProps === undefined &&
+    closedFar.truthProps === undefined &&
+    closedFar.notTruthProps === undefined &&
+    closedFar.memberProps === undefined &&
+    closedFar.nullProps === undefined);
+
 export const farDrivenPredicatedApplies = (w: {
   farPred: CPredicate | undefined;
   gate: CompiledExpr | undefined;
@@ -3478,7 +3517,7 @@ export const farDrivenPredicatedApplies = (w: {
   // what makes the AST test on the next line a test of the ENTIRE predicate. An inline
   // constraint would contribute families whose expression this detector cannot see, so it
   // declines rather than guessing. Conservative on purpose, and it declines no measured shape.
-  w.closedFar === undefined &&
+  // (the inline-constraint question moved into the branch at the foot of this gate — item 2297)
   // ⚠️ THE TWO RAISE-FREEDOM TESTS, AND NEITHER SUBSUMES THE OTHER. `truthCannotRaise` is the
   // AST-level key, shared with the Rust engine, and it is the one that covers the OPERAND side:
   // it answers false for `b.k > b.s / 2`, whose family (`cmpProps`) is non-raising while its
@@ -3504,8 +3543,39 @@ export const farDrivenPredicatedApplies = (w: {
   // `compilePredicate`, in another module, that nothing here would notice changing. Keeping only
   // `truthCannotRaise` would depend on the compiled families never gaining a raising member.
   // Each is cheap and local; the pair costs one comparison at COMPILE time.
-  w.clauseWhere !== undefined &&
-  truthCannotRaise(w.clauseWhere) &&
+  /*
+   * ⚠⚠ **THE AST KEY NEEDS A CLAUSE `WHERE`, AND A PURE INLINE ANCHOR HAS NONE (item 2297).** This
+   * line used to be `w.clauseWhere !== undefined`, which declined
+   * `MATCH (a:P)-[:E]->(b {k: 5})` outright — measured at **24x** the clause spelling of the same
+   * question (item 2296: 104.28 ms against 4.31, and 18.6x the UNFILTERED walk).
+   *
+   * 🔑 **WHY THE INLINE-ONLY CASE NEEDS NO AST KEY.** The header above argues the pair must both stay
+   * because dropping `truthCannotRaise` would make soundness depend on *"no predicate with a raising
+   * operand ever lifting into a non-raising family"* — a property of `liftFarOnlyClause` in another
+   * module. ✅ With no clause `WHERE` **there is no lift at all**, so that implication has no premise:
+   * the predicate is the inline anchor itself. And rather than reason about how `farPred` was
+   * assembled, this tests `farPred` DIRECTLY with the same exhaustive family check — so a plain anchor
+   * is admitted because the WHOLE compiled predicate is one, not because of where it came from.
+   */
+  (w.clauseWhere === undefined
+    ? /*
+       * ✅ THE INLINE-ONLY CASE (item 2297). No clause `WHERE`, so nothing was lifted and the AST key has
+       * no expression to screen — `farPred` IS the inline anchor. Tested DIRECTLY with the exhaustive
+       * family check, so admission does not depend on how `farPred` was assembled.
+       */
+      w.closedFar !== undefined &&
+      inlineFarIsPlainAnchor(w.closedFar) &&
+      inlineFarIsPlainAnchor(w.farPred)
+    : /*
+       * ⚠⚠ **THE MERGED CASE STAYS DECLINED, AND A TEST CAUGHT ME ADMITTING IT.** A first version
+       * relaxed the `closedFar === undefined` conjunct ABOVE instead, which let
+       * `(b:L {m: 3}) WHERE b.n > -1` through — and the gate's own witness test ("an inline far
+       * constraint is declined") failed on ROW ORDER, which is how a route change shows up here.
+       * 🔑 The AST key screens only `clauseWhere`, so with BOTH an inline constraint and a clause
+       * `WHERE` it still tests only part of the predicate — the original hazard, undiminished. Only the
+       * inline-ONLY case escapes it.
+       */
+      w.closedFar === undefined && truthCannotRaise(w.clauseWhere)) &&
   predicateCannotRaise(w.farPred);
 
 /**

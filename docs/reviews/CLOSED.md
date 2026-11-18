@@ -114961,3 +114961,72 @@ cheap short-circuit first.
 
 GATES. `bun run fmt` 0, `bun run check` 0. One driver (`farprof-2296.mjs`, four arms, one shape per
 process); no production change.
+
+## Item 2297 — ✅✅ **SHIPPED: a far-driven walk now carries a plain inline far anchor — 108.42 → 3.95 ms (27x) on the item 2296 fixture, 130.66 → 38.1 (3.4x) on the probe's, and `(b {k: 5})` is now FASTER than the clause spelling it used to lose to by 24x.** ⚠️ The group still flags, because the remaining outlier is the inline `WHERE` arm — a different and larger gap
+
+Item 2296 named the condition: `farDrivenPredicatedApplies` required `closedFar === undefined`, declining
+any inline far constraint "conservative on purpose, and it declines no measured shape". 🔑 Two conditions
+actually stood in the way, and **only instrumenting found the second**.
+
+### ✅ THE FIX, AND WHY A PLAIN ANCHOR IS THE SAFE CASE
+
+```ts
+export const inlineFarIsPlainAnchor = (closedFar: CPredicate | undefined): boolean =>
+  closedFar === undefined ||
+  (closedFar.props.length > 0 &&
+    closedFar.where === undefined &&
+    closedFar.eqProps === undefined &&
+    closedFar.cmpProps === undefined &&
+    closedFar.truthProps === undefined &&
+    closedFar.notTruthProps === undefined &&
+    closedFar.memberProps === undefined &&
+    closedFar.nullProps === undefined);
+```
+
+🔑 The gate's AST key screens `clauseWhere`, so with an inline constraint it tests only PART of the
+predicate — the real hazard. ✅ **`props` is the one family with no expression to miss**: an anchor is
+equality against a non-null literal, which can neither raise nor coerce. All seven other families are
+refused BY NAME, exhaustively, so a ninth added later fails rather than slips through.
+
+### ⚠️ THE SECOND CONDITION, WHICH ONLY THE INSTRUMENT REVEALED
+
+After relaxing `closedFar`, the measurement did not move. 🔑 Rather than guess, the gate's inputs were
+printed:
+
+```text
+    PROBE2297 farPred=set gate=undef needsStart=false types=1 closedFar=props:1 clauseWhere=UNDEF anchorOk=true
+```
+
+⚠️ **Every input favourable, and `clauseWhere=UNDEF` — because a pure inline anchor has no clause `WHERE`
+at all, and the gate ended with `w.clauseWhere !== undefined`.** ✅ Relaxing that is sound for exactly this
+case: the header argues both raise-freedom keys must stay because dropping the AST one would make soundness
+depend on `liftFarOnlyClause` in another module — and **with no clause `WHERE` there is no lift, so that
+implication has no premise.** The branch tests `farPred` DIRECTLY with the same family check, so admission
+does not depend on how it was assembled.
+
+### ⚠️ MY FIRST VERSION WAS TOO BROAD AND THE SUITE CAUGHT IT
+
+Relaxing the `closedFar === undefined` conjunct in place also admitted the MERGED case
+(`(b:L {m: 3}) WHERE b.n > -1`), and the gate's own witness test — _"an inline far constraint is
+declined"_ — failed on ROW ORDER, which is how a route change surfaces here. ✅ **The merged case stays
+declined**: with both an inline constraint and a clause `WHERE`, the AST key still sees only part of the
+predicate. Only the inline-ONLY case escapes.
+
+### ✅ RESULT, AND AN HONEST PARTIAL
+
+```text
+    item 2296 fixture      before    after        probe fixture        before    after
+    rows (no predicate)      6.14      6.25       (b {k: 5})           130.66    38.1   <- 3.4x
+    clause                   4.01      4.16       (b WHERE b.k = 5)    146.73   146.9   <- UNCHANGED
+    inlineProp             108.42      3.95       (b) WHERE …           46.34    47.2   <- unchanged
+```
+
+🔑 **27x on the isolated fixture; the inline anchor now beats the clause spelling.** ⚠️ **But the probe's
+group spread ROSE, 3.2x → 3.8x**, because the slowest arm is now `(b WHERE b.k = 5)`: an inline `WHERE`
+lands in `closedFar.where`, which this admission refuses by name and `hopPredicates` blocks from lifting.
+**That is a separate ~4x and remains open** — recorded rather than hidden, because a group that still
+flags after a fix invites the assumption that the fix did nothing.
+
+GATES. `bun run fmt` 0, `bun run check` 0, `bun run test` **21 projects OK**, `bun run fuzz` **57 pass / 0
+fail** (byte-identity holds). 5 unit tests; **two mutants caught** (dropping the `nullProps` family fails
+2, allowing empty `props` fails 1), each verified as actually applied.
