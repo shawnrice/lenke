@@ -108108,3 +108108,68 @@ moving it risks a cycle; it is passed in instead.
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 5,310 GQL
 tests; `bun run fuzz` all seven green.
+
+## Item 2164 — ⚠️⚠️ **AN AST REWRITE THAT WAS A NO-OP, AND THREE "SUCCESSFUL" VERIFICATIONS THAT MISSED IT. The COALESCE gap is real (6.3x) but lives BELOW the AST, and the screen's 15.0x was mostly its `sum` wrapper**
+
+### 🔑 FIRST, THE SCREEN ROW WAS MOSTLY ITS WRAPPER
+
+Item 2161's screen flagged `sum(coalesce(a.k, 0))` at **15.0x native**. ⚠️ But `sum` over a scan is itself
+6.47 of that 8.94 ms — item 2159 records why — so COALESCE's MARGINAL cost there is 2.47 ms:
+
+```text
+                                       ts    native
+    sum(coalesce(a.k, 0))            8.94      0.89     coalesce costs 2.47 of this
+    sum(a.k)       [the wrapper]     6.47      0.12
+    count(coalesce(a.k, 0))          6.80      0.66     coalesce costs 0.98
+    count(a.k)     [control]         5.82      0.09
+    WHERE coalesce(a.k, 0) = 1      16.99      0.27     coalesce costs 13.16   <- THE REAL GAP
+    WHERE a.k = 1  [control]         3.83      0.04
+```
+
+🔑 **The PREDICATE is where COALESCE is expensive — 6.3x its twin for the identical answer** (10.5 ms
+against 1.67 on a later run), which is an equivalent-spelling gap. ⚠️ A screen row that wraps the feature
+in an expensive aggregate measures the aggregate.
+
+### 🔑 THE REWRITE, AND WHY IT IS SOUND — ALL OF WHICH WAS BESIDE THE POINT
+
+`coalesce(X, d) = v` is `X = v` **when `v !== d`**: for non-null `X` they agree; for NULL `X` the coalesce
+form is `d = v` while `X = v` is UNKNOWN, and a FILTER drops both only if `d !== v`. ⚠️ Verified against
+the engine on a fixture with a present value, a NULL value and an ABSENT property:
+
+```text
+    coalesce(a.k, 0) = 1   has1                   a.k = 1   has1    <- agree
+    coalesce(a.k, 0) = 0   absent, has0, isnull   a.k = 0   has0    <- DIFFER
+```
+
+### ⚠️⚠️ THREE VERIFICATIONS PASSED AND THE CHANGE DID NOTHING
+
+```text
+    1. the rewrite in ISOLATION      coalesce = 1 produced an AST IDENTICAL to a.k = 1     passed
+    2. the COMPOSED route name       both spellings -> countShortcut                       passed
+    3. the compiled CLAUSE shape     both -> eqProps [{key:'k'}], seedHints [{kind:'eq'}]   passed
+    4. the A/B                       10.50 WITHOUT the rewrite, 10.64 WITH                 NO-OP
+```
+
+🔑🔑 **The engine ALREADY converges the two spellings below the AST** — check 3 passes with the rewrite
+REVERTED, which is what made checks 1-3 worthless. ⚠️ My memory's rule was "assert the COMPOSED shape";
+that is necessary and **not sufficient**, because an identical composed shape can also mean the rewrite was
+redundant. **Only an A/B distinguishes "it worked" from "it was already true".**
+
+### 🔑 WHERE THE COST ACTUALLY IS, FOR THE NEXT ATTEMPT
+
+A windowed profile of the two arms:
+
+```text
+    coalesce (10.9 ms/rep)              plain (2.7 ms/rep)
+    (anonymous) 18300   34.3%           (anonymous) 18300   96.3%
+    (anonymous) 2369    10.7            (gc)                 2.3
+    callScalar           9.5            — nothing else —
+    propOf               7.0
+```
+
+⚠️⚠️ **`callScalar` is present in one arm and absent in the other**, so the coalesce call is still
+evaluated PER ROW even though the compiled clause shape is identical. 🔑 The cost is inside the lifted
+`eqProps` entry's compiled VALUE closure, not in the plan shape — so the fix belongs wherever that closure
+is built (`liftStartProps`' seek-hint path), not in an AST pass. That is the next thing to try on this row.
+
+GATES. Reverted; `bun run check` 0; 5,310 tests green.
