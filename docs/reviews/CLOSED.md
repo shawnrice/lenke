@@ -109311,7 +109311,7 @@ caught**; `guard-always-true` survives by definition — always recording IS the
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
 `bun run fuzz` all seven green.
 
-## Item 2185 — 🔑🔑 **THE ENTIRE REMAINING TRANSACTION PENALTY IS BUFFERED EVENTS: a deletion test turns it NEGATIVE (197.4 → −49.4 ns/op). Priced, designed, NOT BUILT — the sound gate risks silently dropping host events**
+## Item 2185 — 🔑🔑 **THE ENTIRE REMAINING TRANSACTION PENALTY IS BUFFERED EVENTS: a deletion test turns it NEGATIVE (197.4 → −49.4 ns/op). Priced, designed, NOT BUILT** ⚠️ **AND THE DESIGN IS REFUTED AT ITEM 2186 — the host-listener gate is UNSOUND against a documented, tested requirement (a listener attached mid-transaction receives events buffered BEFORE it attached). The PRICE below stands; the lever does not**
 
 Item 2184 left GC at +96.5 ns/op as the largest unexplained term. It is not GC on its own terms.
 
@@ -109360,3 +109360,47 @@ items 2180 → 2181 followed exactly this shape and the build landed at 1.83x.
 
 GATES. No production change; the diagnostic deletion reverted, tree verified identical to pristine,
 item 2184's guard and its 15 tests intact. `bun run check` 0.
+
+## Item 2186 — ⚠️⚠️ **BUILT AND REVERTED: item 2185's host-listener gate is UNSOUND, and an EXISTING TEST is what proved it. The ~247 ns/op is real and NOT AVAILABLE — buffered events must reach a listener that subscribes mid-transaction**
+
+Item 2185 priced buffered-event retention at the whole residual transaction penalty and wrote down the
+gate: skip `txEvents.push` when no HOST listener is subscribed. This built it properly and it does not work.
+
+### 🔑 THE BUILD WAS SOUND ON EVERY POINT I HAD IDENTIFIED
+
+Four couplings were found and handled, and the code's own comments confirmed each:
+
+1. **Host vs internal listeners** — `Graph` registers `markMutated` and `onMutate` through its OWN public
+   `on`, so a listener COUNT cannot tell them from a host's (item 862's point). Handled by identity: a
+   `Set` of the two internal references, and a **monotonic** flag so that being wrong only ever costs the
+   old allocation.
+2. **`mutationVersion`** — a third observable item 2185 did not know about. A buffered tx event's only
+   commit-time effect is `pendingWrites += 1` via `markMutated`; it does NO token work, because its tokens
+   went into `txTokens` at buffer time. 🔑 The flush's own comment says exactly that. Handled with an
+   `absorbWrites(n)` bridge mirroring the existing `absorbTokens` one.
+3. **Nested rollback** — `txMarks` is a savepoint array, so a frame's skipped count had to be marked and
+   restored alongside `txEvents.length`.
+4. **Full rollback** — `applyUndoAndReset` zeroes the count, so nothing undone bumps `version`.
+
+### ⚠️⚠️ AND THEN A TEST THAT ALREADY EXISTED REFUTED THE WHOLE IDEA
+
+```text
+    (fail) reactive counters > a @graph/mutate listener attached mid-transaction
+                               still sees the earlier writes
+```
+
+🔑 Its own assertion says why: _"Two, not one: the first write's event was buffered before the listener
+existed, and **a buffered event is dispatched to whoever is subscribed AT COMMIT**."_ ⚠️ So
+subscribe-at-commit-wins is DESIGNED semantics with a test, and a gate decided at WRITE time cannot honour
+it — by the time the flag flips, the earlier events are already gone.
+
+**There is no cheaper variant.** The buffered event IS the payload, so a lightweight marker cannot
+reconstruct what a late subscriber is entitled to receive. ⚠️ Item 2185's heading is corrected in this same
+commit: its PRICE stands (the deletion test is valid), its LEVER does not.
+
+🔑 **What would be needed instead** is a change to the observable contract — e.g. "a listener receives only
+events emitted after it subscribed" — which is a semantics decision for the owner, not a perf change, and
+it would make this test wrong on purpose. **Not proposed.**
+
+GATES. No production change; the build reverted, tree verified identical to pristine, 486/486 core tests
+green. `bun run check` 0.
