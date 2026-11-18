@@ -110640,7 +110640,7 @@ says so too — `sortRowsByColumns` "applies `skip`/`limit` itself, including it
 which is why `boundedTopRows` appeared in the profile at a cheap 0.123 ms. **There is no "a limit cannot be
 more work" defect here.** That headline is withdrawn and item 2208's heading is struck in this commit.
 
-### ✅ WHAT SURVIVES, AND IT IS STILL WORTH 3.5x
+### ⚠️⚠️ ~~WHAT SURVIVES, AND IT IS STILL WORTH 3.5x~~ — **ALSO WITHDRAWN at item 2210: that 3.5x used the unordered floor item 698 explicitly warns against. Against the HONEST floor (unordered + a bare sort of its own rows) the top-k is 1.20-1.66x at every degree, inside item 698's band. NOTHING TO TAKE.**
 
 ```text
     engine: hop topk ORDER BY + LIMIT 10      7325 us
@@ -110661,5 +110661,52 @@ new arm goes in a NEW FILE — the same constraint item 2194 worked under.
 control must differ from the target by exactly ONE thing.** `no ORDER BY, no LIMIT` differs by two, and the
 one I wasn't thinking about (the sort) dominated. One extra row in the table — `ORDER BY` alone — would have
 caught it before the write-up.
+
+GATES. `bun run fmt` 0, `bun run check` 0. No production change.
+
+## Item 2210 — ✅ **THE TOP-K TARGET IS REFUTED AND ITEM 698 IS CONFIRMED, NOT RE-DERIVED: 1.20-1.66x of the HONEST floor at every degree. My 3.5x ceiling used the floor item 698 explicitly warns against, and a refutation sat ON the line I was about to change**
+
+Items 2208/2209 carried a "3.5x, routing change, build it" handoff. ⚠️ Before touching anything, reading the
+site turned up a 🛑 comment on the exact line:
+
+> `sorts !== undefined` FORCING THE START-DRIVEN WALK IS THE SORTED-HOP COST, and it is REFUTED as a target
+> at item 698 (re-priced at 697) — do not re-derive it. … **WHAT THE COST IS, measured against the HONEST
+> floor (the unordered query PLUS a bare sort of its own rows, not the unordered query alone): 0.86x of that
+> floor at degree 1 … and 1.58x at degree 3. Comparing against the unordered row alone overstates it ~1.9x.**
+
+🔑🔑 **That is EXACTLY the error item 2209 had just corrected in the other direction, and I made it again
+one tick later.** My 2,068 us "ceiling" was a streamed walk with no sort cost at all — the unordered floor.
+
+### ✅ THE HONEST FLOOR, AND A DEGREE SWEEP, CONFIRM ITEM 698
+
+```text
+    deg   honest floor   ORDER BY only    ratio |  floor+slice   ORDER+LIMIT 10    ratio
+    1            2590           2894     1.12x |        1519            2381     1.57x
+    2            3904           7450     1.91x |        2291            2743     1.20x
+    3            4055          14952     3.69x |        3292            4904     1.49x
+    4            5967          13094     2.19x |        4034            5568     1.38x
+    6            7899          24006     3.04x |        7709           12768     1.66x
+```
+
+🔑 **The TOP-K is 1.20-1.66x of its honest floor at EVERY degree** — inside item 698's measured 0.86-1.58x
+band. There is nothing to take, and the bounded heap is already doing its job (item 2209 measured the
+`LIMIT` making the sorted query 1.8x faster).
+
+⚠️ **THE UNLIMITED `ORDER BY` COLUMN IS NOT A FINDING EITHER, BECAUSE IT IS NON-MONOTONIC**: 1.12 → 1.91 →
+3.69 → 2.19 → 3.04. A cost that rises, falls and rises again with degree is measurement spread, not a
+mechanism. It would need its own isolated instrument before anyone quotes a number — recorded here as a
+CANDIDATE, deliberately unpriced.
+
+### 🔑 WHY THE SORTED HOP CANNOT USE THE CHEAP WALK, which is the part worth remembering
+
+The far-driven walk is cheaper and is **unavailable**, for a correctness reason rather than a perf one: it
+reorders rows deliberately, `Array.prototype.sort` is stable, so **tie order would change — and tie order is
+observable between the engines** (item 605 measured TS and native agreeing exactly over a fixture with 20
+ties per group, on every hop spelling). ⚠️ My own ceiling walked the label set and its adjacency, i.e. in
+far-driven order — **sound for `RETURN b.k ORDER BY k` where ties are literally identical rows, and UNSOUND
+for any projection with a second column.** A general rung could not use it.
+
+**THREE REFUTATIONS NOW SIT ON THIS FAMILY** (items 697, 698, and this one), all with properly-constructed
+floors. Do not open it again without an instrument that measures the sort's own cost.
 
 GATES. `bun run fmt` 0, `bun run check` 0. No production change.
