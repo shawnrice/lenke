@@ -5524,6 +5524,7 @@ export type CLinear = {
   // `Row[] | undefined` — the one rung that may decline at RUNTIME, because an endpoint label's
   // vacuity is a property of the graph and not of the query (item 1399).
   varLengthCount: ((graph: Graph, params: Params) => Row[] | undefined) | null;
+  shortestEndpointCount: ((graph: Graph, params: Params) => Row[] | undefined) | null;
   /** Precomputed grouped-count closure for `MATCH (n) RETURN n.k, count(*)`; else null. */
   groupCountShortcut: ReachFn | null;
   /** The same over a HOP — `MATCH (a)-[:T]->(b) RETURN b.k, count(*)`; else null. */

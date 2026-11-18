@@ -107326,3 +107326,78 @@ piece of work, not a reorder — the next item on this should start from `matchP
 a `throw` in the candidate rung first to prove which code serves the shape.
 
 GATES. Tree reverted to pristine; `bun run check` 0; 5,217 tests green.
+
+## Item 2151 — ✅✅ **SHIPPED: a `shortestEndpointCount` rung — `ANY SHORTEST … RETURN count(*)` from the BFS's reachable set, 3.11x at depth 1 and ~2x deeper. Item 2150 priced this; the measurement that made it possible was a DIAMOND**
+
+### 🔑 THE SEMANTICS CAME FIRST, AND THEY ARE WHY THE EXISTING RUNG CANNOT SERVE THIS
+
+Item 2150 ended suspecting `detectReachableShortcut` declined a selector needlessly. ⚠️ A diamond
+(`a→b→d`, `a→c→d`) at `{1,2}`, seeded at `a`, settles it:
+
+```text
+    ANY SHORTEST      3     one path per endpoint PAIR — b, c, d
+    default `walk`    4     counts PATHS: a→b, a→c, a→b→d, a→c→d
+    ALL SHORTEST      4     d has TWO equally-short paths
+```
+
+🔑 **Three different answers, so the decline is CORRECT** — and that is what told me what the rung must
+compute: the size of the reachable set, which a BFS's `dist` map already holds. ⚠️ Measure the semantics;
+do not reason about them from the selector's name.
+
+### 🔑 WHY IT IS WORTH A RUNG
+
+A windowed profile of the general matcher on this shape put `withBinding` at **34.4% self** and the BFS
+itself at **6.9%**: the walk is cheap, and building a row per endpoint that `count(*)` discards costs five
+times it.
+
+```text
+    row                       BEFORE     NEW
+    depth 1                    214.7      67.7   3.11x
+    depth 2                    420.8     197.5   2.12x
+    depth 3                    617.5     309.2   1.98x
+    depth 3, INCOMING          602.6     319.6   1.86x
+    with a WHERE [declines]     28.1      29.2   flat
+    plain walk [declines]       13.0      11.2   flat
+```
+
+### ⚠️⚠️ TWO WRONG ANSWERS, BOTH CAUGHT BY EXISTING TESTS ON THE FIRST RUN
+
+- **Bare `ANY` is not this shape.** I admitted `'any'` beside `'anyShortest'`, reasoning that one
+  arbitrary path per endpoint must COUNT the same. ⚠️ `ast.ts` is explicit: `'any'` dedups per **endpoint**,
+  `'anyShortest'` per **endpoint PAIR**, so bare `ANY` counts fewer. `a vacuous {1,1} quantifier` failed.
+- **The SEED is an endpoint when a path returns to it.** `dist` holds the seed at distance 0, so a
+  self-loop read as already-visited and `(a, a)` went uncounted — silently, every other pair right. 🔑 The
+  same `seedCycle` bookkeeping `shortestWalk` carries, which **my own item 2149 test bracketed two items
+  ago** and I still did not anticipate.
+
+🔑 A third existing guard also fired as designed: `routes-fired`'s detector census (37 → 38), whose comment
+says a detector added without a route case "fails HERE instead of going unguarded."
+
+### ⚠️ THE MUTATION ROUND, AND THE FOUR SURVIVORS EACH HAVE A VERIFIED REASON
+
+**10/14 caught**, including the seed cycle, the dedup, the depth ceiling, both direction branches, the
+`adjFrom`/`adjTo` swap, the far label, the `WHERE` gate and a `min` of 0.
+
+- `min >= 1`'s other half and `depth >= min` are **UNREACHABLE**: `{2,4}` with a selector is `E_SYNTAX`,
+  though `walk` accepts it. Not weak tests — a shape the parser will not produce.
+- `max === null` is **redundant with `max < min` BY COERCION**: `{1,}` parses to `{min: 1, max: null}` and
+  `null < 1` is `0 < 1`. 🔑 Proven the 2147 way — removing it alone changes nothing, removing the whole
+  condition is CAUGHT. Kept, because relying on a null-to-zero coercion to reject an unbounded walk is not
+  something a reader should have to notice.
+- A path variable is genuinely **answer-equivalent** for a `count(*)` (6 against 6), as is disabling the
+  rung.
+
+⚠️ Two test gaps the survivors exposed and a 7-vertex line closed: an unbounded max reaches further than a
+bounded one (21 against 15) and `{0,n}` admits the empty path (22). On a SATURATED graph `{1,}` and `{1,3}`
+coincide, which is exactly how that mutant first survived.
+
+⚠️ **AND MY TEST LITERALS WERE WRONG A FOURTH TIME** (2133, 2146, 2149, now 2151): I carried 3-and-4 from
+the single-seed diamond probe into a test that seeds from all four vertices, where it is 5-and-6. Derived
+in a comment now, as the other three taught.
+
+🔑 A bench row was added for the no-`WHERE` form (254.9 TS against ffi's 49.3, **5.18x — OPEN**), beside
+2149's `WHERE` row which this rung declines, so both arms are guarded.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 5,247 GQL
+tests; `bun run fuzz` all seven green — plus `differential` on three explicit seeds, since `ANY SHORTEST`
+is GQL-only and cannot reach the Gremlin residual.

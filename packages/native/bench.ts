@@ -1514,6 +1514,22 @@ const CASES: Case[] = [
      * `{ edge, node }` generator — the saving is the WRAPPER OBJECT, not the lookup, which `expand`
      * already did the same way.
      */
+    /*
+     * 🔑 THE NO-`WHERE` TWIN, added at item 2151 with its own rung — `ANY SHORTEST` + `count(*)` answered
+     * from the BFS's reachable set rather than the general matcher, 3.11x at depth 1. ⚠️ The row below
+     * keeps a `WHERE`, which that rung DECLINES, so the two rows together guard both arms.
+     */
+    name: 'query: ANY SHORTEST count, no WHERE [2151]',
+    ...onGraph(
+      () => optionalDoc,
+      (e, g) =>
+        void e.query(
+          g,
+          'MATCH ANY SHORTEST (a:Person)-[:KNOWS]->{1,2}(b:Person) RETURN count(*) AS c',
+        ),
+    ),
+  },
+  {
     name: 'query: ANY SHORTEST 1-6 hops [item 2149]',
     ...onGraph(
       () => optionalDoc,

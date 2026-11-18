@@ -117,6 +117,7 @@ import { detectOptionalGroupedHopCount, detectOptionalHopCount } from './optiona
 import { detectReachableShortcut } from './reachability.js';
 import { columnName } from './rows.js';
 import { collectAggregates, hasAggregate } from './scalars.js';
+import { detectShortestEndpointCount } from './shortest-endpoint-count.js';
 import { detectVarLengthCount } from './var-length-count.js';
 
 /**
@@ -2596,6 +2597,7 @@ export const compileLinear = (linear: LinearQuery): CLinear => {
   return {
     clauses,
     varLengthCount: detectVarLengthCount(fast, clauses),
+    shortestEndpointCount: detectShortestEndpointCount(fast),
     countShortcut: detectCountShortcut(fast, clauses),
     /*
      * ⚠️ The GROUPED optional-hop count (item 2123), above its ungrouped sibling because it is the

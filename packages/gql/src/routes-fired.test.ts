@@ -525,6 +525,17 @@ describe('every fast-path detector fires for its own shape', () => {
       'MATCH (a:L) OPTIONAL MATCH (a)-[:R]->(b) RETURN a.k AS g, count(*) AS c',
       ['optionalGroupedHopCount'],
     ],
+    /*
+     * ⚠️ `ANY SHORTEST` + `count(*)` (item 2151). The selector is what makes this DISJOINT from
+     * `varLengthCount` beside it: that rung refuses any selector, this one requires `anyShortest`.
+     * 🔑 And bare `ANY` is NOT this shape — `'any'` dedups per ENDPOINT where `'anyShortest'` dedups
+     * per endpoint PAIR, so the two count differently.
+     */
+    [
+      'ANY SHORTEST endpoint count',
+      'MATCH ANY SHORTEST (a:L)-[:R]->{1,3}(b:L) RETURN count(*) AS c',
+      ['shortestEndpointCount'],
+    ],
     [
       // Item 1853: the multi-column DISTINCT over a node scan, which had no rung at all while
       // every hop and chain width had one — 27.7x the one-column spelling.
@@ -582,7 +593,7 @@ describe('every fast-path detector fires for its own shape', () => {
 
   // Every one is covered by the table above. Asserted rather than claimed, so a
   // detector added later without a route case fails HERE instead of going unguarded.
-  it('covers all thirty-seven detectors', () => {
+  it('covers all thirty-eight detectors', () => {
     const covered = new Set(CASES.flatMap(([, , want]) => want));
     const all = new Set(
       Object.keys(
@@ -598,7 +609,8 @@ describe('every fast-path detector fires for its own shape', () => {
     // a detector added without a route case above gets found.
     // 35 -> 36 at item 2119 (`chainDistinctLevels`).
     // 36 -> 37 at item 2123 (`optionalGroupedHopCount`).
-    expect(all.size).toBe(37);
+    // 37 -> 38 at item 2151 (`shortestEndpointCount`).
+    expect(all.size).toBe(38);
   });
 });
 

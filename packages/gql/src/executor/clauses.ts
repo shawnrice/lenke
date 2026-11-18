@@ -1575,6 +1575,20 @@ export const runTxControl = (tx: TxControl, graph: Graph): void => {
  * byte-identical to the native engine's auto-commit frame. Read-only statements
  * skip the frame (no undo/commit overhead).
  */
+/**
+ * A rung that can only decide at RUN time: call it if present, and pass its answer through only when it
+ * did not decline.
+ *
+ * ⚠️ Hoisted purely to keep the chain under its `complexity` cap (35) — adding item 2151's rung inline
+ * took it to 37. 🔑 The two-step `if` reads the same either way; what it must NOT become is a `??`, which
+ * would conflate "declined" with "answered `undefined`".
+ */
+const lateRungRow = (
+  rung: ((graph: Graph, params: Params) => Row[] | undefined) | null,
+  graph: Graph,
+  params: Params,
+): Row[] | undefined => (rung === null ? undefined : rung(graph, params));
+
 export const runLinear = (linear: CLinear, graph: Graph, params: Params): Row[] => {
   // ⚠️ READ, NOT COMPUTED (item 1510). `CLinear.writes` is settled by `compileLinear`; this used
   // to be `linear.clauses.some((c) => WRITE_CLAUSES.has(c.kind))` on every call, which is a
@@ -1643,12 +1657,28 @@ const fastPath = (linear: CLinear, graph: Graph, params: Params): Row[] | undefi
   // existing. `varLengthCount` cannot decide at COMPILE time whether a depth-4 trail's endpoint
   // label is vacuous — vacuity is a property of the graph — so it is admitted and declines here
   // when the label really filters. See `depth4Admissible`.
-  if (linear.varLengthCount) {
-    const varLength = linear.varLengthCount(graph, params);
+  const varLength = lateRungRow(linear.varLengthCount, graph, params);
 
-    if (varLength !== undefined) {
-      return varLength;
-    }
+  if (varLength !== undefined) {
+    return varLength;
+  }
+
+  /*
+   * ITEM-2151-SHORTEST-COUNT: `ANY SHORTEST`/`ANY` + `count(*)` from the BFS's distance map.
+   *
+   * 🔑 PLACED HERE, BESIDE `varLengthCount`, because it answers the same KIND of question (a quantified
+   * walk's `count(*)`) on a disjoint set of shapes: that rung refuses any selector, this one requires
+   * `any`/`anyShortest`. ⚠️ Neither can steal the other's shape, so the order between them is free —
+   * written after it only for reading.
+   *
+   * ⚠️ Without this the shape falls through to the general matcher, where a windowed profile put
+   * `withBinding` at 34.4% self against the BFS's own 6.9%: five times the walk's cost spent building a
+   * row per endpoint that `count(*)` then discards.
+   */
+  const shortest = lateRungRow(linear.shortestEndpointCount, graph, params);
+
+  if (shortest !== undefined) {
+    return shortest;
   }
 
   const starCount = chainStarCountOrCountShortcut(linear, graph, params);
