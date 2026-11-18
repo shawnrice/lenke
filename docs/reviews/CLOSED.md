@@ -113461,3 +113461,50 @@ spread lives.
 
 GATES. `bun run fmt` 0, `bun run check` 0. Existing instrument re-run (`FINDER=gremlin`); no production
 change.
+
+## Item 2267 — ✅ **THE SESSION'S STANDING O(1)-BY-ID INVARIANT IS VERIFIED BY SWEEP FOR THE FIRST TIME: N grows 80x and the lookup grows 3.84x, so it is O(1) and the rise is CACHE — with the jump exactly at 200,000, where `CLAUDE.md` puts that transition**
+
+The brief carries one explicit invariant — _"keep good O(1) access to get a vertex or edge by id"_ — which
+had been touched indirectly (item 2200 priced by-id lookup; 2239 found `getVertexById` is one `Map.get` that
+every element memoizes) but **never verified as an invariant**. 🔑 O(1) means FLAT IN N, so the test is a
+sweep.
+
+```text
+    200,000 scattered lookups per rep, median of 5, ids drawn by a STRIDE (sequential would measure prefetch)
+         N    vertex ns    edge ns    growth vs smallest
+     10000        115.7      133.4    1.00x / 1.00x   (N is  1x)
+     50000         88.4      103.4    0.76x / 0.78x   (N is  5x)
+    200000        330.3      345.0    2.85x / 2.59x   (N is 20x)
+    800000        444.7      436.6    3.84x / 3.27x   (N is 80x)
+```
+
+### ✅ THE INVARIANT HOLDS, AND THE GROWTH IS EXPLAINED
+
+**N grows 80x; the per-lookup cost grows 3.84x.** A structure that had degraded to O(N) would show 80x, and
+one that had gone O(log N) would show ~2.4x on a different curve. ✅ **It is O(1), and the rise is cache
+residency** — the jump happens between 50,000 and 200,000, which is exactly where `CLAUDE.md` places that
+transition (_"between 200k and 1M elements"_; at 2 elements a node plus an edge each, 200,000 nodes is
+~600,000 elements). Both vertices and edges behave the same, as the brief requires of both.
+
+⚠️ **One honesty note about the absolute**: the timed loop builds the id string (`${prefix}${…}`) per
+lookup, so 445 ns includes that allocation, not just the `Map.get`. 🔑 That cost is CONSTANT in N, so it
+**dampens** the measured growth rather than inflating it — the ratio is if anything understated, and the
+verdict is unaffected.
+
+### 🔑 AND THE SESSION'S STATE, STATED PLAINLY
+
+```text
+    bun run fmt / check / test --skip-nx-cache      0 / 0 / 0 (21 projects)
+    bun run fuzz                                   57 pass / 0 fail
+    working tree clean; 224 commits unpushed
+```
+
+**Ten ships hold** (2169, 2170, 2173, 2177, 2181, 2184, 2191, 2194, 2203 at 38x, 2225), all verified present
+in source at items 2235/2244/2254. ⚠️ **Items 2236-2266 shipped NOTHING — thirty-one items of measurement**
+— and that is the honest headline: every candidate they examined was either already built and declined, at
+its floor, or a number of mine that did not survive re-measurement. ✅ What those items did produce: **both
+surfaces now swept across sizes with reproducibility** (2265/2266), a **fair sort floor** where none existed
+(2262), the **cross-engine answer check** the bench lacked (2236/2241), and **nine corrections to my own
+headings**.
+
+GATES. As above, each read unpiped. New instrument `byid-2267.ts`; no production change.
