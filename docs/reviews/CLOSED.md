@@ -112632,3 +112632,60 @@ correct by aliasing, and is never rebuilt.** ✅ That also explains item 2245's 
 inline-cache sites with the read path, and **item 2248's "data rebuild" heading is corrected above.**
 
 GATES. `bun run fmt` 0, `bun run check` 0. New probe `alloc-2249.ts`; `drain-2247.ts` gained `SHAPE=scan`.
+
+## Item 2250 — ✅ **IDENTIFIED, AND IT WAS DOCUMENTED IN THE SOURCE ALL ALONG: the churn penalty is the `topologyVersion`-keyed CSR cache being dropped whole on every write. ⚠️⚠️ JIT deopt REFUTED by `--trace-deopt`, and FOUR items (2246-2249) re-derived a trade-off a grep would have found**
+
+### ✅ FIRST, THE DEOPT HYPOTHESIS IS DEAD
+
+```text
+    --trace-deopt, N=20000, 40 rounds      clean 21 deopt events    churn 19
+    churn functions seen: decode$2 (8), drain (3), insertEdge (2), parseLine (1), emit (1)
+```
+
+🔑 **Churn has FEWER deopts than clean**, and the instrument demonstrably saw my own code (the functions
+above are load-phase, not Node internals — unlike `--heap-prof`'s failures at item 2249, which is why that
+null was not trusted and this one is). The read path never deopts in either arm. **Item 2249's leading
+hypothesis is refuted.**
+
+### 🔑🔑🔑 AND THE REAL MECHANISM IS A DELIBERATE, DOCUMENTED POLICY
+
+The executors cache a **CSR keyed on `graph.topologyVersion`**, which is bumped SYNCHRONOUSLY by every
+adjacency write, and a stale generation is **dropped whole**. The source says so in nine places:
+
+- `gremlin/executor/count-shortcut.ts:2641` — _"`graph.topologyVersion`: a ONE-SHOT query never builds, a
+  **WRITE-EVERY-READ workload never** [pays off]"_
+- `gremlin/executor/second-ask.ts:17` — _"⚠️⚠️ **THIS POLICY IS THE ITEM.** The CSR is keyed on
+  `topologyVersion`, so the first query…"_
+- `gql/executor/csr-cache.ts:286` — _"a one-shot query and a **write-heavy workload never pay for it**"_
+- `gremlin/executor/hop-values.ts:156` — prices the build at **~144 ms on a scattered layout**
+
+✅ **It explains every observation, which is why it is the answer and not another hypothesis:**
+
+| observation                                 | explained by a dropped CSR generation          |
+| ------------------------------------------- | ---------------------------------------------- |
+| requires the adjacency walk (2249)          | ✅ the CSR _is_ the adjacency structure        |
+| one write costs the same as 100 (2246)      | ✅ one generation drop                         |
+| scales with V and E, superlinearly (2248)   | ✅ the build is O(V+E) over a scattered layout |
+| recovers after 1-2 reads (2245)             | ✅ the rebuild is then cached                  |
+| no net allocation (2249)                    | ✅ the new CSR replaces the old                |
+| no deopt (this item)                        | ✅ nothing to do with the JIT                  |
+| not the label index / drain / plan (2247-8) | ✅ none of them is the CSR                     |
+
+### ⚠️⚠️ THE PROCESS FAILURE, WHICH IS THE LESSON
+
+**Four items built four instruments to find something a `grep topologyVersion` would have produced in one
+call.** `CLAUDE.md` opens by warning about exactly this — _"three passes in one session re-derived a closed
+target… each pass searched something first and searched the wrong store"_ — and the right store here was
+**the code**, not `CLOSED.md`. 🔑 **When a cost is structural and reproducible, grep the source for the
+mechanism BEFORE building an instrument to hunt it.** The measurements still stand and were not wasted, but
+they should have cost one item, not four.
+
+### ✅ WHAT IS GENUINELY NEW, AND IT IS A POLICY INPUT
+
+The trade-off was documented but **never quantified at scale**: at **80,000 vertices one write makes the
+next read 2.8-3.4x slower** (13-14 ms of rebuild against a 6-7 ms read), rising from ~1.8x at 20k and ~48
+ns/vertex at 5k to ~171 ns/vertex at 80k. ⚠️ `second-ask.ts` calls the policy "the item", so these numbers
+are the evidence a revisit would need — e.g. an incremental CSR patch for single-edge adds, or a heuristic
+that declines the CSR route when writes are interleaved. **Not proposed here; recorded as priced.**
+
+GATES. `bun run fmt` 0, `bun run check` 0. No production change.
