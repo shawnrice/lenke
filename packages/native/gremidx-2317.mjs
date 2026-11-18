@@ -57,6 +57,20 @@ const pHas = traversal(V(), hasLabel('User'), has('name', NAME), values('score')
 const pScan = traversal(V(), hasLabel('User'), has('team', 'nosuchteam'), values('score'));
 const pById = traversal(V(NAME_ID), values('score'));
 
+/*
+ * ✅✅ **THE ABLATION LADDER (item 2318), ONE ARM PER PROCESS.** Item 2317 left 5.8x between `V(id)`
+ * (0.21 µs) and the full `V(), hasLabel, has, values` (1.28 µs), both flat in |V|. 🔑 These rungs add one
+ * element at a time so the 1.06 µs can be attributed rather than guessed.
+ *
+ * ⚠️ **A LADDER IN ONE PROCESS IS THE SHAPE ITEM 2285 SHOWED FLATTERS ITSELF** — each arm pollutes the
+ * next one's dispatch. Selected by `ARM`, so each runs alone.
+ */
+const pIdVals = traversal(V(NAME_ID), values('score'));
+const pSeedLabel = traversal(V(), hasLabel('User'));
+const pSeedLabelHas = traversal(V(), hasLabel('User'), has('name', NAME));
+const pHasNoLabel = traversal(V(), has('name', NAME));
+const pHasNoLabelVals = traversal(V(), has('name', NAME), values('score'));
+
 const ARMS = {
   /* ✅ The GQL spelling, which item 2316 showed seeks. */
   gqlSeek: () =>
@@ -67,6 +81,16 @@ const ARMS = {
   gremScan: () => toArray(pScan, graph).length,
   /* ✅ The by-id path, which must stay O(1) whatever the index does. */
   gremById: () => toArray(pById, graph).length,
+  /* ✅ LADDER: by-id plus the projection, isolating what `values()` costs. */
+  gremIdVals: () => toArray(pIdVals, graph).length,
+  /* ⚠️ LADDER: the whole-V seed plus a label, with NO seek — this one is linear by construction. */
+  gremSeedLabel: () => toArray(pSeedLabel, graph).length,
+  /* ✅ LADDER: seed + label + seek, no projection. */
+  gremSeedLabelHas: () => toArray(pSeedLabelHas, graph).length,
+  /* 🔑 LADDER: the seek WITHOUT the label — if this is fast, `hasLabel` is the cost. */
+  gremHasNoLabel: () => toArray(pHasNoLabel, graph).length,
+  /* 🔑 LADDER: seek + projection, no label. */
+  gremHasNoLabelVals: () => toArray(pHasNoLabelVals, graph).length,
 };
 
 const arm = ARMS[ARM];

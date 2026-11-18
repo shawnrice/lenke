@@ -217,3 +217,22 @@ so a reused plan and a rebuilt identical one hit the same caches — the saving 
 const recentHires = traversal(V(), hasLabel('Person'), has('startedAt', gte(cutoff)), count());
 // build once at module scope, call per request
 ```
+
+## Ask a Gremlin traversal for the values you want, not the elements
+
+A traversal that ends on a vertex has to hand you the vertex: a live element, wired to the graph so that
+reading a property later still works. A traversal that ends in `values('score')` hands you a number, and
+the element is never built. Naming the property is therefore **cheaper than not naming it**, which is the
+opposite of what it looks like — you are asking for less work, not more.
+
+| 50,000 vertices, one match              | returns the element | ends in `values('score')` |
+| --------------------------------------- | ------------------- | ------------------------- |
+| `V(), has('name', n)`                   | 1.85 µs             | **1.13 µs**               |
+| `V(), hasLabel('User'), has('name', n)` | 2.22 µs             | **1.21 µs**               |
+
+So about 0.7–1.0 µs per matched element, on a query whose other work is under a microsecond. The same rule
+as naming properties in a GQL `RETURN`, and for the same reason — but on the Gremlin side the step that
+ends the traversal is what decides it.
+
+Keep the element when you actually want the element: to read several properties, to traverse on from it, or
+to hand it to code that expects a vertex. The cost is the price of a usable object, not waste.

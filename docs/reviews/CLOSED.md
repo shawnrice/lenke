@@ -115977,3 +115977,54 @@ count beside the time is what caught it**; the time alone looked like a plausibl
 
 GATES. `bun run fmt` 0, `bun run check` 0. One probe (four arms, two modes, three sizes); no production
 change.
+
+## Item 2318 — 🔑🔑 **ADDING `values()` MAKES A GREMLIN TRAVERSAL 1.64-1.84x FASTER, measured twice independently: the cost is ELEMENT MATERIALIZATION, not the step. And the ablation splits item 2317's 1.06 µs: the SEEK path is 0.92 µs over by-id, while `hasLabel` is 0.08 µs — nearly free**
+
+Item 2317 left 5.8x between `V(id)` and the full `V(), hasLabel, has, values`, both flat in |V|. ⚠️ One arm
+per process throughout, because **a ladder in one process is the shape item 2285 showed flatters itself.**
+
+```text
+    arm                                          µs      what it adds
+    V(id), values                              0.21      (the by-id floor)
+    V(), has(name), values                     1.13      +0.92  THE SEEK
+    V(), hasLabel, has(name), values           1.21      +0.08  the label — nearly free
+    V(), has(name)                             1.85      +0.72  returning the ELEMENT
+    V(), hasLabel, has(name)                   2.22      +1.01  returning the ELEMENT
+    gqlSeek (the GQL twin)                     0.22
+```
+
+### 🔑 ASKING FOR LESS COSTS LESS, AND THE SIGN IS THE FINDING
+
+⚠️ **`values()` makes it FASTER: 1.85 → 1.13 (1.64x) and 2.22 → 1.21 (1.84x).** Two independent pairs, each
+in its own process, same row count on both sides. ✅ A traversal ending on a vertex must materialize a LIVE
+ELEMENT wired to the graph; one ending in `values('score')` yields a scalar and never builds it. **So the
+~0.7-1.0 µs is element materialization, not the seek, not the label, and not the step count.**
+
+🔑 **This is user-facing and now a guide rule** (`docs/guides/query-cost.md`, "Ask a Gremlin traversal for
+the values you want, not the elements") — the same principle as naming properties in a GQL `RETURN`, but on
+the Gremlin side it is the FINAL STEP that decides it. ⚠️ Stated with its limit: keep the element when you
+want the element (several properties, traversing on, or handing a vertex to calling code) — that cost is
+the price of a usable object.
+
+### ✅ AND THE ATTRIBUTION OF ITEM 2317's GAP IS NOW SETTLED
+
+```text
+    0.92 µs   the has()-SEEK path over V(id)      <- the remaining target
+    0.08 µs   hasLabel                            <- nearly free, and NOT where to look
+```
+
+⚠️ **So `hasLabel` is exonerated**, which matters because item 2317's vacuous-label measurement (1.15x) made
+the label look like a plausible suspect. ✅ The live target is narrow: **why a seeded `has()` seek costs
+0.92 µs more than `V(id)`, when both are flat in |V| and both return one row.**
+
+### ⚠️ AND A CORRECTION TO MY OWN FIRST DRAFT OF THIS ENTRY
+
+I wrote that the new guide section needed no test because "the measured claim is a ratio". ⚠️ **That is an
+exception the guide's own standard does not grant** — every section in it is gated. ✅ The TIME is not
+testable in a gate, but **the claim a reader ACTS on is that the two forms agree**: same rows matched, same
+property value. If they did not, the advice would be trading an answer for speed, which is not what the
+section says. Test added, and **mutated to check it has teeth** (`values('score')` → `values('team')`:
+**9 pass / 1 fail**, restored to 10/0).
+
+GATES. `bun run fmt` 0, `bun run check` 0, guide suite **10 pass / 0 fail, 31 assertions**, mutant caught.
+One probe extended with five ladder arms; no production change.

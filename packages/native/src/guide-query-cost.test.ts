@@ -16,7 +16,7 @@ import { describe, expect, test } from 'bun:test';
 
 import { Graph } from '@lenke/core';
 import { prepare, query } from '@lenke/gql';
-import { V, count, gte, has, hasLabel, toArray, traversal } from '@lenke/gremlin';
+import { V, count, gte, has, hasLabel, toArray, traversal, values } from '@lenke/gremlin';
 
 const SURNAMES = ['Adler', 'Boyd', 'Boyd', 'Cardoso', 'Devi', 'Eze'] as const;
 
@@ -241,5 +241,42 @@ describe('docs/guides/query-cost.md snippets', () => {
     expect(Number(toArray(recentHires, g)[0])).toBe(3);
     /* Called twice, because the guide's point is reuse across requests. */
     expect(Number(toArray(recentHires, g)[0])).toBe(3);
+  });
+
+  /*
+   * ⚠️ **"Ask a Gremlin traversal for the values you want, not the elements"** (item 2318) claims that
+   * ending in `values('score')` is 1.64-1.84x FASTER than returning the element, because the element is
+   * never materialized. 🔑 The TIME is not testable in a gate, but the claim a reader ACTS on is that the
+   * two forms agree on which rows matched and on the property's value — otherwise the advice would be to
+   * trade an answer for speed, which is not what the section says.
+   */
+  test('values() yields the same property the element would have carried', () => {
+    const g = new Graph();
+
+    for (const [id, team, score] of [
+      ['a', 'core', 10],
+      ['b', 'core', 20],
+      ['c', 'data', 30],
+    ] as const) {
+      g.addVertex({ id, labels: ['Person'], properties: { team, score } });
+    }
+
+    const asElements = traversal(V(), hasLabel('Person'), has('team', 'core'));
+    const asValues = traversal(V(), hasLabel('Person'), has('team', 'core'), values('score'));
+
+    const elements = toArray(asElements, g);
+    const scores = toArray(asValues, g);
+
+    /* ✅ Same rows matched... */
+    expect(elements.length).toBe(2);
+    expect(scores.length).toBe(2);
+
+    /* ✅ ...and the scalar form carries exactly what reading the element would have given. */
+    expect([...scores].sort()).toStrictEqual([10, 20]);
+    expect(
+      elements
+        .map((v) => (v as { properties: Record<string, unknown> }).properties.score)
+        .sort() as number[],
+    ).toStrictEqual([10, 20]);
   });
 });
