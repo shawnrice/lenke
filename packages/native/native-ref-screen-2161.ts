@@ -44,7 +44,16 @@ const N = Number(process.env.SCREEN_N ?? 200_000);
  * ⚠️ **BOTH ARMS MUST RUN ON THE SAME BUILD** — item 1943's note, because diffing against a stale
  * homogeneous baseline credits the flag with whatever shipped in between.
  */
-const MIXED = process.env.MIXED === '1';
+/*
+ * ⚠️⚠️ **DEFAULT ON since item 2190, because item 2189 established the MIXED number is the one to price
+ * against.** A homogeneous fixture makes every label VACUOUS by construction, which unlocks 43+ GQL
+ * elisions a real schema cannot reach: the two-hop count reads **0.19 ms homogeneous against 15.55 on a
+ * genuinely mixed schema — 82x** — and the realistic number is the one item 2087 already optimized.
+ *
+ * 🔑 `MIXED=0` restores the old homogeneous arm, which is useful ONLY for measuring the gate's own cost.
+ * **A nomination taken from it is a nomination against an arm no application reaches.**
+ */
+const MIXED = process.env.MIXED !== '0';
 
 const FANOUT = Number(process.env.SCREEN_FANOUT ?? 3);
 /*

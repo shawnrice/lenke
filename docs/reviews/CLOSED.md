@@ -109571,3 +109571,48 @@ number in every homogeneous screen row is unreachable for a real schema, and the
 already the optimized one.
 
 GATES. No production change; the `vacuousLabel` probe reverted, tree verified identical. `bun run check` 0.
+
+## Item 2190 — 🔑🔑🔑 **`MIXED` IS NOW THE DEFAULT ON BOTH SCREENS, AND THE GQL RANKING CHANGES COMPLETELY: `EXISTS`/`NOT EXISTS` go from 1.5 ms and "fine" to +12-13 ms and 15-16x — the top nominations. Three of this session's fixes also show through**
+
+Item 2189 established that the MIXED number is the one to price against: homogeneous fixtures make every
+label VACUOUS by construction, unlocking 43+ elisions a real schema cannot reach. ⚠️ **Every nomination
+this session took came off a homogeneous screen**, so the first thing to do with that conclusion is re-read
+the rows.
+
+```text
+    GQL screen, MIXED by default, one process per row, 2 rounds, min
+    row                      marginal ts/nat    ratio
+    NOT EXISTS subquery      +12.75 / +0.79    16.1x   <-- FLAG, and it read 1.59 ms homogeneous
+    EXISTS subquery          +12.17 / +0.79    15.4x   <-- FLAG, and it read 1.54 ms homogeneous
+    OPTIONAL MATCH a hop     +19.13 / +3.34     5.7x   <-- FLAG, biggest absolute
+    UNION of two scans        +9.14 / +0.41    22.3x   <-- FLAG
+    grouped sum by key        +5.87 / +1.69     3.5x   <-- FLAG
+    SET one property          +3.51 / +0.32    11.0x   <-- FLAG
+    percentile_cont           +2.99 / +0.35     8.5x   <-- FLAG
+```
+
+⚠️⚠️ **`EXISTS` AND `NOT EXISTS` READ 1.54 AND 1.59 ms ON THE HOMOGENEOUS SCREEN — 1.8-2.0x, comfortably
+ignorable.** Under a realistic schema they are the top two nominations at 15-16x. **That is the whole case
+for the default flip**, and it means every "nothing flags" verdict earlier in this session was measured
+against an arm no application reaches.
+
+### ✅ AND THREE OF THIS SESSION'S FIXES SHOW THROUGH ON THE REALISTIC ARM
+
+```text
+    var-length 1..2 hops   12.66 ts / 19.94 nat   0.6x   ⚠️ TS FASTER — item 2177's 62x rewrite
+    COALESCE               marginal +-0.03 / +0.45       item 2173's short-circuit, now BELOW native
+    size() of a list       marginal  +0.22 / +6.51       TS far ahead
+```
+
+🔑 These were all measured on the homogeneous arm when they shipped, so seeing them hold — and in two cases
+beat native — on the realistic one is the confirmation those items could not give themselves.
+
+### ⚠️ THE GREMLIN SCREEN IS UNCHANGED, WHICH CONFIRMS 2189's MECHANISM
+
+No flags, every row within noise of its homogeneous reading. 🔑 Label vacuity gates **GQL's** elisions, so
+the flag belongs on both screens (a future row might need it) but only ever bites on one.
+
+**NEXT: `EXISTS`/`NOT EXISTS` at +12-13 ms, 15-16x.** ⚠️ `MIXED=0` still restores the old arm, and the file
+says plainly that a nomination taken from it is a nomination against an arm no application reaches.
+
+GATES. Instrument only. `bun run fmt` 0; `bun run check` 0 read unpiped; both screens run.
