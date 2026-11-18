@@ -113555,3 +113555,56 @@ nothing measures a workload whose query text keeps changing. **That is the next 
 prior-art check behind it before any instrument is built.**
 
 GATES. `bun run fmt` 0, `bun run check` 0. No instrument, no production change — a correction item.
+
+## Item 2269 — 🔑🔑🔑 **A SESSION'S COST GROWS WITH THE NUMBER OF DISTINCT STATEMENTS IN THE PROCESS: 3.5 us at 10 texts, 6.3 us at 16-64, ~20 us at 100+ — a 5.5x step no screen can see. ⚠️ And it is probably NOT cache capacity: the caches look unbounded, which contradicts that reading**
+
+Item 2268's prior-art check found the uncovered shape: every screen row runs ONE statement repeatedly, so
+the parse/plan caches are always warm. **This measures a session whose query TEXT keeps changing.** ⚠️ The
+fixture is 200 vertices so EXECUTION is near zero and the statement cost dominates; every arm returns the
+same row count, asserted, so the arms cannot differ in work.
+
+```text
+    2000 statements per rep, median of 7 post-warm-up, texts PRE-BUILT (item 1969's lesson)
+    arm        ns/statement   distinct texts
+    same              3,528        1
+    literal          17,098      500      <- `WHERE n.k >= <i>`, the LITERAL varies
+    alias            19,389      500      <- `RETURN n.k AS a<i>`, the ALIAS varies
+```
+
+### 🔑 THE `literal` ARM IS THE NEW PART, AND IT IS THE REALISTIC ONE
+
+⚠️ **Item 2045 already built the `alias` arm** — _"2000 texts that are STRUCTURALLY IDENTICAL AND TEXTUALLY
+DISTINCT (only the `RETURN` alias differs)… the fixture is 100 vertices so execution is near zero"_ — and
+concluded **parse/plan is not a target** because the cost declines **198x** with warm-up. ✅ But alias
+variation is artificial. **A literal varying is what an application does on every filter**, and it costs
+**4.85x — within 13% of the alias arm.** So auto-param, which lifts literals on the AST, cannot help:
+`parseCache.get(text)` is keyed on the raw TEXT and `planCache.get(stmt)` on the AST OBJECT, so a fresh
+text misses both before auto-param is ever reached.
+
+### ⚠️⚠️ BUT THE CAPACITY READING IS CONTRADICTED, AND I AM NOT CLAIMING IT
+
+Sweeping the distinct count looked like it located a cache capacity:
+
+```text
+    DISTINCT       10      16      32      64     100    1000    5000
+    ns/statement  3824    6259    6418    6300   20401   22482   19435
+```
+
+🔑 Three levels — **~3.8k, ~6.3k, ~20k** — not one cliff. ⚠️⚠️ **And a capacity story does not survive two
+checks**: the grep found **no configured cache bound**, and at `DISTINCT=5000` with `STMTS=2000` only 2000
+texts exist, each seen 7 times across reps — an unbounded cache would be warm from rep 2 and it is not.
+**So this is more likely INLINE-CACHE POLYMORPHISM than eviction**: ~10 plans monomorphic, 16-64
+polymorphic, 100+ megamorphic. That matches item 762's recorded mechanism (_"in the PRE arm every query
+shape funnels through one dispatch site"_) and [[ts-closure-size-is-load-bearing]].
+
+### ✅ WHAT IS SOLID, AND WHAT IS NEXT
+
+**Solid**: the effect is large (5.5x), reproducible across four distinct counts, and invisible to every
+screen in the repo — _100 distinct statements is a small application_, and a people-graph service would
+have hundreds. **Not solid**: the mechanism. 🔑 **NEXT is a code read, not another timing: are
+`parseCache`/`planCache` bounded, and does the cost track the number of distinct PLANS or distinct
+EXECUTION SHAPES?** Those give opposite levers — a bigger cache versus a monomorphic dispatch — and timing
+cannot separate them.
+
+GATES. `bun run fmt` 0, `bun run check` 0. New instrument `stmtcache-2269.ts`
+(`ARM=same|literal|alias`, `DISTINCT=`); no production change.
