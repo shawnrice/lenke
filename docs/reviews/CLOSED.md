@@ -111679,3 +111679,44 @@ needs to know what "clean" looks like.
   `sum`/`mean` fusion (byte-identity, 1830/1853/1857), boxed-vs-columnar aggregates (2173/2196).
 
 GATES. `bun run fmt` 0, `bun run check` 0. No production change.
+
+## Item 2231 — 🔑🔑 **THE TRANSACTION IS CHEAP AND THE INDEX IS NOT: a tx costs 1.16-1.22x per write and 100,000 SEPARATE transactions only 1.25-1.36x, but a hash index adds ~180-256 ns/write (+30-43%). THREE previously unmeasured terms, decomposed**
+
+Both screens and both finders are quiet and trustworthy (item 2230), so this tick took the one serving shape
+no screen row exercises: writes under a transaction.
+
+```text
+    100,000 writes per rep, fresh graph per rep, ONE ARM PER PROCESS, cheap sink
+    arm                                   r1     r2    vs notx    adds
+    floor (raw Map.set)                   60     62      0.10x
+    notx  (addVertex)                    586    618      1.00x
+    onetx (all writes in ONE tx)         677    757      1.16-1.22x
+    manytx (one tx PER WRITE)            797    770      1.25-1.36x
+    index (hash index, no constraint)    854    793      1.39-1.29x   +181..+256  <- the big term
+    connotx (constraint, NO tx)          917    931      1.52-1.53x   +63..+138
+    constraint (constraint + tx)        1167   1131      1.86-1.90x   +200..+250
+```
+
+### ✅ WHAT IS CHEAP, AND WORTH SAYING
+
+🔑 **A transaction per write costs ~180 ns.** 100,000 separate transactions come in at 1.25-1.36x the
+unwrapped writes — so the tx machinery is not a per-write tax worth avoiding, and items 2181/2184 (which
+took the `txTouched` penalty from 340 to 171 ns/op) did the work that makes that true.
+
+### ⚠️⚠️ AND WHERE THE COST ACTUALLY IS: THE INDEX, NOT THE CHECK
+
+**Most of a unique constraint's cost is the INDEX it auto-creates, not the uniqueness test.**
+`createUniqueConstraint` calls `createIndex` when the key is not already indexed — so the `index` arm
+isolates it, and it is **+181 to +256 ns/write against a 598 ns baseline (+30-43%)**, where the uniqueness
+check itself adds only +63 to +138.
+
+🔑 A hash-index insert should be a bucket `Map.set` — on the order of 50-80 ns at this size, not 180-256. **So
+index maintenance per write is a plausible, properly-floored, previously unmeasured target**, and it is the
+complement of item 2181's win: that skip applies only when NO deferrable check exists, so a graph with a
+constraint never benefited from it.
+
+**NEXT: differential-profile the `index` arm against `notx`** — same writes, one hash index. ⚠️ Then LADDER
+before building (items 2216/2217), and remember `createUniqueConstraint(label, key)` is POSITIONAL, not an
+options object.
+
+GATES. `bun run fmt` 0, `bun run check` 0. New probe `packages/native/txwrite-2231.ts`; no engine change.
