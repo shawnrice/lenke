@@ -108504,3 +108504,55 @@ ms in TS.** Whatever native elides, 300,000 endpoint property reads at 40 ms is 
 
 14 tests. GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
 2,821 Gremlin tests; `bun run fuzz` all seven green.
+
+## Item 2171 — ✅ **CLOSED, NOTHING BUILT: the 40 ms `V().out().values(k).count()` row is already-refuted ground. Its dominant frame is `degreeOfTypes` at 53.8%, which items 593 and 1546 priced and the disqualified degree-cache family covers**
+
+Item 2170's screen repair surfaced this row at 40.04 ms in TS against native's 0.11. Profiled before pricing.
+
+```text
+    V().values(k).count()        2.82 ms / 200,000 values    14 ns per value
+    V().out().values(k).count() 23.19 ms / 300,000 values    77 ns per value   5.5x
+    V().out().values(k) no count 20.39 ms                    the reduce adds 2.8
+    V().out().count()   [floor]  0.00 ms                     a counter rung
+```
+
+🔑 The reduce is nearly free, so the cost is the hop+project — [[gremlin-values-is-the-floor]]'s shape.
+**CPU profile, 70 reps so the query dominates the fixture build:**
+
+```text
+    degreeOfTypes      53.8%   <- the whole question
+    parseLine           8.2%   (fixture)
+    (gc)                7.9%
+    filteredHopCount    2.4%   <- its caller
+```
+
+⚠️⚠️ **AND THE CODE'S OWN COMMENTS ALREADY ANSWER IT**, which is the discipline working rather than a dead
+end:
+
+- **Item 593 REJECTED the obvious lever with numbers**: hoisting `labels[0]`, inlining the single-type
+  degree as `byType.get(only)?.size ?? 0`, and destructuring `{key, pred}` above the loop measured
+  **1.01-1.04x** over four alternated rounds, one case per process.
+- **Item 1546 measured a `types.length === 1` fast path NULL** (217.90 → ~217.6). Its conclusion: the
+  53.8% **is** the `Map.get` plus `.size` themselves, not the loop around them.
+- The remaining lever is a per-vertex per-type degree CACHE — the family
+  [[no-dense-vertex-ordinal]] records as BUILT AND DISQUALIFIED (deletes 6.18x/11.34x under churn).
+
+### 🔑 WHY THE SHAPE IS CORRECT, AND WHY IT COSTS WHAT IT COSTS
+
+⚠️ `degreeOfTypes` SUMS DEGREES, so I checked for an over-count first: an endpoint LACKING `k` must not
+contribute. It does not — `out(T).values(k).count()` answers **1** where `out(T).count()` answers 2.
+
+🔑 `filteredHopCount` **drives the FAR side** (item 168's 3x): it visits every vertex, tests whether it has
+`k`, and adds the IN-degree of those that pass, so each edge contributes 1 iff its target has the key. A
+call-site probe confirms **one `degreeOfTypes` call per passing vertex** (39 calls over 40 vertices), at
+site `cs:1369` for both the `values` and the `has` spelling — **not redundant**, so there is no wasted
+degree sum to remove.
+
+⚠️ **The 351x against native is native eliding the endpoint read entirely, not TS overhead** — native
+answers in 0.11 ms because counting edges needs no property at all. Item 2170 already recorded that no
+floor makes that group comparable. **116 ns per vertex for one property read plus one `Map.get`/`.size` is
+consistent with item 1294's ~10.3 ns property read and item 1546's finding that the map read dominates.**
+
+**So this row is at its floor given the refuted levers. Do not re-profile it without a NEW mechanism.**
+
+GATES. No production change; the probes were reverted and the tree verified identical to pristine.
