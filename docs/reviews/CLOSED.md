@@ -113414,3 +113414,50 @@ recorded for the next sweep rather than chased, since one crossing at one size i
 shows cannot be trusted alone.
 
 GATES. `bun run fmt` 0, `bun run check` 0. Existing instrument re-run; no production change.
+
+## Item 2266 — ✅ **THE GREMLIN SURFACE IS VERIFIED CLEAN ACROSS SIZES FOR THE FIRST TIME: 18 rows, TWO sweeps, NOT ONE RISES, and 16 of 18 beat their floors at 80k. 🔑 And a new instrument fact: `CLOSED` rows reproduce to a few percent while `pipeline` rows spread 19-28%**
+
+Items 2229 and 2240 screened Gremlin at ONE size (2229 swept only its three `compose` rows). Item 2264's
+lesson was to sweep first and item 2265's was that a trend needs TWO sweeps at the SAME size set. Both
+applied:
+
+```text
+    shape                                     rung      5000    20000    80000   trend
+    compose/hop simplePath count            pipeline    6.33x    6.72x    3.15x   falls
+    compose/values groupCount               pipeline    2.43x    1.72x    1.90x   falls
+    compose/union(out,in) count             CLOSED      0.02x    0.00x    0.00x   falls
+    count/*  (5 rows)                       CLOSED    ≤0.20x   ≤0.10x   ≤0.03x   falls
+    values/* (5 rows)                       CLOSED    ≤0.73x   ≤0.39x   ≤0.25x   falls
+    other/*  (5 rows)                       CLOSED    ≤1.19x   ≤0.91x   ≤0.62x   falls
+```
+
+### ✅ NOT ONE ROW RISES, IN EITHER SWEEP
+
+**16 of 18 rows are BELOW 1.0x at 80,000** — beating their hand-rolled floors — and every row falls or is
+flat. The two above 1.0x are both already closed and **both fall with size**:
+
+- `hop simplePath count` **6.33 → 3.15x** (and 6.24 → 3.47x in sweep B), matching item 2229's 6.65 → 3.51x.
+  ⚠️ Owner-declined at item 1466.
+- `values groupCount` **2.43 → 1.90x**, closed at item 2240 on an 18 ns/vertex absolute.
+
+🔑 **So no Gremlin target exists at any swept size**, which is a stronger statement than the single-size
+screens could make — and the `simplePath` decay now reproduces across three independent measurements
+(2229's, and both of this item's).
+
+### 🔑🔑 A NEW INSTRUMENT FACT, AND IT SHARPENS EVERY FUTURE NOMINATION
+
+```text
+    CLOSED rows      values/hop values   0.73/0.39/0.25  vs  0.70/0.40/0.26   — a few percent
+                     union(out,in)       0.02/0.00/0.00  vs  0.02/0.00/0.00   — exact
+    pipeline rows    simplePath          6.33/6.72/3.15  vs  6.24/8.00/3.47   — 19% at 20k
+                     values groupCount   2.43/1.72/1.90  vs  3.12/1.85/2.00   — 28% at 5k
+```
+
+**A `CLOSED` row reproduces to a few percent; a `pipeline` row spreads 19-28%.** ✅ That makes sense — a
+closed-form answer is deterministic work, while a pipeline walk is sensitive to machine state — and it means
+**a pipeline row's ratio needs two sweeps before it is quoted, where a CLOSED row's does not.** ⚠️ It also
+explains why the GQL side's `node/rows + where` looked unstable at item 2265: pipeline rows are where the
+spread lives.
+
+GATES. `bun run fmt` 0, `bun run check` 0. Existing instrument re-run (`FINDER=gremlin`); no production
+change.
