@@ -110404,3 +110404,61 @@ row keeps its flag honestly — TS pays 104 ms where native pays 2.25 — while 
 Recorded so the next reader prices it from here rather than from the ratio.
 
 GATES. `bun run fmt` 0, `bun run check` 0. Probe floor corrected; no engine change.
+
+## Item 2205 — ✅ **THE MULTI-CLAUSE SURFACE IS CLOSED: all four remaining flags CEILING UNDER 2.4x, a spelling hypothesis was refuted in one measurement, and a three-size sweep shows the steep ratios are the CACHE TRANSITION, not per-row defects**
+
+Item 2204's lesson was to ceiling before building. ⚠️ Applied to all four remaining flags FIRST this time,
+which is what made this item cheap.
+
+```text
+    row                      engine   ceiling   reachable
+    WHERE EXISTS { hop }      11.13      6.74     1.65x
+    LET then count             5.44      2.28     2.39x
+    FILTER clause              2.94      2.17     1.35x
+```
+
+🔑 Every ceiling does the same work as the engine (real label set, real property reads) and every answer
+matches. **Nothing here clears this repo's ~10% / 2 ms bar for believing a win, let alone building one.**
+
+### ⚠️ A SPELLING HYPOTHESIS, REFUTED IN ONE MEASUREMENT
+
+The probe's `two MATCH clauses` row reads **0.00 ms** while `multi-pattern one MATCH` reads 12-14 ms, and
+neither shares a variable between its patterns — which looked exactly like item 2203's `WITH` violation.
+It is not:
+
+```text
+    MATCH p1 MATCH p2  (clauses)    9.65 ms    30000600000
+    MATCH p1, p2       (commas)     9.29 ms    30000600000   <- the SAME
+```
+
+🔑 The 0.00 ms row is two **SCANS**, whose product is a closed form; two **HOPS** is a different query. Same
+shape of reasoning as item 2203, opposite answer — and the check cost one command.
+
+### 🔑 THE SIZE SWEEP: THE STEEP RATIOS ARE SHARED, SO THEY ARE THE FIXTURE
+
+`PROBE_N` at 50,000 / 200,000 / 800,000 (each step a 4x size increase):
+
+```text
+    row                   50k      200k      800k    50k->200k   200k->800k
+    FLOOR hop            1.09     10.81     54.20       9.9x        5.0x
+    multi-pattern        0.95     14.09     78.03      14.8x        5.5x
+    FLOOR exists1        2.08     13.43     76.05       6.5x        5.7x
+    nested EXISTS       24.41    125.08    610.15       5.1x        4.9x
+    FILTER clause        0.50      3.25     13.86       6.5x        4.3x
+    LET then count       1.15      5.48     19.93       4.8x        3.6x
+```
+
+⚠️⚠️ **THE FLOOR ITSELF JUMPS 9.9x FOR A 4x SIZE INCREASE between 50k and 200k.** That is the cache
+transition `CLAUDE.md` places between 200k and 1M elements, and EVERY row shares it — so none of those
+steep first-step ratios is a per-row defect. By the second step everything is back to 3.6-5.7x, i.e. roughly
+linear. **A ratio measured only at 50,000 understates every row on this probe.**
+
+🔑 And `multi-pattern` at 800k costs **78.03 ms against ~72 ms for its two halves measured separately**
+(54.20 for the `Person` hop plus a cheaper `Admin` one) — it is already AT the floor of computing both
+sides, so the 31.3x against native is architectural, not slack.
+
+**THE MULTI-CLAUSE SURFACE IS NOW EXHAUSTED.** Item 2203 took the one real defect on it (`WITH`/`NEXT`,
+38x); the nested `EXISTS` ceilings at 2.3x (item 2204) and these three at under 2.4x. Future work should
+look elsewhere rather than re-pricing these rows.
+
+GATES. `bun run fmt` 0, `bun run check` 0. No production change.
