@@ -109738,3 +109738,56 @@ rows). ⚠️ The screen's 22.28 ms is therefore NOT the vacuity gate; my own 2x
 from the differential profiler rather than from a rung I can name.
 
 GATES. No production change; build reverted, tree verified identical, `bun run check` 0, GQL suite green.
+
+## Item 2193 — 🔑🔑🔑 **THE OPTIONAL ROW'S COST IS ONE FRAME — `matchesLabel` at +18.8 ms/rep — AND THE COMPLEMENT CEILING IS 17x (30.83 → 1.81 ms, same answer). Diagnosis complete, build handed off**
+
+Item 2192 mis-targeted this row twice by naming a rung first, and said so: **start from the differential
+profiler.** This did.
+
+### 🔑 ONE FRAME IS THE ENTIRE FAR-LABEL COST
+
+```text
+    40 reps, MIXED fixture, one process per arm
+    no-far 1835 ms   FAR 2521 ms   difference +685 ms  (+17.13 ms/rep)
+
+    frame                   no-far      FAR    delta ms
+    matchesLabel:805           0.0    750.9     +750.9   <- the whole difference
+    get soleLabel:1128         0.0    124.3     +124.3
+    get adjFrom:1329         147.7      0.0     -147.7
+    bareDegreeSum:13905       80.1      0.0      -80.1   <- the closed form the no-far arm uses
+    startOnlyHopCount:14004   19.0      0.0      -19.0
+```
+
+🔑 A far label swaps a **degree sum** for a **per-edge label test**: 62 ns per edge across 300,000 edges.
+
+### 🔑 THE SITE, FOUND BY A CALLER TALLY RATHER THAN BY READING
+
+`matchesLabel` is called exactly **twice per edge** and **zero times** in the no-far arm, from one logical
+site: `countEdges(edgesOfTypes(graph.edgesByLabel, types), nearThenFar(out, a, b))` in `shortcuts.ts`.
+
+⚠️ **NEITHER TEST IS REDUNDANT**, which I checked before assuming: `edgesOfTypes` walks the TYPE's WHOLE
+EDGE BUCKET, not edges from labelled anchors, so both endpoints genuinely need testing. 🔑 And the
+degree-sum rung (`labelOnlyHopCount`) is tried FIRST and declines — that decline is the real gate.
+
+### ✅✅ THE CEILING IS MEASURED, NOT GUESSED: 17x, IDENTICAL ANSWER
+
+```text
+    engine, far label              30.83 ms   answer 300000
+    CEILING via the complement      1.81 ms   answer 300000
+```
+
+🔑 **`|edges of type| − Σ degree(v ∉ L)`.** Counting edges that touch an OFF-label vertex and subtracting
+is O(|complement|) where the current path is O(|edges|) with two label tests each. ⚠️ Even my probe's
+sloppy O(V) complement scan is **17x** faster than the engine, and the answers agree exactly.
+
+**HANDED OFF, NOT BUILT, and the reason is specific:** `shortcuts.ts` sits AT its 3000 code-line cap (item
+2135 records five iterations lost to that wall, and item 2163 had to move a whole arm out), and item 2192
+measured a **26% regression on an unrelated row** from adding one branch in this neighbourhood. A 17x
+target deserves its own tick with that budget, not the tail of a diagnosis.
+
+🔑 **What the next attempt needs:** the complement set (`verticesByLabel` gives the label's members, not
+its complement — a `vertexCount - size` test tells you WHICH side is smaller, and only the smaller side
+should be iterated), plus the arm placed where it cannot perturb `bareDegreeSum`'s path.
+
+GATES. No production change; both probes (`vacuousLabel`, `matchesLabel`) reverted and the tree verified
+identical. `bun run check` 0.
