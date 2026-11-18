@@ -116710,3 +116710,60 @@ three writes into one create changes the **event stream** — events are observa
 consumer counting them would observe it, and the differential fuzzer compares RESULTS, not events.
 
 GATES. `bun run fmt` 0, `bun run check` 0. One probe (three arms); no production change.
+
+## Item 2331 — ✅ **FULL GATE PASS: four gates green, all NINE shipped changes verified in source, all TEN probes re-run, and each of the five Gremlin ships re-measured within 2.3% — which matters because items 2321/2322/2323 all edited `node-values.ts` AFTER item 2320 shipped there**
+
+```text
+    bun run fmt / check                       0 / 0
+    bun run test -- --skip-nx-cache           21 projects — OK
+    bun run fuzz                              57 pass / 0 fail   (byte-identity holds)
+```
+
+### ✅ THE SHIPS, CHECKED IN THE SOURCE RATHER THAN ASSUMED
+
+```text
+    2271    PARSE_CACHE_CAP = 512            present    3-4x on multi-statement sessions
+    2293    FAR_BUCKET_DECISIVE / _TINY      present    13.2x, authz list O(results)
+    2297/8  inlineFarIsPlainAnchor           present    27x / 24.2x, inline far predicates
+    2319    seeded drain (plain loop)        present    2.16-2.83x
+    2320    three sibling drains             present    3.86x, V().values(k)
+    2321    edge drain                       present    3.47x, E().values(k)
+    2322    three scan drains                present    2.34x / 1.49x
+    2323    filter admitted to both rungs    present    5.73x, spelling invariant restored
+```
+
+### 🔑 AND THE FIVE GREMLIN SHIPS RE-MEASURED, WHICH IS NOT CEREMONY HERE
+
+Items 2321, 2322 and 2323 each edited `node-values.ts` **after** item 2320 shipped into it, and
+`executor-edits-perturb` prices an edit in that file at up to 16% on unrelated rows. ✅ So the ships were
+re-measured rather than trusted:
+
+```text
+    ship                       recorded      now        delta
+    2319  seeded has+values      0.56 µs     0.56       0%
+    2320  V().values(k)        316.59 µs   324.01      +2.3%
+    2321  E().values(k)          7.71 ns     7.79      +1.0%
+    2322  where(hop)+values     13.5 ns     13.61      +0.8%
+    2323  filter(hop)+values    13.5 ns     13.59      +0.7%
+```
+
+✅ **Every one within 2.3%**, and `where` against `filter` is **13.61 vs 13.59** — item 2323's spelling
+convergence holds, which is the property most at risk from a later edit to the same gates.
+
+### ⚠️ AND THE CHECK THE GATES CANNOT DO
+
+Ten probes from this stretch are `.mjs` or standalone `.ts`, which `bun run check` does not typecheck —
+item 2291 learned that when a `.mjs` arm silently created no index and nearly published "an index does not
+help". ✅ All ten re-run clean on a small fixture: `setrung-2313`, `rungnoise-2314`, `idxmix-2316`,
+`gremidx-2317`, `edgescan-2321`, `scanrungs-2322`, `seekcount-2325`, `route-2326`, `insertcache-2328`,
+`gremwrite-2330`.
+
+### ✅ WHERE THIS STRETCH STANDS
+
+**Six ships** (2319-2323 plus the spelling fix), **1.49x-5.73x**, every one with a parity or route test and
+a caught mutant. **Five targets declined with measured reasons** (2315, 2325/2326, 2329, 2330) and **seven
+corrections of my own numbers before publication** — the arm-length rule (2326), the cross-engine floor
+(2325), the layout confound (2327), the 67%-to-20% write estimate (2330), and three work-parity errors in
+2328 alone. 🔑 **The instrument was wrong more often than the engine, again.**
+
+GATES. As listed.
