@@ -115733,7 +115733,7 @@ applies to that 30.53%: the fair floor allocates too, so it is not attributable 
 
 GATES. `bun run fmt` 0, `bun run check` 0. One probe (five arms); no production change.
 
-## Item 2313 — 🎯 **ITEM 2180's TARGET ONE IS NOW WORTH 2.39x, NOT 1.48x: the read arms got FASTER and the write arm SLOWER since it was priced. The filtered write costs 4.8 µs/row against the unfiltered write's 648 ns, because with no rung it SCANS 200,000 rows to write 2,062**
+## Item 2313 — ⚠️ ~~🎯 ITEM 2180's TARGET ONE IS NOW WORTH 2.39x, NOT 1.48x~~ **UNINDEXED ONLY — item 2315 shows an index gives the WRITE 5.4x and removes the scan penalty entirely, so the rung target dissolves:** the read arms got FASTER and the write arm SLOWER since it was priced. The filtered write costs 4.8 µs/row against the unfiltered write's 648 ns, because with no rung it SCANS 200,000 rows to write 2,062**
 
 ⚠️ **First, a correction to my own framing from item 2312's close.** I had said the three ships this session
 might make this rung cheaper to add. They do not: **all three were GATE RELAXATIONS — a changed condition —
@@ -115821,3 +115821,46 @@ of the row. Three of this session's "cannot tell" verdicts (items 2299, 2304, an
 instrument-limited rather than engine-limited.
 
 GATES. `bun run fmt` 0, `bun run check` 0. One probe; no production change.
+
+## Item 2315 — ✅✅ **THE RUNG TARGET DISSOLVES, AND THE CHEAP EXPLANATION WAS THE RIGHT ONE: an index gives the FILTERED WRITE 5.4x (9.46 → 1.76 ms), so the write's match DOES seek and there is no rung-disqualification penalty once an index exists. Items 2180/2313's 2.39x was an unindexed-fixture artifact**
+
+With item 2314's baseline in hand, this tick set out to build item 2180's target one. 🔑 **Two findings, and
+the second made the first moot.**
+
+### ✅ READING THE CODE CONFIRMED ITEM 2180's CHARACTERIZATION
+
+`groupedClauses` accepts `[match, let, return]` but not `[match, set, return]`, and the reason is
+semantic rather than incidental: **a `let` can be FOLDED into the projection; a `set` must EXECUTE.** So
+the detector cannot simply be relaxed — the rung would have to perform the write, which is a new walk
+variant, in a file where `executor-edits-perturb` prices one at up to 16%, across **21 rungs**. ✅ Item
+2180's description was exact.
+
+### 🔑 AND THEN THE CHEAP EXPLANATION, WHICH I SHOULD HAVE CHECKED FIRST
+
+⚠️ **Item 2313's fixture had NO INDEX.** Item 2301 had already measured an index on the lookup key at
+hundreds of times, so a filtered write's cost could be an unindexed SCAN rather than a missing rung:
+
+```text
+    arm                        no index   indexed    gain
+    WHERE + count(*)             2.64       0.03     88x
+    WHERE + RETURN a.n           2.88       0.10     29x
+    WHERE + SET + count(*)       9.46       1.76     5.4x
+```
+
+✅ **The index helps the WRITE 5.4x, so the write's match seeks like the read's.** Indexed, the write arm
+is 0.10 ms of match plus ~1.66 ms of writes — **805 ns per write, consistent with item 2312's independently
+measured 675 ns/row.** There is no scan penalty left to recover.
+
+### ✅ SO: NOT BUILT, AND THE TARGET IS WITHDRAWN RATHER THAN DEFERRED
+
+⚠️ Unindexed, the gap is real (9.46 against the read's 2.64) because the read reaches `countShortcut` and
+the write scans. ✅ **But its fix is an index — worth 5.4x here and hundreds of times on the read — and that
+is already `docs/guides/query-cost.md`'s FIRST rule.** A 21-rung change risking 16% on every read row
+cannot be justified to recover something a one-line `createIndex` removes.
+
+🔑 **The process lesson is the one worth keeping: I built a baseline (2314), re-priced a target (2313), and
+read the implementation (this item) before noticing that the fixture lacked the one thing the guide tells
+every caller to add.** ✅ Item 2314's baseline is not wasted — it is the instrument any future rung change
+needs, and it stands at 1.011-1.060x.
+
+GATES. `bun run fmt` 0, `bun run check` 0. One knob added to an existing probe; no production change.

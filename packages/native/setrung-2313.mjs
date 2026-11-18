@@ -29,6 +29,16 @@ for (let i = 0; i < N; i += 1) {
   g.addVertex({ id: `v${i}`, labels: ['T'], properties: { k: i % 97, n: i } });
 }
 
+/*
+ * ⚠⚠ **THE CHEAP EXPLANATION, CHECKED BEFORE THE EXPENSIVE ONE (item 2315).** Item 2313 priced "a write
+ * clause disqualifies every read rung" at 2.39x on THIS fixture — which has NO INDEX. 🔑 Item 2301
+ * measured an index on the lookup key at hundreds of times, so a filtered write's cost may be an unindexed
+ * SCAN rather than a missing rung. If `INDEX=1` collapses the write arm, there is no engine defect here.
+ */
+if (process.env.INDEX === '1') {
+  g.createIndex({ on: 'vertex', kind: 'hash', keys: ['k'] });
+}
+
 const ARMS = {
   whereCount: () => query(g, 'MATCH (a:T) WHERE a.k = 5 RETURN count(*) AS c', {})[0].c,
   whereProject: () => query(g, 'MATCH (a:T) WHERE a.k = 5 RETURN a.n AS n', {}).length,
