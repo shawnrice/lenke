@@ -111458,3 +111458,47 @@ raise-parity test whose one-hop sibling proves the predicate really does fault.
 
 GATES. `bun run fmt` 0; `bun run check` 0; `bun run test -- --skip-nx-cache` RC=0 (21 projects); `bun run
 fuzz` all seven, 57 pass / 0 fail.
+
+## Item 2226 — ✅ **THE SWEEP CONFIRMS ITEM 2225 INDEPENDENTLY: `hop2/rows + mid where` goes 5.31x → 2.54x at 80k and its trend flips RISES → FLAT. The new top nomination is `node/rows`, the plainest shape in the table, now RISING MONOTONICALLY**
+
+A regression check and a nomination finder in one run.
+
+```text
+    row                              5000    20000    80000   trend      item 2224 was
+    hop2/rows + mid where           2.47x    2.32x    2.54x   flat       3.93/3.92/5.31 RISES
+    hop2/rows + trailing where      1.28x    1.04x    1.18x   flat       1.23/1.12/1.26 flat
+    hop2/rows                       1.44x    1.27x    1.11x   falls      1.41/1.17/1.14 flat
+    node/rows                       1.52x    1.88x    3.04x   RISES <--  1.78/1.59/2.23 (non-monotonic)
+    node/rows + where               4.45x    2.22x    3.71x   flat       2.52/2.23/4.03 RISES
+    hop/two aggregates              4.33x    4.23x    3.02x   falls      4.03/4.77/3.35 flat
+    hop/rows                        1.21x    0.45x    0.18x   falls
+    hop2/count                      0.01x    0.00x    0.00x   falls
+    page/topk over a hop            0.46x    0.76x    0.78x   RISES (but <1.0 — engine wins)
+```
+
+🔑🔑 **THE SHIPPED ROW IS CONFIRMED BY AN INSTRUMENT I DID NOT BUILD AGAINST**: item 2225 was measured with
+`midfilter-2220.ts`; this is the cliff finder's own floored row, swept across three sizes, and it agrees —
+**2.54x at 80k against 5.31x before, trend flipped.** ⚠️ Its trailing-filter sibling stays flat at 1.18x, so
+the change did not leak into the control.
+
+### 🔑 THE NEW NOMINATION: `node/rows` — `MATCH (n:P) RETURN n.k AS k`, 20,000 rows
+
+```text
+    item 2224    1.78x    1.59x    2.23x    (non-monotonic — item 2210 says spread)
+    item 2226    1.52x    1.88x    3.04x    MONOTONIC
+```
+
+🔑 Two independent runs now end high, and this one is monotonic, which is what item 2210's rule asks for
+before believing a trend. **It is also the plainest shape in the whole table** — a label scan projecting one
+property — so whatever it is should be unusually easy to isolate. ⚠️ `node/rows + where` moved the other way
+(RISES → flat, 4.45/2.22/3.71), so that one remains spread rather than mechanism.
+
+⚠️ Instrument note, recorded not fixed: the SWEEP does not apply item 2212's absolute-size gate, so
+`node/count` shows 12-13x for what is 1,190 ns against a 90 ns `Set.size`. The finder itself suppresses it;
+the sweep prints the ratio because the trend is still meaningful. A reader comparing the two tables needs to
+know that.
+
+**NEXT: ladder `node/rows`** — measure, then LADDER, then ABLATE (items 2216/2217), and **run `nx build`
+before any `@lenke/*` timing** (item 2225's lesson).
+
+GATES. `bun run fmt` 0, `bun run check` 0. No production change.
