@@ -110146,3 +110146,63 @@ a duplicate-id hit, which returns immediately, so the common insert path is one 
 2182's measured 1.00 calls per add.
 
 GATES. No production change. `bun run check` 0.
+
+## Item 2201 — ✅ **THE WRITE PATH IS MINED OUT: `addVertex` is 659 ns against a 74 ns `Map.set` floor, and FOUR of its FIVE top frames already carry a recorded measurement — three refuted levers and one deliberate correctness trade. Only GC/allocation (17.5%) has never been measured**
+
+Items 2199-2200 left both screens quiet and the read/by-id paths verified, so this tick took the write path
+on item 2200's calibrated harness (results consumed into a sink, keys pre-built, a floor and a null control).
+
+```text
+    100,000 ops, fresh graph per rep, median of reps 3-7
+    NULL CONTROL                              0 ns/op
+    FLOOR raw Map.set                        74 ns/op
+    addVertex (fresh id)                    659 ns/op    8.9x the floor
+    addVertex + addEdge                    2144 ns/op
+    SET one prop (whole-object assign)      135 ns/op    1.8x — healthy
+```
+
+🔑 `SET` at 1.8x the floor is in good shape (items 2180-2184 worked it). `addVertex` at 8.9x is the gap, so
+it got a self-time profile: **1066 ns/add under the profiler, 300,000 adds x 12 reps.**
+
+```text
+    frame                     self ms      %    status
+    #commitNormalized           736.9   19.2%   freeze = 30% of a write (item 1733); KEPT, see below
+    (garbage collector)         672.3   17.5%   ⚠️ THE ONLY FRAME WITH NO RECORDED MEASUREMENT
+    commitElementLabels         607.4   15.8%   the single funnel for every label write, by design
+    getVertexById               422.9   11.0%   item 2182: exactly 1.00 O(1) call per add
+    addVertex                   338.8    8.8%   the method's own body
+    indexVertexLabel            283.0    7.4%   has-then-get collapse REFUTED with numbers
+    set/get labels              146.9    3.8%   getter frames — attribution until a deletion test
+```
+
+### ⚠️⚠️ FOUR RECORDED REFUTATIONS, EACH SITTING EXACTLY WHERE I LOOKED
+
+1. **`indexVertexLabel` does `has` → `set` → `get` → `add`, three lookups for one label.** The obvious
+   collapse into one `get` is refuted in a comment immediately below it, on the edge twin: _"It looks like
+   free money and it is NOT"_ — before 2845.9/2893.0/2766.1 against after 2913.9/2872.7/2876.7, interleaved
+   min of three.
+2. **The `Object.freeze` in `#commitNormalized` is 30% of a property write**, ablated in situ with a null
+   control (item 1733: base 115.7/110.6/112.1 vs nofreeze 100.1/78.7/74.1, control flat). **NOT REMOVED,
+   and not an accident:** `get properties` returns the stored bag directly with no copy, so the freeze is
+   what stops a caller mutating graph state through it. Item 1734 tested and REFUTED the one proposed
+   explanation for its in-situ cost, and left a standing instruction: _do not re-explain it without an
+   instrument._
+3. **`getVertexById` at 11%** is item 2182's `frame-attribution-trap` instance — exactly 1.00 O(1) call per
+   add (the duplicate-id check), not a hot getter. Item 2200 confirmed the second call fires only on a
+   duplicate hit, which returns immediately.
+4. **`#commitNormalized`'s other parts are NOT MEASURABLE** — dropping `box.keys = undefined` reads
+   113.3/110.7/109.0 against a base of 115.7/110.6/112.1.
+
+🔑🔑 **So 659 ns/add is the price of being a real LPG — label indexes, a constraint gate, event emission, and
+a frozen property bag — not slack.** The repo's "record rejected optimizations next to the code" rule paid
+for itself four times in one tick; without it this item would have re-derived the has-then-get collapse.
+
+### 🔑 THE ONE RESIDUAL, NAMED BUT NOT PRICED
+
+**GC at 17.5% is the only top frame with no recorded measurement.** Each add allocates a `Vertex`, a
+property bag, a labels `Set` and (first time per id) a `LabelBox`; `soleLabelOf` additionally spends a
+`values().next()` iterator per write by design. ⚠️ All four allocations look structurally required, and
+getting the sole label out of a single-element `Set` needs an iterator either way — so this is a
+diagnosis, not a target, until someone ablates it. Do not open it without an allocation instrument.
+
+GATES. No production change. `bun run check` 0.
