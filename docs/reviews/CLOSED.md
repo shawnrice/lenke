@@ -111310,3 +111310,41 @@ one buys nothing. Both files verified byte-identical to pristine.
 🔑 **The file's deferral was right, and now it is right WITH A MEASUREMENT instead of a conjecture.**
 
 GATES. `bun run check` 0; tree verified identical to pristine. No production change.
+
+## Item 2223 — ✅ **CLOSED, AND THE OPPOSITE OF A WORRY: the per-edge overhead is NOT size-dependent in a worsening way. The engine-to-floor ratio FALLS from 3.78x to 1.69x as the graph grows, because the FLOOR becomes cache-bound and the engine already was**
+
+Items 2217 and 2222 both ended at the same place: a diffuse per-edge overhead on the hop walks. The open
+question was whether that overhead GROWS with graph size, which would make the 2.6x a floor rather than a
+ceiling. It does not.
+
+```text
+    one arm per PROCESS, the bitemporal as-of rows shape
+    edges     engine     floor   ratio    engine ns/edge   floor ns/edge
+     40,000    3,951     1,046   3.78x             98.8            26.2
+    160,000   20,679     7,791   2.65x            129.2            48.7
+    640,000   89,075    52,547   1.69x            139.2            82.1
+```
+
+🔑🔑 **THE FLOOR'S PER-EDGE COST GROWS 3.1x (26.2 → 82.1 ns) WHILE THE ENGINE'S GROWS 1.4x (98.8 → 139.2).**
+The hand-rolled walk is becoming cache-bound as the graph outgrows cache; the engine's walk already paid
+that, so the two converge. **At 640,000 edges the gap is 1.69x, and the trend is still downward.**
+
+✓ The `count` arm shows the same thing from a third angle: 14.2 → 31.8 → 49.2 ns/edge.
+
+### 🔑 WHY THIS MATTERS MORE THAN THE RATIO IT RETIRES
+
+This is the THIRD time this session that sweeping the size changed a verdict, always in the same direction:
+
+- **item 2200** (by-id): a "4.7x overhead" at 200k is **1.5x at 1M**, because a bare `Map.get` goes 7 → 80 ns;
+- **item 2205** (multi-clause): every row's steep 50k→200k ratio was the shared cache transition, not a defect;
+- **item 2223** (per-edge): 3.78x → 1.69x, because the floor degrades faster than the engine.
+
+🔑 **The common cause is that a hand-rolled floor is usually MORE cache-friendly than a general engine at
+small sizes and loses that advantage at scale.** So a single-size ratio systematically OVERSTATES the gap,
+and the overstatement is worst at the sizes a probe is most tempted to use. `CLAUDE.md`'s "sweep the size"
+rule is really "a one-size ratio is an upper bound, not a measurement".
+
+**VERDICT: the 2.6x that items 2215-2222 circled is a mid-size artifact. There is nothing to build, and the
+engine's hop overhead AMORTIZES as graphs grow** — which is the useful thing to know about it.
+
+GATES. `bun run fmt` 0, `bun run check` 0. No production change.
