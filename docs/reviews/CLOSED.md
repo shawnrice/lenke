@@ -116362,7 +116362,7 @@ GATES. No production change in this item. ✅ **Post-ship state: Gremlin probe 0
 1 flag explained as a closed-form threshold artifact; GQL probe 0 answer disagreements and 1 flag explained
 as sweep pollution. Both surfaces are clean.**
 
-## Item 2325 — 🎯 **THE SEEKED PER-ROW PATH COSTS ~1.86x THE SCAN PER-ROW PATH, IN GQL, CONFIRMED BY TWO INDEPENDENT MEASURES — a seek visits FEWER rows but pays MORE for each one, which is backwards and is probably why it was never examined. Found by decomposing the serving bench's slowest indexed read; TS is at NATIVE PARITY on that row, so it is not TS overhead**
+## Item 2325 — ⚠️ ~~🎯 THE SEEKED PER-ROW PATH COSTS ~1.86x THE SCAN PER-ROW PATH~~ **MOSTLY LOOP LENGTH, NOT THE SEEK — item 2326 shows the gap closing to ~1.19x as rows-per-call rises, so the 1.86x was my 200-row arm against a 20,000-row control:**, IN GQL, CONFIRMED BY TWO INDEPENDENT MEASURES — a seek visits FEWER rows but pays MORE for each one, which is backwards and is probably why it was never examined. Found by decomposing the serving bench's slowest indexed read; TS is at NATIVE PARITY on that row, so it is not TS overhead**
 
 A regression sweep of `bun run bench:usage` after items 2319-2323. ✅ **Two results.**
 
@@ -116411,3 +116411,64 @@ own item, where the seeked walk can be profiled against the scan walk directly �
 method that found item 2319's `drain` in one step.
 
 GATES. `bun run fmt` 0, `bun run check` 0. One probe (seven arms); no production change.
+
+## Item 2326 — ⚠️⚠️ **ITEM 2325's TARGET WITHDRAWN BY MY OWN SWEEP: the seeked per-row cost falls 20.32 → 15.72 → 13.72 ns as rows-per-call rises 200 → 1,000 → 5,000, converging on the scan's 11.49. Most of the "1.86x" was LOOP LENGTH — a 200-row arm against a 20,000-row control — not a seek defect. Found before building anything**
+
+Item 2325 isolated a 1.86x seeked-vs-scan per-row gap with same-engine controls and two independent
+measures. 🔑 This item set out to differential-profile the two walks, and the profile pointed at one frame:
+
+```text
+    frame            seek ns/row   scan ns/row
+    propOf                9.05         1.82      <- 82% of the 8.81 ns/row gap
+    (anon):24415          4.83         5.87      <- comparable, the shared projection work
+    get properties        4.06         1.87
+```
+
+⚠️ **But `propOf` is three operations** — two optional chains, a computed key, `?? null` — so it cannot be
+5x dearer by itself. ✅ **And reading the compiled route refuted my fusion hypothesis outright: both shapes
+take the SAME rung**, `nodeProjection`.
+
+```text
+    seekProject   clauses, nodeProjection, writes
+    scanProject   clauses, nodeProjection, writes      <- the SAME rung
+    seekCount     clauses, countShortcut, writes
+```
+
+### ⚠️⚠️ WHICH EXPOSED A FAIRNESS PROBLEM IN MY OWN ARMS
+
+The seek's loop runs **200 rows per call**; the scan's runs **20,000**. A 20,000-iteration loop gets JIT
+treatment a 200-iteration one may never reach, so the comparison was never like-for-like. ✅ Raising the
+bucket size tests it directly:
+
+```text
+    rows per call      ns/visited
+        200              20.32
+      1,000              15.72
+      5,000              13.72
+     10,000              37.49   <- an outlier, see below
+     20,000 (scan)       11.49
+```
+
+🔑 **Monotonically falling and converging on the scan.** At 5,000 rows a call the seek is 13.72 against
+11.49 — **~1.19x, with the trend still descending** — so the honest residual is near nothing, and
+item 2325's 1.86x was an artifact of the arm lengths.
+
+⚠️ **ONE UNEXPLAINED OBSERVATION, recorded rather than smoothed over**: 10,000 rows a call reads **37.49**,
+2.7x worse than 5,000. That is two buckets of 10,000 in the index, so it may be a large-bucket or
+dictionary-mode effect (`ts-set-is-o-width` records a 128→256 dictionary cliff of that kind). **Not chased
+here, and not load-bearing for the withdrawal** — every arm from 200 to 5,000 falls monotonically.
+
+### ✅ WHAT SURVIVES, AND IT IS WORTH KEEPING
+
+**A seeked query's per-row cost is dominated by PER-CALL overhead when it returns few rows** — which is
+precisely the regime the serving bench measures. ✅ That is not a defect to fix in the walk; it is why
+`prepare()` (item 2305, 9-24%) and the parse cache (item 2271, 3-4x) are the levers that matter for small
+seeked reads, both already shipped and both already guide rules. ⚠️ And the bench row's absolute is
+healthy: 150-180k ops/s for a 200-row seeked aggregate.
+
+🔑 **SIXTH FLOOR-FAIRNESS CORRECTION THIS SESSION** (2262, 2281, 2288, 2312, 2325, 2326) — and the second
+in consecutive items, 2325 having already corrected its own cross-engine floor. ✅ The pattern is now
+unmistakable enough to state as a rule: **when an A/B compares two arms, check that they do the same AMOUNT
+of work per call, not merely the same KIND.**
+
+GATES. `bun run fmt` 0, `bun run check` 0. One route reader added; no production change.
