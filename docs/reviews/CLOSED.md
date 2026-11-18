@@ -115644,3 +115644,49 @@ price), and the right response to new evidence is one bounded question — here 
 measurement that closes the family for good.
 
 GATES. `bun run fmt` 0, `bun run check` 0. Two arms added to an existing probe; no production change.
+
+## Item 2311 — ✅ **FULL GATE PASS, ALL THREE SHIPS VERIFIED IN SOURCE, AND EVERY PROBE RE-RUN — which matters because ten of this session's probes are `.mjs` and therefore invisible to `bun run check`**
+
+```text
+    bun run fmt / check                    0 / 0
+    bun run test -- --skip-nx-cache        21 projects, 18 dependent tasks — OK
+    bun run fuzz                           57 pass / 0 fail   (byte-identity holds)
+    guide suite                            9 pass / 0 fail, 25 assertions
+```
+
+### ✅ THE THREE SHIPS, CHECKED IN THE SOURCE RATHER THAN ASSUMED
+
+```text
+    2271    PARSE_CACHE_CAP = 512              present   3-4x on multi-statement sessions
+    2293    FAR_BUCKET_DECISIVE = 64           present   13.2x, authz list O(results)
+    2297/8  inlineFarIsPlainAnchor             present   27x / 24.2x, far-driven inline predicates
+```
+
+### ⚠️ AND A CHECK THE GATES CANNOT DO
+
+🔑 **Ten of this session's probes are `.mjs`, which `bun run check` does not typecheck** — item 2291 learned
+that the hard way, when a `.mjs` arm silently created no index and nearly published "an index does not
+help". ✅ So each was re-run with a tiny fixture; all ten exit 0:
+
+```text
+    farfilter-2286   farprof-2296   idxguide-2301   prepare-2305   rebaclist-2288
+    startcost-2309   orderrow-2308  topksweep-2285  shapecost-2283 growth-2281
+```
+
+⚠️ **A probe that no longer runs is worse than a deleted one**, because its recorded numbers stay
+quotable while nothing can reproduce them. This check costs a minute and should precede any session's
+close.
+
+### ✅ WHERE THE SESSION STANDS
+
+**Three ships hold** (2271, 2293, 2297/2298) and the measurement surfaces are quiet: both spelling probes
+down to known constants, the bench's largest row explained as fixture, and the `withBinding` frame fully
+mapped. ⚠️ **Six of my own published numbers were corrected across 2302-2310** — two guide rows for
+cold-start readings, two headings for a wrong mechanism, one for a Cypher-contaminated framing, and one
+scope correction — which is the session's real pattern: **the instrument was wrong more often than the
+engine.**
+
+✅ `docs/guides/query-cost.md` now carries **nine measured rules, every snippet executed by a test in the
+gate**, and is the session's largest user-facing artifact.
+
+GATES. As listed. No production change in this item.
