@@ -109898,3 +109898,65 @@ against native's +4.67, 2.4x) correctly does NOT flag.
 ```
 
 GATES. No production change; no files touched. `bun run check` 0.
+
+## Item 2196 — ⚠️⚠️ **BUILT AND REVERTED: the streaming grouped `sum` is only 1.06x, because MY CEILING WAS WRONG. `grouped min` already uses a fold and costs the same 16 ms — the array was never the dominant term, `argFn` is**
+
+The screen's last unexamined flag (`grouped sum by key`, +5.99 against native's +1.70, 3.5x). A
+differential profile against the grouped COUNT beside it named the difference cleanly:
+
+```text
+    frame                     count      SUM    delta ms over 60 reps
+    scanAggregates + (anon)     0.0    366.1    +366.1
+    aggregateOverValues         0.0    124.1    +124.1
+    bump + (anon)             120.6      0.0    -120.6   <- count's one-pass tally
+```
+
+🔑 So a grouped `sum` COLLECTS a per-group array and reduces it afterwards, where the count bumps a
+counter. `SUM_FOLD` already existed for the ungrouped walk (item 2159) with a `NOT_PLAIN_NUMBERS` bail, so
+the build reused it rather than copying.
+
+### ✅ THE BUILD WORKED AND WAS CORRECT
+
+```text
+    numeric grouped sum      0→18, 1→12, 2→15          derived from the fixture
+    nulls skipped            c=5
+    TEMPORAL bails           PT10800S  (1H + 2H)       the collecting arm re-runs
+    float exactness          grouped === ungrouped     byte-identity preserved
+```
+
+⚠️ The temporal bail matters: `aggregateOverValues` routes a column holding ANY temporal to `temporalSum`,
+which needs every value in hand, so the fold throws on the first non-number and the whole grouped pass
+re-runs with the collecting classification.
+
+### ⚠️⚠️ AND THEN THE A/B SAID 1.06x, WITH A CONTROL THAT EXPLAINS WHY
+
+```text
+    row                      BEFORE            NEW
+    grouped sum  TARGET  16.14 / 19.51   15.20 / 15.23    1.06x on min-of-arms
+    grouped count   ctl   2.95 /  2.96    3.11 /  3.20    flat
+    grouped avg     ctl  15.71 / 35.71   15.18 / 15.47    flat (its BEFORE spread is 2.3x)
+    ungrouped sum   ctl   6.07 /  6.33    6.02 /  6.17    flat
+    grouped min     ctl  16.38 / 16.30   16.41 / 16.38    flat — AND THIS IS THE ANSWER
+```
+
+🔑🔑 **`grouped min` ALREADY USES A FOLD** (`min` is in `foldFor`) **and still costs 16.4 ms.** So the
+per-group array was never the dominant term, and removing it buys 6% — below this repo's ~10% threshold for
+believing a number without an isolated harness.
+
+⚠️⚠️ **MY CEILING PROBE WAS THE MISTAKE, AND IT PREDICTED 5.0x.** It read `v.properties.age` directly:
+
+```text
+    engine: grouped sum       15.79 ms
+    engine: grouped count      3.00      <- what I assumed the shape could cost
+    my CEILING                 3.13      <- bypasses argFn/binding entirely
+```
+
+🔑 A ceiling is only a ceiling if it does the same WORK. Mine skipped the compiled `argFn(env)` and the
+per-vertex binding write, which is exactly what the grouped-count arm skips and every grouped FOLD pays.
+**Item 2195's ceiling was honest because its arithmetic was the engine's; this one was not.**
+
+**THE REAL TARGET, now named: `argFn(env)` plus the per-vertex `binding.set` on the grouped path — ~13 of
+the 16 ms, and `min` proves it is paid by every grouped fold, not just `sum`.** That is a different and
+larger question than the one this item asked.
+
+GATES. No production change; both files reverted and verified identical to pristine. `bun run check` 0.
