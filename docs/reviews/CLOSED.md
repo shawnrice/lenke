@@ -110462,3 +110462,59 @@ sides, so the 31.3x against native is architectural, not slack.
 look elsewhere rather than re-pricing these rows.
 
 GATES. `bun run fmt` 0, `bun run check` 0. No production change.
+
+## Item 2206 — ✅ **CLOSED: the Gremlin cliff finder's THREE "SUSPECTS" (65x, 72x, 149x) ARE ALL NON-DEFECTS — the engine's filtered count beats a hand-rolled walk by 51x. The ratios compare a near-optimal arm against an O(1) CLOSED FORM, which is the SEVENTH mismatched-floor false nomination**
+
+Both screens are quiet and the multi-clause surface is exhausted (item 2205), so this tick went after the
+Gremlin composition surface. ⚠️ **It did NOT need a new probe, and finding that out was the first win:**
+`packages/native/` already holds **145 probe files**, including `branch-cost-probe`, `union-both-call-floor`,
+`gremlin-match-selectivity-floor`, `nested-read-ladder-probe`, `seek-match-probe` — and a purpose-built
+**`gremlin-cliff-finder.ts`**, whose whole job is finding exactly this kind of nomination. `CLAUDE.md`'s
+"read three file headers before writing a bench" paid for itself immediately.
+
+### THE FINDER'S OUTPUT, AND WHY ALL THREE SUSPECTS ARE FINE
+
+```text
+    count/hop        -> count/hop + far has              65.36x  SUSPECT
+    count/hop hop    -> count/hop hop + trailing has    149.40x  SUSPECT
+    count/hop hop    -> count/hop + mid has + hop        71.91x  SUSPECT
+```
+
+🔑 Every shape is marked `CLOSED` — a rung answers it — so this is "the rung is taken but slow", and the
+only thing that settles it is a ceiling:
+
+```text
+    engine: hop hop            [CLOSED]     11.5 us     answer 319972
+    engine: hop hop + trailing has         383.3 us     answer   6400
+    CEILING hand-rolled two-hop + test    19613   us     answer   6400
+```
+
+⚠️⚠️ **THE ENGINE IS 51x FASTER THAN A HAND-ROLLED WALK OVER THE SAME DATA, with the same answer.** The
+filtered arm is itself a closed form. So the 149x is the ratio of an **O(1) degree-product count** to a
+**near-optimal filtered count** — both excellent, and nothing to take.
+
+🔑 **The finder's `SUSPECT` flag compares each shape against its O(1) NEIGHBOUR, so a perfectly good
+filtered arm still reads 149x.** That is the same class as items 2168 (twice), 2170, 2175, 2199 and 2204 —
+**the seventh** — and the general rule now stands: _a ratio answers "is there a gap"; only a ceiling answers
+"is any of it reachable"._
+
+### ⚠️⚠️ MY OWN UNIT BUG, CAUGHT ONLY BY CROSS-CHECKING THE EXISTING INSTRUMENT
+
+My first run reported **38 ns** and **528 ns** for these shapes — a thousand times below the finder. A bulk
+re-measure (2,000 iterations under one timer, warmed, with a sink) agreed with the finder instead:
+
+```text
+    shape                      my first reading   bulk 2000 iters   the finder
+    hop hop                         "38 ns"           11,480 ns        3,463 ns
+    hop hop + trailing has         "528 ns"          383,287 ns      517,359 ns
+```
+
+🔑 `(ms * 1000)` is **MICROSECONDS**, and I printed it labelled `ns`. ⚠️ A per-op figure that implausible
+should have stopped me on sight — item 2200 established that **anything under ~1 ns is a dead-code artifact**,
+and the same instinct applies to a 38 ns two-hop count over 20,000 vertices.
+
+✅ **The error CANCELS in the ratio**, so the 51x verdict above is unaffected — but it is only luck that the
+conclusion was ratio-shaped. **Cross-checking against the existing probe is what caught it**, which is a
+second, independent reason to run the corpus's instrument before writing a new one.
+
+GATES. `bun run fmt` 0, `bun run check` 0. No production change; no new probe (deliberately).
