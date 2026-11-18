@@ -111918,3 +111918,74 @@ session, and that fuzzer guards the Rust optimizer, not the TS rewrites.
   each struck in its own entry's heading so a reader scanning for open work is not misled.
 
 GATES. As above, each read unpiped. No production change in this item.
+
+## Item 2236 — 🔑 **THE BENCH HAS NO CROSS-ENGINE ANSWER CHECK, AND ITS HEADLINE 27.88x IS WASM AMORTIZING, NOT TS DEGRADING. Built the missing instrument; the TS cost is now fully accounted at ~346 ns/contribution**
+
+Every measured surface was floored (item 2235), so this tick took the one engine the TS screens never
+compare against: **wasm**. `BENCH_ENGINES=ts,wasm bun run bench` flags
+`query: OPTIONAL + GROUP BY, far key [2124]` at **ts 103.1 ms vs wasm 3.7 ms — 27.88x**.
+
+### ⚠️⚠️ FIRST DEFECT: NO ANSWER IS EVER COMPARED
+
+Every workload in `bench.ts` is `void e.query(...)` — **the result is discarded.** So no ratio in that
+table is evidence the two engines did the same work; a large one is as consistent with an engine DECLINING
+as with a real gap. ⚠️ OPTIONAL is a known divergence area (the 15th registered divergence is
+`OPTIONAL MATCH` + a raising inline predicate), which makes this the first thing to rule out, not the last.
+
+🔑 **BUILT `packages/native/parity-2236.ts`**: loads the same ndjson into both engines and compares ROW
+COUNT, the TOTAL of `count(*)`, and a hash of the sorted `group=count` multiset. ⚠️ Row ORDER is
+deliberately NOT compared — unordered order is unspecified and comparing it would be a false alarm.
+**Result: 4 shapes, 0 divergences, hashes identical.** The work is real.
+
+### 🔑🔑 SECOND DEFECT: THE 27.88x IS A ONE-SIZE RATIO, AND IT INVERTS THE CAUSE
+
+```text
+    far key          N=20k    N=50k   N=100k   N=200k
+    ts ms             17.0     30.7     63.1    143.4
+    wasm ms            5.5      3.9      5.6      8.9
+    ratio             3.1x     7.9x    11.3x    16.1x
+    ts ns/contrib      425      307      316      359     <- FLAT: TS is LINEAR
+    wasm ns/contrib    138       39       28       22     <- FALLS: fixed cost amortizing
+```
+
+⚠️⚠️ **The ratio grows because WASM IMPROVES PER UNIT, not because TS degrades.** wasm is ~4 ms fixed plus
+~12 ns/contribution; TS is ~350 ns/contribution and flat. Quoting "27.88x" invites the reader to look for a
+TS complexity bug that is not there. **The honest figure is a ~16-29x PER-CONTRIBUTION constant factor.**
+
+🔑 **And it is NOT about OPTIONAL**: the non-OPTIONAL control shows the same shape (ts 247 vs wasm 21
+ns/contrib at 200k). This is the grouped-count-over-a-hop family generally — which is why items 2123/2124's
+rungs, worth 10.6x and 3.22x, left this untouched.
+
+### ✅ THE TS COST IS FULLY ACCOUNTED (load subtracted, 2,400,000 contributions)
+
+```text
+    frame                     ns/contrib   share
+    (anon) — the rung's walk       160.9     47%
+    get properties                  59.7     17%
+    bump — the group counter        45.7     13%
+    get adjFrom                     34.5     10%
+    edgesOfTypes                    26.8      8%
+    get to / valueKey                13.7      4%
+    ------------------------------------------------
+    named                          ~341 of 346
+```
+
+🔑 **`valueKey` is 4 ns — the grouping itself is nearly free.** The cost is _reaching_ the property.
+
+### ⚠️ WHAT IS NOT CONCLUDED, AND WHY
+
+`get properties` at 59.7 ns is the tempting target and is **NOT** actionable yet, for two recorded reasons:
+
+- **`Vertex.ts` already carries a refutation of optimizing this exact getter** — "JSC inlines a getter whose
+  whole body is a private-field read", flat on four rows with the rounds disagreeing on sign. The box is
+  cached on first read (`#box ??=`), so a warm read should be a private-field load.
+- **A getter frame is ATTRIBUTION until a deletion test with a CONTROL says otherwise** — four instances
+  recorded, and at item 1667 the control moved 7.5x. 59.7 ns is far above a warm private-field read, so
+  either the frame is absorbing its caller's indexing or the box is cold more often than expected. **Those
+  are different targets and a profile cannot separate them.**
+
+**NEXT: a deletion test on the walk's property read with a control that cannot reach it** — the only
+instrument that distinguishes the two, and the precondition for touching anything here.
+
+GATES. `bun run fmt` 0, `bun run check` 0. New instrument `parity-2236.ts` + probe `prof-2236.mjs`; no
+production change.
