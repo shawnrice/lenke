@@ -111147,7 +111147,7 @@ absolute gap — ~15 ms. ⚠️ Per items 2216/2217, the sequence is LADDER then
 
 GATES. `bun run fmt` 0, `bun run check` 0. Instrument only; no engine change.
 
-## Item 2220 — 🔑🔑🔑 **THE STRONGEST NOMINATION OF THE SESSION, ON THREE INDEPENDENT LINES OF EVIDENCE: a MID-pattern filter is not used to prune the second hop. Start-position filtering prunes (7.4 ms); mid-position costs 29.5 ms where its pruning floor is 2.3 ms**
+## Item 2220 — 🔑🔑 **THREE INDEPENDENT LINES OF EVIDENCE that a MID-pattern filter does not prune the second hop (29.5 ms against a 2.3 ms pruning floor).** ⚠️ **FRAMING CORRECTED BY ITEM 2221: this is not an oversight — the placement is DELIBERATE, already 7.02x better than the general matcher, and the push-down is a documented deferred item whose blocker is raise parity.**
 
 Item 2219 flagged `hop2/rows + mid where` at 3.67x with its trailing sibling at 1.10x. This tick tested the
 mechanism rather than profiling it.
@@ -111198,3 +111198,53 @@ accessor, but **a row count invariant to the varied parameter cannot validate th
 ~22 ms fixed term is the closed causes (binding, property reads) or a genuine missing prune.
 
 GATES. `bun run fmt` 0, `bun run check` 0. New probe `packages/native/midfilter-2220.ts`; no engine change.
+
+## Item 2221 — ✅ **ITEM 2220's NOMINATION IS REAL BUT ALREADY KNOWN AND DELIBERATELY DEFERRED: `hop2-projection.ts` carries a MEASURED TABLE for exactly my three queries, the mid filter is ALREADY 7.02x better than the general matcher, and the push-down is "a separate item" blocked on raise parity. `cannotRaise` (item 2173) is the answer to that blocker**
+
+Item 2220 corroborated a missing mid-pattern prune three ways and I was ready to ladder it. ⚠️ Reading the
+rung first — `hop2Projection`, which the finder names — found the question already answered in the source.
+
+### ⚠️⚠️ THE FILE CARRIES A MEASURED TABLE FOR MY EXACT THREE QUERIES
+
+```text
+    WHERE a.k = 5   (start-only)    4.825 ms general  ->  17.895 admitted   3.71x WORSE
+    WHERE b.k = 5   (middle)      161.205             ->   22.980           7.02x better
+    WHERE c.k = 5   (far)         165.432             ->   26.321           6.28x better
+    WHERE true      (invariant)   209.829             ->   36.575           5.74x better
+```
+
+🔑🔑 **The mid filter is ALREADY 7.02x better than the general matcher** — 161 ms down to 23 ms, which is the
+~29.5 ms item 2220 measured on a different fixture. **So item 2220's "the engine has pruning machinery and
+does not apply it mid-pattern" was the wrong framing**, and 2220's heading is corrected in this commit. The
+rung does carry the predicate; it evaluates it at the DEEPEST level on purpose.
+
+### 🔑 AND THE PUSH-DOWN IS DOCUMENTED AS DEFERRED, WITH ITS BLOCKER NAMED
+
+> Pushing a start-only predicate up to the outer loop is the obvious optimization and it is NOT
+> answer-equivalent: the general path evaluates a clause `WHERE` once per COMPLETE match, so a start that
+> yields no row must never evaluate it, and **a predicate that FAULTS would then raise where it previously
+> did not**. … routes an invariant predicate specifically to the walk that carries it. **Taking the push-down
+> means redoing that analysis, so it is a separate item with its own number.**
+
+⚠️ And the start-position variant was SHIPPED INTO A MEASUREMENT and reverted: admitting it was a **3.71x
+REGRESSION**, because the general matcher rejects a start before expanding it while this walk pays one test
+per ROW. **That is the opposite of what my 2220 position table suggested** — the 7.4 ms start row I measured
+is the GENERAL matcher doing its early rejection well, not this rung pruning.
+
+### 🔑🔑 WHAT IS GENUINELY OPEN, AND THE DESIGN FOR IT
+
+The blocker is raise parity: moving a conjunct earlier changes WHETHER it runs on a row the general path
+would never complete. 🔑 **Item 2173 already built `cannotRaise` for exactly `lit`/`prop`/`var` expressions**,
+and `b.k = 5` is that shape — a conjunct that cannot fault can be pushed without reopening items 139-145.
+
+So the open item is: **split the carried `WHERE` into conjuncts, and push to the MIDDLE loop only those
+whose free vars exclude the far variable AND which `cannotRaise`.** ⚠️ Scope is favourable —
+`hop2-projection.ts` is **484 code lines** against the 3,000 cap, and it is already a SEPARATE module created
+precisely so `hop-projection.ts` need not be touched (items 1441/1466 price that at up to 16% on unrelated
+rows).
+
+⚠️ **NOT BUILT THIS TICK, deliberately**: the blocker is a correctness question with five pinning tests, and
+this session's record says a build that starts after the prior art is read goes better than one that starts
+before. The next tick has the design, the file, the floor (2.3 ms) and the existing helper.
+
+GATES. `bun run fmt` 0, `bun run check` 0. No production change.
