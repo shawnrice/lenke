@@ -113081,3 +113081,57 @@ pipeline's one sizable-looking term is a generator chain already priced at ~4% w
 contract. **Nothing to build; three corrections and a closure.**
 
 GATES. `bun run fmt` 0, `bun run check` 0. No instrument, no production change — a prior-art item.
+
+## Item 2259 — 🔑🔑 **A SORTED HOP COSTS 344 ns/ROW WHERE A SORTED SCAN COSTS 87 AND AN UNSORTED HOP COSTS 23 — so ~230 ns/row is unaccounted for by either term. Screening by ABSOLUTE cost found it; the ratio screens never would**
+
+Four threads had closed without a build, each on a diffuse ratio. So this item screened by **absolute** cost
+instead — where this session's actual ships came from (item 2203's 38x, 2194's 12.2x) — and read the
+`ts,wasm` bench table's two biggest rows **against each other**, which nothing had done:
+
+```text
+    traverse 1-hop project              ts  18.1 ms   wasm 215.6
+    traverse 1-hop project + order by   ts 827.5      wasm 292.0
+    -> adding ORDER BY costs TS 45.7x and native 1.35x
+```
+
+🔑 That is [[accounted-shape-hides-a-term]]'s rule in practice: **vary ONE thing in an accounted row before
+dismissing it.**
+
+### ✅ CONFIRMED, SMALLER THAN THE BENCH IMPLIED, AND SHARPER THAN THE HEADLINE
+
+```text
+    N=50000 vertices / 150000 edges, median of 7 post-warm-up, `.length` forces materialization on BOTH arms
+    arm                  median     rows   ns/row
+    project                 3.4   150000       23
+    project+order          51.7   150000      344      <- 15.01x, not 45.7x
+    project+order k        29.6   150000      197      <- a NUMERIC key is 1.75x cheaper than a string one
+    scan+order              4.3    50000       87      <- the SAME sort over a SCAN
+```
+
+⚠️ The unsorted arm reads `.length` too, so laziness is not the difference — the arms differ only in the
+sort.
+
+### 🔑🔑 THE DECOMPOSITION IS WHAT MAKES THIS A TARGET
+
+- **Producing hop rows is CHEAP: 23 ns/row** unsorted.
+- **Sorting a scan's rows costs 87 ns/row**, on the same bare-prop string key.
+- A sorted hop paying both should land near **~110 ns/row**. It costs **344**.
+
+**~230 ns/row — about two thirds of the shape — is explained by neither hop production nor sorting.**
+🔑 A log factor on 3x the rows is ~1.1x, so this is a ROUTE difference, not an algorithmic one.
+
+### ⚠️ AND THE PRIOR ART SAYS THIS TERM HAS A NAME
+
+ORDER BY is heavily worked — items 1902 (3.75x), 1903 (the hop twin, 2.64x, **and a TS-only WRONG ANSWER in
+shipped code**), 1905, 1929, 1930→1962 (shipped, 1.85-2.95x). 🔑 **Item 1965, as corrected by 1966, already
+located the hop-sort mass: "the deferred arm's KEY EVALUATION — 67% by ablation"**, and records that
+`farPropRow` requires a **BARE `prop` item** — which this shape has (`RETURN x.name AS n ORDER BY n`). ⚠️ So
+the fused route ought to be reachable here and the measurement says it is not.
+
+**NEXT, and it is a code read rather than a guess**: check whether `project+order` reaches a rung at all —
+[[rung-precedence-decides-speed]]'s rule is to read `compileLinear`'s non-null fields, because **timing
+cannot distinguish "declined" from "more work"**. ⚠️ Item 1966 also warns that the unsorted arm gets a
+far-driven TEMPLATE FOLD the sorted one does not, so the 23 ns/row baseline may not be a fair floor — that
+has to be settled before the ~230 ns is called recoverable.
+
+GATES. `bun run fmt` 0, `bun run check` 0. New instrument `sortgap-2259.ts`; no production change.
