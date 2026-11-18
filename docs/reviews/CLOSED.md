@@ -114903,3 +114903,61 @@ evaluated once per SCANNED vertex, a clause filter once per SURVIVING BINDING"_ 
 direction: making the inline forms faster is the goal, NOT making the clause form "win" — it already does.
 
 GATES. `bun run fmt` 0, `bun run check` 0. One route reader; no production change.
+
+## Item 2296 — 🎯🎯 **DIAGNOSED TO THE EXACT CONDITION, AND IT FALSIFIES THE COMMENT BESIDE IT: `farDrivenPredicatedApplies` requires `closedFar === undefined`, so an INLINE far constraint is declined "conservatively on purpose" and pays 24x — 104.28 ms against 4.31 for the clause spelling of the same question. Its header says it "declines no measured shape"; this is that shape, measured**
+
+Item 2295 left a 2.8x and a hypothesis. 🔑 **A null control turned the 2.8x into 24x, and profiling BOTH
+sides gave the mechanism without a guess.**
+
+### 🔑 THE CONTROL IS WHAT MADE THIS VISIBLE
+
+```text
+    SHAPE=rows        (NO predicate)    5.61 ms   rows=200000
+    SHAPE=clause      WHERE b.k = 5     4.31      rows=2223
+    SHAPE=inlineProp  (b {k: 5})      104.28      rows=2223     <- 24x the clause twin
+    SHAPE=inlineWhere (b WHERE …)     102.13      rows=2223
+```
+
+⚠️ **The inline form costs 18.6x the UNFILTERED walk while returning 90x fewer rows.** Without the
+no-predicate arm this reads as "a 2.8x spelling gap" on the probe's own fixture; with it, the shape of the
+defect is obvious. ✅ Both arms evaluate the predicate 200,000 times, so the same count at 24x the cost
+means the PER-EVALUATION path differs — which is what sent this to a profile rather than a hypothesis.
+
+### ✅ PROFILING THE FAST SIDE GAVE THE ANSWER (item 1590's rule)
+
+```text
+    INLINE (slow)                        CLAUSE (fast)
+    env.binding     28.99%               (anon) farDrivenPredicatedHopWalk   19.90%
+    propOf          23.87%               satisfies                          12.25%
+    get properties  12.73%               get properties                      2.69%
+```
+
+🔑 **Two different evaluators, and two different WALKS.** The clause form reaches
+`farDrivenPredicatedHopWalk`: it enumerates `candidateVertexSource(graph, farLabel)`, filters far vertices
+with `satisfies`, and walks back from the 2,223 survivors. The inline form takes the `farProp` branch,
+which allocates a `Map` and evaluates through `env.binding`/`propOf` **per reached edge, all 200,000**.
+✅ So it IS a route difference — just not one `compileLinear`'s top-level fields expose, which is why item
+2295's route read showed all five spellings as `hopProjection`.
+
+### 🎯 THE EXACT CONDITION, QUOTED
+
+```ts
+  // ⚠️ NO INLINE FAR CONSTRAINT. With `closedFar === undefined`, `hopPredicates` can only have
+  // produced this `farPred` by lifting the clause `WHERE` whole (`liftFarOnlyClause`) …
+  // An inline constraint would contribute families whose expression this detector cannot see, so it
+  // declines rather than guessing. Conservative on purpose, and it declines no measured shape.
+  w.closedFar === undefined &&
+```
+
+✅ **The reasoning is sound and the last sentence is now false.** "Declines no measured shape" was true when
+written; the inline spelling of this question is that shape, at 24x. ⚠️ The honest fix is narrow: for a
+simple prop anchor (`{k: 5}`) the detector CAN see the expression, so the decline could be conditioned on
+the inline constraint's own shape rather than on its existence.
+
+**OPEN:** admit a far-driven walk when the inline far constraint is a plain, raise-free prop anchor. ⚠️
+`liftStartProps`'s refusals apply (a null literal is `IS NULL`, a param cannot be shown non-null), so the
+admission must be on the COMPILED families, not a syntactic rewrite — and item 2293's lesson is to keep the
+cheap short-circuit first.
+
+GATES. `bun run fmt` 0, `bun run check` 0. One driver (`farprof-2296.mjs`, four arms, one shape per
+process); no production change.
