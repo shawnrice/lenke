@@ -113169,7 +113169,7 @@ unexplained. 🔑 **Those are different rungs** — `nodeProjection` and `hopPro
 one walks edges, the other does not. **A cross-rung subtraction is not a decomposition**, and the "~230
 ns/row unaccounted" figure is withdrawn (heading struck above).
 
-✅ **What survives is the same-rung comparison, and it is the sound one**: within `hopProjection`, a bare-prop
+⚠️ ~~What survives is the same-rung comparison, and it is the sound one~~ **THE KEY-TYPE SPLIT IS NOISE — item 2261 ran the 2x2 and the sign FLIPS between runs. What is robust is that the engine sort is 6-8x a minimal `Array.sort` floor.** Originally: ✅ **What survives is the same-rung comparison, and it is the sound one**: within `hopProjection`, a bare-prop
 string `ORDER BY` costs **15x** the unsorted projection, and a **numeric** key costs 197 against the string's
 344 — so **~147 ns/row is a pure key-TYPE effect at a fixed route**, which is a cleaner question than the
 withdrawn one.
@@ -113181,3 +113181,51 @@ wrong, and the remaining term is one item 1966 already priced by ablation.**
 
 GATES. `bun run fmt` 0, `bun run check` 0. New instrument `sortroute-2260.ts` (route reader; carries the same
 `boundaries/no-cross-package-relative-import` disables the cliff finder does, for the same reason).
+
+## Item 2261 — 🔑🔑 **THE ENGINE'S SORT IS 6-8x A MINIMAL `Array.sort` FLOOR (robust across two runs), AND THE KEY-TYPE SPLIT IS NOISE. ⚠️⚠️ But my floor is UNFAIR BY MY OWN FIRST RULE — a bare `<` does not implement the total order byte-identity requires, so 6-8x is an UPPER BOUND**
+
+Item 2260 left one sound question: at a fixed `hopProjection` route, a string `ORDER BY` key cost 344 ns/row
+and a numeric one 197. ⚠️ **I spotted a confound in my own fixture before measuring** — `name` had 9973
+distinct values and `k` had 97, so the arms differed in TIE DENSITY as well as type. A 2x2 separates them.
+
+### ✅ THE CONFOUND WAS REAL BUT NOT THE CAUSE — AND THEN THE SPLIT TURNED OUT TO BE NOISE
+
+```text
+    run 1                               run 2
+    TYPE effect   hi 141 / lo 166       hi 203 / lo 128
+    CARD effect   str -14 / num 12      str  76 / num  2      ... and 16 / 35 on a third
+```
+
+🔑 Checking the confound was right; **the conclusion is that neither split is readable.** The type effect
+ranges 128-203 and the cardinality effect changes SIGN between runs, so **item 2260's "~147 ns/row is a pure
+key-TYPE effect" is qualified above.** ⚠️ An effect whose sign flips between runs is noise — this session's
+own rule, met for the second time (item 2247).
+
+### 🔑🔑 WHAT IS ROBUST IS THE FLOOR RATIO
+
+```text
+                         string      number     type effect
+    FLOOR (Array.sort)   58 / 61     34 / 31      24 / 29
+    ENGINE sort-attrib  418 / 371   215 / 248    203 / 123
+    vs floor           7.15x/6.09x  6.30x/7.89x
+```
+
+**The engine's sort-attributable cost is 6-8x a bare `Array.prototype.sort`, in both runs and on both key
+types.** ✅ And the floor's OWN type effect is small and stable (24-29 ns/row), which kills my guess that the
+~150 ns gap was intrinsic string comparison: **intrinsic is ~1.4 ns per comparison, not ~8.8.**
+
+### ⚠️⚠️ AND THE FLOOR IS NOT FAIR, BY THE RULE I OPENED THIS SESSION WITH
+
+A floor must do the same work. **Mine sorts with a bare `<`, and the engine's comparator cannot**: sort,
+`min` and `max` use a **TOTAL ORDER** (NaN last, NaN == NaN) for cross-engine byte-identity
+([[nan-comparison-policy]]), across numbers, strings, nulls and temporals. A comparator that handles one
+type with one operator is **not** the engine's contract. 🔑 **So 6-8x is an UPPER BOUND on what is
+available, not a measurement of slack** — exactly the trap item 1682 names (a hand-written PRE arm that was
+simply not the algorithm, inflating every ratio against it).
+
+**NEXT: a floor that implements the total order** — type dispatch, NaN handling, the null ordering — and
+then the ratio means something. ⚠️ Until then this is priced as "6-8x against a comparator the engine is not
+allowed to use", which is honest and is not a target.
+
+GATES. `bun run fmt` 0, `bun run check` 0. New instrument `sortkey-2261.ts` (2x2 plus floor arms); no
+production change.
