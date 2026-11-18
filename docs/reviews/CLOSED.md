@@ -109855,3 +109855,46 @@ was added.
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
 `bun run fuzz` all seven green; 11 new tests, 5,371 GQL tests.
+
+## Item 2195 — ✅ **CLOSED, NOTHING BUILT: item 2194's complement trick does NOT extend to a chain. My ceiling is 3.7x WORSE than the engine (54.22 against 14.65 ms) with the identical answer — the cleanest kind of refutation**
+
+Item 2194 took the one-hop both-labelled count from 30.87 to 2.14 ms by counting from the label's
+complement. The obvious next question is whether a CHAIN — `(a:L)-[:T]->(b:L)-[:T]->(c:L)` — yields to the
+same idea. ⚠️ Item 2189 had already closed this row (the labelled arm is item 2087's level recurrence,
+94 → ~20 ms), so the ceiling came first.
+
+### 🔑 THE ARITHMETIC EXTENDS; THE PERFORMANCE DOES NOT
+
+A chain count is `Σ_b indeg(b) × outdeg(b)`, and restricting every position to `L` needs
+label-restricted degrees. 🔑 Those ARE computable from the complement: walk each outside vertex's edges
+once, building per-vertex `corrIn`/`corrOut` corrections, then sum `(indeg − corrIn) × (outdeg − corrOut)`
+over the labelled set.
+
+```text
+    engine, 3 labels                   14.65 ms   answer 300000
+    CEILING via complement correction  54.22 ms   answer 300000
+```
+
+⚠️⚠️ **THE ANSWER MATCHES AND THE CEILING IS 3.7x SLOWER.** That is the cleanest possible refutation: the
+idea is correct and simply loses. **The complement trick is ONE-HOP-SPECIFIC** — a one-hop count needs only
+a global edge total minus a small correction, whereas a chain needs a pass over every labelled vertex with
+four map lookups each (800,000 `Map.get`s at this size), and item 2087's recurrence already beats that.
+
+🔑 So item 2189's conclusion holds from a second angle, and the screen's `two-hop projection` row (+11.25
+against native's +4.67, 2.4x) correctly does NOT flag.
+
+### 🔑 THE SCREEN AFTER ITEM 2194, for the next tick
+
+```text
+    row                    marginal ts/nat   ratio   status
+    UNION of two scans      +9.18 / +0.41   22.3x   CLOSED at 2179 — the scan floor
+    NOT EXISTS subquery     +7.68 / +0.78    9.8x   worked at 2191 (was 16.1x)
+    EXISTS subquery         +7.43 / +0.79    9.4x   worked at 2191 (was 15.4x)
+    grouped sum by key      +5.99 / +1.70    3.5x   ⚠️ THE ONLY FLAG NO ITEM HAS EXAMINED
+    SET one property        +3.46 / +0.32   10.8x   worked at 2180/2181/2184
+    percentile_cont         +2.34 / +0.34    6.9x   small absolute
+    two-hop projection     +11.25 / +4.67    2.4x   closed at 2189 and here
+    var-length 1..2 hops   +10.94 / +19.33   0.6x   ✅ TS FASTER — item 2177
+```
+
+GATES. No production change; no files touched. `bun run check` 0.
