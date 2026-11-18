@@ -108173,3 +108173,51 @@ evaluated PER ROW even though the compiled clause shape is identical. 🔑 The c
 is built (`liftStartProps`' seek-hint path), not in an AST pass. That is the next thing to try on this row.
 
 GATES. Reverted; `bun run check` 0; 5,310 tests green.
+
+## Item 2165 — ✅ **SHIPPED: `coalesce` compiled to a dedicated closure — 1.25-1.32x. ⚠️ The 6.3x twin gap is NOT closed, and three mutation survivors turned out to be structural for a reason worth knowing**
+
+Item 2164 refuted the AST rewrite for this row and located the cost precisely: `callScalar` at 9.5% in one
+profile arm and ABSENT in the other, with identical compiled clause shapes. 🔑 So the fix is the compiled
+CLOSURE, and `bufferedScalarCall` pays per ROW for what is constant per call site — a `buf` array fill,
+`assertScalarArgTypes`, and two table lookups before reaching the `coalesce` case.
+
+```text
+    row                          BEFORE     NEW
+    WHERE coalesce(a.k,0) = 1      10.5     7.9    1.30x
+    WHERE coalesce(a.k,0) = 0      10.4     7.9    1.32x
+    sum(coalesce(a.k,0))           11.3     8.9    1.25x
+    coalesce(a.s, a.k, 0)          14.5    11.6    1.25x
+    WHERE a.k = 1    [control]       2.8     2.7    flat
+    WHERE upper(a.s) [control]      12.0    12.0    flat
+```
+
+⚠️ **AND THE GAP TO THE TWIN REMAINS: 7.9 against 2.7 is still 2.9x** for the identical answer. The AST is
+not the lever (item 2164), and this takes the per-row closure cost down without closing it.
+
+### ⚠️⚠️ EVERY ARGUMENT IS STILL EVALUATED, DELIBERATELY
+
+Short-circuiting would be faster again, but `coalesce(a.k, <raises>)` raises today even when `a.k` is
+non-null. 🔑 Changing which errors surface is a semantic change, not a speed-up — so the loop does not
+`break`, and **two tests pin it** (a raising argument second, and a raising argument first).
+
+### 🔑 THREE SURVIVORS, ONE EXPLANATION, AND IT IS WORTH KNOWING
+
+A first pass inlined `v !== null && v !== undefined`; both halves survived mutation, and so did dropping
+the test entirely. ⚠️ Not weak tests — **two compounding structural facts:**
+
+1. 🔑 A compiled property read normalizes a MISSING property to `null`. Verified: on a vertex with no `k`,
+   `a.k` projects as `null` and `a.k IS NULL` is true. **So this closure never sees `undefined`.**
+2. 🔑 `found` starts as `null`, so assigning a nullish value to it is indistinguishable from not assigning
+   — the loop stays correct even without the guard.
+
+⚠️ The inlined form was replaced by `isNullish`, the same predicate `firstNonNullish` uses, so the two
+cannot drift and there is ONE thing to mutate rather than two halves that cover for each other. **5/8 then
+2/3 caught** across the two rounds, including the short-circuit mutant, both arg-skips, last-wins-not-first,
+and returning `undefined` instead of `null`. The remaining survivor is documented in place as defence in
+depth with the invariant that would make it load-bearing again.
+
+**14 tests**, including an explicit null and an ABSENT property as separate rows, all-nullish answering
+`null` (not `undefined`), a one-argument call, and a four-argument call whose live value is last.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 5,324 GQL
+tests; `bun run fuzz` all seven green.

@@ -1749,6 +1749,46 @@ const compileCase = (expr: Extract<Expr, { kind: 'case' }>): CompiledExpr => {
   };
 };
 
+/**
+ * `coalesce(a, b, …)` as a dedicated closure: the first non-nullish argument, else `null`.
+ *
+ * ⚠️ Mirrors `firstNonNullish` exactly, including returning `null` (not `undefined`) when every argument
+ * is nullish — a difference there would be a wrong answer, not a slower one.
+ */
+const coalesceCall = <E>(steps: readonly ((env: E) => unknown)[]): ((env: E) => unknown) => {
+  const n = steps.length;
+
+  return (env) => {
+    let found: unknown = null;
+
+    /*
+     * ⚠️ ALL arguments are evaluated, and the FIRST non-nullish wins — not the last. The loop does not
+     * `break`, because breaking is the short-circuit the call site explains is a semantic change.
+     */
+    for (let i = 0; i < n; i += 1) {
+      const v = steps[i](env);
+
+      /*
+       * ⚠️ `isNullish`, NOT an inlined `v !== null && v !== undefined` — one call to the shared predicate
+       * cannot drift from the `firstNonNullish` it mirrors.
+       *
+       * ⚠️⚠️ **AND THIS TEST IS DEFENCE IN DEPTH, NOT LOAD-BEARING, which mutation showed and a check
+       * explained.** Three mutants of it survive — dropping it, dropping either half — for two compounding
+       * reasons: a compiled property read normalizes a MISSING property to `null` (verified: `a.k`
+       * projects as `null`, `a.k IS NULL` is true), so this closure never sees `undefined`; and `found`
+       * starts as `null`, so assigning a nullish value to it is indistinguishable from not assigning.
+       * 🔑 Kept because the invariant it states is what makes the loop correct, and a later `found`
+       * initializer that was not `null` would make it load-bearing again.
+       */
+      if (found === null && !isNullish(v)) {
+        found = v;
+      }
+    }
+
+    return found;
+  };
+};
+
 const compileFunc = (expr: FuncExpr): CompiledExpr => {
   if (AGGREGATES.has(expr.name)) {
     return compileAggregate(expr);
@@ -1899,6 +1939,28 @@ const compileFunc = (expr: FuncExpr): CompiledExpr => {
   //
   // The factory is at module scope and the retention audit that makes it safe is documented
   // there.
+  /*
+   * ITEM-2165-COALESCE-CALL: `coalesce` compiled directly, instead of through the generic scalar call.
+   *
+   * ⚠️⚠️ **THE PREDICATE SPELLING IS 6.3x ITS TWIN FOR THE IDENTICAL ANSWER** — `WHERE coalesce(a.k, 0) = 1`
+   * at 10.5 ms against `WHERE a.k = 1`'s 1.67 over 200,000 vertices — and item 2164 established where that
+   * lives. Not the AST: an AST rewrite folding the two spellings together measured a **NO-OP**, because the
+   * engine already converges them below it (identical `eqProps` and `seedHints`). 🔑 A windowed profile
+   * found `callScalar` at **9.5% in one arm and ABSENT in the other** with those identical shapes, so the
+   * cost is the compiled CLOSURE.
+   *
+   * 🔑 `bufferedScalarCall` pays, PER ROW: a `buf` array fill, `assertScalarArgTypes`, and two table
+   * lookups (`UNARY_NUM`, `UNARY_STR`) before reaching the `coalesce` case. All of it is constant for a
+   * given call site.
+   *
+   * ⚠️ **EVERY ARGUMENT IS STILL EVALUATED, DELIBERATELY.** Short-circuiting would be faster again, but
+   * `coalesce(a.k, f())` currently raises whatever `f()` raises even when `a.k` is non-null, and changing
+   * which errors surface is a semantic change, not a speed-up. This closure is behaviour-identical.
+   */
+  if (name === 'coalesce') {
+    return coalesceCall(args);
+  }
+
   return bufferedScalarCall(name, args);
 };
 
