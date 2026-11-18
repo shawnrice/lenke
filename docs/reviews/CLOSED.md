@@ -115327,3 +115327,49 @@ guards against overstating; this failure mode is the mirror, and it has now cost
 
 GATES. `bun run fmt` 0, `bun run check` 0, guide suite **8 pass / 0 fail**. Probe upgraded with
 calibration; guide and two headings corrected; no production change.
+
+## Item 2304 — ✅ **THE CALIBRATION AUDIT CLEARS THE SESSION'S SHIPS: item 2293's 13.2x and items 2288/2289's ~30x both stand. The engine arms at ~0.6 ms measured accurately; only the FLOOR was cold-inflated (2.2x), and its per-result figure was right anyway**
+
+Items 2302/2303 corrected two published numbers whose fast arm was measured by a single call in one
+`performance.now()` pair. 🔑 **The obligation that creates is to check the rest, not to assume the pattern
+stopped there** — and the arms that fed a SHIP are the ones that matter.
+
+```text
+    arm                  reported (cold)        calibrated              verdict
+    handLabels (floor)   0.05 ms / 24 ns-res    0.0226 ms / 11 ns-res   2.2x cold in absolute
+    gqlDocFirst          0.67                   0.6229                  accurate
+    gqlList (post-ship)  0.69                   0.6426                  accurate
+    gqlInlineFar         0.61                   0.5774                  accurate
+```
+
+✅ **At ~0.6 ms an arm is comfortably above the clock, so the engine side was never at risk** — which is
+why item 2293's **9.08 → 0.69 ms (13.2x)** is unaffected, and why items 2297/2298's 108 → 4 ms and
+102 → 4 ms were never in question.
+
+🔑 **The FLOOR was the exposed arm, and it was cold by 2.2x** (0.05 → 0.0226 ms). ⚠️ That matters because a
+floor being too SLOW makes the engine look CLOSER to it — understating the gap, the same direction as
+items 2302/2303. ✅ **Here it changed nothing**: the per-result figures agree (11 ns calibrated against the
+10 ns reported), so items 2288/2289's gap recomputes at **0.6426 / 0.0226 = 28.4x** against the ~30x
+published.
+
+### ✅ AND THE "0.00 ms" ROWS ARE EXPLAINED RATHER THAN LEFT HANGING
+
+Item 2283's shape table reported `gql 1-hop typed count` and `grem 2-hop count` at **0.00-0.01 ms**, cited
+as evidence of closed-form routes. 🔑 Item 2303 measured exactly that shape under calibration at **~24 ns**
+— so "0.00" was the clock, and the claim it supported (a closed-form count never touches an edge) is
+confirmed rather than undermined. **No further re-measurement needed.**
+
+### 🔑 WHAT THE AUDIT ESTABLISHES AS A TRIAGE RULE
+
+```text
+    arm at ~1 ms or above      the clock is irrelevant; the reading is the work
+    arm at ~0.05 ms            exposed: 2.2x cold here
+    arm at ~0.01 ms or below    the reading IS the clock (item 2303: "0.01 ms" was 24 ns)
+```
+
+✅ **Two ships, one ~30x finding and one guide row verified; two guide rows corrected over items
+2302-2304.** The ships were safe because their arms were slow enough to measure — which is luck, not
+method, and the method is now in three probes.
+
+GATES. `bun run fmt` 0, `bun run check` 0. `rebaclist-2288.mjs` upgraded with calibration; no production
+change.

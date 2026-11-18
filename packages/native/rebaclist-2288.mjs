@@ -248,8 +248,34 @@ const ARMS = {
 
 const fn = ARMS[SHAPE];
 
-for (let w = 0; w < 3; w += 1) {
+/*
+ * ⚠⚠ **INNER-ITERATION CALIBRATION (item 2304).** Several arms here are sub-millisecond — `handLabels`
+ * read 0.05 ms and `gqlDocFirst` 0.69 — and items 2302/2303 showed that a single call in one
+ * `performance.now()` pair UNDERSTATES a fast arm: the clock and the JIT dominate. (The unfiltered hop
+ * count in `farfilter-2286` moved from "0.01 ms" to ~24 ns once calibrated.) 🔑 So warm properly, then
+ * double an inner count until one sample fills `SAMPLE_MS`, and report per call — the pattern
+ * `gremlin-spelling-probe` has used since item 1644.
+ */
+const SAMPLE_MS = Number(process.env.SAMPLE_MS ?? 25);
+
+for (let w = 0; w < 200; w += 1) {
   fn();
+}
+
+let inner = 1;
+
+for (;;) {
+  const t0 = performance.now();
+
+  for (let i = 0; i < inner; i += 1) {
+    fn();
+  }
+
+  if (performance.now() - t0 >= SAMPLE_MS || inner >= 1_000_000) {
+    break;
+  }
+
+  inner *= 2;
 }
 
 const ts = [];
@@ -258,10 +284,13 @@ let answer = 0;
 for (let r = 0; r < ROUNDS; r += 1) {
   const t = performance.now();
 
-  answer = fn();
-  ts.push(performance.now() - t);
+  for (let i = 0; i < inner; i += 1) {
+    answer = fn();
+  }
+
+  ts.push((performance.now() - t) / inner);
 }
 
 console.log(
-  `  USERS=${USERS} DECOYS=${String(DECOYS).padEnd(5)} SHAPE=${SHAPE.padEnd(9)} median ${med(ts).toFixed(2).padStart(8)} ms   answer=${answer}   ${((med(ts) * 1e6) / Math.max(answer, 1)).toFixed(0)} ns/result`,
+  `  USERS=${USERS} DECOYS=${String(DECOYS).padEnd(5)} SHAPE=${SHAPE.padEnd(9)} median ${med(ts).toFixed(4).padStart(9)} ms   inner=${String(inner).padStart(7)}   answer=${answer}   ${((med(ts) * 1e6) / Math.max(answer, 1)).toFixed(0)} ns/result`,
 );
