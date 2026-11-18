@@ -1,11 +1,12 @@
 import type { Graph, Vertex } from '@lenke/core';
 
-import type { Clause, LabelExpr, NodePattern, RelPattern } from '../ast.js';
+import type { Clause, Expr, LabelExpr, NodePattern, RelPattern } from '../ast.js';
 import { matchesLabel } from '../graph-queries.js';
 import type { OneColumnKeys } from './clauses.js';
 import { addOneColumnKey, distinctRows, newOneColumnKeys } from './clauses.js';
 import type { CClause, CompiledExpr, CPath, CProjection, EvalEnv, Params, Row } from './core.js';
-import { freePredicateVars } from './expr-analysis.js';
+import { cannotRaise } from './core.js';
+import { flattenAnd, freePredicateVars } from './expr-analysis.js';
 import type { AlwaysRowsFn, RowsFn } from './hop-projection.js';
 import type { UnionHop } from './hop-sides.js';
 import { claimedByEarlierType, plainNode, plainRel, unionHopOf } from './hop-sides.js';
@@ -259,6 +260,7 @@ export const detectHop2Projection = (
   }
 
   const gate = cm.where;
+  const midGate = midOnlyRaiseFreeGate(m.where, nodes[nodes.length - 1]?.variable, gate);
 
   /**
    * A `WHERE` in the AST and no compiled gate (or the reverse) would silently DROP or INVENT a
@@ -301,7 +303,7 @@ export const detectHop2Projection = (
   const rows =
     u0 !== null && u1 !== null
       ? walkUnion(nodes, [u0, u1], projection, gate, distinct)
-      : walk(nodes, hops as readonly Hop[], projection, gate, distinct);
+      : walk(nodes, hops as readonly Hop[], projection, gate, distinct, midGate);
 
   /**
    * ⚠️ `RETURN DISTINCT` IS ADMITTED AND DEDUPED HERE — item 1822, closing the hole item 1821 left
@@ -347,6 +349,37 @@ export const detectHop2Projection = (
    */
   return (graph, params) =>
     shouldDeclineToOrientedMatcher(graph, cPath, params) ? null : answered(graph, params);
+};
+
+/** A comparison operand that cannot fault. ⚠️ `param` matters: `auto-param` makes `b.k = 5` a `param`. */
+const raiseFreeOperand = (expr: { readonly kind: string }): boolean =>
+  cannotRaise(expr) || expr.kind === 'param';
+
+/** Every conjunct a comparison of raise-free operands? Then the whole predicate is raise-free. */
+const raiseFreeComparisons = (where: Expr): boolean => {
+  const parts: Expr[] = [];
+
+  flattenAnd(where, parts);
+
+  return parts.every(
+    (part) =>
+      part.kind === 'compare' &&
+      raiseFreeOperand((part as { left: { kind: string } }).left) &&
+      raiseFreeOperand((part as { right: { kind: string } }).right),
+  );
+};
+
+/** The gate to run in the MIDDLE loop, or `undefined` when it must stay at the deepest level. */
+const midOnlyRaiseFreeGate = (
+  where: Expr | undefined,
+  farVar: string | undefined,
+  gate: CompiledExpr | undefined,
+): CompiledExpr | undefined => {
+  if (where === undefined || gate === undefined || farVar === undefined) {
+    return undefined;
+  }
+
+  return freePredicateVars(where).has(farVar) || !raiseFreeComparisons(where) ? undefined : gate;
 };
 
 /**
@@ -602,6 +635,7 @@ const walk = (
   projection: CProjection,
   gate: CompiledExpr | undefined,
   distinct: DistinctSpec | undefined,
+  midGate: CompiledExpr | undefined,
 ): AlwaysRowsFn => {
   const [n0, n1, n2] = nodes;
   const [h0, h1] = hops;
@@ -649,6 +683,11 @@ const walk = (
 
         if (v1 !== undefined) {
           binding.set(v1, b);
+        }
+
+        /* 🔑 ONE TEST PER MIDDLE VERTEX instead of one per ROW. */
+        if (midGate !== undefined && asTruth(midGate({ binding, params, graph })) !== true) {
+          continue;
         }
 
         for (const e1 of b1) {

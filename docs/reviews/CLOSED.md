@@ -111249,7 +111249,7 @@ before. The next tick has the design, the file, the floor (2.3 ms) and the exist
 
 GATES. `bun run fmt` 0, `bun run check` 0. No production change.
 
-## Item 2222 — ⚠️⚠️ **BUILT, VERIFIED FIRING, AND REVERTED: the mid-conjunct push-down the file deferred is CORRECT AND USELESS — flat at every selectivity. The residual is item 2217's diffuse per-edge cost. Two findings survive: a measured raise-free class, and AUTO-PARAM silently disabling the first version**
+## Item 2222 — ⚠️⚠️⚠️ **WITHDRAWN BY ITEM 2225: THE MEASUREMENT RAN A STALE DIST.** ~~BUILT, VERIFIED FIRING, AND REVERTED: the mid-conjunct push-down the file deferred is CORRECT AND USELESS — flat at every selectivity.~~ **The firing probe imported `./src` (saw the gate) while the timing probe imported `@lenke/gql` (the DIST, which was never rebuilt). With `nx build` run, the same build is 3.17x at 1% selectivity and SHIPPED at item 2225.** The original text follows for the record: The residual is item 2217's diffuse per-edge cost. Two findings survive: a measured raise-free class, and AUTO-PARAM silently disabling the first version**
 
 Item 2221 handed over a design: split the carried `WHERE` and push raise-free, far-var-free conjuncts into
 `walkUnion`/`walk`'s MIDDLE loop. Built, wired, verified, measured, reverted.
@@ -111400,3 +111400,61 @@ a trailing `CLOSED`. The per-row trend is unaffected because the key is consiste
 build already exists in git history with its correctness argument and firing assertion.
 
 GATES. `bun run fmt` 0, `bun run check` 0. New instrument; no engine change.
+
+## Item 2225 — ✅ **SHIPPED, 3.17x: the mid-conjunct push-down works. ITEM 2222's REVERT WAS BASED ON A STALE DIST — its firing probe read `./src` while its timing probe read `@lenke/gql`, and `nx build` was never run. The sweep's rung column is what exposed it**
+
+Item 2224's sweep showed `hop2/rows + mid where` as the one GQL shape whose ratio RISES with size (5.31x at
+80k), and item 2222 had judged the build at 20k. Re-measuring found something worse than a scope error.
+
+### ⚠️⚠️⚠️ ITEM 2222 NEVER MEASURED ITS OWN BUILD
+
+Two probes, two module resolutions:
+
+```text
+    fire probe   packages/gql $ bun -e "... from './src/index.js'"   -> SOURCE  -> "GATE FIRES"
+    timing probe packages/native $ ... from '@lenke/gql'            -> DIST    -> unchanged
+```
+
+🔑🔑 `@lenke/*` resolves to the BUILT dist (`fuzzers-read-built-dists`), and `bun run check` does **not**
+build it. So 2222 verified firing against source and timed against a dist with no gate in it — **a null
+result that was really an unbuilt one.** ⚠️ The giveaway was found by accident: this tick's fire probe said
+"does NOT fire" at 80k while the cliff finder's RUNG COLUMN said `hop2Projection` fires at both sizes. **Two
+instruments disagreeing is what surfaced it; neither alone would have.**
+
+### ✅ WITH `nx build` RUN, THE SAME BUILD IS A LARGE WIN
+
+```text
+    NODES=80000           before     after    speedup
+    b.k = 5      (1%)      264.7      83.4     3.17x
+    b.k < 10    (10%)      283.3     116.3     2.44x
+    b.k < 50    (50%)      355.8     266.6     1.33x
+    b.k >= 0   (100%)      393.0     399.6     flat    <- nothing to prune, exactly as it should be
+
+    NODES=20000 (item 2222's own size)
+    b.k = 5      (1%)       21.0       6.4     ~3.3x
+    b.k < 10    (10%)       29.7      13.0     2.3x
+
+    controls at 20k, all three returning the SAME 3,200 rows
+    TRAILING c.k = 5        33.5 ms -> 33.5    unchanged
+    START    a.k = 5         7.5 ms ->  7.5    unchanged
+```
+
+🔑 Only the mid row moves; the `vs floor` ratio falls from 9.21x to 3.44x at 80k.
+
+### 🔑🔑 AND THE CORRECTNESS ARGUMENT IS STRONGER THAN I ARGUED
+
+The gate requires the predicate to exclude the FAR variable and to be raise-free (`compare` of
+`lit`/`prop`/`var`/`param` — `param` matters because `auto-param` lifts literals). ⚠️ But a mutation round
+showed `raise-free check removed` SURVIVING even against a predicate that faults ONLY on a dead-end middle,
+and the reason is load-bearing: **the walk's existing `if (b1 === undefined) continue` runs BEFORE the gate
+point**, so a middle with an empty second hop is already skipped. A pushed predicate therefore cannot raise
+where the general path would not — items 139-145's parity is preserved by the walk's own structure, not just
+by my guard. The guard stays as defence if the placement ever moves above that check.
+
+⚠️ Mutation: **1 of 5 caught** (`far-var check removed`), and each survivor is explained — `raise-free` and
+`compare` are unobservable for the reason above, `param` is answer-equivalent (the gate merely stops firing),
+`UNKNOWN treated as pass` needs a null-comparison middle with a non-empty hop. 10 tests, including a
+raise-parity test whose one-hop sibling proves the predicate really does fault.
+
+GATES. `bun run fmt` 0; `bun run check` 0; `bun run test -- --skip-nx-cache` RC=0 (21 projects); `bun run
+fuzz` all seven, 57 pass / 0 fail.

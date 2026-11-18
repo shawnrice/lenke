@@ -1767,7 +1767,7 @@ const compileCase = (expr: Extract<Expr, { kind: 'case' }>): CompiledExpr => {
  * 🔑 The same three kinds are the ones `detectNodeProjection` treats as plain projection items, which is
  * where the spelling comes from rather than from a fresh list.
  */
-const cannotRaise = (expr: { readonly kind: string }): boolean =>
+export const cannotRaise = (expr: { readonly kind: string }): boolean =>
   expr.kind === 'lit' || expr.kind === 'prop' || expr.kind === 'var';
 
 /**
