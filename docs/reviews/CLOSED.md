@@ -111720,3 +111720,59 @@ before building (items 2216/2217), and remember `createUniqueConstraint(label, k
 options object.
 
 GATES. `bun run fmt` 0, `bun run check` 0. New probe `packages/native/txwrite-2231.ts`; no engine change.
+
+## Item 2232 — ✅ **CLOSED IN ONE TICK BY ITS OWN FLOOR: the engine's index maintenance is WITHIN 2-4% of a hand-rolled bucketed insert. Item 2231's nomination is what a bucketed index COSTS, not overhead — and the write path now has a COMPLETE floored account with nothing open**
+
+Item 2231 flagged index maintenance at +181..+256 ns/write (+30-43%). Profiled, cardinality-tested, floored.
+
+### 🔑 THE PROFILE NAMED IT PRECISELY
+
+```text
+    1,400,000 writes, one arm per process     notx ns/w   index ns/w
+    addEntry                                        0.0        116.0   +116  (56%)
+    (garbage collector)                           191.7        266.6    +75  (36%)
+    getVertexById / hasListeners / add              ...          ...    +46
+    total                                                              +208 ns/write
+```
+
+### ⚠️ CARDINALITY WAS A FAIR SUSPICION AND IS NOT THE CAUSE
+
+`k: o` makes every key UNIQUE, so a bucketed index allocates one bucket per row — the worst case, and the
+only case a unique CONSTRAINT can have. A `CARD` knob tests bucket reuse:
+
+```text
+    unique  notx 579  index 810  +231
+    100     notx 597  index 727  +130
+    1000    notx 599  index 865  +266
+```
+
+⚠️ **NON-MONOTONIC (+231, +130, +266), so by item 2210's rule that is spread, not a mechanism.** The index
+cost does not depend cleanly on bucket reuse — which weakened the allocation hypothesis the GC term
+suggested.
+
+### ✅ AND THE FLOOR SETTLES IT: WITHIN 2-4%
+
+```text
+    arm                                       r1     r2
+    notx                                     663    626
+    handindex (hand-rolled Map.get+Set.add)  781    841
+    index (the engine's)                     816    856     1.04x / 1.02x
+```
+
+🔑🔑 **The hand-rolled arm does the same work — one bucket lookup, one create-when-absent, one add — and
+lands within 2-4% of the engine.** So `addEntry`'s 116 ns and the GC it causes are **what a bucketed index
+costs in this language**, not engine slack. ✅ **CLOSED.**
+
+### ✅ THE WRITE PATH IS NOW COMPLETELY ACCOUNTED FOR
+
+| term               | cost          | status                                                                   |
+| ------------------ | ------------- | ------------------------------------------------------------------------ |
+| `addVertex` itself | 586-663 ns    | **mined out** (item 2201: 4 of 5 top frames carry recorded measurements) |
+| a transaction      | +~180 ns      | **cheap**, and items 2181/2184 are why (340 → 171 ns/op)                 |
+| index maintenance  | +130..+266 ns | **AT ITS FLOOR** (this item, within 4%)                                  |
+| uniqueness check   | +63..+138 ns  | the smallest term                                                        |
+
+**Nothing on the write path is open.** That is worth stating plainly: four floored terms, each either at its
+floor, already worked, or explained by a recorded refutation.
+
+GATES. `bun run fmt` 0, `bun run check` 0. No production change.
