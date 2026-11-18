@@ -112741,3 +112741,47 @@ nothing leaks one dead entry per shape per write"_. **Any incremental patch has 
 framed; still not proposed.**
 
 GATES. `bun run fmt` 0, `bun run check` 0. No production change, no instrument — a source-reading item.
+
+## Item 2252 — ✅✅ **MECHANISM CONFIRMED BY ITS PRECONDITION: the penalty tracks `topologyVersion` EXACTLY. Sixty PROPERTY writes cost NOTHING; any version-moving write costs the full penalty. 🔑 And it is per-READ, not per-bump — `addVertex` bumps once and costs MORE than `addEdge`'s two**
+
+Item 2251 derived the route-loss mechanism from `second-ask.ts`'s documentation; item 2250 had accepted a
+mechanism on its predictions alone and was half wrong. ⚠️ So this item tests the **precondition**: if the
+penalty is a lost CSR route keyed on `(graph, topologyVersion, shape)`, it must track
+`topologyVersion` — **not "writes" in general.** Measured directly, version delta printed beside the timing:
+
+```text
+    ARM        floor     after    penalty    writes   tv moved   per write
+    none       1.27 ms   0.88 ms   -0.39 ms      0         0        0
+    setprop    1.30      0.99      -0.31        60         0        0.00    <- FREE
+    addvertex  1.25      2.73      +1.48        60        60        1.00
+    addedge    1.27      2.33      +1.06        60       120        2.00
+```
+
+### ✅ THE PREDICTION HELD, SHARPLY
+
+**Sixty property writes are indistinguishable from no writes at all** (-0.31 ms against the floor's
+-0.39 ms) and move `topologyVersion` by **zero**. Every version-moving write pays in full. 🔑 The penalty
+is not a property of writing; it is a property of **touching topology**.
+
+### 🔑🔑 AND IT IS PER-READ, NOT PER-BUMP — WHICH THE REBUILD STORY COULD NOT EXPLAIN
+
+`addEdge` moves the version **twice** per write and costs **1.06 ms**; `addVertex` moves it **once** and
+costs **1.48 ms**. ⚠️ A per-invalidation rebuild cost would scale with bumps and it does not. **One lost
+route per read is the whole cost, however many times the version moved** — which is item 2251's framing
+confirmed from a second direction, and item 2250's refuted from a third.
+
+### ✅ THE PRACTICAL CONSEQUENCE, AND IT IS THE USEFUL PART
+
+**A property-only update does not pay the interleaving penalty.** For a people-graph taking corrections
+between queries — the workload item 2246 opened this thread on — that is directly actionable: _correcting a
+value_ is free, while _adding a relationship or a person_ costs the next read its fast path (~1.5x at 20k,
+up to ~3x at 80k per item 2248).
+
+⚠️ **`addVertex` invalidating the adjacency CSR is NOT over-invalidation**, though it looks like one: an
+isolated new vertex changes no existing adjacency, but the CSR's offset array is indexed by vertex, so a new
+slot is genuinely required. `Graph.ts:1271` already frames the trade-off — _"over-invalidating costs a
+rebuild, where under-invalidating would [serve a stale answer]"_ — and this is the correct side of it. **No
+lever here; recorded so the next reader does not file one.**
+
+GATES. `bun run fmt` 0, `bun run check` 0. New instrument `tvtest-2252.ts`
+(`ARM=none|setprop|addvertex|addedge`); no production change.
