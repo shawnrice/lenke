@@ -97,6 +97,19 @@ A session over 512 distinct texts pays roughly **4x** per statement against a ca
 (`packages/native/stmtcache-2269.ts`). Parameters also keep values out of query text, which the
 `no-raw-interpolation` lint asks for on its own grounds.
 
+How much it costs, measured on a matched comparison — the same hot query either way, with a second query
+alongside it so both arms do the same amount of work:
+
+| 2 queries per operation                    | operations/second |
+| ------------------------------------------ | ----------------- |
+| both texts reused                          | **749,000**       |
+| one text reused, one built fresh each call | **370,000**       |
+
+So a query text built fresh each call costs about twice as much as the same query with its values bound,
+and the reason is not only that it has to be parsed: the engine keeps a bounded number of recent texts, and
+a stream of single-use ones pushes out the entries your other queries were relying on. A caller that
+interpolates values into its text is slower itself and makes everything around it slower.
+
 ## Index the key you look it up by
 
 The single largest effect in this guide, and the one most easily missed: a `WHERE u.name = $n` with no index

@@ -116530,3 +116530,65 @@ reason. Fixed by duplicating the id into a property, with the trap recorded in t
 
 GATES. `bun run fmt` 0, `bun run check` 0, guide suite **11 pass / 0 fail, 33 assertions**. One probe knob;
 no production change.
+
+## Item 2328 — 🎯 **A SINGLE-USE QUERY TEXT COSTS 2.02x THE SAME WORKLOAD WITH A CACHEABLE ONE, measured against a MATCHED two-query control — and `parseCacheStats` shows why: 2000 single-use texts produce 2000 lift STORES and ZERO hits, so they do not merely miss the cache, they evict what other queries need. The Rust engine already ships the admission filter for this exact hazard**
+
+Profile-first on writes, starting from a bench pair I had not explained: `write: append node` 345.7k ops/s
+against `write: append node [params]` 750.6k. 🔑 The literal row interpolates `i` into the TEXT.
+
+### ✅ THE COUNTERS NAME THE MECHANISM, SO NOTHING HAD TO BE INFERRED
+
+```text
+    arm                          ops/s      liftHits   liftStores
+    literal (new text/call)     251,125         0         2000
+    params  (one text)          423,852         0            0
+    fixedLiteral (one text)     515,763      2000            0
+```
+
+✅ **The lift cache works — `fixedLiteral` hits 2000 times** — but keys on the exact text, so an
+interpolated value stores a fresh entry every call and hits nothing. ⚠️ **2000 single-use stores into a
+512-entry cache wipe it four times over.**
+
+### ⚠️⚠️ AND THREE WORK-PARITY ERRORS OF MINE, ALL CAUGHT BEFORE PUBLISHING
+
+1. `hotWithSpam` (2 queries an op) against `hotAlone` (1) — **mostly measuring the second query**, item
+   2326's error one tick later.
+2. The control's second query seeked `e.score`, **which this fixture does not index** — so it scanned
+   20,000 rows and came out **50x SLOWER than the arm it was controlling for.**
+3. Fixed by seeking the SAME indexed key under a different ALIAS: a distinct cacheable text, identical
+   work.
+
+```text
+    arm                                  queries/op    ops/s     per query
+    hotAlone                                  1        1.88M      1.88M
+    hotWithFixed  (both texts cacheable)      2         749k      1.50M
+    hotWithSpam   (one single-use text)       2         370k      0.74M
+```
+
+🔑🔑 **2.02x for the single-use text, against a control doing the same work.** ✅ A second CACHEABLE text
+costs only 1.25x, which separates "two entries" from "a stream of single-use entries".
+
+### ⚠️ PRIOR ART: THE FIX IS KNOWN TO WORK, IN THE OTHER ENGINE
+
+CLOSED.md's own "WHY IT NEEDS NO ADMISSION CHECK, AND WHEN THAT EXPIRES" records that the Rust side
+**ships a sighting filter — admit on the SECOND sighting, not the first** — built because an all-miss path
+had made a cache **1.16x WORSE**, with `a_single_sighting_does_not_admit_a_gremlin_traversal` pinning it.
+✅ **The TS lift cache has no such filter**, which is what `liftStores: 2000` means.
+
+⚠️ **NOT BUILT HERE, DELIBERATELY.** The 2.02x includes the new text's PARSE, which no admission policy
+recovers; only the store and its eviction are recoverable, and separating those needs either instrumentation
+or the filter itself. ✅ Items 2325/2326 are the recent argument for not rushing from a measurement to a
+build — the measurement is solid and the next item can price the filter against it.
+
+✅ **The guide's "Keep a session's distinct query texts bounded" rule now carries the numbers** and says
+plainly that such a caller is slower itself AND makes everything around it slower.
+
+### ✅ AND THE REPO ALREADY LINTS AGAINST THE PATTERN
+
+⚠️ `bun run check` refused the probe twice under **`lenke/no-raw-interpolation`** — a custom rule that
+forbids splicing a value into a query text. ✅ It exists for INJECTION reasons, but it happens to prevent
+this 2.02x as well, so a caller following the lint cannot hit the hazard. **The bench row being reproduced
+predates the rule**, and the probe's two suppressions each say why.
+
+GATES. `bun run fmt` 0, `bun run check` 0 (after an unused binding and the two documented suppressions).
+One probe (six arms); no production change.
