@@ -114505,7 +114505,7 @@ ratio moves by 2x.
 GATES. `bun run fmt` 0, `bun run check` 0. One probe (`rebaclist-2288.mjs`, five arms, env-selected); no
 production change.
 
-## Item 2289 — 🔴🔴🔴 **AN EQUIVALENT-SPELLING CLIFF ON THE AUTHZ LIST, AND IT IS ASYMPTOTIC: the natural spelling is O(TENANT) and its reversed twin is O(RESULTS) — 13.4x at 400,000 users, same answer, and the gap grows without bound. Gremlin cannot reach the flat route at all: 31.5x.** ⚠️ Item 2288's "the planner orients" was MY OWN WRONG CONCLUSION from a sweep with no control
+## Item 2289 — 🔴🔴🔴 **AN EQUIVALENT-SPELLING CLIFF ON THE AUTHZ LIST, AND IT IS ASYMPTOTIC** ⚠️ (ROOT CAUSE FOUND AT ITEM 2291: it is NOT orientation but a CLAUSE `WHERE` the gate cannot see — the same orientation with an INLINE far predicate is the FASTEST arm) — **the natural spelling is O(TENANT) and its reversed twin is O(RESULTS) — 13.4x at 400,000 users, same answer, and the gap grows without bound. Gremlin cannot reach the flat route at all: 31.5x.** ⚠️ Item 2288's "the planner orients" was MY OWN WRONG CONCLUSION from a sweep with no control
 
 Item 2288 left a ~25x on `list: subjects for object` with the mechanism unverified. 🔑 Two ablations, and
 the second found something much larger than the thing it was testing.
@@ -114618,3 +114618,69 @@ test — time is the only signal and a CI threshold would be flaky — so it bel
 run-it-when-you-touch-the-planner category as its siblings.
 
 GATES. `bun run fmt` 0, `bun run check` 0. New probe + one `package.json` script; no production change.
+
+## Item 2291 — 🔴🔴🔴 **ROOT CAUSE, AND IT IS THE CANONICAL SHAPE `CLAUDE.md` NAMES: a CLAUSE `WHERE` on the far node is invisible to the gate that hands the query to the orienting matcher, so `hop2Projection` keeps a fused walk and goes O(TENANT). The SAME orientation with an INLINE `{name: $doc}` is 29.5x faster and needs NO INDEX.** ⚠️ Item 2104 shipped this fix and this is the hole in it
+
+Item 2289 found the authz list O(tenant) subject-first and O(results) object-first, and I framed it as an
+orientation failure. 🔑 **It is not.** The route reader names the rungs:
+
+```text
+    authz subject-first        -> clauses, hop2Projection      9.08 ms   <- the SPECIALIZED rung
+    authz object-first         -> clauses                      0.68      <- the GENERAL matcher
+    authz two MATCH clauses    -> clauses                      0.54      <- the GENERAL matcher
+```
+
+⚠️ **The slow spelling is the one that gets the specialized rung.** Items 2102/2103 named this exact
+pattern (_"`hop2Projection` preempts the generic matcher and is 59x SLOWER than declining"_) and **item
+2104 SHIPPED the cure** — the rung hands the query to the orienting matcher _"when the far node carries a
+genuine index seek"_, 25.56 → 0.31 ms.
+
+### 🔴 THE HOLE: THE GATE ASKS ABOUT THE _NODE_, AND A CLAUSE `WHERE` IS NOT ON THE NODE
+
+```ts
+const endNode = pattern.segments[pattern.segments.length - 1].node;
+if (!mightSeek(endNode)) return false;
+const endEst = estimateSeedFrom(graph, endNode, binding, params);
+if (!endEst.indexed) return false;
+```
+
+Both questions are about `endNode`. ✅ **Measured, 400,000 users, 2,000 results:**
+
+```text
+    spelling                                  INDEX=none   INDEX=doc
+    clause  WHERE d.name = $doc                  9.09 ms      9.26
+    inline  (d:Doc {name: $doc})                 0.57         0.61     <- 15.9x, and the INDEX IS IRRELEVANT
+```
+
+🔑 **An inline predicate is ON the node, so the gate sees it, the rung declines, and the matcher's
+`orient` does the right thing. A clause `WHERE` is invisible to it.** ⚠️ `pushWhereIntoNode` exists in
+`rewrites.ts` and does NOT reach this gate for this shape.
+
+### ✅ AND THE PROBE NOW ISOLATES THE VARIABLE, NOT JUST THE SYMPTOM
+
+```text
+    subject-first (the natural spelling)       14.90 ms   rows=2000
+    object-first (the mirror)                   0.78
+    subject-first, INLINE far predicate         0.50      <- SAME orientation as the slowest arm
+    object-first, hops reordered                0.66
+    spread 29.51x across 4 spellings of one question
+```
+
+🔑 **The fastest arm has the SAME orientation as the slowest and differs only in predicate placement** —
+so "the planner does not orient" (my item 2289 framing) is wrong: **it orients fine when it can see the
+predicate.** ✅ `CLAUDE.md` lists _"a clause `WHERE` vs an inline `{k: $x}`"_ among four shapes that each
+_"cost 100-300x and each returned the correct answer"_. This is that shape, still live, now asymptotic.
+
+### ⚠️ TWO PREDICTIONS OF MINE DIED ON THE WAY, AND ONE NEEDED PROVING
+
+**"An index on the OBJECT key will fix it"** — no: 9.08 → 9.11 with a working index. ✅ **And the index was
+PROVEN to work before that null was believed** (`seekProof`: a 400,000-user name lookup goes 7.01 ms →
+0.00), because this probe is `.mjs` and has **no typecheck** — exactly how item 2275's arm silently created
+no index at all.
+
+**OPEN:** teach the gate to see a clause-level equality on the far node (or push it into the node before
+the rung decides). The fix site is named, the measurement is 15.9x and grows with the tenant, and
+`bun run spelling:orient` flags it.
+
+GATES. `bun run fmt` 0, `bun run check` 0. Two arms added to `rebaclist-2288.mjs`, one spelling added to the
+orient probe, one route reader; no production change.

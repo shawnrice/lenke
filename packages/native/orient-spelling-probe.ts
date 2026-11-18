@@ -70,6 +70,10 @@ const GROUP: readonly (readonly [string, string])[] = [
     'MATCH (d:Doc)<-[:CAN_VIEW]-(t:Team)<-[:MEMBER_OF]-(u:User) WHERE d.name = $doc RETURN u.name AS n',
   ],
   [
+    'subject-first, INLINE far predicate',
+    'MATCH (u:User)-[:MEMBER_OF]->(t:Team)-[:CAN_VIEW]->(d:Doc {name: $doc}) RETURN u.name AS n',
+  ],
+  [
     'object-first, hops reordered',
     'MATCH (t:Team)-[:CAN_VIEW]->(d:Doc) MATCH (u:User)-[:MEMBER_OF]->(t) WHERE d.name = $doc RETURN u.name AS n',
   ],

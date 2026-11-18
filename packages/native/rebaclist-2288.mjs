@@ -91,6 +91,23 @@ for (let i = 0; i < DECOYS; i += 1) {
   });
 }
 
+/*
+ * ⚠⚠ **AN INDEX ON THE *OBJECT* KEY, WHICH IS THE ONE THE GATE ASKS ABOUT (item 2291).**
+ *
+ * 🔑 `hop2-projection.ts`'s own header says the rung hands a query to the orienting matcher only when
+ * `farEndSeeksNarrower` — *"Only a genuine SEEK on the far node justifies handing the query back"* —
+ * because reversing on label-bucket size alone would give up a fused walk worth 13.8x (items 1821/1822).
+ * With no index on `Doc.name` there is no seek, so the rung keeps its walk and visits every user.
+ *
+ * ⚠️ Item 2100 indexed the SUBJECT key (`User.name`) and concluded this operation *"correctly does not
+ * benefit"*. That is true of the subject key and does not generalize: the gate reads the FAR node.
+ */
+const INDEX = process.env.INDEX ?? 'none';
+
+if (INDEX === 'doc' || INDEX === 'both') {
+  g.createIndex({ on: 'vertex', kind: 'hash', keys: ['name'] });
+}
+
 const med = (xs) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];
 
 const GQL_LIST =
@@ -206,6 +223,27 @@ const ARMS = {
   handLabels: () => handLabels().length,
   gqlUnlabelled: () => query(g, GQL_UNLABELLED, { doc: 'doc1' }).length,
   gqlDocFirst: () => query(g, GQL_LIST_DOCFIRST, { doc: 'doc1' }).length,
+  /*
+   * ⚠⚠ **PROVE THE INDEX FUNCTIONS BEFORE BELIEVING A NULL FROM IT.** This file is `.mjs`, so there is
+   * NO typecheck — and item 2275's index arm silently created nothing because `kind` was invalid, with
+   * bun erasing the type. A 400,000-user name lookup is a scan without an index and a seek with one, so
+   * this arm's own ratio between `INDEX=none` and `INDEX=doc` is the proof.
+   */
+  /*
+   * ⚠⚠ **INLINE vs CLAUSE `WHERE`, ON THE FAR NODE (item 2291).** `farEndSeeksNarrower` asks
+   * `mightSeek(endNode)` and `estimateSeedFrom(graph, endNode, ...)` — both about the NODE. My predicate
+   * is a clause `WHERE`, and *"a clause `WHERE` vs an inline `{k: $x}`"* is one of the four
+   * equivalent-spelling shapes `CLAUDE.md` names as having cost 100-300x historically. There IS a
+   * `pushWhereIntoNode` rewrite, so this measures whether it reaches this gate.
+   */
+  gqlInlineFar: () =>
+    query(
+      g,
+      'MATCH (u:User)-[:MEMBER_OF]->(t:Team)-[:CAN_VIEW]->(d:Doc {name: $doc}) RETURN u.name AS n',
+      { doc: 'doc1' },
+    ).length,
+  seekProof: () =>
+    query(g, 'MATCH (u:User) WHERE u.name = $u RETURN u.name AS n', { u: 'user7' }).length,
 };
 
 const fn = ARMS[SHAPE];
