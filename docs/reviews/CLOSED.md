@@ -112528,3 +112528,53 @@ the ABSOLUTE after-times and quote the floor separately.
 
 GATES. `bun run fmt` 0, `bun run check` 0. New instrument `drain-2247.ts` (`ARM=none|sync|drained`,
 `SHAPE=nolabel`); no production change.
+
+## Item 2248 — 🔑🔑🔑 **THE CHURN PENALTY IS A DATA REBUILD THAT SCALES SUPERLINEARLY: ~48 ns/vertex at 5k rising to ~171 at 80k, where ONE write makes the next read 2.8-3.4x slower. `verticesByLabel` is exonerated, joining `pick` and `drain`**
+
+Item 2247 left ~89% of the interleaved-write penalty unidentified, and the `hasLabel` comparison owed a
+re-run on the trustworthy 60-round harness. ⚠️ **One design correction first**: the two shapes do different
+work, so their raw times are not comparable — the quantity is **penalty = after − floor, measured inside
+each process**, then compared across shapes.
+
+### ✅ THE LABEL INDEX IS NOT THE CAUSE
+
+```text
+    pass        label penalty    nolabel penalty
+    1              0.91 ms          0.85 ms
+    2              0.95             1.00
+    3              0.88             0.98
+    median         0.91             0.98
+```
+
+Identical within noise, so **dropping `hasLabel('User')` does not reduce the penalty at all.**
+`verticesByLabel` joins `pick` (rejected at 2246) and the microtask drain (~11%, 2247) as exonerated.
+
+### 🔑🔑 AND THE DISCRIMINATOR THAT WORKED: IT SCALES WITH THE GRAPH
+
+A fixed plan/compile cost would be flat in N; a data rebuild grows. Two orderings, 60 rounds each:
+
+```text
+    N          floor            after            PENALTY         per vertex
+    5000     0.33 / 0.30     0.61 / 0.50     0.28 / 0.20 ms      ~48 ns
+    20000    1.38 / 1.23     2.16 / 2.65     0.78 / 1.42         ~55 ns
+    80000    7.51 / 5.88    20.89 / 19.89   13.38 / 14.01        ~171 ns
+    ratio at 80000: 2.78x and 3.39x — both orderings agree
+```
+
+🔑 **It is a data rebuild, and per-vertex cost RISES 3.5x from 5k to 80k** — so the penalty is superlinear,
+not merely proportional. ⚠️⚠️ **At 80,000 vertices one write makes the next read ~3x slower**, and the
+absolute penalty (13-14 ms) is twice the clean read itself. The 20k figure this session has been quoting
+(~1.8x) **understates it at scale**, which is exactly the trap `CLAUDE.md` names: _"sweep the size —
+cache-resident and not are different questions."_
+
+✅ `wrong=0/60` at every size — correctness holds throughout.
+
+### ⚠️ WHAT IS STILL OPEN, STATED PRECISELY
+
+The rebuilt structure is **not yet named**. What is known: it is per-graph data (scales with N), it is
+charged once per write regardless of write count (2246), it is not the label index (above), not the
+mutation drain (2247, ~11%), and not plan selection (it would be flat in N). 🔑 **Next: the superlinearity
+is the clue — a structure whose rebuild is worse than O(V) narrows the candidates sharply, and a heap
+profile would name it where a CPU profile at this resolution could not (2246).**
+
+GATES. `bun run fmt` 0, `bun run check` 0. Instrument `drain-2247.ts` reused unchanged; no production change.
