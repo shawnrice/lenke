@@ -108843,3 +108843,65 @@ constant is, an `INSERT` is not and would measure a graph growing 40x. Inserts n
 which is a different instrument and is not in this one.
 
 GATES. Instrument only. `bun run fmt` 0; `bun run check` 0 read unpiped.
+
+## Item 2177 — ✅✅✅ **SHIPPED, AND THE PERF WIN IS THE SMALLER HALF: `count(b)` → `count(*)` is 62x and 85x, and writing its test found a PRE-EXISTING WRONG ANSWER in `unoptionalizeForAggregate` that the fuzzers never caught**
+
+Item 2176's widened screen flagged `var-length 1..2 hops` at +593 ms. The cause was a spelling.
+
+### 🔑 THE EQUIVALENT-SPELLING GAP, WHICH IS THE BUG CLASS THIS REPO WARNS ABOUT
+
+Every count rung gates on a STAR projection, so naming the variable fell off ALL of them onto the general
+matcher. `compileLinear` says it plainly: `count(*)` → `varLengthCount`; `count(b)` → nothing.
+
+```text
+    row                      BEFORE     NEW
+    var-length count(b)      533.92    8.61    62.0x   (answers identical, 599998)
+    two-hop count(c)          17.08    0.20    85.4x   (answers identical, 300000)
+    var-length count(*) ctl    8.86    6.38    flat
+    count(a.k)          ctl    3.26    3.17    flat
+    OPTIONAL count(b)   ctl    8.34    0.00    composes with `unoptionalizeForAggregate`
+```
+
+⚠️ **The same answer, two orders of magnitude apart, on the spelling alone** — exactly the shape the repo's
+own warning describes, and no correctness test could have caught it. The spelling probe has no
+`count(var)` vs `count(*)` group; it should gain one.
+
+🔑 **SOUNDNESS:** `count(x)` counts rows where `x` is non-null, `count(*)` counts rows. A plain `MATCH` only
+emits matched rows, so a pattern variable is always bound there. Under `OPTIONAL MATCH` they genuinely
+differ, so only variables bound by a NON-OPTIONAL pattern qualify.
+
+### ⚠️⚠️⚠️ AND THEN THE TEST FOUND A WRONG ANSWER THAT WAS ALREADY THERE
+
+```text
+    MATCH (x:P) OPTIONAL MATCH (x)-[:E]->(y:P) RETURN count(x)            answered 1, CORRECT 3
+                                               RETURN count(x), count(*)  answered 3,3  correct
+```
+
+🔑🔑 **The same `count(x)` gave two different answers depending on what sat beside it** — which is what makes
+it a bug rather than a semantics choice. `unoptionalizeForAggregate` drops `optional` when every projection
+item is a 1-arg aggregate, on the argument that such aggregates are null-blind. ⚠️ **Dropping the clause
+does not merely stop null-filling — it REMOVES the unmatched rows**, which is invisible to an aggregate over
+a variable THAT clause binds and very visible to one over a variable bound EARLIER. Its comment ("a STAR
+count is the one aggregate that sees a null-filled row") was true and incomplete.
+
+⚠️ **NATIVE WAS RIGHT ALL ALONG (3), so this CLOSES a divergence rather than creating one** — and
+`bun run fuzz` is green both before and after, so the byte-identity fuzzers never covered this shape.
+
+🔑 **The fix needed a subtraction I got wrong once**: `patternVars` of `OPTIONAL MATCH (x)-[:E]->(y)` returns
+BOTH `x` and `y`, because the clause references the anchor it joins to. A first version used that set
+directly, so `count(x)` still looked local and the wrong answer survived unchanged. Earlier clauses'
+variables are now subtracted.
+
+### 🔑 TESTS AND MUTATION
+
+14 tests. **7 of 10 mutants caught, including all three guards of the wrong-answer fix.** ⚠️ Three
+survivors are structural: dropping the `arg.kind` check leaves `arg.name` undefined (never in the bound
+set, so it declines safely); `args` kept beside `star: true` is ignored by every rung; `rewrite-disabled` is
+answer-equivalent by design.
+
+⚠️ A first mutation round had FIVE stale anchors, because fixing the bug rewrote the code the specs pointed
+at — and the formatter had collapsed a three-line gate onto one line. Anchors re-verified for uniqueness
+before the re-run.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
+`bun run fuzz` all seven green.

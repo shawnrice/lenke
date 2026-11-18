@@ -613,6 +613,102 @@ const compileClause = (rawClause: Clause): CClause => {
  * the wrong value. `deferredSortKeys` declines for exactly this (`outNames.has(nameRead)`) and
  * native does the same; this pass refuses to rewrite rather than reproduce the overlay rule.
  */
+/**
+ * `count(b)` → `count(*)` when `b` is bound by a NON-OPTIONAL pattern (item 2177).
+ *
+ * ⚠️⚠️⚠️ **THIS IS THE "EQUIVALENT SPELLINGS MUST COST THE SAME" BUG CLASS, FOUND LIVE.** Every count rung
+ * gates on a STAR projection, so naming the variable instead of `*` fell off ALL of them onto the general
+ * matcher — same answer, two orders of magnitude apart:
+ *
+ * ```text
+ *     MATCH (a:Person)-[:KNOWS]->{1,2}(b:Person) RETURN count(*)    8.51 ms   599998
+ *                                                RETURN count(b)  538.32 ms   599998   63x
+ *     MATCH (a)-[:KNOWS]->(b)-[:KNOWS]->(c)      RETURN count(*)    0.20 ms   300000
+ *                                                RETURN count(c)   15.91 ms   300000   80x
+ * ```
+ *
+ * 🔑 Both readings are from one process per shape, and the ANSWERS ARE IDENTICAL — which is precisely why
+ * no correctness test could ever have caught it. The repo's own warning describes this shape: a planner
+ * that recognizes one spelling and scans for another meaning exactly the same thing.
+ *
+ * ⚠️ **WHY IT IS SOUND:** `count(x)` counts rows where `x` is NON-NULL; `count(*)` counts rows. A plain
+ * `MATCH` only emits rows where the pattern matched, so a pattern variable is always bound there and the
+ * two agree. 🔑 Under `OPTIONAL MATCH` they DIVERGE — a null-padded row is counted by `count(*)` and not by
+ * `count(b)` — which is exactly what `unoptionalizeForAggregate`'s own comment states ("A STAR count is the
+ * one aggregate that sees a null-filled row"). So a variable appearing in ANY optional pattern refuses the
+ * rewrite.
+ *
+ * ⚠️ `count(DISTINCT b)` is NOT rewritten: it counts distinct VALUES, not rows.
+ * ⚠️ Only PATTERN variables qualify. `count(a.k)` must stay as it is — a missing property is null, so it
+ * genuinely counts fewer rows than `count(*)`.
+ *
+ * 🔑 Runs OUTSIDE `unoptionalizeForAggregate`, which can itself clear `optional` from a clause: a shape it
+ * un-optionalizes becomes eligible here, and running first would miss that.
+ */
+const normalizeCountOfBoundVar = (clauses: readonly Clause[]): readonly Clause[] => {
+  const ret = clauses[clauses.length - 1];
+
+  if (ret?.kind !== 'return') {
+    return clauses;
+  }
+
+  /*
+   * ⚠️⚠️ **ONLY NON-OPTIONAL PATTERNS CONTRIBUTE, AND THAT IS THE WHOLE TEST** — a first version also
+   * collected an optional clause's variables and subtracted them, which a surviving mutant showed to be
+   * both REDUNDANT and WRONG:
+   *
+   * 🔑 Redundant, because a variable bound ONLY by optional patterns never enters this set, so the
+   * subtraction had nothing to remove. (The mutant dropping it answered all three OPTIONAL cases
+   * correctly.)
+   *
+   * ⚠️ And wrong, because `patternVars` of an optional clause also names variables bound EARLIER:
+   * `MATCH (x:P) OPTIONAL MATCH (x)-[:E]->(y) RETURN count(x)` has `x` in both sets, yet `x` is never
+   * null there — the OPTIONAL extends the row, it does not null the anchor. The subtraction refused that
+   * shape for no reason.
+   */
+  const bound = new Set<string>();
+
+  for (const clause of clauses) {
+    if (clause.kind !== 'match' || clause.optional) {
+      continue;
+    }
+
+    for (const v of patternVars(clause.patterns)) {
+      bound.add(v);
+    }
+  }
+
+  /**
+   * Is `name` bound by a plain pattern? 🔑 Then every row that pattern produces has it non-null, so
+   * `count(name)` and `count(*)` agree — and a LATER `OPTIONAL MATCH` cannot change that, because it only
+   * adds columns to the row.
+   */
+  const alwaysBound = (name: string): boolean => bound.has(name);
+  let changed = false;
+  const items = ret.projection.items.map((it) => {
+    const { expr } = it;
+
+    if (expr.kind !== 'func' || expr.name !== 'count' || expr.distinct || expr.args.length !== 1) {
+      return it;
+    }
+
+    const [arg] = expr.args;
+
+    if (arg.kind !== 'var' || !alwaysBound(arg.name)) {
+      return it;
+    }
+
+    changed = true;
+
+    /* 🔑 `star: true` with NO args is the shape every count rung gates on. */
+    return { ...it, expr: { ...expr, args: [], star: true } };
+  });
+
+  return changed
+    ? [...clauses.slice(0, -1), { ...ret, projection: { ...ret.projection, items } }]
+    : clauses;
+};
+
 export const normalizeAliasSortKeys = (clauses: readonly Clause[]): readonly Clause[] => {
   const last = clauses[clauses.length - 1];
 
@@ -1593,6 +1689,43 @@ const unoptionalizeForAggregate = (clauses: readonly Clause[]): readonly Clause[
   }
 
   const proj = ret.projection;
+  /*
+   * ⚠️⚠️⚠️ **THE VARIABLES THIS OPTIONAL CLAUSE ITSELF BINDS — AND OMITTING THIS WAS A WRONG ANSWER**
+   * (found at item 2177).
+   *
+   * 🔑 Dropping `optional` does not merely stop null-filling: it REMOVES the rows whose pattern did not
+   * match. That is invisible to an aggregate over a variable THIS clause binds (it was null on exactly
+   * those rows, contributing nothing), but NOT to one over a variable bound EARLIER, which was non-null
+   * there and did contribute.
+   *
+   * ```text
+   *     MATCH (x:P) OPTIONAL MATCH (x)-[:E]->(y:P) RETURN count(x)          answered 1, CORRECT 3
+   *                                                RETURN count(x),count(*) answered 3,3  correct
+   * ```
+   *
+   * ⚠️ The same `count(x)` gave two different answers depending on what sat beside it — the star count
+   * refused the rewrite and so accidentally produced the right answer. The comment below was true and
+   * incomplete: a star count is not the ONLY aggregate that sees those rows.
+   */
+  /*
+   * ⚠️⚠️ **"BORN HERE" MEANS BOUND BY THIS CLAUSE AND NOT BY AN EARLIER ONE, AND THE SUBTRACTION IS THE
+   * WHOLE POINT.** `patternVars` of `OPTIONAL MATCH (x)-[:E]->(y)` returns BOTH `x` and `y`, because the
+   * clause REFERENCES the anchor it joins to. 🔑 A first version of this fix used that set directly, so
+   * `count(x)` still looked local and the wrong answer survived unchanged.
+   */
+  const earlier = new Set<string>();
+
+  for (const clause of clauses.slice(0, -2)) {
+    if (clause.kind === 'match') {
+      for (const v of patternVars(clause.patterns)) {
+        earlier.add(v);
+      }
+    }
+  }
+
+  const ownVars = new Set(patternVars(prev.patterns).filter((v) => !earlier.has(v)));
+  const bornHere = (expr: Expr): boolean =>
+    [...freePredicateVars(expr)].every((v) => ownVars.has(v));
   const nullBlind =
     !proj.star &&
     proj.groupBy === undefined &&
@@ -1603,7 +1736,9 @@ const unoptionalizeForAggregate = (clauses: readonly Clause[]): readonly Clause[
         hasAggregate(it.expr) &&
         // A STAR count is the one aggregate that sees a null-filled row, so one anywhere in the
         // projection — even beside an argument-taking one — refuses the whole rewrite.
-        collectAggregates(it.expr).every((a) => !a.star && a.args.length === 1),
+        collectAggregates(it.expr).every(
+          (a) => !a.star && a.args.length === 1 && a.args.every((arg) => bornHere(arg)),
+        ),
     );
 
   if (!nullBlind) {
@@ -2498,36 +2633,43 @@ export const compileLinear = (linear: LinearQuery): CLinear => {
       // projection: folding a trailing `LET` can itself produce the aliased `ORDER BY` shape this
       // normalizes, and running it first would leave that shape unnormalized. Same composition
       // argument as item 1662's, one pass further out.
-      normalizeAliasSortKeys(
-        inlineTrailingLet(
-          inlineCorrelatedCall(
-            inlineAggregateCall(
-              inlineTrailingFilter(
-                unoptionalizeForAggregate(
-                  // `foldPageIntoReturn` runs INSIDE `dropVacuousPage` so the vacuous case is
-                  // removed first and only a page that actually does something is folded — the
-                  // two would otherwise race to claim the same clause (item 969).
-                  foldPageIntoReturn(
-                    // `foldLabelTestsIntoPatterns` runs FIRST of the three (item 1303): it can empty
-                    // a clause's `WHERE` entirely, and the rungs it is aiming at are selected on
-                    // `pred.fn === alwaysTrue`, so a later pass must see the clause already folded.
-                    dropUnreadGroupBinds(
-                      // `dropUnreadPathVar` runs INSIDE `dropUnreadGroupBinds` because that one
-                      // REFUSES outright on a pattern carrying a `pathVar` — so stripping an unread
-                      // one first is what lets the two compose instead of the first blocking the
-                      // second. Both require exactly `[match, return]`, so neither can see a shape
-                      // the other created.
-                      dropUnreadPathVar(
-                        // `dropUnreadEdgeVar` runs INSIDE `dropUnreadPathVar` for the same
-                        // composition reason: the path-variable pass refuses on nothing the edge pass
-                        // creates, but a pattern can carry BOTH an unread `p` and an unread `r`, and
-                        // only this order drops both in one compile. Each is independently narrow
-                        // (`[match, return]`, one pattern), so neither can see a shape it did not
-                        // expect.
-                        dropUnreadEdgeVar(
-                          dropVacuousPage(
-                            dropVacuousQuantifier(
-                              foldLabelTestsIntoPatterns(spliceChainedPatterns(linear.clauses)),
+      normalizeCountOfBoundVar(
+        /*
+         * ⚠️ OUTERMOST, so it sees the final folded projection AND any clause that
+         * `unoptionalizeForAggregate` has already cleared `optional` from — a shape that pass
+         * un-optionalizes becomes eligible for this one.
+         */
+        normalizeAliasSortKeys(
+          inlineTrailingLet(
+            inlineCorrelatedCall(
+              inlineAggregateCall(
+                inlineTrailingFilter(
+                  unoptionalizeForAggregate(
+                    // `foldPageIntoReturn` runs INSIDE `dropVacuousPage` so the vacuous case is
+                    // removed first and only a page that actually does something is folded — the
+                    // two would otherwise race to claim the same clause (item 969).
+                    foldPageIntoReturn(
+                      // `foldLabelTestsIntoPatterns` runs FIRST of the three (item 1303): it can empty
+                      // a clause's `WHERE` entirely, and the rungs it is aiming at are selected on
+                      // `pred.fn === alwaysTrue`, so a later pass must see the clause already folded.
+                      dropUnreadGroupBinds(
+                        // `dropUnreadPathVar` runs INSIDE `dropUnreadGroupBinds` because that one
+                        // REFUSES outright on a pattern carrying a `pathVar` — so stripping an unread
+                        // one first is what lets the two compose instead of the first blocking the
+                        // second. Both require exactly `[match, return]`, so neither can see a shape
+                        // the other created.
+                        dropUnreadPathVar(
+                          // `dropUnreadEdgeVar` runs INSIDE `dropUnreadPathVar` for the same
+                          // composition reason: the path-variable pass refuses on nothing the edge pass
+                          // creates, but a pattern can carry BOTH an unread `p` and an unread `r`, and
+                          // only this order drops both in one compile. Each is independently narrow
+                          // (`[match, return]`, one pattern), so neither can see a shape it did not
+                          // expect.
+                          dropUnreadEdgeVar(
+                            dropVacuousPage(
+                              dropVacuousQuantifier(
+                                foldLabelTestsIntoPatterns(spliceChainedPatterns(linear.clauses)),
+                              ),
                             ),
                           ),
                         ),
