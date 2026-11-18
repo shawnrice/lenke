@@ -112979,3 +112979,54 @@ cross-engine case, where it must also be shipped). ⚠️ Not a defect — it is
 worth knowing when writing queries.
 
 GATES. `bun run fmt` 0, `bun run check` 0. New instrument `scanfuse-2256.ts`; no production change.
+
+## Item 2257 — 🔑🔑🔑 **THE "GQL `SET` IS SLOWER THAN GREMLIN `property`" GAP IS NOT A WRITE-PATH GAP AT ALL: the core write is the SAME on both surfaces (1.2x), and the whole difference is GQL's MATCH/BINDING pipeline. ⚠️ Which means item 1933's "on the WRITE ALONE" framing attributes it to the wrong code**
+
+Item 2255 confirmed the gap (2.60x, 351 ns/row against 135) and item 2256 validated the arithmetic. The
+profile was diffuse, so no frame nominated itself. 🔑 **But both surfaces perform the SAME mutation, so a
+differential profile asks a sharper question: which frames exist in the GQL arm and NOT in the Gremlin one?**
+
+```text
+    25 rounds x 20,000 vertices, ONE ARM PER PROCESS
+    frame                        gql ms   grem ms   GQL-ONLY
+    #commitNormalized              34.2      28.5      +5.7     <- THE WRITE: SHARED, 1.2x
+    matchPattern                   31.6       0.0     +31.6
+    walkSegments                   30.3       0.0     +30.3
+    withBinding                    29.1       0.0     +29.1
+    runSet                         17.8       0.0     +17.8
+    hoistedMatch                   13.7       0.0     +13.7
+    seedVertices                   12.1       0.0     +12.1
+    recordTail                      8.5       0.0      +8.5
+    get soleLabel / candidateVertices / isElement / runLinearClauses   +22.3
+    (garbage collector)            55.9      14.8     +41.1
+```
+
+### 🔑🔑 THE WRITE IS NOT THE PROBLEM — IT IS SHARED AND EQUAL
+
+**`#commitNormalized` is 34.2 ms in GQL against 28.5 in Gremlin — 1.2x.** That is the core property write,
+and both surfaces reach it. ✅ Everything else in the gap is **~165 ms of GQL-only pipeline** (pattern
+matching, segment walking, binding, clause running) plus the **+41 ms of GC it causes** — together ~46% of
+the GQL arm.
+
+### ⚠️⚠️ SO ITEM 1933's ATTRIBUTION IS WRONG EVEN THOUGH ITS ARITHMETIC IS RIGHT
+
+1933 subtracts a scan to isolate "the write alone", and item 2256 confirmed that subtraction is sound as
+_arithmetic_. ⚠️ **But it does not isolate the write**: the `SET` form runs `hoistedMatch`, `walkSegments`,
+`seedVertices` and `withBinding`, and a scan costing **27 ns/row cannot contain 165 ms of them.** The
+subtrahend removes a `RETURN`-shaped scan, not the `SET` form's own match pipeline — **different code
+paths.** 🔑 So the number is real and the label "on the WRITE ALONE" misdirects every reader who inherits it,
+including three items of this session.
+
+✅ **The honest statement: GQL's STATEMENT PIPELINE costs more than Gremlin's direct traversal for the same
+mutation. The write itself is equal.** Comparing `MATCH (n:T) SET …` against `V().property(…)` as "the same
+work" was never apples-to-apples — one runs a pattern matcher, the other does not.
+
+### 🔭 THE LEVER THIS NAMES, AND ITS PRIOR ART
+
+`MATCH (n:T) SET n.n = 1` is a **label-only pattern**, which needs a label scan and not the general
+match/binding machinery — the same class of specialization as the engine's many read rungs. ⚠️ **But
+`withBinding` (29.1 ms) is already closed**: [[binding-allocation-is-closed]] records a no-copy VIEW (item 2023) and a REUSED map (2024) both built, priced and REFUSED. So a lever here must come from the MATCH side
+(`matchPattern` + `walkSegments` + `hoistedMatch` + `seedVertices` ≈ 88 ms), not the binding side.
+**Priced and named; not built — and the binding half is already refused.**
+
+GATES. `bun run fmt` 0, `bun run check` 0. New instrument `setdiff-2257.mjs`; no production change.
