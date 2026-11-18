@@ -196,7 +196,24 @@ const reachableCount = (
   farLabel: LabelExpr | undefined,
 ): number => {
   const { type, out, min, max } = shape;
-  const dist = new Map<string, number>([[seed.id, 0]]);
+  /*
+   * ITEM-2154-IDENTITY-SEEN: a `Set<Vertex>`, not a `Map<string, number>` keyed on `v.id`.
+   *
+   * 🔑 TWO SEPARATE SAVINGS, and the second is why a `Map` was the wrong shape from the start:
+   *
+   *   - **the key.** `dist.has(nbr.id)` / `dist.set(nbr.id, …)` cost an `id` GETTER plus a string hash,
+   *     twice per edge. After item 2153 removed the label test, `reachableCount` was **80.3% self** with
+   *     `get id` 2.6% and `get to` 3.7% beside it, so the keying was the loop's remaining bulk.
+   *   - **the value.** The distance was never READ — the frontier already carries the depth. A `Map`
+   *     stored a number per vertex that nothing consulted.
+   *
+   * ⚠️⚠️ **IDENTITY KEYING IS ONLY SOUND BECAUSE VERTEX IDENTITY IS STABLE HERE, AND THAT WAS CHECKED,
+   * NOT ASSUMED**: `edge.to`, `getVertexById` and the `addVertex` return are all the same object for one
+   * vertex. A graph that handed back a fresh wrapper per access would make this a WRONG ANSWER, not a
+   * slow path. ⚠️ Item 1589 refuted identity keying for a GREMLIN dedup set, which is a different call
+   * site — the claim there was that the fast side keeps no dedup set at all, and a BFS must.
+   */
+  const seen = new Set<Vertex>();
   let frontier: Vertex[] = [seed];
   let depth = 0;
   let count = 0;
@@ -227,7 +244,7 @@ const reachableCount = (
          * 🔑 Counted at most ONCE and never re-expanded: `anyShortest` keeps one path per endpoint pair,
          * so the FIRST distance at which the cycle closes is the only one that contributes.
          */
-        if (nbr.id === seed.id) {
+        if (nbr === seed) {
           if (!seedCounted && depth >= min && matchesLabel(nbr, farLabel)) {
             count += 1;
             seedCounted = true;
@@ -236,11 +253,11 @@ const reachableCount = (
           continue;
         }
 
-        if (dist.has(nbr.id)) {
+        if (seen.has(nbr)) {
           continue;
         }
 
-        dist.set(nbr.id, depth);
+        seen.add(nbr);
         next.push(nbr);
 
         /*

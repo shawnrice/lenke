@@ -107520,3 +107520,58 @@ one label" decides it, and that is an ISO question rather than a guess to make i
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 5,259 GQL
 tests; `bun run fuzz` all seven green.
+
+## Item 2154 — ✅✅ **SHIPPED: the BFS's visited set keyed on VERTEX IDENTITY instead of `v.id` — 1.19-1.29x at every depth, and the MIXED arm wins too (1.09x). The bench row's native ratio falls 4.65x → 3.26x**
+
+After item 2153 removed the label test, a re-profile left the loop body itself as the whole target:
+
+```text
+    reachableCount   80.3%   (was 68.8% — `get soleLabel` is GONE from the profile)
+    get adjFrom      10.0%
+    get to            3.7%
+    get id            2.6%
+```
+
+🔑 `dist.has(nbr.id)` / `dist.set(nbr.id, …)` cost an `id` GETTER plus a string hash, twice per edge.
+⚠️ **And the `Map` stored a value nothing ever read** — the distance was never consulted, because the
+frontier already carries the depth. A `Set<Vertex>` removes the getter, the hashing and the dead value.
+
+```text
+    row                        BEFORE     NEW
+    depth 2                     175.3    140.2    1.22x
+    depth 1                      49.5     39.7    1.29x
+    depth 3                     268.8    226.8    1.19x
+    MIXED labels [realistic]    131.4    116.8    1.09x    <- wins too, no trade-off
+    gated / walk [controls]                       flat
+    ---- bench rows ----
+    ANY SHORTEST no WHERE       224.2    159.3   and 4.65x native -> 3.26x
+    ANY SHORTEST 1-6 hops        10.3      9.1   and 5.90x native -> 5.12x
+```
+
+🔑 Cumulative for that row across 2151-2154: **249.5 → 159.3 ms, 5.16x native → 3.26x.**
+
+### ⚠️⚠️ IDENTITY KEYING IS SOUND ONLY BECAUSE VERTEX IDENTITY IS STABLE, AND THAT WAS CHECKED
+
+`edge.to`, `getVertexById` and the `addVertex` return value are all **the same object** for one vertex,
+verified before the change rather than assumed. ⚠️ A graph handing back a fresh wrapper per access would
+make this a WRONG ANSWER, not a slow path, and the dedup test is what would fail.
+
+🔑 Item 1589 refuted identity keying for a GREMLIN dedup set, and that is a different call site: the finding
+there (item 1590) was that the fast side keeps **no dedup set at all** on a far-driven walk, which a BFS
+cannot do. ⚠️ A refuted mechanism is refuted at the site it was measured, not everywhere its name appears.
+
+### 🔑 A SURVIVING MUTANT THAT EARNED A DELETION RATHER THAN A COMMENT
+
+**5/6 caught** (the membership test, the add, both seed-compare directions, the frontier push). ⚠️
+`seed-not-pre-seeded` survived — and correctly: the `nbr === seed` branch fires BEFORE any membership test,
+so `seen` never sees the seed and `new Set([seed])` was dead. 🔑 **Deleted rather than kept**, because
+unlike item 2151's `max === null` it was not defence in depth — it stated something untrue about where the
+seed is tracked. A mutation survivor is a question about the code, and sometimes the answer is to remove
+the code.
+
+**48 tests**, the load-bearing three being the diamond (a vertex reached two ways counted once — the
+assertion that would fail if identity were not stable), the seed cycle under identity comparison, and a
+vertex added between asks being a distinct key.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 5,266 GQL
+tests; `bun run fuzz` all seven green.

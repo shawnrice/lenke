@@ -565,6 +565,110 @@ describe('the ANY SHORTEST endpoint count (item 2151)', () => {
     });
   });
 
+  describe('⚠️⚠️ the IDENTITY-keyed seen set (item 2154)', () => {
+    test('a vertex reached by TWO paths is counted once', () => {
+      /*
+       * 🔑 THE DEDUP, which is the whole reason the set exists. A diamond reaches `d` two ways; keyed on
+       * identity it must still be one endpoint pair. ⚠️ If `edge.to` ever returned a fresh wrapper per
+       * access, this is the assertion that would fail — a WRONG ANSWER, not a slow path.
+       */
+      const g = new Graph();
+
+      for (const [i, id] of ['a', 'b', 'c', 'd'].entries()) {
+        g.addVertex({ id, labels: ['P'], properties: { k: i } });
+      }
+
+      let n = 0;
+
+      for (const [f, t] of [
+        ['a', 'b'],
+        ['a', 'c'],
+        ['b', 'd'],
+        ['c', 'd'],
+      ] as const) {
+        g.addEdge({
+          id: `d${(n += 1)}`,
+          from: g.getVertexById(f)!,
+          to: g.getVertexById(t)!,
+          labels: ['T'],
+          properties: {},
+        });
+      }
+
+      // From `a` alone: b, c, d — three pairs, with `d` NOT double counted.
+      expect(
+        query(g, 'MATCH ANY SHORTEST (a:P)-[:T]->{1,2}(b:P) WHERE a.k = 0 RETURN count(*) AS c')[0]
+          .c,
+      ).toBe(3);
+    });
+
+    test('⚠️ the SEED comparison is identity too', () => {
+      /*
+       * 🔑 `nbr === seed` replaced `nbr.id === seed.id`. A cycle back to the seed must still be found,
+       * and found ONCE.
+       */
+      const g = new Graph();
+
+      g.addVertex({ id: 'p', labels: ['P'], properties: { k: 0 } });
+      g.addVertex({ id: 'q', labels: ['P'], properties: { k: 1 } });
+      g.addEdge({
+        id: 'pq',
+        from: g.getVertexById('p')!,
+        to: g.getVertexById('q')!,
+        labels: ['T'],
+        properties: {},
+      });
+      g.addEdge({
+        id: 'qp',
+        from: g.getVertexById('q')!,
+        to: g.getVertexById('p')!,
+        labels: ['T'],
+        properties: {},
+      });
+
+      const q = 'MATCH ANY SHORTEST (a:P)-[:T]->{1,2}(b:P) WHERE a.k = 0 RETURN count(*) AS c';
+
+      // From `p`: q at 1, then p itself at 2 — two pairs.
+      expect(query(g, q)[0].c).toBe(query(g, `${q} ORDER BY c`)[0].c);
+      expect(query(g, q)[0].c).toBe(2);
+    });
+
+    test('⚠️ a vertex ADDED between asks is a distinct key', () => {
+      /*
+       * 🔑 A fresh vertex object must not collide with an existing one, and must be recognised as
+       * already-seen within the walk that reaches it.
+       */
+      const g = new Graph();
+
+      g.addVertex({ id: 'r0', labels: ['P'], properties: { k: 0 } });
+      g.addVertex({ id: 'r1', labels: ['P'], properties: { k: 1 } });
+      g.addEdge({
+        id: 'r01',
+        from: g.getVertexById('r0')!,
+        to: g.getVertexById('r1')!,
+        labels: ['T'],
+        properties: {},
+      });
+
+      const q = 'MATCH ANY SHORTEST (a:P)-[:T]->{1,2}(b:P) RETURN count(*) AS c';
+
+      expect(query(g, q)[0].c).toBe(1);
+
+      g.addVertex({ id: 'r2', labels: ['P'], properties: { k: 2 } });
+      g.addEdge({
+        id: 'r12',
+        from: g.getVertexById('r1')!,
+        to: g.getVertexById('r2')!,
+        labels: ['T'],
+        properties: {},
+      });
+
+      // r0→r1, r0→r1→r2, r1→r2 — three pairs.
+      expect(query(g, q)[0].c).toBe(query(g, `${q} ORDER BY c`)[0].c);
+      expect(query(g, q)[0].c).toBe(3);
+    });
+  });
+
   test('⚠️ a WRITE between two asks is reflected', () => {
     /*
      * 🔑 The rung reads `graph` at RUN time, never at compile time, and both asks share a query TEXT so
