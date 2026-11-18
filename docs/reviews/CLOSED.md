@@ -112933,10 +112933,49 @@ row-materializing scan. 🔑 The likelier explanation is a **FUSED direct-read p
 cannot take, which would make the subtrahend too small and the write-alone ratio **overstated** — the same
 family as this session's label-vacuity and closed-form traps.
 
-**Recorded as a question, not a conclusion**, because I have already guessed once here and been wrong. The
-check is whether the scan control's route is reachable by the `SET` form; until that is answered, **2.60x is
-an upper bound on the write-alone gap**, and the whole-query ratio (2.20x) is the figure that needs no
-decomposition.
+**Recorded as a question, not a conclusion**, because I have already guessed once here and been wrong. ✅ **ANSWERED AT ITEM
+2256: the suspicion is REFUTED — two property reads cost the SAME as one (27 ns/row either way), so 27 ns IS
+the scan and the subtrahend is sound. 2.60x STANDS as a measurement, not an upper bound.**
 
 GATES. `bun run fmt` 0, `bun run check` 0. Existing instruments reused unchanged
 (`setgap-prof-1933.mjs`, `setprof-clean-1933.mjs`); no production change.
+
+## Item 2256 — ✅ **MY OWN FUSION SUSPICION REFUTED IN ONE RUN: two property reads cost the SAME as one, so 27 ns/row IS the scan and item 2255's 2.60x STANDS. 🔑 The ~73 ns from item 2238 was a FAR-vertex read including materialization — and `RETURN n` costs 4.1x `RETURN n.prop`**
+
+Item 2255 flagged a doubt rather than banking it: the scan control subtracted from GQL `SET` reads 25-27
+ns/row, while a property read ALONE measured ~73 ns at item 2238. One of those had to be wrong. The test is
+SPELLINGS — a narrowly fused route would be dramatically cheaper than a shape it cannot cover:
+
+```text
+    arm                                      ns/row    rows
+    bare      RETURN n.n AS x                    27   20000
+    twoprop   RETURN n.n AS x, n.w AS y          27   20000     <- SAME as one read
+    pred      WHERE n.n >= 0 RETURN n.n AS x     38   20000
+    element   RETURN n AS x                     111   20000
+    set       SET n.n = 1                       401       -
+```
+
+### ✅ REFUTED, AND THE REASON IS INSTRUCTIVE
+
+🔑 **`twoprop` costs exactly what `bare` does.** A single-property fusion would make one read much cheaper
+than two; instead the marginal property read is **~free**. So **27 ns/row is the SCAN**, not a fused
+projection, and the subtrahend item 1933 uses is sound. ✅ **Item 2255's 2.60x is a measurement, not an upper
+bound** — hedge lifted above.
+
+### ✅ AND THE APPARENT CONTRADICTION WITH ITEM 2238 DISSOLVES
+
+Item 2238's ~73 ns was a **FAR-vertex** property read, reached through `edge.to` — so it included
+**materializing the far element**. Here `n` is the scan's own element with a warm `#box`, so reading its
+property is nearly free. 🔑 That is exactly [[element-caches-beat-the-store]]'s finding seen from the other
+side: **the cost was never the property read; it was reaching the element.** Two measurements that looked
+contradictory are the same fact.
+
+### 🔑 A NEW FACT WORTH HAVING: `RETURN n` IS 4.1x `RETURN n.prop`
+
+**111 ns/row against 27.** Returning the ELEMENT costs four times returning one of its properties, because
+the element's `{id, labels, properties}` map is built eagerly (`bench.ts` records the same cost for the
+cross-engine case, where it must also be shipped). ⚠️ Not a defect — it is what the surface asks for — but
+**a projection that names the properties it needs is 4x cheaper than one that returns the node**, which is
+worth knowing when writing queries.
+
+GATES. `bun run fmt` 0, `bun run check` 0. New instrument `scanfuse-2256.ts`; no production change.
