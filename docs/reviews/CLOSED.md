@@ -110036,3 +110036,56 @@ a new walk variant at up to 16% on UNRELATED rows, so this wants a full tick wit
 a diagnosis.
 
 GATES. No production change. `bun run check` 0.
+
+## Item 2199 — 🔑🔑 **ITEM 2198'S TARGET REFUTED — `max`/`min` WERE FUSED AT 1857 AND `sum` IS A BYTE-IDENTITY DECISION (1830, 1853). THE BUG WAS IN MY SCREEN: one global floor that is a CLOSED FORM. Fixed with per-group floors, and the Gremlin screen now flags NOTHING**
+
+Item 2198 handed off "`values(k).max()` never got `count()`'s fusion, ~2.7x available". ⚠️ The code says
+otherwise, in a comment at the fusion site:
+
+> `sum`/`mean` ARE NOT HERE and that is a correctness decision, not an omission: an f64 addition is
+> order-sensitive in its last ulp, the fused walk's visit order is not the pipeline's by construction, and
+> byte-identity with the Rust engine is a hard invariant. Items 1830 and 1853 declined the same pair on the
+> GQL side for the same reason.
+
+🔑 So `max`/`min` are already fused (item 1857, measured 1.77x/2.47x there), `foldProjectedMinMax` appeared
+in my profile BECAUSE the fusion is taken, and `sum` is deliberately excluded.
+
+### ⚠️⚠️ THE HONEST FLOOR, AND WHY THE SCREEN LIED
+
+```text
+    values(k).count()   2.63 ms   <- CLOSED FORM: counts vertices carrying the property, walks NOTHING
+    values(k).fold()    5.03 ms   <- the honest floor for a reduce: walk AND materialize
+    values(k).max()     5.70 ms   -> +4.24 against count (63x, FLAGGED) but +0.67 against fold (13%)
+    values(k).sum()     4.26 ms   -> flagged at 39x, and it is FASTER than fold
+```
+
+🔑🔑 `count()` on a bare `values(k)` reaches `propertyCount`, which never walks a value. Subtracting that
+from a row that MUST walk every value charges the row for the walk. **Both flags were phantoms.**
+
+⚠️⚠️ **THIS IS THE SECOND TIME IN THREE ITEMS THAT A FLOOR/CEILING DOING LESS WORK PRODUCED A FAKE TARGET**
+(item 2196's ceiling skipped `argFn`; this floor skips the walk). The rule is now in memory — and the cost
+here was a whole handoff, so the instrument got fixed rather than the lesson re-noted.
+
+### ✅ WHAT WAS BUILT: per-group floors on the Gremlin screen
+
+The third tuple element is now a FLOOR KEY (`floor:<key>` declares one, `<key>` selects one, `raw` takes
+none) instead of a boolean, with a second floor `FLOOR walk V().values(k).fold()`. ⚠️ The loop is now TWO
+PASSES, so a floor may be declared anywhere in `ROWS` — the one-pass version silently used `{ts: 0, nat: 0}`
+for any row ABOVE its floor, which reads as a marginal equal to the raw time and is indistinguishable from a
+real finding. This is the same fix the GQL screen got at item 2175, which this screen never received.
+
+```text
+    row                             OLD marginal        NEW marginal
+    V().values(k).max()          +4.24 / -0.35 FLAG   +0.26 / -5.74   no flag
+    V().values(k).sum()          +2.02 / -0.34 FLAG   -0.99 / -5.73   no flag
+    V().groupCount().by(k)       +5.29 / +2.47        +2.03 / -2.91   no flag
+    V().values(k).dedupe().count() +0.17 / +0.81      -2.93 / -4.61   no flag (its own shortcut)
+```
+
+🔑 **THE GREMLIN SCREEN NOW FLAGS NOTHING**, and the new floor says why: `values(k).fold()` is **5.57 ts
+against 5.85 native, 1.0x** — the values walk is AT PARITY and every reduce over it is near-free.
+
+⚠️ A negative marginal is information, not breakage: `dedupe().count()` beats the walk floor because it has
+its own shortcut.
+
+GATES. `bun run fmt` 0, `bun run check` 0. Bench instrument only; no engine change.

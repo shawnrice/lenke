@@ -127,16 +127,41 @@ const natGraph = graphFromNdjson(createFfiEngineBackend(LIB), doc) as {
   free: () => void;
 };
 
-/** Each row: a name, the plan, and whether it is the FLOOR its siblings are measured against. */
-const ROWS: ReadonlyArray<readonly [string, Plan, boolean]> = [
+/**
+ * Each row: a name, the plan, and the FLOOR KEY its marginal is measured against.
+ *
+ * ⚠️⚠️ **ONE GLOBAL FLOOR MIS-NOMINATED A ROW AND COST ITEM 2198 A WHOLE TICK, SO FLOORS ARE NOW
+ * PER-GROUP** (`floor:<key>` marks a floor, `<key>` selects one, `raw` takes none). The screen's original
+ * floor is `values(k).count()`, and that reaches `propertyCount` — a CLOSED FORM that counts vertices
+ * carrying the property and **never walks a single value**. Subtracting it from a row that MUST walk
+ * every value charges that row for the walk:
+ *
+ * ```text
+ *     values(k).count()   2.63 ms   <- closed form, the old floor for everything
+ *     values(k).fold()    5.03 ms   <- the honest floor for a reduce: walk AND materialize
+ *     values(k).max()     5.70 ms   -> +4.24 against count (63x, FLAGGED) but +0.67 against fold
+ *     values(k).sum()     4.26 ms   -> flagged at 39x, and it is FASTER than fold
+ * ```
+ *
+ * 🔑 `max`/`min` were fused at item 1857 and `sum` is deliberately excluded for byte-identity (items
+ * 1830, 1853) — so all three were already right, and the screen was wrong. This is the same defect the
+ * GQL screen fixed at item 2175 with per-row floors, which this screen never got.
+ */
+const ROWS: ReadonlyArray<readonly [string, Plan, string]> = [
   // ── The floor: the cheapest step that still touches every vertex's property ───────────────────
-  ['FLOOR V().values(k).count()', traversal(V(), values('k'), count()), true],
+  ['FLOOR scan V().values(k).count()', traversal(V(), values('k'), count()), 'floor:scan'],
   // ── Vertex-side steps, measured against that floor ────────────────────────────────────────────
-  ['V().has(k, gt).count()', traversal(V(), has('k', gt(50)), count()), false],
-  ['V().hasLabel().count()', traversal(V(), hasLabel('Admin'), count()), false],
-  ['V().values(k).dedupe().count()', traversal(V(), values('k'), dedupe(), count()), false],
-  ['V().values(k).order()', traversal(V(), values('k'), order()), false],
-  ['V().id().count()', traversal(V(), id(), count()), false],
+  ['V().has(k, gt).count()', traversal(V(), has('k', gt(50)), count()), 'scan'],
+  ['V().hasLabel().count()', traversal(V(), hasLabel('Admin'), count()), 'scan'],
+  /*
+   * ⚠️ THE SECOND FLOOR: a reduce over `values(k)` must WALK every value, which the closed-form
+   * `count()` floor above never does. `fold()` is the cheapest shape that does the same work —
+   * walk and materialize — so it is what a reduce's own cost should be measured against.
+   */
+  ['FLOOR walk V().values(k).fold()', traversal(V(), values('k'), fold()), 'floor:walk'],
+  ['V().values(k).dedupe().count()', traversal(V(), values('k'), dedupe(), count()), 'walk'],
+  ['V().values(k).order()', traversal(V(), values('k'), order()), 'walk'],
+  ['V().id().count()', traversal(V(), id(), count()), 'scan'],
   // ── Edge-side steps. ⚠️ Their own floor is the untyped hop, not the vertex scan ───────────────
   /*
    * ⚠️⚠️ **`V().out().count()` IS NOT A VALID FLOOR AND WAS MY FIRST CHOICE** (and the `id()` floor that
@@ -166,14 +191,14 @@ const ROWS: ReadonlyArray<readonly [string, Plan, boolean]> = [
    * 🔑 Worth a future item on its own terms: `V().out().values(k).count()` reads **41.37 ms in TS**.
    * Whatever native elides, 300,000 endpoint property reads costing 41 ms is a TS-side question.
    */
-  ['RAW V().out().has(k).count()', traversal(V(), out('KNOWS'), has('k', gt(-1)), count()), false],
-  ['RAW V().out().values(k).count()', traversal(V(), out('KNOWS'), values('k'), count()), false],
+  ['RAW V().out().has(k).count()', traversal(V(), out('KNOWS'), has('k', gt(-1)), count()), 'raw'],
+  ['RAW V().out().values(k).count()', traversal(V(), out('KNOWS'), values('k'), count()), 'raw'],
   [
     'RAW V().out().has(k, gt).count()',
     traversal(V(), out('KNOWS'), has('k', gt(50)), count()),
-    false,
+    'raw',
   ],
-  ['RAW V().out().dedupe().count()', traversal(V(), out('KNOWS'), dedupe(), count()), false],
+  ['RAW V().out().dedupe().count()', traversal(V(), out('KNOWS'), dedupe(), count()), 'raw'],
   /*
    * ── ROWS ADDED AT ITEM 2187 ───────────────────────────────────────────────────────────────────
    *
@@ -192,22 +217,22 @@ const ROWS: ReadonlyArray<readonly [string, Plan, boolean]> = [
    * different graph every rep. They need a per-rep rebuild, which is a different instrument.
    */
   // ── Directions other than `out`, which was the only one measured ──────────────────────────────
-  ['V().in().count()', traversal(V(), in_('KNOWS'), count()), false],
-  ['V().both().count()', traversal(V(), both('KNOWS'), count()), false],
-  ['V().outE().count()', traversal(V(), outE('KNOWS'), count()), false],
+  ['V().in().count()', traversal(V(), in_('KNOWS'), count()), 'scan'],
+  ['V().both().count()', traversal(V(), both('KNOWS'), count()), 'scan'],
+  ['V().outE().count()', traversal(V(), outE('KNOWS'), count()), 'scan'],
   // ── Paths and repetition ──────────────────────────────────────────────────────────────────────
-  ['V().out().out().count()', traversal(V(), out('KNOWS'), out('KNOWS'), count()), false],
-  ['V().out().simplePath().count()', traversal(V(), out('KNOWS'), simplePath(), count()), false],
-  ['V().out().path().count()', traversal(V(), out('KNOWS'), path(), count()), false],
+  ['V().out().out().count()', traversal(V(), out('KNOWS'), out('KNOWS'), count()), 'scan'],
+  ['V().out().simplePath().count()', traversal(V(), out('KNOWS'), simplePath(), count()), 'scan'],
+  ['V().out().path().count()', traversal(V(), out('KNOWS'), path(), count()), 'scan'],
   // ── Grouping and set operations ───────────────────────────────────────────────────────────────
-  ['V().groupCount().by(k)', traversal(V(), values('k'), groupCount()), false],
-  ['V().out().dedupe().fold()', traversal(V(), out('KNOWS'), dedupe(), fold()), false],
+  ['V().groupCount().by(k)', traversal(V(), values('k'), groupCount()), 'walk'],
+  ['V().out().dedupe().fold()', traversal(V(), out('KNOWS'), dedupe(), fold()), 'scan'],
   // ── Scalar aggregates over a scan ─────────────────────────────────────────────────────────────
-  ['V().values(k).sum()', traversal(V(), values('k'), sum()), false],
-  ['V().values(k).max()', traversal(V(), values('k'), max()), false],
+  ['V().values(k).sum()', traversal(V(), values('k'), sum()), 'walk'],
+  ['V().values(k).max()', traversal(V(), values('k'), max()), 'walk'],
   // ── Projection shapes ─────────────────────────────────────────────────────────────────────────
-  ['V().valueMap().count()', traversal(V(), valueMap(), count()), false],
-  ['V().limit(10).count()', traversal(V(), limit(10), count()), false],
+  ['V().valueMap().count()', traversal(V(), valueMap(), count()), 'scan'],
+  ['V().limit(10).count()', traversal(V(), limit(10), count()), 'scan'],
 ];
 
 const median = (xs: number[]): number => {
@@ -236,19 +261,33 @@ console.log(
   `  ${'step'.padEnd(32)} ${'ts'.padStart(7)} ${'native'.padStart(7)} ${'ratio'.padStart(7)}  ${'marginal ts/native'.padStart(20)}`,
 );
 
-let floor = { ts: 0, nat: 0 };
+/*
+ * ⚠️ TWO PASSES, so a floor may be declared ANYWHERE in `ROWS` rather than only above the rows it
+ * floors. The one-pass version silently used `{ts: 0, nat: 0}` for any row preceding its own floor,
+ * which reads as a marginal equal to the raw time — indistinguishable from a real finding.
+ */
+const measured = ROWS.map(([name, plan, key]) => ({
+  name,
+  key,
+  t: time(() => toArray(plan, tsGraph)),
+  n: time(() => natGraph.gremlin(planToGremlin(plan))),
+}));
+const floors = new Map<string, { ts: number; nat: number }>();
 
-for (const [name, plan, isFloor] of ROWS) {
-  const t = time(() => toArray(plan, tsGraph));
-  const n = time(() => natGraph.gremlin(planToGremlin(plan)));
-
-  if (isFloor) {
-    floor = { ts: t.ms, nat: n.ms };
+for (const row of measured) {
+  if (row.key.startsWith('floor:')) {
+    floors.set(row.key.slice('floor:'.length), { ts: row.t.ms, nat: row.n.ms });
   }
+}
+
+for (const { name, key, t, n } of measured) {
+  const isFloor = key.startsWith('floor:');
+  const floor = floors.get(isFloor ? key.slice('floor:'.length) : key) ?? { ts: 0, nat: 0 };
 
   /* ⚠️ A `RAW ` row has no valid floor (see the edge-group note above): print no marginal at all rather
    * than a subtraction that would mislead. */
-  const unfloored = name.startsWith('RAW ');
+  /* ⚠️ The KEY says a row has no valid floor, not its NAME — a name prefix is easy to forget. */
+  const unfloored = key === 'raw';
   const marginal =
     isFloor || unfloored
       ? ''
