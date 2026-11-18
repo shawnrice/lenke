@@ -26,14 +26,18 @@ import {
   count,
   dedupe,
   eq,
+  groupCount,
   has,
   hasLabel,
   id,
+  in_,
   limit,
   order,
   out,
+  simplePath,
   toArray,
   traversal,
+  union,
   values,
 } from '@lenke/gremlin';
 import type { Plan } from '@lenke/gremlin';
@@ -223,6 +227,53 @@ const hopIds = (want?: string): string[] => {
   return ids;
 };
 
+/* --- COMPOSITION-STEP floors (item 2229): the surface the finder never floored ----------------- */
+
+/** Tally every `User`'s `team` — the work a `values(team).groupCount()` must do. */
+const teamTally = (): Map<unknown, number> => {
+  const by = new Map<unknown, number>();
+
+  for (const v of g.verticesByLabel.get('User') ?? []) {
+    const { team } = v.properties;
+
+    by.set(team, (by.get(team) ?? 0) + 1);
+  }
+
+  return by;
+};
+
+/**
+ * One hop, counting only paths whose two vertices DIFFER — what `simplePath()` means on a 2-element path.
+ *
+ * ⚠️ A floor must mean the same thing as the step. On a one-hop traversal `simplePath` can only reject a
+ * SELF-LOOP, so an `a.id !== e.to.id` test is the whole contract here; on a longer path it would not be.
+ */
+const hopSimplePathCount = (): number => {
+  let n = 0;
+
+  for (const a of g.verticesByLabel.get('User') ?? []) {
+    for (const e of g.edgesFromByLabel.get(a.id)?.get('E') ?? []) {
+      if (e.to.id !== a.id) {
+        n += 1;
+      }
+    }
+  }
+
+  return n;
+};
+
+/** Both directions counted — the work a `union(out, in)` must do. */
+const bothDirectionsCount = (): number => {
+  let n = 0;
+
+  for (const a of g.verticesByLabel.get('User') ?? []) {
+    n += g.edgesFromByLabel.get(a.id)?.get('E')?.size ?? 0;
+    n += g.edgesToByLabel.get(a.id)?.get('E')?.size ?? 0;
+  }
+
+  return n;
+};
+
 /** Distinct far-node ids reached in one hop — the work a `dedupe().count()` must do. */
 const hopDedupeCount = (): number => {
   const seen = new Set<string>();
@@ -345,6 +396,30 @@ const shapes: Shape[] = [
           .sort((x, y) => (x as number) - (y as number))
           .slice(0, 10),
     },
+  },
+  // --- COMPOSITION steps (item 2229): floored for the first time ---------------------------------
+  {
+    family: 'compose',
+    name: 'values groupCount',
+    plan: traversal(V_(), hasLabel('User'), values('team'), groupCount()),
+    floor: { label: 'walk + Map tally', run: teamTally },
+  },
+  {
+    family: 'compose',
+    name: 'hop simplePath count',
+    plan: traversal(V_(), hasLabel('User'), out('E'), simplePath(), count()),
+    floor: { label: 'walk + self-loop test', run: hopSimplePathCount },
+  },
+  {
+    family: 'compose',
+    name: 'union(out,in) count',
+    plan: traversal(
+      V_(),
+      hasLabel('User'),
+      union(traversal(out('E')), traversal(in_('E'))),
+      count(),
+    ),
+    floor: { label: 'out-degree + in-degree', run: bothDirectionsCount },
   },
 ];
 

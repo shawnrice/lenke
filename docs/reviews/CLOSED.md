@@ -111586,3 +111586,48 @@ direction, and on the shapes where it was large the verdicts were already "close
 
 GATES. `bun run fmt` 0, `bun run check` 0; tree verified back to the shipped file after the A/B. Probe
 harnesses only; no engine change.
+
+## Item 2229 — ✅ **THE GREMLIN COMPOSITION SURFACE IS NOW FLOORED TOO (18 shapes), AND NOTHING RISES. `simplePath` is the one large ratio — `pipeline` beside a `CLOSED` neighbour at 7.83x — but it is BOTH user-declined (item 1466) AND amortizing (6.65x → 3.51x), so it stays closed**
+
+The Gremlin finder's 15 floored shapes were all below 1.0x and falling, so the limit was its SHAPE SET, not
+the engine: counts, values, ids and dedupe are all closed-form-friendly. The composition steps — the surface
+that produced the GQL win — had never been floored.
+
+### ✅ THREE NEW FLOORED ROWS, each floor meaning exactly what its step means
+
+```text
+    family  shape                        rung          ns/op      floor  vs floor
+    compose values groupCount            pipeline     799369     412605     1.94x
+    compose hop simplePath count         pipeline   12653299    1616170 7.83x <--
+    compose union(out,in) count          CLOSED         2047     589138     0.00x
+```
+
+⚠️ `simplePath`'s floor is an `a.id !== e.to.id` test, and that is the whole contract **only on a one-hop
+path**, where the step can reject nothing but a self-loop. A longer path would need real path tracking, so
+the floor is correct for this row and must not be copied to a deeper one.
+
+🔑 By item 2207's rule this is a genuine CLIFF: a `pipeline` shape at 7.83x sitting beside a `CLOSED`
+neighbour at 0.00x. **`union(out,in)` at 0.00x is a degree-sum closed form against a real two-direction
+walk — 288x faster than hand-rolled.**
+
+### ✅ AND THE SWEEP CLOSES IT: NOTHING RISES
+
+```text
+    shape                        5000    20000    80000   trend
+    compose/hop simplePath      6.65x    6.87x    3.51x   falls
+    compose/values groupCount   3.19x    1.85x    1.84x   falls
+    compose/union(out,in)       0.02x    0.00x    0.00x   falls
+```
+
+🔑🔑 **`simplePath` AMORTIZES, 6.65x → 3.51x** — item 2223's pattern again (the hand-rolled floor loses its
+cache advantage faster than the engine). So the gap shrinks exactly where it would matter.
+
+⚠️⚠️ **AND IT IS A DECLINED TARGET: item 1466 declined a measured 3.3x on `simplePath`** because
+`executor-edits-perturb` prices a new walk variant at up to 16% on unrelated rows. That is an owner
+decision, and the amortization here supports it rather than reopening it — **so this is recorded, not
+proposed.**
+
+**NET: 18 floored Gremlin shapes across four families, not one rising, and the single large ratio is both
+declined and shrinking.** The Gremlin surface is as thoroughly verified as the GQL one now.
+
+GATES. `bun run fmt` 0, `bun run check` 0. Instrument only; no engine change.
