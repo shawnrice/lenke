@@ -2830,13 +2830,54 @@ export class Graph {
    * true if the caller should skip its inline check; records the touched vertex
    * so {@link runDeferredChecks} revisits it at commit (a replay records nothing).
    */
+  /**
+   * Can ANY commit-time vertex check fire? (item 2181)
+   *
+   * 🔑 `runDeferredChecks` revisits every id in `txTouched` and asks exactly three questions —
+   * `missingRequired`, `typeViolation`, `uniqueConflict` — plus the validator registry. Each reads only
+   * the collections below, so when all seven are empty **there is nothing for the commit-time pass to
+   * find**, and recording the id was pure cost.
+   *
+   * ⚠️ ALL SEVEN ARE LOAD-BEARING and the list is exhaustive by construction, read off what those three
+   * predicates touch: `missingRequired` → required + typeNotNull; `typeViolation` → typeConstraints +
+   * recordConstraints; `uniqueConflict` → uniqueConstraints; plus cardinality (a vertex lands in
+   * `txTouched` from an EDGE write for exactly this check) and the validator registry. **Adding an
+   * eighth constraint kind without adding it here would skip its deferred check.**
+   *
+   * 🔑 Computed LIVE rather than memoized: a constraint created inside an open transaction would make a
+   * cached flag stale, and seven `size` reads on empty maps are cheaper than the `Set.add` this replaces.
+   */
+  private get hasDeferrableVertexChecks(): boolean {
+    return (
+      this.vertexRequiredConstraints.size > 0 ||
+      this.vertexTypeNotNull.size > 0 ||
+      this.vertexTypeConstraints.size > 0 ||
+      this.vertexRecordConstraints.size > 0 ||
+      this.vertexUniqueConstraints.size > 0 ||
+      this.vertexCardinalityConstraints.size > 0 ||
+      this.validatorRegistry.size > 0
+    );
+  }
+
   private deferConstraint = (vertex: Vertex): boolean => {
     if (this.applyingUndo) {
       return true;
     }
 
     if (this.txDepth > 0) {
-      this.txTouched.add(vertex.id);
+      /*
+       * ⚠️⚠️ **THE RECORD IS SKIPPED WHEN NO COMMIT-TIME CHECK COULD READ IT** (item 2181). A profile of
+       * `MATCH (a:Person) SET a.seen = 1` over 200,000 vertices put `deferConstraint` at **8.0%** and
+       * `runDeferredChecks` at **5.4%** on a graph with ZERO constraints — 13.4% spent recording ids so a
+       * commit-time pass could ask three questions that had no answers to find.
+       *
+       * 🔑 The return value is unchanged: inside a transaction the inline gate is ALWAYS skipped, because
+       * either the commit-time pass will do the work or there is no work. Only the bookkeeping is
+       * conditional.
+       */
+      if (this.hasDeferrableVertexChecks) {
+        this.txTouched.add(vertex.id);
+      }
 
       return true;
     }

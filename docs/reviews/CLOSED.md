@@ -109074,3 +109074,75 @@ larger prize but contradicts a standing CLOSED entry, whose heading is corrected
 so the next reader is not sent away by it.
 
 GATES. No production change. `bun run fmt` 0; `bun run check` 0 read unpiped.
+
+## Item 2181 — ✅✅ **SHIPPED: a transaction stops recording touched vertices when NO commit-time check can read them — `SET` over 200,000 rows goes 108 → 59 ms, 1.83x. This is item 2180's target two, and the first A/B of it was BOGUS**
+
+Item 2180 priced two write targets and corrected the `CLOSED.md` entry that had declared this ground
+closed. This takes the larger one.
+
+### 🔑 THE MECHANISM, FROM THE PROFILE
+
+A CPU profile of `MATCH (a:Person) SET a.seen = 1` over 200,000 vertices, on a graph with **ZERO
+constraints**:
+
+```text
+    (garbage collector)   24.3%
+    setProperty            8.0%   <- the actual write
+    deferConstraint        8.0%   <- recording ids for a pass with nothing to find
+    matchPattern           6.7%   (item 2180's target one, untouched here)
+    runDeferredChecks      5.4%   <- the pass itself
+    recordUndo             2.0%
+```
+
+🔑 Inside a transaction — which every GQL write is — `deferConstraint` did `txTouched.add(vertex.id)`
+unconditionally so `runDeferredChecks` could revisit each one at commit. **13.4% on bookkeeping for three
+questions that had no answers to find.**
+
+```text
+    four alternated arms, 40 reps, median of the last 15, one shape per process
+    row                 BEFORE                NEW
+    SET every row    107.67 / 111.23     58.85 / 60.57     1.83x
+    SET filtered       7.25 /   6.92      6.49 /  6.54     1.09x  (only 2,062 writes)
+    INSERT one node    0.02              0.02              flat
+    read count(*)      0.00              0.00              flat
+    read RETURN a.k    3.66 /   4.07      3.74 /  6.25     NOISE, in both directions
+```
+
+⚠️⚠️ **THE FIRST A/B READ 1.48x WITH THE READ CONTROL ALSO MOVING 1.46x**, which is the giveaway of a bogus
+comparison — reads never call `deferConstraint`. Alternating the arms four times showed the target
+reproducing (107/111 → 58/60) and the control swinging both ways, so **the real figure is 1.83x and the
+first run understated it.**
+
+### ⚠️ SOUNDNESS: SEVEN COLLECTIONS, ENUMERATED FROM WHAT THE COMMIT PASS READS
+
+`runDeferredChecks` asks exactly three questions plus the validator registry, and each reads only:
+`vertexRequiredConstraints`, `vertexTypeNotNull`, `vertexTypeConstraints`, `vertexRecordConstraints`,
+`vertexUniqueConstraints`, `vertexCardinalityConstraints`, `validatorRegistry`. 🔑 Computed **live, not
+memoized** — a constraint created inside an open transaction would make a cached flag stale, and a test
+pins that case.
+
+⚠️ `txTouched` was verified private to `Graph.ts`, written only by the mutators, cleared at transaction
+boundaries and **iterated only by `runDeferredChecks`** — the TS side has no CDC consumer (that is native's
+`lastWriteScope`).
+
+### 🔑 MUTATION: 7 of 9, AND THE FIRST ROUND EXPOSED A GUARD WITH ONLY 3 OF 7 TERMS PROVEN
+
+The first round caught 5 and left **four "drop one collection" survivors** — not structural, just
+untested. Tests were added for each kind (`'string NOT NULL'`, `'RECORD'`, `registerValidator`, and an
+EDGE-driven cardinality case), taking it to 7 of 9. The two that still survive are proven structural:
+
+- **`drop-notnull`** — `createTypeConstraint('P','t','string NOT NULL')` populates `vertexTypeConstraints`
+  as well, so notNull can never be the only non-empty collection. Redundant, kept as defence.
+- **`drop-cardinality`** — enumerated every `txTouched.add` site: there are **SEVEN**, and only the one in
+  `deferConstraint` is guarded. The cardinality paths (`cardinalityGateOnInsert`,
+  `cardinalityNoteOnRemove`) and `addVertex` / `addLabelToVertex` record unconditionally and are untouched.
+
+🔑 **FOLLOW-UP VISIBLE FROM THAT ENUMERATION:** `addVertex` and `addLabelToVertex` add unconditionally too,
+so a bulk `INSERT` still pays what `SET` no longer does. Same guard, different call sites.
+
+⚠️ One test first asserted `typeof threw === 'boolean'` — a tautology — on the case I had called "the one
+observable difference the skip introduces". Both arms were then measured and **agree** (each throws and
+rolls back), so the real behaviour is asserted instead. The difference I feared does not exist.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
+`bun run fuzz` all seven green; 12 new tests.
