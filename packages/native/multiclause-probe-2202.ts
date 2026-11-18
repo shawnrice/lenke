@@ -54,6 +54,25 @@ const doc = (() => {
 
 const SCAN = 'MATCH (a:Person) RETURN count(*) AS c';
 const HOP = 'MATCH (a:Person)-[:KNOWS]->(b) RETURN count(*) AS c';
+/*
+ * ⚠️⚠️ **A NESTED `EXISTS` MUST BE FLOORED BY THE SINGLE `EXISTS`, NOT BY A HOP — item 2204, and the SIXTH
+ * false nomination from a mismatched floor** (items 2168 x2, 2170, 2175, 2199). Against `HOP` the nested
+ * row read **+113.08 / 42.8x**, which sent a whole tick after it; against the single `EXISTS` the honest
+ * marginal is ~+102 ms, and the measured CEILING is only **2.3x**:
+ *
+ * ```text
+ *     engine: single EXISTS         12.27 ms
+ *     engine: NESTED EXISTS        114.32 ms
+ *     CEILING via set membership    50.01 ms   <- same answer (100000), same walks
+ * ```
+ *
+ * 🔑 And the two mechanisms a reader would reach for are both already in place: the nested form DOES reach
+ * item 2191's rung (verified with a throw probe), and it DOES exit early on the first qualifying `b` —
+ * 23.27 ms with the qualifying `b` inserted first against 47.03 ms inserted last, identical answers. The
+ * residue is per-pair binding machinery, and `binding-allocation` was built and refused twice (items 2023,
+ * 2024).
+ */
+const EXISTS1 = 'MATCH (a:Person) WHERE EXISTS { MATCH (a)-[:KNOWS]->(b) } RETURN count(*) AS c';
 
 /** Each row: a name, the query, and the FLOOR query its marginal is measured against. */
 const ROWS: ReadonlyArray<readonly [string, string, string]> = [
@@ -65,15 +84,11 @@ const ROWS: ReadonlyArray<readonly [string, string, string]> = [
     'MATCH (a:Person) OPTIONAL MATCH (a)-[:KNOWS]->(b) RETURN count(b) AS c',
     HOP,
   ],
-  [
-    'WHERE EXISTS { hop }',
-    'MATCH (a:Person) WHERE EXISTS { MATCH (a)-[:KNOWS]->(b) } RETURN count(*) AS c',
-    HOP,
-  ],
+  ['FLOOR exists1 EXISTS{hop}', EXISTS1, HOP],
   [
     'nested EXISTS in EXISTS',
     'MATCH (a:Person) WHERE EXISTS { MATCH (a)-[:KNOWS]->(b) WHERE EXISTS { MATCH (b)-[:KNOWS]->(c) } } RETURN count(*) AS c',
-    HOP,
+    EXISTS1,
   ],
   [
     'CALL (a) { hop }',

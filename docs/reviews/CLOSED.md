@@ -110352,3 +110352,55 @@ not defined``, so scope narrowing is enforced on the original clauses, not here.
 
 GATES. `bun run fmt` 0; `bun run check` 0; `bun run test -- --skip-nx-cache` 21/21 RC=0 (5,388 GQL tests,
 17 new); `bun run fuzz` all seven, 57 pass / 0 fail.
+
+## Item 2204 — ✅ **CLOSED, NOTHING BUILT: the nested `EXISTS`'s 42.8x was the SIXTH false nomination from a mismatched floor. Its real ceiling is 2.3x, and the three mechanisms a reader would reach for are ALL ALREADY IN PLACE**
+
+Item 2202 nominated `nested EXISTS in EXISTS` at +113.08 ms / 42.8x — the probe's largest remaining flag.
+⚠️ Three checks, in increasing cost, each of which could have stopped the build:
+
+### 1. IT ALREADY REACHES ITEM 2191'S RUNG (a throw probe)
+
+```text
+    single EXISTS            REACHES bareNodeCount
+    single NOT EXISTS        REACHES bareNodeCount
+    NESTED EXISTS in EXISTS  REACHES bareNodeCount
+```
+
+⚠️ The FIRST version of this probe used a regex that did not match, so it printed "DOES NOT reach" for all
+three — meaningless, and only the Python traceback revealed it. **A probe that cannot be shown to have been
+applied is not evidence** (`ambiguous-anchor-strings`); the second version asserted the file changed and
+counted the inserted marker.
+
+### 2. EARLY EXIT ALREADY WORKS (two fixtures, identical answers)
+
+The inner `EXISTS` should stop at the first qualifying `b`. It does — proved by moving WHERE the qualifying
+`b` sits in insertion order, with the answer pinned at 60000 both ways:
+
+```text
+    qualifying b inserted FIRST    23.27 ms
+    qualifying b inserted LAST     47.03 ms   <- 2.0x, so the walk DOES stop early
+```
+
+### 3. THE CEILING IS 2.3x, NOT 42.8x
+
+```text
+    engine: single EXISTS         12.27 ms
+    engine: NESTED EXISTS        114.32 ms
+    CEILING via set membership    50.01 ms   <- same answer (100000), same adjacency walks
+```
+
+🔑 The inner `EXISTS { (b)-[:KNOWS]->(c) }` is a set-membership test, so the ceiling precomputes nothing a
+real implementation could not — and it still costs 50 ms, because the 300,000-edge walk is irreducible for
+this shape. The 64 ms between 114 and 50 is per-pair binding machinery, and `binding-allocation` was built
+and refused TWICE (items 2023, 2024).
+
+⚠️⚠️ **THE FLOOR WAS THE BUG, AND THIS IS THE SIXTH TIME** (items 2168 twice, 2170, 2175, 2199). The nested
+row was floored by the plain HOP, but a nested `EXISTS` does strictly more work than a hop. Re-floored on
+the single `EXISTS`, the honest marginal is +104 against a 2.3x ceiling. **FIXED IN THE PROBE:** `EXISTS1`
+is now a declared floor (`floor:exists1`) and the nested row measures against it.
+
+🔑 **A flag answers "is there a TS-vs-native gap"; only a CEILING answers "is any of it reachable".** This
+row keeps its flag honestly — TS pays 104 ms where native pays 2.25 — while the reachable win is 2.3x.
+Recorded so the next reader prices it from here rather than from the ratio.
+
+GATES. `bun run fmt` 0, `bun run check` 0. Probe floor corrected; no engine change.
