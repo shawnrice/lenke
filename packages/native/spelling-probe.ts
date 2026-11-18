@@ -372,6 +372,65 @@ const GROUPS: [string, readonly string[]][] = [
     // grouping key, and the DISTINCT spelling gets written the same way. Item 187 routed
     // DISTINCT-via-LET to the walk and item 188 did the same for a `GROUP BY` with no
     // aggregate, which closed the group — 1.36 / 1.37 / 1.44ms, within 6%.
+    /*
+     * ⚠️⚠️⚠️ **THE GROUP THAT WOULD HAVE CAUGHT A 62x GAP, ADDED AT ITEM 2178 AFTER IT WAS FOUND BY
+     * HAND.** Every count rung gates on a STAR projection, so naming the variable instead of `*` fell
+     * off ALL of them onto the general matcher:
+     *
+     * ```text
+     *     MATCH (a:Person)-[:KNOWS]->{1,2}(b:Person) RETURN count(*)   8.61 ms    599998
+     *                                                RETURN count(b) 533.92 ms   599998   62x
+     *     two hops                                   count(*)/count(c) 0.20 / 17.08       85x
+     * ```
+     *
+     * 🔑 `count(x)` counts rows where `x` is non-null and `count(*)` counts rows; under a plain `MATCH`
+     * a pattern variable is always bound, so **these must answer identically** — and they did, which is
+     * exactly why no correctness test could find it. Item 2177 rewrote the named form to the star form.
+     *
+     * ⚠️ The OPTIONAL spelling is deliberately NOT here: under `OPTIONAL MATCH` the two genuinely differ
+     * (a null-padded row is counted by `count(*)` and not by `count(b)`), so it belongs in a correctness
+     * test — `count-of-bound-var.test.ts` has it — and not in an equivalence group.
+     */
+    'count(*) vs count(bound var): a var-length hop (item 2177)',
+    [
+      'MATCH (a:P)-[:E]->{1,2}(b:P) RETURN count(*) AS c',
+      'MATCH (a:P)-[:E]->{1,2}(b:P) RETURN count(b) AS c',
+      'MATCH (a:P)-[:E]->{1,2}(b:P) RETURN count(a) AS c',
+    ],
+  ],
+  [
+    'count(*) vs count(bound var): two hops and a plain scan (item 2177)',
+    [
+      'MATCH (a:P)-[:E]->(b:P)-[:E]->(d:P) RETURN count(*) AS c',
+      'MATCH (a:P)-[:E]->(b:P)-[:E]->(d:P) RETURN count(d) AS c',
+      'MATCH (a:P)-[:E]->(b:P)-[:E]->(d:P) RETURN count(b) AS c',
+    ],
+  ],
+  [
+    /*
+     * ⚠️⚠️ **THIS GROUP'S ARMS ALL READ ~97 ms HERE AND ~0.00 ms IN EVERY FIXTURE I BUILT BY HAND, AND I
+     * DID NOT FIND WHY** (item 2178). The RATIO is what this probe exists for and it converges (97.13 /
+     * 96.35 / 97.88), so the group does its job; the ABSOLUTE is the open question.
+     *
+     * 🔑 Ruled out, each by measurement, so nobody repeats them:
+     *   - **in-process pollution** from the 60+ groups before it — `SPELL_ONLY` on this group alone in a
+     *     fresh process still reads 97 ms;
+     *   - **mixed NODE labels** (`["P","Q","Univ"]` vs a bare `["P"]`) — 0.00 vs 0.01, no effect;
+     *   - **two-label EDGES** (`e % 11 === 0 ? ["E","F"] : ["E"]`, which could disqualify bucket-summing)
+     *     — 0.00 vs 0.02, no effect.
+     *
+     * ⚠️ What remains untested is this fixture's PROPERTY set (a `@date`, a nested `meta` map, `s`/`flag`)
+     * and its seek INDEX. A `count(*)` over a hop should read no property at all, which is what makes the
+     * 97 ms interesting rather than obviously explicable.
+     */
+    'count(*) vs count(bound var): one hop and an edge variable (item 2177)',
+    [
+      'MATCH (a:P)-[:E]->(b:P) RETURN count(*) AS c',
+      'MATCH (a:P)-[:E]->(b:P) RETURN count(b) AS c',
+      'MATCH (a:P)-[r:E]->(b:P) RETURN count(r) AS c',
+    ],
+  ],
+  [
     'the distinct values of one property',
     [
       'MATCH (n:P) RETURN DISTINCT n.k AS a',

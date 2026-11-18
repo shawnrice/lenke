@@ -108905,3 +108905,46 @@ before the re-run.
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21;
 `bun run fuzz` all seven green.
+
+## Item 2178 — 🔑 **THE SPELLING PROBE NOW GUARDS `count(*)` vs `count(<bound var>)` — the invariant item 2177 found by hand at 62x. Three groups, all converging. ⚠️ And an unexplained 97 ms in the probe's own fixture, with three causes ruled out**
+
+Item 2177's gap was invisible to every correctness test by construction (identical answers, 62x apart) and
+the probe had no group for it. It does now.
+
+```text
+    count(*) vs count(bound var): a var-length hop
+      12.88ms  MATCH (a:P)-[:E]->{1,2}(b:P) RETURN count(*) AS c
+      14.66ms  MATCH (a:P)-[:E]->{1,2}(b:P) RETURN count(b) AS c
+      14.78ms  MATCH (a:P)-[:E]->{1,2}(b:P) RETURN count(a) AS c
+    count(*) vs count(bound var): two hops and a plain scan
+      14.69 / 14.74 / 14.81ms                                      within 1%
+    count(*) vs count(bound var): one hop and an edge variable
+      97.13 / 96.35 / 97.88ms                                      within 2%
+```
+
+🔑 All three converge, so item 2177's rewrite holds under the probe and a regression would flag.
+
+⚠️ **The OPTIONAL spelling is deliberately NOT in a group**: under `OPTIONAL MATCH` the two genuinely
+differ, so that belongs in a correctness test (`count-of-bound-var.test.ts` has it) and would be a false
+flag here.
+
+### ⚠️⚠️ AN OPEN QUESTION I DID NOT SOLVE, WITH THREE CAUSES ELIMINATED
+
+The one-hop group reads **~97 ms per arm in this probe and ~0.00 ms in every fixture I built by hand** — a
+one-hop `count(*)` reading 8x a TWO-hop one. The ratio converges, so the group works; the absolute is
+unexplained. Ruled out by measurement:
+
+- **in-process pollution** from the 60+ groups ahead of it — `SPELL_ONLY` on this group alone in a fresh
+  process still reads 97 ms;
+- **mixed NODE labels** (`["P","Q","Univ"]` vs a bare `["P"]`) — 0.00 against 0.01, no effect. (This was my
+  first hypothesis, from `label-vacuity-gates-fast-paths`, and it was wrong.)
+- **two-label EDGES** (`e % 11 === 0 ? ["E","F"] : ["E"]`, which could disqualify the bucket-summing a
+  count rung does) — 0.00 against 0.02, no effect.
+
+🔑 Untested: this fixture's PROPERTY set (a `@date`, a nested `meta` map) and its seek INDEX. ⚠️ A
+`count(*)` over a hop should read no property at all, which is what makes 97 ms worth a later look rather
+than an obvious fixture cost. **Recorded in the probe beside the group so the three eliminations are not
+repeated.**
+
+GATES. Instrument only. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache`
+21/21.
