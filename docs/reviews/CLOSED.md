@@ -114375,7 +114375,7 @@ artifact, and the two closed-form routes really are ~0.
 GATES. `bun run fmt` 0, `bun run check` 0, guide suite **7 pass / 0 fail, 18 assertions**. One isolated
 probe; guide rule corrected; no production change.
 
-## Item 2287 — ⚠️⚠️ **BUILT, MEASURED AT 175x, AND REVERTED: folding a vacuous `WHERE` works perfectly and costs this repo a LOAD-BEARING TEST ORACLE. The caller-side fix is deleting two words, which the guide now says — so the intervention belongs there, not in the planner**
+## Item 2287 — ⚠️⚠️ **BUILT, MEASURED AT 175x, AND REVERTED** (⚠️ the price is larger than this entry knew — item 2309 adds 4.2-5.3x on PROJECTIONS; and item 2310 proves the trade-off is IRREDUCIBLE, so this is a final decline, not a deferral)**: folding a vacuous `WHERE` works perfectly and costs this repo a LOAD-BEARING TEST ORACLE. The caller-side fix is deleting two words, which the guide now says — so the intervention belongs there, not in the planner**
 
 Item 2286 measured `WHERE true` at 1.75 ms against 0.01 for the identical answer. 🔑 Items 2128/2129 priced
 the REAL-filter version at 20x and declined it on a mathematical blocker — the closed form is an O(V)
@@ -115604,3 +115604,43 @@ unaltered — but the entry should not be read as "worth 175x on one odd shape".
 GATES. `bun run fmt` 0, `bun run check` 0, guide suite **9 pass / 0 fail, 25 assertions** (the projection
 case asserts `toStrictEqual` on the ROWS, not just a count). One probe, one route reader; no production
 change.
+
+## Item 2310 — ✅✅ **ITEM 2287's TRADE-OFF IS IRREDUCIBLE, AND ONE MEASUREMENT PROVES IT: folding `true` out of an `AND` recovers NOTHING (14.0 against 13.6-16.4 ms, same 80,475 rows), so the fold's entire value lives in the BARE `WHERE true` — which is exactly the test oracle it would destroy. A final decline, not a deferral**
+
+Item 2309 raised the vacuous-fold's price (4.2-5.3x on projections, on top of the count's four orders of
+magnitude), which made item 2287's revert worth re-examining ONCE — not to re-litigate the decision, but to
+ask whether a NARROWER fold exists that spares the oracle.
+
+### 🔑 THE OBVIOUS NARROWER FORM, AND WHY IT IS WORTHLESS
+
+Fold `true` out of a conjunction and leave a bare `WHERE true` alone: **the oracle survives, and a query
+builder that appends conditions to a `WHERE true` placeholder is helped.** ✅ It is also exactly the
+real-world shape — `WHERE true AND cond1 AND cond2` is what a builder emits.
+
+```text
+    50,000 vertices, fan-out 5, same 80,475 rows      ms
+    WHERE a.age > 60                                  16.4 / 13.6
+    WHERE true AND a.age > 60                         14.0 / 14.0
+```
+
+⚠️ **Identical within noise.** The fast route is already lost to the REAL conjunct, so there is nothing for
+the narrower fold to recover; the surviving `true` costs nothing measurable to evaluate.
+
+### ✅ WHICH MAKES THE TRADE-OFF IRREDUCIBLE
+
+🔑 **The fold's value and the oracle's need are THE SAME SHAPE** — a predicate that is vacuous _in its
+entirety_. They cannot be separated by any narrowing, because the moment a real conjunct is present the
+route is gone and the fold buys nothing. ✅ So item 2287's revert is **final**: not "declined pending a
+cleverer design", but declined because no cleverer design exists.
+
+⚠️ **The caller-side fix remains total and costs two words** — don't write a vacuous predicate — and
+`docs/guides/query-cost.md` says so with both shapes' numbers. ✅ **A query builder with zero conditions
+should emit no `WHERE` at all**, which is the one correct conclusion for the shape that motivated the
+lever.
+
+🔑 **AND THIS IS WHY RE-EXAMINING ONCE WAS WORTH IT WHILE RE-LITIGATING WOULD NOT HAVE BEEN.** Item 2288
+declined to re-open 2287 on the same evidence; item 2309 produced NEW evidence (a second shape, a larger
+price), and the right response to new evidence is one bounded question — here answered by a single
+measurement that closes the family for good.
+
+GATES. `bun run fmt` 0, `bun run check` 0. Two arms added to an existing probe; no production change.
