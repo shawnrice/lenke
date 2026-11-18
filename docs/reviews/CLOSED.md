@@ -107915,3 +107915,62 @@ is below the bar for touching `executor-edits-perturb`'s blast radius.
 their value is exactly the native column that corrected me.
 
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; 5,283 tests green. No engine change.
+
+## Item 2161 — 🔑🔑 **A NATIVE-REFERENCE SCREEN, BUILT BECAUSE ITEM 2160's TS-INTERNAL ONE MISLED ME TWICE. It flags `EXISTS` at 31.0x and `NOT EXISTS` at 26.0x with both engines' ANSWERS VERIFIED EQUAL — and the mechanism has item 2146's precedent**
+
+Item 2160 screened unbenched features against a TS-internal reference and both flags evaporated against
+the cross-engine column. 🔑 Rather than remember that caveat, this item changes the instrument:
+`native-ref-screen-2161.ts` runs each shape through BOTH engines and reports the ratio that means
+something.
+
+```text
+    shape                      ts     native    ratio
+    EXISTS subquery         26.94       0.87    31.0x  <-- FLAG
+    NOT EXISTS subquery     22.57       0.87    26.0x  <-- FLAG
+    COALESCE                 9.81       0.90    10.9x  <-- FLAG
+    CASE expression          8.63       1.83     4.7x  <-- FLAG
+    ORDER BY DESC            5.44       1.04     5.2x  <-- FLAG
+    percentile_cont          9.45       0.43    22.1x      (native under the floor)
+    stddev_pop               5.93       0.12    48.5x      (native under the floor)
+    size() / DISTINCT 2-col               1.1-1.6x          modest
+    CONTAINS / STARTS WITH / ENDS WITH   E_SYNTAX in NATIVE
+```
+
+### ⚠️⚠️ THE SCREEN COMPARES ANSWERS, AND THAT WAS NOT OPTIONAL
+
+🔑 An earlier EXISTS measurement in this repo was declared **VOID** because the two arms ran the subquery
+over **20,000 candidates against 207** — the ratio compared different work. Its post-mortem records that
+the guard there _"catches EMPTY, not WRONG"_, because a `count(*)` query returns one row whatever the count
+is. ⚠️ My first version of this screen had the same hole; it now captures both answers and prints
+`VOID: answers differ` instead of a ratio. **No row voided — so these flags are trustworthy.**
+
+⚠️ It also carries a FLOOR ON BOTH SIDES (ts > 5 ms, native > 0.5), because item 2157's screen reported
+`71233x` against a `count(*)` counter rung. `percentile_cont` and `stddev_pop` have the largest ratios here
+and are deliberately NOT flagged: native answers them in 0.43 and 0.12 ms.
+
+### 🔑 THE PROFILE, AND A MECHANISM WITH PRECEDENT
+
+```text
+    exists (12.9 ms/rep)          notexists (12.4)
+    get adjFrom      32.0%        get adjFrom      29.5%
+    (anonymous)      18.7         (anonymous)      21.3
+    existsReachable   9.9         existsReachable  10.6
+    oneHopExists      5.4         oneHopExists      3.9
+```
+
+🔑 `oneHopExists` in the profile means `EXISTS` is **already on a dedicated rung**, not the general matcher
+— so this is not item 2151's shape. Its cost is `get adjFrom` per candidate, 200,000 box reads.
+
+🔑🔑 **THE LEVER: `count(*)` over `WHERE EXISTS { (a)-[:T]->() }` is `|{vertices with ≥1 such out-edge}|`,
+which is the SIZE OF `edgesFromByLabel` — the graph-level index that holds only vertices having an edge on
+that side.** And `NOT EXISTS` is `vertexCount` minus it. ⚠️ That is exactly item 2146's closed form (18.5 →
+0.0 ms) and item 2134's index walk (6.3x), so the mechanism is proven here rather than speculative.
+
+⚠️ **NOT BUILT THIS ITEM.** Per item 2158's lesson the next tick starts with a `throw` at the rung to
+confirm which code serves the shape, before any edit.
+
+🔑 Two conformance notes, the opposite direction from item 2160's: **`CONTAINS`, `STARTS WITH` and
+`ENDS WITH` raise `E_SYNTAX` in NATIVE** while TS answers them. Worth a cross-engine divergence entry if
+they are meant to be supported.
+
+GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; 5,283 tests green. No engine change.
