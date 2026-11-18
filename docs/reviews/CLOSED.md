@@ -115467,3 +115467,47 @@ retains a yielded binding — `distinctRows`, `rowKey`, the sort's key arrays, `
 enumeration is the work, not the mutation.
 
 GATES. `bun run fmt` 0, `bun run check` 0. No production change.
+
+## Item 2307 — ✅✅ **THE `withBinding` FRAME IS NOW FULLY MAPPED, AND EVERY CALL SITE IS ACCOUNTED FOR: one TAKEN (item 525, 2.9x), one PRICED AND DECLINED (item 632), one BLOCKED on retention. The enumeration item 2306 set as a precondition is done, and it closes the lever by CODE READING rather than measurement**
+
+Item 2306 left `withBinding` at 13.2% of the post-ship authz list with a precondition: _"anyone taking it
+must first enumerate what retains a yielded binding — and that enumeration is the work."_ 🔑 **Done, and the
+answer is that the frame has three distinct call sites with three different verdicts, none of them open.**
+
+### ✅ THE MAP
+
+```text
+    site                              shape                              verdict
+    core.ts (free endpoint)           EXISTS over a label-only endpoint  TAKEN at item 525
+    matching.ts edgePasses            per-EDGE predicate, quantified     DECLINED at item 632
+    walkSegments / matching.ts:1069   yielded per SEGMENT per match      BLOCKED (item 2024's class)
+```
+
+**1. ALREADY TAKEN.** `core.ts`'s own comment: _"`matchNode` would do the same label test and then ALLOCATE
+a binding (`withBinding`) for an endpoint variable nothing reads — once per edge, over the whole adjacency
+when the answer is no… Only the allocation goes."_ ✅ Measured at item 525: `EXISTS { (x)-[:E]->(b:Half) }`
+**277.6 ms against 95.0 (2.9x)**. The "don't allocate what nothing reads" idea is shipped.
+
+**2. PRICED AND DECLINED.** Item 632 found it while grepping item 631's pattern onto the edge side —
+_"`edgePasses` has the same per-edge `withBinding`"_ — and its verdict is **"INSTRUMENT FIXED; the lever
+priced and declined."** ⚠️ `edgePasses` is the one site where a scratch map WOULD be sound: it builds the
+binding, hands it to `satisfies`, and returns a BOOLEAN, so nothing escapes. **It was still declined on
+price**, and that is the entry to read before re-attempting it.
+
+**3. BLOCKED.** `walkSegments` and `matching.ts:1069`/`1231` YIELD the binding, so a consumer can retain it
+past the next iteration — item 2024's refusal class, where soundness _"needs every binding RETAINER
+enumerated across a lazy engine"_.
+
+### 🔑 WHAT THIS ESTABLISHES BEYOND THE LEVER
+
+⚠️ **`withBinding` is hot in at least five modules and every one of them has a comment about it**:
+`shortest-endpoint-count.ts` and `clauses.ts` record **34.4% self** on the BFS shape, `reachability.ts`
+15.4% / 13.6% / 5.5%, `hop2-projection.ts` 8.5%, and item 2306's authz profile 13.2%. ✅ **A frame being
+hot in six places does not make it six targets** — here it is one function with one taken site, one
+declined site and one blocked site, and the share differs only in how often each shape reaches which.
+
+🔑 **Eighth time this session prior art has decided a tick**, and the first where the deciding evidence was
+a comment in the code rather than an entry in this file. **The grep that found it was `grep -rn
+withBinding packages/gql/src/`** — every hit was a comment pricing it.
+
+GATES. `bun run fmt` 0, `bun run check` 0. No production change; no probe needed.
