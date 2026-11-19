@@ -119975,3 +119975,52 @@ lever to take.
 
 GATES. `bun run fmt` 0, `bun run check` 0. Item 2387's heading corrected. No probe, no production change —
 two reads, and no build attempted because the arithmetic failed first.
+
+## Item 2389 — ✅ **THE GREMLIN LABEL-CLIFF FAMILY IS CLOSED TOO: all four of item 2038's cliffs were diagnosed and taken (2037 at 1.66x, 2040 at 3.48x, 2042 at 2.17x).** ⚠️ And with that, the reachable surface is exhausted — four consecutive items have ended in already-closed work, and every remaining material lever needs a decision about new mutable state
+
+Most of this stretch went to GQL, so this item went to the Gremlin side the mandate names equally. Item
+2038 added nine labelled rows to a 58-row screen that had exactly one, and found four label cliffs — the
+largest `V().hasLabel(T).out(E).values(n)` at 3.10x / 3.56x / 3.61x on three fixtures.
+
+```text
+    item 2037   V().hasLabel(L).values(k)          1.66x, cliff 1.81x -> 1.09x
+    item 2040   a labelled one-hop projection      3.48x, 494.2 -> 142.2 ms, controls 0.96-1.01x
+    item 2042   a trailing terminal / .order()     2.17x, cliff -> 1.08x
+```
+
+✅ All four taken, each with a swept threshold rather than an assumed one. Nothing open there.
+
+### ⚠️ THE STATE OF THE SURFACE, stated plainly rather than probed again
+
+```text
+    2386   the label cliff I found was a REDISCOVERY of item 2086
+    2387   a proposal derived from the codebase's own solution
+    2388   REFUTED before any code — the complement walk is O(|V|), not O(outside)
+    2389   the Gremlin twin of the same family: all four already taken
+```
+
+🔑 **Four consecutive items ending in closed work is the signal, not a run of bad luck.** Across items
+2271-2389 the reachable surfaces have each been swept to a conclusion: both GQL instruments and both
+Gremlin ones triaged, three coverage holes found and closed with a mechanical bound on a fourth (2378), the
+mixed profile attributed to ~68% with no target in it (2380-2382), decode closed with "no unpriced
+remainder", the cold path closed at module import, and both halves of the O(1)-by-id requirement verified.
+
+### ⚠️ WHAT REMAINS, AND WHY IT IS NOT MINE TO TAKE
+
+Every remaining material lever is the same shape — **new mutable state with an invalidation rule**:
+
+```text
+    CSR type-scoped invalidation      6.1x on the interleaved pattern; sound for add/remove, UNSOUND
+                                      for addLabelToEdge (items 2349/2350)
+    an incremental CSR                O(V+E) -> O(1) per write, same invalidation question
+    a per-(label, type) degree sum    would beat the label cliff's O(members); invalidated by every
+                                      edge AND label write (item 2388)
+    deleting the slot memo            buys 1.00x today and costs a scratch push per edge (item 2369)
+```
+
+⚠️ The dense vertex ordinal is the precedent: **built, measured, and DISQUALIFIED** on deletes under churn
+(6.18x/11.34x, items 1369-1372/1397), after eight separate arrivals. Each lever above trades a read win for
+a write cost and a correctness surface, which is an owner's judgment about the engine's priorities rather
+than a measurement — and all four are priced, with their instruments named, ready for that decision.
+
+GATES. `bun run fmt` 0, `bun run check` 0. No probe, no production change — two reads.
