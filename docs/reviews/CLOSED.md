@@ -116768,7 +116768,7 @@ corrections of my own numbers before publication** — the arm-length rule (2326
 
 GATES. As listed.
 
-## Item 2332 — 🎯 **GREMLIN IS 5.12x FASTER THAN GQL ON A TWO-HOP PROJECTION (17.37 vs 88.88 ns a row) WHILE BEING 1.58x SLOWER ON ONE HOP — so this is depth-specific, not "GQL is slow". Gremlin's per-row cost is FLAT across depth and GQL's grows 7.4x. Two candidate mechanisms tested and REFUTED, and the third is already CLOSED**
+## Item 2332 — 🎯 **GREMLIN IS 5.12x FASTER THAN GQL ON A TWO-HOP PROJECTION** (⚠️ the mechanism was IDENTIFIED at item 2333: per-vertex SLOT MEMOIZATION, so Gremlin does 9x fewer property reads) (17.37 vs 88.88 ns a row) WHILE BEING 1.58x SLOWER ON ONE HOP — so this is depth-specific, not "GQL is slow". Gremlin's per-row cost is FLAT across depth and GQL's grows 7.4x. Two candidate mechanisms tested and REFUTED, and the third is already CLOSED**
 
 Items 2317-2323 took the Gremlin read surface from 6.6x its GQL twin to parity on a POINT LOOKUP. ✅ A hop
 is the other half of that surface and nothing had compared it per row.
@@ -116824,3 +116824,62 @@ at. The next attempt should differential-profile `grem2` against `gql2` directly
 found item 2319's `drain` in one step.
 
 GATES. `bun run fmt` 0, `bun run check` 0. One probe (eight arms); no production change.
+
+## Item 2333 — ✅✅ **ITEM 2332's MECHANISM IDENTIFIED: Gremlin's depth-2 rung PRE-MATERIALIZES each vertex's projected value into a slot array and MEMOIZES gate results, so a 180,000-row traversal does 20,000 property reads where GQL does 180,000. My own first hypothesis (a megamorphic `propOf`) was REFUTED by item 802's existing ladder before I built anything**
+
+Item 2332 found Gremlin 5.12x faster on a two-hop projection and said the mechanism was unidentified. ✅
+The differential profile localized it to one frame:
+
+```text
+    frame                          gql ns/row   grem ns/row
+    (anon) the two-hop rung           37.25        0
+    propOf                            15.06        0
+    get properties                    11.04        0.24      <- 46x
+    get to                             3.34        0
+    GREMLIN-ONLY: walk / pairSlotWalk / valueAt / passes      5.6 total
+```
+
+### ⚠️ MY FIRST MECHANISM WAS WRONG, AND CLOSED.md SAID SO BEFORE I BUILT IT
+
+I hypothesized that `propOf` is a SHARED helper called from everywhere, so its site is megamorphic, and
+that a per-plan monomorphic reader (what Gremlin's `pick` closure is) would recover it. ⚠️ **Item 802's
+ladder had already measured exactly that:**
+
+```text
+    CONSTANT-key property read + compare       9.6-11.1 ns/vertex
+    propOf: DYNAMIC keyed load + 2 ?. + ??     9.8-11.1    <- the SAME as the named load
+```
+
+✅ _"the property read is ~10 of the ~24 ns a vertex, not the dispatch around it, and a dynamic keyed load
+is free relative to a named one."_ **So a monomorphic reader gains nothing — the lever is refuted by prior
+measurement, which is the whole point of checking the list before pricing.**
+
+### ✅ AND READING GREMLIN's CODE GIVES THE REAL ANSWER
+
+```ts
+    const valueAt = (slot: number): unknown => vals[slot];
+    const passes = (slot, run) => { const seen = mask[slot];
+                                    if (seen !== 0) { return seen === 1; } … };
+```
+
+🔑🔑 **`vals` and `mask` are per-VERTEX arrays indexed by slot.** The projected value is read once per
+vertex and every path through it then reads `vals[slot]` — an array index, ~0.2 ns — and a gate's verdict is
+computed once per vertex and cached. ✅ **At 20,000 vertices and 180,000 rows that is 9x fewer property
+reads**, which at item 802's ~10 ns each accounts for the gap in magnitude: GQL's 26 ns a row of property
+work against Gremlin's 0.24.
+
+⚠️ `pairSlotWalk` is additionally **duplicated from `stackedWalk` on purpose** — item 1681: _"one function
+serving depths 2, 3, 4 and 5 has worse inline caches for each than a function serving one depth"_, and _"a
+factory, a wrapper or a parameterised shim would test nothing and fix nothing"_ because V8's inline caches
+live on the function, not the call site.
+
+### 🎯 SO THE TARGET IS A MEMOIZATION, NOT A READER — AND IT IS NOT A TICK
+
+GQL's `walkUnion` binds and emits per row, and the far set is discovered DURING the walk, so giving it a
+slot array is a structural change rather than a gate relaxation. ⚠️ **And memoization has drawn blood here
+before**: CLOSED.md records `memoizeIfUncorrelated` computing the SAME NUMBER for a rewritten subquery node,
+so "the memoized answer looked right AND the memoization looked like an 11.1x win". ✅ **NOT BUILT — it
+needs its own item**, with the per-vertex identity question (what makes two paths' far vertex "the same
+slot") answered before any code.
+
+GATES. `bun run fmt` 0, `bun run check` 0. No production change; one heading corrected.
