@@ -11,7 +11,7 @@
  * too — item 2317's `rows=0` trap, where a miss timed against a hit.
  */
 import { Graph } from '@lenke/core';
-import { E, toArray, traversal, values } from '@lenke/gremlin';
+import { E, V, count, toArray, traversal, values } from '@lenke/gremlin';
 
 const NODES = Number(process.env.NODES ?? 20_000);
 const FAN = Number(process.env.FAN ?? 3);
@@ -53,6 +53,25 @@ const EDGE_ID = `e${((NODES * FAN) / 2) | 0}`;
 
 /* ✅ Hoisted, per item 2325's 3.96x. */
 const pEdge = traversal(E(EDGE_ID), values('w'));
+/*
+ * ⚠️ THE MISSING TWIN (item 2372). Item 2351 recorded "Gremlin's `E(id)` is 3x its `V(id)` (620 ns against
+ * item 2317's 210)" — but this probe had NO `gremVertex` arm, so that 3x compared its own measurement
+ * against a DIFFERENT probe's, in a different fixture and process. That is the cross-fixture error item
+ * 2354 caught on the bench's `sum`/`max` pair, repeated one item earlier and left standing for twenty.
+ *
+ * `values('k')` because this fixture's VERTICES carry `k` and its EDGES carry `w` — projecting `'w'` from a
+ * vertex would yield nothing and time a MISS against a HIT, which is item 2317's own trap.
+ */
+const VERTEX_ID = `v${(NODES / 2) | 0}`;
+const pVertex = traversal(V(VERTEX_ID), values('k'));
+/*
+ * ⚠️ AND THE PAIR ABOVE HAS A CONFOUND, which these two remove: `pEdge` and `pVertex` differ in the SOURCE
+ * (`E` vs `V`) **and** in the PROJECTION (an edge property against a vertex property). A 3x between them
+ * cannot be attributed to the by-id lookup while both vary — `vary-only-the-projection`'s rule, applied to
+ * its own mirror image. `count()` reads no property at all, so these isolate the SOURCE.
+ */
+const pEdgeCount = traversal(E(EDGE_ID), count());
+const pVertexCount = traversal(V(VERTEX_ID), count());
 
 /*
  * ⚠️⚠️ **THE FIRST VERSION MEASURED 0.3 ns, WHICH IS ABOUT ONE CPU CYCLE — a `Map.get` cannot be that.**
@@ -85,7 +104,23 @@ const ARMS = {
   },
   /* 🔑 THE GREMLIN SURFACE: `E(id)`, the edge twin of item 2317's `V(id)`. */
   gremEdge: () => toArray(pEdge, graph).length,
+  /* 🔑 AND ITS VERTEX TWIN, MEASURED IN THIS PROCESS — the arm item 2351 borrowed instead of running. */
+  gremVertex: () => toArray(pVertex, graph).length,
+  /* 🔑 SOURCE ONLY, no property read — the pair that attributes the gap. */
+  gremEdgeCount: () => toArray(pEdgeCount, graph).length,
+  gremVertexCount: () => toArray(pVertexCount, graph).length,
 };
+
+/*
+ * ⚠️ BOTH GREMLIN ARMS MUST YIELD THE SAME ROW COUNT, or the comparison prices different amounts of work.
+ * One edge projecting one property against one vertex projecting one property: 1 and 1.
+ */
+const gremEdgeRows = toArray(pEdge, graph).length;
+const gremVertexRows = toArray(pVertex, graph).length;
+
+if (gremEdgeRows !== 1 || gremVertexRows !== 1) {
+  throw new Error(`unfair arms: E(id) yielded ${gremEdgeRows}, V(id) yielded ${gremVertexRows}`);
+}
 
 const arm = ARMS[ARM];
 

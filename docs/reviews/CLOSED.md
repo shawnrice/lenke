@@ -117787,8 +117787,12 @@ actually happened.
 
 - ⚠️ **An edge lookup costs 1.22x a vertex lookup** (7.3 against 6.0 ns). Both flat; the edge map is larger
   at the same NODES because `FAN = 3`, which is the likely reason rather than anything structural.
-- ⚠️ **Gremlin's `E(id)` is 3x its `V(id)`** (≈620 ns against item 2317's 210), and also flat. Not a
-  defect — both are O(1) — but the asymmetry is recorded in case an edge-seeded traversal ever matters.
+- ⚠️ ~~**Gremlin's `E(id)` is 3x its `V(id)`** (≈620 ns against item 2317's 210), and also flat. Not a
+  defect — both are O(1) — but the asymmetry is recorded in case an edge-seeded traversal ever matters.~~
+  **MIS-ATTRIBUTED, corrected at item 2372: the SOURCES are flat (`E(id)` 187.0 ns against `V(id)` 188.7
+  with `count()` held constant, 1.01x). The 3x is entirely the PROJECTION — `values()` adds 441.7 ns on an
+  edge against 17.9 on a vertex, 24.7x — and this comparison was cross-probe, against item 2317's number,
+  because this probe had no `gremVertex` arm.**
 
 GATES. `bun run fmt` 0, `bun run check` 0. One probe (three arms, three sizes); no production change.
 **Twelfth correction of my own instrument this stretch, and the one whose failure mode was hardest to see:
@@ -119009,3 +119013,68 @@ these seventeen rows would have been flagged.
 
 GATES. Tree restored to HEAD (`git diff` on `packages/gql` empty), rebuilt, `bun run fmt` 0, `bun run
 check` 0. Two full bench runs and two builds; no production change in this item.
+
+## Item 2372 — 🎯 **ITEM 2351's "`E(id)` is 3x `V(id)`" IS MIS-ATTRIBUTED: the SOURCES are flat (1.01x). The 3x is the PROJECTION — `values()` costs 441.7 ns on an edge against 17.9 on a vertex, 24.7x** — found by giving that probe the `gremVertex` arm it had been borrowing from another item. Plus decode closed by reading, and both halves of the O(1)-by-id requirement confirmed verified
+
+Three surfaces checked, two closed by reading, one new target isolated.
+
+### ✅ 1. THE DECODE FAMILY IS CLOSED — the largest absolute rows in the corpus, and already profiled
+
+`decode pg-text (5 edges/node)` is 3358 ms, 10x any query row, and I had only ever used the family as a
+control. Item 2156 profiled exactly that row: `indexEdgeLabel` 17.3%, `commitElementLabels` 14.4%,
+`getVertexById` 11.3%, GC 10.7% — _"the breakdown matches the recorded one almost exactly"_, with PROBES.md
+stating **"there is no unpriced remainder to find"**. `indexEdgeLabel` has six prior arrivals and its only
+lever is built-and-disqualified (the dense ordinal, items 1369-1372/1397). Not a target; ninth closure by
+reading this stretch.
+
+### ✅ 2. THE MANDATE's O(1)-BY-ID REQUIREMENT IS FULLY VERIFIED
+
+Vertex half: item 2281 (46 ns at 160k) and item 2317 (`V(id)` flat over 16x). Edge half: item 2351,
+`getEdgeById` 7.0-7.3 ns flat across a 16x sweep in |E|. Re-confirmed here at 5.7 ns (vertex) and 7.7 ns
+(edge) in a shared fixture. Nothing to do.
+
+### 🎯 3. AND THE ASYMMETRY ITEM 2351 RECORDED IS IN THE WRONG PLACE
+
+Item 2351 wrote _"Gremlin's `E(id)` is 3x its `V(id)` (≈620 ns against item 2317's 210)"_. ⚠️ **That compared
+its own measurement against a DIFFERENT probe's, in a different fixture and process**, because
+`edgebyid-2352.mjs` had `hostEdge`, `hostVertex` and `gremEdge` but **no `gremVertex` arm**. That is the
+cross-fixture error item 2354 caught on the bench's `sum`/`max` pair — committed one item earlier and left
+standing for twenty.
+
+✅ With the missing arm added, the 3x REPRODUCES in one fixture (628.7 against 206.6, 3.04x), so the number
+was right. ⚠️ **But both arms varied the SOURCE and the PROJECTION together**, so it was not attributable.
+Holding the projection constant with `count()`:
+
+```text
+    arm                             ns/call   rows
+    gremVertexCount  V(id).count()    188.7      1
+    gremEdgeCount    E(id).count()    187.0      1     1.01x — THE SOURCES ARE FLAT
+    gremVertex       V(id).values()   206.6      1     projection adds  17.9 ns
+    gremEdge         E(id).values()   628.7      1     projection adds 441.7 ns   ⬅ 24.7x
+    hostVertex       getVertexById      5.7
+    hostEdge         getEdgeById        7.7            1.35x
+```
+
+🔑 **So `E(id)` is not slow and the by-id requirement is untouched. Reading ONE property from an EDGE costs
+24.7x reading one from a VERTEX**, and that is a much broader target than an edge-seeded source: it is every
+`values()` over edges, not a niche entry point. Item 2351's note — _"in case an edge-seeded traversal ever
+matters"_ — pointed at the half that does not matter.
+
+⚠️ **MECHANISM NOT ESTABLISHED, deliberately.** Two candidates are visible and neither is measured:
+`Edge.ts` fetches properties lazily from a separate `graph.elementProperties` map into a `#box` where a
+vertex holds them directly, and item 2238 priced a per-edge property read at **~73 ns** — 6x less than the
+441.7 here, so a plain read does not explain it and a per-step term is implicated. ⚠️ A CPU profile of this
+arm is dominated by the 60,000-edge fixture build (`indexEdgeLabel`, `getVertexById`, GC) at only 724
+samples, so it needs a WINDOWED profile. Three mechanisms were guessed wrong in items 2360-2362; this one
+gets measured first.
+
+### Shipped to the instrument
+
+`edgebyid-2352.mjs` gains `gremVertex` (the arm that was being borrowed), `gremEdgeCount`/`gremVertexCount`
+(which attribute the gap), and a **fairness assertion** that throws unless both Gremlin arms yield exactly
+one row — because a projection comparison across element types is exactly where a MISS gets timed against a
+HIT (item 2317). `values('k')` on the vertex side, not `'w'`: this fixture's vertices carry `k` and its
+edges carry `w`.
+
+GATES. `bun run fmt` 0, `bun run check` 0. Item 2351's observation corrected. Probe only; no production
+change.
