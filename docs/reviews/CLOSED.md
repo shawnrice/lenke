@@ -116883,3 +116883,59 @@ needs its own item**, with the per-vertex identity question (what makes two path
 slot") answered before any code.
 
 GATES. `bun run fmt` 0, `bun run check` 0. No production change; one heading corrected.
+
+## Item 2334 — ✅✅ **THE PER-VERTEX IDENTITY QUESTION ANSWERS TO A DENSE VERTEX ORDINAL, which is BUILT AND DISQUALIFIED — the EIGHTH item to arrive there. ✅ But the prefill's own author flagged a losing shape that "no probe covers", and this item covers it: a filter admitting 9 rows of 180,000 costs 1.05x the unfiltered walk, so the feared waste is ~6%, bounded, not a regression**
+
+Item 2333 left the slot-memoization target needing its identity question answered first. ✅ Reading the
+prefill answers it in three lines:
+
+```ts
+const vals: unknown[] = Array.from({ length: n });
+for (let s = 0; s < n; s += 1) {
+  vals[s] = pick(vtx[s]);
+}
+```
+
+⚠️⚠️ **`n` is the slot count and `vtx` a dense array, so the slot IS a dense vertex ordinal** — and
+`no-dense-vertex-ordinal` records that as **BUILT AND DISQUALIFIED** (deletes 6.18x/11.34x under churn,
+items 1369-1372/1397), noting that **seven items had already arrived there. This is the eighth.** ✅ Gremlin
+escapes it because its `vtx[]` is built PER QUERY rather than maintained globally — a per-query dense array
+pays no churn cost — whereas GQL's `walkUnion` discovers the far set DURING the walk and has no frontier
+array to index.
+
+### ✅ AND THE GAP THE AUTHOR LEFT OPEN IN SHIPPED CODE, NOW CLOSED
+
+The prefill's doc comment states its own risk verbatim: _"its cost is O(slots) on a highly selective
+filter — picks for slots nothing reaches … **a filter admitting a handful out of 200,000 is the shape that
+would lose, and no probe covers it.**"_ 🔑 So this item is that probe — one vertex in 20,000 carries the
+filtered value.
+
+```text
+    arm            us      rows        what it shows
+    nofilter      3170   180,000       the walk with no predicate at all
+    unselective   4593   180,000       same walk, filter admits everything
+    selective     3314         9       same walk, filter admits ONE vertex
+```
+
+✅ **The selective arm costs 1.05x the unfiltered walk while emitting 1/20,000th of the rows.** ⚠️ That is
+not the prefill: walking 180,000 paths to TEST them is unavoidable for any engine, selective or not. **The
+prefill's pure waste is the 19,991 picks nothing reads ≈ 200 µs, about 6% of 3314** — bounded and well
+short of a regression.
+
+⚠️ **A yardstick trap worth naming, because it would have manufactured the opposite conclusion**:
+ns-per-EMITTED-ROW on the selective arm is 368,000 ns, which looks catastrophic and is pure arithmetic — 9
+rows divided into a fixed cost. ✅ The honest comparison is absolute µs against the same shape whose filter
+admits everything, which is what the table above does.
+
+✅ **So the author's flagged risk is real in principle and small in practice, and the comment can be read
+with that number beside it.** ⚠️ Note separately that `unselective` (4593) costs **1.45x** `nofilter`
+(3170): the predicate evaluation itself is the real per-row cost on that shape, not the prefill.
+
+### 🔶 WHICH LEAVES ITEM 2332's 5.12x WHERE IT SHOULD BE
+
+The mechanism is understood (item 2333), its downside is now bounded at ~6% (here), **and its blocker is a
+dense vertex ordinal that is already disqualified for GQL's maintained-graph case.** ✅ A per-query frontier
+materialization is the remaining avenue, and it is a structural change to how `walkUnion` discovers its far
+set — recorded with the eighth arrival so the ninth starts from here.
+
+GATES. `bun run fmt` 0, `bun run check` 0. One probe (three arms); no production change.
