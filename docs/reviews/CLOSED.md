@@ -117926,7 +117926,7 @@ both. **None of that is aggregate-specific.**
 
 GATES. `bun run fmt` 0, `bun run check` 0. One probe (five arms, one fixture); no production change.
 
-## Item 2355 — ✅✅ **THE BENCH's LARGEST RATIO IS CLOSED BY READING: `traverse 1-hop + filter` at 40.5x is STABLE (41.0 and 46.2 recorded previously), its user-facing half is already a guide rule I wrote this stretch, and its native half is off-mandate. ⚠️ Plus a caveat on my own item 2353: that bench's noise floor is >10% for rows under ~150 ms, and four of its five highest-ratio rows are smaller than that**
+## Item 2355 — ✅✅ **THE BENCH's LARGEST RATIO IS CLOSED BY READING: `traverse 1-hop + filter` at 40.5x is STABLE (41.0 and 46.2 recorded previously), its user-facing half is already a guide rule I wrote this stretch, and its native half is off-mandate. ⚠️ Plus a caveat on my own item 2353: that bench's noise floor is >10% for rows under ~150 ms, and four of its five highest-ratio rows are smaller than that **(and item 2371 refines the other half: the <1.5% figure is WITHIN one invocation; ACROSS invocations with a rebuild, large rows move up to 7%)****
 
 Item 2353 nominated this row — the sweep's largest TS/ffi ratio at 41.4 ms against 1.0. 🔑 A neighbouring
 row made it look sharper still: `traverse 1-hop project` runs at **0.10x** (TS _ten times faster_ than
@@ -118956,3 +118956,56 @@ committed artifacts is not mine to do unasked — they are flagged here instead.
 errors from `target/ab-2367/shortcuts.PRE.ts`, i.e. from the COPY, which is only possible because the
 directory is neither ignored nor excluded. Renaming to `.ts.bak` silenced the linter but left the files
 tracked — a fix to the symptom that hid the cause for three items.
+
+## Item 2371 — ✅ **REGRESSION PASS ON ITEM 2370: no regression. All 17 rows above 150 ms land within 0.93-1.06x, and the DECODE family — five rows my change cannot reach — spans the same band, so that spread IS the floor.** ⚠️ And it refines item 2355's noise figure: ACROSS bench invocations, large rows move up to **7%**, not 1.5%
+
+`specializeCmpPair` is the only production change since the last canonical `bun run bench`, and it lands in
+the executor, where `executor-edits-perturb` prices an edit at up to 16% on unrelated rows. The additive
+argument — a third arm wired LAST in a `??` chain, reached only when both others decline, evaluated once
+per COMPILE — says it has no per-row cost anywhere. ⚠️ That argument is not sufficient, because the
+perturbation that memory records is about V8 code layout and inline caches, not about logic. So this is a
+real A/B: revert `core.ts` to the pre-2370 copy, rebuild, run the whole bench, restore, rebuild.
+
+```text
+    row                                              PRE     LIVE   LIVE/PRE
+    decode pg-text (5 edges/node)                 3311.8   3358.0     1.01x
+    decode csv (5 edges/node)                     3211.9   3182.2     0.99x
+    decode graphson (5 edges/node)                2994.5   3015.1     1.01x
+    decode pg-json (5 edges/node)                 2788.1   2805.4     1.01x
+    decode ndjson (5 edges/node)                  2923.6   2727.8     0.93x
+    traverse 1-hop project + order by              787.2    792.4     1.01x
+    query: nodes(p) on a 1-hop path [2160]         678.7    654.3     0.96x
+    query: project the edge + materialize          604.7    594.6     0.98x
+    decode graphson                                404.3    390.7     0.97x
+    query: sum over a hop [item 2157]              283.1    299.1     1.06x
+    decode pg-text                                 302.8    283.3     0.94x
+    project var-length 1-3 hops + start filter     230.6    234.8     1.02x
+    decode csv                                     232.7    233.2     1.00x
+    decode pg-json                                 231.0    216.6     0.94x
+    decode ndjson (nodes)                          216.7    201.5     0.93x
+    query: project the edge [ts lazy]              192.8    179.4     0.93x
+    query: ANY SHORTEST count, no WHERE [2151]      180.2    174.6     0.97x
+```
+
+### 🔑 THE DECODE FAMILY IS THE CONTROL, AND IT IS WHAT MAKES THIS READABLE
+
+Five of these rows are codec decoding — `pg-text`, `csv`, `graphson`, `pg-json`, `ndjson` — which involve
+no predicate specialization of any kind, so `specializeCmpPair` cannot reach them even in principle. They
+move **0.93x to 1.01x**, the same band as every query row. ✅ So the spread is the instrument, not the
+change, and the verdict is clean: **nothing exceeds its own control.** 7 rows read faster, 9 slower, 1 flat
+— a split, not a shift.
+
+⚠️ Without that control the `sum over a hop` row at 1.06x and `decode ndjson (nodes)` at 0.93x would each
+look like a finding. Both are inside a band that a row which cannot be affected also occupies.
+
+### ⚠️ AND IT CORRECTS THE OTHER HALF OF ITEM 2355's NOISE FIGURE
+
+Item 2355 recorded _"a floor of >10% for rows under ~150 ms and <1.5% for the large ones"_. The 1.5% was
+measured between two POST passes **inside one bench invocation**. This item measures **across invocations
+with a rebuild between**, which is the comparison a regression pass actually makes — and there the large
+rows move up to **7%**. Both figures are right about different things, so item 2355's entry now says which
+is which. 🔑 **A regression pass must use the across-invocation figure**: at the 1.5% threshold, eleven of
+these seventeen rows would have been flagged.
+
+GATES. Tree restored to HEAD (`git diff` on `packages/gql` empty), rebuilt, `bun run fmt` 0, `bun run
+check` 0. Two full bench runs and two builds; no production change in this item.
