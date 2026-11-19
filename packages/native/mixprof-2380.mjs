@@ -22,13 +22,25 @@ import { E, V, count, hasLabel, toArray, traversal, values } from '@lenke/gremli
 const NODES = Number(process.env.NODES ?? 4_000);
 const FAN = Number(process.env.FAN ?? 3);
 const ROUNDS = Number(process.env.ROUNDS ?? 400);
+const LABELS = Number(process.env.LABELS ?? 2);
 
 const graph = new Graph();
 
 for (let i = 0; i < NODES; i += 1) {
   graph.addVertex({
     id: `v${i}`,
-    labels: [i % 7 === 0 ? 'Admin' : 'Person'],
+    /*
+     * LABELS=1 makes the label VACUOUS (every vertex is a `Person`), which is what engages the 43
+     * label-elision gates `label-vacuity-gates-fast-paths` records across 7 files. LABELS=2 (the default)
+     * gives one vertex in seven a different label, so those gates DECLINE.
+     *
+     * ⚠️ That knob is the realistic-mode question, and it is NOT what `MIXED=1` tests in the screens:
+     * the record says *"`MIXED=1` adds ONE ISOLATED off-label vertex, and a vertex with no edges cannot
+     * affect a hop count"*. One isolated vertex declines a gate with a minimal perturbation; a real
+     * people-graph has several labels each carrying substantial vertices AND edges, which declines the
+     * same gates while every bucket stays large. This measures that regime instead.
+     */
+    labels: [LABELS > 1 && i % 7 === 0 ? 'Admin' : 'Person'],
     properties: { name: `person${i}`, age: i % 90, score: i % 1000, tier: 'a' },
   });
 }

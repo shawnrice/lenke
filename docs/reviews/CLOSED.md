@@ -119647,3 +119647,47 @@ biggest unexplained share in the profile into four named rungs.
 
 GATES. `bun run fmt` 0, `bun run check` 0. Item 2381's claim corrected. No probe, no production change —
 one re-aggregation of a profile already taken.
+
+## Item 2383 — ✅ **THE LABEL-VACUITY MACHINERY IS WORTH 5.5% ON A REALISTIC MIXED WORKLOAD — 43 gates across 7 files, and a documented 6.2x on an ISOLATED read, calibrated to its workload-level value for the first time.** 6/6 runs separate cleanly
+
+`label-vacuity-gates-fast-paths` records that the GQL fast paths need a VACUOUS label, that 43 gates across
+7 files turn on it, and that one off-label vertex in 50,000 costs a read **6.2x, permanently** (item 1934).
+⚠️ It also records that every read screen is label-homogeneous, so **screen rows measure an arm a real
+schema cannot reach** — and a people-graph has several labels. What that machinery is worth on a MIX had
+never been measured.
+
+### ⚠️ AND `MIXED=1` IS NOT THAT MEASUREMENT
+
+The screens' realistic mode _"adds ONE ISOLATED off-label vertex, and a vertex with no edges cannot affect
+a hop count"_. 🔑 That declines a gate with the minimal possible perturbation, which is the right tool for
+asking "does the gate decline". It is not a realistic DISTRIBUTION: a real schema has several labels each
+carrying substantial vertices AND edges, so the gates decline while every bucket stays large.
+
+### ✅ MEASURED ON THE MIXED WORKLOAD, ALTERNATED
+
+`mixprof-2380.mjs` gains a `LABELS` knob: 1 makes every vertex a `Person` (vacuous, gates engage), 2 gives
+one vertex in seven a second label (gates decline). Eight shapes, 32,000 queries a run, alternated:
+
+```text
+    LABELS=1 (vacuous)      20.3   19.5   19.4   us/query    median 19.5
+    LABELS=2 (realistic)    20.5   20.6   20.6               median 20.6    1.056x
+```
+
+🔑 **All three vacuous readings fall below all three realistic ones — 6/6 consistent, no overlap** — so the
+~5.5% is real even though it is the same magnitude as the vacuous arm's own 1.05x spread. The realistic arm
+is notably the tighter of the two (20.5-20.6).
+
+### 🔑 WHAT THE NUMBER MEANS, AND ITS CAVEAT
+
+A 6.2x per-read effect is worth **5.5% to a workload**, because only some shapes use label elision and the
+mix's largest shares — the grouped-node count rung at 15.6% and `bareDegreeSum` at 14.1% (items
+2380/2382) — do not depend on it. ✅ That is a useful bound in both directions: the machinery is earning
+something real and measurable, and a realistic multi-label schema costs ~5.5%, **not** the 6.2x an
+isolated read suggests.
+
+⚠️ **The caveat is the mix itself.** These eight shapes run in equal proportion, which no application does.
+A workload that is 90% point lookups would weight label elision far more heavily, and one dominated by
+grouped counts would weight it near zero. **So 5.5% is this mix's figure, not a universal one** — and the
+knob is in the probe so a different mix can be priced without rebuilding anything.
+
+GATES. `bun run fmt` 0, `bun run check` 0. Probe knob only; no production change.
