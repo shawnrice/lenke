@@ -117703,3 +117703,50 @@ the probe (`rebuildprof-2348.mjs`, arms `steady`/`churn`, knobs `NODES`/`WTYPE`)
 whichever is attempted.
 
 GATES. `bun run fmt` 0, `bun run check` 0. Two probe knobs added; no production change.
+
+## Item 2350 — ✅✅ **THE TYPE-SCOPED LEVER IS SOUND FOR `addEdge`/`removeEdge` AND UNSOUND FOR ONE OPERATION, and the code already names it: `addLabelToEdge` RE-BUCKETS an existing edge between types, so a label write genuinely can change what a `:RARE` query selects. The cache holds ONE graph-wide `topologyVersion`, which is why every shape dies together**
+
+Item 2349 priced type-scoped invalidation at 6.1x on the interleaved pattern and left it to the owner. ⚠️
+**A number is not a licence**, so this item asks the prior question: is the change even sound? ✅
+`packages/gql/src/executor/csr-cache.ts` answers it.
+
+```ts
+const csrCache = new WeakMap<Graph, { tv: number; byShape: Map<string, CsrTables> }>();
+```
+
+🔑 **One `tv` for the whole graph, with per-shape entries inside it** — so a topology bump invalidates every
+`(direction, type set)` shape at once. ✅ That is exactly the behaviour item 2349 measured: a `:E` write
+costs a `:RARE` read.
+
+### ✅ AND THE CACHE ALREADY KEYS BY TYPE, SO THE STRUCTURE IS NOT THE OBSTACLE
+
+`buildCsr(graph, inward, types)` builds a DIRECTION- AND TYPE-FILTERED `nbr`, and `shapeKey` makes
+`(inward, types)` the key. ⚠️ **So scoping is not a new concept here — the shapes are already separate.
+What is graph-wide is only the VERSION that kills them.**
+
+### ⚠️⚠️ THE ONE OPERATION THAT MAKES NAIVE SCOPING A WRONG ANSWER
+
+The module's own comment states it: `topologyVersion` _"bumps on vertex adds and removes, edge adds and
+removes, **AND edge-LABEL writes** — the last because the adjacency boxes are keyed by edge type, so
+`addLabelToEdge` re-buckets what `types` selects without touching `insertEdge`"_.
+
+🔑 **A label write MOVES an existing edge between type buckets**, so `addLabelToEdge(e, 'RARE')` changes
+what a `:RARE` query selects even though no edge was added. ✅ **An `addEdge` carrying `['E']` cannot** — it
+can only grow the `E` bucket. ⚠️ So the sound design is: **scope by the written type for add/remove, and
+keep the global bump for label writes.** That is tractable, and it is the shape the next attempt should
+take rather than a blanket per-type version.
+
+### ⚠️ A SECOND CONSTRAINT THE AUTHOR CHOSE DELIBERATELY, WORTH NOT UNDOING BY ACCIDENT
+
+`types` is **not sorted** into the key, on purpose: _"`edgesOfTypes` iterates `types` IN ORDER, so the two
+orders produce `nbr` arrays that differ in position … f64 sums in a different order are not required to
+agree bit for bit. Byte-identity is a hard invariant here, so the conservative key is the one that
+ships."_ ✅ **Any scoping work inherits that**: a per-type version must not become a reason to merge shapes
+that differ only in type ORDER.
+
+🔶 **STILL NOT BUILT, and now for a better reason than caution**: the design is known, the one unsound
+operation is identified, and the byte-identity constraint is written down. ✅ **That is what the owner needs
+to decide with — a located cost (6.1x), a sound design, and the exception named** — rather than a
+measurement and a hunch.
+
+GATES. `bun run fmt` 0, `bun run check` 0. No probe, no production change — one soundness reading.
