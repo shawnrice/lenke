@@ -118536,3 +118536,72 @@ Nothing in `bench:usage`'s indexed column. The unindexed column is the object-vs
 a conjunct pair that includes `cmpProps` (an ordering comparison), which `PAIRABLE` excludes.
 
 GATES. `bun run fmt` 0, `bun run check` 0. No probe, no production change — four searches and a table.
+
+## Item 2365 — FIXED AN INSTRUMENT AND IT IMMEDIATELY FOUND A 3.4x: `bench:gate` printed min-of-3 at a fixture where identical runs disagree 2.1-2.5x, so it could resolve nothing under ~3x. With a median estimator, a spread column and a `GATE_N` knob, two independent runs now agree — and TS pays **3.4x for a gate at the LAST chain position** where native pays 1.2x, its CHEAPEST
+
+Item 2364's lesson is to search for prior sweeps of an INSTRUMENT. Applied here it found the opposite of a
+sweep: `bench:chain` and `bench:gate` have **one mention each** in this file, both from the items that
+built them. `bench:gemlin` has 78. So two purpose-built instruments had never been swept.
+
+`bench:gate` is the valuable one — its header calls the three-spellings table "what keeps an inline
+constraint, a clause `WHERE` and a per-position LABEL honest against each other, in both engines. A
+spelling that costs more than its twins is the bug class this repo has found four times (item 125)."
+
+### ⚠️ FIRST: THE INSTRUMENT COULD NOT RESOLVE ITS OWN QUESTION, AND IT NEARLY PUBLISHED TWO PHANTOMS
+
+Two runs of the unmodified bench, same build:
+
+```text
+    row                   run 1        run 2
+    (none) free             0.9          1.2
+    position 3              1.1          2.7      2.5x swing
+    position 4 (last)       3.0          1.4      2.1x swing
+    inline / clause     1.0 / 1.5    1.4 / 1.4    the "1.5x spelling gap" is GONE
+```
+
+🔑 From run 1 alone I had a 3.4x position regression and a 1.5x inline-vs-clause spelling gap, with native
+flat in both. **Both were artifacts of min-of-3 on single-digit-millisecond rows.**
+
+### The fix, and why each part
+
+- **`GATE_N` / `GATE_DEG` / `GATE_REPS` knobs** — the file had ZERO `process.env` reads, so the fixture
+  could not be scaled without editing it.
+- **Median of the post-warm-up reps, not the min.** `ts-spelling-probe` records the general scalar path
+  plateauing high and emitting a RARE fast rep, so `min` reports the outlier while a specialized closure is
+  flat — the two arms get estimated differently.
+- **A printed spread column.** A row whose own reps disagree is now visible as one, which is what a single
+  figure cannot show.
+
+⚠️ **AND A WITHIN-PROCESS ESTIMATOR IS NOT ENOUGH, which the fixed bench then demonstrated**: at the
+default fixture `position 4` read 2.7 ms with a **1.0x** spread in one process and 1.4 ms with a 1.2x
+spread in the next. Tight within a run, different between runs — a per-PROCESS mode, not per-rep noise. So
+a tight spread does NOT mean a reproducible number, and the cure is a bigger fixture (or repeated
+processes), not a better estimator.
+
+### ✅ AT `GATE_N=100000` IT RESOLVES, AND THE FINDING IS REPRODUCIBLE
+
+```text
+    constrained at      ts run 1        ts run 2       native
+    (none)                  4.4             4.5          2.6
+    position 0              8.2  1.9x       8.1  1.8x    1.7x
+    position 1              4.0  0.9x       3.9  0.9x    1.7x
+    position 2              4.5  1.0x       4.0  0.9x    1.8x
+    position 3              4.1  0.9x       4.1  0.9x    1.7x
+    position 4 (last)      15.2  3.5x      14.9  3.3x    1.2x   ⬅
+```
+
+🔑 **TS pays 3.4x for a gate at the LAST position and nothing at interior positions; native pays 1.2x
+there, the CHEAPEST entry in its column.** A constraint on the final endpoint should be the cheapest
+possible gate — nothing is expanded after it — so the two engines disagree about which shape is easy. That
+is the "an ordering that could not be right" signal, which is how items 1976-1979 reached a 160x win rather
+than a ratio.
+
+⚠️ **NOT necessarily a regression against item 303's documented "1.2-1.7x".** That range was measured on
+this same unresolvable fixture with min-of-3, so it is not a trustworthy baseline — the honest statement is
+that this is a number which was never measurable before, not one that moved.
+
+NOT YET DIAGNOSED. Next step is why a last-position gate declines what interior positions keep, with
+`position 1-3` as the controls that stay flat and native as the oracle for the expected ordering.
+
+GATES. `bun run fmt` 0, `bun run check` 0 (one `unicorn(no-useless-spread)` on the median's slice, fixed).
+Instrument change only; no production change.

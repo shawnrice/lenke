@@ -23,9 +23,26 @@ import { query as tsQuery } from '@lenke/gql';
 import { nativeBackend } from './src/conformance-harness.js';
 import { graphFromNdjson } from './src/graph.js';
 
-const NODES = 20_000;
-const DEG = 3;
-const REPS = 3;
+const NODES = Number(process.env.GATE_N ?? 20_000);
+const DEG = Number(process.env.GATE_DEG ?? 3);
+/*
+ * NINE reps, not three, and a MEDIAN of the post-warmup ones rather than a min.
+ *
+ * ⚠️ At this bench's default fixture its rows are 0.7-3.0 ms and two runs of the SAME build disagree by
+ * 2.1-2.5x: item 2365 measured `position 3` at 1.1 then 2.7, `position 4` at 3.0 then 1.4, and the
+ * three-spellings table at inline 1.0 / clause 1.5 in one run and 1.4 / 1.4 in the next. **So the single
+ * min-of-3 figure this bench used to print could not resolve anything under ~2.5x**, and a reader (me)
+ * nearly published a 1.5x spelling gap and a 3.4x position regression from one run of it.
+ *
+ * `min` is also the wrong estimator for the TS path specifically — `ts-spelling-probe` records the general
+ * scalar path plateauing high and emitting a RARE fast rep, so `min` reports the outlier while a
+ * specialized closure is flat. Median after dropping warm-up is what that probe settled on.
+ *
+ * The series is printed for the same reason: a spread is visible where a single number is not.
+ */
+const REPS = Number(process.env.GATE_REPS ?? 9);
+/** Reps dropped before the median — the JIT is visibly still tiering up across the first few. */
+const WARMUP = Math.min(3, REPS - 1);
 
 const lines: string[] = [];
 
@@ -90,26 +107,47 @@ const chain = (at: number): string => {
   return `${q} RETURN count(*) AS c`;
 };
 
-const timed = (run: () => number): { ms: number; answer: number } => {
-  let best = Infinity;
+const timed = (run: () => number): { ms: number; answer: number; series: number[] } => {
+  const series: number[] = [];
   let answer = -1;
 
   for (let r = 0; r < REPS; r++) {
     const t0 = performance.now();
     const a = run();
 
-    best = Math.min(best, performance.now() - t0);
+    series.push(performance.now() - t0);
     answer = a;
   }
 
-  return { ms: best, answer };
+  const kept = series.slice(WARMUP).sort((a, b) => a - b);
+  const ms = kept[Math.floor(kept.length / 2)] ?? series[0] ?? 0;
+
+  return { ms, answer, series };
+};
+
+/** The per-rep spread, so an unresolvable row is visible as one. */
+const spread = (series: number[]): string => {
+  const kept = series.slice(WARMUP);
+  const lo = Math.min(...kept);
+  const hi = Math.max(...kept);
+
+  return `${(hi / Math.max(lo, 1e-9)).toFixed(1)}x`.padStart(8);
 };
 
 /** How many times the gated chain costs what the unconstrained one does. */
 const ratio = (ms: number, free: number): string => `${(ms / free).toFixed(1)}x`.padStart(11);
 
-console.log(`${NODES} vertices / ${NODES * DEG} edges, 5 hops, min of ${REPS}`);
-console.log('constrained at      ts ms    vs free      native ms    vs free      answer   agree');
+console.log(
+  `${NODES} vertices / ${NODES * DEG} edges, 5 hops, median of ${REPS - WARMUP} after ${WARMUP} warm-up` +
+    ` (knobs: GATE_N, GATE_DEG, GATE_REPS)`,
+);
+console.log(
+  '  NOTE: at the default fixture these rows are single-digit ms and spread 2.1-2.5x between identical' +
+    ' runs (item 2365). Read the spread column before believing any ratio; raise GATE_N to resolve one.',
+);
+console.log(
+  'constrained at      ts ms    vs free  ts spread      native ms    vs free      answer   agree',
+);
 
 const freeTs = timed(() => ([...tsQuery(tsGraph, chain(-1))] as { c: number }[])[0]?.c ?? -1);
 const freeNat = timed(() => {
@@ -136,7 +174,7 @@ for (let at = 0; at < 5; at++) {
   const label = at === 4 ? 'position 4 (last)' : `position ${at}`;
 
   console.log(
-    `${label.padEnd(20)}${ts.ms.toFixed(1).padStart(7)}${ratio(ts.ms, freeTs.ms)}` +
+    `${label.padEnd(20)}${ts.ms.toFixed(1).padStart(7)}${ratio(ts.ms, freeTs.ms)}${spread(ts.series)}` +
       `${nt.ms.toFixed(1).padStart(14)}${ratio(nt.ms, freeNat.ms)}` +
       `${String(ts.answer).padStart(12)}   ${ts.answer === nt.answer ? 'yes' : `NO (${nt.answer})`}`,
   );
@@ -147,7 +185,9 @@ for (let at = 0; at < 5; at++) {
 // optimizer put the `Filter`, and an inline `{k: 1}` is pushed down to the hop that binds the node
 // while a clause `WHERE` is not.
 console.log('');
-console.log('one position, three spellings      ts ms      native ms      answer   agree');
+console.log(
+  'one position, three spellings      ts ms  ts spread      native ms      answer   agree',
+);
 
 const spellings: [string, string][] = [
   [
@@ -177,7 +217,7 @@ for (const [label, q] of spellings) {
   });
 
   console.log(
-    `${label.padEnd(30)}${ts.ms.toFixed(1).padStart(7)}${nt.ms.toFixed(1).padStart(15)}` +
+    `${label.padEnd(30)}${ts.ms.toFixed(1).padStart(7)}${spread(ts.series)}${nt.ms.toFixed(1).padStart(15)}` +
       `${String(ts.answer).padStart(12)}   ${ts.answer === nt.answer ? 'yes' : `NO (${nt.answer})`}`,
   );
 }
