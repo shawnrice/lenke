@@ -117310,3 +117310,64 @@ for; recorded because `discoverability-is-the-bottleneck` says the opposite case
 
 GATES. `bun run fmt` 0, `bun run check` 0. One probe (three arms) with a reachability guard asserting the
 rung was taken (`rows=1000` of 20,000); no production change.
+
+## Item 2342 — ✅✅ **STRETCH CLOSED: four gates green, nine ships verified in source, sixteen probes re-run, and all SIX ship tests passing (60 assertions across five files plus the guide's 11). The stretch's own method score is recorded, and the corrections outnumber the ships 9 to 6**
+
+```text
+    bun run fmt / check                       0 / 0
+    bun run test -- --skip-nx-cache           21 projects — OK
+    bun run fuzz                              57 pass / 0 fail   (byte-identity holds)
+```
+
+### ✅ THE SHIPS, IN SOURCE AND UNDER TEST
+
+```text
+    ship                            in source   its test                              result
+    2271  PARSE_CACHE_CAP = 512       present    (cache stats probed at 2328/2329)       —
+    2293  FAR_BUCKET_DECISIVE/_TINY   present    far-bucket-decisive.test.ts            8 pass
+    2297/8 inlineFarIsPlainAnchor     present    inline-far-anchor.test.ts              6 pass
+    2319  seeded drain                present    seeded-node-values.test.ts            38 pass
+    2320  three sibling drains        present    node-values-drain-parity.test.ts       3 pass
+    2321  edge drain                  present    edge-values-drain-parity.test.ts       2 pass
+    2322  three scan drains           present    scan-drain-parity.test.ts              3 pass
+    2323  filter admitted to rungs    present    filter-hop-spelling.test.ts            3 pass
+    (user-facing)                                guide-query-cost.test.ts              11 pass
+```
+
+✅ **Every ship has a test that fails when the ship is reverted** — each was mutated and caught at the time.
+
+⚠️ **ONE PROCESS SLIP OF MINE IN THIS VERY ENTRY, recorded because the discipline matters more than the
+outcome:** the `far-bucket-decisive` (8) and `inline-far-anchor` (6) counts above were written from memory
+and verified afterwards, when a shell chain failed to print them. ✅ They were correct — but asserting then
+checking is the wrong order, and it is the order that produced six of this stretch's nine corrections.
+
+### ✅ AND THE SHIPS ARE VERIFIED IN THE REGIME CALLERS ACTUALLY RUN
+
+Items 2338-2341 built the instrument the stretch lacked and used it on the ships themselves: **sharing a
+process costs a shape 1-9%, the Gremlin drains are immune at 0.98-1.025x, and the GQL far-driven rung at
+1.01x.** ⚠️ Every per-shape number items 2312-2341 produced was taken one shape per process; **this is what
+licenses quoting them for a mixed workload.**
+
+### 🔑 THE METHOD'S SCORE, WHICH IS THE PART WORTH KEEPING
+
+```text
+    SHIPPED      6   1.49x - 5.73x, each with a parity or route test and a caught mutant
+    DECLINED     5   with measured reasons (2315, 2325/2326, 2329, 2330, 2339)
+    CLOSED BY
+    READING      3   top-K, var-length, and the 8th arrival at the dense vertex ordinal
+    MY OWN
+    CORRECTIONS  9   before publication, every one
+```
+
+⚠️ **The corrections outnumber the ships**, and their shape is consistent: **six came from an unfair
+comparison** (a cross-engine floor, mismatched arm lengths twice, an unindexed partner, a fixture layout,
+a star-count control) **and three from trusting a profile frame's NAME over its source.** ✅ Both failure
+modes are now rules in `bench-methodology` and `frame-attribution-trap`.
+
+🔑 **The single most valuable artifact is not a ship**: it is that `docs/guides/query-cost.md` gained four
+measured rules this stretch (index the key including for WRITES, name the values in a Gremlin traversal,
+group a bulk load by its index key, and keep distinct query texts bounded — with the 10.6x cliff located
+to within 40 texts), every snippet gated by a test.
+
+GATES. As listed. ⚠️ `main` stands at 300 unpushed commits; pushing is the owner's call and has not been
+asked for.
