@@ -146,8 +146,39 @@ console.log(`  rows: ${rows.join(' ')}`);
 
 const t0 = performance.now();
 
+/*
+ * THE SHAPE WEIGHTING, which item 2383 named as its own caveat (item 2384).
+ *
+ * ⚠️ Item 2383 measured label vacuity at 5.5% over these eight shapes in EQUAL proportion, which no
+ * application does, and said so. Inventing a "realistic" weighting would be worse than none, so this
+ * brackets it with two defensible EXTREMES instead and reports a range:
+ *
+ *   equal     — the eight shapes once each (item 2383's figure)
+ *   point     — 90% indexed point lookups, the regime where label elision matters MOST
+ *   analytic  — 90% grouped counts and hop counts, which do not use label elision at all
+ *
+ * The weights are a repeat count per round, so no shape is ever dropped: a zero-weight shape would stop
+ * its dispatch site being polymorphic and change the measurement for a reason unrelated to weighting.
+ */
+const WEIGHT = process.env.WEIGHT ?? 'equal';
+const PLAN = SHAPES.flatMap(([name, fn]) => {
+  let reps = 1;
+
+  if (WEIGHT === 'point' && name.includes('point')) {
+    reps = 64;
+  }
+
+  if (WEIGHT === 'analytic' && (name.includes('grouped') || name.includes('hop count'))) {
+    reps = 32;
+  }
+
+  return Array.from({ length: reps }, () => fn);
+});
+
+console.log(`  weighting=${WEIGHT}: ${PLAN.length} queries a round`);
+
 for (let r = 0; r < ROUNDS; r += 1) {
-  for (const [, fn] of SHAPES) {
+  for (const fn of PLAN) {
     fn();
   }
 }
@@ -155,5 +186,5 @@ for (let r = 0; r < ROUNDS; r += 1) {
 const dt = performance.now() - t0;
 
 console.log(
-  `  ${dt.toFixed(0)} ms for ${ROUNDS * SHAPES.length} queries = ${((dt * 1000) / (ROUNDS * SHAPES.length)).toFixed(1)} us/query`,
+  `  ${dt.toFixed(0)} ms for ${ROUNDS * PLAN.length} queries = ${((dt * 1000) / (ROUNDS * PLAN.length)).toFixed(2)} us/query`,
 );

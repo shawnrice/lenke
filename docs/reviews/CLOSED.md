@@ -119679,9 +119679,12 @@ is notably the tighter of the two (20.5-20.6).
 
 ### 🔑 WHAT THE NUMBER MEANS, AND ITS CAVEAT
 
-A 6.2x per-read effect is worth **5.5% to a workload**, because only some shapes use label elision and the
+~~A 6.2x per-read effect is worth **5.5% to a workload**, because only some shapes use label elision and the
 mix's largest shares — the grouped-node count rung at 15.6% and `bareDegreeSum` at 14.1% (items
-2380/2382) — do not depend on it. ✅ That is a useful bound in both directions: the machinery is earning
+2380/2382) — do not depend on it.~~ ⚠️ **THE REASON IS REFUTED AT ITEM 2384: those analytic shapes depend on
+label elision MORE than anything else — an analytic-weighted mix measures 1.26x, against 1.05x when point
+lookups dominate, because an INDEXED point lookup seeks and never walks the label bucket at all.** The
+5.5% figure for the equal mix stands; the explanation did not. ✅ That is a useful bound in both directions: the machinery is earning
 something real and measurable, and a realistic multi-label schema costs ~5.5%, **not** the 6.2x an
 isolated read suggests.
 
@@ -119691,3 +119694,49 @@ grouped counts would weight it near zero. **So 5.5% is this mix's figure, not a 
 knob is in the probe so a different mix can be priced without rebuilding anything.
 
 GATES. `bun run fmt` 0, `bun run check` 0. Probe knob only; no production change.
+
+## Item 2384 — ⚠️⚠️ **MY ITEM 2383 EXPLANATION WAS BACKWARDS: label vacuity is worth 1.26x on an ANALYTIC-weighted mix and only ~1.05x when point lookups dominate — because an INDEXED POINT LOOKUP SEEKS and never walks the label bucket.** The range matters for this repo's domain, where the analytic end is the relevant one
+
+Item 2383 priced label vacuity at 5.5% over eight shapes in equal proportion and named the weighting as its
+own caveat. Rather than invent a "realistic" distribution, this brackets it with two extremes — 90% indexed
+point lookups, and 90% grouped/hop counts.
+
+```text
+    weighting   LABELS=1 (vacuous)      LABELS=2 (realistic)     ratio    separation
+    point        3.46  3.15  3.18        3.51  3.30  3.34        1.05x    OVERLAPS (3.46 > 3.34)
+    analytic    29.44 29.49 30.88       37.27 36.87 37.04        1.26x    CLEAN, 3/3 vs 3/3
+    equal (2383)       19.5                     20.6             1.056x   CLEAN, 3/3 vs 3/3
+```
+
+### ⚠️ I PREDICTED THE POINT MIX WOULD SHOW THE LARGEST EFFECT. IT SHOWS THE SMALLEST
+
+🔑 **An indexed point lookup SEEKS — it never walks the label bucket, so label vacuity is irrelevant to
+it.** A grouped count or a hop count WALKS that bucket, and the elision gates live exactly there. So the
+shapes I named at item 2383 as the reason the effect was small are in fact the only ones that produce it.
+
+⚠️ **Item 2383's sentence is therefore refuted and struck**: _"the mix's largest shares — the grouped-node
+count rung at 15.6% and `bareDegreeSum` at 14.1% — do not depend on it"_. They depend on it most. The 5.5%
+measured for the equal mix was right; my account of WHY was backwards, and the test that would have caught
+it is the one run here — vary the weighting and see which way the effect moves.
+
+### ✅ AND THE POINT ARM'S 1.05x IS NOT CLEANLY SEPARATED, which is worth stating
+
+In the analytic arm every vacuous reading (max 30.88) falls below every realistic one (min 36.87). In the
+point arm `3.46` exceeds two of the three realistic readings, so **that 1.05x is within its own noise and
+should be read as "small, possibly nothing"** rather than as a measured 5%. ✅ The analytic 1.26x is the
+only figure here with clean separation.
+
+### 🔑 WHY THE RANGE MATTERS RATHER THAN THE MIDPOINT
+
+A realistic multi-label schema costs **~0-5% on a point-lookup-dominated workload and ~26% on an analytic
+one.** ⚠️ This repo's domain is a people-graph queried over time — grouped counts, traversals and
+aggregates — so **the analytic end is the one that applies**, and label vacuity is a materially more
+important property than item 2383 concluded. It is also a property of the SCHEMA rather than of any query,
+which means an application cannot opt into it per call: the gates are engaged or not by how many labels the
+graph carries.
+
+⚠️ The weights are a repeat count, never zero, deliberately: dropping a shape entirely would make its
+dispatch site monomorphic and change the measurement for a reason unrelated to weighting.
+
+GATES. `bun run fmt` 0, `bun run check` 0. Item 2383's reasoning corrected. Probe knob only; no production
+change.
