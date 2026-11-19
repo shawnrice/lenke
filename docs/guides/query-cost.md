@@ -49,21 +49,35 @@ Keyset is **1.35x** cheaper again. Two things to know:
   in a walk `k > $last` matches nearly every row, so the index adds maintenance without narrowing anything.
   A cursor is not a filter.
 
-## Name the properties you need
+## Name the properties you need — and what it costs depends on where the rows go
 
-Returning an element builds its whole `{id, labels, properties}` map. Returning the properties you asked
-for does not.
+`RETURN n` hands back the live element itself, which is a reference and costs almost nothing to produce.
+`RETURN n.name` reads a field. So inside your own process, returning the element is the _cheaper_ of the
+two — and if you then send the rows anywhere, that reverses sharply, because serializing an element means
+writing out its whole `{id, labels, properties}` map.
 
-| Projection                              | Per row |
-| --------------------------------------- | ------- |
-| `RETURN n.name AS name`                 | 27 ns   |
-| `RETURN n.name AS name, n.team AS team` | 27 ns   |
-| `RETURN n AS n`                         | 111 ns  |
+| 20,000 rows                             | kept in process | serialized to JSON |
+| --------------------------------------- | --------------- | ------------------ |
+| `RETURN n.name AS name`                 | 20.5 ns/row     | 43.3 ns/row        |
+| `RETURN n.name AS name, n.team AS team` | 35.9 ns/row     | 66.1 ns/row        |
+| `RETURN n AS n`                         | **15.6 ns/row** | **502.8 ns/row**   |
 
-So `RETURN n` is **4.1x** a named projection, and a _second_ property is free — the cost is reaching the
-element, not reading its fields (`packages/native/scanfuse-2256.ts`). `RETURN n` also hands back the live
-element, whose properties sit under `n.properties` rather than as direct fields — the flat
-`{id, labels, properties}` map is what a serializer builds from it, and building it is the cost.
+So the advice depends on what you do with the result. **Sending rows to a client, name the properties** —
+the element is 11.6x a named projection once serialized, and that gap grows with how many properties your
+vertices carry. **Consuming rows in the same process**, `RETURN n` is fine and marginally cheaper, and it
+gives you the live element to traverse on from.
+
+**A second column is not free.** It costs about 75% more in process and 53% more serialized, on the same
+element, so ask for the columns you will use:
+
+```ts
+// a client is going to read this, so name the fields
+query(g, 'MATCH (p:Person) WHERE p.team = $t RETURN p.name AS name', { t: 'core' });
+```
+
+Reading two properties of _different_ elements costs more again — a two-hop projection measured 82.1 ns/row
+for `RETURN a.name, b.name` against 31.2 for `RETURN b.name` alone — because each element has to be reached
+before it can be read.
 
 ## Updating a property is cheaper than changing the shape
 

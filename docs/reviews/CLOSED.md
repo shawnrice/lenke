@@ -117426,3 +117426,53 @@ fixtures — **but together they were inconsistent, and the inconsistency was th
 
 GATES. `bun run fmt` 0, `bun run check` 0. One probe (five arms); guide rule corrected, duplicate snippet
 removed.
+
+## Item 2344 — ⚠️⚠️ **THE GUIDE's MOST CONSEQUENTIAL RULE WAS WRONG IN BOTH DIRECTIONS: `RETURN n` is not 4.1x a named projection — in process it is CHEAPER (15.6 against 20.5 ns a row, a reference), and serialized it is 11.6x, not 4.1x. And a second property is not FREE: +75% in process, +53% serialized. Found by cross-checking the guide against my own item 2332**
+
+Item 2343 found a wrong mechanism in one guide rule by cross-checking two of my own numbers. ✅ This item
+did that systematically: **11 rules, ~79 numeric claims**, prioritising the ones NOT measured during this
+stretch. 🔑 One conflicted with my own work immediately.
+
+### ⚠️ THE CONFLICT THAT STARTED IT
+
+The rule said _"a second property is free — 27 ns for `RETURN n.name` and 27 ns for `RETURN n.name,
+n.team`"_. ⚠️ **Item 2332 measured `RETURN a.k, c.k` at 139.29 ns a row against `RETURN c.k`'s 96.54** — a
+second column costing 44%. ✅ My hypothesis was that the guide's two properties share a variable and item
+2332's do not, which would make the rule true but incomplete.
+
+### ✅ IT IS WORSE THAN INCOMPLETE — IT IS BACKWARDS
+
+```text
+    20,000 rows                            in process    serialized
+    RETURN n.name AS name                    20.5 ns       43.3 ns
+    RETURN n.name AS name, n.team AS team    35.9          66.1
+    RETURN n AS n                            15.6         502.8
+```
+
+⚠️ **`RETURN n` is the CHEAPEST of the three in process** — it hands back a reference and builds nothing —
+so the claimed 4.1x is reversed. ✅ **And serialized it is 11.6x, not 4.1x.** 🔑 The guide's own text
+contained the explanation it did not apply: _"the flat `{id, labels, properties}` map is what a SERIALIZER
+builds from it, and building it is the cost"_ — true, and it means the 4.1x belongs to a step the query
+does not perform.
+
+⚠️ **A second property costs +75% in process and +53% serialized** on the SAME element, and two properties
+of DIFFERENT elements cost more again (82.1 against 31.2 ns a row on a two-hop projection). **"Free" was
+wrong in every arm.**
+
+### ✅ SO THE RULE NOW SPLITS THE ADVICE BY DESTINATION
+
+Rewritten as _"Name the properties you need — and what it costs depends on where the rows go"_: **name the
+fields when a client will read them** (11.6x, growing with how many properties the vertices carry);
+**`RETURN n` is fine and marginally cheaper when the rows stay in process**, and it hands back the live
+element to traverse on from. ✅ Its test asserts the two forms carry the SAME DATA — naming fields is a
+cost choice, never an information loss — plus a size comparison that pins the mechanism without timing
+(12 pass / 37 assertions).
+
+### ⚠️ AND A DOUBLE-COUNT OF MINE, CAUGHT BEFORE PUBLICATION
+
+My first serialize arm ran the query TWICE (`JSON.stringify(query(...)).length && query(...).length`),
+inflating both absolutes while roughly preserving the ratio. ✅ Fixed to one query then serialize; the
+numbers above are the corrected ones. **Tenth correction of my own work this stretch.**
+
+GATES. `bun run fmt` 0, `bun run check` 0, guide suite **12 pass / 0 fail, 37 assertions**. One probe (six
+arms, two modes); rule rewritten.

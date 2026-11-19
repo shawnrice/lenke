@@ -322,4 +322,34 @@ describe('docs/guides/query-cost.md snippets', () => {
     expect([...interleaved].sort()).toStrictEqual(['a', 'c', 'e']);
     expect([...grouped].sort()).toStrictEqual([...interleaved].sort());
   });
+
+  /*
+   * ⚠️ **"Name the properties you need — and what it costs depends on where the rows go"** (item 2344)
+   * replaced a rule whose numbers were wrong in BOTH directions: it claimed `RETURN n` costs 4.1x a named
+   * projection (in process it is CHEAPER — 15.6 against 20.5 ns a row) and that a second property is FREE
+   * (it costs ~75% more). 🔑 The claim a reader acts on is that the two forms carry the SAME DATA, so
+   * naming the fields is a cost choice and never an information loss.
+   */
+  test('an element and its named properties carry the same data', () => {
+    const g = new Graph();
+
+    g.addVertex({ id: 'p1', labels: ['Person'], properties: { name: 'Ada', team: 'core' } });
+
+    const named = query(g, 'MATCH (p:Person) RETURN p.name AS name, p.team AS team');
+    const whole = query(g, 'MATCH (p:Person) RETURN p AS p');
+
+    expect(named).toStrictEqual([{ name: 'Ada', team: 'core' }]);
+
+    /* ✅ The element carries the same fields, under `.properties` — which is why serializing it is dearer. */
+    const el = whole[0]?.p as { properties: Record<string, unknown> };
+
+    expect(el.properties.name).toBe('Ada');
+    expect(el.properties.team).toBe('core');
+
+    /*
+     * ✅ And the serialized forms differ in SIZE, which is the mechanism the rule now names: the element
+     * writes out its whole map. A ratio, not a timing, so it is stable enough for a gate.
+     */
+    expect(JSON.stringify(whole).length).toBeGreaterThan(JSON.stringify(named).length);
+  });
 });
