@@ -88,16 +88,23 @@ before it can be read.
 A property write costs nothing beyond the write. Adding or removing a vertex or an edge invalidates the
 adjacency structures the next read would have used, so the next read rebuilds them.
 
-60 writes interleaved with reads, 20,000 vertices (`packages/native/tvtest-2252.ts`):
+One topology write, then eight identical reads of a typed hop, 20,000 vertices:
 
-| Write kind     | Penalty on the next read |
-| -------------- | ------------------------ |
-| Set a property | none                     |
-| Add a vertex   | +1.5 ms                  |
-| Add an edge    | +1.1 ms                  |
+|                          | read 1  | read 2   | reads 3-8    |
+| ------------------------ | ------- | -------- | ------------ |
+| baseline, no write       | 0.09 ms | 0.09 ms  | 0.07-0.09 ms |
+| after setting a property | 0.25    | 0.12     | 0.07-0.10    |
+| after adding a vertex    | 1.11    | 2.52     | 0.07-0.08    |
+| after adding an edge     | 0.84    | **2.42** | 0.07-0.08    |
 
-At 80,000 vertices one topology write makes the next read about **3x** slower. Corrections and status
-changes are free; **batch relationship and entity creation** rather than interleaving it with reads.
+**The cost lands on the first two reads, not one, and the second is the larger.** Adding one edge costs
+about 3 ms in total — the rebuild is applied when the write settles, which happens after the first read has
+already started. By the third read the structure is rebuilt and the cost is gone for good, however many
+reads follow.
+
+So the shape of the advice is: a topology write is a few milliseconds borrowed from whatever reads next, and
+batching them means paying that once instead of once per write. Corrections and status changes — property
+writes — cost essentially nothing (0.25 ms on one read, inside the noise of a single measurement).
 
 ## Keep a session's distinct query texts bounded
 

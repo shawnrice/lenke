@@ -117518,3 +117518,46 @@ documented artifact is a reason to re-read the arm, not a confirmation.**
 
 GATES. `bun run fmt` 0, `bun run check` 0, guide suite 12 pass / 0 fail. Guide: four absolutes and two
 ratios refreshed, one fact added; no production change.
+
+## Item 2346 — ✅✅ **THE WRITE RULE's CORE ADVICE IS RIGHT AND ITS NUMBER IS 3x LOW: a topology write costs ~3 ms, not 1.1, and it lands on the FIRST TWO reads rather than one — the second being the larger. ✅ And it settles a contradiction with CLAUDE.md: the permanent-demotion behaviour is the NATIVE engine's, not this one's**
+
+The last guide rule not re-measured this stretch. ⚠️ **And `CLAUDE.md` flatly contradicted it**: the guide
+says a topology write costs _"the next read"_ +1.1-1.5 ms, while CLAUDE.md records _"ONE `add_edge` demotes
+EVERY later read for the rest of the session (the read after the next one is just as slow)"_, with the
+penalty reaching **24.07x** at 1 edge in 50. 🔑 **A one-off cost and a permanent demotion imply opposite
+advice**, so the test was simply to time several consecutive reads after one write.
+
+```text
+    one write, then 8 identical typed-hop projections, 20,000 vertices, 3 rounds
+                              read 1    read 2    reads 3-8
+    baseline (no write)         0.09      0.09     0.07-0.09
+    after a PROPERTY write      0.25      0.12     0.07-0.10
+    after adding a VERTEX       1.11      2.52     0.07-0.08
+    after adding an EDGE        0.84      2.42     0.07-0.08
+       (3 rounds: 1.41/2.78, 0.93/2.40, 0.84/2.42 — the shape is identical every time)
+```
+
+### ✅ WHAT IT SETTLES
+
+- ⚠️ **The cost lands on TWO reads, not one**, and the SECOND is consistently the larger (2.4-2.8 against
+  0.8-1.4). 🔑 That matches `graph-counters-are-async`: the invalidation is applied on the microtask drain,
+  which falls after the first read has started. **"The next read" hides a second payer.**
+- ⚠️ **The total is ~3 ms, not 1.1** — the guide attributed to one read what spans two, understating by
+  about 3x.
+- ✅ **But it IS amortized**: reads 3-8 sit at baseline in all three rounds, so **CLAUDE.md's
+  permanent-demotion warning does not describe the TS engine.** That text is about the native
+  `rebuild_csr`/`csr_fresh` pair, and the distinction is now recorded in both places rather than left to
+  collide.
+- ✅ **The advice survives intact**: batch topology writes, property writes are free.
+
+### ⚠️⚠️ AND A TRAP I WALKED INTO AND CAUGHT BY READING THE ZEROS
+
+My first read was `MATCH (a:N)-[:RARE]->(b) RETURN count(*)` — **a CLOSED FORM**, which items 2286, 2303
+and 2309 each priced at ~24 ns because it visits no edge. ✅ Every reading came back `0.00 ms` and the probe
+measured nothing. **Three items in this same stretch had already recorded that trap and I still used a hop
+count as a read.** Fixed to a projection, which must walk the adjacency the write invalidates. **Eleventh
+correction of my own work this stretch.**
+
+GATES. `bun run fmt` 0, `bun run check` 0, guide suite 12 pass / 0 fail. ✅ **The guide sweep is now
+complete: all 11 rules re-measured or re-verified, 4 corrected** (the projection rule's direction, the
+hoisting mechanism, two paging ratios, and this one's magnitude and span).
