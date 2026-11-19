@@ -116767,3 +116767,60 @@ corrections of my own numbers before publication** — the arm-length rule (2326
 2328 alone. 🔑 **The instrument was wrong more often than the engine, again.**
 
 GATES. As listed.
+
+## Item 2332 — 🎯 **GREMLIN IS 5.12x FASTER THAN GQL ON A TWO-HOP PROJECTION (17.37 vs 88.88 ns a row) WHILE BEING 1.58x SLOWER ON ONE HOP — so this is depth-specific, not "GQL is slow". Gremlin's per-row cost is FLAT across depth and GQL's grows 7.4x. Two candidate mechanisms tested and REFUTED, and the third is already CLOSED**
+
+Items 2317-2323 took the Gremlin read surface from 6.6x its GQL twin to parity on a POINT LOOKUP. ✅ A hop
+is the other half of that surface and nothing had compared it per row.
+
+```text
+    arm                     us      ns/row     rows
+    gql1   (1 hop)         719      11.98     60,000
+    grem1  (1 hop)        1136      18.94     60,000     Gremlin 1.58x SLOWER
+    gql2   (2 hops)      15998      88.88    180,000
+    grem2  (2 hops)       3126      17.37    180,000     Gremlin 5.12x FASTER
+```
+
+🔑🔑 **Gremlin's per-row cost is FLAT across depth (18.94 → 17.37); GQL's grows 7.4x (11.98 → 88.88).** ⚠️
+The direction REVERSES between one hop and two, which is why this is a depth question and not a language
+one — a single-depth measurement would have concluded the opposite.
+
+### ⚠️ FIRST CANDIDATE, REFUTED BY READING: ISO RELATIONSHIP UNIQUENESS
+
+ISO-GQL imposes relationship uniqueness on a path and Gremlin does not, so GQL could be doing more work BY
+SPEC. ⚠️ Both arms return exactly 180,000 rows, which shows the fixture rarely triggers the difference
+rather than that the semantics match — so the profile had to settle it. ✅ **No Set, Map or visited frame
+appears at all**, so a per-path uniqueness structure is not where the time goes.
+
+### ⚠️ SECOND CANDIDATE, REFUTED BY MEASUREMENT: UNREAD BINDINGS
+
+`gql2` names `a` and an anonymous middle node and reads NEITHER. 🔑 If binding were narrowed to what the
+projection reads, that would be a lever — Gremlin has `drop-unread-as.test.ts` for the same question.
+
+```text
+    RETURN a.k            (the start)       71.36 ns/row
+    RETURN c.k            (the far end)     96.54
+    RETURN a.k, c.k       (both)           139.29
+    (:N) anonymous start, RETURN c.k        95.42      <- vs 96.54 named
+```
+
+✅ **Naming the start costs NOTHING (95.42 against 96.54), so unread bindings are not dead work.** ⚠️ The
+cost scales with PROJECTED VALUES (one column ~71-97, two columns 139), and reading the far end costs
+**1.35x** reading the start — the start is the loop's outer variable, already in hand.
+
+### ⚠️ THIRD CANDIDATE, ALREADY CLOSED
+
+The 39% anonymous frame is **GQL's own specialized two-hop rung** (`const [n0, n1, n2] = nodes; const [h0,
+h1] = hops`), not a missing fast path. ✅ And the per-row binding Map is **CLOSED**: items 2023 and 2024
+built a no-copy VIEW and a REUSED map, priced both and refused both —
+_"the per-row binding allocation is now CLOSED — two independent attempts, both priced, both refused."_
+
+### 🎯 SO WHAT REMAINS, STATED PRECISELY
+
+GQL's two-hop spends **27.8 ns a row on property reads alone** (`propOf` 16.5 + `get properties` 11.3),
+which is **more than Gremlin's ENTIRE 17.37 ns a row** for the same far-element projection. ⚠️ **NOT BUILT
+— the mechanism is not yet identified**, and three plausible ones are now eliminated rather than guessed
+at. The next attempt should differential-profile `grem2` against `gql2` directly, which is the method that
+found item 2319's `drain` in one step.
+
+GATES. `bun run fmt` 0, `bun run check` 0. One probe (eight arms); no production change.
