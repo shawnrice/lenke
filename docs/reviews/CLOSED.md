@@ -119218,3 +119218,64 @@ or `10` there and agrees with nothing.
                                 hasId` has dropped into the "too fast to compare" list, which is this
                                 change showing up in the probe.
 ```
+
+## Item 2375 — ✅ **REGRESSION PASS ON ITEM 2374: clean. And it closed a coverage hole that let the gap sit — `bench:gremlin` had NO id-seeded row at all — which then priced the HALF OF MY OWN SHIP I had not measured: the multi-id edge walk is 1.67x, from 1.5x BEHIND native to 0.9x ahead**
+
+Item 2374 touched `node-values.ts`, the file items 2319-2323 shipped into, so `executor-edits-perturb`
+applies and `bench:gremlin` is the sensitive instrument.
+
+### ✅ NO REGRESSION, with the same control logic item 2371 used
+
+```text
+    traversal                                PRE    LIVE     L/P
+    V().has().has().count()                 3.60    4.80    1.33x   ⬅ cannot be reached by the change
+    V().out() [bare]                        7.40    8.60    1.16x   ⬅ cannot be reached either
+    V().hasLabel().has().count()            2.70    2.30    0.85x   ⬅ sibling moves the OTHER way
+    V().out()x3.values(age)               485.40  502.90    1.04x
+    V().out().values(age).order()         181.60  174.40    0.96x
+    V().out().out().values(age)            93.20   86.70    0.93x
+    V().out().has().out().values(age)      93.20   96.60    1.04x
+```
+
+The two largest deviations are sub-10 ms rows with no id seed and no `values()` — unreachable by a change
+that widens one id-seeded gate — and a sibling of the first moves 0.85x the other way. So that is the noise
+band, and every trustworthy large row sits inside ±7%.
+
+### ⚠️ THE INSTRUMENT HAD NO ID-SEEDED ROW, AND THAT IS WHY THE GAP SAT
+
+A grep of `bench-gremlin.ts` for `V('` / `E('` / `hasId` returns **nothing** — no row exercised
+`matchSeededShape` or `seededIdWalk`. 🔑 Item 1631 records the identical failure in the same file: _"
+`bench:gremlin` had NO ROW for this shape, which is why the TS/native gap on it was never seen."_ Added
+two, MULTI-id rather than one: a single lookup is ~215 ns and prints as `0.0` (the sub-millisecond trap).
+
+### ✅✅ AND THEY PRICED THE HALF OF ITEM 2374 I HAD NOT MEASURED
+
+⚠️ Item 2374 measured only the **eager one-id** path (3.01x). `seededIdWalk`'s generator — the multi-id
+arm — was equally new and had no number.
+
+```text
+    row                                  PRE    LIVE     verdict
+    V(ids).values(age) [10k, control]    0.9     0.8     flat ✓
+    E(ids).values(w)   [10k, TARGET]     1.5     0.9     1.67x  ⬅
+    E(ids) ts/native ratio               1.5x    0.9x    from BEHIND native to AHEAD
+```
+
+🔑 Smaller than the one-id arm's 3.01x, and the reason is structural: the per-call fixed costs item 1660
+decomposed (plan prologue, `newContext`, the iterator protocol) amortize across 10,000 ids, so only the
+per-id work differs. Both halves of the ship are now measured, and `V(ids)` staying flat is the control
+that says the parameterization did not tax the vertex path.
+
+### ⚠️ A PROCESS NOTE: MY ARM-IDENTITY ASSERTION SILENTLY VERIFIED NOTHING
+
+CLAUDE.md requires asserting each A/B arm IS the code it claims. Mine was
+`grep -c "kind: 'V' | 'E'"` — and **zsh parsed the `|` inside the double quotes as a pipe**, so the command
+became a broken pipeline, printed an empty count, and asserted nothing. The arm happened to be correct,
+verified afterwards with a python byte-comparison against the saved copy.
+
+🔑 The lesson is the same family as `no-backticks-in-git-commit-m`: **a shell metacharacter inside a quoted
+grep pattern can turn the assertion into a no-op that looks like a pass.** Compare file bytes in python
+instead — it has no quoting layer and it checks the WHOLE file rather than one token.
+
+GATES. Tree restored to HEAD (`git diff` on `packages/gremlin` empty), rebuilt, `bun run fmt` 0, `bun run
+check` 0 (one TS error fixed: I wrote `FANOUT`, which is only a word in a comment here — the edge loop is
+`k < N * 5`).

@@ -125,7 +125,27 @@ const backend = createFfiEngineBackend(LIB);
 const tsG = tsDeserialize(doc, 'ndjson', new TsGraph());
 const natG = graphFromNdjson(backend, doc);
 
+/*
+ * ID-SEEDED SOURCES, WHICH THIS BENCH HAD NO ROW FOR AT ALL (item 2375).
+ *
+ * ⚠️ That hole is why item 2351's `E(id)` asymmetry sat unexamined: `grep` for `V('`/`E('`/`hasId` over
+ * this file returns nothing, so no row exercised `matchSeededShape`/`seededIdWalk`, and item 1631 records
+ * the identical failure — *"`bench:gremlin` had NO ROW for this shape, which is why the TS/native gap on it
+ * was never seen"*.
+ *
+ * 🔑 MULTI-ID, NOT ONE ID, for two reasons. A single lookup is ~215 ns and would print as `0.0` — the
+ * sub-millisecond trap. And item 2374 shipped the edge arm of this rung but measured only its EAGER
+ * one-id path (3.01x); the multi-id `seededIdWalk` generator is the half that went unmeasured, so these
+ * rows are the instrument for it.
+ */
+const SEED_N = 10_000;
+const ID_V = Array.from({ length: SEED_N }, (_, i) => `v${(i * 97) % N}`);
+/** The edge loop is `k < N * 5`, so edge ids run `e0 .. e{5N-1}`. */
+const ID_E = Array.from({ length: SEED_N }, (_, i) => `e${(i * 97) % (N * 5)}`);
+
 const SHAPES: [string, Plan][] = [
+  ['V(ids).values(age) [10k seeded]', traversal(V(...ID_V), values('age'))],
+  ['E(ids).values(w) [10k seeded]', traversal(E(...ID_E), values('w'))],
   ['V().count()', traversal(V(), count())],
   ['V().hasLabel.count()', traversal(V(), hasLabel('Person'), count())],
   ['V().has(age,gt).count()', traversal(V(), has('age', gt(44)), count())],
