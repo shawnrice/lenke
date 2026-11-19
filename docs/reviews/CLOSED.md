@@ -105744,7 +105744,7 @@ would need the null rows folded into it.
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 5,139 GQL
 tests; seven fuzzers green; 5/5 sweeps. `routes-fired.test.ts`'s detector count moved 36 → 37.
 
-## Item 2124 — ✅ **SHIPPED: the FAR-keyed OPTIONAL grouped count joins the rung — 358.3 → 111.3 ms (3.22x), four controls flat.** Item 2123's own heading advertised it as open; ⚠️ **and it is NOT at its floor — 1.85x remains**
+## Item 2124 — ✅ **SHIPPED: the FAR-keyed OPTIONAL grouped count joins the rung — 358.3 → 111.3 ms (3.22x), four controls flat.** Item 2123's own heading advertised it as open; ⚠️ ~~**and it is NOT at its floor — 1.85x remains**~~ **the 1.85x was a WORK-COUNT error — the OPTIONAL form has 1.33x the rows by construction, so the real gap is 1.39x and the rest is inherent (OPTIONAL must visit every anchor). Corrected at item 2125; this heading corrected at item 2356**
 
 Item 2123 refused a far key and priced the refusal at 361 ms. 🔑 **TWO WALKS, BECAUSE THE KEY'S END
 DECIDES THE SHAPE** — `detectGroupedHopCount`'s own rule, and the OPTIONAL twin needs it for the same
@@ -117960,3 +117960,50 @@ Item 2353's entry now carries that caveat. **This is the second time in three it
 instrument's own record corrected how I had presented its output.**
 
 GATES. `bun run fmt` 0, `bun run check` 0. No probe, no production change — two reads and a caveat.
+
+## Item 2356 — ✅✅ **THE LAST HIGH-RATIO BENCH ROW IS CLOSED, AND ITS OWN HEADING WOULD HAVE SENT ME CHASING A CORRECTED NUMBER: item 2124 advertises "1.85x remains" while its BODY strikes that through as a work-count error (the real gap is 1.39x, corrected at item 2125). Heading fixed here — the 36th instance of the failure item 1301 swept for**
+
+`OPTIONAL + GROUP BY, far key` was the one row from item 2353's table with no explanation. 🔑 It carries its
+own item number, `[2124]`, which is the fastest path to whether it is settled — and it is, twice over.
+
+### ✅ SHIPPED, THEN ITS RESIDUAL CORRECTED
+
+```text
+    item 2124:  358.3 -> 111.3 ms   3.22x   four controls flat
+    the bench now:        101.0 ms          improved further since
+```
+
+⚠️ **And the residual it left was itself wrong.** The entry's body reads: _"~~1.85x, ~45 ms unexplained~~
+**WRONG: a WORK-COUNT error. The OPTIONAL form has 1.33x the rows by construction, so the gap is 1.39x and
+the ~45 ms was mostly those rows. Corrected at item 2125**"_. ✅ So the row is shipped, its residual
+re-priced at 1.39x, and the remainder is **inherent**: the OPTIONAL form must visit every anchor to find
+the unmatched ones, where the non-OPTIONAL can drive from the edges.
+
+### ⚠️⚠️ AND THE HEADING STILL ADVERTISED THE STALE NUMBER
+
+Item 2124's heading says _"it is NOT at its floor — 1.85x remains"_, and its body strikes that through
+four paragraphs later. 🔑 **That is exactly the failure CLAUDE.md names**: _"the heading is what a reader
+scanning for open work actually sees, so a correction added further down does not reach them."_ ⚠️ **Had I
+stopped at the heading I would have spent this tick chasing a number corrected two items after it was
+written.** ✅ Heading corrected in this commit, per the standing rule.
+
+🔑 **Item 1301's sweep of all 265 `OPEN` lines found 40 such corrections, 35 of them advertising work
+already done, and 22 closed by the VERY NEXT item.** ✅ This is one more of exactly that shape — corrected
+by the item TWO later — which is the argument for the rule rather than for a tracker.
+
+### ✅ WHERE THAT LEAVES ITEM 2353's TABLE
+
+```text
+    traverse 1-hop + filter      40.5x   CLOSED at 2355 — stable, already a guide rule, native half off-mandate
+    sum over a hop               37.7x   DISSOLVED at 2354 — cross-fixture; real ratio 1.98x, mechanism known
+    OPTIONAL + GROUP BY far key  35.7x   CLOSED here — shipped at 2124, residual re-priced at 2125
+    2-hop subquery item          26.9x   not examined
+    max over a hop               13.2x   the control for the sum row
+```
+
+✅ **Four of five accounted for, three of them by reading rather than measuring.** ⚠️ The remaining
+`2-hop subquery item` at 151.3 ms is the only one still unexamined, and it sits above the >10% noise band
+item 2355 recorded — so it is the one row of the five whose absolute can be trusted.
+
+GATES. `bun run fmt` 0, `bun run check` 0. No probe, no production change — two reads and a heading
+correction.
