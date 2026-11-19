@@ -119383,3 +119383,53 @@ questions are answered from the grammar and not from Cypher habits:
 GATES. `bun run fmt` 0, `bun run check` 0 (two iterations: the params error above, then a misplaced
 module-level const that landed INSIDE the `CASES` array — caught by `fmt`/`check` before any measurement).
 Bench rows only; no production change.
+
+## Item 2378 — ✅ **THE COVERAGE HUNT IS BOUNDED AND CLOSED: a mechanical audit of 213 SHIPPED headings against every instrument finds NO fourth unguarded win. Items 2375-2377 closed all three that existed.** ⚠️ And the first version of the audit measured the wrong thing — instruments name QUERY SHAPES, never internal function names
+
+Three coverage holes in three items is a pattern worth mechanizing rather than continuing by hand.
+
+### ⚠️ FIRST ATTEMPT, AND WHY IT WAS MEANINGLESS
+
+Extract every backticked identifier from the 213 `SHIPPED` headings, test each against the concatenated
+instrument corpus. Result: 93 identifiers, **7 with no mention anywhere** — `pairMultiplicities`,
+`projectStep`, `localStep`, `applySource`, `nameIsUnread`, `shortestEndpointCount`,
+`unoptionalizeForAggregate`.
+
+🔑 **Every one is an INTERNAL function name, and no instrument would ever mention one.** A bench row
+contains a QUERY; it names surface syntax, not the rung that answers it. `element_id` was findable at item
+2377 only because it is surface syntax appearing in both the record and the instrument queries. **So the
+audit is only valid over surface vocabularies** — and run otherwise it produces seven false alarms and
+hides the real question.
+
+### ✅ THE VALID AUDIT: SURFACE VOCABULARIES, INTERSECTED WITH SHIPPED WINS
+
+```text
+    surface                      enumerated   no instrument call site   AND a SHIPPED heading
+    GQL scalar functions              62                21                      1 (false positive)
+    Gremlin steps + predicates        41                23                      1 (same one)
+```
+
+✅ **Both hits are the SAME token-matching false positive**: `append` / `appendStep` match item 1577
+(_"4.27x on building `traversal(V(id))`"_), which is `appendStep`, a PLAN-BUILDING operation — not the GQL
+`append` scalar or a Gremlin step. ⚠️ So **there is no fourth hole of the item-2375/2376/2377 kind on
+either surface's vocabulary.**
+
+🔑 And the uncovered-but-unshipped tokens are correctly uncovered: no perf work has been done on them, so
+no perf guard is owed, and their CORRECTNESS is covered by the differential fuzzers rather than by a bench.
+
+### ⚠️ THE RESIDUAL, STATED SO IT IS NOT MISTAKEN FOR A GAP
+
+Eight genuine Gremlin predicates have no perf row — `between`, `inside`, `outside`, `containing`,
+`endingWith`, `notContaining`, `regex`, `lte` — and roughly eighteen GQL scalars likewise (`concat`,
+`ends_with`, `head`, `last`, `intersection`, `list_contains`, `list_sort`, `list_union`, `octet_length`,
+`property_names`, the `to_*` family, `xor`, …). ✅ **Nothing is owed for them today.** If any gets
+optimized, that ship needs a row in the same commit — which is the rule items 2375-2377 established by
+violating it three times.
+
+⚠️ What this audit does NOT cover, and could not: GQL CLAUSE shapes (`OPTIONAL`, quantifiers, `ANY
+SHORTEST`, `CALL`) and multi-step Gremlin SHAPES, because those are not single tokens that a mechanical
+intersection can enumerate. The bench covers many by name already; a gap there would still have to be found
+by reading, as items 2375-2377 were.
+
+GATES. `bun run fmt` 0, `bun run check` 0. No probe, no production change — one audit, with its own first
+version refuted.
