@@ -117793,3 +117793,44 @@ actually happened.
 GATES. `bun run fmt` 0, `bun run check` 0. One probe (three arms, three sizes); no production change.
 **Twelfth correction of my own instrument this stretch, and the one whose failure mode was hardest to see:
 the number was not wrong, the reason it was flat was.**
+
+## Item 2352 — ✅ **THE HOISTING AUDIT IS CLEAN: item 2351's flaw has no siblings in this stretch. All six sub-2 ns figures across items 2312-2351 are accounted for, and checking them REFINED the rule — the threshold is not "under 2 ns is wrong" but "under 2 ns must be an operation that CAN be one cycle"**
+
+Item 2351 found an arm reading **0.3 ns** because V8 hoisted a loop-invariant pure call whose result was
+discarded — _"flat by construction"_. 🔑 The obvious worry is that other probes in this stretch share it.
+
+### ✅ FIRST, THE RISK SET IS NARROWER THAN IT LOOKS
+
+⚠️ Nearly every probe here discards its arm's return value (`for (…) { arm(); }`), which sounds alarming.
+✅ **But V8 can only eliminate work it can prove pure AND inline**: `query(graph, text)` is far too large
+and opaque, and the write arms mutate. **So the risk set is only small pure host READS with loop-invariant
+arguments** — which is exactly what item 2351's arm was and what almost nothing else is.
+
+### ✅ AND THE AUDIT ON THE PUBLISHED NUMBERS CAME BACK CLEAN
+
+Scanning every `ns` figure in items 2312-2351 for values under 2 ns — the physics triage from item 2351 —
+found six, all explained:
+
+```text
+    0.20 ns   vals[slot]          an ARRAY INDEX          ✅ correct: that IS about one cycle
+    0.70 ns   isTemporal          a PROFILE SHARE of 25.37 ns/vertex, not a per-call time
+    0.00 ns   (prose)             part of the 368,000 ns arithmetic-trap sentence
+    0.30 ns   x3                  item 2351's own flaw, already caught and corrected
+```
+
+✅ **No uncaught instances.** The one hoisted figure in the stretch is the one that was found and fixed.
+
+### 🔑 AND THE RULE NEEDED REFINING, WHICH THE AUDIT SUPPLIED
+
+⚠️ A blanket "under 2 ns is suspect" would have flagged `vals[slot]` at 0.20 ns — **and that figure is
+right**, because a bounds-checked array load genuinely is about one cycle. ✅ The usable form is **"an
+absolute below ~2 ns must belong to an operation that CAN be one cycle"**: an array index or a field read
+qualifies; a string-keyed `Map.get` (5-10 ns) does not, and a query does not. **The operation's own floor
+is the yardstick, not a number.**
+
+⚠️ **A profile SHARE is not a per-call time either** — `isTemporal` at 0.70 ns a vertex is 2.8% of a
+25.37 ns total, not a 0.70 ns function call. Mixing the two units is its own way to manufacture an
+implausible figure.
+
+GATES. `bun run fmt` 0, `bun run check` 0. No probe, no production change — one audit with a negative
+result, which is the outcome worth stating plainly rather than padding.
