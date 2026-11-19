@@ -117176,7 +117176,7 @@ mismatched `inner` is not fatal (the result is per call) but it weakens the comp
 
 GATES. `bun run fmt` 0, `bun run check` 0. One new probe; no production change.
 
-## Item 2339 — ✅✅ **BISECTION LOCATES ITEM 2338's MIXING PENALTY: a second GQL **SCAN-FAMILY** query costs `hopGql` 1.06-1.14x, while an indexed SEEK costs 1.02x and a GREMLIN hop 1.02x. ⚠️ My property-read-cache hypothesis is REFUTED by an arm that reads no property and still costs 1.13x — the mechanism is SHARED RUNG polymorphism, and the penalty shrinks as the partner's shape gets more similar**
+## Item 2339 — ✅✅ **BISECTION LOCATES ITEM 2338's MIXING PENALTY: a second GQL **SCAN-FAMILY** query costs `hopGql` 1.06-1.14x** (⚠️ **NARROWER THAN THIS ENTRY IMPLIES — item 2341 finds the FAR-DRIVEN rung immune at 1.01x, so the exposure is the HOP family, not GQL rungs generally**)**, while an indexed SEEK costs 1.02x and a GREMLIN hop 1.02x. ⚠️ My property-read-cache hypothesis is REFUTED by an arm that reads no property and still costs 1.13x — the mechanism is SHARED RUNG polymorphism, and the penalty shrinks as the partner's shape gets more similar**
 
 Item 2338 measured `hopGql` at ~1.09x in a five-shape mix. ⚠️ **A 9% effect is below what a mingled
 profile can attribute** — this repo's own rule is that anything under ~10% needs its own isolated harness
@@ -117273,3 +117273,40 @@ SPECIALIZES one of these drains — e.g. generating a literal-key reader — wou
 **take on exactly the sharing exposure GQL has.** Recorded so that trade is visible before it is made.
 
 GATES. `bun run fmt` 0, `bun run check` 0. One probe (four arms); no production change.
+
+## Item 2341 — ✅✅ **ALL SIX SHIPS VERIFIED IMMUNE IN THE MIXED REGIME: the GQL far-driven rung reads 1.01x paired with the very scan shape that costs `hopGql` 1.13x, and 0.98x paired with another far-driven query. ⚠️ Which NARROWS my own item 2339: the exposure is the HOP family, not GQL rungs generally**
+
+Items 2293 and 2297/2298 shipped 13.2x, 27x and 24.2x, **all measured one shape per process** — and item
+2339 found GQL's scan family loses 1.06-1.14x to sharing while item 2340 found the Gremlin drains immune.
+🔑 **The GQL ships sit in the family that is not immune**, so the question was live.
+
+```text
+    partner for farAnchor                    farAnchor us    vs alone
+    (alone)                                     272.7           —
+    scan      the exact item 2339 culprit       275.3         1.01x
+    farOther  another far-driven query          267.8         0.98x
+```
+
+✅ **No penalty at all.** Arithmetic already said a 1.14x penalty could not dent a 13-27x win, ⚠️ **but
+assuming the penalty transfers to an unmeasured rung is exactly the error this stretch has been punished
+for**, so it was measured. ✅ With item 2340's drains, **all six ships are now verified in the regime a real
+caller runs.**
+
+### ⚠️ AND IT CORRECTS THE FRAMING OF MY OWN PREVIOUS ITEM
+
+Item 2339's entry says "a second GQL scan-family query costs `hopGql` 1.06-1.14x" — accurate — but its
+mechanism paragraph generalises to GQL's shared rungs. ✅ **The far-driven rung is in GQL, shares the same
+executor, and is immune at 1.01x.** ⚠️ So the exposure is narrower: **the HOP family specifically**, not
+"GQL rungs". Item 2339's heading is corrected in this commit. 🔑 Ninth correction of my own work this
+stretch, and the second that narrows a finding rather than killing it.
+
+### ✅ A CONFORMANCE DETAIL FOUND BY WRITING THE PROBE
+
+⚠️ `MATCH (g:Group {…})` is a **syntax error**: `Group` is an ISO-GQL **reserved word** (it opens `GROUP
+BY`), and a bare label cannot use one. ✅ The engine's message named the problem AND the fix on the first
+read — _"`Group` is a reserved word and can't be used bare as a label name; quote it as a delimited
+identifier with backticks"_. **Diagnosed without reading any source**, which is what an error message is
+for; recorded because `discoverability-is-the-bottleneck` says the opposite case is the usual one.
+
+GATES. `bun run fmt` 0, `bun run check` 0. One probe (three arms) with a reachability guard asserting the
+rung was taken (`rows=1000` of 20,000); no production change.
