@@ -73,9 +73,40 @@ const SHAPES = {
   hopGrem: () => toArray(pHop, graph).length,
   agg: () => query(graph, 'MATCH (n:N) RETURN max(n.w) AS m').length,
   scan: () => query(graph, 'MATCH (n:N) WHERE n.k = 5 RETURN n.name AS nm').length,
+  /*
+   * ✅✅ **THE MECHANISM TEST (item 2339).** Bisection showed `agg` and `scan` each cost `hopGql` 1.14x
+   * while `lookup` and `hopGrem` cost 1.02x. 🔑 Both culprits are GQL whole-label scans that READ A
+   * PROPERTY; neither innocent partner is. So the hypothesis is the shared compiled `prop` closure's
+   * inline cache going polymorphic.
+   *
+   * ⚠️ These two arms discriminate it: `countOnly` is a GQL whole-label scan that reads NO property, and
+   * `scanSameKey` reads THE SAME key `hopGql` does. If the cache is the mechanism, `countOnly` is harmless
+   * and a DIFFERENT key is what hurts.
+   */
+  countOnly: () => query(graph, 'MATCH (n:N) WHERE n.k = 5 RETURN count(*) AS c').length,
+  scanSameKey: () => query(graph, 'MATCH (n:N) WHERE n.k = 5 RETURN n.k AS kk').length,
 };
 
-const names = ONLY === '' ? Object.keys(SHAPES) : [ONLY];
+/*
+ * ✅✅ **PAIR MODE: BISECTION, BECAUSE A 9% EFFECT IS BELOW WHAT A PROFILE CAN ATTRIBUTE (item 2339).**
+ * Item 2338 measured `hopGql` at ~1.09x in a five-shape mix. 🔑 Profiling the mixed process would mingle
+ * five shapes' frames to chase a 9% term, and this repo's own rule is that anything under ~10% needs its
+ * own isolated harness. ✅ So instead: run `hopGql` with exactly ONE other shape, four times. **Whichever
+ * partner reproduces the penalty names the shared site**, which is a fact rather than an attribution.
+ *
+ * ⚠️ `WITH` selects the partner. The pair still runs round-robin, so the interleaving matches the mix.
+ */
+const WITH = process.env.WITH ?? '';
+/* ⚠️ AN `if` CHAIN, NOT A NESTED TERNARY — the lint refuses the latter, as `node-values.ts` notes too. */
+let names;
+
+if (MODE === 'pair') {
+  names = ['hopGql', WITH];
+} else if (ONLY === '') {
+  names = Object.keys(SHAPES);
+} else {
+  names = [ONLY];
+}
 
 /* ✅ Warm EVERY shape in both modes, so neither mode measures a cold compile the other paid earlier. */
 for (const n of Object.keys(SHAPES)) {
@@ -142,6 +173,17 @@ if (MODE === 'alone') {
   }
 
   result[names[0]] = { ms: med(ts), rows: fn(), inner: inners[names[0]] };
+} else if (MODE === 'pair') {
+  const acc = Object.fromEntries(names.map((n) => [n, []]));
+
+  for (let r = 0; r < REPS; r += 1) {
+    for (const n of names) {
+      acc[n].push(timeOne(n));
+    }
+  }
+
+  /* ✅ Only `hopGql` is reported — the partner is there to pollute, not to be measured. */
+  result.hopGql = { ms: med(acc.hopGql), rows: SHAPES.hopGql(), inner: inners.hopGql };
 } else {
   /*
    * 🔑 THE MIX: every shape, interleaved, timed individually inside ONE process. The interleaving is

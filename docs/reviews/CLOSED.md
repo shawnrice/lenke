@@ -117175,3 +117175,62 @@ modes for `hopGrem` (16 against 32), because the doubling loop's last step is ti
 mismatched `inner` is not fatal (the result is per call) but it weakens the comparison.
 
 GATES. `bun run fmt` 0, `bun run check` 0. One new probe; no production change.
+
+## Item 2339 — ✅✅ **BISECTION LOCATES ITEM 2338's MIXING PENALTY: a second GQL **SCAN-FAMILY** query costs `hopGql` 1.06-1.14x, while an indexed SEEK costs 1.02x and a GREMLIN hop 1.02x. ⚠️ My property-read-cache hypothesis is REFUTED by an arm that reads no property and still costs 1.13x — the mechanism is SHARED RUNG polymorphism, and the penalty shrinks as the partner's shape gets more similar**
+
+Item 2338 measured `hopGql` at ~1.09x in a five-shape mix. ⚠️ **A 9% effect is below what a mingled
+profile can attribute** — this repo's own rule is that anything under ~10% needs its own isolated harness
+— so this item bisects instead: `hopGql` plus exactly ONE partner, which turns attribution into a fact.
+
+```text
+    partner                        hopGql us    vs alone 823-829
+    (alone)                          823.68         —
+    lookup       indexed SEEK        843.85       1.02x   innocent
+    hopGrem      another ENGINE      843.88       1.02x   innocent
+    agg          GQL scan + max()    936.71       1.14x   CULPRIT
+    scan         GQL scan + prop     935.04       1.14x   CULPRIT
+```
+
+### ⚠️⚠️ MY MECHANISM WAS WRONG, AND ONE ARM KILLED IT
+
+Both culprits read a property and neither innocent partner does, so I hypothesized the shared compiled
+`prop` closure's inline cache going polymorphic. ✅ Two discriminating arms:
+
+```text
+    countOnly    GQL scan, NO property read     932.55    1.13x   <- REFUTES the hypothesis
+    scanSameKey  GQL scan, the SAME key         879.01    1.06x
+    scan         GQL scan, a different key      936.43    1.13x
+```
+
+⚠️ **`countOnly` reads no property at all and still costs 1.13x.** The property-read cache cannot be the
+mechanism.
+
+### 🔑 THE EXPLANATION THAT FITS ALL SIX POINTS
+
+**Every culprit is a GQL SCAN-FAMILY query; the two innocents are not** — `lookup` takes the seek rung, and
+`hopGrem` is a different engine with its own functions entirely. ✅ And the penalty **shrinks as the
+partner's shape approaches `hopGql`'s own** (same-key projection 1.06x against a different key's 1.13x),
+which is what polymorphism on a SHARED FUNCTION predicts and what a per-call-site effect would not.
+
+🔑 This is item 1681's rule arriving from the other direction: _"V8's inline caches live on the FUNCTION,
+not the call site, so two call sites of one function share them"_ — the reason Gremlin **duplicates** its
+depth-specialized walks rather than parameterising one. ✅ **And it explains why Gremlin's hop is immune
+here**: item 2333 found it builds a per-plan `pick` closure, so each plan gets its own function and its own
+caches, where GQL's rungs are shared across every plan in the process.
+
+### ⚠️ AND IT IS A FINDING ITEM 802's LADDER COULD NOT HAVE MADE
+
+Item 2336 closed the per-plan-reader idea on item 802's measurement that `propOf` costs the same as a named
+load (9.8-11.1 against 9.6-11.1). ✅ **That ladder was measured in ISOLATION, one shape per process** — the
+regime where this effect does not exist. ⚠️ **So "isolated cost is fine" and "cost grows when shared" are
+both true**, and the second is invisible to the instrument that established the first. That does not revive
+the reader idea (`countOnly` refutes the property-read framing), but it does mean **an isolated ladder
+cannot close a sharing question.**
+
+🔶 **NOT BUILT.** Duplicating GQL's scan rungs per shape is the precedented fix and a large structural
+change, and the prize is 6-14% on one shape in a mixed process. ✅ Recorded with the mechanism and the six
+measurements so the next attempt starts from here rather than from the refuted hypothesis.
+
+GATES. `bun run fmt` 0, `bun run check` 0 (after a nested-ternary lint the repo refuses — `node-values.ts`
+records the same refusal, so the fix was its `if` chain). Two probe arms and a pair mode; no production
+change.
