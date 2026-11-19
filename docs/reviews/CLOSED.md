@@ -119858,7 +119858,7 @@ sweep, since the answer's value grows with |V|.
 GATES. `bun run fmt` 0, `bun run check` 0. Item 2385's heading caveated. Probe sizes only; no production
 change.
 
-## Item 2387 — 🎯 **THE MECHANISM IS EXACT AND THE FIX IS THE CODEBASE's OWN, APPLIED ONE CASE ALONG: `bothLabelledHopCount` answers `(a:L)-[:T]->(b:L)` as `total − edges touching a non-L vertex` in O(complement). The START-ONLY shape `(a:L)-[:T]->(b)` has no such arm and falls to an O(members) degree sum — which is the 4-10x cliff items 2385/2386 measured**
+## Item 2387 — 🎯 ~~**THE MECHANISM IS EXACT AND THE FIX IS THE CODEBASE's OWN, APPLIED ONE CASE ALONG**~~ **the MECHANISM half stands; the FIX is REFUTED at item 2388 — the complement walk is O(|V|) with a membership test, not O(outside), so it has nothing to buy against a path that is already a vertex walk:** `bothLabelledHopCount` answers `(a:L)-[:T]->(b:L)` as `total − edges touching a non-L vertex` in O(complement). The START-ONLY shape `(a:L)-[:T]->(b)` has no such arm and falls to an O(members) degree sum — which is the 4-10x cliff items 2385/2386 measured**
 
 Item 2386 left the question: why did item 1940 leave the count gate, and can the closed form survive a
 second label? Reading settles both.
@@ -119920,3 +119920,58 @@ NOT BUILT. The controls are named by the measurement already: the vacuous arm mu
 minority-label graph must decline via the gate, and the both-labelled rung must be untouched.
 
 GATES. `bun run fmt` 0, `bun run check` 0. No probe, no production change — four reads.
+
+## Item 2388 — ❌ **ITEM 2387's PROPOSAL IS REFUTED BEFORE ANY CODE, by the file it was derived from: the complement walk is `for (const v of graph.verticesById.values()) if (members.has(v)) continue` — O(|V|) with a membership test, NOT O(outside).** It wins for the both-labelled shape only because it replaces an O(E) EDGE walk; the start-only path is already a VERTEX walk, so there is nothing to buy
+
+Item 2387 proposed extending `both-labelled-hop`'s complement arm to the start-only shape and priced it at
+~7x from "walk 571 outside vertices instead of 4,000 members". ⚠️ **The 571 was wrong**: the complement is
+not directly enumerable, because `verticesByLabel` holds the label's MEMBERS.
+
+```ts
+for (const v of graph.verticesById.values()) {   // EVERY vertex
+  if (members.has(v)) { continue; }              // an O(1) test, |V| times
+  …
+}
+```
+
+### 🔑 SO THE TWO PATHS ARE THE SAME ORDER, AND THE WIN WAS IMAGINARY
+
+```text
+    today (bareDegreeSum)   O(members) iterations, each one `adjFrom.get(type).size`  — a Map.get
+    proposed (complement)   O(|V|)     iterations, each one `members.has(v)`          — a Set.has
+                            plus a Map.get for the OUTSIDE vertices only
+```
+
+⚠️ With one label dominating — the realistic case and the whole point — `members ≈ |V|`, so this replaces
+|V| `Map.get`s with |V| `Set.has`es. Both are hash lookups. **Nothing is bought.**
+
+✅ **And the reason it DOES win where it ships is in the same file**: there the path it replaces is _"O(E)
+with two `matchesLabel` calls each"_, which item 2193 measured at _"+750.9 ms over 40 reps, the entire
+far-label cost"_. 🔑 It converts an EDGE walk into a VERTEX walk — |E| → |V|, a win of the average degree.
+**The start-only count is already a vertex walk, so the conversion has no edge walk to eliminate.**
+
+### ⚠️⚠️ THE LESSON, AND IT IS THE SECOND INSTANCE THIS STRETCH
+
+I read the GATE — `if (outside * 8 > total) return null;` — and inferred from it that the walk was
+O(outside). 🔑 **A gate's threshold says WHEN a path is chosen, not WHAT it costs.** That gate compares the
+complement's _work_ against the O(E) path it replaces; it is not a statement about iteration count.
+
+⚠️ Items 2360/2361 were the same error one layer along: I read `composeInlineGate` and inferred the shape of
+its INPUT, when `nodeScanPreds` pushes one pred for the whole `WHERE`. **Both times the fix was to read the
+LOOP rather than the condition above it**, and both times the refutation cost a build (2361) or was caught
+just before one (here).
+
+### What remains open, stated without a route
+
+The cliff is real and measured — O(1) vacuous against O(members) non-vacuous, 4.15x at 4k vertices rising
+to 10.51x at 60k (item 2386). ⚠️ **To beat O(members) something must answer without visiting each member**,
+and the only mechanism that does is a maintained per-(label, edge-type) degree aggregate — new mutable
+state with invalidation on every edge and label write. That is the class the dense ordinal was disqualified
+for (eight arrivals) and that items 2349/2350 deferred for CSR, so it is the owner's call rather than a
+lever to take.
+
+✅ Three routes are now refuted for this cliff: the plan rewrite (item 1935, 0.94x), the projection arm
+(item 1940 took it but explicitly left the count gate), and the complement arm (here).
+
+GATES. `bun run fmt` 0, `bun run check` 0. Item 2387's heading corrected. No probe, no production change —
+two reads, and no build attempted because the arithmetic failed first.
