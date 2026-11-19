@@ -1108,9 +1108,12 @@ export const seededIdWalk = function* (
   labels: readonly string[] | undefined,
   key: string,
   graph: Graph,
+  /** `'E'` resolves through the EDGE id space; see {@link matchSeededShape}'s `kind` (item 2374). */
+  kind: 'V' | 'E' = 'V',
 ): Generator<unknown> {
   for (const id of ids) {
-    const v = graph.getVertexById(asStringId(id));
+    const sid = asStringId(id);
+    const v = kind === 'E' ? graph.getEdgeById(sid) : graph.getVertexById(sid);
 
     if (v === undefined || v === null) {
       continue;
@@ -1136,6 +1139,22 @@ const matchSeededShape = (
   steps: readonly Step[],
 ):
   | {
+      /**
+       * Which id space the source names. ⚠️ ADDED AT ITEM 2374, when this gate read `kind !== 'V'` and the
+       * edge twin fell to the general machinery: `E(id).values(k)` measured **649.1 ns against
+       * `V(id).values(k)`'s 209.5 — 3.1x** on one fixture, and a differential profile put the vertex arm at
+       * **0.0%** in `projectValues` / `sourceFromIds` / `unwrap` / `applySource` because this rung claimed
+       * it while the edge arm entered all of them.
+       *
+       * 🔑 PARAMETERIZED, NOT DUPLICATED — the opposite of item 1604's and item 2370's choice for the
+       * predicate specializers, and deliberately. Those carriers had DIFFERENT semantics (a `props` null
+       * matches, an `eqProps` null rejects), so a second contract beside the first was honest. Here the
+       * logic is identical and only the id map differs, while the comments below pin three behaviours a
+       * copy could drift from: the eager one-id path (item 1660, 1.9x), the `typeof ids[0] === 'string'`
+       * LAZINESS guard, and the deliberate re-iterability `eager-one-id.test.ts` fixes. **Sharing the body
+       * makes the edge arm agree with the vertex arm by construction rather than by inspection.**
+       */
+      kind: 'V' | 'E';
       ids: readonly ID[];
       label: Extract<Step, { kind: 'hasLabel' }> | undefined;
       key: string;
@@ -1143,9 +1162,11 @@ const matchSeededShape = (
   | undefined => {
   const [source, second, third] = steps;
 
-  if (source?.kind !== 'V') {
+  if (source?.kind !== 'V' && source?.kind !== 'E') {
     return undefined;
   }
+
+  const { kind } = source;
 
   const { ids } = source;
 
@@ -1154,7 +1175,7 @@ const matchSeededShape = (
   }
 
   if (steps.length === 2 && second?.kind === 'values' && second.keys.length === 1) {
-    return { ids, label: undefined, key: second.keys[0] };
+    return { kind, ids, label: undefined, key: second.keys[0] };
   }
 
   if (
@@ -1163,7 +1184,7 @@ const matchSeededShape = (
     third?.kind === 'values' &&
     third.keys.length === 1
   ) {
-    return { ids, label: second, key: third.keys[0] };
+    return { kind, ids, label: second, key: third.keys[0] };
   }
 
   return undefined;
@@ -1203,7 +1224,7 @@ export const idSeededValuesShortcut = (plan: Plan, graph: Graph): NodeValues | u
     return undefined;
   }
 
-  const { ids, label, key } = shape;
+  const { kind, ids, label, key } = shape;
   const labels = label?.labels;
 
   // ⚠️⚠️ THE GENERATOR ITSELF, NOT A `{ [Symbol.iterator], drain }` WRAPPER — 1.66x, and it also
@@ -1260,7 +1281,7 @@ export const idSeededValuesShortcut = (plan: Plan, graph: Graph): NodeValues | u
   // are one-shot. Item 1651's one-shot test is written on `V('a', 'b')`, TWO ids, so it never covered
   // this shape; `eager-one-id.test.ts` covers it now and states which way it goes.
   if (ids.length === 1 && typeof ids[0] === 'string') {
-    const v = graph.getVertexById(ids[0]);
+    const v = kind === 'E' ? graph.getEdgeById(ids[0]) : graph.getVertexById(ids[0]);
 
     if (v === undefined || v === null) {
       return [];
@@ -1275,7 +1296,7 @@ export const idSeededValuesShortcut = (plan: Plan, graph: Graph): NodeValues | u
     return key in props ? [props[key]] : [];
   }
 
-  return seededIdWalk(ids, labels, key, graph);
+  return seededIdWalk(ids, labels, key, graph, kind);
 };
 
 /**

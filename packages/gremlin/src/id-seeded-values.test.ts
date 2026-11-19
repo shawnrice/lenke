@@ -21,7 +21,7 @@ import { Graph } from '@lenke/core';
 import type { Plan } from './ast.js';
 import { run, toArray } from './executor.js';
 import { idSeededValuesShortcut } from './executor/node-values.js';
-import { V, count, hasLabel, identity, traversal, values } from './index.js';
+import { E, V, count, hasLabel, identity, traversal, values } from './index.js';
 
 const g = new Graph();
 
@@ -32,6 +32,43 @@ g.addVertex({ id: 'b', labels: ['P', 'Q'], properties: { k: 2, s: 'two' } });
 g.addVertex({ id: 'c', labels: ['Q'], properties: { k: null, s: 'three' } });
 // `d` LACKS `k` entirely, so `values('k')` must drop it rather than emit undefined.
 g.addVertex({ id: 'd', labels: ['P'], properties: { s: 'four' } });
+
+/*
+ * EDGES, for the arm item 2374 admitted. ⚠️ Until then `matchSeededShape` gated on `kind !== 'V'` and
+ * `E(id).values(k)` fell to the general machinery — **649.1 ns against the vertex twin's 209.5, 3.1x**,
+ * closed to 215.6 by sharing this rung's body rather than copying it.
+ *
+ * The same four shapes the vertices cover, because the body is shared and each must still be exercised
+ * through the EDGE id space: a plain property, a STORED NULL (which `values` must emit — null is a stored
+ * value here, not an absence), a key-less edge, and labels for `hasLabel` to filter on.
+ */
+/** `addEdge` takes the Vertex, not its id — and a `null` return would be a fixture bug, so it throws. */
+const vx = (id: string) => {
+  const v = g.getVertexById(id);
+
+  if (v === null) {
+    throw new Error(`fixture: no vertex ${id}`);
+  }
+
+  return v;
+};
+
+g.addEdge({ id: 'e1', from: vx('a'), to: vx('b'), labels: ['E'], properties: { w: 10, t: 'ten' } });
+g.addEdge({
+  id: 'e2',
+  from: vx('b'),
+  to: vx('c'),
+  labels: ['E', 'F'],
+  properties: { w: 20, t: 'twenty' },
+});
+g.addEdge({
+  id: 'e3',
+  from: vx('c'),
+  to: vx('d'),
+  labels: ['F'],
+  properties: { w: null, t: 'thirty' },
+});
+g.addEdge({ id: 'e4', from: vx('d'), to: vx('a'), labels: ['E'], properties: { t: 'forty' } });
 
 /** The same query with a step appended, which the rung refuses — so this runs the pipeline. */
 const CASES: readonly (readonly [string, Plan, Plan])[] = [
@@ -88,6 +125,79 @@ const CASES: readonly (readonly [string, Plan, Plan])[] = [
     traversal(V('a', 'b'), hasLabel('ZZ'), values('k'), identity()),
   ],
 ];
+
+/** The EDGE twin of `CASES`, same shapes through `E(id)` (item 2374). */
+const EDGE_CASES: readonly (readonly [string, Plan, Plan])[] = [
+  ['one edge id', traversal(E('e1'), values('w')), traversal(E('e1'), values('w'), identity())],
+  [
+    'a missing edge id',
+    traversal(E('zz'), values('w')),
+    traversal(E('zz'), values('w'), identity()),
+  ],
+  [
+    'an edge LACKING the key',
+    traversal(E('e4'), values('w')),
+    traversal(E('e4'), values('w'), identity()),
+  ],
+  [
+    'an edge with a STORED NULL value',
+    traversal(E('e3'), values('w')),
+    traversal(E('e3'), values('w'), identity()),
+  ],
+  [
+    'several edge ids, in the order given',
+    traversal(E('e2', 'e1', 'e3'), values('w')),
+    traversal(E('e2', 'e1', 'e3'), values('w'), identity()),
+  ],
+  [
+    'a DUPLICATE edge id yields twice',
+    traversal(E('e1', 'e1'), values('w')),
+    traversal(E('e1', 'e1'), values('w'), identity()),
+  ],
+  [
+    'edge ids mixing present, missing and key-less',
+    traversal(E('e1', 'zz', 'e4', 'e2'), values('w')),
+    traversal(E('e1', 'zz', 'e4', 'e2'), values('w'), identity()),
+  ],
+  [
+    'a string-valued edge key',
+    traversal(E('e1', 'e2'), values('t')),
+    traversal(E('e1', 'e2'), values('t'), identity()),
+  ],
+  [
+    'with a hasLabel on the EDGE label that keeps everything',
+    traversal(E('e1', 'e2'), hasLabel('E'), values('w')),
+    traversal(E('e1', 'e2'), hasLabel('E'), values('w'), identity()),
+  ],
+  [
+    'with a hasLabel on the EDGE label that EXCLUDES one',
+    traversal(E('e1', 'e2', 'e3'), hasLabel('E'), values('w')),
+    traversal(E('e1', 'e2', 'e3'), hasLabel('E'), values('w'), identity()),
+  ],
+];
+
+describe('⚠️ the EDGE arm agrees with the walk it replaces (item 2374)', () => {
+  for (const [label, short, general] of EDGE_CASES) {
+    test(label, () => {
+      /* The rung must actually be TAKEN, or the case compares the general path with itself. */
+      expect(idSeededValuesShortcut(short, g), `${label}: the rung must fire`).toBeDefined();
+      expect(toArray(short, g), `${label}: must equal the pipeline's rows, in order`).toEqual(
+        toArray(general, g),
+      );
+    });
+  }
+
+  test('an edge id and a vertex id are DIFFERENT id spaces', () => {
+    /*
+     * ⚠️ THE ONE CASE THE SHARED BODY COULD GET WRONG, and a value comparison against the general path
+     * would NOT catch it if both routes resolved the same map. `a` is a vertex id and `e1` an edge id, so
+     * `E('a')` and `V('e1')` must each find nothing — a rung that resolved through the wrong map would
+     * answer `1` or `10` here.
+     */
+    expect(toArray(traversal(E('a'), values('k')), g)).toEqual([]);
+    expect(toArray(traversal(V('e1'), values('w')), g)).toEqual([]);
+  });
+});
 
 describe('⚠️ the id-seeded values rung agrees with the walk it replaces', () => {
   for (const [label, short, general] of CASES) {

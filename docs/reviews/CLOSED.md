@@ -119153,3 +119153,68 @@ the control that must stay flat and the fairness assertion already in the probe.
 
 GATES. `bun run fmt` 0, `bun run check` 0. Item 2372's heading corrected. Probe arms only; no production
 change.
+
+## Item 2374 — ✅ **SHIPPED: `idSeededValuesShortcut` now claims the EDGE source. `E(id).values(k)` 649.1 -> 215.6 ns, 3.01x, landing ON the vertex twin's 215-223. Four controls flat, and the mutant that resolves through the wrong id space is CAUGHT**
+
+Item 2373 localized the gap to one line: `matchSeededShape` gated on `source?.kind !== 'V'`, so
+`V(id)[.hasLabel(L)].values(k)` took a point-lookup rung and the edge twin fell to the general machinery.
+
+```text
+    arm                               PRE      LIVE    verdict
+    gremEdge        E(id).values()   649.1    215.6    3.01x  ⬅
+    gremVertex      V(id).values()   209.5    223.5    control (223.0 seen earlier — in spread)
+    gremEdgeBare    E(id)            499.5    505.9    1.00x ✓
+    gremVertexBare  V(id)            506.5    510.5    0.99x ✓
+    gremEdgeCount   E(id).count()    194.2    190.9    1.02x ✓
+```
+
+🔑 215.6 against the vertex arm's 223.5 — **parity, which was the predicted ceiling.**
+
+### 🔑 PARAMETERIZED, NOT DUPLICATED — and that is the opposite of item 2370's choice, deliberately
+
+Item 1604 and item 2370 both added a SEPARATE narrow contract beside an existing specializer rather than
+widening it, and item 1604 gives the reason: its first version "used a hand-written list and MISSED FOUR
+CARRIERS". ⚠️ **That argument does not transfer here, and the difference is semantic.** Those carriers had
+genuinely different readings (a `props` null matches a stored null, an `eqProps` null rejects outright), so
+two contracts were honest. Here the logic is identical and only the id map differs — while the function's
+comments pin three behaviours a copy could silently drift from:
+
+- the **eager one-id path** (item 1660, 1.9x, licensed only for bounded results),
+- the `typeof ids[0] === 'string'` **laziness guard** (so `asStringId` raises from INSIDE the walk),
+- the **deliberate re-iterability** that `eager-one-id.test.ts` fixes, which is route-dependent observable
+  behaviour.
+
+✅ So the shape is a `kind: 'V' | 'E'` on `matchSeededShape`'s result and a hoisted branch at the two
+resolve sites — **the edge arm agrees with the vertex arm by construction rather than by inspection**, and
+there is no closure per id (a comparison, so the eager path's cost is unchanged).
+
+### ✅ THE TEST, AND ITS TEETH
+
+`id-seeded-values.test.ts` gains ten EDGE_CASES mirroring the vertex table — plain property, STORED NULL,
+key-less edge, several ids in order, a duplicate, a mix of present/missing/key-less, a string key, and
+`hasLabel` on the EDGE label both keeping and excluding. Each compares the rung against the same query with
+`.identity()` appended, which the rung refuses, so **the engine's general path is the oracle**; each also
+asserts the rung actually FIRED, or the case would compare the general path with itself.
+
+⚠️ **Plus the one case a value comparison could not catch:** `E('a')` and `V('e1')` must each find nothing,
+because `a` is a vertex id and `e1` an edge id. A shared body resolving through the wrong map answers `1`
+or `10` there and agrees with nothing.
+
+✅ **Teeth verified by mutation**, not assumed: making the eager arm resolve via `getVertexById` gives
+**3 fail**, naming the id-space test first; reverting restores 38 pass.
+
+### Gates
+
+```text
+    bun run fmt             0
+    bun run check           0   (one TS2322 fixed: `addEdge` takes the Vertex, not its id)
+    bun run test            0   21 projects on re-run. ⚠️ The first run showed one `@lenke/native:test`
+                                failure and the suite is clean on re-run — the flake
+                                `sync-test-flake-is-timing` records, confirmed rather than assumed.
+    bun run fuzz            0   57 pass, 0 fail — byte-identity across all seven
+    bun run spelling:gremlin    0 groups disagree on the ANSWER. 3 groups over 2x, ALL PRE-EXISTING with
+                                multiple prior mentions and historically WORSE (`label, VACUOUS, before a
+                                hop` 4.07x -> 3.33x -> 2.69x here). ✅ And `edge id lookup: seeded E(id) vs
+                                hasId` has dropped into the "too fast to compare" list, which is this
+                                change showing up in the probe.
+```
