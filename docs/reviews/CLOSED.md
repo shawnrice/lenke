@@ -118486,3 +118486,53 @@ carried item numbers; this target carried none, and I did not compensate.
 
 GATES. `bun run fmt` 0, `bun run check` 0. Probe arms only; no production change. Headings of items 2359,
 2360 and 2362 corrected in this commit, per the standing rule.
+
+## Item 2364 — the serving bench is FULLY TRIAGED ALREADY, and item 1976's own table is the canonical list. Every TS-behind row closed by reading in four searches; the lesson is to search for prior sweeps of an INSTRUMENT, not just for the row you picked
+
+Item 2359 changed instrument to `bun run bench:usage` and nominated from it. This item worked through the
+remaining TS-behind rows and found every one accounted for — and then found that **item 1976 had swept the
+same instrument and tabulated the same verdicts**, which my item 2359 search never looked for.
+
+```text
+    row                                  my reading      verdict found this item
+    write: append node                   1.44x behind    CLOSED item 312 — the row INTERPOLATES `i` into
+                                                         the query text, so every call misses the parse
+                                                         cache. A deliberate cold-parse row.
+    write: append node [params]          TS 1.52x AHEAD  the same write, parameterised. The 2.06x between
+                                                         them is the two spellings, not a defect.
+    analytic: fan-out spread 1-3 hops    1.39x behind    NOT A DEFECT (item 1977): 0.60x is an estimator
+                                                         reading; six runs spanned 0.60x-1.03x, a 1.9x
+                                                         swing with query, fixture and process fixed.
+    interleaved: append + link           1.31x behind    CLOSED items 576/577
+    read: keyed dedup lookup (+inline)   1.14x apart     CLOSED items 579 / 1973-1974 / 2324 — 1.30x
+                                                         ISOLATED, route-identical ("all five agree on
+                                                         the answer and on the route"), the rest being
+                                                         in-sweep pollution. THREE items have left it.
+    analytic: cycle detection 2-4 hops   1.04x behind    inside noise; closed var-length family (2337)
+```
+
+⚠️ **And my 1.14x reading of the dedup pair was meaningless**, which that row's own comment says in
+advance: _"AT THIS FIXTURE'S 200 MATCHES THE PAIR CANNOT RESOLVE IT, and that is measured, not assumed …
+clause 69.3k / 20.9k / 69.3k against inline 48.1k / 56.5k / 15.8k — swings of 3.3x and 3.6x with the
+direction disagreeing."_ The pair exists so that a change hitting one spelling becomes visible; resolving
+the gap needs a standalone probe at ~1000 matches a seek.
+
+### The lesson, which is NOT the same as item 2363's
+
+Item 2363's failure was search VOCABULARY — I searched my words for the symptom, not the words a fix would
+use. This one is different and simpler: **item 2359 picked a new instrument and searched only for the row
+it chose, never for whether that INSTRUMENT had been swept.** Item 1976's entry opens by saying it went to
+`bench:usage` precisely because nothing had touched its write/interleaved/analytic rows, and tabulates them
+with item numbers. One search for `bench:usage` as a heading subject would have returned the whole table.
+
+🔑 So the rule is per-instrument, not per-row: **when changing instrument, first search for prior sweeps OF
+THAT INSTRUMENT.** A row-level search cannot find a sweep, because a sweep names the instrument and lists
+rows in a table rather than discussing any one of them.
+
+### What is actually open after this
+
+Nothing in `bench:usage`'s indexed column. The unindexed column is the object-vs-columnar scan ceiling at
+12-22x, uniformly, which is structural. The one live remnant from this stretch is item 2363's **1.19x** for
+a conjunct pair that includes `cmpProps` (an ordering comparison), which `PAIRABLE` excludes.
+
+GATES. `bun run fmt` 0, `bun run check` 0. No probe, no production change — four searches and a table.
