@@ -118926,3 +118926,33 @@ at 1.58-1.93 ms, a 1.22x spread. ⚠️ The flipped operand is there because `25
 reach the same `cmpProps` entry, and one of the four historical index-seeding bugs had exactly that shape.
 Both spellings are admitted by construction, which is item 1604's "both spellings or neither" honoured
 rather than re-learned.
+
+### Item 2370 addendum — ⚠️ **`target/` IS NOT GITIGNORED IN THIS REPO**, so four A/B pristine copies of engine sources reached a commit. CLAUDE.md says to keep them there _because_ it is ignored; `git check-ignore` disagrees, and items 1011/1012 left two tracked copies that prove it has been wrong for a long time
+
+Found while verifying item 2370's commit: `git diff --stat` paired `core.ts` with my backup as a rename,
+which is harmless formatting, but checking it surfaced a real problem.
+
+```text
+    target/ab-2361/inline-gate.LIVE.ts.bak      mine, item 2361
+    target/ab-2361/inline-gate.PRE.ts.bak       mine, item 2361
+    target/ab-2367/core.PRE.ts.bak              mine, item 2370
+    target/ab-2367/shortcuts.PRE.ts.bak         mine, item 2367
+    target/pristine-exec-1011.rs                NOT mine — tracked since item 1011
+    target/pristine-exec-1012.rs                NOT mine — tracked since item 1012
+```
+
+`.gitignore` had no `target` entry at all and `git check-ignore` returned nothing. 🔑 **CLAUDE.md's rule
+is sound and its stated reason is false**: _"Keep the pristine copy under `target/` (gitignored, and it
+survives the reboot that a runaway mutant may force)."_ The survives-a-reboot half is why the rule exists
+and still holds; the gitignored half was never true here, and the two 2011-era copies are the evidence that
+nobody checked.
+
+✅ Fixed: the four `.bak` copies are `git rm --cached`'d (still on disk — they are live restore copies), and
+`/target/` is now in `.gitignore` with a comment saying why. ⚠️ The two `pristine-exec-*.rs` files stay
+tracked, because `.gitignore` does not untrack what is already tracked and deleting another item's
+committed artifacts is not mine to do unasked — they are flagged here instead.
+
+⚠️ **This also explains the lint failure at item 2367**: `bun run check` reported `no-redundant-type-constituents`
+errors from `target/ab-2367/shortcuts.PRE.ts`, i.e. from the COPY, which is only possible because the
+directory is neither ignored nor excluded. Renaming to `.ts.bak` silenced the linter but left the files
+tracked — a fix to the symptom that hid the cause for three items.

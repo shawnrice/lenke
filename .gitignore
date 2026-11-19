@@ -204,3 +204,9 @@ research/iso-39075/artifacts/
 
 # CPU profiles from `bun --cpu-prof` (item 994's hop-predicate harness) — large and per-run.
 *.cpuprofile
+
+# A/B pristine copies and scratch artifacts. CLAUDE.md says to keep them here BECAUSE
+# this is gitignored -- it was not, and items 1011/1012 left two tracked copies that prove
+# it (target/pristine-exec-*.rs, still tracked; .gitignore does not untrack what is already
+# tracked). Found at item 2370, after four .bak copies of engine sources reached a commit.
+/target/
