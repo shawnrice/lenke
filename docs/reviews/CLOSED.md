@@ -119595,7 +119595,55 @@ at.
 
 Item 2380's verdict stands and is now demonstrated twice: a mixed profile's shares rank workload mix, and
 its investigable frames here are closed work. ✅ The remaining frames are `bareDegreeSum` (a closed form,
-14.1% because that shape is an eighth of the mix) and `(anon)` at 34.1%, which is unattributable by
-construction.
+14.1% because that shape is an eighth of the mix) and `(anon)` at 34.1%, ~~which is unattributable by
+construction~~ **which item 2382 attributes completely — by LINE, using this very item's own technique**.
 
 GATES. `bun run fmt` 0, `bun run check` 0. No probe, no production change — four reads of a built artifact.
+
+## Item 2382 — ✅ **THE MIXED PROFILE IS NOW FULLY ATTRIBUTED AND CONTAINS NO TARGET — and the 34.1% I twice called "unattributable by construction" resolved in one pass, by LINE, using the technique item 2381 had just written down.** Every share is a closed form, closed work, or a per-element cost at 3.9-7.3 ns
+
+Items 2380 and 2381 both dismissed the mixed profile's largest share — `(anon)`, 34.1% — as unattributable.
+⚠️ **That was wrong twice, and item 2381 contains the refutation**: it establishes that a frame resolves by
+its LINE in the built artifact, and `(anon)` is simply an AGGREGATE OF DISTINCT CLOSURES that I had grouped
+by name. Grouping by `(url, lineNumber)` instead splits it across 15 lines, three of which are nearly all
+of it:
+
+```text
+    15.6%   index.mjs:24562   detectGroupedNodeCount's rung body
+     9.9%   index.mjs:18523   detectCountShortcut's one-row body
+     5.0%   index.mjs:13601   a node-scan rung body (the indexed point lookup)
+     2.3%   index.mjs:9416    (env) => env.params[name]   — a param read
+     ~1%    the remaining 11 lines together
+```
+
+### ✅ THE WHOLE PROFILE, AND NOT ONE TARGET IN IT
+
+```text
+    share   frame                              verdict
+    15.6%   detectGroupedNodeCount rung        ~7.3 ns a vertex over 68M visits — a label-bucket walk
+                                               plus propOf, valueKey and a Map.get. Tight.
+    14.1%   bareDegreeSum                      a CLOSED FORM; the share is workload mix
+     9.9%   detectCountShortcut one-row body   the count shortcut answering two of the eight shapes
+     8.3%   bump                               3.9 ns a call (item 2380, after a 37x correction)
+     7.7%   the cmpProps closure               CLOSED — item 1339 took its 1.41x
+     7.1%   propOf                             REFUTED at item 1339 (0.98x); needs codegen otherwise
+     5.0%   a node-scan rung body              the indexed point lookup
+```
+
+🔑 **~68% attributed, and every piece is either a closed form, already-closed work, or a per-element cost
+in the single-digit nanoseconds.** That is the complete answer to "let the hot frames nominate the target"
+for this workload: they nominate nothing, because nothing in it is inefficient.
+
+### ⚠️ THE LESSON, which is about my own dismissal rather than the engine
+
+"Unattributable by construction" was a claim about the profile and it was false — the profile had the
+information and I had grouped it away. 🔑 **Aggregating a profile by function NAME discards the line, and
+the line is what identifies an anonymous closure.** Item 2381 learned that a name can be INVENTED by V8;
+this adds that a name can also be ABSENT, and in both cases the line is the answer. ⚠️ Two items in a row
+reached a wrong conclusion about a frame from its name alone, in opposite directions.
+
+✅ Group by `(url, lineNumber)` from the start. It costs one extra tuple key and it is what turned the
+biggest unexplained share in the profile into four named rungs.
+
+GATES. `bun run fmt` 0, `bun run check` 0. Item 2381's claim corrected. No probe, no production change —
+one re-aggregation of a profile already taken.
