@@ -118114,3 +118114,82 @@ different algorithm.
 
 GATES. `bun run fmt` 0, `bun run check` 0. No probe, no production change — two reads and an arithmetic
 refutation.
+
+## Item 2359 — OPEN TARGET, measured and mechanism established: on an UNINDEXED label scan, adding ANY second conjunct to the `WHERE` costs 2.11x, and a THIRD is free — so a conjunction declines a specialized single-comparison rung and the whole penalty is paid at the first one. Nominated by the SERVING bench, which had not been run this stretch
+
+The bulk bench's high-ratio rows are all accounted for (items 2353-2358), so this item changed instrument
+rather than picking another row. `bun run bench:usage` is the serving counterpart CLAUDE.md flags as a
+separate question — small operations against a warm graph — and it is also the natural instrument for the
+by-id access part of the standing mandate.
+
+### What the serving bench says, which is mostly good news
+
+TS is AHEAD of native on most INDEXED rows: point lookup 1.73M against 505.8k, permission check 639.8k
+against 150.7k, 2-hop recommendation 566.0k against 239.3k, interleaved write+point read 437.5k against
+210.9k. The indexed serving path is not where the work is.
+
+The UNINDEXED column is uniformly 12-22x behind, which is the known object-vs-columnar scan ceiling, with
+one row 2x worse than the worst of its siblings:
+
+```text
+                              ts(-) run1   run2    native(-)   TS vs its OWN point lookup
+    point lookup                   4.2k    4.7k      55.8k       1.0x
+    permission check               2.7k    2.8k      40.7k       1.7x
+    fan-out spread 1-3 hops        2.1k    2.8k      46.6k       1.7x
+    2-hop recommendation           2.1k    2.0k      43.9k       2.4x
+    cycle detection 2-4 hops        991    1.2k      45.0k       3.9x
+```
+
+Native is FLAT across all five (40.7-55.8k) while TS spreads 3.9x, so the interesting quantity is not the
+ratio against native but TS's own spread. Two runs of the same build put that column's noise at 1.04-1.33x,
+so the outlier survives it.
+
+### The mechanism, in three arms, each in its OWN process
+
+The two bench queries differ in where the subquery sits — `cycle detection` has a CONJUNCTION in its
+`WHERE`, `fan-out spread` has a bare comparison and puts its subquery in the `RETURN`. So the arms test the
+conjunction, with a trivially-true second conjunct as the control:
+
+```text
+    bare         u.name = $n                        228.3 us    11.4 ns/row    rows=1
+    cheapAnd     + u.score >= 0                     480.3 us    24.0 ns/row    2.11x
+    cheapAnd3    + u.score < 100000                 477.0 us    23.9 ns/row    0.99x vs cheapAnd
+    cheapAndRev  u.score >= 0 AND u.name = $n       478.8 us                   1.00x vs cheapAnd
+    existsAnd    the bench's shape                  638.1 us                   2.80x
+    fanoutRet    subquery in the RETURN             242.3 us                   1.06x
+```
+
+A second conjunct costs 2.11x although it is TRUE for every row and therefore changes no answer. A THIRD
+is free. That is decisive between the two candidate explanations: the general path DOES short-circuit
+correctly (which is also why `EXISTS` is not evaluated 20,000 times), so the entire penalty is the
+conjunction declining a specialized single-comparison scan rung. Written order is free (1.00x), consistent
+with `filter-order-is-unobservable`, and a subquery in the RETURN costs 1.06x, which is the complement:
+keep the `WHERE` bare and the subquery is nearly free.
+
+### The shape of the fix, and the honest caveats
+
+The rung wants the FIRST simple comparison and the remaining conjuncts as a post-filter on survivors.
+Because a selective leading conjunct leaves ~1 row, the post-filter runs about once, so the ceiling is the
+full 2.11x rather than a share of it.
+
+Caveats, all from the record. `executor-edits-perturb` prices a new variant in this area at up to 16% on
+unrelated rows, so controls are mandatory. `rung-precedence-decides-speed` warns a willing rung is starved
+by a broader one above it, so the new admission has to be placed in `runLinear`'s chain, not merely
+written. And this is NOT an equivalent-spelling defect — the arms are not equivalent queries — so the
+spelling probe is not the gate; a route test is (`perf-gate-needs-its-own-test`).
+
+### A process note: the first version of this probe was invalid and its own control said so
+
+All five arms ran in one process, and `bare` read 229.9 us running FIRST and 694.5 us running LAST — 3x on
+an unchanged query. Five query shapes through one evaluator leave the dispatch sites polymorphic and the
+first arm gets the clean ones. Every ratio from that version was an artifact; the numbers above are one arm
+per process. CLAUDE.md's "one shape per process" is written for an A/B, and this is the same failure
+arriving in a five-arm ladder.
+
+Also fixed mid-item: the EXISTS arm returned rows=0 because the fixture had no 2-4 hop cycles, so it was
+timing a cycle search that always fails. The row count is what revealed it, as at item 2317.
+
+NOT BUILT. Next step is to find the rung and admit a leading simple comparison with the rest as a
+post-filter, with an unindexed bare-WHERE arm and an indexed arm as controls.
+
+GATES. `bun run fmt` 0, `bun run check` 0. One probe (six arms, one per process); no production change.
