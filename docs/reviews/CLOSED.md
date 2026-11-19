@@ -118670,7 +118670,7 @@ between processes is only evidence when each process's row is internally resolve
 
 GATES. `bun run fmt` 0, `bun run check` 0. Item 2365's heading corrected. No probe, no production change.
 
-## Item 2367 — `bench:chain` swept for the first time. It violated its own stated design (all cases in one process), and it reports an ordering that cannot be right: a **4-leg chain costs 1.37x a 5-leg one on a third of the ways**, which survives isolation. The slot memo is NOT the cause — an oracle says the memo now buys ~1.0x where its comment documents 1.85x
+## Item 2367 — `bench:chain` swept for the first time. It violated its own stated design (all cases in one process), and ~~it reports an ordering that cannot be right: a **4-leg chain costs 1.37x a 5-leg one on a third of the ways**, which survives isolation.~~ **REFUTED at item 2368: there is NO inversion. Steady-state (reps 2-4) is 4-hop 8.5 ms < 5-hop 10.0 ms, the correct order; the whole effect was min-of-5 catching the 5-hop's sporadic FINAL-REP tier-up to 5.6.** The slot memo is NOT the cause — an oracle says the memo now buys ~1.0x where its comment documents 1.85x
 
 The second never-swept instrument (one `CLOSED.md` mention, from the item that built it). Its rows were
 ~1000 ms at item 300 and are now 5-8 ms, so roughly 130x of optimization has landed under it since.
@@ -118743,3 +118743,60 @@ item 1683's entry says it should have used.
 GATES. `bun run fmt` 0, `bun run check` 0. Oracle reverted, tree rebuilt, `git diff` on `packages/gql`
 empty. ⚠️ Pristine A/B copies under `target/` are now `.ts.bak`: the linter scans `target/`, so a `.ts`
 copy there fails `check` with errors from the COPY, which cost one failing gate to discover.
+
+## Item 2368 — item 2367's inversion is REFUTED by printing the per-rep series: there is none. 4-hop 8.5 ms < 5-hop 10.0 ms at steady state, the correct order — and every "5-hop is fast" reading was min-of-5 catching a sporadic FINAL-REP tier-up. Rep 1 is ~110 ms, a 12x cold cost no summary showed
+
+Item 2367 reported a 4-leg chain costing 1.37x a 5-leg one and called it reproducible. This item printed
+what the estimator was summarising.
+
+```text
+    4-hop   reps=[110.2   8.9   8.5   8.2   8.0]   min 8.0
+            reps=[125.5   8.1   7.4   7.4   7.5]   min 7.4
+            reps=[112.3   9.0   8.5   8.3   8.3]   min 8.3     steady ~8.5, monotone, no late jump
+
+    5-hop   reps=[119.9  10.0   9.6   9.5   9.4]   min 9.4
+            reps=[114.7  10.5   9.7   9.9   5.6]   min 5.6  ⬅ final rep tiers up
+            reps=[ 98.3  10.6  10.2   9.8   5.6]   min 5.6  ⬅ and again
+```
+
+✅ **At steady state the ordering is CORRECT: 4-hop ~8.5 against 5-hop ~10.0.** The "inversion" was
+`min`-of-5 reporting the 5-hop's occasional fifth-rep tier-up to 5.6 — a mode the 4-hop never enters —
+against the 4-hop's honest ~8. Item 2367's degree table ("non-monotonic in degree", "faster with twice the
+edges") is the same artifact at four more points.
+
+### How the chain of errors ran, because it is the useful part
+
+```text
+    2365   bench:gate: min-of-3 on 1-3 ms rows        -> claimed 3.4x + a 1.5x spelling gap   BOTH PHANTOM
+    2366   added a spread column                      -> refuted 2365's own headline; found the REAL
+                                                          structural answer (lastGated: 5 passes vs 4)
+    2367   bench:chain: min-of-5 on 5-10 ms rows      -> claimed a 1.37x inversion            PHANTOM
+    2368   printed the per-rep SERIES                 -> refuted it; ordering is correct
+```
+
+🔑 Four items, three phantom findings, one real structural answer — and **every phantom came from trusting
+a summary estimator on small rows, which is a rule CLAUDE.md already states**: _"For the TS per-row path,
+`min`-of-N is the wrong estimator, and it can hide the win. Print the per-rep series before trusting any
+summary of it."_ I applied that rule to probes I wrote myself and not to the repo's existing benches, which
+is precisely where it was most needed, because those benches had never been swept.
+
+⚠️ **AND A MIN CAN HIDE A LOSS AS WELL AS A WIN.** The rule is written around `min` reporting a rare FAST
+rep and understating a slow path. Here it did that to one arm only, and the result was a fabricated
+comparison between two shapes — worse than a wrong magnitude, because the ORDER came out wrong.
+
+### What the series also shows, and is genuinely new
+
+- **Rep 1 is 98-125 ms against a steady 8-10** — a 12x cold cost (JIT plus the first CSR build) that no
+  summary this bench ever printed would reveal. Anything measuring a ONE-SHOT chain count is measuring
+  that, not the steady state.
+- **A ~1.7x faster mode for the 5-hop EXISTS** (9.5 -> 5.6) and is reached nondeterministically on a late
+  rep. ⚠️ Not actionable — it is V8 tiering, not a route, and `no-runtime-codegen` is FIRM — but it does
+  mean the 5-hop's steady state is not its floor.
+
+### Shipped
+
+`bench:chain` now prints the per-rep series beside each row (item 2367 gave it `CHAIN_CASE`), with the
+measured bimodality and the requirement to compare medians across SEVERAL PROCESSES written where the
+estimator is chosen. Item 2367's heading corrected.
+
+GATES. `bun run fmt` 0, `bun run check` 0. Instrument change only; no production change.

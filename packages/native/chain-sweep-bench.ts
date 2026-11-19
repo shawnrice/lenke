@@ -80,6 +80,7 @@ if (SELECTED.length === 0) {
 }
 
 for (const [name, q] of SELECTED) {
+  const series: number[] = [];
   let best = Infinity;
   let answer = -1;
 
@@ -88,9 +89,24 @@ for (const [name, q] of SELECTED) {
     const rows = [...query(g, q)] as { c: number }[];
     const dt = performance.now() - t0;
 
+    series.push(dt);
     best = Math.min(best, dt);
     answer = rows[0]?.c ?? -1;
   }
 
-  console.log(`${name.padEnd(20)}${best.toFixed(1).padStart(10)} ms   answer=${answer}`);
+  /*
+   * THE PER-REP SERIES IS PRINTED, AND CROSS-PROCESS REPETITION IS REQUIRED (item 2368).
+   *
+   * ⚠️ These rows are 5-10 ms, and at that size the 5-hop case is BIMODAL ACROSS PROCESSES: five separate
+   * runs of the identical build and fixture read 5.3 / 8.5 / 4.6 / 9.2 / 4.6 ms — two modes 2.0x apart —
+   * while the 4-hop case is unimodal at 7.0-8.3. A min-of-5 inside ONE process cannot see that, and item
+   * 2367 read a "4-leg chain costs 1.37x a 5-leg one" off exactly that blind spot: true of the medians,
+   * invertible by any single run, because the 5-hop's slow mode exceeds the 4-hop entirely.
+   *
+   * So: run each case in SEVERAL processes and compare medians, never one run against one run.
+   */
+  console.log(
+    `${name.padEnd(20)}${best.toFixed(1).padStart(10)} ms   answer=${answer}` +
+      `   reps=[${series.map((x) => x.toFixed(1)).join(' ')}]`,
+  );
 }
