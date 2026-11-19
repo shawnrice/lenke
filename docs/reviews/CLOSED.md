@@ -118007,3 +118007,53 @@ item 2355 recorded — so it is the one row of the five whose absolute can be tr
 
 GATES. `bun run fmt` 0, `bun run check` 0. No probe, no production change — two reads and a heading
 correction.
+
+## Item 2357 — 🎯 **THE ONE LEVER ITEM 2155 LEFT OPEN IS WORTH MORE THAN ITS DISMISSAL SUGGESTED: the mid-vertex degree memo's ceiling is 1 − 1/FAN, so 66.7% of the degree work at FAN=3 and 91.7% at FAN=12 — "worth little" holds only at FAN ≈ 1, which is the SPARSE fixture CLAUDE.md warns both GQL row instruments default to**
+
+Item 2155 aimed three levers at the bench's largest row and refuted all three — ✅ including one BUILT and
+reverted (_"172.4 with the fusion against 165.0 without … V8 had already inlined the chain; 65.4% across
+four frames was attribution, not overhead"_). 🔑 Its closing line names the survivor:
+
+> _"a memo on the mid-vertex's typed degree — each mid-vertex is reached **~1.5 times in this fixture**, so
+> it is worth little here and would want a high-in-degree fixture to price. That is the next thing to try
+> on this row, not another chain rewrite."_
+
+✅ **The memo's ceiling IS that reach factor R**: a two-hop walk asks each mid-vertex's typed degree once
+per incoming edge, so a memo saves at most (R − 1)/R of that work. **So pricing the lever means measuring
+R — before any code.**
+
+```text
+    SKEW   hubs    distinctMid   maxInDeg      R      memo ceiling
+       0  20,000       20,000           3    3.00        66.7%
+       3   5,000        5,000          12   12.00        91.7%
+      19   1,000        1,000          60   60.00        98.3%
+      99     200          200         300  300.00        99.7%
+```
+
+### 🔑 R = FAN, WHICH IS WHY THE DISMISSAL DEPENDED ON THE FIXTURE
+
+Under uniform targeting every vertex has in-degree FAN, so **R = FAN and the ceiling is 1 − 1/FAN**. ✅ At
+the FAN=3 this probe uses that is **66.7%**, not "little" — and item 2155's ~1.5 implies its fixture
+(`graphDoc`) carries FAN ≈ 1.5, a ceiling of 33%.
+
+⚠️⚠️ **And that is the fixture CLAUDE.md warns about by name**: _"One edge per node is sparse — per-edge
+costs scale with the edge:node ratio … **Both GQL row instruments default to the sparse fixture, and this
+engine's costs are per edge.** Pass `FANOUT=5`."_ 🔑 **So the lever was dismissed on the one fixture shape
+most likely to understate it**, which is not a criticism of item 2155's arithmetic — its R really was ~1.5
+— but it does mean **"worth little here" was a statement about the fixture, not about the lever.**
+
+### ⚠️ WHAT THIS DOES AND DOES NOT ESTABLISH
+
+✅ **Establishes**: the ceiling is a function of FAN, it is 66.7% at FAN=3, and a skewed graph pushes it
+past 98%. **A memo is therefore worth pricing properly rather than left as a footnote.**
+⚠️ **Does NOT establish**: that the memo is cheap enough to collect that ceiling. The degree work is
+~50% of the one-hop arm by item 2155's own profile (`bucketSize` 24.6% + `get adjFrom` 25.2%), so **66.7%
+of ~50% is ~33% of that arm at best**, before the memo's own cost — and `memoizeIfUncorrelated` has
+produced a WRONG ANSWER in this engine before. ⚠️ **Not built**: the honest next step is an A/B of the memo
+on a FAN≥3 fixture, with the uniform FAN=1.5 arm kept as the control that shows when it does NOT pay.
+
+⚠️ **The fixture asserts its own distribution** — distinct endpoints, max in-degree and R are all printed,
+and a degenerate generator throws — because item 702's skewed LCG _"returned the right answer and measured
+14x fast"_, and a skew knob is exactly where that hides.
+
+GATES. `bun run fmt` 0, `bun run check` 0. One probe (four skews); no production change.
