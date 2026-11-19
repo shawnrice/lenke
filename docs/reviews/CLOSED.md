@@ -116940,7 +116940,7 @@ set — recorded with the eighth arrival so the ninth starts from here.
 
 GATES. `bun run fmt` 0, `bun run check` 0. One probe (three arms); no production change.
 
-## Item 2335 — 🎯 **`sum`/`avg` COST 2.21x THE FOLDED `count(n.w)` ON THE SAME PROPERTY (25.37 vs 11.50 ns a vertex) — and ITEM 530's RECORDED 1.25x IS STALE, because the folded path has improved far more than the values path since. A streaming `sum` fold is REFUTED as unwriteable, but a per-vertex GETTER read worth 13% is not**
+## Item 2335 — 🎯 **`sum`/`avg` COST 2.21x THE FOLDED `count(n.w)` ON THE SAME PROPERTY (25.37 vs 11.50 ns a vertex) — and ITEM 530's RECORDED 1.25x IS STALE, because the folded path has improved far more than the values path since. A streaming `sum` fold is REFUTED as unwriteable** (⚠️ ~~and a per-vertex GETTER read worth 13% is not~~ — **that slice does NOT exist; item 2336 found the destructuring already hoisted and the whole 25.37 ns accounted**)
 
 Aggregation was the last read shape with no per-row comparison. ✅ The grouped and closed-form arms behave:
 
@@ -117001,3 +117001,57 @@ byte-identity exposure.** ✅ Recorded as the buildable slice; the 19.8 ns in `a
 caller is the part the impossibility argument covers.
 
 GATES. `bun run fmt` 0, `bun run check` 0. One probe (ten arms); no production change.
+
+## Item 2336 — ✅✅ **THE 13% SLICE I NOMINATED LAST ITEM DOES NOT EXIST — the destructuring is ALREADY hoisted, and `variable.variable` is V8's name for the compiled closure itself, whose 3.42 ns is the ~3 ns closure-dispatch floor plus a `binding.get`. ✅ With that, ALL 25.37 ns of `sum` is accounted for, and the reason it cannot stream is exact: ONE temporal anywhere in the collection turns addition into a data exception**
+
+Item 2335 nominated hoisting a per-vertex getter read out of the loop, worth 13%. ⚠️ **It was already
+hoisted:**
+
+```js
+    case "prop": { const { variable, key } = expr;
+      return (env) => propOf(env.binding.get(variable), key); }
+```
+
+✅ `variable` and `key` are destructured OUTSIDE the returned closure, so nothing reads a getter per row.
+**`variable.variable:9435` is V8 naming that arrow function**, and its 3.42 ns a vertex is the closure call
+plus `env.binding.get(variable)` — a Map lookup. 🔑 `closure-dispatch-is-cheap-keyed-loads-are-not` prices
+a compiled-closure call at **~3 ns**, so 3.42 is that floor, and the `binding.get` half sits inside
+`binding-allocation-is-closed` (items 2023/2024, VIEW and REUSE both built, priced, refused).
+
+### ✅ AND THE IMPOSSIBILITY IS NOT A HAND-WAVE — THE CODE STATES IT
+
+```ts
+// `sum` over DURATIONs folds via the same `dur + dur` (overflow throws);
+// `avg` over any temporal, and `sum` over a non-DURATION, are loud data
+// exceptions rather than a silent NaN → null.
+// A temporal ANYWHERE in the gr[oup] …
+```
+
+🔑🔑 **One temporal anywhere in the collection changes `sum` from "add numbers" to "raise a data
+exception", so the operation genuinely cannot be chosen until every value has been seen.** ✅ That is item
+467's "chosen by looking at the whole collection", verified rather than quoted — and it also explains
+`isTemporal` at 0.70 ns a vertex in the profile: the per-value check the guarantee requires.
+
+### ✅ THE FULL ACCOUNTING, WHICH IS THE RESULT
+
+```text
+    sum(n.w) = 25.37 ns a vertex
+      10.35   aggregateOverValues      the collection-wide fold — the impossibility covers it
+       6.06   its caller               materializing the values array, which IS the collection
+       3.42   compiled closure         ~3 ns dispatch floor + binding.get (both closed)
+       1.76   propOf                   the ~10 ns property read, SHARED with the folded arm
+       1.02   get properties           ditto
+       0.70   isTemporal               required BY the guarantee above
+```
+
+✅ **Nothing is left unattributed, and every term is either the semantic guarantee or an already-closed
+floor.** ⚠️ So the 2.21x over `count(n.w)` is **the price of `sum`'s error semantics, not a defect** — and
+item 2335's target is closed rather than deferred.
+
+⚠️ **EIGHTH CORRECTION OF MY OWN NUMBER THIS STRETCH, and the first where the correction KILLED a target I
+had already written down as buildable.** The pattern is consistent: I nominate from a profile frame's NAME
+and the code says otherwise. **Read the frame's source before pricing it** — `frame-attribution-trap`
+covers getters, and this is the same error one layer out: a frame named after a field is not necessarily a
+field read.
+
+GATES. `bun run fmt` 0, `bun run check` 0. No production change; one heading corrected.
