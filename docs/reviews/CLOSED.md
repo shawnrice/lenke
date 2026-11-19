@@ -15795,7 +15795,7 @@ total** (50,000 hash lookups instead of 150,000 edge visits, against a fresh ans
 `len()`). Also observed, unattributed: declaring the index costs the FRESH path ~2x (3-4 µs absolute
 on an O(1) path), and it is NOT staleness — `create_edge_type_index` touches nothing CSR-related.
 
-**⚠️ AND AFTER ONE WRITE THE TS ENGINE IS 168x FASTER THAN NATIVE ON THIS SHAPE (item 1042).** Same
+**⚠️ AND AFTER ONE WRITE THE TS ENGINE IS 168x FASTER THAN NATIVE ON THIS SHAPE (item 1042).** (⚠️ **SHAPE-SPECIFIC — item 2348 shows a TS PROJECTION is NOT flat after a write: it pays ~0.5 ms rebuilding the CSR. This arm's flatness is a hop COUNT's closed form, which never touches the CSR.**) Same
 graph, same query, median of reps 4+: ts 0.0019 → **0.0021** (FLAT), native 0.0032 → **0.3523**
 (110x worse). Item 573's rule in reverse — the gap is ALGORITHMIC, not the layout ceiling. **TS
 holds the fix already**: `edgesByLabel: Map<string, Set<Edge>>` maintained on insert (`.add`) and
@@ -117605,3 +117605,53 @@ use rather than wired in**, which keeps the friction that found the hole in the 
 
 GATES. `bun run fmt` 0, `bun run check` 0, `bun run test -- --skip-nx-cache` 0, `bun run fuzz` 57/0, guide
 suite **13 pass / 0 fail, 39 assertions**.
+
+## Item 2348 — 🎯 **THE 27x SPIKE ON THE READ AFTER A TOPOLOGY WRITE IS 77% ONE FRAME: the CSR arm's rebuild (item 1895's closure). ⚠️ And it qualifies item 1042's "the TS engine is FLAT after one write" — that arm was a hop COUNT, a closed form that never touches the CSR; a PROJECTION pays ~0.5 ms per write**
+
+Item 2346 measured one `addEdge` then eight identical typed-hop projections: read 1 at 0.84 ms, **read 2 at
+2.42**, reads 3-8 back at 0.09. 🔑 A 27x spike on the interleaved read/write shape a serving application
+lives in, and nothing had profiled it.
+
+⚠️ A single 2.42 ms read gives too few samples, so the probe repeats write-then-read-twice and profiles the
+loop — with `ARM=steady` (the same reads, NO writes) as the control that makes the frame list mean
+something rather than describe a hop projection.
+
+```text
+    frame                     churn      steady     (ms per 3000 cycles)
+    (anon):21337               1575        138      <== 77% of churn, 11.4x the control
+    propOf                       81         72
+    get properties               55         69
+    indexEdgeLabel               35         19
+    everything else            <=28    comparable
+```
+
+✅ **`(anon):21337` is the CSR arm's returned closure** — item 1895's `(graph, params) => {…}`, whose own
+comment calls the CSR arm _"the whole gap"_ for far-driven hops. 🔑 **So one adjacency write invalidates
+the CSR and the next read rebuilds it, and that rebuild IS the spike.** Overall: 0.59 ms a cycle against
+the control's 0.12.
+
+### ⚠️ PRIOR ART RECONCILES, AND IN DOING SO SHOWS THIS IS NEW
+
+Item 680 measured exactly this for the **native** engine — _"`rebuild_csr` runs at LOAD only … nothing
+re-arms it"_, the penalty permanent and selectivity-scaled to 24x. ⚠️ Item 1042 then recorded **"after one
+write the TS engine is 168x FASTER than native on this shape: ts 0.0019 → 0.0021 (FLAT)"**.
+
+🔑 **That TS arm was a typed hop `count(*)` — 1.9 µs over 150,000 edges, i.e. a CLOSED FORM that never
+touches the CSR at all** (items 2286/2303/2309 price it at ~24 ns a call). ✅ **A projection does touch it,
+and is not flat**: 0.09 → 2.42 ms. ⚠️ So item 1042's flatness is true for counts and **misleading for
+projections**; its heading is qualified in this commit.
+
+✅ **And item 2346's other half still stands**: the TS engine DOES re-arm (reads 3-8 return to baseline),
+where native does not. **The two engines differ in whether the rebuild sticks, not in whether it costs.**
+
+### 🎯 THE LEVER, PRICED AND NOT BUILT
+
+An **incremental** CSR update — insert one edge into the structure rather than rebuilding it — is the
+obvious fix, and item 680 named it with its blocker for native. ⚠️ **For TS this measurement is the first**:
+~0.5 ms a write at 60,000 edges, 77% of the interleaved cost. ✅ **Not built**: it is a structural change to
+a data structure whose byte-identity is fuzzed, and the prize is bounded by how often an application
+interleaves writes with typed-hop projections. **Recorded with the frame, the control and the reconciliation
+so the next attempt starts from a located cost rather than a guess.**
+
+GATES. `bun run fmt` 0, `bun run check` 0. One probe (two arms); no production change; item 1042's heading
+qualified.
