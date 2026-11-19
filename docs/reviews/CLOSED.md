@@ -119486,3 +119486,61 @@ came from instrument gaps rather than from the record's open headings, which is 
 likely to come from too.
 
 GATES. `bun run fmt` 0, `bun run check` 0. No probe, no production change — three reads.
+
+## Item 2380 — ⚠️ **A MIXED-WORKLOAD PROFILE CANNOT NOMINATE A TARGET, and that is the item's result: every share is (per-element cost x element count), and the counts differ by orders of magnitude across shapes. My own estimate of the top candidate was 37x wrong until I used the INPUT row count.** The profiler is kept for the question it can answer
+
+Items 2375-2379 found three coverage holes and then exhausted the named surfaces, so this item took the one
+profile-first move not yet made: every CPU profile this stretch has been of a SINGLE shape, which sees
+monomorphic dispatch. A mixed workload sees the sites an application actually creates.
+
+`mixprof-2380.mjs` drives eight shapes round-robin against one graph — an indexed point lookup, a scan with
+a predicate, a hop count, a hop projection, a grouped count, `V(id).values`, `E(id).values`, a Gremlin scan
+count — 160,000 queries at **19.8 us/query**, 3106 samples:
+
+```text
+    (anon)            34.1%
+    bareDegreeSum     14.1%      bump           8.3%
+    members            7.7%      propOf         7.1%
+    fastPath           3.6%      get properties 3.1%
+    walkSegments       2.7%      withBinding    2.0%
+```
+
+### ⚠️ AND THE TOP NOMINATION DISSOLVED ON ARITHMETIC — MY ARITHMETIC
+
+`bareDegreeSum` is the biggest named frame and is a CLOSED FORM, so 14.1% says that shape is an eighth of
+the workload, not that anything is slow. So I went to `bump` (8.3%), the grouped-count accumulator in
+`optional-hop.ts` — `valueKey(key)`, a `Map.get`, and a field increment.
+
+```text
+    my first estimate   8.3% of 3167 ms over 90 OUTPUT groups x 20,000 rounds   = ~146 ns a call
+    the real figure     the same time over ~3,400 INPUT rows x 20,000 rounds    =  ~3.9 ns a call
+```
+
+🔑 **37x wrong, because a grouped count calls `bump` once per MATCHING ROW, not once per output group.**
+`valueKey` plus a `Map.get` in 3.9 ns is healthy. ⚠️ Same class as item 2328's three work-parity errors:
+the denominator was the wrong population.
+
+### 🔑 THE METHODOLOGICAL RESULT, which is what to keep
+
+The standing mandate says to "let the hot frames nominate the target". ✅ That works for a single shape,
+where a share is comparable against a floor for the SAME element count. ⚠️ **It cannot work for a mixed
+workload**: `bareDegreeSum` 14.1%, `bump` 8.3%, `members` 7.7% and `propOf` 7.1% are each a per-element
+cost times an element count, and the counts here span 1 row (a point lookup) to ~12,000 (a hop count) —
+three orders of magnitude. **A share therefore ranks shapes by how much work the workload asked of them,
+and says nothing about whether any of them is inefficient.** Dividing by the right population turns the
+biggest candidate into 3.9 ns.
+
+✅ So the instrument is kept for what it does answer — where time goes in a realistic mix, and whether a
+frame appears that single-shape profiles never show — and NOT used to pick targets. Targets still come from
+a per-element cost against an honest floor, which is what items 2372/2373's ladder did and what found the
+3.01x at item 2374.
+
+⚠️ Four probe defects were fixed before the profile was trusted, each of which would have corrupted it: the
+indexed point lookup answered **rows=0** (one vertex in seven is `Admin`, so it timed a MISS — item 2317's
+trap); `Math.random()` sat in the timed loop, which would appear in the profile as engine-adjacent work;
+`createIndex({ on: 'node' })` is invalid and the engine's own error named the fix (`'vertex'`); and an
+80 ms timed section gave only ~80 samples until the round count was raised 50x.
+
+GATES. `bun run fmt` 0, `bun run check` 0 (three iterations: the index target, a template-literal type on a
+tuple-destructured `name`, and one self-inflicted assertion failure — my code-free check tripped on the
+word `Math.random` inside my own comment).
