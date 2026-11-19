@@ -352,4 +352,36 @@ describe('docs/guides/query-cost.md snippets', () => {
      */
     expect(JSON.stringify(whole).length).toBeGreaterThan(JSON.stringify(named).length);
   });
+
+  /*
+   * ⚠️ **A SNIPPET-COVERAGE GAP FOUND BY COMPARING QUERY TEXTS (item 2347).** "Index the key you look it
+   * up by" shows `MATCH (u:User) WHERE u.name = $n RETURN u.score AS s`, and no test executed that exact
+   * shape — the earlier tests all use `:Person`. 🔑 A first, cruder audit reported every block "covered"
+   * because it matched any token anywhere in this file; comparing the STATEMENT SHAPES found two gaps, one
+   * of them real.
+   *
+   * ✅ What the rule promises a reader is that the index changes the TIME and not the ANSWER, and that it
+   * can be created after the rows exist — both asserted here on the guide's own `:User` shape.
+   */
+  test("the index rule's own snippet runs, and the index does not change its answer", () => {
+    const build = (withIndex: boolean): unknown[] => {
+      const g = new Graph();
+
+      for (let i = 0; i < 40; i += 1) {
+        g.addVertex({ id: `u${i}`, labels: ['User'], properties: { name: `user${i}`, score: i } });
+      }
+
+      /* ✅ Created AFTER the rows, which is the other half of what the rule claims. */
+      if (withIndex) {
+        g.createIndex({ on: 'vertex', kind: 'hash', keys: ['name'] });
+      }
+
+      return query(g, 'MATCH (u:User) WHERE u.name = $n RETURN u.score AS s', { n: 'user7' }).map(
+        (r) => r.s,
+      );
+    };
+
+    expect(build(false)).toStrictEqual([7]);
+    expect(build(true)).toStrictEqual([7]);
+  });
 });

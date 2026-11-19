@@ -117561,3 +117561,47 @@ correction of my own work this stretch.**
 GATES. `bun run fmt` 0, `bun run check` 0, guide suite 12 pass / 0 fail. ✅ **The guide sweep is now
 complete: all 11 rules re-measured or re-verified, 4 corrected** (the projection rule's direction, the
 hoisting mechanism, two paging ratios, and this one's magnitude and span).
+
+## Item 2347 — ✅✅ **THE GUIDE SWEEP's OWN GATE HAD A HOLE: after four rules were rewritten the test count never moved, and comparing STATEMENT SHAPES found one guide query no test executed. ⚠️ My first audit called all 8 blocks "covered" — because it matched any token anywhere in the test file**
+
+Items 2343-2346 rewrote four of the guide's eleven rules. ⚠️ **The guide's standard is that every snippet
+is gated by a test, and the suite count stayed at 12 throughout** — which is either a coincidence or a
+hole.
+
+### ⚠️ MY FIRST AUDIT WAS TOO WEAK TO TELL, AND SAID SO BY PASSING EVERYTHING
+
+It extracted each code block's first quoted string and asked whether any token from it appeared anywhere in
+the test file. ✅ All 8 blocks came back "COVERED" — **which is the `gate-returning-a-value` failure in a
+new place: it asserted that something matched, not that the right thing ran.**
+
+✅ The stronger version compares STATEMENT SHAPES — clauses in order, with params, numbers and literals
+normalised — between the guide and the test file:
+
+```bash
+# re-runnable by hand; normalises $params, numbers and 'literals' and compares clause shapes
+python3 - <<'PY'
+import io,re
+g=io.open('docs/guides/query-cost.md').read(); t=io.open('packages/native/src/guide-query-cost.test.ts').read()
+q=lambda s:{re.sub(r'\s+',' ',m.group(0)).strip() for m in re.finditer(r"(MATCH|INSERT)\b[^'\"\n`]{10,160}",s)}
+n=lambda x:re.sub(r"\$\w+|\d+|'[^']*'",'X',x)
+print([x for x in sorted(q(g)) if not any(n(y)==n(x) for y in q(t))])
+PY
+```
+
+⚠️ **It found two gaps, one real**: `MATCH (u:User) WHERE u.name = $n RETURN u.score AS s` from _"Index the
+key you look it up by"_ was executed by nothing — every existing test uses `:Person`. ✅ The other,
+`MATCH … WHERE … SET …`, is a prose ellipsis rather than a snippet and is expected to stay uncovered.
+
+✅ **Test added** on the guide's own `:User` shape, asserting both halves of what that rule promises: the
+index changes the TIME and not the ANSWER, and it can be created AFTER the rows exist. **13 pass / 39
+assertions**, and the audit now reports only the ellipsis.
+
+### ⚠️ AND A PIECE OF AUTOMATION I DECIDED NOT TO SHIP
+
+The audit would make a tidy CI gate. ⚠️ **`audit-friction-is-load-bearing` records that such automation was
+DECLINED for `CLOSED.md`** — the loose index forces the re-verification that found items 578, 1221 and 1260,
+and this stretch's four corrected rules are the same argument. ✅ **So the one-liner is recorded for hand
+use rather than wired in**, which keeps the friction that found the hole in the first place.
+
+GATES. `bun run fmt` 0, `bun run check` 0, `bun run test -- --skip-nx-cache` 0, `bun run fuzz` 57/0, guide
+suite **13 pass / 0 fail, 39 assertions**.
