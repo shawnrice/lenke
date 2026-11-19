@@ -149,6 +149,20 @@ const SHAPES: [string, Plan][] = [
   ['V().count()', traversal(V(), count())],
   ['V().hasLabel.count()', traversal(V(), hasLabel('Person'), count())],
   ['V().has(age,gt).count()', traversal(V(), has('age', gt(44)), count())],
+  /*
+   * SCAN-ROOTED VALUE PROJECTIONS, BOTH ELEMENT TYPES (item 2376).
+   *
+   * ⚠️ `E().values(w)` is the shape item 2321 shipped `edgeValuesShortcut` for — 3.47x, 26.6 -> 7.7 ns an
+   * edge — and this bench had NO row for it, so nothing here guarded that ship. The edge-rooted surface
+   * carried only two rows before this, both `count()`s, which are closed forms. Same coverage hole item
+   * 2375 closed for id-seeded sources, one shape along.
+   *
+   * 🔑 The vertex twin is the control: the two walk a DIFFERENT number of elements (200,000 vertices
+   * against 1,000,000 edges at this fixture's fanout of 5), so the pair is read PER ELEMENT, not as a
+   * ratio between the rows.
+   */
+  ['V().values(age)', traversal(V(), values('age'))],
+  ['E().values(w)', traversal(E(), values('w'))],
   ['E().count()', traversal(E(), count())],
   // ADDED AT ITEM 877. This row did not exist, which is why a 89,800x gap went unmeasured:
   // `E().hasLabel(T).count()` lowers to `Aggregate{Filter{EdgeScan, IsLabeled}}`, which no

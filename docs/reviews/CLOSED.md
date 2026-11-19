@@ -119279,3 +119279,49 @@ instead — it has no quoting layer and it checks the WHOLE file rather than one
 GATES. Tree restored to HEAD (`git diff` on `packages/gremlin` empty), rebuilt, `bun run fmt` 0, `bun run
 check` 0 (one TS error fixed: I wrote `FANOUT`, which is only a word in a comment here — the edge loop is
 `k < N * 5`).
+
+## Item 2376 — ⚠️ **NOTHING TO BUILD, and the asymmetry that looked like a target is a property of the LANGUAGE: 27 rungs gate V-only against 1 E-only, but the hop rungs are vertex-rooted by shape. The one edge rung that matters is HEALTHY — `E().values(w)` is 25.7 ns an edge against the vertex twin's 21.0, and TS beats native 0.7x.** Two bench rows added, which were guarding item 2321's 3.47x ship with nothing
+
+Item 2375 found a coverage hole (no id-seeded row) that had let a 3x sit, so this item asked the
+generalizable version: **does the same one-line gate refuse edges elsewhere?** Searching the SHAPE rather
+than a property access, which is item 2373's lesson:
+
+```text
+    gates on `source.kind !== 'V'`                        27
+    gates on `source.kind !== 'E'`                         1   (edgeValuesShortcut, item 2321)
+    gates admitting BOTH                                   3   (count-shortcut, index.ts:1350, item 2374)
+```
+
+⚠️ **That 27:1 looks like 26 missing twins and is not.** Almost every V-only gate reads
+`kind !== 'V' || (source.ids?.length ?? 0) > 0` and belongs to a HOP rung — `hop-values`,
+`hop-values-csr`, `choose-hop-values`, `edge-filtered-hop-values`, `start-filtered-hop-values`,
+`tagged-hop-values`, … . A hop is rooted at a vertex because that is what `out`/`in`/`both` traverse; the
+edge-rooted analogue is a different shape (`E().inV()`), not the same rung with a flag. **Refusing `E`
+there is semantics, not an oversight.**
+
+### ✅ AND THE ONE EDGE RUNG THAT DOES MATTER MEASURES HEALTHY
+
+The bench carried only two edge-rooted rows, **both `count()`s, which are closed forms** — so
+`E().values(w)`, the shape item 2321 shipped `edgeValuesShortcut` for at 3.47x, had **no row guarding it**.
+Added it with its vertex twin:
+
+```text
+    row                  ts        native   ts/nat    per element
+    V().values(age)     4.2 ms      4.53     0.9x     21.0 ns   (200,000 vertices)
+    E().values(w)      25.7        37.31     0.7x     25.7 ns   (1,000,000 edges)
+```
+
+🔑 **Read per element, not as a ratio between the rows** — they walk 5x different counts at this fixture's
+fanout. 25.7 ns an edge against 21.0 ns a vertex is **1.22x**, which is the same order as the 1.35x the
+host `getEdgeById`/`getVertexById` pair shows (item 2351), and TS is FASTER than native on both. ✅ Nothing
+to take.
+
+### What the item leaves behind
+
+Two rows that did not exist, guarding a shipped 3.47x; and a recorded reason not to re-raise the 27:1 gate
+count as a target. ⚠️ The honest residual: an edge-rooted HOP (`E().inV().values(age)`) is still
+uninstrumented, because `inV`/`outV` are not imported in that bench and adding a step import to chase a
+shape with no prior evidence is speculative. If an edge-rooted traversal ever matters, that is the row to
+add first.
+
+GATES. `bun run fmt` 0, `bun run check` 0. Bench rows only; no production change.
