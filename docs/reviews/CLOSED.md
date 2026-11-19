@@ -119741,7 +119741,7 @@ dispatch site monomorphic and change the measurement for a reason unrelated to w
 GATES. `bun run fmt` 0, `bun run check` 0. Item 2383's reasoning corrected. Probe knob only; no production
 change.
 
-## Item 2385 — ✅✅ **THE WHOLE LABEL-VACUITY EFFECT IS ONE SHAPE: a HOP COUNT at 5.09x, and the grouped count is FLAT at 1.00x.** ⚠️ Found by fixing a WORK-PARITY DEFECT in my own knob at items 2383/2384 — it RELABELLED vertices, so every `:Person` query matched 14% fewer rows and the grouped count read 0.90x, the realistic arm _faster_
+## Item 2385 — ✅✅ **THE WHOLE LABEL-VACUITY EFFECT IS ONE SHAPE: a HOP COUNT at 5.09x** (⚠️ **a FLOOR — item 2386 finds the cliff grows with |V|: 4.15x at 4k, 6.37x at 20k, 10.51x at 60k, and my fixture was below the size item 2086 says is needed)**, and the grouped count is FLAT at 1.00x.** ⚠️ Found by fixing a WORK-PARITY DEFECT in my own knob at items 2383/2384 — it RELABELLED vertices, so every `:Person` query matched 14% fewer rows and the grouped count read 0.90x, the realistic arm _faster_
 
 Item 2384 measured 1.26x on an analytic mix but that weighting bundles two shape families. Weighting each
 alone separated them — and the separation exposed the defect.
@@ -119800,3 +119800,60 @@ is worth proposing.
 
 GATES. `bun run fmt` 0, `bun run check` 0. Items 2383 and 2384's headings corrected. Probe knob only; no
 production change.
+
+## Item 2386 — ⚠️ **ITEMS 2383-2385 REDISCOVERED ITEM 2086's FINDING (`hopall` 4.60x, mechanism already named: the CSR arm declines), and my fixture was 5x BELOW the size item 2086 says is needed.** ✅ The new contribution is the cliff's SIZE CURVE — 4.15x at 4k, 6.37x at 20k, **10.51x at 60k and still rising**
+
+Item 2385 localized the label-vacuity effect to a one-hop count at 5.09x. The prior art chain settles what
+that is, and it is not new.
+
+```text
+    item 1934   one off-label vertex costs a hop read 6.2x — a CLIFF, not a gradient; 43 gates, 7 files;
+                worst case 1157x (an O(1) hop count becomes a full enumeration)
+    item 1935   the plan-rewrite route REFUTED (`IS LABELED` measures 0.94x, worse)
+    item 1940   TAKEN for the hop PROJECTION: 4.6x, cliff 8.92x -> 2.21x. ⚠️ Its own control table
+                records "count shortcut (a DIFFERENT gate) 880x unchanged"
+    item 2086   the corpus swept under MIXED labels: `hopall` (a ONE-HOP COUNT) 4.60x isolated,
+                `count2` 7.60x, and the mechanism is a ROUTE CHANGE — the CSR arm declines
+```
+
+🔑 **`hopall` at 4.60x IS my 5.09x**, and item 2086 already named the mechanism. ✅ So items 2383-2385 are a
+rediscovery — which the standing rule says to check for first, and which I did not for this chain because I
+arrived from a workload profile rather than from a shape.
+
+### ⚠️ AND ITEM 2086 CONTAINS A DIRECT CAVEAT ON MY OWN NUMBER
+
+> _"At `NODES=20000` the sweep reports `hopfilter` at 0.78x … At 200,000 the same pair is the 5.98x. **The
+> elision's absence costs a CACHE MISS per candidate, so a 20,000-vertex screen cannot see the effect it
+> exists to find.** Default raised to 200,000."_
+
+⚠️ `mixprof`'s fixture is **4,000 vertices** — five times below the size that entry calls already too
+small. So the 5.09x was a floor. Swept:
+
+```text
+    NODES     LABELS=1    LABELS=2    ratio
+     4,000       7.20       29.90     4.15x
+    20,000      18.41      117.32     6.37x
+    60,000      47.17      495.79    10.51x   ⬅ still rising
+```
+
+✅ **That curve is the item's real output, and no prior entry published it**: item 2086 reports single
+figures at two sizes for a different shape. 🔑 The vacuous arm grows SUBLINEARLY in |V| (7.20 -> 47.17 for a
+15x graph — a degree-sum closed form), the mixed arm faster than linearly, which is exactly what "a cache
+miss per candidate" predicts. **So the cliff is not a constant 5x; it widens with the graph**, and a
+production-sized people-graph sits far to the right of anything measured here.
+
+### ✅ WHAT ITEMS 2383-2385 DID ADD, since the shape itself was known
+
+- The **workload-level** price: 1.07x equal, 1.10x point-dominated, 1.38x analytic — item 2086 swept
+  shapes, not workloads, so what the cliff costs a mix had not been measured.
+- The **isolation** that the grouped count is FLAT at 1.00x, so the whole effect is hop counts and no other
+  analytic shape contributes.
+- A **work-parity defect found and fixed** in my own knob, which had inverted the grouped-count arm.
+
+⚠️ **NOT A TARGET HERE.** The mechanism is a route change the CSR arm declines; item 1935 refuted the
+rewrite route, item 1940 took the projection and explicitly left the count gate, and whether the count
+shortcut can keep its closed form on a non-vacuous label is the question — asked properly with a size
+sweep, since the answer's value grows with |V|.
+
+GATES. `bun run fmt` 0, `bun run check` 0. Item 2385's heading caveated. Probe sizes only; no production
+change.
