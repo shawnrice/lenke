@@ -119857,3 +119857,66 @@ sweep, since the answer's value grows with |V|.
 
 GATES. `bun run fmt` 0, `bun run check` 0. Item 2385's heading caveated. Probe sizes only; no production
 change.
+
+## Item 2387 — 🎯 **THE MECHANISM IS EXACT AND THE FIX IS THE CODEBASE's OWN, APPLIED ONE CASE ALONG: `bothLabelledHopCount` answers `(a:L)-[:T]->(b:L)` as `total − edges touching a non-L vertex` in O(complement). The START-ONLY shape `(a:L)-[:T]->(b)` has no such arm and falls to an O(members) degree sum — which is the 4-10x cliff items 2385/2386 measured**
+
+Item 2386 left the question: why did item 1940 leave the count gate, and can the closed form survive a
+second label? Reading settles both.
+
+### ✅ WHAT ACTUALLY HAPPENS, AND IT IS NOT AN ENUMERATION
+
+⚠️ Item 1934's phrase "a full enumeration" is not what this shape does. `bareDegreeSum` already serves the
+labelled case and is O(|bucket|), not O(E):
+
+```ts
+for (const v of candidateVertexSource(graph, label)) {
+  n += (forward ? v.adjFrom : v.adjTo)?.get(type)?.size ?? 0;
+}
+```
+
+🔑 So the cliff is **O(1) → O(members)**, not O(1) → O(E): with the label VACUOUS, `effectiveLabel` elides
+it, the shape becomes "all edges of this type", and the answer is `graph.edgesByLabel.get(type).size` — one
+`Map.get`. With the label real, every `Person` is visited and its `adjFrom.get(type)` read. ✅ That matches
+the measured curve exactly — items 2385/2386 found the vacuous arm sublinear in |V| and the mixed arm
+linear.
+
+### 🎯 AND THE CODEBASE ALREADY SOLVES THE HARDER VERSION OF THIS
+
+`both-labelled-hop.ts` answers the BOTH-labelled count by **complement**: `total` from the O(1) edge-type
+count, minus the edges with an endpoint outside the label, walking only the complement. Its own gate names
+the condition:
+
+```ts
+const outside = graph.vertexCount - members.size;
+if (outside * 8 > total) {
+  return null;
+} /* only a win while the complement is SMALL */
+```
+
+⚠️ **That rung requires BOTH endpoints labelled, so it cannot touch `(a:Person)-[:KNOWS]->(b)`** — and a
+search for any other site computing a label complement for a hop count finds none. **The start-only shape
+has no complement arm.**
+
+### ✅ THE PROPOSAL, which is strictly simpler than what already ships
+
+For a start-only labelled count the answer is `total − (out-edges of this type from vertices OUTSIDE L)`.
+🔑 **No double-count subtlety arises** — the both-labelled case needs its careful asymmetric arithmetic
+because an edge can have either or both endpoints outside, whereas every edge has exactly ONE source. So
+the harder case is already shipped and the easier one is missing.
+
+```text
+    fixture 4,000 Person + 571 Admin, 12,000 edges of type
+    today      bareDegreeSum walks 4,000 members, one Map.get each       29.90 us
+    vacuous    one Map.get                                                7.20 us
+    proposed   walk 571 outside vertices, subtract                       ~7x fewer vertices
+```
+
+⚠️ The existing `outside * 8 > total` gate already encodes when this is a win, so the extension inherits a
+swept threshold rather than needing a new one. ⚠️ And it is a READ-ONLY derivation from
+`edgesByLabel`/`verticesByLabel` — **no maintained aggregate, no new mutable state, no invalidation**,
+which is what disqualified the dense ordinal and what items 2349/2350 deferred for CSR.
+
+NOT BUILT. The controls are named by the measurement already: the vacuous arm must stay flat, a
+minority-label graph must decline via the gate, and the both-labelled rung must be untouched.
+
+GATES. `bun run fmt` 0, `bun run check` 0. No probe, no production change — four reads.
