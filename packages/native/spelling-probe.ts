@@ -1515,6 +1515,29 @@ const SEEK_GROUPS: [string, readonly string[], Record<string, unknown>][] = [
     // What DID narrow: both conjuncts written INLINE is as fast as the best clause form, and
     // without a second conjunct the spellings converge. So the slow corner needs the MIX of an
     // inline seed and a clause conjunct. The mechanism is still open.
+    /*
+     * AN EQUALITY PLUS AN ORDERING COMPARISON, BOTH SPELLINGS (item 2370).
+     *
+     * `specializeCmpPair` admits `props` + `cmpProps` and `eqProps` + `cmpProps`, so the clause and inline
+     * spellings of the same pair both reach it. ⚠️ That symmetry is deliberate and this group is what
+     * keeps it honest: item 1604 shipped the EQUALITY pair over both carriers specifically because
+     * specializing one spelling only "would open a 2.7x EQUIVALENT-SPELLING GAP, the defect class this
+     * engine is named after", and the same argument applies one carrier along.
+     *
+     * The flipped operand order is included because `25 < n.k` and `n.k > 25` must compile to the same
+     * `cmpProps` entry — one of the four historical index-seeding bugs had exactly that shape.
+     */
+    'MIXED PAIR: an equality AND an ordering comparison — clause vs inline vs flipped (item 2370)',
+    [
+      'MATCH (n:P) WHERE n.s = $s AND n.k > 25 RETURN count(*) AS c',
+      'MATCH (n:P {s: $s}) WHERE n.k > 25 RETURN count(*) AS c',
+      'MATCH (n:P) WHERE n.k > 25 AND n.s = $s RETURN count(*) AS c',
+      'MATCH (n:P) WHERE n.s = $s AND 25 < n.k RETURN count(*) AS c',
+      'MATCH (n:P {s: $s}) WHERE 25 < n.k RETURN count(*) AS c',
+    ],
+    { s: 's1' },
+  ],
+  [
     'SEEK: two equalities, one seeked — all four spellings (item 580)',
     [
       'MATCH (n:P) WHERE n.k = $k AND n.s = $s RETURN count(*) AS c',

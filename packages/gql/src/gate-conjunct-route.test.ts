@@ -70,7 +70,7 @@ describe('which conjuncts take the pre-resolved arm', () => {
     expect(specializedConjunct({ pred })).toBeDefined();
   });
 
-  test('TWO carriers do not — one closure cannot answer a conjunction', () => {
+  test('TWO carriers DO, since item 2370 — an equality plus ONE ordering comparison', () => {
     const where = {
       kind: 'and',
       items: [
@@ -89,7 +89,66 @@ describe('which conjuncts take the pre-resolved arm', () => {
       ],
     };
 
-    expect(specializedConjunct({ pred: predOf(undefined, where) })).toBeUndefined();
+    /*
+     * ⚠️ THIS ASSERTED `toBeUndefined()` UNTIL ITEM 2370, and its old name said "one closure cannot
+     * answer a conjunction". `specializeCmpPair` is that closure: `eqProps` or `props` for the equality
+     * plus `cmpProps` for the ordering comparison, emitted in `satisfies`'s own carrier order. The gap it
+     * closes was 1.19x of an unindexed scan's per-candidate cost (24.43 ns against a PAIRABLE pair's
+     * 20.40), measured at item 2363 and taken at 2370 — and the element-by-element agreement test below
+     * is what makes "it answers the conjunction" a claim about the ANSWER rather than about the route.
+     */
+    expect(specializedConjunct({ pred: predOf(undefined, where) })).toBeDefined();
+  });
+
+  test('the MIXED pair agrees with satisfies element by element', () => {
+    const g = new Graph();
+
+    for (let i = 0; i < 60; i += 1) {
+      g.addVertex({ id: `m${i}`, labels: ['P'], properties: { k: i % 5, n: i } });
+    }
+
+    /** `u.k = 2 AND u.n > 20` — one `eqProps` entry and one `cmpProps` entry, the new arm's shape. */
+    const where = {
+      kind: 'and',
+      items: [
+        {
+          kind: 'compare',
+          op: '=',
+          left: { kind: 'prop', variable: 'u', key: 'k' },
+          right: { kind: 'lit', value: 2 },
+        },
+        {
+          kind: 'compare',
+          op: '>',
+          left: { kind: 'prop', variable: 'u', key: 'n' },
+          right: { kind: 'lit', value: 20 },
+        },
+      ],
+    };
+    const pred = predOf(undefined, where);
+    const fast = specializedConjunct({ pred });
+
+    expect(fast).toBeDefined();
+
+    let matched = 0;
+
+    for (let i = 0; i < 60; i += 1) {
+      const v = g.getVertexById(`m${i}`);
+      const slow = satisfies(v as never, pred, new Map(), {}, g);
+
+      expect(fast?.(v as never, { binding: new Map(), params: {}, graph: g })).toBe(slow);
+
+      if (slow) {
+        matched += 1;
+      }
+    }
+
+    /*
+     * ⚠️ A NON-ZERO, NON-TOTAL match count, so neither closure can pass by answering a constant.
+     * `k = i % 5` and `n = i` over 60 vertices: `k = 2` holds for 12 of them (i = 2, 7, … 57) and
+     * `n > 20` for the 8 of those above 20 (i = 22, 27, 32, 37, 42, 47, 52, 57).
+     */
+    expect(matched).toBe(8);
   });
 
   test('the selected arm agrees with satisfies element by element', () => {

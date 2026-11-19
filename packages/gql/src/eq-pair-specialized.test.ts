@@ -136,7 +136,16 @@ describe('which predicates the pair admits', () => {
 
     expect(pred.eqProps?.length).toBe(1);
     expect(pred.cmpProps?.length).toBe(1);
-    expect(specializeNarrowPred(pred)).toBeUndefined();
+    // The EQUALITY pair still refuses it, which is this test's original point and still true.
+    expect(specializeEqPair(pred)).toBeUndefined();
+    /*
+     * ⚠️ BUT THE COMBINED ENTRY POINT NOW ANSWERS IT (item 2370). The comment above says mixing the
+     * carriers "would need a third reading in the same closure" — `specializeCmpPair` is that third
+     * reading, added as a SEPARATE narrow contract rather than by widening this one, which is the shape
+     * item 1604 argued for when it declined to widen `specializeSingleProp`. Worth 1.19x of an unindexed
+     * scan's per-candidate cost.
+     */
+    expect(specializeNarrowPred(pred)).toBeDefined();
   });
 
   test('a carrier the function has never heard of makes it REFUSE, not ignore', () => {

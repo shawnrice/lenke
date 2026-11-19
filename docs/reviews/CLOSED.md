@@ -118414,7 +118414,7 @@ mechanisms.
 
 GATES. `bun run fmt` 0, `bun run check` 0. Probe arms only; no production change.
 
-## Item 2363 — I spent four items pricing a cliff that item 1604 ALREADY FIXED, and most of what is left is a second predicate's real work. No equivalent-spelling gap; the only open piece is the non-PAIRABLE carrier pair at ~1.19x
+## Item 2363 — I spent four items pricing a cliff that item 1604 ALREADY FIXED, and most of what is left is a second predicate's real work. No equivalent-spelling gap; ~~the only open piece is the non-PAIRABLE carrier pair at ~1.19x~~ **that piece is TAKEN at item 2370: `specializeCmpPair`, 1.23x, four controls flat**
 
 Items 2359-2362 treated "a second conjunct costs 1.76x" as a defect and proposed four mechanisms for it,
 three of them refuted by measurement. This item found the prior art and the arithmetic that dissolve most
@@ -118858,3 +118858,71 @@ mode as a stale `CLOSED.md` heading and deserves the same correction.
 
 GATES. `bun run fmt` 0, `bun run check` 0, rebuilt. Oracle reverted; the only production change is 20 lines
 of comment.
+
+## Item 2370 — ✅ **SHIPPED: `specializeCmpPair` takes item 2363's last open piece — an equality plus ONE ordering comparison is now one straight-line closure. 1.23x (488.5 -> 397.0 us), landing ON the PAIRABLE pair's own level, four controls flat, and the mixed pair's five spellings converge within 1.22x**
+
+Items 2359-2363 dissolved a supposed 2.11x conjunction cliff down to one real remnant: `PAIRABLE` is
+`{props, eqProps}`, both equality readings, so a pair including `cmpProps` — any ORDERING comparison —
+declined `specializeEqPair` and ran the generic `satisfies` loop at 24.43 ns a candidate against a PAIRABLE
+pair's 20.40. This takes it.
+
+```text
+    arm                               PRE      LIVE     verdict
+    bare           (control)        227.1     228.1     1.00x ✓
+    twoEq          (control, PAIRABLE pair)
+                                    408.2     403.6     1.01x ✓
+    oneCarrier     (control, `<>` excluded by design)
+                                    401.7     404.5     0.99x ✓
+    cheapAnd       TARGET           488.5     397.0     1.23x ⬅
+    cheapAnd3      (control, 3 entries -> declines)
+                                    477.0     488.1     0.98x ✓
+```
+
+🔑 **397.0 against the PAIRABLE pair's 403.6** — the `cmpProps` pair now costs what an equality pair costs,
+which was the measured ceiling. Four controls flat, including two that must decline by construction: `<>`
+is excluded (an equality in `cmpProps` routes to `compareTruth`, not to a `COMPARE` entry, which is
+`specializeSingleProp`'s own exclusion) and three entries fall past the pair.
+
+### A SEPARATE narrow contract, not a widened one — item 1604's argument, one carrier along
+
+`specializeNarrowPred` is now `specializeSingleProp ?? specializeEqPair ?? specializeCmpPair`, with the new
+arm LAST so every existing route is untouched and it only sees what both others decline. Item 1604 refused
+to widen `specializeSingleProp` for its own pair because "its first version used a hand-written list and
+MISSED FOUR CARRIERS, answering 5 where the right answer was 2"; the same reasoning applies here, so this
+is a third contract beside the other two rather than a change to either.
+
+⚠️ `satisfies` consults `props`, then `eqProps`, then `cmpProps`, so the EQUALITY is emitted first in both
+arms. Null semantics are carried over verbatim from each carrier's own single-entry arm: `props` is a plain
+`structuralEq` (an inline `{k: null}` matches a stored null), `eqProps` rejects a null right-hand side, and
+the ordering test keeps the `typeof` fast path with `compareTruth(...) === true` behind it.
+
+### The two tests that failed were the right ones, and what replaced them
+
+Both asserted the OLD scope: _"TWO carriers do not — one closure cannot answer a conjunction"_ and _"a
+non-equality carrier refuses even at width 2"_. ⚠️ I read them before touching them, because a test named
+"cannot" might encode a semantic blocker — it did not: the second's own comment says mixing the carriers
+"would need a third reading in the same closure", which is a statement about this function's SCOPE, and
+`specializeCmpPair` is that third reading.
+
+✅ **The replacement is an ANSWER test, not a route flip.** `gate-conjunct-route.test.ts` already had "the
+selected arm agrees with satisfies element by element"; the mixed pair now has its own copy of that oracle —
+60 vertices, the fast closure compared against `satisfies` on every one, and `expect(matched).toBe(8)` so
+neither side can pass by answering a constant. The eq-pair test keeps its original claim (the EQUALITY pair
+still refuses) and adds that the combined entry point now answers it.
+
+### Gates, all of them
+
+```text
+    bun run fmt                  0
+    bun run check                0   (3 lint fixes: an unnecessary `as never`, two boolean compares)
+    bun run test                 0   21 projects, 0 fail
+    bun run fuzz                 0   57 pass, 0 fail — byte-identity across all seven
+    bun run spelling             0 groups disagree on the ANSWER, 0 over 2x
+```
+
+✅ **And a new spelling group, per CLAUDE.md's rule for adding a predicate form.** Five spellings of the
+mixed pair — clause, inline, reversed conjunct order, and the flipped operand `25 < n.k` in both — converge
+at 1.58-1.93 ms, a 1.22x spread. ⚠️ The flipped operand is there because `25 < n.k` and `n.k > 25` must
+reach the same `cmpProps` entry, and one of the four historical index-seeding bugs had exactly that shape.
+Both spellings are admitted by construction, which is item 1604's "both spellings or neither" honoured
+rather than re-learned.

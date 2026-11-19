@@ -4568,10 +4568,101 @@ export const specializeEqPair = (
  * width-2 pair. The order is not load-bearing — the two are disjoint by entry count — but it keeps
  * the cheaper, five-carrier function first, and it is ONE decision per QUERY either way.
  */
+/** The three carriers {@link specializeCmpPair} can answer: one ORDERING comparison plus one equality. */
+const CMP_PAIRABLE: ReadonlySet<string> = new Set(['props', 'eqProps', 'cmpProps']);
+/**
+ * ONE ordering comparison plus ONE equality as one straight-line closure, or `undefined`.
+ *
+ * ⚠️ THE WIDTH-2 CASE ITEM 1604 DID NOT COVER. `PAIRABLE` is `{props, eqProps}`, both equality readings,
+ * so `WHERE u.name = $n AND u.score >= 0` — an equality plus an ORDERING comparison — declines
+ * `specializeEqPair` and falls to the generic `satisfies` loop. Measured at item 2363 over a
+ * 20,000-vertex unindexed scan, one arm per process:
+ *
+ * ```text
+ *    bare         u.name = $n                   11.35 ns/candidate
+ *    twoEq        + u.tier = 'a'   (PAIRABLE)   20.40        <- specializeEqPair takes it
+ *    cheapAnd     + u.score >= 0  (cmpProps)    24.43        <- 1.19x, this function's target
+ * ```
+ *
+ * 🔑 Most of the 20.40 is the second property read and compare — genuine work, not a cliff; item 2363
+ * corrected an earlier claim of 1.76x-2.11x on exactly that point. The 1.19x between a PAIRABLE pair and a
+ * `cmpProps` one is what is actually recoverable.
+ *
+ * ⚠️ `satisfies` consults `props`, then `eqProps`, then `cmpProps`, so the EQUALITY is emitted first in
+ * both arms below — item 1604's rule, kept for the same reason.
+ *
+ * ⚠️ TWO ORDERING COMPARISONS ARE NOT ADMITTED. That is a third contract with its own semantics to get
+ * right, and item 2363's table does not price it; a pair is enough to close the measured gap. The `=` and
+ * `<>` exclusion is `specializeSingleProp`'s own, for its reason: an equality in `cmpProps` is routed to
+ * `compareTruth` rather than to a `COMPARE` entry.
+ */
+const specializeCmpPair = (
+  pred: CPredicate,
+): ((element: Bound, env: EvalEnv) => boolean) | undefined => {
+  for (const [carrier, held] of Object.entries(pred)) {
+    if (held === undefined || (Array.isArray(held) && held.length === 0)) {
+      continue;
+    }
+
+    if (!Array.isArray(held) || !CMP_PAIRABLE.has(carrier)) {
+      return undefined;
+    }
+  }
+
+  const inline = pred.props;
+  const lifted = pred.eqProps ?? [];
+  const cmps = pred.cmpProps ?? [];
+
+  if (cmps.length !== 1 || inline.length + lifted.length !== 1) {
+    return undefined;
+  }
+
+  const [{ key: ck, op, value: cv }] = cmps;
+
+  if (op === '=' || op === '<>') {
+    return undefined;
+  }
+
+  const cmp = COMPARE[op];
+
+  if (inline.length === 1) {
+    const [{ key: k0, value: v0 }] = inline;
+
+    return (element, env) => {
+      if (!structuralEq(propOf(element, k0), v0(env))) {
+        return false;
+      }
+
+      const lhs = propOf(element, ck);
+      const rhs = cv(env);
+
+      return typeof lhs === 'number' && typeof rhs === 'number'
+        ? (cmp as (a: number, b: number) => boolean)(lhs, rhs)
+        : compareTruth(op, cmp, lhs, rhs) === true;
+    };
+  }
+
+  const [{ key: k1, value: v1 }] = lifted;
+
+  return (element, env) => {
+    const r1 = v1(env);
+
+    if (r1 === null || r1 === undefined || !structuralEq(propOf(element, k1), r1)) {
+      return false;
+    }
+
+    const lhs = propOf(element, ck);
+    const rhs = cv(env);
+
+    return typeof lhs === 'number' && typeof rhs === 'number'
+      ? (cmp as (a: number, b: number) => boolean)(lhs, rhs)
+      : compareTruth(op, cmp, lhs, rhs) === true;
+  };
+};
 export const specializeNarrowPred = (
   pred: CPredicate,
 ): ((element: Bound, env: EvalEnv) => boolean) | undefined =>
-  specializeSingleProp(pred) ?? specializeEqPair(pred);
+  specializeSingleProp(pred) ?? specializeEqPair(pred) ?? specializeCmpPair(pred);
 
 export const specializeSingleProp = (
   pred: CPredicate,
