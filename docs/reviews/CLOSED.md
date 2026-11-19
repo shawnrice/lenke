@@ -117875,6 +117875,10 @@ absolute among the high-ratio rows.
 - order by`(787.8) is item 2308's **fixture**, not the engine; and`nodes(p) on a 1-hop path` (705.5) runs
   334.0 on ffi too — **2.1x is expensive in both engines, which is a different question from a TS defect.**
 
+⚠️ **CAVEAT ADDED AT ITEM 2355**: `bench.ts`'s own recorded noise floor is **>10% for rows under ~150 ms**
+and <1.5% for the large ones. ✅ The 40x and 37x RATIOS above are far clear of that, but **the small rows'
+ABSOLUTES must not be quoted as baselines** — four of the five highest-ratio rows are under 150 ms.
+
 GATES. `bun run fmt` 0, `bun run check` 0. No production change — one bench run and a nomination with its
 prior art attached.
 
@@ -117921,3 +117925,38 @@ against 16.94; `sum` 63.39 against 26.32), and `hopCount`'s 14.40 ns a visited e
 both. **None of that is aggregate-specific.**
 
 GATES. `bun run fmt` 0, `bun run check` 0. One probe (five arms, one fixture); no production change.
+
+## Item 2355 — ✅✅ **THE BENCH's LARGEST RATIO IS CLOSED BY READING: `traverse 1-hop + filter` at 40.5x is STABLE (41.0 and 46.2 recorded previously), its user-facing half is already a guide rule I wrote this stretch, and its native half is off-mandate. ⚠️ Plus a caveat on my own item 2353: that bench's noise floor is >10% for rows under ~150 ms, and four of its five highest-ratio rows are smaller than that**
+
+Item 2353 nominated this row — the sweep's largest TS/ffi ratio at 41.4 ms against 1.0. 🔑 A neighbouring
+row made it look sharper still: `traverse 1-hop project` runs at **0.10x** (TS _ten times faster_ than
+ffi), so adding a filter appears to flip the comparison by ~400x.
+
+### ✅ READING THE QUERY AND THE RECORD CLOSED IT IN THREE STEPS
+
+1. ⚠️ **The row is a far-filtered COUNT** — `MATCH (a:Person)-[:KNOWS]->(x) WHERE x.age > 45 RETURN
+count(*)`. The record notes this is exactly what misled an earlier item: _"a COUNT, which never reaches
+   the row-building path. I swept all 69 rows of that bench twice per arm before noticing."_
+2. ✅ **It is stable, not a regression.** The file holds 32.0-32.4 and 41.0 for it, both PRE item 1716 which
+   **changed the fixture for this family**, plus 46.2 after — _"not a baseline … an unanchored number"_,
+   with the author adding _"I nearly reported both as regressions."_ My 41.4 sits with 41.0/46.2.
+3. ✅ **Its halves are both already handled.** The user-facing half is `docs/guides/query-cost.md`'s _"any
+   predicate on a hop count leaves the closed form"_ — a rule written THIS stretch, with ~24 ns against
+   1.02-1.74 ms. ⚠️ And the other half — whether the **native** engine keeps a closed form under a
+   predicate — is **the Rust engine, which is off-mandate.**
+
+🔑 **Sixth closure by reading this stretch**, and the one that avoided the most: an investigation of a
+stable row AND the "nearly reported as a regression" trap its own record warns about.
+
+### ⚠️⚠️ AND A CAVEAT ON MY OWN ITEM 2353, WHICH THAT RECORD SUPPLIED
+
+> _"comparing its two POST passes against each other (same build, so pure noise) gives a floor of **>10%
+> for rows under ~150 ms** and **<1.5% for the large ones**."_
+
+⚠️ **Four of the five highest-ratio rows I tabulated last item are under 150 ms** (41.4, 101.0, 96.1, and
+the 151.3 borderline). ✅ **Their RATIOS are safe** — 40x is nowhere near a 10% floor — ⚠️ **but their
+ABSOLUTES must not be quoted as baselines, and no future sweep should read a change in them as real.**
+Item 2353's entry now carries that caveat. **This is the second time in three items that reading the
+instrument's own record corrected how I had presented its output.**
+
+GATES. `bun run fmt` 0, `bun run check` 0. No probe, no production change — two reads and a caveat.
