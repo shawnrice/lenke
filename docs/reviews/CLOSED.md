@@ -119014,7 +119014,7 @@ these seventeen rows would have been flagged.
 GATES. Tree restored to HEAD (`git diff` on `packages/gql` empty), rebuilt, `bun run fmt` 0, `bun run
 check` 0. Two full bench runs and two builds; no production change in this item.
 
-## Item 2372 — 🎯 **ITEM 2351's "`E(id)` is 3x `V(id)`" IS MIS-ATTRIBUTED: the SOURCES are flat (1.01x). The 3x is the PROJECTION — `values()` costs 441.7 ns on an edge against 17.9 on a vertex, 24.7x** — found by giving that probe the `gremVertex` arm it had been borrowing from another item. Plus decode closed by reading, and both halves of the O(1)-by-id requirement confirmed verified
+## Item 2372 — 🎯 **ITEM 2351's "`E(id)` is 3x `V(id)`" IS MIS-ATTRIBUTED: the SOURCES are flat (1.01x). The 3x is the PROJECTION** — ~~`values()` costs 441.7 ns on an edge against 17.9 on a vertex, 24.7x~~ **(the 24.7x is WRONG: `count()` is not a valid floor. Corrected at item 2373 — the real figure is 3.1x and the cause is a missing shortcut, not an expensive read)** — found by giving that probe the `gremVertex` arm it had been borrowing from another item. Plus decode closed by reading, and both halves of the O(1)-by-id requirement confirmed verified
 
 Three surfaces checked, two closed by reading, one new target isolated.
 
@@ -119077,4 +119077,79 @@ HIT (item 2317). `values('k')` on the vertex side, not `'w'`: this fixture's ver
 edges carry `w`.
 
 GATES. `bun run fmt` 0, `bun run check` 0. Item 2351's observation corrected. Probe only; no production
+change.
+
+## Item 2373 — 🎯 **TARGET LOCALIZED EXACTLY, after correcting my own item 2372: `idSeededValuesShortcut` claims `V(id).values(k)` and REFUSES `E(id).values(k)` — `matchSeededShape` returns `undefined` unless `source.kind === 'V'`. Worth 3.1x (649.1 -> ~210 ns), not item 2372's 24.7x**
+
+Item 2372 subtracted a `count()` arm to price the projection and got 441.7 ns on an edge against 17.9 on a
+vertex. ⚠️ A windowed profile refuted that immediately: `projectValues` is **7.1%** of a 639 ns call, about
+45 ns, nowhere near 441.7. **`count()` is not a valid floor** — a reduce can take a shortcut the projection
+cannot, so the subtraction charges that shortcut to the projection.
+
+### ✅ THE HONEST LADDER, with a source-and-emit floor
+
+```text
+    arm                               ns/call
+    gremVertexBare   V(id)              506.5
+    gremVertex       V(id).values('k')  209.5   ⬅ CHEAPER than emitting the element
+    gremEdgeBare     E(id)              499.5
+    gremEdge         E(id).values('w')  649.1   ⬅ DEARER than emitting the element
+```
+
+🔑 **That asymmetry is the whole finding.** On the vertex side a projection is 2.4x cheaper than
+materializing the element; on the edge side it is 1.3x dearer. The real gap is `649.1 / 209.5 = 3.1x`.
+
+### ✅ AND A DIFFERENTIAL PROFILE NAMED THE CAUSE RATHER THAN A FOURTH GUESS
+
+Same instrument, same fixture, the two arms diffed:
+
+```text
+    frame                     EDGE%   VERTEX%     diff
+    projectValues               7.1       0.0     +7.1
+    sourceFromIds               5.0       0.0     +5.0
+    unwrap                      4.4       0.0     +4.4
+    fusedProjectedValues        2.3       0.1     +2.1
+    applySource                 1.1       0.0     +1.1
+```
+
+🔑 **The vertex arm spends 0.0% in the entire source-and-projection machinery — it never enters it.** Its
+own frames name the claimant: `idSeededValuesShortcut` beside `matchSeededShape`. And that function's gate
+is one line:
+
+```ts
+const [source, second, third] = steps;
+if (source?.kind !== 'V') {
+  return undefined; // <- `E(id).values(k)` dies here
+}
+```
+
+So `V(id)[.hasLabel(L)].values(k)` is a point-lookup shortcut and the edge twin falls to the general
+machinery. **Ceiling: 3.1x on an id-seeded edge projection**, by mirroring the shape items 2319-2323
+shipped for the node side.
+
+### ⚠️ THREE HYPOTHESES, AND THE LESSON IS A GREP PATTERN
+
+```text
+    1. an expensive edge property read      REFUTED — item 2238 priced it at ~73 ns, and
+                                              `projectValues` is only 45 ns of the call
+    2. a shortcut the edge side lacks       RIGHT — but I searched for it and concluded it did not exist
+    3. a `count()` floor artifact            RIGHT about item 2372's arithmetic, and the reason the
+                                              24.7x had to go
+```
+
+⚠️⚠️ **Hypothesis 2 was correct and my search said otherwise.** I grepped `\.ids` in `node-values.ts`, got
+eight hits, and every one was of the refusing form `source.ids?.length ?? 0) > 0 → undefined`, so I
+concluded no shortcut there handled an id-seeded source. 🔑 **`matchSeededShape` destructures —
+`const { ids } = source;` — so a property-access grep cannot see it.** The answer was in the file I
+searched, a thousand lines below the hits I read.
+
+That is the same family as `rename-refactor-gotchas`' recorded misses (`grep -I` skipping Unicode, a
+`kind: '[a-z_]+'` pattern omitting camelCase arms): **a grep for `obj.prop` is blind to
+`const { prop } = obj`.** Searching for the SHAPE (`kind !== 'V'`) rather than the property access finds it
+at once.
+
+NOT BUILT. Next step is the edge arm of `matchSeededShape` + `idSeededValuesShortcut`, with `gremVertex` as
+the control that must stay flat and the fairness assertion already in the probe.
+
+GATES. `bun run fmt` 0, `bun run check` 0. Item 2372's heading corrected. Probe arms only; no production
 change.

@@ -70,6 +70,15 @@ const pVertex = traversal(V(VERTEX_ID), values('k'));
  * cannot be attributed to the by-id lookup while both vary — `vary-only-the-projection`'s rule, applied to
  * its own mirror image. `count()` reads no property at all, so these isolate the SOURCE.
  */
+/*
+ * ⚠️ AND `count()` IS THE WRONG FLOOR, which item 2373's windowed profile exposed: it put `projectValues`
+ * at 7.1% (~45 ns of a 639 ns call), nowhere near the 441.7 ns that `values - count` implied. A reduce can
+ * take a shortcut the projection cannot, so the subtraction attributes that shortcut to the projection.
+ * These BARE arms emit the element and stop — source plus emit, nothing else — which is the floor the
+ * projection actually sits on.
+ */
+const pEdgeBare = traversal(E(EDGE_ID));
+const pVertexBare = traversal(V(VERTEX_ID));
 const pEdgeCount = traversal(E(EDGE_ID), count());
 const pVertexCount = traversal(V(VERTEX_ID), count());
 
@@ -109,6 +118,9 @@ const ARMS = {
   /* 🔑 SOURCE ONLY, no property read — the pair that attributes the gap. */
   gremEdgeCount: () => toArray(pEdgeCount, graph).length,
   gremVertexCount: () => toArray(pVertexCount, graph).length,
+  /* 🔑 SOURCE + EMIT ONLY — the honest floor for a projection. */
+  gremEdgeBare: () => toArray(pEdgeBare, graph).length,
+  gremVertexBare: () => toArray(pVertexBare, graph).length,
 };
 
 /*
