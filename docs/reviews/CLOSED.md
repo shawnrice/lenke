@@ -117655,3 +117655,51 @@ so the next attempt starts from a located cost rather than a guess.**
 
 GATES. `bun run fmt` 0, `bun run check` 0. One probe (two arms); no production change; item 1042's heading
 qualified.
+
+## Item 2349 — 🎯 **THE CSR REBUILD IS O(V+E) PER WRITE — 0.13 / 0.82 / 3.25 ms at 5k / 20k / 80k vertices, about SIX READS' worth at every size. And a cheaper lever than "make it incremental" fell out of the fixture: invalidation is NOT type-scoped, so a `:RARE` read pays to rebuild the `:E` partition it never touches — 6.1x on that pattern**
+
+Item 2348 located the interleaved-write spike at 77% in the CSR arm's closure. 🔑 Whether the incremental
+lever earns its structural risk depends on how the rebuild scales, so that is what this item measured.
+
+```text
+    NODES    steady ms/cycle   churn ms/cycle   the rebuild (delta)   churn/steady
+     5,000        0.05             0.18              0.13               3.6x
+    20,000        0.14             0.96              0.82               6.9x
+    80,000        0.62             3.87              3.25               6.2x
+```
+
+✅ **4x the nodes gives ~4x the cost, so the rebuild is O(V+E) per write**, and the ratio holds near 6x at
+every size: **a topology write costs about six reads' worth of rebuild.** ⚠️ At 80,000 vertices that is
+**3.25 ms per write**, and it keeps climbing — `bench-methodology`'s own caution applies, since the
+cache-residency transition sits between 200k and 1M elements and this sweep stops below it.
+
+### 🎯 AND THE FIXTURE EXPOSED A CHEAPER LEVER THAN THE ONE I CAME FOR
+
+The probe writes `:E` and reads `:RARE`, so **the write cannot change the read's answer.** 🔑 If
+invalidation were type-scoped the read would pay nothing; the measurement says otherwise, and in a
+direction I did not predict:
+
+```text
+    write type   ms/cycle   rows      (read hops :RARE; steady = 0.14)
+    E            0.85       1200      the type the read NEVER touches
+    RARE         0.67       1400      the read's OWN type
+```
+
+⚠️⚠️ **Writing the IRRELEVANT type costs MORE**, and the row count excludes the obvious confound **in the
+strengthening direction**: the `RARE` arm delivers 1400 rows against `E`'s 1200 — more row work — and is
+still 1.27x cheaper. ✅ So the rebuild's cost tracks **the written type's partition size** (`:E` holds 49 of
+every 50 edges), while the invalidation itself **fires regardless of which type the reader uses.**
+
+🔑 **A `:RARE` read therefore pays to rebuild the `:E` partition it never reads.** If invalidation were
+scoped by type, that cycle would cost the steady 0.14 rather than 0.85 — **6.1x on this pattern.**
+
+### 🔶 BOTH LEVERS RECORDED, NEITHER BUILT
+
+✅ **Type-scoped invalidation is the cheaper of the two** — it changes when the rebuild fires, not how the
+structure works, where an incremental CSR changes the structure itself. ⚠️ **Both are correctness-sensitive
+(a missed invalidation is a WRONG ANSWER, not a slow one)** and both touch a structure whose byte-identity
+is fuzzed, so neither is mine to build on my own judgment. **Priced, located and left to the owner**, with
+the probe (`rebuildprof-2348.mjs`, arms `steady`/`churn`, knobs `NODES`/`WTYPE`) as the instrument for
+whichever is attempted.
+
+GATES. `bun run fmt` 0, `bun run check` 0. Two probe knobs added; no production change.

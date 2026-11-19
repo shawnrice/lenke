@@ -65,7 +65,13 @@ for (let c = 0; c < CYCLES; c += 1) {
       id: `x${extra++}`,
       from: graph.getVertexById('v0'),
       to: graph.getVertexById('v1'),
-      labels: ['E'],
+      /*
+       * 🔑🔑 **WHICH TYPE THE WRITE TOUCHES (item 2349).** The read below hops `:RARE`, so a write to `:E`
+       * cannot change its answer. ⚠️ If invalidation is GLOBAL the read pays anyway, and type-scoped
+       * invalidation is a bounded lever far cheaper than making the rebuild incremental. ✅ `WTYPE=RARE`
+       * writes the type the read actually uses, as the comparison.
+       */
+      labels: [process.env.WTYPE ?? 'E'],
       properties: {},
     });
   }
@@ -78,5 +84,5 @@ for (let c = 0; c < CYCLES; c += 1) {
 const total = performance.now() - t0;
 
 console.log(
-  `  ARM=${ARM.padEnd(7)} ${total.toFixed(0).padStart(6)} ms for ${CYCLES} cycles  ${(total / CYCLES).toFixed(2)} ms/cycle  edgesAdded=${extra}`,
+  `  ARM=${ARM.padEnd(7)} WTYPE=${(process.env.WTYPE ?? 'E').padEnd(5)} ${total.toFixed(0).padStart(6)} ms  ${(total / CYCLES).toFixed(2)} ms/cycle  edgesAdded=${extra}  rowsNow=${read()}`,
 );
