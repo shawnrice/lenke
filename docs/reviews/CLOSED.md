@@ -119433,3 +119433,56 @@ by reading, as items 2375-2377 were.
 
 GATES. `bun run fmt` 0, `bun run check` 0. No probe, no production change — one audit, with its own first
 version refuted.
+
+## Item 2379 — ⚠️ **THREE DEAD ENDS IN ONE TICK, all closed by reading: clause-shape coverage is adequate, the mechanical clause audit is unreliable for the reason item 2378 already gave, and the COLD path is closed at items 2044/2045 (14 of a first query's ~21 ms is MODULE IMPORT; parse/plan is explicitly not a target)**
+
+Item 2378 bounded the coverage hunt and named what it could not reach: GQL clause shapes. This item tried
+all three remaining angles and none survives.
+
+### ⚠️ 1. CLAUSE-SHAPE COVERAGE IS ADEQUATE
+
+```text
+    OPTIONAL 166   CALL 112   INSERT 82   GROUP BY 87   ORDER BY 489   {1, 198
+    TRAIL 71   ACYCLIC 59   YIELD 38   UNION 39   ANY SHORTEST 27   REMOVE 27
+    SIMPLE 24   _MERGE 22   EXCEPT 14   HAVING 10   INTERSECT 9   DETACH 5
+```
+
+Every shape is present across the instruments. The four thinnest — `DETACH`, `INTERSECT`, `HAVING`,
+`EXCEPT` — are thin because little perf work has touched them, not because a shipped win is unguarded.
+
+### ⚠️ 2. AND THE MECHANICAL CHECK FOR _THOSE_ IS UNRELIABLE, exactly as item 2378 predicted
+
+Intersecting those four tokens with `SHIPPED` headings reports 5 hits for `INTERSECT`, 4 for `EXCEPT`, 5
+for `REMOVE`, 2 for `YIELD` — **and every one is a substring false positive**: `EXCEPT` inside "excepted",
+`REMOVE` inside "removed", `YIELD` inside "yields". 🔑 Item 2378 already wrote that a clause-shape gap
+"would still have to be found by reading"; this is that sentence being true. ⚠️ **Running a third variant
+of the same audit was re-deriving my own result, and the signal to stop was that item 2378's own text
+predicted the outcome.**
+
+### ✅ 3. THE COLD PATH IS MEASURED AND CLOSED
+
+Items 2368/2369 both found rep 1 at 12-17x the steady state (98-125 ms against 8-10; ~500 against 29), and
+every instrument here warms up — so a one-shot query looked like a real uninstrumented workload. It is
+neither uninstrumented nor open:
+
+```text
+    item 2044   a first GQL query in a fresh process is ~21 ms, and the engine's own execution is ~2%
+                of it — 14 ms is MODULE IMPORT
+    item 2045   "PARSE/PLAN IS NOT A TARGET" — the same cache-missing query costs 6.922 ms as a
+                process's first, 1.357 after 50 warm-ups, 0.035 fully warm: a 198x decline, so item
+                2044's "1.8 ms parse+plan" was WARM-UP, not work
+```
+
+🔑 Cold cost is dominated by module import, which is a bundling question rather than an engine one, and
+`coldstart-2044.mjs` already exists. Tenth closure by reading this stretch.
+
+### ⚠️ WHERE THIS LEAVES THE SURFACE, stated plainly
+
+The reachable surface is close to exhausted at this level. What remains is either explicitly the owner's
+call — the two CSR levers priced at items 2349/2350, and the slot memo at item 2369 that buys 1.00x and
+could be deleted — or structural: the unindexed object-vs-columnar scan ceiling at 12-22x, which no local
+change reaches. ✅ Three ships this stretch (2370 at 1.23x, 2374 at 3.01x plus 2375's 1.67x second half)
+came from instrument gaps rather than from the record's open headings, which is where the next one is most
+likely to come from too.
+
+GATES. `bun run fmt` 0, `bun run check` 0. No probe, no production change — three reads.
