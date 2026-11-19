@@ -83,6 +83,16 @@ const ARMS = [
     q: 'MATCH (u:User) WHERE u.name = $n AND u.score >= 0 AND u.score < 100000 RETURN u.name AS n',
   },
   {
+    /*
+     * THE CARRIER ARM (item 2360). Two conjuncts on ONE property. If the 2.11x is about ARITY, this is
+     * as slow as `cheapAnd`. If it is about the gate spanning several property CARRIERS -- item 1600's
+     * `specializeSingleProp` resolves the single-carrier case to one closure, while generic
+     * `inlineHolds` re-dispatches over twelve carriers per element -- this stays near `bare`.
+     */
+    key: 'oneCarrier',
+    q: "MATCH (u:User) WHERE u.name = $n AND u.name <> 'zzz' RETURN u.name AS n",
+  },
+  {
     key: 'cheapAndRev',
     q: 'MATCH (u:User) WHERE u.score >= 0 AND u.name = $n RETURN u.name AS n',
   },

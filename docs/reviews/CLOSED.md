@@ -118193,3 +118193,72 @@ NOT BUILT. Next step is to find the rung and admit a leading simple comparison w
 post-filter, with an unindexed bare-WHERE arm and an indexed arm as controls.
 
 GATES. `bun run fmt` 0, `bun run check` 0. One probe (six arms, one per process); no production change.
+
+## Item 2360 — item 2359's 2.11x is LOCALIZED to `composeInlineGate`'s `reduceRight` chain and SPLIT into two causes: going from one conjunct to two costs 1.76x WITHOUT EVALUATING THE SECOND, and a second property carrier adds 1.19x on top. The fix is a flat two-predicate closure, not a new rung
+
+Item 2359 measured a 2.11x cliff for adding a trivially-true second conjunct to an unindexed scan and
+guessed the cause was a rung decline. The rung is `detectNodeProjection` in `node-scan.ts`, and it does NOT
+decline a conjunction — it accepts the `WHERE` through `nodeScanGate` -> `nodeScanPreds` ->
+`composeInlineGate`. So the guess was wrong and the cost is inside the gate.
+
+```ts
+export const composeInlineGate = (preds) =>
+  preds.reduceRight((rest, ip) => {
+    const fast = specializedConjunct(ip);
+    return fast === undefined
+      ? (v, binding, params, graph) =>
+          inlineHolds(ip, v, binding, params, graph) &&
+          (rest === undefined || rest(v, binding, params, graph))
+      : (v, binding, params, graph) =>
+          fast(v, { binding, params, graph }) &&
+          (rest === undefined || rest(v, binding, params, graph));
+  }, undefined);
+```
+
+### The decomposition, one arm per process, each series inside 1%
+
+```text
+    arm          conjuncts  carriers      us/call   vs bare   rows
+    bare              1         1          229.1     1.00x      1
+    oneCarrier        2         1          403.6     1.76x      1     u.name = $n AND u.name <> 'zzz'
+    cheapAnd          2         2          481.0     2.10x      1     u.name = $n AND u.score >= 0
+    cheapAnd3         3         2          477.0     0.99x vs cheapAnd
+```
+
+Two findings, and the first is the surprising one:
+
+1. **ARITY costs 1.76x, and it is paid WITHOUT EVALUATING THE SECOND PREDICATE.** `u.name = $n` is false
+   for 19,999 of 20,000 candidates, so `&&` short-circuits and the second conjunct never runs — yet the
+   query costs 1.76x. With ONE predicate `rest === undefined` is a captured constant, so V8 folds the `&&`
+   RHS and the gate closure stays tiny; with two it is a function and the closure grows. That is
+   `ts-closure-size-is-load-bearing` appearing in the engine's own gate rather than in a probe.
+2. **A second property CARRIER adds only 1.19x on top** (481.0 against 403.6). Item 1600's comment says
+   `specializeSingleProp` resolves the single-carrier case while generic `inlineHolds` re-dispatches over
+   twelve carriers per element, which predicted a much larger share than it actually has.
+
+And the flat third conjunct is explained rather than mysterious: `reduceRight` nests right-associatively,
+so a third predicate sits INSIDE the layer the leading false conjunct already short-circuits past.
+
+### The fix, and why it is small
+
+Specialize the exactly-two case as ONE flat closure with no `rest === undefined` test and no nesting —
+`(v, b, p, g) => f0(v, ctx) && f1(v, ctx)` — so the common case stays inside V8's inline budget. That is
+the sibling-specialization pattern items 2320 and 2322 shipped in `node-values.ts` for 3.86x and 2.34x,
+applied one layer down. The ceiling is the 1.76x arity term; the carrier term is a separate, smaller
+question.
+
+Caveats carried forward from item 2359: `executor-edits-perturb` prices an edit here at up to 16% on
+unrelated rows, so an unindexed bare arm and an indexed arm are mandatory controls; and
+`rung-precedence-decides-speed` does not apply, because this is not a new rung.
+
+### A third fixture error caught by the row count
+
+The first `oneCarrier` arm was `u.score >= 0 AND u.score < 100000`, which matches EVERY row: it returned
+`rows=20000` and read 1236.2 us, almost all of it building 20,000 rows rather than running the gate.
+Rewriting it on `name` made it selective and the real figure is 403.6. That is the third fixture defect the
+printed row count has caught this stretch (item 2317's MISS-vs-HIT, item 2359's `rows=0` cycle search, and
+this), which is the argument for printing it beside every time.
+
+NOT BUILT. The arity specialization is the next step, with the controls named above.
+
+GATES. `bun run fmt` 0, `bun run check` 0. Probe arms only; no production change.
