@@ -119544,3 +119544,58 @@ trap); `Math.random()` sat in the timed loop, which would appear in the profile 
 GATES. `bun run fmt` 0, `bun run check` 0 (three iterations: the index target, a template-literal type on a
 tuple-destructured `name`, and one self-inflicted assertion failure — my code-free check tripped on the
 word `Math.random` inside my own comment).
+
+## Item 2381 — ⚠️⚠️ **A PROFILE FRAME NAMED `members` IS THE `cmpProps` COMPARISON CLOSURE: V8 inferred the name from an unrelated `const members = pred.memberProps` SEVEN LINES BELOW it in the same scope.** Both frames item 2380's mixed profile nominated are already closed — item 1339 took the 1.41x and REFUTED the `propOf` alternative at 0.98x
+
+Item 2380 concluded a mixed profile cannot nominate a target because every share is a per-element cost
+times an element count. This item tried to price its two biggest investigable frames anyway, and they
+confirm that conclusion a second way: both are already-closed work.
+
+### ⚠️⚠️ FIRST, THE FRAME NAME IS WRONG, AND V8 MADE IT UP
+
+```text
+    11525   return (element, env) => {                  <- the frame V8 calls `members`
+    11526     const lhs = propOf(element, key);
+    11527     const rhs = value(env);
+    11528     return typeof lhs === 'number' && typeof rhs === 'number'
+    11529              ? cmp(lhs, rhs) : compareTruth(op, cmp, lhs, rhs) === true;
+    …
+    11532     const members = pred.memberProps;         <- the binding V8 took the name FROM
+```
+
+🔑 **It is the `cmpProps` ORDERING-COMPARISON arm of `specializeSingleProp`, not a membership test.** V8
+named the anonymous closure after a `const` seven lines below it in the enclosing scope. ⚠️ I spent several
+reads hunting a membership test, and the giveaway was available earlier: **none of the eight shapes in the
+mixed workload uses an IN-list at all**, so a `memberProps` frame could not have been hot. Once identified,
+the 7.7% is simply `n.score > 900` over ~3,400 Persons.
+
+⚠️ **This generalizes and is worth more than the measurement**: a frame name in a bundled build can come
+from a NEIGHBOURING, UNRELATED binding. `frame-attribution-trap` already says a field-read frame is
+attribution until a deletion test says otherwise; this adds that **the NAME itself may not identify the
+code.** Resolve a frame by its line in the built artifact — `callFrame.lineNumber` is 0-BASED, so add one —
+and read the body, never the name.
+
+### ✅ AND BOTH CANDIDATES ARE CLOSED, by a comment sitting directly above the frame
+
+Item 1339's own table, in the lines immediately preceding:
+
+```text
+    through `compareTruth`     median 2.95 ms
+    `cmp` called directly      median 2.09      1.41x   <- TAKEN at item 1339
+    `propOf` replaced instead  median 3.01      0.98x   <- REFUTED
+```
+
+✅ So the 1.41x on this closure was already taken, and `propOf` — the other 7.1% frame — was already tried
+as the alternative and refuted. ⚠️ `closed-perf-targets` independently prices `propOf`'s keyed load at
+1.41x over a literal key with the real term needing codegen, which `no-runtime-codegen` refuses outright.
+🔑 Two frames, two closures, and the evidence for both was within ten lines of the code the profile pointed
+at.
+
+### What this leaves
+
+Item 2380's verdict stands and is now demonstrated twice: a mixed profile's shares rank workload mix, and
+its investigable frames here are closed work. ✅ The remaining frames are `bareDegreeSum` (a closed form,
+14.1% because that shape is an eighth of the mix) and `(anon)` at 34.1%, which is unattributable by
+construction.
+
+GATES. `bun run fmt` 0, `bun run check` 0. No probe, no production change — four reads of a built artifact.
