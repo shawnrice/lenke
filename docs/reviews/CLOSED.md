@@ -117055,3 +117055,66 @@ covers getters, and this is the same error one layer out: a frame named after a 
 field read.
 
 GATES. `bun run fmt` 0, `bun run check` 0. No production change; one heading corrected.
+
+## Item 2337 — ✅✅ **TWO CANDIDATE TARGETS CLOSED BY READING, NOT MEASURING — top-K (item 2285's size sweep: the heap works and its win GROWS to 2.17x at 600k) and var-length (the repo's MOST-WORKED surface at 216 entries, where TS is already FASTER than native). ✅ With those, this stretch's coverage map is complete, and the honest finding is that no read shape is left unexamined**
+
+This tick set out to measure `ORDER BY` / top-K. ⚠️ **The check-before-pricing rule closed it before a
+single measurement**, and then closed the fallback target too.
+
+### ✅ TOP-K: ITEM 2285 ALREADY DID THE SWEEP I WAS ABOUT TO REPEAT
+
+What drew me was a line in the prior art reading `ORDER BY … LIMIT 100` at **2.42 ms against 2.41 for
+sorting all 60,000** — a `LIMIT` buying nothing, which for an O(n log k) heap against O(n log n) should be
+~2.4x at those sizes. ✅ But item 2285 had already swept the size:
+
+```text
+    N          ordered      topk     ratio
+    20000         1.16      0.86     1.36x
+    60000         3.18      2.36     1.35x
+    200000       14.77      8.23     1.79x
+    600000       45.94     21.65     2.12x
+```
+
+✅ **The heap works and its win grows with N, exactly as the complexity predicts.** The 2.42-against-2.41
+reading was a FOUR-ARM process artifact — _"an honest 1.13-2.17x erased to 0.97x by two unrelated arms in
+the same process"_. 🔑 **Had I measured instead of read, I would have reproduced that artifact at 60k,
+where the real ratio sits in the noise floor.**
+
+### ✅ VAR-LENGTH: 216 ENTRIES, AND TS IS ALREADY AHEAD OF NATIVE
+
+```text
+    var-length 1..2 hops   12.66 ts / 19.94 nat   0.6x   ⚠️ TS FASTER — item 2177's 62x rewrite
+    var-length 1..2 hops   13.65               0.7x   HELD
+```
+
+⚠️ _"Var-length being the repo's most-worked surface (**216 entries**)"_ — and the TS arm is **faster than
+the Rust one**. ✅ Not a target, and a reminder that the serving bench's expensive `fan-out spread 1-3
+hops` and `cycle detection 2-4 hops` rows are this same closed family.
+
+### ✅ THE COVERAGE MAP FOR THIS STRETCH, WHICH IS WHAT THE TICK PRODUCED
+
+```text
+    surface                      item(s)        outcome
+    indexed point lookup         2317-2323      SHIPPED 5 x, Gremlin 6.6x slower -> parity/ahead
+    whole scan (vertex, edge)    2320, 2321     SHIPPED 3.86x / 3.47x
+    filtered + dedupe scans      2322           SHIPPED 2.34x / 1.49x
+    spelling: filter vs where    2323           SHIPPED 5.73x, invariant restored
+    one hop / two hops           2332-2334      5.12x characterised; blocked on a CLOSED lever
+    writes (GQL and Gremlin)     2312, 2330     accounted; 1.67x declined at ~20% recoverable
+    aggregates, GROUP BY         2335, 2336     fully accounted; 2.21x is sum's ERROR SEMANTICS
+    parse / lift caches          2328, 2329     2.02x + a 10.6x cliff at the cap; filter DECLINED
+    index layout and seeks       2325-2327      O(1)-per-row confirmed; 4.2x is a BULK-LOAD rule
+    ORDER BY / top-K             2337 (2285)    CLOSED by prior art — heap healthy, win grows
+    var-length paths             2337 (2177)    CLOSED — 216 entries, TS faster than native
+```
+
+✅ **Every read shape the two languages offer has now been either shipped against, accounted for, or
+closed by prior art.** ⚠️ That is not "the engine is finished" — it is that **the profile-first method has
+exhausted the shapes a bench can nominate**, and the remaining levers are the structural ones already
+recorded as blocked (a dense vertex ordinal, a streaming `sum`, a per-row binding map).
+
+🔑 **The method's own score for the stretch: six ships (1.49x-5.73x), five targets declined with measured
+reasons, two closed by reading, and EIGHT corrections of my own numbers before publication.** The
+corrections outnumber the ships, which is the honest shape of profile-first work.
+
+GATES. `bun run fmt` 0, `bun run check` 0. No probe, no production change — two reads and a map.
