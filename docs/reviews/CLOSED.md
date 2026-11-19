@@ -119648,7 +119648,7 @@ biggest unexplained share in the profile into four named rungs.
 GATES. `bun run fmt` 0, `bun run check` 0. Item 2381's claim corrected. No probe, no production change —
 one re-aggregation of a profile already taken.
 
-## Item 2383 — ✅ **THE LABEL-VACUITY MACHINERY IS WORTH 5.5% ON A REALISTIC MIXED WORKLOAD — 43 gates across 7 files, and a documented 6.2x on an ISOLATED read, calibrated to its workload-level value for the first time.** 6/6 runs separate cleanly
+## Item 2383 — ✅ ~~**THE LABEL-VACUITY MACHINERY IS WORTH 5.5% ON A REALISTIC MIXED WORKLOAD**~~ **(1.07x corrected at item 2385, which found a WORK-PARITY DEFECT in this item's own knob: it RELABELLED vertices, so every `:Person` query matched 14% fewer rows)** — 43 gates across 7 files, and a documented 6.2x on an ISOLATED read, calibrated to its workload-level value for the first time.** 6/6 runs separate cleanly
 
 `label-vacuity-gates-fast-paths` records that the GQL fast paths need a VACUOUS label, that 43 gates across
 7 files turn on it, and that one off-label vertex in 50,000 costs a read **6.2x, permanently** (item 1934).
@@ -119695,7 +119695,7 @@ knob is in the probe so a different mix can be priced without rebuilding anythin
 
 GATES. `bun run fmt` 0, `bun run check` 0. Probe knob only; no production change.
 
-## Item 2384 — ⚠️⚠️ **MY ITEM 2383 EXPLANATION WAS BACKWARDS: label vacuity is worth 1.26x on an ANALYTIC-weighted mix and only ~1.05x when point lookups dominate — because an INDEXED POINT LOOKUP SEEKS and never walks the label bucket.** The range matters for this repo's domain, where the analytic end is the relevant one
+## Item 2384 — ⚠️⚠️ **MY ITEM 2383 EXPLANATION WAS BACKWARDS** (and these figures are superseded at item 2385 — same knob defect: the corrected range is 1.07x-1.38x and the effect is ONE shape at 5.09x): ~~label vacuity is worth 1.26x on an ANALYTIC-weighted mix and only ~1.05x when point lookups dominate — because an INDEXED POINT LOOKUP SEEKS and never walks the label bucket.** The range matters for this repo's domain, where the analytic end is the relevant one
 
 Item 2383 priced label vacuity at 5.5% over eight shapes in equal proportion and named the weighting as its
 own caveat. Rather than invent a "realistic" distribution, this brackets it with two extremes — 90% indexed
@@ -119740,3 +119740,63 @@ dispatch site monomorphic and change the measurement for a reason unrelated to w
 
 GATES. `bun run fmt` 0, `bun run check` 0. Item 2383's reasoning corrected. Probe knob only; no production
 change.
+
+## Item 2385 — ✅✅ **THE WHOLE LABEL-VACUITY EFFECT IS ONE SHAPE: a HOP COUNT at 5.09x, and the grouped count is FLAT at 1.00x.** ⚠️ Found by fixing a WORK-PARITY DEFECT in my own knob at items 2383/2384 — it RELABELLED vertices, so every `:Person` query matched 14% fewer rows and the grouped count read 0.90x, the realistic arm _faster_
+
+Item 2384 measured 1.26x on an analytic mix but that weighting bundles two shape families. Weighting each
+alone separated them — and the separation exposed the defect.
+
+### ⚠️⚠️ FIRST, THE DEFECT, BECAUSE IT CORRUPTED TWO ITEMS
+
+`LABELS=2` gave one vertex in seven the label `Admin` **instead of** `Person`. So `MATCH (n:Person)` matched
+14% fewer rows in the realistic arm — less work, for a reason that has nothing to do with label elision:
+
+```text
+    WITH THE DEFECT      grouped  L=1 52.81 53.09 52.94   L=2 46.87 47.92 47.89   0.90x  INVERTED
+    PARITY RESTORED      grouped  L=1 53.23 52.96         L=2 53.15 53.44         1.00x  FLAT
+```
+
+🔑 **The 0.90x was fewer rows, not elision**, and the giveaway was the direction: a realistic arm cannot be
+FASTER than a vacuous one if the only difference is a gate declining. ✅ Item 1934's own setup is the
+correct one — _"ONE off-label vertex in 50,000 costs the read 6.2x"_, an **ADDED** vertex. The knob now adds
+`NODES / 7` off-label vertices carrying no edges, so the `Person` population and the hop work are both
+unchanged and the only variable is whether the label is vacuous.
+
+### ✅✅ AND THE ANSWER IS SINGULAR
+
+```text
+    shape alone          LABELS=1          LABELS=2          ratio
+    grouped count        53.23 52.96       53.15 53.44       1.00x   FLAT — not a driver at all
+    hop count             4.96  5.00       25.46 25.35       5.09x   ⬅ the entire effect
+```
+
+🔑 **One shape family produces all of it, at 5.09x** — which independently corroborates item 1934's 6.2x on
+a read, measured by a different instrument on a different fixture. ⚠️ And it is the shape I twice named as
+NOT a driver: item 2383 said the grouped-count rung "does not depend on it" and item 2384 said the analytic
+shapes "depend on it most". **Both were half right and half wrong** — the hop count does, the grouped count
+does not.
+
+### ✅ THE CORRECTED WORKLOAD RANGE
+
+```text
+    weighting      LABELS=1           LABELS=2           ratio     was (contaminated)
+    equal          25.50 24.25        26.46 26.61        1.07x     1.056x
+    point           3.22  3.28         3.55  3.58        1.10x     1.05x, overlapping
+    analytic       29.80 29.54        41.33 40.57        1.38x     1.26x
+```
+
+✅ Every arm now separates cleanly, including the point mix, which did not before. 🔑 **Even a
+point-dominated mix pays 1.10x**, because the one hop count in 71 queries is expensive enough in absolute
+terms to carry a 5x. ⚠️ So the cost is **1.07x-1.38x of a whole workload**, driven entirely by hop counts,
+and the analytic end applies to this repo's domain.
+
+### What is actually open
+
+A 5.09x on a hop count, caused by a SCHEMA property no query can opt out of. ⚠️ Not yet a target: items
+1934 and the 43 gates it names are the existing machinery, and whether a second label can be made cheap for
+a hop count is a question about `verticesByLabel` bucket walking rather than about any one gate. ✅ What
+this item establishes is the price and the single shape responsible, which is what a target needs before it
+is worth proposing.
+
+GATES. `bun run fmt` 0, `bun run check` 0. Items 2383 and 2384's headings corrected. Probe knob only; no
+production change.

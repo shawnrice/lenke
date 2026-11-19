@@ -40,9 +40,25 @@ for (let i = 0; i < NODES; i += 1) {
      * people-graph has several labels each carrying substantial vertices AND edges, which declines the
      * same gates while every bucket stays large. This measures that regime instead.
      */
-    labels: [LABELS > 1 && i % 7 === 0 ? 'Admin' : 'Person'],
+    labels: ['Person'],
     properties: { name: `person${i}`, age: i % 90, score: i % 1000, tier: 'a' },
   });
+}
+
+/*
+ * ⚠️⚠️ `LABELS=2` ADDS OFF-LABEL VERTICES; IT DOES NOT RELABEL EXISTING ONES — and the first version did
+ * relabel, which was a WORK-PARITY DEFECT that corrupted items 2383 and 2384. Giving one vertex in seven
+ * the label `Admin` instead of `Person` left `MATCH (n:Person)` matching 14% FEWER ROWS, so the grouped
+ * count read **0.90x** — the realistic arm FASTER — which is fewer rows, not label elision. Item 1934's
+ * own setup is the correct one: *"ONE off-label vertex in 50,000 costs the read 6.2x"* — an ADDED vertex.
+ *
+ * These carry no edges, so they add no hop work either; the ONLY thing that changes between the arms is
+ * whether the `Person` label is vacuous.
+ */
+if (LABELS > 1) {
+  for (let i = 0; i < Math.max(1, NODES / 7); i += 1) {
+    graph.addVertex({ id: `admin${i}`, labels: ['Admin'], properties: { name: `admin${i}` } });
+  }
 }
 
 const seen = new Set();
@@ -169,6 +185,20 @@ const PLAN = SHAPES.flatMap(([name, fn]) => {
   }
 
   if (WEIGHT === 'analytic' && (name.includes('grouped') || name.includes('hop count'))) {
+    reps = 32;
+  }
+
+  /*
+   * ⚠️ `analytic` BUNDLES TWO SHAPE FAMILIES, so it cannot say which one produces the 1.26x item 2384
+   * measured. These two weight each alone (item 2385): `grouped` is `detectGroupedNodeCount`'s rung (the
+   * 15.6% frame of item 2382's attribution) and `hopcount` is `bareDegreeSum` under `startOnlyHopCount`
+   * (the 14.1% frame). One of them walks a label bucket the elision gates can skip; the other may not.
+   */
+  if (WEIGHT === 'grouped' && name.includes('grouped')) {
+    reps = 32;
+  }
+
+  if (WEIGHT === 'hopcount' && name.includes('hop count')) {
     reps = 32;
   }
 
