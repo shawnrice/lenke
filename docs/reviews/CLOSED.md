@@ -117835,7 +117835,7 @@ implausible figure.
 GATES. `bun run fmt` 0, `bun run check` 0. No probe, no production change — one audit with a negative
 result, which is the outcome worth stating plainly rather than padding.
 
-## Item 2353 — ✅ **THE CANONICAL `bun run bench` HAD NOT RUN THIS STRETCH; it does now, and it nominates ONE target my own items 2335/2336 half-explained: `sum over a hop` is 287.9 ms against `max over a hop`'s 96.1 — 3.0x, where on a SCAN I measured the same pair at 1.58x**
+## Item 2353 — ✅ **THE CANONICAL `bun run bench` HAD NOT RUN THIS STRETCH; it does now** (⚠️ ~~and it nominates `sum over a hop` at 3.0x against the scan's 1.58x~~ — **item 2354 DISSOLVES that nomination: in ONE fixture the ratios are 1.98x and 1.55x, and the 3.0x came from comparing two different fixtures**)
 
 Every measurement in items 2312-2352 came from probes I wrote. ⚠️ **The repo's own `ts / ffi / wasm` bench
 had not been run**, which is the one instrument that prices the TS column against both backends on 40+
@@ -117877,3 +117877,47 @@ absolute among the high-ratio rows.
 
 GATES. `bun run fmt` 0, `bun run check` 0. No production change — one bench run and a nomination with its
 prior art attached.
+
+## Item 2354 — ⚠️⚠️ **MY OWN NOMINATION FROM LAST ITEM DISSOLVES: `sum`/`max` is 1.55x on a scan and 1.98x on a hop IN ONE FIXTURE, not 1.58x against 3.0x. The bench's two rows use DIFFERENT fixtures (`nodesDoc` and `graphDoc`) and my scan figure came from a third. ✅ And the residual is fully explained by item 2336's impossibility scaled by row count**
+
+Item 2353 nominated `sum over a hop` because the bench showed 287.9 ms against `max`'s 96.1 — 3.0x — where
+items 2335/2336 had measured the same pair at 1.58x on a scan. ⚠️ **Reading `bench.ts` first showed the
+comparison was across fixtures**: `sum over a hop` runs on `graphDoc`, `sum over a scan` on `nodesDoc`, and
+my 1.58x came from a third fixture of my own. 🔑 **The hop pair's ratio was clean; the hop-against-scan
+comparison was not.**
+
+```text
+    ONE fixture, 20,000 vertices / 60,000 edges, same property
+    arm          us        ns/visited     sum/max within the pair
+    scanMax     338.8        16.94
+    scanSum     526.3        26.32          1.55x
+    hopCount    863.9        14.40        (the hop's floor, no aggregate)
+    hopMax     1925.4        32.09
+    hopSum     3803.4        63.39          1.98x
+```
+
+✅ **1.55x and 1.98x — the gap grows by 1.28x on a hop, not by the 1.9x the cross-fixture reading
+suggested.** ⚠️ **So item 2353's nomination was an artifact of my own comparison** and its heading is
+corrected in this commit. **Thirteenth correction of my own work this stretch.**
+
+✅ **And the scan figure reproduces exactly** — 1.55x here against item 2335's 1.58x, on a different
+fixture in a different process, which is the cross-validation that measurement deserved.
+
+### 🔑 THE RESIDUAL IS THE KNOWN MECHANISM, SCALED
+
+The ratio understates what changes. **In absolute terms `sum`'s excess over `max` TRIPLES: 9.38 ns a row on
+the scan (26.32 − 16.94) against 31.30 on the hop (63.39 − 32.09).** 🔑 And that is exactly what item 2336's
+impossibility predicts: **`sum` must materialize the WHOLE collection** before it can choose its operation
+(one temporal anywhere turns addition into a data exception), so its penalty scales with the collection
+size — **and a 3-fan hop produces 60,000 rows where the scan produces 20,000.**
+
+✅ **So nothing new is wrong.** A hop does not make `sum` worse; it makes the collection bigger, and `sum`
+pays per element of a collection it cannot avoid building. ⚠️ **That also means the only way to shrink it
+is to shrink the collection**, which is a caller-side matter (filter before aggregating) rather than an
+engine lever.
+
+⚠️ **Also recorded: a hop row is intrinsically ~1.9-2.4x a scan row for the SAME aggregate** (`max` 32.09
+against 16.94; `sum` 63.39 against 26.32), and `hopCount`'s 14.40 ns a visited edge is the floor underneath
+both. **None of that is aggregate-specific.**
+
+GATES. `bun run fmt` 0, `bun run check` 0. One probe (five arms, one fixture); no production change.
