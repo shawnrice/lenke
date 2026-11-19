@@ -117118,3 +117118,60 @@ reasons, two closed by reading, and EIGHT corrections of my own numbers before p
 corrections outnumber the ships, which is the honest shape of profile-first work.
 
 GATES. `bun run fmt` 0, `bun run check` 0. No probe, no production change — two reads and a map.
+
+## Item 2338 — ✅✅ **A NEW INSTRUMENT, AND ITS RESULT VALIDATES THE WHOLE STRETCH: sharing a process costs each shape only 1-9%, so the ONE-SHAPE-PER-PROCESS numbers items 2312-2337 produced ARE representative of a mixed serving workload. ⚠️ Getting there required catching a fake 2x in my own brand-new probe — `lookup` read 0.002 vs 0.004 ms, which is two ticks of the clock**
+
+Every measurement in items 2312-2337 was taken one shape per process, which is right for an A/B (item
+762's flattering redistribution, item 2285's mirror). ⚠️ **But no application runs one shape**, so every
+number this stretch produced described a regime no caller is in. ✅ This item measures that gap directly:
+each shape alone, then the same shapes round-robin in one process, timed per shape in both.
+
+### ⚠️⚠️ FIRST VERSION: A FAKE 2x, IN A PROBE I HAD JUST WRITTEN
+
+```text
+    lookup    alone 0.002 ms    mixed 0.004 ms    "2.0x"
+```
+
+🔑 **0.002 ms is `performance.now()`'s floor** — at ≤0.01 ms the reading IS the clock, which items
+2302/2303 cost two published numbers to learn. ⚠️ **And the cheap dispatch-dominated shapes are precisely
+the ones mixing should hurt**, so leaving them at the floor would have made the instrument blind exactly
+where it matters. ✅ Per-shape inner calibration, chosen once and shared by both modes:
+
+```text
+    shape      alone us    mixed us    ratio
+    lookup        0.27        0.29      1.07x    <- the "2x" was the clock
+    hopGql      824.45     1020.34      1.24x    <- see below
+    hopGrem    1216.83     1295.77      1.06x
+    agg         426.47      437.74      1.03x
+    scan        360.65      363.07      1.01x
+```
+
+### ⚠️ AND THE 1.24x WAS A SINGLE SAMPLE, WHICH IS MY OWN RULE TURNED ON MYSELF
+
+```text
+    hopGql      r1       r2       r3      median
+    alone     834.11   829.80   828.46   829.80     spread 1.007x
+    mixed     882.13   916.89   902.19   902.19     spread 1.04x
+```
+
+✅ **1.087x, not 1.24x.** ⚠️ Near the ~10% noise floor, but **the ranges are DISJOINT** (alone max 834.11 <
+mixed min 882.13) against a 0.7% spread on the alone arm, so the ~9% is real for this row.
+
+### ✅ WHAT THE INSTRUMENT ACTUALLY SETTLES
+
+**Sharing a process costs 1-9% depending on the shape, with GQL's hop the most exposed at ~9% and Gremlin's
+same-work hop at 6%.** 🔑 **So item 2285's "an honest 1.13-2.17x erased to 0.97x" is NOT the general case** —
+that was a comparison between two ARMS of a change, where pollution lands asymmetrically. **For absolute
+per-shape cost, the isolated figure is within ~10% of the mixed one**, which means every number items
+2312-2337 produced can be quoted for a real workload without re-measuring.
+
+⚠️ **AND THE INSTRUMENT IS NOT AN A/B TOOL.** Its whole point is the polluted regime; using it to compare
+two engine versions would reintroduce the confound the one-shape rule exists to prevent. That is stated in
+the probe's own header so the next reader cannot miss it.
+
+⚠️ One residual wobble, recorded rather than hidden: at `SAMPLE_MS=20` the chosen `inner` differed between
+modes for `hopGrem` (16 against 32), because the doubling loop's last step is timing-sensitive. ✅ Raising
+`SAMPLE_MS` to 60 pinned it at 128 for both, which is how the three-round confirmation was run — a
+mismatched `inner` is not fatal (the result is per call) but it weakens the comparison.
+
+GATES. `bun run fmt` 0, `bun run check` 0. One new probe; no production change.
