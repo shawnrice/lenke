@@ -118669,3 +118669,77 @@ own spread exceeds the effect you are claiming is not evidence, even when two pr
 between processes is only evidence when each process's row is internally resolved.
 
 GATES. `bun run fmt` 0, `bun run check` 0. Item 2365's heading corrected. No probe, no production change.
+
+## Item 2367 — `bench:chain` swept for the first time. It violated its own stated design (all cases in one process), and it reports an ordering that cannot be right: a **4-leg chain costs 1.37x a 5-leg one on a third of the ways**, which survives isolation. The slot memo is NOT the cause — an oracle says the memo now buys ~1.0x where its comment documents 1.85x
+
+The second never-swept instrument (one `CLOSED.md` mention, from the item that built it). Its rows were
+~1000 ms at item 300 and are now 5-8 ms, so roughly 130x of optimization has landed under it since.
+
+### First, the instrument violated its own header
+
+The header says _"One case per process is deliberate — item 290 recorded a large speedup making its
+NEIGHBOUR read 0.87x slower purely by warming it"_ — and the file then ran all six cases in one `for` loop.
+Added `CHAIN_CASE`, a substring selector, the shape the engine's example binaries use.
+
+### The inversion, reproducible and NOT a warm-up artifact
+
+```text
+    case                in-sweep x3            isolated     answer
+    3-hop  [CONTROL]    0.0  0.0  0.0              -        5,400,000     closed-form product
+    4-hop  [CONTROL]    8.1  7.8  8.2            7.4       16,200,000   ⬅
+    5-hop               5.6  5.7  5.7            5.4       48,600,000
+    6-hop               5.6  5.6  5.5              -      145,800,000
+    7-hop reversed      6.4  6.5  7.2            6.6      437,400,000
+    6-hop mixed dirs    5.2  5.3  5.2            5.0       48,600,000
+```
+
+My first hypothesis was warm-up — the 4-hop is the first case to reach the sweep, since the 3-hop is a
+closed form at 0.0 ms. ⚠️ **Refuted**: in its own process the 4-hop still reads 7.4 against the 5-hop's 5.4.
+Only the 4-hop is anomalous; the 7-hop's 6.6 is properly above the 5- and 6-hop rows, as more passes should
+be.
+
+⚠️ **And the bench's `[CONTROL]` labels are STALE.** They claim 3 and 4 segments route to
+`threeSegmentCount` and `fourSegmentCount`, but `fourSegmentCount` **was deleted** — `shortcuts.ts` says so
+("DELETED rather than left unreachable … the sweep subsumes it exactly") and the split is recorded as "3
+hops product wins 1.50x, 4 hops sweep wins 1.91x". `sweepableSegmentCount` is
+`startIsPinnedById(cstart) ? 0 : segments.length`, so the 4-hop IS on the sweep. The label is a lie and it
+cost me a wrong first guess.
+
+### The slot memo is not the cause, and is itself no longer worth what it claims
+
+`sweepChain` builds a per-slot adjacency memo when `passes > 2`, with a comment pricing it at "1.85x,
+`count 4-hop` 550.5 -> 297.5". 4 legs is 3 passes — the worst amortization that still builds it — so the
+memo was the obvious suspect. ⚠️ Rather than relax the gate on a hypothesis (**which is exactly what item
+1683 did here and had to revert**, and which this file's own note warns about), I ran an ORACLE: memo off
+everywhere.
+
+```text
+    case      memo ON    memo OFF
+    4-hop       7.4        7.9      1.07x — the WRONG direction for the hypothesis
+    5-hop       5.4        5.4      flat
+    7-hop       6.6        6.5      flat
+```
+
+✅ So the memo is not the inversion. ⚠️ **And on these rows the memo now buys ~1.0x, against a documented
+1.85x measured when they were 40x larger.** It still costs a scratch push per edge and an
+`Int32Array.from` per slot. That is a stale benefit worth re-pricing deliberately — not deleted here,
+because the oracle only covers `DEG=3` at 200,000 vertices.
+
+### ⚠️ STILL OPEN, AND IT IS THE INTERESTING PART
+
+At `CHAIN_DEG=6` the inversion **disappears** — 4-hop 5.6 against 5-hop 6.2, the right order. So the 4-hop
+reads 7.9 at 600,000 edges and 5.6 at 1,200,000: **faster with twice the edges**, which three O(E) passes
+cannot do.
+
+The fixture is NOT the explanation, checked per CLAUDE.md's rule rather than assumed: `to = (i * 7 + d * 31
+
+- 1. % NODES`splits on the repeat index`d`, so each vertex has `DEG`DISTINCT out-neighbours, and since`gcd(7, NODES) = 1`every vertex has in-degree exactly`DEG`. A regular circulant, not an item-1518
+     degenerate.
+
+So a 4-leg chain at `DEG=3` is doing something a 5-leg chain at `DEG=3` and a 4-leg chain at `DEG=6` both
+avoid. Next step is a route map at each (legs, degree) rather than another mechanism guess — the technique
+item 1683's entry says it should have used.
+
+GATES. `bun run fmt` 0, `bun run check` 0. Oracle reverted, tree rebuilt, `git diff` on `packages/gql`
+empty. ⚠️ Pristine A/B copies under `target/` are now `.ts.bak`: the linter scans `target/`, so a `.ts`
+copy there fails `check` with errors from the COPY, which cost one failing gate to discover.

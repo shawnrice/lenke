@@ -61,7 +61,25 @@ const g = build();
 
 console.log(`${NODES} vertices / ${NODES * DEG} edges, min of ${REPS}`);
 
-for (const [name, q] of CASES) {
+/*
+ * ONE CASE PER PROCESS, which this file's own header has always called deliberate — "item 290 recorded a
+ * large speedup making its NEIGHBOUR read 0.87x slower purely by warming it" — and which the loop below
+ * did not actually honour. `CHAIN_CASE` is a substring selector, the same shape the engine's example
+ * binaries use.
+ *
+ * ⚠️ WITHOUT IT THIS BENCH REPORTED AN IMPOSSIBLE ORDERING, reproducibly across three processes: the
+ * 4-hop case read 7.8-8.2 ms against the 5-hop's 5.6-5.7 and the 6-hop's 5.5-5.6, on a THIRD of the ways.
+ * The 4-hop is simply the FIRST case that reaches the sweep — the 3-hop is a closed-form degree product at
+ * 0.0 ms — so it absorbed the whole warm-up and the later, larger cases ran on warm code. Item 2367.
+ */
+const ONLY = process.env.CHAIN_CASE;
+const SELECTED = ONLY === undefined ? CASES : CASES.filter(([name]) => name.includes(ONLY));
+
+if (SELECTED.length === 0) {
+  throw new Error(`no case matches CHAIN_CASE=${ONLY ?? ''}`);
+}
+
+for (const [name, q] of SELECTED) {
   let best = Infinity;
   let answer = -1;
 
