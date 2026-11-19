@@ -7203,7 +7203,7 @@ Also re-refused by their own records this tick, so nobody prices them again: `ne
 project + start filter` / `distinct over a reversed hop` (items 207 and 215, both row-returning so
 the ts column carries the carrier).
 
-## 530 — the aggregate enum: five of eleven had no scan rung (CLOSED, 2.7-4.3x) + a NATIVE PANIC fixed
+## 530 — the aggregate enum: five of eleven had no scan rung (CLOSED, 2.7-4.3x) + a NATIVE PANIC fixed ⚠️ **ITS `sum` 1.25x RATIO IS STALE — item 2335 measures 2.21x, the folded path having improved far more**
 
 Priced all eleven ISO aggregate names against the same scan with the same argument, ts at 200,000
 vertices. Six took the rung (`count` 10.9, `max` 11.2, `min` 11.3, `sum` 13.6, `avg` 13.7,
@@ -116939,3 +116939,65 @@ materialization is the remaining avenue, and it is a structural change to how `w
 set — recorded with the eighth arrival so the ninth starts from here.
 
 GATES. `bun run fmt` 0, `bun run check` 0. One probe (three arms); no production change.
+
+## Item 2335 — 🎯 **`sum`/`avg` COST 2.21x THE FOLDED `count(n.w)` ON THE SAME PROPERTY (25.37 vs 11.50 ns a vertex) — and ITEM 530's RECORDED 1.25x IS STALE, because the folded path has improved far more than the values path since. A streaming `sum` fold is REFUTED as unwriteable, but a per-vertex GETTER read worth 13% is not**
+
+Aggregation was the last read shape with no per-row comparison. ✅ The grouped and closed-form arms behave:
+
+```text
+    arm                                 ns/vertex    rows
+    count(*)              GQL / Gremlin   ~0          1      closed form, both
+    values projection     Gremlin          6.00    50,000
+    GROUP BY + count(*)   GQL             11.38       97
+```
+
+### ⚠️⚠️ MY FIRST COMPARISON WAS UNFAIR AND I FIXED IT BEFORE CONCLUDING
+
+I read `sum(n.w)` 25.35 against `GROUP BY count(*)` 11.38 and called it 2.2x. ⚠️ **But `count(*)` reads NO
+PROPERTY**, so most of that could have been the per-row read — the arm-parity error items 2326 and 2328
+made a standing rule. ✅ The honest control is `count(n.w)`, which reads the same property AND has a
+streaming fold:
+
+```text
+    count(n.w)   folded      11.50 ns/vertex
+    max(n.w)     folded      16.07
+    sum(n.w)     values      25.37      <- 2.21x the folded count, 1.58x max
+    avg(n.w)     values      25.26
+```
+
+✅ **The 2.21x survives the correction**, which it would not have if the property read were the explanation.
+
+### 🔑 AND THE PROFILE SAYS WHERE IT GOES
+
+```text
+    frame                        sum ns/vertex   GROUP BY count ns/vertex
+    aggregateOverValues              10.35            0.00
+    (anon):24664                      6.06            0.00
+    variable.variable  (a GETTER)     3.42            0.00
+    propOf                            1.76            0.67
+    isTemporal                        0.70            0.00
+```
+
+### ⚠️ ITEM 530's NUMBER IS STALE, WHICH IS WORTH MORE THAN THE TARGET
+
+Item 530 priced all eleven ISO aggregates and recorded **`count(n.age)` 10.9 against `sum` 13.6 — 1.25x**.
+✅ Its figures are ms at 200,000 vertices, i.e. ~55 and ~68 ns a vertex; the folded count now runs at
+**11.50**. **So the folded path has improved ~4.7x and the values path ~2.7x, widening the ratio from
+1.25x to 2.21x.** ⚠️ Anyone reading item 530 today would price this target at a quarter of its real size —
+the exact failure the "verify a heading against the SOURCE" rule exists for. Its heading is corrected in
+this commit.
+
+### 🔶 WHAT CAN AND CANNOT BE BUILT
+
+⚠️ **A streaming `sum` fold is refused on a stated impossibility, not caution**: `VALUES_AGGREGATES`' own
+comment says _"a second implementation of `sum` could not even be written correctly (the operation is
+chosen by looking at the whole collection — item 467), and a second `stddev` would be a byte-identity
+hazard"_, and the Rust side records _"a frontier `sum`/`avg` fast path is REFUTED — the 2.5x is the price
+of byte-identity"_. ✅ That blocker is real and this item does not dispute it.
+
+🎯 **But `variable.variable` at 3.42 ns a vertex is not arithmetic — it is a GETTER read per vertex**, and
+hoisting it out of the loop changes no value, no order and no byte. **13% of the sum's cost, with no
+byte-identity exposure.** ✅ Recorded as the buildable slice; the 19.8 ns in `aggregateOverValues` and its
+caller is the part the impossibility argument covers.
+
+GATES. `bun run fmt` 0, `bun run check` 0. One probe (ten arms); no production change.
