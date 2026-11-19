@@ -118537,7 +118537,7 @@ a conjunct pair that includes `cmpProps` (an ordering comparison), which `PAIRAB
 
 GATES. `bun run fmt` 0, `bun run check` 0. No probe, no production change — four searches and a table.
 
-## Item 2365 — FIXED AN INSTRUMENT AND IT IMMEDIATELY FOUND A 3.4x: `bench:gate` printed min-of-3 at a fixture where identical runs disagree 2.1-2.5x, so it could resolve nothing under ~3x. With a median estimator, a spread column and a `GATE_N` knob, two independent runs now agree — and TS pays **3.4x for a gate at the LAST chain position** where native pays 1.2x, its CHEAPEST
+## Item 2365 — FIXED AN INSTRUMENT AND IT IMMEDIATELY FOUND A ~~3.4x~~ **2.0x (corrected at item 2366: the 3.4x row's own spread is 2.4x, so it was never resolved — the clean reading is 2.0x at `GATE_DEG=2`, against a 1.25x structural floor)**: `bench:gate` printed min-of-3 at a fixture where identical runs disagree 2.1-2.5x, so it could resolve nothing under ~3x. With a median estimator, a spread column and a `GATE_N` knob, two independent runs now agree — and TS pays **3.4x for a gate at the LAST chain position** where native pays 1.2x, its CHEAPEST
 
 Item 2364's lesson is to search for prior sweeps of an INSTRUMENT. Applied here it found the opposite of a
 sweep: `bench:chain` and `bench:gate` have **one mention each** in this file, both from the items that
@@ -118605,3 +118605,67 @@ NOT YET DIAGNOSED. Next step is why a last-position gate declines what interior 
 
 GATES. `bun run fmt` 0, `bun run check` 0 (one `unicorn(no-useless-spread)` on the median's slice, fixed).
 Instrument change only; no production change.
+
+## Item 2366 — the spread column I added last item invalidated last item's own headline: `position 4`'s 3.4x came from a row whose reps disagree 2.4x. The clean figure is **2.0x against a 1.25x structural floor**, the mechanism is `sweepChain`'s `lastGated` extra pass, and native sits exactly on the floor
+
+Item 2365 reported TS paying 3.4x for a gate at the last chain position, reproducible across two processes
+(15.2 / 14.9 ms). This item swept the degree knob and found the reading was never resolved.
+
+```text
+                      free    position 4   ratio    pos-4 SPREAD
+    GATE_DEG=2         2.7        5.3      2.0x       1.1x   ⬅ the only clean reading
+    GATE_DEG=3         4.4       15.2      3.4x       2.4x      row not resolved
+    GATE_DEG=4         5.4       19.0      3.5x       2.7x      row not resolved
+    native, every degree                   1.2x
+```
+
+⚠️ **Two processes agreeing at 15.2 and 14.9 is NOT reproducibility** — it is two processes landing in the
+same per-process mode, which item 2365's own note describes and which I then failed to apply to my own
+headline one paragraph later. The spread column, added in that same item, says the row is unresolved at
+`DEG=3`; I printed it and read the ratio anyway.
+
+### The mechanism, which is in the code and matches native exactly
+
+`sweepChain`:
+
+```ts
+const lastGated = legs[legs.length - 1].gate !== undefined;
+const passes = lastGated ? legs.length : legs.length - 1;
+```
+
+The recurrence is a vectorized level pass over cached CSRs, O(E) per pass. An UNCONSTRAINED last position
+needs no pass — a weighted sum of degrees answers it — so the free chain runs 4 passes and a gated-last
+chain runs 5. **5/4 = 1.25x is the structural floor, and native measures 1.2x at every degree.**
+
+🔑 That also explains why positions 1-3 are FREE (0.9-1.0x): a non-last gate is applied DURING a pass that
+already exists, so `lastGated` is false and the pass count does not change. Only the last position adds
+one.
+
+So the real question is the gap between TS's clean 2.0x and the 1.25x floor — about 1.6x of one pass, not a
+3.4x defect.
+
+### The lever that remains, and the objection it has to answer
+
+The arm's comment states the blocker as inherent: _"a degree cannot say which of a vertex's edges land
+somewhere that passes."_ That is true of a RAW degree and false of a MASKED one — per vertex `v`, the count
+of `v`'s out-edges whose target passes the gate is computable in ONE O(E) pass, after which the last
+position is a weighted degree sum again and the fifth pass disappears.
+
+⚠️ But the fifth pass IS that O(E) pass, so a masked-degree array would replace it with another of the same
+order and win only the difference between "accumulate into `next` per edge" and "increment a counter per
+edge". That is a constant factor on one of five passes — at most the 1.6x residual and probably much less.
+⚠️ And the array would need caching per (`topologyVersion`, gate) to amortize, which `csr-cache.ts` keys by
+shape but not by gate, so it is new state with the staleness risk items 2349/2350 priced.
+
+NOT A TARGET at this size. The honest summary: a gated last position costs 2.0x where 1.25x is structural,
+TS's 5-pass arm is the right algorithm, and the residual is a constant factor inside one pass.
+
+### What the instrument fix is worth, which is the item's real output
+
+On its first real use the spread column refuted the headline of the item that added it. Both of item 2365's
+candidate findings and its published ratio were artifacts, and all three were caught by instrumentation
+built in the same session rather than by a later reader. ⚠️ The standing rule gains a clause: **a row whose
+own spread exceeds the effect you are claiming is not evidence, even when two processes agree** — agreement
+between processes is only evidence when each process's row is internally resolved.
+
+GATES. `bun run fmt` 0, `bun run check` 0. Item 2365's heading corrected. No probe, no production change.
