@@ -117750,3 +117750,46 @@ to decide with — a located cost (6.1x), a sound design, and the exception name
 measurement and a hunch.
 
 GATES. `bun run fmt` 0, `bun run check` 0. No probe, no production change — one soundness reading.
+
+## Item 2351 — ✅✅ **THE EDGE HALF OF THE O(1)-BY-ID REQUIREMENT IS NOW VERIFIED, AND IT WAS UNMEASURED UNTIL NOW: `getEdgeById` is 7.0-7.3 ns FLAT across a 16x sweep in |E|. ⚠️ My first instrument read 0.3 ns — about one CPU cycle — because the call was loop-invariant and its result discarded, so the JIT hoisted it and "flat" was flat BY CONSTRUCTION**
+
+The standing requirement is good O(1) access to get **a vertex or edge** by id. ✅ The vertex half was
+verified (item 2281's 46 ns at 160k, item 2317's `V(id)` flat over 16x). ⚠️ **The edge half had only ever
+appeared as a profile frame, never as a measurement** — half a stated requirement, unchecked.
+
+### ⚠️⚠️ AND THE FIRST READING WAS A CIRCULAR CONFIRMATION
+
+```text
+    hostVertex / hostEdge    0.3 ns, flat at 30k / 120k / 480k edges
+```
+
+🔑 **0.3 ns is about ONE CPU CYCLE and a `Map.get` cannot be that.** The arms were
+`getEdgeById(EDGE_ID) === null ? 0 : 1` with the result **discarded** and the id **loop-invariant**, so V8
+was free to hoist the call out of the timing loop or drop it. ⚠️ **A hoisted call is flat by construction,
+so that reading would have "confirmed" O(1) without measuring it** — the cleanest example this stretch of a
+number agreeing with the hypothesis for the wrong reason.
+
+✅ Fixed by varying the id per iteration (nothing loop-invariant) and accumulating the result into a printed
+`sink` (nothing dead), with the ids precomputed so the loop does not measure string concatenation:
+
+```text
+    arm            30,000 edges   120,000   480,000     growth
+    hostVertex         5.6 ns       5.9       6.0        1.07x
+    hostEdge           7.0          7.4       7.3        1.04x
+    gremEdge  E(id)  626.2        609.9     624.1        1.00x
+```
+
+✅ **Both halves are O(1)** — ~1.05x over 16x the data — with absolutes now physically plausible for a
+string-keyed `Map.get`, and `sink` non-zero and identical across runs, which is the evidence the work
+actually happened.
+
+### 🔑 TWO SMALL OBSERVATIONS WORTH KEEPING
+
+- ⚠️ **An edge lookup costs 1.22x a vertex lookup** (7.3 against 6.0 ns). Both flat; the edge map is larger
+  at the same NODES because `FAN = 3`, which is the likely reason rather than anything structural.
+- ⚠️ **Gremlin's `E(id)` is 3x its `V(id)`** (≈620 ns against item 2317's 210), and also flat. Not a
+  defect — both are O(1) — but the asymmetry is recorded in case an edge-seeded traversal ever matters.
+
+GATES. `bun run fmt` 0, `bun run check` 0. One probe (three arms, three sizes); no production change.
+**Twelfth correction of my own instrument this stretch, and the one whose failure mode was hardest to see:
+the number was not wrong, the reason it was flat was.**
