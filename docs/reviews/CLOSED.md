@@ -118008,7 +118008,7 @@ item 2355 recorded — so it is the one row of the five whose absolute can be tr
 GATES. `bun run fmt` 0, `bun run check` 0. No probe, no production change — two reads and a heading
 correction.
 
-## Item 2357 — 🎯 **THE ONE LEVER ITEM 2155 LEFT OPEN IS WORTH MORE THAN ITS DISMISSAL SUGGESTED: the mid-vertex degree memo's ceiling is 1 − 1/FAN, so 66.7% of the degree work at FAN=3 and 91.7% at FAN=12 — "worth little" holds only at FAN ≈ 1, which is the SPARSE fixture CLAUDE.md warns both GQL row instruments default to**
+## Item 2357 — **THE ONE LEVER ITEM 2155 LEFT OPEN IS WORTH MORE THAN ITS DISMISSAL SUGGESTED** (corrected at item 2358: the ceiling is (1 - 1/FAN) of HALF the degree work, not all of it, because a memo replaces two Map.gets with one rather than eliminating them — 33% at FAN=3, and declined on that arithmetic) — ~~the mid-vertex degree memo's ceiling is 1 - 1/FAN, so 66.7% of the degree work at FAN=3 and 91.7% at FAN=12 — "worth little" holds only at FAN ≈ 1, which is the SPARSE fixture CLAUDE.md warns both GQL row instruments default to**
 
 Item 2155 aimed three levers at the bench's largest row and refuted all three — ✅ including one BUILT and
 reverted (_"172.4 with the fusion against 165.0 without … V8 had already inlined the chain; 65.4% across
@@ -118057,3 +118057,60 @@ and a degenerate generator throws — because item 702's skewed LCG _"returned t
 14x fast"_, and a skew knob is exactly where that hides.
 
 GATES. `bun run fmt` 0, `bun run check` 0. One probe (four skews); no production change.
+
+## Item 2358 — the mid-vertex degree memo is DECLINED on arithmetic, and the decline corrects my own item 2357 ceiling: a memo replaces two `Map.get`s with one rather than eliminating the degree work, so the ceiling is (1 - 1/FAN) of HALF of it — 33% at FAN=3, against a threading change through three hot functions
+
+Item 2357 measured the reach factor and put the memo's ceiling at 66.7% of the degree work at FAN=3. This
+item set out to build the A/B and instead refuted it by reading, in two steps.
+
+### The soundness boundary is per EXECUTION, and the obvious place to hang a memo is per COMPILE
+
+`core.ts:1403` returns `count: (graph, id) => twoHopSide(graph, id, plan)`. It takes `graph` as a
+PARAMETER, so the closure is built at compile time and reused across executions — and plans are cached
+(`PARSE_CACHE_CAP = 512`). A memo hung in that closure would survive writes and go stale, which is exactly
+how `memoizeIfUncorrelated` produced a wrong answer in this engine. So a sound memo has to be created per
+execution and threaded from `env` down through `degree.count` -> `twoHopSide` -> `side`: three signatures
+in the hottest path, where `executor-edits-perturb` prices a new variant at up to 16% on unrelated rows.
+
+### And then the arithmetic says there is nothing to collect
+
+For the common case — one edge type, no far label — `side` is:
+
+```text
+    (out ? edgesFromByLabel : edgesToByLabel).get(bId)    one string-keyed Map.get
+    byType.get(types[0])?.size ?? 0                       one more, plus a .size read
+```
+
+A memo keyed on `bId` must itself do one `Map.get` to check. So on a hit it replaces two gets with one: it
+removes HALF of `side`, not all of it. Item 2357's ceiling assumed the whole degree computation
+disappeared, which is wrong.
+
+```text
+    ceiling as item 2357 computed it   (1 - 1/FAN)              66.7% at FAN=3
+    ceiling as the code allows         (1 - 1/FAN) x 1/2        33.3% at FAN=3
+```
+
+And the absolute is small: item 2351 measured a string-keyed `Map.get` at 5-10 ns, so the saving is
+~3-7 ns per repeat-visited edge. Item 2155's own profile is consistent — `bucketSize` 18.9% plus
+`get adjFrom` 25.2% is the two gets, so halving that is ~22% of the one-hop arm at R=3, and less at the
+sparse FAN that the bench fixture actually uses.
+
+### Declined, with the reason stated as arithmetic rather than caution
+
+A per-execution memo threaded through three hot signatures, for ~22% of one arm on a high-FAN fixture and
+~11% on the sparse one the bench uses, against a 16% perturbation risk to unrelated rows and a known
+wrong-answer history for memos in this engine. That is a bad trade and the numbers say so without needing a
+build.
+
+Item 2357's heading is corrected in this commit. Fourteenth correction of my own work this stretch, and the
+second where reading the code refuted a ceiling I had computed from a profile share — the same shape as
+item 2336, where `aggregateOverValues`'s share looked removable until the code showed the operation could
+not be chosen without the whole collection.
+
+What remains genuinely open on this row is nothing I can see: item 2155 refuted three levers, this item
+refutes the fourth, and the row is at a constant-factor floor of ~433 ns per output row against native's
+~85. The honest statement is that `query: 2-hop subquery item` is understood and not improvable without a
+different algorithm.
+
+GATES. `bun run fmt` 0, `bun run check` 0. No probe, no production change — two reads and an arithmetic
+refutation.
