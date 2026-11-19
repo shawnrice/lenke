@@ -117834,3 +117834,46 @@ implausible figure.
 
 GATES. `bun run fmt` 0, `bun run check` 0. No probe, no production change — one audit with a negative
 result, which is the outcome worth stating plainly rather than padding.
+
+## Item 2353 — ✅ **THE CANONICAL `bun run bench` HAD NOT RUN THIS STRETCH; it does now, and it nominates ONE target my own items 2335/2336 half-explained: `sum over a hop` is 287.9 ms against `max over a hop`'s 96.1 — 3.0x, where on a SCAN I measured the same pair at 1.58x**
+
+Every measurement in items 2312-2352 came from probes I wrote. ⚠️ **The repo's own `ts / ffi / wasm` bench
+had not been run**, which is the one instrument that prices the TS column against both backends on 40+
+shapes.
+
+⚠️ **I read only the TS column and its ffi ratio.** `bun run build` does not rebuild the wasm (CLAUDE.md's
+own trap) and this session has rebuilt several times, so **the wasm column is not something I can vouch
+for** and no number from it is quoted here.
+
+```text
+    the highest ts/ffi ratios                      ts ms    ffi    ratio
+    traverse 1-hop + filter                         41.4     1.0   40.5x
+    query: sum over a hop [item 2157]              287.9     7.6   37.7x
+    query: OPTIONAL + GROUP BY, far key [2124]     101.0     2.8   35.7x
+    query: 2-hop subquery item                     151.3     5.6   26.9x
+    query: max over a hop [2157 control]            96.1     7.3   13.2x
+
+    the largest ts ABSOLUTES
+    traverse 1-hop project + order by              787.8   199.9    3.9x   <- item 2308: FIXTURE, closed
+    query: nodes(p) on a 1-hop path [2160]         705.5   334.0    2.1x   <- dear in BOTH, not TS-specific
+```
+
+### 🎯 THE NOMINATION, AND WHY IT IS NOT ALREADY CLOSED
+
+Items 2335/2336 accounted for `sum` on a **scan**: it has no streaming fold (`VALUES_AGGREGATES`), the
+operation _"is chosen by looking at the whole collection"_ because **one temporal anywhere turns addition
+into a data exception**, and the residual was fully attributed — 25.37 ns a vertex against the folded
+`max`'s 16.07, **1.58x**.
+
+🔑 **On a HOP the same pair is 287.9 against 96.1 — 3.0x.** ✅ The impossibility argument carries over
+unchanged, so it explains _a_ gap; ⚠️ **it does not explain why the gap nearly doubles when the rows come
+from a hop rather than a scan.** That difference is unexamined, and `sum over a hop` is the largest
+absolute among the high-ratio rows.
+
+⚠️ **Two rows deliberately NOT nominated**, because their headings already say why: `traverse 1-hop project
+
+- order by`(787.8) is item 2308's **fixture**, not the engine; and`nodes(p) on a 1-hop path` (705.5) runs
+  334.0 on ffi too — **2.1x is expensive in both engines, which is a different question from a TS defect.**
+
+GATES. `bun run fmt` 0, `bun run check` 0. No production change — one bench run and a nomination with its
+prior art attached.
