@@ -236,10 +236,22 @@ nothing is wrong (`packages/native/prepare-2305.mjs`).
 
 ## Hoist a Gremlin traversal out of the request path
 
-A Gremlin traversal is a plan object you build, and building one per request costs about **18%** (332 ns)
-of a small traversal's time. Gremlin's caches key on the graph and the traversal's shape, not on the object,
-so a reused plan and a rebuilt identical one hit the same caches — the saving is purely the construction
-(`packages/native/gremstmt-2272.ts`).
+A Gremlin traversal is a plan object you build, and the engine remembers what it worked out about that
+object — so building an identical one per request throws that away and the analysis runs again. Building
+the plan is the smaller half of the cost:
+
+| 20,000 vertices                                | reused plan | rebuilt each call |       |
+| ---------------------------------------------- | ----------- | ----------------- | ----- |
+| indexed point lookup                           | 702 ns      | **1190 ns**       | 1.70x |
+| whole-label projection                         | 122.6 µs    | **130.2 µs**      | 1.06x |
+| _constructing the plan alone, running nothing_ | —           | _202 ns_          |       |
+
+Constructing the plan costs 202 ns, but rebuilding costs 488 ns on the small query and 7.6 µs on the large
+one — more than construction either way, because the discarded analysis has to be redone.
+
+So the cost is roughly fixed per call and the _share_ depends on the query: it nearly doubles a point
+lookup and is a rounding error on a whole-label scan. Build the plan where you build the rest of your
+application, not inside the request:
 
 ```ts
 const recentHires = traversal(V(), hasLabel('Person'), has('startedAt', gte(cutoff)), count());

@@ -117371,3 +117371,58 @@ to within 40 texts), every snippet gated by a test.
 
 GATES. As listed. ⚠️ `main` stands at 300 unpushed commits; pushing is the owner's call and has not been
 asked for.
+
+## Item 2343 — ⚠️⚠️ **THE GUIDE's HOISTING RULE STATED A WRONG MECHANISM, AND MEASURING IT PROVED SO: it said the saving "is purely the construction" (332 ns), but construction alone is 202 ns and rebuilding costs 488 ns on a point lookup and 7.6 µs on a whole-label scan. `Plan[EFF_PREFIX]` is a slot ON THE PLAN OBJECT, so a fresh object DISCARDS the analysis. ✅ Third target closed by reading, plus one off-mandate plan of mine corrected**
+
+### ⚠️ FIRST, MY OWN SCHEDULING WAS OFF-MANDATE
+
+I had scheduled this tick for the **wasm** engine. ⚠️ The brief is the **TypeScript** engines; wasm is the
+Rust core compiled down — a different engine, context rather than target. ✅ Corrected before spending the
+tick, not after.
+
+### ✅ AND THE ON-MANDATE TARGET I TURNED TO WAS ALREADY RETRACTED
+
+TS Gremlin builds plans from combinators (no text to parse), so item 2325's 3.96x hoisting penalty is plan
+CONSTRUCTION — which looked unexamined. ⚠️ Prior art closes it and names the exact error I was about to
+make:
+
+> **"RETRACTED — item 910's 'the 19 detectors are 25% of planning' target (item 912)."** The real share is
+> **3.6-14%**, `detectHopProjection` is 87% of the block and is real work for the route it selected, and it
+> declines for 0.042 µs when it does not apply. **"Do not re-propose it from the block figure."**
+>
+> **"A BLOCK measurement invites a block-shaped fix."**
+
+🔑 **I had priced "plan construction" as a block (3.96x) and would have reached for a block-shaped fix.**
+Third closure by reading this stretch, and `appendStep`'s walk already carries item 1504-1512's early-out.
+
+### 🔑 BUT CROSS-CHECKING THE TWO PUBLISHED NUMBERS FOUND A REAL DOCUMENTATION BUG
+
+The guide said **332 ns / about 18%**; item 2325's bench implied **3.96x**, i.e. ~1640 ns. ⚠️ **Both cannot
+describe the same quantity**, and a user-facing number 5x out is worth settling:
+
+```text
+    arm                                        ns      vs reused
+    buildOnly   construction, running nothing   202         —
+    tinyReused  indexed point lookup            702         —
+    tinyRebuilt same, built per call           1190       1.70x   (+488)
+    bigReused   whole-label projection       122,616         —
+    bigRebuilt  same, built per call         130,192       1.06x   (+7,576)
+```
+
+⚠️⚠️ **Construction alone is 202 ns, so it CANNOT explain +488 or +7,576.** The guide's stated mechanism —
+_"Gremlin's caches key on the graph and the traversal's shape, not on the object, so a reused plan and a
+rebuilt identical one hit the same caches"_ — **is false**: `Plan[EFF_PREFIX]` and `[EFF_CHECKED]` are
+SCALAR SLOTS ON THE PLAN OBJECT, which is item 1503's deliberate design (a `WeakMap` was measured and
+rejected). ✅ **A fresh object misses them and every rewrite pass re-runs** — which is why the big shape
+loses 7.6 µs that construction cannot account for.
+
+✅ **The rule now carries both measurements and the right mechanism**, and says the useful thing neither
+number said alone: **the cost is roughly fixed per call, so it nearly doubles a point lookup and is a
+rounding error on a whole-label scan.**
+
+🔑 **The method note: this was found by cross-checking two numbers I had published myself in different
+items.** Neither was wrong in isolation — the guide's 332 ns and the bench's 3.96x measure different
+fixtures — **but together they were inconsistent, and the inconsistency was the mechanism error.**
+
+GATES. `bun run fmt` 0, `bun run check` 0. One probe (five arms); guide rule corrected, duplicate snippet
+removed.
