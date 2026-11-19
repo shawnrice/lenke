@@ -118262,3 +118262,83 @@ this), which is the argument for printing it beside every time.
 NOT BUILT. The arity specialization is the next step, with the controls named above.
 
 GATES. `bun run fmt` 0, `bun run check` 0. Probe arms only; no production change.
+
+## Item 2361 — BUILT, MEASURED NEUTRAL, REVERTED: the flat two-predicate gate wins nothing, because `composeInlineGate` NEVER SEES two predicates — `nodeScanPreds` folds a whole `WHERE` into ONE `InlinePred`. Two hypotheses refuted by measurement, and the real site is `specializeNarrowPred`, which has no `and` case
+
+Item 2360 attributed its 1.76x to `composeInlineGate`'s `reduceRight` chain growing the gate closure past
+V8's inline budget. This item built the flat arity-1 and arity-2 cases, measured, and found nothing.
+
+```text
+    arm          PRE (2360)    LIVE (flat gate)    ratio
+    bare             229.1          218.3          1.05x
+    oneCarrier       403.6          396.5          1.02x
+    cheapAnd         481.0          475.8          1.01x
+    cheapAnd3        477.0          477.3          1.00x
+    existsAnd        638.1          634.5          1.01x
+    fanoutRet        242.3          237.4          1.02x
+```
+
+### Why it could not have worked, which the code says plainly
+
+```ts
+export const nodeScanPreds = (start, where, nodeVar): InlinePred[] | null => {
+  const preds = [];
+  const inStart = inlineOf(start);
+  if (inStart === null) return null;
+  if (inStart !== undefined) preds.push(inStart);
+  if (where !== undefined) {
+    const carried = nodeWhereOf(where, nodeVar);
+    if (carried === 'decline') return null;
+    preds.push(carried); // <- ONE push for the WHOLE `WHERE`
+  }
+  return preds;
+};
+```
+
+A clause `WHERE` becomes a SINGLE `InlinePred` however many conjuncts it has. Every arm above has no
+inline start property, so `composeInlineGate` receives a one-element array in all of them and the arity
+cases never fire. The change was dead code that happened to compile and pass 5,000 tests.
+
+### The second hypothesis, also refuted
+
+If a single conjunct let the scan STOP at its match (a sole equality key plus item 1610's exactness
+verdict) while a conjunction forced a full walk, the probe's cycling id would land halfway on average and
+produce exactly a 2x gap. So the probe got a `POS` knob:
+
+```text
+                 POS=first   POS=last
+    bare            208.5      226.1     1.08x
+    oneCarrier      411.2      405.6     0.99x
+```
+
+Position barely matters, so there is no early exit and `bare` is a full scan too. Refuted.
+
+### The real site, by elimination and then by reading
+
+The 1.79x is inside the single `InlinePred`, not in composing several. `specializedConjunct` is one line —
+`ip.bindVar === undefined ? specializeNarrowPred(ip.pred) : undefined` — and `inline-gate.ts` contains no
+`'and'` case at all. So a conjunction's pred declines specialization and falls to the generic `inlineHolds`
+path, which item 1600's own comment describes as re-dispatching over twelve carriers per element. A single
+comparison gets a specialized closure; `a AND b` gets the twelve-way dispatch, and that is the whole gap.
+
+That also re-explains the flat third conjunct, correctly this time: it is not `reduceRight` nesting (there
+is no nesting — there is one pred). Once the pred is a conjunction at all, the dispatch is already generic,
+so making the expression bigger costs nothing measurable.
+
+Next step, now aimed at the right function: give `specializeNarrowPred` an `and` case that specializes both
+operands and returns a composed closure, declining when either operand declines. Ceiling is the measured
+1.76x on one carrier.
+
+### What this item is worth
+
+A refuted mechanism, a reverted change, and a correct localization — and the lesson is specific: item 2360
+read `composeInlineGate` and inferred the shape of its INPUT rather than checking it. One read of
+`nodeScanPreds` would have shown a single `push` and saved a build, a measurement round and a revert.
+`gate-returning-a-value` is the same family: assert what the thing actually receives, not what its name
+suggests.
+
+The tree is back on PRE and rebuilt so `dist` matches source. Pristine copies of both arms are under
+`target/ab-2361/`, per CLAUDE.md's rule about keeping them off `/tmp`.
+
+GATES. `bun run fmt` 0, `bun run check` 0 (one `no-nested-ternary` in the probe's new `POS` knob, fixed as
+an if-chain). No production change survives this item.

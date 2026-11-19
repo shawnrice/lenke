@@ -164,8 +164,30 @@ const out = new Map();
 
 for (const arm of order) {
   let rows = -1;
+  /*
+   * WHERE the matching vertex SITS IN THE SCAN, which is the item 2361 question. If a single-conjunct
+   * `WHERE` lets the scan STOP at the match (a sole equality key plus an exactness verdict) while a
+   * conjunction forces a full walk, then `first` is nearly free, `last` costs a full scan, and `cycle`
+   * lands halfway on average -- which is exactly the 2x item 2360 measured.
+   */
+  const POS = process.env.POS ?? 'cycle';
+  const pick = (k) => {
+    if (POS === 'first') {
+      return 0;
+    }
+
+    if (POS === 'last') {
+      return USERS - 1;
+    }
+
+    if (POS === 'mid') {
+      return USERS >> 1;
+    }
+
+    return k % USERS;
+  };
   const fn = (k) => {
-    const res = gql.query(graph, arm.q, { n: `user${k % USERS}` });
+    const res = gql.query(graph, arm.q, { n: `user${pick(k)}` });
 
     rows = res.length;
   };
