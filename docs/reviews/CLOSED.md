@@ -117234,3 +117234,42 @@ measurements so the next attempt starts from here rather than from the refuted h
 GATES. `bun run fmt` 0, `bun run check` 0 (after a nested-ternary lint the repo refuses — `node-values.ts`
 records the same refusal, so the fix was its `if` chain). Two probe arms and a pair mode; no production
 change.
+
+## Item 2340 — ✅✅ **THE FIVE SHIPPED GREMLIN DRAINS ARE IMMUNE TO ITEM 2339's SHARING PENALTY — 0.98-1.025x against a 657 µs baseline, including the same-drain-different-key pairing that the mechanism predicts is most exposed. So their isolated wins HOLD in a mixed workload, and the reason is that `props[key]` with a closed-over key was ALREADY a dynamic keyed load: nothing to lose**
+
+Item 2339 found a second GQL scan-family query costs `hopGql` 1.06-1.14x by shared-rung polymorphism. 🔑
+Items 2320/2321/2322 shipped five Gremlin `drain` conversions, **all measured one shape per process** — so
+the honest question is whether those wins survive company.
+
+```text
+    partner for valuesK                     valuesK us    vs alone
+    (alone)                                    657.0         —
+    ids      a DIFFERENT sibling drain         645.9       0.98x
+    labels   a DIFFERENT sibling drain         643.3       0.98x
+    valuesJ  the SAME drain, different key     673.4       1.025x
+```
+
+✅ **Every reading is within 2.5%, and two are below the baseline.** The ships hold.
+
+### 🔑 ITEM 2320's DESIGN WAS TESTED AGAINST ITS OWN PREDICTION
+
+That item deliberately wrote **three sibling drains** (`walkIds`, `walkLabels`, `walkValues`) rather than
+one with a branch, because item 159 measured an inner-loop branch at 1.6x. ✅ So the prediction was that a
+different-sibling pairing would be mild and the **same-drain, different-key** pairing would be the exposed
+one. ⚠️ **It is the largest of the three — directionally right — but at 1.025x it is 5x smaller than GQL's
+1.13x**, so the prediction is confirmed in sign and refuted in magnitude.
+
+### ✅ AND THE MECHANISM EXPLAINS WHY, WHICH IS THE PART WORTH KEEPING
+
+The drain's inner loop is `out.push(props[key])` with `key` **closed over from the plan** — a DYNAMIC keyed
+load. 🔑 `closure-dispatch-is-cheap-keyed-loads-are-not` records a variable key at 1.41x a literal one, so
+**that site was never monomorphically specialized to begin with: it has nothing to lose when a second
+shape shares it.** ⚠️ GQL's scan rungs evidently do specialize and so can lose it — which is the asymmetry
+item 2339 measured without being able to explain.
+
+✅ **So "already general" is itself a form of sharing immunity**, and it is the second reason the sibling
+structure earns its keep (item 159's branch was the first). ⚠️ It also means a future change that
+SPECIALIZES one of these drains — e.g. generating a literal-key reader — would buy per-call speed and
+**take on exactly the sharing exposure GQL has.** Recorded so that trade is visible before it is made.
+
+GATES. `bun run fmt` 0, `bun run check` 0. One probe (four arms); no production change.
