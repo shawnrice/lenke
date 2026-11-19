@@ -356,6 +356,12 @@ const onGraph = (doc: () => string, fn: (e: Engine, g: unknown) => void): Omit<C
   teardown: (e, g) => e.free(g),
 });
 
+/** The 10k-id literal list, built ONCE: ~90 KB of query text, parsed once and then parse-cached. */
+const ID_IN_10K = `MATCH (n:Person) WHERE element_id(n) IN [${Array.from(
+  { length: 10_000 },
+  (_, i) => `'v${(i * 97) % 200_000}'`,
+).join(',')}] RETURN count(*) AS c`;
+
 const CASES: Case[] = [
   { name: 'decode ndjson (nodes)', run: (e) => e.free(e.load(nodesDoc)) },
   { name: 'decode ndjson (5 edges/node)', run: (e) => e.free(e.load(graphDoc)) },
@@ -1601,6 +1607,42 @@ const CASES: Case[] = [
     ...onGraph(
       () => nodesDoc,
       (e, g) => void e.query(g, 'MATCH (a:Person) RETURN sum(a.k) AS c'),
+    ),
+  },
+  /*
+   * ⚠️ LITERALS, NOT PARAMS, and not by preference: this bench's `e.query(g, text)` takes TWO arguments —
+   * there is no params channel — so a `$id` row reads `n/a` on every engine because the name is unbound.
+   * ✅ The literal list is also the shape item 1315 actually shipped and measured (`element_id(n) IN
+   * [...]`), so it is the more faithful guard. The 10k list makes a ~90 KB query text, parsed ONCE and
+   * then served by the parse cache (item 2271 raised its cap to 512).
+   */
+  /*
+   * THE GQL ID SEED, WHICH NO INSTRUMENT IN THIS REPO COVERED (item 2377).
+   *
+   * ⚠️ `element_id` appears 49 times in `CLOSED.md` and ZERO times in `bench.ts`, `spelling-probe.ts` and
+   * `bench-usage.ts` — so item 1315's seeding ship (**614x** for the `=`-chain and **1276x** for
+   * `element_id(n) IN [...]`) had nothing guarding it, and a regression in `seedHints` would have been
+   * invisible to every bench and probe here. That is the third coverage hole found in three items; items
+   * 2375 and 2376 closed the Gremlin ones.
+   *
+   * 🔑 MULTI-ID for the measurable row, for the reason item 2375 gives: one seek answers 0 or 1 rows in
+   * ~200 ns and prints as `0.0`. The single-id row is kept anyway because it is the shape the mandate's
+   * "O(1) access to get a vertex or edge by id" names, and a route that stops seeding shows up there as a
+   * jump from ~0 to a full scan.
+   */
+  {
+    name: 'query: element_id = one id [seed, 2377]',
+    ...onGraph(
+      () => nodesDoc,
+      (e, g) =>
+        void e.query(g, "MATCH (n:Person) WHERE element_id(n) = 'v12345' RETURN n.age AS a"),
+    ),
+  },
+  {
+    name: 'query: element_id IN [10k ids] [seed, 2377]',
+    ...onGraph(
+      () => nodesDoc,
+      (e, g) => void e.query(g, ID_IN_10K),
     ),
   },
   {

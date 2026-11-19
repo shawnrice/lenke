@@ -119325,3 +119325,61 @@ shape with no prior evidence is speculative. If an edge-rooted traversal ever ma
 add first.
 
 GATES. `bun run fmt` 0, `bun run check` 0. Bench rows only; no production change.
+
+## Item 2377 — ⚠️ **THE THIRD COVERAGE HOLE IN THREE ITEMS, and the biggest: `element_id` has 49 mentions in this file and ZERO rows in `bench.ts`, `spelling-probe.ts` and `bench-usage.ts`, so item 1315's seeding ship (614x and 1276x) was guarded by nothing.** Two rows added; the seed is HEALTHY — TS is **5.3x FASTER than native** on a 10k-id seek
+
+Items 2375 and 2376 closed two Gremlin coverage holes, so this item asked the same question of the GQL
+instruments. The GQL id seek exists and is well worked — `matching.ts` carries a dedicated `seedHints`
+path (_"An ID hint needs NO property index: `graph.getVertexById` is an O(1) `Map.get` on `verticesById`,
+which every graph has"_) and item 1315 shipped it: _"`element_id(n) IN [...]` and the id `=`-chain both
+seed: 614x and 1276x"_.
+
+```text
+    element_id mentions in CLOSED.md     49
+    element_id rows in bench.ts           0
+    element_id rows in spelling-probe.ts  0
+    element_id rows in bench-usage.ts     0
+```
+
+🔑 **A 614x/1276x ship with no instrument row anywhere.** A regression in `seedHints` — the seed silently
+declining and falling back to a 200,000-vertex scan — would have been invisible to every bench and probe in
+the repo. ⚠️ And this is the shape the standing mandate names by name ("good O(1) access to get a vertex or
+edge by id"), on the surface where it had the least coverage.
+
+### ✅ THE ROWS, AND THE SEED IS FINE
+
+```text
+    row                                       ts      ffi     wasm    ts/ffi
+    query: element_id = one id               0.0      0.0      0.0     3.14x
+    query: element_id IN [10k ids]           1.9     10.1     10.3     0.19x   ⬅ TS 5.3x FASTER
+```
+
+✅ Nothing to take. The single-id row is a weak guard by construction — it prints `0.0` either way — but it
+still catches the failure that matters for a 614x ship: a lost seed turns it into a 200,000-vertex scan,
+which reads 2-4 ms on the neighbouring rows. The 10k row is the measurable one.
+
+### ⚠️ A GOTCHA FOR ANYONE ADDING A ROW TO THIS BENCH: THERE IS NO PARAMS CHANNEL
+
+My first version passed params — `e.query(g, text, { id: 'v12345' })` — and all three engines printed
+**`n/a`**, because `e.query` takes TWO arguments here and the name was therefore unbound. ⚠️ `n/a` is what
+this bench prints for a THROWN query, so a row can look "not applicable" when it is actually broken.
+TypeScript did say so (`TS2554: Expected 2 arguments, but got 3`) and I read the bench output first.
+
+✅ Literals are also the more faithful guard: item 1315 measured the LITERAL list form. The 10k list is
+~90 KB of query text, built once at module scope and then served by the parse cache (item 2271 raised its
+cap to 512).
+
+### ✅ AND THE GQL SYNTAX IS CONFIRMED, not assumed
+
+Three spellings checked directly against the engine rather than from memory, per CLAUDE.md's rule that GQL
+questions are answered from the grammar and not from Cypher habits:
+
+```text
+    WHERE element_id(n) = $id          OK  [{"a":7}]
+    WHERE element_id(n) IN $ids        OK  [{"c":1}]
+    WHERE element_id(n) IN [$id]       OK  [{"c":1}]
+```
+
+GATES. `bun run fmt` 0, `bun run check` 0 (two iterations: the params error above, then a misplaced
+module-level const that landed INSIDE the `CASES` array — caught by `fmt`/`check` before any measurement).
+Bench rows only; no production change.
