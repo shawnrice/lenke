@@ -117476,3 +117476,45 @@ numbers above are the corrected ones. **Tenth correction of my own work this str
 
 GATES. `bun run fmt` 0, `bun run check` 0, guide suite **12 pass / 0 fail, 37 assertions**. One probe (six
 arms, two modes); rule rewritten.
+
+## Item 2345 — ✅ **THE PAGING RULE REPRODUCES (all four arms within 25%), but TWO of its ratios had drifted — keyset's advantage 1.35x → 1.6x and binding's 1.15x → 1.1x. ⚠️ And the "index makes keyset slower" result I was about to publish as new is ALREADY item 2275's, in its own table: fourth closure by reading this stretch**
+
+Continuing item 2344's cross-check on the rules not measured during this stretch. ✅ The cited probe
+(`paging-2275.ts`) was re-run rather than rebuilt — cheaper and faithful to what the guide points at.
+
+```text
+    arm                          guide     now      drift
+    onepass   ONE query            1.7     2.2 ms
+    keyset    WHERE k > $last    171     137
+    offsetParam  bound           201     214
+    paged     literal SKIP       231     230
+```
+
+✅ **The rule holds and its shape is unchanged**: one query is ~60x the whole walk, and `firstonly` (page 1
+fetched 400 times) at 125.5 ms confirms the guide's claim that keyset costs about what re-fetching page one
+does — 137 against 125.5 is 1.09x.
+
+⚠️ **But two ratios had drifted far enough to mislead**: keyset over bound offset is now **1.6x** (the guide
+said 1.35x) and binding the offset is **1.1x** (it said 1.15x). ✅ Both corrected, along with the four
+absolute figures.
+
+### ⚠️⚠️ AND THE FOURTH CLOSURE BY READING, WHICH I NEARLY MISSED
+
+`keysetIdx` — keyset plus a RANGE index on the cursor key — measured **154.3 against keyset's 137.0,
+confirmed 3/3 with disjoint ranges.** 🔑 An index making paging SLOWER looked like a finding, and I started
+writing it up.
+
+⚠️ **It is item 2275's, stated in its own table**: _"keysetIdx keyset + a RANGE index on k — 172.2 — 27%
+WORSE than keyset"_, under the heading _"NEITHER KEYSET NOR AN INDEX FIXES IT"_. ✅ My re-measurement does
+update it — **the penalty has narrowed from 27% to 13%** — and the guide now carries the fact, which it did
+not: _an index on the key you page by does not help and costs a little._
+
+🔑 **AND A NEAR-MISS WORTH RECORDING ON TOP OF THAT.** The probe's own comment reads: _"bun erases types
+and ran it anyway, so the arm created NO index and read 153.2 ms; I was one step from reporting 'an index
+does not help' from an arm with no index."_ ⚠️ **My measurements were 153.0-154.3 — numerically identical
+to that artifact.** ✅ I checked whether the arm was fixed before believing them (it was: `kind: 'range'`
+is created), which is the only reason the coincidence did not become a retraction. **A number matching a
+documented artifact is a reason to re-read the arm, not a confirmation.**
+
+GATES. `bun run fmt` 0, `bun run check` 0, guide suite 12 pass / 0 fail. Guide: four absolutes and two
+ratios refreshed, one fact added; no production change.

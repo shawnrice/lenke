@@ -13,10 +13,14 @@ whole thing costs far more than asking for it once.
 
 | How                                           | Total  |
 | --------------------------------------------- | ------ |
-| One query returning every row                 | 1.7 ms |
-| Keyset pages (`WHERE k > $last`)              | 171 ms |
-| Offset pages, bound (`OFFSET $s LIMIT $n`)    | 201 ms |
-| Offset pages, literal (`SKIP 20000 LIMIT 50`) | 231 ms |
+| One query returning every row                 | 2.2 ms |
+| Keyset pages (`WHERE k > $last`)              | 137 ms |
+| Offset pages, bound (`OFFSET $s LIMIT $n`)    | 214 ms |
+| Offset pages, literal (`SKIP 20000 LIMIT 50`) | 230 ms |
+
+An index on the key you page by does not help and costs a little — a range index on the cursor column
+measured 154 ms against keyset's 137. Each page still scans and sorts the whole result; the cursor removes
+the counting, not the sorting.
 
 If you need the whole result — an export, a recomputation, a sync — ask for it in one query. Paging is for
 when a person is looking at one screenful.
@@ -38,9 +42,9 @@ MATCH (p:Person) WHERE p.surname > $lastSurname RETURN p.surname AS s ORDER BY s
 `SKIP` is a Cypher alias kept for familiarity and accepts only a literal, so `SKIP $skip` is rejected
 (`Expected a non-negative integer after SKIP/OFFSET`). That matters beyond spelling: a caller who cannot
 bind the offset has to put it in the query text, which makes every page a distinct statement and walks out
-of the parse cache described below. Binding it is **1.15x** cheaper over a full walk.
+of the parse cache described below. Binding it is **about 1.1x** cheaper over a full walk.
 
-Keyset is **1.35x** cheaper again. Two things to know:
+Keyset is **about 1.6x** cheaper again. Two things to know:
 
 - **Add a tiebreak column.** A strict `>` on a key with duplicates skips the rows that tie with the last
   one — in the measurement above, 4 rows of 20,000 vanished. Order by the key _and_ something unique
