@@ -118115,7 +118115,7 @@ different algorithm.
 GATES. `bun run fmt` 0, `bun run check` 0. No probe, no production change — two reads and an arithmetic
 refutation.
 
-## Item 2359 — OPEN TARGET, measured and mechanism established: on an UNINDEXED label scan, adding ANY second conjunct to the `WHERE` costs 2.11x, and a THIRD is free — so a conjunction declines a specialized single-comparison rung and the whole penalty is paid at the first one. Nominated by the SERVING bench, which had not been run this stretch
+## Item 2359 — ~~OPEN TARGET, measured and mechanism established: on an UNINDEXED label scan, adding ANY second conjunct to the `WHERE` costs 2.11x~~ **MOSTLY NOT A TARGET — corrected at item 2363: ~9 ns of the delta is the genuine work of a second predicate, item 1604 already shipped the arity-2 pair, and only the non-PAIRABLE carrier combination (~1.19x) is open**, and a THIRD is free — so a conjunction declines a specialized single-comparison rung and the whole penalty is paid at the first one. Nominated by the SERVING bench, which had not been run this stretch
 
 The bulk bench's high-ratio rows are all accounted for (items 2353-2358), so this item changed instrument
 rather than picking another row. `bun run bench:usage` is the serving counterpart CLAUDE.md flags as a
@@ -118194,7 +118194,7 @@ post-filter, with an unindexed bare-WHERE arm and an indexed arm as controls.
 
 GATES. `bun run fmt` 0, `bun run check` 0. One probe (six arms, one per process); no production change.
 
-## Item 2360 — item 2359's 2.11x is LOCALIZED to `composeInlineGate`'s `reduceRight` chain and SPLIT into two causes: going from one conjunct to two costs 1.76x WITHOUT EVALUATING THE SECOND, and a second property carrier adds 1.19x on top. The fix is a flat two-predicate closure, not a new rung
+## Item 2360 — ~~item 2359's 2.11x is LOCALIZED to `composeInlineGate`'s `reduceRight` chain~~ **BOTH HALVES WRONG (2361 refuted the chain, 2363 the framing): the 1.76x is mostly a second predicate's real work** — ~~and SPLIT into two causes: going from one conjunct to two costs 1.76x WITHOUT EVALUATING THE SECOND~~, and a second property carrier adds 1.19x on top. The fix is a flat two-predicate closure, not a new rung
 
 Item 2359 measured a 2.11x cliff for adding a trivially-true second conjunct to an unindexed scan and
 guessed the cause was a rung decline. The rung is `detectNodeProjection` in `node-scan.ts`, and it does NOT
@@ -118343,7 +118343,7 @@ The tree is back on PRE and rebuilt so `dist` matches source. Pristine copies of
 GATES. `bun run fmt` 0, `bun run check` 0 (one `no-nested-ternary` in the probe's new `POS` knob, fixed as
 an if-chain). No production change survives this item.
 
-## Item 2362 — the 1.76x is fully explained, by a THIRD refutation plus one read: `specializeSingleProp` admits exactly ONE populated carrier with ONE entry, so two conjuncts of ANY operator and ANY carrier fall to the generic loop. Not `eqProps`, not arity in the gate, not early exit
+## Item 2362 — ~~the 1.76x is fully explained~~ **the explanation was INCOMPLETE — item 1604 already widened this to arity 2 via `specializeEqPair`, which item 2363 found; see there** — by a THIRD refutation plus one read: `specializeSingleProp` admits exactly ONE populated carrier with ONE entry, so two conjuncts of ANY operator and ANY carrier fall to the generic loop. Not `eqProps`, not arity in the gate, not early exit
 
 Three mechanisms have now been proposed for item 2359's cliff and three measured false. This item adds the
 third refutation and then finds the answer by reading the specializer's own gate.
@@ -118413,3 +118413,76 @@ NOT BUILT — deliberately deferred rather than rushed at the end of a tick that
 mechanisms.
 
 GATES. `bun run fmt` 0, `bun run check` 0. Probe arms only; no production change.
+
+## Item 2363 — I spent four items pricing a cliff that item 1604 ALREADY FIXED, and most of what is left is a second predicate's real work. No equivalent-spelling gap; the only open piece is the non-PAIRABLE carrier pair at ~1.19x
+
+Items 2359-2362 treated "a second conjunct costs 1.76x" as a defect and proposed four mechanisms for it,
+three of them refuted by measurement. This item found the prior art and the arithmetic that dissolve most
+of the target.
+
+### The prior art, which was in two places I had already searched
+
+`specializeEqPair` IS the width-2 sibling of `specializeSingleProp`, shipped at **item 1604**, whose
+`CLOSED.md` heading reads:
+
+> "**1.29x / 1.37x on the ARITY CLIFF**: a second equality conjunct cost 2.7x and now costs ~1.29x.
+> Nominated by `bench:usage` rather than a profile, and the second half of the change exists only to stop
+> it opening an equivalent-spelling gap"
+
+Same instrument as item 2359, same row class, same cliff — and `CLOSED.md` mentions item 1604 twice. My
+searches used the vocabulary I had invented ("compound WHERE", "conjunction declines") rather than the
+vocabulary the fix used ("arity cliff", "width-2"), so none of them hit.
+
+### No spelling gap: item 1604's "both spellings or neither" holds
+
+```text
+    bare         227.1 us     bareInline   217.2     1.05x    one conjunct, both spellings fast
+    twoEq        408.2        twoEqInline  383.4     1.06x    two conjuncts, both spellings slow
+```
+
+That was a real risk worth checking — item 1604's own comment warns that specializing one spelling only
+"would open a 2.7x EQUIVALENT-SPELLING GAP, the defect class this engine is named after" — and the pair
+agrees to 1.06x. Nothing to fix.
+
+### The arithmetic that dissolves most of the "cliff"
+
+Per candidate over a 20,000-vertex unindexed scan:
+
+```text
+    bare        11.35 ns/candidate       one predicate
+    twoEq       20.40                    two predicates, PAIRABLE carriers  -> +9.05 ns
+    oneCarrier  20.09                    eqProps + cmpProps `<>`
+    cheapAnd    24.43                    eqProps + cmpProps `>=`            -> +13.1 ns
+```
+
+Item 1604 recorded that "the FIRST conjunct costs ~21 ns a candidate and each UNSPECIALIZED one adds ~34",
+with the specialized pair landing near its one-conjunct twin. The +9 ns measured here is far closer to a
+specialized second predicate than to an unspecialized one, so **`specializeEqPair` is firing and the bulk
+of the 1.76x is the genuine cost of reading a second property and comparing it.** A ratio of 1.76x looks
+alarming only because the one-predicate baseline is 11 ns — doubling the predicate work roughly doubles a
+very small number.
+
+### What is actually still open, and it is small
+
+`PAIRABLE` is `{props, eqProps}`, so a pair that includes `cmpProps` — any ORDERING comparison — declines
+the pair and runs the generic loop: 24.43 ns against 20.40, **1.19x**. That is the same 1.19x item 2360
+measured as "a second carrier" and mis-attributed. Extending the pair to `cmpProps` is the remaining lever,
+worth ~1.19x on ordering-comparison pairs and nothing on equality pairs.
+
+⚠️ Item 1604's comment argues AGAINST widening `specializeSingleProp` for this ("its first version used a
+hand-written list and MISSED FOUR CARRIERS, answering 5 where the right answer was 2"), and the same
+caution applies to widening `specializeEqPair`: a third narrow contract beside it is the shape that file
+already chose twice. ⚠️ Item 1604 also left the THREE-conjunct cliff deliberately (76166 against a
+two-clause 54575), so arity three is a separate, known, declined question.
+
+### The process failure, stated plainly
+
+Four items, one build, one revert, three refuted mechanisms — and the answer was a function whose comment
+names the instrument that nominated it. The specific lesson is about SEARCH VOCABULARY: I searched for my
+own description of the symptom, never for the name a fix would have used. When a measurement looks like a
+missing optimization, grep for the OPTIMIZATION's likely name ("specialize", "arity", "width") alongside
+the symptom. Items 2355/2356 closed targets by reading the record first and that worked because the rows
+carried item numbers; this target carried none, and I did not compensate.
+
+GATES. `bun run fmt` 0, `bun run check` 0. Probe arms only; no production change. Headings of items 2359,
+2360 and 2362 corrected in this commit, per the standing rule.

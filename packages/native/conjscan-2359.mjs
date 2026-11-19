@@ -103,6 +103,23 @@ const ARMS = [
     q: "MATCH (u:User) WHERE u.name = $n AND u.tier = 'a' RETURN u.name AS n",
   },
   {
+    /*
+     * THE INLINE TWIN of `twoEq` (item 2363). Item 1604 shipped `specializeEqPair` -- two equality
+     * conjuncts as one straight-line closure -- over the `props` and `eqProps` carriers, admitting BOTH
+     * spellings deliberately: its own comment warns that specializing only one "would open a 2.7x
+     * EQUIVALENT-SPELLING GAP, the defect class this engine is named after". `twoEq` measures SLOW, so
+     * either the pair is not firing for it or it never reaches the pair. If this inline arm is FAST while
+     * `twoEq` is slow, that gap is open on the clause spelling.
+     */
+    key: 'twoEqInline',
+    q: "MATCH (u:User {name: $n, tier: 'a'}) RETURN u.name AS n",
+  },
+  {
+    /** The one-conjunct inline twin, so `bare` has a same-spelling floor. */
+    key: 'bareInline',
+    q: 'MATCH (u:User {name: $n}) RETURN u.name AS n',
+  },
+  {
     key: 'cheapAndRev',
     q: 'MATCH (u:User) WHERE u.score >= 0 AND u.name = $n RETURN u.name AS n',
   },
