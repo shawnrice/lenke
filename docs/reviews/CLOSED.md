@@ -118800,3 +118800,61 @@ measured bimodality and the requirement to compare medians across SEVERAL PROCES
 estimator is chosen. Item 2367's heading corrected.
 
 GATES. `bun run fmt` 0, `bun run check` 0. Instrument change only; no production change.
+
+## Item 2369 — the slot memo's documented **1.85x is now 1.00x**, re-priced by oracle at a fixture whose rows actually resolve. Four shapes plus a declining control, all flat within run-to-run spread. A deletion candidate, left standing, and its comment corrected so nobody re-cites the stale figure
+
+Items 2367-2368 left one real lever: `sweepChain`'s per-slot adjacency memo, gated on `passes > 2`, whose
+comment prices it at _"`count 4-hop` goes 550.5 -> 297.5, **1.85x**"_. That figure was measured when the row
+was 550 ms; it is now 27 ms.
+
+### Measured where the rows resolve, which items 2365-2368 established is the precondition
+
+`CHAIN_N=1000000` (3,000,000 edges), `CHAIN_REPS=7`, one case per process, comparing STEADY-STATE reps. At
+that size the series converge tightly instead of tiering up late:
+
+```text
+    4-hop  reps=[501.5 39.9 29.7 29.8 29.6 29.1 29.0]     rep 1 is a ~500 ms cold cost, 17x the steady
+```
+
+```text
+    case                      ON     OFF    ON/OFF
+    4-hop                    27.3   27.5    0.99x
+    5-hop                    29.7   29.1    1.02x
+    6-hop                    31.3   31.4    1.00x
+    6-hop mixed (DECLINES)   29.5   29.5    1.00x   <- control, flat as it must be
+    7-hop reversed           36.3   35.8    1.01x
+```
+
+✅ **The memo buys nothing.** And the control is the evidence the oracle worked: the mixed-direction chain
+declines the memo by the gate's own `uniform` requirement, and it reads 29.5 on both arms.
+
+⚠️ **One pair would have said "the memo COSTS 1.055x".** My first memo-ON run read 4-hop 29.0 and the
+second 27.3 — 1.06x between two identical arms. So anything under ~6% at this fixture is run-to-run spread
+and the honest verdict is FLAT, not a loss. That is the item 2365-2368 lesson applied to my own conclusion
+before publishing it rather than afterwards.
+
+### MEMO OFF also makes the cost monotonic, which is the sanity check
+
+```text
+    4-hop 27.5   5-hop 29.1   6-hop 31.4   7-hop 35.8
+```
+
+~2 ms per added hop, and 3,000,000 edges at ~0.7 ns an edge-op is ~2 ms — so each extra hop costs exactly
+one more O(E) pass. 🔑 Item 2367's "ordering that cannot be right" is gone at every point once the fixture
+resolves, which is the final confirmation that it never existed.
+
+### Why it is not deleted here
+
+The memo still costs a scratch push per edge and an `Int32Array.from` per slot for that nothing, so it IS a
+deletion candidate. ⚠️ But a null result is not a mandate to remove working code, and this oracle covers
+uniform `:E` chains at one degree over one size — the gate also requires `uniform`, same leg types, no
+gates and no labels, so the shapes it serves are narrow and I have priced four of them. Removing it is the
+owner's call, as items 2349/2350's CSR levers were.
+
+✅ **What IS fixed: the comment.** It now carries this table beside the 1.85x, says the old figure does not
+reproduce, and says explicitly not to re-cite it as a live benefit. A stale number in a code comment misled
+me for two items (it made the memo the obvious suspect for a phantom inversion), which is the same failure
+mode as a stale `CLOSED.md` heading and deserves the same correction.
+
+GATES. `bun run fmt` 0, `bun run check` 0, rebuilt. Oracle reverted; the only production change is 20 lines
+of comment.

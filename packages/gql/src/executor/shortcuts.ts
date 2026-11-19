@@ -4915,6 +4915,26 @@ const sweepChain = ({ graph, params, legs, startLabel, startGate, startSource }:
   // `count 3-hop + start filter` (3 legs, 2 passes) read 162.0 ms against 165.7 over three
   // alternated rounds, consistently the wrong way. At three passes two are refunded and
   // `count 4-hop` goes 550.5 -> 297.5, **1.85x**.
+  //
+  // ⚠️⚠️ THAT 1.85x NO LONGER REPRODUCES, AND THE MEMO NOW BUYS NOTHING. Re-priced at item 2369 with an
+  // ORACLE (this gate forced off) at 1,000,000 vertices / 3,000,000 edges, `CHAIN_REPS=7`, one case per
+  // process, comparing STEADY-STATE reps rather than a min — the rows the original figure was measured on
+  // are 297-550 ms and are now 27-36 ms, roughly 12x faster, so whatever the memo saved has been subsumed:
+  //
+  // ```text
+  //     case                      ON     OFF    ON/OFF
+  //     4-hop                    27.3   27.5    0.99x
+  //     5-hop                    29.7   29.1    1.02x
+  //     6-hop                    31.3   31.4    1.00x
+  //     6-hop mixed (DECLINES)   29.5   29.5    1.00x   <- control, flat as it must be
+  //     7-hop reversed           36.3   35.8    1.01x
+  // ```
+  //
+  // Two memo-ON runs of the SAME build read 29.0 and 27.3 (1.06x), so anything under ~6% here is
+  // run-to-run spread and the honest verdict is FLAT, not a loss. The memo still costs a scratch push per
+  // edge and an `Int32Array.from` per slot for that nothing, which makes it a DELETION CANDIDATE — left
+  // standing because a null result is not a mandate to remove working code, and because this oracle covers
+  // uniform `:E` chains at one degree. ⚠️ Do NOT re-cite the 1.85x as a live benefit.
   const slotNbrs: SlotMemo | undefined =
     uniform &&
     passes > 2 &&
