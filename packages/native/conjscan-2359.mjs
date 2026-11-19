@@ -39,7 +39,7 @@ for (let i = 0; i < USERS; i += 1) {
   graph.addVertex({
     id: `u${i}`,
     labels: ['User'],
-    properties: { name: `user${i}`, score: i % 1000 },
+    properties: { name: `user${i}`, score: i % 1000, tier: 'a' },
   });
 }
 
@@ -91,6 +91,16 @@ const ARMS = [
      */
     key: 'oneCarrier',
     q: "MATCH (u:User) WHERE u.name = $n AND u.name <> 'zzz' RETURN u.name AS n",
+  },
+  {
+    /*
+     * THE ALL-`=` ARM (item 2362). `eqProps` -- added at item 224 and extended at item 230 from one
+     * comparison to an all-`=` AND-chain -- compiles `<var>.<key> = <non-null literal>` conjuncts to read
+     * the ELEMENT directly. Both slow arms above carry a NON-`=` second conjunct (`>=`, `<>`) and so fall
+     * outside it. If that is the mechanism, this arm sits near `bare` despite having two conjuncts.
+     */
+    key: 'twoEq',
+    q: "MATCH (u:User) WHERE u.name = $n AND u.tier = 'a' RETURN u.name AS n",
   },
   {
     key: 'cheapAndRev',

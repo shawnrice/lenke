@@ -118342,3 +118342,74 @@ The tree is back on PRE and rebuilt so `dist` matches source. Pristine copies of
 
 GATES. `bun run fmt` 0, `bun run check` 0 (one `no-nested-ternary` in the probe's new `POS` knob, fixed as
 an if-chain). No production change survives this item.
+
+## Item 2362 — the 1.76x is fully explained, by a THIRD refutation plus one read: `specializeSingleProp` admits exactly ONE populated carrier with ONE entry, so two conjuncts of ANY operator and ANY carrier fall to the generic loop. Not `eqProps`, not arity in the gate, not early exit
+
+Three mechanisms have now been proposed for item 2359's cliff and three measured false. This item adds the
+third refutation and then finds the answer by reading the specializer's own gate.
+
+```text
+    arm          conjuncts  operators       us/call   vs bare
+    bare              1      =                229.6    1.00x
+    twoEq             2      = , =            407.6    1.77x   <- all-equality, STILL slow
+    oneCarrier        2      = , <>           401.7    1.75x
+    cheapAnd          2      = , >=           488.5    2.13x
+```
+
+### The refutation, and why it strengthens rather than weakens the target
+
+`nodeWhereOf`'s comment records that item 224 added `eqProps` — conjuncts of the form
+`<ownVar>.<key> = <non-null literal>` compiled to read the ELEMENT directly — and that **item 230 extended
+it from one comparison to an all-`=` AND-chain**. Both previously measured arms carried a NON-`=` second
+conjunct (`>=`, `<>`), so the obvious reading was that `=` chains are specialized and others are not.
+
+`twoEq` tests that directly and is just as slow (407.6 against `oneCarrier`'s 401.7). So the discriminator
+is NOT the operator. 🔑 And that makes the opportunity LARGER, not smaller: it is not that one family of
+conjunctions is handled and the rest are not — **nothing conjunctive is handled at all.**
+
+### The answer, in `specializeSingleProp`'s own gate
+
+`CPredicate` is a record of carriers (`eqProps`, `cmpProps`, `nullProps`, `memberProps`, `props`, `where`),
+and the specializer admits a predicate only when exactly ONE carrier is populated, that carrier is in
+`SPECIALIZABLE`, and it holds exactly ONE entry. Its own comment states the reason:
+
+> "A populated array is fine ONLY if it is one of the two this function answers, and only if it is the only
+> one — `eqProps` AND `cmpProps` together need a loop, which is the thing being removed."
+
+So one comparison gets a specialized closure and two of ANY operator, in ONE carrier or two, decline both
+specializers and fall to the generic `inlineHolds` loop — item 1600's twelve-carrier re-dispatch per
+element. That is exactly the invariant measured: 1 conjunct fast, 2+ slow, the third free (the generic loop
+is already entered, so a longer predicate costs nothing measurable).
+
+### The three refuted mechanisms, recorded so none is re-proposed
+
+```text
+    item 2360   composeInlineGate's reduceRight chain / closure inline budget
+                BUILT at 2361, measured 1.00-1.05x, reverted. It could not work: `nodeScanPreds`
+                pushes ONE InlinePred for the whole WHERE, so the arity cases never fire.
+    item 2361   early exit on a sole equality key (item 1610's exactness verdict)
+                REFUTED by a POS knob: bare reads 208.5 at `first` and 226.1 at `last`, 1.08x.
+    item 2362   `eqProps`'s all-`=` AND-chain (items 224/230)
+                REFUTED by `twoEq`: an all-equality pair is 1.77x, the same as a mixed pair.
+```
+
+### The fix, precisely stated
+
+Add a two-entry case to the specializer: factor out "specialize ONE entry of carrier X" from
+`specializeSingleProp`'s per-carrier branches, then compose two of them as
+`(e, env) => c0(e, env) && c1(e, env)` — admitting both a single carrier holding two entries and two
+carriers holding one each. Wire it into `specializeNarrowPred` between the existing two.
+
+Ceiling is the measured 1.76x, and it is a CEILING: the generic loop is not removed, only bypassed for the
+two-entry shape. Three conjuncts stay on the loop by choice, since the measurement says layers past the
+second are already free.
+
+Caveats: the function is hot and heavily annotated, so the extraction is the risky part rather than the
+composition; `executor-edits-perturb` prices an edit here at up to 16% on unrelated rows, so the unindexed
+`bare` arm and an indexed arm are mandatory controls; and a route assertion is needed, because a wrong
+answer here is a silently mis-filtered scan rather than a slow one.
+
+NOT BUILT — deliberately deferred rather than rushed at the end of a tick that had already refuted three
+mechanisms.
+
+GATES. `bun run fmt` 0, `bun run check` 0. Probe arms only; no production change.
