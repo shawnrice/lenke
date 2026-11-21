@@ -8776,10 +8776,12 @@ fn shortest_path_terminates_on_a_cycle() {
 
 /// A predecessor map for a straight chain `0 -> 1 -> ... -> n-1`, edge id `i` joining
 /// `i-1` to `i`, which is the shape `first_pred_chain` walks backwards.
-fn chain_preds(n: u32) -> FnvMap<u32, Vec<(u32, u32)>> {
-    let mut preds: FnvMap<u32, Vec<(u32, u32)>> = FnvMap::default();
+fn chain_preds(n: u32) -> crate::exec::varlen::PredDag {
+    let mut preds = crate::exec::varlen::PredDag::with_slots(n as usize + 1);
+    preds.open(0);
     for i in 1..n {
-        preds.insert(i, vec![(i - 1, i)]);
+        preds.open(i);
+        preds.push(i, i - 1, i);
     }
     preds
 }
@@ -8832,10 +8834,17 @@ fn the_reused_chain_buffer_does_not_inherit_the_previous_row() {
 /// (via 1 and via 2); the first-recorded predecessor is what both forms must pick.
 #[test]
 fn the_reused_chain_buffer_picks_the_same_branch() {
-    let mut preds: FnvMap<u32, Vec<(u32, u32)>> = FnvMap::default();
-    preds.insert(1, vec![(0, 10)]);
-    preds.insert(2, vec![(0, 20)]);
-    preds.insert(3, vec![(1, 13), (2, 23)]); // two shortest routes; [0] wins
+    let mut preds = crate::exec::varlen::PredDag::with_slots(5);
+    preds.open(0);
+    preds.open(1);
+    preds.push(1, 0, 10);
+    preds.open(2);
+    preds.push(2, 0, 20);
+    preds.open(3);
+    // Two shortest routes to 3. Pushed in discovery order, so the FIRST wins -- and that is
+    // what an intrusive list appending at the TAIL preserves and a prepending one would not.
+    preds.push(3, 1, 13);
+    preds.push(3, 2, 23);
     let (want_chain, want_echain) = crate::exec::varlen::first_pred_chain(3, 0, &preds);
     let mut chain = Vec::new();
     let mut echain = Vec::new();

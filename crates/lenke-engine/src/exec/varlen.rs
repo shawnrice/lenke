@@ -1547,6 +1547,7 @@ pub(super) fn shortest_path(
     let mut seen: Vec<u32> = vec![0; n_nodes + 1];
     let mut bfs_dist: Vec<u32> = vec![0; n_nodes + 1];
     let mut bfs_gen: u32 = 0;
+    let mut preds = PredDag::with_slots(n_nodes + 1);
 
     for (row, &start) in src.iter().enumerate() {
         guard_path_growth(keep.len(), path_values.len() + path_edges.len(), store)?;
@@ -1563,7 +1564,8 @@ pub(super) fn shortest_path(
         bfs_gen += 1;
         seen[slot(start)] = bfs_gen;
         bfs_dist[slot(start)] = 0;
-        let mut preds: FnvMap<u32, Vec<(u32, u32)>> = FnvMap::default();
+        preds.clear();
+        preds.open(start);
         let mut order: Vec<u32> = vec![start];
         let mut q: VecDeque<u32> = VecDeque::new();
         q.push_back(start);
@@ -1618,7 +1620,8 @@ pub(super) fn shortest_path(
                     None => {
                         seen[nbr] = bfs_gen;
                         bfs_dist[nbr] = dv + 1;
-                        preds.entry(a.nbr).or_default().push((v, a.eid));
+                        preds.open(a.nbr);
+                        preds.push(a.nbr, v, a.eid);
                         order.push(a.nbr);
                         q.push_back(a.nbr);
                         // First time we reach a target: once all are found, the deepest is
@@ -1635,7 +1638,7 @@ pub(super) fn shortest_path(
                     // Another edge onto a node at its shortest distance — a second
                     // shortest-path predecessor.
                     Some(dn) if dn == dv + 1 => {
-                        preds.entry(a.nbr).or_default().push((v, a.eid));
+                        preds.push(a.nbr, v, a.eid);
                     }
                     _ => {}
                 }
@@ -1652,13 +1655,9 @@ pub(super) fn shortest_path(
                     continue;
                 }
                 let c = preds
-                    .get(&node)
-                    .map(|ps| {
-                        ps.iter()
-                            .map(|&(p, _)| pcount.get(&p).copied().unwrap_or(0))
-                            .sum()
-                    })
-                    .unwrap_or(0);
+                    .preds_of(node)
+                    .map(|(p, _)| pcount.get(&p).copied().unwrap_or(0))
+                    .sum();
                 pcount.insert(node, c);
             }
         }
@@ -2119,11 +2118,102 @@ pub(super) fn collect_trails(
 /// The single shortest path start..node via the FIRST predecessor of each node (the
 /// BFS-tree parent) — the representative `ANY SHORTEST` keeps. Returns the node chain
 /// (start..node inclusive) and its edge chain. `node == start` gives `([start], [])`.
-pub(super) fn first_pred_chain(
-    node: u32,
-    start: u32,
-    preds: &FnvMap<u32, Vec<(u32, u32)>>,
-) -> (Vec<u32>, Vec<u32>) {
+/// The shortest-path predecessor DAG as a flat arena plus an intrusive per-node list,
+/// replacing `FnvMap<u32, Vec<(u32, u32)>>`.
+///
+/// That map allocated ONE `Vec` per discovered node per source. The profile taken after item
+/// 2394 put 14.0% of worker samples in the allocator under `shortest_path` -- MORE than the
+/// 7.9% still left in hashing -- and this is where those allocations were. Here a whole source
+/// costs one `clear()` and the arena keeps its capacity across sources.
+///
+/// `head`/`tail` are indexed by vertex slot and are meaningful only where the BFS has stamped
+/// the node as seen for the current generation, so they need no stamp of their own and their
+/// initial contents never matter -- which lets both be `vec![0; n]`, an `alloc_zeroed` whose
+/// pages fault in only as the walk reaches them.
+///
+/// Appending at the TAIL is load-bearing rather than a detail. `first_pred_chain` takes the
+/// FIRST recorded predecessor, and that choice decides which of several equally-short paths
+/// `ANY SHORTEST` reports; a prepending list would reverse it silently. Two tests exist for
+/// exactly that: `the_reused_chain_buffer_picks_the_same_branch` and
+/// `the_undirected_bfs_walks_out_adjacency_before_in`.
+pub(super) struct PredDag {
+    head: Vec<u32>,
+    tail: Vec<u32>,
+    /// `(pred, eid, next)`, where `next == u32::MAX` ends a node's chain.
+    arena: Vec<(u32, u32, u32)>,
+}
+
+impl PredDag {
+    /// `slots` counts the vertex slots PLUS the one reserved for the `u32::MAX` OPTIONAL/NULL
+    /// sentinel, for the reason item 2393 records: a map is total where an array is partial.
+    pub(super) fn with_slots(slots: usize) -> Self {
+        Self {
+            head: vec![0; slots],
+            tail: vec![0; slots],
+            arena: Vec::new(),
+        }
+    }
+
+    fn slot(&self, v: u32) -> usize {
+        if v == u32::MAX {
+            self.head.len() - 1
+        } else {
+            v as usize
+        }
+    }
+
+    /// Retire the previous source's entries. The arena keeps its capacity.
+    fn clear(&mut self) {
+        self.arena.clear();
+    }
+
+    /// Discovery: `v` is reachable and has no predecessors recorded yet this generation.
+    /// Must run before the first [`PredDag::push`] for `v`.
+    pub(super) fn open(&mut self, v: u32) {
+        let i = self.slot(v);
+        self.head[i] = u32::MAX;
+        self.tail[i] = u32::MAX;
+    }
+
+    /// Record `pred -[eid]-> v` as a shortest-path predecessor, AFTER any already recorded.
+    pub(super) fn push(&mut self, v: u32, pred: u32, eid: u32) {
+        let i = self.slot(v);
+        let idx = u32::try_from(self.arena.len()).unwrap_or(u32::MAX);
+        self.arena.push((pred, eid, u32::MAX));
+        let t = self.tail[i];
+        if t == u32::MAX {
+            self.head[i] = idx;
+        } else {
+            self.arena[t as usize].2 = idx;
+        }
+        self.tail[i] = idx;
+    }
+
+    /// The FIRST recorded predecessor of `v`, which is the one the chain walk follows.
+    pub(super) fn first(&self, v: u32) -> Option<(u32, u32)> {
+        let h = self.head[self.slot(v)];
+        if h == u32::MAX {
+            return None;
+        }
+        let (pred, eid, _) = self.arena[h as usize];
+        Some((pred, eid))
+    }
+
+    /// Every recorded predecessor of `v`, in the order they were recorded.
+    pub(super) fn preds_of(&self, v: u32) -> impl Iterator<Item = (u32, u32)> + '_ {
+        let mut cur = self.head[self.slot(v)];
+        std::iter::from_fn(move || {
+            if cur == u32::MAX {
+                return None;
+            }
+            let (pred, eid, next) = self.arena[cur as usize];
+            cur = next;
+            Some((pred, eid))
+        })
+    }
+}
+
+pub(super) fn first_pred_chain(node: u32, start: u32, preds: &PredDag) -> (Vec<u32>, Vec<u32>) {
     let mut chain = Vec::new();
     let mut echain = Vec::new();
     first_pred_chain_into(node, start, preds, &mut chain, &mut echain);
@@ -2137,7 +2227,7 @@ pub(super) fn first_pred_chain(
 pub(super) fn first_pred_chain_into(
     node: u32,
     start: u32,
-    preds: &FnvMap<u32, Vec<(u32, u32)>>,
+    preds: &PredDag,
     chain: &mut Vec<u32>,
     echain: &mut Vec<u32>,
 ) {
@@ -2146,7 +2236,11 @@ pub(super) fn first_pred_chain_into(
     chain.push(node);
     let mut cur = node;
     while cur != start {
-        let (prev, e) = preds[&cur][0];
+        let Some((prev, e)) = preds.first(cur) else {
+            // Unreachable while `cur != start` on a chain the BFS built, and a BREAK rather
+            // than a panic: the `FnvMap` form indexed and would have panicked here.
+            break;
+        };
         echain.push(e);
         cur = prev;
         chain.push(cur);
@@ -2161,19 +2255,17 @@ pub(super) fn first_pred_chain_into(
 pub(super) fn enumerate_shortest_paths(
     node: u32,
     start: u32,
-    preds: &FnvMap<u32, Vec<(u32, u32)>>,
+    preds: &PredDag,
 ) -> Vec<(Vec<u32>, Vec<u32>)> {
     if node == start {
         return vec![(vec![start], Vec::new())];
     }
     let mut out = Vec::new();
-    if let Some(ps) = preds.get(&node) {
-        for &(prev, e) in ps {
-            for (mut chain, mut echain) in enumerate_shortest_paths(prev, start, preds) {
-                chain.push(node);
-                echain.push(e);
-                out.push((chain, echain));
-            }
+    for (prev, e) in preds.preds_of(node) {
+        for (mut chain, mut echain) in enumerate_shortest_paths(prev, start, preds) {
+            chain.push(node);
+            echain.push(e);
+            out.push((chain, echain));
         }
     }
     out

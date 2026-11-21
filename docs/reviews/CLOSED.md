@@ -120407,3 +120407,92 @@ because the 57-pass result from the mutation check describes the mutant, not the
 Still open from the same profile: `preds: FnvMap<u32, Vec<(u32, u32)>>` and `pcount: FnvMap<u32, u64>`
 in the same loop. `preds` is the harder one — a dense `Vec<Vec<_>>` costs N vector headers and an
 O(N) drop per source, so it needs a different representation rather than the same substitution.
+
+## Item 2395 — ✅✅ **THE PREDECESSOR MAP ALLOCATED ONE `Vec` PER DISCOVERED NODE PER SOURCE: `FnvMap<u32, Vec<(u32, u32)>>` becomes a flat arena plus an intrusive per-node list. 1.05-2.62x across five shapes and three sizes, controls flat — and `count` is now 3.03x its pre-item-2393 self at 50k.** 🔑 Nominated by a RE-PROFILE after items 2393/2394, which moved the answer from hashing to ALLOCATION
+
+Items 2393 and 2394 took both halves of one profile, so this iteration re-profiled rather than working
+down what that profile had left over — and the ranking had changed:
+
+```text
+    HASH machinery    44.9%  ->  10.2%      (7.9% of it still owned by shortest_path)
+    ALLOCATOR                    37.8%      <- now the largest single mechanism
+        shortest_path            14.01%
+        betweenness_source       12.91%     (parallel; share inflated by per-thread counting)
+```
+
+So allocation under `shortest_path` now outweighed its remaining hashing, and the site was
+`preds.entry(a.nbr).or_default().push((v, a.eid))` — a fresh `Vec<(u32, u32)>` for every node the BFS
+discovers, for every source, to hold on average barely one entry.
+
+`PredDag` replaces it: `head`/`tail` dense by vertex slot (valid only where `seen == bfs_gen`, so no
+stamp of their own, so both can be `vec![0; n]` and fault in lazily) over one flat
+`arena: Vec<(pred, eid, next)>`. A source costs one `clear()`.
+
+### 🔑 APPENDING AT THE TAIL IS LOAD-BEARING, and item 2394 is why that was obvious
+
+`first_pred_chain` follows the FIRST recorded predecessor, and which predecessor that is decides which
+of several equally-short paths `ANY SHORTEST` reports. A prepending intrusive list — the obvious and
+simpler implementation — reverses it silently. Item 2394 had just discovered that this exact choice was
+observable and unguarded, so the trap was visible before it was stepped in rather than after.
+
+### MEASURED, one shape per process, min across samples
+
+```text
+                   N=50k                    N=200k                   N=1M
+    count     4063.3 -> 1987.6  2.04x   22510.4 ->  8692.2  2.59x   256549.1 -> 109694.1  2.34x
+    yname     4844.9 -> 2441.0  1.98x   28015.7 -> 10699.3  2.62x   275974.8 -> 120820.9  2.28x
+    bothends  4696.1 -> 2107.6  2.23x   25046.4 -> 10220.9  2.45x   299499.1 -> 117689.4  2.54x
+    plen      5745.2 -> 3517.3  1.63x
+    nodes    73625.5 -> 70283.9  1.05x
+    CONTROL    648.5 ->   646.0  1.00x    2880.9 ->  2898.1  0.99x    21456.1 ->  21670.7  0.99x
+```
+
+**Cumulative over items 2393-2395**, `count`: **6023.2 → 1987.6 (3.03x) at 50k** and **293630.5 →
+109694.1 (2.68x) at 1M**.
+
+The mechanism checks out on arithmetic, which is what makes a 2x believable rather than suspicious: the
+BFS discovers ~47,000 nodes per source at N=50k, each previously paying one `malloc` and one `free` for
+an 8-byte allocation. At ~40 ns a pair that is ~1.9 ms, and the measured saving on `count` is 2.08 ms.
+
+### ⚠️ A 1.62x THAT WAS A NON-CONVERGED PROCESS
+
+The first 1M sweep read `count` at 1.62x while `bothends` and `yname` read 2.3-2.5x on the same
+binaries. Its per-round series descended — 195.9 / 189.8 / 172.4 / 163.3 — so the min was still
+falling when the process ended. Alternated, three pairs of eight rounds:
+
+```text
+    noadj   256549.1 .. 308160.6
+    dag     pair 1  161.6 / 158.1 / 152.5 / 142.2 / 150.5 / 138.4 / 132.7 / 126.3   still descending
+            pairs 2-3  109.7 .. 123.2                                               settled
+```
+
+2.34x, not 1.62x. 🔑 **And the warming is ACROSS PROCESSES, not within one** — pair 1 never catches
+pairs 2-3 — so it is allocator and OS page state, not this structure caching anything. Worth stating
+because the flattering reading is available and wrong: `shortest_path` builds a FRESH `PredDag` per
+call, so the arena's capacity is reused across SOURCES within one query and never between queries.
+"The arena keeps its capacity" is true within a query and false across them.
+
+That makes three items in a row where the first number was wrong — 0.92x and 1.47x at item 2393, 0.90x
+at 2394, 1.62x here — every one of them resolved by alternating arms one shape per process and taking
+enough rounds to converge. The instrument, not the change, was the variable each time.
+
+### TEETH
+
+A mutant making `first()` read `tail` instead of `head`, so the LAST recorded predecessor wins, fails
+**2 tests (1348 passed)**: the pre-existing `the_reused_chain_buffer_picks_the_same_branch` and item
+2394's `the_undirected_bfs_walks_out_adjacency_before_in`. The ordering claim is guarded in both the
+helper and the engine.
+
+The chain walk's `preds[&cur][0]` indexed a map and would have PANICKED on a missing predecessor; the
+`PredDag` form takes `first(cur)` and BREAKS instead, which is unreachable while `cur != start` on a
+chain the BFS built.
+
+### GATES
+
+Engine suite 1350 + 13 + 725 pass / 0 fail. `LENKE_OPT_FUZZ_SEEDS=500000 rewrite_fuzz` 10 pass / 0 fail
+in 100.17s. `cargo fmt` 0; `cargo clippy --all-targets -- -D warnings` 0, exit read UNPIPED. `bun run
+fuzz` 57 pass / 0 fail.
+
+`pcount: FnvMap<u32, u64>` is the last map in the loop and is deliberately NOT touched: it is populated
+only for `ShortestSelector::All` without lineage, so none of the measured shapes reach it, and changing
+code no instrument covers is how an unmeasured regression ships.
