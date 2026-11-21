@@ -1539,6 +1539,10 @@ pub(super) fn shortest_path(
     // hashed the sentinel; a dense array indexed by it panics, so the array has to be as
     // TOTAL as the map it replaced. Only a source can reach it -- adjacency never yields the
     // sentinel -- but the mapping is uniform so no caller has to know that.
+    // Loop-invariant: `dir` cannot change between vertices, so the two direction tests
+    // are hoisted out of the per-vertex adjacency walk below.
+    let walk_out = matches!(dir, Dir::Out | Dir::Both);
+    let walk_in = matches!(dir, Dir::In | Dir::Both);
     let slot = |v: u32| if v == u32::MAX { n_nodes } else { v as usize };
     let mut seen: Vec<u32> = vec![0; n_nodes + 1];
     let mut bfs_dist: Vec<u32> = vec![0; n_nodes + 1];
@@ -1593,14 +1597,15 @@ pub(super) fn shortest_path(
             if max.is_some_and(|m| dv >= m) {
                 continue; // hop cap: do not expand past `max`
             }
-            let mut adjs: Vec<crate::store::Adj> = Vec::new();
-            if matches!(dir, Dir::Out | Dir::Both) {
-                adjs.extend_from_slice(store.out(v));
-            }
-            if matches!(dir, Dir::In | Dir::Both) {
-                adjs.extend_from_slice(store.inc(v));
-            }
-            for a in adjs {
+            // `store.out`/`inc` already return `&[Adj]`, so copying both into a fresh Vec for
+            // EVERY dequeued vertex was pure waste: the profile that nominated the distance map
+            // put 5.0% of worker samples in `copy_nonoverlapping<Adj>` and 5.0% more in
+            // malloc/free. Chaining the two slices preserves the order exactly -- out then inc
+            // -- which `Dir::Both` depends on, because BFS discovery order decides which
+            // predecessor is recorded first and therefore which shortest path is reported.
+            let out_adj: &[crate::store::Adj] = if walk_out { store.out(v) } else { &[] };
+            let in_adj: &[crate::store::Adj] = if walk_in { store.inc(v) } else { &[] };
+            for &a in out_adj.iter().chain(in_adj.iter()) {
                 if !edge_carries_wanted(store, &a, &want) || !edge_pred_ok(edge_pred, store, a.eid)
                 {
                     continue;

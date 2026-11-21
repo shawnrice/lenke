@@ -120323,3 +120323,87 @@ vector headers and an O(N) drop per source. The other half of the same profile i
 `adjs: Vec<Adj>` the BFS allocates for every dequeued node — `store.out`/`inc` already return
 `&[Adj]`, so the copy is pure waste, and it showed as `copy_nonoverlapping<Adj>` 5.0% plus
 malloc/free 5.0%. Also OPEN.
+
+## Item 2394 — ✅ **the BFS copied every dequeued vertex's adjacency into a FRESH `Vec<Adj>` although `store.out`/`inc` already return `&[Adj]`: 1.04-1.21x on top of item 2393, controls flat.** 🔑 **And the mutant that checked it found something bigger — the undirected walk's OUT-before-IN order is OBSERVABLE and was guarded by NOTHING: swapping it passed all 1350 unit tests AND all 57 byte-identity fuzz tests while changing which shortest path `ANY SHORTEST` reports**
+
+The other half of item 2393's profile. Alongside the 44.2% in hash probing, that same 1533-sample
+run put 5.0% of worker samples in `copy_nonoverlapping<store::Adj>` and 5.0% more in malloc/free —
+a `Vec::new()` plus `extend_from_slice` per DEQUEUED VERTEX, to copy slices the store already hands
+out by reference. Replaced with `out_adj.iter().chain(in_adj.iter())`, and the two `matches!(dir, …)`
+tests hoisted out of the per-vertex walk since `dir` cannot change between vertices.
+
+### MEASURED, one shape per process, min across samples, three sizes
+
+```text
+                   N=50k                    N=200k                   N=1M
+    count     4685.0 -> 4048.2  1.16x   26813.6 -> 22708.5  1.18x   293630.5 -> 258991.8  1.13x
+    yname     5549.7 -> 4862.8  1.14x   32299.1 -> 28025.8  1.15x   307102.6 -> 273119.3  1.12x
+    bothends  5216.9 -> 4716.0  1.11x   30749.0 -> 25499.7  1.21x   307913.9 -> 278550.7  1.11x
+    plen      6542.1 -> 5841.5  1.12x
+    nodes    75770.1 -> 72625.0  1.04x
+    CONTROL    642.8 ->   642.0  1.00x    2884.4 ->  2898.1  1.00x    22247.5 ->  21527.8  1.03x
+```
+
+Cumulatively with item 2393, `count` at N=50k is **6023.2 → 4048.2, 1.49x**.
+
+### ⚠️ A 0.90x AT 1M THAT WAS ONE POLLUTED RUN, and a noise floor worth recording
+
+The first sweep read `count` at 1M as **0.90x** — the change SLOWER — while `bothends` and `yname`
+read 1.11-1.12x in the other direction on the same binaries. I had a mechanism ready for it, and it
+was plausible: `extend_from_slice` touches the whole adjacency up front, so the filter loop then
+runs over a cache-hot buffer, and at 1M nodes a memory-bound walk could genuinely be paying for that
+copy with a prefetch.
+
+It was not that. Alternated, one arm per process, four pairs of four rounds:
+
+```text
+    slot    293630.5 .. 305696.6     tight
+    noadj   258991.8 .. 267934.3     pairs 2-4
+            pair 1 alone excursed to 267.9 / 368.8 / 368.3 / 329.9
+```
+
+That excursion was the ONLY noadj sample the first sweep took, so one polluted run became the whole
+result. 🔑 **A mechanism that explains a number is not evidence the number is real** — the hypothesis
+was good enough to have been believed, and believing it would have published a size-dependent trade
+that does not exist.
+
+Also recorded for next time: `count` at 200k is genuinely noisy — both arms spread ~21% and the
+noadj arm is bimodal (22.7 / 26.2 / 29.7 / 32.3). That cell needed 16 samples per arm alternated to
+resolve at 1.18x; three rounds could not tell 1.03x from 1.18x.
+
+### 🔑 THE MUTANT FOUND A COVERAGE HOLE, NOT A PERF RESULT
+
+Chaining the slices preserves order exactly — out then inc — and the comment said that order was
+load-bearing. Testing the claim: swap the chain to `in_adj.iter().chain(out_adj.iter())`, and
+
+```text
+    cargo test  (engine suite)        1349 passed, 0 failed
+    bun run fuzz (byte-identity)        57 passed, 0 failed
+```
+
+**Both green on a mutant that changes an answer.** The undirected BFS discovers a vertex's OUT
+neighbours before its IN neighbours, and when a target is reachable at the SAME distance by both
+routes, the predecessor recorded first is the path `ANY SHORTEST` reports. On a four-vertex fixture
+(`s-m1-t` along out-edges, `s-m2-t` along in-edges, t at distance 2 on both),
+`nodes(p)[1].id` is `m1` shipped and `m2` mutated.
+
+⚠️ And this is not covered by `order-is-unspecified`. ROW order is unspecified; WHICH of several
+equally-short paths is returned is a value, and TS/Rust byte-identity is a hard invariant — so the
+choice is a CONTRACT whichever way it is made. It was simply undocumented and untested in both
+engines at once, which is why no differential fuzzer could see it: both engines happened to agree.
+
+`the_undirected_bfs_walks_out_adjacency_before_in` now pins it, and it FAILS on the mutant with
+`want the OUT-adjacency route's midpoint m1, got Str("m2")`. Same class as item 2377 — a long-standing
+claim whose guard did not exist — found here only because the mutant was run against the fuzzers and
+not just the unit suite.
+
+### GATES
+
+Engine suite 1350 + 13 + 725 pass / 0 fail (1350 = the new test). `LENKE_OPT_FUZZ_SEEDS=500000
+rewrite_fuzz` 10 pass / 0 fail in 102.35s. `cargo fmt` 0; `cargo clippy --all-targets -- -D warnings`
+0, exit read UNPIPED. `bun run fuzz` 57 pass / 0 fail on the SHIPPED arm — re-run deliberately,
+because the 57-pass result from the mutation check describes the mutant, not the shipped code.
+
+Still open from the same profile: `preds: FnvMap<u32, Vec<(u32, u32)>>` and `pcount: FnvMap<u32, u64>`
+in the same loop. `preds` is the harder one — a dense `Vec<Vec<_>>` costs N vector headers and an
+O(N) drop per source, so it needs a different representation rather than the same substitution.

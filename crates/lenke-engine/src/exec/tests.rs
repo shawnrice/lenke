@@ -3454,6 +3454,49 @@ fn select_having() {
     );
 }
 
+/// The UNDIRECTED BFS walks a vertex's OUT adjacency before its IN adjacency, and which one
+/// goes first is OBSERVABLE: a target reachable at the SAME distance by both routes reports
+/// the path through whichever predecessor was discovered first.
+///
+/// Nothing guarded that before item 2394. Chaining the two adjacency slices in the opposite
+/// order passed the whole unit suite (1349 tests) AND `bun run fuzz` (57), so a comment
+/// claiming the order was load-bearing was unverified in both directions at once -- and
+/// cross-engine byte-identity makes the choice a contract, not an implementation detail.
+#[test]
+fn the_undirected_bfs_walks_out_adjacency_before_in() {
+    // s-m1-t along OUT edges, s-m2-t along IN edges: t sits at distance 2 on both routes.
+    let nd = concat!(
+        "{\"id\":\"s\",\"labels\":[\"N\"],\"props\":{\"id\":\"s\"}}\n",
+        "{\"id\":\"m1\",\"labels\":[\"N\"],\"props\":{\"id\":\"m1\"}}\n",
+        "{\"id\":\"m2\",\"labels\":[\"N\"],\"props\":{\"id\":\"m2\"}}\n",
+        "{\"id\":\"t\",\"labels\":[\"N\"],\"props\":{\"id\":\"t\"}}\n",
+        "{\"id\":\"e1\",\"from\":\"s\",\"to\":\"m1\",\"type\":\"R\",\"props\":{}}\n",
+        "{\"id\":\"e2\",\"from\":\"m1\",\"to\":\"t\",\"type\":\"R\",\"props\":{}}\n",
+        "{\"id\":\"e3\",\"from\":\"m2\",\"to\":\"s\",\"type\":\"R\",\"props\":{}}\n",
+        "{\"id\":\"e4\",\"from\":\"t\",\"to\":\"m2\",\"type\":\"R\",\"props\":{}}\n",
+    );
+    let store = crate::ndjson::from_ndjson(nd).unwrap();
+    let rows = run(
+        &crate::gql::parse(
+            "MATCH p = ANY SHORTEST (a:N {id:'s'})-[:R]-*(b:N {id:'t'}) \
+             RETURN nodes(p)[1].id AS mid",
+        )
+        .unwrap(),
+        &store,
+    )
+    .rows;
+    assert_eq!(
+        rows.len(),
+        1,
+        "ANY SHORTEST emits one row per reachable target"
+    );
+    assert!(
+        matches!(rows[0][0], Value::Str(ref x) if &**x == "m1"),
+        "want the OUT-adjacency route's midpoint m1, got {:?}",
+        rows[0][0]
+    );
+}
+
 /// `ALL SHORTEST` emits one row per distinct shortest path (so a target reached
 /// by two equal-length paths appears twice), while `ANY SHORTEST` emits one row
 /// per reachable target. A `*` quantifier includes the zero-length seed.
