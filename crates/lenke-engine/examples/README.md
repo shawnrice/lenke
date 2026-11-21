@@ -55,6 +55,7 @@ enumeration's is flat.
 | How many resident bytes does an element cost?                                    | `ingest_bench -- mem`                |
 | What does a GQL / Gremlin query shape cost?                                      | `query_bench -- gql` / `gremlin`     |
 | What does ONE `ANY SHORTEST` shape cost, isolated in its own process, by phase?  | `shortpath_2393` (`SHAPE=…`)         |
+| Is by-id access O(1) as the graph grows, and what does it cost vs a bare map?    | `byid_2397`                          |
 | Which counts still enumerate vs shortcut?                                        | `query_bench -- counts`              |
 | What does a row cost, by what is returned?                                       | `query_bench -- perrow`              |
 | What does turning query text into a plan cost?                                   | `query_bench -- plan`                |
@@ -472,6 +473,17 @@ question in its module header — read the header before touching it.
   split the traversal by PHASE, which is what makes that legible: `count`/`bothends` are ~100%
   BFS, `nodes` is ~93% chain materialization, so a BFS change must move the first and not the
   second, and a table that shows otherwise is measuring its own neighbours.
+
+- `byid_2397` — the standing O(1)-BY-ID requirement, which had no instrument here at all: a
+  `node_by_ext` / `edge_by_ext` sweep against a hash-matched floor. Two things it pins that nothing
+  else did. **`node_by_ext` is a hash lookup plus a constant** — 1.17-1.50x an FNV `HashMap::get`
+  over the same keys, and across 40x in N the floor grows x2.03-2.74 while it grows x2.61-3.02, so
+  it TRACKS the bare map (x1.10-1.28) rather than outgrowing it. **`edge_by_ext` does not**: it is
+  4.2-4.6x `node_by_ext` at a million elements and grows ~5.7x across the sweep, because it holds an
+  `RwLock` and a separate lazily-built index whose FIRST call costs 0.42 ms at 25k and 28 ms at 1M.
+  ⚠️ And its own first version got the floor wrong — a `std` SipHash `HashMap` is hash-bound, so it
+  read SLOWER than the native lookup it was supposed to floor (0.71-0.89x, a ratio under 1.0 that
+  cannot mean a lookup is cheaper than a lookup). A floor must share the measured path's HASH.
 
 ## Before trusting a number
 

@@ -120570,3 +120570,74 @@ nodes) rather than reallocated per source — but betweenness is parallel across
 at any thread count, so the scratch has to be per-thread and the reduction order untouched. Measure
 before building: on a CONNECTED graph the reset is O(reached) ~ O(n) anyway, so the saving is the
 allocator traffic rather than the memset, and that is a much smaller number than this item's.
+
+## Item 2397 — ✅ **THE NATIVE O(1)-BY-ID INVARIANT VERIFIED FOR THE FIRST TIME, against a hash-matched floor: `node_by_ext` TRACKS a bare FNV map (x1.10-1.28 across 40x in N), so it is a hash lookup plus a constant.** ⚠️ **`edge_by_ext` does NOT — 4.2-4.6x it at a million elements, with a lazily-built index whose first call costs 28 ms.** 🔑 And this corpus had NO instrument for the requirement, while the fixture most of it uses cannot even express the question
+
+Items 2091 and 2200 verified by-id access for the TS engine. The native engine's twin never was, and
+the reason it never was is the finding under the finding:
+
+- **`element_id` has exactly one appearance in this corpus** — `spelling_probe`'s "point lookup BY ID"
+  group — and that group asks whether two SPELLINGS cost the same, not whether either is O(1). Nothing
+  sweeps N. Same class as item 2377's hole on the TS side, one engine over.
+- ⚠️ **And `social_store`, which most of the corpus uses, CANNOT answer it**: it builds through
+  `Builder::node`, which assigns no external id, so `node_by_ext` finds nothing in it. That is exactly
+  CLAUDE.md's "give edges ids … omitting them skips the external-id path entirely" — landing in the
+  fixture rather than in a bench, which is why nobody tripped over it. `byid_2397` loads NDJSON
+  instead, where nodes are `v{i}` and edges `e{e}`.
+
+### MEASURED, ns per lookup, min of 5, shuffled pre-built keys, two independent runs
+
+```text
+          N   control     sip     fnv   node_by_ext  ratio   edge_by_ext   node miss
+      25000      0.20   17.25   10.51         12.26  1.17x         27.45       11.30
+     100000      0.20   16.68   10.94         13.05  1.19x         30.07       11.61
+     400000      0.18   19.11   11.74         17.13  1.46x         79.49       13.34
+    1000000      0.18   32.85   21.37         31.99  1.50x        155.09       10.20
+
+    across the sweep:  fnv floor x2.03,  node_by_ext x2.61  ->  tracks the bare map at x1.28
+    second run:        fnv floor x2.74,  node_by_ext x3.02  ->                        x1.10
+```
+
+🔑 **THE VERDICT IS THE SHAPE, NOT THE RATIO.** The floor itself more than doubles over the sweep,
+because a lookup into a large cold map IS a cache miss — item 2200 found the same thing on the TS side
+and warned that a single-size reading gets the trend wrong. `node_by_ext` grows by the same
+cache-driven factor and adds a constant on top, so the invariant holds: it is a hash lookup plus a
+constant, 1.17-1.50x the bare structure, and the gap does not widen in N.
+
+A node MISS is 10.2-13.5 ns and essentially FLAT — it returns before the tombstone check.
+
+### ⚠️ MY FIRST FLOOR WAS NOT A FLOOR, and the giveaway was a ratio under 1.0
+
+The first run used `std::collections::HashMap` alone and read `node_by_ext` at **0.71-0.89x "the
+floor"** — which cannot mean a lookup is cheaper than a lookup. `std`'s default hasher is SipHash,
+so that arm is hash-bound: it costs more than the entire native lookup, and being hash-bound it was
+also suspiciously FLAT in N (x1.06) while the thing it was "flooring" grew x1.33. **A floor must share
+the measured path's HASH or it is measuring a different question.** The probe now prints both, `sip`
+alongside the FNV-1a twin of the store's own `ext_to_node` hasher, and reads the ratio off `fnv`.
+
+(Item 2200's three traps were all avoided by reading it first: the control arm sits at 0.18-0.20 ns and
+exists precisely so a sub-nanosecond reading is recognizable as dead-code elimination rather than
+speed; keys are pre-built and shuffled; every arm is consumed into a printed sink.)
+
+### ⚠️ EDGE BY ID IS A DIFFERENT COST, AND IT IS PRICED OPEN
+
+```text
+    edge_by_ext / node_by_ext      2.24x at 25k  ->  4.85x at 1M
+    the FIRST call (index build)   0.42 ms at 25k, 1.55 ms at 100k, 7.6 ms at 400k, 28.1 ms at 1M
+```
+
+`node_by_ext` is a map get plus a tombstone check. `edge_by_ext` calls `ensure_ext_to_edge()`, takes an
+`RwLock` READ GUARD, and unwraps an `Option` around a separately-built map — per call, forever, not
+just on the first one. So edge-by-id is O(1) amortized with a much larger constant, and the amortized
+part is a real 28 ms cliff on the first edge-by-id lookup against a cold million-edge store.
+
+OPEN, not built, and deliberately not guessed at: the guard is the obvious suspect but an uncontended
+`RwLock` read is ~5-20 ns and the gap at 1M is ~123 ns, so most of it is elsewhere — plausibly a second
+cache-cold map plus `GStr` key comparison. **Price the parts before building anything**; the whole
+point of this item is that the question had no instrument, and it now has one.
+
+### GATES
+
+No production change — this item is an instrument and a verification. `cargo fmt` 0; `cargo clippy
+--all-targets -- -D warnings` 0, exit read UNPIPED. Engine suite unchanged at 1350 + 13 + 725 pass / 0
+fail.
