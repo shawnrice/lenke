@@ -120722,3 +120722,59 @@ is most vertices in most graphs — that overhead is the whole story, not the sc
 No production change — this item is the degree axis added to `byid_2397` plus the correction to item
 2397's heading. `cargo fmt` 0; `cargo clippy --all-targets -- -D warnings` 0, exit read UNPIPED. Engine
 suite unchanged at 1350 + 13 + 725 pass / 0 fail.
+
+## Item 2399 — ✅ **`edge_by_ext` took TWO `RwLock` read acquisitions per lookup where one would do — `ensure_ext_to_edge` took one just to test `is_some()` and return. One now: 1.30x at out-degree 1, flat at 64, 1.07x at 1024, no regression anywhere.** ⚠️ **And the first version of the fix was 1.17x SLOWER at degree 1024 — removing a lock cannot slow a scan, so the cause was CODE SIZE, and `#[cold]` on the build path recovered it**
+
+Lever 1 of item 2398's two, taken because it needs no new state and no new invariant. The lookup called
+`ensure_ext_to_edge()`, which acquires a read lock purely to check `is_some()` and return, and then
+acquired a second read lock to do the get — per call, forever, not only on the first. Now the fast path
+takes one guard and matches on it; the unbuilt case drops the guard and goes out of line.
+
+```text
+    constant edge count ~400,000, min over 5 alternated pairs, 7 reps each
+      out-degree      2 locks     1 lock     ratio
+               1        78.76      60.54     1.30x
+              64        82.17      82.23     1.00x
+            1024       237.56     222.37     1.07x
+```
+
+The win is concentrated where item 2398 said the fixed overhead lives: at out-degree 1 the lookup is
+almost entirely overhead, and one uncontended `RwLock` read is ~18 ns of it. By degree 64 the adjacency
+scan and the cache dominate and the saved lock is invisible.
+
+### ⚠️ THE FIRST VERSION WON AT DEGREE 1 AND LOST 1.17x AT DEGREE 1024
+
+```text
+      out-degree    2 locks    1 lock (first version)
+               1      77.36      66.84     1.16x
+            1024     226.13     265.71     0.85x     <- 3 of 3 rounds, no overlap
+```
+
+Removing a lock acquisition cannot make an adjacency scan slower, so the arithmetic said this was not
+the lock — it was the SHAPE of the function. The first version inlined the whole build path into the
+`None` arm, and a bigger `edge_by_ext` costs the scan more than the saved lock buys. Extracting it as a
+`#[cold] #[inline(never)]` helper kept the degree-1 win and removed the degree-1024 loss.
+
+🔑 This is `pull-alignment-is-load-bearing` and `executor-edits-perturb` in a function neither of them
+names: **a hot lookup's code size is part of its cost, so a change that is locally free can be paid for
+by the loop around it.** The diagnosis came from the mechanism being impossible, not from the number
+being large.
+
+### ⚠️ AND THE DEGREE-64 CELL READ 1.19x ON TWO PAIRS AND 1.00x ON FIVE
+
+Two alternated pairs gave 91.00/93.78 against 76.38/77.99 — non-overlapping ranges, which normally
+reads as solid. Five pairs put both arms at 82.2. These by-id runs take frequent machine excursions —
+one whole arm came back ~2x in both directions across different batches (122/194/364 in one, 181/131/204
+in another) — so **non-overlapping ranges over two pairs is not evidence here; min over more pairs is**.
+Shipping on the two-pair reading would have published a 1.19x that does not exist, which is the fifth
+first-number-wrong of this stretch after items 2393 (twice), 2394, 2395 and 2398.
+
+### GATES
+
+Engine suite 1350 + 13 + 725 pass / 0 fail. `LENKE_OPT_FUZZ_SEEDS=500000 rewrite_fuzz` 10 pass / 0 fail
+in 100.42s. `cargo fmt` 0; `cargo clippy --all-targets -- -D warnings` 0, exit read UNPIPED. `bun run
+fuzz` 57 pass / 0 fail.
+
+Item 2398's lever 2 — O(1) edge liveness via a tombstone, which is what would actually remove the
+O(out-degree) term — is still OPEN and still unbuilt. This item does not touch it: at out-degree 1024
+the lookup is 222 ns against a 6 ns node lookup, and essentially all of that remainder is the scan.

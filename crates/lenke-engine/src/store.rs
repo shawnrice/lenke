@@ -3087,6 +3087,19 @@ impl Store {
         *w = Some(m);
     }
 
+    /// The once-per-store path: build the reverse map, then read it. Deliberately `#[cold]`
+    /// and out of line so it contributes nothing to `edge_by_ext`'s hot-path code size.
+    #[cold]
+    #[inline(never)]
+    fn build_then_get_edge_ext(&self, ext: &str) -> Option<u32> {
+        self.ensure_ext_to_edge();
+        self.ext_to_edge
+            .read()
+            .expect("ext_to_edge poisoned")
+            .as_ref()
+            .and_then(|m| m.get(ext).copied())
+    }
+
     /// The eid of a LIVE edge whose external id is `ext`, or None.
     ///
     /// An O(1) probe of the lazily-built `ext_to_edge` reverse map (see its doc for why
@@ -3104,13 +3117,25 @@ impl Store {
     /// the same eid in every case.
     #[must_use]
     pub fn edge_by_ext(&self, ext: &str) -> Option<u32> {
-        self.ensure_ext_to_edge();
-        let hit = self
-            .ext_to_edge
-            .read()
-            .expect("ext_to_edge poisoned")
-            .as_ref()
-            .and_then(|m| m.get(ext).copied());
+        // ONE read-lock acquisition on the built path. `ensure_ext_to_edge` takes a read lock
+        // of its own just to test `is_some()` and return, so calling it and then reading paid
+        // for TWO acquisitions per lookup forever, not only on the first call. Item 2398
+        // measured this lookup's fixed overhead at ~70 ns against an 11 ns `node_by_ext`.
+        let hit = {
+            let guard = self.ext_to_edge.read().expect("ext_to_edge poisoned");
+            match guard.as_ref() {
+                Some(m) => m.get(ext).copied(),
+                // Out of line and `#[cold]`, which is load-bearing: the first version of this
+                // change inlined the BUILD here and measured 1.17x SLOWER at out-degree 1024
+                // while winning 1.16x at degree 1 -- a bigger `edge_by_ext` costs the adjacency
+                // scan more than the saved lock buys, the same toll
+                // `pull-alignment-is-load-bearing` records for `exec::pull`.
+                None => {
+                    drop(guard);
+                    self.build_then_get_edge_ext(ext)
+                }
+            }
+        };
         // Absent from the map means no edge was EVER created with this id, which is
         // authoritative: the map is append-only.
         let eid = hit?;
