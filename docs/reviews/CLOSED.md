@@ -120571,7 +120571,7 @@ at any thread count, so the scratch has to be per-thread and the reduction order
 before building: on a CONNECTED graph the reset is O(reached) ~ O(n) anyway, so the saving is the
 allocator traffic rather than the memset, and that is a much smaller number than this item's.
 
-## Item 2397 — ✅ **THE NATIVE O(1)-BY-ID INVARIANT VERIFIED FOR THE FIRST TIME, against a hash-matched floor: `node_by_ext` TRACKS a bare FNV map (x1.10-1.28 across 40x in N), so it is a hash lookup plus a constant.** ⚠️ **`edge_by_ext` does NOT — 4.2-4.6x it at a million elements, with a lazily-built index whose first call costs 28 ms.** 🔑 And this corpus had NO instrument for the requirement, while the fixture most of it uses cannot even express the question
+## Item 2397 — ✅ **THE NATIVE O(1)-BY-ID INVARIANT VERIFIED FOR THE FIRST TIME, against a hash-matched floor: `node_by_ext` TRACKS a bare FNV map (x1.10-1.28 across 40x in N), so it is a hash lookup plus a constant.** ⚠️ **`edge_by_ext` does NOT — 4.2-4.6x it at a million elements, with a lazily-built index whose first call costs 28 ms.** ⚠️ **[THIS ENTRY'S BODY CALLED edge-by-id "O(1) amortized with a much larger constant" AND THAT IS WRONG — CORRECTED AT ITEM 2398: it is O(OUT-DEGREE), 8.96x from degree 1 to 4096 with the edge count HELD CONSTANT, because this item's fixture fixed degree at 1 and could not see the term.]** 🔑 And this corpus had NO instrument for the requirement, while the fixture most of it uses cannot even express the question
 
 Items 2091 and 2200 verified by-id access for the TS engine. The native engine's twin never was, and
 the reason it never was is the finding under the finding:
@@ -120641,3 +120641,84 @@ point of this item is that the question had no instrument, and it now has one.
 No production change — this item is an instrument and a verification. `cargo fmt` 0; `cargo clippy
 --all-targets -- -D warnings` 0, exit read UNPIPED. Engine suite unchanged at 1350 + 13 + 725 pass / 0
 fail.
+
+## Item 2398 — ⚠️⚠️ **EDGE-BY-ID IS O(OUT-DEGREE), NOT O(1): 81 → 726 ns from degree 1 to 4096 with the EDGE COUNT HELD CONSTANT, 128x a node lookup at a hub. This CORRECTS item 2397's own body, one item after I wrote it.** 🔑 And the first version of the degree table said 7.84x for reasons that were almost entirely CACHE — the control that separates degree from edge count reversed the conclusion twice
+
+Item 2397 built the first by-id instrument this corpus has had and fixed degree at 1, so it measured
+`edge_by_ext`'s best case and concluded "O(1) amortized with a much larger constant". The mechanism was
+in the code the whole time: `edge_is_live(eid)` is
+
+```rust
+    self.out_adj.get(from as usize).is_some_and(|adj| adj.iter().any(|a| a.eid == eid))
+```
+
+— a LINEAR SCAN of the source vertex's out-adjacency, on every `edge_by_ext` call.
+
+### ⚠️ TWO TABLES THAT DISAGREE, AND THE CONTROL IS WHICH ONE TO BELIEVE
+
+Raising degree the obvious way raises total edges with it, so a cache term rides along:
+
+```text
+    degree sweep, edges GROW with degree (N=2000 fixed)
+      out-deg      edges   edge_by_ext   node_by_ext   vs deg1
+            1       2000         13.44          7.11     1.00x
+           64     128000         77.96          7.29     5.80x
+          256     512000        134.87          6.17    10.04x
+         1024    2048000        455.63          6.45    33.91x
+         4096    8192000       1209.19          6.33    90.00x
+```
+
+90x — and almost all of it is the edge count, not the degree. Holding edges at ~400,000 and changing
+only the SHAPE (fewer nodes, higher degree):
+
+```text
+    out-deg     nodes     edges   edge_by_ext   node_by_ext   vs deg1
+          1    400000    400000         81.02         11.10     1.00x
+         64      6250    400000         84.19          6.56     1.04x
+        256      1562    399872        115.25          6.34     1.42x
+       1024       390    399360        232.65          5.77     2.87x
+       4096        97    397312        726.09          5.67     8.96x
+```
+
+🔑 **8.96x, and the linear term only dominates past out-degree ~256** — 1.04x at 64, then 1.42x, 2.87x,
+8.96x, roughly doubling-to-tripling per 4x degree once the scan outgrows the fixed overhead.
+`node_by_ext` is the control and is FLAT (5.67-11.10 ns, falling as the node count shrinks), so the
+growth is not the harness.
+
+⚠️ **The conclusion reversed TWICE.** From the first table: "O(degree), 7.84x" — wrong, that was edge
+count. Then from the constant-edge table capped at degree 32 (0.78-1.00x, dead flat): "the scan is not a
+measurable term" — also wrong, because degree 32 is below where it bites and my own `nodes < 1000` guard
+had silently dropped every row past it. The honest reading needed BOTH the constant-edge control AND a
+degree range wide enough to contain the crossover. Either one alone gave a confident wrong answer.
+
+### WHY IT MATTERS MORE THAN 726 ns LOOKS
+
+Real graphs are power-law, so a hub is the normal case rather than the exception, and the term is
+unbounded — a vertex with 100,000 edges costs ~18 us per edge-by-id lookup. ⚠️ **And `edge_by_ext` is
+on the INSERT identity path**: its own doc says it is called once per inserted edge carrying an explicit
+string `id`. So bulk-inserting N edges onto a hub is O(N·d) — the same shape as the O(N·E log E) scan
+item 615 removed, reintroduced at a smaller exponent.
+
+### THE OTHER TERM, which is bigger at ordinary degrees and is pure overhead
+
+At degree 1 `edge_by_ext` is 81.02 ns against `node_by_ext`'s 11.10 with essentially no scan to pay for.
+That ~70 ns is: `ensure_ext_to_edge()` taking a read lock to check `is_some()` and returning, then
+`edge_by_ext` taking a SECOND read lock for the get, plus `as_ref()` on the `Option` and a probe of a
+separate map. **Two `RwLock` acquisitions per lookup where one would do**, and at out-degree ≤ 64 — which
+is most vertices in most graphs — that overhead is the whole story, not the scan.
+
+### WHAT IS OPEN, and in which order
+
+1. **Collapse the two read locks into one** (try the fast path under one guard; build and re-read only
+   when unbuilt). No new state, no new invariant, helps every degree. Measure first — an uncontended
+   `RwLock` read is ~10-20 ns of the ~70.
+2. **O(1) liveness**, which needs an edge tombstone: `delete_edge` is the single removal site, so it is
+   contained, but it IS new mutable state that a desync turns into a wrong answer (a live edge reported
+   dead). It would want the item-2393 treatment — a `debug_assert` comparing the flag against the scan,
+   so the whole test suite checks the invariant. Not built, not yet priced against (1).
+
+### GATES
+
+No production change — this item is the degree axis added to `byid_2397` plus the correction to item
+2397's heading. `cargo fmt` 0; `cargo clippy --all-targets -- -D warnings` 0, exit read UNPIPED. Engine
+suite unchanged at 1350 + 13 + 725 pass / 0 fail.

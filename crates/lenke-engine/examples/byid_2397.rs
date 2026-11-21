@@ -241,4 +241,155 @@ fn main() {
             (n1 / n0) / (f1 / f0)
         );
     }
+
+    // --- the DEGREE axis -------------------------------------------------------------
+    //
+    // The size sweep above holds out-degree at 1, which is `edge_by_ext`'s BEST case and hid
+    // the shape of its cost: `edge_is_live(eid)` scans the SOURCE VERTEX'S OUT-ADJACENCY
+    // (`adj.iter().any(|a| a.eid == eid)`), so an edge lookup is O(out-degree), not O(1). A
+    // size sweep at fixed degree cannot see that -- which is why this table exists and why the
+    // first version of this probe reported "O(1) amortized with a larger constant" for an arm
+    // that is not O(1) at all.
+    //
+    // `node_by_ext` is carried alongside as the CONTROL: a node lookup has no adjacency term,
+    // so it must stay flat while the edge arm grows.
+    let deg_n: usize = std::env::var("BYID_DEG_N")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(50_000);
+    let degrees: Vec<usize> = std::env::var("BYID_DEGREES")
+        .unwrap_or_else(|_| "1,2,4,8,16,32".to_string())
+        .split(',')
+        .filter_map(|s| s.trim().parse().ok())
+        .collect();
+
+    harness::section(&format!(
+        "byid/degree (ns per lookup, N={deg_n} fixed, min of {})",
+        cfg.reps
+    ));
+    println!(
+        "{:>9}{:>9}{:>14}{:>14}{:>10}",
+        "out-deg", "edges", "edge_by_ext", "node_by_ext", "edge/deg1"
+    );
+
+    let mut deg1: Option<f64> = None;
+
+    for &deg in &degrees {
+        let store = lenke_engine::ndjson::from_ndjson(&harness::social_ndjson(deg_n, 1, deg))
+            .expect("the fixture must decode");
+        let edges = deg_n * deg;
+
+        let mut order: Vec<usize> = (0..edges).collect();
+        let mut rng = harness::Lcg::seeded();
+        for i in (1..edges).rev() {
+            order.swap(i, rng.next(i as u32 + 1) as usize);
+        }
+        let ekeys: Vec<String> = order.iter().take(ops).map(|&i| format!("e{i}")).collect();
+        let nkeys: Vec<String> = (0..ops.min(deg_n)).map(|i| format!("v{i}")).collect();
+
+        // Warm the lazy index so the build does not land inside the timed loop.
+        let _ = store.edge_by_ext(&ekeys[0]);
+
+        let (edge_us, se) = per_op(cfg.reps, ekeys.len(), || {
+            let mut acc = 0u64;
+            for k in &ekeys {
+                acc = acc.wrapping_add(u64::from(
+                    store.edge_by_ext(black_box(k.as_str())).unwrap_or(0),
+                ));
+            }
+            acc
+        });
+
+        let (node_us, sn) = per_op(cfg.reps, nkeys.len(), || {
+            let mut acc = 0u64;
+            for k in &nkeys {
+                acc = acc.wrapping_add(u64::from(
+                    store.node_by_ext(black_box(k.as_str())).unwrap_or(0),
+                ));
+            }
+            acc
+        });
+
+        if se == 0 || sn == 0 {
+            println!("    WARNING: a sink is zero — that arm did not run");
+        }
+
+        let base = *deg1.get_or_insert(edge_us);
+        println!(
+            "{deg:>9}{edges:>9}{edge_us:>14.2}{node_us:>14.2}{:>9.2}x",
+            edge_us / base
+        );
+    }
+
+    // --- degree with the EDGE COUNT HELD CONSTANT ------------------------------------
+    //
+    // The table above raises degree by raising total edges with it (50k -> 1.6M), so a cache
+    // term rides along with the adjacency scan and the two cannot be told apart. Here the edge
+    // count is fixed and only the SHAPE changes -- fewer nodes, higher degree -- so whatever
+    // growth survives is the scan in `edge_is_live`, not the size of the map it probes.
+    let fixed_edges: usize = std::env::var("BYID_FIXED_EDGES")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(400_000);
+
+    harness::section(&format!(
+        "byid/degree at CONSTANT edge count (~{fixed_edges} edges, min of {})",
+        cfg.reps
+    ));
+    println!(
+        "{:>9}{:>9}{:>9}{:>14}{:>14}{:>10}",
+        "out-deg", "nodes", "edges", "edge_by_ext", "node_by_ext", "vs deg1"
+    );
+
+    let mut base2: Option<f64> = None;
+
+    for &deg in &degrees {
+        let nodes = fixed_edges / deg;
+        if nodes < 64 {
+            continue;
+        }
+        let store = lenke_engine::ndjson::from_ndjson(&harness::social_ndjson(nodes, 1, deg))
+            .expect("the fixture must decode");
+        let edges = nodes * deg;
+
+        let mut order: Vec<usize> = (0..edges).collect();
+        let mut rng = harness::Lcg::seeded();
+        for i in (1..edges).rev() {
+            order.swap(i, rng.next(i as u32 + 1) as usize);
+        }
+        let ekeys: Vec<String> = order.iter().take(ops).map(|&i| format!("e{i}")).collect();
+        let nkeys: Vec<String> = (0..ops.min(nodes)).map(|i| format!("v{i}")).collect();
+
+        let _ = store.edge_by_ext(&ekeys[0]);
+
+        let (edge_us, se) = per_op(cfg.reps, ekeys.len(), || {
+            let mut acc = 0u64;
+            for k in &ekeys {
+                acc = acc.wrapping_add(u64::from(
+                    store.edge_by_ext(black_box(k.as_str())).unwrap_or(0),
+                ));
+            }
+            acc
+        });
+
+        let (node_us, sn) = per_op(cfg.reps, nkeys.len(), || {
+            let mut acc = 0u64;
+            for k in &nkeys {
+                acc = acc.wrapping_add(u64::from(
+                    store.node_by_ext(black_box(k.as_str())).unwrap_or(0),
+                ));
+            }
+            acc
+        });
+
+        if se == 0 || sn == 0 {
+            println!("    WARNING: a sink is zero — that arm did not run");
+        }
+
+        let b = *base2.get_or_insert(edge_us);
+        println!(
+            "{deg:>9}{nodes:>9}{edges:>9}{edge_us:>14.2}{node_us:>14.2}{:>9.2}x",
+            edge_us / b
+        );
+    }
 }
