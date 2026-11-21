@@ -120496,3 +120496,77 @@ fuzz` 57 pass / 0 fail.
 `pcount: FnvMap<u32, u64>` is the last map in the loop and is deliberately NOT touched: it is populated
 only for `ShortestSelector::All` without lineage, so none of the measured shapes reach it, and changing
 code no instrument covers is how an unmeasured regression ships.
+
+## Item 2396 — ✅ **BRANDES' PREDECESSOR LISTS WERE ONE HEAP ALLOCATION PER REACHED NODE PER SOURCE — O(V²) of them: `Vec<Vec<u32>>` becomes a flat arena plus an intrusive list. Betweenness 258.71 → 172.01 ms, 1.50x, both algo controls flat, scores BIT-IDENTICAL.** ⚠️ **And my own comment about WHY the order matters was wrong — a prepending mutant returns identical bits, which is the opposite conclusion from item 2394's identical-looking evidence**
+
+Item 2395's re-profile had a second nomination behind `shortest_path`, and after 2395 shipped it was
+the first:
+
+```text
+    HASH             10.2%  ->  2.4%
+    shortest_path's allocator share   14.01%  ->  2.09%   (+1.21% in PredDag::open)
+    betweenness_source                           17.13%   <- 48% of its OWN CPU
+```
+
+Same defect, one module over. `vec![Vec::new(); n]` is a single allocation because `Vec::new()` does
+not allocate — but the FIRST `push` onto each reached node's list does, so one source costs one heap
+allocation per node it reaches, and Brandes runs one pass per source. `PredLists` replaces it with
+dense `head`/`tail` over one flat `arena: Vec<(pred, next)>`.
+
+```text
+                    PRE        POST      ratio
+    betweenness   258.71 ms  172.01 ms   1.50x
+    closeness      53.58      53.67      1.00x   <- O(V·E) too, no predecessor lists
+    pagerank(20)   12.71      12.72      1.00x
+```
+
+Tight across three rounds each (PRE 258.71-261.15, POST 172.01-172.99). Both controls are in the SAME
+binary and the same process, and neither moves.
+
+### ⚠️ THE COMMENT I WROTE ABOUT THE ORDER WAS WRONG, AND A MUTANT SAID SO
+
+Appending at the tail is the faithful translation of the `Vec`, and I wrote down why I thought it was
+load-bearing: accumulation sums `delta[v] += (sigma[v] / sigma[w]) * coeff` over a node's predecessors
+in order, f64 addition is not associative, and betweenness is byte-identical against the TS engine —
+so a reversal should move the last bits of a centrality score. It was a good story. It is false.
+
+FNV of every `(id, score.to_bits())` over a 60-node branchy fixture, three arms:
+
+```text
+    pristine Vec<Vec<u32>>        8285b90c3a561383
+    this arena, tail-append       8285b90c3a561383     <- the change is bit-preserving
+    a PREPENDING mutant           8285b90c3a561383     <- order is NOT observable here
+```
+
+🔑 The reason is structural: each entry in one node's list updates `delta[v]` for a DIFFERENT `v`, so
+reversing the list reorders INDEPENDENT accumulators rather than additions into one. (Duplicate
+predecessors from parallel edges add the same value twice either way.)
+
+⚠️ **And this is where it would have been easy to be wrong in the other direction.** The prepending
+mutant also survives the whole unit suite (1350 tests) — evidence that looks EXACTLY like item 2394's,
+where a surviving order mutant meant a real coverage hole in an observable contract. Here the same
+evidence means the order is not a contract at all. The discriminator is not the mutant's survival; it
+is whether the quantity is reachable, and the cheap way to find out was to print the bits rather than
+to reason about the floats. The middle row above is the useful one either way: it is the correctness
+evidence for the change.
+
+### TEETH
+
+The mutant that SHOULD be caught is a lossy arena, and it is: `push` keeping only the first predecessor
+fails **3 tests (1348 passed)** — `betweenness_directed_triangle_and_diamond` (the diamond's 0.5/0.5
+sigma division), `betweenness_weighted_reroutes_dependency`, and `gql::tests::call_betweenness_weighted`,
+so the GQL `CALL` surface is covered too.
+
+### GATES
+
+Engine suite 1350 + 13 + 725 pass / 0 fail. `LENKE_OPT_FUZZ_SEEDS=500000 rewrite_fuzz` 10 pass / 0 fail
+in 100.14s. `cargo fmt` 0; `cargo clippy --all-targets -- -D warnings` 0, exit read UNPIPED. `bun run
+fuzz` 57 pass / 0 fail.
+
+Still open in the same function, priced but NOT built: `sigma`, `dist`, `delta` and (weighted) `settled`
+are each a fresh O(n) allocation and memset PER SOURCE, so Brandes pays O(V²) of zeroing on top of its
+O(V·E) work. The fix is per-thread scratch reset over `stack` (which already lists exactly the reached
+nodes) rather than reallocated per source — but betweenness is parallel across sources and byte-identical
+at any thread count, so the scratch has to be per-thread and the reduction order untouched. Measure
+before building: on a CONNECTED graph the reset is O(reached) ~ O(n) anyway, so the saving is the
+allocator traffic rather than the memset, and that is a much smaller number than this item's.

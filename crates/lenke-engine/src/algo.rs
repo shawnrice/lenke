@@ -1264,6 +1264,81 @@ pub fn betweenness(
 /// so folding the returned lists into `cb` in ascending-source order — serial or
 /// parallel — reproduces the serial bit pattern. `want` is `want_etype`'s result
 /// (`None` = named-but-unknown type → no edges).
+/// Brandes' per-source predecessor lists as a flat arena plus an intrusive per-node list,
+/// replacing `Vec<Vec<u32>>`.
+///
+/// `Vec::new()` does not allocate, so `vec![Vec::new(); n]` is a single allocation -- but the
+/// FIRST `push` onto each reached node's list does, so one source costs one heap allocation
+/// per node it reaches and the algorithm costs O(V) of them per source, O(V^2) overall. The
+/// profile taken after item 2395 put 17.1% of worker thread-stacks in the allocator under
+/// `betweenness_source`, which is 48% of that function's own CPU.
+///
+/// Appending at the TAIL keeps this a FAITHFUL translation of the `Vec` it replaces, and
+/// `set_one` depends on it. It is NOT, however, load-bearing for the numbers, and the first
+/// version of this comment claimed it was -- that dependency accumulation sums
+/// `delta[v] += (sigma[v] / sigma[w]) * coeff` over a node's predecessors in order, that f64
+/// addition is not associative, so a reversal would move the last bits of a centrality score.
+/// That is wrong, and measurement said so: a prepending mutant returns BIT-IDENTICAL scores.
+/// The reason is that each entry in one node's list updates `delta[v]` for a DIFFERENT `v`,
+/// so reversing reorders independent accumulators rather than additions into one. Contrast
+/// item 2395, where the order IS observable because `first_pred_chain` reads one entry and
+/// discards the rest.
+///
+/// What the order does buy is bit-equality with the `Vec<Vec<u32>>` form on the same fixture
+/// (FNV of every `(id, score.to_bits())`: `8285b90c3a561383` both ways over a 60-node branchy
+/// graph), which is the evidence that this change is answer-preserving.
+struct PredLists {
+    head: Vec<u32>,
+    tail: Vec<u32>,
+    /// `(pred, next)`, where `next == u32::MAX` ends a node's list.
+    arena: Vec<(u32, u32)>,
+}
+
+impl PredLists {
+    fn new(n: usize) -> Self {
+        Self {
+            head: vec![u32::MAX; n],
+            tail: vec![u32::MAX; n],
+            arena: Vec::new(),
+        }
+    }
+
+    /// Record `pred` as a predecessor of `v`, AFTER any already recorded.
+    fn push(&mut self, v: usize, pred: u32) {
+        let idx = u32::try_from(self.arena.len()).unwrap_or(u32::MAX);
+        self.arena.push((pred, u32::MAX));
+        let t = self.tail[v];
+        if t == u32::MAX {
+            self.head[v] = idx;
+        } else {
+            self.arena[t as usize].1 = idx;
+        }
+        self.tail[v] = idx;
+    }
+
+    /// Replace `v`'s list with the single predecessor `pred` -- the weighted branch's
+    /// strictly-shorter-path reset, which was `pred[to] = vec![v]`. The displaced entries
+    /// stay in the arena unreachable; the arena is per-source and bounded by total pushes.
+    fn set_one(&mut self, v: usize, pred: u32) {
+        self.head[v] = u32::MAX;
+        self.tail[v] = u32::MAX;
+        self.push(v, pred);
+    }
+
+    /// `v`'s predecessors, in the order they were recorded.
+    fn iter(&self, v: usize) -> impl Iterator<Item = u32> + '_ {
+        let mut cur = self.head[v];
+        std::iter::from_fn(move || {
+            if cur == u32::MAX {
+                return None;
+            }
+            let (pred, next) = self.arena[cur as usize];
+            cur = next;
+            Some(pred)
+        })
+    }
+}
+
 fn betweenness_source(
     store: &Store,
     s: u32,
@@ -1277,7 +1352,7 @@ fn betweenness_source(
     let type_ok =
         |eid: u32| want.is_some_and(|inner| inner.is_none_or(|t| store.edge_carries_type(eid, t)));
     let mut sigma = vec![0f64; n];
-    let mut pred: Vec<Vec<u32>> = vec![Vec::new(); n];
+    let mut pred = PredLists::new(n);
     let mut dist = vec![f64::INFINITY; n];
     let mut stack: Vec<u32> = Vec::new();
     sigma[s as usize] = 1.0;
@@ -1305,11 +1380,11 @@ fn betweenness_source(
                 if nd < dist[to as usize] {
                     dist[to as usize] = nd;
                     sigma[to as usize] = sigma[v as usize];
-                    pred[to as usize] = vec![v];
+                    pred.set_one(to as usize, v);
                     heap.push(DijkstraState { dist: nd, idx: to });
                 } else if nd == dist[to as usize] {
                     sigma[to as usize] += sigma[v as usize];
-                    pred[to as usize].push(v);
+                    pred.push(to as usize, v);
                 }
             }
         }
@@ -1330,7 +1405,7 @@ fn betweenness_source(
                     // paths into `to` and record v as a predecessor.
                     if dist[to as usize] == dv + 1.0 {
                         sigma[to as usize] += sigma[v as usize];
-                        pred[to as usize].push(v);
+                        pred.push(to as usize, v);
                     }
                 });
             }
@@ -1342,7 +1417,7 @@ fn betweenness_source(
     let mut contrib: Vec<(u32, f64)> = Vec::with_capacity(stack.len());
     for &w in stack.iter().rev() {
         let coeff = 1.0 + delta[w as usize];
-        for &v in &pred[w as usize] {
+        for v in pred.iter(w as usize) {
             delta[v as usize] += (sigma[v as usize] / sigma[w as usize]) * coeff;
         }
         if w != s {
