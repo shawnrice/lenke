@@ -25,6 +25,7 @@ import type { Expr, NodePattern } from '../ast.js';
 import { compilePredicate } from './core.js';
 import type { Params } from './core.js';
 import { freePredicateVars } from './expr-analysis.js';
+import { plainNode, plainRel } from './hop-sides.js';
 import { predFor } from './inline-gate.js';
 import type { InlinePred } from './inline-gate.js';
 
@@ -76,22 +77,44 @@ const existsHopOf = (
    * variable, inline properties or a `WHERE` on either element need per-element evaluation the index
    * cannot do; `both` would double-count a vertex with edges on each side; and a FAR label or predicate
    * makes "qualifying" depend on the far END, which the index does not record.
+   *
+   * 🔑 `plainNode` / `plainRel` CARRY SEVEN OF THESE, and this gate hand-wrote all seven until item
+   * 2392 — in a file that did not import `hop-sides.js` at all, while five other detectors did.
+   *
+   * ⚠️⚠️ **AND THE SWAP IS NOT NEUTRAL: IT ADMITS `(n {})`, WHICH IS AN EQUIVALENT-SPELLING GAP THIS
+   * GATE WAS LOSING.** `plainNode` tests `(properties?.length ?? 0) === 0`, the hand-written operand
+   * tested `properties !== undefined`, and `parsePropertyMap` returns an EMPTY ARRAY for `{}` (its
+   * `if (!check('rbrace'))` skips the entry loop) — so `MATCH (a) WHERE EXISTS { (a)-[:T]->(b {}) }`
+   * parses with `properties: []` and was declining a route that `(b)` takes. An empty constraint list
+   * constrains nothing, so admitting it is the CORRECT answer and not merely a wider one.
+   *
+   * 🔑 MEASURED, A/B with a NULL CONTROL, 200,000 vertices / 600,000 edges, median of 6
+   * post-warmup reps (`exists-brace-2392.mjs`):
+   *
+   * ```text
+   *                            bare       braced x3                  spread
+   *     route DISABLED        63.72 ms    64.22 / 64.53 / 64.05      1.01x   <- the control
+   *     old gate              17.86       64.55 / 64.36 / 64.29      3.61x
+   *     this gate             19.26       17.09 / 19.51 / 17.22      1.14x
+   * ```
+   *
+   * ⚠️ THE CONTROL IS WHAT MAKES THIS A ROUTE CLAIM RATHER THAN A RATIO. Forcing the whole arm to
+   * decline puts the BARE spelling at 63.72, and the old gate's braced arms sit ON that number
+   * (64.3-64.6) — so they were not taking a slower variant of the route, they were not taking it
+   * at all. Guarded by the spelling probe's `EMPTY inline map` group, because no answer test can
+   * see this: every spelling already answered correctly, just 3.61x slower.
    */
   if (
     startVar === undefined ||
     start.variable !== startVar ||
     start.label !== undefined ||
-    start.properties !== undefined ||
-    start.where !== undefined ||
+    !plainNode(start) ||
     rel.label?.kind !== 'label' ||
-    rel.quantifier !== undefined ||
     rel.variable !== undefined ||
-    rel.properties !== undefined ||
-    rel.where !== undefined ||
+    !plainRel(rel) ||
     (rel.direction !== 'out' && rel.direction !== 'in') ||
     node.label !== undefined ||
-    node.properties !== undefined ||
-    node.where !== undefined ||
+    !plainNode(node) ||
     node.variable === undefined
   ) {
     return undefined;

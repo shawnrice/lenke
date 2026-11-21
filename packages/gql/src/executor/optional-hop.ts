@@ -85,8 +85,14 @@ export const detectOptionalHopCount = (
     !plainRel(rel) ||
     rel.variable !== undefined ||
     rel.direction === 'both' ||
-    !plainNode(node) ||
-    (node.properties !== undefined && node.properties.length > 0)
+    /*
+     * ⚠️ `plainNode` ALREADY COVERS THE PROPERTIES, and a second operand repeating its
+     * properties half stood here until item 2392: `plainNode` is
+     * `(properties?.length ?? 0) === 0 && where === undefined`, so
+     * `node.properties.length > 0` could never decide anything this call had not already
+     * decided. Dead, not merely redundant — removing it cannot change a route.
+     */
+    !plainNode(node)
   ) {
     return null;
   }
@@ -319,8 +325,14 @@ export const detectOptionalGroupedHopCount = (
     !plainRel(rel) ||
     rel.variable !== undefined ||
     rel.direction === 'both' ||
-    !plainNode(node) ||
-    (node.properties !== undefined && node.properties.length > 0)
+    /*
+     * ⚠️ `plainNode` ALREADY COVERS THE PROPERTIES, and a second operand repeating its
+     * properties half stood here until item 2392: `plainNode` is
+     * `(properties?.length ?? 0) === 0 && where === undefined`, so
+     * `node.properties.length > 0` could never decide anything this call had not already
+     * decided. Dead, not merely redundant — removing it cannot change a route.
+     */
+    !plainNode(node)
   ) {
     return null;
   }

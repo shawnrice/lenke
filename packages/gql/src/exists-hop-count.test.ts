@@ -368,4 +368,73 @@ describe('the EXISTS hop count (item 2163)', () => {
       expect(query(h, EXISTS)[0].c).toBe(2);
     });
   });
+  /*
+   * Item 2392 — the EMPTY inline map `{}`, which constrains nothing and so IS the bare spelling.
+   *
+   * ⚠️⚠️ **THE ANSWER CANNOT SEE THIS CHANGE, WHICH IS WHY THE NON-EMPTY MAP IS HERE TOO.** All
+   * three braced spellings already answered correctly before item 2392 — by the general path, 3.82x
+   * slower (the spelling probe's `EMPTY inline map` group holds that measurement). So the equality
+   * tests below pin the admission, and `{k: 2}` is what gives the group TEETH: a gate that widened
+   * too far would ignore a REAL constraint and answer 3 where the correct answer is 1.
+   */
+  describe('⚠️ an EMPTY inline map is a spelling of the bare element (item 2392)', () => {
+    /** v0->v1, v1->v2, v3->v4 over `k = 0..4`: sources {v0, v1, v3} = 3. */
+    const g = (): Graph =>
+      graphOf(5, [
+        [0, 1],
+        [1, 2],
+        [3, 4],
+      ]);
+
+    test('🔑 the bare spelling answers 3, which every empty-map spelling must match', () => {
+      expect(query(g(), EXISTS)[0].c).toBe(3);
+    });
+
+    test('the FAR element braced', () => {
+      expect(
+        query(g(), 'MATCH (a:P) WHERE EXISTS { MATCH (a)-[:T]->(b {}) } RETURN count(*) AS c')[0].c,
+      ).toBe(3);
+    });
+
+    test('the NEAR element braced', () => {
+      expect(
+        query(g(), 'MATCH (a:P) WHERE EXISTS { MATCH (a {})-[:T]->(b) } RETURN count(*) AS c')[0].c,
+      ).toBe(3);
+    });
+
+    test('BOTH braced', () => {
+      expect(
+        query(g(), 'MATCH (a:P) WHERE EXISTS { MATCH (a {})-[:T]->(b {}) } RETURN count(*) AS c')[0]
+          .c,
+      ).toBe(3);
+    });
+
+    test('⚠️⚠️ a NON-EMPTY map still constrains: 1, not the 3 an over-wide gate would answer', () => {
+      // Only v1 -> v2 has a far endpoint with k = 2.
+      expect(
+        query(
+          g(),
+          'MATCH (a:P) WHERE EXISTS { MATCH (a)-[:T]->(b {k: 2}) } RETURN count(*) AS c',
+        )[0].c,
+      ).toBe(1);
+    });
+
+    test('⚠️ and on the NEAR side: k = 1 selects v1 alone, which does have an out-edge', () => {
+      expect(
+        query(
+          g(),
+          'MATCH (a:P) WHERE EXISTS { MATCH (a {k: 1})-[:T]->(b) } RETURN count(*) AS c',
+        )[0].c,
+      ).toBe(1);
+    });
+
+    test('⚠️ a NOT over the braced spelling: 5 - 3 = 2', () => {
+      expect(
+        query(
+          g(),
+          'MATCH (a:P) WHERE NOT EXISTS { MATCH (a)-[:T]->(b {}) } RETURN count(*) AS c',
+        )[0].c,
+      ).toBe(2);
+    });
+  });
 });

@@ -110,6 +110,38 @@ const g = tsDeserialize(lines.join('\n'), 'ndjson', new TsGraph());
 /** Groups of spellings of ONE question. Every member must answer identically. */
 const GROUPS: [string, readonly string[]][] = [
   [
+    // Item 2392. An EMPTY inline map constrains nothing, so `(b {})` IS `(b)` — and the EXISTS
+    // hop count's gate tested `properties !== undefined` where `parsePropertyMap` returns an
+    // EMPTY ARRAY for `{}`, so the braced spelling declined a route the bare one takes. The gate
+    // now calls `plainNode`/`plainRel`, whose test is `(properties?.length ?? 0) === 0`.
+    //
+    // ⚠️ THE EMPTY MAP IS A SPELLING OF NOTHING AT ALL, which is why it belongs here rather than
+    // in a correctness test: every arm always returned the same ANSWER, by the general path, so no
+    // correctness test could see the gap. A/B'd on the old gate at 200,000 vertices / 600,000
+    // edges, median of 6 post-warmup reps, `exists-brace-2392.mjs`:
+    //
+    //                           bare       braced x3                  spread
+    //     route DISABLED       63.72 ms    64.22 / 64.53 / 64.05      1.01x   <- the control
+    //     old gate             17.86       64.55 / 64.36 / 64.29      3.61x
+    //     fixed                19.26       17.09 / 19.51 / 17.22      1.14x
+    //
+    // 🔑 THE 3.61x IS THE WHOLE ARM, confirmed by a null control rather than inferred from the
+    // ratio: with `existsHopNodeCount` forced to decline the BARE spelling reads 63.72, and the
+    // old gate's braced arms sit ON that number. They were not taking a slower route; they were
+    // not taking it.
+    //
+    // ⚠️ `:P`, NOT `:Univ`. `:Univ` is this fixture's universal label and its 202,000-vertex bucket
+    // takes a different and much slower route (86-143 ms, spread 1.3-1.6x), which measures
+    // something else and would read as noise here.
+    'an EXISTS one-hop count: a bare element vs an EMPTY inline map',
+    [
+      'MATCH (a:P) WHERE EXISTS { MATCH (a)-[:E]->(b) } RETURN count(*) AS c',
+      'MATCH (a:P) WHERE EXISTS { MATCH (a)-[:E]->(b {}) } RETURN count(*) AS c',
+      'MATCH (a:P) WHERE EXISTS { MATCH (a {})-[:E]->(b) } RETURN count(*) AS c',
+      'MATCH (a:P) WHERE EXISTS { MATCH (a {})-[:E]->(b {}) } RETURN count(*) AS c',
+    ],
+  ],
+  [
     // Item 984. `NOT n.flag` IS `n.flag = false`. `directEqProps` admits a bare `prop` or a
     // `compare` and nothing else, so a `NOT` conjunct declined the WHOLE chain and the
     // predicate ran through the generic evaluator — 2.20x the equality spelling (item 983)

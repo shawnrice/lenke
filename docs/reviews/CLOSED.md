@@ -120127,3 +120127,84 @@ extending it slightly. Same walk-vs-gate test applies; most of it is fold-accumu
 GATES. `bun run fmt` 0; `bun run check` 0 (one `no-unused-vars` caught and fixed: a site that destructured
 `cret` only to test its kind no longer needs it); `bun run test -- --skip-nx-cache` 0 across 21 projects;
 `bun run fuzz` 57 pass / 0 fail.
+
+## Item 2392 — 🎯 **A 3.61x EQUIVALENT-SPELLING GAP, FOUND BY A READABILITY FIX: `exists-hop-count.ts` hand-wrote `plainNode`/`plainRel` as seven operands and tested `properties !== undefined`, where the helper tests `(properties?.length ?? 0) === 0`.** `parsePropertyMap` returns an EMPTY ARRAY for `{}`, so `(b {})` — a spelling of nothing at all — was declining a route `(b)` takes. ✅ And `optional-hop.ts` carried a DEAD operand repeating `plainNode`'s properties half, twice
+
+Item 2390's audit flagged a 15-operand gate in the window's newest file as a candidate for the
+`hop-sides.ts` helpers it never imported, while five other detectors did. It was filed as a readability
+fix. It was not one.
+
+```text
+    hand-written    start.properties !== undefined
+    plainNode       (start.properties?.length ?? 0) === 0
+```
+
+⚠️ **AND `{}` IS REACHABLE FROM THE SURFACE SYNTAX.** `parsePropertyMap` opens with
+`if (!check('rbrace'))` around its entry loop, so `MATCH (a) WHERE EXISTS { MATCH (a)-[:T]->(b {}) }`
+parses with `properties: []` — present, empty, constraining nothing. The hand-written operand saw
+"present" and declined; the helper sees "empty" and admits.
+
+### MEASURED, A/B, WITH A NULL CONTROL
+
+200,000 vertices / 600,000 edges, median of 6 post-warmup reps, `exists-brace-2392.mjs`:
+
+```text
+                           bare       braced x3                  spread
+    route DISABLED        63.72 ms    64.22 / 64.53 / 64.05      1.01x   <- the control
+    old gate              17.86       64.55 / 64.36 / 64.29      3.61x
+    this gate             19.26       17.09 / 19.51 / 17.22      1.14x
+```
+
+⚠️ **THE BARE ARM'S 17.86 ms IS NOT A REGRESSION AGAINST ITEM 2163's 1.35, IT IS A DIFFERENT FIXTURE.**
+This one makes EVERY vertex a source — `rows=200000` of 200,000 — so the arm does 200,000 index probes,
+which is its worst case. Item 2163's screen has far fewer qualifying vertices, and the arm walks
+`min(labelled, index)`, so it takes the short side there. Same route, different denominator; what this
+item measures is the gap BETWEEN spellings on one fixture, which is unaffected either way.
+
+🔑 **THE CONTROL IS WHAT MAKES THIS A ROUTE CLAIM RATHER THAN A RATIO.** Forcing the whole arm to decline
+puts the BARE spelling at 63.72, and the old gate's braced arms sit ON that number — they were not taking
+a slower variant of the route, they were not taking it at all. Three braced spellings, all three fixed:
+far `(b {})`, near `(a {})`, and both.
+
+⚠️ **NO ANSWER TEST COULD HAVE FOUND THIS**, which is why it is in the spelling probe (`an EXISTS one-hop
+count: a bare element vs an EMPTY inline map`) and not only in a unit test: every spelling already
+returned the correct count, by the general path. This is the defect class the repo is organised around,
+found in a four-day-old file by reading it rather than by measuring it.
+
+### TWO MISTAKES OF MY OWN, both caught by the repo's own instruments
+
+```text
+    the probe fixture   COPIED `(e * 104729) % NODES` from spelling-probe.ts, which is invariant
+                        under e -> e + NODES, so every vertex got THREE PARALLEL edges to ONE
+                        target instead of three distinct ones. fixture-branching.test.ts rejects
+                        that spelling BY NAME and failed the suite. Re-measured on a generator split
+                        on the repeat index; the 3.61x above is the honest fixture's.
+    the first anchor    `:Univ` is this fixture's universal label and its 202,000-vertex bucket takes
+                        a different, much slower route (86-143 ms, spread 1.3-1.6x). I read its flat
+                        arms as "no route fires here" and nearly concluded the fix was a no-op.
+```
+
+The first is item 1516/1518's defect reproduced one more time, in a probe written by someone who had
+just quoted the rule. The CLAUDE.md note's own caveat applies and is worth repeating: an A/B on ONE
+fixture survives a degenerate generator, because both arms saw the same graph — but the number published
+should still come from the honest one.
+
+### ✅ AND A DEAD OPERAND, twice
+
+`optional-hop.ts` already imported `hop-sides.js` and still wrote, at both of its hop gates:
+
+```text
+    !plainNode(node) || (node.properties !== undefined && node.properties.length > 0)
+```
+
+`plainNode` IS `(properties?.length ?? 0) === 0 && where === undefined`, so the second operand could
+never decide anything the call before it had not already decided. Dead rather than merely redundant —
+removing it cannot change a route.
+
+TEETH. The new tests were mutation-verified: deleting the far node's `plainNode` operand (so any inline
+map is admitted and then ignored) makes `{k: 2}` answer 3 where 1 is correct, and TWO tests fail — the
+new one and a pre-existing decline test. `routes-fired.test.ts` 86/0.
+
+GATES. `bun run fmt` 0; `bun run check` 0 (three oxlint type-aware errors in the new probe, fixed:
+untyped tuple arrays made `name` and `label` `string | object`); `bun run test -- --skip-nx-cache` 0
+across 21 projects; `bun run fuzz` 57 pass / 0 fail.
