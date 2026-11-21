@@ -120075,3 +120075,55 @@ GATES. `bun run fmt` 0; `bun run check` 0; `bun run test -- --skip-nx-cache` 0 a
 `bun run fuzz` 57 pass / 0 fail. The Rust `rewrite_fuzz` sweep is NOT the guard here and was not run — it
 fuzzes `crates/lenke-engine`'s optimizer, which this change cannot reach; the TS planner's guards are
 `routes-fired.test.ts` and the differential fuzzers, both green.
+
+## Item 2391 — ✅ **THE DETECTOR PROLOGUE WAS WRITTEN OUT BY HAND 12 TIMES ACROSS 5 FILES — `clauses.length !== 2`, two destructures, `ret.kind !== 'return' || cret.kind !== 'return'`.** Extracted as `twoClauseReturn`, which deliberately does NOT test the first clause's kind. ⚠️ And the duplicated WALK bodies next door are NOT the same question: factoring those is a measured 4x/16% risk, so they stay copied
+
+Item 2390's audit found the GQL executor's compile-time admission tests repeated verbatim. The exact
+block — arity guard, both destructures, both `return`-kind tests, nothing else between them — appears 12
+times:
+
+```text
+    chain-fold-levels.ts   3     hop2-projection.ts   2
+    chain-projection.ts    2     node-scan.ts         2
+    hop-projection.ts      3
+```
+
+Wider, the same shape partially expanded: `ret.kind !== 'return'` appears 41 times across 12 files and an
+`clauses.length !== 2`-style arity guard 37 times. The window added 5 of them.
+
+⚠️ **THE HELPER DOES NOT TEST THE FIRST CLAUSE'S KIND, AND THAT IS THE WHOLE DESIGN CONSTRAINT.** Most
+callers go on to require `match`, `!optional`, `patterns.length === 1` — but not all do, and the sites
+differ on which. A helper that folded those in would silently stop the rungs that admit a `[let, return]`
+or an optional match from firing, which is **exactly the failure item 910 named** when it made "a route
+assertion per detector" the prerequisite for sharing any work between detectors. So the extraction is the
+strict intersection of all 12 sites and each caller keeps its own element tests. `routes-fired.test.ts`
+(66 query-to-rung-field rows) is what makes that checkable rather than hopeful: 86 pass / 0 fail,
+unchanged.
+
+### ⚠️ REFUTED, AND RECORDED SO IT IS NOT RE-ATTEMPTED: the duplicated WALK bodies stay duplicated
+
+`hop-projection.ts` is the most self-duplicated file in the executor — **86 repeated 8-line code windows in
+2,945 code lines**, one walk prologue appearing 5 times (lines 1551, 2897, 4400, 4656, 4827):
+
+```text
+    const rows: Row[] = [];
+    const binding = new Map<string, unknown>();
+    const fl = vacuousLabel(graph, farLabel) ? undefined : farLabel;
+    for (const v of candidateVertexSource(graph, startLabel)) { ... }
+```
+
+**Factoring it is a PERFORMANCE change wearing a refactor's clothes, and both directions are already
+measured.** `ts-closure-size-is-load-bearing`: a walk inlined into a returned closure gives UNRELATED
+queries a new slow mode, 4x. Items 1413/1415/1440/1442/1462: a new walk variant costs rows it does not
+touch up to 16%, and item 1466 declined a 3.3x on `simplePath` for exactly that reason. So the
+distinction this item draws is the durable one — **a GATE runs once per compile and is shared; a WALK runs
+per element and is copied.** It is written at the head of `clause-shape.ts` so the next reader of those
+five near-identical loops finds the reason beside the abstraction rather than having to rediscover it.
+
+Also noted and left alone: `chain-projection.ts` and `hop2-projection.ts` share ~45 duplicated regions
+(largest 19 lines), which blame dates to 2026-11-14 — one day BEFORE this window's base — with item 2104
+extending it slightly. Same walk-vs-gate test applies; most of it is fold-accumulation loop bodies.
+
+GATES. `bun run fmt` 0; `bun run check` 0 (one `no-unused-vars` caught and fixed: a site that destructured
+`cret` only to test its kind no longer needs it); `bun run test -- --skip-nx-cache` 0 across 21 projects;
+`bun run fuzz` 57 pass / 0 fail.

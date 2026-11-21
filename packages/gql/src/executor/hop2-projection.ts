@@ -2,6 +2,7 @@ import type { Graph, Vertex } from '@lenke/core';
 
 import type { Clause, Expr, LabelExpr, NodePattern, RelPattern } from '../ast.js';
 import { matchesLabel } from '../graph-queries.js';
+import { twoClauseReturn } from './clause-shape.js';
 import type { OneColumnKeys } from './clauses.js';
 import { addOneColumnKey, distinctRows, newOneColumnKeys } from './clauses.js';
 import type { CClause, CompiledExpr, CPath, CProjection, EvalEnv, Params, Row } from './core.js';
@@ -807,16 +808,13 @@ export const detectHop2FoldedAggregate = (
   compiled: readonly CClause[],
   // ⚠️ `RowsFn`: inherits `detectHop2Projection`'s execution-time decline (item 2104).
 ): RowsFn | null => {
-  if (clauses.length !== 2) {
+  const twoClause = twoClauseReturn(clauses, compiled);
+
+  if (twoClause === null) {
     return null;
   }
 
-  const [, ret] = clauses;
-  const [, cret] = compiled;
-
-  if (ret.kind !== 'return' || cret.kind !== 'return') {
-    return null;
-  }
+  const { ret, cret } = twoClause;
 
   const proj = cret.projection;
   const agg = proj.foldedAggs?.length === 1 ? proj.foldedAggs[0] : undefined;
@@ -1060,16 +1058,13 @@ export const detectHop2GroupedCount = (
   compiled: readonly CClause[],
   // ⚠️ `RowsFn`: inherits `detectHop2Projection`'s execution-time decline (item 2104).
 ): RowsFn | null => {
-  if (clauses.length !== 2) {
+  const twoClause = twoClauseReturn(clauses, compiled);
+
+  if (twoClause === null) {
     return null;
   }
 
-  const [, ret] = clauses;
-  const [, cret] = compiled;
-
-  if (ret.kind !== 'return' || cret.kind !== 'return') {
-    return null;
-  }
+  const { ret, cret } = twoClause;
 
   const proj = cret.projection;
 

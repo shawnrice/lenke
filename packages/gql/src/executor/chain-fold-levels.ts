@@ -1,6 +1,7 @@
 import type { Graph, Vertex } from '@lenke/core';
 
 import type { Clause, Expr, NodePattern, PathPattern, RelPattern } from '../ast.js';
+import { twoClauseReturn } from './clause-shape.js';
 import type { CompiledExpr, CClause, Params, Row } from './core.js';
 import { csrFor } from './csr-cache.js';
 import { freePredicateVars } from './expr-analysis.js';
@@ -302,16 +303,13 @@ export const detectChainStarCount = (
    * already tests `!== undefined`.
    */
 ): ((graph: Graph, params: Params) => Row[] | undefined) | null => {
-  if (clauses.length !== 2) {
+  const twoClause = twoClauseReturn(clauses, compiled);
+
+  if (twoClause === null) {
     return null;
   }
 
-  const [m, ret] = clauses;
-  const [, cret] = compiled;
-
-  if (ret.kind !== 'return' || cret.kind !== 'return') {
-    return null;
-  }
+  const { first: m, ret, cret } = twoClause;
 
   /*
    * ⚠️⚠️ **TWO SEGMENTS MINIMUM, AND ONE SEGMENT WAS TRIED AND REFUTED (item 2088).** `hopall`
@@ -603,16 +601,13 @@ export const detectChainDistinctLevels = (
   clauses: readonly Clause[],
   compiled: readonly CClause[],
 ): AlwaysRowsFn | null => {
-  if (clauses.length !== 2) {
+  const twoClause = twoClauseReturn(clauses, compiled);
+
+  if (twoClause === null) {
     return null;
   }
 
-  const [m, ret] = clauses;
-  const [, cret] = compiled;
-
-  if (ret.kind !== 'return' || cret.kind !== 'return') {
-    return null;
-  }
+  const { first: m, ret, cret } = twoClause;
 
   const shape = chainShapeOf(m);
 
@@ -683,16 +678,13 @@ export const detectChainFoldLevels = (
   clauses: readonly Clause[],
   compiled: readonly CClause[],
 ): AlwaysRowsFn | null => {
-  if (clauses.length !== 2) {
+  const twoClause = twoClauseReturn(clauses, compiled);
+
+  if (twoClause === null) {
     return null;
   }
 
-  const [m, ret] = clauses;
-  const [, cret] = compiled;
-
-  if (ret.kind !== 'return' || cret.kind !== 'return') {
-    return null;
-  }
+  const { first: m, ret, cret } = twoClause;
 
   const shape = chainShapeOf(m);
 

@@ -5,6 +5,7 @@ import { candidateCount, candidateVertexSource, expand, matchesLabel } from '../
 import type { Adjacency } from '../graph-queries.js';
 import { edgesOfTypes, relTypeNames } from './adjacency.js';
 import { matchNodeLabelled } from './bindings.js';
+import { twoClauseReturn } from './clause-shape.js';
 import { distinctRows } from './clauses.js';
 import type {
   AggFold,
@@ -6445,16 +6446,13 @@ export const detectHopAggregate = (
   clauses: readonly Clause[],
   compiled: readonly CClause[],
 ): RowsFn | null => {
-  if (clauses.length !== 2) {
+  const twoClause = twoClauseReturn(clauses, compiled);
+
+  if (twoClause === null) {
     return null;
   }
 
-  const [m, ret] = clauses;
-  const [cm, cret] = compiled;
-
-  if (ret.kind !== 'return' || cret.kind !== 'return') {
-    return null;
-  }
+  const { first: m, ret, cfirst: cm, cret } = twoClause;
 
   const proj = cret.projection;
   const folded = proj.foldedAggs;
@@ -6887,16 +6885,13 @@ export const detectMultiHopAggregate = (
   clauses: readonly Clause[],
   compiled: readonly CClause[],
 ): RowsFn | null => {
-  if (clauses.length !== 2) {
+  const twoClause = twoClauseReturn(clauses, compiled);
+
+  if (twoClause === null) {
     return null;
   }
 
-  const [m, ret] = clauses;
-  const [cm, cret] = compiled;
-
-  if (ret.kind !== 'return' || cret.kind !== 'return') {
-    return null;
-  }
+  const { first: m, ret, cfirst: cm, cret } = twoClause;
 
   const proj = cret.projection;
 
@@ -7169,16 +7164,13 @@ export const detectHopDistinctProjection = (
   clauses: readonly Clause[],
   compiled: readonly CClause[],
 ): RowsFn | null => {
-  if (clauses.length !== 2) {
+  const twoClause = twoClauseReturn(clauses, compiled);
+
+  if (twoClause === null) {
     return null;
   }
 
-  const [, ret] = clauses;
-  const [, cret] = compiled;
-
-  if (ret.kind !== 'return' || cret.kind !== 'return') {
-    return null;
-  }
+  const { ret } = twoClause;
 
   if (
     !ret.projection.distinct ||

@@ -25,6 +25,7 @@ import type { Graph, Vertex } from '@lenke/core';
 
 import type { Clause, Expr, LabelExpr, NodePattern, Projection, SortItem } from '../ast.js';
 import { matchesLabel } from '../graph-queries.js';
+import { twoClauseReturn } from './clause-shape.js';
 import { distinctRows } from './clauses.js';
 import {
   aggregateOverValues,
@@ -1874,16 +1875,13 @@ export const detectNodeAggregate = (
   clauses: readonly Clause[],
   compiled: readonly CClause[],
 ): ((graph: Graph, params: Params) => Row[]) | null => {
-  if (clauses.length !== 2) {
+  const twoClause = twoClauseReturn(clauses, compiled);
+
+  if (twoClause === null) {
     return null;
   }
 
-  const [m, ret] = clauses;
-  const [, cret] = compiled;
-
-  if (ret.kind !== 'return' || cret.kind !== 'return') {
-    return null;
-  }
+  const { first: m, ret, cret } = twoClause;
 
   const proj = cret.projection;
   // `sum`/`avg` have no entry in `foldFor`, so `foldedAggs` is undefined for them and this
@@ -2255,16 +2253,13 @@ export const detectMultiNodeAggregate = (
   clauses: readonly Clause[],
   compiled: readonly CClause[],
 ): ((graph: Graph, params: Params) => Row[]) | null => {
-  if (clauses.length !== 2) {
+  const twoClause = twoClauseReturn(clauses, compiled);
+
+  if (twoClause === null) {
     return null;
   }
 
-  const [m, ret] = clauses;
-  const [, cret] = compiled;
-
-  if (ret.kind !== 'return' || cret.kind !== 'return') {
-    return null;
-  }
+  const { first: m, ret, cret } = twoClause;
 
   const proj = cret.projection;
 
