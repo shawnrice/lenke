@@ -2711,6 +2711,102 @@ const dropUnreadGroupBinds = (clauses: readonly Clause[]): readonly Clause[] => 
 
   return changed ? [{ ...m, patterns: [{ ...pattern, segments }] }, ret] : clauses;
 };
+/**
+ * The clause rewrites, in the order they RUN: earlier entries first, each handed the previous
+ * one's output. `compileLinear` folds them with `reduce`.
+ *
+ * ⚠️⚠️ **THE ORDER IS LOAD-BEARING, AND EVERY DEPENDENCY IS RECORDED ON THE PASS IT CONSTRAINS.**
+ * Item 1662 priced one wrong position: `inlineCorrelatedCall` ran after `inlineTrailingLet` rather
+ * than before it, the `LET` it emitted was left standing, and a standing `LET` is off every rung —
+ * 1.44x of an available 9.4x, with the whole gap in the composition rather than in either rewrite.
+ * So move an entry only with that kind of evidence.
+ *
+ * 🔑 THIS WAS ONE NESTED CALL EXPRESSION until item 2390 — 18 calls, 17 levels deep over 75 lines,
+ * written outermost-first, so it read in the REVERSE of the order it ran. Three costs, each already
+ * paid: inserting a pass re-indented every pass under it (the four most recent additions re-indent
+ * 14 lines between them), a pass's dependency note sat on whichever neighbour happened to enclose
+ * it rather than on itself, and the positional vocabulary had drifted out of agreement with the
+ * code — see `foldPageIntoReturn` and `normalizeCountOfBoundVar` below, both found by flattening
+ * this and neither a change of order.
+ */
+const PASSES: readonly ((clauses: readonly Clause[]) => readonly Clause[])[] = [
+  dropPassThroughWith,
+  spliceChainedPatterns,
+  // `foldLabelTestsIntoPatterns` runs FIRST of the three (item 1303): it can empty a clause's
+  // `WHERE` entirely, and the rungs it is aiming at are selected on `pred.fn === alwaysTrue`, so a
+  // later pass must see the clause already folded.
+  foldLabelTestsIntoPatterns,
+  dropVacuousQuantifier,
+  dropVacuousPage,
+  // `dropUnreadEdgeVar` runs BEFORE `dropUnreadPathVar` for the same composition reason as the
+  // entry below: the path-variable pass refuses on nothing the edge pass creates, but a pattern can
+  // carry BOTH an unread `p` and an unread `r`, and only this order drops both in one compile. Each
+  // is independently narrow (`[match, return]`, one pattern), so neither can see a shape it did not
+  // expect.
+  dropUnreadEdgeVar,
+  // `dropUnreadPathVar` runs BEFORE `dropUnreadGroupBinds` because that one REFUSES outright on a
+  // pattern carrying a `pathVar` — so stripping an unread one first is what lets the two compose
+  // instead of the first blocking the second. Both require exactly `[match, return]`, so neither
+  // can see a shape the other created.
+  dropUnreadPathVar,
+  dropUnreadGroupBinds,
+  /*
+   * `foldPageIntoReturn` runs AFTER `dropVacuousPage` so the vacuous case is removed first and only
+   * a page that actually does something is folded — the two would otherwise race to claim the same
+   * clause (item 969).
+   *
+   * ⚠️ THE WORD WAS "INSIDE" UNTIL ITEM 2390, AND THAT IS THE OPPOSITE OF WHAT THE CODE DID. In the
+   * old nesting `dropVacuousPage` was the INNER call, so it ran first — which is what this note's
+   * own reason requires. Every other dependency note in the block used "INSIDE" for "runs first";
+   * this one alone used it for "runs after", and the nesting made that impossible to see. The order
+   * is unchanged.
+   */
+  foldPageIntoReturn,
+  unoptionalizeForAggregate,
+  inlineTrailingFilter,
+  // `inlineAggregateCall` runs BEFORE `inlineTrailingLet` so the `LET` it produces is itself
+  // inlined when it is the last binding before the RETURN — the two compose into "a CALL with an
+  // aggregate body is a projection subquery", which is where the rungs are.
+  inlineAggregateCall,
+  /*
+   * ⚠️ `inlineCorrelatedCall` RUNS BEFORE `inlineTrailingLet` FOR THE SAME REASON, AND IT RAN AFTER
+   * IT UNTIL ITEM 1662 MEASURED WHAT THAT COST. Once that rewrite could emit a `LET` of its own (a
+   * computed yield, `RETURN x.k AS c`), running it after the `LET`-folding pass left the `LET`
+   * standing, and a standing `LET` is OFF EVERY RUNG — `[match, let, return]` carries none of the
+   * twenty-one, where the folded `[match, return]` carries `hopAggregate`. Measured: the rewrite
+   * fired, the route assertion passed, and the arm went 3110 -> 2165 ns an outer row against the
+   * 330 its hand-written twin reaches. 1.44x of an available 9.4x, with the whole gap in the
+   * composition rather than in either rewrite.
+   *
+   * The twin is the diagnostic worth keeping: `MATCH (n:P) MATCH (n)-[:E]->(x) LET c = x.k RETURN
+   * sum(c)` is 4 clauses and still compiles to `[match, return]`, so `inlineTrailingLet` never
+   * needed the fused shape — only to run LAST of the three.
+   */
+  inlineCorrelatedCall,
+  inlineTrailingLet,
+  // ⚠️ `normalizeAliasSortKeys` runs AFTER `inlineTrailingLet` so it sees the FOLDED projection:
+  // folding a trailing `LET` can itself produce the aliased `ORDER BY` shape this normalizes, and
+  // running it first would leave that shape unnormalized. Same composition argument as item 1662's,
+  // one pass further out.
+  normalizeAliasSortKeys,
+  /*
+   * ⚠️ LATE — after `unoptionalizeForAggregate` and after the folding passes, so it sees the final
+   * folded projection AND any clause that pass has already cleared `optional` from: a shape
+   * `unoptionalizeForAggregate` un-optionalizes becomes eligible for this one.
+   *
+   * ⚠️ THIS NOTE SAID "OUTERMOST" UNTIL ITEM 2390 AND SAT ON `normalizeAliasSortKeys`'s CALL, one
+   * level off the pass it describes: optionality is nothing to an `ORDER BY` alias, while
+   * `count(x)` of a bound variable is exactly what un-optionalizing makes foldable. Two passes were
+   * already outside it by then, so "outermost" had stopped being true as well. Position unchanged.
+   */
+  normalizeCountOfBoundVar,
+  fuseAnchorThenHop,
+  // `liftStartProps` runs AFTER `fuseAnchorThenHop` so a FUSED clause gets the lift too: the fused
+  // pattern's start is the anchor's, and an anchor written `MATCH (a:P {k: 5})` carries exactly the
+  // inline property this lifts (item 778).
+  liftStartProps,
+];
+
 // EXPORTED for ROUTE ASSERTIONS, and deliberately not from `index.ts` (item 911).
 //
 // The twenty-one detectors below are answer-equivalent routes: a query whose shortcut stops firing
@@ -2727,84 +2823,7 @@ const dropUnreadGroupBinds = (clauses: readonly Clause[]): readonly Clause[] => 
 // time its only production caller was unreachable. An export-for-testing keeps a function's
 // COVERAGE alive independently of whether anything still calls it.)
 export const compileLinear = (linear: LinearQuery): CLinear => {
-  // `liftStartProps` runs OUTSIDE `fuseAnchorThenHop` so a FUSED clause gets the lift too: the
-  // fused pattern's start is the anchor's, and an anchor written `MATCH (a:P {k: 5})` carries
-  // exactly the inline property this lifts (item 778).
-  const source = liftStartProps(
-    fuseAnchorThenHop(
-      // `inlineAggregateCall` runs INSIDE `inlineTrailingLet` so the `LET` it produces is itself
-      // inlined when it is the last binding before the RETURN — the two compose into "a CALL with
-      // an aggregate body is a projection subquery", which is where the rungs are.
-      //
-      // ⚠️ `inlineCorrelatedCall` IS INSIDE `inlineTrailingLet` FOR THE SAME REASON, AND IT WAS
-      // OUTSIDE UNTIL ITEM 1662 MEASURED WHAT THAT COST. Once that rewrite could emit a `LET` of
-      // its own (a computed yield, `RETURN x.k AS c`), running it after the `LET`-folding pass
-      // left the `LET` standing, and a standing `LET` is OFF EVERY RUNG — `[match, let, return]`
-      // carries none of the twenty-one, where the folded `[match, return]` carries `hopAggregate`.
-      // Measured: the rewrite fired, the route assertion passed, and the arm went 3110 -> 2165
-      // ns an outer row against the 330 its hand-written twin reaches. 1.44x of an available
-      // 9.4x, with the whole gap in the composition rather than in either rewrite.
-      //
-      // The twin is the diagnostic worth keeping: `MATCH (n:P) MATCH (n)-[:E]->(x) LET c = x.k
-      // RETURN sum(c)` is 4 clauses and still compiles to `[match, return]`, so `inlineTrailingLet`
-      // never needed the fused shape — only to run LAST of the three.
-      // ⚠️ `normalizeAliasSortKeys` runs OUTSIDE `inlineTrailingLet` so it sees the FOLDED
-      // projection: folding a trailing `LET` can itself produce the aliased `ORDER BY` shape this
-      // normalizes, and running it first would leave that shape unnormalized. Same composition
-      // argument as item 1662's, one pass further out.
-      normalizeCountOfBoundVar(
-        /*
-         * ⚠️ OUTERMOST, so it sees the final folded projection AND any clause that
-         * `unoptionalizeForAggregate` has already cleared `optional` from — a shape that pass
-         * un-optionalizes becomes eligible for this one.
-         */
-        normalizeAliasSortKeys(
-          inlineTrailingLet(
-            inlineCorrelatedCall(
-              inlineAggregateCall(
-                inlineTrailingFilter(
-                  unoptionalizeForAggregate(
-                    // `foldPageIntoReturn` runs INSIDE `dropVacuousPage` so the vacuous case is
-                    // removed first and only a page that actually does something is folded — the
-                    // two would otherwise race to claim the same clause (item 969).
-                    foldPageIntoReturn(
-                      // `foldLabelTestsIntoPatterns` runs FIRST of the three (item 1303): it can empty
-                      // a clause's `WHERE` entirely, and the rungs it is aiming at are selected on
-                      // `pred.fn === alwaysTrue`, so a later pass must see the clause already folded.
-                      dropUnreadGroupBinds(
-                        // `dropUnreadPathVar` runs INSIDE `dropUnreadGroupBinds` because that one
-                        // REFUSES outright on a pattern carrying a `pathVar` — so stripping an unread
-                        // one first is what lets the two compose instead of the first blocking the
-                        // second. Both require exactly `[match, return]`, so neither can see a shape
-                        // the other created.
-                        dropUnreadPathVar(
-                          // `dropUnreadEdgeVar` runs INSIDE `dropUnreadPathVar` for the same
-                          // composition reason: the path-variable pass refuses on nothing the edge pass
-                          // creates, but a pattern can carry BOTH an unread `p` and an unread `r`, and
-                          // only this order drops both in one compile. Each is independently narrow
-                          // (`[match, return]`, one pattern), so neither can see a shape it did not
-                          // expect.
-                          dropUnreadEdgeVar(
-                            dropVacuousPage(
-                              dropVacuousQuantifier(
-                                foldLabelTestsIntoPatterns(
-                                  spliceChainedPatterns(dropPassThroughWith(linear.clauses)),
-                                ),
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ),
-      ),
-    ),
-  );
+  const source = PASSES.reduce<readonly Clause[]>((cs, pass) => pass(cs), linear.clauses);
   const clauses = source.map(compileClause);
   // A pattern repeating a node variable is a SELF-JOIN that the fast paths answer wrongly, so
   // they are not offered the clause list at all — every detector begins by checking its shape

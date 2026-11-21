@@ -120024,3 +120024,54 @@ a write cost and a correctness surface, which is an owner's judgment about the e
 than a measurement — and all four are priced, with their instruments named, ready for that decision.
 
 GATES. `bun run fmt` 0, `bun run check` 0. No probe, no production change — two reads.
+
+## Item 2390 — ✅ **THE 18 CLAUSE REWRITES WERE ONE NESTED CALL EXPRESSION, 17 LEVELS DEEP OVER 75 LINES, READ IN THE REVERSE OF THE ORDER THEY RAN.** Flattened to an ordered `PASSES` array folded with `reduce`, order proven identical mechanically — and the flattening found two dependency comments that had drifted off the pass they describe, one of them saying the OPPOSITE of what the code does
+
+An audit of the last 350 commits for convolution. The headline is that there is very little: `67,074`
+insertions, of which the append-only audit prose is ~49,000 and tests 12,082, leaving **5,650 production
+lines — 52% of them comment, so 2,138 lines of actual code over 350 commits**, in 34 files of which 3 are
+new. Every one of the 38 rung fields on `CLinear` is both assigned and read (no orphans), the largest
+single addition (`node-values.ts`, +484 code lines) spreads over 38 units whose biggest is 66 code lines,
+added control-flow nesting maxes at 7, and the 54 new test files are not clones (29 shared 8-line blocks,
+each in only two files).
+
+The one place the window measurably added convolution was `compileLinear`'s rewrite pipeline:
+
+```text
+    liftStartProps(fuseAnchorThenHop(normalizeCountOfBoundVar(normalizeAliasSortKeys(
+      inlineTrailingLet(inlineCorrelatedCall(inlineAggregateCall(inlineTrailingFilter(
+        ... 10 more ...  spliceChainedPatterns(dropPassThroughWith(linear.clauses))))))))))
+```
+
+Four passes were added in the window, and the diff shows the cost: 14 lines re-indented between them to
+make room. All 18 have the identical signature `(clauses: readonly Clause[]) => readonly Clause[]`, so the
+nesting bought nothing a list does not.
+
+**ORDER PRESERVED, AND PROVEN RATHER THAN EYEBALLED.** The script extracted the call order from the old
+nesting (innermost-first) and the entry order from the new list, and asserted the two sequences equal
+before writing the file. `routes-fired.test.ts` — 66 rows of query-to-rung-fields, the route assertion item
+910 named as the prerequisite for sharing any work between detectors — passes unchanged at 86/0.
+
+⚠️ **AND THE FLATTENING FOUND TWO DRIFTED COMMENTS, BOTH INVISIBLE INSIDE THE NESTING.** Neither is a
+change of order; both are notes that had come loose from the pass they constrain:
+
+```text
+    foldPageIntoReturn        said it "runs INSIDE dropVacuousPage". The code had dropVacuousPage as
+                              the INNER call, so it ran FIRST — which is what the comment's own reason
+                              requires ("the vacuous case is removed first"). Every other note in the
+                              block used INSIDE for "runs first"; this one alone used it for "runs
+                              after". Now reads AFTER.
+    normalizeCountOfBoundVar  its note said "OUTERMOST" and sat on normalizeAliasSortKeys's call, one
+                              level off. By content it is unambiguous — optionality is nothing to an
+                              ORDER BY alias, while count(x) of a bound variable is exactly what
+                              unoptionalizeForAggregate makes foldable. Two passes were already
+                              outside it, so "outermost" had stopped being true as well.
+```
+
+That is the third cost of the onion, after the re-indentation and the backwards reading order: a pass's
+dependency note sat on whichever neighbour happened to enclose it, and nothing made the mismatch visible.
+
+GATES. `bun run fmt` 0; `bun run check` 0; `bun run test -- --skip-nx-cache` 0 across 21 projects;
+`bun run fuzz` 57 pass / 0 fail. The Rust `rewrite_fuzz` sweep is NOT the guard here and was not run — it
+fuzzes `crates/lenke-engine`'s optimizer, which this change cannot reach; the TS planner's guards are
+`routes-fired.test.ts` and the differential fuzzers, both green.
