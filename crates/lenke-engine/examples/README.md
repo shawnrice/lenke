@@ -54,6 +54,7 @@ enumeration's is flat.
 | What does each ENCODE format cost, per byte? (incl. the FFI `binary` snapshot)   | `ingest_bench -- codecs`             |
 | How many resident bytes does an element cost?                                    | `ingest_bench -- mem`                |
 | What does a GQL / Gremlin query shape cost?                                      | `query_bench -- gql` / `gremlin`     |
+| What does ONE `ANY SHORTEST` shape cost, isolated in its own process, by phase?  | `shortpath_2393` (`SHAPE=…`)         |
 | Which counts still enumerate vs shortcut?                                        | `query_bench -- counts`              |
 | What does a row cost, by what is returned?                                       | `query_bench -- perrow`              |
 | What does turning query text into a plan cost?                                   | `query_bench -- plan`                |
@@ -463,6 +464,14 @@ question in its module header — read the header before touching it.
   that — the plans differ three ways (an interposed `Filter{PropertyExists}` from `values(k)`
   skipping absent keys, `nulls_first`, `fault_on_element`), and the numeric control reproduces
   all three. Four lines of output turned a wrong diagnosis into the right one.
+- `shortpath_2393` — ONE `ANY SHORTEST` shape per PROCESS, selected by `SHAPE`, because
+  `query_bench -- shortest` can only select a whole case group and its rows interfere. That is
+  not a style preference: the group table priced item 2393's dense-BFS change at **0.92x on
+  `anchored + nodes(p)`** — a 1.09x regression, consistent across four alternated runs — and
+  the same arms in this probe read **0.98x**, flat. The regression did not exist. The shapes
+  split the traversal by PHASE, which is what makes that legible: `count`/`bothends` are ~100%
+  BFS, `nodes` is ~93% chain materialization, so a BFS change must move the first and not the
+  second, and a table that shows otherwise is measuring its own neighbours.
 
 ## Before trusting a number
 

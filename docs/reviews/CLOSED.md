@@ -120208,3 +120208,118 @@ new one and a pre-existing decline test. `routes-fired.test.ts` 86/0.
 GATES. `bun run fmt` 0; `bun run check` 0 (three oxlint type-aware errors in the new probe, fixed:
 untyped tuple arrays made `name` and `label` `string | object`); `bun run test -- --skip-nx-cache` 0
 across 21 projects; `bun run fuzz` 57 pass / 0 fail.
+
+## Item 2393 — ✅ **72% of `shortest_path`'s OWN CPU was hash-table probing against a key that is already a dense index: `dist: FnvMap<u32, u32>` → two generation-stamped `Vec`s. 1.04-1.28x across five shapes and three sizes, controls flat.** And two instrument failures on the way, one of which invented a 1.09x regression that does not exist
+
+The first Rust-side profile of this stretch, and it needed a profiler built first: `perf`, `samply`
+and `valgrind` are all absent on this box, `cargo install` is denied, and yama's `ptrace_scope=1`
+forbids gdb from ATTACHING to a sibling process. So gdb LAUNCHES the inferior (legal — it is then
+gdb's own child) and the sampling clock lives OUTSIDE gdb: a shell loop sends `SIGUSR1`, gdb stops
+on it and `nopass`es it so the program never sees it, and each stop is one sample. Synchronous, so
+there is no gdb-async event-loop race. `pmp-gdb-sampler.py` + `pmp-run.sh` + `pmp-fold2.py`.
+
+### WHAT THE PROFILE NOMINATED, and why it survives item 2380's rule
+
+1533 samples over the whole `query_bench` corpus:
+
+```text
+    44.9%   of worker samples in hashbrown probe/hash machinery
+    44.2%   of ALL worker samples: that machinery owned by exec::varlen::shortest_path
+    61.5%   shortest_path inclusive
+```
+
+🔑 Item 2380 established that a MIXED-workload share ranks shapes by how much work the workload
+asked of them and says nothing about efficiency. This nomination is not that: it is normalized
+WITHIN one function — 44.2 / 61.5 = **~72% of `shortest_path`'s own CPU is hashing**, independent of
+how much of the corpus that function happens to own.
+
+And the keys were already dense. `target_bits`, in the same function, indexes `bits[a.nbr as usize]`
+and `bits[start as usize]` with NO bound check, because adjacency neighbours and sources are vertex
+SLOTS. So an `FnvMap<u32, u32>` was hashing an array index.
+
+Replaced with `seen`/`bfs_dist` as `Vec<u32>`, allocated once for the whole traversal and reused
+across sources by a GENERATION STAMP — a new source costs an increment, not a clear or an
+allocation. `vec![0; n]` is `alloc_zeroed`, so a BFS touching a handful of a million vertices faults
+in only the pages it reads rather than writing 8n bytes.
+
+### MEASURED, one shape per PROCESS, min of 3 rounds, swept across the cache transition
+
+```text
+                    N=50k                     N=200k                    N=1M
+    count      6023.2 -> 4720.5  1.28x   32398.6 -> 29102.0  1.11x   346502.8 -> 295912.2  1.17x
+    yname      6851.4 -> 5553.3  1.23x   33140.7 -> 31001.0  1.07x   354175.8 -> 342165.8  1.04x
+    bothends   6369.2 -> 5376.8  1.19x   33469.5 -> 29016.8  1.15x   362749.2 -> 309308.5  1.17x
+    plen       7294.9 -> 6472.7  1.13x
+    nodes     77559.4 -> 74615.5  1.04x
+    CONTROL     625.9 ->   641.0  0.98x    2920.5 ->  2894.1  1.01x    22528.4 ->  21708.8  1.04x
+```
+
+The control is a 2-hop count that never enters `shortest_path`. Row counts are identical arm to arm
+at every size (47007 / 188191 / 940626), which is the oracle: `nodes` and `plen` answer a PATH count,
+not a vertex count, so a disagreement was reachable.
+
+The win narrows as N grows because more of the traversal becomes adjacency walking, which this does
+not touch — `nodes` is the limiting case of the same effect at fixed N: it is ~93% chain
+materialization, so a BFS win of ~1.2 ms sits inside 77 ms of other work.
+
+### ⚠️ A 1.09x REGRESSION THAT DOES NOT EXIST — and it was consistent, which is why it was believed
+
+`query_bench -- shortest` can only select a whole case GROUP. Read from that table, over FOUR
+alternated map/dense pairs, `anchored + nodes(p)` was 74095.8 against 80861.8 — 0.92x, with the dense
+arm's four runs (80.9-82.8 ms) entirely above the map arm's best. Nothing about that looks like noise.
+
+Isolated one-shape-per-process, the same two binaries read 0.98x, then 1.04x on the shipped arm. The
+regression was the row's NEIGHBOURS. This is item 737's failure mode reproduced exactly, including
+its shape — a per-row question answered with a shared-process table — and the fix was the same one:
+build the per-row instrument. `shortpath_2393` is it, and its header carries this as the worked
+example.
+
+### ⚠️ AND THE FIRST A/B NUMBER WAS INFLATED BY ITS OWN BASELINE
+
+Pre-fix, `count` measured 1.47x. That arm's map baseline was a noisy run — 8520 / 8828 / 7286 — whose
+min was 7286 against 6023 in a clean one. **1.28x is the honest figure, and it is the one the SHIPPED
+arm produces.** A number measured before a correctness fix is not a number about the shipped code:
+`slot` adds a compare per access, so the pre-fix arm was both faster and wrong.
+
+### 🔑 A MAP IS TOTAL WHERE AN ARRAY IS PARTIAL: the `u32::MAX` sentinel
+
+The first dense version failed SEVEN `rewrite_fuzz` tests at DEFAULT seeds:
+
+```text
+    index out of bounds: the len is 3000 but the index is 4294967295
+```
+
+`u32::MAX` is the OPTIONAL/NULL node sentinel — the same one items 1148-1150 found `hash_join`
+mishandling — and it CAN appear in a source column, where `min == 0` emits it at length 0. An
+`FnvMap` simply hashed it and the BFS found no neighbours; a dense array indexed by it panics. So the
+arrays carry one extra slot and every index goes through `slot(v)`. **The general form: replacing a
+map with an array is not only a representation change, it narrows the DOMAIN, and a sentinel key is
+where that bites.**
+
+⚠️ **AND IT EXPOSES A PRE-EXISTING LATENT PANIC, recorded OPEN rather than claimed:** `bits[start as
+usize]` in the same function is unguarded against the sentinel too. It is reachable only through
+`reverse.rs`'s target-anchored early stop (the only caller passing `early_stop: Some`), and no repro
+exists yet — the fuzzer did not reach that combination. Not fixed here, because a fix without a repro
+is a guess about reachability.
+
+### TEETH
+
+The sentinel panic is itself evidence the fuzzer has teeth against this code, at default seeds. Plus a
+deliberate mutant: deleting `bfs_gen += 1` so a later source inherits the previous source's stamps
+fails **22 tests (1327 passed), exit 101** — with a result line, so that is execution evidence and not
+an exit code alone. The two reads the `FnvMap`'s `dist[&k]` would have PANICKED on now carry
+`debug_assert_eq!` on the stamp, since a dense array returns a stale distance instead of panicking;
+the test profile has `debug_assertions` on, so the whole suite checks the invariant.
+
+### GATES
+
+Engine suite 1349 + 13 + 725 pass / 0 fail. `LENKE_OPT_FUZZ_SEEDS=500000 rewrite_fuzz` 10 pass / 0
+fail in 99.47s. `cargo fmt` 0; `cargo clippy --all-targets -- -D warnings` 0 (exit read UNPIPED).
+`bun run fuzz` 57 pass / 0 fail.
+
+`preds: FnvMap<u32, Vec<(u32, u32)>>` and `pcount: FnvMap<u32, u64>` in the same loop are still maps
+and still hash; they are OPEN, and `preds` is the harder one because a dense `Vec<Vec<_>>` costs N
+vector headers and an O(N) drop per source. The other half of the same profile is the per-vertex
+`adjs: Vec<Adj>` the BFS allocates for every dequeued node — `store.out`/`inc` already return
+`&[Adj]`, so the copy is pure waste, and it showed as `copy_nonoverlapping<Adj>` 5.0% plus
+malloc/free 5.0%. Also OPEN.

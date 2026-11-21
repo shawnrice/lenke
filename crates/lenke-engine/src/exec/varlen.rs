@@ -1520,6 +1520,29 @@ pub(super) fn shortest_path(
     // once for the whole traversal instead of twice per (source, target) pair.
     let mut chain_buf: Vec<u32> = Vec::new();
     let mut echain_buf: Vec<u32> = Vec::new();
+    // The BFS's distance map as DENSE ARRAYS indexed by vertex slot, not an `FnvMap` keyed
+    // by it. A whole-corpus profile put 44.2% of ALL worker samples in hashbrown probing
+    // under this one function — 72% of its own CPU — against a key that is already a dense
+    // index: `target_bits` above indexes `bits[a.nbr as usize]` and `bits[start as usize]`
+    // with no bound check, because adjacency neighbours and sources are vertex SLOTS and so
+    // are always < `n_nodes`.
+    //
+    // Allocated ONCE for the whole traversal and reused across sources by a GENERATION
+    // STAMP: `seen[v] == bfs_gen` means "this source's BFS reached v", so a new source costs
+    // an increment rather than a clear or a fresh allocation. `vec![0; n]` is `alloc_zeroed`,
+    // so a BFS touching a handful of vertices out of a million faults in only the pages it
+    // reads instead of writing 8n bytes.
+    //
+    // One EXTRA slot, and every index goes through `slot`: `u32::MAX` is the OPTIONAL/NULL
+    // node sentinel (the same one items 1148-1150 found `hash_join` mishandling) and it CAN
+    // appear in a source column, where `min == 0` emits it at length 0. An `FnvMap` simply
+    // hashed the sentinel; a dense array indexed by it panics, so the array has to be as
+    // TOTAL as the map it replaced. Only a source can reach it -- adjacency never yields the
+    // sentinel -- but the mapping is uniform so no caller has to know that.
+    let slot = |v: u32| if v == u32::MAX { n_nodes } else { v as usize };
+    let mut seen: Vec<u32> = vec![0; n_nodes + 1];
+    let mut bfs_dist: Vec<u32> = vec![0; n_nodes + 1];
+    let mut bfs_gen: u32 = 0;
 
     for (row, &start) in src.iter().enumerate() {
         guard_path_growth(keep.len(), path_values.len() + path_edges.len(), store)?;
@@ -1527,8 +1550,15 @@ pub(super) fn shortest_path(
         // lie on a shortest path (an edge prev->node with dist[prev] + 1 == dist[node]).
         // `order` is BFS discovery order — every node's predecessors precede it, so a
         // bottom-up pass over it computes path counts / enumerations.
-        let mut dist: FnvMap<u32, u32> = FnvMap::default();
-        dist.insert(start, 0);
+        // A new generation retires every stamp from the previous source. Wrapping would make
+        // a stale stamp read as current, so the one wrap in 4 billion sources clears instead.
+        if bfs_gen == u32::MAX {
+            seen.fill(0);
+            bfs_gen = 0;
+        }
+        bfs_gen += 1;
+        seen[slot(start)] = bfs_gen;
+        bfs_dist[slot(start)] = 0;
         let mut preds: FnvMap<u32, Vec<(u32, u32)>> = FnvMap::default();
         let mut order: Vec<u32> = vec![start];
         let mut q: VecDeque<u32> = VecDeque::new();
@@ -1550,7 +1580,11 @@ pub(super) fn shortest_path(
             }
         }
         while let Some(v) = q.pop_front() {
-            let dv = dist[&v];
+            // Every queued node was stamped when it was discovered; the `FnvMap` this
+            // replaced would have PANICKED on a miss, so the invariant gets an assertion
+            // rather than silently reading a previous source's distance.
+            debug_assert_eq!(seen[slot(v)], bfs_gen, "dequeued an unstamped node");
+            let dv = bfs_dist[slot(v)];
             // All targets settled and their predecessors (depth < D) fully dequeued: any
             // node at depth >= D is beyond every target and would be filtered out anyway.
             if stop_dist.is_some_and(|d| dv >= d) {
@@ -1574,9 +1608,11 @@ pub(super) fn shortest_path(
                 if min >= 1 && a.nbr == start {
                     cycle_edges.push((dv + 1, v, a.eid));
                 }
-                match dist.get(&a.nbr).copied() {
+                let nbr = slot(a.nbr);
+                match (seen[nbr] == bfs_gen).then(|| bfs_dist[nbr]) {
                     None => {
-                        dist.insert(a.nbr, dv + 1);
+                        seen[nbr] = bfs_gen;
+                        bfs_dist[nbr] = dv + 1;
                         preds.entry(a.nbr).or_default().push((v, a.eid));
                         order.push(a.nbr);
                         q.push_back(a.nbr);
@@ -1623,7 +1659,12 @@ pub(super) fn shortest_path(
         }
 
         for &node in &order {
-            let dn = dist[&node];
+            debug_assert_eq!(
+                seen[slot(node)],
+                bfs_gen,
+                "BFS order holds an unstamped node"
+            );
+            let dn = bfs_dist[slot(node)];
             if dn < min {
                 continue; // a `+` quantifier (min 1) excludes the zero-length seed
             }
