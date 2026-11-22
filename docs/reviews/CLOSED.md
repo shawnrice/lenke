@@ -121171,3 +121171,80 @@ vacuous `expect(true).toBe(true)`.
 `bun run test -- --skip-nx-cache` 0 across 21 projects; `bun run fuzz` 57 pass / 0 fail;
 `endpoint-fold-threshold.test.ts` + `endpoint-fold-degree-gate.test.ts` 16 pass — **6 of their
 assertions fired when the constant moved**, which is the teeth item 1345 built them for.
+
+## Item 2403 — ⚠️⚠️ **NO CHANGE: item 2400 freed the tie contract that items 1966-1968 were blocked on, and the lever is STILL not available — because the blocker was never where any of those three items said. FOUR suspects refuted by measurement in one tick, including the route itself, which this shape never enters.** 🔑 And item 698 had already refuted the bare-column half against the honest floor
+
+Item 2400 relaxed cross-engine identity to CONTENT rather than POSITION, which voids the tie-order
+reason items 1966-1968 recorded for refusing the far-driven deferred-hop fold. The loop's own
+follow-up list carried it as "the 67% term". It is not collectable, and the reason is a chain of
+mislocated blockers.
+
+### THE COST IS STILL THERE, so this is not a stale-lever case
+
+`hopsort-1964.mjs`, 200,000 vertices / 1,000,000 edges, FANOUT=5, median of 9:
+
+```text
+    winAlias   RETURN b.n + 1 AS c ORDER BY c LIMIT 10      307.8 ms     (item 1966: 296.5)
+    openAlias  RETURN b.n + 1 AS c ORDER BY c               310.4        310 ns/row
+    winExpr    … ORDER BY b.n + 1 LIMIT 10                  296.2        (item 1966: 298.6)
+```
+
+Unlike item 2402's gate, nothing here went stale: the figures reproduce item 1966's within 4%.
+
+### ⚠️ FOUR SUSPECTS, EACH REFUTED BY MEASUREMENT
+
+```text
+    1  deferredHopOrder's `startDriven: true`     item 1967 flipped it: gql 4948/0, fuzz 57/0, and
+                                                  tieorder-1967.mjs says the ORDER does not move.
+    2  walkReadFlags' `itemsReadStart:            ablated to `false` THIS TICK: 295.3 / 309.1 /
+       s.hasStartVar` (item 1968's relocation)    298.9 against a 307.8 / 310.4 / 296.2 baseline,
+                                                  checksums IDENTICAL. Zero movement.
+    3  hopOrderPlan's `sorts !== undefined`       the gate's own comment names it as THE sorted-hop
+                                                  cost -- but see item 698 below.
+    4  farDrivenHopWalk ITSELF                    instrumented with a throw: NOT REACHED by any
+                                                  shape in the probe, sorted or unsorted.
+```
+
+🔑 **Suspect 4 is the one that matters, and it dissolves item 1966's mechanism.** That item wrote
+"`detectHopProjection` already wires `farDrivenHopWalk` with `proj: walkProj`", so freeing the walk
+would hand the fold to the deferred arm. True of the code and false of this shape: with both `:T`
+labels VACUOUS the unsorted arm takes the **EDGE PASS** (`startFree && farFree`, `hop-projection.ts`
+~1394), which returns before `farDrivenHopWalk` is ever called. So "the fold the two arms do not
+share" is item 167's hoist inside whichever route runs — not the far-driven walk, and not something
+`startDriven` or `itemsReadStart` gates.
+
+⚠️ Item 1968's "`walkReadFlags`' conservative `itemsReadStart` turns out to protect exactly this" was
+a REASONED claim presented as a finding, in the same entry that correctly refuted item 1967's
+reasoned claim one line earlier. Two items in a row located this blocker by argument; both were
+wrong, and an ablation costs one build.
+
+### 🔑 AND THE PRIZE WAS ALREADY BOUNDED, on the half that was measured
+
+Item 698 refuted the sorted-hop target **on its own fixture**, against the engine's own floor (the
+unordered query PLUS a bare sort of its rows) rather than against the unordered query alone:
+
+```text
+    604/605   3.9x    173.0 against a 44.5 ms UNORDERED reference          <- wrong floor
+    697       2.26x   136.2 against 60.2 -- degree 3 against a degree-1 baseline
+    698       0.86x at degree 1, 1.58x at degree 3   against the HONEST floor
+```
+
+⚠️ That covers `ORDER BY k` — a bare output column. Item 1966's shape is `ORDER BY b.n + 1`, a
+COMPUTED key, which carries a per-row evaluation the bare-column shape does not, so item 698 does not
+close it. **But it does bound the neighbourhood**: the sorted hop sits at 0.86-1.58x of the honest
+floor, and a 2-3x read off the unordered query is item 698's documented ~1.9x overstatement.
+
+### WHAT IS ACTUALLY LEFT, and it is not this
+
+Item 1966's own residual was the right one and is unchanged: **specialize the key CLOSURE to a direct
+read when it is shaped like one**, which attacks the 198 ns/row key evaluation without needing a
+different walk at all. That needs no contract and no route change. Not built here.
+
+🛑 **What is now closed is the WALK framing.** Freeing tie order does not unlock this, because no
+walk choice was holding it. The next person to arrive at "the deferred hop should ride the far-driven
+walk" should start by instrumenting whether that walk is reached — one throw, one build.
+
+### GATES
+
+No engine change. Working tree byte-identical to `HEAD` for `hop-projection.ts`, verified with
+`diff` against `git show HEAD:` after each of the two ablations and the instrument.
