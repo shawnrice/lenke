@@ -6387,7 +6387,16 @@ const ORDER_SENSITIVE_AGGREGATES: ReadonlySet<string> = new Set([
  * walk's order — and the difference is only that `collect` shows it as `[10,20,30]` vs `[30,20,10]`
  * where `sum` shows it in the last ulp. By item 2400's rule their element order is free too.
  *
- * What actually keeps them here, pending an owner decision:
+ * ✅ THE OWNER DECISION IS IN (item 2404): *"If we can get gains, then it doesn't matter the order
+ * they're in. It should be deterministic enough, but if someone needs the order, then they can order
+ * by earlier in the walk."* So an aggregate-built list's element order is UNSPECIFIED — recorded in
+ * `CLAUDE.md`. ⚠️ **And the gain is measured at NOTHING, so these names stay here anyway**: freeing
+ * them moved the directed hop 150.63 → 150.94 ms and the undirected 362.43 → 364.78, arms alternated,
+ * at two output sizes. `sum` gained 4-5x because the far-driven template fold computes a far vertex's
+ * value ONCE and folds it in-degree times; `collect` must still append one element per ROW, so the
+ * order changes and the work does not. Keeping the force costs nothing and avoids a harness change.
+ *
+ * What keeps them here, now that the contract no longer does:
  *
  *   1. **the harness cannot tell the two kinds of list apart.** `canonValue` compares EVERY array
  *      positionally, so freeing an aggregate-built list needs it to distinguish that from a stored

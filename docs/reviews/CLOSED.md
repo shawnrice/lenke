@@ -121248,3 +121248,71 @@ walk" should start by instrumenting whether that walk is reached — one throw, 
 
 No engine change. Working tree byte-identical to `HEAD` for `hop-projection.ts`, verified with
 `diff` against `git show HEAD:` after each of the two ablations and the instrument.
+
+## Item 2404 — 🔑 **OWNER RULING: an aggregate-built LIST's element order is UNSPECIFIED. ⚠️ And the code does not change, because freeing it is measured at NOTHING — no gain directed OR undirected, arms alternated at two output sizes.** The contract moves, the implementation stays, and the harness needs no change at all
+
+> _"If we can get gains, then it doesn't matter the order they're in. It should be deterministic
+> enough, but if someone needs the order, then they can order by earlier in the walk."_
+
+Items 2400/2401 left `collect`/`collect_list` as the only two names in `ORDER_SENSITIVE_WALK`, and
+item 2402 corrected the REASON given for that (item 2401 had conflated a stored list property, whose
+order is genuinely its value, with an aggregate-built list, whose order is the walk's). This settles
+it, and the ruling's own condition — **"if we can get gains"** — is what decided the outcome.
+
+### THE CONTRACT: unspecified, recorded in `CLAUDE.md`
+
+`collect`/`collect_list` fold over the walk, so their element order IS the walk's, which item 2400
+made implementation-dependent. A consumer needing an order adds an explicit `ORDER BY` earlier in the
+query — the same answer SQL gives for `array_agg` without one.
+
+### ⚠️ AND THE GAIN IS ZERO, which is why no code moved
+
+```text
+    directed,   50,000 vertices / 250,000 edges, 10 reps, arms ALTERNATED, 3 pairs
+      freed    157.30  189.26  150.94      min 150.94
+      pinned   180.15  150.63  155.45      min 150.63      <- indistinguishable
+
+    undirected, same fixture, 2 pairs                       (the OTHER gate: `collect` refuses the
+      freed    368.60  364.78              min 364.78        undirected hop outright, falling to the
+      pinned   364.49  362.43              min 362.43        general path -- also worth nothing)
+
+    answers agree throughout: 249,996 directed / 499,996 undirected elements
+```
+
+⚠️ **The 200,000-vertex version of this measurement was unusable and saying so is the point**: the
+same arm read 781.28 and 1409.19 ms, a 1.8x spread, because a 1,000,000-element result makes the row
+GC-dominated. Shrinking the output to isolate the WALK is what made the comparison readable — the
+reverse of the usual "sweep the size" move, and the same lesson as item 1878's: price the question,
+not the biggest number available.
+
+### 🔑 THE MECHANISM, which is why this was never going to pay
+
+`sum`/`avg` gained 4-5x at item 2401 because the far-driven walk's TEMPLATE FOLD computes a far
+vertex's value ONCE and folds it in-degree times — it collapses N_rows evaluations into N_far.
+**`collect` cannot collapse anything**: it must append one element per ROW, so the walk order changes
+and the work does not. Freeing it moves the order and buys no arithmetic.
+
+That also retires the framing in which this was listed as a follow-up. It was never an
+order-contract problem; it is an output-size problem, and the output size is the answer.
+
+### WHAT THIS LEAVES, stated so it is not misread later
+
+- ✅ **The contract is relaxed** — `CLAUDE.md` now says an aggregate-built list's element order is
+  unspecified, which licenses a future reordering without re-litigating it.
+- ✅ **The names STAY in `ORDER_SENSITIVE_WALK`.** Keeping the force costs nothing measurable and
+  avoids a harness change; the comment there records the ruling AND the non-gain so the next reader
+  does not re-derive either.
+- ⚠️ **The tests that pin the order now pin IMPLEMENTATION, not a contract.** `collect keeps the scan
+  ORDER, which is the whole observable part of it` and the `collect` assertions in
+  `hop-order-sensitive-aggregates.test.ts` are still correct and still useful as change detectors —
+  but a future change is allowed to move them, which is exactly the distinction item 1968 got wrong
+  about ties. Noted in `CLAUDE.md` rather than left to inference.
+- 🔒 **The harness change is NOT needed and was not made.** `canonValue` compares every array
+  positionally and cannot distinguish an aggregate-built list from a stored list property; that is
+  the work a future reordering would have to do first, and nothing is owed until then.
+
+### GATES
+
+No engine change — `hop-projection.ts` is byte-identical to `HEAD` apart from the corrected comment,
+verified with `diff` against `git show HEAD:` after the revert. `bun run check` 0 (output kept);
+`bun run test -- --skip-nx-cache` 0 across 21 projects.

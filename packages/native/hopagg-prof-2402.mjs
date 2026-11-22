@@ -57,6 +57,18 @@ const QUERIES = {
    * that exists.
    */
   sumage: 'MATCH (a:Person)-[:KNOWS]->(b) RETURN sum(b.age) AS c',
+  /*
+   * Item 2404's arms. `collect`/`collect_list` were the two names left in `ORDER_SENSITIVE_WALK`
+   * after item 2401, so they are still forced start-driven and still refuse the undirected hop.
+   * The owner's ruling frees them, and these measure whether that buys anything before the
+   * contract moves: "if we can get gains, then it doesn't matter the order they're in".
+   *
+   * ⚠️ `size(collect(...))` rather than bare `collect(...)`: the bare form returns a 1,000,000
+   * element list and the probe would measure the ARRAY RETURN as much as the walk. `size()` keeps
+   * the aggregate on the same route while the result stays one number.
+   */
+  collectage: 'MATCH (a:Person)-[:KNOWS]->(b) RETURN size(collect(b.age)) AS c',
+  collectund: 'MATCH (a:Person)-[:KNOWS]-(b) RETURN size(collect(b.age)) AS c',
   maxage: 'MATCH (a:Person)-[:KNOWS]->(b) RETURN max(b.age) AS c',
 };
 const q = QUERIES[ARM];

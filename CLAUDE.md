@@ -411,6 +411,19 @@ comparison. When a test compares a float aggregate across engines, compare to th
 a real defect to still catch one: 1e-9 sits ~3 orders above reassociation noise and ~4 below a
 dropped row.
 
+**An aggregate-built LIST's element order is unspecified too (item 2404, owner ruling).** `collect`
+/`collect_list` fold over the walk, so their element order is the walk's — which the rule above makes
+implementation-dependent. A consumer who needs an order adds an explicit `ORDER BY` earlier in the
+query, exactly as with SQL's `array_agg`. ⚠️ This is a CONTRACT statement, not a description of the
+code: the engine still happens to emit walk order, because item 2404 measured freeing it as worth
+NOTHING (no gain directed or undirected, arms alternated at two output sizes) and so left the names in
+`ORDER_SENSITIVE_WALK`. Do not read the tests that pin that order as a contract — `collect keeps the
+scan ORDER` and friends now pin IMPLEMENTATION behaviour, and a future change may move them.
+
+⚠️ A list STORED as a property is a different object and its order IS its value: you write `[1,2,3]`
+and must read `[1,2,3]` back. `canonValue` compares every array positionally and cannot tell the two
+apart, which is the harness change a future `collect` reordering would need.
+
 **One guarantee that is NOT relaxed.** And within-engine determinism: the same
 query over the same graph answers the same way run to run, byte-identically at any thread
 count (`parallelism-stance`).
