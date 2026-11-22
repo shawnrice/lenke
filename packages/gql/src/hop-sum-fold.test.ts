@@ -163,3 +163,100 @@ describe('the hop sum fold (item 2159)', () => {
     });
   });
 });
+
+/*
+ * Item 2401 — THE FAR-DRIVEN WALK IS NOW PERMITTED FOR `sum`/`avg`, AND THESE ARE ITS TEETH.
+ *
+ * Item 2400 relaxed cross-engine identity to CONTENT rather than POSITION, and item 2401 ruled that
+ * float aggregates carry a PRECISION contract rather than a bit-identity one. So the header above is
+ * superseded on one point: the 3.6x IS available, and `sum`/`avg` left `ORDER_SENSITIVE_WALK`.
+ * Measured on the bench row: 280.2 -> 24.3 ms, 11.5x, with `max`/`sum`-over-a-scan flat.
+ *
+ * ⚠️ What that relaxes is a CORRECTNESS guard, and the differential fuzzer CANNOT see the bug it was
+ * guarding: `sum` is NOT idempotent, so a far vertex reachable by three edges must contribute its
+ * value THREE times, and a far-driven walk visits each far vertex ONCE. A route that drops the
+ * multiplicity is both fast and wrong. The fuzzer's fixture is three vertices carrying small
+ * INTEGERS with no fan-in, so it can neither reassociate (integer sums are exact in f64) nor
+ * under-count. Hence a closed-form fan-in test here, which is the only thing standing under the
+ * relaxation.
+ */
+describe('a far-driven hop sum keeps each edge’s contribution (item 2401)', () => {
+  const FANIN = 3;
+  const N = 40;
+
+  /** Every vertex points at `FANIN` DISTINCT targets, so every target has fan-in `FANIN`. */
+  const fanInGraph = (): Graph => {
+    const g = new Graph();
+
+    for (let i = 0; i < N; i += 1) {
+      g.addVertex({ id: `v${i}`, labels: ['P'], properties: { k: (i % 7) + 1 } });
+    }
+
+    let e = 0;
+
+    // Split on the REPEAT index, never `(i * c) % N`: that form is invariant under `i -> i + N`, so
+    // every one of a vertex's edges would land on the SAME target and the fan-in would be fake
+    // while every degree count still looked right (items 1516/1518).
+    for (let rep = 0; rep < FANIN; rep += 1) {
+      for (let i = 0; i < N; i += 1) {
+        g.addEdge({
+          id: `e${e}`,
+          from: g.getVertexById(`v${i}`)!,
+          to: g.getVertexById(`v${(i * 13 + rep * 17 + 1) % N}`)!,
+          labels: ['T'],
+          properties: { w: (e % 5) + 1 },
+        });
+        e += 1;
+      }
+    }
+
+    return g;
+  };
+
+  /** The closed form, computed from the generator rather than from the engine. */
+  const oracle = (): { sum: number; count: number } => {
+    let sum = 0;
+    let count = 0;
+
+    for (let rep = 0; rep < FANIN; rep += 1) {
+      for (let i = 0; i < N; i += 1) {
+        sum += (((i * 13 + rep * 17 + 1) % N) % 7) + 1;
+        count += 1;
+      }
+    }
+
+    return { sum, count };
+  };
+
+  const one = (g: Graph, q: string): unknown => Object.values(query(g, q)[0] ?? {})[0];
+
+  test('sum over a hop equals the closed form, not the per-far-vertex sum', () => {
+    const g = fanInGraph();
+    const { sum, count } = oracle();
+
+    expect(one(g, 'MATCH (a:P)-[:T]->(b) RETURN count(*) AS c')).toBe(count);
+    expect(one(g, 'MATCH (a:P)-[:T]->(b) RETURN sum(b.k) AS c')).toBe(sum);
+    expect(one(g, 'MATCH (a:P)-[:T]->(b) RETURN avg(b.k) AS c')).toBeCloseTo(sum / count, 9);
+  });
+
+  test('a SECOND accumulator agrees — collect still rides the start-driven walk', () => {
+    const g = fanInGraph();
+    const { sum, count } = oracle();
+    const list = one(g, 'MATCH (a:P)-[:T]->(b) RETURN collect(b.k) AS c') as number[];
+
+    // `collect` stayed in `ORDER_SENSITIVE_WALK` because its order IS its value, so this arm is
+    // reached by a DIFFERENT route than the fold above — which is what makes it an independent check
+    // rather than the same code asserted twice.
+    expect(list).toHaveLength(count);
+    expect(list.reduce((s, v) => s + v, 0)).toBe(sum);
+  });
+
+  test('the UNDIRECTED hop, which was refused outright before item 2401', () => {
+    const g = fanInGraph();
+    const { sum } = oracle();
+
+    // `orderSensitive && hopDir === 'both'` returned null, so this shape fell to the general path.
+    // Both directions now ride the rung, and an undirected hop sees every edge from BOTH ends.
+    expect(one(g, 'MATCH (a:P)-[:T]-(b) RETURN sum(b.k) AS c')).toBe(2 * sum);
+  });
+});

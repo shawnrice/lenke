@@ -17,6 +17,21 @@
 // names, and the undirected form is refused outright (two walks emit all out-rows then all
 // in-rows where the general path interleaves them).
 //
+// ⚠️⚠️ SUPERSEDED IN VERDICT BY ITEM 2401 — THE HAZARD BELOW IS STILL REAL, THE REFUSAL IS NOT.
+// Item 2400 relaxed cross-engine identity to CONTENT rather than POSITION (a walk's order is
+// implementation-dependent), and item 2401 ruled that FLOAT folds carry a PRECISION contract —
+// accurate to within n·eps·sum|x| — rather than a bit-identity one. So `sum`, `avg`, `stddev_pop`
+// and `stddev_samp` LEFT the forcing set (`ORDER_SENSITIVE_WALK` now holds only `collect` and
+// `collect_list`), ride the far-driven walk, and no longer refuse the undirected form. Measured:
+// 280.2 -> 24.3 ms on the bench row, 11.5x.
+//
+// Everything this file DEMONSTRATES stands — the nine-row reorder above is exactly why the two
+// engines' float folds now differ in the last ulp, and this fixture's deliberately non-integral
+// ages are what make that visible. What changed is only whether that difference is a BUG. The
+// float folds below are therefore compared to the precision contract; `collect`/`collect_list`
+// (whose order IS their value) and the exact aggregates stay compared BIT-FOR-BIT, and still
+// assert the start-driven walk and the undirected refusal.
+//
 // Every shape below is asked of BOTH engines, because the last ulp and the list order are exactly
 // what a byte-identity invariant is about. The fixture is built so a far-driven walk would reorder
 // it: crossed edges, and a far vertex with NO `age` so the null rule shows too.
@@ -70,16 +85,76 @@ lines.push(JSON.stringify({ type: 'edge', id: 'e8', labels: ['K'], from: 's1', t
 const NDJSON = lines.join('\n');
 const suite = nativeReady ? describe : describe.skip;
 
+/** A query carrying a FLOAT fold, whose value is a precision contract since item 2401. */
+const FLOAT_FOLD = /\b(?:sum|avg|stddev_pop|stddev_samp)\(/;
+
+/**
+ * Structural comparison where NUMBERS are compared to item 2401's precision contract and
+ * everything else — list order included — stays exact.
+ *
+ * The tolerance is RELATIVE with an absolute floor, because reassociation error scales with the
+ * magnitude of the addends. 1e-9 is ~3 orders of magnitude above the reassociation noise this
+ * fixture can produce and ~4 below the smallest real defect (a dropped row moves these sums by
+ * >= 1.7), so it separates the two cleanly rather than merely hiding the difference.
+ */
+const closeEnough = (a: unknown, b: unknown): boolean => {
+  if (typeof a === 'number' && typeof b === 'number') {
+    return Math.abs(a - b) <= 1e-9 * Math.max(1, Math.abs(a), Math.abs(b));
+  }
+
+  if (Array.isArray(a) && Array.isArray(b)) {
+    return a.length === b.length && a.every((v, i) => closeEnough(v, b[i]));
+  }
+
+  if (a !== null && b !== null && typeof a === 'object' && typeof b === 'object') {
+    const ka = Object.keys(a).sort();
+    const kb = Object.keys(b).sort();
+
+    return (
+      ka.length === kb.length &&
+      ka.every((k, i) => k === kb[i]) &&
+      ka.every((k) =>
+        closeEnough((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k]),
+      )
+    );
+  }
+
+  return JSON.stringify(a) === JSON.stringify(b);
+};
+
 suite('the order-sensitive hop aggregates ride the START-driven walk (item 551)', () => {
   const nativeGraph = graphFromNdjson(nativeBackend(), NDJSON);
   const tsGraph = tsDeserialize(NDJSON, 'ndjson', new Graph());
 
-  /** Compared as a SEQUENCE: the order is the thing under test. */
+  /**
+   * Compared as a SEQUENCE: the order is the thing under test. A FLOAT fold compares to item
+   * 2401's precision contract instead, since its walk order is no longer pinned.
+   */
   const agree = (q: string, want: unknown): void => {
-    expect(`${q} ${JSON.stringify(tsQuery(tsGraph, q))}`).toBe(
-      `${q} ${JSON.stringify(nativeGraph.query(q))}`,
-    );
-    expect(JSON.stringify(tsQuery(tsGraph, q))).toBe(JSON.stringify([{ m: want }]));
+    const ts = tsQuery(tsGraph, q);
+
+    if (FLOAT_FOLD.test(q)) {
+      expect(closeEnough(ts, nativeGraph.query(q))).toBe(true);
+      expect(closeEnough(ts, [{ m: want }])).toBe(true);
+
+      return;
+    }
+
+    expect(`${q} ${JSON.stringify(ts)}`).toBe(`${q} ${JSON.stringify(nativeGraph.query(q))}`);
+    expect(JSON.stringify(ts)).toBe(JSON.stringify([{ m: want }]));
+  };
+
+  /** Cross-engine only, for a loop over every aggregate name. */
+  const agreeAcrossEngines = (q: string): void => {
+    const ts = tsQuery(tsGraph, q);
+
+    if (FLOAT_FOLD.test(q)) {
+      expect(closeEnough(ts, nativeGraph.query(q))).toBe(true);
+
+      return;
+    }
+
+    expect(`${q} ${JSON.stringify(ts)}`).toBe(`${q} ${JSON.stringify(nativeGraph.query(q))}`);
   };
 
   const AGGS = [
@@ -107,9 +182,7 @@ suite('the order-sensitive hop aggregates ride the START-driven walk (item 551)'
     for (const f of AGGS) {
       const q = `MATCH (a:P)-[:K]->(b) RETURN ${f} AS m`;
 
-      expect(`${q} ${JSON.stringify(tsQuery(tsGraph, q))}`).toBe(
-        `${q} ${JSON.stringify(nativeGraph.query(q))}`,
-      );
+      agreeAcrossEngines(q);
     }
 
     agree('MATCH (a:P)-[:K]->(b) RETURN collect(b.age) AS m', [8.5, 3.4, 5.1, 6.8, 0, 0, 3.4, 1.7]);
@@ -126,9 +199,7 @@ suite('the order-sensitive hop aggregates ride the START-driven walk (item 551)'
     for (const f of [...AGGS, 'max(b.age)', 'count(*)']) {
       const q = `MATCH (a)-[:K]-(b) RETURN ${f} AS m`;
 
-      expect(`${q} ${JSON.stringify(tsQuery(tsGraph, q))}`).toBe(
-        `${q} ${JSON.stringify(nativeGraph.query(q))}`,
-      );
+      agreeAcrossEngines(q);
     }
 
     expect(tsQuery(tsGraph, 'MATCH (a)-[:K]-(b) RETURN count(*) AS m')).toEqual([{ m: 18 }]);
@@ -188,9 +259,16 @@ suite('the FILTERED walk is forced start-driven too (item 551)', () => {
   const tsGraph = tsDeserialize(WIDE_NDJSON, 'ndjson', new Graph());
 
   const agree = (q: string): void => {
-    expect(`${q} ${JSON.stringify(tsQuery(tsGraph, q))}`).toBe(
-      `${q} ${JSON.stringify(nativeGraph.query(q))}`,
-    );
+    const ts = tsQuery(tsGraph, q);
+
+    // A FLOAT fold is a precision contract since item 2401; everything else stays bit-exact.
+    if (FLOAT_FOLD.test(q)) {
+      expect(closeEnough(ts, nativeGraph.query(q))).toBe(true);
+
+      return;
+    }
+
+    expect(`${q} ${JSON.stringify(ts)}`).toBe(`${q} ${JSON.stringify(nativeGraph.query(q))}`);
   };
 
   test('an aggregate reading the START variable keeps start order', () => {
@@ -232,9 +310,16 @@ suite('the MULTI-aggregate hop rung takes them too (item 552)', () => {
   const tsGraph = tsDeserialize(NDJSON, 'ndjson', new Graph());
 
   const agree = (q: string): void => {
-    expect(`${q} ${JSON.stringify(tsQuery(tsGraph, q))}`).toBe(
-      `${q} ${JSON.stringify(nativeGraph.query(q))}`,
-    );
+    const ts = tsQuery(tsGraph, q);
+
+    // A FLOAT fold is a precision contract since item 2401; everything else stays bit-exact.
+    if (FLOAT_FOLD.test(q)) {
+      expect(closeEnough(ts, nativeGraph.query(q))).toBe(true);
+
+      return;
+    }
+
+    expect(`${q} ${JSON.stringify(ts)}`).toBe(`${q} ${JSON.stringify(nativeGraph.query(q))}`);
   };
 
   test('an order-sensitive item beside a foldable one', () => {

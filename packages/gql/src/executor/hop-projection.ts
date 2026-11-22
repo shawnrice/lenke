@@ -6348,6 +6348,12 @@ const SUM_FOLD: AggFold = {
   finish: (acc) => acc,
 };
 
+/**
+ * The hop rung's NON-FOLDABLE admissions: `foldFor` carries only `count`/`min`/`max`, so these six
+ * arrive with no fold and are admitted here instead (a `values` accumulator, or {@link SUM_FOLD}
+ * for `sum` since item 2159). This set is RECOGNITION, not a reordering verdict — removing a name
+ * from it does not relax a walk, it strips the aggregate's route entirely.
+ */
 const ORDER_SENSITIVE_AGGREGATES: ReadonlySet<string> = new Set([
   'sum',
   'avg',
@@ -6356,6 +6362,26 @@ const ORDER_SENSITIVE_AGGREGATES: ReadonlySet<string> = new Set([
   'stddev_pop',
   'stddev_samp',
 ]);
+
+/**
+ * The aggregates whose ORDER is actually observable, and so the only ones that still force the
+ * start-driven walk.
+ *
+ * ⚠️ ITEM 2401 SPLIT THIS OUT OF THE SET ABOVE, which conflated two questions. Item 2159 isolated
+ * the cost exactly — `max` takes the FAR-DRIVEN walk and `sum` was forced start-driven, measured by
+ * ablation at `sum(1)` 48.25 ms against `max(1)` 12.88 with no property read at all — and declined
+ * it because reassociating an f64 sum moves the last ulp and byte-identity with the Rust engine was
+ * a hard invariant. **Item 2400 relaxed that invariant to CONTENT rather than POSITION, and item
+ * 2401 ruled that float aggregates carry a PRECISION contract (accurate to within n·eps·sum|x|)
+ * rather than a bit-identity one.** So `sum`, `avg`, `stddev_pop` and `stddev_samp` are free to ride
+ * the far-driven walk.
+ *
+ * `collect`/`collect_list` STAY, and not by inertia: their order is their VALUE, and the
+ * conformance harness compares a list POSITIONALLY (`canonValue` leaves arrays in place — "a list
+ * property value is order-significant"). Freeing those needs its own decision about whether a list
+ * captured from an unordered walk has free order, plus a harness change. Not this item.
+ */
+const ORDER_SENSITIVE_WALK: ReadonlySet<string> = new Set(['collect', 'collect_list']);
 
 const hopPercentile = (
   ret: Clause,
@@ -6372,7 +6398,9 @@ const hopPercentile = (
   }
 
   if (ORDER_SENSITIVE_AGGREGATES.has(e.name)) {
-    return e.args.length === 1 ? { name: e.name, frac: 0, orderSensitive: true } : null;
+    return e.args.length === 1
+      ? { name: e.name, frac: 0, orderSensitive: ORDER_SENSITIVE_WALK.has(e.name) }
+      : null;
   }
 
   if (e.name !== 'percentile_cont' && e.name !== 'percentile_disc') {
@@ -6853,16 +6881,18 @@ const hopAccFor = (
   }
 
   const frac = percentileFraction(e);
-  const sensitive = ORDER_SENSITIVE_AGGREGATES.has(e.name);
+  // Admission and reordering are two questions: `ORDER_SENSITIVE_AGGREGATES` says this rung can
+  // take the aggregate at all, `ORDER_SENSITIVE_WALK` says its order is observable (item 2401).
+  const admitted = ORDER_SENSITIVE_AGGREGATES.has(e.name);
 
-  if (frac === null || !(sensitive ? e.args.length === 1 : PERCENTILES.has(e.name))) {
+  if (frac === null || !(admitted ? e.args.length === 1 : PERCENTILES.has(e.name))) {
     return null;
   }
 
   return {
     acc: { kind: 'values', out, col, name: e.name, frac },
     extremum: false,
-    orderSensitive: sensitive,
+    orderSensitive: ORDER_SENSITIVE_WALK.has(e.name),
   };
 };
 

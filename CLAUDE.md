@@ -400,9 +400,18 @@ most productive wrong-answer finder (the `hash_join` `u32::MAX` OPTIONAL sentine
 1148-1150, found only at 500000 seeds; the `ACYCLIC` zero-length path omission shipped at item
 2002 and caught at 2005). Relaxing order costs none of that coverage.
 
-**Two guarantees that are NOT relaxed.** Float values: `sum`/`avg` and the algorithms'
-accumulations are order-sensitive, so a value contract implies a summation order that does not
-depend on the walk — see the open ruling in item 2400. And within-engine determinism: the same
+**Float aggregates carry a PRECISION contract (item 2401), not a bit-identity one.** `sum`, `avg`,
+`stddev_pop` and `stddev_samp` are accurate to within `n·ε·Σ|xᵢ|` — ~15-16 significant digits for a
+well-conditioned sum — and are NOT bit-identical across engines, because a left fold over a different
+walk order re-associates and each partial sum rounds. ⚠️ Digits OF THE RESULT are explicitly not
+guaranteed under catastrophic cancellation, because no implementation can give that: use an exact
+type for money. `count` stays exact and `min`/`max` stay order-insensitive, so both keep bit-exact
+comparison. When a test compares a float aggregate across engines, compare to the contract (see
+`closeEnough` in `hop-order-sensitive-aggregates.test.ts`) — and keep the tolerance far enough below
+a real defect to still catch one: 1e-9 sits ~3 orders above reassociation noise and ~4 below a
+dropped row.
+
+**One guarantee that is NOT relaxed.** And within-engine determinism: the same
 query over the same graph answers the same way run to run, byte-identically at any thread
 count (`parallelism-stance`).
 

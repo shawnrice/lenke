@@ -447,6 +447,18 @@ describe('every fast-path detector fires for its own shape', () => {
       ['multiNodeAggregate'],
     ],
     ['hop aggregate', 'MATCH (a:L)-[:R]->(b:L) RETURN max(b.k) AS m', ['hopAggregate']],
+    /*
+     * ⚠️ `sum`, NOT just `max`, since item 2401. `sum` reaches this rung too, and before 2401 it
+     * reached it only on a FORCED start-driven walk (`ORDER_SENSITIVE_AGGREGATES` conflated "this
+     * rung admits the aggregate" with "its order is observable"). Splitting those let `sum` take the
+     * far-driven walk: 280.2 -> 24.3 ms on the bench row, 11.5x.
+     *
+     * This row asserts the rung FIRES for `sum`. It deliberately does not try to assert WHICH walk
+     * was chosen — that is internal to the rung, and the evidence for it is the 11.5x plus the
+     * closed-form fan-in oracles in `hop-sum-fold.test.ts`, which is where a dropped multiplicity
+     * would show up as a wrong answer.
+     */
+    ['hop aggregate, sum', 'MATCH (a:L)-[:R]->(b:L) RETURN sum(b.k) AS s', ['hopAggregate']],
     [
       'MULTI node aggregate (two items)',
       'MATCH (n:L) RETURN max(n.k) AS a, min(n.k) AS b',

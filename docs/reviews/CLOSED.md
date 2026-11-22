@@ -120788,10 +120788,10 @@ the lookup is 222 ns against a 6 ns node lookup, and essentially all of that rem
 
 ### THE CONTRACT, in the three parts it actually has
 
-| | status |
-| --- | --- |
-| **VALUES** — the same rows, the same numbers to the last bit, the same keys | ✅ CONTRACT, unchanged |
-| **the order a sort SPECIFIES** — `ORDER BY` / `order()` on its key, `DESC`, nulls, the total order for sort/min/max | ✅ CONTRACT, unchanged |
+|                                                                                                                                  | status                                      |
+| -------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
+| **VALUES** — the same rows, the same numbers to the last bit, the same keys                                                      | ✅ CONTRACT, unchanged                      |
+| **the order a sort SPECIFIES** — `ORDER BY` / `order()` on its key, `DESC`, nulls, the total order for sort/min/max              | ✅ CONTRACT, unchanged                      |
 | **the order a WALK produces** — adjacency enumeration, traversal/stream order, and therefore TIE order within an equal-key group | ❌ NOT a contract. Implementation-dependent |
 
 🔑 **The tie corollary is the load-bearing one and it follows by force, not by choice**: a stable sort
@@ -120903,3 +120903,149 @@ No engine change — policy, one fuzzer predicate, two probe banners, one CLAUDE
 suite 1350 + 13 + 725 pass / 0 fail. `bun run fuzz` 57 pass / 0 fail (the predicate only widens what
 is accepted, so a pass here is necessary and not sufficient — the levers it unblocks are what will
 exercise it). `cargo fmt` 0; `cargo clippy --all-targets -- -D warnings` 0; `bun run check` 0.
+
+## Item 2401 — ✅✅✅ **OWNER RULING + SHIPPED: float aggregates carry a PRECISION contract, not a bit-identity one — so `sum`/`avg` may ride the FAR-DRIVEN walk. 280.2 → 24.3 ms, 11.5x, and `ts/ffi` falls 35.28x → 2.86x. Controls flat, four independent oracles agree.** 🔑 And item 2159 had already isolated the mechanism exactly and declined it for the invariant item 2400 has now relaxed
+
+> _"What if we just guarantee only a certain amount of digits of precision? This is what other things
+> do, right?"_ — and it is: Postgres documents that float aggregates vary with execution order
+> (parallel aggregation changes `sum(float8)`), Spark's vary with partitioning, Neo4j's `sum()` over
+> floats is order-dependent. The standing advice everywhere is an exact type for money, not
+> bit-identical floats.
+
+### THE RULING
+
+**Float aggregates (`sum`, `avg`, `stddev_pop`, `stddev_samp`) are accurate to within `n·ε·Σ|xᵢ|`** —
+about 15-16 significant digits for a well-conditioned sum. Bit-identity across engines is NOT
+guaranteed for them. ⚠️ **And the exclusion is stated rather than implied: digits OF THE RESULT are not
+guaranteed under catastrophic cancellation, because no implementation can give that.** Exact
+aggregates (`count`) and order-insensitive ones (`min`/`max` under the total order) keep bit-exact
+comparison.
+
+The question behind it — _why would a sum change with order, isn't `1 + 2` the same as `2 + 1`?_ —
+has a precise answer, and the first half of it is yes:
+
+```text
+    commutativity HOLDS, exactly:   a+b == b+a over 200,000 random pairs -> True
+    ASSOCIATIVITY is what fails:    (0.1+0.2)+0.3 = 0.6000000000000001
+                                     0.1+(0.2+0.3) = 0.6
+```
+
+A `sum` is a left FOLD, so permuting the sequence changes which values are combined first, and each
+partial sum rounds. Over 5,000 plausible edge weights, two walk orders give `2473840.4329076167`
+against `2473840.432907614` — 1.1e-15 relative, the last bit or two. Under mixed magnitudes it stops
+being a curiosity: `[1e16, 1.0, -1e16]` folds to **0.0** or **1.0** depending on order.
+
+🔑 **Which is why the tolerance is scaled by `Σ|xᵢ|` and not by the result.** Verified numerically:
+observed reorder error sits 75-2600x INSIDE `n·ε·Σ|xᵢ|`, and that bound survives cancellation — it
+accepts the 0.0-vs-1.0 pair as reassociation while still catching a dropped `1e16` row at 1.5e15x the
+bound. A result-relative tolerance cannot do either. The bound's blind spot — a dropped row smaller
+than `n·ε·Σ|xᵢ|` — is exactly where the float sum is itself insensitive to the row, so no VALUE
+coverage is lost, and the row still shows in `count`, which stays exact.
+
+### ⚠️ ITEM 2159 ALREADY FOUND THIS AND DECLINED IT, which is what made the fix one line of concept
+
+Items 2157/2158 thought the 3.6x was row materialization, then the `values` array. Item 2159
+corrected both, shipped the streaming fold (1.09-1.15x) and **isolated the real term by ablation**:
+
+> `max` costs 14.5 ms on this shape where `sum` costs 93.5. **That gap is the WALK, not the
+> accumulation** … `sum(1)` 48.25 ms against `max(1)` 12.88 with no property read at all.
+
+It declined it because reassociation breaks byte-identity — true under the old invariant. So this item
+needed no new diagnosis, only the ruling. ⚠️ It also warned off the wrong fix, and I was heading for
+it: _"Adding `sum` to the shared `foldFor` would NOT have been safe — call sites there infer
+order-insensitivity from foldability."_
+
+### THE CHANGE: one set was doing two jobs
+
+`ORDER_SENSITIVE_AGGREGATES` conflated **"this rung admits the aggregate at all"** (recognition —
+`foldFor` carries only `count`/`min`/`max`, so these six are admitted here, and `sum` gets
+`SUM_FOLD` via `pct?.name === 'sum'`) with **"its order is observable"** (the reordering verdict,
+which forces `forceStartDriven` and refuses the undirected hop outright). Removing `sum` from it
+would have stripped the route, not freed it.
+
+Split into `ORDER_SENSITIVE_WALK = {collect, collect_list}`, used for the verdict at both sites plus
+both `orderSensitive && hopDir === 'both'` gates.
+
+⚠️ **`collect`/`collect_list` STAY, and not by inertia.** Their order IS their value, and
+`conformance-harness.ts`'s `canonValue` compares a list POSITIONALLY — _"a list property value is
+order-significant"_. Freeing them needs its own decision about whether a list captured from an
+unordered walk has free order, plus a harness change. Not this item.
+
+### MEASURED — `BENCH_ONLY`, one case per process
+
+```text
+    row                              ts BEFORE   ts AFTER   ratio      ffi (control)
+    query: sum over a hop               280.2       24.3    11.5x      7.9 -> 8.5
+    query: max over a hop [control]      83.9       82.0     1.02x     8.1 -> 8.0
+    query: sum over a scan [control]      3.1        3.2     0.97x     1.1 -> 1.1
+
+    ts/ffi on the sum row: 35.28x -> 2.86x
+```
+
+### CORRECTNESS: four oracles, because the relaxation removes a guard the fuzzer cannot replace
+
+`sum` is NOT idempotent — a far vertex reachable by three edges must contribute its value THREE times,
+and a far-driven walk visits each far vertex ONCE, so a route that drops the multiplicity is **both
+fast and wrong**. That is the shape of the number that prompted the check. On 4,000 vertices with
+deliberate fan-in 3 (split on the REPEAT index, never `(i·c) % N` — items 1516/1518):
+
+```text
+    sum(b.k) far side      585447   = hand closed form 585447      MATCH
+    count(*)                12000   = 12000                        MATCH
+    avg(b.k)             48.78725   = 48.78725                     MATCH
+    collect(b.k)        len 12000, JS sum 585447                   MATCH   <- a DIFFERENT accumulator
+    and TS == NATIVE on all seven queries, including the undirected form
+```
+
+⚠️⚠️ **AND THE DIFFERENTIAL FUZZER CANNOT GUARD THIS, which `chain-projection.ts` had already written
+down** — _"a wrong answer in the last ulp, invisible to every integer fixture."_ Its fixture is three
+vertices carrying small INTEGERS with no fan-in: integer sums are exact in f64, so it can neither
+reassociate nor under-count. **So no tolerance code was added to the harness** — it would be
+unexercisable there — and the standing guard is instead a closed-form fan-in test in
+`hop-sum-fold.test.ts` (three cases: the fold, the independent `collect` accumulator, and the
+undirected hop that was refused outright before this item), plus a `routes-fired.test.ts` row proving
+`hopAggregate` fires for `sum` so those tests are not vacuous.
+
+### 🎯 A NEW NOMINATION FALLS OUT, AND IT IS BACKWARDS
+
+**`max over a hop` is now 82.0 ms against `sum`'s 24.3 on the identical clause — 3.4x the cost of a
+STRICTLY HARDER aggregate.** `max` is idempotent, so it may dedup far vertices where `sum` must visit
+every edge; it should be the cheaper of the two and it is not. Item 2159 measured `max` at 14.5 ms on
+its own probe fixture, so the bench's 82.0 is fixture-specific and unexplained. Mechanism unknown, not
+yet profiled — this is a nomination, not a diagnosis.
+
+### ⚠️ AND THE FULL SUITE CAUGHT THE PREMISE CHANGE, which is what it is for
+
+`bun test packages/gql` was green (5421) while the cross-project run failed — THREE assertions in
+`packages/native/src/hop-order-sensitive-aggregates.test.ts`, item 551's own guard, whose fixture was
+built for exactly this (_"Non-integral ages, so a reordered `sum` shows in the last ulp rather than
+cancelling"_):
+
+```text
+    sum(b.age)   expected 28.9      got 28.899999999999995
+    sum(b.age)   expected 59.5      got 59.49999999999999
+    avg(b.age)   expected  3.5      got  3.4999999999999996
+```
+
+~1e-15 relative, cross-engine, textbook reassociation. 🔑 **That file needed more than a tolerance:
+two of its test names had become FALSE** — "ride the START-driven walk" and "the UNDIRECTED hop is
+refused". So its header now records the supersession precisely: everything it DEMONSTRATES stands (the
+nine-row reorder is _why_ the engines differ in the last ulp), and only the verdict changed. Float
+folds compare through `closeEnough` (relative 1e-9 with an absolute floor);
+`collect`/`collect_list` and the exact aggregates stay BIT-FOR-BIT and still assert both the
+start-driven walk and the undirected refusal. That is item 198's rule applied: relax the test a change
+breaks, do not refuse the change.
+
+⚠️ **AND MY FIRST TEETH CHECK WAS VACUOUS.** The mutant did not apply — the anchor's indentation was
+wrong — so the "11 pass / 20 pass" it returned was unmutated code, and I nearly recorded it as
+evidence. Re-applied correctly, scaling the fold by 1e-8 relative (three orders above this fixture's
+reassociation noise, four below a dropped row, which moves these sums by >= 1.7) fails **5 cross-engine
+assertions and 6 closed-form ones**. So the tolerance SEPARATES the two rather than swallowing real
+differences, which is the only thing that makes it legitimate.
+
+### GATES
+
+`bun run fmt` 0; `bun run check` 0; `bun test packages/gql` 5421 pass / 0 fail; the new
+`hop-sum-fold.test.ts` 20 pass; `routes-fired.test.ts` 87 pass; `bun run test -- --skip-nx-cache` and
+`bun run fuzz` green. The Rust engine is untouched by this item (its `ffi` column is the flat control
+above).
