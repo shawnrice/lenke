@@ -1588,25 +1588,45 @@ const CASES: Case[] = [
       (e, g) => void e.query(g, 'MATCH (a:Person) RETURN count(labels(a)) AS c'),
     ),
   },
+  /*
+   * ⚠️⚠️ **THESE FOUR ROWS QUERIED `b.k`, WHICH `graphDoc` DOES NOT HAVE (item 2402).** Its nodes
+   * carry ONLY `age` (see its builder above), so `sum(b.k)` answered **0** and `max(b.k)` answered
+   * **null** — verified directly on a graphDoc-shaped fixture. Every value was discarded by
+   * `nonNull`, so the rows measured the ABSENT-KEY path under names that read as the aggregate path,
+   * and three items priced work against them: item 2157's 3.6x nomination, item 2159's 1.09x ship,
+   * and item 2401's headline, which read 11.5x here against **4.0-4.9x** on a column that exists.
+   *
+   * 🔑 So the aggregate rows now use `age`, and the absent-key shape keeps a row OF ITS OWN rather
+   * than masquerading as the other. Both are real questions; only one was being asked.
+   */
   {
-    name: 'query: sum over a hop [item 2157]',
+    name: 'query: sum over a hop [2157, real column since 2402]',
+    ...onGraph(
+      () => graphDoc,
+      (e, g) => void e.query(g, 'MATCH (a:Person)-[:KNOWS]->(b) RETURN sum(b.age) AS c'),
+    ),
+  },
+  {
+    name: 'query: max over a hop [2157 control, real column since 2402]',
+    ...onGraph(
+      () => graphDoc,
+      (e, g) => void e.query(g, 'MATCH (a:Person)-[:KNOWS]->(b) RETURN max(b.age) AS c'),
+    ),
+  },
+  {
+    // The shape the four rows were accidentally measuring, kept deliberately: an aggregate whose
+    // column is absent on every element still walks every row to discover that.
+    name: 'query: sum over a hop, ABSENT key [item 2402]',
     ...onGraph(
       () => graphDoc,
       (e, g) => void e.query(g, 'MATCH (a:Person)-[:KNOWS]->(b) RETURN sum(b.k) AS c'),
     ),
   },
   {
-    name: 'query: max over a hop [2157 control]',
-    ...onGraph(
-      () => graphDoc,
-      (e, g) => void e.query(g, 'MATCH (a:Person)-[:KNOWS]->(b) RETURN max(b.k) AS c'),
-    ),
-  },
-  {
-    name: 'query: sum over a scan [item 2157]',
+    name: 'query: sum over a scan [2157, real column since 2402]',
     ...onGraph(
       () => nodesDoc,
-      (e, g) => void e.query(g, 'MATCH (a:Person) RETURN sum(a.k) AS c'),
+      (e, g) => void e.query(g, 'MATCH (a:Person) RETURN sum(a.age) AS c'),
     ),
   },
   /*

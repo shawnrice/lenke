@@ -6376,10 +6376,30 @@ const ORDER_SENSITIVE_AGGREGATES: ReadonlySet<string> = new Set([
  * rather than a bit-identity one.** So `sum`, `avg`, `stddev_pop` and `stddev_samp` are free to ride
  * the far-driven walk.
  *
- * `collect`/`collect_list` STAY, and not by inertia: their order is their VALUE, and the
- * conformance harness compares a list POSITIONALLY (`canonValue` leaves arrays in place — "a list
- * property value is order-significant"). Freeing those needs its own decision about whether a list
- * captured from an unordered walk has free order, plus a harness change. Not this item.
+ * `collect`/`collect_list` STAY, and the first version of this comment gave a BAD REASON for it:
+ * "their order is their VALUE", citing `canonValue`'s note that *"a list property value is
+ * order-significant"*. That note is about a list the USER STORED — you write `[1,2,3]` and must read
+ * `[1,2,3]` back, because you chose that order. A list an AGGREGATE builds from unordered rows is a
+ * different object: its order is the WALK's order, which item 2400 made implementation-dependent.
+ * Using the first to justify the second conflated them.
+ *
+ * ⚠️ So these two are order-dependent in exactly the SAME way `sum` is — the fold inherits the
+ * walk's order — and the difference is only that `collect` shows it as `[10,20,30]` vs `[30,20,10]`
+ * where `sum` shows it in the last ulp. By item 2400's rule their element order is free too.
+ *
+ * What actually keeps them here, pending an owner decision:
+ *
+ *   1. **the harness cannot tell the two kinds of list apart.** `canonValue` compares EVERY array
+ *      positionally, so freeing an aggregate-built list needs it to distinguish that from a stored
+ *      list property — otherwise relaxing one relaxes the other.
+ *   2. **the engine currently treats the order as deliberate and tests pin it** —
+ *      `values-aggregate-scan.test.ts`'s "collect keeps the scan ORDER, which is the whole
+ *      observable part of it". ⚠️ That pins WITHIN-engine behaviour against its own general-path
+ *      twin, not a cross-engine contract, so it is the same kind of pin item 1968 mistook for one.
+ *   3. **the user-facing cost differs in kind.** A precision contract absorbs `sum`'s variation
+ *      invisibly; nothing absorbs a reordered list. "Unspecified element order" is a bigger ask than
+ *      "15 significant digits", even though both follow from the same premise. (It is also what
+ *      Postgres's `array_agg` does without an explicit `ORDER BY` inside the aggregate.)
  */
 const ORDER_SENSITIVE_WALK: ReadonlySet<string> = new Set(['collect', 'collect_list']);
 

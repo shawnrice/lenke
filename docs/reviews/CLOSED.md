@@ -120904,7 +120904,7 @@ suite 1350 + 13 + 725 pass / 0 fail. `bun run fuzz` 57 pass / 0 fail (the predic
 is accepted, so a pass here is necessary and not sufficient — the levers it unblocks are what will
 exercise it). `cargo fmt` 0; `cargo clippy --all-targets -- -D warnings` 0; `bun run check` 0.
 
-## Item 2401 — ✅✅✅ **OWNER RULING + SHIPPED: float aggregates carry a PRECISION contract, not a bit-identity one — so `sum`/`avg` may ride the FAR-DRIVEN walk. 280.2 → 24.3 ms, 11.5x, and `ts/ffi` falls 35.28x → 2.86x. Controls flat, four independent oracles agree.** 🔑 And item 2159 had already isolated the mechanism exactly and declined it for the invariant item 2400 has now relaxed
+## Item 2401 — ✅✅✅ **OWNER RULING + SHIPPED: float aggregates carry a PRECISION contract, not a bit-identity one — so `sum`/`avg` may ride the FAR-DRIVEN walk.** ⚠️ **[THE HEADLINE BELOW IS INFLATED AND IS CORRECTED AT ITEM 2402: the bench row it quotes aggregates `b.k`, which `graphDoc` DOES NOT HAVE, so 11.5x is the ABSENT-KEY path. On a column that exists the win is 4.0-4.9x (328.30 → 67.18/80.90). The route change and the ruling stand; only the number was wrong. Item 2402 also corrects this entry's reason for keeping `collect`/`collect_list`.]** ~~280.2 → 24.3 ms, 11.5x~~, and `ts/ffi` falls 35.28x → 2.86x. Controls flat, four independent oracles agree.** 🔑 And item 2159 had already isolated the mechanism exactly and declined it for the invariant item 2400 has now relaxed
 
 > _"What if we just guarantee only a certain amount of digits of precision? This is what other things
 > do, right?"_ — and it is: Postgres documents that float aggregates vary with execution order
@@ -121049,3 +121049,125 @@ differences, which is the only thing that makes it legitimate.
 `hop-sum-fold.test.ts` 20 pass; `routes-fired.test.ts` 87 pass; `bun run test -- --skip-nx-cache` and
 `bun run fuzz` green. The Rust engine is untouched by this item (its `ffi` column is the flat control
 above).
+
+## Item 2402 — ✅ **THE ENDPOINT-EXTREMUM FOLD'S DEGREE GATE WAS STALE, NOT WRONG: `MIN_EDGES_PER_VERTEX` 2 → 6. 3.67x at degree 2, 1.89x at 3, 1.28x at 4, and 3.26x on the bench's own `max over a hop` row (97.8 → 30.0 ms), nothing lost at 6+.** ⚠️⚠️ **AND IT CORRECTS ITEM 2401's HEADLINE: the bench rows aggregated `b.k`, which `graphDoc` DOES NOT HAVE, so 11.5x was the ABSENT-KEY path — the real-column win is 4.0-4.9x**
+
+Item 2401 left `max over a hop` at 82.0 ms against `sum`'s 24.3 on the identical clause, with `max`
+the strictly EASIER aggregate (idempotent, so it may dedup far vertices where `sum` must visit every
+edge). That is backwards, so it was filed as a nomination. It resolved into two findings.
+
+### ⚠️ TWO HYPOTHESES REFUTED FIRST, which is why the third came from a profile
+
+```text
+    "max takes the slower dedup walk"   for a DIRECTED hop `idempotent` only sets `noSelfLoops`;
+                                        both call the same `detectHopProjection(..., forceStartDriven)`,
+                                        and a route probe says both compile to `hopAggregate`.
+    "`extremumFold`'s `compareValues`"  ablated to a bare numeric compare: 82.0 -> 82.7. Nothing.
+```
+
+The windowed profile (`hopagg-prof-2402.mjs`, `node:inspector` started AFTER the fixture build) then
+named it in one line — a frame heavy in `max` and ABSENT from both comparison arms:
+
+```text
+    ARM=max    67.76%  hasAnyOfTypes        78.26 ms/rep
+               19.46%  (anonymous)
+    ARM=sum    43.58%  (garbage collector)  40.95 ms/rep   <- no hasAnyOfTypes at all
+    ARM=proj   44.34%  (anonymous)          35.80 ms/rep   <- no hasAnyOfTypes at all
+```
+
+`hasAnyOfTypes` is `hop-endpoint-extremum.ts`'s reachability test: per CANDIDATE VERTEX, one
+string-keyed `Map.get(x.id)` into a 200,000-entry index plus a nested `byType.get(t)`. The rung is
+O(V) where the row walk is O(E) — sound in principle, and its gate admits it above average degree 2.
+
+### 🔑 THE GATE WAS MEASURED HONESTLY AND WENT STALE UNDERNEATH ITSELF
+
+Item 1345 set `MIN_EDGES_PER_VERTEX = 2` from a measured table. Its FOLD column still reproduces
+(86.9-89.3 then, 81-88 now — it is O(candidate endpoints) and reads no edge). Its WALK column has
+roughly HALVED, because items 2297/2298 shipped 24-27x on far-driven hop walks and item 2401 freed the
+folds. So the comparand improved and the crossover moved:
+
+```text
+    degree    fold     walk    verdict           item 1345's walk
+         2   78.03    21.24    fold 3.67x WORSE        88.66
+         3   90.52    47.88    fold 1.89x WORSE       104.61
+         4   85.29    66.84    fold 1.28x WORSE       117.64
+         5   83.76    84.45    tie, 1.008x            150.14
+         6   83.34   106.50    fold wins 1.28x
+         8   83.18   132.13    fold wins 1.59x
+```
+
+**Set to 6, not 5, and that is a deliberate departure from item 1345's own rule** ("admitting AT the
+tie row costs nothing either way"). Degree 5 is a tie on this probe — and on the bench's `graphDoc`,
+which IS degree 5, the fold reads **97.8 ms against the walk's 30.0, a 3.26x LOSS**. A tie on one
+fixture and a 3.26x loss on another is not a tie, so degree 5 goes to the walk. Verified unchanged at
+6 and 8 (min 81.40 / 87.37 over three rounds) and at degree 1 (the gate still declines; item 1345's
+own bench row reads 18.6).
+
+⚠️ **THE RESIDUAL IS THAT DEGREE IS THE WRONG VARIABLE.** The fold's cost is per candidate vertex and
+flat in BOTH degree and width (81-88 ms across degrees 2-16 at one property and at four); the walk's
+is per edge and scales with both. So the crossover is a function of two costs and this gate reads only
+the degree term — measured at ~5 on this probe at either width, and well above 5 on `graphDoc`. **6 is
+the value that loses nothing on every fixture measured, not a derived optimum**, and a width- or
+cost-aware gate is OPEN. That is item 1345's own "the gate is a PROXY and errs BOTH ways", now with a
+second instance.
+
+### ⚠️⚠️ AND THE SECOND FINDING CORRECTS ITEM 2401, ONE ITEM AFTER I WROTE IT
+
+`graphDoc`'s nodes carry ONLY `age`. The bench's four aggregate rows queried **`b.k`**, which it does
+not have — verified directly on a graphDoc-shaped fixture:
+
+```text
+    sum(b.k)   -> 0        max(b.k)   -> null
+    sum(b.age) -> 441500   max(b.age) -> 89
+```
+
+So every value was discarded by `nonNull` and those rows measured the **absent-key path** under names
+that read as the aggregate path. Three items priced work against them: item 2157's 3.6x nomination,
+item 2159's 1.09x ship, and **item 2401's headline, which read 11.5x there against 4.0-4.9x on a
+column that exists**:
+
+```text
+    sum(b.age)  PRE-2401 328.30 ms  ->  POST 67.18   4.89x
+    sum(b.k)    PRE-2401 324.99     ->  POST 80.90   4.02x    (a fixture where `k` DOES exist)
+```
+
+🔑 Item 2401's change is unaffected — the route it freed is real and so is the 4-5x. Only the number
+in its heading was inflated, by a column that is not there. **Item 2401's heading is corrected in this
+commit.** The rows now use `age`, and the absent-key shape keeps a row OF ITS OWN rather than
+masquerading as the other; both are real questions, only one was being asked.
+
+⚠️ A new ratio falls out of the corrected rows and is NOT yet diagnosed: `max over a hop` on a real
+column reads **ts 97.8 against ffi 2.4 (40.39x)** before this item's gate change and 30.0 against 3.1
+after. Open.
+
+### `collect`/`collect_list` — A BAD REASON CORRECTED
+
+Item 2401's comment kept them in the forcing set because "their order is their VALUE", citing
+`canonValue`'s _"a list property value is order-significant"_. ⚠️ **That conflated two objects**: a
+list the USER STORED (order chosen by them, genuinely part of the value) with a list an AGGREGATE
+built from unordered rows (order inherited from the walk, which item 2400 freed). They are
+order-dependent in exactly the same way `sum` is; `collect` merely shows it as `[10,20,30]` vs
+`[30,20,10]` instead of in the last ulp.
+
+They STAY, pending an owner decision, for three honest reasons instead: `canonValue` compares EVERY
+array positionally and cannot distinguish the two kinds of list; the existing pin
+(`values-aggregate-scan.test.ts`'s "collect keeps the scan ORDER") is WITHIN-engine against its own
+general-path twin rather than a cross-engine contract, which is the kind of pin item 1968 mistook for
+one; and the user-facing cost differs in kind, since a precision contract absorbs `sum`'s variation
+invisibly while nothing absorbs a reordered list.
+
+### ⚠️ A GATE READING I COULD NOT DIAGNOSE, AND WHY
+
+`bun run check` returned 1 inside two background jobs while passing stage-by-stage standalone. The
+cause was mundane — a throwaway `answers-2402.mjs` left in `packages/native`, failing
+`padding-lines`. 🔑 **It took three attempts to find because I had run every one of those gates as
+`>/dev/null 2>&1`.** A gate whose output is discarded reports a number with no evidence attached, and
+that is most of the cost of this diagnosis. Also removed: a route probe left behind containing a
+vacuous `expect(true).toBe(true)`.
+
+### GATES
+
+`bun run typecheck` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0 (output KEPT);
+`bun run test -- --skip-nx-cache` 0 across 21 projects; `bun run fuzz` 57 pass / 0 fail;
+`endpoint-fold-threshold.test.ts` + `endpoint-fold-degree-gate.test.ts` 16 pass — **6 of their
+assertions fired when the constant moved**, which is the teeth item 1345 built them for.

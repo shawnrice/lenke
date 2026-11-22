@@ -22,24 +22,33 @@ describe('endpointFoldBeatsRowWalk — the gate arithmetic', () => {
     expect(endpointFoldBeatsRowWalk(200_000, 200_000)).toBe(false);
   });
 
-  test('admits at degree 3 and above, every degree the fold was measured to WIN', () => {
-    expect(endpointFoldBeatsRowWalk(600_000, 200_000)).toBe(true);
-    expect(endpointFoldBeatsRowWalk(800_000, 200_000)).toBe(true);
-    expect(endpointFoldBeatsRowWalk(1_000_000, 200_000)).toBe(true);
+  test('admits at degree 6 and above, every degree the fold is still measured to WIN (item 2402)', () => {
+    // ⚠️ WAS "degree 3 and above". Item 2402 re-measured the crossover at FIVE: the fold is flat in
+    // degree while the walk scales, and the walk has roughly halved since item 1345 set this gate
+    // (items 2297/2298, 2401), so degrees 2-4 moved from the fold to the walk — 3.67x, 1.89x, 1.38x.
+    expect(endpointFoldBeatsRowWalk(1_200_000, 200_000)).toBe(true);
+    expect(endpointFoldBeatsRowWalk(1_600_000, 200_000)).toBe(true);
+    // The degrees that now DECLINE, pinned so a revert has to argue with the measurement. Degree 5
+    // is here because `graphDoc` — the bench's own fixture, at exactly degree 5 — reads the fold at
+    // 97.8 ms against the walk's 30.0.
+    expect(endpointFoldBeatsRowWalk(400_000, 200_000)).toBe(false);
+    expect(endpointFoldBeatsRowWalk(600_000, 200_000)).toBe(false);
+    expect(endpointFoldBeatsRowWalk(800_000, 200_000)).toBe(false);
+    expect(endpointFoldBeatsRowWalk(1_000_000, 200_000)).toBe(false);
   });
 
   // The threshold pinned at N and N-1. A gate whose boundary is not pinned is a gate whose
   // constant can drift by one and still pass every test around it.
-  test('the boundary is exactly 2 edges per vertex, pinned from both sides', () => {
-    expect(endpointFoldBeatsRowWalk(400_000, 200_000)).toBe(true);
-    expect(endpointFoldBeatsRowWalk(399_999, 200_000)).toBe(false);
+  test('the boundary is exactly 6 edges per vertex, pinned from both sides (item 2402)', () => {
+    expect(endpointFoldBeatsRowWalk(1_200_000, 200_000)).toBe(true);
+    expect(endpointFoldBeatsRowWalk(1_199_999, 200_000)).toBe(false);
   });
 
   test('a 2x change in SCALE does not move the decision — only the RATIO does', () => {
-    expect(endpointFoldBeatsRowWalk(40, 20)).toBe(true);
-    expect(endpointFoldBeatsRowWalk(39, 20)).toBe(false);
-    expect(endpointFoldBeatsRowWalk(4_000_000, 2_000_000)).toBe(true);
-    expect(endpointFoldBeatsRowWalk(3_999_999, 2_000_000)).toBe(false);
+    expect(endpointFoldBeatsRowWalk(120, 20)).toBe(true);
+    expect(endpointFoldBeatsRowWalk(119, 20)).toBe(false);
+    expect(endpointFoldBeatsRowWalk(12_000_000, 2_000_000)).toBe(true);
+    expect(endpointFoldBeatsRowWalk(11_999_999, 2_000_000)).toBe(false);
   });
 
   test('an empty graph admits rather than dividing by zero', () => {
@@ -123,8 +132,10 @@ describe('the route flip does not change the answer', () => {
     expect(endpointFoldBeatsRowWalk(graph.edgeCount, graph.vertexCount)).toBe(false);
     expect(query(graph, 'MATCH (a:P)-[:T]->(x) RETURN max(x.n) AS hi', {})[0].hi).toBe(49);
 
-    // Cross the threshold. Same query, other route, same answer.
-    for (let k = 0; k < 60; k++) {
+    // Cross the threshold. Same query, other route, same answer. ⚠️ 270 edges, not 60: item 2402
+    // moved the boundary from 2 edges per vertex to 6, so 110 edges over 50 vertices (degree 2.2)
+    // no longer crosses it. 320 over 50 is degree 6.4.
+    for (let k = 0; k < 270; k++) {
       graph.addEdge({ id: `b${k}`, from: vs[k % 50], to: vs[(k * 3) % 50], labels: ['T'] });
     }
 

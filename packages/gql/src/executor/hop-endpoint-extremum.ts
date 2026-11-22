@@ -50,7 +50,7 @@ type RowsFn = (graph: Graph, params: Params) => Row[] | null;
  * Admitting AT two is deliberate: that row is a tie, so the boundary costs nothing either way, and
  * putting it here keeps every measured WIN (degree 3 and up) on the fold.
  */
-const MIN_EDGES_PER_VERTEX = 2;
+const MIN_EDGES_PER_VERTEX = 6;
 
 /**
  * Does the per-endpoint fold beat the per-row walk on a graph of this shape?
