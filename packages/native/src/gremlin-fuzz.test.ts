@@ -267,7 +267,13 @@ const preds = [eq, gt, gte, lt, lte];
 // engine walks its own). `both('CREATED').values('name').groupCount()` returned
 // the same three counts from each engine keyed in different FIRST-SEEN order —
 // a false divergence, and one that needs no second type name to appear.
-const MULTI_TYPE_STEP = /\b(?:out|in|both)E?\('[^']*'(?:,\s*'[^']*')+\)|\bbothE?\(/;
+// ITEM 2400 WIDENED THIS TO ANY ADJACENCY STEP. The cases above are why MULTI-TYPE and
+// `both`/`bothE` were unspecified even while a SINGLE-type step was still contracted; that
+// reasoning is now just the narrower case of the policy, since a walk's order is
+// implementation-dependent whatever arity the step has. The old multi-type-only pattern was
+// `/\b(?:out|in|both)E?\('[^']*'(?:,\s*'[^']*')+\)|\bbothE?\(/` and is kept here as a
+// comment rather than as dead code.
+const ADJACENCY_STEP = /\b(?:out|in|both)E?\(/;
 
 // coalesce/choose/optional RECONVERGE their arms per-element in TinkerPop and pure-TS (each
 // source element's result is contiguous, in input order — a consequence of traverser-at-a-time
@@ -966,7 +972,18 @@ suite('differential fuzz: gremlin (TS engine vs Rust ENGINE)', () => {
       // engines' "order is unspecified" rule — like SQL without ORDER BY). What
       // IS the contract is WHICH elements come back and HOW MANY, so compare
       // those shapes as a multiset. A duplicated multi-type edge still shows up.
-      const multiType = MULTI_TYPE_STEP.test(text);
+      // Walk order is IMPLEMENTATION-DEPENDENT (policy, item 2400): cross-engine positional
+      // matching was scaffolding for the Rust rewrite and is no longer a contract, so ANY
+      // adjacency step leaves the result order unspecified -- not only a multi-type one. What
+      // stays contractual is WHICH elements come back and HOW MANY (compared as a multiset
+      // below), the VALUES, and the order a top-level `order()` actually specifies.
+      //
+      // The engines still AGREE on walk order today -- nothing has been reordered yet -- so a
+      // POSITIONAL divergence appearing here before a deliberate reorder ships is still worth
+      // investigating rather than shrugging at. And once a reorder does ship, a TIE under a
+      // top-level `order()` becomes the next false flag: the GQL differential fuzzer's fix is to
+      // append a distinct final sort key so the order is total, and the same trick applies here.
+      const multiType = ADJACENCY_STEP.test(text);
       // Either an unspecified adjacency order (multi-type) OR a per-element reconverging
       // branch (coalesce/choose/optional) leaves the result order unspecified.
       const orderUnspecified = multiType || RECONVERGING_BRANCH.test(text);

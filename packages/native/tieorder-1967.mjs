@@ -1,3 +1,18 @@
+// RETIRED AS A CONTRACT (item 2400, 2026-11-22) -- KEPT AS AN INSTRUMENT.
+//
+// This probe's finding is still TRUE: native's tie order under `ORDER BY` follows the
+// START-DRIVEN arrival order, and a far-driven walk would differ. What changed is that this is no
+// longer a cross-engine CONTRACT. Walk order is implementation-dependent (item 2400), and a tie
+// under a sort is resolved by walk arrival order, so an equal-key group is a MULTISET -- which is
+// what the GQL differential fuzzer already assumed, its own words being that comparing a tie
+// "would report the engines' free choice as a bug".
+//
+// So this probe must NOT be read as a refusal any more. The far-driven deferred-hop fold it
+// blocked (item 1966's 198 ns/row, 67% of that shape) is UNBLOCKED. Keep the probe: it still
+// answers "which order does this engine actually produce", which is worth knowing when a
+// reordering change needs explaining -- and its printed `DIFFER? true` vacuity guard is the
+// reusable part.
+//
 // Item 1967 — IS `deferredHopOrder`'s `startDriven: true` LOAD-BEARING FOR TIE ORDER?
 //
 // Item 1966 priced the deferred hop arm's sort-key evaluation at 67% of the shape and found the

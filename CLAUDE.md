@@ -386,8 +386,27 @@ Three rules when you add or change a rewrite, all learned the hard way:
   `count(*)`, and a planner rewrite that permutes which slot holds which node is
   invisible to both. Correctness lives in the unit tests and this fuzzer.
 
-Byte-identity between the TS and Rust engines is a hard invariant. Any change to
-storage, ordering or codecs needs the fuzzers, not just the unit tests. Run them
+**Cross-engine identity is about CONTENT, not POSITION (decided 2026-11-22).** The TS and
+Rust engines must agree on VALUES — the same rows, the same numbers to the last bit, the same
+keys — and on the order an `ORDER BY` / `order()` actually specifies. They need NOT agree on
+the order a WALK produces: how a traversal visits elements is implementation-dependent. So an
+unordered result is a MULTISET, and so is each equal-key group under a sort — a stable sort
+shows walk order through a tie, and the tie is exactly the part no longer contracted.
+
+Cross-engine POSITIONAL matching was scaffolding for the Rust rewrite and that job is done;
+28 items in `CLOSED.md` name it as the blocker for a lever, and several carry measured prizes.
+What the fuzzers are still for is VALUES, and that is not a small thing — they are this repo's
+most productive wrong-answer finder (the `hash_join` `u32::MAX` OPTIONAL sentinel, items
+1148-1150, found only at 500000 seeds; the `ACYCLIC` zero-length path omission shipped at item
+2002 and caught at 2005). Relaxing order costs none of that coverage.
+
+**Two guarantees that are NOT relaxed.** Float values: `sum`/`avg` and the algorithms'
+accumulations are order-sensitive, so a value contract implies a summation order that does not
+depend on the walk — see the open ruling in item 2400. And within-engine determinism: the same
+query over the same graph answers the same way run to run, byte-identically at any thread
+count (`parallelism-stance`).
+
+Any change to storage, values or codecs needs the fuzzers, not just the unit tests. Run them
 through the unified runner (`packages/native/fuzz.ts`), which rebuilds exactly the
 artifacts the selected fuzzers need before running — so you cannot fuzz a stale
 build:

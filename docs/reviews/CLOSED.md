@@ -120778,3 +120778,128 @@ fuzz` 57 pass / 0 fail.
 Item 2398's lever 2 — O(1) edge liveness via a tombstone, which is what would actually remove the
 O(out-degree) term — is still OPEN and still unbuilt. This item does not touch it: at out-degree 1024
 the lookup is 222 ns against a 6 ns node lookup, and essentially all of that remainder is the scan.
+
+## Item 2400 — 🔑🔑 **POLICY, OWNER DECISION (2026-11-22): CROSS-ENGINE IDENTITY IS ABOUT CONTENT, NOT POSITION. A WALK's order is implementation-dependent and no longer has to match between TS and Rust; `ORDER BY` / `order()` must still match; VALUES must still match.** 28 items named the old reading as the blocker for a lever, several with measured prizes — and the GQL differential fuzzer already assumed the new reading in its own comments
+
+> _"the way that we do a walk is implementation dependent and not guaranteed to match. However,
+> order by (built in sorting) should still match. We want values to match."_
+>
+> _"The cross engine matching was helpful to scaffold the rust rewrite, but we have moved past it."_
+
+### THE CONTRACT, in the three parts it actually has
+
+| | status |
+| --- | --- |
+| **VALUES** — the same rows, the same numbers to the last bit, the same keys | ✅ CONTRACT, unchanged |
+| **the order a sort SPECIFIES** — `ORDER BY` / `order()` on its key, `DESC`, nulls, the total order for sort/min/max | ✅ CONTRACT, unchanged |
+| **the order a WALK produces** — adjacency enumeration, traversal/stream order, and therefore TIE order within an equal-key group | ❌ NOT a contract. Implementation-dependent |
+
+🔑 **The tie corollary is the load-bearing one and it follows by force, not by choice**: a stable sort
+resolves ties in walk arrival order, so "walk order is implementation-dependent" and "tie order
+matches" cannot both hold. An equal-key group is a MULTISET. ⚠️ Anyone re-reading item 1968 must read
+it with this: its measurement is still correct, its REFUSAL is void.
+
+### ⚠️ THE HARNESS ALREADY SAID SO, which is the strongest evidence the old reading was over-strict
+
+`differential-fuzz.test.ts`, unchanged by this item:
+
+```text
+    line   16   // ORDER BY queries always carry `n.n` as a final sort key: row order is otherwise
+    line   17   // unspecified ... and a tie would make the comparison flag a non-bug.
+    line 2177   // compare sequences where the order is total — and only there, because a TIE leaves
+    line 2178   // the sequence unspecified and comparing it would report the engines' free choice
+    line 2179   // as a bug.
+```
+
+So the GQL side has been operating under this policy all along. **Item 1968 applied a stricter rule
+BY HAND than the harness it ran under enforced** — it went from item 605's "tie order is OBSERVABLE
+between the engines" to "tie order is a contract", and refused item 1966's ablation-measured 67% term
+(198 ns/row) on that step. Observable is not contractual; that is the whole of the correction.
+
+### WHAT THIS UNBLOCKS, with the numbers already on the record
+
+```text
+    1966-1968   the far-driven deferred-hop fold          67% of the shape, 198 ns/row
+    1955        the edge-predicate family's walk drive    2.28x beyond a start-driven ceiling
+    1986/1987   `V().out('E').cyclicPath()` edge-set arm  4.6x beyond the shipped route
+    670/671     `swap_remove` on adjacency removal        O(1) delete vs today's order-preserving
+                                                          O(D) memmove — 28.74 us to delete one
+                                                          leaf of a 50,000-degree hub
+    2398        O(1) edge liveness                        falls out of the above: `edge_is_live`
+                                                          scans out-adjacency, 81 -> 726 ns from
+                                                          out-degree 1 to 4096
+```
+
+28 items name order or byte-identity as their stated blocker (tight match on a refusal naming the
+constraint; a loose match reports 385 and is not a real count). The five above are the ones carrying
+measured prizes; the rest need re-reading one at a time, which is the follow-up work, not this item.
+
+### ⚠️ TWO GUARANTEES DELIBERATELY **NOT** RELAXED, and why each still earns its cost
+
+**1. Cross-engine VALUE identity is what the fuzzers are FOR, and that is not a small thing.** Every
+wrong answer this corpus has caught was a content catch, not an order catch: the `hash_join`
+`u32::MAX` OPTIONAL sentinel inventing rows (items 1148-1150, found only at `LENKE_OPT_FUZZ_SEEDS=500000`),
+the `ACYCLIC … {0,k}` zero-length path omission shipped at item 2002 and caught at 2005, and item
+2393's own sentinel panic caught at DEFAULT seeds. Relaxing order costs none of that coverage, and
+that is precisely why relaxing order is the cheap half of this decision.
+
+**2. Within-engine determinism.** The same query over the same graph answers the same way run to run,
+byte-identically at any thread count (`parallelism-stance`). A user feels that directly; cross-engine
+agreement they never see.
+
+### 🔑 THE ONE PLACE THE TWO SURVIVING RULES COLLIDE — OPEN, needs a ruling
+
+"Walk order is free" and "values must match" are consistent everywhere except **order-sensitive float
+folds**. `sum`/`avg` reassociate: fold the same multiset in a different order and the last bits move.
+So a walk-order change silently becomes a VALUE change for exactly those aggregates — which is what
+items 1880, 2056 and 2199 were refusing when they called `sum` "a byte-identity decision".
+
+Unaffected: `count` (exact), `min`/`max` (order-insensitive under the total order), `DISTINCT`
+(set-based), and — measured at item 2396 — Brandes' `delta` accumulation, where each predecessor
+entry updates a DIFFERENT accumulator, so a reversal is bit-identical.
+
+Three ways out, not yet priced against each other:
+
+```text
+    a canonical fold order   sum/avg fold in a fixed order (e.g. ascending element id) regardless
+                             of walk, so the value is walk-independent. Costs a sort or an ordered
+                             pass per aggregate -- unmeasured.
+    exempt float folds       accept last-bit differences across engines for sum/avg only. Cheapest,
+                             and it weakens "values must match" exactly where a user would notice.
+    pin the walk narrowly    keep walk order fixed ONLY for queries carrying such an aggregate.
+                             Keeps both rules whole; re-blocks the optimizer on those shapes, which
+                             is where item 1880's refusal came from in the first place.
+```
+
+🔑 There is a precedent for the first: parallel betweenness is already byte-identical at any thread
+count, which means its cross-thread reduction order is ALREADY fixed rather than left to scheduling.
+Extending that technique from thread-independence to walk-independence is the consistent move, and it
+is the one to measure first.
+
+### WHAT CHANGED IN THE TREE
+
+- `CLAUDE.md` — the "byte-identity is a hard invariant" paragraph now states content-not-position,
+  names the two unrelaxed guarantees, and points here for the float-fold ruling.
+- `gremlin-fuzz.test.ts` — `ADJACENCY_STEP` replaces `MULTI_TYPE_STEP` in the `unordered` predicate, so
+  a SINGLE-type `out('E')` is compared as a multiset instead of positionally. ⚠️ Its comment records
+  that the engines still AGREE on walk order today, so a positional divergence appearing BEFORE a
+  deliberate reorder ships is still worth investigating; and that a tie under a top-level `order()` is
+  the next false flag, whose fix is the GQL fuzzer's append-a-total-sort-key trick.
+- `tiewalk-1968.mjs`, `tieorder-1967.mjs` — banner: **RETIRED AS A CONTRACT, KEPT AS AN INSTRUMENT.**
+  Their findings stay true and their refusals are void. Left in place because "which order does this
+  engine actually produce" is worth knowing when a reordering change needs explaining, and the printed
+  `DIFFER? true` vacuity guard is reusable.
+
+⚠️ **Existing order-pinning TESTS are deliberately not swept.** An over-specified assertion that
+currently passes is not a bug; it becomes a question only when a change breaks it, and then the test
+is relaxed rather than the change refused. Sweeping ~hundreds of them pre-emptively would be a large
+mechanical diff with no measurement behind it. Item 198's guidance still applies when one does come
+up: relax the value comparison to a multiset AND add an in-order assertion for the sorted spelling, so
+order stays tested where it IS specified.
+
+### GATES
+
+No engine change — policy, one fuzzer predicate, two probe banners, one CLAUDE.md paragraph. Engine
+suite 1350 + 13 + 725 pass / 0 fail. `bun run fuzz` 57 pass / 0 fail (the predicate only widens what
+is accepted, so a pass here is necessary and not sufficient — the levers it unblocks are what will
+exercise it). `cargo fmt` 0; `cargo clippy --all-targets -- -D warnings` 0; `bun run check` 0.
