@@ -121303,7 +121303,7 @@ order-contract problem; it is an output-size problem, and the output size is the
   avoids a harness change; the comment there records the ruling AND the non-gain so the next reader
   does not re-derive either.
 - ⚠️ **The tests that pin the order now pin IMPLEMENTATION, not a contract.** `collect keeps the scan
-  ORDER, which is the whole observable part of it` and the `collect` assertions in
+ORDER, which is the whole observable part of it` and the `collect` assertions in
   `hop-order-sensitive-aggregates.test.ts` are still correct and still useful as change detectors —
   but a future change is allowed to move them, which is exactly the distinction item 1968 got wrong
   about ties. Noted in `CLAUDE.md` rather than left to inference.
