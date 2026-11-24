@@ -28,6 +28,7 @@ import type {
 import { matchesLabel } from '../graph-queries.js';
 import { outNeighbors, relTypeNames } from './adjacency.js';
 import { matchNode, relHasPredicate } from './bindings.js';
+import { onePatternMatchReturn } from './clause-shape.js';
 import { compileExpr } from './core.js';
 import type { CClause, CNode, CReturnItem, CompiledExpr, EvalEnv, Params, Row } from './core.js';
 import type { CsrTables } from './csr-cache.js';
@@ -1056,23 +1057,13 @@ export const detectReachableShortcut = (
   clauses: readonly Clause[],
   compiled: readonly CClause[],
 ): ReachFn | null => {
-  if (clauses.length !== 2) {
+  const matchRet = onePatternMatchReturn(clauses, compiled);
+
+  if (matchRet === null) {
     return null;
   }
 
-  const [m, ret] = clauses;
-  const [cm, cret] = compiled;
-
-  if (
-    m.kind !== 'match' ||
-    m.optional ||
-    m.patterns.length !== 1 ||
-    ret.kind !== 'return' ||
-    cm.kind !== 'match' ||
-    cret.kind !== 'return'
-  ) {
-    return null;
-  }
+  const { m, ret, cm, cret } = matchRet;
 
   if (m.patterns[0].segments.length !== 1) {
     return null;

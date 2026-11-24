@@ -2,7 +2,7 @@ import type { Graph, Vertex } from '@lenke/core';
 
 import type { Clause, Expr, LabelExpr, NodePattern, RelPattern } from '../ast.js';
 import { matchesLabel } from '../graph-queries.js';
-import { twoClauseReturn } from './clause-shape.js';
+import { onePatternMatchReturn, twoClauseReturn } from './clause-shape.js';
 import type { OneColumnKeys } from './clauses.js';
 import { addOneColumnKey, distinctRows, newOneColumnKeys } from './clauses.js';
 import type { CClause, CompiledExpr, CPath, CProjection, EvalEnv, Params, Row } from './core.js';
@@ -94,23 +94,13 @@ export const detectHop2Projection = (
    * carries a genuine index seek, because whether one exists is a property of the GRAPH.
    */
 ): RowsFn | null => {
-  if (clauses.length !== 2) {
+  const matchRet = onePatternMatchReturn(clauses, compiled);
+
+  if (matchRet === null) {
     return null;
   }
 
-  const [m, ret] = clauses;
-  const [cm, cret] = compiled;
-
-  if (
-    m.kind !== 'match' ||
-    m.optional ||
-    m.patterns.length !== 1 ||
-    ret.kind !== 'return' ||
-    cm.kind !== 'match' ||
-    cret.kind !== 'return'
-  ) {
-    return null;
-  }
+  const { m, ret, cm, cret } = matchRet;
 
   const [pattern] = m.patterns;
 

@@ -12,6 +12,7 @@ import { describe, expect, test } from 'bun:test';
 
 import { Graph } from '@lenke/core';
 
+import { createFilteredCsrGraph } from '../fixtures/createFilteredCsrGraph.js';
 import { query } from '../index.js';
 import { twoHopFilteredCsrApplies } from './two-hop-filtered-csr.js';
 
@@ -22,41 +23,7 @@ import { twoHopFilteredCsrApplies } from './two-hop-filtered-csr.js';
  * varies too: a linear `(a*i+b) % N` target is a bijection per layer, which makes a k-walk count
  * `N * F^k` by arithmetic however the traversal behaves (item 1684).
  */
-const build = (n = 300): Graph => {
-  const g = new Graph();
-  const vs = [];
-
-  for (let i = 0; i < n; i += 1) {
-    vs.push(
-      g.addVertex({
-        id: `v${i}`,
-        labels: ((i * 40_503) >>> 3) % 3 === 0 ? ['P', 'Q'] : ['P'],
-        properties: { k: ((i * 2_246_822_519) >>> 7) % 19 },
-      }),
-    );
-  }
-
-  let e = 0;
-
-  for (let i = 0; i < n; i += 1) {
-    const deg = 1 + ((i * 2654435761) % 4);
-
-    for (let r = 0; r < deg; r += 1) {
-      const mix = ((i * 2654435761) ^ ((i >> 7) * 40503) ^ (r * 104_729)) & 0x7fffffff;
-
-      g.addEdge({
-        id: `e${e}`,
-        from: vs[i],
-        to: vs[mix % n],
-        labels: [r % 5 === 0 ? 'F' : 'E'],
-        properties: {},
-      });
-      e += 1;
-    }
-  }
-
-  return g;
-};
+const build = createFilteredCsrGraph;
 
 const g = build();
 const countOf = (q: string): number => Number(query(g, q)[0].c);

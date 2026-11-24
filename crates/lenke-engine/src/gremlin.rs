@@ -104,6 +104,10 @@ fn combine_edge_scope(arms: &[Option<bool>]) -> Option<bool> {
 /// `@lenke/gremlin` parser's cap so the two engines accept/reject the same queries.
 const MAX_TRAVERSAL_DEPTH: usize = 128;
 
+/// An `addV(...)` head: the vertex's labels, then its inline literal properties. Named because
+/// `clippy::type_complexity` rejects the bare tuple, and the name is the better spelling anyway.
+type LabelsAndProps = (Vec<String>, Vec<(String, Value)>);
+
 pub fn parse(query: &str) -> Result<Plan, String> {
     let toks = lex(query)?;
     // A traversal that reads a full `path()`/`tree()` records each value-producing step's
@@ -1002,6 +1006,61 @@ impl Parser {
             Some(Tok::Ident(s)) => Ok(s),
             other => Err(format!("expected identifier, got {other:?}")),
         }
+    }
+
+    /// `(` an optional vertex label `)` followed by inline literal `.property(k, v)` modulators —
+    /// the 29-line prologue THREE `addV` spellings parsed identically (item 2406).
+    ///
+    /// ⚠️ A PARSER METHOD, so this is the safe kind of sharing: it runs once per `addV` in the
+    /// query TEXT, not once per element, which is the distinction `clause-shape.ts`'s header draws
+    /// and `ts-closure-size-is-load-bearing` measured the wrong side of. Nothing here is on a walk.
+    ///
+    /// 🔑 The `self.pos += 2 … -= 2` dance in the loop guard is a two-token LOOKAHEAD, not a
+    /// mistake: `property_is_literal` has to inspect the arguments to decide whether this
+    /// modulator belongs to the write (a literal) or is a traversal the general path must handle,
+    /// and the guard has to leave the cursor untouched either way so the `while` can decline.
+    fn paren_label_and_literal_props(&mut self) -> Result<LabelsAndProps, String> {
+        self.expect(&Tok::LParen)?;
+
+        let labels = if self.peek() == Some(&Tok::RParen) {
+            Vec::new()
+        } else {
+            let l = self.str_arg()?;
+
+            check_write_name("vertex label", &l)?;
+
+            vec![l]
+        };
+
+        self.expect(&Tok::RParen)?;
+
+        let mut props: Vec<(String, Value)> = Vec::new();
+
+        while self.peek() == Some(&Tok::Dot)
+            && matches!(self.toks.get(self.pos + 1), Some(Tok::Ident(s)) if s.eq_ignore_ascii_case("property"))
+            && {
+                self.pos += 2;
+                let ok = self.property_is_literal();
+                self.pos -= 2;
+                ok
+            }
+        {
+            self.expect(&Tok::Dot)?;
+            self.ident()?; // property
+            self.expect(&Tok::LParen)?;
+
+            let key = self.str_arg()?;
+
+            check_write_name("property key", &key)?;
+            self.expect(&Tok::Comma)?;
+
+            let val = self.literal()?;
+
+            self.expect(&Tok::RParen)?;
+            props.push((key, val));
+        }
+
+        Ok((labels, props))
     }
 
     fn str_arg(&mut self) -> Result<String, String> {
@@ -2171,35 +2230,7 @@ impl Parser {
                         if kw != "addv" {
                             return Err("union() write arms must all be addV(...)".into());
                         }
-                        self.expect(&Tok::LParen)?;
-                        let labels = if self.peek() == Some(&Tok::RParen) {
-                            Vec::new()
-                        } else {
-                            let l = self.str_arg()?;
-                            check_write_name("vertex label", &l)?;
-                            vec![l]
-                        };
-                        self.expect(&Tok::RParen)?;
-                        let mut props: Vec<(String, Value)> = Vec::new();
-                        while self.peek() == Some(&Tok::Dot)
-                            && matches!(self.toks.get(self.pos + 1), Some(Tok::Ident(s)) if s.eq_ignore_ascii_case("property"))
-                            && {
-                                self.pos += 2;
-                                let ok = self.property_is_literal();
-                                self.pos -= 2;
-                                ok
-                            }
-                        {
-                            self.expect(&Tok::Dot)?;
-                            self.ident()?; // property
-                            self.expect(&Tok::LParen)?;
-                            let key = self.str_arg()?;
-                            check_write_name("property key", &key)?;
-                            self.expect(&Tok::Comma)?;
-                            let val = self.literal()?;
-                            self.expect(&Tok::RParen)?;
-                            props.push((key, val));
-                        }
+                        let (labels, props) = self.paren_label_and_literal_props()?;
                         let tail = Plan::Row.project(vec![("_".to_string(), Expr::Slot(0))]);
                         arms.push(Plan::AddVertexStep {
                             input: Box::new(plan.clone()),
@@ -2913,35 +2944,7 @@ impl Parser {
                 // `write_frontier` runs the write arm and pulls the passthrough arm.
                 if matches!(self.peek(), Some(Tok::Ident(s)) if s.eq_ignore_ascii_case("addV")) {
                     self.bump(); // addV
-                    self.expect(&Tok::LParen)?;
-                    let labels = if self.peek() == Some(&Tok::RParen) {
-                        Vec::new()
-                    } else {
-                        let l = self.str_arg()?;
-                        check_write_name("vertex label", &l)?;
-                        vec![l]
-                    };
-                    self.expect(&Tok::RParen)?;
-                    let mut props: Vec<(String, Value)> = Vec::new();
-                    while self.peek() == Some(&Tok::Dot)
-                        && matches!(self.toks.get(self.pos + 1), Some(Tok::Ident(s)) if s.eq_ignore_ascii_case("property"))
-                        && {
-                            self.pos += 2;
-                            let ok = self.property_is_literal();
-                            self.pos -= 2;
-                            ok
-                        }
-                    {
-                        self.expect(&Tok::Dot)?;
-                        self.ident()?; // property
-                        self.expect(&Tok::LParen)?;
-                        let key = self.str_arg()?;
-                        check_write_name("property key", &key)?;
-                        self.expect(&Tok::Comma)?;
-                        let val = self.literal()?;
-                        self.expect(&Tok::RParen)?;
-                        props.push((key, val));
-                    }
+                    let (labels, props) = self.paren_label_and_literal_props()?;
                     if self.peek() == Some(&Tok::Comma) {
                         return Err(
                             "E_NOT_IMPLEMENTED: choose(cond, addV(...), <else>) with a write then-arm is not yet supported"
@@ -3138,36 +3141,7 @@ impl Parser {
                         self.expect(&Tok::Dot)?;
                     }
                     self.ident()?; // addV
-                    self.expect(&Tok::LParen)?;
-                    let labels = if self.peek() == Some(&Tok::RParen) {
-                        Vec::new()
-                    } else {
-                        let l = self.str_arg()?;
-                        check_write_name("vertex label", &l)?;
-                        vec![l]
-                    };
-                    self.expect(&Tok::RParen)?;
-                    // Inline literal `property(k, v)` modulators on the body.
-                    let mut props: Vec<(String, Value)> = Vec::new();
-                    while self.peek() == Some(&Tok::Dot)
-                        && matches!(self.toks.get(self.pos + 1), Some(Tok::Ident(s)) if s.eq_ignore_ascii_case("property"))
-                        && {
-                            self.pos += 2;
-                            let ok = self.property_is_literal();
-                            self.pos -= 2;
-                            ok
-                        }
-                    {
-                        self.expect(&Tok::Dot)?;
-                        self.ident()?; // property
-                        self.expect(&Tok::LParen)?;
-                        let key = self.str_arg()?;
-                        check_write_name("property key", &key)?;
-                        self.expect(&Tok::Comma)?;
-                        let val = self.literal()?;
-                        self.expect(&Tok::RParen)?;
-                        props.push((key, val));
-                    }
+                    let (labels, props) = self.paren_label_and_literal_props()?;
                     self.expect(&Tok::RParen)?; // close repeat(...)
                                                 // Require `.times(n)`.
                     if !(self.peek() == Some(&Tok::Dot)

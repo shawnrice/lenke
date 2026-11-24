@@ -1692,12 +1692,7 @@ fn multi_label_edge_matching() {
     );
     let store = crate::ndjson::from_ndjson(nd).unwrap();
     assert!(store.has_multi_label_edges());
-    let ids = |q: &str| -> Vec<String> {
-        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &store);
-        let mut v = names_of(&run(&plan, &store), 0);
-        v.sort();
-        v
-    };
+    let ids = |q: &str| ids_of(q, &store);
     // `:Y` reaches every edge (all three carry Y, two only as a secondary label).
     assert_eq!(
         ids("MATCH (a:N)-[:Y]->(b) RETURN b.id AS x"),
@@ -1735,12 +1730,7 @@ fn edge_label_negation() {
         "{\"from\":\"a\",\"to\":\"s\",\"labels\":[\"LIKES\"],\"props\":{}}"
     );
     let store = crate::ndjson::from_ndjson(nd).unwrap();
-    let ids = |q: &str| -> Vec<String> {
-        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &store);
-        let mut v = names_of(&run(&plan, &store), 0);
-        v.sort();
-        v
-    };
+    let ids = |q: &str| ids_of(q, &store);
     // NOT CREATED → the KNOWS and LIKES targets.
     assert_eq!(
         ids("MATCH (a:P {id:'a'})-[:!CREATED]->(x) RETURN x.id AS x"),
@@ -1772,12 +1762,7 @@ fn var_length_inline_edge_props() {
         "{\"from\":\"c\",\"to\":\"d\",\"labels\":[\"R\"],\"props\":{\"amt\":5.0}}"
     );
     let store = crate::ndjson::from_ndjson(nd).unwrap();
-    let ids = |q: &str| -> Vec<String> {
-        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &store);
-        let mut v = names_of(&run(&plan, &store), 0);
-        v.sort();
-        v
-    };
+    let ids = |q: &str| ids_of(q, &store);
     // From a, no outgoing amt=20 edge → no path.
     assert!(ids("MATCH (a:N {id:'a'})-[:R {amt:20.0}]->{1,3}(x) RETURN x.id AS id").is_empty());
     // From b, b->c has amt 20 → x = c (c->d is amt 5, excluded).
@@ -1799,12 +1784,7 @@ fn plain_var_length_per_hop_where() {
         "{\"from\":\"b\",\"to\":\"c\",\"labels\":[\"R\"],\"props\":{\"amt\":5.0}}"
     );
     let store = crate::ndjson::from_ndjson(nd).unwrap();
-    let ids = |q: &str| -> Vec<String> {
-        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &store);
-        let mut v = names_of(&run(&plan, &store), 0);
-        v.sort();
-        v
-    };
+    let ids = |q: &str| ids_of(q, &store);
     // e.amt >= 10 blocks b->c → only a->b reaches b.
     assert_eq!(
         ids("MATCH (a:N {id:'a'})-[e:R WHERE e.amt >= 10]->{1,3}(x) RETURN x.id AS id"),
@@ -1831,12 +1811,7 @@ fn per_hop_where_references_outer_source() {
         "{\"from\":\"b\",\"to\":\"c\",\"labels\":[\"R\"],\"props\":{\"amt\":20.0}}"
     );
     let store = crate::ndjson::from_ndjson(nd).unwrap();
-    let ids = |q: &str| -> Vec<String> {
-        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &store);
-        let mut v = names_of(&run(&plan, &store), 0);
-        v.sort();
-        v
-    };
+    let ids = |q: &str| ids_of(q, &store);
     // a.id = 'a' holds → both hops admitted (b, c).
     assert_eq!(
             ids("MATCH (a:N {id:'a'})-[e:R WHERE e.amt >= 10 AND a.id = 'a']->{1,3}(x) RETURN x.id AS id"),
@@ -1896,12 +1871,7 @@ fn bare_all_any_selectors() {
         "{\"from\":\"c\",\"to\":\"d\",\"labels\":[\"R\"],\"props\":{}}"
     );
     let store = crate::ndjson::from_ndjson(nd).unwrap();
-    let ids = |q: &str| -> Vec<String> {
-        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &store);
-        let mut v = names_of(&run(&plan, &store), 0);
-        v.sort();
-        v
-    };
+    let ids = |q: &str| ids_of(q, &store);
     // ALL: d reached by two 2-hop paths → d appears twice; b, c once each.
     assert_eq!(
         ids("MATCH ALL (a:N {id:'a'})-[:R]->{1,2}(x) RETURN x.id AS id"),
@@ -2598,12 +2568,7 @@ fn multi_hop_group_per_rep_where() {
         "{\"from\":\"d\",\"to\":\"e\",\"labels\":[\"R\"],\"props\":{\"amt\":10.0}}"
     );
     let store = crate::ndjson::from_ndjson(nd).unwrap();
-    let ids = |q: &str| -> Vec<String> {
-        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &store);
-        let mut v = names_of(&run(&plan, &store), 0);
-        v.sort();
-        v
-    };
+    let ids = |q: &str| ids_of(q, &store);
     // e2.amt <= e1.amt (10<=10) holds → 1 rep (t=c), 2 reps (t=e).
     assert_eq!(
             ids("MATCH (s:N {id:'a'}) ((x)-[e1:R]->(m)-[e2:R]->(y) WHERE e2.amt <= e1.amt){1,2} (t) RETURN t.id AS id"),
@@ -2728,12 +2693,7 @@ fn repeat_group_per_rep_where() {
         "{\"from\":\"c\",\"to\":\"d\",\"labels\":[\"R\"],\"props\":{\"amt\":10.0}}"
     );
     let store = crate::ndjson::from_ndjson(nd).unwrap();
-    let ids = |q: &str| -> Vec<String> {
-        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &store);
-        let mut v = names_of(&run(&plan, &store), 0);
-        v.sort();
-        v
-    };
+    let ids = |q: &str| ids_of(q, &store);
     // e.amt >= 1 holds for every edge → reach b, c, d.
     assert_eq!(
         ids("MATCH (s:N {id:'a'}) ((x)-[e:R]->(y) WHERE e.amt >= 1){1,3} (t) RETURN t.id AS id"),
@@ -9301,6 +9261,66 @@ fn opt_plan(q: &str, store: &Store) -> Plan {
     crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), store)
 }
 
+/// The query helpers these tests were defining over and over: 36 BYTE-IDENTICAL closure bodies
+/// across four shapes before item 2406 (`val` 11 sites, `ids` 10, `nums` 8, `rows` 7).
+///
+/// Each site keeps a one-line closure that delegates here, so NO call site changes — `val("…")`
+/// still reads the same and the diff is confined to the definitions. The variants are deliberately
+/// left alone: six more `count` closures use `run` instead of `try_run`, and others parse without
+/// `optimize_indexed`. Those differences are the thing under test in their own tests (whether the
+/// optimizer is exercised, whether an error is tolerated), so folding them together would flatten a
+/// distinction rather than remove a duplication.
+///
+/// ⚠️ THE SORTS ARE PART OF THE CONTRACT, not tidiness. Row order without an `ORDER BY` is
+/// UNSPECIFIED (item 2400), so a test comparing a projected column has to compare it
+/// order-insensitively or it pins something the engine does not promise. `ids_of` and `nums_of`
+/// sort for exactly that reason; `val_of` reads one row and `rows_of` only counts, so neither needs
+/// an order.
+fn val_of(q: &str, store: &Store) -> f64 {
+    match crate::exec::try_run(&opt_plan(q, store), store)
+        .unwrap()
+        .rows
+        .iter()
+        .next()
+        .expect("one row")[0]
+    {
+        Value::Num(x) => x,
+        ref o => panic!("{o:?}"),
+    }
+}
+
+fn rows_of(q: &str, store: &Store) -> usize {
+    crate::exec::try_run(&opt_plan(q, store), store)
+        .unwrap()
+        .rows
+        .len()
+}
+
+fn ids_of(q: &str, store: &Store) -> Vec<String> {
+    let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), store);
+    let mut v = names_of(&run(&plan, store), 0);
+
+    v.sort();
+
+    v
+}
+
+fn nums_of(q: &str, store: &Store) -> Vec<f64> {
+    let mut v: Vec<f64> = crate::exec::try_run(&opt_plan(q, store), store)
+        .unwrap()
+        .rows
+        .iter()
+        .map(|r| match r[0] {
+            Value::Num(x) => x,
+            ref o => panic!("{o:?}"),
+        })
+        .collect();
+
+    v.sort_by(f64::total_cmp);
+
+    v
+}
+
 /// THE correctness property of the mode: `path_length(p)` (which the optimizer marks
 /// `CountOnly`, so no chain is ever built) must equal `size(edges(p))` (which reads the
 /// elements, so every chain is built). Same traversal, same rows, two representations of the
@@ -9319,19 +9339,7 @@ fn a_size_only_path_read_agrees_with_reading_the_elements() {
         !any_count_only(&opt_plan(material, &store)),
         "reading edges(p) must keep the elements"
     );
-    let nums = |q: &str| -> Vec<f64> {
-        let mut v: Vec<f64> = crate::exec::try_run(&opt_plan(q, &store), &store)
-            .unwrap()
-            .rows
-            .iter()
-            .map(|r| match r[0] {
-                Value::Num(x) => x,
-                ref o => panic!("{o:?}"),
-            })
-            .collect();
-        v.sort_by(f64::total_cmp);
-        v
-    };
+    let nums = |q: &str| nums_of(q, &store);
     assert_eq!(nums(counted), nums(material));
 }
 
@@ -9346,19 +9354,7 @@ fn cardinality_agrees_in_both_representations() {
     let material =
         "MATCH p = ANY SHORTEST (x:N)-[:R]->*(y:N) RETURN size(nodes(p)) + size(edges(p)) AS n";
     assert!(any_count_only(&opt_plan(counted, &store)));
-    let nums = |q: &str| -> Vec<f64> {
-        let mut v: Vec<f64> = crate::exec::try_run(&opt_plan(q, &store), &store)
-            .unwrap()
-            .rows
-            .iter()
-            .map(|r| match r[0] {
-                Value::Num(x) => x,
-                ref o => panic!("{o:?}"),
-            })
-            .collect();
-        v.sort_by(f64::total_cmp);
-        v
-    };
+    let nums = |q: &str| nums_of(q, &store);
     assert_eq!(nums(counted), nums(material));
 }
 
@@ -9455,19 +9451,7 @@ fn a_size_only_varlen_read_agrees_with_reading_the_elements() {
         !any_count_only(&opt_plan(material, &store)),
         "reading edges(p) must keep the elements"
     );
-    let nums = |q: &str| -> Vec<f64> {
-        let mut v: Vec<f64> = crate::exec::try_run(&opt_plan(q, &store), &store)
-            .unwrap()
-            .rows
-            .iter()
-            .map(|r| match r[0] {
-                Value::Num(x) => x,
-                ref o => panic!("{o:?}"),
-            })
-            .collect();
-        v.sort_by(f64::total_cmp);
-        v
-    };
+    let nums = |q: &str| nums_of(q, &store);
     let got = nums(counted);
     assert_eq!(got, nums(material));
     // And it is not vacuously equal: a 40-node chain has hops of 1, 2 and 3.
@@ -9485,19 +9469,7 @@ fn varlen_cardinality_agrees_in_both_representations() {
     store.set_limit(crate::store::ConfigId::LimitsIntermediate, 50_000_000);
     let counted = "MATCH p = (x:N)-[:R]->{1,3}(y) RETURN cardinality(p) AS n";
     let material = "MATCH p = (x:N)-[:R]->{1,3}(y) RETURN size(nodes(p)) + size(edges(p)) AS n";
-    let nums = |q: &str| -> Vec<f64> {
-        let mut v: Vec<f64> = crate::exec::try_run(&opt_plan(q, &store), &store)
-            .unwrap()
-            .rows
-            .iter()
-            .map(|r| match r[0] {
-                Value::Num(x) => x,
-                ref o => panic!("{o:?}"),
-            })
-            .collect();
-        v.sort_by(f64::total_cmp);
-        v
-    };
+    let nums = |q: &str| nums_of(q, &store);
     assert_eq!(nums(counted), nums(material));
 }
 
@@ -9551,19 +9523,7 @@ fn a_size_only_shortest_k_read_agrees_with_reading_the_elements() {
         any_count_only(&opt_plan(counted, &store)),
         "SHORTEST k must mark CountOnly"
     );
-    let nums = |q: &str| -> Vec<f64> {
-        let mut v: Vec<f64> = crate::exec::try_run(&opt_plan(q, &store), &store)
-            .unwrap()
-            .rows
-            .iter()
-            .map(|r| match r[0] {
-                Value::Num(x) => x,
-                ref o => panic!("{o:?}"),
-            })
-            .collect();
-        v.sort_by(f64::total_cmp);
-        v
-    };
+    let nums = |q: &str| nums_of(q, &store);
     let got = nums(counted);
     assert_eq!(got, nums(material));
     // Not vacuous: a 40-node chain gives a spread of lengths, including 0 for each source.
@@ -9582,19 +9542,7 @@ fn shortest_k_cardinality_agrees_in_both_representations() {
     let counted = "MATCH p = SHORTEST 2 (x:N)-[:R]->*(y:N) RETURN cardinality(p) AS n";
     let material =
         "MATCH p = SHORTEST 2 (x:N)-[:R]->*(y:N) RETURN size(nodes(p)) + size(edges(p)) AS n";
-    let nums = |q: &str| -> Vec<f64> {
-        let mut v: Vec<f64> = crate::exec::try_run(&opt_plan(q, &store), &store)
-            .unwrap()
-            .rows
-            .iter()
-            .map(|r| match r[0] {
-                Value::Num(x) => x,
-                ref o => panic!("{o:?}"),
-            })
-            .collect();
-        v.sort_by(f64::total_cmp);
-        v
-    };
+    let nums = |q: &str| nums_of(q, &store);
     assert_eq!(nums(counted), nums(material));
 }
 
@@ -9819,19 +9767,7 @@ fn size_of_a_group_list_is_its_length() {
 #[test]
 fn cardinality_of_a_list_matches_size() {
     let store = chain_store(6);
-    let nums = |q: &str| -> Vec<f64> {
-        let mut v: Vec<f64> = crate::exec::try_run(&opt_plan(q, &store), &store)
-            .unwrap()
-            .rows
-            .iter()
-            .map(|r| match r[0] {
-                Value::Num(x) => x,
-                ref o => panic!("{o:?}"),
-            })
-            .collect();
-        v.sort_by(f64::total_cmp);
-        v
-    };
+    let nums = |q: &str| nums_of(q, &store);
     assert_eq!(
         nums("MATCH ((a)-[:R]->(b)){1,2} RETURN size(b) AS k"),
         nums("MATCH ((a)-[:R]->(b)){1,2} RETURN cardinality(b) AS k"),
@@ -9924,19 +9860,7 @@ fn size_of_a_string_counts_utf16_units() {
 #[test]
 fn list_functions_over_a_boxed_column_keep_their_answers() {
     let store = chain_store(6);
-    let nums = |q: &str| -> Vec<f64> {
-        let mut v: Vec<f64> = crate::exec::try_run(&opt_plan(q, &store), &store)
-            .unwrap()
-            .rows
-            .iter()
-            .map(|r| match r[0] {
-                Value::Num(x) => x,
-                ref o => panic!("{o:?}"),
-            })
-            .collect();
-        v.sort_by(f64::total_cmp);
-        v
-    };
+    let nums = |q: &str| nums_of(q, &store);
     let base = "MATCH ((a)-[:R]->(b)){1,2} RETURN ";
     // `tail` drops the first element: a 1-rep list of 1 becomes empty, a 2-rep list of 2
     // becomes 1. Five one-rep and four two-rep walks over a 6-node chain.
@@ -12258,24 +12182,8 @@ fn a_zero_only_quantifier_counts_exactly_the_sources() {
 #[test]
 fn a_counting_fast_path_agrees_with_its_rows_for_an_unknown_edge_type() {
     let store = dense_store(4000, 4);
-    let val = |q: &str| -> f64 {
-        match crate::exec::try_run(&opt_plan(q, &store), &store)
-            .unwrap()
-            .rows
-            .iter()
-            .next()
-            .expect("one row")[0]
-        {
-            Value::Num(x) => x,
-            ref o => panic!("{o:?}"),
-        }
-    };
-    let rows = |q: &str| -> usize {
-        crate::exec::try_run(&opt_plan(q, &store), &store)
-            .unwrap()
-            .rows
-            .len()
-    };
+    let val = |q: &str| val_of(q, &store);
+    let rows = |q: &str| rows_of(q, &store);
     for ty in ["R", "Nope"] {
         for quant in ["{0,2}", "{1,2}", "{0,1}"] {
             assert_eq!(
@@ -12551,24 +12459,8 @@ fn algebra_store() -> Store {
 #[test]
 fn the_algebraic_count_applies_an_endpoint_filter() {
     let store = algebra_store();
-    let val = |q: &str| -> f64 {
-        match crate::exec::try_run(&opt_plan(q, &store), &store)
-            .unwrap()
-            .rows
-            .iter()
-            .next()
-            .expect("one row")[0]
-        {
-            Value::Num(x) => x,
-            ref o => panic!("{o:?}"),
-        }
-    };
-    let rows = |q: &str| -> usize {
-        crate::exec::try_run(&opt_plan(q, &store), &store)
-            .unwrap()
-            .rows
-            .len()
-    };
+    let val = |q: &str| val_of(q, &store);
+    let rows = |q: &str| rows_of(q, &store);
     for quant in ["{1,2}", "{0,2}"] {
         for tail in ["(y:N)", "(y:M)", "(y) WHERE y.name <> 'v0'"] {
             let q = format!("MATCH (x)-[:R]->{quant}{tail}");
@@ -12587,18 +12479,7 @@ fn the_algebraic_count_applies_an_endpoint_filter() {
 #[test]
 fn an_endpoint_filter_reduces_the_algebraic_count() {
     let store = algebra_store();
-    let val = |q: &str| -> f64 {
-        match crate::exec::try_run(&opt_plan(q, &store), &store)
-            .unwrap()
-            .rows
-            .iter()
-            .next()
-            .expect("one row")[0]
-        {
-            Value::Num(x) => x,
-            ref o => panic!("{o:?}"),
-        }
-    };
+    let val = |q: &str| val_of(q, &store);
     let all = val("MATCH (x)-[:R]->{1,2}(y) RETURN count(*) AS c");
     let some = val("MATCH (x)-[:R]->{1,2}(y:N) RETURN count(*) AS c");
     let other = val("MATCH (x)-[:R]->{1,2}(y:M) RETURN count(*) AS c");
@@ -12618,18 +12499,7 @@ fn an_endpoint_filter_reduces_the_algebraic_count() {
 #[test]
 fn the_zero_length_term_applies_the_endpoint_filter() {
     let store = algebra_store();
-    let val = |q: &str| -> f64 {
-        match crate::exec::try_run(&opt_plan(q, &store), &store)
-            .unwrap()
-            .rows
-            .iter()
-            .next()
-            .expect("one row")[0]
-        {
-            Value::Num(x) => x,
-            ref o => panic!("{o:?}"),
-        }
-    };
+    let val = |q: &str| val_of(q, &store);
     // `{0,0}` would not reach the algebra (its gate needs `max >= 1`), so the zero-length term is
     // isolated by DIFFERENCE instead: `{0,2}` minus `{1,2}` is exactly the zero-length paths.
     let with_zero = val("MATCH (x)-[:R]->{0,2}(y:N) RETURN count(*) AS c");
@@ -12706,24 +12576,8 @@ fn the_trail_self_loop_correction_respects_the_endpoint_filter() {
         }
     }
     let store = b.build();
-    let val = |q: &str| -> f64 {
-        match crate::exec::try_run(&opt_plan(q, &store), &store)
-            .unwrap()
-            .rows
-            .iter()
-            .next()
-            .expect("one row")[0]
-        {
-            Value::Num(x) => x,
-            ref o => panic!("{o:?}"),
-        }
-    };
-    let rows = |q: &str| -> usize {
-        crate::exec::try_run(&opt_plan(q, &store), &store)
-            .unwrap()
-            .rows
-            .len()
-    };
+    let val = |q: &str| val_of(q, &store);
+    let rows = |q: &str| rows_of(q, &store);
     for tail in ["(y:N)", "(y:M)", "(y)"] {
         let q = format!("MATCH (x)-[:R]->{{1,2}}{tail}");
         assert_eq!(
@@ -12826,18 +12680,7 @@ fn one_edge_store() -> Store {
 #[test]
 fn a_distinct_endpoint_count_over_a_trail_matches_the_rows() {
     let store = one_edge_store();
-    let val = |q: &str| -> f64 {
-        match crate::exec::try_run(&opt_plan(q, &store), &store)
-            .unwrap()
-            .rows
-            .iter()
-            .next()
-            .expect("one row")[0]
-        {
-            Value::Num(x) => x,
-            ref o => panic!("{o:?}"),
-        }
-    };
+    let val = |q: &str| val_of(q, &store);
     // TRAIL (the GQL default) at two or more hops: no path exists at all.
     assert_eq!(
         try_gql("MATCH (x)-[:R]-{2,3}(y) RETURN y.name AS n", &store).unwrap(),
@@ -12893,18 +12736,7 @@ fn a_distinct_endpoint_count_over_a_trail_matches_the_rows_on_a_ring() {
         b.edge(i, (i + 1) % 30, "R");
     }
     let store = b.build();
-    let val = |q: &str| -> f64 {
-        match crate::exec::try_run(&opt_plan(q, &store), &store)
-            .unwrap()
-            .rows
-            .iter()
-            .next()
-            .expect("one row")[0]
-        {
-            Value::Num(x) => x,
-            ref o => panic!("{o:?}"),
-        }
-    };
+    let val = |q: &str| val_of(q, &store);
     let distinct_rows = |q: &str| -> usize {
         crate::exec::try_run(&opt_plan(q, &store), &store)
             .unwrap()
@@ -27944,24 +27776,8 @@ fn the_traversal_mask_counts_what_enumeration_counts() {
     }
 
     let store = store;
-    let val = |q: &str| -> f64 {
-        match crate::exec::try_run(&opt_plan(q, &store), &store)
-            .unwrap()
-            .rows
-            .iter()
-            .next()
-            .expect("one row")[0]
-        {
-            Value::Num(x) => x,
-            ref o => panic!("{o:?}"),
-        }
-    };
-    let rows = |q: &str| -> usize {
-        crate::exec::try_run(&opt_plan(q, &store), &store)
-            .unwrap()
-            .rows
-            .len()
-    };
+    let val = |q: &str| val_of(q, &store);
+    let rows = |q: &str| rows_of(q, &store);
 
     for mode in ["", "TRAIL ", "WALK "] {
         for quant in ["{1,2}", "{0,2}", "{1,1}", "{2,2}"] {
@@ -28136,24 +27952,8 @@ fn a_path_source_per_rep_predicate_is_a_seed_filter() {
     b.edge(0, 0, "T"); // the trail correction's witness
 
     let store = b.build();
-    let val = |q: &str| -> f64 {
-        match crate::exec::try_run(&opt_plan(q, &store), &store)
-            .unwrap()
-            .rows
-            .iter()
-            .next()
-            .expect("one row")[0]
-        {
-            Value::Num(x) => x,
-            ref o => panic!("{o:?}"),
-        }
-    };
-    let rows = |q: &str| -> usize {
-        crate::exec::try_run(&opt_plan(q, &store), &store)
-            .unwrap()
-            .rows
-            .len()
-    };
+    let val = |q: &str| val_of(q, &store);
+    let rows = |q: &str| rows_of(q, &store);
 
     for mode in ["", "TRAIL ", "WALK "] {
         for quant in ["{1,2}", "{0,2}", "{1,1}", "{2,2}", "{0,1}"] {
@@ -28345,24 +28145,8 @@ fn the_degree_algebra_reads_in_adjacency_too() {
     }
 
     let store = store;
-    let val = |q: &str| -> f64 {
-        match crate::exec::try_run(&opt_plan(q, &store), &store)
-            .unwrap()
-            .rows
-            .iter()
-            .next()
-            .expect("one row")[0]
-        {
-            Value::Num(x) => x,
-            ref o => panic!("{o:?}"),
-        }
-    };
-    let rows = |q: &str| -> usize {
-        crate::exec::try_run(&opt_plan(q, &store), &store)
-            .unwrap()
-            .rows
-            .len()
-    };
+    let val = |q: &str| val_of(q, &store);
+    let rows = |q: &str| rows_of(q, &store);
 
     // THE GATE ITSELF, asserted. Item 570 had four mutants survive because the fixture never
     // reached the closed form, and the only symptom was a fast green test. Recomputing the gate's
@@ -28531,24 +28315,8 @@ fn a_deep_walk_counts_what_enumeration_counts() {
         );
     }
 
-    let val = |q: &str| -> f64 {
-        match crate::exec::try_run(&opt_plan(q, &store), &store)
-            .unwrap()
-            .rows
-            .iter()
-            .next()
-            .expect("one row")[0]
-        {
-            Value::Num(x) => x,
-            ref o => panic!("{o:?}"),
-        }
-    };
-    let rows = |q: &str| -> usize {
-        crate::exec::try_run(&opt_plan(q, &store), &store)
-            .unwrap()
-            .rows
-            .len()
-    };
+    let val = |q: &str| val_of(q, &store);
+    let rows = |q: &str| rows_of(q, &store);
 
     // DEPTH 1 THROUGH 5. One and two run the closed form, three and up the recurrence.
     for max in 1..=5u32 {
@@ -29694,12 +29462,7 @@ fn dotted_path_base_kinds() {
         "\n",
     );
     let store = crate::ndjson::from_ndjson(nd).unwrap();
-    let ids = |q: &str| -> Vec<String> {
-        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &store);
-        let mut v = names_of(&run(&plan, &store), 0);
-        v.sort();
-        v
-    };
+    let ids = |q: &str| ids_of(q, &store);
 
     // A RECORD base, one sub-field: the new by-reference arm. Only n0 matches.
     assert_eq!(
@@ -29914,12 +29677,7 @@ fn optional_miss_then_dotted_path_is_null() {
         "\n",
     );
     let store = crate::ndjson::from_ndjson(nd).unwrap();
-    let ids = |q: &str| -> Vec<String> {
-        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &store);
-        let mut v = names_of(&run(&plan, &store), 0);
-        v.sort();
-        v
-    };
+    let ids = |q: &str| ids_of(q, &store);
 
     // The hop MISSES (no `:NOSUCH` edge), so `m` is the null sentinel and `m.meta.city` is Null.
     // Without the guard this panics on an out-of-bounds index rather than returning a row.

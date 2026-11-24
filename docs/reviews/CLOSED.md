@@ -121316,3 +121316,98 @@ ORDER, which is the whole observable part of it` and the `collect` assertions in
 No engine change — `hop-projection.ts` is byte-identical to `HEAD` apart from the corrected comment,
 verified with `diff` against `git show HEAD:` after the revert. `bun run check` 0 (output kept);
 `bun run test -- --skip-nx-cache` 0 across 21 projects.
+
+## Item 2406 — ✅ **CONSOLIDATION PASS: four duplications removed, −280 lines, every one verified rather than assumed. 36 byte-identical test helpers, a 29-line parser prologue repeated three times, a triplicated fixture, and a triplicated detector gate.** 🔑 And three candidates DECLINED with reasons, including the two arena structures I wrote hours apart that only look like twins
+
+A duplication scan (`dupscan.py`, windows of 8-14 normalized non-comment lines) rather than a read-through,
+because a read-through finds what it remembers. The rule the pass worked to is this repo's own:
+**share a gate, copy a walk.** A gate or pure helper runs once per compile; a walk runs per element,
+and `ts-closure-size-is-load-bearing` plus item 2399's `#[cold]` finding both measured the wrong side
+of that line. So: structures and gates, nothing on a walk.
+
+### ✅ WHAT WAS TAKEN
+
+```text
+    1  exec/tests.rs        36 byte-identical closure bodies -> 4 shared fns      -242 lines
+    2  gremlin.rs           a 29-line parser prologue x3     -> one method         -48
+    3  gql fixtures         a 35-line fixture x3             -> createFilteredCsrGraph
+                                                                                   -105 / +61
+    4  clause-shape.ts      a 17-line detector gate x3       -> onePatternMatchReturn
+                                                                                   ~neutral
+```
+
+**1 — the test helpers.** 184 query-helper closures across 67 shapes in a 36,618-line file; four
+shapes were byte-identical across 36 sites (`val` 11, `ids` 10, `nums` 8, `rows` 7). Each site keeps a
+ONE-LINE closure delegating to the new function, so **no call site changed** and the diff is confined
+to definitions. ⚠️ The variants are deliberately left alone: six more `count` closures use `run`
+instead of `try_run`, others parse without `optimize_indexed`. Those differences ARE the thing under
+test in their own tests (whether the optimizer is exercised, whether an error is tolerated), so
+folding them would flatten a distinction rather than remove a duplication. Test counts unchanged:
+1350 + 13 + 725.
+
+**2 — the parser prologue.** `(` optional vertex label `)` plus the inline literal `.property(k, v)`
+modulator loop, 29 consecutive identical lines at three `addV` spellings. Parse-time, once per `addV`
+in the query TEXT. ⚠️ All three CONTEXTS verified covered before trusting the suite's green: plain
+`addV` (18 unit tests), `union(… addV …)` and `repeat(… addV …).times(N)` (both in
+`tests/gremlin_ported.rs`, 725 pass, plus two TS conformance suites). `clippy::type_complexity`
+rejected the tuple return and its own suggestion — a `LabelsAndProps` alias — is the better spelling.
+
+**3 — the fixture.** Byte-identical in `filtered-chain-csr`, `three-hop-gated-degree-product` and
+`two-hop-filtered-csr`; moved to the existing `src/fixtures/` convention. 🔑 The shared copy carries
+the items-1516/1518 warning ONCE instead of three times, which is the real win: the `^ (r * 104_729)`
+term is what breaks the `(a·i + b) % n` invariance, and a future edit that drops it would otherwise
+have three places to go wrong.
+
+**4 — the detector gate.** `onePatternMatchReturn`, the stricter shape `chain-projection`,
+`hop2-projection` and `reachability` wrote out identically on top of item 2391's `twoClauseReturn`.
+Line-neutral; the win is one spelling of "non-optional, exactly one pattern". ⚠️ **Made SELF-CONTAINED
+rather than delegating to `twoClauseReturn`, and that is a measurement decision**: delegating
+allocates TWO records per gate where the inline code allocated none, and one record is the cost item
+2391 measured as free across twelve sites while two is unpriced. `compilerate-2406.mjs` then showed
+this harness cannot price it — a compile is ~0.4 us, the same arm varied 2.9x, and the CONTROL moved
+3.3 → 8.4 ms, which is `CLAUDE.md`'s own giveaway that the instrument is the variable. So the question
+was settled by CONSTRUCTION (match the blessed shape exactly) rather than by a number that cannot
+resolve it. The probe is kept with that limit written into its header, so it reads as a calibrated
+instrument rather than an answer.
+
+🔑 **The gate is answer-equivalent, so the suite cannot see it break** — three rungs that stop firing
+return identical rows by the general path. Verified by mutation: inverting the `m.optional` test fires
+**19 of 87 `routes-fired` assertions**. ⚠️ And I nearly recorded that guard as absent: `reachShortcut`
+is the `CLinear` FIELD while `detectReachableShortcut` is the function, and searching the function
+name found nothing. It is covered, at `routes-fired.test.ts:575`.
+
+### ❌ WHAT WAS DECLINED, and why
+
+- **`PredDag` (`exec/varlen.rs`) and `PredLists` (`algo.rs`)** — written hours apart at items 2395 and
+  2396, and the most tempting target in the scan. They are not twins. `PredDag` is
+  GENERATION-STAMPED, so `vec![0; n]` suffices (its `head`/`tail` are meaningful only where
+  `seen == bfs_gen`) and it needs `slot()` for the `u32::MAX` sentinel; `PredLists` is fresh per
+  source, so `u32::MAX`-init IS its validity marker and no sentinel can reach it. A shared generic
+  would have to carry both initialization strategies and an optional sentinel map — more complexity
+  than ~60 duplicated lines cost, across two paths carrying measured 2.62x and 1.50x wins.
+- **`Plan::VarLength { … }` / `Plan::RepeatGroup { … }` destructuring, 8-9 sites** — the largest raw
+  count in the scan, and idiomatic Rust match-arm boilerplate. Factoring it means giving the variants
+  payload structs, i.e. restructuring the IR. Out of scope for a condensation pass.
+- **The duplicated WALK bodies in `hop-projection.ts`** — left copied BY DESIGN, which
+  `clause-shape.ts`'s header already states and items 1413/1415/1440/1442/1462 priced at up to 16% on
+  rows they do not touch.
+
+### ⚠️ THREE PROCESS SLIPS, all caught by an instrument rather than by care
+
+```text
+    a mechanical import insert   "after the last line starting with `import`" split a MULTI-LINE
+                                 `import {` and broke the file. `tsc` caught it; the heuristic was
+                                 wrong, not unlucky.
+    a probe with no rows         the new compile-rate probe's own vacuity guard fired: a two-vertex
+                                 fixture cannot satisfy a two-hop chain, so that arm would have timed
+                                 an EMPTY query. Fixed to a->b->c.
+    an awk field index           the tighter A/B printed `$3` ("ms") instead of the number, so a
+                                 six-arm run produced nothing. Its question was already dissolved.
+```
+
+### GATES
+
+`bun run check` 0 (output kept); `bun run test -- --skip-nx-cache` 0 across 21 projects;
+`bun run fuzz` 57 pass / 0 fail; `cargo test` 1350 + 13 + 725 pass / 0 fail;
+`cargo clippy --all-targets -- -D warnings` 0; `cargo fmt` 0; `routes-fired.test.ts` 87 pass;
+`packages/gql` 5425 pass; `packages/gremlin` 2845 pass.

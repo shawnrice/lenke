@@ -52,3 +52,58 @@ export const twoClauseReturn = (
 
   return { first, ret, cfirst, cret };
 };
+
+/**
+ * `[non-optional single-pattern match, return]`, both compiled — the STRICTER shape three detectors
+ * wrote out identically on top of the prologue above (`chain-projection`, `hop2-projection`,
+ * `reachability`, item 2406).
+ *
+ * ⚠️ THE WIN HERE IS NOT LINES, it is one definition. Three sites at 17 lines become three at 7
+ * plus this, which is roughly a wash — what it buys is that "non-optional, exactly one pattern" has
+ * a single spelling, so a change to the admitted shape cannot land in two of the three. That is the
+ * drift `twoClauseReturn` above exists to prevent, and the reason this is a SECOND helper rather
+ * than a widening of that one: its twelve callers deliberately disagree about the first clause's
+ * kind, and folding this requirement into it would silently stop the ones that do not want it.
+ *
+ * 🔑 Checkable rather than hopeful for the same reason as above: these three rungs are
+ * answer-equivalent, so a detector that stops firing returns identical rows by the general path.
+ * `routes-fired.test.ts` is what sees it.
+ */
+export type OnePatternMatchReturn = {
+  readonly m: Extract<Clause, { kind: 'match' }>;
+  readonly ret: Extract<Clause, { kind: 'return' }>;
+  readonly cm: Extract<CClause, { kind: 'match' }>;
+  readonly cret: Extract<CClause, { kind: 'return' }>;
+};
+
+export const onePatternMatchReturn = (
+  clauses: readonly Clause[],
+  compiled: readonly CClause[],
+): OnePatternMatchReturn | null => {
+  // ⚠️ SELF-CONTAINED RATHER THAN BUILT ON `twoClauseReturn`, and the six duplicated lines below are
+  // the deliberate price. Delegating would allocate TWO records per gate — that helper's, then this
+  // one's — where the inline code it replaces allocated none. One record per gate is the cost item
+  // 2391 measured as free across its twelve sites; two is a cost nobody has priced, and this
+  // harness cannot price it: a compile is ~0.4 us and the probe's own control moved 2.5x between
+  // rounds, so a few nanoseconds is far under the noise. Matching the blessed shape exactly settles
+  // the question by construction instead of by a measurement that cannot resolve it.
+  if (clauses.length !== 2) {
+    return null;
+  }
+
+  const [m, ret] = clauses;
+  const [cm, cret] = compiled;
+
+  if (
+    m.kind !== 'match' ||
+    m.optional ||
+    m.patterns.length !== 1 ||
+    ret.kind !== 'return' ||
+    cm.kind !== 'match' ||
+    cret.kind !== 'return'
+  ) {
+    return null;
+  }
+
+  return { m, ret, cm, cret };
+};
