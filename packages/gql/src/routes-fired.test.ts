@@ -221,6 +221,38 @@ describe('every fast-path detector fires for its own shape', () => {
       ['chainFoldLevels'],
     ],
     /*
+     * ⚠️⚠️ **AN AGGREGATE OVER A NON-FAR VARIABLE MUST STAY OFF — item 2410, and these rows are the
+     * route claim the ANSWER tests cannot make.** `foldLevel` binds the far variable and nothing
+     * else, so this rung answered `count(a.n)` as 0 over 1,280,000 paths. The pair below is the whole
+     * condition: the SAME chain with the SAME aggregate differs only in which variable it reads, and
+     * one routes while the other must not.
+     *
+     * ⚠️ An `[]` expectation passes more easily the fewer rungs fire (item 2409's own note), so the
+     * far-end row above is what makes these two readable: it fires, and these do not.
+     */
+    [
+      'count over the START variable stays off the level fold (item 2410)',
+      'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L)-[:R]->(d:L) RETURN count(a.k) AS c',
+      /*
+       * 🔑 IT DOES NOT FALL TO THE GENERAL MATCHER — it lands on `chainFoldedAggregate`, the
+       * path-walk twin that binds EVERY variable and so answers this correctly. That is the right
+       * shape of the fix: the level fold declines what it cannot bind, and a rung that can takes it.
+       * ⚠️ So the `[]` rows below are narrower claims than this one: `sum` has no such twin yet
+       * because `ORDER_INVARIANT_AGGREGATES` still refuses it there.
+       */
+      ['chainFoldedAggregate'],
+    ],
+    [
+      'sum over a MIDDLE variable stays off the level fold (item 2410)',
+      'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L)-[:R]->(d:L) RETURN sum(b.k) AS s',
+      [],
+    ],
+    [
+      'an argument reading the far variable AND another stays off (item 2410)',
+      'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L)-[:R]->(d:L) RETURN sum(a.k + d.k) AS s',
+      [],
+    ],
+    /*
      * ⚠️ A DISTINCT SUM STAYS OFF, and this one is a real refusal rather than a stale one: a
      * weighted fold over a deduped multiset has no weight to apply.
      */

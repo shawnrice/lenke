@@ -98185,7 +98185,7 @@ arithmetic, which is precisely what byte-identity forbids.
 
 GATES. `bun run fmt` 0; `bun run check` 0. (Probes only — no engine code changed.)
 
-## Item 2010 — ✅ **ORDER-INVARIANT CHAIN FOLDS GET A LEVEL RECURRENCE: 3-hop `min` 53.04 → 0.43 ms (123x), `count(x)` 45.87 → 0.42 (109x); 4-hop `min` 288.72 → 0.50 (577x), `count(x)` 251.76 → 0.43 (585x) — answers identical, within 1.5-2.4x of the hand ceiling.** ⚠️ **And the FAMILY moves only 1.14x, exactly as item 2009 predicted, because its cost is the `sum` refusal**
+## Item 2010 — ⚠️ **CARRIED A SILENT WRONG ANSWER FOR 400 ITEMS, FIXED AT 2410: the fold binds the FAR variable and nothing else, and never tested that its argument reads only that variable — `count(a.n)` answered 0 over 1,280,000 paths.** ✅ **ORDER-INVARIANT CHAIN FOLDS GET A LEVEL RECURRENCE: 3-hop `min` 53.04 → 0.43 ms (123x), `count(x)` 45.87 → 0.42 (109x); 4-hop `min` 288.72 → 0.50 (577x), `count(x)` 251.76 → 0.43 (585x) — answers identical, within 1.5-2.4x of the hand ceiling.** ⚠️ **And the FAMILY moves only 1.14x, exactly as item 2009 predicted, because its cost is the `sum` refusal**
 
 Takes item 2009's 234-1515x. ⚠️ The rung it replaces was NOT missing: `detectChainFoldedAggregate`
 (item 1824) already admits exactly these folds, but its own note says it "reuses
@@ -105471,7 +105471,7 @@ needs its own mutation round. Expected 517 → ~19.
 GATES. Probe only — no engine change (the oracle was reverted; `chainFoldLevels`'s gate verified back).
 `bun run check` 0 read unpiped; 5,087 GQL tests green.
 
-## Item 2119 — ✅ **SHIPPED: `RETURN DISTINCT <far>.<k>` over a 2+-segment chain goes on the level recurrence — 493.3 → 19.1 ms (25.8x) at two hops and 1633.0 → 19.2 (85.1x) at three, three controls flat**
+## Item 2119 — ⚠️ **ITS COMMENT EXCUSED THE SIBLING THAT HELD A WRONG ANSWER, corrected at 2410: ~~"its argument comes from an aggregate whose lowering already bounded it"~~ is FALSE — nothing bounds an aggregate's argument to the pattern's far end.** ✅ **SHIPPED: `RETURN DISTINCT <far>.<k>` over a 2+-segment chain goes on the level recurrence — 493.3 → 19.1 ms (25.8x) at two hops and 1633.0 → 19.2 (85.1x) at three, three controls flat**
 
 Item 2118 found it in the CONTROLS of an unrelated question: the row spelling cost **27x its own
 `count(DISTINCT)` twin for the same 97 values**. Both must build the same distinct set; the count then
@@ -121801,7 +121801,7 @@ native's `[]` exactly.
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run typecheck` 0, each read unpiped; the four new tests,
 and 3/4 red with the fix mutated away.
 
-## Item 2409 — ✅✅ **TOOK ITEM 1880's REFUSED HALF: `sum`/`avg` over a chain now ride the LEVEL RECURRENCE as a MULTIPLICITY-WEIGHTED fold — 676.38 → 0.80 ms, 849x / 856x, and the fold lands ON `min`'s own floor.** 🔑 **The argument that replaced the refusal is an ERROR BOUND, not a re-association: `Σ u_v·x_v` is INSIDE item 2401's contract and strictly MORE accurate than the per-path left fold.** ⚠️ **AND ITEM 2401 SHIPPED ONE OF SIX SITES — the retired refusal was still live in five more places inside the GQL executor alone**
+## Item 2409 — ⚠️⚠️ **SHIPPED TWO WRONG ANSWERS WITH THE WIN, BOTH FIXED AT 2410: it WIDENED item 2010's unchecked far-variable assumption to `sum`/`avg` (`sum(a.n)` answered `null`), and its empty fold answered `null` where every other route answers `0` — a route-dependent answer, and its test pinned it there.** ✅✅ **TOOK ITEM 1880's REFUSED HALF: `sum`/`avg` over a chain now ride the LEVEL RECURRENCE as a MULTIPLICITY-WEIGHTED fold — 676.38 → 0.80 ms, 849x / 856x, and the fold lands ON `min`'s own floor.** 🔑 **The argument that replaced the refusal is an ERROR BOUND, not a re-association: `Σ u_v·x_v` is INSIDE item 2401's contract and strictly MORE accurate than the per-path left fold.** ⚠️ **AND ITEM 2401 SHIPPED ONE OF SIX SITES — the retired refusal was still live in five more places inside the GQL executor alone**
 
 The user asked for items **1880, 2056, 2157, 2199, 2335** to be priced and built if worth it. ✅ Four
 were already closed or already taken and are corrected in this commit rather than rebuilt; the fifth
@@ -121998,3 +121998,124 @@ without materializing the list it exists to avoid. There is nothing to win.
 --skip-nx-cache` 0 across 21 projects; `bun run fuzz` **57 pass / 0 fail on three consecutive sweeps**
 with `DECLARED none used` and `aggregate=1194/1194` non-empty; the 14-mutant battery 13/13 with the
 no-op control surviving; the oracle, the FFI comparison, the non-finite probe and the A/B above.
+
+## Item 2410 — ⚠️⚠️ **TWO SILENT WRONG ANSWERS ON THE CHAIN LEVEL FOLD, found by looking for a SPEEDUP: `count(a.n)` answered `0` over 1,280,000 paths whose `a.n` is never null, and an empty `sum` answered `null` where every other route answers `0`.** 🔑 **The first has been live since item 2010 (400 items); the second I shipped at 2409 and PINNED IN A TEST.** ⚠️ **5,439 green tests covered neither**
+
+The ask was more speed. The probe written to price it answered `null` where the general path answers
+`448000`, and that was the item.
+
+### 🔑 DEFECT 1 — THE FOLD BINDS THE FAR VARIABLE AND NOTHING ELSE, AND NEVER TESTED FOR IT
+
+```text
+    MATCH (a:P)-[:E]->(b:P)-[:E]->(c:P)-[:E]->(d:P)      16 paths, a.n never null
+        count(a.n)    0      -> 16          min(a.n)   null -> 10
+        sum(a.n)      null   -> 240         avg(a.n)   null -> 15
+```
+
+`foldLevel` runs one pass per reached vertex and binds `farVar` only, so `a.n` evaluated against an
+unbound name, became `null`, and was **excluded by the null rule**. ⚠️ **Not a decline — an answer,
+and a fast one** (0.16 ms where the truth costs 8.5). Every value it produced is plausible, which is
+the whole reason it survived: `count` → 0, the extremums and the sums → `null`.
+
+The line above the bug stated the requirement as fact:
+
+> The fold's argument must read ONLY the far node's variable, so its value is a function of the
+> reached vertex alone
+
+⚠️ **`detectChainDistinctLevels` TWENTY LINES UP TESTS EXACTLY THIS, and its comment says why its
+neighbour does not:** ~~"its argument comes from an aggregate whose lowering already bounded it, and
+this one's does not"~~. 🔑 **That excuse is false.** Nothing in `compileProjection` bounds an
+aggregate's argument to the pattern's far end; `count(a.n)` lowers to a `foldedAggs` entry like any
+other. One `freePredicateVars` call, the same test the sibling already ran — and the sibling's note
+is corrected in the same commit, because it is what let the hole stand through items 2119, 2120 and 2409.
+
+⚠️ **ITEM 2409 WIDENED IT.** `sum`/`avg` were admitted to this rung without the check, so the
+commit that bought 849x also turned `sum(a.n)` from a correct 51 ms answer into a wrong 0.16 ms one.
+🔑 That is how it was found: those were the arm being measured.
+
+✅ The fix is not a blanket decline. `count(a.n)` now lands on `chainFoldedAggregate`, the path-walk
+twin that binds every variable — the level fold declines what it cannot bind and a rung that can
+takes it. `routes-fired.test.ts` records that, and the far-end row still fires.
+
+### ⚠️⚠️ DEFECT 2 — AN EMPTY `sum` WAS ROUTE-DEPENDENT, AND I WROTE THE WRONG VALUE INTO BOTH THE RUNG AND ITS TEST
+
+```text
+    empty walk / all-null column       sum    avg    min   count
+      one hop, scan, false filter       0     null   null    0
+      2-3 hop chain (this rung)       null    null   null    0      <- item 2409
+```
+
+Reachable without an empty graph: a 2-hop chain over a column that is **entirely null** has 16 real
+rows and still folds to nothing. ⚠️ **A route choice must not change the answer**, so `null` was a
+divergence item 2409 introduced. The rung's comment claimed `null` was "what the general path
+answers over a column where every reached vertex is null" — 🔑 **measured, and it is not; the general
+path answers `0`.** `avg` keeps `null` on every route, so the two now deliberately disagree and the
+test says not to tidy them together.
+
+⚠️ **THIS IS THE THIRD ITEM RUNNING WHERE I WROTE A JUSTIFICATION INTO THE CODE AS FACT AND MEASURING
+REFUTED IT** — item 2408's eager drain, item 2409's finiteness guard, and now this. The mechanism is
+identical every time: a plausible sentence in a doc comment, written in place of the measurement that
+would have checked it. What caught it all three times was an instrument, not a re-read.
+
+### 🔑 THE INSTRUMENT, AND WHY IT IS THE OUTPUT HERE AS MUCH AS THE FIXES
+
+`nearagg-oracle-2410.mjs` asks, for every (pattern × variable × column × aggregate), whether
+`<agg>(<v>.<k>)` agrees with the same query's **row form reduced in JS**. The row form is the oracle
+because it is the shape no folding rung serves — it must materialize, so it binds everything. ⚠️ It
+consumes the ENGINE'S OWN ROWS rather than re-deriving a walk, so it cannot agree with a wrong walk
+or disagree with a right one for any reason but the fold. Floats compare to item 2401's contract, not
+bit-wise.
+
+**945 cells across 21 patterns** (7 modifiers × 3 widths — plain, clause `WHERE`, relationship
+variable, union types, label expression, inline properties, undirected): **945 pass / 0 fail**, worst
+err/bound 7.6e-2, and the float arms carry non-zero error so the contract side is not vacuous.
+
+Mutation, because a generative test whose teeth were never verified is worse than no test:
+
+```text
+    remove the far-variable check     50 of 945 FAIL   worst err/bound 2.81e+14
+    restore the empty sum to null      2 of 945 FAIL
+```
+
+⚠️ **THE SECOND MUTANT SURVIVED THE FIRST VERSION OF THE SWEEP** — with only `n` and `f` columns
+every fold had values, so the empty path was never reached and all 630 cells passed. An absent key
+(`z`) makes every cell an all-null fold on every route. 🔑 That is the sweep finding its own blind
+spot, and it is the reason the column list has three entries rather than two.
+
+### ⚠️ WHAT THE GREEN SUITE WAS WORTH
+
+`packages/gql` was **5,439 pass / 0 fail with both defects live**, and `bun run fuzz` was 57/0 on
+three sweeps. Not one test aggregated over a non-far variable on a chain, and not one folded an
+all-null column at two hops. 🔑 The condition needs BOTH halves at once — a chain the level fold
+admits AND an argument it cannot bind — so every test that varied only the aggregate, or only the
+pattern, passed against the broken gate. `chain-levels-near-arg.test.ts` is built around that
+condition: four layers with **disjoint value sets per layer** (on a ring `min(a.n)` and `min(d.n)`
+coincide and the test is satisfied by the wrong answer), every near-arg case paired with a far-arg
+CONTROL. Mutating the fix away fails **15 of its 22** and leaves all five controls passing.
+
+### 🔑 STILL OPEN, AND NOW BETTER PRICED THAN BEFORE
+
+The fix sends `sum`/`avg` over a non-far variable to the general matcher, because
+`chain-projection.ts` and `hop2-projection.ts` still carry item 1830's `ORDER_INVARIANT_AGGREGATES`
+and item 2401's retired byte-identity argument verbatim. Priced here against each shape's own `rows`
+floor, 20,000 vertices / 80,000 edges, 3 hops:
+
+```text
+                        sum      countx    rows       sum vs its floor
+    plain              0.87       0.84    171.59      on the floor (item 2409)
+    label expression  697.83     192.68   178.84      3.9x       <- LIVE
+    union types      1382.55     401.32   359.59      3.8x       <- LIVE
+    non-far argument   51.14       8.49      6.07     8.4x       <- LIVE (at N=2000)
+    clause WHERE      780.53     693.53   728.20      flat — the walk dominates
+    inline properties 727.15     636.86   678.52      flat — the walk dominates
+    relationship var   42.10      42.19     40.81     flat
+```
+
+⚠️ **Three of the six modifiers are flat, so "widen the path-walk rungs" is worth less than the
+modifier count suggests** — the `WHERE` and inline arms pay for their walk, not for the refusal.
+`collect` keeps its refusal everywhere, for a reason no ruling touches.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run typecheck` 0, each read unpiped; `bun run test --
+--skip-nx-cache` 0; `packages/gql` 5,464 pass / 0 fail; `bun run fuzz` 57 pass / 0 fail on three
+consecutive sweeps with `DECLARED none used` and `aggregate=1124/1124` non-empty; the 945-cell sweep
+and both its mutants.

@@ -676,8 +676,11 @@ export const detectChainDistinctLevels = (
    * ⚠️⚠️ **THE ITEM MUST READ ONLY THE FAR VARIABLE, AND THIS IS CHECKED RATHER THAN ASSUMED.** The pass
    * binds `farVar` and nothing else, so an item reading the START (`RETURN DISTINCT a.n`) would evaluate
    * against an unbound name — a silent wrong answer, not a decline. 🔑 `foldLevel`'s neighbour states
-   * this requirement in a comment and does not test it; its argument comes from an aggregate whose
-   * lowering already bounded it, and this one's does not.
+   * this requirement in a comment and does not test it; ~~its argument comes from an aggregate whose
+   * lowering already bounded it, and this one's does not~~ — ⚠️ **THAT EXCUSE WAS WRONG AND COST A
+   * WRONG ANSWER (item 2410).** Nothing in `compileProjection` bounds an aggregate's argument to the
+   * pattern's far end: `count(a.n)` lowers to a `foldedAggs` entry like any other and answered 0 over
+   * 1,280,000 paths. The neighbour now runs the same test this one does.
    */
   /*
    * ⚠️⚠️ EVERY column must read ONLY the far variable (item 2120 widened this from one). The pass binds
@@ -793,6 +796,28 @@ export const detectChainFoldLevels = (
   const farVar = pattern.segments[pattern.segments.length - 1].node.variable;
 
   if (farVar === undefined) {
+    return null;
+  }
+
+  /*
+   * ⚠️⚠️ **CHECKED RATHER THAN ASSUMED SINCE ITEM 2410 — THE COMMENT ABOVE WAS A SILENT WRONG ANSWER
+   * FOR 400 ITEMS.** `foldLevel` binds `farVar` and NOTHING else, so an aggregate over any other
+   * variable evaluates against an unbound name: `MATCH (a:T)-[:E]->(b:T)-[:E]->(c:T)-[:E]->(d:T)
+   * RETURN count(a.n)` answered **0** over 1,280,000 paths whose `a.n` is never null, and `min(a.n)`
+   * answered `null`. Not a decline — an answer, and a fast one.
+   *
+   * 🔑 `detectChainDistinctLevels` RIGHT ABOVE tests exactly this and its comment says why this
+   * function does not: "its argument comes from an aggregate whose lowering already bounded it, and
+   * this one's does not". ⚠️ THAT CLAIM IS FALSE. Nothing in `compileProjection` requires an
+   * aggregate's argument to read the pattern's far end, and `count(a.n)` lowers to a `foldedAggs`
+   * entry like any other. The sibling's own note is corrected in the same commit.
+   *
+   * Item 2409 then widened the hole to `sum`/`avg`, which is how it was found: those were the arm
+   * being measured, and `sum(a.n)` answered `null` where the general path answers 448000.
+   */
+  const reads = freePredicateVars(agg);
+
+  if (reads.size !== 1 || !reads.has(farVar)) {
     return null;
   }
 
@@ -947,12 +972,24 @@ const foldLevel = (pass: FoldPass): unknown => {
 
   if (isWeighted) {
     /*
-     * ⚠️ AN EMPTY `sum` IS `null`, NOT `0`, and an empty `avg` is `null` too — which is what the
-     * general path answers over a column where every reached vertex is null. `have` is the same
-     * distinguisher the extremums use below.
+     * ⚠️⚠️ **AN EMPTY `sum` IS `0` AND AN EMPTY `avg` IS `null`, AND THE TWO DISAGREEING IS THE
+     * POINT.** ~~An empty `sum` is `null`, not `0` … which is what the general path answers over a
+     * column where every reached vertex is null~~ — item 2410 MEASURED that claim and it is false.
+     * Every other route in this engine answers `0`:
+     *
+     * ```text
+     *     empty walk / all-null column        sum   avg   min   count
+     *       one hop, scan, false filter        0    null  null    0
+     *       this rung before item 2410       null   null  null    0
+     * ```
+     *
+     * 🔑 A ROUTE CHOICE MUST NOT CHANGE THE ANSWER, so `null` here was a divergence introduced by
+     * item 2409 — reachable by a 2-hop chain over a column that is entirely null, which is a graph
+     * property and not a query one. `avg` keeps `null` because `0/0` is not an average and that is
+     * what every other route says too. ⚠️ Do not "tidy" these two into agreeing.
      */
     if (!have) {
-      return null;
+      return name === 'sum' ? 0 : null;
     }
 
     return name === 'sum' ? total : total / weight;

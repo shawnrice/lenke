@@ -257,7 +257,16 @@ describe('chainFoldLevels weighted sum/avg (item 2409)', () => {
     expect(Number.isNaN(one(mixed, `${HOP2} RETURN sum(c.w) AS x ORDER BY x`))).toBe(true);
   });
 
-  test('⚠️ NULL IS EXCLUDED and an all-null column answers `null`, not `0`', () => {
+  /*
+   * ⚠️⚠️ **THIS TEST PINNED THE WRONG VALUE AND ITEM 2410 CORRECTED IT.** It asserted `sum` over an
+   * all-null column is `null`, "which is what the general path answers" — a claim written into both
+   * the test and the rung and never measured. It is false: every other route answers `0`, so item
+   * 2409 shipped a route-dependent answer and this test pinned it there. `avg` stays `null`.
+   *
+   * 🔑 The pair below is the whole point now: `sum` and `avg` DISAGREE on an empty fold, and a reader
+   * tidying them into agreement would reintroduce the divergence in one direction or the other.
+   */
+  test('⚠️ NULL IS EXCLUDED, and an all-null column answers `0` for `sum` but `null` for `avg`', () => {
     // `v1` lacks the key entirely and `v2` holds an explicit null — ISO yields NULL for both.
     const g = ringOf([{ w: 2.5 }, { other: 1 }, { w: null }]);
 
@@ -267,8 +276,16 @@ describe('chainFoldLevels weighted sum/avg (item 2409)', () => {
 
     const empty = ringOf([{ other: 1 }, { other: 2 }, { other: 3 }]);
 
-    expect(one(empty, `${HOP2} RETURN sum(c.w) AS x`)).toBe(null);
+    expect(one(empty, `${HOP2} RETURN sum(c.w) AS x`)).toBe(0);
     expect(one(empty, `${HOP2} RETURN avg(c.w) AS x`)).toBe(null);
+
+    /*
+     * ⚠️ THE CROSS-ROUTE CONTROL, which is what makes the two values above a CONTRACT rather than
+     * this rung's preference. One hop over the same graph cannot reach the level fold, so it answers
+     * from the general path — and the two must agree.
+     */
+    expect(one(empty, 'MATCH (a:P)-[:E]->(b:P) RETURN sum(b.w) AS x')).toBe(0);
+    expect(one(empty, 'MATCH (a:P)-[:E]->(b:P) RETURN avg(b.w) AS x')).toBe(null);
   });
 
   test('🔑 THE FOLD DIRECTION IS PINNED — within-engine determinism, which item 2400 did NOT relax', () => {
