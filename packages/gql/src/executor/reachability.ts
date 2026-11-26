@@ -617,8 +617,25 @@ export const runReach = (spec: ReachSpec, graph: Graph, params: Params): Row[] =
    * 28.39. A build is repaid many times over there, so the gate does not apply to it.
    */
   const wide = seeds.length * SEED_SHARE >= graph.verticesById.size;
+  /*
+   * ⚠️⚠️ **`spec.minLen >= 2` BELONGS IN THIS GATE AND WAS MISSING, WHICH WAS A CRASH.** Both
+   * comments below say the tables are REQUIRED for the acyclic arm and for the `min >= 2` trail arm,
+   * and that "the seed-share gate does not apply" to either — but only `spec.acyclic` was written
+   * here. So a `min >= 2` quantifier with a NARROW seed, on a graph whose CSR was not already built,
+   * left `csr` undefined and reached `trailReached(csr!, …)`, where the non-null assertion lies:
+   *
+   *     MATCH (a:T)-[:E]->{2,3}(b:T) WHERE a.n = $p0 RETURN DISTINCT b.n AS x
+   *     TypeError: Cannot destructure property 'order' from null or undefined value
+   *
+   * 🔑 THE SELECTIVITY OF THE PREDICATE DECIDED IT, which is why no test had found it: on the
+   * differential fuzzer's fixture the query crashes for `$p0` in {0, 1, 2} and answers for {3, 5, 7},
+   * because the wider seeds trip `wide` and get the tables anyway. The native engine answered `[]`,
+   * so the fuzzer reported it as an `err`-vs-`ok` divergence and auto-labelled it an evaluation-order
+   * difference — the one family it is NOT, since `a.n = $p0` cannot raise.
+   */
+  const needsCsr = spec.acyclic === true || spec.minLen >= 2;
   const csr =
-    spec.acyclic || wide || csrIsBuilt(graph, !out, types) ? csrFor(graph, !out, types) : undefined;
+    needsCsr || wide || csrIsBuilt(graph, !out, types) ? csrFor(graph, !out, types) : undefined;
   const produce = (): Vertex[] => {
     /*
      * ⚠️ THE `min >= 2` ARM COMES FIRST AND REQUIRES THE TABLES, like the acyclic one: the BFS arms

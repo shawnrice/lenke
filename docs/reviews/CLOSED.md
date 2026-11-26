@@ -121742,3 +121742,61 @@ fuzzer's own label _"an evaluation-order difference, but no registry entry cover
 class item 1711 found and left deliberately unregistered. Every file this item touches is under
 `packages/gremlin/src/executor/`, which the GQL executor does not enter, so the change cannot reach
 it. The sweep was clean on re-run.
+
+## Item 2409a — 🐛 **A CRASH, NOT A DIVERGENCE: the `min >= 2` trail arm takes the CSR tables unconditionally by its own comments and the GATE DID NOT SAY SO, so a NARROW seed reached `trailReached(csr!, …)` with `csr` undefined.** ⚠️ `bun run fuzz` has been reporting this and MISLABELLING it as item 1711's evaluation-order family, which is the one family it is not
+
+Found on the way to item 2409, which is why it has its own commit: it is not that item's change and it was
+failing on `HEAD` before it.
+
+```text
+    MATCH (a:T)-[:E]->{2,3}(b:T) WHERE a.n = $p0 RETURN DISTINCT b.n AS x
+        ts:     err TypeError: Cannot destructure property 'order' from null or undefined value
+        native: ok []
+```
+
+### 🔑 THE GATE CONTRADICTED ITS OWN TWO COMMENTS
+
+`reachability.ts` read:
+
+```ts
+const csr =
+  spec.acyclic || wide || csrIsBuilt(graph, !out, types) ? csrFor(graph, !out, types) : undefined;
+```
+
+and twenty lines below, the arm that consumes it:
+
+> ⚠️ THE `min >= 2` ARM COMES FIRST AND REQUIRES THE TABLES, like the acyclic one … **A build is
+> repaid many times over, so the seed-share gate does not apply.**
+
+⚠️ **IT DID APPLY, BECAUSE `spec.minLen >= 2` WAS NEVER WRITTEN INTO THE GATE.** Only `spec.acyclic`
+was. So a `min >= 2` quantifier with a narrow seed, on a graph whose CSR was not already built, got
+`csr === undefined` and ran straight into `trailReached(csr!, …)` — where the non-null assertion is a
+lie rather than a proof. One line: `const needsCsr = spec.acyclic === true || spec.minLen >= 2;`.
+
+### ⚠️⚠️ WHY NOTHING CAUGHT IT: THE PREDICATE'S SELECTIVITY DECIDED WHETHER IT CRASHED
+
+On the differential fuzzer's own fixture the SAME QUERY TEXT crashes for `$p0` in `{0, 1, 2}` and
+answers for `{3, 5, 7}` — because the wider seeds trip `wide` and are handed the tables anyway. Every
+existing test of this arm happened to use a wide seed, and a test that merely runs the query passes
+against the broken gate. 🔑 So `reach-trail-narrow-seed.test.ts` is built around the CONDITION rather
+than the query: 500 vertices, a predicate matching ONE of them, no prior query to warm the CSR, plus a
+wide-seed CONTROL row showing the bug was a function of seed width and not of the query. **Mutating the
+fix away fails 3 of its 4 tests and leaves the control passing**, which is what makes the pair a finding.
+
+### ⚠️⚠️ AND THE FUZZER'S LABEL WAS WRONG IN A WAY WORTH RECORDING
+
+It reported `(evaluation-order: an evaluation-order difference, but no registry entry covers this
+shape)` — item 1711's family, which is `err` vs `ok` where one engine evaluates a RAISING predicate and
+the other short-circuits it. ⚠️ **This query has no raising predicate**: `a.n = $p0` is a plain
+comparison. A `TypeError` is the TS engine crashing, which is a different and worse thing than two
+defensible readings disagreeing — and the registry of accepted divergences is not where it belongs.
+
+🔑 The practical cost of the mislabelling is that this looked like the known residual every time it
+appeared. ⚠️ **A `TypeError` in the `ts:` column should never read as a divergence**: no accepted
+divergence is a crash, so the label is checkable from the error's own type.
+
+✅ No answer was hiding behind it — with the fix, `$p0` in `{0, 1, 2}` answers `0 rows`, matching
+native's `[]` exactly.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run typecheck` 0, each read unpiped; the four new tests,
+and 3/4 red with the fix mutated away.
