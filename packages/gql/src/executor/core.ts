@@ -5778,7 +5778,13 @@ export type CLinear = {
    * shape and was 27x slower on the same values.
    */
   chainDistinctLevels: AlwaysRowsFn | null;
-  chainFoldLevels: AlwaysRowsFn | null;
+  /*
+   * ⚠️ A `RowsFn` SINCE ITEM 2409, which admitted `sum`/`avg` to this rung as a multiplicity-weighted
+   * fold. Those bail at EXECUTION time on a value they may not multiply — a stored temporal makes
+   * `sum` a data exception rather than an addition (item 2336), and whether a property holds one is
+   * not knowable while compiling. The caller's existing `!== null` fall-through applies unchanged.
+   */
+  chainFoldLevels: RowsFn | null;
   // ⚠️ Declines at EXECUTION time (vacuity is a graph property) with `undefined`, exactly as
   // `varLengthCount` above it does, so the caller's existing fall-through applies unchanged.
   chainStarCount: ((graph: Graph, params: Params) => Row[] | undefined) | null;

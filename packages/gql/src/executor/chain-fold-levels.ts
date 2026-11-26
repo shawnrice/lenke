@@ -3,9 +3,10 @@ import type { Graph, Vertex } from '@lenke/core';
 import type { Clause, Expr, NodePattern, PathPattern, RelPattern } from '../ast.js';
 import { twoClauseReturn } from './clause-shape.js';
 import type { CompiledExpr, CClause, Params, Row } from './core.js';
+import { compileExpr } from './core.js';
 import { csrFor } from './csr-cache.js';
 import { freePredicateVars } from './expr-analysis.js';
-import type { AlwaysRowsFn } from './hop-projection.js';
+import type { AlwaysRowsFn, RowsFn } from './hop-projection.js';
 import { plainNode, plainRel } from './hop-sides.js';
 import { vacuousLabel } from './labels.js';
 import { columnName, resolveCount, valueKey } from './rows.js';
@@ -42,13 +43,41 @@ import { propOf } from './values.js';
  *     4 hops   count(e.n)       251.76         0.17    1515.0x    YES
  * ```
  *
- * ⚠️⚠️ **`sum`, `avg` AND `collect` ARE EXCLUDED BY CONTRACT, NOT BY DIFFICULTY — and a
- * multiplicity-weighted sum is the specific trap.** Writing `sum` here as
- * `Σ u_k(v) · value(v)` is arithmetically appealing and is a DIFFERENT COMPUTATION from adding the
- * per-path values one at a time: f64 addition is not associative, so the two disagree in the last
- * ulp. Byte-identity with the Rust engine is a hard invariant, and
- * `ORDER_INVARIANT_AGGREGATES`/`foldFor` both refuse these for exactly this reason. The temptation
- * is real enough that item 1829's note predicted someone would arrive here motivated to widen it.
+ * ⚠️⚠️ **`sum` AND `avg` ARE NOW ADMITTED AS A MULTIPLICITY-WEIGHTED FOLD (item 2409), AND THE
+ * ARGUMENT IS AN ERROR BOUND RATHER THAN A RE-ASSOCIATION.** This paragraph used to read:
+ *
+ * > Writing `sum` here as `Σ u_k(v) · value(v)` is arithmetically appealing and is a DIFFERENT
+ * > COMPUTATION from adding the per-path values one at a time: f64 addition is not associative, so
+ * > the two disagree in the last ulp. Byte-identity with the Rust engine is a hard invariant.
+ *
+ * 🔑 The FIRST half is still true and is not disputed: `fl(u · x)` is not `x + x + … + x`, and no
+ * reordering makes it so. What changed is the SECOND half. Item 2401 (owner ruling) replaced
+ * bit-identity for `sum`/`avg` with a PRECISION contract — accurate to within `n·ε·Σ|xᵢ|`, and
+ * explicitly NOT bit-identical across engines — and item 2400 freed the premise underneath it.
+ *
+ * 🔑🔑 **AN ERROR BOUND IS SATISFIED OR NOT REGARDLESS OF WHICH OPERATIONS PRODUCE IT, AND THE WEIGHTED
+ * FORM SATISFIES IT WITH ROOM TO SPARE.** Over `V` distinct reached vertices carrying `n` paths in
+ * all, each `fl(u_v · x_v)` costs ONE rounding, and the outer sum over `V` terms costs at most `V`
+ * more, so the total error is bounded by `(V + 1)·ε·Σ|xᵢ|`. Since `V ≤ n`, that is INSIDE
+ * `n·ε·Σ|xᵢ|` — and strictly tighter than the per-path left fold, whose own worst case is the full
+ * `n·ε`. So this rung is not trading accuracy for speed; at high multiplicity it is the more
+ * accurate of the two.
+ *
+ * ⚠️ **DO NOT RE-PIN THE PER-PATH SUM'S EXACT BITS AS A TEST INVARIANT.** `levels-sum.test.ts` pins
+ * the BOUND, not the bits, and pins the fold's own direction for within-engine determinism
+ * (`parallelism-stance`), which is the guarantee item 2400 did NOT relax. Pinning the bits would
+ * rebuild this refusal in a new place.
+ *
+ * ⚠️⚠️ **`collect` IS STILL REFUSED, AND FOR A REASON NO RULING TOUCHES.** Item 2404 made its
+ * element order unspecified, so order is not the blocker — but a weighted fold has no way to EMIT
+ * `u_v` copies of a value without materializing the list it was supposed to avoid, so there is
+ * nothing to win here. It stays on the path walk.
+ *
+ * ⚠️ **AND A NON-NUMBER BAILS AT RUN TIME RATHER THAN BEING REFUSED AT COMPILE TIME** — see
+ * `WEIGHTED_BAIL`. `sum` over a column holding ANY temporal is a loud data exception on the general
+ * path (item 2336: the operation is chosen by looking at the whole collection), and `u · Temporal` is
+ * a silent `NaN`. Whether a property holds one is not knowable until it is read, so the fold watches
+ * for it and hands the query back.
  *
  * ⚠️ **A CHAIN PATTERN COUNTS WALKS, WHICH IS WHY THE RECURRENCE IS EXACT — and that was MEASURED,
  * not assumed.** A quantified path carries a mode (trail/acyclic), and items 2007/2008 spent two
@@ -674,10 +703,31 @@ export const detectChainDistinctLevels = (
   };
 };
 
+/**
+ * The aggregates this rung folds, and WHY each is here (item 2409 widened the first line).
+ *
+ * ```text
+ *   min / max        SET functions over the support   multiplicity irrelevant
+ *   count(x)         one per PATH                     multiplicity IS the tally
+ *   count(DISTINCT)  a set over the VALUES            multiplicity irrelevant
+ *   sum / avg        Σ u_v · x_v                       multiplicity is the WEIGHT   <- item 2409
+ *   collect          needs u_v copies emitted         nothing to win, refused
+ * ```
+ *
+ * ⚠️ `sum`/`avg` arrive with `proj.foldedAggs` UNDEFINED, because the shared `foldFor` carries no
+ * entry for them — so this rung compiles their argument itself. That is deliberate and item 2159's
+ * rule: `foldFor`'s result is read by call sites (`node-scan.ts`, `core.ts`'s grouped path) which
+ * infer ORDER-INSENSITIVITY from foldability, and a weighted sum is not order-insensitive in its
+ * bits. Widening `foldFor` would hand this fold to every one of them unexamined.
+ */
+const WEIGHTED: ReadonlySet<string> = new Set(['sum', 'avg']);
+
 export const detectChainFoldLevels = (
   clauses: readonly Clause[],
   compiled: readonly CClause[],
-): AlwaysRowsFn | null => {
+  // ⚠️ A `RowsFn` SINCE ITEM 2409: the weighted fold bails on a non-number at run time, so this
+  // rung can now decline after it has started, exactly as `chainFoldedAggregate` below it does.
+): RowsFn | null => {
   const twoClause = twoClauseReturn(clauses, compiled);
 
   if (twoClause === null) {
@@ -694,27 +744,43 @@ export const detectChainFoldLevels = (
 
   const { levels, startLabel, pattern } = shape;
   const proj = cret.projection;
-  const agg = proj.foldedAggs?.length === 1 ? proj.foldedAggs[0] : undefined;
+  const folded = proj.foldedAggs?.length === 1 ? proj.foldedAggs[0] : undefined;
+  /*
+   * ⚠️⚠️ **TWO WAYS IN, AND THE SECOND ONE COMPILES ITS OWN ARGUMENT.** `min`/`max`/`count` carry a
+   * `foldedAggs` entry that `compileProjection` already lowered; `sum`/`avg` do not, because
+   * `foldFor` has no entry for them (see `WEIGHTED`). The AST node is the authority either way —
+   * `foldedAggs[].expr` is documented as "the aggregate's own AST node" — so both paths identify the
+   * aggregate by the SAME object and the item-identity test below is unchanged.
+   */
+  const node = ret.projection.items.length === 1 ? ret.projection.items[0].expr : undefined;
+  const weighted =
+    folded === undefined &&
+    node?.kind === 'func' &&
+    WEIGHTED.has(node.name) &&
+    !node.star &&
+    !node.distinct &&
+    node.args.length === 1
+      ? node
+      : undefined;
+  const agg = folded?.expr ?? weighted;
 
   if (
     !proj.aggregating ||
     proj.items.length !== 1 ||
     agg === undefined ||
-    agg.expr.star ||
+    agg.star ||
     ret.projection.items.length !== 1 ||
     // The item must BE the aggregate, not an expression wrapping it — `count(x) + 1` folds the same
     // aggregate but its row value is the arithmetic (`detectChainFoldedAggregate`'s own rule).
-    ret.projection.items[0].expr !== agg.expr
+    ret.projection.items[0].expr !== agg
   ) {
     return null;
   }
 
-  const { name } = agg.expr;
-  const distinct = Boolean(agg.expr.distinct);
+  const { name } = agg;
+  const distinct = Boolean(agg.distinct);
 
-  // ⚠️ `sum`/`avg`/`collect` ARE NOT HERE, and the header says why: a multiplicity-weighted sum is a
-  // different arithmetic from a per-path one, and f64 addition is not associative.
-  if (name !== 'min' && name !== 'max' && name !== 'count') {
+  if (name !== 'min' && name !== 'max' && name !== 'count' && name !== 'sum' && name !== 'avg') {
     return null;
   }
 
@@ -731,16 +797,39 @@ export const detectChainFoldLevels = (
   }
 
   const outName = proj.items[0].name;
-  const { argFn } = agg;
+  /*
+   * ⚠️ ONE COMPILATION EITHER WAY. `foldedAggs` already lowered the argument for `min`/`max`/`count`;
+   * reusing it keeps a single compilation per expression, which is `detectMultiHopAggregate`'s own
+   * rule at its local-compile fallback. `sum`/`avg` have no entry, so the argument is compiled here —
+   * `agg.args[0]` is non-undefined because the `weighted` gate above tested `args.length === 1`.
+   */
+  const argFn = folded?.argFn ?? compileExpr(agg.args[0]);
 
   return (graph: Graph, params: Params) => {
     const { u, order } = levelWalk(graph, levels, startLabel);
     const binding = new Map<string, unknown>();
     const env: FoldEnv = { binding, params, graph };
+    const value = foldLevel({ u, order, name, distinct, argFn, env, binding, farVar });
 
-    return [{ [outName]: foldLevel({ u, order, name, distinct, argFn, env, binding, farVar }) }];
+    /*
+     * ⚠️⚠️ **THE BAIL HANDS THE WHOLE QUERY BACK, IT DOES NOT ANSWER PART OF IT.** A weighted `sum`
+     * that met a temporal (or any non-number) has a partial total in hand, and returning it would be
+     * a silently wrong answer where the general path raises a data exception — item 2159's sharpest
+     * test is exactly that shape, a column numeric until its LAST row. `null` here falls through to
+     * the rung below, which re-walks and answers or faults as it always did.
+     */
+    return value === WEIGHTED_BAIL ? null : [{ [outName]: value }];
   };
 };
+
+/**
+ * The weighted fold met something it may not multiply — see the header's last paragraph.
+ *
+ * ⚠️ A UNIQUE OBJECT, NOT A VALUE. `null`, `NaN` and `undefined` are all legitimate answers from
+ * `foldLevel` (an empty extremum answers `null`), so the sentinel must be distinguishable from every
+ * one of them by identity.
+ */
+const WEIGHTED_BAIL: unique symbol = Symbol('chain-fold-levels weighted bail');
 
 /**
  * The single pass over the final level — the only part that differs between the four folds.
@@ -753,7 +842,7 @@ export const detectChainFoldLevels = (
 type FoldPass = {
   readonly u: Float64Array;
   readonly order: readonly Vertex[];
-  readonly name: 'min' | 'max' | 'count';
+  readonly name: 'min' | 'max' | 'count' | 'sum' | 'avg';
   readonly distinct: boolean;
   readonly argFn: (env: FoldEnv) => unknown;
   readonly env: FoldEnv;
@@ -764,7 +853,11 @@ type FoldPass = {
 const foldLevel = (pass: FoldPass): unknown => {
   const { u, order, name, distinct, argFn, env, binding, farVar } = pass;
   const seen = distinct ? new Set<string>() : undefined;
+  const isWeighted = name === 'sum' || name === 'avg';
   let total = 0;
+  // The denominator for `avg`: the number of PATHS carrying a non-null value, which is exactly what
+  // `count(x)` tallies above — so the two cannot disagree about which paths an average is over.
+  let weight = 0;
   let best: unknown;
   let have = false;
 
@@ -783,6 +876,41 @@ const foldLevel = (pass: FoldPass): unknown => {
     // non-null values, so a vertex missing the property contributes nothing even though it IS
     // reached. `detectChainFoldedAggregate`'s note records the same rule for `count(DISTINCT x)`.
     if (cell === null || cell === undefined) {
+      continue;
+    }
+
+    if (isWeighted) {
+      /*
+       * ⚠️⚠️ **`typeof`, NOT `Number.isFinite` — AND THE FIRST VERSION OF THIS LINE HAD IT THE
+       * OTHER WAY ROUND ON A REASON THAT DOES NOT HOLD.** It read:
+       *
+       * > `Number.isFinite` IS THE TEST … `u · NaN` is `NaN` and `u · Infinity` is `Infinity`, which
+       * > LOOK like the per-path answer and are not reliably it once a second non-finite term with
+       * > the opposite sign is in play.
+       *
+       * 🔑 `levelsum-inf-probe-2409.mjs` put that to six fixtures — `+Inf` alone, `+Inf` with
+       * `-Inf`, `NaN`, and three overflow shapes including one that overflows only BY the weight —
+       * and the two arms AGREE on all six. The argument is provable, not just measured: `mult` is
+       * always finite and non-zero (a zero multiplicity is skipped above), so `mult · ±Inf` is
+       * `±Inf` and `mult · NaN` is `NaN`, giving the weighted form the SAME non-finite term the
+       * per-path form contributes; and `±Inf`/`NaN` absorb order-independently, so only the finite
+       * part re-associates — which is what item 2401's bound already covers.
+       *
+       * ⚠️ SO THE STRICTER GUARD WAS A 849x FALL-THROUGH FOR NO CORRECTNESS GAIN: one `Infinity`
+       * anywhere in the column would have sent the whole query down the path walk. What must still
+       * bail is a NON-NUMBER — a stored Temporal makes `sum` a loud data exception rather than an
+       * addition (item 2336), and `u · Temporal` is a silent `NaN`.
+       */
+      if (typeof cell !== 'number') {
+        return WEIGHTED_BAIL;
+      }
+
+      // ⚠️ THE WEIGHT IS THE MULTIPLICITY, so this is `Σ u_v · x_v` and NOT `Σ x_v` — the header's
+      // error bound is about exactly this line.
+      total += mult * cell;
+      weight += mult;
+      have = true;
+
       continue;
     }
 
@@ -815,6 +943,19 @@ const foldLevel = (pass: FoldPass): unknown => {
 
   if (name === 'count') {
     return total;
+  }
+
+  if (isWeighted) {
+    /*
+     * ⚠️ AN EMPTY `sum` IS `null`, NOT `0`, and an empty `avg` is `null` too — which is what the
+     * general path answers over a column where every reached vertex is null. `have` is the same
+     * distinguisher the extremums use below.
+     */
+    if (!have) {
+      return null;
+    }
+
+    return name === 'sum' ? total : total / weight;
   }
 
   // ⚠️ `null` FOR AN EMPTY EXTREMUM, which is what the general path answers — not `undefined`, and

@@ -168,11 +168,26 @@ describe('every fast-path detector fires for its own shape', () => {
       ['chainDistinctLevels', 'hop2Projection'],
     ],
     /**
-     * ⚠️ ITEM 1830's ALLOWLIST, ADMISSIONS AND REFUSALS BOTH. The refusals are the load-bearing
-     * half: `sum`/`avg` are order-sensitive in the last ulp and `collect`'s order IS its answer, so
-     * admitting any of them would break byte-identity with Rust wherever this walk's order differs
-     * from the general path's — a question settled for ONE hop only (items 419, 551). No ANSWER test
-     * can catch that regression on integer fixtures, which is why it is pinned as a route.
+     * ⚠️ ITEM 1830's ALLOWLIST — ADMISSIONS NOW, AND THAT IS ITEM 2409's CHANGE TO THIS FILE.
+     *
+     * It used to read: _"the refusals are the load-bearing half: `sum`/`avg` are order-sensitive in
+     * the last ulp … so admitting any of them would break byte-identity with Rust"_, and carried
+     * three cases asserting an EMPTY rung list for `sum`, `avg` and `collect`.
+     *
+     * 🔑🔑 TWO THINGS WERE WRONG WITH THAT, and item 2408 found the second one the hard way:
+     *
+     * 1. Item 2401 (owner ruling) replaced bit-identity for `sum`/`avg` with a PRECISION contract,
+     *    and item 2400 freed the premise about walk order underneath it. So the stated reason is
+     *    gone — `chain-fold-levels.ts`'s header carries the error-bound argument that replaced it.
+     * 2. ⚠️ **ASSERTING THE REFUSAL GIVES A NARROWING MUTANT A GREENER FILE, NOT A REDDER ONE.**
+     *    An `[]` expectation passes more easily the fewer rungs fire, so it cannot catch the
+     *    regression it was written for — only the ADMISSION can ([[perf-gate-needs-its-own-test]],
+     *    as item 2408 restated it). The `sum`/`avg` cases below now name the rung.
+     *
+     * ⚠️ `collect` KEEPS ITS REFUSAL and keeps its `[]`, for a reason no ruling touches: a weighted
+     * fold cannot emit `u_v` copies of a value without materializing the list it exists to avoid.
+     * Item 2404 made its element order unspecified, so order is not the blocker — there is simply
+     * nothing to win. Its `[]` is honest about being the weaker form of assertion.
      */
     [
       'three-hop max',
@@ -189,14 +204,29 @@ describe('every fast-path detector fires for its own shape', () => {
       'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L)-[:R]->(d:L) RETURN count(d.k) AS c',
       ['chainFoldLevels', 'chainFoldedAggregate'],
     ],
+    /*
+     * ⚠️ ONLY `chainFoldLevels` FIRES, not the path arm below it. `chainFoldedAggregate` reads
+     * `proj.foldedAggs`, which is undefined for `sum`/`avg` because the shared `foldFor` has no
+     * entry — so unlike `min`/`max`/`count` above, these two have NO second rung waiting. That is
+     * what makes the bail hand the query to the GENERAL path rather than to a sibling rung.
+     */
     [
-      'SUM must stay OFF the rung',
+      'three-hop SUM is ADMITTED to the level fold (item 2409)',
       'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L)-[:R]->(d:L) RETURN sum(d.k) AS s',
-      [],
+      ['chainFoldLevels'],
     ],
     [
-      'AVG must stay OFF the rung',
-      'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L)-[:R]->(d:L) RETURN avg(d.k) AS a',
+      'two-hop AVG is ADMITTED to the level fold (item 2409)',
+      'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L) RETURN avg(c.k) AS a',
+      ['chainFoldLevels'],
+    ],
+    /*
+     * ⚠️ A DISTINCT SUM STAYS OFF, and this one is a real refusal rather than a stale one: a
+     * weighted fold over a deduped multiset has no weight to apply.
+     */
+    [
+      'sum(DISTINCT) stays off the rung',
+      'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L)-[:R]->(d:L) RETURN sum(DISTINCT d.k) AS s',
       [],
     ],
     [

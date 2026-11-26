@@ -2146,8 +2146,14 @@ const deepWidthReductions = (linear: CLinear, graph: Graph, params: Params): Row
    * relationship variable, no union types, single-name labels), so everything it declines lands on
    * the rung below exactly as before.
    */
+  // ⚠️ Falls through on `null` since item 2409 — the weighted `sum`/`avg` fold's execution-time bail
+  // on a value it may not multiply. `min`/`max`/`count` never return it.
   if (linear.chainFoldLevels) {
-    return linear.chainFoldLevels(graph, params);
+    const rows = linear.chainFoldLevels(graph, params);
+
+    if (rows !== null) {
+      return rows;
+    }
   }
 
   // ⚠️ Falls through on `null` — the composed walk's execution-time decline (item 2105).

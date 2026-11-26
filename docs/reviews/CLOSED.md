@@ -88179,7 +88179,7 @@ reports as a single row.
 
 GATES. bun run check 0 read unpiped; no source touched.
 
-## Item 1880 — the general family splitter, and what it shows: the screen's FOUR biggest shapes are each a documented refusal or a measured ceiling, so the addressable time is exhausted
+## Item 1880 — the general family splitter, and what it shows: the screen's FOUR biggest shapes are each a documented refusal or a measured ceiling, so the addressable time is exhausted. ⚠️ **~~ALL FOUR ACCOUNTED FOR~~ — THE `aggregate` ONE WAS TAKEN AT ITEM 2409 AT 849x / 856x.** Its 5.2x (`sum`/`avg` over a chain against `min`/`max`) was refused here on byte-identity, which items 2400/2401 retired; the refusal survived in FIVE more GQL sites after item 2401 shipped only one. The other three stand
 
 Item 1879 split one family by hand and found that `var-length`'s 543 ms was ~70% one bound. A
 per-family total cannot show that, so **every** family number on the screen is a blended average
@@ -107697,7 +107697,7 @@ favourably.
 
 GATES. No code change; `bun run check` 0; 5,266 tests green.
 
-## Item 2157 — 🔑🔑 **FOUND AND PINNED, NOT YET BUILT: `sum()` over a hop costs MORE THAN MATERIALIZING EVERY ROW IT AGGREGATES. New bench row reads 295.2 ms TS against ffi's 7.7 — 38.32x, the largest ratio this session. `ORDER_SENSITIVE_AGGREGATES` is the mechanism and has NEVER been recorded here**
+## Item 2157 — 🔑🔑 **~~FOUND AND PINNED, NOT YET BUILT~~ — BUILT IN THREE STAGES AND THE HEADLINE HERE IS SUPERSEDED: item 2159 took the streaming fold (1.09-1.15x, and corrected TWO of this entry's hypotheses), item 2401 took the far-driven walk this entry called a correctness requirement (4.0-4.9x), and item 2409 took the same refusal at the CHAIN rung (849x). What survives is the MEASUREMENT and the mechanism; the `ORDER_SENSITIVE_AGGREGATES` reading is now item 2401's two-question split.** FOUND AND PINNED: `sum()` over a hop costs MORE THAN MATERIALIZING EVERY ROW IT AGGREGATES. New bench row reads 295.2 ms TS against ffi's 7.7 — 38.32x, the largest ratio this session. `ORDER_SENSITIVE_AGGREGATES` is the mechanism and has NEVER been recorded here**
 
 Items 2155/2156 both found the top of the bench already closed, so this tick screened **40 features for
 bench coverage** instead — the method that produced items 2146 (33x) and 2147 (5.5x). ⚠️ 22 had no row;
@@ -110037,7 +110037,7 @@ a diagnosis.
 
 GATES. No production change. `bun run check` 0.
 
-## Item 2199 — 🔑🔑 **ITEM 2198'S TARGET REFUTED — `max`/`min` WERE FUSED AT 1857 AND `sum` IS A BYTE-IDENTITY DECISION (1830, 1853). THE BUG WAS IN MY SCREEN: one global floor that is a CLOSED FORM. Fixed with per-group floors, and the Gremlin screen now flags NOTHING**
+## Item 2199 — 🔑🔑 **ITEM 2198'S TARGET REFUTED — and the REFUTATION STANDS ON ITS FLOOR ARGUMENT ALONE, which is the half worth keeping: `V().values(k).sum()` is FASTER than `values(k).fold()`, so there was never anything there. ⚠️ ~~`sum` IS A BYTE-IDENTITY DECISION~~ IS RETIRED — items 2400/2401 replaced that invariant and items 2408/2409 took the refusal it protected (2.80x on the Gremlin hop, 849x on the GQL chain); the comment quoted below no longer exists.** `max`/`min` WERE FUSED AT 1857. THE BUG WAS IN MY SCREEN: one global floor that is a CLOSED FORM. Fixed with per-group floors, and the Gremlin screen now flags NOTHING**
 
 Item 2198 handed off "`values(k).max()` never got `count()`'s fusion, ~2.7x available". ⚠️ The code says
 otherwise, in a comment at the fusion site:
@@ -116940,7 +116940,7 @@ set — recorded with the eighth arrival so the ninth starts from here.
 
 GATES. `bun run fmt` 0, `bun run check` 0. One probe (three arms); no production change.
 
-## Item 2335 — 🎯 **`sum`/`avg` COST 2.21x THE FOLDED `count(n.w)` ON THE SAME PROPERTY (25.37 vs 11.50 ns a vertex) — and ITEM 530's RECORDED 1.25x IS STALE, because the folded path has improved far more than the values path since. A streaming `sum` fold is REFUTED as unwriteable** (⚠️ ~~and a per-vertex GETTER read worth 13% is not~~ — **that slice does NOT exist; item 2336 found the destructuring already hoisted and the whole 25.37 ns accounted**)
+## Item 2335 — 🎯 **`sum`/`avg` COST 2.21x THE FOLDED `count(n.w)` ON THE SAME PROPERTY (25.37 vs 11.50 ns a vertex) — and ITEM 530's RECORDED 1.25x IS STALE, because the folded path has improved far more than the values path since. ~~A streaming `sum` fold is REFUTED as unwriteable~~** — ⚠️ **THAT WORD IS TOO STRONG AND ITEM 2159 HAD ALREADY DISPROVED IT 176 ITEMS EARLIER: it shipped a streaming `sum` fold with a sentinel bail for exactly the temporal look-ahead quoted below, and item 2409 took the same shape at the chain rung. What is true is NARROWER — the fold must be able to HAND THE QUERY BACK, which the ungrouped scan arm this entry measured has no mechanism for. The 2.21x stands and item 2336's full accounting of it stands** (⚠️ ~~and a per-vertex GETTER read worth 13% is not~~ — **that slice does NOT exist; item 2336 found the destructuring already hoisted and the whole 25.37 ns accounted**)
 
 Aggregation was the last read shape with no per-row comparison. ✅ The grouped and closed-form arms behave:
 
@@ -121800,3 +121800,201 @@ native's `[]` exactly.
 
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run typecheck` 0, each read unpiped; the four new tests,
 and 3/4 red with the fix mutated away.
+
+## Item 2409 — ✅✅ **TOOK ITEM 1880's REFUSED HALF: `sum`/`avg` over a chain now ride the LEVEL RECURRENCE as a MULTIPLICITY-WEIGHTED fold — 676.38 → 0.80 ms, 849x / 856x, and the fold lands ON `min`'s own floor.** 🔑 **The argument that replaced the refusal is an ERROR BOUND, not a re-association: `Σ u_v·x_v` is INSIDE item 2401's contract and strictly MORE accurate than the per-path left fold.** ⚠️ **AND ITEM 2401 SHIPPED ONE OF SIX SITES — the retired refusal was still live in five more places inside the GQL executor alone**
+
+The user asked for items **1880, 2056, 2157, 2199, 2335** to be priced and built if worth it. ✅ Four
+were already closed or already taken and are corrected in this commit rather than rebuilt; the fifth
+(1880) held a live 5.2x that turned out to be 849x on a fixture large enough to see it.
+
+### 🔑 THE PRICING PASS, WHICH IS HALF THIS ITEM'S OUTPUT
+
+```text
+    item   what its heading advertised              what is actually true
+    1880   `aggregate` 5.2x refused on              ⬅ THE LIVE ONE. Taken here at 849x
+           byte-identity
+    2056   `V().id()` admitted to the scan rung     already SHIPPED at 2056 itself; not a lever
+    2157   `sum()` over a hop, "NOT YET BUILT"      BUILT THREE TIMES SINCE — 2159 (1.09x), 2401
+                                                    (4.0-4.9x), and this item at the chain rung
+    2199   refuted, "`sum` IS a byte-identity       REFUTATION STANDS on its floor argument
+           decision"                                (`sum` is faster than `fold`); the REASON is
+                                                    retired and the comment it quotes is gone
+    2335   "a streaming `sum` fold is REFUTED as    TOO STRONG — item 2159 had already written one
+           unwriteable"                             176 items earlier. The 2.21x and item 2336's
+                                                    full accounting both stand
+```
+
+⚠️ **THREE OF THE FIVE ADVERTISED WORK THAT NO LONGER EXISTED**, which is item 1301's 35-of-40 rate
+holding exactly. 🔑 And the one that mattered was found by reading item 1880's own table rather than
+by measuring: it names the refusal and the number in the same row.
+
+### ⚠️⚠️ ITEM 2401 SHIPPED ONE SITE OF SIX, AND THAT IS THE STRUCTURAL FINDING
+
+Item 2408 recorded that item 2401's engine-agnostic ruling reached only the GQL side, leaving Gremlin's
+`aggregation.ts` carrying the retired invariant for seven items. ⚠️ **It is worse than that: the
+refusal was still live in five more places inside the GQL executor itself.** `grep` for the argument:
+
+```text
+    hop-projection.ts        ✅ the ONE site item 2401 changed
+    chain-fold-levels.ts     ⬅ TAKEN HERE (the level recurrence, 2+ segments)
+    chain-projection.ts      the path-walk rung for 3+ segments, STILL REFUSED
+    hop2-projection.ts       the path-walk rung for exactly 2, STILL REFUSED
+    projection.ts            `foldFor`'s own switch, deliberately unchanged — see below
+    shortcuts.ts             the scan-side note
+```
+
+🔑 Each carries a near-verbatim copy of "f64 addition is not associative … byte-identity with the Rust
+engine is a hard invariant". **A ruling that lands as a comment in one module does not propagate**, and
+grepping the ARGUMENT rather than the aggregate's name is what finds the rest.
+
+### ✅ TAKEN, 849x / 856x — and the arms are a ONE-LINE ROUTE TOGGLE
+
+`levelsum-ab-2409.sh`, 20,000 vertices / 80,000 edges, 3 hops = **1,280,000 paths for one row**, one
+shape per process, 3 order-alternated rounds, min of the per-round medians. The arms differ only in
+whether `WEIGHTED` holds `{sum, avg}`:
+
+```text
+                       GENERIC    FOLDED
+    sum(d.n)            678.97      0.80    ⬅ 849x
+    avg(d.n)            693.47      0.81    ⬅ 856x
+    min(d.n)   CONTROL    0.83      0.84       flat
+    count(d.n) CONTROL    0.82      0.90       flat
+    d.n  ROWS FLOOR     158.22    149.86       flat
+    count(*)   CONTROL    0.54      0.54       flat
+```
+
+🔑 **THE FOLD SITS ON `min`'s FLOOR** (0.80 against 0.84), where the general path was **4.3x the cost of
+materializing all 1,280,000 rows it aggregates** — item 2157's signal, at a scale that one could not
+reach. ⚠️ **ROUTE, not timing** ([[rung-precedence-decides-speed]]): `routes-fired.test.ts` now records
+`chainFoldLevels` answering both, where it recorded an EMPTY rung list before.
+
+⚠️ **AND THE SCALING STATEMENT IS STRONGER THAN THE RATIO.** At 400,000 vertices / 2,000,000 edges
+(**50,000,000 paths**) the fold answers `sum` in **45.25 ms**, sitting on `min`'s 44.71 — while the
+generic arm is **OOM-KILLED at the 16 GB cap**. The query goes from unanswerable to free.
+
+### 🔑🔑 THE ARGUMENT: AN ERROR BOUND, NOT A RE-ASSOCIATION
+
+`chain-fold-levels.ts`'s header refused this in terms worth quoting, because only HALF of it was
+retired:
+
+> Writing `sum` here as `Σ u_k(v) · value(v)` is arithmetically appealing and is a DIFFERENT
+> COMPUTATION from adding the per-path values one at a time: f64 addition is not associative, so the
+> two disagree in the last ulp. Byte-identity with the Rust engine is a hard invariant.
+
+✅ **THE FIRST SENTENCE IS STILL TRUE AND IS NOT DISPUTED** — `fl(u·x)` is not `x + x + … + x`, and no
+reordering makes it so. ⚠️ **It is the SECOND that items 2400/2401 retired**, and that matters because
+item 2401's contract is stated as a BOUND:
+
+```text
+    |engine − exact| ≤ n · ε · Σ|xᵢ|
+```
+
+🔑 **A BOUND IS SATISFIED OR NOT REGARDLESS OF WHICH OPERATIONS PRODUCE IT.** Over `V` distinct reached
+vertices carrying `n` paths, each `fl(u_v · x_v)` costs ONE rounding and the outer sum over `V` terms at
+most `V` more, so the error is bounded by `(V+1)·ε·Σ|xᵢ|` — and `V ≤ n`, so it is INSIDE the contract,
+**strictly tighter than the per-path left fold's own worst case of the full `n·ε`.**
+
+✅ **AND IT SHOWS UP IN THE ANSWER**, which is the part no argument could supply:
+
+```text
+    sum over 1,280,000 paths of an inexact column, exact value 448000
+        GENERIC (per-path left fold)   448000.00000006094
+        FOLDED  (weighted)             447999.99999999907    ⬅ CLOSER
+```
+
+### ✅ THE EVIDENCE, AND THE CONTROLS ARE WHAT MAKE IT READABLE
+
+```text
+    levelsum-oracle-2409.mjs   both arms against a KAHAN reference (~2ε, three orders tighter than
+                               either), 8 shapes x 2 depths:        ✅ 11/11, worst err/bound 1.2e-3
+                               CONTROL: 4/8 shapes have a NON-ZERO error, so the arms genuinely differ
+    levelsum-native-2409.ts    TS vs RUST over the FFI on the fuzzer's own inexact spellings:
+                               ✅ 6/6 float aggregates within the contract at rel 1e-16 to 7.6e-15
+                               ✅ CONTROL: min/max/count all BIT-IDENTICAL, so the difference is
+                               re-association and nothing else
+    levelsum-mutants-2409.mjs  14 mutants:                          ✅ 13/13 CAUGHT, 0 survivors
+                               CONTROL: the 14th is a deliberate NO-OP and SURVIVED, as designed
+```
+
+⚠️ **BIT-IDENTITY IS NOT PINNED AND MUST NOT BE.** `chain-levels-weighted-sum.test.ts` compares to the
+contract at 1e-9 and pins instead the things it does NOT free: the fold's DIRECTION over the vertex
+order (within-engine determinism, [[parallelism-stance]] — with a forward-vs-backward CONTROL so the
+test is not vacuous), the bail, null exclusion, the empty answer, and `avg`'s denominator.
+
+### ⚠️⚠️ I WROTE A JUSTIFICATION INTO THE CODE AND MEASURING REFUTED IT — THE SECOND ITEM RUNNING
+
+The bail started as `!Number.isFinite(cell)`, with a comment I wrote as fact:
+
+> `u · NaN` is `NaN` and `u · Infinity` is `Infinity`, which LOOK like the per-path answer and are not
+> reliably it once a second non-finite term with the opposite sign is in play.
+
+⚠️ **A MUTANT RELAXING THAT GUARD SURVIVED**, and `levelsum-inf-probe-2409.mjs` then put it to six
+fixtures — `+Inf` alone, `+Inf` with `-Inf` (the exact case the comment named), `NaN`, and three
+overflow shapes including one that overflows only BY the weight. 🔑 **The two arms AGREE on all six:
+0/6.** And the reason is provable rather than merely measured — `mult` is finite and non-zero, so
+`mult · ±Inf` is `±Inf` and `mult · NaN` is `NaN`, giving the weighted form the SAME non-finite term,
+and those absorb order-independently.
+
+🔑 **SO THE STRICTER GUARD WAS AN 849x FALL-THROUGH FOR NO CORRECTNESS GAIN**: one `Infinity` anywhere
+in the column would have sent the whole query down the path walk. The shipped guard is `typeof cell !==
+'number'`, which keeps the ONE bail that matters.
+
+⚠️ **ITEM 2408 WAS THE SAME FAILURE** (I wrote the eager drain off as flat, then measured 1.58x). Twice
+running, the mechanism is identical: **a plausible argument written into a doc comment before the
+measurement that would have checked it.** What caught it both times was an instrument, not a re-read.
+
+### ⚠️⚠️ WHY `sum` IS NOT ADDED TO THE SHARED `foldFor`, WHICH WOULD HAVE BEEN THE OBVIOUS CHANGE
+
+`sum`/`avg` arrive at this rung with `proj.foldedAggs` UNDEFINED, because `foldFor` carries only
+`count`/`min`/`max` — so the rung compiles their argument itself. 🔑 That is item 2159's rule and it
+still holds: **`foldFor`'s result is read by call sites which infer ORDER-INSENSITIVITY from
+foldability** (`node-scan.ts`'s unfiltered scan, `core.ts`'s grouped path, `hop-projection.ts`,
+`shortcuts.ts`, `grouped-hop.ts`), and a weighted sum is not order-insensitive in its bits. Widening
+`foldFor` would hand this fold to every one of them unexamined. ⚠️ `node-scan.ts:1776` says so in
+advance: _"`foldFor` is what keeps `sum`/`avg` out … an aggregate added to `foldFor` would otherwise
+arrive here unexamined."_
+
+### 🔑 THE THROW WENT IN FIRST AND IMMEDIATELY PAID
+
+Item 2150's rule, which item 2158 cost a whole item by skipping. The first throw went into
+`detectChainFoldedAggregate` — the rung item 1880's table and `ORDER_INVARIANT_AGGREGATES` both point
+at — and `min` at three hops **did not reach it**. The real site is `chain-fold-levels.ts`, a level
+recurrence, which changed the whole argument: a per-path fold needs only item 2401's re-association
+ruling, and a weighted one needs the error bound above. ⚠️ **One build and one run bought that.**
+
+### ⚠️ THREE MUTANTS WERE DEFECTIVE AND THE BATTERY SAID SO, which is item 1918's lesson applied forward
+
+```text
+    'the gate admits a DISTINCT sum'       UNREACHABLE: a DISTINCT sum is guarded TWICE, in series, so
+                                           removing one gate leaves the other and the ENGINE catches
+                                           the mutant. Rewritten to remove BOTH.
+    'avg divides by VERTICES not paths'    A NO-OP: `weight > 0 ? weight : 1` is `weight` on the only
+                                           path that reaches it. Item 1918's exact defect, repeated.
+    'the bail tests TYPE not finiteness'   ANSWER-EQUIVALENT, per the probe above — not catchable.
+    five more                              ANCHOR DRIFT at x0, caused by my own two corrections to
+                                           the source ([[ambiguous-anchor-strings]], this time x0).
+```
+
+🔑 **EVERY ONE WAS FOUND BY THE HARNESS ASSERTING RATHER THAN SILENTLY MUTATING**, which is item 1914's
+fix and the per-anchor count earning themselves again.
+
+### 🔶 WHAT IS STILL OPEN AND PRICED
+
+⚠️ **`chain-projection.ts` AND `hop2-projection.ts` STILL REFUSE `sum`/`avg`**, and their refusal is
+the easier one: those are PATH-WALK rungs, so the fold is a plain per-path left fold and needs only
+item 2401's re-association ruling — no error-bound argument at all. They serve the shapes the level
+recurrence DECLINES (a carried `WHERE`, a relationship variable, union types, a label expression),
+which is why taking this rung did not take them. ✅ Not built here and not priced: the level fold
+claims the common spelling, so the remaining shapes need their own measurement before anyone should
+assume the same ratio.
+
+⚠️ `collect` KEEPS ITS REFUSAL at every site, and for a reason no ruling touches: item 2404 made its
+element order unspecified, so order is not the blocker — but a weighted fold cannot emit `u_v` copies
+without materializing the list it exists to avoid. There is nothing to win.
+
+### GATES
+
+`bun run fmt` 0; `bun run lint` 0; `bun run typecheck` 0, each read unpiped; `bun run test --
+--skip-nx-cache` 0 across 21 projects; `bun run fuzz` **57 pass / 0 fail on three consecutive sweeps**
+with `DECLARED none used` and `aggregate=1194/1194` non-empty; the 14-mutant battery 13/13 with the
+no-op control surviving; the oracle, the FFI comparison, the non-finite probe and the A/B above.
