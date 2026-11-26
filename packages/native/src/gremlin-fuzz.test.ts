@@ -978,15 +978,21 @@ suite('differential fuzz: gremlin (TS engine vs Rust ENGINE)', () => {
       // stays contractual is WHICH elements come back and HOW MANY (compared as a multiset
       // below), the VALUES, and the order a top-level `order()` actually specifies.
       //
-      // The engines still AGREE on walk order today -- nothing has been reordered yet -- so a
-      // POSITIONAL divergence appearing here before a deliberate reorder ships is still worth
-      // investigating rather than shrugging at. And once a reorder does ship, a TIE under a
-      // top-level `order()` becomes the next false flag: the GQL differential fuzzer's fix is to
-      // append a distinct final sort key so the order is total, and the same trick applies here.
-      const multiType = ADJACENCY_STEP.test(text);
-      // Either an unspecified adjacency order (multi-type) OR a per-element reconverging
-      // branch (coalesce/choose/optional) leaves the result order unspecified.
-      const orderUnspecified = multiType || RECONVERGING_BRANCH.test(text);
+      // ⚠️ A REORDER HAS NOW SHIPPED, so the old form of this note ("the engines still AGREE on walk
+      // order today -- nothing has been reordered yet") is retired: item 2407 drives the one-hop
+      // `cyclicPath` rung off the type's edge set, which emits EDGE-insertion order where the
+      // engines once both emitted vertex order. So a POSITIONAL divergence on an adjacency shape is
+      // now expected rather than suspicious, and this predicate is what keeps it from being
+      // reported. A positional divergence on a shape with NO adjacency step and no reconverging
+      // branch is still worth investigating.
+      //
+      // A TIE under a top-level `order()` is the next false flag: the GQL differential fuzzer's fix
+      // is to append a distinct final sort key so the order is total, and the same trick applies.
+      const adjacency = ADJACENCY_STEP.test(text);
+      // Either an adjacency walk (whose order is implementation-dependent per item 2400's owner
+      // ruling) OR a per-element reconverging branch (coalesce/choose/optional) leaves the result
+      // order unspecified.
+      const orderUnspecified = adjacency || RECONVERGING_BRANCH.test(text);
       // A path-stream order() is unspecified even WITH a top-level order() (the order() IS the
       // unspecified step), so it forces `unordered` on its own.
       const unordered = (orderUnspecified && !hasTopLevelOrder(text)) || orderOverPaths(text);

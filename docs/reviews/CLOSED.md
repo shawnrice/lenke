@@ -93934,7 +93934,7 @@ NO ENGINE BEHAVIOUR CHANGED — two instruments and this entry; `projection.ts` 
 
 GATES. `bun run check` 0; `bun run test -- --skip-nx-cache` 21 projects.
 
-## Item 1955 — **THE EDGE-PREDICATE FAMILY'S THREE GENERIC ROWS, PRICED AT 4.45-4.83x — the walk already exists.** ⚠️ And the family's biggest raw gap (2.28x more) is **CORRECTNESS-BLOCKED by stream order**, which a checksum could not see and a positional compare settled
+## Item 1955 — **THE EDGE-PREDICATE FAMILY'S THREE GENERIC ROWS, PRICED AT 4.45-4.83x — the walk already exists.** ⚠️ ~~And the family's biggest raw gap (2.28x more) is **CORRECTNESS-BLOCKED by stream order**, which a checksum could not see and a positional compare settled~~ 🛑 **BOTH HALVES OF THAT ARE NOW WRONG (item 2407).** Item 2400 freed stream order, so the block is gone — and the gap was never caused by it: the order-PRESERVING flat-array arm is 2.03x where the reordered edge-bucket arm is 1.86x, so the prize needs no reorder at all. ⚠️ Its NUMBER is also stale: items 1956/1957 took the row 111.1 → 58.9 ms, so "2.28x beyond start-driven" is 1.86x and the engine now BEATS the start-driven hand walk (0.89x). The residual is inside the FUSED rung, not a route choice
 
 Continuing the Gremlin screen after item 1954 declined `tree()`. The screen's largest REALISTIC row
 is `V().outE('E').has('w', gt(3)).inV().values('n')` — a property-filtered hop, which real
@@ -96164,7 +96164,7 @@ NO ENGINE BEHAVIOUR CHANGED — the only edits are the stderr banner in three pr
 GATES. `bun run fmt` 0; `bun run check` 0. All three probes re-run after the edit and still emit
 their JSON result.
 
-## Item 1986 — ✅ **SHIPPED: a one-hop `cyclicPath()` IS the SELF-LOOP EDGES, so it needs no path tracking at all — 169.39 → 43.99 ms on the screen, 3.85x, five sibling controls flat, and the engine now sits ON its hand-rolled ceiling (1.0x)**. ⚠️ **ITS "owner decision" ON THE 4.6x EDGE-SET ARM IS WRONG — item 1987 corrects it to CORRECTNESS-BLOCKED by the fuzzer's strictly-ordered compare.** ⚠️ Found through a STALE CLAIM in `PROBES.md` — the file CLAUDE.md says to read first — which item 1923 had already corrected and which misled my target choice for a step
+## Item 1986 — ✅ **SHIPPED: a one-hop `cyclicPath()` IS the SELF-LOOP EDGES, so it needs no path tracking at all — 169.39 → 43.99 ms on the screen, 3.85x, five sibling controls flat, and the engine now sits ON its hand-rolled ceiling (1.0x)**. ⚠️ ~~**ITS "owner decision" ON THE 4.6x EDGE-SET ARM IS WRONG — item 1987 corrects it to CORRECTNESS-BLOCKED by the fuzzer's strictly-ordered compare.**~~ ✅ **AND ITEM 1986 WAS RIGHT THE FIRST TIME: it WAS an owner decision, the owner made it at item 2400, and item 2407 TOOK the 4.6x (31.06 → 7.03 ms, the engine now sits ON the edge-set ceiling at 1.0x).** ⚠️ Found through a STALE CLAIM in `PROBES.md` — the file CLAUDE.md says to read first — which item 1923 had already corrected and which misled my target choice for a step
 
 Both corpora were swept clean (items 1983/1984) and all three profile probes report closed ground
 (item 1985), so this tick used `PROBES.md`'s own section **"ASK WHAT THE SCREEN DOES NOT ASK"**.
@@ -96281,7 +96281,7 @@ knobs.
 GATES. `bun run fmt` 0; `bun run check` 0; `bun run test -- --skip-nx-cache` 0 across 21 projects;
 `bun run fuzz` 0, 57 pass / 0 fail; the Gremlin suite 2,425 pass / 0 fail.
 
-## Item 1987 — 🛑 **CORRECTING MY OWN ITEM 1986 ONE TICK LATER: the 4.6x edge-set arm I labelled "an owner decision on row order" is CORRECTNESS-BLOCKED by the byte-identity invariant, and leaving that label on it invited someone to take it.** ⚠️ Item 1955 had already measured the identical blocker one shape over. ❌ And `tree()` stays declined — read for a new mechanism, found none
+## Item 1987 — 🛑 **CORRECTING MY OWN ITEM 1986 ONE TICK LATER: the 4.6x edge-set arm I labelled "an owner decision on row order" is CORRECTNESS-BLOCKED by the byte-identity invariant, and leaving that label on it invited someone to take it.** ✅ **SUPERSEDED BY ITEM 2400's OWNER RULING AND TAKEN AT ITEM 2407 (4.6x).** ⚠️ This item was a correct reading of the contract AS IT STOOD — the fuzzer really did compare the shape ordered — so it is not an error, it is a refusal whose premise the owner then removed. But note what item 1986 called it FIRST and what 2407 found: it was an owner decision all along, and item 1955's identical "blocker" turned out not even to be the cause of its own gap ⚠️ Item 1955 had already measured the identical blocker one shape over. ❌ And `tree()` stays declined — read for a new mechanism, found none
 
 Item 1986 shipped the one-hop `cyclicPath` route at 3.85x and recorded a faster arm it did not
 build:
@@ -121411,3 +121411,143 @@ name found nothing. It is covered, at `routes-fired.test.ts:575`.
 `bun run fuzz` 57 pass / 0 fail; `cargo test` 1350 + 13 + 725 pass / 0 fail;
 `cargo clippy --all-targets -- -D warnings` 0; `cargo fmt` 0; `routes-fired.test.ts` 87 pass;
 `packages/gql` 5425 pass; `packages/gremlin` 2845 pass.
+
+## Item 2407 — ✅ **TOOK ITEM 1986/1987's 4.6x: the one-hop `cyclicPath` rung now drives the TYPE'S EDGE SET — 31.06 → 7.03 ms, and the engine sits ON the ceiling it was refused (1.0x).** 🛑 **AND REFUTED ITEM 1955's TWIN LEVER TWICE OVER: its block is gone AND was never the cause of its own gap — the ORDER-PRESERVING arm is FASTER than the reordered one (2.03x vs 1.86x).** ⚠️ The rung had NO direct test; one mutant killed 5 of 7 new assertions
+
+Both items refused the same lever for the same stated reason: the Gremlin differential fuzzer decided
+`unordered` as `multiType || RECONVERGING_BRANCH`, so a SINGLE-TYPE `out('E')` was compared **STRICTLY
+ORDERED** against native, making TS stream order a cross-engine contract. **Item 2400's owner ruling
+dissolved exactly that** — walk order is implementation-dependent — and the fuzzer's predicate is now
+`ADJACENCY_STEP`, which both shapes match. ⚠️ Neither refusal was ever about this engine computing a
+wrong answer; both were about a COMPARISON MODE, which is why re-reading them was worth a tick.
+
+### ✅ TAKEN: `cyclicPath`, 4.6x
+
+`cyclicpath-ceiling-1986.mjs` unchanged, 200,000 vertices / 1,000,002 edges, median of 7:
+
+```text
+                              BEFORE      AFTER
+    engine                     31.06       7.03    ⬅ 4.42x
+    CEILING A  per-vertex      30.70      33.39       the arm that shipped
+    CEILING B  edge set         6.75       7.19       the arm that was refused
+    engine sits on             A (1.0x)   B (1.0x)
+```
+
+🔑 **THE ANSWER IS THE SAME MULTISET AND A DIFFERENT SEQUENCE, AND THE PROBE SAYS SO IN BOTH
+DIRECTIONS** — `A agrees with engine` flipped from true to **false** and `B` from false to **true**,
+6 rows throughout. That flip IS the change; a checksum could not have seen it (item 1955's own
+lesson), so the probe compares positionally.
+
+🔑 **THE EDGE-SET DRIVE IS ALSO SIMPLER, WHICH NEITHER ITEM NOTICED.** A self-loop is a self-loop
+from either end, so `out(T)` and `in(T)` select the identical edges — item 1986's own fixture had
+recorded that (`V().in_(E).cyclicPath()` matched `out`) without drawing the consequence. The walk
+therefore drops the per-vertex bucket indirection AND the `outward` branch: fewer lines, one less
+concept.
+
+⚠️ **IT TAKES ON A LIVENESS DEPENDENCY.** `graph.edgesByLabel` must hold only live edges or this
+emits a row the per-vertex walk cannot — a WRONG ANSWER, not a reorder. `removeEdge` de-indexes it
+(core's "removal de-indexes and drops the emptied label entry"), and the new rung test pins that the
+rung inherits it. No new mutable state: the bucket already backs `count-shortcut` and `index-seed`,
+so item 1372's disqualified class is not in play.
+
+**THE SCREEN, `ONLY=pathdep`, with its five controls.** `cyclicPath` is now the CHEAPEST of the six
+rows, having been the second largest before item 1986 built the rung at all:
+
+```text
+    tree                601.13   1.01x [CONTROL]
+    path().by(k)         77.29   1.00x [CONTROL]
+    outE.inV (twin)      51.67   1.14x [CONTROL]  ⬅ SEE BELOW
+    outE.otherV          45.31   1.03x [CONTROL]
+    simplePath           35.74   1.05x faster [CONTROL]
+    cyclicPath            3.84           ⬅ was the 2nd largest row
+```
+
+⚠️ **THE TWIN'S 1.14x IS THE SHARED PROCESS, NOT A REGRESSION, AND THE INSTRUMENT'S OWN HEADER SAYS
+SO** ("ABSOLUTES ARE INFLATED 1.3-1.9x UNEQUALLY by the ~44 shapes sharing this process … do NOT
+compare two rows or two runs"). ISOLATED, two rounds: **45.55 and 45.78** against item 1986's 45.22.
+Mechanically it could not have moved either — the edit is inside a function `index.ts` reaches only
+for a `cyclicPath` plan, and its gate is untouched. Measured anyway, because the alternative is
+trusting the argument.
+
+### ⚠️ THE RUNG HAD NO DIRECT TEST AT ALL
+
+Nothing in the repo named `cyclicPathShortcut`, so the 2,845 passing Gremlin tests said almost
+nothing about the walk being replaced — item 1986 shipped it on a route count and a hand comparison.
+`cyclic-path-shortcut.test.ts` now covers it, and **every assertion drives the rung DIRECTLY rather
+than a traversal**, because the general path answers this shape identically and a `toArray` test
+would pass just as well with the rung deleted (one end-to-end case confirms the wiring, and it is
+the only ambiguous one).
+
+**MUTATION-VERIFIED, because a new test that was never made to fail is one I would only believe:**
+
+```text
+    self-loop test removed  (from === edge.to -> from !== undefined)    5 of 7 fail
+    collapsed to per-vertex (return [...new Set(rows)])                 5 of 7 fail
+```
+
+The fixture's load-bearing part is **two PARALLEL self-loops at one vertex**: the answer is one row
+per self-loop EDGE, and a fixture with at most one loop per vertex cannot tell that from a per-vertex
+reading — which is what the second mutant exploits.
+
+### 🛑 REFUTED: item 1955's twin lever, and BOTH halves of its claim were wrong
+
+`edgefilter-legal-2407.mjs`, item 1955's own fixture, median of 9, **ns per EDGE VISITED** (every arm
+visits all 1,000,000 and keeps 3 in 7, so a per-row figure flatters all four equally — item 1858):
+
+```text
+    engine                           58.9 ms    59 ns/visit
+    bucket LITERAL  (illegal)        30.8       31        1.91x
+    bucket DYNAMIC  (legal)          31.6       32        1.86x
+    flat   DYNAMIC  (engine shape)   29.0       29        2.03x   ⬅ AND IT PRESERVES ORDER
+```
+
+**1 — THE BLOCK IS GONE AND WAS NEVER THE CAUSE.** `flat DYNAMIC` builds the contiguous array in
+`graph.vertices` order, exactly as the shipped `edgeFlatFor` does, so it is ORDER-PRESERVING — and it
+is the FASTEST arm. The reordered edge-bucket arm item 1955 wanted is _slower_ (1.86x). So the prize
+item 1955 described as order-blocked needs no reorder at all, and freeing the order buys nothing here.
+Item 2403's lesson, repeating: a "not built because X" note is a claim about X.
+
+**2 — MY OWN FIRST EXPLANATION WAS ALSO WRONG, AND MEASURING IT IS THE ONLY REASON I KNOW.** Seeing
+that item 1955's ceiling read `edge.properties.w` as a LITERAL where the engine must read
+`properties[key]`, I predicted the gap was item 2016's recorded 1.41x keyed-load term and that the
+lever was a mirage ([[floor-arm-must-take-same-route]]). The dynamic-key arm says otherwise: **30.8
+against 31.6, a 1.03x term, not 1.41x.** The hypothesis was clean, cited a measured precedent, and
+was false.
+
+**3 — AND ITS NUMBER WAS STALE IN THE OTHER DIRECTION.** Items 1956/1957 took this row 111.1 → 58.9
+ms, so "2.28x beyond start-driven" is 1.86x, and the engine now **beats** the start-driven hand walk
+(0.89x) that item 1955 named as its legal ceiling.
+
+🔑 **WHAT IS ACTUALLY LEFT THERE, STATED AS A TARGET AND NOT TAKEN.** The route is FUSED — the route
+screen reports `edgef: outE has inV values SHORTCUT 0 applyStep call(s)` — so the ~2x is INSIDE a
+working rung, not a declined route ([[rung-precedence-decides-speed]]). The engine is 2.03x off a
+hand walk of its OWN shape with its OWN legal access pattern, so what remains is the per-edge closure
+pair (`edgeTest`, `pick`) against an inlined predicate and projection. That is a
+closure-SPECIALIZATION question, and it is **not taken here deliberately**:
+[[executor-edits-perturb]] prices a new walk variant at up to 16% on rows it does not touch, which is
+a cost worth a decision rather than a tick.
+
+### ⚠️ TWO INSTRUMENT FAILURES
+
+```text
+    edge-filter-prof-1882.mjs   reports TIMING, not frames, despite the name: the query is 15% of
+                                the process at N=20000 and 31% at N=200000, and it prints no frame
+                                table at either size. So the 2x above is PRICED but NOT ATTRIBUTED,
+                                and a frame-level instrument for it is a new build, not a flag.
+    my own ns/row column        printed `0` for every arm — ms divided by rows without the 1e6.
+                                Fixed to ns/edge-visit, which is the right unit regardless.
+```
+
+### STALE CLAIMS CORRECTED IN THIS COMMIT
+
+Items 1955, 1986 and 1987 headings. ⚠️ And the fuzzer's own note, which said "the engines still
+AGREE on walk order today -- nothing has been reordered yet" and told a reader to investigate any
+positional divergence: a reorder HAS now shipped, so that note is retired and the variable named
+`multiType` — which has tested any adjacency step since item 2400 — is renamed `adjacency`. A stale
+label in the file CLAUDE.md says to read first is what cost item 1986 a target-selection step.
+
+### GATES
+
+`bun run fmt` 0; `bun run check` 0; `bun run test -- --skip-nx-cache` 0 across 21 projects;
+`bun run fuzz` 57 pass / 0 fail (**the guard that was the stated blocker**); `packages/gremlin`
+2,845 + 7 new pass; the new rung test 7 pass with two mutants each killing 5.

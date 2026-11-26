@@ -26,19 +26,26 @@ import type { Plan } from '../ast.js';
  *     the type's edge set, O(|E_T|)      6.68      6 rows, DIFFERENT order 43.9x
  * ```
  *
- * 🛑 **THE EDGE-SET ARM IS 4.6x FASTER AGAIN AND IS CORRECTNESS-BLOCKED — not an owner decision,
- * which is how item 1986 first recorded it and item 1987 corrected.** Iterating the type's edges
- * directly skips the per-vertex walk, but its order is edge-insertion order rather than vertex
- * order. That is NOT free here: the Gremlin differential fuzzer decides `unordered` as
- * `multiType || RECONVERGING_BRANCH` (plus a path-stream `order()`), and a SINGLE-TYPE `out('E')`
- * with no `coalesce`/`choose`/`optional` and no `order()` satisfies none of them — so this shape is
- * compared **STRICTLY ORDERED** against native and its TS stream order is a cross-engine contract
- * under byte-identity.
+ * ✅ **THE EDGE-SET ARM IS NOW TAKEN — 4.6x, at item 2407.** ~~🛑 THE EDGE-SET ARM IS 4.6x FASTER
+ * AGAIN AND IS CORRECTNESS-BLOCKED — not an owner decision, which is how item 1986 first recorded it
+ * and item 1987 corrected.~~ Items 1986/1987 refused it because the Gremlin differential fuzzer
+ * decided `unordered` as `multiType || RECONVERGING_BRANCH`, so a SINGLE-TYPE `out('E')` satisfied
+ * none of them and was compared **STRICTLY ORDERED** against native — making TS stream order a
+ * cross-engine contract. **The OWNER RULING of 2026-11-22 (item 2400) dissolved exactly that**: walk
+ * order is implementation-dependent and need not match across engines, so the fuzzer's predicate now
+ * admits any adjacency step (`ADJACENCY_STEP`) and this shape is compared as a MULTISET. The refusal
+ * was never about this engine computing a wrong answer; it was about a comparison mode that no longer
+ * applies.
  *
- * ⚠️ Item 1955 found exactly this one shape over, for `V().outE('E')`, where the same edge-bucket
- * drive was 2.28x beyond a start-driven ceiling: "a single-type `outE('E')` is not in its unordered
- * set … **a checksum cannot see an order change**". [[order-is-unspecified]] is about rows nobody
- * contracted; it does not license reordering a shape the fuzzer pins. Priced, and refused.
+ * 🔑 **AND THE EDGE-SET DRIVE IS SIMPLER, NOT JUST FASTER.** A self-loop is a self-loop from either
+ * end, so `out` and `in` return the SAME rows (items 1986's own fixture recorded that:
+ * `V().in_(E).cyclicPath()` matched `out`). Driving the type's edge set makes the direction flag
+ * irrelevant, so the walk drops the per-vertex bucket indirection AND the `outward` branch.
+ *
+ * ⚠️ Item 1955 is the same lever one shape over, for `V().outE('E')` — see item 2407 for its number,
+ * which had gone STALE in the other direction: items 1956/1957 took that row from 111.1 to 62.0 ms,
+ * so its "2.28x beyond a start-driven ceiling" is now 1.96x and the engine BEATS the start-driven
+ * hand walk (0.89x).
  *
  * ⚠️ ONE ROW PER *EDGE*, NOT PER VERTEX. Two PARALLEL self-loops at one vertex are two distinct
  * edges and the engine returns two rows — verified against the engine on a three-vertex fixture
@@ -79,30 +86,37 @@ export const cyclicPathShortcut = (plan: Plan, graph: Graph): unknown[] | undefi
   }
 
   const [type] = hop.labels;
-  const outward = hop.kind === 'out';
   const key = proj === undefined ? undefined : proj.keys[0];
   const rows: unknown[] = [];
 
   /*
-   * ⚠️ VERTEX ORDER THEN EDGE ORDER, which is the order the general route produces and the reason
-   * the ceiling probe compared ANSWERS rather than just times. `graph.vertices` is the same order
-   * `V()` seeds, and each vertex's own bucket is walked in insertion order.
+   * ⚠️ EDGE-INSERTION ORDER, NOT VERTEX ORDER — and that is what item 2400's ruling freed. The
+   * general route emits vertex order then edge order; this emits the type's edge set in insertion
+   * order, which is the SAME MULTISET and a different sequence. A consumer who needs an order adds
+   * an explicit `order()`.
+   *
+   * ⚠️ The bucket holds only LIVE edges — `removeEdge` de-indexes it, which
+   * `edge-endpoint-ids.test.ts`'s "removal de-indexes and drops the emptied label entry" pins. A
+   * stale bucket would make this emit rows the per-vertex walk cannot, which is a WRONG ANSWER
+   * rather than a reorder, so that maintenance is load-bearing here.
+   *
+   * The direction flag is deliberately NOT read: a self-loop is reachable from either end, so
+   * `out(T)` and `in(T)` select the identical edges. Only `hop.labels.length === 1` and a directed
+   * hop are admitted above, so `both`'s double-emission never reaches this walk.
    */
-  for (const v of graph.vertices) {
-    const bucket = (outward ? v.adjFrom : v.adjTo)?.get(type);
+  const bucket = graph.edgesByLabel.get(type);
 
-    if (bucket === undefined) {
-      continue;
-    }
+  if (bucket === undefined) {
+    return rows;
+  }
 
-    for (const edge of bucket) {
-      // The far end, which for a self-loop IS `v` — compared by identity, not id, because an id
-      // comparison would also match a vertex and an edge that share one ([[cross-engine-divergences-open]]).
-      const far: Vertex = outward ? edge.to : edge.from;
+  for (const edge of bucket) {
+    // Identity, not id: an id comparison would also match a vertex and an edge that share one
+    // ([[cross-engine-divergences-open]]).
+    const from: Vertex = edge.from;
 
-      if (far === v) {
-        rows.push(key === undefined ? v : v.properties[key]);
-      }
+    if (from === edge.to) {
+      rows.push(key === undefined ? from : from.properties[key]);
     }
   }
 
