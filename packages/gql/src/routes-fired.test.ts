@@ -213,12 +213,20 @@ describe('every fast-path detector fires for its own shape', () => {
     [
       'three-hop SUM is ADMITTED to the level fold (item 2409)',
       'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L)-[:R]->(d:L) RETURN sum(d.k) AS s',
-      ['chainFoldLevels'],
+      /*
+       * ⚠️ TWO RUNGS COMPILE FOR THIS SHAPE SINCE ITEM 2411, and this list is alphabetical, NOT
+       * precedence. `chainFoldLevels` is consulted ABOVE `chainFoldedAggregate` (see `CLinear`'s
+       * own note), so the level fold still answers this one and the path-walk rung is the fallback
+       * for the shapes it declines. 🔑 This harness reads the COMPILED RECORD, so it cannot see
+       * which of the two answers — the A/B timing is what says the plain shape did not regress.
+       */
+      ['chainFoldLevels', 'chainFoldedAggregate'],
     ],
     [
       'two-hop AVG is ADMITTED to the level fold (item 2409)',
       'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L) RETURN avg(c.k) AS a',
-      ['chainFoldLevels'],
+      // The two-hop twin of the pair above — `hop2FoldedAggregate` is the fallback at this width.
+      ['chainFoldLevels', 'hop2FoldedAggregate'],
     ],
     /*
      * ⚠️⚠️ **AN AGGREGATE OVER A NON-FAR VARIABLE MUST STAY OFF — item 2410, and these rows are the
@@ -245,12 +253,14 @@ describe('every fast-path detector fires for its own shape', () => {
     [
       'sum over a MIDDLE variable stays off the level fold (item 2410)',
       'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L)-[:R]->(d:L) RETURN sum(b.k) AS s',
-      [],
+      // ⚠️ `[]` UNTIL ITEM 2411 WIDENED THE PATH-WALK RUNG — which is the point of the pair: the
+      // level fold declines what it cannot bind, and the rung that binds every variable takes it.
+      ['chainFoldedAggregate'],
     ],
     [
       'an argument reading the far variable AND another stays off (item 2410)',
       'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L)-[:R]->(d:L) RETURN sum(a.k + d.k) AS s',
-      [],
+      ['chainFoldedAggregate'],
     ],
     /*
      * ⚠️ A DISTINCT SUM STAYS OFF, and this one is a real refusal rather than a stale one: a

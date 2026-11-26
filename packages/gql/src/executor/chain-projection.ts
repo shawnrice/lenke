@@ -19,6 +19,7 @@ import {
   unsortedPageRoute,
   withoutSortOrWindow,
 } from './ordered-rows.js';
+import { foldedRowsReducer, pathSumAggFor } from './path-sum-fold.js';
 import { plainRowProjectionIgnoringDistinct, projectRow, valueKey } from './rows.js';
 import { asTruth } from './scalars.js';
 import { rowLocal } from './shortcuts.js';
@@ -1093,13 +1094,25 @@ export const detectChainFoldedAggregate = (
   const { ret, cret } = twoClause;
 
   const proj = cret.projection;
-  const agg = proj.foldedAggs?.length === 1 ? proj.foldedAggs[0] : undefined;
+  const folded = proj.foldedAggs?.length === 1 ? proj.foldedAggs[0] : undefined;
+  /*
+   * ⚠️⚠️ **TWO WAYS IN SINCE ITEM 2411, AND THE SECOND ONE COMPILES ITS OWN ARGUMENT.**
+   * `min`/`max`/`count` carry a `foldedAggs` entry that `compileProjection` already lowered;
+   * `sum`/`avg` do not, because `foldFor` has no entry for them and item 2159's rule forbids
+   * widening it (its result is read by call sites that infer ORDER-INSENSITIVITY from foldability).
+   * `path-sum-fold.ts` identifies them off the AST and owns the accumulator for both rungs.
+   */
+  const sumAgg = folded === undefined ? pathSumAggFor(proj, ret.projection.items[0]?.expr) : null;
+  const agg = folded ?? sumAgg;
 
   if (
     !proj.aggregating ||
     proj.items.length !== 1 ||
     agg === undefined ||
-    !ORDER_INVARIANT_AGGREGATES.has(agg.expr.name) ||
+    agg === null ||
+    // ⚠️ THE ALLOWLIST STILL GUARDS THE `foldedAggs` PATH, which is where `collect` and the
+    // order-sensitive folds would arrive. `sum`/`avg` do not come through it — see `sumAgg` above.
+    (folded !== undefined && !ORDER_INVARIANT_AGGREGATES.has(folded.expr.name)) ||
     // `count(*)` has its own closed-form route and never reaches `foldedAggs`; a DISTINCT `min`/
     // `max` is not foldable at all (`foldFor` returns undefined), so it cannot arrive here either.
     agg.expr.star ||
@@ -1134,6 +1147,16 @@ export const detectChainFoldedAggregate = (
     return null;
   }
 
+  /*
+   * ⚠️ THE REDUCER IS CHOSEN ONCE, AT COMPILE TIME. `path-sum-fold.ts` owns both accumulators so the
+   * two rungs cannot drift on the empty case or the bail, which are the load-bearing parts.
+   */
+  const reduce = foldedRowsReducer(folded, sumAgg, column, outName);
+
+  if (reduce === null) {
+    return null;
+  }
+
   return (graph, params) => {
     /*
      * ⚠️ THIS RUNG COMPOSES `detectChainProjection`'s WALK, so it inherits its execution-time decline
@@ -1145,20 +1168,7 @@ export const detectChainFoldedAggregate = (
       return null;
     }
 
-    let acc = agg.fold.init();
-
-    for (const row of inner) {
-      const v = (row as Record<string, unknown>)[column];
-
-      // Nullish never reaches `step` on the general path either (`stepFolded`'s `isNullish`), and
-      // it must not: a null in the set would make a later non-null the SECOND distinct value where
-      // it is the first.
-      if (v !== null && v !== undefined) {
-        acc = agg.fold.step(acc, v);
-      }
-    }
-
-    return [{ [outName]: agg.fold.finish(acc) }];
+    return reduce(inner);
   };
 };
 

@@ -85968,7 +85968,7 @@ NO ENGINE CODE CHANGED. ~~Priced and left open with the floors a fix has to beat
 
 GATES. bun run check 0 read unpiped.
 
-### Item 1830 — ✅ **`min`/`max`/`count(x)` OVER A CHAIN: 5.8x / 6.5x / 7.2x / 10.4x** at depths 2-5, taking the order-INVARIANT half of item 1829's aggregate family. ⚠️ **AND MUTATION SHOWED THE GUARD I BUILT IS REDUNDANT — kept anyway, because this item's own predecessor supplies the motive to break it**
+### Item 1830 — ⚠️ **ITS OTHER HALF WAS TAKEN AT ITEM 2411 AT 3.0-3.7x: `sum`/`avg` now fold on these same two rungs, because item 2401 retired the byte-identity argument `ORDER_INVARIANT_AGGREGATES` still quoted verbatim.** ✅ **`min`/`max`/`count(x)` OVER A CHAIN: 5.8x / 6.5x / 7.2x / 10.4x** at depths 2-5, taking the order-INVARIANT half of item 1829's aggregate family. ⚠️ **AND MUTATION SHOWED THE GUARD I BUILT IS REDUNDANT — kept anyway, because this item's own predecessor supplies the motive to break it**
 
 THE TARGET, item 1829's largest flag and the half that is safe to take:
 
@@ -107802,7 +107802,7 @@ item. **Put the throw in before the edit, not after the measurement disappoints.
 
 GATES. Tree reverted to pristine; `bun run check` 0; 5,266 tests green.
 
-## Item 2159 — ✅ **SHIPPED, SMALL: `sum()` over a hop streams instead of collecting — 1.09-1.15x. ⚠️⚠️ AND THE 3.6x THAT NOMINATED IT IS NOT AVAILABLE: it is the ORDER-SENSITIVE WALK, which float non-associativity requires. Two of my own hypotheses corrected**
+## Item 2159 — ⚠️ **ITS BLOCKER IS RETIRED (item 2401's precision contract), AND THE CHAIN RUNGS TOOK IT AT ITEMS 2409/2411 — but its `foldFor` RULE STILL HOLDS and both items obeyed it: the fold is compiled at the rung, never by widening `foldFor`.** ✅ **SHIPPED, SMALL: `sum()` over a hop streams instead of collecting — 1.09-1.15x. ⚠️⚠️ ~~AND THE 3.6x THAT NOMINATED IT IS NOT AVAILABLE: it is the ORDER-SENSITIVE WALK, which float non-associativity requires.~~ Two of my own hypotheses corrected**
 
 Item 2158 failed by editing an unreachable detector. 🔑 **This item put the throw in FIRST** and it paid
 immediately: site `hop-projection.ts:6589` is reached by `sum` and `avg` over a hop, and NOT by `max`
@@ -122119,3 +122119,144 @@ GATES. `bun run fmt` 0; `bun run lint` 0; `bun run typecheck` 0, each read unpip
 --skip-nx-cache` 0; `packages/gql` 5,464 pass / 0 fail; `bun run fuzz` 57 pass / 0 fail on three
 consecutive sweeps with `DECLARED none used` and `aggregate=1124/1124` non-empty; the 945-cell sweep
 and both its mutants.
+
+## Item 2411 — ✅ **TOOK ITEM 1830's OTHER HALF: `sum`/`avg` now fold on the PATH-WALK chain rungs, 3.72x / 3.48x / 4.11x at three hops and 3.23x / 3.01x at two — and in every arm `sum` lands ON its own `count(x)` control, so the refusal was the ENTIRE gap.** 🔑 **The argument is the EASY one: these rungs walk the paths, so this is a plain left fold needing only item 2401's re-association ruling and no error bound** ⚠️ **Three of the six modifiers are FLAT, so the lever is worth less than the modifier count suggests**
+
+Item 2409 admitted `sum`/`avg` to the chain LEVEL recurrence. That rung is deliberately narrow — no
+relationship variable, no inline properties, no clause `WHERE`, no union types, no label expression,
+and the argument must read only the far node — and everything it declines fell to
+`chain-projection.ts` and `hop2-projection.ts`, which still carried the refusal verbatim:
+
+> `sum / avg  order-SENSITIVE in the last ulp (f64)  REFUSED` … This engine's hard invariant is
+> BYTE-IDENTITY with the Rust engine, so admitting `sum` would make the two disagree in the last ulp
+> wherever this walk's order differs from the general path's.
+
+🔑 **THE ARGUMENT HERE IS STRICTLY EASIER THAN ITEM 2409's, AND CONFLATING THEM WOULD OVERSTATE THE
+RISK.** The level fold computes `Σ u_v·x_v` over distinct reached vertices — a DIFFERENT COMPUTATION
+from a per-path sum, which is why it needed an error bound. These rungs walk the actual paths, so
+this is a left fold over the SAME ADDENDS in a possibly different ORDER: a re-association and nothing
+more, which is exactly what item 2401's contract frees. ⚠️ Within-engine determinism is untouched —
+the rung's walk is the same walk run to run.
+
+### THE NUMBERS, `pathsum-ab-2411.sh`, route-toggle, 20,000 vertices / 80,000 edges, 3 order-alternated rounds, min of per-round medians
+
+```text
+    THREE HOPS (chain-projection.ts)      GENERIC    FOLDED          vs its own control
+      label expression   sum               709.07    190.78   3.72x   countx 190.37 → ON IT
+      union types        sum              1390.14    399.42   3.48x   countx 396.88 → ON IT
+      non-far argument   sum               693.02    168.72   4.11x   countx 156.98 → ON IT
+      label expression   countx  CONTROL    190.37    190.79   flat
+      union types        countx  CONTROL    396.88    405.25   flat
+      non-far argument   countx  CONTROL    156.98    169.43   flat
+      label expression   rows    FLOOR      165.38    166.82   flat
+
+    TWO HOPS (hop2-projection.ts)
+      label expression   sum               172.12     53.23   3.23x   countx 52.37 → ON IT
+      union types        sum               331.55    110.30   3.01x   countx 108.66 → ON IT
+      label expression   countx  CONTROL     53.30     52.37   flat
+      union types        countx  CONTROL    113.52    108.66   flat
+```
+
+🔑 **`sum` DOES NOT MERELY IMPROVE — IT LANDS ON THE ADMITTED FOLD'S OWN FLOOR** in all five arms (and
+on `union` at three hops it is marginally FASTER than `countx`). That is the readable form of the
+result: the aggregate was never the cost, the refusal was.
+
+⚠️ **AND THE RUNG'S EXISTING TENANTS ARE FLAT, which is the claim a new rung most often breaks**
+([[executor-edits-perturb]] — a new walk variant has cost unrelated rows up to 16%). The `countx` and
+`rows` rows above are those tenants. Separately A/B'd, the `plain` chain — item 2409's level fold,
+which is consulted ABOVE this rung — reads `sum` 0.82 → 0.81, `min` 0.79 → 0.83, `count(x)` 0.79 →
+0.81: the new rung being merely WILLING did not starve the one above it
+([[rung-precedence-decides-speed]]).
+
+### ⚠️ WHAT IS **NOT** WORTH TAKING, which is half the pricing
+
+```text
+      clause WHERE       sum   780.53   its rows floor 728.20   flat
+      inline properties  sum   727.15   its rows floor 678.52   flat
+      relationship var   sum    42.10   its rows floor  40.81   flat
+```
+
+Three of the six modifiers pay for their WALK, not for the refusal — their `sum` already sits at its
+own materialization floor, so there is nothing a fold can return. 🔑 The route probe says why for the
+`WHERE` arm specifically: **neither `count` nor `sum` is served there** (`(none)` for both), so this
+family's rung does not claim a carried `WHERE` at all and widening the fold could not have reached
+it. ⚠️ Anyone pricing "widen the path-walk rungs" from the modifier COUNT would have over-estimated
+it by two.
+
+### 🔑 ONE COPY OF THE ACCUMULATOR, AND `foldFor` IS STILL NOT WIDENED
+
+`path-sum-fold.ts` is new and owns the detection and both accumulators. ⚠️ `chain-projection.ts`
+warns TWICE that two copies of one shape rule is how the far endpoint ended up on a per-edge tally,
+and the two modules already carry duplicate `ORDER_INVARIANT_AGGREGATES` sets — a second copy of the
+accumulator would be the one that drifts, because its empty case and its bail are both load-bearing.
+
+⚠️ **`foldFor` IS UNTOUCHED — item 2159's rule still holds and both items obeyed it.** Its result is
+read by call sites that infer ORDER-INSENSITIVITY from foldability (`node-scan.ts`'s unfiltered scan,
+`core.ts`'s grouped path, `hop-projection.ts`, `shortcuts.ts`, `grouped-hop.ts`), and a `sum` is not
+order-insensitive in its bits; `node-scan.ts:1776` warns of this in advance. So `sum`/`avg` arrive
+with `foldedAggs` UNDEFINED and the rung compiles their argument itself.
+
+### THE THROW WENT IN FIRST AND SETTLED THE SITE
+
+Item 2150's rule, which item 2158 cost a whole item by skipping and item 2409 vindicated when its
+first throw landed in the wrong rung. Here a throw at the ADMISSION point of BOTH detectors (not
+their entry — item 1820's lesson) fired immediately on `count(d.k)` under a label expression, so the
+route map was established before a line was changed:
+
+```text
+                                  BEFORE                      AFTER
+      labelexpr count   chainFoldedAggregate          chainFoldedAggregate
+      labelexpr sum     (none — general matcher)      chainFoldedAggregate
+      union sum         (none)                        chainFoldedAggregate
+      non-far sum       (none)                        chainFoldedAggregate
+      hop2 labelexpr sum (none)                       hop2FoldedAggregate
+      WHERE count/sum   (none) / (none)               (none) / (none)   ← never claimed
+      sum(DISTINCT)     (none)                        (none)            ← still refused
+      collect           (none)                        (none)            ← still refused
+```
+
+### MUTATION: 10 of 10 CAUGHT, AND ALL THREE SURVIVORS WERE PREDICTED
+
+`pathsum-mutants-2411.mjs`, over `chain-path-sum.test.ts`, `routes-fired.test.ts` and both item
+2410 files. 🔑 **Every verdict matched its prediction, which is the first time across these
+batteries** — item 2409 spent three iterations on defective mutants (one UNREACHABLE, one a NO-OP,
+one answer-equivalent) before noticing that predicting the verdict is part of writing the mutant, so
+the expected survivors are labelled `[EQUIV]` in the source with the reason.
+
+```text
+      empty sum answers null (item 2409's divergence restored)   CAUGHT   3 fail
+      empty avg answers 0                                        CAUGHT   3
+      avg divides by the PATH count, not the non-null count      CAUGHT   1
+      avg denominator off by one                                 CAUGHT   8
+      the sum accumulates with the wrong sign                    CAUGHT  17
+      the bail admits a non-number (a temporal is summed)        CAUGHT   2
+      the gate admits sum(DISTINCT)                              CAUGHT   5
+      the gate admits nothing (a ROUTE mutant)                   CAUGHT   4
+      the 3+-hop rung never offers the fold (ROUTE)              CAUGHT   3
+      the 2-hop rung never offers the fold (ROUTE)               CAUGHT   1
+      [EQUIV] the nullish skip removed                           SURVIVED
+      [EQUIV] the order-invariant allowlist dropped              SURVIVED
+      [EQUIV] NO-OP CONTROL (multiply the addend by one)         SURVIVED
+```
+
+⚠️ **THE TWO ROUTE MUTANTS ARE WHY `routes-fired.test.ts` IS IN THE LIST.** Turning either rung's
+gate off is ANSWER-EQUIVALENT — the query falls through to a correct general path — so
+`chain-path-sum.test.ts` alone would pass. That is `[[perf-gate-needs-its-own-test]]` exactly, and
+the route rows are the only assertion that can see it.
+
+⚠️ `[EQUIV]` #1 is worth stating because it looks like a coverage gap: removing the nullish skip does
+NOT let a null through — `typeof null !== 'number'` then BAILS, the rung declines, and the general
+path answers correctly. The guard earns its place by keeping the fold on a null-bearing column, not
+by changing an answer. `[EQUIV]` #2 is item 1830's own recorded finding (the allowlist is redundant
+while `foldFor` returns only order-invariant folds) and is kept as a guard rather than a gate.
+
+### 🔑 STILL OPEN
+
+`collect` keeps its refusal everywhere, for a reason no ruling touches. The `WHERE` and inline arms
+are priced FLAT above and are not a target. The three remaining copies of the retired byte-identity
+paragraph (`hop-projection.ts` ×3) are comments on code item 2401 already shipped, not live refusals.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run typecheck` 0, each read unpiped; `bun run test --
+--skip-nx-cache` 0; `packages/gql` 5,482 pass / 0 fail; `bun run fuzz` 57 pass / 0 fail on three
+consecutive sweeps with `DECLARED none used` and `aggregate=1194/1194` non-empty; item 2410's
+945-cell cross-route sweep still 945/0; the A/B above and the 13-mutant battery.
